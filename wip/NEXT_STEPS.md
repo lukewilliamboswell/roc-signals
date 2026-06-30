@@ -82,7 +82,7 @@ own and engine semantics already covered natively, for no added signal.
   actions now include `key_down` and `submit`. JS contract tests cover dynamic
   event extraction, listener options, malformed descriptors/records, and memory
   view refresh after payload allocation.
-- **Measured result:** `zig build run-signals-bench` includes
+- **Measured result:** the benchmark suite includes
   `signals-event-payload-boundary` at 20 iterations / 80 actions:
   `commands=1100`, `bind_event=80`, `allocs_this_event=7120`,
   `deallocs_this_event=5620`, `retained_alloc_delta=1460`,
@@ -222,7 +222,7 @@ Validation completed for this phase:
   `/api/ops/dashboard` payload, dashboard content renders, and unmount returns
   retained `HostValue` count to zero
 - `zig build run-test-zig -- --test-filter "host value registry"`
-- `zig build run-test-signals`
+- native signal specs through the then-current signal test gate
 
 The exact glue regeneration command used for the ABI update was:
 
@@ -281,11 +281,11 @@ Validation completed for this phase:
 - `node test/signals/browser/task_lifetime_harness.mjs /private/tmp/task_to_utf8_lifetime.wasm failure`
 - `zig build run-test-zig -- --test-filter "signals host descriptors carry capability-owned extension records"`
 - `zig build run-test-zig -- --test-filter "signals host"`
-- `zig build run-test-signals`
+- native signal specs through the then-current signal test gate
 
 ## Phase 4 — Update and review baseline measurements
 
-- [x] Re-run `run-signals-bench` across all six apps and record fresh baselines.
+- [x] Re-run the benchmark suite across all representative apps and record fresh baselines.
 - [x] Capture the current values of the work counters (`nodes_recomputed`,
       `patches_emitted`, `active_graph_records_rebuilt`, `stream_nodes_scanned`,
       `each_key_compares`, per-event allocation deltas) for the representative
@@ -301,8 +301,7 @@ Validation completed for this phase:
       identity-stress spec asserts keyed-row budgets such as `each_key_compares`
       and row reuse/create/remove counts.
 
-Fresh `zig build run-signals-bench` single-sample baselines captured on
-2026-06-26:
+Fresh single-sample benchmark baselines captured on 2026-06-26:
 
 | case | actions | nodes_recomputed | patches_emitted | active_graph_records_rebuilt | stream_nodes_scanned | each_key_compares | allocs_this_event | deallocs_this_event | retained_alloc_delta |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -313,8 +312,8 @@ Fresh `zig build run-signals-bench` single-sample baselines captured on
 | signals-identity-stress | 180 | 180 | 4000 | 300 | 700 | 75720 | 25380 | 20340 | 5000 |
 | signals-checkout-wizard | 180 | 180 | 4280 | 320 | 780 | 16120 | 17840 | 13180 | 4620 |
 
-Post host-allocation-instrumentation `zig build run-signals-bench` single-sample
-baseline captured on 2026-06-27. This is the comparison point for future
+Post host-allocation-instrumentation single-sample benchmark baseline captured on
+2026-06-27. This is the comparison point for future
 scratch-buffer work; timing is included for context, but the allocation count
 and byte columns are the primary signal.
 
@@ -328,8 +327,8 @@ and byte columns are the primary signal.
 | signals-kanban-board | 320 | 555115227 | 242180 | 219460 | 317400 | 261380 | 87414760 | 76704060 | 55960 | 10703340 |
 | signals-component-composition | 100 | 9469786 | 9260 | 6800 | 17240 | 10980 | 3241120 | 1967400 | 6180 | 1272740 |
 
-Post keyed-row-site index `zig build run-signals-bench` single-sample comparison
-captured on 2026-06-27. The keyed row path now keeps an explicit active
+Post keyed-row-site index single-sample benchmark comparison captured on
+2026-06-27. The keyed row path now keeps an explicit active
 `(parent_scope_id, site_ordinal) -> rows` table with per-site hash heads/links,
 so dirty diffs no longer scan the scope forest or rebuild existing-row bucket
 arrays. The large-N specs tightened `each_key_compares` from four per row to two
@@ -357,8 +356,8 @@ structural cost:
 | signals-large-each-64 | 1118520 | 451840 | 300800 | 236360 | 110680 | 12520 | 6320 | 14680 |
 | signals-kanban-board | 454320 | 128520 | 79280 | 82480 | 132340 | 29860 | 1840 | 1400 |
 
-Sparse render-child index `zig build run-signals-bench` single-sample comparison
-captured on 2026-06-27. `HostNodeDescriptorStream` now keeps explicit sparse
+Sparse render-child index single-sample benchmark comparison captured on
+2026-06-27. `HostNodeDescriptorStream` now keeps explicit sparse
 render metadata keyed by elem id, so `streamDirectChildren` walks child links
 instead of scanning `render_nodes`. The first dense-field/dense-side-table shapes
 were rejected because they eliminated scans but regressed host allocation bytes
@@ -382,8 +381,8 @@ Outcome:
   are the remaining `remove_target`, `splice`, and `render_scope` buckets and
   the still-dark whole-stream splice tail work.
 
-Dark-path attribution counters added on 2026-06-27 and measured with
-`zig build run-signals-bench` after the sparse render-child index. These counters
+Dark-path attribution counters added on 2026-06-27 and measured with the
+benchmark suite after the sparse render-child index. These counters
 are not part of `stream_nodes_scanned`; they count the whole-stream/whole-graph
 work that was previously invisible in the scan split.
 
@@ -557,6 +556,136 @@ Baseline review outcome:
 - App-authored keyed-row hashes have been replaced with host-private hashing of
   explicit key text; keep the large-N evidence current as the keyed diff evolves.
 
+## Product capability backlog from `*_PREP.md`
+
+The `*_PREP.md` files are design-prep research, not active queues. This section
+folds their surviving work into one prioritized backlog; treat the prep docs as
+background detail.
+
+**Where this sits.** This is *feature* work, distinct from the Phase 5
+optimisation backlog below. It becomes the active queue once the last Phase 1 item
+(per-app manual browser QA) is green. Two caveats keep it from automatically
+outranking everything else:
+
+- Phase 5 items explicitly flagged as **design gaps** rather than optimisations
+  may interleave *ahead* of new features when a baseline shows a `DESIGN.md`
+  budget is being violated. The persistent rank-ordered propagation queue is the
+  remaining example; sink-route maintenance was another such gap, but that slice
+  has landed. Close conformance gaps before adding surface area; additive features
+  should not bury a propagation-core gap.
+- These are net-new capabilities with real ABI/wire churn, so each lands behind
+  native specs plus JS contract tests, not benchmarks.
+
+**Already landed (do not redo):** protocol version/features, the hybrid
+`Extended` dynamic-record path, custom text attrs (`Html.attr`/`attr_s`), general
+named events with static listener-option *bit constants* (`prevent_default`,
+`stop_propagation`, `capture`, `passive` already exist in `Node.roc`),
+keydown/submit payload slices, the guarded controlled-input `SetValue` policy, and
+JS contract coverage for the current boundary. The wire-protocol doc's "research
+the protocol first" advice is therefore historical: its blocking slice shipped.
+
+The remaining work splits into **two tracks that can run in parallel** plus a
+later convergence item — not one strict 1..n sequence. This is driven by the prep
+docs' own dependency notes: attr/event sits *under* forms, while HTTP re-enters
+through the existing signal-source path and is explicitly independent of the DOM
+boundary.
+
+### Track A — UI boundary (ordered: A1 then A2)
+
+**A1. Finish the attribute/event boundary (the forms enabler).**
+
+- Add general **boolean** attrs/properties needed by forms (`required`,
+  `readonly`, `aria-invalid`/related helpers), with explicit remove semantics
+  rather than empty-string sentinels. (Custom *text* attrs already exist; custom
+  bool attrs do not, and the Phase 1 boundary note already flagged `required` as
+  the next gap.)
+- Extend named event helpers only for real consumers: `focus`, `blur`, `change`,
+  composition/IME, and any submit/keyboard gaps the focused form app surfaces.
+- Reuse the existing listener-option bits; verify runtime wiring for
+  `capture`/`passive` instead of re-adding constants, and add `once` only if a
+  consumer needs it. Keep options static; defer dynamic prevent/stop decisions
+  returned by reducers.
+- Add one focused app/spec plus JS contract tests; do not catalog every web
+  attribute.
+- **Why first in this track:** it is the shared foundation forms and richer UI
+  examples both need, and it reuses the dynamic-record/event infrastructure
+  already landed.
+
+**A2. Minimal production-safe forms slice** (blocked by A1).
+
+- Prove text input reconciliation: no overwrite while focused/composing, latest
+  deferred canonical value applies on blur, equal values are no-ops.
+- Cover submit with prevent-default, checkbox continuity, a required/invalid
+  validation message linked by `aria-describedby`, and native semantic spec
+  actions for focus/blur/submit.
+- Defer selection-preserving masks, file input, radio/select, async validation,
+  and full browser constraint-validation wrapping until this contract is stable.
+- **Why second:** forms are the highest UI layer in the prep docs; treat them as
+  the integration test that proves the A1 boundary on a real surface, not the
+  layer that invents it.
+
+### Track B — Effects (can start now, in parallel with Track A)
+
+**B1. Package-aligned HTTP effects** (independent of A1/A2; do not gate on the DOM
+boundary).
+
+- Pin a released `roc-lang/http` package and consume its `Request`, `Response`,
+  and `Method` types through builders/accessors, not record-field knowledge (the
+  package types are transparent today but slated to become opaque).
+- Replace the string-only `Http.get_text` stub with a low-level
+  `Http.send : Request -> Task(Response, HttpError)`, plus thin text helpers.
+- Treat non-2xx as a completed `Done(Response)`; reserve `HttpError` for transport
+  / runtime failures (network error, timeout, cancellation, unsupported request,
+  response materialization). Bodies are `List(U8)`; decode in Roc.
+- Add deterministic native fake HTTP specs and browser `fetch` contract tests for
+  request encoding, status/header/body materialization, abort, ignored-late
+  results, and memory-view refresh.
+- **Why a separate track:** HTTP re-enters via the signal-source path and shares
+  almost no write surface with A1/A2, so serializing it behind forms only delays
+  high-value work. It is not "item 3"; it is the parallel effects track.
+
+### Convergence — after Track A and Track B
+
+**C1. Subscriptions and app-specific JS interop** (broadest surface; do last).
+
+- First milestone: an internal subscription descriptor/route table, one simple
+  built-in browser subscription (or unify `Signal.interval` into the subscription
+  lifecycle), native fake injection, start/stop/late-message specs, and browser
+  start/message/stop/unmount contract coverage.
+- Keep ports-like app-specific channels as a second slice unless a real example
+  needs them immediately.
+- **Why last:** it should reuse the payload format, effect lifecycle, and
+  mount/cleanup lessons proven by A2 and B1 rather than inventing them alone.
+
+### Continuous discipline (ambient, not a milestone)
+
+Wire-protocol follow-ups stay measured and incremental rather than being a
+scheduled item: keep fixed hot ops; add command byte/drain metrics, malformed
+dynamic-record diagnostics, generated shared constants (if mirrored ids become
+painful), and scoped string/spec interning **only** when metrics show they beat
+the remaining structural tail. Do not switch the native sink to consume the
+browser byte stream; use generated schema or contract tests for parity unless a
+concrete drift bug appears.
+
+### Cross-cutting decisions to settle early (with timing)
+
+These appear in multiple prep docs and will fork the design if deferred. They are
+sequencing constraints, not loose uncertainties:
+
+- **Shared payload format** (event vs subscription vs interop payloads). The docs
+  warn these "should not become three unrelated formats." Decide it **in A1**,
+  when record/primitive event payloads first appear, with C1 explicitly in mind —
+  not after forms have hardened a one-off format.
+- **Effect command channel** (render command buffer vs a separate host→JS effect
+  channel). Shared by HTTP and the wire protocol. Settle it **in B1**, when HTTP
+  gains structured request/response, because it constrains C1's subscription
+  start/stop commands.
+- **Multiple-mount model** (one WASM instance per mount vs explicit mount
+  handles). Lower stakes now, but decide it before stabilizing JS handler
+  registration in C1; handle-based mounting touches every host export and id.
+- **`roc-lang/http` release** to pin, and whether its accessor/builder surface is
+  complete enough to avoid touching record fields — resolve at the start of B1.
+
 ## Phase 5 — Re-prioritise the optimisation backlog
 
 After the capability-bundling phase and baseline review, re-prioritise the items
@@ -591,6 +720,38 @@ Current priority after the Phase 4 review:
 7. Keep scoped browser command-wire string dedupe as a measured hypothesis, not
    as active work, until wire byte/decode counters show it is larger than the
    remaining structural tail.
+
+### Deferred refactor cleanup
+
+The large engine/native-host extraction plan is retired: the engine modules,
+native support modules, test rooting, and native allocation ledger extraction have
+landed. Do not keep a separate refactor plan alive for these leftovers; promote
+one only when it directly supports the measured priority above or fixes a
+concrete bug.
+
+- **Wasm allocation ledger lookup:** native `roc_alloc_ledger.zig` now uses an
+  exact pointer→index map for O(1) frees/reallocs, but `wasm_host.zig` still keeps
+  an inline allocation table where `findExactRocAllocationIndex` scans
+  `roc_allocations.items`. Decide after browser/baseline review whether this is
+  acceptable browser-boundary debug cost or whether wasm should share/adapt the
+  native ledger's exact-index map while preserving its current diagnostics.
+- **Typed ids at module boundaries:** consider `ElemId`, `NodeId`, `ScopeId`,
+  `ActiveSignalId`, `TaskRequestId`, `IntervalToken`, and row-site ids only at
+  extracted module seams. Do not mass-convert the engine while higher-priority
+  scaling work remains.
+- **Small table/slot wrappers:** use `DenseSlots`/`DenseOptionalSlots`-style
+  helpers only where they remove grow-to-id boilerplate without hiding
+  swap-remove repair or turning O(1) lookups into scans.
+- **Render-cache enum storage:** `descriptor_stream.zig` already has field/event
+  slot helpers; `render_cache.zig` still has explicit fields such as
+  `bound_click_event` and `bound_input_event`. Convert only if it makes new
+  events/fields simpler without obscuring hot-path behaviour.
+- **Capability-frame helper:** `retained_values.zig` still repeats
+  push/defer-pop/call sequences. A tiny `CapabilityFrame(Ctx)` guard is fine if it
+  makes call sites clearer, but it is cleanup, not architecture work.
+- **Native host size:** `native_host.zig` remains large after extracting spec,
+  bench, simulated DOM, ledger, and crash handlers. Split further only if a
+  concrete seam emerges; do not extract host glue just to reduce line count.
 
 ### Persistent rank-ordered propagation queue (design gap, not optimisation)
 
@@ -810,7 +971,7 @@ Current priority after the Phase 4 review:
 
 ### Generated large-N `Ui.each` scaling app
 
-- **Status:** implemented by `test/signals/apps/generate_large_each.py`, with
+- **Status:** implemented by `examples/_fixtures/generate_large_each.py`, with
   generated N = 8 and N = 64 fixtures in the native spec suite and the N = 64
   fixture in the benchmark surface. Future structural scaling work should
   tighten these budgets; do not weaken them without measured evidence.
@@ -903,23 +1064,19 @@ locks it in.
 - Focused Zig host/engine work:
   `zig build run-test-zig -- --test-filter "native_host"`
 - Shared engine instantiates under wasm32:
-  `zig build build-test-hosts -Dplatform=signals -Doptimize=ReleaseSmall`
+  `zig build build-test-hosts -Doptimize=ReleaseSmall`
 - Platform Roc or ABI changes (any app):
-  `./zig-out/bin/roc check test/signals/apps/<app>.roc`
-- Focused wasm HostValue lifetime regression:
-  `python3 test/signals/serve.py test/signals/apps/task_to_utf8_lifetime.roc --output /private/tmp/task_to_utf8_lifetime.wasm --no-server --skip-tailwind`
-  `node test/signals/browser/task_lifetime_harness.mjs /private/tmp/task_to_utf8_lifetime.wasm success`
-  `node test/signals/browser/task_lifetime_harness.mjs /private/tmp/task_to_utf8_lifetime.wasm failure`
-- End-to-end signal specs:
-  `zig build run-test-signals --summary failures`
-- Optimized benchmark gate:
-  `zig build run-signals-bench`
+  `roc check examples/<app>/app.roc`
+- Focused wasm/app build regression:
+  `python3 scripts/test.py wasm`
+- End-to-end repository gate:
+  `python3 scripts/test.py`
+- Zig-only checks and tests:
+  `zig build test`
 - Browser host + apps build, both backends:
-  `test/signals/serve.py --no-server --app-opt dev`
-  `test/signals/serve.py --no-server --app-opt size`
+  `python3 scripts/serve.py --no-server --app-opt dev`
+  `python3 scripts/serve.py --no-server --app-opt size`
 - JS↔WASM contract guards (codec/boundary only):
-  `node --test test/signals/browser/runtime_contract.test.mjs`
-  `node --test test/signals/browser/wasm_memory_views.test.mjs`
-  `node --test test/signals/browser/controlled_input_policy.test.mjs`
+  `zig build run-test-browser`
 
 For doc-only updates, `git diff --check` is enough.
