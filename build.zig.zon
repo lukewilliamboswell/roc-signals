@@ -2,7 +2,13 @@
     .name = .roc_signals,
     .version = "0.1.0",
     .minimum_zig_version = "0.16.0",
-    .dependencies = .{},
+    .dependencies = .{
+        .kcov = .{
+            .url = "https://github.com/roc-lang/zig-kcov/archive/5e1954e53ce775a6ecf65abd03ae67deee64ac3c.tar.gz",
+            .hash = "kcov-42.0.1-EuAG4XacCwBu0G8YHvv6sFHfbMPZuwyBuZGqcRMi8IXq",
+            .lazy = true,
+        },
+    },
     .fingerprint = 0x4f0c435bfd82a82d,
     .paths = .{
         "build.zig",
