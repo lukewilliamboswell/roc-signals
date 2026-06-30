@@ -9,8 +9,11 @@ parts of the interface that changed.
 
 ## Start Here
 
-The GitHub Pages site is the intended front door. Until that is published, the
-site source includes the maintained user docs:
+The GitHub Pages site is the front door:
+
+- [Roc Signals site](https://lukewilliamboswell.github.io/roc-signals/)
+
+The maintained docs are also available in the repo:
 
 - [Guide](www/content/docs/guide.md) introduces the programming model.
 - [Contributing](www/content/docs/contributing.md) covers local setup, tests,

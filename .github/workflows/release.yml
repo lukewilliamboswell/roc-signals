@@ -1,0 +1,141 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag (for example, v0.1.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-bundle:
+    name: Build and Bundle Platform
+    runs-on: ubuntu-24.04
+    outputs:
+      bundle_filename: ${{ steps.bundle.outputs.bundle_filename }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: 0.16.0
+          use-cache: false
+
+      - name: Install Roc
+        uses: roc-lang/setup-roc@cbe782d6f165b89c87d99f50a59ac4f5f73b4427
+        with:
+          version: nightly-new-compiler
+
+      - name: Build ReleaseSmall host artifacts
+        run: zig build build-test-hosts -Doptimize=ReleaseSmall
+
+      - name: Bundle platform
+        id: bundle
+        run: |
+          bundle_output=$(BUNDLE_OUT_DIR="$RUNNER_TEMP/platform-bundle" scripts/bundle.sh 2>&1)
+          echo "$bundle_output"
+
+          bundle_path=$(printf '%s\n' "$bundle_output" | awk '/^Created:/ { print $2; exit }')
+          if [ -z "$bundle_path" ] || [ ! -f "$bundle_path" ]; then
+            echo "Error: could not find bundle path in bundle output" >&2
+            exit 1
+          fi
+
+          bundle_filename=$(basename "$bundle_path")
+          echo "Bundle created: $bundle_filename"
+          echo "bundle_path=$bundle_path" >> "$GITHUB_OUTPUT"
+          echo "bundle_filename=$bundle_filename" >> "$GITHUB_OUTPUT"
+
+      - name: Upload bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: platform-bundle
+          path: ${{ steps.bundle.outputs.bundle_path }}
+          retention-days: 30
+
+  test-bundle:
+    name: Test Bundle (${{ matrix.os }})
+    needs: build-and-bundle
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-15-intel
+          - macos-15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: 0.16.0
+          use-cache: false
+
+      - name: Install Roc
+        uses: roc-lang/setup-roc@cbe782d6f165b89c87d99f50a59ac4f5f73b4427
+        with:
+          version: nightly-new-compiler
+
+      - name: Download bundle artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: platform-bundle
+          path: platform-bundle
+
+      - name: Run tests with bundled platform
+        run: |
+          bundle_file="platform-bundle/${{ needs.build-and-bundle.outputs.bundle_filename }}"
+          python3 scripts/test.py bundle --bundle always --bundle-ref "$bundle_file"
+
+  create-release:
+    name: Create GitHub Release
+    needs:
+      - build-and-bundle
+      - test-bundle
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download bundle artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: platform-bundle
+          path: platform-bundle
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bundle_file="platform-bundle/${{ needs.build-and-bundle.outputs.bundle_filename }}"
+          if [ ! -f "$bundle_file" ]; then
+            echo "Error: bundle file not found: $bundle_file" >&2
+            exit 1
+          fi
+
+          gh release create "${{ inputs.release_tag }}" \
+            "$bundle_file" \
+            --target "${{ github.sha }}" \
+            --title "${{ inputs.release_tag }}" \
+            --generate-notes \
+            --notes "Roc Signals platform bundle built with Zig 0.16.0 and Roc nightly. Host artifacts use Zig ReleaseSmall."

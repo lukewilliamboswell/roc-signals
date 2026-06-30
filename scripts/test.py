@@ -92,6 +92,11 @@ def parse_args() -> argparse.Namespace:
         help="Whether to build and test a bundle. Auto runs it on macOS only.",
     )
     parser.add_argument(
+        "--bundle-ref",
+        default=os.environ.get("BUNDLE_REF"),
+        help="Existing bundle path or URL to test for the bundle suite. Defaults to building one.",
+    )
+    parser.add_argument(
         "--keep-output",
         action="store_true",
         help="Keep .test-out after the run.",
@@ -293,14 +298,34 @@ def bundle_platform(roc_bin: str) -> Path:
     raise SystemExit("scripts/bundle.sh did not print a Created: line")
 
 
-def run_bundle_suite(roc_bin: str, examples: tuple[Example, ...]) -> None:
-    bundle = bundle_platform(roc_bin)
+def run_bundle_specs(roc_bin: str, examples: tuple[Example, ...], bundle_url: str) -> None:
+    print(f"\nTesting bundled platform: {bundle_url}")
+    source_root = TEST_OUT / "bundle-source"
+    rewrite_examples_for_bundle(bundle_url, source_root)
+    run_native_specs(roc_bin, examples, source_root=source_root, bin_dir=TEST_OUT / "bundle-bin")
+
+
+def run_bundle_file_suite(roc_bin: str, examples: tuple[Example, ...], bundle: Path) -> None:
     with BundleServer(bundle.resolve().parent) as server:
         bundle_url = f"http://127.0.0.1:{server.port}/{bundle.name}"
-        print(f"\nTesting bundled platform: {bundle_url}")
-        source_root = TEST_OUT / "bundle-source"
-        rewrite_examples_for_bundle(bundle_url, source_root)
-        run_native_specs(roc_bin, examples, source_root=source_root, bin_dir=TEST_OUT / "bundle-bin")
+        run_bundle_specs(roc_bin, examples, bundle_url)
+
+
+def run_bundle_suite(roc_bin: str, examples: tuple[Example, ...], bundle_ref: str | None) -> None:
+    if bundle_ref is None:
+        run_bundle_file_suite(roc_bin, examples, bundle_platform(roc_bin))
+        return
+
+    if bundle_ref.startswith(("http://", "https://")):
+        run_bundle_specs(roc_bin, examples, bundle_ref)
+        return
+
+    bundle = Path(bundle_ref)
+    if not bundle.is_absolute():
+        bundle = ROOT / bundle
+    if not bundle.is_file():
+        raise SystemExit(f"bundle file not found: {bundle_ref}")
+    run_bundle_file_suite(roc_bin, examples, bundle)
 
 
 def main() -> int:
@@ -332,7 +357,7 @@ def main() -> int:
 
     if "bundle" in suites:
         if should_run_hosted(args.bundle):
-            run_bundle_suite(roc_bin, examples)
+            run_bundle_suite(roc_bin, examples, args.bundle_ref)
         else:
             print("\nSkipping bundle executable tests: platform manifest exposes macOS native targets only.")
 

@@ -80,7 +80,7 @@ Roc app executables built during tests are written under `.test-out/` by
 Build host artifacts first, then create a platform bundle:
 
 ```sh
-zig build build-test-hosts
+zig build build-test-hosts -Doptimize=ReleaseSmall
 scripts/bundle.sh
 ```
 
@@ -88,6 +88,12 @@ The bundle script uses `ROC_BIN`, `ROC`, or `roc` from `PATH`. By default it
 writes the archive to the repository root. Set `BUNDLE_OUT_DIR` to choose a
 different output directory. The Python bundle test writes archives under
 `.test-out/bundles`.
+
+To test an existing bundle archive instead of rebuilding one:
+
+```sh
+python3 scripts/test.py bundle --bundle always --bundle-ref path/to/bundle.tar.zst
+```
 
 ## Static Site
 
@@ -97,10 +103,11 @@ Build and serve the static site with:
 python3 scripts/serve.py
 ```
 
-The helper builds the host artifacts, generates `www/static/signals.css` with
-the standalone Tailwind CLI, runs Zola into `dist/`, creates a platform bundle
-under `dist/platform/`, builds public example apps with `--target=wasm32`, and
-copies downloadable source files under `dist/examples/<slug>/source/`.
+The helper builds ReleaseSmall host artifacts, generates
+`www/static/signals.css` with the standalone Tailwind CLI, runs Zola into
+`dist/`, creates a platform bundle under `dist/platform/`, builds public
+example apps with `--target=wasm32 --opt=size` by default, and copies
+downloadable source files under `dist/examples/<slug>/source/`.
 
 Example source files in `dist/` have their local platform header replaced with
 `SIGNALS_PLATFORM_URL` when set. Otherwise they point at the configured GitHub
@@ -113,9 +120,17 @@ Useful variants:
 ```sh
 python3 scripts/serve.py --example ops-dashboard --port 9001
 python3 scripts/serve.py --app-opt dev
+python3 scripts/serve.py --host-opt Debug
 python3 scripts/serve.py --platform-url https://example.com/platform/release.tar.zst
 python3 scripts/serve.py --no-server
 ```
+
+## Releases
+
+The `Release` GitHub Actions workflow is manually triggered. Provide a release
+tag such as `v0.1.0`; the workflow builds ReleaseSmall host artifacts, creates
+the platform bundle, tests the downloaded bundle on Intel and Apple Silicon
+macOS runners, then creates a GitHub release with the bundle attached.
 
 ## Spec Language
 

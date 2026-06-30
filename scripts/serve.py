@@ -61,6 +61,12 @@ def parse_args() -> argparse.Namespace:
         help="Roc --opt mode for example wasm builds. Defaults to APP_OPT or size.",
     )
     parser.add_argument(
+        "--host-opt",
+        choices=("Debug", "ReleaseSafe", "ReleaseFast", "ReleaseSmall"),
+        default="ReleaseSmall",
+        help="Zig optimize mode for platform host artifacts. Defaults to ReleaseSmall.",
+    )
+    parser.add_argument(
         "--roc-bin",
         default=os.environ.get("ROC_BIN") or os.environ.get("ROC") or "roc",
         help="Roc compiler path. Defaults to ROC_BIN, ROC, or roc from PATH.",
@@ -146,8 +152,8 @@ def config_base_url() -> str:
     return str(config.get("base_url", "")).rstrip("/")
 
 
-def build_hosts() -> None:
-    run(["zig", "build", "build-test-hosts"])
+def build_hosts(host_opt: str) -> None:
+    run(["zig", "build", "build-test-hosts", f"-Doptimize={host_opt}"])
 
 
 def build_css(tailwind_bin: str, *, skip: bool) -> None:
@@ -393,7 +399,7 @@ def main() -> int:
 
     try:
         clean_site_output()
-        build_hosts()
+        build_hosts(args.host_opt)
         build_css(tailwind_bin, skip=args.skip_tailwind)
         build_zola_site(zola_bin, base_url=zola_base_url)
         bundle = bundle_platform(roc_bin, DIST / "platform")
