@@ -81,6 +81,7 @@ jobs:
   macos-coverage:
     name: macOS coverage
     runs-on: macos-15
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -95,7 +96,12 @@ jobs:
         run: brew install dwarfutils
 
       - name: Run native host coverage
-        run: python3 scripts/coverage.py --min 81.0 --top 20
+        run: |
+          sudo env \
+            "PATH=$PATH" \
+            "ZIG_GLOBAL_CACHE_DIR=$GITHUB_WORKSPACE/.zig-cache" \
+            "ZIG_LOCAL_CACHE_DIR=$GITHUB_WORKSPACE/.zig-cache" \
+            python3 scripts/coverage.py --min 81.0 --top 20
 
       - name: Upload native host coverage
         if: always()
