@@ -1,0 +1,82 @@
+# Kanban board structural scenario
+
+expect_visible role:heading name:"Release board"
+expect_visible role:region name:"Board controls"
+expect_visible role:region name:"Backlog"
+expect_visible role:region name:"In Progress"
+expect_visible role:region name:"Done"
+expect_text text:"Board ready" "Board ready"
+expect_text text:"All priorities" "All priorities"
+expect_value label:"Reviewer" ""
+fill label:"Reviewer" "Ada"
+expect_value label:"Reviewer" "Ada"
+expect_text text:"Reviewing with Ada" "Reviewing with Ada"
+expect_text text:"3 / 6 cards" "3 / 6 cards"
+expect_text text:"3 / 3 cards" "3 / 3 cards"
+expect_text text:"1 completed" "1 completed"
+expect_visible role:region name:"Card: Design signal graph"
+expect_visible role:region name:"Card: Write platform glue"
+expect_visible role:region name:"Card: Tune keyed diff"
+expect_visible role:region name:"Drop: In Progress end"
+
+click role:button name:"Add note Design signal graph"
+expect_text text:"Notes on Design signal graph: 1" "Notes on Design signal graph: 1"
+
+pointer_down role:region name:"Card: Tune keyed diff"
+expect_text text:"Dragging Tune keyed diff" "Dragging Tune keyed diff"
+pointer_enter role:region name:"Card: Design signal graph"
+expect_text text:"Dragging Tune keyed diff before Design signal graph in Backlog" "Dragging Tune keyed diff before Design signal graph in Backlog"
+
+mark_metrics
+pointer_up role:region name:"Card: Design signal graph"
+expect_text text:"Board ready" "Board ready"
+expect_text text:"Notes on Design signal graph: 1" "Notes on Design signal graph: 1"
+expect_metric_delta create_element 0
+expect_metric_delta append_child 0
+expect_metric_delta move_before 1
+expect_metric_delta remove_node 0
+expect_metric_delta bind_event 0
+expect_metric_delta active_graph_records_rebuilt 0
+expect_metric_delta rows_reused 3
+expect_metric_delta rows_created 0
+expect_metric_delta rows_removed 0
+
+click role:button name:"Add note Write platform glue"
+expect_text text:"Notes on Write platform glue: 1" "Notes on Write platform glue: 1"
+
+pointer_down role:region name:"Card: Write platform glue"
+pointer_enter role:region name:"Drop: In Progress end"
+expect_text text:"Dragging Write platform glue over In Progress" "Dragging Write platform glue over In Progress"
+
+mark_metrics
+pointer_up role:region name:"Drop: In Progress end"
+expect_text text:"Board ready" "Board ready"
+expect_text text:"2 / 6 cards" "2 / 6 cards"
+expect_text text:"4 / 3 cards" "4 / 3 cards"
+expect_visible role:region name:"Card: Write platform glue"
+expect_text text:"Tags: wasm, abi" "Tags: wasm, abi"
+expect_text text:"Notes on Write platform glue: 1" "Notes on Write platform glue: 1"
+expect_metric_delta active_graph_records_rebuilt 10
+expect_metric_delta rows_created 1
+expect_metric_delta rows_removed 1
+
+click role:button name:"Add note Write platform glue"
+expect_text text:"Notes on Write platform glue: 2" "Notes on Write platform glue: 2"
+
+click role:button name:"Focus high priority"
+expect_text text:"High priority focus" "High priority focus"
+expect_absent role:region name:"Card: Write platform glue"
+expect_visible role:region name:"Card: Tune keyed diff"
+
+click role:button name:"Reset demo"
+expect_text text:"3 / 6 cards" "3 / 6 cards"
+expect_visible role:region name:"Card: Write platform glue"
+
+pointer_down role:region name:"Card: Design signal graph"
+pointer_enter role:region name:"Drop: In Progress end"
+pointer_up role:region name:"Drop: In Progress end"
+expect_text text:"2 / 6 cards" "2 / 6 cards"
+expect_text text:"4 / 3 cards" "4 / 3 cards"
+
+pointer_down role:region name:"Card: Write platform glue"
+expect_text text:"Dragging Write platform glue" "Dragging Write platform glue"

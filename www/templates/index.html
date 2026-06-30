@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+
+{% block title %}Roc Signals{% endblock title %}
+
+{% block content %}
+{% set data = load_data(path="data/examples.toml") %}
+<main class="site-shell">
+  <section class="grid gap-6 py-6 lg:grid-cols-[1.2fr_0.8fr] lg:items-center">
+    <div class="grid gap-5">
+      <p class="text-sm font-medium uppercase tracking-wide text-emerald-700">Roc platform experiment</p>
+      <h1 class="max-w-4xl text-4xl font-semibold tracking-normal text-zinc-950 sm:text-5xl">Signal-based UI apps in Roc, running in the browser.</h1>
+      <p class="max-w-3xl text-lg leading-8 text-zinc-700">Roc Signals keeps app descriptions pure while the host owns retained state, events, tasks, and DOM patches. Explore the examples, read the guide, or drop in your own wasm build.</p>
+      <div class="flex flex-wrap gap-3">
+        <a class="button-primary" href="{{ get_url(path='docs/guide/', trailing_slash=true) }}">Read the guide</a>
+        <a class="button" href="{{ get_url(path='examples/', trailing_slash=true) }}">Browse examples</a>
+      </div>
+    </div>
+    <section class="panel grid gap-3 p-5" data-upload-zone>
+      <div>
+        <h2 class="text-xl font-semibold text-zinc-950">Try your own app</h2>
+        <p class="mt-2 text-sm leading-6 text-zinc-600">Build with <code>roc build --target=wasm32 app.roc</code>, then drop the resulting wasm file here.</p>
+      </div>
+      <label class="grid min-h-36 cursor-pointer place-items-center rounded-lg border-2 border-dashed border-zinc-300 bg-zinc-50 p-5 text-center transition hover:border-emerald-500 hover:bg-emerald-50">
+        <input class="sr-only" type="file" accept=".wasm,application/wasm" data-upload-input>
+        <span class="text-sm font-medium text-zinc-700" data-upload-status>Drop app.wasm or choose a file</span>
+      </label>
+      <p class="hidden rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900" data-upload-error></p>
+    </section>
+  </section>
+
+  <section class="panel hidden overflow-hidden" data-upload-runner>
+    <div class="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-200 px-4 py-3">
+      <h2 class="text-lg font-semibold text-zinc-950" data-upload-title>Uploaded app</h2>
+      <button class="button" type="button" data-upload-reset>Close</button>
+    </div>
+    <div data-signals-upload-root></div>
+  </section>
+
+  <section class="grid gap-4">
+    <div class="flex flex-wrap items-end justify-between gap-3">
+      <div>
+        <p class="text-sm font-medium text-emerald-700">Examples</p>
+        <h2 class="text-2xl font-semibold text-zinc-950">Run the maintained apps</h2>
+      </div>
+      <a class="button" href="{{ get_url(path='examples/', trailing_slash=true) }}">All examples</a>
+    </div>
+    <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+      {% for example in data.examples %}
+      {% if example.public %}
+      <a class="panel grid gap-2 p-4 no-underline transition hover:border-emerald-500" href="{{ get_url(path='examples/' ~ example.slug ~ '/', trailing_slash=true) }}">
+        <span class="font-semibold text-zinc-950">{{ example.title }}</span>
+        <span class="text-sm leading-6 text-zinc-600">{{ example.description }}</span>
+      </a>
+      {% endif %}
+      {% endfor %}
+    </div>
+  </section>
+</main>
+{% endblock content %}
