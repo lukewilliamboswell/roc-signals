@@ -119,19 +119,26 @@ fn shouldSkipName(name: []const u8) bool {
 }
 
 fn shouldSkipDir(path: []const u8) bool {
-    return std.mem.eql(u8, path, "platform/targets") or
-        std.mem.eql(u8, path, "./platform/targets");
+    return std.mem.eql(u8, repoRelativePath(path), "platform/targets");
 }
 
 fn shouldCheckFile(path: []const u8) bool {
+    const repo_path = repoRelativePath(path);
+    if (std.mem.startsWith(u8, repo_path, "platform/targets/")) return false;
+
     const skipped_extensions = [_][]const u8{
         ".a",       ".lib", ".o",   ".obj", ".wasm", ".png", ".jpg", ".jpeg", ".gif", ".webp",
         ".tar.zst", ".gz",  ".zip", ".pyc",
     };
     for (skipped_extensions) |ext| {
-        if (std.mem.endsWith(u8, path, ext)) return false;
+        if (std.mem.endsWith(u8, repo_path, ext)) return false;
     }
     return true;
+}
+
+fn repoRelativePath(path: []const u8) []const u8 {
+    if (std.mem.startsWith(u8, path, "./")) return path[2..];
+    return path;
 }
 
 fn checkFile(allocator: Allocator, io: std.Io, path: []const u8) !usize {
@@ -144,6 +151,7 @@ fn checkFile(allocator: Allocator, io: std.Io, path: []const u8) !usize {
         0,
     ) catch |err| switch (err) {
         error.FileNotFound => return 0,
+        error.StreamTooLong => return 0,
         else => return err,
     };
     defer allocator.free(bytes);
