@@ -110,10 +110,11 @@ example apps with `--target=wasm32 --opt=size` by default, and copies
 downloadable source files under `dist/examples/<slug>/source/`.
 
 Example source files in `dist/` have their local platform header replaced with
-`SIGNALS_PLATFORM_URL` when set. Otherwise they point at the configured GitHub
-Pages platform bundle URL. The wasm builds themselves use a temporary local
-HTTP server for the freshly generated bundle, so development builds do not
-depend on a published release.
+`SIGNALS_PLATFORM_URL` when set. Otherwise they point at
+`extra.release_platform_url` from `www/config.toml`, falling back to the
+generated GitHub Pages platform bundle URL. The wasm builds themselves use a
+temporary local HTTP server for the freshly generated bundle, so development
+builds do not depend on a published release.
 
 Useful variants:
 

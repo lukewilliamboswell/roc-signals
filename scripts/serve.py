@@ -147,9 +147,26 @@ def clean_site_output() -> None:
 
 
 def config_base_url() -> str:
-    with (WWW / "config.toml").open("rb") as f:
-        config = tomllib.load(f)
+    config = site_config()
     return str(config.get("base_url", "")).rstrip("/")
+
+
+def config_release_platform_url() -> str | None:
+    extra = site_config().get("extra", {})
+    if not isinstance(extra, dict):
+        return None
+
+    value = extra.get("release_platform_url")
+    if value is None:
+        return None
+
+    platform_url = str(value).strip()
+    return platform_url or None
+
+
+def site_config() -> dict[str, object]:
+    with (WWW / "config.toml").open("rb") as f:
+        return tomllib.load(f)
 
 
 def build_hosts(host_opt: str) -> None:
@@ -351,7 +368,11 @@ def build_examples(
     platform_url: str | None,
     app_opt: str,
 ) -> None:
-    release_platform_ref = platform_url or f"{config_base_url()}/platform/{bundle.name}"
+    release_platform_ref = (
+        platform_url
+        or config_release_platform_url()
+        or f"{config_base_url()}/platform/{bundle.name}"
+    )
     with DirectoryServer(bundle.parent) as bundle_server:
         build_platform_ref = f"http://127.0.0.1:{bundle_server.port}/{bundle.name}"
         print(f"\nUsing local platform bundle for wasm builds: {build_platform_ref}")

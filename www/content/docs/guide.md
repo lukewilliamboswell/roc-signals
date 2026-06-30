@@ -39,7 +39,7 @@ keeps it active.
 A browser-capable app imports the platform modules and returns an `Elem`:
 
 ```roc
-app [main] { pf: platform "../../platform/main.roc" }
+app [main] { pf: platform "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.1/3eLQGNMDG9RuL9sn1A7ep1Rtq7QGmemE89y141WSv1XG.tar.zst" }
 
 import pf.Elem exposing [Elem]
 import pf.Html
@@ -58,9 +58,8 @@ main = |_|
     )
 ```
 
-Examples in this repository use a local platform path. Source files published on
-the site are rewritten to point at the downloadable platform bundle for the
-current GitHub Pages build.
+Examples in this repository use the latest release bundle so they can be built
+outside a clone of this repository.
 
 ## Local state and derived values
 
