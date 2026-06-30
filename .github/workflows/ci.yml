@@ -1,10 +1,14 @@
 name: CI
 
 on:
+  workflow_dispatch:
   pull_request:
   push:
     branches:
       - main
+
+permissions:
+  contents: read
 
 jobs:
   linux-checks:
@@ -47,6 +51,12 @@ jobs:
           name: github-pages-dist
           path: dist
 
+      - name: Upload GitHub Pages artifact
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
   macos-full:
     name: macOS full suite
     runs-on: macos-15
@@ -67,3 +77,25 @@ jobs:
 
       - name: Run all tests
         run: python3 scripts/test.py
+
+  deploy-pages:
+    name: Deploy GitHub Pages
+    runs-on: ubuntu-24.04
+    needs:
+      - linux-checks
+      - macos-full
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    concurrency:
+      group: github-pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
