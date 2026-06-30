@@ -75,6 +75,38 @@ layout:
 Roc app executables built during tests are written under `.test-out/` by
 `scripts/test.py`.
 
+## Coverage
+
+Native host coverage is a diagnostic tool for finding major gaps in the Zig
+runtime and host tests. It runs the existing `signals_shared` and
+`signals_host` Zig test roots under kcov, then merges their line coverage into
+one report. This keeps direct `src/signals/` unit coverage and host-driven
+coverage visible together.
+
+Run a fresh coverage pass from the repository root:
+
+```sh
+python3 scripts/coverage.py
+```
+
+Reuse the previous kcov output for faster inspection:
+
+```sh
+python3 scripts/coverage.py --use-last-run --top 20
+python3 scripts/coverage.py --use-last-run --format lines --file engine --context 5
+python3 scripts/coverage.py --use-last-run --format json --top 10
+```
+
+Coverage output is written under `kcov-output/native-host/`. The script prints a
+ranked summary by uncovered line count; use the `lines` format to inspect the
+actual uncovered source ranges before adding focused tests.
+
+Run coverage after substantial changes to `src/signals/`, `src/native_host.zig`,
+the native spec runner, the simulated DOM, allocation diagnostics, or host
+runtime behavior. The coverage job is intentionally separate from
+`python3 scripts/test.py` because kcov is slower and mainly useful when
+investigating test gaps.
+
 ## Bundles
 
 Build host artifacts first, then create a platform bundle:

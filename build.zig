@@ -47,6 +47,8 @@ pub fn build(b: *std.Build) void {
     const run_fmt_zig_step = b.step("run-fmt-zig", "Format Zig code");
     const run_test_zig_step = b.step("run-test-zig", "Run Zig unit tests");
     const run_test_browser_step = b.step("run-test-browser", "Run browser JavaScript contract tests");
+    const build_coverage_tests_step = b.step("build-coverage-tests", "Build native host coverage test binaries");
+    const run_coverage_native_host_step = b.step("run-coverage-native-host", "Run native host and signals tests with kcov coverage");
     const test_step = b.step("test", "Run Zig-only checks and tests");
 
     const install_step = b.getInstallStep();
@@ -72,17 +74,7 @@ pub fn build(b: *std.Build) void {
 
     const host_test = b.addTest(.{
         .name = "signals_host",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/native_host.zig"),
-            .target = native_target,
-            .optimize = optimize,
-            .link_libc = true,
-            .imports = &.{
-                .{ .name = "signals", .module = createSignalsModule(b, native_target, optimize, build_options_module) },
-                .{ .name = "base", .module = createBaseModule(b, native_target, optimize) },
-                .{ .name = "build_options", .module = build_options_module },
-            },
-        }),
+        .root_module = createNativeHostModule(b, native_target, optimize, build_options_module),
     });
     const run_host_test = b.addRunArtifact(host_test);
     if (b.args) |args| run_host_test.addArgs(args);
@@ -149,6 +141,73 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(run_check_git_lints_step);
     test_step.dependOn(run_check_test_wiring_step);
     test_step.dependOn(run_test_zig_step);
+
+    const is_linux_x86_64 = native_target.result.os.tag == .linux and native_target.result.cpu.arch == .x86_64;
+    const is_coverage_supported = (native_target.result.os.tag == .linux or native_target.result.os.tag == .macos) and !is_linux_x86_64;
+    if (is_coverage_supported) {
+        if (b.lazyDependency("kcov", .{})) |kcov_dep| {
+            const shared_coverage_test = b.addTest(.{
+                .name = "signals_shared_coverage",
+                .root_module = createSignalsModule(b, native_target, .Debug, build_options_module),
+            });
+            const host_coverage_test = b.addTest(.{
+                .name = "signals_host_coverage",
+                .root_module = createNativeHostModule(b, native_target, .Debug, build_options_module),
+            });
+
+            const install_shared_coverage = b.addInstallArtifact(shared_coverage_test, .{});
+            const install_host_coverage = b.addInstallArtifact(host_coverage_test, .{});
+
+            const kcov_exe = kcov_dep.artifact("kcov");
+            const install_kcov = b.addInstallArtifact(kcov_exe, .{});
+
+            build_coverage_tests_step.dependOn(&install_shared_coverage.step);
+            build_coverage_tests_step.dependOn(&install_host_coverage.step);
+            build_coverage_tests_step.dependOn(&install_kcov.step);
+
+            const mkdir_step = b.addSystemCommand(&.{ "mkdir", "-p", "kcov-output/native-host" });
+            mkdir_step.setCwd(b.path("."));
+            mkdir_step.step.dependOn(build_coverage_tests_step);
+
+            if (native_target.result.os.tag == .macos) {
+                const codesign = b.addSystemCommand(&.{"codesign"});
+                codesign.setCwd(b.path("."));
+                codesign.addArgs(&.{ "-s", "-", "--entitlements" });
+                codesign.addFileArg(kcov_dep.path("osx-entitlements.xml"));
+                codesign.addArgs(&.{ "-f", "zig-out/bin/kcov" });
+                codesign.step.dependOn(&install_kcov.step);
+                mkdir_step.step.dependOn(&codesign.step);
+            }
+
+            const run_shared_coverage = b.addSystemCommand(&.{"zig-out/bin/kcov"});
+            run_shared_coverage.addArg("--include-pattern=/src/");
+            run_shared_coverage.addArgs(&.{
+                "kcov-output/native-host",
+                "zig-out/bin/signals_shared_coverage",
+            });
+            run_shared_coverage.setCwd(b.path("."));
+            run_shared_coverage.step.dependOn(&mkdir_step.step);
+            run_shared_coverage.step.dependOn(&install_shared_coverage.step);
+            run_shared_coverage.step.dependOn(&install_kcov.step);
+
+            const run_host_coverage = b.addSystemCommand(&.{"zig-out/bin/kcov"});
+            run_host_coverage.addArg("--include-pattern=/src/");
+            run_host_coverage.addArgs(&.{
+                "kcov-output/native-host",
+                "zig-out/bin/signals_host_coverage",
+            });
+            run_host_coverage.setCwd(b.path("."));
+            run_host_coverage.step.dependOn(&run_shared_coverage.step);
+            run_host_coverage.step.dependOn(&install_host_coverage.step);
+            run_host_coverage.step.dependOn(&install_kcov.step);
+
+            run_coverage_native_host_step.dependOn(build_coverage_tests_step);
+            run_coverage_native_host_step.dependOn(&run_host_coverage.step);
+        }
+    } else {
+        const unsupported = CoverageUnsupportedStep.create(b);
+        run_coverage_native_host_step.dependOn(&unsupported.step);
+    }
 }
 
 fn createBaseModule(
@@ -179,6 +238,25 @@ fn createSignalsModule(
     });
 }
 
+fn createNativeHostModule(
+    b: *std.Build,
+    target: ResolvedTarget,
+    optimize: OptimizeMode,
+    build_options: *std.Build.Module,
+) *std.Build.Module {
+    return b.createModule(.{
+        .root_source_file = b.path("src/native_host.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "signals", .module = createSignalsModule(b, target, optimize, build_options) },
+            .{ .name = "base", .module = createBaseModule(b, target, optimize) },
+            .{ .name = "build_options", .module = build_options },
+        },
+    });
+}
+
 fn buildNativeHostLib(
     b: *std.Build,
     target: ResolvedTarget,
@@ -188,20 +266,10 @@ fn buildNativeHostLib(
     const host_lib = b.addLibrary(.{
         .name = "host",
         .linkage = .static,
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/native_host.zig"),
-            .target = target,
-            .optimize = optimize,
-            .strip = optimize != .Debug,
-            .pic = true,
-            .link_libc = true,
-            .imports = &.{
-                .{ .name = "signals", .module = createSignalsModule(b, target, optimize, build_options) },
-                .{ .name = "base", .module = createBaseModule(b, target, optimize) },
-                .{ .name = "build_options", .module = build_options },
-            },
-        }),
+        .root_module = createNativeHostModule(b, target, optimize, build_options),
     });
+    host_lib.root_module.strip = optimize != .Debug;
+    host_lib.root_module.pic = true;
     host_lib.bundle_compiler_rt = true;
     host_lib.link_function_sections = true;
     host_lib.link_data_sections = true;
@@ -250,3 +318,27 @@ fn buildAndCopyWasmHostObject(
     copy.addCopyFileToSource(obj.getEmittedBin(), "platform/targets/wasm32/host.wasm");
     return &copy.step;
 }
+
+const CoverageUnsupportedStep = struct {
+    step: Step,
+
+    fn create(b: *std.Build) *CoverageUnsupportedStep {
+        const self = b.allocator.create(CoverageUnsupportedStep) catch @panic("OOM");
+        self.* = .{
+            .step = Step.init(.{
+                .id = .custom,
+                .name = "coverage-unsupported",
+                .owner = b,
+                .makeFn = make,
+            }),
+        };
+        return self;
+    }
+
+    fn make(step: *Step, _: Step.MakeOptions) !void {
+        std.debug.print("\n", .{});
+        std.debug.print("Native host coverage is supported on macOS and Linux arm64.\n", .{});
+        std.debug.print("Linux x86_64 is currently disabled because kcov cannot reliably read Zig DWARF there.\n\n", .{});
+        return step.fail("native host coverage is not supported on this platform", .{});
+    }
+};

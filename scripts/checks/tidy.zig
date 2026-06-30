@@ -113,6 +113,8 @@ fn shouldSkipName(name: []const u8) bool {
     return std.mem.eql(u8, name, ".git") or
         std.mem.eql(u8, name, ".zig-cache") or
         std.mem.eql(u8, name, "zig-out") or
+        std.mem.eql(u8, name, "zig-pkg") or
+        std.mem.eql(u8, name, "kcov-output") or
         std.mem.eql(u8, name, ".bundle-url-test") or
         std.mem.eql(u8, name, "__pycache__") or
         std.mem.eql(u8, name, ".DS_Store");

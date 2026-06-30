@@ -1,5 +1,7 @@
 zig-out/
 .zig-cache/
+zig-pkg/
+kcov-output/
 roc-cache/
 dist/
 .site-out/
