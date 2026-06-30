@@ -53,10 +53,15 @@ runner from the same Roc source.
       selection + both backends), not just the counter/demo. With no app
       argument it builds the maintained app suite and serves the suite index;
       pass one app path for targeted QA.
-- [ ] Run each maintained app in the browser as manual QA, and confirm each runs
-      green under the native spec runner. The native spec runner and JS runtime
-      smoke are green for the maintained app set; the suite index now makes the human browser
-      pass available from one URL.
+- [x] Confirm the maintained app suite through the native runner and the browser
+      boundary gates. Verified 2026-06-30: `python3 scripts/test.py native`
+      builds and runs every native app/spec green; `python3 scripts/test.py
+      browser wasm` runs the JS↔WASM contract guards and builds/mounts/unmounts
+      every public wasm app; `python3 scripts/serve.py --no-server --app-opt
+      dev` and `python3 scripts/serve.py --no-server --app-opt size` build the
+      suite index and every public browser wasm artifact. `scripts/serve.py`
+      still provides the one-URL human browser pass when manual inspection is
+      wanted, but that is not an automated semantic gate.
 
 We do **not** add an automated real-browser harness. The native spec runner
 already asserts semantics and work budgets — the things the browser cannot show
@@ -90,12 +95,11 @@ own and engine semantics already covered natively, for no added signal.
   `host_dealloc_bytes_this_event=698040`, `host_retained_bytes_delta=751360`.
   Existing command-count and allocation metrics were sufficient; no new metric
   counter was needed for this slice.
-- **Remaining risks / next slice:** general boolean custom attrs such as
-  `required` are still next because the demo and host specs only needed text
-  attrs plus existing checked/disabled bool fields. Broader event descriptors
-  should add more explicit leaf constants only when an app needs them. Native and
-  wasm still have two render-surface sinks behind the same command enum; command
-  wire parity remains an open design question.
+- **Remaining risks / next slice:** the attribute/event boundary now includes
+  custom boolean attrs and the focused form events needed by forms. Broader event
+  descriptors should add more explicit leaf constants only when an app needs
+  them. Native and wasm still have two render-surface sinks behind the same
+  command enum; command wire parity remains an open design question.
 
 ### JS test surface cleanup (part of Phase 1)
 
@@ -563,9 +567,9 @@ folds their surviving work into one prioritized backlog; treat the prep docs as
 background detail.
 
 **Where this sits.** This is *feature* work, distinct from the Phase 5
-optimisation backlog below. It becomes the active queue once the last Phase 1 item
-(per-app manual browser QA) is green. Two caveats keep it from automatically
-outranking everything else:
+optimisation backlog below. With the Phase 1 native + JS/WASM app-suite gates
+green, this is now the active feature queue. Two caveats keep it from
+automatically outranking everything else:
 
 - Phase 5 items explicitly flagged as **design gaps** rather than optimisations
   may interleave *ahead* of new features when a baseline shows a `DESIGN.md`
@@ -577,85 +581,133 @@ outranking everything else:
   native specs plus JS contract tests, not benchmarks.
 
 **Already landed (do not redo):** protocol version/features, the hybrid
-`Extended` dynamic-record path, custom text attrs (`Html.attr`/`attr_s`), general
-named events with static listener-option *bit constants* (`prevent_default`,
-`stop_propagation`, `capture`, `passive` already exist in `Node.roc`),
-keydown/submit payload slices, the guarded controlled-input `SetValue` policy, and
-JS contract coverage for the current boundary. The wire-protocol doc's "research
-the protocol first" advice is therefore historical: its blocking slice shipped.
+`Extended` dynamic-record path, custom text attrs (`Html.attr`/`attr_s`), custom
+boolean attrs (`Html.required`, `readonly`, `aria_invalid_s`), general named
+events with static listener-option *bit constants* (`prevent_default`,
+`stop_propagation`, `capture`, `passive`, `once`), focused form event helpers
+(`focus`, `blur`, `change`, composition start/end), keydown/submit payload
+slices, the guarded controlled-input `SetValue` policy, the minimal
+production-safe forms slice, package-aligned HTTP request/response envelopes over
+`roc-lang/http` 0.1, the interval lifecycle canary for subscription-style
+start/stop/late-message handling, and JS contract coverage for the current
+boundary. The wire-protocol doc's "research the protocol first" advice is
+therefore historical: its blocking slice shipped.
 
-The remaining work splits into **two tracks that can run in parallel** plus a
-later convergence item — not one strict 1..n sequence. This is driven by the prep
-docs' own dependency notes: attr/event sits *under* forms, while HTTP re-enters
-through the existing signal-source path and is explicitly independent of the DOM
-boundary.
+The first two parallel feature tracks have now landed: attr/event/forms on the UI
+boundary and the package-aligned HTTP slice on the effects boundary. The first
+convergence canary has also landed; broaden subscriptions or app-specific
+interop only when a real example needs that surface.
 
-### Track A — UI boundary (ordered: A1 then A2)
+### Track A — UI boundary (completed)
 
 **A1. Finish the attribute/event boundary (the forms enabler).**
 
-- Add general **boolean** attrs/properties needed by forms (`required`,
-  `readonly`, `aria-invalid`/related helpers), with explicit remove semantics
-  rather than empty-string sentinels. (Custom *text* attrs already exist; custom
-  bool attrs do not, and the Phase 1 boundary note already flagged `required` as
-  the next gap.)
-- Extend named event helpers only for real consumers: `focus`, `blur`, `change`,
-  composition/IME, and any submit/keyboard gaps the focused form app surfaces.
-- Reuse the existing listener-option bits; verify runtime wiring for
-  `capture`/`passive` instead of re-adding constants, and add `once` only if a
-  consumer needs it. Keep options static; defer dynamic prevent/stop decisions
-  returned by reducers.
-- Add one focused app/spec plus JS contract tests; do not catalog every web
-  attribute.
-- **Why first in this track:** it is the shared foundation forms and richer UI
-  examples both need, and it reuses the dynamic-record/event infrastructure
-  already landed.
+Status: completed 2026-06-30.
 
-**A2. Minimal production-safe forms slice** (blocked by A1).
+- General **boolean** attrs/properties needed by forms landed as custom bool
+  descriptors over the existing dynamic attr set/remove wire path. `Html.required`,
+  `readonly`, `aria_invalid_s`, and `aria_describedby` cover the focused forms
+  surface, with false signal values emitting explicit `RemoveAttr` semantics.
+- Named event helpers landed for real consumers: `focus`, `blur`, `change`,
+  `compositionstart`, and `compositionend`. Existing `submit`/keyboard helpers
+  remain on the same named-event path.
+- Listener-option bits remain static and reused. JS contract coverage now asserts
+  capture/passive/once wiring at `addEventListener`; dynamic prevent/stop
+  decisions returned by reducers remain deferred.
+- Focused coverage landed in `examples/form-boundary/app.roc` and `spec.txt`.
+  The native spec runner dispatches focus/blur/change/composition events and
+  asserts required/readonly/aria-invalid presence and removal. JS contract tests
+  cover bool attr set/remove and form named event unit/target-value payloads.
+- Evidence: `zig build test`; `node --test scripts/browser/runtime_contract.test.mjs`;
+  `python3 scripts/test.py native`; `python3 scripts/test.py browser wasm`;
+  `python3 scripts/serve.py --no-server --app-opt dev`; `python3 scripts/serve.py
+  --no-server --app-opt size`.
 
-- Prove text input reconciliation: no overwrite while focused/composing, latest
-  deferred canonical value applies on blur, equal values are no-ops.
-- Cover submit with prevent-default, checkbox continuity, a required/invalid
-  validation message linked by `aria-describedby`, and native semantic spec
-  actions for focus/blur/submit.
-- Defer selection-preserving masks, file input, radio/select, async validation,
-  and full browser constraint-validation wrapping until this contract is stable.
-- **Why second:** forms are the highest UI layer in the prep docs; treat them as
-  the integration test that proves the A1 boundary on a real surface, not the
-  layer that invents it.
+**A2. Minimal production-safe forms slice.**
 
-### Track B — Effects (can start now, in parallel with Track A)
+Status: completed 2026-06-30.
+
+- Text input reconciliation is covered by the controlled-input policy and DOM
+  contract tests: no overwrite while focused/composing, latest deferred canonical
+  value applies on blur, equal values are no-ops, and user-typed matching pending
+  values clear without a DOM write.
+- `examples/form-boundary/app.roc` now exercises a production-shaped form:
+  submit with static prevent-default, checkbox continuity, required email input,
+  invalid state removal, a validation message linked by `aria-describedby`, a
+  readonly field, and focus/blur/change/composition event counters.
+- `examples/form-boundary/spec.txt` covers the native semantic surface:
+  form submit, focus/blur, composition start/end, change payloads, checkbox
+  checking, required/readonly attrs, `aria-invalid` removal, and submit gating.
+- Advanced masks, file input, radio/select, async validation, and full browser
+  constraint-validation wrapping remain deliberately deferred until an app needs
+  them.
+- Evidence: `zig build test`; `node --test scripts/browser/runtime_contract.test.mjs`;
+  `python3 scripts/test.py native`; `python3 scripts/test.py browser wasm`;
+  `python3 scripts/serve.py --no-server --app-opt dev`; `python3 scripts/serve.py
+  --no-server --app-opt size`; `python3 scripts/test.py bench`.
+
+### Track B — Effects (first slice completed)
 
 **B1. Package-aligned HTTP effects** (independent of A1/A2; do not gate on the DOM
 boundary).
 
-- Pin a released `roc-lang/http` package and consume its `Request`, `Response`,
-  and `Method` types through builders/accessors, not record-field knowledge (the
-  package types are transparent today but slated to become opaque).
-- Replace the string-only `Http.get_text` stub with a low-level
-  `Http.send : Request -> Task(Response, HttpError)`, plus thin text helpers.
-- Treat non-2xx as a completed `Done(Response)`; reserve `HttpError` for transport
-  / runtime failures (network error, timeout, cancellation, unsupported request,
-  response materialization). Bodies are `List(U8)`; decode in Roc.
-- Add deterministic native fake HTTP specs and browser `fetch` contract tests for
-  request encoding, status/header/body materialization, abort, ignored-late
-  results, and memory-view refresh.
-- **Why a separate track:** HTTP re-enters via the signal-source path and shares
-  almost no write surface with A1/A2, so serializing it behind forms only delays
-  high-value work. It is not "item 3"; it is the parallel effects track.
+Status: completed 2026-06-30.
+
+- Pinned `roc-lang/http` 0.1 in `platform/main.roc`. `platform/Http.roc`
+  consumes package `Request`, `Response`, and `Method` values only through the
+  release's builders/accessors, then exposes a minimal Signals wrapper surface
+  because app modules cannot import platform-private packages directly.
+- Replaced the raw string-only HTTP bridge with an explicit ASCII task envelope:
+  package request values lower to method/URI/timeout/headers/body bytes, and
+  browser/native results lift response status/headers/body bytes back into
+  package `Response` values in Roc. JS/native still carry task payloads as text;
+  the HTTP envelope is the typed boundary for this slice.
+- Added `Http.request_task` / `Http.start` for low-level
+  `Task(Response, HttpError)` workflows, plus compatibility text helpers
+  `Http.get_text_task` / `Http.get_text` that decode response body bytes as text.
+- Non-2xx responses are completed `Done(Response)` values. `HttpError` is reserved
+  for network, timeout, cancellation, unsupported request, and response
+  materialization failures.
+- Added `examples/http-boundary/app.roc` / `spec.txt` for deterministic native
+  success, non-2xx, and network-failure coverage. JS contract tests cover request
+  encoding, mocked `fetch` request mapping, response status/header/body
+  materialization, and network error envelopes.
+- Deferred: a non-text task result ABI, explicit native request-inspection spec
+  assertions, full timeout/cancellation/stale-result matrix, credentials/redirect
+  policy, duplicate browser response-header preservation beyond what `fetch`
+  exposes, JSON helpers, multipart, streaming, and app-specific interop.
+- Evidence: `zig build test`; `node --test scripts/browser/runtime_contract.test.mjs`;
+  `python3 scripts/test.py native`; `python3 scripts/test.py browser wasm`;
+  `python3 scripts/serve.py --no-server --app-opt dev`; `python3 scripts/serve.py
+  --no-server --app-opt size`; `python3 scripts/test.py bench`.
 
 ### Convergence — after Track A and Track B
 
 **C1. Subscriptions and app-specific JS interop** (broadest surface; do last).
 
-- First milestone: an internal subscription descriptor/route table, one simple
-  built-in browser subscription (or unify `Signal.interval` into the subscription
-  lifecycle), native fake injection, start/stop/late-message specs, and browser
-  start/message/stop/unmount contract coverage.
-- Keep ports-like app-specific channels as a second slice unless a real example
-  needs them immediately.
-- **Why last:** it should reuse the payload format, effect lifecycle, and
-  mount/cleanup lessons proven by A2 and B1 rather than inventing them alone.
+Status: first subscription canary completed 2026-06-30.
+
+- Used the allowed narrow route: `Signal.interval` is the subscription-like
+  lifecycle canary instead of introducing a second generic subscription API
+  before there is an app-shaped consumer.
+- Native specs now have `tick_interval_if_active`, which injects a fake interval
+  message only while a matching interval route is still live. The async-effects
+  spec closes the interval-owning panel, asserts the active route count is zero,
+  then sends a late tick and verifies the closed state remains unchanged.
+- The browser runtime now ignores stale `tickTimer(token)` callbacks after
+  cancellation and emits telemetry for the ignored tick. JS contract coverage
+  asserts that a cancelled timer token does not re-enter wasm.
+- Benchmark replay understands the conditional interval tick, so this canary is
+  covered by the same native, wasm, static-build, and bench gates as the rest of
+  the app suite.
+- Deferred until a real example needs it: a public `Sub` API separate from
+  `Signal.interval`, ports-like app-specific JS channels, app-authored
+  subscription payload descriptors, and the broader start/message/stop/unmount
+  matrix for non-timer browser sources.
+- Evidence: `zig build test`; `node --test scripts/browser/runtime_contract.test.mjs`;
+  `python3 scripts/test.py native`; `python3 scripts/test.py browser wasm`;
+  `python3 scripts/serve.py --no-server --app-opt dev`; `python3 scripts/serve.py
+  --no-server --app-opt size`; `python3 scripts/test.py bench`.
 
 ### Continuous discipline (ambient, not a milestone)
 
@@ -705,19 +757,11 @@ evidence-gated.
 
 Current priority after the Phase 4 review:
 
-1. Remove or bound the render-index refresh tail so splices do not restamp from
-   the splice point to the end of the render-node table.
-2. Reduce event descriptor scans in the structural apply path, especially for
-   kanban, after the render-scope range work.
-3. Move the per-event each row segment/range-map allocations to scratch if the
-   allocation counters stay elevated after the render-index/event work.
-4. Revisit scope-owned descriptor removal only if the now-small
+1. Revisit scope-owned descriptor removal only if the now-small
    `remove_target` residue grows under a broader app or long-session gate.
-5. Then move remaining transient structural buffers to scratch, starting with
-   making `streamDirectChildren` allocation-free for callers.
-6. Keep the long-session leak/plateau gate in the loop for monotonic identity
+2. Keep the long-session leak/plateau gate in the loop for monotonic identity
    and dense `_by_elem_id` tables.
-7. Keep scoped browser command-wire string dedupe as a measured hypothesis, not
+3. Keep scoped browser command-wire string dedupe as a measured hypothesis, not
    as active work, until wire byte/decode counters show it is larger than the
    remaining structural tail.
 
@@ -882,17 +926,104 @@ concrete bug.
   `stream_nodes_scanned_render_scope` is down to `15280` on large-each and
   `30940` on kanban.
 - **Remaining decision:** a persistent active scope range index could remove the
-  residual render-scope scans, but the next measured targets are now
-  `render_indexes_refreshed` and event descriptor scans. Revisit the persistent
-  range index only if the residual bucket grows again or overlaps with the
-  render-index refresh fix.
+  residual render-scope scans, but the next measured target is now per-event
+  allocation/range-map churn. Revisit the persistent range index only if the
+  residual bucket grows again or overlaps with that allocation work.
+
+### Render-index refresh tail on structural splice
+
+- **Status:** implemented for the measured row-only each and pure permutation
+  paths. `replaceRenderRangeWithStream` now refreshes replacement indexes
+  separately from suffix indexes, pure each permutations refresh only the moved
+  region, and row-only keyed each batches defer suffix restamping until the end
+  of the batch. Complex each sites that have non-row direct children on the same
+  parent keep the immediate-refresh path until a focused example justifies a
+  more general child insertion model.
+- **Hypothesis:** most measured render-index refresh cost came from repeatedly
+  restamping the same suffix during multi-row each churn, not from the small
+  replacement ranges themselves.
+- **Result:** `signals-large-each-64` now reports
+  `render_indexes_refreshed=13000` in the 20-iteration benchmark, down from the
+  previous 90920. `signals-kanban-board` is down to 11920 from 17680 via the
+  same-size replacement and pure-permutation changes, while its complex each
+  sites deliberately stay on the conservative fallback.
+- **Gate:** the generated large-N specs now assert
+  `expect_metric_delta_at_most render_indexes_refreshed row_count * 16` for each
+  structural action, so row-only each churn cannot regress to suffix-scale
+  restamping.
+
+### Event descriptor scans in structural apply
+
+- **Status:** implemented. Named event descriptors now maintain a per-element
+  index, and structural splice patching applies event bindings only to
+  replacement elements plus direct children of touched parents instead of
+  rebinding the whole active stream.
+- **Hypothesis:** the measured event scan bucket was dominated by the global
+  post-splice event-binding pass, not by actual changed event descriptors.
+- **Result:** `signals-kanban-board` now reports
+  `stream_nodes_scanned_events=0` in the 20-iteration benchmark, down from the
+  previous 28300. `signals-large-each-64` also reports
+  `stream_nodes_scanned_events=0`; its total `stream_nodes_scanned` is now 31420
+  with `render_indexes_refreshed=13000`.
+- **Gate:** kanban's structural checkpoints and the generated large-N specs now
+  assert `expect_metric_delta stream_nodes_scanned_events 0`. Identity-stress
+  also reflects the reduced redundant event bind on filter, with one fewer patch
+  and zero `bind_event` for that removal-only action.
+
+### Per-event each row scratch buffers
+
+- **Status:** implemented for the measured `Ui.each` structural splice
+  accumulator. `EngineScratch` now owns the per-event each row range map and
+  merged-splice accumulator buffers (`removed_elem_ids`, touched parent ids,
+  replacement elem ids, and replacement on-change/mount indexes). The dirty each
+  row splice path clears them with retained capacity and passes borrowed slices
+  through the merged splice result instead of allocating owned slices each event.
+- **Hypothesis:** after the render-index and event-scan fixes, the remaining
+  elevated host allocation counters would include repeated row range-map and
+  accumulator allocations during keyed each churn.
+- **Result:** the impact is real but small, which is useful signal. In the
+  20-iteration benchmark replay, `signals-kanban-board` moved from
+  `host_allocs_this_event=378540`, `host_alloc_bytes_this_event=97062120` to
+  `377420` and `96858440`. `signals-large-each-64` moved from
+  `258560`, `206273500` to `257740`, `205559100`. Roc ABI allocation counters
+  stayed unchanged, as expected, because this slice only moved engine-internal
+  structural bookkeeping to scratch.
+- **Follow-up:** the next measured target from this slice was
+  `streamDirectChildren`; that is now covered by the direct-child walk section
+  below. Promote further scratch work only when named counters identify the next
+  transient buffer worth moving.
+
+### Allocation-free direct child walks
+
+- **Status:** implemented for engine hot paths. `descriptor_stream` now exposes
+  `streamDirectChildrenInto`, which fills a caller-owned child buffer; the
+  allocating wrapper remains for tests and non-engine callers. `EngineScratch`
+  owns the reusable child buffer, and pure each moves, keyed each insertion-index
+  checks, structural DOM patching, structural event rebinding, and debug render
+  cache assertions now borrow it instead of allocating an owned child slice per
+  parent.
+- **Hypothesis:** after row range maps moved to scratch, repeated direct-child
+  collection remained a visible source of host allocation churn in structural
+  paths.
+- **Result:** the 20-iteration benchmark replay moved `signals-kanban-board`
+  from `host_allocs_this_event=377420`,
+  `host_alloc_bytes_this_event=96858440` to `351320` and `94763560`.
+  `signals-large-each-64` moved from `257740`, `205559100` to `235880` and
+  `202733340`. Roc ABI allocation counters stayed unchanged, as expected.
+- **Gate:** `zig build test`, `python3 scripts/test.py native`, and
+  `python3 scripts/test.py bench` are green with the new helper. Existing
+  render-index and event-scan spec guards stayed green:
+  `signals-large-each-64 render_indexes_refreshed=13000` and
+  `signals-kanban-board stream_nodes_scanned_events=0`.
 
 ### Per-cycle scratch/arena to remove dispatch allocation churn
 
 - **Status:** partial. `EngineScratch` now owns reused buffers for pure reorder
   child-index/LIS work, debug render-cache `seen`/expected-child checks,
-  descriptor-collection binder stacks, and inline `Ui.each` key arrays. Native
-  and wasm teardown release the retained scratch storage. The native host now
+  descriptor-collection binder stacks, inline `Ui.each` key arrays, keyed each
+  row range maps, structural splice accumulator slices, and direct-child walk
+  buffers. Native and wasm teardown release the retained scratch storage. The
+  native host now
   exposes separate `host_allocs_this_event`, `host_deallocs_this_event`,
   `host_alloc_bytes_this_event`, `host_dealloc_bytes_this_event`,
   `host_retained_alloc_delta`, and `host_retained_bytes_delta` metrics for total
@@ -912,13 +1043,14 @@ concrete bug.
 - **Constraint:** the arena is for engine-internal bookkeeping only. Boxed Roc
   values outlive the cycle and must stay on the GPA with their refcounts and the
   `roc_alloc` ledger — they must not be moved onto the arena.
-- **How we'll know:** first make `streamDirectChildren` support a caller-owned
-  buffer or iterator so indexed child walks do not allocate an owned slice by
-  default. Then the long-session `host_retained_alloc_delta` /
-  `host_retained_bytes_delta` gauges flatten earlier, and per-event
-  `host_allocs_this_event` / `host_alloc_bytes_this_event` deltas for the named
-  buffers drop to zero after warmup; specs stay green. Roc heap churn continues
-  to be categorized separately by `allocs_this_event` / `deallocs_this_event`.
+- **How we'll know:** the row range-map and direct-child slices proved that small
+  scratch moves are measurable but do not eliminate the full structural
+  allocation tail. The next useful threshold is when the long-session
+  `host_retained_alloc_delta` / `host_retained_bytes_delta` gauges flatten
+  earlier, and per-event `host_allocs_this_event` /
+  `host_alloc_bytes_this_event` deltas for named buffers drop to zero after
+  warmup; specs stay green. Roc heap churn continues to be categorized
+  separately by `allocs_this_event` / `deallocs_this_event`.
 
 ### O(1) identity/descriptor lookup (kill linear-scan-by-id)
 

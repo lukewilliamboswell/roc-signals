@@ -42,6 +42,7 @@ pub const EventPayloadKind = render.EventPayloadKind;
 pub const EventPayloadAccessor = render.EventPayloadAccessor;
 pub const NodeFieldCustom: u64 = 7;
 const node_field_custom: u64 = NodeFieldCustom;
+const node_bool_field_custom: u64 = 3;
 
 pub const HostValue = retained_values.HostValue;
 pub const HostValueList = abi.RocListWith(HostValue, false);
@@ -59,6 +60,7 @@ pub const HostTextFieldDescriptorIndexes = descriptor_stream.TextFieldDescriptor
 pub const HostBoolFieldDescriptorIndexes = descriptor_stream.BoolFieldDescriptorIndexes;
 pub const HostEventDescriptorIndexes = descriptor_stream.EventDescriptorIndexes;
 pub const HostRenderElemIndex = descriptor_stream.RenderElemIndex;
+pub const HostRenderChildInsertHint = descriptor_stream.RenderChildInsertHint;
 pub const HostElemDescriptorIndex = descriptor_stream.ElemDescriptorIndex;
 pub const HostScopeSiteDescriptorIndexes = descriptor_stream.ScopeSiteDescriptorIndexes;
 pub const HostNodeDescriptorIndex = descriptor_stream.NodeDescriptorIndex;
@@ -73,6 +75,7 @@ pub const HostNodeScopeSiteDesc = descriptor_stream.ScopeSiteDesc;
 pub const HostNodeSignalTextNodeDesc = descriptor_stream.SignalTextNodeDesc;
 pub const HostNodeSignalTextAttrDesc = descriptor_stream.SignalTextAttrDesc;
 pub const HostNodeSignalCustomTextAttrDesc = descriptor_stream.SignalCustomTextAttrDesc;
+pub const HostNodeSignalCustomBoolAttrDesc = descriptor_stream.SignalCustomBoolAttrDesc;
 pub const HostNodeSignalBoolAttrDesc = descriptor_stream.SignalBoolAttrDesc;
 pub const HostNodeOnChangeDesc = descriptor_stream.OnChangeDesc;
 pub const HostNodeEventDesc = descriptor_stream.EventDesc;
@@ -196,6 +199,7 @@ pub const HostScopeBranch = scope_tree.Branch;
 
 pub const HostActiveTextSignalSinkKind = active_graph.TextSinkKind;
 pub const HostActiveTextSignalSink = active_graph.TextSink;
+pub const HostActiveBoolSignalSinkKind = active_graph.BoolSinkKind;
 pub const HostActiveBoolSignalSink = active_graph.BoolSink;
 pub const HostActiveChangeSignalSink = active_graph.ChangeSink;
 pub const HostActiveStructuralSignalKind = active_graph.StructuralKind;
@@ -294,6 +298,10 @@ pub fn streamElemParentElemId(stream: *const HostNodeDescriptorStream, elem_id: 
 
 pub fn streamDirectChildren(allocator: std.mem.Allocator, stream: *const HostNodeDescriptorStream, parent_elem_id: u64) []u64 {
     return descriptor_stream.streamDirectChildren(HostNodeDescriptorStream, allocator, stream, parent_elem_id);
+}
+
+pub fn streamDirectChildrenInto(allocator: std.mem.Allocator, stream: *const HostNodeDescriptorStream, parent_elem_id: u64, children: *std.ArrayListUnmanaged(u64)) []const u64 {
+    return descriptor_stream.streamDirectChildrenInto(HostNodeDescriptorStream, allocator, stream, parent_elem_id, children);
 }
 
 pub fn renderNodeScopeId(stream: *const HostNodeDescriptorStream, node: HostRenderNode) u64 {
@@ -807,8 +815,7 @@ pub fn Engine(comptime Ctx: type) type {
                 }
                 const parent_id = descriptorStreamNodeParent(stream, node);
                 if (cached.parent_id == null or cached.parent_id.? != parent_id) {
-                    const indexed_children = streamDirectChildren(allocator, stream, parent_id);
-                    defer allocator.free(indexed_children);
+                    const indexed_children = streamDirectChildrenInto(allocator, stream, parent_id, &self.scratch.stream_direct_children);
                     const cache_child_count = if (parent_id < self.render_cache.nodes.items.len and self.render_cache.nodes.items[@intCast(parent_id)].active)
                         self.render_cache.nodes.items[@intCast(parent_id)].children.items.len
                     else
@@ -838,8 +845,7 @@ pub fn Engine(comptime Ctx: type) type {
                         expected_children.append(allocator, node.elem_id) catch @panic("out of memory");
                     }
                 }
-                const indexed_children = streamDirectChildren(allocator, stream, @intCast(parent_id));
-                defer allocator.free(indexed_children);
+                const indexed_children = streamDirectChildrenInto(allocator, stream, @intCast(parent_id), &self.scratch.stream_direct_children);
                 if (!std.mem.eql(u64, indexed_children, expected_children.items)) {
                     var message: [160]u8 = undefined;
                     const rendered = std.fmt.bufPrint(
@@ -866,6 +872,13 @@ pub fn Engine(comptime Ctx: type) type {
 
         pub fn applyRenderTextAttr(self: *Self, ctx: Ctx.Handle, elem_id: u64, name: []const u8, value: []const u8) bool {
             return self.render_cache.applyTextAttr(ctx, elem_id, name, value);
+        }
+
+        pub fn applyRenderBoolAttr(self: *Self, ctx: Ctx.Handle, elem_id: u64, name: []const u8, value: bool) bool {
+            if (value) {
+                return self.applyRenderTextAttr(ctx, elem_id, name, "");
+            }
+            return self.clearRenderTextAttr(ctx, elem_id, name);
         }
 
         pub fn applyRenderBoolField(self: *Self, ctx: Ctx.Handle, elem_id: u64, field: RenderBoolField, value: bool) bool {
@@ -1499,6 +1512,16 @@ pub fn Engine(comptime Ctx: type) type {
                 stream.appendSignalCustomTextAttr(allocator, ctx, roc_host, &self.pending_roc_metrics, desc.elem_id, desc.name, signal, desc.read);
                 stream.signal_custom_text_attrs.items[stream.signal_custom_text_attrs.items.len - 1].cached_value = self.cloneHostSignalCacheSlot(ctx, desc.cached_value, &self.pending_roc_metrics);
             }
+            for (previous.static_custom_bool_attrs.items) |desc| {
+                if (!u64SliceContains(copied_elem_ids.items, desc.elem_id)) continue;
+                stream.appendStaticCustomBoolAttr(allocator, desc.elem_id, desc.name, desc.value);
+            }
+            for (previous.signal_custom_bool_attrs.items) |desc| {
+                if (!u64SliceContains(copied_elem_ids.items, desc.elem_id)) continue;
+                const signal = desc.signal.cloneRetained(allocator, &self.pending_roc_metrics);
+                stream.appendSignalCustomBoolAttr(allocator, ctx, roc_host, &self.pending_roc_metrics, desc.elem_id, desc.name, signal, desc.read);
+                stream.signal_custom_bool_attrs.items[stream.signal_custom_bool_attrs.items.len - 1].cached_value = self.cloneHostSignalCacheSlot(ctx, desc.cached_value, &self.pending_roc_metrics);
+            }
             for (previous.static_bool_attrs.items) |desc| {
                 if (!u64SliceContains(copied_elem_ids.items, desc.elem_id)) continue;
                 stream.appendStaticBoolAttr(allocator, desc.elem_id, desc.field, desc.value);
@@ -1690,14 +1713,28 @@ pub fn Engine(comptime Ctx: type) type {
                 },
                 .StaticBool => {
                     const payload = attr.payload_static_bool();
-                    const field = renderBoolFieldFromAbi(payload.field);
-                    stream.appendStaticBoolAttr(allocator, elem_id, field, payload.value);
+                    if (payload.field == node_bool_field_custom) {
+                        if (payload.name.asSlice().len == 0) @panic("custom bool attr descriptor used an empty name");
+                        stream.appendStaticCustomBoolAttr(allocator, elem_id, payload.name.asSlice(), payload.value);
+                    } else {
+                        if (payload.name.asSlice().len != 0) @panic("fixed bool attr descriptor carried a custom name");
+                        const field = renderBoolFieldFromAbi(payload.field);
+                        stream.appendStaticBoolAttr(allocator, elem_id, field, payload.value);
+                    }
                 },
                 .SignalBool => {
                     const payload = attr.payload_signal_bool();
-                    const field = renderBoolFieldFromAbi(payload.field);
-                    const signal = self.bindNodeSignal(allocator, stream, payload.signal.*, binder_stack);
-                    stream.appendSignalBoolAttr(allocator, ctx, roc_host, &self.pending_roc_metrics, elem_id, field, signal, payload.read);
+                    if (payload.field == node_bool_field_custom) {
+                        if (payload.name.asSlice().len == 0) @panic("custom bool attr descriptor used an empty name");
+                        if (stream.customTextAttrDescriptorExists(elem_id, payload.name.asSlice())) @panic("element has duplicate custom bool attr descriptors");
+                        const signal = self.bindNodeSignal(allocator, stream, payload.signal.*, binder_stack);
+                        stream.appendSignalCustomBoolAttr(allocator, ctx, roc_host, &self.pending_roc_metrics, elem_id, payload.name.asSlice(), signal, payload.read);
+                    } else {
+                        if (payload.name.asSlice().len != 0) @panic("fixed bool attr descriptor carried a custom name");
+                        const field = renderBoolFieldFromAbi(payload.field);
+                        const signal = self.bindNodeSignal(allocator, stream, payload.signal.*, binder_stack);
+                        stream.appendSignalBoolAttr(allocator, ctx, roc_host, &self.pending_roc_metrics, elem_id, field, signal, payload.read);
+                    }
                 },
                 .OnEvent => {
                     const payload = attr.payload_on_event();
@@ -2061,12 +2098,12 @@ pub fn Engine(comptime Ctx: type) type {
             active_graph.appendBoolRoute(Ctx.allocator(ctx), &self.active_bool_signal_routes, self.active_signal_graph.items.len, record_id, route);
         }
 
-        fn removeActiveBoolSignalRoute(self: *Self, record_id: u64, index: usize) void {
-            active_graph.removeBoolRoute(&self.active_bool_signal_routes, record_id, index);
+        fn removeActiveBoolSignalRoute(self: *Self, record_id: u64, kind: HostActiveBoolSignalSinkKind, index: usize) void {
+            active_graph.removeBoolRoute(&self.active_bool_signal_routes, record_id, kind, index);
         }
 
-        fn updateActiveBoolSignalRouteIndex(self: *Self, record_id: u64, old_index: usize, new_index: usize) void {
-            active_graph.updateBoolRouteIndex(&self.active_bool_signal_routes, record_id, old_index, new_index);
+        fn updateActiveBoolSignalRouteIndex(self: *Self, record_id: u64, kind: HostActiveBoolSignalSinkKind, old_index: usize, new_index: usize) void {
+            active_graph.updateBoolRouteIndex(&self.active_bool_signal_routes, record_id, kind, old_index, new_index);
         }
 
         fn appendActiveChangeSignalRoute(self: *Self, ctx: Ctx.Handle, record_id: u64, route: HostActiveChangeSignalSink) void {
@@ -2160,6 +2197,14 @@ pub fn Engine(comptime Ctx: type) type {
             desc.cached_value.deinit(ctx, roc_host, &self.pending_roc_metrics);
             desc.signal.deinit(allocator, ctx, roc_host, &self.pending_roc_metrics);
             releaseHostTextRead(desc.read, roc_host, &self.pending_roc_metrics);
+        }
+
+        fn deinitActiveSignalCustomBoolAttrDesc(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, desc: *HostNodeSignalCustomBoolAttrDesc) void {
+            const allocator = Ctx.allocator(ctx);
+            allocator.free(desc.name);
+            desc.cached_value.deinit(ctx, roc_host, &self.pending_roc_metrics);
+            desc.signal.deinit(allocator, ctx, roc_host, &self.pending_roc_metrics);
+            releaseHostBoolRead(desc.read, roc_host, &self.pending_roc_metrics);
         }
 
         fn deinitActiveSignalBoolAttrDesc(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, desc: *HostNodeSignalBoolAttrDesc) void {
@@ -2378,6 +2423,42 @@ pub fn Engine(comptime Ctx: type) type {
             self.active_stream.signal_custom_text_attrs.items.len = write_index;
         }
 
+        fn removeActiveStaticCustomBoolAttrDescriptorsForRemovedElems(self: *Self, ctx: Ctx.Handle, removed_elem_ids: []const u64) void {
+            const allocator = Ctx.allocator(ctx);
+            var write_index: usize = 0;
+            self.recordStreamNodesScannedBy(.stream_nodes_scanned_remove_target, self.active_stream.static_custom_bool_attrs.items.len);
+            for (self.active_stream.static_custom_bool_attrs.items) |desc| {
+                if (u64SliceContains(removed_elem_ids, desc.elem_id)) {
+                    allocator.free(desc.name);
+                    continue;
+                }
+                self.active_stream.static_custom_bool_attrs.items[write_index] = desc;
+                write_index += 1;
+            }
+            self.active_stream.static_custom_bool_attrs.items.len = write_index;
+        }
+
+        fn removeActiveSignalCustomBoolAttrDescriptorsForRemovedElems(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, removed_elem_ids: []const u64) void {
+            var write_index: usize = 0;
+            self.recordStreamNodesScannedBy(.stream_nodes_scanned_remove_target, self.active_stream.signal_custom_bool_attrs.items.len);
+            for (self.active_stream.signal_custom_bool_attrs.items, 0..) |desc, read_index| {
+                if (u64SliceContains(removed_elem_ids, desc.elem_id)) {
+                    var removed = desc;
+                    const record_id = self.requireActiveSignalRecordId(removed.signal.record);
+                    self.removeActiveBoolSignalRoute(record_id, .custom_bool_attr, read_index);
+                    self.active_stream.forgetSignalRecordTree(removed.signal.record);
+                    self.releaseActiveSignalRecord(ctx, removed.signal.record);
+                    self.deinitActiveSignalCustomBoolAttrDesc(ctx, roc_host, &removed);
+                    continue;
+                }
+                const record_id = self.requireActiveSignalRecordId(desc.signal.record);
+                self.updateActiveBoolSignalRouteIndex(record_id, .custom_bool_attr, read_index, write_index);
+                self.active_stream.signal_custom_bool_attrs.items[write_index] = desc;
+                write_index += 1;
+            }
+            self.active_stream.signal_custom_bool_attrs.items.len = write_index;
+        }
+
         fn removeActiveStaticBoolAttrDescriptorAt(self: *Self, index: usize) void {
             if (index >= self.active_stream.static_bool_attrs.items.len) @panic("static bool attr removal index exceeded descriptor table");
             const last_index = self.active_stream.static_bool_attrs.items.len - 1;
@@ -2397,7 +2478,7 @@ pub fn Engine(comptime Ctx: type) type {
             const last_index = self.active_stream.signal_bool_attrs.items.len - 1;
             var removed = self.active_stream.signal_bool_attrs.items[index];
             const removed_record_id = self.requireActiveSignalRecordId(removed.signal.record);
-            self.removeActiveBoolSignalRoute(removed_record_id, index);
+            self.removeActiveBoolSignalRoute(removed_record_id, .bool_attr, index);
             self.active_stream.clearSignalBoolAttrIndex(removed.elem_id, removed.field, index);
             self.active_stream.forgetSignalRecordTree(removed.signal.record);
             self.releaseActiveSignalRecord(ctx, removed.signal.record);
@@ -2407,7 +2488,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const moved = self.active_stream.signal_bool_attrs.items[last_index];
                 const moved_record_id = self.requireActiveSignalRecordId(moved.signal.record);
                 self.active_stream.signal_bool_attrs.items[index] = moved;
-                self.updateActiveBoolSignalRouteIndex(moved_record_id, last_index, index);
+                self.updateActiveBoolSignalRouteIndex(moved_record_id, .bool_attr, last_index, index);
                 self.active_stream.updateSignalBoolAttrIndex(moved.elem_id, moved.field, index);
             }
             self.active_stream.signal_bool_attrs.items.len = last_index;
@@ -2517,13 +2598,16 @@ pub fn Engine(comptime Ctx: type) type {
             if (removed.owns_payload_reducer) {
                 @panic("active named event descriptor retained ownership outside the active event table");
             }
+            self.active_stream.clearNamedEventIndex(removed.elem_id, index);
             allocator.free(removed.name);
             if (self.active_events.items.len != 0) {
                 self.deinitActiveEventDesc(roc_host, self.active_events.items[active_index]);
             }
 
             if (index != last_named_index) {
-                self.active_stream.named_events.items[index] = self.active_stream.named_events.items[last_named_index];
+                const moved = self.active_stream.named_events.items[last_named_index];
+                self.active_stream.named_events.items[index] = moved;
+                self.active_stream.updateNamedEventIndex(moved.elem_id, last_named_index, index);
                 if (self.active_events.items.len != 0) {
                     self.active_events.items[active_index] = self.active_events.items[last_active_index];
                 }
@@ -2674,6 +2758,8 @@ pub fn Engine(comptime Ctx: type) type {
             self.removeActiveElemOwnedDescriptorsForRemovedElems(ctx, roc_host, removed_elem_ids);
             self.removeActiveStaticCustomTextAttrDescriptorsForRemovedElems(ctx, removed_elem_ids);
             self.removeActiveSignalCustomTextAttrDescriptorsForRemovedElems(ctx, roc_host, removed_elem_ids);
+            self.removeActiveStaticCustomBoolAttrDescriptorsForRemovedElems(ctx, removed_elem_ids);
+            self.removeActiveSignalCustomBoolAttrDescriptorsForRemovedElems(ctx, roc_host, removed_elem_ids);
             self.removeActiveOnChangeDescriptorsInTarget(ctx, roc_host, target_scopes);
             self.removeActiveMountDescriptorsInTarget(roc_host, target_scopes);
             self.removeActiveCleanupDescriptorsInTarget(ctx, target_scopes);
@@ -2712,10 +2798,12 @@ pub fn Engine(comptime Ctx: type) type {
             self.active_stream.events.appendSlice(allocator, replacement.events.items) catch @panic("out of memory");
             replacement.events.items.len = 0;
 
-            for (replacement.named_events.items) |*desc| {
+            const named_event_base = self.active_stream.named_events.items.len;
+            for (replacement.named_events.items, 0..) |*desc, offset| {
                 if (!desc.owns_payload_reducer) {
                     @panic("replacement named event descriptor did not own its retained payload");
                 }
+                self.active_stream.recordNamedEventIndex(allocator, desc.elem_id, named_event_base + offset);
                 self.active_events.append(allocator, .{
                     .target_node_id = desc.target_node_id,
                     .payload_kind = desc.payload_kind,
@@ -2801,6 +2889,22 @@ pub fn Engine(comptime Ctx: type) type {
             self.active_stream.signal_custom_text_attrs.appendSlice(allocator, replacement.signal_custom_text_attrs.items) catch @panic("out of memory");
             replacement.signal_custom_text_attrs.items.len = 0;
 
+            self.active_stream.static_custom_bool_attrs.appendSlice(allocator, replacement.static_custom_bool_attrs.items) catch @panic("out of memory");
+            replacement.static_custom_bool_attrs.items.len = 0;
+
+            const signal_custom_bool_attr_base = self.active_stream.signal_custom_bool_attrs.items.len;
+            for (replacement.signal_custom_bool_attrs.items, 0..) |desc, offset| {
+                self.active_stream.rememberSignalRecordTree(allocator, desc.signal.record);
+                self.retainActiveSignalRecord(ctx, desc.signal.record);
+                const record_id = self.requireActiveSignalRecordId(desc.signal.record);
+                self.appendActiveBoolSignalRoute(ctx, record_id, .{
+                    .kind = .custom_bool_attr,
+                    .index = signal_custom_bool_attr_base + offset,
+                });
+            }
+            self.active_stream.signal_custom_bool_attrs.appendSlice(allocator, replacement.signal_custom_bool_attrs.items) catch @panic("out of memory");
+            replacement.signal_custom_bool_attrs.items.len = 0;
+
             const static_bool_attr_base = self.active_stream.static_bool_attrs.items.len;
             for (replacement.static_bool_attrs.items, 0..) |desc, offset| {
                 self.active_stream.recordStaticBoolAttrIndex(allocator, desc.elem_id, desc.field, static_bool_attr_base + offset);
@@ -2817,6 +2921,7 @@ pub fn Engine(comptime Ctx: type) type {
                 self.retainActiveSignalRecord(ctx, desc.signal.record);
                 const record_id = self.requireActiveSignalRecordId(desc.signal.record);
                 self.appendActiveBoolSignalRoute(ctx, record_id, .{
+                    .kind = .bool_attr,
                     .index = signal_bool_attr_base + offset,
                 });
             }
@@ -2909,6 +3014,10 @@ pub fn Engine(comptime Ctx: type) type {
         }
 
         pub fn spliceActiveStreamReplacingTarget(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, target: HostStructuralReplacementTarget, render_insert_index: usize, replacement: *HostNodeDescriptorStream) HostStructuralSplice {
+            return self.spliceActiveStreamReplacingTargetWithOptions(ctx, roc_host, target, render_insert_index, replacement, null, true);
+        }
+
+        pub fn spliceActiveStreamReplacingTargetWithOptions(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, target: HostStructuralReplacementTarget, render_insert_index: usize, replacement: *HostNodeDescriptorStream, child_insert_hint: ?HostRenderChildInsertHint, refresh_suffix_indexes: bool) HostStructuralSplice {
             const allocator = Ctx.allocator(ctx);
             const target_scopes = self.buildReplacementTargetScopeSet(ctx, target);
             defer self.scratch.replacement_target_scopes.clearRetainingCapacity();
@@ -2925,7 +3034,7 @@ pub fn Engine(comptime Ctx: type) type {
             const replacement_elem_ids = structural_splice.renderElemIds(allocator, replacement.render_nodes.items);
             errdefer allocator.free(replacement_elem_ids);
 
-            self.active_stream.replaceRenderRangeWithStream(allocator, render_start, removed_render_nodes, replacement, &self.pending_roc_metrics);
+            self.active_stream.replaceRenderRangeWithStreamOptions(allocator, render_start, removed_render_nodes, replacement, child_insert_hint, refresh_suffix_indexes, &self.pending_roc_metrics);
             self.removeActiveNonRenderDescriptorsInTarget(ctx, roc_host, target_scopes, removal_scan.removed_elem_ids);
             self.adjustActiveScopeSiteRenderInsertIndices(render_insert_index, removal_scan.removed_render_count, replacement_render_count);
             const on_change_start = self.active_stream.on_changes.items.len;
@@ -2948,6 +3057,10 @@ pub fn Engine(comptime Ctx: type) type {
 
         pub fn spliceActiveStreamReplacingScope(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, replaced_scope_id: u64, render_insert_index: usize, replacement: *HostNodeDescriptorStream) HostStructuralSplice {
             return self.spliceActiveStreamReplacingTarget(ctx, roc_host, .{ .scope = replaced_scope_id }, render_insert_index, replacement);
+        }
+
+        pub fn spliceActiveStreamReplacingScopeWithOptions(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, replaced_scope_id: u64, render_insert_index: usize, replacement: *HostNodeDescriptorStream, child_insert_hint: ?HostRenderChildInsertHint, refresh_suffix_indexes: bool) HostStructuralSplice {
+            return self.spliceActiveStreamReplacingTargetWithOptions(ctx, roc_host, .{ .scope = replaced_scope_id }, render_insert_index, replacement, child_insert_hint, refresh_suffix_indexes);
         }
 
         pub fn replaceSignalExprCacheAndClone(self: *Self, ctx: Ctx.Handle, cache_slot: *HostSignalCacheSlot, roc_host: *abi.RocHost, value: HostValue, cap: HostValueCapability) HostValue {
@@ -3061,6 +3174,16 @@ pub fn Engine(comptime Ctx: type) type {
             return changed;
         }
 
+        pub fn evalSignalBoolAttr(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, elem_id: u64, name: []const u8, signal: *HostSignalBinding, read: HostBoolRead, cache_slot: *HostSignalCacheSlot) bool {
+            const value = self.evalHostSignalBinding(ctx, roc_host, signal);
+            const signal_cap = self.hostSignalBindingCapability(ctx, signal);
+            assertHostValueCapabilitiesMatch(read.capability, signal_cap, "bool attr read extension capability did not match its signal value");
+            const bool_value = callHostValueToBoolWithCapability(ctx, roc_host, read.capability, read.read, value);
+            const changed = self.applyRenderBoolAttr(ctx, elem_id, name, bool_value);
+            cache_slot.replace(ctx, roc_host, &self.pending_roc_metrics, value, signal_cap);
+            return changed;
+        }
+
         pub fn evalDirtySignalTextField(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, elem_id: u64, field: RenderTextField, signal: *HostSignalBinding, read: HostTextRead, cache_slot: *HostSignalCacheSlot, dirty_source_node_ids: []const u64, dirty_generation: u64) bool {
             const result = self.evalDirtyHostSignalBinding(ctx, roc_host, signal, dirty_source_node_ids, dirty_generation);
             const cap = self.hostSignalBindingCapability(ctx, signal);
@@ -3101,6 +3224,18 @@ pub fn Engine(comptime Ctx: type) type {
             return self.applyRenderBoolField(ctx, elem_id, field, callHostValueToBoolWithCapability(ctx, roc_host, read.capability, read.read, result.value));
         }
 
+        pub fn evalDirtySignalBoolAttr(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, elem_id: u64, name: []const u8, signal: *HostSignalBinding, read: HostBoolRead, cache_slot: *HostSignalCacheSlot, dirty_source_node_ids: []const u64, dirty_generation: u64) bool {
+            const result = self.evalDirtyHostSignalBinding(ctx, roc_host, signal, dirty_source_node_ids, dirty_generation);
+            const cap = self.hostSignalBindingCapability(ctx, signal);
+            assertHostValueCapabilitiesMatch(read.capability, cap, "dirty bool attr read extension capability did not match its signal value");
+            if (!result.changed) {
+                callHostValueToUnitWithCapability(ctx, roc_host, cap, hv.hostValueCapabilityDrop(cap), result.value);
+                return false;
+            }
+            if (!self.updateDirtySignalCache(ctx, roc_host, cache_slot, result.value, cap)) return false;
+            return self.applyRenderBoolAttr(ctx, elem_id, name, callHostValueToBoolWithCapability(ctx, roc_host, read.capability, read.read, result.value));
+        }
+
         pub fn evalStructuralSignalTextField(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, elem_id: u64, field: RenderTextField, signal: *HostSignalBinding, read: HostTextRead, cache_slot: *HostSignalCacheSlot, dirty_source_node_ids: []const u64, dirty_generation: u64) bool {
             if (dirty_generation != 0 and sourceNodeIdsIntersect(signal.source_node_ids, dirty_source_node_ids)) {
                 return self.evalDirtySignalTextField(ctx, roc_host, elem_id, field, signal, read, cache_slot, dirty_source_node_ids, dirty_generation);
@@ -3120,6 +3255,13 @@ pub fn Engine(comptime Ctx: type) type {
                 return self.evalDirtySignalBoolField(ctx, roc_host, elem_id, field, signal, read, cache_slot, dirty_source_node_ids, dirty_generation);
             }
             return self.evalSignalBoolField(ctx, roc_host, elem_id, field, signal, read, cache_slot);
+        }
+
+        pub fn evalStructuralSignalBoolAttr(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, elem_id: u64, name: []const u8, signal: *HostSignalBinding, read: HostBoolRead, cache_slot: *HostSignalCacheSlot, dirty_source_node_ids: []const u64, dirty_generation: u64) bool {
+            if (dirty_generation != 0 and sourceNodeIdsIntersect(signal.source_node_ids, dirty_source_node_ids)) {
+                return self.evalDirtySignalBoolAttr(ctx, roc_host, elem_id, name, signal, read, cache_slot, dirty_source_node_ids, dirty_generation);
+            }
+            return self.evalSignalBoolAttr(ctx, roc_host, elem_id, name, signal, read, cache_slot);
         }
 
         pub fn evalDirtyHostSignalRecord(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, record: *HostSignalRecord, dirty_source_node_ids: []const u64, dirty_generation: u64) HostSignalEvalResult {
@@ -3592,8 +3734,7 @@ pub fn Engine(comptime Ctx: type) type {
             defer reordered_parent_children.deinit(allocator);
             var inserted_region = false;
             const region_end = region_start + total_len;
-            const old_parent_children = streamDirectChildren(allocator, &self.active_stream, site.parent_elem_id);
-            defer allocator.free(old_parent_children);
+            const old_parent_children = streamDirectChildrenInto(allocator, &self.active_stream, site.parent_elem_id, &self.scratch.stream_direct_children);
             for (old_parent_children) |child_id| {
                 const child_render_index = self.active_stream.renderNodeIndex(child_id) orelse @panic("parent child had no render index");
                 const child_in_region = child_render_index >= region_start and child_render_index < region_end;
@@ -3610,7 +3751,7 @@ pub fn Engine(comptime Ctx: type) type {
                 reordered_parent_children.appendSlice(allocator, reordered_region_children.items) catch @panic("out of memory");
             }
             self.active_stream.replaceRenderChildrenIndex(allocator, site.parent_elem_id, reordered_parent_children.items);
-            self.active_stream.refreshRenderIndexesFrom(allocator, region_start, &self.pending_roc_metrics);
+            self.active_stream.refreshRenderIndexesInRange(allocator, region_start, total_len, &self.pending_roc_metrics);
 
             for (self.active_stream.scope_sites.items) |*scope_site| {
                 const row_scope_id = (self.eachSiteRowAncestorScopeId(scope_site.scope_id, each_site) catch @panic("scope descriptor referenced an unknown parent scope")) orelse continue;
@@ -3622,8 +3763,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             var counts: render.Counts = .{};
-            const children = streamDirectChildren(allocator, &self.active_stream, site.parent_elem_id);
-            defer allocator.free(children);
+            const children = streamDirectChildrenInto(allocator, &self.active_stream, site.parent_elem_id, &self.scratch.stream_direct_children);
             self.replaceRenderChildrenForMoves(ctx, site.parent_elem_id, children, &counts);
             if (comptime enable_runtime_metrics) self.render_metrics.addCommandCounts(counts);
             return counts;
@@ -3631,6 +3771,34 @@ pub fn Engine(comptime Ctx: type) type {
 
         pub fn renderInsertIndexForEachRowRanges(site: HostNodeScopeSiteDesc, row_ranges: *const std.AutoHashMapUnmanaged(u64, HostEachRowRenderSegment), next_scope_ids: []const u64, row_index: usize) usize {
             return each_runtime.renderInsertIndexForRowRanges(site.render_insert_index, row_ranges, next_scope_ids, row_index);
+        }
+
+        pub fn childInsertionIndexForEachRowRanges(self: *Self, allocator: std.mem.Allocator, site: HostNodeScopeSiteDesc, row_ranges: *const std.AutoHashMapUnmanaged(u64, HostEachRowRenderSegment), render_insert_index: usize) usize {
+            const each_site = HostEachSite{ .parent_scope_id = site.scope_id, .site_ordinal = site.ordinal };
+            const children = streamDirectChildrenInto(allocator, &self.active_stream, site.parent_elem_id, &self.scratch.stream_direct_children);
+
+            var child_index: usize = 0;
+            for (children) |child_id| {
+                const child_scope_id = elemScopeId(&self.active_stream, child_id) orelse @panic("each row child had no scope");
+                const row_scope_id = (self.eachSiteRowAncestorScopeId(child_scope_id, each_site) catch @panic("scope descriptor referenced an unknown parent scope")) orelse continue;
+                const range = row_ranges.get(row_scope_id) orelse @panic("each row child had no render range");
+                if (range.start >= render_insert_index) break;
+                child_index += 1;
+            }
+            return child_index;
+        }
+
+        pub fn eachSiteParentHasOnlyRowChildren(self: *Self, allocator: std.mem.Allocator, site: HostNodeScopeSiteDesc, old_render_segments: []const HostEachRowRenderSegment) bool {
+            const each_site = HostEachSite{ .parent_scope_id = site.scope_id, .site_ordinal = site.ordinal };
+            const children = streamDirectChildrenInto(allocator, &self.active_stream, site.parent_elem_id, &self.scratch.stream_direct_children);
+            if (children.len != old_render_segments.len) return false;
+
+            for (children, old_render_segments) |child_id, segment| {
+                const child_scope_id = elemScopeId(&self.active_stream, child_id) orelse return false;
+                const row_scope_id = (self.eachSiteRowAncestorScopeId(child_scope_id, each_site) catch @panic("scope descriptor referenced an unknown parent scope")) orelse return false;
+                if (row_scope_id != segment.scope_id) return false;
+            }
+            return true;
         }
 
         pub fn adjustEachRowRenderRanges(row_ranges: *std.AutoHashMapUnmanaged(u64, HostEachRowRenderSegment), replace_index: usize, removed_count: usize, replacement_count: usize) void {
@@ -3643,37 +3811,52 @@ pub fn Engine(comptime Ctx: type) type {
 
         pub fn applyDirtyEachRowScopeSplices(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, site: HostNodeScopeSiteDesc, each: HostNodeEachDesc, old_render_segments: []const HostEachRowRenderSegment, diff: HostKeyedRowDiffResult, dirty_source_node_ids: []const u64, dirty_generation: u64) render.Counts {
             const allocator = Ctx.allocator(ctx);
-            var row_ranges: std.AutoHashMapUnmanaged(u64, HostEachRowRenderSegment) = .{};
-            defer row_ranges.deinit(allocator);
+            var row_ranges = &self.scratch.each_row_ranges;
+            row_ranges.clearRetainingCapacity();
+            defer row_ranges.clearRetainingCapacity();
             for (old_render_segments) |segment| {
                 const entry = row_ranges.getOrPut(allocator, segment.scope_id) catch @panic("out of memory");
                 if (entry.found_existing) @panic("each row render range index received duplicate row scopes");
                 entry.value_ptr.* = segment;
             }
 
-            var removed_elem_ids: std.ArrayListUnmanaged(u64) = .empty;
-            defer removed_elem_ids.deinit(allocator);
-            var touched_parent_ids: std.ArrayListUnmanaged(u64) = .empty;
-            defer touched_parent_ids.deinit(allocator);
-            var replacement_elem_ids: std.ArrayListUnmanaged(u64) = .empty;
-            defer replacement_elem_ids.deinit(allocator);
-            var replacement_on_change_indices: std.ArrayListUnmanaged(usize) = .empty;
-            defer replacement_on_change_indices.deinit(allocator);
-            var replacement_mount_indices: std.ArrayListUnmanaged(usize) = .empty;
-            defer replacement_mount_indices.deinit(allocator);
+            var removed_elem_ids = &self.scratch.each_removed_elem_ids;
+            removed_elem_ids.clearRetainingCapacity();
+            defer removed_elem_ids.clearRetainingCapacity();
+            var touched_parent_ids = &self.scratch.each_touched_parent_ids;
+            touched_parent_ids.clearRetainingCapacity();
+            defer touched_parent_ids.clearRetainingCapacity();
+            var replacement_elem_ids = &self.scratch.each_replacement_elem_ids;
+            replacement_elem_ids.clearRetainingCapacity();
+            defer replacement_elem_ids.clearRetainingCapacity();
+            var replacement_on_change_indices = &self.scratch.each_replacement_on_change_indices;
+            replacement_on_change_indices.clearRetainingCapacity();
+            defer replacement_on_change_indices.clearRetainingCapacity();
+            var replacement_mount_indices = &self.scratch.each_replacement_mount_indices;
+            replacement_mount_indices.clearRetainingCapacity();
+            defer replacement_mount_indices.clearRetainingCapacity();
+            const defer_render_index_suffixes = self.eachSiteParentHasOnlyRowChildren(allocator, site, old_render_segments);
+            var deferred_render_index_refresh_start: ?usize = null;
             var spliced_any = false;
 
             for (diff.removed_scope_ids) |removed_scope_id| {
                 var empty_stream: HostNodeDescriptorStream = .{};
                 const removed_range = row_ranges.get(removed_scope_id);
                 const render_insert_index = if (removed_range) |range| range.start else site.render_insert_index;
-                const splice = self.spliceActiveStreamReplacingScope(ctx, roc_host, removed_scope_id, render_insert_index, &empty_stream);
+                const splice = if (defer_render_index_suffixes)
+                    self.spliceActiveStreamReplacingScopeWithOptions(ctx, roc_host, removed_scope_id, render_insert_index, &empty_stream, null, false)
+                else
+                    self.spliceActiveStreamReplacingScope(ctx, roc_host, removed_scope_id, render_insert_index, &empty_stream);
                 defer splice.deinit(allocator);
-                updateEachRowRenderRange(&row_ranges, allocator, removed_scope_id, render_insert_index, splice.removed_elem_ids.len, splice.replacement_elem_ids.len);
+                if (defer_render_index_suffixes and splice.removed_elem_ids.len != splice.replacement_elem_ids.len) {
+                    const suffix_start = render_insert_index + splice.replacement_elem_ids.len;
+                    deferred_render_index_refresh_start = if (deferred_render_index_refresh_start) |start| @min(start, suffix_start) else suffix_start;
+                }
+                updateEachRowRenderRange(row_ranges, allocator, removed_scope_id, render_insert_index, splice.removed_elem_ids.len, splice.replacement_elem_ids.len);
 
                 removed_elem_ids.appendSlice(allocator, splice.removed_elem_ids) catch @panic("out of memory");
                 for (splice.touched_parent_ids) |parent_id| {
-                    appendUniqueU64(allocator, &touched_parent_ids, parent_id);
+                    appendUniqueU64(allocator, touched_parent_ids, parent_id);
                 }
                 replacement_elem_ids.appendSlice(allocator, splice.replacement_elem_ids) catch @panic("out of memory");
                 replacement_on_change_indices.appendSlice(allocator, splice.replacement_on_change_indices) catch @panic("out of memory");
@@ -3690,14 +3873,25 @@ pub fn Engine(comptime Ctx: type) type {
                 defer row_stream.deinit(allocator, ctx, roc_host, &self.pending_roc_metrics);
                 self.collectActiveEachSingleRowDescriptors(ctx, roc_host, &row_stream, site, each, row_scope_id, diff.scope_created[row_index], dirty_source_node_ids);
 
-                const render_insert_index = renderInsertIndexForEachRowRanges(site, &row_ranges, diff.scope_ids, row_index);
-                const splice = self.spliceActiveStreamReplacingScope(ctx, roc_host, row_scope_id, render_insert_index, &row_stream);
+                const render_insert_index = renderInsertIndexForEachRowRanges(site, row_ranges, diff.scope_ids, row_index);
+                const splice = if (defer_render_index_suffixes) splice: {
+                    const child_insertion_index = self.childInsertionIndexForEachRowRanges(allocator, site, row_ranges, render_insert_index);
+                    const child_insert_hint = HostRenderChildInsertHint{
+                        .parent_elem_id = site.parent_elem_id,
+                        .insertion_index = child_insertion_index,
+                    };
+                    break :splice self.spliceActiveStreamReplacingScopeWithOptions(ctx, roc_host, row_scope_id, render_insert_index, &row_stream, child_insert_hint, false);
+                } else self.spliceActiveStreamReplacingScope(ctx, roc_host, row_scope_id, render_insert_index, &row_stream);
                 defer splice.deinit(allocator);
-                updateEachRowRenderRange(&row_ranges, allocator, row_scope_id, render_insert_index, splice.removed_elem_ids.len, splice.replacement_elem_ids.len);
+                if (defer_render_index_suffixes and splice.removed_elem_ids.len != splice.replacement_elem_ids.len) {
+                    const suffix_start = render_insert_index + splice.replacement_elem_ids.len;
+                    deferred_render_index_refresh_start = if (deferred_render_index_refresh_start) |start| @min(start, suffix_start) else suffix_start;
+                }
+                updateEachRowRenderRange(row_ranges, allocator, row_scope_id, render_insert_index, splice.removed_elem_ids.len, splice.replacement_elem_ids.len);
 
                 removed_elem_ids.appendSlice(allocator, splice.removed_elem_ids) catch @panic("out of memory");
                 for (splice.touched_parent_ids) |parent_id| {
-                    appendUniqueU64(allocator, &touched_parent_ids, parent_id);
+                    appendUniqueU64(allocator, touched_parent_ids, parent_id);
                 }
                 replacement_elem_ids.appendSlice(allocator, splice.replacement_elem_ids) catch @panic("out of memory");
                 replacement_on_change_indices.appendSlice(allocator, splice.replacement_on_change_indices) catch @panic("out of memory");
@@ -3706,15 +3900,19 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             if (!spliced_any) return .{};
+            if (defer_render_index_suffixes) {
+                if (deferred_render_index_refresh_start) |refresh_start| {
+                    self.active_stream.refreshRenderIndexesFrom(allocator, refresh_start, &self.pending_roc_metrics);
+                }
+            }
 
             const merged_splice = HostStructuralSplice{
-                .removed_elem_ids = removed_elem_ids.toOwnedSlice(allocator) catch @panic("out of memory"),
-                .touched_parent_ids = touched_parent_ids.toOwnedSlice(allocator) catch @panic("out of memory"),
-                .replacement_elem_ids = replacement_elem_ids.toOwnedSlice(allocator) catch @panic("out of memory"),
-                .replacement_on_change_indices = replacement_on_change_indices.toOwnedSlice(allocator) catch @panic("out of memory"),
-                .replacement_mount_indices = replacement_mount_indices.toOwnedSlice(allocator) catch @panic("out of memory"),
+                .removed_elem_ids = removed_elem_ids.items,
+                .touched_parent_ids = touched_parent_ids.items,
+                .replacement_elem_ids = replacement_elem_ids.items,
+                .replacement_on_change_indices = replacement_on_change_indices.items,
+                .replacement_mount_indices = replacement_mount_indices.items,
             };
-            defer merged_splice.deinit(allocator);
             const target = HostStructuralReplacementTarget{ .each_site = .{ .parent_scope_id = site.scope_id, .site_ordinal = site.ordinal } };
             return self.applySplicedStructuralNodeDescriptorTarget(ctx, roc_host, merged_splice, .{
                 .removed = target,
@@ -3823,7 +4021,9 @@ pub fn Engine(comptime Ctx: type) type {
 
         pub fn namedEventBindingForElemName(stream: *const HostNodeDescriptorStream, elem_id: u64, name: []const u8) ?HostRequiredNamedEventBinding {
             const fixed_event_count = stream.events.items.len;
-            for (stream.named_events.items, 0..) |desc, index| {
+            for (stream.namedEventIndices(elem_id)) |index| {
+                if (index >= stream.named_events.items.len) @panic("named event index exceeded descriptor table");
+                const desc = stream.named_events.items[index];
                 if (desc.elem_id == elem_id and std.mem.eql(u8, desc.name, name)) {
                     return .{
                         .event_id = @intCast(fixed_event_count + index + 1),
@@ -3846,9 +4046,12 @@ pub fn Engine(comptime Ctx: type) type {
                 cache_index += 1;
             }
 
-            self.recordStreamNodesScannedBy(.stream_nodes_scanned_events, stream.named_events.items.len);
-            for (stream.named_events.items, 0..) |desc, index| {
-                if (desc.elem_id != elem_id) continue;
+            const named_event_indices = stream.namedEventIndices(elem_id);
+            self.recordStreamNodesScannedBy(.stream_nodes_scanned_events, named_event_indices.len);
+            for (named_event_indices) |index| {
+                if (index >= stream.named_events.items.len) @panic("named event index exceeded descriptor table");
+                const desc = stream.named_events.items[index];
+                if (desc.elem_id != elem_id) @panic("named event index pointed at the wrong element");
                 const event_id: u64 = @intCast(stream.events.items.len + index + 1);
                 self.applyRenderNamedEventBinding(ctx, elem_id, desc.name, .{
                     .event_id = event_id,
@@ -3930,6 +4133,22 @@ pub fn Engine(comptime Ctx: type) type {
             for (self.active_stream.signal_custom_text_attrs.items) |*desc| {
                 if (desc.elem_id != elem_id) continue;
                 if (self.evalStructuralSignalTextAttr(ctx, roc_host, desc.elem_id, desc.name, &desc.signal, desc.read, &desc.cached_value, dirty_source_node_ids, dirty_generation)) {
+                    counts.addTextAttr();
+                }
+            }
+
+            self.recordStreamNodesScannedBy(.stream_nodes_scanned_apply, self.active_stream.static_custom_bool_attrs.items.len);
+            for (self.active_stream.static_custom_bool_attrs.items) |desc| {
+                if (desc.elem_id != elem_id) continue;
+                if (self.applyRenderBoolAttr(ctx, desc.elem_id, desc.name, desc.value)) {
+                    counts.addTextAttr();
+                }
+            }
+
+            self.recordStreamNodesScannedBy(.stream_nodes_scanned_apply, self.active_stream.signal_custom_bool_attrs.items.len);
+            for (self.active_stream.signal_custom_bool_attrs.items) |*desc| {
+                if (desc.elem_id != elem_id) continue;
+                if (self.evalStructuralSignalBoolAttr(ctx, roc_host, desc.elem_id, desc.name, &desc.signal, desc.read, &desc.cached_value, dirty_source_node_ids, dirty_generation)) {
                     counts.addTextAttr();
                 }
             }
@@ -4037,8 +4256,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             for (touched_parents.items) |parent_elem_id| {
-                const children = streamDirectChildren(allocator, stream, parent_elem_id);
-                defer allocator.free(children);
+                const children = streamDirectChildrenInto(allocator, stream, parent_elem_id, &self.scratch.stream_direct_children);
                 self.replaceRenderChildren(ctx, parent_elem_id, children, &counts);
             }
 
@@ -4094,6 +4312,18 @@ pub fn Engine(comptime Ctx: type) type {
             self.recordStreamNodesScannedBy(.stream_nodes_scanned_apply, stream.signal_custom_text_attrs.items.len);
             for (stream.signal_custom_text_attrs.items) |*desc| {
                 if (desc.elem_id < seen.len and seen[@intCast(desc.elem_id)] and self.evalSignalTextAttr(ctx, roc_host, desc.elem_id, desc.name, &desc.signal, desc.read, &desc.cached_value)) {
+                    counts.addTextAttr();
+                }
+            }
+            self.recordStreamNodesScannedBy(.stream_nodes_scanned_apply, stream.static_custom_bool_attrs.items.len);
+            for (stream.static_custom_bool_attrs.items) |desc| {
+                if (desc.elem_id < seen.len and seen[@intCast(desc.elem_id)] and self.applyRenderBoolAttr(ctx, desc.elem_id, desc.name, desc.value)) {
+                    counts.addTextAttr();
+                }
+            }
+            self.recordStreamNodesScannedBy(.stream_nodes_scanned_apply, stream.signal_custom_bool_attrs.items.len);
+            for (stream.signal_custom_bool_attrs.items) |*desc| {
+                if (desc.elem_id < seen.len and seen[@intCast(desc.elem_id)] and self.evalSignalBoolAttr(ctx, roc_host, desc.elem_id, desc.name, &desc.signal, desc.read, &desc.cached_value)) {
                     counts.addTextAttr();
                 }
             }
@@ -4179,6 +4409,16 @@ pub fn Engine(comptime Ctx: type) type {
                     counts.addTextAttr();
                 }
             }
+            for (stream.static_custom_bool_attrs.items) |desc| {
+                if (self.applyRenderBoolAttr(ctx, desc.elem_id, desc.name, desc.value)) {
+                    counts.addTextAttr();
+                }
+            }
+            for (stream.signal_custom_bool_attrs.items) |*desc| {
+                if (self.evalSignalBoolAttr(ctx, roc_host, desc.elem_id, desc.name, &desc.signal, desc.read, &desc.cached_value)) {
+                    counts.addTextAttr();
+                }
+            }
             for (stream.static_bool_attrs.items) |desc| {
                 if (self.applyRenderBoolField(ctx, desc.elem_id, desc.field, desc.value)) {
                     counts.addBoolField(desc.field);
@@ -4256,15 +4496,27 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             for (touched_parents.items) |parent_elem_id| {
-                const children = streamDirectChildren(allocator, &self.active_stream, parent_elem_id);
-                defer allocator.free(children);
+                const children = streamDirectChildrenInto(allocator, &self.active_stream, parent_elem_id, &self.scratch.stream_direct_children);
                 self.replaceRenderChildren(ctx, parent_elem_id, children, &counts);
             }
 
             for (splice.replacement_elem_ids) |elem_id| {
                 self.applyActiveStreamFieldsForElem(ctx, roc_host, elem_id, &counts, dirty_source_node_ids, dirty_generation);
             }
-            self.applyActiveStreamEventBindings(ctx, &counts);
+            var event_binding_elem_ids: std.ArrayListUnmanaged(u64) = .empty;
+            defer event_binding_elem_ids.deinit(allocator);
+            for (splice.replacement_elem_ids) |elem_id| {
+                appendUniqueU64(allocator, &event_binding_elem_ids, elem_id);
+            }
+            for (touched_parents.items) |parent_elem_id| {
+                const children = streamDirectChildrenInto(allocator, &self.active_stream, parent_elem_id, &self.scratch.stream_direct_children);
+                for (children) |child_id| {
+                    appendUniqueU64(allocator, &event_binding_elem_ids, child_id);
+                }
+            }
+            for (event_binding_elem_ids.items) |elem_id| {
+                self.applyStructuralEventBindingsForElem(ctx, elem_id, &counts);
+            }
 
             self.recordStreamNodesScannedBy(.stream_nodes_scanned_splice, splice.replacement_on_change_indices.len);
             for (splice.replacement_on_change_indices) |on_change_index| {
@@ -4374,6 +4626,16 @@ pub fn Engine(comptime Ctx: type) type {
             }
             for (stream.signal_custom_text_attrs.items) |*desc| {
                 if (self.evalSignalTextAttr(ctx, roc_host, desc.elem_id, desc.name, &desc.signal, desc.read, &desc.cached_value)) {
+                    counts.addTextAttr();
+                }
+            }
+            for (stream.static_custom_bool_attrs.items) |desc| {
+                if (self.applyRenderBoolAttr(ctx, desc.elem_id, desc.name, desc.value)) {
+                    counts.addTextAttr();
+                }
+            }
+            for (stream.signal_custom_bool_attrs.items) |*desc| {
+                if (self.evalSignalBoolAttr(ctx, roc_host, desc.elem_id, desc.name, &desc.signal, desc.read, &desc.cached_value)) {
                     counts.addTextAttr();
                 }
             }
@@ -4721,9 +4983,19 @@ pub fn Engine(comptime Ctx: type) type {
 
                 if (route_index < self.active_bool_signal_routes.items.len) {
                     for (self.active_bool_signal_routes.items[route_index].items) |route| {
-                        const desc = &self.active_stream.signal_bool_attrs.items[route.index];
-                        if (self.evalDirtySignalBoolField(ctx, roc_host, desc.elem_id, desc.field, &desc.signal, desc.read, &desc.cached_value, dirty_source_node_ids, dirty_generation)) {
-                            counts.addBoolField(desc.field);
+                        switch (route.kind) {
+                            .bool_attr => {
+                                const desc = &self.active_stream.signal_bool_attrs.items[route.index];
+                                if (self.evalDirtySignalBoolField(ctx, roc_host, desc.elem_id, desc.field, &desc.signal, desc.read, &desc.cached_value, dirty_source_node_ids, dirty_generation)) {
+                                    counts.addBoolField(desc.field);
+                                }
+                            },
+                            .custom_bool_attr => {
+                                const desc = &self.active_stream.signal_custom_bool_attrs.items[route.index];
+                                if (self.evalDirtySignalBoolAttr(ctx, roc_host, desc.elem_id, desc.name, &desc.signal, desc.read, &desc.cached_value, dirty_source_node_ids, dirty_generation)) {
+                                    counts.addTextAttr();
+                                }
+                            },
                         }
                     }
                 }

@@ -10,6 +10,11 @@ import {
   Protocol,
   ProtocolFeature,
   SignalsRuntime,
+  decodeHttpRequestPayload,
+  decodeHttpResponsePayload,
+  encodeHttpRequestPayload,
+  encodeHttpResponsePayload,
+  httpFetchTaskHandler,
   opsApiTextTaskHandler,
 } from "../../www/static/signals.mjs";
 import {
@@ -63,6 +68,11 @@ const PayloadSpecLeaf = Object.freeze({
 });
 
 const unitPayloadSpec = new Uint8Array([PayloadSpecTag.unit]);
+const targetValuePayloadSpec = new Uint8Array([
+  PayloadSpecTag.text,
+  PayloadSpecSource.currentTarget,
+  PayloadSpecLeaf.value,
+]);
 const keyShiftPayloadSpec = concatBytes([
   new Uint8Array([PayloadSpecTag.record, 2]),
   fieldSpec("key", new Uint8Array([PayloadSpecTag.text, PayloadSpecSource.event, PayloadSpecLeaf.key])),
@@ -481,6 +491,31 @@ test("focused SetValue patches are deferred until blur", () => {
   assert.equal(input.value, "host");
 });
 
+test("focused SetValue patches apply the latest deferred value on blur", () => {
+  const { host, root, runtime } = mountWith([
+    { op: Op.resetDom },
+    { op: Op.createElement, a: 1, s: "input" },
+    { op: Op.setValue, a: 1, s: "old" },
+    { op: Op.appendChild, a: 0, b: 1 },
+  ]);
+  const input = findNode(root, (node) => node.tagName === "INPUT");
+
+  fireEvent(input, "focus");
+  input.value = "draft";
+  fireEvent(input, "input");
+
+  host.writeCommands([{ op: Op.setValue, a: 1, s: "canonical-a" }]);
+  runtime.applyPendingCommands("canonical-a");
+  assert.equal(input.value, "draft");
+
+  host.writeCommands([{ op: Op.setValue, a: 1, s: "canonical-b" }]);
+  runtime.applyPendingCommands("canonical-b");
+  assert.equal(input.value, "draft");
+
+  fireEvent(input, "blur");
+  assert.equal(input.value, "canonical-b");
+});
+
 test("composition keeps SetValue patches deferred while focused", () => {
   const { host, root, runtime } = mountWith([
     { op: Op.resetDom },
@@ -532,6 +567,14 @@ test("dynamic attribute commands set and remove DOM attributes", () => {
         dynamic: {
           op: DynamicOp.setAttrText,
           elemId: 1,
+          name: "required",
+          value: "",
+        },
+      },
+      {
+        dynamic: {
+          op: DynamicOp.setAttrText,
+          elemId: 1,
           name: "class",
           value: "toolbar",
         },
@@ -544,12 +587,13 @@ test("dynamic attribute commands set and remove DOM attributes", () => {
   const button = findNode(root, (node) => node.tagName === "BUTTON");
   assert.equal(button.getAttribute("aria-label"), "Save");
   assert.equal(button.getAttribute("data-mode"), "primary");
+  assert.equal(button.getAttribute("required"), "");
   assert.equal(button.getAttribute("class"), "toolbar");
 
   const mountCommands = telemetry.find((entry) => entry.kind === "commands" && entry.phase === "mount");
-  assert.equal(mountCommands.opCounts.set_attr_text, 3);
-  assert.equal(mountCommands.dynamicBytes, 104);
-  assert.equal(mountCommands.fixedRecordBytes, 6 * RECORD_WORDS * 4);
+  assert.equal(mountCommands.opCounts.set_attr_text, 4);
+  assert.equal(mountCommands.dynamicBytes, 132);
+  assert.equal(mountCommands.fixedRecordBytes, 7 * RECORD_WORDS * 4);
 
   host.writeCommands([
     {
@@ -566,18 +610,26 @@ test("dynamic attribute commands set and remove DOM attributes", () => {
         name: "class",
       },
     },
+    {
+      dynamic: {
+        op: DynamicOp.removeAttr,
+        elemId: 1,
+        name: "required",
+      },
+    },
   ]);
   runtime.applyPendingCommands("dynamic-remove");
 
   assert.equal(button.getAttribute("aria-label"), "Save");
   assert.equal(button.getAttribute("data-mode"), null);
+  assert.equal(button.getAttribute("required"), null);
   assert.equal(button.getAttribute("class"), null);
 
   const removeCommands = telemetry.find(
     (entry) => entry.kind === "commands" && entry.phase === "dynamic-remove",
   );
-  assert.equal(removeCommands.opCounts.remove_attr, 2);
-  assert.equal(removeCommands.dynamicBytes, 52);
+  assert.equal(removeCommands.opCounts.remove_attr, 3);
+  assert.equal(removeCommands.dynamicBytes, 76);
 });
 
 test("malformed dynamic command records fail closed", () => {
@@ -750,6 +802,96 @@ test("dynamic submit events apply static prevent-default policy", () => {
   runtime.applyPendingCommands("clear-submit");
   fireEvent(form, "submit");
   assert.deepEqual(host.dispatches, [{ eventId: 22, kind: PayloadKind.unit }]);
+});
+
+test("dynamic form named events dispatch unit and target value payloads", () => {
+  const { host, root } = mountWith([
+    { op: Op.resetDom },
+    { op: Op.createElement, a: 1, s: "input" },
+    {
+      dynamic: {
+        op: DynamicOp.bindEvent,
+        elemId: 1,
+        eventName: "focus",
+        eventId: 23,
+        options: ListenerOptions.capture | ListenerOptions.passive,
+        payloadKind: PayloadKind.unit,
+        payloadSpec: unitPayloadSpec,
+      },
+    },
+    {
+      dynamic: {
+        op: DynamicOp.bindEvent,
+        elemId: 1,
+        eventName: "blur",
+        eventId: 24,
+        options: ListenerOptions.once,
+        payloadKind: PayloadKind.unit,
+        payloadSpec: unitPayloadSpec,
+      },
+    },
+    {
+      dynamic: {
+        op: DynamicOp.bindEvent,
+        elemId: 1,
+        eventName: "change",
+        eventId: 25,
+        options: 0,
+        payloadKind: PayloadKind.str,
+        payloadSpec: targetValuePayloadSpec,
+      },
+    },
+    {
+      dynamic: {
+        op: DynamicOp.bindEvent,
+        elemId: 1,
+        eventName: "compositionstart",
+        eventId: 26,
+        options: 0,
+        payloadKind: PayloadKind.unit,
+        payloadSpec: unitPayloadSpec,
+      },
+    },
+    {
+      dynamic: {
+        op: DynamicOp.bindEvent,
+        elemId: 1,
+        eventName: "compositionend",
+        eventId: 27,
+        options: 0,
+        payloadKind: PayloadKind.unit,
+        payloadSpec: unitPayloadSpec,
+      },
+    },
+    { op: Op.appendChild, a: 0, b: 1 },
+  ]);
+
+  const input = findNode(root, (node) => node.tagName === "INPUT");
+  assert.deepEqual(input.listeners.get("focus")[0].options, {
+    capture: true,
+    passive: true,
+    once: false,
+  });
+  assert.deepEqual(input.listeners.get("blur")[0].options, {
+    capture: false,
+    passive: false,
+    once: true,
+  });
+
+  fireEvent(input, "focus");
+  input.value = "team@example.com";
+  fireEvent(input, "change");
+  fireEvent(input, "compositionstart");
+  fireEvent(input, "compositionend");
+  fireEvent(input, "blur");
+
+  assert.deepEqual(host.dispatches, [
+    { eventId: 23, kind: PayloadKind.unit },
+    { eventId: 25, kind: PayloadKind.str, payload: "team@example.com" },
+    { eventId: 26, kind: PayloadKind.unit },
+    { eventId: 27, kind: PayloadKind.unit },
+    { eventId: 24, kind: PayloadKind.unit },
+  ]);
 });
 
 test("malformed dynamic event payload descriptors fail closed", () => {
@@ -983,6 +1125,8 @@ test("timer commands register intervals and timer ticks re-enter wasm", () => {
 
     runtime.applyCommand({ op: Op.cancelInterval, a: 7, b: 0, c: 0, d: 0, e: 0 });
     assert.equal(runtime.intervals.has(7), false);
+    runtime.tickTimer(7);
+    assert.deepEqual(host.timers, [7]);
   } finally {
     runtime.cancelInterval(7);
   }
@@ -1058,6 +1202,95 @@ test("async task resolution traps report onError without retrying as task failur
   assert.match(errors[0].message, /roc_ui_resolve trapped while applying task result/);
 });
 
+test("HTTP request payload codec preserves method URI timeout headers and body bytes", () => {
+  const body = new Uint8Array([0, 82, 255]);
+  const payload = encodeHttpRequestPayload({
+    method: "PATCH",
+    uri: "/api/items/42",
+    timeoutMs: 250,
+    headers: [
+      ["x-mode", "test"],
+      ["x-mode", "again"],
+    ],
+    body,
+  });
+
+  assert.deepEqual(decodeHttpRequestPayload(payload), {
+    method: "PATCH",
+    uri: "/api/items/42",
+    timeoutMs: 250,
+    headers: [
+      ["x-mode", "test"],
+      ["x-mode", "again"],
+    ],
+    body,
+  });
+});
+
+test("HTTP fetch task handler maps request envelopes to fetch response envelopes", async () => {
+  const calls = [];
+  const payload = encodeHttpRequestPayload({
+    method: "POST",
+    uri: "/api/widgets",
+    timeoutMs: 500,
+    headers: [["content-type", "text/plain"]],
+    body: "hello",
+  });
+  const value = await httpFetchTaskHandler({
+    name: "http:send:widgets",
+    request: payload,
+    signal: new AbortController().signal,
+    fetchImpl: async (url, options) => {
+      calls.push({
+        url,
+        method: options.method,
+        headers: options.headers,
+        body: [...options.body],
+      });
+      return {
+        status: 201,
+        headers: new Map([
+          ["content-type", "text/plain"],
+          ["x-reply", "ok"],
+        ]),
+        arrayBuffer: async () => textBytes("created").buffer,
+      };
+    },
+  });
+
+  assert.deepEqual(calls, [
+    {
+      url: "/api/widgets",
+      method: "POST",
+      headers: [["content-type", "text/plain"]],
+      body: [...textBytes("hello")],
+    },
+  ]);
+  assert.deepEqual(decodeHttpResponsePayload(value), {
+    status: 201,
+    headers: [
+      ["content-type", "text/plain"],
+      ["x-reply", "ok"],
+    ],
+    body: textBytes("created"),
+  });
+});
+
+test("HTTP fetch task handler reports network failures as HTTP error envelopes", async () => {
+  await assert.rejects(
+    () =>
+      httpFetchTaskHandler({
+        name: "http:send:widgets",
+        request: encodeHttpRequestPayload({ uri: "/api/widgets" }),
+        signal: new AbortController().signal,
+        fetchImpl: async () => {
+          throw new Error("offline");
+        },
+      }),
+    /roc-http-error-v1\nnetwork/,
+  );
+});
+
 test("ops API text task handler serves only documented static endpoints", async () => {
   assert.equal(
     opsApiTextTaskHandler({ name: "lookup", request: "roc" }),
@@ -1065,18 +1298,25 @@ test("ops API text task handler serves only documented static endpoints", async 
   );
 
   const value = await opsApiTextTaskHandler({
-    name: "http:get-text:summary",
-    request: "/api/ops/summary",
+    name: "http:send:summary",
+    request: encodeHttpRequestPayload({ method: "GET", uri: "/api/ops/summary" }),
   });
-  assert.match(value, /Overall:/);
-  assert.match(value, /Traffic:/);
+  const response = decodeHttpResponsePayload(value);
+  assert.equal(response.status, 200);
+  assert.deepEqual(response.headers, [["content-type", "text/plain; charset=utf-8"]]);
+  assert.match(new TextDecoder().decode(response.body), /Overall:/);
+  assert.match(new TextDecoder().decode(response.body), /Traffic:/);
 
   assert.throws(
     () =>
       opsApiTextTaskHandler({
-        name: "http:get-text:private",
-        request: "/api/private",
+        name: "http:send:private",
+        request: encodeHttpRequestPayload({ method: "GET", uri: "/api/private" }),
       }),
-    /unsupported ops API text endpoint/,
+    /roc-http-error-v1\nunsupported/,
   );
 });
+
+function textBytes(value) {
+  return new TextEncoder().encode(value);
+}

@@ -3,7 +3,9 @@ platform ""
 		main : {} -> Elem
 	}
 	exposes [Elem, Signal, Html, Ui, Http]
-	packages {}
+	packages {
+		http: "https://github.com/roc-lang/http/releases/download/0.1/6LcdNq2r7xTBwj972ecYWUkMWobJr94yL2NyJpHRAXap.tar.zst",
+	}
 	provides { "roc_ui_init": ui_init }
 	hosted {
 		"roc_host_value_clone": HostValue.clone,

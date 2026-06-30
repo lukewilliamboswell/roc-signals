@@ -87,6 +87,52 @@ pub fn Runner(comptime Ctx: type) type {
                         Ctx.dispatchRocEvent(host, roc_host, event.event_id, .bytes, Ctx.hostValueU8List(host, roc_host, payload_bytes));
                     },
 
+                    .focus, .blur, .composition_start, .composition_end => {
+                        const event_name = namedUnitEventNameForCommand(cmd.cmd_type) orelse {
+                            writeLocatorFailure(cmd.line_num, "unsupported named unit event command");
+                            return 1;
+                        };
+                        const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
+                            writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
+                            return 1;
+                        };
+                        if (elem.disabled) {
+                            writeLocatorFailure(cmd.line_num, "target is disabled");
+                            return 1;
+                        }
+                        const event = Ctx.namedEvent(elem, event_name) orelse {
+                            writeLocatorFailure(cmd.line_num, "target has no named event binding");
+                            return 1;
+                        };
+                        if (event.payload_kind != .unit or event.payload_accessor != .none) {
+                            writeLocatorFailure(cmd.line_num, "named event binding does not use a unit payload descriptor");
+                            return 1;
+                        }
+                        Ctx.dispatchRocEvent(host, roc_host, event.event_id, .unit, Ctx.hostValueUnit(host, roc_host));
+                    },
+
+                    .change => {
+                        const value = cmd.expected_text orelse "";
+                        const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
+                            writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
+                            return 1;
+                        };
+                        if (elem.disabled) {
+                            writeLocatorFailure(cmd.line_num, "target is disabled");
+                            return 1;
+                        }
+                        const event = Ctx.namedEvent(elem, "change") orelse {
+                            writeLocatorFailure(cmd.line_num, "target has no change binding");
+                            return 1;
+                        };
+                        if (event.payload_kind != .str or event.payload_accessor != .target_value) {
+                            writeLocatorFailure(cmd.line_num, "change binding does not request the target value payload descriptor");
+                            return 1;
+                        }
+                        _ = Ctx.setElementValueIfChanged(host, elem, value);
+                        Ctx.dispatchRocEvent(host, roc_host, event.event_id, .str, Ctx.hostValueStr(host, roc_host, value));
+                    },
+
                     .submit => {
                         const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
                             writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
@@ -164,6 +210,17 @@ pub fn Runner(comptime Ctx: type) type {
                         Ctx.finishHostMetrics(host);
                     },
 
+                    .tick_interval_if_active => {
+                        const period_ms = cmd.interval_ms orelse {
+                            writeLocatorFailure(cmd.line_num, "interval command had no period");
+                            return 1;
+                        };
+                        if (Ctx.activeIntervalRecordCountByPeriod(host, period_ms) != 0) {
+                            _ = Ctx.tickIntervalSource(host, roc_host, period_ms);
+                            Ctx.finishHostMetrics(host);
+                        }
+                    },
+
                     .expect_visible => {
                         _ = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
                             writeLocatorFailure(cmd.line_num, "locator did not resolve to one visible element");
@@ -215,9 +272,27 @@ pub fn Runner(comptime Ctx: type) type {
                             writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
                             return 1;
                         };
-                        const actual = Ctx.elementTextAttr(elem, attr_name) orelse "";
+                        const actual = Ctx.elementTextAttr(elem, attr_name) orelse {
+                            writeMissingAttr(cmd.line_num, attr_name);
+                            return 1;
+                        };
                         if (!std.mem.eql(u8, actual, expected)) {
                             writeStringMismatch(cmd.line_num, attr_name, expected, actual);
+                            return 1;
+                        }
+                    },
+
+                    .expect_no_attr => {
+                        const attr_name = cmd.expected_attr orelse {
+                            writeLocatorFailure(cmd.line_num, "attr assertion had no attr name");
+                            return 1;
+                        };
+                        const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
+                            writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
+                            return 1;
+                        };
+                        if (Ctx.elementTextAttr(elem, attr_name) != null) {
+                            writeUnexpectedAttr(cmd.line_num, attr_name);
                             return 1;
                         }
                     },
@@ -430,6 +505,16 @@ pub fn Runner(comptime Ctx: type) type {
             };
         }
 
+        fn namedUnitEventNameForCommand(cmd_type: SpecCommandType) ?[]const u8 {
+            return switch (cmd_type) {
+                .focus => "focus",
+                .blur => "blur",
+                .composition_start => "compositionstart",
+                .composition_end => "compositionend",
+                else => null,
+            };
+        }
+
         fn writeLocatorFailure(line_num: usize, message: []const u8) void {
             var buf: [256]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "TEST FAILED at line {d}: {s}\n", .{ line_num, message }) catch "TEST FAILED\n";
@@ -445,6 +530,18 @@ pub fn Runner(comptime Ctx: type) type {
         fn writeStringMismatch(line_num: usize, field: []const u8, expected: []const u8, actual: []const u8) void {
             var buf: [512]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "TEST FAILED at line {d}:\n  Expected {s}: \"{s}\"\n  Got {s}:      \"{s}\"\n", .{ line_num, field, expected, field, actual }) catch "TEST FAILED\n";
+            Ctx.writeStderr(msg);
+        }
+
+        fn writeUnexpectedAttr(line_num: usize, field: []const u8) void {
+            var buf: [256]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "TEST FAILED at line {d}: expected attr \"{s}\" to be absent\n", .{ line_num, field }) catch "TEST FAILED\n";
+            Ctx.writeStderr(msg);
+        }
+
+        fn writeMissingAttr(line_num: usize, field: []const u8) void {
+            var buf: [256]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "TEST FAILED at line {d}: expected attr \"{s}\" to be present\n", .{ line_num, field }) catch "TEST FAILED\n";
             Ctx.writeStderr(msg);
         }
 

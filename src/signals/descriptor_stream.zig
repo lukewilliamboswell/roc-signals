@@ -35,6 +35,11 @@ pub const RenderNode = struct {
     kind: RenderNodeKind,
 };
 
+pub const RenderChildInsertHint = struct {
+    parent_elem_id: u64,
+    insertion_index: usize,
+};
+
 pub const ElementDesc = struct {
     elem_id: u64,
     parent_elem_id: u64,
@@ -59,6 +64,12 @@ pub const StaticCustomTextAttrDesc = struct {
     elem_id: u64,
     name: []const u8,
     value: []const u8,
+};
+
+pub const StaticCustomBoolAttrDesc = struct {
+    elem_id: u64,
+    name: []const u8,
+    value: bool,
 };
 
 pub const StaticBoolAttrDesc = struct {
@@ -119,6 +130,14 @@ pub const SignalCustomTextAttrDesc = struct {
     name: []const u8,
     signal: HostSignalBinding,
     read: HostTextRead,
+    cached_value: HostSignalCacheSlot = .absent,
+};
+
+pub const SignalCustomBoolAttrDesc = struct {
+    elem_id: u64,
+    name: []const u8,
+    signal: HostSignalBinding,
+    read: HostBoolRead,
     cached_value: HostSignalCacheSlot = .absent,
 };
 
@@ -216,6 +235,7 @@ const appendRenderChildImpl = appendRenderChild;
 const appendScopeSiteImpl = appendScopeSite;
 const appendScopeSiteAtImpl = appendScopeSiteAt;
 const appendStaticBoolAttrImpl = appendStaticBoolAttr;
+const appendStaticCustomBoolAttrImpl = appendStaticCustomBoolAttr;
 const appendStaticCustomTextAttrImpl = appendStaticCustomTextAttr;
 const appendStaticTextAttrImpl = appendStaticTextAttr;
 const appendTextNodeImpl = appendTextNode;
@@ -223,6 +243,7 @@ const childInsertionIndexForRenderIndexImpl = childInsertionIndexForRenderIndex;
 const clearEachIndexImpl = clearEachIndex;
 const clearElementIndexImpl = clearElementIndex;
 const clearEventIndexImpl = clearEventIndex;
+const clearNamedEventIndexImpl = clearNamedEventIndex;
 const clearRenderChildrenImpl = clearRenderChildren;
 const clearRenderNodeIndexImpl = clearRenderNodeIndex;
 const clearScopeSiteIndexImpl = clearScopeSiteIndex;
@@ -246,10 +267,12 @@ const firstRenderChildImpl = firstRenderChild;
 const insertRenderChildrenImpl = insertRenderChildren;
 const lastRenderChildImpl = lastRenderChild;
 const nextRenderSiblingImpl = nextRenderSibling;
+const namedEventIndicesImpl = namedEventIndices;
 const nodeDescriptorIndexImpl = nodeDescriptorIndex;
 const recordEachIndexImpl = recordEachIndex;
 const recordElementIndexImpl = recordElementIndex;
 const recordEventIndexImpl = recordEventIndex;
+const recordNamedEventIndexImpl = recordNamedEventIndex;
 const recordRenderNodeIndexImpl = recordRenderNodeIndex;
 const recordScopeSiteIndexImpl = recordScopeSiteIndex;
 const recordSignalBoolAttrIndexImpl = recordSignalBoolAttrIndex;
@@ -261,6 +284,7 @@ const recordStaticTextAttrIndexImpl = recordStaticTextAttrIndex;
 const recordTextNodeIndexImpl = recordTextNodeIndex;
 const recordWhenIndexImpl = recordWhenIndex;
 const refreshRenderIndexesFromImpl = refreshRenderIndexesFrom;
+const refreshRenderIndexesInRangeImpl = refreshRenderIndexesInRange;
 const removeRenderChildImpl = removeRenderChild;
 const removeRenderMetadataIfEmptyImpl = removeRenderMetadataIfEmpty;
 const renderNodeIndexImpl = renderNodeIndex;
@@ -268,6 +292,7 @@ const replaceRenderChildrenIndexImpl = replaceRenderChildrenIndex;
 const updateEachIndexImpl = updateEachIndex;
 const updateElementIndexImpl = updateElementIndex;
 const updateEventIndexImpl = updateEventIndex;
+const updateNamedEventIndexImpl = updateNamedEventIndex;
 const updateRenderNodeIndexImpl = updateRenderNodeIndex;
 const updateScopeSiteIndexImpl = updateScopeSiteIndex;
 const updateSignalBoolAttrIndexImpl = updateSignalBoolAttrIndex;
@@ -293,6 +318,8 @@ pub const Stream = struct {
     signal_text_attrs: std.ArrayListUnmanaged(SignalTextAttrDesc) = .empty,
     static_custom_text_attrs: std.ArrayListUnmanaged(StaticCustomTextAttrDesc) = .empty,
     signal_custom_text_attrs: std.ArrayListUnmanaged(SignalCustomTextAttrDesc) = .empty,
+    static_custom_bool_attrs: std.ArrayListUnmanaged(StaticCustomBoolAttrDesc) = .empty,
+    signal_custom_bool_attrs: std.ArrayListUnmanaged(SignalCustomBoolAttrDesc) = .empty,
     static_bool_attrs: std.ArrayListUnmanaged(StaticBoolAttrDesc) = .empty,
     signal_bool_attrs: std.ArrayListUnmanaged(SignalBoolAttrDesc) = .empty,
     on_changes: std.ArrayListUnmanaged(OnChangeDesc) = .empty,
@@ -307,6 +334,7 @@ pub const Stream = struct {
     signal_records_by_token: std.AutoHashMapUnmanaged(usize, *SignalRecord) = .{},
     signal_record_descriptor_uses_by_token: std.AutoHashMapUnmanaged(usize, usize) = .{},
     render_metadata_by_elem_id: std.AutoHashMapUnmanaged(u64, RenderElemIndex) = .{},
+    named_event_indices_by_elem_id: std.ArrayListUnmanaged(std.ArrayListUnmanaged(usize)) = .empty,
     descriptor_indexes_by_elem_id: std.ArrayListUnmanaged(ElemDescriptorIndex) = .empty,
     descriptor_indexes_by_node_id: std.ArrayListUnmanaged(NodeDescriptorIndex) = .empty,
     next_elem_id: u64 = 1,
@@ -403,6 +431,10 @@ pub const Stream = struct {
         refreshRenderIndexesFromImpl(Stream, self, allocator, start_index, metrics);
     }
 
+    pub fn refreshRenderIndexesInRange(self: *Stream, allocator: std.mem.Allocator, start_index: usize, count: usize, metrics: anytype) void {
+        refreshRenderIndexesInRangeImpl(Stream, self, allocator, start_index, count, metrics);
+    }
+
     pub fn moveReplacementRenderChildren(self: *Stream, allocator: std.mem.Allocator, replacement: *Stream, elem_id: u64) void {
         self.clearRenderChildren(elem_id);
         const first_child = replacement.firstRenderChild(elem_id) orelse return;
@@ -424,6 +456,10 @@ pub const Stream = struct {
     }
 
     pub fn replaceRenderRangeWithStream(self: *Stream, allocator: std.mem.Allocator, render_start: usize, removed_nodes: []const StreamRenderNode, replacement: *Stream, metrics: anytype) void {
+        self.replaceRenderRangeWithStreamOptions(allocator, render_start, removed_nodes, replacement, null, true, metrics);
+    }
+
+    pub fn replaceRenderRangeWithStreamOptions(self: *Stream, allocator: std.mem.Allocator, render_start: usize, removed_nodes: []const StreamRenderNode, replacement: *Stream, child_insert_hint: ?RenderChildInsertHint, refresh_suffix_indexes: bool, metrics: anytype) void {
         const ChildInsert = struct {
             parent_elem_id: u64,
             insertion_index: usize,
@@ -441,6 +477,10 @@ pub const Stream = struct {
                 insert.deinit(allocator);
             }
             child_inserts.deinit(allocator);
+        }
+
+        if (!refresh_suffix_indexes) {
+            self.refreshRenderIndexesInRange(allocator, render_start, removed_nodes.len, metrics);
         }
 
         for (removed_nodes, render_start..) |node, index| {
@@ -465,7 +505,10 @@ pub const Stream = struct {
                 }
 
                 const index = group_index orelse index: {
-                    const insertion_index = self.childInsertionIndexForRenderIndex(parent_elem_id, render_start);
+                    const insertion_index = if (child_insert_hint) |hint| hint_index: {
+                        if (hint.parent_elem_id == parent_elem_id) break :hint_index hint.insertion_index;
+                        break :hint_index self.childInsertionIndexForRenderIndex(parent_elem_id, render_start);
+                    } else self.childInsertionIndexForRenderIndex(parent_elem_id, render_start);
                     child_inserts.append(allocator, .{
                         .parent_elem_id = parent_elem_id,
                         .insertion_index = insertion_index,
@@ -484,9 +527,13 @@ pub const Stream = struct {
             }
         }
 
+        const replacement_render_count = replacement.render_nodes.items.len;
         self.render_nodes.replaceRange(allocator, render_start, removed_nodes.len, replacement.render_nodes.items) catch @panic("out of memory");
         replacement.render_nodes.items.len = 0;
-        self.refreshRenderIndexesFrom(allocator, render_start, metrics);
+        self.refreshRenderIndexesInRange(allocator, render_start, replacement_render_count, metrics);
+        if (refresh_suffix_indexes and removed_nodes.len != replacement_render_count) {
+            self.refreshRenderIndexesFrom(allocator, render_start + replacement_render_count, metrics);
+        }
     }
 
     pub fn recordElementIndex(self: *Stream, allocator: std.mem.Allocator, elem_id: u64, index: usize) void {
@@ -585,6 +632,22 @@ pub const Stream = struct {
         clearEventIndexImpl(Stream, self, elem_id, kind, expected);
     }
 
+    pub fn recordNamedEventIndex(self: *Stream, allocator: std.mem.Allocator, elem_id: u64, index: usize) void {
+        recordNamedEventIndexImpl(Stream, self, allocator, elem_id, index);
+    }
+
+    pub fn updateNamedEventIndex(self: *Stream, elem_id: u64, old_index: usize, new_index: usize) void {
+        updateNamedEventIndexImpl(Stream, self, elem_id, old_index, new_index);
+    }
+
+    pub fn clearNamedEventIndex(self: *Stream, elem_id: u64, expected: usize) void {
+        clearNamedEventIndexImpl(Stream, self, elem_id, expected);
+    }
+
+    pub fn namedEventIndices(self: *const Stream, elem_id: u64) []const usize {
+        return namedEventIndicesImpl(Stream, self, elem_id);
+    }
+
     pub fn recordScopeSiteIndex(self: *Stream, allocator: std.mem.Allocator, node_id: u64, kind: ScopeSiteKind, index: usize) void {
         recordScopeSiteIndexImpl(Stream, self, allocator, node_id, kind, index);
     }
@@ -679,6 +742,19 @@ pub const Stream = struct {
         }
         self.signal_custom_text_attrs.deinit(allocator);
 
+        for (self.static_custom_bool_attrs.items) |desc| {
+            allocator.free(desc.name);
+        }
+        self.static_custom_bool_attrs.deinit(allocator);
+
+        for (self.signal_custom_bool_attrs.items) |*desc| {
+            allocator.free(desc.name);
+            desc.cached_value.deinit(ctx, roc_host, metrics);
+            desc.signal.deinit(allocator, ctx, roc_host, metrics);
+            releaseHostBoolRead(desc.read, roc_host, metrics);
+        }
+        self.signal_custom_bool_attrs.deinit(allocator);
+
         self.static_bool_attrs.deinit(allocator);
 
         for (self.signal_bool_attrs.items) |*desc| {
@@ -717,6 +793,7 @@ pub const Stream = struct {
             if (desc.owns_payload_reducer) releaseHostEventReducer(desc.payload_reducer, roc_host, metrics);
         }
         self.named_events.deinit(allocator);
+        deinitNamedEventIndexLists(Stream, self, allocator);
 
         for (self.scope_sites.items) |desc| {
             allocator.free(desc.binder_bindings);
@@ -920,6 +997,31 @@ pub const Stream = struct {
         };
     }
 
+    pub fn appendStaticCustomBoolAttr(self: *Stream, allocator: std.mem.Allocator, elem_id: u64, name: []const u8, value: bool) void {
+        appendStaticCustomBoolAttrImpl(Stream, self, allocator, elem_id, name, value);
+    }
+
+    pub fn appendSignalCustomBoolAttr(self: *Stream, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, elem_id: u64, name: []const u8, signal: HostSignalBinding, read: HostBoolRead) void {
+        if (name.len == 0) @panic("custom bool attr descriptor used an empty name");
+        if (self.customTextAttrDescriptorExists(elem_id, name)) @panic("element has duplicate custom attr descriptors");
+
+        self.rememberSignalRecordTree(allocator, signal.record);
+        const name_copy = allocator.dupe(u8, name) catch @panic("out of memory");
+        const retained_read = retainHostBoolRead(read, metrics);
+        self.signal_custom_bool_attrs.append(allocator, .{
+            .elem_id = elem_id,
+            .name = name_copy,
+            .signal = signal,
+            .read = retained_read,
+        }) catch {
+            allocator.free(name_copy);
+            var owned_signal = signal;
+            owned_signal.deinit(allocator, ctx, roc_host, metrics);
+            releaseHostBoolRead(retained_read, roc_host, metrics);
+            @panic("out of memory");
+        };
+    }
+
     pub fn appendStaticBoolAttr(self: *Stream, allocator: std.mem.Allocator, elem_id: u64, field: BoolField, value: bool) void {
         appendStaticBoolAttrImpl(Stream, self, allocator, elem_id, field, value);
     }
@@ -996,7 +1098,9 @@ pub const Stream = struct {
     }
 
     pub fn namedEventDescriptorExists(self: *const Stream, elem_id: u64, name: []const u8) bool {
-        for (self.named_events.items) |desc| {
+        for (self.namedEventIndices(elem_id)) |index| {
+            if (index >= self.named_events.items.len) @panic("named event index exceeded descriptor table");
+            const desc = self.named_events.items[index];
             if (desc.elem_id == elem_id and std.mem.eql(u8, desc.name, name)) return true;
         }
         return false;
@@ -1011,6 +1115,7 @@ pub const Stream = struct {
             releaseHostEventReducer(retained_reducer, roc_host, metrics);
             @panic("out of memory");
         };
+        const event_index = self.named_events.items.len;
         self.named_events.append(allocator, .{
             .elem_id = elem_id,
             .name = name_copy,
@@ -1025,6 +1130,7 @@ pub const Stream = struct {
             releaseHostEventReducer(retained_reducer, roc_host, metrics);
             @panic("out of memory");
         };
+        self.recordNamedEventIndex(allocator, elem_id, event_index);
     }
 
     pub fn appendScopeSite(self: *Stream, allocator: std.mem.Allocator, node_id: u64, scope_id: u64, ordinal: u64, parent_elem_id: u64, kind: ScopeSiteKind, binder_bindings: []const BinderBinding) void {
@@ -1370,6 +1476,54 @@ pub fn clearEventIndex(comptime StreamType: type, stream: *StreamType, elem_id: 
     clearIndex(stream.descriptor_indexes_by_elem_id.items[@intCast(elem_id)].events.slot(kind), expected);
 }
 
+pub fn ensureNamedEventIndexList(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, elem_id: u64) *std.ArrayListUnmanaged(usize) {
+    const index: usize = @intCast(elem_id);
+    while (stream.named_event_indices_by_elem_id.items.len <= index) {
+        stream.named_event_indices_by_elem_id.append(allocator, .empty) catch @panic("out of memory");
+    }
+    return &stream.named_event_indices_by_elem_id.items[index];
+}
+
+pub fn namedEventIndices(comptime StreamType: type, stream: *const StreamType, elem_id: u64) []const usize {
+    if (elem_id >= stream.named_event_indices_by_elem_id.items.len) return &.{};
+    return stream.named_event_indices_by_elem_id.items[@intCast(elem_id)].items;
+}
+
+pub fn recordNamedEventIndex(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, elem_id: u64, index: usize) void {
+    ensureNamedEventIndexList(StreamType, stream, allocator, elem_id).append(allocator, index) catch @panic("out of memory");
+}
+
+pub fn updateNamedEventIndex(comptime StreamType: type, stream: *StreamType, elem_id: u64, old_index: usize, new_index: usize) void {
+    if (elem_id >= stream.named_event_indices_by_elem_id.items.len) @panic("descriptor stream updated a missing named event index");
+    const indices = &stream.named_event_indices_by_elem_id.items[@intCast(elem_id)];
+    for (indices.items) |*index| {
+        if (index.* == old_index) {
+            index.* = new_index;
+            return;
+        }
+    }
+    @panic("descriptor stream updated a missing named event index");
+}
+
+pub fn clearNamedEventIndex(comptime StreamType: type, stream: *StreamType, elem_id: u64, expected: usize) void {
+    if (elem_id >= stream.named_event_indices_by_elem_id.items.len) @panic("descriptor stream cleared a missing named event index");
+    const indices = &stream.named_event_indices_by_elem_id.items[@intCast(elem_id)];
+    for (indices.items, 0..) |index, offset| {
+        if (index == expected) {
+            _ = indices.swapRemove(offset);
+            return;
+        }
+    }
+    @panic("descriptor stream cleared a missing named event index");
+}
+
+pub fn deinitNamedEventIndexLists(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator) void {
+    for (stream.named_event_indices_by_elem_id.items) |*indices| {
+        indices.deinit(allocator);
+    }
+    stream.named_event_indices_by_elem_id.deinit(allocator);
+}
+
 pub fn recordScopeSiteIndex(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, node_id: u64, kind: ScopeSiteKind, index: usize) void {
     setFreshIndex(ensureNodeDescriptorIndex(StreamType, stream, allocator, node_id).scope_sites.slot(kind), index);
 }
@@ -1604,6 +1758,15 @@ pub fn refreshRenderIndexesFrom(comptime StreamType: type, stream: *StreamType, 
     }
 }
 
+pub fn refreshRenderIndexesInRange(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, start_index: usize, count: usize, metrics: anytype) void {
+    if (start_index > stream.render_nodes.items.len) @panic("render index range refresh started past render node table");
+    if (count > stream.render_nodes.items.len - start_index) @panic("render index range refresh exceeded render node table");
+    metrics.bump(.render_indexes_refreshed, @intCast(count));
+    for (stream.render_nodes.items[start_index..][0..count], start_index..) |node, index| {
+        ensureRenderMetadata(StreamType, stream, allocator, node.elem_id).render_node = index;
+    }
+}
+
 pub fn appendElement(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, elem_id: u64, parent_elem_id: u64, scope_id: u64, tag: []const u8) u64 {
     stream.next_elem_id += 1;
 
@@ -1674,6 +1837,12 @@ pub fn customTextAttrDescriptorExists(comptime StreamType: type, stream: *const 
     for (stream.signal_custom_text_attrs.items) |desc| {
         if (desc.elem_id == elem_id and std.mem.eql(u8, desc.name, name)) return true;
     }
+    for (stream.static_custom_bool_attrs.items) |desc| {
+        if (desc.elem_id == elem_id and std.mem.eql(u8, desc.name, name)) return true;
+    }
+    for (stream.signal_custom_bool_attrs.items) |desc| {
+        if (desc.elem_id == elem_id and std.mem.eql(u8, desc.name, name)) return true;
+    }
     return false;
 }
 
@@ -1693,6 +1862,21 @@ pub fn appendStaticCustomTextAttr(comptime StreamType: type, stream: *StreamType
     }) catch {
         allocator.free(name_copy);
         allocator.free(value_copy);
+        @panic("out of memory");
+    };
+}
+
+pub fn appendStaticCustomBoolAttr(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, elem_id: u64, name: []const u8, value: bool) void {
+    if (name.len == 0) @panic("custom bool attr descriptor used an empty name");
+    if (customTextAttrDescriptorExists(StreamType, stream, elem_id, name)) @panic("element has duplicate custom attr descriptors");
+
+    const name_copy = allocator.dupe(u8, name) catch @panic("out of memory");
+    stream.static_custom_bool_attrs.append(allocator, .{
+        .elem_id = elem_id,
+        .name = name_copy,
+        .value = value,
+    }) catch {
+        allocator.free(name_copy);
         @panic("out of memory");
     };
 }
@@ -1881,16 +2065,25 @@ pub fn streamElemParentElemId(comptime StreamType: type, stream: *const StreamTy
     @panic("elem id had no render descriptor");
 }
 
-pub fn streamDirectChildren(comptime StreamType: type, allocator: std.mem.Allocator, stream: *const StreamType, parent_elem_id: u64) []u64 {
-    var children: std.ArrayListUnmanaged(u64) = .empty;
-    errdefer children.deinit(allocator);
-
+pub fn appendStreamDirectChildren(comptime StreamType: type, allocator: std.mem.Allocator, stream: *const StreamType, parent_elem_id: u64, children: *std.ArrayListUnmanaged(u64)) void {
     var child = stream.firstRenderChild(parent_elem_id);
     while (child) |child_id| {
         children.append(allocator, child_id) catch @panic("out of memory");
         child = stream.nextRenderSibling(child_id);
     }
+}
 
+pub fn streamDirectChildrenInto(comptime StreamType: type, allocator: std.mem.Allocator, stream: *const StreamType, parent_elem_id: u64, children: *std.ArrayListUnmanaged(u64)) []const u64 {
+    children.clearRetainingCapacity();
+    appendStreamDirectChildren(StreamType, allocator, stream, parent_elem_id, children);
+    return children.items;
+}
+
+pub fn streamDirectChildren(comptime StreamType: type, allocator: std.mem.Allocator, stream: *const StreamType, parent_elem_id: u64) []u64 {
+    var children: std.ArrayListUnmanaged(u64) = .empty;
+    errdefer children.deinit(allocator);
+
+    appendStreamDirectChildren(StreamType, allocator, stream, parent_elem_id, &children);
     return children.toOwnedSlice(allocator) catch @panic("out of memory");
 }
 
@@ -1979,6 +2172,8 @@ const TestStream = struct {
     signal_text_attrs: std.ArrayListUnmanaged(TestStaticTextAttrDesc) = .empty,
     static_custom_text_attrs: std.ArrayListUnmanaged(TestCustomTextAttrDesc) = .empty,
     signal_custom_text_attrs: std.ArrayListUnmanaged(TestCustomTextAttrDesc) = .empty,
+    static_custom_bool_attrs: std.ArrayListUnmanaged(TestCustomTextAttrDesc) = .empty,
+    signal_custom_bool_attrs: std.ArrayListUnmanaged(TestCustomTextAttrDesc) = .empty,
     static_bool_attrs: std.ArrayListUnmanaged(TestStaticBoolAttrDesc) = .empty,
     signal_bool_attrs: std.ArrayListUnmanaged(TestStaticBoolAttrDesc) = .empty,
     descriptor_indexes_by_elem_id: std.ArrayListUnmanaged(ElemDescriptorIndex) = .empty,
@@ -1993,6 +2188,8 @@ const TestStream = struct {
         self.signal_text_attrs.deinit(allocator);
         self.static_custom_text_attrs.deinit(allocator);
         self.signal_custom_text_attrs.deinit(allocator);
+        self.static_custom_bool_attrs.deinit(allocator);
+        self.signal_custom_bool_attrs.deinit(allocator);
         self.static_bool_attrs.deinit(allocator);
         self.signal_bool_attrs.deinit(allocator);
         self.descriptor_indexes_by_elem_id.deinit(allocator);
@@ -2194,9 +2391,13 @@ test "render metadata helpers maintain child order and indexes" {
     stream.render_nodes.items[1] = .{ .elem_id = 3, .kind = .element };
     stream.render_nodes.items[2] = .{ .elem_id = 2, .kind = .element };
     var metrics = TestMetrics{};
-    refreshRenderIndexesFrom(TestStream, &stream, allocator, 1, &metrics);
+    refreshRenderIndexesInRange(TestStream, &stream, allocator, 1, 1, &metrics);
 
     try std.testing.expectEqual(@as(?usize, 1), renderNodeIndex(TestStream, &stream, 3));
+    try std.testing.expectEqual(@as(?usize, null), renderNodeIndex(TestStream, &stream, 2));
+    try std.testing.expectEqual(@as(u64, 1), metrics.render_indexes_refreshed);
+
+    refreshRenderIndexesFrom(TestStream, &stream, allocator, 2, &metrics);
     try std.testing.expectEqual(@as(?usize, 2), renderNodeIndex(TestStream, &stream, 2));
     try std.testing.expectEqual(@as(u64, 2), metrics.render_indexes_refreshed);
 }

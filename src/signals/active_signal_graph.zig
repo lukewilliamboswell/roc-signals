@@ -75,7 +75,13 @@ pub const TextSink = struct {
     index: usize,
 };
 
+pub const BoolSinkKind = enum {
+    bool_attr,
+    custom_bool_attr,
+};
+
 pub const BoolSink = struct {
+    kind: BoolSinkKind,
     index: usize,
 };
 
@@ -424,12 +430,12 @@ pub fn appendBoolRoute(allocator: std.mem.Allocator, bool_routes: *RouteTable(Bo
     ensureBoolRoute(allocator, bool_routes, graph_len, record_id).append(allocator, route) catch @panic("out of memory");
 }
 
-pub fn removeBoolRoute(bool_routes: *RouteTable(BoolSink), record_id: u64, index: usize) void {
+pub fn removeBoolRoute(bool_routes: *RouteTable(BoolSink), record_id: u64, kind: BoolSinkKind, index: usize) void {
     const route_index: usize = @intCast(record_id);
     if (route_index >= bool_routes.items.len) @panic("active bool signal route removal referenced an unknown signal record");
     var route = &bool_routes.items[route_index];
     for (route.items, 0..) |sink, sink_index| {
-        if (sink.index == index) {
+        if (sink.kind == kind and sink.index == index) {
             _ = route.swapRemove(sink_index);
             return;
         }
@@ -437,12 +443,12 @@ pub fn removeBoolRoute(bool_routes: *RouteTable(BoolSink), record_id: u64, index
     @panic("active bool signal route removal missed its sink");
 }
 
-pub fn updateBoolRouteIndex(bool_routes: *RouteTable(BoolSink), record_id: u64, old_index: usize, new_index: usize) void {
+pub fn updateBoolRouteIndex(bool_routes: *RouteTable(BoolSink), record_id: u64, kind: BoolSinkKind, old_index: usize, new_index: usize) void {
     if (old_index == new_index) return;
     const route_index: usize = @intCast(record_id);
     if (route_index >= bool_routes.items.len) @panic("active bool signal route update referenced an unknown signal record");
     for (bool_routes.items[route_index].items) |*sink| {
-        if (sink.index == old_index) {
+        if (sink.kind == kind and sink.index == old_index) {
             sink.index = new_index;
             return;
         }
@@ -679,6 +685,9 @@ pub fn retainStreamRecords(
     for (stream.signal_bool_attrs.items) |*desc| {
         records_rebuilt += retainRecord(Record, allocator, nodes, source_routes, source_node_count, desc.signal.record, hooks);
     }
+    for (stream.signal_custom_bool_attrs.items) |*desc| {
+        records_rebuilt += retainRecord(Record, allocator, nodes, source_routes, source_node_count, desc.signal.record, hooks);
+    }
     for (stream.on_changes.items) |*desc| {
         records_rebuilt += retainRecord(Record, allocator, nodes, source_routes, source_node_count, desc.signal.record, hooks);
     }
@@ -728,6 +737,14 @@ pub fn rebuildSinkRoutesFromStream(
     for (stream.signal_bool_attrs.items, 0..) |desc, index| {
         const id = requireRecordId(Record, nodes, desc.signal.record);
         appendBoolRoute(allocator, bool_routes, nodes.len, id, .{
+            .kind = .bool_attr,
+            .index = index,
+        });
+    }
+    for (stream.signal_custom_bool_attrs.items, 0..) |desc, index| {
+        const id = requireRecordId(Record, nodes, desc.signal.record);
+        appendBoolRoute(allocator, bool_routes, nodes.len, id, .{
+            .kind = .custom_bool_attr,
             .index = index,
         });
     }
@@ -951,6 +968,7 @@ const LifecycleStream = struct {
     signal_text_attrs: std.ArrayListUnmanaged(LifecycleSignalDesc) = .empty,
     signal_custom_text_attrs: std.ArrayListUnmanaged(LifecycleSignalDesc) = .empty,
     signal_bool_attrs: std.ArrayListUnmanaged(LifecycleSignalDesc) = .empty,
+    signal_custom_bool_attrs: std.ArrayListUnmanaged(LifecycleSignalDesc) = .empty,
     on_changes: std.ArrayListUnmanaged(LifecycleSignalDesc) = .empty,
     whens: std.ArrayListUnmanaged(LifecycleWhenDesc) = .empty,
     eaches: std.ArrayListUnmanaged(LifecycleEachDesc) = .empty,
@@ -960,6 +978,7 @@ const LifecycleStream = struct {
         self.signal_text_attrs.deinit(allocator);
         self.signal_custom_text_attrs.deinit(allocator);
         self.signal_bool_attrs.deinit(allocator);
+        self.signal_custom_bool_attrs.deinit(allocator);
         self.on_changes.deinit(allocator);
         self.whens.deinit(allocator);
         self.eaches.deinit(allocator);
@@ -1088,9 +1107,12 @@ test "active sink routes use route-specific keys" {
     removeTextRoute(&text_routes, 1, .text_node, 3);
     try std.testing.expectEqualSlices(TextSink, &.{.{ .kind = .text_attr, .index = 8 }}, text_routes.items[1].items);
 
-    appendBoolRoute(std.testing.allocator, &bool_routes, 2, 1, .{ .index = 4 });
-    updateBoolRouteIndex(&bool_routes, 1, 4, 9);
-    removeBoolRoute(&bool_routes, 1, 9);
+    appendBoolRoute(std.testing.allocator, &bool_routes, 2, 1, .{ .kind = .bool_attr, .index = 4 });
+    appendBoolRoute(std.testing.allocator, &bool_routes, 2, 1, .{ .kind = .custom_bool_attr, .index = 4 });
+    updateBoolRouteIndex(&bool_routes, 1, .custom_bool_attr, 4, 9);
+    removeBoolRoute(&bool_routes, 1, .bool_attr, 4);
+    try std.testing.expectEqualSlices(BoolSink, &.{.{ .kind = .custom_bool_attr, .index = 9 }}, bool_routes.items[1].items);
+    removeBoolRoute(&bool_routes, 1, .custom_bool_attr, 9);
     try std.testing.expectEqual(@as(usize, 0), bool_routes.items[1].items.len);
 
     appendChangeRoute(std.testing.allocator, &change_routes, 2, 1, .{ .index = 5 });
@@ -1251,6 +1273,7 @@ test "active graph stream rebuild retains records and rebuilds sink routes" {
     stream.signal_text_attrs.append(std.testing.allocator, .{ .signal = .{ .record = &mapped } }) catch @panic("out of memory");
     stream.signal_custom_text_attrs.append(std.testing.allocator, .{ .signal = .{ .record = &source } }) catch @panic("out of memory");
     stream.signal_bool_attrs.append(std.testing.allocator, .{ .signal = .{ .record = &source } }) catch @panic("out of memory");
+    stream.signal_custom_bool_attrs.append(std.testing.allocator, .{ .signal = .{ .record = &mapped } }) catch @panic("out of memory");
     stream.on_changes.append(std.testing.allocator, .{ .signal = .{ .record = &mapped } }) catch @panic("out of memory");
     stream.whens.append(std.testing.allocator, .{ .condition = .{ .record = &source } }) catch @panic("out of memory");
     stream.eaches.append(std.testing.allocator, .{ .items = .{ .record = &mapped } }) catch @panic("out of memory");
@@ -1290,7 +1313,8 @@ test "active graph stream rebuild retains records and rebuilds sink routes" {
 
     try std.testing.expectEqualSlices(TextSink, &.{.{ .kind = .custom_text_attr, .index = 0 }}, text_routes.items[0].items);
     try std.testing.expectEqualSlices(TextSink, &.{ .{ .kind = .text_node, .index = 0 }, .{ .kind = .text_attr, .index = 0 } }, text_routes.items[1].items);
-    try std.testing.expectEqualSlices(BoolSink, &.{.{ .index = 0 }}, bool_routes.items[0].items);
+    try std.testing.expectEqualSlices(BoolSink, &.{.{ .kind = .bool_attr, .index = 0 }}, bool_routes.items[0].items);
+    try std.testing.expectEqualSlices(BoolSink, &.{.{ .kind = .custom_bool_attr, .index = 0 }}, bool_routes.items[1].items);
     try std.testing.expectEqualSlices(ChangeSink, &.{.{ .index = 0 }}, change_routes.items[1].items);
     try std.testing.expectEqualSlices(StructuralSink, &.{.{ .kind = .when, .index = 0 }}, structural_routes.items[0].items);
     try std.testing.expectEqualSlices(StructuralSink, &.{.{ .kind = .each, .index = 0 }}, structural_routes.items[1].items);

@@ -54,9 +54,9 @@ class FakeNode {
     this.childNodes = [];
   }
 
-  addEventListener(type, handler) {
+  addEventListener(type, handler, options) {
     const handlers = this.listeners.get(type) ?? [];
-    handlers.push(handler);
+    handlers.push({ handler, options });
     this.listeners.set(type, handlers);
   }
 
@@ -65,15 +65,15 @@ class FakeNode {
     if (!handlers) {
       return;
     }
-    const index = handlers.indexOf(handler);
+    const index = handlers.findIndex((entry) => entry.handler === handler);
     if (index !== -1) {
       handlers.splice(index, 1);
     }
   }
 
   dispatch(type, event) {
-    for (const handler of [...(this.listeners.get(type) ?? [])]) {
-      handler(event);
+    for (const entry of [...(this.listeners.get(type) ?? [])]) {
+      entry.handler(event);
     }
   }
 }

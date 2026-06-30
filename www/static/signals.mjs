@@ -191,8 +191,8 @@ const pointerProbeEvents = Object.freeze([
   "pointerleave",
 ]);
 
-export const HttpTextTask = Object.freeze({
-  namePrefix: "http:get-text:",
+export const HttpTask = Object.freeze({
+  namePrefix: "http:send:",
   opsApiPaths: Object.freeze([
     "/api/ops/dashboard",
     "/api/ops/summary",
@@ -202,10 +202,17 @@ export const HttpTextTask = Object.freeze({
     "/api/ops/health",
   ]),
 });
+export const HttpTextTask = HttpTask;
 
 const textDecoder = new TextDecoder();
 const dynamicTextDecoder = new TextDecoder("utf-8", { fatal: true });
 const textEncoder = new TextEncoder();
+
+const HttpPayloadVersion = Object.freeze({
+  request: "roc-http-request-v1",
+  response: "roc-http-response-v1",
+  error: "roc-http-error-v1",
+});
 
 const opsDashboardBody = [
   "schema=1",
@@ -327,15 +334,223 @@ const simulatedOpsApi = new Map([
   ],
 ]);
 
-export function opsApiTextTaskHandler({ name, request }) {
-  if (!name.startsWith(HttpTextTask.namePrefix)) {
+export function encodeHttpRequestPayload({ method = "GET", uri = "", timeoutMs = null, headers = [], body = [] } = {}) {
+  const fields = [
+    HttpPayloadVersion.request,
+    encodeHttpString(method),
+    encodeHttpString(uri),
+    timeoutMs === null || timeoutMs === undefined ? "-" : String(timeoutMs),
+    String(headers.length),
+  ];
+  for (const [headerName, headerValue] of headers) {
+    fields.push(encodeHttpString(String(headerName)));
+    fields.push(encodeHttpString(String(headerValue)));
+  }
+  fields.push(encodeHttpBytes(bytesFrom(body)));
+  return fields.join("\n");
+}
+
+export function decodeHttpRequestPayload(payload) {
+  const lines = String(payload).split("\n");
+  const reader = createHttpPayloadReader(lines, HttpPayloadVersion.request, "request");
+  const method = decodeHttpString(reader.read("method"), "method");
+  const uri = decodeHttpString(reader.read("uri"), "uri");
+  const timeoutField = reader.read("timeout");
+  const timeoutMs = timeoutField === "-" ? null : parseHttpInteger(timeoutField, "timeout");
+  const headerCount = parseHttpInteger(reader.read("header count"), "header count");
+  const headers = [];
+  for (let index = 0; index < headerCount; index += 1) {
+    headers.push([
+      decodeHttpString(reader.read("header name"), "header name"),
+      decodeHttpString(reader.read("header value"), "header value"),
+    ]);
+  }
+  const body = decodeHttpBytes(reader.read("body"), "body");
+  reader.done();
+  return { method, uri, timeoutMs, headers, body };
+}
+
+export function encodeHttpResponsePayload({ status = 200, headers = [], body = [] } = {}) {
+  const fields = [HttpPayloadVersion.response, String(status), String(headers.length)];
+  for (const [headerName, headerValue] of headers) {
+    fields.push(encodeHttpString(String(headerName)));
+    fields.push(encodeHttpString(String(headerValue)));
+  }
+  fields.push(encodeHttpBytes(bytesFrom(body)));
+  return fields.join("\n");
+}
+
+export function decodeHttpResponsePayload(payload) {
+  const lines = String(payload).split("\n");
+  const reader = createHttpPayloadReader(lines, HttpPayloadVersion.response, "response");
+  const status = parseHttpInteger(reader.read("status"), "status");
+  const headerCount = parseHttpInteger(reader.read("header count"), "header count");
+  const headers = [];
+  for (let index = 0; index < headerCount; index += 1) {
+    headers.push([
+      decodeHttpString(reader.read("header name"), "header name"),
+      decodeHttpString(reader.read("header value"), "header value"),
+    ]);
+  }
+  const body = decodeHttpBytes(reader.read("body"), "body");
+  reader.done();
+  return { status, headers, body };
+}
+
+export function encodeHttpErrorPayload(code, message = "") {
+  return [HttpPayloadVersion.error, code, encodeHttpString(String(message))].join("\n");
+}
+
+export async function httpFetchTaskHandler({ name, request, signal, fetchImpl = globalThis.fetch }) {
+  if (!name.startsWith(HttpTask.namePrefix)) {
     return null;
   }
-  const body = simulatedOpsApi.get(request);
-  if (body === undefined) {
-    throw new Error(`unsupported ops API text endpoint: ${request}`);
+  if (typeof fetchImpl !== "function") {
+    throw new Error(encodeHttpErrorPayload("unsupported", "fetch is not available"));
   }
-  return Promise.resolve(body);
+
+  let decoded;
+  try {
+    decoded = decodeHttpRequestPayload(request);
+  } catch (err) {
+    throw new Error(encodeHttpErrorPayload("unsupported", err?.message ?? err));
+  }
+
+  let timedOut = false;
+  const controller = new AbortController();
+  const relayAbort = () => controller.abort();
+  if (signal?.aborted) {
+    relayAbort();
+  } else {
+    signal?.addEventListener?.("abort", relayAbort, { once: true });
+  }
+
+  const timeoutId =
+    decoded.timeoutMs === null
+      ? null
+      : setTimeout(() => {
+          timedOut = true;
+          controller.abort();
+        }, decoded.timeoutMs);
+
+  try {
+    const response = await fetchImpl(decoded.uri, {
+      method: decoded.method,
+      headers: decoded.headers,
+      body: decoded.body.length === 0 ? undefined : decoded.body,
+      signal: controller.signal,
+    });
+    const body = new Uint8Array(await response.arrayBuffer());
+    const headers = [...response.headers.entries()];
+    return encodeHttpResponsePayload({ status: response.status, headers, body });
+  } catch (err) {
+    if (timedOut) {
+      throw new Error(encodeHttpErrorPayload("timeout", ""));
+    }
+    if (controller.signal.aborted || err?.name === "AbortError") {
+      throw new Error(encodeHttpErrorPayload("canceled", ""));
+    }
+    throw new Error(encodeHttpErrorPayload("network", err?.message ?? err));
+  } finally {
+    if (timeoutId !== null) {
+      clearTimeout(timeoutId);
+    }
+    signal?.removeEventListener?.("abort", relayAbort);
+  }
+}
+
+export function opsApiTextTaskHandler({ name, request }) {
+  if (!name.startsWith(HttpTask.namePrefix)) {
+    return null;
+  }
+  const decoded = decodeHttpRequestPayload(request);
+  if (decoded.method !== "GET") {
+    throw new Error(encodeHttpErrorPayload("unsupported", `unsupported ops API method: ${decoded.method}`));
+  }
+  const body = simulatedOpsApi.get(decoded.uri);
+  if (body === undefined) {
+    throw new Error(encodeHttpErrorPayload("unsupported", `unsupported ops API text endpoint: ${decoded.uri}`));
+  }
+  return Promise.resolve(
+    encodeHttpResponsePayload({
+      status: 200,
+      headers: [["content-type", "text/plain; charset=utf-8"]],
+      body: textEncoder.encode(body),
+    }),
+  );
+}
+
+function bytesFrom(value) {
+  if (value instanceof Uint8Array) {
+    return value;
+  }
+  if (typeof value === "string") {
+    return textEncoder.encode(value);
+  }
+  return Uint8Array.from(value);
+}
+
+function encodeHttpString(value) {
+  return encodeHttpBytes(textEncoder.encode(value));
+}
+
+function decodeHttpString(field, label) {
+  try {
+    return dynamicTextDecoder.decode(decodeHttpBytes(field, label));
+  } catch (err) {
+    throw new Error(`malformed HTTP payload ${label}: invalid UTF-8`);
+  }
+}
+
+function encodeHttpBytes(bytes) {
+  return [...bytes].map((byte) => String(byte)).join(",");
+}
+
+function decodeHttpBytes(field, label) {
+  if (field === "") {
+    return new Uint8Array();
+  }
+  return Uint8Array.from(
+    field.split(",").map((part) => {
+      const byte = Number(part);
+      if (!Number.isInteger(byte) || byte < 0 || byte > 255) {
+        throw new Error(`malformed HTTP payload ${label}: invalid byte`);
+      }
+      return byte;
+    }),
+  );
+}
+
+function parseHttpInteger(field, label) {
+  const value = Number(field);
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`malformed HTTP payload ${label}: invalid integer`);
+  }
+  return value;
+}
+
+function createHttpPayloadReader(lines, expectedVersion, label) {
+  let index = 0;
+  const read = (fieldLabel) => {
+    if (index >= lines.length) {
+      throw new Error(`malformed HTTP ${label} payload: missing ${fieldLabel}`);
+    }
+    const value = lines[index];
+    index += 1;
+    return value;
+  };
+  const version = read("version");
+  if (version !== expectedVersion) {
+    throw new Error(`malformed HTTP ${label} payload: wrong version`);
+  }
+  return {
+    read,
+    done() {
+      if (index !== lines.length) {
+        throw new Error(`malformed HTTP ${label} payload: trailing fields`);
+      }
+    },
+  };
 }
 
 export async function instantiateSignalsWasm(url) {
@@ -473,6 +688,10 @@ export class SignalsRuntime {
   }
 
   tickTimer(token) {
+    if (!this.intervals.has(token)) {
+      this.emitTelemetry("ignored_timer_tick", { token });
+      return;
+    }
     this.emitTelemetry("host_call", { call: "timer", token });
     this.views.callHost(this.exports.roc_ui_timer, token);
     this.applyPendingCommands(`timer:${token}`);

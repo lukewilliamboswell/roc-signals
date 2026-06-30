@@ -31,6 +31,38 @@ Html := [].{
 		Node.Attr.SignalText({ field: Node.field_custom, name, signal: Signal.to_expr(signal), read: { capability: Capability.handle(cap), read: Box.box(read) } })
 	}
 
+	bool_attr : Str -> Node.Attr
+	bool_attr = |name| Node.Attr.StaticBool({ field: Node.bool_field_custom, name, value: True })
+
+	bool_attr_if : Str, Bool -> List(Node.Attr)
+	bool_attr_if = |name, present| {
+		if present {
+			[bool_attr(name)]
+		} else {
+			[]
+		}
+	}
+
+	bool_attr_s : Str, Signal(Bool) -> Node.Attr
+	bool_attr_s = |name, signal| {
+		cap = signal.cap
+		read : HostValue -> Bool
+		read = |value| Box.unbox(Capability.get(value, cap))
+		Node.Attr.SignalBool({ field: Node.bool_field_custom, name, signal: Signal.to_expr(signal), read: { capability: Capability.handle(cap), read: Box.box(read) } })
+	}
+
+	required : Node.Attr
+	required = bool_attr("required")
+
+	readonly : Node.Attr
+	readonly = bool_attr("readonly")
+
+	aria_invalid_s : Signal(Bool) -> Node.Attr
+	aria_invalid_s = |signal| bool_attr_s("aria-invalid", signal)
+
+	aria_describedby : Str -> Node.Attr
+	aria_describedby = |id| attr("aria-describedby", id)
+
 	on_pointer_down : Node.Msg -> Node.Attr
 	on_pointer_down = |msg| Node.Attr.OnEvent({ kind: Node.event_kind_pointer_down, msg })
 
@@ -51,6 +83,21 @@ Html := [].{
 
 	on_submit_prevent_default : Node.Msg -> Node.Attr
 	on_submit_prevent_default = |msg| on_event("submit", Node.listener_prevent_default, msg)
+
+	on_focus : Node.Msg -> Node.Attr
+	on_focus = |msg| on_event("focus", 0, msg)
+
+	on_blur : Node.Msg -> Node.Attr
+	on_blur = |msg| on_event("blur", 0, msg)
+
+	on_change : Node.Msg -> Node.Attr
+	on_change = |msg| on_event("change", 0, msg)
+
+	on_composition_start : Node.Msg -> Node.Attr
+	on_composition_start = |msg| on_event("compositionstart", 0, msg)
+
+	on_composition_end : Node.Msg -> Node.Attr
+	on_composition_end = |msg| on_event("compositionend", 0, msg)
 
 	div : List(Node.Attr), List(Elem) -> Elem
 	div = |attrs, children| Elem.Element({ tag: "div", attrs, children })
@@ -129,28 +176,22 @@ Html := [].{
 
 	paragraph : Str -> Elem
 	paragraph = |text_value| {
+		paragraph_attrs(text_value, [])
+	}
+
+	paragraph_attrs : Str, List(Node.Attr) -> Elem
+	paragraph_attrs = |text_value, attrs| {
 		Elem.Element(
 			{
 				tag: "p",
-				attrs: [Node.Attr.StaticText({ field: Node.field_text, name: "", value: text_value })],
+				attrs: List.concat([Node.Attr.StaticText({ field: Node.field_text, name: "", value: text_value })], attrs),
 				children: [],
 			},
 		)
 	}
 
 	paragraph_c : Str, Str -> Elem
-	paragraph_c = |text_value, classes| {
-		Elem.Element(
-			{
-				tag: "p",
-				attrs: [
-					Node.Attr.StaticText({ field: Node.field_text, name: "", value: text_value }),
-					class_attr(classes),
-				],
-				children: [],
-			},
-		)
-	}
+	paragraph_c = |text_value, classes| paragraph_attrs(text_value, [class_attr(classes)])
 
 	paragraph_s : Signal(Str) -> Elem
 	paragraph_s = |signal| paragraph_s_c(signal, "")
@@ -274,7 +315,7 @@ Html := [].{
 				attrs: List.concat(
 					[
 						Node.Attr.SignalText({ field: Node.field_text, name: "", signal: Signal.to_expr(label), read: { capability: Capability.handle(label_cap), read: Box.box(read_label) } }),
-						Node.Attr.SignalBool({ field: Node.bool_field_disabled, signal: Signal.to_expr(disabled), read: { capability: Capability.handle(disabled_cap), read: Box.box(read_disabled) } }),
+						Node.Attr.SignalBool({ field: Node.bool_field_disabled, name: "", signal: Signal.to_expr(disabled), read: { capability: Capability.handle(disabled_cap), read: Box.box(read_disabled) } }),
 						Node.Attr.OnEvent({ kind: Node.event_kind_click, msg }),
 					],
 					attrs,
@@ -334,7 +375,7 @@ Html := [].{
 					[
 						Node.Attr.StaticText({ field: Node.field_role, name: "", value: "checkbox" }),
 						Node.Attr.StaticText({ field: Node.field_label, name: "", value: label }),
-						Node.Attr.SignalBool({ field: Node.bool_field_checked, signal: Signal.to_expr(checked), read: { capability: Capability.handle(checked_cap), read: Box.box(read_checked) } }),
+						Node.Attr.SignalBool({ field: Node.bool_field_checked, name: "", signal: Signal.to_expr(checked), read: { capability: Capability.handle(checked_cap), read: Box.box(read_checked) } }),
 						Node.Attr.OnEvent({ kind: Node.event_kind_check, msg }),
 					],
 					attrs,

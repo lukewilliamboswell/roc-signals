@@ -7,6 +7,11 @@ pub const SpecCommandType = enum {
     pointer_enter,
     pointer_leave,
     key_down,
+    focus,
+    blur,
+    change,
+    composition_start,
+    composition_end,
     submit,
     fill,
     check,
@@ -16,12 +21,14 @@ pub const SpecCommandType = enum {
     expect_absent,
     expect_value,
     expect_attr,
+    expect_no_attr,
     expect_checked,
     expect_disabled,
     expect_updates,
     resolve_task,
     reject_task,
     tick_interval,
+    tick_interval_if_active,
     expect_cleanup,
     expect_pending_task,
     expect_interval,
@@ -147,6 +154,39 @@ fn splitTwoQuoted(input: []const u8) ParseError!struct { first: []const u8, seco
     };
 }
 
+fn dupeUnescapedQuoted(allocator: std.mem.Allocator, input: []const u8) ParseError![]u8 {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer out.deinit(allocator);
+
+    var index: usize = 0;
+    while (index < input.len) {
+        const byte = input[index];
+        if (byte != '\\') {
+            out.append(allocator, byte) catch return ParseError.OutOfMemory;
+            index += 1;
+            continue;
+        }
+
+        index += 1;
+        if (index >= input.len) return ParseError.InvalidFormat;
+        const escaped: u8 = switch (input[index]) {
+            'n' => '\n',
+            't' => '\t',
+            '\\' => '\\',
+            '"' => '"',
+            else => return ParseError.InvalidFormat,
+        };
+        out.append(allocator, escaped) catch return ParseError.OutOfMemory;
+        index += 1;
+    }
+
+    return out.toOwnedSlice(allocator) catch return ParseError.OutOfMemory;
+}
+
+fn dupePlain(allocator: std.mem.Allocator, input: []const u8) ParseError![]u8 {
+    return allocator.dupe(u8, input) catch return ParseError.OutOfMemory;
+}
+
 fn parseQuotedValue(allocator: std.mem.Allocator, prefix: []const u8, input: []const u8) ParseError!?[]const u8 {
     if (!std.mem.startsWith(u8, input, prefix)) return null;
     const rest = std.mem.trim(u8, input[prefix.len..], " \t");
@@ -234,6 +274,18 @@ pub fn parseTestSpec(allocator: std.mem.Allocator, content: []const u8) ParseErr
             const key_copy = allocator.dupe(u8, key_split.quoted) catch return ParseError.OutOfMemory;
             errdefer allocator.free(key_copy);
             try appendSpecCommand(&commands, allocator, .key_down, try parseLocator(allocator, key_split.head), key_copy, null, try parseBoolToken(shift_split.token), line_num);
+        } else if (std.mem.startsWith(u8, trimmed, "focus ")) {
+            try appendSpecCommand(&commands, allocator, .focus, try parseLocator(allocator, trimmed["focus ".len..]), null, null, null, line_num);
+        } else if (std.mem.startsWith(u8, trimmed, "blur ")) {
+            try appendSpecCommand(&commands, allocator, .blur, try parseLocator(allocator, trimmed["blur ".len..]), null, null, null, line_num);
+        } else if (std.mem.startsWith(u8, trimmed, "change ")) {
+            const split = try splitTrailingQuoted(trimmed["change ".len..]);
+            const value_copy = allocator.dupe(u8, split.quoted) catch return ParseError.OutOfMemory;
+            try appendSpecCommand(&commands, allocator, .change, try parseLocator(allocator, split.head), value_copy, null, null, line_num);
+        } else if (std.mem.startsWith(u8, trimmed, "composition_start ")) {
+            try appendSpecCommand(&commands, allocator, .composition_start, try parseLocator(allocator, trimmed["composition_start ".len..]), null, null, null, line_num);
+        } else if (std.mem.startsWith(u8, trimmed, "composition_end ")) {
+            try appendSpecCommand(&commands, allocator, .composition_end, try parseLocator(allocator, trimmed["composition_end ".len..]), null, null, null, line_num);
         } else if (std.mem.startsWith(u8, trimmed, "submit ")) {
             try appendSpecCommand(&commands, allocator, .submit, try parseLocator(allocator, trimmed["submit ".len..]), null, null, null, line_num);
         } else if (std.mem.eql(u8, trimmed, "mark_metrics")) {
@@ -267,6 +319,12 @@ pub fn parseTestSpec(allocator: std.mem.Allocator, content: []const u8) ParseErr
             errdefer allocator.free(value_copy);
             try appendSpecCommand(&commands, allocator, .expect_attr, try parseLocator(allocator, name_split.head), value_copy, null, null, line_num);
             commands.items[commands.items.len - 1].expected_attr = attr_name;
+        } else if (std.mem.startsWith(u8, trimmed, "expect_no_attr ")) {
+            const name_split = try splitTrailingToken(trimmed["expect_no_attr ".len..]);
+            const attr_name = allocator.dupe(u8, name_split.token) catch return ParseError.OutOfMemory;
+            errdefer allocator.free(attr_name);
+            try appendSpecCommand(&commands, allocator, .expect_no_attr, try parseLocator(allocator, name_split.head), null, null, null, line_num);
+            commands.items[commands.items.len - 1].expected_attr = attr_name;
         } else if (std.mem.startsWith(u8, trimmed, "expect_checked ")) {
             const split = try splitTrailingToken(trimmed[15..]);
             try appendSpecCommand(&commands, allocator, .expect_checked, try parseLocator(allocator, split.head), null, null, try parseBoolToken(split.token), line_num);
@@ -279,17 +337,17 @@ pub fn parseTestSpec(allocator: std.mem.Allocator, content: []const u8) ParseErr
             try appendSpecCommand(&commands, allocator, .expect_updates, try parseLocator(allocator, split.head), null, expected_count, null, line_num);
         } else if (std.mem.startsWith(u8, trimmed, "resolve_task ")) {
             const split = try splitTwoQuoted(trimmed["resolve_task ".len..]);
-            const task_name = allocator.dupe(u8, split.first) catch return ParseError.OutOfMemory;
+            const task_name = try dupePlain(allocator, split.first);
             errdefer allocator.free(task_name);
-            const payload = allocator.dupe(u8, split.second) catch return ParseError.OutOfMemory;
+            const payload = try dupeUnescapedQuoted(allocator, split.second);
             errdefer allocator.free(payload);
             try appendSpecCommand(&commands, allocator, .resolve_task, emptyLocator(), payload, null, null, line_num);
             commands.items[commands.items.len - 1].task_name = task_name;
         } else if (std.mem.startsWith(u8, trimmed, "reject_task ")) {
             const split = try splitTwoQuoted(trimmed["reject_task ".len..]);
-            const task_name = allocator.dupe(u8, split.first) catch return ParseError.OutOfMemory;
+            const task_name = try dupePlain(allocator, split.first);
             errdefer allocator.free(task_name);
-            const payload = allocator.dupe(u8, split.second) catch return ParseError.OutOfMemory;
+            const payload = try dupeUnescapedQuoted(allocator, split.second);
             errdefer allocator.free(payload);
             try appendSpecCommand(&commands, allocator, .reject_task, emptyLocator(), payload, null, null, line_num);
             commands.items[commands.items.len - 1].task_name = task_name;
@@ -297,6 +355,11 @@ pub fn parseTestSpec(allocator: std.mem.Allocator, content: []const u8) ParseErr
             const period_text = std.mem.trim(u8, trimmed["tick_interval ".len..], " \t");
             const period_ms = std.fmt.parseInt(u64, period_text, 10) catch return ParseError.InvalidFormat;
             try appendSpecCommand(&commands, allocator, .tick_interval, emptyLocator(), null, null, null, line_num);
+            commands.items[commands.items.len - 1].interval_ms = period_ms;
+        } else if (std.mem.startsWith(u8, trimmed, "tick_interval_if_active ")) {
+            const period_text = std.mem.trim(u8, trimmed["tick_interval_if_active ".len..], " \t");
+            const period_ms = std.fmt.parseInt(u64, period_text, 10) catch return ParseError.InvalidFormat;
+            try appendSpecCommand(&commands, allocator, .tick_interval_if_active, emptyLocator(), null, null, null, line_num);
             commands.items[commands.items.len - 1].interval_ms = period_ms;
         } else if (std.mem.startsWith(u8, trimmed, "expect_cleanup ")) {
             const split = try splitTrailingToken(trimmed["expect_cleanup ".len..]);
@@ -344,23 +407,39 @@ test "spec parser parses actions and assertions" {
     const content =
         \\click role:button name:"Save"
         \\fill label:"Email" "a@example.com"
+        \\focus label:"Email"
+        \\blur label:"Email"
+        \\change label:"Email" "changed@example.com"
+        \\composition_start label:"Email"
+        \\composition_end label:"Email"
         \\expect_attr test_id:"status" data-state "ready"
+        \\expect_no_attr label:"Email" aria-invalid
         \\tick_interval 250
+        \\tick_interval_if_active 250
         \\expect_interval 250 1
     ;
     const commands = try parseTestSpec(std.testing.allocator, content);
     defer freeSpecCommands(std.testing.allocator, commands);
 
-    try std.testing.expectEqual(@as(usize, 5), commands.len);
+    try std.testing.expectEqual(@as(usize, 12), commands.len);
     try std.testing.expectEqual(SpecCommandType.click, commands[0].cmd_type);
     try std.testing.expectEqual(LocatorKind.role_name, commands[0].locator.kind);
     try std.testing.expectEqualStrings("button", commands[0].locator.role.?);
     try std.testing.expectEqualStrings("Save", commands[0].locator.name.?);
     try std.testing.expectEqualStrings("a@example.com", commands[1].expected_text.?);
-    try std.testing.expectEqualStrings("data-state", commands[2].expected_attr.?);
-    try std.testing.expectEqualStrings("ready", commands[2].expected_text.?);
-    try std.testing.expectEqual(@as(?u64, 250), commands[3].interval_ms);
-    try std.testing.expectEqual(@as(?u64, 1), commands[4].expected_count);
+    try std.testing.expectEqual(SpecCommandType.focus, commands[2].cmd_type);
+    try std.testing.expectEqual(SpecCommandType.blur, commands[3].cmd_type);
+    try std.testing.expectEqual(SpecCommandType.change, commands[4].cmd_type);
+    try std.testing.expectEqualStrings("changed@example.com", commands[4].expected_text.?);
+    try std.testing.expectEqual(SpecCommandType.composition_start, commands[5].cmd_type);
+    try std.testing.expectEqual(SpecCommandType.composition_end, commands[6].cmd_type);
+    try std.testing.expectEqualStrings("data-state", commands[7].expected_attr.?);
+    try std.testing.expectEqualStrings("ready", commands[7].expected_text.?);
+    try std.testing.expectEqualStrings("aria-invalid", commands[8].expected_attr.?);
+    try std.testing.expectEqual(@as(?u64, 250), commands[9].interval_ms);
+    try std.testing.expectEqual(SpecCommandType.tick_interval_if_active, commands[10].cmd_type);
+    try std.testing.expectEqual(@as(?u64, 250), commands[10].interval_ms);
+    try std.testing.expectEqual(@as(?u64, 1), commands[11].expected_count);
 }
 
 test "spec parser rejects malformed commands" {

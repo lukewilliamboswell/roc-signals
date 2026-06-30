@@ -853,21 +853,23 @@ comptime {
 /// Element type for __AnonStruct72
 pub const __AnonStruct72 = if (@sizeOf(usize) == 4) extern struct {
     field: u64,
+    name: RocStr,
     read: HostValueBoolReadHandle,
     signal: *NodeSignalExpr,
 } else extern struct {
     field: u64,
+    name: RocStr,
     read: HostValueBoolReadHandle,
     signal: *NodeSignalExpr,
 };
 
 comptime {
     if (@sizeOf(usize) == 8) {
-        if (@sizeOf(__AnonStruct72) != 48) @compileError("__AnonStruct72 size mismatch");
+        if (@sizeOf(__AnonStruct72) != 72) @compileError("__AnonStruct72 size mismatch");
         if (@alignOf(__AnonStruct72) != 8) @compileError("__AnonStruct72 alignment mismatch");
     }
     if (@sizeOf(usize) == 4) {
-        if (@sizeOf(__AnonStruct72) != 32) @compileError("__AnonStruct72 size mismatch");
+        if (@sizeOf(__AnonStruct72) != 40) @compileError("__AnonStruct72 size mismatch");
         if (@alignOf(__AnonStruct72) != 8) @compileError("__AnonStruct72 alignment mismatch");
     }
 }
@@ -933,19 +935,21 @@ comptime {
 /// Element type for __AnonStruct78
 pub const __AnonStruct78 = if (@sizeOf(usize) == 4) extern struct {
     field: u64,
+    name: RocStr,
     value: bool,
 } else extern struct {
     field: u64,
+    name: RocStr,
     value: bool,
 };
 
 comptime {
     if (@sizeOf(usize) == 8) {
-        if (@sizeOf(__AnonStruct78) != 16) @compileError("__AnonStruct78 size mismatch");
+        if (@sizeOf(__AnonStruct78) != 40) @compileError("__AnonStruct78 size mismatch");
         if (@alignOf(__AnonStruct78) != 8) @compileError("__AnonStruct78 alignment mismatch");
     }
     if (@sizeOf(usize) == 4) {
-        if (@sizeOf(__AnonStruct78) != 16) @compileError("__AnonStruct78 size mismatch");
+        if (@sizeOf(__AnonStruct78) != 24) @compileError("__AnonStruct78 size mismatch");
         if (@alignOf(__AnonStruct78) != 8) @compileError("__AnonStruct78 alignment mismatch");
     }
 }
@@ -1922,12 +1926,14 @@ pub fn incref__AnonStruct71(value: __AnonStruct71, amount: isize) void {
 
 /// Recursively decrement Roc-owned fields in __AnonStruct72.
 pub fn decref__AnonStruct72(value: __AnonStruct72, roc_host: *RocHost) void {
+    value.name.decref(roc_host);
     decrefHostValueBoolReadHandle(value.read, roc_host);
     decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType35, roc_host);
 }
 
 /// Increment Roc-owned fields in __AnonStruct72.
 pub fn incref__AnonStruct72(value: __AnonStruct72, amount: isize) void {
+    value.name.incref(amount);
     increfHostValueBoolReadHandle(value.read, amount);
     increfBox(@ptrCast(value.signal), amount);
 }
@@ -1972,14 +1978,12 @@ pub fn increfHostValueTextReadHandle(value: HostValueTextReadHandle, amount: isi
 
 /// Recursively decrement Roc-owned fields in __AnonStruct78.
 pub fn decref__AnonStruct78(value: __AnonStruct78, roc_host: *RocHost) void {
-    _ = value;
-    _ = roc_host;
+    value.name.decref(roc_host);
 }
 
 /// Increment Roc-owned fields in __AnonStruct78.
 pub fn incref__AnonStruct78(value: __AnonStruct78, amount: isize) void {
-    _ = value;
-    _ = amount;
+    value.name.incref(amount);
 }
 
 /// Recursively decrement Roc-owned fields in __AnonStruct79.

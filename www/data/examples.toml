@@ -32,6 +32,28 @@ native = true
 bench = true
 
 [[examples]]
+slug = "form-boundary"
+title = "Form Boundary"
+description = "Boolean form attributes and named form events at the native/JS boundary."
+source = "examples/form-boundary/app.roc"
+spec = "examples/form-boundary/spec.txt"
+public = true
+wasm = true
+native = true
+bench = true
+
+[[examples]]
+slug = "http-boundary"
+title = "HTTP Boundary"
+description = "Package-aligned HTTP request and response payloads at the native/JS boundary."
+source = "examples/http-boundary/app.roc"
+spec = "examples/http-boundary/spec.txt"
+public = true
+wasm = true
+native = true
+bench = true
+
+[[examples]]
 slug = "kanban-board"
 title = "Kanban Board"
 description = "A keyed list workflow with row identity, filtering, and local card state."

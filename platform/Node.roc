@@ -111,6 +111,9 @@ import HostValue exposing [HostValue]
 	bool_field_disabled : U64
 	bool_field_disabled = 2
 
+	bool_field_custom : U64
+	bool_field_custom = 3
+
 	event_kind_click : U64
 	event_kind_click = 1
 
@@ -176,8 +179,8 @@ import HostValue exposing [HostValue]
 	Attr := [
 		StaticText({ field : U64, name : Str, value : Str }),
 		SignalText({ field : U64, name : Str, signal : Box(SignalExpr), read : HostValue.TextReadHandle }),
-		StaticBool({ field : U64, value : Bool }),
-		SignalBool({ field : U64, signal : Box(SignalExpr), read : HostValue.BoolReadHandle }),
+		StaticBool({ field : U64, name : Str, value : Bool }),
+		SignalBool({ field : U64, name : Str, signal : Box(SignalExpr), read : HostValue.BoolReadHandle }),
 		OnEvent({ kind : U64, msg : Msg }),
 		OnNamedEvent({ name : Str, options : U64, msg : Msg }),
 	]

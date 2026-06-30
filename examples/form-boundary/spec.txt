@@ -1,0 +1,59 @@
+# Form boundary scenario
+
+expect_visible role:heading name:"Form boundary"
+expect_attr role:region name:"Form boundary" data-boundary "forms"
+expect_attr role:form name:"Signup form" id "signup-form"
+expect_attr role:form name:"Signup form" data-form "form-boundary"
+
+expect_value label:"Email" ""
+expect_attr label:"Email" id "form-boundary-email"
+expect_attr label:"Email" type "email"
+expect_attr label:"Email" name "email"
+expect_attr label:"Email" placeholder "team@example.com"
+expect_attr label:"Email" autocomplete "email"
+expect_attr label:"Email" required ""
+expect_attr label:"Email" aria-describedby "email-help"
+expect_attr label:"Email" aria-invalid ""
+expect_attr text:"Email is required." id "email-help"
+expect_value label:"Reference" "READ-ONLY"
+expect_attr label:"Reference" readonly ""
+expect_checked label:"Accept terms" false
+expect_text text:"Invalid: yes" "Invalid: yes"
+expect_text text:"Terms pending" "Terms pending"
+expect_text text:"Submits: 0" "Submits: 0"
+expect_text text:"Focus events: 0" "Focus events: 0"
+expect_text text:"Blur events: 0" "Blur events: 0"
+expect_text text:"Change events: 0" "Change events: 0"
+expect_text text:"Composition start events: 0" "Composition start events: 0"
+expect_text text:"Composition end events: 0" "Composition end events: 0"
+
+submit role:form name:"Signup form"
+expect_text text:"Submits: 0" "Submits: 0"
+
+focus label:"Email"
+expect_text text:"Focus events: 1" "Focus events: 1"
+
+composition_start label:"Email"
+expect_text text:"Composition start events: 1" "Composition start events: 1"
+
+composition_end label:"Email"
+expect_text text:"Composition end events: 1" "Composition end events: 1"
+
+change label:"Email" "team@example.com"
+expect_value label:"Email" "team@example.com"
+expect_no_attr label:"Email" aria-invalid
+expect_text text:"Invalid: no" "Invalid: no"
+expect_text text:"Change events: 1" "Change events: 1"
+
+submit role:form name:"Signup form"
+expect_text text:"Submits: 0" "Submits: 0"
+
+check label:"Accept terms"
+expect_checked label:"Accept terms" true
+expect_text text:"Terms accepted" "Terms accepted"
+
+submit role:form name:"Signup form"
+expect_text text:"Submits: 1" "Submits: 1"
+
+blur label:"Email"
+expect_text text:"Blur events: 1" "Blur events: 1"

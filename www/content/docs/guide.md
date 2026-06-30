@@ -311,14 +311,20 @@ The current app-facing effect helpers are intentionally small:
 | Deterministic fake task for tests/examples | `Signal.fake_task` |
 | Task status signal | `Signal.from_task`, `Signal.fold_task` |
 | Start a string-request task | `Signal.start_str` |
-| Browser HTTP text task | `Http.get_text_task`, `Http.get_text` |
+| Package-aligned HTTP task | `Http.request_task`, `Http.start` |
+| Browser HTTP text helper | `Http.get_text_task`, `Http.get_text` |
 | Timer source | `Signal.interval(period_ms)` |
 | Fire a command when a signal changes | `Ui.on_change(signal, to_cmd)` |
 | Fire a command when a scope mounts | `Ui.on_mount(to_cmd)` |
 | Cleanup when a scope is disposed | `Ui.on_cleanup(cleanup)` |
 
-The browser runtime currently routes `Http.get_text_task` requests to `fetch` for
-the documented Signals dev-server ops endpoints used by the dashboard example.
+`Http.request_task` and `Http.start` use the pinned `roc-lang/http` request and
+response types through the platform's `Http` builder/accessor wrappers. The
+browser runtime receives an explicit request envelope, executes `fetch`, and
+returns an explicit response envelope; JS never reads Roc record layouts. The
+`Http.get_text_task` / `Http.get_text` helpers are thin convenience wrappers that
+decode response body bytes as UTF-8 text for examples like the dashboard.
+
 For example, `examples/ops-dashboard/app.roc` creates a browser HTTP text task,
 starts it on mount, starts it again on interval ticks, and folds the task status
 into dashboard state.

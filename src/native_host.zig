@@ -1861,6 +1861,10 @@ const BenchmarkCtx = struct {
         return elem.bound_check_event;
     }
 
+    pub fn namedEvent(elem: *const BenchmarkDomElement, name: []const u8) ?DomNamedEvent {
+        return nodeEventName(elem, name);
+    }
+
     pub fn dispatchRocEventMeasured(host: *Host, roc_host: *RocHost, event_id: u64, payload_kind: EventPayloadKind, payload: HostValue, stats: ?*BenchmarkStats) void {
         dispatchRocEventWithStats(host, roc_host, event_id, payload_kind, payload, stats);
     }
@@ -1899,6 +1903,10 @@ const BenchmarkCtx = struct {
 
     pub fn tickIntervalSource(host: *Host, roc_host: *RocHost, period_ms: u64) CommandCounts {
         return tickIntervalSourceForBenchmark(host, roc_host, period_ms);
+    }
+
+    pub fn activeIntervalRecordCountByPeriod(host: *const Host, period_ms: u64) u64 {
+        return host.engine.activeIntervalRecordCountByPeriod(period_ms);
     }
 
     pub fn finishHostMetrics(host: *Host) void {
@@ -4631,6 +4639,7 @@ fn testNodeStaticBoolAttr(field: RenderBoolField, value: bool) abi.NodeAttr {
         .payload = .{
             .static_bool = .{
                 .field = @intFromEnum(field),
+                .name = RocStr.empty(),
                 .value = value,
             },
         },
@@ -4648,6 +4657,7 @@ fn testNodeSignalBoolAttrWithCapability(roc_host: *abi.RocHost, field: RenderBoo
         .payload = .{
             .signal_bool = .{
                 .field = @intFromEnum(field),
+                .name = RocStr.fromSlice("", roc_host),
                 .read = testBoolReadHandle(roc_host, cap),
                 .signal = boxTestNodeSignalExpr(roc_host, signal),
             },
