@@ -1,0 +1,120 @@
+[[examples]]
+slug = "ops-dashboard"
+title = "Ops Dashboard"
+description = "A simulated operations dashboard with async refresh and a static browser-side backend."
+source = "examples/ops-dashboard/app.roc"
+spec = "examples/ops-dashboard/spec.txt"
+public = true
+wasm = true
+native = true
+bench = true
+
+[[examples]]
+slug = "checkout-wizard"
+title = "Checkout Wizard"
+description = "A multi-step form with retained input state and semantic validation."
+source = "examples/checkout-wizard/app.roc"
+spec = "examples/checkout-wizard/spec.txt"
+public = true
+wasm = true
+native = true
+bench = true
+
+[[examples]]
+slug = "event-payload-boundary"
+title = "Event Payload Boundary"
+description = "A focused example for browser event payload marshalling."
+source = "examples/event-payload-boundary/app.roc"
+spec = "examples/event-payload-boundary/spec.txt"
+public = true
+wasm = true
+native = true
+bench = true
+
+[[examples]]
+slug = "form-boundary"
+title = "Form Boundary"
+description = "Boolean form attributes and named form events at the native/JS boundary."
+source = "examples/form-boundary/app.roc"
+spec = "examples/form-boundary/spec.txt"
+public = true
+wasm = true
+native = true
+bench = true
+
+[[examples]]
+slug = "http-boundary"
+title = "HTTP Boundary"
+description = "Package-aligned HTTP request and response payloads at the native/JS boundary."
+source = "examples/http-boundary/app.roc"
+spec = "examples/http-boundary/spec.txt"
+public = true
+wasm = true
+native = true
+bench = true
+
+[[examples]]
+slug = "kanban-board"
+title = "Kanban Board"
+description = "A keyed list workflow with row identity, filtering, and local card state."
+source = "examples/kanban-board/app.roc"
+spec = "examples/kanban-board/spec.txt"
+public = true
+wasm = true
+native = true
+bench = true
+
+[[examples]]
+slug = "identity-stress"
+title = "Identity Stress"
+description = "Nested conditional and keyed-row identity behavior under reorder."
+source = "examples/identity-stress/app.roc"
+spec = "examples/identity-stress/spec.txt"
+public = true
+wasm = true
+native = true
+bench = true
+
+[[examples]]
+slug = "component-composition"
+title = "Component Composition"
+description = "Small retained-state components composed into a larger view."
+source = "examples/component-composition/app.roc"
+spec = "examples/component-composition/spec.txt"
+public = true
+wasm = true
+native = true
+bench = true
+
+[[examples]]
+slug = "async-effects"
+title = "Async Effects"
+description = "Task, interval, cancellation, and cleanup descriptors in one example."
+source = "examples/async-effects/app.roc"
+spec = "examples/async-effects/spec.txt"
+public = true
+wasm = true
+native = true
+bench = true
+
+[[examples]]
+slug = "large-each-08"
+title = "Large Each 08"
+description = "Internal keyed-row fixture."
+source = "examples/_fixtures/large-each-08/app.roc"
+spec = "examples/_fixtures/large-each-08/spec.txt"
+public = false
+wasm = false
+native = true
+bench = false
+
+[[examples]]
+slug = "large-each-64"
+title = "Large Each 64"
+description = "Internal keyed-row benchmark fixture."
+source = "examples/_fixtures/large-each-64/app.roc"
+spec = "examples/_fixtures/large-each-64/spec.txt"
+public = false
+wasm = false
+native = true
+bench = true

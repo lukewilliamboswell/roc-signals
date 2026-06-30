@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+
+{% block title %}Docs · {{ config.title }}{% endblock title %}
+
+{% block content %}
+<main class="site-shell">
+  <section class="grid gap-3">
+    <p class="text-sm font-medium text-emerald-700">Docs</p>
+    <h1 class="text-3xl font-semibold text-zinc-950">Learn Roc Signals</h1>
+  </section>
+  <div class="grid gap-3 sm:grid-cols-2">
+    {% for page in section.pages %}
+    <a class="panel grid gap-2 p-4 no-underline transition hover:border-emerald-500" href="{{ page.permalink }}">
+      <span class="font-semibold text-zinc-950">{{ page.title }}</span>
+    </a>
+    {% endfor %}
+  </div>
+</main>
+{% endblock content %}

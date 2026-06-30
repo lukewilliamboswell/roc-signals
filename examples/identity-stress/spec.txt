@@ -1,0 +1,123 @@
+# G2 identity stress scenario: nested when -> each -> when with row-local state,
+# keyed mid-list insert/filter churn, and enclosing branch disposal.
+
+expect_visible role:heading name:"Identity stress"
+expect_visible role:region name:"Controls"
+expect_visible role:region name:"Rows active"
+expect_visible role:region name:"Alpha"
+expect_visible role:region name:"Beta"
+expect_visible role:region name:"Gamma"
+expect_text text:"Alpha waiting" "Alpha waiting"
+expect_text text:"Beta waiting" "Beta waiting"
+expect_text text:"Gamma waiting" "Gamma waiting"
+expect_absent role:region name:"Delta"
+
+mark_metrics
+click role:button name:"Bump Alpha"
+expect_text text:"Alpha detail count: 1" "Alpha detail count: 1"
+expect_metric_delta rows_reused 0
+expect_metric_delta rows_created 0
+expect_metric_delta rows_removed 0
+expect_metric_delta scopes_disposed 1
+
+mark_metrics
+click role:button name:"Reorder rows"
+expect_visible role:region name:"Gamma"
+expect_text text:"Alpha detail count: 1" "Alpha detail count: 1"
+expect_text text:"Beta waiting" "Beta waiting"
+expect_metric_delta rows_reused 3
+expect_metric_delta rows_created 0
+expect_metric_delta rows_removed 0
+expect_metric_delta each_key_compares 6
+
+mark_metrics
+click role:button name:"Bump Gamma"
+expect_text text:"Gamma detail count: 1" "Gamma detail count: 1"
+expect_text text:"Alpha detail count: 1" "Alpha detail count: 1"
+expect_metric_delta rows_reused 0
+expect_metric_delta rows_created 0
+expect_metric_delta rows_removed 0
+expect_metric_delta scopes_disposed 1
+
+mark_metrics
+click role:button name:"Insert Delta"
+expect_visible role:region name:"Delta"
+expect_text text:"Delta waiting" "Delta waiting"
+expect_text text:"Gamma detail count: 1" "Gamma detail count: 1"
+expect_text text:"Alpha detail count: 1" "Alpha detail count: 1"
+expect_metric_delta nodes_recomputed 1
+expect_metric_delta patches_emitted 12
+expect_metric_delta rows_reused 3
+expect_metric_delta rows_created 1
+expect_metric_delta rows_removed 0
+expect_metric_delta each_key_compares 7
+
+mark_metrics
+click role:button name:"Bump Delta"
+expect_text text:"Delta detail count: 1" "Delta detail count: 1"
+expect_text text:"Gamma detail count: 1" "Gamma detail count: 1"
+expect_text text:"Alpha detail count: 1" "Alpha detail count: 1"
+expect_metric_delta rows_reused 0
+expect_metric_delta rows_created 0
+expect_metric_delta rows_removed 0
+expect_metric_delta scopes_disposed 1
+
+mark_metrics
+click role:button name:"Filter Beta"
+expect_absent role:region name:"Beta"
+expect_text text:"Delta detail count: 1" "Delta detail count: 1"
+expect_text text:"Gamma detail count: 1" "Gamma detail count: 1"
+expect_text text:"Alpha detail count: 1" "Alpha detail count: 1"
+expect_metric_delta nodes_recomputed 1
+expect_metric_delta patches_emitted 3
+expect_metric_delta remove_node 3
+expect_metric_delta bind_event 0
+expect_metric_delta move_before 0
+expect_metric_delta append_child 0
+expect_metric_delta rows_reused 3
+expect_metric_delta rows_created 0
+expect_metric_delta rows_removed 1
+expect_metric_delta scopes_disposed 2
+expect_metric_delta each_key_compares 6
+
+mark_metrics
+click role:button name:"Filter Beta"
+expect_visible role:region name:"Beta"
+expect_text text:"Beta waiting" "Beta waiting"
+expect_text text:"Delta detail count: 1" "Delta detail count: 1"
+expect_text text:"Gamma detail count: 1" "Gamma detail count: 1"
+expect_text text:"Alpha detail count: 1" "Alpha detail count: 1"
+expect_metric_delta rows_reused 3
+expect_metric_delta rows_created 1
+expect_metric_delta rows_removed 0
+expect_metric_delta each_key_compares 7
+
+mark_metrics
+click role:button name:"Toggle rows active"
+expect_visible role:region name:"Rows inactive"
+expect_text text:"Rows hidden" "Rows hidden"
+expect_absent role:region name:"Rows active"
+expect_absent role:region name:"Alpha"
+expect_absent role:region name:"Beta"
+expect_absent role:region name:"Gamma"
+expect_absent role:region name:"Delta"
+expect_metric_delta rows_reused 0
+expect_metric_delta rows_created 0
+expect_metric_delta rows_removed 0
+expect_metric_delta scopes_disposed 9
+
+mark_metrics
+click role:button name:"Toggle rows active"
+expect_visible role:region name:"Rows active"
+expect_visible role:region name:"Alpha"
+expect_visible role:region name:"Beta"
+expect_visible role:region name:"Gamma"
+expect_visible role:region name:"Delta"
+expect_text text:"Alpha waiting" "Alpha waiting"
+expect_text text:"Beta waiting" "Beta waiting"
+expect_text text:"Gamma waiting" "Gamma waiting"
+expect_text text:"Delta waiting" "Delta waiting"
+expect_metric_delta rows_reused 0
+expect_metric_delta rows_created 4
+expect_metric_delta rows_removed 0
+expect_metric_delta scopes_disposed 1

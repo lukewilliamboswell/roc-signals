@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  linux-checks:
+    name: Linux checks
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: 0.16.0
+          use-cache: false
+
+      - name: Install Roc
+        uses: roc-lang/setup-roc@cbe782d6f165b89c87d99f50a59ac4f5f73b4427
+        with:
+          version: nightly-new-compiler
+
+      - name: Install site tools
+        run: |
+          curl -fsSL https://github.com/getzola/zola/releases/download/v0.22.1/zola-v0.22.1-x86_64-unknown-linux-gnu.tar.gz -o zola.tar.gz
+          tar -xzf zola.tar.gz
+          sudo mv zola /usr/local/bin/zola
+          curl -fsSL https://github.com/tailwindlabs/tailwindcss/releases/download/v3.4.17/tailwindcss-linux-x64 -o tailwindcss
+          chmod +x tailwindcss
+          sudo mv tailwindcss /usr/local/bin/tailwindcss
+
+      - name: Run non-native suites
+        run: |
+          python3 scripts/test.py zig browser roc-check wasm --native never --bundle never
+
+      - name: Build static site
+        run: python3 scripts/serve.py --no-server
+
+      - name: Upload static site artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: github-pages-dist
+          path: dist
+
+  macos-full:
+    name: macOS full suite
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: 0.16.0
+          use-cache: false
+
+      - name: Install Roc
+        uses: roc-lang/setup-roc@cbe782d6f165b89c87d99f50a59ac4f5f73b4427
+        with:
+          version: nightly-new-compiler
+
+      - name: Run all tests
+        run: python3 scripts/test.py

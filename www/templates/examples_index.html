@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+
+{% block title %}Examples · {{ config.title }}{% endblock title %}
+
+{% block content %}
+{% set data = load_data(path="data/examples.toml") %}
+<main class="site-shell">
+  <section class="grid gap-3">
+    <p class="text-sm font-medium text-emerald-700">Examples</p>
+    <h1 class="text-3xl font-semibold text-zinc-950">Explore the apps</h1>
+    <p class="max-w-3xl leading-7 text-zinc-700">Each example runs from a prebuilt wasm artifact and includes source files you can download, modify, and rebuild locally with Roc.</p>
+  </section>
+  <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+    {% for example in data.examples %}
+    {% if example.public %}
+    <a class="panel grid gap-2 p-4 no-underline transition hover:border-emerald-500" href="{{ get_url(path='examples/' ~ example.slug ~ '/', trailing_slash=true) }}">
+      <span class="font-semibold text-zinc-950">{{ example.title }}</span>
+      <span class="text-sm leading-6 text-zinc-600">{{ example.description }}</span>
+    </a>
+    {% endif %}
+    {% endfor %}
+  </div>
+</main>
+{% endblock content %}

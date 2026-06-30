@@ -1,0 +1,12 @@
+base_url = "https://lukewilliamboswell.github.io/roc-signals"
+title = "Roc Signals"
+description = "A Roc platform for signal-based browser interfaces."
+compile_sass = false
+build_search_index = false
+generate_feeds = false
+
+[markdown]
+smart_punctuation = true
+
+[extra]
+github_url = "https://github.com/lukewilliamboswell/roc-signals"

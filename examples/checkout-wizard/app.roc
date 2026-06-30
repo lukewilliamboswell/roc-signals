@@ -1,0 +1,241 @@
+app [main] { pf: platform "../../platform/main.roc" }
+
+import pf.Elem exposing [Elem]
+import pf.Html
+import pf.Signal
+import pf.Ui
+
+concat3 : Str, Str, Str -> Str
+concat3 = |a, b, c| Str.concat(Str.concat(a, b), c)
+
+label_i64 : Str, I64 -> Str
+label_i64 = |name, value| concat3(name, ": ", value.to_str())
+
+step_label : I64 -> Str
+step_label = |step| {
+	if step == 0 {
+		"Step 1 Cart"
+	} else if step == 1 {
+		"Step 2 Delivery"
+	} else {
+		"Step 3 Review"
+	}
+}
+
+step_attr_value : I64 -> Str
+step_attr_value = |step| {
+	if step == 0 {
+		"cart"
+	} else if step == 1 {
+		"delivery"
+	} else {
+		"review"
+	}
+}
+
+next_step : I64 -> I64
+next_step = |step| {
+	next = step + 1
+	if next > 2 {
+		2
+	} else {
+		next
+	}
+}
+
+prev_step : I64 -> I64
+prev_step = |step| {
+	next = step - 1
+	if next < 0 {
+		0
+	} else {
+		next
+	}
+}
+
+initial_lines : List(Str)
+initial_lines = ["3 seats", "Priority support"]
+
+team_lines : List(Str)
+team_lines = ["3 seats", "Priority support", "Audit log export"]
+
+basic_lines : List(Str)
+basic_lines = ["3 seats"]
+
+page_class : Str
+page_class = "grid gap-6"
+
+hero_class : Str
+hero_class = "grid gap-2 rounded-lg border border-sky-200 bg-sky-50 p-5"
+
+panel_class : Str
+panel_class = "grid gap-4"
+
+primary_button_class : Str
+primary_button_class = "border-sky-600 bg-sky-600 text-white hover:border-sky-700 hover:bg-sky-700"
+
+input_class : Str
+input_class = "w-full max-w-md"
+
+render_line : Str, Signal.Signal(Str) -> Elem
+render_line = |label, _line_signal| {
+	initial_quantity : I64
+	initial_quantity = 1
+
+	Ui.state(
+		initial_quantity,
+		|quantity| {
+			quantity_label =
+				Signal.map(
+					quantity.signal(),
+					|n| concat3(label, " quantity: ", n.to_str()),
+				)
+
+			Html.section(
+				label,
+				[],
+				[
+					Html.paragraph(label),
+					Html.button(
+						Str.concat("Decrease ", label),
+						quantity.on_unit(|current| {
+							next = current - 1
+							if next < 0 {
+								0
+							} else {
+								next
+							}
+						}),
+					),
+					Html.text_s(quantity_label),
+					Html.button(Str.concat("Increase ", label), quantity.on_unit(|current| current + 1)),
+				],
+			)
+		},
+	)
+}
+
+main : {} -> Elem
+main = |_| {
+	initial_terms : Bool
+	initial_terms = False
+
+	Ui.state(
+		0,
+		|step| {
+			Ui.state(
+				"",
+				|email| {
+					Ui.state(
+						"",
+						|address| {
+							Ui.state(
+								initial_terms,
+								|terms| {
+									Ui.state(
+										initial_lines,
+										|lines| {
+											Ui.state(
+												0,
+												|submit_count| {
+													step_signal = step.signal()
+													step_text = Signal.map(step_signal, step_label)
+													step_attr = Signal.map(step_signal, step_attr_value)
+													is_cart = Signal.map(step_signal, |value| value == 0)
+													is_delivery = Signal.map(step_signal, |value| value == 1)
+													terms_signal = terms.signal()
+													terms_text =
+														Signal.map(
+															terms_signal,
+															|accepted| if accepted {
+																"Terms accepted"
+															} else {
+																"Terms pending"
+															},
+														)
+													submit_disabled = Signal.map(terms_signal, |accepted| !accepted)
+													review_label =
+														Signal.map(
+															submit_count.signal(),
+															|attempts| label_i64("Orders submitted", attempts),
+														)
+													email_review = Signal.map(email.signal(), |value| Str.concat("Email: ", value))
+													address_review = Signal.map(address.signal(), |value| Str.concat("Address: ", value))
+
+													cart_panel =
+														Html.section(
+															"Cart",
+															[Html.class_attr(panel_class), Html.attr("data-panel", "cart")],
+															[
+																Html.paragraph("Cart editor"),
+																Html.button_c("Use team plan", primary_button_class, lines.on_unit(|_| team_lines)),
+																Html.button("Use basic plan", lines.on_unit(|_| basic_lines)),
+																Ui.each_str(lines.signal(), |label| label, render_line),
+															],
+														)
+													delivery_panel =
+														Html.section_c(
+															"Delivery",
+															panel_class,
+															[
+																Html.text_input_c("Email", email.signal(), input_class, email.on_str(|_, value| value)),
+																Html.text_input_c("Address", address.signal(), input_class, address.on_str(|_, value| value)),
+																Html.checkbox("Accept terms", terms_signal, terms.on_bool(|_, checked| checked)),
+																Html.text_s(terms_text),
+															],
+														)
+													review_panel =
+														Html.section_c(
+															"Review",
+															panel_class,
+															[
+																Html.text_s(email_review),
+																Html.text_s(address_review),
+																Html.text_s(review_label),
+																Html.action_button(
+																	Signal.const("Place order"),
+																	submit_disabled,
+																	submit_count.on_unit(|current| current + 1),
+																),
+															],
+														)
+
+													Html.div_c(
+														page_class,
+														[
+															Html.div_c(
+																hero_class,
+																[
+																	Html.heading_c("Checkout wizard", "text-3xl font-semibold text-zinc-950"),
+																	Html.paragraph_c("A three-step purchase flow with retained cart rows, controlled inputs, checkbox state, and a disabled review action.", "max-w-3xl text-sm text-zinc-700"),
+																],
+															),
+															Html.button("Back", step.on_unit(prev_step)),
+															Html.button_c("Next", primary_button_class, step.on_unit(next_step)),
+															Html.section("Current step", [Html.attr_s("data-step", step_attr)], [Html.text_s(step_text)]),
+															Ui.when(
+																is_cart,
+																|_| cart_panel,
+																|_| {
+																	Ui.when(
+																		is_delivery,
+																		|_| delivery_panel,
+																		|_| review_panel,
+																	)
+																},
+															),
+														],
+													)
+												},
+											)
+										},
+									)
+								},
+							)
+						},
+					)
+				},
+			)
+		},
+	)
+}

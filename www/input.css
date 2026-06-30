@@ -1,0 +1,86 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    color-scheme: light;
+  }
+
+  body {
+    @apply bg-zinc-50 text-zinc-950 antialiased;
+  }
+
+  a {
+    @apply text-emerald-700 underline-offset-2 hover:text-emerald-800 hover:underline;
+  }
+}
+
+@layer components {
+  .site-shell {
+    @apply mx-auto grid w-full max-w-6xl gap-8 px-4 py-6 sm:px-6 lg:px-8;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .site-shell > * {
+    min-width: 0;
+  }
+
+  .panel {
+    @apply min-w-0 rounded-lg border border-zinc-200 bg-white shadow-sm;
+  }
+
+  .button {
+    @apply inline-flex items-center justify-center rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm font-medium text-zinc-900 shadow-sm transition hover:border-emerald-500 hover:text-emerald-700;
+  }
+
+  .button-primary {
+    @apply inline-flex items-center justify-center rounded-md border border-emerald-600 bg-emerald-600 px-3 py-2 text-sm font-medium text-white shadow-sm transition hover:border-emerald-700 hover:bg-emerald-700;
+  }
+
+  .prose-signals {
+    @apply min-w-0 max-w-none text-zinc-800;
+  }
+
+  .prose-signals h1 {
+    @apply mb-4 text-3xl font-semibold tracking-normal text-zinc-950;
+  }
+
+  .prose-signals h2 {
+    @apply mt-8 border-t border-zinc-200 pt-6 text-2xl font-semibold tracking-normal text-zinc-950;
+  }
+
+  .prose-signals h3 {
+    @apply mt-6 text-xl font-semibold tracking-normal text-zinc-950;
+  }
+
+  .prose-signals p,
+  .prose-signals li {
+    @apply leading-7;
+  }
+
+  .prose-signals ul,
+  .prose-signals ol {
+    @apply my-4 grid gap-2 pl-6;
+  }
+
+  .prose-signals ul {
+    @apply list-disc;
+  }
+
+  .prose-signals ol {
+    @apply list-decimal;
+  }
+
+  .prose-signals pre {
+    @apply my-4 max-w-full overflow-x-auto rounded-lg bg-zinc-950 p-4 text-sm text-zinc-50;
+  }
+
+  .prose-signals code {
+    @apply rounded bg-zinc-100 px-1 py-0.5 text-sm text-zinc-900;
+  }
+
+  .prose-signals pre code {
+    @apply bg-transparent p-0 text-zinc-50;
+  }
+}
