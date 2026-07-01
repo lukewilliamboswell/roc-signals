@@ -480,6 +480,97 @@ export function opsApiTextTaskHandler({ name, request }) {
   );
 }
 
+export function apiRequestConsoleTaskHandler({ name, request }) {
+  if (!name.startsWith(HttpTask.namePrefix)) {
+    return null;
+  }
+  const decoded = decodeHttpRequestPayload(request);
+  if (decoded.uri !== "/api/api-request-console") {
+    return null;
+  }
+  if (decoded.method !== "POST") {
+    throw new Error(encodeHttpErrorPayload("unsupported", `unsupported API console method: ${decoded.method}`));
+  }
+
+  const scenario = httpHeaderValue(decoded.headers, "x-scenario") || "success";
+  if (scenario === "failure") {
+    throw new Error(encodeHttpErrorPayload("network", "offline"));
+  }
+
+  const missing = scenario === "missing";
+  return Promise.resolve(
+    encodeHttpResponsePayload({
+      status: missing ? 404 : 201,
+      headers: [
+        ["content-type", "application/json; charset=utf-8"],
+        ["x-result", missing ? "missing" : "ok"],
+      ],
+      body: textEncoder.encode(
+        missing
+          ? '{"status":"missing","message":"customer record was not found"}'
+          : '{"status":"created","message":"customer-42 is ready"}',
+      ),
+    }),
+  );
+}
+
+export function lookupTaskHandler({ name, request, signal }) {
+  if (name !== "lookup") {
+    return null;
+  }
+
+  const query = String(request).trim();
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error("canceled"));
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      if (query.toLowerCase().includes("fail") || query.toLowerCase().includes("offline")) {
+        reject(new Error("offline search index"));
+      } else if (query === "") {
+        resolve("Type a search term to see matching actions");
+      } else {
+        resolve(`Top results for "${query}": docs, examples, and release notes`);
+      }
+    }, 80);
+
+    signal?.addEventListener?.(
+      "abort",
+      () => {
+        clearTimeout(timer);
+        reject(new Error("canceled"));
+      },
+      { once: true },
+    );
+  });
+}
+
+export function publicExampleTaskHandler(args) {
+  const lookup = lookupTaskHandler(args);
+  if (lookup !== null && lookup !== undefined) {
+    return lookup;
+  }
+
+  const apiConsole = apiRequestConsoleTaskHandler(args);
+  if (apiConsole !== null && apiConsole !== undefined) {
+    return apiConsole;
+  }
+
+  return opsApiTextTaskHandler(args);
+}
+
+function httpHeaderValue(headers, targetName) {
+  const target = targetName.toLowerCase();
+  for (const [name, value] of headers) {
+    if (String(name).toLowerCase() === target) {
+      return String(value);
+    }
+  }
+  return "";
+}
+
 function bytesFrom(value) {
   if (value instanceof Uint8Array) {
     return value;

@@ -4456,6 +4456,59 @@ test "signals host structural patch shifts moved row event ids only" {
     try std.testing.expectEqual(@as(?u64, 1), host.dom_elements.items[@intCast(row_2_button_id)].bound_click_event);
 }
 
+test "signals host dirty each removal refreshes survivor event ids" {
+    test_erased_callable_drop_count = 0;
+    test_row_elem_call_count = 0;
+
+    var host = HostEnv.init();
+    var roc_host = makeSignalsRocHost(&host);
+    host.engine.roc_host = &roc_host;
+    defer {
+        host.deinit();
+        _ = host.gpa.deinit();
+    }
+
+    const state_token = newTestBinderToken(&roc_host);
+    const state_cap = testHostValueCapability(&roc_host);
+    const each = testNodeEachWithSignalCapabilityAndRow(&roc_host, testNodeRefExpr(state_token), state_cap, &testStatefulRowButtonElemCallable);
+    const children = [_]abi.Elem{each};
+    const section = testElementWith(&roc_host, "section", &.{}, &children);
+
+    const initial_items = [_]HostValue{ testHostValueI64(1), testHostValueI64(2), testHostValueI64(3) };
+    const root = testNodeStateWithTokenAndInitialCapability(&roc_host, state_token, testHostValueI64List(&roc_host, &initial_items), section, state_cap);
+    defer abi.decrefElem(root, &roc_host);
+
+    var initial_stream: HostNodeDescriptorStream = .{};
+    host.collectActiveElemRootDescriptors(&roc_host, &initial_stream, root, &.{});
+    _ = applyNodeDescriptorStream(&host, &roc_host, &initial_stream);
+    host.rebuildActiveEventsFromStream(&initial_stream);
+    host.engine.active_stream = initial_stream;
+
+    const state_id = host.engine.active_stream.scope_sites.items[0].node_id;
+    const state_index = host.engine.stateIndexByNodeId(state_id) orelse unreachable;
+    const row_3_button_id = activeTextElementId(&host, "row-action-3-3") orelse unreachable;
+    try std.testing.expectEqual(@as(?u64, 3), host.dom_elements.items[@intCast(row_3_button_id)].bound_click_event);
+
+    const next_items = [_]HostValue{ testHostValueI64(1), testHostValueI64(3) };
+    testDropHostValue(&roc_host, host.engine.states.items[state_index].cell.value);
+    host.engine.states.items[state_index].cell.value = testHostValueI64List(&roc_host, &next_items);
+    host.engine.states.items[state_index].version += 1;
+
+    const dirty_source_node_ids = [_]u64{state_id};
+    const dirty_generation = host.nextDirtySignalGeneration();
+    const changed_record_ids = propagateDirtyActiveSignals(&host, &roc_host, host.hostAllocator(), &dirty_source_node_ids, dirty_generation);
+    defer host.hostAllocator().free(changed_record_ids);
+    const dirty_structural_signals = collectDirtyStructuralSignals(&host, &roc_host, host.hostAllocator(), &dirty_source_node_ids, changed_record_ids, dirty_generation);
+    defer host.hostAllocator().free(dirty_structural_signals);
+
+    try std.testing.expectEqual(@as(usize, 1), dirty_structural_signals.len);
+    _ = applyDirtyStructuralSignalsLocally(&host, &roc_host, &dirty_source_node_ids, dirty_generation, dirty_structural_signals);
+
+    try std.testing.expectEqual(@as(usize, 2), host.engine.active_events.items.len);
+    try std.testing.expectEqual(row_3_button_id, activeTextElementId(&host, "row-action-3-3") orelse unreachable);
+    try std.testing.expectEqual(@as(?u64, 2), host.dom_elements.items[@intCast(row_3_button_id)].bound_click_event);
+}
+
 fn freeKeyedRowDiff(host: *HostEnv, diff: HostKeyedRowDiffResult) void {
     diff.deinit(host.hostAllocator());
 }

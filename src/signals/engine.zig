@@ -4571,6 +4571,7 @@ pub fn Engine(comptime Ctx: type) type {
         pub fn applyDirtyStructuralSignalsLocally(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, dirty_source_node_ids: []const u64, dirty_generation: u64, changes: []const HostDirtyStructuralSignal) render.Counts {
             var total_counts: render.Counts = .{};
             var applied_any = false;
+            const event_count_before = self.active_stream.events.items.len + self.active_stream.named_events.items.len;
 
             for (changes) |change| {
                 var replacement_stream: HostNodeDescriptorStream = .{};
@@ -4664,6 +4665,13 @@ pub fn Engine(comptime Ctx: type) type {
                 const counts = self.applySplicedStructuralNodeDescriptorTarget(ctx, roc_host, splice_and_targets.splice, splice_and_targets.targets, dirty_source_node_ids, dirty_generation);
                 total_counts.addAll(counts);
                 applied_any = true;
+            }
+
+            if (applied_any) {
+                const event_count_after = self.active_stream.events.items.len + self.active_stream.named_events.items.len;
+                if (event_count_after != event_count_before) {
+                    self.applyActiveStreamEventBindings(ctx, &total_counts);
+                }
             }
 
             return total_counts;

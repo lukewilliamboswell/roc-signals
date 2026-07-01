@@ -17,11 +17,6 @@ dist/
 *.so
 *.tar.zst
 
-!platform/targets/
-!platform/targets/**/
-!platform/targets/**/*.a
-!platform/targets/**/*.wasm
-
 www/static/signals.css
 examples/**/__pycache__/
 scripts/__pycache__/

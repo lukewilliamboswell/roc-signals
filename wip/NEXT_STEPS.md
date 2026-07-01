@@ -1,1195 +1,241 @@
 # Signals — Next Steps
 
-`DESIGN.md` is the enduring target design (one engine, two thin hosts; native is
-the spec/telemetry/debug host, wasm is the browser boundary; the same apps run in
-both). This file is the live work queue: the ordered drive toward that design,
-plus the optimisation backlog held behind it. Completed phase notes and retired
-findings belong in git history, not here.
-
-## Drive order
-
-The goal of this phase is to bring all our apps online — running in the browser
-alongside the native spec test runner — on top of a fully host-agnostic engine,
-then harden the erased-value ownership boundary before spending time on
-optimisation. We deliberately defer further optimisation of the implementation
-until:
-
-1. the refactor that finishes the engine extraction is complete (**done** —
-   `engine.zig` now owns the structural collection/splice/apply/rebind and
-   effect-source dispatch path; no reactive or structural logic remains in either
-   host file, only host-specific glue),
-2. the architecture and abstractions have been reviewed (**done** —
-   `verifyCtx`/`verifyRegistryOps`/`verifySink`/`verifyMetrics` pin the host
-   seam contracts explicitly, native/wasm host files only expose host glue and
-   sinks, and the seam unit modules plus native app/spec gate are green),
-3. retained `HostValue` edges carry coherent app-compiled ownership
-   capabilities instead of scattered split/eq/drop descriptors, and
-4. baseline measurements have been updated and reviewed to inform decisions.
-
-Only then do we re-prioritise the optimisation backlog. The phases below are in
-order; take the earliest unfinished one.
-
-## Phase 1 — Bring the app suite online in both hosts
-
-With the engine fully extracted, enable structural behaviour in the wasm host and
-get every app in the suite running in the browser *and* under the native spec
-runner from the same Roc source.
-
-- [x] Enable the structural wasm path (`Ui.each`, `Ui.when`, `remove_node`,
-      `move_before`, async) now that the structural engine is shared. The
-      previously-noted comptime kill switch becomes unnecessary once the path is
-      green — remove it rather than leaving a dormant flag.
-- [x] Event-payload accessor path: carry the accessor descriptor in the
-      descriptor tree; JS walks it against the live `Event` and serializes only
-      the requested leaves into a `roc_alloc`'d buffer, transferring ownership on
-      `roc_ui_event`. No payload reconstruction in JS.
-- [x] Structural splicing against a live DOM: `Ui.each`/`Ui.when` detach/move via
-      the shared `RemoveNode`/`MoveBefore` commands; surviving rows keep DOM and
-      local state; disposed scopes clear `nodes[]`/listeners and drop closures.
-- [x] Async/timers/cancellation in the browser: `roc_ui_resolve` / `roc_ui_timer`
-      exports with host-assigned `request_id` / `token`, `AbortController` /
-      `clearInterval` driven by host-emitted cancel commands on scope dispose.
-- [x] `serve.py` builds and serves **any** app in the suite (parameterised app
-      selection + both backends), not just the counter/demo. With no app
-      argument it builds the maintained app suite and serves the suite index;
-      pass one app path for targeted QA.
-- [x] Confirm the maintained app suite through the native runner and the browser
-      boundary gates. Verified 2026-06-30: `python3 scripts/test.py native`
-      builds and runs every native app/spec green; `python3 scripts/test.py
-      browser wasm` runs the JS↔WASM contract guards and builds/mounts/unmounts
-      every public wasm app; `python3 scripts/serve.py --no-server --app-opt
-      dev` and `python3 scripts/serve.py --no-server --app-opt size` build the
-      suite index and every public browser wasm artifact. `scripts/serve.py`
-      still provides the one-URL human browser pass when manual inspection is
-      wanted, but that is not an automated semantic gate.
-
-We do **not** add an automated real-browser harness. The native spec runner
-already asserts semantics and work budgets — the things the browser cannot show
-us — and the JS runtime is a thin wrapper whose only meaningful contract is the
-cmd/patch codec. A headless-browser harness would re-test DOM behaviour we do not
-own and engine semantics already covered natively, for no added signal.
-
-### Attribute/event/payload boundary slice evaluation
-
-- **Status:** implemented. Custom text attrs remain on the existing
-  `SetAttrText` / `RemoveAttr` dynamic record path. General named events now use
-  explicit `BindEvent` / `ClearEvent` dynamic records with event name, static
-  listener option bits, payload kind, and payload descriptor. `keydown` requests
-  only `{ event.key, event.shiftKey }`; JS encodes layout-independent bytes and
-  the Roc app-facing `Ui.State.on_key` decoder constructs `{ key, shift_key }`.
-  Submit uses a unit descriptor plus the static prevent-default option.
-- **Alternatives rejected:** JSON payloads, JS decoding Roc record/list/string
-  layouts, DOM-state inference, global interning of payload values, and
-  generalizing fixed hot click/input/check/pointer ops before measurement.
-- **Coverage added:** `event_payload_boundary.roc` / `.txt` covers `href`,
-  `aria-label`, `data-*`, `id`, `placeholder`, static and signal-backed custom
-  attrs, keyboard payload updates, and submit prevent-default. Native host spec
-  actions now include `key_down` and `submit`. JS contract tests cover dynamic
-  event extraction, listener options, malformed descriptors/records, and memory
-  view refresh after payload allocation.
-- **Measured result:** the benchmark suite includes
-  `signals-event-payload-boundary` at 20 iterations / 80 actions:
-  `commands=1100`, `bind_event=80`, `allocs_this_event=7120`,
-  `deallocs_this_event=5620`, `retained_alloc_delta=1460`,
-  `host_alloc_bytes_this_event=1451800`,
-  `host_dealloc_bytes_this_event=698040`, `host_retained_bytes_delta=751360`.
-  Existing command-count and allocation metrics were sufficient; no new metric
-  counter was needed for this slice.
-- **Remaining risks / next slice:** the attribute/event boundary now includes
-  custom boolean attrs and the focused form events needed by forms. Broader event
-  descriptors should add more explicit leaf constants only when an app needs
-  them. Native and wasm still have two render-surface sinks behind the same
-  command enum; command wire parity remains an open design question.
-
-### JS test surface cleanup (part of Phase 1)
-
-The current browser tests re-prove engine semantics through a DOM double, which
-duplicates native coverage across the boundary. Keep only the JS↔WASM contract
-guards.
-
-- [x] Remove `browser/counter_app.test.mjs`, `browser/executor.test.mjs`, and
-      `browser/stable_text_app.test.mjs` — these assert engine semantics (count
-      changes, one `set_text` per click, pruning, retained-value budget) that the
-      native spec runner already owns and asserts more precisely.
-- [x] Keep `browser/wasm_memory_views.test.mjs` (memory.grow view invalidation)
-      and `browser/controlled_input_policy.test.mjs` (`SetValue` focus/IME
-      policy) — these guard the genuine JS↔WASM boundary contract, not engine
-      semantics.
-- [x] Ensure the remaining JS guards cover the codec contract: op-code →
-      DOM-op mapping, payload marshalling round-trip, and the view-refresh rule.
-
-## Phase 2 — Architecture and abstractions review
-
-A deliberate review pass, once the app suite is online, before any optimisation.
-
-- [x] Are `Ctx` and `sink()` good seams? Is the `Ctx` contract minimal and
-      explicit (every decl checked by `verifyCtx`/`verifyRegistryOps`, no duck
-      typing)?
-- [x] Is the native/wasm split clean — does anything reactive or structural still
-      leak into a host file?
-- [x] Do we have good unit tests at each seam (engine, scope tree, keyed rows,
-      identity table, host-value registry, render sink), or are seams only covered
-      transitively through app specs?
-- [x] Record the review outcome and any seam changes; fix seam defects here rather
-      than carrying them into the optimisation phase.
-
-## Phase 3 — Bundle coherent app-compiled HostValue capabilities
-
-Status: completed as the current architecture.
-
-The immediate wasm `Str.to_utf8` lifetime trap is fixed in the typed backend
-where it belongs. The broader ownership-design gap is now closed by making every
-retained `HostValue` cell carry one app-compiled capability object. The prebuilt
-Zig host remains app-type blind; platform Roc is compiled with the app, so each
-concrete `Signal(a)`, state binder, event payload, row key/item, and sink read
-site packages the exact operations for its concrete `a`.
-
-The host-visible ABI shape is intentionally erased:
-
-```roc
-HostValue.CapabilityHandle := {
-    clone : Box((HostValue -> HostValue)),
-    eq : Box((HostValue, HostValue -> Bool)),
-    drop : Box((HostValue -> {})),
-}
-```
-
-`Capability(a)` is still a typed Roc wrapper. It builds a private typed
-`split : Box(a) -> { keep : Box(a), out : Box(a) }` closure and captures that
-split closure inside the app-compiled `clone`, `eq`, and `drop` operations. The
-descriptor graph stores only the erased handle above, so heterogeneous `Elem`
-and `Node.SignalExpr` payloads no longer under-apply a parameterized
-`CapabilityHandle(a)`.
-
-The registry cell is conceptually:
-
-```zig
-{ box: RocBox, capability: HostValueCapabilityHandle }
-```
-
-Ownership contract:
-
-- `store_with_capability` transfers a boxed value plus its owned capability into
-  the registry.
-- `store_with_existing_capability` stores a new box under the source value's
-  retained capability; it is used by app-compiled clone operations.
-- `get_with_capability` checks the supplied handle against the stored handle,
-  clones through the stored capability, then consumes the clone. This remains
-  split-and-replace semantically; it is never a borrow.
-- `take_with_capability` checks the supplied handle, removes the cell, releases
-  the registry's retained capability exactly once, and transfers the box to Roc.
-- `get_with_split` and `take_with_split` are only for capability internals. The
-  host permits them only while it is executing a Roc callable under an active
-  frame containing the value's owning capability.
-
-Host sequencing changed accordingly. Signal const/map/map2/combine/interval/task
-sources, signal-backed text/bool sinks, `Ui.when`, event payload descriptors,
-task request descriptors, row key/item scopes, state cells, active descriptor
-cleanup, and unmount teardown now retain, compare, invoke, and release the same
-capability handle. The host does not reconstruct a value's split/drop/eq path
-from independent descriptor fields.
-
-Task payload callbacks still use consuming ownership. `Done(Str)` and
-`Failed(Str)` payloads are assigned the task payload capability, passed to the
-app-compiled callback, and then the host asserts the payload handle was consumed
-before completing the callback. The host does not drop a payload after ownership
-has transferred.
-
-Debug hardening:
-
-- reads before capability assignment fail;
-- full capability mismatches fail;
-- split/take internals fail if no owning capability is active;
-- conflicting capability assignment fails;
-- released-handle access fails;
-- unconsumed consuming callbacks fail;
-- clone results must be a different handle owned by the same capability;
-- taking a value releases the stored capability once, and a second take fails.
-
-The remaining edge operations now travel as app-compiled extension records
-rather than scattered free-standing thunks. Signal text/bool reads, `Ui.when`
-condition reads, task request reads, event reducers, and `Ui.each` operations
-carry the owning capability and operation together at the host boundary. The
-universal retained-value contract remains `clone`/`eq`/`drop`; edge-specific
-operations extend that contract only where the descriptor explicitly asks for
-them.
-
-Validation completed for this phase:
-
-- `./zig-out/bin/roc check test/signals/apps/task_to_utf8_lifetime.roc`
-- `./zig-out/bin/roc check test/signals/apps/ops_dashboard.roc`
-- `node --test test/signals/browser/runtime_contract.test.mjs`
-- task lifetime wasm built with `test/signals/serve.py`
-- `node test/signals/browser/task_lifetime_harness.mjs ... success`
-- `node test/signals/browser/task_lifetime_harness.mjs ... failure`
-- ops dashboard wasm flow: loading text disappears after resolving the real
-  `/api/ops/dashboard` payload, dashboard content renders, and unmount returns
-  retained `HostValue` count to zero
-- `zig build run-test-zig -- --test-filter "host value registry"`
-- native signal specs through the then-current signal test gate
-
-The exact glue regeneration command used for the ABI update was:
-
-```sh
-./zig-out/bin/roc glue src/glue/src/ZigGlue.roc test/signals/src test/signals/platform/main.roc
-```
-
-Judgment: proceed with the capability architecture. The host now uses a
-first-class capability object, not only a Roc-side wrapper, and the edge thunks
-cross as capability-owned extension records.
-
-## Phase 3.5 — Remove remaining capability-edge legacy
-
-Status: completed as the current architecture.
-
-The descriptor graph no longer carries edge-specific thunks next to separate
-capability handles:
-
-- signal-backed text reads use `HostValue.TextReadHandle`;
-- signal-backed bool reads and `Ui.when` conditions use
-  `HostValue.BoolReadHandle`;
-- task request reads use `HostValue.TaskRequestReadHandle`;
-- event reducers use `HostValue.EventReducerHandle`;
-- `Ui.each_str` operations travel in one erased ops record containing the items,
-  item, and key capabilities plus `items_to_values`, `key_of`, `key_text`, and
-  `row`.
-
-The operation and owning capability are now one object at the host boundary. The
-host-visible shapes remain erased and stable, with no `Box(a)` fields in
-heterogeneous descriptors. The host stores/passes one extension object per
-retained edge instead of reconstructing a capability plus free-standing thunk.
-
-`HostValue.get` stays split-and-replace, `HostValue.take` stays consuming, and
-task payload callbacks stay on the consuming ownership path. The host still has
-no Roc layout/refcount knowledge; it only invokes the app-compiled operations it
-was handed.
-
-Do not reintroduce the abandoned parameterized host-visible handle shape
-(`CapabilityHandle(a)` in `Elem`/`Node` descriptors), compiler fallbacks, or
-host-side Roc layout/refcount knowledge.
-
-The exact glue regeneration command used for this ABI update was:
-
-```sh
-./zig-out/bin/roc glue src/glue/src/ZigGlue.roc test/signals/src test/signals/platform/main.roc
-```
-
-Validation completed for this phase:
-
-- `zig build roc`
-- `./zig-out/bin/roc check test/signals/apps/task_to_utf8_lifetime.roc`
-- `./zig-out/bin/roc check test/signals/apps/ops_dashboard.roc`
-- `node --test test/signals/browser/runtime_contract.test.mjs`
-- `python3 test/signals/serve.py test/signals/apps/task_to_utf8_lifetime.roc --output /private/tmp/task_to_utf8_lifetime.wasm --no-server --skip-tailwind`
-- `node test/signals/browser/task_lifetime_harness.mjs /private/tmp/task_to_utf8_lifetime.wasm success`
-- `node test/signals/browser/task_lifetime_harness.mjs /private/tmp/task_to_utf8_lifetime.wasm failure`
-- `zig build run-test-zig -- --test-filter "signals host descriptors carry capability-owned extension records"`
-- `zig build run-test-zig -- --test-filter "signals host"`
-- native signal specs through the then-current signal test gate
-
-## Phase 4 — Update and review baseline measurements
-
-- [x] Re-run the benchmark suite across all representative apps and record fresh baselines.
-- [x] Capture the current values of the work counters (`nodes_recomputed`,
-      `patches_emitted`, `active_graph_records_rebuilt`, `stream_nodes_scanned`,
-      `each_key_compares`, per-event allocation deltas) for the representative
-      events of each app.
-- [x] Review the baselines together: which paths are actually expensive, and on
-      what inputs? This review is what turns the optimisation hypotheses below
-      from suspicion into prioritised, evidence-backed work.
-- [x] Wire the foundation counters into `expect_metric_delta` budget assertions
-      (not just captured numbers) on a representative event — at minimum
-      `active_graph_records_rebuilt` on a non-structural event and a single-row
-      splice. These now gate through the app specs: `kanban_board.txt` asserts
-      `active_graph_records_rebuilt` for reorder/splice events, and the
-      identity-stress spec asserts keyed-row budgets such as `each_key_compares`
-      and row reuse/create/remove counts.
-
-Fresh single-sample benchmark baselines captured on 2026-06-26:
-
-| case | actions | nodes_recomputed | patches_emitted | active_graph_records_rebuilt | stream_nodes_scanned | each_key_compares | allocs_this_event | deallocs_this_event | retained_alloc_delta |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| signals-ops-dashboard | 60 | 60 | 3900 | 20 | 820 | 20 | 33760 | 21200 | 12560 |
-| signals-kanban-board | 300 | 300 | 22500 | 3500 | 3580 | 361240 | 202080 | 178240 | 23800 |
-| signals-async-effects | 180 | 220 | 2660 | 60 | 420 | 12880 | 16640 | 13700 | 2900 |
-| signals-component-composition | 100 | 100 | 1500 | 120 | 180 | 7420 | 9700 | 7240 | 2420 |
-| signals-identity-stress | 180 | 180 | 4000 | 300 | 700 | 75720 | 25380 | 20340 | 5000 |
-| signals-checkout-wizard | 180 | 180 | 4280 | 320 | 780 | 16120 | 17840 | 13180 | 4620 |
-
-Post host-allocation-instrumentation single-sample benchmark baseline captured on
-2026-06-27. This is the comparison point for future
-scratch-buffer work; timing is included for context, but the allocation count
-and byte columns are the primary signal.
-
-| case | actions | total_ns | allocs_this_event | deallocs_this_event | host_allocs_this_event | host_deallocs_this_event | host_alloc_bytes_this_event | host_dealloc_bytes_this_event | host_retained_alloc_delta | host_retained_bytes_delta |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| signals-ops-dashboard | 60 | 51619910 | 33760 | 21200 | 47500 | 23900 | 8296620 | 4079080 | 23600 | 4217540 |
-| signals-large-each-64 | 120 | 816326234 | 160640 | 139940 | 241500 | 189460 | 200148680 | 189401620 | 51960 | 10745940 |
-| signals-async-effects | 180 | 24911045 | 16640 | 13700 | 27340 | 20460 | 4984060 | 3599480 | 6800 | 1383760 |
-| signals-checkout-wizard | 180 | 22675915 | 17800 | 13140 | 32720 | 22860 | 7700300 | 5560300 | 9800 | 2139200 |
-| signals-identity-stress | 180 | 38397540 | 24180 | 19140 | 43980 | 32080 | 11723240 | 8834440 | 11820 | 2887980 |
-| signals-kanban-board | 320 | 555115227 | 242180 | 219460 | 317400 | 261380 | 87414760 | 76704060 | 55960 | 10703340 |
-| signals-component-composition | 100 | 9469786 | 9260 | 6800 | 17240 | 10980 | 3241120 | 1967400 | 6180 | 1272740 |
-
-Post keyed-row-site index single-sample benchmark comparison captured on
-2026-06-27. The keyed row path now keeps an explicit active
-`(parent_scope_id, site_ordinal) -> rows` table with per-site hash heads/links,
-so dirty diffs no longer scan the scope forest or rebuild existing-row bucket
-arrays. The large-N specs tightened `each_key_compares` from four per row to two
-per row for no-collision diffs. The earlier large keyed-list readings were a CSV
-alignment mistake: the million-scale values are `stream_nodes_scanned`, not
-`each_key_compares`. Key comparison work is now linear and small relative to
-structural stream scanning; host allocation churn still drops on the keyed-list
-cases.
-
-| case | actions | total_ns | stream_nodes_scanned | each_key_compares | allocs_this_event | deallocs_this_event | host_allocs_this_event | host_deallocs_this_event | host_alloc_bytes_this_event | host_dealloc_bytes_this_event | host_retained_alloc_delta | host_retained_bytes_delta |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| signals-ops-dashboard | 60 | 51992067 | 20 | 0 | 33760 | 21200 | 47500 | 23900 | 8296620 | 4079080 | 23600 | 4217540 |
-| signals-large-each-64 | 120 | 722977782 | 1118520 | 14680 | 160640 | 139940 | 224120 | 171880 | 195850600 | 184879540 | 52160 | 10969940 |
-| signals-async-effects | 180 | 24981420 | 10200 | 0 | 16640 | 13700 | 27340 | 20460 | 4984060 | 3599480 | 6800 | 1383760 |
-| signals-checkout-wizard | 180 | 22923971 | 10280 | 40 | 17800 | 13140 | 32800 | 22760 | 7716620 | 5547820 | 9980 | 2168000 |
-| signals-identity-stress | 180 | 38606668 | 37060 | 660 | 24180 | 19140 | 42760 | 30600 | 11595060 | 8654820 | 12080 | 2939420 |
-| signals-kanban-board | 320 | 554785712 | 454320 | 1400 | 242180 | 219460 | 313920 | 257520 | 87030340 | 76245640 | 56340 | 10777340 |
-| signals-component-composition | 100 | 12397755 | 5800 | 220 | 9260 | 6800 | 16600 | 10140 | 3177080 | 1871940 | 6380 | 1304160 |
-
-Stream-scan diagnostic counters added on 2026-06-27 isolate the next large
-structural cost:
-
-| case | stream_nodes_scanned | remove_target | splice | render_scope | children | events | dirty_scope | each_key_compares |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| signals-large-each-64 | 1118520 | 451840 | 300800 | 236360 | 110680 | 12520 | 6320 | 14680 |
-| signals-kanban-board | 454320 | 128520 | 79280 | 82480 | 132340 | 29860 | 1840 | 1400 |
-
-Sparse render-child index single-sample benchmark comparison captured on
-2026-06-27. `HostNodeDescriptorStream` now keeps explicit sparse
-render metadata keyed by elem id, so `streamDirectChildren` walks child links
-instead of scanning `render_nodes`. The first dense-field/dense-side-table shapes
-were rejected because they eliminated scans but regressed host allocation bytes
-materially; the kept sparse map shape preserves the scan win with allocation
-bytes close to the keyed-row-site baseline.
-
-| case | actions | total_ns | stream_nodes_scanned | stream_nodes_scanned_children | each_key_compares | host_allocs_this_event | host_deallocs_this_event | host_alloc_bytes_this_event | host_dealloc_bytes_this_event | host_retained_alloc_delta | host_retained_bytes_delta |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| signals-large-each-64 | 120 | 777513618 | 1007840 | 0 | 14680 | 241960 | 189700 | 198628840 | 187283540 | 52180 | 11344180 |
-| signals-kanban-board | 320 | 601585598 | 321980 | 0 | 1400 | 337480 | 281060 | 90453540 | 79294600 | 56360 | 11151580 |
-
-Outcome:
-
-- The child bucket is gone: `signals-large-each-64` drops exactly 110680 stream
-  scans and `signals-kanban-board` drops exactly 132340 stream scans.
-- Host allocation bytes are close but not free: large-each is about +2.8MB over
-  the keyed-row-site baseline, and kanban is about +3.4MB over it. The rejected
-  dense shapes were much worse, at roughly +27MB and +8MB respectively.
-- Single-sample wall time is noisy and not improved here. Treat this as the
-  bounded child-bucket win plus a probe that confirms the next larger targets
-  are the remaining `remove_target`, `splice`, and `render_scope` buckets and
-  the still-dark whole-stream splice tail work.
-
-Dark-path attribution counters added on 2026-06-27 and measured with the
-benchmark suite after the sparse render-child index. These counters
-are not part of `stream_nodes_scanned`; they count the whole-stream/whole-graph
-work that was previously invisible in the scan split.
-
-| case | signal_record_table_rebuilt | active_intervals_synced | render_indexes_refreshed |
-| --- | ---: | ---: | ---: |
-| signals-large-each-64 | 69240 | 141080 | 90920 |
-| signals-kanban-board | 20960 | 33040 | 20280 |
-
-This confirms that the splice tail is a major uncounted structural cost. On the
-large-N canary, the hidden counters sum to 301240 units, with interval sync as
-the largest single dark path. The next implementation slice should remove the
-whole-stream signal-record table rebuild and active interval graph walk from
-splices before moving to the `remove_target` descriptor index work.
-
-Incremental splice-tail signal-record/interval maintenance landed on
-2026-06-27. `HostNodeDescriptorStream` now carries explicit descriptor-tree
-owner counts for signal records, so splices register and forget only the
-removed/inserted signal-record trees instead of rebuilding the active token
-table. Active interval sources now start/cancel at active graph retain/release
-points, so splice updates no longer walk the whole active signal graph to sync
-intervals. The remaining interval-sync count below is the full-rebuild/init
-residue, not the per-splice tail.
-
-| case | total_ns | signal_record_table_rebuilt | active_intervals_synced | render_indexes_refreshed | host_alloc_bytes_this_event |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| signals-large-each-64 | 758172373 | 0 | 2600 | 90920 | 198918280 |
-| signals-kanban-board | 594475033 | 0 | 2120 | 20280 | 90631460 |
-
-Elem-owned descriptor removal worklists landed on 2026-06-27. Structural
-splices now consume the explicit `removed_elem_ids` list and the active stream's
-`descriptor_indexes_by_elem_id` table to remove render-owned descriptor rows
-directly: elements, text nodes, signal text nodes, scalar attrs, signal attrs,
-and events. Removal indexes are collected before mutation, sorted descending,
-and applied with swap-removal so moved rows update their descriptor indexes and
-signal/event routes exactly once. Scope-owned descriptor tables still use the
-target-scope membership set and are the remaining `remove_target` residue.
-
-| case | total_ns | stream_nodes_scanned | remove_target | render_scope | splice | events | dirty_scope | render_indexes_refreshed | host_alloc_bytes_this_event |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| signals-large-each-64 | 698619001 | 561600 | 5600 | 236360 | 300800 | 12520 | 6320 | 90920 | 198930940 |
-| signals-kanban-board | 544532300 | 186780 | 3200 | 77800 | 75640 | 28300 | 1840 | 17680 | 90282660 |
-
-Outcome:
-
-- `stream_nodes_scanned_remove_target` collapsed from 451840 to 5600 on
-  `signals-large-each-64`, and from 128520 to 3200 on
-  `signals-kanban-board`.
-- Single-sample wall time improved by about 6.1% on large-each relative to the
-  target-scope-set probe and about 8.5% on kanban. Host allocation bytes are
-  effectively flat on large-each and slightly lower on kanban.
-- Event descriptor swap-removal reduces incidental event-id churn: the
-  identity-stress filter path now rebinds one moved tail event instead of every
-  later compacted event row. The visible DOM and row reuse/remove assertions are
-  unchanged.
-- The remaining measured structural scan work is now dominated by
-  `splice + render_scope`: 537160 scans on large-each and 153440 on kanban.
-  The render-index refresh tail is also still visible at 90920 / 17680.
-
-Splice touched-parent collection was folded into the target render-node pass on
-2026-06-27. The splice path now records removed elem ids and candidate touched
-parents in one full render-node walk, then filters the small parent candidate
-list against the completed removed-elem set.
-
-| case | total_ns | stream_nodes_scanned | remove_target | render_scope | splice | events | dirty_scope | render_indexes_refreshed | host_alloc_bytes_this_event |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| signals-large-each-64 | 706742673 | 411920 | 5600 | 236360 | 151120 | 12520 | 6320 | 90920 | 198930940 |
-| signals-kanban-board | 535414668 | 150260 | 3200 | 77800 | 39120 | 28300 | 1840 | 17680 | 90282660 |
-
-Outcome:
-
-- `stream_nodes_scanned_splice` fell from 300800 to 151120 on large-each and
-  from 75640 to 39120 on kanban.
-- This is a clear attribution win but not yet the full range-index fix. The
-  remaining largest measured buckets are `render_scope` plus the remaining
-  splice range discovery: 387480 scans on large-each and 116920 on kanban.
-- Single-sample wall time is mixed: large-each is noisier/slower in this sample,
-  kanban improves from 544532300 to 535414668. Keep using scan counters for
-  direction and median-of-N for timing claims.
-
-Splice target range discovery was then changed to consume the explicit
-`render_insert_index` passed by the caller on 2026-06-27. Instead of scanning
-the whole active render stream to rediscover the target range, splice walks from
-the insertion point through the contiguous target range and stops at the first
-non-target boundary node.
-
-| case | total_ns | stream_nodes_scanned | remove_target | render_scope | splice | events | dirty_scope | render_indexes_refreshed | host_alloc_bytes_this_event |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| signals-large-each-64 | 699562249 | 265020 | 5600 | 236360 | 4220 | 12520 | 6320 | 90920 | 198930940 |
-| signals-kanban-board | 549882230 | 116660 | 3200 | 77800 | 5520 | 28300 | 1840 | 17680 | 90282660 |
-
-Outcome:
-
-- `stream_nodes_scanned_splice` fell from 151120 to 4220 on large-each and from
-  39120 to 5520 on kanban.
-- Total measured stream scans are now dominated by `render_scope`:
-  236360 / 265020 on large-each and 77800 / 116660 on kanban.
-- Timing remains noisy in single samples: large-each returns near the
-  elem-owned-removal reading, while kanban is slower than the previous sample.
-  The scan attribution is the reliable signal here.
-
-Each-row splices now use explicit per-event row render ranges, captured on
-2026-06-27. The render-order scan already needed for each diff classification
-now returns `[scope_id, render_start, len]` segments. Row splices build a local
-range map from those segments and update it after each splice, so insertion
-points consume explicit range data instead of repeatedly scanning the active
-render stream for first/last nodes in a row scope.
-
-| case | total_ns | stream_nodes_scanned | remove_target | render_scope | splice | events | dirty_scope | render_indexes_refreshed | host_alloc_bytes_this_event |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| signals-large-each-64 | 697220749 | 43940 | 5600 | 15280 | 4220 | 12520 | 6320 | 90920 | 200502620 |
-| signals-kanban-board | 551420216 | 69800 | 3200 | 30940 | 5520 | 28300 | 1840 | 17680 | 90407940 |
-
-Outcome:
-
-- `stream_nodes_scanned_render_scope` fell from 236360 to 15280 on large-each
-  and from 77800 to 30940 on kanban.
-- Total measured stream scans fell to 43940 on large-each and 69800 on kanban.
-  The largest remaining counted buckets are now event scans and the residual
-  render-scope scan.
-- The local range map adds transient allocation: host allocation bytes rose by
-  about 1.6MB on large-each and 0.1MB on kanban in this single sample. This is a
-  good candidate for the next scratch-buffer pass once the remaining structural
-  tail is understood.
-- The biggest remaining non-counted structural tail is now
-  `render_indexes_refreshed`, especially on large-each at 90920.
-
-Outcome:
-
-- `signal_record_table_rebuilt` dropped to zero in the two structural canaries.
-- `active_intervals_synced` fell from 141080 to 2600 on large-each and from
-  33040 to 2120 on kanban; the remaining count comes from full stream rebuilds,
-  not splice-local updates.
-- `render_indexes_refreshed` is unchanged, confirming render-index restamping is
-  now the only dark splice-tail counter left.
-- Wall time improved in this single sample by about 2.5% on large-each and 1.2%
-  on kanban, while host allocation bytes moved slightly upward. Treat this as a
-  real structural cleanup and measurement win, but not the main scan reduction.
-
-Baseline review outcome:
-
-- Structural `Ui.each` work remains the clear first target, but the hot metric is
-  stream scanning around structural patching, not key comparison. The keyed row
-  lookup path is now linear. The `children` bucket is removed by explicit child
-  links, and the render-owned side of `remove_target` is removed by
-  elem-indexed deletion worklists. The larger remaining structural targets are
-  now `splice`, `render_scope`, and the render-index refresh tail.
-- The child-index slice validated the semantic direction: indexed
-  `streamDirectChildren` drops `stream_nodes_scanned_children` to zero and
-  reduces total stream scans by the former `children` bucket. The keeper storage
-  is sparse render metadata keyed by elem id, not extra fields on the dense
-  `HostElemDescriptorIndex`.
-- The former dark splice-tail paths are now attributed. The signal-record table
-  rebuild and interval graph walk have been removed from splice updates; render
-  index refresh remains a measured O(N)-capable tail cost.
-- The generated large-N `Ui.each` app is now in the native spec/bench surface at
-  N = 8 and N = 64, so the next structural fixes are guarded by N-sensitive
-  assertions, not just aggregate six-app samples.
-- `stream_nodes_scanned` is the dominant measured structural cost in the
-  large-N and kanban apps. The split counters above should be tightened as the
-  active stream grows explicit indexes for scope ranges and children.
-- Per-event allocations are high, especially in kanban, but they are currently
-  mixed with whole-site structural work and retained-value churn. Address
-  algorithmic structural gaps before arena/scratch tuning so allocation wins are
-  attributable.
-- The persistent rank-ordered queue remains a design gap, but the present
-  `nodes_recomputed` counts mostly track event count. Prioritise it after the
-  structural scaling gates unless implementation work in the structural path
-  touches the same dirty-worklist ownership.
-- Slot reclamation requires a long-session experiment; the single-sample
-  `retained_alloc_delta` table cannot prove or disprove plateau behaviour.
-- App-authored keyed-row hashes have been replaced with host-private hashing of
-  explicit key text; keep the large-N evidence current as the keyed diff evolves.
-
-## Product capability backlog from `*_PREP.md`
-
-The `*_PREP.md` files are design-prep research, not active queues. This section
-folds their surviving work into one prioritized backlog; treat the prep docs as
-background detail.
-
-**Where this sits.** This is *feature* work, distinct from the Phase 5
-optimisation backlog below. With the Phase 1 native + JS/WASM app-suite gates
-green, this is now the active feature queue. Two caveats keep it from
-automatically outranking everything else:
-
-- Phase 5 items explicitly flagged as **design gaps** rather than optimisations
-  may interleave *ahead* of new features when a baseline shows a `DESIGN.md`
-  budget is being violated. The persistent rank-ordered propagation queue is the
-  remaining example; sink-route maintenance was another such gap, but that slice
-  has landed. Close conformance gaps before adding surface area; additive features
-  should not bury a propagation-core gap.
-- These are net-new capabilities with real ABI/wire churn, so each lands behind
-  native specs plus JS contract tests, not benchmarks.
-
-**Already landed (do not redo):** protocol version/features, the hybrid
-`Extended` dynamic-record path, custom text attrs (`Html.attr`/`attr_s`), custom
-boolean attrs (`Html.required`, `readonly`, `aria_invalid_s`), general named
-events with static listener-option *bit constants* (`prevent_default`,
-`stop_propagation`, `capture`, `passive`, `once`), focused form event helpers
-(`focus`, `blur`, `change`, composition start/end), keydown/submit payload
-slices, the guarded controlled-input `SetValue` policy, the minimal
-production-safe forms slice, package-aligned HTTP request/response envelopes over
-`roc-lang/http` 0.1, the interval lifecycle canary for subscription-style
-start/stop/late-message handling, and JS contract coverage for the current
-boundary. The wire-protocol doc's "research the protocol first" advice is
-therefore historical: its blocking slice shipped.
-
-The first two parallel feature tracks have now landed: attr/event/forms on the UI
-boundary and the package-aligned HTTP slice on the effects boundary. The first
-convergence canary has also landed; broaden subscriptions or app-specific
-interop only when a real example needs that surface.
-
-### Track A — UI boundary (completed)
-
-**A1. Finish the attribute/event boundary (the forms enabler).**
-
-Status: completed 2026-06-30.
-
-- General **boolean** attrs/properties needed by forms landed as custom bool
-  descriptors over the existing dynamic attr set/remove wire path. `Html.required`,
-  `readonly`, `aria_invalid_s`, and `aria_describedby` cover the focused forms
-  surface, with false signal values emitting explicit `RemoveAttr` semantics.
-- Named event helpers landed for real consumers: `focus`, `blur`, `change`,
-  `compositionstart`, and `compositionend`. Existing `submit`/keyboard helpers
-  remain on the same named-event path.
-- Listener-option bits remain static and reused. JS contract coverage now asserts
-  capture/passive/once wiring at `addEventListener`; dynamic prevent/stop
-  decisions returned by reducers remain deferred.
-- Focused coverage landed in `examples/form-boundary/app.roc` and `spec.txt`.
-  The native spec runner dispatches focus/blur/change/composition events and
-  asserts required/readonly/aria-invalid presence and removal. JS contract tests
-  cover bool attr set/remove and form named event unit/target-value payloads.
-- Evidence: `zig build test`; `node --test scripts/browser/runtime_contract.test.mjs`;
-  `python3 scripts/test.py native`; `python3 scripts/test.py browser wasm`;
-  `python3 scripts/serve.py --no-server --app-opt dev`; `python3 scripts/serve.py
-  --no-server --app-opt size`.
-
-**A2. Minimal production-safe forms slice.**
-
-Status: completed 2026-06-30.
-
-- Text input reconciliation is covered by the controlled-input policy and DOM
-  contract tests: no overwrite while focused/composing, latest deferred canonical
-  value applies on blur, equal values are no-ops, and user-typed matching pending
-  values clear without a DOM write.
-- `examples/form-boundary/app.roc` now exercises a production-shaped form:
-  submit with static prevent-default, checkbox continuity, required email input,
-  invalid state removal, a validation message linked by `aria-describedby`, a
-  readonly field, and focus/blur/change/composition event counters.
-- `examples/form-boundary/spec.txt` covers the native semantic surface:
-  form submit, focus/blur, composition start/end, change payloads, checkbox
-  checking, required/readonly attrs, `aria-invalid` removal, and submit gating.
-- Advanced masks, file input, radio/select, async validation, and full browser
-  constraint-validation wrapping remain deliberately deferred until an app needs
-  them.
-- Evidence: `zig build test`; `node --test scripts/browser/runtime_contract.test.mjs`;
-  `python3 scripts/test.py native`; `python3 scripts/test.py browser wasm`;
-  `python3 scripts/serve.py --no-server --app-opt dev`; `python3 scripts/serve.py
-  --no-server --app-opt size`; `python3 scripts/test.py bench`.
-
-### Track B — Effects (first slice completed)
-
-**B1. Package-aligned HTTP effects** (independent of A1/A2; do not gate on the DOM
-boundary).
-
-Status: completed 2026-06-30.
-
-- Pinned `roc-lang/http` 0.1 in `platform/main.roc`. `platform/Http.roc`
-  consumes package `Request`, `Response`, and `Method` values only through the
-  release's builders/accessors, then exposes a minimal Signals wrapper surface
-  because app modules cannot import platform-private packages directly.
-- Replaced the raw string-only HTTP bridge with an explicit ASCII task envelope:
-  package request values lower to method/URI/timeout/headers/body bytes, and
-  browser/native results lift response status/headers/body bytes back into
-  package `Response` values in Roc. JS/native still carry task payloads as text;
-  the HTTP envelope is the typed boundary for this slice.
-- Added `Http.request_task` / `Http.start` for low-level
-  `Task(Response, HttpError)` workflows, plus compatibility text helpers
-  `Http.get_text_task` / `Http.get_text` that decode response body bytes as text.
-- Non-2xx responses are completed `Done(Response)` values. `HttpError` is reserved
-  for network, timeout, cancellation, unsupported request, and response
-  materialization failures.
-- Added `examples/http-boundary/app.roc` / `spec.txt` for deterministic native
-  success, non-2xx, and network-failure coverage. JS contract tests cover request
-  encoding, mocked `fetch` request mapping, response status/header/body
-  materialization, and network error envelopes.
-- Deferred: a non-text task result ABI, explicit native request-inspection spec
-  assertions, full timeout/cancellation/stale-result matrix, credentials/redirect
-  policy, duplicate browser response-header preservation beyond what `fetch`
-  exposes, JSON helpers, multipart, streaming, and app-specific interop.
-- Evidence: `zig build test`; `node --test scripts/browser/runtime_contract.test.mjs`;
-  `python3 scripts/test.py native`; `python3 scripts/test.py browser wasm`;
-  `python3 scripts/serve.py --no-server --app-opt dev`; `python3 scripts/serve.py
-  --no-server --app-opt size`; `python3 scripts/test.py bench`.
-
-### Convergence — after Track A and Track B
-
-**C1. Subscriptions and app-specific JS interop** (broadest surface; do last).
-
-Status: first subscription canary completed 2026-06-30.
-
-- Used the allowed narrow route: `Signal.interval` is the subscription-like
-  lifecycle canary instead of introducing a second generic subscription API
-  before there is an app-shaped consumer.
-- Native specs now have `tick_interval_if_active`, which injects a fake interval
-  message only while a matching interval route is still live. The async-effects
-  spec closes the interval-owning panel, asserts the active route count is zero,
-  then sends a late tick and verifies the closed state remains unchanged.
-- The browser runtime now ignores stale `tickTimer(token)` callbacks after
-  cancellation and emits telemetry for the ignored tick. JS contract coverage
-  asserts that a cancelled timer token does not re-enter wasm.
-- Benchmark replay understands the conditional interval tick, so this canary is
-  covered by the same native, wasm, static-build, and bench gates as the rest of
-  the app suite.
-- Deferred until a real example needs it: a public `Sub` API separate from
-  `Signal.interval`, ports-like app-specific JS channels, app-authored
-  subscription payload descriptors, and the broader start/message/stop/unmount
-  matrix for non-timer browser sources.
-- Evidence: `zig build test`; `node --test scripts/browser/runtime_contract.test.mjs`;
-  `python3 scripts/test.py native`; `python3 scripts/test.py browser wasm`;
-  `python3 scripts/serve.py --no-server --app-opt dev`; `python3 scripts/serve.py
-  --no-server --app-opt size`; `python3 scripts/test.py bench`.
-
-### Continuous discipline (ambient, not a milestone)
-
-Wire-protocol follow-ups stay measured and incremental rather than being a
-scheduled item: keep fixed hot ops; add command byte/drain metrics, malformed
-dynamic-record diagnostics, generated shared constants (if mirrored ids become
-painful), and scoped string/spec interning **only** when metrics show they beat
-the remaining structural tail. Do not switch the native sink to consume the
-browser byte stream; use generated schema or contract tests for parity unless a
-concrete drift bug appears.
-
-### Cross-cutting decisions to settle early (with timing)
-
-These appear in multiple prep docs and will fork the design if deferred. They are
-sequencing constraints, not loose uncertainties:
-
-- **Shared payload format** (event vs subscription vs interop payloads). The docs
-  warn these "should not become three unrelated formats." Decide it **in A1**,
-  when record/primitive event payloads first appear, with C1 explicitly in mind —
-  not after forms have hardened a one-off format.
-- **Effect command channel** (render command buffer vs a separate host→JS effect
-  channel). Shared by HTTP and the wire protocol. Settle it **in B1**, when HTTP
-  gains structured request/response, because it constrains C1's subscription
-  start/stop commands.
-- **Multiple-mount model** (one WASM instance per mount vs explicit mount
-  handles). Lower stakes now, but decide it before stabilizing JS handler
-  registration in C1; handle-based mounting touches every host export and id.
-- **`roc-lang/http` release** to pin, and whether its accessor/builder surface is
-  complete enough to avoid touching record fields — resolve at the start of B1.
-
-## Phase 5 — Re-prioritise the optimisation backlog
-
-After the capability-bundling phase and baseline review, re-prioritise the items
-below using the measured evidence. Each is stated as a falsifiable hypothesis:
-what we believe it helps, why we suspect it, and how we will know. Do not promote
-an item to active work until the Phase 4 baseline supports its hypothesis; an
-optimisation without measured evidence is speculation.
-
-Two of the items below (the persistent rank-ordered propagation queue and
-incremental sink-route maintenance on splice) are **not pure optimisations**:
-they are gaps against `DESIGN.md`'s mandated propagation core and Complexity
-Discipline budget. They are listed here because they are still measured against
-the Phase 4 baselines, but they may be promoted ahead of the discretionary items
-when the baseline confirms the budget is being violated rather than merely
-suboptimal. The remaining items are genuine optimisations and stay strictly
-evidence-gated.
-
-Current priority after the Phase 4 review:
-
-1. Revisit scope-owned descriptor removal only if the now-small
-   `remove_target` residue grows under a broader app or long-session gate.
-2. Keep the long-session leak/plateau gate in the loop for monotonic identity
-   and dense `_by_elem_id` tables.
-3. Keep scoped browser command-wire string dedupe as a measured hypothesis, not
-   as active work, until wire byte/decode counters show it is larger than the
-   remaining structural tail.
-
-### Deferred refactor cleanup
-
-The large engine/native-host extraction plan is retired: the engine modules,
-native support modules, test rooting, and native allocation ledger extraction have
-landed. Do not keep a separate refactor plan alive for these leftovers; promote
-one only when it directly supports the measured priority above or fixes a
-concrete bug.
-
-- **Wasm allocation ledger lookup:** native `roc_alloc_ledger.zig` now uses an
-  exact pointer→index map for O(1) frees/reallocs, but `wasm_host.zig` still keeps
-  an inline allocation table where `findExactRocAllocationIndex` scans
-  `roc_allocations.items`. Decide after browser/baseline review whether this is
-  acceptable browser-boundary debug cost or whether wasm should share/adapt the
-  native ledger's exact-index map while preserving its current diagnostics.
-- **Typed ids at module boundaries:** consider `ElemId`, `NodeId`, `ScopeId`,
-  `ActiveSignalId`, `TaskRequestId`, `IntervalToken`, and row-site ids only at
-  extracted module seams. Do not mass-convert the engine while higher-priority
-  scaling work remains.
-- **Small table/slot wrappers:** use `DenseSlots`/`DenseOptionalSlots`-style
-  helpers only where they remove grow-to-id boilerplate without hiding
-  swap-remove repair or turning O(1) lookups into scans.
-- **Render-cache enum storage:** `descriptor_stream.zig` already has field/event
-  slot helpers; `render_cache.zig` still has explicit fields such as
-  `bound_click_event` and `bound_input_event`. Convert only if it makes new
-  events/fields simpler without obscuring hot-path behaviour.
-- **Capability-frame helper:** `retained_values.zig` still repeats
-  push/defer-pop/call sequences. A tiny `CapabilityFrame(Ctx)` guard is fine if it
-  makes call sites clearer, but it is cleanup, not architecture work.
-- **Native host size:** `native_host.zig` remains large after extracting spec,
-  bench, simulated DOM, ledger, and crash handlers. Split further only if a
-  concrete seam emerges; do not extract host glue just to reduce line count.
-
-### Persistent rank-ordered propagation queue (design gap, not optimisation)
-
-- **Hypothesis:** a single Engine-owned, rank-bucketed dirty queue — reusing the
-  existing `last_dirty_generation` stamp for dedup and `clearRetainingCapacity`
-  between events — replaces the per-event `ArrayList` → `toOwnedSlice` →
-  insertion-sort path with the queue `DESIGN.md` actually mandates.
-- **Why we suspect it:** `DESIGN.md` calls for "a single dirty priority queue per
-  propagation" keyed by topological rank, but
-  `dirtyActiveSignalRecordIdsForSources` builds a fresh worklist, owns-slices it,
-  and `sortActiveSignalRecordIdsByRank` re-sorts it on every event. The
-  generation-counter half of a proper dirty-set already exists; only the reused
-  queue half is missing. This is closing a stated design gap, not a speculative
-  tuning.
-- **How we'll know:** propagation produces the same dirty/changed sets and rank
-  ordering as today (specs green), and per-event allocation deltas for the
-  worklists drop to zero after warmup on a reused `HostEnv`.
-
-### Incremental sink-route maintenance on splice (design gap, not optimisation)
-
-- **Status:** implemented in `engine.zig`. Structural splice now removes,
-  rewrites, and appends sink-route entries as descriptor tables change, and
-  active signal record `swapRemove` moves route buckets with the moved record id.
-  The large-N app now gates active graph rebuilds by changed rows: append/filter
-  allow four records for one created row, remove allows zero, and re-expand
-  allows four records per created row.
-- **Hypothesis:** patching sink routes only for records in the spliced subtree —
-  rather than re-walking the whole active stream — makes structural work scale
-  with the change, not the tree, as `DESIGN.md` requires.
-- **Why we suspected it:** the old splice path re-walked every signal-bearing
-  table of the entire active stream to rebuild every sink route even for a
-  one-row change. That specific gap is closed; do not reintroduce a full
-  `rebuildActiveSinkSignalRoutesFromStream` call on splice.
-- **How we'll know:** `expect_metric_delta active_graph_records_rebuilt` on a
-  single-row splice in the large-N app is bounded by the changed set, not N — the
-  counter `DESIGN.md` designed specifically to fail this path. The assertion is
-  the gate; wiring it is part of the item.
-
-### Structural attribution counters for dark O(N) splice work
-
-- **Status:** implemented. Runtime metrics and benchmark CSV now expose
-  `signal_record_table_rebuilt`, `active_intervals_synced`, and
-  `render_indexes_refreshed`, all gated by the existing `metrics` build option.
-- **Hypothesis:** some remaining one-row structural splice cost is hidden outside
-  `stream_nodes_scanned`: the splice tail still rebuilds the active stream's
-  signal-record token table, syncs active intervals by walking the whole signal
-  graph, and refreshes render indexes from the splice point to the end of the
-  render-node table.
-- **Why we suspect it:** these paths are whole-table/whole-graph walks adjacent
-  to the measured splice path, but the current scan split only attributes
-  descriptor-stream scans. That makes the optimization backlog partially blind.
-- **How we'll know:** add metrics for `signal_record_table_rebuilt`,
-  `active_intervals_synced`, and `render_indexes_refreshed`, then rerun the
-  large-N and kanban benchmarks before promoting the next large structural
-  change. These counters should be gated by `build_options.metrics`.
-
-### Incremental signal-record table and interval sync on splice
-
-- **Status:** implemented for splice-local updates. Signal-record token lookup is
-  maintained from explicit descriptor-tree owner counts, and interval sources are
-  started/cancelled from active graph retain/release. Full stream rebuilds still
-  use the existing graph-wide interval sync path.
-- **Hypothesis:** maintaining the active stream signal-record token table and
-  active intervals for only removed/inserted structural descriptors removes
-  hidden O(total signal-bearing descriptors) and O(total signal graph records)
-  work from every splice.
-- **Why we suspect it:** `rebuildActiveStreamSignalRecordTable` clears and
-  re-walks all signal-bearing descriptor tables after each splice, and
-  `syncActiveIntervalsFromGraph` walks the entire active signal graph. These are
-  the same clear-and-rebuild pattern already removed from sink routes.
-- **Result:** `signals-large-each-64` now reports
-  `signal_record_table_rebuilt=0` and `active_intervals_synced=2600`; kanban
-  reports `0` and `2120`. The non-zero interval values are full-rebuild/init
-  residue. The next dark tail is `render_indexes_refreshed`.
-
-### Scope-owned descriptor removal index
-
-- **Status:** partially implemented for render-owned descriptors; no longer the
-  next major target.
-- **Hypothesis:** a maintained scope-to-owned-descriptor index makes
-  `removeActiveNonRenderDescriptorsInTarget` scale with the replaced subtree
-  instead of linearly scanning and compacting every descriptor table.
-- **Why we suspected it:** before elem-indexed deletion, the `remove_target`
-  bucket was the largest measured structural bucket on `signals-large-each-64`.
-  It came from the many
-  remove-in-target helpers scanning descriptor tables and asking whether each
-  descriptor belongs to the replacement target.
-- **How we'll know:** add or tighten large-N assertions so a one-row splice's
-  `stream_nodes_scanned_remove_target` is bounded by changed descriptors, not
-  total active descriptors. Precomputing the replacement-subtree membership set
-  should remove repeated ancestry walks inside the removal loops.
-- **Probe result:** precomputing a replacement-target scope membership set once
-  per splice is valid and removes repeated ancestry walks from descriptor
-  removal checks, but it does not reduce `stream_nodes_scanned_remove_target`
-  because the descriptor tables are still scanned and compacted. Single-sample
-  benchmark after the splice-tail commit: `signals-large-each-64` total
-  `743778712` with `remove_target=451840`; `signals-kanban-board` total
-  `595055581` with `remove_target=128520`. Keep the target-scope set as a
-  supporting structure, but the next real win is explicit descriptor owner
-  indexes/removal worklists.
-- **Implemented slice:** render-owned descriptor tables now use explicit
-  elem-id descriptor indexes and scratch removal worklists. This drops
-  `remove_target` to `5600` on large-each and `3200` on kanban.
-- **Remaining decision:** a persistent scope-owned descriptor index would address
-  the residual scope-owned scans, but current measurements make it smaller than
-  `splice`, `render_scope`, event scans, and render-index refresh. Do not promote
-  this again until a benchmark shows the residue growing.
-
-### Scope render-range index
-
-- **Hypothesis:** maintaining `scope_id -> [render_start, render_end)` for active
-  scope subtrees collapses the current render-range discovery scans used by
-  splice and render-scope lookup.
-- **Why we suspect it:** `splice` and `render_scope` together are more than 40%
-  of the large-N stream-scan split. After elem-indexed descriptor removal, they
-  are the largest remaining measured scan buckets: `300800 + 236360` on
-  `signals-large-each-64` and `75640 + 77800` on `signals-kanban-board`. Both
-  answer the same ownership question: which contiguous render-node range belongs
-  to this scope subtree?
-- **Implemented slice:** splice's touched-parent collection now shares the
-  target render-node pass. `stream_nodes_scanned_splice` is down to `151120` on
-  large-each and `39120` on kanban.
-- **Implemented slice:** splice now consumes the explicit `render_insert_index`
-  and scans only the contiguous target range. `stream_nodes_scanned_splice` is
-  down again to `4220` on large-each and `5520` on kanban.
-- **Implemented slice:** each-row structural splices now reuse explicit
-  per-event row render segments and update a local range map after each splice.
-  `stream_nodes_scanned_render_scope` is down to `15280` on large-each and
-  `30940` on kanban.
-- **Remaining decision:** a persistent active scope range index could remove the
-  residual render-scope scans, but the next measured target is now per-event
-  allocation/range-map churn. Revisit the persistent range index only if the
-  residual bucket grows again or overlaps with that allocation work.
-
-### Render-index refresh tail on structural splice
-
-- **Status:** implemented for the measured row-only each and pure permutation
-  paths. `replaceRenderRangeWithStream` now refreshes replacement indexes
-  separately from suffix indexes, pure each permutations refresh only the moved
-  region, and row-only keyed each batches defer suffix restamping until the end
-  of the batch. Complex each sites that have non-row direct children on the same
-  parent keep the immediate-refresh path until a focused example justifies a
-  more general child insertion model.
-- **Hypothesis:** most measured render-index refresh cost came from repeatedly
-  restamping the same suffix during multi-row each churn, not from the small
-  replacement ranges themselves.
-- **Result:** `signals-large-each-64` now reports
-  `render_indexes_refreshed=13000` in the 20-iteration benchmark, down from the
-  previous 90920. `signals-kanban-board` is down to 11920 from 17680 via the
-  same-size replacement and pure-permutation changes, while its complex each
-  sites deliberately stay on the conservative fallback.
-- **Gate:** the generated large-N specs now assert
-  `expect_metric_delta_at_most render_indexes_refreshed row_count * 16` for each
-  structural action, so row-only each churn cannot regress to suffix-scale
-  restamping.
-
-### Event descriptor scans in structural apply
-
-- **Status:** implemented. Named event descriptors now maintain a per-element
-  index, and structural splice patching applies event bindings only to
-  replacement elements plus direct children of touched parents instead of
-  rebinding the whole active stream.
-- **Hypothesis:** the measured event scan bucket was dominated by the global
-  post-splice event-binding pass, not by actual changed event descriptors.
-- **Result:** `signals-kanban-board` now reports
-  `stream_nodes_scanned_events=0` in the 20-iteration benchmark, down from the
-  previous 28300. `signals-large-each-64` also reports
-  `stream_nodes_scanned_events=0`; its total `stream_nodes_scanned` is now 31420
-  with `render_indexes_refreshed=13000`.
-- **Gate:** kanban's structural checkpoints and the generated large-N specs now
-  assert `expect_metric_delta stream_nodes_scanned_events 0`. Identity-stress
-  also reflects the reduced redundant event bind on filter, with one fewer patch
-  and zero `bind_event` for that removal-only action.
-
-### Per-event each row scratch buffers
-
-- **Status:** implemented for the measured `Ui.each` structural splice
-  accumulator. `EngineScratch` now owns the per-event each row range map and
-  merged-splice accumulator buffers (`removed_elem_ids`, touched parent ids,
-  replacement elem ids, and replacement on-change/mount indexes). The dirty each
-  row splice path clears them with retained capacity and passes borrowed slices
-  through the merged splice result instead of allocating owned slices each event.
-- **Hypothesis:** after the render-index and event-scan fixes, the remaining
-  elevated host allocation counters would include repeated row range-map and
-  accumulator allocations during keyed each churn.
-- **Result:** the impact is real but small, which is useful signal. In the
-  20-iteration benchmark replay, `signals-kanban-board` moved from
-  `host_allocs_this_event=378540`, `host_alloc_bytes_this_event=97062120` to
-  `377420` and `96858440`. `signals-large-each-64` moved from
-  `258560`, `206273500` to `257740`, `205559100`. Roc ABI allocation counters
-  stayed unchanged, as expected, because this slice only moved engine-internal
-  structural bookkeeping to scratch.
-- **Follow-up:** the next measured target from this slice was
-  `streamDirectChildren`; that is now covered by the direct-child walk section
-  below. Promote further scratch work only when named counters identify the next
-  transient buffer worth moving.
-
-### Allocation-free direct child walks
-
-- **Status:** implemented for engine hot paths. `descriptor_stream` now exposes
-  `streamDirectChildrenInto`, which fills a caller-owned child buffer; the
-  allocating wrapper remains for tests and non-engine callers. `EngineScratch`
-  owns the reusable child buffer, and pure each moves, keyed each insertion-index
-  checks, structural DOM patching, structural event rebinding, and debug render
-  cache assertions now borrow it instead of allocating an owned child slice per
-  parent.
-- **Hypothesis:** after row range maps moved to scratch, repeated direct-child
-  collection remained a visible source of host allocation churn in structural
-  paths.
-- **Result:** the 20-iteration benchmark replay moved `signals-kanban-board`
-  from `host_allocs_this_event=377420`,
-  `host_alloc_bytes_this_event=96858440` to `351320` and `94763560`.
-  `signals-large-each-64` moved from `257740`, `205559100` to `235880` and
-  `202733340`. Roc ABI allocation counters stayed unchanged, as expected.
-- **Gate:** `zig build test`, `python3 scripts/test.py native`, and
-  `python3 scripts/test.py bench` are green with the new helper. Existing
-  render-index and event-scan spec guards stayed green:
-  `signals-large-each-64 render_indexes_refreshed=13000` and
-  `signals-kanban-board stream_nodes_scanned_events=0`.
-
-### Per-cycle scratch/arena to remove dispatch allocation churn
-
-- **Status:** partial. `EngineScratch` now owns reused buffers for pure reorder
-  child-index/LIS work, debug render-cache `seen`/expected-child checks,
-  descriptor-collection binder stacks, inline `Ui.each` key arrays, keyed each
-  row range maps, structural splice accumulator slices, and direct-child walk
-  buffers. Native and wasm teardown release the retained scratch storage. The
-  native host now
-  exposes separate `host_allocs_this_event`, `host_deallocs_this_event`,
-  `host_alloc_bytes_this_event`, `host_dealloc_bytes_this_event`,
-  `host_retained_alloc_delta`, and `host_retained_bytes_delta` metrics for total
-  native host-managed allocator traffic, while the existing `allocs_this_event`
-  and `deallocs_this_event` metrics remain the Roc ABI request counters inside
-  that total. Runtime telemetry is behind the comptime `metrics` build option so
-  non-metrics host builds take the direct allocator path and skip counter bumps.
-- **Hypothesis:** threading one arena (reset `.retain_capacity` per dispatch/
-  render cycle) plus a few persistent reused scratch buffers on the Engine
-  (`seen: []bool`, the dirty/changed/structural worklists) eliminates the bulk of
-  the transient malloc/free churn per event without changing behaviour.
-- **Why we suspect it:** every transient in a dispatch cycle currently round-trips
-  the safety GPA — the dirty/changed/structural worklists, `seen[]` (allocated
-  separately three times), per-element `next_children` `ArrayList`s, the
-  signal-graph route-rebuild temporaries, and the recursive `binder_stack`. These
-  are cycle-scoped buffers whose shape repeats every event.
-- **Constraint:** the arena is for engine-internal bookkeeping only. Boxed Roc
-  values outlive the cycle and must stay on the GPA with their refcounts and the
-  `roc_alloc` ledger — they must not be moved onto the arena.
-- **How we'll know:** the row range-map and direct-child slices proved that small
-  scratch moves are measurable but do not eliminate the full structural
-  allocation tail. The next useful threshold is when the long-session
-  `host_retained_alloc_delta` / `host_retained_bytes_delta` gauges flatten
-  earlier, and per-event `host_allocs_this_event` /
-  `host_alloc_bytes_this_event` deltas for named buffers drop to zero after
-  warmup; specs stay green. Roc heap churn continues to be categorized
-  separately by `allocs_this_event` / `deallocs_this_event`.
-
-### O(1) identity/descriptor lookup (kill linear-scan-by-id)
-
-- **Status:** node/elem descriptor lookup slices and keyed row-site indexes have
-  landed. Render-child indexing has also landed using sparse render metadata
-  keyed by elem id rather than widening the dense elem descriptor index.
-  `HostNodeDescriptorStream` maintains explicit
-  `node_id -> scope_site/state/when/each` and `elem_id -> descriptor` indexes;
-  the engine maintains `node_id -> state cell` indexes for runtime state; and
-  signal record reuse now uses an explicit `token -> record` map. Keyed
-  `Ui.each` row diffs consume an engine-owned active row-site table keyed by
-  `(parent_scope_id, site_ordinal)`, with per-site `key_hash -> row` heads and
-  linked rows retained across diffs. The direct lookup helpers
-  (`stateIndexByNodeId`, `activeScopeSiteByNodeId`,
-  `activeWhenIndexByNodeId`, `activeEachIndexByNodeId`,
-  `streamNodeIdInReplacementTarget`, `streamNodeIdInScopeSubtree`,
-  `findElementDesc`, `findTextNodeDesc`, `findSignalTextNodeDesc`,
-  `streamHasTextField`, `streamHasBoolField`, `signalRecordByToken`, and
-  `activeEachRowScopes`) no longer scan descriptor tables or the scope forest.
-  Indexed child collection no longer scans render nodes. Remaining work is the
-  render-node subtree scans and render-range lookup.
-- **Hypothesis:** finishing explicit active render-node/subtree ownership indexes
-  — maintained on insert/remove, the way `descriptor_indexes_by_elem_id` already
-  is — plus restricting structural patching to the spliced subtree, remove the
-  O(render_nodes²) behaviour in the structural patch paths.
-- **Why we suspect it:** `DESIGN.md` forbids answering "what id is this record?"
-  or "what descriptor owns this elem_id?" by walking a list. The descriptor and
-  token lookups now follow that rule, but the remaining subtree and child
-  collection paths still walk active render nodes to rediscover ownership. The
-  accelerator pattern already exists in the file; the remaining work is applying
-  it to those ownership questions without changing behaviour.
-- **How we'll know:** child indexing removes the `children` bucket without
-  increasing host allocation bytes materially from the keyed-row-site baseline.
-  The later scope-range work adds `stream_nodes_scanned` assertions on a
-  single-row update in the large-N app; the counter must be bounded by the
-  changed set, not by N.
-
-### Slot reclamation for monotonic identity tables
-
-- **Hypothesis:** a free-list of vacant slots for `scopes`, `node_identities`, and
-  `dom_identities` keeps long-session cost flat where it currently degrades.
-- **Why we suspect it:** these tables deactivate via an `active=false` tombstone
-  and never reclaim slots, so every linear scan over them pays for dead entries
-  and a long session degrades even where the algorithm is nominally bounded.
-  `DESIGN.md` budgets ledger ops at O(1) with the index stored in the header; the
-  same discipline should apply here.
-- **How we'll know:** the long-session leak experiment shows table sizes plateau
-  (not grow monotonically) under sustained churn, and identity-lookup
-  `stream_nodes_scanned` stays flat across a long session at fixed live N.
-
-### Generated large-N `Ui.each` scaling app
-
-- **Status:** implemented by `examples/_fixtures/generate_large_each.py`, with
-  generated N = 8 and N = 64 fixtures in the native spec suite and the N = 64
-  fixture in the benchmark surface. Future structural scaling work should
-  tighten these budgets; do not weaken them without measured evidence.
-- **Hypothesis:** a generated large-N each app (N a build parameter, generated
-  systematically — never a handwritten catalog) is the primary proof that the
-  scaling budgets hold across N, extending the active-graph canary from host unit
-  coverage to a real app.
-- **Why we suspect it:** the current fixtures are small; budget violations that
-  only appear at scale can hide behind low patch counts at small N.
-- **How we'll know:** specs assert the budget for single-row update / append /
-  remove / filter / reorder using `active_graph_records_rebuilt`,
-  `stream_nodes_scanned`, `each_key_compares`, and per-event allocations across
-  N ∈ {small, large}; flatness across N confirms or refutes the scaling claim.
-
-### Moves-only reorder proof at large N
-
-- **Hypothesis:** pure permutations emit only DOM moves for displaced rows
-  (longest-stable-subsequence move count), with no row-body re-run and no active
-  graph rebuild, and this holds as N grows.
-- **Why we suspect it:** the local row-move path is implemented and asserted on
-  small fixtures, but only the generated large-N app can pin that reorder does not
-  degrade to whole-site re-collect at scale.
-- **How we'll know:** a large-N reorder host test fails if reorder degrades from
-  moves-only to whole-site re-collect/rebuild.
-
-### Host-private keyed-row hashing
-
-- **Hypothesis:** replacing the app-authored `key -> U64` hash thunk with
-  `Ui.each_str` key material keeps keyed diff lookup O(L) without exposing hash
-  finalization to Roc apps.
-- **Why we suspect it:** the host still builds the same hash index, but now hashes
-  explicit key text privately and stores existing row hashes on row scopes.
-- **How we'll know:** `each_key_compares` still tracks L (not L²) under churn and
-  large-N reorder tests do not re-run row bodies or rebuild the each site.
-
-### Scoped command-wire string dedupe and JS decode cache
-
-- **Hypothesis:** a per-drain string table for the wasm command wire, paired with
-  a JS decode cache keyed by explicit string identity or `(offset, len)`, reduces
-  command-buffer bytes, host-side string copies, and repeated UTF-8 decode work
-  during initial mount and structural splices.
-- **Why we suspect it:** fixed string commands currently append every occurrence
-  into `roc_ui_string_buffer_*`, dynamic attr records inline each `name` and
-  `value`, and JS decodes every referenced byte slice independently. Repeated
-  tags, metadata names (`role`, `aria-label`, `data-testid`, `class`), and
-  repeated class/text attribute values are common in large rows and dashboards.
-  Ordinary unchanged signal text is already pruned before command emission, so
-  the expected win is command-wire churn for patches that really are emitted, not
-  reactive equality or DOM-churn avoidance.
-- **Constraint:** scope this to the browser command wire and per-drain JS cache.
-  Do not globally intern Roc `Str`, `HostValue` payloads, keyed-row values, or
-  capability-owned data. Do not replace keyed-row typed equality with intern ids;
-  keyed rows continue to use host-private hashes plus typed equality for
-  collisions and duplicate-key checks.
-- **How we'll know:** add metrics for fixed string bytes, dynamic string bytes,
-  deduped string-table bytes, string table hits/misses, and JS decode-cache
-  hits/misses. Promote the work only if large-N mount/splice or attr-heavy app
-  samples show material byte/decode reduction without increasing retained host
-  memory or weakening the wire contract.
-
-### Long-session leak experiment
-
-- **Hypothesis:** retained memory over a long session is flat after warmup, and an
-  O(1) allocation-free path keeps session cost linear rather than O(allocs²).
-- **Why we suspect it:** per-iteration `retained_alloc_delta` cannot establish
-  long-session flatness; only a sustained reuse of one `HostEnv` across many
-  events can.
-- **How we'll know:** reuse one `HostEnv` across many dispatched events and assert
-  the live `allocs − deallocs` gauge is flat after warmup.
-
-### Benchmark-gate breadth
-
-- **Hypothesis:** extending the benchmark/spec surface beyond the maintained
-  representative apps (specifically to the generated large-N app) is what turns
-  the scaling claim from "true on small fixtures" into "true across N".
-- **Why we suspect it:** scaling regressions are invisible to the current
-  representative gate at small N.
-- **How we'll know:** the large-N app's scaling invariants are in
-  `expect_metric_delta` assertions and the bench CSV carries its timing evidence.
+This file is the active backlog. It should contain only unfinished work and the
+current ordering. Completed phase notes, benchmark snapshots, and retired findings
+belong in git history or focused design notes, not here.
+
+## Direction
+
+The next phase should reduce the number of public concepts, not grow the API in
+order to preserve every historical path. Prefer one small, typed boundary model
+that attributes, event payloads, subscriptions, app interop, and structured effect
+results can share.
+
+Guiding rules:
+
+- Do not add duplicate public helpers when a smaller core API plus focused sugar is
+  enough.
+- Do not keep compatibility APIs as permanent design inputs. Compatibility shims are
+  temporary migration tools and should have an explicit removal path.
+- Keep JS and native hosts as boundary executors. Roc describes explicit data; hosts
+  execute descriptors and report diagnostics.
+- Prefer typed descriptors over public bit flags or ad hoc stringly protocols.
+- Add surface only when a maintained app or focused canary proves the need.
+- When a design prep item has shipped, remove it from this backlog instead of
+  keeping it as a completed task.
+
+## Active priority order
+
+### 1. Boundary model consolidation
+
+**Goal:** define the smallest shared boundary model that can carry typed data
+between Roc and hosts without creating one-off formats for events, subscriptions,
+JS interop, and structured effects.
+
+This should happen before broadening event propagation, because event payloads and
+dynamic event responses are only one consumer of the boundary.
+
+Deliverables:
+
+- Define a minimal shared `BoundarySchema` / `BoundaryPayload` family for:
+  - unit;
+  - bool;
+  - text;
+  - integer / float scalars only if a real canary needs them;
+  - records of primitive leaves.
+- Define `EventExtractionPlan` as a DOM-specific producer of that boundary payload,
+  not as an event-only payload format.
+- Reuse the same boundary vocabulary for future subscription/app-interop payloads.
+- Keep Roc layout opaque to JS and Zig. Hosts may move bytes/scalars and invoke
+  app-compiled capabilities/decoders; they must not decode arbitrary Roc layouts.
+- Decide the error model for extraction/validation failure:
+  - deterministic diagnostic;
+  - no reducer delivery for that handler;
+  - no silent fallback to DOM inference.
+- Audit the existing public API and mark compatibility-only pieces for removal or
+  replacement by the smaller boundary API.
+
+Non-goals for this slice:
+
+- No generic public `Sub` API yet.
+- No app-specific JS channel yet.
+- No dynamic event response API yet.
+- No broad catalog of event payload leaves. Add leaves only for a canary.
+
+Validation:
+
+- One focused app/spec canary that uses a record payload through the boundary.
+- JS contract tests for boundary encoding, malformed descriptors, extraction
+  failure, and memory-view refresh after host allocation.
+- Native spec coverage for the semantic result, without duplicating browser quirks.
+
+### 2. Public API shrink pass
+
+**Goal:** make the current public surface trend toward one core API plus small
+sugar, rather than parallel fixed/named/compatibility paths.
+
+Deliverables:
+
+- Inventory `platform/Node.roc` and `platform/Html.roc` for duplicate surfaces:
+  fixed event helpers, named event escape hatches, raw listener bits, payload
+  accessor constants, and compatibility helpers.
+- Classify each as:
+  - keep as core;
+  - keep as sugar over the core;
+  - temporary compatibility shim;
+  - remove/deprecate.
+- Prefer a single canonical attr/event representation internally, even if a short
+  migration shim remains at the Roc API edge.
+- Replace public raw listener bitmasks with typed policy values only when the
+  boundary model can carry them cleanly.
+- Avoid adding new `_with` helper families unless they clearly lower to the same
+  core descriptor and replace an older path.
+
+Validation:
+
+- Existing maintained examples still check/build.
+- Any removed or renamed surface is reflected in docs/examples in the same slice.
+
+### 3. Reframe event propagation on top of the boundary
+
+**Goal:** implement event propagation policy as descriptor data over the shared
+boundary, not as another event-specific API family.
+
+Prerequisite: Priority 1 has a settled minimal boundary payload format.
+
+Deliverables:
+
+- One canonical event descriptor internally. Fixed hot event opcodes may remain as
+  compression only, not as a separate semantic path.
+- Handler-level policy and payload:
+  - static prevent default;
+  - static stop propagation;
+  - static stop immediate propagation;
+  - capture/bubble phase;
+  - passive/active listener choice;
+  - `once`;
+  - `self`/`trusted` filters.
+- Delivery derivation:
+  - public request starts with `Auto` and `Native` only;
+  - delegated delivery remains an internal optimization until there is a proven
+    need to expose it;
+  - native is forced for semantics delegation cannot reproduce.
+- `roc_ui_event` returns response bits so dynamic response can be added later
+  without another ABI break, but dynamic response does not need to be public in the
+  first propagation slice.
+- Native spec runner gains browser-realistic dispatch for the motivating cases,
+  especially `real_click` as `pointerdown -> pointerup -> click` with propagation.
+
+API discipline:
+
+- Do not add `on_pointer_down_stop_propagation`-style helper names.
+- Do not add a second payload-description system for events.
+- Do not expose DOM event objects to Roc.
+- Keep high-level helpers as sugar over the canonical descriptor.
+
+Validation:
+
+- A focused nested-control/drag canary proving propagation policy.
+- Native spec coverage for capture/bubble, stop propagation, stop immediate, self,
+  disabled controls where relevant, and form submit default prevention.
+- JS contract tests for listener options and response-bit timing.
+
+### 4. Dynamic event response, only if needed
+
+**Goal:** support expert cases where event response depends on event payload or app
+state, without taxing ordinary handlers or adding duplicate APIs.
+
+Prerequisites:
+
+- Shared boundary payloads are implemented.
+- Static event policy is implemented over canonical descriptors.
+- A real maintained app or canary needs state-dependent response.
+
+Deliverables:
+
+- Dynamic response only through explicit `state.on_event`-style handlers that return
+  both next state and `Event.Response`.
+- Response bits are applied synchronously before the JS listener returns.
+- Ordinary `on_unit` / `on_value` handlers remain static-policy only.
+
+Non-goals:
+
+- No separate payload-only dynamic response API unless repeated code proves it is
+  worth adding as sugar.
+- No async/task-based event response; browser event policy must remain synchronous.
+
+### 5. Subscriptions and app-specific JS interop
+
+**Goal:** add broader inbound host messages only after the boundary model is proven
+by events/effects and a real example needs the surface.
+
+Deliverables when promoted:
+
+- Mount-scoped source ids and generations.
+- Start/stop/unmount cleanup semantics.
+- Shared boundary payload decoding.
+- Stale-message diagnostics.
+- Native spec injection primitives that model semantics without becoming a browser
+  clone.
+
+Keep deferred until needed:
+
+- Public generic `Sub` API.
+- Ports-like app-specific JS channels.
+- Browser source catalogs beyond focused canaries.
+
+### 6. Structural/design-gap backlog
+
+Feature work above should not bury a core propagation or scaling gap when a metric
+shows a `DESIGN.md` budget is violated. The following remain eligible, but should
+be promoted only with current measurements.
+
+#### Persistent rank-ordered propagation queue
+
+Design gap, not cosmetic optimization.
+
+- Replace per-event fresh dirty worklists and sorting with the single rank-bucketed
+  dirty queue described by `DESIGN.md`.
+- Reuse existing generation stamps for deduplication.
+- Know it worked when propagation results stay identical and per-event dirty-list
+  allocations drop to zero after warmup.
+
+#### Long-session plateau gate
+
+- Reuse one host environment across sustained churn.
+- Assert retained allocation/table sizes plateau after warmup.
+- Use this before promoting free-list or slot-reclamation work.
+
+#### Slot reclamation for monotonic identity tables
+
+Promote only if the long-session gate shows monotonic growth that matters.
+
+- Candidate tables: scopes, node identities, DOM identities, dense id-indexed side
+  tables.
+- Preserve O(1) lookup discipline; do not fix memory by reintroducing scans.
+
+#### Measured command-wire string dedupe
+
+Keep as a hypothesis, not active work.
+
+- Add byte/decode counters first.
+- Promote only if fixed/dynamic string traffic is larger than the remaining
+  structural tail in representative apps.
+- Do not globally intern Roc strings, `HostValue`s, keys, or capability-owned data.
+
+#### Additional scratch/arena work
+
+Promote only when named counters identify a specific transient buffer still worth
+moving.
+
+- Keep Roc heap allocations and host-internal scratch separate.
+- Do not move boxed Roc values or refcounted data into per-cycle scratch storage.
 
 ## Green Gates
 
 Use the smallest gate that proves the slice, then run the full signal gate before
-committing. For a pure refactor slice the existing native specs are the
-regression guard; a behaviour-changing slice must also land the assertion that
-locks it in.
+committing. For a pure refactor slice the existing native specs are the regression
+guard; a behavior-changing slice must also land the assertion that locks it in.
 
 - Pre-commit tidy gate:
   `zig build run-check-tidy`
@@ -1197,18 +243,18 @@ locks it in.
   `zig build run-test-zig -- --test-filter "native_host"`
 - Shared engine instantiates under wasm32:
   `zig build build-test-hosts -Doptimize=ReleaseSmall`
-- Platform Roc or ABI changes (any app):
+- Platform Roc or ABI changes:
   `roc check examples/<app>/app.roc`
 - Focused wasm/app build regression:
   `python3 scripts/test.py wasm`
-- End-to-end repository gate:
-  `python3 scripts/test.py`
 - Zig-only checks and tests:
   `zig build test`
+- JS↔WASM contract guards:
+  `zig build run-test-browser`
 - Browser host + apps build, both backends:
   `python3 scripts/serve.py --no-server --app-opt dev`
   `python3 scripts/serve.py --no-server --app-opt size`
-- JS↔WASM contract guards (codec/boundary only):
-  `zig build run-test-browser`
+- End-to-end repository gate:
+  `python3 scripts/test.py`
 
 For doc-only updates, `git diff --check` is enough.

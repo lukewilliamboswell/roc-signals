@@ -1,0 +1,59 @@
+# Team signup form scenario
+
+expect_visible role:heading name:"Team Signup"
+expect_attr role:region name:"Team Signup" data-app "team-signup"
+expect_attr role:form name:"Signup form" id "signup-form"
+expect_attr role:form name:"Signup form" data-form "team-signup"
+
+expect_value label:"Work email" ""
+expect_attr label:"Work email" id "team-signup-email"
+expect_attr label:"Work email" type "email"
+expect_attr label:"Work email" name "email"
+expect_attr label:"Work email" placeholder "team@example.com"
+expect_attr label:"Work email" autocomplete "email"
+expect_attr label:"Work email" required ""
+expect_attr label:"Work email" aria-describedby "email-help"
+expect_attr label:"Work email" aria-invalid ""
+expect_attr text:"Use the email address for the team owner." id "email-help"
+expect_value label:"Reference code" "TEAM-2026-ALPHA"
+expect_attr label:"Reference code" readonly ""
+expect_checked label:"Accept workspace terms" false
+expect_text text:"Email status: required" "Email status: required"
+expect_text text:"Review the workspace terms" "Review the workspace terms"
+expect_text text:"Invitation not sent" "Invitation not sent"
+expect_text text:"Focus events: 0" "Focus events: 0"
+expect_text text:"Blur events: 0" "Blur events: 0"
+expect_text text:"Change events: 0" "Change events: 0"
+expect_text text:"Composition start events: 0" "Composition start events: 0"
+expect_text text:"Composition end events: 0" "Composition end events: 0"
+
+submit role:form name:"Signup form"
+expect_text text:"Invitation not sent" "Invitation not sent"
+
+focus label:"Work email"
+expect_text text:"Focus events: 1" "Focus events: 1"
+
+composition_start label:"Work email"
+expect_text text:"Composition start events: 1" "Composition start events: 1"
+
+composition_end label:"Work email"
+expect_text text:"Composition end events: 1" "Composition end events: 1"
+
+change label:"Work email" "team@example.com"
+expect_value label:"Work email" "team@example.com"
+expect_no_attr label:"Work email" aria-invalid
+expect_text text:"Email status: ready" "Email status: ready"
+expect_text text:"Change events: 1" "Change events: 1"
+
+submit role:form name:"Signup form"
+expect_text text:"Invitation not sent" "Invitation not sent"
+
+check label:"Accept workspace terms"
+expect_checked label:"Accept workspace terms" true
+expect_text text:"Terms ready for submission" "Terms ready for submission"
+
+submit role:form name:"Signup form"
+expect_text text:"Invitation sent: 1" "Invitation sent: 1"
+
+blur label:"Work email"
+expect_text text:"Blur events: 1" "Blur events: 1"

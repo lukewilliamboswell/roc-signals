@@ -5,7 +5,7 @@ import { basename } from "node:path";
 
 import {
   SignalsRuntime,
-  opsApiTextTaskHandler,
+  publicExampleTaskHandler,
 } from "../../www/static/signals.mjs";
 import { installDomDouble } from "./dom_double.mjs";
 
@@ -38,7 +38,7 @@ const { instance } = await WebAssembly.instantiate(bytes, {});
 const root = installDomDouble();
 const errors = [];
 const runtime = new SignalsRuntime(instance.exports, root, {
-  taskHandler: opsApiTextTaskHandler,
+  taskHandler: publicExampleTaskHandler,
   telemetry: false,
   onError: (err) => errors.push(err),
 });

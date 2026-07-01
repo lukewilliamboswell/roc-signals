@@ -1,0 +1,123 @@
+# Deployment queue scenario: retained row checks across reorder, hotfix insert,
+# filtering, and enclosing branch disposal.
+
+expect_visible role:heading name:"Deployment Queue"
+expect_visible role:region name:"Queue controls"
+expect_visible role:region name:"Deployments active"
+expect_visible role:region name:"Edge Gateway"
+expect_visible role:region name:"API Workers"
+expect_visible role:region name:"Search Index"
+expect_text text:"Edge Gateway awaiting verification" "Edge Gateway awaiting verification"
+expect_text text:"API Workers awaiting verification" "API Workers awaiting verification"
+expect_text text:"Search Index awaiting verification" "Search Index awaiting verification"
+expect_absent role:region name:"Billing Hotfix"
+
+mark_metrics
+click role:button name:"Check Edge Gateway"
+expect_text text:"Edge Gateway checks: 1" "Edge Gateway checks: 1"
+expect_metric_delta rows_reused 0
+expect_metric_delta rows_created 0
+expect_metric_delta rows_removed 0
+expect_metric_delta scopes_disposed 1
+
+mark_metrics
+click role:button name:"Prioritize queue"
+expect_visible role:region name:"Search Index"
+expect_text text:"Edge Gateway checks: 1" "Edge Gateway checks: 1"
+expect_text text:"API Workers awaiting verification" "API Workers awaiting verification"
+expect_metric_delta rows_reused 3
+expect_metric_delta rows_created 0
+expect_metric_delta rows_removed 0
+expect_metric_delta each_key_compares 6
+
+mark_metrics
+click role:button name:"Check Search Index"
+expect_text text:"Search Index checks: 1" "Search Index checks: 1"
+expect_text text:"Edge Gateway checks: 1" "Edge Gateway checks: 1"
+expect_metric_delta rows_reused 0
+expect_metric_delta rows_created 0
+expect_metric_delta rows_removed 0
+expect_metric_delta scopes_disposed 1
+
+mark_metrics
+click role:button name:"Insert hotfix"
+expect_visible role:region name:"Billing Hotfix"
+expect_text text:"Billing Hotfix awaiting verification" "Billing Hotfix awaiting verification"
+expect_text text:"Search Index checks: 1" "Search Index checks: 1"
+expect_text text:"Edge Gateway checks: 1" "Edge Gateway checks: 1"
+expect_metric_delta nodes_recomputed 1
+expect_metric_delta patches_emitted 20
+expect_metric_delta rows_reused 3
+expect_metric_delta rows_created 1
+expect_metric_delta rows_removed 0
+expect_metric_delta each_key_compares 7
+
+mark_metrics
+click role:button name:"Check Billing Hotfix"
+expect_text text:"Billing Hotfix checks: 1" "Billing Hotfix checks: 1"
+expect_text text:"Search Index checks: 1" "Search Index checks: 1"
+expect_text text:"Edge Gateway checks: 1" "Edge Gateway checks: 1"
+expect_metric_delta rows_reused 0
+expect_metric_delta rows_created 0
+expect_metric_delta rows_removed 0
+expect_metric_delta scopes_disposed 1
+
+mark_metrics
+click role:button name:"Hide API Workers"
+expect_absent role:region name:"API Workers"
+expect_text text:"Billing Hotfix checks: 1" "Billing Hotfix checks: 1"
+expect_text text:"Search Index checks: 1" "Search Index checks: 1"
+expect_text text:"Edge Gateway checks: 1" "Edge Gateway checks: 1"
+expect_metric_delta nodes_recomputed 1
+expect_metric_delta patches_emitted 4
+expect_metric_delta remove_node 4
+expect_metric_delta bind_event 0
+expect_metric_delta move_before 0
+expect_metric_delta append_child 0
+expect_metric_delta rows_reused 3
+expect_metric_delta rows_created 0
+expect_metric_delta rows_removed 1
+expect_metric_delta scopes_disposed 2
+expect_metric_delta each_key_compares 6
+
+mark_metrics
+click role:button name:"Hide API Workers"
+expect_visible role:region name:"API Workers"
+expect_text text:"API Workers awaiting verification" "API Workers awaiting verification"
+expect_text text:"Billing Hotfix checks: 1" "Billing Hotfix checks: 1"
+expect_text text:"Search Index checks: 1" "Search Index checks: 1"
+expect_text text:"Edge Gateway checks: 1" "Edge Gateway checks: 1"
+expect_metric_delta rows_reused 3
+expect_metric_delta rows_created 1
+expect_metric_delta rows_removed 0
+expect_metric_delta each_key_compares 7
+
+mark_metrics
+click role:button name:"Pause queue"
+expect_visible role:region name:"Deployments paused"
+expect_text text:"Queue paused" "Queue paused"
+expect_absent role:region name:"Deployments active"
+expect_absent role:region name:"Edge Gateway"
+expect_absent role:region name:"API Workers"
+expect_absent role:region name:"Search Index"
+expect_absent role:region name:"Billing Hotfix"
+expect_metric_delta rows_reused 0
+expect_metric_delta rows_created 0
+expect_metric_delta rows_removed 0
+expect_metric_delta scopes_disposed 9
+
+mark_metrics
+click role:button name:"Pause queue"
+expect_visible role:region name:"Deployments active"
+expect_visible role:region name:"Edge Gateway"
+expect_visible role:region name:"API Workers"
+expect_visible role:region name:"Search Index"
+expect_visible role:region name:"Billing Hotfix"
+expect_text text:"Edge Gateway awaiting verification" "Edge Gateway awaiting verification"
+expect_text text:"API Workers awaiting verification" "API Workers awaiting verification"
+expect_text text:"Search Index awaiting verification" "Search Index awaiting verification"
+expect_text text:"Billing Hotfix awaiting verification" "Billing Hotfix awaiting verification"
+expect_metric_delta rows_reused 0
+expect_metric_delta rows_created 4
+expect_metric_delta rows_removed 0
+expect_metric_delta scopes_disposed 1

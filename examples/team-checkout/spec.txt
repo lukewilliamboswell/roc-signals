@@ -1,0 +1,44 @@
+# Team checkout smoke scenario
+
+expect_visible role:heading name:"Team Checkout"
+expect_visible role:region name:"Cart"
+expect_attr role:region name:"Cart" data-panel "cart"
+expect_attr role:region name:"Current step" data-step "cart"
+expect_visible role:region name:"3 seats"
+expect_visible role:region name:"Priority support"
+expect_text text:"3 seats quantity: 1" "3 seats quantity: 1"
+
+click role:button name:"Increase 3 seats"
+expect_text text:"3 seats quantity: 2" "3 seats quantity: 2"
+
+click role:button name:"Next"
+expect_visible role:region name:"Delivery"
+expect_attr role:region name:"Current step" data-step "delivery"
+expect_value label:"Email" ""
+fill label:"Email" "team@example.com"
+expect_value label:"Email" "team@example.com"
+fill label:"Address" "42 Signal Way"
+expect_value label:"Address" "42 Signal Way"
+expect_checked label:"Accept terms" false
+
+click role:button name:"Next"
+expect_visible role:region name:"Review"
+expect_attr role:region name:"Current step" data-step "review"
+expect_text text:"Email: team@example.com" "Email: team@example.com"
+expect_text text:"Address: 42 Signal Way" "Address: 42 Signal Way"
+expect_text text:"Receipt pending" "Receipt pending"
+expect_disabled role:button name:"Place order" true
+
+click role:button name:"Back"
+expect_visible role:region name:"Delivery"
+expect_attr role:region name:"Current step" data-step "delivery"
+check label:"Accept terms"
+expect_checked label:"Accept terms" true
+expect_text text:"Terms accepted" "Terms accepted"
+
+click role:button name:"Next"
+expect_visible role:region name:"Review"
+expect_attr role:region name:"Current step" data-step "review"
+expect_disabled role:button name:"Place order" false
+click role:button name:"Place order"
+expect_text text:"Receipt sent: 1" "Receipt sent: 1"

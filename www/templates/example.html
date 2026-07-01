@@ -7,12 +7,12 @@
 <main class="site-shell">
   {% for example in data.examples %}
   {% if example.slug == page.extra.slug %}
-  <section class="grid gap-4">
-    <div class="flex flex-wrap items-end justify-between gap-3">
-      <div>
+  <section class="grid min-w-0 gap-4">
+    <div class="grid min-w-0 gap-3 sm:flex sm:flex-wrap sm:items-end sm:justify-between">
+      <div class="min-w-0">
         <p class="text-sm font-medium text-emerald-700">Example</p>
         <h1 class="text-3xl font-semibold text-zinc-950">{{ example.title }}</h1>
-        <p class="mt-2 max-w-3xl leading-7 text-zinc-700">{{ example.description }}</p>
+        <p class="mt-2 max-w-3xl break-words leading-7 text-zinc-700">{{ example.description }}</p>
       </div>
       <div class="flex flex-wrap gap-2">
         <a class="button" href="{{ get_url(path='examples/' ~ example.slug ~ '/source/app.roc') }}">Source</a>
@@ -23,7 +23,7 @@
     </div>
     <section class="panel overflow-hidden">
       <div class="border-b border-zinc-200 px-4 py-3">
-        <p class="text-sm text-zinc-600">Running <code>{{ example.slug }}/app.wasm</code></p>
+        <p class="text-sm text-zinc-600">Running <code class="break-all">{{ example.slug }}/app.wasm</code></p>
       </div>
       <div data-signals-wasm="{{ get_url(path='examples/' ~ example.slug ~ '/app.wasm') }}" data-signals-title="{{ example.title }}"></div>
     </section>
