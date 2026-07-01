@@ -1,0 +1,31 @@
+# Workspace widgets smoke scenario
+
+expect_visible role:heading name:"Workspace Widgets"
+expect_visible role:region name:"Widget controls"
+expect_visible role:region name:"Traffic Widget"
+expect_visible role:region name:"Queue Widget"
+expect_text text:"Traffic Widget refreshes: 0" "Traffic Widget refreshes: 0"
+expect_text text:"Queue Widget refreshes: 0" "Queue Widget refreshes: 0"
+
+click role:button name:"Refresh Traffic Widget"
+expect_text text:"Traffic Widget refreshes: 1" "Traffic Widget refreshes: 1"
+expect_text text:"Queue Widget refreshes: 0" "Queue Widget refreshes: 0"
+
+click role:button name:"Reorder widgets"
+expect_visible role:region name:"Queue Widget"
+expect_visible role:region name:"Traffic Widget"
+expect_text text:"Traffic Widget refreshes: 1" "Traffic Widget refreshes: 1"
+expect_text text:"Queue Widget refreshes: 0" "Queue Widget refreshes: 0"
+
+click role:button name:"Refresh Queue Widget"
+expect_text text:"Queue Widget refreshes: 1" "Queue Widget refreshes: 1"
+expect_text text:"Traffic Widget refreshes: 1" "Traffic Widget refreshes: 1"
+
+click role:button name:"Toggle queue widget"
+expect_absent role:region name:"Queue Widget"
+expect_text text:"Traffic Widget refreshes: 1" "Traffic Widget refreshes: 1"
+
+click role:button name:"Toggle queue widget"
+expect_visible role:region name:"Queue Widget"
+expect_text text:"Queue Widget refreshes: 0" "Queue Widget refreshes: 0"
+expect_text text:"Traffic Widget refreshes: 1" "Traffic Widget refreshes: 1"

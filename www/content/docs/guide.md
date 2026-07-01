@@ -243,7 +243,7 @@ render_line = |label, _line| {
 }
 ```
 
-The [Checkout Wizard](@/examples/checkout-wizard.md) uses this pattern for cart
+The [Team Checkout](@/examples/team-checkout.md) uses this pattern for cart
 line quantities.
 
 ## Components and larger apps
@@ -290,7 +290,7 @@ A useful convention is: pass one signal of one props record across a component
 boundary, then derive leaf fields inside the component. Avoid long parameter
 lists of field signals unless there is a specific reason.
 
-The [Ops Dashboard](@/examples/ops-dashboard.md) follows this shape with:
+The [Service Ops Center](@/examples/service-ops-center.md) follows this shape with:
 
 - `Dashboard.roc` for domain parsing/state,
 - `DashboardRemote.roc` for per-section remote state,
@@ -324,7 +324,7 @@ returns an explicit response envelope; JS never reads Roc record layouts. The
 `Http.get_text_task` / `Http.get_text` helpers are thin convenience wrappers that
 decode response body bytes as UTF-8 text for examples like the dashboard.
 
-For example, `examples/ops-dashboard/app.roc` creates a browser HTTP text task,
+For example, `examples/service-ops-center/app.roc` creates a browser HTTP text task,
 starts it on mount, starts it again on interval ticks, and folds the task status
 into dashboard state.
 
@@ -404,7 +404,7 @@ examples be tested without a browser while still describing user-facing behavior
 A spec looks like:
 
 ```txt
-expect_visible role:heading name:"Checkout wizard"
+expect_visible role:heading name:"Team Checkout"
 fill label:"Email" "team@example.com"
 expect_value label:"Email" "team@example.com"
 check label:"Accept terms"
@@ -440,7 +440,7 @@ under `dist/examples/<slug>/source/`, and starts a local static server.
 Useful variants:
 
 ```sh
-python3 scripts/serve.py --example ops-dashboard --port 9001
+python3 scripts/serve.py --example service-ops-center --port 9001
 python3 scripts/serve.py --app-opt dev
 python3 scripts/serve.py --no-server
 ```
@@ -472,7 +472,7 @@ For contributor setup and release-site details, see
 
 - Browse the [Examples](@/examples/_index.md) page and open each example's
   **Source** and **Spec** links.
-- Read `examples/ops-dashboard/app.roc` for the most complete current browser
+- Read `examples/service-ops-center/app.roc` for the most complete current browser
   implementation.
 - Read `www/static/signals.mjs` if you want to understand the JavaScript runtime
   that applies Wasm command buffers to the DOM.

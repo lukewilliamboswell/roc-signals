@@ -10,12 +10,15 @@ import {
   Protocol,
   ProtocolFeature,
   SignalsRuntime,
+  apiRequestConsoleTaskHandler,
   decodeHttpRequestPayload,
   decodeHttpResponsePayload,
   encodeHttpRequestPayload,
   encodeHttpResponsePayload,
   httpFetchTaskHandler,
+  lookupTaskHandler,
   opsApiTextTaskHandler,
+  publicExampleTaskHandler,
 } from "../../www/static/signals.mjs";
 import {
   applySetValue,
@@ -1315,6 +1318,82 @@ test("ops API text task handler serves only documented static endpoints", async 
       }),
     /roc-http-error-v1\nunsupported/,
   );
+});
+
+test("API request console task handler serves deterministic POST scenarios", async () => {
+  const success = await apiRequestConsoleTaskHandler({
+    name: "http:send:api-request-console",
+    request: encodeHttpRequestPayload({
+      method: "POST",
+      uri: "/api/api-request-console",
+      headers: [["x-scenario", "success"]],
+      body: '{"lookup":"customer-42"}',
+    }),
+  });
+  const successResponse = decodeHttpResponsePayload(success);
+  assert.equal(successResponse.status, 201);
+  assert.deepEqual(successResponse.headers, [
+    ["content-type", "application/json; charset=utf-8"],
+    ["x-result", "ok"],
+  ]);
+  assert.match(new TextDecoder().decode(successResponse.body), /customer-42/);
+
+  const missing = await apiRequestConsoleTaskHandler({
+    name: "http:send:api-request-console",
+    request: encodeHttpRequestPayload({
+      method: "POST",
+      uri: "/api/api-request-console",
+      headers: [["x-scenario", "missing"]],
+    }),
+  });
+  assert.equal(decodeHttpResponsePayload(missing).status, 404);
+
+  assert.throws(
+    () =>
+      apiRequestConsoleTaskHandler({
+        name: "http:send:api-request-console",
+        request: encodeHttpRequestPayload({
+          method: "POST",
+          uri: "/api/api-request-console",
+          headers: [["x-scenario", "failure"]],
+        }),
+      }),
+    /roc-http-error-v1\nnetwork/,
+  );
+});
+
+test("public example task handler combines ops, API console, and lookup tasks", async () => {
+  const lookup = await lookupTaskHandler({
+    name: "lookup",
+    request: "roc",
+    signal: new AbortController().signal,
+  });
+  assert.match(lookup, /Top results for "roc"/);
+
+  await assert.rejects(
+    () =>
+      lookupTaskHandler({
+        name: "lookup",
+        request: "fail",
+        signal: new AbortController().signal,
+      }),
+    /offline search index/,
+  );
+
+  const api = await publicExampleTaskHandler({
+    name: "http:send:api-request-console",
+    request: encodeHttpRequestPayload({
+      method: "POST",
+      uri: "/api/api-request-console",
+    }),
+  });
+  assert.equal(decodeHttpResponsePayload(api).status, 201);
+
+  const ops = await publicExampleTaskHandler({
+    name: "http:send:summary",
+    request: encodeHttpRequestPayload({ method: "GET", uri: "/api/ops/summary" }),
+  });
+  assert.match(new TextDecoder().decode(decodeHttpResponsePayload(ops).body), /Overall:/);
 });
 
 function textBytes(value) {

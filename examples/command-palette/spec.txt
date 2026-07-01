@@ -1,0 +1,30 @@
+# Command palette event scenario
+
+expect_visible role:heading name:"Command Palette"
+expect_attr role:region name:"Command Palette" data-app "command-palette"
+expect_attr role:link name:"Command docs" href "/docs/guide/"
+expect_attr role:link name:"Command docs" aria-label "Command docs"
+expect_attr role:link name:"Command docs" data-link "guide"
+
+expect_value label:"Command search" ""
+expect_attr label:"Command search" id "command-search"
+expect_attr label:"Command search" placeholder "Search actions or jump to a page"
+expect_attr label:"Command search" data-static "ready"
+expect_attr label:"Command search" data-query ""
+expect_text text:"Shortcut captured: none" "Shortcut captured: none"
+
+fill label:"Command search" "deploy"
+expect_value label:"Command search" "deploy"
+expect_attr label:"Command search" data-query "deploy"
+expect_text text:"Filtering actions for: deploy" "Filtering actions for: deploy"
+
+key_down label:"Command search" "K" true
+expect_text text:"Shortcut captured: K with Shift" "Shortcut captured: K with Shift"
+key_down label:"Command search" "Enter" false
+expect_text text:"Shortcut captured: Enter" "Shortcut captured: Enter"
+
+expect_attr role:form name:"Command form" id "command-form"
+expect_attr role:form name:"Command form" data-form "command-palette"
+expect_text text:"No command has run yet" "No command has run yet"
+submit role:form name:"Command form"
+expect_text text:"Commands run: 1" "Commands run: 1"

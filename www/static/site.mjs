@@ -1,4 +1,4 @@
-import { mountSignalsApp, opsApiTextTaskHandler } from "./signals.mjs";
+import { mountSignalsApp, publicExampleTaskHandler } from "./signals.mjs";
 
 let uploadedRuntime = null;
 let uploadedObjectUrl = null;
@@ -14,7 +14,7 @@ async function mountInto(root, wasmUrl, title, errorTarget = null) {
     return await mountSignalsApp({
       wasmUrl,
       root,
-      taskHandler: opsApiTextTaskHandler,
+      taskHandler: publicExampleTaskHandler,
       onError: (err) => showError(errorTarget, err),
       telemetry: true,
     });

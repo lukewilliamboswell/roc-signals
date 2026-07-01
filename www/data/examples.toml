@@ -1,97 +1,97 @@
 [[examples]]
-slug = "ops-dashboard"
-title = "Ops Dashboard"
-description = "A simulated operations dashboard with async refresh and a static browser-side backend."
-source = "examples/ops-dashboard/app.roc"
-spec = "examples/ops-dashboard/spec.txt"
+slug = "service-ops-center"
+title = "Service Ops Center"
+description = "A live service operations dashboard with async refresh, health panels, and a deterministic browser backend."
+source = "examples/service-ops-center/app.roc"
+spec = "examples/service-ops-center/spec.txt"
 public = true
 wasm = true
 native = true
 bench = true
 
 [[examples]]
-slug = "checkout-wizard"
-title = "Checkout Wizard"
-description = "A multi-step form with retained input state and semantic validation."
-source = "examples/checkout-wizard/app.roc"
-spec = "examples/checkout-wizard/spec.txt"
+slug = "team-checkout"
+title = "Team Checkout"
+description = "A team purchasing flow with retained cart quantities, delivery details, review, and receipt state."
+source = "examples/team-checkout/app.roc"
+spec = "examples/team-checkout/spec.txt"
 public = true
 wasm = true
 native = true
 bench = true
 
 [[examples]]
-slug = "event-payload-boundary"
-title = "Event Payload Boundary"
-description = "A focused example for browser event payload marshalling."
-source = "examples/event-payload-boundary/app.roc"
-spec = "examples/event-payload-boundary/spec.txt"
+slug = "command-palette"
+title = "Command Palette"
+description = "A keyboard-friendly command surface that captures text input, shortcut metadata, link attributes, and submit events."
+source = "examples/command-palette/app.roc"
+spec = "examples/command-palette/spec.txt"
 public = true
 wasm = true
 native = true
 bench = true
 
 [[examples]]
-slug = "form-boundary"
-title = "Form Boundary"
-description = "Boolean form attributes and named form events at the native/JS boundary."
-source = "examples/form-boundary/app.roc"
-spec = "examples/form-boundary/spec.txt"
+slug = "team-signup"
+title = "Team Signup"
+description = "A realistic signup form with validation, terms acceptance, a read-only reference field, and submission state."
+source = "examples/team-signup/app.roc"
+spec = "examples/team-signup/spec.txt"
 public = true
 wasm = true
 native = true
 bench = true
 
 [[examples]]
-slug = "http-boundary"
-title = "HTTP Boundary"
-description = "Package-aligned HTTP request and response payloads at the native/JS boundary."
-source = "examples/http-boundary/app.roc"
-spec = "examples/http-boundary/spec.txt"
+slug = "api-request-console"
+title = "API Request Console"
+description = "A deterministic API console that sends POST requests and displays success, non-2xx, and failure responses."
+source = "examples/api-request-console/app.roc"
+spec = "examples/api-request-console/spec.txt"
 public = true
 wasm = true
 native = true
 bench = true
 
 [[examples]]
-slug = "kanban-board"
-title = "Kanban Board"
-description = "A keyed list workflow with row identity, filtering, and local card state."
-source = "examples/kanban-board/app.roc"
-spec = "examples/kanban-board/spec.txt"
+slug = "release-planner"
+title = "Release Planner"
+description = "A release planning board with drag reorder, priority filtering, reviewer input, and card-local notes."
+source = "examples/release-planner/app.roc"
+spec = "examples/release-planner/spec.txt"
 public = true
 wasm = true
 native = true
 bench = true
 
 [[examples]]
-slug = "identity-stress"
-title = "Identity Stress"
-description = "Nested conditional and keyed-row identity behavior under reorder."
-source = "examples/identity-stress/app.roc"
-spec = "examples/identity-stress/spec.txt"
+slug = "deployment-queue"
+title = "Deployment Queue"
+description = "A deployment queue with priority reorder, hotfix insertion, filtering, pause/resume, and row-local checks."
+source = "examples/deployment-queue/app.roc"
+spec = "examples/deployment-queue/spec.txt"
 public = true
 wasm = true
 native = true
 bench = true
 
 [[examples]]
-slug = "component-composition"
-title = "Component Composition"
-description = "Small retained-state components composed into a larger view."
-source = "examples/component-composition/app.roc"
-spec = "examples/component-composition/spec.txt"
+slug = "workspace-widgets"
+title = "Workspace Widgets"
+description = "A workspace dashboard where independent widgets keep local state through reorder, reset, and hide/show."
+source = "examples/workspace-widgets/app.roc"
+spec = "examples/workspace-widgets/spec.txt"
 public = true
 wasm = true
 native = true
 bench = true
 
 [[examples]]
-slug = "async-effects"
-title = "Async Effects"
-description = "Task, interval, cancellation, and cleanup descriptors in one example."
-source = "examples/async-effects/app.roc"
-spec = "examples/async-effects/spec.txt"
+slug = "live-search"
+title = "Live Search"
+description = "A live search panel with loading, results, failures, freshness ticks, cancellation, and cleanup."
+source = "examples/live-search/app.roc"
+spec = "examples/live-search/spec.txt"
 public = true
 wasm = true
 native = true

@@ -163,7 +163,7 @@ builds do not depend on a published release.
 Useful variants:
 
 ```sh
-python3 scripts/serve.py --example ops-dashboard --port 9001
+python3 scripts/serve.py --example service-ops-center --port 9001
 python3 scripts/serve.py --app-opt dev
 python3 scripts/serve.py --host-opt Debug
 python3 scripts/serve.py --platform-url https://example.com/platform/release.tar.zst
@@ -182,7 +182,7 @@ macOS runners, then creates a GitHub release with the bundle attached.
 Native app specs use semantic locators rather than positional DOM indices:
 
 ```txt
-expect_visible role:heading name:"Checkout wizard"
+expect_visible role:heading name:"Team Checkout"
 fill label:"Email" "team@example.com"
 expect_value label:"Email" "team@example.com"
 check label:"Accept terms"
@@ -217,7 +217,7 @@ them automatically in the default macOS suite. A built app binary also accepts
 benchmark flags directly:
 
 ```sh
-.test-out/bench-bin/signals-ops-dashboard-bench --bench-app --bench-name signals-ops-dashboard --bench-iterations 100 --bench-samples 3 examples/ops-dashboard/spec.txt
+.test-out/bench-bin/signals-service-ops-center-bench --bench-app --bench-name signals-service-ops-center --bench-iterations 100 --bench-samples 3 examples/service-ops-center/spec.txt
 ```
 
 The host initializes a fresh app per iteration, applies the initial command

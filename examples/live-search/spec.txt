@@ -1,0 +1,59 @@
+# Live search lifecycle scenario
+
+expect_visible role:heading name:"Live Search"
+expect_visible role:region name:"Search results"
+expect_text text:"Search status: loading" "Search status: loading"
+expect_text text:"Waiting for search results" "Waiting for search results"
+expect_text text:"No search error" "No search error"
+expect_text text:"Freshness check: 0" "Freshness check: 0"
+expect_pending_task "lookup" 0
+expect_cleanup "live search panel cleanup" 0
+expect_interval 1000 1
+
+tick_interval 1000
+expect_text text:"Freshness check: 1" "Freshness check: 1"
+
+fill label:"Search" "roc"
+expect_pending_task "lookup" 1
+expect_text text:"Search status: loading" "Search status: loading"
+
+resolve_task "lookup" "Roc result payload that is intentionally longer than the Roc small string limit"
+expect_pending_task "lookup" 0
+expect_text text:"Search status: results ready" "Search status: results ready"
+expect_text text:"Results: Roc result payload that is intentionally longer than the Roc small string limit" "Results: Roc result payload that is intentionally longer than the Roc small string limit"
+
+fill label:"Search" "zig"
+expect_pending_task "lookup" 1
+expect_text text:"Search status: loading" "Search status: loading"
+
+reject_task "lookup" "offline payload that is intentionally longer than the Roc small string limit"
+expect_pending_task "lookup" 0
+expect_text text:"Search status: failed" "Search status: failed"
+expect_text text:"Search error: offline payload that is intentionally longer than the Roc small string limit" "Search error: offline payload that is intentionally longer than the Roc small string limit"
+
+tick_interval 1000
+expect_text text:"Freshness check: 2" "Freshness check: 2"
+
+fill label:"Search" "cancel me"
+expect_pending_task "lookup" 1
+
+mark_metrics
+click role:button name:"Close results"
+expect_absent role:region name:"Search results"
+expect_visible role:region name:"Search panel closed"
+expect_pending_task "lookup" 0
+expect_cleanup "live search panel cleanup" 1
+expect_interval 1000 0
+tick_interval_if_active 1000
+expect_visible role:region name:"Search panel closed"
+expect_interval 1000 0
+expect_metric_delta retained_alloc_delta -13
+
+click role:button name:"Open results"
+expect_visible role:region name:"Search results"
+expect_text text:"Search status: loading" "Search status: loading"
+expect_text text:"Waiting for search results" "Waiting for search results"
+expect_text text:"No search error" "No search error"
+expect_text text:"Freshness check: 0" "Freshness check: 0"
+expect_cleanup "live search panel cleanup" 1
+expect_interval 1000 1

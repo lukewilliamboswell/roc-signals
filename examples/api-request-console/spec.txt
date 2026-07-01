@@ -1,0 +1,47 @@
+# API request console scenario
+
+expect_visible role:heading name:"API Request Console"
+expect_visible role:region name:"Request"
+expect_visible role:region name:"Response"
+expect_visible role:region name:"Request controls"
+expect_text text:"Method: POST" "Method: POST"
+expect_text text:"URL: /api/api-request-console" "URL: /api/api-request-console"
+expect_text text:"Scenario: healthy request" "Scenario: healthy request"
+expect_text text:"Waiting for response" "Waiting for response"
+expect_text text:"Result header: waiting" "Result header: waiting"
+expect_text text:"Response body: waiting" "Response body: waiting"
+expect_pending_task "http:send:api-request-console" 1
+
+resolve_task "http:send:api-request-console" "roc-http-response-v1\n201\n1\n120,45,114,101,115,117,108,116\n111,107\n99,114,101,97,116,101,100"
+expect_pending_task "http:send:api-request-console" 0
+expect_text text:"Response status: 201" "Response status: 201"
+expect_text text:"Result header: ok" "Result header: ok"
+expect_text text:"Response body: created" "Response body: created"
+
+click role:button name:"Load missing record"
+expect_pending_task "http:send:api-request-console" 1
+expect_text text:"Scenario: missing record" "Scenario: missing record"
+
+resolve_task "http:send:api-request-console" "roc-http-response-v1\n404\n1\n120,45,114,101,115,117,108,116\n109,105,115,115,105,110,103\n110,111,116,32,102,111,117,110,100"
+expect_pending_task "http:send:api-request-console" 0
+expect_text text:"Response needs attention: 404" "Response needs attention: 404"
+expect_text text:"Result header: missing" "Result header: missing"
+expect_text text:"Response body: not found" "Response body: not found"
+
+click role:button name:"Simulate network error"
+expect_pending_task "http:send:api-request-console" 1
+expect_text text:"Scenario: network failure" "Scenario: network failure"
+
+reject_task "http:send:api-request-console" "roc-http-error-v1\nnetwork\n111,102,102,108,105,110,101"
+expect_pending_task "http:send:api-request-console" 0
+expect_text text:"Request failed: network: offline" "Request failed: network: offline"
+expect_text text:"Result header: failed" "Result header: failed"
+expect_text text:"Response body: failed" "Response body: failed"
+
+click role:button name:"Use healthy request"
+expect_pending_task "http:send:api-request-console" 1
+resolve_task "http:send:api-request-console" "roc-http-response-v1\n201\n1\n120,45,114,101,115,117,108,116\n111,107\n99,114,101,97,116,101,100"
+expect_text text:"Response status: 201" "Response status: 201"
+
+click role:button name:"Send request"
+expect_pending_task "http:send:api-request-console" 1
