@@ -38,7 +38,6 @@ pub fn main(init: std.process.Init) !void {
 
     for (test_files.items) |path| {
         if (isExplicitRoot(path)) continue;
-        if (std.mem.startsWith(u8, path, "src/base/")) continue;
 
         const wired = if (std.mem.startsWith(u8, path, "src/signals/"))
             rootImportsPath("src/signals/mod.zig", signals_mod, path)

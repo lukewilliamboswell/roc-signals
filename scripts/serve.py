@@ -8,6 +8,7 @@ import functools
 import http.server
 import os
 from pathlib import Path
+import platform
 import re
 import shutil
 import socket
@@ -26,6 +27,9 @@ TAILWIND_INPUT = WWW / "input.css"
 TAILWIND_OUTPUT = WWW / "static" / "signals.css"
 TAILWIND_CONFIG = ROOT / "tailwind.config.js"
 PLATFORM_HEADER_RE = re.compile(r'platform\s+"[^"]+"')
+LINUX_WASM_SKIPS = {
+    "live-search": "Roc compiler segfaults while building this example for wasm32 on Linux",
+}
 
 
 def load_examples() -> list[dict[str, object]]:
@@ -313,11 +317,15 @@ def copy_example_dir(source_dir: Path, dest_dir: Path, *, platform_ref: str) -> 
 
 
 def public_wasm_examples(examples: list[dict[str, object]], selected_slug: str | None) -> list[dict[str, object]]:
-    selected = [
-        example
-        for example in examples
-        if bool(example.get("public", True)) and bool(example.get("wasm", True))
-    ]
+    selected = []
+    for example in examples:
+        slug = str(example.get("slug", ""))
+        if not bool(example.get("public", True)) or not bool(example.get("wasm", True)):
+            continue
+        if should_skip_wasm_example(slug):
+            print(f"\nSkipping wasm site build for {slug} on Linux: {LINUX_WASM_SKIPS[slug]}.")
+            continue
+        selected.append(example)
     if selected_slug is None:
         return selected
 
@@ -326,6 +334,10 @@ def public_wasm_examples(examples: list[dict[str, object]], selected_slug: str |
         valid = ", ".join(str(example.get("slug")) for example in selected)
         raise SystemExit(f"unknown public wasm example '{selected_slug}'. Valid examples: {valid}")
     return matches
+
+
+def should_skip_wasm_example(slug: str) -> bool:
+    return platform.system() == "Linux" and slug in LINUX_WASM_SKIPS
 
 
 def build_example_wasm(

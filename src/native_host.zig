@@ -2147,8 +2147,6 @@ fn main(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
 }
 
 fn platform_main(spec_file: []const u8, verbose: bool) error{}!c_int {
-    _ = crash_handlers.installForCurrentThread();
-
     var host_env = HostEnv.init();
     const allocator = host_env.hostAllocator();
 
