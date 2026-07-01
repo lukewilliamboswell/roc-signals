@@ -107,6 +107,12 @@ Prefer seam-level tests for those typed views before adding broad host/spec test
 that gives Zig exhaustive switches and named payload fields while preserving the
 external ABI exactly.
 
+When coverage points at large engine paths, first look for engine-adjacent logic
+that can live in a focused `src/signals/` module, such as descriptor bookkeeping,
+effect lifecycle state, or borrowed ABI views. Unit-test those seams directly and
+keep host/spec tests for cross-module behavior. If a seam retains or releases Roc
+tokens, allocate real Roc boxes in tests instead of using stack pointers.
+
 Run coverage after substantial changes to `src/signals/`, `src/native_host.zig`,
 the native spec runner, the simulated DOM, allocation diagnostics, or host
 runtime behavior. The coverage job is intentionally separate from

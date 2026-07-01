@@ -1775,56 +1775,51 @@ pub fn Engine(comptime Ctx: type) type {
             self.validateScopeId(scope_id) catch @panic("scope id has no host scope descriptor");
 
             const allocator = Ctx.allocator(ctx);
-            switch (elem.tag) {
-                .Element => {
-                    const payload = elem.payload_element();
+            switch (abi_view.Elem.fromAbi(elem)) {
+                .element => |payload| {
                     const elem_id = self.internDomIdentity(Ctx.allocator(ctx), scope_id, dom_ordinal.*) catch @panic("scope id has no host scope descriptor");
                     dom_ordinal.* += 1;
                     _ = stream.appendElement(allocator, elem_id, parent_elem_id, scope_id, payload.tag.asSlice());
-                    for (payload.attrs.items()) |attr| {
+                    for (payload.attrs) |attr| {
                         self.collectNodeAttrDescriptor(ctx, roc_host, stream, elem_id, attr, binder_stack.items);
                     }
-                    for (payload.children.items()) |child| {
+                    for (payload.children) |child| {
                         self.collectActiveElemDescriptors(ctx, roc_host, stream, child, scope_id, elem_id, ordinal, dom_ordinal, binder_stack, scope_created, dirty_source_node_ids);
                     }
                 },
-                .Text => {
+                .text => |payload| {
                     const elem_id = self.internDomIdentity(Ctx.allocator(ctx), scope_id, dom_ordinal.*) catch @panic("scope id has no host scope descriptor");
                     dom_ordinal.* += 1;
-                    stream.appendTextNode(allocator, elem_id, parent_elem_id, scope_id, elem.payload_text().asSlice());
+                    stream.appendTextNode(allocator, elem_id, parent_elem_id, scope_id, payload.text.asSlice());
                 },
-                .TextSignal => {
+                .text_signal => |payload| {
                     const elem_id = self.internDomIdentity(Ctx.allocator(ctx), scope_id, dom_ordinal.*) catch @panic("scope id has no host scope descriptor");
                     dom_ordinal.* += 1;
-                    const text_signal = elem.payload_text_signal();
-                    const signal = self.bindNodeSignal(allocator, stream, text_signal.signal.*, binder_stack.items);
-                    stream.appendSignalTextNode(allocator, ctx, roc_host, &self.pending_roc_metrics, elem_id, parent_elem_id, scope_id, signal, text_signal.read);
+                    const signal = self.bindNodeSignal(allocator, stream, payload.signal.*, binder_stack.items);
+                    stream.appendSignalTextNode(allocator, ctx, roc_host, &self.pending_roc_metrics, elem_id, parent_elem_id, scope_id, signal, payload.read);
                 },
-                .Cleanup => {
-                    stream.appendCleanup(allocator, scope_id, elem.payload_cleanup().cleanup.asSlice());
+                .cleanup => |payload| {
+                    stream.appendCleanup(allocator, scope_id, payload.name.asSlice());
                 },
-                .OnChange => {
-                    const payload = elem.payload_on_change();
+                .on_change => |payload| {
                     const signal = self.bindNodeSignal(allocator, stream, payload.signal.*, binder_stack.items);
                     stream.appendOnChange(allocator, ctx, roc_host, &self.pending_roc_metrics, scope_id, signal, payload.to_cmd);
                 },
-                .OnMount => {
-                    const payload = elem.payload_on_mount();
+                .on_mount => |payload| {
                     stream.appendMount(allocator, roc_host, &self.pending_roc_metrics, scope_id, payload.to_cmd, scope_created);
                 },
-                .State => {
+                .state => |state| {
                     const site_ordinal = ordinal.*;
                     const node_id = self.internNodeIdentity(Ctx.allocator(ctx), scope_id, site_ordinal) catch @panic("scope id has no host scope descriptor");
                     ordinal.* += 1;
                     stream.appendScopeSite(allocator, node_id, scope_id, site_ordinal, parent_elem_id, .state, binder_stack.items);
-                    const state = elem.payload_state();
-                    stream.appendState(allocator, roc_host, &self.pending_roc_metrics, node_id, state.initial, state.cap);
+                    stream.appendState(allocator, roc_host, &self.pending_roc_metrics, node_id, state.initial, state.capability);
                     self.ensureStateFromDesc(ctx, roc_host, stream.states.items[stream.states.items.len - 1]);
-                    binder_stack.append(allocator, .{ .token = state.binder, .node_id = node_id }) catch @panic("out of memory");
+                    binder_stack.append(allocator, .{ .token = state.binder.ptr, .node_id = node_id }) catch @panic("out of memory");
                     self.collectActiveElemDescriptors(ctx, roc_host, stream, state.child.*, scope_id, parent_elem_id, ordinal, dom_ordinal, binder_stack, scope_created, dirty_source_node_ids);
                     _ = binder_stack.pop() orelse unreachable;
                 },
-                .Component => {
+                .component => |payload| {
                     const site_ordinal = ordinal.*;
                     const node_id = self.internNodeIdentity(Ctx.allocator(ctx), scope_id, site_ordinal) catch @panic("scope id has no host scope descriptor");
                     ordinal.* += 1;
@@ -1833,14 +1828,13 @@ pub fn Engine(comptime Ctx: type) type {
                     const component_scope_id = component_scope.scope_id;
                     var component_ordinal: u64 = 0;
                     var component_dom_ordinal: u64 = 0;
-                    self.collectActiveElemDescriptors(ctx, roc_host, stream, elem.payload_component().child.*, component_scope_id, parent_elem_id, &component_ordinal, &component_dom_ordinal, binder_stack, component_scope.created, dirty_source_node_ids);
+                    self.collectActiveElemDescriptors(ctx, roc_host, stream, payload.child.*, component_scope_id, parent_elem_id, &component_ordinal, &component_dom_ordinal, binder_stack, component_scope.created, dirty_source_node_ids);
                 },
-                .When => {
+                .when => |when_payload| {
                     const site_ordinal = ordinal.*;
                     const node_id = self.internNodeIdentity(Ctx.allocator(ctx), scope_id, site_ordinal) catch @panic("scope id has no host scope descriptor");
                     ordinal.* += 1;
                     stream.appendScopeSite(allocator, node_id, scope_id, site_ordinal, parent_elem_id, .when, binder_stack.items);
-                    const when_payload = elem.payload_when();
                     const condition_binding = self.bindNodeSignal(allocator, stream, when_payload.condition.*, binder_stack.items);
                     stream.appendWhen(allocator, ctx, roc_host, &self.pending_roc_metrics, node_id, condition_binding, when_payload.read, when_payload.when_false.*, when_payload.when_true.*);
 
@@ -1864,12 +1858,11 @@ pub fn Engine(comptime Ctx: type) type {
                     var branch_dom_ordinal: u64 = 0;
                     self.collectActiveElemDescriptors(ctx, roc_host, stream, branch_elem, branch_scope_id, parent_elem_id, &branch_ordinal, &branch_dom_ordinal, binder_stack, branch_scope.created, dirty_source_node_ids);
                 },
-                .Each => {
+                .each => |each_payload| {
                     const site_ordinal = ordinal.*;
                     const node_id = self.internNodeIdentity(Ctx.allocator(ctx), scope_id, site_ordinal) catch @panic("scope id has no host scope descriptor");
                     ordinal.* += 1;
                     stream.appendScopeSite(allocator, node_id, scope_id, site_ordinal, parent_elem_id, .each, binder_stack.items);
-                    const each_payload = elem.payload_each();
                     const items_binding = self.bindNodeSignal(allocator, stream, each_payload.items.*, binder_stack.items);
                     stream.appendEach(allocator, ctx, roc_host, &self.pending_roc_metrics, node_id, items_binding, each_payload.ops);
                     const each_index = stream.eaches.items.len - 1;

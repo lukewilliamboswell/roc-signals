@@ -430,12 +430,26 @@ const TestMetrics = struct {
 };
 
 const TestIntervalHost = struct {
+    start_task_count: u64 = 0,
+    cancel_task_count: u64 = 0,
+    last_started_task: ?u64 = null,
+    last_canceled_task: ?u64 = null,
     start_interval_count: u64 = 0,
     cancel_interval_count: u64 = 0,
 };
 
 const TestIntervalSink = struct {
     host: *TestIntervalHost,
+
+    pub fn startTask(self: @This(), request_id: u64, _: []const u8, _: []const u8) void {
+        self.host.start_task_count += 1;
+        self.host.last_started_task = request_id;
+    }
+
+    pub fn cancelTask(self: @This(), request_id: u64) void {
+        self.host.cancel_task_count += 1;
+        self.host.last_canceled_task = request_id;
+    }
 
     pub fn startInterval(self: @This(), _: u64, _: u64) void {
         self.host.start_interval_count += 1;
@@ -452,6 +466,15 @@ const TestIntervalCtx = struct {
 
     pub fn sink(ctx: Handle) Sink {
         return .{ .host = ctx };
+    }
+};
+
+const TestScopeLookup = struct {
+    root_scope_id: u64,
+    child_scope_id: u64,
+
+    pub fn descendantOrSelf(self: @This(), owner_scope_id: u64, scope_id: u64) bool {
+        return owner_scope_id == scope_id or (scope_id == self.root_scope_id and owner_scope_id == self.child_scope_id);
     }
 };
 
@@ -482,6 +505,12 @@ fn testIntervalRecord(token: HostSignalToken, period_ms: u64) HostSignalRecord {
             .cap = undefined,
         } },
     };
+}
+
+fn testSignalToken(roc_host: *abi.RocHost, value: u64) HostSignalToken {
+    const token: *u64 = @ptrCast(@alignCast(abi.allocateBox(@sizeOf(u64), @alignOf(u64), false, roc_host)));
+    token.* = value;
+    return token;
 }
 
 test "effects runtime finds and removes pending tasks" {
@@ -581,6 +610,73 @@ test "effects runtime indexes pending tasks" {
     try std.testing.expectEqual(@as(?usize, null), pendingTaskIndexByRequestId(tasks.items, 11));
 }
 
+test "effects runtime starts clears and cancels pending tasks by token" {
+    var env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&env);
+    const first_token = testSignalToken(&roc_host, 1);
+    defer retained_values.releaseHostSignalToken(first_token, &roc_host);
+    const second_token = testSignalToken(&roc_host, 2);
+    defer retained_values.releaseHostSignalToken(second_token, &roc_host);
+    var missing_token_value: u64 = 3;
+
+    var host = TestIntervalHost{};
+    var tasks: std.ArrayListUnmanaged(PendingTask) = .empty;
+    defer tasks.deinit(std.testing.allocator);
+    var next_request_id: u64 = 100;
+
+    const started_id = appendAndStartPendingTask(TestIntervalCtx, &host, std.testing.allocator, &tasks, &next_request_id, &roc_host, 10, first_token, "load", "a");
+    try std.testing.expectEqual(@as(u64, 100), started_id);
+    try std.testing.expectEqual(@as(u64, 1), host.start_task_count);
+    try std.testing.expectEqual(@as(?u64, 100), host.last_started_task);
+
+    _ = appendPendingTask(std.testing.allocator, &tasks, &next_request_id, &roc_host, 11, second_token, "save", "b");
+    _ = appendPendingTask(std.testing.allocator, &tasks, &next_request_id, &roc_host, 12, first_token, "load", "c");
+
+    cancelPendingTasksByTaskToken(TestIntervalCtx, &host, std.testing.allocator, &tasks, null, &missing_token_value);
+    try std.testing.expectEqual(@as(usize, 3), tasks.items.len);
+
+    cancelPendingTasksByTaskToken(TestIntervalCtx, &host, std.testing.allocator, &tasks, &roc_host, first_token);
+    try std.testing.expectEqual(@as(usize, 1), tasks.items.len);
+    try std.testing.expectEqual(second_token, tasks.items[0].task_token);
+    try std.testing.expectEqual(@as(u64, 2), host.cancel_task_count);
+
+    clearPendingTasks(TestIntervalCtx, &host, std.testing.allocator, &tasks, &roc_host);
+    try std.testing.expectEqual(@as(usize, 0), tasks.items.len);
+    try std.testing.expectEqual(@as(u64, 3), host.cancel_task_count);
+}
+
+test "effects runtime cancels pending tasks in a scope subtree" {
+    var env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&env);
+    const root_token = testSignalToken(&roc_host, 10);
+    defer retained_values.releaseHostSignalToken(root_token, &roc_host);
+    const child_token = testSignalToken(&roc_host, 11);
+    defer retained_values.releaseHostSignalToken(child_token, &roc_host);
+    const outside_token = testSignalToken(&roc_host, 20);
+    defer retained_values.releaseHostSignalToken(outside_token, &roc_host);
+
+    var host = TestIntervalHost{};
+    var tasks: std.ArrayListUnmanaged(PendingTask) = .empty;
+    defer tasks.deinit(std.testing.allocator);
+    var next_request_id: u64 = 200;
+
+    _ = appendPendingTask(std.testing.allocator, &tasks, &next_request_id, &roc_host, 10, root_token, "root", "r");
+    _ = appendPendingTask(std.testing.allocator, &tasks, &next_request_id, &roc_host, 11, child_token, "child", "c");
+    _ = appendPendingTask(std.testing.allocator, &tasks, &next_request_id, &roc_host, 20, outside_token, "outside", "o");
+
+    const lookup = TestScopeLookup{ .root_scope_id = 10, .child_scope_id = 11 };
+    cancelPendingTasksInScopeSubtree(TestIntervalCtx, &host, std.testing.allocator, &tasks, null, 99, lookup);
+    try std.testing.expectEqual(@as(usize, 3), tasks.items.len);
+
+    cancelPendingTasksInScopeSubtree(TestIntervalCtx, &host, std.testing.allocator, &tasks, &roc_host, 10, lookup);
+    try std.testing.expectEqual(@as(usize, 1), tasks.items.len);
+    try std.testing.expectEqual(outside_token, tasks.items[0].task_token);
+    try std.testing.expectEqual(@as(u64, 2), host.cancel_task_count);
+
+    clearPendingTasks(TestIntervalCtx, &host, std.testing.allocator, &tasks, &roc_host);
+    try std.testing.expectEqual(@as(u64, 3), host.cancel_task_count);
+}
+
 test "effects runtime updates active interval table" {
     var first_token: u64 = 0;
     var second_token: u64 = 0;
@@ -608,6 +704,55 @@ test "effects runtime updates active interval table" {
     try std.testing.expectEqual(@as(u64, 10), removed.token);
     try std.testing.expectEqual(@as(usize, 1), intervals.items.len);
     try std.testing.expectEqual(@as(u64, 11), intervals.items[0].token);
+}
+
+test "effects runtime manages interval lifecycle transitions" {
+    var env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&env);
+    const first_token = testSignalToken(&roc_host, 100);
+    defer retained_values.releaseHostSignalToken(first_token, &roc_host);
+    const second_token = testSignalToken(&roc_host, 200);
+    defer retained_values.releaseHostSignalToken(second_token, &roc_host);
+
+    var host = TestIntervalHost{};
+    var intervals: std.ArrayListUnmanaged(ActiveInterval) = .empty;
+    defer intervals.deinit(std.testing.allocator);
+    var next_interval_token: u64 = 10;
+
+    ensureActiveInterval(TestIntervalCtx, &host, std.testing.allocator, &intervals, &next_interval_token, &roc_host, first_token, 250);
+    ensureActiveInterval(TestIntervalCtx, &host, std.testing.allocator, &intervals, &next_interval_token, &roc_host, second_token, 500);
+    try std.testing.expectEqual(@as(usize, 2), intervals.items.len);
+    try std.testing.expectEqual(@as(u64, 12), next_interval_token);
+    try std.testing.expectEqual(@as(u64, 2), host.start_interval_count);
+    try std.testing.expectEqual(@as(?usize, 1), activeIntervalIndexBySourceToken(intervals.items, second_token));
+
+    clearActiveIntervals(TestIntervalCtx, &host, &intervals, &roc_host);
+    try std.testing.expectEqual(@as(usize, 0), intervals.items.len);
+    try std.testing.expectEqual(@as(u64, 2), host.cancel_interval_count);
+
+    ensureActiveInterval(TestIntervalCtx, &host, std.testing.allocator, &intervals, &next_interval_token, &roc_host, first_token, 250);
+    ensureActiveInterval(TestIntervalCtx, &host, std.testing.allocator, &intervals, &next_interval_token, &roc_host, second_token, 500);
+    try std.testing.expectEqual(@as(u64, 4), host.start_interval_count);
+
+    removeActiveIntervalBySourceToken(TestIntervalCtx, &host, &intervals, &roc_host, second_token);
+    try std.testing.expectEqual(@as(usize, 1), intervals.items.len);
+    try std.testing.expectEqual(@as(u64, 3), host.cancel_interval_count);
+
+    markActiveIntervalsInactive(intervals.items);
+    finishActiveIntervalSync(TestIntervalCtx, &host, &intervals, &roc_host);
+    try std.testing.expectEqual(@as(usize, 0), intervals.items.len);
+    try std.testing.expectEqual(@as(u64, 4), host.cancel_interval_count);
+
+    var no_host_token: u64 = 300;
+    intervals.append(std.testing.allocator, .{
+        .token = 99,
+        .source_token = &no_host_token,
+        .period_ms = 1000,
+        .active = true,
+    }) catch @panic("out of memory");
+    finishActiveIntervalSync(TestIntervalCtx, &host, &intervals, null);
+    try std.testing.expectEqual(@as(usize, 1), intervals.items.len);
+    _ = removeActiveIntervalAt(&intervals, 0);
 }
 
 test "effects runtime syncs existing active intervals from graph" {

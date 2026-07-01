@@ -8,6 +8,7 @@ pub const HostValueCapability = retained.HostValueCapability;
 pub const HostTextRead = retained.HostTextRead;
 pub const HostBoolRead = retained.HostBoolRead;
 pub const HostEventReducer = retained.HostEventReducer;
+pub const HostEachOps = retained.HostEachOps;
 
 pub const node_text_field_custom: u64 = 7;
 pub const node_bool_field_custom: u64 = 3;
@@ -306,6 +307,143 @@ pub const NodeAttr = union(enum) {
                     .name = RocStrView.fromAbi(payload.name),
                     .options = payload.options,
                     .msg = EventMessage.fromAbi(payload.msg),
+                } };
+            },
+        };
+    }
+};
+
+pub const ElementElem = struct {
+    tag: RocStrView,
+    attrs: []const abi.NodeAttr,
+    children: []const abi.Elem,
+};
+
+pub const TextElem = struct {
+    text: RocStrView,
+};
+
+pub const TextSignalElem = struct {
+    signal: *const abi.NodeSignalExpr,
+    read: HostTextRead,
+};
+
+pub const CleanupElem = struct {
+    name: RocStrView,
+};
+
+pub const OnChangeElem = struct {
+    signal: *const abi.NodeSignalExpr,
+    to_cmd: abi.RocErasedCallable,
+};
+
+pub const OnMountElem = struct {
+    to_cmd: abi.RocErasedCallable,
+};
+
+pub const StateElem = struct {
+    binder: StateBinderToken,
+    initial: abi.RocErasedCallable,
+    capability: HostValueCapability,
+    child: *const abi.Elem,
+};
+
+pub const ComponentElem = struct {
+    child: *const abi.Elem,
+};
+
+pub const WhenElem = struct {
+    condition: *const abi.NodeSignalExpr,
+    read: HostBoolRead,
+    when_false: *const abi.Elem,
+    when_true: *const abi.Elem,
+};
+
+pub const EachElem = struct {
+    items: *const abi.NodeSignalExpr,
+    ops: HostEachOps,
+};
+
+pub const Elem = union(enum) {
+    element: ElementElem,
+    text: TextElem,
+    text_signal: TextSignalElem,
+    cleanup: CleanupElem,
+    on_change: OnChangeElem,
+    on_mount: OnMountElem,
+    state: StateElem,
+    component: ComponentElem,
+    when: WhenElem,
+    each: EachElem,
+
+    pub fn fromAbi(elem: abi.Elem) Elem {
+        return switch (elem.tag) {
+            .Element => blk: {
+                const payload = elem.payload_element();
+                break :blk .{ .element = .{
+                    .tag = RocStrView.fromAbi(payload.tag),
+                    .attrs = payload.attrs.items(),
+                    .children = payload.children.items(),
+                } };
+            },
+            .Text => .{ .text = .{
+                .text = RocStrView.fromAbi(elem.payload_text()),
+            } },
+            .TextSignal => blk: {
+                const payload = elem.payload_text_signal();
+                break :blk .{ .text_signal = .{
+                    .signal = payload.signal,
+                    .read = payload.read,
+                } };
+            },
+            .Cleanup => blk: {
+                const payload = elem.payload_cleanup();
+                break :blk .{ .cleanup = .{
+                    .name = RocStrView.fromAbi(payload.cleanup),
+                } };
+            },
+            .OnChange => blk: {
+                const payload = elem.payload_on_change();
+                break :blk .{ .on_change = .{
+                    .signal = payload.signal,
+                    .to_cmd = payload.to_cmd,
+                } };
+            },
+            .OnMount => blk: {
+                const payload = elem.payload_on_mount();
+                break :blk .{ .on_mount = .{
+                    .to_cmd = payload.to_cmd,
+                } };
+            },
+            .State => blk: {
+                const payload = elem.payload_state();
+                break :blk .{ .state = .{
+                    .binder = StateBinderToken.fromAbi(payload.binder),
+                    .initial = payload.initial,
+                    .capability = payload.cap,
+                    .child = payload.child,
+                } };
+            },
+            .Component => blk: {
+                const payload = elem.payload_component();
+                break :blk .{ .component = .{
+                    .child = payload.child,
+                } };
+            },
+            .When => blk: {
+                const payload = elem.payload_when();
+                break :blk .{ .when = .{
+                    .condition = payload.condition,
+                    .read = payload.read,
+                    .when_false = payload.when_false,
+                    .when_true = payload.when_true,
+                } };
+            },
+            .Each => blk: {
+                const payload = elem.payload_each();
+                break :blk .{ .each = .{
+                    .items = payload.items,
+                    .ops = payload.ops,
                 } };
             },
         };
@@ -678,8 +816,225 @@ test "NodeAttr.fromAbi decodes named events" {
     }
 }
 
+test "Elem.fromAbi decodes element text and cleanup payloads" {
+    const attr = abi.NodeAttr{
+        .payload = .{ .static_bool = .{
+            .field = @intFromEnum(BoolField.disabled),
+            .name = abi.RocStr.empty(),
+            .value = true,
+        } },
+        .tag = .StaticBool,
+    };
+    const child = abi.Elem{
+        .payload = .{ .text = borrowedRocStr("child") },
+        .tag = .Text,
+    };
+    var attrs = [_]abi.NodeAttr{attr};
+    var children = [_]abi.Elem{child};
+    const element = abi.Elem{
+        .payload = .{ .element = .{
+            .attrs = borrowedNodeAttrList(attrs[0..]),
+            .children = borrowedElemList(children[0..]),
+            .tag = borrowedRocStr("button"),
+        } },
+        .tag = .Element,
+    };
+    switch (Elem.fromAbi(element)) {
+        .element => |payload| {
+            try std.testing.expectEqualStrings("button", payload.tag.asSlice());
+            try std.testing.expectEqual(@as(usize, 1), payload.attrs.len);
+            try std.testing.expectEqual(abi.NodeAttrTag.StaticBool, payload.attrs[0].tag);
+            try std.testing.expectEqual(@as(usize, 1), payload.children.len);
+            try std.testing.expectEqual(abi.ElemTag.Text, payload.children[0].tag);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+
+    switch (Elem.fromAbi(child)) {
+        .text => |payload| try std.testing.expectEqualStrings("child", payload.text.asSlice()),
+        else => return error.TestUnexpectedResult,
+    }
+
+    const cleanup = abi.Elem{
+        .payload = .{ .cleanup = .{
+            .cleanup = borrowedRocStr("close-menu"),
+        } },
+        .tag = .Cleanup,
+    };
+    switch (Elem.fromAbi(cleanup)) {
+        .cleanup => |payload| try std.testing.expectEqualStrings("close-menu", payload.name.asSlice()),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "Elem.fromAbi decodes lifecycle and state payloads" {
+    var signal_token: u64 = 13;
+    var signal = abi.NodeSignalExpr{
+        .payload = .{ .ref = &signal_token },
+        .tag = .Ref,
+    };
+    const text_read = std.mem.zeroes(HostTextRead);
+    const text_signal = abi.Elem{
+        .payload = .{ .text_signal = .{
+            .read = text_read,
+            .signal = &signal,
+        } },
+        .tag = .TextSignal,
+    };
+    switch (Elem.fromAbi(text_signal)) {
+        .text_signal => |payload| {
+            try std.testing.expectEqual(&signal, payload.signal);
+            try std.testing.expectEqual(text_read, payload.read);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+
+    const on_change_cmd: abi.RocErasedCallable = @ptrFromInt(0x1010);
+    const on_change = abi.Elem{
+        .payload = .{ .on_change = .{
+            .signal = &signal,
+            .to_cmd = on_change_cmd,
+        } },
+        .tag = .OnChange,
+    };
+    switch (Elem.fromAbi(on_change)) {
+        .on_change => |payload| {
+            try std.testing.expectEqual(&signal, payload.signal);
+            try std.testing.expectEqual(on_change_cmd, payload.to_cmd);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+
+    const on_mount_cmd: abi.RocErasedCallable = @ptrFromInt(0x2020);
+    const on_mount = abi.Elem{
+        .payload = .{ .on_mount = .{
+            .to_cmd = on_mount_cmd,
+        } },
+        .tag = .OnMount,
+    };
+    switch (Elem.fromAbi(on_mount)) {
+        .on_mount => |payload| try std.testing.expectEqual(on_mount_cmd, payload.to_cmd),
+        else => return error.TestUnexpectedResult,
+    }
+
+    var binder: u64 = 14;
+    var child = abi.Elem{
+        .payload = .{ .text = borrowedRocStr("state-child") },
+        .tag = .Text,
+    };
+    const initial: abi.RocErasedCallable = @ptrFromInt(0x3030);
+    const capability = std.mem.zeroes(HostValueCapability);
+    const state = abi.Elem{
+        .payload = .{ .state = .{
+            .binder = &binder,
+            .cap = capability,
+            .child = &child,
+            .initial = initial,
+        } },
+        .tag = .State,
+    };
+    switch (Elem.fromAbi(state)) {
+        .state => |payload| {
+            try std.testing.expectEqual(&binder, payload.binder.ptr);
+            try std.testing.expectEqual(initial, payload.initial);
+            try std.testing.expectEqual(capability, payload.capability);
+            try std.testing.expectEqual(&child, payload.child);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "Elem.fromAbi decodes component when and each payloads" {
+    var component_child = abi.Elem{
+        .payload = .{ .text = borrowedRocStr("component-child") },
+        .tag = .Text,
+    };
+    const component = abi.Elem{
+        .payload = .{ .component = .{
+            .child = &component_child,
+        } },
+        .tag = .Component,
+    };
+    switch (Elem.fromAbi(component)) {
+        .component => |payload| try std.testing.expectEqual(&component_child, payload.child),
+        else => return error.TestUnexpectedResult,
+    }
+
+    var condition_token: u64 = 15;
+    var condition = abi.NodeSignalExpr{
+        .payload = .{ .ref = &condition_token },
+        .tag = .Ref,
+    };
+    var when_false = abi.Elem{
+        .payload = .{ .text = borrowedRocStr("false") },
+        .tag = .Text,
+    };
+    var when_true = abi.Elem{
+        .payload = .{ .text = borrowedRocStr("true") },
+        .tag = .Text,
+    };
+    const bool_read = std.mem.zeroes(HostBoolRead);
+    const when = abi.Elem{
+        .payload = .{ .when = .{
+            .condition = &condition,
+            .read = bool_read,
+            .when_false = &when_false,
+            .when_true = &when_true,
+        } },
+        .tag = .When,
+    };
+    switch (Elem.fromAbi(when)) {
+        .when => |payload| {
+            try std.testing.expectEqual(&condition, payload.condition);
+            try std.testing.expectEqual(bool_read, payload.read);
+            try std.testing.expectEqual(&when_false, payload.when_false);
+            try std.testing.expectEqual(&when_true, payload.when_true);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+
+    var items_token: u64 = 16;
+    var items = abi.NodeSignalExpr{
+        .payload = .{ .ref = &items_token },
+        .tag = .Ref,
+    };
+    const ops = std.mem.zeroes(HostEachOps);
+    const each = abi.Elem{
+        .payload = .{ .each = .{
+            .items = &items,
+            .ops = ops,
+        } },
+        .tag = .Each,
+    };
+    switch (Elem.fromAbi(each)) {
+        .each => |payload| {
+            try std.testing.expectEqual(&items, payload.items);
+            try std.testing.expectEqual(ops, payload.ops);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
 fn borrowedSignalExprList(items: []const abi.NodeSignalExpr) abi.RocList(abi.NodeSignalExpr) {
     if (items.len == 0) return abi.RocList(abi.NodeSignalExpr).empty();
+    return .{
+        .elements_ptr = @constCast(items.ptr),
+        .length = items.len,
+        .capacity_or_alloc_ptr = items.len << 1,
+    };
+}
+
+fn borrowedNodeAttrList(items: []const abi.NodeAttr) abi.RocList(abi.NodeAttr) {
+    if (items.len == 0) return abi.RocList(abi.NodeAttr).empty();
+    return .{
+        .elements_ptr = @constCast(items.ptr),
+        .length = items.len,
+        .capacity_or_alloc_ptr = items.len << 1,
+    };
+}
+
+fn borrowedElemList(items: []const abi.Elem) abi.RocList(abi.Elem) {
+    if (items.len == 0) return abi.RocList(abi.Elem).empty();
     return .{
         .elements_ptr = @constCast(items.ptr),
         .length = items.len,
