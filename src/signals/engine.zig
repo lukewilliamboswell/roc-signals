@@ -14,6 +14,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const abi = @import("roc_platform_abi.zig");
+const abi_view = @import("abi_view.zig");
 const scope_tree = @import("scope_tree.zig");
 const erased_calls = @import("erased_calls.zig");
 const render = @import("render_commands.zig");
@@ -1268,106 +1269,103 @@ pub fn Engine(comptime Ctx: type) type {
         }
 
         pub fn bindNodeSignalExpr(self: *Self, allocator: std.mem.Allocator, stream: *HostNodeDescriptorStream, expr: abi.NodeSignalExpr, binder_stack: []const HostBinderBinding) *HostSignalRecord {
-            return switch (expr.tag) {
-                .Ref => blk: {
-                    const node_id = resolveNodeBinderRef(binder_stack, expr.payload_ref());
+            return self.bindSignalExprView(allocator, stream, abi_view.SignalExpr.fromAbi(expr), binder_stack);
+        }
+
+        fn bindSignalExprView(self: *Self, allocator: std.mem.Allocator, stream: *HostNodeDescriptorStream, expr: abi_view.SignalExpr, binder_stack: []const HostBinderBinding) *HostSignalRecord {
+            return switch (expr) {
+                .ref => |payload| blk: {
+                    const node_id = resolveNodeBinderRef(binder_stack, payload.binder.ptr);
                     break :blk HostSignalRecord.init(allocator, .{ .ref = node_id });
                 },
-                .ConstValue => blk: {
-                    const payload = expr.payload_const_value();
-                    const token = payload._0;
+                .const_value => |payload| blk: {
+                    const token = payload.token.ptr;
                     if (self.retainExistingSignalRecordForStream(allocator, stream, token, .const_value)) |record| {
                         break :blk record;
                     }
 
                     const record = HostSignalRecord.init(allocator, .{ .const_value = .{
                         .token = retainHostSignalToken(token),
-                        .init = retainHostCallable(payload._1, &self.pending_roc_metrics),
-                        .cap = retainHostValueCapability(payload._2, &self.pending_roc_metrics),
+                        .init = retainHostCallable(payload.init, &self.pending_roc_metrics),
+                        .cap = retainHostValueCapability(payload.capability, &self.pending_roc_metrics),
                     } });
                     stream.rememberSignalRecord(allocator, record);
                     break :blk record;
                 },
-                .Map => blk: {
-                    const payload = expr.payload_map();
-                    const token = payload._0;
+                .map => |payload| blk: {
+                    const token = payload.token.ptr;
                     if (self.retainExistingSignalRecordForStream(allocator, stream, token, .map)) |record| {
                         break :blk record;
                     }
 
-                    const input = self.bindNodeSignalExpr(allocator, stream, payload._1.*, binder_stack);
+                    const input = self.bindSignalExprView(allocator, stream, abi_view.SignalExpr.fromAbi(payload.input.*), binder_stack);
                     const record = HostSignalRecord.init(allocator, .{ .map = .{
                         .token = retainHostSignalToken(token),
                         .input = input,
-                        .transform = retainHostCallable(payload._2, &self.pending_roc_metrics),
-                        .cap = retainHostValueCapability(payload._3, &self.pending_roc_metrics),
+                        .transform = retainHostCallable(payload.transform, &self.pending_roc_metrics),
+                        .cap = retainHostValueCapability(payload.capability, &self.pending_roc_metrics),
                     } });
                     stream.rememberSignalRecord(allocator, record);
                     break :blk record;
                 },
-                .Map2 => blk: {
-                    const payload = expr.payload_map2();
-                    const token = payload._0;
+                .map2 => |payload| blk: {
+                    const token = payload.token.ptr;
                     if (self.retainExistingSignalRecordForStream(allocator, stream, token, .map2)) |record| {
                         break :blk record;
                     }
 
-                    const left = self.bindNodeSignalExpr(allocator, stream, payload._1.*, binder_stack);
-                    const right = self.bindNodeSignalExpr(allocator, stream, payload._2.*, binder_stack);
+                    const left = self.bindSignalExprView(allocator, stream, abi_view.SignalExpr.fromAbi(payload.left.*), binder_stack);
+                    const right = self.bindSignalExprView(allocator, stream, abi_view.SignalExpr.fromAbi(payload.right.*), binder_stack);
                     const record = HostSignalRecord.init(allocator, .{ .map2 = .{
                         .token = retainHostSignalToken(token),
                         .left = left,
                         .right = right,
-                        .transform = retainHostCallable(payload._3, &self.pending_roc_metrics),
-                        .cap = retainHostValueCapability(payload._4, &self.pending_roc_metrics),
+                        .transform = retainHostCallable(payload.transform, &self.pending_roc_metrics),
+                        .cap = retainHostValueCapability(payload.capability, &self.pending_roc_metrics),
                     } });
                     stream.rememberSignalRecord(allocator, record);
                     break :blk record;
                 },
-                .Combine => blk: {
-                    const payload = expr.payload_combine();
-                    const token = payload._0;
+                .combine => |payload| blk: {
+                    const token = payload.token.ptr;
                     if (self.retainExistingSignalRecordForStream(allocator, stream, token, .combine)) |record| {
                         break :blk record;
                     }
 
-                    const source_children = payload._1.items();
-                    const children = allocator.alloc(*HostSignalRecord, source_children.len) catch @panic("out of memory");
-                    for (source_children, children) |child, *dest| {
-                        dest.* = self.bindNodeSignalExpr(allocator, stream, child, binder_stack);
+                    const children = allocator.alloc(*HostSignalRecord, payload.children.len) catch @panic("out of memory");
+                    for (payload.children, children) |child, *dest| {
+                        dest.* = self.bindSignalExprView(allocator, stream, abi_view.SignalExpr.fromAbi(child), binder_stack);
                     }
                     const record = HostSignalRecord.init(allocator, .{ .combine = .{
                         .token = retainHostSignalToken(token),
                         .children = children,
-                        .transform = retainHostCallable(payload._2, &self.pending_roc_metrics),
-                        .cap = retainHostValueCapability(payload._3, &self.pending_roc_metrics),
+                        .transform = retainHostCallable(payload.transform, &self.pending_roc_metrics),
+                        .cap = retainHostValueCapability(payload.capability, &self.pending_roc_metrics),
                     } });
                     stream.rememberSignalRecord(allocator, record);
                     break :blk record;
                 },
-                .TaskSource => blk: {
-                    const payload = expr.payload_task_source();
-                    const token = payload.token;
+                .task_source => |payload| blk: {
+                    const token = payload.token.ptr;
                     if (self.retainExistingSignalRecordForStream(allocator, stream, token, .task_source)) |record| {
                         break :blk record;
                     }
 
                     const record = HostSignalRecord.init(allocator, .{ .task_source = .{
                         .token = retainHostSignalToken(token),
-                        .name = allocator.dupe(u8, payload.name.asSlice()) catch @panic("out of memory"),
-                        .payload_cap = retainHostValueCapability(payload.payload_cap, &self.pending_roc_metrics),
+                        .name = allocator.dupe(u8, payload.name) catch @panic("out of memory"),
+                        .payload_cap = retainHostValueCapability(payload.payload_capability, &self.pending_roc_metrics),
                         .initial = retainHostCallable(payload.initial, &self.pending_roc_metrics),
                         .done = retainHostCallable(payload.done, &self.pending_roc_metrics),
                         .failed = retainHostCallable(payload.failed, &self.pending_roc_metrics),
-                        .cap = retainHostValueCapability(payload.cap, &self.pending_roc_metrics),
+                        .cap = retainHostValueCapability(payload.capability, &self.pending_roc_metrics),
                         .reset_on_start = payload.reset_on_start,
                     } });
                     stream.rememberSignalRecord(allocator, record);
                     break :blk record;
                 },
-                .IntervalSource => blk: {
-                    const payload = expr.payload_interval_source();
-                    const token = payload.token;
+                .interval_source => |payload| blk: {
+                    const token = payload.token.ptr;
                     if (self.retainExistingSignalRecordForStream(allocator, stream, token, .interval_source)) |record| {
                         break :blk record;
                     }
@@ -1377,7 +1375,7 @@ pub fn Engine(comptime Ctx: type) type {
                         .period_ms = payload.period_ms,
                         .initial = retainHostCallable(payload.initial, &self.pending_roc_metrics),
                         .tick = retainHostCallable(payload.tick, &self.pending_roc_metrics),
-                        .cap = retainHostValueCapability(payload.cap, &self.pending_roc_metrics),
+                        .cap = retainHostValueCapability(payload.capability, &self.pending_roc_metrics),
                     } });
                     stream.rememberSignalRecord(allocator, record);
                     break :blk record;
