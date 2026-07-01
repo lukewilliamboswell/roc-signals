@@ -101,6 +101,18 @@ Coverage output is written under `kcov-output/native-host/`. The script prints a
 ranked summary by uncovered line count; use the `lines` format to inspect the
 actual uncovered source ranges before adding focused tests.
 
+When coverage points at generated ABI ingestion, keep `roc_platform_abi.zig` as
+the raw layout contract and add a small borrowed typed view above it instead.
+Prefer seam-level tests for those typed views before adding broad host/spec tests;
+that gives Zig exhaustive switches and named payload fields while preserving the
+external ABI exactly.
+
+When coverage points at large engine paths, first look for engine-adjacent logic
+that can live in a focused `src/signals/` module, such as descriptor bookkeeping,
+effect lifecycle state, or borrowed ABI views. Unit-test those seams directly and
+keep host/spec tests for cross-module behavior. If a seam retains or releases Roc
+tokens, allocate real Roc boxes in tests instead of using stack pointers.
+
 Run coverage after substantial changes to `src/signals/`, `src/native_host.zig`,
 the native spec runner, the simulated DOM, allocation diagnostics, or host
 runtime behavior. The coverage job is intentionally separate from

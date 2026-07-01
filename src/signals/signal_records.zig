@@ -119,6 +119,25 @@ pub const Payload = union(enum) {
     interval_source: IntervalSourceRecord,
 };
 
+pub const EffectSourceRef = union(enum) {
+    task: *TaskSourceRecord,
+    interval: *IntervalSourceRecord,
+
+    pub fn cachedSlot(self: EffectSourceRef) *CacheSlot {
+        return switch (self) {
+            .task => |payload| &payload.cached_value,
+            .interval => |payload| &payload.cached_value,
+        };
+    }
+
+    pub fn capability(self: EffectSourceRef) HostValueCapability {
+        return switch (self) {
+            .task => |payload| payload.cap,
+            .interval => |payload| payload.cap,
+        };
+    }
+};
+
 /// A refcounted, shareable node in the signal graph. Owns its transform/eq/drop
 /// thunks plus a memoized cached value; the active graph holds one reference
 /// while a record is mounted.
@@ -148,6 +167,60 @@ pub const Record = struct {
             .combine => |payload| payload.token,
             .task_source => |payload| payload.token,
             .interval_source => |payload| payload.token,
+        };
+    }
+
+    pub fn cachedSlot(self: *Record) ?*CacheSlot {
+        return switch (self.payload) {
+            .ref => null,
+            .const_value => |*payload| &payload.cached_value,
+            .map => |*payload| &payload.cached_value,
+            .map2 => |*payload| &payload.cached_value,
+            .combine => |*payload| &payload.cached_value,
+            .task_source => |*payload| &payload.cached_value,
+            .interval_source => |*payload| &payload.cached_value,
+        };
+    }
+
+    pub fn capability(self: *const Record, comptime Ctx: type, ctx: Ctx.Handle) HostValueCapability {
+        return switch (self.payload) {
+            .ref => |node_id| Ctx.stateCapability(ctx, node_id),
+            .const_value => |payload| payload.cap,
+            .map => |payload| payload.cap,
+            .map2 => |payload| payload.cap,
+            .combine => |payload| payload.cap,
+            .task_source => |payload| payload.cap,
+            .interval_source => |payload| payload.cap,
+        };
+    }
+
+    pub fn taskSource(self: *Record) ?*TaskSourceRecord {
+        return switch (self.payload) {
+            .task_source => |*payload| payload,
+            .ref, .const_value, .map, .map2, .combine, .interval_source => null,
+        };
+    }
+
+    pub fn requireTaskSource(self: *Record) *TaskSourceRecord {
+        return self.taskSource() orelse @panic("signal record was not a task source");
+    }
+
+    pub fn intervalSource(self: *Record) ?*IntervalSourceRecord {
+        return switch (self.payload) {
+            .interval_source => |*payload| payload,
+            .ref, .const_value, .map, .map2, .combine, .task_source => null,
+        };
+    }
+
+    pub fn requireIntervalSource(self: *Record) *IntervalSourceRecord {
+        return self.intervalSource() orelse @panic("signal record was not an interval source");
+    }
+
+    pub fn effectSource(self: *Record) ?EffectSourceRef {
+        return switch (self.payload) {
+            .task_source => |*payload| .{ .task = payload },
+            .interval_source => |*payload| .{ .interval = payload },
+            .ref, .const_value, .map, .map2, .combine => null,
         };
     }
 
@@ -249,6 +322,23 @@ pub const Binding = struct {
         allocator.free(self.source_node_ids);
     }
 };
+
+pub fn walkTree(comptime Context: type, context: Context, record: *Record, comptime visit: fn (Context, *Record) void) void {
+    visit(context, record);
+    switch (record.payload) {
+        .ref, .const_value, .task_source, .interval_source => {},
+        .map => |payload| walkTree(Context, context, payload.input, visit),
+        .map2 => |payload| {
+            walkTree(Context, context, payload.left, visit);
+            walkTree(Context, context, payload.right, visit);
+        },
+        .combine => |payload| {
+            for (payload.children) |child| {
+                walkTree(Context, context, child, visit);
+            }
+        },
+    }
+}
 
 pub fn validateExistingSignalRecord(record: *Record, expected_tag: std.meta.Tag(Payload)) void {
     if (std.meta.activeTag(record.payload) != expected_tag) {

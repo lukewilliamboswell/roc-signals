@@ -14,6 +14,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const abi = @import("roc_platform_abi.zig");
+const abi_view = @import("abi_view.zig");
 const scope_tree = @import("scope_tree.zig");
 const erased_calls = @import("erased_calls.zig");
 const render = @import("render_commands.zig");
@@ -40,9 +41,7 @@ pub const RenderBoolField = render.BoolField;
 pub const RenderEventKind = render.EventKind;
 pub const EventPayloadKind = render.EventPayloadKind;
 pub const EventPayloadAccessor = render.EventPayloadAccessor;
-pub const NodeFieldCustom: u64 = 7;
-const node_field_custom: u64 = NodeFieldCustom;
-const node_bool_field_custom: u64 = 3;
+pub const NodeFieldCustom: u64 = abi_view.node_text_field_custom;
 
 pub const HostValue = retained_values.HostValue;
 pub const HostValueList = abi.RocListWith(HostValue, false);
@@ -338,56 +337,23 @@ pub fn resolveNodeBinderRef(binder_stack: []const HostBinderBinding, token: Host
 }
 
 pub fn renderTextFieldFromAbi(field: u64) RenderTextField {
-    return switch (field) {
-        @intFromEnum(RenderTextField.text) => .text,
-        @intFromEnum(RenderTextField.role) => .role,
-        @intFromEnum(RenderTextField.label) => .label,
-        @intFromEnum(RenderTextField.test_id) => .test_id,
-        @intFromEnum(RenderTextField.value) => .value,
-        @intFromEnum(RenderTextField.class) => .class,
-        else => @panic("Roc render text descriptor used an unknown field"),
-    };
+    return abi_view.textFieldFromAbi(field);
 }
 
 pub fn renderBoolFieldFromAbi(field: u64) RenderBoolField {
-    return switch (field) {
-        @intFromEnum(RenderBoolField.checked) => .checked,
-        @intFromEnum(RenderBoolField.disabled) => .disabled,
-        else => @panic("Roc render bool descriptor used an unknown field"),
-    };
+    return abi_view.boolFieldFromAbi(field);
 }
 
 pub fn renderEventKindFromAbi(kind: u64) RenderEventKind {
-    return switch (kind) {
-        @intFromEnum(RenderEventKind.click) => .click,
-        @intFromEnum(RenderEventKind.input) => .input,
-        @intFromEnum(RenderEventKind.check) => .check,
-        @intFromEnum(RenderEventKind.pointer_down) => .pointer_down,
-        @intFromEnum(RenderEventKind.pointer_up) => .pointer_up,
-        @intFromEnum(RenderEventKind.pointer_enter) => .pointer_enter,
-        @intFromEnum(RenderEventKind.pointer_leave) => .pointer_leave,
-        else => @panic("Roc render event descriptor used an unknown event kind"),
-    };
+    return abi_view.eventKindFromAbi(kind);
 }
 
 pub fn eventPayloadKindFromAbi(payload_kind: u64) EventPayloadKind {
-    return switch (payload_kind) {
-        @intFromEnum(EventPayloadKind.unit) => .unit,
-        @intFromEnum(EventPayloadKind.str) => .str,
-        @intFromEnum(EventPayloadKind.bool) => .bool,
-        @intFromEnum(EventPayloadKind.bytes) => .bytes,
-        else => @panic("Roc event descriptor used an unknown payload kind"),
-    };
+    return abi_view.eventPayloadKindFromAbi(payload_kind);
 }
 
 pub fn eventPayloadAccessorFromAbi(payload_accessor: u64) EventPayloadAccessor {
-    return switch (payload_accessor) {
-        @intFromEnum(EventPayloadAccessor.none) => .none,
-        @intFromEnum(EventPayloadAccessor.target_value) => .target_value,
-        @intFromEnum(EventPayloadAccessor.target_checked) => .target_checked,
-        @intFromEnum(EventPayloadAccessor.record_key_shift) => .record_key_shift,
-        else => @panic("Roc event descriptor used an unknown payload accessor"),
-    };
+    return abi_view.eventPayloadAccessorFromAbi(payload_accessor);
 }
 
 pub fn Engine(comptime Ctx: type) type {
@@ -1180,32 +1146,10 @@ pub fn Engine(comptime Ctx: type) type {
         pub fn cloneMemoizedDirtySignalResult(self: *Self, ctx: Ctx.Handle, record: *HostSignalRecord, dirty_generation: u64) ?HostSignalEvalResult {
             if (record.last_dirty_generation != dirty_generation) return null;
 
-            return switch (record.payload) {
-                .ref => null,
-                .const_value => |*payload| .{
-                    .value = self.cloneCachedSignalValue(ctx, &payload.cached_value),
-                    .changed = record.last_dirty_changed,
-                },
-                .map => |*payload| .{
-                    .value = self.cloneCachedSignalValue(ctx, &payload.cached_value),
-                    .changed = record.last_dirty_changed,
-                },
-                .map2 => |*payload| .{
-                    .value = self.cloneCachedSignalValue(ctx, &payload.cached_value),
-                    .changed = record.last_dirty_changed,
-                },
-                .combine => |*payload| .{
-                    .value = self.cloneCachedSignalValue(ctx, &payload.cached_value),
-                    .changed = record.last_dirty_changed,
-                },
-                .task_source => |*payload| .{
-                    .value = self.cloneCachedSignalValue(ctx, &payload.cached_value),
-                    .changed = record.last_dirty_changed,
-                },
-                .interval_source => |*payload| .{
-                    .value = self.cloneCachedSignalValue(ctx, &payload.cached_value),
-                    .changed = record.last_dirty_changed,
-                },
+            const cache_slot = record.cachedSlot() orelse return null;
+            return .{
+                .value = self.cloneCachedSignalValue(ctx, cache_slot),
+                .changed = record.last_dirty_changed,
             };
         }
 
@@ -1216,15 +1160,7 @@ pub fn Engine(comptime Ctx: type) type {
         }
 
         pub fn hostSignalRecordCapability(_: *Self, ctx: Ctx.Handle, record: *const HostSignalRecord) HostValueCapability {
-            return switch (record.payload) {
-                .ref => |node_id| Ctx.stateCapability(ctx, node_id),
-                .const_value => |payload| payload.cap,
-                .map => |payload| payload.cap,
-                .map2 => |payload| payload.cap,
-                .combine => |payload| payload.cap,
-                .task_source => |payload| payload.cap,
-                .interval_source => |payload| payload.cap,
-            };
+            return record.capability(Ctx, ctx);
         }
 
         pub fn hostSignalBindingCapability(self: *Self, ctx: Ctx.Handle, signal: *const HostSignalBinding) HostValueCapability {
@@ -1268,86 +1204,84 @@ pub fn Engine(comptime Ctx: type) type {
         }
 
         pub fn bindNodeSignalExpr(self: *Self, allocator: std.mem.Allocator, stream: *HostNodeDescriptorStream, expr: abi.NodeSignalExpr, binder_stack: []const HostBinderBinding) *HostSignalRecord {
-            return switch (expr.tag) {
-                .Ref => blk: {
-                    const node_id = resolveNodeBinderRef(binder_stack, expr.payload_ref());
+            return self.bindSignalExprView(allocator, stream, abi_view.SignalExpr.fromAbi(expr), binder_stack);
+        }
+
+        fn bindSignalExprView(self: *Self, allocator: std.mem.Allocator, stream: *HostNodeDescriptorStream, expr: abi_view.SignalExpr, binder_stack: []const HostBinderBinding) *HostSignalRecord {
+            return switch (expr) {
+                .ref => |payload| blk: {
+                    const node_id = resolveNodeBinderRef(binder_stack, payload.binder.ptr);
                     break :blk HostSignalRecord.init(allocator, .{ .ref = node_id });
                 },
-                .ConstValue => blk: {
-                    const payload = expr.payload_const_value();
-                    const token = payload._0;
+                .const_value => |payload| blk: {
+                    const token = payload.token.ptr;
                     if (self.retainExistingSignalRecordForStream(allocator, stream, token, .const_value)) |record| {
                         break :blk record;
                     }
 
                     const record = HostSignalRecord.init(allocator, .{ .const_value = .{
                         .token = retainHostSignalToken(token),
-                        .init = retainHostCallable(payload._1, &self.pending_roc_metrics),
-                        .cap = retainHostValueCapability(payload._2, &self.pending_roc_metrics),
+                        .init = retainHostCallable(payload.init, &self.pending_roc_metrics),
+                        .cap = retainHostValueCapability(payload.capability, &self.pending_roc_metrics),
                     } });
                     stream.rememberSignalRecord(allocator, record);
                     break :blk record;
                 },
-                .Map => blk: {
-                    const payload = expr.payload_map();
-                    const token = payload._0;
+                .map => |payload| blk: {
+                    const token = payload.token.ptr;
                     if (self.retainExistingSignalRecordForStream(allocator, stream, token, .map)) |record| {
                         break :blk record;
                     }
 
-                    const input = self.bindNodeSignalExpr(allocator, stream, payload._1.*, binder_stack);
+                    const input = self.bindSignalExprView(allocator, stream, abi_view.SignalExpr.fromAbi(payload.input.*), binder_stack);
                     const record = HostSignalRecord.init(allocator, .{ .map = .{
                         .token = retainHostSignalToken(token),
                         .input = input,
-                        .transform = retainHostCallable(payload._2, &self.pending_roc_metrics),
-                        .cap = retainHostValueCapability(payload._3, &self.pending_roc_metrics),
+                        .transform = retainHostCallable(payload.transform, &self.pending_roc_metrics),
+                        .cap = retainHostValueCapability(payload.capability, &self.pending_roc_metrics),
                     } });
                     stream.rememberSignalRecord(allocator, record);
                     break :blk record;
                 },
-                .Map2 => blk: {
-                    const payload = expr.payload_map2();
-                    const token = payload._0;
+                .map2 => |payload| blk: {
+                    const token = payload.token.ptr;
                     if (self.retainExistingSignalRecordForStream(allocator, stream, token, .map2)) |record| {
                         break :blk record;
                     }
 
-                    const left = self.bindNodeSignalExpr(allocator, stream, payload._1.*, binder_stack);
-                    const right = self.bindNodeSignalExpr(allocator, stream, payload._2.*, binder_stack);
+                    const left = self.bindSignalExprView(allocator, stream, abi_view.SignalExpr.fromAbi(payload.left.*), binder_stack);
+                    const right = self.bindSignalExprView(allocator, stream, abi_view.SignalExpr.fromAbi(payload.right.*), binder_stack);
                     const record = HostSignalRecord.init(allocator, .{ .map2 = .{
                         .token = retainHostSignalToken(token),
                         .left = left,
                         .right = right,
-                        .transform = retainHostCallable(payload._3, &self.pending_roc_metrics),
-                        .cap = retainHostValueCapability(payload._4, &self.pending_roc_metrics),
+                        .transform = retainHostCallable(payload.transform, &self.pending_roc_metrics),
+                        .cap = retainHostValueCapability(payload.capability, &self.pending_roc_metrics),
                     } });
                     stream.rememberSignalRecord(allocator, record);
                     break :blk record;
                 },
-                .Combine => blk: {
-                    const payload = expr.payload_combine();
-                    const token = payload._0;
+                .combine => |payload| blk: {
+                    const token = payload.token.ptr;
                     if (self.retainExistingSignalRecordForStream(allocator, stream, token, .combine)) |record| {
                         break :blk record;
                     }
 
-                    const source_children = payload._1.items();
-                    const children = allocator.alloc(*HostSignalRecord, source_children.len) catch @panic("out of memory");
-                    for (source_children, children) |child, *dest| {
-                        dest.* = self.bindNodeSignalExpr(allocator, stream, child, binder_stack);
+                    const children = allocator.alloc(*HostSignalRecord, payload.children.len) catch @panic("out of memory");
+                    for (payload.children, children) |child, *dest| {
+                        dest.* = self.bindSignalExprView(allocator, stream, abi_view.SignalExpr.fromAbi(child), binder_stack);
                     }
                     const record = HostSignalRecord.init(allocator, .{ .combine = .{
                         .token = retainHostSignalToken(token),
                         .children = children,
-                        .transform = retainHostCallable(payload._2, &self.pending_roc_metrics),
-                        .cap = retainHostValueCapability(payload._3, &self.pending_roc_metrics),
+                        .transform = retainHostCallable(payload.transform, &self.pending_roc_metrics),
+                        .cap = retainHostValueCapability(payload.capability, &self.pending_roc_metrics),
                     } });
                     stream.rememberSignalRecord(allocator, record);
                     break :blk record;
                 },
-                .TaskSource => blk: {
-                    const payload = expr.payload_task_source();
-                    const token = payload.token;
+                .task_source => |payload| blk: {
+                    const token = payload.token.ptr;
                     if (self.retainExistingSignalRecordForStream(allocator, stream, token, .task_source)) |record| {
                         break :blk record;
                     }
@@ -1355,19 +1289,18 @@ pub fn Engine(comptime Ctx: type) type {
                     const record = HostSignalRecord.init(allocator, .{ .task_source = .{
                         .token = retainHostSignalToken(token),
                         .name = allocator.dupe(u8, payload.name.asSlice()) catch @panic("out of memory"),
-                        .payload_cap = retainHostValueCapability(payload.payload_cap, &self.pending_roc_metrics),
+                        .payload_cap = retainHostValueCapability(payload.payload_capability, &self.pending_roc_metrics),
                         .initial = retainHostCallable(payload.initial, &self.pending_roc_metrics),
                         .done = retainHostCallable(payload.done, &self.pending_roc_metrics),
                         .failed = retainHostCallable(payload.failed, &self.pending_roc_metrics),
-                        .cap = retainHostValueCapability(payload.cap, &self.pending_roc_metrics),
+                        .cap = retainHostValueCapability(payload.capability, &self.pending_roc_metrics),
                         .reset_on_start = payload.reset_on_start,
                     } });
                     stream.rememberSignalRecord(allocator, record);
                     break :blk record;
                 },
-                .IntervalSource => blk: {
-                    const payload = expr.payload_interval_source();
-                    const token = payload.token;
+                .interval_source => |payload| blk: {
+                    const token = payload.token.ptr;
                     if (self.retainExistingSignalRecordForStream(allocator, stream, token, .interval_source)) |record| {
                         break :blk record;
                     }
@@ -1377,7 +1310,7 @@ pub fn Engine(comptime Ctx: type) type {
                         .period_ms = payload.period_ms,
                         .initial = retainHostCallable(payload.initial, &self.pending_roc_metrics),
                         .tick = retainHostCallable(payload.tick, &self.pending_roc_metrics),
-                        .cap = retainHostValueCapability(payload.cap, &self.pending_roc_metrics),
+                        .cap = retainHostValueCapability(payload.capability, &self.pending_roc_metrics),
                     } });
                     stream.rememberSignalRecord(allocator, record);
                     break :blk record;
@@ -1686,72 +1619,54 @@ pub fn Engine(comptime Ctx: type) type {
 
         pub fn collectNodeAttrDescriptor(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, elem_id: u64, attr: abi.NodeAttr, binder_stack: []const HostBinderBinding) void {
             const allocator = Ctx.allocator(ctx);
-            switch (attr.tag) {
-                .StaticText => {
-                    const payload = attr.payload_static_text();
-                    if (payload.field == node_field_custom) {
-                        stream.appendStaticCustomTextAttr(allocator, elem_id, payload.name.asSlice(), payload.value.asSlice());
-                    } else {
-                        if (payload.name.asSlice().len != 0) @panic("fixed text attr descriptor carried a custom name");
-                        const field = renderTextFieldFromAbi(payload.field);
-                        stream.appendStaticTextAttr(allocator, elem_id, field, payload.value.asSlice());
+            switch (abi_view.NodeAttr.fromAbi(attr)) {
+                .static_text => |payload| {
+                    switch (payload.target) {
+                        .fixed => |field| stream.appendStaticTextAttr(allocator, elem_id, field, payload.value.asSlice()),
+                        .custom => |name| stream.appendStaticCustomTextAttr(allocator, elem_id, name.asSlice(), payload.value.asSlice()),
                     }
                 },
-                .SignalText => {
-                    const payload = attr.payload_signal_text();
-                    if (payload.field == node_field_custom) {
-                        if (payload.name.asSlice().len == 0) @panic("custom text attr descriptor used an empty name");
-                        if (stream.customTextAttrDescriptorExists(elem_id, payload.name.asSlice())) @panic("element has duplicate custom text attr descriptors");
-                        const signal = self.bindNodeSignal(allocator, stream, payload.signal.*, binder_stack);
-                        stream.appendSignalCustomTextAttr(allocator, ctx, roc_host, &self.pending_roc_metrics, elem_id, payload.name.asSlice(), signal, payload.read);
-                    } else {
-                        if (payload.name.asSlice().len != 0) @panic("fixed text attr descriptor carried a custom name");
-                        const field = renderTextFieldFromAbi(payload.field);
-                        const signal = self.bindNodeSignal(allocator, stream, payload.signal.*, binder_stack);
-                        stream.appendSignalTextAttr(allocator, ctx, roc_host, &self.pending_roc_metrics, elem_id, field, signal, payload.read);
+                .signal_text => |payload| {
+                    switch (payload.target) {
+                        .fixed => |field| {
+                            const signal = self.bindNodeSignal(allocator, stream, payload.signal.*, binder_stack);
+                            stream.appendSignalTextAttr(allocator, ctx, roc_host, &self.pending_roc_metrics, elem_id, field, signal, payload.read);
+                        },
+                        .custom => |name| {
+                            const name_slice = name.asSlice();
+                            if (stream.customTextAttrDescriptorExists(elem_id, name_slice)) @panic("element has duplicate custom text attr descriptors");
+                            const signal = self.bindNodeSignal(allocator, stream, payload.signal.*, binder_stack);
+                            stream.appendSignalCustomTextAttr(allocator, ctx, roc_host, &self.pending_roc_metrics, elem_id, name_slice, signal, payload.read);
+                        },
                     }
                 },
-                .StaticBool => {
-                    const payload = attr.payload_static_bool();
-                    if (payload.field == node_bool_field_custom) {
-                        if (payload.name.asSlice().len == 0) @panic("custom bool attr descriptor used an empty name");
-                        stream.appendStaticCustomBoolAttr(allocator, elem_id, payload.name.asSlice(), payload.value);
-                    } else {
-                        if (payload.name.asSlice().len != 0) @panic("fixed bool attr descriptor carried a custom name");
-                        const field = renderBoolFieldFromAbi(payload.field);
-                        stream.appendStaticBoolAttr(allocator, elem_id, field, payload.value);
+                .static_bool => |payload| {
+                    switch (payload.target) {
+                        .fixed => |field| stream.appendStaticBoolAttr(allocator, elem_id, field, payload.value),
+                        .custom => |name| stream.appendStaticCustomBoolAttr(allocator, elem_id, name.asSlice(), payload.value),
                     }
                 },
-                .SignalBool => {
-                    const payload = attr.payload_signal_bool();
-                    if (payload.field == node_bool_field_custom) {
-                        if (payload.name.asSlice().len == 0) @panic("custom bool attr descriptor used an empty name");
-                        if (stream.customTextAttrDescriptorExists(elem_id, payload.name.asSlice())) @panic("element has duplicate custom bool attr descriptors");
-                        const signal = self.bindNodeSignal(allocator, stream, payload.signal.*, binder_stack);
-                        stream.appendSignalCustomBoolAttr(allocator, ctx, roc_host, &self.pending_roc_metrics, elem_id, payload.name.asSlice(), signal, payload.read);
-                    } else {
-                        if (payload.name.asSlice().len != 0) @panic("fixed bool attr descriptor carried a custom name");
-                        const field = renderBoolFieldFromAbi(payload.field);
-                        const signal = self.bindNodeSignal(allocator, stream, payload.signal.*, binder_stack);
-                        stream.appendSignalBoolAttr(allocator, ctx, roc_host, &self.pending_roc_metrics, elem_id, field, signal, payload.read);
+                .signal_bool => |payload| {
+                    switch (payload.target) {
+                        .fixed => |field| {
+                            const signal = self.bindNodeSignal(allocator, stream, payload.signal.*, binder_stack);
+                            stream.appendSignalBoolAttr(allocator, ctx, roc_host, &self.pending_roc_metrics, elem_id, field, signal, payload.read);
+                        },
+                        .custom => |name| {
+                            const name_slice = name.asSlice();
+                            if (stream.customTextAttrDescriptorExists(elem_id, name_slice)) @panic("element has duplicate custom bool attr descriptors");
+                            const signal = self.bindNodeSignal(allocator, stream, payload.signal.*, binder_stack);
+                            stream.appendSignalCustomBoolAttr(allocator, ctx, roc_host, &self.pending_roc_metrics, elem_id, name_slice, signal, payload.read);
+                        },
                     }
                 },
-                .OnEvent => {
-                    const payload = attr.payload_on_event();
-                    const msg = payload.msg;
-                    const kind = renderEventKindFromAbi(payload.kind);
-                    const payload_kind = eventPayloadKindFromAbi(msg.payload_kind);
-                    const payload_accessor = eventPayloadAccessorFromAbi(msg.payload_accessor);
-                    const target_node_id = resolveNodeBinderRef(binder_stack, msg.binder);
-                    stream.appendEvent(allocator, roc_host, &self.pending_roc_metrics, elem_id, kind, msg.binder, target_node_id, payload_kind, payload_accessor, msg.payload_reducer);
+                .event => |payload| {
+                    const target_node_id = resolveNodeBinderRef(binder_stack, payload.msg.binder.ptr);
+                    stream.appendEvent(allocator, roc_host, &self.pending_roc_metrics, elem_id, payload.kind, payload.msg.binder.ptr, target_node_id, payload.msg.payload_kind, payload.msg.payload_accessor, payload.msg.payload_reducer);
                 },
-                .OnNamedEvent => {
-                    const payload = attr.payload_on_named_event();
-                    const msg = payload.msg;
-                    const payload_kind = eventPayloadKindFromAbi(msg.payload_kind);
-                    const payload_accessor = eventPayloadAccessorFromAbi(msg.payload_accessor);
-                    const target_node_id = resolveNodeBinderRef(binder_stack, msg.binder);
-                    stream.appendNamedEvent(allocator, roc_host, &self.pending_roc_metrics, elem_id, payload.name.asSlice(), payload.options, msg.binder, target_node_id, payload_kind, payload_accessor, msg.payload_reducer);
+                .named_event => |payload| {
+                    const target_node_id = resolveNodeBinderRef(binder_stack, payload.msg.binder.ptr);
+                    stream.appendNamedEvent(allocator, roc_host, &self.pending_roc_metrics, elem_id, payload.name.asSlice(), payload.options, payload.msg.binder.ptr, target_node_id, payload.msg.payload_kind, payload.msg.payload_accessor, payload.msg.payload_reducer);
                 },
             }
         }
@@ -1830,56 +1745,51 @@ pub fn Engine(comptime Ctx: type) type {
             self.validateScopeId(scope_id) catch @panic("scope id has no host scope descriptor");
 
             const allocator = Ctx.allocator(ctx);
-            switch (elem.tag) {
-                .Element => {
-                    const payload = elem.payload_element();
+            switch (abi_view.Elem.fromAbi(elem)) {
+                .element => |payload| {
                     const elem_id = self.internDomIdentity(Ctx.allocator(ctx), scope_id, dom_ordinal.*) catch @panic("scope id has no host scope descriptor");
                     dom_ordinal.* += 1;
                     _ = stream.appendElement(allocator, elem_id, parent_elem_id, scope_id, payload.tag.asSlice());
-                    for (payload.attrs.items()) |attr| {
+                    for (payload.attrs) |attr| {
                         self.collectNodeAttrDescriptor(ctx, roc_host, stream, elem_id, attr, binder_stack.items);
                     }
-                    for (payload.children.items()) |child| {
+                    for (payload.children) |child| {
                         self.collectActiveElemDescriptors(ctx, roc_host, stream, child, scope_id, elem_id, ordinal, dom_ordinal, binder_stack, scope_created, dirty_source_node_ids);
                     }
                 },
-                .Text => {
+                .text => |payload| {
                     const elem_id = self.internDomIdentity(Ctx.allocator(ctx), scope_id, dom_ordinal.*) catch @panic("scope id has no host scope descriptor");
                     dom_ordinal.* += 1;
-                    stream.appendTextNode(allocator, elem_id, parent_elem_id, scope_id, elem.payload_text().asSlice());
+                    stream.appendTextNode(allocator, elem_id, parent_elem_id, scope_id, payload.text.asSlice());
                 },
-                .TextSignal => {
+                .text_signal => |payload| {
                     const elem_id = self.internDomIdentity(Ctx.allocator(ctx), scope_id, dom_ordinal.*) catch @panic("scope id has no host scope descriptor");
                     dom_ordinal.* += 1;
-                    const text_signal = elem.payload_text_signal();
-                    const signal = self.bindNodeSignal(allocator, stream, text_signal.signal.*, binder_stack.items);
-                    stream.appendSignalTextNode(allocator, ctx, roc_host, &self.pending_roc_metrics, elem_id, parent_elem_id, scope_id, signal, text_signal.read);
+                    const signal = self.bindNodeSignal(allocator, stream, payload.signal.*, binder_stack.items);
+                    stream.appendSignalTextNode(allocator, ctx, roc_host, &self.pending_roc_metrics, elem_id, parent_elem_id, scope_id, signal, payload.read);
                 },
-                .Cleanup => {
-                    stream.appendCleanup(allocator, scope_id, elem.payload_cleanup().cleanup.asSlice());
+                .cleanup => |payload| {
+                    stream.appendCleanup(allocator, scope_id, payload.name.asSlice());
                 },
-                .OnChange => {
-                    const payload = elem.payload_on_change();
+                .on_change => |payload| {
                     const signal = self.bindNodeSignal(allocator, stream, payload.signal.*, binder_stack.items);
                     stream.appendOnChange(allocator, ctx, roc_host, &self.pending_roc_metrics, scope_id, signal, payload.to_cmd);
                 },
-                .OnMount => {
-                    const payload = elem.payload_on_mount();
+                .on_mount => |payload| {
                     stream.appendMount(allocator, roc_host, &self.pending_roc_metrics, scope_id, payload.to_cmd, scope_created);
                 },
-                .State => {
+                .state => |state| {
                     const site_ordinal = ordinal.*;
                     const node_id = self.internNodeIdentity(Ctx.allocator(ctx), scope_id, site_ordinal) catch @panic("scope id has no host scope descriptor");
                     ordinal.* += 1;
                     stream.appendScopeSite(allocator, node_id, scope_id, site_ordinal, parent_elem_id, .state, binder_stack.items);
-                    const state = elem.payload_state();
-                    stream.appendState(allocator, roc_host, &self.pending_roc_metrics, node_id, state.initial, state.cap);
+                    stream.appendState(allocator, roc_host, &self.pending_roc_metrics, node_id, state.initial, state.capability);
                     self.ensureStateFromDesc(ctx, roc_host, stream.states.items[stream.states.items.len - 1]);
-                    binder_stack.append(allocator, .{ .token = state.binder, .node_id = node_id }) catch @panic("out of memory");
+                    binder_stack.append(allocator, .{ .token = state.binder.ptr, .node_id = node_id }) catch @panic("out of memory");
                     self.collectActiveElemDescriptors(ctx, roc_host, stream, state.child.*, scope_id, parent_elem_id, ordinal, dom_ordinal, binder_stack, scope_created, dirty_source_node_ids);
                     _ = binder_stack.pop() orelse unreachable;
                 },
-                .Component => {
+                .component => |payload| {
                     const site_ordinal = ordinal.*;
                     const node_id = self.internNodeIdentity(Ctx.allocator(ctx), scope_id, site_ordinal) catch @panic("scope id has no host scope descriptor");
                     ordinal.* += 1;
@@ -1888,14 +1798,13 @@ pub fn Engine(comptime Ctx: type) type {
                     const component_scope_id = component_scope.scope_id;
                     var component_ordinal: u64 = 0;
                     var component_dom_ordinal: u64 = 0;
-                    self.collectActiveElemDescriptors(ctx, roc_host, stream, elem.payload_component().child.*, component_scope_id, parent_elem_id, &component_ordinal, &component_dom_ordinal, binder_stack, component_scope.created, dirty_source_node_ids);
+                    self.collectActiveElemDescriptors(ctx, roc_host, stream, payload.child.*, component_scope_id, parent_elem_id, &component_ordinal, &component_dom_ordinal, binder_stack, component_scope.created, dirty_source_node_ids);
                 },
-                .When => {
+                .when => |when_payload| {
                     const site_ordinal = ordinal.*;
                     const node_id = self.internNodeIdentity(Ctx.allocator(ctx), scope_id, site_ordinal) catch @panic("scope id has no host scope descriptor");
                     ordinal.* += 1;
                     stream.appendScopeSite(allocator, node_id, scope_id, site_ordinal, parent_elem_id, .when, binder_stack.items);
-                    const when_payload = elem.payload_when();
                     const condition_binding = self.bindNodeSignal(allocator, stream, when_payload.condition.*, binder_stack.items);
                     stream.appendWhen(allocator, ctx, roc_host, &self.pending_roc_metrics, node_id, condition_binding, when_payload.read, when_payload.when_false.*, when_payload.when_true.*);
 
@@ -1919,12 +1828,11 @@ pub fn Engine(comptime Ctx: type) type {
                     var branch_dom_ordinal: u64 = 0;
                     self.collectActiveElemDescriptors(ctx, roc_host, stream, branch_elem, branch_scope_id, parent_elem_id, &branch_ordinal, &branch_dom_ordinal, binder_stack, branch_scope.created, dirty_source_node_ids);
                 },
-                .Each => {
+                .each => |each_payload| {
                     const site_ordinal = ordinal.*;
                     const node_id = self.internNodeIdentity(Ctx.allocator(ctx), scope_id, site_ordinal) catch @panic("scope id has no host scope descriptor");
                     ordinal.* += 1;
                     stream.appendScopeSite(allocator, node_id, scope_id, site_ordinal, parent_elem_id, .each, binder_stack.items);
-                    const each_payload = elem.payload_each();
                     const items_binding = self.bindNodeSignal(allocator, stream, each_payload.items.*, binder_stack.items);
                     stream.appendEach(allocator, ctx, roc_host, &self.pending_roc_metrics, node_id, items_binding, each_payload.ops);
                     const each_index = stream.eaches.items.len - 1;
@@ -3068,6 +2976,16 @@ pub fn Engine(comptime Ctx: type) type {
             return self.cloneCachedSignalValue(ctx, cache_slot);
         }
 
+        pub fn evalEffectSourceInitial(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, cache_slot: *HostSignalCacheSlot, initial: abi.RocErasedCallable, cap: HostValueCapability) HostValue {
+            switch (cache_slot.*) {
+                .present => return self.cloneCachedSignalValue(ctx, cache_slot),
+                .absent => {
+                    const value = erased_calls.callValueInitThunk(roc_host, initial);
+                    return self.replaceSignalExprCacheAndClone(ctx, cache_slot, roc_host, value, cap);
+                },
+            }
+        }
+
         pub fn evalHostSignalRecord(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, record: *HostSignalRecord) HostValue {
             switch (record.payload) {
                 .ref => |node_id| return Ctx.stateValueByNodeId(ctx, node_id),
@@ -3118,22 +3036,10 @@ pub fn Engine(comptime Ctx: type) type {
                     return self.replaceSignalExprCacheAndClone(ctx, &payload.cached_value, roc_host, value, payload.cap);
                 },
                 .task_source => |*payload| {
-                    switch (payload.cached_value) {
-                        .present => return self.cloneCachedSignalValue(ctx, &payload.cached_value),
-                        .absent => {
-                            const value = erased_calls.callValueInitThunk(roc_host, payload.initial);
-                            return self.replaceSignalExprCacheAndClone(ctx, &payload.cached_value, roc_host, value, payload.cap);
-                        },
-                    }
+                    return self.evalEffectSourceInitial(ctx, roc_host, &payload.cached_value, payload.initial, payload.cap);
                 },
                 .interval_source => |*payload| {
-                    switch (payload.cached_value) {
-                        .present => return self.cloneCachedSignalValue(ctx, &payload.cached_value),
-                        .absent => {
-                            const value = erased_calls.callValueInitThunk(roc_host, payload.initial);
-                            return self.replaceSignalExprCacheAndClone(ctx, &payload.cached_value, roc_host, value, payload.cap);
-                        },
-                    }
+                    return self.evalEffectSourceInitial(ctx, roc_host, &payload.cached_value, payload.initial, payload.cap);
                 },
             }
         }
@@ -4839,11 +4745,8 @@ pub fn Engine(comptime Ctx: type) type {
         }
 
         pub fn updateEffectSourceCache(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, record: *HostSignalRecord, value: HostValue) bool {
-            return switch (record.payload) {
-                .task_source => |*payload| self.updateEffectSourceCacheSlot(ctx, roc_host, &payload.cached_value, value, payload.cap),
-                .interval_source => |*payload| self.updateEffectSourceCacheSlot(ctx, roc_host, &payload.cached_value, value, payload.cap),
-                .ref, .const_value, .map, .map2, .combine => @panic("effect source update targeted a non-source signal record"),
-            };
+            const source = record.effectSource() orelse @panic("effect source update targeted a non-source signal record");
+            return self.updateEffectSourceCacheSlot(ctx, roc_host, source.cachedSlot(), value, source.capability());
         }
 
         pub fn applyDirtySignalBatch(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, dirty_source_node_ids: []const u64, changed_record_ids: []const u64, dirty_generation: u64) render.Counts {
@@ -4886,10 +4789,7 @@ pub fn Engine(comptime Ctx: type) type {
 
         pub fn startTaskCommand(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, owner_scope_id: u64, cmd: erased_calls.StartTaskCmd) render.Counts {
             const record = self.activeTaskRecordByToken(cmd.task_token) orelse @panic("StartTask referenced a task source that is not active");
-            const task_payload = switch (record.payload) {
-                .task_source => |payload| payload,
-                .ref, .const_value, .map, .map2, .combine, .interval_source => unreachable,
-            };
+            const task_payload = record.requireTaskSource();
             if (!std.mem.eql(u8, task_payload.name, cmd.task_name.asSlice())) {
                 @panic("StartTask task name does not match the referenced task source");
             }
@@ -4910,31 +4810,23 @@ pub fn Engine(comptime Ctx: type) type {
             return .{};
         }
 
-        pub fn tickIntervalSource(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, period_ms: u64) render.Counts {
-            const record = self.activeIntervalRecordByPeriod(period_ms) orelse @panic("tick_interval matched no active interval source");
-            const interval_payload = switch (record.payload) {
-                .interval_source => |payload| payload,
-                .ref, .const_value, .map, .map2, .combine, .task_source => unreachable,
-            };
-
+        fn tickIntervalRecord(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, record: *HostSignalRecord) render.Counts {
+            const interval_payload = record.requireIntervalSource();
             const current = self.evalHostSignalRecord(ctx, roc_host, record);
             defer self.dropHostSignalRecordValue(ctx, roc_host, record, current);
             const next = callHostValueToHostValueWithCapability(ctx, roc_host, interval_payload.cap, interval_payload.tick, current);
             return self.dispatchEffectSourceValue(ctx, roc_host, record, next);
         }
 
+        pub fn tickIntervalSource(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, period_ms: u64) render.Counts {
+            const record = self.activeIntervalRecordByPeriod(period_ms) orelse @panic("tick_interval matched no active interval source");
+            return self.tickIntervalRecord(ctx, roc_host, record);
+        }
+
         pub fn tickIntervalSourceByRuntimeToken(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, token: u64) render.Counts {
             const source_token = self.activeIntervalSourceTokenByRuntimeToken(token) orelse @panic("timer tick referenced an inactive interval token");
             const record = self.activeIntervalRecordByToken(source_token) orelse @panic("timer tick matched no active interval source");
-            const interval_payload = switch (record.payload) {
-                .interval_source => |payload| payload,
-                .ref, .const_value, .map, .map2, .combine, .task_source => unreachable,
-            };
-
-            const current = self.evalHostSignalRecord(ctx, roc_host, record);
-            defer self.dropHostSignalRecordValue(ctx, roc_host, record, current);
-            const next = callHostValueToHostValueWithCapability(ctx, roc_host, interval_payload.cap, interval_payload.tick, current);
-            return self.dispatchEffectSourceValue(ctx, roc_host, record, next);
+            return self.tickIntervalRecord(ctx, roc_host, record);
         }
 
         pub fn evalDirtyOnChange(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, desc: *HostNodeOnChangeDesc, dirty_source_node_ids: []const u64, dirty_generation: u64) render.Counts {

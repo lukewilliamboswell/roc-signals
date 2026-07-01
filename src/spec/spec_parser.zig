@@ -442,6 +442,68 @@ test "spec parser parses actions and assertions" {
     try std.testing.expectEqual(@as(?u64, 1), commands[11].expected_count);
 }
 
+test "spec parser parses async cleanup metrics and boolean commands" {
+    const content =
+        \\# parser fixtures should keep native specs honest
+        \\key_down role:textbox name:"Search" "Enter" true
+        \\expect_checked label:"Enabled" false
+        \\expect_disabled test_id:"submit" true
+        \\resolve_task "fetch user" "hello\n\"world\"\\"
+        \\reject_task "fetch user" "bad\trequest"
+        \\expect_cleanup "fetch user" 2
+        \\expect_pending_task "fetch user" 1
+        \\mark_metrics
+        \\expect_metric_delta closure_releases -1
+        \\expect_metric_delta_at_most host_retained_alloc_delta 0
+    ;
+    const commands = try parseTestSpec(std.testing.allocator, content);
+    defer freeSpecCommands(std.testing.allocator, commands);
+
+    try std.testing.expectEqual(@as(usize, 10), commands.len);
+
+    try std.testing.expectEqual(SpecCommandType.key_down, commands[0].cmd_type);
+    try std.testing.expectEqual(@as(usize, 2), commands[0].line_num);
+    try std.testing.expectEqual(LocatorKind.role_name, commands[0].locator.kind);
+    try std.testing.expectEqualStrings("textbox", commands[0].locator.role.?);
+    try std.testing.expectEqualStrings("Search", commands[0].locator.name.?);
+    try std.testing.expectEqualStrings("Enter", commands[0].expected_text.?);
+    try std.testing.expectEqual(@as(?bool, true), commands[0].expected_bool);
+
+    try std.testing.expectEqual(SpecCommandType.expect_checked, commands[1].cmd_type);
+    try std.testing.expectEqual(LocatorKind.label, commands[1].locator.kind);
+    try std.testing.expectEqualStrings("Enabled", commands[1].locator.label.?);
+    try std.testing.expectEqual(@as(?bool, false), commands[1].expected_bool);
+
+    try std.testing.expectEqual(SpecCommandType.expect_disabled, commands[2].cmd_type);
+    try std.testing.expectEqual(LocatorKind.test_id, commands[2].locator.kind);
+    try std.testing.expectEqualStrings("submit", commands[2].locator.test_id.?);
+    try std.testing.expectEqual(@as(?bool, true), commands[2].expected_bool);
+
+    try std.testing.expectEqual(SpecCommandType.resolve_task, commands[3].cmd_type);
+    try std.testing.expectEqualStrings("fetch user", commands[3].task_name.?);
+    try std.testing.expectEqualStrings("hello\n\"world\"\\", commands[3].expected_text.?);
+
+    try std.testing.expectEqual(SpecCommandType.reject_task, commands[4].cmd_type);
+    try std.testing.expectEqualStrings("fetch user", commands[4].task_name.?);
+    try std.testing.expectEqualStrings("bad\trequest", commands[4].expected_text.?);
+
+    try std.testing.expectEqual(SpecCommandType.expect_cleanup, commands[5].cmd_type);
+    try std.testing.expectEqualStrings("fetch user", commands[5].task_name.?);
+    try std.testing.expectEqual(@as(?u64, 2), commands[5].expected_count);
+
+    try std.testing.expectEqual(SpecCommandType.expect_pending_task, commands[6].cmd_type);
+    try std.testing.expectEqualStrings("fetch user", commands[6].task_name.?);
+    try std.testing.expectEqual(@as(?u64, 1), commands[6].expected_count);
+
+    try std.testing.expectEqual(SpecCommandType.mark_metrics, commands[7].cmd_type);
+    try std.testing.expectEqual(SpecCommandType.expect_metric_delta, commands[8].cmd_type);
+    try std.testing.expectEqualStrings("closure_releases", commands[8].expected_text.?);
+    try std.testing.expectEqual(@as(?i64, -1), commands[8].expected_metric_delta);
+    try std.testing.expectEqual(SpecCommandType.expect_metric_delta_at_most, commands[9].cmd_type);
+    try std.testing.expectEqualStrings("host_retained_alloc_delta", commands[9].expected_text.?);
+    try std.testing.expectEqual(@as(?i64, 0), commands[9].expected_metric_delta);
+}
+
 test "spec parser rejects malformed commands" {
     try std.testing.expectError(ParseError.InvalidFormat, parseTestSpec(std.testing.allocator, "click missing_locator"));
 }

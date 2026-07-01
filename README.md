@@ -47,6 +47,31 @@ python3 scripts/test.py
 The scripts use `roc` from `PATH` by default. Override it with `ROC_BIN`, `ROC`,
 or `--roc-bin /path/to/roc`.
 
+## Coverage
+
+Native host coverage is the main signal for risky engine behavior because it
+exercises bind, initial eval, dirty propagation, structural patching, effects,
+and the spec parser under one host.
+
+Refresh the report with:
+
+```sh
+python3 scripts/coverage.py --format summary --top 40
+```
+
+Inspect uncovered source ranges without rebuilding kcov output:
+
+```sh
+python3 scripts/coverage.py --use-last-run --format lines --file src/signals/engine.zig --context 5
+```
+
+CI enforces both global coverage and per-file floors for the engine,
+descriptor stream, native host, platform ABI, and spec parser. When adding
+signal behavior, prefer host-level tests that go through real descriptor bind,
+render apply, dirty propagation, task resolution, or interval ticks. Ratchet the
+nearest per-file threshold when the new test closes meaningful uncovered risk;
+do not chase panic-only, fatal handler, or OOM cleanup noise for its own sake.
+
 ## Repository Layout
 
 - [platform/](platform/) contains the Roc platform package and target host

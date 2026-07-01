@@ -82,6 +82,11 @@ pub const MountDesc = struct {
     scope_id: u64,
     to_cmd: abi.RocErasedCallable,
     run_on_mount: bool,
+
+    pub fn deinit(self: MountDesc, roc_host: *abi.RocHost, metrics: anytype) void {
+        metrics.bump(.closure_releases, 1);
+        abi.decrefErasedCallable(self.to_cmd, roc_host);
+    }
 };
 
 pub const CleanupDesc = struct {
@@ -115,6 +120,10 @@ pub const SignalTextNodeDesc = struct {
     signal: HostSignalBinding,
     read: HostTextRead,
     cached_value: HostSignalCacheSlot = .absent,
+
+    pub fn deinit(self: *@This(), allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
+        deinitSignalTextFields(&self.signal, &self.cached_value, self.read, allocator, ctx, roc_host, metrics);
+    }
 };
 
 pub const SignalTextAttrDesc = struct {
@@ -123,6 +132,10 @@ pub const SignalTextAttrDesc = struct {
     signal: HostSignalBinding,
     read: HostTextRead,
     cached_value: HostSignalCacheSlot = .absent,
+
+    pub fn deinit(self: *@This(), allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
+        deinitSignalTextFields(&self.signal, &self.cached_value, self.read, allocator, ctx, roc_host, metrics);
+    }
 };
 
 pub const SignalCustomTextAttrDesc = struct {
@@ -131,6 +144,11 @@ pub const SignalCustomTextAttrDesc = struct {
     signal: HostSignalBinding,
     read: HostTextRead,
     cached_value: HostSignalCacheSlot = .absent,
+
+    pub fn deinit(self: *@This(), allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
+        allocator.free(self.name);
+        deinitSignalTextFields(&self.signal, &self.cached_value, self.read, allocator, ctx, roc_host, metrics);
+    }
 };
 
 pub const SignalCustomBoolAttrDesc = struct {
@@ -139,6 +157,40 @@ pub const SignalCustomBoolAttrDesc = struct {
     signal: HostSignalBinding,
     read: HostBoolRead,
     cached_value: HostSignalCacheSlot = .absent,
+
+    pub fn deinit(self: *@This(), allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
+        allocator.free(self.name);
+        deinitSignalBoolFields(&self.signal, &self.cached_value, self.read, allocator, ctx, roc_host, metrics);
+    }
+};
+
+pub const CustomAttrValueKind = enum {
+    text,
+    bool,
+};
+
+pub const CustomAttrKind = enum {
+    static_text,
+    signal_text,
+    static_bool,
+    signal_bool,
+
+    pub fn valueKind(self: CustomAttrKind) CustomAttrValueKind {
+        return switch (self) {
+            .static_text, .signal_text => .text,
+            .static_bool, .signal_bool => .bool,
+        };
+    }
+};
+
+pub const CustomAttrRef = struct {
+    kind: CustomAttrKind,
+    elem_id: u64,
+    name: []const u8,
+
+    pub fn matches(self: CustomAttrRef, elem_id: u64, name: []const u8) bool {
+        return self.elem_id == elem_id and std.mem.eql(u8, self.name, name);
+    }
 };
 
 pub const SignalBoolAttrDesc = struct {
@@ -147,6 +199,10 @@ pub const SignalBoolAttrDesc = struct {
     signal: HostSignalBinding,
     read: HostBoolRead,
     cached_value: HostSignalCacheSlot = .absent,
+
+    pub fn deinit(self: *@This(), allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
+        deinitSignalBoolFields(&self.signal, &self.cached_value, self.read, allocator, ctx, roc_host, metrics);
+    }
 };
 
 pub const OnChangeDesc = struct {
@@ -154,6 +210,13 @@ pub const OnChangeDesc = struct {
     signal: HostSignalBinding,
     to_cmd: abi.RocErasedCallable,
     cached_value: HostSignalCacheSlot = .absent,
+
+    pub fn deinit(self: *@This(), allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
+        self.cached_value.deinit(ctx, roc_host, metrics);
+        self.signal.deinit(allocator, ctx, roc_host, metrics);
+        metrics.bump(.closure_releases, 1);
+        abi.decrefErasedCallable(self.to_cmd, roc_host);
+    }
 };
 
 pub const EventDesc = struct {
@@ -165,6 +228,10 @@ pub const EventDesc = struct {
     payload_accessor: EventPayloadAccessor,
     payload_reducer: HostEventReducer,
     owns_payload_reducer: bool = true,
+
+    pub fn deinit(self: EventDesc, roc_host: *abi.RocHost, metrics: anytype) void {
+        if (self.owns_payload_reducer) releaseHostEventReducer(self.payload_reducer, roc_host, metrics);
+    }
 };
 
 pub const NamedEventDesc = struct {
@@ -177,12 +244,23 @@ pub const NamedEventDesc = struct {
     payload_accessor: EventPayloadAccessor,
     payload_reducer: HostEventReducer,
     owns_payload_reducer: bool = true,
+
+    pub fn deinit(self: NamedEventDesc, allocator: std.mem.Allocator, roc_host: *abi.RocHost, metrics: anytype) void {
+        allocator.free(self.name);
+        if (self.owns_payload_reducer) releaseHostEventReducer(self.payload_reducer, roc_host, metrics);
+    }
 };
 
 pub const StateDesc = struct {
     node_id: u64,
     initial: abi.RocErasedCallable,
     cap: HostValueCapability,
+
+    pub fn deinit(self: StateDesc, roc_host: *abi.RocHost, metrics: anytype) void {
+        metrics.bump(.closure_releases, 1);
+        abi.decrefErasedCallable(self.initial, roc_host);
+        releaseHostValueCapability(self.cap, roc_host, metrics);
+    }
 };
 
 pub const WhenDesc = struct {
@@ -192,6 +270,14 @@ pub const WhenDesc = struct {
     when_false: abi.Elem,
     when_true: abi.Elem,
     cached_value: HostSignalCacheSlot = .absent,
+
+    pub fn deinit(self: *@This(), allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
+        self.cached_value.deinit(ctx, roc_host, metrics);
+        self.condition.deinit(allocator, ctx, roc_host, metrics);
+        releaseHostBoolRead(self.read, roc_host, metrics);
+        abi.decrefElem(self.when_false, roc_host);
+        abi.decrefElem(self.when_true, roc_host);
+    }
 };
 
 pub const EachDesc = struct {
@@ -199,6 +285,12 @@ pub const EachDesc = struct {
     items: HostSignalBinding,
     ops: HostEachOps,
     cached_value: HostSignalCacheSlot = .absent,
+
+    pub fn deinit(self: *@This(), allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
+        self.cached_value.deinit(ctx, roc_host, metrics);
+        self.items.deinit(allocator, ctx, roc_host, metrics);
+        releaseHostEachOps(self.ops, roc_host, metrics);
+    }
 };
 
 pub const HostSignalToken = signal_records.HostSignalToken;
@@ -215,6 +307,30 @@ const releaseHostValueCapability = retained.releaseHostValueCapability;
 const retainHostEachOps = retained.retainHostEachOps;
 const releaseHostEachOps = retained.releaseHostEachOps;
 
+fn deinitSignalTextFields(signal: *HostSignalBinding, cache_slot: *HostSignalCacheSlot, read: HostTextRead, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
+    cache_slot.deinit(ctx, roc_host, metrics);
+    signal.deinit(allocator, ctx, roc_host, metrics);
+    releaseHostTextRead(read, roc_host, metrics);
+}
+
+fn deinitSignalBoolFields(signal: *HostSignalBinding, cache_slot: *HostSignalCacheSlot, read: HostBoolRead, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
+    cache_slot.deinit(ctx, roc_host, metrics);
+    signal.deinit(allocator, ctx, roc_host, metrics);
+    releaseHostBoolRead(read, roc_host, metrics);
+}
+
+fn rollbackSignalTextAppend(signal: HostSignalBinding, read: HostTextRead, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
+    var owned_signal = signal;
+    var cache_slot: HostSignalCacheSlot = .absent;
+    deinitSignalTextFields(&owned_signal, &cache_slot, read, allocator, ctx, roc_host, metrics);
+}
+
+fn rollbackSignalBoolAppend(signal: HostSignalBinding, read: HostBoolRead, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
+    var owned_signal = signal;
+    var cache_slot: HostSignalCacheSlot = .absent;
+    deinitSignalBoolFields(&owned_signal, &cache_slot, read, allocator, ctx, roc_host, metrics);
+}
+
 const StreamRenderNode = RenderNode;
 const StreamElementDesc = ElementDesc;
 const StreamTextNodeDesc = TextNodeDesc;
@@ -225,6 +341,60 @@ fn renderNodeSliceContainsElem(items: []const RenderNode, elem_id: u64) bool {
         if (item.elem_id == elem_id) return true;
     }
     return false;
+}
+
+pub fn CustomAttrRefs(comptime StreamType: type) type {
+    return struct {
+        stream: *const StreamType,
+        kind: CustomAttrKind = .static_text,
+        index: usize = 0,
+
+        pub fn next(self: *@This()) ?CustomAttrRef {
+            while (true) {
+                switch (self.kind) {
+                    .static_text => {
+                        if (self.index < self.stream.static_custom_text_attrs.items.len) {
+                            const desc = self.stream.static_custom_text_attrs.items[self.index];
+                            self.index += 1;
+                            return .{ .kind = .static_text, .elem_id = desc.elem_id, .name = desc.name };
+                        }
+                        self.kind = .signal_text;
+                        self.index = 0;
+                    },
+                    .signal_text => {
+                        if (self.index < self.stream.signal_custom_text_attrs.items.len) {
+                            const desc = self.stream.signal_custom_text_attrs.items[self.index];
+                            self.index += 1;
+                            return .{ .kind = .signal_text, .elem_id = desc.elem_id, .name = desc.name };
+                        }
+                        self.kind = .static_bool;
+                        self.index = 0;
+                    },
+                    .static_bool => {
+                        if (self.index < self.stream.static_custom_bool_attrs.items.len) {
+                            const desc = self.stream.static_custom_bool_attrs.items[self.index];
+                            self.index += 1;
+                            return .{ .kind = .static_bool, .elem_id = desc.elem_id, .name = desc.name };
+                        }
+                        self.kind = .signal_bool;
+                        self.index = 0;
+                    },
+                    .signal_bool => {
+                        if (self.index < self.stream.signal_custom_bool_attrs.items.len) {
+                            const desc = self.stream.signal_custom_bool_attrs.items[self.index];
+                            self.index += 1;
+                            return .{ .kind = .signal_bool, .elem_id = desc.elem_id, .name = desc.name };
+                        }
+                        return null;
+                    },
+                }
+            }
+        }
+    };
+}
+
+pub fn customAttrRefs(comptime StreamType: type, stream: *const StreamType) CustomAttrRefs(StreamType) {
+    return .{ .stream = stream };
 }
 
 // Stream methods keep the public method names while delegating to the generic
@@ -710,9 +880,7 @@ pub const Stream = struct {
         self.text_nodes.deinit(allocator);
 
         for (self.signal_text_nodes.items) |*desc| {
-            desc.cached_value.deinit(ctx, roc_host, metrics);
-            desc.signal.deinit(allocator, ctx, roc_host, metrics);
-            releaseHostTextRead(desc.read, roc_host, metrics);
+            desc.deinit(allocator, ctx, roc_host, metrics);
         }
         self.signal_text_nodes.deinit(allocator);
 
@@ -722,9 +890,7 @@ pub const Stream = struct {
         self.static_text_attrs.deinit(allocator);
 
         for (self.signal_text_attrs.items) |*desc| {
-            desc.cached_value.deinit(ctx, roc_host, metrics);
-            desc.signal.deinit(allocator, ctx, roc_host, metrics);
-            releaseHostTextRead(desc.read, roc_host, metrics);
+            desc.deinit(allocator, ctx, roc_host, metrics);
         }
         self.signal_text_attrs.deinit(allocator);
 
@@ -735,10 +901,7 @@ pub const Stream = struct {
         self.static_custom_text_attrs.deinit(allocator);
 
         for (self.signal_custom_text_attrs.items) |*desc| {
-            allocator.free(desc.name);
-            desc.cached_value.deinit(ctx, roc_host, metrics);
-            desc.signal.deinit(allocator, ctx, roc_host, metrics);
-            releaseHostTextRead(desc.read, roc_host, metrics);
+            desc.deinit(allocator, ctx, roc_host, metrics);
         }
         self.signal_custom_text_attrs.deinit(allocator);
 
@@ -748,33 +911,24 @@ pub const Stream = struct {
         self.static_custom_bool_attrs.deinit(allocator);
 
         for (self.signal_custom_bool_attrs.items) |*desc| {
-            allocator.free(desc.name);
-            desc.cached_value.deinit(ctx, roc_host, metrics);
-            desc.signal.deinit(allocator, ctx, roc_host, metrics);
-            releaseHostBoolRead(desc.read, roc_host, metrics);
+            desc.deinit(allocator, ctx, roc_host, metrics);
         }
         self.signal_custom_bool_attrs.deinit(allocator);
 
         self.static_bool_attrs.deinit(allocator);
 
         for (self.signal_bool_attrs.items) |*desc| {
-            desc.cached_value.deinit(ctx, roc_host, metrics);
-            desc.signal.deinit(allocator, ctx, roc_host, metrics);
-            releaseHostBoolRead(desc.read, roc_host, metrics);
+            desc.deinit(allocator, ctx, roc_host, metrics);
         }
         self.signal_bool_attrs.deinit(allocator);
 
         for (self.on_changes.items) |*desc| {
-            desc.cached_value.deinit(ctx, roc_host, metrics);
-            desc.signal.deinit(allocator, ctx, roc_host, metrics);
-            metrics.bump(.closure_releases, 1);
-            abi.decrefErasedCallable(desc.to_cmd, roc_host);
+            desc.deinit(allocator, ctx, roc_host, metrics);
         }
         self.on_changes.deinit(allocator);
 
         for (self.mounts.items) |desc| {
-            metrics.bump(.closure_releases, 1);
-            abi.decrefErasedCallable(desc.to_cmd, roc_host);
+            desc.deinit(roc_host, metrics);
         }
         self.mounts.deinit(allocator);
 
@@ -784,13 +938,12 @@ pub const Stream = struct {
         self.cleanups.deinit(allocator);
 
         for (self.events.items) |desc| {
-            if (desc.owns_payload_reducer) releaseHostEventReducer(desc.payload_reducer, roc_host, metrics);
+            desc.deinit(roc_host, metrics);
         }
         self.events.deinit(allocator);
 
         for (self.named_events.items) |desc| {
-            allocator.free(desc.name);
-            if (desc.owns_payload_reducer) releaseHostEventReducer(desc.payload_reducer, roc_host, metrics);
+            desc.deinit(allocator, roc_host, metrics);
         }
         self.named_events.deinit(allocator);
         deinitNamedEventIndexLists(Stream, self, allocator);
@@ -801,25 +954,17 @@ pub const Stream = struct {
         self.scope_sites.deinit(allocator);
 
         for (self.states.items) |desc| {
-            metrics.bump(.closure_releases, 1);
-            abi.decrefErasedCallable(desc.initial, roc_host);
-            releaseHostValueCapability(desc.cap, roc_host, metrics);
+            desc.deinit(roc_host, metrics);
         }
         self.states.deinit(allocator);
 
         for (self.whens.items) |*desc| {
-            desc.cached_value.deinit(ctx, roc_host, metrics);
-            desc.condition.deinit(allocator, ctx, roc_host, metrics);
-            releaseHostBoolRead(desc.read, roc_host, metrics);
-            abi.decrefElem(desc.when_false, roc_host);
-            abi.decrefElem(desc.when_true, roc_host);
+            desc.deinit(allocator, ctx, roc_host, metrics);
         }
         self.whens.deinit(allocator);
 
         for (self.eaches.items) |*desc| {
-            desc.cached_value.deinit(ctx, roc_host, metrics);
-            desc.items.deinit(allocator, ctx, roc_host, metrics);
-            releaseHostEachOps(desc.ops, roc_host, metrics);
+            desc.deinit(allocator, ctx, roc_host, metrics);
         }
         self.eaches.deinit(allocator);
 
@@ -872,40 +1017,27 @@ pub const Stream = struct {
     }
 
     pub fn rememberSignalRecordTree(self: *Stream, allocator: std.mem.Allocator, record: *SignalRecord) void {
-        self.rememberSignalRecord(allocator, record);
-        self.incrementSignalRecordDescriptorUse(allocator, record);
-        switch (record.payload) {
-            .ref, .const_value => {},
-            .map => |payload| self.rememberSignalRecordTree(allocator, payload.input),
-            .map2 => |payload| {
-                self.rememberSignalRecordTree(allocator, payload.left);
-                self.rememberSignalRecordTree(allocator, payload.right);
-            },
-            .combine => |payload| {
-                for (payload.children) |child| {
-                    self.rememberSignalRecordTree(allocator, child);
-                }
-            },
-            .task_source, .interval_source => {},
-        }
+        const Context = struct {
+            stream: *Stream,
+            allocator: std.mem.Allocator,
+
+            fn visit(ctx: @This(), current: *SignalRecord) void {
+                ctx.stream.rememberSignalRecord(ctx.allocator, current);
+                ctx.stream.incrementSignalRecordDescriptorUse(ctx.allocator, current);
+            }
+        };
+        signal_records.walkTree(Context, .{ .stream = self, .allocator = allocator }, record, Context.visit);
     }
 
     pub fn forgetSignalRecordTree(self: *Stream, record: *SignalRecord) void {
-        self.decrementSignalRecordDescriptorUse(record);
-        switch (record.payload) {
-            .ref, .const_value => {},
-            .map => |payload| self.forgetSignalRecordTree(payload.input),
-            .map2 => |payload| {
-                self.forgetSignalRecordTree(payload.left);
-                self.forgetSignalRecordTree(payload.right);
-            },
-            .combine => |payload| {
-                for (payload.children) |child| {
-                    self.forgetSignalRecordTree(child);
-                }
-            },
-            .task_source, .interval_source => {},
-        }
+        const Context = struct {
+            stream: *Stream,
+
+            fn visit(ctx: @This(), current: *SignalRecord) void {
+                ctx.stream.decrementSignalRecordDescriptorUse(current);
+            }
+        };
+        signal_records.walkTree(Context, .{ .stream = self }, record, Context.visit);
     }
 
     pub fn appendElement(self: *Stream, allocator: std.mem.Allocator, elem_id: u64, parent_elem_id: u64, scope_id: u64, tag: []const u8) u64 {
@@ -924,9 +1056,7 @@ pub const Stream = struct {
         const render_index = self.render_nodes.items.len;
 
         self.render_nodes.append(allocator, .{ .elem_id = elem_id, .kind = .signal_text }) catch {
-            var owned_signal = signal;
-            owned_signal.deinit(allocator, ctx, roc_host, metrics);
-            releaseHostTextRead(retained_read, roc_host, metrics);
+            rollbackSignalTextAppend(signal, retained_read, allocator, ctx, roc_host, metrics);
             @panic("out of memory");
         };
         self.signal_text_nodes.append(allocator, .{
@@ -936,9 +1066,7 @@ pub const Stream = struct {
             .signal = signal,
             .read = retained_read,
         }) catch {
-            var owned_signal = signal;
-            owned_signal.deinit(allocator, ctx, roc_host, metrics);
-            releaseHostTextRead(retained_read, roc_host, metrics);
+            rollbackSignalTextAppend(signal, retained_read, allocator, ctx, roc_host, metrics);
             @panic("out of memory");
         };
         self.recordSignalTextNodeIndex(allocator, elem_id, signal_text_node_index);
@@ -960,9 +1088,7 @@ pub const Stream = struct {
             .signal = signal,
             .read = retained_read,
         }) catch {
-            var owned_signal = signal;
-            owned_signal.deinit(allocator, ctx, roc_host, metrics);
-            releaseHostTextRead(retained_read, roc_host, metrics);
+            rollbackSignalTextAppend(signal, retained_read, allocator, ctx, roc_host, metrics);
             @panic("out of memory");
         };
         self.recordSignalTextAttrIndex(allocator, elem_id, field, attr_index);
@@ -978,7 +1104,7 @@ pub const Stream = struct {
 
     pub fn appendSignalCustomTextAttr(self: *Stream, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, elem_id: u64, name: []const u8, signal: HostSignalBinding, read: HostTextRead) void {
         if (name.len == 0) @panic("custom text attr descriptor used an empty name");
-        if (self.customTextAttrDescriptorExists(elem_id, name)) @panic("element has duplicate custom text attr descriptors");
+        if (customAttrDescriptorExists(Stream, self, elem_id, name)) @panic("element has duplicate custom text attr descriptors");
 
         self.rememberSignalRecordTree(allocator, signal.record);
         const name_copy = allocator.dupe(u8, name) catch @panic("out of memory");
@@ -990,9 +1116,7 @@ pub const Stream = struct {
             .read = retained_read,
         }) catch {
             allocator.free(name_copy);
-            var owned_signal = signal;
-            owned_signal.deinit(allocator, ctx, roc_host, metrics);
-            releaseHostTextRead(retained_read, roc_host, metrics);
+            rollbackSignalTextAppend(signal, retained_read, allocator, ctx, roc_host, metrics);
             @panic("out of memory");
         };
     }
@@ -1003,7 +1127,7 @@ pub const Stream = struct {
 
     pub fn appendSignalCustomBoolAttr(self: *Stream, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, elem_id: u64, name: []const u8, signal: HostSignalBinding, read: HostBoolRead) void {
         if (name.len == 0) @panic("custom bool attr descriptor used an empty name");
-        if (self.customTextAttrDescriptorExists(elem_id, name)) @panic("element has duplicate custom attr descriptors");
+        if (customAttrDescriptorExists(Stream, self, elem_id, name)) @panic("element has duplicate custom attr descriptors");
 
         self.rememberSignalRecordTree(allocator, signal.record);
         const name_copy = allocator.dupe(u8, name) catch @panic("out of memory");
@@ -1015,9 +1139,7 @@ pub const Stream = struct {
             .read = retained_read,
         }) catch {
             allocator.free(name_copy);
-            var owned_signal = signal;
-            owned_signal.deinit(allocator, ctx, roc_host, metrics);
-            releaseHostBoolRead(retained_read, roc_host, metrics);
+            rollbackSignalBoolAppend(signal, retained_read, allocator, ctx, roc_host, metrics);
             @panic("out of memory");
         };
     }
@@ -1036,9 +1158,7 @@ pub const Stream = struct {
             .signal = signal,
             .read = retained_read,
         }) catch {
-            var owned_signal = signal;
-            owned_signal.deinit(allocator, ctx, roc_host, metrics);
-            releaseHostBoolRead(retained_read, roc_host, metrics);
+            rollbackSignalBoolAppend(signal, retained_read, allocator, ctx, roc_host, metrics);
             @panic("out of memory");
         };
         self.recordSignalBoolAttrIndex(allocator, elem_id, field, attr_index);
@@ -1053,10 +1173,12 @@ pub const Stream = struct {
             .signal = signal,
             .to_cmd = to_cmd,
         }) catch {
-            var owned_signal = signal;
-            owned_signal.deinit(allocator, ctx, roc_host, metrics);
-            metrics.bump(.closure_releases, 1);
-            abi.decrefErasedCallable(to_cmd, roc_host);
+            var desc = OnChangeDesc{
+                .scope_id = scope_id,
+                .signal = signal,
+                .to_cmd = to_cmd,
+            };
+            desc.deinit(allocator, ctx, roc_host, metrics);
             @panic("out of memory");
         };
     }
@@ -1069,8 +1191,12 @@ pub const Stream = struct {
             .to_cmd = to_cmd,
             .run_on_mount = run_on_mount,
         }) catch {
-            metrics.bump(.closure_releases, 1);
-            abi.decrefErasedCallable(to_cmd, roc_host);
+            const desc = MountDesc{
+                .scope_id = scope_id,
+                .to_cmd = to_cmd,
+                .run_on_mount = run_on_mount,
+            };
+            desc.deinit(roc_host, metrics);
             @panic("out of memory");
         };
     }
@@ -1091,7 +1217,16 @@ pub const Stream = struct {
             .payload_accessor = payload_accessor,
             .payload_reducer = retained_reducer,
         }) catch {
-            releaseHostEventReducer(retained_reducer, roc_host, metrics);
+            const desc = EventDesc{
+                .elem_id = elem_id,
+                .kind = kind,
+                .binder_token = binder_token,
+                .target_node_id = target_node_id,
+                .payload_kind = payload_kind,
+                .payload_accessor = payload_accessor,
+                .payload_reducer = retained_reducer,
+            };
+            desc.deinit(roc_host, metrics);
             @panic("out of memory");
         };
         self.recordEventIndex(allocator, elem_id, kind, event_index);
@@ -1126,8 +1261,17 @@ pub const Stream = struct {
             .payload_accessor = payload_accessor,
             .payload_reducer = retained_reducer,
         }) catch {
-            allocator.free(name_copy);
-            releaseHostEventReducer(retained_reducer, roc_host, metrics);
+            const desc = NamedEventDesc{
+                .elem_id = elem_id,
+                .name = name_copy,
+                .options = std.math.cast(u32, options) orelse @panic("named event listener options exceeded u32 range"),
+                .binder_token = binder_token,
+                .target_node_id = target_node_id,
+                .payload_kind = payload_kind,
+                .payload_accessor = payload_accessor,
+                .payload_reducer = retained_reducer,
+            };
+            desc.deinit(allocator, roc_host, metrics);
             @panic("out of memory");
         };
         self.recordNamedEventIndex(allocator, elem_id, event_index);
@@ -1151,9 +1295,12 @@ pub const Stream = struct {
             .initial = initial,
             .cap = cap,
         }) catch {
-            releaseHostValueCapability(cap, roc_host, metrics);
-            metrics.bump(.closure_releases, 1);
-            abi.decrefErasedCallable(initial, roc_host);
+            const desc = StateDesc{
+                .node_id = node_id,
+                .initial = initial,
+                .cap = cap,
+            };
+            desc.deinit(roc_host, metrics);
             @panic("out of memory");
         };
         self.recordStateIndex(allocator, node_id, state_index);
@@ -1172,11 +1319,14 @@ pub const Stream = struct {
             .when_false = when_false,
             .when_true = when_true,
         }) catch {
-            var owned_condition = condition;
-            owned_condition.deinit(allocator, ctx, roc_host, metrics);
-            releaseHostBoolRead(retained_read, roc_host, metrics);
-            abi.decrefElem(when_false, roc_host);
-            abi.decrefElem(when_true, roc_host);
+            var desc = WhenDesc{
+                .node_id = node_id,
+                .condition = condition,
+                .read = retained_read,
+                .when_false = when_false,
+                .when_true = when_true,
+            };
+            desc.deinit(allocator, ctx, roc_host, metrics);
             @panic("out of memory");
         };
         self.recordWhenIndex(allocator, node_id, when_index);
@@ -1191,9 +1341,12 @@ pub const Stream = struct {
             .items = items,
             .ops = retained_ops,
         }) catch {
-            var owned_items = items;
-            owned_items.deinit(allocator, ctx, roc_host, metrics);
-            releaseHostEachOps(retained_ops, roc_host, metrics);
+            var desc = EachDesc{
+                .node_id = node_id,
+                .items = items,
+                .ops = retained_ops,
+            };
+            desc.deinit(allocator, ctx, roc_host, metrics);
             @panic("out of memory");
         };
         self.recordEachIndex(allocator, node_id, each_index);
@@ -1831,24 +1984,20 @@ pub fn appendStaticTextAttr(comptime StreamType: type, stream: *StreamType, allo
 }
 
 pub fn customTextAttrDescriptorExists(comptime StreamType: type, stream: *const StreamType, elem_id: u64, name: []const u8) bool {
-    for (stream.static_custom_text_attrs.items) |desc| {
-        if (desc.elem_id == elem_id and std.mem.eql(u8, desc.name, name)) return true;
-    }
-    for (stream.signal_custom_text_attrs.items) |desc| {
-        if (desc.elem_id == elem_id and std.mem.eql(u8, desc.name, name)) return true;
-    }
-    for (stream.static_custom_bool_attrs.items) |desc| {
-        if (desc.elem_id == elem_id and std.mem.eql(u8, desc.name, name)) return true;
-    }
-    for (stream.signal_custom_bool_attrs.items) |desc| {
-        if (desc.elem_id == elem_id and std.mem.eql(u8, desc.name, name)) return true;
+    return customAttrDescriptorExists(StreamType, stream, elem_id, name);
+}
+
+pub fn customAttrDescriptorExists(comptime StreamType: type, stream: *const StreamType, elem_id: u64, name: []const u8) bool {
+    var attrs = customAttrRefs(StreamType, stream);
+    while (attrs.next()) |attr| {
+        if (attr.matches(elem_id, name)) return true;
     }
     return false;
 }
 
 pub fn appendStaticCustomTextAttr(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, elem_id: u64, name: []const u8, value: []const u8) void {
     if (name.len == 0) @panic("custom text attr descriptor used an empty name");
-    if (customTextAttrDescriptorExists(StreamType, stream, elem_id, name)) @panic("element has duplicate custom text attr descriptors");
+    if (customAttrDescriptorExists(StreamType, stream, elem_id, name)) @panic("element has duplicate custom text attr descriptors");
 
     const name_copy = allocator.dupe(u8, name) catch @panic("out of memory");
     const value_copy = allocator.dupe(u8, value) catch {
@@ -1868,7 +2017,7 @@ pub fn appendStaticCustomTextAttr(comptime StreamType: type, stream: *StreamType
 
 pub fn appendStaticCustomBoolAttr(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, elem_id: u64, name: []const u8, value: bool) void {
     if (name.len == 0) @panic("custom bool attr descriptor used an empty name");
-    if (customTextAttrDescriptorExists(StreamType, stream, elem_id, name)) @panic("element has duplicate custom attr descriptors");
+    if (customAttrDescriptorExists(StreamType, stream, elem_id, name)) @panic("element has duplicate custom attr descriptors");
 
     const name_copy = allocator.dupe(u8, name) catch @panic("out of memory");
     stream.static_custom_bool_attrs.append(allocator, .{
@@ -1981,11 +2130,9 @@ pub fn streamHasTextField(comptime StreamType: type, stream: *const StreamType, 
 }
 
 pub fn streamHasCustomTextAttr(comptime StreamType: type, stream: *const StreamType, elem_id: u64, name: []const u8) bool {
-    for (stream.static_custom_text_attrs.items) |desc| {
-        if (desc.elem_id == elem_id and std.mem.eql(u8, desc.name, name)) return true;
-    }
-    for (stream.signal_custom_text_attrs.items) |desc| {
-        if (desc.elem_id == elem_id and std.mem.eql(u8, desc.name, name)) return true;
+    var attrs = customAttrRefs(StreamType, stream);
+    while (attrs.next()) |attr| {
+        if (attr.kind.valueKind() == .text and attr.matches(elem_id, name)) return true;
     }
     return false;
 }
@@ -2355,6 +2502,61 @@ test "stream reader helpers validate descriptor indexes" {
     const children = streamDirectChildren(TestStream, allocator, &stream, 1);
     defer allocator.free(children);
     try std.testing.expectEqualSlices(u64, &.{ 2, 3 }, children);
+}
+
+test "custom attr refs iterate all custom descriptor variants" {
+    const allocator = std.testing.allocator;
+    var stream = TestStream{};
+    defer stream.deinit(allocator);
+
+    stream.static_custom_text_attrs.append(allocator, .{ .elem_id = 1, .name = "data-id" }) catch @panic("out of memory");
+    stream.signal_custom_text_attrs.append(allocator, .{ .elem_id = 2, .name = "aria-label" }) catch @panic("out of memory");
+    stream.static_custom_bool_attrs.append(allocator, .{ .elem_id = 3, .name = "disabled" }) catch @panic("out of memory");
+    stream.signal_custom_bool_attrs.append(allocator, .{ .elem_id = 4, .name = "aria-expanded" }) catch @panic("out of memory");
+
+    var attrs = customAttrRefs(TestStream, &stream);
+    const expected = [_]CustomAttrRef{
+        .{ .kind = .static_text, .elem_id = 1, .name = "data-id" },
+        .{ .kind = .signal_text, .elem_id = 2, .name = "aria-label" },
+        .{ .kind = .static_bool, .elem_id = 3, .name = "disabled" },
+        .{ .kind = .signal_bool, .elem_id = 4, .name = "aria-expanded" },
+    };
+
+    for (expected) |item| {
+        const attr = attrs.next() orelse return error.TestUnexpectedResult;
+        try std.testing.expectEqual(item.kind, attr.kind);
+        try std.testing.expectEqual(item.kind.valueKind(), attr.kind.valueKind());
+        try std.testing.expectEqual(item.elem_id, attr.elem_id);
+        try std.testing.expectEqualStrings(item.name, attr.name);
+    }
+    try std.testing.expect(attrs.next() == null);
+}
+
+test "custom attr duplicate detection spans text and bool descriptors" {
+    const allocator = std.testing.allocator;
+    var stream = TestStream{};
+    defer stream.deinit(allocator);
+
+    stream.static_custom_text_attrs.append(allocator, .{ .elem_id = 1, .name = "data-id" }) catch @panic("out of memory");
+    stream.signal_custom_bool_attrs.append(allocator, .{ .elem_id = 1, .name = "aria-expanded" }) catch @panic("out of memory");
+    stream.static_custom_bool_attrs.append(allocator, .{ .elem_id = 2, .name = "data-id" }) catch @panic("out of memory");
+
+    try std.testing.expect(customAttrDescriptorExists(TestStream, &stream, 1, "data-id"));
+    try std.testing.expect(customAttrDescriptorExists(TestStream, &stream, 1, "aria-expanded"));
+    try std.testing.expect(!customAttrDescriptorExists(TestStream, &stream, 1, "missing"));
+    try std.testing.expect(!customAttrDescriptorExists(TestStream, &stream, 3, "data-id"));
+}
+
+test "stream custom text lookup excludes bool descriptors" {
+    const allocator = std.testing.allocator;
+    var stream = TestStream{};
+    defer stream.deinit(allocator);
+
+    stream.signal_custom_text_attrs.append(allocator, .{ .elem_id = 1, .name = "aria-label" }) catch @panic("out of memory");
+    stream.static_custom_bool_attrs.append(allocator, .{ .elem_id = 1, .name = "aria-expanded" }) catch @panic("out of memory");
+
+    try std.testing.expect(streamHasCustomTextAttr(TestStream, &stream, 1, "aria-label"));
+    try std.testing.expect(!streamHasCustomTextAttr(TestStream, &stream, 1, "aria-expanded"));
 }
 
 test "render metadata helpers maintain child order and indexes" {
