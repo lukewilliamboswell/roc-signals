@@ -6,26 +6,34 @@ const Step = std.Build.Step;
 
 const RocTarget = enum {
     x64mac,
+    x64musl,
     arm64mac,
+    arm64musl,
 
     fn toZigTarget(self: RocTarget) std.Target.Query {
         return switch (self) {
             .x64mac => .{ .cpu_arch = .x86_64, .os_tag = .macos },
+            .x64musl => .{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .musl },
             .arm64mac => .{ .cpu_arch = .aarch64, .os_tag = .macos },
+            .arm64musl => .{ .cpu_arch = .aarch64, .os_tag = .linux, .abi = .musl },
         };
     }
 
     fn targetDir(self: RocTarget) []const u8 {
         return switch (self) {
             .x64mac => "x64mac",
+            .x64musl => "x64musl",
             .arm64mac => "arm64mac",
+            .arm64musl => "arm64musl",
         };
     }
 };
 
 const native_targets = [_]RocTarget{
     .x64mac,
+    .x64musl,
     .arm64mac,
+    .arm64musl,
 };
 
 pub fn build(b: *std.Build) void {
@@ -210,18 +218,6 @@ pub fn build(b: *std.Build) void {
     }
 }
 
-fn createBaseModule(
-    b: *std.Build,
-    target: ResolvedTarget,
-    optimize: OptimizeMode,
-) *std.Build.Module {
-    return b.createModule(.{
-        .root_source_file = b.path("src/base/mod.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-}
-
 fn createSignalsModule(
     b: *std.Build,
     target: ResolvedTarget,
@@ -244,14 +240,14 @@ fn createNativeHostModule(
     optimize: OptimizeMode,
     build_options: *std.Build.Module,
 ) *std.Build.Module {
+    const is_musl = target.result.os.tag == .linux and target.result.abi == .musl;
     return b.createModule(.{
         .root_source_file = b.path("src/native_host.zig"),
         .target = target,
         .optimize = optimize,
-        .link_libc = true,
+        .link_libc = !is_musl,
         .imports = &.{
             .{ .name = "signals", .module = createSignalsModule(b, target, optimize, build_options) },
-            .{ .name = "base", .module = createBaseModule(b, target, optimize) },
             .{ .name = "build_options", .module = build_options },
         },
     });

@@ -20,7 +20,9 @@ platform ""
 		inputs_dir: "targets/",
 		wasm32: { inputs: ["host.wasm", app], output: Shared },
 		x64mac: { inputs: ["libhost.a", app] },
+		x64musl: { inputs: ["crt1.o", "libhost.a", app, "libc.a"] },
 		arm64mac: { inputs: ["libhost.a", app] },
+		arm64musl: { inputs: ["crt1.o", "libhost.a", app, "libc.a"] },
 	}
 
 import Elem exposing [Elem]

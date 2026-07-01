@@ -37,8 +37,8 @@ python3 scripts/test.py
 
 The default suite builds the platform hosts, runs Zig checks and unit tests,
 runs browser JavaScript contract tests, runs `roc check`, builds wasm apps, runs
-native semantic specs on macOS, validates the bundled platform on macOS, and
-runs the benchmark suite on macOS.
+native semantic specs on macOS and Linux, validates the bundled platform on
+macOS and Linux, and runs the benchmark suite on macOS and Linux.
 
 Useful targeted suites:
 
@@ -70,6 +70,12 @@ layout:
 
 - `platform/targets/x64mac/libhost.a`
 - `platform/targets/arm64mac/libhost.a`
+- `platform/targets/x64musl/libhost.a`
+- `platform/targets/x64musl/crt1.o`
+- `platform/targets/x64musl/libc.a`
+- `platform/targets/arm64musl/libhost.a`
+- `platform/targets/arm64musl/crt1.o`
+- `platform/targets/arm64musl/libc.a`
 - `platform/targets/wasm32/host.wasm`
 
 Roc app executables built during tests are written under `.test-out/` by

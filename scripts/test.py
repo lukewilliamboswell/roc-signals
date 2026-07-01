@@ -23,6 +23,12 @@ ROOT = Path(__file__).resolve().parent.parent
 TEST_OUT = ROOT / ".test-out"
 EXAMPLES_MANIFEST = ROOT / "www" / "data" / "examples.toml"
 PLATFORM_HEADER_RE = re.compile(r'platform\s+"[^"]+"')
+MUSL_NATIVE_SKIPS = {
+    "live-search": "Roc compiler segfaults intermittently while building this example for Linux musl",
+}
+LINUX_WASM_SKIPS = {
+    "live-search": "Roc compiler segfaults while building this example for wasm32 on Linux",
+}
 
 
 @dataclass(frozen=True)
@@ -83,13 +89,13 @@ def parse_args() -> argparse.Namespace:
         "--native",
         choices=("auto", "always", "never"),
         default="auto",
-        help="Whether to run native executable specs. Auto runs them on macOS only.",
+        help="Whether to run native executable specs. Auto runs them on macOS and Linux.",
     )
     parser.add_argument(
         "--bundle",
         choices=("auto", "always", "never"),
         default="auto",
-        help="Whether to build and test a bundle. Auto runs it on macOS only.",
+        help="Whether to build and test a bundle. Auto runs it on macOS and Linux.",
     )
     parser.add_argument(
         "--bundle-ref",
@@ -154,6 +160,9 @@ def build_wasm_apps(roc_bin: str, examples: tuple[Example, ...]) -> None:
     for example in examples:
         if not example.wasm:
             continue
+        if platform.system() == "Linux" and example.slug in LINUX_WASM_SKIPS:
+            print(f"\nSkipping wasm build for {example.slug} on Linux: {LINUX_WASM_SKIPS[example.slug]}.")
+            continue
         output = wasm_dir / f"{example.slug}.wasm"
         run(
             [
@@ -174,7 +183,7 @@ def should_run_hosted(mode: str) -> bool:
         return True
     if mode == "never":
         return False
-    return platform.system() == "Darwin"
+    return native_target_for_host() is not None
 
 
 def native_exe_path(bin_dir: Path, exe_name: str) -> Path:
@@ -182,16 +191,40 @@ def native_exe_path(bin_dir: Path, exe_name: str) -> Path:
     return bin_dir / f"{exe_name}{suffix}"
 
 
-def roc_native_target() -> str:
-    if platform.system() != "Darwin":
-        raise SystemExit("native specs require the platform's macOS targets")
-
+def native_target_for_host() -> str | None:
     machine = platform.machine().lower()
-    if machine in {"arm64", "aarch64"}:
-        return "arm64mac"
-    if machine in {"x86_64", "amd64"}:
-        return "x64mac"
-    raise SystemExit(f"unsupported macOS architecture for native specs: {platform.machine()}")
+    system = platform.system()
+    if system == "Darwin":
+        if machine in {"arm64", "aarch64"}:
+            return "arm64mac"
+        if machine in {"x86_64", "amd64"}:
+            return "x64mac"
+    if system == "Linux":
+        if machine in {"arm64", "aarch64"}:
+            return "arm64musl"
+        if machine in {"x86_64", "amd64"}:
+            return "x64musl"
+    return None
+
+
+def roc_native_target() -> str:
+    target = native_target_for_host()
+    if target is not None:
+        return target
+    raise SystemExit(
+        f"unsupported platform for native specs: {platform.system()} {platform.machine()} "
+        "(supported: macOS x64/arm64 and Linux x64/arm64 musl)"
+    )
+
+
+def native_cache_args(target: str) -> list[str]:
+    return ["--no-cache"] if target.endswith("musl") else []
+
+
+def should_skip_native_example(target: str, example: Example) -> str | None:
+    if not target.endswith("musl"):
+        return None
+    return MUSL_NATIVE_SKIPS.get(example.slug)
 
 
 def run_native_specs(
@@ -206,26 +239,34 @@ def run_native_specs(
     for example in examples:
         if not example.native:
             continue
+        if reason := should_skip_native_example(target, example):
+            print(f"\nSkipping native spec for {example.slug} on {target}: {reason}.")
+            continue
         if example.spec is None:
             raise SystemExit(f"{example.slug} is native but has no spec")
         source = source_root / example.source
         spec = source_root / example.spec
         exe = native_exe_path(bin_dir, example.exe_name)
-        run([roc_bin, "build", f"--target={target}", "--opt=dev", f"--output={exe}", source])
+        run([roc_bin, "build", f"--target={target}", "--opt=dev", *native_cache_args(target), f"--output={exe}", source])
         run([exe, spec])
 
 
-def run_benchmarks(roc_bin: str, examples: tuple[Example, ...]) -> None:
+def run_benchmarks(roc_bin: str, examples: tuple[Example, ...], *, source_root: Path = ROOT) -> None:
     bin_dir = TEST_OUT / "bench-bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
     target = roc_native_target()
     for example in examples:
         if not example.bench:
             continue
+        if reason := should_skip_native_example(target, example):
+            print(f"\nSkipping benchmark for {example.slug} on {target}: {reason}.")
+            continue
         if example.spec is None:
             raise SystemExit(f"{example.slug} is benchmarked but has no spec")
+        source = source_root / example.source
+        spec = source_root / example.spec
         exe = native_exe_path(bin_dir, f"{example.exe_name}-bench")
-        run([roc_bin, "build", f"--target={target}", "--opt=speed", f"--output={exe}", example.source])
+        run([roc_bin, "build", f"--target={target}", "--opt=speed", *native_cache_args(target), f"--output={exe}", source])
         run(
             [
                 exe,
@@ -236,7 +277,7 @@ def run_benchmarks(roc_bin: str, examples: tuple[Example, ...]) -> None:
                 "20",
                 "--bench-samples",
                 "1",
-                example.spec,
+                spec,
             ]
         )
 
@@ -250,10 +291,24 @@ def rewrite_platform_headers(root: Path, platform_ref: str) -> None:
             source.write_text(updated, encoding="utf-8")
 
 
-def rewrite_examples_for_bundle(bundle_url: str, dest_root: Path) -> None:
+def rewrite_examples_for_platform(platform_ref: str, dest_root: Path) -> None:
+    if dest_root.exists():
+        shutil.rmtree(dest_root)
     examples_dest = dest_root / "examples"
     shutil.copytree(ROOT / "examples", examples_dest, dirs_exist_ok=True)
-    rewrite_platform_headers(examples_dest, bundle_url)
+    rewrite_platform_headers(examples_dest, platform_ref)
+
+
+def run_local_native_specs(roc_bin: str, examples: tuple[Example, ...]) -> None:
+    source_root = TEST_OUT / "native-source"
+    rewrite_examples_for_platform(str((ROOT / "platform" / "main.roc").resolve()), source_root)
+    run_native_specs(roc_bin, examples, source_root=source_root)
+
+
+def run_local_benchmarks(roc_bin: str, examples: tuple[Example, ...]) -> None:
+    source_root = TEST_OUT / "bench-source"
+    rewrite_examples_for_platform(str((ROOT / "platform" / "main.roc").resolve()), source_root)
+    run_benchmarks(roc_bin, examples, source_root=source_root)
 
 
 class BundleServer:
@@ -301,7 +356,7 @@ def bundle_platform(roc_bin: str) -> Path:
 def run_bundle_specs(roc_bin: str, examples: tuple[Example, ...], bundle_url: str) -> None:
     print(f"\nTesting bundled platform: {bundle_url}")
     source_root = TEST_OUT / "bundle-source"
-    rewrite_examples_for_bundle(bundle_url, source_root)
+    rewrite_examples_for_platform(bundle_url, source_root)
     run_native_specs(roc_bin, examples, source_root=source_root, bin_dir=TEST_OUT / "bundle-bin")
 
 
@@ -351,21 +406,21 @@ def main() -> int:
 
     if "native" in suites:
         if should_run_hosted(args.native):
-            run_native_specs(roc_bin, examples)
+            run_local_native_specs(roc_bin, examples)
         else:
-            print("\nSkipping native specs: platform manifest exposes macOS native targets only.")
+            print("\nSkipping native specs: platform manifest exposes macOS and Linux musl native targets only.")
 
     if "bundle" in suites:
         if should_run_hosted(args.bundle):
             run_bundle_suite(roc_bin, examples, args.bundle_ref)
         else:
-            print("\nSkipping bundle executable tests: platform manifest exposes macOS native targets only.")
+            print("\nSkipping bundle executable tests: platform manifest exposes macOS and Linux musl native targets only.")
 
     if "bench" in suites:
         if should_run_hosted(args.native):
-            run_benchmarks(roc_bin, examples)
+            run_local_benchmarks(roc_bin, examples)
         else:
-            print("\nSkipping benchmarks: platform manifest exposes macOS native targets only.")
+            print("\nSkipping benchmarks: platform manifest exposes macOS and Linux musl native targets only.")
 
     if not args.keep_output and TEST_OUT.exists():
         shutil.rmtree(TEST_OUT)
