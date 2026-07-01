@@ -41,9 +41,7 @@ pub const RenderBoolField = render.BoolField;
 pub const RenderEventKind = render.EventKind;
 pub const EventPayloadKind = render.EventPayloadKind;
 pub const EventPayloadAccessor = render.EventPayloadAccessor;
-pub const NodeFieldCustom: u64 = 7;
-const node_field_custom: u64 = NodeFieldCustom;
-const node_bool_field_custom: u64 = 3;
+pub const NodeFieldCustom: u64 = abi_view.node_text_field_custom;
 
 pub const HostValue = retained_values.HostValue;
 pub const HostValueList = abi.RocListWith(HostValue, false);
@@ -339,56 +337,23 @@ pub fn resolveNodeBinderRef(binder_stack: []const HostBinderBinding, token: Host
 }
 
 pub fn renderTextFieldFromAbi(field: u64) RenderTextField {
-    return switch (field) {
-        @intFromEnum(RenderTextField.text) => .text,
-        @intFromEnum(RenderTextField.role) => .role,
-        @intFromEnum(RenderTextField.label) => .label,
-        @intFromEnum(RenderTextField.test_id) => .test_id,
-        @intFromEnum(RenderTextField.value) => .value,
-        @intFromEnum(RenderTextField.class) => .class,
-        else => @panic("Roc render text descriptor used an unknown field"),
-    };
+    return abi_view.textFieldFromAbi(field);
 }
 
 pub fn renderBoolFieldFromAbi(field: u64) RenderBoolField {
-    return switch (field) {
-        @intFromEnum(RenderBoolField.checked) => .checked,
-        @intFromEnum(RenderBoolField.disabled) => .disabled,
-        else => @panic("Roc render bool descriptor used an unknown field"),
-    };
+    return abi_view.boolFieldFromAbi(field);
 }
 
 pub fn renderEventKindFromAbi(kind: u64) RenderEventKind {
-    return switch (kind) {
-        @intFromEnum(RenderEventKind.click) => .click,
-        @intFromEnum(RenderEventKind.input) => .input,
-        @intFromEnum(RenderEventKind.check) => .check,
-        @intFromEnum(RenderEventKind.pointer_down) => .pointer_down,
-        @intFromEnum(RenderEventKind.pointer_up) => .pointer_up,
-        @intFromEnum(RenderEventKind.pointer_enter) => .pointer_enter,
-        @intFromEnum(RenderEventKind.pointer_leave) => .pointer_leave,
-        else => @panic("Roc render event descriptor used an unknown event kind"),
-    };
+    return abi_view.eventKindFromAbi(kind);
 }
 
 pub fn eventPayloadKindFromAbi(payload_kind: u64) EventPayloadKind {
-    return switch (payload_kind) {
-        @intFromEnum(EventPayloadKind.unit) => .unit,
-        @intFromEnum(EventPayloadKind.str) => .str,
-        @intFromEnum(EventPayloadKind.bool) => .bool,
-        @intFromEnum(EventPayloadKind.bytes) => .bytes,
-        else => @panic("Roc event descriptor used an unknown payload kind"),
-    };
+    return abi_view.eventPayloadKindFromAbi(payload_kind);
 }
 
 pub fn eventPayloadAccessorFromAbi(payload_accessor: u64) EventPayloadAccessor {
-    return switch (payload_accessor) {
-        @intFromEnum(EventPayloadAccessor.none) => .none,
-        @intFromEnum(EventPayloadAccessor.target_value) => .target_value,
-        @intFromEnum(EventPayloadAccessor.target_checked) => .target_checked,
-        @intFromEnum(EventPayloadAccessor.record_key_shift) => .record_key_shift,
-        else => @panic("Roc event descriptor used an unknown payload accessor"),
-    };
+    return abi_view.eventPayloadAccessorFromAbi(payload_accessor);
 }
 
 pub fn Engine(comptime Ctx: type) type {
@@ -1353,7 +1318,7 @@ pub fn Engine(comptime Ctx: type) type {
 
                     const record = HostSignalRecord.init(allocator, .{ .task_source = .{
                         .token = retainHostSignalToken(token),
-                        .name = allocator.dupe(u8, payload.name) catch @panic("out of memory"),
+                        .name = allocator.dupe(u8, payload.name.asSlice()) catch @panic("out of memory"),
                         .payload_cap = retainHostValueCapability(payload.payload_capability, &self.pending_roc_metrics),
                         .initial = retainHostCallable(payload.initial, &self.pending_roc_metrics),
                         .done = retainHostCallable(payload.done, &self.pending_roc_metrics),
@@ -1684,72 +1649,54 @@ pub fn Engine(comptime Ctx: type) type {
 
         pub fn collectNodeAttrDescriptor(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, elem_id: u64, attr: abi.NodeAttr, binder_stack: []const HostBinderBinding) void {
             const allocator = Ctx.allocator(ctx);
-            switch (attr.tag) {
-                .StaticText => {
-                    const payload = attr.payload_static_text();
-                    if (payload.field == node_field_custom) {
-                        stream.appendStaticCustomTextAttr(allocator, elem_id, payload.name.asSlice(), payload.value.asSlice());
-                    } else {
-                        if (payload.name.asSlice().len != 0) @panic("fixed text attr descriptor carried a custom name");
-                        const field = renderTextFieldFromAbi(payload.field);
-                        stream.appendStaticTextAttr(allocator, elem_id, field, payload.value.asSlice());
+            switch (abi_view.NodeAttr.fromAbi(attr)) {
+                .static_text => |payload| {
+                    switch (payload.target) {
+                        .fixed => |field| stream.appendStaticTextAttr(allocator, elem_id, field, payload.value.asSlice()),
+                        .custom => |name| stream.appendStaticCustomTextAttr(allocator, elem_id, name.asSlice(), payload.value.asSlice()),
                     }
                 },
-                .SignalText => {
-                    const payload = attr.payload_signal_text();
-                    if (payload.field == node_field_custom) {
-                        if (payload.name.asSlice().len == 0) @panic("custom text attr descriptor used an empty name");
-                        if (stream.customTextAttrDescriptorExists(elem_id, payload.name.asSlice())) @panic("element has duplicate custom text attr descriptors");
-                        const signal = self.bindNodeSignal(allocator, stream, payload.signal.*, binder_stack);
-                        stream.appendSignalCustomTextAttr(allocator, ctx, roc_host, &self.pending_roc_metrics, elem_id, payload.name.asSlice(), signal, payload.read);
-                    } else {
-                        if (payload.name.asSlice().len != 0) @panic("fixed text attr descriptor carried a custom name");
-                        const field = renderTextFieldFromAbi(payload.field);
-                        const signal = self.bindNodeSignal(allocator, stream, payload.signal.*, binder_stack);
-                        stream.appendSignalTextAttr(allocator, ctx, roc_host, &self.pending_roc_metrics, elem_id, field, signal, payload.read);
+                .signal_text => |payload| {
+                    switch (payload.target) {
+                        .fixed => |field| {
+                            const signal = self.bindNodeSignal(allocator, stream, payload.signal.*, binder_stack);
+                            stream.appendSignalTextAttr(allocator, ctx, roc_host, &self.pending_roc_metrics, elem_id, field, signal, payload.read);
+                        },
+                        .custom => |name| {
+                            const name_slice = name.asSlice();
+                            if (stream.customTextAttrDescriptorExists(elem_id, name_slice)) @panic("element has duplicate custom text attr descriptors");
+                            const signal = self.bindNodeSignal(allocator, stream, payload.signal.*, binder_stack);
+                            stream.appendSignalCustomTextAttr(allocator, ctx, roc_host, &self.pending_roc_metrics, elem_id, name_slice, signal, payload.read);
+                        },
                     }
                 },
-                .StaticBool => {
-                    const payload = attr.payload_static_bool();
-                    if (payload.field == node_bool_field_custom) {
-                        if (payload.name.asSlice().len == 0) @panic("custom bool attr descriptor used an empty name");
-                        stream.appendStaticCustomBoolAttr(allocator, elem_id, payload.name.asSlice(), payload.value);
-                    } else {
-                        if (payload.name.asSlice().len != 0) @panic("fixed bool attr descriptor carried a custom name");
-                        const field = renderBoolFieldFromAbi(payload.field);
-                        stream.appendStaticBoolAttr(allocator, elem_id, field, payload.value);
+                .static_bool => |payload| {
+                    switch (payload.target) {
+                        .fixed => |field| stream.appendStaticBoolAttr(allocator, elem_id, field, payload.value),
+                        .custom => |name| stream.appendStaticCustomBoolAttr(allocator, elem_id, name.asSlice(), payload.value),
                     }
                 },
-                .SignalBool => {
-                    const payload = attr.payload_signal_bool();
-                    if (payload.field == node_bool_field_custom) {
-                        if (payload.name.asSlice().len == 0) @panic("custom bool attr descriptor used an empty name");
-                        if (stream.customTextAttrDescriptorExists(elem_id, payload.name.asSlice())) @panic("element has duplicate custom bool attr descriptors");
-                        const signal = self.bindNodeSignal(allocator, stream, payload.signal.*, binder_stack);
-                        stream.appendSignalCustomBoolAttr(allocator, ctx, roc_host, &self.pending_roc_metrics, elem_id, payload.name.asSlice(), signal, payload.read);
-                    } else {
-                        if (payload.name.asSlice().len != 0) @panic("fixed bool attr descriptor carried a custom name");
-                        const field = renderBoolFieldFromAbi(payload.field);
-                        const signal = self.bindNodeSignal(allocator, stream, payload.signal.*, binder_stack);
-                        stream.appendSignalBoolAttr(allocator, ctx, roc_host, &self.pending_roc_metrics, elem_id, field, signal, payload.read);
+                .signal_bool => |payload| {
+                    switch (payload.target) {
+                        .fixed => |field| {
+                            const signal = self.bindNodeSignal(allocator, stream, payload.signal.*, binder_stack);
+                            stream.appendSignalBoolAttr(allocator, ctx, roc_host, &self.pending_roc_metrics, elem_id, field, signal, payload.read);
+                        },
+                        .custom => |name| {
+                            const name_slice = name.asSlice();
+                            if (stream.customTextAttrDescriptorExists(elem_id, name_slice)) @panic("element has duplicate custom bool attr descriptors");
+                            const signal = self.bindNodeSignal(allocator, stream, payload.signal.*, binder_stack);
+                            stream.appendSignalCustomBoolAttr(allocator, ctx, roc_host, &self.pending_roc_metrics, elem_id, name_slice, signal, payload.read);
+                        },
                     }
                 },
-                .OnEvent => {
-                    const payload = attr.payload_on_event();
-                    const msg = payload.msg;
-                    const kind = renderEventKindFromAbi(payload.kind);
-                    const payload_kind = eventPayloadKindFromAbi(msg.payload_kind);
-                    const payload_accessor = eventPayloadAccessorFromAbi(msg.payload_accessor);
-                    const target_node_id = resolveNodeBinderRef(binder_stack, msg.binder);
-                    stream.appendEvent(allocator, roc_host, &self.pending_roc_metrics, elem_id, kind, msg.binder, target_node_id, payload_kind, payload_accessor, msg.payload_reducer);
+                .event => |payload| {
+                    const target_node_id = resolveNodeBinderRef(binder_stack, payload.msg.binder.ptr);
+                    stream.appendEvent(allocator, roc_host, &self.pending_roc_metrics, elem_id, payload.kind, payload.msg.binder.ptr, target_node_id, payload.msg.payload_kind, payload.msg.payload_accessor, payload.msg.payload_reducer);
                 },
-                .OnNamedEvent => {
-                    const payload = attr.payload_on_named_event();
-                    const msg = payload.msg;
-                    const payload_kind = eventPayloadKindFromAbi(msg.payload_kind);
-                    const payload_accessor = eventPayloadAccessorFromAbi(msg.payload_accessor);
-                    const target_node_id = resolveNodeBinderRef(binder_stack, msg.binder);
-                    stream.appendNamedEvent(allocator, roc_host, &self.pending_roc_metrics, elem_id, payload.name.asSlice(), payload.options, msg.binder, target_node_id, payload_kind, payload_accessor, msg.payload_reducer);
+                .named_event => |payload| {
+                    const target_node_id = resolveNodeBinderRef(binder_stack, payload.msg.binder.ptr);
+                    stream.appendNamedEvent(allocator, roc_host, &self.pending_roc_metrics, elem_id, payload.name.asSlice(), payload.options, payload.msg.binder.ptr, target_node_id, payload.msg.payload_kind, payload.msg.payload_accessor, payload.msg.payload_reducer);
                 },
             }
         }

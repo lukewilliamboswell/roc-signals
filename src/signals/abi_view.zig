@@ -1,9 +1,34 @@
 const std = @import("std");
 
 const abi = @import("roc_platform_abi.zig");
+const render = @import("render_commands.zig");
 const retained = @import("retained_values.zig");
 
 pub const HostValueCapability = retained.HostValueCapability;
+pub const HostTextRead = retained.HostTextRead;
+pub const HostBoolRead = retained.HostBoolRead;
+pub const HostEventReducer = retained.HostEventReducer;
+
+pub const node_text_field_custom: u64 = 7;
+pub const node_bool_field_custom: u64 = 3;
+
+pub const TextField = render.TextField;
+pub const BoolField = render.BoolField;
+pub const EventKind = render.EventKind;
+pub const EventPayloadKind = render.EventPayloadKind;
+pub const EventPayloadAccessor = render.EventPayloadAccessor;
+
+pub const RocStrView = struct {
+    value: abi.RocStr,
+
+    pub fn fromAbi(value: abi.RocStr) RocStrView {
+        return .{ .value = value };
+    }
+
+    pub fn asSlice(self: *const RocStrView) []const u8 {
+        return self.value.asSlice();
+    }
+};
 
 pub const SignalToken = struct {
     ptr: retained.HostSignalToken,
@@ -55,7 +80,7 @@ pub const CombineSignal = struct {
 
 pub const TaskSourceSignal = struct {
     token: SignalToken,
-    name: []const u8,
+    name: RocStrView,
     payload_capability: HostValueCapability,
     initial: abi.RocErasedCallable,
     done: abi.RocErasedCallable,
@@ -126,7 +151,7 @@ pub const SignalExpr = union(enum) {
                 const payload = expr.payload_task_source();
                 break :blk .{ .task_source = .{
                     .token = SignalToken.fromAbi(payload.token),
-                    .name = payload.name.asSlice(),
+                    .name = RocStrView.fromAbi(payload.name),
                     .payload_capability = payload.payload_cap,
                     .initial = payload.initial,
                     .done = payload.done,
@@ -149,12 +174,186 @@ pub const SignalExpr = union(enum) {
     }
 };
 
+pub const TextAttrTarget = union(enum) {
+    fixed: TextField,
+    custom: RocStrView,
+
+    pub fn fromAbi(field: u64, name: abi.RocStr) TextAttrTarget {
+        const name_slice = name.asSlice();
+        if (field == node_text_field_custom) {
+            if (name_slice.len == 0) @panic("custom text attr descriptor used an empty name");
+            return .{ .custom = RocStrView.fromAbi(name) };
+        }
+        if (name_slice.len != 0) @panic("fixed text attr descriptor carried a custom name");
+        return .{ .fixed = textFieldFromAbi(field) };
+    }
+};
+
+pub const BoolAttrTarget = union(enum) {
+    fixed: BoolField,
+    custom: RocStrView,
+
+    pub fn fromAbi(field: u64, name: abi.RocStr) BoolAttrTarget {
+        const name_slice = name.asSlice();
+        if (field == node_bool_field_custom) {
+            if (name_slice.len == 0) @panic("custom bool attr descriptor used an empty name");
+            return .{ .custom = RocStrView.fromAbi(name) };
+        }
+        if (name_slice.len != 0) @panic("fixed bool attr descriptor carried a custom name");
+        return .{ .fixed = boolFieldFromAbi(field) };
+    }
+};
+
+pub const StaticTextAttr = struct {
+    target: TextAttrTarget,
+    value: RocStrView,
+};
+
+pub const SignalTextAttr = struct {
+    target: TextAttrTarget,
+    signal: *const abi.NodeSignalExpr,
+    read: HostTextRead,
+};
+
+pub const StaticBoolAttr = struct {
+    target: BoolAttrTarget,
+    value: bool,
+};
+
+pub const SignalBoolAttr = struct {
+    target: BoolAttrTarget,
+    signal: *const abi.NodeSignalExpr,
+    read: HostBoolRead,
+};
+
+pub const EventMessage = struct {
+    binder: StateBinderToken,
+    payload_kind: EventPayloadKind,
+    payload_accessor: EventPayloadAccessor,
+    payload_reducer: HostEventReducer,
+
+    pub fn fromAbi(msg: abi.__AnonStruct69) EventMessage {
+        return .{
+            .binder = StateBinderToken.fromAbi(msg.binder),
+            .payload_kind = eventPayloadKindFromAbi(msg.payload_kind),
+            .payload_accessor = eventPayloadAccessorFromAbi(msg.payload_accessor),
+            .payload_reducer = msg.payload_reducer,
+        };
+    }
+};
+
+pub const EventAttr = struct {
+    kind: EventKind,
+    msg: EventMessage,
+};
+
+pub const NamedEventAttr = struct {
+    name: RocStrView,
+    options: u64,
+    msg: EventMessage,
+};
+
+pub const NodeAttr = union(enum) {
+    static_text: StaticTextAttr,
+    signal_text: SignalTextAttr,
+    static_bool: StaticBoolAttr,
+    signal_bool: SignalBoolAttr,
+    event: EventAttr,
+    named_event: NamedEventAttr,
+
+    pub fn fromAbi(attr: abi.NodeAttr) NodeAttr {
+        return switch (attr.tag) {
+            .StaticText => blk: {
+                const payload = attr.payload_static_text();
+                break :blk .{ .static_text = .{
+                    .target = TextAttrTarget.fromAbi(payload.field, payload.name),
+                    .value = RocStrView.fromAbi(payload.value),
+                } };
+            },
+            .SignalText => blk: {
+                const payload = attr.payload_signal_text();
+                break :blk .{ .signal_text = .{
+                    .target = TextAttrTarget.fromAbi(payload.field, payload.name),
+                    .signal = payload.signal,
+                    .read = payload.read,
+                } };
+            },
+            .StaticBool => blk: {
+                const payload = attr.payload_static_bool();
+                break :blk .{ .static_bool = .{
+                    .target = BoolAttrTarget.fromAbi(payload.field, payload.name),
+                    .value = payload.value,
+                } };
+            },
+            .SignalBool => blk: {
+                const payload = attr.payload_signal_bool();
+                break :blk .{ .signal_bool = .{
+                    .target = BoolAttrTarget.fromAbi(payload.field, payload.name),
+                    .signal = payload.signal,
+                    .read = payload.read,
+                } };
+            },
+            .OnEvent => blk: {
+                const payload = attr.payload_on_event();
+                break :blk .{ .event = .{
+                    .kind = eventKindFromAbi(payload.kind),
+                    .msg = EventMessage.fromAbi(payload.msg),
+                } };
+            },
+            .OnNamedEvent => blk: {
+                const payload = attr.payload_on_named_event();
+                break :blk .{ .named_event = .{
+                    .name = RocStrView.fromAbi(payload.name),
+                    .options = payload.options,
+                    .msg = EventMessage.fromAbi(payload.msg),
+                } };
+            },
+        };
+    }
+};
+
+pub fn textFieldFromAbi(field: u64) TextField {
+    return enumFromAbi(TextField, field, "Roc render text descriptor used an unknown field");
+}
+
+pub fn boolFieldFromAbi(field: u64) BoolField {
+    return enumFromAbi(BoolField, field, "Roc render bool descriptor used an unknown field");
+}
+
+pub fn eventKindFromAbi(kind: u64) EventKind {
+    return enumFromAbi(EventKind, kind, "Roc render event descriptor used an unknown event kind");
+}
+
+pub fn eventPayloadKindFromAbi(payload_kind: u64) EventPayloadKind {
+    return enumFromAbi(EventPayloadKind, payload_kind, "Roc event descriptor used an unknown payload kind");
+}
+
+pub fn eventPayloadAccessorFromAbi(payload_accessor: u64) EventPayloadAccessor {
+    return enumFromAbi(EventPayloadAccessor, payload_accessor, "Roc event descriptor used an unknown payload accessor");
+}
+
+fn enumFromAbi(comptime T: type, value: u64, comptime message: []const u8) T {
+    inline for (std.meta.fields(T)) |field| {
+        if (value == field.value) return @field(T, field.name);
+    }
+    @panic(message);
+}
+
 test "signal token wrappers keep binder and signal tokens distinct" {
     comptime {
         if (SignalToken == StateBinderToken) {
             @compileError("signal tokens and state binder tokens must remain distinct types");
         }
     }
+}
+
+test "RocStrView keeps small string bytes valid after return" {
+    const view = makeSmallRocStrView();
+    try std.testing.expectEqualStrings("small", view.asSlice());
+}
+
+fn makeSmallRocStrView() RocStrView {
+    return RocStrView.fromAbi(borrowedRocStr("small"));
 }
 
 test "SignalExpr.fromAbi decodes ref and const value expressions" {
@@ -284,7 +483,7 @@ test "SignalExpr.fromAbi decodes effect source expressions" {
     switch (SignalExpr.fromAbi(task_expr)) {
         .task_source => |payload| {
             try std.testing.expectEqual(&task_token, payload.token.ptr);
-            try std.testing.expectEqualStrings("load-user", payload.name);
+            try std.testing.expectEqualStrings("load-user", payload.name.asSlice());
             try std.testing.expect(payload.reset_on_start);
             try std.testing.expectEqual(capability, payload.payload_capability);
             try std.testing.expectEqual(capability, payload.capability);
@@ -308,6 +507,172 @@ test "SignalExpr.fromAbi decodes effect source expressions" {
             try std.testing.expectEqual(&interval_token, payload.token.ptr);
             try std.testing.expectEqual(@as(u64, 250), payload.period_ms);
             try std.testing.expectEqual(capability, payload.capability);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "NodeAttr.fromAbi decodes text attr targets" {
+    const fixed = abi.NodeAttr{
+        .payload = .{ .static_text = .{
+            .field = @intFromEnum(TextField.label),
+            .name = abi.RocStr.empty(),
+            .value = borrowedRocStr("ready"),
+        } },
+        .tag = .StaticText,
+    };
+    switch (NodeAttr.fromAbi(fixed)) {
+        .static_text => |payload| {
+            switch (payload.target) {
+                .fixed => |field| try std.testing.expectEqual(TextField.label, field),
+                else => return error.TestUnexpectedResult,
+            }
+            try std.testing.expectEqualStrings("ready", payload.value.asSlice());
+        },
+        else => return error.TestUnexpectedResult,
+    }
+
+    const custom = abi.NodeAttr{
+        .payload = .{ .static_text = .{
+            .field = node_text_field_custom,
+            .name = borrowedRocStr("data-id"),
+            .value = borrowedRocStr("42"),
+        } },
+        .tag = .StaticText,
+    };
+    switch (NodeAttr.fromAbi(custom)) {
+        .static_text => |payload| {
+            switch (payload.target) {
+                .custom => |name| try std.testing.expectEqualStrings("data-id", name.asSlice()),
+                else => return error.TestUnexpectedResult,
+            }
+            try std.testing.expectEqualStrings("42", payload.value.asSlice());
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "NodeAttr.fromAbi decodes signal text and bool attrs" {
+    var token: u64 = 10;
+    var signal = abi.NodeSignalExpr{
+        .payload = .{ .ref = &token },
+        .tag = .Ref,
+    };
+    const text_read = std.mem.zeroes(HostTextRead);
+    const bool_read = std.mem.zeroes(HostBoolRead);
+
+    const text_attr = abi.NodeAttr{
+        .payload = .{ .signal_text = .{
+            .field = @intFromEnum(TextField.value),
+            .name = abi.RocStr.empty(),
+            .read = text_read,
+            .signal = &signal,
+        } },
+        .tag = .SignalText,
+    };
+    switch (NodeAttr.fromAbi(text_attr)) {
+        .signal_text => |payload| {
+            switch (payload.target) {
+                .fixed => |field| try std.testing.expectEqual(TextField.value, field),
+                else => return error.TestUnexpectedResult,
+            }
+            try std.testing.expectEqual(&signal, payload.signal);
+            try std.testing.expectEqual(text_read, payload.read);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+
+    const bool_attr = abi.NodeAttr{
+        .payload = .{ .signal_bool = .{
+            .field = node_bool_field_custom,
+            .name = borrowedRocStr("aria-expanded"),
+            .read = bool_read,
+            .signal = &signal,
+        } },
+        .tag = .SignalBool,
+    };
+    switch (NodeAttr.fromAbi(bool_attr)) {
+        .signal_bool => |payload| {
+            switch (payload.target) {
+                .custom => |name| try std.testing.expectEqualStrings("aria-expanded", name.asSlice()),
+                else => return error.TestUnexpectedResult,
+            }
+            try std.testing.expectEqual(&signal, payload.signal);
+            try std.testing.expectEqual(bool_read, payload.read);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "NodeAttr.fromAbi decodes static bool attrs and events" {
+    const static_bool = abi.NodeAttr{
+        .payload = .{ .static_bool = .{
+            .field = @intFromEnum(BoolField.disabled),
+            .name = abi.RocStr.empty(),
+            .value = true,
+        } },
+        .tag = .StaticBool,
+    };
+    switch (NodeAttr.fromAbi(static_bool)) {
+        .static_bool => |payload| {
+            switch (payload.target) {
+                .fixed => |field| try std.testing.expectEqual(BoolField.disabled, field),
+                else => return error.TestUnexpectedResult,
+            }
+            try std.testing.expect(payload.value);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+
+    var binder: u64 = 11;
+    const reducer = std.mem.zeroes(HostEventReducer);
+    const event = abi.NodeAttr{
+        .payload = .{ .on_event = .{
+            .kind = @intFromEnum(EventKind.pointer_down),
+            .msg = .{
+                .binder = &binder,
+                .payload_kind = @intFromEnum(EventPayloadKind.bytes),
+                .payload_accessor = @intFromEnum(EventPayloadAccessor.record_key_shift),
+                .payload_reducer = reducer,
+            },
+        } },
+        .tag = .OnEvent,
+    };
+    switch (NodeAttr.fromAbi(event)) {
+        .event => |payload| {
+            try std.testing.expectEqual(EventKind.pointer_down, payload.kind);
+            try std.testing.expectEqual(&binder, payload.msg.binder.ptr);
+            try std.testing.expectEqual(EventPayloadKind.bytes, payload.msg.payload_kind);
+            try std.testing.expectEqual(EventPayloadAccessor.record_key_shift, payload.msg.payload_accessor);
+            try std.testing.expectEqual(reducer, payload.msg.payload_reducer);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "NodeAttr.fromAbi decodes named events" {
+    var binder: u64 = 12;
+    const reducer = std.mem.zeroes(HostEventReducer);
+    const attr = abi.NodeAttr{
+        .payload = .{ .on_named_event = .{
+            .name = borrowedRocStr("keydown"),
+            .options = render.listener_option_prevent_default,
+            .msg = .{
+                .binder = &binder,
+                .payload_kind = @intFromEnum(EventPayloadKind.unit),
+                .payload_accessor = @intFromEnum(EventPayloadAccessor.none),
+                .payload_reducer = reducer,
+            },
+        } },
+        .tag = .OnNamedEvent,
+    };
+    switch (NodeAttr.fromAbi(attr)) {
+        .named_event => |payload| {
+            try std.testing.expectEqualStrings("keydown", payload.name.asSlice());
+            try std.testing.expectEqual(@as(u64, render.listener_option_prevent_default), payload.options);
+            try std.testing.expectEqual(&binder, payload.msg.binder.ptr);
+            try std.testing.expectEqual(EventPayloadKind.unit, payload.msg.payload_kind);
+            try std.testing.expectEqual(EventPayloadAccessor.none, payload.msg.payload_accessor);
         },
         else => return error.TestUnexpectedResult,
     }
