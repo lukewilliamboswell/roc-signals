@@ -1146,32 +1146,10 @@ pub fn Engine(comptime Ctx: type) type {
         pub fn cloneMemoizedDirtySignalResult(self: *Self, ctx: Ctx.Handle, record: *HostSignalRecord, dirty_generation: u64) ?HostSignalEvalResult {
             if (record.last_dirty_generation != dirty_generation) return null;
 
-            return switch (record.payload) {
-                .ref => null,
-                .const_value => |*payload| .{
-                    .value = self.cloneCachedSignalValue(ctx, &payload.cached_value),
-                    .changed = record.last_dirty_changed,
-                },
-                .map => |*payload| .{
-                    .value = self.cloneCachedSignalValue(ctx, &payload.cached_value),
-                    .changed = record.last_dirty_changed,
-                },
-                .map2 => |*payload| .{
-                    .value = self.cloneCachedSignalValue(ctx, &payload.cached_value),
-                    .changed = record.last_dirty_changed,
-                },
-                .combine => |*payload| .{
-                    .value = self.cloneCachedSignalValue(ctx, &payload.cached_value),
-                    .changed = record.last_dirty_changed,
-                },
-                .task_source => |*payload| .{
-                    .value = self.cloneCachedSignalValue(ctx, &payload.cached_value),
-                    .changed = record.last_dirty_changed,
-                },
-                .interval_source => |*payload| .{
-                    .value = self.cloneCachedSignalValue(ctx, &payload.cached_value),
-                    .changed = record.last_dirty_changed,
-                },
+            const cache_slot = record.cachedSlot() orelse return null;
+            return .{
+                .value = self.cloneCachedSignalValue(ctx, cache_slot),
+                .changed = record.last_dirty_changed,
             };
         }
 
@@ -1182,15 +1160,7 @@ pub fn Engine(comptime Ctx: type) type {
         }
 
         pub fn hostSignalRecordCapability(_: *Self, ctx: Ctx.Handle, record: *const HostSignalRecord) HostValueCapability {
-            return switch (record.payload) {
-                .ref => |node_id| Ctx.stateCapability(ctx, node_id),
-                .const_value => |payload| payload.cap,
-                .map => |payload| payload.cap,
-                .map2 => |payload| payload.cap,
-                .combine => |payload| payload.cap,
-                .task_source => |payload| payload.cap,
-                .interval_source => |payload| payload.cap,
-            };
+            return record.capability(Ctx, ctx);
         }
 
         pub fn hostSignalBindingCapability(self: *Self, ctx: Ctx.Handle, signal: *const HostSignalBinding) HostValueCapability {
@@ -3006,6 +2976,16 @@ pub fn Engine(comptime Ctx: type) type {
             return self.cloneCachedSignalValue(ctx, cache_slot);
         }
 
+        pub fn evalEffectSourceInitial(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, cache_slot: *HostSignalCacheSlot, initial: abi.RocErasedCallable, cap: HostValueCapability) HostValue {
+            switch (cache_slot.*) {
+                .present => return self.cloneCachedSignalValue(ctx, cache_slot),
+                .absent => {
+                    const value = erased_calls.callValueInitThunk(roc_host, initial);
+                    return self.replaceSignalExprCacheAndClone(ctx, cache_slot, roc_host, value, cap);
+                },
+            }
+        }
+
         pub fn evalHostSignalRecord(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, record: *HostSignalRecord) HostValue {
             switch (record.payload) {
                 .ref => |node_id| return Ctx.stateValueByNodeId(ctx, node_id),
@@ -3056,22 +3036,10 @@ pub fn Engine(comptime Ctx: type) type {
                     return self.replaceSignalExprCacheAndClone(ctx, &payload.cached_value, roc_host, value, payload.cap);
                 },
                 .task_source => |*payload| {
-                    switch (payload.cached_value) {
-                        .present => return self.cloneCachedSignalValue(ctx, &payload.cached_value),
-                        .absent => {
-                            const value = erased_calls.callValueInitThunk(roc_host, payload.initial);
-                            return self.replaceSignalExprCacheAndClone(ctx, &payload.cached_value, roc_host, value, payload.cap);
-                        },
-                    }
+                    return self.evalEffectSourceInitial(ctx, roc_host, &payload.cached_value, payload.initial, payload.cap);
                 },
                 .interval_source => |*payload| {
-                    switch (payload.cached_value) {
-                        .present => return self.cloneCachedSignalValue(ctx, &payload.cached_value),
-                        .absent => {
-                            const value = erased_calls.callValueInitThunk(roc_host, payload.initial);
-                            return self.replaceSignalExprCacheAndClone(ctx, &payload.cached_value, roc_host, value, payload.cap);
-                        },
-                    }
+                    return self.evalEffectSourceInitial(ctx, roc_host, &payload.cached_value, payload.initial, payload.cap);
                 },
             }
         }
@@ -4777,11 +4745,8 @@ pub fn Engine(comptime Ctx: type) type {
         }
 
         pub fn updateEffectSourceCache(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, record: *HostSignalRecord, value: HostValue) bool {
-            return switch (record.payload) {
-                .task_source => |*payload| self.updateEffectSourceCacheSlot(ctx, roc_host, &payload.cached_value, value, payload.cap),
-                .interval_source => |*payload| self.updateEffectSourceCacheSlot(ctx, roc_host, &payload.cached_value, value, payload.cap),
-                .ref, .const_value, .map, .map2, .combine => @panic("effect source update targeted a non-source signal record"),
-            };
+            const source = record.effectSource() orelse @panic("effect source update targeted a non-source signal record");
+            return self.updateEffectSourceCacheSlot(ctx, roc_host, source.cachedSlot(), value, source.capability());
         }
 
         pub fn applyDirtySignalBatch(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, dirty_source_node_ids: []const u64, changed_record_ids: []const u64, dirty_generation: u64) render.Counts {
@@ -4824,10 +4789,7 @@ pub fn Engine(comptime Ctx: type) type {
 
         pub fn startTaskCommand(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, owner_scope_id: u64, cmd: erased_calls.StartTaskCmd) render.Counts {
             const record = self.activeTaskRecordByToken(cmd.task_token) orelse @panic("StartTask referenced a task source that is not active");
-            const task_payload = switch (record.payload) {
-                .task_source => |payload| payload,
-                .ref, .const_value, .map, .map2, .combine, .interval_source => unreachable,
-            };
+            const task_payload = record.requireTaskSource();
             if (!std.mem.eql(u8, task_payload.name, cmd.task_name.asSlice())) {
                 @panic("StartTask task name does not match the referenced task source");
             }
@@ -4848,31 +4810,23 @@ pub fn Engine(comptime Ctx: type) type {
             return .{};
         }
 
-        pub fn tickIntervalSource(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, period_ms: u64) render.Counts {
-            const record = self.activeIntervalRecordByPeriod(period_ms) orelse @panic("tick_interval matched no active interval source");
-            const interval_payload = switch (record.payload) {
-                .interval_source => |payload| payload,
-                .ref, .const_value, .map, .map2, .combine, .task_source => unreachable,
-            };
-
+        fn tickIntervalRecord(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, record: *HostSignalRecord) render.Counts {
+            const interval_payload = record.requireIntervalSource();
             const current = self.evalHostSignalRecord(ctx, roc_host, record);
             defer self.dropHostSignalRecordValue(ctx, roc_host, record, current);
             const next = callHostValueToHostValueWithCapability(ctx, roc_host, interval_payload.cap, interval_payload.tick, current);
             return self.dispatchEffectSourceValue(ctx, roc_host, record, next);
         }
 
+        pub fn tickIntervalSource(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, period_ms: u64) render.Counts {
+            const record = self.activeIntervalRecordByPeriod(period_ms) orelse @panic("tick_interval matched no active interval source");
+            return self.tickIntervalRecord(ctx, roc_host, record);
+        }
+
         pub fn tickIntervalSourceByRuntimeToken(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, token: u64) render.Counts {
             const source_token = self.activeIntervalSourceTokenByRuntimeToken(token) orelse @panic("timer tick referenced an inactive interval token");
             const record = self.activeIntervalRecordByToken(source_token) orelse @panic("timer tick matched no active interval source");
-            const interval_payload = switch (record.payload) {
-                .interval_source => |payload| payload,
-                .ref, .const_value, .map, .map2, .combine, .task_source => unreachable,
-            };
-
-            const current = self.evalHostSignalRecord(ctx, roc_host, record);
-            defer self.dropHostSignalRecordValue(ctx, roc_host, record, current);
-            const next = callHostValueToHostValueWithCapability(ctx, roc_host, interval_payload.cap, interval_payload.tick, current);
-            return self.dispatchEffectSourceValue(ctx, roc_host, record, next);
+            return self.tickIntervalRecord(ctx, roc_host, record);
         }
 
         pub fn evalDirtyOnChange(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, desc: *HostNodeOnChangeDesc, dirty_source_node_ids: []const u64, dirty_generation: u64) render.Counts {

@@ -101,7 +101,14 @@ jobs:
             "PATH=$PATH" \
             "ZIG_GLOBAL_CACHE_DIR=$GITHUB_WORKSPACE/.zig-cache" \
             "ZIG_LOCAL_CACHE_DIR=$GITHUB_WORKSPACE/.zig-cache" \
-            python3 scripts/coverage.py --min 81.0 --top 20
+            python3 scripts/coverage.py \
+              --min 86.5 \
+              --min-file src/signals/engine.zig=71.0 \
+              --min-file src/signals/descriptor_stream.zig=76.0 \
+              --min-file src/native_host.zig=94.0 \
+              --min-file src/signals/roc_platform_abi.zig=72.0 \
+              --min-file src/spec/spec_parser.zig=90.0 \
+              --top 20
 
       - name: Upload native host coverage
         if: always()

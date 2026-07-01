@@ -50,11 +50,8 @@ pub fn deinitCleanupEvents(allocator: std.mem.Allocator, events: *CleanupEvents)
 
 pub fn activeTaskRecordByToken(active_signal_graph: anytype, token: HostSignalToken) ?*HostSignalRecord {
     for (active_signal_graph) |node| {
-        switch (node.record.payload) {
-            .task_source => |payload| {
-                if (payload.token == token) return node.record;
-            },
-            .ref, .const_value, .map, .map2, .combine, .interval_source => {},
+        if (node.record.taskSource()) |payload| {
+            if (payload.token == token) return node.record;
         }
     }
     return null;
@@ -63,14 +60,10 @@ pub fn activeTaskRecordByToken(active_signal_graph: anytype, token: HostSignalTo
 pub fn activeTaskRecordByName(active_signal_graph: anytype, name: []const u8) ?*HostSignalRecord {
     var found: ?*HostSignalRecord = null;
     for (active_signal_graph) |node| {
-        switch (node.record.payload) {
-            .task_source => |payload| {
-                if (!std.mem.eql(u8, payload.name, name)) continue;
-                if (found != null) @panic("fake task result matched more than one active task source");
-                found = node.record;
-            },
-            .ref, .const_value, .map, .map2, .combine, .interval_source => {},
-        }
+        const payload = node.record.taskSource() orelse continue;
+        if (!std.mem.eql(u8, payload.name, name)) continue;
+        if (found != null) @panic("fake task result matched more than one active task source");
+        found = node.record;
     }
     return found;
 }
@@ -78,11 +71,8 @@ pub fn activeTaskRecordByName(active_signal_graph: anytype, name: []const u8) ?*
 pub fn activeIntervalRecordCountByPeriod(active_signal_graph: anytype, period_ms: u64) u64 {
     var count: u64 = 0;
     for (active_signal_graph) |node| {
-        switch (node.record.payload) {
-            .interval_source => |payload| {
-                if (payload.period_ms == period_ms) count += 1;
-            },
-            .ref, .const_value, .map, .map2, .combine, .task_source => {},
+        if (node.record.intervalSource()) |payload| {
+            if (payload.period_ms == period_ms) count += 1;
         }
     }
     return count;
@@ -91,14 +81,10 @@ pub fn activeIntervalRecordCountByPeriod(active_signal_graph: anytype, period_ms
 pub fn activeIntervalRecordByToken(active_signal_graph: anytype, source_token: HostSignalToken) ?*HostSignalRecord {
     var found: ?*HostSignalRecord = null;
     for (active_signal_graph) |node| {
-        switch (node.record.payload) {
-            .interval_source => |payload| {
-                if (payload.token != source_token) continue;
-                if (found != null) @panic("interval token matched more than one active interval source");
-                found = node.record;
-            },
-            .ref, .const_value, .map, .map2, .combine, .task_source => {},
-        }
+        const payload = node.record.intervalSource() orelse continue;
+        if (payload.token != source_token) continue;
+        if (found != null) @panic("interval token matched more than one active interval source");
+        found = node.record;
     }
     return found;
 }
@@ -106,14 +92,10 @@ pub fn activeIntervalRecordByToken(active_signal_graph: anytype, source_token: H
 pub fn activeIntervalRecordByPeriod(active_signal_graph: anytype, period_ms: u64) ?*HostSignalRecord {
     var found: ?*HostSignalRecord = null;
     for (active_signal_graph) |node| {
-        switch (node.record.payload) {
-            .interval_source => |payload| {
-                if (payload.period_ms != period_ms) continue;
-                if (found != null) @panic("tick_interval matched more than one active interval source");
-                found = node.record;
-            },
-            .ref, .const_value, .map, .map2, .combine, .task_source => {},
-        }
+        const payload = node.record.intervalSource() orelse continue;
+        if (payload.period_ms != period_ms) continue;
+        if (found != null) @panic("tick_interval matched more than one active interval source");
+        found = node.record;
     }
     return found;
 }
@@ -405,13 +387,9 @@ pub fn syncActiveIntervalsFromGraph(
     metrics.bump(.active_intervals_synced, @intCast(active_signal_graph.len));
 
     for (active_signal_graph) |node| {
-        switch (node.record.payload) {
-            .interval_source => |payload| {
-                const host = roc_host orelse @panic("active interval cannot retain token without a Roc host");
-                ensureActiveInterval(Ctx, ctx, allocator, intervals, next_interval_token, host, payload.token, payload.period_ms);
-            },
-            .ref, .const_value, .map, .map2, .combine, .task_source => {},
-        }
+        const payload = node.record.intervalSource() orelse continue;
+        const host = roc_host orelse @panic("active interval cannot retain token without a Roc host");
+        ensureActiveInterval(Ctx, ctx, allocator, intervals, next_interval_token, host, payload.token, payload.period_ms);
     }
 
     finishActiveIntervalSync(Ctx, ctx, intervals, roc_host);

@@ -52,6 +52,23 @@ class FileCoverage:
         return self.covered_lines / self.total_lines * 100.0
 
 
+@dataclass(frozen=True)
+class FileThreshold:
+    pattern: str
+    minimum: float
+
+
+@dataclass
+class FileThresholdResult:
+    threshold: FileThreshold
+    matched: list[FileCoverage]
+    failed: list[FileCoverage]
+
+    @property
+    def passed(self) -> bool:
+        return bool(self.matched) and not self.failed
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run and inspect native host kcov coverage.",
@@ -62,6 +79,7 @@ def parse_args() -> argparse.Namespace:
             "  %(prog)s --use-last-run --format lines --file engine --context 5\n"
             "  %(prog)s --use-last-run --format json --top 10\n"
             "  %(prog)s --min 35\n"
+            "  %(prog)s --min 84 --min-file src/signals/engine.zig=67.5\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -100,6 +118,16 @@ def parse_args() -> argparse.Namespace:
         metavar="PERCENT",
         type=float,
         help="Fail if merged coverage is below PERCENT.",
+    )
+    parser.add_argument(
+        "--min-file",
+        metavar="PATTERN=PERCENT",
+        action="append",
+        default=[],
+        help=(
+            "Fail if any normalized relative file path containing PATTERN is below PERCENT. "
+            "May be repeated. Fails if PATTERN matches no files."
+        ),
     )
     return parser.parse_args()
 
@@ -155,6 +183,29 @@ def should_include_path(rel_path: str, file_pattern: str | None) -> bool:
     if file_pattern is None:
         return True
     return file_pattern.lower() in rel_path.lower()
+
+
+def parse_file_threshold(raw: str) -> FileThreshold:
+    if "=" not in raw:
+        raise SystemExit(f"invalid --min-file value {raw!r}; expected PATTERN=PERCENT")
+
+    pattern, raw_minimum = raw.split("=", 1)
+    pattern = normalize_path(pattern.strip())
+    if not pattern:
+        raise SystemExit(f"invalid --min-file value {raw!r}; PATTERN cannot be empty")
+
+    try:
+        minimum = float(raw_minimum)
+    except ValueError:
+        raise SystemExit(
+            f"invalid --min-file value {raw!r}; PERCENT must be a number"
+        ) from None
+    if minimum < 0 or minimum > 100:
+        raise SystemExit(
+            f"invalid --min-file value {raw!r}; PERCENT must be between 0 and 100"
+        )
+
+    return FileThreshold(pattern=pattern, minimum=minimum)
 
 
 def parse_count(value: object) -> int:
@@ -282,6 +333,52 @@ def totals(files: list[FileCoverage]) -> tuple[int, int, float]:
     return covered, total, percent
 
 
+def evaluate_file_thresholds(
+    files_by_path: dict[str, FileCoverage],
+    raw_thresholds: list[str],
+) -> list[FileThresholdResult]:
+    results: list[FileThresholdResult] = []
+    for raw in raw_thresholds:
+        threshold = parse_file_threshold(raw)
+        matched = [
+            file_cov
+            for path, file_cov in files_by_path.items()
+            if threshold.pattern.lower() in path.lower()
+        ]
+        matched.sort(key=lambda item: item.rel_path)
+        failed = [
+            file_cov
+            for file_cov in matched
+            if file_cov.percent_covered < threshold.minimum
+        ]
+        results.append(
+            FileThresholdResult(
+                threshold=threshold,
+                matched=matched,
+                failed=failed,
+            )
+        )
+    return results
+
+
+def format_file_threshold_failures(results: list[FileThresholdResult]) -> str:
+    lines: list[str] = []
+    for result in results:
+        threshold = result.threshold
+        if not result.matched:
+            lines.append(
+                f"file coverage pattern {threshold.pattern!r} matched no files"
+            )
+            continue
+
+        for file_cov in result.failed:
+            lines.append(
+                f"{file_cov.rel_path} coverage {file_cov.percent_covered:.2f}% "
+                f"is below required file minimum {threshold.minimum:.2f}%"
+            )
+    return "\n".join(lines)
+
+
 def uncovered_ranges(file_cov: FileCoverage) -> list[tuple[int, int]]:
     uncovered = sorted(line for line, hits in file_cov.hits.items() if hits == 0)
     if not uncovered:
@@ -365,7 +462,12 @@ def format_lines(
     return "\n".join(sections).rstrip()
 
 
-def format_json(files: list[FileCoverage], overall_files: list[FileCoverage], top: int | None) -> str:
+def format_json(
+    files: list[FileCoverage],
+    overall_files: list[FileCoverage],
+    top: int | None,
+    file_thresholds: list[FileThresholdResult],
+) -> str:
     covered, total, percent = totals(overall_files)
     result = {
         "overall": {
@@ -389,6 +491,27 @@ def format_json(files: list[FileCoverage], overall_files: list[FileCoverage], to
             }
             for file_cov in files
         ],
+        "file_thresholds": [
+            {
+                "pattern": threshold_result.threshold.pattern,
+                "minimum": threshold_result.threshold.minimum,
+                "passed": threshold_result.passed,
+                "matched_files": [
+                    file_cov.rel_path for file_cov in threshold_result.matched
+                ],
+                "failed_files": [
+                    {
+                        "file": file_cov.rel_path,
+                        "percent_covered": round(file_cov.percent_covered, 2),
+                        "covered_lines": file_cov.covered_lines,
+                        "total_lines": file_cov.total_lines,
+                        "uncovered_lines": file_cov.uncovered_lines,
+                    }
+                    for file_cov in threshold_result.failed
+                ],
+            }
+            for threshold_result in file_thresholds
+        ],
     }
     return json.dumps(result, indent=2)
 
@@ -404,22 +527,29 @@ def main() -> int:
     overall_files = list(files_by_path.values())
     files = sorted_files(files_by_path, args.top)
     covered, total, percent = totals(overall_files)
+    file_thresholds = evaluate_file_thresholds(files_by_path, args.min_file)
 
     if args.format == "summary":
         print(format_summary(files, overall_files, args.top))
     elif args.format == "lines":
         print(format_lines(files, overall_files, args.context, args.top))
     else:
-        print(format_json(files, overall_files, args.top))
+        print(format_json(files, overall_files, args.top, file_thresholds))
 
+    failed = False
     if args.min is not None and percent < args.min:
         print(
             f"\ncoverage {percent:.2f}% is below required minimum {args.min:.2f}%",
             file=sys.stderr,
         )
-        return 1
+        failed = True
 
-    return 0
+    file_threshold_failures = format_file_threshold_failures(file_thresholds)
+    if file_threshold_failures:
+        print(f"\n{file_threshold_failures}", file=sys.stderr)
+        failed = True
+
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
