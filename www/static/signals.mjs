@@ -40,7 +40,7 @@ export const Op = Object.freeze({
 });
 
 export const Protocol = Object.freeze({
-  version: 7,
+  version: 8,
 });
 
 export const ProtocolFeature = Object.freeze({
@@ -50,6 +50,8 @@ export const ProtocolFeature = Object.freeze({
 
 const requiredProtocolFeatures =
   ProtocolFeature.dynamicAttrs | ProtocolFeature.dynamicEvents;
+
+const behaviorAttrName = "data-signals-behavior";
 
 export const DynamicOp = Object.freeze({
   setAttrText: 1,
@@ -222,6 +224,7 @@ const EventExtractionLeaf = Object.freeze({
   value: 2,
   checked: 3,
   shiftKey: 4,
+  detail: 5,
 });
 
 const fixedEventExtractionPlan = Object.freeze({
@@ -251,14 +254,6 @@ const pointerProbeEvents = Object.freeze([
 
 export const HttpTask = Object.freeze({
   namePrefix: "http:send:",
-  opsApiPaths: Object.freeze([
-    "/api/ops/dashboard",
-    "/api/ops/summary",
-    "/api/ops/traffic",
-    "/api/ops/jobs",
-    "/api/ops/alerts",
-    "/api/ops/health",
-  ]),
 });
 export const HttpTextTask = HttpTask;
 
@@ -271,126 +266,6 @@ const HttpPayloadVersion = Object.freeze({
   response: "roc-http-response-v1",
   error: "roc-http-error-v1",
 });
-
-const opsDashboardBody = [
-  "schema=1",
-  "updated_version=1",
-  "updated_hour=12",
-  "updated_minute=0",
-  "updated_second=0",
-  "phase_code=0",
-  "requests_per_minute=1480",
-  "traffic_delta_percent=7",
-  "error_permille=5",
-  "burn_rate_x10=8",
-  "budget_remaining_permille=987",
-  "latency_ms=84",
-  "latency_target_ms=120",
-  "webhook_rpm=920",
-  "webhook_bar_code=4",
-  "db_write_rpm=680",
-  "db_write_bar_code=3",
-  "ingress_bar_code=5",
-  "latency_bar_code=3",
-  "error_bar_code=1",
-  "budget_bar_code=1",
-  "queue_depth=37",
-  "queue_trend_code=1",
-  "queue_capacity=120",
-  "running_jobs=10",
-  "blocked_jobs=0",
-  "oldest_job_min=7",
-  "job_a_id=101",
-  "job_a_progress=72",
-  "job_a_age_min=4",
-  "job_a_state_code=0",
-  "job_b_id=118",
-  "job_b_progress=43",
-  "job_b_age_min=9",
-  "job_b_state_code=0",
-  "job_c_id=132",
-  "job_c_progress=58",
-  "job_c_age_min=3",
-  "job_c_state_code=0",
-  "job_d_id=172",
-  "job_d_progress=64",
-  "job_d_age_min=6",
-  "job_d_state_code=0",
-  "alert_a_code=2",
-  "alert_a_age_min=5",
-  "alert_b_code=4",
-  "alert_b_age_min=3",
-  "alert_c_code=5",
-  "alert_c_age_min=11",
-  "edge_state_code=0",
-  "edge_latency_ms=48",
-  "api_state_code=0",
-  "api_latency_ms=84",
-  "worker_state_code=0",
-  "worker_oldest_job_min=7",
-  "database_state_code=0",
-  "database_lag_sec=1",
-  "billing_state_code=0",
-  "billing_latency_ms=96",
-  "search_state_code=0",
-  "search_refresh_sec=14",
-  "identity_state_code=0",
-  "identity_latency_ms=42",
-].join("\n");
-
-const simulatedOpsApi = new Map([
-  ["/api/ops/dashboard", opsDashboardBody],
-  [
-    "/api/ops/summary",
-    [
-      "Updated: 12:00:00 UTC  version 1",
-      "Overall: Nominal  phase steady  incidents 0  tone good",
-      "Traffic: 1,480 rpm  7% over 5m",
-      "Errors: 0.5%  budget burn 0.8x",
-      "Queue: 37 jobs  running 10  blocked 0",
-      "Services: 7/7 healthy  primary region usw2",
-    ].join("\n"),
-  ],
-  [
-    "/api/ops/traffic",
-    [
-      "Ingress        1,480 rpm  ######------  +7% over 5m",
-      "API p95        84 ms      ####--------  target 120 ms",
-      "Error rate     0.5%       ##----------  budget burn 0.8x",
-      "Webhook fanout 920 rpm    #####-------  steady",
-      "DB writes      680 rpm    ####--------  replica lag 1s",
-    ].join("\n"),
-  ],
-  [
-    "/api/ops/jobs",
-    [
-      "job-101  running   72%  workers/search  4m  Rebuild search index",
-      "job-118  running   43%  billing         9m  Backfill billing events",
-      "job-132  running   58%  compliance      3m  Export audit archive",
-      "job-172  running   64%  identity        6m  Prune stale sessions",
-    ].join("\n"),
-  ],
-  [
-    "/api/ops/alerts",
-    [
-      "WARNING workers      monitoring 5m   Retry queue elevated",
-      "INFO    payments-api recovering 3m   Error budget burn below 1x",
-      "INFO    edge         steady     11m  Canary pool normal",
-    ].join("\n"),
-  ],
-  [
-    "/api/ops/health",
-    [
-      "edge      ok       p95 48 ms   8 pods    all regions serving",
-      "api       ok       p95 84 ms   12 pods   primary deploy api-01",
-      "workers   ok       oldest 7m   24 slots  37 queued jobs",
-      "database  ok       lag 1s      2 writers failover warm",
-      "billing   ok       p95 96 ms   6 pods    webhooks draining",
-      "search    ok       refresh 14s 5 shards  index green",
-      "identity  ok       p95 42 ms   4 pods    session cache hot",
-    ].join("\n"),
-  ],
-]);
 
 export function encodeHttpRequestPayload({ method = "GET", uri = "", timeoutMs = null, headers = [], body = [] } = {}) {
   const fields = [
@@ -517,116 +392,104 @@ export async function httpFetchTaskHandler({ name, request, signal, fetchImpl = 
   }
 }
 
-export function opsApiTextTaskHandler({ name, request }) {
-  if (!name.startsWith(HttpTask.namePrefix)) {
-    return null;
-  }
-  const decoded = decodeHttpRequestPayload(request);
-  if (decoded.method !== "GET") {
-    throw new Error(encodeHttpErrorPayload("unsupported", `unsupported ops API method: ${decoded.method}`));
-  }
-  const body = simulatedOpsApi.get(decoded.uri);
-  if (body === undefined) {
-    throw new Error(encodeHttpErrorPayload("unsupported", `unsupported ops API text endpoint: ${decoded.uri}`));
-  }
-  return Promise.resolve(
-    encodeHttpResponsePayload({
-      status: 200,
-      headers: [["content-type", "text/plain; charset=utf-8"]],
-      body: textEncoder.encode(body),
-    }),
-  );
-}
+export function createHttpTaskRouter(routes) {
+  const entries = Object.entries(routes).map(([key, handler]) => {
+    const [method, ...uriParts] = key.trim().split(/\s+/);
+    const uri = uriParts.join(" ");
+    if (!method || !uri || typeof handler !== "function") {
+      throw new Error(`invalid HTTP task route: ${key}`);
+    }
+    return { method: method.toUpperCase(), uri, handler };
+  });
+  const routeByKey = new Map(entries.map((entry) => [`${entry.method} ${entry.uri}`, entry]));
+  const knownUris = new Set(entries.map((entry) => entry.uri));
 
-export function apiRequestConsoleTaskHandler({ name, request }) {
-  if (!name.startsWith(HttpTask.namePrefix)) {
-    return null;
-  }
-  const decoded = decodeHttpRequestPayload(request);
-  if (decoded.uri !== "/api/api-request-console") {
-    return null;
-  }
-  if (decoded.method !== "POST") {
-    throw new Error(encodeHttpErrorPayload("unsupported", `unsupported API console method: ${decoded.method}`));
-  }
-
-  const scenario = httpHeaderValue(decoded.headers, "x-scenario") || "success";
-  if (scenario === "failure") {
-    throw new Error(encodeHttpErrorPayload("network", "offline"));
-  }
-
-  const missing = scenario === "missing";
-  return Promise.resolve(
-    encodeHttpResponsePayload({
-      status: missing ? 404 : 201,
-      headers: [
-        ["content-type", "application/json; charset=utf-8"],
-        ["x-result", missing ? "missing" : "ok"],
-      ],
-      body: textEncoder.encode(
-        missing
-          ? '{"status":"missing","message":"customer record was not found"}'
-          : '{"status":"created","message":"customer-42 is ready"}',
-      ),
-    }),
-  );
-}
-
-export function lookupTaskHandler({ name, request, signal }) {
-  if (name !== "lookup") {
-    return null;
-  }
-
-  const query = String(request).trim();
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(new Error("canceled"));
-      return;
+  return function httpTaskRouter({ name, request, signal, requestId }) {
+    if (!name.startsWith(HttpTask.namePrefix)) {
+      return null;
     }
 
-    const timer = setTimeout(() => {
-      if (query.toLowerCase().includes("fail") || query.toLowerCase().includes("offline")) {
-        reject(new Error("offline search index"));
-      } else if (query === "") {
-        resolve("Type a search term to see matching actions");
-      } else {
-        resolve(`Top results for "${query}": docs, examples, and release notes`);
-      }
-    }, 80);
+    let decoded;
+    try {
+      decoded = decodeHttpRequestPayload(request);
+    } catch (err) {
+      throw httpTaskError("unsupported", err?.message ?? err);
+    }
 
-    signal?.addEventListener?.(
-      "abort",
-      () => {
-        clearTimeout(timer);
-        reject(new Error("canceled"));
-      },
-      { once: true },
-    );
+    const method = decoded.method.toUpperCase();
+    const route = routeByKey.get(`${method} ${decoded.uri}`);
+    if (!route) {
+      if (knownUris.has(decoded.uri)) {
+        throw httpTaskError("unsupported", `unsupported HTTP method ${decoded.method} for ${decoded.uri}`);
+      }
+      return null;
+    }
+
+    const routeRequest = {
+      method: decoded.method,
+      uri: decoded.uri,
+      headers: decoded.headers,
+      body: decoded.body,
+      bodyText: () => dynamicTextDecoder.decode(decoded.body),
+      timeoutMs: decoded.timeoutMs,
+      signal,
+      name,
+      requestId,
+    };
+
+    try {
+      const result = route.handler(routeRequest);
+      if (result && typeof result.then === "function") {
+        return Promise.resolve(result).catch((err) => {
+          throw normalizeHttpRouterError(err);
+        });
+      }
+      return result;
+    } catch (err) {
+      throw normalizeHttpRouterError(err);
+    }
+  };
+}
+
+export function httpJsonResponse(value, { status = 200, headers = [] } = {}) {
+  return httpTextResponse(JSON.stringify(value), {
+    status,
+    contentType: "application/json; charset=utf-8",
+    headers,
   });
 }
 
-export function publicExampleTaskHandler(args) {
-  const lookup = lookupTaskHandler(args);
-  if (lookup !== null && lookup !== undefined) {
-    return lookup;
-  }
-
-  const apiConsole = apiRequestConsoleTaskHandler(args);
-  if (apiConsole !== null && apiConsole !== undefined) {
-    return apiConsole;
-  }
-
-  return opsApiTextTaskHandler(args);
+export function httpTextResponse(
+  text,
+  { status = 200, contentType = "text/plain; charset=utf-8", headers = [] } = {},
+) {
+  return encodeHttpResponsePayload({
+    status,
+    headers: [["content-type", contentType], ...headers],
+    body: textEncoder.encode(String(text)),
+  });
 }
 
-function httpHeaderValue(headers, targetName) {
-  const target = targetName.toLowerCase();
+export function httpTaskError(code, message = "") {
+  return new Error(encodeHttpErrorPayload(code, message));
+}
+
+export function httpHeaderValue(headers, targetName) {
+  const target = String(targetName).toLowerCase();
   for (const [name, value] of headers) {
     if (String(name).toLowerCase() === target) {
       return String(value);
     }
   }
   return "";
+}
+
+function normalizeHttpRouterError(err) {
+  const message = String(err?.message ?? err);
+  if (message.startsWith(HttpPayloadVersion.error)) {
+    return err instanceof Error ? err : new Error(message);
+  }
+  return httpTaskError("unsupported", message);
 }
 
 function bytesFrom(value) {
@@ -713,9 +576,9 @@ export async function instantiateSignalsWasm(url) {
   return instance;
 }
 
-export async function mountSignalsApp({ wasmUrl, root, taskHandler, onError, telemetry }) {
+export async function mountSignalsApp({ wasmUrl, root, taskHandler, onError, telemetry, behaviors }) {
   const instance = await instantiateSignalsWasm(wasmUrl);
-  const runtime = new SignalsRuntime(instance.exports, root, { taskHandler, onError, telemetry });
+  const runtime = new SignalsRuntime(instance.exports, root, { taskHandler, onError, telemetry, behaviors });
   runtime.mount();
   return runtime;
 }
@@ -731,7 +594,12 @@ export class SignalsRuntime {
     this.controlledInputs = new Map();
     this.intervals = new Map();
     this.tasks = new Map();
+    this.issuedTasks = new Map();
     this.taskHandler = options.taskHandler ?? null;
+    this.behaviors = normalizeBehaviors(options.behaviors);
+    this.behaviorInstances = new Map();
+    this.pendingBehaviorAttaches = new Set();
+    this.pendingBehaviorUpdates = new Map();
     this.telemetryLog = normalizeTelemetry(options.telemetry);
     this.telemetrySeq = 0;
     this.pointerProbeCleanups = [];
@@ -880,17 +748,32 @@ export class SignalsRuntime {
   }
 
   resolveTask(requestId, value, failed = false) {
+    const task = this.tasks.get(requestId);
+    const issuedTask = this.issuedTasks.get(requestId);
+    if (!task && !issuedTask) {
+      this.emitTelemetry("unknown_task_resolution", { requestId, failed: failed !== false });
+      throw this.runtimeError(new Error(`task result had no matching pending request: ${requestId}`));
+    }
+    if (!task) {
+      this.emitTelemetry("ignored_task_resolution", {
+        requestId,
+        name: issuedTask.name,
+        request: issuedTask.request,
+        failed: failed !== false,
+        reason: "not_pending",
+      });
+    }
     const bytes = textEncoder.encode(value);
     const ptr = this.views.callHost(this.exports.roc_alloc, bytes.length, 1).result;
     try {
-        this.views.u8.set(bytes, ptr);
-        this.emitTelemetry("host_call", {
-          call: "resolve_task",
-          requestId,
-          failed: failed !== false,
-          payloadLen: bytes.length,
-        });
-        this.views.callHost(this.exports.roc_ui_resolve, requestId, ptr, bytes.length, failed ? 1 : 0);
+      this.views.u8.set(bytes, ptr);
+      this.emitTelemetry("host_call", {
+        call: "resolve_task",
+        requestId,
+        failed: failed !== false,
+        payloadLen: bytes.length,
+      });
+      this.views.callHost(this.exports.roc_ui_resolve, requestId, ptr, bytes.length, failed ? 1 : 0);
     } catch (err) {
       throw this.runtimeError(err);
     } finally {
@@ -986,6 +869,7 @@ export class SignalsRuntime {
     for (const record of records) {
       this.applyCommand(record);
     }
+    this.flushBehaviorEffects();
     this.emitTelemetry("commands_applied", {
       phase,
       count: records.length,
@@ -1020,6 +904,7 @@ export class SignalsRuntime {
 
       case Op.removeNode: {
         const node = this.node(record.a);
+        this.cleanupBehaviorSubtree(node);
         node.parentNode?.removeChild(node);
         this.clearElemListeners(record.a);
         this.clearControlledInput(record.a);
@@ -1136,13 +1021,17 @@ export class SignalsRuntime {
   applyDynamicCommand(offset, length) {
     const command = this.decodeDynamicCommand(offset, length);
     switch (command.op) {
-      case DynamicOp.setAttrText:
+      case DynamicOp.setAttrText: {
         setDynamicTextAttribute(this.node(command.elemId), command.name, command.value);
+        this.afterDynamicAttrSet(command.elemId, command.name, command.value);
         return;
+      }
 
-      case DynamicOp.removeAttr:
+      case DynamicOp.removeAttr: {
         removeDynamicAttribute(this.node(command.elemId), command.name);
+        this.afterDynamicAttrRemove(command.elemId, command.name);
         return;
+      }
 
       case DynamicOp.bindEvent:
         this.applyEventBindCommand(command);
@@ -1342,6 +1231,140 @@ export class SignalsRuntime {
 
   applyEventBindCommand(command) {
     this.bindEvent(command.binding);
+  }
+
+  // Behavior updates are scoped to dynamic custom attributes. Fixed-field render
+  // ops such as text, class, value, checked, and test-id do not call update().
+  afterDynamicAttrSet(elemId, name, value) {
+    if (name === behaviorAttrName) {
+      this.setBehaviorMarker(elemId, value);
+      return;
+    }
+    this.scheduleBehaviorUpdate(elemId, name);
+  }
+
+  afterDynamicAttrRemove(elemId, name) {
+    if (name === behaviorAttrName) {
+      this.cleanupBehavior(elemId);
+      this.pendingBehaviorAttaches.delete(elemId);
+      this.pendingBehaviorUpdates.delete(elemId);
+      return;
+    }
+    this.scheduleBehaviorUpdate(elemId, name);
+  }
+
+  setBehaviorMarker(elemId, name) {
+    const current = this.behaviorInstances.get(elemId);
+    if (current?.name === name) {
+      return;
+    }
+    if (current) {
+      this.cleanupBehavior(elemId);
+    }
+    this.pendingBehaviorAttaches.add(elemId);
+    this.pendingBehaviorUpdates.delete(elemId);
+  }
+
+  scheduleBehaviorUpdate(elemId, attrName) {
+    if (!this.behaviorInstances.has(elemId)) {
+      return;
+    }
+    let attrs = this.pendingBehaviorUpdates.get(elemId);
+    if (!attrs) {
+      attrs = new Set();
+      this.pendingBehaviorUpdates.set(elemId, attrs);
+    }
+    attrs.add(attrName);
+  }
+
+  flushBehaviorEffects() {
+    if (this.pendingBehaviorAttaches.size !== 0) {
+      const attachIds = [...this.pendingBehaviorAttaches];
+      this.pendingBehaviorAttaches.clear();
+      for (const elemId of attachIds) {
+        this.attachBehavior(elemId);
+      }
+    }
+
+    if (this.pendingBehaviorUpdates.size !== 0) {
+      const updates = [...this.pendingBehaviorUpdates.entries()];
+      this.pendingBehaviorUpdates.clear();
+      for (const [elemId, attrs] of updates) {
+        const instance = this.behaviorInstances.get(elemId);
+        if (!instance || typeof instance.behavior.update !== "function") {
+          continue;
+        }
+        for (const attrName of attrs) {
+          instance.behavior.update(instance.el, attrName, { runtime: this });
+          this.emitTelemetry("behavior_update", {
+            elemId,
+            behavior: instance.name,
+            attrName,
+            elem: describeDomNode(instance.el, elemId),
+          });
+        }
+      }
+    }
+  }
+
+  attachBehavior(elemId) {
+    const el = this.nodes.get(elemId);
+    if (!isElementLike(el)) {
+      return;
+    }
+    const name = el.getAttribute?.(behaviorAttrName) ?? "";
+    if (name === "") {
+      return;
+    }
+    const behavior = this.behaviors.get(name);
+    if (!behavior || typeof behavior.attach !== "function") {
+      this.emitTelemetry("behavior_missing", {
+        elemId,
+        behavior: name,
+        elem: describeDomNode(el, elemId),
+      });
+      return;
+    }
+    // Behaviors may return a cleanup function. Other return values are ignored.
+    const attached = behavior.attach(el, { runtime: this });
+    const cleanup = typeof attached === "function" ? attached : null;
+    this.behaviorInstances.set(elemId, { name, el, behavior, cleanup });
+    this.emitTelemetry("behavior_attach", {
+      elemId,
+      behavior: name,
+      elem: describeDomNode(el, elemId),
+    });
+  }
+
+  cleanupBehavior(elemId) {
+    const instance = this.behaviorInstances.get(elemId);
+    if (!instance) {
+      return;
+    }
+    this.behaviorInstances.delete(elemId);
+    this.pendingBehaviorUpdates.delete(elemId);
+    instance.cleanup?.();
+    this.emitTelemetry("behavior_cleanup", {
+      elemId,
+      behavior: instance.name,
+      elem: describeDomNode(instance.el, elemId),
+    });
+  }
+
+  cleanupBehaviorSubtree(node) {
+    for (const [elemId, instance] of [...this.behaviorInstances.entries()]) {
+      if (node === instance.el || nodeContains(node, instance.el)) {
+        this.cleanupBehavior(elemId);
+      }
+    }
+  }
+
+  cleanupBehaviors() {
+    for (const elemId of [...this.behaviorInstances.keys()]) {
+      this.cleanupBehavior(elemId);
+    }
+    this.pendingBehaviorAttaches.clear();
+    this.pendingBehaviorUpdates.clear();
   }
 
   dispatchEventPayload(eventId, payloadDescriptor, event, payloadTelemetry = null) {
@@ -1596,6 +1619,7 @@ export class SignalsRuntime {
     this.cancelTask(requestId);
     const controller = new AbortController();
     this.tasks.set(requestId, { name, request, controller });
+    this.issuedTasks.set(requestId, { name, request });
     this.emitTelemetry("start_task", { requestId, name, request });
     if (!this.taskHandler) {
       return;
@@ -1613,21 +1637,17 @@ export class SignalsRuntime {
 
     Promise.resolve(handled).then(
       (value) => {
-        if (!controller.signal.aborted && this.tasks.has(requestId)) {
-          try {
-            this.resolveTask(requestId, String(value), false);
-          } catch (err) {
-            this.reportError(err);
-          }
+        try {
+          this.resolveTask(requestId, String(value), false);
+        } catch (err) {
+          this.reportError(err);
         }
       },
       (err) => {
-        if (!controller.signal.aborted && this.tasks.has(requestId)) {
-          try {
-            this.resolveTask(requestId, String(err?.message ?? err), true);
-          } catch (resolveErr) {
-            this.reportError(resolveErr);
-          }
+        try {
+          this.resolveTask(requestId, String(err?.message ?? err), true);
+        } catch (resolveErr) {
+          this.reportError(resolveErr);
         }
       },
     );
@@ -1672,6 +1692,7 @@ export class SignalsRuntime {
       tasks: this.tasks.size,
     });
     this.clearAsyncResources();
+    this.cleanupBehaviors();
     for (const cleanup of this.eventCleanups.values()) {
       cleanup();
     }
@@ -1904,6 +1925,40 @@ function normalizeTelemetry(telemetry) {
     return (entry) => telemetry.log(entry);
   }
   throw new TypeError("SignalsRuntime telemetry must be true, a function, or an object with log(entry)");
+}
+
+function normalizeBehaviors(behaviors) {
+  if (behaviors === undefined || behaviors === null) {
+    return new Map();
+  }
+  if (behaviors instanceof Map) {
+    return new Map(behaviors);
+  }
+  if (typeof behaviors === "object") {
+    return new Map(Object.entries(behaviors));
+  }
+  throw new TypeError("SignalsRuntime behaviors must be an object or Map");
+}
+
+function isElementLike(node) {
+  return !!node && typeof node.getAttribute === "function" && typeof node.setAttribute === "function";
+}
+
+function nodeContains(root, child) {
+  if (!root || !child) {
+    return false;
+  }
+  if (typeof root.contains === "function") {
+    return root.contains(child);
+  }
+  let current = child.parentNode ?? null;
+  while (current) {
+    if (current === root) {
+      return true;
+    }
+    current = current.parentNode ?? null;
+  }
+  return false;
 }
 
 function consoleTelemetry(entry) {
@@ -2284,7 +2339,10 @@ function validateEventExtractionSource(source, cursor) {
 }
 
 function validateEventExtractionLeaf(kind, leaf, cursor) {
-  if (kind === "text" && (leaf === EventExtractionLeaf.key || leaf === EventExtractionLeaf.value)) {
+  if (
+    kind === "text" &&
+    (leaf === EventExtractionLeaf.key || leaf === EventExtractionLeaf.value || leaf === EventExtractionLeaf.detail)
+  ) {
     return;
   }
   if (kind === "bool" && (leaf === EventExtractionLeaf.checked || leaf === EventExtractionLeaf.shiftKey)) {
@@ -2295,7 +2353,7 @@ function validateEventExtractionLeaf(kind, leaf, cursor) {
 
 function validateEventExtractionSourceLeaf(source, leaf, cursor) {
   if (
-    (leaf === EventExtractionLeaf.key || leaf === EventExtractionLeaf.shiftKey) &&
+    (leaf === EventExtractionLeaf.key || leaf === EventExtractionLeaf.shiftKey || leaf === EventExtractionLeaf.detail) &&
     source === EventExtractionSource.event
   ) {
     return;
@@ -2433,9 +2491,23 @@ function describeBoundarySchema(spec) {
 }
 
 function readEventExtractionLeaf(spec, event) {
+  if (spec.leaf === EventExtractionLeaf.detail) {
+    return serializeEventDetail(event?.detail);
+  }
   const source = eventExtractionSourceObject(spec.source, event);
   const property = eventExtractionLeafProperty(spec.leaf);
   return source?.[property];
+}
+
+function serializeEventDetail(detail) {
+  if (detail === undefined || detail === null) {
+    return "";
+  }
+  if (typeof detail === "string") {
+    return detail;
+  }
+  const encoded = JSON.stringify(detail);
+  return encoded === undefined ? "" : encoded;
 }
 
 function eventExtractionSourceObject(source, event) {
@@ -2461,6 +2533,8 @@ function eventExtractionLeafProperty(leaf) {
       return "checked";
     case EventExtractionLeaf.shiftKey:
       return "shiftKey";
+    case EventExtractionLeaf.detail:
+      return "detail";
     default:
       throw new Error(`unknown event extraction leaf ${leaf}`);
   }

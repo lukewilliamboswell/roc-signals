@@ -72,12 +72,26 @@ class FakeNode {
   }
 
   dispatch(type, event) {
+    setEventField(event, "currentTarget", this);
     for (const entry of [...(this.listeners.get(type) ?? [])]) {
       entry.handler(event);
       if (event.immediatePropagationStopped) {
         break;
       }
     }
+  }
+
+  dispatchEvent(event) {
+    setEventField(event, "target", event.target ?? this);
+    let current = this;
+    while (current) {
+      current.dispatch(event.type, event);
+      if (!event.bubbles || event.cancelBubble) {
+        break;
+      }
+      current = current.parentNode;
+    }
+    return !event.defaultPrevented;
   }
 }
 
@@ -115,6 +129,22 @@ export class FakeElement extends FakeNode {
     this.attributes.delete(name);
   }
 
+  get parentElement() {
+    return this.parentNode?.nodeType === ELEMENT_NODE ? this.parentNode : null;
+  }
+
+  querySelector(selector) {
+    return this.querySelectorAll(selector)[0] ?? null;
+  }
+
+  querySelectorAll(selector) {
+    const matches = [];
+    for (const child of this.childNodes) {
+      collectMatches(child, selector, matches);
+    }
+    return matches;
+  }
+
   get textContent() {
     let out = "";
     for (const child of this.childNodes) {
@@ -147,8 +177,31 @@ export class FakeText extends FakeNode {
 export function createDocument() {
   return {
     createElement: (tag) => new FakeElement(tag),
+    createElementNS: (_namespace, tag) => new FakeElement(tag),
     createTextNode: (data) => new FakeText(data),
   };
+}
+
+function collectMatches(node, selector, matches) {
+  if (node.nodeType === ELEMENT_NODE && matchesSelector(node, selector)) {
+    matches.push(node);
+  }
+  for (const child of node.childNodes) {
+    collectMatches(child, selector, matches);
+  }
+}
+
+function matchesSelector(node, selector) {
+  const attrMatch = selector.match(/^\[([A-Za-z0-9_-]+)(?:="([^"]*)")?\]$/);
+  if (!attrMatch) {
+    return false;
+  }
+  const [, name, value] = attrMatch;
+  const actual = node.getAttribute(name);
+  if (actual == null) {
+    return false;
+  }
+  return value == null || actual === value;
 }
 
 // Installs the globals `runtime.mjs` reads (`document`, `Node`) and returns a
@@ -156,6 +209,9 @@ export function createDocument() {
 export function installDomDouble() {
   globalThis.document = createDocument();
   globalThis.Node = { ELEMENT_NODE, TEXT_NODE };
+  if (typeof globalThis.CustomEvent !== "function") {
+    globalThis.CustomEvent = FakeCustomEvent;
+  }
   return globalThis.document.createElement("div");
 }
 
@@ -206,11 +262,15 @@ export function fireEvent(node, type, init = {}) {
     type,
     target: node,
     currentTarget: node,
+    bubbles: init.bubbles ?? false,
+    cancelBubble: false,
     defaultPrevented: false,
     preventDefault() {
       this.defaultPrevented = true;
     },
-    stopPropagation() {},
+    stopPropagation() {
+      this.cancelBubble = true;
+    },
     immediatePropagationStopped: false,
     stopImmediatePropagation() {
       this.immediatePropagationStopped = true;
@@ -218,6 +278,38 @@ export function fireEvent(node, type, init = {}) {
     },
     ...init,
   };
-  node.dispatch(type, event);
+  node.dispatchEvent(event);
   return event;
+}
+
+class FakeCustomEvent {
+  constructor(type, init = {}) {
+    this.type = type;
+    this.detail = init.detail;
+    this.bubbles = init.bubbles ?? false;
+    this.cancelBubble = false;
+    this.defaultPrevented = false;
+    this.immediatePropagationStopped = false;
+  }
+
+  preventDefault() {
+    this.defaultPrevented = true;
+  }
+
+  stopPropagation() {
+    this.cancelBubble = true;
+  }
+
+  stopImmediatePropagation() {
+    this.immediatePropagationStopped = true;
+    this.stopPropagation();
+  }
+}
+
+function setEventField(event, name, value) {
+  try {
+    Object.defineProperty(event, name, { value, configurable: true });
+  } catch {
+    event[name] = value;
+  }
 }

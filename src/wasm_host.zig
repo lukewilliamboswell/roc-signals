@@ -73,6 +73,10 @@ const WasmCtx = struct {
         roc_allocation_phase = phase;
     }
 
+    pub fn failWithMessage(_: Handle, message: []const u8) noreturn {
+        failHostWithFmt("{s}", .{message});
+    }
+
     pub fn pushHostValueCapabilities(_: Handle, caps: []const HostValueCapability) void {
         active_capabilities.push(caps);
     }
@@ -547,7 +551,14 @@ fn resolveTask(request_id: u64, payload_text: []const u8, failed: bool) void {
     const previous_phase = roc_allocation_phase;
     defer roc_allocation_phase = previous_phase;
     const ctx = WasmCtx{};
-    const pending_index = shared_engine.pendingTaskIndexByRequestId(request_id) orelse failHostWith("task result had no matching pending request");
+    const pending_index = switch (shared_engine.classifyTaskResolution(request_id)) {
+        .pending => shared_engine.pendingTaskIndexByRequestId(request_id).?,
+        .superseded => {
+            shared_engine.noteStaleTaskResolutionIgnored();
+            return;
+        },
+        .unknown => failHostWith("task result had no matching pending request"),
+    };
     var pending = shared_engine.removePendingTaskAt(pending_index);
     defer shared_engine.deinitPendingTask(ctx, &pending);
 

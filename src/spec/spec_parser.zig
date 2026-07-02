@@ -15,6 +15,7 @@ pub const SpecCommandType = enum {
     change,
     composition_start,
     composition_end,
+    custom_event,
     submit,
     fill,
     check,
@@ -29,11 +30,13 @@ pub const SpecCommandType = enum {
     expect_disabled,
     expect_updates,
     resolve_task,
+    resolve_stale_task,
     reject_task,
     tick_interval,
     tick_interval_if_active,
     expect_cleanup,
     expect_pending_task,
+    expect_canceled_task,
     expect_interval,
     mark_metrics,
     expect_metric_delta,
@@ -291,6 +294,15 @@ pub fn parseTestSpec(allocator: std.mem.Allocator, content: []const u8) ParseErr
             try appendSpecCommand(&commands, allocator, .composition_start, try parseLocator(allocator, trimmed["composition_start ".len..]), null, null, null, line_num);
         } else if (std.mem.startsWith(u8, trimmed, "composition_end ")) {
             try appendSpecCommand(&commands, allocator, .composition_end, try parseLocator(allocator, trimmed["composition_end ".len..]), null, null, null, line_num);
+        } else if (std.mem.startsWith(u8, trimmed, "custom_event ")) {
+            const detail_split = try splitTrailingQuoted(trimmed["custom_event ".len..]);
+            const event_split = try splitTrailingQuoted(detail_split.head);
+            const event_name = try dupeUnescapedQuoted(allocator, event_split.quoted);
+            errdefer allocator.free(event_name);
+            const detail = try dupeUnescapedQuoted(allocator, detail_split.quoted);
+            errdefer allocator.free(detail);
+            try appendSpecCommand(&commands, allocator, .custom_event, try parseLocator(allocator, event_split.head), detail, null, null, line_num);
+            commands.items[commands.items.len - 1].task_name = event_name;
         } else if (std.mem.startsWith(u8, trimmed, "submit ")) {
             try appendSpecCommand(&commands, allocator, .submit, try parseLocator(allocator, trimmed["submit ".len..]), null, null, null, line_num);
         } else if (std.mem.eql(u8, trimmed, "mark_metrics")) {
@@ -348,6 +360,14 @@ pub fn parseTestSpec(allocator: std.mem.Allocator, content: []const u8) ParseErr
             errdefer allocator.free(payload);
             try appendSpecCommand(&commands, allocator, .resolve_task, emptyLocator(), payload, null, null, line_num);
             commands.items[commands.items.len - 1].task_name = task_name;
+        } else if (std.mem.startsWith(u8, trimmed, "resolve_stale_task ")) {
+            const split = try splitTwoQuoted(trimmed["resolve_stale_task ".len..]);
+            const task_name = try dupePlain(allocator, split.first);
+            errdefer allocator.free(task_name);
+            const payload = try dupeUnescapedQuoted(allocator, split.second);
+            errdefer allocator.free(payload);
+            try appendSpecCommand(&commands, allocator, .resolve_stale_task, emptyLocator(), payload, null, null, line_num);
+            commands.items[commands.items.len - 1].task_name = task_name;
         } else if (std.mem.startsWith(u8, trimmed, "reject_task ")) {
             const split = try splitTwoQuoted(trimmed["reject_task ".len..]);
             const task_name = try dupePlain(allocator, split.first);
@@ -381,6 +401,14 @@ pub fn parseTestSpec(allocator: std.mem.Allocator, content: []const u8) ParseErr
             errdefer allocator.free(task_name);
             const expected_count = std.fmt.parseInt(u64, split.token, 10) catch return ParseError.InvalidFormat;
             try appendSpecCommand(&commands, allocator, .expect_pending_task, emptyLocator(), null, expected_count, null, line_num);
+            commands.items[commands.items.len - 1].task_name = task_name;
+        } else if (std.mem.startsWith(u8, trimmed, "expect_canceled_task ")) {
+            const split = try splitTrailingToken(trimmed["expect_canceled_task ".len..]);
+            const name_value = try parseSingleQuoted(split.head);
+            const task_name = allocator.dupe(u8, name_value) catch return ParseError.OutOfMemory;
+            errdefer allocator.free(task_name);
+            const expected_count = std.fmt.parseInt(u64, split.token, 10) catch return ParseError.InvalidFormat;
+            try appendSpecCommand(&commands, allocator, .expect_canceled_task, emptyLocator(), null, expected_count, null, line_num);
             commands.items[commands.items.len - 1].task_name = task_name;
         } else if (std.mem.startsWith(u8, trimmed, "expect_interval ")) {
             const split = try splitTrailingToken(trimmed["expect_interval ".len..]);
@@ -418,6 +446,7 @@ test "spec parser parses actions and assertions" {
         \\change label:"Email" "changed@example.com"
         \\composition_start label:"Email"
         \\composition_end label:"Email"
+        \\custom_event test_id:"chart" "chart-select" "now | 1,200 rpm"
         \\expect_attr test_id:"status" data-state "ready"
         \\expect_no_attr label:"Email" aria-invalid
         \\tick_interval 250
@@ -427,7 +456,7 @@ test "spec parser parses actions and assertions" {
     const commands = try parseTestSpec(std.testing.allocator, content);
     defer freeSpecCommands(std.testing.allocator, commands);
 
-    try std.testing.expectEqual(@as(usize, 13), commands.len);
+    try std.testing.expectEqual(@as(usize, 14), commands.len);
     try std.testing.expectEqual(SpecCommandType.click, commands[0].cmd_type);
     try std.testing.expectEqual(LocatorKind.role_name, commands[0].locator.kind);
     try std.testing.expectEqualStrings("button", commands[0].locator.role.?);
@@ -440,13 +469,18 @@ test "spec parser parses actions and assertions" {
     try std.testing.expectEqualStrings("changed@example.com", commands[5].expected_text.?);
     try std.testing.expectEqual(SpecCommandType.composition_start, commands[6].cmd_type);
     try std.testing.expectEqual(SpecCommandType.composition_end, commands[7].cmd_type);
-    try std.testing.expectEqualStrings("data-state", commands[8].expected_attr.?);
-    try std.testing.expectEqualStrings("ready", commands[8].expected_text.?);
-    try std.testing.expectEqualStrings("aria-invalid", commands[9].expected_attr.?);
-    try std.testing.expectEqual(@as(?u64, 250), commands[10].interval_ms);
-    try std.testing.expectEqual(SpecCommandType.tick_interval_if_active, commands[11].cmd_type);
+    try std.testing.expectEqual(SpecCommandType.custom_event, commands[8].cmd_type);
+    try std.testing.expectEqual(LocatorKind.test_id, commands[8].locator.kind);
+    try std.testing.expectEqualStrings("chart", commands[8].locator.test_id.?);
+    try std.testing.expectEqualStrings("chart-select", commands[8].task_name.?);
+    try std.testing.expectEqualStrings("now | 1,200 rpm", commands[8].expected_text.?);
+    try std.testing.expectEqualStrings("data-state", commands[9].expected_attr.?);
+    try std.testing.expectEqualStrings("ready", commands[9].expected_text.?);
+    try std.testing.expectEqualStrings("aria-invalid", commands[10].expected_attr.?);
     try std.testing.expectEqual(@as(?u64, 250), commands[11].interval_ms);
-    try std.testing.expectEqual(@as(?u64, 1), commands[12].expected_count);
+    try std.testing.expectEqual(SpecCommandType.tick_interval_if_active, commands[12].cmd_type);
+    try std.testing.expectEqual(@as(?u64, 250), commands[12].interval_ms);
+    try std.testing.expectEqual(@as(?u64, 1), commands[13].expected_count);
 }
 
 test "spec parser parses async cleanup metrics and boolean commands" {
@@ -456,9 +490,11 @@ test "spec parser parses async cleanup metrics and boolean commands" {
         \\expect_checked label:"Enabled" false
         \\expect_disabled test_id:"submit" true
         \\resolve_task "fetch user" "hello\n\"world\"\\"
+        \\resolve_stale_task "fetch user" "late"
         \\reject_task "fetch user" "bad\trequest"
         \\expect_cleanup "fetch user" 2
         \\expect_pending_task "fetch user" 1
+        \\expect_canceled_task "fetch user" 1
         \\mark_metrics
         \\expect_metric_delta closure_releases -1
         \\expect_metric_delta_at_most host_retained_alloc_delta 0
@@ -466,7 +502,7 @@ test "spec parser parses async cleanup metrics and boolean commands" {
     const commands = try parseTestSpec(std.testing.allocator, content);
     defer freeSpecCommands(std.testing.allocator, commands);
 
-    try std.testing.expectEqual(@as(usize, 10), commands.len);
+    try std.testing.expectEqual(@as(usize, 12), commands.len);
 
     try std.testing.expectEqual(SpecCommandType.key_down, commands[0].cmd_type);
     try std.testing.expectEqual(@as(usize, 2), commands[0].line_num);
@@ -490,27 +526,40 @@ test "spec parser parses async cleanup metrics and boolean commands" {
     try std.testing.expectEqualStrings("fetch user", commands[3].task_name.?);
     try std.testing.expectEqualStrings("hello\n\"world\"\\", commands[3].expected_text.?);
 
-    try std.testing.expectEqual(SpecCommandType.reject_task, commands[4].cmd_type);
+    try std.testing.expectEqual(SpecCommandType.resolve_stale_task, commands[4].cmd_type);
     try std.testing.expectEqualStrings("fetch user", commands[4].task_name.?);
-    try std.testing.expectEqualStrings("bad\trequest", commands[4].expected_text.?);
+    try std.testing.expectEqualStrings("late", commands[4].expected_text.?);
 
-    try std.testing.expectEqual(SpecCommandType.expect_cleanup, commands[5].cmd_type);
+    try std.testing.expectEqual(SpecCommandType.reject_task, commands[5].cmd_type);
     try std.testing.expectEqualStrings("fetch user", commands[5].task_name.?);
-    try std.testing.expectEqual(@as(?u64, 2), commands[5].expected_count);
+    try std.testing.expectEqualStrings("bad\trequest", commands[5].expected_text.?);
 
-    try std.testing.expectEqual(SpecCommandType.expect_pending_task, commands[6].cmd_type);
+    try std.testing.expectEqual(SpecCommandType.expect_cleanup, commands[6].cmd_type);
     try std.testing.expectEqualStrings("fetch user", commands[6].task_name.?);
-    try std.testing.expectEqual(@as(?u64, 1), commands[6].expected_count);
+    try std.testing.expectEqual(@as(?u64, 2), commands[6].expected_count);
 
-    try std.testing.expectEqual(SpecCommandType.mark_metrics, commands[7].cmd_type);
-    try std.testing.expectEqual(SpecCommandType.expect_metric_delta, commands[8].cmd_type);
-    try std.testing.expectEqualStrings("closure_releases", commands[8].expected_text.?);
-    try std.testing.expectEqual(@as(?i64, -1), commands[8].expected_metric_delta);
-    try std.testing.expectEqual(SpecCommandType.expect_metric_delta_at_most, commands[9].cmd_type);
-    try std.testing.expectEqualStrings("host_retained_alloc_delta", commands[9].expected_text.?);
-    try std.testing.expectEqual(@as(?i64, 0), commands[9].expected_metric_delta);
+    try std.testing.expectEqual(SpecCommandType.expect_pending_task, commands[7].cmd_type);
+    try std.testing.expectEqualStrings("fetch user", commands[7].task_name.?);
+    try std.testing.expectEqual(@as(?u64, 1), commands[7].expected_count);
+
+    try std.testing.expectEqual(SpecCommandType.expect_canceled_task, commands[8].cmd_type);
+    try std.testing.expectEqualStrings("fetch user", commands[8].task_name.?);
+    try std.testing.expectEqual(@as(?u64, 1), commands[8].expected_count);
+
+    try std.testing.expectEqual(SpecCommandType.mark_metrics, commands[9].cmd_type);
+    try std.testing.expectEqual(SpecCommandType.expect_metric_delta, commands[10].cmd_type);
+    try std.testing.expectEqualStrings("closure_releases", commands[10].expected_text.?);
+    try std.testing.expectEqual(@as(?i64, -1), commands[10].expected_metric_delta);
+    try std.testing.expectEqual(SpecCommandType.expect_metric_delta_at_most, commands[11].cmd_type);
+    try std.testing.expectEqualStrings("host_retained_alloc_delta", commands[11].expected_text.?);
+    try std.testing.expectEqual(@as(?i64, 0), commands[11].expected_metric_delta);
 }
 
 test "spec parser rejects malformed commands" {
     try std.testing.expectError(ParseError.InvalidFormat, parseTestSpec(std.testing.allocator, "click missing_locator"));
+    try std.testing.expectError(ParseError.InvalidFormat, parseTestSpec(std.testing.allocator, "custom_event test_id:\"chart\" \"chart-select\""));
+    try std.testing.expectError(ParseError.InvalidFormat, parseTestSpec(std.testing.allocator, "custom_event test_id:\"chart\" chart-select \"detail\""));
+    try std.testing.expectError(ParseError.InvalidFormat, parseTestSpec(std.testing.allocator, "resolve_stale_task \"fetch user\""));
+    try std.testing.expectError(ParseError.InvalidFormat, parseTestSpec(std.testing.allocator, "expect_canceled_task \"fetch user\" nope"));
+    try std.testing.expectError(ParseError.InvalidFormat, parseTestSpec(std.testing.allocator, "expect_canceled_task fetch 1"));
 }

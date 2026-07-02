@@ -98,6 +98,40 @@ native = true
 bench = true
 
 [[examples]]
+slug = "json-decode"
+title = "Json Decode"
+description = "Internal vendored Json derivation fixture."
+source = "examples/_fixtures/json-decode/app.roc"
+spec = "examples/_fixtures/json-decode/spec.txt"
+public = false
+wasm = true
+native = true
+bench = false
+
+[[examples]]
+slug = "each-duplicate-key"
+title = "Each Duplicate Key"
+description = "Internal duplicate keyed-row diagnostic fixture."
+source = "examples/_fixtures/each-duplicate-key/app.roc"
+spec = "examples/_fixtures/each-duplicate-key/spec.txt"
+public = false
+wasm = true
+native = false
+bench = false
+expect_mount_error = "duplicate key \"alert-42\""
+
+[[examples]]
+slug = "task-latest-wins"
+title = "Task Latest Wins"
+description = "Internal task superseding fixture."
+source = "examples/_fixtures/task-latest-wins/app.roc"
+spec = "examples/_fixtures/task-latest-wins/spec.txt"
+public = false
+wasm = false
+native = true
+bench = false
+
+[[examples]]
 slug = "large-each-08"
 title = "Large Each 08"
 description = "Internal keyed-row fixture."

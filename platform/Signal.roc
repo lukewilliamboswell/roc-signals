@@ -57,7 +57,10 @@ Signal(a) := { expr : Box(Node.SignalExpr), cap : Capability(a) }.{
 
 	## Low-level host task source constructor. `reset_on_start` controls whether
 	## starting a new request publishes `Loading` or keeps the last cached value
-	## while the runtime request is pending.
+	## while the runtime request is pending. Starting a request for a task source
+	## cancels any older pending request for that same source; if an older host
+	## result arrives anyway, the runtime ignores it and keeps the newer request in
+	## control.
 	task_source : Str, (Str -> a), (Str -> err), Bool -> Task(a, err)
 		where [
 			a.is_eq : a, a -> Bool,
@@ -66,7 +69,7 @@ Signal(a) := { expr : Box(Node.SignalExpr), cap : Capability(a) }.{
 	task_source = |name, to_done, to_failed, reset_on_start| {
 		token : Box(U64)
 		token = Node.new_token({})
-		status_cap =
+			status_cap =
 			Capability.new_with_eq(
 				|left, right|
 					match left {
@@ -287,7 +290,7 @@ Signal(a) := { expr : Box(Node.SignalExpr), cap : Capability(a) }.{
 	combine = |signals| {
 		token : Box(U64)
 		token = Node.new_token({})
-		input_cap =
+			input_cap =
 			match List.first(signals) {
 				Ok(first) => first.cap
 				Err(_) => Capability.new({})

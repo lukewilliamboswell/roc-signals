@@ -3,7 +3,7 @@
 const std = @import("std");
 const boundary = @import("boundary.zig");
 
-pub const protocol_version: u32 = 7;
+pub const protocol_version: u32 = 8;
 pub const protocol_feature_dynamic_attrs: u32 = 1 << 0;
 pub const protocol_feature_dynamic_events: u32 = 1 << 1;
 pub const protocol_features: u32 = protocol_feature_dynamic_attrs | protocol_feature_dynamic_events;

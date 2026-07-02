@@ -118,6 +118,69 @@ pub const HostSignalRecordPayload = signal_records.Payload;
 pub const HostSignalRecord = signal_records.Record;
 pub const HostSignalBinding = signal_records.Binding;
 pub const validateExistingSignalRecord = signal_records.validateExistingSignalRecord;
+
+pub const TaskResolutionClass = enum {
+    pending,
+    superseded,
+    unknown,
+};
+
+pub fn formatEachDuplicateKeyDiagnostic(
+    buffer: []u8,
+    parent_scope_id: u64,
+    site_ordinal: u64,
+    first_index: usize,
+    second_index: usize,
+    key_text: []const u8,
+) []const u8 {
+    const max_key_len = 160;
+    const displayed_key_len = utf8PrefixLenAtMost(key_text, max_key_len);
+    const displayed_key = key_text[0..displayed_key_len];
+    const suffix = if (displayed_key_len < key_text.len) "..." else "";
+    return std.fmt.bufPrint(
+        buffer,
+        "Ui.each duplicate key \"{s}{s}\": rows {d} and {d} share this key (each site: parent scope {d}, ordinal {d}); keys must be unique per list",
+        .{
+            displayed_key,
+            suffix,
+            first_index + 1,
+            second_index + 1,
+            parent_scope_id,
+            site_ordinal,
+        },
+    ) catch "Ui.each duplicate key: keys must be unique per list";
+}
+
+fn utf8PrefixLenAtMost(bytes: []const u8, max_len: usize) usize {
+    if (bytes.len <= max_len) return bytes.len;
+    var end = max_len;
+    while (end > 0 and (bytes[end] & 0b1100_0000) == 0b1000_0000) {
+        end -= 1;
+    }
+    return end;
+}
+
+test "formats each duplicate key diagnostics" {
+    var buf: [512]u8 = undefined;
+    const msg = formatEachDuplicateKeyDiagnostic(&buf, 12, 3, 2, 6, "alert-42");
+    try std.testing.expectEqualStrings(
+        "Ui.each duplicate key \"alert-42\": rows 3 and 7 share this key (each site: parent scope 12, ordinal 3); keys must be unique per list",
+        msg,
+    );
+}
+
+test "duplicate key diagnostics truncate at utf8 boundary" {
+    var key: [162]u8 = undefined;
+    @memset(key[0..159], 'a');
+    key[159] = 0xc3;
+    key[160] = 0xa9;
+    key[161] = 'x';
+
+    var buf: [512]u8 = undefined;
+    const msg = formatEachDuplicateKeyDiagnostic(&buf, 12, 3, 0, 1, key[0..]);
+    try std.testing.expect(std.mem.indexOf(u8, msg, "\xc3") == null);
+    try std.testing.expect(std.mem.indexOf(u8, msg, "...") != null);
+}
 pub const appendSignalRecordSourceNodeIds = signal_records.appendSignalRecordSourceNodeIds;
 
 const render_event_kinds = [_]RenderEventKind{ .click, .input, .check, .pointer_down, .pointer_up, .pointer_enter, .pointer_leave };
@@ -497,6 +560,20 @@ pub fn Engine(comptime Ctx: type) type {
                 metrics.bump(.rows_removed, rows_removed);
                 self.engine.pending_roc_metrics = metrics;
             }
+
+            pub fn failDuplicateEachKey(self: *@This(), parent_scope_id: u64, site_ordinal: u64, first_index: usize, second_index: usize, key: HostValue) noreturn {
+                self.engine.failDuplicateEachKey(
+                    self.ctx,
+                    self.roc_host,
+                    self.ops.key_text,
+                    self.ops.key_capability,
+                    parent_scope_id,
+                    site_ordinal,
+                    first_index,
+                    second_index,
+                    key,
+                );
+            }
         };
 
         const ScopeIdentityDeactivation = struct {
@@ -673,6 +750,12 @@ pub fn Engine(comptime Ctx: type) type {
             metrics.bump(.each_syncs, 1);
             metrics.bump(.each_sync_keys, @intCast(key_count));
             metrics.bump(.each_sync_existing_rows, @intCast(existing_count));
+            self.pending_roc_metrics = metrics;
+        }
+
+        pub fn noteStaleTaskResolutionIgnored(self: *Self) void {
+            var metrics = self.pending_roc_metrics;
+            metrics.bump(.stale_task_results_ignored, 1);
             self.pending_roc_metrics = metrics;
         }
 
@@ -998,6 +1081,16 @@ pub fn Engine(comptime Ctx: type) type {
 
         pub fn pendingTaskIndexByRequestId(self: *Self, request_id: u64) ?usize {
             return effects_runtime.pendingTaskIndexByRequestId(self.pending_tasks.items, request_id);
+        }
+
+        pub fn classifyTaskResolution(self: *Self, request_id: u64) TaskResolutionClass {
+            if (self.pendingTaskIndexByRequestId(request_id) != null) return .pending;
+            // Any previously issued, no-longer-pending id is benign here. That
+            // deliberately covers both canceled/superseded async work and double
+            // resolves of already-completed tasks; hosts should reject ids that
+            // were never issued before calling into the engine.
+            if (request_id != 0 and request_id < self.next_task_request_id) return .superseded;
+            return .unknown;
         }
 
         pub fn sourceSignalIdsForEvent(self: *Self, event_id: u64) EventLookupError![]const u64 {
@@ -3426,6 +3519,29 @@ pub fn Engine(comptime Ctx: type) type {
             const text = callHostValueToStrWithCapability(ctx, roc_host, key_cap, key_text, key);
             defer text.decref(roc_host);
             return hashEachKeyText(text.asSlice());
+        }
+
+        pub fn failDuplicateEachKey(
+            self: *Self,
+            ctx: Ctx.Handle,
+            roc_host: *abi.RocHost,
+            key_text: abi.RocErasedCallable,
+            key_cap: HostValueCapability,
+            parent_scope_id: u64,
+            site_ordinal: u64,
+            first_index: usize,
+            second_index: usize,
+            key: HostValue,
+        ) noreturn {
+            _ = self;
+            const text = callHostValueToStrWithCapability(ctx, roc_host, key_cap, key_text, key);
+            var buf: [512]u8 = undefined;
+            const msg = formatEachDuplicateKeyDiagnostic(&buf, parent_scope_id, site_ordinal, first_index, second_index, text.asSlice());
+            text.decref(roc_host);
+            if (comptime @hasDecl(Ctx, "failWithMessage")) {
+                Ctx.failWithMessage(ctx, msg);
+            }
+            @panic(msg);
         }
 
         pub fn eachKeysEqual(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, ops: HostEachOps, left: HostValue, right: HostValue) bool {

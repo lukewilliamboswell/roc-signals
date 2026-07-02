@@ -265,6 +265,31 @@ pub fn Runner(comptime Ctx: type) type {
                         Ctx.dispatchRocEvent(host, roc_host, event.binding.event_id, event.binding.payload_descriptor, Ctx.hostValueStr(host, roc_host, value));
                     },
 
+                    .custom_event => {
+                        const event_name = cmd.task_name orelse {
+                            writeLocatorFailure(cmd.line_num, "custom_event command had no event name");
+                            return 1;
+                        };
+                        const detail = cmd.expected_text orelse "";
+                        const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
+                            writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
+                            return 1;
+                        };
+                        if (elem.disabled) {
+                            writeLocatorFailure(cmd.line_num, "target is disabled");
+                            return 1;
+                        }
+                        const event = Ctx.namedEvent(elem, event_name) orelse {
+                            writeLocatorFailure(cmd.line_num, "target has no named event binding");
+                            return 1;
+                        };
+                        if (!event.binding.payload_descriptor.eql(BoundaryPayloadDescriptor.init(.str, .detail))) {
+                            writeLocatorFailure(cmd.line_num, "custom event binding does not request the detail payload descriptor");
+                            return 1;
+                        }
+                        Ctx.dispatchRocEvent(host, roc_host, event.binding.event_id, event.binding.payload_descriptor, Ctx.hostValueStr(host, roc_host, detail));
+                    },
+
                     .submit => {
                         const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
                             writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
@@ -319,13 +344,17 @@ pub fn Runner(comptime Ctx: type) type {
                         }
                     },
 
-                    .resolve_task, .reject_task => {
+                    .resolve_task, .reject_task, .resolve_stale_task => {
                         const task_name = cmd.task_name orelse {
                             writeLocatorFailure(cmd.line_num, "task command had no task name");
                             return 1;
                         };
                         const payload = cmd.expected_text orelse "";
-                        _ = Ctx.resolvePendingTask(host, roc_host, task_name, payload, cmd.cmd_type == .reject_task);
+                        if (cmd.cmd_type == .resolve_stale_task) {
+                            _ = Ctx.resolveStalePendingTask(host, roc_host, task_name, payload, false);
+                        } else {
+                            _ = Ctx.resolvePendingTask(host, roc_host, task_name, payload, cmd.cmd_type == .reject_task);
+                        }
                         Ctx.finishHostMetrics(host);
                     },
 
@@ -488,6 +517,18 @@ pub fn Runner(comptime Ctx: type) type {
                         }
                     },
 
+                    .expect_canceled_task => {
+                        const name = cmd.task_name orelse "";
+                        const expected = cmd.expected_count orelse 0;
+                        const actual = Ctx.canceledTaskCountByName(host, name);
+                        if (actual != expected) {
+                            var buf: [512]u8 = undefined;
+                            const msg = std.fmt.bufPrint(&buf, "TEST FAILED at line {d}:\n  Expected canceled task \"{s}\": {d}\n  Got canceled task count:       {d}\n", .{ cmd.line_num, name, expected, actual }) catch "TEST FAILED\n";
+                            Ctx.writeStderr(msg);
+                            return 1;
+                        }
+                    },
+
                     .expect_interval => {
                         const period_ms = cmd.interval_ms orelse 0;
                         const expected = cmd.expected_count orelse 0;
@@ -600,6 +641,7 @@ pub fn Runner(comptime Ctx: type) type {
             if (std.mem.eql(u8, name, "closure_releases")) return u64MetricAsI64(metrics.closure_releases);
             if (std.mem.eql(u8, name, "render_indexes_refreshed")) return u64MetricAsI64(metrics.render_indexes_refreshed);
             if (std.mem.eql(u8, name, "signal_record_table_rebuilt")) return u64MetricAsI64(metrics.signal_record_table_rebuilt);
+            if (std.mem.eql(u8, name, "stale_task_results_ignored")) return u64MetricAsI64(metrics.stale_task_results_ignored);
             if (std.mem.eql(u8, name, "stream_nodes_scanned")) return u64MetricAsI64(metrics.stream_nodes_scanned);
             if (std.mem.eql(u8, name, "stream_nodes_scanned_apply")) return u64MetricAsI64(metrics.stream_nodes_scanned_apply);
             if (std.mem.eql(u8, name, "stream_nodes_scanned_children")) return u64MetricAsI64(metrics.stream_nodes_scanned_children);

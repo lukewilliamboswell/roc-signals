@@ -63,6 +63,10 @@ const NativeCtx = struct {
         ctx.debug_phase = phase;
     }
 
+    pub fn failWithMessage(_: Handle, message: []const u8) noreturn {
+        failHost(message);
+    }
+
     pub fn pushHostValueCapabilities(ctx: Handle, caps: []const HostValueCapability) void {
         ctx.active_capabilities.push(caps);
     }
@@ -155,6 +159,11 @@ const TestState = struct {
             .commands = &.{},
         };
     }
+};
+
+const NativeTaskRecord = struct {
+    request_id: u64,
+    name: []const u8,
 };
 
 fn u64SliceContains(items: []const u64, target: u64) bool {
@@ -286,6 +295,8 @@ const HostEnv = struct {
     debug_phase: u32 = 0,
     active_capabilities: hv.ActiveCapabilityStack = .{},
     dom_elements: std.ArrayListUnmanaged(DomElement) = .empty,
+    started_tasks: std.ArrayListUnmanaged(NativeTaskRecord) = .empty,
+    canceled_tasks: std.ArrayListUnmanaged(NativeTaskRecord) = .empty,
 
     fn init() HostEnv {
         return .{
@@ -301,6 +312,68 @@ const HostEnv = struct {
     inline fn hostAllocator(self: *HostEnv) std.mem.Allocator {
         if (comptime !enable_runtime_metrics) return self.backingAllocator();
         return .{ .ptr = self, .vtable = &HostAllocator.vtable };
+    }
+
+    fn deinitTaskRecords(self: *HostEnv) void {
+        const allocator = self.hostAllocator();
+        for (self.started_tasks.items) |record| {
+            allocator.free(record.name);
+        }
+        self.started_tasks.deinit(allocator);
+        self.started_tasks = .empty;
+        for (self.canceled_tasks.items) |record| {
+            allocator.free(record.name);
+        }
+        self.canceled_tasks.deinit(allocator);
+        self.canceled_tasks = .empty;
+    }
+
+    fn recordStartedTask(self: *HostEnv, request_id: u64, task_name: []const u8) void {
+        const allocator = self.hostAllocator();
+        const task_name_copy = allocator.dupe(u8, task_name) catch @panic("out of memory");
+        self.started_tasks.append(allocator, .{
+            .request_id = request_id,
+            .name = task_name_copy,
+        }) catch {
+            allocator.free(task_name_copy);
+            @panic("out of memory");
+        };
+    }
+
+    fn takeStartedTask(self: *HostEnv, request_id: u64) ?NativeTaskRecord {
+        for (self.started_tasks.items, 0..) |record, index| {
+            if (record.request_id == request_id) return self.started_tasks.swapRemove(index);
+        }
+        return null;
+    }
+
+    fn noteTaskResolved(self: *HostEnv, request_id: u64) void {
+        if (self.takeStartedTask(request_id)) |record| {
+            self.hostAllocator().free(record.name);
+        }
+    }
+
+    fn recordCanceledTask(self: *HostEnv, request_id: u64) void {
+        const record = self.takeStartedTask(request_id) orelse return;
+        self.canceled_tasks.append(self.hostAllocator(), record) catch {
+            self.hostAllocator().free(record.name);
+            @panic("out of memory");
+        };
+    }
+
+    fn takeCanceledTaskByName(self: *HostEnv, name: []const u8) ?NativeTaskRecord {
+        for (self.canceled_tasks.items, 0..) |record, index| {
+            if (std.mem.eql(u8, record.name, name)) return self.canceled_tasks.swapRemove(index);
+        }
+        return null;
+    }
+
+    fn canceledTaskCountByName(self: *const HostEnv, name: []const u8) u64 {
+        var count: u64 = 0;
+        for (self.canceled_tasks.items) |record| {
+            if (std.mem.eql(u8, record.name, name)) count += 1;
+        }
+        return count;
     }
 
     inline fn hostMetricBytes(bytes: usize) u64 {
@@ -414,9 +487,13 @@ const HostEnv = struct {
 
     pub fn sinkCancelInterval(_: *HostEnv, _: u64) void {}
 
-    pub fn sinkStartTask(_: *HostEnv, _: u64, _: []const u8, _: []const u8) void {}
+    pub fn sinkStartTask(self: *HostEnv, request_id: u64, task_name: []const u8, _: []const u8) void {
+        self.recordStartedTask(request_id, task_name);
+    }
 
-    pub fn sinkCancelTask(_: *HostEnv, _: u64) void {}
+    pub fn sinkCancelTask(self: *HostEnv, request_id: u64) void {
+        self.recordCanceledTask(request_id);
+    }
 
     pub fn sinkDebugAssertNode(self: *HostEnv, elem_id: u64, active: bool, tag: ?[]const u8, parent_id: ?u64, children: []const u64, click_event: ?u64, input_event: ?u64, check_event: ?u64, pointer_down_event: ?u64, pointer_up_event: ?u64, pointer_enter_event: ?u64, pointer_leave_event: ?u64) void {
         if (elem_id >= self.dom_elements.items.len) {
@@ -966,6 +1043,7 @@ const HostEnv = struct {
 
         self.clearPendingTasks();
         self.engine.pending_tasks.deinit(allocator);
+        self.deinitTaskRecords();
 
         engine.deinitCleanupEvents(allocator, &self.engine.cleanup_events);
 
@@ -1359,6 +1437,7 @@ fn updateDirtySignalCache(host: *HostEnv, roc_host: *abi.RocHost, cache_slot: *H
 fn resolvePendingTask(host: *HostEnv, roc_host: *abi.RocHost, name: []const u8, payload_text: []const u8, failed: bool) CommandCounts {
     const pending_index = host.engine.pendingTaskIndexByName(name) orelse failHost("fake task result had no matching pending request");
     var pending = host.engine.removePendingTaskAt(pending_index);
+    host.noteTaskResolved(pending.request_id);
     defer host.engine.deinitPendingTask(host, &pending);
 
     const record = host.engine.activeTaskRecordByName(name) orelse failHost("fake task result matched no active task source");
@@ -1378,6 +1457,19 @@ fn resolvePendingTask(host: *HostEnv, roc_host: *abi.RocHost, name: []const u8, 
         callHostValueToHostValueWithCapability(host, roc_host, task_payload.payload_cap, task_payload.done, payload_value);
     host.assertHostValueTakenAfter(payload_value, payload_take_epoch);
     return host.engine.dispatchEffectSourceValue(host, roc_host, record, next);
+}
+
+fn resolveStalePendingTask(host: *HostEnv, name: []const u8, _: []const u8, _: bool) CommandCounts {
+    const record = host.takeCanceledTaskByName(name) orelse failHost("fake stale task result had no matching canceled request");
+    defer host.hostAllocator().free(record.name);
+    switch (host.engine.classifyTaskResolution(record.request_id)) {
+        .pending => failHost("fake stale task result still matched a pending request"),
+        .superseded => {
+            host.engine.noteStaleTaskResolutionIgnored();
+            return .{};
+        },
+        .unknown => failHost("fake stale task result matched an unknown request"),
+    }
 }
 
 fn tickIntervalSource(host: *HostEnv, roc_host: *abi.RocHost, period_ms: u64) CommandCounts {
@@ -1764,6 +1856,10 @@ fn resolvePendingTaskForBenchmark(host: *HostEnv, roc_host: *abi.RocHost, name: 
     return resolvePendingTask(host, roc_host, name, payload_text, failed);
 }
 
+fn resolveStalePendingTaskForBenchmark(host: *HostEnv, name: []const u8, payload_text: []const u8, failed: bool) CommandCounts {
+    return resolveStalePendingTask(host, name, payload_text, failed);
+}
+
 fn tickIntervalSourceForBenchmark(host: *HostEnv, roc_host: *abi.RocHost, period_ms: u64) CommandCounts {
     return tickIntervalSource(host, roc_host, period_ms);
 }
@@ -1898,6 +1994,10 @@ const BenchmarkCtx = struct {
         return resolvePendingTaskForBenchmark(host, roc_host, name, payload_text, failed);
     }
 
+    pub fn resolveStalePendingTask(host: *Host, _: *RocHost, name: []const u8, payload_text: []const u8, failed: bool) CommandCounts {
+        return resolveStalePendingTaskForBenchmark(host, name, payload_text, failed);
+    }
+
     pub fn tickIntervalSource(host: *Host, roc_host: *RocHost, period_ms: u64) CommandCounts {
         return tickIntervalSourceForBenchmark(host, roc_host, period_ms);
     }
@@ -1936,6 +2036,10 @@ const BenchmarkCtx = struct {
 
     pub fn lastRuntimeMetrics(host: *const Host) RuntimeMetrics {
         return host.engine.last_runtime_metrics;
+    }
+
+    pub fn canceledTaskCountByName(host: *const Host, name: []const u8) u64 {
+        return host.canceledTaskCountByName(name);
     }
 
     pub fn addRuntimeMetrics(left: RuntimeMetrics, right: RuntimeMetrics) RuntimeMetrics {
@@ -2021,6 +2125,10 @@ const SpecRunnerCtx = struct {
         return resolvePendingTaskForBenchmark(host, roc_host, name, payload_text, failed);
     }
 
+    pub fn resolveStalePendingTask(host: *Host, _: *RocHost, name: []const u8, payload_text: []const u8, failed: bool) CommandCounts {
+        return resolveStalePendingTaskForBenchmark(host, name, payload_text, failed);
+    }
+
     pub fn tickIntervalSource(host: *Host, roc_host: *RocHost, period_ms: u64) CommandCounts {
         return tickIntervalSourceForBenchmark(host, roc_host, period_ms);
     }
@@ -2035,6 +2143,10 @@ const SpecRunnerCtx = struct {
 
     pub fn pendingTaskCountByName(host: *const Host, name: []const u8) u64 {
         return host.engine.pendingTaskCountByName(name);
+    }
+
+    pub fn canceledTaskCountByName(host: *const Host, name: []const u8) u64 {
+        return host.canceledTaskCountByName(name);
     }
 
     pub fn activeIntervalRecordCountByPeriod(host: *const Host, period_ms: u64) u64 {
@@ -3291,6 +3403,37 @@ test "signals host task sources reset on start only when requested" {
         try std.testing.expectEqualStrings("saved", host.dom_elements.items[3].text.?);
         try std.testing.expectEqual(@as(usize, 1), host.engine.pending_tasks.items.len);
     }
+}
+
+test "signals host classifies superseded task results" {
+    test_erased_callable_drop_count = 0;
+
+    var host = HostEnv.init();
+    var roc_host = makeSignalsRocHost(&host);
+    host.engine.roc_host = &roc_host;
+
+    const record = makeTestConsumingTaskSourceRecord(&host, &roc_host, "lookup");
+    defer {
+        record.release(host.hostAllocator(), &host, &roc_host, &host.engine.pending_roc_metrics);
+        host.deinit();
+        _ = host.gpa.deinit();
+    }
+
+    const task_token = switch (record.payload) {
+        .task_source => |payload| payload.token,
+        else => unreachable,
+    };
+    const request_id = host.engine.appendPendingTask(&host, 0, task_token, "lookup", "/api/first");
+
+    try std.testing.expectEqual(engine.TaskResolutionClass.pending, host.engine.classifyTaskResolution(request_id));
+    host.engine.cancelPendingTasksByTaskToken(&host, task_token);
+    try std.testing.expectEqual(@as(usize, 0), host.engine.pending_tasks.items.len);
+    try std.testing.expectEqual(engine.TaskResolutionClass.superseded, host.engine.classifyTaskResolution(request_id));
+    try std.testing.expectEqual(engine.TaskResolutionClass.unknown, host.engine.classifyTaskResolution(host.engine.next_task_request_id + 10));
+
+    const stale_start = host.engine.pending_roc_metrics.stale_task_results_ignored;
+    host.engine.noteStaleTaskResolutionIgnored();
+    try std.testing.expectEqual(stale_start + 1, host.engine.pending_roc_metrics.stale_task_results_ignored);
 }
 
 test "signals host interval sources tick by period and runtime token" {

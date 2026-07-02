@@ -1,0 +1,12 @@
+# Vendored Json module derivation fixture.
+
+expect_visible role:heading name:"Json decode fixture"
+expect_text text:"probe ok 42 alpha beta warm missing token-bytes 3" "probe ok 42 alpha beta warm missing token-bytes 3"
+expect_text text:"missing required" "missing required"
+expect_text text:"invalid json" "invalid json"
+expect_text text:"trailing ok 7" "trailing ok 7"
+expect_text text:"trailing garbage invalid" "trailing garbage invalid"
+expect_text text:"optional present 9" "optional present 9"
+expect_text text:"camel api" "camel api"
+expect_text text:"encode escape ok" "encode escape ok"
+expect_text text:"escaped parse ok" "escaped parse ok"

@@ -13,6 +13,9 @@ field_role = { id: 2 }
 field_label : Node.TextField
 field_label = { id: 3 }
 
+field_test_id : Node.TextField
+field_test_id = { id: 4 }
+
 field_value : Node.TextField
 field_value = { id: 5 }
 
@@ -177,6 +180,16 @@ Html := [].{
 	aria_describedby : Str -> Node.Attr
 	aria_describedby = |id| attr("aria-describedby", id)
 
+	## Static test id metadata used by native specs and browser test hooks.
+	test_id : Str -> Node.Attr
+	test_id = |value| Node.Attr.StaticText({ field: field_test_id, name: "", value })
+
+		## Mark an element for a JavaScript behavior registered with the runtime.
+		## Behavior `update` callbacks run for dynamic custom attrs such as
+		## `attr_s`, not for fixed-field updates like text, class, value, checked, or test id.
+		behavior : Str -> Node.Attr
+		behavior = |name| attr("data-signals-behavior", name)
+
 	## Pointer-down event binding.
 	on_pointer_down : Node.Msg -> Node.Attr
 	on_pointer_down = |msg| event_attr(fixed_event_binding(fixed_event_pointer_down, msg))
@@ -196,6 +209,10 @@ Html := [].{
 	## Named event binding with an explicit static policy.
 	on_event : Str, EventPolicy, Node.Msg -> Node.Attr
 	on_event = |name, policy, msg| event_attr(named_event_binding(name, policy, msg))
+
+	## Named event binding with the default event policy.
+	on_custom : Str, Node.Msg -> Node.Attr
+	on_custom = |name, msg| on_event(name, event_policy_none, msg)
 
 	## Named event binding with explicit policy and delivery request.
 	on_event_delivery : Str, EventPolicy, EventDelivery, Node.Msg -> Node.Attr

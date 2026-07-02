@@ -9,16 +9,19 @@ import {
   Protocol,
   ProtocolFeature,
   SignalsRuntime,
-  apiRequestConsoleTaskHandler,
   decodeHttpRequestPayload,
   decodeHttpResponsePayload,
   encodeHttpRequestPayload,
   encodeHttpResponsePayload,
   httpFetchTaskHandler,
-  lookupTaskHandler,
-  opsApiTextTaskHandler,
-  publicExampleTaskHandler,
 } from "../../www/static/signals.mjs";
+import {
+  apiRequestConsoleTaskHandler,
+  createOpsBackend,
+  lookupTaskHandler,
+  opsApiTaskHandler,
+  publicExampleTaskHandler,
+} from "../../www/static/example_tasks.mjs";
 import {
   applySetValue,
   beginComposition,
@@ -90,6 +93,7 @@ const EventExtractionLeaf = Object.freeze({
   value: 2,
   checked: 3,
   shiftKey: 4,
+  detail: 5,
 });
 
 const unitEventExtractionPlan = new Uint8Array([BoundarySchemaTag.unit]);
@@ -102,6 +106,11 @@ const eventKeyEventExtractionPlan = new Uint8Array([
   BoundarySchemaTag.text,
   EventExtractionSource.event,
   EventExtractionLeaf.key,
+]);
+const eventDetailExtractionPlan = new Uint8Array([
+  BoundarySchemaTag.text,
+  EventExtractionSource.event,
+  EventExtractionLeaf.detail,
 ]);
 const keyShiftEventExtractionPlan = concatBytes([
   new Uint8Array([BoundarySchemaTag.record, 2]),
@@ -452,11 +461,11 @@ function toUint8Array(value) {
 }
 
 function mountWith(mountScript, options = {}) {
-  const { taskHandler, onError, telemetry, ...hostOptions } = options;
+  const { taskHandler, onError, telemetry, behaviors, ...hostOptions } = options;
   const host = new MockHost(hostOptions);
   host.mountScript = mountScript;
   const root = installDomDouble();
-  const runtime = new SignalsRuntime(host.exports, root, { taskHandler, onError, telemetry });
+  const runtime = new SignalsRuntime(host.exports, root, { taskHandler, onError, telemetry, behaviors });
   runtime.mount();
   return { host, root, runtime };
 }
@@ -903,6 +912,128 @@ test("dynamic keydown events dispatch explicit key shift byte payloads", () => {
   assert.deepEqual(host.dispatches, [
     { eventId: 21, kind: PayloadKind.bytes, payloadBytes: keyShiftBytes("K", true) },
   ]);
+});
+
+test("dynamic custom events dispatch serialized detail payloads", () => {
+  const { host, root } = mountWith([
+    { op: Op.resetDom },
+    { op: Op.createElement, a: 1, s: "section" },
+    {
+      dynamic: {
+        op: DynamicOp.bindEvent,
+        elemId: 1,
+        eventName: "chart-select",
+        eventId: 30,
+        options: 0,
+        eventExtractionPlan: eventDetailExtractionPlan,
+      },
+    },
+    { op: Op.createElement, a: 2, s: "button" },
+    { op: Op.appendChild, a: 1, b: 2 },
+    { op: Op.appendChild, a: 0, b: 1 },
+  ]);
+
+  const button = findNode(root, (node) => node.tagName === "BUTTON");
+  button.dispatchEvent(new CustomEvent("chart-select", { detail: "point-a", bubbles: true }));
+  button.dispatchEvent(new CustomEvent("chart-select", { detail: { id: "point-b", rpm: 1200 }, bubbles: true }));
+  button.dispatchEvent(new CustomEvent("chart-select", { bubbles: true }));
+
+  const circular = {};
+  circular.self = circular;
+  assert.throws(
+    () => button.dispatchEvent(new CustomEvent("chart-select", { detail: circular, bubbles: true })),
+    /Converting circular structure to JSON/,
+  );
+
+  assert.deepEqual(host.dispatches, [
+    { eventId: 30, kind: PayloadKind.str, payload: "point-a" },
+    { eventId: 30, kind: PayloadKind.str, payload: '{"id":"point-b","rpm":1200}' },
+    { eventId: 30, kind: PayloadKind.str, payload: "" },
+  ]);
+});
+
+test("behavior lifecycle attaches after batch, coalesces updates, and cleans up", () => {
+  const telemetry = [];
+  const calls = [];
+  let behaviorElement = null;
+  const behaviors = {
+    demo: {
+      attach(el) {
+        behaviorElement = el;
+        calls.push(["attach", el.getAttribute("data-value"), el.parentNode !== null]);
+        return () => calls.push(["cleanup", el.getAttribute("data-value")]);
+      },
+      update(el, attrName) {
+        calls.push(["update", attrName, el.getAttribute(attrName)]);
+      },
+    },
+  };
+  const setAttr = (elemId, name, value) => ({
+    dynamic: { op: DynamicOp.setAttrText, elemId, name, value },
+  });
+  const removeAttr = (elemId, name) => ({
+    dynamic: { op: DynamicOp.removeAttr, elemId, name },
+  });
+  const { host, runtime } = mountWith(
+    [
+      { op: Op.resetDom },
+      { op: Op.createElement, a: 1, s: "section" },
+      {
+        dynamic: {
+          op: DynamicOp.bindEvent,
+          elemId: 1,
+          eventName: "chart-select",
+          eventId: 31,
+          options: 0,
+          eventExtractionPlan: eventDetailExtractionPlan,
+        },
+      },
+      { op: Op.createElement, a: 2, s: "div" },
+      setAttr(2, "data-value", "one"),
+      setAttr(2, "data-signals-behavior", "demo"),
+      { op: Op.appendChild, a: 1, b: 2 },
+      { op: Op.appendChild, a: 0, b: 1 },
+    ],
+    { behaviors, telemetry: (entry) => telemetry.push(entry) },
+  );
+
+  assert.deepEqual(calls, [["attach", "one", true]]);
+  behaviorElement.dispatchEvent(new CustomEvent("chart-select", { detail: "from behavior", bubbles: true }));
+  assert.deepEqual(host.dispatches, [
+    { eventId: 31, kind: PayloadKind.str, payload: "from behavior" },
+  ]);
+
+  host.writeCommands([
+    setAttr(2, "data-value", "two"),
+    setAttr(2, "data-value", "three"),
+    setAttr(2, "data-extra", "x"),
+  ]);
+  runtime.applyPendingCommands("behavior-update");
+  assert.deepEqual(calls.slice(1), [
+    ["update", "data-value", "three"],
+    ["update", "data-extra", "x"],
+  ]);
+
+  host.writeCommands([setAttr(2, "data-signals-behavior", "missing")]);
+  runtime.applyPendingCommands("behavior-missing");
+  assert.deepEqual(calls.at(-1), ["cleanup", "three"]);
+  assert.ok(telemetry.some((entry) => entry.kind === "behavior_missing" && entry.behavior === "missing"));
+
+  host.writeCommands([setAttr(2, "data-signals-behavior", "demo")]);
+  runtime.applyPendingCommands("behavior-reattach");
+  assert.deepEqual(calls.at(-1), ["attach", "three", true]);
+
+  host.writeCommands([removeAttr(2, "data-signals-behavior")]);
+  runtime.applyPendingCommands("behavior-remove-marker");
+  assert.deepEqual(calls.at(-1), ["cleanup", "three"]);
+
+  host.writeCommands([setAttr(2, "data-signals-behavior", "demo")]);
+  runtime.applyPendingCommands("behavior-reattach-before-unmount");
+  runtime.unmount();
+  assert.deepEqual(calls.at(-1), ["cleanup", "three"]);
+  assert.ok(telemetry.some((entry) => entry.kind === "behavior_attach" && entry.behavior === "demo"));
+  assert.ok(telemetry.some((entry) => entry.kind === "behavior_update" && entry.attrName === "data-value"));
+  assert.ok(telemetry.some((entry) => entry.kind === "behavior_cleanup" && entry.behavior === "demo"));
 });
 
 test("dynamic submit events apply static prevent-default policy", () => {
@@ -1353,6 +1484,14 @@ test("malformed dynamic event extraction plans fail closed", () => {
       /malformed event extraction plan.*source tag 1 cannot produce leaf tag 3/,
     ],
     [
+      bind(new Uint8Array([BoundarySchemaTag.text, EventExtractionSource.target, EventExtractionLeaf.detail])),
+      /malformed event extraction plan.*source tag 2 cannot produce leaf tag 5/,
+    ],
+    [
+      bind(new Uint8Array([BoundarySchemaTag.bool, EventExtractionSource.event, EventExtractionLeaf.detail])),
+      /malformed event extraction plan.*bool event extraction used incompatible leaf tag 5/,
+    ],
+    [
       bind(new Uint8Array([BoundarySchemaTag.record, 0])),
       /malformed event extraction plan.*record field count was zero/,
     ],
@@ -1647,6 +1786,86 @@ test("task commands marshal request and resolve payloads by request id", () => {
   assert.equal(runtime.tasks.has(6), false);
 });
 
+test("stale manual task resolutions reach host classification with telemetry", () => {
+  const telemetry = [];
+  const { host, runtime } = mountWith([{ op: Op.resetDom }], {
+    telemetry: (entry) => telemetry.push(entry),
+  });
+
+  runtime.startTask(404, "lookup", "old");
+  runtime.cancelTask(404);
+  runtime.resolveTask(404, "late payload");
+
+  assert.deepEqual(host.resolutions, [
+    { requestId: 404, payload: "late payload", failed: false },
+  ]);
+  assert.ok(
+    telemetry.some(
+      (entry) =>
+        entry.kind === "ignored_task_resolution" &&
+        entry.requestId === 404 &&
+        entry.name === "lookup" &&
+        entry.failed === false,
+    ),
+  );
+});
+
+test("never-issued manual task resolutions fail loudly", () => {
+  const telemetry = [];
+  const { host, runtime } = mountWith([{ op: Op.resetDom }], {
+    telemetry: (entry) => telemetry.push(entry),
+  });
+
+  assert.throws(() => runtime.resolveTask(404, "late payload"), /task result had no matching pending request: 404/);
+  assert.deepEqual(host.resolutions, []);
+  assert.ok(
+    telemetry.some(
+      (entry) =>
+        entry.kind === "unknown_task_resolution" &&
+        entry.requestId === 404 &&
+        entry.failed === false,
+    ),
+  );
+});
+
+test("task cancellation aborts stale async settlement and keeps fresh request current", async () => {
+  const deferred = [];
+  const telemetry = [];
+  const { host, runtime } = mountWith([{ op: Op.resetDom }], {
+    telemetry: (entry) => telemetry.push(entry),
+    taskHandler: ({ requestId, signal }) =>
+      new Promise((resolve) => {
+        deferred.push({ requestId, signal, resolve });
+      }),
+  });
+
+  runtime.startTask(10, "lookup", "old");
+  runtime.cancelTask(10);
+  runtime.startTask(11, "lookup", "fresh");
+
+  assert.equal(deferred[0].signal.aborted, true);
+  assert.equal(deferred[1].signal.aborted, false);
+
+  deferred[0].resolve("stale");
+  deferred[1].resolve("ready");
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.deepEqual(host.resolutions, [
+    { requestId: 10, payload: "stale", failed: false },
+    { requestId: 11, payload: "ready", failed: false },
+  ]);
+  assert.ok(
+    telemetry.some(
+      (entry) =>
+        entry.kind === "ignored_task_resolution" &&
+        entry.requestId === 10 &&
+        entry.name === "lookup" &&
+        entry.failed === false,
+    ),
+  );
+});
+
 test("task handler rejections resolve through the task failure path", async () => {
   const { host } = mountWith(
     [
@@ -1779,27 +1998,46 @@ test("HTTP fetch task handler reports network failures as HTTP error envelopes",
   );
 });
 
-test("ops API text task handler serves only documented static endpoints", async () => {
-  assert.equal(
-    opsApiTextTaskHandler({ name: "lookup", request: "roc" }),
-    null,
-  );
+test("ops API task handler serves changing documented endpoints", async () => {
+  assert.equal(opsApiTaskHandler({ name: "lookup", request: "roc" }), null);
 
-  const value = await opsApiTextTaskHandler({
+  const backend = createOpsBackend();
+  const value = await opsApiTaskHandler({
     name: "http:send:summary",
     request: encodeHttpRequestPayload({ method: "GET", uri: "/api/ops/summary" }),
-  });
+  }, backend);
   const response = decodeHttpResponsePayload(value);
   assert.equal(response.status, 200);
   assert.deepEqual(response.headers, [["content-type", "text/plain; charset=utf-8"]]);
   assert.match(new TextDecoder().decode(response.body), /Overall:/);
   assert.match(new TextDecoder().decode(response.body), /Traffic:/);
 
+  const firstDashboard = await opsApiTaskHandler({
+    name: "http:send:dashboard",
+    request: encodeHttpRequestPayload({ method: "GET", uri: "/api/ops/dashboard" }),
+  }, backend);
+  const secondDashboard = await opsApiTaskHandler({
+    name: "http:send:dashboard",
+    request: encodeHttpRequestPayload({ method: "GET", uri: "/api/ops/dashboard" }),
+  }, backend);
+  assert.notEqual(
+    new TextDecoder().decode(decodeHttpResponsePayload(firstDashboard).body),
+    new TextDecoder().decode(decodeHttpResponsePayload(secondDashboard).body),
+  );
+
+  assert.equal(
+    opsApiTaskHandler({
+      name: "http:send:private",
+      request: encodeHttpRequestPayload({ method: "GET", uri: "/api/private" }),
+    }),
+    null,
+  );
+
   assert.throws(
     () =>
-      opsApiTextTaskHandler({
-        name: "http:send:private",
-        request: encodeHttpRequestPayload({ method: "GET", uri: "/api/private" }),
+      opsApiTaskHandler({
+        name: "http:send:dashboard",
+        request: encodeHttpRequestPayload({ method: "POST", uri: "/api/ops/dashboard" }),
       }),
     /roc-http-error-v1\nunsupported/,
   );

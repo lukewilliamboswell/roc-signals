@@ -17,12 +17,16 @@ import sys
 import threading
 import tomllib
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 
 ROOT = Path(__file__).resolve().parent.parent
 TEST_OUT = ROOT / ".test-out"
 EXAMPLES_MANIFEST = ROOT / "www" / "data" / "examples.toml"
 PLATFORM_HEADER_RE = re.compile(r'platform\s+"[^"]+"')
+PLATFORM_HEADER_CAPTURE_RE = re.compile(r'platform\s+"([^"]+)"')
+URL_SCHEMES = {"http", "https"}
+LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 MUSL_NATIVE_SKIPS = {
     "live-search": "Roc compiler segfaults intermittently while building this example for Linux musl",
 }
@@ -41,6 +45,7 @@ class Example:
     wasm: bool
     native: bool
     bench: bool
+    expect_mount_error: str | None
 
     @property
     def exe_name(self) -> str:
@@ -64,6 +69,7 @@ def load_examples() -> tuple[Example, ...]:
                 wasm=bool(raw.get("wasm", True)),
                 native=bool(raw.get("native", True)),
                 bench=bool(raw.get("bench", False)),
+                expect_mount_error=str(raw["expect_mount_error"]) if "expect_mount_error" in raw else None,
             )
         )
     if not examples:
@@ -103,6 +109,14 @@ def parse_args() -> argparse.Namespace:
         help="Existing bundle path or URL to test for the bundle suite. Defaults to building one.",
     )
     parser.add_argument(
+        "--allow-release-platform-url",
+        action="store_true",
+        help=(
+            "Allow tests to run against a non-local platform URL. Intended only for release "
+            "verification; development tests should use a local platform path or bundle file."
+        ),
+    )
+    parser.add_argument(
         "--keep-output",
         action="store_true",
         help="Keep .test-out after the run.",
@@ -114,6 +128,52 @@ def run(command: list[str | Path], *, cwd: Path = ROOT, env: dict[str, str] | No
     printable = " ".join(str(part) for part in command)
     print(f"\n==> {printable}", flush=True)
     subprocess.run([str(part) for part in command], cwd=cwd, env=env, check=True)
+
+
+def is_url_ref(value: str) -> bool:
+    return urlparse(value).scheme.lower() in URL_SCHEMES
+
+
+def is_local_url_ref(value: str) -> bool:
+    if not is_url_ref(value):
+        return False
+    parsed = urlparse(value)
+    return parsed.hostname in LOOPBACK_HOSTS
+
+
+def is_release_platform_url(value: str) -> bool:
+    return is_url_ref(value) and not is_local_url_ref(value)
+
+
+def release_platform_url_error(value: str) -> str:
+    return (
+        f"refusing to run tests against a release platform URL: {value}\n"
+        "For development, switch to a local platform path or local bundle file so tests exercise "
+        "workspace changes. Pass --allow-release-platform-url only when intentionally verifying "
+        "a published release."
+    )
+
+
+def ensure_release_platform_url_allowed(value: str, *, allow_release_platform_url: bool) -> None:
+    if is_release_platform_url(value) and not allow_release_platform_url:
+        raise SystemExit(release_platform_url_error(value))
+
+
+def ensure_sources_do_not_use_release_platform_urls(
+    examples: tuple[Example, ...],
+    source_root: Path,
+    *,
+    allow_release_platform_url: bool,
+) -> None:
+    if allow_release_platform_url:
+        return
+    for example in examples:
+        source = source_root / example.source
+        if not source.is_file():
+            continue
+        match = PLATFORM_HEADER_CAPTURE_RE.search(source.read_text(encoding="utf-8"))
+        if match is not None:
+            ensure_release_platform_url_allowed(match.group(1), allow_release_platform_url=False)
 
 
 def command_path(value: str) -> str:
@@ -154,7 +214,13 @@ def run_roc_checks(
     examples: tuple[Example, ...],
     *,
     source_root: Path = ROOT,
+    allow_release_platform_url: bool = False,
 ) -> None:
+    ensure_sources_do_not_use_release_platform_urls(
+        examples,
+        source_root,
+        allow_release_platform_url=allow_release_platform_url,
+    )
     for example in examples:
         run([roc_bin, "check", source_root / example.source])
 
@@ -168,6 +234,11 @@ def build_wasm_apps(roc_bin: str, examples: tuple[Example, ...]) -> None:
         print(f"\nTesting wasm apps with local platform bundle: {platform_ref}")
         source_root = TEST_OUT / "wasm-source"
         rewrite_examples_for_platform(platform_ref, source_root)
+        ensure_sources_do_not_use_release_platform_urls(
+            examples,
+            source_root,
+            allow_release_platform_url=False,
+        )
         for example in examples:
             if not example.wasm:
                 continue
@@ -186,7 +257,10 @@ def build_wasm_apps(roc_bin: str, examples: tuple[Example, ...]) -> None:
                     source_root / example.source,
                 ]
             )
-            run(["node", "scripts/browser/mount_wasm_example.mjs", output, example.slug])
+            mount_cmd = ["node", "scripts/browser/mount_wasm_example.mjs", output, example.slug]
+            if example.expect_mount_error is not None:
+                mount_cmd.extend(["--expect-error", example.expect_mount_error])
+            run(mount_cmd)
 
 
 def should_run_hosted(mode: str) -> bool:
@@ -244,7 +318,13 @@ def run_native_specs(
     *,
     source_root: Path = ROOT,
     bin_dir: Path = TEST_OUT / "bin",
+    allow_release_platform_url: bool = False,
 ) -> None:
+    ensure_sources_do_not_use_release_platform_urls(
+        examples,
+        source_root,
+        allow_release_platform_url=allow_release_platform_url,
+    )
     bin_dir.mkdir(parents=True, exist_ok=True)
     target = roc_native_target()
     for example in examples:
@@ -263,6 +343,11 @@ def run_native_specs(
 
 
 def run_benchmarks(roc_bin: str, examples: tuple[Example, ...], *, source_root: Path = ROOT) -> None:
+    ensure_sources_do_not_use_release_platform_urls(
+        examples,
+        source_root,
+        allow_release_platform_url=False,
+    )
     bin_dir = TEST_OUT / "bench-bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
     target = roc_native_target()
@@ -370,26 +455,45 @@ def bundle_platform(roc_bin: str) -> Path:
     raise SystemExit("scripts/bundle.sh did not print a Created: line")
 
 
-def run_bundle_specs(roc_bin: str, examples: tuple[Example, ...], bundle_url: str) -> None:
+def run_bundle_specs(
+    roc_bin: str,
+    examples: tuple[Example, ...],
+    bundle_url: str,
+    *,
+    allow_release_platform_url: bool,
+) -> None:
+    ensure_release_platform_url_allowed(bundle_url, allow_release_platform_url=allow_release_platform_url)
     print(f"\nTesting bundled platform: {bundle_url}")
     source_root = TEST_OUT / "bundle-source"
     rewrite_examples_for_platform(bundle_url, source_root)
-    run_native_specs(roc_bin, examples, source_root=source_root, bin_dir=TEST_OUT / "bundle-bin")
+    run_native_specs(
+        roc_bin,
+        examples,
+        source_root=source_root,
+        bin_dir=TEST_OUT / "bundle-bin",
+        allow_release_platform_url=allow_release_platform_url,
+    )
 
 
 def run_bundle_file_suite(roc_bin: str, examples: tuple[Example, ...], bundle: Path) -> None:
     with BundleServer(bundle.resolve().parent) as server:
         bundle_url = f"http://127.0.0.1:{server.port}/{bundle.name}"
-        run_bundle_specs(roc_bin, examples, bundle_url)
+        run_bundle_specs(roc_bin, examples, bundle_url, allow_release_platform_url=False)
 
 
-def run_bundle_suite(roc_bin: str, examples: tuple[Example, ...], bundle_ref: str | None) -> None:
+def run_bundle_suite(
+    roc_bin: str,
+    examples: tuple[Example, ...],
+    bundle_ref: str | None,
+    *,
+    allow_release_platform_url: bool,
+) -> None:
     if bundle_ref is None:
         run_bundle_file_suite(roc_bin, examples, bundle_platform(roc_bin))
         return
 
-    if bundle_ref.startswith(("http://", "https://")):
-        run_bundle_specs(roc_bin, examples, bundle_ref)
+    if is_url_ref(bundle_ref):
+        run_bundle_specs(roc_bin, examples, bundle_ref, allow_release_platform_url=allow_release_platform_url)
         return
 
     bundle = Path(bundle_ref)
@@ -400,6 +504,18 @@ def run_bundle_suite(roc_bin: str, examples: tuple[Example, ...], bundle_ref: st
     run_bundle_file_suite(roc_bin, examples, bundle)
 
 
+def validate_args_before_build(args: argparse.Namespace, suites: set[str]) -> None:
+    if "bundle" not in suites:
+        return
+    if not should_run_hosted(args.bundle):
+        return
+    if args.bundle_ref is not None:
+        ensure_release_platform_url_allowed(
+            args.bundle_ref,
+            allow_release_platform_url=args.allow_release_platform_url,
+        )
+
+
 def main() -> int:
     args = parse_args()
     examples = load_examples()
@@ -407,6 +523,7 @@ def main() -> int:
     if "all" in suites:
         suites = {"zig", "browser", "roc-check", "wasm", "native", "bundle", "bench"}
 
+    validate_args_before_build(args, suites)
     roc_bin = command_path(args.roc_bin)
     ensure_clean_output(args.keep_output)
 
@@ -429,7 +546,12 @@ def main() -> int:
 
     if "bundle" in suites:
         if should_run_hosted(args.bundle):
-            run_bundle_suite(roc_bin, examples, args.bundle_ref)
+            run_bundle_suite(
+                roc_bin,
+                examples,
+                args.bundle_ref,
+                allow_release_platform_url=args.allow_release_platform_url,
+            )
         else:
             print("\nSkipping bundle executable tests: platform manifest exposes macOS and Linux musl native targets only.")
 
