@@ -1,6 +1,9 @@
-const std = @import("std");
+//! Host-independent render command protocol and command-buffer encoders.
 
-pub const protocol_version: u32 = 1;
+const std = @import("std");
+const boundary = @import("boundary.zig");
+
+pub const protocol_version: u32 = 7;
 pub const protocol_feature_dynamic_attrs: u32 = 1 << 0;
 pub const protocol_feature_dynamic_events: u32 = 1 << 1;
 pub const protocol_features: u32 = protocol_feature_dynamic_attrs | protocol_feature_dynamic_events;
@@ -10,6 +13,81 @@ pub const listener_option_stop_propagation: u32 = 1 << 1;
 pub const listener_option_capture: u32 = 1 << 2;
 pub const listener_option_passive: u32 = 1 << 3;
 pub const listener_option_once: u32 = 1 << 4;
+pub const listener_option_stop_immediate: u32 = 1 << 5;
+pub const listener_option_self: u32 = 1 << 6;
+pub const listener_option_trusted: u32 = 1 << 7;
+pub const listener_option_mask: u32 =
+    listener_option_prevent_default |
+    listener_option_stop_propagation |
+    listener_option_capture |
+    listener_option_passive |
+    listener_option_once |
+    listener_option_stop_immediate |
+    listener_option_self |
+    listener_option_trusted;
+
+pub const EventPolicy = struct {
+    prevent_default: bool = false,
+    stop_propagation: bool = false,
+    stop_immediate: bool = false,
+    capture: bool = false,
+    passive: bool = false,
+    once: bool = false,
+    self: bool = false,
+    trusted: bool = false,
+
+    pub const none: EventPolicy = .{};
+
+    pub fn fromBits(bits: u64) EventPolicy {
+        const bits_u32 = std.math.cast(u32, bits) orelse std.debug.panic(
+            "event listener options exceeded u32 range: {}",
+            .{bits},
+        );
+        return fromWireBits(bits_u32);
+    }
+
+    pub fn fromWireBits(bits: u32) EventPolicy {
+        if ((bits & ~listener_option_mask) != 0) {
+            std.debug.panic("event listener options used unsupported bits: 0x{x}", .{bits});
+        }
+        return .{
+            .prevent_default = (bits & listener_option_prevent_default) != 0,
+            .stop_propagation = (bits & listener_option_stop_propagation) != 0,
+            .stop_immediate = (bits & listener_option_stop_immediate) != 0,
+            .capture = (bits & listener_option_capture) != 0,
+            .passive = (bits & listener_option_passive) != 0,
+            .once = (bits & listener_option_once) != 0,
+            .self = (bits & listener_option_self) != 0,
+            .trusted = (bits & listener_option_trusted) != 0,
+        };
+    }
+
+    pub fn toWireBits(self: EventPolicy) u32 {
+        return (if (self.prevent_default) listener_option_prevent_default else 0) |
+            (if (self.stop_propagation) listener_option_stop_propagation else 0) |
+            (if (self.stop_immediate) listener_option_stop_immediate else 0) |
+            (if (self.capture) listener_option_capture else 0) |
+            (if (self.passive) listener_option_passive else 0) |
+            (if (self.once) listener_option_once else 0) |
+            (if (self.self) listener_option_self else 0) |
+            (if (self.trusted) listener_option_trusted else 0);
+    }
+
+    pub fn eql(self: EventPolicy, other: EventPolicy) bool {
+        return self.prevent_default == other.prevent_default and
+            self.stop_propagation == other.stop_propagation and
+            self.stop_immediate == other.stop_immediate and
+            self.capture == other.capture and
+            self.passive == other.passive and
+            self.once == other.once and
+            self.self == other.self and
+            self.trusted == other.trusted;
+    }
+
+    pub fn isNone(self: EventPolicy) bool {
+        return self.eql(EventPolicy.none);
+    }
+};
 
 pub const Op = enum(u32) {
     reset_dom = 1,
@@ -46,6 +124,35 @@ pub const DynamicOp = enum(u16) {
     remove_attr = 2,
     bind_event = 3,
     clear_event = 4,
+};
+
+pub const EventDeliveryRequestWire = enum(u32) {
+    auto = 1,
+    native = 2,
+};
+
+pub const EventDeliveryEffectiveWire = enum(u32) {
+    native = 1,
+    delegated = 2,
+};
+
+pub const EventDeliveryReasonWire = enum(u32) {
+    requested_native = 1,
+    capture_policy = 2,
+    stop_immediate_policy = 3,
+    stop_propagation_policy = 4,
+    pointer_drag = 5,
+    prevent_default_policy = 6,
+    once_policy = 7,
+    passive_policy = 8,
+    self_filter = 9,
+    native_runtime_default = 10,
+};
+
+pub const EventDeliveryWire = struct {
+    requested: EventDeliveryRequestWire,
+    effective: EventDeliveryEffectiveWire,
+    reason: EventDeliveryReasonWire,
 };
 
 pub const Record = extern struct {
@@ -151,10 +258,11 @@ pub const DynamicBuffer = struct {
         event_id: u32,
         event_name: []const u8,
         options: u32,
-        payload_kind: u32,
-        payload_spec: []const u8,
+        delivery: EventDeliveryWire,
+        payload_descriptor: boundary.BoundaryPayloadDescriptor,
     ) std.mem.Allocator.Error!DynamicSlice {
-        const payload_len = @sizeOf(u32) + @sizeOf(u32) + @sizeOf(u32) + event_name.len + @sizeOf(u32) + @sizeOf(u32) + @sizeOf(u32) + payload_spec.len;
+        const event_extraction_plan = payload_descriptor.extractionBytes();
+        const payload_len = @sizeOf(u32) + @sizeOf(u32) + @sizeOf(u32) + event_name.len + @sizeOf(u32) + (3 * @sizeOf(u32)) + @sizeOf(u32) + event_extraction_plan.len;
         const record = try self.appendRecord(allocator, .bind_event, payload_len);
         var cursor = record.payload_start;
         writeU32(self.bytes.items, &cursor, elem_id);
@@ -162,9 +270,11 @@ pub const DynamicBuffer = struct {
         writeU32(self.bytes.items, &cursor, @intCast(event_name.len));
         writeBytes(self.bytes.items, &cursor, event_name);
         writeU32(self.bytes.items, &cursor, options);
-        writeU32(self.bytes.items, &cursor, payload_kind);
-        writeU32(self.bytes.items, &cursor, @intCast(payload_spec.len));
-        writeBytes(self.bytes.items, &cursor, payload_spec);
+        writeU32(self.bytes.items, &cursor, @intFromEnum(delivery.requested));
+        writeU32(self.bytes.items, &cursor, @intFromEnum(delivery.effective));
+        writeU32(self.bytes.items, &cursor, @intFromEnum(delivery.reason));
+        writeU32(self.bytes.items, &cursor, @intCast(event_extraction_plan.len));
+        writeBytes(self.bytes.items, &cursor, event_extraction_plan);
         return record.slice;
     }
 
@@ -275,76 +385,29 @@ pub const EventKind = enum(u64) {
             .pointer_leave => .bind_pointer_leave,
         };
     }
+
+    pub fn payloadDescriptor(self: EventKind) boundary.BoundaryPayloadDescriptor {
+        return switch (self) {
+            .click, .pointer_down, .pointer_up, .pointer_enter, .pointer_leave => boundary.BoundaryPayloadDescriptor.init(.unit, .none),
+            .input => boundary.BoundaryPayloadDescriptor.init(.str, .target_value),
+            .check => boundary.BoundaryPayloadDescriptor.init(.bool, .target_checked),
+        };
+    }
+
+    pub fn domEventName(self: EventKind) []const u8 {
+        return switch (self) {
+            .click => "click",
+            .input => "input",
+            .check => "change",
+            .pointer_down => "pointerdown",
+            .pointer_up => "pointerup",
+            .pointer_enter => "pointerenter",
+            .pointer_leave => "pointerleave",
+        };
+    }
 };
 
-pub const EventPayloadAccessor = enum(u64) {
-    none = 1,
-    target_value = 2,
-    target_checked = 3,
-    record_key_shift = 4,
-};
-
-pub const EventPayloadKind = enum(u64) {
-    unit = 1,
-    str = 2,
-    bool = 3,
-    bytes = 4,
-};
-
-pub const PayloadSpec = struct {
-    pub const unit: u8 = 1;
-    pub const text: u8 = 2;
-    pub const bool_: u8 = 3;
-    pub const record: u8 = 4;
-
-    pub const source_event: u8 = 1;
-    pub const source_target: u8 = 2;
-    pub const source_current_target: u8 = 3;
-
-    pub const leaf_key: u8 = 1;
-    pub const leaf_value: u8 = 2;
-    pub const leaf_checked: u8 = 3;
-    pub const leaf_shift_key: u8 = 4;
-
-    pub const unit_spec = [_]u8{unit};
-
-    pub const target_value = [_]u8{
-        text,
-        source_current_target,
-        leaf_value,
-    };
-
-    pub const target_checked = [_]u8{
-        bool_,
-        source_current_target,
-        leaf_checked,
-    };
-
-    pub const key_shift = [_]u8{
-        record,
-        2,
-        3,
-        'k',
-        'e',
-        'y',
-        text,
-        source_event,
-        leaf_key,
-        9,
-        's',
-        'h',
-        'i',
-        'f',
-        't',
-        '_',
-        'k',
-        'e',
-        'y',
-        bool_,
-        source_event,
-        leaf_shift_key,
-    };
-};
+pub const EventExtractionPlan = boundary.DomEventExtractionPlan;
 
 pub const Counts = struct {
     total: u64 = 0,
@@ -468,6 +531,28 @@ pub const Metrics = struct {
     }
 };
 
+test "event policy converts compatibility bits at the wire edge" {
+    const bits =
+        listener_option_prevent_default |
+        listener_option_stop_immediate |
+        listener_option_capture |
+        listener_option_once |
+        listener_option_self |
+        listener_option_trusted;
+    const policy = EventPolicy.fromBits(bits);
+
+    try std.testing.expect(policy.prevent_default);
+    try std.testing.expect(!policy.stop_propagation);
+    try std.testing.expect(policy.stop_immediate);
+    try std.testing.expect(policy.capture);
+    try std.testing.expect(!policy.passive);
+    try std.testing.expect(policy.once);
+    try std.testing.expect(policy.self);
+    try std.testing.expect(policy.trusted);
+    try std.testing.expectEqual(@as(u32, bits), policy.toWireBits());
+    try std.testing.expect(EventPolicy.none.isNone());
+}
+
 test "render command counts group detailed host-independent ops" {
     var counts: Counts = .{};
     counts.addOp(.reset_dom);
@@ -505,6 +590,26 @@ test "render command counts group detailed host-independent ops" {
     try std.testing.expectEqual(@as(u64, 1), counts.set_disabled);
     try std.testing.expectEqual(@as(u64, 5), counts.set_metadata);
     try std.testing.expectEqual(@as(u64, 7), counts.bind_event);
+}
+
+test "fixed event opcodes declare canonical payload descriptors" {
+    try std.testing.expect(EventKind.click.payloadDescriptor().eql(boundary.BoundaryPayloadDescriptor.init(.unit, .none)));
+    try std.testing.expect(EventKind.pointer_down.payloadDescriptor().eql(boundary.BoundaryPayloadDescriptor.init(.unit, .none)));
+    try std.testing.expect(EventKind.pointer_up.payloadDescriptor().eql(boundary.BoundaryPayloadDescriptor.init(.unit, .none)));
+    try std.testing.expect(EventKind.pointer_enter.payloadDescriptor().eql(boundary.BoundaryPayloadDescriptor.init(.unit, .none)));
+    try std.testing.expect(EventKind.pointer_leave.payloadDescriptor().eql(boundary.BoundaryPayloadDescriptor.init(.unit, .none)));
+    try std.testing.expect(EventKind.input.payloadDescriptor().eql(boundary.BoundaryPayloadDescriptor.init(.str, .target_value)));
+    try std.testing.expect(EventKind.check.payloadDescriptor().eql(boundary.BoundaryPayloadDescriptor.init(.bool, .target_checked)));
+}
+
+test "fixed event kinds expose browser DOM event names" {
+    try std.testing.expectEqualStrings("click", EventKind.click.domEventName());
+    try std.testing.expectEqualStrings("input", EventKind.input.domEventName());
+    try std.testing.expectEqualStrings("change", EventKind.check.domEventName());
+    try std.testing.expectEqualStrings("pointerdown", EventKind.pointer_down.domEventName());
+    try std.testing.expectEqualStrings("pointerup", EventKind.pointer_up.domEventName());
+    try std.testing.expectEqualStrings("pointerenter", EventKind.pointer_enter.domEventName());
+    try std.testing.expectEqualStrings("pointerleave", EventKind.pointer_leave.domEventName());
 }
 
 test "render command buffer stores fixed-width records" {
@@ -560,6 +665,57 @@ test "dynamic command buffer stores aligned attribute records" {
     try std.testing.expectEqual(@as(usize, 0), buffer.ptrAddress());
 }
 
+test "dynamic command buffer stores event extraction plan" {
+    var buffer: DynamicBuffer = .{};
+    defer buffer.deinit(std.testing.allocator);
+
+    const descriptor = boundary.BoundaryPayloadDescriptor.init(.bytes, .record_key_shift);
+    const bind_event = try buffer.appendBindEvent(
+        std.testing.allocator,
+        42,
+        99,
+        "keydown",
+        listener_option_prevent_default | listener_option_stop_propagation,
+        .{
+            .requested = .auto,
+            .effective = .native,
+            .reason = .stop_propagation_policy,
+        },
+        descriptor,
+    );
+
+    try std.testing.expectEqual(@as(u32, 0), bind_event.offset);
+    try std.testing.expectEqual(@as(u32, 72), bind_event.len);
+    try std.testing.expectEqual(@as(usize, 72), buffer.len());
+    try std.testing.expectEqual(@as(u16, @intFromEnum(DynamicOp.bind_event)), std.mem.readInt(u16, buffer.bytes.items[0..2], .little));
+    try std.testing.expectEqual(@as(u16, 0), std.mem.readInt(u16, buffer.bytes.items[2..4], .little));
+    try std.testing.expectEqual(@as(u32, 61), std.mem.readInt(u32, buffer.bytes.items[4..8], .little));
+
+    var cursor: usize = 8;
+    try std.testing.expectEqual(@as(u32, 42), readTestU32(buffer.bytes.items, &cursor));
+    try std.testing.expectEqual(@as(u32, 99), readTestU32(buffer.bytes.items, &cursor));
+
+    const name_len = readTestU32(buffer.bytes.items, &cursor);
+    const name_len_usize: usize = @intCast(name_len);
+    try std.testing.expectEqual(@as(u32, 7), name_len);
+    try std.testing.expectEqualStrings("keydown", buffer.bytes.items[cursor..][0..name_len_usize]);
+    cursor += name_len_usize;
+
+    try std.testing.expectEqual(@as(u32, listener_option_prevent_default | listener_option_stop_propagation), readTestU32(buffer.bytes.items, &cursor));
+    try std.testing.expectEqual(@as(u32, @intFromEnum(EventDeliveryRequestWire.auto)), readTestU32(buffer.bytes.items, &cursor));
+    try std.testing.expectEqual(@as(u32, @intFromEnum(EventDeliveryEffectiveWire.native)), readTestU32(buffer.bytes.items, &cursor));
+    try std.testing.expectEqual(@as(u32, @intFromEnum(EventDeliveryReasonWire.stop_propagation_policy)), readTestU32(buffer.bytes.items, &cursor));
+
+    const extraction_len = readTestU32(buffer.bytes.items, &cursor);
+    const extraction_len_usize: usize = @intCast(extraction_len);
+    try std.testing.expectEqual(@as(u32, @intCast(descriptor.extractionBytes().len)), extraction_len);
+    try std.testing.expectEqualSlices(u8, descriptor.extractionBytes(), buffer.bytes.items[cursor..][0..extraction_len_usize]);
+    cursor += extraction_len_usize;
+
+    try std.testing.expectEqual(@as(usize, 69), cursor);
+    try std.testing.expectEqual(@as(u8, 0), buffer.bytes.items[cursor]);
+}
+
 test "render metrics accumulate command counts" {
     var metrics: Metrics = .{};
     var counts: Counts = .{};
@@ -575,4 +731,10 @@ test "render metrics accumulate command counts" {
     try std.testing.expectEqual(@as(u64, 1), metrics.move_before);
     try std.testing.expectEqual(@as(u64, 1), metrics.set_metadata);
     try std.testing.expectEqual(@as(u64, 1), metrics.bind_event);
+}
+
+fn readTestU32(bytes: []const u8, cursor: *usize) u32 {
+    const value = std.mem.readInt(u32, bytes[cursor.*..][0..@sizeOf(u32)], .little);
+    cursor.* += @sizeOf(u32);
+    return value;
 }

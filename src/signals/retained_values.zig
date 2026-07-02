@@ -1,3 +1,5 @@
+//! Retained Roc value and capability wrappers used by host-agnostic runtime code.
+
 const abi = @import("roc_platform_abi.zig");
 const erased_calls = @import("erased_calls.zig");
 const hv = @import("host_values.zig");

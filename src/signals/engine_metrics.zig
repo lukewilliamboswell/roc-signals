@@ -1,3 +1,5 @@
+//! Runtime metric counters and no-op metric sinks for the Signals engine.
+
 const std = @import("std");
 const builtin = @import("builtin");
 const build_options = @import("build_options");

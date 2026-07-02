@@ -2,7 +2,6 @@ app [main] { pf: platform "https://github.com/lukewilliamboswell/roc-signals/rel
 
 import pf.Elem exposing [Elem]
 import pf.Html
-import pf.Node
 import pf.Signal
 import pf.Ui
 
@@ -521,8 +520,8 @@ note_button = |board_state, card_id, label| {
 		label,
 		[
 			Html.class_attr(note_button_class),
-			Html.on_event("pointerdown", Node.listener_stop_propagation, stop_drag),
-			Html.on_event("pointerup", Node.listener_stop_propagation, stop_drag),
+			Html.on_event("pointerdown", Html.event_policy_stop_propagation, stop_drag),
+			Html.on_event("pointerup", Html.event_policy_stop_propagation, stop_drag),
 		],
 		board_state.on_unit(|board| increment_card_notes(board, card_id)),
 	)

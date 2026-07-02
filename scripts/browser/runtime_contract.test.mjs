@@ -5,7 +5,6 @@ import {
   DynamicOp,
   ListenerOptions,
   Op,
-  PayloadAccessor,
   PayloadKind,
   Protocol,
   ProtocolFeature,
@@ -50,38 +49,66 @@ const RECORD_WORDS = 6;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
-const PayloadSpecTag = Object.freeze({
+const EventDeliveryRequestWire = Object.freeze({
+  auto: 1,
+  native: 2,
+});
+
+const EventDeliveryEffectiveWire = Object.freeze({
+  native: 1,
+  delegated: 2,
+});
+
+const EventDeliveryReasonWire = Object.freeze({
+  requestedNative: 1,
+  capturePolicy: 2,
+  stopImmediatePolicy: 3,
+  stopPropagationPolicy: 4,
+  pointerDrag: 5,
+  preventDefaultPolicy: 6,
+  oncePolicy: 7,
+  passivePolicy: 8,
+  selfFilter: 9,
+  nativeRuntimeDefault: 10,
+});
+
+const BoundarySchemaTag = Object.freeze({
   unit: 1,
   text: 2,
   bool: 3,
   record: 4,
 });
 
-const PayloadSpecSource = Object.freeze({
+const EventExtractionSource = Object.freeze({
   event: 1,
   target: 2,
   currentTarget: 3,
 });
 
-const PayloadSpecLeaf = Object.freeze({
+const EventExtractionLeaf = Object.freeze({
   key: 1,
   value: 2,
   checked: 3,
   shiftKey: 4,
 });
 
-const unitPayloadSpec = new Uint8Array([PayloadSpecTag.unit]);
-const targetValuePayloadSpec = new Uint8Array([
-  PayloadSpecTag.text,
-  PayloadSpecSource.currentTarget,
-  PayloadSpecLeaf.value,
+const unitEventExtractionPlan = new Uint8Array([BoundarySchemaTag.unit]);
+const targetValueEventExtractionPlan = new Uint8Array([
+  BoundarySchemaTag.text,
+  EventExtractionSource.currentTarget,
+  EventExtractionLeaf.value,
 ]);
-const keyShiftPayloadSpec = concatBytes([
-  new Uint8Array([PayloadSpecTag.record, 2]),
-  fieldSpec("key", new Uint8Array([PayloadSpecTag.text, PayloadSpecSource.event, PayloadSpecLeaf.key])),
+const eventKeyEventExtractionPlan = new Uint8Array([
+  BoundarySchemaTag.text,
+  EventExtractionSource.event,
+  EventExtractionLeaf.key,
+]);
+const keyShiftEventExtractionPlan = concatBytes([
+  new Uint8Array([BoundarySchemaTag.record, 2]),
+  fieldSpec("key", new Uint8Array([BoundarySchemaTag.text, EventExtractionSource.event, EventExtractionLeaf.key])),
   fieldSpec(
     "shift_key",
-    new Uint8Array([PayloadSpecTag.bool, PayloadSpecSource.event, PayloadSpecLeaf.shiftKey]),
+    new Uint8Array([BoundarySchemaTag.bool, EventExtractionSource.event, EventExtractionLeaf.shiftKey]),
   ),
 ]);
 
@@ -100,11 +127,15 @@ class MockHost {
     this.protocolVersion = protocolVersion;
     this.protocolFeatures = protocolFeatures;
     this.dispatches = [];
+    this.eventPayloadKinds = new Map();
     this.timers = [];
     this.resolutions = [];
     this.resolveTrapMessage = null;
     this.mountScript = [];
     this.eventResponses = new Map();
+    this.eventResponseBits = new Map();
+    this.eventTrapMessages = new Map();
+    this.deallocTrapMessage = null;
     this.timerResponses = new Map();
 
     this.exports = {
@@ -122,7 +153,12 @@ class MockHost {
       roc_ui_last_error_len: () => this.lastErrorLen,
       roc_ui_live_host_values: () => 0,
       roc_alloc: (len) => this.alloc(len),
-      roc_dealloc: () => {},
+      roc_dealloc: () => {
+        if (this.deallocTrapMessage !== null) {
+          this.writeLastError(this.deallocTrapMessage);
+          throw new WebAssembly.RuntimeError("unreachable");
+        }
+      },
       roc_ui_mount: () => this.writeCommands(this.mountScript),
       roc_ui_unmount: () => {
         this.cmdLen = 0;
@@ -146,7 +182,21 @@ class MockHost {
         }
         this.writeCommands([]);
       },
-      roc_ui_event: (eventId, kind, ptr, len, boolValue) => {
+      roc_ui_event: (eventId, payloadKind, ptr, len, boolValue) => {
+        const trapMessage = this.eventTrapMessages.get(eventId);
+        if (trapMessage !== undefined) {
+          this.writeLastError(trapMessage);
+          throw new WebAssembly.RuntimeError("unreachable");
+        }
+        const expectedKind = this.eventPayloadKinds.get(eventId);
+        if (expectedKind === undefined) {
+          throw new Error(`mock host received event ${eventId} without a recorded payload descriptor`);
+        }
+        if (payloadKind !== expectedKind) {
+          this.writeLastError("DOM event payload kind does not match Roc event descriptor");
+          throw new WebAssembly.RuntimeError("unreachable");
+        }
+        const kind = payloadKind;
         const dispatch = { eventId, kind };
         if (kind === PayloadKind.str) {
           dispatch.payload = decoder.decode(new Uint8Array(this.memory.buffer, ptr, len));
@@ -158,6 +208,7 @@ class MockHost {
         this.dispatches.push(dispatch);
         const respond = this.eventResponses.get(eventId);
         this.writeCommands(respond ? respond(dispatch) : []);
+        return this.eventResponseBits.get(eventId) ?? 0;
       },
     };
   }
@@ -184,6 +235,7 @@ class MockHost {
     let strOffset = 0;
     let dynamicOffset = 0;
     script.forEach((entry, index) => {
+      this.noteEventBinding(entry);
       let op = entry.op;
       let { a = 0, b = 0, c = 0, d = 0, e = 0 } = entry;
       if (entry.strings !== undefined) {
@@ -226,6 +278,31 @@ class MockHost {
     this.strLen = strOffset;
     this.dynamicLen = dynamicOffset;
   }
+
+  noteEventBinding(entry) {
+    if (entry.dynamic?.op === DynamicOp.bindEvent) {
+      const payloadKind = payloadKindForTestExtractionPlan(entry.dynamic.eventExtractionPlan);
+      if (payloadKind !== undefined) {
+        this.eventPayloadKinds.set(entry.dynamic.eventId, payloadKind);
+      }
+      return;
+    }
+
+    switch (entry.op) {
+      case Op.bindClick:
+      case Op.bindInput:
+      case Op.bindCheck:
+      case Op.bindPointerDown:
+      case Op.bindPointerUp:
+      case Op.bindPointerEnter:
+      case Op.bindPointerLeave:
+        this.eventPayloadKinds.set(entry.b, payloadKindForFixedEventOp(entry.op));
+        return;
+
+      default:
+        return;
+    }
+  }
 }
 
 function encodeDynamicRecord(spec) {
@@ -253,13 +330,16 @@ function encodeDynamicPayload(spec) {
       return concatBytes([u32Bytes(spec.elemId), stringBytes(spec.name)]);
 
     case DynamicOp.bindEvent:
+      const delivery = spec.delivery ?? deliveryForTestBinding(spec);
       return concatBytes([
         u32Bytes(spec.elemId),
         u32Bytes(spec.eventId),
         stringBytes(spec.eventName),
         u32Bytes(spec.options ?? 0),
-        u32Bytes(spec.payloadKind),
-        bytesField(spec.payloadSpec),
+        u32Bytes(delivery.requested),
+        u32Bytes(delivery.effective),
+        u32Bytes(delivery.reason),
+        bytesField(spec.eventExtractionPlan),
       ]);
 
     case DynamicOp.clearEvent:
@@ -267,6 +347,62 @@ function encodeDynamicPayload(spec) {
 
     default:
       return new Uint8Array(0);
+  }
+}
+
+function deliveryForTestBinding(spec) {
+  return {
+    requested: EventDeliveryRequestWire.auto,
+    effective: EventDeliveryEffectiveWire.native,
+    reason: nativeDeliveryReasonForTestBinding(spec),
+  };
+}
+
+function nativeDeliveryReasonForTestBinding(spec) {
+  const options = spec.options ?? 0;
+  if ((options & ListenerOptions.capture) !== 0) return EventDeliveryReasonWire.capturePolicy;
+  if ((options & ListenerOptions.stopImmediatePropagation) !== 0) return EventDeliveryReasonWire.stopImmediatePolicy;
+  if ((options & ListenerOptions.stopPropagation) !== 0) return EventDeliveryReasonWire.stopPropagationPolicy;
+  if ((options & ListenerOptions.preventDefault) !== 0) return EventDeliveryReasonWire.preventDefaultPolicy;
+  if ((options & ListenerOptions.once) !== 0) return EventDeliveryReasonWire.oncePolicy;
+  if ((options & ListenerOptions.passive) !== 0) return EventDeliveryReasonWire.passivePolicy;
+  if ((options & ListenerOptions.self) !== 0) return EventDeliveryReasonWire.selfFilter;
+  return EventDeliveryReasonWire.nativeRuntimeDefault;
+}
+
+function payloadKindForFixedEventOp(op) {
+  switch (op) {
+    case Op.bindClick:
+    case Op.bindPointerDown:
+    case Op.bindPointerUp:
+    case Op.bindPointerEnter:
+    case Op.bindPointerLeave:
+      return PayloadKind.unit;
+
+    case Op.bindInput:
+      return PayloadKind.str;
+
+    case Op.bindCheck:
+      return PayloadKind.bool;
+
+    default:
+      return undefined;
+  }
+}
+
+function payloadKindForTestExtractionPlan(value) {
+  const bytes = toUint8Array(value);
+  switch (bytes[0]) {
+    case BoundarySchemaTag.unit:
+      return PayloadKind.unit;
+    case BoundarySchemaTag.text:
+      return PayloadKind.str;
+    case BoundarySchemaTag.bool:
+      return PayloadKind.bool;
+    case BoundarySchemaTag.record:
+      return PayloadKind.bytes;
+    default:
+      return undefined;
   }
 }
 
@@ -523,7 +659,7 @@ test("composition keeps SetValue patches deferred while focused", () => {
   const { host, root, runtime } = mountWith([
     { op: Op.resetDom },
     { op: Op.createElement, a: 1, s: "input" },
-    { op: Op.bindInput, a: 1, b: 10, c: PayloadAccessor.targetValue },
+    { op: Op.bindInput, a: 1, b: 10 },
     { op: Op.appendChild, a: 0, b: 1 },
   ]);
   const input = findNode(root, (node) => node.tagName === "INPUT");
@@ -698,21 +834,21 @@ test("event payloads round-trip through the wasm memory boundary", () => {
     { op: Op.resetDom },
     { op: Op.createElement, a: 1, s: "button" },
     { op: Op.setText, a: 1, s: "click" },
-    { op: Op.bindClick, a: 1, b: 10, c: PayloadAccessor.none },
+    { op: Op.bindClick, a: 1, b: 10 },
     { op: Op.appendChild, a: 0, b: 1 },
     { op: Op.createElement, a: 2, s: "input" },
-    { op: Op.bindInput, a: 2, b: 11, c: PayloadAccessor.targetValue },
+    { op: Op.bindInput, a: 2, b: 11 },
     { op: Op.appendChild, a: 0, b: 2 },
     { op: Op.createElement, a: 3, s: "input" },
     { op: Op.setRole, a: 3, s: "checkbox" },
-    { op: Op.bindCheck, a: 3, b: 12, c: PayloadAccessor.targetChecked },
+    { op: Op.bindCheck, a: 3, b: 12 },
     { op: Op.appendChild, a: 0, b: 3 },
     { op: Op.createElement, a: 4, s: "section" },
     { op: Op.setText, a: 4, s: "drop-zone" },
-    { op: Op.bindPointerDown, a: 4, b: 13, c: PayloadAccessor.none },
-    { op: Op.bindPointerEnter, a: 4, b: 14, c: PayloadAccessor.none },
-    { op: Op.bindPointerUp, a: 4, b: 15, c: PayloadAccessor.none },
-    { op: Op.bindPointerLeave, a: 4, b: 16, c: PayloadAccessor.none },
+    { op: Op.bindPointerDown, a: 4, b: 13 },
+    { op: Op.bindPointerEnter, a: 4, b: 14 },
+    { op: Op.bindPointerUp, a: 4, b: 15 },
+    { op: Op.bindPointerLeave, a: 4, b: 16 },
     { op: Op.appendChild, a: 0, b: 4 },
   ]);
 
@@ -755,8 +891,7 @@ test("dynamic keydown events dispatch explicit key shift byte payloads", () => {
         eventName: "keydown",
         eventId: 21,
         options: 0,
-        payloadKind: PayloadKind.bytes,
-        payloadSpec: keyShiftPayloadSpec,
+        eventExtractionPlan: keyShiftEventExtractionPlan,
       },
     },
     { op: Op.appendChild, a: 0, b: 1 },
@@ -781,8 +916,7 @@ test("dynamic submit events apply static prevent-default policy", () => {
         eventName: "submit",
         eventId: 22,
         options: ListenerOptions.preventDefault,
-        payloadKind: PayloadKind.unit,
-        payloadSpec: unitPayloadSpec,
+        eventExtractionPlan: unitEventExtractionPlan,
       },
     },
     { op: Op.appendChild, a: 0, b: 1 },
@@ -807,67 +941,312 @@ test("dynamic submit events apply static prevent-default policy", () => {
   assert.deepEqual(host.dispatches, [{ eventId: 22, kind: PayloadKind.unit }]);
 });
 
-test("dynamic form named events dispatch unit and target value payloads", () => {
+test("dynamic events apply static stop-propagation policy", () => {
+  const telemetry = [];
+  const { host, root } = mountWith(
+    [
+      { op: Op.resetDom },
+      { op: Op.createElement, a: 1, s: "button" },
+      { op: Op.setText, a: 1, s: "click" },
+      {
+        dynamic: {
+          op: DynamicOp.bindEvent,
+          elemId: 1,
+          eventName: "click",
+          eventId: 123,
+          options: ListenerOptions.stopPropagation,
+          eventExtractionPlan: unitEventExtractionPlan,
+        },
+      },
+      { op: Op.appendChild, a: 0, b: 1 },
+    ],
+    { telemetry: (entry) => telemetry.push(entry) },
+  );
+  const button = findByText(root, "button", "click");
+  let stopCalls = 0;
+
+  const event = fireEvent(button, "click", {
+    stopPropagation() {
+      stopCalls += 1;
+      this.propagationStopped = true;
+    },
+  });
+
+  assert.equal(stopCalls, 1);
+  assert.equal(event.propagationStopped, true);
+  assert.equal(event.immediatePropagationStopped, false);
+  assert.deepEqual(host.dispatches, [{ eventId: 123, kind: PayloadKind.unit }]);
+  assert.ok(
+    telemetry.some(
+      (entry) =>
+        entry.kind === "dom_event" &&
+        entry.eventId === 123 &&
+        entry.listenerOptions?.stopPropagation === true &&
+        entry.stoppedPropagation === true &&
+        entry.stoppedImmediatePropagation === false,
+    ),
+  );
+});
+
+test("dynamic events apply static stop-immediate propagation policy", () => {
   const { host, root } = mountWith([
     { op: Op.resetDom },
-    { op: Op.createElement, a: 1, s: "input" },
+    { op: Op.createElement, a: 1, s: "button" },
+    { op: Op.setText, a: 1, s: "click" },
     {
       dynamic: {
         op: DynamicOp.bindEvent,
         elemId: 1,
-        eventName: "focus",
+        eventName: "click",
         eventId: 23,
-        options: ListenerOptions.capture | ListenerOptions.passive,
-        payloadKind: PayloadKind.unit,
-        payloadSpec: unitPayloadSpec,
-      },
-    },
-    {
-      dynamic: {
-        op: DynamicOp.bindEvent,
-        elemId: 1,
-        eventName: "blur",
-        eventId: 24,
-        options: ListenerOptions.once,
-        payloadKind: PayloadKind.unit,
-        payloadSpec: unitPayloadSpec,
-      },
-    },
-    {
-      dynamic: {
-        op: DynamicOp.bindEvent,
-        elemId: 1,
-        eventName: "change",
-        eventId: 25,
-        options: 0,
-        payloadKind: PayloadKind.str,
-        payloadSpec: targetValuePayloadSpec,
-      },
-    },
-    {
-      dynamic: {
-        op: DynamicOp.bindEvent,
-        elemId: 1,
-        eventName: "compositionstart",
-        eventId: 26,
-        options: 0,
-        payloadKind: PayloadKind.unit,
-        payloadSpec: unitPayloadSpec,
-      },
-    },
-    {
-      dynamic: {
-        op: DynamicOp.bindEvent,
-        elemId: 1,
-        eventName: "compositionend",
-        eventId: 27,
-        options: 0,
-        payloadKind: PayloadKind.unit,
-        payloadSpec: unitPayloadSpec,
+        options: ListenerOptions.stopImmediatePropagation,
+        eventExtractionPlan: unitEventExtractionPlan,
       },
     },
     { op: Op.appendChild, a: 0, b: 1 },
   ]);
+  const button = findByText(root, "button", "click");
+  let laterListenerFired = false;
+  button.addEventListener("click", () => {
+    laterListenerFired = true;
+  });
+
+  const event = fireEvent(button, "click");
+
+  assert.equal(event.immediatePropagationStopped, true);
+  assert.equal(laterListenerFired, false);
+  assert.deepEqual(host.dispatches, [{ eventId: 23, kind: PayloadKind.unit }]);
+});
+
+test("dynamic events apply self and trusted filters before static policy", () => {
+  const telemetry = [];
+  const { host, root } = mountWith(
+    [
+      { op: Op.resetDom },
+      { op: Op.createElement, a: 1, s: "button" },
+      { op: Op.setText, a: 1, s: "self" },
+      {
+        dynamic: {
+          op: DynamicOp.bindEvent,
+          elemId: 1,
+          eventName: "click",
+          eventId: 24,
+          options: ListenerOptions.self | ListenerOptions.preventDefault,
+          eventExtractionPlan: unitEventExtractionPlan,
+        },
+      },
+      { op: Op.appendChild, a: 0, b: 1 },
+      { op: Op.createElement, a: 2, s: "button" },
+      { op: Op.setText, a: 2, s: "trusted" },
+      {
+        dynamic: {
+          op: DynamicOp.bindEvent,
+          elemId: 2,
+          eventName: "click",
+          eventId: 25,
+          options: ListenerOptions.trusted,
+          eventExtractionPlan: unitEventExtractionPlan,
+        },
+      },
+      { op: Op.appendChild, a: 0, b: 2 },
+    ],
+    { telemetry: (entry) => telemetry.push(entry) },
+  );
+  const selfButton = findByText(root, "button", "self");
+  const childTarget = document.createElement("span");
+  selfButton.appendChild(childTarget);
+
+  const filteredSelf = fireEvent(selfButton, "click", { target: childTarget });
+  assert.equal(filteredSelf.defaultPrevented, false);
+  assert.deepEqual(host.dispatches, []);
+
+  const acceptedSelf = fireEvent(selfButton, "click");
+  assert.equal(acceptedSelf.defaultPrevented, true);
+  assert.deepEqual(host.dispatches, [{ eventId: 24, kind: PayloadKind.unit }]);
+
+  const trustedButton = findByText(root, "button", "trusted");
+  fireEvent(trustedButton, "click", { isTrusted: false });
+  assert.deepEqual(host.dispatches, [{ eventId: 24, kind: PayloadKind.unit }]);
+  fireEvent(trustedButton, "click", { isTrusted: true });
+  assert.deepEqual(host.dispatches, [
+    { eventId: 24, kind: PayloadKind.unit },
+    { eventId: 25, kind: PayloadKind.unit },
+  ]);
+  assert.ok(
+    telemetry.some(
+      (entry) =>
+        entry.kind === "dom_event_filtered" &&
+        entry.eventId === 24 &&
+        entry.filter === "self",
+    ),
+  );
+  assert.ok(
+    telemetry.some(
+      (entry) =>
+        entry.kind === "dom_event_filtered" &&
+        entry.eventId === 25 &&
+        entry.filter === "trusted",
+    ),
+  );
+});
+
+test("dynamic once listener survives self-filtered deliveries", () => {
+  const { host, root } = mountWith([
+    { op: Op.resetDom },
+    { op: Op.createElement, a: 1, s: "button" },
+    { op: Op.setText, a: 1, s: "once" },
+    {
+      dynamic: {
+        op: DynamicOp.bindEvent,
+        elemId: 1,
+        eventName: "click",
+        eventId: 26,
+        options: ListenerOptions.once | ListenerOptions.self,
+        eventExtractionPlan: unitEventExtractionPlan,
+      },
+    },
+    { op: Op.appendChild, a: 0, b: 1 },
+  ]);
+  const button = findByText(root, "button", "once");
+  const childTarget = document.createElement("span");
+  button.appendChild(childTarget);
+
+  assert.deepEqual(button.listeners.get("click")[0].options, {
+    capture: false,
+    passive: false,
+    once: false,
+  });
+
+  fireEvent(button, "click", { target: childTarget });
+  assert.deepEqual(host.dispatches, []);
+  assert.equal(button.listeners.get("click").length, 1);
+
+  fireEvent(button, "click");
+  assert.deepEqual(host.dispatches, [{ eventId: 26, kind: PayloadKind.unit }]);
+  assert.equal(button.listeners.get("click").length, 0);
+
+  fireEvent(button, "click");
+  assert.deepEqual(host.dispatches, [{ eventId: 26, kind: PayloadKind.unit }]);
+});
+
+test("event dispatch retains response bits returned by roc_ui_event", () => {
+  const { host, root, runtime } = mountWith([
+    { op: Op.resetDom },
+    { op: Op.createElement, a: 1, s: "button" },
+    { op: Op.setText, a: 1, s: "click" },
+    { op: Op.bindClick, a: 1, b: 23 },
+    { op: Op.appendChild, a: 0, b: 1 },
+  ]);
+  host.eventResponseBits.set(23, 5);
+
+  fireEvent(findByText(root, "button", "click"), "click");
+
+  assert.deepEqual(host.dispatches, [{ eventId: 23, kind: PayloadKind.unit }]);
+  assert.equal(runtime.lastEventResponseBits, 5);
+});
+
+test("event dispatch wraps wasm host trap diagnostics", () => {
+  const { host, root } = mountWith([
+    { op: Op.resetDom },
+    { op: Op.createElement, a: 1, s: "button" },
+    { op: Op.setText, a: 1, s: "click" },
+    { op: Op.bindClick, a: 1, b: 24 },
+    { op: Op.appendChild, a: 0, b: 1 },
+  ]);
+  host.eventTrapMessages.set(
+    24,
+    "DOM event payload descriptor does not match Roc event descriptor",
+  );
+
+  assert.throws(
+    () => fireEvent(findByText(root, "button", "click"), "click"),
+    /DOM event payload descriptor does not match Roc event descriptor: unreachable/,
+  );
+  assert.deepEqual(host.dispatches, []);
+});
+
+test("event dispatch preserves diagnostics when payload dealloc also traps", () => {
+  const { host, root } = mountWith([
+    { op: Op.resetDom },
+    { op: Op.createElement, a: 1, s: "input" },
+    { op: Op.bindInput, a: 1, b: 25 },
+    { op: Op.appendChild, a: 0, b: 1 },
+  ]);
+  host.eventTrapMessages.set(
+    25,
+    "DOM event payload kind does not match Roc event descriptor",
+  );
+  host.deallocTrapMessage = "roc_dealloc failed after event trap";
+
+  const input = findNode(root, (node) => node.tagName === "INPUT");
+  input.value = "typed";
+  assert.throws(
+    () => fireEvent(input, "input"),
+    /DOM event payload kind does not match Roc event descriptor: unreachable/,
+  );
+  assert.deepEqual(host.dispatches, []);
+});
+
+test("dynamic form named events dispatch unit and target value payloads", () => {
+  const telemetry = [];
+  const { host, root } = mountWith(
+    [
+      { op: Op.resetDom },
+      { op: Op.createElement, a: 1, s: "input" },
+      {
+        dynamic: {
+          op: DynamicOp.bindEvent,
+          elemId: 1,
+          eventName: "focus",
+          eventId: 23,
+          options: ListenerOptions.capture | ListenerOptions.passive,
+          eventExtractionPlan: unitEventExtractionPlan,
+        },
+      },
+      {
+        dynamic: {
+          op: DynamicOp.bindEvent,
+          elemId: 1,
+          eventName: "blur",
+          eventId: 24,
+          options: ListenerOptions.once,
+          eventExtractionPlan: unitEventExtractionPlan,
+        },
+      },
+      {
+        dynamic: {
+          op: DynamicOp.bindEvent,
+          elemId: 1,
+          eventName: "change",
+          eventId: 25,
+          options: 0,
+          eventExtractionPlan: targetValueEventExtractionPlan,
+        },
+      },
+      {
+        dynamic: {
+          op: DynamicOp.bindEvent,
+          elemId: 1,
+          eventName: "compositionstart",
+          eventId: 26,
+          options: 0,
+          eventExtractionPlan: unitEventExtractionPlan,
+        },
+      },
+      {
+        dynamic: {
+          op: DynamicOp.bindEvent,
+          elemId: 1,
+          eventName: "compositionend",
+          eventId: 27,
+          options: 0,
+          eventExtractionPlan: unitEventExtractionPlan,
+        },
+      },
+      { op: Op.appendChild, a: 0, b: 1 },
+    ],
+    { telemetry: (entry) => telemetry.push(entry) },
+  );
 
   const input = findNode(root, (node) => node.tagName === "INPUT");
   assert.deepEqual(input.listeners.get("focus")[0].options, {
@@ -895,46 +1274,97 @@ test("dynamic form named events dispatch unit and target value payloads", () => 
     { eventId: 27, kind: PayloadKind.unit },
     { eventId: 24, kind: PayloadKind.unit },
   ]);
+  assert.ok(
+    telemetry.some(
+      (entry) =>
+        entry.kind === "bind_event" &&
+        entry.domEvent === "focus" &&
+        entry.requestedDelivery === "auto" &&
+        entry.effectiveDelivery === "native" &&
+        entry.deliveryReason === "capture-policy",
+    ),
+  );
+  assert.ok(
+    telemetry.some(
+      (entry) =>
+        entry.kind === "bind_event" &&
+        entry.domEvent === "blur" &&
+        entry.requestedDelivery === "auto" &&
+        entry.effectiveDelivery === "native" &&
+        entry.deliveryReason === "once-policy",
+    ),
+  );
 });
 
-test("malformed dynamic event payload descriptors fail closed", () => {
+test("malformed dynamic event extraction plans fail closed", () => {
   const { host, runtime } = mountWith([
     { op: Op.resetDom },
     { op: Op.createElement, a: 1, s: "input" },
     { op: Op.appendChild, a: 0, b: 1 },
   ]);
 
-  const bind = (payloadSpec, overrides = {}) => ({
+  const bind = (eventExtractionPlan, overrides = {}) => ({
     dynamic: {
       op: DynamicOp.bindEvent,
       elemId: 1,
       eventName: "keydown",
       eventId: 31,
       options: overrides.options ?? 0,
-      payloadKind: overrides.payloadKind ?? PayloadKind.bytes,
-      payloadSpec,
+      eventExtractionPlan,
     },
   });
 
   const duplicateFields = concatBytes([
-    new Uint8Array([PayloadSpecTag.record, 2]),
-    fieldSpec("key", new Uint8Array([PayloadSpecTag.text, PayloadSpecSource.event, PayloadSpecLeaf.key])),
-    fieldSpec("key", new Uint8Array([PayloadSpecTag.text, PayloadSpecSource.event, PayloadSpecLeaf.key])),
+    new Uint8Array([BoundarySchemaTag.record, 2]),
+    fieldSpec("key", new Uint8Array([BoundarySchemaTag.text, EventExtractionSource.event, EventExtractionLeaf.key])),
+    fieldSpec("key", new Uint8Array([BoundarySchemaTag.text, EventExtractionSource.event, EventExtractionLeaf.key])),
+  ]);
+  const nestedRecord = concatBytes([
+    new Uint8Array([BoundarySchemaTag.record, 1]),
+    fieldSpec(
+      "outer",
+      concatBytes([
+        new Uint8Array([BoundarySchemaTag.record, 1]),
+        fieldSpec("inner", new Uint8Array([BoundarySchemaTag.text, EventExtractionSource.event, EventExtractionLeaf.key])),
+      ]),
+    ),
+  ]);
+  const invalidUtf8Field = concatBytes([
+    new Uint8Array([BoundarySchemaTag.record, 1, 1, 0xff]),
+    new Uint8Array([BoundarySchemaTag.text, EventExtractionSource.event, EventExtractionLeaf.key]),
   ]);
 
   const cases = [
-    [bind(new Uint8Array([99])), /malformed event payload descriptor.*unknown descriptor tag 99/],
+    [bind(new Uint8Array([99])), /malformed event extraction plan.*unknown shape tag 99/],
     [
-      bind(new Uint8Array([PayloadSpecTag.record, 1, 3, 0x6b])),
-      /malformed event payload descriptor.*record_field_name extends beyond descriptor length/,
-    ],
-    [bind(duplicateFields), /malformed event payload descriptor.*duplicated/],
-    [
-      bind(keyShiftPayloadSpec, { payloadKind: PayloadKind.unit }),
-      /malformed event payload descriptor.*payload_kind unit did not match descriptor bytes/,
+      bind(new Uint8Array([BoundarySchemaTag.text, 99, EventExtractionLeaf.key])),
+      /malformed event extraction plan.*unknown event extraction source tag 99/,
     ],
     [
-      bind(keyShiftPayloadSpec, { options: 1 << 12 }),
+      bind(new Uint8Array([BoundarySchemaTag.bool, EventExtractionSource.event, EventExtractionLeaf.value])),
+      /malformed event extraction plan.*bool event extraction used incompatible leaf tag 2/,
+    ],
+    [
+      bind(new Uint8Array([BoundarySchemaTag.text, EventExtractionSource.currentTarget, EventExtractionLeaf.key])),
+      /malformed event extraction plan.*source tag 3 cannot produce leaf tag 1/,
+    ],
+    [
+      bind(new Uint8Array([BoundarySchemaTag.bool, EventExtractionSource.event, EventExtractionLeaf.checked])),
+      /malformed event extraction plan.*source tag 1 cannot produce leaf tag 3/,
+    ],
+    [
+      bind(new Uint8Array([BoundarySchemaTag.record, 0])),
+      /malformed event extraction plan.*record field count was zero/,
+    ],
+    [
+      bind(new Uint8Array([BoundarySchemaTag.record, 1, 3, 0x6b])),
+      /malformed event extraction plan.*record_field_name extends beyond extraction plan length/,
+    ],
+    [bind(duplicateFields), /malformed event extraction plan.*duplicated/],
+    [bind(invalidUtf8Field), /malformed event extraction plan.*field name was not valid UTF-8/],
+    [bind(nestedRecord), /malformed event extraction plan.*nested record shape/],
+    [
+      bind(keyShiftEventExtractionPlan, { options: 1 << 12 }),
       /unsupported listener option bits/,
     ],
   ];
@@ -943,6 +1373,46 @@ test("malformed dynamic event payload descriptors fail closed", () => {
     host.writeCommands([entry]);
     assert.throws(() => runtime.applyPendingCommands("bad-bind-event"), pattern);
   }
+});
+
+test("dynamic event extraction failure fails closed without dispatching reducer", () => {
+  const telemetry = [];
+  const { host, root } = mountWith(
+    [
+      { op: Op.resetDom },
+      { op: Op.createElement, a: 1, s: "button" },
+      { op: Op.setText, a: 1, s: "click" },
+      {
+        dynamic: {
+          op: DynamicOp.bindEvent,
+          elemId: 1,
+          eventName: "click",
+          eventId: 32,
+          options: 0,
+          eventExtractionPlan: eventKeyEventExtractionPlan,
+        },
+      },
+      { op: Op.appendChild, a: 0, b: 1 },
+    ],
+    { telemetry: (entry) => telemetry.push(entry) },
+  );
+
+  assert.throws(
+    () => fireEvent(findByText(root, "button", "click"), "click"),
+    /event extraction text leaf did not yield a string/,
+  );
+  assert.deepEqual(host.dispatches, []);
+  assert.ok(
+    telemetry.some(
+      (entry) =>
+        entry.kind === "event_payload_error" &&
+        entry.eventId === 32 &&
+        entry.payloadKind === "str" &&
+        entry.boundarySchema === "text" &&
+        entry.eventExtractionPlan === "text:event.key" &&
+        /event extraction text leaf did not yield a string/.test(entry.message),
+    ),
+  );
 });
 
 test("memory growth during byte payload allocation keeps response commands readable", () => {
@@ -957,8 +1427,7 @@ test("memory growth during byte payload allocation keeps response commands reada
           eventName: "keydown",
           eventId: 41,
           options: 0,
-          payloadKind: PayloadKind.bytes,
-          payloadSpec: keyShiftPayloadSpec,
+          eventExtractionPlan: keyShiftEventExtractionPlan,
         },
       },
       { op: Op.appendChild, a: 0, b: 1 },
@@ -996,7 +1465,7 @@ test("clear_event and remove_node release DOM listeners", () => {
     { op: Op.resetDom },
     { op: Op.createElement, a: 1, s: "button" },
     { op: Op.setText, a: 1, s: "click" },
-    { op: Op.bindClick, a: 1, b: 1, c: PayloadAccessor.none },
+    { op: Op.bindClick, a: 1, b: 1 },
     { op: Op.appendChild, a: 0, b: 1 },
   ]);
 
@@ -1009,7 +1478,7 @@ test("clear_event and remove_node release DOM listeners", () => {
     op: Op.bindClick,
     a: 1,
     b: 2,
-    c: PayloadAccessor.none,
+    c: 0,
     d: 0,
     e: 0,
   });
@@ -1025,7 +1494,7 @@ test("telemetry records command batches DOM events and event payload dispatches"
       { op: Op.resetDom },
       { op: Op.createElement, a: 1, s: "button" },
       { op: Op.setText, a: 1, s: "click" },
-      { op: Op.bindClick, a: 1, b: 17, c: PayloadAccessor.none },
+      { op: Op.bindClick, a: 1, b: 17 },
       { op: Op.appendChild, a: 0, b: 1 },
     ],
     { telemetry: (entry) => telemetry.push(entry) },
@@ -1050,7 +1519,22 @@ test("telemetry records command batches DOM events and event payload dispatches"
         entry.kind === "dom_event" &&
         entry.domEvent === "click" &&
         entry.eventId === 17 &&
+        entry.requestedDelivery === "auto" &&
+        entry.effectiveDelivery === "native" &&
+        entry.deliveryReason === "native-runtime-default" &&
+        entry.boundarySchema === "unit" &&
         entry.currentTarget.tag === "button",
+    ),
+  );
+  assert.ok(
+    telemetry.some(
+      (entry) =>
+        entry.kind === "bind_event" &&
+        entry.domEvent === "click" &&
+        entry.eventId === 17 &&
+        entry.requestedDelivery === "auto" &&
+        entry.effectiveDelivery === "native" &&
+        entry.deliveryReason === "native-runtime-default",
     ),
   );
   assert.ok(
@@ -1059,7 +1543,8 @@ test("telemetry records command batches DOM events and event payload dispatches"
         entry.kind === "event_payload" &&
         entry.eventId === 17 &&
         entry.payloadKind === "unit" &&
-        entry.payloadAccessor === "none",
+        entry.boundarySchema === "unit" &&
+        entry.eventExtractionPlan === "unit",
     ),
   );
   assert.ok(
@@ -1079,7 +1564,7 @@ test("memory growth during dispatch keeps the response command stream readable",
     [
       { op: Op.resetDom },
       { op: Op.createElement, a: 1, s: "input" },
-      { op: Op.bindInput, a: 1, b: 2, c: PayloadAccessor.targetValue },
+      { op: Op.bindInput, a: 1, b: 2 },
       { op: Op.appendChild, a: 0, b: 1 },
       { op: Op.createText, a: 2, s: "start" },
       { op: Op.appendChild, a: 0, b: 2 },

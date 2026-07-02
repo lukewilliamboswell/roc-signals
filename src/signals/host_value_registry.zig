@@ -1,3 +1,5 @@
+//! One-based registry for opaque Roc HostValue handles and their capabilities.
+
 const std = @import("std");
 const abi = @import("roc_platform_abi.zig");
 const erased_calls = @import("erased_calls.zig");

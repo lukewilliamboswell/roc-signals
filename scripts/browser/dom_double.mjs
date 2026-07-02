@@ -74,6 +74,9 @@ class FakeNode {
   dispatch(type, event) {
     for (const entry of [...(this.listeners.get(type) ?? [])]) {
       entry.handler(event);
+      if (event.immediatePropagationStopped) {
+        break;
+      }
     }
   }
 }
@@ -208,6 +211,11 @@ export function fireEvent(node, type, init = {}) {
       this.defaultPrevented = true;
     },
     stopPropagation() {},
+    immediatePropagationStopped: false,
+    stopImmediatePropagation() {
+      this.immediatePropagationStopped = true;
+      this.stopPropagation();
+    },
     ...init,
   };
   node.dispatch(type, event);

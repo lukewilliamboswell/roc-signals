@@ -101,7 +101,8 @@ test "NoMetrics is a zero-size no-op metrics sink" {
 }
 
 const EventPayloadKind = engine.EventPayloadKind;
-const EventPayloadAccessor = engine.EventPayloadAccessor;
+const EventExtractionPlanKind = engine.EventExtractionPlanKind;
+const BoundaryPayloadDescriptor = engine.BoundaryPayloadDescriptor;
 const SignalKind = engine.SignalKind;
 const HostActiveEventDesc = engine.HostActiveEventDesc;
 const HostPendingTask = engine.HostPendingTask;
@@ -401,20 +402,12 @@ const HostEnv = struct {
         clearRenderBoolField(self, elem_id, field);
     }
 
-    pub fn sinkBindEventKind(self: *HostEnv, elem_id: u64, kind: RenderEventKind, event_id: u64, _: EventPayloadAccessor) void {
-        bindNodeEventKind(self, elem_id, kind, event_id);
+    pub fn sinkBindEvent(self: *HostEnv, command: render_sink.EventBindCommand) void {
+        bindNodeEvent(self, command);
     }
 
-    pub fn sinkClearEvent(self: *HostEnv, elem_id: u64, kind: RenderEventKind) void {
-        clearNodeEventKind(self, elem_id, kind);
-    }
-
-    pub fn sinkBindEventName(self: *HostEnv, elem_id: u64, name: []const u8, event_id: u64, options: u32, payload_kind: EventPayloadKind, payload_accessor: EventPayloadAccessor) void {
-        bindNodeEventName(self, elem_id, name, event_id, options, payload_kind, payload_accessor);
-    }
-
-    pub fn sinkClearEventName(self: *HostEnv, elem_id: u64, name: []const u8) void {
-        clearNodeEventName(self, elem_id, name);
+    pub fn sinkClearEvent(self: *HostEnv, command: render_sink.EventClearCommand) void {
+        clearNodeEvent(self, command);
     }
 
     pub fn sinkStartInterval(_: *HostEnv, _: u64, _: u64) void {}
@@ -439,13 +432,13 @@ const HostEnv = struct {
         if (!std.mem.eql(u8, elem.tag, expected_tag)) failHost("render cache tag disagreed with simulated DOM");
         if (elem.parent_id != parent_id) failHost("render cache parent disagreed with simulated DOM");
         if (!std.mem.eql(u64, elem.children.items, children)) failHost("render cache child order disagreed with simulated DOM");
-        if (elem.bound_click_event != click_event) failHost("render cache click binding disagreed with simulated DOM");
-        if (elem.bound_input_event != input_event) failHost("render cache input binding disagreed with simulated DOM");
-        if (elem.bound_check_event != check_event) failHost("render cache check binding disagreed with simulated DOM");
-        if (elem.bound_pointer_down_event != pointer_down_event) failHost("render cache pointer-down binding disagreed with simulated DOM");
-        if (elem.bound_pointer_up_event != pointer_up_event) failHost("render cache pointer-up binding disagreed with simulated DOM");
-        if (elem.bound_pointer_enter_event != pointer_enter_event) failHost("render cache pointer-enter binding disagreed with simulated DOM");
-        if (elem.bound_pointer_leave_event != pointer_leave_event) failHost("render cache pointer-leave binding disagreed with simulated DOM");
+        if (sim_dom.fixedEventId(elem, .click) != click_event) failHost("render cache click binding disagreed with simulated DOM");
+        if (sim_dom.fixedEventId(elem, .input) != input_event) failHost("render cache input binding disagreed with simulated DOM");
+        if (sim_dom.fixedEventId(elem, .check) != check_event) failHost("render cache check binding disagreed with simulated DOM");
+        if (sim_dom.fixedEventId(elem, .pointer_down) != pointer_down_event) failHost("render cache pointer-down binding disagreed with simulated DOM");
+        if (sim_dom.fixedEventId(elem, .pointer_up) != pointer_up_event) failHost("render cache pointer-up binding disagreed with simulated DOM");
+        if (sim_dom.fixedEventId(elem, .pointer_enter) != pointer_enter_event) failHost("render cache pointer-enter binding disagreed with simulated DOM");
+        if (sim_dom.fixedEventId(elem, .pointer_leave) != pointer_leave_event) failHost("render cache pointer-leave binding disagreed with simulated DOM");
     }
 
     fn activeRocHost(self: *HostEnv) *abi.RocHost {
@@ -1399,24 +1392,20 @@ fn applyDirtyRenderSinks(host: *HostEnv, roc_host: *abi.RocHost, dirty_source_no
     return host.engine.applyDirtyRenderSinks(host, roc_host, dirty_source_node_ids, changed_record_ids, dirty_generation);
 }
 
-fn bindNodeEventKind(host: *HostEnv, elem_id: u64, kind: RenderEventKind, event_id: u64) void {
-    sim_dom.bindEventKind(domElementById(host, elem_id), kind, event_id);
+fn bindNodeEvent(host: *HostEnv, command: render_sink.EventBindCommand) void {
+    sim_dom.bindEvent(host.hostAllocator(), domElementById(host, command.elem_id), command.key, command.binding);
 }
 
-fn clearNodeEventKind(host: *HostEnv, elem_id: u64, kind: RenderEventKind) void {
-    sim_dom.clearEventKind(domElementById(host, elem_id), kind);
-}
-
-fn bindNodeEventName(host: *HostEnv, elem_id: u64, name: []const u8, event_id: u64, options: u32, payload_kind: EventPayloadKind, payload_accessor: EventPayloadAccessor) void {
-    sim_dom.bindEventName(host.hostAllocator(), domElementById(host, elem_id), name, event_id, options, payload_kind, payload_accessor);
-}
-
-fn clearNodeEventName(host: *HostEnv, elem_id: u64, name: []const u8) void {
-    sim_dom.clearEventName(host.hostAllocator(), domElementById(host, elem_id), name);
+fn clearNodeEvent(host: *HostEnv, command: render_sink.EventClearCommand) void {
+    sim_dom.clearEvent(host.hostAllocator(), domElementById(host, command.elem_id), command.key);
 }
 
 fn nodeEventName(elem: *const DomElement, name: []const u8) ?DomNamedEvent {
     return sim_dom.namedEvent(elem, name);
+}
+
+fn nodeFixedEventId(host: *const HostEnv, elem_id: u64, kind: RenderEventKind) ?u64 {
+    return sim_dom.fixedEventId(&host.dom_elements.items[@intCast(elem_id)], kind);
 }
 
 fn replaceDomChildrenForStructuralParentMoves(host: *HostEnv, parent_elem_id: u64, next_child_ids: []const u64) void {
@@ -1545,9 +1534,9 @@ fn hostEventById(host: *HostEnv, event_id: u64) HostActiveEventDesc {
     return host.engine.active_events.items[@intCast(event_id - 1)];
 }
 
-fn validateEventPayloadKind(desc: HostActiveEventDesc, actual_payload_kind: EventPayloadKind) void {
-    if (desc.payload_kind != actual_payload_kind) {
-        failHost("DOM event payload kind does not match Roc event descriptor");
+fn validateBoundaryPayloadDescriptor(desc: HostActiveEventDesc, expected_payload_descriptor: BoundaryPayloadDescriptor) void {
+    if (!desc.payload_descriptor.eql(expected_payload_descriptor)) {
+        failHost("DOM event payload descriptor does not match Roc event descriptor");
     }
 }
 
@@ -1620,9 +1609,9 @@ fn acceptInitElem(host: *HostEnv, roc_host: *abi.RocHost, root_box: ElemBox) voi
     acceptInitElemWithStats(host, roc_host, root_box, null, null);
 }
 
-fn dispatchRocEventWithStats(host: *HostEnv, roc_host: *abi.RocHost, event_id: u64, payload_kind: EventPayloadKind, payload: HostValue, stats: ?*BenchmarkStats) void {
+fn dispatchRocEventWithStats(host: *HostEnv, roc_host: *abi.RocHost, event_id: u64, payload_descriptor: BoundaryPayloadDescriptor, payload: HostValue, stats: ?*BenchmarkStats) void {
     const desc = hostEventById(host, event_id);
-    validateEventPayloadKind(desc, payload_kind);
+    validateBoundaryPayloadDescriptor(desc, payload_descriptor);
     const payload_cap = desc.payload_reducer.capability;
     host.setHostValueCapability(payload, payload_cap);
     defer callHostValueToUnitWithCapability(host, roc_host, payload_cap, hv.hostValueCapabilityDrop(payload_cap), payload);
@@ -1692,8 +1681,8 @@ fn dispatchRocEventWithStats(host: *HostEnv, roc_host: *abi.RocHost, event_id: u
     }
 }
 
-fn dispatchRocEvent(host: *HostEnv, roc_host: *abi.RocHost, event_id: u64, payload_kind: EventPayloadKind, payload: HostValue) void {
-    dispatchRocEventWithStats(host, roc_host, event_id, payload_kind, payload, null);
+fn dispatchRocEvent(host: *HostEnv, roc_host: *abi.RocHost, event_id: u64, payload_descriptor: BoundaryPayloadDescriptor, payload: HostValue) void {
+    dispatchRocEventWithStats(host, roc_host, event_id, payload_descriptor, payload, null);
 }
 
 fn encodeKeyShiftPayload(allocator: std.mem.Allocator, key: []const u8, shift_key: bool) []u8 {
@@ -1710,23 +1699,20 @@ fn requireNamedEvent(elem: *const DomElement, name: []const u8, message: []const
 
 fn dispatchKeyDownWithStats(host: *HostEnv, roc_host: *abi.RocHost, elem: *const DomElement, key: []const u8, shift_key: bool, stats: ?*BenchmarkStats) void {
     const event = requireNamedEvent(elem, "keydown", "keydown target has no named keydown binding");
-    if (event.payload_kind != .bytes or event.payload_accessor != .record_key_shift) {
+    if (!event.binding.payload_descriptor.eql(BoundaryPayloadDescriptor.init(.bytes, .record_key_shift))) {
         failHost("keydown binding does not request the key/shift payload descriptor");
     }
     const payload_bytes = encodeKeyShiftPayload(host.hostAllocator(), key, shift_key);
     defer host.hostAllocator().free(payload_bytes);
-    dispatchRocEventWithStats(host, roc_host, event.event_id, .bytes, hostValueU8List(host, roc_host, payload_bytes), stats);
+    dispatchRocEventWithStats(host, roc_host, event.binding.event_id, event.binding.payload_descriptor, hostValueU8List(host, roc_host, payload_bytes), stats);
 }
 
 fn dispatchSubmitWithStats(host: *HostEnv, roc_host: *abi.RocHost, elem: *const DomElement, stats: ?*BenchmarkStats) void {
     const event = requireNamedEvent(elem, "submit", "submit target has no named submit binding");
-    if (event.payload_kind != .unit or event.payload_accessor != .none) {
+    if (!event.binding.payload_descriptor.eql(BoundaryPayloadDescriptor.init(.unit, .none))) {
         failHost("submit binding does not use a unit payload descriptor");
     }
-    if ((event.options & render.listener_option_prevent_default) == 0) {
-        failHost("submit binding is missing the static prevent-default listener policy");
-    }
-    dispatchRocEventWithStats(host, roc_host, event.event_id, .unit, hostValueUnit(host, roc_host), stats);
+    dispatchRocEventWithStats(host, roc_host, event.binding.event_id, event.binding.payload_descriptor, hostValueUnit(host, roc_host), stats);
 }
 
 fn makeSignalsRocHost(host: *HostEnv) abi.RocHost {
@@ -1744,10 +1730,10 @@ fn makeSignalsRocHost(host: *HostEnv) abi.RocHost {
 
 fn pointerEventIdForCommand(elem: *const DomElement, cmd_type: SpecCommandType) ?u64 {
     return switch (cmd_type) {
-        .pointer_down => elem.bound_pointer_down_event,
-        .pointer_up => elem.bound_pointer_up_event,
-        .pointer_enter => elem.bound_pointer_enter_event,
-        .pointer_leave => elem.bound_pointer_leave_event,
+        .pointer_down => sim_dom.fixedEventId(elem, .pointer_down),
+        .pointer_up => sim_dom.fixedEventId(elem, .pointer_up),
+        .pointer_enter => sim_dom.fixedEventId(elem, .pointer_enter),
+        .pointer_leave => sim_dom.fixedEventId(elem, .pointer_leave),
         else => null,
     };
 }
@@ -1841,12 +1827,23 @@ const BenchmarkCtx = struct {
         return host.findElementByLocator(locator, line_num);
     }
 
+    pub fn elementById(host: *Host, elem_id: u64) ?*BenchmarkDomElement {
+        if (elem_id >= host.dom_elements.items.len) return null;
+        const elem = &host.dom_elements.items[@intCast(elem_id)];
+        if (!elem.active) return null;
+        return elem;
+    }
+
     pub fn elementDisabled(elem: *const BenchmarkDomElement) bool {
         return elem.disabled;
     }
 
+    pub fn fixedEventId(elem: *const BenchmarkDomElement, kind: render.EventKind) ?u64 {
+        return sim_dom.fixedEventId(elem, kind);
+    }
+
     pub fn clickEventId(elem: *const BenchmarkDomElement) ?u64 {
-        return elem.bound_click_event;
+        return sim_dom.fixedEventId(elem, .click);
     }
 
     pub fn pointerEventId(elem: *const BenchmarkDomElement, cmd_type: SpecCommandType) ?u64 {
@@ -1854,19 +1851,19 @@ const BenchmarkCtx = struct {
     }
 
     pub fn inputEventId(elem: *const BenchmarkDomElement) ?u64 {
-        return elem.bound_input_event;
+        return sim_dom.fixedEventId(elem, .input);
     }
 
     pub fn checkEventId(elem: *const BenchmarkDomElement) ?u64 {
-        return elem.bound_check_event;
+        return sim_dom.fixedEventId(elem, .check);
     }
 
     pub fn namedEvent(elem: *const BenchmarkDomElement, name: []const u8) ?DomNamedEvent {
         return nodeEventName(elem, name);
     }
 
-    pub fn dispatchRocEventMeasured(host: *Host, roc_host: *RocHost, event_id: u64, payload_kind: EventPayloadKind, payload: HostValue, stats: ?*BenchmarkStats) void {
-        dispatchRocEventWithStats(host, roc_host, event_id, payload_kind, payload, stats);
+    pub fn dispatchRocEventMeasured(host: *Host, roc_host: *RocHost, event_id: u64, payload_descriptor: BoundaryPayloadDescriptor, payload: HostValue, stats: ?*BenchmarkStats) void {
+        dispatchRocEventWithStats(host, roc_host, event_id, payload_descriptor, payload, stats);
     }
 
     pub fn hostValueUnit(host: *Host, roc_host: *RocHost) HostValue {
@@ -1969,6 +1966,13 @@ const SpecRunnerCtx = struct {
         return host.findElementByLocator(locator, line_num);
     }
 
+    pub fn elementById(host: *Host, elem_id: u64) ?*DomElement {
+        if (elem_id >= host.dom_elements.items.len) return null;
+        const elem = &host.dom_elements.items[@intCast(elem_id)];
+        if (!elem.active) return null;
+        return elem;
+    }
+
     pub fn countElementsByLocator(host: *Host, locator: Locator) usize {
         return host.countElementsByLocator(locator);
     }
@@ -1977,8 +1981,12 @@ const SpecRunnerCtx = struct {
         return nodeEventName(elem, name);
     }
 
-    pub fn dispatchRocEvent(host: *Host, roc_host: *RocHost, event_id: u64, payload_kind: EventPayloadKind, payload: HostValue) void {
-        dispatchRocEventWithStats(host, roc_host, event_id, payload_kind, payload, null);
+    pub fn fixedEventId(elem: *const DomElement, kind: RenderEventKind) ?u64 {
+        return sim_dom.fixedEventId(elem, kind);
+    }
+
+    pub fn dispatchRocEvent(host: *Host, roc_host: *RocHost, event_id: u64, payload_descriptor: BoundaryPayloadDescriptor, payload: HostValue) void {
+        dispatchRocEventWithStats(host, roc_host, event_id, payload_descriptor, payload, null);
     }
 
     pub fn hostValueUnit(host: *Host, roc_host: *RocHost) HostValue {
@@ -2259,8 +2267,7 @@ test "signals host dirty plan deduplicates diamond join by rank" {
 
     try host.engine.event_descriptors.append(allocator, .{
         .event_id = 1,
-        .payload_kind = .unit,
-        .payload_accessor = .none,
+        .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none),
     });
     try appendTestSignalDescriptor(&host, 0, .source, &.{1}, &.{});
     try appendTestSignalDescriptor(&host, 1, .map, &.{}, &.{0});
@@ -3242,7 +3249,7 @@ test "signals host task sources reset on start only when requested" {
 
     {
         const cmd = testStartTaskCmd(&roc_host, reset_task, "lookup", "/api/first");
-        defer abi.decref__AnonStruct85(cmd, &roc_host);
+        defer abi.decref__AnonStruct91(cmd, &roc_host);
         const prune_start = host.engine.pending_roc_metrics.propagation_prunes;
         const counts = host.engine.startTaskCommand(&host, &roc_host, 0, cmd);
         try std.testing.expectEqual(@as(u64, 0), counts.total);
@@ -3256,7 +3263,7 @@ test "signals host task sources reset on start only when requested" {
 
     {
         const cmd = testStartTaskCmd(&roc_host, reset_task, "lookup", "/api/second");
-        defer abi.decref__AnonStruct85(cmd, &roc_host);
+        defer abi.decref__AnonStruct91(cmd, &roc_host);
         const counts = host.engine.startTaskCommand(&host, &roc_host, 0, cmd);
         try std.testing.expectEqual(@as(u64, 1), counts.set_text);
         try std.testing.expectEqualStrings("loading", host.dom_elements.items[2].text.?);
@@ -3266,7 +3273,7 @@ test "signals host task sources reset on start only when requested" {
 
     {
         const cmd = testStartTaskCmd(&roc_host, sticky_task, "save", "/api/save");
-        defer abi.decref__AnonStruct85(cmd, &roc_host);
+        defer abi.decref__AnonStruct91(cmd, &roc_host);
         const counts = host.engine.startTaskCommand(&host, &roc_host, 0, cmd);
         try std.testing.expectEqual(@as(u64, 0), counts.total);
         try std.testing.expectEqual(@as(usize, 1), host.engine.pending_tasks.items.len);
@@ -3278,7 +3285,7 @@ test "signals host task sources reset on start only when requested" {
 
     {
         const cmd = testStartTaskCmd(&roc_host, sticky_task, "save", "/api/save-again");
-        defer abi.decref__AnonStruct85(cmd, &roc_host);
+        defer abi.decref__AnonStruct91(cmd, &roc_host);
         const counts = host.engine.startTaskCommand(&host, &roc_host, 0, cmd);
         try std.testing.expectEqual(@as(u64, 0), counts.total);
         try std.testing.expectEqualStrings("saved", host.dom_elements.items[3].text.?);
@@ -4344,7 +4351,7 @@ test "signals host structural patch binds only changed event slots" {
 
     try std.testing.expectEqual(@as(u64, 1), initial_counts.bind_event);
     const button_id = host.engine.active_stream.elements.items[1].elem_id;
-    try std.testing.expectEqual(@as(?u64, 1), host.dom_elements.items[@intCast(button_id)].bound_click_event);
+    try std.testing.expectEqual(@as(?u64, 1), nodeFixedEventId(&host, button_id, .click));
 
     const same_button_attrs = [_]abi.NodeAttr{
         testNodeStaticTextAttr(&roc_host, .text, "Submit"),
@@ -4364,7 +4371,7 @@ test "signals host structural patch binds only changed event slots" {
     host.engine.active_stream = same_stream;
 
     try std.testing.expectEqual(@as(u64, 0), same_counts.bind_event);
-    try std.testing.expectEqual(@as(?u64, 1), host.dom_elements.items[@intCast(button_id)].bound_click_event);
+    try std.testing.expectEqual(@as(?u64, 1), nodeFixedEventId(&host, button_id, .click));
 
     const removed_button_attrs = [_]abi.NodeAttr{
         testNodeStaticTextAttr(&roc_host, .text, "Submit"),
@@ -4383,7 +4390,7 @@ test "signals host structural patch binds only changed event slots" {
     host.engine.active_stream = removed_stream;
 
     try std.testing.expectEqual(@as(u64, 1), removed_counts.bind_event);
-    try std.testing.expect(host.dom_elements.items[@intCast(button_id)].bound_click_event == null);
+    try std.testing.expect(nodeFixedEventId(&host, button_id, .click) == null);
 }
 
 test "signals host structural patch shifts moved row event ids only" {
@@ -4412,8 +4419,8 @@ test "signals host structural patch shifts moved row event ids only" {
     try std.testing.expectEqual(@as(u64, 2), initial_counts.bind_event);
     const row_1_button_id = activeTextElementId(&host, "row-action-1-1") orelse unreachable;
     const row_2_button_id = activeTextElementId(&host, "row-action-2-2") orelse unreachable;
-    try std.testing.expectEqual(@as(?u64, 1), host.dom_elements.items[@intCast(row_1_button_id)].bound_click_event);
-    try std.testing.expectEqual(@as(?u64, 2), host.dom_elements.items[@intCast(row_2_button_id)].bound_click_event);
+    try std.testing.expectEqual(@as(?u64, 1), nodeFixedEventId(&host, row_1_button_id, .click));
+    try std.testing.expectEqual(@as(?u64, 2), nodeFixedEventId(&host, row_2_button_id, .click));
 
     const reordered_items = [_]HostValue{ testHostValueI64(2), testHostValueI64(1) };
     const reordered_children = [_]abi.Elem{
@@ -4432,8 +4439,8 @@ test "signals host structural patch shifts moved row event ids only" {
     try std.testing.expectEqual(@as(u64, 2), reordered_counts.bind_event);
     try std.testing.expectEqual(row_1_button_id, activeTextElementId(&host, "row-action-1-1") orelse unreachable);
     try std.testing.expectEqual(row_2_button_id, activeTextElementId(&host, "row-action-2-2") orelse unreachable);
-    try std.testing.expectEqual(@as(?u64, 2), host.dom_elements.items[@intCast(row_1_button_id)].bound_click_event);
-    try std.testing.expectEqual(@as(?u64, 1), host.dom_elements.items[@intCast(row_2_button_id)].bound_click_event);
+    try std.testing.expectEqual(@as(?u64, 2), nodeFixedEventId(&host, row_1_button_id, .click));
+    try std.testing.expectEqual(@as(?u64, 1), nodeFixedEventId(&host, row_2_button_id, .click));
 
     const same_reordered_items = [_]HostValue{ testHostValueI64(2), testHostValueI64(1) };
     const same_reordered_children = [_]abi.Elem{
@@ -4450,8 +4457,8 @@ test "signals host structural patch shifts moved row event ids only" {
 
     try std.testing.expectEqual(@as(u64, 0), same_reordered_counts.create_element);
     try std.testing.expectEqual(@as(u64, 0), same_reordered_counts.bind_event);
-    try std.testing.expectEqual(@as(?u64, 2), host.dom_elements.items[@intCast(row_1_button_id)].bound_click_event);
-    try std.testing.expectEqual(@as(?u64, 1), host.dom_elements.items[@intCast(row_2_button_id)].bound_click_event);
+    try std.testing.expectEqual(@as(?u64, 2), nodeFixedEventId(&host, row_1_button_id, .click));
+    try std.testing.expectEqual(@as(?u64, 1), nodeFixedEventId(&host, row_2_button_id, .click));
 }
 
 test "signals host dirty each removal refreshes survivor event ids" {
@@ -4485,7 +4492,7 @@ test "signals host dirty each removal refreshes survivor event ids" {
     const state_id = host.engine.active_stream.scope_sites.items[0].node_id;
     const state_index = host.engine.stateIndexByNodeId(state_id) orelse unreachable;
     const row_3_button_id = activeTextElementId(&host, "row-action-3-3") orelse unreachable;
-    try std.testing.expectEqual(@as(?u64, 3), host.dom_elements.items[@intCast(row_3_button_id)].bound_click_event);
+    try std.testing.expectEqual(@as(?u64, 3), nodeFixedEventId(&host, row_3_button_id, .click));
 
     const next_items = [_]HostValue{ testHostValueI64(1), testHostValueI64(3) };
     testDropHostValue(&roc_host, host.engine.states.items[state_index].cell.value);
@@ -4504,7 +4511,7 @@ test "signals host dirty each removal refreshes survivor event ids" {
 
     try std.testing.expectEqual(@as(usize, 2), host.engine.active_events.items.len);
     try std.testing.expectEqual(row_3_button_id, activeTextElementId(&host, "row-action-3-3") orelse unreachable);
-    try std.testing.expectEqual(@as(?u64, 2), host.dom_elements.items[@intCast(row_3_button_id)].bound_click_event);
+    try std.testing.expectEqual(@as(?u64, 2), nodeFixedEventId(&host, row_3_button_id, .click));
 }
 
 fn freeKeyedRowDiff(host: *HostEnv, diff: HostKeyedRowDiffResult) void {
@@ -4910,7 +4917,7 @@ fn testNodeStaticTextAttr(roc_host: *abi.RocHost, field: RenderTextField, value:
     return .{
         .payload = .{
             .static_text = .{
-                .field = @intFromEnum(field),
+                .field = .{ .id = @intFromEnum(field) },
                 .name = RocStr.fromSlice("", roc_host),
                 .value = RocStr.fromSlice(value, roc_host),
             },
@@ -4923,7 +4930,7 @@ fn testNodeStaticCustomTextAttr(roc_host: *abi.RocHost, name: []const u8, value:
     return .{
         .payload = .{
             .static_text = .{
-                .field = NodeFieldCustom,
+                .field = .{ .id = NodeFieldCustom },
                 .name = RocStr.fromSlice(name, roc_host),
                 .value = RocStr.fromSlice(value, roc_host),
             },
@@ -4941,7 +4948,7 @@ fn testNodeSignalTextAttrWithCapability(roc_host: *abi.RocHost, field: RenderTex
     return .{
         .payload = .{
             .signal_text = .{
-                .field = @intFromEnum(field),
+                .field = .{ .id = @intFromEnum(field) },
                 .name = RocStr.fromSlice("", roc_host),
                 .read = testTextReadHandle(roc_host, cap),
                 .signal = boxTestNodeSignalExpr(roc_host, signal),
@@ -4955,7 +4962,7 @@ fn testNodeStaticBoolAttr(field: RenderBoolField, value: bool) abi.NodeAttr {
     return .{
         .payload = .{
             .static_bool = .{
-                .field = @intFromEnum(field),
+                .field = .{ .id = @intFromEnum(field) },
                 .name = RocStr.empty(),
                 .value = value,
             },
@@ -4973,7 +4980,7 @@ fn testNodeSignalBoolAttrWithCapability(roc_host: *abi.RocHost, field: RenderBoo
     return .{
         .payload = .{
             .signal_bool = .{
-                .field = @intFromEnum(field),
+                .field = .{ .id = @intFromEnum(field) },
                 .name = RocStr.fromSlice("", roc_host),
                 .read = testBoolReadHandle(roc_host, cap),
                 .signal = boxTestNodeSignalExpr(roc_host, signal),
@@ -4983,7 +4990,7 @@ fn testNodeSignalBoolAttrWithCapability(roc_host: *abi.RocHost, field: RenderBoo
     };
 }
 
-fn testPayloadAccessorForKind(payload_kind: EventPayloadKind) EventPayloadAccessor {
+fn testExtractionPlanForKind(payload_kind: EventPayloadKind) EventExtractionPlanKind {
     return switch (payload_kind) {
         .unit => .none,
         .str => .target_value,
@@ -4992,7 +4999,32 @@ fn testPayloadAccessorForKind(payload_kind: EventPayloadKind) EventPayloadAccess
     };
 }
 
+fn testEventExtractionPlan(roc_host: *abi.RocHost, extraction_plan: EventExtractionPlanKind) abi.NodeEventExtractionPlan {
+    return .{
+        .bytes = abi.RocListWith(u8, false).fromSlice(extraction_plan.bytes(), roc_host),
+    };
+}
+
+fn testNodeEventPolicy(bits: u32) abi.NodeEventPolicy {
+    const policy = render.EventPolicy.fromWireBits(bits);
+    return .{
+        .capture = policy.capture,
+        .once = policy.once,
+        .passive = policy.passive,
+        .prevent_default = policy.prevent_default,
+        .self = policy.self,
+        .stop_immediate = policy.stop_immediate,
+        .stop_propagation = policy.stop_propagation,
+        .trusted = policy.trusted,
+    };
+}
+
+fn testNodeEventDelivery(native: bool) abi.NodeEventDelivery {
+    return .{ .native = native };
+}
+
 fn testNodeEventAttr(roc_host: *abi.RocHost, kind: RenderEventKind, binder_token: HostBinderToken, payload_kind: EventPayloadKind) abi.NodeAttr {
+    const extraction_plan = testExtractionPlanForKind(payload_kind);
     const transform = writeTestErasedCallable(
         TestErasedI64Capture,
         roc_host,
@@ -5003,20 +5035,22 @@ fn testNodeEventAttr(roc_host: *abi.RocHost, kind: RenderEventKind, binder_token
     const payload_cap = testHostValueCapability(roc_host);
     return .{
         .payload = .{
-            .on_event = .{
-                .kind = @intFromEnum(kind),
+            .on = .{
+                .kind = .{ .id = @intFromEnum(kind) },
                 .msg = .{
                     .binder = cloneTestBinderToken(binder_token),
-                    .payload_accessor = @intFromEnum(testPayloadAccessorForKind(payload_kind)),
-                    .payload_kind = @intFromEnum(payload_kind),
+                    .event_extraction_plan = testEventExtractionPlan(roc_host, extraction_plan),
                     .payload_reducer = .{
                         .capability = payload_cap,
                         .transform = transform,
                     },
                 },
+                .name = RocStr.empty(),
+                .delivery = testNodeEventDelivery(false),
+                .policy = testNodeEventPolicy(0),
             },
         },
-        .tag = .OnEvent,
+        .tag = .On,
     };
 }
 
@@ -5031,20 +5065,22 @@ fn testNodeUnitIncrementEventAttr(roc_host: *abi.RocHost, kind: RenderEventKind,
     const payload_cap = testHostValueCapability(roc_host);
     return .{
         .payload = .{
-            .on_event = .{
-                .kind = @intFromEnum(kind),
+            .on = .{
+                .kind = .{ .id = @intFromEnum(kind) },
                 .msg = .{
                     .binder = cloneTestBinderToken(binder_token),
-                    .payload_accessor = @intFromEnum(EventPayloadAccessor.none),
-                    .payload_kind = @intFromEnum(EventPayloadKind.unit),
+                    .event_extraction_plan = testEventExtractionPlan(roc_host, .none),
                     .payload_reducer = .{
                         .capability = payload_cap,
                         .transform = transform,
                     },
                 },
+                .name = RocStr.empty(),
+                .delivery = testNodeEventDelivery(false),
+                .policy = testNodeEventPolicy(0),
             },
         },
-        .tag = .OnEvent,
+        .tag = .On,
     };
 }
 
@@ -5530,10 +5566,10 @@ test "signals host collects Elem descriptor stream" {
     try std.testing.expectEqual(@as(usize, 0), stream.signal_bool_attrs.items[0].signal.source_node_ids.len);
 
     try std.testing.expectEqual(@as(usize, 1), stream.events.items.len);
-    try std.testing.expectEqual(RenderEventKind.click, stream.events.items[0].kind);
+    try std.testing.expectEqual(RenderEventKind.click, stream.events.items[0].fixedKind().?);
     try std.testing.expect(stream.events.items[0].binder_token == state_token);
     try std.testing.expectEqual(stream.scope_sites.items[0].node_id, stream.events.items[0].target_node_id);
-    try std.testing.expectEqual(EventPayloadKind.unit, stream.events.items[0].payload_kind);
+    try std.testing.expectEqual(BoundaryPayloadDescriptor.init(.unit, .none), stream.events.items[0].payload_descriptor);
 
     try std.testing.expectEqual(@as(usize, 3), stream.scope_sites.items.len);
     try std.testing.expectEqual(HostNodeScopeSiteKind.state, stream.scope_sites.items[0].kind);
@@ -5747,13 +5783,13 @@ test "signals host dispatches through active event records outside descriptor st
     host.engine.active_stream = stream;
 
     const button_id = host.engine.active_stream.elements.items[0].elem_id;
-    const event_id = host.dom_elements.items[@intCast(button_id)].bound_click_event orelse unreachable;
+    const event_id = nodeFixedEventId(&host, button_id, .click) orelse unreachable;
     const state_id = host.engine.active_stream.scope_sites.items[0].node_id;
 
     host.engine.active_stream.deinit(host.hostAllocator(), &host, &roc_host, &host.engine.pending_roc_metrics);
     host.engine.active_stream = .{};
 
-    dispatchRocEvent(&host, &roc_host, event_id, .unit, testHostValueUnit());
+    dispatchRocEvent(&host, &roc_host, event_id, BoundaryPayloadDescriptor.init(.unit, .none), testHostValueUnit());
     try expectHostValueI64(host.stateValueByNodeId(state_id), 1);
 }
 
@@ -5783,13 +5819,13 @@ test "signals host keeps live allocations flat across repeated events" {
     host.engine.active_stream = stream;
 
     const button_id = host.engine.active_stream.elements.items[0].elem_id;
-    const event_id = host.dom_elements.items[@intCast(button_id)].bound_click_event orelse unreachable;
+    const event_id = nodeFixedEventId(&host, button_id, .click) orelse unreachable;
     const state_id = host.engine.active_stream.scope_sites.items[0].node_id;
 
     var live_after_warmup: ?i64 = null;
     var iteration: usize = 0;
     while (iteration < 100) : (iteration += 1) {
-        dispatchRocEvent(&host, &roc_host, event_id, .unit, hostValueUnit(&host, &roc_host));
+        dispatchRocEvent(&host, &roc_host, event_id, BoundaryPayloadDescriptor.init(.unit, .none), hostValueUnit(&host, &roc_host));
         const live = @as(i64, @intCast(host.alloc_count)) - @as(i64, @intCast(host.dealloc_count));
         if (iteration == 9) {
             live_after_warmup = live;

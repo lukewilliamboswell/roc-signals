@@ -1,14 +1,19 @@
+//! Decoder and owned snapshot model for Roc UI descriptor streams.
+
 const std = @import("std");
 const abi = @import("roc_platform_abi.zig");
+const boundary = @import("boundary.zig");
 const render = @import("render_commands.zig");
+const render_sink = @import("render_sink.zig");
 const retained = @import("retained_values.zig");
 const signal_records = @import("signal_records.zig");
 
 pub const TextField = render.TextField;
 pub const BoolField = render.BoolField;
 pub const EventKind = render.EventKind;
-pub const EventPayloadKind = render.EventPayloadKind;
-pub const EventPayloadAccessor = render.EventPayloadAccessor;
+pub const EventPolicy = render.EventPolicy;
+pub const EventDeliveryRequest = render_sink.EventDeliveryRequest;
+pub const BoundaryPayloadDescriptor = boundary.BoundaryPayloadDescriptor;
 pub const HostSignalBinding = signal_records.Binding;
 pub const HostSignalCacheSlot = signal_records.CacheSlot;
 pub const HostValueCapability = retained.HostValueCapability;
@@ -219,34 +224,43 @@ pub const OnChangeDesc = struct {
     }
 };
 
-pub const EventDesc = struct {
-    elem_id: u64,
-    kind: EventKind,
-    binder_token: BinderToken,
-    target_node_id: u64,
-    payload_kind: EventPayloadKind,
-    payload_accessor: EventPayloadAccessor,
-    payload_reducer: HostEventReducer,
-    owns_payload_reducer: bool = true,
-
-    pub fn deinit(self: EventDesc, roc_host: *abi.RocHost, metrics: anytype) void {
-        if (self.owns_payload_reducer) releaseHostEventReducer(self.payload_reducer, roc_host, metrics);
-    }
+pub const NamedEventBinding = struct {
+    name: []const u8,
+    policy: EventPolicy,
+    delivery_request: EventDeliveryRequest = .auto,
 };
 
-pub const NamedEventDesc = struct {
+pub const EventBinding = union(enum) {
+    fixed: EventKind,
+    named: NamedEventBinding,
+};
+
+pub const EventDesc = struct {
     elem_id: u64,
-    name: []const u8,
-    options: u32,
+    binding: EventBinding,
+    delivery_request: EventDeliveryRequest = .auto,
     binder_token: BinderToken,
     target_node_id: u64,
-    payload_kind: EventPayloadKind,
-    payload_accessor: EventPayloadAccessor,
+    payload_descriptor: BoundaryPayloadDescriptor,
     payload_reducer: HostEventReducer,
     owns_payload_reducer: bool = true,
 
-    pub fn deinit(self: NamedEventDesc, allocator: std.mem.Allocator, roc_host: *abi.RocHost, metrics: anytype) void {
-        allocator.free(self.name);
+    pub fn fixedKind(self: EventDesc) ?EventKind {
+        return switch (self.binding) {
+            .fixed => |kind| kind,
+            .named => null,
+        };
+    }
+
+    pub fn named(self: EventDesc) ?NamedEventBinding {
+        return switch (self.binding) {
+            .fixed => null,
+            .named => |binding| binding,
+        };
+    }
+
+    pub fn deinit(self: EventDesc, allocator: std.mem.Allocator, roc_host: *abi.RocHost, metrics: anytype) void {
+        if (self.named()) |binding| allocator.free(binding.name);
         if (self.owns_payload_reducer) releaseHostEventReducer(self.payload_reducer, roc_host, metrics);
     }
 };
@@ -496,7 +510,6 @@ pub const Stream = struct {
     mounts: std.ArrayListUnmanaged(MountDesc) = .empty,
     cleanups: std.ArrayListUnmanaged(CleanupDesc) = .empty,
     events: std.ArrayListUnmanaged(EventDesc) = .empty,
-    named_events: std.ArrayListUnmanaged(NamedEventDesc) = .empty,
     scope_sites: std.ArrayListUnmanaged(ScopeSiteDesc) = .empty,
     states: std.ArrayListUnmanaged(StateDesc) = .empty,
     whens: std.ArrayListUnmanaged(WhenDesc) = .empty,
@@ -938,14 +951,9 @@ pub const Stream = struct {
         self.cleanups.deinit(allocator);
 
         for (self.events.items) |desc| {
-            desc.deinit(roc_host, metrics);
-        }
-        self.events.deinit(allocator);
-
-        for (self.named_events.items) |desc| {
             desc.deinit(allocator, roc_host, metrics);
         }
-        self.named_events.deinit(allocator);
+        self.events.deinit(allocator);
         deinitNamedEventIndexLists(Stream, self, allocator);
 
         for (self.scope_sites.items) |desc| {
@@ -1205,28 +1213,28 @@ pub const Stream = struct {
         appendCleanupImpl(Stream, self, allocator, scope_id, name);
     }
 
-    pub fn appendEvent(self: *Stream, allocator: std.mem.Allocator, roc_host: *abi.RocHost, metrics: anytype, elem_id: u64, kind: EventKind, binder_token: BinderToken, target_node_id: u64, payload_kind: EventPayloadKind, payload_accessor: EventPayloadAccessor, payload_reducer: HostEventReducer) void {
+    pub fn appendEvent(self: *Stream, allocator: std.mem.Allocator, roc_host: *abi.RocHost, metrics: anytype, elem_id: u64, kind: EventKind, delivery_request: EventDeliveryRequest, binder_token: BinderToken, target_node_id: u64, payload_descriptor: BoundaryPayloadDescriptor, payload_reducer: HostEventReducer) void {
         const retained_reducer = retainHostEventReducer(payload_reducer, metrics);
         const event_index = self.events.items.len;
         self.events.append(allocator, .{
             .elem_id = elem_id,
-            .kind = kind,
+            .binding = .{ .fixed = kind },
+            .delivery_request = delivery_request,
             .binder_token = binder_token,
             .target_node_id = target_node_id,
-            .payload_kind = payload_kind,
-            .payload_accessor = payload_accessor,
+            .payload_descriptor = payload_descriptor,
             .payload_reducer = retained_reducer,
         }) catch {
             const desc = EventDesc{
                 .elem_id = elem_id,
-                .kind = kind,
+                .binding = .{ .fixed = kind },
+                .delivery_request = delivery_request,
                 .binder_token = binder_token,
                 .target_node_id = target_node_id,
-                .payload_kind = payload_kind,
-                .payload_accessor = payload_accessor,
+                .payload_descriptor = payload_descriptor,
                 .payload_reducer = retained_reducer,
             };
-            desc.deinit(roc_host, metrics);
+            desc.deinit(allocator, roc_host, metrics);
             @panic("out of memory");
         };
         self.recordEventIndex(allocator, elem_id, kind, event_index);
@@ -1234,14 +1242,15 @@ pub const Stream = struct {
 
     pub fn namedEventDescriptorExists(self: *const Stream, elem_id: u64, name: []const u8) bool {
         for (self.namedEventIndices(elem_id)) |index| {
-            if (index >= self.named_events.items.len) @panic("named event index exceeded descriptor table");
-            const desc = self.named_events.items[index];
-            if (desc.elem_id == elem_id and std.mem.eql(u8, desc.name, name)) return true;
+            if (index >= self.events.items.len) @panic("named event index exceeded descriptor table");
+            const desc = self.events.items[index];
+            const binding = desc.named() orelse @panic("named event index pointed at a fixed event descriptor");
+            if (desc.elem_id == elem_id and std.mem.eql(u8, binding.name, name)) return true;
         }
         return false;
     }
 
-    pub fn appendNamedEvent(self: *Stream, allocator: std.mem.Allocator, roc_host: *abi.RocHost, metrics: anytype, elem_id: u64, name: []const u8, options: u64, binder_token: BinderToken, target_node_id: u64, payload_kind: EventPayloadKind, payload_accessor: EventPayloadAccessor, payload_reducer: HostEventReducer) void {
+    pub fn appendNamedEvent(self: *Stream, allocator: std.mem.Allocator, roc_host: *abi.RocHost, metrics: anytype, elem_id: u64, name: []const u8, policy: EventPolicy, delivery_request: EventDeliveryRequest, binder_token: BinderToken, target_node_id: u64, payload_descriptor: BoundaryPayloadDescriptor, payload_reducer: HostEventReducer) void {
         if (name.len == 0) @panic("named event descriptor used an empty event name");
         if (self.namedEventDescriptorExists(elem_id, name)) @panic("element has duplicate named event descriptors");
 
@@ -1250,25 +1259,31 @@ pub const Stream = struct {
             releaseHostEventReducer(retained_reducer, roc_host, metrics);
             @panic("out of memory");
         };
-        const event_index = self.named_events.items.len;
-        self.named_events.append(allocator, .{
+        const event_index = self.events.items.len;
+        self.events.append(allocator, .{
             .elem_id = elem_id,
-            .name = name_copy,
-            .options = std.math.cast(u32, options) orelse @panic("named event listener options exceeded u32 range"),
+            .binding = .{ .named = .{
+                .name = name_copy,
+                .policy = policy,
+                .delivery_request = delivery_request,
+            } },
+            .delivery_request = delivery_request,
             .binder_token = binder_token,
             .target_node_id = target_node_id,
-            .payload_kind = payload_kind,
-            .payload_accessor = payload_accessor,
+            .payload_descriptor = payload_descriptor,
             .payload_reducer = retained_reducer,
         }) catch {
-            const desc = NamedEventDesc{
+            const desc = EventDesc{
                 .elem_id = elem_id,
-                .name = name_copy,
-                .options = std.math.cast(u32, options) orelse @panic("named event listener options exceeded u32 range"),
+                .binding = .{ .named = .{
+                    .name = name_copy,
+                    .policy = policy,
+                    .delivery_request = delivery_request,
+                } },
+                .delivery_request = delivery_request,
                 .binder_token = binder_token,
                 .target_node_id = target_node_id,
-                .payload_kind = payload_kind,
-                .payload_accessor = payload_accessor,
+                .payload_descriptor = payload_descriptor,
                 .payload_reducer = retained_reducer,
             };
             desc.deinit(allocator, roc_host, metrics);
@@ -2378,6 +2393,43 @@ const TestMetrics = struct {
         }
     }
 };
+
+test "fixed event descriptors preserve Roc supplied payload descriptors" {
+    const allocator = std.testing.allocator;
+    var stream: Stream = .{};
+    defer {
+        stream.events.deinit(allocator);
+        stream.descriptor_indexes_by_elem_id.deinit(allocator);
+    }
+
+    var env = abi.RocEnv{ .allocator = allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&env);
+    var metrics = TestMetrics{};
+    var binder: u64 = 1;
+    const payload_descriptor = BoundaryPayloadDescriptor.init(.str, .target_value);
+    const reducer = HostEventReducer{
+        .capability = .{ .clone = null, .drop = null, .eq = null },
+        .transform = null,
+    };
+
+    stream.appendEvent(
+        allocator,
+        &roc_host,
+        &metrics,
+        7,
+        .pointer_down,
+        .auto,
+        &binder,
+        42,
+        payload_descriptor,
+        reducer,
+    );
+
+    try std.testing.expectEqual(@as(usize, 1), stream.events.items.len);
+    try std.testing.expectEqual(EventKind.pointer_down, stream.events.items[0].fixedKind().?);
+    try std.testing.expect(stream.events.items[0].payload_descriptor.eql(payload_descriptor));
+    try std.testing.expectEqual(@as(?usize, 0), stream.elemDescriptorIndex(7).?.events.get(.pointer_down));
+}
 
 test "field descriptor indexes round-trip by enum field" {
     var text: TextFieldDescriptorIndexes = .{};

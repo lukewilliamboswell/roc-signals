@@ -40,7 +40,7 @@ export const Op = Object.freeze({
 });
 
 export const Protocol = Object.freeze({
-  version: 1,
+  version: 7,
 });
 
 export const ProtocolFeature = Object.freeze({
@@ -124,25 +124,11 @@ export const PayloadKind = Object.freeze({
   bytes: 4,
 });
 
-export const PayloadAccessor = Object.freeze({
-  none: 1,
-  targetValue: 2,
-  targetChecked: 3,
-  recordKeyShift: 4,
-});
-
 const payloadKindNames = Object.freeze({
   [PayloadKind.unit]: "unit",
   [PayloadKind.str]: "str",
   [PayloadKind.bool]: "bool",
   [PayloadKind.bytes]: "bytes",
-});
-
-const payloadAccessorNames = Object.freeze({
-  [PayloadAccessor.none]: "none",
-  [PayloadAccessor.targetValue]: "target_value",
-  [PayloadAccessor.targetChecked]: "target_checked",
-  [PayloadAccessor.recordKeyShift]: "record_key_shift",
 });
 
 export const ListenerOptions = Object.freeze({
@@ -151,6 +137,9 @@ export const ListenerOptions = Object.freeze({
   capture: 1 << 2,
   passive: 1 << 3,
   once: 1 << 4,
+  stopImmediatePropagation: 1 << 5,
+  self: 1 << 6,
+  trusted: 1 << 7,
 });
 
 const knownListenerOptionMask =
@@ -158,26 +147,95 @@ const knownListenerOptionMask =
   ListenerOptions.stopPropagation |
   ListenerOptions.capture |
   ListenerOptions.passive |
-  ListenerOptions.once;
+  ListenerOptions.once |
+  ListenerOptions.stopImmediatePropagation |
+  ListenerOptions.self |
+  ListenerOptions.trusted;
 
-const PayloadSpecTag = Object.freeze({
+const EventDelivery = Object.freeze({
+  auto: "auto",
+  native: "native",
+  delegated: "delegated",
+});
+
+const EventDeliveryRequestWire = Object.freeze({
+  auto: 1,
+  native: 2,
+});
+
+const EventDeliveryEffectiveWire = Object.freeze({
+  native: 1,
+  delegated: 2,
+});
+
+const EventDeliveryReasonWire = Object.freeze({
+  requestedNative: 1,
+  capturePolicy: 2,
+  stopImmediatePolicy: 3,
+  stopPropagationPolicy: 4,
+  pointerDrag: 5,
+  preventDefaultPolicy: 6,
+  oncePolicy: 7,
+  passivePolicy: 8,
+  selfFilter: 9,
+  nativeRuntimeDefault: 10,
+});
+
+const eventDeliveryRequestNames = Object.freeze({
+  [EventDeliveryRequestWire.auto]: EventDelivery.auto,
+  [EventDeliveryRequestWire.native]: EventDelivery.native,
+});
+
+const eventDeliveryEffectiveNames = Object.freeze({
+  [EventDeliveryEffectiveWire.native]: EventDelivery.native,
+  [EventDeliveryEffectiveWire.delegated]: EventDelivery.delegated,
+});
+
+const eventDeliveryReasonNames = Object.freeze({
+  [EventDeliveryReasonWire.requestedNative]: "requested-native",
+  [EventDeliveryReasonWire.capturePolicy]: "capture-policy",
+  [EventDeliveryReasonWire.stopImmediatePolicy]: "stop-immediate-policy",
+  [EventDeliveryReasonWire.stopPropagationPolicy]: "stop-propagation-policy",
+  [EventDeliveryReasonWire.pointerDrag]: "pointer-drag",
+  [EventDeliveryReasonWire.preventDefaultPolicy]: "prevent-default-policy",
+  [EventDeliveryReasonWire.oncePolicy]: "once-policy",
+  [EventDeliveryReasonWire.passivePolicy]: "passive-policy",
+  [EventDeliveryReasonWire.selfFilter]: "self-filter",
+  [EventDeliveryReasonWire.nativeRuntimeDefault]: "native-runtime-default",
+});
+
+const BoundarySchemaTag = Object.freeze({
   unit: 1,
   text: 2,
   bool: 3,
   record: 4,
 });
 
-const PayloadSpecSource = Object.freeze({
+const EventExtractionSource = Object.freeze({
   event: 1,
   target: 2,
   currentTarget: 3,
 });
 
-const PayloadSpecLeaf = Object.freeze({
+const EventExtractionLeaf = Object.freeze({
   key: 1,
   value: 2,
   checked: 3,
   shiftKey: 4,
+});
+
+const fixedEventExtractionPlan = Object.freeze({
+  unit: Object.freeze({ kind: "unit" }),
+  targetValue: Object.freeze({
+    kind: "text",
+    source: EventExtractionSource.currentTarget,
+    leaf: EventExtractionLeaf.value,
+  }),
+  targetChecked: Object.freeze({
+    kind: "bool",
+    source: EventExtractionSource.currentTarget,
+    leaf: EventExtractionLeaf.checked,
+  }),
 });
 
 const pointerProbeEvents = Object.freeze([
@@ -677,6 +735,7 @@ export class SignalsRuntime {
     this.telemetryLog = normalizeTelemetry(options.telemetry);
     this.telemetrySeq = 0;
     this.pointerProbeCleanups = [];
+    this.lastEventResponseBits = 0;
     this.onError = options.onError ?? ((err) => {
       setTimeout(() => {
         throw err;
@@ -747,16 +806,41 @@ export class SignalsRuntime {
   dispatchString(eventId, value) {
     const bytes = textEncoder.encode(value);
     const ptr = this.views.callHost(this.exports.roc_alloc, bytes.length, 1).result;
-    this.views.u8.set(bytes, ptr);
-    this.dispatch(eventId, PayloadKind.str, ptr, bytes.length, 0);
-    this.views.callHost(this.exports.roc_dealloc, ptr, 1);
+    let primaryError;
+    try {
+      this.views.u8.set(bytes, ptr);
+      return this.dispatch(eventId, PayloadKind.str, ptr, bytes.length, 0);
+    } catch (err) {
+      primaryError = err;
+      throw err;
+    } finally {
+      this.deallocEventPayload(ptr, primaryError);
+    }
   }
 
   dispatchBytes(eventId, bytes) {
     const ptr = this.views.callHost(this.exports.roc_alloc, bytes.length, 1).result;
-    this.views.u8.set(bytes, ptr);
-    this.dispatch(eventId, PayloadKind.bytes, ptr, bytes.length, 0);
-    this.views.callHost(this.exports.roc_dealloc, ptr, 1);
+    let primaryError;
+    try {
+      this.views.u8.set(bytes, ptr);
+      return this.dispatch(eventId, PayloadKind.bytes, ptr, bytes.length, 0);
+    } catch (err) {
+      primaryError = err;
+      throw err;
+    } finally {
+      this.deallocEventPayload(ptr, primaryError);
+    }
+  }
+
+  deallocEventPayload(ptr, primaryError) {
+    try {
+      this.views.callHost(this.exports.roc_dealloc, ptr, 1);
+    } catch (err) {
+      if (primaryError !== undefined) {
+        return;
+      }
+      throw this.runtimeError(err);
+    }
   }
 
   dispatch(eventId, payloadKind, payloadPtr, payloadLen, boolValue) {
@@ -767,15 +851,22 @@ export class SignalsRuntime {
       payloadLen,
       boolValue: boolValue !== 0,
     });
-    this.views.callHost(
-      this.exports.roc_ui_event,
-      eventId,
-      payloadKind,
-      payloadPtr,
-      payloadLen,
-      boolValue,
-    );
-    this.applyPendingCommands(`event:${eventId}`);
+    try {
+      const eventCall = this.views.callHost(
+        this.exports.roc_ui_event,
+        eventId,
+        payloadKind,
+        payloadPtr,
+        payloadLen,
+        boolValue,
+      );
+      const responseBits = eventCall.result ?? 0;
+      this.lastEventResponseBits = responseBits;
+      this.applyPendingCommands(`event:${eventId}`);
+      return responseBits;
+    } catch (err) {
+      throw this.runtimeError(err);
+    }
   }
 
   tickTimer(token) {
@@ -977,32 +1068,31 @@ export class SignalsRuntime {
         return;
 
       case Op.bindClick:
-        this.bindEvent(record.a, "click", record.b, record.c);
+        this.applyEventBindCommand(fixedEventCommand(record, "click"));
         return;
 
       case Op.bindInput:
-        this.controlledInput(record.a);
-        this.bindEvent(record.a, "input", record.b, record.c);
+        this.applyEventBindCommand(fixedEventCommand(record, "input"));
         return;
 
       case Op.bindCheck:
-        this.bindEvent(record.a, "change", record.b, record.c);
+        this.applyEventBindCommand(fixedEventCommand(record, "change"));
         return;
 
       case Op.bindPointerDown:
-        this.bindEvent(record.a, "pointerdown", record.b, record.c);
+        this.applyEventBindCommand(fixedEventCommand(record, "pointerdown"));
         return;
 
       case Op.bindPointerUp:
-        this.bindEvent(record.a, "pointerup", record.b, record.c);
+        this.applyEventBindCommand(fixedEventCommand(record, "pointerup"));
         return;
 
       case Op.bindPointerEnter:
-        this.bindEvent(record.a, "pointerenter", record.b, record.c);
+        this.applyEventBindCommand(fixedEventCommand(record, "pointerenter"));
         return;
 
       case Op.bindPointerLeave:
-        this.bindEvent(record.a, "pointerleave", record.b, record.c);
+        this.applyEventBindCommand(fixedEventCommand(record, "pointerleave"));
         return;
 
       case Op.clearEvent: {
@@ -1055,18 +1145,11 @@ export class SignalsRuntime {
         return;
 
       case DynamicOp.bindEvent:
-        this.bindNamedEvent(
-          command.elemId,
-          command.eventName,
-          command.eventId,
-          command.options,
-          command.payloadKind,
-          command.payloadSpec,
-        );
+        this.applyEventBindCommand(command);
         return;
 
       case DynamicOp.clearEvent:
-        this.clearEvent(command.elemId, command.eventName);
+        this.clearEvent(command.elemId, command.domEvent);
         return;
 
       default:
@@ -1127,30 +1210,27 @@ export class SignalsRuntime {
         const eventId = readDynamicU32(view, cursor, "event_id");
         const eventName = readDynamicString(view, cursor, "event_name");
         const options = readDynamicU32(view, cursor, "options");
-        const payloadKind = readDynamicU32(view, cursor, "payload_kind");
-        const payloadSpecBytes = readDynamicByteArray(view, cursor, "payload_spec");
+        const delivery = readEventDelivery(view, cursor);
+        const eventExtractionPlanBytes = readDynamicByteArray(view, cursor, "event_extraction_plan");
         assertDynamicPayloadConsumed(cursor);
         validateListenerOptions(options, cursor);
-        validatePayloadKind(payloadKind, cursor);
-        const payloadSpec = parseEventPayloadDescriptor(
-          payloadSpecBytes,
+        const eventExtractionPlan = parseEventExtractionPlan(
+          eventExtractionPlanBytes,
           cursor.recordOffset,
           cursor.opName,
         );
-        const descriptorKind = payloadKindForDescriptor(payloadSpec);
-        if (descriptorKind !== payloadKind) {
-          throw new Error(
-            `malformed event payload descriptor at byte ${cursor.recordOffset}: ${cursor.opName} payload_kind ${payloadKindName(payloadKind)} did not match descriptor ${payloadKindName(descriptorKind)}`,
-          );
-        }
-        return { op, elemId, eventId, eventName, options, payloadKind, payloadSpec };
+        const payloadDescriptor = payloadDescriptorFromEventExtractionPlan(eventExtractionPlan);
+        return {
+          op,
+          binding: dynamicEventBinding(elemId, eventName, eventId, options, delivery, payloadDescriptor),
+        };
       }
 
       case DynamicOp.clearEvent: {
         const elemId = readDynamicU32(view, cursor, "elem_id");
         const eventName = readDynamicString(view, cursor, "event_name");
         assertDynamicPayloadConsumed(cursor);
-        return { op, elemId, eventName };
+        return { op, elemId, domEvent: eventName };
       }
 
       default:
@@ -1158,27 +1238,83 @@ export class SignalsRuntime {
     }
   }
 
-  bindEvent(elemId, domEvent, eventId, payloadAccessor) {
+  bindEvent(binding) {
+    const {
+      elemId,
+      domEvent,
+      eventId,
+      options = 0,
+      payloadDescriptor,
+      preventDefaultForPointerEvents = false,
+      installPointerDrag = false,
+      useListenerOptions = false,
+      includeStaticPolicyTelemetry = false,
+    } = binding;
+    const delivery = eventDeliveryForBinding(binding);
     const key = `${elemId}:${domEvent}`;
     this.eventCleanups.get(key)?.();
     const elem = this.node(elemId);
+    if (domEvent === "input") {
+      this.controlledInput(elemId);
+    }
+    const manualOnce = listenerUsesManualOnce(options);
+    const listenerOptions = useListenerOptions
+      ? listenerOptionsForAddEventListener(options, { manualOnce })
+      : undefined;
+    let cleanup = () => {};
     const listener = (event) => {
-      const preventedDefault = preventDefaultForRocEvent(domEvent, event);
-      this.emitTelemetry("dom_event", {
-        domEvent,
-        eventId,
-        payloadAccessor: payloadAccessorName(payloadAccessor),
-        preventedDefault,
-        currentTarget: describeDomNode(event.currentTarget, elemId),
-        target: describeDomNode(event.target),
-        pointer: describePointerEvent(event),
+      const payloadTelemetry = this.telemetryLog
+        ? payloadDescriptorTelemetry(payloadDescriptor)
+        : null;
+      const filter = eventPolicyFilterResult(options, event);
+      if (!filter.accepted) {
+        if (payloadTelemetry) {
+          this.emitTelemetry("dom_event_filtered", {
+            domEvent,
+            eventId,
+            filter: filter.reason,
+            listenerOptions: describeListenerOptions(options),
+            requestedDelivery: delivery.requested,
+            effectiveDelivery: delivery.effective,
+            deliveryReason: delivery.reason,
+            ...payloadTelemetry,
+            currentTarget: describeDomNode(event.currentTarget, elemId),
+            target: describeDomNode(event.target),
+          });
+        }
+        return;
+      }
+      if (manualOnce) {
+        cleanup();
+      }
+      const policy = applyEventListenerPolicy(options, domEvent, event, {
+        preventDefaultForPointerEvents,
       });
-      this.dispatchEventPayload(eventId, payloadAccessor, event);
+      if (payloadTelemetry) {
+        this.emitTelemetry("dom_event", {
+          domEvent,
+          eventId,
+          requestedDelivery: delivery.requested,
+          effectiveDelivery: delivery.effective,
+          deliveryReason: delivery.reason,
+          ...listenerPolicyTelemetry(options, policy, includeStaticPolicyTelemetry),
+          ...payloadTelemetry,
+          currentTarget: describeDomNode(event.currentTarget, elemId),
+          target: describeDomNode(event.target),
+          pointer: describePointerEvent(event),
+        });
+      }
+      this.dispatchEventPayload(eventId, payloadDescriptor, event, payloadTelemetry);
     };
-    elem.addEventListener(domEvent, listener);
-    this.eventCleanups.set(key, () => elem.removeEventListener(domEvent, listener));
+    cleanup = () => elem.removeEventListener(domEvent, listener, listenerOptions);
+    if (listenerOptions === undefined) {
+      elem.addEventListener(domEvent, listener);
+    } else {
+      elem.addEventListener(domEvent, listener, listenerOptions);
+    }
+    this.eventCleanups.set(key, cleanup);
     elem.dataset.rocEventId = String(eventId);
-    if (domEvent === "pointerdown") {
+    if (installPointerDrag) {
       elem.dataset.rocPointerDrag = "true";
       elem.draggable = false;
       if (elem.style) {
@@ -1187,139 +1323,82 @@ export class SignalsRuntime {
         elem.style.touchAction = "none";
       }
     }
-    this.emitTelemetry("bind_event", {
-      elemId,
-      domEvent,
-      eventId,
-      payloadAccessor: payloadAccessorName(payloadAccessor),
-      elem: describeDomNode(elem, elemId),
-    });
-  }
-
-  bindNamedEvent(elemId, domEvent, eventId, options, payloadKind, payloadSpec) {
-    const key = `${elemId}:${domEvent}`;
-    this.eventCleanups.get(key)?.();
-    const elem = this.node(elemId);
-    if (domEvent === "input") {
-      this.controlledInput(elemId);
-    }
-    const listenerOptions = listenerOptionsForAddEventListener(options);
-    const listener = (event) => {
-      const policy = applyStaticListenerPolicy(options, event);
-      this.emitTelemetry("dom_event", {
+    if (this.telemetryLog) {
+      this.emitTelemetry("bind_event", {
+        elemId,
         domEvent,
         eventId,
-        listenerOptions: describeListenerOptions(options),
-        payloadKind: payloadKindName(payloadKind),
-        payloadDescriptor: describePayloadDescriptor(payloadSpec),
-        preventedDefault: policy.preventedDefault,
-        stoppedPropagation: policy.stoppedPropagation,
-        currentTarget: describeDomNode(event.currentTarget, elemId),
-        target: describeDomNode(event.target),
-        pointer: describePointerEvent(event),
+        requestedDelivery: delivery.requested,
+        effectiveDelivery: delivery.effective,
+        deliveryReason: delivery.reason,
+        ...(includeStaticPolicyTelemetry
+          ? { listenerOptions: describeListenerOptions(options) }
+          : {}),
+        ...payloadDescriptorTelemetry(payloadDescriptor),
+        elem: describeDomNode(elem, elemId),
       });
-      this.dispatchNamedEventPayload(eventId, payloadKind, payloadSpec, event);
-    };
-    elem.addEventListener(domEvent, listener, listenerOptions);
-    this.eventCleanups.set(key, () =>
-      elem.removeEventListener(domEvent, listener, listenerOptions),
-    );
-    elem.dataset.rocEventId = String(eventId);
-    this.emitTelemetry("bind_event", {
-      elemId,
-      domEvent,
-      eventId,
-      listenerOptions: describeListenerOptions(options),
-      payloadKind: payloadKindName(payloadKind),
-      payloadDescriptor: describePayloadDescriptor(payloadSpec),
-      elem: describeDomNode(elem, elemId),
-    });
-  }
-
-  dispatchEventPayload(eventId, payloadAccessor, event) {
-    switch (payloadAccessor) {
-      case PayloadAccessor.none:
-        this.emitTelemetry("event_payload", {
-          eventId,
-          payloadKind: "unit",
-          payloadAccessor: payloadAccessorName(payloadAccessor),
-        });
-        this.dispatchUnit(eventId);
-        return;
-
-      case PayloadAccessor.targetValue:
-        this.emitTelemetry("event_payload", {
-          eventId,
-          payloadKind: "str",
-          payloadAccessor: payloadAccessorName(payloadAccessor),
-          value: event.currentTarget.value,
-        });
-        this.dispatchString(eventId, event.currentTarget.value);
-        return;
-
-      case PayloadAccessor.targetChecked:
-        this.emitTelemetry("event_payload", {
-          eventId,
-          payloadKind: "bool",
-          payloadAccessor: payloadAccessorName(payloadAccessor),
-          value: event.currentTarget.checked,
-        });
-        this.dispatchBool(eventId, event.currentTarget.checked);
-        return;
-
-      default:
-        throw new Error(`unknown event payload accessor ${payloadAccessor}`);
     }
   }
 
-  dispatchNamedEventPayload(eventId, payloadKind, payloadSpec, event) {
+  applyEventBindCommand(command) {
+    this.bindEvent(command.binding);
+  }
+
+  dispatchEventPayload(eventId, payloadDescriptor, event, payloadTelemetry = null) {
+    const { payloadKind, eventExtractionPlan } = payloadDescriptor;
     switch (payloadKind) {
       case PayloadKind.unit:
-        extractPayloadValue(payloadSpec, event);
-        this.emitTelemetry("event_payload", {
-          eventId,
-          payloadKind: "unit",
-          payloadDescriptor: describePayloadDescriptor(payloadSpec),
-        });
+        try {
+          extractBoundaryPayloadValue(eventExtractionPlan, event);
+        } catch (err) {
+          this.emitEventPayloadError(eventId, payloadDescriptor, event, err);
+          throw err;
+        }
+        this.emitEventPayloadTelemetry(eventId, payloadDescriptor, payloadTelemetry, {});
         this.dispatchUnit(eventId);
         return;
 
       case PayloadKind.str: {
-        const value = extractPayloadValue(payloadSpec, event);
-        if (typeof value !== "string") {
-          throw new Error("event payload descriptor produced a non-text value for str payload");
+        let value;
+        try {
+          value = extractBoundaryPayloadValue(eventExtractionPlan, event);
+          if (typeof value !== "string") {
+            throw new Error("event extraction plan produced a non-text value for str payload");
+          }
+        } catch (err) {
+          this.emitEventPayloadError(eventId, payloadDescriptor, event, err);
+          throw err;
         }
-        this.emitTelemetry("event_payload", {
-          eventId,
-          payloadKind: "str",
-          payloadDescriptor: describePayloadDescriptor(payloadSpec),
-          value,
-        });
+        this.emitEventPayloadTelemetry(eventId, payloadDescriptor, payloadTelemetry, { value });
         this.dispatchString(eventId, value);
         return;
       }
 
       case PayloadKind.bool: {
-        const value = extractPayloadValue(payloadSpec, event);
-        if (typeof value !== "boolean") {
-          throw new Error("event payload descriptor produced a non-bool value for bool payload");
+        let value;
+        try {
+          value = extractBoundaryPayloadValue(eventExtractionPlan, event);
+          if (typeof value !== "boolean") {
+            throw new Error("event extraction plan produced a non-bool value for bool payload");
+          }
+        } catch (err) {
+          this.emitEventPayloadError(eventId, payloadDescriptor, event, err);
+          throw err;
         }
-        this.emitTelemetry("event_payload", {
-          eventId,
-          payloadKind: "bool",
-          payloadDescriptor: describePayloadDescriptor(payloadSpec),
-          value,
-        });
+        this.emitEventPayloadTelemetry(eventId, payloadDescriptor, payloadTelemetry, { value });
         this.dispatchBool(eventId, value);
         return;
       }
 
       case PayloadKind.bytes: {
-        const bytes = encodePayloadBytes(payloadSpec, event);
-        this.emitTelemetry("event_payload", {
-          eventId,
-          payloadKind: "bytes",
-          payloadDescriptor: describePayloadDescriptor(payloadSpec),
+        let bytes;
+        try {
+          bytes = encodeBoundaryPayloadBytes(eventExtractionPlan, event);
+        } catch (err) {
+          this.emitEventPayloadError(eventId, payloadDescriptor, event, err);
+          throw err;
+        }
+        this.emitEventPayloadTelemetry(eventId, payloadDescriptor, payloadTelemetry, {
           byteLength: bytes.length,
         });
         this.dispatchBytes(eventId, bytes);
@@ -1329,6 +1408,30 @@ export class SignalsRuntime {
       default:
         throw new Error(`unknown event payload kind ${payloadKind}`);
     }
+  }
+
+  emitEventPayloadTelemetry(eventId, payloadDescriptor, payloadTelemetry, detail) {
+    if (!this.telemetryLog) {
+      return;
+    }
+    this.emitTelemetry("event_payload", {
+      eventId,
+      ...(payloadTelemetry ?? payloadDescriptorTelemetry(payloadDescriptor)),
+      ...detail,
+    });
+  }
+
+  emitEventPayloadError(eventId, payloadDescriptor, event, err) {
+    if (!this.telemetryLog) {
+      return;
+    }
+    this.emitTelemetry("event_payload_error", {
+      eventId,
+      ...payloadDescriptorTelemetry(payloadDescriptor),
+      message: err?.message ?? String(err),
+      currentTarget: describeDomNode(event.currentTarget),
+      target: describeDomNode(event.target),
+    });
   }
 
   clearEvent(elemId, domEvent) {
@@ -1658,25 +1761,25 @@ export class SignalsRuntime {
         return { op, elemId: record.a, className: this.readString(record.b, record.c) };
 
       case Op.bindClick:
-        return this.describeBindCommand(op, record, "click");
+        return this.describeEventBindCommand(op, fixedEventCommand(record, "click").binding);
 
       case Op.bindInput:
-        return this.describeBindCommand(op, record, "input");
+        return this.describeEventBindCommand(op, fixedEventCommand(record, "input").binding);
 
       case Op.bindCheck:
-        return this.describeBindCommand(op, record, "change");
+        return this.describeEventBindCommand(op, fixedEventCommand(record, "change").binding);
 
       case Op.bindPointerDown:
-        return this.describeBindCommand(op, record, "pointerdown");
+        return this.describeEventBindCommand(op, fixedEventCommand(record, "pointerdown").binding);
 
       case Op.bindPointerUp:
-        return this.describeBindCommand(op, record, "pointerup");
+        return this.describeEventBindCommand(op, fixedEventCommand(record, "pointerup").binding);
 
       case Op.bindPointerEnter:
-        return this.describeBindCommand(op, record, "pointerenter");
+        return this.describeEventBindCommand(op, fixedEventCommand(record, "pointerenter").binding);
 
       case Op.bindPointerLeave:
-        return this.describeBindCommand(op, record, "pointerleave");
+        return this.describeEventBindCommand(op, fixedEventCommand(record, "pointerleave").binding);
 
       case Op.clearEvent:
         return {
@@ -1730,21 +1833,13 @@ export class SignalsRuntime {
         };
 
       case DynamicOp.bindEvent:
-        return {
-          op: dynamicOpName(command.op),
-          elemId: command.elemId,
-          domEvent: command.eventName,
-          eventId: command.eventId,
-          options: describeListenerOptions(command.options),
-          payloadKind: payloadKindName(command.payloadKind),
-          payloadDescriptor: describePayloadDescriptor(command.payloadSpec),
-        };
+        return this.describeEventBindCommand(dynamicOpName(command.op), command.binding);
 
       case DynamicOp.clearEvent:
         return {
           op: dynamicOpName(command.op),
           elemId: command.elemId,
-          domEvent: command.eventName,
+          domEvent: command.domEvent,
         };
 
       default:
@@ -1752,14 +1847,18 @@ export class SignalsRuntime {
     }
   }
 
-  describeBindCommand(op, record, domEvent) {
-    return {
+  describeEventBindCommand(op, binding) {
+    return compactObject({
       op,
-      elemId: record.a,
-      domEvent,
-      eventId: record.b,
-      payloadAccessor: payloadAccessorName(record.c),
-    };
+      elemId: binding.elemId,
+      domEvent: binding.domEvent,
+      eventId: binding.eventId,
+      options: binding.includeStaticPolicyTelemetry
+        ? describeListenerOptions(binding.options)
+        : undefined,
+      payloadKind: payloadKindName(binding.payloadDescriptor.payloadKind),
+      eventExtractionPlan: describeEventExtractionPlan(binding.payloadDescriptor.eventExtractionPlan),
+    });
   }
 
   installPointerProbe() {
@@ -1823,17 +1922,133 @@ function payloadKindName(kind) {
   return payloadKindNames[kind] ?? `unknown:${kind}`;
 }
 
-function payloadAccessorName(accessor) {
-  return payloadAccessorNames[accessor] ?? `unknown:${accessor}`;
+function payloadDescriptorFromEventExtractionPlan(eventExtractionPlan) {
+  const boundarySchema = boundarySchemaFromEventExtractionPlan(eventExtractionPlan);
+  return {
+    boundarySchema,
+    payloadKind: payloadKindForBoundarySchema(boundarySchema),
+    eventExtractionPlan,
+  };
 }
 
-function validatePayloadKind(payloadKind, cursor) {
-  if (payloadKindNames[payloadKind] !== undefined) {
-    return;
+function fixedEventCommand(record, domEvent) {
+  return {
+    op: record.op,
+    binding: fixedEventBinding(record.a, domEvent, record.b, record.op),
+  };
+}
+
+function fixedEventBinding(elemId, domEvent, eventId, op) {
+  return {
+    elemId,
+    domEvent,
+    eventId,
+    options: 0,
+    payloadDescriptor: fixedEventPayloadDescriptorForOp(op),
+    preventDefaultForPointerEvents: fixedEventPreventsPointerDefault(op),
+    installPointerDrag: op === Op.bindPointerDown,
+  };
+}
+
+function dynamicEventBinding(elemId, domEvent, eventId, options, delivery, payloadDescriptor) {
+  return {
+    elemId,
+    domEvent,
+    eventId,
+    options,
+    delivery,
+    payloadDescriptor,
+    useListenerOptions: true,
+    includeStaticPolicyTelemetry: true,
+  };
+}
+
+function eventDeliveryForBinding(binding) {
+  if (binding.delivery !== undefined) {
+    return binding.delivery;
   }
-  throw new Error(
-    `malformed dynamic render record at byte ${cursor.recordOffset}: ${cursor.opName} used unknown payload_kind ${payloadKind}`,
-  );
+  const requested = EventDelivery.auto;
+  if (requested === EventDelivery.native) {
+    return { requested, effective: EventDelivery.native, reason: "requested-native" };
+  }
+  if (requested !== EventDelivery.auto) {
+    throw new Error(`unsupported event delivery request ${String(requested)}`);
+  }
+  return {
+    requested,
+    effective: EventDelivery.native,
+    reason: nativeDeliveryReasonForBinding(binding),
+  };
+}
+
+function nativeDeliveryReasonForBinding(binding) {
+  const options = binding.options ?? 0;
+  if ((options & ListenerOptions.capture) !== 0) {
+    return "capture-policy";
+  }
+  if ((options & ListenerOptions.stopImmediatePropagation) !== 0) {
+    return "stop-immediate-policy";
+  }
+  if ((options & ListenerOptions.stopPropagation) !== 0) {
+    return "stop-propagation-policy";
+  }
+  if (binding.installPointerDrag) {
+    return "pointer-drag";
+  }
+  if ((options & ListenerOptions.preventDefault) !== 0 || binding.preventDefaultForPointerEvents) {
+    return "prevent-default-policy";
+  }
+  if ((options & ListenerOptions.once) !== 0) {
+    return "once-policy";
+  }
+  if ((options & ListenerOptions.passive) !== 0) {
+    return "passive-policy";
+  }
+  if ((options & ListenerOptions.self) !== 0) {
+    return "self-filter";
+  }
+  return "native-runtime-default";
+}
+
+function fixedEventPayloadDescriptorForOp(op) {
+  switch (op) {
+    case Op.bindClick:
+    case Op.bindPointerDown:
+    case Op.bindPointerUp:
+    case Op.bindPointerEnter:
+    case Op.bindPointerLeave:
+      return payloadDescriptorFromEventExtractionPlan(fixedEventExtractionPlan.unit);
+
+    case Op.bindInput:
+      return payloadDescriptorFromEventExtractionPlan(fixedEventExtractionPlan.targetValue);
+
+    case Op.bindCheck:
+      return payloadDescriptorFromEventExtractionPlan(fixedEventExtractionPlan.targetChecked);
+
+    default:
+      throw new Error(`render op ${opName(op)} is not a fixed event bind`);
+  }
+}
+
+function fixedEventPreventsPointerDefault(op) {
+  switch (op) {
+    case Op.bindPointerDown:
+    case Op.bindPointerUp:
+    case Op.bindPointerEnter:
+    case Op.bindPointerLeave:
+      return true;
+
+    default:
+      return false;
+  }
+}
+
+function payloadDescriptorTelemetry(payloadDescriptor) {
+  return {
+    payloadKind: payloadKindName(payloadDescriptor.payloadKind),
+    boundarySchema: describeBoundarySchema(payloadDescriptor.boundarySchema),
+    eventExtractionPlan: describeEventExtractionPlan(payloadDescriptor.eventExtractionPlan),
+  };
 }
 
 function validateListenerOptions(options, cursor) {
@@ -1846,17 +2061,58 @@ function validateListenerOptions(options, cursor) {
   );
 }
 
-function listenerOptionsForAddEventListener(options) {
+function readEventDelivery(view, cursor) {
+  return {
+    requested: readEventDeliveryName(
+      eventDeliveryRequestNames,
+      readDynamicU32(view, cursor, "delivery_requested"),
+      "delivery_requested",
+      cursor,
+    ),
+    effective: readEventDeliveryName(
+      eventDeliveryEffectiveNames,
+      readDynamicU32(view, cursor, "delivery_effective"),
+      "delivery_effective",
+      cursor,
+    ),
+    reason: readEventDeliveryName(
+      eventDeliveryReasonNames,
+      readDynamicU32(view, cursor, "delivery_reason"),
+      "delivery_reason",
+      cursor,
+    ),
+  };
+}
+
+function readEventDeliveryName(names, id, field, cursor) {
+  const name = names[id];
+  if (name !== undefined) {
+    return name;
+  }
+  throw new Error(
+    `malformed dynamic render record at byte ${cursor.recordOffset}: ${cursor.opName} used unknown ${field} id ${id}`,
+  );
+}
+
+function listenerOptionsForAddEventListener(options, { manualOnce = false } = {}) {
   return {
     capture: (options & ListenerOptions.capture) !== 0,
     passive: (options & ListenerOptions.passive) !== 0,
-    once: (options & ListenerOptions.once) !== 0,
+    once: (options & ListenerOptions.once) !== 0 && !manualOnce,
   };
+}
+
+function listenerUsesManualOnce(options) {
+  return (
+    (options & ListenerOptions.once) !== 0 &&
+    (options & (ListenerOptions.self | ListenerOptions.trusted)) !== 0
+  );
 }
 
 function applyStaticListenerPolicy(options, event) {
   let preventedDefault = false;
   let stoppedPropagation = false;
+  let stoppedImmediatePropagation = false;
   if ((options & ListenerOptions.preventDefault) !== 0) {
     if (typeof event?.preventDefault !== "function") {
       throw new Error("event listener requested preventDefault but event has no preventDefault method");
@@ -1871,126 +2127,215 @@ function applyStaticListenerPolicy(options, event) {
     event.stopPropagation();
     stoppedPropagation = true;
   }
-  return { preventedDefault, stoppedPropagation };
+  if ((options & ListenerOptions.stopImmediatePropagation) !== 0) {
+    if (typeof event?.stopImmediatePropagation !== "function") {
+      throw new Error("event listener requested stopImmediatePropagation but event has no stopImmediatePropagation method");
+    }
+    event.stopImmediatePropagation();
+    stoppedPropagation = true;
+    stoppedImmediatePropagation = true;
+  }
+  return { preventedDefault, stoppedPropagation, stoppedImmediatePropagation };
+}
+
+function eventPolicyFilterResult(options, event) {
+  if ((options & ListenerOptions.self) !== 0 && event?.target !== event?.currentTarget) {
+    return { accepted: false, reason: "self" };
+  }
+  if ((options & ListenerOptions.trusted) !== 0 && event?.isTrusted !== true) {
+    return { accepted: false, reason: "trusted" };
+  }
+  return { accepted: true };
+}
+
+function applyEventListenerPolicy(options, domEvent, event, policy) {
+  const result = applyStaticListenerPolicy(options, event);
+  if (policy.preventDefaultForPointerEvents && !result.preventedDefault) {
+    result.preventedDefault = preventDefaultForRocEvent(domEvent, event);
+  }
+  return result;
+}
+
+function listenerPolicyTelemetry(options, policy, includeStaticPolicyTelemetry) {
+  if (includeStaticPolicyTelemetry) {
+    return {
+      listenerOptions: describeListenerOptions(options),
+      preventedDefault: policy.preventedDefault,
+      stoppedPropagation: policy.stoppedPropagation,
+      stoppedImmediatePropagation: policy.stoppedImmediatePropagation,
+    };
+  }
+  return {
+    preventedDefault: policy.preventedDefault,
+  };
 }
 
 function describeListenerOptions(options) {
   return compactObject({
     preventDefault: (options & ListenerOptions.preventDefault) !== 0,
     stopPropagation: (options & ListenerOptions.stopPropagation) !== 0,
+    stopImmediatePropagation: (options & ListenerOptions.stopImmediatePropagation) !== 0,
     capture: (options & ListenerOptions.capture) !== 0,
     passive: (options & ListenerOptions.passive) !== 0,
     once: (options & ListenerOptions.once) !== 0,
+    self: (options & ListenerOptions.self) !== 0,
+    trusted: (options & ListenerOptions.trusted) !== 0,
   });
 }
 
-function parseEventPayloadDescriptor(bytes, recordOffset, opName) {
+function parseEventExtractionPlan(bytes, recordOffset, opName) {
   const cursor = { offset: 0, limit: bytes.length, recordOffset, opName };
-  const spec = parsePayloadSpecNode(bytes, cursor);
+  const plan = parseEventExtractionPlanNode(bytes, cursor);
   if (cursor.offset !== cursor.limit) {
-    throw malformedPayloadDescriptor(
+    throw malformedEventExtractionPlan(
       cursor,
-      `left ${cursor.limit - cursor.offset} trailing descriptor bytes`,
+      `left ${cursor.limit - cursor.offset} trailing byte(s)`,
     );
   }
-  return spec;
+  return plan;
 }
 
-function parsePayloadSpecNode(bytes, cursor) {
-  const tag = readPayloadSpecU8(bytes, cursor, "tag");
+function parseEventExtractionPlanNode(bytes, cursor) {
+  const tag = readEventExtractionPlanU8(bytes, cursor, "tag");
   switch (tag) {
-    case PayloadSpecTag.unit:
+    case BoundarySchemaTag.unit:
       return { kind: "unit" };
 
-    case PayloadSpecTag.text:
-      return parseScalarPayloadSpec(bytes, cursor, "text");
+    case BoundarySchemaTag.text:
+      return parseEventScalarExtraction(bytes, cursor, "text");
 
-    case PayloadSpecTag.bool:
-      return parseScalarPayloadSpec(bytes, cursor, "bool");
+    case BoundarySchemaTag.bool:
+      return parseEventScalarExtraction(bytes, cursor, "bool");
 
-    case PayloadSpecTag.record: {
-      const fieldCount = readPayloadSpecU8(bytes, cursor, "record_field_count");
-      const fields = [];
-      const names = new Set();
-      for (let i = 0; i < fieldCount; i += 1) {
-        const nameLen = readPayloadSpecU8(bytes, cursor, "record_field_name_len");
-        if (nameLen === 0) {
-          throw malformedPayloadDescriptor(cursor, "record field name was empty");
-        }
-        ensurePayloadSpecAvailable(cursor, nameLen, "record_field_name");
-        const nameBytes = bytes.subarray(cursor.offset, cursor.offset + nameLen);
-        cursor.offset += nameLen;
-        let name;
-        try {
-          name = dynamicTextDecoder.decode(nameBytes);
-        } catch (err) {
-          throw malformedPayloadDescriptor(cursor, "record field name was not valid UTF-8", err);
-        }
-        if (names.has(name)) {
-          throw malformedPayloadDescriptor(cursor, `record field "${name}" was duplicated`);
-        }
-        names.add(name);
-        fields.push({ name, spec: parsePayloadSpecNode(bytes, cursor) });
-      }
-      return { kind: "record", fields };
-    }
+    case BoundarySchemaTag.record:
+      return parseBoundaryRecordNode(bytes, cursor, parseEventExtractionPlanNode);
 
     default:
-      throw malformedPayloadDescriptor(cursor, `unknown descriptor tag ${tag}`);
+      throw malformedEventExtractionPlan(cursor, `unknown shape tag ${tag}`);
   }
 }
 
-function parseScalarPayloadSpec(bytes, cursor, kind) {
-  const source = readPayloadSpecU8(bytes, cursor, `${kind}_source`);
-  const leaf = readPayloadSpecU8(bytes, cursor, `${kind}_leaf`);
-  validatePayloadSource(source, cursor);
-  validatePayloadLeaf(kind, leaf, cursor);
+function parseBoundaryRecordNode(bytes, cursor, parseNode) {
+  const fieldCount = readEventExtractionPlanU8(bytes, cursor, "record_field_count");
+  if (fieldCount === 0) {
+    throw malformedEventExtractionPlan(cursor, "record field count was zero");
+  }
+  const fields = [];
+  const names = new Set();
+  for (let i = 0; i < fieldCount; i += 1) {
+    const nameLen = readEventExtractionPlanU8(bytes, cursor, "record_field_name_len");
+    if (nameLen === 0) {
+      throw malformedEventExtractionPlan(cursor, "record field name was empty");
+    }
+    ensureEventExtractionPlanAvailable(cursor, nameLen, "record_field_name");
+    const nameBytes = bytes.subarray(cursor.offset, cursor.offset + nameLen);
+    cursor.offset += nameLen;
+    let name;
+    try {
+      name = dynamicTextDecoder.decode(nameBytes);
+    } catch (err) {
+      throw malformedEventExtractionPlan(cursor, "record field name was not valid UTF-8", err);
+    }
+    if (names.has(name)) {
+      throw malformedEventExtractionPlan(cursor, `record field "${name}" was duplicated`);
+    }
+    names.add(name);
+    const spec = parseNode(bytes, cursor);
+    if (spec.kind === "record") {
+      throw malformedEventExtractionPlan(cursor, `record field "${name}" used a nested record shape`);
+    }
+    fields.push({ name, spec });
+  }
+  return { kind: "record", fields };
+}
+
+function parseEventScalarExtraction(bytes, cursor, kind) {
+  const source = readEventExtractionPlanU8(bytes, cursor, `${kind}_source`);
+  const leaf = readEventExtractionPlanU8(bytes, cursor, `${kind}_leaf`);
+  validateEventExtractionSource(source, cursor);
+  validateEventExtractionLeaf(kind, leaf, cursor);
+  validateEventExtractionSourceLeaf(source, leaf, cursor);
   return { kind, source, leaf };
 }
 
-function ensurePayloadSpecAvailable(cursor, byteCount, field) {
+function ensureEventExtractionPlanAvailable(cursor, byteCount, field) {
   if (cursor.offset + byteCount <= cursor.limit) {
     return;
   }
-  throw malformedPayloadDescriptor(cursor, `${field} extends beyond descriptor length`);
+  throw malformedEventExtractionPlan(cursor, `${field} extends beyond extraction plan length`);
 }
 
-function readPayloadSpecU8(bytes, cursor, field) {
-  ensurePayloadSpecAvailable(cursor, 1, field);
+function readEventExtractionPlanU8(bytes, cursor, field) {
+  ensureEventExtractionPlanAvailable(cursor, 1, field);
   const value = bytes[cursor.offset];
   cursor.offset += 1;
   return value;
 }
 
-function validatePayloadSource(source, cursor) {
+function validateEventExtractionSource(source, cursor) {
   if (
-    source === PayloadSpecSource.event ||
-    source === PayloadSpecSource.target ||
-    source === PayloadSpecSource.currentTarget
+    source === EventExtractionSource.event ||
+    source === EventExtractionSource.target ||
+    source === EventExtractionSource.currentTarget
   ) {
     return;
   }
-  throw malformedPayloadDescriptor(cursor, `unknown source tag ${source}`);
+  throw malformedEventExtractionPlan(cursor, `unknown event extraction source tag ${source}`);
 }
 
-function validatePayloadLeaf(kind, leaf, cursor) {
-  if (kind === "text" && (leaf === PayloadSpecLeaf.key || leaf === PayloadSpecLeaf.value)) {
+function validateEventExtractionLeaf(kind, leaf, cursor) {
+  if (kind === "text" && (leaf === EventExtractionLeaf.key || leaf === EventExtractionLeaf.value)) {
     return;
   }
-  if (kind === "bool" && (leaf === PayloadSpecLeaf.checked || leaf === PayloadSpecLeaf.shiftKey)) {
+  if (kind === "bool" && (leaf === EventExtractionLeaf.checked || leaf === EventExtractionLeaf.shiftKey)) {
     return;
   }
-  throw malformedPayloadDescriptor(cursor, `${kind} descriptor used incompatible leaf tag ${leaf}`);
+  throw malformedEventExtractionPlan(cursor, `${kind} event extraction used incompatible leaf tag ${leaf}`);
 }
 
-function malformedPayloadDescriptor(cursor, message, cause = undefined) {
+function validateEventExtractionSourceLeaf(source, leaf, cursor) {
+  if (
+    (leaf === EventExtractionLeaf.key || leaf === EventExtractionLeaf.shiftKey) &&
+    source === EventExtractionSource.event
+  ) {
+    return;
+  }
+  if (
+    (leaf === EventExtractionLeaf.value || leaf === EventExtractionLeaf.checked) &&
+    (source === EventExtractionSource.target || source === EventExtractionSource.currentTarget)
+  ) {
+    return;
+  }
+  throw malformedEventExtractionPlan(cursor, `event extraction source tag ${source} cannot produce leaf tag ${leaf}`);
+}
+
+function malformedEventExtractionPlan(cursor, message, cause = undefined) {
   return new Error(
-    `malformed event payload descriptor at byte ${cursor.recordOffset}: ${cursor.opName} ${message}`,
+    `malformed event extraction plan at byte ${cursor.recordOffset}: ${cursor.opName} ${message}`,
     cause === undefined ? undefined : { cause },
   );
 }
 
-function payloadKindForDescriptor(spec) {
+function boundarySchemaFromEventExtractionPlan(spec) {
+  switch (spec.kind) {
+    case "unit":
+    case "text":
+    case "bool":
+      return { kind: spec.kind };
+    case "record":
+      return {
+        kind: "record",
+        fields: spec.fields.map((field) => ({
+          name: field.name,
+          spec: boundarySchemaFromEventExtractionPlan(field.spec),
+        })),
+      };
+    default:
+      throw new Error(`unknown event extraction plan kind ${spec.kind}`);
+  }
+}
+
+function payloadKindForBoundarySchema(spec) {
   switch (spec.kind) {
     case "unit":
       return PayloadKind.unit;
@@ -2001,43 +2346,43 @@ function payloadKindForDescriptor(spec) {
     case "record":
       return PayloadKind.bytes;
     default:
-      throw new Error(`unknown event payload descriptor kind ${spec.kind}`);
+      throw new Error(`unknown boundary schema kind ${spec.kind}`);
   }
 }
 
-function extractPayloadValue(spec, event) {
+function extractBoundaryPayloadValue(spec, event) {
   switch (spec.kind) {
     case "unit":
       return undefined;
     case "text": {
-      const value = readPayloadLeaf(spec, event);
+      const value = readEventExtractionLeaf(spec, event);
       if (typeof value !== "string") {
-        throw new Error("event payload descriptor text leaf did not yield a string");
+        throw new Error("event extraction text leaf did not yield a string");
       }
       return value;
     }
     case "bool": {
-      const value = readPayloadLeaf(spec, event);
+      const value = readEventExtractionLeaf(spec, event);
       if (typeof value !== "boolean") {
-        throw new Error("event payload descriptor bool leaf did not yield a boolean");
+        throw new Error("event extraction bool leaf did not yield a boolean");
       }
       return value;
     }
     case "record":
-      return spec.fields.map((field) => [field.name, extractPayloadValue(field.spec, event)]);
+      return spec.fields.map((field) => [field.name, extractBoundaryPayloadValue(field.spec, event)]);
     default:
-      throw new Error(`unknown event payload descriptor kind ${spec.kind}`);
+      throw new Error(`unknown boundary schema kind ${spec.kind}`);
   }
 }
 
-function encodePayloadBytes(spec, event) {
+function encodeBoundaryPayloadBytes(spec, event) {
   const chunks = [];
   let totalLen = 0;
   const push = (bytes) => {
     chunks.push(bytes);
     totalLen += bytes.length;
   };
-  writePayloadBytes(spec, event, push);
+  writeBoundaryPayloadBytes(spec, event, push);
   const out = new Uint8Array(totalLen);
   let offset = 0;
   for (const chunk of chunks) {
@@ -2047,12 +2392,12 @@ function encodePayloadBytes(spec, event) {
   return out;
 }
 
-function writePayloadBytes(spec, event, push) {
+function writeBoundaryPayloadBytes(spec, event, push) {
   switch (spec.kind) {
     case "unit":
       return;
     case "text": {
-      const bytes = textEncoder.encode(extractPayloadValue(spec, event));
+      const bytes = textEncoder.encode(extractBoundaryPayloadValue(spec, event));
       const len = new Uint8Array(4);
       new DataView(len.buffer).setUint32(0, bytes.length, true);
       push(len);
@@ -2060,75 +2405,90 @@ function writePayloadBytes(spec, event, push) {
       return;
     }
     case "bool":
-      push(new Uint8Array([extractPayloadValue(spec, event) ? 1 : 0]));
+      push(new Uint8Array([extractBoundaryPayloadValue(spec, event) ? 1 : 0]));
       return;
     case "record":
       for (const field of spec.fields) {
-        writePayloadBytes(field.spec, event, push);
+        writeBoundaryPayloadBytes(field.spec, event, push);
       }
       return;
     default:
-      throw new Error(`unknown event payload descriptor kind ${spec.kind}`);
+      throw new Error(`unknown boundary schema kind ${spec.kind}`);
   }
 }
 
-function readPayloadLeaf(spec, event) {
-  const source = payloadSourceObject(spec.source, event);
-  const property = payloadLeafProperty(spec.leaf);
-  return source?.[property];
-}
-
-function payloadSourceObject(source, event) {
-  switch (source) {
-    case PayloadSpecSource.event:
-      return event;
-    case PayloadSpecSource.target:
-      return event.target;
-    case PayloadSpecSource.currentTarget:
-      return event.currentTarget;
-    default:
-      throw new Error(`unknown event payload source ${source}`);
-  }
-}
-
-function payloadLeafProperty(leaf) {
-  switch (leaf) {
-    case PayloadSpecLeaf.key:
-      return "key";
-    case PayloadSpecLeaf.value:
-      return "value";
-    case PayloadSpecLeaf.checked:
-      return "checked";
-    case PayloadSpecLeaf.shiftKey:
-      return "shiftKey";
-    default:
-      throw new Error(`unknown event payload leaf ${leaf}`);
-  }
-}
-
-function describePayloadDescriptor(spec) {
+function describeBoundarySchema(spec) {
   switch (spec.kind) {
     case "unit":
-      return "unit";
     case "text":
     case "bool":
-      return `${spec.kind}:${payloadSourceName(spec.source)}.${payloadLeafProperty(spec.leaf)}`;
+      return spec.kind;
     case "record":
       return `{ ${spec.fields
-        .map((field) => `${field.name}: ${describePayloadDescriptor(field.spec)}`)
+        .map((field) => `${field.name}: ${describeBoundarySchema(field.spec)}`)
         .join(", ")} }`;
     default:
       return `unknown:${spec.kind}`;
   }
 }
 
-function payloadSourceName(source) {
+function readEventExtractionLeaf(spec, event) {
+  const source = eventExtractionSourceObject(spec.source, event);
+  const property = eventExtractionLeafProperty(spec.leaf);
+  return source?.[property];
+}
+
+function eventExtractionSourceObject(source, event) {
   switch (source) {
-    case PayloadSpecSource.event:
+    case EventExtractionSource.event:
+      return event;
+    case EventExtractionSource.target:
+      return event.target;
+    case EventExtractionSource.currentTarget:
+      return event.currentTarget;
+    default:
+      throw new Error(`unknown event extraction source ${source}`);
+  }
+}
+
+function eventExtractionLeafProperty(leaf) {
+  switch (leaf) {
+    case EventExtractionLeaf.key:
+      return "key";
+    case EventExtractionLeaf.value:
+      return "value";
+    case EventExtractionLeaf.checked:
+      return "checked";
+    case EventExtractionLeaf.shiftKey:
+      return "shiftKey";
+    default:
+      throw new Error(`unknown event extraction leaf ${leaf}`);
+  }
+}
+
+function describeEventExtractionPlan(spec) {
+  switch (spec.kind) {
+    case "unit":
+      return "unit";
+    case "text":
+    case "bool":
+      return `${spec.kind}:${eventExtractionSourceName(spec.source)}.${eventExtractionLeafProperty(spec.leaf)}`;
+    case "record":
+      return `{ ${spec.fields
+        .map((field) => `${field.name}: ${describeEventExtractionPlan(field.spec)}`)
+        .join(", ")} }`;
+    default:
+      return `unknown:${spec.kind}`;
+  }
+}
+
+function eventExtractionSourceName(source) {
+  switch (source) {
+    case EventExtractionSource.event:
       return "event";
-    case PayloadSpecSource.target:
+    case EventExtractionSource.target:
       return "target";
-    case PayloadSpecSource.currentTarget:
+    case EventExtractionSource.currentTarget:
       return "currentTarget";
     default:
       return `unknown:${source}`;

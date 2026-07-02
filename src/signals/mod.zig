@@ -9,6 +9,7 @@ const std = @import("std");
 pub const abi = @import("roc_platform_abi.zig");
 pub const abi_view = @import("abi_view.zig");
 pub const active_signal_graph = @import("active_signal_graph.zig");
+pub const boundary = @import("boundary.zig");
 pub const descriptor_stream = @import("descriptor_stream.zig");
 pub const each_runtime = @import("each_runtime.zig");
 pub const effects_runtime = @import("effects_runtime.zig");
@@ -33,6 +34,7 @@ pub const structural_splice = @import("structural_splice.zig");
 test {
     std.testing.refAllDecls(abi_view);
     std.testing.refAllDecls(active_signal_graph);
+    std.testing.refAllDecls(boundary);
     std.testing.refAllDecls(descriptor_stream);
     std.testing.refAllDecls(each_runtime);
     std.testing.refAllDecls(effects_runtime);

@@ -1,7 +1,10 @@
+//! Parser for text-based Signals example specs and assertions.
+
 const std = @import("std");
 
 pub const SpecCommandType = enum {
     click,
+    real_click,
     pointer_down,
     pointer_up,
     pointer_enter,
@@ -260,6 +263,8 @@ pub fn parseTestSpec(allocator: std.mem.Allocator, content: []const u8) ParseErr
 
         if (std.mem.startsWith(u8, trimmed, "click ")) {
             try appendSpecCommand(&commands, allocator, .click, try parseLocator(allocator, trimmed[6..]), null, null, null, line_num);
+        } else if (std.mem.startsWith(u8, trimmed, "real_click ")) {
+            try appendSpecCommand(&commands, allocator, .real_click, try parseLocator(allocator, trimmed["real_click ".len..]), null, null, null, line_num);
         } else if (std.mem.startsWith(u8, trimmed, "pointer_down ")) {
             try appendSpecCommand(&commands, allocator, .pointer_down, try parseLocator(allocator, trimmed["pointer_down ".len..]), null, null, null, line_num);
         } else if (std.mem.startsWith(u8, trimmed, "pointer_up ")) {
@@ -406,6 +411,7 @@ pub fn parseTestSpec(allocator: std.mem.Allocator, content: []const u8) ParseErr
 test "spec parser parses actions and assertions" {
     const content =
         \\click role:button name:"Save"
+        \\real_click role:button name:"Save"
         \\fill label:"Email" "a@example.com"
         \\focus label:"Email"
         \\blur label:"Email"
@@ -421,25 +427,26 @@ test "spec parser parses actions and assertions" {
     const commands = try parseTestSpec(std.testing.allocator, content);
     defer freeSpecCommands(std.testing.allocator, commands);
 
-    try std.testing.expectEqual(@as(usize, 12), commands.len);
+    try std.testing.expectEqual(@as(usize, 13), commands.len);
     try std.testing.expectEqual(SpecCommandType.click, commands[0].cmd_type);
     try std.testing.expectEqual(LocatorKind.role_name, commands[0].locator.kind);
     try std.testing.expectEqualStrings("button", commands[0].locator.role.?);
     try std.testing.expectEqualStrings("Save", commands[0].locator.name.?);
-    try std.testing.expectEqualStrings("a@example.com", commands[1].expected_text.?);
-    try std.testing.expectEqual(SpecCommandType.focus, commands[2].cmd_type);
-    try std.testing.expectEqual(SpecCommandType.blur, commands[3].cmd_type);
-    try std.testing.expectEqual(SpecCommandType.change, commands[4].cmd_type);
-    try std.testing.expectEqualStrings("changed@example.com", commands[4].expected_text.?);
-    try std.testing.expectEqual(SpecCommandType.composition_start, commands[5].cmd_type);
-    try std.testing.expectEqual(SpecCommandType.composition_end, commands[6].cmd_type);
-    try std.testing.expectEqualStrings("data-state", commands[7].expected_attr.?);
-    try std.testing.expectEqualStrings("ready", commands[7].expected_text.?);
-    try std.testing.expectEqualStrings("aria-invalid", commands[8].expected_attr.?);
-    try std.testing.expectEqual(@as(?u64, 250), commands[9].interval_ms);
-    try std.testing.expectEqual(SpecCommandType.tick_interval_if_active, commands[10].cmd_type);
+    try std.testing.expectEqual(SpecCommandType.real_click, commands[1].cmd_type);
+    try std.testing.expectEqualStrings("a@example.com", commands[2].expected_text.?);
+    try std.testing.expectEqual(SpecCommandType.focus, commands[3].cmd_type);
+    try std.testing.expectEqual(SpecCommandType.blur, commands[4].cmd_type);
+    try std.testing.expectEqual(SpecCommandType.change, commands[5].cmd_type);
+    try std.testing.expectEqualStrings("changed@example.com", commands[5].expected_text.?);
+    try std.testing.expectEqual(SpecCommandType.composition_start, commands[6].cmd_type);
+    try std.testing.expectEqual(SpecCommandType.composition_end, commands[7].cmd_type);
+    try std.testing.expectEqualStrings("data-state", commands[8].expected_attr.?);
+    try std.testing.expectEqualStrings("ready", commands[8].expected_text.?);
+    try std.testing.expectEqualStrings("aria-invalid", commands[9].expected_attr.?);
     try std.testing.expectEqual(@as(?u64, 250), commands[10].interval_ms);
-    try std.testing.expectEqual(@as(?u64, 1), commands[11].expected_count);
+    try std.testing.expectEqual(SpecCommandType.tick_interval_if_active, commands[11].cmd_type);
+    try std.testing.expectEqual(@as(?u64, 250), commands[11].interval_ms);
+    try std.testing.expectEqual(@as(?u64, 1), commands[12].expected_count);
 }
 
 test "spec parser parses async cleanup metrics and boolean commands" {

@@ -1,3 +1,5 @@
+//! Owned signal records and cache slots retained in the active graph.
+
 const std = @import("std");
 const abi = @import("roc_platform_abi.zig");
 const retained = @import("retained_values.zig");

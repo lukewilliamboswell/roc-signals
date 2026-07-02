@@ -42,14 +42,15 @@ Deliverables:
   - bool;
   - text;
   - integer / float scalars only if a real canary needs them;
-  - records of primitive leaves.
+  - non-empty records of primitive leaves.
 - Define `EventExtractionPlan` as a DOM-specific producer of that boundary payload,
   not as an event-only payload format.
 - Reuse the same boundary vocabulary for future subscription/app-interop payloads.
 - Keep Roc layout opaque to JS and Zig. Hosts may move bytes/scalars and invoke
   app-compiled capabilities/decoders; they must not decode arbitrary Roc layouts.
-- Decide the error model for extraction/validation failure:
-  - deterministic diagnostic;
+- Extend the current error model for extraction/validation failure across hosts:
+  - deterministic diagnostic, preserving JS `event_payload_error` telemetry for
+    event extraction failures;
   - no reducer delivery for that handler;
   - no silent fallback to DOM inference.
 - Audit the existing public API and mark compatibility-only pieces for removal or
@@ -64,10 +65,9 @@ Non-goals for this slice:
 
 Validation:
 
-- One focused app/spec canary that uses a record payload through the boundary.
-- JS contract tests for boundary encoding, malformed descriptors, extraction
-  failure, and memory-view refresh after host allocation.
-- Native spec coverage for the semantic result, without duplicating browser quirks.
+- Any new boundary leaf/container addition must include one focused app/spec
+  canary, JS contract coverage for encoding/validation/extraction failure, and
+  native spec coverage for the semantic result without duplicating browser quirks.
 
 ### 2. Public API shrink pass
 
@@ -76,25 +76,18 @@ sugar, rather than parallel fixed/named/compatibility paths.
 
 Deliverables:
 
-- Inventory `platform/Node.roc` and `platform/Html.roc` for duplicate surfaces:
-  fixed event helpers, named event escape hatches, raw listener bits, payload
-  accessor constants, and compatibility helpers.
-- Classify each as:
-  - keep as core;
-  - keep as sugar over the core;
-  - temporary compatibility shim;
-  - remove/deprecate.
-- Prefer a single canonical attr/event representation internally, even if a short
-  migration shim remains at the Roc API edge.
-- Replace public raw listener bitmasks with typed policy values only when the
-  boundary model can carry them cleanly.
-- Avoid adding new `_with` helper families unless they clearly lower to the same
-  core descriptor and replace an older path.
+- Keep `wip/PUBLIC_API_SHRINK_AUDIT.md` current whenever the public surface
+  changes.
+- Keep fixed event helpers and named events lowering through the same
+  `Node.EventBinding` shape while preserving fixed-event compression until
+  measurements say it can be removed.
+- Remove or avoid reintroducing public raw ids, listener bitmasks, and duplicate
+  helper families when a slice touches that surface.
+- Reflect any removed or renamed surface in docs/examples in the same slice.
 
 Validation:
 
 - Existing maintained examples still check/build.
-- Any removed or renamed surface is reflected in docs/examples in the same slice.
 
 ### 3. Reframe event propagation on top of the boundary
 
@@ -116,15 +109,27 @@ Deliverables:
   - `once`;
   - `self`/`trusted` filters.
 - Delivery derivation:
-  - public request starts with `Auto` and `Native` only;
+  - `Node.EventBinding` now carries a typed delivery request through the Roc ABI;
+  - host-facing Zig event bindings now carry requested/effective delivery and a
+    native-delivery reason derived before render-cache storage/sink dispatch;
+  - browser runtime still derives the same current `Auto -> Native` decision from
+    existing command fields for command-wire telemetry because delivery is not yet
+    encoded in render commands;
+  - public request starts with `Auto` and `Native` only, exposed through the
+    low-level `Html.on_event_delivery` path;
   - delegated delivery remains an internal optimization until there is a proven
     need to expose it;
-  - native is forced for semantics delegation cannot reproduce.
-- `roc_ui_event` returns response bits so dynamic response can be added later
-  without another ABI break, but dynamic response does not need to be public in the
-  first propagation slice.
-- Native spec runner gains browser-realistic dispatch for the motivating cases,
-  especially `real_click` as `pointerdown -> pointerup -> click` with propagation.
+  - native is forced for semantics delegation cannot reproduce;
+  - remaining work is to encode delivery through the browser command wire when the
+    canonical host descriptor replaces the fixed/named split.
+- Continue extending native spec coverage beyond the current `real_click`
+  primitive. Capture/bubble and static stop/stop-immediate policy now have
+  focused native runner coverage; `release-planner` has a nested note-button
+  canary proving stop-propagation prevents card drag startup during a real click;
+  submit dispatch has focused coverage for static prevent-default and disabled
+  targets; and `self`/`trusted` filters are encoded in typed policy and covered
+  in browser/native runner tests. Remaining gaps include broader default-action
+  modeling where relevant.
 
 API discipline:
 
@@ -135,10 +140,17 @@ API discipline:
 
 Validation:
 
-- A focused nested-control/drag canary proving propagation policy.
-- Native spec coverage for capture/bubble, stop propagation, stop immediate, self,
-  disabled controls where relevant, and form submit default prevention.
-- JS contract tests for listener options and response-bit timing.
+- Preserve the `release-planner` nested-control/drag canary: `real_click` on the
+  card note button must increment the note without starting a drag.
+- Native spec coverage should be added for any new propagation/default-action
+  semantics beyond the current capture/bubble, stop/stop-immediate, submit, and
+  `self`/`trusted` cases.
+- JS contract tests should cover any new listener option or event response timing
+  behavior; current coverage includes static default/propagation policy,
+  `self`/`trusted` filters, listener options passed to `addEventListener`,
+  delivery telemetry for current `Auto -> Native` derivation, and response-bit
+  timing. Zig render-cache coverage now verifies descriptor-level delivery
+  derivation before storage and sink dispatch.
 
 ### 4. Dynamic event response, only if needed
 

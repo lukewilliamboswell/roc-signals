@@ -5,13 +5,20 @@ is not an enduring design document yet. Its purpose is to capture requirements,
 current constraints, candidate directions, and unresolved questions before the
 final design is folded into `DESIGN.md`, `GUIDE.md`, and `NEXT_STEPS.md`.
 
+Status: the first boundary/API shrink slice has landed. General text/boolean
+attributes, named events, typed static event policy, keyboard payloads, submit
+prevent-default, and the shared `BoundarySchema` / `EventExtractionPlan` record
+path are now implemented. The remaining value of this note is the future
+broadening work: optional attribute absence, more payload leaves only when a
+canary needs them, and reuse of the boundary vocabulary beyond DOM events.
+
 ## Problem Statement
 
-The current Signals UI boundary is intentionally small: apps can set a few
+The original Signals UI boundary was intentionally small: apps could set a few
 well-known fields and bind a few event kinds. That was useful for proving the
-core engine, but it is too narrow for real production web apps.
+core engine, but too narrow for real production web apps.
 
-Today the platform surface is effectively closed:
+The original closed surface was:
 
 - text-like fields: `text`, `role`, `label`, `test_id`, `value`, `class`;
 - bool fields: `checked`, `disabled`;
@@ -20,12 +27,13 @@ Today the platform surface is effectively closed:
 - payload shapes: unit, string, bool;
 - payload accessors: none, `target.value`, `target.checked`.
 
-This means many normal browser capabilities are inexpressible without changing
-`Node.roc`, the Zig engine, the render-command layer, and `runtime.mjs` together.
-Examples include `href`, `src`, `id`, `name`, `type`, `placeholder`, `style`,
-`aria-*`, `data-*`, keyboard events, focus/blur, form submit, file input,
-clipboard, drag/drop, scroll, composition, and event metadata such as keys or
-pointer coordinates.
+The current surface is no longer closed in the same way. `Html.attr`,
+`Html.attr_s`, `Html.bool_attr`, and `Html.bool_attr_s` cover arbitrary named
+attributes; `Html.on_event` covers arbitrary named DOM events with typed static
+policy; and `Ui.State.on_key` proves a non-scalar record payload through the
+boundary. Remaining gaps include optional attribute absence, namespace-sensitive
+attributes where required, broader payload leaves such as pointer coordinates or
+file metadata, and using the same boundary vocabulary for non-event host input.
 
 The goal is to generalize the boundary without losing the properties that make
 the current engine tractable:
@@ -40,27 +48,37 @@ the current engine tractable:
 
 Relevant current files:
 
-- `test/signals/platform/Node.roc`
-  - `Attr` is a closed enum with `StaticText`, `SignalText`, `StaticBool`,
-    `SignalBool`, and `OnEvent`.
-  - Fields, event kinds, payload kinds, and payload accessors are hard-coded `U64`
-    constants.
-- `test/signals/platform/Html.roc`
-  - exposes convenience constructors for a small set of tags/attrs/events.
-- `test/signals/src/engine.zig`
+- `platform/Node.roc`
+  - `Attr` carries typed `TextField` / `BoolField` wrappers and one
+    `On(EventBinding)` constructor.
+  - `Msg` carries typed `BoundarySchema` and `EventExtractionPlan` byte wrappers;
+    public payload-kind/accessor constants and compatibility event-message
+    constructors have been removed.
+  - `EventBinding` carries typed `EventPolicy` and `EventDelivery`; listener
+    option bits are now a browser command-wire detail, not a Roc ABI field.
+- `platform/Html.roc`
+  - exposes attribute/event sugar and owns file-local lowering data for built-in
+    fields and fixed event kinds.
+- `platform/Ui.roc`
+  - constructs reducer messages from file-local boundary/extraction descriptors.
+    The remaining descriptor byte values are temporary until the wasm key-shift
+    allocation regression has a smaller fix.
+- `src/signals/boundary.zig`
+  - parses and validates the shared boundary schema and DOM event extraction
+    plan.
+- `src/signals/engine.zig`
   - collects descriptor streams for text attrs, bool attrs, and event descriptors.
   - routes source updates to signal graph records.
-- `test/signals/src/render_commands.zig`
+- `src/signals/render_commands.zig`
   - owns fixed render op ids and command-buffer record shape.
-- `test/signals/browser/runtime.mjs`
+- `www/static/signals.mjs`
   - applies integer patch ops to DOM nodes and marshals event payloads back to
     `roc_ui_event`.
-- `test/signals/browser/runtime_contract.test.mjs`
+- `scripts/browser/runtime_contract.test.mjs`
   - protects the JS↔WASM contract surface.
 
-The design already names this as an open question under event payload accessor
-format: carry explicit accessor descriptors in the descriptor tree so JS
-serializes only requested leaves.
+The core direction is now settled: carry explicit boundary schema and producer
+descriptors in the descriptor tree so JS serializes only requested leaves.
 
 ## Requirements
 
@@ -125,20 +143,22 @@ Possible Roc-level shape:
 
 ```roc
 Attr := [
-    StaticText({ field : U64, value : Str }),
-    SignalText({ field : U64, signal : Box(SignalExpr), read : TextReadHandle }),
-    StaticBool({ field : U64, value : Bool }),
-    SignalBool({ field : U64, signal : Box(SignalExpr), read : BoolReadHandle }),
-    StaticAttr({ name : Str, value : Str }),
-    SignalAttr({ name : Str, signal : Box(SignalExpr), read : TextReadHandle }),
-    StaticBoolAttr({ name : Str, value : Bool }),
-    SignalBoolAttr({ name : Str, signal : Box(SignalExpr), read : BoolReadHandle }),
-    OnEvent({ kind : EventKind, msg : Msg, options : EventOptions }),
+    StaticText({ field : TextField, name : Str, value : Str }),
+    SignalText({ field : TextField, name : Str, signal : Box(SignalExpr), read : TextReadHandle }),
+    StaticBool({ field : BoolField, name : Str, value : Bool }),
+    SignalBool({ field : BoolField, name : Str, signal : Box(SignalExpr), read : BoolReadHandle }),
+    On(EventBinding),
 ]
+
+EventDelivery := { native : Bool }
+
+EventBinding := { kind : FixedEventKind, msg : Msg, policy : EventPolicy, delivery : EventDelivery, name : Str }
 ```
 
-Open question: whether `EventKind` should be a string, an interned string ref, or
-a tagged union with specialized common variants plus `Custom(Str)`.
+This is the current shape. `Html` hides the built-in field/event ids and exposes
+general named attrs/events as sugar over the same descriptor records. The
+remaining question is whether a later wire format should keep the `name` string
+inline, move it through a string table, or add an interned string ref.
 
 ### 2. Make payload access explicit data
 
@@ -188,9 +208,9 @@ Real apps need at least:
 - passive listeners for scroll/touch where appropriate;
 - maybe once.
 
-Need to decide whether prevent/stop are static options on the binding or dynamic
-results from the reducer. Static options are easier and deterministic; dynamic
-results are more expressive but couple reducer execution to browser event policy.
+Static prevent/stop/listener options now live on the binding as typed
+`Node.EventPolicy` data exposed through `Html`. Dynamic results remain deferred
+until a maintained app or canary proves a state-dependent response is needed.
 
 ### 4. Attribute removal semantics
 
@@ -243,28 +263,29 @@ This layer sits **on top of** the wire protocol and **underneath** forms:
   `SetAttr`/`RemoveAttr`/`BindEvent` ops, the name/string reference table, and the
   event payload byte format. Do not design the descriptor shape here without
   co-designing its wire encoding there.
-- `CONTROLLED_INPUTS_FORMS_DESIGN_PREP.md` is the primary consumer: form controls
+- `CONTROLLED_INPUTS_FORMS_DESIGN_PREP.md` is a primary consumer: form controls
   need `type`, `name`, `required`, `aria-*`, and `submit`/`focus`/`blur`/keyboard
-  events, all of which this boundary must express first. Forms can act as the
-  vertical slice that proves this boundary.
-- The prevent-default/stop-propagation policy here also unblocks form `submit`.
-  Note the current runtime hard-codes prevent-default to pointer events only
-  (`preventDefaultForRocEvent` in `runtime.mjs`); generalizing it is part of this
-  work.
+  events. The current general attr/event surface covers these basics.
+- Static prevent-default/stop-propagation policy now covers submit and nested
+  control canaries. Broader default-action modeling should be added only with a
+  focused semantic test.
 
 Recommended order: settle the protocol encoding, then this boundary, then use the
 forms milestone to exercise both end to end.
 
-## Suggested First Milestone
+## Next Milestone
 
-Add a general text attribute and a generalized keyboard event payload as a thin
-vertical slice:
+The original thin slice is complete: general attrs, keyboard record payload,
+submit prevent-default, native descriptor support, browser command/event support,
+focused app/spec coverage, and JS contract coverage exist.
 
-- `Html.attr : Str, Str -> Attr`;
-- `Html.attr_s : Str, Signal(Str) -> Attr`;
-- `Html.on_key_down : KeyPayload -> Msg` or equivalent helper;
-- native descriptor support;
-- browser command/event support;
-- one focused app/spec and one JS contract test.
+The next boundary slice should remove or prove one remaining temporary edge:
 
-This proves the open boundary shape without attempting to catalog the web.
+- remove the file-local `Ui` boundary/extraction byte values once the wasm
+  key-shift descriptor allocation regression has a smaller fix; or
+- add optional attribute absence if a maintained app needs signal-backed removal;
+  or
+- add one new boundary leaf only with an app/spec canary, native semantic
+  coverage, and JS validation/extraction-failure coverage.
+
+Do not broaden the browser catalog speculatively.

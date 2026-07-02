@@ -1,7 +1,11 @@
+//! Compile-time contract checks for host contexts used by the shared engine.
+
 const std = @import("std");
 const abi = @import("roc_platform_abi.zig");
+const boundary = @import("boundary.zig");
 const erased_calls = @import("erased_calls.zig");
 const render = @import("render_commands.zig");
+const render_sink = @import("render_sink.zig");
 const hv = @import("host_values.zig");
 const engine_metrics = @import("engine_metrics.zig");
 
@@ -10,9 +14,9 @@ pub const HostValueCapability = hv.HostValueCapabilityHandle;
 
 const RenderTextField = render.TextField;
 const RenderBoolField = render.BoolField;
-const RenderEventKind = render.EventKind;
-const EventPayloadKind = render.EventPayloadKind;
-const EventPayloadAccessor = render.EventPayloadAccessor;
+const BoundaryPayloadDescriptor = boundary.BoundaryPayloadDescriptor;
+const EventBindingKey = render_sink.EventBindingKey;
+const EventBinding = render_sink.EventBinding;
 
 fn verifyDeclFn(comptime owner_name: []const u8, comptime Owner: type, comptime decl_name: []const u8, comptime params: anytype, comptime return_type: type) void {
     if (!@hasDecl(Owner, decl_name)) {
@@ -75,10 +79,8 @@ pub fn verifySink(comptime Sink: type) void {
     verifyDeclFn("engine Sink", Sink, "clearTextField", .{ Sink, u64, RenderTextField }, void);
     verifyDeclFn("engine Sink", Sink, "clearTextAttr", .{ Sink, u64, []const u8 }, void);
     verifyDeclFn("engine Sink", Sink, "clearBoolField", .{ Sink, u64, RenderBoolField }, void);
-    verifyDeclFn("engine Sink", Sink, "bindEventKind", .{ Sink, u64, RenderEventKind, u64, EventPayloadAccessor }, void);
-    verifyDeclFn("engine Sink", Sink, "clearEvent", .{ Sink, u64, RenderEventKind }, void);
-    verifyDeclFn("engine Sink", Sink, "bindEventName", .{ Sink, u64, []const u8, u64, u32, EventPayloadKind, EventPayloadAccessor }, void);
-    verifyDeclFn("engine Sink", Sink, "clearEventName", .{ Sink, u64, []const u8 }, void);
+    verifyDeclFn("engine Sink", Sink, "bindEvent", .{ Sink, u64, EventBindingKey, EventBinding }, void);
+    verifyDeclFn("engine Sink", Sink, "clearEvent", .{ Sink, u64, EventBindingKey }, void);
     verifyDeclFn("engine Sink", Sink, "startInterval", .{ Sink, u64, u64 }, void);
     verifyDeclFn("engine Sink", Sink, "cancelInterval", .{ Sink, u64 }, void);
     verifyDeclFn("engine Sink", Sink, "startTask", .{ Sink, u64, []const u8, []const u8 }, void);
@@ -122,10 +124,8 @@ const VerifySink = struct {
     pub fn clearTextField(_: VerifySink, _: u64, _: RenderTextField) void {}
     pub fn clearTextAttr(_: VerifySink, _: u64, _: []const u8) void {}
     pub fn clearBoolField(_: VerifySink, _: u64, _: RenderBoolField) void {}
-    pub fn bindEventKind(_: VerifySink, _: u64, _: RenderEventKind, _: u64, _: EventPayloadAccessor) void {}
-    pub fn clearEvent(_: VerifySink, _: u64, _: RenderEventKind) void {}
-    pub fn bindEventName(_: VerifySink, _: u64, _: []const u8, _: u64, _: u32, _: EventPayloadKind, _: EventPayloadAccessor) void {}
-    pub fn clearEventName(_: VerifySink, _: u64, _: []const u8) void {}
+    pub fn bindEvent(_: VerifySink, _: u64, _: EventBindingKey, _: EventBinding) void {}
+    pub fn clearEvent(_: VerifySink, _: u64, _: EventBindingKey) void {}
     pub fn startInterval(_: VerifySink, _: u64, _: u64) void {}
     pub fn cancelInterval(_: VerifySink, _: u64) void {}
     pub fn startTask(_: VerifySink, _: u64, _: []const u8, _: []const u8) void {}

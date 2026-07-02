@@ -1,3 +1,5 @@
+//! Active identity tables for stable scope-local node and DOM element ids.
+
 const std = @import("std");
 
 pub const Error = error{

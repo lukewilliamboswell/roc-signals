@@ -1,3 +1,5 @@
+//! Scope forest primitives for component, branch, and keyed row lifetimes.
+
 const std = @import("std");
 
 pub const Error = error{

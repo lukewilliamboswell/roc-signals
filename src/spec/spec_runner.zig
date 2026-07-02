@@ -1,15 +1,114 @@
+//! Native spec runner that dispatches parsed UI commands against the simulated DOM.
+
 const std = @import("std");
 
 const signals = @import("signals");
+const boundary = signals.boundary;
 const engine = signals.engine;
 const render = signals.render;
 const spec_parser = @import("spec_parser.zig");
 
-const EventPayloadAccessor = render.EventPayloadAccessor;
-const EventPayloadKind = render.EventPayloadKind;
+const BoundaryPayloadDescriptor = boundary.BoundaryPayloadDescriptor;
 const RuntimeMetrics = engine.RuntimeMetrics;
 const SpecCommand = spec_parser.SpecCommand;
 const SpecCommandType = spec_parser.SpecCommandType;
+
+fn writeLocatorFailureForCtx(comptime Ctx: type, line_num: usize, message: []const u8) void {
+    var buf: [256]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, "TEST FAILED at line {d}: {s}\n", .{ line_num, message }) catch "TEST FAILED\n";
+    Ctx.writeStderr(msg);
+}
+
+fn dispatchBubblingUnitEventById(comptime Ctx: type, host: *Ctx.Host, roc_host: *Ctx.RocHost, target_id: u64, fixed_kind: render.EventKind, event_name: []const u8, line_num: usize) bool {
+    var path: [128]u64 = undefined;
+    var path_len: usize = 0;
+    var next_id: ?u64 = target_id;
+    while (next_id) |elem_id| {
+        if (path_len >= path.len) {
+            writeLocatorFailureForCtx(Ctx, line_num, "event propagation path exceeded native spec runner limit");
+            return false;
+        }
+        const elem = Ctx.elementById(host, elem_id) orelse {
+            writeLocatorFailureForCtx(Ctx, line_num, "event propagation path referenced a missing element");
+            return false;
+        };
+        path[path_len] = elem.id;
+        path_len += 1;
+        next_id = elem.parent_id;
+    }
+
+    var dispatched = false;
+    var capture_index = path_len;
+    while (capture_index > 0) {
+        capture_index -= 1;
+        const elem_id = path[capture_index];
+        const elem = Ctx.elementById(host, elem_id) orelse {
+            writeLocatorFailureForCtx(Ctx, line_num, "event target was removed before dispatch completed");
+            return false;
+        };
+        const event = Ctx.namedEvent(elem, event_name) orelse continue;
+        if (!event.binding.policy.capture) continue;
+        if (!eventPolicyMatchesSpecEvent(event.binding.policy, elem_id, target_id)) continue;
+        if (!event.binding.payload_descriptor.eql(BoundaryPayloadDescriptor.init(.unit, .none))) {
+            writeLocatorFailureForCtx(Ctx, line_num, "capturing event binding does not use a unit payload descriptor");
+            return false;
+        }
+        dispatched = true;
+        Ctx.dispatchRocEvent(host, roc_host, event.binding.event_id, event.binding.payload_descriptor, Ctx.hostValueUnit(host, roc_host));
+        if (event.binding.policy.stop_propagation or event.binding.policy.stop_immediate) return true;
+    }
+
+    for (path[0..path_len]) |elem_id| {
+        const elem = Ctx.elementById(host, elem_id) orelse {
+            writeLocatorFailureForCtx(Ctx, line_num, "event target was removed before dispatch completed");
+            return false;
+        };
+
+        if (Ctx.fixedEventId(elem, fixed_kind)) |event_id| {
+            dispatched = true;
+            Ctx.dispatchRocEvent(host, roc_host, event_id, BoundaryPayloadDescriptor.init(.unit, .none), Ctx.hostValueUnit(host, roc_host));
+        }
+
+        const event = Ctx.namedEvent(elem, event_name) orelse continue;
+        if (event.binding.policy.capture) continue;
+        if (!eventPolicyMatchesSpecEvent(event.binding.policy, elem_id, target_id)) continue;
+        if (!event.binding.payload_descriptor.eql(BoundaryPayloadDescriptor.init(.unit, .none))) {
+            writeLocatorFailureForCtx(Ctx, line_num, "bubbling event binding does not use a unit payload descriptor");
+            return false;
+        }
+        dispatched = true;
+        Ctx.dispatchRocEvent(host, roc_host, event.binding.event_id, event.binding.payload_descriptor, Ctx.hostValueUnit(host, roc_host));
+        if (event.binding.policy.stop_propagation or event.binding.policy.stop_immediate) break;
+    }
+
+    if (std.mem.eql(u8, event_name, "click") and !dispatched) {
+        writeLocatorFailureForCtx(Ctx, line_num, "real_click did not find a click binding in the propagation path");
+        return false;
+    }
+    return true;
+}
+
+fn eventPolicyMatchesSpecEvent(policy: render.EventPolicy, elem_id: u64, target_id: u64) bool {
+    if (policy.self and elem_id != target_id) return false;
+    return true;
+}
+
+fn dispatchSubmitEvent(comptime Ctx: type, host: *Ctx.Host, roc_host: *Ctx.RocHost, elem: anytype, line_num: usize) bool {
+    if (elem.disabled) {
+        writeLocatorFailureForCtx(Ctx, line_num, "target is disabled");
+        return false;
+    }
+    const event = Ctx.namedEvent(elem, "submit") orelse {
+        writeLocatorFailureForCtx(Ctx, line_num, "target has no submit binding");
+        return false;
+    };
+    if (!event.binding.payload_descriptor.eql(BoundaryPayloadDescriptor.init(.unit, .none))) {
+        writeLocatorFailureForCtx(Ctx, line_num, "submit binding does not use a unit payload descriptor");
+        return false;
+    }
+    Ctx.dispatchRocEvent(host, roc_host, event.binding.event_id, event.binding.payload_descriptor, Ctx.hostValueUnit(host, roc_host));
+    return true;
+}
 
 pub fn Runner(comptime Ctx: type) type {
     return struct {
@@ -34,11 +133,33 @@ pub fn Runner(comptime Ctx: type) type {
                             writeLocatorFailure(cmd.line_num, "target is disabled");
                             return 1;
                         }
-                        const event_id = elem.bound_click_event orelse {
-                            writeLocatorFailure(cmd.line_num, "target has no click binding");
+                        const event_id = Ctx.fixedEventId(elem, .click) orelse blk: {
+                            const event = Ctx.namedEvent(elem, "click") orelse {
+                                writeLocatorFailure(cmd.line_num, "target has no click binding");
+                                return 1;
+                            };
+                            if (!event.binding.payload_descriptor.eql(BoundaryPayloadDescriptor.init(.unit, .none))) {
+                                writeLocatorFailure(cmd.line_num, "click binding does not use a unit payload descriptor");
+                                return 1;
+                            }
+                            break :blk event.binding.event_id;
+                        };
+                        Ctx.dispatchRocEvent(host, roc_host, event_id, BoundaryPayloadDescriptor.init(.unit, .none), Ctx.hostValueUnit(host, roc_host));
+                    },
+
+                    .real_click => {
+                        const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
+                            writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
                             return 1;
                         };
-                        Ctx.dispatchRocEvent(host, roc_host, event_id, .unit, Ctx.hostValueUnit(host, roc_host));
+                        if (elem.disabled) {
+                            writeLocatorFailure(cmd.line_num, "target is disabled");
+                            return 1;
+                        }
+                        const target_id = elem.id;
+                        if (!dispatchBubblingUnitEventById(Ctx, host, roc_host, target_id, .pointer_down, "pointerdown", cmd.line_num)) return 1;
+                        if (!dispatchBubblingUnitEventById(Ctx, host, roc_host, target_id, .pointer_up, "pointerup", cmd.line_num)) return 1;
+                        if (!dispatchBubblingUnitEventById(Ctx, host, roc_host, target_id, .click, "click", cmd.line_num)) return 1;
                     },
 
                     .pointer_down, .pointer_up, .pointer_enter, .pointer_leave => {
@@ -50,11 +171,22 @@ pub fn Runner(comptime Ctx: type) type {
                             writeLocatorFailure(cmd.line_num, "target is disabled");
                             return 1;
                         }
-                        const event_id = pointerEventIdForCommand(elem, cmd.cmd_type) orelse {
-                            writeLocatorFailure(cmd.line_num, "target has no pointer binding");
-                            return 1;
+                        const event_id = pointerEventIdForCommand(elem, cmd.cmd_type) orelse blk: {
+                            const event_name = pointerEventNameForCommand(cmd.cmd_type) orelse {
+                                writeLocatorFailure(cmd.line_num, "unsupported pointer event command");
+                                return 1;
+                            };
+                            const event = Ctx.namedEvent(elem, event_name) orelse {
+                                writeLocatorFailure(cmd.line_num, "target has no pointer binding");
+                                return 1;
+                            };
+                            if (!event.binding.payload_descriptor.eql(BoundaryPayloadDescriptor.init(.unit, .none))) {
+                                writeLocatorFailure(cmd.line_num, "pointer binding does not use a unit payload descriptor");
+                                return 1;
+                            }
+                            break :blk event.binding.event_id;
                         };
-                        Ctx.dispatchRocEvent(host, roc_host, event_id, .unit, Ctx.hostValueUnit(host, roc_host));
+                        Ctx.dispatchRocEvent(host, roc_host, event_id, BoundaryPayloadDescriptor.init(.unit, .none), Ctx.hostValueUnit(host, roc_host));
                     },
 
                     .key_down => {
@@ -70,7 +202,7 @@ pub fn Runner(comptime Ctx: type) type {
                             writeLocatorFailure(cmd.line_num, "target has no keydown binding");
                             return 1;
                         };
-                        if (event.payload_kind != .bytes or event.payload_accessor != .record_key_shift) {
+                        if (!event.binding.payload_descriptor.eql(BoundaryPayloadDescriptor.init(.bytes, .record_key_shift))) {
                             writeLocatorFailure(cmd.line_num, "keydown binding does not request the key/shift payload descriptor");
                             return 1;
                         }
@@ -84,7 +216,7 @@ pub fn Runner(comptime Ctx: type) type {
                         };
                         const payload_bytes = encodeKeyShiftPayload(Ctx.allocator(host), key, shift_key);
                         defer Ctx.allocator(host).free(payload_bytes);
-                        Ctx.dispatchRocEvent(host, roc_host, event.event_id, .bytes, Ctx.hostValueU8List(host, roc_host, payload_bytes));
+                        Ctx.dispatchRocEvent(host, roc_host, event.binding.event_id, event.binding.payload_descriptor, Ctx.hostValueU8List(host, roc_host, payload_bytes));
                     },
 
                     .focus, .blur, .composition_start, .composition_end => {
@@ -104,11 +236,11 @@ pub fn Runner(comptime Ctx: type) type {
                             writeLocatorFailure(cmd.line_num, "target has no named event binding");
                             return 1;
                         };
-                        if (event.payload_kind != .unit or event.payload_accessor != .none) {
+                        if (!event.binding.payload_descriptor.eql(BoundaryPayloadDescriptor.init(.unit, .none))) {
                             writeLocatorFailure(cmd.line_num, "named event binding does not use a unit payload descriptor");
                             return 1;
                         }
-                        Ctx.dispatchRocEvent(host, roc_host, event.event_id, .unit, Ctx.hostValueUnit(host, roc_host));
+                        Ctx.dispatchRocEvent(host, roc_host, event.binding.event_id, event.binding.payload_descriptor, Ctx.hostValueUnit(host, roc_host));
                     },
 
                     .change => {
@@ -125,12 +257,12 @@ pub fn Runner(comptime Ctx: type) type {
                             writeLocatorFailure(cmd.line_num, "target has no change binding");
                             return 1;
                         };
-                        if (event.payload_kind != .str or event.payload_accessor != .target_value) {
+                        if (!event.binding.payload_descriptor.eql(BoundaryPayloadDescriptor.init(.str, .target_value))) {
                             writeLocatorFailure(cmd.line_num, "change binding does not request the target value payload descriptor");
                             return 1;
                         }
                         _ = Ctx.setElementValueIfChanged(host, elem, value);
-                        Ctx.dispatchRocEvent(host, roc_host, event.event_id, .str, Ctx.hostValueStr(host, roc_host, value));
+                        Ctx.dispatchRocEvent(host, roc_host, event.binding.event_id, event.binding.payload_descriptor, Ctx.hostValueStr(host, roc_host, value));
                     },
 
                     .submit => {
@@ -138,23 +270,7 @@ pub fn Runner(comptime Ctx: type) type {
                             writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
                             return 1;
                         };
-                        if (elem.disabled) {
-                            writeLocatorFailure(cmd.line_num, "target is disabled");
-                            return 1;
-                        }
-                        const event = Ctx.namedEvent(elem, "submit") orelse {
-                            writeLocatorFailure(cmd.line_num, "target has no submit binding");
-                            return 1;
-                        };
-                        if (event.payload_kind != .unit or event.payload_accessor != .none) {
-                            writeLocatorFailure(cmd.line_num, "submit binding does not use a unit payload descriptor");
-                            return 1;
-                        }
-                        if ((event.options & render.listener_option_prevent_default) == 0) {
-                            writeLocatorFailure(cmd.line_num, "submit binding is missing the static prevent-default listener policy");
-                            return 1;
-                        }
-                        Ctx.dispatchRocEvent(host, roc_host, event.event_id, .unit, Ctx.hostValueUnit(host, roc_host));
+                        if (!dispatchSubmitEvent(Ctx, host, roc_host, elem, cmd.line_num)) return 1;
                     },
 
                     .fill => {
@@ -167,8 +283,14 @@ pub fn Runner(comptime Ctx: type) type {
                             writeLocatorFailure(cmd.line_num, "target is disabled");
                             return 1;
                         }
-                        if (elem.bound_input_event) |event_id| {
-                            Ctx.dispatchRocEvent(host, roc_host, event_id, .str, Ctx.hostValueStr(host, roc_host, value));
+                        if (Ctx.fixedEventId(elem, .input)) |event_id| {
+                            Ctx.dispatchRocEvent(host, roc_host, event_id, BoundaryPayloadDescriptor.init(.str, .target_value), Ctx.hostValueStr(host, roc_host, value));
+                        } else if (Ctx.namedEvent(elem, "input")) |event| {
+                            if (!event.binding.payload_descriptor.eql(BoundaryPayloadDescriptor.init(.str, .target_value))) {
+                                writeLocatorFailure(cmd.line_num, "input binding does not request the target value payload descriptor");
+                                return 1;
+                            }
+                            Ctx.dispatchRocEvent(host, roc_host, event.binding.event_id, event.binding.payload_descriptor, Ctx.hostValueStr(host, roc_host, value));
                         } else {
                             _ = Ctx.setElementValueIfChanged(host, elem, value);
                         }
@@ -184,8 +306,14 @@ pub fn Runner(comptime Ctx: type) type {
                             writeLocatorFailure(cmd.line_num, "target is disabled");
                             return 1;
                         }
-                        if (elem.bound_check_event) |event_id| {
-                            Ctx.dispatchRocEvent(host, roc_host, event_id, .bool, Ctx.hostValueBool(host, roc_host, checked));
+                        if (Ctx.fixedEventId(elem, .check)) |event_id| {
+                            Ctx.dispatchRocEvent(host, roc_host, event_id, BoundaryPayloadDescriptor.init(.bool, .target_checked), Ctx.hostValueBool(host, roc_host, checked));
+                        } else if (Ctx.namedEvent(elem, "change")) |event| {
+                            if (!event.binding.payload_descriptor.eql(BoundaryPayloadDescriptor.init(.bool, .target_checked))) {
+                                writeLocatorFailure(cmd.line_num, "checkbox change binding does not request the target checked payload descriptor");
+                                return 1;
+                            }
+                            Ctx.dispatchRocEvent(host, roc_host, event.binding.event_id, event.binding.payload_descriptor, Ctx.hostValueBool(host, roc_host, checked));
                         } else {
                             _ = Ctx.setElementCheckedIfChanged(elem, checked);
                         }
@@ -497,10 +625,20 @@ pub fn Runner(comptime Ctx: type) type {
 
         fn pointerEventIdForCommand(elem: anytype, cmd_type: SpecCommandType) ?u64 {
             return switch (cmd_type) {
-                .pointer_down => elem.bound_pointer_down_event,
-                .pointer_up => elem.bound_pointer_up_event,
-                .pointer_enter => elem.bound_pointer_enter_event,
-                .pointer_leave => elem.bound_pointer_leave_event,
+                .pointer_down => Ctx.fixedEventId(elem, .pointer_down),
+                .pointer_up => Ctx.fixedEventId(elem, .pointer_up),
+                .pointer_enter => Ctx.fixedEventId(elem, .pointer_enter),
+                .pointer_leave => Ctx.fixedEventId(elem, .pointer_leave),
+                else => null,
+            };
+        }
+
+        fn pointerEventNameForCommand(cmd_type: SpecCommandType) ?[]const u8 {
+            return switch (cmd_type) {
+                .pointer_down => "pointerdown",
+                .pointer_up => "pointerup",
+                .pointer_enter => "pointerenter",
+                .pointer_leave => "pointerleave",
                 else => null,
             };
         }
@@ -575,6 +713,186 @@ pub fn Runner(comptime Ctx: type) type {
             Ctx.writeStderr(msg);
         }
     };
+}
+
+test "spec runner real_click dispatch honors capture bubble and stop policies" {
+    const sim_dom = @import("../sim_dom.zig");
+
+    const TestHost = struct {
+        allocator: std.mem.Allocator,
+        elements: std.ArrayListUnmanaged(sim_dom.Element) = .empty,
+        dispatches: std.ArrayListUnmanaged(u64) = .empty,
+
+        fn init(allocator: std.mem.Allocator) @This() {
+            return .{ .allocator = allocator };
+        }
+
+        fn deinit(self: *@This()) void {
+            for (self.elements.items) |*elem| {
+                elem.deinit(self.allocator);
+            }
+            self.elements.deinit(self.allocator);
+            self.dispatches.deinit(self.allocator);
+        }
+
+        fn appendDispatch(self: *@This(), event_id: u64) void {
+            self.dispatches.append(self.allocator, event_id) catch @panic("test dispatch log allocation failed");
+        }
+    };
+
+    const TestCtx = struct {
+        pub const Host = TestHost;
+        pub const RocHost = void;
+
+        pub fn writeStderr(_: []const u8) void {}
+
+        pub fn elementById(host: *Host, elem_id: u64) ?*sim_dom.Element {
+            if (elem_id >= host.elements.items.len) return null;
+            const elem = &host.elements.items[@intCast(elem_id)];
+            if (!elem.active) return null;
+            return elem;
+        }
+
+        pub fn fixedEventId(elem: *const sim_dom.Element, kind: render.EventKind) ?u64 {
+            return sim_dom.fixedEventId(elem, kind);
+        }
+
+        pub fn namedEvent(elem: *const sim_dom.Element, name: []const u8) ?sim_dom.NamedEvent {
+            return sim_dom.namedEvent(elem, name);
+        }
+
+        pub fn dispatchRocEvent(host: *Host, _: *RocHost, event_id: u64, payload_descriptor: BoundaryPayloadDescriptor, _: void) void {
+            if (!payload_descriptor.eql(BoundaryPayloadDescriptor.init(.unit, .none))) {
+                @panic("test expected a unit payload descriptor");
+            }
+            host.appendDispatch(event_id);
+        }
+
+        pub fn hostValueUnit(_: *Host, _: *RocHost) void {}
+    };
+
+    const allocator = std.testing.allocator;
+    var host = TestHost.init(allocator);
+    defer host.deinit();
+    var roc_host: void = {};
+
+    sim_dom.reset(allocator, &host.elements);
+    sim_dom.appendDetached(allocator, &host.elements, 1, "section");
+    sim_dom.appendDetached(allocator, &host.elements, 2, "button");
+    sim_dom.appendChild(allocator, &host.elements.items[0], &host.elements.items[1]);
+    sim_dom.appendChild(allocator, &host.elements.items[1], &host.elements.items[2]);
+
+    const unit_descriptor = BoundaryPayloadDescriptor.init(.unit, .none);
+    sim_dom.bindEventName(allocator, &host.elements.items[0], "click", 5, render.EventPolicy.fromBits(render.listener_option_capture | render.listener_option_trusted), unit_descriptor);
+    sim_dom.bindEventName(allocator, &host.elements.items[1], "click", 10, render.EventPolicy.none, unit_descriptor);
+    sim_dom.bindEventName(allocator, &host.elements.items[2], "click", 20, render.EventPolicy.none, unit_descriptor);
+
+    try std.testing.expect(dispatchBubblingUnitEventById(TestCtx, &host, &roc_host, 2, .click, "click", 99));
+    try std.testing.expectEqualSlices(u64, &.{ 5, 20, 10 }, host.dispatches.items);
+
+    host.dispatches.clearRetainingCapacity();
+    sim_dom.bindEventKind(&host.elements.items[2], .click, .{
+        .event_id = 15,
+        .payload_descriptor = unit_descriptor,
+    });
+    sim_dom.bindEventName(allocator, &host.elements.items[2], "click", 20, render.EventPolicy.fromBits(render.listener_option_stop_propagation), unit_descriptor);
+    try std.testing.expect(dispatchBubblingUnitEventById(TestCtx, &host, &roc_host, 2, .click, "click", 99));
+    try std.testing.expectEqualSlices(u64, &.{ 5, 15, 20 }, host.dispatches.items);
+    sim_dom.clearEventKind(&host.elements.items[2], .click);
+
+    host.dispatches.clearRetainingCapacity();
+    sim_dom.bindEventName(allocator, &host.elements.items[2], "click", 20, render.EventPolicy.fromBits(render.listener_option_stop_propagation), unit_descriptor);
+    try std.testing.expect(dispatchBubblingUnitEventById(TestCtx, &host, &roc_host, 2, .click, "click", 99));
+    try std.testing.expectEqualSlices(u64, &.{ 5, 20 }, host.dispatches.items);
+
+    host.dispatches.clearRetainingCapacity();
+    sim_dom.bindEventName(allocator, &host.elements.items[2], "click", 20, render.EventPolicy.fromBits(render.listener_option_stop_immediate), unit_descriptor);
+    try std.testing.expect(dispatchBubblingUnitEventById(TestCtx, &host, &roc_host, 2, .click, "click", 99));
+    try std.testing.expectEqualSlices(u64, &.{ 5, 20 }, host.dispatches.items);
+
+    host.dispatches.clearRetainingCapacity();
+    const capture_stop = render.EventPolicy.fromBits(render.listener_option_capture | render.listener_option_stop_propagation);
+    sim_dom.bindEventName(allocator, &host.elements.items[0], "click", 5, capture_stop, unit_descriptor);
+    sim_dom.bindEventName(allocator, &host.elements.items[2], "click", 20, render.EventPolicy.none, unit_descriptor);
+    try std.testing.expect(dispatchBubblingUnitEventById(TestCtx, &host, &roc_host, 2, .click, "click", 99));
+    try std.testing.expectEqualSlices(u64, &.{5}, host.dispatches.items);
+
+    host.dispatches.clearRetainingCapacity();
+    sim_dom.bindEventName(allocator, &host.elements.items[0], "click", 5, render.EventPolicy.fromBits(render.listener_option_capture | render.listener_option_self), unit_descriptor);
+    sim_dom.bindEventName(allocator, &host.elements.items[1], "click", 10, render.EventPolicy.fromBits(render.listener_option_self), unit_descriptor);
+    sim_dom.bindEventName(allocator, &host.elements.items[2], "click", 20, render.EventPolicy.none, unit_descriptor);
+    try std.testing.expect(dispatchBubblingUnitEventById(TestCtx, &host, &roc_host, 2, .click, "click", 99));
+    try std.testing.expectEqualSlices(u64, &.{20}, host.dispatches.items);
+}
+
+test "spec runner submit dispatches enabled unit bindings" {
+    const sim_dom = @import("../sim_dom.zig");
+
+    const TestHost = struct {
+        allocator: std.mem.Allocator,
+        elements: std.ArrayListUnmanaged(sim_dom.Element) = .empty,
+        dispatches: std.ArrayListUnmanaged(u64) = .empty,
+
+        fn init(allocator: std.mem.Allocator) @This() {
+            return .{ .allocator = allocator };
+        }
+
+        fn deinit(self: *@This()) void {
+            for (self.elements.items) |*elem| {
+                elem.deinit(self.allocator);
+            }
+            self.elements.deinit(self.allocator);
+            self.dispatches.deinit(self.allocator);
+        }
+
+        fn appendDispatch(self: *@This(), event_id: u64) void {
+            self.dispatches.append(self.allocator, event_id) catch @panic("test dispatch log allocation failed");
+        }
+    };
+
+    const TestCtx = struct {
+        pub const Host = TestHost;
+        pub const RocHost = void;
+
+        pub fn writeStderr(_: []const u8) void {}
+
+        pub fn namedEvent(elem: *const sim_dom.Element, name: []const u8) ?sim_dom.NamedEvent {
+            return sim_dom.namedEvent(elem, name);
+        }
+
+        pub fn dispatchRocEvent(host: *Host, _: *RocHost, event_id: u64, payload_descriptor: BoundaryPayloadDescriptor, _: void) void {
+            if (!payload_descriptor.eql(BoundaryPayloadDescriptor.init(.unit, .none))) {
+                @panic("test expected a unit payload descriptor");
+            }
+            host.appendDispatch(event_id);
+        }
+
+        pub fn hostValueUnit(_: *Host, _: *RocHost) void {}
+    };
+
+    const allocator = std.testing.allocator;
+    var host = TestHost.init(allocator);
+    defer host.deinit();
+    var roc_host: void = {};
+
+    sim_dom.reset(allocator, &host.elements);
+    sim_dom.appendDetached(allocator, &host.elements, 1, "form");
+    sim_dom.appendChild(allocator, &host.elements.items[0], &host.elements.items[1]);
+
+    const unit_descriptor = BoundaryPayloadDescriptor.init(.unit, .none);
+    sim_dom.bindEventName(allocator, &host.elements.items[1], "submit", 30, render.EventPolicy.none, unit_descriptor);
+    try std.testing.expect(dispatchSubmitEvent(TestCtx, &host, &roc_host, &host.elements.items[1], 120));
+    try std.testing.expectEqualSlices(u64, &.{30}, host.dispatches.items);
+
+    host.dispatches.clearRetainingCapacity();
+    sim_dom.bindEventName(allocator, &host.elements.items[1], "submit", 31, render.EventPolicy.none, BoundaryPayloadDescriptor.init(.str, .target_value));
+    try std.testing.expect(!dispatchSubmitEvent(TestCtx, &host, &roc_host, &host.elements.items[1], 121));
+    try std.testing.expectEqual(@as(usize, 0), host.dispatches.items.len);
+
+    sim_dom.bindEventName(allocator, &host.elements.items[1], "submit", 32, render.EventPolicy.none, unit_descriptor);
+    sim_dom.setDisabled(&host.elements.items[1], true);
+    try std.testing.expect(!dispatchSubmitEvent(TestCtx, &host, &roc_host, &host.elements.items[1], 122));
+    try std.testing.expectEqual(@as(usize, 0), host.dispatches.items.len);
 }
 
 test "spec runner resolves runtime metric names" {

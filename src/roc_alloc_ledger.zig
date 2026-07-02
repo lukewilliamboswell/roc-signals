@@ -1,3 +1,5 @@
+//! Allocation ledger for native Roc memory diagnostics and leak checks.
+
 const std = @import("std");
 
 pub const Allocation = struct {

@@ -47,16 +47,24 @@ Event.Binding(a) := {
     handlers : List(Event.HandlerBinding(a)),
 }
 
-Html.on : Event.Binding(a) -> Node.Attr
+Html.on : Event.Binding(a) -> Html.Attr
 ```
 
 Most application code should use helpers:
 
 ```roc
 Html.on_click(state.on_unit(save))
-Html.on_submit_with(Event.prevent_default, state.on_unit(submit))
-Html.on_key_down_with(Event.default |> Event.payload(Event.key), state.on_value(handle_key))
-Html.on_pointer_down_with(Event.stop_propagation, state.on_unit(start_drag))
+Html.on_submit_prevent_default(state.on_unit(submit))
+Html.on(
+    Event.bind("keydown")
+        |> Event.payload(Event.key)
+        |> Event.handle(state.on_value(handle_key))
+)
+Html.on(
+    Event.bind("pointerdown")
+        |> Event.stop_propagation
+        |> Event.handle(state.on_unit(start_drag))
+)
 ```
 
 The lower-level API should remain available:
@@ -86,21 +94,22 @@ subscriptions, app interop, and structured effects can reuse.
 After that boundary exists, the first shippable event slice should solve the
 release-planner class of bugs with minimal public surface:
 
-1. Canonicalize fixed `OnEvent` and dynamic `OnNamedEvent` attributes into one
-   internal event descriptor family. Existing APIs may lower through compatibility
-   shims, but the semantic model should have one path.
-2. Introduce typed semantic event policy in Zig and treat current raw option bits as
-   ingest/encoding compatibility only.
+1. Collapse the remaining fixed/named host descriptor split into one internal
+   event descriptor family. The public Roc attr shape already carries
+   `On(EventBinding)`, but the semantic model should have one host path too.
+2. Introduce typed semantic event policy in Zig and treat current host option bits
+   as ingest/encoding compatibility only.
 3. Add or keep only the smallest Roc API needed to express static policy over the
    canonical descriptor. Do not add parallel helper families unless they replace an
    older surface or clearly lower to the core API.
-4. Change `roc_ui_event` to return event-response bits, initially always zero for
-   existing static handlers, so dynamic response can be added later without another
-   ABI break.
+4. Keep `roc_ui_event` returning event-response bits. Existing static handlers
+   currently return zero; dynamic response can use this ABI later without another
+   break.
 5. Normalize fixed and named bindings to the same JS listener object and use native
    listeners whenever requested policy requires native event-flow semantics.
-6. Add native spec-runner event-flow dispatch, especially `real_click` as
-   `pointerdown -> pointerup -> click` with bubbling and propagation policy.
+6. Extend native spec-runner event-flow coverage beyond the current
+   `real_click` primitive, which now models `pointerdown -> pointerup -> click`
+   with bubbling and static stop policy.
 
 Dynamic handler responses and fully general multiple-stateful-handler batching are
 important long-term work, but they should not be prerequisites for the static
@@ -173,31 +182,73 @@ The conclusion from these systems is consistent:
 Relevant current files:
 
 - `platform/Node.roc`
-  - `Attr` has `OnEvent({ kind, msg })` for fixed event kinds and
-    `OnNamedEvent({ name, options, msg })` for dynamic events.
-  - listener options are exposed as `U64` bit constants.
+  - `Attr` has one `On(EventBinding)` variant. Fixed bindings carry a typed
+    `FixedEventKind`; named bindings carry a name plus typed `EventPolicy`.
+  - `EventBinding` carries typed `EventPolicy` through the Roc ABI. The current
+    policy data includes static default/propagation controls, listener
+    phase/options, and `self`/`trusted` filters.
+  - `BoundarySchema` and `EventExtractionPlan` carry descriptor bytes. The host
+    derives a parsed boundary payload descriptor from those bytes during ABI
+    ingest.
 - `platform/Html.roc`
-  - fixed helpers such as `on_pointer_down` use `OnEvent`, which cannot carry
-    listener policy.
-  - `on_event` accepts raw option bits and is currently the escape hatch.
+  - fixed helpers such as `on_pointer_down` lower through file-local
+    fixed-kind/event-binding constructors.
+  - `on_event` accepts typed `EventPolicy` and is currently the common escape
+    hatch.
+  - `on_event_delivery` accepts typed `EventPolicy` and `EventDelivery` for the
+    low-level cases that must explicitly request native delivery.
 - `src/signals/descriptor_stream.zig`
-  - stores `EventDesc` and `NamedEventDesc` separately.
+  - stores fixed and named event descriptors in one `EventDesc` table, with
+    fixed and named per-element indexes as lookup views.
+  - named event descriptors retain typed `EventPolicy`; raw listener bits are no
+    longer stored in the active descriptor stream.
+- `src/signals/boundary.zig`
+  - owns the host-side payload container ids, shared schema bytes, and DOM
+    extraction-plan ids. ABI ingest derives parsed payload descriptors from
+    Roc's descriptor bytes. The parser structurally validates the minimal shared
+    schema vocabulary (`unit`, `text`, `bool`, non-empty records of primitive
+    leaves) and DOM extraction-plan bytes, rejecting empty or nested records while
+    native dispatch remains limited to the current compact descriptor canaries.
+    Canonical schema bytes are owned by supported extraction plans/descriptors,
+    not by the generic payload container id.
 - `src/signals/render_cache.zig`
-  - stores fixed event bindings separately from named event bindings.
+  - stores fixed and named bindings with one `EventBinding` payload shape. Fixed
+    bindings still use per-kind slots so hot-event lookup keeps its scan budget.
+- `src/signals/render_sink.zig`
+  - engine-facing sinks receive one `EventBindingKey` plus one `EventBinding`
+    shape carrying typed `EventPolicy`. The native host adapter receives one
+    `EventBindCommand` / `EventClearCommand` record; the remaining fixed/named
+    choice is local host encoding or simulated-DOM storage.
 - `src/wasm_host.zig`
-  - fixed events emit fixed opcodes; named events emit dynamic `BindEvent`
-    records with options and payload descriptors.
+  - event binding emits from one `EventBindCommand` record. Fixed events still
+    encode as fixed opcodes; named events still encode as dynamic `BindEvent`
+    records with names and listener-policy bits derived from `EventPolicy`.
 - `www/static/signals.mjs`
-  - fixed events bind directly with `addEventListener(event, listener)`.
-  - named events parse listener option bits, apply static prevent/stop policy,
-    and decode payload descriptors.
+  - fixed and dynamic bind commands decode into one event-binding command shape
+    before listener installation and command description. Fixed bindings carry
+    their legacy pointer-default policy; named bindings carry listener options.
+    `self`/`trusted` filters run before static listener policy and reducer
+    delivery.
+- `src/sim_dom.zig`
+  - fixed and named native bindings store one `EventBinding` payload shape and
+    apply through one bind/clear helper. Fixed bindings still use per-kind slots
+    for fast lookup.
 - `src/spec/spec_runner.zig`
-  - semantic actions dispatch directly to the bound event id and do not yet model
-    full browser event flow for click/pointer interactions.
+  - `real_click` dispatches `pointerdown -> pointerup -> click` through the
+    simulated DOM propagation path, runs named capture handlers before bubble
+    handlers, treats injected user actions as trusted, applies `self` filters,
+    and honors static stop/stop-immediate policy. Direct `click` remains
+    available as a low-level host test primitive.
+  - `submit` remains a semantic command for app-managed forms: the native runner
+    requires a unit payload descriptor, static prevent-default policy, and an
+    enabled target before dispatching the reducer.
 
-The current dynamic named-event path is much closer to the target model than the
-fixed event-kind path. The problem is that the platform leaks the distinction.
-Long term, `OnEvent` vs `OnNamedEvent` should disappear from the semantic model.
+The public Roc attr shape, host descriptor stream, render cache, engine sink, and
+native host adapter no longer leak separate fixed and named binding payload
+shapes or raw listener bits. The remaining split is local host representation:
+fixed bindings are still a compact wasm opcode path and simulated-DOM slot path,
+while named bindings carry explicit names and encode typed policy to browser
+wire bits.
 
 ## Design Principles
 
@@ -324,21 +375,19 @@ state.on_event : (model, a -> { state : model, response : Event.Response }) -> E
 High-level helpers should be ordinary compositions over the core binding shape:
 
 ```roc
-Html.on_click : Event.Handler({}) -> Node.Attr
-Html.on_click_with : Event.Policy({}), Event.Handler({}) -> Node.Attr
+Html.on_click : Event.Handler({}) -> Html.Attr
 
-Html.on_input : Event.Handler(Str) -> Node.Attr
-Html.on_input_with : Event.Policy(Str), Event.Handler(Str) -> Node.Attr
+Html.on_input : Event.Handler(Str) -> Html.Attr
 
-Html.on_submit : Event.Handler({}) -> Node.Attr
-Html.on_submit_with : Event.Policy({}), Event.Handler({}) -> Node.Attr
-Html.on_submit_prevent_default : Event.Handler({}) -> Node.Attr
+Html.on_submit : Event.Handler({}) -> Html.Attr
+Html.on_submit_prevent_default : Event.Handler({}) -> Html.Attr
 
-Html.on : Event.Binding(a) -> Node.Attr
+Html.on : Event.Binding(a) -> Html.Attr
 ```
 
-Bare helpers use the framework default policy. `_with` helpers accept explicit
-policy values. `Html.on` accepts the full lower-level binding builder result.
+Bare helpers use the framework default policy. Explicit policy, payload, phase,
+filter, or delivery values go through `Html.on` with the lower-level binding
+builder result instead of per-event `_with` helper families.
 
 For common modifier ergonomics, use typed policy values:
 
@@ -385,9 +434,9 @@ is the DOM extraction plan; the cross-boundary encoding should not be unique to
 events.
 
 The shared codec should be implemented before broadening the event API. Existing
-payload accessors can remain as compatibility and wire-compression mechanisms,
-but new event payload capabilities should be framed as leaves/plans over the
-shared boundary rather than a second event-only format.
+fixed opcodes can remain as wire-compression mechanisms, but new event payload
+capabilities should be framed as leaves/plans over the shared boundary rather
+than a second event-only format.
 
 ## Static And Dynamic Event Policy
 
@@ -398,8 +447,8 @@ There are two legitimate policy classes.
 Static policy is known from the descriptor before the event fires:
 
 ```roc
-Html.on_submit_with(Event.prevent_default, state.on_unit(submit))
-Html.on_click_with(Event.stop_propagation, state.on_unit(close_menu))
+Html.on(Event.bind("submit") |> Event.prevent_default |> Event.handle(state.on_unit(submit)))
+Html.on(Event.bind("click") |> Event.stop_propagation |> Event.handle(state.on_unit(close_menu)))
 ```
 
 JS can apply static `preventDefault` and propagation control before payload
@@ -596,15 +645,18 @@ semantics.
 Current:
 
 ```text
-roc_ui_event(event_id, payload_kind, payload_ptr, payload_len, bool_value) -> void
+roc_ui_event(event_id, payload_ptr, payload_len, bool_value) -> u32 EventResponseBits
 ```
+
+The active host descriptor table determines the payload kind for `event_id`; JS
+only fills the pointer/length/bool payload slots. Existing static handlers return
+zero response bits.
 
 Target:
 
 ```text
 roc_ui_event(
   binding_or_event_id : u32,
-  payload_format : u32,
   payload_ptr : u32,
   payload_len : u32,
   scalar_bits : u64
@@ -719,15 +771,44 @@ delegation should remain internal: users can request `Native`, but not force
 `Delegated`. If a future public `Delegated` option is added, incompatible policy
 must fail descriptor validation instead of silently changing semantics.
 
+Current status: `Node.EventBinding` carries a typed delivery request through the
+Roc ABI. Host-facing Zig event bindings carry requested/effective delivery and a
+native-delivery reason derived before render-cache storage and sink dispatch. All
+bindings still install native DOM listeners, and the browser command wire still
+derives matching telemetry from existing command fields because the fixed/named
+render command formats do not encode delivery yet. Policy-required native reasons
+are explicit for capture, propagation/default action, `once`, passive listeners,
+`self`, and pointer drag setup. Delegated delivery remains unimplemented and
+should not become public until the canonical host descriptor can validate and
+encode it.
+
 ## Payload Boundary
 
 The current event payload design has two layers:
 
-- `payload_kind` tells the host which HostValue shape to construct;
-- `payload_accessor` or dynamic payload descriptor tells JS what to read.
+- `BoundarySchema.bytes` and `EventExtractionPlan.bytes` carry the shared
+  descriptor bytes at the Roc ABI edge;
+- the host derives one parsed payload descriptor from those bytes and carries it
+  through retained event descriptors, render cache entries, native spec checks,
+  dispatch validation, and host sink interfaces;
+- Zig now structurally validates the minimal shared schema vocabulary and
+  DOM-specific scalar extraction leaves, rejecting empty or nested records before
+  mapping to the current compact dispatch descriptors;
+- canonical schema bytes are derived from supported extraction plans/descriptors,
+  while payload kind remains only the host dispatch container;
+- dynamic wasm `BindEvent` records carry both boundary schema bytes and DOM
+  extraction-plan bytes; JS validates that they match and derives payload kind
+  from the boundary schema, then retains the parsed schema/extraction pair on the
+  listener descriptor;
+- the external wasm event ABI derives payload kind from the active descriptor;
+- fixed-event opcode compression derives canonical payload descriptors from the
+  opcode without carrying a payload-accessor word on the wire.
+- JS event extraction failures emit `event_payload_error` telemetry, skip reducer
+  delivery, and rethrow the deterministic extraction error. Host validation and
+  native paths should preserve the same fail-closed model.
 
-The boundary design should replace this with a shared boundary codec before event
-propagation grows broader public payload APIs:
+The boundary design should keep the remaining fixed/named wire-command split as
+compression only while broader public payload APIs grow over the shared codec:
 
 ```zig
 pub const BoundarySchema = union(enum) {
@@ -793,7 +874,8 @@ event opcodes are optional compression after canonicalization.
 Implication:
 
 - version bump the event bind record when policy becomes structured;
-- add a `payload_schema` field, not only `payload_kind`;
+- keep payload schema/extraction bytes as the semantic field, not a separate
+  `payload_kind`;
 - include phase and delivery;
 - include handler chain or binding id;
 - validate unsupported option combinations in JS and Zig.
@@ -807,9 +889,9 @@ event descriptor, not fixed helper variants.
 
 Implication:
 
-- retire raw public `U64` listener option bits;
+- keep raw listener option bits out of the public Roc API;
 - expose typed policy builders;
-- replace `OnEvent` / `OnNamedEvent` with `On(Event.Binding)`;
+- keep `On(Event.Binding)` as the public Roc attr shape;
 - keep helper APIs as sugar only;
 - implement the shared `BoundarySchema` before broadening event payload or dynamic
   response APIs.
@@ -928,7 +1010,8 @@ Required checks:
 - `AutoPassive` resolves to an active listener when static or dynamic prevention
   can be requested for default-passive browser events;
 - payload extraction reads only declared leaves;
-- payload extraction failure is diagnostic and deterministic;
+- payload extraction failure is diagnostic and deterministic: JS emits
+  `event_payload_error`, skips reducer delivery, and rethrows;
 - after any WASM host call, memory views are refreshed before reading buffers;
 - delegated document listeners are mount-scoped and removed when unused.
 
@@ -951,20 +1034,29 @@ pointerup
 click
 ```
 
-with target, currentTarget, capture, target, and bubble phases. It should honor:
+with target, currentTarget, capture, target, and bubble phases. It now honors:
 
 - disabled controls;
 - self filters;
-- trusted filters, probably always trusted in user actions;
-- prevent default flags for submit and navigation simulations;
+- trusted filters for injected user actions;
+- prevent default flags for submit;
 - stop propagation and stop immediate propagation;
-- native vs delegated semantics where the native runner can model them;
+- native vs delegated semantics where the native runner can model them.
+
+`release-planner` keeps a focused nested-control/drag canary: a `real_click` on
+the note button nested inside a draggable card increments that card's note count
+without starting a drag, proving the pointerdown/pointerup stop-propagation
+policy protects the parent card binding.
+
+Remaining event-flow coverage should focus on broader default-action simulations:
+
 - form submit default behavior where relevant.
 
 Native specs should still avoid duplicating browser quirks. They should not try
 to fully model shadow DOM `composedPath` behavior, default-passive browser
 heuristics, or every browser-specific default action. Browser contract tests
-should cover JS codec and listener option behavior. Native specs should cover the
+should cover JS codec and listener option behavior, including static
+default/propagation policy and response-bit timing. Native specs should cover the
 engine semantics and app behavior using realistic event flow.
 
 ## Refactor Plan Toward The Target
@@ -972,34 +1064,50 @@ engine semantics and app behavior using realistic event flow.
 This sequence is implementation guidance, not a compromise on the target model.
 
 1. Add semantic event policy types in Zig.
-   Keep wire bits as an encoder detail. Convert current named event `options`
-   into `EventPolicy` at descriptor ingest.
+   This is now true for the Roc ABI, retained host descriptors, and bindings.
+   Wire bits remain only at the browser command edge, where typed named-event
+   policy is encoded for the JS runtime.
 
 2. Add typed Roc policy builders.
-   Keep old constants temporarily, but stop teaching examples to use raw bits.
-   Public docs should describe `Event.Policy` and `_with` helpers.
+   `EventPolicy` and `event_policy_*` are now the public names for the existing
+   static policy shape; the older `EventOptions` and `event_options_*`
+   compatibility aliases have been removed. Public docs should eventually
+   describe compositional policy values that lower to the canonical event
+   descriptor.
 
 3. Unify fixed and named event descriptors internally.
-   `OnEvent` and `OnNamedEvent` can still exist at the ABI edge while ingesting
-   into one `EventBindingDesc`. Handler-level policy and payload should be
-   represented even if the first implementation permits only one stateful handler
-   per binding.
+   The ABI edge now carries `On(EventBinding)`, and the engine descriptor stream
+   stores fixed and named event bindings in one table. Payload descriptors now
+   flow through render-cache and sink interfaces as one value, and the render
+   cache and engine sink use one binding payload shape for fixed and named
+   events. JS also normalizes fixed and dynamic bind commands into one decoded
+   event-binding command shape, and the native host adapter plus simulated DOM
+   apply fixed and named bindings through one command/binding shape. The
+   remaining fixed/named distinction is host-local encoding/storage compression.
 
 4. Move fixed event bindings onto the same JS binding object.
-   `bind_click` may still be emitted, but JS should normalize it into the same
-   `EventBinding` structure used by dynamic `BindEvent`.
+   This is now true for the browser runtime. `bind_click` and the other fixed
+   opcodes are still emitted as compression, but JS normalizes them into the same
+   listener binding structure used by dynamic `BindEvent`.
 
 5. Change `roc_ui_event` to return response bits.
-   Initially return zero for existing handlers. Then add dynamic response
-   handlers.
+   This is now true at the wasm/JS edge. Existing handlers return zero, and the
+   JS runtime retains the returned bits for the future dynamic response path.
 
-6. Replace public raw event APIs.
-   Introduce `Html.on`, `Html.on_*_with`, and typed payload helpers. Deprecate
-   public `Html.on_event(name, U64, msg)`.
+6. Replace remaining public raw event APIs.
+   `Html.on_event(name, U64, msg)` has been replaced by
+   `Html.on_event(name, EventPolicy, msg)`, with
+   `Html.on_event_delivery(name, EventPolicy, EventDelivery, msg)` as the single
+   low-level explicit delivery request path. Future `Html.on` or typed payload
+   helper work should lower to the same descriptor shape and must not introduce
+   parallel `_with` event families.
 
 7. Add native event-flow dispatch.
-   Replace direct `click` assumptions in specs that need browser-realistic
-   behavior. Keep direct dispatch only as a low-level host test primitive.
+   `real_click` now models `pointerdown -> pointerup -> click` with named
+   capture handlers, bubble handlers, `self` filtering, trusted injected user
+   events, and static stop/stop-immediate policy. Replace direct `click`
+   assumptions in specs that need browser-realistic behavior, and keep direct
+   dispatch only as a low-level host test primitive.
 
 8. Introduce handler chains.
    The long-term rule is one event turn with ordered state updates and one command
@@ -1077,8 +1185,16 @@ note_button =
     Html.button_attrs(
         label,
         [
-            Html.on_pointer_down_with(Event.stop_propagation, board_state.on_unit(noop)),
-            Html.on_pointer_up_with(Event.stop_propagation, board_state.on_unit(noop)),
+            Html.on(
+                Event.bind("pointerdown")
+                    |> Event.stop_propagation
+                    |> Event.handle(board_state.on_unit(noop))
+            ),
+            Html.on(
+                Event.bind("pointerup")
+                    |> Event.stop_propagation
+                    |> Event.handle(board_state.on_unit(noop))
+            ),
         ],
         board_state.on_unit(add_note),
     )
@@ -1089,7 +1205,14 @@ The better app design is a drag handle:
 ```roc
 Html.button_attrs(
     "Drag",
-    [Html.on_pointer_down_with(Event.prevent_default |> Event.stop_propagation, board_state.on_unit(start_drag))],
+    [
+        Html.on(
+            Event.bind("pointerdown")
+                |> Event.prevent_default
+                |> Event.stop_propagation
+                |> Event.handle(board_state.on_unit(start_drag))
+        ),
+    ],
     board_state.on_unit(noop),
 )
 ```
@@ -1101,7 +1224,13 @@ Forms become clear:
 
 ```roc
 Html.form(
-    [Html.on_submit_with(Event.prevent_default, state.on_unit(submit))],
+    [
+        Html.on(
+            Event.bind("submit")
+                |> Event.prevent_default
+                |> Event.handle(state.on_unit(submit))
+        ),
+    ],
     fields,
 )
 ```
@@ -1109,12 +1238,12 @@ Html.form(
 Keyboard shortcuts become precise:
 
 ```roc
-Html.on_key_down_with(
-    Event.default
+Html.on(
+    Event.bind("keydown")
         |> Event.native
         |> Event.payload(Event.key)
-        |> Event.dynamic_response,
-    state.on_event(handle_key)
+        |> Event.dynamic_response
+        |> Event.handle(state.on_event(handle_key))
 )
 ```
 

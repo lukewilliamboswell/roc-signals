@@ -227,6 +227,7 @@ pub const RocStr = extern struct {
 
     const Self = @This();
     const small_string_size = @sizeOf(RocStr);
+    const small_str_max_length = small_string_size - 1;
     const small_str_bit: usize = @as(usize, @bitCast(@as(isize, std.math.minInt(isize))));
     const seamless_slice_tag: usize = 1;
 
@@ -767,47 +768,116 @@ comptime {
     }
 }
 
-/// Element type for __AnonStruct68
-pub const __AnonStruct68 = if (@sizeOf(usize) == 4) extern struct {
-    kind: u64,
-    msg: __AnonStruct69,
-} else extern struct {
-    kind: u64,
-    msg: __AnonStruct69,
+/// Element type for Node.EventBinding
+pub const NodeEventBinding = extern struct {
+    kind: NodeFixedEventKind,
+    msg: __AnonStruct70,
+    name: RocStr,
+    delivery: NodeEventDelivery,
+    policy: NodeEventPolicy,
 };
 
 comptime {
     if (@sizeOf(usize) == 8) {
-        if (@sizeOf(__AnonStruct68) != 64) @compileError("__AnonStruct68 size mismatch");
-        if (@alignOf(__AnonStruct68) != 8) @compileError("__AnonStruct68 alignment mismatch");
+        if (@sizeOf(NodeEventBinding) != 112) @compileError("NodeEventBinding size mismatch");
+        if (@alignOf(NodeEventBinding) != 8) @compileError("NodeEventBinding alignment mismatch");
     }
     if (@sizeOf(usize) == 4) {
-        if (@sizeOf(__AnonStruct68) != 48) @compileError("__AnonStruct68 size mismatch");
-        if (@alignOf(__AnonStruct68) != 8) @compileError("__AnonStruct68 alignment mismatch");
+        if (@sizeOf(NodeEventBinding) != 64) @compileError("NodeEventBinding size mismatch");
+        if (@alignOf(NodeEventBinding) != 8) @compileError("NodeEventBinding alignment mismatch");
     }
 }
 
-/// Element type for __AnonStruct69
-pub const __AnonStruct69 = if (@sizeOf(usize) == 4) extern struct {
-    payload_accessor: u64,
-    payload_kind: u64,
+/// Element type for Node.EventDelivery
+pub const NodeEventDelivery = extern struct {
+    native: bool,
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(NodeEventDelivery) != 1) @compileError("NodeEventDelivery size mismatch");
+        if (@alignOf(NodeEventDelivery) != 1) @compileError("NodeEventDelivery alignment mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(NodeEventDelivery) != 1) @compileError("NodeEventDelivery size mismatch");
+        if (@alignOf(NodeEventDelivery) != 1) @compileError("NodeEventDelivery alignment mismatch");
+    }
+}
+
+/// Element type for Node.FixedEventKind
+pub const NodeFixedEventKind = extern struct {
+    id: u64,
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(NodeFixedEventKind) != 8) @compileError("NodeFixedEventKind size mismatch");
+        if (@alignOf(NodeFixedEventKind) != 8) @compileError("NodeFixedEventKind alignment mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(NodeFixedEventKind) != 8) @compileError("NodeFixedEventKind size mismatch");
+        if (@alignOf(NodeFixedEventKind) != 8) @compileError("NodeFixedEventKind alignment mismatch");
+    }
+}
+
+/// Element type for Node.EventPolicy
+pub const NodeEventPolicy = extern struct {
+    capture: bool,
+    once: bool,
+    passive: bool,
+    prevent_default: bool,
+    self: bool,
+    stop_immediate: bool,
+    stop_propagation: bool,
+    trusted: bool,
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(NodeEventPolicy) != 8) @compileError("NodeEventPolicy size mismatch");
+        if (@alignOf(NodeEventPolicy) != 1) @compileError("NodeEventPolicy alignment mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(NodeEventPolicy) != 8) @compileError("NodeEventPolicy size mismatch");
+        if (@alignOf(NodeEventPolicy) != 1) @compileError("NodeEventPolicy alignment mismatch");
+    }
+}
+
+/// Element type for __AnonStruct70
+pub const __AnonStruct70 = if (@sizeOf(usize) == 4) extern struct {
     binder: *u64,
+    event_extraction_plan: NodeEventExtractionPlan,
     payload_reducer: HostValueEventReducerHandle,
 } else extern struct {
-    payload_accessor: u64,
-    payload_kind: u64,
     binder: *u64,
+    event_extraction_plan: NodeEventExtractionPlan,
     payload_reducer: HostValueEventReducerHandle,
 };
 
 comptime {
     if (@sizeOf(usize) == 8) {
-        if (@sizeOf(__AnonStruct69) != 56) @compileError("__AnonStruct69 size mismatch");
-        if (@alignOf(__AnonStruct69) != 8) @compileError("__AnonStruct69 alignment mismatch");
+        if (@sizeOf(__AnonStruct70) != 64) @compileError("__AnonStruct70 size mismatch");
+        if (@alignOf(__AnonStruct70) != 8) @compileError("__AnonStruct70 alignment mismatch");
     }
     if (@sizeOf(usize) == 4) {
-        if (@sizeOf(__AnonStruct69) != 40) @compileError("__AnonStruct69 size mismatch");
-        if (@alignOf(__AnonStruct69) != 8) @compileError("__AnonStruct69 alignment mismatch");
+        if (@sizeOf(__AnonStruct70) != 32) @compileError("__AnonStruct70 size mismatch");
+        if (@alignOf(__AnonStruct70) != 4) @compileError("__AnonStruct70 alignment mismatch");
+    }
+}
+
+/// Element type for Node.EventExtractionPlan
+pub const NodeEventExtractionPlan = extern struct {
+    bytes: RocListWith(u8, false),
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(NodeEventExtractionPlan) != 24) @compileError("NodeEventExtractionPlan size mismatch");
+        if (@alignOf(NodeEventExtractionPlan) != 8) @compileError("NodeEventExtractionPlan alignment mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(NodeEventExtractionPlan) != 12) @compileError("NodeEventExtractionPlan size mismatch");
+        if (@alignOf(NodeEventExtractionPlan) != 4) @compileError("NodeEventExtractionPlan alignment mismatch");
     }
 }
 
@@ -828,49 +898,43 @@ comptime {
     }
 }
 
-/// Element type for __AnonStruct71
-pub const __AnonStruct71 = if (@sizeOf(usize) == 4) extern struct {
-    msg: __AnonStruct69,
-    options: u64,
+/// Element type for __AnonStruct76
+pub const __AnonStruct76 = if (@sizeOf(usize) == 4) extern struct {
+    field: NodeBoolField,
     name: RocStr,
+    read: HostValueBoolReadHandle,
+    signal: *NodeSignalExpr,
 } else extern struct {
-    msg: __AnonStruct69,
-    options: u64,
+    field: NodeBoolField,
     name: RocStr,
+    read: HostValueBoolReadHandle,
+    signal: *NodeSignalExpr,
 };
 
 comptime {
     if (@sizeOf(usize) == 8) {
-        if (@sizeOf(__AnonStruct71) != 88) @compileError("__AnonStruct71 size mismatch");
-        if (@alignOf(__AnonStruct71) != 8) @compileError("__AnonStruct71 alignment mismatch");
+        if (@sizeOf(__AnonStruct76) != 72) @compileError("__AnonStruct76 size mismatch");
+        if (@alignOf(__AnonStruct76) != 8) @compileError("__AnonStruct76 alignment mismatch");
     }
     if (@sizeOf(usize) == 4) {
-        if (@sizeOf(__AnonStruct71) != 64) @compileError("__AnonStruct71 size mismatch");
-        if (@alignOf(__AnonStruct71) != 8) @compileError("__AnonStruct71 alignment mismatch");
+        if (@sizeOf(__AnonStruct76) != 40) @compileError("__AnonStruct76 size mismatch");
+        if (@alignOf(__AnonStruct76) != 8) @compileError("__AnonStruct76 alignment mismatch");
     }
 }
 
-/// Element type for __AnonStruct72
-pub const __AnonStruct72 = if (@sizeOf(usize) == 4) extern struct {
-    field: u64,
-    name: RocStr,
-    read: HostValueBoolReadHandle,
-    signal: *NodeSignalExpr,
-} else extern struct {
-    field: u64,
-    name: RocStr,
-    read: HostValueBoolReadHandle,
-    signal: *NodeSignalExpr,
+/// Element type for Node.BoolField
+pub const NodeBoolField = extern struct {
+    id: u64,
 };
 
 comptime {
     if (@sizeOf(usize) == 8) {
-        if (@sizeOf(__AnonStruct72) != 72) @compileError("__AnonStruct72 size mismatch");
-        if (@alignOf(__AnonStruct72) != 8) @compileError("__AnonStruct72 alignment mismatch");
+        if (@sizeOf(NodeBoolField) != 8) @compileError("NodeBoolField size mismatch");
+        if (@alignOf(NodeBoolField) != 8) @compileError("NodeBoolField alignment mismatch");
     }
     if (@sizeOf(usize) == 4) {
-        if (@sizeOf(__AnonStruct72) != 40) @compileError("__AnonStruct72 size mismatch");
-        if (@alignOf(__AnonStruct72) != 8) @compileError("__AnonStruct72 alignment mismatch");
+        if (@sizeOf(NodeBoolField) != 8) @compileError("NodeBoolField size mismatch");
+        if (@alignOf(NodeBoolField) != 8) @compileError("NodeBoolField alignment mismatch");
     }
 }
 
@@ -891,14 +955,14 @@ comptime {
     }
 }
 
-/// Element type for __AnonStruct76
-pub const __AnonStruct76 = if (@sizeOf(usize) == 4) extern struct {
-    field: u64,
+/// Element type for __AnonStruct81
+pub const __AnonStruct81 = if (@sizeOf(usize) == 4) extern struct {
+    field: NodeTextField,
     name: RocStr,
     read: HostValueTextReadHandle,
     signal: *NodeSignalExpr,
 } else extern struct {
-    field: u64,
+    field: NodeTextField,
     name: RocStr,
     read: HostValueTextReadHandle,
     signal: *NodeSignalExpr,
@@ -906,12 +970,28 @@ pub const __AnonStruct76 = if (@sizeOf(usize) == 4) extern struct {
 
 comptime {
     if (@sizeOf(usize) == 8) {
-        if (@sizeOf(__AnonStruct76) != 72) @compileError("__AnonStruct76 size mismatch");
-        if (@alignOf(__AnonStruct76) != 8) @compileError("__AnonStruct76 alignment mismatch");
+        if (@sizeOf(__AnonStruct81) != 72) @compileError("__AnonStruct81 size mismatch");
+        if (@alignOf(__AnonStruct81) != 8) @compileError("__AnonStruct81 alignment mismatch");
     }
     if (@sizeOf(usize) == 4) {
-        if (@sizeOf(__AnonStruct76) != 40) @compileError("__AnonStruct76 size mismatch");
-        if (@alignOf(__AnonStruct76) != 8) @compileError("__AnonStruct76 alignment mismatch");
+        if (@sizeOf(__AnonStruct81) != 40) @compileError("__AnonStruct81 size mismatch");
+        if (@alignOf(__AnonStruct81) != 8) @compileError("__AnonStruct81 alignment mismatch");
+    }
+}
+
+/// Element type for Node.TextField
+pub const NodeTextField = extern struct {
+    id: u64,
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(NodeTextField) != 8) @compileError("NodeTextField size mismatch");
+        if (@alignOf(NodeTextField) != 8) @compileError("NodeTextField alignment mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(NodeTextField) != 8) @compileError("NodeTextField size mismatch");
+        if (@alignOf(NodeTextField) != 8) @compileError("NodeTextField alignment mismatch");
     }
 }
 
@@ -932,72 +1012,72 @@ comptime {
     }
 }
 
-/// Element type for __AnonStruct78
-pub const __AnonStruct78 = if (@sizeOf(usize) == 4) extern struct {
-    field: u64,
+/// Element type for __AnonStruct84
+pub const __AnonStruct84 = if (@sizeOf(usize) == 4) extern struct {
+    field: NodeBoolField,
     name: RocStr,
     value: bool,
 } else extern struct {
-    field: u64,
+    field: NodeBoolField,
     name: RocStr,
     value: bool,
 };
 
 comptime {
     if (@sizeOf(usize) == 8) {
-        if (@sizeOf(__AnonStruct78) != 40) @compileError("__AnonStruct78 size mismatch");
-        if (@alignOf(__AnonStruct78) != 8) @compileError("__AnonStruct78 alignment mismatch");
+        if (@sizeOf(__AnonStruct84) != 40) @compileError("__AnonStruct84 size mismatch");
+        if (@alignOf(__AnonStruct84) != 8) @compileError("__AnonStruct84 alignment mismatch");
     }
     if (@sizeOf(usize) == 4) {
-        if (@sizeOf(__AnonStruct78) != 24) @compileError("__AnonStruct78 size mismatch");
-        if (@alignOf(__AnonStruct78) != 8) @compileError("__AnonStruct78 alignment mismatch");
-    }
-}
-
-/// Element type for __AnonStruct79
-pub const __AnonStruct79 = if (@sizeOf(usize) == 4) extern struct {
-    field: u64,
-    name: RocStr,
-    value: RocStr,
-} else extern struct {
-    field: u64,
-    name: RocStr,
-    value: RocStr,
-};
-
-comptime {
-    if (@sizeOf(usize) == 8) {
-        if (@sizeOf(__AnonStruct79) != 56) @compileError("__AnonStruct79 size mismatch");
-        if (@alignOf(__AnonStruct79) != 8) @compileError("__AnonStruct79 alignment mismatch");
-    }
-    if (@sizeOf(usize) == 4) {
-        if (@sizeOf(__AnonStruct79) != 32) @compileError("__AnonStruct79 size mismatch");
-        if (@alignOf(__AnonStruct79) != 8) @compileError("__AnonStruct79 alignment mismatch");
-    }
-}
-
-/// Element type for __AnonStruct81
-pub const __AnonStruct81 = if (@sizeOf(usize) == 4) extern struct {
-    signal: *NodeSignalExpr,
-    to_cmd: RocErasedCallable,
-} else extern struct {
-    signal: *NodeSignalExpr,
-    to_cmd: RocErasedCallable,
-};
-
-comptime {
-    if (@sizeOf(usize) == 8) {
-        if (@sizeOf(__AnonStruct81) != 16) @compileError("__AnonStruct81 size mismatch");
-        if (@alignOf(__AnonStruct81) != 8) @compileError("__AnonStruct81 alignment mismatch");
-    }
-    if (@sizeOf(usize) == 4) {
-        if (@sizeOf(__AnonStruct81) != 8) @compileError("__AnonStruct81 size mismatch");
-        if (@alignOf(__AnonStruct81) != 4) @compileError("__AnonStruct81 alignment mismatch");
+        if (@sizeOf(__AnonStruct84) != 24) @compileError("__AnonStruct84 size mismatch");
+        if (@alignOf(__AnonStruct84) != 8) @compileError("__AnonStruct84 alignment mismatch");
     }
 }
 
 /// Element type for __AnonStruct85
 pub const __AnonStruct85 = if (@sizeOf(usize) == 4) extern struct {
+    field: NodeTextField,
+    name: RocStr,
+    value: RocStr,
+} else extern struct {
+    field: NodeTextField,
+    name: RocStr,
+    value: RocStr,
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(__AnonStruct85) != 56) @compileError("__AnonStruct85 size mismatch");
+        if (@alignOf(__AnonStruct85) != 8) @compileError("__AnonStruct85 alignment mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(__AnonStruct85) != 32) @compileError("__AnonStruct85 size mismatch");
+        if (@alignOf(__AnonStruct85) != 8) @compileError("__AnonStruct85 alignment mismatch");
+    }
+}
+
+/// Element type for __AnonStruct87
+pub const __AnonStruct87 = if (@sizeOf(usize) == 4) extern struct {
+    signal: *NodeSignalExpr,
+    to_cmd: RocErasedCallable,
+} else extern struct {
+    signal: *NodeSignalExpr,
+    to_cmd: RocErasedCallable,
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(__AnonStruct87) != 16) @compileError("__AnonStruct87 size mismatch");
+        if (@alignOf(__AnonStruct87) != 8) @compileError("__AnonStruct87 alignment mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(__AnonStruct87) != 8) @compileError("__AnonStruct87 size mismatch");
+        if (@alignOf(__AnonStruct87) != 4) @compileError("__AnonStruct87 alignment mismatch");
+    }
+}
+
+/// Element type for __AnonStruct91
+pub const __AnonStruct91 = if (@sizeOf(usize) == 4) extern struct {
     request_init: RocErasedCallable,
     request_read: HostValueTaskRequestReadHandle,
     task_name: RocStr,
@@ -1011,12 +1091,12 @@ pub const __AnonStruct85 = if (@sizeOf(usize) == 4) extern struct {
 
 comptime {
     if (@sizeOf(usize) == 8) {
-        if (@sizeOf(__AnonStruct85) != 72) @compileError("__AnonStruct85 size mismatch");
-        if (@alignOf(__AnonStruct85) != 8) @compileError("__AnonStruct85 alignment mismatch");
+        if (@sizeOf(__AnonStruct91) != 72) @compileError("__AnonStruct91 size mismatch");
+        if (@alignOf(__AnonStruct91) != 8) @compileError("__AnonStruct91 alignment mismatch");
     }
     if (@sizeOf(usize) == 4) {
-        if (@sizeOf(__AnonStruct85) != 36) @compileError("__AnonStruct85 size mismatch");
-        if (@alignOf(__AnonStruct85) != 4) @compileError("__AnonStruct85 alignment mismatch");
+        if (@sizeOf(__AnonStruct91) != 36) @compileError("__AnonStruct91 size mismatch");
+        if (@alignOf(__AnonStruct91) != 4) @compileError("__AnonStruct91 alignment mismatch");
     }
 }
 
@@ -1037,8 +1117,8 @@ comptime {
     }
 }
 
-/// Element type for __AnonStruct87
-pub const __AnonStruct87 = if (@sizeOf(usize) == 4) extern struct {
+/// Element type for __AnonStruct93
+pub const __AnonStruct93 = if (@sizeOf(usize) == 4) extern struct {
     to_cmd: RocErasedCallable,
 } else extern struct {
     to_cmd: RocErasedCallable,
@@ -1046,17 +1126,17 @@ pub const __AnonStruct87 = if (@sizeOf(usize) == 4) extern struct {
 
 comptime {
     if (@sizeOf(usize) == 8) {
-        if (@sizeOf(__AnonStruct87) != 8) @compileError("__AnonStruct87 size mismatch");
-        if (@alignOf(__AnonStruct87) != 8) @compileError("__AnonStruct87 alignment mismatch");
+        if (@sizeOf(__AnonStruct93) != 8) @compileError("__AnonStruct93 size mismatch");
+        if (@alignOf(__AnonStruct93) != 8) @compileError("__AnonStruct93 alignment mismatch");
     }
     if (@sizeOf(usize) == 4) {
-        if (@sizeOf(__AnonStruct87) != 4) @compileError("__AnonStruct87 size mismatch");
-        if (@alignOf(__AnonStruct87) != 4) @compileError("__AnonStruct87 alignment mismatch");
+        if (@sizeOf(__AnonStruct93) != 4) @compileError("__AnonStruct93 size mismatch");
+        if (@alignOf(__AnonStruct93) != 4) @compileError("__AnonStruct93 alignment mismatch");
     }
 }
 
-/// Element type for __AnonStruct90
-pub const __AnonStruct90 = if (@sizeOf(usize) == 4) extern struct {
+/// Element type for __AnonStruct96
+pub const __AnonStruct96 = if (@sizeOf(usize) == 4) extern struct {
     binder: *u64,
     cap: HostValueCapabilityHandle,
     child: *Elem,
@@ -1070,17 +1150,17 @@ pub const __AnonStruct90 = if (@sizeOf(usize) == 4) extern struct {
 
 comptime {
     if (@sizeOf(usize) == 8) {
-        if (@sizeOf(__AnonStruct90) != 48) @compileError("__AnonStruct90 size mismatch");
-        if (@alignOf(__AnonStruct90) != 8) @compileError("__AnonStruct90 alignment mismatch");
+        if (@sizeOf(__AnonStruct96) != 48) @compileError("__AnonStruct96 size mismatch");
+        if (@alignOf(__AnonStruct96) != 8) @compileError("__AnonStruct96 alignment mismatch");
     }
     if (@sizeOf(usize) == 4) {
-        if (@sizeOf(__AnonStruct90) != 24) @compileError("__AnonStruct90 size mismatch");
-        if (@alignOf(__AnonStruct90) != 4) @compileError("__AnonStruct90 alignment mismatch");
+        if (@sizeOf(__AnonStruct96) != 24) @compileError("__AnonStruct96 size mismatch");
+        if (@alignOf(__AnonStruct96) != 4) @compileError("__AnonStruct96 alignment mismatch");
     }
 }
 
-/// Element type for __AnonStruct91
-pub const __AnonStruct91 = if (@sizeOf(usize) == 4) extern struct {
+/// Element type for __AnonStruct97
+pub const __AnonStruct97 = if (@sizeOf(usize) == 4) extern struct {
     read: HostValueTextReadHandle,
     signal: *NodeSignalExpr,
 } else extern struct {
@@ -1090,17 +1170,17 @@ pub const __AnonStruct91 = if (@sizeOf(usize) == 4) extern struct {
 
 comptime {
     if (@sizeOf(usize) == 8) {
-        if (@sizeOf(__AnonStruct91) != 40) @compileError("__AnonStruct91 size mismatch");
-        if (@alignOf(__AnonStruct91) != 8) @compileError("__AnonStruct91 alignment mismatch");
+        if (@sizeOf(__AnonStruct97) != 40) @compileError("__AnonStruct97 size mismatch");
+        if (@alignOf(__AnonStruct97) != 8) @compileError("__AnonStruct97 alignment mismatch");
     }
     if (@sizeOf(usize) == 4) {
-        if (@sizeOf(__AnonStruct91) != 20) @compileError("__AnonStruct91 size mismatch");
-        if (@alignOf(__AnonStruct91) != 4) @compileError("__AnonStruct91 alignment mismatch");
+        if (@sizeOf(__AnonStruct97) != 20) @compileError("__AnonStruct97 size mismatch");
+        if (@alignOf(__AnonStruct97) != 4) @compileError("__AnonStruct97 alignment mismatch");
     }
 }
 
-/// Element type for __AnonStruct92
-pub const __AnonStruct92 = if (@sizeOf(usize) == 4) extern struct {
+/// Element type for __AnonStruct98
+pub const __AnonStruct98 = if (@sizeOf(usize) == 4) extern struct {
     condition: *NodeSignalExpr,
     read: HostValueBoolReadHandle,
     when_false: *Elem,
@@ -1114,12 +1194,12 @@ pub const __AnonStruct92 = if (@sizeOf(usize) == 4) extern struct {
 
 comptime {
     if (@sizeOf(usize) == 8) {
-        if (@sizeOf(__AnonStruct92) != 56) @compileError("__AnonStruct92 size mismatch");
-        if (@alignOf(__AnonStruct92) != 8) @compileError("__AnonStruct92 alignment mismatch");
+        if (@sizeOf(__AnonStruct98) != 56) @compileError("__AnonStruct98 size mismatch");
+        if (@alignOf(__AnonStruct98) != 8) @compileError("__AnonStruct98 alignment mismatch");
     }
     if (@sizeOf(usize) == 4) {
-        if (@sizeOf(__AnonStruct92) != 28) @compileError("__AnonStruct92 size mismatch");
-        if (@alignOf(__AnonStruct92) != 4) @compileError("__AnonStruct92 alignment mismatch");
+        if (@sizeOf(__AnonStruct98) != 28) @compileError("__AnonStruct98 size mismatch");
+        if (@alignOf(__AnonStruct98) != 4) @compileError("__AnonStruct98 alignment mismatch");
     }
 }
 
@@ -1143,12 +1223,12 @@ pub const ElemPayload = extern union {
     component: __AnonStruct31,
     each: __AnonStruct33,
     element: __AnonStruct65,
-    on_change: __AnonStruct81,
-    on_mount: __AnonStruct87,
-    state: __AnonStruct90,
+    on_change: __AnonStruct87,
+    on_mount: __AnonStruct93,
+    state: __AnonStruct96,
     text: RocStr,
-    text_signal: __AnonStruct91,
-    when: __AnonStruct92,
+    text_signal: __AnonStruct97,
+    when: __AnonStruct98,
 };
 
 /// Tag union: Elem
@@ -1171,28 +1251,28 @@ pub const Elem = if (@sizeOf(usize) == 4) extern struct {
         const ptr: *const __AnonStruct65 = @ptrCast(@alignCast(&self.payload));
         return ptr.*;
     }
-    pub fn payload_on_change(self: *const @This()) __AnonStruct81 {
-        const ptr: *const __AnonStruct81 = @ptrCast(@alignCast(&self.payload));
-        return ptr.*;
-    }
-    pub fn payload_on_mount(self: *const @This()) __AnonStruct87 {
+    pub fn payload_on_change(self: *const @This()) __AnonStruct87 {
         const ptr: *const __AnonStruct87 = @ptrCast(@alignCast(&self.payload));
         return ptr.*;
     }
-    pub fn payload_state(self: *const @This()) __AnonStruct90 {
-        const ptr: *const __AnonStruct90 = @ptrCast(@alignCast(&self.payload));
+    pub fn payload_on_mount(self: *const @This()) __AnonStruct93 {
+        const ptr: *const __AnonStruct93 = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
+    pub fn payload_state(self: *const @This()) __AnonStruct96 {
+        const ptr: *const __AnonStruct96 = @ptrCast(@alignCast(&self.payload));
         return ptr.*;
     }
     pub fn payload_text(self: *const @This()) RocStr {
         const ptr: *const RocStr = @ptrCast(@alignCast(&self.payload));
         return ptr.*;
     }
-    pub fn payload_text_signal(self: *const @This()) __AnonStruct91 {
-        const ptr: *const __AnonStruct91 = @ptrCast(@alignCast(&self.payload));
+    pub fn payload_text_signal(self: *const @This()) __AnonStruct97 {
+        const ptr: *const __AnonStruct97 = @ptrCast(@alignCast(&self.payload));
         return ptr.*;
     }
-    pub fn payload_when(self: *const @This()) __AnonStruct92 {
-        const ptr: *const __AnonStruct92 = @ptrCast(@alignCast(&self.payload));
+    pub fn payload_when(self: *const @This()) __AnonStruct98 {
+        const ptr: *const __AnonStruct98 = @ptrCast(@alignCast(&self.payload));
         return ptr.*;
     }
 } else extern struct {
@@ -1210,22 +1290,22 @@ pub const Elem = if (@sizeOf(usize) == 4) extern struct {
     pub fn payload_element(self: *const @This()) __AnonStruct65 {
         return self.payload.element;
     }
-    pub fn payload_on_change(self: *const @This()) __AnonStruct81 {
+    pub fn payload_on_change(self: *const @This()) __AnonStruct87 {
         return self.payload.on_change;
     }
-    pub fn payload_on_mount(self: *const @This()) __AnonStruct87 {
+    pub fn payload_on_mount(self: *const @This()) __AnonStruct93 {
         return self.payload.on_mount;
     }
-    pub fn payload_state(self: *const @This()) __AnonStruct90 {
+    pub fn payload_state(self: *const @This()) __AnonStruct96 {
         return self.payload.state;
     }
     pub fn payload_text(self: *const @This()) RocStr {
         return self.payload.text;
     }
-    pub fn payload_text_signal(self: *const @This()) __AnonStruct91 {
+    pub fn payload_text_signal(self: *const @This()) __AnonStruct97 {
         return self.payload.text_signal;
     }
-    pub fn payload_when(self: *const @This()) __AnonStruct92 {
+    pub fn payload_when(self: *const @This()) __AnonStruct98 {
         return self.payload.when;
     }
 };
@@ -1370,80 +1450,71 @@ comptime {
 
 /// Tag discriminant for Node.Attr.
 pub const NodeAttrTag = enum(u8) {
-    OnEvent = 0,
-    OnNamedEvent = 1,
-    SignalBool = 2,
-    SignalText = 3,
-    StaticBool = 4,
-    StaticText = 5,
+    On = 0,
+    SignalBool = 1,
+    SignalText = 2,
+    StaticBool = 3,
+    StaticText = 4,
 };
 
 /// Payload union for Node.Attr.
 pub const NodeAttrPayload = extern union {
-    on_event: __AnonStruct68,
-    on_named_event: __AnonStruct71,
-    signal_bool: __AnonStruct72,
-    signal_text: __AnonStruct76,
-    static_bool: __AnonStruct78,
-    static_text: __AnonStruct79,
+    on: NodeEventBinding,
+    signal_bool: __AnonStruct76,
+    signal_text: __AnonStruct81,
+    static_bool: __AnonStruct84,
+    static_text: __AnonStruct85,
 };
 
 /// Tag union: Node.Attr
 pub const NodeAttr = if (@sizeOf(usize) == 4) extern struct {
     payload: [64]u8 align(8),
     tag: NodeAttrTag,
-    pub fn payload_on_event(self: *const @This()) __AnonStruct68 {
-        const ptr: *const __AnonStruct68 = @ptrCast(@alignCast(&self.payload));
+    pub fn payload_on(self: *const @This()) NodeEventBinding {
+        const ptr: *const NodeEventBinding = @ptrCast(@alignCast(&self.payload));
         return ptr.*;
     }
-    pub fn payload_on_named_event(self: *const @This()) __AnonStruct71 {
-        const ptr: *const __AnonStruct71 = @ptrCast(@alignCast(&self.payload));
-        return ptr.*;
-    }
-    pub fn payload_signal_bool(self: *const @This()) __AnonStruct72 {
-        const ptr: *const __AnonStruct72 = @ptrCast(@alignCast(&self.payload));
-        return ptr.*;
-    }
-    pub fn payload_signal_text(self: *const @This()) __AnonStruct76 {
+    pub fn payload_signal_bool(self: *const @This()) __AnonStruct76 {
         const ptr: *const __AnonStruct76 = @ptrCast(@alignCast(&self.payload));
         return ptr.*;
     }
-    pub fn payload_static_bool(self: *const @This()) __AnonStruct78 {
-        const ptr: *const __AnonStruct78 = @ptrCast(@alignCast(&self.payload));
+    pub fn payload_signal_text(self: *const @This()) __AnonStruct81 {
+        const ptr: *const __AnonStruct81 = @ptrCast(@alignCast(&self.payload));
         return ptr.*;
     }
-    pub fn payload_static_text(self: *const @This()) __AnonStruct79 {
-        const ptr: *const __AnonStruct79 = @ptrCast(@alignCast(&self.payload));
+    pub fn payload_static_bool(self: *const @This()) __AnonStruct84 {
+        const ptr: *const __AnonStruct84 = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
+    pub fn payload_static_text(self: *const @This()) __AnonStruct85 {
+        const ptr: *const __AnonStruct85 = @ptrCast(@alignCast(&self.payload));
         return ptr.*;
     }
 } else extern struct {
     payload: NodeAttrPayload,
     tag: NodeAttrTag,
-    pub fn payload_on_event(self: *const @This()) __AnonStruct68 {
-        return self.payload.on_event;
+    pub fn payload_on(self: *const @This()) NodeEventBinding {
+        return self.payload.on;
     }
-    pub fn payload_on_named_event(self: *const @This()) __AnonStruct71 {
-        return self.payload.on_named_event;
-    }
-    pub fn payload_signal_bool(self: *const @This()) __AnonStruct72 {
+    pub fn payload_signal_bool(self: *const @This()) __AnonStruct76 {
         return self.payload.signal_bool;
     }
-    pub fn payload_signal_text(self: *const @This()) __AnonStruct76 {
+    pub fn payload_signal_text(self: *const @This()) __AnonStruct81 {
         return self.payload.signal_text;
     }
-    pub fn payload_static_bool(self: *const @This()) __AnonStruct78 {
+    pub fn payload_static_bool(self: *const @This()) __AnonStruct84 {
         return self.payload.static_bool;
     }
-    pub fn payload_static_text(self: *const @This()) __AnonStruct79 {
+    pub fn payload_static_text(self: *const @This()) __AnonStruct85 {
         return self.payload.static_text;
     }
 };
 
 comptime {
     if (@sizeOf(usize) == 8) {
-        if (@sizeOf(NodeAttr) != 96) @compileError("NodeAttr size mismatch");
+        if (@sizeOf(NodeAttr) != 120) @compileError("NodeAttr size mismatch");
         if (@alignOf(NodeAttr) != 8) @compileError("NodeAttr alignment mismatch");
-        if (@offsetOf(NodeAttr, "tag") != 88) @compileError("NodeAttr tag offset mismatch");
+        if (@offsetOf(NodeAttr, "tag") != 112) @compileError("NodeAttr tag offset mismatch");
     }
     if (@sizeOf(usize) == 4) {
         if (@sizeOf(NodeAttr) != 72) @compileError("NodeAttr size mismatch");
@@ -1509,11 +1580,6 @@ pub const HostValueTake_with_splitArgs = extern struct {
 
 // =============================================================================
 // Generated Refcount Helpers
-//
-// These helpers recursively retain or release Roc-owned fields using the explicit
-// TypeRepr layout supplied to glue generation. For RocList(T), element release
-// only runs when the list allocation is uniquely owned, immediately before the
-// outer list allocation is decremented and potentially freed.
 // =============================================================================
 
 /// Recursively decrement Roc-owned fields in HostValueCapabilityHandle.
@@ -1558,22 +1624,22 @@ pub fn decrefElem(value: Elem, roc_host: *RocHost) void {
             decref__AnonStruct65(value.payload_element(), roc_host);
         },
         .OnChange => {
-            decref__AnonStruct81(value.payload_on_change(), roc_host);
+            decref__AnonStruct87(value.payload_on_change(), roc_host);
         },
         .OnMount => {
-            decref__AnonStruct87(value.payload_on_mount(), roc_host);
+            decref__AnonStruct93(value.payload_on_mount(), roc_host);
         },
         .State => {
-            decref__AnonStruct90(value.payload_state(), roc_host);
+            decref__AnonStruct96(value.payload_state(), roc_host);
         },
         .Text => {
             value.payload_text().decref(roc_host);
         },
         .TextSignal => {
-            decref__AnonStruct91(value.payload_text_signal(), roc_host);
+            decref__AnonStruct97(value.payload_text_signal(), roc_host);
         },
         .When => {
-            decref__AnonStruct92(value.payload_when(), roc_host);
+            decref__AnonStruct98(value.payload_when(), roc_host);
         },
     }
 }
@@ -1594,22 +1660,22 @@ pub fn increfElem(value: Elem, amount: isize) void {
             incref__AnonStruct65(value.payload_element(), amount);
         },
         .OnChange => {
-            incref__AnonStruct81(value.payload_on_change(), amount);
+            incref__AnonStruct87(value.payload_on_change(), amount);
         },
         .OnMount => {
-            incref__AnonStruct87(value.payload_on_mount(), amount);
+            incref__AnonStruct93(value.payload_on_mount(), amount);
         },
         .State => {
-            incref__AnonStruct90(value.payload_state(), amount);
+            incref__AnonStruct96(value.payload_state(), amount);
         },
         .Text => {
             value.payload_text().incref(amount);
         },
         .TextSignal => {
-            incref__AnonStruct91(value.payload_text_signal(), amount);
+            incref__AnonStruct97(value.payload_text_signal(), amount);
         },
         .When => {
-            incref__AnonStruct92(value.payload_when(), amount);
+            incref__AnonStruct98(value.payload_when(), amount);
         },
     }
 }
@@ -1833,23 +1899,20 @@ pub fn incref__AnonStruct65(value: __AnonStruct65, amount: isize) void {
 /// Recursively decrement Roc-owned payloads in NodeAttr.
 pub fn decrefNodeAttr(value: NodeAttr, roc_host: *RocHost) void {
     switch (value.tag) {
-        .OnEvent => {
-            decref__AnonStruct68(value.payload_on_event(), roc_host);
-        },
-        .OnNamedEvent => {
-            decref__AnonStruct71(value.payload_on_named_event(), roc_host);
+        .On => {
+            decrefNodeEventBinding(value.payload_on(), roc_host);
         },
         .SignalBool => {
-            decref__AnonStruct72(value.payload_signal_bool(), roc_host);
+            decref__AnonStruct76(value.payload_signal_bool(), roc_host);
         },
         .SignalText => {
-            decref__AnonStruct76(value.payload_signal_text(), roc_host);
+            decref__AnonStruct81(value.payload_signal_text(), roc_host);
         },
         .StaticBool => {
-            decref__AnonStruct78(value.payload_static_bool(), roc_host);
+            decref__AnonStruct84(value.payload_static_bool(), roc_host);
         },
         .StaticText => {
-            decref__AnonStruct79(value.payload_static_text(), roc_host);
+            decref__AnonStruct85(value.payload_static_text(), roc_host);
         },
     }
 }
@@ -1857,47 +1920,100 @@ pub fn decrefNodeAttr(value: NodeAttr, roc_host: *RocHost) void {
 /// Increment Roc-owned payloads in NodeAttr.
 pub fn increfNodeAttr(value: NodeAttr, amount: isize) void {
     switch (value.tag) {
-        .OnEvent => {
-            incref__AnonStruct68(value.payload_on_event(), amount);
-        },
-        .OnNamedEvent => {
-            incref__AnonStruct71(value.payload_on_named_event(), amount);
+        .On => {
+            increfNodeEventBinding(value.payload_on(), amount);
         },
         .SignalBool => {
-            incref__AnonStruct72(value.payload_signal_bool(), amount);
+            incref__AnonStruct76(value.payload_signal_bool(), amount);
         },
         .SignalText => {
-            incref__AnonStruct76(value.payload_signal_text(), amount);
+            incref__AnonStruct81(value.payload_signal_text(), amount);
         },
         .StaticBool => {
-            incref__AnonStruct78(value.payload_static_bool(), amount);
+            incref__AnonStruct84(value.payload_static_bool(), amount);
         },
         .StaticText => {
-            incref__AnonStruct79(value.payload_static_text(), amount);
+            incref__AnonStruct85(value.payload_static_text(), amount);
         },
     }
 }
 
-/// Recursively decrement Roc-owned fields in __AnonStruct68.
-pub fn decref__AnonStruct68(value: __AnonStruct68, roc_host: *RocHost) void {
-    decref__AnonStruct69(value.msg, roc_host);
+/// Recursively decrement Roc-owned fields in NodeEventBinding.
+pub fn decrefNodeEventBinding(value: NodeEventBinding, roc_host: *RocHost) void {
+    decrefNodeFixedEventKind(value.kind, roc_host);
+    decref__AnonStruct70(value.msg, roc_host);
+    value.name.decref(roc_host);
+    decrefNodeEventDelivery(value.delivery, roc_host);
+    decrefNodeEventPolicy(value.policy, roc_host);
 }
 
-/// Increment Roc-owned fields in __AnonStruct68.
-pub fn incref__AnonStruct68(value: __AnonStruct68, amount: isize) void {
-    incref__AnonStruct69(value.msg, amount);
+/// Increment Roc-owned fields in NodeEventBinding.
+pub fn increfNodeEventBinding(value: NodeEventBinding, amount: isize) void {
+    increfNodeFixedEventKind(value.kind, amount);
+    incref__AnonStruct70(value.msg, amount);
+    value.name.incref(amount);
+    increfNodeEventDelivery(value.delivery, amount);
+    increfNodeEventPolicy(value.policy, amount);
 }
 
-/// Recursively decrement Roc-owned fields in __AnonStruct69.
-pub fn decref__AnonStruct69(value: __AnonStruct69, roc_host: *RocHost) void {
+/// Recursively decrement Roc-owned fields in NodeEventDelivery.
+pub fn decrefNodeEventDelivery(value: NodeEventDelivery, roc_host: *RocHost) void {
+    _ = value;
+    _ = roc_host;
+}
+
+/// Increment Roc-owned fields in NodeEventDelivery.
+pub fn increfNodeEventDelivery(value: NodeEventDelivery, amount: isize) void {
+    _ = value;
+    _ = amount;
+}
+
+/// Recursively decrement Roc-owned fields in NodeFixedEventKind.
+pub fn decrefNodeFixedEventKind(value: NodeFixedEventKind, roc_host: *RocHost) void {
+    _ = value;
+    _ = roc_host;
+}
+
+/// Increment Roc-owned fields in NodeFixedEventKind.
+pub fn increfNodeFixedEventKind(value: NodeFixedEventKind, amount: isize) void {
+    _ = value;
+    _ = amount;
+}
+
+/// Recursively decrement Roc-owned fields in NodeEventPolicy.
+pub fn decrefNodeEventPolicy(value: NodeEventPolicy, roc_host: *RocHost) void {
+    _ = value;
+    _ = roc_host;
+}
+
+/// Increment Roc-owned fields in NodeEventPolicy.
+pub fn increfNodeEventPolicy(value: NodeEventPolicy, amount: isize) void {
+    _ = value;
+    _ = amount;
+}
+
+/// Recursively decrement Roc-owned fields in __AnonStruct70.
+pub fn decref__AnonStruct70(value: __AnonStruct70, roc_host: *RocHost) void {
     decrefBoxWith(@ptrCast(value.binder), @alignOf(u64), false, null, roc_host);
+    decrefNodeEventExtractionPlan(value.event_extraction_plan, roc_host);
     decrefHostValueEventReducerHandle(value.payload_reducer, roc_host);
 }
 
-/// Increment Roc-owned fields in __AnonStruct69.
-pub fn incref__AnonStruct69(value: __AnonStruct69, amount: isize) void {
+/// Increment Roc-owned fields in __AnonStruct70.
+pub fn incref__AnonStruct70(value: __AnonStruct70, amount: isize) void {
     increfBox(@ptrCast(value.binder), amount);
+    increfNodeEventExtractionPlan(value.event_extraction_plan, amount);
     increfHostValueEventReducerHandle(value.payload_reducer, amount);
+}
+
+/// Recursively decrement Roc-owned fields in NodeEventExtractionPlan.
+pub fn decrefNodeEventExtractionPlan(value: NodeEventExtractionPlan, roc_host: *RocHost) void {
+    value.bytes.decref(roc_host);
+}
+
+/// Increment Roc-owned fields in NodeEventExtractionPlan.
+pub fn increfNodeEventExtractionPlan(value: NodeEventExtractionPlan, amount: isize) void {
+    value.bytes.incref(amount);
 }
 
 /// Recursively decrement Roc-owned fields in HostValueEventReducerHandle.
@@ -1912,30 +2028,32 @@ pub fn increfHostValueEventReducerHandle(value: HostValueEventReducerHandle, amo
     increfErasedCallable(value.transform, amount);
 }
 
-/// Recursively decrement Roc-owned fields in __AnonStruct71.
-pub fn decref__AnonStruct71(value: __AnonStruct71, roc_host: *RocHost) void {
-    decref__AnonStruct69(value.msg, roc_host);
-    value.name.decref(roc_host);
-}
-
-/// Increment Roc-owned fields in __AnonStruct71.
-pub fn incref__AnonStruct71(value: __AnonStruct71, amount: isize) void {
-    incref__AnonStruct69(value.msg, amount);
-    value.name.incref(amount);
-}
-
-/// Recursively decrement Roc-owned fields in __AnonStruct72.
-pub fn decref__AnonStruct72(value: __AnonStruct72, roc_host: *RocHost) void {
+/// Recursively decrement Roc-owned fields in __AnonStruct76.
+pub fn decref__AnonStruct76(value: __AnonStruct76, roc_host: *RocHost) void {
+    decrefNodeBoolField(value.field, roc_host);
     value.name.decref(roc_host);
     decrefHostValueBoolReadHandle(value.read, roc_host);
     decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType35, roc_host);
 }
 
-/// Increment Roc-owned fields in __AnonStruct72.
-pub fn incref__AnonStruct72(value: __AnonStruct72, amount: isize) void {
+/// Increment Roc-owned fields in __AnonStruct76.
+pub fn incref__AnonStruct76(value: __AnonStruct76, amount: isize) void {
+    increfNodeBoolField(value.field, amount);
     value.name.incref(amount);
     increfHostValueBoolReadHandle(value.read, amount);
     increfBox(@ptrCast(value.signal), amount);
+}
+
+/// Recursively decrement Roc-owned fields in NodeBoolField.
+pub fn decrefNodeBoolField(value: NodeBoolField, roc_host: *RocHost) void {
+    _ = value;
+    _ = roc_host;
+}
+
+/// Increment Roc-owned fields in NodeBoolField.
+pub fn increfNodeBoolField(value: NodeBoolField, amount: isize) void {
+    _ = value;
+    _ = amount;
 }
 
 /// Recursively decrement Roc-owned fields in HostValueBoolReadHandle.
@@ -1950,18 +2068,32 @@ pub fn increfHostValueBoolReadHandle(value: HostValueBoolReadHandle, amount: isi
     increfErasedCallable(value.read, amount);
 }
 
-/// Recursively decrement Roc-owned fields in __AnonStruct76.
-pub fn decref__AnonStruct76(value: __AnonStruct76, roc_host: *RocHost) void {
+/// Recursively decrement Roc-owned fields in __AnonStruct81.
+pub fn decref__AnonStruct81(value: __AnonStruct81, roc_host: *RocHost) void {
+    decrefNodeTextField(value.field, roc_host);
     value.name.decref(roc_host);
     decrefHostValueTextReadHandle(value.read, roc_host);
     decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType35, roc_host);
 }
 
-/// Increment Roc-owned fields in __AnonStruct76.
-pub fn incref__AnonStruct76(value: __AnonStruct76, amount: isize) void {
+/// Increment Roc-owned fields in __AnonStruct81.
+pub fn incref__AnonStruct81(value: __AnonStruct81, amount: isize) void {
+    increfNodeTextField(value.field, amount);
     value.name.incref(amount);
     increfHostValueTextReadHandle(value.read, amount);
     increfBox(@ptrCast(value.signal), amount);
+}
+
+/// Recursively decrement Roc-owned fields in NodeTextField.
+pub fn decrefNodeTextField(value: NodeTextField, roc_host: *RocHost) void {
+    _ = value;
+    _ = roc_host;
+}
+
+/// Increment Roc-owned fields in NodeTextField.
+pub fn increfNodeTextField(value: NodeTextField, amount: isize) void {
+    _ = value;
+    _ = amount;
 }
 
 /// Recursively decrement Roc-owned fields in HostValueTextReadHandle.
@@ -1976,50 +2108,54 @@ pub fn increfHostValueTextReadHandle(value: HostValueTextReadHandle, amount: isi
     increfErasedCallable(value.read, amount);
 }
 
-/// Recursively decrement Roc-owned fields in __AnonStruct78.
-pub fn decref__AnonStruct78(value: __AnonStruct78, roc_host: *RocHost) void {
+/// Recursively decrement Roc-owned fields in __AnonStruct84.
+pub fn decref__AnonStruct84(value: __AnonStruct84, roc_host: *RocHost) void {
+    decrefNodeBoolField(value.field, roc_host);
     value.name.decref(roc_host);
 }
 
-/// Increment Roc-owned fields in __AnonStruct78.
-pub fn incref__AnonStruct78(value: __AnonStruct78, amount: isize) void {
+/// Increment Roc-owned fields in __AnonStruct84.
+pub fn incref__AnonStruct84(value: __AnonStruct84, amount: isize) void {
+    increfNodeBoolField(value.field, amount);
     value.name.incref(amount);
-}
-
-/// Recursively decrement Roc-owned fields in __AnonStruct79.
-pub fn decref__AnonStruct79(value: __AnonStruct79, roc_host: *RocHost) void {
-    value.name.decref(roc_host);
-    value.value.decref(roc_host);
-}
-
-/// Increment Roc-owned fields in __AnonStruct79.
-pub fn incref__AnonStruct79(value: __AnonStruct79, amount: isize) void {
-    value.name.incref(amount);
-    value.value.incref(amount);
-}
-
-/// Recursively decrement Roc-owned fields in __AnonStruct81.
-pub fn decref__AnonStruct81(value: __AnonStruct81, roc_host: *RocHost) void {
-    decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType35, roc_host);
-    decrefErasedCallable(value.to_cmd, roc_host);
-}
-
-/// Increment Roc-owned fields in __AnonStruct81.
-pub fn incref__AnonStruct81(value: __AnonStruct81, amount: isize) void {
-    increfBox(@ptrCast(value.signal), amount);
-    increfErasedCallable(value.to_cmd, amount);
 }
 
 /// Recursively decrement Roc-owned fields in __AnonStruct85.
 pub fn decref__AnonStruct85(value: __AnonStruct85, roc_host: *RocHost) void {
+    decrefNodeTextField(value.field, roc_host);
+    value.name.decref(roc_host);
+    value.value.decref(roc_host);
+}
+
+/// Increment Roc-owned fields in __AnonStruct85.
+pub fn incref__AnonStruct85(value: __AnonStruct85, amount: isize) void {
+    increfNodeTextField(value.field, amount);
+    value.name.incref(amount);
+    value.value.incref(amount);
+}
+
+/// Recursively decrement Roc-owned fields in __AnonStruct87.
+pub fn decref__AnonStruct87(value: __AnonStruct87, roc_host: *RocHost) void {
+    decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType35, roc_host);
+    decrefErasedCallable(value.to_cmd, roc_host);
+}
+
+/// Increment Roc-owned fields in __AnonStruct87.
+pub fn incref__AnonStruct87(value: __AnonStruct87, amount: isize) void {
+    increfBox(@ptrCast(value.signal), amount);
+    increfErasedCallable(value.to_cmd, amount);
+}
+
+/// Recursively decrement Roc-owned fields in __AnonStruct91.
+pub fn decref__AnonStruct91(value: __AnonStruct91, roc_host: *RocHost) void {
     decrefErasedCallable(value.request_init, roc_host);
     decrefHostValueTaskRequestReadHandle(value.request_read, roc_host);
     value.task_name.decref(roc_host);
     decrefBoxWith(@ptrCast(value.task_token), @alignOf(u64), false, null, roc_host);
 }
 
-/// Increment Roc-owned fields in __AnonStruct85.
-pub fn incref__AnonStruct85(value: __AnonStruct85, amount: isize) void {
+/// Increment Roc-owned fields in __AnonStruct91.
+pub fn incref__AnonStruct91(value: __AnonStruct91, amount: isize) void {
     increfErasedCallable(value.request_init, amount);
     increfHostValueTaskRequestReadHandle(value.request_read, amount);
     value.task_name.incref(amount);
@@ -2038,54 +2174,54 @@ pub fn increfHostValueTaskRequestReadHandle(value: HostValueTaskRequestReadHandl
     increfErasedCallable(value.read, amount);
 }
 
-/// Recursively decrement Roc-owned fields in __AnonStruct87.
-pub fn decref__AnonStruct87(value: __AnonStruct87, roc_host: *RocHost) void {
+/// Recursively decrement Roc-owned fields in __AnonStruct93.
+pub fn decref__AnonStruct93(value: __AnonStruct93, roc_host: *RocHost) void {
     decrefErasedCallable(value.to_cmd, roc_host);
 }
 
-/// Increment Roc-owned fields in __AnonStruct87.
-pub fn incref__AnonStruct87(value: __AnonStruct87, amount: isize) void {
+/// Increment Roc-owned fields in __AnonStruct93.
+pub fn incref__AnonStruct93(value: __AnonStruct93, amount: isize) void {
     increfErasedCallable(value.to_cmd, amount);
 }
 
-/// Recursively decrement Roc-owned fields in __AnonStruct90.
-pub fn decref__AnonStruct90(value: __AnonStruct90, roc_host: *RocHost) void {
+/// Recursively decrement Roc-owned fields in __AnonStruct96.
+pub fn decref__AnonStruct96(value: __AnonStruct96, roc_host: *RocHost) void {
     decrefBoxWith(@ptrCast(value.binder), @alignOf(u64), false, null, roc_host);
     decrefHostValueCapabilityHandle(value.cap, roc_host);
     decrefBoxWith(@ptrCast(value.child), @alignOf(Elem), true, &decrefBoxPayloadType27, roc_host);
     decrefErasedCallable(value.initial, roc_host);
 }
 
-/// Increment Roc-owned fields in __AnonStruct90.
-pub fn incref__AnonStruct90(value: __AnonStruct90, amount: isize) void {
+/// Increment Roc-owned fields in __AnonStruct96.
+pub fn incref__AnonStruct96(value: __AnonStruct96, amount: isize) void {
     increfBox(@ptrCast(value.binder), amount);
     increfHostValueCapabilityHandle(value.cap, amount);
     increfBox(@ptrCast(value.child), amount);
     increfErasedCallable(value.initial, amount);
 }
 
-/// Recursively decrement Roc-owned fields in __AnonStruct91.
-pub fn decref__AnonStruct91(value: __AnonStruct91, roc_host: *RocHost) void {
+/// Recursively decrement Roc-owned fields in __AnonStruct97.
+pub fn decref__AnonStruct97(value: __AnonStruct97, roc_host: *RocHost) void {
     decrefHostValueTextReadHandle(value.read, roc_host);
     decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType35, roc_host);
 }
 
-/// Increment Roc-owned fields in __AnonStruct91.
-pub fn incref__AnonStruct91(value: __AnonStruct91, amount: isize) void {
+/// Increment Roc-owned fields in __AnonStruct97.
+pub fn incref__AnonStruct97(value: __AnonStruct97, amount: isize) void {
     increfHostValueTextReadHandle(value.read, amount);
     increfBox(@ptrCast(value.signal), amount);
 }
 
-/// Recursively decrement Roc-owned fields in __AnonStruct92.
-pub fn decref__AnonStruct92(value: __AnonStruct92, roc_host: *RocHost) void {
+/// Recursively decrement Roc-owned fields in __AnonStruct98.
+pub fn decref__AnonStruct98(value: __AnonStruct98, roc_host: *RocHost) void {
     decrefBoxWith(@ptrCast(value.condition), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType35, roc_host);
     decrefHostValueBoolReadHandle(value.read, roc_host);
     decrefBoxWith(@ptrCast(value.when_false), @alignOf(Elem), true, &decrefBoxPayloadType27, roc_host);
     decrefBoxWith(@ptrCast(value.when_true), @alignOf(Elem), true, &decrefBoxPayloadType27, roc_host);
 }
 
-/// Increment Roc-owned fields in __AnonStruct92.
-pub fn incref__AnonStruct92(value: __AnonStruct92, amount: isize) void {
+/// Increment Roc-owned fields in __AnonStruct98.
+pub fn incref__AnonStruct98(value: __AnonStruct98, amount: isize) void {
     increfBox(@ptrCast(value.condition), amount);
     increfHostValueBoolReadHandle(value.read, amount);
     increfBox(@ptrCast(value.when_false), amount);
