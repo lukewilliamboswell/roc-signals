@@ -557,4 +557,9 @@ test "spec parser parses async cleanup metrics and boolean commands" {
 
 test "spec parser rejects malformed commands" {
     try std.testing.expectError(ParseError.InvalidFormat, parseTestSpec(std.testing.allocator, "click missing_locator"));
+    try std.testing.expectError(ParseError.InvalidFormat, parseTestSpec(std.testing.allocator, "custom_event test_id:\"chart\" \"chart-select\""));
+    try std.testing.expectError(ParseError.InvalidFormat, parseTestSpec(std.testing.allocator, "custom_event test_id:\"chart\" chart-select \"detail\""));
+    try std.testing.expectError(ParseError.InvalidFormat, parseTestSpec(std.testing.allocator, "resolve_stale_task \"fetch user\""));
+    try std.testing.expectError(ParseError.InvalidFormat, parseTestSpec(std.testing.allocator, "expect_canceled_task \"fetch user\" nope"));
+    try std.testing.expectError(ParseError.InvalidFormat, parseTestSpec(std.testing.allocator, "expect_canceled_task fetch 1"));
 }
