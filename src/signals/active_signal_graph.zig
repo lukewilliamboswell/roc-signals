@@ -1,7 +1,7 @@
 const std = @import("std");
 const scope_tree = @import("scope_tree.zig");
 const signal_graph = @import("signal_graph.zig");
-const render = @import("render_commands.zig");
+const boundary = @import("boundary.zig");
 
 pub fn Node(comptime Record: type) type {
     return signal_graph.Node(Record);
@@ -24,8 +24,7 @@ pub const EventRoute = struct {
 
 pub const EventDescriptor = struct {
     event_id: u64,
-    payload_kind: render.EventPayloadKind,
-    payload_accessor: render.EventPayloadAccessor,
+    payload_descriptor: boundary.BoundaryPayloadDescriptor,
 };
 
 pub const Descriptor = struct {
@@ -116,7 +115,7 @@ pub fn sourceSignalIdsForEvent(routes: []const EventRoute, event_id: u64) EventL
     return route.signal_ids;
 }
 
-pub fn eventPayloadKind(descriptors: []const EventDescriptor, event_id: u64) EventLookupError!render.EventPayloadKind {
+pub fn eventPayloadDescriptor(descriptors: []const EventDescriptor, event_id: u64) EventLookupError!boundary.BoundaryPayloadDescriptor {
     if (event_id == 0) return EventLookupError.EventIdZero;
 
     const event_index = event_id - 1;
@@ -124,7 +123,7 @@ pub fn eventPayloadKind(descriptors: []const EventDescriptor, event_id: u64) Eve
 
     const descriptor = descriptors[@intCast(event_index)];
     if (descriptor.event_id != event_id) return EventLookupError.EventDescriptorIndexMismatch;
-    return descriptor.payload_kind;
+    return descriptor.payload_descriptor;
 }
 
 pub fn signalIdsForState(routes: []const StateRoute, state_id: u64) SignalLookupError![]const u64 {

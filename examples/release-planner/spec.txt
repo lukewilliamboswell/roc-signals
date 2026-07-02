@@ -19,7 +19,8 @@ expect_visible role:region name:"Card: Write platform glue"
 expect_visible role:region name:"Card: Tune keyed diff"
 expect_visible role:region name:"Drop: In Progress end"
 
-click role:button name:"Add note Design signal graph"
+real_click role:button name:"Add note Design signal graph"
+expect_text text:"Board ready" "Board ready"
 expect_text text:"Notes on Design signal graph: 1" "Notes on Design signal graph: 1"
 
 pointer_down role:region name:"Card: Tune keyed diff"

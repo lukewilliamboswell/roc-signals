@@ -112,6 +112,7 @@ fn walkTree(allocator: Allocator, io: std.Io, dir_path: []const u8, paths: *Path
 fn shouldSkipName(name: []const u8) bool {
     return std.mem.eql(u8, name, ".git") or
         std.mem.eql(u8, name, ".zig-cache") or
+        std.mem.eql(u8, name, ".claude") or
         std.mem.eql(u8, name, "zig-out") or
         std.mem.eql(u8, name, "zig-pkg") or
         std.mem.eql(u8, name, "kcov-output") or

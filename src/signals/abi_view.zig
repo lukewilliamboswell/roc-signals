@@ -1,7 +1,9 @@
 const std = @import("std");
 
 const abi = @import("roc_platform_abi.zig");
+const boundary = @import("boundary.zig");
 const render = @import("render_commands.zig");
+const render_sink = @import("render_sink.zig");
 const retained = @import("retained_values.zig");
 
 pub const HostValueCapability = retained.HostValueCapability;
@@ -16,8 +18,11 @@ pub const node_bool_field_custom: u64 = 3;
 pub const TextField = render.TextField;
 pub const BoolField = render.BoolField;
 pub const EventKind = render.EventKind;
-pub const EventPayloadKind = render.EventPayloadKind;
-pub const EventPayloadAccessor = render.EventPayloadAccessor;
+pub const EventPolicy = render.EventPolicy;
+pub const EventDeliveryRequest = render_sink.EventDeliveryRequest;
+pub const EventPayloadKind = boundary.PayloadKind;
+pub const EventExtractionPlanKind = boundary.EventExtractionPlanKind;
+pub const BoundaryPayloadDescriptor = boundary.BoundaryPayloadDescriptor;
 
 pub const RocStrView = struct {
     value: abi.RocStr,
@@ -179,14 +184,15 @@ pub const TextAttrTarget = union(enum) {
     fixed: TextField,
     custom: RocStrView,
 
-    pub fn fromAbi(field: u64, name: abi.RocStr) TextAttrTarget {
+    pub fn fromAbi(field: abi.NodeTextField, name: abi.RocStr) TextAttrTarget {
+        const field_id = field.id;
         const name_slice = name.asSlice();
-        if (field == node_text_field_custom) {
+        if (field_id == node_text_field_custom) {
             if (name_slice.len == 0) @panic("custom text attr descriptor used an empty name");
             return .{ .custom = RocStrView.fromAbi(name) };
         }
         if (name_slice.len != 0) @panic("fixed text attr descriptor carried a custom name");
-        return .{ .fixed = textFieldFromAbi(field) };
+        return .{ .fixed = textFieldFromAbi(field_id) };
     }
 };
 
@@ -194,14 +200,15 @@ pub const BoolAttrTarget = union(enum) {
     fixed: BoolField,
     custom: RocStrView,
 
-    pub fn fromAbi(field: u64, name: abi.RocStr) BoolAttrTarget {
+    pub fn fromAbi(field: abi.NodeBoolField, name: abi.RocStr) BoolAttrTarget {
+        const field_id = field.id;
         const name_slice = name.asSlice();
-        if (field == node_bool_field_custom) {
+        if (field_id == node_bool_field_custom) {
             if (name_slice.len == 0) @panic("custom bool attr descriptor used an empty name");
             return .{ .custom = RocStrView.fromAbi(name) };
         }
         if (name_slice.len != 0) @panic("fixed bool attr descriptor carried a custom name");
-        return .{ .fixed = boolFieldFromAbi(field) };
+        return .{ .fixed = boolFieldFromAbi(field_id) };
     }
 };
 
@@ -229,15 +236,13 @@ pub const SignalBoolAttr = struct {
 
 pub const EventMessage = struct {
     binder: StateBinderToken,
-    payload_kind: EventPayloadKind,
-    payload_accessor: EventPayloadAccessor,
+    payload_descriptor: BoundaryPayloadDescriptor,
     payload_reducer: HostEventReducer,
 
-    pub fn fromAbi(msg: abi.__AnonStruct69) EventMessage {
+    pub fn fromAbi(msg: abi.__AnonStruct70) EventMessage {
         return .{
             .binder = StateBinderToken.fromAbi(msg.binder),
-            .payload_kind = eventPayloadKindFromAbi(msg.payload_kind),
-            .payload_accessor = eventPayloadAccessorFromAbi(msg.payload_accessor),
+            .payload_descriptor = boundary.boundaryPayloadDescriptorFromExtractionBytes(msg.event_extraction_plan.bytes.items()),
             .payload_reducer = msg.payload_reducer,
         };
     }
@@ -245,14 +250,33 @@ pub const EventMessage = struct {
 
 pub const EventAttr = struct {
     kind: EventKind,
+    delivery_request: EventDeliveryRequest,
     msg: EventMessage,
 };
 
 pub const NamedEventAttr = struct {
     name: RocStrView,
-    options: u64,
+    policy: EventPolicy,
+    delivery_request: EventDeliveryRequest,
     msg: EventMessage,
 };
+
+pub fn eventPolicyFromAbi(policy: abi.NodeEventPolicy) EventPolicy {
+    return .{
+        .prevent_default = policy.prevent_default,
+        .stop_propagation = policy.stop_propagation,
+        .stop_immediate = policy.stop_immediate,
+        .capture = policy.capture,
+        .passive = policy.passive,
+        .once = policy.once,
+        .self = policy.self,
+        .trusted = policy.trusted,
+    };
+}
+
+pub fn eventDeliveryRequestFromAbi(delivery: abi.NodeEventDelivery) EventDeliveryRequest {
+    return if (delivery.native) .native else .auto;
+}
 
 pub const NodeAttr = union(enum) {
     static_text: StaticTextAttr,
@@ -294,18 +318,30 @@ pub const NodeAttr = union(enum) {
                     .read = payload.read,
                 } };
             },
-            .OnEvent => blk: {
-                const payload = attr.payload_on_event();
+            .On => blk: {
+                const payload = attr.payload_on();
+                const kind_id = payload.kind.id;
+                const policy = eventPolicyFromAbi(payload.policy);
+                if (kind_id == 0) {
+                    if (payload.name.asSlice().len == 0) @panic("named event descriptor used an empty name");
+                    break :blk .{ .named_event = .{
+                        .name = RocStrView.fromAbi(payload.name),
+                        .policy = policy,
+                        .delivery_request = eventDeliveryRequestFromAbi(payload.delivery),
+                        .msg = EventMessage.fromAbi(payload.msg),
+                    } };
+                }
+                if (payload.name.asSlice().len != 0) @panic("fixed event descriptor carried a named event");
+                if (!policy.isNone()) {
+                    std.debug.panic("fixed event descriptor carried named event policy: kind_id={} policy_bits={} name_len={}", .{
+                        kind_id,
+                        policy.toWireBits(),
+                        payload.name.asSlice().len,
+                    });
+                }
                 break :blk .{ .event = .{
-                    .kind = eventKindFromAbi(payload.kind),
-                    .msg = EventMessage.fromAbi(payload.msg),
-                } };
-            },
-            .OnNamedEvent => blk: {
-                const payload = attr.payload_on_named_event();
-                break :blk .{ .named_event = .{
-                    .name = RocStrView.fromAbi(payload.name),
-                    .options = payload.options,
+                    .kind = eventKindFromAbi(kind_id),
+                    .delivery_request = eventDeliveryRequestFromAbi(payload.delivery),
                     .msg = EventMessage.fromAbi(payload.msg),
                 } };
             },
@@ -460,14 +496,6 @@ pub fn boolFieldFromAbi(field: u64) BoolField {
 
 pub fn eventKindFromAbi(kind: u64) EventKind {
     return enumFromAbi(EventKind, kind, "Roc render event descriptor used an unknown event kind");
-}
-
-pub fn eventPayloadKindFromAbi(payload_kind: u64) EventPayloadKind {
-    return enumFromAbi(EventPayloadKind, payload_kind, "Roc event descriptor used an unknown payload kind");
-}
-
-pub fn eventPayloadAccessorFromAbi(payload_accessor: u64) EventPayloadAccessor {
-    return enumFromAbi(EventPayloadAccessor, payload_accessor, "Roc event descriptor used an unknown payload accessor");
 }
 
 fn enumFromAbi(comptime T: type, value: u64, comptime message: []const u8) T {
@@ -653,7 +681,7 @@ test "SignalExpr.fromAbi decodes effect source expressions" {
 test "NodeAttr.fromAbi decodes text attr targets" {
     const fixed = abi.NodeAttr{
         .payload = .{ .static_text = .{
-            .field = @intFromEnum(TextField.label),
+            .field = .{ .id = @intFromEnum(TextField.label) },
             .name = abi.RocStr.empty(),
             .value = borrowedRocStr("ready"),
         } },
@@ -672,7 +700,7 @@ test "NodeAttr.fromAbi decodes text attr targets" {
 
     const custom = abi.NodeAttr{
         .payload = .{ .static_text = .{
-            .field = node_text_field_custom,
+            .field = .{ .id = node_text_field_custom },
             .name = borrowedRocStr("data-id"),
             .value = borrowedRocStr("42"),
         } },
@@ -701,7 +729,7 @@ test "NodeAttr.fromAbi decodes signal text and bool attrs" {
 
     const text_attr = abi.NodeAttr{
         .payload = .{ .signal_text = .{
-            .field = @intFromEnum(TextField.value),
+            .field = .{ .id = @intFromEnum(TextField.value) },
             .name = abi.RocStr.empty(),
             .read = text_read,
             .signal = &signal,
@@ -722,7 +750,7 @@ test "NodeAttr.fromAbi decodes signal text and bool attrs" {
 
     const bool_attr = abi.NodeAttr{
         .payload = .{ .signal_bool = .{
-            .field = node_bool_field_custom,
+            .field = .{ .id = node_bool_field_custom },
             .name = borrowedRocStr("aria-expanded"),
             .read = bool_read,
             .signal = &signal,
@@ -745,7 +773,7 @@ test "NodeAttr.fromAbi decodes signal text and bool attrs" {
 test "NodeAttr.fromAbi decodes static bool attrs and events" {
     const static_bool = abi.NodeAttr{
         .payload = .{ .static_bool = .{
-            .field = @intFromEnum(BoolField.disabled),
+            .field = .{ .id = @intFromEnum(BoolField.disabled) },
             .name = abi.RocStr.empty(),
             .value = true,
         } },
@@ -765,23 +793,25 @@ test "NodeAttr.fromAbi decodes static bool attrs and events" {
     var binder: u64 = 11;
     const reducer = std.mem.zeroes(HostEventReducer);
     const event = abi.NodeAttr{
-        .payload = .{ .on_event = .{
-            .kind = @intFromEnum(EventKind.pointer_down),
+        .payload = .{ .on = .{
+            .kind = .{ .id = @intFromEnum(EventKind.pointer_down) },
             .msg = .{
                 .binder = &binder,
-                .payload_kind = @intFromEnum(EventPayloadKind.bytes),
-                .payload_accessor = @intFromEnum(EventPayloadAccessor.record_key_shift),
+                .event_extraction_plan = testEventExtractionPlan(.record_key_shift),
                 .payload_reducer = reducer,
             },
+            .name = abi.RocStr.empty(),
+            .delivery = testEventDelivery(true),
+            .policy = testEventPolicy(0),
         } },
-        .tag = .OnEvent,
+        .tag = .On,
     };
     switch (NodeAttr.fromAbi(event)) {
         .event => |payload| {
             try std.testing.expectEqual(EventKind.pointer_down, payload.kind);
+            try std.testing.expectEqual(EventDeliveryRequest.native, payload.delivery_request);
             try std.testing.expectEqual(&binder, payload.msg.binder.ptr);
-            try std.testing.expectEqual(EventPayloadKind.bytes, payload.msg.payload_kind);
-            try std.testing.expectEqual(EventPayloadAccessor.record_key_shift, payload.msg.payload_accessor);
+            try std.testing.expectEqual(BoundaryPayloadDescriptor.init(.bytes, .record_key_shift), payload.msg.payload_descriptor);
             try std.testing.expectEqual(reducer, payload.msg.payload_reducer);
         },
         else => return error.TestUnexpectedResult,
@@ -792,25 +822,26 @@ test "NodeAttr.fromAbi decodes named events" {
     var binder: u64 = 12;
     const reducer = std.mem.zeroes(HostEventReducer);
     const attr = abi.NodeAttr{
-        .payload = .{ .on_named_event = .{
-            .name = borrowedRocStr("keydown"),
-            .options = render.listener_option_prevent_default,
+        .payload = .{ .on = .{
+            .kind = .{ .id = 0 },
             .msg = .{
                 .binder = &binder,
-                .payload_kind = @intFromEnum(EventPayloadKind.unit),
-                .payload_accessor = @intFromEnum(EventPayloadAccessor.none),
+                .event_extraction_plan = testEventExtractionPlan(.none),
                 .payload_reducer = reducer,
             },
+            .name = borrowedRocStr("keydown"),
+            .delivery = testEventDelivery(false),
+            .policy = testEventPolicy(render.listener_option_prevent_default | render.listener_option_self | render.listener_option_trusted),
         } },
-        .tag = .OnNamedEvent,
+        .tag = .On,
     };
     switch (NodeAttr.fromAbi(attr)) {
         .named_event => |payload| {
             try std.testing.expectEqualStrings("keydown", payload.name.asSlice());
-            try std.testing.expectEqual(@as(u64, render.listener_option_prevent_default), payload.options);
+            try std.testing.expect(payload.policy.eql(EventPolicy.fromBits(render.listener_option_prevent_default | render.listener_option_self | render.listener_option_trusted)));
+            try std.testing.expectEqual(EventDeliveryRequest.auto, payload.delivery_request);
             try std.testing.expectEqual(&binder, payload.msg.binder.ptr);
-            try std.testing.expectEqual(EventPayloadKind.unit, payload.msg.payload_kind);
-            try std.testing.expectEqual(EventPayloadAccessor.none, payload.msg.payload_accessor);
+            try std.testing.expectEqual(BoundaryPayloadDescriptor.init(.unit, .none), payload.msg.payload_descriptor);
         },
         else => return error.TestUnexpectedResult,
     }
@@ -819,7 +850,7 @@ test "NodeAttr.fromAbi decodes named events" {
 test "Elem.fromAbi decodes element text and cleanup payloads" {
     const attr = abi.NodeAttr{
         .payload = .{ .static_bool = .{
-            .field = @intFromEnum(BoolField.disabled),
+            .field = .{ .id = @intFromEnum(BoolField.disabled) },
             .name = abi.RocStr.empty(),
             .value = true,
         } },
@@ -1042,6 +1073,15 @@ fn borrowedElemList(items: []const abi.Elem) abi.RocList(abi.Elem) {
     };
 }
 
+fn borrowedU8List(bytes: []const u8) abi.RocListWith(u8, false) {
+    if (bytes.len == 0) return abi.RocListWith(u8, false).empty();
+    return .{
+        .elements_ptr = @constCast(bytes.ptr),
+        .length = bytes.len,
+        .capacity_or_alloc_ptr = bytes.len << 1,
+    };
+}
+
 fn borrowedRocStr(bytes: []const u8) abi.RocStr {
     if (bytes.len == 0) return abi.RocStr.empty();
     return .{
@@ -1049,4 +1089,28 @@ fn borrowedRocStr(bytes: []const u8) abi.RocStr {
         .capacity_or_alloc_ptr = bytes.len << 1,
         .length = bytes.len,
     };
+}
+
+fn testEventExtractionPlan(plan: EventExtractionPlanKind) abi.NodeEventExtractionPlan {
+    return .{
+        .bytes = borrowedU8List(plan.bytes()),
+    };
+}
+
+fn testEventPolicy(bits: u32) abi.NodeEventPolicy {
+    const policy = EventPolicy.fromWireBits(bits);
+    return .{
+        .capture = policy.capture,
+        .once = policy.once,
+        .passive = policy.passive,
+        .prevent_default = policy.prevent_default,
+        .self = policy.self,
+        .stop_immediate = policy.stop_immediate,
+        .stop_propagation = policy.stop_propagation,
+        .trusted = policy.trusted,
+    };
+}
+
+fn testEventDelivery(native: bool) abi.NodeEventDelivery {
+    return .{ .native = native };
 }

@@ -134,6 +134,8 @@ the public examples:
 | Keyboard payloads | `Html.on_key_down(state.on_key(...))` |
 | Submit without navigation | `Html.on_submit_prevent_default(...)` |
 | Pointer events | `Html.on_pointer_down`, `on_pointer_up`, `on_pointer_enter`, `on_pointer_leave` |
+| Named events with static policy | `Html.on_event(name, Html.event_policy_..., msg)` |
+| Named events with explicit delivery | `Html.on_event_delivery(name, policy, Html.event_delivery_native, msg)` |
 
 Keyboard payloads are typed in Roc:
 
@@ -160,6 +162,25 @@ Html.form_label(
     "Search form",
     [Html.on_submit_prevent_default(model.on_unit(|state| { ..state, submits: state.submits + 1 }))],
     [Html.button("Submit", model.on_unit(|state| state))],
+)
+```
+
+For less common event names, use `Html.on_event` with typed static policy data.
+Use `Html.on_event_delivery` only when the binding must explicitly request native
+delivery. For example, a nested button can stop pointer events from reaching a
+parent drag handler without adding a one-off helper:
+
+```roc
+open_menu = |state| { ..state, menu_open: True }
+stop_drag = model.on_unit(|state| state)
+
+Html.button_attrs(
+    "Open menu",
+    [
+        Html.on_event("pointerdown", Html.event_policy_stop_propagation, stop_drag),
+        Html.on_event("pointerup", Html.event_policy_stop_propagation, stop_drag),
+    ],
+    model.on_unit(open_menu),
 )
 ```
 

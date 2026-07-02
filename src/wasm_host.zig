@@ -2,7 +2,8 @@
 //!
 //! This host links Signals Roc apps as wasm reactors and owns the browser-facing
 //! boundary only: `roc_alloc` marshalling, the command-buffer sink serialized
-//! into linear memory, and the integer event/payload codec JavaScript drives.
+//! into linear memory, and the event payload slots JavaScript fills from
+//! descriptors.
 //!
 //! All reactive and structural behaviour lives in the shared `engine.zig`. Like
 //! the native host, this file is a thin shell: it provides a `Ctx` (`WasmCtx`)
@@ -12,7 +13,9 @@
 const std = @import("std");
 const signals = @import("signals");
 const abi = signals.abi;
+const boundary = signals.boundary;
 const render = signals.render;
+const render_sink = signals.render_sink;
 const host_value_registry = signals.host_value_registry;
 const erased_calls = signals.erased_calls;
 const hv = signals.host_values;
@@ -26,7 +29,12 @@ const RenderBoolField = render.BoolField;
 const RenderEventKind = render.EventKind;
 const SharedEngine = engine.Engine(WasmCtx);
 const HostNodeDescriptorStream = engine.HostNodeDescriptorStream;
-const EventPayloadKind = engine.EventPayloadKind;
+const BoundaryPayloadDescriptor = engine.BoundaryPayloadDescriptor;
+const BoundaryPayloadKind = boundary.PayloadKind;
+const EventBindingKey = render_sink.EventBindingKey;
+const EventBinding = render_sink.EventBinding;
+const EventBindCommand = render_sink.EventBindCommand;
+const EventClearCommand = render_sink.EventClearCommand;
 const HostActiveEventDesc = SharedEngine.ActiveEventDesc;
 
 const WasmCtx = struct {
@@ -150,20 +158,12 @@ const WasmSink = struct {
         appendBoolFieldCommand(field, toU32(elem_id), false);
     }
 
-    pub fn bindEventKind(_: WasmSink, elem_id: u64, kind: RenderEventKind, event_id: u64, payload_accessor: engine.EventPayloadAccessor) void {
-        appendCommand(kind.bindOp(), toU32(elem_id), toU32(event_id), toU32(@intFromEnum(payload_accessor)), 0, 0);
+    pub fn bindEvent(_: WasmSink, elem_id: u64, key: EventBindingKey, binding: EventBinding) void {
+        appendEventBindCommand(.{ .elem_id = elem_id, .key = key, .binding = binding });
     }
 
-    pub fn clearEvent(_: WasmSink, elem_id: u64, kind: RenderEventKind) void {
-        appendCommand(.clear_event, toU32(elem_id), toU32(@intFromEnum(kind)), 0, 0, 0);
-    }
-
-    pub fn bindEventName(_: WasmSink, elem_id: u64, name: []const u8, event_id: u64, options: u32, payload_kind: EventPayloadKind, payload_accessor: engine.EventPayloadAccessor) void {
-        appendDynamicBindEvent(toU32(elem_id), name, toU32(event_id), options, @intCast(@intFromEnum(payload_kind)), payloadSpecForAccessor(payload_accessor));
-    }
-
-    pub fn clearEventName(_: WasmSink, elem_id: u64, name: []const u8) void {
-        appendDynamicClearEvent(toU32(elem_id), name);
+    pub fn clearEvent(_: WasmSink, elem_id: u64, key: EventBindingKey) void {
+        appendEventClearCommand(.{ .elem_id = elem_id, .key = key });
     }
 
     pub fn startInterval(_: WasmSink, token: u64, period_ms: u64) void {
@@ -312,17 +312,34 @@ fn appendDynamicRemoveAttr(elem_id: u32, name: []const u8) void {
     appendCommand(.extended, slice.offset, slice.len, 0, 0, 0);
 }
 
-fn payloadSpecForAccessor(payload_accessor: engine.EventPayloadAccessor) []const u8 {
-    return switch (payload_accessor) {
-        .none => &render.PayloadSpec.unit_spec,
-        .target_value => &render.PayloadSpec.target_value,
-        .target_checked => &render.PayloadSpec.target_checked,
-        .record_key_shift => &render.PayloadSpec.key_shift,
-    };
+fn appendEventBindCommand(command: EventBindCommand) void {
+    const elem_id = toU32(command.elem_id);
+    const binding = command.binding;
+    if (binding.delivery.effective != .native) {
+        @panic("browser event command wire only supports native delivery");
+    }
+    switch (command.key) {
+        .fixed => |kind| {
+            if (binding.canUseFixedOpcode(kind)) {
+                appendCommand(kind.bindOp(), elem_id, toU32(binding.event_id), 0, 0, 0);
+            } else {
+                appendDynamicBindEvent(elem_id, kind.domEventName(), toU32(binding.event_id), binding.policy.toWireBits(), binding.delivery.toWire(), binding.payload_descriptor);
+            }
+        },
+        .named => |name| appendDynamicBindEvent(elem_id, name, toU32(binding.event_id), binding.policy.toWireBits(), binding.delivery.toWire(), binding.payload_descriptor),
+    }
 }
 
-fn appendDynamicBindEvent(elem_id: u32, name: []const u8, event_id: u32, options: u32, payload_kind: u32, payload_spec: []const u8) void {
-    const slice = dynamic_command_buffer.appendBindEvent(allocator(), elem_id, event_id, name, options, payload_kind, payload_spec) catch failHost();
+fn appendEventClearCommand(command: EventClearCommand) void {
+    const elem_id = toU32(command.elem_id);
+    switch (command.key) {
+        .fixed => |kind| appendCommand(.clear_event, elem_id, toU32(@intFromEnum(kind)), 0, 0, 0),
+        .named => |name| appendDynamicClearEvent(elem_id, name),
+    }
+}
+
+fn appendDynamicBindEvent(elem_id: u32, name: []const u8, event_id: u32, options: u32, delivery: render.EventDeliveryWire, payload_descriptor: BoundaryPayloadDescriptor) void {
+    const slice = dynamic_command_buffer.appendBindEvent(allocator(), elem_id, event_id, name, options, delivery, payload_descriptor) catch failHost();
     appendCommand(.extended, slice.offset, slice.len, 0, 0, 0);
 }
 
@@ -497,10 +514,8 @@ fn hostEventById(event_id: u32) HostActiveEventDesc {
 /// Route a DOM event into its source node's retained reducer thunk, then
 /// propagate in rank order and apply both scalar render sinks and any structural
 /// splice the change triggers. Mirrors the native host's `dispatchRocEventMeasured`.
-fn dispatchEvent(event_id: u32, payload_kind: EventPayloadKind, payload: HostValue) void {
+fn dispatchEvent(desc: HostActiveEventDesc, payload: HostValue) void {
     const ctx = WasmCtx{};
-    const desc = hostEventById(event_id);
-    if (desc.payload_kind != payload_kind) failHost();
     const payload_cap = desc.payload_reducer.capability;
     setHostValueCapability(payload, payload_cap);
     defer callHostValueToUnitWithCapability(payload_cap, hv.hostValueCapabilityDrop(payload_cap), payload);
@@ -952,23 +967,33 @@ export fn roc_ui_mount() callconv(.c) void {
     renderActiveRoot(&.{});
 }
 
-export fn roc_ui_event(event_id: u32, payload_kind_id: u32, payload_ptr: usize, payload_len: usize, bool_value: u32) callconv(.c) void {
+fn payloadKindFromWire(payload_kind: u32) BoundaryPayloadKind {
+    return switch (payload_kind) {
+        @intFromEnum(BoundaryPayloadKind.unit) => .unit,
+        @intFromEnum(BoundaryPayloadKind.str) => .str,
+        @intFromEnum(BoundaryPayloadKind.bool) => .bool,
+        @intFromEnum(BoundaryPayloadKind.bytes) => .bytes,
+        else => failHostWith("DOM event used an unknown payload kind"),
+    };
+}
+
+export fn roc_ui_event(event_id: u32, payload_kind: u32, payload_ptr: usize, payload_len: usize, bool_value: u32) callconv(.c) u32 {
     clearHostError();
     clearCommandBuffers();
-    const payload_kind: EventPayloadKind = switch (payload_kind_id) {
-        @intFromEnum(EventPayloadKind.unit) => .unit,
-        @intFromEnum(EventPayloadKind.str) => .str,
-        @intFromEnum(EventPayloadKind.bool) => .bool,
-        @intFromEnum(EventPayloadKind.bytes) => .bytes,
-        else => failHost(),
-    };
-    const payload = switch (payload_kind) {
+    const desc = hostEventById(event_id);
+    const actual_payload_kind = payloadKindFromWire(payload_kind);
+    const expected_payload_kind = desc.payload_descriptor.payloadKind();
+    if (actual_payload_kind != expected_payload_kind) {
+        failHostWith("DOM event payload kind does not match Roc event descriptor");
+    }
+    const payload = switch (actual_payload_kind) {
         .unit => hostValueUnit(),
         .str => hostValueStr((@as([*]const u8, @ptrFromInt(payload_ptr)))[0..payload_len]),
         .bool => hostValueBool(bool_value != 0),
         .bytes => hostValueU8List((@as([*]const u8, @ptrFromInt(payload_ptr)))[0..payload_len]),
     };
-    dispatchEvent(event_id, payload_kind, payload);
+    dispatchEvent(desc, payload);
+    return 0;
 }
 
 export fn roc_ui_timer(token: u32) callconv(.c) void {

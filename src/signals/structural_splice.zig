@@ -56,7 +56,6 @@ pub const ElemOwnedRemovalScratch = struct {
     static_bool_attr_indexes: std.ArrayListUnmanaged(usize) = .empty,
     signal_bool_attr_indexes: std.ArrayListUnmanaged(usize) = .empty,
     event_indexes: std.ArrayListUnmanaged(usize) = .empty,
-    named_event_indexes: std.ArrayListUnmanaged(usize) = .empty,
 
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
         self.element_indexes.deinit(allocator);
@@ -67,7 +66,6 @@ pub const ElemOwnedRemovalScratch = struct {
         self.static_bool_attr_indexes.deinit(allocator);
         self.signal_bool_attr_indexes.deinit(allocator);
         self.event_indexes.deinit(allocator);
-        self.named_event_indexes.deinit(allocator);
         self.* = .{};
     }
 
@@ -79,8 +77,7 @@ pub const ElemOwnedRemovalScratch = struct {
             self.signal_text_attr_indexes.items.len != 0 or
             self.static_bool_attr_indexes.items.len != 0 or
             self.signal_bool_attr_indexes.items.len != 0 or
-            self.event_indexes.items.len != 0 or
-            self.named_event_indexes.items.len != 0)
+            self.event_indexes.items.len != 0)
         {
             @panic("elem-owned removal scratch was already active");
         }
@@ -95,7 +92,6 @@ pub const ElemOwnedRemovalScratch = struct {
         self.static_bool_attr_indexes.clearRetainingCapacity();
         self.signal_bool_attr_indexes.clearRetainingCapacity();
         self.event_indexes.clearRetainingCapacity();
-        self.named_event_indexes.clearRetainingCapacity();
     }
 
     pub fn appendDescriptorIndexes(self: *@This(), allocator: std.mem.Allocator, descriptor_index: anytype) void {
@@ -118,7 +114,6 @@ pub const ElemOwnedRemovalScratch = struct {
         sortRemovalIndexesDescending(self.static_bool_attr_indexes.items);
         sortRemovalIndexesDescending(self.signal_bool_attr_indexes.items);
         sortRemovalIndexesDescending(self.event_indexes.items);
-        sortRemovalIndexesDescending(self.named_event_indexes.items);
     }
 };
 

@@ -4,6 +4,30 @@ import Capability exposing [Capability]
 import Node
 import Signal exposing [Signal]
 
+## Shared DOM extraction descriptor bytes. Keep these as module
+## values so the larger key-shift descriptor is not allocated directly inside
+## `State.on_key` on wasm.
+event_extraction_unit : Node.EventExtractionPlan
+event_extraction_unit = { bytes: [1] }
+
+event_extraction_target_value : Node.EventExtractionPlan
+event_extraction_target_value = { bytes: [2, 3, 2] }
+
+event_extraction_target_checked : Node.EventExtractionPlan
+event_extraction_target_checked = { bytes: [3, 3, 3] }
+
+event_extraction_key_shift : Node.EventExtractionPlan
+event_extraction_key_shift = { bytes: [4, 2, 3, 107, 101, 121, 2, 1, 1, 9, 115, 104, 105, 102, 116, 95, 107, 101, 121, 3, 1, 4] }
+
+state_event_msg : Node.BinderRef, Node.EventExtractionPlan, HostValue.EventReducerHandle -> Node.Msg
+state_event_msg = |binder, event_extraction_plan, payload_reducer| {
+	{
+		binder,
+		event_extraction_plan,
+		payload_reducer,
+	}
+}
+
 ## Dynamic structure and local state. State is introduced through an explicit
 ## closure binder (`Ui.state`): the binder is the construction site, which is the
 ## only way to give per-instance state a stable identity in pure Roc. The host
@@ -100,12 +124,11 @@ Ui := [].{
 					next = f(current)
 					Capability.store(Box.box(next), current_cap)
 				}
-				{
-					binder: st.ref,
-					payload_kind: Node.unit_payload_kind,
-					payload_accessor: Node.payload_accessor_none,
-					payload_reducer: { capability: Capability.handle(payload_cap), transform: Box.box(wrapped) },
-				}
+				state_event_msg(
+					st.ref,
+					event_extraction_unit,
+					{ capability: Capability.handle(payload_cap), transform: Box.box(wrapped) },
+				)
 			}
 
 		on_str : State(a), (a, Str -> a) -> Node.Msg
@@ -122,12 +145,11 @@ Ui := [].{
 					next = f(current, payload)
 					Capability.store(Box.box(next), current_cap)
 				}
-				{
-					binder: st.ref,
-					payload_kind: Node.str_payload_kind,
-					payload_accessor: Node.payload_accessor_target_value,
-					payload_reducer: { capability: Capability.handle(payload_cap), transform: Box.box(wrapped) },
-				}
+				state_event_msg(
+					st.ref,
+					event_extraction_target_value,
+					{ capability: Capability.handle(payload_cap), transform: Box.box(wrapped) },
+				)
 			}
 
 		on_bool : State(a), (a, Bool -> a) -> Node.Msg
@@ -144,12 +166,11 @@ Ui := [].{
 					next = f(current, payload)
 					Capability.store(Box.box(next), current_cap)
 				}
-				{
-					binder: st.ref,
-					payload_kind: Node.bool_payload_kind,
-					payload_accessor: Node.payload_accessor_target_checked,
-					payload_reducer: { capability: Capability.handle(payload_cap), transform: Box.box(wrapped) },
-				}
+				state_event_msg(
+					st.ref,
+					event_extraction_target_checked,
+					{ capability: Capability.handle(payload_cap), transform: Box.box(wrapped) },
+				)
 			}
 
 		on_key : State(a), (a, KeyPayload -> a) -> Node.Msg
@@ -166,12 +187,11 @@ Ui := [].{
 					next = f(current, decode_key_payload(payload_bytes))
 					Capability.store(Box.box(next), current_cap)
 				}
-				{
-					binder: st.ref,
-					payload_kind: Node.bytes_payload_kind,
-					payload_accessor: Node.payload_accessor_record_key_shift,
-					payload_reducer: { capability: Capability.handle(payload_cap), transform: Box.box(wrapped) },
-				}
+				state_event_msg(
+					st.ref,
+					event_extraction_key_shift,
+					{ capability: Capability.handle(payload_cap), transform: Box.box(wrapped) },
+				)
 			}
 	}
 

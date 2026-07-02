@@ -149,33 +149,44 @@ def run_browser_suite() -> None:
     run(["zig", "build", "run-test-browser"])
 
 
-def run_roc_checks(roc_bin: str, examples: tuple[Example, ...]) -> None:
+def run_roc_checks(
+    roc_bin: str,
+    examples: tuple[Example, ...],
+    *,
+    source_root: Path = ROOT,
+) -> None:
     for example in examples:
-        run([roc_bin, "check", example.source])
+        run([roc_bin, "check", source_root / example.source])
 
 
 def build_wasm_apps(roc_bin: str, examples: tuple[Example, ...]) -> None:
     wasm_dir = TEST_OUT / "wasm"
     wasm_dir.mkdir(parents=True, exist_ok=True)
-    for example in examples:
-        if not example.wasm:
-            continue
-        if platform.system() == "Linux" and example.slug in LINUX_WASM_SKIPS:
-            print(f"\nSkipping wasm build for {example.slug} on Linux: {LINUX_WASM_SKIPS[example.slug]}.")
-            continue
-        output = wasm_dir / f"{example.slug}.wasm"
-        run(
-            [
-                roc_bin,
-                "build",
-                "--target=wasm32",
-                "--opt=size",
-                "--no-cache",
-                f"--output={output}",
-                example.source,
-            ]
-        )
-        run(["node", "scripts/browser/mount_wasm_example.mjs", output, example.slug])
+    bundle = bundle_platform(roc_bin)
+    with BundleServer(bundle.resolve().parent) as server:
+        platform_ref = f"http://127.0.0.1:{server.port}/{bundle.name}"
+        print(f"\nTesting wasm apps with local platform bundle: {platform_ref}")
+        source_root = TEST_OUT / "wasm-source"
+        rewrite_examples_for_platform(platform_ref, source_root)
+        for example in examples:
+            if not example.wasm:
+                continue
+            if platform.system() == "Linux" and example.slug in LINUX_WASM_SKIPS:
+                print(f"\nSkipping wasm build for {example.slug} on Linux: {LINUX_WASM_SKIPS[example.slug]}.")
+                continue
+            output = wasm_dir / f"{example.slug}.wasm"
+            run(
+                [
+                    roc_bin,
+                    "build",
+                    "--target=wasm32",
+                    "--opt=size",
+                    "--no-cache",
+                    f"--output={output}",
+                    source_root / example.source,
+                ]
+            )
+            run(["node", "scripts/browser/mount_wasm_example.mjs", output, example.slug])
 
 
 def should_run_hosted(mode: str) -> bool:
@@ -305,6 +316,12 @@ def run_local_native_specs(roc_bin: str, examples: tuple[Example, ...]) -> None:
     run_native_specs(roc_bin, examples, source_root=source_root)
 
 
+def run_local_roc_checks(roc_bin: str, examples: tuple[Example, ...]) -> None:
+    source_root = TEST_OUT / "roc-check-source"
+    rewrite_examples_for_platform(str((ROOT / "platform" / "main.roc").resolve()), source_root)
+    run_roc_checks(roc_bin, examples, source_root=source_root)
+
+
 def run_local_benchmarks(roc_bin: str, examples: tuple[Example, ...]) -> None:
     source_root = TEST_OUT / "bench-source"
     rewrite_examples_for_platform(str((ROOT / "platform" / "main.roc").resolve()), source_root)
@@ -400,7 +417,7 @@ def main() -> int:
     if "browser" in suites:
         run_browser_suite()
     if "roc-check" in suites:
-        run_roc_checks(roc_bin, examples)
+        run_local_roc_checks(roc_bin, examples)
     if "wasm" in suites:
         build_wasm_apps(roc_bin, examples)
 

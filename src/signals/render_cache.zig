@@ -1,24 +1,15 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const boundary = @import("boundary.zig");
 const render = @import("render_commands.zig");
+const render_sink = @import("render_sink.zig");
 
 pub const TextField = render.TextField;
 pub const BoolField = render.BoolField;
 pub const EventKind = render.EventKind;
-pub const EventPayloadKind = render.EventPayloadKind;
-pub const EventPayloadAccessor = render.EventPayloadAccessor;
-
-pub const EventBinding = struct {
-    event_id: u64,
-    payload_accessor: EventPayloadAccessor,
-};
-
-pub const NamedEventBinding = struct {
-    event_id: u64,
-    options: u32,
-    payload_kind: EventPayloadKind,
-    payload_accessor: EventPayloadAccessor,
-};
+pub const BoundaryPayloadDescriptor = boundary.BoundaryPayloadDescriptor;
+pub const EventBindingKey = render_sink.EventBindingKey;
+pub const EventBinding = render_sink.EventBinding;
 
 pub const EventBindings = struct {
     click: ?EventBinding = null,
@@ -54,10 +45,7 @@ pub const CustomTextAttr = struct {
 
 pub const NamedEvent = struct {
     name: []const u8,
-    event_id: u64,
-    options: u32,
-    payload_kind: EventPayloadKind,
-    payload_accessor: EventPayloadAccessor,
+    binding: EventBinding,
 
     fn deinit(self: NamedEvent, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
@@ -69,20 +57,7 @@ pub const ScalarNode = struct {
     tag: ?[]const u8 = null,
     parent_id: ?u64 = null,
     children: std.ArrayListUnmanaged(u64) = .empty,
-    bound_click_event: ?u64 = null,
-    bound_click_accessor: ?EventPayloadAccessor = null,
-    bound_input_event: ?u64 = null,
-    bound_input_accessor: ?EventPayloadAccessor = null,
-    bound_check_event: ?u64 = null,
-    bound_check_accessor: ?EventPayloadAccessor = null,
-    bound_pointer_down_event: ?u64 = null,
-    bound_pointer_down_accessor: ?EventPayloadAccessor = null,
-    bound_pointer_up_event: ?u64 = null,
-    bound_pointer_up_accessor: ?EventPayloadAccessor = null,
-    bound_pointer_enter_event: ?u64 = null,
-    bound_pointer_enter_accessor: ?EventPayloadAccessor = null,
-    bound_pointer_leave_event: ?u64 = null,
-    bound_pointer_leave_accessor: ?EventPayloadAccessor = null,
+    event_bindings: EventBindings = .{},
     text: ?[]const u8 = null,
     role: ?[]const u8 = null,
     label: ?[]const u8 = null,
@@ -153,28 +128,21 @@ pub const ScalarNode = struct {
         return null;
     }
 
-    fn eventSlot(self: *ScalarNode, kind: EventKind) *?u64 {
-        return switch (kind) {
-            .click => &self.bound_click_event,
-            .input => &self.bound_input_event,
-            .check => &self.bound_check_event,
-            .pointer_down => &self.bound_pointer_down_event,
-            .pointer_up => &self.bound_pointer_up_event,
-            .pointer_enter => &self.bound_pointer_enter_event,
-            .pointer_leave => &self.bound_pointer_leave_event,
-        };
+    fn fixedEventBindingSlot(self: *ScalarNode, kind: EventKind) *?EventBinding {
+        return eventBindingSlot(&self.event_bindings, kind);
     }
 
-    fn eventAccessorSlot(self: *ScalarNode, kind: EventKind) *?EventPayloadAccessor {
-        return switch (kind) {
-            .click => &self.bound_click_accessor,
-            .input => &self.bound_input_accessor,
-            .check => &self.bound_check_accessor,
-            .pointer_down => &self.bound_pointer_down_accessor,
-            .pointer_up => &self.bound_pointer_up_accessor,
-            .pointer_enter => &self.bound_pointer_enter_accessor,
-            .pointer_leave => &self.bound_pointer_leave_accessor,
-        };
+    fn fixedEventId(self: *const ScalarNode, kind: EventKind) ?u64 {
+        const binding = switch (kind) {
+            .click => self.event_bindings.click,
+            .input => self.event_bindings.input,
+            .check => self.event_bindings.check,
+            .pointer_down => self.event_bindings.pointer_down,
+            .pointer_up => self.event_bindings.pointer_up,
+            .pointer_enter => self.event_bindings.pointer_enter,
+            .pointer_leave => self.event_bindings.pointer_leave,
+        } orelse return null;
+        return binding.event_id;
     }
 };
 
@@ -384,64 +352,57 @@ pub fn Cache(comptime Ctx: type) type {
 
         pub fn applyEventBinding(self: *Self, ctx: Ctx.Handle, elem_id: u64, kind: EventKind, binding: ?EventBinding, counts: *render.Counts) void {
             const node = self.activeNode(elem_id);
-            const event_slot = node.eventSlot(kind);
-            const accessor_slot = node.eventAccessorSlot(kind);
-            const event_id = if (binding) |payload| payload.event_id else null;
-            const payload_accessor = if (binding) |payload| payload.payload_accessor else null;
-            if (event_slot.* == event_id and accessor_slot.* == payload_accessor) return;
+            const slot = node.fixedEventBindingSlot(kind);
+            if (binding) |raw_next| {
+                const next = raw_next.withDeliveryFor(.{ .fixed = kind });
+                if (!next.policy.isNone()) @panic("fixed event binding carried listener policy");
+                if (slot.*) |existing| {
+                    if (existing.eql(next)) return;
+                }
 
-            event_slot.* = event_id;
-            accessor_slot.* = payload_accessor;
-            if (event_id) |id| {
-                Ctx.sink(ctx).bindEventKind(elem_id, kind, id, payload_accessor orelse @panic("event binding was missing payload accessor"));
-            } else {
-                Ctx.sink(ctx).clearEvent(elem_id, kind);
+                slot.* = next;
+                Ctx.sink(ctx).bindEvent(elem_id, .{ .fixed = kind }, next);
+                counts.addEventBinding();
+                return;
             }
+
+            if (slot.* == null) return;
+            slot.* = null;
+            Ctx.sink(ctx).clearEvent(elem_id, .{ .fixed = kind });
             counts.addEventBinding();
         }
 
-        pub fn applyNamedEventBinding(self: *Self, ctx: Ctx.Handle, elem_id: u64, name: []const u8, binding: ?NamedEventBinding, counts: *render.Counts) void {
+        pub fn applyNamedEventBinding(self: *Self, ctx: Ctx.Handle, elem_id: u64, name: []const u8, binding: ?EventBinding, counts: *render.Counts) void {
             const allocator = Ctx.allocator(ctx);
             const node = self.activeNode(elem_id);
             const existing_index = node.namedEventIndex(name);
 
-            if (binding) |next| {
+            if (binding) |raw_next| {
+                const next = raw_next.withDeliveryFor(.{ .named = name });
                 if (existing_index) |index| {
                     const existing = &node.named_events.items[index];
-                    if (existing.event_id == next.event_id and
-                        existing.options == next.options and
-                        existing.payload_kind == next.payload_kind and
-                        existing.payload_accessor == next.payload_accessor)
-                    {
-                        return;
-                    }
+                    if (existing.binding.eql(next)) return;
 
-                    existing.event_id = next.event_id;
-                    existing.options = next.options;
-                    existing.payload_kind = next.payload_kind;
-                    existing.payload_accessor = next.payload_accessor;
+                    existing.binding = next;
                 } else {
                     const name_copy = allocator.dupe(u8, name) catch @panic("out of memory");
                     node.named_events.append(allocator, .{
                         .name = name_copy,
-                        .event_id = next.event_id,
-                        .options = next.options,
-                        .payload_kind = next.payload_kind,
-                        .payload_accessor = next.payload_accessor,
+                        .binding = next,
                     }) catch {
                         allocator.free(name_copy);
                         @panic("out of memory");
                     };
                 }
 
-                Ctx.sink(ctx).bindEventName(elem_id, name, next.event_id, next.options, next.payload_kind, next.payload_accessor);
+                Ctx.sink(ctx).bindEvent(elem_id, .{ .named = name }, next);
                 counts.addEventBinding();
                 return;
             }
 
             const index = existing_index orelse return;
             const removed = node.named_events.orderedRemove(index);
-            Ctx.sink(ctx).clearEventName(elem_id, removed.name);
+            Ctx.sink(ctx).clearEvent(elem_id, .{ .named = removed.name });
             removed.deinit(allocator);
             counts.addEventBinding();
         }
@@ -456,13 +417,13 @@ pub fn Cache(comptime Ctx: type) type {
                     cached.tag,
                     cached.parent_id,
                     cached.children.items,
-                    cached.bound_click_event,
-                    cached.bound_input_event,
-                    cached.bound_check_event,
-                    cached.bound_pointer_down_event,
-                    cached.bound_pointer_up_event,
-                    cached.bound_pointer_enter_event,
-                    cached.bound_pointer_leave_event,
+                    cached.fixedEventId(.click),
+                    cached.fixedEventId(.input),
+                    cached.fixedEventId(.check),
+                    cached.fixedEventId(.pointer_down),
+                    cached.fixedEventId(.pointer_up),
+                    cached.fixedEventId(.pointer_enter),
+                    cached.fixedEventId(.pointer_leave),
                 );
             }
         }
@@ -562,6 +523,7 @@ const TestHost = struct {
     clear_event_count: u64 = 0,
     bind_named_event_count: u64 = 0,
     clear_named_event_count: u64 = 0,
+    last_event_binding: ?EventBinding = null,
 };
 
 const TestCtx = struct {
@@ -598,17 +560,18 @@ const TestSink = struct {
         self.host.clear_text_attr_count += 1;
     }
     pub fn clearBoolField(_: TestSink, _: u64, _: BoolField) void {}
-    pub fn bindEventKind(self: TestSink, _: u64, _: EventKind, _: u64, _: EventPayloadAccessor) void {
-        self.host.bind_event_count += 1;
+    pub fn bindEvent(self: TestSink, _: u64, key: EventBindingKey, binding: EventBinding) void {
+        self.host.last_event_binding = binding;
+        switch (key) {
+            .fixed => self.host.bind_event_count += 1,
+            .named => self.host.bind_named_event_count += 1,
+        }
     }
-    pub fn clearEvent(self: TestSink, _: u64, _: EventKind) void {
-        self.host.clear_event_count += 1;
-    }
-    pub fn bindEventName(self: TestSink, _: u64, _: []const u8, _: u64, _: u32, _: EventPayloadKind, _: EventPayloadAccessor) void {
-        self.host.bind_named_event_count += 1;
-    }
-    pub fn clearEventName(self: TestSink, _: u64, _: []const u8) void {
-        self.host.clear_named_event_count += 1;
+    pub fn clearEvent(self: TestSink, _: u64, key: EventBindingKey) void {
+        switch (key) {
+            .fixed => self.host.clear_event_count += 1,
+            .named => self.host.clear_named_event_count += 1,
+        }
     }
     pub fn debugAssertNode(_: TestSink, _: u64, _: bool, _: ?[]const u8, _: ?u64, _: []const u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64) void {}
 };
@@ -655,7 +618,7 @@ test "unchanged event binding emits no duplicate command" {
     var counts: render.Counts = .{};
     cache.ensureNode(&host, 1, "button", &counts);
 
-    const binding = EventBinding{ .event_id = 1, .payload_accessor = .none };
+    const binding = EventBinding{ .event_id = 1, .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) };
     cache.applyEventBinding(&host, 1, .click, binding, &counts);
     cache.applyEventBinding(&host, 1, .click, binding, &counts);
     try std.testing.expectEqual(@as(u64, 1), counts.bind_event);
@@ -669,9 +632,9 @@ test "unchanged event binding emits no duplicate command" {
 
 test "event binding slots are keyed by event kind" {
     var bindings = EventBindings{};
-    const click = EventBinding{ .event_id = 1, .payload_accessor = .none };
-    const input = EventBinding{ .event_id = 2, .payload_accessor = .target_value };
-    const pointer_down = EventBinding{ .event_id = 3, .payload_accessor = .target_checked };
+    const click = EventBinding{ .event_id = 1, .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) };
+    const input = EventBinding{ .event_id = 2, .payload_descriptor = BoundaryPayloadDescriptor.init(.str, .target_value) };
+    const pointer_down = EventBinding{ .event_id = 3, .payload_descriptor = BoundaryPayloadDescriptor.init(.bool, .target_checked) };
 
     eventBindingSlot(&bindings, .click).* = click;
     eventBindingSlot(&bindings, .input).* = input;
@@ -684,6 +647,40 @@ test "event binding slots are keyed by event kind" {
     try std.testing.expectEqual(@as(?EventBinding, null), bindings.pointer_up);
     try std.testing.expectEqual(@as(?EventBinding, null), bindings.pointer_enter);
     try std.testing.expectEqual(@as(?EventBinding, null), bindings.pointer_leave);
+}
+
+test "event bindings derive delivery before cache storage and sink commands" {
+    var host = TestHost{};
+    var cache: Cache(TestCtx) = .{};
+    defer cache.deinit(&host);
+
+    cache.reset(&host);
+    var counts: render.Counts = .{};
+    cache.ensureNode(&host, 1, "button", &counts);
+    cache.ensureNode(&host, 2, "form", &counts);
+
+    const fixed = EventBinding{
+        .event_id = 1,
+        .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none),
+    };
+    cache.applyEventBinding(&host, 1, .pointer_down, fixed, &counts);
+    const fixed_delivery = cache.activeNode(1).event_bindings.pointer_down.?.delivery;
+    try std.testing.expectEqual(render_sink.EventDeliveryRequest.auto, fixed_delivery.requested);
+    try std.testing.expectEqual(render_sink.EventDeliveryEffective.native, fixed_delivery.effective);
+    try std.testing.expectEqual(render_sink.EventDeliveryReason.pointer_drag, fixed_delivery.reason);
+    try std.testing.expectEqual(render_sink.EventDeliveryReason.pointer_drag, host.last_event_binding.?.delivery.reason);
+
+    const named = EventBinding{
+        .event_id = 2,
+        .policy = render.EventPolicy.fromBits(render.listener_option_capture),
+        .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none),
+    };
+    cache.applyNamedEventBinding(&host, 2, "focus", named, &counts);
+    const named_delivery = cache.activeNode(2).named_events.items[0].binding.delivery;
+    try std.testing.expectEqual(render_sink.EventDeliveryRequest.auto, named_delivery.requested);
+    try std.testing.expectEqual(render_sink.EventDeliveryEffective.native, named_delivery.effective);
+    try std.testing.expectEqual(render_sink.EventDeliveryReason.capture_policy, named_delivery.reason);
+    try std.testing.expectEqual(render_sink.EventDeliveryReason.capture_policy, host.last_event_binding.?.delivery.reason);
 }
 
 test "custom text attr application and clear are idempotent" {
@@ -715,17 +712,14 @@ test "named event replacement and clear are idempotent" {
     var counts: render.Counts = .{};
     cache.ensureNode(&host, 1, "form", &counts);
 
-    const first = NamedEventBinding{
+    const first = EventBinding{
         .event_id = 1,
-        .options = 0,
-        .payload_kind = .unit,
-        .payload_accessor = .none,
+        .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none),
     };
-    const second = NamedEventBinding{
+    const second = EventBinding{
         .event_id = 2,
-        .options = render.listener_option_prevent_default,
-        .payload_kind = .str,
-        .payload_accessor = .target_value,
+        .policy = render.EventPolicy.fromBits(render.listener_option_prevent_default),
+        .payload_descriptor = BoundaryPayloadDescriptor.init(.str, .target_value),
     };
 
     cache.applyNamedEventBinding(&host, 1, "submit", first, &counts);

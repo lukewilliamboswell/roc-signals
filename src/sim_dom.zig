@@ -1,8 +1,22 @@
 const std = @import("std");
 
 const signals = @import("signals");
+const boundary = signals.boundary;
 const render = signals.render;
+const render_sink = signals.render_sink;
 const spec_parser = @import("spec/spec_parser.zig");
+
+pub const EventBinding = render_sink.EventBinding;
+
+pub const FixedEventBindings = struct {
+    click: ?EventBinding = null,
+    input: ?EventBinding = null,
+    check: ?EventBinding = null,
+    pointer_down: ?EventBinding = null,
+    pointer_up: ?EventBinding = null,
+    pointer_enter: ?EventBinding = null,
+    pointer_leave: ?EventBinding = null,
+};
 
 pub const Element = struct {
     id: u64,
@@ -17,13 +31,7 @@ pub const Element = struct {
     disabled: bool,
     parent_id: ?u64,
     children: std.ArrayListUnmanaged(u64),
-    bound_click_event: ?u64,
-    bound_input_event: ?u64,
-    bound_check_event: ?u64,
-    bound_pointer_down_event: ?u64,
-    bound_pointer_up_event: ?u64,
-    bound_pointer_enter_event: ?u64,
-    bound_pointer_leave_event: ?u64,
+    event_bindings: FixedEventBindings,
     active: bool,
     text_update_count: u64,
     value_update_count: u64,
@@ -46,13 +54,7 @@ pub const Element = struct {
             .disabled = false,
             .parent_id = null,
             .children = .empty,
-            .bound_click_event = null,
-            .bound_input_event = null,
-            .bound_check_event = null,
-            .bound_pointer_down_event = null,
-            .bound_pointer_up_event = null,
-            .bound_pointer_enter_event = null,
-            .bound_pointer_leave_event = null,
+            .event_bindings = .{},
             .active = true,
             .text_update_count = 0,
             .value_update_count = 0,
@@ -109,10 +111,7 @@ pub const TextAttr = struct {
 
 pub const NamedEvent = struct {
     name: []const u8,
-    event_id: u64,
-    options: u32,
-    payload_kind: render.EventPayloadKind,
-    payload_accessor: render.EventPayloadAccessor,
+    binding: EventBinding,
 
     pub fn deinit(self: NamedEvent, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
@@ -282,47 +281,79 @@ pub fn namedEvent(elem: *const Element, name: []const u8) ?NamedEvent {
     return elem.named_events.items[index];
 }
 
-pub fn bindEventKind(elem: *Element, kind: render.EventKind, event_id: u64) void {
-    switch (kind) {
-        .click => elem.bound_click_event = event_id,
-        .input => elem.bound_input_event = event_id,
-        .check => elem.bound_check_event = event_id,
-        .pointer_down => elem.bound_pointer_down_event = event_id,
-        .pointer_up => elem.bound_pointer_up_event = event_id,
-        .pointer_enter => elem.bound_pointer_enter_event = event_id,
-        .pointer_leave => elem.bound_pointer_leave_event = event_id,
-    }
+pub fn fixedEventBindingSlot(bindings: *FixedEventBindings, kind: render.EventKind) *?EventBinding {
+    return switch (kind) {
+        .click => &bindings.click,
+        .input => &bindings.input,
+        .check => &bindings.check,
+        .pointer_down => &bindings.pointer_down,
+        .pointer_up => &bindings.pointer_up,
+        .pointer_enter => &bindings.pointer_enter,
+        .pointer_leave => &bindings.pointer_leave,
+    };
+}
+
+pub fn fixedEventBinding(elem: *const Element, kind: render.EventKind) ?EventBinding {
+    return switch (kind) {
+        .click => elem.event_bindings.click,
+        .input => elem.event_bindings.input,
+        .check => elem.event_bindings.check,
+        .pointer_down => elem.event_bindings.pointer_down,
+        .pointer_up => elem.event_bindings.pointer_up,
+        .pointer_enter => elem.event_bindings.pointer_enter,
+        .pointer_leave => elem.event_bindings.pointer_leave,
+    };
+}
+
+pub fn fixedEventId(elem: *const Element, kind: render.EventKind) ?u64 {
+    const binding = fixedEventBinding(elem, kind) orelse return null;
+    return binding.event_id;
+}
+
+pub fn bindEventKind(elem: *Element, kind: render.EventKind, binding: EventBinding) void {
+    if (!binding.policy.isNone()) @panic("fixed simulated DOM event binding carried listener policy");
+    fixedEventBindingSlot(&elem.event_bindings, kind).* = binding;
 }
 
 pub fn clearEventKind(elem: *Element, kind: render.EventKind) void {
-    switch (kind) {
-        .click => elem.bound_click_event = null,
-        .input => elem.bound_input_event = null,
-        .check => elem.bound_check_event = null,
-        .pointer_down => elem.bound_pointer_down_event = null,
-        .pointer_up => elem.bound_pointer_up_event = null,
-        .pointer_enter => elem.bound_pointer_enter_event = null,
-        .pointer_leave => elem.bound_pointer_leave_event = null,
+    fixedEventBindingSlot(&elem.event_bindings, kind).* = null;
+}
+
+pub fn bindEvent(allocator: std.mem.Allocator, elem: *Element, key: render_sink.EventBindingKey, binding: EventBinding) void {
+    switch (key) {
+        .fixed => |kind| bindEventKind(elem, kind, binding),
+        .named => |name| bindEventNameBinding(allocator, elem, name, binding),
     }
 }
 
-pub fn bindEventName(allocator: std.mem.Allocator, elem: *Element, name: []const u8, event_id: u64, options: u32, payload_kind: render.EventPayloadKind, payload_accessor: render.EventPayloadAccessor) void {
+pub fn clearEvent(allocator: std.mem.Allocator, elem: *Element, key: render_sink.EventBindingKey) void {
+    switch (key) {
+        .fixed => |kind| clearEventKind(elem, kind),
+        .named => |name| clearEventName(allocator, elem, name),
+    }
+}
+
+pub fn bindEventName(allocator: std.mem.Allocator, elem: *Element, name: []const u8, event_id: u64, policy: render.EventPolicy, payload_descriptor: boundary.BoundaryPayloadDescriptor) void {
+    var binding: EventBinding = .{
+        .event_id = event_id,
+        .policy = policy,
+        .payload_descriptor = payload_descriptor,
+    };
+    binding = binding.withDeliveryFor(.{ .named = name });
+    bindEventNameBinding(allocator, elem, name, binding);
+}
+
+fn bindEventNameBinding(allocator: std.mem.Allocator, elem: *Element, name: []const u8, binding: EventBinding) void {
     if (elem.namedEventIndex(name)) |index| {
         const event = &elem.named_events.items[index];
-        event.event_id = event_id;
-        event.options = options;
-        event.payload_kind = payload_kind;
-        event.payload_accessor = payload_accessor;
+        event.binding = binding;
         return;
     }
 
     const name_copy = allocator.dupe(u8, name) catch std.process.exit(1);
     elem.named_events.append(allocator, .{
         .name = name_copy,
-        .event_id = event_id,
-        .options = options,
-        .payload_kind = payload_kind,
-        .payload_accessor = payload_accessor,
+        .binding = binding,
     }) catch {
         allocator.free(name_copy);
         std.process.exit(1);
@@ -368,13 +399,7 @@ pub fn removeChildAt(parent: *Element, child_index: usize) void {
 pub fn deactivateRemovedNode(allocator: std.mem.Allocator, elem: *Element) void {
     elem.active = false;
     elem.parent_id = null;
-    elem.bound_click_event = null;
-    elem.bound_input_event = null;
-    elem.bound_check_event = null;
-    elem.bound_pointer_down_event = null;
-    elem.bound_pointer_up_event = null;
-    elem.bound_pointer_enter_event = null;
-    elem.bound_pointer_leave_event = null;
+    elem.event_bindings = .{};
     for (elem.named_events.items) |event| {
         event.deinit(allocator);
     }
@@ -404,10 +429,10 @@ test "simulated DOM element indexes attrs and named events" {
     });
     try elem.named_events.append(allocator, .{
         .name = try allocator.dupe(u8, "submit"),
-        .event_id = 42,
-        .options = 0,
-        .payload_kind = .unit,
-        .payload_accessor = .none,
+        .binding = .{
+            .event_id = 42,
+            .payload_descriptor = boundary.BoundaryPayloadDescriptor.init(.unit, .none),
+        },
     });
 
     try std.testing.expectEqual(@as(?usize, 0), elem.textAttrIndex("data-state"));
@@ -476,19 +501,21 @@ test "simulated DOM binds and clears events" {
     var elem = Element.init(3, tag);
     defer elem.deinit(allocator);
 
-    bindEventKind(&elem, .click, 11);
-    try std.testing.expectEqual(@as(?u64, 11), elem.bound_click_event);
+    bindEventKind(&elem, .click, .{
+        .event_id = 11,
+        .payload_descriptor = boundary.BoundaryPayloadDescriptor.init(.unit, .none),
+    });
+    try std.testing.expectEqual(@as(?u64, 11), fixedEventId(&elem, .click));
     clearEventKind(&elem, .click);
-    try std.testing.expectEqual(@as(?u64, null), elem.bound_click_event);
+    try std.testing.expectEqual(@as(?u64, null), fixedEventId(&elem, .click));
 
-    bindEventName(allocator, &elem, "submit", 21, 7, .unit, .none);
-    try std.testing.expectEqual(@as(u64, 21), namedEvent(&elem, "submit").?.event_id);
-    bindEventName(allocator, &elem, "submit", 22, 9, .bytes, .record_key_shift);
+    bindEventName(allocator, &elem, "submit", 21, render.EventPolicy.fromBits(7), boundary.BoundaryPayloadDescriptor.init(.unit, .none));
+    try std.testing.expectEqual(@as(u64, 21), namedEvent(&elem, "submit").?.binding.event_id);
+    bindEventName(allocator, &elem, "submit", 22, render.EventPolicy.fromBits(9), boundary.BoundaryPayloadDescriptor.init(.bytes, .record_key_shift));
     const updated = namedEvent(&elem, "submit").?;
-    try std.testing.expectEqual(@as(u64, 22), updated.event_id);
-    try std.testing.expectEqual(@as(u32, 9), updated.options);
-    try std.testing.expectEqual(render.EventPayloadKind.bytes, updated.payload_kind);
-    try std.testing.expectEqual(render.EventPayloadAccessor.record_key_shift, updated.payload_accessor);
+    try std.testing.expectEqual(@as(u64, 22), updated.binding.event_id);
+    try std.testing.expect(updated.binding.policy.eql(render.EventPolicy.fromBits(9)));
+    try std.testing.expectEqual(boundary.BoundaryPayloadDescriptor.init(.bytes, .record_key_shift), updated.binding.payload_descriptor);
     clearEventName(allocator, &elem, "submit");
     try std.testing.expect(namedEvent(&elem, "submit") == null);
 }
@@ -536,7 +563,7 @@ test "simulated DOM replaces children and deactivates removed nodes" {
 
     removeChildAt(&elements.items[0], 0);
     try std.testing.expectEqual(@as(usize, 0), elements.items[0].children.items.len);
-    bindEventName(allocator, &elements.items[3], "click", 9, 0, .unit, .none);
+    bindEventName(allocator, &elements.items[3], "click", 9, render.EventPolicy.none, boundary.BoundaryPayloadDescriptor.init(.unit, .none));
     deactivateRemovedNode(allocator, &elements.items[3]);
     try std.testing.expect(!elements.items[3].active);
     try std.testing.expectEqual(@as(?u64, null), elements.items[3].parent_id);
