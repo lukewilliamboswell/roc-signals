@@ -1,3 +1,5 @@
+//! Structural patch planning for replacing disposed scopes or keyed rows.
+
 const std = @import("std");
 const descriptor_stream = @import("descriptor_stream.zig");
 const scope_runtime = @import("scope_runtime.zig");

@@ -1,3 +1,5 @@
+//! Runtime-owned scope payloads for state binders and keyed rows.
+
 const std = @import("std");
 const abi = @import("roc_platform_abi.zig");
 const retained_values = @import("retained_values.zig");

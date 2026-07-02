@@ -1,3 +1,5 @@
+//! Native spec runner that dispatches parsed UI commands against the simulated DOM.
+
 const std = @import("std");
 
 const signals = @import("signals");

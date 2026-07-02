@@ -9,12 +9,12 @@ import HostValue exposing [HostValue]
 ## A `Signal` is an expression that references state/source binders by a binder
 ## ref (a path-relative index assigned during the host walk). Declaration of a
 ## binder (via `Ui.state`) mints identity; a use (`map`, sink) does not.
-	Node := [].{
+Node := [].{
 
-		new_token : {} -> Box(U64)
-		new_token = |_| Box.box(0)
+	new_token : {} -> Box(U64)
+	new_token = |_| Box.box(0)
 
-		## Reference to a state/source binder. The token is minted by `Ui.state` and
+	## Reference to a state/source binder. The token is minted by `Ui.state` and
 	## copied into both the state declaration and all signal/message references to
 	## that declaration. The host maps tokens to construction-order node ids during
 	## the active descriptor walk; the token is not the state identity.
@@ -67,6 +67,7 @@ import HostValue exposing [HostValue]
 		IntervalSource(IntervalSource),
 	]
 
+	## Host command emitted by lifecycle hooks or signal change sinks.
 	Cmd := [
 		StartTask(
 			{
@@ -78,20 +79,27 @@ import HostValue exposing [HostValue]
 		),
 	]
 
+	## Cleanup descriptor run when a scope is disposed.
 	Cleanup := [
 		Cleanup(Str),
 	]
 
+	## Numeric text-field id used by the render wire protocol.
 	TextField := { id : U64 }
 
+	## Numeric bool-field id used by the render wire protocol.
 	BoolField := { id : U64 }
 
+	## Numeric fixed-event id used by the render wire protocol.
 	FixedEventKind := { id : U64 }
 
+	## Requested event delivery mode for the host listener.
 	EventDelivery := { native : Bool }
 
+	## Compact host-side event payload extraction descriptor.
 	EventExtractionPlan := { bytes : List(U8) }
 
+	## Browser listener options requested by an event binding.
 	EventPolicy : {
 		prevent_default : Bool,
 		stop_propagation : Bool,
@@ -113,5 +121,6 @@ import HostValue exposing [HostValue]
 		On(EventBinding),
 	]
 
+	## Event binding descriptor attached to an element.
 	EventBinding := { kind : FixedEventKind, msg : Msg, policy : EventPolicy, delivery : EventDelivery, name : Str }
 }

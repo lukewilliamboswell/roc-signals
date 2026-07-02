@@ -1,3 +1,5 @@
+//! Runtime tables for pending tasks, intervals, and cleanup effects.
+
 const std = @import("std");
 const abi = @import("roc_platform_abi.zig");
 const retained_values = @import("retained_values.zig");

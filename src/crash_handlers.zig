@@ -1,3 +1,5 @@
+//! Minimal panic and stderr handlers for concise native-host failures.
+
 const std = @import("std");
 
 pub const std_options: std.Options = .{

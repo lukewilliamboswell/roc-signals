@@ -1,3 +1,5 @@
+//! Benchmark helpers for measuring Signals host runtime phases and command counts.
+
 const std = @import("std");
 
 const signals = @import("signals");

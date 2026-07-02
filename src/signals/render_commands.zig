@@ -1,3 +1,5 @@
+//! Host-independent render command protocol and command-buffer encoders.
+
 const std = @import("std");
 const boundary = @import("boundary.zig");
 

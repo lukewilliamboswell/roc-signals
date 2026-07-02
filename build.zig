@@ -1,3 +1,5 @@
+//! Build graph for Signals hosts, checks, tests, and generated platform artifacts.
+
 const std = @import("std");
 
 const OptimizeMode = std.builtin.OptimizeMode;

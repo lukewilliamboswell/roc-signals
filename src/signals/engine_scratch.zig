@@ -1,3 +1,5 @@
+//! Reusable scratch buffers for descriptor collection and structural patching.
+
 const std = @import("std");
 const descriptor_stream = @import("descriptor_stream.zig");
 const each_runtime = @import("each_runtime.zig");

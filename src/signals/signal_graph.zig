@@ -1,3 +1,5 @@
+//! Generic dependency graph helpers for ranking and collecting dirty signals.
+
 const std = @import("std");
 
 pub const Error = error{

@@ -1,3 +1,5 @@
+//! Keyed-list reconciliation storage and diff helpers for `Ui.each`.
+
 const std = @import("std");
 
 pub const missing_row_index = std.math.maxInt(usize);

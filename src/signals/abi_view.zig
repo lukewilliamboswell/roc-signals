@@ -1,3 +1,5 @@
+//! Typed views over generated Roc ABI descriptors used by the engine.
+
 const std = @import("std");
 
 const abi = @import("roc_platform_abi.zig");

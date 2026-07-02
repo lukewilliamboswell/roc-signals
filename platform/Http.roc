@@ -4,7 +4,11 @@ import http.Method
 import http.Request
 import http.Response
 
+## HTTP request helpers backed by the pinned `roc-lang/http` package and the
+## Signals task runtime.
 Http := [].{
+
+	## Errors returned by platform HTTP task helpers.
 	HttpError := [
 		Network(Str),
 		Timeout,
@@ -13,61 +17,120 @@ Http := [].{
 		ResponseMaterialization(Str),
 	]
 
+	## HTTP `GET` method.
 	method_get = GET
+
+	## HTTP `POST` method.
 	method_post = POST
+
+	## HTTP `PUT` method.
 	method_put = PUT
+
+	## HTTP `DELETE` method.
 	method_delete = DELETE
+
+	## HTTP `PATCH` method.
 	method_patch = PATCH
+
+	## Custom HTTP method.
 	method_unknown = |name| Unknown(name)
 
+	## Create a request from a method.
 	request_from_method = Request.from_method
+
+	## Read a request's method.
 	request_method = Request.method
+
+	## Read a request's method as text.
 	request_method_str = Request.method_str
+
+	## Read request headers.
 	request_headers = Request.headers
+
+	## Read request body bytes.
 	request_body = Request.body
+
+	## Read request URI.
 	request_uri = Request.uri
+
+	## Read request timeout.
 	request_timeout = Request.timeout
+
+	## Set request method.
 	with_method = Request.with_method
+
+	## Replace request headers.
 	with_headers = Request.with_headers
+
+	## Add one request header.
 	add_header = Request.add_header
+
+	## Set request URI.
 	with_uri = Request.with_uri
+
+	## Set request body bytes.
 	with_body = Request.with_body
+
+	## Set request timeout.
 	with_timeout_ms = |request, ms| Request.with_timeout(request, TimeoutMilliseconds(ms))
+
+	## Disable request timeout.
 	with_no_timeout = |request| Request.with_timeout(request, NoTimeout)
 
+	## Create a response from a status code.
 	response_from_status = Response.from_status
+
+	## Read response status code.
 	response_status = Response.status
+
+	## Read response headers.
 	response_headers = Response.headers
+
+	## Read response body bytes.
 	response_body = Response.body
+
+	## Set response status code.
 	response_with_status = Response.with_status
+
+	## Replace response headers.
 	response_with_headers = Response.with_headers
+
+	## Add one response header.
 	response_add_header = Response.add_header
+
+	## Set response body bytes.
 	response_with_body = Response.with_body
 
+	## Create a task for full HTTP request/response values.
 	request_task = |purpose| {
 		name = Str.concat("http:send:", purpose)
 		Signal.task_source(name, decode_response_payload, decode_error_payload, False)
 	}
 
+	## Start a full HTTP request task.
 	start = |task, request| Signal.start_str(task, encode_request_payload(request))
 
+	## Create a task that decodes successful responses as text.
 	get_text_task = |purpose| {
 		name = Str.concat("http:send:", purpose)
 		Signal.task_source(name, decode_text_response_payload, decode_error_text_payload, False)
 	}
 
+	## Start a `GET` request and decode a successful response body as text.
 	get_text = |task, uri| {
 		request0 = request_from_method(method_get)
 		request = with_uri(request0, uri)
 		Signal.start_str(task, encode_request_payload(request))
 	}
 
+	## Start a `GET` request and keep the full response value.
 	get = |task, uri| {
 		request0 = request_from_method(method_get)
 		request = with_uri(request0, uri)
 		start(task, request)
 	}
 
+	## Convert an HTTP error to user-facing text.
 	error_text = |err|
 		match err {
 			Network(message) => Str.concat("network: ", message)
@@ -212,14 +275,17 @@ Http := [].{
 		if Str.is_empty(field) {
 			[]
 		} else {
-			List.map(Str.split_on(field, ","), |part| {
-				match U8.from_str(part) {
-					Ok(byte) => byte
-					Err(_) => {
-						crash "malformed HTTP payload"
+			List.map(
+				Str.split_on(field, ","),
+				|part| {
+					match U8.from_str(part) {
+						Ok(byte) => byte
+						Err(_) => {
+							crash "malformed HTTP payload"
+						}
 					}
-				}
-			})
+				},
+			)
 		}
 	}
 

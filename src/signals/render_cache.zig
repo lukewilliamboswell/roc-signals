@@ -1,3 +1,5 @@
+//! Render-state cache that suppresses duplicate host commands for stable DOM nodes.
+
 const std = @import("std");
 const builtin = @import("builtin");
 const boundary = @import("boundary.zig");

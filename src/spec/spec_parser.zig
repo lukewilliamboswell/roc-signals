@@ -1,3 +1,5 @@
+//! Parser for text-based Signals example specs and assertions.
+
 const std = @import("std");
 
 pub const SpecCommandType = enum {

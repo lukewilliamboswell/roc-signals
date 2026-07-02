@@ -1,3 +1,5 @@
+//! Active signal graph records, routes, and dirty propagation helpers.
+
 const std = @import("std");
 const scope_tree = @import("scope_tree.zig");
 const signal_graph = @import("signal_graph.zig");

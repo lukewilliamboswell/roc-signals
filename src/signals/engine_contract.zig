@@ -1,3 +1,5 @@
+//! Compile-time contract checks for host contexts used by the shared engine.
+
 const std = @import("std");
 const abi = @import("roc_platform_abi.zig");
 const boundary = @import("boundary.zig");

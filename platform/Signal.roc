@@ -2,8 +2,10 @@ import HostValue exposing [HostValue]
 import Capability exposing [Capability]
 import Node
 
+## Current state of a host-backed task.
 TaskStatus(a, err) := [Loading, Done(a), Failed(err)]
 
+## Host-backed task source that accepts string requests.
 Task(a, err) := { source : Node.TaskSource, cap : Capability(TaskStatus(a, err)) }
 
 ## Opaque, typed signal. Wraps a boxed pure `Node.SignalExpr` descriptor
@@ -11,23 +13,28 @@ Task(a, err) := { source : Node.TaskSource, cap : Capability(TaskStatus(a, err))
 ## Runtime values are opaque host-owned cells; each edge carries the exact typed
 ## thunks that can read, compare, transform, and release that cell.
 Signal(a) := { expr : Box(Node.SignalExpr), cap : Capability(a) }.{
+
+	## Copy a boxed signal expression descriptor.
 	clone_expr : Box(Node.SignalExpr) -> Box(Node.SignalExpr)
 	clone_expr = |expr| expr
 
+	## Expose the host-readable expression descriptor for platform helpers.
 	to_expr : Signal(a) -> Box(Node.SignalExpr)
 	to_expr = |signal| signal.expr
 
+	## Build a typed signal from a host descriptor and matching capability.
 	from_expr : Node.SignalExpr, Capability(a) -> Signal(a)
 	from_expr = |expr, cap| { expr: Box.box(expr), cap }
 
+	## Read a task source as a signal of loading/done/failed status.
 	from_task : Task(a, err) -> Signal(TaskStatus(a, err))
 	from_task = |task| { expr: Box.box(Node.SignalExpr.TaskSource(task.source)), cap: task.cap }
 
-	fold_task :
-		Task(a, err), b, (a -> b), (err -> b) -> Signal(b)
-			where [
-				b.is_eq : b, b -> Bool,
-			]
+	## Fold a task status signal into display or view-model state.
+	fold_task : Task(a, err), b, (a -> b), (err -> b) -> Signal(b)
+		where [
+			b.is_eq : b, b -> Bool,
+		]
 	fold_task = |task, loading, done, failed| {
 		status = Signal.from_task(task)
 		Signal.map(
@@ -40,23 +47,22 @@ Signal(a) := { expr : Box(Node.SignalExpr), cap : Capability(a) }.{
 		)
 	}
 
-	fake_task :
-		Str, (Str -> a), (Str -> err) -> Task(a, err)
-			where [
-				a.is_eq : a, a -> Bool,
-				err.is_eq : err, err -> Bool,
-			]
+	## Create a deterministic string-payload task source for tests and examples.
+	fake_task : Str, (Str -> a), (Str -> err) -> Task(a, err)
+		where [
+			a.is_eq : a, a -> Bool,
+			err.is_eq : err, err -> Bool,
+		]
 	fake_task = |name, to_done, to_failed| Signal.task_source(name, to_done, to_failed, True)
 
 	## Low-level host task source constructor. `reset_on_start` controls whether
 	## starting a new request publishes `Loading` or keeps the last cached value
 	## while the runtime request is pending.
-	task_source :
-		Str, (Str -> a), (Str -> err), Bool -> Task(a, err)
-			where [
-				a.is_eq : a, a -> Bool,
-				err.is_eq : err, err -> Bool,
-			]
+	task_source : Str, (Str -> a), (Str -> err), Bool -> Task(a, err)
+		where [
+			a.is_eq : a, a -> Bool,
+			err.is_eq : err, err -> Bool,
+		]
 	task_source = |name, to_done, to_failed, reset_on_start| {
 		token : Box(U64)
 		token = Node.new_token({})
@@ -77,7 +83,7 @@ Signal(a) := { expr : Box(Node.SignalExpr), cap : Capability(a) }.{
 							_ => False
 						}
 					},
-		)
+			)
 		payload_cap = Capability.new({})
 
 		loading : TaskStatus(a, err)
@@ -105,12 +111,12 @@ Signal(a) := { expr : Box(Node.SignalExpr), cap : Capability(a) }.{
 		}
 
 		{
-				source: {
-					token,
-					name,
-					cap: Capability.handle(status_cap),
-					payload_cap: Capability.handle(payload_cap),
-					initial: Box.box(initial),
+			source: {
+				token,
+				name,
+				cap: Capability.handle(status_cap),
+				payload_cap: Capability.handle(payload_cap),
+				initial: Box.box(initial),
 				done: Box.box(done),
 				failed: Box.box(failed),
 				reset_on_start,
@@ -119,6 +125,7 @@ Signal(a) := { expr : Box(Node.SignalExpr), cap : Capability(a) }.{
 		}
 	}
 
+	## Start a string-request task.
 	start_str : Task(a, err), Str -> Node.Cmd
 	start_str = |task, request| {
 		request_cap = Capability.new({})
@@ -136,9 +143,11 @@ Signal(a) := { expr : Box(Node.SignalExpr), cap : Capability(a) }.{
 		)
 	}
 
+	## Create a named cleanup command for lifecycle testing and host effects.
 	cleanup : Str -> Node.Cleanup
 	cleanup = |name| Node.Cleanup.Cleanup(name)
 
+	## Tick upward from zero every `period_ms` while mounted.
 	interval : U64 -> Signal(U64)
 	interval = |period_ms| {
 		source_from_tick :
@@ -146,10 +155,10 @@ Signal(a) := { expr : Box(Node.SignalExpr), cap : Capability(a) }.{
 				where [
 					a.is_eq : a, a -> Bool,
 				]
-			source_from_tick = |initial_value, next| {
-				token : Box(U64)
-				token = Node.new_token({})
-				cap = Capability.new({})
+		source_from_tick = |initial_value, next| {
+			token : Box(U64)
+			token = Node.new_token({})
+			cap = Capability.new({})
 
 			initial : {} -> HostValue
 			initial = |_| Capability.store(Box.box(initial_value), cap)
@@ -206,11 +215,10 @@ Signal(a) := { expr : Box(Node.SignalExpr), cap : Capability(a) }.{
 	## Derived signal. The transform is a typed `a -> b`; the host passes opaque
 	## cells and this thunk is the only place that can read the `a` input and
 	## construct the `b` output cell.
-	map :
-		Signal(a), (a -> b) -> Signal(b)
-			where [
-				b.is_eq : b, b -> Bool,
-			]
+	map : Signal(a), (a -> b) -> Signal(b)
+		where [
+			b.is_eq : b, b -> Bool,
+		]
 	map = |signal, f| {
 		token : Box(U64)
 		token = Node.new_token({})
@@ -237,11 +245,11 @@ Signal(a) := { expr : Box(Node.SignalExpr), cap : Capability(a) }.{
 		}
 	}
 
-	map2 :
-		Signal(a), Signal(b), (a, b -> c) -> Signal(c)
-			where [
-				c.is_eq : c, c -> Bool,
-			]
+	## Derived signal from two input signals.
+	map2 : Signal(a), Signal(b), (a, b -> c) -> Signal(c)
+		where [
+			c.is_eq : c, c -> Bool,
+		]
 	map2 = |left, right, f| {
 		token : Box(U64)
 		token = Node.new_token({})
@@ -272,11 +280,10 @@ Signal(a) := { expr : Box(Node.SignalExpr), cap : Capability(a) }.{
 	}
 
 	## Combine a list of same-typed signals into a signal of the list of values.
-	combine :
-		List(Signal(a)) -> Signal(List(a))
-			where [
-				a.is_eq : a, a -> Bool,
-			]
+	combine : List(Signal(a)) -> Signal(List(a))
+		where [
+			a.is_eq : a, a -> Bool,
+		]
 	combine = |signals| {
 		token : Box(U64)
 		token = Node.new_token({})

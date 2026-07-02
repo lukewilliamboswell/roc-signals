@@ -1,3 +1,5 @@
+//! Decoder and owned snapshot model for Roc UI descriptor streams.
+
 const std = @import("std");
 const abi = @import("roc_platform_abi.zig");
 const boundary = @import("boundary.zig");

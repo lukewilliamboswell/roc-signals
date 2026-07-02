@@ -162,6 +162,11 @@ fn checkFile(allocator: Allocator, io: std.Io, path: []const u8) !usize {
     if (std.mem.indexOfScalar(u8, bytes, 0) != null) return 0;
 
     var errors: usize = 0;
+    if (std.mem.endsWith(u8, repoRelativePath(path), ".zig") and !hasModuleDocComment(bytes)) {
+        std.debug.print("{s}: Zig files must start with a module-level //! doc comment\n", .{path});
+        errors += 1;
+    }
+
     if (bytes.len != 0 and bytes[bytes.len - 1] != '\n') {
         std.debug.print("{s}: missing trailing newline\n", .{path});
         errors += 1;
@@ -175,6 +180,10 @@ fn checkFile(allocator: Allocator, io: std.Io, path: []const u8) !usize {
     }
 
     return errors;
+}
+
+fn hasModuleDocComment(bytes: []const u8) bool {
+    return std.mem.startsWith(u8, bytes, "//!");
 }
 
 fn lineNumber(bytes: []const u8, offset: usize) usize {

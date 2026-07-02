@@ -1,3 +1,5 @@
+//! Shared host-boundary payload schemas and event extraction descriptors.
+
 const std = @import("std");
 
 /// Host boundary payload kind ids. These are the ABI-level containers that cross

@@ -1,3 +1,5 @@
+//! Simulated DOM tree used by native specs and benchmark execution.
+
 const std = @import("std");
 
 const signals = @import("signals");
