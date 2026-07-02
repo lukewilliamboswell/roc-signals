@@ -263,7 +263,17 @@ Field : { name : List(U8), value : List(U8) }
 
 parse_fields : Str -> Try(List(Field), Dashboard.ParseErr)
 parse_fields = |body| {
-	var $remaining = Str.to_utf8(body)
+	bytes = Str.to_utf8(body)
+	if is_json_object(bytes) {
+		parse_json_fields(bytes)
+	} else {
+		parse_line_fields(bytes)
+	}
+}
+
+parse_line_fields : List(U8) -> Try(List(Field), Dashboard.ParseErr)
+parse_line_fields = |bytes| {
+	var $remaining = bytes
 	var $fields = []
 
 	while True {
@@ -278,6 +288,140 @@ parse_fields = |body| {
 			parts = split_once_byte(line.value, 61)?
 			$fields = List.append($fields, { name: parts.before, value: parts.after })
 		}
+	}
+}
+
+parse_json_fields : List(U8) -> Try(List(Field), Dashboard.ParseErr)
+parse_json_fields = |bytes| {
+	var $remaining = skip_json_space(bytes)
+	$remaining = consume_json_byte($remaining, 123)?
+	$remaining = skip_json_space($remaining)
+	var $fields = []
+
+	match List.first($remaining) {
+		Ok(byte) =>
+			if byte == 125 {
+				return Ok($fields)
+			}
+
+		Err(_) => return Err(BadProtocol)
+	}
+
+	while True {
+		key = take_json_string($remaining)?
+		$remaining = skip_json_space(key.rest)
+		$remaining = consume_json_byte($remaining, 58)?
+		value = take_json_number($remaining)?
+		$fields = List.append($fields, { name: key.value, value: value.value })
+		$remaining = skip_json_space(value.rest)
+
+		match List.first($remaining) {
+			Ok(byte) =>
+				if byte == 44 {
+					$remaining = skip_json_space(List.drop_first($remaining, 1))
+				} else if byte == 125 {
+					rest = skip_json_space(List.drop_first($remaining, 1))
+					if List.is_empty(rest) {
+						return Ok($fields)
+					} else {
+						return Err(BadProtocol)
+					}
+				} else {
+					return Err(BadProtocol)
+				}
+
+			Err(_) => return Err(BadProtocol)
+		}
+	}
+}
+
+is_json_object : List(U8) -> Bool
+is_json_object = |bytes| {
+	trimmed = skip_json_space(bytes)
+	match List.first(trimmed) {
+		Ok(byte) => byte == 123
+		Err(_) => False
+	}
+}
+
+skip_json_space : List(U8) -> List(U8)
+skip_json_space = |bytes| {
+	var $remaining = bytes
+
+	while True {
+		match List.first($remaining) {
+			Ok(byte) =>
+				if (byte == 32) or (byte == 10) or (byte == 13) or (byte == 9) {
+					$remaining = List.drop_first($remaining, 1)
+				} else {
+					return $remaining
+				}
+
+			Err(_) => return $remaining
+		}
+	}
+}
+
+consume_json_byte : List(U8), U8 -> Try(List(U8), Dashboard.ParseErr)
+consume_json_byte = |bytes, expected|
+	match List.first(bytes) {
+		Ok(byte) =>
+			if byte == expected {
+				Ok(List.drop_first(bytes, 1))
+			} else {
+				Err(BadProtocol)
+			}
+
+		Err(_) => Err(BadProtocol)
+	}
+
+take_json_string : List(U8) -> Try({ value : List(U8), rest : List(U8) }, Dashboard.ParseErr)
+take_json_string = |bytes| {
+	remaining0 = consume_json_byte(skip_json_space(bytes), 34)?
+	var $remaining = remaining0
+	var $value = []
+
+	while True {
+		match List.first($remaining) {
+			Ok(byte) =>
+				if byte == 34 {
+					return Ok({ value: $value, rest: List.drop_first($remaining, 1) })
+				} else if byte == 92 {
+					return Err(BadProtocol)
+				} else {
+					$value = List.append($value, byte)
+					$remaining = List.drop_first($remaining, 1)
+				}
+
+			Err(_) => return Err(BadProtocol)
+		}
+	}
+}
+
+take_json_number : List(U8) -> Try({ value : List(U8), rest : List(U8) }, Dashboard.ParseErr)
+take_json_number = |bytes| {
+	var $remaining = skip_json_space(bytes)
+	var $value = []
+
+	while True {
+		match List.first($remaining) {
+			Ok(byte) =>
+				if (byte >= 48) and (byte <= 57) {
+					$value = List.append($value, byte)
+					$remaining = List.drop_first($remaining, 1)
+				} else if List.is_empty($value) {
+					return Err(BadNumber)
+				} else {
+					return Ok({ value: $value, rest: $remaining })
+				}
+
+			Err(_) =>
+				if List.is_empty($value) {
+					return Err(BadNumber)
+				} else {
+					return Ok({ value: $value, rest: $remaining })
+				}
+			}
 	}
 }
 
@@ -382,7 +526,7 @@ bytes_equal = |left, right| {
 					Ok(_) => return False
 					Err(_) => return True
 				}
-		}
+			}
 	}
 }
 

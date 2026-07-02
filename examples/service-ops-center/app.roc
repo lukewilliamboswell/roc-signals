@@ -306,6 +306,112 @@ traffic_panel = |traffic| {
 	)
 }
 
+chart_payload = |remote|
+	field(
+		remote,
+		|value|
+			match value {
+				RemoteReady(model) => model.payload
+				_ => ""
+			},
+	)
+
+chart_headline = |remote|
+	field(
+		remote,
+		|value|
+			match value {
+				RemoteReady(model) => model.headline
+				_ => "Chart waiting for data"
+			},
+	)
+
+chart_detail = |remote|
+	field(
+		remote,
+		|value|
+			match value {
+				RemoteReady(model) => model.detail
+				_ => DashboardRemote.message(value)
+			},
+	)
+
+chart_panel = |chart| {
+	Ui.state(
+		"",
+		|hovered_chart_point| {
+			Ui.state(
+				"",
+				|selected_chart_point| {
+					is_ready = remote_is_ready(chart)
+					payload = chart_payload(chart)
+					headline = chart_headline(chart)
+					detail = chart_detail(chart)
+					hovered = hovered_chart_point.signal()
+					selected = selected_chart_point.signal()
+					focus = Signal.map2(hovered, selected, DashboardView.chart_focus_text)
+
+					Ui.component(
+						|_|
+							render_panel(
+								"Traffic chart",
+								"Interactive traffic chart",
+								[
+									Ui.when(
+										is_ready,
+										|_|
+											Html.div_c(
+												DashboardTheme.chart_shell_class,
+												[
+													Html.div_c(
+														DashboardTheme.chart_copy_class,
+														[
+															Html.div_c(DashboardTheme.strong_text_class, [Html.text_s(headline)]),
+															Html.div_c(DashboardTheme.text_sm_muted_class, [Html.text_s(detail)]),
+														],
+													),
+													Html.div(
+														[
+															Html.class_attr(DashboardTheme.chart_mount_class),
+															Html.attr("data-ops-chart", "traffic"),
+															Html.attr_s("data-ops-chart-points", payload),
+															Html.attr_s("data-ops-chart-selected", selected),
+															Html.attr("aria-label", "Interactive traffic chart"),
+														],
+														[Html.div_c(DashboardTheme.chart_loading_class, [Html.text("Preparing chart")])],
+													),
+													Html.text_input_attrs(
+														"Chart hover",
+														hovered,
+														[
+															Html.class_attr(DashboardTheme.chart_bridge_input_class),
+															Html.attr("data-ops-chart-hover-input", "traffic"),
+														],
+														hovered_chart_point.on_str(|_, value| value),
+													),
+													Html.text_input_attrs(
+														"Chart selection",
+														selected,
+														[
+															Html.class_attr(DashboardTheme.chart_bridge_input_class),
+															Html.attr("data-ops-chart-select-input", "traffic"),
+														],
+														selected_chart_point.on_str(|_, value| value),
+													),
+													Html.div_c(DashboardTheme.chart_focus_class, [Html.text_s(focus)]),
+												],
+											),
+										|_| remote_message("Chart", chart),
+									),
+								],
+							),
+					)
+				},
+			)
+		},
+	)
+}
+
 services_panel = |services| {
 	is_ready = remote_is_ready(services)
 	rows = ready_list(services)
@@ -391,6 +497,7 @@ dashboard_page = |dashboard_state, manual_refresh_text, refresh_now, lifecycle| 
 	last_updated = field(select_remote(dashboard_state, DashboardView.last_updated), DashboardRemote.text)
 	status = select_remote(dashboard_state, DashboardView.status_strip)
 	metrics = select_remote(dashboard_state, DashboardView.metrics)
+	chart = select_remote(dashboard_state, DashboardView.chart_model)
 	traffic = select_remote(dashboard_state, DashboardView.traffic_rows)
 	services = select_remote(dashboard_state, DashboardView.service_rows)
 	jobs = select_remote(dashboard_state, DashboardView.job_rows)
@@ -400,28 +507,28 @@ dashboard_page = |dashboard_state, manual_refresh_text, refresh_now, lifecycle| 
 		|_|
 			Html.div_c(
 				DashboardTheme.page_class,
-					[
-						Html.div_c(
-							DashboardTheme.shell_class,
-							List.concat(
-								[
-									toolbar(last_updated, manual_refresh_text, refresh_now),
-									status_strip(status),
-									metric_grid(metrics),
-									Html.div_c(
-										DashboardTheme.main_grid_class,
-										[
-											Html.div_c(DashboardTheme.wide_column_class, [traffic_panel(traffic), services_panel(services)]),
-											Html.div_c(DashboardTheme.side_column_class, [jobs_panel(jobs), alerts_panel(alerts)]),
-										],
-									),
-								],
-								lifecycle,
-							),
+				[
+					Html.div_c(
+						DashboardTheme.shell_class,
+						List.concat(
+							[
+								toolbar(last_updated, manual_refresh_text, refresh_now),
+								status_strip(status),
+								metric_grid(metrics),
+								Html.div_c(
+									DashboardTheme.main_grid_class,
+									[
+										Html.div_c(DashboardTheme.wide_column_class, [chart_panel(chart), traffic_panel(traffic), services_panel(services)]),
+										Html.div_c(DashboardTheme.side_column_class, [jobs_panel(jobs), alerts_panel(alerts)]),
+									],
+								),
+							],
+							lifecycle,
 						),
-					],
-				),
-		)
+					),
+				],
+			),
+	)
 }
 
 main : {} -> Elem

@@ -22,6 +22,20 @@ DashboardView :: [].{
 		tone : DashboardTheme.Tone,
 	}
 
+	ChartModel : {
+		payload : Str,
+		headline : Str,
+		detail : Str,
+	}
+
+	ChartPoint : {
+		id : Str,
+		label : Str,
+		rpm : U64,
+		latency_ms : U64,
+		error_permille : U64,
+	}
+
 	TrafficRow : {
 		id : Str,
 		label : Str,
@@ -141,6 +155,24 @@ DashboardView :: [].{
 		]
 	}
 
+	chart_model : Dashboard -> ChartModel
+	chart_model = |dashboard|
+		{
+			payload: chart_payload(dashboard),
+			headline: "Live request pressure",
+			detail: "Latest ${metric_text(dashboard.traffic.requests_per_minute, " rpm")} | p95 ${dashboard.traffic.latency_ms.to_str()} ms | errors ${permille_text(dashboard.budget.error_permille)}",
+		}
+
+	chart_focus_text : Str, Str -> Str
+	chart_focus_text = |hovered, selected|
+		if !Str.is_empty(hovered) {
+			"Hover: ${hovered}"
+		} else if !Str.is_empty(selected) {
+			"Selected: ${selected}"
+		} else {
+			"Hover or click a chart point"
+		}
+
 	ingress_traffic_row : Dashboard -> TrafficRow
 	ingress_traffic_row = |dashboard|
 		{
@@ -214,6 +246,54 @@ DashboardView :: [].{
 	manual_refresh_text = |count| "Manual refreshes: ${count.to_str()} | auto refresh 2s"
 }
 
+chart_payload : Dashboard -> Str
+chart_payload = |dashboard|
+	join_with(
+		";",
+		List.map(
+			[
+				chart_point(dashboard, 0),
+				chart_point(dashboard, 1),
+				chart_point(dashboard, 2),
+				chart_point(dashboard, 3),
+				chart_point(dashboard, 4),
+				chart_point(dashboard, 5),
+				chart_point(dashboard, 6),
+				chart_point(dashboard, 7),
+				chart_point(dashboard, 8),
+				chart_point(dashboard, 9),
+				chart_point(dashboard, 10),
+				chart_point(dashboard, 11),
+			],
+			chart_point_payload,
+		),
+	)
+
+chart_point : Dashboard, U64 -> DashboardView.ChartPoint
+chart_point = |dashboard, index| {
+	distance = 11 - index
+	version = dashboard.version
+	rpm_shift = ((version + index * 7) % 17) * 8
+	latency_shift = ((version + index * 5) % 13) * 3
+	error_shift = (version + index * 3) % 7
+	label =
+		if distance == 0 {
+			"now"
+		} else {
+			"-${(distance * 2).to_str()}m"
+		}
+	{
+		id: "h${two_digits(index)}",
+		label,
+		rpm: subtract_floor(dashboard.traffic.requests_per_minute + rpm_shift, 68),
+		latency_ms: subtract_floor(dashboard.traffic.latency_ms + latency_shift, 18),
+		error_permille: subtract_floor(dashboard.budget.error_permille + error_shift, 3),
+	}
+}
+
+chart_point_payload : DashboardView.ChartPoint -> Str
+chart_point_payload = |point| "${point.id}|${point.label}|${point.rpm.to_str()}|${point.latency_ms.to_str()}|${point.error_permille.to_str()}"
+
 traffic_detail : Dashboard -> Str
 traffic_detail = |dashboard|
 	join_with(
@@ -260,7 +340,11 @@ budget_detail = |dashboard|
 
 service_row : Dashboard.Service -> DashboardView.ServiceRow
 service_row = |service| {
-	detail = if service.latency_ms == 0 { service.detail } else { "p95 ${service.latency_ms.to_str()} ms | ${service.detail}" }
+	detail = if service.latency_ms == 0 {
+		service.detail
+	} else {
+		"p95 ${service.latency_ms.to_str()} ms | ${service.detail}"
+	}
 	{ id: service.id, label: service.label, state: health_text(service.health), detail, tone: tone_for_health(service.health) }
 }
 
@@ -484,6 +568,14 @@ rate_x_text = |value| "${(value // 10).to_str()}.${(value % 10).to_str()}x"
 
 metric_text : U64, Str -> Str
 metric_text = |value, suffix| "${value.to_str()}${suffix}"
+
+subtract_floor : U64, U64 -> U64
+subtract_floor = |value, amount|
+	if value > amount {
+		value - amount
+	} else {
+		value
+	}
 
 join_with : Str, List(Str) -> Str
 join_with = |separator, parts|

@@ -9,16 +9,19 @@ import {
   Protocol,
   ProtocolFeature,
   SignalsRuntime,
-  apiRequestConsoleTaskHandler,
   decodeHttpRequestPayload,
   decodeHttpResponsePayload,
   encodeHttpRequestPayload,
   encodeHttpResponsePayload,
   httpFetchTaskHandler,
-  lookupTaskHandler,
-  opsApiTextTaskHandler,
-  publicExampleTaskHandler,
 } from "../../www/static/signals.mjs";
+import {
+  apiRequestConsoleTaskHandler,
+  createOpsBackend,
+  lookupTaskHandler,
+  opsApiTaskHandler,
+  publicExampleTaskHandler,
+} from "../../www/static/example_tasks.mjs";
 import {
   applySetValue,
   beginComposition,
@@ -1779,27 +1782,46 @@ test("HTTP fetch task handler reports network failures as HTTP error envelopes",
   );
 });
 
-test("ops API text task handler serves only documented static endpoints", async () => {
-  assert.equal(
-    opsApiTextTaskHandler({ name: "lookup", request: "roc" }),
-    null,
-  );
+test("ops API task handler serves changing documented endpoints", async () => {
+  assert.equal(opsApiTaskHandler({ name: "lookup", request: "roc" }), null);
 
-  const value = await opsApiTextTaskHandler({
+  const backend = createOpsBackend();
+  const value = await opsApiTaskHandler({
     name: "http:send:summary",
     request: encodeHttpRequestPayload({ method: "GET", uri: "/api/ops/summary" }),
-  });
+  }, backend);
   const response = decodeHttpResponsePayload(value);
   assert.equal(response.status, 200);
   assert.deepEqual(response.headers, [["content-type", "text/plain; charset=utf-8"]]);
   assert.match(new TextDecoder().decode(response.body), /Overall:/);
   assert.match(new TextDecoder().decode(response.body), /Traffic:/);
 
+  const firstDashboard = await opsApiTaskHandler({
+    name: "http:send:dashboard",
+    request: encodeHttpRequestPayload({ method: "GET", uri: "/api/ops/dashboard" }),
+  }, backend);
+  const secondDashboard = await opsApiTaskHandler({
+    name: "http:send:dashboard",
+    request: encodeHttpRequestPayload({ method: "GET", uri: "/api/ops/dashboard" }),
+  }, backend);
+  assert.notEqual(
+    new TextDecoder().decode(decodeHttpResponsePayload(firstDashboard).body),
+    new TextDecoder().decode(decodeHttpResponsePayload(secondDashboard).body),
+  );
+
+  assert.equal(
+    opsApiTaskHandler({
+      name: "http:send:private",
+      request: encodeHttpRequestPayload({ method: "GET", uri: "/api/private" }),
+    }),
+    null,
+  );
+
   assert.throws(
     () =>
-      opsApiTextTaskHandler({
-        name: "http:send:private",
-        request: encodeHttpRequestPayload({ method: "GET", uri: "/api/private" }),
+      opsApiTaskHandler({
+        name: "http:send:dashboard",
+        request: encodeHttpRequestPayload({ method: "POST", uri: "/api/ops/dashboard" }),
       }),
     /roc-http-error-v1\nunsupported/,
   );

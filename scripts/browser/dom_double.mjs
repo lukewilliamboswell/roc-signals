@@ -79,6 +79,11 @@ class FakeNode {
       }
     }
   }
+
+  dispatchEvent(event) {
+    this.dispatch(event.type, event);
+    return !event.defaultPrevented;
+  }
 }
 
 export class FakeElement extends FakeNode {
@@ -115,6 +120,22 @@ export class FakeElement extends FakeNode {
     this.attributes.delete(name);
   }
 
+  get parentElement() {
+    return this.parentNode?.nodeType === ELEMENT_NODE ? this.parentNode : null;
+  }
+
+  querySelector(selector) {
+    return this.querySelectorAll(selector)[0] ?? null;
+  }
+
+  querySelectorAll(selector) {
+    const matches = [];
+    for (const child of this.childNodes) {
+      collectMatches(child, selector, matches);
+    }
+    return matches;
+  }
+
   get textContent() {
     let out = "";
     for (const child of this.childNodes) {
@@ -147,8 +168,31 @@ export class FakeText extends FakeNode {
 export function createDocument() {
   return {
     createElement: (tag) => new FakeElement(tag),
+    createElementNS: (_namespace, tag) => new FakeElement(tag),
     createTextNode: (data) => new FakeText(data),
   };
+}
+
+function collectMatches(node, selector, matches) {
+  if (node.nodeType === ELEMENT_NODE && matchesSelector(node, selector)) {
+    matches.push(node);
+  }
+  for (const child of node.childNodes) {
+    collectMatches(child, selector, matches);
+  }
+}
+
+function matchesSelector(node, selector) {
+  const attrMatch = selector.match(/^\[([A-Za-z0-9_-]+)(?:="([^"]*)")?\]$/);
+  if (!attrMatch) {
+    return false;
+  }
+  const [, name, value] = attrMatch;
+  const actual = node.getAttribute(name);
+  if (actual == null) {
+    return false;
+  }
+  return value == null || actual === value;
 }
 
 // Installs the globals `runtime.mjs` reads (`document`, `Node`) and returns a

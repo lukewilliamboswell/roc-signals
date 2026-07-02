@@ -3,10 +3,8 @@
 import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
 
-import {
-  SignalsRuntime,
-  publicExampleTaskHandler,
-} from "../../www/static/signals.mjs";
+import { publicExampleTaskHandler } from "../../www/static/example_tasks.mjs";
+import { SignalsRuntime } from "../../www/static/signals.mjs";
 import { installDomDouble } from "./dom_double.mjs";
 
 const [, , wasmPath, rawName] = process.argv;

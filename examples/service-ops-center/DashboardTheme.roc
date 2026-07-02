@@ -128,8 +128,29 @@ DashboardTheme :: [].{
 	text_sm_class : Str
 	text_sm_class = "text-sm"
 
+	text_sm_muted_class : Str
+	text_sm_muted_class = "text-sm text-zinc-600"
+
 	text_xs_class : Str
 	text_xs_class = "text-xs"
+
+	chart_shell_class : Str
+	chart_shell_class = "grid gap-3"
+
+	chart_copy_class : Str
+	chart_copy_class = "grid gap-1"
+
+	chart_mount_class : Str
+	chart_mount_class = "grid min-h-36 w-full overflow-hidden rounded-md border border-zinc-200 bg-white p-3"
+
+	chart_loading_class : Str
+	chart_loading_class = "grid min-h-36 place-items-center text-sm text-zinc-500"
+
+	chart_bridge_input_class : Str
+	chart_bridge_input_class = "sr-only"
+
+	chart_focus_class : Str
+	chart_focus_class = "rounded-md border border-zinc-200 bg-zinc-50 p-3 font-mono text-sm text-zinc-700"
 
 	job_detail_grid_class : Str
 	job_detail_grid_class = "grid gap-1 sm:grid-cols-4"

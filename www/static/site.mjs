@@ -1,4 +1,6 @@
-import { mountSignalsApp, publicExampleTaskHandler } from "./signals.mjs";
+import { publicExampleTaskHandler } from "./example_tasks.mjs";
+import { installServiceOpsCharts } from "./service_ops_charts.mjs";
+import { mountSignalsApp } from "./signals.mjs";
 
 let uploadedRuntime = null;
 let uploadedObjectUrl = null;
@@ -11,13 +13,20 @@ async function mountInto(root, wasmUrl, title, errorTarget = null) {
   }
 
   try {
-    return await mountSignalsApp({
+    const runtime = await mountSignalsApp({
       wasmUrl,
       root,
       taskHandler: publicExampleTaskHandler,
       onError: (err) => showError(errorTarget, err),
       telemetry: true,
     });
+    const cleanupCharts = installServiceOpsCharts(root);
+    const unmount = runtime.unmount.bind(runtime);
+    runtime.unmount = () => {
+      cleanupCharts();
+      unmount();
+    };
+    return runtime;
   } catch (err) {
     showError(errorTarget, err);
     throw err;
