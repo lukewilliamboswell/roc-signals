@@ -2,7 +2,7 @@ platform ""
 	requires {
 		main : {} -> Elem
 	}
-	exposes [Elem, Signal, Html, Ui, Http]
+	exposes [Elem, Signal, Html, Ui, Http, Json]
 	packages {
 		http: "https://github.com/roc-lang/http/releases/download/0.1/6LcdNq2r7xTBwj972ecYWUkMWobJr94yL2NyJpHRAXap.tar.zst",
 	}
@@ -18,7 +18,10 @@ platform ""
 	}
 	targets: {
 		inputs_dir: "targets/",
-		wasm32: { inputs: ["host.wasm", app], output: Shared },
+		wasm32: {
+			inputs: ["host.wasm", app],
+			output: Shared,
+		},
 		x64mac: { inputs: ["libhost.a", app] },
 		x64musl: { inputs: ["crt1.o", "libhost.a", app, "libc.a"] },
 		arm64mac: { inputs: ["libhost.a", app] },
@@ -31,6 +34,7 @@ import Signal
 import Html
 import Ui
 import Http
+import Json
 
 ui_init : {} -> Box(Elem)
 ui_init = |_| {

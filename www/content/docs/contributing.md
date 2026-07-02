@@ -145,6 +145,11 @@ To test an existing bundle archive instead of rebuilding one:
 python3 scripts/test.py bundle --bundle always --bundle-ref path/to/bundle.tar.zst
 ```
 
+The test driver refuses non-local platform URLs by default so development tests
+exercise workspace changes. Use a local bundle path during development. When
+intentionally verifying a published release URL, pass
+`--allow-release-platform-url`.
+
 ## Static Site
 
 Build and serve the static site with:

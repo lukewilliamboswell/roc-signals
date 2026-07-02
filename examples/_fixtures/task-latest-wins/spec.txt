@@ -1,0 +1,21 @@
+# Latest task request wins; stale completions are ignored.
+
+expect_visible role:heading name:"Task latest wins"
+expect_text text:"Task status: loading" "Task status: loading"
+expect_pending_task "lookup" 1
+expect_canceled_task "lookup" 0
+
+click role:button name:"Refresh"
+expect_pending_task "lookup" 1
+expect_canceled_task "lookup" 1
+expect_text text:"Task status: loading" "Task status: loading"
+
+mark_metrics
+resolve_stale_task "lookup" "stale result"
+expect_metric_delta stale_task_results_ignored 1
+expect_pending_task "lookup" 1
+expect_text text:"Task status: loading" "Task status: loading"
+
+resolve_task "lookup" "fresh result"
+expect_pending_task "lookup" 0
+expect_text text:"Task status: done fresh result" "Task status: done fresh result"

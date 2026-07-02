@@ -110,7 +110,9 @@ Http := [].{
 	## Start a full HTTP request task.
 	start = |task, request| Signal.start_str(task, encode_request_payload(request))
 
-	## Create a task that decodes successful responses as text.
+	## Create a task that decodes successful responses as text. Starting a new
+	## request on the same task cancels any older pending request; late results from
+	## canceled requests are ignored by the runtime.
 	get_text_task = |purpose| {
 		name = Str.concat("http:send:", purpose)
 		Signal.task_source(name, decode_text_response_payload, decode_error_text_payload, False)
@@ -149,7 +151,7 @@ Http := [].{
 			encode_timeout(Request.timeout(request)),
 			List.len(headers).to_str(),
 		]
-		request_fields =
+			request_fields =
 			List.fold(
 				headers,
 				base,
@@ -166,7 +168,7 @@ Http := [].{
 			Response.status(response).to_str(),
 			List.len(headers).to_str(),
 		]
-		response_fields =
+			response_fields =
 			List.fold(
 				headers,
 				base,
@@ -177,7 +179,7 @@ Http := [].{
 	}
 
 	encode_error_payload = |err| {
-		(code, message) =
+			(code, message) =
 			match err {
 				Network(detail) => ("network", detail)
 				Timeout => ("timeout", "")
@@ -193,7 +195,7 @@ Http := [].{
 		reader0 = expect_version(Str.split_on(payload, "\n"), "roc-http-response-v1", "response")
 		status_line = read_line(reader0, "response status")
 		header_count_line = read_line(status_line.rest, "response header count")
-		status =
+			status =
 			match U16.from_str(status_line.value) {
 				Ok(value) => value
 				Err(_) => {

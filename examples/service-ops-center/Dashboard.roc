@@ -1,3 +1,5 @@
+import pf.Json
+
 Dashboard := {
 	schema : U64,
 	version : U64,
@@ -10,7 +12,7 @@ Dashboard := {
 	jobs : List(Dashboard.Job),
 	alerts : List(Dashboard.Alert),
 }.{
-	ParseErr : [BadProtocol, BadNumber, MissingField(Str), UnsupportedSchema(U64)]
+	ParseErr : [BadJson, MissingData(Str), BadCode(Str), UnsupportedSchema(U64)]
 
 	State := [Loading, Ready(Dashboard), RequestFailed(Str), DecodeFailed(ParseErr)]
 
@@ -94,86 +96,205 @@ Dashboard := {
 	loading = Loading
 }
 
+# Keep the raw JSON records split. With roc release-fast-7da362c8,
+# derived parsing for one 52+ field record segfaults; the 10 small parses are
+# an intentional compiler-workaround until that upstream issue is fixed.
+RawMeta : {
+	schema : U64,
+	updated_version : U64,
+	updated_hour : U64,
+	updated_minute : U64,
+	updated_second : U64,
+	phase_code : U64,
+}
+
+RawTrafficCore : {
+	requests_per_minute : U64,
+	traffic_delta_percent : U64,
+	latency_ms : U64,
+	latency_target_ms : U64,
+	webhook_rpm : U64,
+	db_write_rpm : U64,
+}
+
+RawTrafficBars : {
+	webhook_bar_code : U64,
+	db_write_bar_code : U64,
+	ingress_bar_code : U64,
+	latency_bar_code : U64,
+	error_bar_code : U64,
+}
+
+RawBudget : {
+	error_permille : U64,
+	burn_rate_x10 : U64,
+	budget_remaining_permille : U64,
+	budget_bar_code : U64,
+}
+
+RawQueue : {
+	queue_depth : U64,
+	queue_trend_code : U64,
+	queue_capacity : U64,
+	running_jobs : U64,
+	blocked_jobs : U64,
+	oldest_job_min : U64,
+}
+
+RawServiceStates : {
+	edge_state_code : U64,
+	api_state_code : U64,
+	worker_state_code : U64,
+	database_state_code : U64,
+	billing_state_code : U64,
+	search_state_code : U64,
+	identity_state_code : U64,
+}
+
+RawServiceMetrics : {
+	edge_latency_ms : U64,
+	api_latency_ms : U64,
+	worker_oldest_job_min : U64,
+	database_lag_sec : U64,
+	billing_latency_ms : U64,
+	search_refresh_sec : U64,
+	identity_latency_ms : U64,
+}
+
+RawJobsA : {
+	job_a_id : U64,
+	job_a_progress : U64,
+	job_a_age_min : U64,
+	job_a_state_code : U64,
+	job_b_id : U64,
+	job_b_progress : U64,
+	job_b_age_min : U64,
+	job_b_state_code : U64,
+}
+
+RawJobsB : {
+	job_c_id : U64,
+	job_c_progress : U64,
+	job_c_age_min : U64,
+	job_c_state_code : U64,
+	job_d_id : U64,
+	job_d_progress : U64,
+	job_d_age_min : U64,
+	job_d_state_code : U64,
+}
+
+RawAlerts : {
+	alert_a_code : U64,
+	alert_a_age_min : U64,
+	alert_b_code : U64,
+	alert_b_age_min : U64,
+	alert_c_code : U64,
+	alert_c_age_min : U64,
+}
+
 parse_dashboard : Str -> Try(Dashboard, Dashboard.ParseErr)
 parse_dashboard = |body| {
-	fields = parse_fields(body)?
-	schema = get_u64(fields, "schema")?
-	if schema != 1 {
-		return Err(UnsupportedSchema(schema))
+	meta_result : Try(RawMeta, Json)
+	meta_result = Json.parse(body)
+	meta = map_json_result("meta", meta_result)?
+	if meta.schema != 1 {
+		return Err(UnsupportedSchema(meta.schema))
 	}
 
-	updated_hour = get_u64(fields, "updated_hour")?
-	updated_minute = get_u64(fields, "updated_minute")?
-	updated_second = get_u64(fields, "updated_second")?
-	phase = decode_phase(get_u64(fields, "phase_code")?)?
-	queue_trend = decode_queue_trend(get_u64(fields, "queue_trend_code")?)?
+	traffic_result : Try(RawTrafficCore, Json)
+	traffic_result = Json.parse(body)
+	traffic = map_json_result("traffic", traffic_result)?
+	traffic_bars_result : Try(RawTrafficBars, Json)
+	traffic_bars_result = Json.parse(body)
+	traffic_bars = map_json_result("traffic bars", traffic_bars_result)?
+	budget_result : Try(RawBudget, Json)
+	budget_result = Json.parse(body)
+	budget = map_json_result("budget", budget_result)?
+	queue_result : Try(RawQueue, Json)
+	queue_result = Json.parse(body)
+	queue = map_json_result("queue", queue_result)?
+	service_states_result : Try(RawServiceStates, Json)
+	service_states_result = Json.parse(body)
+	service_states = map_json_result("service states", service_states_result)?
+	service_metrics_result : Try(RawServiceMetrics, Json)
+	service_metrics_result = Json.parse(body)
+	service_metrics = map_json_result("service metrics", service_metrics_result)?
+	jobs_a_result : Try(RawJobsA, Json)
+	jobs_a_result = Json.parse(body)
+	jobs_a = map_json_result("jobs a", jobs_a_result)?
+	jobs_b_result : Try(RawJobsB, Json)
+	jobs_b_result = Json.parse(body)
+	jobs_b = map_json_result("jobs b", jobs_b_result)?
+	alerts_result : Try(RawAlerts, Json)
+	alerts_result = Json.parse(body)
+	alerts = map_json_result("alerts", alerts_result)?
 
-	edge_health = decode_health(get_u64(fields, "edge_state_code")?)?
-	api_health = decode_health(get_u64(fields, "api_state_code")?)?
-	worker_health = decode_health(get_u64(fields, "worker_state_code")?)?
-	database_health = decode_health(get_u64(fields, "database_state_code")?)?
-	billing_health = decode_health(get_u64(fields, "billing_state_code")?)?
-	search_health = decode_health(get_u64(fields, "search_state_code")?)?
-	identity_health = decode_health(get_u64(fields, "identity_state_code")?)?
+	phase = decode_phase(meta.phase_code)?
+	queue_trend = decode_queue_trend(queue.queue_trend_code)?
 
-	job_a_state = decode_job_state(get_u64(fields, "job_a_state_code")?)?
-	job_b_state = decode_job_state(get_u64(fields, "job_b_state_code")?)?
-	job_c_state = decode_job_state(get_u64(fields, "job_c_state_code")?)?
-	job_d_state = decode_job_state(get_u64(fields, "job_d_state_code")?)?
+	edge_health = decode_health("edge_state_code", service_states.edge_state_code)?
+	api_health = decode_health("api_state_code", service_states.api_state_code)?
+	worker_health = decode_health("worker_state_code", service_states.worker_state_code)?
+	database_health = decode_health("database_state_code", service_states.database_state_code)?
+	billing_health = decode_health("billing_state_code", service_states.billing_state_code)?
+	search_health = decode_health("search_state_code", service_states.search_state_code)?
+	identity_health = decode_health("identity_state_code", service_states.identity_state_code)?
 
-	alert_a_kind = decode_alert_kind(get_u64(fields, "alert_a_code")?)?
-	alert_b_kind = decode_alert_kind(get_u64(fields, "alert_b_code")?)?
-	alert_c_kind = decode_alert_kind(get_u64(fields, "alert_c_code")?)?
+	job_a_state = decode_job_state("job_a_state_code", jobs_a.job_a_state_code)?
+	job_b_state = decode_job_state("job_b_state_code", jobs_a.job_b_state_code)?
+	job_c_state = decode_job_state("job_c_state_code", jobs_b.job_c_state_code)?
+	job_d_state = decode_job_state("job_d_state_code", jobs_b.job_d_state_code)?
 
-	queue_depth = get_u64(fields, "queue_depth")?
-	worker_oldest_job_min = get_u64(fields, "worker_oldest_job_min")?
+	alert_a_kind = decode_alert_kind("alert_a_code", alerts.alert_a_code)?
+	alert_b_kind = decode_alert_kind("alert_b_code", alerts.alert_b_code)?
+	alert_c_kind = decode_alert_kind("alert_c_code", alerts.alert_c_code)?
 
 	Ok(
 		{
-			schema,
-			version: get_u64(fields, "updated_version")?,
-			updated: { hour: updated_hour, minute: updated_minute, second: updated_second },
+			schema: meta.schema,
+			version: meta.updated_version,
+			updated: { hour: meta.updated_hour, minute: meta.updated_minute, second: meta.updated_second },
 			phase,
 			traffic: {
-				requests_per_minute: get_u64(fields, "requests_per_minute")?,
-				delta_percent: get_u64(fields, "traffic_delta_percent")?,
-				latency_ms: get_u64(fields, "latency_ms")?,
-				latency_target_ms: get_u64(fields, "latency_target_ms")?,
-				webhook_rpm: get_u64(fields, "webhook_rpm")?,
-				db_write_rpm: get_u64(fields, "db_write_rpm")?,
-				ingress_bar_code: get_bar_code(fields, "ingress_bar_code")?,
-				latency_bar_code: get_bar_code(fields, "latency_bar_code")?,
-				error_bar_code: get_bar_code(fields, "error_bar_code")?,
-				webhook_bar_code: get_bar_code(fields, "webhook_bar_code")?,
-				db_write_bar_code: get_bar_code(fields, "db_write_bar_code")?,
+				requests_per_minute: traffic.requests_per_minute,
+				delta_percent: traffic.traffic_delta_percent,
+				latency_ms: traffic.latency_ms,
+				latency_target_ms: traffic.latency_target_ms,
+				webhook_rpm: traffic.webhook_rpm,
+				db_write_rpm: traffic.db_write_rpm,
+				ingress_bar_code: get_bar_code("ingress_bar_code", traffic_bars.ingress_bar_code)?,
+				latency_bar_code: get_bar_code("latency_bar_code", traffic_bars.latency_bar_code)?,
+				error_bar_code: get_bar_code("error_bar_code", traffic_bars.error_bar_code)?,
+				webhook_bar_code: get_bar_code("webhook_bar_code", traffic_bars.webhook_bar_code)?,
+				db_write_bar_code: get_bar_code("db_write_bar_code", traffic_bars.db_write_bar_code)?,
 			},
 			budget: {
-				remaining_permille: get_u64(fields, "budget_remaining_permille")?,
-				burn_rate_x10: get_u64(fields, "burn_rate_x10")?,
-				error_permille: get_u64(fields, "error_permille")?,
-				bar_code: get_bar_code(fields, "budget_bar_code")?,
+				remaining_permille: budget.budget_remaining_permille,
+				burn_rate_x10: budget.burn_rate_x10,
+				error_permille: budget.error_permille,
+				bar_code: get_bar_code("budget_bar_code", budget.budget_bar_code)?,
 			},
 			queue: {
-				depth: queue_depth,
+				depth: queue.queue_depth,
 				trend: queue_trend,
-				capacity: get_u64(fields, "queue_capacity")?,
-				running_jobs: get_u64(fields, "running_jobs")?,
-				blocked_jobs: get_u64(fields, "blocked_jobs")?,
-				oldest_job_min: get_u64(fields, "oldest_job_min")?,
+				capacity: queue.queue_capacity,
+				running_jobs: queue.running_jobs,
+				blocked_jobs: queue.blocked_jobs,
+				oldest_job_min: queue.oldest_job_min,
 			},
 			services: [
 				{
 					id: "edge",
 					label: "edge",
 					health: edge_health,
-					latency_ms: get_u64(fields, "edge_latency_ms")?,
+					latency_ms: service_metrics.edge_latency_ms,
 					detail: "8 pods",
 				},
 				{
 					id: "api",
 					label: "api",
 					health: api_health,
-					latency_ms: get_u64(fields, "api_latency_ms")?,
+					latency_ms: service_metrics.api_latency_ms,
 					detail: "12 pods",
 				},
 				{
@@ -181,20 +302,20 @@ parse_dashboard = |body| {
 					label: "workers",
 					health: worker_health,
 					latency_ms: 0,
-					detail: "oldest ${worker_oldest_job_min.to_str()}m | ${queue_depth.to_str()} queued",
+					detail: "oldest ${service_metrics.worker_oldest_job_min.to_str()}m | ${queue.queue_depth.to_str()} queued",
 				},
 				{
 					id: "database",
 					label: "database",
 					health: database_health,
 					latency_ms: 0,
-					detail: "lag ${get_u64(fields, "database_lag_sec")?.to_str()}s | 2 writers",
+					detail: "lag ${service_metrics.database_lag_sec.to_str()}s | 2 writers",
 				},
 				{
 					id: "billing",
 					label: "billing",
 					health: billing_health,
-					latency_ms: get_u64(fields, "billing_latency_ms")?,
+					latency_ms: service_metrics.billing_latency_ms,
 					detail: "webhooks",
 				},
 				{
@@ -202,13 +323,13 @@ parse_dashboard = |body| {
 					label: "search",
 					health: search_health,
 					latency_ms: 0,
-					detail: "refresh ${get_u64(fields, "search_refresh_sec")?.to_str()}s | 5 shards",
+					detail: "refresh ${service_metrics.search_refresh_sec.to_str()}s | 5 shards",
 				},
 				{
 					id: "identity",
 					label: "identity",
 					health: identity_health,
-					latency_ms: get_u64(fields, "identity_latency_ms")?,
+					latency_ms: service_metrics.identity_latency_ms,
 					detail: "session cache",
 				},
 			],
@@ -217,316 +338,62 @@ parse_dashboard = |body| {
 					id: "search-index",
 					label: "Rebuild search index",
 					owner: "workers/search",
-					run_id: get_u64(fields, "job_a_id")?,
+					run_id: jobs_a.job_a_id,
 					state: job_a_state,
-					progress: get_u64(fields, "job_a_progress")?,
-					age_min: get_u64(fields, "job_a_age_min")?,
+					progress: jobs_a.job_a_progress,
+					age_min: jobs_a.job_a_age_min,
 				},
 				{
 					id: "billing-backfill",
 					label: "Backfill billing events",
 					owner: "billing",
-					run_id: get_u64(fields, "job_b_id")?,
+					run_id: jobs_a.job_b_id,
 					state: job_b_state,
-					progress: get_u64(fields, "job_b_progress")?,
-					age_min: get_u64(fields, "job_b_age_min")?,
+					progress: jobs_a.job_b_progress,
+					age_min: jobs_a.job_b_age_min,
 				},
 				{
 					id: "audit-export",
 					label: "Export audit archive",
 					owner: "compliance",
-					run_id: get_u64(fields, "job_c_id")?,
+					run_id: jobs_b.job_c_id,
 					state: job_c_state,
-					progress: get_u64(fields, "job_c_progress")?,
-					age_min: get_u64(fields, "job_c_age_min")?,
+					progress: jobs_b.job_c_progress,
+					age_min: jobs_b.job_c_age_min,
 				},
 				{
 					id: "session-prune",
 					label: "Prune stale sessions",
 					owner: "identity",
-					run_id: get_u64(fields, "job_d_id")?,
+					run_id: jobs_b.job_d_id,
 					state: job_d_state,
-					progress: get_u64(fields, "job_d_progress")?,
-					age_min: get_u64(fields, "job_d_age_min")?,
+					progress: jobs_b.job_d_progress,
+					age_min: jobs_b.job_d_age_min,
 				},
 			],
 			alerts: [
-				{ id: alert_id(alert_a_kind), kind: alert_a_kind, age_min: get_u64(fields, "alert_a_age_min")? },
-				{ id: alert_id(alert_b_kind), kind: alert_b_kind, age_min: get_u64(fields, "alert_b_age_min")? },
-				{ id: alert_id(alert_c_kind), kind: alert_c_kind, age_min: get_u64(fields, "alert_c_age_min")? },
+				{ id: alert_id(alert_a_kind), kind: alert_a_kind, age_min: alerts.alert_a_age_min },
+				{ id: alert_id(alert_b_kind), kind: alert_b_kind, age_min: alerts.alert_b_age_min },
+				{ id: alert_id(alert_c_kind), kind: alert_c_kind, age_min: alerts.alert_c_age_min },
 			],
 		},
 	)
 }
 
-Field : { name : List(U8), value : List(U8) }
-
-parse_fields : Str -> Try(List(Field), Dashboard.ParseErr)
-parse_fields = |body| {
-	bytes = Str.to_utf8(body)
-	if is_json_object(bytes) {
-		parse_json_fields(bytes)
-	} else {
-		parse_line_fields(bytes)
-	}
-}
-
-parse_line_fields : List(U8) -> Try(List(Field), Dashboard.ParseErr)
-parse_line_fields = |bytes| {
-	var $remaining = bytes
-	var $fields = []
-
-	while True {
-		if List.is_empty($remaining) {
-			return Ok($fields)
-		}
-
-		line = take_line($remaining)?
-		$remaining = line.rest
-
-		if !List.is_empty(line.value) {
-			parts = split_once_byte(line.value, 61)?
-			$fields = List.append($fields, { name: parts.before, value: parts.after })
-		}
-	}
-}
-
-parse_json_fields : List(U8) -> Try(List(Field), Dashboard.ParseErr)
-parse_json_fields = |bytes| {
-	var $remaining = skip_json_space(bytes)
-	$remaining = consume_json_byte($remaining, 123)?
-	$remaining = skip_json_space($remaining)
-	var $fields = []
-
-	match List.first($remaining) {
-		Ok(byte) =>
-			if byte == 125 {
-				return Ok($fields)
-			}
-
-		Err(_) => return Err(BadProtocol)
+map_json_result : Str, Try(a, Json) -> Try(a, Dashboard.ParseErr)
+map_json_result = |label, result|
+	match result {
+		Ok(value) => Ok(value)
+		Err(MissingRequired) => Err(MissingData(label))
+		Err(InvalidJson) => Err(BadJson)
 	}
 
-	while True {
-		key = take_json_string($remaining)?
-		$remaining = skip_json_space(key.rest)
-		$remaining = consume_json_byte($remaining, 58)?
-		value = take_json_number($remaining)?
-		$fields = List.append($fields, { name: key.value, value: value.value })
-		$remaining = skip_json_space(value.rest)
-
-		match List.first($remaining) {
-			Ok(byte) =>
-				if byte == 44 {
-					$remaining = skip_json_space(List.drop_first($remaining, 1))
-				} else if byte == 125 {
-					rest = skip_json_space(List.drop_first($remaining, 1))
-					if List.is_empty(rest) {
-						return Ok($fields)
-					} else {
-						return Err(BadProtocol)
-					}
-				} else {
-					return Err(BadProtocol)
-				}
-
-			Err(_) => return Err(BadProtocol)
-		}
-	}
-}
-
-is_json_object : List(U8) -> Bool
-is_json_object = |bytes| {
-	trimmed = skip_json_space(bytes)
-	match List.first(trimmed) {
-		Ok(byte) => byte == 123
-		Err(_) => False
-	}
-}
-
-skip_json_space : List(U8) -> List(U8)
-skip_json_space = |bytes| {
-	var $remaining = bytes
-
-	while True {
-		match List.first($remaining) {
-			Ok(byte) =>
-				if (byte == 32) or (byte == 10) or (byte == 13) or (byte == 9) {
-					$remaining = List.drop_first($remaining, 1)
-				} else {
-					return $remaining
-				}
-
-			Err(_) => return $remaining
-		}
-	}
-}
-
-consume_json_byte : List(U8), U8 -> Try(List(U8), Dashboard.ParseErr)
-consume_json_byte = |bytes, expected|
-	match List.first(bytes) {
-		Ok(byte) =>
-			if byte == expected {
-				Ok(List.drop_first(bytes, 1))
-			} else {
-				Err(BadProtocol)
-			}
-
-		Err(_) => Err(BadProtocol)
-	}
-
-take_json_string : List(U8) -> Try({ value : List(U8), rest : List(U8) }, Dashboard.ParseErr)
-take_json_string = |bytes| {
-	remaining0 = consume_json_byte(skip_json_space(bytes), 34)?
-	var $remaining = remaining0
-	var $value = []
-
-	while True {
-		match List.first($remaining) {
-			Ok(byte) =>
-				if byte == 34 {
-					return Ok({ value: $value, rest: List.drop_first($remaining, 1) })
-				} else if byte == 92 {
-					return Err(BadProtocol)
-				} else {
-					$value = List.append($value, byte)
-					$remaining = List.drop_first($remaining, 1)
-				}
-
-			Err(_) => return Err(BadProtocol)
-		}
-	}
-}
-
-take_json_number : List(U8) -> Try({ value : List(U8), rest : List(U8) }, Dashboard.ParseErr)
-take_json_number = |bytes| {
-	var $remaining = skip_json_space(bytes)
-	var $value = []
-
-	while True {
-		match List.first($remaining) {
-			Ok(byte) =>
-				if (byte >= 48) and (byte <= 57) {
-					$value = List.append($value, byte)
-					$remaining = List.drop_first($remaining, 1)
-				} else if List.is_empty($value) {
-					return Err(BadNumber)
-				} else {
-					return Ok({ value: $value, rest: $remaining })
-				}
-
-			Err(_) =>
-				if List.is_empty($value) {
-					return Err(BadNumber)
-				} else {
-					return Ok({ value: $value, rest: $remaining })
-				}
-			}
-	}
-}
-
-get_u64 : List(Field), Str -> Try(U64, Dashboard.ParseErr)
-get_u64 = |fields, name| {
-	raw = get_field(fields, name)?
-	bytes_to_u64(raw)
-}
-
-get_bar_code : List(Field), Str -> Try(U64, Dashboard.ParseErr)
-get_bar_code = |fields, name| {
-	value = get_u64(fields, name)?
+get_bar_code : Str, U64 -> Try(U64, Dashboard.ParseErr)
+get_bar_code = |name, value| {
 	if value <= 8 {
 		Ok(value)
 	} else {
-		Err(BadProtocol)
-	}
-}
-
-get_field : List(Field), Str -> Try(List(U8), Dashboard.ParseErr)
-get_field = |fields, name| {
-	target = Str.to_utf8(name)
-	var $remaining = fields
-
-	while True {
-		match List.first($remaining) {
-			Ok(field) =>
-				if bytes_equal(field.name, target) {
-					return Ok(field.value)
-				} else {
-					$remaining = List.drop_first($remaining, 1)
-				}
-
-			Err(_) => return Err(MissingField(name))
-		}
-	}
-}
-
-take_line : List(U8) -> Try({ value : List(U8), rest : List(U8) }, Dashboard.ParseErr)
-take_line = |raw| {
-	var $remaining = raw
-	var $value = []
-
-	while True {
-		match List.first($remaining) {
-			Ok(byte) => {
-				if byte == 10 {
-					return Ok({ value: $value, rest: List.drop_first($remaining, 1) })
-				}
-
-				$value = List.append($value, byte)
-				$remaining = List.drop_first($remaining, 1)
-			}
-
-			Err(_) => return Ok({ value: $value, rest: [] })
-		}
-	}
-}
-
-split_once_byte : List(U8), U8 -> Try({ before : List(U8), after : List(U8) }, Dashboard.ParseErr)
-split_once_byte = |bytes, delimiter| {
-	var $remaining = bytes
-	var $before = []
-
-	while True {
-		match List.first($remaining) {
-			Ok(byte) =>
-				if byte == delimiter {
-					return Ok({ before: $before, after: List.drop_first($remaining, 1) })
-				} else {
-					$before = List.append($before, byte)
-					$remaining = List.drop_first($remaining, 1)
-				}
-
-			Err(_) => return Err(BadProtocol)
-		}
-	}
-}
-
-bytes_equal : List(U8), List(U8) -> Bool
-bytes_equal = |left, right| {
-	var $left = left
-	var $right = right
-
-	while True {
-		match List.first($left) {
-			Ok(left_byte) =>
-				match List.first($right) {
-					Ok(right_byte) =>
-						if left_byte == right_byte {
-							$left = List.drop_first($left, 1)
-							$right = List.drop_first($right, 1)
-						} else {
-							return False
-						}
-
-					Err(_) => return False
-				}
-
-			Err(_) =>
-				match List.first($right) {
-					Ok(_) => return False
-					Err(_) => return True
-				}
-			}
+		Err(BadCode(name))
 	}
 }
 
@@ -541,11 +408,11 @@ decode_phase = |code|
 	} else if code == 3 {
 		Ok(PhaseRecovering)
 	} else {
-		Err(BadProtocol)
+		Err(BadCode("phase_code"))
 	}
 
-decode_health : U64 -> Try(Dashboard.Health, Dashboard.ParseErr)
-decode_health = |code|
+decode_health : Str, U64 -> Try(Dashboard.Health, Dashboard.ParseErr)
+decode_health = |name, code|
 	if code == 0 {
 		Ok(HealthOk)
 	} else if code == 1 {
@@ -553,7 +420,7 @@ decode_health = |code|
 	} else if code == 2 {
 		Ok(HealthDegraded)
 	} else {
-		Err(BadProtocol)
+		Err(BadCode(name))
 	}
 
 decode_queue_trend : U64 -> Try(Dashboard.QueueTrend, Dashboard.ParseErr)
@@ -565,11 +432,11 @@ decode_queue_trend = |code|
 	} else if code == 2 {
 		Ok(TrendRising)
 	} else {
-		Err(BadProtocol)
+		Err(BadCode("queue_trend_code"))
 	}
 
-decode_job_state : U64 -> Try(Dashboard.JobState, Dashboard.ParseErr)
-decode_job_state = |code|
+decode_job_state : Str, U64 -> Try(Dashboard.JobState, Dashboard.ParseErr)
+decode_job_state = |name, code|
 	if code == 0 {
 		Ok(JobRunning)
 	} else if code == 1 {
@@ -579,11 +446,11 @@ decode_job_state = |code|
 	} else if code == 3 {
 		Ok(JobBlocked)
 	} else {
-		Err(BadProtocol)
+		Err(BadCode(name))
 	}
 
-decode_alert_kind : U64 -> Try(Dashboard.AlertKind, Dashboard.ParseErr)
-decode_alert_kind = |code|
+decode_alert_kind : Str, U64 -> Try(Dashboard.AlertKind, Dashboard.ParseErr)
+decode_alert_kind = |name, code|
 	if code == 1 {
 		Ok(AlertCriticalCheckout)
 	} else if code == 2 {
@@ -595,7 +462,7 @@ decode_alert_kind = |code|
 	} else if code == 5 {
 		Ok(AlertEdgeSteady)
 	} else {
-		Err(BadProtocol)
+		Err(BadCode(name))
 	}
 
 alert_id : Dashboard.AlertKind -> Str
@@ -607,27 +474,3 @@ alert_id = |kind|
 		AlertPaymentRecovering => "payment-recovery"
 		AlertEdgeSteady => "edge-steady"
 	}
-
-bytes_to_u64 : List(U8) -> Try(U64, Dashboard.ParseErr)
-bytes_to_u64 = |bytes| {
-	if List.is_empty(bytes) {
-		return Err(BadNumber)
-	}
-
-	var $remaining = bytes
-	var $value = 0
-
-	while True {
-		match List.first($remaining) {
-			Ok(byte) =>
-				if (byte >= 48) and (byte <= 57) {
-					$value = $value * 10 + U8.to_u64(byte - 48)
-					$remaining = List.drop_first($remaining, 1)
-				} else {
-					return Err(BadNumber)
-				}
-
-			Err(_) => return Ok($value)
-		}
-	}
-}

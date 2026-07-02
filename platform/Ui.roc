@@ -16,6 +16,9 @@ event_extraction_target_value = { bytes: [2, 3, 2] }
 event_extraction_target_checked : Node.EventExtractionPlan
 event_extraction_target_checked = { bytes: [3, 3, 3] }
 
+event_extraction_detail : Node.EventExtractionPlan
+event_extraction_detail = { bytes: [2, 1, 5] }
+
 event_extraction_key_shift : Node.EventExtractionPlan
 event_extraction_key_shift = { bytes: [4, 2, 3, 107, 101, 121, 2, 1, 1, 9, 115, 104, 105, 102, 116, 95, 107, 101, 121, 3, 1, 4] }
 
@@ -174,6 +177,28 @@ Ui := [].{
 			state_event_msg(
 				st.ref,
 				event_extraction_target_checked,
+				{ capability: Capability.handle(payload_cap), transform: Box.box(wrapped) },
+			)
+		}
+
+		## Build a custom-event reducer message using `event.detail` serialized as text.
+		on_detail : State(a), (a, Str -> a) -> Node.Msg
+		on_detail = |st, f| {
+			current_cap = st.cap
+			payload_cap = Capability.new({})
+			wrapped : HostValue, HostValue -> HostValue
+			wrapped = |current_hv, payload_hv| {
+				current : a
+				current = Box.unbox(Capability.get(current_hv, current_cap))
+				payload : Str
+				payload = Box.unbox(Capability.get(payload_hv, payload_cap))
+				next : a
+				next = f(current, payload)
+				Capability.store(Box.box(next), current_cap)
+			}
+			state_event_msg(
+				st.ref,
+				event_extraction_detail,
 				{ capability: Capability.handle(payload_cap), transform: Box.box(wrapped) },
 			)
 		}

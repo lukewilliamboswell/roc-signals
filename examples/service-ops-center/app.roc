@@ -1,4 +1,4 @@
-app [main] { pf: platform "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.1/3eLQGNMDG9RuL9sn1A7ep1Rtq7QGmemE89y141WSv1XG.tar.zst" }
+app [main] { pf: platform "../../platform/main.roc" }
 
 import Dashboard
 import DashboardRemote
@@ -353,55 +353,46 @@ chart_panel = |chart| {
 
 					Ui.component(
 						|_|
-							render_panel(
-								"Traffic chart",
-								"Interactive traffic chart",
+							Html.div(
 								[
-									Ui.when(
-										is_ready,
-										|_|
-											Html.div_c(
-												DashboardTheme.chart_shell_class,
-												[
+									Html.test_id("traffic-chart"),
+									Html.on_custom("chart-hover", hovered_chart_point.on_detail(|_, value| value)),
+									Html.on_custom("chart-select", selected_chart_point.on_detail(|_, value| value)),
+								],
+								[
+									render_panel(
+										"Traffic chart",
+										"Interactive traffic chart",
+										[
+											Ui.when(
+												is_ready,
+												|_|
 													Html.div_c(
-														DashboardTheme.chart_copy_class,
+														DashboardTheme.chart_shell_class,
 														[
-															Html.div_c(DashboardTheme.strong_text_class, [Html.text_s(headline)]),
-															Html.div_c(DashboardTheme.text_sm_muted_class, [Html.text_s(detail)]),
+															Html.div_c(
+																DashboardTheme.chart_copy_class,
+																[
+																	Html.div_c(DashboardTheme.strong_text_class, [Html.text_s(headline)]),
+																	Html.div_c(DashboardTheme.text_sm_muted_class, [Html.text_s(detail)]),
+																],
+															),
+															Html.div(
+																[
+																	Html.class_attr(DashboardTheme.chart_mount_class),
+																	Html.behavior("ops-chart"),
+																	Html.attr_s("data-ops-chart-points", payload),
+																	Html.attr_s("data-ops-chart-selected", selected),
+																	Html.attr("aria-label", "Interactive traffic chart"),
+																],
+																[Html.div_c(DashboardTheme.chart_loading_class, [Html.text("Preparing chart")])],
+															),
 														],
 													),
-													Html.div(
-														[
-															Html.class_attr(DashboardTheme.chart_mount_class),
-															Html.attr("data-ops-chart", "traffic"),
-															Html.attr_s("data-ops-chart-points", payload),
-															Html.attr_s("data-ops-chart-selected", selected),
-															Html.attr("aria-label", "Interactive traffic chart"),
-														],
-														[Html.div_c(DashboardTheme.chart_loading_class, [Html.text("Preparing chart")])],
-													),
-													Html.text_input_attrs(
-														"Chart hover",
-														hovered,
-														[
-															Html.class_attr(DashboardTheme.chart_bridge_input_class),
-															Html.attr("data-ops-chart-hover-input", "traffic"),
-														],
-														hovered_chart_point.on_str(|_, value| value),
-													),
-													Html.text_input_attrs(
-														"Chart selection",
-														selected,
-														[
-															Html.class_attr(DashboardTheme.chart_bridge_input_class),
-															Html.attr("data-ops-chart-select-input", "traffic"),
-														],
-														selected_chart_point.on_str(|_, value| value),
-													),
-													Html.div_c(DashboardTheme.chart_focus_class, [Html.text_s(focus)]),
-												],
+												|_| remote_message("Chart", chart),
 											),
-										|_| remote_message("Chart", chart),
+											Html.div_c(DashboardTheme.chart_focus_class, [Html.text_s(focus)]),
+										],
 									),
 								],
 							),
@@ -540,7 +531,7 @@ main = |_| {
 			refresh_request = Signal.map2(tick, manual_refresh.signal(), |timer_value, manual_value| timer_value + manual_value)
 
 			dashboard_task = Http.get_text_task("dashboard")
-			dashboard_state =
+				dashboard_state =
 				Signal.fold_task(
 					dashboard_task,
 					Dashboard.loading,

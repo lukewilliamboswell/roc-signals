@@ -146,9 +146,6 @@ DashboardTheme :: [].{
 	chart_loading_class : Str
 	chart_loading_class = "grid min-h-36 place-items-center text-sm text-zinc-500"
 
-	chart_bridge_input_class : Str
-	chart_bridge_input_class = "sr-only"
-
 	chart_focus_class : Str
 	chart_focus_class = "rounded-md border border-zinc-200 bg-zinc-50 p-3 font-mono text-sm text-zinc-700"
 

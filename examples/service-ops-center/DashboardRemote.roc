@@ -44,8 +44,8 @@ DashboardRemote(a) := [RemoteLoading, RemoteReady(a), RemoteEmpty, RemoteFailed(
 parse_error_text : Dashboard.ParseErr -> Str
 parse_error_text = |err|
 	match err {
-		BadProtocol => "response did not match the dashboard protocol"
-		BadNumber => "response had an invalid dashboard number"
-		MissingField(name) => "response was missing ${name}"
+		BadJson => "response was not valid dashboard JSON"
+		MissingData(label) => "response was missing dashboard ${label} data"
+		BadCode(name) => "response had an invalid dashboard code for ${name}"
 		UnsupportedSchema(schema) => "unsupported dashboard schema ${schema.to_str()}"
 	}

@@ -1,0 +1,2 @@
+# This fixture should fail during mount before any assertions run.
+

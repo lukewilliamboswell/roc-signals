@@ -58,6 +58,7 @@ pub const DomEventExtractionPlan = struct {
     pub const leaf_value: u8 = 2;
     pub const leaf_checked: u8 = 3;
     pub const leaf_shift_key: u8 = 4;
+    pub const leaf_detail: u8 = 5;
 
     pub const target_value = [_]u8{
         SchemaTag.text,
@@ -69,6 +70,12 @@ pub const DomEventExtractionPlan = struct {
         SchemaTag.bool_,
         source_current_target,
         leaf_checked,
+    };
+
+    pub const detail = [_]u8{
+        SchemaTag.text,
+        source_event,
+        leaf_detail,
     };
 
     pub const key_shift = [_]u8{
@@ -104,6 +111,7 @@ pub const EventExtractionPlanKind = enum(u64) {
     target_value = 2,
     target_checked = 3,
     record_key_shift = 4,
+    detail = 5,
 
     pub fn payloadKind(self: EventExtractionPlanKind) PayloadKind {
         return switch (self) {
@@ -111,6 +119,7 @@ pub const EventExtractionPlanKind = enum(u64) {
             .target_value => .str,
             .target_checked => .bool,
             .record_key_shift => .bytes,
+            .detail => .str,
         };
     }
 
@@ -120,6 +129,7 @@ pub const EventExtractionPlanKind = enum(u64) {
             .target_value => &DomEventExtractionPlan.target_value,
             .target_checked => &DomEventExtractionPlan.target_checked,
             .record_key_shift => &DomEventExtractionPlan.key_shift,
+            .detail => &DomEventExtractionPlan.detail,
         };
     }
 
@@ -129,6 +139,7 @@ pub const EventExtractionPlanKind = enum(u64) {
             .target_value => &SchemaTag.text_schema,
             .target_checked => &SchemaTag.bool_schema,
             .record_key_shift => &SchemaTag.key_shift_schema,
+            .detail => &SchemaTag.text_schema,
         };
     }
 };
@@ -284,6 +295,7 @@ fn validateEventExtractionLeaf(payload_kind: PayloadKind, leaf: u8) ParseError!v
         .str => switch (leaf) {
             DomEventExtractionPlan.leaf_key,
             DomEventExtractionPlan.leaf_value,
+            DomEventExtractionPlan.leaf_detail,
             => return,
             else => return error.IncompatibleEventExtractionLeaf,
         },
@@ -301,6 +313,7 @@ fn validateEventExtractionSourceLeaf(source: u8, leaf: u8) ParseError!void {
     switch (leaf) {
         DomEventExtractionPlan.leaf_key,
         DomEventExtractionPlan.leaf_shift_key,
+        DomEventExtractionPlan.leaf_detail,
         => {
             if (source == DomEventExtractionPlan.source_event) return;
         },
@@ -320,6 +333,7 @@ fn parseSupportedEventExtractionPlanKind(extraction_bytes: []const u8) ParseErro
     if (std.mem.eql(u8, extraction_bytes, &DomEventExtractionPlan.target_value)) return .target_value;
     if (std.mem.eql(u8, extraction_bytes, &DomEventExtractionPlan.target_checked)) return .target_checked;
     if (std.mem.eql(u8, extraction_bytes, &DomEventExtractionPlan.key_shift)) return .record_key_shift;
+    if (std.mem.eql(u8, extraction_bytes, &DomEventExtractionPlan.detail)) return .detail;
     return error.UnsupportedEventExtractionPlan;
 }
 
@@ -356,6 +370,7 @@ test "event extraction plans use shared boundary schema tags" {
     try std.testing.expectEqual(DomEventExtractionPlan.leaf_value, DomEventExtractionPlan.target_value[2]);
     try std.testing.expectEqual(SchemaTag.bool_, DomEventExtractionPlan.target_checked[0]);
     try std.testing.expectEqual(SchemaTag.record, DomEventExtractionPlan.key_shift[0]);
+    try std.testing.expectEqualSlices(u8, &[_]u8{ SchemaTag.text, DomEventExtractionPlan.source_event, DomEventExtractionPlan.leaf_detail }, &DomEventExtractionPlan.detail);
 }
 
 test "compact event extraction plan ids declare their payload container" {
@@ -363,6 +378,7 @@ test "compact event extraction plan ids declare their payload container" {
     try std.testing.expectEqual(PayloadKind.str, EventExtractionPlanKind.target_value.payloadKind());
     try std.testing.expectEqual(PayloadKind.bool, EventExtractionPlanKind.target_checked.payloadKind());
     try std.testing.expectEqual(PayloadKind.bytes, EventExtractionPlanKind.record_key_shift.payloadKind());
+    try std.testing.expectEqual(PayloadKind.str, EventExtractionPlanKind.detail.payloadKind());
 }
 
 test "payload shape ids must match extraction plan payload containers" {
@@ -370,6 +386,7 @@ test "payload shape ids must match extraction plan payload containers" {
     try std.testing.expect(boundaryPayloadDescriptorMatches(.str, .target_value));
     try std.testing.expect(boundaryPayloadDescriptorMatches(.bool, .target_checked));
     try std.testing.expect(boundaryPayloadDescriptorMatches(.bytes, .record_key_shift));
+    try std.testing.expect(boundaryPayloadDescriptorMatches(.str, .detail));
     try std.testing.expect(!boundaryPayloadDescriptorMatches(.unit, .target_value));
     try std.testing.expect(!boundaryPayloadDescriptorMatches(.bytes, .none));
 }
@@ -379,6 +396,7 @@ test "supported event extraction plan ids declare derived payload shape bytes" {
     try std.testing.expectEqualSlices(u8, &SchemaTag.text_schema, EventExtractionPlanKind.target_value.schemaBytes());
     try std.testing.expectEqualSlices(u8, &SchemaTag.bool_schema, EventExtractionPlanKind.target_checked.schemaBytes());
     try std.testing.expectEqualSlices(u8, &SchemaTag.key_shift_schema, EventExtractionPlanKind.record_key_shift.schemaBytes());
+    try std.testing.expectEqualSlices(u8, &SchemaTag.text_schema, EventExtractionPlanKind.detail.schemaBytes());
 
     try std.testing.expectEqualSlices(
         u8,
@@ -392,6 +410,7 @@ test "boundary payload descriptors derive dispatch containers from extraction pl
     try std.testing.expectEqual(EventExtractionPlanKind.target_value, eventExtractionPlanKindFromBytes(&DomEventExtractionPlan.target_value).?);
     try std.testing.expectEqual(EventExtractionPlanKind.target_checked, eventExtractionPlanKindFromBytes(&DomEventExtractionPlan.target_checked).?);
     try std.testing.expectEqual(EventExtractionPlanKind.record_key_shift, eventExtractionPlanKindFromBytes(&DomEventExtractionPlan.key_shift).?);
+    try std.testing.expectEqual(EventExtractionPlanKind.detail, eventExtractionPlanKindFromBytes(&DomEventExtractionPlan.detail).?);
     try std.testing.expectEqual(@as(?EventExtractionPlanKind, null), eventExtractionPlanKindFromBytes(&[_]u8{98}));
 
     const descriptor = boundaryPayloadDescriptorFromExtractionBytes(&DomEventExtractionPlan.key_shift);
@@ -447,6 +466,21 @@ test "event extraction parser validates DOM-specific scalar leaves" {
         DomEventExtractionPlan.source_event,
         DomEventExtractionPlan.leaf_checked,
     };
+    const detail = [_]u8{
+        SchemaTag.text,
+        DomEventExtractionPlan.source_event,
+        DomEventExtractionPlan.leaf_detail,
+    };
+    const invalid_detail_source = [_]u8{
+        SchemaTag.text,
+        DomEventExtractionPlan.source_target,
+        DomEventExtractionPlan.leaf_detail,
+    };
+    const invalid_detail_kind = [_]u8{
+        SchemaTag.bool_,
+        DomEventExtractionPlan.source_event,
+        DomEventExtractionPlan.leaf_detail,
+    };
     const nested_record = [_]u8{
         SchemaTag.record,
         1,
@@ -480,5 +514,9 @@ test "event extraction parser validates DOM-specific scalar leaves" {
     try std.testing.expectError(error.IncompatibleEventExtractionLeaf, parseEventExtractionPayloadKind(&invalid_leaf));
     try std.testing.expectError(error.IncompatibleEventExtractionSource, parseEventExtractionPayloadKind(&invalid_event_property_source));
     try std.testing.expectError(error.IncompatibleEventExtractionSource, parseEventExtractionPayloadKind(&invalid_target_property_source));
+    try std.testing.expectEqual(PayloadKind.str, parseEventExtractionPayloadKind(&detail));
+    try std.testing.expectEqual(EventExtractionPlanKind.detail, eventExtractionPlanKindFromBytes(&detail).?);
+    try std.testing.expectError(error.IncompatibleEventExtractionSource, parseEventExtractionPayloadKind(&invalid_detail_source));
+    try std.testing.expectError(error.IncompatibleEventExtractionLeaf, parseEventExtractionPayloadKind(&invalid_detail_kind));
     try std.testing.expectError(error.NestedRecordField, parseEventExtractionPayloadKind(&nested_record));
 }

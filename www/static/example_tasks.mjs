@@ -1,20 +1,10 @@
 import {
-  HttpTask,
-  decodeHttpRequestPayload,
-  encodeHttpErrorPayload,
-  encodeHttpResponsePayload,
+  createHttpTaskRouter,
+  httpHeaderValue,
+  httpJsonResponse,
+  httpTaskError,
+  httpTextResponse,
 } from "./signals.mjs";
-
-const textEncoder = new TextEncoder();
-
-const opsApiPaths = Object.freeze([
-  "/api/ops/dashboard",
-  "/api/ops/summary",
-  "/api/ops/traffic",
-  "/api/ops/jobs",
-  "/api/ops/alerts",
-  "/api/ops/health",
-]);
 
 export function createPublicExampleTaskHandler() {
   const opsBackend = createOpsBackend();
@@ -46,67 +36,70 @@ export function createOpsBackend() {
 }
 
 const defaultOpsBackend = createOpsBackend();
+const opsRouters = new WeakMap();
 
 export function opsApiTaskHandler({ name, request }, backend = defaultOpsBackend) {
-  if (!name.startsWith(HttpTask.namePrefix)) {
-    return null;
-  }
-
-  const decoded = decodeHttpRequestPayload(request);
-  if (!opsApiPaths.includes(decoded.uri)) {
-    return null;
-  }
-  if (decoded.method !== "GET") {
-    throw new Error(encodeHttpErrorPayload("unsupported", `unsupported ops API method: ${decoded.method}`));
-  }
-
-  const snapshot = backend.nextSnapshot();
-  switch (decoded.uri) {
-    case "/api/ops/dashboard":
-      return resolvedResponse(dashboardJson(snapshot), "application/json; charset=utf-8");
-    case "/api/ops/summary":
-      return resolvedResponse(summaryText(snapshot), "text/plain; charset=utf-8");
-    case "/api/ops/traffic":
-      return resolvedResponse(trafficText(snapshot), "text/plain; charset=utf-8");
-    case "/api/ops/jobs":
-      return resolvedResponse(jobsText(snapshot), "text/plain; charset=utf-8");
-    case "/api/ops/alerts":
-      return resolvedResponse(alertsText(snapshot), "text/plain; charset=utf-8");
-    case "/api/ops/health":
-      return resolvedResponse(healthText(snapshot), "text/plain; charset=utf-8");
-    default:
-      return null;
-  }
+  return opsRouterFor(backend)({ name, request });
 }
 
-export function apiRequestConsoleTaskHandler({ name, request }) {
-  if (!name.startsWith(HttpTask.namePrefix)) {
-    return null;
-  }
-  const decoded = decodeHttpRequestPayload(request);
-  if (decoded.uri !== "/api/api-request-console") {
-    return null;
-  }
-  if (decoded.method !== "POST") {
-    throw new Error(encodeHttpErrorPayload("unsupported", `unsupported API console method: ${decoded.method}`));
+function opsRouterFor(backend) {
+  let router = opsRouters.get(backend);
+  if (router) {
+    return router;
   }
 
-  const scenario = httpHeaderValue(decoded.headers, "x-scenario") || "success";
-  if (scenario === "failure") {
-    throw new Error(encodeHttpErrorPayload("network", "offline"));
-  }
-
-  const missing = scenario === "missing";
-  return resolvedResponse(
-    missing
-      ? '{"status":"missing","message":"customer record was not found"}'
-      : '{"status":"created","message":"customer-42 is ready"}',
-    "application/json; charset=utf-8",
-    {
-      status: missing ? 404 : 201,
-      headers: [["x-result", missing ? "missing" : "ok"]],
+  router = createHttpTaskRouter({
+    "GET /api/ops/dashboard": () => {
+      const snapshot = backend.nextSnapshot();
+      return httpJsonResponse(snapshot.fields);
     },
-  );
+    "GET /api/ops/summary": () => {
+      const snapshot = backend.nextSnapshot();
+      return httpTextResponse(summaryText(snapshot));
+    },
+    "GET /api/ops/traffic": () => {
+      const snapshot = backend.nextSnapshot();
+      return httpTextResponse(trafficText(snapshot));
+    },
+    "GET /api/ops/jobs": () => {
+      const snapshot = backend.nextSnapshot();
+      return httpTextResponse(jobsText(snapshot));
+    },
+    "GET /api/ops/alerts": () => {
+      const snapshot = backend.nextSnapshot();
+      return httpTextResponse(alertsText(snapshot));
+    },
+    "GET /api/ops/health": () => {
+      const snapshot = backend.nextSnapshot();
+      return httpTextResponse(healthText(snapshot));
+    },
+  });
+  opsRouters.set(backend, router);
+  return router;
+}
+
+const apiConsoleRouter = createHttpTaskRouter({
+  "POST /api/api-request-console": (req) => {
+    const scenario = httpHeaderValue(req.headers, "x-scenario") || "success";
+    if (scenario === "failure") {
+      throw httpTaskError("network", "offline");
+    }
+
+    const missing = scenario === "missing";
+    return httpJsonResponse(
+      missing
+        ? { status: "missing", message: "customer record was not found" }
+        : { status: "created", message: "customer-42 is ready" },
+      {
+        status: missing ? 404 : 201,
+        headers: [["x-result", missing ? "missing" : "ok"]],
+      },
+    );
+  },
+});
+
+export function apiRequestConsoleTaskHandler(args) {
+  return apiConsoleRouter(args);
 }
 
 export function lookupTaskHandler({ name, request, signal }) {
@@ -248,10 +241,6 @@ function opsSnapshot(sequence) {
   };
 }
 
-function dashboardJson(snapshot) {
-  return JSON.stringify(snapshot.fields);
-}
-
 function summaryText(snapshot) {
   return [
     `Updated: 12:${twoDigits(Math.floor((snapshot.sequence * 2) / 60) % 60)}:${twoDigits((snapshot.sequence * 2) % 60)} UTC  version ${snapshot.sequence}`,
@@ -306,26 +295,6 @@ function healthText(snapshot) {
     "search    ok       index green",
     "identity  ok       session cache hot",
   ].join("\n");
-}
-
-function resolvedResponse(body, contentType, { status = 200, headers = [] } = {}) {
-  return Promise.resolve(
-    encodeHttpResponsePayload({
-      status,
-      headers: [["content-type", contentType], ...headers],
-      body: textEncoder.encode(body),
-    }),
-  );
-}
-
-function httpHeaderValue(headers, targetName) {
-  const target = targetName.toLowerCase();
-  for (const [name, value] of headers) {
-    if (String(name).toLowerCase() === target) {
-      return String(value);
-    }
-  }
-  return "";
 }
 
 function wave(seed, speed, amplitude) {

@@ -76,7 +76,11 @@ pub const RenderMove = struct {
 
 const NextKeyIndexError = error{
     OutOfMemory,
-    DuplicateKey,
+};
+
+pub const DuplicateKeyInfo = struct {
+    first_index: usize,
+    second_index: usize,
 };
 
 pub fn clearSites(allocator: std.mem.Allocator, sites: *std.ArrayListUnmanaged(Site), site_indexes: *SiteIndexMap, memberships: *std.ArrayListUnmanaged(?Membership)) void {
@@ -320,10 +324,12 @@ pub fn syncRows(
 
     const next_hash_links = allocator.alloc(usize, keys.len) catch @panic("out of memory");
     defer allocator.free(next_hash_links);
-    indexNextKeys(allocator, &next_hash_heads, next_hash_links, key_hashes, keys, hooks) catch |err| switch (err) {
+    const duplicate = indexNextKeys(allocator, &next_hash_heads, next_hash_links, key_hashes, keys, hooks) catch |err| switch (err) {
         error.OutOfMemory => @panic("out of memory"),
-        error.DuplicateKey => @panic("keyed row diff operation failed"),
     };
+    if (duplicate) |info| {
+        hooks.failDuplicateEachKey(parent_scope_id, site_ordinal, info.first_index, info.second_index, keys[info.second_index]);
+    }
 
     const matched_existing = allocator.alloc(bool, existing_len) catch @panic("out of memory");
     defer allocator.free(matched_existing);
@@ -427,7 +433,7 @@ fn indexNextKeys(
     key_hashes: []const u64,
     keys: anytype,
     hooks: anytype,
-) NextKeyIndexError!void {
+) NextKeyIndexError!?DuplicateKeyInfo {
     @memset(next_hash_links, missing_row_index);
 
     for (key_hashes, 0..) |hash, key_index| {
@@ -435,7 +441,10 @@ fn indexNextKeys(
             var previous_index = head;
             while (previous_index != missing_row_index) {
                 if (hooks.nextKeysEqual(keys[previous_index], keys[key_index])) {
-                    return error.DuplicateKey;
+                    return .{
+                        .first_index = previous_index,
+                        .second_index = key_index,
+                    };
                 }
                 previous_index = next_hash_links[previous_index];
             }
@@ -447,6 +456,7 @@ fn indexNextKeys(
         }
         entry.value_ptr.* = key_index;
     }
+    return null;
 }
 
 fn rowKeysHash(row_keys: anytype, scope_id: u64) u64 {
@@ -584,6 +594,15 @@ const TestSyncHooks = struct {
         self.rows_created = rows_created;
         self.rows_removed = rows_removed;
     }
+
+    pub fn failDuplicateEachKey(_: *@This(), parent_scope_id: u64, site_ordinal: u64, first_index: usize, second_index: usize, key: u64) noreturn {
+        _ = parent_scope_id;
+        _ = site_ordinal;
+        _ = first_index;
+        _ = second_index;
+        _ = key;
+        @panic("test duplicate each key");
+    }
 };
 
 test "each runtime detects duplicate next keys through typed equality" {
@@ -604,10 +623,11 @@ test "each runtime detects duplicate next keys through typed equality" {
     };
     defer hooks.deinit(std.testing.allocator);
 
-    try std.testing.expectError(
-        error.DuplicateKey,
-        indexNextKeys(std.testing.allocator, &next_hash_heads, &next_hash_links, &key_hashes, &keys, &hooks),
-    );
+    const duplicate = try indexNextKeys(std.testing.allocator, &next_hash_heads, &next_hash_links, &key_hashes, &keys, &hooks);
+    try std.testing.expectEqual(@as(?DuplicateKeyInfo, .{
+        .first_index = 0,
+        .second_index = 1,
+    }), duplicate);
 }
 
 test "each runtime appends rows and tracks memberships" {

@@ -72,6 +72,7 @@ class FakeNode {
   }
 
   dispatch(type, event) {
+    setEventField(event, "currentTarget", this);
     for (const entry of [...(this.listeners.get(type) ?? [])]) {
       entry.handler(event);
       if (event.immediatePropagationStopped) {
@@ -81,7 +82,15 @@ class FakeNode {
   }
 
   dispatchEvent(event) {
-    this.dispatch(event.type, event);
+    setEventField(event, "target", event.target ?? this);
+    let current = this;
+    while (current) {
+      current.dispatch(event.type, event);
+      if (!event.bubbles || event.cancelBubble) {
+        break;
+      }
+      current = current.parentNode;
+    }
     return !event.defaultPrevented;
   }
 }
@@ -200,6 +209,9 @@ function matchesSelector(node, selector) {
 export function installDomDouble() {
   globalThis.document = createDocument();
   globalThis.Node = { ELEMENT_NODE, TEXT_NODE };
+  if (typeof globalThis.CustomEvent !== "function") {
+    globalThis.CustomEvent = FakeCustomEvent;
+  }
   return globalThis.document.createElement("div");
 }
 
@@ -250,11 +262,15 @@ export function fireEvent(node, type, init = {}) {
     type,
     target: node,
     currentTarget: node,
+    bubbles: init.bubbles ?? false,
+    cancelBubble: false,
     defaultPrevented: false,
     preventDefault() {
       this.defaultPrevented = true;
     },
-    stopPropagation() {},
+    stopPropagation() {
+      this.cancelBubble = true;
+    },
     immediatePropagationStopped: false,
     stopImmediatePropagation() {
       this.immediatePropagationStopped = true;
@@ -262,6 +278,38 @@ export function fireEvent(node, type, init = {}) {
     },
     ...init,
   };
-  node.dispatch(type, event);
+  node.dispatchEvent(event);
   return event;
+}
+
+class FakeCustomEvent {
+  constructor(type, init = {}) {
+    this.type = type;
+    this.detail = init.detail;
+    this.bubbles = init.bubbles ?? false;
+    this.cancelBubble = false;
+    this.defaultPrevented = false;
+    this.immediatePropagationStopped = false;
+  }
+
+  preventDefault() {
+    this.defaultPrevented = true;
+  }
+
+  stopPropagation() {
+    this.cancelBubble = true;
+  }
+
+  stopImmediatePropagation() {
+    this.immediatePropagationStopped = true;
+    this.stopPropagation();
+  }
+}
+
+function setEventField(event, name, value) {
+  try {
+    Object.defineProperty(event, name, { value, configurable: true });
+  } catch {
+    event[name] = value;
+  }
 }

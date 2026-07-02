@@ -52,6 +52,7 @@ pub const RuntimeMetrics = struct {
     set_text: u64,
     set_value: u64,
     signal_record_table_rebuilt: u64,
+    stale_task_results_ignored: u64,
     stream_nodes_scanned: u64,
     stream_nodes_scanned_apply: u64,
     stream_nodes_scanned_children: u64,
