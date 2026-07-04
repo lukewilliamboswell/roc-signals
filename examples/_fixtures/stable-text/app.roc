@@ -5,10 +5,8 @@ import pf.Html
 import pf.Signal
 import pf.Ui
 
-page_class : Str
 page_class = "grid gap-6"
 
-hero_class : Str
 hero_class = "grid gap-2 rounded-lg border border-zinc-200 bg-white p-5"
 
 main : {} -> Elem

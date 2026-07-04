@@ -9,10 +9,10 @@ import pf.Ui
 TaskState := [Loading, Ready(U64), Failed(U64)]
 
 decode : Str -> TaskState
-decode = |body| Ready(List.len(Str.to_utf8(body)))
+decode = |body| Ready(Str.to_utf8(body).len())
 
 failed : Str -> TaskState
-failed = |err| Failed(List.len(Str.to_utf8(err)))
+failed = |err| Failed(Str.to_utf8(err).len())
 
 state_text : TaskState -> Str
 state_text = |state|

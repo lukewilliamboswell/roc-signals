@@ -86,7 +86,7 @@ DashboardView :: [].{
 	phase_status_item : Dashboard -> StatusItem
 	phase_status_item = |dashboard| {
 		ok = count_health(dashboard.services, HealthOk)
-		total = List.len(dashboard.services)
+		total = dashboard.services.len()
 		health_summary = "${ok.to_str()}/${total.to_str()} services ok"
 		{ id: "phase", label: "Phase", value: phase_text(dashboard.phase), detail: "${incident_count_for_phase(dashboard.phase).to_str()} incidents | ${health_summary}" }
 	}
@@ -96,7 +96,7 @@ DashboardView :: [].{
 		degraded = count_health(dashboard.services, HealthDegraded)
 		watch = count_health(dashboard.services, HealthWatch)
 		ok = count_health(dashboard.services, HealthOk)
-		total = List.len(dashboard.services)
+		total = dashboard.services.len()
 		health_summary = "${ok.to_str()}/${total.to_str()} services ok"
 		{ id: "system", label: "System", value: overall_text(degraded, watch), detail: "${health_summary} | ${watch.to_str()} watch" }
 	}
@@ -125,7 +125,7 @@ DashboardView :: [].{
 		degraded = count_health(dashboard.services, HealthDegraded)
 		watch = count_health(dashboard.services, HealthWatch)
 		ok = count_health(dashboard.services, HealthOk)
-		total = List.len(dashboard.services)
+		total = dashboard.services.len()
 		phase = phase_text(dashboard.phase)
 		overall = overall_text(degraded, watch)
 		health_summary = "${ok.to_str()}/${total.to_str()} services ok"
@@ -234,13 +234,13 @@ DashboardView :: [].{
 		]
 
 	service_rows : Dashboard -> List(ServiceRow)
-	service_rows = |dashboard| List.map(dashboard.services, service_row)
+	service_rows = |dashboard| dashboard.services.map(service_row)
 
 	job_rows : Dashboard -> List(JobRow)
-	job_rows = |dashboard| List.map(dashboard.jobs, job_row)
+	job_rows = |dashboard| dashboard.jobs.map(job_row)
 
 	alert_rows : Dashboard -> List(AlertRow)
-	alert_rows = |dashboard| List.map(dashboard.alerts, alert_row)
+	alert_rows = |dashboard| dashboard.alerts.map(alert_row)
 
 	manual_refresh_text : U64 -> Str
 	manual_refresh_text = |count| "Manual refreshes: ${count.to_str()} | auto refresh 2s"
@@ -250,23 +250,20 @@ chart_payload : Dashboard -> Str
 chart_payload = |dashboard|
 	join_with(
 		";",
-		List.map(
-			[
-				chart_point(dashboard, 0),
-				chart_point(dashboard, 1),
-				chart_point(dashboard, 2),
-				chart_point(dashboard, 3),
-				chart_point(dashboard, 4),
-				chart_point(dashboard, 5),
-				chart_point(dashboard, 6),
-				chart_point(dashboard, 7),
-				chart_point(dashboard, 8),
-				chart_point(dashboard, 9),
-				chart_point(dashboard, 10),
-				chart_point(dashboard, 11),
-			],
-			chart_point_payload,
-		),
+		[
+			chart_point(dashboard, 0),
+			chart_point(dashboard, 1),
+			chart_point(dashboard, 2),
+			chart_point(dashboard, 3),
+			chart_point(dashboard, 4),
+			chart_point(dashboard, 5),
+			chart_point(dashboard, 6),
+			chart_point(dashboard, 7),
+			chart_point(dashboard, 8),
+			chart_point(dashboard, 9),
+			chart_point(dashboard, 10),
+			chart_point(dashboard, 11),
+		].map(chart_point_payload),
 	)
 
 chart_point : Dashboard, U64 -> DashboardView.ChartPoint
@@ -375,8 +372,7 @@ alert_row = |alert|
 
 count_health : List(Dashboard.Service), Dashboard.Health -> U64
 count_health = |services, target|
-	List.fold(
-		services,
+	services.fold(
 		0,
 		|count, service|
 			if service.health == target {
@@ -579,8 +575,7 @@ subtract_floor = |value, amount|
 
 join_with : Str, List(Str) -> Str
 join_with = |separator, parts|
-	List.fold(
-		parts,
+	parts.fold(
 		"",
 		|acc, part|
 			if Str.is_empty(acc) {

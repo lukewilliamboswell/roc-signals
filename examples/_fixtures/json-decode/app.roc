@@ -10,7 +10,7 @@ main = |_| {
 		[],
 		List.concat(
 			[Html.heading("Json decode fixture")],
-			List.map(JsonProbe.rows, Html.paragraph),
+			JsonProbe.rows.map(Html.paragraph),
 		),
 	)
 }

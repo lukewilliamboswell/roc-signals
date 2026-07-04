@@ -83,13 +83,10 @@ disabled_state = |state, task_loading| {
 	(!can_submit_state(state)) or ((state.submit_count > 0) and task_loading)
 }
 
-page_class : Str
 page_class = "grid gap-5"
 
-panel_class : Str
 panel_class = "panel grid gap-4 p-4"
 
-input_class : Str
 input_class = "w-full max-w-md rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm"
 
 main : {} -> Elem
@@ -114,8 +111,10 @@ main = |_| {
 					|err| Str.concat("Submit error: ", err),
 				)
 			task_loading = Signal.fold_task(task, True, |_| False, |_| False)
-			status_text = Signal.map2(state_signal, task_text, status_message)
-			submit_disabled = Signal.map2(state_signal, task_loading, disabled_state)
+			status_inputs = { state: state_signal, task_text: task_text }.Signal
+			status_text = Signal.map(status_inputs, |inputs| status_message(inputs.state, inputs.task_text))
+			disabled_inputs = { state: state_signal, task_loading: task_loading }.Signal
+			submit_disabled = Signal.map(disabled_inputs, |inputs| disabled_state(inputs.state, inputs.task_loading))
 
 			Html.div_c(
 				page_class,

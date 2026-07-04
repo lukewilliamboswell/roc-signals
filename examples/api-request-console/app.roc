@@ -6,23 +6,18 @@ import pf.Http
 import pf.Signal
 import pf.Ui
 
-page_class : Str
 page_class = "grid gap-5"
 
-hero_class : Str
 hero_class = "panel grid gap-2 p-5"
 
-panel_class : Str
 panel_class = "panel grid gap-4 p-4"
 
-card_class : Str
 card_class = "panel grid gap-3 p-4"
 
-toolbar_class : Str
 toolbar_class = "flex flex-wrap items-center gap-3"
 
 header_value = |headers, target|
-	match List.find_first(headers, |(name, _)| name == target) {
+	match headers.find_first(|(name, _)| name == target) {
 		Ok((_, value)) => value
 		Err(_) => "missing"
 	}

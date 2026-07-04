@@ -11,10 +11,8 @@ concat3 = |a, b, c| Str.concat(Str.concat(a, b), c)
 increment_i64 : I64 -> I64
 increment_i64 = |current| current + 1
 
-traffic_widget : Str
 traffic_widget = "Traffic Widget"
 
-queue_widget : Str
 queue_widget = "Queue Widget"
 
 initial_components : List(Str)
@@ -23,19 +21,14 @@ initial_components = [traffic_widget, queue_widget]
 reordered_components : List(Str)
 reordered_components = [queue_widget, traffic_widget]
 
-page_class : Str
 page_class = "grid gap-5"
 
-hero_class : Str
 hero_class = "panel grid gap-2 p-5"
 
-panel_class : Str
 panel_class = "panel grid gap-4 p-4"
 
-widget_class : Str
 widget_class = "panel grid gap-3 p-4"
 
-toolbar_class : Str
 toolbar_class = "flex flex-wrap items-center gap-3"
 
 visible_components : Bool, List(Str) -> List(Str)
@@ -87,12 +80,13 @@ main = |_| {
 			Ui.state(
 				True,
 				|show_queue| {
+					visible_inputs =
+						{
+							show_queue: show_queue.signal(),
+							order: order.signal(),
+						}.Signal
 					visible =
-						Signal.map2(
-							show_queue.signal(),
-							order.signal(),
-							visible_components,
-						)
+						Signal.map(visible_inputs, |inputs| visible_components(inputs.show_queue, inputs.order))
 
 					Html.div_c(
 						page_class,

@@ -139,6 +139,24 @@ main = |_|
 host updates the `name` source, recomputes `greeting` and `save_disabled`, and
 patches only the text/value/disabled sinks that changed.
 
+When a derived value needs several named signals, prefer Roc's record-builder
+syntax instead of looking for `Signal.map3` or `Signal.map4`:
+
+```roc
+profile =
+    {
+        first: first_name.signal(),
+        last: last_name.signal(),
+        active: active.signal(),
+    }.Signal
+
+summary =
+    Signal.map(profile, |value| {
+        status = if value.active { "active" } else { "paused" }
+        "${value.first} ${value.last}: ${status}"
+    })
+```
+
 Use the same pattern for numbers, records, and custom types. Any type used as a
 signal value needs an `is_eq` method so the runtime can stop propagation when a
 recomputed value is unchanged.
@@ -307,8 +325,13 @@ email_message = Signal.map(form.signal(), |state|
 task = Signal.fake_task("form-submit", |value| value, |err| err)
 request = Signal.map(form.signal(), |state| state.submit_request)
 task_loading = Signal.fold_task(task, True, |_| False, |_| False)
-submit_disabled = Signal.map2(form.signal(), task_loading, |state, loading|
-    (!can_submit(state)) or ((state.submit_count > 0) and loading),
+submit_state =
+    {
+        form: form.signal(),
+        loading: task_loading,
+    }.Signal
+submit_disabled = Signal.map(submit_state, |value|
+    (!can_submit(value.form)) or ((value.form.submit_count > 0) and value.loading),
 )
 
 Html.form_label(
@@ -656,8 +679,9 @@ Most good performance falls out of modeling the UI with the right primitive:
 - Use `Ui.each_str` for dynamic lists and choose stable keys from item identity.
 - Put row-local state inside the row renderer so it follows the row key through
   reorder/filter operations.
-- Keep derived values derived with `Signal.map`, `Signal.map2`, and
-  `Signal.combine` instead of duplicating state.
+- Keep derived values derived with `Signal.map`, record builders such as
+  `{ first: first_signal, last: last_signal }.Signal`, and `Signal.combine`
+  instead of duplicating state.
 - Define meaningful `is_eq` for custom signal values; equality is the cutoff that
   prevents unchanged values from waking downstream work.
 - Avoid one giant source record feeding one giant view-model if sections can be

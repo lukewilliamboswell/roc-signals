@@ -125,10 +125,11 @@ declares rather than one the runtime discovers.
 
 **The reframing that makes signals work in pure Roc:** in Solid, dependencies
 are *discovered* at runtime. In a pure language, dependencies are *declared* —
-they are already present in the structure of each `map`/`map2`/`combine` call
-before anything runs. When the app writes `Signal.map2(price, qty, f)`, the
-edges `price -> result` and `qty -> result` are *data*. So the host never needs
-a current-observer stack and never runs a closure to find out what it reads. The
+they are already present in the structure of each `map`/`map2`/`combine` call,
+or in Roc record-builder syntax such as `{ price: price, qty: qty }.Signal`,
+before anything runs. When the app writes a two-input derived signal, the edges
+`price -> result` and `qty -> result` are *data*. So the host never needs a
+current-observer stack and never runs a closure to find out what it reads. The
 **dependency graph is handed to the host as a value, once.** The host then owns
 a mutable node table and runs push-based incremental propagation over it.
 
@@ -382,6 +383,8 @@ Signal.map2 : Signal(a), Signal(b), (a, b -> c) -> Signal(c)
     where [c.is_eq : c, c -> Bool]
 Signal.combine : List(Signal(a)) -> Signal(List(a))
     where [a.is_eq : a, a -> Bool]
+# Named multi-signal composition should use Roc record-builder syntax:
+# { first: first_signal, last: last_signal, active: active_signal }.Signal
 
 # Async / effects as sources (same propagation path as user events)
 Signal.fake_task : Str, (Str -> a), (Str -> err) -> Task(a, err)
@@ -646,7 +649,10 @@ counter =
 
 ```roc
 full_name : Signal(Str), Signal(Str) -> Signal(Str)
-full_name = |first, last| Signal.map2(first, last, |f, l| "${f} ${l}")
+full_name = |first, last| {
+    parts = { first: first, last: last }.Signal
+    Signal.map(parts, |value| "${value.first} ${value.last}")
+}
 ```
 
 ### Example: text input with retained state

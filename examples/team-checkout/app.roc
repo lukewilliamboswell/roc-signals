@@ -101,22 +101,16 @@ basic_pressed = |plan| {
 	}
 }
 
-page_class : Str
 page_class = "grid gap-5"
 
-hero_class : Str
 hero_class = "panel grid gap-2 p-5"
 
-panel_class : Str
 panel_class = "panel grid gap-4 p-4"
 
-cart_item_class : Str
 cart_item_class = "panel grid gap-3 p-4"
 
-toolbar_class : Str
 toolbar_class = "flex flex-wrap items-center gap-3"
 
-input_class : Str
 input_class = "w-full max-w-md rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm"
 
 render_line : Str, Signal.Signal(Str) -> Elem
