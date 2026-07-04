@@ -136,31 +136,36 @@ main = |_| {
 							Ui.state(
 								initial_active,
 								|active| {
+									shape_inputs =
+										{
+											reordered: reordered.signal(),
+											inserted: inserted.signal(),
+										}.Signal
 									shape : Signal.Signal(I64)
 									shape =
-										Signal.map2(
-											reordered.signal(),
-											inserted.signal(),
-											|is_reordered, has_hotfix| if is_reordered {
-												if has_hotfix {
+										Signal.map(
+											shape_inputs,
+											|inputs| if inputs.reordered {
+												if inputs.inserted {
 													3
 												} else {
 													2
 												}
 											} else {
-												if has_hotfix {
+												if inputs.inserted {
 													1
 												} else {
 													0
 												}
 											},
 										)
+									rows_inputs =
+										{
+											shape_code: shape,
+											filtered: filtered.signal(),
+										}.Signal
 									rows =
-										Signal.map2(
-											shape,
-											filtered.signal(),
-											|shape_code, hide_workers| rows_for_shape(shape_code, hide_workers),
-										)
+										Signal.map(rows_inputs, |inputs| rows_for_shape(inputs.shape_code, inputs.filtered))
 
 									Html.div_c(
 										page_class,

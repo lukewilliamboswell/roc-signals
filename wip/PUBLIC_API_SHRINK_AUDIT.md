@@ -91,7 +91,10 @@ that proves the slice before the end-to-end repository gate.
   request tokens, interval handles, and disposal. `Node.Cmd` and `Node.Cleanup`
   still appear in signatures only because the app-facing alias pass was backed
   out; do not use that naming leak as a reason to add public id or
-  lifecycle-token APIs.
+  lifecycle-token APIs. Keep `Signal.map2` as the applicative primitive Roc
+  record-builder syntax needs, but prefer `{ field: signal, ... }.Signal` for
+  named multi-signal joins instead of adding `Signal.map3`, `Signal.map4`, or
+  higher-arity helper families.
 - `Http.request_task`, `Http.start`, `Http.HttpError`, `Http.method_*`, and the
   package-aligned request/response builder/accessor wrappers in `Http`: the
   shipped HTTP task surface. Keep it pinned to `roc-lang/http` request/response
@@ -249,6 +252,9 @@ that proves the slice before the end-to-end repository gate.
   model.
 - Do not add more `_with` event helper families. Add a typed option/payload
   value when sugar cannot express a maintained app or focused canary.
+- Do not add `Signal.map3` or higher-arity signal helper families. Use Roc
+  record-builder syntax for named multi-signal composition and `Signal.combine`
+  for homogeneous signal lists.
 - Replace HTTP's current `http:send:` task-name prefix routing with a typed
   effect capability registry only when the subscriptions/app-interop work has a
   maintained app or focused canary to prove the shared task/subscription routing

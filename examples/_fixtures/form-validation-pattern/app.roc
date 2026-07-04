@@ -114,8 +114,10 @@ main = |_| {
 					|err| Str.concat("Submit error: ", err),
 				)
 			task_loading = Signal.fold_task(task, True, |_| False, |_| False)
-			status_text = Signal.map2(state_signal, task_text, status_message)
-			submit_disabled = Signal.map2(state_signal, task_loading, disabled_state)
+			status_inputs = { state: state_signal, task_text: task_text }.Signal
+			status_text = Signal.map(status_inputs, |inputs| status_message(inputs.state, inputs.task_text))
+			disabled_inputs = { state: state_signal, task_loading: task_loading }.Signal
+			submit_disabled = Signal.map(disabled_inputs, |inputs| disabled_state(inputs.state, inputs.task_loading))
 
 			Html.div_c(
 				page_class,

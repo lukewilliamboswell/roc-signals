@@ -349,7 +349,8 @@ chart_panel = |chart| {
 					detail = chart_detail(chart)
 					hovered = hovered_chart_point.signal()
 					selected = selected_chart_point.signal()
-					focus = Signal.map2(hovered, selected, DashboardView.chart_focus_text)
+					focus_inputs = { hovered: hovered, selected: selected }.Signal
+					focus = Signal.map(focus_inputs, |inputs| DashboardView.chart_focus_text(inputs.hovered, inputs.selected))
 
 					Ui.component(
 						|_|
@@ -528,7 +529,8 @@ main = |_| {
 		0,
 		|manual_refresh| {
 			tick = Signal.interval(2000)
-			refresh_request = Signal.map2(tick, manual_refresh.signal(), |timer_value, manual_value| timer_value + manual_value)
+			refresh_inputs = { tick: tick, manual: manual_refresh.signal() }.Signal
+			refresh_request = Signal.map(refresh_inputs, |inputs| inputs.tick + inputs.manual)
 
 			dashboard_task = Http.get_text_task("dashboard")
 				dashboard_state =

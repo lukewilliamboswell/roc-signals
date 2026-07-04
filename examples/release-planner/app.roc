@@ -530,7 +530,8 @@ note_button = |board_state, card_id, label| {
 render_card : Ui.State(Board), Str, Str, Signal.Signal(Card) -> Elem
 render_card = |board_state, column_id, card_id, card_signal| {
 	board_signal = board_state.signal()
-	class_signal = Signal.map2(board_signal, card_signal, card_class)
+	class_inputs = { board: board_signal, card: card_signal }.Signal
+	class_signal = Signal.map(class_inputs, |inputs| card_class(inputs.board, inputs.card))
 	title_signal = Signal.map(card_signal, |card| card.title)
 	meta_signal = Signal.map(card_signal, card_meta_text)
 	status_signal = Signal.map(card_signal, card_status_text)
@@ -581,7 +582,8 @@ render_column : Ui.State(Board), Str, Signal.Signal(Column) -> Elem
 render_column = |board_state, column_id, column_signal| {
 	board_signal = board_state.signal()
 	cards_signal = Signal.map(board_signal, |board| column_cards(board, column_id))
-	summary_signal = Signal.map2(board_signal, column_signal, column_summary)
+	summary_inputs = { board: board_signal, column: column_signal }.Signal
+	summary_signal = Signal.map(summary_inputs, |inputs| column_summary(inputs.board, inputs.column))
 	drop_class_signal = Signal.map(board_signal, |board| drop_zone_class_for(board, column_id))
 	end_label = concat3("Drop: ", column_title(column_id), " end")
 

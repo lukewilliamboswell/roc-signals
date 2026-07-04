@@ -58,7 +58,7 @@ expect_text text:"4 / 3 cards" "4 / 3 cards"
 expect_visible role:region name:"Card: Write platform glue"
 expect_text text:"Tags: wasm, abi" "Tags: wasm, abi"
 expect_text text:"Notes on Write platform glue: 1" "Notes on Write platform glue: 1"
-expect_metric_delta active_graph_records_rebuilt 10
+expect_metric_delta active_graph_records_rebuilt 11
 expect_metric_delta stream_nodes_scanned_events 2
 expect_metric_delta rows_created 1
 expect_metric_delta rows_removed 1

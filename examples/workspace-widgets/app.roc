@@ -87,12 +87,13 @@ main = |_| {
 			Ui.state(
 				True,
 				|show_queue| {
+					visible_inputs =
+						{
+							show_queue: show_queue.signal(),
+							order: order.signal(),
+						}.Signal
 					visible =
-						Signal.map2(
-							show_queue.signal(),
-							order.signal(),
-							visible_components,
-						)
+						Signal.map(visible_inputs, |inputs| visible_components(inputs.show_queue, inputs.order))
 
 					Html.div_c(
 						page_class,

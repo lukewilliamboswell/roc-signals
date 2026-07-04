@@ -209,6 +209,17 @@ native = true
 bench = false
 
 [[examples]]
+slug = "signal-record-builder"
+title = "Signal Record Builder"
+description = "Internal Signal record-builder composition fixture."
+source = "examples/_fixtures/signal-record-builder/app.roc"
+spec = "examples/_fixtures/signal-record-builder/spec.txt"
+public = false
+wasm = false
+native = true
+bench = false
+
+[[examples]]
 slug = "optional-text-attr"
 title = "Optional Text Attr"
 description = "Internal signal-backed optional custom text attr fixture."
