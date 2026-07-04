@@ -183,7 +183,11 @@ main = |_| {
 							Html.paragraph_s_c(email_text, "text-sm font-medium text-zinc-900"),
 							Html.paragraph_s_c(terms_text, "text-sm text-zinc-700"),
 							Html.paragraph_s_c(submit_text, "text-sm font-medium text-emerald-700"),
-							Html.button_c("Create team", "button-primary", model.on_unit(|state| state)),
+							Html.button_attrs(
+								"Create team",
+								[Html.class_attr("button-primary"), Html.attr("type", "button")],
+								model.on_unit(record_submit),
+							),
 							Html.div_c(
 								"sr-only",
 								[

@@ -100,7 +100,7 @@ bench = true
 [[examples]]
 slug = "json-decode"
 title = "Json Decode"
-description = "Internal vendored Json derivation fixture."
+description = "Internal builtin Json derivation fixture."
 source = "examples/_fixtures/json-decode/app.roc"
 spec = "examples/_fixtures/json-decode/spec.txt"
 public = false
@@ -126,6 +126,127 @@ title = "Task Latest Wins"
 description = "Internal task superseding fixture."
 source = "examples/_fixtures/task-latest-wins/app.roc"
 spec = "examples/_fixtures/task-latest-wins/spec.txt"
+public = false
+wasm = false
+native = true
+bench = false
+
+[[examples]]
+slug = "task-to-utf8-lifetime"
+title = "Task To UTF-8 Lifetime"
+description = "Internal HTTP text task UTF-8 ownership fixture."
+source = "examples/_fixtures/task-to-utf8-lifetime/app.roc"
+spec = "examples/_fixtures/task-to-utf8-lifetime/spec.txt"
+public = false
+wasm = false
+native = true
+bench = false
+
+[[examples]]
+slug = "controlled-input-contract"
+title = "Controlled Input Contract"
+description = "Internal focused/composing controlled-input reconciliation fixture."
+source = "examples/_fixtures/controlled-input-contract/app.roc"
+spec = "examples/_fixtures/controlled-input-contract/spec.txt"
+public = false
+wasm = false
+native = true
+bench = false
+
+[[examples]]
+slug = "select-control"
+title = "Select Control"
+description = "Internal single-value select control fixture."
+source = "examples/_fixtures/select-control/app.roc"
+spec = "examples/_fixtures/select-control/spec.txt"
+public = false
+wasm = false
+native = true
+bench = false
+
+[[examples]]
+slug = "textarea-control"
+title = "Textarea Control"
+description = "Internal textarea control fixture."
+source = "examples/_fixtures/textarea-control/app.roc"
+spec = "examples/_fixtures/textarea-control/spec.txt"
+public = false
+wasm = false
+native = true
+bench = false
+
+[[examples]]
+slug = "radio-group-control"
+title = "Radio Group Control"
+description = "Internal radio group control fixture."
+source = "examples/_fixtures/radio-group-control/app.roc"
+spec = "examples/_fixtures/radio-group-control/spec.txt"
+public = false
+wasm = false
+native = true
+bench = false
+
+[[examples]]
+slug = "number-input-control"
+title = "Number Input Control"
+description = "Internal number input draft/commit fixture."
+source = "examples/_fixtures/number-input-control/app.roc"
+spec = "examples/_fixtures/number-input-control/spec.txt"
+public = false
+wasm = false
+native = true
+bench = false
+
+[[examples]]
+slug = "form-validation-pattern"
+title = "Form Validation Pattern"
+description = "Internal derived validation and async submit fixture."
+source = "examples/_fixtures/form-validation-pattern/app.roc"
+spec = "examples/_fixtures/form-validation-pattern/spec.txt"
+public = false
+wasm = false
+native = true
+bench = false
+
+[[examples]]
+slug = "optional-text-attr"
+title = "Optional Text Attr"
+description = "Internal signal-backed optional custom text attr fixture."
+source = "examples/_fixtures/optional-text-attr/app.roc"
+spec = "examples/_fixtures/optional-text-attr/spec.txt"
+public = false
+wasm = false
+native = true
+bench = false
+
+[[examples]]
+slug = "submit-button-default"
+title = "Submit Button Default"
+description = "Internal submit-button default-action fixture."
+source = "examples/_fixtures/submit-button-default/app.roc"
+spec = "examples/_fixtures/submit-button-default/spec.txt"
+public = false
+wasm = false
+native = true
+bench = false
+
+[[examples]]
+slug = "form-reset-default"
+title = "Form Reset Default"
+description = "Internal reset-button default-action fixture."
+source = "examples/_fixtures/form-reset-default/app.roc"
+spec = "examples/_fixtures/form-reset-default/spec.txt"
+public = false
+wasm = false
+native = true
+bench = false
+
+[[examples]]
+slug = "checkbox-real-click"
+title = "Checkbox Real Click"
+description = "Internal checkbox real-click default-action fixture."
+source = "examples/_fixtures/checkbox-real-click/app.roc"
+spec = "examples/_fixtures/checkbox-real-click/spec.txt"
 public = false
 wasm = false
 native = true

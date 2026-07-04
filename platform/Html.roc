@@ -141,6 +141,36 @@ Html := [].{
 		Node.Attr.SignalText({ field: field_custom, name, signal: Signal.to_expr(signal), read: { capability: Capability.handle(cap), read: Box.box(read) } })
 	}
 
+	## Signal-backed optional text attribute by name. `None` removes the attr;
+	## `Some(value)` sets it to `value`.
+	attr_maybe_s : Str, Signal([None, Some(Str)]) -> Node.Attr
+	attr_maybe_s = |name, signal| {
+		cap = signal.cap
+		present : HostValue -> Bool
+		present = |value|
+			match Box.unbox(Capability.get(value, cap)) {
+				None => False
+				Some(_) => True
+			}
+		read : HostValue -> Str
+		read = |value|
+			match Box.unbox(Capability.get(value, cap)) {
+				None => {
+					crash "optional text attr read when absent"
+				}
+				Some(text) => text
+			}
+		Node.Attr.TextOptionalSignal(
+			{
+				field: field_custom,
+				name,
+				signal: Signal.to_expr(signal),
+				present: { capability: Capability.handle(cap), read: Box.box(present) },
+				read: { capability: Capability.handle(cap), read: Box.box(read) },
+			},
+		)
+	}
+
 	## Static boolean attribute set to true.
 	bool_attr : Str -> Node.Attr
 	bool_attr = |name| Node.Attr.StaticBool({ field: bool_field_custom, name, value: True })
@@ -180,15 +210,19 @@ Html := [].{
 	aria_describedby : Str -> Node.Attr
 	aria_describedby = |id| attr("aria-describedby", id)
 
+	## Signal-backed `aria-activedescendant` attribute. `None` removes it.
+	aria_activedescendant_s : Signal([None, Some(Str)]) -> Node.Attr
+	aria_activedescendant_s = |signal| attr_maybe_s("aria-activedescendant", signal)
+
 	## Static test id metadata used by native specs and browser test hooks.
 	test_id : Str -> Node.Attr
 	test_id = |value| Node.Attr.StaticText({ field: field_test_id, name: "", value })
 
-		## Mark an element for a JavaScript behavior registered with the runtime.
-		## Behavior `update` callbacks run for dynamic custom attrs such as
-		## `attr_s`, not for fixed-field updates like text, class, value, checked, or test id.
-		behavior : Str -> Node.Attr
-		behavior = |name| attr("data-signals-behavior", name)
+	## Mark an element for a JavaScript behavior registered with the runtime.
+	## Behavior `update` callbacks run for dynamic custom attrs such as
+	## `attr_s`, not for fixed-field updates like text, class, value, checked, or test id.
+	behavior : Str -> Node.Attr
+	behavior = |name| attr("data-signals-behavior", name)
 
 	## Pointer-down event binding.
 	on_pointer_down : Node.Msg -> Node.Attr
@@ -519,6 +553,161 @@ Html := [].{
 						Node.Attr.StaticText({ field: field_label, name: "", value: label }),
 						Node.Attr.SignalText({ field: field_value, name: "", signal: Signal.to_expr(value), read: { capability: Capability.handle(value_cap), read: Box.box(read_value) } }),
 						event_attr(fixed_event_binding(fixed_event_input, msg)),
+					],
+					attrs,
+				),
+				children: [],
+			},
+		)
+	}
+
+	## A number input bound to a draft string value, firing `msg` (a str-payload
+	## reducer) on input. Parse the draft on a commit event such as blur/change.
+	number_input : Str, Signal(Str), Node.Msg -> Elem
+	number_input = |label, value, msg| number_input_attrs(label, value, [], msg)
+
+	## Number input with a static class.
+	number_input_c : Str, Signal(Str), Str, Node.Msg -> Elem
+	number_input_c = |label, value, classes, msg| number_input_attrs(label, value, [class_attr(classes)], msg)
+
+	## Number input with extra attrs.
+	number_input_attrs : Str, Signal(Str), List(Node.Attr), Node.Msg -> Elem
+	number_input_attrs = |label, value, attrs, msg| {
+		value_cap = value.cap
+		read_value : HostValue -> Str
+		read_value = |host_value| Box.unbox(Capability.get(host_value, value_cap))
+		Elem.Element(
+			{
+				tag: "input",
+				attrs: List.concat(
+					[
+						Node.Attr.StaticText({ field: field_role, name: "", value: "spinbutton" }),
+						Node.Attr.StaticText({ field: field_label, name: "", value: label }),
+						attr("type", "number"),
+						Node.Attr.SignalText({ field: field_value, name: "", signal: Signal.to_expr(value), read: { capability: Capability.handle(value_cap), read: Box.box(read_value) } }),
+						event_attr(fixed_event_binding(fixed_event_input, msg)),
+					],
+					attrs,
+				),
+				children: [],
+			},
+		)
+	}
+
+	## A textarea bound to a signal value, firing `msg` (a str-payload reducer)
+	## on input.
+	textarea : Str, Signal(Str), Node.Msg -> Elem
+	textarea = |label, value, msg| textarea_attrs(label, value, [], msg)
+
+	## Textarea with a static class.
+	textarea_c : Str, Signal(Str), Str, Node.Msg -> Elem
+	textarea_c = |label, value, classes, msg| textarea_attrs(label, value, [class_attr(classes)], msg)
+
+	## Textarea with extra attrs.
+	textarea_attrs : Str, Signal(Str), List(Node.Attr), Node.Msg -> Elem
+	textarea_attrs = |label, value, attrs, msg| {
+		value_cap = value.cap
+		read_value : HostValue -> Str
+		read_value = |host_value| Box.unbox(Capability.get(host_value, value_cap))
+		Elem.Element(
+			{
+				tag: "textarea",
+				attrs: List.concat(
+					[
+						Node.Attr.StaticText({ field: field_role, name: "", value: "textbox" }),
+						Node.Attr.StaticText({ field: field_label, name: "", value: label }),
+						Node.Attr.SignalText({ field: field_value, name: "", signal: Signal.to_expr(value), read: { capability: Capability.handle(value_cap), read: Box.box(read_value) } }),
+						event_attr(fixed_event_binding(fixed_event_input, msg)),
+					],
+					attrs,
+				),
+				children: [],
+			},
+		)
+	}
+
+	## A single-value select bound to a signal value, firing `msg` (a str-payload
+	## reducer) on change.
+	select : Str, Signal(Str), List(Elem), Node.Msg -> Elem
+	select = |label, value, options, msg| select_attrs(label, value, [], options, msg)
+
+	## Single-value select with a static class.
+	select_c : Str, Signal(Str), Str, List(Elem), Node.Msg -> Elem
+	select_c = |label, value, classes, options, msg| select_attrs(label, value, [class_attr(classes)], options, msg)
+
+	## Single-value select with extra attrs.
+	select_attrs : Str, Signal(Str), List(Node.Attr), List(Elem), Node.Msg -> Elem
+	select_attrs = |label, value, attrs, options, msg| {
+		value_cap = value.cap
+		read_value : HostValue -> Str
+		read_value = |host_value| Box.unbox(Capability.get(host_value, value_cap))
+		Elem.Element(
+			{
+				tag: "select",
+				attrs: List.concat(
+					[
+						Node.Attr.StaticText({ field: field_role, name: "", value: "combobox" }),
+						Node.Attr.StaticText({ field: field_label, name: "", value: label }),
+						Node.Attr.SignalText({ field: field_value, name: "", signal: Signal.to_expr(value), read: { capability: Capability.handle(value_cap), read: Box.box(read_value) } }),
+						on_change(msg),
+					],
+					attrs,
+				),
+				children: options,
+			},
+		)
+	}
+
+	## Static option for a `select`, with host-visible option text and value.
+	option : Str, Str -> Elem
+	option = |value, label| option_attrs(value, label, [])
+
+	## Static option with extra attrs.
+	option_attrs : Str, Str, List(Node.Attr) -> Elem
+	option_attrs = |value, label, attrs| {
+		Elem.Element(
+			{
+				tag: "option",
+				attrs: List.concat(
+					[
+						Node.Attr.StaticText({ field: field_text, name: "", value: label }),
+						attr("value", value),
+					],
+					attrs,
+				),
+				children: [],
+			},
+		)
+	}
+
+	## A radio option in a string-valued radio group. `selected` is the canonical
+	## group value; `msg` receives this option's value through the change event.
+	radio : Str, Str, Str, Signal(Str), Node.Msg -> Elem
+	radio = |label, name, value, selected, msg| radio_attrs(label, name, value, selected, [], msg)
+
+	## Radio option with a static class.
+	radio_c : Str, Str, Str, Signal(Str), Str, Node.Msg -> Elem
+	radio_c = |label, name, value, selected, classes, msg| radio_attrs(label, name, value, selected, [class_attr(classes)], msg)
+
+	## Radio option with extra attrs.
+	radio_attrs : Str, Str, Str, Signal(Str), List(Node.Attr), Node.Msg -> Elem
+	radio_attrs = |label, name, value, selected, attrs, msg| {
+		checked = Signal.map(selected, |current| current == value)
+		checked_cap = checked.cap
+		read_checked : HostValue -> Bool
+		read_checked = |host_value| Box.unbox(Capability.get(host_value, checked_cap))
+		Elem.Element(
+			{
+				tag: "input",
+				attrs: List.concat(
+					[
+						Node.Attr.StaticText({ field: field_role, name: "", value: "radio" }),
+						Node.Attr.StaticText({ field: field_label, name: "", value: label }),
+						attr("type", "radio"),
+						attr("name", name),
+						Node.Attr.StaticText({ field: field_value, name: "", value }),
+						Node.Attr.SignalBool({ field: bool_field_checked, name: "", signal: Signal.to_expr(checked), read: { capability: Capability.handle(checked_cap), read: Box.box(read_checked) } }),
+						on_change(msg),
 					],
 					attrs,
 				),

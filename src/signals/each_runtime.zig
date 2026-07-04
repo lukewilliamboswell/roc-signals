@@ -1,4 +1,4 @@
-//! Keyed-list reconciliation storage and diff helpers for `Ui.each`.
+//! Keyed-list reconciliation storage and diff helpers for `Ui.each_str`.
 
 const std = @import("std");
 
@@ -307,7 +307,7 @@ pub fn syncRows(
     items: anytype,
     hooks: anytype,
 ) DiffResult {
-    if (keys.len != items.len) @panic("Ui.each keyed scope received mismatched key and item lists");
+    if (keys.len != items.len) @panic("Ui.each_str keyed scope received mismatched key and item lists");
     if (site_index >= sites.items.len) @panic("each row site index exceeded site table");
 
     const existing_len = sites.items[site_index].scope_ids.items.len;

@@ -156,6 +156,20 @@ pub const SignalCustomTextAttrDesc = struct {
     }
 };
 
+pub const SignalOptionalCustomTextAttrDesc = struct {
+    elem_id: u64,
+    name: []const u8,
+    signal: HostSignalBinding,
+    present: HostBoolRead,
+    read: HostTextRead,
+    cached_value: HostSignalCacheSlot = .absent,
+
+    pub fn deinit(self: *@This(), allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
+        allocator.free(self.name);
+        deinitSignalOptionalTextFields(&self.signal, &self.cached_value, self.present, self.read, allocator, ctx, roc_host, metrics);
+    }
+};
+
 pub const SignalCustomBoolAttrDesc = struct {
     elem_id: u64,
     name: []const u8,
@@ -177,12 +191,13 @@ pub const CustomAttrValueKind = enum {
 pub const CustomAttrKind = enum {
     static_text,
     signal_text,
+    signal_text_optional,
     static_bool,
     signal_bool,
 
     pub fn valueKind(self: CustomAttrKind) CustomAttrValueKind {
         return switch (self) {
-            .static_text, .signal_text => .text,
+            .static_text, .signal_text, .signal_text_optional => .text,
             .static_bool, .signal_bool => .bool,
         };
     }
@@ -327,6 +342,13 @@ fn deinitSignalTextFields(signal: *HostSignalBinding, cache_slot: *HostSignalCac
     releaseHostTextRead(read, roc_host, metrics);
 }
 
+fn deinitSignalOptionalTextFields(signal: *HostSignalBinding, cache_slot: *HostSignalCacheSlot, present: HostBoolRead, read: HostTextRead, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
+    cache_slot.deinit(ctx, roc_host, metrics);
+    signal.deinit(allocator, ctx, roc_host, metrics);
+    releaseHostBoolRead(present, roc_host, metrics);
+    releaseHostTextRead(read, roc_host, metrics);
+}
+
 fn deinitSignalBoolFields(signal: *HostSignalBinding, cache_slot: *HostSignalCacheSlot, read: HostBoolRead, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
     cache_slot.deinit(ctx, roc_host, metrics);
     signal.deinit(allocator, ctx, roc_host, metrics);
@@ -337,6 +359,12 @@ fn rollbackSignalTextAppend(signal: HostSignalBinding, read: HostTextRead, alloc
     var owned_signal = signal;
     var cache_slot: HostSignalCacheSlot = .absent;
     deinitSignalTextFields(&owned_signal, &cache_slot, read, allocator, ctx, roc_host, metrics);
+}
+
+fn rollbackSignalOptionalTextAppend(signal: HostSignalBinding, present: HostBoolRead, read: HostTextRead, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
+    var owned_signal = signal;
+    var cache_slot: HostSignalCacheSlot = .absent;
+    deinitSignalOptionalTextFields(&owned_signal, &cache_slot, present, read, allocator, ctx, roc_host, metrics);
 }
 
 fn rollbackSignalBoolAppend(signal: HostSignalBinding, read: HostBoolRead, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
@@ -380,6 +408,15 @@ pub fn CustomAttrRefs(comptime StreamType: type) type {
                             const desc = self.stream.signal_custom_text_attrs.items[self.index];
                             self.index += 1;
                             return .{ .kind = .signal_text, .elem_id = desc.elem_id, .name = desc.name };
+                        }
+                        self.kind = .signal_text_optional;
+                        self.index = 0;
+                    },
+                    .signal_text_optional => {
+                        if (self.index < self.stream.signal_optional_custom_text_attrs.items.len) {
+                            const desc = self.stream.signal_optional_custom_text_attrs.items[self.index];
+                            self.index += 1;
+                            return .{ .kind = .signal_text_optional, .elem_id = desc.elem_id, .name = desc.name };
                         }
                         self.kind = .static_bool;
                         self.index = 0;
@@ -502,6 +539,7 @@ pub const Stream = struct {
     signal_text_attrs: std.ArrayListUnmanaged(SignalTextAttrDesc) = .empty,
     static_custom_text_attrs: std.ArrayListUnmanaged(StaticCustomTextAttrDesc) = .empty,
     signal_custom_text_attrs: std.ArrayListUnmanaged(SignalCustomTextAttrDesc) = .empty,
+    signal_optional_custom_text_attrs: std.ArrayListUnmanaged(SignalOptionalCustomTextAttrDesc) = .empty,
     static_custom_bool_attrs: std.ArrayListUnmanaged(StaticCustomBoolAttrDesc) = .empty,
     signal_custom_bool_attrs: std.ArrayListUnmanaged(SignalCustomBoolAttrDesc) = .empty,
     static_bool_attrs: std.ArrayListUnmanaged(StaticBoolAttrDesc) = .empty,
@@ -918,6 +956,11 @@ pub const Stream = struct {
         }
         self.signal_custom_text_attrs.deinit(allocator);
 
+        for (self.signal_optional_custom_text_attrs.items) |*desc| {
+            desc.deinit(allocator, ctx, roc_host, metrics);
+        }
+        self.signal_optional_custom_text_attrs.deinit(allocator);
+
         for (self.static_custom_bool_attrs.items) |desc| {
             allocator.free(desc.name);
         }
@@ -1125,6 +1168,27 @@ pub const Stream = struct {
         }) catch {
             allocator.free(name_copy);
             rollbackSignalTextAppend(signal, retained_read, allocator, ctx, roc_host, metrics);
+            @panic("out of memory");
+        };
+    }
+
+    pub fn appendSignalOptionalCustomTextAttr(self: *Stream, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, elem_id: u64, name: []const u8, signal: HostSignalBinding, present: HostBoolRead, read: HostTextRead) void {
+        if (name.len == 0) @panic("custom text attr descriptor used an empty name");
+        if (customAttrDescriptorExists(Stream, self, elem_id, name)) @panic("element has duplicate custom text attr descriptors");
+
+        self.rememberSignalRecordTree(allocator, signal.record);
+        const name_copy = allocator.dupe(u8, name) catch @panic("out of memory");
+        const retained_present = retainHostBoolRead(present, metrics);
+        const retained_read = retainHostTextRead(read, metrics);
+        self.signal_optional_custom_text_attrs.append(allocator, .{
+            .elem_id = elem_id,
+            .name = name_copy,
+            .signal = signal,
+            .present = retained_present,
+            .read = retained_read,
+        }) catch {
+            allocator.free(name_copy);
+            rollbackSignalOptionalTextAppend(signal, retained_present, retained_read, allocator, ctx, roc_host, metrics);
             @panic("out of memory");
         };
     }
@@ -2334,6 +2398,7 @@ const TestStream = struct {
     signal_text_attrs: std.ArrayListUnmanaged(TestStaticTextAttrDesc) = .empty,
     static_custom_text_attrs: std.ArrayListUnmanaged(TestCustomTextAttrDesc) = .empty,
     signal_custom_text_attrs: std.ArrayListUnmanaged(TestCustomTextAttrDesc) = .empty,
+    signal_optional_custom_text_attrs: std.ArrayListUnmanaged(TestCustomTextAttrDesc) = .empty,
     static_custom_bool_attrs: std.ArrayListUnmanaged(TestCustomTextAttrDesc) = .empty,
     signal_custom_bool_attrs: std.ArrayListUnmanaged(TestCustomTextAttrDesc) = .empty,
     static_bool_attrs: std.ArrayListUnmanaged(TestStaticBoolAttrDesc) = .empty,
@@ -2350,6 +2415,7 @@ const TestStream = struct {
         self.signal_text_attrs.deinit(allocator);
         self.static_custom_text_attrs.deinit(allocator);
         self.signal_custom_text_attrs.deinit(allocator);
+        self.signal_optional_custom_text_attrs.deinit(allocator);
         self.static_custom_bool_attrs.deinit(allocator);
         self.signal_custom_bool_attrs.deinit(allocator);
         self.static_bool_attrs.deinit(allocator);
@@ -2563,15 +2629,17 @@ test "custom attr refs iterate all custom descriptor variants" {
 
     stream.static_custom_text_attrs.append(allocator, .{ .elem_id = 1, .name = "data-id" }) catch @panic("out of memory");
     stream.signal_custom_text_attrs.append(allocator, .{ .elem_id = 2, .name = "aria-label" }) catch @panic("out of memory");
-    stream.static_custom_bool_attrs.append(allocator, .{ .elem_id = 3, .name = "disabled" }) catch @panic("out of memory");
-    stream.signal_custom_bool_attrs.append(allocator, .{ .elem_id = 4, .name = "aria-expanded" }) catch @panic("out of memory");
+    stream.signal_optional_custom_text_attrs.append(allocator, .{ .elem_id = 3, .name = "aria-activedescendant" }) catch @panic("out of memory");
+    stream.static_custom_bool_attrs.append(allocator, .{ .elem_id = 4, .name = "disabled" }) catch @panic("out of memory");
+    stream.signal_custom_bool_attrs.append(allocator, .{ .elem_id = 5, .name = "aria-expanded" }) catch @panic("out of memory");
 
     var attrs = customAttrRefs(TestStream, &stream);
     const expected = [_]CustomAttrRef{
         .{ .kind = .static_text, .elem_id = 1, .name = "data-id" },
         .{ .kind = .signal_text, .elem_id = 2, .name = "aria-label" },
-        .{ .kind = .static_bool, .elem_id = 3, .name = "disabled" },
-        .{ .kind = .signal_bool, .elem_id = 4, .name = "aria-expanded" },
+        .{ .kind = .signal_text_optional, .elem_id = 3, .name = "aria-activedescendant" },
+        .{ .kind = .static_bool, .elem_id = 4, .name = "disabled" },
+        .{ .kind = .signal_bool, .elem_id = 5, .name = "aria-expanded" },
     };
 
     for (expected) |item| {
@@ -2591,10 +2659,12 @@ test "custom attr duplicate detection spans text and bool descriptors" {
 
     stream.static_custom_text_attrs.append(allocator, .{ .elem_id = 1, .name = "data-id" }) catch @panic("out of memory");
     stream.signal_custom_bool_attrs.append(allocator, .{ .elem_id = 1, .name = "aria-expanded" }) catch @panic("out of memory");
+    stream.signal_optional_custom_text_attrs.append(allocator, .{ .elem_id = 1, .name = "aria-activedescendant" }) catch @panic("out of memory");
     stream.static_custom_bool_attrs.append(allocator, .{ .elem_id = 2, .name = "data-id" }) catch @panic("out of memory");
 
     try std.testing.expect(customAttrDescriptorExists(TestStream, &stream, 1, "data-id"));
     try std.testing.expect(customAttrDescriptorExists(TestStream, &stream, 1, "aria-expanded"));
+    try std.testing.expect(customAttrDescriptorExists(TestStream, &stream, 1, "aria-activedescendant"));
     try std.testing.expect(!customAttrDescriptorExists(TestStream, &stream, 1, "missing"));
     try std.testing.expect(!customAttrDescriptorExists(TestStream, &stream, 3, "data-id"));
 }
@@ -2605,9 +2675,11 @@ test "stream custom text lookup excludes bool descriptors" {
     defer stream.deinit(allocator);
 
     stream.signal_custom_text_attrs.append(allocator, .{ .elem_id = 1, .name = "aria-label" }) catch @panic("out of memory");
+    stream.signal_optional_custom_text_attrs.append(allocator, .{ .elem_id = 1, .name = "aria-activedescendant" }) catch @panic("out of memory");
     stream.static_custom_bool_attrs.append(allocator, .{ .elem_id = 1, .name = "aria-expanded" }) catch @panic("out of memory");
 
     try std.testing.expect(streamHasCustomTextAttr(TestStream, &stream, 1, "aria-label"));
+    try std.testing.expect(streamHasCustomTextAttr(TestStream, &stream, 1, "aria-activedescendant"));
     try std.testing.expect(!streamHasCustomTextAttr(TestStream, &stream, 1, "aria-expanded"));
 }
 

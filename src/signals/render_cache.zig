@@ -199,6 +199,19 @@ pub fn Cache(comptime Ctx: type) type {
             return self.nodes.items.len != 0 and self.nodes.items[0].active;
         }
 
+        pub fn hasActiveNode(self: *const Self, elem_id: u64) bool {
+            const index: usize = @intCast(elem_id);
+            return index < self.nodes.items.len and self.nodes.items[index].active;
+        }
+
+        pub fn activeNodeTagDiffers(self: *const Self, elem_id: u64, tag: []const u8) bool {
+            const index: usize = @intCast(elem_id);
+            if (index >= self.nodes.items.len) return false;
+            const node = &self.nodes.items[index];
+            if (!node.active) return false;
+            return node.tag == null or !std.mem.eql(u8, node.tag.?, tag);
+        }
+
         pub fn reset(self: *Self, ctx: Ctx.Handle) void {
             const allocator = Ctx.allocator(ctx);
             for (self.nodes.items) |*node| {
@@ -221,10 +234,17 @@ pub fn Cache(comptime Ctx: type) type {
             }
             const node = &self.nodes.items[index];
             if (!node.active) {
-                @panic("render descriptor referenced an inactive render cache identity");
+                node.* = ScalarNode.initActive(allocator, tag);
+                return true;
             }
             if (node.tag == null or !std.mem.eql(u8, node.tag.?, tag)) {
-                @panic("render descriptor changed the tag for an existing render cache identity");
+                var message: [160]u8 = undefined;
+                const rendered = std.fmt.bufPrint(
+                    &message,
+                    "render descriptor changed tag for elem {d}: cache '{s}', stream '{s}'",
+                    .{ elem_id, node.tag orelse "<null>", tag },
+                ) catch "render descriptor changed the tag for an existing render cache identity";
+                @panic(rendered);
             }
             return false;
         }
@@ -590,6 +610,30 @@ test "applying unchanged text field emits no duplicate command" {
     try std.testing.expect(cache.applyTextField(&host, 1, .text, "hello"));
     try std.testing.expect(!cache.applyTextField(&host, 1, .text, "hello"));
     try std.testing.expectEqual(@as(u64, 1), host.apply_text_field_count);
+}
+
+test "removed cache slot can be recreated with a different tag" {
+    var host = TestHost{};
+    var cache: Cache(TestCtx) = .{};
+    defer cache.deinit(&host);
+
+    cache.reset(&host);
+    var counts: render.Counts = .{};
+    cache.ensureNode(&host, 1, "text", &counts);
+    try std.testing.expect(!cache.activeNodeTagDiffers(1, "text"));
+    try std.testing.expect(cache.activeNodeTagDiffers(1, "div"));
+    try std.testing.expect(cache.applyTextField(&host, 1, .text, "stale"));
+
+    cache.removeNode(&host, 1, &counts);
+    try std.testing.expect(!cache.activeNodeTagDiffers(1, "div"));
+
+    cache.ensureNode(&host, 1, "div", &counts);
+    const node = cache.activeNode(1);
+    try std.testing.expectEqualStrings("div", node.tag.?);
+    try std.testing.expectEqual(@as(?[]const u8, null), node.text);
+    try std.testing.expectEqual(@as(u64, 2), counts.create_element);
+    try std.testing.expectEqual(@as(u64, 1), counts.remove_node);
+    try std.testing.expectEqual(@as(u64, 3), counts.total);
 }
 
 test "reordering children counts only displaced moves" {

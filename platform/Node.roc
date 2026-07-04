@@ -3,8 +3,9 @@ import HostValue exposing [HostValue]
 ## Pure UI descriptor tree produced by `build`. This is the explicit data the
 ## host ingests. Identity is NOT threaded in Roc: the tree is immutable and pure,
 ## and the host assigns construction-order identity by a deterministic pre-order
-## walk. Only identity-bearing nodes (state binders, `when` sites, `each` sites)
-## advance the per-scope ordinal in that walk; ordinary markup does not.
+## walk. Only identity-bearing nodes (state binders, `when` sites, and
+## `Ui.each_str` sites) advance the per-scope ordinal in that walk; ordinary
+## markup does not.
 ##
 ## A `Signal` is an expression that references state/source binders by a binder
 ## ref (a path-relative index assigned during the host walk). Declaration of a
@@ -116,6 +117,7 @@ Node := [].{
 	Attr := [
 		StaticText({ field : TextField, name : Str, value : Str }),
 		SignalText({ field : TextField, name : Str, signal : Box(SignalExpr), read : HostValue.TextReadHandle }),
+		TextOptionalSignal({ field : TextField, name : Str, signal : Box(SignalExpr), present : HostValue.BoolReadHandle, read : HostValue.TextReadHandle }),
 		StaticBool({ field : BoolField, name : Str, value : Bool }),
 		SignalBool({ field : BoolField, name : Str, signal : Box(SignalExpr), read : HostValue.BoolReadHandle }),
 		On(EventBinding),

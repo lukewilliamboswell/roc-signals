@@ -689,6 +689,190 @@ test("composition keeps SetValue patches deferred while focused", () => {
   assert.equal(input.value, "host");
 });
 
+test("remove_node clears controlled input pending state and listeners", () => {
+  const { host, root, runtime } = mountWith([
+    { op: Op.resetDom },
+    { op: Op.createElement, a: 1, s: "input" },
+    { op: Op.setValue, a: 1, s: "old" },
+    { op: Op.appendChild, a: 0, b: 1 },
+  ]);
+  const removedInput = findNode(root, (node) => node.tagName === "INPUT");
+
+  fireEvent(removedInput, "focus");
+  removedInput.value = "draft";
+  fireEvent(removedInput, "input");
+
+  host.writeCommands([{ op: Op.setValue, a: 1, s: "pending" }]);
+  runtime.applyPendingCommands("host-update");
+  assert.equal(removedInput.value, "draft");
+  assert.equal(runtime.controlledInputs.get(1)?.state.pendingValue, "pending");
+
+  host.writeCommands([{ op: Op.removeNode, a: 1 }]);
+  runtime.applyPendingCommands("remove-input");
+  assert.equal(runtime.controlledInputs.has(1), false);
+  assert.equal(removedInput.listeners.get("blur")?.length ?? 0, 0);
+
+  fireEvent(removedInput, "blur");
+  assert.equal(removedInput.value, "draft");
+
+  host.writeCommands([
+    { op: Op.createElement, a: 1, s: "input" },
+    { op: Op.setValue, a: 1, s: "fresh" },
+    { op: Op.appendChild, a: 0, b: 1 },
+  ]);
+  runtime.applyPendingCommands("recreate-input");
+  const recreatedInput = findNode(root, (node) => node.tagName === "INPUT");
+  assert.equal(recreatedInput.value, "fresh");
+  assert.equal(runtime.controlledInputs.get(1)?.state.pendingValue, null);
+});
+
+test("single select change syncs controlled value before Roc echo", () => {
+  const { host, root, runtime } = mountWith([
+    { op: Op.resetDom },
+    { op: Op.createElement, a: 1, s: "select" },
+    { op: Op.setValue, a: 1, s: "starter" },
+    {
+      dynamic: {
+        op: DynamicOp.bindEvent,
+        elemId: 1,
+        eventName: "change",
+        eventId: 41,
+        options: 0,
+        eventExtractionPlan: targetValueEventExtractionPlan,
+      },
+    },
+    { op: Op.appendChild, a: 0, b: 1 },
+  ]);
+  const select = findNode(root, (node) => node.tagName === "SELECT");
+
+  fireEvent(select, "focus");
+  select.value = "growth";
+  fireEvent(select, "change");
+
+  assert.deepEqual(host.dispatches, [{ eventId: 41, kind: PayloadKind.str, payload: "growth" }]);
+  assert.equal(runtime.controlledInputs.get(1)?.state.value, "growth");
+
+  host.writeCommands([{ op: Op.setValue, a: 1, s: "growth" }]);
+  runtime.applyPendingCommands("roc-echo");
+
+  assert.equal(select.value, "growth");
+  assert.equal(runtime.controlledInputs.get(1)?.state.pendingValue, null);
+});
+
+test("radio change dispatches the option target value", () => {
+  const { host, root, runtime } = mountWith([
+    { op: Op.resetDom },
+    { op: Op.createElement, a: 1, s: "input" },
+    { op: Op.setRole, a: 1, s: "radio" },
+    { op: Op.setLabel, a: 1, s: "Annual" },
+    { op: Op.setValue, a: 1, s: "annual" },
+    { op: Op.setChecked, a: 1, b: 0 },
+    {
+      dynamic: {
+        op: DynamicOp.setAttrText,
+        elemId: 1,
+        name: "type",
+        value: "radio",
+      },
+    },
+    {
+      dynamic: {
+        op: DynamicOp.setAttrText,
+        elemId: 1,
+        name: "name",
+        value: "billing",
+      },
+    },
+    {
+      dynamic: {
+        op: DynamicOp.bindEvent,
+        elemId: 1,
+        eventName: "change",
+        eventId: 51,
+        options: 0,
+        eventExtractionPlan: targetValueEventExtractionPlan,
+      },
+    },
+    { op: Op.appendChild, a: 0, b: 1 },
+  ]);
+  const radio = findNode(root, (node) => node.tagName === "INPUT" && node.getAttribute("role") === "radio");
+
+  radio.checked = true;
+  fireEvent(radio, "change");
+
+  assert.deepEqual(host.dispatches, [{ eventId: 51, kind: PayloadKind.str, payload: "annual" }]);
+  assert.equal(runtime.controlledInputs.get(1)?.state.value, "annual");
+
+  host.writeCommands([{ op: Op.setChecked, a: 1, b: 1 }]);
+  runtime.applyPendingCommands("radio-checked");
+  assert.equal(radio.checked, true);
+  assert.equal(radio.getAttribute("type"), "radio");
+  assert.equal(radio.getAttribute("name"), "billing");
+});
+
+test("textarea SetValue patches use the controlled text policy", () => {
+  const { host, root, runtime } = mountWith([
+    { op: Op.resetDom },
+    { op: Op.createElement, a: 1, s: "textarea" },
+    { op: Op.setValue, a: 1, s: "draft" },
+    { op: Op.bindInput, a: 1, b: 42 },
+    { op: Op.appendChild, a: 0, b: 1 },
+  ]);
+  const textarea = findNode(root, (node) => node.tagName === "TEXTAREA");
+
+  fireEvent(textarea, "focus");
+  textarea.value = "user edit";
+  fireEvent(textarea, "input");
+
+  assert.deepEqual(host.dispatches, [{ eventId: 42, kind: PayloadKind.str, payload: "user edit" }]);
+
+  host.writeCommands([{ op: Op.setValue, a: 1, s: "canonical edit" }]);
+  runtime.applyPendingCommands("textarea-host-update");
+
+  assert.equal(textarea.value, "user edit");
+  assert.equal(runtime.controlledInputs.get(1)?.state.pendingValue, "canonical edit");
+
+  fireEvent(textarea, "blur");
+  assert.equal(textarea.value, "canonical edit");
+  assert.equal(runtime.controlledInputs.get(1)?.state.pendingValue, null);
+});
+
+test("number input keeps draft string while focused", () => {
+  const { host, root, runtime } = mountWith([
+    { op: Op.resetDom },
+    { op: Op.createElement, a: 1, s: "input" },
+    {
+      dynamic: {
+        op: DynamicOp.setAttrText,
+        elemId: 1,
+        name: "type",
+        value: "number",
+      },
+    },
+    { op: Op.setValue, a: 1, s: "3" },
+    { op: Op.bindInput, a: 1, b: 61 },
+    { op: Op.appendChild, a: 0, b: 1 },
+  ]);
+  const input = findNode(root, (node) => node.tagName === "INPUT");
+
+  fireEvent(input, "focus");
+  input.value = "12.";
+  fireEvent(input, "input");
+
+  assert.deepEqual(host.dispatches, [{ eventId: 61, kind: PayloadKind.str, payload: "12." }]);
+
+  host.writeCommands([{ op: Op.setValue, a: 1, s: "12" }]);
+  runtime.applyPendingCommands("number-commit");
+
+  assert.equal(input.value, "12.");
+  assert.equal(runtime.controlledInputs.get(1)?.state.pendingValue, "12");
+
+  fireEvent(input, "blur");
+  assert.equal(input.value, "12");
+  assert.equal(runtime.controlledInputs.get(1)?.state.pendingValue, null);
+  assert.equal(input.getAttribute("type"), "number");
+});
+
 test("dynamic attribute commands set and remove DOM attributes", () => {
   const telemetry = [];
   const { host, root, runtime } = mountWith(
@@ -742,6 +926,19 @@ test("dynamic attribute commands set and remove DOM attributes", () => {
   assert.equal(mountCommands.opCounts.set_attr_text, 4);
   assert.equal(mountCommands.dynamicBytes, 132);
   assert.equal(mountCommands.fixedRecordBytes, 7 * RECORD_WORDS * 4);
+  const mountApplied = telemetry.find(
+    (entry) => entry.kind === "commands_applied" && entry.phase === "mount",
+  );
+  assert.deepEqual(mountApplied.decode, {
+    fixedStringDecodes: 1,
+    fixedStringBytes: 6,
+    dynamicRecordsDecoded: 4,
+    dynamicRecordBytes: 132,
+    dynamicStringDecodes: 8,
+    dynamicStringBytes: 50,
+    dynamicByteArrayDecodes: 0,
+    dynamicByteArrayBytes: 0,
+  });
 
   host.writeCommands([
     {
@@ -778,6 +975,19 @@ test("dynamic attribute commands set and remove DOM attributes", () => {
   );
   assert.equal(removeCommands.opCounts.remove_attr, 3);
   assert.equal(removeCommands.dynamicBytes, 76);
+  const removeApplied = telemetry.find(
+    (entry) => entry.kind === "commands_applied" && entry.phase === "dynamic-remove",
+  );
+  assert.deepEqual(removeApplied.decode, {
+    fixedStringDecodes: 0,
+    fixedStringBytes: 0,
+    dynamicRecordsDecoded: 3,
+    dynamicRecordBytes: 76,
+    dynamicStringDecodes: 3,
+    dynamicStringBytes: 22,
+    dynamicByteArrayDecodes: 0,
+    dynamicByteArrayBytes: 0,
+  });
 });
 
 test("malformed dynamic command records fail closed", () => {
@@ -839,6 +1049,7 @@ test("malformed dynamic command records fail closed", () => {
 });
 
 test("event payloads round-trip through the wasm memory boundary", () => {
+  const telemetry = [];
   const { host, root } = mountWith([
     { op: Op.resetDom },
     { op: Op.createElement, a: 1, s: "button" },
@@ -859,7 +1070,7 @@ test("event payloads round-trip through the wasm memory boundary", () => {
     { op: Op.bindPointerUp, a: 4, b: 15 },
     { op: Op.bindPointerLeave, a: 4, b: 16 },
     { op: Op.appendChild, a: 0, b: 4 },
-  ]);
+  ], { telemetry: (entry) => telemetry.push(entry) });
 
   fireEvent(findByText(root, "button", "click"), "click");
   const textInput = findAll(root, (node) => node.tagName === "INPUT")[0];
@@ -887,9 +1098,38 @@ test("event payloads round-trip through the wasm memory boundary", () => {
     { eventId: 15, kind: PayloadKind.unit },
     { eventId: 16, kind: PayloadKind.unit },
   ]);
+  assert.ok(
+    telemetry.some(
+      (entry) =>
+        entry.kind === "bind_event" &&
+        entry.domEvent === "pointerdown" &&
+        entry.eventId === 13 &&
+        entry.requestedDelivery === "auto" &&
+        entry.effectiveDelivery === "native" &&
+        entry.deliveryReason === "pointer-drag",
+    ),
+  );
+  for (const [domEvent, eventId] of [
+    ["pointerenter", 14],
+    ["pointerup", 15],
+    ["pointerleave", 16],
+  ]) {
+    assert.ok(
+      telemetry.some(
+        (entry) =>
+          entry.kind === "bind_event" &&
+          entry.domEvent === domEvent &&
+          entry.eventId === eventId &&
+          entry.requestedDelivery === "auto" &&
+          entry.effectiveDelivery === "native" &&
+          entry.deliveryReason === "prevent-default-policy",
+      ),
+    );
+  }
 });
 
 test("dynamic keydown events dispatch explicit key shift byte payloads", () => {
+  const telemetry = [];
   const { host, root } = mountWith([
     { op: Op.resetDom },
     { op: Op.createElement, a: 1, s: "input" },
@@ -904,7 +1144,7 @@ test("dynamic keydown events dispatch explicit key shift byte payloads", () => {
       },
     },
     { op: Op.appendChild, a: 0, b: 1 },
-  ]);
+  ], { telemetry: (entry) => telemetry.push(entry) });
 
   const input = findNode(root, (node) => node.tagName === "INPUT");
   fireEvent(input, "keydown", { key: "K", shiftKey: true });
@@ -912,6 +1152,19 @@ test("dynamic keydown events dispatch explicit key shift byte payloads", () => {
   assert.deepEqual(host.dispatches, [
     { eventId: 21, kind: PayloadKind.bytes, payloadBytes: keyShiftBytes("K", true) },
   ]);
+  const mountApplied = telemetry.find(
+    (entry) => entry.kind === "commands_applied" && entry.phase === "mount",
+  );
+  assert.deepEqual(mountApplied.decode, {
+    fixedStringDecodes: 1,
+    fixedStringBytes: 5,
+    dynamicRecordsDecoded: 1,
+    dynamicRecordBytes: 72,
+    dynamicStringDecodes: 1,
+    dynamicStringBytes: 7,
+    dynamicByteArrayDecodes: 1,
+    dynamicByteArrayBytes: keyShiftEventExtractionPlan.length,
+  });
 });
 
 test("dynamic custom events dispatch serialized detail payloads", () => {
@@ -1260,20 +1513,60 @@ test("dynamic once listener survives self-filtered deliveries", () => {
   assert.deepEqual(host.dispatches, [{ eventId: 26, kind: PayloadKind.unit }]);
 });
 
-test("event dispatch retains response bits returned by roc_ui_event", () => {
-  const { host, root, runtime } = mountWith([
+test("event dispatch applies response bits before draining response commands", () => {
+  const telemetry = [];
+  const { host, root, runtime } = mountWith(
+    [
+      { op: Op.resetDom },
+      { op: Op.createElement, a: 1, s: "button" },
+      { op: Op.setText, a: 1, s: "click" },
+      { op: Op.bindClick, a: 1, b: 23 },
+      { op: Op.appendChild, a: 0, b: 1 },
+    ],
+    { telemetry: (entry) => telemetry.push(entry) },
+  );
+  const responseBits =
+    ListenerOptions.preventDefault |
+    ListenerOptions.stopPropagation |
+    ListenerOptions.stopImmediatePropagation;
+  host.eventResponseBits.set(23, responseBits);
+  host.eventResponses.set(23, () => [{ op: Op.setText, a: 1, s: "clicked" }]);
+
+  const event = fireEvent(findByText(root, "button", "click"), "click");
+
+  assert.equal(event.defaultPrevented, true);
+  assert.equal(event.cancelBubble, true);
+  assert.equal(event.immediatePropagationStopped, true);
+  assert.deepEqual(host.dispatches, [{ eventId: 23, kind: PayloadKind.unit }]);
+  assert.equal(runtime.lastEventResponseBits, responseBits);
+  assert.equal(findByText(root, "button", "clicked").textContent, "clicked");
+  const responseIndex = telemetry.findIndex(
+    (entry) => entry.kind === "dom_event_response" && entry.eventId === 23,
+  );
+  const commandsIndex = telemetry.findIndex(
+    (entry) => entry.kind === "commands" && entry.phase === "event:23",
+  );
+  assert.ok(responseIndex >= 0);
+  assert.ok(commandsIndex > responseIndex);
+});
+
+test("event dispatch rejects unsupported response bits before draining response commands", () => {
+  const { host, root } = mountWith([
     { op: Op.resetDom },
     { op: Op.createElement, a: 1, s: "button" },
     { op: Op.setText, a: 1, s: "click" },
     { op: Op.bindClick, a: 1, b: 23 },
     { op: Op.appendChild, a: 0, b: 1 },
   ]);
-  host.eventResponseBits.set(23, 5);
+  host.eventResponseBits.set(23, ListenerOptions.capture);
+  host.eventResponses.set(23, () => [{ op: Op.setText, a: 1, s: "clicked" }]);
 
-  fireEvent(findByText(root, "button", "click"), "click");
-
+  assert.throws(
+    () => fireEvent(findByText(root, "button", "click"), "click"),
+    /unsupported event response bits 0x4/,
+  );
   assert.deepEqual(host.dispatches, [{ eventId: 23, kind: PayloadKind.unit }]);
-  assert.equal(runtime.lastEventResponseBits, 5);
+  assert.equal(findByText(root, "button", "click").textContent, "click");
 });
 
 test("event dispatch wraps wasm host trap diagnostics", () => {
@@ -1760,10 +2053,11 @@ test("timer commands register intervals and timer ticks re-enter wasm", () => {
 });
 
 test("task commands marshal request and resolve payloads by request id", () => {
+  const telemetry = [];
   const { host, runtime } = mountWith([
     { op: Op.resetDom },
     { op: Op.startTask, a: 5, strings: ["lookup", "roc"] },
-  ]);
+  ], { telemetry: (entry) => telemetry.push(entry) });
 
   assert.deepEqual(
     [...runtime.tasks.entries()].map(([requestId, task]) => ({
@@ -1780,10 +2074,39 @@ test("task commands marshal request and resolve payloads by request id", () => {
     { requestId: 5, payload: "Roc result", failed: false },
   ]);
   assert.equal(runtime.tasks.has(5), false);
+  assert.ok(
+    telemetry.some(
+      (entry) =>
+        entry.kind === "start_task" &&
+        entry.requestId === 5 &&
+        entry.name === "lookup" &&
+        entry.request === "roc",
+    ),
+  );
+  assert.ok(
+    telemetry.some(
+      (entry) =>
+        entry.kind === "task_resolution" &&
+        entry.requestId === 5 &&
+        entry.name === "lookup" &&
+        entry.request === "roc" &&
+        entry.failed === false &&
+        entry.payloadLen === "Roc result".length,
+    ),
+  );
 
   runtime.applyCommand({ op: Op.startTask, a: 6, b: 0, c: 6, d: 6, e: 3 });
   runtime.applyCommand({ op: Op.cancelTask, a: 6, b: 0, c: 0, d: 0, e: 0 });
   assert.equal(runtime.tasks.has(6), false);
+  assert.ok(
+    telemetry.some(
+      (entry) =>
+        entry.kind === "cancel_task" &&
+        entry.requestId === 6 &&
+        entry.name === "lookup" &&
+        entry.request === "roc",
+    ),
+  );
 });
 
 test("stale manual task resolutions reach host classification with telemetry", () => {
@@ -1867,12 +2190,14 @@ test("task cancellation aborts stale async settlement and keeps fresh request cu
 });
 
 test("task handler rejections resolve through the task failure path", async () => {
+  const telemetry = [];
   const { host } = mountWith(
     [
       { op: Op.resetDom },
       { op: Op.startTask, a: 8, strings: ["lookup", "roc"] },
     ],
     {
+      telemetry: (entry) => telemetry.push(entry),
       taskHandler: () => Promise.reject(new Error("offline")),
     },
   );
@@ -1883,6 +2208,17 @@ test("task handler rejections resolve through the task failure path", async () =
   assert.deepEqual(host.resolutions, [
     { requestId: 8, payload: "offline", failed: true },
   ]);
+  assert.ok(
+    telemetry.some(
+      (entry) =>
+        entry.kind === "task_resolution" &&
+        entry.requestId === 8 &&
+        entry.name === "lookup" &&
+        entry.request === "roc" &&
+        entry.failed === true &&
+        entry.payloadLen === "offline".length,
+    ),
+  );
 });
 
 test("async task resolution traps report onError without retrying as task failure", async () => {
@@ -1934,6 +2270,31 @@ test("HTTP request payload codec preserves method URI timeout headers and body b
   });
 });
 
+test("HTTP response payload codec preserves status duplicate headers and body bytes", () => {
+  const body = new Uint8Array([1, 2, 3, 255]);
+  const payload = encodeHttpResponsePayload({
+    status: 202,
+    headers: [
+      ["set-cookie", "a=1"],
+      ["set-cookie", "b=2"],
+      ["x-trace", "first"],
+      ["x-trace", "second"],
+    ],
+    body,
+  });
+
+  assert.deepEqual(decodeHttpResponsePayload(payload), {
+    status: 202,
+    headers: [
+      ["set-cookie", "a=1"],
+      ["set-cookie", "b=2"],
+      ["x-trace", "first"],
+      ["x-trace", "second"],
+    ],
+    body,
+  });
+});
+
 test("HTTP fetch task handler maps request envelopes to fetch response envelopes", async () => {
   const calls = [];
   const payload = encodeHttpRequestPayload({
@@ -1953,13 +2314,19 @@ test("HTTP fetch task handler maps request envelopes to fetch response envelopes
         method: options.method,
         headers: options.headers,
         body: [...options.body],
+        hasSignal: options.signal instanceof AbortSignal,
+        optionKeys: Object.keys(options).sort(),
       });
       return {
         status: 201,
-        headers: new Map([
-          ["content-type", "text/plain"],
-          ["x-reply", "ok"],
-        ]),
+        headers: {
+          entries: () =>
+            [
+              ["content-type", "text/plain"],
+              ["x-reply", "ok"],
+              ["x-reply", "again"],
+            ][Symbol.iterator](),
+        },
         arrayBuffer: async () => textBytes("created").buffer,
       };
     },
@@ -1971,6 +2338,8 @@ test("HTTP fetch task handler maps request envelopes to fetch response envelopes
       method: "POST",
       headers: [["content-type", "text/plain"]],
       body: [...textBytes("hello")],
+      hasSignal: true,
+      optionKeys: ["body", "headers", "method", "signal"],
     },
   ]);
   assert.deepEqual(decodeHttpResponsePayload(value), {
@@ -1978,6 +2347,7 @@ test("HTTP fetch task handler maps request envelopes to fetch response envelopes
     headers: [
       ["content-type", "text/plain"],
       ["x-reply", "ok"],
+      ["x-reply", "again"],
     ],
     body: textBytes("created"),
   });

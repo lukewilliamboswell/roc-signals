@@ -79,6 +79,28 @@ test("HTTP text response helper sets custom content type", () => {
   assert.equal(decoder.decode(response.body), "plain");
 });
 
+test("HTTP response helpers preserve ordered duplicate header pairs", () => {
+  const response = decodeHttpResponsePayload(
+    httpTextResponse("cookies", {
+      headers: [
+        ["set-cookie", "a=1"],
+        ["set-cookie", "b=2"],
+        ["x-mode", "first"],
+        ["x-mode", "second"],
+      ],
+    }),
+  );
+
+  assert.deepEqual(response.headers, [
+    ["content-type", "text/plain; charset=utf-8"],
+    ["set-cookie", "a=1"],
+    ["set-cookie", "b=2"],
+    ["x-mode", "first"],
+    ["x-mode", "second"],
+  ]);
+  assert.equal(httpHeaderValue(response.headers, "x-mode"), "first");
+});
+
 test("HTTP task router rejects method mismatch on known URIs", () => {
   const router = createHttpTaskRouter({
     "GET /api/widgets": () => httpTextResponse("ok"),

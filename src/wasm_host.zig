@@ -536,7 +536,6 @@ fn dispatchEvent(desc: HostActiveEventDesc, payload: HostValue) void {
     const dirty_generation = shared_engine.nextDirtySignalGeneration();
 
     const changed_record_ids = shared_engine.propagateDirtyActiveSignals(ctx, &roc_host, allocator(), &dirty_source_node_ids, dirty_generation);
-    defer allocator().free(changed_record_ids);
 
     const dirty_structural_signals = shared_engine.collectDirtyStructuralSignals(ctx, &roc_host, allocator(), &dirty_source_node_ids, changed_record_ids, dirty_generation);
     defer allocator().free(dirty_structural_signals);
@@ -660,7 +659,7 @@ fn clearActiveRuntime() void {
 
 // --- Compiler-rt shim ---
 
-// The Roc app's `key.hash` path (`Ui.each`) emits a 128-bit integer multiply.
+// The Roc app's `key.hash` path (`Ui.each_str`) emits a 128-bit integer multiply.
 // ReleaseSmall leaves it as an undefined `__multi3` symbol instead of bundling
 // compiler-rt, so the app object imports `env.__multi3`. The host is linked into
 // every app wasm, so defining it here resolves that reference at link time and

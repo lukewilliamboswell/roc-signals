@@ -1,26 +1,9 @@
 import Elem exposing [Elem]
 import HostValue exposing [HostValue]
 import Capability exposing [Capability]
+import EventExtraction
 import Node
 import Signal exposing [Signal]
-
-## Shared DOM extraction descriptor bytes. Keep these as module
-## values so the larger key-shift descriptor is not allocated directly inside
-## `State.on_key` on wasm.
-event_extraction_unit : Node.EventExtractionPlan
-event_extraction_unit = { bytes: [1] }
-
-event_extraction_target_value : Node.EventExtractionPlan
-event_extraction_target_value = { bytes: [2, 3, 2] }
-
-event_extraction_target_checked : Node.EventExtractionPlan
-event_extraction_target_checked = { bytes: [3, 3, 3] }
-
-event_extraction_detail : Node.EventExtractionPlan
-event_extraction_detail = { bytes: [2, 1, 5] }
-
-event_extraction_key_shift : Node.EventExtractionPlan
-event_extraction_key_shift = { bytes: [4, 2, 3, 107, 101, 121, 2, 1, 1, 9, 115, 104, 105, 102, 116, 95, 107, 101, 121, 3, 1, 4] }
 
 state_event_msg : Node.BinderRef, Node.EventExtractionPlan, HostValue.EventReducerHandle -> Node.Msg
 state_event_msg = |binder, event_extraction_plan, payload_reducer| {
@@ -132,7 +115,7 @@ Ui := [].{
 			}
 			state_event_msg(
 				st.ref,
-				event_extraction_unit,
+				EventExtraction.unit,
 				{ capability: Capability.handle(payload_cap), transform: Box.box(wrapped) },
 			)
 		}
@@ -154,7 +137,7 @@ Ui := [].{
 			}
 			state_event_msg(
 				st.ref,
-				event_extraction_target_value,
+				EventExtraction.target_value,
 				{ capability: Capability.handle(payload_cap), transform: Box.box(wrapped) },
 			)
 		}
@@ -176,7 +159,7 @@ Ui := [].{
 			}
 			state_event_msg(
 				st.ref,
-				event_extraction_target_checked,
+				EventExtraction.target_checked,
 				{ capability: Capability.handle(payload_cap), transform: Box.box(wrapped) },
 			)
 		}
@@ -198,7 +181,7 @@ Ui := [].{
 			}
 			state_event_msg(
 				st.ref,
-				event_extraction_detail,
+				EventExtraction.detail,
 				{ capability: Capability.handle(payload_cap), transform: Box.box(wrapped) },
 			)
 		}
@@ -220,7 +203,7 @@ Ui := [].{
 			}
 			state_event_msg(
 				st.ref,
-				event_extraction_key_shift,
+				EventExtraction.key_shift,
 				{ capability: Capability.handle(payload_cap), transform: Box.box(wrapped) },
 			)
 		}

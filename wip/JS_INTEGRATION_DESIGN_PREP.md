@@ -1,17 +1,25 @@
 # JS Integration / Subscriptions Design Prep
 
-Temporary working note for JavaScript integration in the Signals UI framework.
-This is not an enduring design document yet. Its purpose is to capture the plan
-shape, requirements, research notes, and open questions for `Sub`s, app-specific
-JS interop, and browser mounting before the final design is folded into
-`DESIGN.md`, `GUIDE.md`, and `NEXT_STEPS.md`.
+Deferred working note for JavaScript integration in the Signals UI framework.
+This is not an enduring design document yet and is not an active implementation
+milestone. Its purpose is to capture the plan shape, requirements, research
+notes, and open questions for `Sub`s, app-specific JS interop, and browser
+mounting before a maintained app or focused canary promotes the deferred
+`wip/NEXT_STEPS.md` priority into a concrete implementation slice and the final
+design is folded into `design.md` and the app-author guide.
+
+Refresh check: re-run on 2026-07-04 with the focused browser integration gate
+for behavior lifecycle, protocol checks, timers, tasks, and listener cleanup.
+Current behavior/mounting claims below remained green; subscriptions and
+app-specific interop remain unpromoted.
 
 ## Why This Exists
 
-`DESIGN.md` currently names `Sub(a)` as part of the intended app-facing API and
-states the high-level rule that subscriptions are declared by structure and
-started/stopped by the host. That is directionally correct, but it is not enough
-for implementation or production-readiness.
+`design.md` now keeps `Sub(a)` out of the shipped app-facing API and records the
+enduring rule future subscriptions must follow: subscriptions are declared by
+structure, owned by scopes, diffed by the host, and started/stopped by lifecycle.
+That direction is useful, but it is not enough for implementation or
+production-readiness.
 
 Real web apps need long-lived browser and JS resources:
 
@@ -28,33 +36,48 @@ lifecycle, test fakes, and boundary rules. Elm's ports are useful prior art for
 this problem, but Signals should not copy Elm mechanically; it should adapt the
 boundary discipline to the Signals effects-as-sources engine.
 
-## Current Coverage in `DESIGN.md`
+Signals already has one narrow browser integration hook:
+`Html.behavior(name)` marks a DOM element for a behavior registered through
+`mountSignalsApp({ behaviors })`. The runtime attaches the matching behavior
+after a batch, calls behavior `update` for dynamic custom attributes, and cleans
+it up on marker removal, subtree removal, or unmount. This is useful for
+element-scoped browser widgets such as the service-ops chart, but it is not a
+general subscription or ports surface: it is browser-only, not a retained source,
+and any Roc update still comes back through declared DOM events such as
+`Html.on_custom`.
 
-`DESIGN.md` covers `Sub`s only at a high level:
+## Current Coverage in `design.md`
 
-- `Core Concepts` says `Cmd / Sub` are typed effect requests and subscriptions;
-  results re-enter the graph as source updates.
-- `App-Facing API` lists `Sub(a)` as opaque to apps.
-- `Glitch Freedom, Ordering, and Async` says `Sub`s are declared by structure and
-  the host diffs the declared subscription set against the live set.
+`design.md` covers future `Sub`s only at a high level:
+
+- `Core Concepts` says general `Sub` descriptors are deferred until a maintained
+  app or focused canary needs broader inbound host messages.
+- `App-Facing API` says `Sub(a)` and app-specific JS interop are future surfaces,
+  not shipped API.
+- `Glitch Freedom, Ordering, and Async` says future `Sub` descriptors must be
+  declared by structure, scope-owned, diffed by the host, and lifecycle-managed.
 - `Async in the browser` covers timers and tasks, but not a general subscription
   descriptor or app-specific interop channel.
-- `Open Questions` mentions multiple instances per page, but does not connect it
-  to subscriptions or JS integration.
+- `Browser mounting model` defines one Wasm instance per active mount; this prep
+  still needs a mount-local registration model for subscriptions and interop
+  beyond the existing element-scoped behavior registry.
 
-Missing details:
+Missing details, intentionally unresolved until promotion:
 
 - no concrete `Sub(a)` constructors or descriptor shape;
 - no place in `Elem` / scope structure where subscriptions are declared;
 - no keyed identity for subscriptions;
 - no start/stop diff algorithm beyond one sentence;
-- no payload encoding format;
+- no subscription-side producer descriptor or concrete inbound encoding format;
 - no native fake model for inbound JS events;
-- no app-specific interop channel comparable to Elm ports;
-- no multiple-mount handle or per-mount JS registration model.
+- no app-specific interop channel comparable to Elm ports, beyond the current
+  browser-only `Html.behavior` marker;
+- no per-mount JS registration model attached to the current
+  one-Wasm-instance-per-mount browser stance.
 
-Conclusion: the enduring design has the right direction, but the plan is not yet
-adequate. This prep doc should feed a future `DESIGN.md` section.
+Conclusion: the enduring design has the right direction, but the plan should not
+become surface without a maintained app or focused canary. This prep doc should
+feed a future `design.md` section only after that promotion trigger exists.
 
 ## Elm Ports Research Notes
 
@@ -178,24 +201,34 @@ Interop.send : Channel(a), a -> Cmd
 Interop.subscribe : Channel(a), a -> Sub(a)
 ```
 
-These names are illustrative only. The design must account for Signals' current
-`Elem`-driven app shape, scoped identity, retained callbacks, and confined
-erasure.
+These names are illustrative only. The first promoted slice may use a focused
+built-in subscription surface without stabilizing a generic public `Sub(a)` API;
+keep the generic API deferred until repeated canaries prove it. The design must
+account for Signals' current `Elem`-driven app shape, scoped identity, retained
+callbacks, and confined erasure.
 
 ## Built-In Subscription Candidates
 
 Do not start by building every browser API. Use the smallest set that proves the
 model:
 
-- `Signal.interval` may be treated as the existing subscription-like canary;
+- `Signal.interval` is shipped as a timer/effect source, not as public `Sub`
+  surface. Treat it as lifecycle prior art for start/stop/unmount behavior, and
+  only fold it into shared subscription internals if the promoted slice proves
+  that reuse lowers complexity without changing the app-facing API.
 - `Browser.online : Sub(Bool)`;
 - `Browser.visibility : Sub(Visibility)`;
-- `Browser.media_query : Str -> Sub(Bool)`;
-- `WebSocket.messages : WebSocketConfig -> Sub(WebSocketEvent)` eventually;
-- `Storage.changes : StorageArea -> Sub(StorageEvent)` eventually.
+- `Browser.media_query : Str -> Sub(Bool)`.
 
-The first real milestone should include one browser-native subscription with
-simple lifecycle and one app-specific interop channel, only if needed to prove the
+Keep broader browser source catalogs deferred until a maintained app or focused
+canary proves they are needed beyond the first lifecycle/payload slice. Examples:
+
+- `WebSocket.messages : WebSocketConfig -> Sub(WebSocketEvent)`;
+- `Storage.changes : StorageArea -> Sub(StorageEvent)`.
+
+The first promoted slice should include the smallest browser-native
+subscription that proves lifecycle and payload semantics. Add an app-specific
+interop channel only if the promoting maintained app or focused canary needs the
 escape-hatch shape.
 
 ## App-Specific JS Interop
@@ -228,33 +261,32 @@ Non-goals:
 
 ## Payload Boundary
 
-Payloads need a representation that works for subscriptions and interop without
-JS reading Roc layouts.
+This question is now settled in direction: the shared boundary vocabulary
+shipped for event payloads as schema tags embedded in `Node.EventExtractionPlan`
+bytes. `src/signals/boundary.zig` parses and validates those bytes, currently
+covering unit, text, bool, and non-empty records of primitive leaves.
+Subscriptions and interop payloads must reuse that vocabulary rather than
+introducing a JSON-like or string-only format.
 
-Candidates:
+Remaining payload work when subscriptions are promoted:
 
-1. UTF-8 strings only.
-   - too small for production interop, but useful for an initial spike.
-2. JSON-like value format.
-   - close to Elm ports and convenient for JS integration;
-   - may allocate more and weakens static shape unless wrapped by typed Roc
-     decoders/builders.
-3. Small typed primitive-record format shared with generalized event payloads.
-   - more consistent with Signals' descriptor discipline;
-   - likely better long-term if the wire protocol grows dynamic records.
-4. Bytes plus app-level codecs.
-   - maximally simple boundary;
-   - requires good library support to avoid every app hand-rolling codecs.
+- define the subscription-side producer descriptor (the analogue of the DOM
+  `EventExtractionPlan`) for host/JS-originated messages;
+- add new leaves or containers only when a subscription canary needs them,
+  with the same fail-closed validation and diagnostics as event extraction;
+- keep typed decoding in Roc-provided capabilities; hosts move bytes/scalars
+  only.
 
-Research should align this with `WIRE_PROTOCOL_DESIGN_PREP.md` and
-`ATTRIBUTE_EVENT_PAYLOAD_BOUNDARY_DESIGN_PREP.md`; event payloads, interop
-payloads, and subscription payloads should not become three unrelated formats.
+Event payloads, interop payloads, and subscription payloads must not become
+three unrelated formats.
 
 ## Multiple Mounting
 
-`DESIGN.md` currently lists multiple instances per page as an open question:
-current host state is module-global, so two mounts need either two WASM instances
-or an explicit per-mount handle.
+`design.md` now treats one Wasm instance per active mount as the current
+production stance. The wasm host state is module-global inside an instance, and
+`mountSignalsApp` creates a fresh instance per root. Multiple roots on a page are
+therefore multiple `WebAssembly.Instance` values, each with its own
+`SignalsRuntime`.
 
 This question is part of JS integration because subscriptions and interop need
 mount-local ownership:
@@ -268,21 +300,21 @@ mount-local ownership:
 
 Options:
 
-1. **One WASM instance per mount.**
+1. **Current stance: one WASM instance per mount.**
    - simplest engine model;
-   - heavier memory/startup;
-   - easy resource isolation.
-2. **One WASM instance with explicit mount handles.**
-   - better for many widgets;
+   - easy resource isolation;
+   - aligns JS registries with one `SignalsRuntime`;
+   - heavier memory/startup for pages with many tiny widgets.
+2. **Deferred alternative: one WASM instance with explicit mount handles.**
+   - better if many-widget embedding measurements prove per-instance overhead is
+     too high;
    - requires every host export to take a handle;
    - forces all command buffers, ids, and JS registries to be mount-scoped.
-3. **Single mount only for now, documented.**
-   - acceptable for research;
-   - poor production escape hatch and embedding story.
 
-Recommendation for research: decide this before implementing app-specific interop
-channels. If channels are global and mounting later becomes handle-based, the
-migration will be costly.
+Interop channels should target the current stance first: register handlers and
+source ids on the `SignalsRuntime` / Wasm instance that owns the mount. Do not
+design global channel registries that would make a future handle-based model
+harder to introduce.
 
 ## Browser Runtime Requirements
 
@@ -295,6 +327,8 @@ migration will be costly.
 - Run cleanup on `roc_ui_unmount` for every live subscription and interop channel.
 - Expose registration hooks for app-specific JS handlers without giving them
   direct access to engine internals.
+- Keep the existing `data-signals-behavior` registry element-scoped; do not reuse
+  it as the subscription or app-port route table.
 - Record telemetry for subscribe/start, message, stop, ignored-late, handler
   error, and unmount cleanup.
 
@@ -322,16 +356,32 @@ Shared concerns:
 - browser telemetry;
 - effect capability registry.
 
+The typed effect capability registry in `wip/NEXT_STEPS.md` should be designed
+with subscriptions, because both tasks and subscriptions need owned ids,
+generations, payload validation, native fakes, and browser telemetry. It should
+replace the current HTTP `http:send:` task-name prefix routing only when that
+shared registry has a subscription or interop canary to prove the
+task/subscription routing model.
+
 Different concerns:
 
 - HTTP is one-shot and returns `Done`/`Failed`;
 - subscriptions are long-lived and publish many values;
 - ports-like interop is app-specific and should not shape package-level HTTP.
 
-## Validation Plan
+## Promotion Validation Plan
+
+Promotion trigger: name one maintained app or focused canary and one small
+built-in browser subscription, such as online/visibility/media-query status,
+that proves lifecycle, payload, stale-message, cleanup, and work-budget
+semantics.
+
+Use this plan only after that app or canary proves the need for broader inbound
+host messages.
 
 1. Add a small built-in subscription canary, such as online/visibility/media-query
-   or promote interval into the same subscription infrastructure.
+   status. Use `Signal.interval` only as lifecycle prior art unless the promoted
+   slice proves shared internals are the smaller route.
 2. Add a native spec that proves:
    - subscription starts when scope enters;
    - unchanged descriptor does not restart;
@@ -349,46 +399,80 @@ Different concerns:
    - one inbound subscription channel;
    - JS registration at mount;
    - native fake coverage.
-5. Decide the multiple-mount strategy before stabilizing JS handler registration.
+5. Validate the current one-Wasm-instance-per-mount strategy before stabilizing
+   JS handler registration; revisit explicit mount handles only with
+   many-widget measurements.
+
+## Focused Gates
+
+For prep-only edits that do not change current behavior claims, run:
+
+```sh
+git diff --check
+zig build run-check-tidy
+```
+
+For edits that change current browser-integration claims around
+`Html.behavior`, mounting, timers, tasks, or runtime cleanup, run the focused
+browser contract coverage:
+
+```sh
+node --test --test-name-pattern "behavior lifecycle|protocol checks|timer|task|clear_event|remove_node" scripts/browser/runtime_contract.test.mjs
+```
+
+When the priority is promoted into a concrete implementation slice, use the
+smallest gate that proves the slice, then the repository gate before committing.
+A promoted subscription slice should include at least:
+
+```sh
+python3 scripts/test.py native --native always
+zig build run-test-browser
+python3 scripts/test.py roc-check
+```
+
+Add `python3 scripts/test.py bench --native always` when subscription diffing or
+work-budget claims change, and `python3 scripts/test.py wasm` when wasm/app
+build coverage changes.
 
 ## Outstanding Questions
 
 - What is the concrete `Sub(a)` app-facing API and where is it declared in the
   `Elem` tree?
-- Is `Signal.interval` a special signal source or should it be represented as a
-  subscription internally?
 - What identity key does a subscription use: construction site, explicit channel
   name, parameters, or a host-generated descriptor id?
 - How are subscription parameter changes detected without app-authored equality
   footguns?
-- What payload format should be shared by event payloads, subscription payloads,
-  and app interop messages?
-- Should app-specific interop be string/JSON-like for ergonomics or typed bytes
-  for discipline?
+- What subscription-side producer descriptor should reuse the existing shared
+  boundary vocabulary for host/JS-originated messages?
+- What ergonomic app-specific interop API can expose that shared vocabulary
+  without falling back to string-only or JSON-like channels?
 - Are ports-like channels application-only, package-usable, or explicitly outside
   package contracts?
 - Should outbound interop messages be `Cmd`s, command-buffer ops, or a separate
   effect channel?
-- How do inbound interop messages identify their target source under multiple
-  mounts?
-- Should the production model allow multiple mounts in one WASM instance, or
-  recommend one WASM instance per mount?
-- What JS handler registration API should the browser runtime expose?
+- How do inbound interop messages identify their target source inside the owning
+  `SignalsRuntime`?
+- What many-widget memory/startup measurement would justify revisiting explicit
+  same-instance mount handles?
+- What JS handler registration API should the browser runtime expose for
+  subscriptions and ports beyond the existing behavior registry?
 - How are handler errors surfaced: console telemetry, failed source value,
   diagnostics, or app-visible errors?
 
-## Suggested First Milestone
+## Suggested First Promoted Slice
 
-Create a focused subscription/interoperability spike:
+Create a focused subscription spike:
 
 - introduce an internal subscription descriptor and route table;
-- implement one simple built-in browser subscription or unify `Signal.interval`
-  with the subscription lifecycle;
+- implement one simple built-in browser subscription;
 - add native fake injection and start/stop/late-message specs;
 - add browser contract coverage for start/message/stop/unmount;
 - document a provisional mount strategy;
-- keep app-specific ports-like channels as a second slice unless a real example
-  immediately needs them.
+- keep app-specific ports-like channels as a second slice unless a maintained
+  app or focused canary immediately needs them.
 
-This milestone should produce enough evidence to fold the core `Sub` lifecycle
-into `DESIGN.md` and add app-facing examples to `GUIDE.md`.
+This promoted slice should produce enough evidence to fold the core subscription
+lifecycle into `design.md` and, only if app-facing surface is promoted, add
+examples to the app-author guide.
+It corresponds to `wip/NEXT_STEPS.md` priority 2, but remains deferred until the
+promotion trigger exists.

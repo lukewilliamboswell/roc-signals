@@ -42,6 +42,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
     const native_target = b.standardTargetOptions(.{});
     const metrics = b.option(bool, "metrics", "Enable runtime telemetry counters") orelse true;
+    const test_filters = b.option([]const []const u8, "test-filter", "Skip Zig unit tests that do not match any filter") orelse &.{};
 
     const build_options = b.addOptions();
     build_options.addOption(bool, "metrics", metrics);
@@ -78,6 +79,7 @@ pub fn build(b: *std.Build) void {
     const shared_test = b.addTest(.{
         .name = "signals_shared",
         .root_module = createSignalsModule(b, native_target, optimize, build_options_module),
+        .filters = test_filters,
     });
     const run_shared_test = b.addRunArtifact(shared_test);
     if (b.args) |args| run_shared_test.addArgs(args);
@@ -85,6 +87,7 @@ pub fn build(b: *std.Build) void {
     const host_test = b.addTest(.{
         .name = "signals_host",
         .root_module = createNativeHostModule(b, native_target, optimize, build_options_module),
+        .filters = test_filters,
     });
     const run_host_test = b.addRunArtifact(host_test);
     if (b.args) |args| run_host_test.addArgs(args);

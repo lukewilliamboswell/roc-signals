@@ -26,6 +26,7 @@ expect_text text:"Blur events: 0" "Blur events: 0"
 expect_text text:"Change events: 0" "Change events: 0"
 expect_text text:"Composition start events: 0" "Composition start events: 0"
 expect_text text:"Composition end events: 0" "Composition end events: 0"
+expect_attr role:button name:"Create team" type "button"
 
 submit role:form name:"Signup form"
 expect_text text:"Invitation not sent" "Invitation not sent"
@@ -54,6 +55,9 @@ expect_text text:"Terms ready for submission" "Terms ready for submission"
 
 submit role:form name:"Signup form"
 expect_text text:"Invitation sent: 1" "Invitation sent: 1"
+
+click role:button name:"Create team"
+expect_text text:"Invitation sent: 2" "Invitation sent: 2"
 
 blur label:"Work email"
 expect_text text:"Blur events: 1" "Blur events: 1"

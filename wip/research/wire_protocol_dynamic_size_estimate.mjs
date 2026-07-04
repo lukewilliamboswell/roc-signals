@@ -1,5 +1,6 @@
 const align4 = (n) => (n + 3) & ~3;
 const utf8Len = (text) => new TextEncoder().encode(text).length;
+const utf8Bytes = (text) => [...new TextEncoder().encode(text)];
 
 const FIXED_RECORD = 24;
 const DYNAMIC_HEADER = 8; // u16 op, u16 flags, u32 payload_len
@@ -34,6 +35,31 @@ function fixedRefsBatch({ commands, strings = [], specs = [] }) {
     strings.reduce((sum, text) => sum + 8 + utf8Len(text), 0) +
     specs.reduce((sum, spec) => sum + 8 + spec.bytes, 0);
   return commands * FIXED_RECORD + tableBytes;
+}
+
+function httpBytesField(bytes) {
+  return [...bytes].map((byte) => String(byte)).join(",");
+}
+
+function httpStringField(text) {
+  return httpBytesField(utf8Bytes(text));
+}
+
+function httpRequestPayload({ method = "GET", uri = "", timeoutMs = null, headers = [], body = [] } = {}) {
+  const bodyBytes = typeof body === "string" ? utf8Bytes(body) : body;
+  const fields = [
+    "roc-http-request-v1",
+    httpStringField(method),
+    httpStringField(uri),
+    timeoutMs === null ? "-" : String(timeoutMs),
+    String(headers.length),
+  ];
+  for (const [name, value] of headers) {
+    fields.push(httpStringField(name));
+    fields.push(httpStringField(value));
+  }
+  fields.push(httpBytesField(bodyBytes));
+  return fields.join("\n");
 }
 
 const commands = {
@@ -103,6 +129,7 @@ function sum(list, key) {
 }
 
 const keyboardPayloadSpecBytes = 24; // record{ key: event.key text, shift_key: event.shiftKey bool }
+const summaryHttpRequest = httpRequestPayload({ method: "GET", uri: "/api/ops/summary" });
 
 const scenarios = [
   {
@@ -153,13 +180,13 @@ const scenarios = [
     hybridUsesDynamic: false,
   },
   {
-    name: "future SetAttr aria-label",
+    name: "dynamic SetAttr aria-label",
     ops: [commands.setAttr("aria-label", "Search")],
     fixedRefs: fixedRefsBatch({ commands: 1, strings: ["aria-label", "Search"] }),
     hybridUsesDynamic: true,
   },
   {
-    name: "future BindEvent key payload",
+    name: "dynamic BindEvent key payload",
     ops: [commands.bindEventSpec("keydown", keyboardPayloadSpecBytes)],
     fixedRefs: fixedRefsBatch({
       commands: 1,
@@ -169,13 +196,13 @@ const scenarios = [
     hybridUsesDynamic: true,
   },
   {
-    name: "current StartTask text",
-    ops: [commands.startTask("http:get-text:summary", "/api/ops/summary")],
-    fixedRefs: fixedRefsBatch({ commands: 1, strings: ["http:get-text:summary", "/api/ops/summary"] }),
+    name: "current HTTP text task",
+    ops: [commands.startTask("http:send:summary", summaryHttpRequest)],
+    fixedRefs: fixedRefsBatch({ commands: 1, strings: ["http:send:summary", summaryHttpRequest] }),
     hybridUsesDynamic: false,
   },
   {
-    name: "future HTTP request",
+    name: "dynamic HTTP request",
     ops: [commands.httpStart("POST", "/api/orders", "content-type", "application/json", "{\"id\":17}")],
     fixedRefs: fixedRefsBatch({
       commands: 1,

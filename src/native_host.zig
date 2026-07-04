@@ -895,10 +895,6 @@ const HostEnv = struct {
         };
     }
 
-    fn dirtySignalIdsForEvent(self: *HostEnv, allocator: std.mem.Allocator, event_id: u64) []u64 {
-        return self.engine.dirtySignalIdsForEvent(allocator, event_id);
-    }
-
     fn activeSignalRank(self: *HostEnv, record_id: u64) u64 {
         return self.engine.activeSignalRank(record_id);
     }
@@ -1291,11 +1287,11 @@ fn setElementText(host: *HostEnv, elem: *DomElement, text: []const u8) void {
 }
 
 fn setElementValueIfChanged(host: *HostEnv, elem: *DomElement, value: []const u8) bool {
-    return sim_dom.setValueIfChanged(host.hostAllocator(), elem, value);
+    return sim_dom.setUserValueIfChanged(host.hostAllocator(), elem, value);
 }
 
 fn setElementValue(host: *HostEnv, elem: *DomElement, value: []const u8) void {
-    sim_dom.setValue(host.hostAllocator(), elem, value);
+    _ = sim_dom.setControlledValue(host.hostAllocator(), elem, value);
 }
 
 fn clearElementText(host: *HostEnv, elem: *DomElement) void {
@@ -1395,9 +1391,12 @@ fn clearRenderBoolField(host: *HostEnv, elem_id: u64, field: RenderBoolField) vo
 }
 
 fn appendDetachedDomNode(host: *HostEnv, elem_id: u64, tag: []const u8) void {
-    if (elem_id != host.dom_elements.items.len) failHost("descriptor stream elements must be dense and ordered by elem id");
+    if (elem_id > host.dom_elements.items.len) failHost("descriptor stream elements must be dense and ordered by elem id");
+    if (elem_id < host.dom_elements.items.len and host.dom_elements.items[@intCast(elem_id)].active) {
+        failHost("descriptor stream attempted to reuse an active elem id");
+    }
     sim_dom.appendDetached(host.hostAllocator(), &host.dom_elements, elem_id, tag);
-    host.engine.next_elem_id = elem_id + 1;
+    host.engine.next_elem_id = @max(host.engine.next_elem_id, elem_id + 1);
 }
 
 fn appendDomNode(host: *HostEnv, elem_id: u64, parent_elem_id: u64, tag: []const u8) void {
@@ -1416,7 +1415,7 @@ fn ensureDomNode(host: *HostEnv, elem_id: u64, tag: []const u8) void {
     appendDetachedDomNode(host, elem_id, tag);
 }
 
-fn propagateDirtyActiveSignals(host: *HostEnv, roc_host: *abi.RocHost, allocator: std.mem.Allocator, dirty_source_node_ids: []const u64, dirty_generation: u64) []u64 {
+fn propagateDirtyActiveSignals(host: *HostEnv, roc_host: *abi.RocHost, allocator: std.mem.Allocator, dirty_source_node_ids: []const u64, dirty_generation: u64) []const u64 {
     return host.engine.propagateDirtyActiveSignals(host, roc_host, allocator, dirty_source_node_ids, dirty_generation);
 }
 
@@ -1736,7 +1735,6 @@ fn dispatchRocEventWithStats(host: *HostEnv, roc_host: *abi.RocHost, event_id: u
         const dirty_source_node_ids = [_]u64{desc.target_node_id};
         const dirty_generation = host.nextDirtySignalGeneration();
         const changed_record_ids = propagateDirtyActiveSignals(host, roc_host, host.hostAllocator(), &dirty_source_node_ids, dirty_generation);
-        defer host.hostAllocator().free(changed_record_ids);
         const dirty_structural_signals = collectDirtyStructuralSignals(host, roc_host, host.hostAllocator(), &dirty_source_node_ids, changed_record_ids, dirty_generation);
         defer host.hostAllocator().free(dirty_structural_signals);
         if (dirty_structural_signals.len != 0) {
@@ -1759,7 +1757,6 @@ fn dispatchRocEventWithStats(host: *HostEnv, roc_host: *abi.RocHost, event_id: u
         const dirty_source_node_ids = [_]u64{desc.target_node_id};
         const dirty_generation = host.nextDirtySignalGeneration();
         const changed_record_ids = propagateDirtyActiveSignals(host, roc_host, host.hostAllocator(), &dirty_source_node_ids, dirty_generation);
-        defer host.hostAllocator().free(changed_record_ids);
         const dirty_structural_signals = collectDirtyStructuralSignals(host, roc_host, host.hostAllocator(), &dirty_source_node_ids, changed_record_ids, dirty_generation);
         defer host.hostAllocator().free(dirty_structural_signals);
         if (dirty_structural_signals.len != 0) {
@@ -1789,7 +1786,7 @@ fn requireNamedEvent(elem: *const DomElement, name: []const u8, message: []const
     return nodeEventName(elem, name) orelse failHost(message);
 }
 
-fn dispatchKeyDownWithStats(host: *HostEnv, roc_host: *abi.RocHost, elem: *const DomElement, key: []const u8, shift_key: bool, stats: ?*BenchmarkStats) void {
+fn dispatchKeyDownWithStats(host: *HostEnv, roc_host: *abi.RocHost, elem: *const DomElement, key: []const u8, shift_key: bool, stats: ?*BenchmarkStats) bool {
     const event = requireNamedEvent(elem, "keydown", "keydown target has no named keydown binding");
     if (!event.binding.payload_descriptor.eql(BoundaryPayloadDescriptor.init(.bytes, .record_key_shift))) {
         failHost("keydown binding does not request the key/shift payload descriptor");
@@ -1797,12 +1794,27 @@ fn dispatchKeyDownWithStats(host: *HostEnv, roc_host: *abi.RocHost, elem: *const
     const payload_bytes = encodeKeyShiftPayload(host.hostAllocator(), key, shift_key);
     defer host.hostAllocator().free(payload_bytes);
     dispatchRocEventWithStats(host, roc_host, event.binding.event_id, event.binding.payload_descriptor, hostValueU8List(host, roc_host, payload_bytes), stats);
+    return event.binding.policy.prevent_default;
 }
 
 fn dispatchSubmitWithStats(host: *HostEnv, roc_host: *abi.RocHost, elem: *const DomElement, stats: ?*BenchmarkStats) void {
     const event = requireNamedEvent(elem, "submit", "submit target has no named submit binding");
     if (!event.binding.payload_descriptor.eql(BoundaryPayloadDescriptor.init(.unit, .none))) {
         failHost("submit binding does not use a unit payload descriptor");
+    }
+    if (!event.binding.policy.prevent_default) {
+        failHost("submit binding does not request prevent-default policy");
+    }
+    dispatchRocEventWithStats(host, roc_host, event.binding.event_id, event.binding.payload_descriptor, hostValueUnit(host, roc_host), stats);
+}
+
+fn dispatchResetWithStats(host: *HostEnv, roc_host: *abi.RocHost, elem: *const DomElement, stats: ?*BenchmarkStats) void {
+    const event = requireNamedEvent(elem, "reset", "reset target has no named reset binding");
+    if (!event.binding.payload_descriptor.eql(BoundaryPayloadDescriptor.init(.unit, .none))) {
+        failHost("reset binding does not use a unit payload descriptor");
+    }
+    if (!event.binding.policy.prevent_default) {
+        failHost("reset binding does not request prevent-default policy");
     }
     dispatchRocEventWithStats(host, roc_host, event.binding.event_id, event.binding.payload_descriptor, hostValueUnit(host, roc_host), stats);
 }
@@ -1958,6 +1970,10 @@ const BenchmarkCtx = struct {
         return nodeEventName(elem, name);
     }
 
+    pub fn elementTextAttr(elem: *const BenchmarkDomElement, name: []const u8) ?[]const u8 {
+        return sim_dom.textAttr(elem, name);
+    }
+
     pub fn dispatchRocEventMeasured(host: *Host, roc_host: *RocHost, event_id: u64, payload_descriptor: BoundaryPayloadDescriptor, payload: HostValue, stats: ?*BenchmarkStats) void {
         dispatchRocEventWithStats(host, roc_host, event_id, payload_descriptor, payload, stats);
     }
@@ -1974,16 +1990,36 @@ const BenchmarkCtx = struct {
         return hostValueBoolForBenchmark(host, roc_host, value);
     }
 
-    pub fn dispatchKeyDownMeasured(host: *Host, roc_host: *RocHost, elem: *const BenchmarkDomElement, key: []const u8, shift_key: bool, stats: ?*BenchmarkStats) void {
-        dispatchKeyDownWithStats(host, roc_host, elem, key, shift_key, stats);
+    pub fn dispatchKeyDownMeasured(host: *Host, roc_host: *RocHost, elem: *const BenchmarkDomElement, key: []const u8, shift_key: bool, stats: ?*BenchmarkStats) bool {
+        return dispatchKeyDownWithStats(host, roc_host, elem, key, shift_key, stats);
     }
 
     pub fn dispatchSubmitMeasured(host: *Host, roc_host: *RocHost, elem: *const BenchmarkDomElement, stats: ?*BenchmarkStats) void {
         dispatchSubmitWithStats(host, roc_host, elem, stats);
     }
 
+    pub fn dispatchResetMeasured(host: *Host, roc_host: *RocHost, elem: *const BenchmarkDomElement, stats: ?*BenchmarkStats) void {
+        dispatchResetWithStats(host, roc_host, elem, stats);
+    }
+
     pub fn setElementValueIfChanged(host: *Host, elem: *BenchmarkDomElement, value: []const u8) bool {
         return setElementValueForBenchmark(host, elem, value);
+    }
+
+    pub fn focusElement(_: *Host, elem: *BenchmarkDomElement) void {
+        sim_dom.focusElement(elem);
+    }
+
+    pub fn blurElement(host: *Host, elem: *BenchmarkDomElement) void {
+        _ = sim_dom.blurElement(host.hostAllocator(), elem);
+    }
+
+    pub fn beginComposition(_: *Host, elem: *BenchmarkDomElement) void {
+        sim_dom.beginComposition(elem);
+    }
+
+    pub fn endComposition(host: *Host, elem: *BenchmarkDomElement) void {
+        _ = sim_dom.endComposition(host.hostAllocator(), elem);
     }
 
     pub fn setElementCheckedIfChanged(elem: *BenchmarkDomElement, checked: bool) bool {
@@ -2110,7 +2146,23 @@ const SpecRunnerCtx = struct {
     }
 
     pub fn setElementValueIfChanged(host: *Host, elem: *DomElement, value: []const u8) bool {
-        return sim_dom.setValueIfChanged(host.hostAllocator(), elem, value);
+        return sim_dom.setUserValueIfChanged(host.hostAllocator(), elem, value);
+    }
+
+    pub fn focusElement(_: *Host, elem: *DomElement) void {
+        sim_dom.focusElement(elem);
+    }
+
+    pub fn blurElement(host: *Host, elem: *DomElement) void {
+        _ = sim_dom.blurElement(host.hostAllocator(), elem);
+    }
+
+    pub fn beginComposition(_: *Host, elem: *DomElement) void {
+        sim_dom.beginComposition(elem);
+    }
+
+    pub fn endComposition(host: *Host, elem: *DomElement) void {
+        _ = sim_dom.endComposition(host.hostAllocator(), elem);
     }
 
     pub fn setElementCheckedIfChanged(elem: *DomElement, checked: bool) bool {
@@ -2303,27 +2355,6 @@ fn platform_main(spec_file: []const u8, verbose: bool) error{}!c_int {
     return SpecRunner.run(&host_env, &roc_host, host_env.test_state.commands, verbose);
 }
 
-fn appendTestSignalDescriptor(host: *HostEnv, signal_id: u64, kind: SignalKind, source_event_ids: []const u64, input_signal_ids: []const u64) std.mem.Allocator.Error!void {
-    if (!builtin.is_test) @compileError("appendTestSignalDescriptor is test-only");
-
-    const allocator = host.hostAllocator();
-    const owned_source_states = try allocator.dupe(u64, &.{});
-    errdefer allocator.free(owned_source_states);
-    const owned_source_events = try allocator.dupe(u64, source_event_ids);
-    errdefer allocator.free(owned_source_events);
-    const owned_inputs = try allocator.dupe(u64, input_signal_ids);
-    errdefer allocator.free(owned_inputs);
-
-    try host.engine.signal_descriptors.append(allocator, .{
-        .signal_id = signal_id,
-        .kind = kind,
-        .source_state_ids = owned_source_states,
-        .source_event_ids = owned_source_events,
-        .input_signal_ids = owned_inputs,
-        .rank = 0,
-    });
-}
-
 fn deinitTestHostGraph(host: *HostEnv) void {
     if (!builtin.is_test) @compileError("deinitTestHostGraph is test-only");
 
@@ -2367,36 +2398,6 @@ fn deinitTestHostIdentity(host: *HostEnv) void {
     host.engine.host_values.deinit(allocator);
     host.test_host_value_kinds.deinit(allocator);
     host.roc_allocations.deinit(allocator);
-}
-
-test "signals host dirty plan deduplicates diamond join by rank" {
-    var host = HostEnv.init();
-    defer {
-        deinitTestHostGraph(&host);
-        _ = host.gpa.deinit();
-    }
-    const allocator = host.hostAllocator();
-
-    try host.engine.event_descriptors.append(allocator, .{
-        .event_id = 1,
-        .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none),
-    });
-    try appendTestSignalDescriptor(&host, 0, .source, &.{1}, &.{});
-    try appendTestSignalDescriptor(&host, 1, .map, &.{}, &.{0});
-    try appendTestSignalDescriptor(&host, 2, .map, &.{}, &.{0});
-    try appendTestSignalDescriptor(&host, 3, .map2, &.{}, &.{ 1, 2 });
-
-    host.rebuildSignalTopologyFromSignals();
-    host.rebuildSignalEventRoutesFromSignals();
-
-    const dirty_signal_ids = host.dirtySignalIdsForEvent(allocator, 1);
-    defer allocator.free(dirty_signal_ids);
-
-    try std.testing.expectEqualSlices(u64, &.{ 0, 1, 2, 3 }, dirty_signal_ids);
-    try std.testing.expectEqual(@as(u64, 0), host.signalRank(0));
-    try std.testing.expectEqual(@as(u64, 1), host.signalRank(1));
-    try std.testing.expectEqual(@as(u64, 1), host.signalRank(2));
-    try std.testing.expectEqual(@as(u64, 2), host.signalRank(3));
 }
 
 test "signals metrics accumulate propagation pruning counters" {
@@ -3554,10 +3555,10 @@ test "signals host disposal retires scope subtree identities" {
     try std.testing.expect(!host.engine.node_identities.items[@intCast(branch_state)].active);
 
     const recreated_row = createTestEachRowScope(&host, &roc_host, root, 3, testHostValueI64(10), testHostValueI64(10), key_cap, key_cap);
-    try std.testing.expect(recreated_row != row);
+    try std.testing.expectEqual(row, recreated_row);
 
     const recreated_state = host.internNodeIdentity(recreated_row, 0);
-    try std.testing.expect(recreated_state != row_state);
+    try std.testing.expectEqual(row_state, recreated_state);
 }
 
 test "signals host patches dirty leaf sinks without descriptor rebuild" {
@@ -3601,7 +3602,6 @@ test "signals host patches dirty leaf sinks without descriptor rebuild" {
     const dirty_source_node_ids = [_]u64{state_id};
     const dirty_generation = host.nextDirtySignalGeneration();
     const changed_record_ids = propagateDirtyActiveSignals(&host, &roc_host, host.hostAllocator(), &dirty_source_node_ids, dirty_generation);
-    defer host.hostAllocator().free(changed_record_ids);
     const dirty_structural_signals = collectDirtyStructuralSignals(&host, &roc_host, host.hostAllocator(), &dirty_source_node_ids, changed_record_ids, dirty_generation);
     defer host.hostAllocator().free(dirty_structural_signals);
     try std.testing.expectEqual(@as(usize, 0), dirty_structural_signals.len);
@@ -3619,7 +3619,6 @@ test "signals host patches dirty leaf sinks without descriptor rebuild" {
 
     const unchanged_generation = host.nextDirtySignalGeneration();
     const unchanged_record_ids = propagateDirtyActiveSignals(&host, &roc_host, host.hostAllocator(), &dirty_source_node_ids, unchanged_generation);
-    defer host.hostAllocator().free(unchanged_record_ids);
     const unchanged_counts = applyDirtyRenderSinks(&host, &roc_host, &dirty_source_node_ids, unchanged_record_ids, unchanged_generation);
     try std.testing.expectEqual(@as(u64, 0), unchanged_counts.total);
 }
@@ -3663,7 +3662,6 @@ test "signals host prunes dirty leaf sink when retained map equality is unchange
     const prune_start = host.engine.pending_roc_metrics.propagation_prunes;
     const dirty_generation = host.nextDirtySignalGeneration();
     const changed_record_ids = propagateDirtyActiveSignals(&host, &roc_host, host.hostAllocator(), &dirty_source_node_ids, dirty_generation);
-    defer host.hostAllocator().free(changed_record_ids);
     const patch_counts = applyDirtyRenderSinks(&host, &roc_host, &dirty_source_node_ids, changed_record_ids, dirty_generation);
 
     try std.testing.expectEqual(@as(u64, 0), patch_counts.total);
@@ -3736,7 +3734,6 @@ test "signals host evaluates shared dirty record once per batch" {
     const derived_start = host.engine.pending_roc_metrics.derived_calls_into_roc;
     const dirty_generation = host.nextDirtySignalGeneration();
     const changed_record_ids = propagateDirtyActiveSignals(&host, &roc_host, host.hostAllocator(), &dirty_source_node_ids, dirty_generation);
-    defer host.hostAllocator().free(changed_record_ids);
     const patch_counts = applyDirtyRenderSinks(&host, &roc_host, &dirty_source_node_ids, changed_record_ids, dirty_generation);
 
     try std.testing.expectEqual(@as(u64, 0), patch_counts.total);
@@ -3785,7 +3782,6 @@ test "signals host skips parent transform when dirty child output is unchanged" 
     const derived_start = host.engine.pending_roc_metrics.derived_calls_into_roc;
     const dirty_generation = host.nextDirtySignalGeneration();
     const changed_record_ids = propagateDirtyActiveSignals(&host, &roc_host, host.hostAllocator(), &dirty_source_node_ids, dirty_generation);
-    defer host.hostAllocator().free(changed_record_ids);
     const patch_counts = applyDirtyRenderSinks(&host, &roc_host, &dirty_source_node_ids, changed_record_ids, dirty_generation);
 
     try std.testing.expectEqual(@as(u64, 0), patch_counts.total);
@@ -3857,7 +3853,6 @@ test "signals host evaluates map2 through bind and dirty propagation" {
     const derived_start = host.engine.pending_roc_metrics.derived_calls_into_roc;
     const dirty_generation = host.nextDirtySignalGeneration();
     const changed_record_ids = propagateDirtyActiveSignals(&host, &roc_host, host.hostAllocator(), &dirty_source_node_ids, dirty_generation);
-    defer host.hostAllocator().free(changed_record_ids);
     const patch_counts = applyDirtyRenderSinks(&host, &roc_host, &dirty_source_node_ids, changed_record_ids, dirty_generation);
 
     try std.testing.expectEqual(@as(u64, 1), patch_counts.set_text);
@@ -3868,7 +3863,6 @@ test "signals host evaluates map2 through bind and dirty propagation" {
     const right_dirty_source_node_ids = [_]u64{right_state_id};
     const right_generation = host.nextDirtySignalGeneration();
     const right_changed_record_ids = propagateDirtyActiveSignals(&host, &roc_host, host.hostAllocator(), &right_dirty_source_node_ids, right_generation);
-    defer host.hostAllocator().free(right_changed_record_ids);
     const right_counts = applyDirtyRenderSinks(&host, &roc_host, &right_dirty_source_node_ids, right_changed_record_ids, right_generation);
 
     try std.testing.expectEqual(@as(u64, 1), right_counts.set_text);
@@ -3916,7 +3910,6 @@ test "signals host marks dirty structural sources for structural patching" {
     const dirty_source_node_ids = [_]u64{state_id};
     const dirty_generation = host.nextDirtySignalGeneration();
     const changed_record_ids = propagateDirtyActiveSignals(&host, &roc_host, host.hostAllocator(), &dirty_source_node_ids, dirty_generation);
-    defer host.hostAllocator().free(changed_record_ids);
     const dirty_structural_signals = collectDirtyStructuralSignals(&host, &roc_host, host.hostAllocator(), &dirty_source_node_ids, changed_record_ids, dirty_generation);
     defer host.hostAllocator().free(dirty_structural_signals);
     try std.testing.expectEqual(@as(usize, 1), dirty_structural_signals.len);
@@ -3926,8 +3919,10 @@ test "signals host marks dirty structural sources for structural patching" {
     const patch_counts = applyDirtyWhenStructuralSignals(&host, &roc_host, &dirty_source_node_ids, dirty_generation, dirty_structural_signals);
 
     try std.testing.expectEqual(@as(u64, 0), patch_counts.reset_dom);
-    try std.testing.expectEqual(@as(u64, 1), patch_counts.create_element);
-    try std.testing.expectEqual(@as(u64, 1), patch_counts.append_child);
+    try std.testing.expectEqual(@as(u64, 0), patch_counts.create_element);
+    try std.testing.expectEqual(@as(u64, 0), patch_counts.append_child);
+    try std.testing.expectEqual(@as(u64, 1), patch_counts.set_text);
+    try std.testing.expectEqual(@as(u64, 1), patch_counts.total);
     try std.testing.expect(activeTextElementId(&host, "true branch") == null);
     try std.testing.expect(activeTextElementId(&host, "false branch") != null);
 }
@@ -3979,7 +3974,6 @@ test "signals host reuses active signal records while collecting dirty when bran
     const dirty_source_node_ids = [_]u64{state_id};
     const dirty_generation = host.nextDirtySignalGeneration();
     const changed_record_ids = propagateDirtyActiveSignals(&host, &roc_host, host.hostAllocator(), &dirty_source_node_ids, dirty_generation);
-    defer host.hostAllocator().free(changed_record_ids);
     const dirty_structural_signals = collectDirtyStructuralSignals(&host, &roc_host, host.hostAllocator(), &dirty_source_node_ids, changed_record_ids, dirty_generation);
     defer host.hostAllocator().free(dirty_structural_signals);
     try std.testing.expectEqual(@as(usize, 1), dirty_structural_signals.len);
@@ -4037,7 +4031,6 @@ test "signals host prunes structural render when retained condition equality is 
 
     const dirty_generation = host.nextDirtySignalGeneration();
     const changed_record_ids = propagateDirtyActiveSignals(&host, &roc_host, host.hostAllocator(), &dirty_source_node_ids, dirty_generation);
-    defer host.hostAllocator().free(changed_record_ids);
     const dirty_structural_signals = collectDirtyStructuralSignals(&host, &roc_host, host.hostAllocator(), &dirty_source_node_ids, changed_record_ids, dirty_generation);
     defer host.hostAllocator().free(dirty_structural_signals);
     try std.testing.expectEqual(@as(usize, 0), dirty_structural_signals.len);
@@ -4122,7 +4115,7 @@ test "signals host structural patch reorders keyed row DOM without recreating su
     try std.testing.expectEqual(@as(u64, 4), test_row_elem_call_count);
     const row_4_id = activeTextElementId(&host, "row-4-4") orelse unreachable;
     try std.testing.expectEqual(@as(u64, 0), changed_counts.reset_dom);
-    try std.testing.expectEqual(@as(u64, 1), changed_counts.create_element);
+    try std.testing.expectEqual(@as(u64, 0), changed_counts.create_element);
     try std.testing.expectEqual(row_2_id, activeTextElementId(&host, "row-2-2") orelse unreachable);
     try std.testing.expect(activeTextElementId(&host, "row-1-1") == null);
     try std.testing.expect(activeTextElementId(&host, "row-3-3") == null);
@@ -4177,7 +4170,6 @@ test "signals host dirty each append patches only changed row" {
     const dirty_source_node_ids = [_]u64{state_id};
     const dirty_generation = host.nextDirtySignalGeneration();
     const changed_record_ids = propagateDirtyActiveSignals(&host, &roc_host, host.hostAllocator(), &dirty_source_node_ids, dirty_generation);
-    defer host.hostAllocator().free(changed_record_ids);
     const dirty_structural_signals = collectDirtyStructuralSignals(&host, &roc_host, host.hostAllocator(), &dirty_source_node_ids, changed_record_ids, dirty_generation);
     defer host.hostAllocator().free(dirty_structural_signals);
 
@@ -4251,7 +4243,6 @@ test "signals host dirty each reorder moves rows without recollecting bodies" {
     const dirty_source_node_ids = [_]u64{state_id};
     const dirty_generation = host.nextDirtySignalGeneration();
     const changed_record_ids = propagateDirtyActiveSignals(&host, &roc_host, host.hostAllocator(), &dirty_source_node_ids, dirty_generation);
-    defer host.hostAllocator().free(changed_record_ids);
     const dirty_structural_signals = collectDirtyStructuralSignals(&host, &roc_host, host.hostAllocator(), &dirty_source_node_ids, changed_record_ids, dirty_generation);
     defer host.hostAllocator().free(dirty_structural_signals);
 
@@ -4280,6 +4271,247 @@ test "signals host dirty each reorder moves rows without recollecting bodies" {
     try std.testing.expectEqual(@as(u64, 1), patch_counts.total);
     try std.testing.expectEqual(patch_start + 1, host.engine.render_metrics.patches_emitted);
     try std.testing.expectEqualSlices(u64, &.{ row_3_id, row_1_id, row_2_id }, host.dom_elements.items[@intCast(section_id)].children.items);
+}
+
+test "signals host keeps table sizes flat across repeated keyed row reorder churn" {
+    test_erased_callable_drop_count = 0;
+    test_row_elem_call_count = 0;
+
+    var host = HostEnv.init();
+    var roc_host = makeSignalsRocHost(&host);
+    host.engine.roc_host = &roc_host;
+    defer {
+        host.deinit();
+        _ = host.gpa.deinit();
+    }
+
+    const state_token = newTestBinderToken(&roc_host);
+    const state_cap = testHostValueCapability(&roc_host);
+    const each = testNodeEachWithSignalCapabilityAndRow(&roc_host, testNodeRefExpr(state_token), state_cap, &testStatefulRowElemCallable);
+    const children = [_]abi.Elem{each};
+    const section = testElementWith(&roc_host, "section", &.{}, &children);
+
+    const initial_items = [_]HostValue{ testHostValueI64(1), testHostValueI64(2), testHostValueI64(3), testHostValueI64(4) };
+    const root = testNodeStateWithTokenAndInitialCapability(&roc_host, state_token, testHostValueI64List(&roc_host, &initial_items), section, state_cap);
+    defer abi.decrefElem(root, &roc_host);
+
+    var initial_stream: HostNodeDescriptorStream = .{};
+    host.collectActiveElemRootDescriptors(&roc_host, &initial_stream, root, &.{});
+    _ = applyNodeDescriptorStream(&host, &roc_host, &initial_stream);
+    host.engine.active_stream = initial_stream;
+    finishHostMetrics(&host);
+
+    const state_id = host.engine.active_stream.scope_sites.items[0].node_id;
+
+    var snapshot_after_warmup: ?HostPlateauSnapshot = null;
+    var iteration: usize = 0;
+    while (iteration < 80) : (iteration += 1) {
+        var items: [4]HostValue = undefined;
+        switch (iteration % 4) {
+            0 => items = .{ testHostValueI64(4), testHostValueI64(1), testHostValueI64(2), testHostValueI64(3) },
+            1 => items = .{ testHostValueI64(2), testHostValueI64(4), testHostValueI64(3), testHostValueI64(1) },
+            2 => items = .{ testHostValueI64(1), testHostValueI64(3), testHostValueI64(4), testHostValueI64(2) },
+            else => items = .{ testHostValueI64(1), testHostValueI64(2), testHostValueI64(3), testHostValueI64(4) },
+        }
+
+        try std.testing.expect(host.updateStateValue(&roc_host, state_id, testHostValueI64List(&roc_host, &items)));
+
+        const dirty_source_node_ids = [_]u64{state_id};
+        const dirty_generation = host.nextDirtySignalGeneration();
+        const changed_record_ids = propagateDirtyActiveSignals(&host, &roc_host, host.hostAllocator(), &dirty_source_node_ids, dirty_generation);
+        const dirty_structural_signals = collectDirtyStructuralSignals(&host, &roc_host, host.hostAllocator(), &dirty_source_node_ids, changed_record_ids, dirty_generation);
+
+        try std.testing.expectEqual(@as(usize, 1), dirty_structural_signals.len);
+        try std.testing.expectEqual(HostActiveStructuralSignalKind.each, dirty_structural_signals[0].kind);
+
+        const rows_created_start = host.engine.last_runtime_metrics.rows_created;
+        const rows_removed_start = host.engine.last_runtime_metrics.rows_removed;
+        const row_call_start = test_row_elem_call_count;
+
+        _ = applyDirtyStructuralSignalsLocally(&host, &roc_host, &dirty_source_node_ids, dirty_generation, dirty_structural_signals);
+        host.hostAllocator().free(dirty_structural_signals);
+        finishHostMetrics(&host);
+
+        try std.testing.expectEqual(@as(u64, 0), host.engine.last_runtime_metrics.rows_created - rows_created_start);
+        try std.testing.expectEqual(@as(u64, 0), host.engine.last_runtime_metrics.rows_removed - rows_removed_start);
+        try std.testing.expectEqual(row_call_start, test_row_elem_call_count);
+
+        const snapshot = HostPlateauSnapshot.capture(&host);
+        if (iteration == 7) {
+            snapshot_after_warmup = snapshot;
+        } else if (iteration > 7) {
+            try expectHostPlateauSnapshot(snapshot_after_warmup.?, snapshot);
+        }
+    }
+
+    try std.testing.expect(activeTextElementId(&host, "row-1-1") != null);
+    try std.testing.expect(activeTextElementId(&host, "row-2-2") != null);
+    try std.testing.expect(activeTextElementId(&host, "row-3-3") != null);
+    try std.testing.expect(activeTextElementId(&host, "row-4-4") != null);
+}
+
+test "signals host removal reinsert churn plateaus dense tables" {
+    test_erased_callable_drop_count = 0;
+    test_row_elem_call_count = 0;
+
+    var host = HostEnv.init();
+    var roc_host = makeSignalsRocHost(&host);
+    host.engine.roc_host = &roc_host;
+    defer {
+        host.deinit();
+        _ = host.gpa.deinit();
+    }
+
+    const state_token = newTestBinderToken(&roc_host);
+    const state_cap = testHostValueCapability(&roc_host);
+    const each = testNodeEachWithSignalCapabilityAndRow(&roc_host, testNodeRefExpr(state_token), state_cap, &testStatefulRowElemCallable);
+    const children = [_]abi.Elem{each};
+    const section = testElementWith(&roc_host, "section", &.{}, &children);
+
+    const initial_items = [_]HostValue{ testHostValueI64(1), testHostValueI64(2), testHostValueI64(3) };
+    const root = testNodeStateWithTokenAndInitialCapability(&roc_host, state_token, testHostValueI64List(&roc_host, &initial_items), section, state_cap);
+    defer abi.decrefElem(root, &roc_host);
+
+    var initial_stream: HostNodeDescriptorStream = .{};
+    host.collectActiveElemRootDescriptors(&roc_host, &initial_stream, root, &.{});
+    _ = applyNodeDescriptorStream(&host, &roc_host, &initial_stream);
+    host.engine.active_stream = initial_stream;
+    finishHostMetrics(&host);
+
+    const state_id = host.engine.active_stream.scope_sites.items[0].node_id;
+
+    var snapshot_after_warmup: ?HostPlateauSnapshot = null;
+    var iteration: usize = 0;
+    while (iteration < 40) : (iteration += 1) {
+        var items: [3]HostValue = undefined;
+        if (iteration % 2 == 0) {
+            items = .{ testHostValueI64(1), testHostValueI64(3), testHostValueI64(4) };
+        } else {
+            items = .{ testHostValueI64(1), testHostValueI64(2), testHostValueI64(3) };
+        }
+
+        try std.testing.expect(host.updateStateValue(&roc_host, state_id, testHostValueI64List(&roc_host, &items)));
+
+        const before_metrics = host.engine.last_runtime_metrics;
+        const row_call_start = test_row_elem_call_count;
+
+        {
+            const dirty_source_node_ids = [_]u64{state_id};
+            const dirty_generation = host.nextDirtySignalGeneration();
+            const changed_record_ids = propagateDirtyActiveSignals(&host, &roc_host, host.hostAllocator(), &dirty_source_node_ids, dirty_generation);
+            const dirty_structural_signals = collectDirtyStructuralSignals(&host, &roc_host, host.hostAllocator(), &dirty_source_node_ids, changed_record_ids, dirty_generation);
+            defer host.hostAllocator().free(dirty_structural_signals);
+
+            try std.testing.expectEqual(@as(usize, 1), dirty_structural_signals.len);
+            try std.testing.expectEqual(HostActiveStructuralSignalKind.each, dirty_structural_signals[0].kind);
+
+            _ = applyDirtyStructuralSignalsLocally(&host, &roc_host, &dirty_source_node_ids, dirty_generation, dirty_structural_signals);
+        }
+        finishHostMetrics(&host);
+
+        try std.testing.expectEqual(@as(u64, 1), host.engine.last_runtime_metrics.rows_created - before_metrics.rows_created);
+        try std.testing.expectEqual(@as(u64, 1), host.engine.last_runtime_metrics.rows_removed - before_metrics.rows_removed);
+        try std.testing.expectEqual(row_call_start + 1, test_row_elem_call_count);
+
+        const snapshot = HostPlateauSnapshot.capture(&host);
+        if (iteration == 7) {
+            snapshot_after_warmup = snapshot;
+        } else if (iteration > 7) {
+            try expectHostPlateauSnapshot(snapshot_after_warmup.?, snapshot);
+        }
+    }
+
+    try std.testing.expect(activeTextElementId(&host, "row-1-1") != null);
+    try std.testing.expect(activeTextElementId(&host, "row-2-2") != null);
+    try std.testing.expect(activeTextElementId(&host, "row-3-3") != null);
+    try std.testing.expect(activeTextElementId(&host, "row-4-4") == null);
+}
+
+test "signals host nested removal reinsert churn plateaus branch scopes" {
+    test_erased_callable_drop_count = 0;
+    test_row_elem_call_count = 0;
+
+    var host = HostEnv.init();
+    var roc_host = makeSignalsRocHost(&host);
+    host.engine.roc_host = &roc_host;
+    defer {
+        host.deinit();
+        _ = host.gpa.deinit();
+    }
+
+    const condition_token = newTestBinderToken(&roc_host);
+    const condition_cap = testHostValueCapability(&roc_host);
+    const items_token = newTestBinderToken(&roc_host);
+    const items_cap = testHostValueCapability(&roc_host);
+    const each = testNodeEachSignalWithNestedWhenRows(&roc_host, testNodeRefExpr(items_token), items_cap, condition_token, condition_cap);
+    const children = [_]abi.Elem{each};
+    const section = testElementWith(&roc_host, "section", &.{}, &children);
+    const initial_items = [_]HostValue{ testHostValueI64(1), testHostValueI64(2), testHostValueI64(3) };
+    const items_state = testNodeStateWithTokenAndInitialCapability(&roc_host, items_token, testHostValueI64List(&roc_host, &initial_items), section, items_cap);
+    const root = testNodeStateWithTokenAndInitialCapability(&roc_host, condition_token, testHostValueBool(true), items_state, condition_cap);
+    defer abi.decrefElem(root, &roc_host);
+
+    var initial_stream: HostNodeDescriptorStream = .{};
+    host.collectActiveElemRootDescriptors(&roc_host, &initial_stream, root, &.{});
+    _ = applyNodeDescriptorStream(&host, &roc_host, &initial_stream);
+    host.engine.active_stream = initial_stream;
+    finishHostMetrics(&host);
+
+    var state_ids: [2]u64 = undefined;
+    var state_count: usize = 0;
+    for (host.engine.active_stream.scope_sites.items) |site| {
+        if (site.kind != .state) continue;
+        if (state_count < state_ids.len) state_ids[state_count] = site.node_id;
+        state_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), state_count);
+    const items_state_id = state_ids[1];
+
+    var snapshot_after_warmup: ?HostPlateauSnapshot = null;
+    var iteration: usize = 0;
+    while (iteration < 40) : (iteration += 1) {
+        var items: [3]HostValue = undefined;
+        if (iteration % 2 == 0) {
+            items = .{ testHostValueI64(1), testHostValueI64(3), testHostValueI64(4) };
+        } else {
+            items = .{ testHostValueI64(1), testHostValueI64(2), testHostValueI64(3) };
+        }
+
+        try std.testing.expect(host.updateStateValue(&roc_host, items_state_id, testHostValueI64List(&roc_host, &items)));
+
+        const before_metrics = host.engine.last_runtime_metrics;
+        const row_call_start = test_row_elem_call_count;
+
+        {
+            const dirty_source_node_ids = [_]u64{items_state_id};
+            const dirty_generation = host.nextDirtySignalGeneration();
+            const changed_record_ids = propagateDirtyActiveSignals(&host, &roc_host, host.hostAllocator(), &dirty_source_node_ids, dirty_generation);
+            const dirty_structural_signals = collectDirtyStructuralSignals(&host, &roc_host, host.hostAllocator(), &dirty_source_node_ids, changed_record_ids, dirty_generation);
+            defer host.hostAllocator().free(dirty_structural_signals);
+
+            try std.testing.expectEqual(@as(usize, 1), dirty_structural_signals.len);
+            try std.testing.expectEqual(HostActiveStructuralSignalKind.each, dirty_structural_signals[0].kind);
+
+            _ = applyDirtyStructuralSignalsLocally(&host, &roc_host, &dirty_source_node_ids, dirty_generation, dirty_structural_signals);
+        }
+        finishHostMetrics(&host);
+
+        try std.testing.expectEqual(@as(u64, 1), host.engine.last_runtime_metrics.rows_created - before_metrics.rows_created);
+        try std.testing.expectEqual(@as(u64, 1), host.engine.last_runtime_metrics.rows_removed - before_metrics.rows_removed);
+        try std.testing.expectEqual(row_call_start + 1, test_row_elem_call_count);
+
+        const snapshot = HostPlateauSnapshot.capture(&host);
+        if (iteration == 7) {
+            snapshot_after_warmup = snapshot;
+        } else if (iteration > 7) {
+            try expectHostPlateauSnapshot(snapshot_after_warmup.?, snapshot);
+        }
+    }
+
+    try std.testing.expect(activeTextElementId(&host, "row-1-1-true") != null);
+    try std.testing.expect(activeTextElementId(&host, "row-2-2-true") != null);
+    try std.testing.expect(activeTextElementId(&host, "row-3-3-true") != null);
+    try std.testing.expect(activeTextElementId(&host, "row-4-4-true") == null);
 }
 
 test "signals host dirty each mixed churn splices changed rows and moves survivors" {
@@ -4327,7 +4559,6 @@ test "signals host dirty each mixed churn splices changed rows and moves survivo
     const dirty_source_node_ids = [_]u64{state_id};
     const dirty_generation = host.nextDirtySignalGeneration();
     const changed_record_ids = propagateDirtyActiveSignals(&host, &roc_host, host.hostAllocator(), &dirty_source_node_ids, dirty_generation);
-    defer host.hostAllocator().free(changed_record_ids);
     const dirty_structural_signals = collectDirtyStructuralSignals(&host, &roc_host, host.hostAllocator(), &dirty_source_node_ids, changed_record_ids, dirty_generation);
     defer host.hostAllocator().free(dirty_structural_signals);
 
@@ -4348,13 +4579,13 @@ test "signals host dirty each mixed churn splices changed rows and moves survivo
     try std.testing.expectEqual(@as(u64, 1), host.engine.pending_roc_metrics.rows_removed - rows_removed_start);
     try std.testing.expectEqual(@as(u64, 0), host.engine.pending_roc_metrics.active_graph_records_rebuilt - graph_rebuild_start);
     try std.testing.expectEqual(row_call_start + 1, test_row_elem_call_count);
-    try std.testing.expectEqual(@as(u64, 1), patch_counts.create_element);
-    try std.testing.expectEqual(@as(u64, 1), patch_counts.append_child);
-    try std.testing.expectEqual(@as(u64, 1), patch_counts.remove_node);
-    try std.testing.expectEqual(@as(u64, 2), patch_counts.move_before);
+    try std.testing.expectEqual(@as(u64, 0), patch_counts.create_element);
+    try std.testing.expectEqual(@as(u64, 0), patch_counts.append_child);
+    try std.testing.expectEqual(@as(u64, 0), patch_counts.remove_node);
+    try std.testing.expectEqual(@as(u64, 1), patch_counts.move_before);
     try std.testing.expectEqual(@as(u64, 1), patch_counts.set_text);
-    try std.testing.expectEqual(@as(u64, 6), patch_counts.total);
-    try std.testing.expectEqual(patch_start + 6, host.engine.render_metrics.patches_emitted);
+    try std.testing.expectEqual(@as(u64, 2), patch_counts.total);
+    try std.testing.expectEqual(patch_start + 2, host.engine.render_metrics.patches_emitted);
     const row_4_id = activeTextElementId(&host, "row-4-4") orelse unreachable;
     try std.testing.expectEqual(row_1_id, activeTextElementId(&host, "row-1-1") orelse unreachable);
     try std.testing.expectEqual(row_3_id, activeTextElementId(&host, "row-3-3") orelse unreachable);
@@ -4402,7 +4633,6 @@ test "signals host updates nested when without rebuilding unchanged row" {
     const dirty_source_node_ids = [_]u64{state_id};
     const dirty_generation = host.nextDirtySignalGeneration();
     const changed_record_ids = propagateDirtyActiveSignals(&host, &roc_host, host.hostAllocator(), &dirty_source_node_ids, dirty_generation);
-    defer host.hostAllocator().free(changed_record_ids);
     const dirty_structural_signals = collectDirtyStructuralSignals(&host, &roc_host, host.hostAllocator(), &dirty_source_node_ids, changed_record_ids, dirty_generation);
     defer host.hostAllocator().free(dirty_structural_signals);
     try std.testing.expectEqual(@as(usize, 1), dirty_structural_signals.len);
@@ -4645,7 +4875,6 @@ test "signals host dirty each removal refreshes survivor event ids" {
     const dirty_source_node_ids = [_]u64{state_id};
     const dirty_generation = host.nextDirtySignalGeneration();
     const changed_record_ids = propagateDirtyActiveSignals(&host, &roc_host, host.hostAllocator(), &dirty_source_node_ids, dirty_generation);
-    defer host.hostAllocator().free(changed_record_ids);
     const dirty_structural_signals = collectDirtyStructuralSignals(&host, &roc_host, host.hostAllocator(), &dirty_source_node_ids, changed_record_ids, dirty_generation);
     defer host.hostAllocator().free(dirty_structural_signals);
 
@@ -5378,7 +5607,7 @@ fn testNodeEachWithItemsAndRow(roc_host: *abi.RocHost, items: []const HostValue,
     return testNodeEachWithSignalAndRow(roc_host, testNodeConstExpr(roc_host, testHostValueI64List(roc_host, items)), row_fn);
 }
 
-fn testNodeEachWithNestedWhenRows(roc_host: *abi.RocHost, items: []const HostValue, condition_binder: HostBinderToken, condition_cap: HostValueCapability) abi.Elem {
+fn testNodeEachSignalWithNestedWhenRows(roc_host: *abi.RocHost, items_signal: abi.NodeSignalExpr, items_cap: HostValueCapability, condition_binder: HostBinderToken, condition_cap: HostValueCapability) abi.Elem {
     const key_cap = testHostValueCapability(roc_host);
     const key_of = writeTestErasedCallable(
         TestErasedI64Capture,
@@ -5400,8 +5629,6 @@ fn testNodeEachWithNestedWhenRows(roc_host: *abi.RocHost, items: []const HostVal
             .condition_cap = hv.retainHostValueCapability(condition_cap),
         },
     );
-    const items_signal = testNodeConstExpr(roc_host, testHostValueI64List(roc_host, items));
-    const items_cap = testNodeSignalExprCapabilityOrPanic(items_signal);
     return .{
         .payload = .{
             .each = .{
@@ -5419,6 +5646,12 @@ fn testNodeEachWithNestedWhenRows(roc_host: *abi.RocHost, items: []const HostVal
         },
         .tag = .Each,
     };
+}
+
+fn testNodeEachWithNestedWhenRows(roc_host: *abi.RocHost, items: []const HostValue, condition_binder: HostBinderToken, condition_cap: HostValueCapability) abi.Elem {
+    const items_signal = testNodeConstExpr(roc_host, testHostValueI64List(roc_host, items));
+    const items_cap = testNodeSignalExprCapabilityOrPanic(items_signal);
+    return testNodeEachSignalWithNestedWhenRows(roc_host, items_signal, items_cap, condition_binder, condition_cap);
 }
 
 fn testNodeEachWithItems(roc_host: *abi.RocHost, items: []const HostValue) abi.Elem {
@@ -5499,7 +5732,7 @@ test "signals host keyed row diff reuses creates and removes by typed key" {
     try std.testing.expectEqual(@as(u64, 0), reappeared.rows_removed);
     try std.testing.expectEqual(@as(u64, 1), reappeared.row_items_unchanged);
     try std.testing.expectEqual(@as(u64, 1), reappeared.row_items_updated);
-    try std.testing.expect(reappeared.scope_ids[0] != initial.scope_ids[0]);
+    try std.testing.expectEqual(initial.scope_ids[0], reappeared.scope_ids[0]);
     try std.testing.expectEqual(initial.scope_ids[1], reappeared.scope_ids[1]);
     try std.testing.expectEqual(changed.scope_ids[1], reappeared.scope_ids[2]);
 
@@ -5936,7 +6169,87 @@ test "signals host dispatches through active event records outside descriptor st
     try expectHostValueI64(host.stateValueByNodeId(state_id), 1);
 }
 
-test "signals host keeps live allocations flat across repeated events" {
+const HostPlateauSnapshot = struct {
+    retained_alloc_delta: i64,
+    host_retained_alloc_delta: i64,
+    host_retained_bytes_delta: i64,
+    dom_elements_len: usize,
+    active_events_len: usize,
+    event_descriptors_len: usize,
+    signal_descriptors_len: usize,
+    signal_routes_len: usize,
+    signal_dependents_len: usize,
+    signal_cache_len: usize,
+    states_len: usize,
+    state_indexes_by_node_id_len: usize,
+    scopes_len: usize,
+    each_row_sites_len: usize,
+    each_row_memberships_by_scope_id_len: usize,
+    node_identities_len: usize,
+    dom_identities_len: usize,
+    active_stream_elements_len: usize,
+    active_stream_events_len: usize,
+    active_stream_states_len: usize,
+    active_signal_graph_len: usize,
+    active_source_signal_routes_len: usize,
+    active_text_signal_routes_len: usize,
+    active_bool_signal_routes_len: usize,
+    active_change_signal_routes_len: usize,
+    active_structural_signal_routes_len: usize,
+    active_intervals_len: usize,
+    pending_tasks_len: usize,
+    dirty_queue_seen_capacity: usize,
+    dirty_queue_pending_capacity: usize,
+    dirty_queue_ordered_capacity: usize,
+    dirty_queue_rank_counts_capacity: usize,
+    dirty_changed_record_ids_capacity: usize,
+
+    fn capture(current: *const HostEnv) @This() {
+        const metrics = current.engine.last_runtime_metrics;
+        const dirty_queue = current.engine.scratch.dirty_active_records;
+        return .{
+            .retained_alloc_delta = metrics.retained_alloc_delta,
+            .host_retained_alloc_delta = metrics.host_retained_alloc_delta,
+            .host_retained_bytes_delta = metrics.host_retained_bytes_delta,
+            .dom_elements_len = current.dom_elements.items.len,
+            .active_events_len = current.engine.active_events.items.len,
+            .event_descriptors_len = current.engine.event_descriptors.items.len,
+            .signal_descriptors_len = current.engine.signal_descriptors.items.len,
+            .signal_routes_len = current.engine.signal_routes.items.len,
+            .signal_dependents_len = current.engine.signal_dependents.items.len,
+            .signal_cache_len = current.engine.signal_cache.items.len,
+            .states_len = current.engine.states.items.len,
+            .state_indexes_by_node_id_len = current.engine.state_indexes_by_node_id.items.len,
+            .scopes_len = current.engine.scopes.items.len,
+            .each_row_sites_len = current.engine.each_row_sites.items.len,
+            .each_row_memberships_by_scope_id_len = current.engine.each_row_memberships_by_scope_id.items.len,
+            .node_identities_len = current.engine.node_identities.items.len,
+            .dom_identities_len = current.engine.dom_identities.items.len,
+            .active_stream_elements_len = current.engine.active_stream.elements.items.len,
+            .active_stream_events_len = current.engine.active_stream.events.items.len,
+            .active_stream_states_len = current.engine.active_stream.states.items.len,
+            .active_signal_graph_len = current.engine.active_signal_graph.items.len,
+            .active_source_signal_routes_len = current.engine.active_source_signal_routes.items.len,
+            .active_text_signal_routes_len = current.engine.active_text_signal_routes.items.len,
+            .active_bool_signal_routes_len = current.engine.active_bool_signal_routes.items.len,
+            .active_change_signal_routes_len = current.engine.active_change_signal_routes.items.len,
+            .active_structural_signal_routes_len = current.engine.active_structural_signal_routes.items.len,
+            .active_intervals_len = current.engine.active_intervals.items.len,
+            .pending_tasks_len = current.engine.pending_tasks.items.len,
+            .dirty_queue_seen_capacity = dirty_queue.seen_generations.capacity,
+            .dirty_queue_pending_capacity = dirty_queue.pending_record_ids.capacity,
+            .dirty_queue_ordered_capacity = dirty_queue.ordered_record_ids.capacity,
+            .dirty_queue_rank_counts_capacity = dirty_queue.rank_counts.capacity,
+            .dirty_changed_record_ids_capacity = current.engine.scratch.dirty_changed_record_ids.capacity,
+        };
+    }
+};
+
+fn expectHostPlateauSnapshot(expected: HostPlateauSnapshot, actual: HostPlateauSnapshot) !void {
+    try std.testing.expect(std.meta.eql(expected, actual));
+}
+
+test "signals host keeps live allocations and table sizes flat across repeated events" {
     test_erased_callable_drop_count = 0;
 
     var host = HostEnv.init();
@@ -5965,15 +6278,15 @@ test "signals host keeps live allocations flat across repeated events" {
     const event_id = nodeFixedEventId(&host, button_id, .click) orelse unreachable;
     const state_id = host.engine.active_stream.scope_sites.items[0].node_id;
 
-    var live_after_warmup: ?i64 = null;
+    var snapshot_after_warmup: ?HostPlateauSnapshot = null;
     var iteration: usize = 0;
     while (iteration < 100) : (iteration += 1) {
         dispatchRocEvent(&host, &roc_host, event_id, BoundaryPayloadDescriptor.init(.unit, .none), hostValueUnit(&host, &roc_host));
-        const live = @as(i64, @intCast(host.alloc_count)) - @as(i64, @intCast(host.dealloc_count));
+        const snapshot = HostPlateauSnapshot.capture(&host);
         if (iteration == 9) {
-            live_after_warmup = live;
+            snapshot_after_warmup = snapshot;
         } else if (iteration > 9) {
-            try std.testing.expectEqual(live_after_warmup.?, live);
+            try expectHostPlateauSnapshot(snapshot_after_warmup.?, snapshot);
         }
     }
 

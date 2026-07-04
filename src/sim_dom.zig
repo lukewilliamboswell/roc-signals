@@ -29,6 +29,9 @@ pub const Element = struct {
     class: ?[]const u8,
     text: ?[]const u8,
     value: ?[]const u8,
+    pending_value: ?[]const u8,
+    focused: bool,
+    composing: bool,
     checked: bool,
     disabled: bool,
     parent_id: ?u64,
@@ -52,6 +55,9 @@ pub const Element = struct {
             .class = null,
             .text = null,
             .value = null,
+            .pending_value = null,
+            .focused = false,
+            .composing = false,
             .checked = false,
             .disabled = false,
             .parent_id = null,
@@ -75,6 +81,7 @@ pub const Element = struct {
         if (self.class) |class| allocator.free(class);
         if (self.text) |text| allocator.free(text);
         if (self.value) |value| allocator.free(value);
+        if (self.pending_value) |pending_value| allocator.free(pending_value);
         for (self.attrs.items) |attr| {
             attr.deinit(allocator);
         }
@@ -206,6 +213,85 @@ pub fn setValueIfChanged(allocator: std.mem.Allocator, elem: *Element, value: []
 pub fn setValue(allocator: std.mem.Allocator, elem: *Element, value: []const u8) void {
     setOwnedString(allocator, &elem.value, value);
     elem.value_update_count += 1;
+}
+
+fn clearPendingValue(allocator: std.mem.Allocator, elem: *Element) void {
+    if (elem.pending_value) |pending| {
+        allocator.free(pending);
+        elem.pending_value = null;
+    }
+}
+
+fn replacePendingValue(allocator: std.mem.Allocator, elem: *Element, value: []const u8) void {
+    clearPendingValue(allocator, elem);
+    elem.pending_value = allocator.dupe(u8, value) catch std.process.exit(1);
+}
+
+pub fn setUserValueIfChanged(allocator: std.mem.Allocator, elem: *Element, value: []const u8) bool {
+    const changed = setValueIfChanged(allocator, elem, value);
+    if (elem.pending_value) |pending| {
+        if (std.mem.eql(u8, pending, elem.value orelse "")) {
+            clearPendingValue(allocator, elem);
+        }
+    }
+    return changed;
+}
+
+pub fn setControlledValue(allocator: std.mem.Allocator, elem: *Element, value: []const u8) bool {
+    if (elem.value) |existing| {
+        if (std.mem.eql(u8, existing, value)) {
+            clearPendingValue(allocator, elem);
+            return false;
+        }
+    }
+
+    if (elem.composing or elem.focused) {
+        replacePendingValue(allocator, elem, value);
+        return false;
+    }
+
+    clearPendingValue(allocator, elem);
+    setValue(allocator, elem, value);
+    return true;
+}
+
+pub fn focusElement(elem: *Element) void {
+    elem.focused = true;
+}
+
+pub fn blurElement(allocator: std.mem.Allocator, elem: *Element) bool {
+    elem.focused = false;
+    return flushPendingControlledValue(allocator, elem);
+}
+
+pub fn beginComposition(elem: *Element) void {
+    elem.composing = true;
+}
+
+pub fn endComposition(allocator: std.mem.Allocator, elem: *Element) bool {
+    elem.composing = false;
+    return flushPendingControlledValue(allocator, elem);
+}
+
+pub fn flushPendingControlledValue(allocator: std.mem.Allocator, elem: *Element) bool {
+    const pending = elem.pending_value orelse return false;
+
+    if (elem.value) |existing| {
+        if (std.mem.eql(u8, existing, pending)) {
+            clearPendingValue(allocator, elem);
+            return false;
+        }
+    }
+
+    if (elem.composing or elem.focused) {
+        return false;
+    }
+
+    const pending_copy = allocator.dupe(u8, pending) catch std.process.exit(1);
+    defer allocator.free(pending_copy);
+    clearPendingValue(allocator, elem);
+    setValue(allocator, elem, pending_copy);
+    return true;
 }
 
 pub fn clearText(allocator: std.mem.Allocator, elem: *Element) void {
@@ -383,6 +469,14 @@ pub fn reset(allocator: std.mem.Allocator, elements: *std.ArrayListUnmanaged(Ele
 
 pub fn appendDetached(allocator: std.mem.Allocator, elements: *std.ArrayListUnmanaged(Element), elem_id: u64, tag: []const u8) void {
     const tag_copy = allocator.dupe(u8, tag) catch std.process.exit(1);
+    if (elem_id < elements.items.len) {
+        const elem = &elements.items[@intCast(elem_id)];
+        if (elem.active) @panic("sim DOM append attempted to reuse an active element id");
+        elem.deinit(allocator);
+        elem.* = Element.init(elem_id, tag_copy);
+        return;
+    }
+    if (elem_id != elements.items.len) @panic("sim DOM append skipped an element id");
     elements.append(allocator, Element.init(elem_id, tag_copy)) catch {
         allocator.free(tag_copy);
         std.process.exit(1);
@@ -401,6 +495,9 @@ pub fn removeChildAt(parent: *Element, child_index: usize) void {
 pub fn deactivateRemovedNode(allocator: std.mem.Allocator, elem: *Element) void {
     elem.active = false;
     elem.parent_id = null;
+    elem.focused = false;
+    elem.composing = false;
+    clearPendingValue(allocator, elem);
     elem.event_bindings = .{};
     for (elem.named_events.items) |event| {
         event.deinit(allocator);
@@ -467,6 +564,47 @@ test "simulated DOM matches spec locators" {
     }));
 }
 
+test "simulated DOM locator helpers cover implicit roles and name fallbacks" {
+    const allocator = std.testing.allocator;
+
+    const heading_tag = try allocator.dupe(u8, "h2");
+    var heading = Element.init(4, heading_tag);
+    defer heading.deinit(allocator);
+    heading.text = try allocator.dupe(u8, "Overview");
+
+    try std.testing.expectEqualStrings("heading", implicitRole(&heading).?);
+    try std.testing.expect(matchesLocator(&heading, .{
+        .kind = .role_name,
+        .role = "heading",
+        .name = "Overview",
+    }));
+
+    const section_tag = try allocator.dupe(u8, "section");
+    var section = Element.init(5, section_tag);
+    defer section.deinit(allocator);
+    section.label = try allocator.dupe(u8, "Settings");
+
+    try std.testing.expectEqualStrings("region", implicitRole(&section).?);
+    try std.testing.expect(matchesLocator(&section, .{
+        .kind = .label,
+        .label = "Settings",
+    }));
+
+    const input_tag = try allocator.dupe(u8, "input");
+    var input = Element.init(6, input_tag);
+    defer input.deinit(allocator);
+    input.value = try allocator.dupe(u8, "draft");
+
+    try std.testing.expect(implicitRole(&input) == null);
+    try std.testing.expectEqualStrings("draft", accessibleName(&input));
+
+    const div_tag = try allocator.dupe(u8, "div");
+    var empty = Element.init(7, div_tag);
+    defer empty.deinit(allocator);
+
+    try std.testing.expectEqualStrings("", accessibleName(&empty));
+}
+
 test "simulated DOM mutation helpers update owned fields and counters" {
     const allocator = std.testing.allocator;
     const tag = try allocator.dupe(u8, "input");
@@ -492,9 +630,104 @@ test "simulated DOM mutation helpers update owned fields and counters" {
     try std.testing.expect(textAttr(&elem, "data-state") == null);
 
     try std.testing.expect(setCheckedIfChanged(&elem, true));
+    try std.testing.expect(!setCheckedIfChanged(&elem, true));
+    setChecked(&elem, false);
     setDisabled(&elem, true);
-    try std.testing.expect(elem.checked);
+    try std.testing.expect(!elem.checked);
     try std.testing.expect(elem.disabled);
+
+    clearText(allocator, &elem);
+    clearValue(allocator, &elem);
+    try std.testing.expect(elem.text == null);
+    try std.testing.expect(elem.value == null);
+    try std.testing.expectEqual(@as(u64, 2), elem.text_update_count);
+    try std.testing.expectEqual(@as(u64, 3), elem.value_update_count);
+}
+
+test "simulated DOM controlled values defer while focused and flush on blur" {
+    const allocator = std.testing.allocator;
+    const tag = try allocator.dupe(u8, "input");
+    var elem = Element.init(20, tag);
+    defer elem.deinit(allocator);
+
+    try std.testing.expect(setControlledValue(allocator, &elem, "old"));
+    try std.testing.expectEqualStrings("old", elem.value.?);
+    try std.testing.expectEqual(@as(u64, 1), elem.value_update_count);
+
+    focusElement(&elem);
+    try std.testing.expect(setUserValueIfChanged(allocator, &elem, "draft"));
+    try std.testing.expect(!setControlledValue(allocator, &elem, "canonical-a"));
+    try std.testing.expectEqualStrings("draft", elem.value.?);
+    try std.testing.expectEqualStrings("canonical-a", elem.pending_value.?);
+
+    try std.testing.expect(!setControlledValue(allocator, &elem, "canonical-b"));
+    try std.testing.expectEqualStrings("draft", elem.value.?);
+    try std.testing.expectEqualStrings("canonical-b", elem.pending_value.?);
+
+    try std.testing.expect(blurElement(allocator, &elem));
+    try std.testing.expectEqualStrings("canonical-b", elem.value.?);
+    try std.testing.expect(elem.pending_value == null);
+    try std.testing.expectEqual(@as(u64, 3), elem.value_update_count);
+}
+
+test "simulated DOM controlled values clear stale pending equality" {
+    const allocator = std.testing.allocator;
+    const tag = try allocator.dupe(u8, "input");
+    var elem = Element.init(23, tag);
+    defer elem.deinit(allocator);
+
+    try std.testing.expect(setControlledValue(allocator, &elem, "stable"));
+    focusElement(&elem);
+    try std.testing.expect(!setControlledValue(allocator, &elem, "pending"));
+    try std.testing.expectEqualStrings("pending", elem.pending_value.?);
+
+    try std.testing.expect(!setControlledValue(allocator, &elem, "stable"));
+    try std.testing.expect(elem.pending_value == null);
+
+    replacePendingValue(allocator, &elem, "stable");
+    try std.testing.expect(!blurElement(allocator, &elem));
+    try std.testing.expect(elem.pending_value == null);
+    try std.testing.expectEqualStrings("stable", elem.value.?);
+}
+
+test "simulated DOM controlled values no-op when user draft matches pending" {
+    const allocator = std.testing.allocator;
+    const tag = try allocator.dupe(u8, "input");
+    var elem = Element.init(21, tag);
+    defer elem.deinit(allocator);
+
+    try std.testing.expect(setControlledValue(allocator, &elem, "a"));
+    focusElement(&elem);
+    try std.testing.expect(!setControlledValue(allocator, &elem, "abc"));
+    try std.testing.expectEqualStrings("abc", elem.pending_value.?);
+
+    try std.testing.expect(setUserValueIfChanged(allocator, &elem, "abc"));
+    try std.testing.expect(elem.pending_value == null);
+    try std.testing.expect(!blurElement(allocator, &elem));
+    try std.testing.expectEqualStrings("abc", elem.value.?);
+    try std.testing.expectEqual(@as(u64, 2), elem.value_update_count);
+}
+
+test "simulated DOM controlled values stay deferred through composition end while focused" {
+    const allocator = std.testing.allocator;
+    const tag = try allocator.dupe(u8, "input");
+    var elem = Element.init(22, tag);
+    defer elem.deinit(allocator);
+
+    try std.testing.expect(setControlledValue(allocator, &elem, ""));
+    focusElement(&elem);
+    beginComposition(&elem);
+    try std.testing.expect(setUserValueIfChanged(allocator, &elem, "ime"));
+    try std.testing.expect(!setControlledValue(allocator, &elem, "canonical-ime"));
+    try std.testing.expectEqualStrings("ime", elem.value.?);
+
+    try std.testing.expect(!endComposition(allocator, &elem));
+    try std.testing.expectEqualStrings("ime", elem.value.?);
+    try std.testing.expectEqualStrings("canonical-ime", elem.pending_value.?);
+
+    try std.testing.expect(blurElement(allocator, &elem));
+    try std.testing.expectEqualStrings("canonical-ime", elem.value.?);
+    try std.testing.expect(elem.pending_value == null);
 }
 
 test "simulated DOM binds and clears events" {
@@ -522,6 +755,45 @@ test "simulated DOM binds and clears events" {
     try std.testing.expect(namedEvent(&elem, "submit") == null);
 }
 
+test "simulated DOM binds all fixed event variants through generic helpers" {
+    const allocator = std.testing.allocator;
+    const tag = try allocator.dupe(u8, "form");
+    var elem = Element.init(8, tag);
+    defer elem.deinit(allocator);
+
+    const payload = boundary.BoundaryPayloadDescriptor.init(.unit, .none);
+    const kinds = [_]render.EventKind{
+        .input,
+        .check,
+        .pointer_down,
+        .pointer_up,
+        .pointer_enter,
+        .pointer_leave,
+    };
+
+    for (kinds, 0..) |kind, index| {
+        const event_id: u64 = @intCast(index + 30);
+        bindEvent(allocator, &elem, .{ .fixed = kind }, .{
+            .event_id = event_id,
+            .payload_descriptor = payload,
+        });
+        try std.testing.expectEqual(@as(?u64, event_id), fixedEventId(&elem, kind));
+    }
+
+    for (kinds) |kind| {
+        clearEvent(allocator, &elem, .{ .fixed = kind });
+        try std.testing.expectEqual(@as(?u64, null), fixedEventId(&elem, kind));
+    }
+
+    bindEvent(allocator, &elem, .{ .named = "custom-submit" }, .{
+        .event_id = 99,
+        .payload_descriptor = payload,
+    });
+    try std.testing.expectEqual(@as(u64, 99), namedEvent(&elem, "custom-submit").?.binding.event_id);
+    clearEvent(allocator, &elem, .{ .named = "custom-submit" });
+    try std.testing.expect(namedEvent(&elem, "custom-submit") == null);
+}
+
 test "simulated DOM resets and appends children" {
     const allocator = std.testing.allocator;
     var elements: std.ArrayListUnmanaged(Element) = .empty;
@@ -540,6 +812,32 @@ test "simulated DOM resets and appends children" {
     appendChild(allocator, &elements.items[0], &elements.items[1]);
     try std.testing.expectEqual(@as(?u64, 0), elements.items[1].parent_id);
     try std.testing.expectEqualSlices(u64, &.{1}, elements.items[0].children.items);
+    try std.testing.expectEqual(@as(?usize, 0), childIndex(&elements.items[0], 1));
+    try std.testing.expectEqual(@as(?usize, null), childIndex(&elements.items[0], 2));
+
+    reset(allocator, &elements);
+    try std.testing.expectEqual(@as(usize, 1), elements.items.len);
+    try std.testing.expectEqualStrings("root", elements.items[0].tag);
+}
+
+test "simulated DOM reuses inactive element ids" {
+    const allocator = std.testing.allocator;
+    var elements: std.ArrayListUnmanaged(Element) = .empty;
+    defer {
+        for (elements.items) |*elem| {
+            elem.deinit(allocator);
+        }
+        elements.deinit(allocator);
+    }
+
+    reset(allocator, &elements);
+    appendDetached(allocator, &elements, 1, "p");
+    deactivateRemovedNode(allocator, &elements.items[1]);
+    appendDetached(allocator, &elements, 1, "button");
+
+    try std.testing.expect(elements.items[1].active);
+    try std.testing.expectEqualStrings("button", elements.items[1].tag);
+    try std.testing.expectEqual(@as(?u64, null), elements.items[1].parent_id);
 }
 
 test "simulated DOM replaces children and deactivates removed nodes" {

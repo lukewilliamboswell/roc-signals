@@ -34,10 +34,10 @@ Build and serve the static site with the examples:
 python3 scripts/serve.py
 ```
 
-Then open:
+Then open the local URL printed by the server. To use a fixed port:
 
-```text
-http://127.0.0.1:8000/
+```sh
+python3 scripts/serve.py --port 8000
 ```
 
 The examples live under [examples/](examples/). Each public example has its own
@@ -87,4 +87,6 @@ do not chase panic-only, fatal handler, or OOM cleanup noise for its own sake.
 - [www/](www/) contains the Zola site, static JavaScript runtime, user docs, and
   example-page metadata.
 - [scripts/](scripts/) contains the Python drivers and repository checks.
-- [wip/](wip/) contains historical notes and design-prep documents.
+- [wip/NEXT_STEPS.md](wip/NEXT_STEPS.md) is the active backlog. Other files under
+  [wip/](wip/) are focused design notes and research evidence that have not been
+  folded into the enduring design.

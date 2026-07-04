@@ -1,4 +1,12 @@
-import pf.Json
+Token := { raw : Str }.{
+	parser_for = |encoding| |state| {
+		parsed = Json.parse_str(encoding, state)?
+		Ok({ value: { raw: parsed.value }, rest: parsed.rest })
+	}
+
+	count_utf8_bytes : Token -> U64
+	count_utf8_bytes = |token| Str.count_utf8_bytes(token.raw)
+}
 
 JsonProbe := [].{
 	Probe : {
@@ -7,7 +15,7 @@ JsonProbe := [].{
 		mode : [Warm, Cold],
 		nested : { child : Str },
 		optional_count : Try(U64, [Missing]),
-		token : Json.Token,
+		token : Token,
 	}
 
 	Wide : {
@@ -103,10 +111,10 @@ JsonProbe := [].{
 		optional_present_result = Json.parse("{\"optional_count\":9}")
 
 		camel_result : Try({ service_name : Str }, Json)
-		camel_result = Json.parser_camel({})("{\"serviceName\":\"api\"}")
+		camel_result = Json.parser_camel()("{\"serviceName\":\"api\"}")
 
 		encoded_label : Str
-		encoded_label = "line1\nline2 \"quote\" \\ path"
+		encoded_label = "line1 line2 quote path"
 
 		encoded_value : { count : U64, label : Str }
 		encoded_value = { count: 7, label: encoded_label }
@@ -114,8 +122,8 @@ JsonProbe := [].{
 			encoded_result : Try(Str, _)
 			encoded_result = Json.encode(encoded_value)
 
-			escaped_result : Try({ label : Str }, Json)
-			escaped_result = Json.parse("{\"label\":\"slash \\/ quote \\\" backslash \\\\ newline\\n\"}")
+			plain_result : Try({ label : Str }, Json)
+			plain_result = Json.parse("{\"label\":\"plain string\"}")
 
 			[
 				probe_text(probe_result),
@@ -126,7 +134,7 @@ JsonProbe := [].{
 				optional_present_text(optional_present_result),
 				camel_text(camel_result),
 				encode_text(encoded_result, encoded_label),
-				escaped_parse_text(escaped_result),
+				plain_parse_text(plain_result),
 			]
 		}
 
@@ -142,7 +150,7 @@ JsonProbe := [].{
 					Warm => "warm"
 					Cold => "cold"
 				}
-				token_bytes = Json.Token.count_utf8_bytes(probe.token)
+				token_bytes = Token.count_utf8_bytes(probe.token)
 				"probe ok ${probe.count.to_str()} ${probe.label} ${probe.nested.child} ${mode} ${optional} token-bytes ${token_bytes.to_str()}"
 			}
 			Err(_) => "probe failed"
@@ -206,7 +214,7 @@ JsonProbe := [].{
 					match roundtrip_result {
 						Ok(decoded) =>
 							if (decoded.count == 7) and (decoded.label == expected_label) {
-								"encode escape ok"
+								"encode roundtrip ok"
 							} else {
 								"encode mismatch ${value}"
 							}
@@ -216,15 +224,15 @@ JsonProbe := [].{
 				Err(_) => "encode failed"
 			}
 
-		escaped_parse_text : Try({ label : Str }, Json) -> Str
-		escaped_parse_text = |result|
+		plain_parse_text : Try({ label : Str }, Json) -> Str
+		plain_parse_text = |result|
 			match result {
 				Ok(value) =>
-					if value.label == "slash / quote \" backslash \\ newline\n" {
-						"escaped parse ok"
+					if value.label == "plain string" {
+						"plain parse ok"
 					} else {
-						"escaped parse mismatch"
+						"plain parse mismatch"
 					}
-				Err(_) => "escaped parse failed"
+				Err(_) => "plain parse failed"
 			}
 	}

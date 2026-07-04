@@ -1,0 +1,38 @@
+# Controlled input reconciliation contract
+
+expect_visible role:heading name:"Controlled Input Contract"
+expect_attr role:region name:"Controlled Input Contract" data-fixture "controlled-input-contract"
+expect_value label:"Normalized draft" ""
+expect_value label:"Echo draft" ""
+expect_text text:"Canonical normalized: " "Canonical normalized: "
+
+focus label:"Normalized draft"
+expect_text text:"Focus events: 1" "Focus events: 1"
+
+fill label:"Normalized draft" "one"
+expect_value label:"Normalized draft" "one"
+expect_text text:"Canonical normalized: canonical:one" "Canonical normalized: canonical:one"
+
+fill label:"Normalized draft" "two"
+expect_value label:"Normalized draft" "two"
+expect_text text:"Canonical normalized: canonical:two" "Canonical normalized: canonical:two"
+
+blur label:"Normalized draft"
+expect_value label:"Normalized draft" "canonical:two"
+expect_text text:"Blur events: 1" "Blur events: 1"
+
+focus label:"Normalized draft"
+composition_start label:"Normalized draft"
+fill label:"Normalized draft" "ime"
+expect_value label:"Normalized draft" "ime"
+expect_text text:"Canonical normalized: canonical:ime" "Canonical normalized: canonical:ime"
+composition_end label:"Normalized draft"
+expect_value label:"Normalized draft" "ime"
+blur label:"Normalized draft"
+expect_value label:"Normalized draft" "canonical:ime"
+
+focus label:"Echo draft"
+fill label:"Echo draft" "same"
+expect_value label:"Echo draft" "same"
+expect_updates label:"Echo draft" 2
+blur label:"Echo draft"
