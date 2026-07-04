@@ -8,6 +8,12 @@ mounting before a maintained app or focused canary promotes the deferred
 `wip/NEXT_STEPS.md` priority into a concrete implementation slice and the final
 design is folded into `design.md` and the app-author guide.
 
+The browser-environment surface that consumes the first subscription source
+(startup snapshot, location/history, storage) is designed in
+`wip/BROWSER_ENV_DESIGN_PREP.md`; this note owns the generic subscription
+machinery: descriptors, identity, generations, lifecycle, and the payload
+producer.
+
 Refresh check: re-run on 2026-07-04 with the focused browser integration gate
 for behavior lifecycle, protocol checks, timers, tasks, and listener cleanup.
 Current behavior/mounting claims below remained green; subscriptions and
@@ -23,6 +29,7 @@ production-readiness.
 
 Real web apps need long-lived browser and JS resources:
 
+- browser location/history route changes (popstate);
 - WebSocket / EventSource streams;
 - local/session storage events;
 - browser online/offline status;
@@ -216,20 +223,25 @@ model:
   surface. Treat it as lifecycle prior art for start/stop/unmount behavior, and
   only fold it into shared subscription internals if the promoted slice proves
   that reuse lowers complexity without changing the app-facing API.
-- `Browser.online : Sub(Bool)`;
-- `Browser.visibility : Sub(Visibility)`;
-- `Browser.media_query : Str -> Sub(Bool)`.
+- The browser location source (popstate route changes) is the named first
+  canary. Its app-facing surface is designed in
+  `wip/BROWSER_ENV_DESIGN_PREP.md` and promoted through the browser-environment
+  priority in `wip/NEXT_STEPS.md`; this note owns the machinery it rides.
+- Later canaries on the same machinery: `Browser.visibility` (the
+  `service-ops-center` polling-pause expansion), `Browser.online` (the
+  `live-search` offline expansion), and `Browser.media_query : Str -> Sub(Bool)`
+  when an app proves parameterized restart.
 
 Keep broader browser source catalogs deferred until a maintained app or focused
 canary proves they are needed beyond the first lifecycle/payload slice. Examples:
 
 - `WebSocket.messages : WebSocketConfig -> Sub(WebSocketEvent)`;
-- `Storage.changes : StorageArea -> Sub(StorageEvent)`.
+- `Storage.changes : StorageArea -> Sub(StorageEvent)`; the cross-tab scope
+  decision is recorded in `wip/BROWSER_ENV_DESIGN_PREP.md`.
 
-The first promoted slice should include the smallest browser-native
-subscription that proves lifecycle and payload semantics. Add an app-specific
-interop channel only if the promoting maintained app or focused canary needs the
-escape-hatch shape.
+The first promoted slice is the browser location source, proving lifecycle and
+payload semantics. Add an app-specific interop channel only if the promoting
+maintained app or focused canary needs the escape-hatch shape.
 
 ## App-Specific JS Interop
 
@@ -371,17 +383,19 @@ Different concerns:
 
 ## Promotion Validation Plan
 
-Promotion trigger: name one maintained app or focused canary and one small
-built-in browser subscription, such as online/visibility/media-query status,
-that proves lifecycle, payload, stale-message, cleanup, and work-budget
-semantics.
+Promotion trigger: the browser location source (popstate route changes) named
+in the browser-environment priority of `wip/NEXT_STEPS.md` is the first focused
+canary; it must prove lifecycle, payload, stale-message, cleanup, and
+work-budget semantics on this note's descriptor design. The
+`service-ops-center` routing expansion is the maintained app that drives it.
 
 Use this plan only after that app or canary proves the need for broader inbound
 host messages.
 
-1. Add a small built-in subscription canary, such as online/visibility/media-query
-   status. Use `Signal.interval` only as lifecycle prior art unless the promoted
-   slice proves shared internals are the smaller route.
+1. Deliver the browser location source as the first subscription canary through
+   the browser-environment priority. Use `Signal.interval` only as lifecycle
+   prior art unless the promoted slice proves shared internals are the smaller
+   route.
 2. Add a native spec that proves:
    - subscription starts when scope enters;
    - unchanged descriptor does not restart;
@@ -438,6 +452,8 @@ build coverage changes.
 
 - What is the concrete `Sub(a)` app-facing API and where is it declared in the
   `Elem` tree?
+- Does the location source stabilize any public `Sub` shape, or does it stay
+  internal until a second source proves generalization? Expected: internal.
 - What identity key does a subscription use: construction site, explicit channel
   name, parameters, or a host-generated descriptor id?
 - How are subscription parameter changes detected without app-authored equality
@@ -464,7 +480,7 @@ build coverage changes.
 Create a focused subscription spike:
 
 - introduce an internal subscription descriptor and route table;
-- implement one simple built-in browser subscription;
+- implement the browser location source (popstate route changes);
 - add native fake injection and start/stop/late-message specs;
 - add browser contract coverage for start/message/stop/unmount;
 - document a provisional mount strategy;
@@ -474,5 +490,6 @@ Create a focused subscription spike:
 This promoted slice should produce enough evidence to fold the core subscription
 lifecycle into `design.md` and, only if app-facing surface is promoted, add
 examples to the app-author guide.
-It corresponds to `wip/NEXT_STEPS.md` priority 2, but remains deferred until the
-promotion trigger exists.
+It corresponds to the subscriptions priority in `wip/NEXT_STEPS.md`; its first
+canary is delivered through the browser-environment priority, and it remains
+deferred until that promotion trigger exists.
