@@ -53,14 +53,53 @@ prev_step = |step| {
 	}
 }
 
-initial_lines : List(Str)
-initial_lines = ["3 seats", "Priority support"]
+Plan := [Team, Basic]
 
 team_lines : List(Str)
 team_lines = ["3 seats", "Priority support", "Audit log export"]
 
 basic_lines : List(Str)
 basic_lines = ["3 seats"]
+
+plan_lines : Plan -> List(Str)
+plan_lines = |plan| {
+	match plan {
+		Plan.Team => team_lines
+		Plan.Basic => basic_lines
+	}
+}
+
+team_button_class : Plan -> Str
+team_button_class = |plan| {
+	match plan {
+		Plan.Team => "button-primary"
+		Plan.Basic => "button"
+	}
+}
+
+basic_button_class : Plan -> Str
+basic_button_class = |plan| {
+	match plan {
+		Plan.Team => "button"
+		Plan.Basic => "button-primary"
+	}
+}
+
+team_pressed : Plan -> Str
+team_pressed = |plan| {
+	match plan {
+		Plan.Team => "true"
+		Plan.Basic => "false"
+	}
+}
+
+basic_pressed : Plan -> Str
+basic_pressed = |plan| {
+	match plan {
+		Plan.Team => "false"
+		Plan.Basic => "true"
+	}
+}
 
 page_class : Str
 page_class = "grid gap-5"
@@ -106,14 +145,16 @@ render_line = |label, _line_signal| {
 							Html.button_c(
 								Str.concat("Decrease ", label),
 								"button",
-								quantity.on_unit(|current| {
-									next = current - 1
-									if next < 0 {
-										0
-									} else {
-										next
-									}
-								}),
+								quantity.on_unit(
+									|current| {
+										next = current - 1
+										if next < 0 {
+											0
+										} else {
+											next
+										}
+									},
+								),
 							),
 							Html.paragraph_s_c(quantity_label, "text-sm font-medium text-zinc-900"),
 							Html.button_c(Str.concat("Increase ", label), "button", quantity.on_unit(|current| current + 1)),
@@ -152,8 +193,8 @@ main = |_| {
 								initial_terms,
 								|terms| {
 									Ui.state(
-										initial_lines,
-										|lines| {
+										Plan.Team,
+										|plan| {
 											Ui.state(
 												0,
 												|submit_count| {
@@ -163,7 +204,7 @@ main = |_| {
 													is_cart = Signal.map(step_signal, |value| value == 0)
 													is_delivery = Signal.map(step_signal, |value| value == 1)
 													terms_signal = terms.signal()
-													terms_text =
+														terms_text =
 														Signal.map(
 															terms_signal,
 															|accepted| if accepted {
@@ -176,8 +217,14 @@ main = |_| {
 													review_label = Signal.map(submit_count.signal(), receipt_label)
 													email_review = Signal.map(email.signal(), |value| Str.concat("Email: ", value))
 													address_review = Signal.map(address.signal(), |value| Str.concat("Address: ", value))
+													plan_signal = plan.signal()
+													lines_signal = Signal.map(plan_signal, plan_lines)
+													team_class_signal = Signal.map(plan_signal, team_button_class)
+													basic_class_signal = Signal.map(plan_signal, basic_button_class)
+													team_pressed_signal = Signal.map(plan_signal, team_pressed)
+													basic_pressed_signal = Signal.map(plan_signal, basic_pressed)
 
-													cart_panel =
+														cart_panel =
 														Html.section(
 															"Cart",
 															[Html.class_attr(panel_class), Html.attr("data-panel", "cart")],
@@ -187,14 +234,22 @@ main = |_| {
 																Html.div_c(
 																	toolbar_class,
 																	[
-																		Html.button_c("Use team plan", "button-primary", lines.on_unit(|_| team_lines)),
-																		Html.button_c("Use basic plan", "button", lines.on_unit(|_| basic_lines)),
+																		Html.button_attrs(
+																			"Use team plan",
+																			[Html.class_attr_s(team_class_signal), Html.attr_s("aria-pressed", team_pressed_signal)],
+																			plan.on_unit(|_| Plan.Team),
+																		),
+																		Html.button_attrs(
+																			"Use basic plan",
+																			[Html.class_attr_s(basic_class_signal), Html.attr_s("aria-pressed", basic_pressed_signal)],
+																			plan.on_unit(|_| Plan.Basic),
+																		),
 																	],
 																),
-																Ui.each_str(lines.signal(), |label| label, render_line),
+																Ui.each_str(lines_signal, |label| label, render_line),
 															],
 														)
-													delivery_panel =
+														delivery_panel =
 														Html.section_c(
 															"Delivery",
 															panel_class,
@@ -206,7 +261,7 @@ main = |_| {
 																Html.paragraph_s_c(terms_text, "text-sm font-medium text-zinc-900"),
 															],
 														)
-													review_panel =
+														review_panel =
 														Html.section_c(
 															"Review",
 															panel_class,

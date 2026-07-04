@@ -13,6 +13,7 @@ const wasmPath = args.shift();
 let expectError = "";
 let printTelemetrySummary = false;
 let exerciseServiceOpsRefresh = false;
+let exerciseTeamCheckoutPlans = false;
 let rawName;
 
 while (args.length > 0) {
@@ -23,6 +24,8 @@ while (args.length > 0) {
     printTelemetrySummary = true;
   } else if (arg === "--exercise-service-ops-refresh") {
     exerciseServiceOpsRefresh = true;
+  } else if (arg === "--exercise-team-checkout-plans") {
+    exerciseTeamCheckoutPlans = true;
   } else if (arg.startsWith("--")) {
     console.error(`unknown argument: ${arg}`);
     process.exit(2);
@@ -36,7 +39,7 @@ while (args.length > 0) {
 
 if (!wasmPath) {
   console.error(
-    "usage: mount_wasm_example.mjs <wasm-path> [name] [--expect-error <substring>] [--telemetry-summary] [--exercise-service-ops-refresh]",
+    "usage: mount_wasm_example.mjs <wasm-path> [name] [--expect-error <substring>] [--telemetry-summary] [--exercise-service-ops-refresh] [--exercise-team-checkout-plans]",
   );
   process.exit(2);
 }
@@ -114,6 +117,10 @@ if (root.textContent.trim() === "") {
 
 if (exerciseServiceOpsRefresh) {
   await exerciseRefreshWorkflow(name, root, errors);
+}
+
+if (exerciseTeamCheckoutPlans) {
+  await exerciseTeamCheckoutPlanWorkflow(name, root, errors);
 }
 
 try {
@@ -199,6 +206,54 @@ async function exerciseRefreshWorkflow(name, root, errors) {
   if (!root.textContent.includes("Manual refreshes: 1")) {
     fail(`exercised ${name} refresh, but the manual refresh counter did not update`);
   }
+}
+
+async function exerciseTeamCheckoutPlanWorkflow(name, root, errors) {
+  const basicButton = findByText(root, "button", "Use basic plan");
+  const teamButton = findByText(root, "button", "Use team plan");
+  if (!basicButton || !teamButton) {
+    fail(`mounted ${name}, but the team checkout plan buttons were not rendered`);
+  }
+
+  if (!root.textContent.includes("Priority support") || !root.textContent.includes("Audit log export")) {
+    fail(`mounted ${name}, but the team plan rows were not initially rendered`);
+  }
+  if (teamButton.getAttribute("aria-pressed") !== "true" || basicButton.getAttribute("aria-pressed") !== "false") {
+    fail(`mounted ${name}, but the team plan button state was not initially selected`);
+  }
+
+  fireEvent(basicButton, "click", { bubbles: true });
+  await new Promise((resolve) => setTimeout(resolve, settleMs));
+  failOnRuntimeErrors(name, errors, "switching to the basic plan");
+
+  if (!root.textContent.includes("3 seats")) {
+    fail(`switched ${name} to the basic plan, but the base row was removed`);
+  }
+  if (root.textContent.includes("Priority support") || root.textContent.includes("Audit log export")) {
+    fail(`switched ${name} to the basic plan, but team-only rows remained`);
+  }
+  if (teamButton.getAttribute("aria-pressed") !== "false" || basicButton.getAttribute("aria-pressed") !== "true") {
+    fail(`switched ${name} to the basic plan, but button state did not update`);
+  }
+
+  fireEvent(teamButton, "click", { bubbles: true });
+  await new Promise((resolve) => setTimeout(resolve, settleMs));
+  failOnRuntimeErrors(name, errors, "switching back to the team plan");
+
+  if (!root.textContent.includes("Priority support") || !root.textContent.includes("Audit log export")) {
+    fail(`switched ${name} back to the team plan, but team rows were not restored`);
+  }
+  if (teamButton.getAttribute("aria-pressed") !== "true" || basicButton.getAttribute("aria-pressed") !== "false") {
+    fail(`switched ${name} back to the team plan, but button state did not update`);
+  }
+}
+
+function failOnRuntimeErrors(name, errors, action) {
+  if (errors.length === 0) {
+    return;
+  }
+  const details = errors.map((err) => err?.stack ?? err).join("\n");
+  fail(`runtime reported errors while ${action} in ${name}:\n${details}`);
 }
 
 function instrumentBehaviors(behaviors, counts) {

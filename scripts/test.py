@@ -262,6 +262,8 @@ def build_wasm_apps(roc_bin: str, examples: tuple[Example, ...]) -> None:
                 mount_cmd.extend(["--expect-error", example.expect_mount_error])
             if example.slug == "service-ops-center":
                 mount_cmd.append("--exercise-service-ops-refresh")
+            if example.slug == "team-checkout":
+                mount_cmd.append("--exercise-team-checkout-plans")
             run(mount_cmd)
 
 
