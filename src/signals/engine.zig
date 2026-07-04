@@ -3460,12 +3460,16 @@ pub fn Engine(comptime Ctx: type) type {
             return self.evalDirtyHostSignalRecord(ctx, roc_host, signal.record, dirty_source_node_ids, dirty_generation);
         }
 
+        /// Returns a borrowed slice backed by engine scratch. Callers must not free
+        /// it, and it stays valid only until the next dirty propagation.
         pub fn propagateDirtyActiveSignals(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, allocator: std.mem.Allocator, dirty_source_node_ids: []const u64, dirty_generation: u64) []const u64 {
             _ = allocator;
             const dirty_record_ids = self.scratchDirtyActiveSignalRecordIdsForSources(ctx, dirty_source_node_ids);
             return self.propagateDirtyActiveSignalRecordIds(ctx, roc_host, dirty_record_ids, dirty_source_node_ids, dirty_generation);
         }
 
+        /// Returns a borrowed slice backed by engine scratch. Callers must not free
+        /// it, and it stays valid only until the next dirty propagation.
         pub fn propagateDirtyActiveSignalRecordIds(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, dirty_record_ids: []const u64, dirty_source_node_ids: []const u64, dirty_generation: u64) []const u64 {
             const allocator = Ctx.allocator(ctx);
             var changed_record_ids = &self.scratch.dirty_changed_record_ids;

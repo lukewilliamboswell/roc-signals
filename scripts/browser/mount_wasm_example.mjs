@@ -6,12 +6,13 @@ import { basename } from "node:path";
 import { publicExampleTaskHandler } from "../../www/static/example_tasks.mjs";
 import { serviceOpsBehaviors } from "../../www/static/service_ops_charts.mjs";
 import { SignalsRuntime } from "../../www/static/signals.mjs";
-import { installDomDouble } from "./dom_double.mjs";
+import { findByText, fireEvent, installDomDouble } from "./dom_double.mjs";
 
 const args = process.argv.slice(2);
 const wasmPath = args.shift();
 let expectError = "";
 let printTelemetrySummary = false;
+let exerciseServiceOpsRefresh = false;
 let rawName;
 
 while (args.length > 0) {
@@ -20,6 +21,8 @@ while (args.length > 0) {
     expectError = args.shift() ?? "";
   } else if (arg === "--telemetry-summary") {
     printTelemetrySummary = true;
+  } else if (arg === "--exercise-service-ops-refresh") {
+    exerciseServiceOpsRefresh = true;
   } else if (arg.startsWith("--")) {
     console.error(`unknown argument: ${arg}`);
     process.exit(2);
@@ -33,7 +36,7 @@ while (args.length > 0) {
 
 if (!wasmPath) {
   console.error(
-    "usage: mount_wasm_example.mjs <wasm-path> [name] [--expect-error <substring>] [--telemetry-summary]",
+    "usage: mount_wasm_example.mjs <wasm-path> [name] [--expect-error <substring>] [--telemetry-summary] [--exercise-service-ops-refresh]",
   );
   process.exit(2);
 }
@@ -109,6 +112,10 @@ if (root.textContent.trim() === "") {
   fail(`mounted ${name}, but no DOM text was rendered`);
 }
 
+if (exerciseServiceOpsRefresh) {
+  await exerciseRefreshWorkflow(name, root, errors);
+}
+
 try {
   runtime.unmount();
 } catch (err) {
@@ -173,6 +180,25 @@ function commandTelemetrySummary(name, entries) {
   }
 
   return summary;
+}
+
+async function exerciseRefreshWorkflow(name, root, errors) {
+  const button = findByText(root, "button", "Refresh now");
+  if (!button) {
+    fail(`mounted ${name}, but the Refresh now button was not rendered`);
+  }
+
+  fireEvent(button, "click", { bubbles: true });
+  await new Promise((resolve) => setTimeout(resolve, settleMs));
+
+  if (errors.length !== 0) {
+    const details = errors.map((err) => err?.stack ?? err).join("\n");
+    fail(`runtime reported errors while exercising ${name} refresh:\n${details}`);
+  }
+
+  if (!root.textContent.includes("Manual refreshes: 1")) {
+    fail(`exercised ${name} refresh, but the manual refresh counter did not update`);
+  }
 }
 
 function instrumentBehaviors(behaviors, counts) {

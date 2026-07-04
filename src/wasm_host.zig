@@ -536,7 +536,6 @@ fn dispatchEvent(desc: HostActiveEventDesc, payload: HostValue) void {
     const dirty_generation = shared_engine.nextDirtySignalGeneration();
 
     const changed_record_ids = shared_engine.propagateDirtyActiveSignals(ctx, &roc_host, allocator(), &dirty_source_node_ids, dirty_generation);
-    defer allocator().free(changed_record_ids);
 
     const dirty_structural_signals = shared_engine.collectDirtyStructuralSignals(ctx, &roc_host, allocator(), &dirty_source_node_ids, changed_record_ids, dirty_generation);
     defer allocator().free(dirty_structural_signals);

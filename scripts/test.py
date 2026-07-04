@@ -260,6 +260,8 @@ def build_wasm_apps(roc_bin: str, examples: tuple[Example, ...]) -> None:
             mount_cmd = ["node", "scripts/browser/mount_wasm_example.mjs", output, example.slug]
             if example.expect_mount_error is not None:
                 mount_cmd.extend(["--expect-error", example.expect_mount_error])
+            if example.slug == "service-ops-center":
+                mount_cmd.append("--exercise-service-ops-refresh")
             run(mount_cmd)
 
 
