@@ -43,7 +43,9 @@ jobs:
           python3 scripts/test.py zig browser roc-check wasm --native never --bundle never
 
       - name: Build static site
-        run: python3 scripts/serve.py --no-server
+        run: |
+          python3 scripts/serve.py --no-server --app-opt dev
+          python3 scripts/serve.py --no-server --app-opt size
 
       - name: Upload static site artifact
         uses: actions/upload-artifact@v4

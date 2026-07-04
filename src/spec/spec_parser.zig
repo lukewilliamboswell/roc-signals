@@ -13,6 +13,7 @@ pub const SpecCommandType = enum {
     focus,
     blur,
     change,
+    select_option,
     composition_start,
     composition_end,
     custom_event,
@@ -290,6 +291,10 @@ pub fn parseTestSpec(allocator: std.mem.Allocator, content: []const u8) ParseErr
             const split = try splitTrailingQuoted(trimmed["change ".len..]);
             const value_copy = allocator.dupe(u8, split.quoted) catch return ParseError.OutOfMemory;
             try appendSpecCommand(&commands, allocator, .change, try parseLocator(allocator, split.head), value_copy, null, null, line_num);
+        } else if (std.mem.startsWith(u8, trimmed, "select_option ")) {
+            const split = try splitTrailingQuoted(trimmed["select_option ".len..]);
+            const value_copy = allocator.dupe(u8, split.quoted) catch return ParseError.OutOfMemory;
+            try appendSpecCommand(&commands, allocator, .select_option, try parseLocator(allocator, split.head), value_copy, null, null, line_num);
         } else if (std.mem.startsWith(u8, trimmed, "composition_start ")) {
             try appendSpecCommand(&commands, allocator, .composition_start, try parseLocator(allocator, trimmed["composition_start ".len..]), null, null, null, line_num);
         } else if (std.mem.startsWith(u8, trimmed, "composition_end ")) {
@@ -444,6 +449,7 @@ test "spec parser parses actions and assertions" {
         \\focus label:"Email"
         \\blur label:"Email"
         \\change label:"Email" "changed@example.com"
+        \\select_option label:"Plan" "growth"
         \\composition_start label:"Email"
         \\composition_end label:"Email"
         \\custom_event test_id:"chart" "chart-select" "now | 1,200 rpm"
@@ -456,7 +462,7 @@ test "spec parser parses actions and assertions" {
     const commands = try parseTestSpec(std.testing.allocator, content);
     defer freeSpecCommands(std.testing.allocator, commands);
 
-    try std.testing.expectEqual(@as(usize, 14), commands.len);
+    try std.testing.expectEqual(@as(usize, 15), commands.len);
     try std.testing.expectEqual(SpecCommandType.click, commands[0].cmd_type);
     try std.testing.expectEqual(LocatorKind.role_name, commands[0].locator.kind);
     try std.testing.expectEqualStrings("button", commands[0].locator.role.?);
@@ -467,20 +473,22 @@ test "spec parser parses actions and assertions" {
     try std.testing.expectEqual(SpecCommandType.blur, commands[4].cmd_type);
     try std.testing.expectEqual(SpecCommandType.change, commands[5].cmd_type);
     try std.testing.expectEqualStrings("changed@example.com", commands[5].expected_text.?);
-    try std.testing.expectEqual(SpecCommandType.composition_start, commands[6].cmd_type);
-    try std.testing.expectEqual(SpecCommandType.composition_end, commands[7].cmd_type);
-    try std.testing.expectEqual(SpecCommandType.custom_event, commands[8].cmd_type);
-    try std.testing.expectEqual(LocatorKind.test_id, commands[8].locator.kind);
-    try std.testing.expectEqualStrings("chart", commands[8].locator.test_id.?);
-    try std.testing.expectEqualStrings("chart-select", commands[8].task_name.?);
-    try std.testing.expectEqualStrings("now | 1,200 rpm", commands[8].expected_text.?);
-    try std.testing.expectEqualStrings("data-state", commands[9].expected_attr.?);
-    try std.testing.expectEqualStrings("ready", commands[9].expected_text.?);
-    try std.testing.expectEqualStrings("aria-invalid", commands[10].expected_attr.?);
-    try std.testing.expectEqual(@as(?u64, 250), commands[11].interval_ms);
-    try std.testing.expectEqual(SpecCommandType.tick_interval_if_active, commands[12].cmd_type);
+    try std.testing.expectEqual(SpecCommandType.select_option, commands[6].cmd_type);
+    try std.testing.expectEqualStrings("growth", commands[6].expected_text.?);
+    try std.testing.expectEqual(SpecCommandType.composition_start, commands[7].cmd_type);
+    try std.testing.expectEqual(SpecCommandType.composition_end, commands[8].cmd_type);
+    try std.testing.expectEqual(SpecCommandType.custom_event, commands[9].cmd_type);
+    try std.testing.expectEqual(LocatorKind.test_id, commands[9].locator.kind);
+    try std.testing.expectEqualStrings("chart", commands[9].locator.test_id.?);
+    try std.testing.expectEqualStrings("chart-select", commands[9].task_name.?);
+    try std.testing.expectEqualStrings("now | 1,200 rpm", commands[9].expected_text.?);
+    try std.testing.expectEqualStrings("data-state", commands[10].expected_attr.?);
+    try std.testing.expectEqualStrings("ready", commands[10].expected_text.?);
+    try std.testing.expectEqualStrings("aria-invalid", commands[11].expected_attr.?);
     try std.testing.expectEqual(@as(?u64, 250), commands[12].interval_ms);
-    try std.testing.expectEqual(@as(?u64, 1), commands[13].expected_count);
+    try std.testing.expectEqual(SpecCommandType.tick_interval_if_active, commands[13].cmd_type);
+    try std.testing.expectEqual(@as(?u64, 250), commands[13].interval_ms);
+    try std.testing.expectEqual(@as(?u64, 1), commands[14].expected_count);
 }
 
 test "spec parser parses async cleanup metrics and boolean commands" {
@@ -555,7 +563,58 @@ test "spec parser parses async cleanup metrics and boolean commands" {
     try std.testing.expectEqual(@as(?i64, 0), commands[11].expected_metric_delta);
 }
 
+test "spec parser parses pointer form and visibility commands" {
+    const content =
+        \\pointer_down test_id:"drag-handle"
+        \\pointer_up test_id:"drag-handle"
+        \\pointer_enter text:"Drop zone"
+        \\pointer_leave text:"Drop zone"
+        \\submit role:button name:"Save"
+        \\check label:"Enabled"
+        \\uncheck label:"Enabled"
+        \\expect_text test_id:"status" "Ready"
+        \\expect_visible role:button name:"Save"
+        \\expect_absent text:"Loading"
+        \\expect_value label:"Email" "a@example.com"
+        \\expect_updates test_id:"status" 3
+    ;
+    const commands = try parseTestSpec(std.testing.allocator, content);
+    defer freeSpecCommands(std.testing.allocator, commands);
+
+    try std.testing.expectEqual(@as(usize, 12), commands.len);
+    try std.testing.expectEqual(SpecCommandType.pointer_down, commands[0].cmd_type);
+    try std.testing.expectEqualStrings("drag-handle", commands[0].locator.test_id.?);
+    try std.testing.expectEqual(SpecCommandType.pointer_up, commands[1].cmd_type);
+    try std.testing.expectEqualStrings("drag-handle", commands[1].locator.test_id.?);
+    try std.testing.expectEqual(SpecCommandType.pointer_enter, commands[2].cmd_type);
+    try std.testing.expectEqualStrings("Drop zone", commands[2].locator.text.?);
+    try std.testing.expectEqual(SpecCommandType.pointer_leave, commands[3].cmd_type);
+    try std.testing.expectEqualStrings("Drop zone", commands[3].locator.text.?);
+    try std.testing.expectEqual(SpecCommandType.submit, commands[4].cmd_type);
+    try std.testing.expectEqualStrings("button", commands[4].locator.role.?);
+    try std.testing.expectEqualStrings("Save", commands[4].locator.name.?);
+    try std.testing.expectEqual(SpecCommandType.check, commands[5].cmd_type);
+    try std.testing.expectEqualStrings("Enabled", commands[5].locator.label.?);
+    try std.testing.expectEqual(SpecCommandType.uncheck, commands[6].cmd_type);
+    try std.testing.expectEqualStrings("Enabled", commands[6].locator.label.?);
+    try std.testing.expectEqual(SpecCommandType.expect_text, commands[7].cmd_type);
+    try std.testing.expectEqualStrings("status", commands[7].locator.test_id.?);
+    try std.testing.expectEqualStrings("Ready", commands[7].expected_text.?);
+    try std.testing.expectEqual(SpecCommandType.expect_visible, commands[8].cmd_type);
+    try std.testing.expectEqualStrings("button", commands[8].locator.role.?);
+    try std.testing.expectEqualStrings("Save", commands[8].locator.name.?);
+    try std.testing.expectEqual(SpecCommandType.expect_absent, commands[9].cmd_type);
+    try std.testing.expectEqualStrings("Loading", commands[9].locator.text.?);
+    try std.testing.expectEqual(SpecCommandType.expect_value, commands[10].cmd_type);
+    try std.testing.expectEqualStrings("Email", commands[10].locator.label.?);
+    try std.testing.expectEqualStrings("a@example.com", commands[10].expected_text.?);
+    try std.testing.expectEqual(SpecCommandType.expect_updates, commands[11].cmd_type);
+    try std.testing.expectEqualStrings("status", commands[11].locator.test_id.?);
+    try std.testing.expectEqual(@as(?u64, 3), commands[11].expected_count);
+}
+
 test "spec parser rejects malformed commands" {
+    try std.testing.expectError(ParseError.InvalidFormat, parseBoolToken("maybe"));
     try std.testing.expectError(ParseError.InvalidFormat, parseTestSpec(std.testing.allocator, "click missing_locator"));
     try std.testing.expectError(ParseError.InvalidFormat, parseTestSpec(std.testing.allocator, "custom_event test_id:\"chart\" \"chart-select\""));
     try std.testing.expectError(ParseError.InvalidFormat, parseTestSpec(std.testing.allocator, "custom_event test_id:\"chart\" chart-select \"detail\""));

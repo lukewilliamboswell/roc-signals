@@ -1,5 +1,3 @@
-import pf.Json
-
 Dashboard := {
 	schema : U64,
 	version : U64,

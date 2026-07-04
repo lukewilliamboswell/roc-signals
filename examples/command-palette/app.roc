@@ -142,7 +142,11 @@ main = |_| {
 							Html.paragraph_s_c(query_text, "text-sm text-zinc-700"),
 							Html.paragraph_s_c(key_signal, "text-sm font-medium text-zinc-900"),
 							Html.paragraph_s_c(submit_signal, "text-sm text-zinc-600"),
-							Html.button_c("Run command", "button-primary", model.on_unit(record_submit)),
+							Html.button_attrs(
+								"Run command",
+								[Html.class_attr("button-primary"), Html.attr("type", "button")],
+								model.on_unit(record_submit),
+							),
 						],
 					),
 				],

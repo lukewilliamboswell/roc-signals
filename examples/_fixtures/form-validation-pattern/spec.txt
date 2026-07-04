@@ -1,0 +1,48 @@
+# Form validation pattern scenario
+
+expect_visible role:heading name:"Form Validation Pattern"
+expect_attr role:region name:"Form Validation Pattern" data-fixture "form-validation-pattern"
+expect_attr role:form name:"Validation form" id "validation-form"
+expect_value label:"Invite email" ""
+expect_attr label:"Invite email" id "invite-email"
+expect_attr label:"Invite email" type "email"
+expect_attr label:"Invite email" aria-describedby "invite-email-message"
+expect_no_attr label:"Invite email" aria-invalid
+expect_attr label:"Accept terms" aria-describedby "terms-message"
+expect_no_attr label:"Accept terms" aria-invalid
+expect_text text:"Email validation: ready." "Email validation: ready."
+expect_text text:"Terms validation: ready." "Terms validation: ready."
+expect_text text:"Submit status: idle" "Submit status: idle"
+expect_disabled role:button name:"Send invite" true
+expect_pending_task "form-submit" 0
+
+submit role:form name:"Validation form"
+expect_attr label:"Invite email" aria-invalid ""
+expect_attr label:"Accept terms" aria-invalid ""
+expect_text text:"Email validation: enter an email address." "Email validation: enter an email address."
+expect_text text:"Terms validation: accept terms to continue." "Terms validation: accept terms to continue."
+expect_disabled role:button name:"Send invite" true
+expect_pending_task "form-submit" 0
+
+fill label:"Invite email" "ops@example.com"
+expect_value label:"Invite email" "ops@example.com"
+expect_no_attr label:"Invite email" aria-invalid
+expect_attr label:"Accept terms" aria-invalid ""
+expect_text text:"Email validation: ready." "Email validation: ready."
+expect_disabled role:button name:"Send invite" true
+
+check label:"Accept terms"
+expect_checked label:"Accept terms" true
+expect_no_attr label:"Accept terms" aria-invalid
+expect_text text:"Terms validation: ready." "Terms validation: ready."
+expect_disabled role:button name:"Send invite" false
+
+click role:button name:"Send invite"
+expect_pending_task "form-submit" 1
+expect_text text:"Submit status: sending" "Submit status: sending"
+expect_disabled role:button name:"Send invite" true
+
+resolve_task "form-submit" "queued"
+expect_pending_task "form-submit" 0
+expect_text text:"Submit result: queued" "Submit result: queued"
+expect_disabled role:button name:"Send invite" false

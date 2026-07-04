@@ -58,8 +58,8 @@ reconstructs meaning, holds reactive state, or re-decides patches.
 
 ## Non-Negotiable Constraints
 
-These constraints come from `AGENTS.md`, `design.md`, and the platform's role.
-Every part of this design must respect them.
+These constraints come from the platform's role and from the discipline this
+document is meant to preserve. Every part of this design must respect them.
 
 1. **No compiler changes.** This is a platform. We may not add dataflow
    analysis passes, dependency-graph extraction, or any new compiler behavior.
@@ -144,7 +144,7 @@ the *output* after the work is done. Solid would not wake the node at all. We
 accept this because the alternative — lazy, read-tracked edges — requires
 observing Roc's reads, which the no-compiler-changes rule forbids. The escape
 valve for genuinely dynamic dependency *structure* (a derivation over a
-value-dependent set of inputs) is the same scope mechanism that powers `Ui.each`
+value-dependent set of inputs) is the same scope mechanism that powers `Ui.each_str`
 (see Identity and Dynamic Structure): a sub-graph that is rebuilt when its shape
 changes, not a static edge that is always live. Dynamic-cardinality reactivity
 and dynamic list structure must therefore share one mechanism, never two.
@@ -160,15 +160,26 @@ and dynamic list structure must therefore share one mechanism, never two.
   binder; effect combinators introduce effect sources.
 - **Derived node** — `map`, `map2`, `combine`. Holds a retained Roc transform
   closure plus its input node ids. The host recomputes it when an input changes.
-- **Reducer** — a pure `a -> a` (or `a -> (a, Cmd)`) closure attached to a source
-  via `send`. The host retains it and calls it when the bound event fires.
+- **Reducer** — a pure state transition closure attached to a source through a
+  `Node.Msg`. Unit reducers are `a -> a`; payload reducers are typed wrappers
+  such as `(a, Str -> a)`, `(a, Bool -> a)`, or `(a, KeyPayload -> a)`. The host
+  retains the erased reducer and calls it when the bound event fires.
 - **Scope** — a host-owned region that owns minted node ids and retained
   closures: the root, each conditional branch, and each list row are scopes.
   Disposing a scope drops its refcounts and detaches its DOM.
 - **Elem** — a pure description of UI structure that references signals for
   dynamic text/attrs and references reducers for event handlers.
-- **Cmd / Sub** — typed effect requests and subscriptions; results re-enter the
-  graph as source updates, using the same propagation path as a click.
+- **Cmd** — typed effect requests produced by lifecycle or signal-change sinks.
+  The shipped command is `StartTask`; timers are effect sources. Results
+  re-enter the graph as source updates, using the same propagation path as a
+  click. General `Sub` descriptors are deliberately deferred until a maintained
+  app or focused canary needs broader inbound host messages.
+- **Future Sub** — a deferred long-lived source descriptor, not shipped public
+  API. When promoted, subscriptions must be declared by structure, owned by
+  scopes, diffed by stable descriptor identity, and started/stopped by host
+  lifecycle. Inbound payloads must reuse the shared boundary schema vocabulary,
+  and any retained source value or callback must use the same capability-owned
+  `HostValue` model as events and tasks.
 
 ## Identity: Construction-Site Within Explicit Scopes
 
@@ -239,10 +250,10 @@ undefined behavior in the thunk.
 
 Two rules keep this invariant honest:
 
-1. **The routing is consumed, never reconstructed.** Per `AGENTS.md`, the host
-   builds its `event_id -> source`, edge, and sink tables from explicit tokens
-   in the descriptor. It never re-derives which thunk owns which value by
-   guessing from structure or bytes.
+1. **The routing is consumed, never reconstructed.** The host builds its
+   `event_id -> source`, edge, and sink tables from explicit tokens in the
+   descriptor. It never re-derives which thunk owns which value by guessing from
+   structure or bytes.
 2. **Capability ownership assertions.** Every opaque `HostValue` cell carries
    the app-compiled capability that owns it. Public get/take operations must
    present the same capability, and internal split/take operations are accepted
@@ -334,11 +345,15 @@ capability bridges the two.
 
 ## App-Facing API
 
-The app sees `Signal(a)`, typed keys, `Elem`, `Cmd(a)`, `Sub(a)`, and a small
-set of polymorphic functions. It never sees ids, string keys, `NodeValue`,
-lifecycle tokens, or subscription internals. The API is identical regardless of
-which host runs the app — apps are written once and run under both the native
-spec runner and the browser.
+The app sees `Signal(a)`, durable text key material for `Ui.each_str`, `Elem`,
+task/effect helpers, and a small set of polymorphic functions. It never sees
+host ids, host-private key hashes, `NodeValue`, or lifecycle tokens. The API is
+identical regardless of which host runs the app — apps are written once and run
+under both the native spec runner and the browser.
+General `Sub(a)` and app-specific JS interop are future surfaces, not shipped
+API. They must extend the source/effect boundary above; they must not introduce
+a second payload format, a public id route table, or a separate browser-only
+state channel.
 
 ### Module surface
 
@@ -353,9 +368,10 @@ resolves and specializes.
 # Opaque to the app:
 Signal(a)
 Elem
-Cmd(a)
-Sub(a)
-Scope            # only appears in Ui.component / cleanup signatures
+Task(a, err)
+TaskStatus(a, err)
+Cmd              # produced and consumed by helpers; not a public id surface
+Cleanup          # produced and consumed by helpers; not a public id surface
 
 # Signal construction and combination
 Signal.const : a -> Signal(a)
@@ -375,31 +391,126 @@ Signal.start_str : Task(a, err), Str -> Cmd
 Signal.cleanup : Str -> Cleanup
 Signal.interval : U64 -> Signal(U64)  # period ms -> tick count
 Ui.on_change : Signal(a), (a -> Cmd) -> Elem  # sink: fires a Cmd when value changes
+Ui.on_mount : ({} -> Cmd) -> Elem
 Ui.on_cleanup : Cleanup -> Elem               # runs at scope disposal
 
 # Structure
-Html.div : List(Attr), List(Elem) -> Elem
-Html.button : List(Attr), List(Elem) -> Elem
-Html.input : List(Attr), List(Elem) -> Elem
+Html.div : List(Html.Attr), List(Elem) -> Elem
+Html.form : List(Html.Attr), List(Elem) -> Elem
+Html.form_label : Str, List(Html.Attr), List(Elem) -> Elem
+Html.link : Str, List(Html.Attr) -> Elem
+Html.section : Str, List(Html.Attr), List(Elem) -> Elem
+Html.heading : Str -> Elem
+Html.paragraph : Str -> Elem
+Html.paragraph_s : Signal(Str) -> Elem
+Html.pre_s_c : Signal(Str), Str -> Elem
+Html.button : Str, Msg -> Elem
+Html.action_button : Signal(Str), Signal(Bool), Msg -> Elem
+Html.text_input : Str, Signal(Str), Msg -> Elem
+Html.number_input : Str, Signal(Str), Msg -> Elem
+Html.textarea : Str, Signal(Str), Msg -> Elem
+Html.select : Str, Signal(Str), List(Elem), Msg -> Elem
+Html.option : Str, Str -> Elem
+Html.option_attrs : Str, Str, List(Attr) -> Elem
+Html.radio : Str, Str, Str, Signal(Str), Msg -> Elem
+Html.checkbox : Str, Signal(Bool), Msg -> Elem
 Html.text : Str -> Elem            # static text
 Html.text_s : Signal(Str) -> Elem  # signal-backed text (a sink)
+# Many element helpers also expose `_c`, `_sc`, `_s`, and `_attrs` variants for
+# static class, signal-backed class/text, and extra attrs, including focused
+# helpers like `button_s_c` and `action_button_c`. These are sugar over the same
+# descriptor vocabulary.
 
 # Attributes (signal-backed where dynamic)
-Html.value : Signal(Str) -> Attr
-Html.checked : Signal(Bool) -> Attr
-Html.disabled : Signal(Bool) -> Attr
+Html.class_attr : Str -> Attr
+Html.class_attr_s : Signal(Str) -> Attr
+Html.test_id : Str -> Attr
 Html.attr : Str, Str -> Attr
 Html.attr_s : Str, Signal(Str) -> Attr
-Html.on_click : Msg -> Attr
-Html.on_input : (Str -> Msg) -> Attr
-Html.on_check : (Bool -> Msg) -> Attr
+Html.attr_maybe_s : Str, Signal([None, Some(Str)]) -> Attr
+Html.bool_attr : Str -> Attr
+Html.bool_attr_if : Str, Bool -> List(Attr)
+Html.bool_attr_s : Str, Signal(Bool) -> Attr
+Html.required : Attr
+Html.readonly : Attr
+Html.aria_describedby : Str -> Attr
+Html.aria_invalid_s : Signal(Bool) -> Attr
+Html.aria_activedescendant_s : Signal([None, Some(Str)]) -> Attr
+Html.behavior : Str -> Attr
+Html.EventPolicy : Node.EventPolicy
+Html.EventDelivery : Node.EventDelivery
+Html.event_policy_none : EventPolicy
+Html.event_policy_prevent_default : EventPolicy
+Html.event_policy_stop_propagation : EventPolicy
+Html.event_policy_stop_immediate : EventPolicy
+Html.event_delivery_auto : EventDelivery
+Html.event_delivery_native : EventDelivery
+Html.on_event : Str, EventPolicy, Msg -> Attr
+Html.on_custom : Str, Msg -> Attr
+Html.on_event_delivery : Str, EventPolicy, EventDelivery, Msg -> Attr
+Html.on_submit_prevent_default : Msg -> Attr
+Html.on_pointer_down : Msg -> Attr
+Html.on_pointer_up : Msg -> Attr
+Html.on_pointer_enter : Msg -> Attr
+Html.on_pointer_leave : Msg -> Attr
+Html.on_key_down : Msg -> Attr
+Html.on_focus : Msg -> Attr
+Html.on_blur : Msg -> Attr
+Html.on_change : Msg -> Attr
+Html.on_composition_start : Msg -> Attr
+Html.on_composition_end : Msg -> Attr
+
+# Package-aligned HTTP tasks
+HttpError := [Network(Str), Timeout, Canceled, Unsupported(Str), ResponseMaterialization(Str)]
+Request        # `roc-lang/http` request value
+Response       # `roc-lang/http` response value
+Method         # `roc-lang/http` method value
+Timeout        # `roc-lang/http` timeout value
+Http.method_get : Method
+Http.method_post : Method
+Http.method_put : Method
+Http.method_delete : Method
+Http.method_patch : Method
+Http.method_unknown : Str -> Method
+Http.request_task : Str -> Task(Response, HttpError)
+Http.start : Task(Response, HttpError), Request -> Cmd
+Http.get : Task(Response, HttpError), Str -> Cmd
+Http.get_text_task : Str -> Task(Str, Str)
+Http.get_text : Task(Str, Str), Str -> Cmd
+Http.error_text : HttpError -> Str
+Http.request_from_method : Method -> Request
+Http.request_method : Request -> Method
+Http.request_method_str : Request -> Str
+Http.request_headers : Request -> List((Str, Str))
+Http.request_body : Request -> List(U8)
+Http.request_uri : Request -> Str
+Http.request_timeout : Request -> Timeout
+Http.with_method : Request, Method -> Request
+Http.with_headers : Request, List((Str, Str)) -> Request
+Http.add_header : Request, Str, Str -> Request
+Http.with_uri : Request, Str -> Request
+Http.with_body : Request, List(U8) -> Request
+Http.with_timeout_ms : Request, U64 -> Request
+Http.with_no_timeout : Request -> Request
+Http.response_from_status : U16 -> Response
+Http.response_status : Response -> U16
+Http.response_headers : Response -> List((Str, Str))
+Http.response_body : Response -> List(U8)
+Http.response_with_status : Response, U16 -> Response
+Http.response_with_headers : Response, List((Str, Str)) -> Response
+Http.response_add_header : Response, Str, Str -> Response
+Http.response_with_body : Response, List(U8) -> Response
 
 # Dynamic structure (explicit scopes)
 Ui.state : a, (State(a) -> Elem) -> Elem
     where [a.is_eq : a, a -> Bool]
 State.signal : State(a) -> Signal(a)
 State.on_unit : State(a), (a -> a) -> Msg
-State.on_value : State(a), (a, payload -> a) -> Msg
+State.on_str : State(a), (a, Str -> a) -> Msg
+State.on_bool : State(a), (a, Bool -> a) -> Msg
+State.on_detail : State(a), (a, Str -> a) -> Msg
+Ui.KeyPayload : { key : Str, shift_key : Bool }
+State.on_key : State(a), (a, Ui.KeyPayload -> a) -> Msg
 Ui.when : Signal(Bool), ({} -> Elem), ({} -> Elem) -> Elem
 Ui.each_str : Signal(List(item)), (item -> Str), (Str, Signal(item) -> Elem) -> Elem
     where [
@@ -410,10 +521,105 @@ Ui.each_str : Signal(List(item)), (item -> Str), (Str, Signal(item) -> Elem) -> 
 Ui.component : ({} -> Elem) -> Elem
 ```
 
-`Msg` here is the unit of host-to-Roc dispatch: a `send`-bound reducer plus an
-optional payload. `Html.on_input(name_changed)` means "when this input fires,
-route the typed payload through `name_changed` and apply the bound reducer." The
-app never names an event id; the host mints and routes them.
+The form helpers above are sugar over the same text/bool fields and event
+payload descriptors: text input, number input, textarea, and single-value select
+use the target-value path; checkbox uses target-checked; radio derives checked
+from a string-valued selected signal and dispatches the option value. They do
+not introduce separate browser-state channels.
+
+HTTP helpers are wrappers over the pinned `roc-lang/http` request/response
+values plus Signals-owned transport errors. The text helpers exist for examples
+and decode successful response bodies as UTF-8; JSON/body convenience layers and
+browser fetch-policy knobs stay gated until a maintained app or focused canary
+proves the current package-aligned request path is insufficient.
+
+`Signal.task_source` exists as low-level platform/helper plumbing for
+`Signal.fake_task` and `Http`; ordinary apps should use those wrappers. Do not
+widen `task_source` into a generic public effect registry. Future typed effect
+capabilities should replace task-name conventions only with a promoted
+subscriptions/app-interop slice that proves the shared task/subscription routing
+model.
+
+`Signal.clone_expr`, `Signal.to_expr`, and `Signal.from_expr` are also exposed
+platform plumbing because `Html` and `Ui` need to share typed signal descriptors
+without package-private helpers. They are not an app-facing descriptor API, and
+future shrink work should avoid treating that leak as a reason to add public
+signal ids, descriptor inspection, or host-owned construction helpers.
+
+`Msg` here is the unit of host-to-Roc dispatch: a bound reducer plus an optional
+payload. `Html.text_input("Name", name_signal, name_state.on_str(update_name))`
+means "when this input fires, route the target-value payload through
+`update_name` and apply the bound reducer." The app never names an event id; the
+host mints and routes them.
+
+### Boundary payloads and event bindings
+
+`Node.Msg` is the app-facing reducer descriptor. It carries:
+
+- a `BinderRef` naming the state/source binder to update;
+- an `EventExtractionPlan` byte descriptor naming what the host should extract
+  from the event;
+- a capability-owned reducer handle that can decode the resulting `HostValue`
+  payload and produce the next typed state.
+
+The shared boundary schema vocabulary is intentionally small:
+
+```text
+1 = unit
+2 = text
+3 = bool
+4 = record
+```
+
+DOM event extraction reuses those schema tags, then adds DOM-specific producer
+bytes after scalar nodes: source (`event`, `target`, `currentTarget`) and leaf
+(`key`, `value`, `checked`, `shiftKey`, `detail`). Records are non-empty, flat,
+UTF-8-named records of scalar leaves with no duplicate field names. Scalar
+payloads dispatch as unit/text/bool containers; record payloads dispatch as
+bytes, and app-compiled Roc decoders such as `State.on_key` construct the typed
+record. Hosts never decode Roc records or infer a payload from DOM shape.
+
+The current ABI uses compact Roc-side `EventExtractionPlan` byte values for the
+supported plans: unit, target value, target checked, event detail, and the
+`{ key, shift_key }` keyboard record. The host expands those into
+`BoundaryPayloadDescriptor` data for render-cache comparison and, on the browser
+wire, emits the extraction descriptor bytes so JS can validate and execute the
+plan. Unsupported source/leaf pairs, nested records, duplicate fields, trailing
+bytes, or mismatched payload containers are contract errors.
+
+Every event binding has one canonical internal shape:
+
+```text
+EventBinding := {
+  event_id,
+  policy,              # preventDefault, stopPropagation, stopImmediate,
+                       # capture, passive, once, self, trusted
+  delivery,            # requested/effective/reason
+  payload_descriptor,
+}
+```
+
+`EventDelivery` is derived by the host before render-cache storage. The public
+request is `auto` or `native`; the current effective delivery is native, with a
+reason such as `requested-native`, `capture-policy`, `stop-propagation-policy`,
+`prevent-default-policy`, `once-policy`, `passive-policy`, `self-filter`,
+`pointer-drag`, or `native-runtime-default`. The wire already has an effective
+`delegated` enum value, but delegated event delivery is not a shipped semantic
+path.
+
+Fixed event opcodes are compression for canonical fixed bindings only: a fixed
+binding may use the compact opcode when policy is empty and its payload
+descriptor matches the fixed event kind. Otherwise fixed events and all named
+events lower through the dynamic `BindEvent` record carrying the same canonical
+binding data. The browser decodes fixed and dynamic event records into the same
+listener shape.
+
+Native specs model only default actions required by maintained apps or focused
+canaries. `real_click` dispatches through propagation before applying supported
+defaults: app-managed submit for submit buttons, app-managed reset for reset
+buttons, checkbox checked changes, and radio target-value changes. `key_down`
+models Enter submit from text-like inputs. App-managed submit/reset bindings
+must be unit payloads with static prevent-default policy.
 
 ### Example: counter
 
@@ -421,16 +627,16 @@ app never names an event id; the host mints and routes them.
 counter : Elem
 counter =
     Ui.state(0i64, |count_state| {
-        count = count_state.signal
+        count = count_state.signal()
         dec = count_state.on_unit(|n| n - 1)
         inc = count_state.on_unit(|n| n + 1)
 
         Html.div(
             [],
             [
-                Html.button([Html.on_click(dec)], [Html.text("-")]),
+                Html.button("-", dec),
                 Html.text_s(Signal.map(count, |n| n.to_str())),
-                Html.button([Html.on_click(inc)], [Html.text("+")]),
+                Html.button("+", inc),
             ],
         )
     })
@@ -449,10 +655,11 @@ full_name = |first, last| Signal.map2(first, last, |f, l| "${f} ${l}")
 name_field : Elem
 name_field =
     Ui.state("", |text_state| {
-        text = text_state.signal
-        Html.input(
-            [Html.value(text), Html.on_input(|new| text_state.on_value(|_, _payload| new))],
-            [],
+        text = text_state.signal()
+        Html.text_input(
+            "Name",
+            text,
+            text_state.on_str(|_current, value| value),
         )
     })
 ```
@@ -466,7 +673,7 @@ string and not by re-derived tree position.
 ```roc
 todo_list : Signal(List(Todo)) -> Elem
 todo_list = |todos|
-    Html.ul(
+    Html.div(
         [],
         [
             Ui.each_str(
@@ -474,15 +681,13 @@ todo_list = |todos|
                 |todo| todo.id,
                 |_key, row| {
                     Ui.state(Bool.false, |editing_state| {
-                        editing = editing_state.signal
-                        Html.li(
+                        editing = editing_state.signal()
+                        Html.div(
                             [],
                             [
                                 Html.text_s(Signal.map(row, |t| t.title)),
-                                Html.button(
-                                    [Html.on_click(editing_state.on_unit(|e| !e))],
-                                    [Html.text_s(Signal.map(editing, |e| if e { "done" } else { "edit" }))],
-                                ),
+                                Html.button("Toggle edit", editing_state.on_unit(|e| !e)),
+                                Html.text_s(Signal.map(editing, |e| if e { "done" } else { "edit" })),
                             ],
                         )
                     })
@@ -563,11 +768,11 @@ roc_ui_init : {} -> Box(Elem)
   rank order, invoking only the changed derived nodes' retained transform thunks.
   Every Roc call per event is a direct closure invocation, not an FFI entrypoint
   crossing.
-- **Dynamic structure (`Ui.each` rows, `Ui.when` branches) also needs no
+- **Dynamic structure (`Ui.each_str` rows, `Ui.when` branches) also needs no
   entrypoint.** When a new list key or branch appears at runtime, Roc must
   *produce new UI structure* that did not exist at init — but it does so through a
   **retained builder closure**, not a new entrypoint. The row builder you pass to
-  `Ui.each` (`|key, row| ...`) and each branch body of `Ui.when` are captured at
+  `Ui.each_str` (`|key, row| ...`) and each branch body of `Ui.when` are captured at
   init as `RocErasedCallable` values (the host stores `row`, `when_true`,
   `when_false`). When the host needs a new row, it calls the retained `row`
   closure directly with the new key/item and receives a fresh `Elem` sub-tree —
@@ -576,7 +781,7 @@ roc_ui_init : {} -> Box(Elem)
   entrypoint is needed or wanted: the host already holds a direct pointer to the
   specific builder for that specific site. Adding an entrypoint would reintroduce
   the boundary crossing this model exists to remove, and force the host to ask
-  Roc "which builder?" when it already knows. `Ui.each` patch locality is
+  Roc "which builder?" when it already knows. `Ui.each_str` patch locality is
   host-side: the host splices returned row sub-trees into affected scopes and
   preserves surviving row scopes instead of re-entering the root descriptor.
 - **Why a single entrypoint, not the batched protocol.** An earlier design
@@ -610,7 +815,7 @@ neither needs an entrypoint:
 
 - **Value closures** — reducers (`Msg`), `map`/`map2`/`combine` transforms, `eq`,
   `read`, `key_of`. Take values, return a value. Run on every relevant event.
-- **Structure closures** — `Ui.each` row builders and `Ui.when` branch bodies.
+- **Structure closures** — `Ui.each_str` row builders and `Ui.when` branch bodies.
   Take values (a key/item, or unit), return an `Elem` sub-tree. Run when a new
   row or branch must be materialized at runtime.
 
@@ -645,9 +850,10 @@ Per node id the host stores:
   sources),
 - the owning scope id.
 
-Adjacency, ranks, and the dirty set are dense integer-indexed structures. No
-string keys, no scans to rediscover identity, no `Dict(Str, _)`; identity is
-dense integers throughout.
+Adjacency, ranks, and the dirty set are dense integer-indexed structures. The
+app may provide text key material to `Ui.each_str`, but host graph identity does
+not use string keys, scans to rediscover identity, or `Dict(Str, _)`; identity
+is dense integers throughout.
 
 ### Complexity Discipline (the foundation budget)
 
@@ -660,7 +866,7 @@ lookup, or a full graph rebuild does not meet its budget.
 
 The budgets, by operation (N = total live signal records/render nodes in the
 active tree; C = changed set for this event; K = rows touched by a structural
-change; L = rows at the affected `Ui.each` site):
+change; L = rows at the affected `Ui.each_str` site):
 
 | Operation | Required budget | Forbidden |
 |---|---|---|
@@ -668,9 +874,9 @@ change; L = rows at the affected `Ui.each` site):
 | descriptor lookup by `elem_id` | O(1) | linear scan over the descriptor arrays |
 | non-structural event propagation | O(C + fanout) | O(N); O(fanout²) dedup/sort |
 | `Ui.when` branch flip | O(changed subtree) | O(N) field/route/graph rebuild |
-| `Ui.each` keyed diff | O(L) via key hash index | O(L²) `is_eq` scan |
-| `Ui.each` append/remove/filter | O(K) | O(N) per touched row |
-| `Ui.each` reorder | O(K moved) DOM moves | O(L) whole-site re-collect + rebuild |
+| `Ui.each_str` keyed diff | O(L) via key hash index | O(L²) `is_eq` scan |
+| `Ui.each_str` append/remove/filter | O(K) | O(N) per touched row |
+| `Ui.each_str` reorder | O(K moved) DOM moves | O(L) whole-site re-collect + rebuild |
 | dependency-graph maintenance after a splice | O(affected scope) | full clear-and-rebuild of the active graph over N |
 | host allocation / free bookkeeping | O(1) per alloc/free | O(live allocations) scan per free |
 | spec/bench action target resolution | acceptable O(DOM) for the *harness*, but excluded from `dispatch_apply_ns` | folding harness lookup time into measured framework cost |
@@ -725,25 +931,33 @@ re-sort. Value pruning is the second half of linear-with-changes scaling.
 
 ### Event routing
 
-The host maintains a dense `event_id -> source_node_id` table built from
-`BindClick`/`BindInput`/`BindCheck` sinks in the descriptor. When a DOM listener
-fires (a simulated one on the native host, a real one in the browser), it looks
-up the source node in O(1) and calls that source's retained reducer thunk
-directly. No scan, no string lookup.
+The host maintains dense event binding tables built from canonical
+`Node.Attr.On(EventBinding)` descriptors. Fixed and named bindings both resolve
+to retained event descriptors; when a DOM listener fires (a simulated one on the
+native host, a real one in the browser), it looks up the event id in O(1),
+validates the boundary payload descriptor, and calls the source's retained
+reducer thunk directly. No scan, no string lookup.
 
 ### Scopes and lifecycle
 
-The host owns a forest of scopes. On a `Ui.when` flip or a `Ui.each` key-set
+The host owns a forest of scopes. On a `Ui.when` flip or a `Ui.each_str` key-set
 change:
 - diff the new structure against the old (key-set diff for lists, branch flip for
   conditionals),
 - mint a scope for new branches/keys (run that scope's `build` once, ingesting
   the sub-desc Roc returns for it),
-- dispose scopes for removed branches/keys: remove their ids from the table and
-  adjacency, call `decrefErasedCallable` on each retained closure (Roc reclaims
-  captured environments), run any `Ui.on_cleanup` task, and detach the rendered
-  subtree through `sink()`,
+- dispose scopes for removed branches/keys: remove their ids from active indexes
+  and adjacency, call `decrefErasedCallable` on each retained closure (Roc
+  reclaims captured environments), release capability-owned state/source values,
+  run any `Ui.on_cleanup` task, and detach the rendered subtree through `sink()`,
 - reorder list rows by moving DOM nodes, never rebuilding surviving rows.
+
+Dense id tables are allowed to keep their backing arrays, but inactive slots are
+not allowed to grow without bound. Disposed each-row scopes, state cells, node
+identities, DOM identities, native simulated DOM elements, component scopes, and
+`when` branch scopes become reusable slots while id-indexed reads remain O(1).
+Reclamation must never be implemented by scanning all live nodes or rebuilding
+the graph.
 
 `keep_alive` is an explicit per-scope flag, never a heuristic.
 
@@ -763,14 +977,18 @@ and event bind/clear operations. The browser wire also has an `Extended` fixed
 record whose operands point at a dynamic byte record for less common operations
 such as arbitrary text attributes. The shared command vocabulary, command
 counters, metrics accumulator, fixed-width command record, and dynamic-record
-framing live in `src/render_commands.zig`. Each host implements the sink:
+framing live in `src/signals/render_commands.zig`. Each host implements the
+sink:
 
 - the **native host** applies each command to its `DomElement` array, including
-  a separate owned custom-attribute table for `Html.attr`/`Html.attr_s`;
+  a separate owned custom-attribute table for `Html.attr`/`Html.attr_s`/
+  `Html.attr_maybe_s`;
 - the **wasm host** serializes each command into a fixed-width record in linear
   memory for the JS executor to apply, with dynamic byte records for metadata
   attributes (`role`, `aria-label`, `data-testid`, `class`) and open-ended
-  custom text attributes.
+  custom text attributes. Optional signal-backed custom text attrs lower to the
+  same set/clear command vocabulary: `None` removes the attr, `Some(text)` sets
+  it.
 
 Because the logical command set is shared, a spec on the native host asserts the
 same render semantics the browser will execute. The browser wire can choose a
@@ -844,9 +1062,15 @@ of Effectiveness); per-iteration deltas cannot establish it.
   results and timer ticks enter the same queue, so there is one ordering
   authority.
 - **Async / cancellation:** `Cmd` requests carry a host-assigned request id tied
-  to the owning scope and node — never an app string. Disposing the scope cancels
-  the request. `Sub`s are declared by structure; the host diffs the declared
-  subscription set against the live set and starts/stops accordingly.
+  to the owning scope and source node; that request id is the lifecycle and
+  cancellation authority. The current task descriptor also carries a task name
+  for routing, diagnostics, and native spec control. HTTP uses the `http:send:`
+  task-name prefix today; a typed effect capability registry should replace that
+  string convention only when the subscriptions/app-interop work proves the
+  shared task/subscription routing model. Disposing the scope cancels the
+  request. Future `Sub` descriptors must follow the same structural ownership
+  rule: declared by structure, diffed by the host against the live set, and
+  started/stopped by scope lifecycle.
 - **Errors:** `Signal.from_task` yields `[Loading, Done(a), Failed(err)]`, so error
   states are ordinary signal values the app folds and renders. There is no
   effect-inside-signal-evaluation; effects are sources.
@@ -905,7 +1129,8 @@ holds no reactive state, runs no diff, and never reconstructs meaning.
 
 ```
 roc_ui_mount() -> void          // host runs roc_ui_init, ingests, emits initial patch stream
-roc_ui_event(event_id, payload_kind, payload_ptr, payload_len, bool_value) -> void
+roc_ui_event(event_id, payload_kind, payload_ptr, payload_len, bool_value) -> u32
+                                // DOM-response bits; current static handlers return zero
 roc_ui_timer(token) -> void                 // drive interval/timer source
 roc_ui_resolve(request_id, ptr, len, failed) -> void   // async result
 roc_ui_unmount() -> void        // dispose all scopes, drop descriptor, free retained closures
@@ -928,16 +1153,22 @@ roc_ui_live_host_values() -> usize
 ```
 
 The host drives the engine entirely inside WASM. `roc_ui_event` enters the Zig
-host, routes the event id to its source node, and calls the retained reducer
-thunk via `RocErasedCallable` in-process. There is no per-event Roc entrypoint
-crossing — this is the reason the boundary is cheap.
+host, routes the event id to its source node, calls the retained reducer thunk
+via `RocErasedCallable` in-process, and returns synchronous DOM-response bits to
+JS before the command drain. JS accepts only the response controls that can still
+affect the active browser event (`preventDefault`, `stopPropagation`, and
+`stopImmediatePropagation`) and fails closed on any other returned bit. Current
+static-policy handlers return zero; the return value exists for the future
+explicit dynamic-response path. There is no per-event Roc entrypoint crossing —
+this is the reason the boundary is cheap.
 
 ### Command-buffer wire format
 
 The browser wire is versioned. JS reads `roc_ui_protocol_version()` and
-`roc_ui_protocol_features()` before mounting and requires version `1` with the
-`dynamic_attrs` and `dynamic_events` feature bits. A version or feature mismatch
-is a boundary error, not a compatibility shim.
+`roc_ui_protocol_features()` before mounting and requires the current
+`Protocol.version` (`8` in `www/static/signals.mjs`) plus the `dynamic_attrs`
+and `dynamic_events` feature bits. A version or feature mismatch is a boundary
+error, not a compatibility shim.
 
 The host appends fixed-width records to `roc_ui_command_buffer_*`: six little
 endian `u32` words (`op`, then five integer operands). Hot operations fit
@@ -965,7 +1196,7 @@ payload bytes
 zero padding to 4-byte alignment
 ```
 
-Version 1 defines two dynamic attribute ops and two dynamic event ops:
+Protocol version 8 defines two dynamic attribute ops and two dynamic event ops:
 
 ```text
 SetAttrText:
@@ -986,9 +1217,11 @@ BindEvent:
   u32 event_name_len
   event_name bytes
   u32 listener_options
-  u32 payload_kind
-  u32 payload_descriptor_len
-  payload_descriptor bytes
+  u32 delivery_requested
+  u32 delivery_effective
+  u32 delivery_reason
+  u32 event_extraction_plan_len
+  event_extraction_plan bytes
 
 ClearEvent:
   u32 elem_id
@@ -1004,19 +1237,32 @@ the host emitted; it does not reconstruct missing render intent.
 
 Current wasm-host emission uses dynamic records for metadata text attributes
 (`role`, `aria-label`, `data-testid`, and `class`) and for app-authored custom
-text attributes from `Html.attr` / `Html.attr_s`. The Roc descriptor makes the
-custom path explicit with `Node.field_custom` plus a `name` field on text attrs;
-fixed text fields must carry an empty name. `SetText`, `SetValue`, bool fields,
-fixed click/input/check/pointer event binds, timers, and tasks remain fixed
-records. General named events use `BindEvent`/`ClearEvent`, carrying the event
-name, static listener option bits, payload kind, and payload descriptor emitted
-by the host from Roc descriptors.
+text attributes from `Html.attr`, `Html.attr_s`, and `Html.attr_maybe_s`. The
+Roc descriptor makes the custom path explicit with `Node.field_custom` plus a
+`name` field on text attrs; fixed text fields must carry an empty name.
+`SetText`, `SetValue`, bool fields, fixed click/input/check/pointer event binds,
+timers, and tasks remain fixed records when they can be represented without
+policy/delivery/payload expansion. General named events, and fixed events that
+need the expanded shape, use `BindEvent`/`ClearEvent`, carrying the event name,
+listener option bits derived from typed policy, delivery
+requested/effective/reason ids, and extraction-plan bytes emitted by the host
+from Roc descriptors. JS derives the dispatch payload kind from the validated
+extraction plan.
+
+Wire-size optimizations are command-stream concerns, not value-model concerns.
+The runtime telemetry records fixed-record bytes, fixed-string bytes, dynamic
+buffer bytes, and apply-path decode counts/bytes for fixed strings, dynamic
+records, dynamic strings, and dynamic byte arrays. A future string-dedupe slice
+must be justified by representative action telemetry, not mount snapshots alone,
+and must lower total command/decode bytes without globally interning Roc
+strings, `HostValue`s, keys, or capability-owned data.
 
 Dynamic event payload descriptors are independent of Roc value layout. They are
 small byte descriptors that name only event/target/currentTarget leaves JS may
-read. Version 1 supports unit payloads, scalar text/bool payloads, and explicit
-records. The current record descriptor used by `Html.on_key_down` asks JS to
-read `event.key` and `event.shiftKey`; JS encodes `{ key, shift_key }` as:
+read. The current descriptor vocabulary supports unit payloads, scalar
+text/bool payloads, and explicit records. The current record descriptor used by
+`Html.on_key_down` asks JS to read `event.key` and `event.shiftKey`; JS encodes
+`{ key, shift_key }` as:
 
 ```text
 u32 key_utf8_len
@@ -1025,10 +1271,11 @@ u8 shift_key   # 0 or 1
 ```
 
 The host receives those bytes as a `List(U8)` `HostValue`, and the app-facing
-`Ui.State.on_key` decoder constructs the typed Roc record. JS never decodes Roc
-records, tag unions, list headers, or string layouts. Unsupported payload kind /
-accessor pairs, malformed descriptors, duplicate record fields, trailing bytes,
-and invalid listener option bits are host/runtime contract errors.
+`State.on_key` decoder constructs the typed Roc record. JS never decodes Roc
+records, tag unions, list headers, or string layouts. Unsupported payload kinds,
+malformed descriptors, invalid source/leaf pairs, duplicate record fields,
+trailing bytes, and invalid listener option bits are host/runtime contract
+errors.
 
 ### Marshalling and memory discipline
 
@@ -1044,9 +1291,21 @@ required.
 `SetValue` is a guarded op, not a blind assignment. Equal values are no-ops;
 differing values are deferred while the target input is focused or composing
 (IME); the latest deferred value is applied after blur unless a later input echo
-already matched it. Focused masking/validation and selection-preserving
-normalization are a known future input-reconciliation concern (see Open
-Questions), kept out of the thin executor.
+already matched it. The guarded text-value rule applies to text-like controlled
+controls, including text input, number-input draft strings, and textarea.
+
+Other form controls stay on explicit field/event descriptors rather than a
+browser-owned form model: single-value select uses the text `value` field and
+target-value change payload, radio derives `checked` from a string-valued
+selected signal and dispatches the option value, and checkbox uses the bool
+`checked` field plus target-checked payload. Submit and reset are app-managed
+form events with static prevent-default policy where the native runner models
+only the default actions required by maintained apps and focused canaries.
+
+Focused masking/validation, selection-preserving normalization, file inputs,
+multi-select, browser constraint validation, date/time helpers, and app-visible
+focus commands are future input/form concerns (see Open Questions), kept out of
+the thin executor until a maintained app or focused canary proves the gap.
 
 ### Refcount ownership split
 
@@ -1062,27 +1321,58 @@ Questions), kept out of the thin executor.
   them. Buffers JS produces for event payloads are `roc_alloc`'d by JS and
   ownership transfers to the host on `roc_ui_event`.
 
+### Browser mounting model
+
+One active browser mount owns one Wasm instance. The wasm host stores the engine
+and capability stack in module-global state inside that instance, and
+`roc_ui_mount()` starts by clearing that instance's active runtime before
+running `roc_ui_init`. The browser convenience helper `mountSignalsApp` follows
+this model by instantiating a fresh Wasm module for each root.
+
+Multiple independent roots on one page are supported by creating multiple Wasm
+instances and one `SignalsRuntime` per root. A single `WebAssembly.Instance`
+must not be shared across simultaneous roots unless the host grows explicit
+mount handles on every export and command buffer. That handle-based model is not
+part of the current design; it should only be promoted if many-widget embedding
+measurements show that per-instance memory/startup cost is unacceptable.
+
 ### Async in the browser
 
 Effects are sources. Timers/`Signal.interval` are ingested at init; JS runs the
 real `setInterval(period_ms)` keyed by `token` and calls `roc_ui_timer(token)`
-each tick. Tasks/`fetch` declare a request; the host assigns a `request_id`, JS
-performs the `fetch`, and on settle calls `roc_ui_resolve(request_id, ptr, len,
-ok)`, which the host folds into `[Loading, Done, Failed]`. Disposing a scope
-cancels in-flight requests (host-emitted cancel → JS `AbortController` /
-`clearInterval`) and runs `Ui.on_cleanup`. All of it enters the one propagation
-queue; JS scheduling stays a single synchronous path.
+each tick. Tasks declare a request with a task name and request payload; the host
+assigns a `request_id`, JS routes the request by the current task name
+convention, and on settle calls `roc_ui_resolve(request_id, ptr, len, ok)`,
+which the host folds into `[Loading, Done, Failed]`. Browser HTTP tasks are the
+shipped task-name route that performs `fetch`; they use the `http:send:` prefix
+until a promoted subscription/app-interop slice proves the shared
+task/subscription routing model.
+Disposing a scope cancels in-flight requests (host-emitted cancel → JS
+`AbortController` / `clearInterval`) and runs `Ui.on_cleanup`. All of it enters
+the one propagation queue; JS scheduling stays a single synchronous path.
+
+HTTP request policy currently comes from browser `fetch` defaults except for the
+fields the Roc request envelope carries. The runtime passes method, headers,
+body, timeout, and an abort signal; it does not set `credentials`, `redirect`,
+`mode`, `cache`, or referrer policy. Therefore credentials default to
+same-origin, redirects default to follow, and CORS remains normal browser CORS.
+HTTP statuses are materialized as responses. Rejected fetches, including CORS
+denials and network failures, become `HttpError.Network`; runtime timeouts
+become `HttpError.Timeout`; and scope disposal or request replacement becomes
+`HttpError.Canceled`.
 
 ### What is worth testing on the JS side
 
 The JS runtime is a thin executor, so engine semantics and work budgets are
-proven by the native spec runner, **never re-tested through JS**. The only
-JS-side behavior worth an automated guard is the **JS↔WASM contract** itself:
-the cmd/patch codec, protocol version/feature negotiation, dynamic-record
-validation, event-payload marshalling, telemetry byte accounting, and the
-`memory.grow` view-refresh discipline. A JS test that re-asserts "clicking
-changes the count" or "one patch per event" is duplicating the engine's own
-coverage across the boundary and pulls no additional weight.
+proven by the native spec runner, **never re-tested through JS**. JS-side guards
+belong to the **browser boundary contract**: the cmd/patch codec, protocol
+version/feature negotiation, dynamic-record validation, event-payload
+marshalling, static event-policy and response-bit timing, controlled-input DOM
+reconciliation, behavior attach/update/cleanup, timer/task/fetch bridges,
+telemetry byte accounting, and the `memory.grow` view-refresh discipline. A JS
+test that re-asserts "clicking changes the count" or "one patch per event" is
+duplicating the engine's own coverage across the boundary and pulls no
+additional weight.
 
 ## Measures of Effectiveness
 
@@ -1105,10 +1395,11 @@ property regresses.
 
 3. **Semantics proven where we can observe them.** The native spec runner asserts
    behaviour and work budgets — the observability a real browser structurally
-   cannot give us. The JS runtime is thin enough that the only automated JS test
-   is the JS↔WASM codec contract. *We know this holds when:* engine semantics are
-   covered by native specs only, and JS coverage is the codec/boundary contract
-   only.
+   cannot give us. The JS runtime is thin enough that automated JS tests stay on
+   browser-boundary responsibilities rather than engine semantics. *We know this
+   holds when:* engine semantics are covered by native specs, and JS coverage is
+   limited to the codec, DOM executor, browser resource bridges, telemetry, and
+   fail-closed boundary validation.
 
 4. **Work scales with change, not tree size.** Per event, nodes recomputed,
    patches emitted, and rows touched track the *changed* set — including under
@@ -1122,8 +1413,11 @@ property regresses.
 5. **No leaks; reclamation is deterministic.** The host holds exactly one
    refcount per live retained closure/value and zero for disposed ones. *We know
    this holds when:* `closure_retains == closure_releases` after teardown, the
-   live `allocs − deallocs` gauge is flat after warmup across a long session, and
-   carrier type-tag assertions never fire across the full safe-build spec suite.
+   live `allocs − deallocs` gauge and host retained-byte gauge are flat after
+   warmup across a long session, dense table lengths plateau under repeated
+   event dispatch, keyed-row reorder churn, bounded removal/reinsert churn, and
+   nested branch-scope churn, and carrier type-tag assertions never fire across
+   the full safe-build spec suite.
 
 6. **Determinism.** The same spec produces the same command sequence every run.
 
@@ -1136,24 +1430,35 @@ property regresses.
 
 The representative apps are not demos; each exists to make one capability fail
 loudly if it regresses. The bar for adding an app is **"it exercises an
-otherwise-unproven capability,"** never size or visual richness. The suite:
+otherwise-unproven capability,"** never size or visual richness. The maintained
+public suite is:
 
-- `ops_dashboard` — scalar chains, fanout, conditional branch, keyed alert rows,
-  input state.
-- `checkout_wizard` — keyed wizard steps, form/checkbox state, disabled actions,
-  list replacement, per-row state.
-- `event_payload_boundary` — app-authored `href`/`aria-*`/`data-*`/`id`/
-  `placeholder` attrs, signal-backed custom attrs, keyboard payload bytes, and
-  submit with static prevent-default policy.
-- `kanban_board` — keyed reorder/archive/reset, per-card state, `map2` filtering.
-- `identity_stress` — `when -> each -> when` row-local state through
-  reorder/insert/filter/disposal.
-- `component_composition` — reusable stateful `Ui.component` instances keep local
-  state across keyed row movement and dispose with the owning row scope.
-- `async_effects` — fake task result injection, `[Loading, Done, Failed]`
-  rendering through a fold, `Ui.on_change` request issuance, pending-request
-  cancellation, deterministic interval ticks, interval cancellation, and cleanup
-  execution.
+- `service-ops-center` — HTTP text refresh, interval-driven refresh, JSON
+  parsing through the compiler builtin, custom chart events, behavior hooks, and
+  dashboard-scale derived views.
+- `team-checkout` — retained cart quantities, delivery form state, checkbox
+  state, review/receipt branches, and list replacement.
+- `command-palette` — keyboard-friendly text input, shortcut metadata, link
+  attributes, custom attributes, and submit events.
+- `team-signup` — realistic validation, required/read-only/ARIA attrs, checkbox
+  terms acceptance, focus/blur tracking, and submission state.
+- `api-request-console` — full-response package-aligned HTTP tasks, request
+  method/body/header construction, non-2xx responses, and failure rendering.
+- `release-planner` — pointer-driven card reorder, move-only structural patches,
+  priority filtering, reviewer input, and card-local notes.
+- `deployment-queue` — keyed priority reorder, hotfix insertion, filtering,
+  pause/resume, row-local checks, and row create/remove budgets.
+- `workspace-widgets` — independent widget components preserving local state
+  through reorder, reset, and hide/show.
+- `live-search` — task lifecycle, loading/success/failure folds, interval
+  freshness ticks, cleanup, cancellation, and retained-allocation teardown
+  checks.
+
+Focused internal fixtures carry narrow canaries that should not become broad
+catalog pressure: JSON builtin derivation, duplicate-key diagnostics, task
+superseding and UTF-8 task ownership, controlled input reconciliation, textarea,
+number, select, radio, checkbox, submit/reset default actions, optional text
+attrs, validation patterns, and generated large-`Ui.each_str` scaling.
 
 Host tests cover topological rank ordering, diamond deduplication, confined
 erasure through carrier tags, retained closure lifecycle accounting, dirty cache
@@ -1168,19 +1473,21 @@ behavior.
 suite must also assert *work*, so a regression to O(N) work fails the build rather
 than passing silently:
 
-- A **generated large-N `Ui.each` app** (the scaling fixture). N is a build
+- A **generated large-N `Ui.each_str` app** (the scaling fixture). N is a build
   parameter; the rows are generated programmatically, not handwritten. It is the
   one place where large N is allowed, precisely because it is systematic rather
   than a catalog. Its specs assert the budget for single-row update, append,
   remove, filter, and reorder — including the `active_graph_records_rebuilt`,
   `stream_nodes_scanned`, `each_key_compares`, and per-event allocation counters.
-- **Work assertions on the structural apps.** `kanban_board` reorder/filter
-  steps and the `async_effects` cancel cycle carry `expect_metric_delta` blocks
-  that bound work and prove no retained-closure or allocation leak across the
-  async open/close cycle.
-- **Real-event fanout assertions in `ops_dashboard`** bounding `nodes_recomputed`
-  / `derived_calls_into_roc` so diamond/shared-signal amplification is pinned on
-  the live path.
+- **Work assertions on structural and lifecycle paths.** `release-planner`
+  move-only reorder, `deployment-queue` row create/remove, `live-search`
+  cleanup, `task-latest-wins` stale-result handling, and the generated
+  `large-each-*` fixtures carry `expect_metric_delta` blocks that bound work and
+  prove no retained closure, allocation, row, or stale-task leak across the
+  relevant cycle.
+- **Real-event and async fanout assertions in maintained apps** should keep
+  bounding `nodes_recomputed`, `derived_calls_into_roc`, task lifecycle metrics,
+  and row counters so shared-signal amplification is pinned on the live path.
 - **A reorder host test at large N** that fails if reorder degrades from
   moves-only to whole-site re-collect.
 
@@ -1193,12 +1500,15 @@ ABI, layout rules, or browser constraints.
   (equal = no-op, differing deferred while focused/composing) is enough for apps
   without focused text editing, but full focused masking, validation, and
   selection-preserving normalization may require a first-class
-  input-reconciliation primitive rather than an executor rule.
+  input-reconciliation primitive rather than an executor rule. File inputs,
+  multi-select, browser constraint validation, and focus commands should stay
+  canary-gated rather than becoming catalog-style helpers.
 - **Animation / high-frequency continuous values.** A push graph driven by
   discrete updates may need a dedicated `interval`-driven path for smooth
   animation; whether a rAF-coalescing layer buys anything is a measurement.
-- **Multiple instances per page.** Host state is module-global; two mounts on one
-  page need either two WASM instances or an explicit per-mount handle.
+- **Many-widget embedding cost.** The current browser model is one Wasm instance
+  per active mount. Whether many small widgets need an explicit same-instance
+  mount-handle model is a measurement, not a default design assumption.
 - **Recompute granularity.** Whether any future batching of in-host recompute
   buys anything is a measurement, not a fixed decision.
 - **Native vs. browser render-surface parity.** Whether the native spec runner

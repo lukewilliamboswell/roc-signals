@@ -773,18 +773,24 @@ pub const NodeEventBinding = extern struct {
     kind: NodeFixedEventKind,
     msg: __AnonStruct70,
     name: RocStr,
-    delivery: NodeEventDelivery,
     policy: NodeEventPolicy,
+    delivery: NodeEventDelivery,
 };
 
 comptime {
     if (@sizeOf(usize) == 8) {
         if (@sizeOf(NodeEventBinding) != 112) @compileError("NodeEventBinding size mismatch");
         if (@alignOf(NodeEventBinding) != 8) @compileError("NodeEventBinding alignment mismatch");
+        if (@offsetOf(NodeEventBinding, "name") != 72) @compileError("NodeEventBinding name offset mismatch");
+        if (@offsetOf(NodeEventBinding, "policy") != 96) @compileError("NodeEventBinding policy offset mismatch");
+        if (@offsetOf(NodeEventBinding, "delivery") != 104) @compileError("NodeEventBinding delivery offset mismatch");
     }
     if (@sizeOf(usize) == 4) {
         if (@sizeOf(NodeEventBinding) != 64) @compileError("NodeEventBinding size mismatch");
         if (@alignOf(NodeEventBinding) != 8) @compileError("NodeEventBinding alignment mismatch");
+        if (@offsetOf(NodeEventBinding, "name") != 40) @compileError("NodeEventBinding name offset mismatch");
+        if (@offsetOf(NodeEventBinding, "policy") != 52) @compileError("NodeEventBinding policy offset mismatch");
+        if (@offsetOf(NodeEventBinding, "delivery") != 60) @compileError("NodeEventBinding delivery offset mismatch");
     }
 }
 
@@ -976,6 +982,32 @@ comptime {
     if (@sizeOf(usize) == 4) {
         if (@sizeOf(__AnonStruct81) != 40) @compileError("__AnonStruct81 size mismatch");
         if (@alignOf(__AnonStruct81) != 8) @compileError("__AnonStruct81 alignment mismatch");
+    }
+}
+
+/// Element type for TextOptionalSignal payload.
+pub const __AnonStruct82 = if (@sizeOf(usize) == 4) extern struct {
+    field: NodeTextField,
+    name: RocStr,
+    present: HostValueBoolReadHandle,
+    read: HostValueTextReadHandle,
+    signal: *NodeSignalExpr,
+} else extern struct {
+    field: NodeTextField,
+    name: RocStr,
+    present: HostValueBoolReadHandle,
+    read: HostValueTextReadHandle,
+    signal: *NodeSignalExpr,
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(__AnonStruct82) != 104) @compileError("__AnonStruct82 size mismatch");
+        if (@alignOf(__AnonStruct82) != 8) @compileError("__AnonStruct82 alignment mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(__AnonStruct82) != 56) @compileError("__AnonStruct82 size mismatch");
+        if (@alignOf(__AnonStruct82) != 8) @compileError("__AnonStruct82 alignment mismatch");
     }
 }
 
@@ -1455,6 +1487,7 @@ pub const NodeAttrTag = enum(u8) {
     SignalText = 2,
     StaticBool = 3,
     StaticText = 4,
+    TextOptionalSignal = 5,
 };
 
 /// Payload union for Node.Attr.
@@ -1464,6 +1497,7 @@ pub const NodeAttrPayload = extern union {
     signal_text: __AnonStruct81,
     static_bool: __AnonStruct84,
     static_text: __AnonStruct85,
+    text_optional_signal: __AnonStruct82,
 };
 
 /// Tag union: Node.Attr
@@ -1480,6 +1514,10 @@ pub const NodeAttr = if (@sizeOf(usize) == 4) extern struct {
     }
     pub fn payload_signal_text(self: *const @This()) __AnonStruct81 {
         const ptr: *const __AnonStruct81 = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
+    pub fn payload_text_optional_signal(self: *const @This()) __AnonStruct82 {
+        const ptr: *const __AnonStruct82 = @ptrCast(@alignCast(&self.payload));
         return ptr.*;
     }
     pub fn payload_static_bool(self: *const @This()) __AnonStruct84 {
@@ -1501,6 +1539,9 @@ pub const NodeAttr = if (@sizeOf(usize) == 4) extern struct {
     }
     pub fn payload_signal_text(self: *const @This()) __AnonStruct81 {
         return self.payload.signal_text;
+    }
+    pub fn payload_text_optional_signal(self: *const @This()) __AnonStruct82 {
+        return self.payload.text_optional_signal;
     }
     pub fn payload_static_bool(self: *const @This()) __AnonStruct84 {
         return self.payload.static_bool;
@@ -1908,6 +1949,9 @@ pub fn decrefNodeAttr(value: NodeAttr, roc_host: *RocHost) void {
         .SignalText => {
             decref__AnonStruct81(value.payload_signal_text(), roc_host);
         },
+        .TextOptionalSignal => {
+            decref__AnonStruct82(value.payload_text_optional_signal(), roc_host);
+        },
         .StaticBool => {
             decref__AnonStruct84(value.payload_static_bool(), roc_host);
         },
@@ -1928,6 +1972,9 @@ pub fn increfNodeAttr(value: NodeAttr, amount: isize) void {
         },
         .SignalText => {
             incref__AnonStruct81(value.payload_signal_text(), amount);
+        },
+        .TextOptionalSignal => {
+            incref__AnonStruct82(value.payload_text_optional_signal(), amount);
         },
         .StaticBool => {
             incref__AnonStruct84(value.payload_static_bool(), amount);
@@ -2080,6 +2127,24 @@ pub fn decref__AnonStruct81(value: __AnonStruct81, roc_host: *RocHost) void {
 pub fn incref__AnonStruct81(value: __AnonStruct81, amount: isize) void {
     increfNodeTextField(value.field, amount);
     value.name.incref(amount);
+    increfHostValueTextReadHandle(value.read, amount);
+    increfBox(@ptrCast(value.signal), amount);
+}
+
+/// Recursively decrement Roc-owned fields in __AnonStruct82.
+pub fn decref__AnonStruct82(value: __AnonStruct82, roc_host: *RocHost) void {
+    decrefNodeTextField(value.field, roc_host);
+    value.name.decref(roc_host);
+    decrefHostValueBoolReadHandle(value.present, roc_host);
+    decrefHostValueTextReadHandle(value.read, roc_host);
+    decrefBoxWith(@ptrCast(value.signal), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType35, roc_host);
+}
+
+/// Increment Roc-owned fields in __AnonStruct82.
+pub fn incref__AnonStruct82(value: __AnonStruct82, amount: isize) void {
+    increfNodeTextField(value.field, amount);
+    value.name.incref(amount);
+    increfHostValueBoolReadHandle(value.present, amount);
     increfHostValueTextReadHandle(value.read, amount);
     increfBox(@ptrCast(value.signal), amount);
 }

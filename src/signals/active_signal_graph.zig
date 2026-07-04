@@ -69,6 +69,7 @@ pub const TextSinkKind = enum {
     text_node,
     text_attr,
     custom_text_attr,
+    custom_text_optional_attr,
 };
 
 pub const TextSink = struct {
@@ -152,54 +153,6 @@ pub fn signalRank(descriptors: []const Descriptor, signal_id: u64) SignalLookupE
     return descriptor.rank;
 }
 
-pub fn appendSignalAndDependents(allocator: std.mem.Allocator, dependent_routes: []const DependentsRoute, signal_ids: *std.ArrayListUnmanaged(u64), signal_id: u64) void {
-    if (!containsU64(signal_ids.items, signal_id)) {
-        signal_ids.append(allocator, signal_id) catch @panic("out of memory");
-    }
-
-    var index: usize = 0;
-    while (index < signal_ids.items.len) : (index += 1) {
-        const current_signal_id = signal_ids.items[index];
-        const dependents = dependentSignalIdsForSignal(dependent_routes, current_signal_id) catch @panic("host signal dependent route table is invalid");
-        for (dependents) |dependent_signal_id| {
-            if (!containsU64(signal_ids.items, dependent_signal_id)) {
-                signal_ids.append(allocator, dependent_signal_id) catch @panic("out of memory");
-            }
-        }
-    }
-}
-
-pub fn sortSignalIdsByRank(descriptors: []const Descriptor, signal_ids: []u64) void {
-    var index: usize = 1;
-    while (index < signal_ids.len) : (index += 1) {
-        const value = signal_ids[index];
-        const value_rank = signalRank(descriptors, value) catch @panic("host signal rank table is invalid");
-        var insert_index = index;
-        while (insert_index > 0) {
-            const previous = signal_ids[insert_index - 1];
-            const previous_rank = signalRank(descriptors, previous) catch @panic("host signal rank table is invalid");
-            if (previous_rank < value_rank or (previous_rank == value_rank and previous < value)) break;
-            signal_ids[insert_index] = previous;
-            insert_index -= 1;
-        }
-        signal_ids[insert_index] = value;
-    }
-}
-
-pub fn dirtySignalIdsForEvent(allocator: std.mem.Allocator, event_routes: []const EventRoute, dependent_routes: []const DependentsRoute, descriptors: []const Descriptor, event_id: u64) []u64 {
-    var dirty_signal_ids: std.ArrayListUnmanaged(u64) = .empty;
-    errdefer dirty_signal_ids.deinit(allocator);
-
-    const source_signal_ids = sourceSignalIdsForEvent(event_routes, event_id) catch @panic("event id has no host source signal route descriptor");
-    for (source_signal_ids) |signal_id| {
-        appendSignalAndDependents(allocator, dependent_routes, &dirty_signal_ids, signal_id);
-    }
-
-    const signal_ids = dirty_signal_ids.toOwnedSlice(allocator) catch @panic("out of memory");
-    sortSignalIdsByRank(descriptors, signal_ids);
-    return signal_ids;
-}
-
 pub fn rank(comptime Record: type, nodes: []const Node(Record), record_id: u64) u64 {
     return signal_graph.rank(Record, nodes, record_id) catch @panic("active signal record id has no graph node");
 }
@@ -208,50 +161,212 @@ pub fn dependentIds(comptime Record: type, nodes: []const Node(Record), record_i
     return signal_graph.dependentIds(Record, nodes, record_id) catch @panic("active signal record id has no dependent table");
 }
 
-pub fn appendAndDependents(comptime Record: type, allocator: std.mem.Allocator, nodes: []const Node(Record), record_ids: *std.ArrayListUnmanaged(u64), record_id: u64) void {
-    signal_graph.appendReachableDependents(Record, allocator, nodes, record_ids, record_id) catch |err| switch (err) {
-        error.OutOfMemory => @panic("out of memory"),
-        else => @panic("active signal dependent traversal referenced an unknown record"),
+test "active graph route lookup helpers validate indexed ids" {
+    const event_payload = boundary.BoundaryPayloadDescriptor.init(.str, .target_value);
+    var route_signal_ids = [_]u64{ 3, 5 };
+    var state_signal_ids = [_]u64{7};
+    var dependent_signal_ids = [_]u64{ 11, 13 };
+    var empty_signal_ids = [_]u64{};
+
+    const event_routes = [_]EventRoute{
+        .{ .event_id = 1, .signal_ids = &route_signal_ids },
     };
+    const mismatched_event_routes = [_]EventRoute{
+        .{ .event_id = 2, .signal_ids = &route_signal_ids },
+    };
+    const event_descriptors = [_]EventDescriptor{
+        .{ .event_id = 1, .payload_descriptor = event_payload },
+    };
+    const mismatched_event_descriptors = [_]EventDescriptor{
+        .{ .event_id = 2, .payload_descriptor = event_payload },
+    };
+    const state_routes = [_]StateRoute{
+        .{ .state_id = 0, .signal_ids = &state_signal_ids },
+    };
+    const mismatched_state_routes = [_]StateRoute{
+        .{ .state_id = 1, .signal_ids = &state_signal_ids },
+    };
+    const dependent_routes = [_]DependentsRoute{
+        .{ .signal_id = 0, .signal_ids = &dependent_signal_ids },
+    };
+    const mismatched_dependent_routes = [_]DependentsRoute{
+        .{ .signal_id = 1, .signal_ids = &dependent_signal_ids },
+    };
+    const descriptors = [_]Descriptor{
+        .{
+            .signal_id = 0,
+            .kind = .map,
+            .source_state_ids = &state_signal_ids,
+            .source_event_ids = &route_signal_ids,
+            .input_signal_ids = &dependent_signal_ids,
+            .rank = 9,
+        },
+    };
+    const mismatched_descriptors = [_]Descriptor{
+        .{
+            .signal_id = 1,
+            .kind = .source,
+            .source_state_ids = &empty_signal_ids,
+            .source_event_ids = &empty_signal_ids,
+            .input_signal_ids = &empty_signal_ids,
+            .rank = 0,
+        },
+    };
+
+    try std.testing.expectEqualSlices(u64, &route_signal_ids, try sourceSignalIdsForEvent(&event_routes, 1));
+    try std.testing.expectEqual(event_payload, try eventPayloadDescriptor(&event_descriptors, 1));
+    try std.testing.expectEqualSlices(u64, &state_signal_ids, try signalIdsForState(&state_routes, 0));
+    try std.testing.expectEqualSlices(u64, &dependent_signal_ids, try dependentSignalIdsForSignal(&dependent_routes, 0));
+    try std.testing.expectEqual(@as(u64, 9), try signalRank(&descriptors, 0));
+
+    try std.testing.expectError(EventLookupError.EventIdZero, sourceSignalIdsForEvent(&event_routes, 0));
+    try std.testing.expectError(EventLookupError.MissingSignalEventRoute, sourceSignalIdsForEvent(&event_routes, 2));
+    try std.testing.expectError(EventLookupError.SignalEventRouteIndexMismatch, sourceSignalIdsForEvent(&mismatched_event_routes, 1));
+
+    try std.testing.expectError(EventLookupError.EventIdZero, eventPayloadDescriptor(&event_descriptors, 0));
+    try std.testing.expectError(EventLookupError.MissingEventDescriptor, eventPayloadDescriptor(&event_descriptors, 2));
+    try std.testing.expectError(EventLookupError.EventDescriptorIndexMismatch, eventPayloadDescriptor(&mismatched_event_descriptors, 1));
+
+    try std.testing.expectError(SignalLookupError.MissingSignalRoute, signalIdsForState(&state_routes, 1));
+    try std.testing.expectError(SignalLookupError.SignalRouteIndexMismatch, signalIdsForState(&mismatched_state_routes, 0));
+
+    try std.testing.expectError(SignalLookupError.MissingSignalDependentRoute, dependentSignalIdsForSignal(&dependent_routes, 1));
+    try std.testing.expectError(SignalLookupError.SignalDependentRouteIndexMismatch, dependentSignalIdsForSignal(&mismatched_dependent_routes, 0));
+
+    try std.testing.expectError(SignalLookupError.MissingSignalDescriptor, signalRank(&descriptors, 1));
+    try std.testing.expectError(SignalLookupError.SignalDescriptorIndexMismatch, signalRank(&mismatched_descriptors, 0));
 }
 
-pub fn sortRecordIdsByRank(comptime Record: type, nodes: []const Node(Record), record_ids: []u64) void {
-    signal_graph.sortIdsByRank(Record, nodes, record_ids) catch {
-        @panic("active signal rank sort referenced an unknown record");
-    };
-}
+pub const DirtyRecordQueue = struct {
+    generation: u64 = 0,
+    seen_generations: std.ArrayListUnmanaged(u64) = .empty,
+    pending_record_ids: std.ArrayListUnmanaged(u64) = .empty,
+    ordered_record_ids: std.ArrayListUnmanaged(u64) = .empty,
+    rank_counts: std.ArrayListUnmanaged(usize) = .empty,
+    rank_offsets: std.ArrayListUnmanaged(usize) = .empty,
 
-pub fn dirtyRecordIdsForSources(comptime Record: type, allocator: std.mem.Allocator, nodes: []const Node(Record), source_routes: []const std.ArrayListUnmanaged(u64), dirty_source_node_ids: []const u64) []u64 {
-    var dirty_record_ids: std.ArrayListUnmanaged(u64) = .empty;
-    errdefer dirty_record_ids.deinit(allocator);
+    pub fn deinit(self: *DirtyRecordQueue, allocator: std.mem.Allocator) void {
+        self.seen_generations.deinit(allocator);
+        self.pending_record_ids.deinit(allocator);
+        self.ordered_record_ids.deinit(allocator);
+        self.rank_counts.deinit(allocator);
+        self.rank_offsets.deinit(allocator);
+        self.* = .{};
+    }
 
-    for (dirty_source_node_ids) |source_node_id| {
-        const route_index: usize = @intCast(source_node_id);
-        if (route_index >= source_routes.len) continue;
+    pub fn collectForSources(
+        self: *DirtyRecordQueue,
+        comptime Record: type,
+        allocator: std.mem.Allocator,
+        nodes: []const Node(Record),
+        source_routes: []const std.ArrayListUnmanaged(u64),
+        dirty_source_node_ids: []const u64,
+    ) []const u64 {
+        var max_rank: u64 = 0;
+        self.begin(allocator, nodes.len);
 
-        for (source_routes[route_index].items) |record_id| {
-            appendAndDependents(Record, allocator, nodes, &dirty_record_ids, record_id);
+        for (dirty_source_node_ids) |source_node_id| {
+            const route_index: usize = @intCast(source_node_id);
+            if (route_index >= source_routes.len) continue;
+
+            for (source_routes[route_index].items) |record_id| {
+                self.enqueueRecord(Record, allocator, nodes, record_id, &max_rank);
+            }
+        }
+
+        return self.finish(Record, allocator, nodes, max_rank);
+    }
+
+    pub fn collectForRoots(
+        self: *DirtyRecordQueue,
+        comptime Record: type,
+        allocator: std.mem.Allocator,
+        nodes: []const Node(Record),
+        root_record_ids: []const u64,
+    ) []const u64 {
+        var max_rank: u64 = 0;
+        self.begin(allocator, nodes.len);
+
+        for (root_record_ids) |record_id| {
+            self.enqueueRecord(Record, allocator, nodes, record_id, &max_rank);
+        }
+
+        return self.finish(Record, allocator, nodes, max_rank);
+    }
+
+    fn begin(self: *DirtyRecordQueue, allocator: std.mem.Allocator, node_count: usize) void {
+        if (self.generation == std.math.maxInt(u64)) {
+            @memset(self.seen_generations.items, 0);
+            self.generation = 0;
+        }
+        self.generation += 1;
+
+        const previous_len = self.seen_generations.items.len;
+        if (previous_len < node_count) {
+            self.seen_generations.resize(allocator, node_count) catch @panic("out of memory");
+            @memset(self.seen_generations.items[previous_len..], 0);
+        }
+
+        self.pending_record_ids.clearRetainingCapacity();
+        self.ordered_record_ids.clearRetainingCapacity();
+    }
+
+    fn finish(self: *DirtyRecordQueue, comptime Record: type, allocator: std.mem.Allocator, nodes: []const Node(Record), initial_max_rank: u64) []const u64 {
+        var max_rank = initial_max_rank;
+        var pending_index: usize = 0;
+        while (pending_index < self.pending_record_ids.items.len) : (pending_index += 1) {
+            const record_id = self.pending_record_ids.items[pending_index];
+            for (dependentIds(Record, nodes, record_id)) |dependent_record_id| {
+                self.enqueueRecord(Record, allocator, nodes, dependent_record_id, &max_rank);
+            }
+        }
+
+        self.writeRanked(Record, allocator, nodes, max_rank);
+        return self.ordered_record_ids.items;
+    }
+
+    fn enqueueRecord(self: *DirtyRecordQueue, comptime Record: type, allocator: std.mem.Allocator, nodes: []const Node(Record), record_id: u64, max_rank: *u64) void {
+        if (record_id >= nodes.len) @panic("dirty active signal root referenced an unknown record");
+        const record_index: usize = @intCast(record_id);
+        if (self.seen_generations.items[record_index] == self.generation) return;
+
+        self.seen_generations.items[record_index] = self.generation;
+        self.pending_record_ids.append(allocator, record_id) catch @panic("out of memory");
+        if (nodes[record_index].rank > max_rank.*) {
+            max_rank.* = nodes[record_index].rank;
         }
     }
 
-    const record_ids = dirty_record_ids.toOwnedSlice(allocator) catch @panic("out of memory");
-    sortRecordIdsByRank(Record, nodes, record_ids);
-    return record_ids;
-}
+    fn writeRanked(self: *DirtyRecordQueue, comptime Record: type, allocator: std.mem.Allocator, nodes: []const Node(Record), max_rank: u64) void {
+        if (self.pending_record_ids.items.len == 0) return;
 
-pub fn dirtyRecordIdsForRoots(comptime Record: type, allocator: std.mem.Allocator, nodes: []const Node(Record), root_record_ids: []const u64) []u64 {
-    var dirty_record_ids: std.ArrayListUnmanaged(u64) = .empty;
-    errdefer dirty_record_ids.deinit(allocator);
+        const rank_count = (std.math.cast(usize, max_rank) orelse @panic("dirty active signal rank exceeded addressable memory")) + 1;
+        self.rank_counts.resize(allocator, rank_count) catch @panic("out of memory");
+        self.rank_offsets.resize(allocator, rank_count) catch @panic("out of memory");
+        @memset(self.rank_counts.items, 0);
 
-    for (root_record_ids) |record_id| {
-        if (record_id >= nodes.len) @panic("dirty active signal root referenced an unknown record");
-        appendAndDependents(Record, allocator, nodes, &dirty_record_ids, record_id);
+        for (self.pending_record_ids.items) |record_id| {
+            const record_index: usize = @intCast(record_id);
+            const rank_index: usize = @intCast(nodes[record_index].rank);
+            self.rank_counts.items[rank_index] += 1;
+        }
+
+        var offset: usize = 0;
+        for (self.rank_counts.items, 0..) |count, index| {
+            self.rank_offsets.items[index] = offset;
+            offset += count;
+        }
+
+        self.ordered_record_ids.resize(allocator, self.pending_record_ids.items.len) catch @panic("out of memory");
+        for (self.pending_record_ids.items) |record_id| {
+            const record_index: usize = @intCast(record_id);
+            const rank_index: usize = @intCast(nodes[record_index].rank);
+            const output_index = self.rank_offsets.items[rank_index];
+            self.rank_offsets.items[rank_index] = output_index + 1;
+            self.ordered_record_ids.items[output_index] = record_id;
+        }
     }
-
-    const record_ids = dirty_record_ids.toOwnedSlice(allocator) catch @panic("out of memory");
-    sortRecordIdsByRank(Record, nodes, record_ids);
-    return record_ids;
-}
+};
 
 pub fn recordId(comptime Record: type, nodes: []const Node(Record), record: *const Record) ?u64 {
     const record_id = record.active_graph_id orelse return null;
@@ -683,6 +798,9 @@ pub fn retainStreamRecords(
     for (stream.signal_custom_text_attrs.items) |*desc| {
         records_rebuilt += retainRecord(Record, allocator, nodes, source_routes, source_node_count, desc.signal.record, hooks);
     }
+    for (stream.signal_optional_custom_text_attrs.items) |*desc| {
+        records_rebuilt += retainRecord(Record, allocator, nodes, source_routes, source_node_count, desc.signal.record, hooks);
+    }
     for (stream.signal_bool_attrs.items) |*desc| {
         records_rebuilt += retainRecord(Record, allocator, nodes, source_routes, source_node_count, desc.signal.record, hooks);
     }
@@ -732,6 +850,13 @@ pub fn rebuildSinkRoutesFromStream(
         const id = requireRecordId(Record, nodes, desc.signal.record);
         appendTextRoute(allocator, text_routes, nodes.len, id, .{
             .kind = .custom_text_attr,
+            .index = index,
+        });
+    }
+    for (stream.signal_optional_custom_text_attrs.items, 0..) |desc, index| {
+        const id = requireRecordId(Record, nodes, desc.signal.record);
+        appendTextRoute(allocator, text_routes, nodes.len, id, .{
+            .kind = .custom_text_optional_attr,
             .index = index,
         });
     }
@@ -968,6 +1093,7 @@ const LifecycleStream = struct {
     signal_text_nodes: std.ArrayListUnmanaged(LifecycleSignalDesc) = .empty,
     signal_text_attrs: std.ArrayListUnmanaged(LifecycleSignalDesc) = .empty,
     signal_custom_text_attrs: std.ArrayListUnmanaged(LifecycleSignalDesc) = .empty,
+    signal_optional_custom_text_attrs: std.ArrayListUnmanaged(LifecycleSignalDesc) = .empty,
     signal_bool_attrs: std.ArrayListUnmanaged(LifecycleSignalDesc) = .empty,
     signal_custom_bool_attrs: std.ArrayListUnmanaged(LifecycleSignalDesc) = .empty,
     on_changes: std.ArrayListUnmanaged(LifecycleSignalDesc) = .empty,
@@ -978,6 +1104,7 @@ const LifecycleStream = struct {
         self.signal_text_nodes.deinit(allocator);
         self.signal_text_attrs.deinit(allocator);
         self.signal_custom_text_attrs.deinit(allocator);
+        self.signal_optional_custom_text_attrs.deinit(allocator);
         self.signal_bool_attrs.deinit(allocator);
         self.signal_custom_bool_attrs.deinit(allocator);
         self.on_changes.deinit(allocator);
@@ -986,7 +1113,7 @@ const LifecycleStream = struct {
     }
 };
 
-test "active graph dirty roots collect reachable dependents once sorted by rank" {
+test "active graph dirty queue collects roots and dependents by rank" {
     var records = [_]TestRecord{
         .{ .id = 0 },
         .{ .id = 1 },
@@ -1010,13 +1137,14 @@ test "active graph dirty roots collect reachable dependents once sorted by rank"
     try signal_graph.appendDependent(TestRecord, std.testing.allocator, &nodes, 2, 3);
     try signal_graph.appendDependent(TestRecord, std.testing.allocator, &nodes, 3, 1);
 
-    const dirty_ids = dirtyRecordIdsForRoots(TestRecord, std.testing.allocator, &nodes, &.{ 0, 2 });
-    defer std.testing.allocator.free(dirty_ids);
+    var queue = DirtyRecordQueue{};
+    defer queue.deinit(std.testing.allocator);
 
+    const dirty_ids = queue.collectForRoots(TestRecord, std.testing.allocator, &nodes, &.{ 0, 2 });
     try std.testing.expectEqualSlices(u64, &.{ 0, 2, 3, 1 }, dirty_ids);
 }
 
-test "active graph source routes collect dirty dependents sorted by rank" {
+test "active graph dirty queue collects source-route dependents by rank" {
     var records = [_]TestRecord{
         .{ .id = 0 },
         .{ .id = 1 },
@@ -1041,38 +1169,59 @@ test "active graph source routes collect dirty dependents sorted by rank" {
     appendSourceRoute(std.testing.allocator, &source_routes, 4, 3, 1);
     appendSourceRoute(std.testing.allocator, &source_routes, 4, 3, 1);
 
-    const dirty_ids = dirtyRecordIdsForSources(TestRecord, std.testing.allocator, &nodes, source_routes.items, &.{3});
-    defer std.testing.allocator.free(dirty_ids);
+    var queue = DirtyRecordQueue{};
+    defer queue.deinit(std.testing.allocator);
 
+    const dirty_ids = queue.collectForSources(TestRecord, std.testing.allocator, &nodes, source_routes.items, &.{3});
     try std.testing.expectEqualSlices(u64, &.{ 1, 2, 0 }, dirty_ids);
 }
 
-test "legacy signal event routes expand dependents once and sort by rank" {
-    const event_sources = [_]u64{1};
-    const signal_one_dependents = [_]u64{ 2, 3 };
-    const signal_two_dependents = [_]u64{3};
-
-    const event_routes = [_]EventRoute{
-        .{ .event_id = 1, .signal_ids = @constCast(event_sources[0..]) },
+test "active graph dirty queue reuses retained buffers and ranks reachable records" {
+    var records = [_]TestRecord{
+        .{ .id = 0 },
+        .{ .id = 1 },
+        .{ .id = 2 },
+        .{ .id = 3 },
     };
-    const dependent_routes = [_]DependentsRoute{
-        .{ .signal_id = 0, .signal_ids = @constCast(&.{}) },
-        .{ .signal_id = 1, .signal_ids = @constCast(signal_one_dependents[0..]) },
-        .{ .signal_id = 2, .signal_ids = @constCast(signal_two_dependents[0..]) },
-        .{ .signal_id = 3, .signal_ids = @constCast(&.{}) },
+    var nodes = [_]Node(TestRecord){
+        .{ .record = &records[0], .rank = 0 },
+        .{ .record = &records[1], .rank = 1 },
+        .{ .record = &records[2], .rank = 1 },
+        .{ .record = &records[3], .rank = 2 },
     };
-    const descriptors = [_]Descriptor{
-        .{ .signal_id = 0, .kind = .source, .source_state_ids = @constCast(&.{}), .source_event_ids = @constCast(&.{}), .input_signal_ids = @constCast(&.{}), .rank = 9 },
-        .{ .signal_id = 1, .kind = .source, .source_state_ids = @constCast(&.{}), .source_event_ids = @constCast(&.{}), .input_signal_ids = @constCast(&.{}), .rank = 2 },
-        .{ .signal_id = 2, .kind = .map, .source_state_ids = @constCast(&.{}), .source_event_ids = @constCast(&.{}), .input_signal_ids = @constCast(&.{}), .rank = 1 },
-        .{ .signal_id = 3, .kind = .map2, .source_state_ids = @constCast(&.{}), .source_event_ids = @constCast(&.{}), .input_signal_ids = @constCast(&.{}), .rank = 3 },
-    };
+    defer {
+        for (&nodes) |*node| {
+            std.testing.allocator.free(node.dependents);
+        }
+    }
+    try signal_graph.appendDependent(TestRecord, std.testing.allocator, &nodes, 0, 1);
+    try signal_graph.appendDependent(TestRecord, std.testing.allocator, &nodes, 0, 2);
+    try signal_graph.appendDependent(TestRecord, std.testing.allocator, &nodes, 1, 3);
+    try signal_graph.appendDependent(TestRecord, std.testing.allocator, &nodes, 2, 3);
 
-    const dirty_ids = dirtySignalIdsForEvent(std.testing.allocator, &event_routes, &dependent_routes, &descriptors, 1);
-    defer std.testing.allocator.free(dirty_ids);
+    var source_routes: RouteTable(u64) = .empty;
+    defer source_routes.deinit(std.testing.allocator);
+    defer clearSourceRoutes(std.testing.allocator, &source_routes);
+    appendSourceRoute(std.testing.allocator, &source_routes, 1, 0, 0);
+    appendSourceRoute(std.testing.allocator, &source_routes, 1, 0, 0);
 
-    try std.testing.expectEqualSlices(u64, &.{ 2, 1, 3 }, dirty_ids);
-    try std.testing.expectError(EventLookupError.EventIdZero, sourceSignalIdsForEvent(&event_routes, 0));
+    var queue = DirtyRecordQueue{};
+    defer queue.deinit(std.testing.allocator);
+
+    const first_ids = queue.collectForSources(TestRecord, std.testing.allocator, &nodes, source_routes.items, &.{0});
+    try std.testing.expectEqualSlices(u64, &.{ 0, 1, 2, 3 }, first_ids);
+
+    const pending_capacity = queue.pending_record_ids.capacity;
+    const ordered_capacity = queue.ordered_record_ids.capacity;
+    const seen_capacity = queue.seen_generations.capacity;
+    const rank_capacity = queue.rank_counts.capacity;
+
+    const second_ids = queue.collectForSources(TestRecord, std.testing.allocator, &nodes, source_routes.items, &.{0});
+    try std.testing.expectEqualSlices(u64, &.{ 0, 1, 2, 3 }, second_ids);
+    try std.testing.expectEqual(pending_capacity, queue.pending_record_ids.capacity);
+    try std.testing.expectEqual(ordered_capacity, queue.ordered_record_ids.capacity);
+    try std.testing.expectEqual(seen_capacity, queue.seen_generations.capacity);
+    try std.testing.expectEqual(rank_capacity, queue.rank_counts.capacity);
 }
 
 test "active source routes replace and remove ids" {
@@ -1273,6 +1422,7 @@ test "active graph stream rebuild retains records and rebuilds sink routes" {
     stream.signal_text_nodes.append(std.testing.allocator, .{ .signal = .{ .record = &mapped } }) catch @panic("out of memory");
     stream.signal_text_attrs.append(std.testing.allocator, .{ .signal = .{ .record = &mapped } }) catch @panic("out of memory");
     stream.signal_custom_text_attrs.append(std.testing.allocator, .{ .signal = .{ .record = &source } }) catch @panic("out of memory");
+    stream.signal_optional_custom_text_attrs.append(std.testing.allocator, .{ .signal = .{ .record = &source } }) catch @panic("out of memory");
     stream.signal_bool_attrs.append(std.testing.allocator, .{ .signal = .{ .record = &source } }) catch @panic("out of memory");
     stream.signal_custom_bool_attrs.append(std.testing.allocator, .{ .signal = .{ .record = &mapped } }) catch @panic("out of memory");
     stream.on_changes.append(std.testing.allocator, .{ .signal = .{ .record = &mapped } }) catch @panic("out of memory");
@@ -1312,7 +1462,7 @@ test "active graph stream rebuild retains records and rebuilds sink routes" {
         &stream,
     );
 
-    try std.testing.expectEqualSlices(TextSink, &.{.{ .kind = .custom_text_attr, .index = 0 }}, text_routes.items[0].items);
+    try std.testing.expectEqualSlices(TextSink, &.{ .{ .kind = .custom_text_attr, .index = 0 }, .{ .kind = .custom_text_optional_attr, .index = 0 } }, text_routes.items[0].items);
     try std.testing.expectEqualSlices(TextSink, &.{ .{ .kind = .text_node, .index = 0 }, .{ .kind = .text_attr, .index = 0 } }, text_routes.items[1].items);
     try std.testing.expectEqualSlices(BoolSink, &.{.{ .kind = .bool_attr, .index = 0 }}, bool_routes.items[0].items);
     try std.testing.expectEqualSlices(BoolSink, &.{.{ .kind = .custom_bool_attr, .index = 0 }}, bool_routes.items[1].items);

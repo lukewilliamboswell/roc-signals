@@ -1,6 +1,7 @@
 //! Reusable scratch buffers for descriptor collection and structural patching.
 
 const std = @import("std");
+const active_signal_graph = @import("active_signal_graph.zig");
 const descriptor_stream = @import("descriptor_stream.zig");
 const each_runtime = @import("each_runtime.zig");
 const retained_values = @import("retained_values.zig");
@@ -20,9 +21,12 @@ pub const Scratch = struct {
     each_removed_elem_ids: std.ArrayListUnmanaged(u64) = .empty,
     each_touched_parent_ids: std.ArrayListUnmanaged(u64) = .empty,
     each_replacement_elem_ids: std.ArrayListUnmanaged(u64) = .empty,
+    each_moved_event_elem_ids: std.ArrayListUnmanaged(u64) = .empty,
     each_replacement_on_change_indices: std.ArrayListUnmanaged(usize) = .empty,
     each_replacement_mount_indices: std.ArrayListUnmanaged(usize) = .empty,
     replacement_target_scopes: std.ArrayListUnmanaged(bool) = .empty,
+    dirty_active_records: active_signal_graph.DirtyRecordQueue = .{},
+    dirty_changed_record_ids: std.ArrayListUnmanaged(u64) = .empty,
     elem_owned_removal: structural_splice.ElemOwnedRemovalScratch = .{},
 
     pub fn deinit(self: *Scratch, allocator: std.mem.Allocator) void {
@@ -39,9 +43,12 @@ pub const Scratch = struct {
         self.each_removed_elem_ids.deinit(allocator);
         self.each_touched_parent_ids.deinit(allocator);
         self.each_replacement_elem_ids.deinit(allocator);
+        self.each_moved_event_elem_ids.deinit(allocator);
         self.each_replacement_on_change_indices.deinit(allocator);
         self.each_replacement_mount_indices.deinit(allocator);
         self.replacement_target_scopes.deinit(allocator);
+        self.dirty_active_records.deinit(allocator);
+        self.dirty_changed_record_ids.deinit(allocator);
         self.elem_owned_removal.deinit(allocator);
         self.* = .{};
     }
@@ -63,9 +70,11 @@ test "engine scratch deinit resets retained scratch storage" {
     try scratch.each_removed_elem_ids.append(allocator, 11);
     try scratch.each_touched_parent_ids.append(allocator, 12);
     try scratch.each_replacement_elem_ids.append(allocator, 13);
-    try scratch.each_replacement_on_change_indices.append(allocator, 14);
-    try scratch.each_replacement_mount_indices.append(allocator, 15);
+    try scratch.each_moved_event_elem_ids.append(allocator, 14);
+    try scratch.each_replacement_on_change_indices.append(allocator, 15);
+    try scratch.each_replacement_mount_indices.append(allocator, 16);
     try scratch.replacement_target_scopes.append(allocator, true);
+    try scratch.dirty_changed_record_ids.append(allocator, 17);
 
     scratch.deinit(allocator);
 
@@ -81,7 +90,10 @@ test "engine scratch deinit resets retained scratch storage" {
     try std.testing.expectEqual(@as(usize, 0), scratch.each_removed_elem_ids.items.len);
     try std.testing.expectEqual(@as(usize, 0), scratch.each_touched_parent_ids.items.len);
     try std.testing.expectEqual(@as(usize, 0), scratch.each_replacement_elem_ids.items.len);
+    try std.testing.expectEqual(@as(usize, 0), scratch.each_moved_event_elem_ids.items.len);
     try std.testing.expectEqual(@as(usize, 0), scratch.each_replacement_on_change_indices.items.len);
     try std.testing.expectEqual(@as(usize, 0), scratch.each_replacement_mount_indices.items.len);
     try std.testing.expectEqual(@as(usize, 0), scratch.replacement_target_scopes.items.len);
+    try std.testing.expectEqual(@as(usize, 0), scratch.dirty_active_records.pending_record_ids.items.len);
+    try std.testing.expectEqual(@as(usize, 0), scratch.dirty_changed_record_ids.items.len);
 }

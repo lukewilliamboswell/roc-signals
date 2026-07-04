@@ -27,7 +27,7 @@ pub fn nowNs() u64 {
 
 pub fn commandIsAction(cmd: spec_parser.SpecCommand) bool {
     return switch (cmd.cmd_type) {
-        .click, .real_click, .pointer_down, .pointer_up, .pointer_enter, .pointer_leave, .key_down, .focus, .blur, .change, .composition_start, .composition_end, .submit, .fill, .check, .uncheck, .resolve_task, .reject_task, .tick_interval, .tick_interval_if_active => true,
+        .click, .real_click, .pointer_down, .pointer_up, .pointer_enter, .pointer_leave, .key_down, .focus, .blur, .change, .select_option, .composition_start, .composition_end, .submit, .fill, .check, .uncheck, .resolve_task, .reject_task, .tick_interval, .tick_interval_if_active => true,
         else => false,
     };
 }
@@ -46,6 +46,11 @@ fn eventPolicyMatchesBenchmarkEvent(policy: render.EventPolicy, elem_id: u64, ta
     if (policy.self and elem_id != target_id) return false;
     return true;
 }
+
+const UnitEventDispatchResult = struct {
+    default_prevented: bool = false,
+    dispatched: bool = false,
+};
 
 fn writeStdout(bytes: []const u8) void {
     std.Io.File.stdout().writeStreamingAll(std.Io.Threaded.global_single_threaded.io(), bytes) catch {};
@@ -236,9 +241,15 @@ pub fn Runner(comptime Ctx: type) type {
                 .real_click => {
                     const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse Ctx.fail("benchmark real_click locator did not resolve");
                     if (Ctx.elementDisabled(elem)) Ctx.fail("benchmark real_click target is disabled");
-                    dispatchBubblingUnitEventMeasured(host, roc_host, elem.id, .pointer_down, "pointerdown", stats);
-                    dispatchBubblingUnitEventMeasured(host, roc_host, elem.id, .pointer_up, "pointerup", stats);
-                    dispatchBubblingUnitEventMeasured(host, roc_host, elem.id, .click, "click", stats);
+                    const target_id = elem.id;
+                    _ = dispatchBubblingUnitEventMeasured(host, roc_host, target_id, .pointer_down, "pointerdown", stats);
+                    _ = dispatchBubblingUnitEventMeasured(host, roc_host, target_id, .pointer_up, "pointerup", stats);
+                    const click_result = dispatchBubblingUnitEventMeasured(host, roc_host, target_id, .click, "click", stats);
+                    const target = Ctx.elementById(host, target_id) orelse Ctx.fail("benchmark real_click default action target was removed");
+                    if (!click_result.dispatched and !hasBenchmarkRealClickDefaultAction(target)) {
+                        Ctx.fail("benchmark real_click did not find a click binding in the propagation path");
+                    }
+                    dispatchBenchmarkRealClickDefaultAction(host, roc_host, target_id, click_result, stats);
                 },
 
                 .pointer_down, .pointer_up, .pointer_enter, .pointer_leave => {
@@ -251,14 +262,19 @@ pub fn Runner(comptime Ctx: type) type {
                 .key_down => {
                     const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse Ctx.fail("benchmark key_down locator did not resolve");
                     if (Ctx.elementDisabled(elem)) Ctx.fail("benchmark key_down target is disabled");
-                    Ctx.dispatchKeyDownMeasured(
+                    const key = cmd.expected_text orelse Ctx.fail("benchmark key_down command is missing key text");
+                    const target_id = elem.id;
+                    const default_prevented = Ctx.dispatchKeyDownMeasured(
                         host,
                         roc_host,
                         elem,
-                        cmd.expected_text orelse Ctx.fail("benchmark key_down command is missing key text"),
+                        key,
                         cmd.expected_bool orelse Ctx.fail("benchmark key_down command is missing shift flag"),
                         stats,
                     );
+                    if (std.mem.eql(u8, key, "Enter")) {
+                        dispatchBenchmarkEnterKeyDefaultAction(host, roc_host, target_id, default_prevented, stats);
+                    }
                 },
 
                 .focus, .blur, .composition_start, .composition_end => {
@@ -267,6 +283,13 @@ pub fn Runner(comptime Ctx: type) type {
                     if (Ctx.elementDisabled(elem)) Ctx.fail("benchmark named event target is disabled");
                     const event = Ctx.namedEvent(elem, event_name) orelse Ctx.fail("benchmark named event target has no binding");
                     if (!event.binding.payload_descriptor.eql(engine.BoundaryPayloadDescriptor.init(.unit, .none))) Ctx.fail("benchmark named event binding does not use a unit payload descriptor");
+                    switch (cmd.cmd_type) {
+                        .focus => Ctx.focusElement(host, elem),
+                        .blur => Ctx.blurElement(host, elem),
+                        .composition_start => Ctx.beginComposition(host, elem),
+                        .composition_end => Ctx.endComposition(host, elem),
+                        else => unreachable,
+                    }
                     Ctx.dispatchRocEventMeasured(host, roc_host, event.binding.event_id, event.binding.payload_descriptor, Ctx.hostValueUnit(host, roc_host), stats);
                 },
 
@@ -280,6 +303,13 @@ pub fn Runner(comptime Ctx: type) type {
                     Ctx.dispatchRocEventMeasured(host, roc_host, event.binding.event_id, event.binding.payload_descriptor, Ctx.hostValueStr(host, roc_host, value), stats);
                 },
 
+                .select_option => {
+                    const value = cmd.expected_text orelse "";
+                    const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse Ctx.fail("benchmark select_option locator did not resolve");
+                    if (Ctx.elementDisabled(elem)) Ctx.fail("benchmark select_option target is disabled");
+                    dispatchBenchmarkSelectOption(host, roc_host, elem, value, stats);
+                },
+
                 .submit => {
                     const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse Ctx.fail("benchmark submit locator did not resolve");
                     if (Ctx.elementDisabled(elem)) Ctx.fail("benchmark submit target is disabled");
@@ -290,10 +320,9 @@ pub fn Runner(comptime Ctx: type) type {
                     const value = cmd.expected_text orelse "";
                     const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse Ctx.fail("benchmark fill locator did not resolve");
                     if (Ctx.elementDisabled(elem)) Ctx.fail("benchmark fill target is disabled");
+                    _ = Ctx.setElementValueIfChanged(host, elem, value);
                     if (Ctx.inputEventId(elem)) |event_id| {
                         Ctx.dispatchRocEventMeasured(host, roc_host, event_id, engine.BoundaryPayloadDescriptor.init(.str, .target_value), Ctx.hostValueStr(host, roc_host, value), stats);
-                    } else {
-                        _ = Ctx.setElementValueIfChanged(host, elem, value);
                     }
                 },
 
@@ -345,7 +374,155 @@ pub fn Runner(comptime Ctx: type) type {
             }
         }
 
-        fn dispatchBubblingUnitEventMeasured(host: *Host, roc_host: *RocHost, target_id: u64, fixed_kind: render.EventKind, event_name: []const u8, stats: *Stats) void {
+        fn benchmarkIsSubmitButton(elem: anytype) bool {
+            if (!std.mem.eql(u8, elem.tag, "button")) return false;
+            const button_type = Ctx.elementTextAttr(elem, "type") orelse return true;
+            return !std.ascii.eqlIgnoreCase(button_type, "button") and
+                !std.ascii.eqlIgnoreCase(button_type, "reset");
+        }
+
+        fn benchmarkIsResetButton(elem: anytype) bool {
+            if (!std.mem.eql(u8, elem.tag, "button")) return false;
+            const button_type = Ctx.elementTextAttr(elem, "type") orelse return false;
+            return std.ascii.eqlIgnoreCase(button_type, "reset");
+        }
+
+        fn benchmarkIsCheckboxControl(elem: anytype) bool {
+            if (!std.mem.eql(u8, elem.tag, "input")) return false;
+            if (elem.role) |role| {
+                if (std.mem.eql(u8, role, "checkbox")) return true;
+            }
+            const input_type = Ctx.elementTextAttr(elem, "type") orelse return false;
+            return std.ascii.eqlIgnoreCase(input_type, "checkbox");
+        }
+
+        fn benchmarkIsRadioControl(elem: anytype) bool {
+            if (!std.mem.eql(u8, elem.tag, "input")) return false;
+            if (elem.role) |role| {
+                if (std.mem.eql(u8, role, "radio")) return true;
+            }
+            const input_type = Ctx.elementTextAttr(elem, "type") orelse return false;
+            return std.ascii.eqlIgnoreCase(input_type, "radio");
+        }
+
+        fn hasBenchmarkRealClickDefaultAction(elem: anytype) bool {
+            return benchmarkIsSubmitButton(elem) or benchmarkIsResetButton(elem) or benchmarkIsCheckboxControl(elem) or benchmarkIsRadioControl(elem);
+        }
+
+        fn dispatchBenchmarkCheckedChangeEvent(host: *Host, roc_host: *RocHost, elem: anytype, checked: bool, stats: *Stats) void {
+            if (Ctx.checkEventId(elem)) |event_id| {
+                Ctx.dispatchRocEventMeasured(host, roc_host, event_id, engine.BoundaryPayloadDescriptor.init(.bool, .target_checked), Ctx.hostValueBool(host, roc_host, checked), stats);
+            } else {
+                _ = Ctx.setElementCheckedIfChanged(elem, checked);
+            }
+        }
+
+        fn dispatchBenchmarkRadioChangeEvent(host: *Host, roc_host: *RocHost, elem: anytype, stats: *Stats) void {
+            if (!Ctx.setElementCheckedIfChanged(elem, true)) return;
+            const event = Ctx.namedEvent(elem, "change") orelse return;
+            if (!event.binding.payload_descriptor.eql(engine.BoundaryPayloadDescriptor.init(.str, .target_value))) {
+                Ctx.fail("benchmark radio change binding does not request the target value payload descriptor");
+            }
+            const value = elem.value orelse Ctx.fail("benchmark radio default action target has no value");
+            Ctx.dispatchRocEventMeasured(host, roc_host, event.binding.event_id, event.binding.payload_descriptor, Ctx.hostValueStr(host, roc_host, value), stats);
+        }
+
+        fn benchmarkSelectHasOptionValue(host: *Host, elem: anytype, value: []const u8) bool {
+            for (elem.children.items) |child_id| {
+                const child = Ctx.elementById(host, child_id) orelse Ctx.fail("benchmark select option child was removed");
+                if (!std.mem.eql(u8, child.tag, "option")) continue;
+                const option_value = Ctx.elementTextAttr(child, "value") orelse continue;
+                if (std.mem.eql(u8, option_value, value)) return true;
+            }
+            return false;
+        }
+
+        fn dispatchBenchmarkSelectOption(host: *Host, roc_host: *RocHost, elem: anytype, value: []const u8, stats: *Stats) void {
+            if (!std.mem.eql(u8, elem.tag, "select")) Ctx.fail("benchmark select_option target is not a select control");
+            if (!benchmarkSelectHasOptionValue(host, elem, value)) Ctx.fail("benchmark select_option value does not match a rendered option");
+            if (!Ctx.setElementValueIfChanged(host, elem, value)) return;
+            const event = Ctx.namedEvent(elem, "change") orelse return;
+            if (!event.binding.payload_descriptor.eql(engine.BoundaryPayloadDescriptor.init(.str, .target_value))) {
+                Ctx.fail("benchmark select change binding does not request the target value payload descriptor");
+            }
+            Ctx.dispatchRocEventMeasured(host, roc_host, event.binding.event_id, event.binding.payload_descriptor, Ctx.hostValueStr(host, roc_host, value), stats);
+        }
+
+        fn benchmarkIsTextLikeEnterSubmitControl(elem: anytype) bool {
+            if (!std.mem.eql(u8, elem.tag, "input")) return false;
+            const input_type = Ctx.elementTextAttr(elem, "type") orelse return true;
+            const non_submit_types = [_][]const u8{
+                "button",
+                "checkbox",
+                "color",
+                "file",
+                "hidden",
+                "image",
+                "radio",
+                "range",
+                "reset",
+                "submit",
+            };
+            for (non_submit_types) |kind| {
+                if (std.ascii.eqlIgnoreCase(input_type, kind)) return false;
+            }
+            return true;
+        }
+
+        fn dispatchBenchmarkEnterKeyDefaultAction(host: *Host, roc_host: *RocHost, target_id: u64, default_prevented: bool, stats: *Stats) void {
+            if (default_prevented) return;
+            const target = Ctx.elementById(host, target_id) orelse Ctx.fail("benchmark Enter key default action target was removed");
+            if (!benchmarkIsTextLikeEnterSubmitControl(target)) return;
+            var next_id = target.parent_id;
+            while (next_id) |elem_id| {
+                const elem = Ctx.elementById(host, elem_id) orelse Ctx.fail("benchmark Enter key submit default referenced a missing ancestor");
+                if (std.mem.eql(u8, elem.tag, "form")) {
+                    Ctx.dispatchSubmitMeasured(host, roc_host, elem, stats);
+                    return;
+                }
+                next_id = elem.parent_id;
+            }
+        }
+
+        fn dispatchBenchmarkSubmitButtonDefaultAction(host: *Host, roc_host: *RocHost, target: anytype, stats: *Stats) void {
+            var next_id = target.parent_id;
+            while (next_id) |elem_id| {
+                const elem = Ctx.elementById(host, elem_id) orelse Ctx.fail("benchmark real_click submit default referenced a missing ancestor");
+                if (std.mem.eql(u8, elem.tag, "form")) {
+                    Ctx.dispatchSubmitMeasured(host, roc_host, elem, stats);
+                    return;
+                }
+                next_id = elem.parent_id;
+            }
+        }
+
+        fn dispatchBenchmarkResetButtonDefaultAction(host: *Host, roc_host: *RocHost, target: anytype, stats: *Stats) void {
+            var next_id = target.parent_id;
+            while (next_id) |elem_id| {
+                const elem = Ctx.elementById(host, elem_id) orelse Ctx.fail("benchmark real_click reset default referenced a missing ancestor");
+                if (std.mem.eql(u8, elem.tag, "form")) {
+                    Ctx.dispatchResetMeasured(host, roc_host, elem, stats);
+                    return;
+                }
+                next_id = elem.parent_id;
+            }
+        }
+
+        fn dispatchBenchmarkRealClickDefaultAction(host: *Host, roc_host: *RocHost, target_id: u64, click_result: UnitEventDispatchResult, stats: *Stats) void {
+            if (click_result.default_prevented) return;
+            const target = Ctx.elementById(host, target_id) orelse Ctx.fail("benchmark real_click default action target was removed");
+            if (benchmarkIsCheckboxControl(target)) {
+                dispatchBenchmarkCheckedChangeEvent(host, roc_host, target, !target.checked, stats);
+            } else if (benchmarkIsRadioControl(target)) {
+                dispatchBenchmarkRadioChangeEvent(host, roc_host, target, stats);
+            } else if (benchmarkIsResetButton(target)) {
+                dispatchBenchmarkResetButtonDefaultAction(host, roc_host, target, stats);
+            } else if (benchmarkIsSubmitButton(target)) {
+                dispatchBenchmarkSubmitButtonDefaultAction(host, roc_host, target, stats);
+            }
+        }
+
+        fn dispatchBubblingUnitEventMeasured(host: *Host, roc_host: *RocHost, target_id: u64, fixed_kind: render.EventKind, event_name: []const u8, stats: *Stats) UnitEventDispatchResult {
             var path: [128]u64 = undefined;
             var path_len: usize = 0;
             var next_id: ?u64 = target_id;
@@ -358,7 +535,7 @@ pub fn Runner(comptime Ctx: type) type {
             }
 
             const unit_descriptor = engine.BoundaryPayloadDescriptor.init(.unit, .none);
-            var dispatched = false;
+            var result = UnitEventDispatchResult{};
 
             var capture_index = path_len;
             while (capture_index > 0) {
@@ -369,15 +546,16 @@ pub fn Runner(comptime Ctx: type) type {
                 if (!event.binding.policy.capture) continue;
                 if (!eventPolicyMatchesBenchmarkEvent(event.binding.policy, elem_id, target_id)) continue;
                 if (!event.binding.payload_descriptor.eql(unit_descriptor)) Ctx.fail("benchmark capturing event binding does not use a unit payload descriptor");
-                dispatched = true;
+                result.dispatched = true;
+                result.default_prevented = result.default_prevented or event.binding.policy.prevent_default;
                 Ctx.dispatchRocEventMeasured(host, roc_host, event.binding.event_id, event.binding.payload_descriptor, Ctx.hostValueUnit(host, roc_host), stats);
-                if (event.binding.policy.stop_propagation or event.binding.policy.stop_immediate) return;
+                if (event.binding.policy.stop_propagation or event.binding.policy.stop_immediate) return result;
             }
 
             for (path[0..path_len]) |elem_id| {
                 const elem = Ctx.elementById(host, elem_id) orelse Ctx.fail("benchmark event target was removed during bubble");
                 if (Ctx.fixedEventId(elem, fixed_kind)) |event_id| {
-                    dispatched = true;
+                    result.dispatched = true;
                     Ctx.dispatchRocEventMeasured(host, roc_host, event_id, unit_descriptor, Ctx.hostValueUnit(host, roc_host), stats);
                 }
 
@@ -385,14 +563,13 @@ pub fn Runner(comptime Ctx: type) type {
                 if (event.binding.policy.capture) continue;
                 if (!eventPolicyMatchesBenchmarkEvent(event.binding.policy, elem_id, target_id)) continue;
                 if (!event.binding.payload_descriptor.eql(unit_descriptor)) Ctx.fail("benchmark bubbling event binding does not use a unit payload descriptor");
-                dispatched = true;
+                result.dispatched = true;
+                result.default_prevented = result.default_prevented or event.binding.policy.prevent_default;
                 Ctx.dispatchRocEventMeasured(host, roc_host, event.binding.event_id, event.binding.payload_descriptor, Ctx.hostValueUnit(host, roc_host), stats);
                 if (event.binding.policy.stop_propagation or event.binding.policy.stop_immediate) break;
             }
 
-            if (std.mem.eql(u8, event_name, "click") and !dispatched) {
-                Ctx.fail("benchmark real_click did not find a click binding in the propagation path");
-            }
+            return result;
         }
     };
 }

@@ -9,8 +9,8 @@ pub const HostValue = retained_values.HostValue;
 pub const HostValueCapability = retained_values.HostValueCapability;
 pub const HostValueCell = retained_values.HostValueCell;
 
-/// Per-row payload carried in an `Ui.each` scope: the row's key and item cells,
-/// keyed by the construction-site ordinal.
+/// Per-row payload carried in a `Ui.each_str` scope: the row's key and item
+/// cells, keyed by the construction-site ordinal.
 pub const EachRowScopeStep = struct {
     site_ordinal: u64,
     key_hash: u64,

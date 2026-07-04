@@ -28,6 +28,18 @@ pub fn internNode(allocator: std.mem.Allocator, identities: *std.ArrayListUnmana
         }
     }
 
+    for (identities.items) |*identity| {
+        if (identity.active) continue;
+        const node_id = identity.node_id;
+        identity.* = .{
+            .node_id = node_id,
+            .scope_id = scope_id,
+            .ordinal = ordinal,
+            .active = true,
+        };
+        return node_id;
+    }
+
     const node_id: u64 = @intCast(identities.items.len);
     identities.append(allocator, .{
         .node_id = node_id,
@@ -44,6 +56,18 @@ pub fn internDom(allocator: std.mem.Allocator, identities: *std.ArrayListUnmanag
         if (identity.scope_id == scope_id and identity.ordinal == ordinal) {
             return identity.elem_id;
         }
+    }
+
+    for (identities.items) |*identity| {
+        if (identity.active) continue;
+        const elem_id = identity.elem_id;
+        identity.* = .{
+            .elem_id = elem_id,
+            .scope_id = scope_id,
+            .ordinal = ordinal,
+            .active = true,
+        };
+        return elem_id;
     }
 
     const elem_id: u64 = @intCast(identities.items.len + 1);
@@ -87,10 +111,10 @@ test "node identities reuse active scope ordinal pairs" {
 
     identities.items[@intCast(first)].active = false;
     const recreated = try internNode(std.testing.allocator, &identities, 7, 0);
-    try std.testing.expectEqual(@as(u64, 2), recreated);
+    try std.testing.expectEqual(first, recreated);
 }
 
-test "dom identities are one-based and reuse active scope ordinal pairs" {
+test "dom identities are one-based and reuse active and inactive slots" {
     var identities: std.ArrayListUnmanaged(DomIdentity) = .empty;
     defer identities.deinit(std.testing.allocator);
 
@@ -101,6 +125,10 @@ test "dom identities are one-based and reuse active scope ordinal pairs" {
     try std.testing.expectEqual(@as(u64, 1), first);
     try std.testing.expectEqual(first, same);
     try std.testing.expectEqual(@as(u64, 2), next);
+
+    identities.items[@intCast(first - 1)].active = false;
+    const recreated = try internDom(std.testing.allocator, &identities, 2, 0);
+    try std.testing.expectEqual(first, recreated);
 }
 
 const TestDeactivateHook = struct {

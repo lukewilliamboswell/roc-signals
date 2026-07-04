@@ -1,0 +1,21 @@
+# Form reset default-action scenario
+
+expect_visible role:heading name:"Form Reset Default"
+expect_attr role:region name:"Form Reset Default" data-fixture "form-reset-default"
+expect_attr role:form name:"Reset default form" id "reset-default-form"
+expect_attr role:button name:"Reset form" type "reset"
+expect_value label:"Name" ""
+expect_checked label:"Accept reset terms" false
+expect_text text:"Reset clicks: 0" "Reset clicks: 0"
+expect_text text:"Resets: 0" "Resets: 0"
+
+fill label:"Name" "Ada"
+check label:"Accept reset terms"
+expect_value label:"Name" "Ada"
+expect_checked label:"Accept reset terms" true
+
+real_click role:button name:"Reset form"
+expect_value label:"Name" ""
+expect_checked label:"Accept reset terms" false
+expect_text text:"Reset clicks: 1" "Reset clicks: 1"
+expect_text text:"Resets: 1" "Resets: 1"

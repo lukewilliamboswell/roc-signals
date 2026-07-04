@@ -76,6 +76,7 @@ pub const HostNodeScopeSiteDesc = descriptor_stream.ScopeSiteDesc;
 pub const HostNodeSignalTextNodeDesc = descriptor_stream.SignalTextNodeDesc;
 pub const HostNodeSignalTextAttrDesc = descriptor_stream.SignalTextAttrDesc;
 pub const HostNodeSignalCustomTextAttrDesc = descriptor_stream.SignalCustomTextAttrDesc;
+pub const HostNodeSignalOptionalCustomTextAttrDesc = descriptor_stream.SignalOptionalCustomTextAttrDesc;
 pub const HostNodeSignalCustomBoolAttrDesc = descriptor_stream.SignalCustomBoolAttrDesc;
 pub const HostNodeSignalBoolAttrDesc = descriptor_stream.SignalBoolAttrDesc;
 pub const HostNodeOnChangeDesc = descriptor_stream.OnChangeDesc;
@@ -139,7 +140,7 @@ pub fn formatEachDuplicateKeyDiagnostic(
     const suffix = if (displayed_key_len < key_text.len) "..." else "";
     return std.fmt.bufPrint(
         buffer,
-        "Ui.each duplicate key \"{s}{s}\": rows {d} and {d} share this key (each site: parent scope {d}, ordinal {d}); keys must be unique per list",
+        "Ui.each_str duplicate key \"{s}{s}\": rows {d} and {d} share this key (each site: parent scope {d}, ordinal {d}); keys must be unique per list",
         .{
             displayed_key,
             suffix,
@@ -148,7 +149,7 @@ pub fn formatEachDuplicateKeyDiagnostic(
             parent_scope_id,
             site_ordinal,
         },
-    ) catch "Ui.each duplicate key: keys must be unique per list";
+    ) catch "Ui.each_str duplicate key: keys must be unique per list";
 }
 
 fn utf8PrefixLenAtMost(bytes: []const u8, max_len: usize) usize {
@@ -164,7 +165,7 @@ test "formats each duplicate key diagnostics" {
     var buf: [512]u8 = undefined;
     const msg = formatEachDuplicateKeyDiagnostic(&buf, 12, 3, 2, 6, "alert-42");
     try std.testing.expectEqualStrings(
-        "Ui.each duplicate key \"alert-42\": rows 3 and 7 share this key (each site: parent scope 12, ordinal 3); keys must be unique per list",
+        "Ui.each_str duplicate key \"alert-42\": rows 3 and 7 share this key (each site: parent scope 12, ordinal 3); keys must be unique per list",
         msg,
     );
 }
@@ -197,6 +198,24 @@ fn u64SliceContains(items: []const u64, target: u64) bool {
         if (item == target) return true;
     }
     return false;
+}
+
+fn structuralSpliceParentAvailable(parent_elem_id: u64, parent_active: bool, replacement_elem_ids: []const u64, removed_elem_ids: []const u64) bool {
+    if (parent_elem_id == 0) return true;
+    if (u64SliceContains(replacement_elem_ids, parent_elem_id)) return true;
+    if (u64SliceContains(removed_elem_ids, parent_elem_id)) return false;
+    return parent_active;
+}
+
+test "spliced structural parents may be active outside replacement range" {
+    const replacement = [_]u64{ 43, 44, 45 };
+    const removed = [_]u64{ 43, 44, 45 };
+
+    try std.testing.expect(structuralSpliceParentAvailable(0, false, &replacement, &removed));
+    try std.testing.expect(structuralSpliceParentAvailable(71, true, &replacement, &removed));
+    try std.testing.expect(!structuralSpliceParentAvailable(71, false, &replacement, &removed));
+    try std.testing.expect(structuralSpliceParentAvailable(43, false, &replacement, &removed));
+    try std.testing.expect(!structuralSpliceParentAvailable(44, true, &.{}, &removed));
 }
 
 pub fn appendUniqueU64(allocator: std.mem.Allocator, values: *std.ArrayListUnmanaged(u64), value: u64) void {
@@ -287,8 +306,8 @@ pub const RecomputeApplyOutcome = struct {
 
 pub const HostKeyedRowDiffResult = each_runtime.DiffResult;
 
-/// The retained key/item pair read back out of an `Ui.each` row scope. Named so
-/// the native forwarder and the engine method share one type instead of each
+/// The retained key/item pair read back out of a `Ui.each_str` row scope. Named
+/// so the native forwarder and the engine method share one type instead of each
 /// declaring a distinct anonymous struct.
 pub const EachRowValues = scope_runtime.EachRowValues;
 
@@ -767,6 +786,10 @@ pub fn Engine(comptime Ctx: type) type {
             return self.render_cache.hasRoot();
         }
 
+        pub fn hasActiveRenderNode(self: *const Self, elem_id: u64) bool {
+            return self.render_cache.hasActiveNode(elem_id);
+        }
+
         pub fn resetRenderTree(self: *Self, ctx: Ctx.Handle) void {
             self.render_cache.reset(ctx);
         }
@@ -777,6 +800,10 @@ pub fn Engine(comptime Ctx: type) type {
 
         pub fn ensureRenderNode(self: *Self, ctx: Ctx.Handle, elem_id: u64, tag: []const u8, counts: *render.Counts) void {
             self.render_cache.ensureNode(ctx, elem_id, tag, counts);
+        }
+
+        pub fn activeRenderNodeTagDiffers(self: *const Self, elem_id: u64, tag: []const u8) bool {
+            return self.render_cache.activeNodeTagDiffers(elem_id, tag);
         }
 
         pub fn removeRenderNode(self: *Self, ctx: Ctx.Handle, elem_id: u64, counts: *render.Counts) void {
@@ -1121,18 +1148,6 @@ pub fn Engine(comptime Ctx: type) type {
             return self.dirty_signal_generation;
         }
 
-        pub fn appendSignalAndDependents(self: *Self, allocator: std.mem.Allocator, signal_ids: *std.ArrayListUnmanaged(u64), signal_id: u64) void {
-            active_graph.appendSignalAndDependents(allocator, self.signal_dependents.items, signal_ids, signal_id);
-        }
-
-        pub fn sortSignalIdsByRank(self: *Self, signal_ids: []u64) void {
-            active_graph.sortSignalIdsByRank(self.signal_descriptors.items, signal_ids);
-        }
-
-        pub fn dirtySignalIdsForEvent(self: *Self, allocator: std.mem.Allocator, event_id: u64) []u64 {
-            return active_graph.dirtySignalIdsForEvent(allocator, self.signal_event_routes.items, self.signal_dependents.items, self.signal_descriptors.items, event_id);
-        }
-
         pub fn activeSignalRank(self: *Self, record_id: u64) u64 {
             return active_graph.rank(HostSignalRecord, self.active_signal_graph.items, record_id);
         }
@@ -1141,26 +1156,23 @@ pub fn Engine(comptime Ctx: type) type {
             return active_graph.dependentIds(HostSignalRecord, self.active_signal_graph.items, record_id);
         }
 
-        pub fn appendActiveSignalAndDependents(self: *Self, allocator: std.mem.Allocator, record_ids: *std.ArrayListUnmanaged(u64), record_id: u64) void {
-            active_graph.appendAndDependents(HostSignalRecord, allocator, self.active_signal_graph.items, record_ids, record_id);
-        }
-
-        pub fn sortActiveSignalRecordIdsByRank(self: *Self, record_ids: []u64) void {
-            active_graph.sortRecordIdsByRank(HostSignalRecord, self.active_signal_graph.items, record_ids);
-        }
-
-        pub fn dirtyActiveSignalRecordIdsForSources(self: *Self, allocator: std.mem.Allocator, dirty_source_node_ids: []const u64) []u64 {
-            return active_graph.dirtyRecordIdsForSources(
+        fn scratchDirtyActiveSignalRecordIdsForSources(self: *Self, ctx: Ctx.Handle, dirty_source_node_ids: []const u64) []const u64 {
+            return self.scratch.dirty_active_records.collectForSources(
                 HostSignalRecord,
-                allocator,
+                Ctx.allocator(ctx),
                 self.active_signal_graph.items,
                 self.active_source_signal_routes.items,
                 dirty_source_node_ids,
             );
         }
 
-        pub fn dirtyActiveSignalRecordIdsForRoots(self: *Self, allocator: std.mem.Allocator, root_record_ids: []const u64) []u64 {
-            return active_graph.dirtyRecordIdsForRoots(HostSignalRecord, allocator, self.active_signal_graph.items, root_record_ids);
+        fn scratchDirtyActiveSignalRecordIdsForRoots(self: *Self, ctx: Ctx.Handle, root_record_ids: []const u64) []const u64 {
+            return self.scratch.dirty_active_records.collectForRoots(
+                HostSignalRecord,
+                Ctx.allocator(ctx),
+                self.active_signal_graph.items,
+                root_record_ids,
+            );
         }
 
         pub fn recordDerivedCall(self: *Self) void {
@@ -1266,15 +1278,24 @@ pub fn Engine(comptime Ctx: type) type {
 
             const initial = erased_calls.callValueInitThunk(roc_host, desc.initial);
             var cell = HostValueCell.initRetained(initial, desc.cap, &self.pending_roc_metrics);
-            const state_index = self.states.items.len;
-            self.states.append(Ctx.allocator(ctx), .{
+            const next_state = HostState{
                 .state_id = desc.node_id,
                 .cell = cell,
                 .version = 0,
                 .active = true,
-            }) catch {
-                cell.deinit(ctx, roc_host, &self.pending_roc_metrics);
-                @panic("out of memory");
+            };
+            const state_index = blk: {
+                for (self.states.items, 0..) |state, index| {
+                    if (state.active) continue;
+                    self.states.items[index] = next_state;
+                    break :blk index;
+                }
+                const index = self.states.items.len;
+                self.states.append(Ctx.allocator(ctx), next_state) catch {
+                    cell.deinit(ctx, roc_host, &self.pending_roc_metrics);
+                    @panic("out of memory");
+                };
+                break :blk index;
             };
             self.recordStateCellIndex(ctx, desc.node_id, state_index);
         }
@@ -1534,6 +1555,12 @@ pub fn Engine(comptime Ctx: type) type {
                 stream.appendSignalCustomTextAttr(allocator, ctx, roc_host, &self.pending_roc_metrics, desc.elem_id, desc.name, signal, desc.read);
                 stream.signal_custom_text_attrs.items[stream.signal_custom_text_attrs.items.len - 1].cached_value = self.cloneHostSignalCacheSlot(ctx, desc.cached_value, &self.pending_roc_metrics);
             }
+            for (previous.signal_optional_custom_text_attrs.items) |desc| {
+                if (!u64SliceContains(copied_elem_ids.items, desc.elem_id)) continue;
+                const signal = desc.signal.cloneRetained(allocator, &self.pending_roc_metrics);
+                stream.appendSignalOptionalCustomTextAttr(allocator, ctx, roc_host, &self.pending_roc_metrics, desc.elem_id, desc.name, signal, desc.present, desc.read);
+                stream.signal_optional_custom_text_attrs.items[stream.signal_optional_custom_text_attrs.items.len - 1].cached_value = self.cloneHostSignalCacheSlot(ctx, desc.cached_value, &self.pending_roc_metrics);
+            }
             for (previous.static_custom_bool_attrs.items) |desc| {
                 if (!u64SliceContains(copied_elem_ids.items, desc.elem_id)) continue;
                 stream.appendStaticCustomBoolAttr(allocator, desc.elem_id, desc.name, desc.value);
@@ -1723,6 +1750,17 @@ pub fn Engine(comptime Ctx: type) type {
                             if (stream.customTextAttrDescriptorExists(elem_id, name_slice)) @panic("element has duplicate custom text attr descriptors");
                             const signal = self.bindNodeSignal(allocator, stream, payload.signal.*, binder_stack);
                             stream.appendSignalCustomTextAttr(allocator, ctx, roc_host, &self.pending_roc_metrics, elem_id, name_slice, signal, payload.read);
+                        },
+                    }
+                },
+                .signal_optional_text => |payload| {
+                    switch (payload.target) {
+                        .fixed => @panic("optional text attr descriptors require a custom attr name"),
+                        .custom => |name| {
+                            const name_slice = name.asSlice();
+                            if (stream.customTextAttrDescriptorExists(elem_id, name_slice)) @panic("element has duplicate custom text attr descriptors");
+                            const signal = self.bindNodeSignal(allocator, stream, payload.signal.*, binder_stack);
+                            stream.appendSignalOptionalCustomTextAttr(allocator, ctx, roc_host, &self.pending_roc_metrics, elem_id, name_slice, signal, payload.present, payload.read);
                         },
                     }
                 },
@@ -2193,6 +2231,15 @@ pub fn Engine(comptime Ctx: type) type {
             releaseHostTextRead(desc.read, roc_host, &self.pending_roc_metrics);
         }
 
+        fn deinitActiveSignalOptionalCustomTextAttrDesc(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, desc: *HostNodeSignalOptionalCustomTextAttrDesc) void {
+            const allocator = Ctx.allocator(ctx);
+            allocator.free(desc.name);
+            desc.cached_value.deinit(ctx, roc_host, &self.pending_roc_metrics);
+            desc.signal.deinit(allocator, ctx, roc_host, &self.pending_roc_metrics);
+            releaseHostBoolRead(desc.present, roc_host, &self.pending_roc_metrics);
+            releaseHostTextRead(desc.read, roc_host, &self.pending_roc_metrics);
+        }
+
         fn deinitActiveSignalCustomBoolAttrDesc(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, desc: *HostNodeSignalCustomBoolAttrDesc) void {
             const allocator = Ctx.allocator(ctx);
             allocator.free(desc.name);
@@ -2416,6 +2463,27 @@ pub fn Engine(comptime Ctx: type) type {
             self.active_stream.signal_custom_text_attrs.items.len = write_index;
         }
 
+        fn removeActiveSignalOptionalCustomTextAttrDescriptorsForRemovedElems(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, removed_elem_ids: []const u64) void {
+            var write_index: usize = 0;
+            self.recordStreamNodesScannedBy(.stream_nodes_scanned_remove_target, self.active_stream.signal_optional_custom_text_attrs.items.len);
+            for (self.active_stream.signal_optional_custom_text_attrs.items, 0..) |desc, read_index| {
+                if (u64SliceContains(removed_elem_ids, desc.elem_id)) {
+                    var removed = desc;
+                    const record_id = self.requireActiveSignalRecordId(removed.signal.record);
+                    self.removeActiveTextSignalRoute(record_id, .custom_text_optional_attr, read_index);
+                    self.active_stream.forgetSignalRecordTree(removed.signal.record);
+                    self.releaseActiveSignalRecord(ctx, removed.signal.record);
+                    self.deinitActiveSignalOptionalCustomTextAttrDesc(ctx, roc_host, &removed);
+                    continue;
+                }
+                const record_id = self.requireActiveSignalRecordId(desc.signal.record);
+                self.updateActiveTextSignalRouteIndex(record_id, .custom_text_optional_attr, read_index, write_index);
+                self.active_stream.signal_optional_custom_text_attrs.items[write_index] = desc;
+                write_index += 1;
+            }
+            self.active_stream.signal_optional_custom_text_attrs.items.len = write_index;
+        }
+
         fn removeActiveStaticCustomBoolAttrDescriptorsForRemovedElems(self: *Self, ctx: Ctx.Handle, removed_elem_ids: []const u64) void {
             const allocator = Ctx.allocator(ctx);
             var write_index: usize = 0;
@@ -2552,7 +2620,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
         }
 
-        fn removeActiveEventDescriptorAt(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, index: usize) void {
+        fn removeActiveEventDescriptorAt(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, index: usize, moved_event_elem_ids: *std.ArrayListUnmanaged(u64)) void {
             const allocator = Ctx.allocator(ctx);
             const event_count = self.active_stream.events.items.len;
             if (self.active_events.items.len != event_count) {
@@ -2575,6 +2643,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const moved = self.active_stream.events.items[last_index];
                 self.active_stream.events.items[index] = moved;
                 self.updateActiveEventDescriptorIndex(moved, last_index, index);
+                appendUniqueU64(allocator, moved_event_elem_ids, moved.elem_id);
                 if (self.active_events.items.len != 0) {
                     self.active_events.items[index] = self.active_events.items[last_index];
                 }
@@ -2600,7 +2669,7 @@ pub fn Engine(comptime Ctx: type) type {
             scratch.sortDescending();
         }
 
-        fn removeActiveElemOwnedDescriptorsForRemovedElems(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, removed_elem_ids: []const u64) void {
+        fn removeActiveElemOwnedDescriptorsForRemovedElems(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, removed_elem_ids: []const u64, moved_event_elem_ids: *std.ArrayListUnmanaged(u64)) void {
             self.collectElemOwnedRemovalIndexes(ctx, removed_elem_ids);
             defer self.clearElemOwnedRemovalScratch();
 
@@ -2618,7 +2687,7 @@ pub fn Engine(comptime Ctx: type) type {
                 self.removeActiveSignalBoolAttrDescriptorAt(ctx, roc_host, index);
             }
             for (scratch.event_indexes.items) |index| {
-                self.removeActiveEventDescriptorAt(ctx, roc_host, index);
+                self.removeActiveEventDescriptorAt(ctx, roc_host, index, moved_event_elem_ids);
             }
             for (scratch.element_indexes.items) |index| {
                 self.removeActiveElementDescriptorAt(ctx, index);
@@ -2718,10 +2787,11 @@ pub fn Engine(comptime Ctx: type) type {
             self.active_stream.eaches.items.len = write_index;
         }
 
-        fn removeActiveNonRenderDescriptorsInTarget(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, target_scopes: []const bool, removed_elem_ids: []const u64) void {
-            self.removeActiveElemOwnedDescriptorsForRemovedElems(ctx, roc_host, removed_elem_ids);
+        fn removeActiveNonRenderDescriptorsInTarget(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, target_scopes: []const bool, removed_elem_ids: []const u64, moved_event_elem_ids: *std.ArrayListUnmanaged(u64)) void {
+            self.removeActiveElemOwnedDescriptorsForRemovedElems(ctx, roc_host, removed_elem_ids, moved_event_elem_ids);
             self.removeActiveStaticCustomTextAttrDescriptorsForRemovedElems(ctx, removed_elem_ids);
             self.removeActiveSignalCustomTextAttrDescriptorsForRemovedElems(ctx, roc_host, removed_elem_ids);
+            self.removeActiveSignalOptionalCustomTextAttrDescriptorsForRemovedElems(ctx, roc_host, removed_elem_ids);
             self.removeActiveStaticCustomBoolAttrDescriptorsForRemovedElems(ctx, removed_elem_ids);
             self.removeActiveSignalCustomBoolAttrDescriptorsForRemovedElems(ctx, roc_host, removed_elem_ids);
             self.removeActiveOnChangeDescriptorsInTarget(ctx, roc_host, target_scopes);
@@ -2836,6 +2906,19 @@ pub fn Engine(comptime Ctx: type) type {
             }
             self.active_stream.signal_custom_text_attrs.appendSlice(allocator, replacement.signal_custom_text_attrs.items) catch @panic("out of memory");
             replacement.signal_custom_text_attrs.items.len = 0;
+
+            const signal_optional_custom_text_attr_base = self.active_stream.signal_optional_custom_text_attrs.items.len;
+            for (replacement.signal_optional_custom_text_attrs.items, 0..) |desc, offset| {
+                self.active_stream.rememberSignalRecordTree(allocator, desc.signal.record);
+                self.retainActiveSignalRecord(ctx, desc.signal.record);
+                const record_id = self.requireActiveSignalRecordId(desc.signal.record);
+                self.appendActiveTextSignalRoute(ctx, record_id, .{
+                    .kind = .custom_text_optional_attr,
+                    .index = signal_optional_custom_text_attr_base + offset,
+                });
+            }
+            self.active_stream.signal_optional_custom_text_attrs.appendSlice(allocator, replacement.signal_optional_custom_text_attrs.items) catch @panic("out of memory");
+            replacement.signal_optional_custom_text_attrs.items.len = 0;
 
             self.active_stream.static_custom_bool_attrs.appendSlice(allocator, replacement.static_custom_bool_attrs.items) catch @panic("out of memory");
             replacement.static_custom_bool_attrs.items.len = 0;
@@ -2981,9 +3064,11 @@ pub fn Engine(comptime Ctx: type) type {
             const mount_count = replacement.mounts.items.len;
             const replacement_elem_ids = structural_splice.renderElemIds(allocator, replacement.render_nodes.items);
             errdefer allocator.free(replacement_elem_ids);
+            var moved_event_elem_ids: std.ArrayListUnmanaged(u64) = .empty;
+            errdefer moved_event_elem_ids.deinit(allocator);
 
             self.active_stream.replaceRenderRangeWithStreamOptions(allocator, render_start, removed_render_nodes, replacement, child_insert_hint, refresh_suffix_indexes, &self.pending_roc_metrics);
-            self.removeActiveNonRenderDescriptorsInTarget(ctx, roc_host, target_scopes, removal_scan.removed_elem_ids);
+            self.removeActiveNonRenderDescriptorsInTarget(ctx, roc_host, target_scopes, removal_scan.removed_elem_ids, &moved_event_elem_ids);
             self.adjustActiveScopeSiteRenderInsertIndices(render_insert_index, removal_scan.removed_render_count, replacement_render_count);
             const on_change_start = self.active_stream.on_changes.items.len;
             const replacement_on_change_indices = structural_splice.indexRange(allocator, on_change_start, on_change_count);
@@ -2998,6 +3083,7 @@ pub fn Engine(comptime Ctx: type) type {
                 .removed_elem_ids = removal_scan.removed_elem_ids,
                 .touched_parent_ids = removal_scan.touched_parent_ids,
                 .replacement_elem_ids = replacement_elem_ids,
+                .moved_event_elem_ids = moved_event_elem_ids.toOwnedSlice(allocator) catch @panic("out of memory"),
                 .replacement_on_change_indices = replacement_on_change_indices,
                 .replacement_mount_indices = replacement_mount_indices,
             };
@@ -3110,6 +3196,25 @@ pub fn Engine(comptime Ctx: type) type {
             return changed;
         }
 
+        fn applySignalOptionalTextAttrValue(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, elem_id: u64, name: []const u8, value: HostValue, signal_cap: HostValueCapability, present: HostBoolRead, read: HostTextRead) bool {
+            assertHostValueCapabilitiesMatch(present.capability, signal_cap, "optional text attr presence read extension capability did not match its signal value");
+            assertHostValueCapabilitiesMatch(read.capability, signal_cap, "optional text attr read extension capability did not match its signal value");
+            if (!callHostValueToBoolWithCapability(ctx, roc_host, present.capability, present.read, value)) {
+                return self.clearRenderTextAttr(ctx, elem_id, name);
+            }
+            const text = callHostValueToStrWithCapability(ctx, roc_host, read.capability, read.read, value);
+            defer text.decref(roc_host);
+            return self.applyRenderTextAttr(ctx, elem_id, name, text.asSlice());
+        }
+
+        pub fn evalSignalOptionalTextAttr(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, elem_id: u64, name: []const u8, signal: *HostSignalBinding, present: HostBoolRead, read: HostTextRead, cache_slot: *HostSignalCacheSlot) bool {
+            const value = self.evalHostSignalBinding(ctx, roc_host, signal);
+            const signal_cap = self.hostSignalBindingCapability(ctx, signal);
+            const changed = self.applySignalOptionalTextAttrValue(ctx, roc_host, elem_id, name, value, signal_cap, present, read);
+            cache_slot.replace(ctx, roc_host, &self.pending_roc_metrics, value, signal_cap);
+            return changed;
+        }
+
         pub fn evalSignalBoolField(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, elem_id: u64, field: RenderBoolField, signal: *HostSignalBinding, read: HostBoolRead, cache_slot: *HostSignalCacheSlot) bool {
             const value = self.evalHostSignalBinding(ctx, roc_host, signal);
             const signal_cap = self.hostSignalBindingCapability(ctx, signal);
@@ -3158,6 +3263,19 @@ pub fn Engine(comptime Ctx: type) type {
             return self.applyRenderTextAttr(ctx, elem_id, name, text.asSlice());
         }
 
+        pub fn evalDirtySignalOptionalTextAttr(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, elem_id: u64, name: []const u8, signal: *HostSignalBinding, present: HostBoolRead, read: HostTextRead, cache_slot: *HostSignalCacheSlot, dirty_source_node_ids: []const u64, dirty_generation: u64) bool {
+            const result = self.evalDirtyHostSignalBinding(ctx, roc_host, signal, dirty_source_node_ids, dirty_generation);
+            const cap = self.hostSignalBindingCapability(ctx, signal);
+            assertHostValueCapabilitiesMatch(present.capability, cap, "dirty optional text attr presence read extension capability did not match its signal value");
+            assertHostValueCapabilitiesMatch(read.capability, cap, "dirty optional text attr read extension capability did not match its signal value");
+            if (!result.changed) {
+                callHostValueToUnitWithCapability(ctx, roc_host, cap, hv.hostValueCapabilityDrop(cap), result.value);
+                return false;
+            }
+            if (!self.updateDirtySignalCache(ctx, roc_host, cache_slot, result.value, cap)) return false;
+            return self.applySignalOptionalTextAttrValue(ctx, roc_host, elem_id, name, result.value, cap, present, read);
+        }
+
         pub fn evalDirtySignalBoolField(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, elem_id: u64, field: RenderBoolField, signal: *HostSignalBinding, read: HostBoolRead, cache_slot: *HostSignalCacheSlot, dirty_source_node_ids: []const u64, dirty_generation: u64) bool {
             const result = self.evalDirtyHostSignalBinding(ctx, roc_host, signal, dirty_source_node_ids, dirty_generation);
             const cap = self.hostSignalBindingCapability(ctx, signal);
@@ -3194,6 +3312,13 @@ pub fn Engine(comptime Ctx: type) type {
                 return self.evalDirtySignalTextAttr(ctx, roc_host, elem_id, name, signal, read, cache_slot, dirty_source_node_ids, dirty_generation);
             }
             return self.evalSignalTextAttr(ctx, roc_host, elem_id, name, signal, read, cache_slot);
+        }
+
+        pub fn evalStructuralSignalOptionalTextAttr(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, elem_id: u64, name: []const u8, signal: *HostSignalBinding, present: HostBoolRead, read: HostTextRead, cache_slot: *HostSignalCacheSlot, dirty_source_node_ids: []const u64, dirty_generation: u64) bool {
+            if (dirty_generation != 0 and sourceNodeIdsIntersect(signal.source_node_ids, dirty_source_node_ids)) {
+                return self.evalDirtySignalOptionalTextAttr(ctx, roc_host, elem_id, name, signal, present, read, cache_slot, dirty_source_node_ids, dirty_generation);
+            }
+            return self.evalSignalOptionalTextAttr(ctx, roc_host, elem_id, name, signal, present, read, cache_slot);
         }
 
         pub fn evalStructuralSignalBoolField(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, elem_id: u64, field: RenderBoolField, signal: *HostSignalBinding, read: HostBoolRead, cache_slot: *HostSignalCacheSlot, dirty_source_node_ids: []const u64, dirty_generation: u64) bool {
@@ -3335,15 +3460,16 @@ pub fn Engine(comptime Ctx: type) type {
             return self.evalDirtyHostSignalRecord(ctx, roc_host, signal.record, dirty_source_node_ids, dirty_generation);
         }
 
-        pub fn propagateDirtyActiveSignals(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, allocator: std.mem.Allocator, dirty_source_node_ids: []const u64, dirty_generation: u64) []u64 {
-            const dirty_record_ids = self.dirtyActiveSignalRecordIdsForSources(allocator, dirty_source_node_ids);
-            defer allocator.free(dirty_record_ids);
-            return self.propagateDirtyActiveSignalRecordIds(ctx, roc_host, allocator, dirty_record_ids, dirty_source_node_ids, dirty_generation);
+        pub fn propagateDirtyActiveSignals(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, allocator: std.mem.Allocator, dirty_source_node_ids: []const u64, dirty_generation: u64) []const u64 {
+            _ = allocator;
+            const dirty_record_ids = self.scratchDirtyActiveSignalRecordIdsForSources(ctx, dirty_source_node_ids);
+            return self.propagateDirtyActiveSignalRecordIds(ctx, roc_host, dirty_record_ids, dirty_source_node_ids, dirty_generation);
         }
 
-        pub fn propagateDirtyActiveSignalRecordIds(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, allocator: std.mem.Allocator, dirty_record_ids: []const u64, dirty_source_node_ids: []const u64, dirty_generation: u64) []u64 {
-            var changed_record_ids: std.ArrayListUnmanaged(u64) = .empty;
-            errdefer changed_record_ids.deinit(allocator);
+        pub fn propagateDirtyActiveSignalRecordIds(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, dirty_record_ids: []const u64, dirty_source_node_ids: []const u64, dirty_generation: u64) []const u64 {
+            const allocator = Ctx.allocator(ctx);
+            var changed_record_ids = &self.scratch.dirty_changed_record_ids;
+            changed_record_ids.clearRetainingCapacity();
 
             for (dirty_record_ids) |record_id| {
                 const record = self.active_signal_graph.items[@intCast(record_id)].record;
@@ -3356,7 +3482,7 @@ pub fn Engine(comptime Ctx: type) type {
                 self.dropHostSignalRecordValue(ctx, roc_host, record, result.value);
             }
 
-            return changed_record_ids.toOwnedSlice(allocator) catch @panic("out of memory");
+            return changed_record_ids.items;
         }
 
         pub fn collectDirtyStructuralSignals(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, allocator: std.mem.Allocator, dirty_source_node_ids: []const u64, changed_record_ids: []const u64, dirty_generation: u64) []HostDirtyStructuralSignal {
@@ -3798,6 +3924,9 @@ pub fn Engine(comptime Ctx: type) type {
             var replacement_elem_ids = &self.scratch.each_replacement_elem_ids;
             replacement_elem_ids.clearRetainingCapacity();
             defer replacement_elem_ids.clearRetainingCapacity();
+            var moved_event_elem_ids = &self.scratch.each_moved_event_elem_ids;
+            moved_event_elem_ids.clearRetainingCapacity();
+            defer moved_event_elem_ids.clearRetainingCapacity();
             var replacement_on_change_indices = &self.scratch.each_replacement_on_change_indices;
             replacement_on_change_indices.clearRetainingCapacity();
             defer replacement_on_change_indices.clearRetainingCapacity();
@@ -3828,6 +3957,9 @@ pub fn Engine(comptime Ctx: type) type {
                     appendUniqueU64(allocator, touched_parent_ids, parent_id);
                 }
                 replacement_elem_ids.appendSlice(allocator, splice.replacement_elem_ids) catch @panic("out of memory");
+                for (splice.moved_event_elem_ids) |elem_id| {
+                    appendUniqueU64(allocator, moved_event_elem_ids, elem_id);
+                }
                 replacement_on_change_indices.appendSlice(allocator, splice.replacement_on_change_indices) catch @panic("out of memory");
                 replacement_mount_indices.appendSlice(allocator, splice.replacement_mount_indices) catch @panic("out of memory");
                 spliced_any = true;
@@ -3863,6 +3995,9 @@ pub fn Engine(comptime Ctx: type) type {
                     appendUniqueU64(allocator, touched_parent_ids, parent_id);
                 }
                 replacement_elem_ids.appendSlice(allocator, splice.replacement_elem_ids) catch @panic("out of memory");
+                for (splice.moved_event_elem_ids) |elem_id| {
+                    appendUniqueU64(allocator, moved_event_elem_ids, elem_id);
+                }
                 replacement_on_change_indices.appendSlice(allocator, splice.replacement_on_change_indices) catch @panic("out of memory");
                 replacement_mount_indices.appendSlice(allocator, splice.replacement_mount_indices) catch @panic("out of memory");
                 spliced_any = true;
@@ -3879,6 +4014,7 @@ pub fn Engine(comptime Ctx: type) type {
                 .removed_elem_ids = removed_elem_ids.items,
                 .touched_parent_ids = touched_parent_ids.items,
                 .replacement_elem_ids = replacement_elem_ids.items,
+                .moved_event_elem_ids = moved_event_elem_ids.items,
                 .replacement_on_change_indices = replacement_on_change_indices.items,
                 .replacement_mount_indices = replacement_mount_indices.items,
             };
@@ -4085,6 +4221,14 @@ pub fn Engine(comptime Ctx: type) type {
                 }
             }
 
+            self.recordStreamNodesScannedBy(.stream_nodes_scanned_apply, self.active_stream.signal_optional_custom_text_attrs.items.len);
+            for (self.active_stream.signal_optional_custom_text_attrs.items) |*desc| {
+                if (desc.elem_id != elem_id) continue;
+                if (self.evalStructuralSignalOptionalTextAttr(ctx, roc_host, desc.elem_id, desc.name, &desc.signal, desc.present, desc.read, &desc.cached_value, dirty_source_node_ids, dirty_generation)) {
+                    counts.addTextAttr();
+                }
+            }
+
             self.recordStreamNodesScannedBy(.stream_nodes_scanned_apply, self.active_stream.static_custom_bool_attrs.items.len);
             for (self.active_stream.static_custom_bool_attrs.items) |desc| {
                 if (desc.elem_id != elem_id) continue;
@@ -4191,7 +4335,11 @@ pub fn Engine(comptime Ctx: type) type {
                 const parent_elem_id = renderNodeParentElemId(stream, node);
                 if (parent_elem_id >= child_table_len) @panic("render node referenced parent outside structural DOM patch table");
 
-                self.ensureRenderNode(ctx, node.elem_id, renderNodeTag(stream, node), &counts);
+                const tag = renderNodeTag(stream, node);
+                if (self.activeRenderNodeTagDiffers(node.elem_id, tag)) {
+                    self.removeRenderNode(ctx, node.elem_id, &counts);
+                }
+                self.ensureRenderNode(ctx, node.elem_id, tag, &counts);
                 seen[@intCast(node.elem_id)] = true;
                 appendUniqueU64(allocator, &touched_parents, parent_elem_id);
             }
@@ -4260,6 +4408,12 @@ pub fn Engine(comptime Ctx: type) type {
             self.recordStreamNodesScannedBy(.stream_nodes_scanned_apply, stream.signal_custom_text_attrs.items.len);
             for (stream.signal_custom_text_attrs.items) |*desc| {
                 if (desc.elem_id < seen.len and seen[@intCast(desc.elem_id)] and self.evalSignalTextAttr(ctx, roc_host, desc.elem_id, desc.name, &desc.signal, desc.read, &desc.cached_value)) {
+                    counts.addTextAttr();
+                }
+            }
+            self.recordStreamNodesScannedBy(.stream_nodes_scanned_apply, stream.signal_optional_custom_text_attrs.items.len);
+            for (stream.signal_optional_custom_text_attrs.items) |*desc| {
+                if (desc.elem_id < seen.len and seen[@intCast(desc.elem_id)] and self.evalSignalOptionalTextAttr(ctx, roc_host, desc.elem_id, desc.name, &desc.signal, desc.present, desc.read, &desc.cached_value)) {
                     counts.addTextAttr();
                 }
             }
@@ -4357,6 +4511,11 @@ pub fn Engine(comptime Ctx: type) type {
                     counts.addTextAttr();
                 }
             }
+            for (stream.signal_optional_custom_text_attrs.items) |*desc| {
+                if (self.evalSignalOptionalTextAttr(ctx, roc_host, desc.elem_id, desc.name, &desc.signal, desc.present, desc.read, &desc.cached_value)) {
+                    counts.addTextAttr();
+                }
+            }
             for (stream.static_custom_bool_attrs.items) |desc| {
                 if (self.applyRenderBoolAttr(ctx, desc.elem_id, desc.name, desc.value)) {
                     counts.addTextAttr();
@@ -4432,9 +4591,15 @@ pub fn Engine(comptime Ctx: type) type {
                 if (elem_id >= child_table_len) @panic("render node exceeded structural DOM patch table");
 
                 const parent_elem_id = streamElemParentElemId(&self.active_stream, elem_id);
-                if (parent_elem_id >= child_table_len) @panic("render node referenced parent outside structural DOM patch table");
+                if (!structuralSpliceParentAvailable(parent_elem_id, self.hasActiveRenderNode(parent_elem_id), splice.replacement_elem_ids, splice.removed_elem_ids)) {
+                    @panic("render node referenced unavailable parent in structural DOM splice");
+                }
 
-                self.ensureRenderNode(ctx, elem_id, streamElemTag(&self.active_stream, elem_id), &counts);
+                const tag = streamElemTag(&self.active_stream, elem_id);
+                if (self.activeRenderNodeTagDiffers(elem_id, tag)) {
+                    self.removeRenderNode(ctx, elem_id, &counts);
+                }
+                self.ensureRenderNode(ctx, elem_id, tag, &counts);
                 seen[@intCast(elem_id)] = true;
                 appendUniqueU64(allocator, &touched_parents, parent_elem_id);
             }
@@ -4463,7 +4628,11 @@ pub fn Engine(comptime Ctx: type) type {
                     appendUniqueU64(allocator, &event_binding_elem_ids, child_id);
                 }
             }
+            for (splice.moved_event_elem_ids) |elem_id| {
+                appendUniqueU64(allocator, &event_binding_elem_ids, elem_id);
+            }
             for (event_binding_elem_ids.items) |elem_id| {
+                if (!self.hasActiveRenderNode(elem_id)) continue;
                 self.applyStructuralEventBindingsForElem(ctx, elem_id, &counts);
             }
 
@@ -4512,7 +4681,11 @@ pub fn Engine(comptime Ctx: type) type {
                 const parent_elem_id = renderNodeParentElemId(stream, node);
                 if (parent_elem_id >= child_table_len) @panic("render node referenced parent outside structural DOM patch table");
 
-                self.ensureRenderNode(ctx, node.elem_id, renderNodeTag(stream, node), &counts);
+                const tag = renderNodeTag(stream, node);
+                if (self.activeRenderNodeTagDiffers(node.elem_id, tag)) {
+                    self.removeRenderNode(ctx, node.elem_id, &counts);
+                }
+                self.ensureRenderNode(ctx, node.elem_id, tag, &counts);
                 seen[@intCast(node.elem_id)] = true;
 
                 next_children[@intCast(parent_elem_id)].append(allocator, node.elem_id) catch @panic("out of memory");
@@ -4575,6 +4748,11 @@ pub fn Engine(comptime Ctx: type) type {
             }
             for (stream.signal_custom_text_attrs.items) |*desc| {
                 if (self.evalSignalTextAttr(ctx, roc_host, desc.elem_id, desc.name, &desc.signal, desc.read, &desc.cached_value)) {
+                    counts.addTextAttr();
+                }
+            }
+            for (stream.signal_optional_custom_text_attrs.items) |*desc| {
+                if (self.evalSignalOptionalTextAttr(ctx, roc_host, desc.elem_id, desc.name, &desc.signal, desc.present, desc.read, &desc.cached_value)) {
                     counts.addTextAttr();
                 }
             }
@@ -4817,12 +4995,10 @@ pub fn Engine(comptime Ctx: type) type {
 
             const record_id = self.requireActiveSignalRecordId(record);
             const roots = [_]u64{record_id};
-            const dirty_record_ids = self.dirtyActiveSignalRecordIdsForRoots(Ctx.allocator(ctx), &roots);
-            defer Ctx.allocator(ctx).free(dirty_record_ids);
+            const dirty_record_ids = self.scratchDirtyActiveSignalRecordIdsForRoots(ctx, &roots);
 
             debugPhase(ctx, 330);
-            const changed_record_ids = self.propagateDirtyActiveSignalRecordIds(ctx, roc_host, Ctx.allocator(ctx), dirty_record_ids, &.{}, dirty_generation);
-            defer Ctx.allocator(ctx).free(changed_record_ids);
+            const changed_record_ids = self.propagateDirtyActiveSignalRecordIds(ctx, roc_host, dirty_record_ids, &.{}, dirty_generation);
             debugPhase(ctx, 340);
             return self.applyDirtySignalBatch(ctx, roc_host, &.{}, changed_record_ids, dirty_generation);
         }
@@ -4906,6 +5082,12 @@ pub fn Engine(comptime Ctx: type) type {
                             .custom_text_attr => {
                                 const desc = &self.active_stream.signal_custom_text_attrs.items[route.index];
                                 if (self.evalDirtySignalTextAttr(ctx, roc_host, desc.elem_id, desc.name, &desc.signal, desc.read, &desc.cached_value, dirty_source_node_ids, dirty_generation)) {
+                                    counts.addTextAttr();
+                                }
+                            },
+                            .custom_text_optional_attr => {
+                                const desc = &self.active_stream.signal_optional_custom_text_attrs.items[route.index];
+                                if (self.evalDirtySignalOptionalTextAttr(ctx, roc_host, desc.elem_id, desc.name, &desc.signal, desc.present, desc.read, &desc.cached_value, dirty_source_node_ids, dirty_generation)) {
                                     counts.addTextAttr();
                                 }
                             },

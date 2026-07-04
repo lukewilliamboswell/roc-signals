@@ -1,0 +1,25 @@
+# Textarea control scenario
+
+expect_visible role:heading name:"Textarea Control"
+expect_attr role:region name:"Textarea Control" data-fixture "textarea-control"
+expect_value label:"Message" ""
+expect_attr label:"Message" id "message-body"
+expect_attr label:"Message" placeholder "Write a note"
+expect_text text:"Canonical body: " "Canonical body: "
+expect_text text:"Focus events: 0" "Focus events: 0"
+expect_text text:"Blur events: 0" "Blur events: 0"
+
+focus label:"Message"
+expect_text text:"Focus events: 1" "Focus events: 1"
+
+fill label:"Message" "draft note"
+expect_value label:"Message" "draft note"
+expect_text text:"Canonical body: saved:draft note" "Canonical body: saved:draft note"
+
+fill label:"Message" "second draft"
+expect_value label:"Message" "second draft"
+expect_text text:"Canonical body: saved:second draft" "Canonical body: saved:second draft"
+
+blur label:"Message"
+expect_value label:"Message" "saved:second draft"
+expect_text text:"Blur events: 1" "Blur events: 1"

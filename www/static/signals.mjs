@@ -154,6 +154,11 @@ const knownListenerOptionMask =
   ListenerOptions.self |
   ListenerOptions.trusted;
 
+const eventResponseBitMask =
+  ListenerOptions.preventDefault |
+  ListenerOptions.stopPropagation |
+  ListenerOptions.stopImmediatePropagation;
+
 const EventDelivery = Object.freeze({
   auto: "auto",
   native: "native",
@@ -613,6 +618,7 @@ export class SignalsRuntime {
     // by the most recent host call so guards can assert the per-event patch
     // budget (mirrors the native host's `patches_emitted` discipline).
     this.lastCommands = [];
+    this.commandDecodeStats = null;
     if (this.telemetryLog) {
       this.installPointerProbe();
     }
@@ -663,21 +669,21 @@ export class SignalsRuntime {
     this.clearDom();
   }
 
-  dispatchUnit(eventId) {
-    this.dispatch(eventId, PayloadKind.unit, 0, 0, 0);
+  dispatchUnit(eventId, options = {}) {
+    return this.dispatch(eventId, PayloadKind.unit, 0, 0, 0, options);
   }
 
-  dispatchBool(eventId, value) {
-    this.dispatch(eventId, PayloadKind.bool, 0, 0, value ? 1 : 0);
+  dispatchBool(eventId, value, options = {}) {
+    return this.dispatch(eventId, PayloadKind.bool, 0, 0, value ? 1 : 0, options);
   }
 
-  dispatchString(eventId, value) {
+  dispatchString(eventId, value, options = {}) {
     const bytes = textEncoder.encode(value);
     const ptr = this.views.callHost(this.exports.roc_alloc, bytes.length, 1).result;
     let primaryError;
     try {
       this.views.u8.set(bytes, ptr);
-      return this.dispatch(eventId, PayloadKind.str, ptr, bytes.length, 0);
+      return this.dispatch(eventId, PayloadKind.str, ptr, bytes.length, 0, options);
     } catch (err) {
       primaryError = err;
       throw err;
@@ -686,12 +692,12 @@ export class SignalsRuntime {
     }
   }
 
-  dispatchBytes(eventId, bytes) {
+  dispatchBytes(eventId, bytes, options = {}) {
     const ptr = this.views.callHost(this.exports.roc_alloc, bytes.length, 1).result;
     let primaryError;
     try {
       this.views.u8.set(bytes, ptr);
-      return this.dispatch(eventId, PayloadKind.bytes, ptr, bytes.length, 0);
+      return this.dispatch(eventId, PayloadKind.bytes, ptr, bytes.length, 0, options);
     } catch (err) {
       primaryError = err;
       throw err;
@@ -711,7 +717,7 @@ export class SignalsRuntime {
     }
   }
 
-  dispatch(eventId, payloadKind, payloadPtr, payloadLen, boolValue) {
+  dispatch(eventId, payloadKind, payloadPtr, payloadLen, boolValue, options = {}) {
     this.emitTelemetry("host_call", {
       call: "event",
       eventId,
@@ -728,9 +734,11 @@ export class SignalsRuntime {
         payloadLen,
         boolValue,
       );
-      const responseBits = eventCall.result ?? 0;
+      const responseBits = validateEventResponseBits(eventCall.result ?? 0);
       this.lastEventResponseBits = responseBits;
-      this.applyPendingCommands(`event:${eventId}`);
+      if (options.drainCommands !== false) {
+        this.applyPendingCommands(`event:${eventId}`);
+      }
       return responseBits;
     } catch (err) {
       throw this.runtimeError(err);
@@ -767,6 +775,15 @@ export class SignalsRuntime {
     const ptr = this.views.callHost(this.exports.roc_alloc, bytes.length, 1).result;
     try {
       this.views.u8.set(bytes, ptr);
+      if (task) {
+        this.emitTelemetry("task_resolution", {
+          requestId,
+          name: task.name,
+          request: task.request,
+          failed: failed !== false,
+          payloadLen: bytes.length,
+        });
+      }
       this.emitTelemetry("host_call", {
         call: "resolve_task",
         requestId,
@@ -834,6 +851,7 @@ export class SignalsRuntime {
   }
 
   readString(offset, length) {
+    recordFixedStringDecode(this.commandDecodeStats, length);
     if (length === 0) {
       return "";
     }
@@ -866,8 +884,15 @@ export class SignalsRuntime {
     const records = this.readPendingCommands();
     this.lastCommands = records;
     this.emitCommandTelemetry(phase, records);
-    for (const record of records) {
-      this.applyCommand(record);
+    const previousDecodeStats = this.commandDecodeStats;
+    const decodeStats = newCommandDecodeStats();
+    this.commandDecodeStats = decodeStats;
+    try {
+      for (const record of records) {
+        this.applyCommand(record);
+      }
+    } finally {
+      this.commandDecodeStats = previousDecodeStats;
     }
     this.flushBehaviorEffects();
     this.emitTelemetry("commands_applied", {
@@ -876,6 +901,7 @@ export class SignalsRuntime {
       domNodes: this.nodes.size,
       eventListeners: this.eventCleanups.size,
       liveHostValues: this.liveHostValues(),
+      decode: decodeStats,
     });
     return records;
   }
@@ -1077,7 +1103,14 @@ export class SignalsRuntime {
       );
     }
 
-    const cursor = { offset: 8, limit: 8 + payloadLen, recordOffset: offset, opName };
+    recordDynamicRecordDecode(this.commandDecodeStats, bytes.byteLength);
+    const cursor = {
+      offset: 8,
+      limit: 8 + payloadLen,
+      recordOffset: offset,
+      opName,
+      stats: this.commandDecodeStats,
+    };
     switch (op) {
       case DynamicOp.setAttrText: {
         const elemId = readDynamicU32(view, cursor, "elem_id");
@@ -1193,7 +1226,21 @@ export class SignalsRuntime {
           pointer: describePointerEvent(event),
         });
       }
-      this.dispatchEventPayload(eventId, payloadDescriptor, event, payloadTelemetry);
+      const responseBits = this.dispatchEventPayload(eventId, payloadDescriptor, event, payloadTelemetry, {
+        drainCommands: false,
+      });
+      const responsePolicy = applyDynamicEventResponse(responseBits, event);
+      if (this.telemetryLog && responsePolicy.changed) {
+        this.emitTelemetry("dom_event_response", {
+          domEvent,
+          eventId,
+          responseBits,
+          preventedDefault: responsePolicy.preventedDefault,
+          stoppedPropagation: responsePolicy.stoppedPropagation,
+          stoppedImmediatePropagation: responsePolicy.stoppedImmediatePropagation,
+        });
+      }
+      this.applyPendingCommands(`event:${eventId}`);
     };
     cleanup = () => elem.removeEventListener(domEvent, listener, listenerOptions);
     if (listenerOptions === undefined) {
@@ -1367,7 +1414,7 @@ export class SignalsRuntime {
     this.pendingBehaviorUpdates.clear();
   }
 
-  dispatchEventPayload(eventId, payloadDescriptor, event, payloadTelemetry = null) {
+  dispatchEventPayload(eventId, payloadDescriptor, event, payloadTelemetry = null, options = {}) {
     const { payloadKind, eventExtractionPlan } = payloadDescriptor;
     switch (payloadKind) {
       case PayloadKind.unit:
@@ -1378,8 +1425,7 @@ export class SignalsRuntime {
           throw err;
         }
         this.emitEventPayloadTelemetry(eventId, payloadDescriptor, payloadTelemetry, {});
-        this.dispatchUnit(eventId);
-        return;
+        return this.dispatchUnit(eventId, options);
 
       case PayloadKind.str: {
         let value;
@@ -1393,8 +1439,7 @@ export class SignalsRuntime {
           throw err;
         }
         this.emitEventPayloadTelemetry(eventId, payloadDescriptor, payloadTelemetry, { value });
-        this.dispatchString(eventId, value);
-        return;
+        return this.dispatchString(eventId, value, options);
       }
 
       case PayloadKind.bool: {
@@ -1409,8 +1454,7 @@ export class SignalsRuntime {
           throw err;
         }
         this.emitEventPayloadTelemetry(eventId, payloadDescriptor, payloadTelemetry, { value });
-        this.dispatchBool(eventId, value);
-        return;
+        return this.dispatchBool(eventId, value, options);
       }
 
       case PayloadKind.bytes: {
@@ -1424,8 +1468,7 @@ export class SignalsRuntime {
         this.emitEventPayloadTelemetry(eventId, payloadDescriptor, payloadTelemetry, {
           byteLength: bytes.length,
         });
-        this.dispatchBytes(eventId, bytes);
-        return;
+        return this.dispatchBytes(eventId, bytes, options);
       }
 
       default:
@@ -1556,6 +1599,12 @@ export class SignalsRuntime {
       ],
       [
         "input",
+        () => {
+          syncFromDom();
+        },
+      ],
+      [
+        "change",
         () => {
           syncFromDom();
         },
@@ -2022,6 +2071,9 @@ function eventDeliveryForBinding(binding) {
   if (binding.delivery !== undefined) {
     return binding.delivery;
   }
+  // Compact fixed-event opcodes omit delivery fields. They are only emitted for
+  // canonical fixed bindings, so JS derives the same Auto -> Native delivery
+  // decision from fixed binding traits for telemetry and listener setup.
   const requested = EventDelivery.auto;
   if (requested === EventDelivery.native) {
     return { requested, effective: EventDelivery.native, reason: "requested-native" };
@@ -2209,6 +2261,32 @@ function applyEventListenerPolicy(options, domEvent, event, policy) {
     result.preventedDefault = preventDefaultForRocEvent(domEvent, event);
   }
   return result;
+}
+
+function applyDynamicEventResponse(responseBits, event) {
+  const result = applyStaticListenerPolicy(responseBits, event);
+  return {
+    ...result,
+    changed:
+      result.preventedDefault ||
+      result.stoppedPropagation ||
+      result.stoppedImmediatePropagation,
+  };
+}
+
+function validateEventResponseBits(responseBits) {
+  if (
+    !Number.isInteger(responseBits) ||
+    responseBits < 0 ||
+    responseBits > 0xffffffff
+  ) {
+    throw new Error(`event response bits must be an unsigned 32-bit integer, got ${responseBits}`);
+  }
+  const unsupported = responseBits & ~eventResponseBitMask;
+  if (unsupported !== 0) {
+    throw new Error(`unsupported event response bits 0x${(unsupported >>> 0).toString(16)}`);
+  }
+  return responseBits;
 }
 
 function listenerPolicyTelemetry(options, policy, includeStaticPolicyTelemetry) {
@@ -2663,6 +2741,51 @@ function setClass(node, value) {
   }
 }
 
+function newCommandDecodeStats() {
+  return {
+    fixedStringDecodes: 0,
+    fixedStringBytes: 0,
+    dynamicRecordsDecoded: 0,
+    dynamicRecordBytes: 0,
+    dynamicStringDecodes: 0,
+    dynamicStringBytes: 0,
+    dynamicByteArrayDecodes: 0,
+    dynamicByteArrayBytes: 0,
+  };
+}
+
+function recordFixedStringDecode(stats, bytes) {
+  if (!stats) {
+    return;
+  }
+  stats.fixedStringDecodes += 1;
+  stats.fixedStringBytes += bytes;
+}
+
+function recordDynamicRecordDecode(stats, bytes) {
+  if (!stats) {
+    return;
+  }
+  stats.dynamicRecordsDecoded += 1;
+  stats.dynamicRecordBytes += bytes;
+}
+
+function recordDynamicStringDecode(stats, bytes) {
+  if (!stats) {
+    return;
+  }
+  stats.dynamicStringDecodes += 1;
+  stats.dynamicStringBytes += bytes;
+}
+
+function recordDynamicByteArrayDecode(stats, bytes) {
+  if (!stats) {
+    return;
+  }
+  stats.dynamicByteArrayDecodes += 1;
+  stats.dynamicByteArrayBytes += bytes;
+}
+
 function align4(value) {
   return (value + 3) & ~3;
 }
@@ -2688,6 +2811,7 @@ function readDynamicString(view, cursor, field) {
   ensureDynamicAvailable(cursor, length, field);
   const bytes = new Uint8Array(view.buffer, view.byteOffset + cursor.offset, length);
   cursor.offset += length;
+  recordDynamicStringDecode(cursor.stats, length);
   try {
     return dynamicTextDecoder.decode(bytes);
   } catch (err) {
@@ -2703,6 +2827,7 @@ function readDynamicByteArray(view, cursor, field) {
   ensureDynamicAvailable(cursor, length, field);
   const bytes = new Uint8Array(view.buffer, view.byteOffset + cursor.offset, length);
   cursor.offset += length;
+  recordDynamicByteArrayDecode(cursor.stats, length);
   return new Uint8Array(bytes);
 }
 

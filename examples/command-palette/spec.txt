@@ -20,11 +20,13 @@ expect_text text:"Filtering actions for: deploy" "Filtering actions for: deploy"
 
 key_down label:"Command search" "K" true
 expect_text text:"Shortcut captured: K with Shift" "Shortcut captured: K with Shift"
+expect_text text:"No command has run yet" "No command has run yet"
 key_down label:"Command search" "Enter" false
 expect_text text:"Shortcut captured: Enter" "Shortcut captured: Enter"
+expect_text text:"Commands run: 1" "Commands run: 1"
 
 expect_attr role:form name:"Command form" id "command-form"
 expect_attr role:form name:"Command form" data-form "command-palette"
-expect_text text:"No command has run yet" "No command has run yet"
-submit role:form name:"Command form"
-expect_text text:"Commands run: 1" "Commands run: 1"
+expect_attr role:button name:"Run command" type "button"
+click role:button name:"Run command"
+expect_text text:"Commands run: 2" "Commands run: 2"

@@ -660,7 +660,7 @@ fn clearActiveRuntime() void {
 
 // --- Compiler-rt shim ---
 
-// The Roc app's `key.hash` path (`Ui.each`) emits a 128-bit integer multiply.
+// The Roc app's `key.hash` path (`Ui.each_str`) emits a 128-bit integer multiply.
 // ReleaseSmall leaves it as an undefined `__multi3` symbol instead of bundling
 // compiler-rt, so the app object imports `env.__multi3`. The host is linked into
 // every app wasm, so defining it here resolves that reference at link time and

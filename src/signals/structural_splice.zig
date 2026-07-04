@@ -20,6 +20,7 @@ pub const Splice = struct {
     removed_elem_ids: []u64,
     touched_parent_ids: []u64,
     replacement_elem_ids: []u64,
+    moved_event_elem_ids: []u64,
     replacement_on_change_indices: []usize,
     replacement_mount_indices: []usize,
 
@@ -27,6 +28,7 @@ pub const Splice = struct {
         allocator.free(self.removed_elem_ids);
         allocator.free(self.touched_parent_ids);
         allocator.free(self.replacement_elem_ids);
+        allocator.free(self.moved_event_elem_ids);
         allocator.free(self.replacement_on_change_indices);
         allocator.free(self.replacement_mount_indices);
     }
@@ -247,6 +249,7 @@ test "structural splice owns replacement slices" {
         .removed_elem_ids = try allocator.dupe(u64, &.{ 1, 2 }),
         .touched_parent_ids = try allocator.dupe(u64, &.{3}),
         .replacement_elem_ids = try allocator.dupe(u64, &.{ 4, 5 }),
+        .moved_event_elem_ids = try allocator.dupe(u64, &.{6}),
         .replacement_on_change_indices = try allocator.dupe(usize, &.{6}),
         .replacement_mount_indices = try allocator.dupe(usize, &.{7}),
     };

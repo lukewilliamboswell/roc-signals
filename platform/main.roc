@@ -2,7 +2,7 @@ platform ""
 	requires {
 		main : {} -> Elem
 	}
-	exposes [Elem, Signal, Html, Ui, Http, Json]
+	exposes [Elem, Signal, Html, Ui, Http]
 	packages {
 		http: "https://github.com/roc-lang/http/releases/download/0.1/6LcdNq2r7xTBwj972ecYWUkMWobJr94yL2NyJpHRAXap.tar.zst",
 	}
@@ -34,7 +34,6 @@ import Signal
 import Html
 import Ui
 import Http
-import Json
 
 ui_init : {} -> Box(Elem)
 ui_init = |_| {

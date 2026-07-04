@@ -225,6 +225,13 @@ pub const SignalTextAttr = struct {
     read: HostTextRead,
 };
 
+pub const SignalOptionalTextAttr = struct {
+    target: TextAttrTarget,
+    signal: *const abi.NodeSignalExpr,
+    present: HostBoolRead,
+    read: HostTextRead,
+};
+
 pub const StaticBoolAttr = struct {
     target: BoolAttrTarget,
     value: bool,
@@ -283,6 +290,7 @@ pub fn eventDeliveryRequestFromAbi(delivery: abi.NodeEventDelivery) EventDeliver
 pub const NodeAttr = union(enum) {
     static_text: StaticTextAttr,
     signal_text: SignalTextAttr,
+    signal_optional_text: SignalOptionalTextAttr,
     static_bool: StaticBoolAttr,
     signal_bool: SignalBoolAttr,
     event: EventAttr,
@@ -302,6 +310,15 @@ pub const NodeAttr = union(enum) {
                 break :blk .{ .signal_text = .{
                     .target = TextAttrTarget.fromAbi(payload.field, payload.name),
                     .signal = payload.signal,
+                    .read = payload.read,
+                } };
+            },
+            .TextOptionalSignal => blk: {
+                const payload = attr.payload_text_optional_signal();
+                break :blk .{ .signal_optional_text = .{
+                    .target = TextAttrTarget.fromAbi(payload.field, payload.name),
+                    .signal = payload.signal,
+                    .present = payload.present,
                     .read = payload.read,
                 } };
             },
