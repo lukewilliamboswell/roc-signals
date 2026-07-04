@@ -40,19 +40,14 @@ concat3 = |a, b, c| Str.concat(Str.concat(a, b), c)
 concat4 : Str, Str, Str, Str -> Str
 concat4 = |a, b, c, d| Str.concat(concat3(a, b, c), d)
 
-backlog_id : Str
 backlog_id = "backlog"
 
-ready_id : Str
 ready_id = "ready"
 
-progress_id : Str
 progress_id = "progress"
 
-review_id : Str
 review_id = "review"
 
-done_id : Str
 done_id = "done"
 
 columns : List(Column)
@@ -145,164 +140,114 @@ initial_board = {
 	focus_high_priority: False,
 }
 
-page_class : Str
 page_class = "grid min-h-screen gap-5 bg-zinc-100 text-zinc-950"
 
-toolbar_class : Str
 toolbar_class = "panel grid gap-4 p-5"
 
-toolbar_top_class : Str
 toolbar_top_class = "grid gap-3 lg:grid-cols-3"
 
-toolbar_title_class : Str
 toolbar_title_class = "grid gap-1 lg:col-span-2"
 
-eyebrow_class : Str
 eyebrow_class = "text-xs font-semibold uppercase text-emerald-700"
 
-toolbar_copy_class : Str
 toolbar_copy_class = "text-sm text-zinc-600"
 
-metric_grid_class : Str
 metric_grid_class = "grid gap-2 sm:grid-cols-3"
 
-metric_card_class : Str
 metric_card_class = "panel grid gap-1 bg-zinc-50 p-3"
 
-metric_label_class : Str
 metric_label_class = "text-xs font-semibold uppercase text-zinc-500"
 
-metric_value_class : Str
 metric_value_class = "text-lg font-semibold text-zinc-950"
 
-controls_class : Str
 controls_class = "grid gap-3 sm:flex sm:flex-wrap sm:items-end"
 
-board_class : Str
 board_class = "grid gap-4 xl:grid-cols-3"
 
-column_class : Str
 column_class = "panel grid min-h-32 content-start gap-3 bg-zinc-50 p-3"
 
-column_heading_class : Str
 column_heading_class = "text-sm font-semibold text-zinc-950"
 
-column_summary_class : Str
 column_summary_class = "text-xs font-medium uppercase text-zinc-500"
 
-card_base_class : Str
 card_base_class = "panel grid cursor-grab select-none touch-none gap-3 p-4 text-left transition hover:border-zinc-400"
 
-card_drag_class : Str
 card_drag_class = "panel grid cursor-grabbing select-none touch-none gap-3 border-emerald-500 bg-emerald-50 p-4 text-left"
 
-card_hover_class : Str
 card_hover_class = "panel grid cursor-grab select-none touch-none gap-3 border-sky-500 bg-sky-50 p-4 text-left"
 
-drop_zone_class : Str
 drop_zone_class = "select-none touch-none border border-dashed border-zinc-300 bg-white p-4 text-center text-sm font-medium text-zinc-500"
 
-drop_zone_active_class : Str
 drop_zone_active_class = "select-none touch-none border border-dashed border-emerald-500 bg-emerald-50 p-4 text-center text-sm font-semibold text-emerald-800"
 
-card_header_class : Str
 card_header_class = "grid gap-1"
 
-card_title_class : Str
 card_title_class = "text-sm font-semibold leading-5 text-zinc-950"
 
-card_id_class : Str
 card_id_class = "text-xs font-semibold uppercase text-zinc-500"
 
-card_meta_grid_class : Str
 card_meta_grid_class = "grid gap-2 sm:grid-cols-2"
 
-card_meta_class : Str
 card_meta_class = "text-xs text-zinc-600"
 
-card_tag_class : Str
 card_tag_class = "text-xs font-medium text-emerald-700"
 
-card_footer_class : Str
 card_footer_class = "grid gap-2 border-t border-zinc-100 pt-3 sm:flex sm:flex-wrap sm:items-center sm:justify-between"
 
-note_text_class : Str
 note_text_class = "text-xs font-medium text-zinc-500"
 
-note_button_class : Str
 note_button_class = "button"
 
-button_class : Str
 button_class = "button"
 
-primary_button_class : Str
 primary_button_class = "button-primary"
 
-input_class : Str
 input_class = "min-w-0 w-full max-w-md rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm"
 
 column_title : Str -> Str
-column_title = |column_id| {
-	match List.find_first(columns, |column| column.id == column_id) {
-		Ok(column) => column.title
-		Err(_) => column_id
-	}
+column_title = |column_id| match columns.find_first(|column| column.id == column_id) {
+	Ok(column) => column.title
+	Err(_) => column_id
 }
 
 card_title : List(Card), Str -> Str
-card_title = |cards, card_id| {
-	match List.find_first(cards, |card| card.id == card_id) {
-		Ok(card) => card.title
-		Err(_) => card_id
-	}
+card_title = |cards, card_id| match cards.find_first(|card| card.id == card_id) {
+	Ok(card) => card.title
+	Err(_) => card_id
 }
 
 join_tags : List(Str) -> Str
-join_tags = |tags| {
-	List.fold(
-		tags,
-		"",
-		|acc, tag| if acc == "" {
-			tag
-		} else {
-			concat3(acc, ", ", tag)
-		},
-	)
-}
+join_tags = |tags| tags.fold("", |acc, tag| if acc == "" tag else concat3(acc, ", ", tag))
 
 priority_visible : Bool, Card -> Bool
-priority_visible = |focus_high_priority, card| {
+priority_visible = |focus_high_priority, card|
 	if focus_high_priority {
 		card.priority == "High"
 	} else {
 		True
 	}
-}
 
 column_cards : Board, Str -> List(Card)
-column_cards = |board, column_id| {
-	List.keep_if(
-		board.cards,
-		|card| (card.status == column_id) and priority_visible(board.focus_high_priority, card),
-	)
-}
+column_cards = |board, column_id| board.cards.keep_if(
+	|card| (card.status == column_id) and priority_visible(board.focus_high_priority, card),
+)
 
 visible_cards : Board -> List(Card)
-visible_cards = |board| List.keep_if(board.cards, |card| priority_visible(board.focus_high_priority, card))
+visible_cards = |board| board.cards.keep_if(|card| priority_visible(board.focus_high_priority, card))
 
 visible_card_count : Board -> U64
-visible_card_count = |board| List.len(visible_cards(board))
+visible_card_count = |board| visible_cards(board).len()
 
 visible_estimate : Board -> U64
-visible_estimate = |board| List.fold(visible_cards(board), 0, |total, card| total + card.estimate)
+visible_estimate = |board| visible_cards(board).fold(0, |total, card| total + card.estimate)
 
 column_summary : Board, Column -> Str
 column_summary = |board, column| {
-	count = List.len(column_cards(board, column.id))
+	count_str = column_cards(board, column.id).len().to_str()
 	if column.id == done_id {
-		concat3(count.to_str(), " completed", "")
+		concat3(count_str, " completed", "")
 	} else {
-		concat4(count.to_str(), " / ", column.limit.to_str(), " cards")
+		concat4(count_str, " / ", column.limit.to_str(), " cards")
 	}
 }
 
@@ -349,73 +294,52 @@ visible_points_text : Board -> Str
 visible_points_text = |board| concat3(visible_estimate(board).to_str(), " points", "")
 
 done_cards_text : Board -> Str
-done_cards_text = |board| concat3(List.len(column_cards(board, done_id)).to_str(), " done", "")
+done_cards_text = |board| concat3(column_cards(board, done_id).len().to_str(), " done", "")
 
 start_drag : Board, Str -> Board
-start_drag = |board, card_id| {
-	{ ..board, dragging: Dragging(card_id), hover: NoHover }
-}
+start_drag = |board, card_id| { ..board, dragging: Dragging(card_id), hover: NoHover }
 
 cancel_drag : Board -> Board
-cancel_drag = |board| {
-	{ ..board, dragging: Idle, hover: NoHover }
-}
+cancel_drag = |board| { ..board, dragging: Idle, hover: NoHover }
 
 hover_end : Board, Str -> Board
-hover_end = |board, column_id| {
-	match board.dragging {
+hover_end = |board, column_id| match board.dragging {
 		Idle => board
 		Dragging(_) => { ..board, hover: HoverEnd(column_id) }
 	}
-}
 
 hover_before : Board, Str, Str -> Board
-hover_before = |board, column_id, before_id| {
-	match board.dragging {
-		Idle => board
-		Dragging(card_id) => if card_id == before_id {
-			{ ..board, hover: NoHover }
-		} else {
-			{ ..board, hover: HoverBefore(column_id, before_id) }
-		}
-	}
+hover_before = |board, column_id, before_id| match board.dragging {
+	Idle => board
+	Dragging(card_id) => if card_id == before_id
+		{ ..board, hover: NoHover }
+	else
+		{ ..board, hover: HoverBefore(column_id, before_id) }
 }
 
 clear_hover : Board -> Board
-clear_hover = |board| {
-	{ ..board, hover: NoHover }
-}
+clear_hover = |board| { ..board, hover: NoHover }
 
 increment_card_notes : Board, Str -> Board
 increment_card_notes = |board, card_id| {
-	{
-		..board,
-		cards: List.map(
-			board.cards,
-			|card| if card.id == card_id {
-				{ ..card, notes: card.notes + 1 }
-			} else {
-				card
-			},
-		),
-	}
+	..board,
+	cards: board.cards.map(|card| if card.id == card_id { ..card, notes: card.notes + 1 } else card),
 }
 
 insert_before : List(Card), Card, Str -> List(Card)
 insert_before = |cards, moved, before_id| {
 	state =
-		List.fold(
-			cards,
+		cards.fold(
 			{ output: [], inserted: False },
 			|acc, card| {
 				if (!acc.inserted) and card.id == before_id {
 					{
-						output: List.append(List.append(acc.output, moved), card),
+						output: acc.output.append(moved).append(card),
 						inserted: True,
 					}
 				} else {
 					{
-						output: List.append(acc.output, card),
+						output: acc.output.append(card),
 						inserted: acc.inserted,
 					}
 				}
@@ -425,7 +349,7 @@ insert_before = |cards, moved, before_id| {
 	if state.inserted {
 		state.output
 	} else {
-		List.append(state.output, moved)
+		state.output.append(moved)
 	}
 }
 
@@ -434,13 +358,13 @@ move_dragging_card = |board, target| {
 	match board.dragging {
 		Idle => board
 		Dragging(card_id) => {
-			match List.find_first(board.cards, |card| card.id == card_id) {
+			match board.cards.find_first(|card| card.id == card_id) {
 				Ok(card) => {
-					without_card = List.keep_if(board.cards, |candidate| candidate.id != card_id)
+					without_card = board.cards.keep_if(|candidate| candidate.id != card_id)
 					next_cards =
 						match target {
 							NoHover => board.cards
-							HoverEnd(column_id) => List.append(without_card, { ..card, status: column_id })
+							HoverEnd(column_id) => without_card.append({ ..card, status: column_id })
 							HoverBefore(column_id, before_id) => {
 								if card_id == before_id {
 									board.cards
@@ -471,7 +395,11 @@ card_class = |board, card| {
 			card_drag_class
 		} else {
 			match board.hover {
-				HoverBefore(_, before_id) => if before_id == card.id { card_hover_class } else { card_base_class }
+				HoverBefore(_, before_id) => if before_id == card.id {
+					card_hover_class
+				} else {
+					card_base_class
+				}
 				_ => card_base_class
 			}
 		}
@@ -482,7 +410,11 @@ card_class = |board, card| {
 drop_zone_class_for : Board, Str -> Str
 drop_zone_class_for = |board, column_id| {
 	match board.hover {
-		HoverEnd(active_column) => if active_column == column_id { drop_zone_active_class } else { drop_zone_class }
+		HoverEnd(active_column) => if active_column == column_id {
+			drop_zone_active_class
+		} else {
+			drop_zone_class
+		}
 		_ => drop_zone_class
 	}
 }

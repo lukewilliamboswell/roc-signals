@@ -11,16 +11,12 @@ concat3 = |a, b, c| Str.concat(Str.concat(a, b), c)
 row_label : Str, I64 -> Str
 row_label = |label, count| concat3(label, " checks: ", count.to_str())
 
-row_a : Str
 row_a = "Edge Gateway"
 
-row_b : Str
 row_b = "API Workers"
 
-row_c : Str
 row_c = "Search Index"
 
-row_d : Str
 row_d = "Billing Hotfix"
 
 initial_rows : List(Str)
@@ -47,19 +43,14 @@ reordered_filtered_rows = [row_c, row_a]
 inserted_reordered_filtered_rows : List(Str)
 inserted_reordered_filtered_rows = [row_c, row_a, row_d]
 
-page_class : Str
 page_class = "grid gap-5"
 
-hero_class : Str
 hero_class = "panel grid gap-2 p-5"
 
-panel_class : Str
 panel_class = "panel grid gap-4 p-4"
 
-row_class : Str
 row_class = "panel grid gap-3 p-4"
 
-toolbar_class : Str
 toolbar_class = "flex flex-wrap items-center gap-3"
 
 rows_for_shape : I64, Bool -> List(Str)

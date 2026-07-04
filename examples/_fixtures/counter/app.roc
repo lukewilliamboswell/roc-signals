@@ -8,13 +8,10 @@ import pf.Ui
 label_count : I64 -> Str
 label_count = |value| Str.concat("Count: ", value.to_str())
 
-page_class : Str
 page_class = "grid gap-6"
 
-hero_class : Str
 hero_class = "grid gap-2 rounded-lg border border-emerald-200 bg-emerald-50 p-5"
 
-primary_button_class : Str
 primary_button_class = "border-emerald-600 bg-emerald-600 text-white hover:border-emerald-700 hover:bg-emerald-700"
 
 main : {} -> Elem

@@ -32,13 +32,10 @@ ready_text = |profile| {
 ready_disabled : { first : Str, last : Str, active : Bool } -> Bool
 ready_disabled = |profile| !((!Str.is_empty(profile.first)) and (!Str.is_empty(profile.last)) and profile.active)
 
-page_class : Str
 page_class = "grid gap-5"
 
-panel_class : Str
 panel_class = "panel grid gap-4 p-4"
 
-input_class : Str
 input_class = "w-full max-w-md rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm"
 
 main : {} -> Elem

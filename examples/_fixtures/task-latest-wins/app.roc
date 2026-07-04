@@ -14,7 +14,7 @@ main = |_| {
 		0,
 		|version| {
 			task = Signal.fake_task("lookup", |value| value, |err| err)
-			label = 
+			label =
 				Signal.fold_task(
 					task,
 					"Task status: loading",

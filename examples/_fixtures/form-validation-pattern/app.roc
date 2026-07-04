@@ -83,13 +83,10 @@ disabled_state = |state, task_loading| {
 	(!can_submit_state(state)) or ((state.submit_count > 0) and task_loading)
 }
 
-page_class : Str
 page_class = "grid gap-5"
 
-panel_class : Str
 panel_class = "panel grid gap-4 p-4"
 
-input_class : Str
 input_class = "w-full max-w-md rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm"
 
 main : {} -> Elem
