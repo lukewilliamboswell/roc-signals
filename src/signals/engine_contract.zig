@@ -17,6 +17,8 @@ const RenderBoolField = render.BoolField;
 const BoundaryPayloadDescriptor = boundary.BoundaryPayloadDescriptor;
 const EventBindingKey = render_sink.EventBindingKey;
 const EventBinding = render_sink.EventBinding;
+const NavigationKind = render_sink.NavigationKind;
+const LocationSnapshot = render_sink.LocationSnapshot;
 
 fn verifyDeclFn(comptime owner_name: []const u8, comptime Owner: type, comptime decl_name: []const u8, comptime params: anytype, comptime return_type: type) void {
     if (!@hasDecl(Owner, decl_name)) {
@@ -85,6 +87,8 @@ pub fn verifySink(comptime Sink: type) void {
     verifyDeclFn("engine Sink", Sink, "cancelInterval", .{ Sink, u64 }, void);
     verifyDeclFn("engine Sink", Sink, "startTask", .{ Sink, u64, []const u8, []const u8 }, void);
     verifyDeclFn("engine Sink", Sink, "cancelTask", .{ Sink, u64 }, void);
+    verifyDeclFn("engine Sink", Sink, "navigate", .{ Sink, NavigationKind, LocationSnapshot }, void);
+    verifyDeclFn("engine Sink", Sink, "setDocumentTitle", .{ Sink, []const u8 }, void);
     verifyDeclFn("engine Sink", Sink, "debugAssertNode", .{ Sink, u64, bool, ?[]const u8, ?u64, []const u64, ?u64, ?u64, ?u64, ?u64, ?u64, ?u64, ?u64 }, void);
 }
 
@@ -105,6 +109,7 @@ pub fn verifyCtx(comptime Ctx: type) void {
     verifyDeclFn("engine Ctx", Ctx, "popHostValueCapabilities", .{Ctx.Handle}, void);
     verifyDeclFn("engine Ctx", Ctx, "stateValueByNodeId", .{ Ctx.Handle, u64 }, HostValue);
     verifyDeclFn("engine Ctx", Ctx, "stateCapability", .{ Ctx.Handle, u64 }, HostValueCapability);
+    verifyDeclFn("engine Ctx", Ctx, "initialLocationPayload", .{ Ctx.Handle, *abi.RocHost, HostValueCapability }, HostValue);
     verifyDeclFn("engine Ctx", Ctx, "sink", .{Ctx.Handle}, Ctx.Sink);
     verifyRegistryOps(Ctx.RegistryOps);
     verifyMetrics(Ctx.Metrics);
@@ -130,6 +135,8 @@ const VerifySink = struct {
     pub fn cancelInterval(_: VerifySink, _: u64) void {}
     pub fn startTask(_: VerifySink, _: u64, _: []const u8, _: []const u8) void {}
     pub fn cancelTask(_: VerifySink, _: u64) void {}
+    pub fn navigate(_: VerifySink, _: NavigationKind, _: LocationSnapshot) void {}
+    pub fn setDocumentTitle(_: VerifySink, _: []const u8) void {}
     pub fn debugAssertNode(_: VerifySink, _: u64, _: bool, _: ?[]const u8, _: ?u64, _: []const u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64) void {}
 };
 
@@ -163,6 +170,10 @@ const VerifyCtx = struct {
 
     pub fn stateCapability(_: Handle, _: u64) HostValueCapability {
         return undefined;
+    }
+
+    pub fn initialLocationPayload(_: Handle, _: *abi.RocHost, _: HostValueCapability) HostValue {
+        return 0;
     }
 
     pub fn sink(_: Handle) Sink {

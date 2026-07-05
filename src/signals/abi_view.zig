@@ -105,6 +105,36 @@ pub const IntervalSourceSignal = struct {
     capability: HostValueCapability,
 };
 
+pub const LocationSourceSignal = struct {
+    token: SignalToken,
+    from_payload: abi.RocErasedCallable,
+    capability: HostValueCapability,
+    payload_capability: HostValueCapability,
+};
+
+pub const VisibilitySourceSignal = struct {
+    token: SignalToken,
+    from_payload: abi.RocErasedCallable,
+    capability: HostValueCapability,
+    payload_capability: HostValueCapability,
+};
+
+pub const OnlineSourceSignal = struct {
+    token: SignalToken,
+    from_payload: abi.RocErasedCallable,
+    capability: HostValueCapability,
+    payload_capability: HostValueCapability,
+};
+
+pub const StorageSourceSignal = struct {
+    token: SignalToken,
+    area: boundary.StorageArea,
+    key: RocStrView,
+    from_payload: abi.RocErasedCallable,
+    capability: HostValueCapability,
+    payload_capability: HostValueCapability,
+};
+
 pub const SignalExpr = union(enum) {
     ref: SignalRef,
     const_value: ConstValueSignal,
@@ -113,6 +143,10 @@ pub const SignalExpr = union(enum) {
     combine: CombineSignal,
     task_source: TaskSourceSignal,
     interval_source: IntervalSourceSignal,
+    location_source: LocationSourceSignal,
+    online_source: OnlineSourceSignal,
+    visibility_source: VisibilitySourceSignal,
+    storage_source: StorageSourceSignal,
 
     pub fn fromAbi(expr: abi.NodeSignalExpr) SignalExpr {
         return switch (expr.tag) {
@@ -176,6 +210,45 @@ pub const SignalExpr = union(enum) {
                     .initial = payload.initial,
                     .tick = payload.tick,
                     .capability = payload.cap,
+                } };
+            },
+            .LocationSource => blk: {
+                const payload = expr.payload_location_source();
+                break :blk .{ .location_source = .{
+                    .token = SignalToken.fromAbi(payload._0),
+                    .from_payload = payload._1,
+                    .capability = payload._2,
+                    .payload_capability = payload._3,
+                } };
+            },
+            .VisibilitySource => blk: {
+                const payload = expr.payload_visibility_source();
+                break :blk .{ .visibility_source = .{
+                    .token = SignalToken.fromAbi(payload._0),
+                    .from_payload = payload._1,
+                    .capability = payload._2,
+                    .payload_capability = payload._3,
+                } };
+            },
+            .OnlineSource => blk: {
+                const payload = expr.payload_online_source();
+                break :blk .{ .online_source = .{
+                    .token = SignalToken.fromAbi(payload._0),
+                    .from_payload = payload._1,
+                    .capability = payload._2,
+                    .payload_capability = payload._3,
+                } };
+            },
+            .StorageSource => blk: {
+                const payload = expr.payload_storage_source();
+                const area = boundary.StorageArea.fromId(payload.area) orelse @panic("StorageSource referenced an unknown storage area");
+                break :blk .{ .storage_source = .{
+                    .token = SignalToken.fromAbi(payload.token),
+                    .area = area,
+                    .key = RocStrView.fromAbi(payload.key),
+                    .from_payload = payload.from_payload,
+                    .capability = payload.cap,
+                    .payload_capability = payload.payload_cap,
                 } };
             },
         };
@@ -388,6 +461,7 @@ pub const CleanupElem = struct {
 };
 
 pub const OnChangeElem = struct {
+    run_initial: bool,
     signal: *const abi.NodeSignalExpr,
     to_cmd: abi.RocErasedCallable,
 };
@@ -460,6 +534,15 @@ pub const Elem = union(enum) {
             .OnChange => blk: {
                 const payload = elem.payload_on_change();
                 break :blk .{ .on_change = .{
+                    .run_initial = false,
+                    .signal = payload.signal,
+                    .to_cmd = payload.to_cmd,
+                } };
+            },
+            .OnChangeInitial => blk: {
+                const payload = elem.payload_on_change_initial();
+                break :blk .{ .on_change = .{
+                    .run_initial = true,
                     .signal = payload.signal,
                     .to_cmd = payload.to_cmd,
                 } };
@@ -692,6 +775,90 @@ test "SignalExpr.fromAbi decodes effect source expressions" {
             try std.testing.expectEqual(&interval_token, payload.token.ptr);
             try std.testing.expectEqual(@as(u64, 250), payload.period_ms);
             try std.testing.expectEqual(capability, payload.capability);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+
+    var location_token: u64 = 10;
+    const location_expr = abi.NodeSignalExpr{
+        .payload = .{ .location_source = .{
+            ._0 = &location_token,
+            ._1 = null,
+            ._2 = capability,
+            ._3 = capability,
+        } },
+        .tag = .LocationSource,
+    };
+    switch (SignalExpr.fromAbi(location_expr)) {
+        .location_source => |payload| {
+            try std.testing.expectEqual(&location_token, payload.token.ptr);
+            try std.testing.expectEqual(@as(abi.RocErasedCallable, null), payload.from_payload);
+            try std.testing.expectEqual(capability, payload.capability);
+            try std.testing.expectEqual(capability, payload.payload_capability);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+
+    var visibility_token: u64 = 11;
+    const visibility_expr = abi.NodeSignalExpr{
+        .payload = .{ .visibility_source = .{
+            ._0 = &visibility_token,
+            ._1 = null,
+            ._2 = capability,
+            ._3 = capability,
+        } },
+        .tag = .VisibilitySource,
+    };
+    switch (SignalExpr.fromAbi(visibility_expr)) {
+        .visibility_source => |payload| {
+            try std.testing.expectEqual(&visibility_token, payload.token.ptr);
+            try std.testing.expectEqual(@as(abi.RocErasedCallable, null), payload.from_payload);
+            try std.testing.expectEqual(capability, payload.capability);
+            try std.testing.expectEqual(capability, payload.payload_capability);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+
+    var online_token: u64 = 12;
+    const online_expr = abi.NodeSignalExpr{
+        .payload = .{ .online_source = .{
+            ._0 = &online_token,
+            ._1 = null,
+            ._2 = capability,
+            ._3 = capability,
+        } },
+        .tag = .OnlineSource,
+    };
+    switch (SignalExpr.fromAbi(online_expr)) {
+        .online_source => |payload| {
+            try std.testing.expectEqual(&online_token, payload.token.ptr);
+            try std.testing.expectEqual(@as(abi.RocErasedCallable, null), payload.from_payload);
+            try std.testing.expectEqual(capability, payload.capability);
+            try std.testing.expectEqual(capability, payload.payload_capability);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+
+    var storage_token: u64 = 13;
+    const storage_expr = abi.NodeSignalExpr{
+        .payload = .{ .storage_source = .{
+            .area = @intFromEnum(boundary.StorageArea.local),
+            .token = &storage_token,
+            .key = borrowedRocStr("checkout:draft"),
+            .from_payload = null,
+            .cap = capability,
+            .payload_cap = capability,
+        } },
+        .tag = .StorageSource,
+    };
+    switch (SignalExpr.fromAbi(storage_expr)) {
+        .storage_source => |payload| {
+            try std.testing.expectEqual(&storage_token, payload.token.ptr);
+            try std.testing.expectEqual(boundary.StorageArea.local, payload.area);
+            try std.testing.expectEqualStrings("checkout:draft", payload.key.asSlice());
+            try std.testing.expectEqual(@as(abi.RocErasedCallable, null), payload.from_payload);
+            try std.testing.expectEqual(capability, payload.capability);
+            try std.testing.expectEqual(capability, payload.payload_capability);
         },
         else => return error.TestUnexpectedResult,
     }
@@ -949,6 +1116,23 @@ test "Elem.fromAbi decodes lifecycle and state payloads" {
     };
     switch (Elem.fromAbi(on_change)) {
         .on_change => |payload| {
+            try std.testing.expect(!payload.run_initial);
+            try std.testing.expectEqual(&signal, payload.signal);
+            try std.testing.expectEqual(on_change_cmd, payload.to_cmd);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+
+    const on_change_initial = abi.Elem{
+        .payload = .{ .on_change_initial = .{
+            .signal = &signal,
+            .to_cmd = on_change_cmd,
+        } },
+        .tag = .OnChangeInitial,
+    };
+    switch (Elem.fromAbi(on_change_initial)) {
+        .on_change => |payload| {
+            try std.testing.expect(payload.run_initial);
             try std.testing.expectEqual(&signal, payload.signal);
             try std.testing.expectEqual(on_change_cmd, payload.to_cmd);
         },

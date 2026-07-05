@@ -254,6 +254,19 @@ Ui := [].{
 		Elem.OnChange({ signal: Signal.to_expr(signal), to_cmd: Box.box(wrapped) })
 	}
 
+	## Run a command with the first mounted signal value and later changed values.
+	on_change_initial : Signal(a), (a -> Node.Cmd) -> Elem
+	on_change_initial = |signal, to_cmd| {
+		cap = signal.cap
+		wrapped : HostValue -> Node.Cmd
+		wrapped = |value| {
+			typed : a
+			typed = Box.unbox(Capability.get(value, cap))
+			to_cmd(typed)
+		}
+		Elem.OnChangeInitial({ signal: Signal.to_expr(signal), to_cmd: Box.box(wrapped) })
+	}
+
 	## Run a command when the owning scope first mounts.
 	on_mount : ({} -> Node.Cmd) -> Elem
 	on_mount = |to_cmd| Elem.OnMount({ to_cmd: Box.box(to_cmd) })

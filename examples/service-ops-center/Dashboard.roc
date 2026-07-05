@@ -7,6 +7,7 @@ Dashboard := {
 	budget : Dashboard.Budget,
 	queue : Dashboard.Queue,
 	services : List(Dashboard.Service),
+	service_details : List(Dashboard.ServiceDetail),
 	jobs : List(Dashboard.Job),
 	alerts : List(Dashboard.Alert),
 }.{
@@ -64,6 +65,28 @@ Dashboard := {
 		detail : Str,
 	}
 
+	ServiceDetail : {
+		id : Str,
+		label : Str,
+		owner : Str,
+		status : Str,
+		summary : Str,
+		runbook : Str,
+		dependencies : List(ServiceDependency),
+		contacts : List(ServiceContact),
+	}
+
+	ServiceDependency : {
+		id : Str,
+		label : Str,
+		state : Str,
+	}
+
+	ServiceContact : {
+		team : Str,
+		channel : Str,
+	}
+
 	Job : {
 		id : Str,
 		label : Str,
@@ -92,6 +115,26 @@ Dashboard := {
 
 	loading : State
 	loading = Loading
+
+	empty_service_detail : Str -> ServiceDetail
+	empty_service_detail = |service_id|
+		{
+			id: service_id,
+			label: "Waiting for service detail",
+			owner: "unknown",
+			status: "waiting",
+			summary: "Service detail will appear after the dashboard response loads.",
+			runbook: "No runbook loaded",
+			dependencies: [],
+			contacts: [],
+		}
+
+	service_detail_for : Dashboard, Str -> ServiceDetail
+	service_detail_for = |dashboard, service_id|
+		match dashboard.service_details.find_first(|detail| detail.id == service_id) {
+			Ok(detail) => detail
+			Err(_) => Dashboard.empty_service_detail(service_id)
+		}
 }
 
 # Keep the raw JSON records split. With roc release-fast-7da362c8,
@@ -190,6 +233,10 @@ RawAlerts : {
 	alert_c_age_min : U64,
 }
 
+RawServiceDetails : {
+	service_details : List(Dashboard.ServiceDetail),
+}
+
 parse_dashboard : Str -> Try(Dashboard, Dashboard.ParseErr)
 parse_dashboard = |body| {
 	meta_result : Try(RawMeta, Json)
@@ -226,6 +273,9 @@ parse_dashboard = |body| {
 	alerts_result : Try(RawAlerts, Json)
 	alerts_result = Json.parse(body)
 	alerts = map_json_result("alerts", alerts_result)?
+	service_details_result : Try(RawServiceDetails, Json)
+	service_details_result = Json.parse(body)
+	service_details = map_json_result("service details", service_details_result)?
 
 	phase = decode_phase(meta.phase_code)?
 	queue_trend = decode_queue_trend(queue.queue_trend_code)?
@@ -331,6 +381,7 @@ parse_dashboard = |body| {
 					detail: "session cache",
 				},
 			],
+			service_details: service_details.service_details,
 			jobs: [
 				{
 					id: "search-index",

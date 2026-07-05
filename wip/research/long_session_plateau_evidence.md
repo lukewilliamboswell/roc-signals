@@ -6,9 +6,13 @@ Purpose: keep detailed structural evidence out of the active backlog. Promote ne
 long-session or slot-reclamation work only when a current measurement shows a
 budget violation.
 
-Refresh check: re-run on 2026-07-04 with the focused plateau and dirty-queue
-Zig gate; the current dense-table, scratch-capacity, and dirty propagation
-coverage below remained green.
+Refresh check: re-run on 2026-07-05:
+
+- `zig build run-test-zig -Dtest-filter=plateau -Dtest-filter="dirty queue"`
+  exited successfully.
+
+The current dense-table, scratch-capacity, and dirty propagation coverage below
+remained green.
 
 ## Focused Gate
 

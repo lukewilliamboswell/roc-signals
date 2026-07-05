@@ -61,8 +61,12 @@ Node := [].{
 	SignalExpr := [
 		Ref(BinderRef),
 		ConstValue(Box(U64), Box(({} -> HostValue)), HostValue.CapabilityHandle),
+		LocationSource(Box(U64), Box((HostValue -> HostValue)), HostValue.CapabilityHandle, HostValue.CapabilityHandle),
+		StorageSource(Box(U64), U64, Str, Box((HostValue -> HostValue)), HostValue.CapabilityHandle, HostValue.CapabilityHandle),
+		VisibilitySource(Box(U64), Box((HostValue -> HostValue)), HostValue.CapabilityHandle, HostValue.CapabilityHandle),
 		Map(Box(U64), Box(SignalExpr), Box((HostValue -> HostValue)), HostValue.CapabilityHandle),
 		Map2(Box(U64), Box(SignalExpr), Box(SignalExpr), Box((HostValue, HostValue -> HostValue)), HostValue.CapabilityHandle),
+		OnlineSource(Box(U64), Box((HostValue -> HostValue)), HostValue.CapabilityHandle, HostValue.CapabilityHandle),
 		Combine(Box(U64), List(SignalExpr), Box((List(HostValue) -> HostValue)), HostValue.CapabilityHandle),
 		TaskSource(TaskSource),
 		IntervalSource(IntervalSource),
@@ -70,6 +74,11 @@ Node := [].{
 
 	## Host command emitted by lifecycle hooks or signal change sinks.
 	Cmd := [
+		Noop,
+		PushState({ path : Str, query : Str, hash : Str }),
+		ReplaceState({ path : Str, query : Str, hash : Str }),
+		SetStorageText({ area : U64, key : Str, value : Str }),
+		RemoveStorage({ area : U64, key : Str }),
 		StartTask(
 			{
 				task_token : Box(U64),
@@ -78,6 +87,7 @@ Node := [].{
 				request_read : HostValue.TaskRequestReadHandle,
 			},
 		),
+		SetDocumentTitle({ title : Str }),
 	]
 
 	## Cleanup descriptor run when a scope is disposed.

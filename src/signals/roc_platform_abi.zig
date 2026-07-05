@@ -1132,6 +1132,164 @@ comptime {
     }
 }
 
+/// Payload struct for PushState/ReplaceState command variants.
+pub const NodeLocationCommandPayload = if (@sizeOf(usize) == 4) extern struct {
+    hash: RocStr,
+    path: RocStr,
+    query: RocStr,
+} else extern struct {
+    hash: RocStr,
+    path: RocStr,
+    query: RocStr,
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(NodeLocationCommandPayload) != 72) @compileError("NodeLocationCommandPayload size mismatch");
+        if (@alignOf(NodeLocationCommandPayload) != 8) @compileError("NodeLocationCommandPayload alignment mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(NodeLocationCommandPayload) != 36) @compileError("NodeLocationCommandPayload size mismatch");
+        if (@alignOf(NodeLocationCommandPayload) != 4) @compileError("NodeLocationCommandPayload alignment mismatch");
+    }
+}
+
+/// Payload struct for SetStorageText command variant.
+pub const NodeStorageSetCommandPayload = extern struct {
+    area: u64,
+    key: RocStr,
+    value: RocStr,
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(NodeStorageSetCommandPayload) != 56) @compileError("NodeStorageSetCommandPayload size mismatch");
+        if (@alignOf(NodeStorageSetCommandPayload) != 8) @compileError("NodeStorageSetCommandPayload alignment mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(NodeStorageSetCommandPayload) != 32) @compileError("NodeStorageSetCommandPayload size mismatch");
+        if (@alignOf(NodeStorageSetCommandPayload) != 8) @compileError("NodeStorageSetCommandPayload alignment mismatch");
+    }
+}
+
+/// Payload struct for RemoveStorage command variant.
+pub const NodeStorageRemoveCommandPayload = extern struct {
+    area: u64,
+    key: RocStr,
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(NodeStorageRemoveCommandPayload) != 32) @compileError("NodeStorageRemoveCommandPayload size mismatch");
+        if (@alignOf(NodeStorageRemoveCommandPayload) != 8) @compileError("NodeStorageRemoveCommandPayload alignment mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(NodeStorageRemoveCommandPayload) != 24) @compileError("NodeStorageRemoveCommandPayload size mismatch");
+        if (@alignOf(NodeStorageRemoveCommandPayload) != 8) @compileError("NodeStorageRemoveCommandPayload alignment mismatch");
+    }
+}
+
+/// Payload struct for SetDocumentTitle command variant.
+pub const NodeDocumentTitleCommandPayload = extern struct {
+    title: RocStr,
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(NodeDocumentTitleCommandPayload) != 24) @compileError("NodeDocumentTitleCommandPayload size mismatch");
+        if (@alignOf(NodeDocumentTitleCommandPayload) != 8) @compileError("NodeDocumentTitleCommandPayload alignment mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(NodeDocumentTitleCommandPayload) != 12) @compileError("NodeDocumentTitleCommandPayload size mismatch");
+        if (@alignOf(NodeDocumentTitleCommandPayload) != 4) @compileError("NodeDocumentTitleCommandPayload alignment mismatch");
+    }
+}
+
+/// Tag discriminant for Node.Cmd.
+pub const NodeCmdTag = enum(u8) {
+    Noop = 0,
+    PushState = 1,
+    RemoveStorage = 2,
+    ReplaceState = 3,
+    SetDocumentTitle = 4,
+    SetStorageText = 5,
+    StartTask = 6,
+};
+
+/// Payload union for Node.Cmd.
+pub const NodeCmdPayload = extern union {
+    push_state: NodeLocationCommandPayload,
+    remove_storage: NodeStorageRemoveCommandPayload,
+    replace_state: NodeLocationCommandPayload,
+    set_storage_text: NodeStorageSetCommandPayload,
+    start_task: __AnonStruct91,
+    set_document_title: NodeDocumentTitleCommandPayload,
+};
+
+/// Tag union: Node.Cmd
+pub const NodeCmd = if (@sizeOf(usize) == 4) extern struct {
+    payload: [36]u8 align(4),
+    tag: NodeCmdTag,
+    pub fn payload_push_state(self: *const @This()) NodeLocationCommandPayload {
+        const ptr: *const NodeLocationCommandPayload = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
+    pub fn payload_remove_storage(self: *const @This()) NodeStorageRemoveCommandPayload {
+        const ptr: *const NodeStorageRemoveCommandPayload = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
+    pub fn payload_replace_state(self: *const @This()) NodeLocationCommandPayload {
+        const ptr: *const NodeLocationCommandPayload = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
+    pub fn payload_set_storage_text(self: *const @This()) NodeStorageSetCommandPayload {
+        const ptr: *const NodeStorageSetCommandPayload = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
+    pub fn payload_start_task(self: *const @This()) __AnonStruct91 {
+        const ptr: *const __AnonStruct91 = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
+    pub fn payload_set_document_title(self: *const @This()) NodeDocumentTitleCommandPayload {
+        const ptr: *const NodeDocumentTitleCommandPayload = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
+} else extern struct {
+    payload: NodeCmdPayload,
+    tag: NodeCmdTag,
+    pub fn payload_push_state(self: *const @This()) NodeLocationCommandPayload {
+        return self.payload.push_state;
+    }
+    pub fn payload_remove_storage(self: *const @This()) NodeStorageRemoveCommandPayload {
+        return self.payload.remove_storage;
+    }
+    pub fn payload_replace_state(self: *const @This()) NodeLocationCommandPayload {
+        return self.payload.replace_state;
+    }
+    pub fn payload_set_storage_text(self: *const @This()) NodeStorageSetCommandPayload {
+        return self.payload.set_storage_text;
+    }
+    pub fn payload_start_task(self: *const @This()) __AnonStruct91 {
+        return self.payload.start_task;
+    }
+    pub fn payload_set_document_title(self: *const @This()) NodeDocumentTitleCommandPayload {
+        return self.payload.set_document_title;
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(NodeCmd) != 80) @compileError("NodeCmd size mismatch");
+        if (@alignOf(NodeCmd) != 8) @compileError("NodeCmd alignment mismatch");
+        if (@offsetOf(NodeCmd, "tag") != 72) @compileError("NodeCmd tag offset mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(NodeCmd) != 40) @compileError("NodeCmd size mismatch");
+        if (@alignOf(NodeCmd) != 4) @compileError("NodeCmd alignment mismatch");
+        if (@offsetOf(NodeCmd, "tag") != 36) @compileError("NodeCmd tag offset mismatch");
+    }
+}
+
 /// Element type for HostValue.TaskRequestReadHandle
 pub const HostValueTaskRequestReadHandle = extern struct {
     capability: HostValueCapabilityHandle,
@@ -1242,11 +1400,12 @@ pub const ElemTag = enum(u8) {
     Each = 2,
     Element = 3,
     OnChange = 4,
-    OnMount = 5,
-    State = 6,
-    Text = 7,
-    TextSignal = 8,
-    When = 9,
+    OnChangeInitial = 5,
+    OnMount = 6,
+    State = 7,
+    Text = 8,
+    TextSignal = 9,
+    When = 10,
 };
 
 /// Payload union for Elem.
@@ -1256,6 +1415,7 @@ pub const ElemPayload = extern union {
     each: __AnonStruct33,
     element: __AnonStruct65,
     on_change: __AnonStruct87,
+    on_change_initial: __AnonStruct87,
     on_mount: __AnonStruct93,
     state: __AnonStruct96,
     text: RocStr,
@@ -1284,6 +1444,10 @@ pub const Elem = if (@sizeOf(usize) == 4) extern struct {
         return ptr.*;
     }
     pub fn payload_on_change(self: *const @This()) __AnonStruct87 {
+        const ptr: *const __AnonStruct87 = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
+    pub fn payload_on_change_initial(self: *const @This()) __AnonStruct87 {
         const ptr: *const __AnonStruct87 = @ptrCast(@alignCast(&self.payload));
         return ptr.*;
     }
@@ -1324,6 +1488,9 @@ pub const Elem = if (@sizeOf(usize) == 4) extern struct {
     }
     pub fn payload_on_change(self: *const @This()) __AnonStruct87 {
         return self.payload.on_change;
+    }
+    pub fn payload_on_change_initial(self: *const @This()) __AnonStruct87 {
+        return self.payload.on_change_initial;
     }
     pub fn payload_on_mount(self: *const @This()) __AnonStruct93 {
         return self.payload.on_mount;
@@ -1387,15 +1554,64 @@ pub const NodeSignalExprMap2Payload = extern struct {
     _4: HostValueCapabilityHandle,
 };
 
+/// Payload struct for LocationSource variant.
+pub const NodeSignalExprLocationSourcePayload = extern struct {
+    _0: *u64,
+    _1: RocErasedCallable,
+    _2: HostValueCapabilityHandle,
+    _3: HostValueCapabilityHandle,
+};
+
+/// Payload struct for VisibilitySource variant.
+pub const NodeSignalExprVisibilitySourcePayload = extern struct {
+    _0: *u64,
+    _1: RocErasedCallable,
+    _2: HostValueCapabilityHandle,
+    _3: HostValueCapabilityHandle,
+};
+
+/// Payload struct for OnlineSource variant.
+pub const NodeSignalExprOnlineSourcePayload = extern struct {
+    _0: *u64,
+    _1: RocErasedCallable,
+    _2: HostValueCapabilityHandle,
+    _3: HostValueCapabilityHandle,
+};
+
+/// Payload struct for StorageSource variant.
+pub const NodeSignalExprStorageSourcePayload = extern struct {
+    area: u64,
+    token: *u64,
+    key: RocStr,
+    from_payload: RocErasedCallable,
+    cap: HostValueCapabilityHandle,
+    payload_cap: HostValueCapabilityHandle,
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(NodeSignalExprStorageSourcePayload) != 96) @compileError("NodeSignalExprStorageSourcePayload size mismatch");
+        if (@alignOf(NodeSignalExprStorageSourcePayload) != 8) @compileError("NodeSignalExprStorageSourcePayload alignment mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(NodeSignalExprStorageSourcePayload) != 56) @compileError("NodeSignalExprStorageSourcePayload size mismatch");
+        if (@alignOf(NodeSignalExprStorageSourcePayload) != 8) @compileError("NodeSignalExprStorageSourcePayload alignment mismatch");
+    }
+}
+
 /// Tag discriminant for Node.SignalExpr.
 pub const NodeSignalExprTag = enum(u8) {
     Combine = 0,
     ConstValue = 1,
     IntervalSource = 2,
-    Map = 3,
-    Map2 = 4,
-    Ref = 5,
-    TaskSource = 6,
+    LocationSource = 3,
+    Map = 4,
+    Map2 = 5,
+    OnlineSource = 6,
+    Ref = 7,
+    StorageSource = 8,
+    TaskSource = 9,
+    VisibilitySource = 10,
 };
 
 /// Payload union for Node.SignalExpr.
@@ -1403,10 +1619,14 @@ pub const NodeSignalExprPayload = extern union {
     combine: NodeSignalExprCombinePayload,
     const_value: NodeSignalExprConstValuePayload,
     interval_source: __AnonStruct53,
+    location_source: NodeSignalExprLocationSourcePayload,
     map: NodeSignalExprMapPayload,
     map2: NodeSignalExprMap2Payload,
+    online_source: NodeSignalExprOnlineSourcePayload,
     ref: *u64,
+    storage_source: NodeSignalExprStorageSourcePayload,
     task_source: __AnonStruct57,
+    visibility_source: NodeSignalExprVisibilitySourcePayload,
 };
 
 /// Tag union: Node.SignalExpr
@@ -1423,6 +1643,22 @@ pub const NodeSignalExpr = if (@sizeOf(usize) == 4) extern struct {
     }
     pub fn payload_interval_source(self: *const @This()) __AnonStruct53 {
         const ptr: *const __AnonStruct53 = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
+    pub fn payload_location_source(self: *const @This()) NodeSignalExprLocationSourcePayload {
+        const ptr: *const NodeSignalExprLocationSourcePayload = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
+    pub fn payload_visibility_source(self: *const @This()) NodeSignalExprVisibilitySourcePayload {
+        const ptr: *const NodeSignalExprVisibilitySourcePayload = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
+    pub fn payload_online_source(self: *const @This()) NodeSignalExprOnlineSourcePayload {
+        const ptr: *const NodeSignalExprOnlineSourcePayload = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
+    pub fn payload_storage_source(self: *const @This()) NodeSignalExprStorageSourcePayload {
+        const ptr: *const NodeSignalExprStorageSourcePayload = @ptrCast(@alignCast(&self.payload));
         return ptr.*;
     }
     pub fn payload_map(self: *const @This()) NodeSignalExprMapPayload {
@@ -1452,6 +1688,18 @@ pub const NodeSignalExpr = if (@sizeOf(usize) == 4) extern struct {
     }
     pub fn payload_interval_source(self: *const @This()) __AnonStruct53 {
         return self.payload.interval_source;
+    }
+    pub fn payload_location_source(self: *const @This()) NodeSignalExprLocationSourcePayload {
+        return self.payload.location_source;
+    }
+    pub fn payload_visibility_source(self: *const @This()) NodeSignalExprVisibilitySourcePayload {
+        return self.payload.visibility_source;
+    }
+    pub fn payload_online_source(self: *const @This()) NodeSignalExprOnlineSourcePayload {
+        return self.payload.online_source;
+    }
+    pub fn payload_storage_source(self: *const @This()) NodeSignalExprStorageSourcePayload {
+        return self.payload.storage_source;
     }
     pub fn payload_map(self: *const @This()) NodeSignalExprMapPayload {
         return self.payload.map;
@@ -1667,6 +1915,9 @@ pub fn decrefElem(value: Elem, roc_host: *RocHost) void {
         .OnChange => {
             decref__AnonStruct87(value.payload_on_change(), roc_host);
         },
+        .OnChangeInitial => {
+            decref__AnonStruct87(value.payload_on_change_initial(), roc_host);
+        },
         .OnMount => {
             decref__AnonStruct93(value.payload_on_mount(), roc_host);
         },
@@ -1702,6 +1953,9 @@ pub fn increfElem(value: Elem, amount: isize) void {
         },
         .OnChange => {
             incref__AnonStruct87(value.payload_on_change(), amount);
+        },
+        .OnChangeInitial => {
+            incref__AnonStruct87(value.payload_on_change_initial(), amount);
         },
         .OnMount => {
             incref__AnonStruct93(value.payload_on_mount(), amount);
@@ -1780,6 +2034,35 @@ pub fn decrefNodeSignalExpr(value: NodeSignalExpr, roc_host: *RocHost) void {
         .IntervalSource => {
             decref__AnonStruct53(value.payload_interval_source(), roc_host);
         },
+        .LocationSource => {
+            const payload = value.payload_location_source();
+            decrefBoxWith(@ptrCast(payload._0), @alignOf(u64), false, null, roc_host);
+            decrefErasedCallable(payload._1, roc_host);
+            decrefHostValueCapabilityHandle(payload._2, roc_host);
+            decrefHostValueCapabilityHandle(payload._3, roc_host);
+        },
+        .VisibilitySource => {
+            const payload = value.payload_visibility_source();
+            decrefBoxWith(@ptrCast(payload._0), @alignOf(u64), false, null, roc_host);
+            decrefErasedCallable(payload._1, roc_host);
+            decrefHostValueCapabilityHandle(payload._2, roc_host);
+            decrefHostValueCapabilityHandle(payload._3, roc_host);
+        },
+        .OnlineSource => {
+            const payload = value.payload_online_source();
+            decrefBoxWith(@ptrCast(payload._0), @alignOf(u64), false, null, roc_host);
+            decrefErasedCallable(payload._1, roc_host);
+            decrefHostValueCapabilityHandle(payload._2, roc_host);
+            decrefHostValueCapabilityHandle(payload._3, roc_host);
+        },
+        .StorageSource => {
+            const payload = value.payload_storage_source();
+            decrefBoxWith(@ptrCast(payload.token), @alignOf(u64), false, null, roc_host);
+            payload.key.decref(roc_host);
+            decrefErasedCallable(payload.from_payload, roc_host);
+            decrefHostValueCapabilityHandle(payload.cap, roc_host);
+            decrefHostValueCapabilityHandle(payload.payload_cap, roc_host);
+        },
         .Map => {
             const payload = value.payload_map();
             decrefBoxWith(@ptrCast(payload._0), @alignOf(u64), false, null, roc_host);
@@ -1822,6 +2105,35 @@ pub fn increfNodeSignalExpr(value: NodeSignalExpr, amount: isize) void {
         },
         .IntervalSource => {
             incref__AnonStruct53(value.payload_interval_source(), amount);
+        },
+        .LocationSource => {
+            const payload = value.payload_location_source();
+            increfBox(@ptrCast(payload._0), amount);
+            increfErasedCallable(payload._1, amount);
+            increfHostValueCapabilityHandle(payload._2, amount);
+            increfHostValueCapabilityHandle(payload._3, amount);
+        },
+        .VisibilitySource => {
+            const payload = value.payload_visibility_source();
+            increfBox(@ptrCast(payload._0), amount);
+            increfErasedCallable(payload._1, amount);
+            increfHostValueCapabilityHandle(payload._2, amount);
+            increfHostValueCapabilityHandle(payload._3, amount);
+        },
+        .OnlineSource => {
+            const payload = value.payload_online_source();
+            increfBox(@ptrCast(payload._0), amount);
+            increfErasedCallable(payload._1, amount);
+            increfHostValueCapabilityHandle(payload._2, amount);
+            increfHostValueCapabilityHandle(payload._3, amount);
+        },
+        .StorageSource => {
+            const payload = value.payload_storage_source();
+            increfBox(@ptrCast(payload.token), amount);
+            payload.key.incref(amount);
+            increfErasedCallable(payload.from_payload, amount);
+            increfHostValueCapabilityHandle(payload.cap, amount);
+            increfHostValueCapabilityHandle(payload.payload_cap, amount);
         },
         .Map => {
             const payload = value.payload_map();
@@ -2225,6 +2537,78 @@ pub fn incref__AnonStruct91(value: __AnonStruct91, amount: isize) void {
     increfHostValueTaskRequestReadHandle(value.request_read, amount);
     value.task_name.incref(amount);
     increfBox(@ptrCast(value.task_token), amount);
+}
+
+/// Recursively decrement Roc-owned fields in NodeLocationCommandPayload.
+pub fn decrefNodeLocationCommandPayload(value: NodeLocationCommandPayload, roc_host: *RocHost) void {
+    value.hash.decref(roc_host);
+    value.path.decref(roc_host);
+    value.query.decref(roc_host);
+}
+
+/// Increment Roc-owned fields in NodeLocationCommandPayload.
+pub fn increfNodeLocationCommandPayload(value: NodeLocationCommandPayload, amount: isize) void {
+    value.hash.incref(amount);
+    value.path.incref(amount);
+    value.query.incref(amount);
+}
+
+/// Recursively decrement Roc-owned fields in NodeStorageSetCommandPayload.
+pub fn decrefNodeStorageSetCommandPayload(value: NodeStorageSetCommandPayload, roc_host: *RocHost) void {
+    value.key.decref(roc_host);
+    value.value.decref(roc_host);
+}
+
+/// Increment Roc-owned fields in NodeStorageSetCommandPayload.
+pub fn increfNodeStorageSetCommandPayload(value: NodeStorageSetCommandPayload, amount: isize) void {
+    value.key.incref(amount);
+    value.value.incref(amount);
+}
+
+/// Recursively decrement Roc-owned fields in NodeStorageRemoveCommandPayload.
+pub fn decrefNodeStorageRemoveCommandPayload(value: NodeStorageRemoveCommandPayload, roc_host: *RocHost) void {
+    value.key.decref(roc_host);
+}
+
+/// Increment Roc-owned fields in NodeStorageRemoveCommandPayload.
+pub fn increfNodeStorageRemoveCommandPayload(value: NodeStorageRemoveCommandPayload, amount: isize) void {
+    value.key.incref(amount);
+}
+
+/// Recursively decrement Roc-owned fields in NodeDocumentTitleCommandPayload.
+pub fn decrefNodeDocumentTitleCommandPayload(value: NodeDocumentTitleCommandPayload, roc_host: *RocHost) void {
+    value.title.decref(roc_host);
+}
+
+/// Increment Roc-owned fields in NodeDocumentTitleCommandPayload.
+pub fn increfNodeDocumentTitleCommandPayload(value: NodeDocumentTitleCommandPayload, amount: isize) void {
+    value.title.incref(amount);
+}
+
+/// Recursively decrement Roc-owned fields in Node.Cmd.
+pub fn decrefNodeCmd(value: NodeCmd, roc_host: *RocHost) void {
+    switch (value.tag) {
+        .Noop => {},
+        .PushState => decrefNodeLocationCommandPayload(value.payload_push_state(), roc_host),
+        .RemoveStorage => decrefNodeStorageRemoveCommandPayload(value.payload_remove_storage(), roc_host),
+        .ReplaceState => decrefNodeLocationCommandPayload(value.payload_replace_state(), roc_host),
+        .SetStorageText => decrefNodeStorageSetCommandPayload(value.payload_set_storage_text(), roc_host),
+        .StartTask => decref__AnonStruct91(value.payload_start_task(), roc_host),
+        .SetDocumentTitle => decrefNodeDocumentTitleCommandPayload(value.payload_set_document_title(), roc_host),
+    }
+}
+
+/// Increment Roc-owned fields in Node.Cmd.
+pub fn increfNodeCmd(value: NodeCmd, amount: isize) void {
+    switch (value.tag) {
+        .Noop => {},
+        .PushState => increfNodeLocationCommandPayload(value.payload_push_state(), amount),
+        .RemoveStorage => increfNodeStorageRemoveCommandPayload(value.payload_remove_storage(), amount),
+        .ReplaceState => increfNodeLocationCommandPayload(value.payload_replace_state(), amount),
+        .SetStorageText => increfNodeStorageSetCommandPayload(value.payload_set_storage_text(), amount),
+        .StartTask => incref__AnonStruct91(value.payload_start_task(), amount),
+        .SetDocumentTitle => increfNodeDocumentTitleCommandPayload(value.payload_set_document_title(), amount),
+    }
 }
 
 /// Recursively decrement Roc-owned fields in HostValueTaskRequestReadHandle.

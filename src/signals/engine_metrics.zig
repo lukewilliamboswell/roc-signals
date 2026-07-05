@@ -59,6 +59,7 @@ pub const RuntimeMetrics = struct {
     stream_nodes_scanned_dirty_scope: u64,
     stream_nodes_scanned_events: u64,
     stream_nodes_scanned_mounts: u64,
+    stream_nodes_scanned_on_change: u64,
     stream_nodes_scanned_remove_target: u64,
     stream_nodes_scanned_render_scope: u64,
     stream_nodes_scanned_splice: u64,

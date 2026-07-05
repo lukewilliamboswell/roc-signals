@@ -222,6 +222,7 @@ function opsSnapshot(sequence) {
     identity_state_code: 0,
     identity_latency_ms: clamp(round(42 + wave(sequence, 0.38, 8)), 30, 70),
   };
+  fields.service_details = serviceDetails(fields);
 
   return {
     sequence,
@@ -239,6 +240,74 @@ function opsSnapshot(sequence) {
     blockedJobs,
     databaseLagSec,
   };
+}
+
+function serviceDetails(fields) {
+  return [
+    serviceDetail("edge", "edge", "traffic", fields.edge_state_code, "Global edge routers and canary traffic shaping", "runbooks/edge-traffic", [
+      dependency("api", "api", fields.api_state_code),
+      dependency("identity", "identity", fields.identity_state_code),
+    ]),
+    serviceDetail("api", "api", "platform", fields.api_state_code, "Primary JSON API gateway for customer and ops workflows", "runbooks/api-gateway", [
+      dependency("database", "database", fields.database_state_code),
+      dependency("billing", "billing", fields.billing_state_code),
+      dependency("identity", "identity", fields.identity_state_code),
+    ]),
+    serviceDetail("workers", "workers", "delivery", fields.worker_state_code, "Background queue consumers for search, billing, exports, and session cleanup", "runbooks/workers-queue", [
+      dependency("database", "database", fields.database_state_code),
+      dependency("search", "search", fields.search_state_code),
+    ]),
+    serviceDetail("database", "database", "data", fields.database_state_code, "Primary transactional store and replica health for the public API", "runbooks/database-lag", [
+      dependency("api", "api", fields.api_state_code),
+      dependency("workers", "workers", fields.worker_state_code),
+    ]),
+    serviceDetail("billing", "billing", "revenue", fields.billing_state_code, "Billing API and webhook delivery coordination", "runbooks/billing-webhooks", [
+      dependency("api", "api", fields.api_state_code),
+      dependency("workers", "workers", fields.worker_state_code),
+    ]),
+    serviceDetail("search", "search", "discovery", fields.search_state_code, "Search indexing and query freshness for public workspaces", "runbooks/search-freshness", [
+      dependency("workers", "workers", fields.worker_state_code),
+      dependency("database", "database", fields.database_state_code),
+    ]),
+    serviceDetail("identity", "identity", "security", fields.identity_state_code, "Session cache, token validation, and operator access checks", "runbooks/identity-cache", [
+      dependency("api", "api", fields.api_state_code),
+      dependency("database", "database", fields.database_state_code),
+    ]),
+  ];
+}
+
+function serviceDetail(id, label, owner, stateCode, summary, runbook, dependencies) {
+  return {
+    id,
+    label,
+    owner,
+    status: healthTextForCode(stateCode),
+    summary,
+    runbook,
+    dependencies,
+    contacts: [
+      { team: `${owner}-primary`, channel: `#ops-${id}` },
+      { team: "incident-command", channel: "#incident-room" },
+    ],
+  };
+}
+
+function dependency(id, label, stateCode) {
+  return {
+    id,
+    label,
+    state: healthTextForCode(stateCode),
+  };
+}
+
+function healthTextForCode(code) {
+  if (code === 2) {
+    return "degraded";
+  }
+  if (code === 1) {
+    return "watch";
+  }
+  return "ok";
 }
 
 function summaryText(snapshot) {

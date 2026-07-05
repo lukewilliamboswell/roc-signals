@@ -20,6 +20,7 @@ Card : {
 	estimate : U64,
 	status : Str,
 	notes : U64,
+	note_markdown : Str,
 }
 
 DragState := [Idle, Dragging(Str)]
@@ -32,6 +33,36 @@ Board : {
 	hover : HoverState,
 	reviewer : Str,
 	focus_high_priority : Bool,
+	editing_card : Str,
+}
+
+MarkdownListItem : {
+	key : Str,
+	text : Str,
+}
+
+MarkdownBlock : {
+	key : Str,
+	kind : Str,
+	text : Str,
+	items : List(MarkdownListItem),
+}
+
+InlineSegment : {
+	key : Str,
+	kind : Str,
+	text : Str,
+	href : Str,
+}
+
+InlineState : {
+	segments : List(InlineSegment),
+	index : U64,
+}
+
+MarkdownState : {
+	blocks : List(MarkdownBlock),
+	index : U64,
 }
 
 concat3 : Str, Str, Str -> Str
@@ -49,6 +80,20 @@ progress_id = "progress"
 review_id = "review"
 
 done_id = "done"
+
+design_note = "## Signal graph note\nBuild **signal graph** evidence before the public guide update.\n- Mount scopes\n- Dirty queue\n[Design docs](/docs/guide/)\n[Blocked script](javascript:alert)"
+
+platform_note = "## Platform glue note\nKeep `roc_ui_mount` and `roc_ui_update` contracts aligned.\n- Native ABI\n- Wasm ABI\n[Runtime checklist](/docs/guide/)"
+
+diff_note = "## Diff budget note\nMeasure **row reuse** before adding drag sugar.\n- Move existing rows\n- Avoid rebuilds"
+
+browser_note = "## Browser runtime note\nExercise `prevent_default` and controlled text before release."
+
+event_note = "## Event payload note\nDocument [event payloads](/docs/guide/) and block [unsafe links](javascript:alert)."
+
+structural_note = "## Structural budget note\nKeep the spec metrics readable for reviewers."
+
+docs_note = "## Host contract note\nPublish the command and signal lifecycle summary."
 
 columns : List(Column)
 columns = [
@@ -68,6 +113,7 @@ initial_cards = [
 		estimate: 5,
 		status: backlog_id,
 		notes: 0,
+		note_markdown: design_note,
 	},
 	{
 		id: "CARD-102",
@@ -78,6 +124,7 @@ initial_cards = [
 		estimate: 3,
 		status: backlog_id,
 		notes: 0,
+		note_markdown: platform_note,
 	},
 	{
 		id: "CARD-103",
@@ -88,6 +135,7 @@ initial_cards = [
 		estimate: 2,
 		status: backlog_id,
 		notes: 0,
+		note_markdown: diff_note,
 	},
 	{
 		id: "CARD-201",
@@ -98,6 +146,7 @@ initial_cards = [
 		estimate: 2,
 		status: progress_id,
 		notes: 0,
+		note_markdown: browser_note,
 	},
 	{
 		id: "CARD-301",
@@ -108,6 +157,7 @@ initial_cards = [
 		estimate: 4,
 		status: progress_id,
 		notes: 0,
+		note_markdown: event_note,
 	},
 	{
 		id: "CARD-401",
@@ -118,6 +168,7 @@ initial_cards = [
 		estimate: 1,
 		status: progress_id,
 		notes: 0,
+		note_markdown: structural_note,
 	},
 	{
 		id: "CARD-501",
@@ -128,6 +179,7 @@ initial_cards = [
 		estimate: 1,
 		status: done_id,
 		notes: 0,
+		note_markdown: docs_note,
 	},
 ]
 
@@ -138,6 +190,7 @@ initial_board = {
 	hover: NoHover,
 	reviewer: "",
 	focus_high_priority: False,
+	editing_card: "CARD-101",
 }
 
 page_class = "grid min-h-screen gap-5 bg-zinc-100 text-zinc-950"
@@ -198,6 +251,18 @@ note_text_class = "text-xs font-medium text-zinc-500"
 
 note_button_class = "button"
 
+note_editor_class = "panel grid gap-3 bg-white p-4"
+
+markdown_view_class = "grid gap-2 text-sm text-zinc-700"
+
+markdown_quote_class = "border-l-2 border-emerald-500 pl-3 text-zinc-700"
+
+markdown_code_class = "rounded bg-zinc-100 px-1 py-0.5 font-mono text-xs text-zinc-950"
+
+markdown_link_class = "font-medium text-emerald-700 underline"
+
+textarea_class = "min-w-0 min-h-32 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 font-mono text-sm"
+
 button_class = "button"
 
 primary_button_class = "button-primary"
@@ -218,6 +283,214 @@ card_title = |cards, card_id| match cards.find_first(|card| card.id == card_id) 
 
 join_tags : List(Str) -> Str
 join_tags = |tags| tags.fold("", |acc, tag| if acc == "" tag else concat3(acc, ", ", tag))
+
+block_key : U64, Str -> Str
+block_key = |index, kind| concat4("b:", index.to_str(), ":", kind)
+
+item_key : U64 -> Str
+item_key = |index| concat3("i:", index.to_str(), "")
+
+segment_key : U64, Str -> Str
+segment_key = |index, kind| concat4("s:", index.to_str(), ":", kind)
+
+empty_inline_state : InlineState
+empty_inline_state = { segments: [], index: 0 }
+
+append_segment : InlineState, Str, Str, Str -> InlineState
+append_segment = |state, kind, text, href| {
+	if Str.is_empty(text) {
+		state
+	} else {
+		{
+			segments: state.segments.append({ key: segment_key(state.index, kind), kind, text, href }),
+			index: state.index + 1,
+		}
+	}
+}
+
+safe_href : Str -> Bool
+safe_href = |href| {
+	Str.starts_with(href, "https://")
+		or Str.starts_with(href, "http://")
+		or Str.starts_with(href, "/")
+		or Str.starts_with(href, "#")
+		or Str.starts_with(href, "mailto:")
+}
+
+parse_link_inline : InlineState, Str -> InlineState
+parse_link_inline = |state, text| {
+	match Str.find_first(text, "[") {
+		Ok(open) =>
+			match Str.find_first(open.after, "](") {
+				Ok(label_split) =>
+					match Str.find_first(label_split.after, ")") {
+						Ok(href_split) => {
+							before_state = parse_inline_into(state, open.before)
+							link_state =
+								if safe_href(href_split.before) {
+									append_segment(before_state, "link", label_split.before, href_split.before)
+								} else {
+									append_segment(before_state, "text", label_split.before, "")
+								}
+							parse_inline_into(link_state, href_split.after)
+						}
+						Err(_) => append_segment(state, "text", text, "")
+					}
+				Err(_) => append_segment(state, "text", text, "")
+			}
+		Err(_) => append_segment(state, "text", text, "")
+	}
+}
+
+parse_code_inline : InlineState, Str -> InlineState
+parse_code_inline = |state, text| {
+	match Str.find_first(text, "`") {
+		Ok(open) =>
+			match Str.find_first(open.after, "`") {
+				Ok(close) => {
+					before_state = parse_inline_into(state, open.before)
+					code_state = append_segment(before_state, "code", close.before, "")
+					parse_inline_into(code_state, close.after)
+				}
+				Err(_) => append_segment(state, "text", text, "")
+			}
+		Err(_) => parse_link_inline(state, text)
+	}
+}
+
+parse_strong_inline : InlineState, Str -> InlineState
+parse_strong_inline = |state, text| {
+	match Str.find_first(text, "**") {
+		Ok(open) =>
+			match Str.find_first(open.after, "**") {
+				Ok(close) => {
+					before_state = parse_inline_into(state, open.before)
+					strong_state = append_segment(before_state, "strong", close.before, "")
+					parse_inline_into(strong_state, close.after)
+				}
+				Err(_) => append_segment(state, "text", text, "")
+			}
+		Err(_) => parse_code_inline(state, text)
+	}
+}
+
+parse_inline_into : InlineState, Str -> InlineState
+parse_inline_into = |state, text| {
+	if Str.is_empty(text) {
+		state
+	} else {
+		parse_strong_inline(state, text)
+	}
+}
+
+inline_segments : Str -> List(InlineSegment)
+inline_segments = |text| parse_inline_into(empty_inline_state, text).segments
+
+append_block : MarkdownState, Str, Str, List(MarkdownListItem) -> MarkdownState
+append_block = |state, kind, text, items| {
+	{
+		blocks: state.blocks.append({ key: block_key(state.index, kind), kind, text, items }),
+		index: state.index + 1,
+	}
+}
+
+parse_markdown_line : MarkdownState, Str -> MarkdownState
+parse_markdown_line = |state, line| {
+	trimmed = Str.trim(line)
+	if Str.is_empty(trimmed) {
+		state
+	} else if Str.starts_with(trimmed, "## ") {
+		append_block(state, "heading", Str.drop_prefix(trimmed, "## "), [])
+	} else if Str.starts_with(trimmed, "# ") {
+		append_block(state, "heading", Str.drop_prefix(trimmed, "# "), [])
+	} else if Str.starts_with(trimmed, "> ") {
+		append_block(state, "quote", Str.drop_prefix(trimmed, "> "), [])
+	} else if Str.starts_with(trimmed, "- ") {
+		append_block(
+			state,
+			"list",
+			Str.drop_prefix(trimmed, "- "),
+			[],
+		)
+	} else {
+		append_block(state, "paragraph", trimmed, [])
+	}
+}
+
+parse_markdown : Str -> List(MarkdownBlock)
+parse_markdown = |source| {
+	Str.split_on(source, "\n").fold({ blocks: [], index: 0 }, parse_markdown_line).blocks
+}
+
+inline_plain_text : Str -> Str
+inline_plain_text = |source| {
+	inline_segments(source).fold("", |acc, segment| Str.concat(acc, segment.text))
+}
+
+inline_view : Signal.Signal(Str) -> Elem
+inline_view = |source| {
+	segments = Signal.map(source, inline_segments)
+	Elem.Element({ tag: "span", attrs: [], children: [Ui.each_str(segments, |segment| segment.key, render_inline_segment)] })
+}
+
+render_inline_segment : Str, Signal.Signal(InlineSegment) -> Elem
+render_inline_segment = |key, segment| {
+	text = Signal.map(segment, |value| value.text)
+	href = Signal.map(segment, |value| value.href)
+	if Str.ends_with(key, ":strong") {
+		Elem.Element({ tag: "strong", attrs: [], children: [Html.text_s(text)] })
+	} else if Str.ends_with(key, ":code") {
+		Elem.Element({ tag: "code", attrs: [Html.class_attr(markdown_code_class)], children: [Html.text_s(text)] })
+	} else if Str.ends_with(key, ":link") {
+		Elem.Element(
+			{
+				tag: "a",
+				attrs: [
+					Html.attr_s("href", href),
+					Html.test_id(key),
+					Html.class_attr(markdown_link_class),
+				],
+				children: [Html.text_s(text)],
+			},
+		)
+	} else {
+		Html.text_s(text)
+	}
+}
+
+render_list_item : Str, Signal.Signal(MarkdownListItem) -> Elem
+render_list_item = |_, item| {
+	text = Signal.map(item, |value| value.text)
+	Elem.Element({ tag: "li", attrs: [], children: [inline_view(text)] })
+}
+
+render_markdown_block : Str, Signal.Signal(MarkdownBlock) -> Elem
+render_markdown_block = |key, block| {
+	text = Signal.map(block, |value| value.text)
+	if Str.ends_with(key, ":heading") {
+		Elem.Element({ tag: "h3", attrs: [Html.class_attr(card_title_class)], children: [Html.text_s(text)] })
+	} else if Str.ends_with(key, ":quote") {
+		Elem.Element({ tag: "blockquote", attrs: [Html.class_attr(markdown_quote_class)], children: [inline_view(text)] })
+	} else if Str.ends_with(key, ":list") {
+		Elem.Element(
+			{
+				tag: "ul",
+				attrs: [Html.class_attr("list-disc pl-5")],
+				children: [
+					Elem.Element({ tag: "li", attrs: [], children: [inline_view(text)] }),
+				],
+			},
+		)
+	} else {
+		Elem.Element({ tag: "p", attrs: [], children: [inline_view(text)] })
+	}
+}
+
+markdown_view : Signal.Signal(Str), Str -> Elem
+markdown_view = |source, classes| {
+	blocks = Signal.map(source, parse_markdown)
+	Html.div([Html.class_attr(classes)], [Ui.each_str(blocks, |block| block.key, render_markdown_block)])
+}
 
 priority_visible : Bool, Card -> Bool
 priority_visible = |focus_high_priority, card|
@@ -325,6 +598,51 @@ increment_card_notes = |board, card_id| {
 	..board,
 	cards: board.cards.map(|card| if card.id == card_id { ..card, notes: card.notes + 1 } else card),
 }
+
+select_note_card : Board, Str -> Board
+select_note_card = |board, card_id| { ..board, editing_card: card_id }
+
+update_selected_note : Board, Str -> Board
+update_selected_note = |board, value| {
+	..board,
+	cards: board.cards.map(
+		|card|
+			if card.id == board.editing_card {
+				{ ..card, note_markdown: value }
+			} else {
+				card
+			},
+	),
+}
+
+selected_card : Board -> Card
+selected_card = |board| {
+	match board.cards.find_first(|card| card.id == board.editing_card) {
+		Ok(card) => card
+		Err(_) => {
+			match List.first(board.cards) {
+				Ok(card) => card
+				Err(_) => {
+					id: "",
+					title: "No card selected",
+					owner: "",
+					priority: "",
+					tags: [],
+					estimate: 0,
+					status: backlog_id,
+					notes: 0,
+					note_markdown: "",
+				}
+			}
+		}
+	}
+}
+
+selected_note_markdown : Board -> Str
+selected_note_markdown = |board| selected_card(board).note_markdown
+
+selected_note_title : Board -> Str
+selected_note_title = |board| Str.concat("Editing notes for ", selected_card(board).title)
 
 insert_before : List(Card), Card, Str -> List(Card)
 insert_before = |cards, moved, before_id| {
@@ -459,6 +777,42 @@ note_button = |board_state, card_id, label| {
 	)
 }
 
+edit_note_button : Ui.State(Board), Str, Str -> Elem
+edit_note_button = |board_state, card_id, label| {
+	stop_drag = board_state.on_unit(|board| board)
+
+	Html.button_attrs(
+		label,
+		[
+			Html.class_attr(note_button_class),
+			Html.on_event("pointerdown", Html.event_policy_stop_propagation, stop_drag),
+			Html.on_event("pointerup", Html.event_policy_stop_propagation, stop_drag),
+		],
+		board_state.on_unit(|board| select_note_card(board, card_id)),
+	)
+}
+
+render_note_editor : Ui.State(Board), Signal.Signal(Board) -> Elem
+render_note_editor = |board, board_signal| {
+	title = Signal.map(board_signal, selected_note_title)
+	note = Signal.map(board_signal, selected_note_markdown)
+	Html.section_c(
+		"Note editor",
+		note_editor_class,
+		[
+			Html.paragraph_s_c(title, "text-sm font-semibold text-zinc-950"),
+			Html.textarea_c("Note markdown", note, textarea_class, board.on_str(update_selected_note)),
+			Html.section_c(
+				"Rendered note preview",
+				markdown_view_class,
+				[
+					markdown_view(note, markdown_view_class),
+				],
+			),
+		],
+	)
+}
+
 render_card : Ui.State(Board), Str, Str, Signal.Signal(Card) -> Elem
 render_card = |board_state, column_id, card_id, card_signal| {
 	board_signal = board_state.signal()
@@ -504,6 +858,7 @@ render_card = |board_state, column_id, card_id, card_signal| {
 				[
 					Html.paragraph_s_c(note_signal, note_text_class),
 					note_button(board_state, card_id, Str.concat("Add note ", card_title(initial_cards, card_id))),
+					edit_note_button(board_state, card_id, Str.concat("Edit notes ", card_title(initial_cards, card_id))),
 				],
 			),
 		],
@@ -614,6 +969,7 @@ main = |_| {
 									Html.button_c("Reset demo", primary_button_class, board.on_unit(|_| initial_board)),
 								],
 							),
+							render_note_editor(board, board_signal),
 						],
 					),
 					Html.div_c(

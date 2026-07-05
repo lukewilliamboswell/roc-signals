@@ -44,6 +44,29 @@ pub const SchemaTag = struct {
         'y',
         bool_,
     };
+    pub const location_schema = [_]u8{
+        record,
+        3,
+        4,
+        'p',
+        'a',
+        't',
+        'h',
+        text,
+        5,
+        'q',
+        'u',
+        'e',
+        'r',
+        'y',
+        text,
+        4,
+        'h',
+        'a',
+        's',
+        'h',
+        text,
+    };
 };
 
 /// DOM-specific extraction plan leaves. A scalar payload-shape node is followed
@@ -200,6 +223,46 @@ pub const ParseError = error{
     UnsupportedEventExtractionPlan,
 };
 
+pub const EncodeError = error{
+    OutOfMemory,
+    BoundaryTextTooLong,
+};
+
+pub const LocationSnapshot = struct {
+    path: []const u8,
+    query: []const u8,
+    hash: []const u8,
+};
+
+pub const VisibilitySnapshot = enum {
+    hidden,
+    visible,
+};
+
+pub const OnlineSnapshot = enum {
+    offline,
+    online,
+};
+
+pub const StorageArea = enum(u64) {
+    local = 1,
+    session = 2,
+
+    pub fn fromId(id: u64) ?StorageArea {
+        return switch (id) {
+            1 => .local,
+            2 => .session,
+            else => null,
+        };
+    }
+};
+
+pub const StorageSnapshot = union(enum) {
+    missing,
+    value: []const u8,
+    unavailable: []const u8,
+};
+
 const Cursor = struct {
     bytes: []const u8,
     offset: usize = 0,
@@ -222,6 +285,87 @@ const Cursor = struct {
         if (self.offset != self.bytes.len) return error.TrailingBytes;
     }
 };
+
+pub fn encodeLocationPayload(allocator: std.mem.Allocator, location: LocationSnapshot) EncodeError![]u8 {
+    var total_len: usize = 0;
+    total_len = try addBoundaryTextPayloadLen(total_len, location.path);
+    total_len = try addBoundaryTextPayloadLen(total_len, location.query);
+    total_len = try addBoundaryTextPayloadLen(total_len, location.hash);
+
+    const bytes = try allocator.alloc(u8, total_len);
+    var offset: usize = 0;
+    writeBoundaryTextPayload(bytes, &offset, location.path);
+    writeBoundaryTextPayload(bytes, &offset, location.query);
+    writeBoundaryTextPayload(bytes, &offset, location.hash);
+    if (offset != bytes.len) @panic("location payload encoder length accounting drifted");
+    return bytes;
+}
+
+pub fn encodeVisibilityPayload(allocator: std.mem.Allocator, visibility: VisibilitySnapshot) EncodeError![]u8 {
+    const bytes = try allocator.alloc(u8, 1);
+    bytes[0] = switch (visibility) {
+        .hidden => 0,
+        .visible => 1,
+    };
+    return bytes;
+}
+
+pub fn encodeOnlinePayload(allocator: std.mem.Allocator, online: OnlineSnapshot) EncodeError![]u8 {
+    const bytes = try allocator.alloc(u8, 1);
+    bytes[0] = switch (online) {
+        .offline => 0,
+        .online => 1,
+    };
+    return bytes;
+}
+
+pub fn encodeStoragePayload(allocator: std.mem.Allocator, snapshot: StorageSnapshot) EncodeError![]u8 {
+    var total_len: usize = 1;
+    switch (snapshot) {
+        .missing => {},
+        .value => |value| total_len = try addBoundaryTextPayloadLen(total_len, value),
+        .unavailable => |message| total_len = try addBoundaryTextPayloadLen(total_len, message),
+    }
+
+    const bytes = try allocator.alloc(u8, total_len);
+    var offset: usize = 0;
+    switch (snapshot) {
+        .missing => {
+            bytes[offset] = 0;
+            offset += 1;
+        },
+        .value => |value| {
+            bytes[offset] = 1;
+            offset += 1;
+            writeBoundaryTextPayload(bytes, &offset, value);
+        },
+        .unavailable => |message| {
+            bytes[offset] = 2;
+            offset += 1;
+            writeBoundaryTextPayload(bytes, &offset, message);
+        },
+    }
+    if (offset != bytes.len) @panic("storage payload encoder length accounting drifted");
+    return bytes;
+}
+
+fn addBoundaryTextPayloadLen(total: usize, text: []const u8) EncodeError!usize {
+    _ = try boundaryTextLen(text);
+    const with_len = std.math.add(usize, text.len, 4) catch return error.BoundaryTextTooLong;
+    return std.math.add(usize, total, with_len) catch error.BoundaryTextTooLong;
+}
+
+fn boundaryTextLen(text: []const u8) EncodeError!u32 {
+    return std.math.cast(u32, text.len) orelse error.BoundaryTextTooLong;
+}
+
+fn writeBoundaryTextPayload(bytes: []u8, offset: *usize, text: []const u8) void {
+    const len = boundaryTextLen(text) catch unreachable;
+    std.mem.writeInt(u32, bytes[offset.*..][0..4], len, .little);
+    offset.* += 4;
+    @memcpy(bytes[offset.*..][0..text.len], text);
+    offset.* += text.len;
+}
 
 fn parseBoundaryRecord(cursor: *Cursor, comptime parseNode: fn (*Cursor) ParseError!PayloadKind) ParseError!PayloadKind {
     const field_count = try cursor.readByte();
@@ -253,6 +397,24 @@ pub fn parseEventExtractionPayloadKind(extraction_bytes: []const u8) ParseError!
     const payload_kind = try parseEventExtractionNode(&cursor);
     try cursor.requireDone();
     return payload_kind;
+}
+
+pub fn parseBoundarySchemaPayloadKind(schema_bytes: []const u8) ParseError!PayloadKind {
+    var cursor = Cursor{ .bytes = schema_bytes };
+    const payload_kind = try parseBoundarySchemaNode(&cursor);
+    try cursor.requireDone();
+    return payload_kind;
+}
+
+fn parseBoundarySchemaNode(cursor: *Cursor) ParseError!PayloadKind {
+    const tag = try cursor.readByte();
+    return switch (tag) {
+        SchemaTag.unit => .unit,
+        SchemaTag.text => .str,
+        SchemaTag.bool_ => .bool,
+        SchemaTag.record => try parseBoundaryRecord(cursor, parseBoundarySchemaNode),
+        else => error.UnknownSchemaTag,
+    };
 }
 
 fn parseEventExtractionNode(cursor: *Cursor) ParseError!PayloadKind {
@@ -365,6 +527,33 @@ test "event extraction plans use shared boundary schema tags" {
     try std.testing.expectEqualSlices(u8, &[_]u8{SchemaTag.unit}, &SchemaTag.unit_schema);
     try std.testing.expectEqualSlices(u8, &[_]u8{SchemaTag.text}, &SchemaTag.text_schema);
     try std.testing.expectEqualSlices(u8, &[_]u8{SchemaTag.bool_}, &SchemaTag.bool_schema);
+    try std.testing.expectEqualSlices(
+        u8,
+        &[_]u8{
+            SchemaTag.record,
+            3,
+            4,
+            'p',
+            'a',
+            't',
+            'h',
+            SchemaTag.text,
+            5,
+            'q',
+            'u',
+            'e',
+            'r',
+            'y',
+            SchemaTag.text,
+            4,
+            'h',
+            'a',
+            's',
+            'h',
+            SchemaTag.text,
+        },
+        &SchemaTag.location_schema,
+    );
     try std.testing.expectEqual(SchemaTag.text, DomEventExtractionPlan.target_value[0]);
     try std.testing.expectEqual(DomEventExtractionPlan.source_current_target, DomEventExtractionPlan.target_value[1]);
     try std.testing.expectEqual(DomEventExtractionPlan.leaf_value, DomEventExtractionPlan.target_value[2]);
@@ -416,6 +605,58 @@ test "boundary payload descriptors derive dispatch containers from extraction pl
     const descriptor = boundaryPayloadDescriptorFromExtractionBytes(&DomEventExtractionPlan.key_shift);
     try std.testing.expectEqual(PayloadKind.bytes, descriptor.payload_kind);
     try std.testing.expectEqual(EventExtractionPlanKind.record_key_shift, descriptor.extraction_plan);
+}
+
+test "boundary schema parser validates host-originated payload shapes" {
+    try std.testing.expectEqual(PayloadKind.unit, parseBoundarySchemaPayloadKind(&SchemaTag.unit_schema));
+    try std.testing.expectEqual(PayloadKind.str, parseBoundarySchemaPayloadKind(&SchemaTag.text_schema));
+    try std.testing.expectEqual(PayloadKind.bool, parseBoundarySchemaPayloadKind(&SchemaTag.bool_schema));
+    try std.testing.expectEqual(PayloadKind.bytes, parseBoundarySchemaPayloadKind(&SchemaTag.key_shift_schema));
+    try std.testing.expectEqual(PayloadKind.bytes, parseBoundarySchemaPayloadKind(&SchemaTag.location_schema));
+
+    const trailing_bytes = [_]u8{ SchemaTag.text, 0 };
+    const unknown_tag = [_]u8{99};
+    const empty_record = [_]u8{ SchemaTag.record, 0 };
+    const nested_record = [_]u8{
+        SchemaTag.record,
+        1,
+        5,
+        'o',
+        'u',
+        't',
+        'e',
+        'r',
+        SchemaTag.record,
+        1,
+        5,
+        'i',
+        'n',
+        'n',
+        'e',
+        'r',
+        SchemaTag.text,
+    };
+
+    try std.testing.expectError(error.TrailingBytes, parseBoundarySchemaPayloadKind(&trailing_bytes));
+    try std.testing.expectError(error.UnknownSchemaTag, parseBoundarySchemaPayloadKind(&unknown_tag));
+    try std.testing.expectError(error.EmptyRecord, parseBoundarySchemaPayloadKind(&empty_record));
+    try std.testing.expectError(error.NestedRecordField, parseBoundarySchemaPayloadKind(&nested_record));
+}
+
+test "location payload encoder writes schema-ordered text fields" {
+    const payload = try encodeLocationPayload(std.testing.allocator, .{
+        .path = "/ops",
+        .query = "a=1",
+        .hash = "top",
+    });
+    defer std.testing.allocator.free(payload);
+
+    const expected = [_]u8{
+        4, 0, 0, 0,   '/', 'o', 'p', 's',
+        3, 0, 0, 0,   'a', '=', '1', 3,
+        0, 0, 0, 't', 'o', 'p',
+    };
+    try std.testing.expectEqualSlices(u8, &expected, payload);
 }
 
 test "event extraction parser validates DOM-specific scalar leaves" {

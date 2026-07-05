@@ -3,6 +3,7 @@
 const std = @import("std");
 
 const signals = @import("signals");
+const boundary = signals.boundary;
 const engine = signals.engine;
 const render = signals.render;
 const spec_parser = @import("../spec/spec_parser.zig");
@@ -27,8 +28,32 @@ pub fn nowNs() u64 {
 
 pub fn commandIsAction(cmd: spec_parser.SpecCommand) bool {
     return switch (cmd.cmd_type) {
-        .click, .real_click, .pointer_down, .pointer_up, .pointer_enter, .pointer_leave, .key_down, .focus, .blur, .change, .select_option, .composition_start, .composition_end, .submit, .fill, .check, .uncheck, .resolve_task, .reject_task, .tick_interval, .tick_interval_if_active => true,
+        .click, .real_click, .pointer_down, .pointer_up, .pointer_enter, .pointer_leave, .key_down, .focus, .blur, .change, .select_option, .custom_event, .composition_start, .composition_end, .submit, .fill, .check, .uncheck, .resolve_task, .reject_task, .tick_interval, .tick_interval_if_active, .navigate, .set_visibility, .set_online, .history_back, .history_forward => true,
         else => false,
+    };
+}
+
+fn locationSnapshotFromSpecText(comptime Ctx: type, line_num: usize, text: []const u8) boundary.LocationSnapshot {
+    return spec_parser.locationSnapshotFromSpecText(text) catch {
+        var buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "benchmark location path at line {d} must start with /", .{line_num}) catch "benchmark location path must start with /";
+        Ctx.fail(msg);
+    };
+}
+
+fn visibilitySnapshotFromSpecText(comptime Ctx: type, line_num: usize, text: []const u8) boundary.VisibilitySnapshot {
+    return spec_parser.visibilitySnapshotFromSpecText(text) catch {
+        var buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "benchmark visibility at line {d} must be visible or hidden", .{line_num}) catch "benchmark visibility must be visible or hidden";
+        Ctx.fail(msg);
+    };
+}
+
+fn onlineSnapshotFromSpecText(comptime Ctx: type, line_num: usize, text: []const u8) boundary.OnlineSnapshot {
+    return spec_parser.onlineSnapshotFromSpecText(text) catch {
+        var buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "benchmark online state at line {d} must be online or offline", .{line_num}) catch "benchmark online state must be online or offline";
+        Ctx.fail(msg);
     };
 }
 
@@ -207,6 +232,8 @@ pub fn Runner(comptime Ctx: type) type {
             defer Ctx.leaveCurrent();
             defer Ctx.deinitHost(&host);
 
+            applyPreMountSpecCommands(&host, commands);
+
             const init_start_ns = nowNs();
             const init_result = Ctx.initRocUi();
             stats.init_roc_ns += nowNs() - init_start_ns;
@@ -234,7 +261,7 @@ pub fn Runner(comptime Ctx: type) type {
                 .click => {
                     const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse Ctx.fail("benchmark click locator did not resolve");
                     if (Ctx.elementDisabled(elem)) Ctx.fail("benchmark click target is disabled");
-                    const event_id = Ctx.clickEventId(elem) orelse Ctx.fail("benchmark click target has no binding");
+                    const event_id = benchmarkClickEventId(elem) orelse Ctx.fail("benchmark click target has no binding");
                     Ctx.dispatchRocEventMeasured(host, roc_host, event_id, engine.BoundaryPayloadDescriptor.init(.unit, .none), Ctx.hostValueUnit(host, roc_host), stats);
                 },
 
@@ -301,6 +328,18 @@ pub fn Runner(comptime Ctx: type) type {
                     if (!event.binding.payload_descriptor.eql(engine.BoundaryPayloadDescriptor.init(.str, .target_value))) Ctx.fail("benchmark change binding does not request the target value payload descriptor");
                     _ = Ctx.setElementValueIfChanged(host, elem, value);
                     Ctx.dispatchRocEventMeasured(host, roc_host, event.binding.event_id, event.binding.payload_descriptor, Ctx.hostValueStr(host, roc_host, value), stats);
+                },
+
+                .custom_event => {
+                    const event_name = cmd.task_name orelse Ctx.fail("benchmark custom_event command had no event name");
+                    const detail = cmd.expected_text orelse "";
+                    const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse Ctx.fail("benchmark custom_event locator did not resolve");
+                    if (Ctx.elementDisabled(elem)) Ctx.fail("benchmark custom_event target is disabled");
+                    const event = Ctx.namedEvent(elem, event_name) orelse Ctx.fail("benchmark custom_event target has no named event binding");
+                    if (!event.binding.payload_descriptor.eql(engine.BoundaryPayloadDescriptor.init(.str, .detail))) {
+                        Ctx.fail("benchmark custom_event binding does not request the detail payload descriptor");
+                    }
+                    Ctx.dispatchRocEventMeasured(host, roc_host, event.binding.event_id, event.binding.payload_descriptor, Ctx.hostValueStr(host, roc_host, detail), stats);
                 },
 
                 .select_option => {
@@ -370,7 +409,88 @@ pub fn Runner(comptime Ctx: type) type {
                     stats.actions += 1;
                 },
 
+                .navigate => {
+                    const text = cmd.expected_text orelse Ctx.fail("benchmark navigate command had no URL text");
+                    const location = locationSnapshotFromSpecText(Ctx, cmd.line_num, text);
+                    const start_ns = nowNs();
+                    const counts = Ctx.navigateLocation(host, roc_host, location);
+                    stats.dispatch_apply_ns += nowNs() - start_ns;
+                    stats.commands.addAll(counts);
+                    Ctx.finishHostMetrics(host);
+                    stats.actions += 1;
+                },
+
+                .history_back => {
+                    const start_ns = nowNs();
+                    const counts = Ctx.historyBack(host, roc_host);
+                    stats.dispatch_apply_ns += nowNs() - start_ns;
+                    stats.commands.addAll(counts);
+                    Ctx.finishHostMetrics(host);
+                    stats.actions += 1;
+                },
+
+                .history_forward => {
+                    const start_ns = nowNs();
+                    const counts = Ctx.historyForward(host, roc_host);
+                    stats.dispatch_apply_ns += nowNs() - start_ns;
+                    stats.commands.addAll(counts);
+                    Ctx.finishHostMetrics(host);
+                    stats.actions += 1;
+                },
+
+                .set_visibility => {
+                    const text = cmd.expected_text orelse Ctx.fail("benchmark set_visibility command had no visibility text");
+                    const visibility = visibilitySnapshotFromSpecText(Ctx, cmd.line_num, text);
+                    const start_ns = nowNs();
+                    const counts = Ctx.setVisibility(host, roc_host, visibility);
+                    stats.dispatch_apply_ns += nowNs() - start_ns;
+                    stats.commands.addAll(counts);
+                    Ctx.finishHostMetrics(host);
+                    stats.actions += 1;
+                },
+
+                .set_online => {
+                    const text = cmd.expected_text orelse Ctx.fail("benchmark set_online command had no online text");
+                    const online = onlineSnapshotFromSpecText(Ctx, cmd.line_num, text);
+                    const start_ns = nowNs();
+                    const counts = Ctx.setOnline(host, roc_host, online);
+                    stats.dispatch_apply_ns += nowNs() - start_ns;
+                    stats.commands.addAll(counts);
+                    Ctx.finishHostMetrics(host);
+                    stats.actions += 1;
+                },
+
                 else => {},
+            }
+        }
+
+        fn applyPreMountSpecCommands(host: *Host, commands: []const SpecCommand) void {
+            for (commands) |cmd| {
+                switch (cmd.cmd_type) {
+                    .set_initial_location => {
+                        const text = cmd.expected_text orelse Ctx.fail("benchmark set_initial_location command had no URL text");
+                        Ctx.setInitialLocation(host, locationSnapshotFromSpecText(Ctx, cmd.line_num, text));
+                    },
+                    .set_initial_visibility => {
+                        const text = cmd.expected_text orelse Ctx.fail("benchmark set_initial_visibility command had no visibility text");
+                        Ctx.setInitialVisibility(host, visibilitySnapshotFromSpecText(Ctx, cmd.line_num, text));
+                    },
+                    .set_initial_online => {
+                        const text = cmd.expected_text orelse Ctx.fail("benchmark set_initial_online command had no online text");
+                        Ctx.setInitialOnline(host, onlineSnapshotFromSpecText(Ctx, cmd.line_num, text));
+                    },
+                    .seed_local_storage, .seed_session_storage => {
+                        const key = cmd.task_name orelse Ctx.fail("benchmark seed storage command had no key text");
+                        const value = cmd.expected_text orelse Ctx.fail("benchmark seed storage command had no value text");
+                        const area: boundary.StorageArea = switch (cmd.cmd_type) {
+                            .seed_local_storage => .local,
+                            .seed_session_storage => .session,
+                            else => unreachable,
+                        };
+                        Ctx.seedStorage(host, area, key, value);
+                    },
+                    else => {},
+                }
             }
         }
 
@@ -379,6 +499,15 @@ pub fn Runner(comptime Ctx: type) type {
             const button_type = Ctx.elementTextAttr(elem, "type") orelse return true;
             return !std.ascii.eqlIgnoreCase(button_type, "button") and
                 !std.ascii.eqlIgnoreCase(button_type, "reset");
+        }
+
+        fn benchmarkClickEventId(elem: anytype) ?u64 {
+            if (Ctx.clickEventId(elem)) |event_id| return event_id;
+            const event = Ctx.namedEvent(elem, "click") orelse return null;
+            if (!event.binding.payload_descriptor.eql(engine.BoundaryPayloadDescriptor.init(.unit, .none))) {
+                Ctx.fail("benchmark named click binding does not use a unit payload descriptor");
+            }
+            return event.binding.event_id;
         }
 
         fn benchmarkIsResetButton(elem: anytype) bool {
@@ -591,12 +720,44 @@ test "commandIsAction recognizes only mutating commands" {
         .expected_bool = null,
         .line_num = 2,
     }));
+    try std.testing.expect(commandIsAction(.{
+        .cmd_type = .navigate,
+        .locator = .{ .kind = .none },
+        .expected_text = null,
+        .expected_count = null,
+        .expected_bool = null,
+        .line_num = 3,
+    }));
+    try std.testing.expect(commandIsAction(.{
+        .cmd_type = .set_visibility,
+        .locator = .{ .kind = .none },
+        .expected_text = null,
+        .expected_count = null,
+        .expected_bool = null,
+        .line_num = 4,
+    }));
+    try std.testing.expect(commandIsAction(.{
+        .cmd_type = .custom_event,
+        .locator = .{ .kind = .none },
+        .expected_text = null,
+        .expected_count = null,
+        .expected_bool = null,
+        .line_num = 5,
+    }));
     try std.testing.expect(!commandIsAction(.{
         .cmd_type = .expect_text,
         .locator = .{ .kind = .none },
         .expected_text = null,
         .expected_count = null,
         .expected_bool = null,
-        .line_num = 3,
+        .line_num = 6,
+    }));
+    try std.testing.expect(!commandIsAction(.{
+        .cmd_type = .set_initial_location,
+        .locator = .{ .kind = .none },
+        .expected_text = null,
+        .expected_count = null,
+        .expected_bool = null,
+        .line_num = 7,
     }));
 }

@@ -37,10 +37,15 @@ export const Op = Object.freeze({
   bindPointerEnter: 25,
   bindPointerLeave: 26,
   extended: 27,
+  pushState: 28,
+  replaceState: 29,
+  setStorageText: 30,
+  removeStorage: 31,
+  setDocumentTitle: 32,
 });
 
 export const Protocol = Object.freeze({
-  version: 8,
+  version: 11,
 });
 
 export const ProtocolFeature = Object.freeze({
@@ -110,6 +115,11 @@ const opNames = Object.freeze({
   [Op.bindPointerEnter]: "bind_pointer_enter",
   [Op.bindPointerLeave]: "bind_pointer_leave",
   [Op.extended]: "extended",
+  [Op.pushState]: "push_state",
+  [Op.replaceState]: "replace_state",
+  [Op.setStorageText]: "set_storage_text",
+  [Op.removeStorage]: "remove_storage",
+  [Op.setDocumentTitle]: "set_document_title",
 });
 
 const dynamicOpNames = Object.freeze({
@@ -216,6 +226,34 @@ const BoundarySchemaTag = Object.freeze({
   text: 2,
   bool: 3,
   record: 4,
+});
+
+export const LocationBoundarySchema = Object.freeze({
+  kind: "record",
+  fields: Object.freeze([
+    Object.freeze({ name: "path", spec: Object.freeze({ kind: "text" }) }),
+    Object.freeze({ name: "query", spec: Object.freeze({ kind: "text" }) }),
+    Object.freeze({ name: "hash", spec: Object.freeze({ kind: "text" }) }),
+  ]),
+});
+
+export const VisibilityBoundarySchema = Object.freeze({
+  kind: "bool",
+});
+
+export const OnlineBoundarySchema = Object.freeze({
+  kind: "bool",
+});
+
+export const StorageArea = Object.freeze({
+  local: 1,
+  session: 2,
+});
+
+const StoragePayloadTag = Object.freeze({
+  missing: 0,
+  value: 1,
+  unavailable: 2,
 });
 
 const EventExtractionSource = Object.freeze({
@@ -570,20 +608,86 @@ function createHttpPayloadReader(lines, expectedVersion, label) {
   };
 }
 
-export async function instantiateSignalsWasm(url) {
+function storageForArea(options, area) {
+  if (area === StorageArea.local) {
+    return options.localStorage ?? options.storage?.localStorage ?? globalThis.localStorage;
+  }
+  if (area === StorageArea.session) {
+    return options.sessionStorage ?? options.storage?.sessionStorage ?? globalThis.sessionStorage;
+  }
+  return null;
+}
+
+function storageSnapshotForKey(options, area, key) {
+  const storage = storageForArea(options, area);
+  if (storage === undefined || storage === null || typeof storage.getItem !== "function") {
+    return { kind: "unavailable", message: "browser storage is unavailable" };
+  }
+
+  try {
+    const value = storage.getItem(key);
+    return value === null ? { kind: "missing" } : { kind: "value", value: String(value) };
+  } catch (err) {
+    return { kind: "unavailable", message: err?.message ?? String(err) };
+  }
+}
+
+function createStorageImports(getExports, options = {}) {
+  function readKey(keyPtr, keyLen) {
+    const exports = getExports();
+    if (!exports?.memory) {
+      throw new Error("storage import ran before wasm memory was available");
+    }
+    return textDecoder.decode(new Uint8Array(exports.memory.buffer, keyPtr, keyLen));
+  }
+
+  function payloadBytes(area, keyPtr, keyLen) {
+    const key = readKey(keyPtr, keyLen);
+    return encodeStoragePayloadBytes(storageSnapshotForKey(options, area, key));
+  }
+
+  return {
+    roc_ui_storage_payload_len(area, keyPtr, keyLen) {
+      return payloadBytes(area, keyPtr, keyLen).length;
+    },
+    roc_ui_read_storage_payload(area, keyPtr, keyLen, outPtr, outLen) {
+      const exports = getExports();
+      if (!exports?.memory) {
+        throw new Error("storage import ran before wasm memory was available");
+      }
+      const bytes = payloadBytes(area, keyPtr, keyLen);
+      if (bytes.length > outLen) {
+        return bytes.length;
+      }
+      new Uint8Array(exports.memory.buffer, outPtr, outLen).set(bytes);
+      return bytes.length;
+    },
+  };
+}
+
+export async function instantiateSignalsBytes(bytes, options = {}) {
+  let instanceRef = null;
+  const result = await WebAssembly.instantiate(bytes, {
+    env: createStorageImports(() => instanceRef?.exports, options),
+  });
+  instanceRef = result.instance;
+  return result;
+}
+
+export async function instantiateSignalsWasm(url, options = {}) {
   const response = await fetch(url);
   if (!response.ok) {
     throw new Error(`failed to fetch ${url}: ${response.status}`);
   }
 
   const bytes = await response.arrayBuffer();
-  const { instance } = await WebAssembly.instantiate(bytes, {});
+  const { instance } = await instantiateSignalsBytes(bytes, options);
   return instance;
 }
 
-export async function mountSignalsApp({ wasmUrl, root, taskHandler, onError, telemetry, behaviors }) {
-  const instance = await instantiateSignalsWasm(wasmUrl);
-  const runtime = new SignalsRuntime(instance.exports, root, { taskHandler, onError, telemetry, behaviors });
+export async function mountSignalsApp({ wasmUrl, root, taskHandler, onError, telemetry, behaviors, localStorage, sessionStorage, storage, document, visibilityDocument, navigator, networkEventTarget }) {
+  const instance = await instantiateSignalsWasm(wasmUrl, { telemetry, localStorage, sessionStorage, storage });
+  const runtime = new SignalsRuntime(instance.exports, root, { taskHandler, onError, telemetry, behaviors, localStorage, sessionStorage, storage, document, visibilityDocument, navigator, networkEventTarget });
   runtime.mount();
   return runtime;
 }
@@ -601,14 +705,29 @@ export class SignalsRuntime {
     this.tasks = new Map();
     this.issuedTasks = new Map();
     this.taskHandler = options.taskHandler ?? null;
+    this.location = options.location ?? globalThis.location;
+    this.history = options.history ?? globalThis.history;
+    this.localStorage = options.localStorage ?? options.storage?.localStorage ?? globalThis.localStorage;
+    this.sessionStorage = options.sessionStorage ?? options.storage?.sessionStorage ?? globalThis.sessionStorage;
+    this.eventTarget = options.eventTarget ?? globalThis;
+    this.document = options.document ?? globalThis.document;
+    this.visibilityDocument = options.visibilityDocument ?? this.document;
+    this.navigator = options.navigator ?? globalThis.navigator;
+    this.networkEventTarget = options.networkEventTarget ?? this.eventTarget;
     this.behaviors = normalizeBehaviors(options.behaviors);
     this.behaviorInstances = new Map();
     this.pendingBehaviorAttaches = new Set();
     this.pendingBehaviorUpdates = new Map();
     this.telemetryLog = normalizeTelemetry(options.telemetry);
     this.telemetrySeq = 0;
+    this.mounted = false;
+    this.mountGeneration = 0;
+    this.locationListenerCleanup = null;
+    this.visibilityListenerCleanup = null;
+    this.onlineListenerCleanup = null;
     this.pointerProbeCleanups = [];
     this.lastEventResponseBits = 0;
+    this.storageBatch = null;
     this.onError = options.onError ?? ((err) => {
       setTimeout(() => {
         throw err;
@@ -656,12 +775,332 @@ export class SignalsRuntime {
   }
 
   mount() {
+    this.mounted = true;
+    this.mountGeneration += 1;
+    this.setInitialLocationSnapshot();
+    this.setInitialVisibilitySnapshot();
+    this.setInitialOnlineSnapshot();
+    this.prepareMountEnvironment();
+    this.installLocationListener(this.mountGeneration);
+    this.installVisibilityListener(this.mountGeneration);
+    this.installOnlineListener(this.mountGeneration);
     this.emitTelemetry("host_call", { call: "mount" });
     this.views.callHost(this.exports.roc_ui_mount);
     this.applyPendingCommands("mount");
   }
 
+  setInitialLocationSnapshot() {
+    if (typeof this.exports.roc_ui_set_location !== "function") {
+      return;
+    }
+    const snapshot = locationSnapshotFromLocation(this.location);
+    this.writeLocationPayload("roc_ui_set_location", snapshot, "environment_snapshot", {
+      location: snapshot,
+    });
+  }
+
+  setInitialVisibilitySnapshot() {
+    if (typeof this.exports.roc_ui_set_visibility !== "function") {
+      return;
+    }
+    const visible = visibilitySnapshotFromDocument(this.visibilityDocument);
+    this.writeVisibilityPayload("roc_ui_set_visibility", visible, "environment_snapshot", {
+      visibility: visible,
+    });
+  }
+
+  setInitialOnlineSnapshot() {
+    if (typeof this.exports.roc_ui_set_online !== "function") {
+      return;
+    }
+    const online = onlineSnapshotFromNavigator(this.navigator);
+    this.writeOnlinePayload("roc_ui_set_online", online, "environment_snapshot", {
+      online,
+    });
+  }
+
+  prepareMountEnvironment() {
+    if (typeof this.exports.roc_ui_prepare_mount !== "function") {
+      return;
+    }
+    this.emitTelemetry("host_call", { call: "prepare_mount" });
+    try {
+      this.views.callHost(this.exports.roc_ui_prepare_mount);
+      this.seedInitialStorageSnapshots();
+    } catch (err) {
+      throw this.runtimeError(err);
+    }
+  }
+
+  seedInitialStorageSnapshots() {
+    const countExport = this.exports.roc_ui_storage_declaration_count;
+    const areaExport = this.exports.roc_ui_storage_declaration_area;
+    const keyPtrExport = this.exports.roc_ui_storage_declaration_key_ptr;
+    const keyLenExport = this.exports.roc_ui_storage_declaration_key_len;
+    const setPayload = this.exports.roc_ui_set_storage_payload;
+    if (
+      typeof countExport !== "function" ||
+      typeof areaExport !== "function" ||
+      typeof keyPtrExport !== "function" ||
+      typeof keyLenExport !== "function" ||
+      typeof setPayload !== "function"
+    ) {
+      return;
+    }
+
+    const count = countExport();
+    for (let index = 0; index < count; index += 1) {
+      const area = areaExport(index);
+      const keyPtr = keyPtrExport(index);
+      const keyLen = keyLenExport(index);
+      const key = this.readMemoryString(keyPtr, keyLen);
+      const snapshot = storageSnapshotForKey(
+        { localStorage: this.localStorage, sessionStorage: this.sessionStorage },
+        area,
+        key,
+      );
+      const bytes = encodeStoragePayloadBytes(snapshot);
+      const payloadPtr = this.views.callHost(this.exports.roc_alloc, bytes.length, 1).result;
+      try {
+        this.views.u8.set(bytes, payloadPtr);
+        this.emitTelemetry("storage_snapshot", {
+          area,
+          key,
+          snapshotKind: snapshot.kind,
+          payloadLen: bytes.length,
+        });
+        this.views.callHost(setPayload, area, keyPtr, keyLen, payloadPtr, bytes.length);
+      } finally {
+        this.views.callHost(this.exports.roc_dealloc, payloadPtr, 1);
+      }
+    }
+  }
+
+  writeLocationPayload(exportName, snapshot, telemetryKind, telemetryDetail = {}) {
+    const hostCall = this.exports[exportName];
+    if (typeof hostCall !== "function") {
+      return false;
+    }
+    const bytes = encodeBoundarySchemaPayloadBytes(LocationBoundarySchema, snapshot);
+    const ptr = this.views.callHost(this.exports.roc_alloc, bytes.length, 1).result;
+    try {
+      this.views.u8.set(bytes, ptr);
+      this.emitTelemetry(telemetryKind, {
+        ...telemetryDetail,
+        payloadLen: bytes.length,
+      });
+      this.views.callHost(hostCall, ptr, bytes.length);
+      return true;
+    } catch (err) {
+      throw this.runtimeError(err);
+    } finally {
+      this.views.callHost(this.exports.roc_dealloc, ptr, 1);
+    }
+  }
+
+  writeVisibilityPayload(exportName, visible, telemetryKind, telemetryDetail = {}) {
+    const hostCall = this.exports[exportName];
+    if (typeof hostCall !== "function") {
+      return false;
+    }
+    const bytes = encodeBoundarySchemaPayloadBytes(VisibilityBoundarySchema, visible);
+    const ptr = this.views.callHost(this.exports.roc_alloc, bytes.length, 1).result;
+    try {
+      this.views.u8.set(bytes, ptr);
+      this.emitTelemetry(telemetryKind, {
+        ...telemetryDetail,
+        payloadLen: bytes.length,
+      });
+      this.views.callHost(hostCall, ptr, bytes.length);
+      return true;
+    } catch (err) {
+      throw this.runtimeError(err);
+    } finally {
+      this.views.callHost(this.exports.roc_dealloc, ptr, 1);
+    }
+  }
+
+  writeOnlinePayload(exportName, online, telemetryKind, telemetryDetail = {}) {
+    const hostCall = this.exports[exportName];
+    if (typeof hostCall !== "function") {
+      return false;
+    }
+    const bytes = encodeBoundarySchemaPayloadBytes(OnlineBoundarySchema, online);
+    const ptr = this.views.callHost(this.exports.roc_alloc, bytes.length, 1).result;
+    try {
+      this.views.u8.set(bytes, ptr);
+      this.emitTelemetry(telemetryKind, {
+        ...telemetryDetail,
+        payloadLen: bytes.length,
+      });
+      this.views.callHost(hostCall, ptr, bytes.length);
+      return true;
+    } catch (err) {
+      throw this.runtimeError(err);
+    } finally {
+      this.views.callHost(this.exports.roc_dealloc, ptr, 1);
+    }
+  }
+
+  installLocationListener(generation) {
+    this.clearLocationListener();
+    if (typeof this.exports.roc_ui_update_location !== "function") {
+      return;
+    }
+    if (
+      this.eventTarget === undefined ||
+      this.eventTarget === null ||
+      typeof this.eventTarget.addEventListener !== "function" ||
+      typeof this.eventTarget.removeEventListener !== "function"
+    ) {
+      return;
+    }
+
+    const listener = () => this.dispatchPopstate(generation);
+    this.eventTarget.addEventListener("popstate", listener);
+    this.locationListenerCleanup = () => {
+      this.eventTarget.removeEventListener("popstate", listener);
+    };
+    this.emitTelemetry("popstate_listener", { action: "install", generation });
+  }
+
+  clearLocationListener() {
+    if (this.locationListenerCleanup === null) {
+      return;
+    }
+    this.locationListenerCleanup();
+    this.locationListenerCleanup = null;
+    this.emitTelemetry("popstate_listener", { action: "remove", generation: this.mountGeneration });
+  }
+
+  dispatchPopstate(generation) {
+    if (!this.mounted || generation !== this.mountGeneration) {
+      this.emitTelemetry("ignored_popstate", {
+        reason: this.mounted ? "stale_generation" : "unmounted",
+        generation,
+        currentGeneration: this.mountGeneration,
+      });
+      return;
+    }
+    const snapshot = locationSnapshotFromLocation(this.location);
+    this.emitTelemetry("host_call", { call: "popstate", generation });
+    this.writeLocationPayload("roc_ui_update_location", snapshot, "location_update", {
+      trigger: "popstate",
+      generation,
+      location: snapshot,
+    });
+    this.applyPendingCommands(`popstate:${generation}`);
+  }
+
+  installVisibilityListener(generation) {
+    this.clearVisibilityListener();
+    if (typeof this.exports.roc_ui_update_visibility !== "function") {
+      return;
+    }
+    if (
+      this.visibilityDocument === undefined ||
+      this.visibilityDocument === null ||
+      typeof this.visibilityDocument.addEventListener !== "function" ||
+      typeof this.visibilityDocument.removeEventListener !== "function"
+    ) {
+      return;
+    }
+
+    const listener = () => this.dispatchVisibilitychange(generation);
+    this.visibilityDocument.addEventListener("visibilitychange", listener);
+    this.visibilityListenerCleanup = () => {
+      this.visibilityDocument.removeEventListener("visibilitychange", listener);
+    };
+    this.emitTelemetry("visibility_listener", { action: "install", generation });
+  }
+
+  clearVisibilityListener() {
+    if (this.visibilityListenerCleanup === null) {
+      return;
+    }
+    this.visibilityListenerCleanup();
+    this.visibilityListenerCleanup = null;
+    this.emitTelemetry("visibility_listener", { action: "remove", generation: this.mountGeneration });
+  }
+
+  dispatchVisibilitychange(generation) {
+    if (!this.mounted || generation !== this.mountGeneration) {
+      this.emitTelemetry("ignored_visibilitychange", {
+        reason: this.mounted ? "stale_generation" : "unmounted",
+        generation,
+        currentGeneration: this.mountGeneration,
+      });
+      return;
+    }
+    const visible = visibilitySnapshotFromDocument(this.visibilityDocument);
+    this.emitTelemetry("host_call", { call: "visibilitychange", generation });
+    this.writeVisibilityPayload("roc_ui_update_visibility", visible, "visibility_update", {
+      trigger: "visibilitychange",
+      generation,
+      visibility: visible,
+    });
+    this.applyPendingCommands(`visibilitychange:${generation}`);
+  }
+
+  installOnlineListener(generation) {
+    this.clearOnlineListener();
+    if (typeof this.exports.roc_ui_update_online !== "function") {
+      return;
+    }
+    if (
+      this.networkEventTarget === undefined ||
+      this.networkEventTarget === null ||
+      typeof this.networkEventTarget.addEventListener !== "function" ||
+      typeof this.networkEventTarget.removeEventListener !== "function"
+    ) {
+      return;
+    }
+
+    const onlineListener = () => this.dispatchOnlineChange(generation, "online");
+    const offlineListener = () => this.dispatchOnlineChange(generation, "offline");
+    this.networkEventTarget.addEventListener("online", onlineListener);
+    this.networkEventTarget.addEventListener("offline", offlineListener);
+    this.onlineListenerCleanup = () => {
+      this.networkEventTarget.removeEventListener("online", onlineListener);
+      this.networkEventTarget.removeEventListener("offline", offlineListener);
+    };
+    this.emitTelemetry("online_listener", { action: "install", generation });
+  }
+
+  clearOnlineListener() {
+    if (this.onlineListenerCleanup === null) {
+      return;
+    }
+    this.onlineListenerCleanup();
+    this.onlineListenerCleanup = null;
+    this.emitTelemetry("online_listener", { action: "remove", generation: this.mountGeneration });
+  }
+
+  dispatchOnlineChange(generation, trigger) {
+    if (!this.mounted || generation !== this.mountGeneration) {
+      this.emitTelemetry("ignored_onlinechange", {
+        reason: this.mounted ? "stale_generation" : "unmounted",
+        generation,
+        currentGeneration: this.mountGeneration,
+        trigger,
+      });
+      return;
+    }
+    const online = onlineSnapshotFromNavigator(this.navigator);
+    this.emitTelemetry("host_call", { call: "onlinechange", generation, trigger });
+    this.writeOnlinePayload("roc_ui_update_online", online, "online_update", {
+      trigger,
+      generation,
+      online,
+    });
+    this.applyPendingCommands(`onlinechange:${generation}`);
+  }
+
   unmount() {
+    this.mounted = false;
+    this.clearLocationListener();
+    this.clearVisibilityListener();
+    this.clearOnlineListener();
     this.emitTelemetry("host_call", { call: "unmount" });
     this.views.callHost(this.exports.roc_ui_unmount);
     this.applyPendingCommands("unmount");
@@ -862,6 +1301,14 @@ export class SignalsRuntime {
     return textDecoder.decode(bytes);
   }
 
+  readMemoryString(ptr, length) {
+    if (length === 0) {
+      return "";
+    }
+    this.views.afterHostCall();
+    return textDecoder.decode(this.views.u8.subarray(ptr, ptr + length));
+  }
+
   readDynamicBytes(offset, length) {
     this.views.afterHostCall();
     const base = this.exports.roc_ui_dynamic_buffer_ptr();
@@ -885,14 +1332,19 @@ export class SignalsRuntime {
     this.lastCommands = records;
     this.emitCommandTelemetry(phase, records);
     const previousDecodeStats = this.commandDecodeStats;
+    const previousStorageBatch = this.storageBatch;
     const decodeStats = newCommandDecodeStats();
     this.commandDecodeStats = decodeStats;
+    this.storageBatch = new Map();
     try {
       for (const record of records) {
         this.applyCommand(record);
       }
     } finally {
+      const storageBatch = this.storageBatch;
       this.commandDecodeStats = previousDecodeStats;
+      this.storageBatch = previousStorageBatch;
+      this.flushStorageBatch(storageBatch);
     }
     this.flushBehaviorEffects();
     this.emitTelemetry("commands_applied", {
@@ -1035,6 +1487,26 @@ export class SignalsRuntime {
         this.cancelTask(record.a);
         return;
 
+      case Op.pushState:
+        this.applyNavigationCommand("push", this.readString(record.a, record.b));
+        return;
+
+      case Op.replaceState:
+        this.applyNavigationCommand("replace", this.readString(record.a, record.b));
+        return;
+
+      case Op.setStorageText:
+        this.queueStorageCommand("set", record.a, this.readString(record.b, record.c), this.readString(record.d, record.e));
+        return;
+
+      case Op.removeStorage:
+        this.queueStorageCommand("remove", record.a, this.readString(record.b, record.c), "");
+        return;
+
+      case Op.setDocumentTitle:
+        this.applyDocumentTitleCommand(this.readString(record.b, record.c));
+        return;
+
       case Op.extended:
         this.applyDynamicCommand(record.a, record.b);
         return;
@@ -1042,6 +1514,80 @@ export class SignalsRuntime {
       default:
         throw new Error(`unknown render op ${record.op}`);
     }
+  }
+
+  applyNavigationCommand(kind, href) {
+    if (this.history === undefined || this.history === null) {
+      throw new Error("browser history is unavailable");
+    }
+    if (kind === "push") {
+      this.history.pushState(null, "", href);
+    } else if (kind === "replace") {
+      this.history.replaceState(null, "", href);
+    } else {
+      throw new Error(`unknown navigation kind ${kind}`);
+    }
+    this.emitTelemetry("navigation", { mode: kind, href });
+  }
+
+  storageForArea(area) {
+    if (area === StorageArea.local) {
+      return this.localStorage;
+    }
+    if (area === StorageArea.session) {
+      return this.sessionStorage;
+    }
+    throw new Error(`unknown storage area ${area}`);
+  }
+
+  queueStorageCommand(mode, area, key, value) {
+    const command = { mode, area, key, value };
+    if (this.storageBatch === null) {
+      this.applyStorageCommand(command);
+      return;
+    }
+    this.storageBatch.set(`${area}\u0000${key}`, command);
+  }
+
+  flushStorageBatch(batch) {
+    if (batch === null) {
+      return;
+    }
+    for (const command of batch.values()) {
+      this.applyStorageCommand(command);
+    }
+  }
+
+  applyStorageCommand(command) {
+    const storage = this.storageForArea(command.area);
+    if (storage === undefined || storage === null) {
+      throw new Error("browser storage is unavailable");
+    }
+    if (command.mode === "set") {
+      if (typeof storage.setItem !== "function") {
+        throw new Error("browser storage setItem is unavailable");
+      }
+      storage.setItem(command.key, command.value);
+      this.emitTelemetry("storage", { mode: "set", area: command.area, key: command.key });
+      return;
+    }
+    if (command.mode === "remove") {
+      if (typeof storage.removeItem !== "function") {
+        throw new Error("browser storage removeItem is unavailable");
+      }
+      storage.removeItem(command.key);
+      this.emitTelemetry("storage", { mode: "remove", area: command.area, key: command.key });
+      return;
+    }
+    throw new Error(`unknown storage command ${command.mode}`);
+  }
+
+  applyDocumentTitleCommand(title) {
+    if (this.document === undefined || this.document === null) {
+      throw new Error("document title is unavailable");
+    }
+    this.document.title = title;
+    this.emitTelemetry("document_title", { title });
   }
 
   applyDynamicCommand(offset, length) {
@@ -1876,6 +2422,31 @@ export class SignalsRuntime {
       case Op.cancelTask:
         return { op, requestId: record.a };
 
+      case Op.pushState:
+      case Op.replaceState:
+        return {
+          op,
+          href: this.readString(record.a, record.b),
+        };
+
+      case Op.setStorageText:
+        return {
+          op,
+          area: record.a,
+          key: this.readString(record.b, record.c),
+          valueBytes: record.e,
+        };
+
+      case Op.removeStorage:
+        return {
+          op,
+          area: record.a,
+          key: this.readString(record.b, record.c),
+        };
+
+      case Op.setDocumentTitle:
+        return { op, title: this.readString(record.b, record.c) };
+
       case Op.extended:
         return this.describeDynamicCommand(record.a, record.b);
 
@@ -2526,6 +3097,120 @@ function encodeBoundaryPayloadBytes(spec, event) {
     offset += chunk.length;
   }
   return out;
+}
+
+function concatBytes(chunks) {
+  let totalLen = 0;
+  for (const chunk of chunks) {
+    totalLen += chunk.length;
+  }
+  const out = new Uint8Array(totalLen);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return out;
+}
+
+export function encodeBoundarySchemaPayloadBytes(spec, value = undefined) {
+  const chunks = [];
+  let totalLen = 0;
+  const push = (bytes) => {
+    chunks.push(bytes);
+    totalLen += bytes.length;
+  };
+  writeBoundarySchemaPayloadBytes(spec, value, push, "payload");
+  const out = new Uint8Array(totalLen);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return out;
+}
+
+export function encodeStoragePayloadBytes(snapshot) {
+  if (snapshot?.kind === "missing") {
+    return new Uint8Array([StoragePayloadTag.missing]);
+  }
+  if (snapshot?.kind === "value") {
+    return concatBytes([
+      new Uint8Array([StoragePayloadTag.value]),
+      encodeBoundarySchemaPayloadBytes(Object.freeze({ kind: "text" }), String(snapshot.value)),
+    ]);
+  }
+  if (snapshot?.kind === "unavailable") {
+    return concatBytes([
+      new Uint8Array([StoragePayloadTag.unavailable]),
+      encodeBoundarySchemaPayloadBytes(Object.freeze({ kind: "text" }), String(snapshot.message)),
+    ]);
+  }
+  throw new Error("unknown storage payload snapshot");
+}
+
+export function locationSnapshotFromHref(href, baseHref = "http://signals.local/") {
+  const url = new URL(String(href), baseHref);
+  return {
+    path: url.pathname,
+    query: url.search.startsWith("?") ? url.search.slice(1) : url.search,
+    hash: url.hash.startsWith("#") ? url.hash.slice(1) : url.hash,
+  };
+}
+
+export function locationSnapshotFromLocation(location = globalThis.location) {
+  if (location === undefined || location === null) {
+    return locationSnapshotFromHref("/");
+  }
+  return locationSnapshotFromHref(location.href);
+}
+
+export function visibilitySnapshotFromDocument(doc = globalThis.document) {
+  if (doc === undefined || doc === null || typeof doc.visibilityState !== "string") {
+    return true;
+  }
+  return doc.visibilityState !== "hidden";
+}
+
+export function onlineSnapshotFromNavigator(navigator = globalThis.navigator) {
+  if (navigator === undefined || navigator === null || typeof navigator.onLine !== "boolean") {
+    return true;
+  }
+  return navigator.onLine;
+}
+
+function writeBoundarySchemaPayloadBytes(spec, value, push, path) {
+  switch (spec.kind) {
+    case "unit":
+      return;
+    case "text": {
+      if (typeof value !== "string") {
+        throw new Error(`${path} expected text boundary value`);
+      }
+      const bytes = textEncoder.encode(value);
+      const len = new Uint8Array(4);
+      new DataView(len.buffer).setUint32(0, bytes.length, true);
+      push(len);
+      push(bytes);
+      return;
+    }
+    case "bool":
+      if (typeof value !== "boolean") {
+        throw new Error(`${path} expected bool boundary value`);
+      }
+      push(new Uint8Array([value ? 1 : 0]));
+      return;
+    case "record":
+      if (value === null || typeof value !== "object") {
+        throw new Error(`${path} expected record boundary value`);
+      }
+      for (const field of spec.fields) {
+        writeBoundarySchemaPayloadBytes(field.spec, value[field.name], push, `${path}.${field.name}`);
+      }
+      return;
+    default:
+      throw new Error(`unknown boundary schema kind ${spec.kind}`);
+  }
 }
 
 function writeBoundaryPayloadBytes(spec, event, push) {

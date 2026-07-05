@@ -641,7 +641,7 @@ pub fn recordSliceContains(comptime Record: type, records: []const *Record, reco
 
 pub fn appendInputRecords(comptime Record: type, allocator: std.mem.Allocator, records: *std.ArrayListUnmanaged(*Record), record: *Record) void {
     switch (record.payload) {
-        .ref, .const_value, .task_source, .interval_source => {},
+        .ref, .const_value, .task_source, .interval_source, .location_source, .online_source, .visibility_source, .storage_source => {},
         .map => |payload| appendUniqueInputRecord(Record, allocator, records, payload.input),
         .map2 => |payload| {
             appendUniqueInputRecord(Record, allocator, records, payload.left);
@@ -674,7 +674,7 @@ pub fn retainRecord(
     var records_rebuilt: u64 = 0;
 
     switch (record.payload) {
-        .ref, .const_value, .task_source, .interval_source => {},
+        .ref, .const_value, .task_source, .interval_source, .location_source, .online_source, .visibility_source, .storage_source => {},
         .map => |payload| {
             records_rebuilt += retainRecord(Record, allocator, nodes, source_routes, source_node_count, payload.input, hooks);
             const input_id = requireRecordId(Record, nodes.items, payload.input);
@@ -707,7 +707,7 @@ pub fn retainRecord(
 
     switch (record.payload) {
         .ref => |source_node_id| appendSourceRoute(allocator, source_routes, source_node_count, source_node_id, record_id),
-        .const_value, .task_source => {},
+        .const_value, .task_source, .location_source, .online_source, .visibility_source, .storage_source => {},
         .interval_source => |payload| hooks.ensureInterval(payload.token, payload.period_ms),
         .map => |payload| appendDependentId(Record, allocator, nodes.items, requireRecordId(Record, nodes.items, payload.input), record_id),
         .map2 => |payload| {
@@ -750,7 +750,7 @@ pub fn releaseRecord(
 
     switch (record.payload) {
         .ref => |source_node_id| removeSourceRoute(source_routes, source_node_id, record_id),
-        .const_value, .task_source => {},
+        .const_value, .task_source, .location_source, .online_source, .visibility_source, .storage_source => {},
         .interval_source => |payload| hooks.removeInterval(payload.token),
         .map, .map2, .combine => {},
     }
@@ -905,7 +905,7 @@ fn appendUniqueInputRecord(comptime Record: type, allocator: std.mem.Allocator, 
 fn updateMovedRecordEdges(comptime Record: type, nodes: []Node(Record), source_routes: *RouteTable(u64), moved_record: *Record, old_record_id: u64, new_record_id: u64) void {
     switch (moved_record.payload) {
         .ref => |source_node_id| replaceSourceRouteId(source_routes, source_node_id, old_record_id, new_record_id),
-        .const_value, .task_source, .interval_source => {},
+        .const_value, .task_source, .interval_source, .location_source, .online_source, .visibility_source, .storage_source => {},
         .map => |payload| replaceDependentId(Record, nodes, requireRecordId(Record, nodes, payload.input), old_record_id, new_record_id),
         .map2 => |payload| {
             replaceDependentId(Record, nodes, requireRecordId(Record, nodes, payload.left), old_record_id, new_record_id);
@@ -1042,6 +1042,10 @@ const LifecycleTestRecord = struct {
         combine: CombinePayload,
         task_source,
         interval_source: IntervalPayload,
+        location_source,
+        online_source,
+        visibility_source,
+        storage_source,
     };
 
     pub fn retain(self: *LifecycleTestRecord) *LifecycleTestRecord {

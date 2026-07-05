@@ -15,6 +15,13 @@ pub const EventKind = render.EventKind;
 pub const EventPolicy = render.EventPolicy;
 pub const BoundaryPayloadDescriptor = boundary.BoundaryPayloadDescriptor;
 pub const Counts = render.Counts;
+pub const LocationSnapshot = boundary.LocationSnapshot;
+pub const StorageArea = boundary.StorageArea;
+
+pub const NavigationKind = enum {
+    push,
+    replace,
+};
 
 pub const EventBindingKey = union(enum) {
     fixed: EventKind,
@@ -235,6 +242,22 @@ pub fn DomSink(comptime Host: type) type {
             self.host.sinkCancelTask(request_id);
         }
 
+        pub fn navigate(self: @This(), kind: NavigationKind, location: LocationSnapshot) void {
+            self.host.sinkNavigate(kind, location);
+        }
+
+        pub fn setDocumentTitle(self: @This(), title: []const u8) void {
+            self.host.sinkSetDocumentTitle(title);
+        }
+
+        pub fn setStorageText(self: @This(), area: StorageArea, key: []const u8, value: []const u8) void {
+            self.host.sinkSetStorageText(area, key, value);
+        }
+
+        pub fn removeStorage(self: @This(), area: StorageArea, key: []const u8) void {
+            self.host.sinkRemoveStorage(area, key);
+        }
+
         pub fn debugAssertNode(self: @This(), elem_id: u64, active: bool, tag: ?[]const u8, parent_id: ?u64, children: []const u64, click_event: ?u64, input_event: ?u64, check_event: ?u64, pointer_down_event: ?u64, pointer_up_event: ?u64, pointer_enter_event: ?u64, pointer_leave_event: ?u64) void {
             self.host.sinkDebugAssertNode(elem_id, active, tag, parent_id, children, click_event, input_event, check_event, pointer_down_event, pointer_up_event, pointer_enter_event, pointer_leave_event);
         }
@@ -304,6 +327,7 @@ test "DomSink forwards every render seam method to the host" {
         last_event_descriptor: BoundaryPayloadDescriptor = BoundaryPayloadDescriptor.init(.unit, .none),
         last_task_name: []const u8 = "",
         last_task_request: []const u8 = "",
+        last_dynamic_value: []const u8 = "",
         last_children_len: usize = 0,
         last_debug_children_len: usize = 0,
         saw_fixed_bind: bool = false,
@@ -399,6 +423,40 @@ test "DomSink forwards every render seam method to the host" {
             self.mark(15);
         }
 
+        pub fn sinkNavigate(self: *@This(), kind: NavigationKind, location: LocationSnapshot) void {
+            self.mark(19);
+            self.last_task_name = switch (kind) {
+                .push => "push",
+                .replace => "replace",
+            };
+            self.last_task_request = location.path;
+        }
+
+        pub fn sinkSetDocumentTitle(self: *@This(), title: []const u8) void {
+            self.mark(22);
+            self.last_task_name = "title";
+            self.last_task_request = title;
+        }
+
+        pub fn sinkSetStorageText(self: *@This(), area: StorageArea, key: []const u8, value: []const u8) void {
+            self.mark(20);
+            self.last_task_name = switch (area) {
+                .local => "local",
+                .session => "session",
+            };
+            self.last_task_request = key;
+            self.last_dynamic_value = value;
+        }
+
+        pub fn sinkRemoveStorage(self: *@This(), area: StorageArea, key: []const u8) void {
+            self.mark(21);
+            self.last_task_name = switch (area) {
+                .local => "local",
+                .session => "session",
+            };
+            self.last_task_request = key;
+        }
+
         pub fn sinkDebugAssertNode(self: *@This(), _: u64, _: bool, _: ?[]const u8, _: ?u64, children: []const u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64) void {
             self.mark(16);
             self.last_debug_children_len = children.len;
@@ -435,9 +493,12 @@ test "DomSink forwards every render seam method to the host" {
     sink.cancelInterval(8);
     sink.startTask(9, "lookup", "roc");
     sink.cancelTask(9);
+    sink.setStorageText(.local, "checkout:draft", "saved");
+    sink.removeStorage(.session, "checkout:flash");
+    sink.navigate(.replace, .{ .path = "/done", .query = "tab=1", .hash = "tail" });
     sink.debugAssertNode(1, true, "div", 0, &children, 7, null, null, null, null, null, null);
 
-    try std.testing.expectEqual((@as(u32, 1) << 19) - 1, host.seen);
+    try std.testing.expectEqual((@as(u32, 1) << 22) - 1, host.seen);
     try std.testing.expectEqual(@as(usize, 2), host.last_children_len);
     try std.testing.expectEqual(@as(usize, 2), host.last_debug_children_len);
     try std.testing.expectEqual(BoundaryPayloadDescriptor.init(.bytes, .record_key_shift), host.last_event_descriptor);
@@ -445,6 +506,7 @@ test "DomSink forwards every render seam method to the host" {
     try std.testing.expect(host.saw_named_bind);
     try std.testing.expect(host.saw_fixed_clear);
     try std.testing.expect(host.saw_named_clear);
-    try std.testing.expectEqualStrings("lookup", host.last_task_name);
-    try std.testing.expectEqualStrings("roc", host.last_task_request);
+    try std.testing.expectEqualStrings("replace", host.last_task_name);
+    try std.testing.expectEqualStrings("/done", host.last_task_request);
+    try std.testing.expectEqualStrings("saved", host.last_dynamic_value);
 }

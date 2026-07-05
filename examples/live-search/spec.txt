@@ -5,6 +5,7 @@ expect_visible role:region name:"Search results"
 expect_text text:"Search status: loading" "Search status: loading"
 expect_text text:"Waiting for search results" "Waiting for search results"
 expect_text text:"No search error" "No search error"
+expect_text text:"Network: online" "Network: online"
 expect_text text:"Freshness check: 0" "Freshness check: 0"
 expect_pending_task "lookup" 0
 expect_cleanup "live search panel cleanup" 0
@@ -13,7 +14,14 @@ expect_interval 1000 1
 tick_interval 1000
 expect_text text:"Freshness check: 1" "Freshness check: 1"
 
+set_online offline
+expect_text text:"Network: offline - search paused" "Network: offline - search paused"
 fill label:"Search" "roc"
+expect_pending_task "lookup" 0
+expect_text text:"Search status: loading" "Search status: loading"
+
+set_online online
+expect_text text:"Network: online" "Network: online"
 expect_pending_task "lookup" 1
 expect_text text:"Search status: loading" "Search status: loading"
 
@@ -44,16 +52,21 @@ expect_visible role:region name:"Search panel closed"
 expect_pending_task "lookup" 0
 expect_cleanup "live search panel cleanup" 1
 expect_interval 1000 0
+set_online offline
+expect_pending_task "lookup" 0
+set_online online
+expect_pending_task "lookup" 0
 tick_interval_if_active 1000
 expect_visible role:region name:"Search panel closed"
 expect_interval 1000 0
-expect_metric_delta retained_alloc_delta -13
+expect_metric_delta retained_alloc_delta -19
 
 click role:button name:"Open results"
 expect_visible role:region name:"Search results"
 expect_text text:"Search status: loading" "Search status: loading"
 expect_text text:"Waiting for search results" "Waiting for search results"
 expect_text text:"No search error" "No search error"
+expect_text text:"Network: online" "Network: online"
 expect_text text:"Freshness check: 0" "Freshness check: 0"
 expect_cleanup "live search panel cleanup" 1
 expect_interval 1000 1

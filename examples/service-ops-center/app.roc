@@ -4,14 +4,104 @@ import Dashboard
 import DashboardRemote
 import DashboardTheme
 import DashboardView
+import pf.Browser
 import pf.Elem exposing [Elem]
 import pf.Html
 import pf.Http
 import pf.Signal
 import pf.Ui
 
+Route : [RouteOverview, RouteService(Str), RouteUnknown]
+
+RouteIntent : { serial : U64, path : Str, query : Str, hash : Str }
+
 increment_u64 : U64 -> U64
 increment_u64 = |current| current + 1
+
+overview_location : Browser.Location
+overview_location = { path: "/", query: "", hash: "" }
+
+service_location : Str -> Browser.Location
+service_location = |service_id| { path: "/services/${service_id}", query: "", hash: "" }
+
+route_from_location : Browser.Location -> Route
+route_from_location = |location|
+	if location.path == "/" {
+		RouteOverview
+	} else if location.path == "/services/edge" {
+		RouteService("edge")
+	} else if location.path == "/services/api" {
+		RouteService("api")
+	} else if location.path == "/services/workers" {
+		RouteService("workers")
+	} else if location.path == "/services/database" {
+		RouteService("database")
+	} else if location.path == "/services/billing" {
+		RouteService("billing")
+	} else if location.path == "/services/search" {
+		RouteService("search")
+	} else if location.path == "/services/identity" {
+		RouteService("identity")
+	} else {
+		RouteUnknown
+	}
+
+route_service_id : Route -> Str
+route_service_id = |route|
+	match route {
+		RouteService(service_id) => service_id
+		_ => ""
+	}
+
+route_shows_detail : Route -> Bool
+route_shows_detail = |route|
+	match route {
+		RouteService(_) => True
+		_ => False
+	}
+
+document_title_for_route : Route -> Str
+document_title_for_route = |route|
+	match route {
+		RouteService(service_id) => "${service_id} service detail - Service Ops Center"
+		_ => "Service Ops Center"
+	}
+
+canonical_location : Dashboard.State, Browser.Location -> Browser.Location
+canonical_location = |state, location|
+	match route_from_location(location) {
+		RouteUnknown =>
+			match state {
+				Ready(_) => overview_location
+				_ => location
+			}
+		_ => location
+	}
+
+route_intent_location : RouteIntent -> Browser.Location
+route_intent_location = |intent| { path: intent.path, query: intent.query, hash: intent.hash }
+
+route_intent_for : RouteIntent, Browser.Location -> RouteIntent
+route_intent_for = |current, target| {
+	{
+		serial: current.serial + 1,
+		path: target.path,
+		query: target.query,
+		hash: target.hash,
+	}
+}
+
+route_link : Str, Str, Browser.Location, Ui.State(RouteIntent) -> Elem
+route_link = |label, classes, target, intent| {
+	Html.link(
+		label,
+		[
+			Html.class_attr(classes),
+			Html.attr("href", target.path),
+			Html.on_event("click", Html.event_policy_prevent_default, intent.on_unit(|current| route_intent_for(current, target))),
+		],
+	)
+}
 
 field : Signal.Signal(r), (r -> a) -> Signal.Signal(a)
 	where [
@@ -24,6 +114,12 @@ select_remote : Signal.Signal(Dashboard.State), (Dashboard -> a) -> Signal.Signa
 		a.is_eq : a, a -> Bool,
 	]
 select_remote = |state, select| Signal.map(state, |value| DashboardRemote.from_state(value, select))
+
+select_remote_with : Signal.Signal(Dashboard.State), Signal.Signal(b), (Dashboard, b -> a) -> Signal.Signal(DashboardRemote(a))
+	where [
+		a.is_eq : a, a -> Bool,
+	]
+select_remote_with = |state, extra, select| Signal.map2(state, extra, |value, detail| DashboardRemote.from_state_with(value, detail, select))
 
 ready_list : Signal.Signal(DashboardRemote(List(a))) -> Signal.Signal(List(a))
 	where [
@@ -210,6 +306,36 @@ render_alert_row = |_key, alert| {
 	)
 }
 
+render_dependency_row : Str, Signal.Signal(Dashboard.ServiceDependency) -> Elem
+render_dependency_row = |_key, dependency| {
+	label = field(dependency, |row| row.label)
+	state = field(dependency, |row| row.state)
+
+	Html.div_c(
+		DashboardTheme.detail_row_class,
+		[
+			Html.div_c(DashboardTheme.detail_label_class, [Html.text("Dependency")]),
+			Html.div_c(DashboardTheme.strong_text_class, [Html.text_s(label)]),
+			Html.div_c(DashboardTheme.text_sm_muted_class, [Html.text_s(state)]),
+		],
+	)
+}
+
+render_contact_row : Str, Signal.Signal(Dashboard.ServiceContact) -> Elem
+render_contact_row = |_key, contact| {
+	team = field(contact, |row| row.team)
+	channel = field(contact, |row| row.channel)
+
+	Html.div_c(
+		DashboardTheme.detail_row_class,
+		[
+			Html.div_c(DashboardTheme.detail_label_class, [Html.text("Contact")]),
+			Html.div_c(DashboardTheme.strong_text_class, [Html.text_s(team)]),
+			Html.div_c(DashboardTheme.text_sm_muted_class, [Html.text_s(channel)]),
+		],
+	)
+}
+
 render_status_items : Signal.Signal(List(DashboardView.StatusItem)) -> Elem
 render_status_items = |items| Ui.each_str(items, |item| item.id, render_status_item)
 
@@ -227,6 +353,12 @@ render_job_rows = |items| Ui.each_str(items, |item| item.id, render_job_row)
 
 render_alert_rows : Signal.Signal(List(DashboardView.AlertRow)) -> Elem
 render_alert_rows = |items| Ui.each_str(items, |item| item.id, render_alert_row)
+
+render_dependency_rows : Signal.Signal(List(Dashboard.ServiceDependency)) -> Elem
+render_dependency_rows = |items| Ui.each_str(items, |item| item.id, render_dependency_row)
+
+render_contact_rows : Signal.Signal(List(Dashboard.ServiceContact)) -> Elem
+render_contact_rows = |items| Ui.each_str(items, |item| item.team, render_contact_row)
 
 status_strip_items : Signal.Signal(DashboardRemote(DashboardView.StatusStrip)) -> Signal.Signal(List(DashboardView.StatusItem))
 status_strip_items = |remote|
@@ -464,7 +596,151 @@ alerts_panel = |alerts| {
 	)
 }
 
-toolbar = |last_updated, manual_refresh_text, refresh_now|
+detail_dependencies = |detail|
+	field(
+		detail,
+		|value|
+			match value {
+				RemoteReady(model) => model.dependencies
+				_ => []
+			},
+	)
+
+detail_contacts = |detail|
+	field(
+		detail,
+		|value|
+			match value {
+				RemoteReady(model) => model.contacts
+				_ => []
+			},
+	)
+
+service_detail_panel = |detail, route_intent| {
+	is_ready = remote_is_ready(detail)
+	title =
+		field(
+			detail,
+			|value|
+				match value {
+					RemoteReady(model) => DashboardView.service_detail_title(model)
+					_ => DashboardRemote.message(value)
+				},
+		)
+	status =
+		field(
+			detail,
+			|value|
+				match value {
+					RemoteReady(model) => DashboardView.service_detail_status(model)
+					_ => DashboardRemote.message(value)
+				},
+		)
+	summary =
+		field(
+			detail,
+			|value|
+				match value {
+					RemoteReady(model) => DashboardView.service_detail_summary(model)
+					_ => "Waiting for service detail"
+				},
+		)
+	runbook =
+		field(
+			detail,
+			|value|
+				match value {
+					RemoteReady(model) => DashboardView.service_detail_runbook(model)
+					_ => "Runbook: waiting"
+				},
+		)
+	dependency_count =
+		field(
+			detail,
+			|value|
+				match value {
+					RemoteReady(model) => DashboardView.service_detail_dependency_count(model)
+					_ => "0 dependencies watched"
+				},
+		)
+	dependencies = detail_dependencies(detail)
+	contacts = detail_contacts(detail)
+
+	Ui.component(
+		|_|
+			render_panel(
+				"Service detail",
+				"Service detail",
+				[
+					Html.div_c(
+						DashboardTheme.view_nav_class,
+						[
+							route_link("Back to overview", DashboardTheme.secondary_button_class, overview_location, route_intent),
+						],
+					),
+					Html.div_c(DashboardTheme.metric_detail_class, [Html.text("This drill-down is URL-addressable; browser Back and Forward restore the selected service.")]),
+					Ui.when(
+						is_ready,
+						|_|
+							Html.div_c(
+								DashboardTheme.detail_grid_class,
+								[
+									Html.div_c(
+										DashboardTheme.detail_main_class,
+										[
+											Html.div_c(DashboardTheme.app_heading_class, [Html.text_s(title)]),
+											Html.div_c(DashboardTheme.text_sm_muted_class, [Html.text_s(status)]),
+											Html.div_c(DashboardTheme.metric_detail_class, [Html.text_s(summary)]),
+											Html.div_c(DashboardTheme.mono_sm_class, [Html.text_s(runbook)]),
+										],
+									),
+									Html.div_c(
+										DashboardTheme.detail_side_class,
+										[
+											Html.div_c(DashboardTheme.detail_label_class, [Html.text_s(dependency_count)]),
+											render_dependency_rows(dependencies),
+											render_contact_rows(contacts),
+										],
+									),
+								],
+							),
+						|_| remote_message("Service detail", detail),
+					),
+				],
+			),
+	)
+}
+
+service_nav = |route_intent|
+	Html.div_c(
+		DashboardTheme.view_nav_class,
+		[
+			route_link("Open api details", DashboardTheme.secondary_button_class, service_location("api"), route_intent),
+			route_link("Open workers details", DashboardTheme.secondary_button_class, service_location("workers"), route_intent),
+			route_link("Open database details", DashboardTheme.secondary_button_class, service_location("database"), route_intent),
+		],
+	)
+
+is_visible : Browser.Visibility -> Bool
+is_visible = |visibility|
+	match visibility {
+		Visible => True
+		Hidden => False
+	}
+
+visibility_status_text : Browser.Visibility -> Str
+visibility_status_text = |visibility|
+	if is_visible(visibility) {
+		"Auto refresh active"
+	} else {
+		"Auto refresh paused while tab is hidden"
+	}
+
+refresh_key : { tick : U64, manual : U64 } -> U64
+refresh_key = |inputs|
+	inputs.tick + inputs.manual
+
+toolbar = |last_updated, manual_refresh_text, visibility_status, refresh_now, route_intent|
 	Html.div_c(
 		DashboardTheme.toolbar_class,
 		[
@@ -473,11 +749,13 @@ toolbar = |last_updated, manual_refresh_text, refresh_now|
 				[
 					Html.heading_c("Service Ops Center", DashboardTheme.app_heading_class),
 					Html.div_c(DashboardTheme.toolbar_status_class, [Html.text_s(last_updated)]),
+					Html.div_c(DashboardTheme.toolbar_status_class, [Html.text_s(visibility_status)]),
 				],
 			),
 			Html.div_c(
 				DashboardTheme.toolbar_actions_class,
 				[
+					route_link("Overview", DashboardTheme.secondary_button_class, overview_location, route_intent),
 					Html.text_s(manual_refresh_text),
 					Html.button_c("Refresh now", DashboardTheme.primary_button_class, refresh_now),
 				],
@@ -485,7 +763,7 @@ toolbar = |last_updated, manual_refresh_text, refresh_now|
 		],
 	)
 
-dashboard_page = |dashboard_state, manual_refresh_text, refresh_now, lifecycle| {
+dashboard_page = |dashboard_state, route, selected_service, manual_refresh_text, visibility_status, refresh_now, route_intent, lifecycle| {
 	last_updated = field(select_remote(dashboard_state, DashboardView.last_updated), DashboardRemote.text)
 	status = select_remote(dashboard_state, DashboardView.status_strip)
 	metrics = select_remote(dashboard_state, DashboardView.metrics)
@@ -494,6 +772,8 @@ dashboard_page = |dashboard_state, manual_refresh_text, refresh_now, lifecycle| 
 	services = select_remote(dashboard_state, DashboardView.service_rows)
 	jobs = select_remote(dashboard_state, DashboardView.job_rows)
 	alerts = select_remote(dashboard_state, DashboardView.alert_rows)
+	selected_detail = select_remote_with(dashboard_state, selected_service, Dashboard.service_detail_for)
+	show_detail = Signal.map(route, route_shows_detail)
 
 	Ui.component(
 		|_|
@@ -504,15 +784,26 @@ dashboard_page = |dashboard_state, manual_refresh_text, refresh_now, lifecycle| 
 						DashboardTheme.shell_class,
 						List.concat(
 							[
-								toolbar(last_updated, manual_refresh_text, refresh_now),
-								status_strip(status),
-								metric_grid(metrics),
-								Html.div_c(
-									DashboardTheme.main_grid_class,
-									[
-										Html.div_c(DashboardTheme.wide_column_class, [chart_panel(chart), traffic_panel(traffic), services_panel(services)]),
-										Html.div_c(DashboardTheme.side_column_class, [jobs_panel(jobs), alerts_panel(alerts)]),
-									],
+								toolbar(last_updated, manual_refresh_text, visibility_status, refresh_now, route_intent),
+								Ui.when(
+									show_detail,
+									|_| service_detail_panel(selected_detail, route_intent),
+									|_|
+										Html.div_c(
+											"grid gap-4",
+											[
+												status_strip(status),
+												metric_grid(metrics),
+												service_nav(route_intent),
+												Html.div_c(
+													DashboardTheme.main_grid_class,
+													[
+														Html.div_c(DashboardTheme.wide_column_class, [chart_panel(chart), traffic_panel(traffic), services_panel(services)]),
+														Html.div_c(DashboardTheme.side_column_class, [jobs_panel(jobs), alerts_panel(alerts)]),
+													],
+												),
+											],
+										),
 								),
 							],
 							lifecycle,
@@ -528,28 +819,65 @@ main = |_| {
 	Ui.state(
 		0,
 		|manual_refresh| {
-			tick = Signal.interval(2000)
-			refresh_inputs = { tick: tick, manual: manual_refresh.signal() }.Signal
-			refresh_request = Signal.map(refresh_inputs, |inputs| inputs.tick + inputs.manual)
+			Ui.state(
+				{ serial: 0, path: "/", query: "", hash: "" },
+				|route_intent| {
+					location = Browser.location
+					visibility = Browser.visibility
+					visible = Signal.map(visibility, is_visible)
+					route = Signal.map(location, route_from_location)
+					selected_service = Signal.map(route, route_service_id)
+					tick = Signal.interval(2000)
+					refresh_inputs = { tick: tick, manual: manual_refresh.signal() }.Signal
+					refresh_request = Signal.map(refresh_inputs, refresh_key)
 
-			dashboard_task = Http.get_text_task("dashboard")
-				dashboard_state =
-				Signal.fold_task(
-					dashboard_task,
-					Dashboard.loading,
-					Dashboard.decode,
-					Dashboard.request_failed,
-				)
+					dashboard_task = Http.get_text_task("dashboard")
+					dashboard_state =
+						Signal.fold_task(
+							dashboard_task,
+							Dashboard.loading,
+							Dashboard.decode,
+							Dashboard.request_failed,
+						)
+					canonical_inputs = { dashboard: dashboard_state, location }.Signal
+					canonical_route = Signal.map(canonical_inputs, |inputs| canonical_location(inputs.dashboard, inputs.location))
 
-			manual_refresh_text = field(manual_refresh.signal(), DashboardView.manual_refresh_text)
-			dashboard_page(
-				dashboard_state,
-				manual_refresh_text,
-				manual_refresh.on_unit(increment_u64),
-				[
-					Ui.on_mount(|_| Http.get_text(dashboard_task, "/api/ops/dashboard")),
-					Ui.on_change(refresh_request, |_| Http.get_text(dashboard_task, "/api/ops/dashboard")),
-				],
+					manual_refresh_text = field(manual_refresh.signal(), DashboardView.manual_refresh_text)
+					visibility_status = Signal.map(visibility, visibility_status_text)
+					document_title = Signal.map(route, document_title_for_route)
+					dashboard_page(
+						dashboard_state,
+						route,
+						selected_service,
+						manual_refresh_text,
+						visibility_status,
+						manual_refresh.on_unit(increment_u64),
+						route_intent,
+						[
+							Ui.when(
+								visible,
+								|_|
+									Html.div_c(
+										"hidden",
+										[
+											Ui.on_mount(|_| Http.get_text(dashboard_task, "/api/ops/dashboard")),
+											Ui.on_change(refresh_request, |_| Http.get_text(dashboard_task, "/api/ops/dashboard")),
+										],
+									),
+								|_|
+									Html.div_c(
+										"hidden",
+										[
+											Ui.on_change(manual_refresh.signal(), |_| Http.get_text(dashboard_task, "/api/ops/dashboard")),
+										],
+									),
+							),
+							Ui.on_change(route_intent.signal(), |intent| Browser.push_state(route_intent_location(intent))),
+							Ui.on_change(canonical_route, Browser.replace_state),
+							Ui.on_change_initial(document_title, Browser.set_title),
+						],
+					)
+				},
 			)
 		},
 	)

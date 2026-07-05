@@ -8,11 +8,18 @@ extend those paths instead of adding a duplicate event-specific payload or polic
 surface. Judge the design below against the requirements of expert frontend work
 and the goal of a smaller public API.
 
-Refresh check: re-run on 2026-07-04 with the focused browser event contract,
-Zig event/boundary/spec-runner subset, and full native spec suite. Current
-static-policy, event-delivery, boundary payload, response-bit, and native event
-flow claims below remained green; dynamic response and handler chains remain
-unpromoted.
+Refresh check: re-run on 2026-07-05:
+
+- `node --test --test-name-pattern "event|payload|submit|listener|delivery|form" scripts/browser/runtime_contract.test.mjs`
+  passed 28/28.
+- `zig build run-test-zig -Dtest-filter=event -Dtest-filter=boundary -Dtest-filter="spec runner"`
+  exited successfully.
+- `python3 scripts/test.py native --native always` exited successfully across
+  the maintained native examples and focused fixtures.
+
+Current static-policy, event-delivery, boundary payload, response-bit, and
+native event-flow claims below remained green; dynamic response and handler
+chains remain unpromoted.
 
 ## Executive Decision
 

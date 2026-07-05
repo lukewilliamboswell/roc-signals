@@ -1,0 +1,26 @@
+# Markdown Elem structural fixture
+
+expect_visible role:heading name:"Markdown Elem Fixture"
+expect_visible text:"Release note"
+expect_visible text:"bold outcome"
+expect_visible text:"Signal.map"
+expect_visible text:"First item"
+expect_visible text:"Second item"
+expect_visible text:"Quote text"
+expect_visible text:"Allowed link"
+expect_attr test_id:"allowed-link" href "https://example.test/release"
+expect_visible text:"Blocked script"
+expect_no_attr text:"Blocked script" href
+
+mark_metrics
+fill label:"Markdown input" "Updated **copy** with `inline code`\n[Live link](https://example.test/live)\n[Bad link](javascript:alert)"
+expect_value label:"Markdown input" "Updated **copy** with `inline code`\n[Live link](https://example.test/live)\n[Bad link](javascript:alert)"
+expect_visible text:"Updated "
+expect_visible text:"copy"
+expect_visible text:"inline code"
+expect_visible text:"Live link"
+expect_attr test_id:"s:5:link" href "https://example.test/live"
+expect_visible text:"Bad link"
+expect_no_attr text:"Bad link" href
+expect_metric_delta_at_most patches_emitted 80
+expect_metric_delta_at_most active_graph_records_rebuilt 24

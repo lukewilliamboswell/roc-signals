@@ -10,6 +10,15 @@ DashboardRemote(a) := [RemoteLoading, RemoteReady(a), RemoteEmpty, RemoteFailed(
 			DecodeFailed(err) => RemoteFailed("Decode failed: ${parse_error_text(err)}")
 		}
 
+	from_state_with : Dashboard.State, b, (Dashboard, b -> a) -> DashboardRemote(a)
+	from_state_with = |state, extra, select|
+		match state {
+			Loading => RemoteLoading
+			Ready(dashboard) => RemoteReady(select(dashboard, extra))
+			RequestFailed(err) => RemoteFailed("Request failed: ${err}")
+			DecodeFailed(err) => RemoteFailed("Decode failed: ${parse_error_text(err)}")
+		}
+
 	is_ready : DashboardRemote(a) -> Bool
 	is_ready = |remote|
 		match remote {

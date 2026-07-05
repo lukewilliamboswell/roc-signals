@@ -1,6 +1,8 @@
 //! Parser for text-based Signals example specs and assertions.
 
 const std = @import("std");
+const signals = @import("signals");
+const boundary = signals.boundary;
 
 pub const SpecCommandType = enum {
     click,
@@ -39,6 +41,23 @@ pub const SpecCommandType = enum {
     expect_pending_task,
     expect_canceled_task,
     expect_interval,
+    set_initial_location,
+    set_initial_visibility,
+    set_initial_online,
+    seed_local_storage,
+    seed_session_storage,
+    navigate,
+    set_visibility,
+    set_online,
+    history_back,
+    history_forward,
+    expect_current_location,
+    assert_current_location,
+    expect_document_title,
+    expect_local_storage,
+    expect_session_storage,
+    expect_no_local_storage,
+    expect_no_session_storage,
     mark_metrics,
     expect_metric_delta,
     expect_metric_delta_at_most,
@@ -192,6 +211,38 @@ fn dupeUnescapedQuoted(allocator: std.mem.Allocator, input: []const u8) ParseErr
 
 fn dupePlain(allocator: std.mem.Allocator, input: []const u8) ParseError![]u8 {
     return allocator.dupe(u8, input) catch return ParseError.OutOfMemory;
+}
+
+pub fn locationSnapshotFromSpecText(text: []const u8) ParseError!boundary.LocationSnapshot {
+    var before_hash = text;
+    var hash: []const u8 = "";
+    if (std.mem.indexOfScalar(u8, text, '#')) |hash_index| {
+        before_hash = text[0..hash_index];
+        hash = text[hash_index + 1 ..];
+    }
+
+    var path = before_hash;
+    var query: []const u8 = "";
+    if (std.mem.indexOfScalar(u8, before_hash, '?')) |query_index| {
+        path = before_hash[0..query_index];
+        query = before_hash[query_index + 1 ..];
+    }
+    if (path.len == 0) path = "/";
+    if (path[0] != '/') return ParseError.InvalidFormat;
+
+    return .{ .path = path, .query = query, .hash = hash };
+}
+
+pub fn visibilitySnapshotFromSpecText(text: []const u8) ParseError!boundary.VisibilitySnapshot {
+    if (std.mem.eql(u8, text, "visible")) return .visible;
+    if (std.mem.eql(u8, text, "hidden")) return .hidden;
+    return ParseError.InvalidFormat;
+}
+
+pub fn onlineSnapshotFromSpecText(text: []const u8) ParseError!boundary.OnlineSnapshot {
+    if (std.mem.eql(u8, text, "online")) return .online;
+    if (std.mem.eql(u8, text, "offline")) return .offline;
+    return ParseError.InvalidFormat;
 }
 
 fn parseQuotedValue(allocator: std.mem.Allocator, prefix: []const u8, input: []const u8) ParseError!?[]const u8 {
@@ -421,6 +472,90 @@ pub fn parseTestSpec(allocator: std.mem.Allocator, content: []const u8) ParseErr
             const expected_count = std.fmt.parseInt(u64, split.token, 10) catch return ParseError.InvalidFormat;
             try appendSpecCommand(&commands, allocator, .expect_interval, emptyLocator(), null, expected_count, null, line_num);
             commands.items[commands.items.len - 1].interval_ms = period_ms;
+        } else if (std.mem.startsWith(u8, trimmed, "set_initial_location ")) {
+            const location = try parseSingleQuoted(trimmed["set_initial_location ".len..]);
+            const location_copy = allocator.dupe(u8, location) catch return ParseError.OutOfMemory;
+            try appendSpecCommand(&commands, allocator, .set_initial_location, emptyLocator(), location_copy, null, null, line_num);
+        } else if (std.mem.startsWith(u8, trimmed, "set_initial_visibility ")) {
+            const visibility_text = std.mem.trim(u8, trimmed["set_initial_visibility ".len..], " \t");
+            const visibility_copy = allocator.dupe(u8, visibility_text) catch return ParseError.OutOfMemory;
+            try appendSpecCommand(&commands, allocator, .set_initial_visibility, emptyLocator(), visibility_copy, null, null, line_num);
+        } else if (std.mem.startsWith(u8, trimmed, "set_initial_online ")) {
+            const online_text = std.mem.trim(u8, trimmed["set_initial_online ".len..], " \t");
+            const online_copy = allocator.dupe(u8, online_text) catch return ParseError.OutOfMemory;
+            try appendSpecCommand(&commands, allocator, .set_initial_online, emptyLocator(), online_copy, null, null, line_num);
+        } else if (std.mem.startsWith(u8, trimmed, "seed_local_storage ")) {
+            const split = try splitTwoQuoted(trimmed["seed_local_storage ".len..]);
+            const key = try dupePlain(allocator, split.first);
+            errdefer allocator.free(key);
+            const value = try dupePlain(allocator, split.second);
+            errdefer allocator.free(value);
+            try appendSpecCommand(&commands, allocator, .seed_local_storage, emptyLocator(), value, null, null, line_num);
+            commands.items[commands.items.len - 1].task_name = key;
+        } else if (std.mem.startsWith(u8, trimmed, "seed_session_storage ")) {
+            const split = try splitTwoQuoted(trimmed["seed_session_storage ".len..]);
+            const key = try dupePlain(allocator, split.first);
+            errdefer allocator.free(key);
+            const value = try dupePlain(allocator, split.second);
+            errdefer allocator.free(value);
+            try appendSpecCommand(&commands, allocator, .seed_session_storage, emptyLocator(), value, null, null, line_num);
+            commands.items[commands.items.len - 1].task_name = key;
+        } else if (std.mem.startsWith(u8, trimmed, "navigate ")) {
+            const location = try parseSingleQuoted(trimmed["navigate ".len..]);
+            const location_copy = allocator.dupe(u8, location) catch return ParseError.OutOfMemory;
+            try appendSpecCommand(&commands, allocator, .navigate, emptyLocator(), location_copy, null, null, line_num);
+        } else if (std.mem.startsWith(u8, trimmed, "set_visibility ")) {
+            const visibility_text = std.mem.trim(u8, trimmed["set_visibility ".len..], " \t");
+            const visibility_copy = allocator.dupe(u8, visibility_text) catch return ParseError.OutOfMemory;
+            try appendSpecCommand(&commands, allocator, .set_visibility, emptyLocator(), visibility_copy, null, null, line_num);
+        } else if (std.mem.startsWith(u8, trimmed, "set_online ")) {
+            const online_text = std.mem.trim(u8, trimmed["set_online ".len..], " \t");
+            const online_copy = allocator.dupe(u8, online_text) catch return ParseError.OutOfMemory;
+            try appendSpecCommand(&commands, allocator, .set_online, emptyLocator(), online_copy, null, null, line_num);
+        } else if (std.mem.eql(u8, trimmed, "history_back")) {
+            try appendSpecCommand(&commands, allocator, .history_back, emptyLocator(), null, null, null, line_num);
+        } else if (std.mem.eql(u8, trimmed, "history_forward")) {
+            try appendSpecCommand(&commands, allocator, .history_forward, emptyLocator(), null, null, null, line_num);
+        } else if (std.mem.startsWith(u8, trimmed, "expect_current_location ")) {
+            const location = try parseSingleQuoted(trimmed["expect_current_location ".len..]);
+            const location_copy = allocator.dupe(u8, location) catch return ParseError.OutOfMemory;
+            try appendSpecCommand(&commands, allocator, .expect_current_location, emptyLocator(), location_copy, null, null, line_num);
+        } else if (std.mem.startsWith(u8, trimmed, "assert_current_location ")) {
+            const location = try parseSingleQuoted(trimmed["assert_current_location ".len..]);
+            const location_copy = allocator.dupe(u8, location) catch return ParseError.OutOfMemory;
+            try appendSpecCommand(&commands, allocator, .assert_current_location, emptyLocator(), location_copy, null, null, line_num);
+        } else if (std.mem.startsWith(u8, trimmed, "expect_document_title ")) {
+            const title = try parseSingleQuoted(trimmed["expect_document_title ".len..]);
+            const title_copy = allocator.dupe(u8, title) catch return ParseError.OutOfMemory;
+            try appendSpecCommand(&commands, allocator, .expect_document_title, emptyLocator(), title_copy, null, null, line_num);
+        } else if (std.mem.startsWith(u8, trimmed, "expect_local_storage ")) {
+            const split = try splitTwoQuoted(trimmed["expect_local_storage ".len..]);
+            const key = try dupePlain(allocator, split.first);
+            errdefer allocator.free(key);
+            const value = try dupePlain(allocator, split.second);
+            errdefer allocator.free(value);
+            try appendSpecCommand(&commands, allocator, .expect_local_storage, emptyLocator(), value, null, null, line_num);
+            commands.items[commands.items.len - 1].task_name = key;
+        } else if (std.mem.startsWith(u8, trimmed, "expect_session_storage ")) {
+            const split = try splitTwoQuoted(trimmed["expect_session_storage ".len..]);
+            const key = try dupePlain(allocator, split.first);
+            errdefer allocator.free(key);
+            const value = try dupePlain(allocator, split.second);
+            errdefer allocator.free(value);
+            try appendSpecCommand(&commands, allocator, .expect_session_storage, emptyLocator(), value, null, null, line_num);
+            commands.items[commands.items.len - 1].task_name = key;
+        } else if (std.mem.startsWith(u8, trimmed, "expect_no_local_storage ")) {
+            const key_value = try parseSingleQuoted(trimmed["expect_no_local_storage ".len..]);
+            const key = try dupePlain(allocator, key_value);
+            errdefer allocator.free(key);
+            try appendSpecCommand(&commands, allocator, .expect_no_local_storage, emptyLocator(), null, null, null, line_num);
+            commands.items[commands.items.len - 1].task_name = key;
+        } else if (std.mem.startsWith(u8, trimmed, "expect_no_session_storage ")) {
+            const key_value = try parseSingleQuoted(trimmed["expect_no_session_storage ".len..]);
+            const key = try dupePlain(allocator, key_value);
+            errdefer allocator.free(key);
+            try appendSpecCommand(&commands, allocator, .expect_no_session_storage, emptyLocator(), null, null, null, line_num);
+            commands.items[commands.items.len - 1].task_name = key;
         } else if (std.mem.startsWith(u8, trimmed, "expect_metric_delta_at_most ")) {
             const split = try splitTrailingToken(trimmed["expect_metric_delta_at_most ".len..]);
             const metric_name = allocator.dupe(u8, split.head) catch return ParseError.OutOfMemory;
@@ -458,11 +593,28 @@ test "spec parser parses actions and assertions" {
         \\tick_interval 250
         \\tick_interval_if_active 250
         \\expect_interval 250 1
+        \\set_initial_location "/services/api?tab=logs#tail"
+        \\set_initial_visibility hidden
+        \\set_initial_online offline
+        \\seed_local_storage "checkout:draft" "saved"
+        \\seed_session_storage "checkout:flash" "shown"
+        \\navigate "/services/web?tab=deploys#events"
+        \\set_visibility visible
+        \\set_online online
+        \\history_back
+        \\history_forward
+        \\expect_current_location "/services/web?tab=deploys#events"
+        \\assert_current_location "/services/web?tab=deploys#events"
+        \\expect_document_title "Service Ops Center"
+        \\expect_local_storage "checkout:draft" "saved"
+        \\expect_session_storage "checkout:flash" "shown"
+        \\expect_no_local_storage "checkout:missing"
+        \\expect_no_session_storage "checkout:missing"
     ;
     const commands = try parseTestSpec(std.testing.allocator, content);
     defer freeSpecCommands(std.testing.allocator, commands);
 
-    try std.testing.expectEqual(@as(usize, 15), commands.len);
+    try std.testing.expectEqual(@as(usize, 32), commands.len);
     try std.testing.expectEqual(SpecCommandType.click, commands[0].cmd_type);
     try std.testing.expectEqual(LocatorKind.role_name, commands[0].locator.kind);
     try std.testing.expectEqualStrings("button", commands[0].locator.role.?);
@@ -489,6 +641,59 @@ test "spec parser parses actions and assertions" {
     try std.testing.expectEqual(SpecCommandType.tick_interval_if_active, commands[13].cmd_type);
     try std.testing.expectEqual(@as(?u64, 250), commands[13].interval_ms);
     try std.testing.expectEqual(@as(?u64, 1), commands[14].expected_count);
+    try std.testing.expectEqual(SpecCommandType.set_initial_location, commands[15].cmd_type);
+    try std.testing.expectEqualStrings("/services/api?tab=logs#tail", commands[15].expected_text.?);
+    try std.testing.expectEqual(SpecCommandType.set_initial_visibility, commands[16].cmd_type);
+    try std.testing.expectEqualStrings("hidden", commands[16].expected_text.?);
+    try std.testing.expectEqual(SpecCommandType.set_initial_online, commands[17].cmd_type);
+    try std.testing.expectEqualStrings("offline", commands[17].expected_text.?);
+    try std.testing.expectEqual(SpecCommandType.seed_local_storage, commands[18].cmd_type);
+    try std.testing.expectEqualStrings("checkout:draft", commands[18].task_name.?);
+    try std.testing.expectEqualStrings("saved", commands[18].expected_text.?);
+    try std.testing.expectEqual(SpecCommandType.seed_session_storage, commands[19].cmd_type);
+    try std.testing.expectEqualStrings("checkout:flash", commands[19].task_name.?);
+    try std.testing.expectEqualStrings("shown", commands[19].expected_text.?);
+    try std.testing.expectEqual(SpecCommandType.navigate, commands[20].cmd_type);
+    try std.testing.expectEqualStrings("/services/web?tab=deploys#events", commands[20].expected_text.?);
+    try std.testing.expectEqual(SpecCommandType.set_visibility, commands[21].cmd_type);
+    try std.testing.expectEqualStrings("visible", commands[21].expected_text.?);
+    try std.testing.expectEqual(SpecCommandType.set_online, commands[22].cmd_type);
+    try std.testing.expectEqualStrings("online", commands[22].expected_text.?);
+    try std.testing.expectEqual(SpecCommandType.history_back, commands[23].cmd_type);
+    try std.testing.expectEqual(SpecCommandType.history_forward, commands[24].cmd_type);
+    try std.testing.expectEqual(SpecCommandType.expect_current_location, commands[25].cmd_type);
+    try std.testing.expectEqualStrings("/services/web?tab=deploys#events", commands[25].expected_text.?);
+    try std.testing.expectEqual(SpecCommandType.assert_current_location, commands[26].cmd_type);
+    try std.testing.expectEqualStrings("/services/web?tab=deploys#events", commands[26].expected_text.?);
+    try std.testing.expectEqual(SpecCommandType.expect_document_title, commands[27].cmd_type);
+    try std.testing.expectEqualStrings("Service Ops Center", commands[27].expected_text.?);
+    try std.testing.expectEqual(SpecCommandType.expect_local_storage, commands[28].cmd_type);
+    try std.testing.expectEqualStrings("checkout:draft", commands[28].task_name.?);
+    try std.testing.expectEqualStrings("saved", commands[28].expected_text.?);
+    try std.testing.expectEqual(SpecCommandType.expect_session_storage, commands[29].cmd_type);
+    try std.testing.expectEqualStrings("checkout:flash", commands[29].task_name.?);
+    try std.testing.expectEqualStrings("shown", commands[29].expected_text.?);
+    try std.testing.expectEqual(SpecCommandType.expect_no_local_storage, commands[30].cmd_type);
+    try std.testing.expectEqualStrings("checkout:missing", commands[30].task_name.?);
+    try std.testing.expectEqual(SpecCommandType.expect_no_session_storage, commands[31].cmd_type);
+    try std.testing.expectEqualStrings("checkout:missing", commands[31].task_name.?);
+}
+
+test "spec parser parses browser environment value text" {
+    const location = try locationSnapshotFromSpecText("/services/api?tab=logs#tail");
+    try std.testing.expectEqualStrings("/services/api", location.path);
+    try std.testing.expectEqualStrings("tab=logs", location.query);
+    try std.testing.expectEqualStrings("tail", location.hash);
+
+    const root = try locationSnapshotFromSpecText("?q=1#top");
+    try std.testing.expectEqualStrings("/", root.path);
+    try std.testing.expectEqualStrings("q=1", root.query);
+    try std.testing.expectEqualStrings("top", root.hash);
+
+    try std.testing.expectEqual(boundary.VisibilitySnapshot.visible, try visibilitySnapshotFromSpecText("visible"));
+    try std.testing.expectEqual(boundary.VisibilitySnapshot.hidden, try visibilitySnapshotFromSpecText("hidden"));
+    try std.testing.expectEqual(boundary.OnlineSnapshot.online, try onlineSnapshotFromSpecText("online"));
+    try std.testing.expectEqual(boundary.OnlineSnapshot.offline, try onlineSnapshotFromSpecText("offline"));
 }
 
 test "spec parser parses async cleanup metrics and boolean commands" {
@@ -615,6 +820,9 @@ test "spec parser parses pointer form and visibility commands" {
 
 test "spec parser rejects malformed commands" {
     try std.testing.expectError(ParseError.InvalidFormat, parseBoolToken("maybe"));
+    try std.testing.expectError(ParseError.InvalidFormat, locationSnapshotFromSpecText("services/api"));
+    try std.testing.expectError(ParseError.InvalidFormat, visibilitySnapshotFromSpecText("maybe"));
+    try std.testing.expectError(ParseError.InvalidFormat, onlineSnapshotFromSpecText("maybe"));
     try std.testing.expectError(ParseError.InvalidFormat, parseTestSpec(std.testing.allocator, "click missing_locator"));
     try std.testing.expectError(ParseError.InvalidFormat, parseTestSpec(std.testing.allocator, "custom_event test_id:\"chart\" \"chart-select\""));
     try std.testing.expectError(ParseError.InvalidFormat, parseTestSpec(std.testing.allocator, "custom_event test_id:\"chart\" chart-select \"detail\""));

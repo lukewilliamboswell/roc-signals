@@ -1,6 +1,7 @@
 app [main] { pf: platform "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.1/3eLQGNMDG9RuL9sn1A7ep1Rtq7QGmemE89y141WSv1XG.tar.zst" }
 
 import pf.Elem exposing [Elem]
+import pf.Browser
 import pf.Html
 import pf.Signal
 import pf.Ui
@@ -49,6 +50,14 @@ failed_text = |status|
 		_ => "No search error"
 	}
 
+online_text : Bool -> Str
+online_text = |online|
+	if online {
+		"Network: online"
+	} else {
+		"Network: offline - search paused"
+	}
+
 toggle_label : Bool -> Str
 toggle_label = |shown| {
 	if shown {
@@ -60,7 +69,10 @@ toggle_label = |shown| {
 
 panel = |query, task| {
 	ticks = Signal.interval(1000)
+	online = Browser.online
 	tick_text = Signal.map(ticks, |n| concat3("Freshness check: ", n.to_str(), ""))
+	network_text = Signal.map(online, online_text)
+	search_request = { query: query.signal(), online: online }.Signal
 	status =
 		Signal.fold_task(
 			task,
@@ -74,11 +86,20 @@ panel = |query, task| {
 		panel_class,
 		[
 			Html.text_input_c("Search", query.signal(), input_class, query.on_str(|_, value| value)),
+			Html.paragraph_s_c(network_text, "text-sm font-medium text-zinc-900"),
 			Html.paragraph_s_c(Signal.map(status, status_text), "text-sm font-medium text-zinc-900"),
 			Html.paragraph_s_c(Signal.map(status, done_text), "text-sm text-zinc-700"),
 			Html.paragraph_s_c(Signal.map(status, failed_text), "text-sm text-red-950"),
 			Html.paragraph_s_c(tick_text, "text-sm text-zinc-600"),
-			Ui.on_change(query.signal(), |value| Signal.start_str(task, value)),
+			Ui.on_change(
+				search_request,
+				|request|
+					if request.online {
+						Signal.start_str(task, request.query)
+					} else {
+						Signal.noop
+					},
+			),
 			Ui.on_cleanup(Signal.cleanup("live search panel cleanup")),
 		],
 	)

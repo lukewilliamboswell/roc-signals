@@ -227,6 +227,8 @@ pub const SignalBoolAttrDesc = struct {
 
 pub const OnChangeDesc = struct {
     scope_id: u64,
+    run_initial: bool,
+    run_initial_pending: bool,
     signal: HostSignalBinding,
     to_cmd: abi.RocErasedCallable,
     cached_value: HostSignalCacheSlot = .absent,
@@ -1236,17 +1238,21 @@ pub const Stream = struct {
         self.recordSignalBoolAttrIndex(allocator, elem_id, field, attr_index);
     }
 
-    pub fn appendOnChange(self: *Stream, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, scope_id: u64, signal: HostSignalBinding, to_cmd: abi.RocErasedCallable) void {
+    pub fn appendOnChange(self: *Stream, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, scope_id: u64, signal: HostSignalBinding, to_cmd: abi.RocErasedCallable, run_initial: bool, run_initial_pending: bool) void {
         self.rememberSignalRecordTree(allocator, signal.record);
         abi.increfErasedCallable(to_cmd, 1);
         metrics.bump(.closure_retains, 1);
         self.on_changes.append(allocator, .{
             .scope_id = scope_id,
+            .run_initial = run_initial,
+            .run_initial_pending = run_initial_pending,
             .signal = signal,
             .to_cmd = to_cmd,
         }) catch {
             var desc = OnChangeDesc{
                 .scope_id = scope_id,
+                .run_initial = run_initial,
+                .run_initial_pending = run_initial_pending,
                 .signal = signal,
                 .to_cmd = to_cmd,
             };

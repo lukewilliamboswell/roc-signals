@@ -49,6 +49,13 @@ pub const HostValueCell = struct {
         return erased_calls.callErasedHostValueHostValueToBool(roc_host, hv.hostValueCapabilityEq(self.cap), self.value, value);
     }
 
+    pub fn valueEqualsIncoming(self: *const HostValueCell, ctx: anytype, roc_host: *abi.RocHost, value: HostValue, incoming_cap: HostValueCapability) bool {
+        const caps = [_]HostValueCapability{ self.cap, incoming_cap };
+        ctx.pushHostValueCapabilities(&caps);
+        defer ctx.popHostValueCapabilities();
+        return erased_calls.callErasedHostValueHostValueToBool(roc_host, hv.hostValueCapabilityEq(self.cap), self.value, value);
+    }
+
     pub fn dropIncoming(self: *const HostValueCell, ctx: anytype, roc_host: *abi.RocHost, value: HostValue) void {
         const caps = [_]HostValueCapability{self.cap};
         ctx.pushHostValueCapabilities(&caps);
@@ -128,11 +135,11 @@ pub fn callHostValueToHostValueWithCapability(comptime Ctx: type, ctx: Ctx.Handl
     return erased_calls.callErasedHostValueToHostValue(roc_host, callable, value);
 }
 
-pub fn callHostValueToStartTaskCmdWithCapability(comptime Ctx: type, ctx: Ctx.Handle, roc_host: *abi.RocHost, cap: HostValueCapability, callable: abi.RocErasedCallable, value: HostValue) erased_calls.StartTaskCmd {
+pub fn callHostValueToCmdWithCapability(comptime Ctx: type, ctx: Ctx.Handle, roc_host: *abi.RocHost, cap: HostValueCapability, callable: abi.RocErasedCallable, value: HostValue) erased_calls.Cmd {
     const caps = [_]HostValueCapability{cap};
     pushCapabilities(Ctx, ctx, &caps);
     defer popCapabilities(Ctx, ctx);
-    return erased_calls.callErasedHostValueToStartTaskCmd(roc_host, callable, value);
+    return erased_calls.callErasedHostValueToCmd(roc_host, callable, value);
 }
 
 pub fn callHostValueToStrWithCapability(comptime Ctx: type, ctx: Ctx.Handle, roc_host: *abi.RocHost, cap: HostValueCapability, callable: abi.RocErasedCallable, value: HostValue) abi.RocStr {

@@ -22,6 +22,12 @@ DashboardTheme :: [].{
 	primary_button_class : Str
 	primary_button_class = "button-primary"
 
+	secondary_button_class : Str
+	secondary_button_class = "button"
+
+	view_nav_class : Str
+	view_nav_class = "flex flex-wrap items-center gap-2"
+
 	metric_grid_class : Str
 	metric_grid_class = "grid gap-3 sm:grid-cols-2 xl:grid-cols-5"
 
@@ -39,6 +45,21 @@ DashboardTheme :: [].{
 
 	service_grid_class : Str
 	service_grid_class = "grid gap-3 sm:grid-cols-2 xl:grid-cols-3"
+
+	detail_grid_class : Str
+	detail_grid_class = "grid gap-4 lg:grid-cols-3"
+
+	detail_main_class : Str
+	detail_main_class = "grid gap-3 lg:col-span-2"
+
+	detail_side_class : Str
+	detail_side_class = "grid gap-3"
+
+	detail_row_class : Str
+	detail_row_class = "grid gap-1 rounded-md border border-zinc-200 bg-white p-3 text-sm"
+
+	detail_label_class : Str
+	detail_label_class = "text-xs font-semibold uppercase tracking-normal text-zinc-500"
 
 	status_item_class : Str
 	status_item_class = "grid gap-1"
