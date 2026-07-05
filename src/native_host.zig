@@ -3045,6 +3045,10 @@ const TestTaskPayloadCapture = extern struct {
     payload_cap: HostValueCapability,
 };
 
+const TestPayloadTransformCapture = extern struct {
+    cap: HostValueCapability,
+};
+
 var test_erased_callable_drop_count: u64 = 0;
 var test_row_elem_call_count: u64 = 0;
 
@@ -3513,6 +3517,21 @@ fn testConsumeTaskPayloadStrCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: 
     writeTestErasedResult(HostValue, ret, value);
 }
 
+fn testPayloadChecksumHostValueCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8) callconv(.c) void {
+    const host = hostFromRocHost(roc_host);
+    const capture = testCapturePtrAs(TestPayloadTransformCapture, capture_ptr);
+    const call_args = testErasedArgsAs(ErasedHostValueUnaryArgs, args);
+    const payload = testReadHostValueU8List(roc_host, call_args.arg0);
+
+    var checksum: i64 = 0;
+    for (payload.items()) |byte| {
+        checksum += @as(i64, byte);
+    }
+    testDropHostValue(roc_host, call_args.arg0);
+
+    writeTestErasedResult(HostValue, ret, hv.makeI64WithCapability(host, roc_host, checksum, capture.cap));
+}
+
 fn testReadStrHostValueCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8) callconv(.c) void {
     _ = capture_ptr;
     const call_args = testErasedArgsAs(ErasedHostValueUnaryArgs, args);
@@ -3868,6 +3887,180 @@ test "signals host interval sources tick by period and runtime token" {
     const runtime_counts = host.engine.tickIntervalSourceByRuntimeToken(&host, &roc_host, runtime_token);
     try std.testing.expectEqual(@as(u64, 1), runtime_counts.set_text);
     try std.testing.expectEqualStrings("3", host.dom_elements.items[1].text.?);
+}
+
+test "signals host browser environment sources and commands update native state" {
+    test_erased_callable_drop_count = 0;
+
+    var host = HostEnv.init();
+    var roc_host = makeSignalsRocHost(&host);
+    host.engine.roc_host = &roc_host;
+    defer {
+        host.deinit();
+        _ = host.gpa.deinit();
+    }
+
+    try std.testing.expectEqualStrings("/", host.currentLocation().path);
+    host.setCurrentLocation(.{ .path = "/start", .query = "", .hash = "" });
+    host.setVisibility(.visible);
+    host.setOnline(.online);
+    host.setStorageText(.local, "cart", "seeded");
+
+    {
+        const exprs = [_]abi.NodeSignalExpr{
+            testNodeLocationSourceExpr(&roc_host),
+            testNodeVisibilitySourceExpr(&roc_host),
+            testNodeOnlineSourceExpr(&roc_host),
+            testNodeStorageSourceExpr(&roc_host, .local, "scratch"),
+        };
+        for (exprs) |expr| {
+            abi.increfNodeSignalExpr(expr, 1);
+            abi.decrefNodeSignalExpr(expr, &roc_host);
+            abi.decrefNodeSignalExpr(expr, &roc_host);
+        }
+    }
+
+    const location = testNodeLocationSourceExpr(&roc_host);
+    const visibility = testNodeVisibilitySourceExpr(&roc_host);
+    const online = testNodeOnlineSourceExpr(&roc_host);
+    const storage = testNodeStorageSourceExpr(&roc_host, .local, "cart");
+    const children = [_]abi.Elem{
+        testNodeI64TextSignal(&roc_host, location),
+        testNodeI64TextSignal(&roc_host, visibility),
+        testNodeI64TextSignal(&roc_host, online),
+        testNodeI64TextSignal(&roc_host, storage),
+    };
+    const root = testElement(&roc_host, &children);
+    defer abi.decrefElem(root, &roc_host);
+
+    var stream: HostNodeDescriptorStream = .{};
+    host.collectActiveElemRootDescriptors(&roc_host, &stream, root, &.{});
+    const initial_counts = applyNodeDescriptorStream(&host, &roc_host, &stream);
+    host.engine.active_stream = stream;
+
+    try std.testing.expectEqual(@as(u64, 4), initial_counts.set_text);
+    const testing_allocator = std.testing.allocator;
+    const initial_location_text = try testing_allocator.dupe(u8, host.dom_elements.items[2].text.?);
+    defer testing_allocator.free(initial_location_text);
+    const initial_visibility_text = try testing_allocator.dupe(u8, host.dom_elements.items[3].text.?);
+    defer testing_allocator.free(initial_visibility_text);
+    const initial_online_text = try testing_allocator.dupe(u8, host.dom_elements.items[4].text.?);
+    defer testing_allocator.free(initial_online_text);
+    const initial_storage_text = try testing_allocator.dupe(u8, host.dom_elements.items[5].text.?);
+    defer testing_allocator.free(initial_storage_text);
+
+    {
+        const noop_cmd = erased_calls.Cmd{ .payload = undefined, .tag = .Noop };
+        retainTestCmd(noop_cmd);
+        releaseTestCmd(&roc_host, noop_cmd);
+        try std.testing.expectEqual(@as(u64, 0), host.engine.runCommand(&host, &roc_host, 0, noop_cmd).total);
+    }
+
+    {
+        const cmd = testLocationCmd(&roc_host, .PushState, .{ .path = "/browser-env-next", .query = "panel=ops", .hash = "chart" });
+        retainTestCmd(cmd);
+        defer releaseTestCmd(&roc_host, cmd);
+        defer releaseTestCmd(&roc_host, cmd);
+        const counts = host.engine.runCommand(&host, &roc_host, 0, cmd);
+        try std.testing.expectEqual(@as(u64, 1), counts.set_text);
+        try std.testing.expectEqualStrings("/browser-env-next", host.currentLocation().path);
+        try std.testing.expect(!std.mem.eql(u8, initial_location_text, host.dom_elements.items[2].text.?));
+    }
+
+    {
+        const cmd = testLocationCmd(&roc_host, .ReplaceState, .{ .path = "/browser-env-replaced", .query = "", .hash = "" });
+        retainTestCmd(cmd);
+        defer releaseTestCmd(&roc_host, cmd);
+        defer releaseTestCmd(&roc_host, cmd);
+        const counts = host.engine.runCommand(&host, &roc_host, 0, cmd);
+        try std.testing.expectEqual(@as(u64, 1), counts.set_text);
+        try std.testing.expectEqualStrings("/browser-env-replaced", host.currentLocation().path);
+    }
+
+    {
+        try std.testing.expect(host.backCurrentLocation());
+        const counts = host.engine.dispatchCurrentLocationSources(&host, &roc_host);
+        try std.testing.expectEqual(@as(u64, 1), counts.set_text);
+        try std.testing.expectEqualStrings("/start", host.currentLocation().path);
+    }
+
+    {
+        try std.testing.expect(host.forwardCurrentLocation());
+        const counts = host.engine.dispatchCurrentLocationSources(&host, &roc_host);
+        try std.testing.expectEqual(@as(u64, 1), counts.set_text);
+        try std.testing.expectEqualStrings("/browser-env-replaced", host.currentLocation().path);
+    }
+
+    {
+        try std.testing.expect(host.backCurrentLocation());
+        const cmd = testLocationCmd(&roc_host, .PushState, .{ .path = "/browser-env-branch", .query = "", .hash = "" });
+        retainTestCmd(cmd);
+        defer releaseTestCmd(&roc_host, cmd);
+        defer releaseTestCmd(&roc_host, cmd);
+        _ = host.engine.runCommand(&host, &roc_host, 0, cmd);
+        try std.testing.expectEqualStrings("/browser-env-branch", host.currentLocation().path);
+        try std.testing.expect(!host.forwardCurrentLocation());
+    }
+
+    {
+        host.setVisibility(.hidden);
+        const counts = host.engine.dispatchCurrentVisibilitySources(&host, &roc_host);
+        try std.testing.expectEqual(@as(u64, 1), counts.set_text);
+        try std.testing.expect(!std.mem.eql(u8, initial_visibility_text, host.dom_elements.items[3].text.?));
+    }
+
+    {
+        host.setOnline(.offline);
+        const counts = host.engine.dispatchCurrentOnlineSources(&host, &roc_host);
+        try std.testing.expectEqual(@as(u64, 1), counts.set_text);
+        try std.testing.expect(!std.mem.eql(u8, initial_online_text, host.dom_elements.items[4].text.?));
+    }
+
+    {
+        const cmd = testStorageSetCmd(&roc_host, .local, "theme", "dark");
+        retainTestCmd(cmd);
+        defer releaseTestCmd(&roc_host, cmd);
+        defer releaseTestCmd(&roc_host, cmd);
+        try std.testing.expectEqual(@as(u64, 0), host.engine.runCommand(&host, &roc_host, 0, cmd).total);
+        try std.testing.expectEqualStrings("dark", host.storageValue(.local, "theme").?);
+        try std.testing.expectEqualStrings(initial_storage_text, host.dom_elements.items[5].text.?);
+    }
+
+    {
+        const cmd = testStorageSetCmd(&roc_host, .local, "theme", "light");
+        retainTestCmd(cmd);
+        defer releaseTestCmd(&roc_host, cmd);
+        defer releaseTestCmd(&roc_host, cmd);
+        _ = host.engine.runCommand(&host, &roc_host, 0, cmd);
+        try std.testing.expectEqualStrings("light", host.storageValue(.local, "theme").?);
+    }
+
+    {
+        const cmd = testStorageRemoveCmd(&roc_host, .local, "theme");
+        retainTestCmd(cmd);
+        defer releaseTestCmd(&roc_host, cmd);
+        defer releaseTestCmd(&roc_host, cmd);
+        _ = host.engine.runCommand(&host, &roc_host, 0, cmd);
+        try std.testing.expectEqual(@as(?[]const u8, null), host.storageValue(.local, "theme"));
+    }
+
+    {
+        const cmd = testDocumentTitleCmd(&roc_host, "Ops ready");
+        retainTestCmd(cmd);
+        defer releaseTestCmd(&roc_host, cmd);
+        defer releaseTestCmd(&roc_host, cmd);
+        try std.testing.expectEqual(@as(u64, 0), host.engine.runCommand(&host, &roc_host, 0, cmd).total);
+        try std.testing.expectEqualStrings("Ops ready", host.currentDocumentTitle());
+    }
+
+    {
+        const cmd = testDocumentTitleCmd(&roc_host, "Ops steady");
+        retainTestCmd(cmd);
+        defer releaseTestCmd(&roc_host, cmd);
+        defer releaseTestCmd(&roc_host, cmd);
+        _ = host.engine.runCommand(&host, &roc_host, 0, cmd);
+        try std.testing.expectEqualStrings("Ops steady", host.currentDocumentTitle());
+    }
 }
 
 test "signals host interns scopes and node identities from explicit paths" {
@@ -5654,6 +5847,74 @@ fn testNodeIntervalSourceExpr(roc_host: *abi.RocHost, period_ms: u64, initial_va
     };
 }
 
+fn testPayloadChecksumCallable(roc_host: *abi.RocHost, cap: HostValueCapability) abi.RocErasedCallable {
+    return writeTestErasedCallable(
+        TestPayloadTransformCapture,
+        roc_host,
+        &testPayloadChecksumHostValueCallable,
+        &testErasedCallableOnDrop,
+        .{ .cap = cap },
+    );
+}
+
+fn testNodeLocationSourceExpr(roc_host: *abi.RocHost) abi.NodeSignalExpr {
+    const cap = testHostValueCapability(roc_host);
+    const payload_cap = testHostValueCapability(roc_host);
+    return .{
+        .payload = .{ .location_source = .{
+            ._0 = newTestSignalToken(roc_host),
+            ._1 = testPayloadChecksumCallable(roc_host, cap),
+            ._2 = cap,
+            ._3 = payload_cap,
+        } },
+        .tag = .LocationSource,
+    };
+}
+
+fn testNodeVisibilitySourceExpr(roc_host: *abi.RocHost) abi.NodeSignalExpr {
+    const cap = testHostValueCapability(roc_host);
+    const payload_cap = testHostValueCapability(roc_host);
+    return .{
+        .payload = .{ .visibility_source = .{
+            ._0 = newTestSignalToken(roc_host),
+            ._1 = testPayloadChecksumCallable(roc_host, cap),
+            ._2 = cap,
+            ._3 = payload_cap,
+        } },
+        .tag = .VisibilitySource,
+    };
+}
+
+fn testNodeOnlineSourceExpr(roc_host: *abi.RocHost) abi.NodeSignalExpr {
+    const cap = testHostValueCapability(roc_host);
+    const payload_cap = testHostValueCapability(roc_host);
+    return .{
+        .payload = .{ .online_source = .{
+            ._0 = newTestSignalToken(roc_host),
+            ._1 = testPayloadChecksumCallable(roc_host, cap),
+            ._2 = cap,
+            ._3 = payload_cap,
+        } },
+        .tag = .OnlineSource,
+    };
+}
+
+fn testNodeStorageSourceExpr(roc_host: *abi.RocHost, area: boundary.StorageArea, key: []const u8) abi.NodeSignalExpr {
+    const cap = testHostValueCapability(roc_host);
+    const payload_cap = testHostValueCapability(roc_host);
+    return .{
+        .payload = .{ .storage_source = .{
+            .area = @intFromEnum(area),
+            .token = newTestSignalToken(roc_host),
+            .key = RocStr.fromSlice(key, roc_host),
+            .from_payload = testPayloadChecksumCallable(roc_host, cap),
+            .cap = cap,
+            .payload_cap = payload_cap,
+        } },
+        .tag = .StorageSource,
+    };
+}
+
 fn testNodeText(roc_host: *abi.RocHost, text: []const u8) abi.Elem {
     return .{
         .payload = .{ .text = RocStr.fromSlice(text, roc_host) },
@@ -5899,6 +6160,63 @@ fn testStartTaskCmd(roc_host: *abi.RocHost, task_source: abi.NodeSignalExpr, nam
         .task_name = RocStr.fromSlice(name, roc_host),
         .task_token = cloneTestSignalToken(task_payload.token),
     };
+}
+
+fn testLocationCmd(roc_host: *abi.RocHost, tag: abi.NodeCmdTag, location: boundary.LocationSnapshot) erased_calls.Cmd {
+    return .{
+        .payload = switch (tag) {
+            .PushState => .{ .push_state = .{
+                .hash = RocStr.fromSlice(location.hash, roc_host),
+                .path = RocStr.fromSlice(location.path, roc_host),
+                .query = RocStr.fromSlice(location.query, roc_host),
+            } },
+            .ReplaceState => .{ .replace_state = .{
+                .hash = RocStr.fromSlice(location.hash, roc_host),
+                .path = RocStr.fromSlice(location.path, roc_host),
+                .query = RocStr.fromSlice(location.query, roc_host),
+            } },
+            else => @panic("testLocationCmd requires PushState or ReplaceState"),
+        },
+        .tag = tag,
+    };
+}
+
+fn testStorageSetCmd(roc_host: *abi.RocHost, area: boundary.StorageArea, key: []const u8, value: []const u8) erased_calls.Cmd {
+    return .{
+        .payload = .{ .set_storage_text = .{
+            .area = @intFromEnum(area),
+            .key = RocStr.fromSlice(key, roc_host),
+            .value = RocStr.fromSlice(value, roc_host),
+        } },
+        .tag = .SetStorageText,
+    };
+}
+
+fn testStorageRemoveCmd(roc_host: *abi.RocHost, area: boundary.StorageArea, key: []const u8) erased_calls.Cmd {
+    return .{
+        .payload = .{ .remove_storage = .{
+            .area = @intFromEnum(area),
+            .key = RocStr.fromSlice(key, roc_host),
+        } },
+        .tag = .RemoveStorage,
+    };
+}
+
+fn testDocumentTitleCmd(roc_host: *abi.RocHost, title: []const u8) erased_calls.Cmd {
+    return .{
+        .payload = .{ .set_document_title = .{
+            .title = RocStr.fromSlice(title, roc_host),
+        } },
+        .tag = .SetDocumentTitle,
+    };
+}
+
+fn retainTestCmd(cmd: erased_calls.Cmd) void {
+    abi.increfNodeCmd(cmd, 1);
+}
+
+fn releaseTestCmd(roc_host: *abi.RocHost, cmd: erased_calls.Cmd) void {
+    abi.decrefNodeCmd(cmd, roc_host);
 }
 
 fn testNodeStateWithTokenAndInitial(roc_host: *abi.RocHost, binder_token: HostBinderToken, initial: HostValue, child: abi.Elem) abi.Elem {
