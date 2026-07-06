@@ -6,9 +6,14 @@ Purpose: keep shipped controlled input and browser-form evidence out of the
 active backlog. Promote new form/input surface only when a maintained app or
 focused canary proves a concrete browser-form gap.
 
-Refresh check: re-run on 2026-07-04 with the focused browser form contract,
-Zig simulated-DOM/spec-runner subset, and full native spec suite; the current
-surface and fixture coverage below remained green.
+Refresh check: re-run on 2026-07-05 with the focused browser form contract,
+Zig simulated-DOM/spec-runner subset, and full native spec suite. `node --test
+--test-name-pattern "controlled input|SetValue|payloads round-trip|select|radio|textarea|number input|submit|form" scripts/browser/runtime_contract.test.mjs`
+passed 18/18. `zig build run-test-zig -Dtest-filter="simulated DOM controlled"
+-Dtest-filter="spec runner"` exited successfully; the two filters also exited
+successfully when run separately. `python3 scripts/test.py native --native
+always` passed for the maintained apps and fixtures in the current workspace.
+The current surface and fixture coverage below remained green.
 
 ## Focused Gates
 

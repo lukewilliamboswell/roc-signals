@@ -73,6 +73,21 @@ DashboardView :: [].{
 		tone : DashboardTheme.Tone,
 	}
 
+	service_detail_title : Dashboard.ServiceDetail -> Str
+	service_detail_title = |detail| "${detail.label} service detail"
+
+	service_detail_status : Dashboard.ServiceDetail -> Str
+	service_detail_status = |detail| "Status: ${detail.status} | owner ${detail.owner}"
+
+	service_detail_summary : Dashboard.ServiceDetail -> Str
+	service_detail_summary = |detail| detail.summary
+
+	service_detail_runbook : Dashboard.ServiceDetail -> Str
+	service_detail_runbook = |detail| "Runbook: ${detail.runbook}"
+
+	service_detail_dependency_count : Dashboard.ServiceDetail -> Str
+	service_detail_dependency_count = |detail| "${detail.dependencies.len().to_str()} dependencies watched"
+
 	last_updated : Dashboard -> Str
 	last_updated = |dashboard| "Last server update ${clock_text(dashboard.updated)} | tick ${dashboard.version.to_str()} | auto refresh 2s"
 

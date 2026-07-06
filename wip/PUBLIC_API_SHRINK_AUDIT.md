@@ -84,13 +84,14 @@ that proves the slice before the end-to-end repository gate.
   compact execution path.
 - `Signal.const`, `Signal.map`, `Signal.map2`, `Signal.combine`,
   `Signal.Task`, `Signal.TaskStatus`, `Signal.from_task`, `Signal.fold_task`,
-  `Signal.start_str`, `Signal.interval`, `Ui.on_change`, `Ui.on_mount`,
-  `Ui.on_cleanup`, `Node.Cmd`, and `Node.Cleanup`: the current structural
-  signal/effect/lifecycle surface. Keep the model descriptor-first: Roc declares
-  sources, task status, commands, and cleanup descriptors; the host owns ids,
-  request tokens, interval handles, and disposal. `Node.Cmd` and `Node.Cleanup`
-  still appear in signatures only because the app-facing alias pass was backed
-  out; do not use that naming leak as a reason to add public id or
+  `Signal.start_str`, `Signal.interval`, `Ui.on_change`,
+  `Ui.on_change_initial`, `Ui.on_mount`, `Ui.on_cleanup`, `Node.Cmd`, and
+  `Node.Cleanup`: the current structural signal/effect/lifecycle surface. Keep
+  the model descriptor-first: Roc declares sources, task status, commands, and
+  cleanup descriptors; the host owns ids, request tokens, interval handles, and
+  disposal. `Node.Cmd` and `Node.Cleanup` still appear in signatures only
+  because the app-facing alias pass was backed out; do not use that naming leak
+  as a reason to add public id or
   lifecycle-token APIs. Keep `Signal.map2` as the applicative primitive Roc
   record-builder syntax needs, but prefer `{ field: signal, ... }.Signal` for
   named multi-signal joins instead of adding `Signal.map3`, `Signal.map4`, or
@@ -100,6 +101,16 @@ that proves the slice before the end-to-end repository gate.
   shipped HTTP task surface. Keep it pinned to `roc-lang/http` request/response
   values plus Signals-owned transport errors and explicit request/response
   envelopes; do not introduce a second Signals-only request model.
+- `Browser.Location`, `Browser.Visibility`, `Browser.StorageText`,
+  `Browser.location`, `Browser.visibility`, `Browser.online`,
+  `Browser.local_storage_text`, `Browser.session_storage_text`,
+  `Browser.push_state`, `Browser.replace_state`, `Browser.set_title`,
+  `Browser.set_local_storage_text`, `Browser.set_session_storage_text`,
+  `Browser.remove_local_storage`, and `Browser.remove_session_storage`: the
+  shipped browser-environment surface. Keep route parsing, storage key
+  namespacing, serialization, and domain validation in app/package code. Do not
+  widen this into a router DSL, whole-store snapshot, raw browser API catalog,
+  or public generic `Sub` surface without a maintained app or focused canary.
 
 ## Keep As Sugar
 
@@ -127,6 +138,10 @@ that proves the slice before the end-to-end repository gate.
   behavior hook, registered per mount and managed with attach/update/cleanup
   lifecycle, not grow into the deferred app-specific subscriptions or ports API
   and not become a public id route table.
+- Rich-content rendering through ordinary `Elem.Element` plus text nodes: keep
+  this as app/package-side structure. Do not add a raw HTML, `innerHTML`, or
+  sanitizer surface unless repeated maintained apps prove that ordinary `Elem`
+  construction plus app-local content policy is not enough.
 - Fixed field helpers such as `Html.class_attr` and `Html.test_id`, structural
   constructors such as `Html.div`/`Html.form`, labeled metadata constructors
   such as `Html.form_label`/`Html.link`/`Html.section`, text helpers such as
@@ -228,9 +243,10 @@ that proves the slice before the end-to-end repository gate.
   model. `real_click` covers propagation and supported default actions; direct
   `click` remains a low-level unit dispatch primitive.
 - The platform no longer exposes a vendored `Json` module. Apps and fixtures use
-  the compiler builtin `Json` module directly; Signals should add HTTP/body JSON
-  sugar only if a maintained app or focused canary proves builtin `Json` is not
-  enough.
+  the compiler builtin `Json` module directly. The current JSON/body-codec spike
+  is closed in `wip/research/json_codec_evidence.md`; it does not justify
+  Signals HTTP/body JSON sugar, and the remaining wide-dashboard split parse is
+  a Roc compiler workaround rather than a platform surface trigger.
 - `Signal.task_source` remains a low-level constructor used by `Signal.fake_task`
   and `Http`. It is not documented as the ordinary app path and should not grow
   into a generic public effect registry. Future subscriptions or typed effect
@@ -262,9 +278,14 @@ that proves the slice before the end-to-end repository gate.
   instead of exposing public ids or a browser-only channel table.
 - Do not add HTTP fetch-policy knobs such as credentials, redirect, mode, cache,
   or referrer policy to the current helper layer without a maintained app or
-  focused canary proving browser-default policy is insufficient. If promoted,
+  focused canary proving browser-default policy is insufficient. The current
+  validation is closed in `wip/research/fetch_policy_evidence.md`. If promoted,
   the knobs should extend the package-aligned request transport path instead of
   creating a second Signals-only request model.
+- Do not add a storage-only command-result side channel for failed
+  local/session storage writes. The current validation in
+  `wip/research/storage_command_result_evidence.md` keeps app-visible
+  write-failure recovery behind a broader command/effect-result design.
 - Keep file inputs, multi-select, browser constraint validation, focus commands,
   and selection-preserving mask/formatter behavior out of the general form helper
   set until a maintained app or focused canary proves a concrete browser-form

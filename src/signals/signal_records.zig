@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const abi = @import("roc_platform_abi.zig");
+const boundary = @import("boundary.zig");
 const retained = @import("retained_values.zig");
 
 pub const HostValue = retained.HostValue;
@@ -111,6 +112,40 @@ pub const IntervalSourceRecord = struct {
     cached_value: CacheSlot = .absent,
 };
 
+pub const LocationSourceRecord = struct {
+    token: HostSignalToken,
+    payload_cap: HostValueCapability,
+    from_payload: abi.RocErasedCallable,
+    cap: HostValueCapability,
+    cached_value: CacheSlot = .absent,
+};
+
+pub const VisibilitySourceRecord = struct {
+    token: HostSignalToken,
+    payload_cap: HostValueCapability,
+    from_payload: abi.RocErasedCallable,
+    cap: HostValueCapability,
+    cached_value: CacheSlot = .absent,
+};
+
+pub const OnlineSourceRecord = struct {
+    token: HostSignalToken,
+    payload_cap: HostValueCapability,
+    from_payload: abi.RocErasedCallable,
+    cap: HostValueCapability,
+    cached_value: CacheSlot = .absent,
+};
+
+pub const StorageSourceRecord = struct {
+    token: HostSignalToken,
+    area: boundary.StorageArea,
+    key: []const u8,
+    payload_cap: HostValueCapability,
+    from_payload: abi.RocErasedCallable,
+    cap: HostValueCapability,
+    cached_value: CacheSlot = .absent,
+};
+
 pub const Payload = union(enum) {
     ref: u64,
     const_value: ConstRecord,
@@ -119,16 +154,28 @@ pub const Payload = union(enum) {
     combine: CombineRecord,
     task_source: TaskSourceRecord,
     interval_source: IntervalSourceRecord,
+    location_source: LocationSourceRecord,
+    online_source: OnlineSourceRecord,
+    visibility_source: VisibilitySourceRecord,
+    storage_source: StorageSourceRecord,
 };
 
 pub const EffectSourceRef = union(enum) {
     task: *TaskSourceRecord,
     interval: *IntervalSourceRecord,
+    location: *LocationSourceRecord,
+    online: *OnlineSourceRecord,
+    visibility: *VisibilitySourceRecord,
+    storage: *StorageSourceRecord,
 
     pub fn cachedSlot(self: EffectSourceRef) *CacheSlot {
         return switch (self) {
             .task => |payload| &payload.cached_value,
             .interval => |payload| &payload.cached_value,
+            .location => |payload| &payload.cached_value,
+            .online => |payload| &payload.cached_value,
+            .visibility => |payload| &payload.cached_value,
+            .storage => |payload| &payload.cached_value,
         };
     }
 
@@ -136,6 +183,10 @@ pub const EffectSourceRef = union(enum) {
         return switch (self) {
             .task => |payload| payload.cap,
             .interval => |payload| payload.cap,
+            .location => |payload| payload.cap,
+            .online => |payload| payload.cap,
+            .visibility => |payload| payload.cap,
+            .storage => |payload| payload.cap,
         };
     }
 };
@@ -169,6 +220,10 @@ pub const Record = struct {
             .combine => |payload| payload.token,
             .task_source => |payload| payload.token,
             .interval_source => |payload| payload.token,
+            .location_source => |payload| payload.token,
+            .online_source => |payload| payload.token,
+            .visibility_source => |payload| payload.token,
+            .storage_source => |payload| payload.token,
         };
     }
 
@@ -181,6 +236,10 @@ pub const Record = struct {
             .combine => |*payload| &payload.cached_value,
             .task_source => |*payload| &payload.cached_value,
             .interval_source => |*payload| &payload.cached_value,
+            .location_source => |*payload| &payload.cached_value,
+            .online_source => |*payload| &payload.cached_value,
+            .visibility_source => |*payload| &payload.cached_value,
+            .storage_source => |*payload| &payload.cached_value,
         };
     }
 
@@ -193,13 +252,17 @@ pub const Record = struct {
             .combine => |payload| payload.cap,
             .task_source => |payload| payload.cap,
             .interval_source => |payload| payload.cap,
+            .location_source => |payload| payload.cap,
+            .online_source => |payload| payload.cap,
+            .visibility_source => |payload| payload.cap,
+            .storage_source => |payload| payload.cap,
         };
     }
 
     pub fn taskSource(self: *Record) ?*TaskSourceRecord {
         return switch (self.payload) {
             .task_source => |*payload| payload,
-            .ref, .const_value, .map, .map2, .combine, .interval_source => null,
+            .ref, .const_value, .map, .map2, .combine, .interval_source, .location_source, .online_source, .visibility_source, .storage_source => null,
         };
     }
 
@@ -210,7 +273,7 @@ pub const Record = struct {
     pub fn intervalSource(self: *Record) ?*IntervalSourceRecord {
         return switch (self.payload) {
             .interval_source => |*payload| payload,
-            .ref, .const_value, .map, .map2, .combine, .task_source => null,
+            .ref, .const_value, .map, .map2, .combine, .task_source, .location_source, .online_source, .visibility_source, .storage_source => null,
         };
     }
 
@@ -218,10 +281,58 @@ pub const Record = struct {
         return self.intervalSource() orelse @panic("signal record was not an interval source");
     }
 
+    pub fn locationSource(self: *Record) ?*LocationSourceRecord {
+        return switch (self.payload) {
+            .location_source => |*payload| payload,
+            .ref, .const_value, .map, .map2, .combine, .task_source, .interval_source, .online_source, .visibility_source, .storage_source => null,
+        };
+    }
+
+    pub fn requireLocationSource(self: *Record) *LocationSourceRecord {
+        return self.locationSource() orelse @panic("signal record was not a location source");
+    }
+
+    pub fn onlineSource(self: *Record) ?*OnlineSourceRecord {
+        return switch (self.payload) {
+            .online_source => |*payload| payload,
+            .ref, .const_value, .map, .map2, .combine, .task_source, .interval_source, .location_source, .visibility_source, .storage_source => null,
+        };
+    }
+
+    pub fn requireOnlineSource(self: *Record) *OnlineSourceRecord {
+        return self.onlineSource() orelse @panic("signal record was not an online source");
+    }
+
+    pub fn visibilitySource(self: *Record) ?*VisibilitySourceRecord {
+        return switch (self.payload) {
+            .visibility_source => |*payload| payload,
+            .ref, .const_value, .map, .map2, .combine, .task_source, .interval_source, .location_source, .online_source, .storage_source => null,
+        };
+    }
+
+    pub fn requireVisibilitySource(self: *Record) *VisibilitySourceRecord {
+        return self.visibilitySource() orelse @panic("signal record was not a visibility source");
+    }
+
+    pub fn storageSource(self: *Record) ?*StorageSourceRecord {
+        return switch (self.payload) {
+            .storage_source => |*payload| payload,
+            .ref, .const_value, .map, .map2, .combine, .task_source, .interval_source, .location_source, .online_source, .visibility_source => null,
+        };
+    }
+
+    pub fn requireStorageSource(self: *Record) *StorageSourceRecord {
+        return self.storageSource() orelse @panic("signal record was not a storage source");
+    }
+
     pub fn effectSource(self: *Record) ?EffectSourceRef {
         return switch (self.payload) {
             .task_source => |*payload| .{ .task = payload },
             .interval_source => |*payload| .{ .interval = payload },
+            .location_source => |*payload| .{ .location = payload },
+            .online_source => |*payload| .{ .online = payload },
+            .visibility_source => |*payload| .{ .visibility = payload },
+            .storage_source => |*payload| .{ .storage = payload },
             .ref, .const_value, .map, .map2, .combine => null,
         };
     }
@@ -299,6 +410,43 @@ pub const Record = struct {
                 releaseHostValueCapability(payload.cap, roc_host, metrics);
                 metrics.bump(.closure_releases, 2);
             },
+            .location_source => |payload| {
+                var cached_value = payload.cached_value;
+                cached_value.deinit(ctx, roc_host, metrics);
+                releaseHostSignalToken(payload.token, roc_host);
+                releaseHostValueCapability(payload.payload_cap, roc_host, metrics);
+                abi.decrefErasedCallable(payload.from_payload, roc_host);
+                releaseHostValueCapability(payload.cap, roc_host, metrics);
+                metrics.bump(.closure_releases, 1);
+            },
+            .online_source => |payload| {
+                var cached_value = payload.cached_value;
+                cached_value.deinit(ctx, roc_host, metrics);
+                releaseHostSignalToken(payload.token, roc_host);
+                releaseHostValueCapability(payload.payload_cap, roc_host, metrics);
+                abi.decrefErasedCallable(payload.from_payload, roc_host);
+                releaseHostValueCapability(payload.cap, roc_host, metrics);
+                metrics.bump(.closure_releases, 1);
+            },
+            .visibility_source => |payload| {
+                var cached_value = payload.cached_value;
+                cached_value.deinit(ctx, roc_host, metrics);
+                releaseHostSignalToken(payload.token, roc_host);
+                releaseHostValueCapability(payload.payload_cap, roc_host, metrics);
+                abi.decrefErasedCallable(payload.from_payload, roc_host);
+                releaseHostValueCapability(payload.cap, roc_host, metrics);
+                metrics.bump(.closure_releases, 1);
+            },
+            .storage_source => |payload| {
+                var cached_value = payload.cached_value;
+                cached_value.deinit(ctx, roc_host, metrics);
+                releaseHostSignalToken(payload.token, roc_host);
+                allocator.free(payload.key);
+                releaseHostValueCapability(payload.payload_cap, roc_host, metrics);
+                abi.decrefErasedCallable(payload.from_payload, roc_host);
+                releaseHostValueCapability(payload.cap, roc_host, metrics);
+                metrics.bump(.closure_releases, 1);
+            },
         }
 
         allocator.destroy(self);
@@ -328,7 +476,7 @@ pub const Binding = struct {
 pub fn walkTree(comptime Context: type, context: Context, record: *Record, comptime visit: fn (Context, *Record) void) void {
     visit(context, record);
     switch (record.payload) {
-        .ref, .const_value, .task_source, .interval_source => {},
+        .ref, .const_value, .task_source, .interval_source, .location_source, .online_source, .visibility_source, .storage_source => {},
         .map => |payload| walkTree(Context, context, payload.input, visit),
         .map2 => |payload| {
             walkTree(Context, context, payload.left, visit);
@@ -366,7 +514,7 @@ pub fn appendSignalRecordSourceNodeIds(allocator: std.mem.Allocator, source_node
                 appendSignalRecordSourceNodeIds(allocator, source_node_ids, child);
             }
         },
-        .task_source, .interval_source => {},
+        .task_source, .interval_source, .location_source, .online_source, .visibility_source, .storage_source => {},
     }
 }
 

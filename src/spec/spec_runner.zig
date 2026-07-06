@@ -13,6 +13,20 @@ const RuntimeMetrics = engine.RuntimeMetrics;
 const SpecCommand = spec_parser.SpecCommand;
 const SpecCommandType = spec_parser.SpecCommandType;
 
+fn storageValueForCtx(comptime Ctx: type, host: *Ctx.Host, area: boundary.StorageArea, key: []const u8) ?[]const u8 {
+    if (comptime @hasDecl(Ctx, "storageValue")) {
+        return Ctx.storageValue(host, area, key);
+    }
+    return null;
+}
+
+fn documentTitleForCtx(comptime Ctx: type, host: *Ctx.Host) []const u8 {
+    if (comptime @hasDecl(Ctx, "documentTitle")) {
+        return Ctx.documentTitle(host);
+    }
+    return "";
+}
+
 fn writeLocatorFailureForCtx(comptime Ctx: type, line_num: usize, message: []const u8) void {
     var buf: [256]u8 = undefined;
     const msg = std.fmt.bufPrint(&buf, "TEST FAILED at line {d}: {s}\n", .{ line_num, message }) catch "TEST FAILED\n";
@@ -341,6 +355,131 @@ pub fn Runner(comptime Ctx: type) type {
                 switch (cmd.cmd_type) {
                     .mark_metrics => {
                         metrics_mark = Ctx.lastRuntimeMetrics(host);
+                    },
+
+                    .set_initial_location, .set_initial_visibility, .set_initial_online, .seed_local_storage, .seed_session_storage => {},
+
+                    .set_visibility => {
+                        if (comptime !@hasDecl(Ctx, "setVisibility")) {
+                            writeLocatorFailure(cmd.line_num, "visibility commands are not supported by this runner");
+                            return 1;
+                        } else {
+                            const text = cmd.expected_text orelse {
+                                writeLocatorFailure(cmd.line_num, "set_visibility command had no visibility text");
+                                return 1;
+                            };
+                            const visibility = visibilitySnapshotFromSpecText(cmd.line_num, text) orelse return 1;
+                            _ = Ctx.setVisibility(host, roc_host, visibility);
+                            Ctx.finishHostMetrics(host);
+                        }
+                    },
+
+                    .set_online => {
+                        if (comptime !@hasDecl(Ctx, "setOnline")) {
+                            writeLocatorFailure(cmd.line_num, "online commands are not supported by this runner");
+                            return 1;
+                        } else {
+                            const text = cmd.expected_text orelse {
+                                writeLocatorFailure(cmd.line_num, "set_online command had no online text");
+                                return 1;
+                            };
+                            const online = onlineSnapshotFromSpecText(cmd.line_num, text) orelse return 1;
+                            _ = Ctx.setOnline(host, roc_host, online);
+                            Ctx.finishHostMetrics(host);
+                        }
+                    },
+
+                    .navigate => {
+                        const text = cmd.expected_text orelse {
+                            writeLocatorFailure(cmd.line_num, "navigate command had no URL text");
+                            return 1;
+                        };
+                        const location = locationSnapshotFromSpecText(cmd.line_num, text) orelse return 1;
+                        _ = Ctx.navigateLocation(host, roc_host, location);
+                        Ctx.finishHostMetrics(host);
+                    },
+
+                    .history_back => {
+                        _ = Ctx.historyBack(host, roc_host);
+                        Ctx.finishHostMetrics(host);
+                    },
+
+                    .history_forward => {
+                        _ = Ctx.historyForward(host, roc_host);
+                        Ctx.finishHostMetrics(host);
+                    },
+
+                    .expect_current_location, .assert_current_location => {
+                        const text = cmd.expected_text orelse {
+                            writeLocatorFailure(cmd.line_num, "current-location assertion had no URL text");
+                            return 1;
+                        };
+                        const expected = locationSnapshotFromSpecText(cmd.line_num, text) orelse return 1;
+                        const actual = Ctx.currentLocation(host);
+                        if (!std.mem.eql(u8, actual.path, expected.path)) {
+                            writeStringMismatch(cmd.line_num, "location.path", expected.path, actual.path);
+                            return 1;
+                        }
+                        if (!std.mem.eql(u8, actual.query, expected.query)) {
+                            writeStringMismatch(cmd.line_num, "location.query", expected.query, actual.query);
+                            return 1;
+                        }
+                        if (!std.mem.eql(u8, actual.hash, expected.hash)) {
+                            writeStringMismatch(cmd.line_num, "location.hash", expected.hash, actual.hash);
+                            return 1;
+                        }
+                    },
+
+                    .expect_document_title => {
+                        const expected = cmd.expected_text orelse {
+                            writeLocatorFailure(cmd.line_num, "document-title assertion had no text");
+                            return 1;
+                        };
+                        const actual = documentTitleForCtx(Ctx, host);
+                        if (!std.mem.eql(u8, actual, expected)) {
+                            writeStringMismatch(cmd.line_num, "document title", expected, actual);
+                            return 1;
+                        }
+                    },
+
+                    .expect_local_storage, .expect_session_storage => {
+                        const key = cmd.task_name orelse {
+                            writeLocatorFailure(cmd.line_num, "storage assertion had no key text");
+                            return 1;
+                        };
+                        const expected = cmd.expected_text orelse {
+                            writeLocatorFailure(cmd.line_num, "storage assertion had no value text");
+                            return 1;
+                        };
+                        const area: boundary.StorageArea = switch (cmd.cmd_type) {
+                            .expect_local_storage => .local,
+                            .expect_session_storage => .session,
+                            else => unreachable,
+                        };
+                        const actual = storageValueForCtx(Ctx, host, area, key) orelse {
+                            writeLocatorFailure(cmd.line_num, "storage key was missing");
+                            return 1;
+                        };
+                        if (!std.mem.eql(u8, actual, expected)) {
+                            writeStringMismatch(cmd.line_num, "storage value", expected, actual);
+                            return 1;
+                        }
+                    },
+
+                    .expect_no_local_storage, .expect_no_session_storage => {
+                        const key = cmd.task_name orelse {
+                            writeLocatorFailure(cmd.line_num, "storage absence assertion had no key text");
+                            return 1;
+                        };
+                        const area: boundary.StorageArea = switch (cmd.cmd_type) {
+                            .expect_no_local_storage => .local,
+                            .expect_no_session_storage => .session,
+                            else => unreachable,
+                        };
+                        if (storageValueForCtx(Ctx, host, area, key)) |_| {
+                            writeLocatorFailure(cmd.line_num, "storage key was present");
+                            return 1;
+                        }
                     },
 
                     .click => {
@@ -937,6 +1076,27 @@ pub fn Runner(comptime Ctx: type) type {
             var buf: [256]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "TEST FAILED at line {d}: {s}\n", .{ line_num, message }) catch "TEST FAILED\n";
             Ctx.writeStderr(msg);
+        }
+
+        fn locationSnapshotFromSpecText(line_num: usize, text: []const u8) ?boundary.LocationSnapshot {
+            return spec_parser.locationSnapshotFromSpecText(text) catch {
+                writeLocatorFailure(line_num, "location path must start with /");
+                return null;
+            };
+        }
+
+        fn visibilitySnapshotFromSpecText(line_num: usize, text: []const u8) ?boundary.VisibilitySnapshot {
+            return spec_parser.visibilitySnapshotFromSpecText(text) catch {
+                writeLocatorFailure(line_num, "visibility must be visible or hidden");
+                return null;
+            };
+        }
+
+        fn onlineSnapshotFromSpecText(line_num: usize, text: []const u8) ?boundary.OnlineSnapshot {
+            return spec_parser.onlineSnapshotFromSpecText(text) catch {
+                writeLocatorFailure(line_num, "online state must be online or offline");
+                return null;
+            };
         }
 
         fn writeAbsentFailure(line_num: usize, match_count: usize) void {

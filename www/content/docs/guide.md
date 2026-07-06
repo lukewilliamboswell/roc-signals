@@ -426,6 +426,20 @@ attributes such as `Html.attr_s` and `Html.attr_maybe_s`. A behavior is not a
 general JS-to-Roc message channel or subscription source; app-visible values
 should still enter through declared event handlers such as `Html.on_custom`.
 
+## Rich content without raw HTML
+
+Render rich text as ordinary `Elem` nodes. A markdown parser can map headings,
+lists, blockquotes, code spans, emphasis, and links to `Elem.Element` trees, with
+all user-controlled copy placed in `Html.text` or `Html.text_s` leaves. Do not
+inject raw HTML into the browser runtime.
+
+`examples/release-planner/app.roc` shows the current pattern: card notes store a
+small markdown subset, the app parses that text into block/inline records, and
+the preview renders those records with `Ui.each_str`, `Elem.Element`, and
+signal-backed text. Link safety is an app concern; the example allowlists
+`https://`, `http://`, `/`, `#`, and `mailto:` links and renders unsafe links as
+plain text.
+
 ## Dynamic UI: conditionals and keyed lists
 
 Use `Ui.when` when a region appears/disappears or switches between two subtrees:
@@ -574,7 +588,15 @@ The current app-facing effect helpers are intentionally small:
 | HTTP request builders/accessors | `Http.method_*`, `Http.request_from_method`, `Http.with_*`, `Http.add_header`, `Http.request_*` |
 | HTTP response/error helpers | `Http.response_*`, `Http.response_status`, `Http.response_headers`, `Http.response_body`, `Http.error_text` |
 | Timer source | `Signal.interval(period_ms)` |
+| Current browser location | `Browser.location` |
+| Browser navigation commands | `Browser.push_state`, `Browser.replace_state` |
+| Browser document title command | `Browser.set_title` |
+| Page visibility source | `Browser.visibility` |
+| Browser online status | `Browser.online` |
+| Browser storage reads | `Browser.local_storage_text`, `Browser.session_storage_text` |
+| Browser storage writes/removals | `Browser.set_local_storage_text`, `Browser.set_session_storage_text`, `Browser.remove_local_storage`, `Browser.remove_session_storage` |
 | Fire a command when a signal changes | `Ui.on_change(signal, to_cmd)` |
+| Fire a command for the first mounted value and later changes | `Ui.on_change_initial(signal, to_cmd)` |
 | Fire a command when a scope mounts | `Ui.on_mount(to_cmd)` |
 | Cleanup when a scope is disposed | `Signal.cleanup`, `Ui.on_cleanup(cleanup)` |
 
@@ -601,7 +623,26 @@ scope disposal or replacement of an in-flight task reports `Http.Canceled`.
 
 For example, `examples/service-ops-center/app.roc` creates a browser HTTP text task,
 starts it on mount, starts it again on interval ticks, and folds the task status
-into dashboard state.
+into dashboard state, including nested service-detail JSON used by its routed
+drill-down view. It also derives route state from `Browser.location`, intercepts
+navigation links with the static `prevent_default` event policy, and emits
+`Browser.push_state` / `Browser.replace_state` commands through `Ui.on_change`.
+It derives document titles from the active route and emits `Browser.set_title`
+through `Ui.on_change_initial` so deep links set the first browser title. The
+same app uses `Browser.visibility` to pause polling while the tab is hidden.
+`examples/live-search/app.roc` uses `Browser.online` to suppress task starts
+while offline and replay the current query when the browser returns online.
+`examples/team-checkout/app.roc` declares localStorage text keys at mount, folds
+`Browser.StorageText` into draft state, writes edits through storage commands,
+and removes all draft keys when the user clears the saved order.
+
+`Browser.location` is deliberately raw: `path` includes its leading `/`, while
+`query` and `hash` omit `?` and `#`. Route parsing, key namespacing, storage
+serialization, and domain validation stay in app/package code. Storage reads
+return `Browser.StorageText`: `StorageMissing`, `StorageValue(text)`, or
+`StorageUnavailable(message)`. Storage writes and removals are commands today;
+failed write/remove commands report as host/runtime errors rather than
+app-visible command results.
 
 A simplified pattern looks like this:
 
@@ -627,6 +668,13 @@ main = |_| {
 
 Task identity comes from the owning scope and task source. Disposing a scope
 cancels its active intervals/tasks and runs cleanup descriptors.
+Browser environment sources use the same owner-scoped model: the runtime seeds
+location, visibility, online, and declared storage reads before the first render,
+then cleans up browser listeners and active resources when the owning scope or
+mount is disposed.
+Browser commands such as navigation, document title updates, and storage writes
+stay explicit effects, so apps decide when state changes should touch browser
+globals.
 
 ## How updates reach the browser
 
@@ -648,6 +696,8 @@ retained closure for the event or source that changed:
 - a click calls the reducer built by `state.on_unit`;
 - input/check events call reducers built by `state.on_str` or `state.on_bool`;
 - task/timer results update their source signals;
+- browser location, visibility, online, and declared storage sources update from
+  host-owned environment payloads;
 - changed derived nodes call the retained `Signal.map`/`Signal.map2`/`combine`
   transforms;
 - changed `Ui.when` or `Ui.each_str` sites mount/dispose only the affected

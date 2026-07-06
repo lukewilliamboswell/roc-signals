@@ -373,12 +373,14 @@ pub fn syncRows(
             rows_reused += 1;
 
             const row_item_equal = hooks.rowItemEquals(scope_id, item);
-            hooks.replaceRowKey(scope_id, hash, key);
-            hooks.replaceRowItem(scope_id, item);
             if (row_item_equal) {
+                hooks.dropIncomingKey(key);
+                hooks.dropIncomingItem(item);
                 row_items_changed[key_index] = false;
                 row_items_unchanged += 1;
             } else {
+                hooks.replaceRowKey(scope_id, hash, key);
+                hooks.replaceRowItem(scope_id, item);
                 row_items_changed[key_index] = true;
                 row_items_updated += 1;
             }
@@ -570,6 +572,10 @@ const TestSyncHooks = struct {
     pub fn replaceRowItem(self: *@This(), scope_id: u64, item: u64) void {
         self.items_by_scope[@intCast(scope_id)] = item;
     }
+
+    pub fn dropIncomingKey(_: *@This(), _: u64) void {}
+
+    pub fn dropIncomingItem(_: *@This(), _: u64) void {}
 
     pub fn createRow(self: *@This(), parent_scope_id: u64, site_ordinal: u64, hash: u64, key: u64, item: u64) u64 {
         if (parent_scope_id != 1 or site_ordinal != 2) @panic("test row was created for the wrong site");

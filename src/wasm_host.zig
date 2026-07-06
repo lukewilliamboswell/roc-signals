@@ -13,6 +13,7 @@
 const std = @import("std");
 const signals = @import("signals");
 const abi = signals.abi;
+const abi_view = signals.abi_view;
 const boundary = signals.boundary;
 const render = signals.render;
 const render_sink = signals.render_sink;
@@ -63,6 +64,22 @@ const WasmCtx = struct {
 
     pub fn stateCapability(_: Handle, node_id: u64) HostValueCapability {
         return shared_engine.stateCapability(node_id) catch failHost();
+    }
+
+    pub fn initialLocationPayload(_: Handle, _: *abi.RocHost, cap: HostValueCapability) HostValue {
+        return makeInitialLocationPayload(cap);
+    }
+
+    pub fn initialVisibilityPayload(_: Handle, _: *abi.RocHost, cap: HostValueCapability) HostValue {
+        return makeInitialVisibilityPayload(cap);
+    }
+
+    pub fn initialOnlinePayload(_: Handle, _: *abi.RocHost, cap: HostValueCapability) HostValue {
+        return makeInitialOnlinePayload(cap);
+    }
+
+    pub fn initialStoragePayload(_: Handle, _: *abi.RocHost, area: boundary.StorageArea, key: []const u8, cap: HostValueCapability) HostValue {
+        return makeInitialStoragePayload(area, key, cap);
     }
 
     pub fn sink(_: Handle) Sink {
@@ -188,6 +205,26 @@ const WasmSink = struct {
         appendCommand(.cancel_task, toU32(request_id), 0, 0, 0, 0);
     }
 
+    pub fn navigate(_: WasmSink, kind: render_sink.NavigationKind, location: boundary.LocationSnapshot) void {
+        setCurrentLocationSnapshot(location);
+        appendLocationCommand(switch (kind) {
+            .push => .push_state,
+            .replace => .replace_state,
+        }, location);
+    }
+
+    pub fn setDocumentTitle(_: WasmSink, title: []const u8) void {
+        appendDocumentTitleCommand(title);
+    }
+
+    pub fn setStorageText(_: WasmSink, area: boundary.StorageArea, key: []const u8, value: []const u8) void {
+        appendStorageSetCommand(area, key, value);
+    }
+
+    pub fn removeStorage(_: WasmSink, area: boundary.StorageArea, key: []const u8) void {
+        appendStorageRemoveCommand(area, key);
+    }
+
     pub fn debugAssertNode(_: WasmSink, _: u64, _: bool, _: ?[]const u8, _: ?u64, _: []const u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64) void {}
 };
 
@@ -201,6 +238,29 @@ var shared_engine: SharedEngine = .init();
 var command_buffer: render.Buffer = .{};
 var dynamic_command_buffer: render.DynamicBuffer = .{};
 var string_buffer: std.ArrayListUnmanaged(u8) = .empty;
+var initial_location_payload: ?[]u8 = null;
+var initial_visibility_payload: ?[]u8 = null;
+var initial_online_payload: ?[]u8 = null;
+
+const StorageDeclaration = struct {
+    area: boundary.StorageArea,
+    key: []const u8,
+};
+
+const InitialStoragePayload = struct {
+    area: boundary.StorageArea,
+    key: []u8,
+    payload: []u8,
+
+    fn deinit(self: InitialStoragePayload, alloc: std.mem.Allocator) void {
+        alloc.free(self.key);
+        alloc.free(self.payload);
+    }
+};
+
+var storage_declarations: std.ArrayListUnmanaged(StorageDeclaration) = .empty;
+var initial_storage_payloads: std.ArrayListUnmanaged(InitialStoragePayload) = .empty;
+var mount_prepared: bool = false;
 
 const RocAllocation = struct {
     user_ptr: [*]u8,
@@ -294,6 +354,41 @@ fn storeBytes(bytes: []const u8) u32 {
 
 fn appendStringCommand(op: render.Op, elem_id: u32, bytes: []const u8) void {
     appendCommand(op, elem_id, storeBytes(bytes), toU32(bytes.len), 0, 0);
+}
+
+fn storeLocationHref(location: boundary.LocationSnapshot) render.DynamicSlice {
+    if (location.path.len == 0 or location.path[0] != '/') failHostWith("location path must start with /");
+    const offset = toU32(string_buffer.items.len);
+    string_buffer.appendSlice(allocator(), location.path) catch failHost();
+    if (location.query.len != 0) {
+        string_buffer.append(allocator(), '?') catch failHost();
+        string_buffer.appendSlice(allocator(), location.query) catch failHost();
+    }
+    if (location.hash.len != 0) {
+        string_buffer.append(allocator(), '#') catch failHost();
+        string_buffer.appendSlice(allocator(), location.hash) catch failHost();
+    }
+    return .{ .offset = offset, .len = toU32(string_buffer.items.len - offset) };
+}
+
+fn appendLocationCommand(op: render.Op, location: boundary.LocationSnapshot) void {
+    const href = storeLocationHref(location);
+    appendCommand(op, href.offset, href.len, 0, 0, 0);
+}
+
+fn appendDocumentTitleCommand(title: []const u8) void {
+    appendCommand(.set_document_title, 0, storeBytes(title), toU32(title.len), 0, 0);
+}
+
+fn appendStorageSetCommand(area: boundary.StorageArea, key: []const u8, value: []const u8) void {
+    const key_offset = storeBytes(key);
+    const value_offset = storeBytes(value);
+    appendCommand(.set_storage_text, toU32(@intFromEnum(area)), key_offset, toU32(key.len), value_offset, toU32(value.len));
+}
+
+fn appendStorageRemoveCommand(area: boundary.StorageArea, key: []const u8) void {
+    const key_offset = storeBytes(key);
+    appendCommand(.remove_storage, toU32(@intFromEnum(area)), key_offset, toU32(key.len), 0, 0);
 }
 
 fn textAttrNameForField(field: RenderTextField) ?[]const u8 {
@@ -462,6 +557,242 @@ fn hostValueU8List(bytes: []const u8) HostValue {
     return hv.makeU8List(HostValueOpsCtx{}, &roc_host, bytes);
 }
 
+fn hostValueU8ListWithCapability(bytes: []const u8, cap: HostValueCapability) HostValue {
+    return hv.makeU8ListWithCapability(HostValueOpsCtx{}, &roc_host, bytes, cap);
+}
+
+fn makeDefaultLocationPayload() []u8 {
+    return boundary.encodeLocationPayload(allocator(), .{ .path = "/", .query = "", .hash = "" }) catch |err| switch (err) {
+        error.OutOfMemory => failHostWith("location payload allocation failed"),
+        error.BoundaryTextTooLong => failHostWith("location payload field exceeded boundary length"),
+    };
+}
+
+fn makeInitialLocationPayload(cap: HostValueCapability) HostValue {
+    if (initial_location_payload) |bytes| {
+        return hostValueU8ListWithCapability(bytes, cap);
+    }
+
+    const bytes = makeDefaultLocationPayload();
+    defer allocator().free(bytes);
+    return hostValueU8ListWithCapability(bytes, cap);
+}
+
+fn makeDefaultVisibilityPayload() []u8 {
+    return boundary.encodeVisibilityPayload(allocator(), .visible) catch |err| switch (err) {
+        error.OutOfMemory => failHostWith("visibility payload allocation failed"),
+        error.BoundaryTextTooLong => failHostWith("visibility payload field exceeded boundary length"),
+    };
+}
+
+fn makeInitialVisibilityPayload(cap: HostValueCapability) HostValue {
+    if (initial_visibility_payload) |bytes| {
+        return hostValueU8ListWithCapability(bytes, cap);
+    }
+
+    const bytes = makeDefaultVisibilityPayload();
+    defer allocator().free(bytes);
+    return hostValueU8ListWithCapability(bytes, cap);
+}
+
+fn makeDefaultOnlinePayload() []u8 {
+    return boundary.encodeOnlinePayload(allocator(), .online) catch |err| switch (err) {
+        error.OutOfMemory => failHostWith("online payload allocation failed"),
+        error.BoundaryTextTooLong => failHostWith("online payload field exceeded boundary length"),
+    };
+}
+
+fn makeInitialOnlinePayload(cap: HostValueCapability) HostValue {
+    if (initial_online_payload) |bytes| {
+        return hostValueU8ListWithCapability(bytes, cap);
+    }
+
+    const bytes = makeDefaultOnlinePayload();
+    defer allocator().free(bytes);
+    return hostValueU8ListWithCapability(bytes, cap);
+}
+
+fn initialStoragePayload(area: boundary.StorageArea, key: []const u8) ?[]const u8 {
+    for (initial_storage_payloads.items) |entry| {
+        if (entry.area == area and std.mem.eql(u8, entry.key, key)) {
+            return entry.payload;
+        }
+    }
+    return null;
+}
+
+fn makeInitialStoragePayload(area: boundary.StorageArea, key: []const u8, cap: HostValueCapability) HostValue {
+    if (initialStoragePayload(area, key)) |bytes| {
+        return hostValueU8ListWithCapability(bytes, cap);
+    }
+
+    const bytes = boundary.encodeStoragePayload(allocator(), .missing) catch |err| switch (err) {
+        error.OutOfMemory => failHostWith("storage payload allocation failed"),
+        error.BoundaryTextTooLong => failHostWith("storage payload field exceeded boundary length"),
+    };
+    defer allocator().free(bytes);
+    return hostValueU8ListWithCapability(bytes, cap);
+}
+
+fn clearStorageDeclarations() void {
+    storage_declarations.clearRetainingCapacity();
+}
+
+fn clearInitialStoragePayloads() void {
+    for (initial_storage_payloads.items) |entry| {
+        entry.deinit(allocator());
+    }
+    initial_storage_payloads.clearRetainingCapacity();
+}
+
+fn clearStorageEnvironment() void {
+    clearStorageDeclarations();
+    clearInitialStoragePayloads();
+}
+
+fn rememberStorageDeclaration(area: boundary.StorageArea, key: []const u8) void {
+    for (storage_declarations.items) |entry| {
+        if (entry.area == area and std.mem.eql(u8, entry.key, key)) {
+            return;
+        }
+    }
+    storage_declarations.append(allocator(), .{ .area = area, .key = key }) catch failHost();
+}
+
+fn discoverStorageSignalExpr(expr: abi.NodeSignalExpr) void {
+    switch (abi_view.SignalExpr.fromAbi(expr)) {
+        .ref, .const_value, .task_source, .interval_source, .location_source, .online_source, .visibility_source => {},
+        .map => |payload| discoverStorageSignalExpr(payload.input.*),
+        .map2 => |payload| {
+            discoverStorageSignalExpr(payload.left.*);
+            discoverStorageSignalExpr(payload.right.*);
+        },
+        .combine => |payload| {
+            for (payload.children) |child| {
+                discoverStorageSignalExpr(child);
+            }
+        },
+        .storage_source => |payload| rememberStorageDeclaration(payload.area, payload.key.asSlice()),
+    }
+}
+
+fn discoverStorageAttr(attr: abi.NodeAttr) void {
+    switch (abi_view.NodeAttr.fromAbi(attr)) {
+        .static_text, .static_bool, .event, .named_event => {},
+        .signal_text => |payload| discoverStorageSignalExpr(payload.signal.*),
+        .signal_optional_text => |payload| discoverStorageSignalExpr(payload.signal.*),
+        .signal_bool => |payload| discoverStorageSignalExpr(payload.signal.*),
+    }
+}
+
+fn discoverStorageElem(elem: abi.Elem) void {
+    switch (abi_view.Elem.fromAbi(elem)) {
+        .element => |payload| {
+            for (payload.attrs) |attr| {
+                discoverStorageAttr(attr);
+            }
+            for (payload.children) |child| {
+                discoverStorageElem(child);
+            }
+        },
+        .text, .cleanup, .on_mount => {},
+        .text_signal => |payload| discoverStorageSignalExpr(payload.signal.*),
+        .on_change => |payload| discoverStorageSignalExpr(payload.signal.*),
+        .state => |payload| discoverStorageElem(payload.child.*),
+        .component => |payload| discoverStorageElem(payload.child.*),
+        .when => |payload| {
+            discoverStorageSignalExpr(payload.condition.*);
+            discoverStorageElem(payload.when_false.*);
+            discoverStorageElem(payload.when_true.*);
+        },
+        .each => |payload| {
+            discoverStorageSignalExpr(payload.items.*);
+        },
+    }
+}
+
+fn setInitialStoragePayload(area: boundary.StorageArea, key: []const u8, payload: []const u8) void {
+    for (initial_storage_payloads.items) |*entry| {
+        if (entry.area == area and std.mem.eql(u8, entry.key, key)) {
+            allocator().free(entry.payload);
+            entry.payload = allocator().dupe(u8, payload) catch failHost();
+            return;
+        }
+    }
+
+    const key_copy = allocator().dupe(u8, key) catch failHost();
+    errdefer allocator().free(key_copy);
+    const payload_copy = allocator().dupe(u8, payload) catch failHost();
+    errdefer allocator().free(payload_copy);
+    initial_storage_payloads.append(allocator(), .{ .area = area, .key = key_copy, .payload = payload_copy }) catch failHost();
+}
+
+fn setCurrentLocationPayload(bytes: []const u8) void {
+    if (initial_location_payload) |existing| {
+        allocator().free(existing);
+    }
+    initial_location_payload = allocator().dupe(u8, bytes) catch failHost();
+}
+
+fn setInitialLocationPayload(bytes: []const u8) void {
+    if (shared_engine.root_elem != null) failHostWith("initial location cannot be set after mount");
+    setCurrentLocationPayload(bytes);
+}
+
+fn setCurrentLocationSnapshot(location: boundary.LocationSnapshot) void {
+    const bytes = boundary.encodeLocationPayload(allocator(), location) catch |err| switch (err) {
+        error.OutOfMemory => failHostWith("location payload allocation failed"),
+        error.BoundaryTextTooLong => failHostWith("location payload field exceeded boundary length"),
+    };
+    defer allocator().free(bytes);
+    setCurrentLocationPayload(bytes);
+}
+
+fn clearInitialLocationPayload() void {
+    if (initial_location_payload) |bytes| {
+        allocator().free(bytes);
+        initial_location_payload = null;
+    }
+}
+
+fn setCurrentVisibilityPayload(bytes: []const u8) void {
+    if (initial_visibility_payload) |existing| {
+        allocator().free(existing);
+    }
+    initial_visibility_payload = allocator().dupe(u8, bytes) catch failHost();
+}
+
+fn setInitialVisibilityPayload(bytes: []const u8) void {
+    if (shared_engine.root_elem != null) failHostWith("initial visibility cannot be set after mount");
+    setCurrentVisibilityPayload(bytes);
+}
+
+fn clearInitialVisibilityPayload() void {
+    if (initial_visibility_payload) |bytes| {
+        allocator().free(bytes);
+        initial_visibility_payload = null;
+    }
+}
+
+fn setCurrentOnlinePayload(bytes: []const u8) void {
+    if (initial_online_payload) |existing| {
+        allocator().free(existing);
+    }
+    initial_online_payload = allocator().dupe(u8, bytes) catch failHost();
+}
+
+fn setInitialOnlinePayload(bytes: []const u8) void {
+    if (shared_engine.root_elem != null) failHostWith("initial online status cannot be set after mount");
+    setCurrentOnlinePayload(bytes);
+}
+
+fn clearInitialOnlinePayload() void {
+    if (initial_online_payload) |bytes| {
+        allocator().free(bytes);
+        initial_online_payload = null;
+    }
+}
+
 // --- State access (routed through the engine's state table) ---
 
 fn currentStateValue(node_id: u64) HostValue {
@@ -486,6 +817,24 @@ fn updateStateValue(node_id: u64, value: HostValue) bool {
 
 fn dropMovedElemPayload(_: ?*anyopaque, _: *abi.RocHost) callconv(.c) void {}
 
+fn initRootElem() void {
+    if (shared_engine.root_elem != null) failHostWith("Roc root Elem initialized more than once");
+    const root_box: ElemBox = abi.roc_ui_init();
+    shared_engine.root_elem = root_box.*;
+    abi.decrefBoxWith(@ptrCast(root_box), @alignOf(abi.Elem), true, &dropMovedElemPayload, &roc_host);
+}
+
+fn prepareMountRoot() void {
+    clearActiveRuntime();
+    clearCommandBuffers();
+    clearStorageEnvironment();
+    initRootElem();
+    if (shared_engine.root_elem) |root| {
+        discoverStorageElem(root);
+    }
+    mount_prepared = true;
+}
+
 /// Collect the root `Elem` into a fresh descriptor stream, apply it against the
 /// active stream (first render creates everything; later renders diff), rebuild
 /// the active event table, and swap the new stream in. Mirrors the native host's
@@ -506,7 +855,9 @@ fn renderActiveRoot(dirty_source_node_ids: []const u64) void {
     shared_engine.rebuildActiveEventsFromStream(ctx, &next_stream);
     shared_engine.active_stream.deinit(allocator(), ctx, &roc_host, &shared_engine.pending_roc_metrics);
     shared_engine.active_stream = next_stream;
+    const on_change_initial_counts = shared_engine.runActiveOnChangeInitialCommands(ctx, &roc_host);
     const mount_counts = shared_engine.runActiveMountCommands(ctx, &roc_host);
+    shared_engine.render_metrics.addCommandCounts(on_change_initial_counts);
     shared_engine.render_metrics.addCommandCounts(mount_counts);
 }
 
@@ -564,7 +915,7 @@ fn resolveTask(request_id: u64, payload_text: []const u8, failed: bool) void {
     const record = shared_engine.activeTaskRecordByToken(pending.task_token) orelse failHostWith("task result matched no active task source");
     const task_payload = switch (record.payload) {
         .task_source => |payload| payload,
-        .ref, .const_value, .map, .map2, .combine, .interval_source => unreachable,
+        .ref, .const_value, .map, .map2, .combine, .interval_source, .location_source, .online_source, .visibility_source, .storage_source => unreachable,
     };
     if (task_payload.token != pending.task_token) failHostWith("task result matched a pending request for a different task source");
 
@@ -588,6 +939,24 @@ fn tickInterval(token: u64) void {
     _ = shared_engine.tickIntervalSourceByRuntimeToken(ctx, &roc_host, token);
 }
 
+fn dispatchLocationChange(payload: []const u8) void {
+    const ctx = WasmCtx{};
+    setCurrentLocationPayload(payload);
+    _ = shared_engine.dispatchCurrentLocationSources(ctx, &roc_host);
+}
+
+fn dispatchVisibilityChange(payload: []const u8) void {
+    const ctx = WasmCtx{};
+    setCurrentVisibilityPayload(payload);
+    _ = shared_engine.dispatchCurrentVisibilitySources(ctx, &roc_host);
+}
+
+fn dispatchOnlineChange(payload: []const u8) void {
+    const ctx = WasmCtx{};
+    setCurrentOnlinePayload(payload);
+    _ = shared_engine.dispatchCurrentOnlineSources(ctx, &roc_host);
+}
+
 /// Tear the engine's reactive runtime back down to a re-mountable empty state.
 /// Runs before each mount and on unmount; the order mirrors the engine portion of
 /// the native host's `HostEnv.deinit`.
@@ -595,6 +964,7 @@ fn clearActiveRuntime() void {
     const a = allocator();
     const ctx = WasmCtx{};
     shared_engine.roc_host = &roc_host;
+    mount_prepared = false;
 
     shared_engine.clearActiveSignalRoutes(ctx);
     shared_engine.active_source_signal_routes.deinit(a);
@@ -965,16 +1335,87 @@ export fn roc_ui_live_host_values() callconv(.c) usize {
     return shared_engine.host_values.liveCount();
 }
 
+export fn roc_ui_prepare_mount() callconv(.c) void {
+    clearHostError();
+    prepareMountRoot();
+}
+
+export fn roc_ui_storage_declaration_count() callconv(.c) usize {
+    return storage_declarations.items.len;
+}
+
+export fn roc_ui_storage_declaration_area(index: usize) callconv(.c) u32 {
+    if (index >= storage_declarations.items.len) failHostWith("storage declaration index out of bounds");
+    return @intCast(@intFromEnum(storage_declarations.items[index].area));
+}
+
+export fn roc_ui_storage_declaration_key_ptr(index: usize) callconv(.c) usize {
+    if (index >= storage_declarations.items.len) failHostWith("storage declaration index out of bounds");
+    const key = storage_declarations.items[index].key;
+    if (key.len == 0) return 0;
+    return @intFromPtr(key.ptr);
+}
+
+export fn roc_ui_storage_declaration_key_len(index: usize) callconv(.c) usize {
+    if (index >= storage_declarations.items.len) failHostWith("storage declaration index out of bounds");
+    return storage_declarations.items[index].key.len;
+}
+
+export fn roc_ui_set_storage_payload(area_id: u32, key_ptr: usize, key_len: usize, payload_ptr: usize, payload_len: usize) callconv(.c) void {
+    clearHostError();
+    const area = boundary.StorageArea.fromId(area_id) orelse failHostWith("storage payload used an unknown storage area");
+    const key = (@as([*]const u8, @ptrFromInt(key_ptr)))[0..key_len];
+    const payload = (@as([*]const u8, @ptrFromInt(payload_ptr)))[0..payload_len];
+    setInitialStoragePayload(area, key, payload);
+}
+
 export fn roc_ui_mount() callconv(.c) void {
     clearHostError();
-    clearActiveRuntime();
-    clearCommandBuffers();
-
-    const root_box: ElemBox = abi.roc_ui_init();
-    shared_engine.root_elem = root_box.*;
-    abi.decrefBoxWith(@ptrCast(root_box), @alignOf(abi.Elem), true, &dropMovedElemPayload, &roc_host);
+    if (!mount_prepared) {
+        clearActiveRuntime();
+        clearCommandBuffers();
+        clearStorageEnvironment();
+        initRootElem();
+    } else {
+        clearCommandBuffers();
+        mount_prepared = false;
+    }
 
     renderActiveRoot(&.{});
+    clearStorageEnvironment();
+}
+
+export fn roc_ui_set_location(payload_ptr: usize, payload_len: usize) callconv(.c) void {
+    clearHostError();
+    setInitialLocationPayload((@as([*]const u8, @ptrFromInt(payload_ptr)))[0..payload_len]);
+}
+
+export fn roc_ui_update_location(payload_ptr: usize, payload_len: usize) callconv(.c) void {
+    clearHostError();
+    clearCommandBuffers();
+    dispatchLocationChange((@as([*]const u8, @ptrFromInt(payload_ptr)))[0..payload_len]);
+}
+
+export fn roc_ui_set_visibility(payload_ptr: usize, payload_len: usize) callconv(.c) void {
+    clearHostError();
+    setInitialVisibilityPayload((@as([*]const u8, @ptrFromInt(payload_ptr)))[0..payload_len]);
+}
+
+export fn roc_ui_update_visibility(payload_ptr: usize, payload_len: usize) callconv(.c) void {
+    clearHostError();
+    clearCommandBuffers();
+    dispatchVisibilityChange((@as([*]const u8, @ptrFromInt(payload_ptr)))[0..payload_len]);
+}
+
+export fn roc_ui_set_online(payload_ptr: usize, payload_len: usize) callconv(.c) void {
+    clearHostError();
+    setInitialOnlinePayload((@as([*]const u8, @ptrFromInt(payload_ptr)))[0..payload_len]);
+}
+
+export fn roc_ui_update_online(payload_ptr: usize, payload_len: usize) callconv(.c) void {
+    clearHostError();
+    clearCommandBuffers();
+    dispatchOnlineChange((@as([*]const u8, @ptrFromInt(payload_ptr)))[0..payload_len]);
 }
 
 fn payloadKindFromWire(payload_kind: u32) BoundaryPayloadKind {
@@ -1026,6 +1467,10 @@ export fn roc_ui_unmount() callconv(.c) void {
     clearHostError();
     clearCommandBuffers();
     clearActiveRuntime();
+    clearInitialLocationPayload();
+    clearInitialVisibilityPayload();
+    clearInitialOnlinePayload();
+    clearStorageEnvironment();
 }
 
 export fn roc_dbg(_: [*]const u8, _: usize) callconv(.c) void {}

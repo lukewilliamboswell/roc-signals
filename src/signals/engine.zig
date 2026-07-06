@@ -24,6 +24,7 @@ const host_value_registry = @import("host_value_registry.zig");
 const hv = @import("host_values.zig");
 const engine_metrics = @import("engine_metrics.zig");
 const engine_contract = @import("engine_contract.zig");
+const render_sink = @import("render_sink.zig");
 const render_cache_mod = @import("render_cache.zig");
 const descriptor_stream = @import("descriptor_stream.zig");
 const retained_values = @import("retained_values.zig");
@@ -40,6 +41,7 @@ const enable_runtime_metrics = engine_metrics.enable_runtime_metrics;
 pub const RenderTextField = render.TextField;
 pub const RenderBoolField = render.BoolField;
 pub const RenderEventKind = render.EventKind;
+pub const NavigationKind = render_sink.NavigationKind;
 pub const EventPayloadKind = boundary.PayloadKind;
 pub const EventExtractionPlanKind = boundary.EventExtractionPlanKind;
 pub const BoundaryPayloadDescriptor = boundary.BoundaryPayloadDescriptor;
@@ -115,6 +117,10 @@ pub const HostSignalMap2Record = signal_records.Map2Record;
 pub const HostSignalCombineRecord = signal_records.CombineRecord;
 pub const HostSignalTaskSourceRecord = signal_records.TaskSourceRecord;
 pub const HostSignalIntervalSourceRecord = signal_records.IntervalSourceRecord;
+pub const HostSignalLocationSourceRecord = signal_records.LocationSourceRecord;
+pub const HostSignalOnlineSourceRecord = signal_records.OnlineSourceRecord;
+pub const HostSignalVisibilitySourceRecord = signal_records.VisibilitySourceRecord;
+pub const HostSignalStorageSourceRecord = signal_records.StorageSourceRecord;
 pub const HostSignalRecordPayload = signal_records.Payload;
 pub const HostSignalRecord = signal_records.Record;
 pub const HostSignalBinding = signal_records.Binding;
@@ -545,11 +551,11 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             pub fn existingKeyEquals(self: *@This(), scope_id: u64, key: HostValue) bool {
-                return self.engine.eachRowScopeKeyEquals(self.ctx, self.roc_host, scope_id, key);
+                return self.engine.eachRowScopeKeyEquals(self.ctx, self.roc_host, scope_id, key, self.ops.key_capability);
             }
 
             pub fn rowItemEquals(self: *@This(), scope_id: u64, item: HostValue) bool {
-                return self.engine.eachRowScopeItemEquals(self.ctx, self.roc_host, scope_id, item);
+                return self.engine.eachRowScopeItemEquals(self.ctx, self.roc_host, scope_id, item, self.ops.item_capability);
             }
 
             pub fn replaceRowKey(self: *@This(), scope_id: u64, key_hash: u64, key: HostValue) void {
@@ -558,6 +564,14 @@ pub fn Engine(comptime Ctx: type) type {
 
             pub fn replaceRowItem(self: *@This(), scope_id: u64, item: HostValue) void {
                 self.engine.replaceEachRowScopeItemWithCapability(self.ctx, self.roc_host, scope_id, item, self.ops.item_capability);
+            }
+
+            pub fn dropIncomingKey(self: *@This(), key: HostValue) void {
+                callHostValueToUnitWithCapability(self.ctx, self.roc_host, self.ops.key_capability, hv.hostValueCapabilityDrop(self.ops.key_capability), key);
+            }
+
+            pub fn dropIncomingItem(self: *@This(), item: HostValue) void {
+                callHostValueToUnitWithCapability(self.ctx, self.roc_host, self.ops.item_capability, hv.hostValueCapabilityDrop(self.ops.item_capability), item);
             }
 
             pub fn createRow(self: *@This(), parent_scope_id: u64, site_ordinal: u64, key_hash: u64, key: HostValue, item: HostValue) u64 {
@@ -676,8 +690,8 @@ pub fn Engine(comptime Ctx: type) type {
             return retained_values.callHostValueToHostValueWithCapability(Ctx, ctx, roc_host, cap, callable, value);
         }
 
-        fn callHostValueToStartTaskCmdWithCapability(ctx: Ctx.Handle, roc_host: *abi.RocHost, cap: HostValueCapability, callable: abi.RocErasedCallable, value: HostValue) erased_calls.StartTaskCmd {
-            return retained_values.callHostValueToStartTaskCmdWithCapability(Ctx, ctx, roc_host, cap, callable, value);
+        fn callHostValueToCmdWithCapability(ctx: Ctx.Handle, roc_host: *abi.RocHost, cap: HostValueCapability, callable: abi.RocErasedCallable, value: HostValue) erased_calls.Cmd {
+            return retained_values.callHostValueToCmdWithCapability(Ctx, ctx, roc_host, cap, callable, value);
         }
 
         fn callHostValueToStrWithCapability(ctx: Ctx.Handle, roc_host: *abi.RocHost, cap: HostValueCapability, callable: abi.RocErasedCallable, value: HostValue) abi.RocStr {
@@ -1425,6 +1439,70 @@ pub fn Engine(comptime Ctx: type) type {
                     stream.rememberSignalRecord(allocator, record);
                     break :blk record;
                 },
+                .location_source => |payload| blk: {
+                    const token = payload.token.ptr;
+                    if (self.retainExistingSignalRecordForStream(allocator, stream, token, .location_source)) |record| {
+                        break :blk record;
+                    }
+
+                    const record = HostSignalRecord.init(allocator, .{ .location_source = .{
+                        .token = retainHostSignalToken(token),
+                        .payload_cap = retainHostValueCapability(payload.payload_capability, &self.pending_roc_metrics),
+                        .from_payload = retainHostCallable(payload.from_payload, &self.pending_roc_metrics),
+                        .cap = retainHostValueCapability(payload.capability, &self.pending_roc_metrics),
+                    } });
+                    stream.rememberSignalRecord(allocator, record);
+                    break :blk record;
+                },
+                .visibility_source => |payload| blk: {
+                    const token = payload.token.ptr;
+                    if (self.retainExistingSignalRecordForStream(allocator, stream, token, .visibility_source)) |record| {
+                        break :blk record;
+                    }
+
+                    const record = HostSignalRecord.init(allocator, .{ .visibility_source = .{
+                        .token = retainHostSignalToken(token),
+                        .payload_cap = retainHostValueCapability(payload.payload_capability, &self.pending_roc_metrics),
+                        .from_payload = retainHostCallable(payload.from_payload, &self.pending_roc_metrics),
+                        .cap = retainHostValueCapability(payload.capability, &self.pending_roc_metrics),
+                    } });
+                    stream.rememberSignalRecord(allocator, record);
+                    break :blk record;
+                },
+                .online_source => |payload| blk: {
+                    const token = payload.token.ptr;
+                    if (self.retainExistingSignalRecordForStream(allocator, stream, token, .online_source)) |record| {
+                        break :blk record;
+                    }
+
+                    const record = HostSignalRecord.init(allocator, .{ .online_source = .{
+                        .token = retainHostSignalToken(token),
+                        .payload_cap = retainHostValueCapability(payload.payload_capability, &self.pending_roc_metrics),
+                        .from_payload = retainHostCallable(payload.from_payload, &self.pending_roc_metrics),
+                        .cap = retainHostValueCapability(payload.capability, &self.pending_roc_metrics),
+                    } });
+                    stream.rememberSignalRecord(allocator, record);
+                    break :blk record;
+                },
+                .storage_source => |payload| blk: {
+                    const token = payload.token.ptr;
+                    if (self.retainExistingSignalRecordForStream(allocator, stream, token, .storage_source)) |record| {
+                        break :blk record;
+                    }
+
+                    const key_copy = allocator.dupe(u8, payload.key.asSlice()) catch @panic("out of memory");
+                    errdefer allocator.free(key_copy);
+                    const record = HostSignalRecord.init(allocator, .{ .storage_source = .{
+                        .token = retainHostSignalToken(token),
+                        .area = payload.area,
+                        .key = key_copy,
+                        .payload_cap = retainHostValueCapability(payload.payload_capability, &self.pending_roc_metrics),
+                        .from_payload = retainHostCallable(payload.from_payload, &self.pending_roc_metrics),
+                        .cap = retainHostValueCapability(payload.capability, &self.pending_roc_metrics),
+                    } });
+                    stream.rememberSignalRecord(allocator, record);
+                    break :blk record;
+                },
             };
         }
 
@@ -1584,7 +1662,7 @@ pub fn Engine(comptime Ctx: type) type {
             for (previous.on_changes.items) |desc| {
                 if (!(self.scopeIsDescendantOrSelf(desc.scope_id, root_scope_id) catch @panic("scope descriptor referenced an unknown parent scope"))) continue;
                 const signal = desc.signal.cloneRetained(allocator, &self.pending_roc_metrics);
-                stream.appendOnChange(allocator, ctx, roc_host, &self.pending_roc_metrics, desc.scope_id, signal, desc.to_cmd);
+                stream.appendOnChange(allocator, ctx, roc_host, &self.pending_roc_metrics, desc.scope_id, signal, desc.to_cmd, desc.run_initial, desc.run_initial_pending);
                 stream.on_changes.items[stream.on_changes.items.len - 1].cached_value = self.cloneHostSignalCacheSlot(ctx, desc.cached_value, &self.pending_roc_metrics);
             }
             for (previous.mounts.items) |desc| {
@@ -1677,9 +1755,9 @@ pub fn Engine(comptime Ctx: type) type {
             return result.scope_id;
         }
 
-        pub fn eachRowScopeItemEquals(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, scope_id: u64, item: HostValue) bool {
+        pub fn eachRowScopeItemEquals(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, scope_id: u64, item: HostValue, item_cap: HostValueCapability) bool {
             self.recordEachItemCompare();
-            return scope_runtime.eachRowItemEquals(self.scopes.items, ctx, roc_host, scope_id, item);
+            return scope_runtime.eachRowItemEquals(self.scopes.items, ctx, roc_host, scope_id, item, item_cap);
         }
 
         pub fn replaceEachRowScopeKey(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, scope_id: u64, key_hash: u64, key: HostValue, key_cap: HostValueCapability) void {
@@ -1847,7 +1925,7 @@ pub fn Engine(comptime Ctx: type) type {
 
                 var ordinal: u64 = 0;
                 var dom_ordinal: u64 = 0;
-                self.collectActiveElemDescriptors(ctx, roc_host, stream, row_elem, row_scope_id, site.parent_elem_id, &ordinal, &dom_ordinal, binder_stack, row_created, dirty_source_node_ids);
+                self.collectActiveEachRowElemDescriptors(ctx, roc_host, stream, each, row_elem, row_scope_id, site.parent_elem_id, &ordinal, &dom_ordinal, binder_stack, row_created, dirty_source_node_ids);
             }
         }
 
@@ -1862,7 +1940,14 @@ pub fn Engine(comptime Ctx: type) type {
 
             var ordinal: u64 = 0;
             var dom_ordinal: u64 = 0;
-            self.collectActiveElemDescriptors(ctx, roc_host, stream, row_elem, row_scope_id, site.parent_elem_id, &ordinal, &dom_ordinal, binder_stack, row_created, dirty_source_node_ids);
+            self.collectActiveEachRowElemDescriptors(ctx, roc_host, stream, each, row_elem, row_scope_id, site.parent_elem_id, &ordinal, &dom_ordinal, binder_stack, row_created, dirty_source_node_ids);
+        }
+
+        fn collectActiveEachRowElemDescriptors(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, each: HostNodeEachDesc, row_elem: abi.Elem, row_scope_id: u64, parent_elem_id: u64, ordinal: *u64, dom_ordinal: *u64, binder_stack: *std.ArrayListUnmanaged(HostBinderBinding), row_created: bool, dirty_source_node_ids: []const u64) void {
+            const caps = [_]HostValueCapability{ each.ops.key_capability, each.ops.item_capability };
+            Ctx.pushHostValueCapabilities(ctx, &caps);
+            defer Ctx.popHostValueCapabilities(ctx);
+            self.collectActiveElemDescriptors(ctx, roc_host, stream, row_elem, row_scope_id, parent_elem_id, ordinal, dom_ordinal, binder_stack, row_created, dirty_source_node_ids);
         }
 
         pub fn collectActiveElemDescriptors(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, elem: abi.Elem, scope_id: u64, parent_elem_id: u64, ordinal: *u64, dom_ordinal: *u64, binder_stack: *std.ArrayListUnmanaged(HostBinderBinding), scope_created: bool, dirty_source_node_ids: []const u64) void {
@@ -1897,7 +1982,7 @@ pub fn Engine(comptime Ctx: type) type {
                 },
                 .on_change => |payload| {
                     const signal = self.bindNodeSignal(allocator, stream, payload.signal.*, binder_stack.items);
-                    stream.appendOnChange(allocator, ctx, roc_host, &self.pending_roc_metrics, scope_id, signal, payload.to_cmd);
+                    stream.appendOnChange(allocator, ctx, roc_host, &self.pending_roc_metrics, scope_id, signal, payload.to_cmd, payload.run_initial, payload.run_initial and scope_created);
                 },
                 .on_mount => |payload| {
                     stream.appendMount(allocator, roc_host, &self.pending_roc_metrics, scope_id, payload.to_cmd, scope_created);
@@ -1993,7 +2078,7 @@ pub fn Engine(comptime Ctx: type) type {
 
                         var row_ordinal: u64 = 0;
                         var row_dom_ordinal: u64 = 0;
-                        self.collectActiveElemDescriptors(ctx, roc_host, stream, row_elem, row_scope_id, parent_elem_id, &row_ordinal, &row_dom_ordinal, binder_stack, row_created, dirty_source_node_ids);
+                        self.collectActiveEachRowElemDescriptors(ctx, roc_host, stream, each_desc, row_elem, row_scope_id, parent_elem_id, &row_ordinal, &row_dom_ordinal, binder_stack, row_created, dirty_source_node_ids);
                     }
                 },
             }
@@ -3112,6 +3197,50 @@ pub fn Engine(comptime Ctx: type) type {
             }
         }
 
+        pub fn evalLocationSourceInitial(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, payload: *HostSignalLocationSourceRecord) HostValue {
+            switch (payload.cached_value) {
+                .present => return self.cloneCachedSignalValue(ctx, &payload.cached_value),
+                .absent => {
+                    const raw_payload = Ctx.initialLocationPayload(ctx, roc_host, payload.payload_cap);
+                    const value = callHostValueToHostValueWithCapability(ctx, roc_host, payload.payload_cap, payload.from_payload, raw_payload);
+                    return self.replaceSignalExprCacheAndClone(ctx, &payload.cached_value, roc_host, value, payload.cap);
+                },
+            }
+        }
+
+        pub fn evalVisibilitySourceInitial(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, payload: *HostSignalVisibilitySourceRecord) HostValue {
+            switch (payload.cached_value) {
+                .present => return self.cloneCachedSignalValue(ctx, &payload.cached_value),
+                .absent => {
+                    const raw_payload = Ctx.initialVisibilityPayload(ctx, roc_host, payload.payload_cap);
+                    const value = callHostValueToHostValueWithCapability(ctx, roc_host, payload.payload_cap, payload.from_payload, raw_payload);
+                    return self.replaceSignalExprCacheAndClone(ctx, &payload.cached_value, roc_host, value, payload.cap);
+                },
+            }
+        }
+
+        pub fn evalOnlineSourceInitial(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, payload: *HostSignalOnlineSourceRecord) HostValue {
+            switch (payload.cached_value) {
+                .present => return self.cloneCachedSignalValue(ctx, &payload.cached_value),
+                .absent => {
+                    const raw_payload = Ctx.initialOnlinePayload(ctx, roc_host, payload.payload_cap);
+                    const value = callHostValueToHostValueWithCapability(ctx, roc_host, payload.payload_cap, payload.from_payload, raw_payload);
+                    return self.replaceSignalExprCacheAndClone(ctx, &payload.cached_value, roc_host, value, payload.cap);
+                },
+            }
+        }
+
+        pub fn evalStorageSourceInitial(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, payload: *HostSignalStorageSourceRecord) HostValue {
+            switch (payload.cached_value) {
+                .present => return self.cloneCachedSignalValue(ctx, &payload.cached_value),
+                .absent => {
+                    const raw_payload = Ctx.initialStoragePayload(ctx, roc_host, payload.area, payload.key, payload.payload_cap);
+                    const value = callHostValueToHostValueWithCapability(ctx, roc_host, payload.payload_cap, payload.from_payload, raw_payload);
+                    return self.replaceSignalExprCacheAndClone(ctx, &payload.cached_value, roc_host, value, payload.cap);
+                },
+            }
+        }
+
         pub fn evalHostSignalRecord(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, record: *HostSignalRecord) HostValue {
             switch (record.payload) {
                 .ref => |node_id| return Ctx.stateValueByNodeId(ctx, node_id),
@@ -3166,6 +3295,18 @@ pub fn Engine(comptime Ctx: type) type {
                 },
                 .interval_source => |*payload| {
                     return self.evalEffectSourceInitial(ctx, roc_host, &payload.cached_value, payload.initial, payload.cap);
+                },
+                .location_source => |*payload| {
+                    return self.evalLocationSourceInitial(ctx, roc_host, payload);
+                },
+                .visibility_source => |*payload| {
+                    return self.evalVisibilitySourceInitial(ctx, roc_host, payload);
+                },
+                .online_source => |*payload| {
+                    return self.evalOnlineSourceInitial(ctx, roc_host, payload);
+                },
+                .storage_source => |*payload| {
+                    return self.evalStorageSourceInitial(ctx, roc_host, payload);
                 },
             }
         }
@@ -3453,6 +3594,34 @@ pub fn Engine(comptime Ctx: type) type {
                         .changed = record.last_dirty_generation == dirty_generation and record.last_dirty_changed,
                     });
                 },
+                .location_source => |*payload| {
+                    debugPhase(ctx, 412);
+                    return self.rememberDirtySignalResult(record, dirty_generation, .{
+                        .value = self.cloneCachedSignalValue(ctx, &payload.cached_value),
+                        .changed = record.last_dirty_generation == dirty_generation and record.last_dirty_changed,
+                    });
+                },
+                .visibility_source => |*payload| {
+                    debugPhase(ctx, 414);
+                    return self.rememberDirtySignalResult(record, dirty_generation, .{
+                        .value = self.cloneCachedSignalValue(ctx, &payload.cached_value),
+                        .changed = record.last_dirty_generation == dirty_generation and record.last_dirty_changed,
+                    });
+                },
+                .online_source => |*payload| {
+                    debugPhase(ctx, 415);
+                    return self.rememberDirtySignalResult(record, dirty_generation, .{
+                        .value = self.cloneCachedSignalValue(ctx, &payload.cached_value),
+                        .changed = record.last_dirty_generation == dirty_generation and record.last_dirty_changed,
+                    });
+                },
+                .storage_source => |*payload| {
+                    debugPhase(ctx, 413);
+                    return self.rememberDirtySignalResult(record, dirty_generation, .{
+                        .value = self.cloneCachedSignalValue(ctx, &payload.cached_value),
+                        .changed = record.last_dirty_generation == dirty_generation and record.last_dirty_changed,
+                    });
+                },
             }
         }
 
@@ -3631,9 +3800,9 @@ pub fn Engine(comptime Ctx: type) type {
             return allocator.dupe(u64, self.each_row_sites.items[site_index].scope_ids.items) catch return scope_tree.Error.OutOfMemory;
         }
 
-        pub fn eachRowScopeKeyEquals(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, scope_id: u64, key: HostValue) bool {
+        pub fn eachRowScopeKeyEquals(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, scope_id: u64, key: HostValue, key_cap: HostValueCapability) bool {
             self.recordEachKeyReuseCompare();
-            return scope_runtime.eachRowKeyEquals(self.scopes.items, ctx, roc_host, scope_id, key);
+            return scope_runtime.eachRowKeyEquals(self.scopes.items, ctx, roc_host, scope_id, key, key_cap);
         }
 
         pub fn eachRowScopeKeyValue(self: *Self, scope_id: u64) HostValue {
@@ -3727,8 +3896,7 @@ pub fn Engine(comptime Ctx: type) type {
                     .len = render_index - start,
                 }) catch @panic("out of memory");
                 const entry = segment_indexes_by_scope.getOrPut(allocator, row_scope_id) catch @panic("out of memory");
-                if (entry.found_existing) @panic("each row render nodes were split across multiple segments");
-                entry.value_ptr.* = segment_index;
+                if (!entry.found_existing) entry.value_ptr.* = segment_index;
             }
 
             return segments.toOwnedSlice(allocator) catch @panic("out of memory");
@@ -4040,13 +4208,45 @@ pub fn Engine(comptime Ctx: type) type {
             desc.cached_value.replace(ctx, roc_host, &self.pending_roc_metrics, value, self.hostSignalBindingCapability(ctx, &desc.signal));
         }
 
+        pub fn evalOnChangeInitialCommand(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, desc: *HostNodeOnChangeDesc) render.Counts {
+            if (!desc.run_initial_pending) return .{};
+            desc.run_initial_pending = false;
+
+            const cap = self.hostSignalBindingCapability(ctx, &desc.signal);
+            const value = self.cloneCachedSignalValue(ctx, &desc.cached_value);
+            defer callHostValueToUnitWithCapability(ctx, roc_host, cap, hv.hostValueCapabilityDrop(cap), value);
+
+            const cmd = callHostValueToCmdWithCapability(ctx, roc_host, cap, desc.to_cmd, value);
+            defer abi.decrefNodeCmd(cmd, roc_host);
+            return self.runCommand(ctx, roc_host, desc.scope_id, cmd);
+        }
+
+        pub fn runActiveOnChangeInitialCommandIndices(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, indices: []const usize) render.Counts {
+            var counts: render.Counts = .{};
+            self.recordStreamNodesScannedBy(.stream_nodes_scanned_on_change, indices.len);
+            for (indices) |on_change_index| {
+                if (on_change_index >= self.active_stream.on_changes.items.len) @panic("on_change descriptor index exceeded active descriptor stream");
+                counts.addAll(self.evalOnChangeInitialCommand(ctx, roc_host, &self.active_stream.on_changes.items[on_change_index]));
+            }
+            return counts;
+        }
+
+        pub fn runActiveOnChangeInitialCommands(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost) render.Counts {
+            var counts: render.Counts = .{};
+            self.recordStreamNodesScannedBy(.stream_nodes_scanned_on_change, self.active_stream.on_changes.items.len);
+            for (self.active_stream.on_changes.items) |*desc| {
+                counts.addAll(self.evalOnChangeInitialCommand(ctx, roc_host, desc));
+            }
+            return counts;
+        }
+
         pub fn evalMountCommand(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, desc: *HostNodeMountDesc) render.Counts {
             if (!desc.run_on_mount) return .{};
             desc.run_on_mount = false;
 
-            const cmd = erased_calls.callUnitToStartTaskCmd(roc_host, desc.to_cmd);
-            defer abi.decref__AnonStruct91(cmd, roc_host);
-            return self.startTaskCommand(ctx, roc_host, desc.scope_id, cmd);
+            const cmd = erased_calls.callUnitToCmd(roc_host, desc.to_cmd);
+            defer abi.decrefNodeCmd(cmd, roc_host);
+            return self.runCommand(ctx, roc_host, desc.scope_id, cmd);
         }
 
         pub fn runActiveMountCommandIndices(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, indices: []const usize) render.Counts {
@@ -4649,6 +4849,7 @@ pub fn Engine(comptime Ctx: type) type {
 
             self.debugAssertRenderCacheMatchesStream(ctx, &self.active_stream);
             self.debugAssertRenderCacheMatchesSink(ctx);
+            counts.addAll(self.runActiveOnChangeInitialCommandIndices(ctx, roc_host, splice.replacement_on_change_indices));
             counts.addAll(self.runActiveMountCommandIndices(ctx, roc_host, splice.replacement_mount_indices));
             if (comptime enable_runtime_metrics) self.render_metrics.addCommandCounts(counts);
             return counts;
@@ -4793,6 +4994,32 @@ pub fn Engine(comptime Ctx: type) type {
             return counts;
         }
 
+        pub fn rerenderActiveRoot(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, dirty_source_node_ids: []const u64) render.Counts {
+            const root = self.root_elem orelse @panic("host render requested before Roc root Elem was initialized");
+            const allocator = Ctx.allocator(ctx);
+
+            var next_stream: HostNodeDescriptorStream = .{};
+            errdefer next_stream.deinit(allocator, ctx, roc_host, &self.pending_roc_metrics);
+            self.collectActiveElemRootDescriptors(ctx, roc_host, &next_stream, root, dirty_source_node_ids);
+
+            var counts = if (!self.hasRenderRoot())
+                self.applyNodeDescriptorStream(ctx, roc_host, &next_stream)
+            else
+                self.applyStructuralNodeDescriptorStream(ctx, roc_host, &next_stream);
+
+            self.rebuildActiveEventsFromStream(ctx, &next_stream);
+            self.active_stream.deinit(allocator, ctx, roc_host, &self.pending_roc_metrics);
+            self.active_stream = next_stream;
+
+            const on_change_initial_counts = self.runActiveOnChangeInitialCommands(ctx, roc_host);
+            const mount_counts = self.runActiveMountCommands(ctx, roc_host);
+            if (comptime enable_runtime_metrics) self.render_metrics.addCommandCounts(on_change_initial_counts);
+            if (comptime enable_runtime_metrics) self.render_metrics.addCommandCounts(mount_counts);
+            counts.addAll(on_change_initial_counts);
+            counts.addAll(mount_counts);
+            return counts;
+        }
+
         pub fn applyDirtyStructuralSignalsLocally(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, dirty_source_node_ids: []const u64, dirty_generation: u64, changes: []const HostDirtyStructuralSignal) render.Counts {
             var total_counts: render.Counts = .{};
             var applied_any = false;
@@ -4825,7 +5052,7 @@ pub fn Engine(comptime Ctx: type) type {
                             },
                         };
                     },
-                    .each => each_target: {
+                    .each => {
                         const site = self.activeScopeSiteByNodeId(change.node_id, .each) orelse {
                             if (applied_any) continue;
                             @panic("dirty each structural site is not active");
@@ -4836,7 +5063,6 @@ pub fn Engine(comptime Ctx: type) type {
                         };
                         const each_desc = self.active_stream.eaches.items[each_index];
                         const each_site = HostEachSite{ .parent_scope_id = site.scope_id, .site_ordinal = site.ordinal };
-                        const target = HostStructuralReplacementTarget{ .each_site = each_site };
                         const allocator = Ctx.allocator(ctx);
                         const old_active_rows = self.activeEachRowScopes(allocator, site.scope_id, site.ordinal) catch @panic("scope id has no host scope descriptor");
                         defer allocator.free(old_active_rows);
@@ -4868,21 +5094,8 @@ pub fn Engine(comptime Ctx: type) type {
                             continue;
                         }
 
-                        self.collectActiveEachRowDescriptorsFromDiff(ctx, roc_host, &replacement_stream, site, each_desc, diff, dirty_source_node_ids);
-                        const splice = self.spliceActiveStreamReplacingTarget(
-                            ctx,
-                            roc_host,
-                            target,
-                            site.render_insert_index,
-                            &replacement_stream,
-                        );
-                        break :each_target .{
-                            .splice = splice,
-                            .targets = HostStructuralPatchTargets{
-                                .removed = target,
-                                .replacement = target,
-                            },
-                        };
+                        total_counts.addAll(self.rerenderActiveRoot(ctx, roc_host, dirty_source_node_ids));
+                        return total_counts;
                     },
                 };
                 defer splice_and_targets.splice.deinit(Ctx.allocator(ctx));
@@ -5007,6 +5220,125 @@ pub fn Engine(comptime Ctx: type) type {
             return self.applyDirtySignalBatch(ctx, roc_host, &.{}, changed_record_ids, dirty_generation);
         }
 
+        fn locationSnapshotFromCommand(payload: abi.NodeLocationCommandPayload) boundary.LocationSnapshot {
+            return .{
+                .path = payload.path.asSlice(),
+                .query = payload.query.asSlice(),
+                .hash = payload.hash.asSlice(),
+            };
+        }
+
+        fn storageAreaFromCommand(area_id: u64) boundary.StorageArea {
+            return boundary.StorageArea.fromId(area_id) orelse @panic("storage command referenced an unknown storage area");
+        }
+
+        pub fn dispatchCurrentLocationSources(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost) render.Counts {
+            const allocator = Ctx.allocator(ctx);
+            var root_record_ids: std.ArrayListUnmanaged(u64) = .empty;
+            defer root_record_ids.deinit(allocator);
+
+            const dirty_generation = self.nextDirtySignalGeneration();
+            for (self.active_signal_graph.items, 0..) |node, index| {
+                const payload = node.record.locationSource() orelse continue;
+                const raw_payload = Ctx.initialLocationPayload(ctx, roc_host, payload.payload_cap);
+                const next = callHostValueToHostValueWithCapability(ctx, roc_host, payload.payload_cap, payload.from_payload, raw_payload);
+                if (!self.updateEffectSourceCache(ctx, roc_host, node.record, next)) continue;
+
+                node.record.last_dirty_generation = dirty_generation;
+                node.record.last_dirty_changed = true;
+                root_record_ids.append(allocator, @intCast(index)) catch @panic("out of memory");
+            }
+
+            if (root_record_ids.items.len == 0) return .{};
+
+            self.recordDispatch();
+            var metrics = self.pending_roc_metrics;
+            metrics.bump(.nodes_recomputed, @intCast(root_record_ids.items.len));
+            self.pending_roc_metrics = metrics;
+
+            const dirty_record_ids = self.scratchDirtyActiveSignalRecordIdsForRoots(ctx, root_record_ids.items);
+            const changed_record_ids = self.propagateDirtyActiveSignalRecordIds(ctx, roc_host, dirty_record_ids, &.{}, dirty_generation);
+            return self.applyDirtySignalBatch(ctx, roc_host, &.{}, changed_record_ids, dirty_generation);
+        }
+
+        pub fn dispatchCurrentVisibilitySources(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost) render.Counts {
+            const allocator = Ctx.allocator(ctx);
+            var root_record_ids: std.ArrayListUnmanaged(u64) = .empty;
+            defer root_record_ids.deinit(allocator);
+
+            const dirty_generation = self.nextDirtySignalGeneration();
+            for (self.active_signal_graph.items, 0..) |node, index| {
+                const payload = node.record.visibilitySource() orelse continue;
+                const raw_payload = Ctx.initialVisibilityPayload(ctx, roc_host, payload.payload_cap);
+                const next = callHostValueToHostValueWithCapability(ctx, roc_host, payload.payload_cap, payload.from_payload, raw_payload);
+                if (!self.updateEffectSourceCache(ctx, roc_host, node.record, next)) continue;
+
+                node.record.last_dirty_generation = dirty_generation;
+                node.record.last_dirty_changed = true;
+                root_record_ids.append(allocator, @intCast(index)) catch @panic("out of memory");
+            }
+
+            if (root_record_ids.items.len == 0) return .{};
+
+            self.recordDispatch();
+            var metrics = self.pending_roc_metrics;
+            metrics.bump(.nodes_recomputed, @intCast(root_record_ids.items.len));
+            self.pending_roc_metrics = metrics;
+
+            const dirty_record_ids = self.scratchDirtyActiveSignalRecordIdsForRoots(ctx, root_record_ids.items);
+            const changed_record_ids = self.propagateDirtyActiveSignalRecordIds(ctx, roc_host, dirty_record_ids, &.{}, dirty_generation);
+            return self.applyDirtySignalBatch(ctx, roc_host, &.{}, changed_record_ids, dirty_generation);
+        }
+
+        pub fn dispatchCurrentOnlineSources(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost) render.Counts {
+            const allocator = Ctx.allocator(ctx);
+            var root_record_ids: std.ArrayListUnmanaged(u64) = .empty;
+            defer root_record_ids.deinit(allocator);
+
+            const dirty_generation = self.nextDirtySignalGeneration();
+            for (self.active_signal_graph.items, 0..) |node, index| {
+                const payload = node.record.onlineSource() orelse continue;
+                const raw_payload = Ctx.initialOnlinePayload(ctx, roc_host, payload.payload_cap);
+                const next = callHostValueToHostValueWithCapability(ctx, roc_host, payload.payload_cap, payload.from_payload, raw_payload);
+                if (!self.updateEffectSourceCache(ctx, roc_host, node.record, next)) continue;
+
+                node.record.last_dirty_generation = dirty_generation;
+                node.record.last_dirty_changed = true;
+                root_record_ids.append(allocator, @intCast(index)) catch @panic("out of memory");
+            }
+
+            if (root_record_ids.items.len == 0) return .{};
+
+            self.recordDispatch();
+            var metrics = self.pending_roc_metrics;
+            metrics.bump(.nodes_recomputed, @intCast(root_record_ids.items.len));
+            self.pending_roc_metrics = metrics;
+
+            const dirty_record_ids = self.scratchDirtyActiveSignalRecordIdsForRoots(ctx, root_record_ids.items);
+            const changed_record_ids = self.propagateDirtyActiveSignalRecordIds(ctx, roc_host, dirty_record_ids, &.{}, dirty_generation);
+            return self.applyDirtySignalBatch(ctx, roc_host, &.{}, changed_record_ids, dirty_generation);
+        }
+
+        pub fn navigateLocationCommand(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, kind: NavigationKind, location: boundary.LocationSnapshot) render.Counts {
+            Ctx.sink(ctx).navigate(kind, location);
+            return self.dispatchCurrentLocationSources(ctx, roc_host);
+        }
+
+        pub fn setStorageTextCommand(_: *Self, ctx: Ctx.Handle, payload: abi.NodeStorageSetCommandPayload) render.Counts {
+            Ctx.sink(ctx).setStorageText(storageAreaFromCommand(payload.area), payload.key.asSlice(), payload.value.asSlice());
+            return .{};
+        }
+
+        pub fn setDocumentTitleCommand(_: *Self, ctx: Ctx.Handle, payload: abi.NodeDocumentTitleCommandPayload) render.Counts {
+            Ctx.sink(ctx).setDocumentTitle(payload.title.asSlice());
+            return .{};
+        }
+
+        pub fn removeStorageCommand(_: *Self, ctx: Ctx.Handle, payload: abi.NodeStorageRemoveCommandPayload) render.Counts {
+            Ctx.sink(ctx).removeStorage(storageAreaFromCommand(payload.area), payload.key.asSlice());
+            return .{};
+        }
+
         pub fn startTaskCommand(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, owner_scope_id: u64, cmd: erased_calls.StartTaskCmd) render.Counts {
             const record = self.activeTaskRecordByToken(cmd.task_token) orelse @panic("StartTask referenced a task source that is not active");
             const task_payload = record.requireTaskSource();
@@ -5028,6 +5360,18 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             return .{};
+        }
+
+        pub fn runCommand(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, owner_scope_id: u64, cmd: erased_calls.Cmd) render.Counts {
+            return switch (cmd.tag) {
+                .Noop => .{},
+                .PushState => self.navigateLocationCommand(ctx, roc_host, .push, locationSnapshotFromCommand(cmd.payload_push_state())),
+                .RemoveStorage => self.removeStorageCommand(ctx, cmd.payload_remove_storage()),
+                .ReplaceState => self.navigateLocationCommand(ctx, roc_host, .replace, locationSnapshotFromCommand(cmd.payload_replace_state())),
+                .SetStorageText => self.setStorageTextCommand(ctx, cmd.payload_set_storage_text()),
+                .StartTask => self.startTaskCommand(ctx, roc_host, owner_scope_id, cmd.payload_start_task()),
+                .SetDocumentTitle => self.setDocumentTitleCommand(ctx, cmd.payload_set_document_title()),
+            };
         }
 
         fn tickIntervalRecord(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, record: *HostSignalRecord) render.Counts {
@@ -5058,9 +5402,9 @@ pub fn Engine(comptime Ctx: type) type {
             }
             if (!self.updateDirtySignalCache(ctx, roc_host, &desc.cached_value, result.value, cap)) return .{};
 
-            const cmd = callHostValueToStartTaskCmdWithCapability(ctx, roc_host, cap, desc.to_cmd, result.value);
-            defer abi.decref__AnonStruct91(cmd, roc_host);
-            return self.startTaskCommand(ctx, roc_host, desc.scope_id, cmd);
+            const cmd = callHostValueToCmdWithCapability(ctx, roc_host, cap, desc.to_cmd, result.value);
+            defer abi.decrefNodeCmd(cmd, roc_host);
+            return self.runCommand(ctx, roc_host, desc.scope_id, cmd);
         }
 
         pub fn applyDirtyRenderSinks(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, dirty_source_node_ids: []const u64, changed_record_ids: []const u64, dirty_generation: u64) render.Counts {
@@ -5176,6 +5520,8 @@ const VerifySink = struct {
     pub fn cancelInterval(_: VerifySink, _: u64) void {}
     pub fn startTask(_: VerifySink, _: u64, _: []const u8, _: []const u8) void {}
     pub fn cancelTask(_: VerifySink, _: u64) void {}
+    pub fn navigate(_: VerifySink, _: NavigationKind, _: boundary.LocationSnapshot) void {}
+    pub fn setDocumentTitle(_: VerifySink, _: []const u8) void {}
     pub fn debugAssertNode(_: VerifySink, _: u64, _: bool, _: ?[]const u8, _: ?u64, _: []const u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64) void {}
 };
 
@@ -5207,6 +5553,14 @@ const VerifyCtx = struct {
 
     pub fn stateCapability(_: Handle, _: u64) HostValueCapability {
         return undefined;
+    }
+
+    pub fn initialLocationPayload(_: Handle, _: *abi.RocHost, _: HostValueCapability) HostValue {
+        return 0;
+    }
+
+    pub fn initialStoragePayload(_: Handle, _: *abi.RocHost, _: boundary.StorageArea, _: []const u8, _: HostValueCapability) HostValue {
+        return 0;
     }
 
     pub fn sink(_: Handle) Sink {

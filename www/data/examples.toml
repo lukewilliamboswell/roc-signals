@@ -1,7 +1,7 @@
 [[examples]]
 slug = "service-ops-center"
 title = "Service Ops Center"
-description = "A live service operations dashboard with async refresh, health panels, and a deterministic browser backend."
+description = "A routed service operations dashboard with async refresh, Browser.location-backed service routes, visibility-aware polling, nested JSON drill-downs, and a deterministic browser backend."
 source = "examples/service-ops-center/app.roc"
 spec = "examples/service-ops-center/spec.txt"
 public = true
@@ -12,7 +12,7 @@ bench = true
 [[examples]]
 slug = "team-checkout"
 title = "Team Checkout"
-description = "A team purchasing flow with retained cart quantities, delivery details, review, and receipt state."
+description = "A persisted team purchasing flow with retained cart quantities, delivery details, review/receipt state, localStorage restore, and clear-saved removals."
 source = "examples/team-checkout/app.roc"
 spec = "examples/team-checkout/spec.txt"
 public = true
@@ -56,7 +56,7 @@ bench = true
 [[examples]]
 slug = "release-planner"
 title = "Release Planner"
-description = "A release planning board with drag reorder, priority filtering, reviewer input, and card-local notes."
+description = "A release planning board with drag reorder, priority filtering, reviewer input, and markdown card notes rendered as ordinary Elem structure."
 source = "examples/release-planner/app.roc"
 spec = "examples/release-planner/spec.txt"
 public = true
@@ -89,7 +89,7 @@ bench = true
 [[examples]]
 slug = "live-search"
 title = "Live Search"
-description = "A live search panel with loading, results, failures, freshness ticks, cancellation, and cleanup."
+description = "A live search panel with loading, results, failures, freshness ticks, online/offline task gating, cancellation, and cleanup."
 source = "examples/live-search/app.roc"
 spec = "examples/live-search/spec.txt"
 public = true
@@ -126,6 +126,61 @@ title = "Task Latest Wins"
 description = "Internal task superseding fixture."
 source = "examples/_fixtures/task-latest-wins/app.roc"
 spec = "examples/_fixtures/task-latest-wins/spec.txt"
+public = false
+wasm = false
+native = true
+bench = false
+
+[[examples]]
+slug = "location-source"
+title = "Location Source"
+description = "Internal startup location source fixture."
+source = "examples/_fixtures/location-source/app.roc"
+spec = "examples/_fixtures/location-source/spec.txt"
+public = false
+wasm = true
+native = true
+bench = false
+
+[[examples]]
+slug = "location-navigation"
+title = "Location Navigation"
+description = "Internal browser location navigation command fixture."
+source = "examples/_fixtures/location-navigation/app.roc"
+spec = "examples/_fixtures/location-navigation/spec.txt"
+public = false
+wasm = true
+native = true
+bench = false
+
+[[examples]]
+slug = "storage-commands"
+title = "Storage Commands"
+description = "Internal browser storage source and command fixture."
+source = "examples/_fixtures/storage-commands/app.roc"
+spec = "examples/_fixtures/storage-commands/spec.txt"
+public = false
+wasm = true
+native = true
+bench = false
+
+[[examples]]
+slug = "on-change-initial"
+title = "On Change Initial"
+description = "Internal lifecycle command fixture for first-value signal changes."
+source = "examples/_fixtures/on-change-initial/app.roc"
+spec = "examples/_fixtures/on-change-initial/spec.txt"
+public = false
+wasm = true
+native = true
+bench = false
+
+[[examples]]
+slug = "markdown-elem"
+title = "Markdown Elem"
+description = "Internal app-side markdown-to-Elem fixture."
+source = "examples/_fixtures/markdown-elem/app.roc"
+spec = "examples/_fixtures/markdown-elem/spec.txt"
 public = false
 wasm = false
 native = true

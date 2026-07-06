@@ -1,0 +1,14 @@
+# on_change_initial lifecycle scenario
+
+expect_visible role:heading name:"On Change Initial"
+expect_visible text:"Initial value: mounted"
+expect_visible text:"Regular value: mounted"
+expect_document_title "initial:mounted"
+
+click role:button name:"Change regular"
+expect_visible text:"Regular value: updated"
+expect_document_title "regular:updated"
+
+click role:button name:"Change initial"
+expect_visible text:"Initial value: updated"
+expect_document_title "initial:updated"

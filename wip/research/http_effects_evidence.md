@@ -6,9 +6,11 @@ Purpose: keep shipped HTTP evidence out of the active backlog. Promote new HTTP
 surface only when a maintained app or focused canary proves a remaining
 production gap.
 
-Refresh check: re-run on 2026-07-04 with the focused HTTP router/runtime
-contract gates and full native spec suite; the current surface and coverage
-below remained green.
+Refresh check: re-run on 2026-07-05 with the focused HTTP router/runtime
+contract gates after validating the browser fetch-policy candidate.
+`node --test scripts/browser/http_task_router.test.mjs` passed 11/11, and
+`node --test --test-name-pattern "task|HTTP|API request|ops API|public example task" scripts/browser/runtime_contract.test.mjs`
+passed 13/13. The current surface and coverage below remained green.
 
 ## Focused Gates
 
@@ -102,8 +104,13 @@ production gap that the shipped HTTP task surface does not cover.
 - Replace `http:send:` prefix routing only after a promoted
   subscription/app-interop slice proves the shared typed effect capability
   registry and task/subscription routing model.
-- Add JSON/body helper sugar only if a maintained app or focused canary proves
-  the compiler builtin `Json` API is not enough.
-- Add browser fetch-policy controls such as credentials, redirect, mode, cache,
-  or referrer policy only when a maintained app or focused canary needs host
-  control beyond browser defaults.
+- Keep JSON/body helper sugar closed for current evidence. The spike outcome in
+  `wip/research/json_codec_evidence.md` found that builtin `Json` plus
+  app-local mappers cover the maintained examples; the remaining
+  `service-ops-center` split parse is a Roc wide-record derivation workaround,
+  not an HTTP surface gap.
+- Keep browser fetch-policy controls closed for current evidence. The validation
+  outcome in `wip/research/fetch_policy_evidence.md` found that maintained apps
+  use the package-aligned method/URI/header/body/timeout path plus browser
+  defaults; reopen only when a maintained app or focused canary needs host
+  control beyond those defaults.

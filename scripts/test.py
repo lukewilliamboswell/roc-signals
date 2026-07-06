@@ -264,6 +264,14 @@ def build_wasm_apps(roc_bin: str, examples: tuple[Example, ...]) -> None:
                 mount_cmd.append("--exercise-service-ops-refresh")
             if example.slug == "team-checkout":
                 mount_cmd.append("--exercise-team-checkout-plans")
+            if example.slug == "location-source":
+                mount_cmd.append("--exercise-location-source")
+            if example.slug == "location-navigation":
+                mount_cmd.append("--exercise-location-navigation")
+            if example.slug == "storage-commands":
+                mount_cmd.append("--exercise-storage-commands")
+            if example.slug == "live-search":
+                mount_cmd.append("--exercise-live-search-online")
             run(mount_cmd)
 
 

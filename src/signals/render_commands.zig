@@ -3,7 +3,7 @@
 const std = @import("std");
 const boundary = @import("boundary.zig");
 
-pub const protocol_version: u32 = 8;
+pub const protocol_version: u32 = 11;
 pub const protocol_feature_dynamic_attrs: u32 = 1 << 0;
 pub const protocol_feature_dynamic_events: u32 = 1 << 1;
 pub const protocol_features: u32 = protocol_feature_dynamic_attrs | protocol_feature_dynamic_events;
@@ -117,6 +117,11 @@ pub const Op = enum(u32) {
     bind_pointer_enter = 25,
     bind_pointer_leave = 26,
     extended = 27,
+    push_state = 28,
+    replace_state = 29,
+    set_storage_text = 30,
+    remove_storage = 31,
+    set_document_title = 32,
 };
 
 pub const DynamicOp = enum(u16) {
@@ -441,7 +446,7 @@ pub const Counts = struct {
             // Event-unbinding is counted through `addEventBinding` alongside the
             // bind it supersedes, so the raw wire op never reaches this counter.
             .clear_event => self.bind_event += 1,
-            .start_interval, .cancel_interval, .start_task, .cancel_task => {},
+            .start_interval, .cancel_interval, .start_task, .cancel_task, .push_state, .replace_state, .set_storage_text, .remove_storage, .set_document_title => {},
         }
     }
 

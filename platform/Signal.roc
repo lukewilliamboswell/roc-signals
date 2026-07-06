@@ -146,6 +146,10 @@ Signal(a) := { expr : Box(Node.SignalExpr), cap : Capability(a) }.{
 		)
 	}
 
+	## Command that intentionally performs no host work.
+	noop : Node.Cmd
+	noop = Node.Cmd.Noop
+
 	## Create a named cleanup command for lifecycle testing and host effects.
 	cleanup : Str -> Node.Cleanup
 	cleanup = |name| Node.Cleanup.Cleanup(name)

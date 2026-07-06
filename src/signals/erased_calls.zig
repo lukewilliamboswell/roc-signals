@@ -10,6 +10,7 @@ const abi = @import("roc_platform_abi.zig");
 
 pub const HostValue = u64;
 pub const HostValueList = abi.RocListWith(HostValue, false);
+pub const Cmd = abi.NodeCmd;
 pub const StartTaskCmd = abi.__AnonStruct91;
 pub const RocBoxPair = extern struct {
     keep: abi.RocBox,
@@ -66,10 +67,10 @@ pub fn callErasedHostValueToHostValue(roc_host: *abi.RocHost, callable: abi.RocE
     return result;
 }
 
-pub fn callErasedHostValueToStartTaskCmd(roc_host: *abi.RocHost, callable: abi.RocErasedCallable, arg0: HostValue) StartTaskCmd {
+pub fn callErasedHostValueToCmd(roc_host: *abi.RocHost, callable: abi.RocErasedCallable, arg0: HostValue) Cmd {
     const payload = erasedCallablePayload(callable);
     var call_args = ErasedHostValueUnaryArgs{ .arg0 = arg0 };
-    var result: StartTaskCmd = undefined;
+    var result: Cmd = undefined;
     payload.callable_fn_ptr(
         roc_host,
         @ptrCast(&result),
@@ -79,10 +80,10 @@ pub fn callErasedHostValueToStartTaskCmd(roc_host: *abi.RocHost, callable: abi.R
     return result;
 }
 
-pub fn callUnitToStartTaskCmd(roc_host: *abi.RocHost, callable: abi.RocErasedCallable) StartTaskCmd {
+pub fn callUnitToCmd(roc_host: *abi.RocHost, callable: abi.RocErasedCallable) Cmd {
     const payload = erasedCallablePayload(callable);
     var call_args = ErasedUnitArgs{};
-    var result: StartTaskCmd = undefined;
+    var result: Cmd = undefined;
     payload.callable_fn_ptr(
         roc_host,
         @ptrCast(&result),

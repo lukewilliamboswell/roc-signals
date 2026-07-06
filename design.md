@@ -169,12 +169,16 @@ and dynamic list structure must therefore share one mechanism, never two.
   closures: the root, each conditional branch, and each list row are scopes.
   Disposing a scope drops its refcounts and detaches its DOM.
 - **Elem** — a pure description of UI structure that references signals for
-  dynamic text/attrs and references reducers for event handlers.
+  dynamic text/attrs and references reducers for event handlers. Element nodes
+  carry a tag string, attrs, and children; user-controlled copy stays in text
+  nodes (`Html.text` / `Html.text_s`), not raw HTML.
 - **Cmd** — typed effect requests produced by lifecycle or signal-change sinks.
-  The shipped command is `StartTask`; timers are effect sources. Results
-  re-enter the graph as source updates, using the same propagation path as a
-  click. General `Sub` descriptors are deliberately deferred until a maintained
-  app or focused canary needs broader inbound host messages.
+  Shipped commands start tasks, navigate browser history, set the browser
+  document title, and write/remove browser storage. Timers and browser
+  environment values are effect sources. Task results and source updates
+  re-enter the graph through the same propagation queue as a click. General
+  `Sub` descriptors are deliberately deferred until a maintained app or focused
+  canary needs broader inbound host messages.
 - **Future Sub** — a deferred long-lived source descriptor, not shipped public
   API. When promoted, subscriptions must be declared by structure, owned by
   scopes, diffed by stable descriptor identity, and started/stopped by host
@@ -394,6 +398,7 @@ Signal.start_str : Task(a, err), Str -> Cmd
 Signal.cleanup : Str -> Cleanup
 Signal.interval : U64 -> Signal(U64)  # period ms -> tick count
 Ui.on_change : Signal(a), (a -> Cmd) -> Elem  # sink: fires a Cmd when value changes
+Ui.on_change_initial : Signal(a), (a -> Cmd) -> Elem  # fires for first mounted value, then changes
 Ui.on_mount : ({} -> Cmd) -> Elem
 Ui.on_cleanup : Cleanup -> Elem               # runs at scope disposal
 
@@ -504,6 +509,23 @@ Http.response_with_headers : Response, List((Str, Str)) -> Response
 Http.response_add_header : Response, Str, Str -> Response
 Http.response_with_body : Response, List(U8) -> Response
 
+# Browser environment
+Browser.Location := { path : Str, query : Str, hash : Str }
+Browser.Visibility := [Visible, Hidden]
+Browser.StorageText := [StorageMissing, StorageValue(Str), StorageUnavailable(Str)]
+Browser.location : Signal(Browser.Location)
+Browser.visibility : Signal(Browser.Visibility)
+Browser.online : Signal(Bool)
+Browser.local_storage_text : Str -> Signal(Browser.StorageText)
+Browser.session_storage_text : Str -> Signal(Browser.StorageText)
+Browser.push_state : Browser.Location -> Cmd
+Browser.replace_state : Browser.Location -> Cmd
+Browser.set_title : Str -> Cmd
+Browser.set_local_storage_text : Str, Str -> Cmd
+Browser.set_session_storage_text : Str, Str -> Cmd
+Browser.remove_local_storage : Str -> Cmd
+Browser.remove_session_storage : Str -> Cmd
+
 # Dynamic structure (explicit scopes)
 Ui.state : a, (State(a) -> Elem) -> Elem
     where [a.is_eq : a, a -> Bool]
@@ -530,11 +552,24 @@ use the target-value path; checkbox uses target-checked; radio derives checked
 from a string-valued selected signal and dispatches the option value. They do
 not introduce separate browser-state channels.
 
+Rich content is ordinary `Elem` structure. Apps or packages may parse markdown,
+prose blocks, or CMS data into `Elem.Element({ tag, attrs, children })` nodes,
+including headings, lists, blockquotes, inline code, emphasis, and links, while
+placing user-controlled text only in `Html.text` or `Html.text_s` leaves. The
+platform intentionally exposes no raw HTML, `innerHTML`, or sanitizer surface;
+link-scheme allowlists, markdown parsing, and other content policy stay in
+app/package code unless repeated maintained apps prove a smaller shared helper
+is needed.
+
 HTTP helpers are wrappers over the pinned `roc-lang/http` request/response
 values plus Signals-owned transport errors. The text helpers exist for examples
-and decode successful response bodies as UTF-8; JSON/body convenience layers and
-browser fetch-policy knobs stay gated until a maintained app or focused canary
-proves the current package-aligned request path is insufficient.
+and decode successful response bodies as UTF-8. The current JSON/body-codec
+spike closed without new Signals surface: apps use builtin `Json` plus
+app-local mappers, and the remaining service dashboard split parse is a Roc
+wide-record derivation workaround rather than an HTTP surface gap. Browser
+fetch-policy validation closed without new surface: the browser host uses
+`fetch` defaults unless a future maintained app or focused canary proves the
+current package-aligned request path is insufficient.
 
 `Signal.task_source` exists as low-level platform/helper plumbing for
 `Signal.fake_task` and `Http`; ordinary apps should use those wrappers. Do not
@@ -1172,7 +1207,7 @@ this is the reason the boundary is cheap.
 
 The browser wire is versioned. JS reads `roc_ui_protocol_version()` and
 `roc_ui_protocol_features()` before mounting and requires the current
-`Protocol.version` (`8` in `www/static/signals.mjs`) plus the `dynamic_attrs`
+`Protocol.version` (`11` in `www/static/signals.mjs`) plus the `dynamic_attrs`
 and `dynamic_events` feature bits. A version or feature mismatch is a boundary
 error, not a compatibility shim.
 
@@ -1202,7 +1237,8 @@ payload bytes
 zero padding to 4-byte alignment
 ```
 
-Protocol version 8 defines two dynamic attribute ops and two dynamic event ops:
+The dynamic-record protocol defines two dynamic attribute ops and two dynamic
+event ops:
 
 ```text
 SetAttrText:
@@ -1367,6 +1403,39 @@ denials and network failures, become `HttpError.Network`; runtime timeouts
 become `HttpError.Timeout`; and scope disposal or request replacement becomes
 `HttpError.Canceled`.
 
+Browser location is another host-backed source. `Browser.location` is seeded
+from the per-mount startup snapshot before `roc_ui_mount`, and the JS runtime
+installs a mount-scoped `popstate` listener that calls
+`roc_ui_update_location` with normalized `{ path, query, hash }` pieces.
+`Browser.push_state` and `Browser.replace_state` travel through the command
+boundary and call `history.pushState` / `history.replaceState`; the host also
+refreshes active location sources in that propagation turn so rendered route
+state and the browser URL stay aligned.
+
+`Browser.set_title` is a separate command, not part of location. Apps derive a
+title from route or domain state and emit it with `Ui.on_change_initial` when
+the first mounted value matters, or `Ui.on_change` when only later changes
+should touch the title. The browser runtime writes `document.title`, and the
+native spec host records the title for assertions.
+
+Browser visibility and online/offline state are the other shipped focused
+browser sources. `Browser.visibility` is seeded from `document.visibilityState`
+and refreshed from `visibilitychange`; `Browser.online` is seeded from
+`navigator.onLine` and refreshed from `online` / `offline`. Both reuse the same
+host-backed source path as location: mount-scoped ids/generations, shared
+boundary payload bytes, stale-message diagnostics, and listener cleanup on
+unmount. They do not expose a generic public `Sub` API.
+
+Browser storage reads are declared sources, not whole-store snapshots.
+`Browser.local_storage_text(key)` and `Browser.session_storage_text(key)` add
+specific key/area declarations to the prepared mount; the JS runtime reads
+those keys synchronously before first render and passes `StorageMissing`,
+`StorageValue`, or `StorageUnavailable` payloads to Roc. Storage writes and
+removals are command-buffer operations, coalesced by area/key before touching
+the browser store. Storage write/remove failures are host/runtime errors today,
+not app-visible command results. Stored values are text; JSON, validation, and
+key namespacing remain app/package responsibilities.
+
 ### What is worth testing on the JS side
 
 The JS runtime is a thin executor, so engine semantics and work budgets are
@@ -1440,10 +1509,13 @@ otherwise-unproven capability,"** never size or visual richness. The maintained
 public suite is:
 
 - `service-ops-center` — HTTP text refresh, interval-driven refresh, JSON
-  parsing through the compiler builtin, custom chart events, behavior hooks, and
-  dashboard-scale derived views.
+  parsing through the compiler builtin, Browser.location-backed service routes
+  with push/replace navigation and Back/Forward coverage, visibility-aware
+  polling, nested JSON service drill-downs, custom chart events, behavior hooks,
+  and dashboard-scale derived views.
 - `team-checkout` — retained cart quantities, delivery form state, checkbox
-  state, review/receipt branches, and list replacement.
+  state, review/receipt branches, list replacement, and localStorage-backed
+  checkout persistence with clear-saved removals.
 - `command-palette` — keyboard-friendly text input, shortcut metadata, link
   attributes, custom attributes, and submit events.
 - `team-signup` — realistic validation, required/read-only/ARIA attrs, checkbox
@@ -1451,20 +1523,23 @@ public suite is:
 - `api-request-console` — full-response package-aligned HTTP tasks, request
   method/body/header construction, non-2xx responses, and failure rendering.
 - `release-planner` — pointer-driven card reorder, move-only structural patches,
-  priority filtering, reviewer input, and card-local notes.
+  priority filtering, reviewer input, and markdown card notes rendered as
+  ordinary `Elem` structure.
 - `deployment-queue` — keyed priority reorder, hotfix insertion, filtering,
   pause/resume, row-local checks, and row create/remove budgets.
 - `workspace-widgets` — independent widget components preserving local state
   through reorder, reset, and hide/show.
 - `live-search` — task lifecycle, loading/success/failure folds, interval
-  freshness ticks, cleanup, cancellation, and retained-allocation teardown
-  checks.
+  freshness ticks, online/offline task gating, cleanup, cancellation, and
+  retained-allocation teardown checks.
 
 Focused internal fixtures carry narrow canaries that should not become broad
 catalog pressure: JSON builtin derivation, duplicate-key diagnostics, task
-superseding and UTF-8 task ownership, controlled input reconciliation, textarea,
-number, select, radio, checkbox, submit/reset default actions, optional text
-attrs, validation patterns, and generated large-`Ui.each_str` scaling.
+superseding and UTF-8 task ownership, browser environment commands/sources,
+initial-aware signal-change commands, markdown-to-`Elem` structure and link
+safety, controlled input reconciliation, textarea, number, select, radio,
+checkbox, submit/reset default actions, optional text attrs, validation
+patterns, and generated large-`Ui.each_str` scaling.
 
 Host tests cover topological rank ordering, diamond deduplication, confined
 erasure through carrier tags, retained closure lifecycle accounting, dirty cache

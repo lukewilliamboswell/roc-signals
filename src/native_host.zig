@@ -10,6 +10,7 @@ const builtin = @import("builtin");
 const build_options = @import("build_options");
 const signals = @import("signals");
 const abi = signals.abi;
+const boundary = signals.boundary;
 const render = signals.render;
 const render_sink = signals.render_sink;
 const scope_tree = signals.scope_tree;
@@ -81,6 +82,22 @@ const NativeCtx = struct {
 
     pub fn stateCapability(ctx: Handle, node_id: u64) HostValueCapability {
         return ctx.stateCapability(node_id);
+    }
+
+    pub fn initialLocationPayload(ctx: Handle, roc_host: *abi.RocHost, cap: HostValueCapability) HostValue {
+        return ctx.initialLocationPayload(roc_host, cap);
+    }
+
+    pub fn initialVisibilityPayload(ctx: Handle, roc_host: *abi.RocHost, cap: HostValueCapability) HostValue {
+        return ctx.initialVisibilityPayload(roc_host, cap);
+    }
+
+    pub fn initialOnlinePayload(ctx: Handle, roc_host: *abi.RocHost, cap: HostValueCapability) HostValue {
+        return ctx.initialOnlinePayload(roc_host, cap);
+    }
+
+    pub fn initialStoragePayload(ctx: Handle, roc_host: *abi.RocHost, area: boundary.StorageArea, key: []const u8, cap: HostValueCapability) HostValue {
+        return ctx.initialStoragePayload(roc_host, area, key, cap);
     }
 
     pub fn sink(ctx: Handle) Sink {
@@ -164,6 +181,57 @@ const TestState = struct {
 const NativeTaskRecord = struct {
     request_id: u64,
     name: []const u8,
+};
+
+const NativeLocation = struct {
+    path: []u8,
+    query: []u8,
+    hash: []u8,
+
+    fn init(allocator: std.mem.Allocator, location: boundary.LocationSnapshot) NativeLocation {
+        if (location.path.len == 0 or location.path[0] != '/') failHost("location path must start with /");
+        const path = allocator.dupe(u8, location.path) catch @panic("out of memory");
+        const query = allocator.dupe(u8, location.query) catch {
+            allocator.free(path);
+            @panic("out of memory");
+        };
+        const hash = allocator.dupe(u8, location.hash) catch {
+            allocator.free(path);
+            allocator.free(query);
+            @panic("out of memory");
+        };
+        return .{ .path = path, .query = query, .hash = hash };
+    }
+
+    fn deinit(self: NativeLocation, allocator: std.mem.Allocator) void {
+        allocator.free(self.path);
+        allocator.free(self.query);
+        allocator.free(self.hash);
+    }
+
+    fn snapshot(self: NativeLocation) boundary.LocationSnapshot {
+        return .{ .path = self.path, .query = self.query, .hash = self.hash };
+    }
+};
+
+const NativeStorageEntry = struct {
+    area: boundary.StorageArea,
+    key: []u8,
+    value: []u8,
+
+    fn init(allocator: std.mem.Allocator, area: boundary.StorageArea, key: []const u8, value: []const u8) NativeStorageEntry {
+        const key_copy = allocator.dupe(u8, key) catch @panic("out of memory");
+        const value_copy = allocator.dupe(u8, value) catch {
+            allocator.free(key_copy);
+            @panic("out of memory");
+        };
+        return .{ .area = area, .key = key_copy, .value = value_copy };
+    }
+
+    fn deinit(self: NativeStorageEntry, allocator: std.mem.Allocator) void {
+        allocator.free(self.key);
+        allocator.free(self.value);
+    }
 };
 
 fn u64SliceContains(items: []const u64, target: u64) bool {
@@ -297,6 +365,12 @@ const HostEnv = struct {
     dom_elements: std.ArrayListUnmanaged(DomElement) = .empty,
     started_tasks: std.ArrayListUnmanaged(NativeTaskRecord) = .empty,
     canceled_tasks: std.ArrayListUnmanaged(NativeTaskRecord) = .empty,
+    location_history: std.ArrayListUnmanaged(NativeLocation) = .empty,
+    location_index: usize = 0,
+    visibility: boundary.VisibilitySnapshot = .visible,
+    online: boundary.OnlineSnapshot = .online,
+    storage_entries: std.ArrayListUnmanaged(NativeStorageEntry) = .empty,
+    document_title: ?[]u8 = null,
 
     fn init() HostEnv {
         return .{
@@ -493,6 +567,25 @@ const HostEnv = struct {
 
     pub fn sinkCancelTask(self: *HostEnv, request_id: u64) void {
         self.recordCanceledTask(request_id);
+    }
+
+    pub fn sinkNavigate(self: *HostEnv, kind: render_sink.NavigationKind, location: boundary.LocationSnapshot) void {
+        switch (kind) {
+            .push => self.pushCurrentLocation(location),
+            .replace => self.replaceCurrentLocation(location),
+        }
+    }
+
+    pub fn sinkSetDocumentTitle(self: *HostEnv, title: []const u8) void {
+        self.setDocumentTitle(title);
+    }
+
+    pub fn sinkSetStorageText(self: *HostEnv, area: boundary.StorageArea, key: []const u8, value: []const u8) void {
+        self.setStorageText(area, key, value);
+    }
+
+    pub fn sinkRemoveStorage(self: *HostEnv, area: boundary.StorageArea, key: []const u8) void {
+        self.removeStorage(area, key);
     }
 
     pub fn sinkDebugAssertNode(self: *HostEnv, elem_id: u64, active: bool, tag: ?[]const u8, parent_id: ?u64, children: []const u64, click_event: ?u64, input_event: ?u64, check_event: ?u64, pointer_down_event: ?u64, pointer_up_event: ?u64, pointer_enter_event: ?u64, pointer_leave_event: ?u64) void {
@@ -706,6 +799,170 @@ const HostEnv = struct {
         self.engine.host_values.assertTakenAfter(value, epoch) catch |err| {
             failHostValueRegistryError(err);
         };
+    }
+
+    fn currentLocation(self: *const HostEnv) boundary.LocationSnapshot {
+        if (self.location_history.items.len == 0) {
+            return .{ .path = "/", .query = "", .hash = "" };
+        }
+        return self.location_history.items[self.location_index].snapshot();
+    }
+
+    fn clearLocationHistory(self: *HostEnv) void {
+        const allocator = self.hostAllocator();
+        for (self.location_history.items) |entry| {
+            entry.deinit(allocator);
+        }
+        self.location_history.clearRetainingCapacity();
+        self.location_index = 0;
+    }
+
+    fn setCurrentLocation(self: *HostEnv, location: boundary.LocationSnapshot) void {
+        const allocator = self.hostAllocator();
+        self.clearLocationHistory();
+        self.location_history.append(allocator, NativeLocation.init(allocator, location)) catch @panic("out of memory");
+        self.location_index = 0;
+    }
+
+    fn ensureLocationHistory(self: *HostEnv) void {
+        if (self.location_history.items.len != 0) return;
+        self.setCurrentLocation(.{ .path = "/", .query = "", .hash = "" });
+    }
+
+    fn clearForwardLocationHistory(self: *HostEnv) void {
+        const allocator = self.hostAllocator();
+        if (self.location_history.items.len == 0) return;
+        var index = self.location_index + 1;
+        while (index < self.location_history.items.len) : (index += 1) {
+            self.location_history.items[index].deinit(allocator);
+        }
+        self.location_history.items.len = self.location_index + 1;
+    }
+
+    fn pushCurrentLocation(self: *HostEnv, location: boundary.LocationSnapshot) void {
+        const allocator = self.hostAllocator();
+        self.ensureLocationHistory();
+        self.clearForwardLocationHistory();
+        self.location_history.append(allocator, NativeLocation.init(allocator, location)) catch @panic("out of memory");
+        self.location_index = self.location_history.items.len - 1;
+    }
+
+    fn replaceCurrentLocation(self: *HostEnv, location: boundary.LocationSnapshot) void {
+        const allocator = self.hostAllocator();
+        self.ensureLocationHistory();
+        self.location_history.items[self.location_index].deinit(allocator);
+        self.location_history.items[self.location_index] = NativeLocation.init(allocator, location);
+    }
+
+    fn backCurrentLocation(self: *HostEnv) bool {
+        if (self.location_history.items.len == 0 or self.location_index == 0) return false;
+        self.location_index -= 1;
+        return true;
+    }
+
+    fn forwardCurrentLocation(self: *HostEnv) bool {
+        if (self.location_index + 1 >= self.location_history.items.len) return false;
+        self.location_index += 1;
+        return true;
+    }
+
+    fn initialLocationPayload(self: *HostEnv, roc_host: *abi.RocHost, cap: HostValueCapability) HostValue {
+        const bytes = boundary.encodeLocationPayload(self.hostAllocator(), self.currentLocation()) catch |err| switch (err) {
+            error.OutOfMemory => failHost("location payload allocation failed"),
+            error.BoundaryTextTooLong => failHost("location payload field exceeded boundary length"),
+        };
+        defer self.hostAllocator().free(bytes);
+        return hv.makeU8ListWithCapability(self, roc_host, bytes, cap);
+    }
+
+    fn initialVisibilityPayload(self: *HostEnv, roc_host: *abi.RocHost, cap: HostValueCapability) HostValue {
+        const bytes = boundary.encodeVisibilityPayload(self.hostAllocator(), self.visibility) catch |err| switch (err) {
+            error.OutOfMemory => failHost("visibility payload allocation failed"),
+            error.BoundaryTextTooLong => unreachable,
+        };
+        defer self.hostAllocator().free(bytes);
+        return hv.makeU8ListWithCapability(self, roc_host, bytes, cap);
+    }
+
+    fn setVisibility(self: *HostEnv, visibility: boundary.VisibilitySnapshot) void {
+        self.visibility = visibility;
+    }
+
+    fn initialOnlinePayload(self: *HostEnv, roc_host: *abi.RocHost, cap: HostValueCapability) HostValue {
+        const bytes = boundary.encodeOnlinePayload(self.hostAllocator(), self.online) catch |err| switch (err) {
+            error.OutOfMemory => failHost("online payload allocation failed"),
+            error.BoundaryTextTooLong => unreachable,
+        };
+        defer self.hostAllocator().free(bytes);
+        return hv.makeU8ListWithCapability(self, roc_host, bytes, cap);
+    }
+
+    fn setOnline(self: *HostEnv, online: boundary.OnlineSnapshot) void {
+        self.online = online;
+    }
+
+    fn storageEntryIndex(self: *const HostEnv, area: boundary.StorageArea, key: []const u8) ?usize {
+        for (self.storage_entries.items, 0..) |entry, index| {
+            if (entry.area == area and std.mem.eql(u8, entry.key, key)) return index;
+        }
+        return null;
+    }
+
+    fn storageValue(self: *const HostEnv, area: boundary.StorageArea, key: []const u8) ?[]const u8 {
+        const index = self.storageEntryIndex(area, key) orelse return null;
+        return self.storage_entries.items[index].value;
+    }
+
+    fn setStorageText(self: *HostEnv, area: boundary.StorageArea, key: []const u8, value: []const u8) void {
+        const allocator = self.hostAllocator();
+        if (self.storageEntryIndex(area, key)) |index| {
+            allocator.free(self.storage_entries.items[index].value);
+            self.storage_entries.items[index].value = allocator.dupe(u8, value) catch @panic("out of memory");
+            return;
+        }
+        self.storage_entries.append(allocator, NativeStorageEntry.init(allocator, area, key, value)) catch @panic("out of memory");
+    }
+
+    fn removeStorage(self: *HostEnv, area: boundary.StorageArea, key: []const u8) void {
+        const allocator = self.hostAllocator();
+        const index = self.storageEntryIndex(area, key) orelse return;
+        const removed = self.storage_entries.swapRemove(index);
+        removed.deinit(allocator);
+    }
+
+    fn setDocumentTitle(self: *HostEnv, title: []const u8) void {
+        const allocator = self.hostAllocator();
+        self.clearDocumentTitle();
+        self.document_title = allocator.dupe(u8, title) catch @panic("out of memory");
+    }
+
+    fn currentDocumentTitle(self: *const HostEnv) []const u8 {
+        return self.document_title orelse "";
+    }
+
+    fn clearDocumentTitle(self: *HostEnv) void {
+        if (self.document_title) |title| {
+            self.hostAllocator().free(title);
+            self.document_title = null;
+        }
+    }
+
+    fn clearStorage(self: *HostEnv) void {
+        const allocator = self.hostAllocator();
+        for (self.storage_entries.items) |entry| {
+            entry.deinit(allocator);
+        }
+        self.storage_entries.clearRetainingCapacity();
+    }
+
+    fn initialStoragePayload(self: *HostEnv, roc_host: *abi.RocHost, area: boundary.StorageArea, key: []const u8, cap: HostValueCapability) HostValue {
+        const snapshot: boundary.StorageSnapshot = if (self.storageValue(area, key)) |value| .{ .value = value } else .missing;
+        const bytes = boundary.encodeStoragePayload(self.hostAllocator(), snapshot) catch |err| switch (err) {
+            error.OutOfMemory => failHost("storage payload allocation failed"),
+            error.BoundaryTextTooLong => failHost("storage payload field exceeded boundary length"),
+        };
+        defer self.hostAllocator().free(bytes);
+        return hv.makeU8ListWithCapability(self, roc_host, bytes, cap);
     }
 
     // `pub` so the shared `engine.HostValueCell.cloneRetained` can clone a value
@@ -1073,6 +1330,11 @@ const HostEnv = struct {
         self.engine.dom_identities.deinit(allocator);
         self.engine.deinitRenderCache(self);
         self.engine.deinitScratch(self);
+        self.clearLocationHistory();
+        self.location_history.deinit(allocator);
+        self.clearStorage();
+        self.storage_entries.deinit(allocator);
+        self.clearDocumentTitle();
 
         freeSpecCommands(allocator, self.test_state.commands);
 
@@ -1442,7 +1704,7 @@ fn resolvePendingTask(host: *HostEnv, roc_host: *abi.RocHost, name: []const u8, 
     const record = host.engine.activeTaskRecordByName(name) orelse failHost("fake task result matched no active task source");
     const task_payload = switch (record.payload) {
         .task_source => |payload| payload,
-        .ref, .const_value, .map, .map2, .combine, .interval_source => unreachable,
+        .ref, .const_value, .map, .map2, .combine, .interval_source, .location_source, .online_source, .visibility_source, .storage_source => unreachable,
     };
     if (task_payload.token != pending.task_token) {
         failHost("fake task result matched a pending request for a different task source");
@@ -1473,6 +1735,18 @@ fn resolveStalePendingTask(host: *HostEnv, name: []const u8, _: []const u8, _: b
 
 fn tickIntervalSource(host: *HostEnv, roc_host: *abi.RocHost, period_ms: u64) CommandCounts {
     return host.engine.tickIntervalSource(host, roc_host, period_ms);
+}
+
+fn dispatchCurrentLocationSources(host: *HostEnv, roc_host: *abi.RocHost) CommandCounts {
+    return host.engine.dispatchCurrentLocationSources(host, roc_host);
+}
+
+fn dispatchCurrentVisibilitySources(host: *HostEnv, roc_host: *abi.RocHost) CommandCounts {
+    return host.engine.dispatchCurrentVisibilitySources(host, roc_host);
+}
+
+fn dispatchCurrentOnlineSources(host: *HostEnv, roc_host: *abi.RocHost) CommandCounts {
+    return host.engine.dispatchCurrentOnlineSources(host, roc_host);
 }
 
 fn collectDirtyStructuralSignals(host: *HostEnv, roc_host: *abi.RocHost, allocator: std.mem.Allocator, dirty_source_node_ids: []const u64, changed_record_ids: []const u64, dirty_generation: u64) []HostDirtyStructuralSignal {
@@ -1682,8 +1956,11 @@ fn renderActiveRootWithStats(host: *HostEnv, roc_host: *abi.RocHost, dirty_sourc
     host.rebuildActiveEventsFromStream(&next_stream);
     host.engine.active_stream.deinit(host.hostAllocator(), host, roc_host, &host.engine.pending_roc_metrics);
     host.engine.active_stream = next_stream;
+    const on_change_initial_counts = host.engine.runActiveOnChangeInitialCommands(host, roc_host);
     const mount_counts = host.engine.runActiveMountCommands(host, roc_host);
+    if (comptime enable_runtime_metrics) host.engine.render_metrics.addCommandCounts(on_change_initial_counts);
     if (comptime enable_runtime_metrics) host.engine.render_metrics.addCommandCounts(mount_counts);
+    if (command_counts) |total| total.addAll(on_change_initial_counts);
     if (command_counts) |total| total.addAll(mount_counts);
     finishHostMetrics(host);
 }
@@ -2038,6 +2315,47 @@ const BenchmarkCtx = struct {
         return tickIntervalSourceForBenchmark(host, roc_host, period_ms);
     }
 
+    pub fn setInitialLocation(host: *Host, location: boundary.LocationSnapshot) void {
+        host.setCurrentLocation(location);
+    }
+
+    pub fn setInitialVisibility(host: *Host, visibility: boundary.VisibilitySnapshot) void {
+        host.setVisibility(visibility);
+    }
+
+    pub fn setInitialOnline(host: *Host, online: boundary.OnlineSnapshot) void {
+        host.setOnline(online);
+    }
+
+    pub fn seedStorage(host: *Host, area: boundary.StorageArea, key: []const u8, value: []const u8) void {
+        host.setStorageText(area, key, value);
+    }
+
+    pub fn navigateLocation(host: *Host, roc_host: *RocHost, location: boundary.LocationSnapshot) CommandCounts {
+        host.pushCurrentLocation(location);
+        return dispatchCurrentLocationSources(host, roc_host);
+    }
+
+    pub fn historyBack(host: *Host, roc_host: *RocHost) CommandCounts {
+        if (!host.backCurrentLocation()) failHost("history_back had no previous location");
+        return dispatchCurrentLocationSources(host, roc_host);
+    }
+
+    pub fn historyForward(host: *Host, roc_host: *RocHost) CommandCounts {
+        if (!host.forwardCurrentLocation()) failHost("history_forward had no next location");
+        return dispatchCurrentLocationSources(host, roc_host);
+    }
+
+    pub fn setVisibility(host: *Host, roc_host: *RocHost, visibility: boundary.VisibilitySnapshot) CommandCounts {
+        host.setVisibility(visibility);
+        return dispatchCurrentVisibilitySources(host, roc_host);
+    }
+
+    pub fn setOnline(host: *Host, roc_host: *RocHost, online: boundary.OnlineSnapshot) CommandCounts {
+        host.setOnline(online);
+        return dispatchCurrentOnlineSources(host, roc_host);
+    }
+
     pub fn activeIntervalRecordCountByPeriod(host: *const Host, period_ms: u64) u64 {
         return host.engine.activeIntervalRecordCountByPeriod(period_ms);
     }
@@ -2185,6 +2503,43 @@ const SpecRunnerCtx = struct {
         return tickIntervalSourceForBenchmark(host, roc_host, period_ms);
     }
 
+    pub fn navigateLocation(host: *Host, roc_host: *RocHost, location: boundary.LocationSnapshot) CommandCounts {
+        host.pushCurrentLocation(location);
+        return dispatchCurrentLocationSources(host, roc_host);
+    }
+
+    pub fn historyBack(host: *Host, roc_host: *RocHost) CommandCounts {
+        if (!host.backCurrentLocation()) failHost("history_back had no previous location");
+        return dispatchCurrentLocationSources(host, roc_host);
+    }
+
+    pub fn historyForward(host: *Host, roc_host: *RocHost) CommandCounts {
+        if (!host.forwardCurrentLocation()) failHost("history_forward had no next location");
+        return dispatchCurrentLocationSources(host, roc_host);
+    }
+
+    pub fn currentLocation(host: *const Host) boundary.LocationSnapshot {
+        return host.currentLocation();
+    }
+
+    pub fn setVisibility(host: *Host, roc_host: *RocHost, visibility: boundary.VisibilitySnapshot) CommandCounts {
+        host.setVisibility(visibility);
+        return dispatchCurrentVisibilitySources(host, roc_host);
+    }
+
+    pub fn setOnline(host: *Host, roc_host: *RocHost, online: boundary.OnlineSnapshot) CommandCounts {
+        host.setOnline(online);
+        return dispatchCurrentOnlineSources(host, roc_host);
+    }
+
+    pub fn storageValue(host: *const Host, area: boundary.StorageArea, key: []const u8) ?[]const u8 {
+        return host.storageValue(area, key);
+    }
+
+    pub fn documentTitle(host: *const Host) []const u8 {
+        return host.currentDocumentTitle();
+    }
+
     pub fn finishHostMetrics(host: *Host) void {
         finishHostMetricsForBenchmark(host);
     }
@@ -2318,6 +2673,48 @@ fn main(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
     };
 }
 
+fn locationSnapshotFromSpecText(text: []const u8) boundary.LocationSnapshot {
+    return spec_parser.locationSnapshotFromSpecText(text) catch failHost("set_initial_location path must start with /");
+}
+
+fn visibilitySnapshotFromSpecText(text: []const u8) boundary.VisibilitySnapshot {
+    return spec_parser.visibilitySnapshotFromSpecText(text) catch failHost("visibility must be visible or hidden");
+}
+
+fn onlineSnapshotFromSpecText(text: []const u8) boundary.OnlineSnapshot {
+    return spec_parser.onlineSnapshotFromSpecText(text) catch failHost("online state must be online or offline");
+}
+
+fn applyPreMountSpecCommands(host: *HostEnv, commands: []const SpecCommand) void {
+    for (commands) |cmd| {
+        switch (cmd.cmd_type) {
+            .set_initial_location => {
+                const text = cmd.expected_text orelse failHost("set_initial_location command is missing URL text");
+                host.setCurrentLocation(locationSnapshotFromSpecText(text));
+            },
+            .set_initial_visibility => {
+                const text = cmd.expected_text orelse failHost("set_initial_visibility command is missing visibility text");
+                host.setVisibility(visibilitySnapshotFromSpecText(text));
+            },
+            .set_initial_online => {
+                const text = cmd.expected_text orelse failHost("set_initial_online command is missing online text");
+                host.setOnline(onlineSnapshotFromSpecText(text));
+            },
+            .seed_local_storage, .seed_session_storage => {
+                const key = cmd.task_name orelse failHost("seed storage command is missing key text");
+                const value = cmd.expected_text orelse failHost("seed storage command is missing value text");
+                const area: boundary.StorageArea = switch (cmd.cmd_type) {
+                    .seed_local_storage => .local,
+                    .seed_session_storage => .session,
+                    else => unreachable,
+                };
+                host.setStorageText(area, key, value);
+            },
+            else => {},
+        }
+    }
+}
+
 fn platform_main(spec_file: []const u8, verbose: bool) error{}!c_int {
     var host_env = HostEnv.init();
     const allocator = host_env.hostAllocator();
@@ -2340,6 +2737,7 @@ fn platform_main(spec_file: []const u8, verbose: bool) error{}!c_int {
     defer current_roc_host = null;
     defer host_env.deinit();
 
+    applyPreMountSpecCommands(&host_env, host_env.test_state.commands);
     acceptInitElem(&host_env, &roc_host, abi.roc_ui_init());
 
     if (verbose) {
@@ -2645,6 +3043,10 @@ const TestCapabilityCloneCapture = extern struct {
 
 const TestTaskPayloadCapture = extern struct {
     payload_cap: HostValueCapability,
+};
+
+const TestPayloadTransformCapture = extern struct {
+    cap: HostValueCapability,
 };
 
 var test_erased_callable_drop_count: u64 = 0;
@@ -3115,6 +3517,21 @@ fn testConsumeTaskPayloadStrCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: 
     writeTestErasedResult(HostValue, ret, value);
 }
 
+fn testPayloadChecksumHostValueCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8) callconv(.c) void {
+    const host = hostFromRocHost(roc_host);
+    const capture = testCapturePtrAs(TestPayloadTransformCapture, capture_ptr);
+    const call_args = testErasedArgsAs(ErasedHostValueUnaryArgs, args);
+    const payload = testReadHostValueU8List(roc_host, call_args.arg0);
+
+    var checksum: i64 = 0;
+    for (payload.items()) |byte| {
+        checksum += @as(i64, byte);
+    }
+    testDropHostValue(roc_host, call_args.arg0);
+
+    writeTestErasedResult(HostValue, ret, hv.makeI64WithCapability(host, roc_host, checksum, capture.cap));
+}
+
 fn testReadStrHostValueCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8) callconv(.c) void {
     _ = capture_ptr;
     const call_args = testErasedArgsAs(ErasedHostValueUnaryArgs, args);
@@ -3470,6 +3887,180 @@ test "signals host interval sources tick by period and runtime token" {
     const runtime_counts = host.engine.tickIntervalSourceByRuntimeToken(&host, &roc_host, runtime_token);
     try std.testing.expectEqual(@as(u64, 1), runtime_counts.set_text);
     try std.testing.expectEqualStrings("3", host.dom_elements.items[1].text.?);
+}
+
+test "signals host browser environment sources and commands update native state" {
+    test_erased_callable_drop_count = 0;
+
+    var host = HostEnv.init();
+    var roc_host = makeSignalsRocHost(&host);
+    host.engine.roc_host = &roc_host;
+    defer {
+        host.deinit();
+        _ = host.gpa.deinit();
+    }
+
+    try std.testing.expectEqualStrings("/", host.currentLocation().path);
+    host.setCurrentLocation(.{ .path = "/start", .query = "", .hash = "" });
+    host.setVisibility(.visible);
+    host.setOnline(.online);
+    host.setStorageText(.local, "cart", "seeded");
+
+    {
+        const exprs = [_]abi.NodeSignalExpr{
+            testNodeLocationSourceExpr(&roc_host),
+            testNodeVisibilitySourceExpr(&roc_host),
+            testNodeOnlineSourceExpr(&roc_host),
+            testNodeStorageSourceExpr(&roc_host, .local, "scratch"),
+        };
+        for (exprs) |expr| {
+            abi.increfNodeSignalExpr(expr, 1);
+            abi.decrefNodeSignalExpr(expr, &roc_host);
+            abi.decrefNodeSignalExpr(expr, &roc_host);
+        }
+    }
+
+    const location = testNodeLocationSourceExpr(&roc_host);
+    const visibility = testNodeVisibilitySourceExpr(&roc_host);
+    const online = testNodeOnlineSourceExpr(&roc_host);
+    const storage = testNodeStorageSourceExpr(&roc_host, .local, "cart");
+    const children = [_]abi.Elem{
+        testNodeI64TextSignal(&roc_host, location),
+        testNodeI64TextSignal(&roc_host, visibility),
+        testNodeI64TextSignal(&roc_host, online),
+        testNodeI64TextSignal(&roc_host, storage),
+    };
+    const root = testElement(&roc_host, &children);
+    defer abi.decrefElem(root, &roc_host);
+
+    var stream: HostNodeDescriptorStream = .{};
+    host.collectActiveElemRootDescriptors(&roc_host, &stream, root, &.{});
+    const initial_counts = applyNodeDescriptorStream(&host, &roc_host, &stream);
+    host.engine.active_stream = stream;
+
+    try std.testing.expectEqual(@as(u64, 4), initial_counts.set_text);
+    const testing_allocator = std.testing.allocator;
+    const initial_location_text = try testing_allocator.dupe(u8, host.dom_elements.items[2].text.?);
+    defer testing_allocator.free(initial_location_text);
+    const initial_visibility_text = try testing_allocator.dupe(u8, host.dom_elements.items[3].text.?);
+    defer testing_allocator.free(initial_visibility_text);
+    const initial_online_text = try testing_allocator.dupe(u8, host.dom_elements.items[4].text.?);
+    defer testing_allocator.free(initial_online_text);
+    const initial_storage_text = try testing_allocator.dupe(u8, host.dom_elements.items[5].text.?);
+    defer testing_allocator.free(initial_storage_text);
+
+    {
+        const noop_cmd = erased_calls.Cmd{ .payload = undefined, .tag = .Noop };
+        retainTestCmd(noop_cmd);
+        releaseTestCmd(&roc_host, noop_cmd);
+        try std.testing.expectEqual(@as(u64, 0), host.engine.runCommand(&host, &roc_host, 0, noop_cmd).total);
+    }
+
+    {
+        const cmd = testLocationCmd(&roc_host, .PushState, .{ .path = "/browser-env-next", .query = "panel=ops", .hash = "chart" });
+        retainTestCmd(cmd);
+        defer releaseTestCmd(&roc_host, cmd);
+        defer releaseTestCmd(&roc_host, cmd);
+        const counts = host.engine.runCommand(&host, &roc_host, 0, cmd);
+        try std.testing.expectEqual(@as(u64, 1), counts.set_text);
+        try std.testing.expectEqualStrings("/browser-env-next", host.currentLocation().path);
+        try std.testing.expect(!std.mem.eql(u8, initial_location_text, host.dom_elements.items[2].text.?));
+    }
+
+    {
+        const cmd = testLocationCmd(&roc_host, .ReplaceState, .{ .path = "/browser-env-replaced", .query = "", .hash = "" });
+        retainTestCmd(cmd);
+        defer releaseTestCmd(&roc_host, cmd);
+        defer releaseTestCmd(&roc_host, cmd);
+        const counts = host.engine.runCommand(&host, &roc_host, 0, cmd);
+        try std.testing.expectEqual(@as(u64, 1), counts.set_text);
+        try std.testing.expectEqualStrings("/browser-env-replaced", host.currentLocation().path);
+    }
+
+    {
+        try std.testing.expect(host.backCurrentLocation());
+        const counts = host.engine.dispatchCurrentLocationSources(&host, &roc_host);
+        try std.testing.expectEqual(@as(u64, 1), counts.set_text);
+        try std.testing.expectEqualStrings("/start", host.currentLocation().path);
+    }
+
+    {
+        try std.testing.expect(host.forwardCurrentLocation());
+        const counts = host.engine.dispatchCurrentLocationSources(&host, &roc_host);
+        try std.testing.expectEqual(@as(u64, 1), counts.set_text);
+        try std.testing.expectEqualStrings("/browser-env-replaced", host.currentLocation().path);
+    }
+
+    {
+        try std.testing.expect(host.backCurrentLocation());
+        const cmd = testLocationCmd(&roc_host, .PushState, .{ .path = "/browser-env-branch", .query = "", .hash = "" });
+        retainTestCmd(cmd);
+        defer releaseTestCmd(&roc_host, cmd);
+        defer releaseTestCmd(&roc_host, cmd);
+        _ = host.engine.runCommand(&host, &roc_host, 0, cmd);
+        try std.testing.expectEqualStrings("/browser-env-branch", host.currentLocation().path);
+        try std.testing.expect(!host.forwardCurrentLocation());
+    }
+
+    {
+        host.setVisibility(.hidden);
+        const counts = host.engine.dispatchCurrentVisibilitySources(&host, &roc_host);
+        try std.testing.expectEqual(@as(u64, 1), counts.set_text);
+        try std.testing.expect(!std.mem.eql(u8, initial_visibility_text, host.dom_elements.items[3].text.?));
+    }
+
+    {
+        host.setOnline(.offline);
+        const counts = host.engine.dispatchCurrentOnlineSources(&host, &roc_host);
+        try std.testing.expectEqual(@as(u64, 1), counts.set_text);
+        try std.testing.expect(!std.mem.eql(u8, initial_online_text, host.dom_elements.items[4].text.?));
+    }
+
+    {
+        const cmd = testStorageSetCmd(&roc_host, .local, "theme", "dark");
+        retainTestCmd(cmd);
+        defer releaseTestCmd(&roc_host, cmd);
+        defer releaseTestCmd(&roc_host, cmd);
+        try std.testing.expectEqual(@as(u64, 0), host.engine.runCommand(&host, &roc_host, 0, cmd).total);
+        try std.testing.expectEqualStrings("dark", host.storageValue(.local, "theme").?);
+        try std.testing.expectEqualStrings(initial_storage_text, host.dom_elements.items[5].text.?);
+    }
+
+    {
+        const cmd = testStorageSetCmd(&roc_host, .local, "theme", "light");
+        retainTestCmd(cmd);
+        defer releaseTestCmd(&roc_host, cmd);
+        defer releaseTestCmd(&roc_host, cmd);
+        _ = host.engine.runCommand(&host, &roc_host, 0, cmd);
+        try std.testing.expectEqualStrings("light", host.storageValue(.local, "theme").?);
+    }
+
+    {
+        const cmd = testStorageRemoveCmd(&roc_host, .local, "theme");
+        retainTestCmd(cmd);
+        defer releaseTestCmd(&roc_host, cmd);
+        defer releaseTestCmd(&roc_host, cmd);
+        _ = host.engine.runCommand(&host, &roc_host, 0, cmd);
+        try std.testing.expectEqual(@as(?[]const u8, null), host.storageValue(.local, "theme"));
+    }
+
+    {
+        const cmd = testDocumentTitleCmd(&roc_host, "Ops ready");
+        retainTestCmd(cmd);
+        defer releaseTestCmd(&roc_host, cmd);
+        defer releaseTestCmd(&roc_host, cmd);
+        try std.testing.expectEqual(@as(u64, 0), host.engine.runCommand(&host, &roc_host, 0, cmd).total);
+        try std.testing.expectEqualStrings("Ops ready", host.currentDocumentTitle());
+    }
+
+    {
+        const cmd = testDocumentTitleCmd(&roc_host, "Ops steady");
+        retainTestCmd(cmd);
+        defer releaseTestCmd(&roc_host, cmd);
+        defer releaseTestCmd(&roc_host, cmd);
+        _ = host.engine.runCommand(&host, &roc_host, 0, cmd);
+        try std.testing.expectEqualStrings("Ops steady", host.currentDocumentTitle());
+    }
 }
 
 test "signals host interns scopes and node identities from explicit paths" {
@@ -5007,6 +5598,10 @@ fn testNodeSignalExprCapability(signal: abi.NodeSignalExpr) ?HostValueCapability
         .Combine => signal.payload_combine()._3,
         .TaskSource => signal.payload_task_source().cap,
         .IntervalSource => signal.payload_interval_source().cap,
+        .LocationSource => signal.payload_location_source()._2,
+        .OnlineSource => signal.payload_online_source()._2,
+        .VisibilitySource => signal.payload_visibility_source()._2,
+        .StorageSource => signal.payload_storage_source().cap,
         .Ref => null,
     };
 }
@@ -5249,6 +5844,74 @@ fn testNodeIntervalSourceExpr(roc_host: *abi.RocHost, period_ms: u64, initial_va
             .token = newTestSignalToken(roc_host),
         } },
         .tag = .IntervalSource,
+    };
+}
+
+fn testPayloadChecksumCallable(roc_host: *abi.RocHost, cap: HostValueCapability) abi.RocErasedCallable {
+    return writeTestErasedCallable(
+        TestPayloadTransformCapture,
+        roc_host,
+        &testPayloadChecksumHostValueCallable,
+        &testErasedCallableOnDrop,
+        .{ .cap = cap },
+    );
+}
+
+fn testNodeLocationSourceExpr(roc_host: *abi.RocHost) abi.NodeSignalExpr {
+    const cap = testHostValueCapability(roc_host);
+    const payload_cap = testHostValueCapability(roc_host);
+    return .{
+        .payload = .{ .location_source = .{
+            ._0 = newTestSignalToken(roc_host),
+            ._1 = testPayloadChecksumCallable(roc_host, cap),
+            ._2 = cap,
+            ._3 = payload_cap,
+        } },
+        .tag = .LocationSource,
+    };
+}
+
+fn testNodeVisibilitySourceExpr(roc_host: *abi.RocHost) abi.NodeSignalExpr {
+    const cap = testHostValueCapability(roc_host);
+    const payload_cap = testHostValueCapability(roc_host);
+    return .{
+        .payload = .{ .visibility_source = .{
+            ._0 = newTestSignalToken(roc_host),
+            ._1 = testPayloadChecksumCallable(roc_host, cap),
+            ._2 = cap,
+            ._3 = payload_cap,
+        } },
+        .tag = .VisibilitySource,
+    };
+}
+
+fn testNodeOnlineSourceExpr(roc_host: *abi.RocHost) abi.NodeSignalExpr {
+    const cap = testHostValueCapability(roc_host);
+    const payload_cap = testHostValueCapability(roc_host);
+    return .{
+        .payload = .{ .online_source = .{
+            ._0 = newTestSignalToken(roc_host),
+            ._1 = testPayloadChecksumCallable(roc_host, cap),
+            ._2 = cap,
+            ._3 = payload_cap,
+        } },
+        .tag = .OnlineSource,
+    };
+}
+
+fn testNodeStorageSourceExpr(roc_host: *abi.RocHost, area: boundary.StorageArea, key: []const u8) abi.NodeSignalExpr {
+    const cap = testHostValueCapability(roc_host);
+    const payload_cap = testHostValueCapability(roc_host);
+    return .{
+        .payload = .{ .storage_source = .{
+            .area = @intFromEnum(area),
+            .token = newTestSignalToken(roc_host),
+            .key = RocStr.fromSlice(key, roc_host),
+            .from_payload = testPayloadChecksumCallable(roc_host, cap),
+            .cap = cap,
+            .payload_cap = payload_cap,
+        } },
+        .tag = .StorageSource,
     };
 }
 
@@ -5497,6 +6160,63 @@ fn testStartTaskCmd(roc_host: *abi.RocHost, task_source: abi.NodeSignalExpr, nam
         .task_name = RocStr.fromSlice(name, roc_host),
         .task_token = cloneTestSignalToken(task_payload.token),
     };
+}
+
+fn testLocationCmd(roc_host: *abi.RocHost, tag: abi.NodeCmdTag, location: boundary.LocationSnapshot) erased_calls.Cmd {
+    return .{
+        .payload = switch (tag) {
+            .PushState => .{ .push_state = .{
+                .hash = RocStr.fromSlice(location.hash, roc_host),
+                .path = RocStr.fromSlice(location.path, roc_host),
+                .query = RocStr.fromSlice(location.query, roc_host),
+            } },
+            .ReplaceState => .{ .replace_state = .{
+                .hash = RocStr.fromSlice(location.hash, roc_host),
+                .path = RocStr.fromSlice(location.path, roc_host),
+                .query = RocStr.fromSlice(location.query, roc_host),
+            } },
+            else => @panic("testLocationCmd requires PushState or ReplaceState"),
+        },
+        .tag = tag,
+    };
+}
+
+fn testStorageSetCmd(roc_host: *abi.RocHost, area: boundary.StorageArea, key: []const u8, value: []const u8) erased_calls.Cmd {
+    return .{
+        .payload = .{ .set_storage_text = .{
+            .area = @intFromEnum(area),
+            .key = RocStr.fromSlice(key, roc_host),
+            .value = RocStr.fromSlice(value, roc_host),
+        } },
+        .tag = .SetStorageText,
+    };
+}
+
+fn testStorageRemoveCmd(roc_host: *abi.RocHost, area: boundary.StorageArea, key: []const u8) erased_calls.Cmd {
+    return .{
+        .payload = .{ .remove_storage = .{
+            .area = @intFromEnum(area),
+            .key = RocStr.fromSlice(key, roc_host),
+        } },
+        .tag = .RemoveStorage,
+    };
+}
+
+fn testDocumentTitleCmd(roc_host: *abi.RocHost, title: []const u8) erased_calls.Cmd {
+    return .{
+        .payload = .{ .set_document_title = .{
+            .title = RocStr.fromSlice(title, roc_host),
+        } },
+        .tag = .SetDocumentTitle,
+    };
+}
+
+fn retainTestCmd(cmd: erased_calls.Cmd) void {
+    abi.increfNodeCmd(cmd, 1);
+}
+
+fn releaseTestCmd(roc_host: *abi.RocHost, cmd: erased_calls.Cmd) void {
+    abi.decrefNodeCmd(cmd, roc_host);
 }
 
 fn testNodeStateWithTokenAndInitial(roc_host: *abi.RocHost, binder_token: HostBinderToken, initial: HostValue, child: abi.Elem) abi.Elem {

@@ -16,7 +16,7 @@ import HostValue exposing [HostValue]
 ##   Advances the parent scope ordinal and collects the child under a component
 ##   scope whose internal ordinals are local to the component instance.
 ## - `OnChange`: a non-rendering sink that runs a host command when a signal's
-##   value changes.
+##   value changes, optionally including the first mounted value.
 ## - `OnMount`: a non-rendering sink that runs a host command when the owning
 ##   scope first enters the live tree.
 ## - `Cleanup`: a non-rendering descriptor run when the owning scope is disposed.
@@ -25,6 +25,7 @@ Elem := [
 	Cleanup({ cleanup : Node.Cleanup }),
 	Element({ tag : Str, attrs : List(Node.Attr), children : List(Elem) }),
 	OnChange({ signal : Box(Node.SignalExpr), to_cmd : Box((HostValue -> Node.Cmd)) }),
+	OnChangeInitial({ signal : Box(Node.SignalExpr), to_cmd : Box((HostValue -> Node.Cmd)) }),
 	OnMount({ to_cmd : Box(({} -> Node.Cmd)) }),
 	Text(Str),
 	TextSignal({ signal : Box(Node.SignalExpr), read : HostValue.TextReadHandle }),

@@ -4,16 +4,25 @@ import assert from "node:assert/strict";
 import {
   DynamicOp,
   ListenerOptions,
+  LocationBoundarySchema,
+  OnlineBoundarySchema,
   Op,
   PayloadKind,
   Protocol,
   ProtocolFeature,
+  StorageArea,
   SignalsRuntime,
+  VisibilityBoundarySchema,
   decodeHttpRequestPayload,
   decodeHttpResponsePayload,
+  encodeBoundarySchemaPayloadBytes,
+  encodeStoragePayloadBytes,
   encodeHttpRequestPayload,
   encodeHttpResponsePayload,
   httpFetchTaskHandler,
+  locationSnapshotFromHref,
+  onlineSnapshotFromNavigator,
+  visibilitySnapshotFromDocument,
 } from "../../www/static/signals.mjs";
 import {
   apiRequestConsoleTaskHandler,
@@ -46,6 +55,7 @@ const CMD_BASE = 1024;
 const STR_BASE = 16384;
 const DYN_BASE = 24576;
 const ERROR_BASE = 32768;
+const STORAGE_DECL_BASE = 34816;
 const DEFAULT_ALLOC_BASE = 40960;
 const RECORD_WORDS = 6;
 
@@ -126,6 +136,7 @@ class MockHost {
     allocBase = DEFAULT_ALLOC_BASE,
     protocolVersion = Protocol.version,
     protocolFeatures = ProtocolFeature.dynamicAttrs | ProtocolFeature.dynamicEvents,
+    storageDeclarations = [],
   } = {}) {
     this.memory = new WebAssembly.Memory({ initial: 1 });
     this.cmdLen = 0;
@@ -146,6 +157,24 @@ class MockHost {
     this.eventTrapMessages = new Map();
     this.deallocTrapMessage = null;
     this.timerResponses = new Map();
+    this.initialLocationPayload = null;
+    this.initialVisibilityPayload = null;
+    this.initialOnlinePayload = null;
+    this.locationUpdatePayloads = [];
+    this.visibilityUpdatePayloads = [];
+    this.onlineUpdatePayloads = [];
+    this.locationUpdateScript = [];
+    this.visibilityUpdateScript = [];
+    this.onlineUpdateScript = [];
+    this.prepareMounts = 0;
+    this.storageDeclarations = storageDeclarations.map((entry) => ({
+      area: entry.area,
+      key: String(entry.key),
+      keyBytes: encoder.encode(String(entry.key)),
+      keyPtr: 0,
+    }));
+    this.storagePayloads = [];
+    this.writeStorageDeclarationKeys();
 
     this.exports = {
       memory: this.memory,
@@ -168,7 +197,42 @@ class MockHost {
           throw new WebAssembly.RuntimeError("unreachable");
         }
       },
+      roc_ui_prepare_mount: () => {
+        this.prepareMounts += 1;
+      },
+      roc_ui_storage_declaration_count: () => this.storageDeclarations.length,
+      roc_ui_storage_declaration_area: (index) => this.storageDeclarations[index].area,
+      roc_ui_storage_declaration_key_ptr: (index) => this.storageDeclarations[index].keyPtr,
+      roc_ui_storage_declaration_key_len: (index) => this.storageDeclarations[index].keyBytes.length,
+      roc_ui_set_storage_payload: (area, keyPtr, keyLen, payloadPtr, payloadLen) => {
+        this.storagePayloads.push({
+          area,
+          key: decoder.decode(new Uint8Array(this.memory.buffer, keyPtr, keyLen)),
+          payload: [...new Uint8Array(this.memory.buffer, payloadPtr, payloadLen)],
+        });
+      },
       roc_ui_mount: () => this.writeCommands(this.mountScript),
+      roc_ui_set_location: (ptr, len) => {
+        this.initialLocationPayload = [...new Uint8Array(this.memory.buffer, ptr, len)];
+      },
+      roc_ui_update_location: (ptr, len) => {
+        this.locationUpdatePayloads.push([...new Uint8Array(this.memory.buffer, ptr, len)]);
+        this.writeCommands(this.locationUpdateScript);
+      },
+      roc_ui_set_visibility: (ptr, len) => {
+        this.initialVisibilityPayload = [...new Uint8Array(this.memory.buffer, ptr, len)];
+      },
+      roc_ui_update_visibility: (ptr, len) => {
+        this.visibilityUpdatePayloads.push([...new Uint8Array(this.memory.buffer, ptr, len)]);
+        this.writeCommands(this.visibilityUpdateScript);
+      },
+      roc_ui_set_online: (ptr, len) => {
+        this.initialOnlinePayload = [...new Uint8Array(this.memory.buffer, ptr, len)];
+      },
+      roc_ui_update_online: (ptr, len) => {
+        this.onlineUpdatePayloads.push([...new Uint8Array(this.memory.buffer, ptr, len)]);
+        this.writeCommands(this.onlineUpdateScript);
+      },
       roc_ui_unmount: () => {
         this.cmdLen = 0;
         this.strLen = 0;
@@ -222,6 +286,16 @@ class MockHost {
     };
   }
 
+  writeStorageDeclarationKeys() {
+    let offset = STORAGE_DECL_BASE;
+    const memory = new Uint8Array(this.memory.buffer);
+    for (const declaration of this.storageDeclarations) {
+      declaration.keyPtr = offset;
+      memory.set(declaration.keyBytes, offset);
+      offset += declaration.keyBytes.length;
+    }
+  }
+
   writeLastError(message) {
     const bytes = encoder.encode(message);
     new Uint8Array(this.memory.buffer).set(bytes, ERROR_BASE);
@@ -260,8 +334,13 @@ class MockHost {
       } else if (entry.s !== undefined) {
         const encoded = encoder.encode(entry.s);
         bytes.set(encoded, STR_BASE + strOffset);
-        b = strOffset;
-        c = encoded.length;
+        if (entry.op === Op.pushState || entry.op === Op.replaceState) {
+          a = strOffset;
+          b = encoded.length;
+        } else {
+          b = strOffset;
+          c = encoded.length;
+        }
         strOffset += encoded.length;
       }
       if (entry.dynamic !== undefined || entry.dynamicBytes !== undefined) {
@@ -435,6 +514,17 @@ function keyShiftBytes(key, shiftKey) {
   return [...concatBytes([u32Bytes(keyBytes.length), keyBytes, new Uint8Array([shiftKey ? 1 : 0])])];
 }
 
+function allocBaseLeavingOneByteAfterInitialEnvironment() {
+  const defaultLocation = { path: "/", query: "", hash: "" };
+  return (
+    PAGE -
+    encodeBoundarySchemaPayloadBytes(LocationBoundarySchema, defaultLocation).length -
+    encodeBoundarySchemaPayloadBytes(VisibilityBoundarySchema, true).length -
+    encodeBoundarySchemaPayloadBytes(OnlineBoundarySchema, true).length -
+    1
+  );
+}
+
 function u32Bytes(value) {
   const out = new Uint8Array(4);
   new DataView(out.buffer).setUint32(0, value, true);
@@ -460,12 +550,95 @@ function toUint8Array(value) {
   return value instanceof Uint8Array ? value : new Uint8Array(value);
 }
 
+function createEventTargetDouble() {
+  const listeners = new Map();
+  return {
+    addEventListener(type, listener) {
+      const entries = listeners.get(type) ?? [];
+      entries.push(listener);
+      listeners.set(type, entries);
+    },
+    removeEventListener(type, listener) {
+      const entries = listeners.get(type) ?? [];
+      listeners.set(
+        type,
+        entries.filter((entry) => entry !== listener),
+      );
+    },
+    dispatch(type) {
+      for (const listener of [...(listeners.get(type) ?? [])]) {
+        listener({ type });
+      }
+    },
+    listeners(type) {
+      return [...(listeners.get(type) ?? [])];
+    },
+    listenerCount(type) {
+      return listeners.get(type)?.length ?? 0;
+    },
+  };
+}
+
+function createStorageDouble(initial = {}) {
+  const values = new Map(Object.entries(initial));
+  const calls = [];
+  return {
+    calls,
+    getItem(key) {
+      const normalized = String(key);
+      return values.has(normalized) ? values.get(normalized) : null;
+    },
+    setItem(key, value) {
+      calls.push(["set", String(key), String(value)]);
+      values.set(String(key), String(value));
+    },
+    removeItem(key) {
+      calls.push(["remove", String(key)]);
+      values.delete(String(key));
+    },
+    dump() {
+      return Object.fromEntries(values.entries());
+    },
+  };
+}
+
 function mountWith(mountScript, options = {}) {
-  const { taskHandler, onError, telemetry, behaviors, ...hostOptions } = options;
+  const {
+    taskHandler,
+    onError,
+    telemetry,
+    behaviors,
+    location,
+    history,
+    eventTarget,
+    document,
+    visibilityDocument,
+    navigator,
+    networkEventTarget,
+    localStorage,
+    sessionStorage,
+    storage,
+    ...hostOptions
+  } = options;
   const host = new MockHost(hostOptions);
   host.mountScript = mountScript;
   const root = installDomDouble();
-  const runtime = new SignalsRuntime(host.exports, root, { taskHandler, onError, telemetry, behaviors });
+  const runtime = new SignalsRuntime(host.exports, root, {
+    taskHandler,
+    onError,
+    telemetry,
+    behaviors,
+    location,
+    history,
+    eventTarget,
+    document,
+    visibilityDocument,
+    navigator,
+    networkEventTarget,
+    localStorage,
+    sessionStorage,
+    storage,
+  });
   runtime.mount();
   return { host, root, runtime };
 }
@@ -576,6 +749,392 @@ test("protocol checks reject incompatible wasm exports", () => {
   );
 });
 
+test("location boundary schema encodes normalized URL pieces", () => {
+  const snapshot = locationSnapshotFromHref(
+    "../orders/42?tab=events&region=apac#deploys",
+    "https://ops.example.test/apps/service/",
+  );
+
+  assert.deepEqual(snapshot, {
+    path: "/apps/orders/42",
+    query: "tab=events&region=apac",
+    hash: "deploys",
+  });
+  assert.deepEqual(
+    [...encodeBoundarySchemaPayloadBytes(LocationBoundarySchema, snapshot)],
+    [
+      ...stringBytes("/apps/orders/42"),
+      ...stringBytes("tab=events&region=apac"),
+      ...stringBytes("deploys"),
+    ],
+  );
+  assert.throws(
+    () => encodeBoundarySchemaPayloadBytes(LocationBoundarySchema, { path: "/x", query: "", hash: 7 }),
+    /payload\.hash expected text boundary value/,
+  );
+});
+
+test("visibility boundary schema encodes document visibility", () => {
+  assert.equal(visibilitySnapshotFromDocument({ visibilityState: "visible" }), true);
+  assert.equal(visibilitySnapshotFromDocument({ visibilityState: "hidden" }), false);
+  assert.equal(visibilitySnapshotFromDocument({}), true);
+  assert.deepEqual([...encodeBoundarySchemaPayloadBytes(VisibilityBoundarySchema, true)], [1]);
+  assert.deepEqual([...encodeBoundarySchemaPayloadBytes(VisibilityBoundarySchema, false)], [0]);
+  assert.throws(
+    () => encodeBoundarySchemaPayloadBytes(VisibilityBoundarySchema, "visible"),
+    /payload expected bool boundary value/,
+  );
+});
+
+test("online boundary schema encodes navigator status", () => {
+  assert.equal(onlineSnapshotFromNavigator({ onLine: true }), true);
+  assert.equal(onlineSnapshotFromNavigator({ onLine: false }), false);
+  assert.equal(onlineSnapshotFromNavigator({}), true);
+  assert.deepEqual([...encodeBoundarySchemaPayloadBytes(OnlineBoundarySchema, true)], [1]);
+  assert.deepEqual([...encodeBoundarySchemaPayloadBytes(OnlineBoundarySchema, false)], [0]);
+  assert.throws(
+    () => encodeBoundarySchemaPayloadBytes(OnlineBoundarySchema, "online"),
+    /payload expected bool boundary value/,
+  );
+});
+
+test("storage payload encoder surfaces missing value and unavailable snapshots", () => {
+  assert.deepEqual([...encodeStoragePayloadBytes({ kind: "missing" })], [0]);
+  assert.deepEqual(
+    [...encodeStoragePayloadBytes({ kind: "value", value: "draft" })],
+    [1, ...stringBytes("draft")],
+  );
+  assert.deepEqual(
+    [...encodeStoragePayloadBytes({ kind: "unavailable", message: "blocked" })],
+    [2, ...stringBytes("blocked")],
+  );
+  assert.throws(
+    () => encodeStoragePayloadBytes({ kind: "unknown" }),
+    /unknown storage payload snapshot/,
+  );
+});
+
+test("mount seeds wasm host with initial location visibility and online snapshots", () => {
+  const telemetry = [];
+  const { host } = mountWith([], {
+    location: { href: "https://ops.example.test/services/api?tab=logs#tail" },
+    visibilityDocument: { visibilityState: "hidden" },
+    navigator: { onLine: false },
+    telemetry: (entry) => telemetry.push(entry),
+  });
+
+  assert.deepEqual(host.initialLocationPayload, [
+    ...stringBytes("/services/api"),
+    ...stringBytes("tab=logs"),
+    ...stringBytes("tail"),
+  ]);
+  assert.deepEqual(host.initialVisibilityPayload, [0]);
+  assert.deepEqual(host.initialOnlinePayload, [0]);
+  assert.ok(
+    telemetry.some(
+      (entry) =>
+        entry.kind === "environment_snapshot" &&
+        entry.location.path === "/services/api" &&
+        entry.location.query === "tab=logs" &&
+        entry.location.hash === "tail",
+    ),
+  );
+  assert.ok(
+    telemetry.some(
+      (entry) => entry.kind === "environment_snapshot" && entry.visibility === false && entry.payloadLen === 1,
+    ),
+  );
+  assert.ok(
+    telemetry.some((entry) => entry.kind === "environment_snapshot" && entry.online === false && entry.payloadLen === 1),
+  );
+});
+
+test("mount seeds wasm host with declared storage snapshots before first render", () => {
+  const telemetry = [];
+  const localStorage = createStorageDouble({ "checkout:draft": "seeded local" });
+  const sessionStorage = createStorageDouble({ "checkout:flash": "seeded flash" });
+  const { host } = mountWith([], {
+    storageDeclarations: [
+      { area: StorageArea.local, key: "checkout:draft" },
+      { area: StorageArea.session, key: "checkout:flash" },
+      { area: StorageArea.local, key: "checkout:missing" },
+    ],
+    localStorage,
+    sessionStorage,
+    telemetry: (entry) => telemetry.push(entry),
+  });
+
+  assert.equal(host.prepareMounts, 1);
+  assert.deepEqual(host.storagePayloads, [
+    {
+      area: StorageArea.local,
+      key: "checkout:draft",
+      payload: [...encodeStoragePayloadBytes({ kind: "value", value: "seeded local" })],
+    },
+    {
+      area: StorageArea.session,
+      key: "checkout:flash",
+      payload: [...encodeStoragePayloadBytes({ kind: "value", value: "seeded flash" })],
+    },
+    {
+      area: StorageArea.local,
+      key: "checkout:missing",
+      payload: [...encodeStoragePayloadBytes({ kind: "missing" })],
+    },
+  ]);
+
+  assert.deepEqual(
+    telemetry
+      .filter((entry) => entry.kind === "storage_snapshot")
+      .map((entry) => ({ area: entry.area, key: entry.key, snapshotKind: entry.snapshotKind, value: entry.value })),
+    [
+      { area: StorageArea.local, key: "checkout:draft", snapshotKind: "value", value: undefined },
+      { area: StorageArea.session, key: "checkout:flash", snapshotKind: "value", value: undefined },
+      { area: StorageArea.local, key: "checkout:missing", snapshotKind: "missing", value: undefined },
+    ],
+  );
+});
+
+test("popstate updates wasm location source and drains render commands", () => {
+  const telemetry = [];
+  const eventTarget = createEventTargetDouble();
+  const location = { href: "https://ops.example.test/" };
+  const { host, root } = mountWith(
+    [
+      { op: Op.resetDom },
+      { op: Op.createText, a: 1, s: "Path: /" },
+      { op: Op.appendChild, a: 0, b: 1 },
+    ],
+    {
+      location,
+      eventTarget,
+      telemetry: (entry) => telemetry.push(entry),
+    },
+  );
+  host.locationUpdateScript = [{ op: Op.setText, a: 1, s: "Path: /services/api" }];
+
+  assert.equal(eventTarget.listenerCount("popstate"), 1);
+  location.href = "https://ops.example.test/services/api?tab=logs#tail";
+  eventTarget.dispatch("popstate");
+
+  assert.deepEqual(host.locationUpdatePayloads, [
+    [
+      ...stringBytes("/services/api"),
+      ...stringBytes("tab=logs"),
+      ...stringBytes("tail"),
+    ],
+  ]);
+  assert.ok(findTextNode(root, "Path: /services/api"));
+  assert.ok(
+    telemetry.some(
+      (entry) =>
+        entry.kind === "location_update" &&
+        entry.trigger === "popstate" &&
+        entry.location.path === "/services/api" &&
+        entry.location.query === "tab=logs" &&
+        entry.location.hash === "tail",
+    ),
+  );
+  const commands = telemetry.find((entry) => entry.kind === "commands" && entry.phase === "popstate:1");
+  assert.equal(commands.opCounts.set_text, 1);
+});
+
+test("popstate listener is removed on unmount and stale dispatches are ignored", () => {
+  const telemetry = [];
+  const eventTarget = createEventTargetDouble();
+  const { host, runtime } = mountWith([{ op: Op.resetDom }], {
+    eventTarget,
+    telemetry: (entry) => telemetry.push(entry),
+  });
+  const staleListener = eventTarget.listeners("popstate")[0];
+
+  runtime.unmount();
+  assert.equal(eventTarget.listenerCount("popstate"), 0);
+  staleListener();
+
+  assert.deepEqual(host.locationUpdatePayloads, []);
+  assert.ok(
+    telemetry.some(
+      (entry) =>
+        entry.kind === "ignored_popstate" &&
+        entry.reason === "unmounted" &&
+        entry.generation === 1 &&
+        entry.currentGeneration === 1,
+    ),
+  );
+
+  runtime.mount();
+  assert.equal(eventTarget.listenerCount("popstate"), 1);
+  staleListener();
+  assert.deepEqual(host.locationUpdatePayloads, []);
+  assert.ok(
+    telemetry.some(
+      (entry) =>
+        entry.kind === "ignored_popstate" &&
+        entry.reason === "stale_generation" &&
+        entry.generation === 1 &&
+        entry.currentGeneration === 2,
+    ),
+  );
+  runtime.unmount();
+});
+
+test("visibilitychange updates wasm visibility source and drains render commands", () => {
+  const telemetry = [];
+  const visibilityDocument = createEventTargetDouble();
+  visibilityDocument.visibilityState = "visible";
+  const { host, root } = mountWith(
+    [
+      { op: Op.resetDom },
+      { op: Op.createText, a: 1, s: "Visible" },
+      { op: Op.appendChild, a: 0, b: 1 },
+    ],
+    {
+      document: visibilityDocument,
+      telemetry: (entry) => telemetry.push(entry),
+    },
+  );
+  host.visibilityUpdateScript = [{ op: Op.setText, a: 1, s: "Hidden" }];
+
+  assert.equal(visibilityDocument.listenerCount("visibilitychange"), 1);
+  visibilityDocument.visibilityState = "hidden";
+  visibilityDocument.dispatch("visibilitychange");
+
+  assert.deepEqual(host.visibilityUpdatePayloads, [[0]]);
+  assert.ok(findTextNode(root, "Hidden"));
+  assert.ok(
+    telemetry.some(
+      (entry) =>
+        entry.kind === "visibility_update" &&
+        entry.trigger === "visibilitychange" &&
+        entry.visibility === false,
+    ),
+  );
+  const commands = telemetry.find((entry) => entry.kind === "commands" && entry.phase === "visibilitychange:1");
+  assert.equal(commands.opCounts.set_text, 1);
+});
+
+test("visibilitychange listener is removed on unmount and stale dispatches are ignored", () => {
+  const telemetry = [];
+  const visibilityDocument = createEventTargetDouble();
+  visibilityDocument.visibilityState = "visible";
+  const { host, runtime } = mountWith([{ op: Op.resetDom }], {
+    document: visibilityDocument,
+    telemetry: (entry) => telemetry.push(entry),
+  });
+  const staleListener = visibilityDocument.listeners("visibilitychange")[0];
+
+  runtime.unmount();
+  assert.equal(visibilityDocument.listenerCount("visibilitychange"), 0);
+  staleListener();
+
+  assert.deepEqual(host.visibilityUpdatePayloads, []);
+  assert.ok(
+    telemetry.some(
+      (entry) =>
+        entry.kind === "ignored_visibilitychange" &&
+        entry.reason === "unmounted" &&
+        entry.generation === 1 &&
+        entry.currentGeneration === 1,
+    ),
+  );
+
+  runtime.mount();
+  assert.equal(visibilityDocument.listenerCount("visibilitychange"), 1);
+  staleListener();
+  assert.deepEqual(host.visibilityUpdatePayloads, []);
+  assert.ok(
+    telemetry.some(
+      (entry) =>
+        entry.kind === "ignored_visibilitychange" &&
+        entry.reason === "stale_generation" &&
+        entry.generation === 1 &&
+        entry.currentGeneration === 2,
+    ),
+  );
+  runtime.unmount();
+});
+
+test("online and offline events update wasm online source and drain render commands", () => {
+  const telemetry = [];
+  const networkEventTarget = createEventTargetDouble();
+  const navigator = { onLine: true };
+  const { host, root } = mountWith(
+    [
+      { op: Op.resetDom },
+      { op: Op.createText, a: 1, s: "Online" },
+      { op: Op.appendChild, a: 0, b: 1 },
+    ],
+    {
+      navigator,
+      networkEventTarget,
+      telemetry: (entry) => telemetry.push(entry),
+    },
+  );
+  host.onlineUpdateScript = [{ op: Op.setText, a: 1, s: "Offline" }];
+
+  assert.equal(networkEventTarget.listenerCount("online"), 1);
+  assert.equal(networkEventTarget.listenerCount("offline"), 1);
+  navigator.onLine = false;
+  networkEventTarget.dispatch("offline");
+
+  assert.deepEqual(host.onlineUpdatePayloads, [[0]]);
+  assert.ok(findTextNode(root, "Offline"));
+  assert.ok(
+    telemetry.some(
+      (entry) => entry.kind === "online_update" && entry.trigger === "offline" && entry.online === false,
+    ),
+  );
+  const commands = telemetry.find((entry) => entry.kind === "commands" && entry.phase === "onlinechange:1");
+  assert.equal(commands.opCounts.set_text, 1);
+});
+
+test("online listeners are removed on unmount and stale dispatches are ignored", () => {
+  const telemetry = [];
+  const networkEventTarget = createEventTargetDouble();
+  const navigator = { onLine: true };
+  const { host, runtime } = mountWith([{ op: Op.resetDom }], {
+    navigator,
+    networkEventTarget,
+    telemetry: (entry) => telemetry.push(entry),
+  });
+  const staleOfflineListener = networkEventTarget.listeners("offline")[0];
+
+  runtime.unmount();
+  assert.equal(networkEventTarget.listenerCount("online"), 0);
+  assert.equal(networkEventTarget.listenerCount("offline"), 0);
+  staleOfflineListener();
+
+  assert.deepEqual(host.onlineUpdatePayloads, []);
+  assert.ok(
+    telemetry.some(
+      (entry) =>
+        entry.kind === "ignored_onlinechange" &&
+        entry.reason === "unmounted" &&
+        entry.trigger === "offline" &&
+        entry.generation === 1 &&
+        entry.currentGeneration === 1,
+    ),
+  );
+
+  runtime.mount();
+  assert.equal(networkEventTarget.listenerCount("online"), 1);
+  assert.equal(networkEventTarget.listenerCount("offline"), 1);
+  staleOfflineListener();
+  assert.deepEqual(host.onlineUpdatePayloads, []);
+  assert.ok(
+    telemetry.some(
+      (entry) =>
+        entry.kind === "ignored_onlinechange" &&
+        entry.reason === "stale_generation" &&
+        entry.trigger === "offline" &&
+        entry.generation === 1 &&
+        entry.currentGeneration === 2,
+    ),
+  );
+  runtime.unmount();
+});
+
 test("command opcodes map to the expected DOM operations", () => {
   const { root } = mountWith([
     { op: Op.resetDom },
@@ -616,6 +1175,134 @@ test("command opcodes map to the expected DOM operations", () => {
   assert.equal(input.getAttribute("data-testid"), "name-field");
   assert.equal(input.getAttribute("class"), "rounded-md border-zinc-300");
   assert.equal(findTextNode(root, "before"), null);
+});
+
+test("navigation opcodes call browser history and emit telemetry", () => {
+  const calls = [];
+  const telemetry = [];
+  mountWith(
+    [
+      { op: Op.pushState, s: "/services/api?tab=logs#tail" },
+      { op: Op.replaceState, s: "/services/web" },
+    ],
+    {
+      history: {
+        pushState: (state, title, href) => calls.push(["push", state, title, href]),
+        replaceState: (state, title, href) => calls.push(["replace", state, title, href]),
+      },
+      telemetry: (entry) => telemetry.push(entry),
+    },
+  );
+
+  assert.deepEqual(calls, [
+    ["push", null, "", "/services/api?tab=logs#tail"],
+    ["replace", null, "", "/services/web"],
+  ]);
+  assert.deepEqual(
+    telemetry
+      .filter((entry) => entry.kind === "navigation")
+      .map((entry) => ({ kind: entry.kind, mode: entry.mode, href: entry.href })),
+    [
+      { kind: "navigation", mode: "push", href: "/services/api?tab=logs#tail" },
+      { kind: "navigation", mode: "replace", href: "/services/web" },
+    ],
+  );
+  const commands = telemetry.find((entry) => entry.kind === "commands" && entry.phase === "mount");
+  assert.equal(commands.opCounts.push_state, 1);
+  assert.equal(commands.opCounts.replace_state, 1);
+});
+
+test("document title opcode updates document title and emits telemetry", () => {
+  const document = { title: "Initial" };
+  const telemetry = [];
+  mountWith([{ op: Op.setDocumentTitle, s: "api service detail - Service Ops Center" }], {
+    document,
+    telemetry: (entry) => telemetry.push(entry),
+  });
+
+  assert.equal(document.title, "api service detail - Service Ops Center");
+  assert.deepEqual(
+    telemetry
+      .filter((entry) => entry.kind === "document_title")
+      .map((entry) => ({ kind: entry.kind, title: entry.title })),
+    [{ kind: "document_title", title: "api service detail - Service Ops Center" }],
+  );
+  const commands = telemetry.find((entry) => entry.kind === "commands" && entry.phase === "mount");
+  assert.equal(commands.opCounts.set_document_title, 1);
+  assert.deepEqual(
+    commands.commands.filter((command) => command.op === "set_document_title"),
+    [{ op: "set_document_title", title: "api service detail - Service Ops Center" }],
+  );
+});
+
+test("storage commands coalesce by area and key before touching browser storage", () => {
+  const localStorage = createStorageDouble({
+    "checkout:draft": "old",
+    "checkout:remove": "keep",
+  });
+  const sessionStorage = createStorageDouble({ "checkout:flash": "shown" });
+  const telemetry = [];
+  const { host, runtime } = mountWith([], {
+    localStorage,
+    sessionStorage,
+    telemetry: (entry) => telemetry.push(entry),
+  });
+
+  host.writeCommands([
+    { op: Op.setStorageText, a: StorageArea.local, strings: ["checkout:draft", "first"] },
+    { op: Op.setStorageText, a: StorageArea.local, strings: ["checkout:draft", "second"] },
+    { op: Op.removeStorage, a: StorageArea.session, s: "checkout:flash" },
+    { op: Op.setStorageText, a: StorageArea.local, strings: ["checkout:cleanup", "temp"] },
+    { op: Op.removeStorage, a: StorageArea.local, s: "checkout:cleanup" },
+    { op: Op.removeStorage, a: StorageArea.local, s: "checkout:remove" },
+  ]);
+  runtime.applyPendingCommands("storage-drain");
+
+  assert.equal(localStorage.getItem("checkout:draft"), "second");
+  assert.equal(localStorage.getItem("checkout:cleanup"), null);
+  assert.equal(localStorage.getItem("checkout:remove"), null);
+  assert.equal(sessionStorage.getItem("checkout:flash"), null);
+  assert.deepEqual(localStorage.calls, [
+    ["set", "checkout:draft", "second"],
+    ["remove", "checkout:cleanup"],
+    ["remove", "checkout:remove"],
+  ]);
+  assert.deepEqual(sessionStorage.calls, [["remove", "checkout:flash"]]);
+
+  const commandTelemetry = telemetry.find(
+    (entry) => entry.kind === "commands" && entry.phase === "storage-drain",
+  );
+  assert.equal(commandTelemetry.opCounts.set_storage_text, 3);
+  assert.equal(commandTelemetry.opCounts.remove_storage, 3);
+
+  const storageTelemetry = telemetry
+    .filter((entry) => entry.kind === "storage")
+    .map((entry) => ({ mode: entry.mode, area: entry.area, key: entry.key, value: entry.value }));
+  assert.deepEqual(storageTelemetry, [
+    { mode: "set", area: StorageArea.local, key: "checkout:draft", value: undefined },
+    { mode: "remove", area: StorageArea.session, key: "checkout:flash", value: undefined },
+    { mode: "remove", area: StorageArea.local, key: "checkout:cleanup", value: undefined },
+    { mode: "remove", area: StorageArea.local, key: "checkout:remove", value: undefined },
+  ]);
+});
+
+test("storage commands fail clearly when browser storage is unavailable", () => {
+  const { host, runtime } = mountWith([], {
+    localStorage: {
+      getItem() {
+        return null;
+      },
+    },
+  });
+
+  host.writeCommands([
+    { op: Op.setStorageText, a: StorageArea.local, strings: ["checkout:draft", "saved"] },
+  ]);
+
+  assert.throws(
+    () => runtime.applyPendingCommands("storage-unavailable"),
+    /browser storage setItem is unavailable/,
+  );
 });
 
 test("focused SetValue patches are deferred until blur", () => {
@@ -1866,7 +2553,7 @@ test("memory growth during byte payload allocation keeps response commands reada
       { op: Op.createText, a: 2, s: "start" },
       { op: Op.appendChild, a: 0, b: 2 },
     ],
-    { allocBase: PAGE - 1 },
+    { allocBase: allocBaseLeavingOneByteAfterInitialEnvironment() },
   );
   host.eventResponses.set(41, () => [
     { op: Op.setText, a: 2, s: "keyed" },
@@ -2001,7 +2688,7 @@ test("memory growth during dispatch keeps the response command stream readable",
       { op: Op.createText, a: 2, s: "start" },
       { op: Op.appendChild, a: 0, b: 2 },
     ],
-    { allocBase: PAGE - 1 },
+    { allocBase: allocBaseLeavingOneByteAfterInitialEnvironment() },
   );
   host.eventResponses.set(2, (dispatch) => [
     { op: Op.setText, a: 2, s: dispatch.payload },

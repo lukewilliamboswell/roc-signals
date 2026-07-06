@@ -74,12 +74,12 @@ pub fn eachRowConst(scopes: []const Scope, scope_id: u64) *const EachRowScopeSte
     };
 }
 
-pub fn eachRowKeyEquals(scopes: []const Scope, ctx: anytype, roc_host: *abi.RocHost, scope_id: u64, key: HostValue) bool {
-    return eachRowConst(scopes, scope_id).key.valueEquals(ctx, roc_host, key);
+pub fn eachRowKeyEquals(scopes: []const Scope, ctx: anytype, roc_host: *abi.RocHost, scope_id: u64, key: HostValue, key_cap: HostValueCapability) bool {
+    return eachRowConst(scopes, scope_id).key.valueEqualsIncoming(ctx, roc_host, key, key_cap);
 }
 
-pub fn eachRowItemEquals(scopes: []const Scope, ctx: anytype, roc_host: *abi.RocHost, scope_id: u64, item: HostValue) bool {
-    return eachRowConst(scopes, scope_id).item.valueEquals(ctx, roc_host, item);
+pub fn eachRowItemEquals(scopes: []const Scope, ctx: anytype, roc_host: *abi.RocHost, scope_id: u64, item: HostValue, item_cap: HostValueCapability) bool {
+    return eachRowConst(scopes, scope_id).item.valueEqualsIncoming(ctx, roc_host, item, item_cap);
 }
 
 pub fn replaceEachRowKey(scopes: []Scope, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, scope_id: u64, key_hash: u64, key: HostValue, key_cap: HostValueCapability) void {
