@@ -30,6 +30,11 @@ PLATFORM_HEADER_RE = re.compile(r'platform\s+"[^"]+"')
 LINUX_WASM_SKIPS = {
     "live-search": "Roc compiler segfaults while building this example for wasm32 on Linux",
 }
+LINUX_WASM_OPT_SKIPS = {
+    ("dev", "service-ops-center"): (
+        "Roc compiler hangs while building this example for wasm32 with --opt=dev on Linux"
+    ),
+}
 
 
 def load_examples() -> list[dict[str, object]]:
@@ -316,14 +321,22 @@ def copy_example_dir(source_dir: Path, dest_dir: Path, *, platform_ref: str) -> 
     rewrite_platform_headers(dest_dir, platform_ref)
 
 
-def public_wasm_examples(examples: list[dict[str, object]], selected_slug: str | None) -> list[dict[str, object]]:
+def public_wasm_examples(
+    examples: list[dict[str, object]],
+    selected_slug: str | None,
+    app_opt: str,
+) -> list[dict[str, object]]:
     selected = []
+    skipped: list[tuple[str, str]] = []
     for example in examples:
         slug = str(example.get("slug", ""))
         if not bool(example.get("public", True)) or not bool(example.get("wasm", True)):
             continue
-        if should_skip_wasm_example(slug):
-            print(f"\nSkipping wasm site build for {slug} on Linux: {LINUX_WASM_SKIPS[slug]}.")
+        skip_reason = wasm_skip_reason(slug, app_opt)
+        if skip_reason is not None:
+            skipped.append((slug, skip_reason))
+            if selected_slug is None:
+                print(f"\nSkipping wasm site build for {slug} on Linux: {skip_reason}.")
             continue
         selected.append(example)
     if selected_slug is None:
@@ -331,13 +344,23 @@ def public_wasm_examples(examples: list[dict[str, object]], selected_slug: str |
 
     matches = [example for example in selected if example.get("slug") == selected_slug]
     if not matches:
+        for slug, skip_reason in skipped:
+            if slug == selected_slug:
+                raise SystemExit(
+                    f"cannot build public wasm example '{selected_slug}' on Linux with --app-opt {app_opt}: "
+                    f"{skip_reason}"
+                )
         valid = ", ".join(str(example.get("slug")) for example in selected)
         raise SystemExit(f"unknown public wasm example '{selected_slug}'. Valid examples: {valid}")
     return matches
 
 
-def should_skip_wasm_example(slug: str) -> bool:
-    return platform.system() == "Linux" and slug in LINUX_WASM_SKIPS
+def wasm_skip_reason(slug: str, app_opt: str) -> str | None:
+    if platform.system() != "Linux":
+        return None
+    if slug in LINUX_WASM_SKIPS:
+        return LINUX_WASM_SKIPS[slug]
+    return LINUX_WASM_OPT_SKIPS.get((app_opt, slug))
 
 
 def build_example_wasm(
@@ -420,7 +443,7 @@ def serve_dist(host: str, port: int) -> None:
 
 def main() -> int:
     args = parse_args()
-    examples = public_wasm_examples(load_examples(), args.example)
+    examples = public_wasm_examples(load_examples(), args.example, args.app_opt)
     roc_bin = resolve_command(args.roc_bin, "Roc compiler")
     zola_bin = resolve_command(args.zola_bin, "Zola CLI")
     tailwind_bin = args.tailwind_bin if args.skip_tailwind else resolve_command(args.tailwind_bin, "Tailwind CSS CLI")
