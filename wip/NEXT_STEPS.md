@@ -19,6 +19,13 @@ open follow-up questions. Keep shipped controlled input/forms, canonical
 event-binding, public guide, bundle/release-flow, and native spec runner layers
 current when public surface changes.
 
+The active evidence vehicle is the `examples/conduit` RealWorld demo build,
+planned in `wip/REALWORLD_DEMO_PLAN.md`. The build itself promotes no public
+surface; when it exposes a gap, it names conduit as the trigger against the
+relevant priority below, and its findings ledger
+(`wip/research/realworld_demo_findings.md`, created at the plan's Phase 0)
+records confirmations that gated items stayed unneeded.
+
 Evidence still gates public surface and structural promotions, but the evidence
 is now manufactured deliberately: the maintained examples are grown along the
 roadmap in `wip/research/realworld_gap_analysis.md` so they become the realistic
@@ -52,6 +59,22 @@ Per-app rationale, phase ordering, landed status, and deferred suite-curation
 decisions live in `wip/research/realworld_gap_analysis.md`. Use that note to
 choose the proving app or focused canary; keep the roadmap detail out of this
 active backlog.
+
+## Active evidence work
+
+### 0. RealWorld demo build (`examples/conduit`)
+
+**Goal:** build the first RealWorld-class maintained app as the evidence
+instrument for production readiness, per `wip/REALWORLD_DEMO_PLAN.md` (scope,
+phases, MoE/MoP definitions, backend strategy, comparison method).
+
+This is app and evidence work, not a platform promotion. Pre-flight (Phase 0)
+canaries: cross-origin authenticated request, roc#9964 wide-record re-check
+(refresh `wip/research/json_codec_evidence.md`), roc-parser markdown spike,
+in-page conduit API backend skeleton. Expected promotion triggers this build
+may generate: scroll restoration (priority 1), JSON/body ergonomics
+(priority 3); expected confirmations: generic `Sub`, dynamic event response,
+fetch-policy knobs, storage write-failure recovery stay deferred.
 
 ## Active priority order
 

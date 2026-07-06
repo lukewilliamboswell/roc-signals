@@ -11,6 +11,11 @@ focused browser-source, and rich-content example phases landed. Re-check the
 classifications and the roadmap when another phase ships or an example
 expansion lands, so the backlog never cites stale analysis.
 
+Update 2026-07-06: a dedicated RealWorld demo app (`examples/conduit`) is now
+scheduled; the plan, scope, and measures live in `wip/REALWORLD_DEMO_PLAN.md`.
+Conduit stops being only a measuring stick and becomes a built app; this note
+remains the platform-gap classification record.
+
 ## Focused Gates
 
 For edits to this note, which carries no repository behavior claims, run:
@@ -220,10 +225,14 @@ promotion gates in `wip/NEXT_STEPS.md` stay, but the evidence is manufactured
 instead of awaited. Examples are evidence tools, not compatibility surfaces,
 and do not need backwards compatibility.
 
-Current decision: expand existing apps only; no new app and no suite curation
-is scheduled. If the flagship becomes unwieldy under future browser-environment
-or storage-adjacent follow-ups, splitting a dedicated app out of it remains the
-recorded fallback.
+Current decision (revised 2026-07-06): the expand-existing-apps-only phase is
+complete; a dedicated RealWorld demo app, `examples/conduit`, is scheduled as
+the next evidence vehicle. It is too large to graft onto an existing app's
+fiction, which was the recorded fallback condition for splitting out a
+dedicated app. Scope, phases, MoE/MoP definitions, backend strategy, and the
+comparison method live in `wip/REALWORLD_DEMO_PLAN.md`; findings accumulate in
+`wip/research/realworld_demo_findings.md` from its Phase 0. No other suite
+curation is scheduled.
 
 ### service-ops-center: routed ops SPA with visibility-aware polling
 
@@ -305,6 +314,18 @@ static markdown-to-`Elem` structure, dynamic nested inline/list rendering, and
 link-scheme safety. The live preview uses ordinary dynamic `Elem` structure; no
 raw HTML or browser-only behavior island is required for the current markdown
 subset.
+
+### conduit: RealWorld demo (scheduled)
+
+The full Conduit spec as a dedicated maintained app: routed pages with deep
+links, JWT session persisted in localStorage, paginated feeds, markdown
+article bodies, comments, favorites, follows, and 422 error-envelope
+rendering, driven against an in-page deterministic API backend with a
+cross-origin conformance pass. Planned to drive: representative action
+telemetry for the command-wire dedupe hypothesis, the scroll-restoration
+trigger (or its explicit re-deferral), post-roc#9964 JSON ergonomics evidence
+at ~19-endpoint scale, and scale evidence for construction-order state
+identity in a ~3-4k line app. Detail: `wip/REALWORLD_DEMO_PLAN.md`.
 
 ### Unchanged apps
 
