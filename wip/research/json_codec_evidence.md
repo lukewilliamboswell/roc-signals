@@ -75,6 +75,15 @@ class of evidence:
 - Adding an executed 63-field `JsonProbe.Wide` parse to the focused
   `json-decode` fixture crashed `roc check` with `SIGSEGV`.
 
+The 2026-07-06 recheck on `roc release-fast-c0cae661` still reproduces the
+compiler crash. A temporary minimization pass showed 45-49 fields pass and
+50-63 fields crash. The focused 50-field repro now lives at
+`wip/research/wide_record_json_sigsegv_repro.roc`; running
+`roc check wip/research/wide_record_json_sigsegv_repro.roc` exits 139 with the
+Roc compiler SIGSEGV message. Running the same command under LLDB stops thread
+12 with `EXC_BAD_ACCESS` at an invalid generated-code address. Filed upstream
+as roc-lang/roc#9964 with the equivalent `test/fx` platform repro.
+
 That means the split service parser remains a current compiler workaround. It
 does not prove that Signals needs JSON helpers, because a platform wrapper over
 the same builtin derivation would inherit the compiler failure or hide it behind

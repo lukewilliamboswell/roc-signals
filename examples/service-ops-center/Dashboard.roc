@@ -137,9 +137,10 @@ Dashboard := {
 		}
 }
 
-# Keep the raw JSON records split. With roc release-fast-7da362c8,
-# derived parsing for one 52+ field record segfaults; the 10 small parses are
-# an intentional compiler-workaround until that upstream issue is fixed.
+# Keep the raw JSON records split. Builtin Json-derived parsing for one 50+
+# field record still segfaults on roc release-fast-c0cae661; see roc-lang/roc#9964
+# and wip/research/wide_record_json_sigsegv_repro.roc. The 10 small parses are
+# an intentional compiler workaround until that upstream issue is fixed.
 RawMeta : {
 	schema : U64,
 	updated_version : U64,
