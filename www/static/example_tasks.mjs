@@ -5,9 +5,11 @@ import {
   httpTaskError,
   httpTextResponse,
 } from "./signals.mjs";
+import { createConduitTaskHandler } from "./conduit_backend.mjs";
 
 export function createPublicExampleTaskHandler() {
   const opsBackend = createOpsBackend();
+  const conduitTaskHandler = createConduitTaskHandler();
   return function publicExampleTaskHandler(args) {
     const lookup = lookupTaskHandler(args);
     if (lookup !== null && lookup !== undefined) {
@@ -17,6 +19,11 @@ export function createPublicExampleTaskHandler() {
     const apiConsole = apiRequestConsoleTaskHandler(args);
     if (apiConsole !== null && apiConsole !== undefined) {
       return apiConsole;
+    }
+
+    const conduit = conduitTaskHandler(args);
+    if (conduit !== null && conduit !== undefined) {
+      return conduit;
     }
 
     return opsApiTaskHandler(args, opsBackend);
