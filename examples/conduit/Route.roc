@@ -32,6 +32,18 @@ Route := [
 	register_location : Browser.Location
 	register_location = { path: "/register", query: "", hash: "" }
 
+	feed_location : Route.Feed -> Browser.Location
+	feed_location = |feed| { path: "/", query: feed_query(feed), hash: "" }
+
+	article_location : Str -> Browser.Location
+	article_location = |slug| { path: "/article/${slug}", query: "", hash: "" }
+
+	profile_location : Str -> Browser.Location
+	profile_location = |username| { path: "/profile/${username}", query: "", hash: "" }
+
+	profile_favorites_location : Str -> Browser.Location
+	profile_favorites_location = |username| { path: "/profile/${username}/favorites", query: "", hash: "" }
+
 	from_location : Browser.Location -> Route
 	from_location = |location| {
 		path = location.path
