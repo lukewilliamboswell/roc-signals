@@ -21,23 +21,23 @@ Capability(a) := [
 		clone : HostValue -> HostValue
 		clone = |host_value| {
 			boxed : Box(a)
-			boxed = HostValue.get_with_split(host_value, split_handle)
-			HostValue.store_with_existing_capability(boxed, host_value)
+			boxed = HostValue.get_with_split!(host_value, split_handle)
+			HostValue.store_with_existing_capability!(boxed, host_value)
 		}
 
 		eq : HostValue, HostValue -> Bool
 		eq = |left_hv, right_hv| {
 			left : a
-			left = Box.unbox(HostValue.get_with_split(left_hv, split_handle))
+			left = Box.unbox(HostValue.get_with_split!(left_hv, split_handle))
 			right : a
-			right = Box.unbox(HostValue.get_with_split(right_hv, split_handle))
+			right = Box.unbox(HostValue.get_with_split!(right_hv, split_handle))
 			is_equal(left, right)
 		}
 
 		drop : HostValue -> {}
 		drop = |host_value| {
 			boxed : Box(a)
-			boxed = HostValue.take_with_split(host_value, split_handle)
+			boxed = HostValue.take_with_split!(host_value, split_handle)
 			_ = boxed
 			{}
 		}
@@ -66,13 +66,13 @@ Capability(a) := [
 
 	## Store a boxed Roc value behind this capability.
 	store : Box(a), Capability(a) -> HostValue
-	store = |boxed, cap| HostValue.store_with_capability(boxed, Capability.handle(cap))
+	store = |boxed, cap| HostValue.store_with_capability!(boxed, Capability.handle(cap))
 
 	## Read a boxed Roc value through this capability without consuming it.
 	get : HostValue, Capability(a) -> Box(a)
-	get = |host_value, cap| HostValue.get_with_capability(host_value, Capability.handle(cap))
+	get = |host_value, cap| HostValue.get_with_capability!(host_value, Capability.handle(cap))
 
 	## Consume a host value and recover the boxed Roc value.
 	take : HostValue, Capability(a) -> Box(a)
-	take = |host_value, cap| HostValue.take_with_capability(host_value, Capability.handle(cap))
+	take = |host_value, cap| HostValue.take_with_capability!(host_value, Capability.handle(cap))
 }

@@ -92,25 +92,25 @@ JsonProbe := [].{
 
 	rows : List(Str)
 	rows = {
-		probe_result : Try(Probe, Json)
+		probe_result : Try(Probe, Json.ParseErr)
 		probe_result = Json.parse(probe_json)
 
-		missing_result : Try({ count : U64 }, Json)
+		missing_result : Try({ count : U64 }, Json.ParseErr)
 		missing_result = Json.parse("{}")
 
-		invalid_result : Try({ count : U64 }, Json)
+		invalid_result : Try({ count : U64 }, Json.ParseErr)
 		invalid_result = Json.parse("not-json")
 
-		trailing_result : Try({ count : U64 }, Json)
+		trailing_result : Try({ count : U64 }, Json.ParseErr)
 		trailing_result = Json.parse_trailing_commas("{\"count\":7,}")
 
-		trailing_garbage_result : Try({ count : U64 }, Json)
+		trailing_garbage_result : Try({ count : U64 }, Json.ParseErr)
 		trailing_garbage_result = Json.parse("{\"count\":7} trailing")
 
-		optional_present_result : Try({ optional_count : Try(U64, [Missing]) }, Json)
+		optional_present_result : Try({ optional_count : Try(U64, [Missing]) }, Json.ParseErr)
 		optional_present_result = Json.parse("{\"optional_count\":9}")
 
-		camel_result : Try({ service_name : Str }, Json)
+		camel_result : Try({ service_name : Str }, Json.ParseErr)
 		camel_result = Json.parser_camel()("{\"serviceName\":\"api\"}")
 
 		encoded_label : Str
@@ -120,9 +120,9 @@ JsonProbe := [].{
 		encoded_value = { count: 7, label: encoded_label }
 
 			encoded_result : Try(Str, _)
-			encoded_result = Json.encode(encoded_value)
+			encoded_result = Json.to_str_try(encoded_value)
 
-			plain_result : Try({ label : Str }, Json)
+			plain_result : Try({ label : Str }, Json.ParseErr)
 			plain_result = Json.parse("{\"label\":\"plain string\"}")
 
 			[
@@ -138,7 +138,7 @@ JsonProbe := [].{
 			]
 		}
 
-	probe_text : Try(Probe, Json) -> Str
+	probe_text : Try(Probe, Json.ParseErr) -> Str
 	probe_text = |result|
 		match result {
 			Ok(probe) => {
@@ -156,38 +156,38 @@ JsonProbe := [].{
 			Err(_) => "probe failed"
 		}
 
-	missing_text : Try({ count : U64 }, Json) -> Str
+	missing_text : Try({ count : U64 }, Json.ParseErr) -> Str
 	missing_text = |result|
 		match result {
 			Ok(_) => "missing failed"
-			Err(MissingRequired) => "missing required"
-			Err(InvalidJson) => "missing invalid"
+			Err(MissingRequiredField(_)) => "missing required"
+			Err(InvalidJson(_)) => "missing invalid"
 		}
 
-	invalid_text : Try({ count : U64 }, Json) -> Str
+	invalid_text : Try({ count : U64 }, Json.ParseErr) -> Str
 	invalid_text = |result|
 		match result {
 			Ok(_) => "invalid failed"
-			Err(InvalidJson) => "invalid json"
-			Err(MissingRequired) => "invalid missing"
+			Err(InvalidJson(_)) => "invalid json"
+			Err(MissingRequiredField(_)) => "invalid missing"
 		}
 
-	trailing_text : Try({ count : U64 }, Json) -> Str
+	trailing_text : Try({ count : U64 }, Json.ParseErr) -> Str
 	trailing_text = |result|
 		match result {
 			Ok(value) => "trailing ok ${value.count.to_str()}"
 			Err(_) => "trailing failed"
 		}
 
-	trailing_garbage_text : Try({ count : U64 }, Json) -> Str
+	trailing_garbage_text : Try({ count : U64 }, Json.ParseErr) -> Str
 	trailing_garbage_text = |result|
 		match result {
 			Ok(_) => "garbage failed"
-			Err(InvalidJson) => "trailing garbage invalid"
-			Err(MissingRequired) => "trailing garbage missing"
+			Err(InvalidJson(_)) => "trailing garbage invalid"
+			Err(MissingRequiredField(_)) => "trailing garbage missing"
 		}
 
-	optional_present_text : Try({ optional_count : Try(U64, [Missing]) }, Json) -> Str
+	optional_present_text : Try({ optional_count : Try(U64, [Missing]) }, Json.ParseErr) -> Str
 	optional_present_text = |result|
 		match result {
 			Ok(value) =>
@@ -198,7 +198,7 @@ JsonProbe := [].{
 			Err(_) => "optional present failed"
 		}
 
-	camel_text : Try({ service_name : Str }, Json) -> Str
+	camel_text : Try({ service_name : Str }, Json.ParseErr) -> Str
 	camel_text = |result|
 		match result {
 			Ok(value) => "camel ${value.service_name}"
@@ -209,7 +209,7 @@ JsonProbe := [].{
 		encode_text = |result, expected_label|
 			match result {
 				Ok(value) => {
-					roundtrip_result : Try({ count : U64, label : Str }, Json)
+					roundtrip_result : Try({ count : U64, label : Str }, Json.ParseErr)
 					roundtrip_result = Json.parse(value)
 					match roundtrip_result {
 						Ok(decoded) =>
@@ -224,7 +224,7 @@ JsonProbe := [].{
 				Err(_) => "encode failed"
 			}
 
-		plain_parse_text : Try({ label : Str }, Json) -> Str
+		plain_parse_text : Try({ label : Str }, Json.ParseErr) -> Str
 		plain_parse_text = |result|
 			match result {
 				Ok(value) =>

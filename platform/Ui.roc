@@ -327,7 +327,7 @@ Ui := [].{
 			key : Str
 			key = Box.unbox(Capability.get(key_hv, key_cap))
 			row_item : {} -> HostValue
-			row_item = |_| HostValue.clone(item_hv)
+			row_item = |_| HostValue.clone!(item_hv)
 			row_signal_token : Box(U64)
 			row_signal_token = Node.new_token({})
 			row(

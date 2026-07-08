@@ -9,6 +9,8 @@ import pf.Html
 #   roc check wip/research/wide_record_json_sigsegv_repro.roc
 #
 # Observed on release-fast-c0cae661: compiler exits 139 with SIGSEGV.
+# 2026-07-08: updated to the renamed error type (`Json.ParseErr`, tags now carry
+# payloads) after nightly-2026-July-06 removed the bare `Json` error type.
 
 Wide : {
 	f01 : U64,
@@ -68,13 +70,13 @@ wide_json = "{\"f01\":1,\"f02\":2,\"f03\":3,\"f04\":4,\"f05\":5,\"f06\":6,\"f07\
 
 main : {} -> Elem
 main = |_| {
-	result : Try(Wide, Json)
+	result : Try(Wide, Json.ParseErr)
 	result = Json.parse(wide_json)
 
 	Html.paragraph(wide_text(result))
 }
 
-wide_text : Try(Wide, Json) -> Str
+wide_text : Try(Wide, Json.ParseErr) -> Str
 wide_text = |result|
 	match result {
 		Ok(value) =>

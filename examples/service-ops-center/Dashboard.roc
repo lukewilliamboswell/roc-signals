@@ -240,41 +240,41 @@ RawServiceDetails : {
 
 parse_dashboard : Str -> Try(Dashboard, Dashboard.ParseErr)
 parse_dashboard = |body| {
-	meta_result : Try(RawMeta, Json)
+	meta_result : Try(RawMeta, Json.ParseErr)
 	meta_result = Json.parse(body)
 	meta = map_json_result("meta", meta_result)?
 	if meta.schema != 1 {
 		return Err(UnsupportedSchema(meta.schema))
 	}
 
-	traffic_result : Try(RawTrafficCore, Json)
+	traffic_result : Try(RawTrafficCore, Json.ParseErr)
 	traffic_result = Json.parse(body)
 	traffic = map_json_result("traffic", traffic_result)?
-	traffic_bars_result : Try(RawTrafficBars, Json)
+	traffic_bars_result : Try(RawTrafficBars, Json.ParseErr)
 	traffic_bars_result = Json.parse(body)
 	traffic_bars = map_json_result("traffic bars", traffic_bars_result)?
-	budget_result : Try(RawBudget, Json)
+	budget_result : Try(RawBudget, Json.ParseErr)
 	budget_result = Json.parse(body)
 	budget = map_json_result("budget", budget_result)?
-	queue_result : Try(RawQueue, Json)
+	queue_result : Try(RawQueue, Json.ParseErr)
 	queue_result = Json.parse(body)
 	queue = map_json_result("queue", queue_result)?
-	service_states_result : Try(RawServiceStates, Json)
+	service_states_result : Try(RawServiceStates, Json.ParseErr)
 	service_states_result = Json.parse(body)
 	service_states = map_json_result("service states", service_states_result)?
-	service_metrics_result : Try(RawServiceMetrics, Json)
+	service_metrics_result : Try(RawServiceMetrics, Json.ParseErr)
 	service_metrics_result = Json.parse(body)
 	service_metrics = map_json_result("service metrics", service_metrics_result)?
-	jobs_a_result : Try(RawJobsA, Json)
+	jobs_a_result : Try(RawJobsA, Json.ParseErr)
 	jobs_a_result = Json.parse(body)
 	jobs_a = map_json_result("jobs a", jobs_a_result)?
-	jobs_b_result : Try(RawJobsB, Json)
+	jobs_b_result : Try(RawJobsB, Json.ParseErr)
 	jobs_b_result = Json.parse(body)
 	jobs_b = map_json_result("jobs b", jobs_b_result)?
-	alerts_result : Try(RawAlerts, Json)
+	alerts_result : Try(RawAlerts, Json.ParseErr)
 	alerts_result = Json.parse(body)
 	alerts = map_json_result("alerts", alerts_result)?
-	service_details_result : Try(RawServiceDetails, Json)
+	service_details_result : Try(RawServiceDetails, Json.ParseErr)
 	service_details_result = Json.parse(body)
 	service_details = map_json_result("service details", service_details_result)?
 
@@ -430,12 +430,12 @@ parse_dashboard = |body| {
 	)
 }
 
-map_json_result : Str, Try(a, Json) -> Try(a, Dashboard.ParseErr)
+map_json_result : Str, Try(a, Json.ParseErr) -> Try(a, Dashboard.ParseErr)
 map_json_result = |label, result|
 	match result {
 		Ok(value) => Ok(value)
-		Err(MissingRequired) => Err(MissingData(label))
-		Err(InvalidJson) => Err(BadJson)
+		Err(MissingRequiredField(_)) => Err(MissingData(label))
+		Err(InvalidJson(_)) => Err(BadJson)
 	}
 
 get_bar_code : Str, U64 -> Try(U64, Dashboard.ParseErr)
