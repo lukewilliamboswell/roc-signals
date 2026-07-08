@@ -24,12 +24,59 @@ Action: <promotion trigger recorded in NEXT_STEPS priority N | issue filed |
 ## Feature → spec-line map (MoE-1)
 
 Maintained from Phase 1 onward; no unchecked rows at Phase 5 exit.
+Line references are to `examples/conduit/spec.txt` sections by comment
+header (line numbers drift; headers are stable).
 
 | Feature | Spec assertion(s) | Status |
 | --- | --- | --- |
-| (populated as features land) | | |
+| Deep link cold-mounts routed page + title | "Cold mount at a deep link" section | done (Phase 1) |
+| Header nav push_state routing (brand, Sign in, Sign up) | "Brand link navigates home" section | done (Phase 1) |
+| Back/forward keep URL, title, view in sync | "Back/forward walk the entry trail" section | done (Phase 1) |
+| All 9 route shapes mount with per-route titles | "Every route shape mounts" section | done (Phase 1) |
+| Home query params (page, tag) parse into feed state | "Home query params parse" section | done (Phase 1) |
+| Unknown route renders not-found without URL rewrite | "Unknown routes render the not-found page" section | done (Phase 1) |
+| Feeds, pagination controls, popular tags | — | Phase 2 |
+| Article page with markdown body | — | Phase 2 |
+| Profiles (view, tabs) | — | Phase 2 |
+| Auth: register/login/logout, JWT persist/restore | — | Phase 3 |
+| Guarded routes with replace_state redirects | — | Phase 3 |
+| Settings | — | Phase 3 |
+| Editor create/edit, article delete | — | Phase 4 |
+| Comments create/delete | — | Phase 4 |
+| Favorites, follows | — | Phase 4 |
+| 422 envelopes on all four forms | — | Phase 3/4 |
+| Network failure states on every fetch surface | — | Phase 2-5 |
 
 ## Findings
+
+### 2026-07-08 Phase 1 — Cold-cache `roc check` takes ~51s on the conduit skeleton; warm re-check is 90ms
+
+Classification: compiler
+Severity: friction
+Evidence: on nightly-2026-July-07 (`release-fast-050c6975`), the first
+`roc check examples/conduit/app.roc` after edits reports ~51,000ms; an
+immediate re-check of the unchanged file reports 90ms, so the cost is
+cold-cache module-graph compilation, not per-iteration. For comparison,
+cold checks of small fixtures are sub-second (`json-decode` ~320ms, the
+50-field repro ~1s) while `service-ops-center` is ~64s — app-shaped code
+pays far more than fixture-shaped code and the scaling with size is
+unclear. Local iteration is fine; the cost lands on cold paths —
+`python3 scripts/test.py roc-check` gates and CI check every example from
+fresh copies, so each conduit phase adds cold-check latency to every gate
+run.
+Action: recorded; re-measure at each phase exit, and minimize an upstream
+repro if cold checks cross a few minutes at target app size.
+
+### 2026-07-08 Phase 1 — Tag constructors are not first-class functions
+
+Classification: ergonomics
+Severity: paper-cut
+Evidence: passing a payload tag constructor as a function argument
+(`slug_route(prefix, EditorEdit)`) fails to check — the bare tag is
+treated as a zero-argument tag (`[EditorEdit, ..]` vs the needed
+`Str -> Route`). `examples/conduit/Route.roc` wraps constructors in
+lambdas (`|slug| EditorEdit(slug)`) instead.
+Action: accepted as app code; language-level, not a platform matter.
 
 ### 2026-07-08 Phase 0 — Nightly compiler renamed the builtin `Json` error type; repo idiom broke under floating-nightly CI
 

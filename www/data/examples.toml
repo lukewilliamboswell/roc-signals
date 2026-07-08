@@ -98,6 +98,17 @@ native = true
 bench = true
 
 [[examples]]
+slug = "conduit"
+title = "Conduit"
+description = "RealWorld (Conduit) evidence app: history-routed multi-page shell with per-route titles and deep links, growing through the RealWorld feature set. Unpublished until the hardening phase."
+source = "examples/conduit/app.roc"
+spec = "examples/conduit/spec.txt"
+public = false
+wasm = true
+native = true
+bench = false
+
+[[examples]]
 slug = "json-decode"
 title = "Json Decode"
 description = "Internal builtin Json derivation fixture."

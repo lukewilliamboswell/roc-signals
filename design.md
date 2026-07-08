@@ -1533,6 +1533,14 @@ public suite is:
   freshness ticks, online/offline task gating, cleanup, cancellation, and
   retained-allocation teardown checks.
 
+One app is registered but unpublished while under construction:
+
+- `conduit` — the RealWorld spec app and platform evidence instrument
+  (`wip/REALWORLD_DEMO_PLAN.md`): app-code history routing across nine route
+  shapes with per-route titles, deep links, and Back/Forward coverage, growing
+  through feeds, sessions, and write paths; `public` flips only at its
+  hardening phase.
+
 Focused internal fixtures carry narrow canaries that should not become broad
 catalog pressure: JSON builtin derivation, duplicate-key diagnostics, task
 superseding and UTF-8 task ownership, browser environment commands/sources,

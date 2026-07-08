@@ -68,13 +68,21 @@ active backlog.
 instrument for production readiness, per `wip/REALWORLD_DEMO_PLAN.md` (scope,
 phases, MoE/MoP definitions, backend strategy, comparison method).
 
-This is app and evidence work, not a platform promotion. Pre-flight (Phase 0)
-canaries: cross-origin authenticated request, roc#9964 wide-record re-check
-(refresh `wip/research/json_codec_evidence.md`), roc-parser markdown spike,
-in-page conduit API backend skeleton. Expected promotion triggers this build
-may generate: scroll restoration (priority 1), JSON/body ergonomics
-(priority 3); expected confirmations: generic `Sub`, dynamic event response,
-fetch-policy knobs, storage write-failure recovery stay deferred.
+This is app and evidence work, not a platform promotion. Phase 0 pre-flight
+canaries completed 2026-07-08 (findings in
+`wip/research/realworld_demo_findings.md`): cross-origin authenticated
+request observed in a real browser (fetch-policy candidate stays closed,
+`wip/research/fetch_policy_evidence.md`), roc#9964 wide-record crash no
+longer reproduces on the current nightly
+(`wip/research/json_codec_evidence.md`), markdown spike landed in the
+`markdown-elem` fixture (fences, images, nested lists; no roc-parser
+package exists, app-local parser is the path), and the in-page conduit API
+backend skeleton is proven by node tests. Phase 1 registered
+`examples/conduit` (unpublished) with the routed shell. Expected promotion
+triggers this build may generate: scroll restoration (priority 1),
+JSON/body ergonomics (priority 3); expected confirmations: generic `Sub`,
+dynamic event response, fetch-policy knobs, storage write-failure recovery
+stay deferred.
 
 ## Active priority order
 

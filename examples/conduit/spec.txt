@@ -1,0 +1,85 @@
+# Conduit Phase 1: shell, route switching, per-route titles, deep links,
+# back/forward. Pages are placeholders until their build phases.
+
+# Cold mount at a deep link renders the routed page with the right title.
+set_initial_location "/article/how-to-train-signals-1"
+expect_current_location "/article/how-to-train-signals-1"
+expect_document_title "how-to-train-signals-1 - Conduit"
+expect_visible role:heading name:"Article"
+expect_visible text:"Slug: how-to-train-signals-1"
+
+# Brand link navigates home through push_state.
+click role:link name:"conduit"
+expect_current_location "/"
+expect_document_title "Conduit"
+expect_visible text:"A place to share your knowledge."
+expect_visible text:"Global feed - page 1"
+
+click role:link name:"Sign in"
+expect_current_location "/login"
+expect_document_title "Sign in - Conduit"
+expect_visible role:heading name:"Sign in"
+
+click role:link name:"Sign up"
+expect_current_location "/register"
+expect_document_title "Sign up - Conduit"
+expect_visible role:heading name:"Sign up"
+
+# Back/forward walk the entry trail and keep title and view in sync.
+history_back
+expect_current_location "/login"
+expect_document_title "Sign in - Conduit"
+expect_visible role:heading name:"Sign in"
+
+history_back
+expect_current_location "/"
+expect_document_title "Conduit"
+expect_visible text:"Global feed - page 1"
+
+history_back
+expect_current_location "/article/how-to-train-signals-1"
+expect_document_title "how-to-train-signals-1 - Conduit"
+expect_visible text:"Slug: how-to-train-signals-1"
+
+history_forward
+expect_current_location "/"
+expect_document_title "Conduit"
+
+# Every route shape mounts from navigation with the right title.
+navigate "/profile/anna"
+expect_document_title "@anna - Conduit"
+expect_visible text:"@anna"
+expect_visible text:"My articles"
+
+navigate "/profile/anna/favorites"
+expect_document_title "@anna favorites - Conduit"
+expect_visible text:"Favorited articles"
+
+navigate "/editor"
+expect_document_title "New article - Conduit"
+expect_visible role:heading name:"New article"
+
+navigate "/editor/some-post"
+expect_document_title "Edit article - Conduit"
+expect_visible text:"Editing: some-post"
+
+navigate "/settings"
+expect_document_title "Settings - Conduit"
+expect_visible role:heading name:"Settings"
+
+# Home query params parse into pagination and tag filter state.
+navigate "/?tag=roc&page=2"
+expect_current_location "/?tag=roc&page=2"
+expect_document_title "Conduit"
+expect_visible text:"Tag roc - page 2"
+
+# Unknown routes render the not-found page without rewriting the URL.
+navigate "/definitely/not/a/route"
+expect_current_location "/definitely/not/a/route"
+expect_document_title "Page not found - Conduit"
+expect_visible role:heading name:"Page not found"
+
+click role:link name:"Take me home"
+expect_current_location "/"
+expect_document_title "Conduit"
+expect_visible text:"Global feed - page 1"
