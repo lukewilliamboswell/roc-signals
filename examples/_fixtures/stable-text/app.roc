@@ -14,7 +14,7 @@ main = |_| {
 	Ui.state(
 		0,
 		|count| {
-			stable = Signal.map(count.signal(), |_| "Stable")
+			stable = count.signal().map(|_| "Stable")
 
 			Html.div_c(
 				page_class,

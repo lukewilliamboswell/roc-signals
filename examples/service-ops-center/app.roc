@@ -107,19 +107,22 @@ field : Signal.Signal(r), (r -> a) -> Signal.Signal(a)
 	where [
 		a.is_eq : a, a -> Bool,
 	]
-field = |source, select| Signal.map(source, select)
+field = |source, select| source.map(select)
 
 select_remote : Signal.Signal(Dashboard.State), (Dashboard -> a) -> Signal.Signal(DashboardRemote(a))
 	where [
 		a.is_eq : a, a -> Bool,
 	]
-select_remote = |state, select| Signal.map(state, |value| DashboardRemote.from_state(value, select))
+select_remote = |state, select| state.map(|value| DashboardRemote.from_state(value, select))
 
 select_remote_with : Signal.Signal(Dashboard.State), Signal.Signal(b), (Dashboard, b -> a) -> Signal.Signal(DashboardRemote(a))
 	where [
 		a.is_eq : a, a -> Bool,
 	]
-select_remote_with = |state, extra, select| Signal.map2(state, extra, |value, detail| DashboardRemote.from_state_with(value, detail, select))
+select_remote_with = |state, extra, select| {
+	inputs = { state: state, extra: extra }.Signal
+	inputs.map(|value| DashboardRemote.from_state_with(value.state, value.extra, select))
+}
 
 ready_list : Signal.Signal(DashboardRemote(List(a))) -> Signal.Signal(List(a))
 	where [
@@ -135,8 +138,10 @@ ready_list = |remote|
 			},
 	)
 
+remote_is_ready : Signal.Signal(DashboardRemote(a)) -> Signal.Signal(Bool)
 remote_is_ready = |remote| field(remote, DashboardRemote.is_ready)
 
+remote_tone : Signal.Signal(DashboardRemote(a)) -> Signal.Signal(DashboardTheme.Tone)
 remote_tone = |remote|
 	field(
 		remote,
@@ -148,6 +153,7 @@ remote_tone = |remote|
 			},
 	)
 
+remote_message : Str, Signal.Signal(DashboardRemote(a)) -> Elem
 remote_message = |label, remote| {
 	message = field(remote, DashboardRemote.message)
 	classes = field(remote_tone(remote), DashboardTheme.remote_inline_class)
@@ -166,10 +172,7 @@ render_panel = |region_label, heading, children|
 	Html.section_c(
 		region_label,
 		DashboardTheme.panel_class,
-		List.concat(
-			[Html.heading_c(heading, DashboardTheme.section_heading_class)],
-			children,
-		),
+		[Html.heading_c(heading, DashboardTheme.section_heading_class)].concat(children),
 	)
 
 render_status_item : Str, Signal.Signal(DashboardView.StatusItem) -> Elem
@@ -401,9 +404,10 @@ status_strip = |status| {
 					),
 				],
 			),
-	)
-}
+		)
+	}
 
+metric_grid : Signal.Signal(DashboardRemote(List(DashboardView.Metric))) -> Elem
 metric_grid = |metrics| {
 	is_ready = remote_is_ready(metrics)
 	items = ready_list(metrics)
@@ -415,9 +419,10 @@ metric_grid = |metrics| {
 				|_| Html.div_c(DashboardTheme.metric_grid_class, [render_metrics(items)]),
 				|_| Html.div_c(DashboardTheme.metric_grid_class, [remote_message("Metrics", metrics)]),
 			),
-	)
-}
+		)
+	}
 
+traffic_panel : Signal.Signal(DashboardRemote(List(DashboardView.TrafficRow))) -> Elem
 traffic_panel = |traffic| {
 	is_ready = remote_is_ready(traffic)
 	rows = ready_list(traffic)
@@ -435,9 +440,10 @@ traffic_panel = |traffic| {
 					),
 				],
 			),
-	)
-}
+		)
+	}
 
+chart_payload : Signal.Signal(DashboardRemote(DashboardView.ChartModel)) -> Signal.Signal(Str)
 chart_payload = |remote|
 	field(
 		remote,
@@ -448,6 +454,7 @@ chart_payload = |remote|
 			},
 	)
 
+chart_headline : Signal.Signal(DashboardRemote(DashboardView.ChartModel)) -> Signal.Signal(Str)
 chart_headline = |remote|
 	field(
 		remote,
@@ -458,6 +465,7 @@ chart_headline = |remote|
 			},
 	)
 
+chart_detail : Signal.Signal(DashboardRemote(DashboardView.ChartModel)) -> Signal.Signal(Str)
 chart_detail = |remote|
 	field(
 		remote,
@@ -468,6 +476,7 @@ chart_detail = |remote|
 			},
 	)
 
+chart_panel : Signal.Signal(DashboardRemote(DashboardView.ChartModel)) -> Elem
 chart_panel = |chart| {
 	Ui.state(
 		"",
@@ -482,7 +491,7 @@ chart_panel = |chart| {
 					hovered = hovered_chart_point.signal()
 					selected = selected_chart_point.signal()
 					focus_inputs = { hovered: hovered, selected: selected }.Signal
-					focus = Signal.map(focus_inputs, |inputs| DashboardView.chart_focus_text(inputs.hovered, inputs.selected))
+					focus = focus_inputs.map(|inputs| DashboardView.chart_focus_text(inputs.hovered, inputs.selected))
 
 					Ui.component(
 						|_|
@@ -536,6 +545,7 @@ chart_panel = |chart| {
 	)
 }
 
+services_panel : Signal.Signal(DashboardRemote(List(DashboardView.ServiceRow))) -> Elem
 services_panel = |services| {
 	is_ready = remote_is_ready(services)
 	rows = ready_list(services)
@@ -556,6 +566,7 @@ services_panel = |services| {
 	)
 }
 
+jobs_panel : Signal.Signal(DashboardRemote(List(DashboardView.JobRow))) -> Elem
 jobs_panel = |jobs| {
 	is_ready = remote_is_ready(jobs)
 	rows = ready_list(jobs)
@@ -576,6 +587,7 @@ jobs_panel = |jobs| {
 	)
 }
 
+alerts_panel : Signal.Signal(DashboardRemote(List(DashboardView.AlertRow))) -> Elem
 alerts_panel = |alerts| {
 	is_ready = remote_is_ready(alerts)
 	rows = ready_list(alerts)
@@ -596,6 +608,7 @@ alerts_panel = |alerts| {
 	)
 }
 
+detail_dependencies : Signal.Signal(DashboardRemote(Dashboard.ServiceDetail)) -> Signal.Signal(List(Dashboard.ServiceDependency))
 detail_dependencies = |detail|
 	field(
 		detail,
@@ -606,6 +619,7 @@ detail_dependencies = |detail|
 			},
 	)
 
+detail_contacts : Signal.Signal(DashboardRemote(Dashboard.ServiceDetail)) -> Signal.Signal(List(Dashboard.ServiceContact))
 detail_contacts = |detail|
 	field(
 		detail,
@@ -616,6 +630,7 @@ detail_contacts = |detail|
 			},
 	)
 
+service_detail_panel : Signal.Signal(DashboardRemote(Dashboard.ServiceDetail)), Ui.State(RouteIntent) -> Elem
 service_detail_panel = |detail, route_intent| {
 	is_ready = remote_is_ready(detail)
 	title =
@@ -708,9 +723,10 @@ service_detail_panel = |detail, route_intent| {
 					),
 				],
 			),
-	)
+		)
 }
 
+service_nav : Ui.State(RouteIntent) -> Elem
 service_nav = |route_intent|
 	Html.div_c(
 		DashboardTheme.view_nav_class,
@@ -740,6 +756,7 @@ refresh_key : { tick : U64, manual : U64 } -> U64
 refresh_key = |inputs|
 	inputs.tick + inputs.manual
 
+toolbar : Signal.Signal(Str), Signal.Signal(Str), Signal.Signal(Str), _, Ui.State(RouteIntent) -> Elem
 toolbar = |last_updated, manual_refresh_text, visibility_status, refresh_now, route_intent|
 	Html.div_c(
 		DashboardTheme.toolbar_class,
@@ -763,6 +780,7 @@ toolbar = |last_updated, manual_refresh_text, visibility_status, refresh_now, ro
 		],
 	)
 
+dashboard_page : Signal.Signal(Dashboard.State), Signal.Signal(Route), Signal.Signal(Str), Signal.Signal(Str), Signal.Signal(Str), _, Ui.State(RouteIntent), List(Elem) -> Elem
 dashboard_page = |dashboard_state, route, selected_service, manual_refresh_text, visibility_status, refresh_now, route_intent, lifecycle| {
 	last_updated = field(select_remote(dashboard_state, DashboardView.last_updated), DashboardRemote.text)
 	status = select_remote(dashboard_state, DashboardView.status_strip)
@@ -773,7 +791,7 @@ dashboard_page = |dashboard_state, route, selected_service, manual_refresh_text,
 	jobs = select_remote(dashboard_state, DashboardView.job_rows)
 	alerts = select_remote(dashboard_state, DashboardView.alert_rows)
 	selected_detail = select_remote_with(dashboard_state, selected_service, Dashboard.service_detail_for)
-	show_detail = Signal.map(route, route_shows_detail)
+	show_detail = route.map(route_shows_detail)
 
 	Ui.component(
 		|_|
@@ -782,32 +800,29 @@ dashboard_page = |dashboard_state, route, selected_service, manual_refresh_text,
 				[
 					Html.div_c(
 						DashboardTheme.shell_class,
-						List.concat(
-							[
-								toolbar(last_updated, manual_refresh_text, visibility_status, refresh_now, route_intent),
-								Ui.when(
-									show_detail,
-									|_| service_detail_panel(selected_detail, route_intent),
-									|_|
-										Html.div_c(
-											"grid gap-4",
-											[
-												status_strip(status),
-												metric_grid(metrics),
-												service_nav(route_intent),
-												Html.div_c(
-													DashboardTheme.main_grid_class,
-													[
-														Html.div_c(DashboardTheme.wide_column_class, [chart_panel(chart), traffic_panel(traffic), services_panel(services)]),
-														Html.div_c(DashboardTheme.side_column_class, [jobs_panel(jobs), alerts_panel(alerts)]),
-													],
-												),
-											],
-										),
-								),
-							],
-							lifecycle,
-						),
+						[
+							toolbar(last_updated, manual_refresh_text, visibility_status, refresh_now, route_intent),
+							Ui.when(
+								show_detail,
+								|_| service_detail_panel(selected_detail, route_intent),
+								|_|
+									Html.div_c(
+										"grid gap-4",
+										[
+											status_strip(status),
+											metric_grid(metrics),
+											service_nav(route_intent),
+											Html.div_c(
+												DashboardTheme.main_grid_class,
+												[
+													Html.div_c(DashboardTheme.wide_column_class, [chart_panel(chart), traffic_panel(traffic), services_panel(services)]),
+													Html.div_c(DashboardTheme.side_column_class, [jobs_panel(jobs), alerts_panel(alerts)]),
+												],
+											),
+										],
+									),
+							),
+						].concat(lifecycle),
 					),
 				],
 			),
@@ -824,12 +839,14 @@ main = |_| {
 				|route_intent| {
 					location = Browser.location
 					visibility = Browser.visibility
-					visible = Signal.map(visibility, is_visible)
-					route = Signal.map(location, route_from_location)
-					selected_service = Signal.map(route, route_service_id)
+					visible : Signal.Signal(Bool)
+					visible = visibility.map(is_visible)
+
+					route = location.map(route_from_location)
+					selected_service = route.map(route_service_id)
 					tick = Signal.interval(2000)
 					refresh_inputs = { tick: tick, manual: manual_refresh.signal() }.Signal
-					refresh_request = Signal.map(refresh_inputs, refresh_key)
+					refresh_request = refresh_inputs.map(refresh_key)
 
 					dashboard_task = Http.get_text_task("dashboard")
 					dashboard_state =
@@ -840,11 +857,13 @@ main = |_| {
 							Dashboard.request_failed,
 						)
 					canonical_inputs = { dashboard: dashboard_state, location }.Signal
-					canonical_route = Signal.map(canonical_inputs, |inputs| canonical_location(inputs.dashboard, inputs.location))
+					canonical_route = canonical_inputs.map(|inputs| canonical_location(inputs.dashboard, inputs.location))
 
 					manual_refresh_text = field(manual_refresh.signal(), DashboardView.manual_refresh_text)
-					visibility_status = Signal.map(visibility, visibility_status_text)
-					document_title = Signal.map(route, document_title_for_route)
+					visibility_status : Signal.Signal(Str)
+					visibility_status = visibility.map(visibility_status_text)
+
+					document_title = route.map(document_title_for_route)
 					dashboard_page(
 						dashboard_state,
 						route,

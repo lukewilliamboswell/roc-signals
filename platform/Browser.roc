@@ -5,12 +5,12 @@ import Signal exposing [Signal]
 
 read_byte : List(U8) -> { byte : U8, rest : List(U8) }
 read_byte = |bytes|
-		match List.first(bytes) {
-			Ok(byte) => { byte, rest: List.drop_first(bytes, 1) }
-			Err(_) => {
-				crash "malformed browser payload: missing byte"
-			}
+	match bytes.first() {
+		Ok(byte) => { byte, rest: bytes.drop_first(1) }
+		Err(_) => {
+			crash "malformed browser payload: missing byte"
 		}
+	}
 
 read_u32_le : List(U8) -> { value : U64, rest : List(U8) }
 read_u32_le = |bytes| {
@@ -34,7 +34,7 @@ take_bytes = |bytes, count| {
 
 	while $left > 0 {
 		next = read_byte($remaining)
-		$value = List.append($value, next.byte)
+		$value = $value.append(next.byte)
 		$remaining = next.rest
 		$left = $left - 1
 	}
@@ -82,7 +82,7 @@ Browser := [].{
 		query = read_text(path.rest)
 		hash = read_text(query.rest)
 
-		if !List.is_empty(hash.rest) {
+		if !hash.rest.is_empty() {
 			crash "malformed location payload: trailing bytes"
 		}
 
@@ -93,7 +93,7 @@ Browser := [].{
 	decode_visibility_payload = |bytes| {
 		status = read_byte(bytes)
 
-		if !List.is_empty(status.rest) {
+		if !status.rest.is_empty() {
 			crash "malformed visibility payload: trailing bytes"
 		}
 
@@ -110,7 +110,7 @@ Browser := [].{
 	decode_online_payload = |bytes| {
 		status = read_byte(bytes)
 
-		if !List.is_empty(status.rest) {
+		if !status.rest.is_empty() {
 			crash "malformed online payload: trailing bytes"
 		}
 
@@ -128,21 +128,21 @@ Browser := [].{
 		status = read_byte(bytes)
 
 		if status.byte == 0 {
-			if !List.is_empty(status.rest) {
+			if !status.rest.is_empty() {
 				crash "malformed storage payload: trailing bytes"
 			}
 
 			StorageMissing
 		} else if status.byte == 1 {
 			value = read_text(status.rest)
-			if !List.is_empty(value.rest) {
+			if !value.rest.is_empty() {
 				crash "malformed storage payload: trailing bytes"
 			}
 
 			StorageValue(value.value)
 		} else if status.byte == 2 {
 			message = read_text(status.rest)
-			if !List.is_empty(message.rest) {
+			if !message.rest.is_empty() {
 				crash "malformed storage payload: trailing bytes"
 			}
 

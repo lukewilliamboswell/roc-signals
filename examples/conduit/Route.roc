@@ -57,12 +57,12 @@ Route := [
 			Settings
 		} else if path == "/editor" {
 			EditorNew
-		} else if Str.starts_with(path, "/editor/") {
-			slug_route(Str.drop_prefix(path, "/editor/"), |slug| EditorEdit(slug))
-		} else if Str.starts_with(path, "/article/") {
-			slug_route(Str.drop_prefix(path, "/article/"), |slug| Article(slug))
-		} else if Str.starts_with(path, "/profile/") {
-			profile_route(Str.drop_prefix(path, "/profile/"))
+		} else if path.starts_with("/editor/") {
+			slug_route(path.drop_prefix("/editor/"), |slug| EditorEdit(slug))
+		} else if path.starts_with("/article/") {
+			slug_route(path.drop_prefix("/article/"), |slug| Article(slug))
+		} else if path.starts_with("/profile/") {
+			profile_route(path.drop_prefix("/profile/"))
 		} else {
 			NotFound
 		}
@@ -146,7 +146,7 @@ Route := [
 
 	profile_route : Str -> Route
 	profile_route = |rest|
-		match Str.find_first(rest, "/") {
+		match rest.find_first("/") {
 			Ok(split) =>
 				if split.after == "favorites" and valid_segment(split.before) {
 					ProfileFavorites(split.before)
@@ -163,10 +163,10 @@ Route := [
 
 	valid_segment : Str -> Bool
 	valid_segment = |segment|
-		if Str.is_empty(segment) {
+		if segment.is_empty() {
 			False
 		} else {
-			match Str.find_first(segment, "/") {
+			match segment.find_first("/") {
 				Ok(_) => False
 				Err(_) => True
 			}
@@ -174,11 +174,11 @@ Route := [
 
 	parse_feed : Str -> Route.Feed
 	parse_feed = |query|
-		Str.split_on(query, "&").fold(
+		query.split_on("&").fold(
 			default_feed,
 			|feed, pair|
-				if Str.starts_with(pair, "page=") {
-					match U64.from_str(Str.drop_prefix(pair, "page=")) {
+				if pair.starts_with("page=") {
+					match U64.from_str(pair.drop_prefix("page=")) {
 						Ok(page) =>
 							if page >= 1 {
 								{ ..feed, page: page }
@@ -189,9 +189,9 @@ Route := [
 					}
 				} else if pair == "feed=yours" {
 					{ ..feed, source: Yours }
-				} else if Str.starts_with(pair, "tag=") {
-					tag_value = Str.drop_prefix(pair, "tag=")
-					if Str.is_empty(tag_value) {
+				} else if pair.starts_with("tag=") {
+					tag_value = pair.drop_prefix("tag=")
+					if tag_value.is_empty() {
 						feed
 					} else {
 						{ ..feed, tag: Tagged(tag_value) }
@@ -222,7 +222,7 @@ Route := [
 		parts = [source_part, page_part, tag_part].fold(
 			[],
 			|acc, part|
-				if Str.is_empty(part) {
+				if part.is_empty() {
 					acc
 				} else {
 					acc.append(part)

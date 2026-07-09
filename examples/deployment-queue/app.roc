@@ -5,11 +5,8 @@ import pf.Html
 import pf.Signal
 import pf.Ui
 
-concat3 : Str, Str, Str -> Str
-concat3 = |a, b, c| Str.concat(Str.concat(a, b), c)
-
 row_label : Str, I64 -> Str
-row_label = |label, count| concat3(label, " checks: ", count.to_str())
+row_label = |label, count| "${label} checks: ${count.to_str()}"
 
 row_a = "Edge Gateway"
 
@@ -78,25 +75,44 @@ rows_for_shape = |shape, hide_workers| {
 	}
 }
 
+shape_code : Bool, Bool -> I64
+shape_code = |reordered, inserted|
+	if reordered {
+		if inserted {
+			3
+		} else {
+			2
+		}
+	} else {
+		if inserted {
+			1
+		} else {
+			0
+		}
+	}
+
 render_row : Str, Signal.Signal(Str) -> Elem
 render_row = |label, _row_signal| {
 	Ui.state(
 		0,
 		|count| {
+			count_signal : Signal.Signal(I64)
 			count_signal = count.signal()
-			count_label = Signal.map(count_signal, |n| row_label(label, n))
-			has_count = Signal.map(count_signal, |n| n > 0)
+			count_label : Signal.Signal(Str)
+			count_label = count_signal.map(|n| row_label(label, n))
+			has_count : Signal.Signal(Bool)
+			has_count = count_signal.map(|n| n > 0)
 
 			Html.section_c(
 				label,
 				row_class,
 				[
 					Html.heading_c(label, "text-lg font-semibold text-zinc-950"),
-					Html.button_c(Str.concat("Check ", label), "button", count.on_unit(|n| n + 1)),
+					Html.button_c("Check ${label}", "button", count.on_unit(|n| n + 1)),
 					Ui.when(
 						has_count,
 						|_| Html.paragraph_s_c(count_label, "text-sm font-medium text-emerald-700"),
-						|_| Html.paragraph_c(Str.concat(label, " awaiting verification"), "text-sm text-zinc-600"),
+						|_| Html.paragraph_c("${label} awaiting verification", "text-sm text-zinc-600"),
 					),
 				],
 			)
@@ -134,29 +150,17 @@ main = |_| {
 										}.Signal
 									shape : Signal.Signal(I64)
 									shape =
-										Signal.map(
-											shape_inputs,
-											|inputs| if inputs.reordered {
-												if inputs.inserted {
-													3
-												} else {
-													2
-												}
-											} else {
-												if inputs.inserted {
-													1
-												} else {
-													0
-												}
-											},
+										shape_inputs.map(
+											|inputs| shape_code(inputs.reordered, inputs.inserted),
 										)
 									rows_inputs =
 										{
 											shape_code: shape,
 											filtered: filtered.signal(),
 										}.Signal
+									rows : Signal.Signal(List(Str))
 									rows =
-										Signal.map(rows_inputs, |inputs| rows_for_shape(inputs.shape_code, inputs.filtered))
+										rows_inputs.map(|inputs| rows_for_shape(inputs.shape_code, inputs.filtered))
 
 									Html.div_c(
 										page_class,

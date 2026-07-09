@@ -20,19 +20,11 @@ initial_state = {
 	submits: 0,
 }
 
-concat3 : Str, Str, Str -> Str
-concat3 = |a, b, c| Str.concat(Str.concat(a, b), c)
-
-concat4 : Str, Str, Str, Str -> Str
-concat4 = |a, b, c, d| Str.concat(concat3(a, b, c), d)
-
 set_query : PaletteState, Str -> PaletteState
 set_query = |state, value| { ..state, query: value }
 
 set_key : PaletteState, Ui.KeyPayload -> PaletteState
-set_key = |state, payload| {
-	{ ..state, last_key: payload.key, shift_key: payload.shift_key }
-}
+set_key = |state, payload| { ..state, last_key: payload.key, shift_key: payload.shift_key }
 
 record_submit : PaletteState -> PaletteState
 record_submit = |state| { ..state, submits: state.submits + 1 }
@@ -46,26 +38,24 @@ shortcut_label = |state| {
 			""
 		}
 
-	concat4("Shortcut captured: ", state.last_key, shift_label, "")
+	"Shortcut captured: ${state.last_key}${shift_label}"
 }
 
 submit_label : PaletteState -> Str
-submit_label = |state| {
+submit_label = |state|
 	if state.submits == 0 {
 		"No command has run yet"
 	} else {
-		Str.concat("Commands run: ", state.submits.to_str())
+		"Commands run: ${state.submits.to_str()}"
 	}
-}
 
 query_label : PaletteState -> Str
-query_label = |state| {
-	if Str.is_empty(state.query) {
+query_label = |state|
+	if state.query.is_empty() {
 		"Start typing to filter actions"
 	} else {
-		Str.concat("Filtering actions for: ", state.query)
+		"Filtering actions for: ${state.query}"
 	}
-}
 
 page_class = "grid gap-5"
 
@@ -83,10 +73,10 @@ main = |_| {
 		initial_state,
 		|model| {
 			state_signal = model.signal()
-			query_signal = Signal.map(state_signal, |state| state.query)
-			key_signal = Signal.map(state_signal, shortcut_label)
-			submit_signal = Signal.map(state_signal, submit_label)
-			query_text = Signal.map(state_signal, query_label)
+			query_signal = state_signal.map(|state| state.query)
+			key_signal = state_signal.map(shortcut_label)
+			submit_signal = state_signal.map(submit_label)
+			query_text = state_signal.map(query_label)
 
 			Html.div_c(
 				page_class,

@@ -6,11 +6,8 @@ import pf.Html
 
 main : {} -> Elem
 main = |_| {
-	Html.div(
-		[],
-		List.concat(
-			[Html.heading("Json decode fixture")],
-			JsonProbe.rows.map(Html.paragraph),
-		),
-	)
-}
+		Html.div(
+			[],
+			[Html.heading("Json decode fixture")].concat(JsonProbe.rows.map(Html.paragraph)),
+		)
+	}

@@ -22,9 +22,11 @@ import pf.Ui
 
 header_view : Signal.Signal(Session), Ui.State(Nav.RouteIntent) -> Elem
 header_view = |session, intent| {
-	signed_in = Signal.map(session, |value| Session.is_signed_in(value))
-	username_rows = Signal.map(
-		session,
+	signed_in : Signal.Signal(Bool)
+	signed_in = session.map(|value| Session.is_signed_in(value))
+
+	username_rows : Signal.Signal(List(Str))
+	username_rows = session.map(
 		|value|
 			match value {
 				SignedIn(user) => [user.username]
@@ -122,7 +124,7 @@ editor_edit_page = |route| {
 				[Html.class_attr("px-4 py-6")],
 				[
 					Html.heading("Edit article"),
-					Html.text_s(Signal.map(route, |value| "Editing: ${Route.article_slug(value)}")),
+					Html.text_s(route.map(|value| "Editing: ${Route.article_slug(value)}")),
 					Html.paragraph("The editor arrives with the write phase (Phase 4)."),
 				],
 			),
@@ -147,7 +149,9 @@ not_found_page = |intent| {
 
 page_view : Signal.Signal(Route), Signal.Signal(Session), Ui.State(Nav.RouteIntent) -> Elem
 page_view = |route, session, intent| {
-	is_kind = |name| Signal.map(route, |value| Route.kind(value) == name)
+	is_kind : Str -> Signal.Signal(Bool)
+	is_kind = |name| route.map(|value| Route.kind(value) == name)
+
 	Ui.when(
 		is_kind("home"),
 		|_| Home.page(route, session, intent),
@@ -201,10 +205,11 @@ main = |_| {
 		Nav.initial,
 		|route_intent| {
 			location = Browser.location
-			route = Signal.map(location, Route.from_location)
+			route = location.map(Route.from_location)
 			session = Session.current
-			document_title = Signal.map(route, Route.title)
-			guard = Signal.map2(route, session, guard_target)
+			document_title = route.map(Route.title)
+			guard_inputs = { route: route, session: session }.Signal
+			guard = guard_inputs.map(|value| guard_target(value.route, value.session))
 
 			Html.div_c(
 				"mx-auto flex min-h-screen max-w-3xl flex-col",

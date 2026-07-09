@@ -3,18 +3,18 @@
 Format := {}.{
 	display_date : Str -> Str
 	display_date = |iso|
-		match Str.find_first(iso, "-") {
+		match iso.find_first("-") {
 			Ok(year_split) =>
-				match Str.find_first(year_split.after, "-") {
+				match year_split.after.find_first("-") {
 					Ok(month_split) => {
 						day_raw =
-							match Str.find_first(month_split.after, "T") {
+							match month_split.after.find_first("T") {
 								Ok(day_split) => day_split.before
 								Err(_) => month_split.after
 							}
 						day =
-							if Str.starts_with(day_raw, "0") {
-								Str.drop_prefix(day_raw, "0")
+							if day_raw.starts_with("0") {
+								day_raw.drop_prefix("0")
 							} else {
 								day_raw
 							}

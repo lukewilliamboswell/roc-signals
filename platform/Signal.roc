@@ -37,8 +37,7 @@ Signal(a) := { expr : Box(Node.SignalExpr), cap : Capability(a) }.{
 		]
 	fold_task = |task, loading, done, failed| {
 		status = Signal.from_task(task)
-		Signal.map(
-			status,
+		status.map(
 			|value| match value {
 				TaskStatus.Loading => loading
 				TaskStatus.Done(done_value) => done(done_value)
@@ -295,16 +294,16 @@ Signal(a) := { expr : Box(Node.SignalExpr), cap : Capability(a) }.{
 		token : Box(U64)
 		token = Node.new_token({})
 			input_cap =
-			match List.first(signals) {
+			match signals.first() {
 				Ok(first) => first.cap
 				Err(_) => Capability.new({})
 			}
 		output_cap = Capability.new({})
-		exprs = List.map(signals, |s| Box.unbox(Signal.clone_expr(s.expr)))
+		exprs = signals.map(|s| Box.unbox(Signal.clone_expr(s.expr)))
 		transform : List(HostValue) -> HostValue
 		transform = |items| {
 			values : List(a)
-			values = List.map(items, |host_value| Box.unbox(Capability.get(host_value, input_cap)))
+			values = items.map(|host_value| Box.unbox(Capability.get(host_value, input_cap)))
 			Capability.store(Box.box(values), output_cap)
 		}
 		{

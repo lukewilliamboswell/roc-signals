@@ -28,11 +28,8 @@ initial_state = {
 	composition_end_count: 0,
 }
 
-concat3 : Str, Str, Str -> Str
-concat3 = |a, b, c| Str.concat(Str.concat(a, b), c)
-
 label_i64 : Str, I64 -> Str
-label_i64 = |name, value| concat3(name, ": ", value.to_str())
+label_i64 = |name, value| "${name}: ${value.to_str()}"
 
 update_email : FormState, Str -> FormState
 update_email = |state, value| { ..state, email: value }
@@ -44,13 +41,12 @@ record_terms : FormState, Bool -> FormState
 record_terms = |state, accepted| { ..state, accepted }
 
 record_submit : FormState -> FormState
-record_submit = |state| {
-	if (!Str.is_empty(state.email)) and state.accepted {
+record_submit = |state|
+	if (!state.email.is_empty()) and state.accepted {
 		{ ..state, submit_count: state.submit_count + 1 }
 	} else {
 		state
 	}
-}
 
 record_focus : FormState -> FormState
 record_focus = |state| { ..state, focus_count: state.focus_count + 1 }
@@ -65,31 +61,28 @@ record_composition_end : FormState -> FormState
 record_composition_end = |state| { ..state, composition_end_count: state.composition_end_count + 1 }
 
 email_status : Str -> Str
-email_status = |value| {
-	if Str.is_empty(value) {
+email_status = |value|
+	if value.is_empty() {
 		"Email status: required"
 	} else {
 		"Email status: ready"
 	}
-}
 
 terms_label : Bool -> Str
-terms_label = |accepted| {
+terms_label = |accepted|
 	if accepted {
 		"Terms ready for submission"
 	} else {
 		"Review the workspace terms"
 	}
-}
 
 submit_label : FormState -> Str
-submit_label = |state| {
+submit_label = |state|
 	if state.submit_count == 0 {
 		"Invitation not sent"
 	} else {
-		Str.concat("Invitation sent: ", state.submit_count.to_str())
+		"Invitation sent: ${state.submit_count.to_str()}"
 	}
-}
 
 page_class = "grid gap-5"
 
@@ -104,18 +97,30 @@ main = |_| {
 	Ui.state(
 		initial_state,
 		|model| {
+			state_signal : Signal.Signal(FormState)
 			state_signal = model.signal()
-			email_signal = Signal.map(state_signal, |state| state.email)
-			accepted_signal = Signal.map(state_signal, |state| state.accepted)
-			invalid_signal = Signal.map(email_signal, |value| Str.is_empty(value))
-			email_text = Signal.map(email_signal, email_status)
-			terms_text = Signal.map(accepted_signal, terms_label)
-			submit_text = Signal.map(state_signal, submit_label)
-			focus_text = Signal.map(state_signal, |state| label_i64("Focus events", state.focus_count))
-			blur_text = Signal.map(state_signal, |state| label_i64("Blur events", state.blur_count))
-			change_text = Signal.map(state_signal, |state| label_i64("Change events", state.change_count))
-			composition_start_text = Signal.map(state_signal, |state| label_i64("Composition start events", state.composition_start_count))
-			composition_end_text = Signal.map(state_signal, |state| label_i64("Composition end events", state.composition_end_count))
+			email_signal : Signal.Signal(Str)
+			email_signal = state_signal.map(|state| state.email)
+			accepted_signal : Signal.Signal(Bool)
+			accepted_signal = state_signal.map(|state| state.accepted)
+			invalid_signal : Signal.Signal(Bool)
+			invalid_signal = email_signal.map(|value| value.is_empty())
+			email_text : Signal.Signal(Str)
+			email_text = email_signal.map(email_status)
+			terms_text : Signal.Signal(Str)
+			terms_text = accepted_signal.map(terms_label)
+			submit_text : Signal.Signal(Str)
+			submit_text = state_signal.map(submit_label)
+			focus_text : Signal.Signal(Str)
+			focus_text = state_signal.map(|state| label_i64("Focus events", state.focus_count))
+			blur_text : Signal.Signal(Str)
+			blur_text = state_signal.map(|state| label_i64("Blur events", state.blur_count))
+			change_text : Signal.Signal(Str)
+			change_text = state_signal.map(|state| label_i64("Change events", state.change_count))
+			composition_start_text : Signal.Signal(Str)
+			composition_start_text = state_signal.map(|state| label_i64("Composition start events", state.composition_start_count))
+			composition_end_text : Signal.Signal(Str)
+			composition_end_text = state_signal.map(|state| label_i64("Composition end events", state.composition_end_count))
 
 			Html.div_c(
 				page_class,

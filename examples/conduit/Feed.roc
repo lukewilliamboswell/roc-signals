@@ -19,11 +19,21 @@ Feed := {}.{
 
 	view : Signal.Signal(Api.Remote(Api.FeedPage)), Ui.State(Nav.RouteIntent) -> Elem
 	view = |remote, intent| {
-		is_loading = Signal.map(remote, is_loading_state)
-		is_failed = Signal.map(remote, is_failed_state)
-		is_empty = Signal.map(remote, is_empty_state)
-		articles = Signal.map(remote, articles_of)
-		message = Signal.map(remote, failure_message)
+		is_loading : Signal.Signal(Bool)
+		is_loading = remote.map(is_loading_state)
+
+		is_failed : Signal.Signal(Bool)
+		is_failed = remote.map(is_failed_state)
+
+		is_empty : Signal.Signal(Bool)
+		is_empty = remote.map(is_empty_state)
+
+		articles : Signal.Signal(List(Api.ArticleSummary))
+		articles = remote.map(articles_of)
+
+		message : Signal.Signal(Str)
+		message = remote.map(failure_message)
+
 		Ui.component(
 			|_|
 				Html.div(
@@ -59,7 +69,7 @@ Feed := {}.{
 	is_empty_state : Api.Remote(Api.FeedPage) -> Bool
 	is_empty_state = |remote|
 		match remote {
-			Ready(page) => List.is_empty(page.articles)
+			Ready(page) => page.articles.is_empty()
 			_ => False
 		}
 
@@ -79,12 +89,24 @@ Feed := {}.{
 
 	preview_row : Str, Signal.Signal(Api.ArticleSummary), Ui.State(Nav.RouteIntent) -> Elem
 	preview_row = |slug, article, intent| {
-		date_text = Signal.map(article, |value| Format.display_date(value.created_at))
-		title = Signal.map(article, |value| value.title)
-		description = Signal.map(article, |value| value.description)
-		favorites = Signal.map(article, |value| "${value.favorites_count.to_str()} favorites")
-		author_rows = Signal.map(article, |value| [value.author.username])
-		tags = Signal.map(article, |value| value.tag_list)
+		date_text : Signal.Signal(Str)
+		date_text = article.map(|value| Format.display_date(value.created_at))
+
+		title : Signal.Signal(Str)
+		title = article.map(|value| value.title)
+
+		description : Signal.Signal(Str)
+		description = article.map(|value| value.description)
+
+		favorites : Signal.Signal(Str)
+		favorites = article.map(|value| "${value.favorites_count.to_str()} favorites")
+
+		author_rows : Signal.Signal(List(Str))
+		author_rows = article.map(|value| [value.author.username])
+
+		tags : Signal.Signal(List(Str))
+		tags = article.map(|value| value.tag_list)
+
 		Elem.Element(
 			{
 				tag: "article",
@@ -130,7 +152,8 @@ Feed := {}.{
 
 	pagination : Signal.Signal(Api.Remote(Api.FeedPage)), Signal.Signal(Route.Feed), Ui.State(Nav.RouteIntent) -> Elem
 	pagination = |remote, feed, intent| {
-		items = Signal.map2(remote, feed, page_items)
+		inputs = { remote: remote, feed: feed }.Signal
+		items = inputs.map(|value| page_items(value.remote, value.feed))
 		Elem.Element(
 			{
 				tag: "nav",
@@ -143,8 +166,7 @@ Feed := {}.{
 	page_link_row : Ui.State(Nav.RouteIntent) -> (Str, Signal.Signal(Feed.PageItem) -> Elem)
 	page_link_row = |intent|
 		|key, item| {
-			classes = Signal.map(
-				item,
+			classes = item.map(
 				|value|
 					if value.active {
 						"rounded bg-emerald-600 px-2 text-white"
@@ -179,14 +201,14 @@ Feed := {}.{
 
 	page_label : Str -> Str
 	page_label = |key|
-		match Str.find_first(key, "|") {
+		match key.find_first("|") {
 			Ok(split) => split.before
 			Err(_) => key
 		}
 
 	key_location : Str -> Browser.Location
 	key_location = |key|
-		match Str.find_first(key, "|") {
+		match key.find_first("|") {
 			Ok(split) => {
 				page =
 					match U64.from_str(split.before) {
@@ -194,7 +216,7 @@ Feed := {}.{
 						Err(_) => 1
 					}
 				tag =
-					if Str.is_empty(split.after) {
+					if split.after.is_empty() {
 						AllTags
 					} else {
 						Tagged(split.after)
@@ -209,7 +231,7 @@ Feed := {}.{
 		if from > to {
 			[]
 		} else {
-			List.concat([from], number_range(from + 1, to))
+			[from].concat(number_range(from + 1, to))
 		}
 
 	is_loading_state : Api.Remote(Api.FeedPage) -> Bool

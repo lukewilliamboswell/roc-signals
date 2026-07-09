@@ -98,9 +98,9 @@ items_for_mode = |mode| {
 
 render_row : Str, Signal.Signal(Item) -> Elem
 render_row = |key, item_signal| {
-	label_signal = Signal.map(item_signal, |item| item.label)
+	label_signal = item_signal.map(|item| item.label)
 	Html.section(
-		Str.concat("Large row ", key),
+		"Large row ${key}",
 		[],
 		[
 			Html.paragraph_s(label_signal),
@@ -113,7 +113,7 @@ main = |_| {
 	Ui.state(
 		0,
 		|mode| {
-			items = Signal.map(mode.signal(), items_for_mode)
+			items = mode.signal().map(items_for_mode)
 			Html.div(
 				[],
 				[

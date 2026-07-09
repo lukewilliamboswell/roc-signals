@@ -124,7 +124,7 @@ Api := {}.{
 	# wip/research/realworld_demo_findings.md).
 
 	replace : Str, Str, Str -> Str
-	replace = |text, from, to| Str.join_with(Str.split_on(text, from), to)
+	replace = |text, from, to| Str.join_with(text.split_on(from), to)
 
 	shield_escapes : Str -> Str
 	shield_escapes = |raw| {
@@ -185,40 +185,61 @@ Api := {}.{
 
 	AuthResult : [AuthIdle, AuthAccepted(Api.User), AuthRejected(List(Str)), AuthErrored(Str)]
 
+	auth_headers : Str -> List(Http.Header)
+	auth_headers = |token| if token.is_empty() { [] } else { [{ name: "authorization", value: "Token ${token}" }] }
+
+	json_headers : Str -> List(Http.Header)
+	json_headers = |token|
+		if token.is_empty() {
+			[{ name: "content-type", value: "application/json" }]
+		} else {
+			[
+				{ name: "content-type", value: "application/json" },
+				{ name: "authorization", value: "Token ${token}" },
+			]
+		}
+
 	# Authenticated requests use the full request/response path because the
 	# text-task helpers cannot carry headers.
+	get_request : Str, Str -> _
 	get_request = |uri, token| {
-		base = Http.with_uri(Http.request_from_method(Http.method_get), uri)
-		timed = Http.with_timeout_ms(base, 8000)
-		if Str.is_empty(token) {
-			timed
-		} else {
-			Http.add_header(timed, "authorization", "Token ${token}")
-		}
+		Http.with_timeout_ms(
+			Http.with_headers(
+				Http.request_from_method(Http.method_get)
+					.with_uri(uri),
+				auth_headers(token),
+			),
+			8000,
+		)
 	}
 
+	post_request : Str, Str, Str -> _
 	post_request = |uri, body, token| {
-		base = Http.with_uri(Http.request_from_method(Http.method_post), uri)
-		typed = Http.add_header(base, "content-type", "application/json")
-		timed = Http.with_timeout_ms(Http.with_body(typed, Str.to_utf8(body)), 8000)
-		if Str.is_empty(token) {
-			timed
-		} else {
-			Http.add_header(timed, "authorization", "Token ${token}")
-		}
+		Http.with_timeout_ms(
+			Http.with_headers(
+				Http.request_from_method(Http.method_post)
+					.with_uri(uri)
+					.with_body(body.to_utf8()),
+				json_headers(token),
+			),
+			8000,
+		)
 	}
 
+	put_request : Str, Str, Str -> _
 	put_request = |uri, body, token| {
-		base = Http.with_uri(Http.request_from_method(Http.method_put), uri)
-		typed = Http.add_header(base, "content-type", "application/json")
-		timed = Http.with_timeout_ms(Http.with_body(typed, Str.to_utf8(body)), 8000)
-		if Str.is_empty(token) {
-			timed
-		} else {
-			Http.add_header(timed, "authorization", "Token ${token}")
-		}
+		Http.with_timeout_ms(
+			Http.with_headers(
+				Http.request_from_method(Http.method_put)
+					.with_uri(uri)
+					.with_body(body.to_utf8()),
+				json_headers(token),
+			),
+			8000,
+		)
 	}
 
+	feed_request : Route.Feed, Str -> _
 	feed_request = |feed, token| get_request(feed_uri(feed), token)
 
 	feed_uri_for : Route.Feed -> Str
@@ -231,8 +252,10 @@ Api := {}.{
 	register_body = |username, email, password|
 		Json.to_str({ user: { username: username, email: email, password: password } })
 
+	response_text : _ -> Str
 	response_text = |response| Str.from_utf8_lossy(Http.response_body(response))
 
+	decode_feed_response : _ -> Api.Remote(Api.FeedPage)
 	decode_feed_response = |response| {
 		status = Http.response_status(response)
 		if status == 200 {
@@ -244,6 +267,7 @@ Api := {}.{
 		}
 	}
 
+	classify_auth : _ -> Api.AuthResult
 	classify_auth = |response| {
 		status = Http.response_status(response)
 		body = response_text(response)
@@ -267,29 +291,31 @@ Api := {}.{
 	# per key, first message only. JSON/body ergonomics evidence for
 	# NEXT_STEPS priority 3 (see the findings ledger).
 	parse_errors : Str -> List(Str)
-	parse_errors = |body|
-		match Str.find_first(shield_escapes(body), "\"errors\"") {
+	parse_errors = |body| {
+		shielded = shield_escapes(body)
+		match shielded.find_first("\"errors\"") {
 			Ok(split) => collect_errors(split.after, [])
 			Err(_) => ["The request was rejected."]
 		}
+	}
 
 	collect_errors : Str, List(Str) -> List(Str)
 	collect_errors = |rest, acc|
-		match Str.find_first(rest, "\"") {
+		match rest.find_first("\"") {
 			Err(_) => acc
 			Ok(key_open) =>
-				match Str.find_first(key_open.after, "\"") {
+				match key_open.after.find_first("\"") {
 					Err(_) => acc
 					Ok(key_close) =>
-						match Str.find_first(key_close.after, "[\"") {
+						match key_close.after.find_first("[\"") {
 							Err(_) => acc
 							Ok(list_open) =>
-								match Str.find_first(list_open.after, "\"") {
+								match list_open.after.find_first("\"") {
 									Err(_) => acc
 									Ok(message_close) => {
 										entry = restore_text("${key_close.before} ${message_close.before}")
 										next = acc.append(entry)
-										match Str.find_first(message_close.after, "]") {
+										match message_close.after.find_first("]") {
 											Err(_) => next
 											Ok(list_close) => collect_errors(list_close.after, next)
 										}

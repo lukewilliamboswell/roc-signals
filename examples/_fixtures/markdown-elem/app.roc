@@ -53,30 +53,24 @@ initial_live_markdown = "```\nlive fence body\n```\n- Alpha item\n  - Beta neste
 initial_state : State
 initial_state = { markdown: initial_live_markdown }
 
-concat3 : Str, Str, Str -> Str
-concat3 = |a, b, c| Str.concat(Str.concat(a, b), c)
-
-concat4 : Str, Str, Str, Str -> Str
-concat4 = |a, b, c, d| Str.concat(concat3(a, b, c), d)
-
 block_key : U64, Str -> Str
-block_key = |index, kind| concat4("b:", index.to_str(), ":", kind)
+block_key = |index, kind| "b:${index.to_str()}:${kind}"
 
 item_key : U64 -> Str
-item_key = |index| concat3("i:", index.to_str(), "")
+item_key = |index| "i:${index.to_str()}"
 
 child_key : U64 -> Str
-child_key = |index| concat3("c:", index.to_str(), "")
+child_key = |index| "c:${index.to_str()}"
 
 segment_key : U64, Str -> Str
-segment_key = |index, kind| concat4("s:", index.to_str(), ":", kind)
+segment_key = |index, kind| "s:${index.to_str()}:${kind}"
 
 empty_inline_state : InlineState
 empty_inline_state = { segments: [], index: 0 }
 
 append_segment : InlineState, Str, Str, Str -> InlineState
 append_segment = |state, kind, text, href| {
-	if Str.is_empty(text) {
+	if text.is_empty() {
 		state
 	} else {
 		{
@@ -88,20 +82,20 @@ append_segment = |state, kind, text, href| {
 
 safe_href : Str -> Bool
 safe_href = |href| {
-	Str.starts_with(href, "https://")
-		or Str.starts_with(href, "http://")
-		or Str.starts_with(href, "/")
-		or Str.starts_with(href, "#")
-		or Str.starts_with(href, "mailto:")
+	href.starts_with("https://")
+		or href.starts_with("http://")
+		or href.starts_with("/")
+		or href.starts_with("#")
+		or href.starts_with("mailto:")
 }
 
 parse_link_inline : InlineState, Str -> InlineState
 parse_link_inline = |state, text| {
-	match Str.find_first(text, "[") {
+	match text.find_first("[") {
 		Ok(open) =>
-			match Str.find_first(open.after, "](") {
+			match open.after.find_first("](") {
 				Ok(label_split) =>
-					match Str.find_first(label_split.after, ")") {
+					match label_split.after.find_first(")") {
 						Ok(href_split) => {
 							before_state = parse_inline_into(state, open.before)
 							link_state =
@@ -122,11 +116,11 @@ parse_link_inline = |state, text| {
 
 parse_image_inline : InlineState, Str -> InlineState
 parse_image_inline = |state, text| {
-	match Str.find_first(text, "![") {
+	match text.find_first("![") {
 		Ok(open) =>
-			match Str.find_first(open.after, "](") {
+			match open.after.find_first("](") {
 				Ok(alt_split) =>
-					match Str.find_first(alt_split.after, ")") {
+					match alt_split.after.find_first(")") {
 						Ok(src_split) => {
 							before_state = parse_inline_into(state, open.before)
 							image_state =
@@ -147,9 +141,9 @@ parse_image_inline = |state, text| {
 
 parse_code_inline : InlineState, Str -> InlineState
 parse_code_inline = |state, text| {
-	match Str.find_first(text, "`") {
+	match text.find_first("`") {
 		Ok(open) =>
-			match Str.find_first(open.after, "`") {
+			match open.after.find_first("`") {
 				Ok(close) => {
 					before_state = parse_inline_into(state, open.before)
 					code_state = append_segment(before_state, "code", close.before, "")
@@ -163,9 +157,9 @@ parse_code_inline = |state, text| {
 
 parse_strong_inline : InlineState, Str -> InlineState
 parse_strong_inline = |state, text| {
-	match Str.find_first(text, "**") {
+	match text.find_first("**") {
 		Ok(open) =>
-			match Str.find_first(open.after, "**") {
+			match open.after.find_first("**") {
 				Ok(close) => {
 					before_state = parse_inline_into(state, open.before)
 					strong_state = append_segment(before_state, "strong", close.before, "")
@@ -179,7 +173,7 @@ parse_strong_inline = |state, text| {
 
 parse_inline_into : InlineState, Str -> InlineState
 parse_inline_into = |state, text| {
-	if Str.is_empty(text) {
+	if text.is_empty() {
 		state
 	} else {
 		parse_strong_inline(state, text)
@@ -235,7 +229,7 @@ flush_item = |state|
 flush_list : MarkdownState -> MarkdownState
 flush_list = |state| {
 	flushed = flush_item(state)
-	if List.is_empty(flushed.pending_items) {
+	if flushed.pending_items.is_empty() {
 		flushed
 	} else {
 		appended = append_block(flushed, "list", "", flushed.pending_items)
@@ -268,28 +262,28 @@ append_other = |state, kind, text| append_block(flush_list(state), kind, text, [
 
 parse_markdown_line : MarkdownState, Str -> MarkdownState
 parse_markdown_line = |state, line| {
-	trimmed = Str.trim(line)
+	trimmed = line.trim()
 	if state.in_fence {
-		if Str.starts_with(trimmed, "```") {
+		if trimmed.starts_with("```") {
 			flush_fence(state)
 		} else {
 			{ ..state, fence_lines: state.fence_lines.append(line) }
 		}
-	} else if Str.starts_with(trimmed, "```") {
+	} else if trimmed.starts_with("```") {
 		flushed = flush_list(state)
 		{ ..flushed, in_fence: True, fence_lines: [] }
-	} else if Str.is_empty(trimmed) {
+	} else if trimmed.is_empty() {
 		flush_list(state)
-	} else if Str.starts_with(line, "  - ") {
-		add_nested_item(state, Str.trim(Str.drop_prefix(line, "  - ")))
-	} else if Str.starts_with(trimmed, "- ") {
-		start_item(state, Str.drop_prefix(trimmed, "- "))
-	} else if Str.starts_with(trimmed, "## ") {
-		append_other(state, "heading", Str.drop_prefix(trimmed, "## "))
-	} else if Str.starts_with(trimmed, "# ") {
-		append_other(state, "heading", Str.drop_prefix(trimmed, "# "))
-	} else if Str.starts_with(trimmed, "> ") {
-		append_other(state, "quote", Str.drop_prefix(trimmed, "> "))
+	} else if line.starts_with("  - ") {
+		add_nested_item(state, line.drop_prefix("  - ").trim())
+	} else if trimmed.starts_with("- ") {
+		start_item(state, trimmed.drop_prefix("- "))
+	} else if trimmed.starts_with("## ") {
+		append_other(state, "heading", trimmed.drop_prefix("## "))
+	} else if trimmed.starts_with("# ") {
+		append_other(state, "heading", trimmed.drop_prefix("# "))
+	} else if trimmed.starts_with("> ") {
+		append_other(state, "quote", trimmed.drop_prefix("> "))
 	} else {
 		append_other(state, "paragraph", trimmed)
 	}
@@ -297,13 +291,13 @@ parse_markdown_line = |state, line| {
 
 parse_markdown : Str -> List(MarkdownBlock)
 parse_markdown = |source| {
-	folded = Str.split_on(source, "\n").fold(empty_markdown_state, parse_markdown_line)
+	folded = source.split_on("\n").fold(empty_markdown_state, parse_markdown_line)
 	ended = if folded.in_fence { flush_fence(folded) } else { folded }
 	flush_list(ended).blocks
 }
 
 inline_plain_text : Str -> Str
-inline_plain_text = |source| inline_segments(source).fold("", |acc, segment| Str.concat(acc, segment.text))
+inline_plain_text = |source| Str.join_with(inline_segments(source).map(|segment| segment.text), "")
 
 keyed_children : List(Str) -> List({ key : Str, text : Str })
 keyed_children = |texts|
@@ -317,19 +311,19 @@ keyed_children = |texts|
 
 inline_view : Signal.Signal(Str) -> Elem
 inline_view = |source| {
-	segments = Signal.map(source, inline_segments)
+	segments = source.map(inline_segments)
 	Elem.Element({ tag: "span", attrs: [], children: [Ui.each_str(segments, |segment| segment.key, render_inline_segment)] })
 }
 
 render_inline_segment : Str, Signal.Signal(InlineSegment) -> Elem
 render_inline_segment = |key, segment| {
-	text = Signal.map(segment, |value| value.text)
-	href = Signal.map(segment, |value| value.href)
-	if Str.ends_with(key, ":strong") {
+	text = segment.map(|value| value.text)
+	href = segment.map(|value| value.href)
+	if key.ends_with(":strong") {
 		Elem.Element({ tag: "strong", attrs: [], children: [Html.text_s(text)] })
-	} else if Str.ends_with(key, ":code") {
+	} else if key.ends_with(":code") {
 		Elem.Element({ tag: "code", attrs: [Html.class_attr("rounded bg-zinc-100 px-1 font-mono")], children: [Html.text_s(text)] })
-	} else if Str.ends_with(key, ":image") {
+	} else if key.ends_with(":image") {
 		Elem.Element(
 			{
 				tag: "img",
@@ -341,7 +335,7 @@ render_inline_segment = |key, segment| {
 				children: [],
 			},
 		)
-	} else if Str.ends_with(key, ":link") {
+	} else if key.ends_with(":link") {
 		Elem.Element(
 			{
 				tag: "a",
@@ -359,15 +353,21 @@ render_inline_segment = |key, segment| {
 
 render_child_item : Str, Signal.Signal({ key : Str, text : Str }) -> Elem
 render_child_item = |_, child| {
-	text = Signal.map(child, |value| value.text)
+	text = child.map(|value| value.text)
 	Elem.Element({ tag: "li", attrs: [], children: [inline_view(text)] })
 }
 
 render_list_item : Str, Signal.Signal(MarkdownListItem) -> Elem
 render_list_item = |_, item| {
-	text = Signal.map(item, |value| value.text)
-	children_signal = Signal.map(item, |value| keyed_children(value.children))
-	empty_children = Signal.map(item, |value| List.is_empty(value.children))
+	text : Signal.Signal(Str)
+	text = item.map(|value| value.text)
+
+	children_signal : Signal.Signal(List({ key : Str, text : Str }))
+	children_signal = item.map(|value| keyed_children(value.children))
+
+	empty_children : Signal.Signal(Bool)
+	empty_children = item.map(|value| value.children.is_empty())
+
 	Elem.Element(
 		{
 			tag: "li",
@@ -386,12 +386,14 @@ render_list_item = |_, item| {
 
 render_markdown_block : Str, Signal.Signal(MarkdownBlock) -> Elem
 render_markdown_block = |key, block| {
-	text = Signal.map(block, |value| value.text)
-	if Str.ends_with(key, ":heading") {
+	text : Signal.Signal(Str)
+	text = block.map(|value| value.text)
+
+	if key.ends_with(":heading") {
 		Elem.Element({ tag: "h3", attrs: [], children: [Html.text_s(text)] })
-	} else if Str.ends_with(key, ":quote") {
+	} else if key.ends_with(":quote") {
 		Elem.Element({ tag: "blockquote", attrs: [], children: [inline_view(text)] })
-	} else if Str.ends_with(key, ":codeblock") {
+	} else if key.ends_with(":codeblock") {
 		Elem.Element(
 			{
 				tag: "pre",
@@ -399,8 +401,10 @@ render_markdown_block = |key, block| {
 				children: [Elem.Element({ tag: "code", attrs: [], children: [Html.text_s(text)] })],
 			},
 		)
-	} else if Str.ends_with(key, ":list") {
-		items = Signal.map(block, |value| value.items)
+	} else if key.ends_with(":list") {
+		items : Signal.Signal(List(MarkdownListItem))
+		items = block.map(|value| value.items)
+
 		Elem.Element({ tag: "ul", attrs: [], children: [Ui.each_str(items, |item| item.key, render_list_item)] })
 	} else {
 		Elem.Element({ tag: "p", attrs: [], children: [inline_view(text)] })
@@ -409,7 +413,7 @@ render_markdown_block = |key, block| {
 
 markdown_view : Signal.Signal(Str) -> Elem
 markdown_view = |source| {
-	blocks = Signal.map(source, parse_markdown)
+	blocks = source.map(parse_markdown)
 	Html.div([Html.attr("data-fixture", "markdown-preview")], [Ui.each_str(blocks, |block| block.key, render_markdown_block)])
 }
 
@@ -438,7 +442,7 @@ render_static_item : MarkdownListItem -> Elem
 render_static_item = |item| {
 	base = static_inline_view(item.text)
 	children_elems =
-		if List.is_empty(item.children) {
+		if item.children.is_empty() {
 			base
 		} else {
 			base.append(Elem.Element({ tag: "ul", attrs: [], children: item.children.map(render_static_child) }))
@@ -481,7 +485,7 @@ main = |_| {
 		initial_state,
 		|model| {
 			state = model.signal()
-			markdown = Signal.map(state, |value| value.markdown)
+			markdown = state.map(|value| value.markdown)
 
 			Html.section(
 				"Markdown Elem Fixture",

@@ -5,7 +5,7 @@ Token := { raw : Str }.{
 	}
 
 	count_utf8_bytes : Token -> U64
-	count_utf8_bytes = |token| Str.count_utf8_bytes(token.raw)
+	count_utf8_bytes = |token| token.raw.count_utf8_bytes()
 }
 
 JsonProbe := [].{

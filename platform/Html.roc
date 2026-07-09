@@ -295,7 +295,7 @@ Html := [].{
 			Node.Attr.StaticText({ field: field_role, name: "", value: "form" }),
 			Node.Attr.StaticText({ field: field_label, name: "", value: label }),
 		]
-		form(List.concat(base, attrs), children)
+		form(base.concat(attrs), children)
 	}
 
 	## Link element with text, role, and accessible label metadata.
@@ -306,7 +306,7 @@ Html := [].{
 			Node.Attr.StaticText({ field: field_label, name: "", value: label }),
 			Node.Attr.StaticText({ field: field_text, name: "", value: label }),
 		]
-		Elem.Element({ tag: "a", attrs: List.concat(base, attrs), children: [] })
+		Elem.Element({ tag: "a", attrs: base.concat(attrs), children: [] })
 	}
 
 	## `div` with a static class attribute.
@@ -324,7 +324,7 @@ Html := [].{
 			Node.Attr.StaticText({ field: field_role, name: "", value: "region" }),
 			Node.Attr.StaticText({ field: field_label, name: "", value: label }),
 		]
-		Elem.Element({ tag: "section", attrs: List.concat(base, attrs), children })
+		Elem.Element({ tag: "section", attrs: base.concat(attrs), children })
 	}
 
 	## Labeled section region with a static class.
@@ -378,7 +378,7 @@ Html := [].{
 		Elem.Element(
 			{
 				tag: "p",
-				attrs: List.concat([Node.Attr.StaticText({ field: field_text, name: "", value: text_value })], attrs),
+				attrs: [Node.Attr.StaticText({ field: field_text, name: "", value: text_value })].concat(attrs),
 				children: [],
 			},
 		)
@@ -455,13 +455,10 @@ Html := [].{
 		Elem.Element(
 			{
 				tag: "button",
-				attrs: List.concat(
-					[
-						Node.Attr.StaticText({ field: field_text, name: "", value: label }),
-						event_attr(fixed_event_binding(fixed_event_click, msg)),
-					],
-					attrs,
-				),
+				attrs: [
+					Node.Attr.StaticText({ field: field_text, name: "", value: label }),
+					event_attr(fixed_event_binding(fixed_event_click, msg)),
+				].concat(attrs),
 				children: [],
 			},
 		)
@@ -484,13 +481,10 @@ Html := [].{
 		Elem.Element(
 			{
 				tag: "button",
-				attrs: List.concat(
-					[
-						Node.Attr.SignalText({ field: field_text, name: "", signal: Signal.to_expr(label), read: { capability: Capability.handle(label_cap), read: Box.box(read_label) } }),
-						event_attr(fixed_event_binding(fixed_event_click, msg)),
-					],
-					attrs,
-				),
+				attrs: [
+					Node.Attr.SignalText({ field: field_text, name: "", signal: Signal.to_expr(label), read: { capability: Capability.handle(label_cap), read: Box.box(read_label) } }),
+					event_attr(fixed_event_binding(fixed_event_click, msg)),
+				].concat(attrs),
 				children: [],
 			},
 		)
@@ -516,14 +510,11 @@ Html := [].{
 		Elem.Element(
 			{
 				tag: "button",
-				attrs: List.concat(
-					[
-						Node.Attr.SignalText({ field: field_text, name: "", signal: Signal.to_expr(label), read: { capability: Capability.handle(label_cap), read: Box.box(read_label) } }),
-						Node.Attr.SignalBool({ field: bool_field_disabled, name: "", signal: Signal.to_expr(disabled), read: { capability: Capability.handle(disabled_cap), read: Box.box(read_disabled) } }),
-						event_attr(fixed_event_binding(fixed_event_click, msg)),
-					],
-					attrs,
-				),
+				attrs: [
+					Node.Attr.SignalText({ field: field_text, name: "", signal: Signal.to_expr(label), read: { capability: Capability.handle(label_cap), read: Box.box(read_label) } }),
+					Node.Attr.SignalBool({ field: bool_field_disabled, name: "", signal: Signal.to_expr(disabled), read: { capability: Capability.handle(disabled_cap), read: Box.box(read_disabled) } }),
+					event_attr(fixed_event_binding(fixed_event_click, msg)),
+				].concat(attrs),
 				children: [],
 			},
 		)
@@ -547,15 +538,12 @@ Html := [].{
 		Elem.Element(
 			{
 				tag: "input",
-				attrs: List.concat(
-					[
-						Node.Attr.StaticText({ field: field_role, name: "", value: "textbox" }),
-						Node.Attr.StaticText({ field: field_label, name: "", value: label }),
-						Node.Attr.SignalText({ field: field_value, name: "", signal: Signal.to_expr(value), read: { capability: Capability.handle(value_cap), read: Box.box(read_value) } }),
-						event_attr(fixed_event_binding(fixed_event_input, msg)),
-					],
-					attrs,
-				),
+				attrs: [
+					Node.Attr.StaticText({ field: field_role, name: "", value: "textbox" }),
+					Node.Attr.StaticText({ field: field_label, name: "", value: label }),
+					Node.Attr.SignalText({ field: field_value, name: "", signal: Signal.to_expr(value), read: { capability: Capability.handle(value_cap), read: Box.box(read_value) } }),
+					event_attr(fixed_event_binding(fixed_event_input, msg)),
+				].concat(attrs),
 				children: [],
 			},
 		)
@@ -579,16 +567,13 @@ Html := [].{
 		Elem.Element(
 			{
 				tag: "input",
-				attrs: List.concat(
-					[
-						Node.Attr.StaticText({ field: field_role, name: "", value: "spinbutton" }),
-						Node.Attr.StaticText({ field: field_label, name: "", value: label }),
-						attr("type", "number"),
-						Node.Attr.SignalText({ field: field_value, name: "", signal: Signal.to_expr(value), read: { capability: Capability.handle(value_cap), read: Box.box(read_value) } }),
-						event_attr(fixed_event_binding(fixed_event_input, msg)),
-					],
-					attrs,
-				),
+				attrs: [
+					Node.Attr.StaticText({ field: field_role, name: "", value: "spinbutton" }),
+					Node.Attr.StaticText({ field: field_label, name: "", value: label }),
+					attr("type", "number"),
+					Node.Attr.SignalText({ field: field_value, name: "", signal: Signal.to_expr(value), read: { capability: Capability.handle(value_cap), read: Box.box(read_value) } }),
+					event_attr(fixed_event_binding(fixed_event_input, msg)),
+				].concat(attrs),
 				children: [],
 			},
 		)
@@ -612,15 +597,12 @@ Html := [].{
 		Elem.Element(
 			{
 				tag: "textarea",
-				attrs: List.concat(
-					[
-						Node.Attr.StaticText({ field: field_role, name: "", value: "textbox" }),
-						Node.Attr.StaticText({ field: field_label, name: "", value: label }),
-						Node.Attr.SignalText({ field: field_value, name: "", signal: Signal.to_expr(value), read: { capability: Capability.handle(value_cap), read: Box.box(read_value) } }),
-						event_attr(fixed_event_binding(fixed_event_input, msg)),
-					],
-					attrs,
-				),
+				attrs: [
+					Node.Attr.StaticText({ field: field_role, name: "", value: "textbox" }),
+					Node.Attr.StaticText({ field: field_label, name: "", value: label }),
+					Node.Attr.SignalText({ field: field_value, name: "", signal: Signal.to_expr(value), read: { capability: Capability.handle(value_cap), read: Box.box(read_value) } }),
+					event_attr(fixed_event_binding(fixed_event_input, msg)),
+				].concat(attrs),
 				children: [],
 			},
 		)
@@ -644,15 +626,12 @@ Html := [].{
 		Elem.Element(
 			{
 				tag: "select",
-				attrs: List.concat(
-					[
-						Node.Attr.StaticText({ field: field_role, name: "", value: "combobox" }),
-						Node.Attr.StaticText({ field: field_label, name: "", value: label }),
-						Node.Attr.SignalText({ field: field_value, name: "", signal: Signal.to_expr(value), read: { capability: Capability.handle(value_cap), read: Box.box(read_value) } }),
-						on_change(msg),
-					],
-					attrs,
-				),
+				attrs: [
+					Node.Attr.StaticText({ field: field_role, name: "", value: "combobox" }),
+					Node.Attr.StaticText({ field: field_label, name: "", value: label }),
+					Node.Attr.SignalText({ field: field_value, name: "", signal: Signal.to_expr(value), read: { capability: Capability.handle(value_cap), read: Box.box(read_value) } }),
+					on_change(msg),
+				].concat(attrs),
 				children: options,
 			},
 		)
@@ -668,13 +647,10 @@ Html := [].{
 		Elem.Element(
 			{
 				tag: "option",
-				attrs: List.concat(
-					[
-						Node.Attr.StaticText({ field: field_text, name: "", value: label }),
-						attr("value", value),
-					],
-					attrs,
-				),
+				attrs: [
+					Node.Attr.StaticText({ field: field_text, name: "", value: label }),
+					attr("value", value),
+				].concat(attrs),
 				children: [],
 			},
 		)
@@ -692,25 +668,22 @@ Html := [].{
 	## Radio option with extra attrs.
 	radio_attrs : Str, Str, Str, Signal(Str), List(Node.Attr), Node.Msg -> Elem
 	radio_attrs = |label, name, value, selected, attrs, msg| {
-		checked = Signal.map(selected, |current| current == value)
+		checked = selected.map(|current| current == value)
 		checked_cap = checked.cap
 		read_checked : HostValue -> Bool
 		read_checked = |host_value| Box.unbox(Capability.get(host_value, checked_cap))
 		Elem.Element(
 			{
 				tag: "input",
-				attrs: List.concat(
-					[
-						Node.Attr.StaticText({ field: field_role, name: "", value: "radio" }),
-						Node.Attr.StaticText({ field: field_label, name: "", value: label }),
-						attr("type", "radio"),
-						attr("name", name),
-						Node.Attr.StaticText({ field: field_value, name: "", value }),
-						Node.Attr.SignalBool({ field: bool_field_checked, name: "", signal: Signal.to_expr(checked), read: { capability: Capability.handle(checked_cap), read: Box.box(read_checked) } }),
-						on_change(msg),
-					],
-					attrs,
-				),
+				attrs: [
+					Node.Attr.StaticText({ field: field_role, name: "", value: "radio" }),
+					Node.Attr.StaticText({ field: field_label, name: "", value: label }),
+					attr("type", "radio"),
+					attr("name", name),
+					Node.Attr.StaticText({ field: field_value, name: "", value }),
+					Node.Attr.SignalBool({ field: bool_field_checked, name: "", signal: Signal.to_expr(checked), read: { capability: Capability.handle(checked_cap), read: Box.box(read_checked) } }),
+					on_change(msg),
+				].concat(attrs),
 				children: [],
 			},
 		)
@@ -734,15 +707,12 @@ Html := [].{
 		Elem.Element(
 			{
 				tag: "input",
-				attrs: List.concat(
-					[
-						Node.Attr.StaticText({ field: field_role, name: "", value: "checkbox" }),
-						Node.Attr.StaticText({ field: field_label, name: "", value: label }),
-						Node.Attr.SignalBool({ field: bool_field_checked, name: "", signal: Signal.to_expr(checked), read: { capability: Capability.handle(checked_cap), read: Box.box(read_checked) } }),
-						event_attr(fixed_event_binding(fixed_event_check, msg)),
-					],
-					attrs,
-				),
+				attrs: [
+					Node.Attr.StaticText({ field: field_role, name: "", value: "checkbox" }),
+					Node.Attr.StaticText({ field: field_label, name: "", value: label }),
+					Node.Attr.SignalBool({ field: bool_field_checked, name: "", signal: Signal.to_expr(checked), read: { capability: Capability.handle(checked_cap), read: Box.box(read_checked) } }),
+					event_attr(fixed_event_binding(fixed_event_check, msg)),
+				].concat(attrs),
 				children: [],
 			},
 		)

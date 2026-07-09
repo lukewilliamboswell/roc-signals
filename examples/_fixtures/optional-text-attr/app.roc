@@ -23,32 +23,34 @@ toggle_active : State -> State
 toggle_active = |state| { ..state, active: !state.active }
 
 active_descendant : State -> [None, Some(Str)]
-active_descendant = |state| {
+active_descendant = |state|
 	if state.active {
 		Some("option-alpha")
 	} else {
 		None
 	}
-}
 
 toggle_label : State -> Str
-toggle_label = |state| {
+toggle_label = |state|
 	if state.active {
 		"Close options"
 	} else {
 		"Open options"
 	}
-}
 
 main : {} -> Elem
 main = |_| {
 	Ui.state(
 		initial_state,
 		|model| {
+			state_signal : Signal.Signal(State)
 			state_signal = model.signal()
-			query_signal = Signal.map(state_signal, |state| state.query)
-			active_descendant_signal = Signal.map(state_signal, active_descendant)
-			button_label = Signal.map(state_signal, toggle_label)
+			query_signal : Signal.Signal(Str)
+			query_signal = state_signal.map(|state| state.query)
+			active_descendant_signal : Signal.Signal([None, Some(Str)])
+			active_descendant_signal = state_signal.map(active_descendant)
+			button_label : Signal.Signal(Str)
+			button_label = state_signal.map(toggle_label)
 
 			Html.section(
 				"Optional Text Attr",

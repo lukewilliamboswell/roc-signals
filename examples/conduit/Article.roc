@@ -19,16 +19,32 @@ Article := {}.{
 		Ui.component(
 			|_| {
 				task = Http.get_text_task("article")
+				state : Signal.Signal(Api.Remote(Api.Article))
 				state = Signal.fold_task(task, Loading, Api.decode_article, Api.request_failed)
-				slug = Signal.map(route, |value| Route.article_slug(value))
-				is_loading = Signal.map(state, article_loading)
-				is_failed = Signal.map(state, article_failed)
-				message = Signal.map(state, article_message)
-				title = Signal.map(state, article_title)
-				body = Signal.map(state, article_body)
-				meta = Signal.map(state, article_meta)
-				author_rows = Signal.map(state, article_author_rows)
-				loaded_title = Signal.map(state, article_title)
+				slug = route.map(|value| Route.article_slug(value))
+
+				is_loading : Signal.Signal(Bool)
+				is_loading = state.map(article_loading)
+
+				is_failed : Signal.Signal(Bool)
+				is_failed = state.map(article_failed)
+
+				message : Signal.Signal(Str)
+				message = state.map(article_message)
+
+				title : Signal.Signal(Str)
+				title = state.map(article_title)
+
+				body : Signal.Signal(Str)
+				body = state.map(article_body)
+
+				meta : Signal.Signal(Str)
+				meta = state.map(article_meta)
+
+				author_rows : Signal.Signal(List(Str))
+				author_rows = state.map(article_author_rows)
+
+				loaded_title = title
 
 				Html.section(
 					"Article",
@@ -37,7 +53,7 @@ Article := {}.{
 						Ui.on_change_initial(
 							slug,
 							|value|
-								if Str.is_empty(value) {
+								if value.is_empty() {
 									Signal.noop
 								} else {
 									Http.get_text(task, Api.article_uri(value))
@@ -46,7 +62,7 @@ Article := {}.{
 						Ui.on_change(
 							loaded_title,
 							|value|
-								if Str.is_empty(value) {
+								if value.is_empty() {
 									Signal.noop
 								} else {
 									Browser.set_title("${value} - Conduit")

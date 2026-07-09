@@ -9,10 +9,10 @@ import pf.Ui
 TaskState := [Loading, Ready(U64), Failed(U64)]
 
 decode : Str -> TaskState
-decode = |body| Ready(Str.to_utf8(body).len())
+decode = |body| Ready(body.to_utf8().len())
 
 failed : Str -> TaskState
-failed = |err| Failed(Str.to_utf8(err).len())
+failed = |err| Failed(err.to_utf8().len())
 
 state_text : TaskState -> Str
 state_text = |state|
@@ -26,7 +26,7 @@ main : {} -> Elem
 main = |_| {
 	task = Http.get_text_task("dashboard")
 	state = Signal.fold_task(task, Loading, decode, failed)
-	text = Signal.map(state, state_text)
+	text = state.map(state_text)
 
 	Html.div_c(
 		"",

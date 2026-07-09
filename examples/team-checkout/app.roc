@@ -6,14 +6,11 @@ import pf.Html
 import pf.Signal
 import pf.Ui
 
-concat3 : Str, Str, Str -> Str
-concat3 = |a, b, c| Str.concat(Str.concat(a, b), c)
-
 label_i64 : Str, I64 -> Str
-label_i64 = |name, value| concat3(name, ": ", value.to_str())
+label_i64 = |name, value| "${name}: ${value.to_str()}"
 
 step_label : I64 -> Str
-step_label = |step| {
+step_label = |step|
 	if step == 0 {
 		"Step 1 - Cart"
 	} else if step == 1 {
@@ -21,10 +18,9 @@ step_label = |step| {
 	} else {
 		"Step 3 - Review"
 	}
-}
 
 step_attr_value : I64 -> Str
-step_attr_value = |step| {
+step_attr_value = |step|
 	if step == 0 {
 		"cart"
 	} else if step == 1 {
@@ -32,7 +28,6 @@ step_attr_value = |step| {
 	} else {
 		"review"
 	}
-}
 
 next_step : I64 -> I64
 next_step = |step| {
@@ -65,53 +60,47 @@ I64Draft := [I64Untouched, I64Changed(I64)]
 PlanDraft := [PlanUntouched, PlanChanged(Plan)]
 
 team_button_class : Plan -> Str
-team_button_class = |plan| {
+team_button_class = |plan|
 	match plan {
 		Plan.Team => "button-primary"
 		Plan.Basic => "button"
 	}
-}
 
 basic_button_class : Plan -> Str
-basic_button_class = |plan| {
+basic_button_class = |plan|
 	match plan {
 		Plan.Team => "button"
 		Plan.Basic => "button-primary"
 	}
-}
 
 team_pressed : Plan -> Str
-team_pressed = |plan| {
+team_pressed = |plan|
 	match plan {
 		Plan.Team => "true"
 		Plan.Basic => "false"
 	}
-}
 
 basic_pressed : Plan -> Str
-basic_pressed = |plan| {
+basic_pressed = |plan|
 	match plan {
 		Plan.Team => "false"
 		Plan.Basic => "true"
 	}
-}
 
 encode_plan : Plan -> Str
-encode_plan = |plan| {
+encode_plan = |plan|
 	match plan {
 		Plan.Team => "team"
 		Plan.Basic => "basic"
 	}
-}
 
 decode_plan : Str -> Plan
-decode_plan = |value| {
+decode_plan = |value|
 	if value == "basic" {
 		Plan.Basic
 	} else {
 		Plan.Team
 	}
-}
 
 decode_bool : Str -> Bool
 decode_bool = |value| value == "true"
@@ -144,85 +133,99 @@ decode_i64 = |fallback, value| {
 }
 
 stored_text : Str, Browser.StorageText -> Str
-stored_text = |fallback, stored| {
+stored_text = |fallback, stored|
 	match stored {
 		StorageValue(value) => value
 		_ => fallback
 	}
-}
 
 stored_bool : Bool, Browser.StorageText -> Bool
-stored_bool = |fallback, stored| {
+stored_bool = |fallback, stored|
 	match stored {
 		StorageValue(value) => decode_bool(value)
 		_ => fallback
 	}
-}
 
 stored_i64 : I64, Browser.StorageText -> I64
-stored_i64 = |fallback, stored| {
+stored_i64 = |fallback, stored|
 	match stored {
 		StorageValue(value) => decode_i64(fallback, value)
 		_ => fallback
 	}
-}
 
 stored_plan : Plan, Browser.StorageText -> Plan
-stored_plan = |fallback, stored| {
+stored_plan = |fallback, stored|
 	match stored {
 		StorageValue(value) => decode_plan(value)
 		_ => fallback
 	}
-}
 
 encode_bool : Bool -> Str
-encode_bool = |value| {
+encode_bool = |value|
 	if value {
 		"true"
 	} else {
 		"false"
 	}
-}
 
 draft_text_value : Str, TextDraft, Browser.StorageText -> Str
-draft_text_value = |fallback, draft, stored| {
+draft_text_value = |fallback, draft, stored|
 	match draft {
 		TextChanged(value) => value
 		TextUntouched => stored_text(fallback, stored)
 	}
-}
 
 draft_bool_value : Bool, BoolDraft, Browser.StorageText -> Bool
-draft_bool_value = |fallback, draft, stored| {
+draft_bool_value = |fallback, draft, stored|
 	match draft {
 		BoolChanged(value) => value
 		BoolUntouched => stored_bool(fallback, stored)
 	}
-}
 
 draft_i64_value : I64, I64Draft, Browser.StorageText -> I64
-draft_i64_value = |fallback, draft, stored| {
+draft_i64_value = |fallback, draft, stored|
 	match draft {
 		I64Changed(value) => value
 		I64Untouched => stored_i64(fallback, stored)
 	}
-}
 
 draft_plan_value : Plan, PlanDraft, Browser.StorageText -> Plan
-draft_plan_value = |fallback, draft, stored| {
+draft_plan_value = |fallback, draft, stored|
 	match draft {
 		PlanChanged(value) => value
 		PlanUntouched => stored_plan(fallback, stored)
 	}
+
+draft_text_signal : Str, Signal.Signal(TextDraft), Signal.Signal(Browser.StorageText) -> Signal.Signal(Str)
+draft_text_signal = |fallback, draft, stored| {
+	inputs = { draft: draft, stored: stored }.Signal
+	inputs.map(|value| draft_text_value(fallback, value.draft, value.stored))
+}
+
+draft_bool_signal : Bool, Signal.Signal(BoolDraft), Signal.Signal(Browser.StorageText) -> Signal.Signal(Bool)
+draft_bool_signal = |fallback, draft, stored| {
+	inputs = { draft: draft, stored: stored }.Signal
+	inputs.map(|value| draft_bool_value(fallback, value.draft, value.stored))
+}
+
+draft_i64_signal : I64, Signal.Signal(I64Draft), Signal.Signal(Browser.StorageText) -> Signal.Signal(I64)
+draft_i64_signal = |fallback, draft, stored| {
+	inputs = { draft: draft, stored: stored }.Signal
+	inputs.map(|value| draft_i64_value(fallback, value.draft, value.stored))
+}
+
+draft_plan_signal : Plan, Signal.Signal(PlanDraft), Signal.Signal(Browser.StorageText) -> Signal.Signal(Plan)
+draft_plan_signal = |fallback, draft, stored| {
+	inputs = { draft: draft, stored: stored }.Signal
+	inputs.map(|value| draft_plan_value(fallback, value.draft, value.stored))
 }
 
 draft_i64_current : I64, I64Draft -> I64
-draft_i64_current = |fallback, draft| {
+draft_i64_current = |fallback, draft|
 	match draft {
 		I64Changed(value) => value
 		I64Untouched => fallback
 	}
-}
 
 increase_i64 : I64, I64Draft -> I64Draft
 increase_i64 = |fallback, draft| I64Changed(draft_i64_current(fallback, draft) + 1)
@@ -244,20 +247,18 @@ prev_step_draft : I64Draft -> I64Draft
 prev_step_draft = |draft| I64Changed(prev_step(draft_i64_current(0, draft)))
 
 has_storage_value : Browser.StorageText -> Bool
-has_storage_value = |stored| {
+has_storage_value = |stored|
 	match stored {
 		StorageValue(_) => True
 		_ => False
 	}
-}
 
 storage_notice_text : Browser.StorageText -> Str
-storage_notice_text = |stored| {
+storage_notice_text = |stored|
 	match stored {
 		StorageUnavailable(_) => "Saved draft storage is unavailable in this browser."
 		_ => ""
 	}
-}
 
 checkout_step_key = "team-checkout:step"
 
@@ -276,7 +277,7 @@ quantity_support_key = "team-checkout:qty:priority-support"
 quantity_audit_key = "team-checkout:qty:audit-log-export"
 
 quantity_key_for_label : Str -> Str
-quantity_key_for_label = |label| {
+quantity_key_for_label = |label|
 	if label == "Priority support" {
 		quantity_support_key
 	} else if label == "Audit log export" {
@@ -284,7 +285,6 @@ quantity_key_for_label = |label| {
 	} else {
 		quantity_seats_key
 	}
-}
 
 page_class = "grid gap-5"
 
@@ -305,12 +305,8 @@ render_line = |label, stored_quantity| {
 	Ui.state(
 		I64Untouched,
 		|quantity| {
-			quantity_value = Signal.map2(quantity.signal(), stored_quantity, |draft, stored| draft_i64_value(1, draft, stored))
-			quantity_label =
-				Signal.map(
-					quantity_value,
-					|n| concat3(label, " quantity: ", n.to_str()),
-				)
+			quantity_value = draft_i64_signal(1, quantity.signal(), stored_quantity)
+			quantity_label = quantity_value.map(|n| "${label} quantity: ${n.to_str()}")
 
 			Html.section_c(
 				label,
@@ -321,9 +317,9 @@ render_line = |label, stored_quantity| {
 					Html.div_c(
 						toolbar_class,
 						[
-							Html.button_c(Str.concat("Decrease ", label), "button", quantity.on_unit(|draft| decrease_i64(1, draft))),
+							Html.button_c("Decrease ${label}", "button", quantity.on_unit(|draft| decrease_i64(1, draft))),
 							Html.paragraph_s_c(quantity_label, "text-sm font-medium text-zinc-900"),
-							Html.button_c(Str.concat("Increase ", label), "button", quantity.on_unit(|draft| increase_i64(1, draft))),
+							Html.button_c("Increase ${label}", "button", quantity.on_unit(|draft| increase_i64(1, draft))),
 							Ui.on_change(quantity_value, |n| Browser.set_local_storage_text(key, n.to_str())),
 						],
 					),
@@ -334,13 +330,12 @@ render_line = |label, stored_quantity| {
 }
 
 receipt_label : I64 -> Str
-receipt_label = |attempts| {
+receipt_label = |attempts|
 	if attempts == 0 {
 		"Receipt pending"
 	} else {
 		label_i64("Receipt sent", attempts)
 	}
-}
 
 main : {} -> Elem
 main = |_| {
@@ -374,35 +369,34 @@ main = |_| {
 													Ui.state(
 														0,
 														|clear_saved| {
-															step_value = Signal.map2(step.signal(), stored_step, |draft, stored| draft_i64_value(0, draft, stored))
-															step_text = Signal.map(step_value, step_label)
-															step_attr = Signal.map(step_value, step_attr_value)
-															is_cart = Signal.map(step_value, |value| value == 0)
-															is_delivery = Signal.map(step_value, |value| value == 1)
-															email_value = Signal.map2(email.signal(), stored_email, |draft, stored| draft_text_value("", draft, stored))
-															address_value = Signal.map2(address.signal(), stored_address, |draft, stored| draft_text_value("", draft, stored))
-															terms_value = Signal.map2(terms.signal(), stored_terms, |draft, stored| draft_bool_value(False, draft, stored))
-															plan_value = Signal.map2(plan.signal(), stored_plan_source, |draft, stored| draft_plan_value(Plan.Team, draft, stored))
+															step_value = draft_i64_signal(0, step.signal(), stored_step)
+															step_text = step_value.map(step_label)
+															step_attr = step_value.map(step_attr_value)
+															is_cart = step_value.map(|value| value == 0)
+															is_delivery = step_value.map(|value| value == 1)
+															email_value = draft_text_signal("", email.signal(), stored_email)
+															address_value = draft_text_signal("", address.signal(), stored_address)
+															terms_value = draft_bool_signal(False, terms.signal(), stored_terms)
+															plan_value = draft_plan_signal(Plan.Team, plan.signal(), stored_plan_source)
 															terms_text =
-																Signal.map(
-																	terms_value,
+																terms_value.map(
 																	|accepted| if accepted {
 																		"Terms accepted"
 																	} else {
 																		"Terms pending"
 																	},
 																)
-															submit_disabled = Signal.map(terms_value, |accepted| !accepted)
-															review_label = Signal.map(submit_count.signal(), receipt_label)
-															email_review = Signal.map(email_value, |value| Str.concat("Email: ", value))
-															address_review = Signal.map(address_value, |value| Str.concat("Address: ", value))
-															is_team_plan = Signal.map(plan_value, |value| value == Plan.Team)
-															team_class_signal = Signal.map(plan_value, team_button_class)
-															basic_class_signal = Signal.map(plan_value, basic_button_class)
-															team_pressed_signal = Signal.map(plan_value, team_pressed)
-															basic_pressed_signal = Signal.map(plan_value, basic_pressed)
-															has_saved_order = Signal.map(stored_email, has_storage_value)
-															storage_notice = Signal.map(stored_email, storage_notice_text)
+															submit_disabled = terms_value.map(|accepted| !accepted)
+															review_label = submit_count.signal().map(receipt_label)
+															email_review = email_value.map(|value| "Email: ${value}")
+															address_review = address_value.map(|value| "Address: ${value}")
+															is_team_plan = plan_value.map(|value| value == Plan.Team)
+															team_class_signal = plan_value.map(team_button_class)
+															basic_class_signal = plan_value.map(basic_button_class)
+															team_pressed_signal = plan_value.map(team_pressed)
+															basic_pressed_signal = plan_value.map(basic_pressed)
+															has_saved_order = stored_email.map(has_storage_value)
+															storage_notice = stored_email.map(storage_notice_text)
 
 															resume_panel =
 																Html.section_c(
@@ -528,9 +522,9 @@ main = |_| {
 																	Html.div_c(
 																		"hidden",
 																		[
-																			Html.text_s(Signal.map(stored_seats_quantity, |_| "")),
-																			Html.text_s(Signal.map(stored_support_quantity, |_| "")),
-																			Html.text_s(Signal.map(stored_audit_quantity, |_| "")),
+																			Html.text_s(stored_seats_quantity.map(|_| "")),
+																			Html.text_s(stored_support_quantity.map(|_| "")),
+																			Html.text_s(stored_audit_quantity.map(|_| "")),
 																		],
 																	),
 																	Ui.on_change(step_value, |value| Browser.set_local_storage_text(checkout_step_key, value.to_str())),

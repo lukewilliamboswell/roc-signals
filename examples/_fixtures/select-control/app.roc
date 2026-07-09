@@ -20,9 +20,6 @@ initial_state = {
 	change_count: 0,
 }
 
-concat3 : Str, Str, Str -> Str
-concat3 = |a, b, c| Str.concat(Str.concat(a, b), c)
-
 set_plan : State, Str -> State
 set_plan = |state, value| { ..state, plan: value, change_count: state.change_count + 1 }
 
@@ -33,10 +30,10 @@ record_blur : State -> State
 record_blur = |state| { ..state, blur_count: state.blur_count + 1 }
 
 label_i64 : Str, I64 -> Str
-label_i64 = |name, value| concat3(name, ": ", value.to_str())
+label_i64 = |name, value| "${name}: ${value.to_str()}"
 
 selected_label : Str -> Str
-selected_label = |plan| Str.concat("Selected plan: ", plan)
+selected_label = |plan| "Selected plan: ${plan}"
 
 main : {} -> Elem
 main = |_| {
@@ -44,11 +41,11 @@ main = |_| {
 		initial_state,
 		|model| {
 			state_signal = model.signal()
-			plan_signal = Signal.map(state_signal, |state| state.plan)
-			selected_text = Signal.map(plan_signal, selected_label)
-			focus_text = Signal.map(state_signal, |state| label_i64("Focus events", state.focus_count))
-			blur_text = Signal.map(state_signal, |state| label_i64("Blur events", state.blur_count))
-			change_text = Signal.map(state_signal, |state| label_i64("Change events", state.change_count))
+			plan_signal = state_signal.map(|state| state.plan)
+			selected_text = plan_signal.map(selected_label)
+			focus_text = state_signal.map(|state| label_i64("Focus events", state.focus_count))
+			blur_text = state_signal.map(|state| label_i64("Blur events", state.blur_count))
+			change_text = state_signal.map(|state| label_i64("Change events", state.change_count))
 
 			Html.section(
 				"Select Control",

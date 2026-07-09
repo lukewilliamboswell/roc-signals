@@ -22,14 +22,11 @@ initial_state = {
 	submit_request: "",
 }
 
-concat3 : Str, Str, Str -> Str
-concat3 = |a, b, c| Str.concat(Str.concat(a, b), c)
-
 can_submit_state : FormState -> Bool
-can_submit_state = |state| (!Str.is_empty(state.email)) and state.accepted
+can_submit_state = |state| (!state.email.is_empty()) and state.accepted
 
 email_invalid_state : FormState -> Bool
-email_invalid_state = |state| state.attempted and Str.is_empty(state.email)
+email_invalid_state = |state| state.attempted and state.email.is_empty()
 
 terms_invalid_state : FormState -> Bool
 terms_invalid_state = |state| state.attempted and !state.accepted
@@ -44,7 +41,7 @@ submit_if_valid : FormState -> FormState
 submit_if_valid = |state| {
 	if can_submit_state(state) {
 		next_count = state.submit_count + 1
-		request = concat3(state.email, "#", next_count.to_str())
+		request = "${state.email}#${next_count.to_str()}"
 		{ ..state, attempted: True, submit_count: next_count, submit_request: request }
 	} else {
 		{ ..state, attempted: True }
@@ -52,36 +49,31 @@ submit_if_valid = |state| {
 }
 
 email_message : FormState -> Str
-email_message = |state| {
+email_message = |state|
 	if email_invalid_state(state) {
 		"Email validation: enter an email address."
 	} else {
 		"Email validation: ready."
 	}
-}
 
 terms_message : FormState -> Str
-terms_message = |state| {
+terms_message = |state|
 	if terms_invalid_state(state) {
 		"Terms validation: accept terms to continue."
 	} else {
 		"Terms validation: ready."
 	}
-}
 
 status_message : FormState, Str -> Str
-status_message = |state, task_text| {
+status_message = |state, task_text|
 	if state.submit_count == 0 {
 		"Submit status: idle"
 	} else {
 		task_text
 	}
-}
 
 disabled_state : FormState, Bool -> Bool
-disabled_state = |state, task_loading| {
-	(!can_submit_state(state)) or ((state.submit_count > 0) and task_loading)
-}
+disabled_state = |state, task_loading| (!can_submit_state(state)) or ((state.submit_count > 0) and task_loading)
 
 page_class = "grid gap-5"
 
@@ -94,27 +86,41 @@ main = |_| {
 	Ui.state(
 		initial_state,
 		|model| {
+			state_signal : Signal.Signal(FormState)
 			state_signal = model.signal()
-			email_signal = Signal.map(state_signal, |state| state.email)
-			accepted_signal = Signal.map(state_signal, |state| state.accepted)
-			request_signal = Signal.map(state_signal, |state| state.submit_request)
-			email_invalid = Signal.map(state_signal, email_invalid_state)
-			terms_invalid = Signal.map(state_signal, terms_invalid_state)
-			email_text = Signal.map(state_signal, email_message)
-			terms_text = Signal.map(state_signal, terms_message)
+			email_signal : Signal.Signal(Str)
+			email_signal = state_signal.map(|state| state.email)
+			accepted_signal : Signal.Signal(Bool)
+			accepted_signal = state_signal.map(|state| state.accepted)
+			request_signal : Signal.Signal(Str)
+			request_signal = state_signal.map(|state| state.submit_request)
+			email_invalid : Signal.Signal(Bool)
+			email_invalid = state_signal.map(email_invalid_state)
+			terms_invalid : Signal.Signal(Bool)
+			terms_invalid = state_signal.map(terms_invalid_state)
+			email_text : Signal.Signal(Str)
+			email_text = state_signal.map(email_message)
+			terms_text : Signal.Signal(Str)
+			terms_text = state_signal.map(terms_message)
 			task = Signal.fake_task("form-submit", |value| value, |err| err)
+			task_text : Signal.Signal(Str)
 			task_text =
 				Signal.fold_task(
 					task,
 					"Submit status: sending",
-					|value| Str.concat("Submit result: ", value),
-					|err| Str.concat("Submit error: ", err),
+					|value| "Submit result: ${value}",
+					|err| "Submit error: ${err}",
 				)
+			task_loading : Signal.Signal(Bool)
 			task_loading = Signal.fold_task(task, True, |_| False, |_| False)
+			status_inputs : Signal.Signal({ state : FormState, task_text : Str })
 			status_inputs = { state: state_signal, task_text: task_text }.Signal
-			status_text = Signal.map(status_inputs, |inputs| status_message(inputs.state, inputs.task_text))
+			status_text : Signal.Signal(Str)
+			status_text = status_inputs.map(|inputs| status_message(inputs.state, inputs.task_text))
+			disabled_inputs : Signal.Signal({ state : FormState, task_loading : Bool })
 			disabled_inputs = { state: state_signal, task_loading: task_loading }.Signal
-			submit_disabled = Signal.map(disabled_inputs, |inputs| disabled_state(inputs.state, inputs.task_loading))
+			submit_disabled : Signal.Signal(Bool)
+			submit_disabled = disabled_inputs.map(|inputs| disabled_state(inputs.state, inputs.task_loading))
 
 			Html.div_c(
 				page_class,

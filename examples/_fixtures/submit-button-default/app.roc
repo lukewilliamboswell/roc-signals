@@ -23,7 +23,7 @@ record_submit : State -> State
 record_submit = |state| { ..state, submits: state.submits + 1 }
 
 label_i64 : Str, I64 -> Str
-label_i64 = |label, value| Str.concat(label, value.to_str())
+label_i64 = |label, value| "${label}${value.to_str()}"
 
 main : {} -> Elem
 main = |_| {
@@ -31,8 +31,8 @@ main = |_| {
 		initial_state,
 		|model| {
 			state_signal = model.signal()
-			clicks_text = Signal.map(state_signal, |state| label_i64("Clicks: ", state.clicks))
-			submits_text = Signal.map(state_signal, |state| label_i64("Submits: ", state.submits))
+			clicks_text = state_signal.map(|state| label_i64("Clicks: ", state.clicks))
+			submits_text = state_signal.map(|state| label_i64("Submits: ", state.submits))
 
 			Html.section(
 				"Submit Button Default",

@@ -17,6 +17,15 @@ Http := [].{
 		ResponseMaterialization(Str),
 	]
 
+	## User-facing HTTP header shape.
+	Header : { name : Str, value : Str }
+
+	header_to_tuple : Header -> (Str, Str)
+	header_to_tuple = |header| (header.name, header.value)
+
+	header_from_tuple : (Str, Str) -> Header
+	header_from_tuple = |(name, value)| { name, value }
+
 	## HTTP `GET` method.
 	method_get = GET
 
@@ -45,7 +54,7 @@ Http := [].{
 	request_method_str = Request.method_str
 
 	## Read request headers.
-	request_headers = Request.headers
+	request_headers = |request| Request.headers(request).map(header_from_tuple)
 
 	## Read request body bytes.
 	request_body = Request.body
@@ -60,7 +69,7 @@ Http := [].{
 	with_method = Request.with_method
 
 	## Replace request headers.
-	with_headers = Request.with_headers
+	with_headers = |request, headers| Request.with_headers(request, headers.map(header_to_tuple))
 
 	## Add one request header.
 	add_header = Request.add_header
@@ -84,7 +93,7 @@ Http := [].{
 	response_status = Response.status
 
 	## Read response headers.
-	response_headers = Response.headers
+	response_headers = |response| Response.headers(response).map(header_from_tuple)
 
 	## Read response body bytes.
 	response_body = Response.body
@@ -93,7 +102,7 @@ Http := [].{
 	response_with_status = Response.with_status
 
 	## Replace response headers.
-	response_with_headers = Response.with_headers
+	response_with_headers = |response, headers| Response.with_headers(response, headers.map(header_to_tuple))
 
 	## Add one response header.
 	response_add_header = Response.add_header
@@ -102,10 +111,7 @@ Http := [].{
 	response_with_body = Response.with_body
 
 	## Create a task for full HTTP request/response values.
-	request_task = |purpose| {
-		name = Str.concat("http:send:", purpose)
-		Signal.task_source(name, decode_response_payload, decode_error_payload, False)
-	}
+	request_task = |purpose| Signal.task_source("http:send:${purpose}", decode_response_payload, decode_error_payload, False)
 
 	## Start a full HTTP request task.
 	start = |task, request| Signal.start_str(task, encode_request_payload(request))
@@ -113,33 +119,32 @@ Http := [].{
 	## Create a task that decodes successful responses as text. Starting a new
 	## request on the same task cancels any older pending request; late results from
 	## canceled requests are ignored by the runtime.
-	get_text_task = |purpose| {
-		name = Str.concat("http:send:", purpose)
-		Signal.task_source(name, decode_text_response_payload, decode_error_text_payload, False)
-	}
+	get_text_task = |purpose| Signal.task_source("http:send:${purpose}", decode_text_response_payload, decode_error_text_payload, False)
 
 	## Start a `GET` request and decode a successful response body as text.
 	get_text = |task, uri| {
-		request0 = request_from_method(method_get)
-		request = with_uri(request0, uri)
+		request =
+			Request.from_method(method_get)
+				.with_uri(uri)
 		Signal.start_str(task, encode_request_payload(request))
 	}
 
 	## Start a `GET` request and keep the full response value.
-	get = |task, uri| {
-		request0 = request_from_method(method_get)
-		request = with_uri(request0, uri)
-		start(task, request)
-	}
+	get = |task, uri|
+		start(
+			task,
+			Request.from_method(method_get)
+				.with_uri(uri),
+		)
 
 	## Convert an HTTP error to user-facing text.
 	error_text = |err|
 		match err {
-			Network(message) => Str.concat("network: ", message)
+			Network(message) => "network: ${message}"
 			Timeout => "timeout"
 			Canceled => "canceled"
-			Unsupported(message) => Str.concat("unsupported request: ", message)
-			ResponseMaterialization(message) => Str.concat("response materialization: ", message)
+			Unsupported(message) => "unsupported request: ${message}"
+			ResponseMaterialization(message) => "response materialization: ${message}"
 		}
 
 	encode_request_payload = |request| {
@@ -149,15 +154,14 @@ Http := [].{
 			encode_str(Request.method_str(request)),
 			encode_str(Request.uri(request)),
 			encode_timeout(Request.timeout(request)),
-			List.len(headers).to_str(),
+			headers.len().to_str(),
 		]
 			request_fields =
-			List.fold(
-				headers,
+			headers.fold(
 				base,
-				|acc, (name, value)| List.append(List.append(acc, encode_str(name)), encode_str(value)),
+				|acc, (name, value)| acc.append(encode_str(name)).append(encode_str(value)),
 			)
-		fields = List.append(request_fields, encode_bytes(Request.body(request)))
+		fields = request_fields.append(encode_bytes(Request.body(request)))
 		Str.join_with(fields, "\n")
 	}
 
@@ -166,15 +170,14 @@ Http := [].{
 		base = [
 			"roc-http-response-v1",
 			Response.status(response).to_str(),
-			List.len(headers).to_str(),
+			headers.len().to_str(),
 		]
 			response_fields =
-			List.fold(
-				headers,
+			headers.fold(
 				base,
-				|acc, (name, value)| List.append(List.append(acc, encode_str(name)), encode_str(value)),
+				|acc, (name, value)| acc.append(encode_str(name)).append(encode_str(value)),
 			)
-		fields = List.append(response_fields, encode_bytes(Response.body(response)))
+		fields = response_fields.append(encode_bytes(Response.body(response)))
 		Str.join_with(fields, "\n")
 	}
 
@@ -192,7 +195,7 @@ Http := [].{
 	}
 
 	decode_response_payload = |payload| {
-		reader0 = expect_version(Str.split_on(payload, "\n"), "roc-http-response-v1", "response")
+		reader0 = expect_version(payload.split_on("\n"), "roc-http-response-v1", "response")
 		status_line = read_line(reader0, "response status")
 		header_count_line = read_line(status_line.rest, "response header count")
 			status =
@@ -206,13 +209,13 @@ Http := [].{
 		header_result = read_headers(header_count_line.rest, header_count, "response")
 		body_line = read_line(header_result.rest, "response body")
 
-		if !List.is_empty(body_line.rest) {
+		if !body_line.rest.is_empty() {
 			crash "malformed HTTP response payload: trailing fields"
 		}
 
-		response0 = Response.from_status(status)
-		response1 = Response.with_headers(response0, header_result.headers)
-		Response.with_body(response1, decode_bytes(body_line.value, "response body"))
+		Response.from_status(status)
+			.with_headers(header_result.headers)
+			.with_body(decode_bytes(body_line.value, "response body"))
 	}
 
 	decode_text_response_payload = |payload| {
@@ -224,11 +227,11 @@ Http := [].{
 	}
 
 	decode_error_payload = |payload| {
-		reader0 = expect_version(Str.split_on(payload, "\n"), "roc-http-error-v1", "error")
+		reader0 = expect_version(payload.split_on("\n"), "roc-http-error-v1", "error")
 		code_line = read_line(reader0, "error code")
 		message_line = read_line(code_line.rest, "error message")
 
-		if !List.is_empty(message_line.rest) {
+		if !message_line.rest.is_empty() {
 			ResponseMaterialization("malformed HTTP error payload: trailing fields")
 		} else {
 			message = decode_str(message_line.value, "error message")
@@ -256,10 +259,10 @@ Http := [].{
 			TimeoutMilliseconds(ms) => ms.to_str()
 		}
 
-	encode_str = |text| encode_bytes(Str.to_utf8(text))
+	encode_str = |text| encode_bytes(text.to_utf8())
 
 	encode_bytes = |bytes| {
-		parts = List.map(bytes, |byte| U8.to_u64(byte).to_str())
+		parts = bytes.map(|byte| U8.to_u64(byte).to_str())
 		Str.join_with(parts, ",")
 	}
 
@@ -274,11 +277,10 @@ Http := [].{
 	}
 
 	decode_bytes = |field, _label| {
-		if Str.is_empty(field) {
+		if field.is_empty() {
 			[]
 		} else {
-			List.map(
-				Str.split_on(field, ","),
+			field.split_on(",").map(
 				|part| {
 					match U8.from_str(part) {
 						Ok(byte) => byte
@@ -305,9 +307,9 @@ Http := [].{
 		var $left = count
 
 		while $left > 0 {
-			name_line = read_line($remaining, Str.concat(label, " header name"))
-			value_line = read_line(name_line.rest, Str.concat(label, " header value"))
-			$headers = List.append($headers, (decode_str(name_line.value, "header name"), decode_str(value_line.value, "header value")))
+			name_line = read_line($remaining, "${label} header name")
+			value_line = read_line(name_line.rest, "${label} header value")
+			$headers = $headers.append((decode_str(name_line.value, "header name"), decode_str(value_line.value, "header value")))
 			$remaining = value_line.rest
 			$left = $left - 1
 		}
@@ -316,7 +318,7 @@ Http := [].{
 	}
 
 	expect_version = |lines, expected, label| {
-		version = read_line(lines, Str.concat(label, " version"))
+		version = read_line(lines, "${label} version")
 		if version.value == expected {
 			version.rest
 		} else {
@@ -325,8 +327,8 @@ Http := [].{
 	}
 
 	read_line = |lines, _label|
-		match List.first(lines) {
-			Ok(value) => { value, rest: List.drop_first(lines, 1) }
+		match lines.first() {
+			Ok(value) => { value, rest: lines.drop_first(1) }
 			Err(_) => {
 				crash "malformed HTTP payload"
 			}

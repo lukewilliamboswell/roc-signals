@@ -66,16 +66,38 @@ Auth := {}.{
 					empty_form,
 					|form| {
 						task = Http.request_task(if is_register { "register" } else { "login" })
+						result : Signal.Signal(Api.AuthResult)
 						result = Signal.fold_task(
 							task,
 							AuthIdle,
 							Api.classify_auth,
 							|err| AuthErrored("Request failed: ${Http.error_text(err)}"),
 						)
-						submission = Signal.map(form.signal(), submission_of)
-						errors = Signal.map(result, error_lines)
-						accepted_token = Signal.map(result, accepted_token_of)
-						accepted_username = Signal.map(result, accepted_username_of)
+
+						form_signal : Signal.Signal(Auth.Form)
+						form_signal = form.signal()
+
+						submission : Signal.Signal(Auth.Submission)
+						submission = form_signal.map(submission_of)
+
+						errors : Signal.Signal(List(Str))
+						errors = result.map(error_lines)
+
+						accepted_token : Signal.Signal(Str)
+						accepted_token = result.map(accepted_token_of)
+
+						accepted_username : Signal.Signal(Str)
+						accepted_username = result.map(accepted_username_of)
+
+						username : Signal.Signal(Str)
+						username = form_signal.map(|value| value.username)
+
+						email : Signal.Signal(Str)
+						email = form_signal.map(|value| value.email)
+
+						password : Signal.Signal(Str)
+						password = form_signal.map(|value| value.password)
+
 						heading = if is_register { "Sign up" } else { "Sign in" }
 
 						Html.section(
@@ -93,9 +115,9 @@ Auth := {}.{
 											Http.start(task, Api.post_request("/api/users/login", Api.login_body(snapshot.email, snapshot.password), ""))
 										},
 								),
-								Ui.on_change(accepted_token, |token| if Str.is_empty(token) { Signal.noop } else { Session.persist_token(token) }),
-								Ui.on_change(accepted_username, |name| if Str.is_empty(name) { Signal.noop } else { Session.persist_username(name) }),
-								Ui.on_change(accepted_username, |name| if Str.is_empty(name) { Signal.noop } else { Browser.push_state(Route.home_location) }),
+								Ui.on_change(accepted_token, |token| if token.is_empty() { Signal.noop } else { Session.persist_token(token) }),
+								Ui.on_change(accepted_username, |name| if name.is_empty() { Signal.noop } else { Session.persist_username(name) }),
+								Ui.on_change(accepted_username, |name| if name.is_empty() { Signal.noop } else { Browser.push_state(Route.home_location) }),
 								Html.heading(heading),
 								error_list(errors),
 								Html.form(
@@ -104,7 +126,7 @@ Auth := {}.{
 										if is_register {
 											Html.text_input_attrs(
 												"Username",
-												Signal.map(form.signal(), |value| value.username),
+												username,
 												[Html.class_attr(field_class)],
 												form.on_str(|value, text| { ..value, username: text }),
 											)
@@ -113,13 +135,13 @@ Auth := {}.{
 										},
 										Html.text_input_attrs(
 											"Email",
-											Signal.map(form.signal(), |value| value.email),
+											email,
 											[Html.class_attr(field_class), Html.attr("type", "email")],
 											form.on_str(|value, text| { ..value, email: text }),
 										),
 										Html.text_input_attrs(
 											"Password",
-											Signal.map(form.signal(), |value| value.password),
+											password,
 											[Html.class_attr(field_class), Html.attr("type", "password")],
 											form.on_str(|value, text| { ..value, password: text }),
 										),
@@ -149,8 +171,8 @@ Auth := {}.{
 
 	error_list : Signal.Signal(List(Str)) -> Elem
 	error_list = |errors| {
-		keyed = Signal.map(
-			errors,
+		keyed : Signal.Signal(List({ key : Str, text : Str }))
+		keyed = errors.map(
 			|lines|
 				lines.fold(
 					{ items: [], index: 0 },
@@ -168,7 +190,7 @@ Auth := {}.{
 					Ui.each_str(
 						keyed,
 						|item| item.key,
-						|_, item| Elem.Element({ tag: "li", attrs: [], children: [Html.text_s(Signal.map(item, |value| value.text))] }),
+						|_, item| Elem.Element({ tag: "li", attrs: [], children: [Html.text_s(item.map(|value| value.text))] }),
 					),
 				],
 			},

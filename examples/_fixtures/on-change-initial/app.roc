@@ -20,15 +20,15 @@ main = |_| {
 		{ initial: "mounted", regular: "mounted" },
 		|model| {
 			state = model.signal()
-			initial = Signal.map(state, |value| value.initial)
-			regular = Signal.map(state, |value| value.regular)
+			initial = state.map(|value| value.initial)
+			regular = state.map(|value| value.regular)
 
 			Html.div_c(
 				"",
 				[
 					Html.heading("On Change Initial"),
-					Html.text_s(Signal.map(initial, |value| "Initial value: ${value}")),
-					Html.text_s(Signal.map(regular, |value| "Regular value: ${value}")),
+					Html.text_s(initial.map(|value| "Initial value: ${value}")),
+					Html.text_s(regular.map(|value| "Regular value: ${value}")),
 					Html.button("Change initial", model.on_unit(|value| { ..value, initial: "updated" })),
 					Html.button("Change regular", model.on_unit(|value| { ..value, regular: "updated" })),
 					Ui.on_change_initial(initial, |value| Browser.set_title(initial_title(value))),

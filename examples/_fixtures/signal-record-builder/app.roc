@@ -5,10 +5,9 @@ import pf.Html
 import pf.Signal
 import pf.Ui
 
-concat3 : Str, Str, Str -> Str
-concat3 = |a, b, c| Str.concat(Str.concat(a, b), c)
+Profile : { first : Str, last : Str, active : Bool }
 
-summary_text : { first : Str, last : Str, active : Bool } -> Str
+summary_text : Profile -> Str
 summary_text = |profile| {
 	status =
 		if profile.active {
@@ -17,20 +16,22 @@ summary_text = |profile| {
 			"paused"
 		}
 
-	concat3(concat3("Profile: ", profile.first, " "), concat3(profile.last, " is ", status), "")
+	"Profile: ${profile.first} ${profile.last} is ${status}"
 }
 
-ready_text : { first : Str, last : Str, active : Bool } -> Str
-ready_text = |profile| {
-	if (!Str.is_empty(profile.first)) and (!Str.is_empty(profile.last)) and profile.active {
+profile_ready : Profile -> Bool
+profile_ready = |profile| (!profile.first.is_empty()) and (!profile.last.is_empty()) and profile.active
+
+ready_text : Profile -> Str
+ready_text = |profile|
+	if profile_ready(profile) {
 		"Ready: yes"
 	} else {
 		"Ready: no"
 	}
-}
 
-ready_disabled : { first : Str, last : Str, active : Bool } -> Bool
-ready_disabled = |profile| !((!Str.is_empty(profile.first)) and (!Str.is_empty(profile.last)) and profile.active)
+ready_disabled : Profile -> Bool
+ready_disabled = |profile| !profile_ready(profile)
 
 page_class = "grid gap-5"
 
@@ -49,15 +50,19 @@ main = |_| {
 					Ui.state(
 						True,
 						|active| {
+							profile : Signal.Signal(Profile)
 							profile =
 								{
 									first: first.signal(),
 									last: last.signal(),
 									active: active.signal(),
 								}.Signal
-							summary = Signal.map(profile, summary_text)
-							ready = Signal.map(profile, ready_text)
-							disabled = Signal.map(profile, ready_disabled)
+							summary : Signal.Signal(Str)
+							summary = profile.map(summary_text)
+							ready : Signal.Signal(Str)
+							ready = profile.map(ready_text)
+							disabled : Signal.Signal(Bool)
+							disabled = profile.map(ready_disabled)
 
 							Html.div_c(
 								page_class,

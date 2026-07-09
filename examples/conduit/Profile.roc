@@ -18,11 +18,15 @@ Profile := {}.{
 			|_| {
 				profile_task = Http.get_text_task("profile")
 				articles_task = Http.get_text_task("profile-articles")
+				profile_state : Signal.Signal(Api.Remote(Api.Profile))
 				profile_state = Signal.fold_task(profile_task, Loading, Api.decode_profile, Api.request_failed)
 				articles_state = Signal.fold_task(articles_task, Loading, Api.decode_feed, Api.request_failed)
-				username = Signal.map(route, |value| Route.profile_username(value))
-				articles_uri = Signal.map(
-					username,
+
+				username : Signal.Signal(Str)
+				username = route.map(|value| Route.profile_username(value))
+
+				articles_uri : Signal.Signal(Str)
+				articles_uri = username.map(
 					|value|
 						if favorites {
 							Api.favorited_articles_uri(value)
@@ -30,12 +34,24 @@ Profile := {}.{
 							Api.author_articles_uri(value)
 						},
 				)
-				is_loading = Signal.map(profile_state, profile_loading)
-				is_failed = Signal.map(profile_state, profile_failed)
-				message = Signal.map(profile_state, profile_message)
-				name_text = Signal.map(profile_state, profile_name)
-				bio_text = Signal.map(profile_state, profile_bio)
-				tab_rows = Signal.map(username, |value| if Str.is_empty(value) { [] } else { [value] })
+
+				is_loading : Signal.Signal(Bool)
+				is_loading = profile_state.map(profile_loading)
+
+				is_failed : Signal.Signal(Bool)
+				is_failed = profile_state.map(profile_failed)
+
+				message : Signal.Signal(Str)
+				message = profile_state.map(profile_message)
+
+				name_text : Signal.Signal(Str)
+				name_text = profile_state.map(profile_name)
+
+				bio_text : Signal.Signal(Str)
+				bio_text = profile_state.map(profile_bio)
+
+				tab_rows : Signal.Signal(List(Str))
+				tab_rows = username.map(|value| if value.is_empty() { [] } else { [value] })
 
 				Html.section(
 					"Profile",
@@ -44,7 +60,7 @@ Profile := {}.{
 						Ui.on_change_initial(
 							username,
 							|value|
-								if Str.is_empty(value) {
+								if value.is_empty() {
 									Signal.noop
 								} else {
 									Http.get_text(profile_task, Api.profile_uri(value))

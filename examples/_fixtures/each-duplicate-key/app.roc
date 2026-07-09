@@ -18,7 +18,7 @@ duplicate_items = [
 
 render_row : Str, Signal.Signal(Item) -> Elem
 render_row = |key, item_signal| {
-	label = Signal.map(item_signal, |item| item.label)
+	label = item_signal.map(|item| item.label)
 	Html.section(
 		key,
 		[],

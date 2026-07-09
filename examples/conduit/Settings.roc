@@ -62,22 +62,45 @@ Settings := {}.{
 					empty_form,
 					|form| {
 						task = Http.request_task("settings")
-						token = Signal.map(session, |value| Session.token_of(value))
+						form_signal : Signal.Signal(Settings.Form)
+						form_signal = form.signal()
+						token = session.map(|value| Session.token_of(value))
+
+						result : Signal.Signal(Api.AuthResult)
 						result = Signal.fold_task(
 							task,
 							AuthIdle,
 							Api.classify_auth,
 							|err| AuthErrored("Request failed: ${Http.error_text(err)}"),
 						)
-						submission = Signal.map2(
-							form.signal(),
-							token,
-							|value, token_text| { serial: value.serial, body: value.submitted_body, token: token_text },
-						)
-						logout = Signal.map(form.signal(), |value| value.logout_serial)
-						saved = Signal.map(result, saved_text)
-						errors = Signal.map(result, error_lines)
-						username = Signal.map(session, |value| Session.username_of(value))
+						submission_inputs = { form: form_signal, token: token }.Signal
+
+						submission : Signal.Signal({ serial : U64, body : Str, token : Str })
+						submission = submission_inputs.map(|value| { serial: value.form.serial, body: value.form.submitted_body, token: value.token })
+
+						logout : Signal.Signal(U64)
+						logout = form_signal.map(|value| value.logout_serial)
+
+						saved : Signal.Signal(Str)
+						saved = result.map(saved_text)
+
+						errors : Signal.Signal(List(Str))
+						errors = result.map(Auth.error_lines)
+
+						username = session.map(|value| Session.username_of(value))
+						signed_in_text = username.map(|name| "Signed in as ${name}")
+
+						image : Signal.Signal(Str)
+						image = form_signal.map(|value| value.image)
+
+						bio : Signal.Signal(Str)
+						bio = form_signal.map(|value| value.bio)
+
+						email : Signal.Signal(Str)
+						email = form_signal.map(|value| value.email)
+
+						password : Signal.Signal(Str)
+						password = form_signal.map(|value| value.password)
 
 						Html.section(
 							"Settings",
@@ -95,7 +118,7 @@ Settings := {}.{
 									Ui.on_change(logout, |serial| if serial == 0 { Signal.noop } else { Session.clear_token }),
 									Ui.on_change(logout, |serial| if serial == 0 { Signal.noop } else { Session.clear_username }),
 									Html.heading("Settings"),
-								Html.text_s(Signal.map(username, |name| "Signed in as ${name}")),
+								Html.text_s(signed_in_text),
 								Auth.error_list(errors),
 								Html.paragraph_s(saved),
 								Html.form(
@@ -103,25 +126,25 @@ Settings := {}.{
 									[
 										Html.text_input_attrs(
 											"Profile picture URL",
-											Signal.map(form.signal(), |value| value.image),
+											image,
 											[Html.class_attr(Auth.field_class)],
 											form.on_str(|value, text| { ..value, image: text }),
 										),
 										Html.textarea_attrs(
 											"Bio",
-											Signal.map(form.signal(), |value| value.bio),
+											bio,
 											[Html.class_attr(Auth.field_class)],
 											form.on_str(|value, text| { ..value, bio: text }),
 										),
 										Html.text_input_attrs(
 											"Email",
-											Signal.map(form.signal(), |value| value.email),
+											email,
 											[Html.class_attr(Auth.field_class), Html.attr("type", "email")],
 											form.on_str(|value, text| { ..value, email: text }),
 										),
 										Html.text_input_attrs(
 											"New password",
-											Signal.map(form.signal(), |value| value.password),
+											password,
 											[Html.class_attr(Auth.field_class), Html.attr("type", "password")],
 											form.on_str(|value, text| { ..value, password: text }),
 										),
@@ -152,11 +175,4 @@ Settings := {}.{
 			_ => ""
 		}
 
-	error_lines : Api.AuthResult -> List(Str)
-	error_lines = |result|
-		match result {
-			AuthRejected(lines) => lines
-			AuthErrored(message) => [message]
-			_ => []
-		}
 }

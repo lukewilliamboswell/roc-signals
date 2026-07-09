@@ -33,18 +33,23 @@ record_reset : State -> State
 record_reset = |state| { ..initial_state, reset_clicks: state.reset_clicks, resets: state.resets + 1 }
 
 count_label : Str, I64 -> Str
-count_label = |label, value| Str.concat(label, value.to_str())
+count_label = |label, value| "${label}${value.to_str()}"
 
 main : {} -> Elem
 main = |_| {
 	Ui.state(
 		initial_state,
 		|model| {
+			state_signal : Signal.Signal(State)
 			state_signal = model.signal()
-			name_signal = Signal.map(state_signal, |state| state.name)
-			accepted_signal = Signal.map(state_signal, |state| state.accepted)
-			reset_clicks_text = Signal.map(state_signal, |state| count_label("Reset clicks: ", state.reset_clicks))
-			resets_text = Signal.map(state_signal, |state| count_label("Resets: ", state.resets))
+			name_signal : Signal.Signal(Str)
+			name_signal = state_signal.map(|state| state.name)
+			accepted_signal : Signal.Signal(Bool)
+			accepted_signal = state_signal.map(|state| state.accepted)
+			reset_clicks_text : Signal.Signal(Str)
+			reset_clicks_text = state_signal.map(|state| count_label("Reset clicks: ", state.reset_clicks))
+			resets_text : Signal.Signal(Str)
+			resets_text = state_signal.map(|state| count_label("Resets: ", state.resets))
 
 			Html.section(
 				"Form Reset Default",

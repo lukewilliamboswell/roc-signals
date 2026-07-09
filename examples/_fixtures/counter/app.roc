@@ -6,7 +6,7 @@ import pf.Signal
 import pf.Ui
 
 label_count : I64 -> Str
-label_count = |value| Str.concat("Count: ", value.to_str())
+label_count = |value| "Count: ${value.to_str()}"
 
 page_class = "grid gap-6"
 
@@ -19,7 +19,7 @@ main = |_| {
 	Ui.state(
 		0,
 		|count| {
-			label = Signal.map(count.signal(), label_count)
+			label = count.signal().map(label_count)
 
 			Html.div_c(
 				page_class,

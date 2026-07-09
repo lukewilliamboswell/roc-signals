@@ -26,11 +26,13 @@ Home := {}.{
 					Api.decode_feed_response,
 					|err| Api.request_failed(Http.error_text(err)),
 				)
+				tags_state : Signal.Signal(Api.Remote(List(Str)))
 				tags_state = Signal.fold_task(tags_task, Loading, Api.decode_tags, Api.request_failed)
-				feed = Signal.map(route, |value| Route.feed_of(value))
-				fetch_params = Signal.map2(feed, session, |feed_value, session_value| { feed: feed_value, token: Session.token_of(session_value) })
-				feed_label = Signal.map(feed, feed_heading)
-				signed_in = Signal.map(session, |value| Session.is_signed_in(value))
+				feed = route.map(|value| Route.feed_of(value))
+				fetch_inputs = { feed: feed, session: session }.Signal
+				fetch_params = fetch_inputs.map(|value| { feed: value.feed, token: Session.token_of(value.session) })
+				feed_label = feed.map(feed_heading)
+				signed_in = session.map(|value| Session.is_signed_in(value))
 
 				Html.section(
 					"Home",
@@ -76,16 +78,14 @@ Home := {}.{
 	feed_tabs = |feed, signed_in, intent| {
 		active = "border-b-2 border-emerald-600 px-2 font-medium text-emerald-700"
 		idle = "px-2 text-zinc-500"
-		yours_class = Signal.map(
-			feed,
+		yours_class = feed.map(
 			|value|
 				match value.source {
 					Yours => active
 					Global => idle
 				},
 		)
-		global_class = Signal.map(
-			feed,
+		global_class = feed.map(
 			|value|
 				match value.source {
 					Yours => idle
@@ -114,9 +114,15 @@ Home := {}.{
 
 	tags_sidebar : Signal.Signal(Api.Remote(List(Str))), Ui.State(Nav.RouteIntent) -> Elem
 	tags_sidebar = |tags_state, intent| {
-		is_loading = Signal.map(tags_state, tags_loading)
-		is_failed = Signal.map(tags_state, tags_failed)
-		tags = Signal.map(tags_state, tags_of)
+		is_loading : Signal.Signal(Bool)
+		is_loading = tags_state.map(tags_loading)
+
+		is_failed : Signal.Signal(Bool)
+		is_failed = tags_state.map(tags_failed)
+
+		tags : Signal.Signal(List(Str))
+		tags = tags_state.map(tags_of)
+
 		Elem.Element(
 			{
 				tag: "aside",

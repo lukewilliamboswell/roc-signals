@@ -20,26 +20,29 @@ record_checked : State, Bool -> State
 record_checked = |state, accepted| { ..state, accepted, changes: state.changes + 1 }
 
 status_label : Bool -> Str
-status_label = |accepted| {
+status_label = |accepted|
 	if accepted {
 		"Accepted: true"
 	} else {
 		"Accepted: false"
 	}
-}
 
 changes_label : I64 -> Str
-changes_label = |changes| Str.concat("Changes: ", changes.to_str())
+changes_label = |changes| "Changes: ${changes.to_str()}"
 
 main : {} -> Elem
 main = |_| {
 	Ui.state(
 		initial_state,
 		|model| {
+			state_signal : Signal.Signal(State)
 			state_signal = model.signal()
-			accepted_signal = Signal.map(state_signal, |state| state.accepted)
-			status_text = Signal.map(accepted_signal, status_label)
-			changes_text = Signal.map(state_signal, |state| changes_label(state.changes))
+			accepted_signal : Signal.Signal(Bool)
+			accepted_signal = state_signal.map(|state| state.accepted)
+			status_text : Signal.Signal(Str)
+			status_text = accepted_signal.map(status_label)
+			changes_text : Signal.Signal(Str)
+			changes_text = state_signal.map(|state| changes_label(state.changes))
 
 			Html.section(
 				"Checkbox Real Click",

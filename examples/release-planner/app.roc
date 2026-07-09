@@ -25,7 +25,12 @@ Card : {
 
 DragState := [Idle, Dragging(Str)]
 
-HoverState := [NoHover, HoverEnd(Str), HoverBefore(Str, Str)]
+HoverBeforeTarget : {
+	column_id : Str,
+	before_id : Str,
+}
+
+HoverState := [NoHover, HoverEnd(Str), HoverBefore(HoverBeforeTarget)]
 
 Board : {
 	cards : List(Card),
@@ -64,12 +69,6 @@ MarkdownState : {
 	blocks : List(MarkdownBlock),
 	index : U64,
 }
-
-concat3 : Str, Str, Str -> Str
-concat3 = |a, b, c| Str.concat(Str.concat(a, b), c)
-
-concat4 : Str, Str, Str, Str -> Str
-concat4 = |a, b, c, d| Str.concat(concat3(a, b, c), d)
 
 backlog_id = "backlog"
 
@@ -282,23 +281,23 @@ card_title = |cards, card_id| match cards.find_first(|card| card.id == card_id) 
 }
 
 join_tags : List(Str) -> Str
-join_tags = |tags| tags.fold("", |acc, tag| if acc == "" tag else concat3(acc, ", ", tag))
+join_tags = |tags| Str.join_with(tags, ", ")
 
 block_key : U64, Str -> Str
-block_key = |index, kind| concat4("b:", index.to_str(), ":", kind)
+block_key = |index, kind| "b:${index.to_str()}:${kind}"
 
 item_key : U64 -> Str
-item_key = |index| concat3("i:", index.to_str(), "")
+item_key = |index| "i:${index.to_str()}"
 
 segment_key : U64, Str -> Str
-segment_key = |index, kind| concat4("s:", index.to_str(), ":", kind)
+segment_key = |index, kind| "s:${index.to_str()}:${kind}"
 
 empty_inline_state : InlineState
 empty_inline_state = { segments: [], index: 0 }
 
 append_segment : InlineState, Str, Str, Str -> InlineState
 append_segment = |state, kind, text, href| {
-	if Str.is_empty(text) {
+	if text.is_empty() {
 		state
 	} else {
 		{
@@ -310,20 +309,20 @@ append_segment = |state, kind, text, href| {
 
 safe_href : Str -> Bool
 safe_href = |href| {
-	Str.starts_with(href, "https://")
-		or Str.starts_with(href, "http://")
-		or Str.starts_with(href, "/")
-		or Str.starts_with(href, "#")
-		or Str.starts_with(href, "mailto:")
+	href.starts_with("https://")
+		or href.starts_with("http://")
+		or href.starts_with("/")
+		or href.starts_with("#")
+		or href.starts_with("mailto:")
 }
 
 parse_link_inline : InlineState, Str -> InlineState
 parse_link_inline = |state, text| {
-	match Str.find_first(text, "[") {
+	match text.find_first("[") {
 		Ok(open) =>
-			match Str.find_first(open.after, "](") {
+			match open.after.find_first("](") {
 				Ok(label_split) =>
-					match Str.find_first(label_split.after, ")") {
+					match label_split.after.find_first(")") {
 						Ok(href_split) => {
 							before_state = parse_inline_into(state, open.before)
 							link_state =
@@ -344,9 +343,9 @@ parse_link_inline = |state, text| {
 
 parse_code_inline : InlineState, Str -> InlineState
 parse_code_inline = |state, text| {
-	match Str.find_first(text, "`") {
+	match text.find_first("`") {
 		Ok(open) =>
-			match Str.find_first(open.after, "`") {
+			match open.after.find_first("`") {
 				Ok(close) => {
 					before_state = parse_inline_into(state, open.before)
 					code_state = append_segment(before_state, "code", close.before, "")
@@ -360,9 +359,9 @@ parse_code_inline = |state, text| {
 
 parse_strong_inline : InlineState, Str -> InlineState
 parse_strong_inline = |state, text| {
-	match Str.find_first(text, "**") {
+	match text.find_first("**") {
 		Ok(open) =>
-			match Str.find_first(open.after, "**") {
+			match open.after.find_first("**") {
 				Ok(close) => {
 					before_state = parse_inline_into(state, open.before)
 					strong_state = append_segment(before_state, "strong", close.before, "")
@@ -376,7 +375,7 @@ parse_strong_inline = |state, text| {
 
 parse_inline_into : InlineState, Str -> InlineState
 parse_inline_into = |state, text| {
-	if Str.is_empty(text) {
+	if text.is_empty() {
 		state
 	} else {
 		parse_strong_inline(state, text)
@@ -396,20 +395,20 @@ append_block = |state, kind, text, items| {
 
 parse_markdown_line : MarkdownState, Str -> MarkdownState
 parse_markdown_line = |state, line| {
-	trimmed = Str.trim(line)
-	if Str.is_empty(trimmed) {
+	trimmed = line.trim()
+	if trimmed.is_empty() {
 		state
-	} else if Str.starts_with(trimmed, "## ") {
-		append_block(state, "heading", Str.drop_prefix(trimmed, "## "), [])
-	} else if Str.starts_with(trimmed, "# ") {
-		append_block(state, "heading", Str.drop_prefix(trimmed, "# "), [])
-	} else if Str.starts_with(trimmed, "> ") {
-		append_block(state, "quote", Str.drop_prefix(trimmed, "> "), [])
-	} else if Str.starts_with(trimmed, "- ") {
+	} else if trimmed.starts_with("## ") {
+		append_block(state, "heading", trimmed.drop_prefix("## "), [])
+	} else if trimmed.starts_with("# ") {
+		append_block(state, "heading", trimmed.drop_prefix("# "), [])
+	} else if trimmed.starts_with("> ") {
+		append_block(state, "quote", trimmed.drop_prefix("> "), [])
+	} else if trimmed.starts_with("- ") {
 		append_block(
 			state,
 			"list",
-			Str.drop_prefix(trimmed, "- "),
+			trimmed.drop_prefix("- "),
 			[],
 		)
 	} else {
@@ -419,29 +418,27 @@ parse_markdown_line = |state, line| {
 
 parse_markdown : Str -> List(MarkdownBlock)
 parse_markdown = |source| {
-	Str.split_on(source, "\n").fold({ blocks: [], index: 0 }, parse_markdown_line).blocks
+	source.split_on("\n").fold({ blocks: [], index: 0 }, parse_markdown_line).blocks
 }
 
 inline_plain_text : Str -> Str
-inline_plain_text = |source| {
-	inline_segments(source).fold("", |acc, segment| Str.concat(acc, segment.text))
-}
+inline_plain_text = |source| Str.join_with(inline_segments(source).map(|segment| segment.text), "")
 
 inline_view : Signal.Signal(Str) -> Elem
 inline_view = |source| {
-	segments = Signal.map(source, inline_segments)
+	segments = source.map(inline_segments)
 	Elem.Element({ tag: "span", attrs: [], children: [Ui.each_str(segments, |segment| segment.key, render_inline_segment)] })
 }
 
 render_inline_segment : Str, Signal.Signal(InlineSegment) -> Elem
 render_inline_segment = |key, segment| {
-	text = Signal.map(segment, |value| value.text)
-	href = Signal.map(segment, |value| value.href)
-	if Str.ends_with(key, ":strong") {
+	text = segment.map(|value| value.text)
+	href = segment.map(|value| value.href)
+	if key.ends_with(":strong") {
 		Elem.Element({ tag: "strong", attrs: [], children: [Html.text_s(text)] })
-	} else if Str.ends_with(key, ":code") {
+	} else if key.ends_with(":code") {
 		Elem.Element({ tag: "code", attrs: [Html.class_attr(markdown_code_class)], children: [Html.text_s(text)] })
-	} else if Str.ends_with(key, ":link") {
+	} else if key.ends_with(":link") {
 		Elem.Element(
 			{
 				tag: "a",
@@ -460,18 +457,18 @@ render_inline_segment = |key, segment| {
 
 render_list_item : Str, Signal.Signal(MarkdownListItem) -> Elem
 render_list_item = |_, item| {
-	text = Signal.map(item, |value| value.text)
+	text = item.map(|value| value.text)
 	Elem.Element({ tag: "li", attrs: [], children: [inline_view(text)] })
 }
 
 render_markdown_block : Str, Signal.Signal(MarkdownBlock) -> Elem
 render_markdown_block = |key, block| {
-	text = Signal.map(block, |value| value.text)
-	if Str.ends_with(key, ":heading") {
+	text = block.map(|value| value.text)
+	if key.ends_with(":heading") {
 		Elem.Element({ tag: "h3", attrs: [Html.class_attr(card_title_class)], children: [Html.text_s(text)] })
-	} else if Str.ends_with(key, ":quote") {
+	} else if key.ends_with(":quote") {
 		Elem.Element({ tag: "blockquote", attrs: [Html.class_attr(markdown_quote_class)], children: [inline_view(text)] })
-	} else if Str.ends_with(key, ":list") {
+	} else if key.ends_with(":list") {
 		Elem.Element(
 			{
 				tag: "ul",
@@ -488,7 +485,7 @@ render_markdown_block = |key, block| {
 
 markdown_view : Signal.Signal(Str), Str -> Elem
 markdown_view = |source, classes| {
-	blocks = Signal.map(source, parse_markdown)
+	blocks = source.map(parse_markdown)
 	Html.div([Html.class_attr(classes)], [Ui.each_str(blocks, |block| block.key, render_markdown_block)])
 }
 
@@ -518,9 +515,9 @@ column_summary : Board, Column -> Str
 column_summary = |board, column| {
 	count_str = column_cards(board, column.id).len().to_str()
 	if column.id == done_id {
-		concat3(count_str, " completed", "")
+		"${count_str} completed"
 	} else {
-		concat4(count_str, " / ", column.limit.to_str(), " cards")
+		"${count_str} / ${column.limit.to_str()} cards"
 	}
 }
 
@@ -530,15 +527,15 @@ drag_status_text = |board| {
 		Idle => "Board ready"
 		Dragging(card_id) => {
 			title = card_title(board.cards, card_id)
-			match board.hover {
-				NoHover => concat3("Dragging ", title, "")
-				HoverEnd(column_id) => concat4("Dragging ", title, " over ", column_title(column_id))
-				HoverBefore(column_id, before_id) => {
-					before_title = card_title(board.cards, before_id)
-					concat4(concat4("Dragging ", title, " before ", before_title), " in ", column_title(column_id), "")
+				match board.hover {
+					NoHover => "Dragging ${title}"
+					HoverEnd(column_id) => "Dragging ${title} over ${column_title(column_id)}"
+					HoverBefore(target) => {
+						before_title = card_title(board.cards, target.before_id)
+						"Dragging ${title} before ${before_title} in ${column_title(target.column_id)}"
+					}
 				}
 			}
-		}
 	}
 }
 
@@ -547,7 +544,7 @@ reviewer_text = |board| {
 	if board.reviewer == "" {
 		"No reviewer assigned"
 	} else {
-		Str.concat("Reviewing with ", board.reviewer)
+		"Reviewing with ${board.reviewer}"
 	}
 }
 
@@ -561,13 +558,13 @@ focus_text = |board| {
 }
 
 visible_cards_text : Board -> Str
-visible_cards_text = |board| concat3(visible_card_count(board).to_str(), " cards", "")
+visible_cards_text = |board| "${visible_card_count(board).to_str()} cards"
 
 visible_points_text : Board -> Str
-visible_points_text = |board| concat3(visible_estimate(board).to_str(), " points", "")
+visible_points_text = |board| "${visible_estimate(board).to_str()} points"
 
 done_cards_text : Board -> Str
-done_cards_text = |board| concat3(column_cards(board, done_id).len().to_str(), " done", "")
+done_cards_text = |board| "${column_cards(board, done_id).len().to_str()} done"
 
 start_drag : Board, Str -> Board
 start_drag = |board, card_id| { ..board, dragging: Dragging(card_id), hover: NoHover }
@@ -583,12 +580,12 @@ hover_end = |board, column_id| match board.dragging {
 
 hover_before : Board, Str, Str -> Board
 hover_before = |board, column_id, before_id| match board.dragging {
-	Idle => board
-	Dragging(card_id) => if card_id == before_id
-		{ ..board, hover: NoHover }
-	else
-		{ ..board, hover: HoverBefore(column_id, before_id) }
-}
+		Idle => board
+		Dragging(card_id) => if card_id == before_id
+			{ ..board, hover: NoHover }
+		else
+			{ ..board, hover: HoverBefore({ column_id, before_id }) }
+	}
 
 clear_hover : Board -> Board
 clear_hover = |board| { ..board, hover: NoHover }
@@ -620,7 +617,7 @@ selected_card = |board| {
 	match board.cards.find_first(|card| card.id == board.editing_card) {
 		Ok(card) => card
 		Err(_) => {
-			match List.first(board.cards) {
+			match board.cards.first() {
 				Ok(card) => card
 				Err(_) => {
 					id: "",
@@ -642,7 +639,7 @@ selected_note_markdown : Board -> Str
 selected_note_markdown = |board| selected_card(board).note_markdown
 
 selected_note_title : Board -> Str
-selected_note_title = |board| Str.concat("Editing notes for ", selected_card(board).title)
+selected_note_title = |board| "Editing notes for ${selected_card(board).title}"
 
 insert_before : List(Card), Card, Str -> List(Card)
 insert_before = |cards, moved, before_id| {
@@ -679,18 +676,18 @@ move_dragging_card = |board, target| {
 			match board.cards.find_first(|card| card.id == card_id) {
 				Ok(card) => {
 					without_card = board.cards.keep_if(|candidate| candidate.id != card_id)
-					next_cards =
-						match target {
-							NoHover => board.cards
-							HoverEnd(column_id) => without_card.append({ ..card, status: column_id })
-							HoverBefore(column_id, before_id) => {
-								if card_id == before_id {
-									board.cards
-								} else {
-									insert_before(without_card, { ..card, status: column_id }, before_id)
+						next_cards =
+							match target {
+								NoHover => board.cards
+								HoverEnd(column_id) => without_card.append({ ..card, status: column_id })
+								HoverBefore(drop_target) => {
+									if card_id == drop_target.before_id {
+										board.cards
+									} else {
+										insert_before(without_card, { ..card, status: drop_target.column_id }, drop_target.before_id)
+									}
 								}
 							}
-						}
 
 					{ ..board, cards: next_cards, dragging: Idle, hover: NoHover }
 				}
@@ -704,19 +701,19 @@ drop_on_end : Board, Str -> Board
 drop_on_end = |board, column_id| move_dragging_card(board, HoverEnd(column_id))
 
 drop_before : Board, Str, Str -> Board
-drop_before = |board, column_id, before_id| move_dragging_card(board, HoverBefore(column_id, before_id))
+drop_before = |board, column_id, before_id| move_dragging_card(board, HoverBefore({ column_id, before_id }))
 
 card_class : Board, Card -> Str
 card_class = |board, card| {
 	match board.dragging {
 		Dragging(card_id) => if card_id == card.id {
 			card_drag_class
-		} else {
-			match board.hover {
-				HoverBefore(_, before_id) => if before_id == card.id {
-					card_hover_class
-				} else {
-					card_base_class
+			} else {
+				match board.hover {
+					HoverBefore(target) => if target.before_id == card.id {
+						card_hover_class
+					} else {
+						card_base_class
 				}
 				_ => card_base_class
 			}
@@ -738,29 +735,22 @@ drop_zone_class_for = |board, column_id| {
 }
 
 card_meta_text : Card -> Str
-card_meta_text = |card| {
-	concat4(
-		concat4(card.owner, " owns ", card.id, " - "),
-		card.priority,
-		" priority - ",
-		concat3(card.estimate.to_str(), " points", ""),
-	)
-}
+card_meta_text = |card| "${card.owner} owns ${card.id} - ${card.priority} priority - ${card.estimate.to_str()} points"
 
 card_status_text : Card -> Str
-card_status_text = |card| Str.concat("Column: ", column_title(card.status))
+card_status_text = |card| "Column: ${column_title(card.status)}"
 
 card_priority_text : Card -> Str
-card_priority_text = |card| Str.concat(card.priority, " priority")
+card_priority_text = |card| "${card.priority} priority"
 
 card_estimate_text : Card -> Str
-card_estimate_text = |card| concat3(card.estimate.to_str(), " pts", "")
+card_estimate_text = |card| "${card.estimate.to_str()} pts"
 
 card_tags_text : Card -> Str
-card_tags_text = |card| Str.concat("Tags: ", join_tags(card.tags))
+card_tags_text = |card| "Tags: ${join_tags(card.tags)}"
 
 note_label : Card -> Str
-note_label = |card| concat4("Notes on ", card.title, ": ", card.notes.to_str())
+note_label = |card| "Notes on ${card.title}: ${card.notes.to_str()}"
 
 note_button : Ui.State(Board), Str, Str -> Elem
 note_button = |board_state, card_id, label| {
@@ -794,8 +784,8 @@ edit_note_button = |board_state, card_id, label| {
 
 render_note_editor : Ui.State(Board), Signal.Signal(Board) -> Elem
 render_note_editor = |board, board_signal| {
-	title = Signal.map(board_signal, selected_note_title)
-	note = Signal.map(board_signal, selected_note_markdown)
+	title = board_signal.map(selected_note_title)
+	note = board_signal.map(selected_note_markdown)
 	Html.section_c(
 		"Note editor",
 		note_editor_class,
@@ -817,17 +807,17 @@ render_card : Ui.State(Board), Str, Str, Signal.Signal(Card) -> Elem
 render_card = |board_state, column_id, card_id, card_signal| {
 	board_signal = board_state.signal()
 	class_inputs = { board: board_signal, card: card_signal }.Signal
-	class_signal = Signal.map(class_inputs, |inputs| card_class(inputs.board, inputs.card))
-	title_signal = Signal.map(card_signal, |card| card.title)
-	meta_signal = Signal.map(card_signal, card_meta_text)
-	status_signal = Signal.map(card_signal, card_status_text)
-	priority_signal = Signal.map(card_signal, card_priority_text)
-	estimate_signal = Signal.map(card_signal, card_estimate_text)
-	tags_signal = Signal.map(card_signal, card_tags_text)
-	note_signal = Signal.map(card_signal, note_label)
+	class_signal = class_inputs.map(|inputs| card_class(inputs.board, inputs.card))
+	title_signal = card_signal.map(|card| card.title)
+	meta_signal = card_signal.map(card_meta_text)
+	status_signal = card_signal.map(card_status_text)
+	priority_signal = card_signal.map(card_priority_text)
+	estimate_signal = card_signal.map(card_estimate_text)
+	tags_signal = card_signal.map(card_tags_text)
+	note_signal = card_signal.map(note_label)
 
 	Html.section(
-		Str.concat("Card: ", card_title(initial_cards, card_id)),
+		"Card: ${card_title(initial_cards, card_id)}",
 		[
 			Html.class_attr_s(class_signal),
 			Html.on_pointer_down(board_state.on_unit(|board| start_drag(board, card_id))),
@@ -857,8 +847,8 @@ render_card = |board_state, column_id, card_id, card_signal| {
 				card_footer_class,
 				[
 					Html.paragraph_s_c(note_signal, note_text_class),
-					note_button(board_state, card_id, Str.concat("Add note ", card_title(initial_cards, card_id))),
-					edit_note_button(board_state, card_id, Str.concat("Edit notes ", card_title(initial_cards, card_id))),
+					note_button(board_state, card_id, "Add note ${card_title(initial_cards, card_id)}"),
+					edit_note_button(board_state, card_id, "Edit notes ${card_title(initial_cards, card_id)}"),
 				],
 			),
 		],
@@ -868,11 +858,16 @@ render_card = |board_state, column_id, card_id, card_signal| {
 render_column : Ui.State(Board), Str, Signal.Signal(Column) -> Elem
 render_column = |board_state, column_id, column_signal| {
 	board_signal = board_state.signal()
-	cards_signal = Signal.map(board_signal, |board| column_cards(board, column_id))
+	cards_signal : Signal.Signal(List(Card))
+	cards_signal = board_signal.map(|board| column_cards(board, column_id))
+
 	summary_inputs = { board: board_signal, column: column_signal }.Signal
-	summary_signal = Signal.map(summary_inputs, |inputs| column_summary(inputs.board, inputs.column))
-	drop_class_signal = Signal.map(board_signal, |board| drop_zone_class_for(board, column_id))
-	end_label = concat3("Drop: ", column_title(column_id), " end")
+	summary_signal = summary_inputs.map(|inputs| column_summary(inputs.board, inputs.column))
+
+	drop_class_signal : Signal.Signal(Str)
+	drop_class_signal = board_signal.map(|board| drop_zone_class_for(board, column_id))
+
+	end_label = "Drop: ${column_title(column_id)} end"
 
 	Html.section(
 		column_title(column_id),
@@ -903,12 +898,12 @@ main = |_| {
 		initial_board,
 		|board| {
 			board_signal = board.signal()
-			drag_status = Signal.map(board_signal, drag_status_text)
-			reviewer_label = Signal.map(board_signal, reviewer_text)
-			filter_label = Signal.map(board_signal, focus_text)
-			card_metric = Signal.map(board_signal, visible_cards_text)
-			point_metric = Signal.map(board_signal, visible_points_text)
-			done_metric = Signal.map(board_signal, done_cards_text)
+			drag_status = board_signal.map(drag_status_text)
+			reviewer_label = board_signal.map(reviewer_text)
+			filter_label = board_signal.map(focus_text)
+			card_metric = board_signal.map(visible_cards_text)
+			point_metric = board_signal.map(visible_points_text)
+			done_metric = board_signal.map(done_cards_text)
 			column_signal = Signal.const(columns)
 
 			Html.div_c(
@@ -961,7 +956,7 @@ main = |_| {
 							Html.div_c(
 								controls_class,
 								[
-									Html.text_input_c("Reviewer", Signal.map(board_signal, |value| value.reviewer), input_class, board.on_str(|state, value| { ..state, reviewer: value })),
+									Html.text_input_c("Reviewer", board_signal.map(|value| value.reviewer), input_class, board.on_str(|state, value| { ..state, reviewer: value })),
 									Html.paragraph_s_c(reviewer_label, toolbar_copy_class),
 									Html.paragraph_s_c(filter_label, toolbar_copy_class),
 									Html.button_c("Focus high priority", button_class, board.on_unit(|state| { ..state, focus_high_priority: !state.focus_high_priority })),

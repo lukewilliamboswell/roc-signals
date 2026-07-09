@@ -5,9 +5,6 @@ import pf.Html
 import pf.Signal
 import pf.Ui
 
-concat3 : Str, Str, Str -> Str
-concat3 = |a, b, c| Str.concat(Str.concat(a, b), c)
-
 increment_i64 : I64 -> I64
 increment_i64 = |current| current + 1
 
@@ -49,10 +46,7 @@ counter_component = |label| {
 				initial_count,
 				|count| {
 					count_label =
-						Signal.map(
-							count.signal(),
-							|value| concat3(label, " refreshes: ", value.to_str()),
-						)
+						count.signal().map(|value| "${label} refreshes: ${value.to_str()}")
 
 					Html.section_c(
 						label,
@@ -60,7 +54,7 @@ counter_component = |label| {
 						[
 							Html.heading_c(label, "text-lg font-semibold text-zinc-950"),
 							Html.paragraph_s_c(count_label, "text-sm text-zinc-700"),
-							Html.button_c(Str.concat("Refresh ", label), "button", count.on_unit(increment_i64)),
+							Html.button_c("Refresh ${label}", "button", count.on_unit(increment_i64)),
 						],
 					)
 				},
@@ -86,7 +80,7 @@ main = |_| {
 							order: order.signal(),
 						}.Signal
 					visible =
-						Signal.map(visible_inputs, |inputs| visible_components(inputs.show_queue, inputs.order))
+						visible_inputs.map(|inputs| visible_components(inputs.show_queue, inputs.order))
 
 					Html.div_c(
 						page_class,

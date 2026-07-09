@@ -16,8 +16,8 @@ state_event_msg = |binder, event_extraction_plan, payload_reducer| {
 
 read_byte : List(U8) -> { byte : U8, rest : List(U8) }
 read_byte = |bytes|
-	match List.first(bytes) {
-		Ok(byte) => { byte, rest: List.drop_first(bytes, 1) }
+	match bytes.first() {
+		Ok(byte) => { byte, rest: bytes.drop_first(1) }
 		Err(_) => {
 			crash "malformed key event payload: missing byte"
 		}
@@ -45,7 +45,7 @@ take_bytes = |bytes, count| {
 
 	while $left > 0 {
 		next = read_byte($remaining)
-		$value = List.append($value, next.byte)
+		$value = $value.append(next.byte)
 		$remaining = next.rest
 		$left = $left - 1
 	}
@@ -59,7 +59,7 @@ decode_key_payload = |bytes| {
 	key_bytes = take_bytes(key_len.rest, key_len.value)
 	shift = read_byte(key_bytes.rest)
 
-	if !List.is_empty(shift.rest) {
+	if !shift.rest.is_empty() {
 		crash "malformed key event payload: trailing bytes"
 	}
 
@@ -307,7 +307,7 @@ Ui := [].{
 		items_to_values = |items_hv| {
 			typed_items : List(item)
 			typed_items = Box.unbox(Capability.get(items_hv, items_cap))
-			List.map(typed_items, |item| Capability.store(Box.box(item), item_cap))
+			typed_items.map(|item| Capability.store(Box.box(item), item_cap))
 		}
 		key_of_hv : HostValue -> HostValue
 		key_of_hv = |item_hv| {
