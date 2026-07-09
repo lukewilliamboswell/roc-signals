@@ -17,7 +17,7 @@ Article := {}.{
 	page : Signal.Signal(Route), Ui.State(Nav.RouteIntent) -> Elem
 	page = |route, intent| {
 		Ui.component(
-			|_| {
+			|| {
 				task = Http.get_text_task("article")
 				state : Signal.Signal(Api.Remote(Api.Article))
 				state = Signal.fold_task(task, Loading, Api.decode_article, Api.request_failed)
@@ -70,27 +70,27 @@ Article := {}.{
 						),
 						Ui.when(
 							is_loading,
-							|_| Html.paragraph("Loading article..."),
-							|_|
-								Ui.when(
-									is_failed,
-									|_| Html.paragraph_s_c(message, "text-red-700"),
-									|_|
-										Html.div(
-											[Html.attr("data-conduit", "article")],
+							|| Html.paragraph("Loading article..."),
+
+							|| Ui.when(
+								is_failed,
+								|| Html.paragraph_s_c(message, "text-red-700"),
+
+								|| Html.div(
+									[Html.attr("data-conduit", "article")],
+									[
+										Elem.Element({ tag: "h2", attrs: [Html.class_attr("text-2xl font-bold")], children: [Html.text_s(title)] }),
+										Html.div_c(
+											"flex items-center gap-2 py-2 text-sm text-zinc-500",
 											[
-												Elem.Element({ tag: "h2", attrs: [Html.class_attr("text-2xl font-bold")], children: [Html.text_s(title)] }),
-												Html.div_c(
-													"flex items-center gap-2 py-2 text-sm text-zinc-500",
-													[
-														Ui.each_str(author_rows, |name| name, |name, _| Nav.link(name, "font-medium text-emerald-600", Route.profile_location(name), intent)),
-														Html.text_s(meta),
-													],
-												),
-												Markdown.view(body),
+												Ui.each_str(author_rows, |name| name, |name, _| Nav.link(name, "font-medium text-emerald-600", Route.profile_location(name), intent)),
+												Html.text_s(meta),
 											],
 										),
+										Markdown.view(body),
+									],
 								),
+							),
 						),
 					],
 				)

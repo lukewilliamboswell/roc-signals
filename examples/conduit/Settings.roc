@@ -57,7 +57,7 @@ Settings := {}.{
 	page : Signal.Signal(Session), Ui.State(Nav.RouteIntent) -> Elem
 	page = |session, _intent| {
 		Ui.component(
-			|_| {
+			|| {
 				Ui.state(
 					empty_form,
 					|form| {
@@ -115,9 +115,23 @@ Settings := {}.{
 											Http.start(task, Api.put_request("/api/user", snapshot.body, snapshot.token))
 										},
 								),
-									Ui.on_change(logout, |serial| if serial == 0 { Signal.noop } else { Session.clear_token }),
-									Ui.on_change(logout, |serial| if serial == 0 { Signal.noop } else { Session.clear_username }),
-									Html.heading("Settings"),
+								Ui.on_change(
+									logout,
+									|serial| if serial == 0 {
+										Signal.noop
+									} else {
+										Session.clear_token
+									},
+								),
+								Ui.on_change(
+									logout,
+									|serial| if serial == 0 {
+										Signal.noop
+									} else {
+										Session.clear_username
+									},
+								),
+								Html.heading("Settings"),
 								Html.text_s(signed_in_text),
 								Auth.error_list(errors),
 								Html.paragraph_s(saved),

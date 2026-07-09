@@ -311,9 +311,9 @@ safe_href : Str -> Bool
 safe_href = |href| {
 	href.starts_with("https://")
 		or href.starts_with("http://")
-		or href.starts_with("/")
-		or href.starts_with("#")
-		or href.starts_with("mailto:")
+			or href.starts_with("/")
+				or href.starts_with("#")
+					or href.starts_with("mailto:")
 }
 
 parse_link_inline : InlineState, Str -> InlineState
@@ -527,15 +527,15 @@ drag_status_text = |board| {
 		Idle => "Board ready"
 		Dragging(card_id) => {
 			title = card_title(board.cards, card_id)
-				match board.hover {
-					NoHover => "Dragging ${title}"
-					HoverEnd(column_id) => "Dragging ${title} over ${column_title(column_id)}"
-					HoverBefore(target) => {
-						before_title = card_title(board.cards, target.before_id)
-						"Dragging ${title} before ${before_title} in ${column_title(target.column_id)}"
-					}
+			match board.hover {
+				NoHover => "Dragging ${title}"
+				HoverEnd(column_id) => "Dragging ${title} over ${column_title(column_id)}"
+				HoverBefore(target) => {
+					before_title = card_title(board.cards, target.before_id)
+					"Dragging ${title} before ${before_title} in ${column_title(target.column_id)}"
 				}
 			}
+		}
 	}
 }
 
@@ -574,18 +574,18 @@ cancel_drag = |board| { ..board, dragging: Idle, hover: NoHover }
 
 hover_end : Board, Str -> Board
 hover_end = |board, column_id| match board.dragging {
-		Idle => board
-		Dragging(_) => { ..board, hover: HoverEnd(column_id) }
-	}
+	Idle => board
+	Dragging(_) => { ..board, hover: HoverEnd(column_id) }
+}
 
 hover_before : Board, Str, Str -> Board
 hover_before = |board, column_id, before_id| match board.dragging {
-		Idle => board
-		Dragging(card_id) => if card_id == before_id
-			{ ..board, hover: NoHover }
-		else
-			{ ..board, hover: HoverBefore({ column_id, before_id }) }
-	}
+	Idle => board
+	Dragging(card_id) => if card_id == before_id
+		{ ..board, hover: NoHover }
+	else
+		{ ..board, hover: HoverBefore({ column_id, before_id }) }
+}
 
 clear_hover : Board -> Board
 clear_hover = |board| { ..board, hover: NoHover }
@@ -676,18 +676,18 @@ move_dragging_card = |board, target| {
 			match board.cards.find_first(|card| card.id == card_id) {
 				Ok(card) => {
 					without_card = board.cards.keep_if(|candidate| candidate.id != card_id)
-						next_cards =
-							match target {
-								NoHover => board.cards
-								HoverEnd(column_id) => without_card.append({ ..card, status: column_id })
-								HoverBefore(drop_target) => {
-									if card_id == drop_target.before_id {
-										board.cards
-									} else {
-										insert_before(without_card, { ..card, status: drop_target.column_id }, drop_target.before_id)
-									}
+					next_cards =
+						match target {
+							NoHover => board.cards
+							HoverEnd(column_id) => without_card.append({ ..card, status: column_id })
+							HoverBefore(drop_target) => {
+								if card_id == drop_target.before_id {
+									board.cards
+								} else {
+									insert_before(without_card, { ..card, status: drop_target.column_id }, drop_target.before_id)
 								}
 							}
+						}
 
 					{ ..board, cards: next_cards, dragging: Idle, hover: NoHover }
 				}
@@ -708,12 +708,12 @@ card_class = |board, card| {
 	match board.dragging {
 		Dragging(card_id) => if card_id == card.id {
 			card_drag_class
-			} else {
-				match board.hover {
-					HoverBefore(target) => if target.before_id == card.id {
-						card_hover_class
-					} else {
-						card_base_class
+		} else {
+			match board.hover {
+				HoverBefore(target) => if target.before_id == card.id {
+					card_hover_class
+				} else {
+					card_base_class
 				}
 				_ => card_base_class
 			}
@@ -892,8 +892,8 @@ render_column = |board_state, column_id, column_signal| {
 	)
 }
 
-main : {} -> Elem
-main = |_| {
+main : () -> Elem
+main = || {
 	Ui.state(
 		initial_board,
 		|board| {

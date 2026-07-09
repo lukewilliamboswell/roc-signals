@@ -67,8 +67,8 @@ Signal(a) := { expr : Box(Node.SignalExpr), cap : Capability(a) }.{
 		]
 	task_source = |name, to_done, to_failed, reset_on_start| {
 		token : Box(U64)
-		token = Node.new_token({})
-			status_cap =
+		token = Node.new_token()
+		status_cap =
 			Capability.new_with_eq(
 				|left, right|
 					match left {
@@ -86,13 +86,13 @@ Signal(a) := { expr : Box(Node.SignalExpr), cap : Capability(a) }.{
 						}
 					},
 			)
-		payload_cap = Capability.new({})
+		payload_cap = Capability.new()
 
 		loading : TaskStatus(a, err)
 		loading = TaskStatus.Loading
 
-		initial : {} -> HostValue
-		initial = |_| Capability.store(Box.box(loading), status_cap)
+		initial : () -> HostValue
+		initial = || Capability.store(Box.box(loading), status_cap)
 
 		done : HostValue -> HostValue
 		done = |payload_hv| {
@@ -130,9 +130,9 @@ Signal(a) := { expr : Box(Node.SignalExpr), cap : Capability(a) }.{
 	## Start a string-request task.
 	start_str : Task(a, err), Str -> Node.Cmd
 	start_str = |task, request| {
-		request_cap = Capability.new({})
-		request_init : {} -> HostValue
-		request_init = |_| Capability.store(Box.box(request), request_cap)
+		request_cap = Capability.new()
+		request_init : () -> HostValue
+		request_init = || Capability.store(Box.box(request), request_cap)
 		request_read : HostValue -> Str
 		request_read = |value| Box.unbox(Capability.get(value, request_cap))
 		Node.Cmd.StartTask(
@@ -163,11 +163,11 @@ Signal(a) := { expr : Box(Node.SignalExpr), cap : Capability(a) }.{
 				]
 		source_from_tick = |initial_value, next| {
 			token : Box(U64)
-			token = Node.new_token({})
-			cap = Capability.new({})
+			token = Node.new_token()
+			cap = Capability.new()
 
-			initial : {} -> HostValue
-			initial = |_| Capability.store(Box.box(initial_value), cap)
+			initial : () -> HostValue
+			initial = || Capability.store(Box.box(initial_value), cap)
 
 			tick : HostValue -> HostValue
 			tick = |current_hv| {
@@ -202,10 +202,10 @@ Signal(a) := { expr : Box(Node.SignalExpr), cap : Capability(a) }.{
 		]
 	const = |value| {
 		token : Box(U64)
-		token = Node.new_token({})
-		cap = Capability.new({})
-		init : {} -> HostValue
-		init = |_| Capability.store(Box.box(value), cap)
+		token = Node.new_token()
+		cap = Capability.new()
+		init : () -> HostValue
+		init = || Capability.store(Box.box(value), cap)
 		{
 			expr: Box.box(
 				Node.SignalExpr.ConstValue(
@@ -227,8 +227,8 @@ Signal(a) := { expr : Box(Node.SignalExpr), cap : Capability(a) }.{
 		]
 	map = |signal, f| {
 		token : Box(U64)
-		token = Node.new_token({})
-		output_cap = Capability.new({})
+		token = Node.new_token()
+		output_cap = Capability.new()
 		wrapped : HostValue -> HostValue
 		wrapped = |input_hv| {
 			typed_input : a
@@ -258,8 +258,8 @@ Signal(a) := { expr : Box(Node.SignalExpr), cap : Capability(a) }.{
 		]
 	map2 = |left, right, f| {
 		token : Box(U64)
-		token = Node.new_token({})
-		output_cap = Capability.new({})
+		token = Node.new_token()
+		output_cap = Capability.new()
 		wrapped : HostValue, HostValue -> HostValue
 		wrapped = |left_hv, right_hv| {
 			left_v : a
@@ -292,13 +292,13 @@ Signal(a) := { expr : Box(Node.SignalExpr), cap : Capability(a) }.{
 		]
 	combine = |signals| {
 		token : Box(U64)
-		token = Node.new_token({})
-			input_cap =
+		token = Node.new_token()
+		input_cap =
 			match signals.first() {
 				Ok(first) => first.cap
-				Err(_) => Capability.new({})
+				Err(_) => Capability.new()
 			}
-		output_cap = Capability.new({})
+		output_cap = Capability.new()
 		exprs = signals.map(|s| Box.unbox(Signal.clone_expr(s.expr)))
 		transform : List(HostValue) -> HostValue
 		transform = |items| {

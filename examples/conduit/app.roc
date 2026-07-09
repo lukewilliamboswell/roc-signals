@@ -19,7 +19,6 @@ import pf.Ui
 # and profile pages are live read-only surfaces, while auth/editor pages
 # stay placeholders until their build phases (wip/REALWORLD_DEMO_PLAN.md).
 
-
 header_view : Signal.Signal(Session), Ui.State(Nav.RouteIntent) -> Elem
 header_view = |session, intent| {
 	signed_in : Signal.Signal(Bool)
@@ -47,23 +46,23 @@ header_view = |session, intent| {
 							Nav.link("Home", "px-2 text-zinc-600", Route.home_location, intent),
 							Ui.when(
 								signed_in,
-								|_|
-									Html.div_c(
-										"inline-flex",
-										[
-											Nav.link("New Article", "px-2 text-zinc-600", { path: "/editor", query: "", hash: "" }, intent),
-											Nav.link("Settings", "px-2 text-zinc-600", { path: "/settings", query: "", hash: "" }, intent),
-											Ui.each_str(username_rows, |name| name, |name, _| Nav.link(name, "px-2 text-emerald-700", Route.profile_location(name), intent)),
-										],
-									),
-								|_|
-									Html.div_c(
-										"inline-flex",
-										[
-											Nav.link("Sign in", "px-2 text-zinc-600", Route.login_location, intent),
-											Nav.link("Sign up", "px-2 text-zinc-600", Route.register_location, intent),
-										],
-									),
+
+								|| Html.div_c(
+									"inline-flex",
+									[
+										Nav.link("New Article", "px-2 text-zinc-600", { path: "/editor", query: "", hash: "" }, intent),
+										Nav.link("Settings", "px-2 text-zinc-600", { path: "/settings", query: "", hash: "" }, intent),
+										Ui.each_str(username_rows, |name| name, |name, _| Nav.link(name, "px-2 text-emerald-700", Route.profile_location(name), intent)),
+									],
+								),
+
+								|| Html.div_c(
+									"inline-flex",
+									[
+										Nav.link("Sign in", "px-2 text-zinc-600", Route.login_location, intent),
+										Nav.link("Sign up", "px-2 text-zinc-600", Route.register_location, intent),
+									],
+								),
 							),
 						],
 					},
@@ -103,47 +102,47 @@ footer_view = Elem.Element(
 simple_page : Str, Str -> Elem
 simple_page = |heading, note| {
 	Ui.component(
-		|_|
-			Html.section(
-				heading,
-				[Html.class_attr("px-4 py-6")],
-				[
-					Html.heading(heading),
-					Html.paragraph(note),
-				],
-			),
+
+		|| Html.section(
+			heading,
+			[Html.class_attr("px-4 py-6")],
+			[
+				Html.heading(heading),
+				Html.paragraph(note),
+			],
+		),
 	)
 }
 
 editor_edit_page : Signal.Signal(Route) -> Elem
 editor_edit_page = |route| {
 	Ui.component(
-		|_|
-			Html.section(
-				"Edit article",
-				[Html.class_attr("px-4 py-6")],
-				[
-					Html.heading("Edit article"),
-					Html.text_s(route.map(|value| "Editing: ${Route.article_slug(value)}")),
-					Html.paragraph("The editor arrives with the write phase (Phase 4)."),
-				],
-			),
+
+		|| Html.section(
+			"Edit article",
+			[Html.class_attr("px-4 py-6")],
+			[
+				Html.heading("Edit article"),
+				Html.text_s(route.map(|value| "Editing: ${Route.article_slug(value)}")),
+				Html.paragraph("The editor arrives with the write phase (Phase 4)."),
+			],
+		),
 	)
 }
 
 not_found_page : Ui.State(Nav.RouteIntent) -> Elem
 not_found_page = |intent| {
 	Ui.component(
-		|_|
-			Html.section(
-				"Page not found",
-				[Html.class_attr("px-4 py-6")],
-				[
-					Html.heading("Page not found"),
-					Html.paragraph("This address does not match any conduit page."),
-					Nav.link("Take me home", "text-emerald-600 underline", Route.home_location, intent),
-				],
-			),
+
+		|| Html.section(
+			"Page not found",
+			[Html.class_attr("px-4 py-6")],
+			[
+				Html.heading("Page not found"),
+				Html.paragraph("This address does not match any conduit page."),
+				Nav.link("Take me home", "text-emerald-600 underline", Route.home_location, intent),
+			],
+		),
 	)
 }
 
@@ -152,55 +151,101 @@ page_view = |route, session, intent| {
 	is_kind : Str -> Signal.Signal(Bool)
 	is_kind = |name| route.map(|value| Route.kind(value) == name)
 
+	home_page : Elem
+	home_page = Home.page(route, session, intent)
+
+	login_page : Elem
+	login_page = Auth.page(False, intent)
+
+	register_page : Elem
+	register_page = Auth.page(True, intent)
+
+	settings_page : Elem
+	settings_page = Settings.page(session, intent)
+
+	new_article_page : Elem
+	new_article_page = simple_page("New article", "The editor arrives with the write phase (Phase 4).")
+
+	edit_article_page : Elem
+	edit_article_page = editor_edit_page(route)
+
+	article_page : Elem
+	article_page = Article.page(route, intent)
+
+	profile_page : Elem
+	profile_page = Profile.page(route, False, intent)
+
+	profile_favorites_page : Elem
+	profile_favorites_page = Profile.page(route, True, intent)
+
+	not_found : Elem
+	not_found = not_found_page(intent)
+
+	profile_favorites_or_not_found : Elem
+	profile_favorites_or_not_found = Ui.when(
+		is_kind("profile-favorites"),
+		|| profile_favorites_page,
+		|| not_found,
+	)
+
+	profile_or_rest : Elem
+	profile_or_rest = Ui.when(
+		is_kind("profile"),
+		|| profile_page,
+		|| profile_favorites_or_not_found,
+	)
+
+	article_or_rest : Elem
+	article_or_rest = Ui.when(
+		is_kind("article"),
+		|| article_page,
+		|| profile_or_rest,
+	)
+
+	edit_article_or_rest : Elem
+	edit_article_or_rest = Ui.when(
+		is_kind("editor-edit"),
+		|| edit_article_page,
+		|| article_or_rest,
+	)
+
+	new_article_or_rest : Elem
+	new_article_or_rest = Ui.when(
+		is_kind("editor-new"),
+		|| new_article_page,
+		|| edit_article_or_rest,
+	)
+
+	settings_or_rest : Elem
+	settings_or_rest = Ui.when(
+		is_kind("settings"),
+		|| settings_page,
+		|| new_article_or_rest,
+	)
+
+	register_or_rest : Elem
+	register_or_rest = Ui.when(
+		is_kind("register"),
+		|| register_page,
+		|| settings_or_rest,
+	)
+
+	login_or_rest : Elem
+	login_or_rest = Ui.when(
+		is_kind("login"),
+		|| login_page,
+		|| register_or_rest,
+	)
+
 	Ui.when(
 		is_kind("home"),
-		|_| Home.page(route, session, intent),
-		|_|
-			Ui.when(
-				is_kind("login"),
-				|_| Auth.page(False, intent),
-				|_|
-					Ui.when(
-						is_kind("register"),
-						|_| Auth.page(True, intent),
-						|_|
-							Ui.when(
-								is_kind("settings"),
-								|_| Settings.page(session, intent),
-								|_|
-									Ui.when(
-										is_kind("editor-new"),
-										|_| simple_page("New article", "The editor arrives with the write phase (Phase 4)."),
-										|_|
-											Ui.when(
-												is_kind("editor-edit"),
-												|_| editor_edit_page(route),
-												|_|
-													Ui.when(
-														is_kind("article"),
-														|_| Article.page(route, intent),
-														|_|
-															Ui.when(
-																is_kind("profile"),
-																|_| Profile.page(route, False, intent),
-																|_|
-																	Ui.when(
-																		is_kind("profile-favorites"),
-																		|_| Profile.page(route, True, intent),
-																		|_| not_found_page(intent),
-																	),
-															),
-													),
-											),
-									),
-							),
-					),
-			),
+		|| home_page,
+		|| login_or_rest,
 	)
 }
 
-main : {} -> Elem
-main = |_| {
+main : () -> Elem
+main = || {
 	Ui.state(
 		Nav.initial,
 		|route_intent| {

@@ -35,8 +35,8 @@ record_reset = |state| { ..initial_state, reset_clicks: state.reset_clicks, rese
 count_label : Str, I64 -> Str
 count_label = |label, value| "${label}${value.to_str()}"
 
-main : {} -> Elem
-main = |_| {
+main : () -> Elem
+main = || {
 	Ui.state(
 		initial_state,
 		|model| {

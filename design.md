@@ -41,7 +41,7 @@ reconstructs meaning, holds reactive state, or re-decides patches.
                           ┌──────────────────────────────┐
                           │   Engine (host-agnostic)     │
    App (Roc)              │   node table, scheduler,      │
-   build : {} -> Elem     │   dirty set, is_eq pruning,   │
+   build : () -> Elem     │   dirty set, is_eq pruning,   │
    pure descriptor   ───▶ │   scope forest, keyed diff,   │
    (roc_ui_init, once)    │   structural splice/apply     │
                           └───────────────┬──────────────┘
@@ -399,7 +399,7 @@ Signal.cleanup : Str -> Cleanup
 Signal.interval : U64 -> Signal(U64)  # period ms -> tick count
 Ui.on_change : Signal(a), (a -> Cmd) -> Elem  # sink: fires a Cmd when value changes
 Ui.on_change_initial : Signal(a), (a -> Cmd) -> Elem  # fires for first mounted value, then changes
-Ui.on_mount : ({} -> Cmd) -> Elem
+Ui.on_mount : (() -> Cmd) -> Elem
 Ui.on_cleanup : Cleanup -> Elem               # runs at scope disposal
 
 # Structure
@@ -536,14 +536,14 @@ State.on_bool : State(a), (a, Bool -> a) -> Msg
 State.on_detail : State(a), (a, Str -> a) -> Msg
 Ui.KeyPayload : { key : Str, shift_key : Bool }
 State.on_key : State(a), (a, Ui.KeyPayload -> a) -> Msg
-Ui.when : Signal(Bool), ({} -> Elem), ({} -> Elem) -> Elem
+Ui.when : Signal(Bool), (() -> Elem), (() -> Elem) -> Elem
 Ui.each_str : Signal(List(item)), (item -> Str), (Str, Signal(item) -> Elem) -> Elem
     where [
         item.is_eq : item, item -> Bool,
     ]
 
 # Components (named scopes for local state)
-Ui.component : ({} -> Elem) -> Elem
+Ui.component : (() -> Elem) -> Elem
 ```
 
 The form helpers above are sugar over the same text/bool fields and event
@@ -795,10 +795,10 @@ is deliberately no per-event Roc entrypoint and no `ui_recompute` round-trip.
 
 ```roc
 # platform/main.roc
-roc_ui_init : {} -> Box(Elem)
+roc_ui_init : () -> Box(Elem)
 ```
 
-- `roc_ui_init` runs `main({})` once and returns the boxed descriptor tree. The
+- `roc_ui_init` runs `main()` once and returns the boxed descriptor tree. The
   host ingests it, mints dense ids, interns signal tokens into shared records,
   builds adjacency and topological ranks, computes initial values by calling the
   retained transform thunks in dependency order, and emits the initial render
@@ -1147,7 +1147,7 @@ holds no reactive state, runs no diff, and never reconstructs meaning.
 ```
   Roc app (wasm)         Engine (Zig, in wasm)              JS runtime (browser)
   --------------         ---------------------              --------------------
-  main : {} -> Elem      node table (mutable)               nodes[]   : Node[]
+  main : () -> Elem      node table (mutable)               nodes[]   : Node[]
   pure descriptor   ──▶  scheduler / dirty set / scopes ──▶ listeners[]: Fn[]
   (roc_ui_init, once)    reducer + transform thunks         applyCmd(op, args...)
                          keyed each diff, ranks              forward event(id,payload)

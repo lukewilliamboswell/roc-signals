@@ -26,10 +26,10 @@ Elem := [
 	Element({ tag : Str, attrs : List(Node.Attr), children : List(Elem) }),
 	OnChange({ signal : Box(Node.SignalExpr), to_cmd : Box((HostValue -> Node.Cmd)) }),
 	OnChangeInitial({ signal : Box(Node.SignalExpr), to_cmd : Box((HostValue -> Node.Cmd)) }),
-	OnMount({ to_cmd : Box(({} -> Node.Cmd)) }),
+	OnMount({ to_cmd : Box((() -> Node.Cmd)) }),
 	Text(Str),
 	TextSignal({ signal : Box(Node.SignalExpr), read : HostValue.TextReadHandle }),
-	State({ binder : Node.BinderRef, initial : Box(({} -> HostValue)), cap : HostValue.CapabilityHandle, child : Box(Elem) }),
+	State({ binder : Node.BinderRef, initial : Box((() -> HostValue)), cap : HostValue.CapabilityHandle, child : Box(Elem) }),
 	When({ condition : Box(Node.SignalExpr), read : HostValue.BoolReadHandle, when_true : Box(Elem), when_false : Box(Elem) }),
 	Each(
 		{

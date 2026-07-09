@@ -67,8 +67,8 @@ toolbar_class = "flex flex-wrap items-center gap-3"
 
 input_class = "w-full max-w-md rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm"
 
-main : {} -> Elem
-main = |_| {
+main : () -> Elem
+main = || {
 	Ui.state(
 		initial_state,
 		|model| {

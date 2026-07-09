@@ -36,8 +36,8 @@ label_i64 = |name, value| "${name}: ${value.to_str()}"
 body_label : Str -> Str
 body_label = |value| "Canonical body: ${value}"
 
-main : {} -> Elem
-main = |_| {
+main : () -> Elem
+main = || {
 	Ui.state(
 		initial_state,
 		|model| {

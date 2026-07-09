@@ -25,8 +25,8 @@ record_submit = |state| { ..state, submits: state.submits + 1 }
 label_i64 : Str, I64 -> Str
 label_i64 = |label, value| "${label}${value.to_str()}"
 
-main : {} -> Elem
-main = |_| {
+main : () -> Elem
+main = || {
 	Ui.state(
 		initial_state,
 		|model| {

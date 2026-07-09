@@ -105,10 +105,10 @@ Routing, focused browser sources, and storage need browser-provided initial
 values before or during mount: typed environment values into Roc, no
 fake-default first render patched after mount, a sync-only versus task-backed
 decision, and one environment snapshot per active mount. This affects the
-`main : {} -> Elem` contract and the host boundary, so it is platform/API
+`main : () -> Elem` contract and the host boundary, so it is platform/API
 design, and it is the shared prerequisite of gaps 1, 2, and 4.
 
-Current status: the platform kept `main : {} -> Elem` and seeds typed
+Current status: the platform kept `main : () -> Elem` and seeds typed
 host-owned environment sources from a synchronous per-mount snapshot before
 first render. Location, visibility, online, and declared storage sources now use
 that path.

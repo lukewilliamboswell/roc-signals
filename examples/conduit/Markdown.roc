@@ -39,7 +39,11 @@ Markdown := {}.{
 	parse : Str -> List(Markdown.Block)
 	parse = |source| {
 		folded = source.split_on("\n").fold(empty_state, parse_line)
-		ended = if folded.in_fence { flush_fence(folded) } else { folded }
+		ended = if folded.in_fence {
+			flush_fence(folded)
+		} else {
+			folded
+		}
 		flush_list(ended).blocks
 	}
 
@@ -150,9 +154,9 @@ Markdown := {}.{
 	safe_href = |href| {
 		href.starts_with("https://")
 			or href.starts_with("http://")
-			or href.starts_with("/")
-			or href.starts_with("#")
-			or href.starts_with("mailto:")
+				or href.starts_with("/")
+					or href.starts_with("#")
+						or href.starts_with("mailto:")
 	}
 
 	segment_key : U64, Str -> Str
@@ -215,7 +219,7 @@ Markdown := {}.{
 	parse_image = |state, text|
 		match text.find_first("![") {
 			Ok(open) =>
-					match open.after.find_first("](") {
+				match open.after.find_first("](") {
 					Ok(alt_split) =>
 						match alt_split.after.find_first(")") {
 							Ok(src_split) => {
@@ -239,7 +243,7 @@ Markdown := {}.{
 	parse_link = |state, text|
 		match text.find_first("[") {
 			Ok(open) =>
-					match open.after.find_first("](") {
+				match open.after.find_first("](") {
 					Ok(label_split) =>
 						match label_split.after.find_first(")") {
 							Ok(href_split) => {
@@ -307,7 +311,7 @@ Markdown := {}.{
 		children_signal = item.map(|value| keyed_children(value.children))
 
 		empty_children : Signal.Signal(Bool)
-			empty_children = item.map(|value| value.children.is_empty())
+		empty_children = item.map(|value| value.children.is_empty())
 
 		Elem.Element(
 			{
@@ -317,8 +321,8 @@ Markdown := {}.{
 					inline_view(text),
 					Ui.when(
 						empty_children,
-						|_| Html.text(""),
-						|_| Elem.Element({ tag: "ul", attrs: [], children: [Ui.each_str(children_signal, |child| child.key, render_child)] }),
+						|| Html.text(""),
+						|| Elem.Element({ tag: "ul", attrs: [], children: [Ui.each_str(children_signal, |child| child.key, render_child)] }),
 					),
 				],
 			},

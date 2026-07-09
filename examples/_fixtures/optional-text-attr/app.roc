@@ -38,8 +38,8 @@ toggle_label = |state|
 		"Open options"
 	}
 
-main : {} -> Elem
-main = |_| {
+main : () -> Elem
+main = || {
 	Ui.state(
 		initial_state,
 		|model| {

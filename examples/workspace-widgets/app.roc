@@ -41,7 +41,7 @@ counter_component = |label| {
 	initial_count = 0
 
 	Ui.component(
-		|_| {
+		|| {
 			Ui.state(
 				initial_count,
 				|count| {
@@ -66,8 +66,8 @@ counter_component = |label| {
 render_component : Str, Signal.Signal(Str) -> Elem
 render_component = |label, _label_signal| counter_component(label)
 
-main : {} -> Elem
-main = |_| {
+main : () -> Elem
+main = || {
 	Ui.state(
 		initial_components,
 		|order| {

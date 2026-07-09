@@ -96,8 +96,8 @@ request_for = |scenario| {
 	Http.with_timeout_ms(request, 1500)
 }
 
-main : {} -> Elem
-main = |_| {
+main : () -> Elem
+main = || {
 	Ui.state(
 		"success",
 		|scenario| {
@@ -126,7 +126,17 @@ main = |_| {
 							Html.div_c(
 								toolbar_class,
 								[
-									Html.button_c("Send request", "button-primary", scenario.on_unit(|value| if value == "success-retry" { "success" } else { "success-retry" })),
+									Html.button_c(
+										"Send request",
+										"button-primary",
+										scenario.on_unit(
+											|value| if value == "success-retry" {
+												"success"
+											} else {
+												"success-retry"
+											},
+										),
+									),
 									Html.button_c("Use healthy request", "button", scenario.on_unit(|_| "success")),
 									Html.button_c("Load missing record", "button", scenario.on_unit(|_| "missing")),
 									Html.button_c("Simulate network error", "button", scenario.on_unit(|_| "failure")),
@@ -153,7 +163,7 @@ main = |_| {
 							Html.paragraph_s(body),
 						],
 					),
-					Ui.on_mount(|_| Http.start(task, request_for("success"))),
+					Ui.on_mount(|| Http.start(task, request_for("success"))),
 					Ui.on_change(scenario.signal(), |value| Http.start(task, request_for(value))),
 				],
 			)

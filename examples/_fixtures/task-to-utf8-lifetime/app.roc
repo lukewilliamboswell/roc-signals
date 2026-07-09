@@ -22,8 +22,8 @@ state_text = |state|
 		Failed(n) => "failed bytes ${n.to_str()}"
 	}
 
-main : {} -> Elem
-main = |_| {
+main : () -> Elem
+main = || {
 	task = Http.get_text_task("dashboard")
 	state = Signal.fold_task(task, Loading, decode, failed)
 	text = state.map(state_text)
@@ -33,7 +33,7 @@ main = |_| {
 		[
 			Html.heading("Task UTF-8 lifetime"),
 			Html.text_s(text),
-			Ui.on_mount(|_| Http.get_text(task, "/api/ops/dashboard")),
+			Ui.on_mount(|| Http.get_text(task, "/api/ops/dashboard")),
 		],
 	)
 }

@@ -51,8 +51,8 @@ canonical_label = |value| "Canonical normalized: ${value}"
 counter_label : Str, I64 -> Str
 counter_label = |name, value| "${name}: ${value.to_str()}"
 
-main : {} -> Elem
-main = |_| {
+main : () -> Elem
+main = || {
 	Ui.state(
 		initial_state,
 		|model| {

@@ -61,11 +61,17 @@ Auth := {}.{
 	page : Bool, Ui.State(Nav.RouteIntent) -> Elem
 	page = |is_register, intent| {
 		Ui.component(
-			|_| {
+			|| {
 				Ui.state(
 					empty_form,
 					|form| {
-						task = Http.request_task(if is_register { "register" } else { "login" })
+						task = Http.request_task(
+							if is_register {
+								"register"
+							} else {
+								"login"
+							},
+						)
 						result : Signal.Signal(Api.AuthResult)
 						result = Signal.fold_task(
 							task,
@@ -98,7 +104,11 @@ Auth := {}.{
 						password : Signal.Signal(Str)
 						password = form_signal.map(|value| value.password)
 
-						heading = if is_register { "Sign up" } else { "Sign in" }
+						heading = if is_register {
+							"Sign up"
+						} else {
+							"Sign in"
+						}
 
 						Html.section(
 							heading,
@@ -115,9 +125,30 @@ Auth := {}.{
 											Http.start(task, Api.post_request("/api/users/login", Api.login_body(snapshot.email, snapshot.password), ""))
 										},
 								),
-								Ui.on_change(accepted_token, |token| if token.is_empty() { Signal.noop } else { Session.persist_token(token) }),
-								Ui.on_change(accepted_username, |name| if name.is_empty() { Signal.noop } else { Session.persist_username(name) }),
-								Ui.on_change(accepted_username, |name| if name.is_empty() { Signal.noop } else { Browser.push_state(Route.home_location) }),
+								Ui.on_change(
+									accepted_token,
+									|token| if token.is_empty() {
+										Signal.noop
+									} else {
+										Session.persist_token(token)
+									},
+								),
+								Ui.on_change(
+									accepted_username,
+									|name| if name.is_empty() {
+										Signal.noop
+									} else {
+										Session.persist_username(name)
+									},
+								),
+								Ui.on_change(
+									accepted_username,
+									|name| if name.is_empty() {
+										Signal.noop
+									} else {
+										Browser.push_state(Route.home_location)
+									},
+								),
 								Html.heading(heading),
 								error_list(errors),
 								Html.form(
@@ -153,9 +184,17 @@ Auth := {}.{
 									],
 								),
 								Nav.link(
-									if is_register { "Have an account?" } else { "Need an account?" },
+									if is_register {
+										"Have an account?"
+									} else {
+										"Need an account?"
+									},
 									"text-emerald-600 underline",
-									if is_register { Route.login_location } else { Route.register_location },
+									if is_register {
+										Route.login_location
+									} else {
+										Route.register_location
+									},
 									intent,
 								),
 							],

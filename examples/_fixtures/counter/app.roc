@@ -14,8 +14,8 @@ hero_class = "grid gap-2 rounded-lg border border-emerald-200 bg-emerald-50 p-5"
 
 primary_button_class = "border-emerald-600 bg-emerald-600 text-white hover:border-emerald-700 hover:bg-emerald-700"
 
-main : {} -> Elem
-main = |_| {
+main : () -> Elem
+main = || {
 	Ui.state(
 		0,
 		|count| {

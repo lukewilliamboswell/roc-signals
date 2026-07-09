@@ -107,8 +107,8 @@ panel = |query, task| {
 	)
 }
 
-main : {} -> Elem
-main = |_| {
+main : () -> Elem
+main = || {
 	Ui.state(
 		True,
 		|show_panel| {
@@ -132,8 +132,8 @@ main = |_| {
 							Html.button_s_c(toggle_text, "button-primary justify-self-start", show_panel.on_unit(|value| !value)),
 							Ui.when(
 								show_panel.signal(),
-								|_| panel(query, task),
-								|_| Html.section_c("Search panel closed", panel_class, [Html.paragraph("Closed")]),
+								|| panel(query, task),
+								|| Html.section_c("Search panel closed", panel_class, [Html.paragraph("Closed")]),
 							),
 						],
 					)

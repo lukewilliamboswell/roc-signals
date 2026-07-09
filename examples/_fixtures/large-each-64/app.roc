@@ -416,8 +416,8 @@ render_row = |key, item_signal| {
 	)
 }
 
-main : {} -> Elem
-main = |_| {
+main : () -> Elem
+main = || {
 	Ui.state(
 		0,
 		|mode| {

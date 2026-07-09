@@ -1,6 +1,6 @@
 platform ""
 	requires {
-		main : {} -> Elem
+		main : () -> Elem
 	}
 	exposes [Elem, Signal, Html, Ui, Http, Browser]
 	packages {
@@ -36,7 +36,7 @@ import Ui
 import Http
 import Browser
 
-ui_init : {} -> Box(Elem)
-ui_init = |_| {
-	Box.box(main({}))
+ui_init : () -> Box(Elem)
+ui_init = || {
+	Box.box(main())
 }

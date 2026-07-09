@@ -8,8 +8,8 @@ import pf.Ui
 request_text : U64 -> Str
 request_text = |version| "/api/latest/${version.to_str()}"
 
-main : {} -> Elem
-main = |_| {
+main : () -> Elem
+main = || {
 	Ui.state(
 		0,
 		|version| {
@@ -29,7 +29,7 @@ main = |_| {
 					Html.heading("Task latest wins"),
 					Html.button("Refresh", version.on_unit(|value| value + 1)),
 					Html.text_s(label),
-					Ui.on_mount(|_| Signal.start_str(task, request_text(0))),
+					Ui.on_mount(|| Signal.start_str(task, request_text(0))),
 					Ui.on_change(request, |value| Signal.start_str(task, value)),
 				],
 			)

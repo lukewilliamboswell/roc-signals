@@ -104,7 +104,7 @@ Ui := [].{
 		on_unit : State(a), (a -> a) -> Node.Msg
 		on_unit = |st, f| {
 			current_cap = st.cap
-			payload_cap = Capability.new({})
+			payload_cap = Capability.new()
 			wrapped : HostValue, HostValue -> HostValue
 			wrapped = |current_hv, _payload_hv| {
 				current : a
@@ -124,7 +124,7 @@ Ui := [].{
 		on_str : State(a), (a, Str -> a) -> Node.Msg
 		on_str = |st, f| {
 			current_cap = st.cap
-			payload_cap = Capability.new({})
+			payload_cap = Capability.new()
 			wrapped : HostValue, HostValue -> HostValue
 			wrapped = |current_hv, payload_hv| {
 				current : a
@@ -146,7 +146,7 @@ Ui := [].{
 		on_bool : State(a), (a, Bool -> a) -> Node.Msg
 		on_bool = |st, f| {
 			current_cap = st.cap
-			payload_cap = Capability.new({})
+			payload_cap = Capability.new()
 			wrapped : HostValue, HostValue -> HostValue
 			wrapped = |current_hv, payload_hv| {
 				current : a
@@ -168,7 +168,7 @@ Ui := [].{
 		on_detail : State(a), (a, Str -> a) -> Node.Msg
 		on_detail = |st, f| {
 			current_cap = st.cap
-			payload_cap = Capability.new({})
+			payload_cap = Capability.new()
 			wrapped : HostValue, HostValue -> HostValue
 			wrapped = |current_hv, payload_hv| {
 				current : a
@@ -190,7 +190,7 @@ Ui := [].{
 		on_key : State(a), (a, KeyPayload -> a) -> Node.Msg
 		on_key = |st, f| {
 			current_cap = st.cap
-			payload_cap = Capability.new({})
+			payload_cap = Capability.new()
 			wrapped : HostValue, HostValue -> HostValue
 			wrapped = |current_hv, payload_hv| {
 				current : a
@@ -217,11 +217,11 @@ Ui := [].{
 			a.is_eq : a, a -> Bool,
 		]
 	state = |init, body| {
-		cap = Capability.new({})
-		initial : {} -> HostValue
-		initial = |_| Capability.store(Box.box(init), cap)
+		cap = Capability.new()
+		initial : () -> HostValue
+		initial = || Capability.store(Box.box(init), cap)
 		token : Box(U64)
-		token = Node.new_token({})
+		token = Node.new_token()
 		handle : State(a)
 		handle = { ref: Node.BinderRef.BinderRef(token), cap }
 		child = body(handle)
@@ -238,8 +238,8 @@ Ui := [].{
 	## Introduce a reusable local scope. State/when/each ordinals inside the body
 	## are local to this component instance instead of consuming the caller's
 	## identity sequence.
-	component : ({} -> Elem) -> Elem
-	component = |body| Elem.Component({ child: Box.box(body({})) })
+	component : (() -> Elem) -> Elem
+	component = |body| Elem.Component({ child: Box.box(body()) })
 
 	## Run a command whenever the signal publishes a changed value.
 	on_change : Signal(a), (a -> Node.Cmd) -> Elem
@@ -268,7 +268,7 @@ Ui := [].{
 	}
 
 	## Run a command when the owning scope first mounts.
-	on_mount : ({} -> Node.Cmd) -> Elem
+	on_mount : (() -> Node.Cmd) -> Elem
 	on_mount = |to_cmd| Elem.OnMount({ to_cmd: Box.box(to_cmd) })
 
 	## Register cleanup work for when the owning scope is disposed.
@@ -276,7 +276,7 @@ Ui := [].{
 	on_cleanup = |cleanup| Elem.Cleanup({ cleanup: cleanup })
 
 	## Conditional. Each arm is its own scope; flipping disposes the losing arm.
-	when : Signal(Bool), ({} -> Elem), ({} -> Elem) -> Elem
+	when : Signal(Bool), (() -> Elem), (() -> Elem) -> Elem
 	when = |condition, when_true, when_false| {
 		condition_cap = condition.cap
 		read_condition : HostValue -> Bool
@@ -285,8 +285,8 @@ Ui := [].{
 			{
 				condition: Signal.to_expr(condition),
 				read: { capability: Capability.handle(condition_cap), read: Box.box(read_condition) },
-				when_true: Box.box(when_true({})),
-				when_false: Box.box(when_false({})),
+				when_true: Box.box(when_true()),
+				when_false: Box.box(when_false()),
 			},
 		)
 	}
@@ -301,8 +301,8 @@ Ui := [].{
 		]
 	each_str = |items, key_of, row| {
 		items_cap = items.cap
-		item_cap = Capability.new({})
-		key_cap = Capability.new({})
+		item_cap = Capability.new()
+		key_cap = Capability.new()
 		items_to_values : HostValue -> List(HostValue)
 		items_to_values = |items_hv| {
 			typed_items : List(item)
@@ -326,10 +326,10 @@ Ui := [].{
 		row_hv = |key_hv, item_hv| {
 			key : Str
 			key = Box.unbox(Capability.get(key_hv, key_cap))
-			row_item : {} -> HostValue
-			row_item = |_| HostValue.clone!(item_hv)
+			row_item : () -> HostValue
+			row_item = || HostValue.clone!(item_hv)
 			row_signal_token : Box(U64)
-			row_signal_token = Node.new_token({})
+			row_signal_token = Node.new_token()
 			row(
 				key,
 				Signal.from_expr(

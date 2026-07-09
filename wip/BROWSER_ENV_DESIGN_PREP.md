@@ -51,10 +51,10 @@ commands remains deferred.
 
 ## Current Coverage in `design.md` and the Repository
 
-- `platform/main.roc` still requires `main : {} -> Elem`; host-owned seeded
+- `platform/main.roc` still requires `main : () -> Elem`; host-owned seeded
   sources provide the first environment values without changing the app entry
   contract.
-- Mounting keeps the `main({})` entry shape; `SignalsRuntime.mount()` seeds
+- Mounting keeps the `main()` entry shape; `SignalsRuntime.mount()` seeds
   host-owned environment payloads before the first render so sources such as
   `Browser.location` can reflect the real startup state.
 - `design.md` treats one Wasm instance per active mount as the production
@@ -109,8 +109,8 @@ Loading states onto the first paint. Task-backed reads would reuse the existing
 task path but reintroduce render-then-patch for values that are cheaply
 available. Anything genuinely async stays a task.
 
-**Impact on `main : {} -> Elem`.** The shipped design keeps
-`main : {} -> Elem` and exposes platform-provided sources/values seeded from the
+**Impact on `main : () -> Elem`.** The shipped design keeps
+`main : () -> Elem` and exposes platform-provided sources/values seeded from the
 snapshot. Changing the app contract to `main : Env -> Elem` would still be a
 platform-ABI change: every example, the public guide,
 `wip/PUBLIC_API_SHRINK_AUDIT.md`, and the `roc-check` gate would move in the
@@ -121,7 +121,7 @@ Post-mount environment changes are not snapshots: they arrive as source
 updates (popstate, visibilitychange, online/offline, and any future storage
 events) through the subscription path.
 
-Decision for the first promoted slice: keep `main : {} -> Elem` and introduce
+Decision for the first promoted slice: keep `main : () -> Elem` and introduce
 typed, host-owned environment sources seeded from a synchronous per-mount
 snapshot. This avoids an ABI-wide `main : Env -> Elem` migration while still
 letting the first structural render read the real initial location, visibility,

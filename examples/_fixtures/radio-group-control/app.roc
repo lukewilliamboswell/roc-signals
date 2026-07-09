@@ -25,8 +25,8 @@ billing_label = |value| "Billing cadence: ${value}"
 changes_label : I64 -> Str
 changes_label = |value| "Changes: ${value.to_str()}"
 
-main : {} -> Elem
-main = |_| {
+main : () -> Elem
+main = || {
 	Ui.state(
 		initial_state,
 		|model| {

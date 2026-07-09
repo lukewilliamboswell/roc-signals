@@ -393,19 +393,19 @@ status_strip = |status| {
 	classes = field(status_strip_tone(status), DashboardTheme.status_strip_class)
 
 	Ui.component(
-		|_|
-			Html.div_sc(
-				classes,
-				[
-					Ui.when(
-						is_ready,
-						|_| render_status_items(items),
-						|_| remote_message("Status", status),
-					),
-				],
-			),
-		)
-	}
+
+		|| Html.div_sc(
+			classes,
+			[
+				Ui.when(
+					is_ready,
+					|| render_status_items(items),
+					|| remote_message("Status", status),
+				),
+			],
+		),
+	)
+}
 
 metric_grid : Signal.Signal(DashboardRemote(List(DashboardView.Metric))) -> Elem
 metric_grid = |metrics| {
@@ -413,14 +413,14 @@ metric_grid = |metrics| {
 	items = ready_list(metrics)
 
 	Ui.component(
-		|_|
-			Ui.when(
-				is_ready,
-				|_| Html.div_c(DashboardTheme.metric_grid_class, [render_metrics(items)]),
-				|_| Html.div_c(DashboardTheme.metric_grid_class, [remote_message("Metrics", metrics)]),
-			),
-		)
-	}
+
+		|| Ui.when(
+			is_ready,
+			|| Html.div_c(DashboardTheme.metric_grid_class, [render_metrics(items)]),
+			|| Html.div_c(DashboardTheme.metric_grid_class, [remote_message("Metrics", metrics)]),
+		),
+	)
+}
 
 traffic_panel : Signal.Signal(DashboardRemote(List(DashboardView.TrafficRow))) -> Elem
 traffic_panel = |traffic| {
@@ -428,20 +428,20 @@ traffic_panel = |traffic| {
 	rows = ready_list(traffic)
 
 	Ui.component(
-		|_|
-			render_panel(
-				"Traffic",
-				"Traffic and pressure",
-				[
-					Ui.when(
-						is_ready,
-						|_| render_traffic_rows(rows),
-						|_| remote_message("Traffic", traffic),
-					),
-				],
-			),
-		)
-	}
+
+		|| render_panel(
+			"Traffic",
+			"Traffic and pressure",
+			[
+				Ui.when(
+					is_ready,
+					|| render_traffic_rows(rows),
+					|| remote_message("Traffic", traffic),
+				),
+			],
+		),
+	)
+}
 
 chart_payload : Signal.Signal(DashboardRemote(DashboardView.ChartModel)) -> Signal.Signal(Str)
 chart_payload = |remote|
@@ -494,50 +494,50 @@ chart_panel = |chart| {
 					focus = focus_inputs.map(|inputs| DashboardView.chart_focus_text(inputs.hovered, inputs.selected))
 
 					Ui.component(
-						|_|
-							Html.div(
-								[
-									Html.test_id("traffic-chart"),
-									Html.on_custom("chart-hover", hovered_chart_point.on_detail(|_, value| value)),
-									Html.on_custom("chart-select", selected_chart_point.on_detail(|_, value| value)),
-								],
-								[
-									render_panel(
-										"Traffic chart",
-										"Interactive traffic chart",
-										[
-											Ui.when(
-												is_ready,
-												|_|
+
+						|| Html.div(
+							[
+								Html.test_id("traffic-chart"),
+								Html.on_custom("chart-hover", hovered_chart_point.on_detail(|_, value| value)),
+								Html.on_custom("chart-select", selected_chart_point.on_detail(|_, value| value)),
+							],
+							[
+								render_panel(
+									"Traffic chart",
+									"Interactive traffic chart",
+									[
+										Ui.when(
+											is_ready,
+
+											|| Html.div_c(
+												DashboardTheme.chart_shell_class,
+												[
 													Html.div_c(
-														DashboardTheme.chart_shell_class,
+														DashboardTheme.chart_copy_class,
 														[
-															Html.div_c(
-																DashboardTheme.chart_copy_class,
-																[
-																	Html.div_c(DashboardTheme.strong_text_class, [Html.text_s(headline)]),
-																	Html.div_c(DashboardTheme.text_sm_muted_class, [Html.text_s(detail)]),
-																],
-															),
-															Html.div(
-																[
-																	Html.class_attr(DashboardTheme.chart_mount_class),
-																	Html.behavior("ops-chart"),
-																	Html.attr_s("data-ops-chart-points", payload),
-																	Html.attr_s("data-ops-chart-selected", selected),
-																	Html.attr("aria-label", "Interactive traffic chart"),
-																],
-																[Html.div_c(DashboardTheme.chart_loading_class, [Html.text("Preparing chart")])],
-															),
+															Html.div_c(DashboardTheme.strong_text_class, [Html.text_s(headline)]),
+															Html.div_c(DashboardTheme.text_sm_muted_class, [Html.text_s(detail)]),
 														],
 													),
-												|_| remote_message("Chart", chart),
+													Html.div(
+														[
+															Html.class_attr(DashboardTheme.chart_mount_class),
+															Html.behavior("ops-chart"),
+															Html.attr_s("data-ops-chart-points", payload),
+															Html.attr_s("data-ops-chart-selected", selected),
+															Html.attr("aria-label", "Interactive traffic chart"),
+														],
+														[Html.div_c(DashboardTheme.chart_loading_class, [Html.text("Preparing chart")])],
+													),
+												],
 											),
-											Html.div_c(DashboardTheme.chart_focus_class, [Html.text_s(focus)]),
-										],
-									),
-								],
-							),
+											|| remote_message("Chart", chart),
+										),
+										Html.div_c(DashboardTheme.chart_focus_class, [Html.text_s(focus)]),
+									],
+								),
+							],
+						),
 					)
 				},
 			)
@@ -551,18 +551,18 @@ services_panel = |services| {
 	rows = ready_list(services)
 
 	Ui.component(
-		|_|
-			render_panel(
-				"Service health",
-				"Service matrix",
-				[
-					Ui.when(
-						is_ready,
-						|_| Html.div_c(DashboardTheme.service_grid_class, [render_service_rows(rows)]),
-						|_| remote_message("Services", services),
-					),
-				],
-			),
+
+		|| render_panel(
+			"Service health",
+			"Service matrix",
+			[
+				Ui.when(
+					is_ready,
+					|| Html.div_c(DashboardTheme.service_grid_class, [render_service_rows(rows)]),
+					|| remote_message("Services", services),
+				),
+			],
+		),
 	)
 }
 
@@ -572,18 +572,18 @@ jobs_panel = |jobs| {
 	rows = ready_list(jobs)
 
 	Ui.component(
-		|_|
-			render_panel(
-				"Active jobs",
-				"Active jobs",
-				[
-					Ui.when(
-						is_ready,
-						|_| render_job_rows(rows),
-						|_| remote_message("Jobs", jobs),
-					),
-				],
-			),
+
+		|| render_panel(
+			"Active jobs",
+			"Active jobs",
+			[
+				Ui.when(
+					is_ready,
+					|| render_job_rows(rows),
+					|| remote_message("Jobs", jobs),
+				),
+			],
+		),
 	)
 }
 
@@ -593,18 +593,18 @@ alerts_panel = |alerts| {
 	rows = ready_list(alerts)
 
 	Ui.component(
-		|_|
-			render_panel(
-				"Alerts",
-				"Incidents and alerts",
-				[
-					Ui.when(
-						is_ready,
-						|_| render_alert_rows(rows),
-						|_| remote_message("Alerts", alerts),
-					),
-				],
-			),
+
+		|| render_panel(
+			"Alerts",
+			"Incidents and alerts",
+			[
+				Ui.when(
+					is_ready,
+					|| render_alert_rows(rows),
+					|| remote_message("Alerts", alerts),
+				),
+			],
+		),
 	)
 }
 
@@ -682,48 +682,48 @@ service_detail_panel = |detail, route_intent| {
 	contacts = detail_contacts(detail)
 
 	Ui.component(
-		|_|
-			render_panel(
-				"Service detail",
-				"Service detail",
-				[
-					Html.div_c(
-						DashboardTheme.view_nav_class,
+
+		|| render_panel(
+			"Service detail",
+			"Service detail",
+			[
+				Html.div_c(
+					DashboardTheme.view_nav_class,
+					[
+						route_link("Back to overview", DashboardTheme.secondary_button_class, overview_location, route_intent),
+					],
+				),
+				Html.div_c(DashboardTheme.metric_detail_class, [Html.text("This drill-down is URL-addressable; browser Back and Forward restore the selected service.")]),
+				Ui.when(
+					is_ready,
+
+					|| Html.div_c(
+						DashboardTheme.detail_grid_class,
 						[
-							route_link("Back to overview", DashboardTheme.secondary_button_class, overview_location, route_intent),
-						],
-					),
-					Html.div_c(DashboardTheme.metric_detail_class, [Html.text("This drill-down is URL-addressable; browser Back and Forward restore the selected service.")]),
-					Ui.when(
-						is_ready,
-						|_|
 							Html.div_c(
-								DashboardTheme.detail_grid_class,
+								DashboardTheme.detail_main_class,
 								[
-									Html.div_c(
-										DashboardTheme.detail_main_class,
-										[
-											Html.div_c(DashboardTheme.app_heading_class, [Html.text_s(title)]),
-											Html.div_c(DashboardTheme.text_sm_muted_class, [Html.text_s(status)]),
-											Html.div_c(DashboardTheme.metric_detail_class, [Html.text_s(summary)]),
-											Html.div_c(DashboardTheme.mono_sm_class, [Html.text_s(runbook)]),
-										],
-									),
-									Html.div_c(
-										DashboardTheme.detail_side_class,
-										[
-											Html.div_c(DashboardTheme.detail_label_class, [Html.text_s(dependency_count)]),
-											render_dependency_rows(dependencies),
-											render_contact_rows(contacts),
-										],
-									),
+									Html.div_c(DashboardTheme.app_heading_class, [Html.text_s(title)]),
+									Html.div_c(DashboardTheme.text_sm_muted_class, [Html.text_s(status)]),
+									Html.div_c(DashboardTheme.metric_detail_class, [Html.text_s(summary)]),
+									Html.div_c(DashboardTheme.mono_sm_class, [Html.text_s(runbook)]),
 								],
 							),
-						|_| remote_message("Service detail", detail),
+							Html.div_c(
+								DashboardTheme.detail_side_class,
+								[
+									Html.div_c(DashboardTheme.detail_label_class, [Html.text_s(dependency_count)]),
+									render_dependency_rows(dependencies),
+									render_contact_rows(contacts),
+								],
+							),
+						],
 					),
-				],
-			),
-		)
+					|| remote_message("Service detail", detail),
+				),
+			],
+		),
+	)
 }
 
 service_nav : Ui.State(RouteIntent) -> Elem
@@ -794,43 +794,43 @@ dashboard_page = |dashboard_state, route, selected_service, manual_refresh_text,
 	show_detail = route.map(route_shows_detail)
 
 	Ui.component(
-		|_|
-			Html.div_c(
-				DashboardTheme.page_class,
-				[
-					Html.div_c(
-						DashboardTheme.shell_class,
-						[
-							toolbar(last_updated, manual_refresh_text, visibility_status, refresh_now, route_intent),
-							Ui.when(
-								show_detail,
-								|_| service_detail_panel(selected_detail, route_intent),
-								|_|
+
+		|| Html.div_c(
+			DashboardTheme.page_class,
+			[
+				Html.div_c(
+					DashboardTheme.shell_class,
+					[
+						toolbar(last_updated, manual_refresh_text, visibility_status, refresh_now, route_intent),
+						Ui.when(
+							show_detail,
+							|| service_detail_panel(selected_detail, route_intent),
+
+							|| Html.div_c(
+								"grid gap-4",
+								[
+									status_strip(status),
+									metric_grid(metrics),
+									service_nav(route_intent),
 									Html.div_c(
-										"grid gap-4",
+										DashboardTheme.main_grid_class,
 										[
-											status_strip(status),
-											metric_grid(metrics),
-											service_nav(route_intent),
-											Html.div_c(
-												DashboardTheme.main_grid_class,
-												[
-													Html.div_c(DashboardTheme.wide_column_class, [chart_panel(chart), traffic_panel(traffic), services_panel(services)]),
-													Html.div_c(DashboardTheme.side_column_class, [jobs_panel(jobs), alerts_panel(alerts)]),
-												],
-											),
+											Html.div_c(DashboardTheme.wide_column_class, [chart_panel(chart), traffic_panel(traffic), services_panel(services)]),
+											Html.div_c(DashboardTheme.side_column_class, [jobs_panel(jobs), alerts_panel(alerts)]),
 										],
 									),
+								],
 							),
-						].concat(lifecycle),
-					),
-				],
-			),
+						),
+					].concat(lifecycle),
+				),
+			],
+		),
 	)
 }
 
-main : {} -> Elem
-main = |_| {
+main : () -> Elem
+main = || {
 	Ui.state(
 		0,
 		|manual_refresh| {
@@ -875,21 +875,21 @@ main = |_| {
 						[
 							Ui.when(
 								visible,
-								|_|
-									Html.div_c(
-										"hidden",
-										[
-											Ui.on_mount(|_| Http.get_text(dashboard_task, "/api/ops/dashboard")),
-											Ui.on_change(refresh_request, |_| Http.get_text(dashboard_task, "/api/ops/dashboard")),
-										],
-									),
-								|_|
-									Html.div_c(
-										"hidden",
-										[
-											Ui.on_change(manual_refresh.signal(), |_| Http.get_text(dashboard_task, "/api/ops/dashboard")),
-										],
-									),
+
+								|| Html.div_c(
+									"hidden",
+									[
+										Ui.on_mount(|| Http.get_text(dashboard_task, "/api/ops/dashboard")),
+										Ui.on_change(refresh_request, |_| Http.get_text(dashboard_task, "/api/ops/dashboard")),
+									],
+								),
+
+								|| Html.div_c(
+									"hidden",
+									[
+										Ui.on_change(manual_refresh.signal(), |_| Http.get_text(dashboard_task, "/api/ops/dashboard")),
+									],
+								),
 							),
 							Ui.on_change(route_intent.signal(), |intent| Browser.push_state(route_intent_location(intent))),
 							Ui.on_change(canonical_route, Browser.replace_state),

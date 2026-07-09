@@ -17,7 +17,7 @@ Home := {}.{
 	page : Signal.Signal(Route), Signal.Signal(Session), Ui.State(Nav.RouteIntent) -> Elem
 	page = |route, session, intent| {
 		Ui.component(
-			|_| {
+			|| {
 				feed_task = Http.request_task("feed")
 				tags_task = Http.get_text_task("tags")
 				feed_state = Signal.fold_task(
@@ -39,7 +39,7 @@ Home := {}.{
 					[Html.class_attr("px-4 py-6")],
 					[
 						Ui.on_change_initial(fetch_params, |params| Http.start(feed_task, Api.feed_request(params.feed, params.token))),
-						Ui.on_mount(|_| Http.get_text(tags_task, Api.tags_uri)),
+						Ui.on_mount(|| Http.get_text(tags_task, Api.tags_uri)),
 						Html.heading("conduit"),
 						Html.paragraph("A place to share your knowledge."),
 						Html.div_c(
@@ -72,7 +72,7 @@ Home := {}.{
 					Tagged(tag) => "Tag: ${tag}"
 					AllTags => "Global Feed"
 				}
-		}
+			}
 
 	feed_tabs : Signal.Signal(Route.Feed), Signal.Signal(Bool), Ui.State(Nav.RouteIntent) -> Elem
 	feed_tabs = |feed, signed_in, intent| {
@@ -94,7 +94,7 @@ Home := {}.{
 							AllTags => active
 							Tagged(_) => idle
 						}
-				},
+					},
 		)
 		Elem.Element(
 			{
@@ -103,8 +103,8 @@ Home := {}.{
 				children: [
 					Ui.when(
 						signed_in,
-						|_| Nav.link_c("Your Feed", yours_class, Route.feed_location({ page: 1, tag: AllTags, source: Yours }), intent),
-						|_| Html.text(""),
+						|| Nav.link_c("Your Feed", yours_class, Route.feed_location({ page: 1, tag: AllTags, source: Yours }), intent),
+						|| Html.text(""),
 					),
 					Nav.link_c("Global Feed", global_class, Route.home_location, intent),
 				],
@@ -131,17 +131,17 @@ Home := {}.{
 					Html.paragraph_c("Popular Tags", "font-medium"),
 					Ui.when(
 						is_loading,
-						|_| Html.paragraph("Loading tags..."),
-						|_|
-							Ui.when(
-								is_failed,
-								|_| Html.paragraph_c("Tags are unavailable.", "text-red-700"),
-								|_|
-									Html.div_c(
-										"flex flex-wrap gap-1",
-										[Ui.each_str(tags, |tag| tag, |tag, _| sidebar_tag(tag, intent))],
-									),
+						|| Html.paragraph("Loading tags..."),
+
+						|| Ui.when(
+							is_failed,
+							|| Html.paragraph_c("Tags are unavailable.", "text-red-700"),
+
+							|| Html.div_c(
+								"flex flex-wrap gap-1",
+								[Ui.each_str(tags, |tag| tag, |tag, _| sidebar_tag(tag, intent))],
 							),
+						),
 					),
 				],
 			},

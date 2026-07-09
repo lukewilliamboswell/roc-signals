@@ -30,8 +30,8 @@ status_label = |accepted|
 changes_label : I64 -> Str
 changes_label = |changes| "Changes: ${changes.to_str()}"
 
-main : {} -> Elem
-main = |_| {
+main : () -> Elem
+main = || {
 	Ui.state(
 		initial_state,
 		|model| {

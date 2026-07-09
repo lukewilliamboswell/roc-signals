@@ -34,28 +34,31 @@ Feed := {}.{
 		message : Signal.Signal(Str)
 		message = remote.map(failure_message)
 
+		article_key : Api.ArticleSummary -> Str
+		article_key = |article| article.slug
+
+		article_row : Str, Signal.Signal(Api.ArticleSummary) -> Elem
+		article_row = |key, article| preview_row(key, article, intent)
+
 		Ui.component(
-			|_|
-				Html.div(
-					[Html.attr("data-conduit", "article-list")],
-					[
-						Ui.when(
-							is_loading,
-							|_| Html.paragraph("Loading articles..."),
-							|_|
-								Ui.when(
-									is_failed,
-									|_| Html.paragraph_s_c(message, "text-red-700"),
-									|_|
-										Ui.when(
-											is_empty,
-											|_| Html.paragraph("No articles are here... yet."),
-											|_| Ui.each_str(articles, |article| article.slug, |key, article| preview_row(key, article, intent)),
-										),
-								),
+			|| Html.div(
+				[Html.attr("data-conduit", "article-list")],
+				[
+					Ui.when(
+						is_loading,
+						|| Html.paragraph("Loading articles..."),
+						|| Ui.when(
+							is_failed,
+							|| Html.paragraph_s_c(message, "text-red-700"),
+							|| Ui.when(
+								is_empty,
+								|| Html.paragraph("No articles are here... yet."),
+								|| Ui.each_str(articles, article_key, article_row),
+							),
 						),
-					],
-				),
+					),
+				],
+			),
 		)
 	}
 
@@ -240,6 +243,5 @@ Feed := {}.{
 			Loading => True
 			_ => False
 		}
-
 
 }

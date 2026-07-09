@@ -84,9 +84,9 @@ safe_href : Str -> Bool
 safe_href = |href| {
 	href.starts_with("https://")
 		or href.starts_with("http://")
-		or href.starts_with("/")
-		or href.starts_with("#")
-		or href.starts_with("mailto:")
+			or href.starts_with("/")
+				or href.starts_with("#")
+					or href.starts_with("mailto:")
 }
 
 parse_link_inline : InlineState, Str -> InlineState
@@ -292,7 +292,11 @@ parse_markdown_line = |state, line| {
 parse_markdown : Str -> List(MarkdownBlock)
 parse_markdown = |source| {
 	folded = source.split_on("\n").fold(empty_markdown_state, parse_markdown_line)
-	ended = if folded.in_fence { flush_fence(folded) } else { folded }
+	ended = if folded.in_fence {
+		flush_fence(folded)
+	} else {
+		folded
+	}
 	flush_list(ended).blocks
 }
 
@@ -376,8 +380,8 @@ render_list_item = |_, item| {
 				inline_view(text),
 				Ui.when(
 					empty_children,
-					|_| Html.text(""),
-					|_| Elem.Element({ tag: "ul", attrs: [], children: [Ui.each_str(children_signal, |child| child.key, render_child_item)] }),
+					|| Html.text(""),
+					|| Elem.Element({ tag: "ul", attrs: [], children: [Ui.each_str(children_signal, |child| child.key, render_child_item)] }),
 				),
 			],
 		},
@@ -479,8 +483,8 @@ static_markdown_view = |source| {
 update_markdown : State, Str -> State
 update_markdown = |state, value| { ..state, markdown: value }
 
-main : {} -> Elem
-main = |_| {
+main : () -> Elem
+main = || {
 	Ui.state(
 		initial_state,
 		|model| {

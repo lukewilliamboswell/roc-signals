@@ -12,8 +12,8 @@ import HostValue exposing [HostValue]
 ## binder (via `Ui.state`) mints identity; a use (`map`, sink) does not.
 Node := [].{
 
-	new_token : {} -> Box(U64)
-	new_token = |_| Box.box(0)
+	new_token : () -> Box(U64)
+	new_token = || Box.box(0)
 
 	## Reference to a state/source binder. The token is minted by `Ui.state` and
 	## copied into both the state declaration and all signal/message references to
@@ -44,7 +44,7 @@ Node := [].{
 		name : Str,
 		cap : HostValue.CapabilityHandle,
 		payload_cap : HostValue.CapabilityHandle,
-		initial : Box(({} -> HostValue)),
+		initial : Box((() -> HostValue)),
 		done : Box((HostValue -> HostValue)),
 		failed : Box((HostValue -> HostValue)),
 		reset_on_start : Bool,
@@ -54,13 +54,13 @@ Node := [].{
 		token : Box(U64),
 		period_ms : U64,
 		cap : HostValue.CapabilityHandle,
-		initial : Box(({} -> HostValue)),
+		initial : Box((() -> HostValue)),
 		tick : Box((HostValue -> HostValue)),
 	}
 
 	SignalExpr := [
 		Ref(BinderRef),
-		ConstValue(Box(U64), Box(({} -> HostValue)), HostValue.CapabilityHandle),
+		ConstValue(Box(U64), Box((() -> HostValue)), HostValue.CapabilityHandle),
 		LocationSource(Box(U64), Box((HostValue -> HostValue)), HostValue.CapabilityHandle, HostValue.CapabilityHandle),
 		StorageSource(Box(U64), U64, Str, Box((HostValue -> HostValue)), HostValue.CapabilityHandle, HostValue.CapabilityHandle),
 		VisibilitySource(Box(U64), Box((HostValue -> HostValue)), HostValue.CapabilityHandle, HostValue.CapabilityHandle),
@@ -83,7 +83,7 @@ Node := [].{
 			{
 				task_token : Box(U64),
 				task_name : Str,
-				request_init : Box(({} -> HostValue)),
+				request_init : Box((() -> HostValue)),
 				request_read : HostValue.TaskRequestReadHandle,
 			},
 		),

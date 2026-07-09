@@ -156,9 +156,9 @@ Browser := [].{
 	location : Signal(Location)
 	location = {
 		token : Box(U64)
-		token = Node.new_token({})
-		location_cap = Capability.new({})
-		payload_cap = Capability.new({})
+		token = Node.new_token()
+		location_cap = Capability.new()
+		payload_cap = Capability.new()
 
 		from_payload : HostValue -> HostValue
 		from_payload = |payload_hv| {
@@ -183,9 +183,9 @@ Browser := [].{
 	visibility : Signal(Visibility)
 	visibility = {
 		token : Box(U64)
-		token = Node.new_token({})
-		visibility_cap = Capability.new({})
-		payload_cap = Capability.new({})
+		token = Node.new_token()
+		visibility_cap = Capability.new()
+		payload_cap = Capability.new()
 
 		from_payload : HostValue -> HostValue
 		from_payload = |payload_hv| {
@@ -210,9 +210,9 @@ Browser := [].{
 	online : Signal(Bool)
 	online = {
 		token : Box(U64)
-		token = Node.new_token({})
-		online_cap = Capability.new({})
-		payload_cap = Capability.new({})
+		token = Node.new_token()
+		online_cap = Capability.new()
+		payload_cap = Capability.new()
 
 		from_payload : HostValue -> HostValue
 		from_payload = |payload_hv| {
@@ -235,9 +235,9 @@ Browser := [].{
 	storage_text : U64, Str -> Signal(StorageText)
 	storage_text = |area, key| {
 		token : Box(U64)
-		token = Node.new_token({})
-		storage_cap = Capability.new({})
-		payload_cap = Capability.new({})
+		token = Node.new_token()
+		storage_cap = Capability.new()
+		payload_cap = Capability.new()
 
 		from_payload : HostValue -> HostValue
 		from_payload = |payload_hv| {

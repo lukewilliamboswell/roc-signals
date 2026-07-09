@@ -111,8 +111,8 @@ render_row = |label, _row_signal| {
 					Html.button_c("Check ${label}", "button", count.on_unit(|n| n + 1)),
 					Ui.when(
 						has_count,
-						|_| Html.paragraph_s_c(count_label, "text-sm font-medium text-emerald-700"),
-						|_| Html.paragraph_c("${label} awaiting verification", "text-sm text-zinc-600"),
+						|| Html.paragraph_s_c(count_label, "text-sm font-medium text-emerald-700"),
+						|| Html.paragraph_c("${label} awaiting verification", "text-sm text-zinc-600"),
 					),
 				],
 			)
@@ -120,8 +120,8 @@ render_row = |label, _row_signal| {
 	)
 }
 
-main : {} -> Elem
-main = |_| {
+main : () -> Elem
+main = || {
 	initial_reordered : Bool
 	initial_reordered = False
 	initial_inserted : Bool
@@ -190,7 +190,7 @@ main = |_| {
 											),
 											Ui.when(
 												active.signal(),
-												|_| {
+												|| {
 													Html.section_c(
 														"Deployments active",
 														panel_class,
@@ -199,7 +199,7 @@ main = |_| {
 														],
 													)
 												},
-												|_| {
+												|| {
 													Html.section_c(
 														"Deployments paused",
 														panel_class,

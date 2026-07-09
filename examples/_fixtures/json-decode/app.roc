@@ -4,10 +4,10 @@ import JsonProbe
 import pf.Elem exposing [Elem]
 import pf.Html
 
-main : {} -> Elem
-main = |_| {
-		Html.div(
-			[],
-			[Html.heading("Json decode fixture")].concat(JsonProbe.rows.map(Html.paragraph)),
-		)
-	}
+main : () -> Elem
+main = || {
+	Html.div(
+		[],
+		[Html.heading("Json decode fixture")].concat(JsonProbe.rows.map(Html.paragraph)),
+	)
+}

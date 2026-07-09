@@ -14,8 +14,8 @@ initial_title = |value| "initial:${value}"
 regular_title : Str -> Str
 regular_title = |value| "regular:${value}"
 
-main : {} -> Elem
-main = |_| {
+main : () -> Elem
+main = || {
 	Ui.state(
 		{ initial: "mounted", regular: "mounted" },
 		|model| {

@@ -35,8 +35,8 @@ label_i64 = |name, value| "${name}: ${value.to_str()}"
 selected_label : Str -> Str
 selected_label = |plan| "Selected plan: ${plan}"
 
-main : {} -> Elem
-main = |_| {
+main : () -> Elem
+main = || {
 	Ui.state(
 		initial_state,
 		|model| {

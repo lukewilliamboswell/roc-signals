@@ -27,8 +27,8 @@ label = |name, result|
 		Err(InvalidJson(msg)) => "${name} invalid: ${msg}"
 	}
 
-main : {} -> Elem
-main = |_| {
+main : () -> Elem
+main = || {
 	p1 : Str -> Try({ created_at : Str }, Json.ParseErr)
 	p1 = Json.parser_camel()
 

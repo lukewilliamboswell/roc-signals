@@ -40,8 +40,8 @@ committed_label = |value| "Committed seats: ${value.to_str()}"
 counter_label : Str, I64 -> Str
 counter_label = |name, value| "${name}: ${value.to_str()}"
 
-main : {} -> Elem
-main = |_| {
+main : () -> Elem
+main = || {
 	Ui.state(
 		initial_state,
 		|model| {

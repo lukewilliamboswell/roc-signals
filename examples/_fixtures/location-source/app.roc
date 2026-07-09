@@ -22,8 +22,8 @@ location_query = |location| "Query: ${visible_piece(location.query)}"
 location_hash : Browser.Location -> Str
 location_hash = |location| "Hash: ${visible_piece(location.hash)}"
 
-main : {} -> Elem
-main = |_| {
+main : () -> Elem
+main = || {
 	location = Browser.location
 
 	Html.div_c(

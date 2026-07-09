@@ -46,11 +46,11 @@ Capability(a) := [
 	}
 
 	## Create a capability using the type's `is_eq` implementation.
-	new : {} -> Capability(a)
+	new : () -> Capability(a)
 		where [
 			a.is_eq : a, a -> Bool,
 		]
-	new = |_| Capability.new_with_eq(|left, right| left.is_eq(right))
+	new = || Capability.new_with_eq(|left, right| left.is_eq(right))
 
 	## Return the erased handle passed through host descriptors.
 	handle : Capability(a) -> HostValue.CapabilityHandle

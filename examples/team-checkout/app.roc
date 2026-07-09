@@ -337,8 +337,8 @@ receipt_label = |attempts|
 		label_i64("Receipt sent", attempts)
 	}
 
-main : {} -> Elem
-main = |_| {
+main : () -> Elem
+main = || {
 	stored_step = Browser.local_storage_text(checkout_step_key)
 	stored_email = Browser.local_storage_text(checkout_email_key)
 	stored_address = Browser.local_storage_text(checkout_address_key)
@@ -433,7 +433,7 @@ main = |_| {
 																		render_line("3 seats", stored_seats_quantity),
 																		Ui.when(
 																			is_team_plan,
-																			|_| {
+																			|| {
 																				Html.div_c(
 																					"grid gap-4",
 																					[
@@ -442,7 +442,7 @@ main = |_| {
 																					],
 																				)
 																			},
-																			|_| Html.div_c("hidden", []),
+																			|| Html.div_c("hidden", []),
 																		),
 																	],
 																)
@@ -490,8 +490,8 @@ main = |_| {
 																	),
 																	Ui.when(
 																		has_saved_order,
-																		|_| resume_panel,
-																		|_| Html.div_c("hidden", []),
+																		|| resume_panel,
+																		|| Html.div_c("hidden", []),
 																	),
 																	Html.section_c(
 																		"Checkout progress",
@@ -510,12 +510,12 @@ main = |_| {
 																	Html.section("Current step", [Html.class_attr("sr-only"), Html.attr_s("data-step", step_attr)], [Html.text_s(step_text)]),
 																	Ui.when(
 																		is_cart,
-																		|_| cart_panel,
-																		|_| {
+																		|| cart_panel,
+																		|| {
 																			Ui.when(
 																				is_delivery,
-																				|_| delivery_panel,
-																				|_| review_panel,
+																				|| delivery_panel,
+																				|| review_panel,
 																			)
 																		},
 																	),

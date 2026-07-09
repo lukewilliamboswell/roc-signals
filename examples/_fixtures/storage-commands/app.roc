@@ -14,8 +14,8 @@ storage_label = |label, value|
 		StorageUnavailable(message) => "${label}: unavailable ${message}"
 	}
 
-main : {} -> Elem
-main = |_| {
+main : () -> Elem
+main = || {
 	local_draft = Browser.local_storage_text("checkout:draft")
 	session_flash = Browser.session_storage_text("checkout:flash")
 	missing_draft = Browser.local_storage_text("checkout:missing")
@@ -27,10 +27,10 @@ main = |_| {
 			Html.text_s(local_draft.map(|value| storage_label("Local draft", value))),
 			Html.text_s(session_flash.map(|value| storage_label("Session flash", value))),
 			Html.text_s(missing_draft.map(|value| storage_label("Missing draft", value))),
-			Ui.on_mount(|_| Browser.set_local_storage_text("checkout:draft", "mount saved")),
-			Ui.on_mount(|_| Browser.remove_session_storage("checkout:flash")),
-			Ui.on_mount(|_| Browser.set_local_storage_text("checkout:coalesced", "old")),
-			Ui.on_mount(|_| Browser.set_local_storage_text("checkout:coalesced", "new")),
+			Ui.on_mount(|| Browser.set_local_storage_text("checkout:draft", "mount saved")),
+			Ui.on_mount(|| Browser.remove_session_storage("checkout:flash")),
+			Ui.on_mount(|| Browser.set_local_storage_text("checkout:coalesced", "old")),
+			Ui.on_mount(|| Browser.set_local_storage_text("checkout:coalesced", "new")),
 		],
 	)
 }
