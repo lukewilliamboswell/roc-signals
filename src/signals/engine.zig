@@ -126,6 +126,16 @@ pub const HostSignalRecord = signal_records.Record;
 pub const HostSignalBinding = signal_records.Binding;
 pub const validateExistingSignalRecord = signal_records.validateExistingSignalRecord;
 
+const HostPendingOnChangeCommand = struct {
+    scope_id: u64,
+    cmd: erased_calls.Cmd,
+};
+
+const HostDeferredStorageEffect = struct {
+    area: boundary.StorageArea,
+    key: []u8,
+};
+
 pub const TaskResolutionClass = enum {
     pending,
     superseded,
@@ -403,6 +413,40 @@ pub fn elemScopeId(stream: *const HostNodeDescriptorStream, elem_id: u64) ?u64 {
     return descriptor_stream.elemScopeId(HostNodeDescriptorStream, stream, elem_id);
 }
 
+fn textFieldDescriptorIndexesActive(indexes: HostTextFieldDescriptorIndexes) bool {
+    return indexes.text != null or
+        indexes.role != null or
+        indexes.label != null or
+        indexes.test_id != null or
+        indexes.value != null or
+        indexes.class != null;
+}
+
+fn boolFieldDescriptorIndexesActive(indexes: HostBoolFieldDescriptorIndexes) bool {
+    return indexes.checked != null or indexes.disabled != null;
+}
+
+fn eventDescriptorIndexesActive(indexes: HostEventDescriptorIndexes) bool {
+    return indexes.click != null or
+        indexes.input != null or
+        indexes.check != null or
+        indexes.pointer_down != null or
+        indexes.pointer_up != null or
+        indexes.pointer_enter != null or
+        indexes.pointer_leave != null;
+}
+
+fn elemDescriptorIndexActive(index: HostElemDescriptorIndex) bool {
+    return index.element != null or
+        index.text_node != null or
+        index.signal_text_node != null or
+        textFieldDescriptorIndexesActive(index.static_text_attrs) or
+        textFieldDescriptorIndexesActive(index.signal_text_attrs) or
+        boolFieldDescriptorIndexesActive(index.static_bool_attrs) or
+        boolFieldDescriptorIndexesActive(index.signal_bool_attrs) or
+        eventDescriptorIndexesActive(index.events);
+}
+
 pub fn adjustedRenderInsertIndex(old_index: usize, replace_index: usize, removed_count: usize, replacement_count: usize) usize {
     return descriptor_stream.adjustedRenderInsertIndex(old_index, replace_index, removed_count, replacement_count);
 }
@@ -480,6 +524,9 @@ pub fn Engine(comptime Ctx: type) type {
         each_row_memberships_by_scope_id: std.ArrayListUnmanaged(?HostEachRowMembership) = .empty,
         node_identities: std.ArrayListUnmanaged(HostNodeIdentity) = .empty,
         dom_identities: std.ArrayListUnmanaged(HostDomIdentity) = .empty,
+        // Identity ids retired during the current dirty generation must not be
+        // reused until the next one; see identity_table.internNode.
+        identity_reuse_barrier: u64 = 0,
         active_stream: HostNodeDescriptorStream = .{},
         active_signal_graph: std.ArrayListUnmanaged(HostActiveSignalGraphNode) = .empty,
         active_source_signal_routes: active_graph.RouteTable(u64) = .empty,
@@ -626,7 +673,7 @@ pub fn Engine(comptime Ctx: type) type {
 
             pub fn deactivateNodeIdentities(self: *@This(), scope_id: u64) void {
                 var identity_deactivation = ScopeIdentityDeactivation{ .engine = self.engine, .ctx = self.ctx, .roc_host = self.roc_host };
-                identity_table.deactivateNodesInScope(&self.engine.node_identities, scope_id, &identity_deactivation);
+                identity_table.deactivateNodesInScope(&self.engine.node_identities, scope_id, self.engine.identity_reuse_barrier, &identity_deactivation);
             }
 
             pub fn appendCleanupEvents(self: *@This(), scope_id: u64) void {
@@ -642,7 +689,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             pub fn deactivateDomIdentities(self: *@This(), scope_id: u64) void {
-                identity_table.deactivateDomsInScope(&self.engine.dom_identities, scope_id);
+                identity_table.deactivateDomsInScope(&self.engine.dom_identities, scope_id, self.engine.identity_reuse_barrier);
             }
 
             pub fn removeEachRow(self: *@This(), scope_id: u64, key_hash: u64) void {
@@ -657,6 +704,15 @@ pub fn Engine(comptime Ctx: type) type {
                 var metrics = self.engine.pending_roc_metrics;
                 metrics.bump(.scopes_disposed, 1);
                 self.engine.pending_roc_metrics = metrics;
+            }
+        };
+
+        const ActiveDomIds = struct {
+            stream: *const HostNodeDescriptorStream,
+
+            pub fn elemIdIsActive(self: @This(), elem_id: u64) bool {
+                const index = self.stream.elemDescriptorIndex(elem_id) orelse return false;
+                return elemDescriptorIndexActive(index);
             }
         };
 
@@ -1159,6 +1215,7 @@ pub fn Engine(comptime Ctx: type) type {
                 @panic("host dirty signal generation overflowed");
             }
             self.dirty_signal_generation += 1;
+            self.identity_reuse_barrier = self.dirty_signal_generation;
             return self.dirty_signal_generation;
         }
 
@@ -1742,13 +1799,13 @@ pub fn Engine(comptime Ctx: type) type {
 
         pub fn disposeScopeSubtree(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, scope_id: u64) void {
             var disposal = ScopeDisposal{ .engine = self, .ctx = ctx, .roc_host = roc_host };
-            scope_runtime.disposeSubtree(HostEachRowScopeStep, self.scopes.items, scope_id, &disposal);
+            scope_runtime.disposeSubtree(HostEachRowScopeStep, self.scopes.items, scope_id, self.identity_reuse_barrier, &disposal);
         }
 
         pub fn createEachRowScope(self: *Self, ctx: Ctx.Handle, parent_scope_id: u64, site_ordinal: u64, key_hash: u64, key: HostValue, item: HostValue, key_cap: HostValueCapability, item_cap: HostValueCapability) u64 {
             self.validateScopeId(parent_scope_id) catch @panic("scope id has no host scope descriptor");
 
-            const result = scope_runtime.appendEachRow(Ctx.allocator(ctx), &self.scopes, parent_scope_id, site_ordinal, key_hash, key, item, key_cap, item_cap, &self.pending_roc_metrics) catch @panic("scope id has no host scope descriptor");
+            const result = scope_runtime.appendEachRow(Ctx.allocator(ctx), &self.scopes, parent_scope_id, site_ordinal, key_hash, key, item, key_cap, item_cap, &self.pending_roc_metrics, self.identity_reuse_barrier) catch @panic("scope id has no host scope descriptor");
             self.recordScopeCreated();
             const site_index = self.ensureEachRowSiteIndex(Ctx.allocator(ctx), parent_scope_id, site_ordinal);
             self.appendEachRowToSiteIndex(Ctx.allocator(ctx), site_index, result.scope_id, key_hash);
@@ -3126,6 +3183,14 @@ pub fn Engine(comptime Ctx: type) type {
                     ) catch "active render node has no matching descriptor";
                     @panic(rendered);
                 }
+                const parent_elem_id = renderNodeParentElemId(&self.active_stream, node);
+                if (parent_elem_id != 0 and
+                    findElementDesc(&self.active_stream, parent_elem_id) == null and
+                    findTextNodeDesc(&self.active_stream, parent_elem_id) == null and
+                    findSignalTextNodeDesc(&self.active_stream, parent_elem_id) == null)
+                {
+                    @panic("active render node referenced a missing parent descriptor");
+                }
             }
         }
 
@@ -3134,15 +3199,66 @@ pub fn Engine(comptime Ctx: type) type {
         }
 
         pub fn spliceActiveStreamReplacingTargetWithOptions(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, target: HostStructuralReplacementTarget, render_insert_index: usize, replacement: *HostNodeDescriptorStream, child_insert_hint: ?HostRenderChildInsertHint, refresh_suffix_indexes: bool) HostStructuralSplice {
-            const allocator = Ctx.allocator(ctx);
-            const target_scopes = self.buildReplacementTargetScopeSet(ctx, target);
-            defer self.scratch.replacement_target_scopes.clearRetainingCapacity();
+            return self.spliceActiveStreamReplacingTargetWithScopeSet(ctx, roc_host, target, render_insert_index, replacement, child_insert_hint, refresh_suffix_indexes, null);
+        }
 
-            const removal_scan = structural_splice.collectRenderRemovalScan(HostNodeDescriptorStream, allocator, &self.active_stream, render_insert_index, target_scopes);
+        // Snapshot the replacement-target scope set while the replaced scope
+        // subtree is still live. A when-arm swap disposes the outgoing branch
+        // scopes before its splice runs, and a removal scan classifying old
+        // render nodes against the post-disposal scope tree under-collects:
+        // the outgoing arm's descriptors survive while their (already reused)
+        // elem ids re-register, tripping the duplicate-descriptor-index panic.
+        pub fn snapshotReplacementTargetScopeSet(self: *Self, ctx: Ctx.Handle, target: HostStructuralReplacementTarget) []const bool {
+            const built = self.buildReplacementTargetScopeSet(ctx, target);
+            const copy = Ctx.allocator(ctx).dupe(bool, built) catch @panic("out of memory");
+            self.scratch.replacement_target_scopes.clearRetainingCapacity();
+            return copy;
+        }
+
+        pub fn spliceActiveStreamReplacingScopeWithScopeSnapshot(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, replaced_scope_id: u64, render_insert_index: usize, replacement: *HostNodeDescriptorStream, target_scopes_snapshot: []const bool) HostStructuralSplice {
+            return self.spliceActiveStreamReplacingTargetWithScopeSet(ctx, roc_host, .{ .scope = replaced_scope_id }, render_insert_index, replacement, null, true, target_scopes_snapshot);
+        }
+
+        fn renderStartForReplacementTargetSet(self: *Self, render_insert_hint: usize, target_scopes: []const bool) usize {
+            var render_index = render_insert_hint;
+            while (render_index < self.active_stream.render_nodes.items.len) : (render_index += 1) {
+                const node = self.active_stream.render_nodes.items[render_index];
+                if (structural_splice.scopeIsInTargetSet(target_scopes, renderNodeScopeId(&self.active_stream, node))) return render_index;
+            }
+            return render_insert_hint;
+        }
+
+        fn replacementTargetHasNonContiguousDomDescendants(self: *Self, ctx: Ctx.Handle, render_insert_hint: usize, target_scopes: []const bool) bool {
+            const allocator = Ctx.allocator(ctx);
+            const render_start = self.renderStartForReplacementTargetSet(render_insert_hint, target_scopes);
+            const removal_scan = structural_splice.collectRenderRemovalScan(HostNodeDescriptorStream, allocator, &self.active_stream, render_start, target_scopes);
+            defer removal_scan.deinit(allocator);
+            if (removal_scan.removed_render_count == 0) return false;
+
+            var extra_descendants: std.ArrayListUnmanaged(u64) = .empty;
+            defer extra_descendants.deinit(allocator);
+
+            const contiguous_end = render_start + removal_scan.removed_render_count;
+            for (self.active_stream.render_nodes.items[contiguous_end..]) |node| {
+                const parent_elem_id = renderNodeParentElemId(&self.active_stream, node);
+                if (u64SliceContains(removal_scan.removed_elem_ids, parent_elem_id) or u64SliceContains(extra_descendants.items, parent_elem_id)) {
+                    extra_descendants.append(allocator, node.elem_id) catch @panic("out of memory");
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        fn spliceActiveStreamReplacingTargetWithScopeSet(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, target: HostStructuralReplacementTarget, render_insert_index: usize, replacement: *HostNodeDescriptorStream, child_insert_hint: ?HostRenderChildInsertHint, refresh_suffix_indexes: bool, prebuilt_target_scopes: ?[]const bool) HostStructuralSplice {
+            const allocator = Ctx.allocator(ctx);
+            const target_scopes = prebuilt_target_scopes orelse self.buildReplacementTargetScopeSet(ctx, target);
+            defer if (prebuilt_target_scopes == null) self.scratch.replacement_target_scopes.clearRetainingCapacity();
+
+            const render_start = self.renderStartForReplacementTargetSet(render_insert_index, target_scopes);
+            const removal_scan = structural_splice.collectRenderRemovalScan(HostNodeDescriptorStream, allocator, &self.active_stream, render_start, target_scopes);
             errdefer removal_scan.deinit(allocator);
             self.recordStreamNodesScannedBy(.stream_nodes_scanned_splice, removal_scan.target_scan_count);
 
-            const render_start = render_insert_index;
             const removed_render_nodes = self.active_stream.render_nodes.items[render_start..][0..removal_scan.removed_render_count];
             const replacement_render_count = replacement.render_nodes.items.len;
             const on_change_count = replacement.on_changes.items.len;
@@ -3154,14 +3270,14 @@ pub fn Engine(comptime Ctx: type) type {
 
             self.active_stream.replaceRenderRangeWithStreamOptions(allocator, render_start, removed_render_nodes, replacement, child_insert_hint, refresh_suffix_indexes, &self.pending_roc_metrics);
             self.removeActiveNonRenderDescriptorsInTarget(ctx, roc_host, target_scopes, removal_scan.removed_elem_ids, &moved_event_elem_ids);
-            self.adjustActiveScopeSiteRenderInsertIndices(render_insert_index, removal_scan.removed_render_count, replacement_render_count);
+            self.adjustActiveScopeSiteRenderInsertIndices(render_start, removal_scan.removed_render_count, replacement_render_count);
             const on_change_start = self.active_stream.on_changes.items.len;
             const replacement_on_change_indices = structural_splice.indexRange(allocator, on_change_start, on_change_count);
             errdefer allocator.free(replacement_on_change_indices);
             const mount_start = self.active_stream.mounts.items.len;
             const replacement_mount_indices = structural_splice.indexRange(allocator, mount_start, mount_count);
             errdefer allocator.free(replacement_mount_indices);
-            self.appendReplacementNonRenderDescriptorsMoved(ctx, replacement, render_insert_index);
+            self.appendReplacementNonRenderDescriptorsMoved(ctx, replacement, render_start);
             self.validateActiveRenderDescriptorIntegrity();
 
             return .{
@@ -3632,6 +3748,7 @@ pub fn Engine(comptime Ctx: type) type {
         /// Returns a borrowed slice backed by engine scratch. Callers must not free
         /// it, and it stays valid only until the next dirty propagation.
         pub fn propagateDirtyActiveSignals(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, allocator: std.mem.Allocator, dirty_source_node_ids: []const u64, dirty_generation: u64) []const u64 {
+            self.identity_reuse_barrier = dirty_generation;
             _ = allocator;
             const dirty_record_ids = self.scratchDirtyActiveSignalRecordIdsForSources(ctx, dirty_source_node_ids);
             return self.propagateDirtyActiveSignalRecordIds(ctx, roc_host, dirty_record_ids, dirty_source_node_ids, dirty_generation);
@@ -3670,6 +3787,7 @@ pub fn Engine(comptime Ctx: type) type {
                     switch (route.kind) {
                         .when => {
                             const desc = &self.active_stream.whens.items[route.index];
+                            const site = self.activeScopeSiteByNodeId(desc.node_id, .when) orelse @panic("active when descriptor had no scope site");
                             const result = self.evalDirtyHostSignalBinding(ctx, roc_host, &desc.condition, dirty_source_node_ids, dirty_generation);
                             const cap = self.hostSignalBindingCapability(ctx, &desc.condition);
                             assertHostValueCapabilitiesMatch(desc.read.capability, cap, "dirty when read extension capability did not match its signal value");
@@ -3682,12 +3800,16 @@ pub fn Engine(comptime Ctx: type) type {
                                 dirty_structural_signals.append(allocator, .{
                                     .kind = .when,
                                     .node_id = desc.node_id,
+                                    .scope_id = site.scope_id,
+                                    .ordinal = site.ordinal,
+                                    .record = desc.condition.record,
                                     .branch = active_branch,
                                 }) catch @panic("out of memory");
                             }
                         },
                         .each => {
                             const desc = &self.active_stream.eaches.items[route.index];
+                            const site = self.activeScopeSiteByNodeId(desc.node_id, .each) orelse @panic("active each descriptor had no scope site");
                             const result = self.evalDirtyHostSignalBinding(ctx, roc_host, &desc.items, dirty_source_node_ids, dirty_generation);
                             const cap = self.hostSignalBindingCapability(ctx, &desc.items);
                             if (!result.changed) {
@@ -3698,6 +3820,9 @@ pub fn Engine(comptime Ctx: type) type {
                                 dirty_structural_signals.append(allocator, .{
                                     .kind = .each,
                                     .node_id = desc.node_id,
+                                    .scope_id = site.scope_id,
+                                    .ordinal = site.ordinal,
+                                    .record = desc.items.record,
                                 }) catch @panic("out of memory");
                             }
                         },
@@ -3771,25 +3896,25 @@ pub fn Engine(comptime Ctx: type) type {
         }
 
         pub fn internComponentScope(self: *Self, allocator: std.mem.Allocator, parent_scope_id: u64, site_ordinal: u64) scope_tree.Error!scope_tree.InternResult {
-            const result = try scope_tree.internComponent(HostEachRowScopeStep, allocator, &self.scopes, parent_scope_id, site_ordinal);
+            const result = try scope_tree.internComponent(HostEachRowScopeStep, allocator, &self.scopes, parent_scope_id, site_ordinal, self.identity_reuse_barrier);
             if (result.created) self.recordScopeCreated();
             return result;
         }
 
         pub fn internWhenBranchScope(self: *Self, allocator: std.mem.Allocator, parent_scope_id: u64, site_ordinal: u64, branch: HostScopeBranch) scope_tree.Error!scope_tree.InternResult {
-            const result = try scope_tree.internWhenBranch(HostEachRowScopeStep, allocator, &self.scopes, parent_scope_id, site_ordinal, branch);
+            const result = try scope_tree.internWhenBranch(HostEachRowScopeStep, allocator, &self.scopes, parent_scope_id, site_ordinal, branch, self.identity_reuse_barrier);
             if (result.created) self.recordScopeCreated();
             return result;
         }
 
         pub fn internNodeIdentity(self: *Self, allocator: std.mem.Allocator, scope_id: u64, ordinal: u64) IdentityInternError!u64 {
             try self.validateScopeId(scope_id);
-            return identity_table.internNode(allocator, &self.node_identities, scope_id, ordinal);
+            return identity_table.internNode(allocator, &self.node_identities, scope_id, ordinal, self.identity_reuse_barrier);
         }
 
         pub fn internDomIdentity(self: *Self, allocator: std.mem.Allocator, scope_id: u64, ordinal: u64) IdentityInternError!u64 {
             try self.validateScopeId(scope_id);
-            return identity_table.internDom(allocator, &self.dom_identities, scope_id, ordinal);
+            return identity_table.internDom(allocator, &self.dom_identities, scope_id, ordinal, self.identity_reuse_barrier, ActiveDomIds{ .stream = &self.active_stream });
         }
 
         pub fn activeEachRowScopes(self: *Self, allocator: std.mem.Allocator, parent_scope_id: u64, site_ordinal: u64) scope_tree.Error![]u64 {
@@ -3855,6 +3980,18 @@ pub fn Engine(comptime Ctx: type) type {
 
         pub fn scopeIsDescendantOrSelf(self: *Self, scope_id: u64, root_scope_id: u64) scope_tree.Error!bool {
             return scope_tree.descendantOrSelf(HostEachRowScopeStep, self.scopes.items, scope_id, root_scope_id);
+        }
+
+        fn scopeDepth(self: *Self, scope_id: u64) usize {
+            var depth: usize = 0;
+            var current: ?u64 = scope_id;
+            while (current) |id| {
+                if (id >= self.scopes.items.len) return std.math.maxInt(usize);
+                const scope = self.scopes.items[@intCast(id)];
+                current = scope.parent_scope_id;
+                if (current != null) depth += 1;
+            }
+            return depth;
         }
 
         pub fn scopeIsEachSiteRowDescendantOrSelf(self: *Self, scope_id: u64, site: HostEachSite) scope_tree.Error!bool {
@@ -4040,6 +4177,15 @@ pub fn Engine(comptime Ctx: type) type {
             return each_runtime.renderInsertIndexForRowRanges(site.render_insert_index, row_ranges, next_scope_ids, row_index);
         }
 
+        pub fn renderAppendIndexForEachRowRanges(site: HostNodeScopeSiteDesc, row_ranges: *const std.AutoHashMapUnmanaged(u64, HostEachRowRenderSegment)) usize {
+            var append_index = site.render_insert_index;
+            var range_iterator = row_ranges.iterator();
+            while (range_iterator.next()) |entry| {
+                append_index = @max(append_index, entry.value_ptr.start + entry.value_ptr.len);
+            }
+            return append_index;
+        }
+
         pub fn childInsertionIndexForEachRowRanges(self: *Self, allocator: std.mem.Allocator, site: HostNodeScopeSiteDesc, row_ranges: *const std.AutoHashMapUnmanaged(u64, HostEachRowRenderSegment), render_insert_index: usize) usize {
             const each_site = HostEachSite{ .parent_scope_id = site.scope_id, .site_ordinal = site.ordinal };
             const children = streamDirectChildrenInto(allocator, &self.active_stream, site.parent_elem_id, &self.scratch.stream_direct_children);
@@ -4076,7 +4222,7 @@ pub fn Engine(comptime Ctx: type) type {
             each_runtime.updateRenderRange(row_ranges, allocator, scope_id, render_insert_index, removed_count, replacement_count);
         }
 
-        pub fn applyDirtyEachRowScopeSplices(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, site: HostNodeScopeSiteDesc, each: HostNodeEachDesc, old_render_segments: []const HostEachRowRenderSegment, diff: HostKeyedRowDiffResult, dirty_source_node_ids: []const u64, dirty_generation: u64) render.Counts {
+        pub fn applyDirtyEachRowScopeSplices(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, site: HostNodeScopeSiteDesc, each: HostNodeEachDesc, old_render_segments: []const HostEachRowRenderSegment, diff: HostKeyedRowDiffResult, append_created_rows_for_later_moves: bool, dirty_source_node_ids: []const u64, dirty_generation: u64) render.Counts {
             const allocator = Ctx.allocator(ctx);
             var row_ranges = &self.scratch.each_row_ranges;
             row_ranges.clearRetainingCapacity();
@@ -4137,16 +4283,20 @@ pub fn Engine(comptime Ctx: type) type {
                 spliced_any = true;
             }
 
-            for (diff.scope_ids, diff.row_items_changed, 0..) |row_scope_id, row_item_changed, row_index| {
+            for (diff.scope_ids, diff.row_items_changed, diff.scope_created, 0..) |row_scope_id, row_item_changed, row_created, row_index| {
                 if (!row_item_changed and !self.scopeSubtreeHasDirtyStructuralSource(&self.active_stream, row_scope_id, dirty_source_node_ids)) {
                     continue;
                 }
 
                 var row_stream: HostNodeDescriptorStream = .{};
                 defer row_stream.deinit(allocator, ctx, roc_host, &self.pending_roc_metrics);
-                self.collectActiveEachSingleRowDescriptors(ctx, roc_host, &row_stream, site, each, row_scope_id, diff.scope_created[row_index], dirty_source_node_ids);
+                self.collectActiveEachSingleRowDescriptors(ctx, roc_host, &row_stream, site, each, row_scope_id, row_created, dirty_source_node_ids);
 
-                const render_insert_index = renderInsertIndexForEachRowRanges(site, row_ranges, diff.scope_ids, row_index);
+                const append_created_row = append_created_rows_for_later_moves and defer_render_index_suffixes and row_created;
+                const render_insert_index = if (append_created_row)
+                    renderAppendIndexForEachRowRanges(site, row_ranges)
+                else
+                    renderInsertIndexForEachRowRanges(site, row_ranges, diff.scope_ids, row_index);
                 const splice = if (defer_render_index_suffixes) splice: {
                     const child_insertion_index = self.childInsertionIndexForEachRowRanges(allocator, site, row_ranges, render_insert_index);
                     const child_insert_hint = HostRenderChildInsertHint{
@@ -4198,7 +4348,7 @@ pub fn Engine(comptime Ctx: type) type {
         }
 
         pub fn applyDirtyEachMixedRowSplicesAndMoves(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, site: HostNodeScopeSiteDesc, each: HostNodeEachDesc, old_render_segments: []const HostEachRowRenderSegment, diff: HostKeyedRowDiffResult, dirty_source_node_ids: []const u64, dirty_generation: u64) render.Counts {
-            var counts = self.applyDirtyEachRowScopeSplices(ctx, roc_host, site, each, old_render_segments, diff, dirty_source_node_ids, dirty_generation);
+            var counts = self.applyDirtyEachRowScopeSplices(ctx, roc_host, site, each, old_render_segments, diff, true, dirty_source_node_ids, dirty_generation);
             counts.addAll(self.applyDirtyEachPermutationMoves(ctx, site, diff.scope_ids));
             return counts;
         }
@@ -4552,6 +4702,7 @@ pub fn Engine(comptime Ctx: type) type {
             for (self.active_stream.render_nodes.items) |node| {
                 if (!self.renderNodeInReplacementTarget(&self.active_stream, node, targets.removed)) continue;
                 if (node.elem_id < seen.len and seen[@intCast(node.elem_id)]) continue;
+                if (!self.hasActiveRenderNode(node.elem_id)) continue;
                 self.removeRenderNode(ctx, node.elem_id, &counts);
             }
 
@@ -4810,6 +4961,7 @@ pub fn Engine(comptime Ctx: type) type {
 
             for (splice.removed_elem_ids) |elem_id| {
                 if (elem_id < seen.len and seen[@intCast(elem_id)]) continue;
+                if (!self.hasActiveRenderNode(elem_id)) continue;
                 self.removeRenderNode(ctx, elem_id, &counts);
             }
 
@@ -4898,7 +5050,7 @@ pub fn Engine(comptime Ctx: type) type {
 
             for (self.active_stream.render_nodes.items) |node| {
                 const still_rendered = node.elem_id < seen.len and seen[@intCast(node.elem_id)];
-                if (!still_rendered) self.removeRenderNode(ctx, node.elem_id, &counts);
+                if (!still_rendered and self.hasActiveRenderNode(node.elem_id)) self.removeRenderNode(ctx, node.elem_id, &counts);
             }
 
             for (next_children, 0..) |*children, index| {
@@ -5020,12 +5172,54 @@ pub fn Engine(comptime Ctx: type) type {
             return counts;
         }
 
+        pub fn rerenderActiveRootWithReset(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, dirty_source_node_ids: []const u64) render.Counts {
+            const root = self.root_elem orelse @panic("host render requested before Roc root Elem was initialized");
+            const allocator = Ctx.allocator(ctx);
+
+            var next_stream: HostNodeDescriptorStream = .{};
+            errdefer next_stream.deinit(allocator, ctx, roc_host, &self.pending_roc_metrics);
+            self.collectActiveElemRootDescriptors(ctx, roc_host, &next_stream, root, dirty_source_node_ids);
+
+            var counts = self.applyNodeDescriptorStream(ctx, roc_host, &next_stream);
+
+            self.rebuildActiveEventsFromStream(ctx, &next_stream);
+            self.active_stream.deinit(allocator, ctx, roc_host, &self.pending_roc_metrics);
+            self.active_stream = next_stream;
+
+            const on_change_initial_counts = self.runActiveOnChangeInitialCommands(ctx, roc_host);
+            const mount_counts = self.runActiveMountCommands(ctx, roc_host);
+            if (comptime enable_runtime_metrics) self.render_metrics.addCommandCounts(on_change_initial_counts);
+            if (comptime enable_runtime_metrics) self.render_metrics.addCommandCounts(mount_counts);
+            counts.addAll(on_change_initial_counts);
+            counts.addAll(mount_counts);
+            return counts;
+        }
+
         pub fn applyDirtyStructuralSignalsLocally(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, dirty_source_node_ids: []const u64, dirty_generation: u64, changes: []const HostDirtyStructuralSignal) render.Counts {
+            const DirtyStructuralOrder = struct {
+                engine: *Self,
+
+                pub fn lessThan(order: @This(), lhs: HostDirtyStructuralSignal, rhs: HostDirtyStructuralSignal) bool {
+                    const lhs_depth = order.engine.scopeDepth(lhs.scope_id);
+                    const rhs_depth = order.engine.scopeDepth(rhs.scope_id);
+                    if (lhs_depth != rhs_depth) return lhs_depth < rhs_depth;
+                    if (lhs.scope_id != rhs.scope_id) return lhs.scope_id < rhs.scope_id;
+                    if (lhs.ordinal != rhs.ordinal) return lhs.ordinal < rhs.ordinal;
+                    if (@intFromEnum(lhs.kind) != @intFromEnum(rhs.kind)) return @intFromEnum(lhs.kind) < @intFromEnum(rhs.kind);
+                    return lhs.node_id < rhs.node_id;
+                }
+            };
+
+            const dirty_allocator = Ctx.allocator(ctx);
+            const ordered_changes = dirty_allocator.dupe(HostDirtyStructuralSignal, changes) catch @panic("out of memory");
+            defer dirty_allocator.free(ordered_changes);
+            std.mem.sort(HostDirtyStructuralSignal, ordered_changes, DirtyStructuralOrder{ .engine = self }, DirtyStructuralOrder.lessThan);
+
             var total_counts: render.Counts = .{};
             var applied_any = false;
             const event_count_before = self.active_stream.events.items.len;
 
-            for (changes) |change| {
+            for (ordered_changes) |change| {
                 var replacement_stream: HostNodeDescriptorStream = .{};
                 defer replacement_stream.deinit(Ctx.allocator(ctx), ctx, roc_host, &self.pending_roc_metrics);
                 const splice_and_targets: HostStructuralSpliceAndTargets = switch (change.kind) {
@@ -5034,16 +5228,46 @@ pub fn Engine(comptime Ctx: type) type {
                             if (applied_any) continue;
                             @panic("dirty when structural site is not active");
                         };
+                        if (site.scope_id != change.scope_id or site.ordinal != change.ordinal) {
+                            if (applied_any) continue;
+                            @panic("dirty when structural site identity changed before apply");
+                        }
                         const when_index = self.activeWhenIndexByNodeId(change.node_id) orelse {
                             if (applied_any) continue;
                             @panic("dirty when descriptor is not active");
                         };
-                        const active_branch = change.branch orelse @panic("dirty when structural signal did not record its active branch");
-                        const replaced_scope_id = (self.activeWhenBranchScopeId(site.scope_id, site.ordinal, active_branch.opposite()) catch @panic("scope id has no host scope descriptor")) orelse @panic("dirty when structural update had no active opposite branch scope");
                         const when_desc = self.active_stream.whens.items[when_index];
+                        if (when_desc.condition.record != change.record) {
+                            if (applied_any) continue;
+                            @panic("dirty when descriptor identity changed before apply");
+                        }
+                        const active_branch = change.branch orelse @panic("dirty when structural signal did not record its active branch");
+                        const replaced_scope_id = (self.activeWhenBranchScopeId(site.scope_id, site.ordinal, active_branch.opposite()) catch @panic("scope id has no host scope descriptor")) orelse {
+                            if (applied_any) continue;
+                            total_counts.addAll(self.rerenderActiveRootWithReset(ctx, roc_host, dirty_source_node_ids));
+                            return total_counts;
+                        };
+                        const existing_replacement_scope_id = self.activeWhenBranchScopeId(site.scope_id, site.ordinal, active_branch) catch @panic("scope id has no host scope descriptor");
 
+                        const target_scopes_snapshot = self.snapshotReplacementTargetScopeSet(ctx, .{ .scope = replaced_scope_id });
+                        defer Ctx.allocator(ctx).free(target_scopes_snapshot);
+                        if (self.replacementTargetHasNonContiguousDomDescendants(ctx, site.render_insert_index, target_scopes_snapshot)) {
+                            total_counts.addAll(self.rerenderActiveRootWithReset(ctx, roc_host, dirty_source_node_ids));
+                            return total_counts;
+                        }
+                        if (existing_replacement_scope_id) |replacement_scope_id| {
+                            self.disposeScopeSubtree(ctx, roc_host, replaced_scope_id);
+                            const splice = self.spliceActiveStreamReplacingScopeWithScopeSnapshot(ctx, roc_host, replaced_scope_id, site.render_insert_index, &replacement_stream, target_scopes_snapshot);
+                            break :when_target .{
+                                .splice = splice,
+                                .targets = HostStructuralPatchTargets{
+                                    .removed = .{ .scope = replaced_scope_id },
+                                    .replacement = .{ .scope = replacement_scope_id },
+                                },
+                            };
+                        }
                         const replacement_scope_id = self.collectActiveWhenBranchDescriptors(ctx, roc_host, &replacement_stream, site, when_desc, active_branch, dirty_source_node_ids);
-                        const splice = self.spliceActiveStreamReplacingScope(ctx, roc_host, replaced_scope_id, site.render_insert_index, &replacement_stream);
+                        const splice = self.spliceActiveStreamReplacingScopeWithScopeSnapshot(ctx, roc_host, replaced_scope_id, site.render_insert_index, &replacement_stream, target_scopes_snapshot);
                         break :when_target .{
                             .splice = splice,
                             .targets = HostStructuralPatchTargets{
@@ -5057,11 +5281,19 @@ pub fn Engine(comptime Ctx: type) type {
                             if (applied_any) continue;
                             @panic("dirty each structural site is not active");
                         };
+                        if (site.scope_id != change.scope_id or site.ordinal != change.ordinal) {
+                            if (applied_any) continue;
+                            @panic("dirty each structural site identity changed before apply");
+                        }
                         const each_index = self.activeEachIndexByNodeId(change.node_id) orelse {
                             if (applied_any) continue;
                             @panic("dirty each descriptor is not active");
                         };
                         const each_desc = self.active_stream.eaches.items[each_index];
+                        if (each_desc.items.record != change.record) {
+                            if (applied_any) continue;
+                            @panic("dirty each descriptor identity changed before apply");
+                        }
                         const each_site = HostEachSite{ .parent_scope_id = site.scope_id, .site_ordinal = site.ordinal };
                         const allocator = Ctx.allocator(ctx);
                         const old_active_rows = self.activeEachRowScopes(allocator, site.scope_id, site.ordinal) catch @panic("scope id has no host scope descriptor");
@@ -5074,7 +5306,7 @@ pub fn Engine(comptime Ctx: type) type {
                         defer diff.deinit(allocator);
 
                         if (old_active_rows.len == old_render_rows.len and Self.eachDiffPreservesSurvivorRenderOrder(old_render_rows, diff.scope_ids)) {
-                            const counts = self.applyDirtyEachRowScopeSplices(ctx, roc_host, site, each_desc, old_render_segments, diff, dirty_source_node_ids, dirty_generation);
+                            const counts = self.applyDirtyEachRowScopeSplices(ctx, roc_host, site, each_desc, old_render_segments, diff, false, dirty_source_node_ids, dirty_generation);
                             total_counts.addAll(counts);
                             applied_any = true;
                             continue;
@@ -5185,12 +5417,16 @@ pub fn Engine(comptime Ctx: type) type {
         }
 
         pub fn applyDirtySignalBatch(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, dirty_source_node_ids: []const u64, changed_record_ids: []const u64, dirty_generation: u64) render.Counts {
+            const allocator = Ctx.allocator(ctx);
+            const stable_changed_record_ids = allocator.dupe(u64, changed_record_ids) catch @panic("out of memory");
+            defer allocator.free(stable_changed_record_ids);
+
             debugPhase(ctx, 350);
-            const dirty_structural_signals = self.collectDirtyStructuralSignals(ctx, roc_host, Ctx.allocator(ctx), dirty_source_node_ids, changed_record_ids, dirty_generation);
-            defer Ctx.allocator(ctx).free(dirty_structural_signals);
+            var counts = self.applyDirtyRenderSinks(ctx, roc_host, dirty_source_node_ids, stable_changed_record_ids, dirty_generation);
 
             debugPhase(ctx, 360);
-            var counts = self.applyDirtyRenderSinks(ctx, roc_host, dirty_source_node_ids, changed_record_ids, dirty_generation);
+            const dirty_structural_signals = self.collectDirtyStructuralSignals(ctx, roc_host, allocator, dirty_source_node_ids, stable_changed_record_ids, dirty_generation);
+            defer allocator.free(dirty_structural_signals);
             if (dirty_structural_signals.len != 0) {
                 debugPhase(ctx, 370);
                 counts.addAll(self.applyDirtyStructuralSignalsLocally(ctx, roc_host, dirty_source_node_ids, dirty_generation, dirty_structural_signals));
@@ -5220,7 +5456,7 @@ pub fn Engine(comptime Ctx: type) type {
             return self.applyDirtySignalBatch(ctx, roc_host, &.{}, changed_record_ids, dirty_generation);
         }
 
-        fn locationSnapshotFromCommand(payload: abi.NodeLocationCommandPayload) boundary.LocationSnapshot {
+        fn locationSnapshotFromCommandPayload(payload: *const abi.NodeLocationCommandPayload) boundary.LocationSnapshot {
             return .{
                 .path = payload.path.asSlice(),
                 .query = payload.query.asSlice(),
@@ -5319,14 +5555,47 @@ pub fn Engine(comptime Ctx: type) type {
             return self.applyDirtySignalBatch(ctx, roc_host, &.{}, changed_record_ids, dirty_generation);
         }
 
+        pub fn dispatchCurrentStorageSources(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, area: boundary.StorageArea, key: []const u8) render.Counts {
+            const allocator = Ctx.allocator(ctx);
+            var root_record_ids: std.ArrayListUnmanaged(u64) = .empty;
+            defer root_record_ids.deinit(allocator);
+
+            const dirty_generation = self.nextDirtySignalGeneration();
+            for (self.active_signal_graph.items, 0..) |node, index| {
+                const payload = node.record.storageSource() orelse continue;
+                if (payload.area != area or !std.mem.eql(u8, payload.key, key)) continue;
+
+                const raw_payload = Ctx.initialStoragePayload(ctx, roc_host, payload.area, payload.key, payload.payload_cap);
+                const next = callHostValueToHostValueWithCapability(ctx, roc_host, payload.payload_cap, payload.from_payload, raw_payload);
+                if (!self.updateEffectSourceCache(ctx, roc_host, node.record, next)) continue;
+
+                node.record.last_dirty_generation = dirty_generation;
+                node.record.last_dirty_changed = true;
+                root_record_ids.append(allocator, @intCast(index)) catch @panic("out of memory");
+            }
+
+            if (root_record_ids.items.len == 0) return .{};
+
+            self.recordDispatch();
+            var metrics = self.pending_roc_metrics;
+            metrics.bump(.nodes_recomputed, @intCast(root_record_ids.items.len));
+            self.pending_roc_metrics = metrics;
+
+            const dirty_record_ids = self.scratchDirtyActiveSignalRecordIdsForRoots(ctx, root_record_ids.items);
+            const changed_record_ids = self.propagateDirtyActiveSignalRecordIds(ctx, roc_host, dirty_record_ids, &.{}, dirty_generation);
+            return self.applyDirtySignalBatch(ctx, roc_host, &.{}, changed_record_ids, dirty_generation);
+        }
+
         pub fn navigateLocationCommand(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, kind: NavigationKind, location: boundary.LocationSnapshot) render.Counts {
             Ctx.sink(ctx).navigate(kind, location);
             return self.dispatchCurrentLocationSources(ctx, roc_host);
         }
 
-        pub fn setStorageTextCommand(_: *Self, ctx: Ctx.Handle, payload: abi.NodeStorageSetCommandPayload) render.Counts {
-            Ctx.sink(ctx).setStorageText(storageAreaFromCommand(payload.area), payload.key.asSlice(), payload.value.asSlice());
-            return .{};
+        pub fn setStorageTextCommand(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, payload: abi.NodeStorageSetCommandPayload) render.Counts {
+            const area = storageAreaFromCommand(payload.area);
+            const key = payload.key.asSlice();
+            Ctx.sink(ctx).setStorageText(area, key, payload.value.asSlice());
+            return self.dispatchCurrentStorageSources(ctx, roc_host, area, key);
         }
 
         pub fn setDocumentTitleCommand(_: *Self, ctx: Ctx.Handle, payload: abi.NodeDocumentTitleCommandPayload) render.Counts {
@@ -5334,9 +5603,11 @@ pub fn Engine(comptime Ctx: type) type {
             return .{};
         }
 
-        pub fn removeStorageCommand(_: *Self, ctx: Ctx.Handle, payload: abi.NodeStorageRemoveCommandPayload) render.Counts {
-            Ctx.sink(ctx).removeStorage(storageAreaFromCommand(payload.area), payload.key.asSlice());
-            return .{};
+        pub fn removeStorageCommand(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, payload: abi.NodeStorageRemoveCommandPayload) render.Counts {
+            const area = storageAreaFromCommand(payload.area);
+            const key = payload.key.asSlice();
+            Ctx.sink(ctx).removeStorage(area, key);
+            return self.dispatchCurrentStorageSources(ctx, roc_host, area, key);
         }
 
         pub fn startTaskCommand(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, owner_scope_id: u64, cmd: erased_calls.StartTaskCmd) render.Counts {
@@ -5365,10 +5636,16 @@ pub fn Engine(comptime Ctx: type) type {
         pub fn runCommand(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, owner_scope_id: u64, cmd: erased_calls.Cmd) render.Counts {
             return switch (cmd.tag) {
                 .Noop => .{},
-                .PushState => self.navigateLocationCommand(ctx, roc_host, .push, locationSnapshotFromCommand(cmd.payload_push_state())),
-                .RemoveStorage => self.removeStorageCommand(ctx, cmd.payload_remove_storage()),
-                .ReplaceState => self.navigateLocationCommand(ctx, roc_host, .replace, locationSnapshotFromCommand(cmd.payload_replace_state())),
-                .SetStorageText => self.setStorageTextCommand(ctx, cmd.payload_set_storage_text()),
+                .PushState => blk: {
+                    const payload = cmd.payload_push_state();
+                    break :blk self.navigateLocationCommand(ctx, roc_host, .push, locationSnapshotFromCommandPayload(&payload));
+                },
+                .RemoveStorage => self.removeStorageCommand(ctx, roc_host, cmd.payload_remove_storage()),
+                .ReplaceState => blk: {
+                    const payload = cmd.payload_replace_state();
+                    break :blk self.navigateLocationCommand(ctx, roc_host, .replace, locationSnapshotFromCommandPayload(&payload));
+                },
+                .SetStorageText => self.setStorageTextCommand(ctx, roc_host, cmd.payload_set_storage_text()),
                 .StartTask => self.startTaskCommand(ctx, roc_host, owner_scope_id, cmd.payload_start_task()),
                 .SetDocumentTitle => self.setDocumentTitleCommand(ctx, cmd.payload_set_document_title()),
             };
@@ -5393,22 +5670,48 @@ pub fn Engine(comptime Ctx: type) type {
             return self.tickIntervalRecord(ctx, roc_host, record);
         }
 
-        pub fn evalDirtyOnChange(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, desc: *HostNodeOnChangeDesc, dirty_source_node_ids: []const u64, dirty_generation: u64) render.Counts {
+        pub fn evalDirtyOnChangeCommand(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, desc: *HostNodeOnChangeDesc, dirty_source_node_ids: []const u64, dirty_generation: u64) ?HostPendingOnChangeCommand {
             const result = self.evalDirtyHostSignalBinding(ctx, roc_host, &desc.signal, dirty_source_node_ids, dirty_generation);
             const cap = self.hostSignalBindingCapability(ctx, &desc.signal);
             if (!result.changed) {
                 callHostValueToUnitWithCapability(ctx, roc_host, cap, hv.hostValueCapabilityDrop(cap), result.value);
-                return .{};
+                return null;
             }
-            if (!self.updateDirtySignalCache(ctx, roc_host, &desc.cached_value, result.value, cap)) return .{};
+            if (!self.updateDirtySignalCache(ctx, roc_host, &desc.cached_value, result.value, cap)) return null;
 
-            const cmd = callHostValueToCmdWithCapability(ctx, roc_host, cap, desc.to_cmd, result.value);
+            const value = self.cloneCachedSignalValue(ctx, &desc.cached_value);
+            defer callHostValueToUnitWithCapability(ctx, roc_host, cap, hv.hostValueCapabilityDrop(cap), value);
+            const cmd = callHostValueToCmdWithCapability(ctx, roc_host, cap, desc.to_cmd, value);
+            abi.increfNodeCmd(cmd, 1);
+            abi.decrefNodeCmd(cmd, roc_host);
+            return .{ .scope_id = desc.scope_id, .cmd = cmd };
+        }
+
+        pub fn evalDirtyOnChange(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, desc: *HostNodeOnChangeDesc, dirty_source_node_ids: []const u64, dirty_generation: u64) render.Counts {
+            const pending = self.evalDirtyOnChangeCommand(ctx, roc_host, desc, dirty_source_node_ids, dirty_generation) orelse return .{};
+            const cmd = pending.cmd;
             defer abi.decrefNodeCmd(cmd, roc_host);
-            return self.runCommand(ctx, roc_host, desc.scope_id, cmd);
+            return self.runCommand(ctx, roc_host, pending.scope_id, cmd);
         }
 
         pub fn applyDirtyRenderSinks(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, dirty_source_node_ids: []const u64, changed_record_ids: []const u64, dirty_generation: u64) render.Counts {
             var counts: render.Counts = .{};
+            const allocator = Ctx.allocator(ctx);
+            var pending_on_change_commands: std.ArrayListUnmanaged(HostPendingOnChangeCommand) = .empty;
+            defer {
+                for (pending_on_change_commands.items) |pending| {
+                    abi.decrefNodeCmd(pending.cmd, roc_host);
+                }
+                pending_on_change_commands.deinit(allocator);
+            }
+            var deferred_storage_effects: std.ArrayListUnmanaged(HostDeferredStorageEffect) = .empty;
+            defer {
+                for (deferred_storage_effects.items) |effect| {
+                    allocator.free(effect.key);
+                }
+                deferred_storage_effects.deinit(allocator);
+            }
+            var deferred_location_effect = false;
 
             for (changed_record_ids) |record_id| {
                 const route_index: usize = @intCast(record_id);
@@ -5465,9 +5768,50 @@ pub fn Engine(comptime Ctx: type) type {
                 if (route_index < self.active_change_signal_routes.items.len) {
                     for (self.active_change_signal_routes.items[route_index].items) |route| {
                         const desc = &self.active_stream.on_changes.items[route.index];
-                        counts.addAll(self.evalDirtyOnChange(ctx, roc_host, desc, dirty_source_node_ids, dirty_generation));
+                        if (self.evalDirtyOnChangeCommand(ctx, roc_host, desc, dirty_source_node_ids, dirty_generation)) |pending| {
+                            pending_on_change_commands.append(allocator, pending) catch @panic("out of memory");
+                        }
                     }
                 }
+            }
+
+            for (pending_on_change_commands.items) |pending| {
+                switch (pending.cmd.tag) {
+                    .PushState => {
+                        const payload = pending.cmd.payload_push_state();
+                        const location = locationSnapshotFromCommandPayload(&payload);
+                        Ctx.sink(ctx).navigate(.push, location);
+                        deferred_location_effect = true;
+                    },
+                    .ReplaceState => {
+                        const payload = pending.cmd.payload_replace_state();
+                        const location = locationSnapshotFromCommandPayload(&payload);
+                        Ctx.sink(ctx).navigate(.replace, location);
+                        deferred_location_effect = true;
+                    },
+                    .SetStorageText => {
+                        const payload = pending.cmd.payload_set_storage_text();
+                        const area = storageAreaFromCommand(payload.area);
+                        const key = payload.key.asSlice();
+                        Ctx.sink(ctx).setStorageText(area, key, payload.value.asSlice());
+                        deferred_storage_effects.append(allocator, .{ .area = area, .key = allocator.dupe(u8, key) catch @panic("out of memory") }) catch @panic("out of memory");
+                    },
+                    .RemoveStorage => {
+                        const payload = pending.cmd.payload_remove_storage();
+                        const area = storageAreaFromCommand(payload.area);
+                        const key = payload.key.asSlice();
+                        Ctx.sink(ctx).removeStorage(area, key);
+                        deferred_storage_effects.append(allocator, .{ .area = area, .key = allocator.dupe(u8, key) catch @panic("out of memory") }) catch @panic("out of memory");
+                    },
+                    else => counts.addAll(self.runCommand(ctx, roc_host, pending.scope_id, pending.cmd)),
+                }
+            }
+
+            if (deferred_location_effect) {
+                counts.addAll(self.dispatchCurrentLocationSources(ctx, roc_host));
+            }
+            for (deferred_storage_effects.items) |effect| {
+                counts.addAll(self.dispatchCurrentStorageSources(ctx, roc_host, effect.area, effect.key));
             }
 
             if (comptime enable_runtime_metrics) self.render_metrics.addCommandCounts(counts);

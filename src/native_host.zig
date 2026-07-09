@@ -189,7 +189,9 @@ const NativeLocation = struct {
     hash: []u8,
 
     fn init(allocator: std.mem.Allocator, location: boundary.LocationSnapshot) NativeLocation {
-        if (location.path.len == 0 or location.path[0] != '/') failHost("location path must start with /");
+        if (location.path.len == 0 or location.path[0] != '/') {
+            failHost("location path must start with /");
+        }
         const path = allocator.dupe(u8, location.path) catch @panic("out of memory");
         const query = allocator.dupe(u8, location.query) catch {
             allocator.free(path);
@@ -1653,7 +1655,6 @@ fn clearRenderBoolField(host: *HostEnv, elem_id: u64, field: RenderBoolField) vo
 }
 
 fn appendDetachedDomNode(host: *HostEnv, elem_id: u64, tag: []const u8) void {
-    if (elem_id > host.dom_elements.items.len) failHost("descriptor stream elements must be dense and ordered by elem id");
     if (elem_id < host.dom_elements.items.len and host.dom_elements.items[@intCast(elem_id)].active) {
         failHost("descriptor stream attempted to reuse an active elem id");
     }
@@ -1778,7 +1779,6 @@ fn replaceDomChildrenForStructuralParentMoves(host: *HostEnv, parent_elem_id: u6
 }
 
 fn removeDomNode(host: *HostEnv, elem_id: u64) void {
-    const allocator = host.hostAllocator();
     if (elem_id == 0) failHost("structural patch attempted to remove host DOM root");
     if (elem_id >= host.dom_elements.items.len) failHost("structural patch removed an element missing from DOM state");
 
@@ -1796,6 +1796,20 @@ fn removeDomNode(host: *HostEnv, elem_id: u64) void {
                 sim_dom.removeChildAt(parent, child_index);
             }
         }
+    }
+    deactivateDomSubtree(host, elem_id);
+}
+
+fn deactivateDomSubtree(host: *HostEnv, elem_id: u64) void {
+    const allocator = host.hostAllocator();
+    if (elem_id >= host.dom_elements.items.len) return;
+    const elem = &host.dom_elements.items[@intCast(elem_id)];
+    if (!elem.active) return;
+
+    const child_ids = allocator.dupe(u64, elem.children.items) catch @panic("out of memory");
+    defer allocator.free(child_ids);
+    for (child_ids) |child_id| {
+        deactivateDomSubtree(host, child_id);
     }
     sim_dom.deactivateRemovedNode(allocator, elem);
 }
@@ -2012,38 +2026,33 @@ fn dispatchRocEventWithStats(host: *HostEnv, roc_host: *abi.RocHost, event_id: u
         const dirty_source_node_ids = [_]u64{desc.target_node_id};
         const dirty_generation = host.nextDirtySignalGeneration();
         const changed_record_ids = propagateDirtyActiveSignals(host, roc_host, host.hostAllocator(), &dirty_source_node_ids, dirty_generation);
-        const dirty_structural_signals = collectDirtyStructuralSignals(host, roc_host, host.hostAllocator(), &dirty_source_node_ids, changed_record_ids, dirty_generation);
+        const stable_changed_record_ids = host.hostAllocator().dupe(u64, changed_record_ids) catch @panic("out of memory");
+        defer host.hostAllocator().free(stable_changed_record_ids);
+        const apply_start_ns = benchmark.nowNs();
+        const sink_counts = applyDirtyRenderSinks(host, roc_host, &dirty_source_node_ids, stable_changed_record_ids, dirty_generation);
+        const dirty_structural_signals = collectDirtyStructuralSignals(host, roc_host, host.hostAllocator(), &dirty_source_node_ids, stable_changed_record_ids, dirty_generation);
         defer host.hostAllocator().free(dirty_structural_signals);
+        var counts = sink_counts;
         if (dirty_structural_signals.len != 0) {
-            const apply_start_ns = benchmark.nowNs();
-            const sink_counts = applyDirtyRenderSinks(host, roc_host, &dirty_source_node_ids, changed_record_ids, dirty_generation);
-            const counts = applyDirtyStructuralSignalsLocally(host, roc_host, &dirty_source_node_ids, dirty_generation, dirty_structural_signals);
-            s.dispatch_apply_ns += benchmark.nowNs() - apply_start_ns;
-            s.commands.addAll(sink_counts);
-            s.commands.addAll(counts);
-            finishHostMetrics(host);
-        } else {
-            const apply_start_ns = benchmark.nowNs();
-            const counts = applyDirtyRenderSinks(host, roc_host, &dirty_source_node_ids, changed_record_ids, dirty_generation);
-            s.dispatch_apply_ns += benchmark.nowNs() - apply_start_ns;
-            s.commands.addAll(counts);
-            finishHostMetrics(host);
+            counts.addAll(applyDirtyStructuralSignalsLocally(host, roc_host, &dirty_source_node_ids, dirty_generation, dirty_structural_signals));
         }
+        s.dispatch_apply_ns += benchmark.nowNs() - apply_start_ns;
+        s.commands.addAll(counts);
+        finishHostMetrics(host);
         s.actions += 1;
     } else {
         const dirty_source_node_ids = [_]u64{desc.target_node_id};
         const dirty_generation = host.nextDirtySignalGeneration();
         const changed_record_ids = propagateDirtyActiveSignals(host, roc_host, host.hostAllocator(), &dirty_source_node_ids, dirty_generation);
-        const dirty_structural_signals = collectDirtyStructuralSignals(host, roc_host, host.hostAllocator(), &dirty_source_node_ids, changed_record_ids, dirty_generation);
+        const stable_changed_record_ids = host.hostAllocator().dupe(u64, changed_record_ids) catch @panic("out of memory");
+        defer host.hostAllocator().free(stable_changed_record_ids);
+        _ = applyDirtyRenderSinks(host, roc_host, &dirty_source_node_ids, stable_changed_record_ids, dirty_generation);
+        const dirty_structural_signals = collectDirtyStructuralSignals(host, roc_host, host.hostAllocator(), &dirty_source_node_ids, stable_changed_record_ids, dirty_generation);
         defer host.hostAllocator().free(dirty_structural_signals);
         if (dirty_structural_signals.len != 0) {
-            _ = applyDirtyRenderSinks(host, roc_host, &dirty_source_node_ids, changed_record_ids, dirty_generation);
             _ = applyDirtyStructuralSignalsLocally(host, roc_host, &dirty_source_node_ids, dirty_generation, dirty_structural_signals);
-            finishHostMetrics(host);
-        } else {
-            _ = applyDirtyRenderSinks(host, roc_host, &dirty_source_node_ids, changed_record_ids, dirty_generation);
-            finishHostMetrics(host);
         }
+        finishHostMetrics(host);
     }
 }
 
@@ -3049,6 +3058,18 @@ const TestPayloadTransformCapture = extern struct {
     cap: HostValueCapability,
 };
 
+const TestLocationCmdCapture = extern struct {
+    tag: abi.NodeCmdTag,
+    path: RocStr,
+    query: RocStr,
+    hash: RocStr,
+};
+
+const TestLocationPathEqualsCapture = extern struct {
+    cap: HostValueCapability,
+    path: RocStr,
+};
+
 var test_erased_callable_drop_count: u64 = 0;
 var test_row_elem_call_count: u64 = 0;
 
@@ -3530,6 +3551,45 @@ fn testPayloadChecksumHostValueCallable(roc_host: *abi.RocHost, ret: ?[*]u8, arg
     testDropHostValue(roc_host, call_args.arg0);
 
     writeTestErasedResult(HostValue, ret, hv.makeI64WithCapability(host, roc_host, checksum, capture.cap));
+}
+
+fn testLocationCmdCaptureOnDrop(capture_ptr: ?[*]u8, roc_host: *abi.RocHost) callconv(.c) void {
+    const capture = testCapturePtrAs(TestLocationCmdCapture, capture_ptr);
+    capture.path.decref(roc_host);
+    capture.query.decref(roc_host);
+    capture.hash.decref(roc_host);
+    test_erased_callable_drop_count += 1;
+}
+
+fn testLocationPathEqualsCaptureOnDrop(capture_ptr: ?[*]u8, roc_host: *abi.RocHost) callconv(.c) void {
+    const capture = testCapturePtrAs(TestLocationPathEqualsCapture, capture_ptr);
+    capture.path.decref(roc_host);
+    test_erased_callable_drop_count += 1;
+}
+
+fn testLocationCmdCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8) callconv(.c) void {
+    _ = args;
+    const capture = testCapturePtrAs(TestLocationCmdCapture, capture_ptr);
+    writeTestErasedResult(erased_calls.Cmd, ret, testLocationCmd(roc_host, capture.tag, .{
+        .path = capture.path.asSlice(),
+        .query = capture.query.asSlice(),
+        .hash = capture.hash.asSlice(),
+    }));
+}
+
+fn testLocationPathEqualsHostValueCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8) callconv(.c) void {
+    const host = hostFromRocHost(roc_host);
+    const capture = testCapturePtrAs(TestLocationPathEqualsCapture, capture_ptr);
+    const call_args = testErasedArgsAs(ErasedHostValueUnaryArgs, args);
+    const payload = testReadHostValueU8List(roc_host, call_args.arg0);
+    defer testDropHostValue(roc_host, call_args.arg0);
+
+    const bytes = payload.items();
+    if (bytes.len < 4) @panic("test location payload was missing path length");
+    const path_len = std.mem.readInt(u32, bytes[0..4], .little);
+    if (bytes.len < 4 + path_len) @panic("test location payload path length exceeded payload");
+    const path = bytes[4..][0..path_len];
+    writeTestErasedResult(HostValue, ret, hv.makeBoolWithCapability(host, roc_host, std.mem.eql(u8, path, capture.path.asSlice()), capture.cap));
 }
 
 fn testReadStrHostValueCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8) callconv(.c) void {
@@ -4045,6 +4105,31 @@ test "signals host browser environment sources and commands update native state"
     }
 
     {
+        const cmd = testStorageSetCmd(&roc_host, .local, "cart", "updated");
+        retainTestCmd(cmd);
+        defer releaseTestCmd(&roc_host, cmd);
+        defer releaseTestCmd(&roc_host, cmd);
+        const counts = host.engine.runCommand(&host, &roc_host, 0, cmd);
+        try std.testing.expectEqual(@as(u64, 1), counts.set_text);
+        try std.testing.expectEqualStrings("updated", host.storageValue(.local, "cart").?);
+        try std.testing.expect(!std.mem.eql(u8, initial_storage_text, host.dom_elements.items[5].text.?));
+    }
+
+    const updated_storage_text = try testing_allocator.dupe(u8, host.dom_elements.items[5].text.?);
+    defer testing_allocator.free(updated_storage_text);
+
+    {
+        const cmd = testStorageRemoveCmd(&roc_host, .local, "cart");
+        retainTestCmd(cmd);
+        defer releaseTestCmd(&roc_host, cmd);
+        defer releaseTestCmd(&roc_host, cmd);
+        const counts = host.engine.runCommand(&host, &roc_host, 0, cmd);
+        try std.testing.expectEqual(@as(u64, 1), counts.set_text);
+        try std.testing.expectEqual(@as(?[]const u8, null), host.storageValue(.local, "cart"));
+        try std.testing.expect(!std.mem.eql(u8, updated_storage_text, host.dom_elements.items[5].text.?));
+    }
+
+    {
         const cmd = testDocumentTitleCmd(&roc_host, "Ops ready");
         retainTestCmd(cmd);
         defer releaseTestCmd(&roc_host, cmd);
@@ -4510,12 +4595,101 @@ test "signals host marks dirty structural sources for structural patching" {
     const patch_counts = applyDirtyWhenStructuralSignals(&host, &roc_host, &dirty_source_node_ids, dirty_generation, dirty_structural_signals);
 
     try std.testing.expectEqual(@as(u64, 0), patch_counts.reset_dom);
-    try std.testing.expectEqual(@as(u64, 0), patch_counts.create_element);
-    try std.testing.expectEqual(@as(u64, 0), patch_counts.append_child);
+    try std.testing.expectEqual(@as(u64, 1), patch_counts.create_element);
+    try std.testing.expectEqual(@as(u64, 1), patch_counts.append_child);
+    try std.testing.expectEqual(@as(u64, 1), patch_counts.remove_node);
     try std.testing.expectEqual(@as(u64, 1), patch_counts.set_text);
-    try std.testing.expectEqual(@as(u64, 1), patch_counts.total);
+    try std.testing.expectEqual(@as(u64, 4), patch_counts.total);
     try std.testing.expect(activeTextElementId(&host, "true branch") == null);
     try std.testing.expect(activeTextElementId(&host, "false branch") != null);
+}
+
+test "signals host deferred on_change navigation preserves small string payloads" {
+    test_erased_callable_drop_count = 0;
+
+    var host = HostEnv.init();
+    var roc_host = makeSignalsRocHost(&host);
+    host.engine.roc_host = &roc_host;
+    defer {
+        host.deinit();
+        _ = host.gpa.deinit();
+    }
+
+    host.setCurrentLocation(.{ .path = "/start", .query = "", .hash = "" });
+
+    const state_token = newTestBinderToken(&roc_host);
+    const state_cap = testHostValueCapability(&roc_host);
+    const children = [_]abi.Elem{
+        testNodeOnChange(&roc_host, testNodeRefExpr(state_token), testLocationCmdCallableFor(&roc_host, .PushState, "/", "", "")),
+        testNodeText(&roc_host, "ready"),
+    };
+    const root = testNodeStateWithTokenAndInitialCapability(&roc_host, state_token, testHostValueBool(false), testElement(&roc_host, &children), state_cap);
+    defer abi.decrefElem(root, &roc_host);
+
+    var stream: HostNodeDescriptorStream = .{};
+    host.collectActiveElemRootDescriptors(&roc_host, &stream, root, &.{});
+    _ = applyNodeDescriptorStream(&host, &roc_host, &stream);
+    host.engine.active_stream = stream;
+
+    const state_id = host.engine.active_stream.scope_sites.items[0].node_id;
+    try std.testing.expect(host.updateStateValue(&roc_host, state_id, testHostValueBool(true)));
+
+    const dirty_source_node_ids = [_]u64{state_id};
+    const dirty_generation = host.nextDirtySignalGeneration();
+    const changed_record_ids = propagateDirtyActiveSignals(&host, &roc_host, host.hostAllocator(), &dirty_source_node_ids, dirty_generation);
+    _ = host.engine.applyDirtySignalBatch(&host, &roc_host, &dirty_source_node_ids, changed_record_ids, dirty_generation);
+
+    try std.testing.expectEqualStrings("/", host.currentLocation().path);
+}
+
+test "signals host applies structural changes after deferred location redirects" {
+    test_erased_callable_drop_count = 0;
+
+    var host = HostEnv.init();
+    var roc_host = makeSignalsRocHost(&host);
+    host.engine.roc_host = &roc_host;
+    defer {
+        host.deinit();
+        _ = host.gpa.deinit();
+    }
+
+    host.setCurrentLocation(.{ .path = "/login", .query = "", .hash = "" });
+
+    const is_editor = testNodeLocationPathEqualsSourceExpr(&roc_host, "/editor");
+    const is_login = testNodeLocationPathEqualsSourceExpr(&roc_host, "/login");
+    const is_login_cap = testNodeSignalExprCapabilityOrPanic(is_login);
+    const page = abi.Elem{
+        .payload = .{
+            .when = .{
+                .condition = boxTestNodeSignalExpr(&roc_host, is_login),
+                .read = testBoolReadHandle(&roc_host, is_login_cap),
+                .when_false = boxTestElem(&roc_host, testNodeText(&roc_host, "not found")),
+                .when_true = boxTestElem(&roc_host, testNodeText(&roc_host, "login page")),
+            },
+        },
+        .tag = .When,
+    };
+    const children = [_]abi.Elem{
+        testNodeOnChange(&roc_host, is_editor, testLocationCmdCallableFor(&roc_host, .ReplaceState, "/login", "", "")),
+        page,
+    };
+    const root = testElement(&roc_host, &children);
+    defer abi.decrefElem(root, &roc_host);
+
+    var stream: HostNodeDescriptorStream = .{};
+    host.collectActiveElemRootDescriptors(&roc_host, &stream, root, &.{});
+    _ = applyNodeDescriptorStream(&host, &roc_host, &stream);
+    host.engine.active_stream = stream;
+
+    try std.testing.expect(activeTextElementId(&host, "login page") != null);
+    try std.testing.expect(activeTextElementId(&host, "not found") == null);
+
+    host.pushCurrentLocation(.{ .path = "/editor", .query = "", .hash = "" });
+    _ = host.engine.dispatchCurrentLocationSources(&host, &roc_host);
+
+    try std.testing.expectEqualStrings("/login", host.currentLocation().path);
+    try std.testing.expect(activeTextElementId(&host, "login page") != null);
+    try std.testing.expect(activeTextElementId(&host, "not found") == null);
 }
 
 test "signals host reuses active signal records while collecting dirty when branch" {
@@ -4706,7 +4880,11 @@ test "signals host structural patch reorders keyed row DOM without recreating su
     try std.testing.expectEqual(@as(u64, 4), test_row_elem_call_count);
     const row_4_id = activeTextElementId(&host, "row-4-4") orelse unreachable;
     try std.testing.expectEqual(@as(u64, 0), changed_counts.reset_dom);
-    try std.testing.expectEqual(@as(u64, 0), changed_counts.create_element);
+    try std.testing.expectEqual(@as(u64, 1), changed_counts.create_element);
+    try std.testing.expectEqual(@as(u64, 1), changed_counts.append_child);
+    try std.testing.expectEqual(@as(u64, 2), changed_counts.remove_node);
+    try std.testing.expectEqual(@as(u64, 1), changed_counts.set_text);
+    try std.testing.expectEqual(@as(u64, 5), changed_counts.total);
     try std.testing.expectEqual(row_2_id, activeTextElementId(&host, "row-2-2") orelse unreachable);
     try std.testing.expect(activeTextElementId(&host, "row-1-1") == null);
     try std.testing.expect(activeTextElementId(&host, "row-3-3") == null);
@@ -5170,13 +5348,13 @@ test "signals host dirty each mixed churn splices changed rows and moves survivo
     try std.testing.expectEqual(@as(u64, 1), host.engine.pending_roc_metrics.rows_removed - rows_removed_start);
     try std.testing.expectEqual(@as(u64, 0), host.engine.pending_roc_metrics.active_graph_records_rebuilt - graph_rebuild_start);
     try std.testing.expectEqual(row_call_start + 1, test_row_elem_call_count);
-    try std.testing.expectEqual(@as(u64, 0), patch_counts.create_element);
-    try std.testing.expectEqual(@as(u64, 0), patch_counts.append_child);
-    try std.testing.expectEqual(@as(u64, 0), patch_counts.remove_node);
+    try std.testing.expectEqual(@as(u64, 1), patch_counts.create_element);
+    try std.testing.expectEqual(@as(u64, 1), patch_counts.append_child);
+    try std.testing.expectEqual(@as(u64, 1), patch_counts.remove_node);
     try std.testing.expectEqual(@as(u64, 1), patch_counts.move_before);
     try std.testing.expectEqual(@as(u64, 1), patch_counts.set_text);
-    try std.testing.expectEqual(@as(u64, 2), patch_counts.total);
-    try std.testing.expectEqual(patch_start + 2, host.engine.render_metrics.patches_emitted);
+    try std.testing.expectEqual(@as(u64, 5), patch_counts.total);
+    try std.testing.expectEqual(patch_start + 5, host.engine.render_metrics.patches_emitted);
     const row_4_id = activeTextElementId(&host, "row-4-4") orelse unreachable;
     try std.testing.expectEqual(row_1_id, activeTextElementId(&host, "row-1-1") orelse unreachable);
     try std.testing.expectEqual(row_3_id, activeTextElementId(&host, "row-3-3") orelse unreachable);
@@ -5857,6 +6035,34 @@ fn testPayloadChecksumCallable(roc_host: *abi.RocHost, cap: HostValueCapability)
     );
 }
 
+fn testLocationCmdCallableFor(roc_host: *abi.RocHost, tag: abi.NodeCmdTag, path: []const u8, query: []const u8, hash: []const u8) abi.RocErasedCallable {
+    return writeTestErasedCallable(
+        TestLocationCmdCapture,
+        roc_host,
+        &testLocationCmdCallable,
+        &testLocationCmdCaptureOnDrop,
+        .{
+            .tag = tag,
+            .path = RocStr.fromSlice(path, roc_host),
+            .query = RocStr.fromSlice(query, roc_host),
+            .hash = RocStr.fromSlice(hash, roc_host),
+        },
+    );
+}
+
+fn testLocationPathEqualsCallable(roc_host: *abi.RocHost, cap: HostValueCapability, path: []const u8) abi.RocErasedCallable {
+    return writeTestErasedCallable(
+        TestLocationPathEqualsCapture,
+        roc_host,
+        &testLocationPathEqualsHostValueCallable,
+        &testLocationPathEqualsCaptureOnDrop,
+        .{
+            .cap = cap,
+            .path = RocStr.fromSlice(path, roc_host),
+        },
+    );
+}
+
 fn testNodeLocationSourceExpr(roc_host: *abi.RocHost) abi.NodeSignalExpr {
     const cap = testHostValueCapability(roc_host);
     const payload_cap = testHostValueCapability(roc_host);
@@ -5864,6 +6070,20 @@ fn testNodeLocationSourceExpr(roc_host: *abi.RocHost) abi.NodeSignalExpr {
         .payload = .{ .location_source = .{
             ._0 = newTestSignalToken(roc_host),
             ._1 = testPayloadChecksumCallable(roc_host, cap),
+            ._2 = cap,
+            ._3 = payload_cap,
+        } },
+        .tag = .LocationSource,
+    };
+}
+
+fn testNodeLocationPathEqualsSourceExpr(roc_host: *abi.RocHost, path: []const u8) abi.NodeSignalExpr {
+    const cap = testHostValueCapability(roc_host);
+    const payload_cap = testHostValueCapability(roc_host);
+    return .{
+        .payload = .{ .location_source = .{
+            ._0 = newTestSignalToken(roc_host),
+            ._1 = testLocationPathEqualsCallable(roc_host, cap, path),
             ._2 = cap,
             ._3 = payload_cap,
         } },
@@ -6134,6 +6354,26 @@ fn testElementWith(roc_host: *abi.RocHost, tag: []const u8, attrs: []const abi.N
 
 fn testElement(roc_host: *abi.RocHost, children: []const abi.Elem) abi.Elem {
     return testElementWith(roc_host, "div", &.{}, children);
+}
+
+fn testNodeOnChange(roc_host: *abi.RocHost, signal: abi.NodeSignalExpr, to_cmd: abi.RocErasedCallable) abi.Elem {
+    return .{
+        .payload = .{ .on_change = .{
+            .signal = boxTestNodeSignalExpr(roc_host, signal),
+            .to_cmd = to_cmd,
+        } },
+        .tag = .OnChange,
+    };
+}
+
+fn testNodeOnChangeInitial(roc_host: *abi.RocHost, signal: abi.NodeSignalExpr, to_cmd: abi.RocErasedCallable) abi.Elem {
+    return .{
+        .payload = .{ .on_change_initial = .{
+            .signal = boxTestNodeSignalExpr(roc_host, signal),
+            .to_cmd = to_cmd,
+        } },
+        .tag = .OnChangeInitial,
+    };
 }
 
 fn testHostValueInitialThunk(roc_host: *abi.RocHost, initial: HostValue) abi.RocErasedCallable {

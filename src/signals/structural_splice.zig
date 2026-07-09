@@ -198,11 +198,14 @@ pub fn collectRenderRemovalScan(comptime Stream: type, allocator: std.mem.Alloca
     var render_index = render_insert_index;
     while (render_index < stream.render_nodes.items.len) : (render_index += 1) {
         const node = stream.render_nodes.items[render_index];
+        const parent_elem_id = descriptor_stream.renderNodeParentElemId(Stream, stream, node);
         target_scan_count += 1;
-        if (!scopeIsInTargetSet(target_scopes, descriptor_stream.renderNodeScopeId(Stream, stream, node))) break;
+        const scope_in_target = scopeIsInTargetSet(target_scopes, descriptor_stream.renderNodeScopeId(Stream, stream, node));
+        const parent_removed = u64SliceContains(removed_elem_ids.items, parent_elem_id);
+        if (!scope_in_target and !parent_removed) break;
         removed_render_count += 1;
         removed_elem_ids.append(allocator, node.elem_id) catch @panic("out of memory");
-        appendUniqueU64(allocator, &touched_parent_ids, descriptor_stream.renderNodeParentElemId(Stream, stream, node));
+        appendUniqueU64(allocator, &touched_parent_ids, parent_elem_id);
     }
 
     var touched_parent_write_index: usize = 0;
@@ -434,6 +437,37 @@ test "structural splice scans removed render range" {
     }) catch @panic("out of memory");
 
     var target_scopes = [_]bool{false} ** 21;
+    target_scopes[10] = true;
+    const scan = collectRenderRemovalScan(TestStream, allocator, &stream, 0, target_scopes[0..]);
+    defer scan.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 3), scan.removed_render_count);
+    try std.testing.expectEqual(@as(usize, 4), scan.target_scan_count);
+    try std.testing.expectEqualSlices(u64, &.{ 1, 2, 3 }, scan.removed_elem_ids);
+    try std.testing.expectEqualSlices(u64, &.{0}, scan.touched_parent_ids);
+}
+
+test "structural splice removes rendered descendants of target nodes across scope boundaries" {
+    const allocator = std.testing.allocator;
+    var stream = TestStream{};
+    defer stream.deinit(allocator);
+
+    stream.render_nodes.appendSlice(allocator, &.{
+        .{ .elem_id = 1, .kind = .element },
+        .{ .elem_id = 2, .kind = .element },
+        .{ .elem_id = 3, .kind = .text },
+        .{ .elem_id = 4, .kind = .element },
+    }) catch @panic("out of memory");
+    stream.elements.appendSlice(allocator, &.{
+        .{ .elem_id = 1, .parent_elem_id = 0, .scope_id = 10, .tag = "section" },
+        .{ .elem_id = 2, .parent_elem_id = 1, .scope_id = 20, .tag = "div" },
+        .{ .elem_id = 4, .parent_elem_id = 0, .scope_id = 30, .tag = "aside" },
+    }) catch @panic("out of memory");
+    stream.text_nodes.appendSlice(allocator, &.{
+        .{ .elem_id = 3, .parent_elem_id = 2, .scope_id = 30, .value = "nested" },
+    }) catch @panic("out of memory");
+
+    var target_scopes = [_]bool{false} ** 31;
     target_scopes[10] = true;
     const scan = collectRenderRemovalScan(TestStream, allocator, &stream, 0, target_scopes[0..]);
     defer scan.deinit(allocator);

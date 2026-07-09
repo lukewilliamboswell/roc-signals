@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const scope_tree = @import("scope_tree.zig");
+const signal_records = @import("signal_records.zig");
 const signal_graph = @import("signal_graph.zig");
 const boundary = @import("boundary.zig");
 
@@ -104,6 +105,9 @@ pub const StructuralSink = struct {
 pub const DirtyStructuralSignal = struct {
     kind: StructuralKind,
     node_id: u64,
+    scope_id: u64,
+    ordinal: u64,
+    record: *signal_records.Record,
     branch: ?scope_tree.Branch = null,
 };
 

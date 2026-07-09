@@ -1577,7 +1577,9 @@ pub const NodeDescriptorIndex = struct {
 };
 
 pub fn setFreshIndex(slot: *?usize, value: usize) void {
-    if (slot.* != null) @panic("descriptor stream recorded duplicate descriptor index");
+    if (slot.* != null) {
+        @panic("descriptor stream recorded duplicate descriptor index");
+    }
     slot.* = value;
 }
 
@@ -1775,7 +1777,8 @@ pub fn clearScopeSiteIndex(comptime StreamType: type, stream: *StreamType, node_
 }
 
 pub fn recordStateIndex(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, node_id: u64, index: usize) void {
-    setFreshIndex(&ensureNodeDescriptorIndex(StreamType, stream, allocator, node_id).state, index);
+    const slot = &ensureNodeDescriptorIndex(StreamType, stream, allocator, node_id).state;
+    setFreshIndex(slot, index);
 }
 
 pub fn updateStateIndex(comptime StreamType: type, stream: *StreamType, node_id: u64, index: usize) void {
@@ -1787,7 +1790,8 @@ pub fn clearStateIndex(comptime StreamType: type, stream: *StreamType, node_id: 
 }
 
 pub fn recordWhenIndex(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, node_id: u64, index: usize) void {
-    setFreshIndex(&ensureNodeDescriptorIndex(StreamType, stream, allocator, node_id).when, index);
+    const slot = &ensureNodeDescriptorIndex(StreamType, stream, allocator, node_id).when;
+    setFreshIndex(slot, index);
 }
 
 pub fn updateWhenIndex(comptime StreamType: type, stream: *StreamType, node_id: u64, index: usize) void {
@@ -1799,7 +1803,8 @@ pub fn clearWhenIndex(comptime StreamType: type, stream: *StreamType, node_id: u
 }
 
 pub fn recordEachIndex(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, node_id: u64, index: usize) void {
-    setFreshIndex(&ensureNodeDescriptorIndex(StreamType, stream, allocator, node_id).each, index);
+    const slot = &ensureNodeDescriptorIndex(StreamType, stream, allocator, node_id).each;
+    setFreshIndex(slot, index);
 }
 
 pub fn updateEachIndex(comptime StreamType: type, stream: *StreamType, node_id: u64, index: usize) void {

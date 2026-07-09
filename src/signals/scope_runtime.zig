@@ -43,7 +43,7 @@ pub fn deinitScopeStep(step: *ScopeStep, ctx: anytype, roc_host: *abi.RocHost, m
     }
 }
 
-pub fn appendEachRow(allocator: std.mem.Allocator, scopes: *std.ArrayListUnmanaged(Scope), parent_scope_id: u64, site_ordinal: u64, key_hash: u64, key: HostValue, item: HostValue, key_cap: HostValueCapability, item_cap: HostValueCapability, metrics: anytype) scope_tree.Error!scope_tree.InternResult {
+pub fn appendEachRow(allocator: std.mem.Allocator, scopes: *std.ArrayListUnmanaged(Scope), parent_scope_id: u64, site_ordinal: u64, key_hash: u64, key: HostValue, item: HostValue, key_cap: HostValueCapability, item_cap: HostValueCapability, metrics: anytype, reuse_barrier: u64) scope_tree.Error!scope_tree.InternResult {
     try scope_tree.validate(EachRowScopeStep, scopes.items, parent_scope_id);
 
     const key_cell = HostValueCell.initRetained(key, key_cap, metrics);
@@ -53,7 +53,7 @@ pub fn appendEachRow(allocator: std.mem.Allocator, scopes: *std.ArrayListUnmanag
         .key_hash = key_hash,
         .key = key_cell,
         .item = item_cell,
-    });
+    }, reuse_barrier);
 }
 
 pub fn eachRow(scopes: []Scope, scope_id: u64) *EachRowScopeStep {
@@ -106,7 +106,7 @@ pub fn eachRowKeyHash(scopes: []const Scope, scope_id: u64) u64 {
     return eachRowConst(scopes, scope_id).key_hash;
 }
 
-pub fn disposeSubtree(comptime Row: type, scopes: []scope_tree.Scope(Row), scope_id: u64, hooks: anytype) void {
+pub fn disposeSubtree(comptime Row: type, scopes: []scope_tree.Scope(Row), scope_id: u64, retired_at: u64, hooks: anytype) void {
     if (scope_id >= scopes.len) @panic("scope disposal referenced an unknown scope");
     if (scopes[@intCast(scope_id)].scope_id != scope_id or !scopes[@intCast(scope_id)].active) @panic("scope id has no host scope descriptor");
 
@@ -115,7 +115,7 @@ pub fn disposeSubtree(comptime Row: type, scopes: []scope_tree.Scope(Row), scope
         const child = scopes[child_index];
         if (!child.active) continue;
         if (child.parent_scope_id == scope_id) {
-            disposeSubtree(Row, scopes, child.scope_id, hooks);
+            disposeSubtree(Row, scopes, child.scope_id, retired_at, hooks);
         }
     }
 
@@ -131,6 +131,7 @@ pub fn disposeSubtree(comptime Row: type, scopes: []scope_tree.Scope(Row), scope
     }
     hooks.deinitScopeStep(&scope.step);
     scope.active = false;
+    scope.retired_at = retired_at;
     hooks.recordScopeDisposed();
 }
 
@@ -194,20 +195,23 @@ test "scope runtime disposes active subtrees through explicit hooks" {
     defer scopes.deinit(std.testing.allocator);
 
     _ = try scope_tree.internRoot(TestRow, std.testing.allocator, &scopes);
-    _ = try scope_tree.internComponent(TestRow, std.testing.allocator, &scopes, 0, 1);
-    _ = try scope_tree.appendEachRow(TestRow, std.testing.allocator, &scopes, 1, .{ .site_ordinal = 4, .key_hash = 40 });
-    _ = try scope_tree.internComponent(TestRow, std.testing.allocator, &scopes, 2, 1);
-    _ = try scope_tree.internComponent(TestRow, std.testing.allocator, &scopes, 0, 2);
+    _ = try scope_tree.internComponent(TestRow, std.testing.allocator, &scopes, 0, 1, 0);
+    _ = try scope_tree.appendEachRow(TestRow, std.testing.allocator, &scopes, 1, .{ .site_ordinal = 4, .key_hash = 40 }, 0);
+    _ = try scope_tree.internComponent(TestRow, std.testing.allocator, &scopes, 2, 1, 0);
+    _ = try scope_tree.internComponent(TestRow, std.testing.allocator, &scopes, 0, 2, 0);
 
     var hooks = TestDisposeHooks{};
     defer hooks.deinit(std.testing.allocator);
-    disposeSubtree(TestRow, scopes.items, 1, &hooks);
+    disposeSubtree(TestRow, scopes.items, 1, 5, &hooks);
 
     try std.testing.expect(scopes.items[0].active);
     try std.testing.expect(!scopes.items[1].active);
     try std.testing.expect(!scopes.items[2].active);
     try std.testing.expect(!scopes.items[3].active);
     try std.testing.expect(scopes.items[4].active);
+    try std.testing.expectEqual(@as(u64, 5), scopes.items[1].retired_at);
+    try std.testing.expectEqual(@as(u64, 5), scopes.items[2].retired_at);
+    try std.testing.expectEqual(@as(u64, 5), scopes.items[3].retired_at);
     try std.testing.expectEqualSlices(u64, &.{ 3, 2, 1 }, hooks.node_deactivations.items);
     try std.testing.expectEqualSlices(u64, &.{40}, hooks.removed_rows.items);
     try std.testing.expectEqual(@as(u64, 3), hooks.deinit_steps);
@@ -225,7 +229,7 @@ test "scope runtime owns each-row scope values and key hash" {
     }{};
     const key_cap: HostValueCapability = std.mem.zeroes(HostValueCapability);
     const item_cap: HostValueCapability = std.mem.zeroes(HostValueCapability);
-    const row = try appendEachRow(std.testing.allocator, &scopes, 0, 7, 42, 100, 200, key_cap, item_cap, &metrics);
+    const row = try appendEachRow(std.testing.allocator, &scopes, 0, 7, 42, 100, 200, key_cap, item_cap, &metrics, 0);
 
     try std.testing.expectEqual(@as(u64, 1), row.scope_id);
     try std.testing.expectEqual(@as(u64, 42), eachRowKeyHash(scopes.items, row.scope_id));
