@@ -1,9 +1,10 @@
 ## RealWorld API surface: DTO records, camelCase JSON decoding through the
 ## builtin Json (single wide-enough parses; roc#9964 no longer reproduces on
 ## the current nightly, see wip/research/realworld_demo_findings.md), URI
-## builders, and the Remote loading/ready/failed shape every fetch surface
-## renders from. Auth headers land with sessions (Phase 3).
+## builders, auth headers (`Authorization: Token <jwt>` per the spec), and
+## the Remote loading/ready/failed shape every fetch surface renders from.
 import Route
+import pf.Http
 
 Api := {}.{
 	Remote(a) : [Loading, Ready(a), Failed(Str)]
@@ -179,4 +180,122 @@ Api := {}.{
 
 	request_failed : Str -> Api.Remote(a)
 	request_failed = |err| Failed("Request failed: ${err}")
+
+	User : { email : Str, token : Str, username : Str }
+
+	AuthResult : [AuthIdle, AuthAccepted(Api.User), AuthRejected(List(Str)), AuthErrored(Str)]
+
+	# Authenticated requests use the full request/response path because the
+	# text-task helpers cannot carry headers.
+	get_request = |uri, token| {
+		base = Http.with_uri(Http.request_from_method(Http.method_get), uri)
+		timed = Http.with_timeout_ms(base, 8000)
+		if Str.is_empty(token) {
+			timed
+		} else {
+			Http.add_header(timed, "authorization", "Token ${token}")
+		}
+	}
+
+	post_request = |uri, body, token| {
+		base = Http.with_uri(Http.request_from_method(Http.method_post), uri)
+		typed = Http.add_header(base, "content-type", "application/json")
+		timed = Http.with_timeout_ms(Http.with_body(typed, Str.to_utf8(body)), 8000)
+		if Str.is_empty(token) {
+			timed
+		} else {
+			Http.add_header(timed, "authorization", "Token ${token}")
+		}
+	}
+
+	put_request = |uri, body, token| {
+		base = Http.with_uri(Http.request_from_method(Http.method_put), uri)
+		typed = Http.add_header(base, "content-type", "application/json")
+		timed = Http.with_timeout_ms(Http.with_body(typed, Str.to_utf8(body)), 8000)
+		if Str.is_empty(token) {
+			timed
+		} else {
+			Http.add_header(timed, "authorization", "Token ${token}")
+		}
+	}
+
+	feed_request = |feed, token| get_request(feed_uri(feed), token)
+
+	feed_uri_for : Route.Feed -> Str
+	feed_uri_for = |feed| feed_uri(feed)
+
+	login_body : Str, Str -> Str
+	login_body = |email, password| Json.to_str({ user: { email: email, password: password } })
+
+	register_body : Str, Str, Str -> Str
+	register_body = |username, email, password|
+		Json.to_str({ user: { username: username, email: email, password: password } })
+
+	response_text = |response| Str.from_utf8_lossy(Http.response_body(response))
+
+	decode_feed_response = |response| {
+		status = Http.response_status(response)
+		if status == 200 {
+			decode_feed(response_text(response))
+		} else if status == 401 {
+			Failed("Please sign in to see this feed.")
+		} else {
+			Failed("The server responded with status ${status.to_str()}.")
+		}
+	}
+
+	classify_auth = |response| {
+		status = Http.response_status(response)
+		body = response_text(response)
+		if status == 200 {
+			parse : Str -> Try({ user : Api.User }, Json.ParseErr)
+			parse = Json.parser_camel()
+			match parse(shield_escapes(body)) {
+				Ok(envelope) => AuthAccepted(envelope.user)
+				Err(_) => AuthErrored("The server response could not be read.")
+			}
+		} else if status == 422 {
+			AuthRejected(parse_errors(body))
+		} else {
+			AuthErrored("The server responded with status ${status.to_str()}.")
+		}
+	}
+
+	# 422 validation envelopes ({"errors": {"field": ["message", ...]}})
+	# carry dynamic object keys, which derived record decoding cannot
+	# express, so the envelope is string-parsed: one "field message" entry
+	# per key, first message only. JSON/body ergonomics evidence for
+	# NEXT_STEPS priority 3 (see the findings ledger).
+	parse_errors : Str -> List(Str)
+	parse_errors = |body|
+		match Str.find_first(shield_escapes(body), "\"errors\"") {
+			Ok(split) => collect_errors(split.after, [])
+			Err(_) => ["The request was rejected."]
+		}
+
+	collect_errors : Str, List(Str) -> List(Str)
+	collect_errors = |rest, acc|
+		match Str.find_first(rest, "\"") {
+			Err(_) => acc
+			Ok(key_open) =>
+				match Str.find_first(key_open.after, "\"") {
+					Err(_) => acc
+					Ok(key_close) =>
+						match Str.find_first(key_close.after, "[\"") {
+							Err(_) => acc
+							Ok(list_open) =>
+								match Str.find_first(list_open.after, "\"") {
+									Err(_) => acc
+									Ok(message_close) => {
+										entry = restore_text("${key_close.before} ${message_close.before}")
+										next = acc.append(entry)
+										match Str.find_first(message_close.after, "]") {
+											Err(_) => next
+											Ok(list_close) => collect_errors(list_close.after, next)
+										}
+									}
+								}
+						}
+				}
+		}
 }

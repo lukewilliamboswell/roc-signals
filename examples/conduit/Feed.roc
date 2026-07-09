@@ -17,36 +17,13 @@ import pf.Ui
 Feed := {}.{
 	PageItem : { key : Str, active : Bool }
 
-	# Empty and failed states render as placeholder rows inside the keyed
-	# list instead of their own Ui.when arms: flipping a when arm during a
-	# task resolve/reject flush panics the native host ("descriptor stream
-	# recorded duplicate descriptor index") - blocker recorded in
-	# wip/research/realworld_demo_findings.md; restore the arms once the
-	# host fix lands.
-	empty_row_key : Str
-	empty_row_key = "~empty"
-
-	failed_row_key : Str
-	failed_row_key = "~failed"
-
-	placeholder_row : Str, Str -> Api.ArticleSummary
-	placeholder_row = |key, message| {
-		{
-			slug: key,
-			title: "",
-			description: message,
-			tag_list: [],
-			created_at: "",
-			favorited: False,
-			favorites_count: 0,
-			author: { username: "", bio: "", image: "", following: False },
-		}
-	}
-
 	view : Signal.Signal(Api.Remote(Api.FeedPage)), Ui.State(Nav.RouteIntent) -> Elem
 	view = |remote, intent| {
 		is_loading = Signal.map(remote, is_loading_state)
-		rows = Signal.map(remote, rows_of)
+		is_failed = Signal.map(remote, is_failed_state)
+		is_empty = Signal.map(remote, is_empty_state)
+		articles = Signal.map(remote, articles_of)
+		message = Signal.map(remote, failure_message)
 		Ui.component(
 			|_|
 				Html.div(
@@ -55,34 +32,49 @@ Feed := {}.{
 						Ui.when(
 							is_loading,
 							|_| Html.paragraph("Loading articles..."),
-							|_| Ui.each_str(rows, |article| article.slug, |key, article| preview(key, article, intent)),
+							|_|
+								Ui.when(
+									is_failed,
+									|_| Html.paragraph_s_c(message, "text-red-700"),
+									|_|
+										Ui.when(
+											is_empty,
+											|_| Html.paragraph("No articles are here... yet."),
+											|_| Ui.each_str(articles, |article| article.slug, |key, article| preview_row(key, article, intent)),
+										),
+								),
 						),
 					],
 				),
 		)
 	}
 
-	rows_of : Api.Remote(Api.FeedPage) -> List(Api.ArticleSummary)
-	rows_of = |remote|
+	is_failed_state : Api.Remote(Api.FeedPage) -> Bool
+	is_failed_state = |remote|
 		match remote {
-			Ready(page) =>
-				if List.is_empty(page.articles) {
-					[placeholder_row(empty_row_key, "")]
-				} else {
-					page.articles
-				}
-			Failed(message) => [placeholder_row(failed_row_key, message)]
-			Loading => []
+			Failed(_) => True
+			_ => False
 		}
 
-	preview : Str, Signal.Signal(Api.ArticleSummary), Ui.State(Nav.RouteIntent) -> Elem
-	preview = |slug, article, intent|
-		if slug == empty_row_key {
-			Html.paragraph("No articles are here... yet.")
-		} else if slug == failed_row_key {
-			Html.paragraph_s_c(Signal.map(article, |value| value.description), "text-red-700")
-		} else {
-			preview_row(slug, article, intent)
+	is_empty_state : Api.Remote(Api.FeedPage) -> Bool
+	is_empty_state = |remote|
+		match remote {
+			Ready(page) => List.is_empty(page.articles)
+			_ => False
+		}
+
+	articles_of : Api.Remote(Api.FeedPage) -> List(Api.ArticleSummary)
+	articles_of = |remote|
+		match remote {
+			Ready(page) => page.articles
+			_ => []
+		}
+
+	failure_message : Api.Remote(Api.FeedPage) -> Str
+	failure_message = |remote|
+		match remote {
+			Failed(message) => message
+			_ => ""
 		}
 
 	preview_row : Str, Signal.Signal(Api.ArticleSummary), Ui.State(Nav.RouteIntent) -> Elem
@@ -134,7 +126,7 @@ Feed := {}.{
 
 	tag_pill : Str, Ui.State(Nav.RouteIntent) -> Elem
 	tag_pill = |tag, intent|
-		Nav.link(tag, "rounded-full border border-zinc-300 px-2 text-xs text-zinc-500", Route.feed_location({ page: 1, tag: Tagged(tag) }), intent)
+		Nav.link(tag, "rounded-full border border-zinc-300 px-2 text-xs text-zinc-500", Route.feed_location({ page: 1, tag: Tagged(tag), source: Global }), intent)
 
 	pagination : Signal.Signal(Api.Remote(Api.FeedPage)), Signal.Signal(Route.Feed), Ui.State(Nav.RouteIntent) -> Elem
 	pagination = |remote, feed, intent| {
@@ -207,7 +199,7 @@ Feed := {}.{
 					} else {
 						Tagged(split.after)
 					}
-				Route.feed_location({ page: page, tag: tag })
+				Route.feed_location({ page: page, tag: tag, source: Global })
 			}
 			Err(_) => Route.home_location
 		}

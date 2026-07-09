@@ -345,6 +345,57 @@ function login(backend, bodyText) {
   return errorResponse(422, { "email or password": ["is invalid"] });
 }
 
+function register(backend, bodyText) {
+  let parsed;
+  try {
+    parsed = JSON.parse(bodyText);
+  } catch {
+    return errorResponse(422, { body: ["can't be parsed"] });
+  }
+  const username = parsed?.user?.username;
+  const email = parsed?.user?.email;
+  const password = parsed?.user?.password;
+  if (!username) {
+    return errorResponse(422, { username: ["can't be blank"] });
+  }
+  if (!email) {
+    return errorResponse(422, { email: ["can't be blank"] });
+  }
+  if (!password) {
+    return errorResponse(422, { password: ["can't be blank"] });
+  }
+  if (backend.users.has(username)) {
+    return errorResponse(422, { username: ["has already been taken"] });
+  }
+  const user = {
+    username,
+    email,
+    password,
+    bio: "",
+    image: "",
+    following: new Set(),
+    token: seedToken(username),
+  };
+  backend.users.set(username, user);
+  return httpJsonResponse({ user: userJson(user) });
+}
+
+function updateUser(backend, viewer, bodyText) {
+  let parsed;
+  try {
+    parsed = JSON.parse(bodyText);
+  } catch {
+    return errorResponse(422, { body: ["can't be parsed"] });
+  }
+  const updates = parsed?.user ?? {};
+  for (const field of ["email", "bio", "image", "password", "username"]) {
+    if (typeof updates[field] === "string" && updates[field] !== "") {
+      viewer[field] = updates[field];
+    }
+  }
+  return httpJsonResponse({ user: userJson(viewer) });
+}
+
 function isConduitPath(path) {
   return (
     path === "/api/articles" ||
@@ -381,6 +432,12 @@ function routeConduit(backend, { method, path, query, viewer, bodyText }) {
   }
   if (method === "POST" && path === "/api/users/login") {
     return login(backend, bodyText);
+  }
+  if (method === "POST" && path === "/api/users") {
+    return register(backend, bodyText);
+  }
+  if (method === "PUT" && path === "/api/user") {
+    return viewer ? updateUser(backend, viewer, bodyText) : unauthorized();
   }
   if (method === "GET" && path === "/api/user") {
     return viewer ? httpJsonResponse({ user: userJson(viewer) }) : unauthorized();

@@ -87,6 +87,26 @@ then (restore the arms with the fix). Article/Profile pages still use
 failed arms and are exposed to the same panic on reject — the Phase 5
 error matrix must not land before the host fix.
 
+2026-07-08 update (Phase 3 WIP): a third manifestation, silent instead of
+panicking — with the session `Ui.when` nodes added to the header, a
+route-driven arm swap away from a page whose task had completed leaves
+the disposed arm's nodes active in the DOM (the article page's
+"Loading article..." paragraph stays mounted as a sibling of the home
+page's content; native spec fails at the home tags assertion with the
+zombie visible in the `--verbose` DOM dump). Three manifestations of one
+descriptor-stream defect is a pattern, not a corner: the host fix now
+blocks Phase 3, promoted to active work ahead of further app phases.
+
+2026-07-09 update (resolved in `c981ae9`): the class split into stale
+dirty entries against recycled node ids, deferred command payload lifetime,
+and structural removal/ordering issues. The engine fix now snapshots
+changed-record ids, applies render sinks before collecting structural work,
+delays same-generation identity reuse, preserves deferred navigation
+payloads, and treats subtree removal as one host remove while deactivating
+descendants internally. With `Feed.roc` restored to natural
+loading/failed/empty `Ui.when` arms, the full Conduit spec passes; the page
+switch budget returned to `patches_emitted <= 60` exactly.
+
 ### 2026-07-08 Phase 2 — Accessible name lookup does not traverse link children; keyed rows need static context
 
 Classification: ergonomics

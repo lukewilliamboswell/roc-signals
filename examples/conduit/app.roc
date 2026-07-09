@@ -1,10 +1,13 @@
 app [main] { pf: platform "../../platform/main.roc" }
 
 import Article
+import Auth
 import Home
 import Nav
 import Profile
 import Route
+import Session
+import Settings
 import pf.Browser
 import pf.Elem exposing [Elem]
 import pf.Html
@@ -17,8 +20,17 @@ import pf.Ui
 # stay placeholders until their build phases (wip/REALWORLD_DEMO_PLAN.md).
 
 
-header_view : Ui.State(Nav.RouteIntent) -> Elem
-header_view = |intent| {
+header_view : Signal.Signal(Session), Ui.State(Nav.RouteIntent) -> Elem
+header_view = |session, intent| {
+	signed_in = Signal.map(session, |value| Session.is_signed_in(value))
+	username_rows = Signal.map(
+		session,
+		|value|
+			match value {
+				SignedIn(user) => [user.username]
+				Anonymous => []
+			},
+	)
 	Elem.Element(
 		{
 			tag: "header",
@@ -31,14 +43,47 @@ header_view = |intent| {
 						attrs: [Html.attr("aria-label", "Site")],
 						children: [
 							Nav.link("Home", "px-2 text-zinc-600", Route.home_location, intent),
-							Nav.link("Sign in", "px-2 text-zinc-600", Route.login_location, intent),
-							Nav.link("Sign up", "px-2 text-zinc-600", Route.register_location, intent),
+							Ui.when(
+								signed_in,
+								|_|
+									Html.div_c(
+										"inline-flex",
+										[
+											Nav.link("New Article", "px-2 text-zinc-600", { path: "/editor", query: "", hash: "" }, intent),
+											Nav.link("Settings", "px-2 text-zinc-600", { path: "/settings", query: "", hash: "" }, intent),
+											Ui.each_str(username_rows, |name| name, |name, _| Nav.link(name, "px-2 text-emerald-700", Route.profile_location(name), intent)),
+										],
+									),
+								|_|
+									Html.div_c(
+										"inline-flex",
+										[
+											Nav.link("Sign in", "px-2 text-zinc-600", Route.login_location, intent),
+											Nav.link("Sign up", "px-2 text-zinc-600", Route.register_location, intent),
+										],
+									),
+							),
 						],
 					},
 				),
 			],
 		},
 	)
+}
+
+guard_target : Route, Session -> [Stay, Redirect(Browser.Location)]
+guard_target = |route, session| {
+	kind = Route.kind(route)
+	signed_in = Session.is_signed_in(session)
+	requires_auth = kind == "settings" or kind == "editor-new" or kind == "editor-edit"
+	anonymous_only = kind == "login" or kind == "register"
+	if requires_auth and !signed_in {
+		Redirect(Route.login_location)
+	} else if anonymous_only and signed_in {
+		Redirect(Route.home_location)
+	} else {
+		Stay
+	}
 }
 
 footer_view : Elem
@@ -100,24 +145,24 @@ not_found_page = |intent| {
 	)
 }
 
-page_view : Signal.Signal(Route), Ui.State(Nav.RouteIntent) -> Elem
-page_view = |route, intent| {
+page_view : Signal.Signal(Route), Signal.Signal(Session), Ui.State(Nav.RouteIntent) -> Elem
+page_view = |route, session, intent| {
 	is_kind = |name| Signal.map(route, |value| Route.kind(value) == name)
 	Ui.when(
 		is_kind("home"),
-		|_| Home.page(route, intent),
+		|_| Home.page(route, session, intent),
 		|_|
 			Ui.when(
 				is_kind("login"),
-				|_| simple_page("Sign in", "The sign-in form arrives with sessions (Phase 3)."),
+				|_| Auth.page(False, intent),
 				|_|
 					Ui.when(
 						is_kind("register"),
-						|_| simple_page("Sign up", "The sign-up form arrives with sessions (Phase 3)."),
+						|_| Auth.page(True, intent),
 						|_|
 							Ui.when(
 								is_kind("settings"),
-								|_| simple_page("Settings", "Settings arrive with sessions (Phase 3)."),
+								|_| Settings.page(session, intent),
 								|_|
 									Ui.when(
 										is_kind("editor-new"),
@@ -157,15 +202,25 @@ main = |_| {
 		|route_intent| {
 			location = Browser.location
 			route = Signal.map(location, Route.from_location)
+			session = Session.current
 			document_title = Signal.map(route, Route.title)
+			guard = Signal.map2(route, session, guard_target)
 
 			Html.div_c(
 				"mx-auto flex min-h-screen max-w-3xl flex-col",
 				[
 					Ui.on_change(route_intent.signal(), |intent| Browser.push_state(Nav.location(intent))),
+					Ui.on_change_initial(
+						guard,
+						|target|
+							match target {
+								Redirect(redirect_location) => Browser.replace_state(redirect_location)
+								Stay => Signal.noop
+							},
+					),
 					Ui.on_change_initial(document_title, Browser.set_title),
-					header_view(route_intent),
-					Elem.Element({ tag: "main", attrs: [Html.class_attr("grow")], children: [page_view(route, route_intent)] }),
+					header_view(session, route_intent),
+					Elem.Element({ tag: "main", attrs: [Html.class_attr("grow")], children: [page_view(route, session, route_intent)] }),
 					footer_view,
 				],
 			)

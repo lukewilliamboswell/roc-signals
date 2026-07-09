@@ -6,6 +6,7 @@ import Api
 import Feed
 import Nav
 import Route
+import Session
 import pf.Elem exposing [Elem]
 import pf.Html
 import pf.Http
@@ -13,23 +14,29 @@ import pf.Signal
 import pf.Ui
 
 Home := {}.{
-	page : Signal.Signal(Route), Ui.State(Nav.RouteIntent) -> Elem
-	page = |route, intent| {
+	page : Signal.Signal(Route), Signal.Signal(Session), Ui.State(Nav.RouteIntent) -> Elem
+	page = |route, session, intent| {
 		Ui.component(
 			|_| {
-				feed_task = Http.get_text_task("feed")
+				feed_task = Http.request_task("feed")
 				tags_task = Http.get_text_task("tags")
-				feed_state = Signal.fold_task(feed_task, Loading, Api.decode_feed, Api.request_failed)
+				feed_state = Signal.fold_task(
+					feed_task,
+					Loading,
+					Api.decode_feed_response,
+					|err| Api.request_failed(Http.error_text(err)),
+				)
 				tags_state = Signal.fold_task(tags_task, Loading, Api.decode_tags, Api.request_failed)
 				feed = Signal.map(route, |value| Route.feed_of(value))
-				feed_uri = Signal.map(feed, |value| Api.feed_uri(value))
+				fetch_params = Signal.map2(feed, session, |feed_value, session_value| { feed: feed_value, token: Session.token_of(session_value) })
 				feed_label = Signal.map(feed, feed_heading)
+				signed_in = Signal.map(session, |value| Session.is_signed_in(value))
 
 				Html.section(
 					"Home",
 					[Html.class_attr("px-4 py-6")],
 					[
-						Ui.on_change_initial(feed_uri, |uri| Http.get_text(feed_task, uri)),
+						Ui.on_change_initial(fetch_params, |params| Http.start(feed_task, Api.feed_request(params.feed, params.token))),
 						Ui.on_mount(|_| Http.get_text(tags_task, Api.tags_uri)),
 						Html.heading("conduit"),
 						Html.paragraph("A place to share your knowledge."),
@@ -39,6 +46,7 @@ Home := {}.{
 								Html.div_c(
 									"grow",
 									[
+										feed_tabs(feed, signed_in, intent),
 										Html.paragraph_s_c(feed_label, "font-medium text-emerald-700"),
 										Feed.view(feed_state, intent),
 										Feed.pagination(feed_state, feed, intent),
@@ -55,10 +63,54 @@ Home := {}.{
 
 	feed_heading : Route.Feed -> Str
 	feed_heading = |feed|
-		match feed.tag {
-			Tagged(tag) => "Tag: ${tag}"
-			AllTags => "Global Feed"
+		match feed.source {
+			Yours => "Your Feed"
+			Global =>
+				match feed.tag {
+					Tagged(tag) => "Tag: ${tag}"
+					AllTags => "Global Feed"
+				}
 		}
+
+	feed_tabs : Signal.Signal(Route.Feed), Signal.Signal(Bool), Ui.State(Nav.RouteIntent) -> Elem
+	feed_tabs = |feed, signed_in, intent| {
+		active = "border-b-2 border-emerald-600 px-2 font-medium text-emerald-700"
+		idle = "px-2 text-zinc-500"
+		yours_class = Signal.map(
+			feed,
+			|value|
+				match value.source {
+					Yours => active
+					Global => idle
+				},
+		)
+		global_class = Signal.map(
+			feed,
+			|value|
+				match value.source {
+					Yours => idle
+					Global =>
+						match value.tag {
+							AllTags => active
+							Tagged(_) => idle
+						}
+				},
+		)
+		Elem.Element(
+			{
+				tag: "nav",
+				attrs: [Html.attr("aria-label", "Feed tabs"), Html.class_attr("flex gap-2 border-b border-zinc-200 pb-1")],
+				children: [
+					Ui.when(
+						signed_in,
+						|_| Nav.link_c("Your Feed", yours_class, Route.feed_location({ page: 1, tag: AllTags, source: Yours }), intent),
+						|_| Html.text(""),
+					),
+					Nav.link_c("Global Feed", global_class, Route.home_location, intent),
+				],
+			},
+		)
+	}
 
 	tags_sidebar : Signal.Signal(Api.Remote(List(Str))), Ui.State(Nav.RouteIntent) -> Elem
 	tags_sidebar = |tags_state, intent| {
@@ -92,7 +144,7 @@ Home := {}.{
 
 	sidebar_tag : Str, Ui.State(Nav.RouteIntent) -> Elem
 	sidebar_tag = |tag, intent|
-		Nav.link(tag, "rounded bg-zinc-500 px-2 text-xs text-white", Route.feed_location({ page: 1, tag: Tagged(tag) }), intent)
+		Nav.link(tag, "rounded bg-zinc-500 px-2 text-xs text-white", Route.feed_location({ page: 1, tag: Tagged(tag), source: Global }), intent)
 
 	tags_loading : Api.Remote(List(Str)) -> Bool
 	tags_loading = |remote|

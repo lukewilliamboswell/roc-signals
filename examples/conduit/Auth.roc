@@ -1,0 +1,199 @@
+## Sign-in and sign-up pages. Submissions snapshot the form into state so
+## the request command fires once per submit (not per keystroke); a
+## successful response persists the session keys and navigates home, and a
+## 422 envelope renders as an error list above the form.
+import Api
+import Nav
+import Route
+import Session
+import pf.Browser
+import pf.Elem exposing [Elem]
+import pf.Html
+import pf.Http
+import pf.Signal
+import pf.Ui
+
+Auth := {}.{
+	Form : {
+		username : Str,
+		email : Str,
+		password : Str,
+		serial : U64,
+		submitted_username : Str,
+		submitted_email : Str,
+		submitted_password : Str,
+	}
+
+	empty_form : Auth.Form
+	empty_form = {
+		username: "",
+		email: "",
+		password: "",
+		serial: 0,
+		submitted_username: "",
+		submitted_email: "",
+		submitted_password: "",
+	}
+
+	submit_form : Auth.Form -> Auth.Form
+	submit_form = |form| {
+		{
+			..form,
+			serial: form.serial + 1,
+			submitted_username: form.username,
+			submitted_email: form.email,
+			submitted_password: form.password,
+		}
+	}
+
+	Submission : { serial : U64, username : Str, email : Str, password : Str }
+
+	submission_of : Auth.Form -> Auth.Submission
+	submission_of = |form| {
+		{
+			serial: form.serial,
+			username: form.submitted_username,
+			email: form.submitted_email,
+			password: form.submitted_password,
+		}
+	}
+
+	page : Bool, Ui.State(Nav.RouteIntent) -> Elem
+	page = |is_register, intent| {
+		Ui.component(
+			|_| {
+				Ui.state(
+					empty_form,
+					|form| {
+						task = Http.request_task(if is_register { "register" } else { "login" })
+						result = Signal.fold_task(
+							task,
+							AuthIdle,
+							Api.classify_auth,
+							|err| AuthErrored("Request failed: ${Http.error_text(err)}"),
+						)
+						submission = Signal.map(form.signal(), submission_of)
+						errors = Signal.map(result, error_lines)
+						accepted_token = Signal.map(result, accepted_token_of)
+						accepted_username = Signal.map(result, accepted_username_of)
+						heading = if is_register { "Sign up" } else { "Sign in" }
+
+						Html.section(
+							heading,
+							[Html.class_attr("mx-auto max-w-md px-4 py-6")],
+							[
+								Ui.on_change(
+									submission,
+									|snapshot|
+										if snapshot.serial == 0 {
+											Signal.noop
+										} else if is_register {
+											Http.start(task, Api.post_request("/api/users", Api.register_body(snapshot.username, snapshot.email, snapshot.password), ""))
+										} else {
+											Http.start(task, Api.post_request("/api/users/login", Api.login_body(snapshot.email, snapshot.password), ""))
+										},
+								),
+								Ui.on_change(accepted_token, |token| if Str.is_empty(token) { Signal.noop } else { Session.persist_token(token) }),
+								Ui.on_change(accepted_username, |name| if Str.is_empty(name) { Signal.noop } else { Session.persist_username(name) }),
+								Ui.on_change(accepted_username, |name| if Str.is_empty(name) { Signal.noop } else { Browser.push_state(Route.home_location) }),
+								Html.heading(heading),
+								error_list(errors),
+								Html.form(
+									[Html.on_submit_prevent_default(form.on_unit(submit_form))],
+									[
+										if is_register {
+											Html.text_input_attrs(
+												"Username",
+												Signal.map(form.signal(), |value| value.username),
+												[Html.class_attr(field_class)],
+												form.on_str(|value, text| { ..value, username: text }),
+											)
+										} else {
+											Html.text("")
+										},
+										Html.text_input_attrs(
+											"Email",
+											Signal.map(form.signal(), |value| value.email),
+											[Html.class_attr(field_class), Html.attr("type", "email")],
+											form.on_str(|value, text| { ..value, email: text }),
+										),
+										Html.text_input_attrs(
+											"Password",
+											Signal.map(form.signal(), |value| value.password),
+											[Html.class_attr(field_class), Html.attr("type", "password")],
+											form.on_str(|value, text| { ..value, password: text }),
+										),
+										Html.button_attrs(
+											heading,
+											[Html.class_attr("rounded bg-emerald-600 px-4 py-2 text-white"), Html.attr("type", "submit")],
+											form.on_unit(submit_form),
+										),
+									],
+								),
+								Nav.link(
+									if is_register { "Have an account?" } else { "Need an account?" },
+									"text-emerald-600 underline",
+									if is_register { Route.login_location } else { Route.register_location },
+									intent,
+								),
+							],
+						)
+					},
+				)
+			},
+		)
+	}
+
+	field_class : Str
+	field_class = "mb-2 w-full rounded border border-zinc-300 px-3 py-2"
+
+	error_list : Signal.Signal(List(Str)) -> Elem
+	error_list = |errors| {
+		keyed = Signal.map(
+			errors,
+			|lines|
+				lines.fold(
+					{ items: [], index: 0 },
+					|acc, line| {
+						items: acc.items.append({ key: "e:${acc.index.to_str()}", text: line }),
+						index: acc.index + 1,
+					},
+				).items,
+		)
+		Elem.Element(
+			{
+				tag: "ul",
+				attrs: [Html.class_attr("text-red-700")],
+				children: [
+					Ui.each_str(
+						keyed,
+						|item| item.key,
+						|_, item| Elem.Element({ tag: "li", attrs: [], children: [Html.text_s(Signal.map(item, |value| value.text))] }),
+					),
+				],
+			},
+		)
+	}
+
+	error_lines : Api.AuthResult -> List(Str)
+	error_lines = |result|
+		match result {
+			AuthRejected(lines) => lines
+			AuthErrored(message) => [message]
+			_ => []
+		}
+
+	accepted_token_of : Api.AuthResult -> Str
+	accepted_token_of = |result|
+		match result {
+			AuthAccepted(user) => user.token
+			_ => ""
+		}
+
+	accepted_username_of : Api.AuthResult -> Str
+	accepted_username_of = |result|
+		match result {
+			AuthAccepted(user) => user.username
+			_ => ""
+		}
+}

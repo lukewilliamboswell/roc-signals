@@ -22,6 +22,31 @@ a better platform shape, propose the breaking change through the normal
 promotion gates with low ceremony; do not paper over API awkwardness in app
 code without a ledger entry.
 
+## Status and next steps (updated 2026-07-09)
+
+Work lives on branch `real-world-demo` (draft PR #13). Phases 0-3 are
+committed; the findings ledger (`wip/research/realworld_demo_findings.md`)
+has entries for everything found so far, including two drafted-but-unfiled
+upstream compiler issues (deliberate: hold filing until Phase 5 synthesis).
+
+The build is doing its job: it surfaced a real dirty-flush correctness
+defect class in the shared reactive engine (`Ui.when` arm flips during task
+resolve/reject flushes panic the native host or leave zombie nodes). That
+engine slice landed in `c981ae9`; Phase 3 now uses the natural
+loading/failed/empty arms again and the full Conduit spec is green.
+
+Current order:
+
+1. **Phase 4 write paths.** Article create/edit/delete, favorite/unfavorite,
+   follow/unfollow, comments, and 422 coverage.
+2. **Phase 5 hardening and measurement.** Error matrix, long-session run,
+   browser comparison, ledger synthesis, and upstream issue filing.
+
+Expect further findings — that is the mission, not a schedule slip. The
+project has no users, so platform-shape changes stay cheap; judge every fix
+against the long-term ideal architecture (efficient, maintainable, DRY)
+rather than the smallest local patch.
+
 ## Focused Gates
 
 This note carries no repository behavior claims. For edits, run:

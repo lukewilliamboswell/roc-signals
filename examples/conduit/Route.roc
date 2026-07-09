@@ -15,10 +15,10 @@ Route := [
 	ProfileFavorites(Str),
 	NotFound,
 ].{
-	Feed : { page : U64, tag : [AllTags, Tagged(Str)] }
+	Feed : { page : U64, tag : [AllTags, Tagged(Str)], source : [Global, Yours] }
 
 	default_feed : Route.Feed
-	default_feed = { page: 1, tag: AllTags }
+	default_feed = { page: 1, tag: AllTags, source: Global }
 
 	home : Route
 	home = Home(default_feed)
@@ -187,6 +187,8 @@ Route := [
 							}
 						Err(_) => feed
 					}
+				} else if pair == "feed=yours" {
+					{ ..feed, source: Yours }
 				} else if Str.starts_with(pair, "tag=") {
 					tag_value = Str.drop_prefix(pair, "tag=")
 					if Str.is_empty(tag_value) {
@@ -201,6 +203,11 @@ Route := [
 
 	feed_query : Route.Feed -> Str
 	feed_query = |feed| {
+		source_part =
+			match feed.source {
+				Yours => "feed=yours"
+				Global => ""
+			}
 		page_part =
 			if feed.page > 1 {
 				"page=${feed.page.to_str()}"
@@ -212,12 +219,15 @@ Route := [
 				Tagged(tag) => "tag=${tag}"
 				AllTags => ""
 			}
-		if Str.is_empty(page_part) {
-			tag_part
-		} else if Str.is_empty(tag_part) {
-			page_part
-		} else {
-			"${page_part}&${tag_part}"
-		}
+		parts = [source_part, page_part, tag_part].fold(
+			[],
+			|acc, part|
+				if Str.is_empty(part) {
+					acc
+				} else {
+					acc.append(part)
+				},
+		)
+		Str.join_with(parts, "&")
 	}
 }

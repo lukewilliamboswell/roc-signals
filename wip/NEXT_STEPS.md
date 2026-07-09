@@ -71,46 +71,16 @@ active backlog.
 
 ## Active evidence work
 
-Ordering within this section is strict: 0a blocks 0b, because every later
-conduit phase renders task-driven loading/failed/empty states through the
-exact engine path 0a fixes.
-
-### 0a. Reactive engine correctness — dirty-flush structural defects (first priority)
-
-**Goal:** make `Ui.when` arm flips during task resolve/reject flushes correct
-in the shared engine (`src/signals/engine.zig` and friends), then lock the
-behavior in with mechanism-derived tests.
-
-The conduit build surfaced a defect class where work scheduled during a dirty
-flush references the active descriptor stream by reusable ids while the
-stream mutates underneath it. Three symptoms across two phases: a
-duplicate-descriptor-index panic on when-arm flips at task completion, a
-wrong-arm render after route transitions, and disposed-arm zombie nodes left
-in the DOM. Two mechanisms have been separated: stale dirty entries applied
-against recycled node ids (root-caused; node-identity reuse-barrier fix
-drafted in the working tree with a regression test), and a when-arm splice
-whose removal scan leaves the outgoing arm's descriptors in the stream
-(open; three live hypotheses with deciding instrumentation in place).
-
-The complete investigation state — background for readers new to the engine,
-trace evidence, hypotheses, repro commands, working-tree inventory
-(fix-vs-instrumentation), the step-by-step fix plan, and the acceptance
-gates — lives in `wip/research/engine_dirty_flush_defects.md`. Fix at the
-architecture bar (unify the duplicated scope-membership walks; make flush
-mutation ordering an invariant; consider making stale id references
-unrepresentable), not the patch bar. Commit as its own slice before any
-further conduit work.
-
-Temporary toolchain for this slice: until roc-lang/roc PR #10025 and PR
-#10050 land upstream and the local compiler is refreshed, use the merged
-ReleaseFast checkout at
+Temporary toolchain for active Roc app/debug loops: until roc-lang/roc PR
+#10025 and PR #10050 land upstream and the local compiler is refreshed, use
+the merged ReleaseFast checkout at
 `/private/tmp/roc-pr10025-10050-copy/zig-out/bin/roc`
 (`release-fast-36718acf`) for conduit rebuild/debug loops. It includes both
 PR heads plus a local one-line compile fix in that temporary Roc checkout.
 Use `--no-cache` from this sandbox, e.g.
 `/private/tmp/roc-pr10025-10050-copy/zig-out/bin/roc build --no-cache --target=arm64mac --opt=dev --output=/tmp/conduit-dbg examples/conduit/app.roc`.
 
-### 0b. RealWorld demo build (`examples/conduit`)
+### 0a. RealWorld demo build (`examples/conduit`)
 
 **Goal:** build the first RealWorld-class maintained app as the evidence
 instrument for production readiness, per `wip/REALWORLD_DEMO_PLAN.md` (scope,
@@ -132,19 +102,11 @@ JSON/body ergonomics (priority 3); expected confirmations: generic `Sub`,
 dynamic event response, fetch-policy knobs, storage write-failure recovery
 stay deferred.
 
-Phases 0-2 are committed (branch `real-world-demo`, draft PR #13). Phase 3
-(sessions: register/login/logout, JWT persist/restore, guarded routes,
-settings, Your Feed) is built in the working tree but uncommitted and
-blocked on item 0a: its spec deterministically hits the engine defects, and
-`Feed.roc`'s Phase 2 placeholder-row workaround is already reverted to the
-natural `when` arms the fix must support. Order of work once 0a lands:
-run the full Phase 3 spec green, run the full gate suite, update the
-findings ledger (feature→spec map rows; 422 dynamic-key JSON evidence for
-priority 3; settings-prefill limitation), and commit Phase 3 as its own
-slice — then Phase 4 (write paths) and Phase 5 (hardening/measurement) per
-`wip/REALWORLD_DEMO_PLAN.md`. Two upstream compiler issues are drafted in
-the ledger but deliberately not filed yet (recorded decision; revisit at
-Phase 5 synthesis).
+Current backlog: Phase 4 (write paths) and Phase 5
+(hardening/measurement) per `wip/REALWORLD_DEMO_PLAN.md`. Keep completed
+phase evidence in `wip/research/realworld_demo_findings.md`, not in this
+backlog. Two upstream compiler issues are drafted in the ledger but
+deliberately not filed yet (recorded decision; revisit at Phase 5 synthesis).
 
 ## Active priority order
 
