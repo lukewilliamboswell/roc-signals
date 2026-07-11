@@ -83,7 +83,7 @@ Auth := {}.{
 						form_signal : Signal.Signal(Auth.Form)
 						form_signal = form.signal()
 
-						submission : Signal.Signal(Auth.Submission)
+						submission : Signal(Auth.Submission)
 						submission = form_signal.map(submission_of)
 
 						errors : Signal.Signal(List(Str))

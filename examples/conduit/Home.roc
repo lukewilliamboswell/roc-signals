@@ -50,7 +50,7 @@ Home := {}.{
 									[
 										feed_tabs(feed, signed_in, intent),
 										Html.paragraph_s_c(feed_label, "font-medium text-emerald-700"),
-										Feed.view(feed_state, intent),
+										Feed.view(feed_state, session, intent),
 										Feed.pagination(feed_state, feed, intent),
 									],
 								),

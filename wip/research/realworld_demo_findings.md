@@ -23,46 +23,298 @@ Action: <promotion trigger recorded in NEXT_STEPS priority N | issue filed |
 
 ## Feature → spec-line map (MoE-1)
 
-Maintained from Phase 1 onward; no unchecked rows at Phase 5 exit.
-Line references are to `examples/conduit/spec.txt` sections by comment
-header (line numbers drift; headers are stable).
+Maintained from Phase 1 onward; no unchecked rows at Phase 5 exit. “Implemented”
+below means the app path and its assertion are present. The table is not an
+end-to-end pass record: the current native spec fails during initial mount, so
+MoE-1 remains open until the whole script passes. Line references are to
+`examples/conduit/spec.txt` sections by comment header (line numbers drift;
+headers are stable).
 
 | Feature | Spec assertion(s) | Status |
 | --- | --- | --- |
-| Deep link cold-mounts routed page + title | "Cold mount at a deep link" section | done (Phase 1) |
-| Header nav push_state routing (brand, Sign in, Sign up) | "Brand link navigates home" section | done (Phase 1) |
-| Back/forward keep URL, title, view in sync | "Back/forward walk the entry trail" section | done (Phase 1) |
-| All 9 route shapes mount with per-route titles | "Every route shape mounts" section | done (Phase 1) |
-| Home query params (page, tag) parse into feed state | "Home query params parse" section | done (Phase 1) |
-| Unknown route renders not-found without URL rewrite | "Unknown routes render the not-found page" section | done (Phase 1) |
-| Feeds, pagination controls, popular tags | — | Phase 2 |
-| Article page with markdown body | — | Phase 2 |
-| Profiles (view, tabs) | — | Phase 2 |
-| Auth: register/login/logout, JWT persist/restore | — | Phase 3 |
-| Guarded routes with replace_state redirects | — | Phase 3 |
-| Settings | — | Phase 3 |
-| Editor create/edit, article delete | — | Phase 4 |
-| Comments create/delete | — | Phase 4 |
-| Favorites, follows | — | Phase 4 |
-| 422 envelopes on all four forms | — | Phase 3/4 |
-| Network failure states on every fetch surface | — | Phase 2-5 |
+| Deep link cold-mounts routed page + title | "Cold mount at a deep link" section | implemented (Phase 1) |
+| Header nav push_state routing (brand, Sign in, Sign up) | "Brand link navigates home" section | implemented (Phase 1) |
+| Back/forward keep URL, title, view in sync | "Back/forward walk the entry trail" section | implemented (Phase 1) |
+| All 9 route shapes mount with per-route titles | "Every route shape mounts" section | implemented (Phase 1) |
+| Home query params (page, tag) parse into feed state | "Home query params parse" section | implemented (Phase 1) |
+| Unknown route renders not-found without URL rewrite | "Unknown routes render the not-found page" section | implemented (Phase 1) |
+| Feeds, pagination controls, popular tags | "Home"; "Pagination"; "Tag filter"; "Your Feed" sections | implemented (Phase 2-3) |
+| Article page with markdown body | "Cold mount at a deep link" section | implemented (Phase 2) |
+| Profiles (view, tabs) | "Profile page" section | implemented (Phase 2) |
+| Auth: register/login/logout, JWT persist/restore | "Seeded session"; "Settings"; "Login"; "Register" sections | implemented (Phase 3-5) |
+| Guarded routes with replace_state redirects | "Guarded routes redirect anonymous visitors" section | implemented (Phase 3) |
+| Settings | "Settings" section | implemented (Phase 3-5) |
+| Editor create/edit, article delete | "Article writes" section | implemented (Phase 4) |
+| Comments create/delete | "Article writes" section | implemented (Phase 4) |
+| Favorites, follows | "Home"; "Article writes"; "Profile page" sections | implemented (Phase 4) |
+| 422 envelopes on all four forms | "Settings"; "Register"; "Login"; "Article writes" sections | implemented (Phase 5) |
+| Network failure states on every fetch surface | "Network failure matrix for every GET surface" section | implemented (Phase 5) |
+| Submission readiness | README plus `serve.py --no-server` gates | README done; all three direct artifacts were produced before the current compiler postcheck regression appeared; compiler, native spec, and site gates remain open (Phase 5) |
+| Soak and command-wire measurement | Conduit build plus plateau/telemetry gates | structural plateau gate refreshed; Conduit-specific measurements not run (Phase 5) |
+| Comparison study | local LoC baseline plus wasm/public build outputs | local source baseline recorded; payload/reference rows open (Phase 5) |
+
+## NEXT_STEPS Priority Synthesis (Phase 5 WIP)
+
+This is the MoE-5 closeout ledger. It stays WIP until the remaining runtime,
+real-backend, measurement, and publication gates are exercised and final
+publication/submission readiness is decided.
+
+| Priority | Conduit evidence | Current decision |
+| --- | --- | --- |
+| 1. Browser environment follow-ups | Conduit uses the shipped location/history, storage startup snapshots, document title, visibility/online-adjacent task path, and app-local route parsing. The app has not proven app-visible storage write recovery, cross-tab storage, IndexedDB, or split location sources. Static-host deep-link behavior remains tied to the publication gate, which follows the native runtime fix. | No browser-environment promotion yet; scroll/hash/static-hosting decision remains deferred until publication can be tested. |
+| 2. Subscriptions and app-specific JS interop | Conduit did not need generic `Sub`, ports-like app interop, or a broader browser source catalog beyond shipped focused sources and ordinary tasks. | Keep generic subscriptions and app-specific interop deferred. |
+| 3. HTTP production hardening | Conduit proves authenticated request envelopes, timeout-bearing requests, task replacement/stale suppression, 422 envelopes, and network errors. Cross-origin header auth already passed the Phase 0 canary, so fetch-policy knobs stay closed. Builtin Json required an app-local escape workaround and string-parsed dynamic 422 keys, but the current issue is compiler JSON behavior/dynamic object parsing, not proof that Signals should own JSON/body helpers. Explicit user abort and typed effect capability routing were not needed. | No HTTP public-surface promotion yet; keep fetch-policy controls, JSON/body helper sugar, explicit abort, and effect registry deferred. Compiler JSON issue remains a compiler finding. |
+| 4. Form/input hardening | Conduit forms use shipped text inputs, textareas, submit prevention, and controlled state. The async edit/settings prefill limitation is recorded as app ergonomics, and no selection, file input, multi-select, constraint validation, focus command, or date/time input need appeared. | No form/input promotion yet; async state hydration remains a documented app pattern unless more maintained forms pay the cost. |
+| 5. Dynamic event response | Conduit uses static prevent-default form submission and ordinary click/input handlers; no state-dependent event response, handler-chain composition, or payload-only response was needed. | Keep dynamic event response deferred. |
+
+## Comparison Baseline (Phase 5 WIP)
+
+This is the local half of the RealWorld comparison study. External reference
+implementations and gzipped first-render payloads remain open; compilation is
+no longer the reason to defer them, but the failing authoritative native gate
+takes precedence over comparison polish.
+
+Measured 2026-07-11 with `wc -l examples/conduit/*.roc
+examples/conduit/spec.txt examples/conduit/README.md`:
+
+| Category | Files | Lines |
+| --- | --- | ---: |
+| Shell, routing, session, nav, formatting | `app.roc`, `Route.roc`, `Session.roc`, `Nav.roc`, `Format.roc` | 654 |
+| API, DTOs, request helpers, mock contract | `Api.roc` | 380 |
+| Routed pages, view state, form state | `Home.roc`, `Feed.roc`, `Article.roc`, `Profile.roc`, `Auth.roc`, `Settings.roc`, `Editor.roc` | 2,333 |
+| Markdown rendering | `Markdown.roc` | 358 |
+| Roc app source total | all `examples/conduit/*.roc` | 3,725 |
+| Native browser spec | `spec.txt` | 347 |
+| Public README | `README.md` | 32 |
+| App source plus evidence docs | Roc source, spec, README | 4,104 |
+
+Interpretation: the Roc app source is inside the plan's 3,000-4,000 line
+target and below the 5,000-line review threshold. Including the native spec and
+README crosses 4,000 lines, but those are evidence/publication artifacts rather
+than app runtime source. The missing comparison rows remain: Elm/Svelte/React
+reference LoC by category, gzipped first-render payload, cold-load request
+count, static-host deep-link behavior, and reference error-state coverage.
+
+## Open Phase 5 Gates
+
+These are the only remaining Phase 5 closeout gates, in execution order:
+
+| Gate | Current evidence | Resume condition |
+| --- | --- | --- |
+| Native spec execution | `release-fast-4828766c` produced a native artifact that failed even with an empty spec (`HostValue operation used a capability that does not own the retained value`); final checks now reproducibly panic earlier on an erased-function `ConstStore` postcheck invariant | minimize/fix the compiler panic, then the runtime capability mismatch, then run `examples/conduit/spec.txt` end to end |
+| Real-backend conformance (MoE-2) | in-page backend shape is covered by node tests, and the Phase 0 cross-origin auth canary passed | wasm Conduit build runs in browser with a base-URL swap against a conformant backend |
+| Public-site publication/readiness (MoE-6) | README exists; direct wasm dev and size builds pass; `public = false` is intentional | after the native gate, `serve.py --no-server` passes in both app optimization modes, including Conduit |
+| Static-host deep-link decision | path-based history routing is the app source of truth; static hosting behavior is untested | public/site build can be served from a static-host-like path and tested |
+| Payload/startup comparison | local source LoC baseline exists | wasm/site output exists so gzipped payload and cold-load request counts can be measured |
+| Conduit soak and action telemetry | structural plateau and static wire estimates are refreshed | native/wasm behavior gate is trustworthy enough to exercise feed/article/login/logout cycles |
+
+## Compiler Issue Filing Drafts (Phase 5 WIP)
+
+These track upstream compiler findings that blocked or shaped Conduit evidence.
+Filed issues are linked here; unfiled issue notes stay summarized in this table
+until they can be rechecked and filed.
+
+| Candidate | Draft title | Current evidence | Before filing |
+| --- | --- | --- | --- |
+| Builtin JSON string escapes | builtin Json cannot parse escaped string characters | a temporary single-field probe reproduced rejection of plain controls versus escaped newline, quote, backslash, tab, and Unicode inputs on the roc#10072 compiler; the probe was removed after evidence capture; the Conduit workaround lives in `examples/conduit/Api.roc`; a 2026-07-12 recheck on `release-fast-4828766c` instead panicked in postcheck before execution | recreate the small probe after minimizing/bypassing the new postcheck panic, then make the final semantic recheck and file upstream |
+| Browser source compiler crash | exposed/used/mapped `Browser.location` source crashes compiler with SIGSEGV/capture_fields | filed as roc-lang/roc#10071 with a self-contained repro; roc-lang/roc#10072 fixed the reduced and full build repros; the later `ConstStore` postcheck panic is a separate compiler regression | resolved for this experiment; retain the upstream link as history |
+| HTTP task build crash | unused `Http.get_text_task` crashes native build/codegen | reduced in roc-lang/roc#10071/comment-4941703250 and helper-specialization repro in comment-4944342804; fixed by roc-lang/roc#10072; the later `ConstStore` postcheck panic is a separate compiler regression | resolved for this experiment; retain the upstream link as history |
+| Wide derived JSON record parse crash | already filed as roc-lang/roc#9964 | focused 50-field repro now checks on nightly-2026-July-07, but upstream issue remains open | re-verify when upstream closes it; only reopen/file follow-up if the single-wide parser is still slow or crashes |
 
 ## Findings
+
+### 2026-07-12 Phase 5 — Native Conduit mount fails retained-value capability ownership
+
+Classification: platform-gap
+Severity: blocker (for MoE-1 and downstream Phase 5 measurements)
+Evidence: with PATH compiler `release-fast-4828766c`, `roc check` passes;
+native arm64mac, wasm dev, and wasm size direct builds pass. The native build
+takes about 2m50s and wasm dev about 2m59s. Running the resulting native
+executable against `examples/conduit/spec.txt` exits immediately with
+`HOST ERROR: HostValue operation used a capability that does not own the
+retained value`. Empty, storage-only, and location-only probe specs fail the
+same way, which places the failure in initial app mount rather than a spec
+directive or feature flow. The JS browser contract suite remains green
+(103/103), including the 21 Conduit backend cases.
+Action: make this the first closeout task. Minimize the Conduit initial-mount
+capability mismatch against a smaller app, fix it in the host/engine or app as
+the reduction proves, and do not claim the feature map verified until the full
+native script passes. Release, soak, and comparison work follows this gate.
+
+### 2026-07-12 Phase 5 — Current compiler postcheck regression blocks final verification
+
+Classification: compiler
+Severity: blocker
+Evidence: building the temporary single-field JSON probe with PATH compiler
+`release-fast-4828766c` aborted in postcheck with `erased function ConstStore
+output requires explicit erased function entries`. The prior roc#10072 compiler
+built the same minimized probe and reproduced rejection of escaped JSON strings.
+The probe was removed after this evidence was captured. Final verification then
+reproduced the same postcheck panic on the full Conduit app, including a
+sequential `roc check --no-cache examples/conduit/app.roc`; earlier in the same
+review, the same reported compiler version had checked and built direct Conduit
+artifacts.
+Action: treat this as the first compiler/runtime gate and do not conflate it
+with the JSON semantic bug. Minimize the postcheck panic and establish why the
+same version's behavior changed, then recheck Conduit and recreate the small
+JSON probe for its final semantic filing check.
+
+### 2026-07-11 Phase 5 — Conduit soak and wire-telemetry measurements are compiler-blocked
+
+Classification: compiler
+Severity: blocker (for Conduit-specific MoP ratchets)
+Evidence: the reusable structural plateau gate
+`zig build run-test-zig -Dtest-filter=plateau -Dtest-filter="dirty queue"`
+passes on 2026-07-11, so the existing host dense-table and dirty-queue plateau
+coverage remains current. The planned Conduit-specific soak run (feed/article
+navigation plus login/logout cycles) and command-wire action trace refresh both
+require a Conduit native or wasm build. Current direct Conduit wasm builds in
+both app opt modes exit 139 with Roc compiler SIGSEGVs, and the native Conduit
+spec/build path is already blocked by the Phase 4 compiler crash recorded
+below.
+Action: no structural work is promoted: there is no failing plateau measurement.
+Conduit-specific MoP ratchets and command-wire action telemetry are deferred
+until the compiler can build the app.
+Resolution 2026-07-12: the compiler now builds the app; the new initial-mount
+capability mismatch above supersedes the old resume condition.
+
+### 2026-07-11 Phase 5 — Public-site wasm build gate is blocked by Roc compiler crashes
+
+Classification: compiler
+Severity: blocker (for publication/submission readiness)
+Evidence: `python3 scripts/serve.py --no-server --app-opt dev` and
+`python3 scripts/serve.py --no-server --app-opt size` both fail before a full
+public site build completes. With `release-fast-43e1cc3c`, the dev gate
+SIGSEGVs while building `service-ops-center` for wasm, and the size gate aborts
+with `guarded list invalidated: lambda_mono.Type.Store.capture_fields` on the
+same app. Direct Conduit wasm builds on the current source also fail:
+`roc build --target=wasm32 --opt=dev --no-cache
+--output=/tmp/conduit-dev.wasm examples/conduit/app.roc` and the matching
+`--opt=size` command both exit 139 with Roc compiler SIGSEGVs. During the
+temporary publication trial, focused `serve.py --example conduit` checks failed
+the same way. Rechecked on 2026-07-11 with PATH Roc `release-fast-d35c3560`:
+`roc check examples/conduit/app.roc`, direct native build, and wasm dev build
+SIGSEGV; wasm size panics with
+`lambda_mono.Type.Store.capture_fields`. A smaller
+temporary app that only returns `Elem.Text("hello")` also SIGSEGVs with the
+full platform. Temporary reduction
+shows the crash disappears with only `Elem`, `Signal`, `Html`, and `Ui`
+exposed, and reappears when the `Browser.location` source is restored. Filed
+upstream as roc-lang/roc#10071 with a self-contained eight-file repro that does
+not require cloning this repository. Follow-up comment
+roc-lang/roc#10071/comment-4939911807 corrects the issue body's omitted
+`hosted` mappings; adding them to the standalone repro still reproduces the
+SIGSEGV.
+Built roc-lang/roc#10072 locally on 2026-07-11 as `release-fast-3a167111`.
+That compiler fixes the reduced Browser-location repro: both the temporary
+repo-local probe and the corrected standalone roc-lang/roc#10071 repro check,
+and the standalone repro builds natively. It
+does not unblock Conduit: `roc check examples/conduit/app.roc`, direct native
+build, direct wasm dev build, and direct wasm size build all still exit 139
+with SIGSEGVs. Smaller control checks/builds (`counter`, `service-ops-center`,
+`json-decode`, and the Conduit JSON decode probe) pass on the PR compiler.
+Follow-up reduction posted as
+roc-lang/roc#10071/comment-4940838958: starting from the corrected standalone
+repro, adding only `current = Browser.location` in app code makes `roc check`
+and native build SIGSEGV with fault address `0x10`; removing that binding while
+keeping `import pf.Browser` checks.
+Retested the newer roc-lang/roc#10072 head
+`fbab7377ea32b393133021ae898ab5930350f0ad` on 2026-07-11 as
+`release-fast-fbab7377`. It fixes the direct used-source repro:
+`current = Browser.location` now checks and builds. It does not fix mapped
+browser sources: `current = Browser.location.map(|_| "ok")` still SIGSEGVs on
+`roc check` and native build, and full Conduit still SIGSEGVs on check, native
+build, wasm dev build, and wasm size build. Follow-up posted as
+roc-lang/roc#10071/comment-4941101241.
+Retested roc-lang/roc#10072 again at
+`2bde9d3f9f691d31e98ae7457ccb3442837441cc` on 2026-07-11 as
+`release-fast-2bde9d3f`. The mapped-source repro now checks and builds, and
+full `roc check examples/conduit/app.roc` passes. Full Conduit direct builds
+still SIGSEGV for native arm64mac, wasm dev, and wasm size. Smaller control
+builds (`counter`, the mapped route-source static app, and the Conduit JSON
+decode probe) pass, so the remaining blocker is a Conduit build-stage crash
+rather than the previously reduced browser-source check crash.
+Further reduction posted as roc-lang/roc#10071/comment-4941703250: the build
+crash reduces to constructing an unused `Http.get_text_task("feed")` and
+returning `Elem.Text("hello")`. The app checks, but native build SIGSEGVs.
+`Signal.fold_task` is not required. A simple
+`Signal.task_source("feed", |_| "done", |_| "failed", False)` control builds,
+and replacing `Http.get_text_task`'s decoder pair with simple lambdas also
+builds; reintroducing `decode_text_response_payload` brings the crash back.
+Retested roc-lang/roc#10072 at
+`45d819c010c640472ae730d19041347d3f589d27` on 2026-07-11 as
+`release-fast-45d819c0`. The reduced HTTP task repro still checks and still
+SIGSEGVs on native build. Full Conduit still checks and still SIGSEGVs for
+native arm64mac, wasm dev, and wasm size. Counter native/wasm and the Conduit
+JSON decode probe still build; follow-up posted as
+roc-lang/roc#10071/comment-4942947641.
+Diagnostic script output from `/tmp/roc-10071-diagnostics-20260711-164002`
+gives a more actionable root than the ReleaseFast SIGSEGV: the Debug compiler
+panics in postcheck with
+`instantiation unified a tag union with a non-tag-union type` at
+`src/postcheck/monotype/solve.zig:663`, reached through dispatch lowering
+(`instantiateTargetFromPlan` / `lowerResolvedDispatch`). ReleaseSafe aborts at
+`reached unreachable code`; ReleaseFast remains a stripped `EXC_BAD_ACCESS`.
+Posted as roc-lang/roc#10071/comment-4943237173.
+`examples/conduit` now has a README, but `www/data/examples.toml` keeps
+`public = false` until these build gates can pass.
+Action: publication is deferred; keep using `roc check`, backend/browser tests,
+and tidy gates for Conduit work. Revisit after the compiler crash is minimized
+or the local compiler is refreshed.
+Resolution 2026-07-12: direct native and wasm builds pass on the current PATH
+compiler. Publication remains deferred for the native runtime failure and the
+unrun site/readiness gates, not for a compiler crash.
+
+### 2026-07-10 Phase 4 — Async-loaded records cannot seed controlled form state directly
+
+Classification: ergonomics
+Severity: friction
+Evidence: `examples/conduit/Editor.roc` edit page fetches the article and
+renders current values as read-only context, while the controlled edit fields
+start blank and submit a partial article update where blank fields mean
+"unchanged". The same constraint already shaped `examples/conduit/Settings.roc`:
+`Ui.state` initializes synchronously, and there is no app-level primitive to
+copy a later task result into controlled input state exactly once without
+fighting user edits.
+Action: accepted as app code for Phase 4. Consider a one-shot state hydration
+helper only if Phase 5 finds more form surfaces paying this cost; otherwise
+document the partial-update pattern for async edit forms.
+
+### 2026-07-10 Phase 4 — Conduit native build crashes the temporary Roc compiler before spec execution
+
+Classification: compiler
+Severity: blocker (for native spec verification)
+Evidence: `/private/tmp/roc-pr10025-10050-copy/zig-out/bin/roc build
+--no-cache --target=arm64mac --opt=dev --output=/tmp/signals-conduit
+examples/conduit/app.roc` exits 139 with a Roc compiler SIGSEGV. The same
+command also crashes against a clean `HEAD` archive at
+`/private/tmp/roc-signals-head-archive`, so this is not caused by the Phase
+4 editor-create slice. The `roc` binary from `/Users/luke/Documents/GitHub/roc`
+panics on the same app with
+`guarded list invalidated: lambda_mono.Type.Store.capture_fields`, which
+points at the same build/codegen class rather than a native host/spec issue.
+Action: keep using `roc check` plus browser/backend gates for this slice;
+native Conduit spec execution is blocked until the local compiler is refreshed
+or this build crash is minimized/filed during Phase 5 compiler-issue
+synthesis.
 
 ### 2026-07-08 Phase 2 — Builtin Json parser rejects every escape sequence inside JSON strings
 
 Classification: compiler
 Severity: blocker (worked around in app code)
-Evidence: `wip/research/conduit_decode_probe.roc` — parsing
-`{"body":"a\nb"}` returns `InvalidJson` on nightly-2026-July-07 and at
-roc-lang/roc HEAD: `Builtin.Json.split_json_string_tail` returns
-`invalid_json` whenever a backslash appears before the closing quote, so
-`\n`, `\"`, `\\`, `\t`, and `\uXXXX` are all unparseable. Every
-RealWorld article body (markdown with newlines) and any bio/title with a
+Evidence: a temporary probe minimized the failure to one parser,
+`{ body : Str }`, with plain, `\n`, `\"`, `\\`, `\t`, and `\uXXXX` inputs.
+The native browser-spec run rendered `plain ok` for the control case, while all
+five escaped-string cases rendered
+`<case> invalid: Invalid JSON` with the temporary compiler on 2026-07-11.
+The probe and its spec were removed after evidence capture.
+The original Phase 2 source read showed `Builtin.Json.split_json_string_tail`
+returning `invalid_json` whenever a backslash appears before the closing quote.
+Every RealWorld article body (markdown with newlines) and any bio/title with a
 quote hits this; a conformant client cannot avoid it.
 Action: upstream issue warranted (draft: "builtin Json cannot parse any
-string escape sequence; split_json_string_tail rejects backslashes" with
-the probe file); app workaround in `examples/conduit/Api.roc`
+string escape sequence; split_json_string_tail rejects backslashes"); app
+workaround in `examples/conduit/Api.roc`
 (`shield_escapes`/`restore_text`: placeholder-substitute escapes before
 parse, restore after decode; `\uXXXX` still unsupported). Remove the
 workaround and re-simplify when upstream lands support.

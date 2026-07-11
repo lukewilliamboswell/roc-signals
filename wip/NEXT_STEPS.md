@@ -71,14 +71,12 @@ active backlog.
 
 ## Active evidence work
 
-Temporary toolchain for active Roc app/debug loops: until roc-lang/roc PR
-#10025 and PR #10050 land upstream and the local compiler is refreshed, use
-the merged ReleaseFast checkout at
-`/private/tmp/roc-pr10025-10050-copy/zig-out/bin/roc`
-(`release-fast-36718acf`) for conduit rebuild/debug loops. It includes both
-PR heads plus a local one-line compile fix in that temporary Roc checkout.
-Use `--no-cache` from this sandbox, e.g.
-`/private/tmp/roc-pr10025-10050-copy/zig-out/bin/roc build --no-cache --target=arm64mac --opt=dev --output=/tmp/conduit-dbg examples/conduit/app.roc`.
+Active Roc toolchain: use `roc` from `PATH` and record `roc version` with gate
+results (reviewed 2026-07-12 as `release-fast-4828766c`). Temporary compiler
+checkouts are retired for this workstream. Use `--no-cache` from this sandbox,
+e.g.
+`roc build --no-cache --target=arm64mac --opt=dev --output=/tmp/conduit-dbg
+examples/conduit/app.roc`.
 
 ### 0a. RealWorld demo build (`examples/conduit`)
 
@@ -86,27 +84,35 @@ Use `--no-cache` from this sandbox, e.g.
 instrument for production readiness, per `wip/REALWORLD_DEMO_PLAN.md` (scope,
 phases, MoE/MoP definitions, backend strategy, comparison method).
 
-This is app and evidence work, not a platform promotion. Phase 0 pre-flight
-canaries completed 2026-07-08 (findings in
-`wip/research/realworld_demo_findings.md`): cross-origin authenticated
-request observed in a real browser (fetch-policy candidate stays closed,
-`wip/research/fetch_policy_evidence.md`), roc#9964 wide-record crash no
-longer reproduces on the current nightly
-(`wip/research/json_codec_evidence.md`), markdown spike landed in the
-`markdown-elem` fixture (fences, images, nested lists; no roc-parser
-package exists, app-local parser is the path), and the in-page conduit API
-backend skeleton is proven by node tests. Phase 1 registered
-`examples/conduit` (unpublished) with the routed shell. Expected promotion
-triggers this build may generate: scroll restoration (priority 1),
-JSON/body ergonomics (priority 3); expected confirmations: generic `Sub`,
-dynamic event response, fetch-policy knobs, storage write-failure recovery
-stay deferred.
+This is app and evidence work, not a platform promotion. Phases 0-4 and the
+Phase 5 feature/error matrices are implemented; completed evidence belongs in
+`wip/research/realworld_demo_findings.md` rather than this active backlog.
 
-Current backlog: Phase 4 (write paths) and Phase 5
-(hardening/measurement) per `wip/REALWORLD_DEMO_PLAN.md`. Keep completed
-phase evidence in `wip/research/realworld_demo_findings.md`, not in this
-backlog. Two upstream compiler issues are drafted in the ledger but
-deliberately not filed yet (recorded decision; revisit at Phase 5 synthesis).
+Current closeout order:
+
+1. Restore the compiler and native behavior gate. On 2026-07-12
+   `release-fast-4828766c` first produced native arm64mac, wasm dev, and wasm
+   size artifacts; the native executable then failed even with an empty spec:
+   `HostValue operation used a capability that does not own the retained value`.
+   Final verification on the same version now reproducibly panics during
+   `roc check` on an erased-function `ConstStore` postcheck invariant. Minimize
+   the compiler failure first, then the runtime failure. Do not claim MoE-1
+   until the full spec passes.
+2. Run `python3 scripts/serve.py --no-server` in dev and size app-opt modes,
+   exercise the resulting wasm mount, decide path-vs-hash/static-host behavior,
+   and make an explicit `public` decision.
+3. Run the real-backend base-URL-swap conformance pass (MoE-2).
+4. Run the Conduit soak and action-wire telemetry, then set or re-defer the MoP
+   budgets from measurements.
+5. Finish payload/reference comparison rows. Recheck/file the builtin JSON
+   escape issue after minimizing or bypassing the current compiler's new
+   postcheck panic on the probe. Close the findings synthesis only after these
+   decisions are recorded.
+
+The former compiler-build crash is historical: roc-lang/roc#10071 is filed and
+roc-lang/roc#10072 fixed its reduced/full build repros. The remaining gate is a
+runtime host correctness failure, followed by release evidence—not more Conduit
+feature construction.
 
 ## Active priority order
 

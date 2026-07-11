@@ -2,6 +2,7 @@ app [main] { pf: platform "../../platform/main.roc" }
 
 import Article
 import Auth
+import Editor
 import Home
 import Nav
 import Profile
@@ -114,22 +115,6 @@ simple_page = |heading, note| {
 	)
 }
 
-editor_edit_page : Signal.Signal(Route) -> Elem
-editor_edit_page = |route| {
-	Ui.component(
-
-		|| Html.section(
-			"Edit article",
-			[Html.class_attr("px-4 py-6")],
-			[
-				Html.heading("Edit article"),
-				Html.text_s(route.map(|value| "Editing: ${Route.article_slug(value)}")),
-				Html.paragraph("The editor arrives with the write phase (Phase 4)."),
-			],
-		),
-	)
-}
-
 not_found_page : Ui.State(Nav.RouteIntent) -> Elem
 not_found_page = |intent| {
 	Ui.component(
@@ -164,19 +149,19 @@ page_view = |route, session, intent| {
 	settings_page = Settings.page(session, intent)
 
 	new_article_page : Elem
-	new_article_page = simple_page("New article", "The editor arrives with the write phase (Phase 4).")
+	new_article_page = Editor.create_page(session)
 
 	edit_article_page : Elem
-	edit_article_page = editor_edit_page(route)
+	edit_article_page = Editor.edit_page(route, session)
 
 	article_page : Elem
-	article_page = Article.page(route, intent)
+	article_page = Article.page(route, session, intent)
 
 	profile_page : Elem
-	profile_page = Profile.page(route, False, intent)
+	profile_page = Profile.page(route, session, False, intent)
 
 	profile_favorites_page : Elem
-	profile_favorites_page = Profile.page(route, True, intent)
+	profile_favorites_page = Profile.page(route, session, True, intent)
 
 	not_found : Elem
 	not_found = not_found_page(intent)

@@ -9,9 +9,9 @@
 // require it, which keeps the app compatible with the weakest conformant
 // backend.
 //
-// Current surface: the read endpoints plus login. Register, user update,
-// article/comment/favorite/follow mutations land alongside the app phases
-// that exercise them (wip/REALWORLD_DEMO_PLAN.md).
+// Current surface: read endpoints, auth/settings, article create/delete, and
+// comments, favorites, and follow/unfollow. The remaining article mutations land alongside the app
+// phases that exercise them (wip/REALWORLD_DEMO_PLAN.md).
 //
 // Everything is seeded and in-memory: no clock, no randomness, so native and
 // JS assertions can rely on exact values. Unknown URIs return null so the
@@ -307,6 +307,62 @@ function articleComments(backend, slug, viewer) {
   return httpJsonResponse({ comments: entries.map((comment) => commentJson(backend, comment, viewer)) });
 }
 
+function createComment(backend, viewer, slug, bodyText) {
+  const article = backend.articles.find((candidate) => candidate.slug === slug);
+  if (!article) {
+    return notFound();
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(bodyText);
+  } catch {
+    return errorResponse(422, { body: ["can't be parsed"] });
+  }
+
+  const body = typeof parsed?.comment?.body === "string" ? parsed.comment.body : "";
+  if (!body.trim()) {
+    return errorResponse(422, { body: ["can't be blank"] });
+  }
+
+  const createdAt = isoAfterHours(20_000 + backend.nextCommentId);
+  const comment = {
+    id: backend.nextCommentId,
+    createdAt,
+    updatedAt: createdAt,
+    body,
+    author: viewer.username,
+  };
+  backend.nextCommentId += 1;
+  const entries = backend.comments.get(slug) ?? [];
+  entries.push(comment);
+  backend.comments.set(slug, entries);
+  return httpJsonResponse({ comment: commentJson(backend, comment, viewer) }, { status: 201 });
+}
+
+function deleteComment(backend, viewer, slug, idText) {
+  const article = backend.articles.find((candidate) => candidate.slug === slug);
+  if (!article) {
+    return notFound();
+  }
+  const id = Number.parseInt(idText, 10);
+  if (!Number.isFinite(id)) {
+    return notFound();
+  }
+  const entries = backend.comments.get(slug) ?? [];
+  const index = entries.findIndex((comment) => comment.id === id);
+  if (index < 0) {
+    return notFound();
+  }
+  const comment = entries[index];
+  if (comment.author !== viewer.username) {
+    return errorResponse(403, { body: ["forbidden"] });
+  }
+  entries.splice(index, 1);
+  backend.comments.set(slug, entries);
+  return httpJsonResponse({ comment: commentJson(backend, comment, viewer) });
+}
+
 function popularTags(backend) {
   const counts = new Map();
   for (const article of backend.articles) {
@@ -355,14 +411,18 @@ function register(backend, bodyText) {
   const username = parsed?.user?.username;
   const email = parsed?.user?.email;
   const password = parsed?.user?.password;
+  const errors = {};
   if (!username) {
-    return errorResponse(422, { username: ["can't be blank"] });
+    errors.username = ["can't be blank"];
   }
   if (!email) {
-    return errorResponse(422, { email: ["can't be blank"] });
+    errors.email = ["can't be blank"];
   }
   if (!password) {
-    return errorResponse(422, { password: ["can't be blank"] });
+    errors.password = ["can't be blank"];
+  }
+  if (Object.keys(errors).length > 0) {
+    return errorResponse(422, errors);
   }
   if (backend.users.has(username)) {
     return errorResponse(422, { username: ["has already been taken"] });
@@ -388,12 +448,176 @@ function updateUser(backend, viewer, bodyText) {
     return errorResponse(422, { body: ["can't be parsed"] });
   }
   const updates = parsed?.user ?? {};
+  if (["email", "bio", "image", "password", "username"].every((field) => typeof updates[field] !== "string" || updates[field] === "")) {
+    return errorResponse(422, { body: ["must update at least one field"] });
+  }
   for (const field of ["email", "bio", "image", "password", "username"]) {
     if (typeof updates[field] === "string" && updates[field] !== "") {
       viewer[field] = updates[field];
     }
   }
   return httpJsonResponse({ user: userJson(viewer) });
+}
+
+function setProfileFollow(backend, viewer, username, shouldFollow) {
+  if (!backend.users.has(username)) {
+    return notFound();
+  }
+  if (shouldFollow) {
+    viewer.following.add(username);
+  } else {
+    viewer.following.delete(username);
+  }
+  return httpJsonResponse({ profile: profileJson(backend, username, viewer) });
+}
+
+function uniqueSlug(backend, title) {
+  const base = slugify(title) || "article";
+  let slug = base;
+  let suffix = 2;
+  while (backend.articles.some((article) => article.slug === slug)) {
+    slug = `${base}-${suffix}`;
+    suffix += 1;
+  }
+  return slug;
+}
+
+function uniqueSlugForUpdate(backend, currentSlug, title) {
+  const base = slugify(title) || currentSlug || "article";
+  let slug = base;
+  let suffix = 2;
+  while (backend.articles.some((article) => article.slug !== currentSlug && article.slug === slug)) {
+    slug = `${base}-${suffix}`;
+    suffix += 1;
+  }
+  return slug;
+}
+
+function createArticle(backend, viewer, bodyText) {
+  let parsed;
+  try {
+    parsed = JSON.parse(bodyText);
+  } catch {
+    return errorResponse(422, { body: ["can't be parsed"] });
+  }
+
+  const draft = parsed?.article ?? {};
+  const errors = {};
+  const title = typeof draft.title === "string" ? draft.title.trim() : "";
+  const description = typeof draft.description === "string" ? draft.description.trim() : "";
+  const body = typeof draft.body === "string" ? draft.body : "";
+  const tagList = Array.isArray(draft.tagList)
+    ? draft.tagList.filter((tag) => typeof tag === "string" && tag.trim() !== "").map((tag) => tag.trim())
+    : [];
+
+  if (!title) {
+    errors.title = ["can't be blank"];
+  }
+  if (!description) {
+    errors.description = ["can't be blank"];
+  }
+  if (!body.trim()) {
+    errors.body = ["can't be blank"];
+  }
+  if (Object.keys(errors).length > 0) {
+    return errorResponse(422, errors);
+  }
+
+  const createdAt = isoAfterHours(10_000 + backend.articles.length);
+  const article = {
+    slug: uniqueSlug(backend, title),
+    title,
+    description,
+    body,
+    tagList,
+    createdAt,
+    updatedAt: createdAt,
+    author: viewer.username,
+    favoritedBy: new Set(),
+  };
+  backend.articles.push(article);
+  backend.comments.set(article.slug, []);
+  return httpJsonResponse({ article: articleJson(backend, article, viewer) }, { status: 201 });
+}
+
+function updateArticle(backend, viewer, slug, bodyText) {
+  const article = backend.articles.find((candidate) => candidate.slug === slug);
+  if (!article) {
+    return notFound();
+  }
+  if (article.author !== viewer.username) {
+    return errorResponse(403, { body: ["forbidden"] });
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(bodyText);
+  } catch {
+    return errorResponse(422, { body: ["can't be parsed"] });
+  }
+
+  const draft = parsed?.article ?? {};
+  const title = typeof draft.title === "string" ? draft.title.trim() : "";
+  const description = typeof draft.description === "string" ? draft.description.trim() : "";
+  const body = typeof draft.body === "string" ? draft.body : "";
+  const tagList = Array.isArray(draft.tagList)
+    ? draft.tagList.filter((tag) => typeof tag === "string" && tag.trim() !== "").map((tag) => tag.trim())
+    : [];
+
+  if (!title && !description && !body.trim() && tagList.length === 0) {
+    return errorResponse(422, { body: ["must change at least one field"] });
+  }
+
+  const oldSlug = article.slug;
+  if (title) {
+    article.title = title;
+    article.slug = uniqueSlugForUpdate(backend, oldSlug, title);
+  }
+  if (description) {
+    article.description = description;
+  }
+  if (body.trim()) {
+    article.body = body;
+  }
+  if (tagList.length > 0) {
+    article.tagList = tagList;
+  }
+  article.updatedAt = isoAfterHours(12_000 + backend.articles.length);
+
+  if (article.slug !== oldSlug) {
+    const entries = backend.comments.get(oldSlug);
+    backend.comments.delete(oldSlug);
+    backend.comments.set(article.slug, entries ?? []);
+  }
+
+  return httpJsonResponse({ article: articleJson(backend, article, viewer) });
+}
+
+function deleteArticle(backend, viewer, slug) {
+  const index = backend.articles.findIndex((candidate) => candidate.slug === slug);
+  if (index < 0) {
+    return notFound();
+  }
+  const article = backend.articles[index];
+  if (article.author !== viewer.username) {
+    return errorResponse(403, { body: ["forbidden"] });
+  }
+  backend.articles.splice(index, 1);
+  backend.comments.delete(slug);
+  return httpJsonResponse({ article: articleJson(backend, article, viewer) });
+}
+
+function setArticleFavorite(backend, viewer, slug, shouldFavorite) {
+  const article = backend.articles.find((candidate) => candidate.slug === slug);
+  if (!article) {
+    return notFound();
+  }
+  if (shouldFavorite) {
+    article.favoritedBy.add(viewer.username);
+  } else {
+    article.favoritedBy.delete(viewer.username);
+  }
+  return httpJsonResponse({ article: articleJson(backend, article, viewer) });
 }
 
 function isConduitPath(path) {
@@ -414,14 +638,35 @@ function routeConduit(backend, { method, path, query, viewer, bodyText }) {
   if (method === "GET" && path === "/api/articles") {
     return listArticles(backend, query, viewer);
   }
+  if (method === "POST" && path === "/api/articles") {
+    return viewer ? createArticle(backend, viewer, bodyText) : unauthorized();
+  }
   if (method === "GET" && path === "/api/articles/feed") {
     return feedArticles(backend, query, viewer);
   }
   if (method === "GET" && segments.length === 3 && segments[1] === "articles") {
     return singleArticle(backend, segments[2], viewer);
   }
+  if (method === "PUT" && segments.length === 3 && segments[1] === "articles") {
+    return viewer ? updateArticle(backend, viewer, segments[2], bodyText) : unauthorized();
+  }
+  if (method === "DELETE" && segments.length === 3 && segments[1] === "articles") {
+    return viewer ? deleteArticle(backend, viewer, segments[2]) : unauthorized();
+  }
+  if (method === "POST" && segments.length === 4 && segments[1] === "articles" && segments[3] === "favorite") {
+    return viewer ? setArticleFavorite(backend, viewer, segments[2], true) : unauthorized();
+  }
+  if (method === "DELETE" && segments.length === 4 && segments[1] === "articles" && segments[3] === "favorite") {
+    return viewer ? setArticleFavorite(backend, viewer, segments[2], false) : unauthorized();
+  }
   if (method === "GET" && segments.length === 4 && segments[1] === "articles" && segments[3] === "comments") {
     return articleComments(backend, segments[2], viewer);
+  }
+  if (method === "POST" && segments.length === 4 && segments[1] === "articles" && segments[3] === "comments") {
+    return viewer ? createComment(backend, viewer, segments[2], bodyText) : unauthorized();
+  }
+  if (method === "DELETE" && segments.length === 5 && segments[1] === "articles" && segments[3] === "comments") {
+    return viewer ? deleteComment(backend, viewer, segments[2], segments[4]) : unauthorized();
   }
   if (method === "GET" && path === "/api/tags") {
     return popularTags(backend);
@@ -429,6 +674,12 @@ function routeConduit(backend, { method, path, query, viewer, bodyText }) {
   if (method === "GET" && segments.length === 3 && segments[1] === "profiles") {
     const profile = profileJson(backend, segments[2], viewer);
     return profile ? httpJsonResponse({ profile }) : notFound();
+  }
+  if (method === "POST" && segments.length === 4 && segments[1] === "profiles" && segments[3] === "follow") {
+    return viewer ? setProfileFollow(backend, viewer, segments[2], true) : unauthorized();
+  }
+  if (method === "DELETE" && segments.length === 4 && segments[1] === "profiles" && segments[3] === "follow") {
+    return viewer ? setProfileFollow(backend, viewer, segments[2], false) : unauthorized();
   }
   if (method === "POST" && path === "/api/users/login") {
     return login(backend, bodyText);

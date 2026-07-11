@@ -22,25 +22,34 @@ a better platform shape, propose the breaking change through the normal
 promotion gates with low ceremony; do not paper over API awkwardness in app
 code without a ledger entry.
 
-## Status and next steps (updated 2026-07-09)
+## Status and next steps (updated 2026-07-12)
 
-Work lives on branch `real-world-demo` (draft PR #13). Phases 0-3 are
-committed; the findings ledger (`wip/research/realworld_demo_findings.md`)
-has entries for everything found so far, including two drafted-but-unfiled
-upstream compiler issues (deliberate: hold filing until Phase 5 synthesis).
+Work lives on branch `real-world-demo` (draft PR #13). Phases 0-4 are
+implemented in the working tree. Phase 5 feature work is also substantially
+implemented: the complete 422 and GET-network-error matrices are present, the
+backend contract suite is green, a README exists, and the priority 1-5
+synthesis is drafted in the findings ledger.
 
-The build is doing its job: it surfaced a real dirty-flush correctness
-defect class in the shared reactive engine (`Ui.when` arm flips during task
-resolve/reject flushes panic the native host or leave zombie nodes). That
-engine slice landed in `c981ae9`; Phase 3 now uses the natural
-loading/failed/empty arms again and the full Conduit spec is green.
+The experiment has therefore moved from feature construction to closeout. It
+is not yet correct to call it complete. Direct native arm64mac, wasm dev, and
+wasm size artifacts were produced with `release-fast-4828766c`, and the native
+artifact exposed an initial-mount retained `HostValue` capability mismatch.
+Final verification on the same version now reproducibly panics earlier during
+`roc check` with an erased-function `ConstStore` postcheck invariant. The
+feature assertions are comprehensive but have not passed end to end on the
+current tree.
 
 Current order:
 
-1. **Phase 4 write paths.** Article create/edit/delete, favorite/unfavorite,
-   follow/unfollow, comments, and 422 coverage.
-2. **Phase 5 hardening and measurement.** Error matrix, long-session run,
-   browser comparison, ledger synthesis, and upstream issue filing.
+1. **Restore the authoritative native gate.** Minimize/fix the current compiler
+   postcheck panic, then minimize/fix the initial-mount capability mismatch and
+   run `examples/conduit/spec.txt` end to end.
+2. **Run release/readiness gates.** Exercise both `serve.py --no-server` app
+   optimization modes, mount the wasm build, and decide static-host routing and
+   publication.
+3. **Close evidence, not features.** Run real-backend conformance, the Conduit
+   soak/action telemetry, payload measurements, and the comparison study; file
+   or explicitly defer the JSON escape compiler issue.
 
 Expect further findings — that is the mission, not a schedule slip. The
 project has no users, so platform-shape changes stay cheap; judge every fix
@@ -110,9 +119,10 @@ Out of scope / non-goals:
 
 ## App Shape
 
-Location: `examples/conduit`, registered in `www/data/examples.toml` with
-`public = false` until the hardening phase flips it (the `design.md`
-app-suite list updates in the same slice that registers it).
+Location: `examples/conduit`, registered in `www/data/examples.toml`. Phase 5
+keeps it unpublished until the authoritative native behavior gate and both
+site/wasm build modes pass, then flips it to `public = true` if the suite
+decision holds (the `design.md` app-suite list updates in the same slice).
 
 Module sketch and size budget (total target 3,000-4,000 lines; crossing
 5,000 is itself a finding about platform ergonomics):
@@ -290,7 +300,7 @@ in the same slice.
 
 ### Phase 1 — skeleton
 
-Register `examples/conduit` (unpublished), shell layout, `Route.roc`, route
+Register `examples/conduit` initially unpublished, shell layout, `Route.roc`, route
 switching with placeholder pages, per-route titles, deep links, back/forward
 native and wasm coverage.
 
@@ -355,7 +365,7 @@ host-level error for the demo).
   manual cross-origin pass; running the official API spec collection against
   a thin HTTP wrapper stays a stretch option.
 - Public-site weight: conduit will dominate `dist/`; both app-opt builds must
-  stay green from Phase 1 (`public = false` keeps it off the rendered site
-  until Phase 5).
+  pass before publication. Phase 5 keeps `public = false` until the native spec
+  and site/readiness gates pass and the suite decision is explicit.
 - Spec-runner ergonomics under a very large `spec.txt` — treat as a tooling
   finding if it hurts.

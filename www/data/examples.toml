@@ -100,7 +100,7 @@ bench = true
 [[examples]]
 slug = "conduit"
 title = "Conduit"
-description = "RealWorld (Conduit) evidence app: history-routed multi-page shell with per-route titles and deep links, growing through the RealWorld feature set. Unpublished until the hardening phase."
+description = "RealWorld (Conduit) evidence app: history-routed feeds, sessions, profiles, markdown articles, comments, favorites, follows, and server-confirmed write paths. Unpublished while the Phase 5 wasm build gate is compiler-blocked."
 source = "examples/conduit/app.roc"
 spec = "examples/conduit/spec.txt"
 public = false

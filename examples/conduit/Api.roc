@@ -38,6 +38,13 @@ Api := {}.{
 
 	Profile : { username : Str, bio : Str, image : Str, following : Bool }
 
+	Comment : {
+		id : U64,
+		created_at : Str,
+		body : Str,
+		author : Api.Author,
+	}
+
 	page_size : U64
 	page_size = 20
 
@@ -63,8 +70,20 @@ Api := {}.{
 	article_uri : Str -> Str
 	article_uri = |slug| "/api/articles/${slug}"
 
+	favorite_uri : Str -> Str
+	favorite_uri = |slug| "/api/articles/${slug}/favorite"
+
+	comments_uri : Str -> Str
+	comments_uri = |slug| "/api/articles/${slug}/comments"
+
+	comment_uri : Str, U64 -> Str
+	comment_uri = |slug, id| "/api/articles/${slug}/comments/${id.to_str()}"
+
 	profile_uri : Str -> Str
 	profile_uri = |username| "/api/profiles/${username}"
+
+	follow_uri : Str -> Str
+	follow_uri = |username| "/api/profiles/${username}/follow"
 
 	tags_uri : Str
 	tags_uri = "/api/tags"
@@ -102,6 +121,17 @@ Api := {}.{
 		}
 	}
 
+	decode_comments : Str -> Api.Remote(List(Api.Comment))
+	decode_comments = |body| {
+		parse : Str -> Try({ comments : List(Api.Comment) }, Json.ParseErr)
+		parse = Json.parser_camel()
+		match to_remote(parse(shield_escapes(body))) {
+			Ready(envelope) => Ready(envelope.comments.map(restore_comment))
+			Loading => Loading
+			Failed(message) => Failed(message)
+		}
+	}
+
 	decode_tags : Str -> Api.Remote(List(Str))
 	decode_tags = |body| {
 		parse : Str -> Try({ tags : List(Str) }, Json.ParseErr)
@@ -113,6 +143,8 @@ Api := {}.{
 		}
 	}
 
+	# TODO remove once https://github.com/roc-lang/roc/pull/10045 is merged
+	#
 	# The builtin Json parser rejects any backslash escape inside a JSON
 	# string (Builtin.Json.split_json_string_tail treats a backslash before
 	# the closing quote as invalid JSON), and RealWorld payloads legally
@@ -167,6 +199,15 @@ Api := {}.{
 			description: restore_text(article.description),
 			body: restore_text(article.body),
 			author: restore_author(article.author),
+		}
+	}
+
+	restore_comment : Api.Comment -> Api.Comment
+	restore_comment = |comment| {
+		{
+			..comment,
+			body: restore_text(comment.body),
+			author: restore_author(comment.author),
 		}
 	}
 
@@ -234,6 +275,18 @@ Api := {}.{
 					.with_uri(uri)
 					.with_body(body.to_utf8()),
 				json_headers(token),
+			),
+			8000,
+		)
+	}
+
+	delete_request : Str, Str -> _
+	delete_request = |uri, token| {
+		Http.with_timeout_ms(
+			Http.with_headers(
+				Http.request_from_method(Http.method_delete)
+					.with_uri(uri),
+				auth_headers(token),
 			),
 			8000,
 		)

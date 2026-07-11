@@ -8,17 +8,26 @@ import Api
 import Format
 import Nav
 import Route
+import Session
 import pf.Browser
 import pf.Elem exposing [Elem]
 import pf.Html
+import pf.Http
 import pf.Signal
 import pf.Ui
 
 Feed := {}.{
 	PageItem : { key : Str, active : Bool }
 
-	view : Signal.Signal(Api.Remote(Api.FeedPage)), Ui.State(Nav.RouteIntent) -> Elem
-	view = |remote, intent| {
+	State : { favorite_serial : U64 }
+
+	FavoriteResult : [FavoriteIdle, FavoriteAccepted(Api.Article), FavoriteRejected(Str)]
+
+	initial_state : Feed.State
+	initial_state = { favorite_serial: 0 }
+
+	view : Signal.Signal(Api.Remote(Api.FeedPage)), Signal.Signal(Session), Ui.State(Nav.RouteIntent) -> Elem
+	view = |remote, session, intent| {
 		is_loading : Signal.Signal(Bool)
 		is_loading = remote.map(is_loading_state)
 
@@ -38,7 +47,7 @@ Feed := {}.{
 		article_key = |article| article.slug
 
 		article_row : Str, Signal.Signal(Api.ArticleSummary) -> Elem
-		article_row = |key, article| preview_row(key, article, intent)
+		article_row = |key, article| preview_row(key, article, session, intent)
 
 		Ui.component(
 			|| Html.div(
@@ -90,64 +99,164 @@ Feed := {}.{
 			_ => ""
 		}
 
-	preview_row : Str, Signal.Signal(Api.ArticleSummary), Ui.State(Nav.RouteIntent) -> Elem
-	preview_row = |slug, article, intent| {
-		date_text : Signal.Signal(Str)
-		date_text = article.map(|value| Format.display_date(value.created_at))
+	preview_row : Str, Signal.Signal(Api.ArticleSummary), Signal.Signal(Session), Ui.State(Nav.RouteIntent) -> Elem
+	preview_row = |slug, article, session, intent| {
+		Ui.component(
+			|| {
+				Ui.state(
+					initial_state,
+					|model| {
+						favorite_task = Http.request_task("feed-favorite")
+						favorite_result : Signal.Signal(Feed.FavoriteResult)
+						favorite_result = Signal.fold_task(
+							favorite_task,
+							FavoriteIdle,
+							classify_favorite,
+							|err| FavoriteRejected("Request failed: ${Http.error_text(err)}"),
+						)
 
-		title : Signal.Signal(Str)
-		title = article.map(|value| value.title)
+						model_signal = model.signal()
+						token = session.map(|value| Session.token_of(value))
+						row = { article: article, result: favorite_result }.Signal.map(|value| row_state(value.article, value.result))
+						request_inputs = { model: model_signal, row: row, token: token }.Signal
+						request = request_inputs.map(|value| { serial: value.model.favorite_serial, slug: value.row.slug, favorited: value.row.favorited, token: value.token })
 
-		description : Signal.Signal(Str)
-		description = article.map(|value| value.description)
+						date_text : Signal.Signal(Str)
+						date_text = article.map(|value| Format.display_date(value.created_at))
 
-		favorites : Signal.Signal(Str)
-		favorites = article.map(|value| "${value.favorites_count.to_str()} favorites")
+						title : Signal.Signal(Str)
+						title = row.map(|value| value.title)
 
-		author_rows : Signal.Signal(List(Str))
-		author_rows = article.map(|value| [value.author.username])
+						description : Signal.Signal(Str)
+						description = row.map(|value| value.description)
 
-		tags : Signal.Signal(List(Str))
-		tags = article.map(|value| value.tag_list)
+						favorites : Signal.Signal(Str)
+						favorites = row.map(|value| "${value.favorites_count.to_str()} favorites")
 
-		Elem.Element(
-			{
-				tag: "article",
-				attrs: [Html.class_attr("border-t border-zinc-200 py-4")],
-				children: [
-					Html.div_c(
-						"flex items-center gap-2 text-sm text-zinc-500",
-						[
-							Ui.each_str(author_rows, |name| name, |name, _| Nav.link(name, "font-medium text-emerald-600", Route.profile_location(name), intent)),
-							Html.text_s(date_text),
-						],
-					),
-					Elem.Element(
-						{
-							tag: "a",
-							attrs: [
-								Html.class_attr("block text-lg font-semibold"),
-								Html.attr("href", "/article/${slug}"),
-								Html.on_event("click", Html.event_policy_prevent_default, intent.on_unit(|current| Nav.for_target(current, Route.article_location(slug)))),
-							],
-							children: [Html.text_s(title)],
-						},
-					),
-					Html.paragraph_s_c(description, "text-zinc-500"),
-					Html.div_c(
-						"flex items-center justify-between text-sm text-zinc-500",
-						[
-							Html.text_s(favorites),
-							Html.div_c(
-								"flex gap-1",
-								[Ui.each_str(tags, |tag| tag, |tag, _| tag_pill(tag, intent))],
-							),
-						],
-					),
-				],
+						favorite_label : Signal.Signal(Str)
+						favorite_label = row.map(favorite_button_label)
+
+						favorite_error : Signal.Signal(Str)
+						favorite_error = favorite_result.map(favorite_message_of)
+
+						author_rows : Signal.Signal(List(Str))
+						author_rows = article.map(|value| [value.author.username])
+
+						tags : Signal.Signal(List(Str))
+						tags = article.map(|value| value.tag_list)
+
+						signed_in = session.map(|value| Session.is_signed_in(value))
+
+						Elem.Element(
+							{
+								tag: "article",
+								attrs: [Html.class_attr("border-t border-zinc-200 py-4")],
+								children: [
+									Ui.on_change(
+										request,
+										|value|
+											if value.serial == 0 or value.slug.is_empty() {
+												Signal.noop
+											} else if value.favorited {
+												Http.start(favorite_task, Api.delete_request(Api.favorite_uri(value.slug), value.token))
+											} else {
+												Http.start(favorite_task, Api.post_request(Api.favorite_uri(value.slug), "", value.token))
+											},
+									),
+									Html.div_c(
+										"flex items-center gap-2 text-sm text-zinc-500",
+										[
+											Ui.each_str(author_rows, |name| name, |name, _| Nav.link(name, "font-medium text-emerald-600", Route.profile_location(name), intent)),
+											Html.text_s(date_text),
+										],
+									),
+									Elem.Element(
+										{
+											tag: "a",
+											attrs: [
+												Html.class_attr("block text-lg font-semibold"),
+												Html.attr("href", "/article/${slug}"),
+												Html.on_event("click", Html.event_policy_prevent_default, intent.on_unit(|current| Nav.for_target(current, Route.article_location(slug)))),
+											],
+											children: [Html.text_s(title)],
+										},
+									),
+									Html.paragraph_s_c(description, "text-zinc-500"),
+									Html.div_c(
+										"flex items-center justify-between text-sm text-zinc-500",
+										[
+											Ui.when(
+												signed_in,
+												|| Html.action_button_attrs(
+													favorite_label,
+													favorite_label.map(|_| False),
+													[Html.class_attr("rounded border border-emerald-600 px-2 py-1 text-emerald-700")],
+													model.on_unit(|value| { favorite_serial: value.favorite_serial + 1 }),
+												),
+												|| Html.text_s(favorites),
+											),
+											Html.div_c(
+												"flex gap-1",
+												[Ui.each_str(tags, |tag| tag, |tag, _| tag_pill(tag, intent))],
+											),
+										],
+									),
+									Html.paragraph_s_c(favorite_error, "text-red-700"),
+								],
+							},
+						)
+					},
+				)
 			},
 		)
 	}
+
+	classify_favorite : _ -> Feed.FavoriteResult
+	classify_favorite = |response| {
+		status = Http.response_status(response)
+		if status == 200 {
+			match Api.decode_article(Api.response_text(response)) {
+				Ready(article) => FavoriteAccepted(article)
+				Failed(message) => FavoriteRejected(message)
+				Loading => FavoriteRejected("The server response could not be read.")
+			}
+		} else if status == 401 {
+			FavoriteRejected("Please sign in to favorite articles.")
+		} else if status == 404 {
+			FavoriteRejected("Article was not found.")
+		} else {
+			FavoriteRejected("The server responded with status ${status.to_str()}.")
+		}
+	}
+
+	row_state : Api.ArticleSummary, Feed.FavoriteResult -> Api.ArticleSummary
+	row_state = |article, result|
+		match result {
+			FavoriteAccepted(updated) => {
+				..article,
+				favorited: updated.favorited,
+				favorites_count: updated.favorites_count,
+			}
+			_ => article
+		}
+
+	favorite_button_label : Api.ArticleSummary -> Str
+	favorite_button_label = |article| {
+		prefix =
+			if article.favorited {
+				"Unfavorite"
+			} else {
+				"Favorite"
+			}
+		"${prefix} ${article.title} (${article.favorites_count.to_str()})"
+	}
+
+	favorite_message_of : Feed.FavoriteResult -> Str
+	favorite_message_of = |result|
+		match result {
+			FavoriteRejected(message) => message
+			_ => ""
+		}
 
 	tag_pill : Str, Ui.State(Nav.RouteIntent) -> Elem
 	tag_pill = |tag, intent|

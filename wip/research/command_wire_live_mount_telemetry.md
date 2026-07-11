@@ -63,6 +63,14 @@ Refresh check: re-run on 2026-07-05:
   `--exercise-live-search-online`; subtracting the mount-only rows matched the
   action deltas below.
 
+Conduit refresh attempt: checked on 2026-07-11 during Conduit Phase 5.
+`node wip/research/wire_protocol_dynamic_size_estimate.mjs` exited
+successfully. Representative Conduit action telemetry is still blocked by Roc
+compiler crashes: direct Conduit wasm builds for both `--opt=dev` and
+`--opt=size` exit 139, and the native Conduit build/spec path is blocked by the
+same compiler class. The public-app snapshot below is unchanged because Conduit
+remains `public = false` until the wasm build gate passes.
+
 | App | Command batches | Commands | Fixed record bytes | Fixed string bytes | Dynamic buffer bytes |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | service-ops-center | 3 | 1113 | 26712 | 2767 | 15428 |
