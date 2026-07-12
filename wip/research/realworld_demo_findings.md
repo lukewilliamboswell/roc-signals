@@ -104,7 +104,7 @@ execution order after it:
 | Gate | Current evidence | Resume condition |
 | --- | --- | --- |
 | Native spec execution | full `examples/conduit/spec.txt` passes with `release-fast-afbc7863`, including explicit stale completion and back/forward assertions | complete |
-| Cross-example native rollout | all Roc checks pass; `service-ops-center` now gets past the baseline capability mismatch but fails its unknown-route overview assertion at spec line 75 | fix the focused route-branch defect, then rerun `scripts/test.py native` |
+| Cross-example native rollout | all Roc checks and all native specs pass, including `service-ops-center` and the canonical-location branch fixture | complete |
 | Remaining MoE-3/MoE-4 robustness | ordinary back/forward, loading, errors, and stale suppression pass | inject `StorageUnavailable` and run the planned 10-step navigation trail |
 | Real-backend conformance (MoE-2) | in-page backend shape is covered by node tests, and the Phase 0 cross-origin auth canary passed | wasm Conduit build runs in browser with a base-URL swap against a conformant backend |
 | Public-site publication/readiness (MoE-6) | README exists; direct wasm dev and size builds pass; `public = false` is intentional | after the native gate, `serve.py --no-server` passes in both app optimization modes, including Conduit |
@@ -130,7 +130,7 @@ until they can be rechecked and filed.
 ### 2026-07-12 Phase 5 — Source factories expose a pre-existing Service Ops branch defect
 
 Classification: platform-gap
-Severity: friction (outside the Conduit feature gate)
+Severity: friction (resolved)
 Evidence: the all-example native suite checks every app, then reaches
 `service-ops-center/spec.txt` line 75: an unknown service URL is canonically
 replaced with `/`, but the overview `Ui.when` branch remains detached. A clean
@@ -138,9 +138,12 @@ replaced with `/`, but the overview `Ui.when` branch remains detached. A clean
 earlier during mount with the retained-value capability mismatch, so this is
 not a regression caused by the keyed-row insertion fix; the source-factory
 change made the deeper existing failure reachable.
-Action: isolate the route-driven branch replacement in a focused fixture before
-rerunning the all-example native suite. Do not describe the repository-wide
-native gate as green until it passes.
+Action: resolved in `examples/_fixtures/location-canonical-branch`. Scalar
+render sinks now capture navigation/storage effects, structural sinks for the
+triggering generation apply next, and only then does the engine redispatch the
+updated host source. Native and Wasm DOM-event paths share the same batch
+transaction. The focused failing/control specs, Service Ops, Conduit, and the
+full cross-example native suite pass.
 
 ### 2026-07-12 Phase 5 — Native behavior gate restored and hardened
 

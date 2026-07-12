@@ -69,8 +69,10 @@ expect_text text:"Billing Hotfix checks: 1" "Billing Hotfix checks: 1"
 expect_text text:"Search Index checks: 1" "Search Index checks: 1"
 expect_text text:"Edge Gateway checks: 1" "Edge Gateway checks: 1"
 expect_metric_delta nodes_recomputed 1
-expect_metric_delta patches_emitted 5
-expect_metric_delta remove_node 4
+# Removing a rendered row emits one subtree removal; descendants deactivate
+# inside the engine rather than producing redundant host remove patches.
+expect_metric_delta patches_emitted 2
+expect_metric_delta remove_node 1
 expect_metric_delta bind_event 1
 expect_metric_delta move_before 0
 expect_metric_delta append_child 0

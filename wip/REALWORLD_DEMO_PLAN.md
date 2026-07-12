@@ -34,25 +34,23 @@ The experiment has therefore moved from feature construction to closeout. The
 authoritative native behavior script now passes end to end with
 `release-fast-afbc7863`. Restoring that gate fixed capability-bearing browser
 sources, duplicate-name task routing, keyed-row structural replacement,
-descendant accessible-name lookup, and repeated mutation/refetch behavior. The
+descendant accessible-name lookup, repeated mutation/refetch behavior, and
+same-turn route canonicalization. The full cross-example native suite now
+passes, including the focused canonical-location branch fixture. The
 current PATH compiler still has a separate erased-function `ConstStore`
 postcheck regression; that toolchain issue no longer blocks behavior evidence
 because the known-good roc#10072 build checks and builds the app.
 
 Current order:
 
-1. **Finish the cross-example rollout.** The browser-source factory change lets
-   `service-ops-center` get past the baseline capability mismatch, exposing a
-   separate unknown-route branch replacement failure at native spec line 75.
-   Fix that focused fixture and rerun the all-example native suite.
-2. **Run release/readiness gates.** Exercise both `serve.py --no-server` app
+1. **Run release/readiness gates.** Exercise both `serve.py --no-server` app
    optimization modes, mount the wasm build, and decide static-host routing and
    publication.
-3. **Close robustness evidence.** Add an injectable `StorageUnavailable`
+2. **Close robustness evidence.** Add an injectable `StorageUnavailable`
    startup case and the planned 10-step back/forward plus long-session soak.
    The native script already covers ordinary back and forward navigation and
    explicitly delivers a stale feed result after request replacement.
-4. **Close evidence, not features.** Run real-backend conformance, the Conduit
+3. **Close evidence, not features.** Run real-backend conformance, the Conduit
    soak/action telemetry, payload measurements, and the comparison study; file
    or explicitly defer the JSON escape compiler issue.
 

@@ -16,6 +16,7 @@ let exerciseServiceOpsRefresh = false;
 let exerciseTeamCheckoutPlans = false;
 let exerciseLocationSource = false;
 let exerciseLocationNavigation = false;
+let exerciseLocationCanonicalBranch = false;
 let exerciseStorageCommands = false;
 let exerciseLiveSearchOnline = false;
 let rawName;
@@ -34,6 +35,8 @@ while (args.length > 0) {
     exerciseLocationSource = true;
   } else if (arg === "--exercise-location-navigation") {
     exerciseLocationNavigation = true;
+  } else if (arg === "--exercise-location-canonical-branch") {
+    exerciseLocationCanonicalBranch = true;
   } else if (arg === "--exercise-storage-commands") {
     exerciseStorageCommands = true;
   } else if (arg === "--exercise-live-search-online") {
@@ -51,7 +54,7 @@ while (args.length > 0) {
 
 if (!wasmPath) {
   console.error(
-    "usage: mount_wasm_example.mjs <wasm-path> [name] [--expect-error <substring>] [--telemetry-summary] [--exercise-service-ops-refresh] [--exercise-team-checkout-plans] [--exercise-location-source] [--exercise-location-navigation] [--exercise-storage-commands] [--exercise-live-search-online]",
+    "usage: mount_wasm_example.mjs <wasm-path> [name] [--expect-error <substring>] [--telemetry-summary] [--exercise-service-ops-refresh] [--exercise-team-checkout-plans] [--exercise-location-source] [--exercise-location-navigation] [--exercise-location-canonical-branch] [--exercise-storage-commands] [--exercise-live-search-online]",
   );
   process.exit(2);
 }
@@ -108,6 +111,9 @@ function initialSessionStorage() {
 }
 
 function initialBrowserHref() {
+  if (exerciseLocationCanonicalBranch) {
+    return "http://signals.local/services/workers";
+  }
   if (exerciseLocationSource) {
     return "http://signals.local/services/api?tab=logs#tail";
   }
@@ -219,6 +225,10 @@ if (exerciseLocationSource) {
 
 if (exerciseLocationNavigation) {
   await exerciseLocationNavigationWorkflow(name, root, errors, browserHistory, browserEvents);
+}
+
+if (exerciseLocationCanonicalBranch) {
+  await exerciseLocationCanonicalBranchWorkflow(name, root, errors, browserHistory, browserEvents);
 }
 
 if (exerciseStorageCommands) {
@@ -433,6 +443,24 @@ async function exerciseLocationNavigationWorkflow(name, root, errors, browserHis
   failOnRuntimeErrors(name, errors, "checking command-backed location replacement");
   expectBrowserUrl(name, browserHistory, "/services/web", "tab=deploys", "events", "applying command-backed location replacement");
   expectRenderedLocation(name, root, "/services/web", "tab=deploys", "events", "applying command-backed location replacement");
+}
+
+async function exerciseLocationCanonicalBranchWorkflow(name, root, errors, browserHistory, browserEvents) {
+  if (!root.textContent.includes("Detail branch")) {
+    fail(`mounted ${name}, but the initial detail branch was not rendered`);
+  }
+
+  browserHistory.pushState(null, "", "/services/missing");
+  browserEvents.dispatch("popstate");
+  await new Promise((resolve) => setTimeout(resolve, settleMs));
+  failOnRuntimeErrors(name, errors, "canonicalizing a nested location update");
+  expectBrowserPath(name, browserHistory, "/", "canonicalizing a nested location update");
+  if (!root.textContent.includes("Path: /") || !root.textContent.includes("Overview branch")) {
+    fail(`canonicalized ${name}, but the overview branch and final path were not rendered`);
+  }
+  if (root.textContent.includes("Detail branch")) {
+    fail(`canonicalized ${name}, but the stale detail branch remained mounted`);
+  }
 }
 
 async function exerciseLiveSearchOnlineWorkflow(name, root, errors, browserNavigator, browserEvents) {

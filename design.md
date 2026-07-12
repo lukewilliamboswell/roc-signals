@@ -1410,7 +1410,11 @@ installs a mount-scoped `popstate` listener that calls
 `Browser.push_state` and `Browser.replace_state` travel through the command
 boundary and call `history.pushState` / `history.replaceState`; the host also
 refreshes active location sources in that propagation turn so rendered route
-state and the browser URL stay aligned.
+state and the browser URL stay aligned. When an `Ui.on_change` emits navigation
+while a dirty batch is rendering, the engine applies scalar and structural
+sinks for that generation before redispatching the updated location source.
+This transaction boundary prevents a canonical redirect from invalidating a
+pending `Ui.when` branch change.
 
 `Browser.set_title` is a separate command, not part of location. Apps derive a
 title from route or domain state and emit it with `Ui.on_change_initial` when

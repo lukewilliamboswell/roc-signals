@@ -2056,13 +2056,7 @@ fn dispatchRocEventWithStats(host: *HostEnv, roc_host: *abi.RocHost, event_id: u
         const stable_changed_record_ids = host.hostAllocator().dupe(u64, changed_record_ids) catch @panic("out of memory");
         defer host.hostAllocator().free(stable_changed_record_ids);
         const apply_start_ns = benchmark.nowNs();
-        const sink_counts = applyDirtyRenderSinks(host, roc_host, &dirty_source_node_ids, stable_changed_record_ids, dirty_generation);
-        const dirty_structural_signals = collectDirtyStructuralSignals(host, roc_host, host.hostAllocator(), &dirty_source_node_ids, stable_changed_record_ids, dirty_generation);
-        defer host.hostAllocator().free(dirty_structural_signals);
-        var counts = sink_counts;
-        if (dirty_structural_signals.len != 0) {
-            counts.addAll(applyDirtyStructuralSignalsLocally(host, roc_host, &dirty_source_node_ids, dirty_generation, dirty_structural_signals));
-        }
+        const counts = host.engine.applyDirtySignalBatch(host, roc_host, &dirty_source_node_ids, stable_changed_record_ids, dirty_generation);
         s.dispatch_apply_ns += benchmark.nowNs() - apply_start_ns;
         s.commands.addAll(counts);
         finishHostMetrics(host);
@@ -2073,12 +2067,7 @@ fn dispatchRocEventWithStats(host: *HostEnv, roc_host: *abi.RocHost, event_id: u
         const changed_record_ids = propagateDirtyActiveSignals(host, roc_host, host.hostAllocator(), &dirty_source_node_ids, dirty_generation);
         const stable_changed_record_ids = host.hostAllocator().dupe(u64, changed_record_ids) catch @panic("out of memory");
         defer host.hostAllocator().free(stable_changed_record_ids);
-        _ = applyDirtyRenderSinks(host, roc_host, &dirty_source_node_ids, stable_changed_record_ids, dirty_generation);
-        const dirty_structural_signals = collectDirtyStructuralSignals(host, roc_host, host.hostAllocator(), &dirty_source_node_ids, stable_changed_record_ids, dirty_generation);
-        defer host.hostAllocator().free(dirty_structural_signals);
-        if (dirty_structural_signals.len != 0) {
-            _ = applyDirtyStructuralSignalsLocally(host, roc_host, &dirty_source_node_ids, dirty_generation, dirty_structural_signals);
-        }
+        _ = host.engine.applyDirtySignalBatch(host, roc_host, &dirty_source_node_ids, stable_changed_record_ids, dirty_generation);
         finishHostMetrics(host);
     }
 }
@@ -4702,7 +4691,7 @@ test "signals host deferred on_change navigation preserves small string payloads
     try std.testing.expectEqualStrings("/", host.currentLocation().path);
 }
 
-test "signals host applies structural changes after deferred location redirects" {
+test "signals host applies the final structural branch after deferred location redirects" {
     test_erased_callable_drop_count = 0;
 
     var host = HostEnv.init();
@@ -4713,24 +4702,24 @@ test "signals host applies structural changes after deferred location redirects"
         _ = host.gpa.deinit();
     }
 
-    host.setCurrentLocation(.{ .path = "/login", .query = "", .hash = "" });
+    host.setCurrentLocation(.{ .path = "/services/workers", .query = "", .hash = "" });
 
-    const is_editor = testNodeLocationPathEqualsSourceExpr(&roc_host, "/editor");
-    const is_login = testNodeLocationPathEqualsSourceExpr(&roc_host, "/login");
-    const is_login_cap = testNodeSignalExprCapabilityOrPanic(is_login);
+    const is_missing = testNodeLocationPathEqualsSourceExpr(&roc_host, "/services/missing");
+    const is_detail = testNodeLocationPathEqualsSourceExpr(&roc_host, "/services/workers");
+    const is_detail_cap = testNodeSignalExprCapabilityOrPanic(is_detail);
     const page = abi.Elem{
         .payload = .{
             .when = .{
-                .condition = boxTestNodeSignalExpr(&roc_host, is_login),
-                .read = testBoolReadHandle(&roc_host, is_login_cap),
-                .when_false = boxTestElem(&roc_host, testNodeText(&roc_host, "not found")),
-                .when_true = boxTestElem(&roc_host, testNodeText(&roc_host, "login page")),
+                .condition = boxTestNodeSignalExpr(&roc_host, is_detail),
+                .read = testBoolReadHandle(&roc_host, is_detail_cap),
+                .when_false = boxTestElem(&roc_host, testNodeText(&roc_host, "overview branch")),
+                .when_true = boxTestElem(&roc_host, testNodeText(&roc_host, "detail branch")),
             },
         },
         .tag = .When,
     };
     const children = [_]abi.Elem{
-        testNodeOnChange(&roc_host, is_editor, testLocationCmdCallableFor(&roc_host, .ReplaceState, "/login", "", "")),
+        testNodeOnChange(&roc_host, is_missing, testLocationCmdCallableFor(&roc_host, .ReplaceState, "/", "", "")),
         page,
     };
     const root = testElement(&roc_host, &children);
@@ -4741,15 +4730,15 @@ test "signals host applies structural changes after deferred location redirects"
     _ = applyNodeDescriptorStream(&host, &roc_host, &stream);
     host.engine.active_stream = stream;
 
-    try std.testing.expect(activeTextElementId(&host, "login page") != null);
-    try std.testing.expect(activeTextElementId(&host, "not found") == null);
+    try std.testing.expect(activeTextElementId(&host, "detail branch") != null);
+    try std.testing.expect(activeTextElementId(&host, "overview branch") == null);
 
-    host.pushCurrentLocation(.{ .path = "/editor", .query = "", .hash = "" });
+    host.pushCurrentLocation(.{ .path = "/services/missing", .query = "", .hash = "" });
     _ = host.engine.dispatchCurrentLocationSources(&host, &roc_host);
 
-    try std.testing.expectEqualStrings("/login", host.currentLocation().path);
-    try std.testing.expect(activeTextElementId(&host, "login page") != null);
-    try std.testing.expect(activeTextElementId(&host, "not found") == null);
+    try std.testing.expectEqualStrings("/", host.currentLocation().path);
+    try std.testing.expect(activeTextElementId(&host, "detail branch") == null);
+    try std.testing.expect(activeTextElementId(&host, "overview branch") != null);
 }
 
 test "signals host reuses active signal records while collecting dirty when branch" {

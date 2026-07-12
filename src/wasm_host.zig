@@ -887,14 +887,7 @@ fn dispatchEvent(desc: HostActiveEventDesc, payload: HostValue) void {
     const dirty_generation = shared_engine.nextDirtySignalGeneration();
 
     const changed_record_ids = shared_engine.propagateDirtyActiveSignals(ctx, &roc_host, allocator(), &dirty_source_node_ids, dirty_generation);
-
-    const dirty_structural_signals = shared_engine.collectDirtyStructuralSignals(ctx, &roc_host, allocator(), &dirty_source_node_ids, changed_record_ids, dirty_generation);
-    defer allocator().free(dirty_structural_signals);
-
-    _ = shared_engine.applyDirtyRenderSinks(ctx, &roc_host, &dirty_source_node_ids, changed_record_ids, dirty_generation);
-    if (dirty_structural_signals.len != 0) {
-        _ = shared_engine.applyDirtyStructuralSignalsLocally(ctx, &roc_host, &dirty_source_node_ids, dirty_generation, dirty_structural_signals);
-    }
+    _ = shared_engine.applyDirtySignalBatch(ctx, &roc_host, &dirty_source_node_ids, changed_record_ids, dirty_generation);
 }
 
 fn resolveTask(request_id: u64, payload_text: []const u8, failed: bool) void {

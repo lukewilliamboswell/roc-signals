@@ -165,6 +165,17 @@ native = true
 bench = false
 
 [[examples]]
+slug = "location-canonical-branch"
+title = "Canonical Location Branch"
+description = "Internal same-turn location canonicalization and structural branch fixture."
+source = "examples/_fixtures/location-canonical-branch/app.roc"
+spec = "examples/_fixtures/location-canonical-branch/spec.txt"
+public = false
+wasm = true
+native = true
+bench = false
+
+[[examples]]
 slug = "storage-commands"
 title = "Storage Commands"
 description = "Internal browser storage source and command fixture."
