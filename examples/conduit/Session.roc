@@ -12,8 +12,8 @@ Session := [Anonymous, SignedIn({ token : Str, username : Str })].{
 	username_key : Str
 	username_key = "conduit.username"
 
-	current : Signal.Signal(Session)
-	current = {
+	current : () -> Signal.Signal(Session)
+	current = || {
 		stored = { jwt: Browser.local_storage_text(jwt_key), username: Browser.local_storage_text(username_key) }.Signal
 		stored.map(
 			|value|

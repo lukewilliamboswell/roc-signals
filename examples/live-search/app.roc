@@ -71,7 +71,7 @@ toggle_label = |shown|
 panel : Ui.State(Str), _ -> Elem
 panel = |query, task| {
 	ticks = Signal.interval(1000)
-	online = Browser.online
+	online = Browser.online()
 	tick_text = ticks.map(|n| "Freshness check: ${n.to_str()}")
 	network_text = online.map(online_text)
 	search_request = { query: query.signal(), online: online }.Signal

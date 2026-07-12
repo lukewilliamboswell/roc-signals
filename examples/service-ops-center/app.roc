@@ -837,8 +837,8 @@ main = || {
 			Ui.state(
 				{ serial: 0, path: "/", query: "", hash: "" },
 				|route_intent| {
-					location = Browser.location
-					visibility = Browser.visibility
+					location = Browser.location()
+					visibility = Browser.visibility()
 					visible : Signal.Signal(Bool)
 					visible = visibility.map(is_visible)
 

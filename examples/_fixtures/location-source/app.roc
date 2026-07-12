@@ -24,7 +24,7 @@ location_hash = |location| "Hash: ${visible_piece(location.hash)}"
 
 main : () -> Elem
 main = || {
-	location = Browser.location
+	location = Browser.location()
 
 	Html.div_c(
 		"",

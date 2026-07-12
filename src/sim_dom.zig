@@ -148,13 +148,17 @@ pub fn accessibleName(elem: *const Element) []const u8 {
 }
 
 pub fn matchesLocator(elem: *const Element, locator: spec_parser.Locator) bool {
+    return matchesLocatorWithAccessibleName(elem, locator, accessibleName(elem));
+}
+
+pub fn matchesLocatorWithAccessibleName(elem: *const Element, locator: spec_parser.Locator, accessible_name: []const u8) bool {
     return switch (locator.kind) {
         .none => false,
         .role_name => blk: {
             const role = implicitRole(elem) orelse break :blk false;
             const expected_role = locator.role orelse break :blk false;
             const expected_name = locator.name orelse break :blk false;
-            break :blk std.mem.eql(u8, role, expected_role) and std.mem.eql(u8, accessibleName(elem), expected_name);
+            break :blk std.mem.eql(u8, role, expected_role) and std.mem.eql(u8, accessible_name, expected_name);
         },
         .label => blk: {
             const expected = locator.label orelse break :blk false;
@@ -606,6 +610,13 @@ test "simulated DOM locator helpers cover implicit roles and name fallbacks" {
         .role = "heading",
         .name = "Overview",
     }));
+    allocator.free(heading.text.?);
+    heading.text = null;
+    try std.testing.expect(matchesLocatorWithAccessibleName(&heading, .{
+        .kind = .role_name,
+        .role = "heading",
+        .name = "Overview",
+    }, "Overview"));
 
     const section_tag = try allocator.dupe(u8, "section");
     var section = Element.init(5, section_tag);

@@ -15,7 +15,7 @@ import pf.Ui
 Profile := {}.{
 	State : { follow_serial : U64 }
 
-	FollowResult : [FollowIdle, FollowAccepted, FollowRejected(Str)]
+	FollowResult : [FollowIdle, FollowAccepted(Api.Profile), FollowRejected(Str)]
 
 	initial_state : Profile.State
 	initial_state = { follow_serial: 0 }
@@ -61,8 +61,7 @@ Profile := {}.{
 							},
 						)
 
-						follow_refetch_inputs = { accepted: follow_result.map(follow_done_of), username: username }.Signal
-						follow_refetch = follow_refetch_inputs.map(|value| { accepted: value.accepted, username: value.username })
+						follow_refetch = { result: follow_result, username: username }.Signal
 
 						articles_uri : Signal.Signal(Str)
 						articles_uri = username.map(
@@ -131,11 +130,14 @@ Profile := {}.{
 								Ui.on_change(
 									follow_refetch,
 									|request|
-										if request.accepted and !request.username.is_empty() {
-											Http.get_text(profile_task, Api.profile_uri(request.username))
-										} else {
+									match request.result {
+										FollowAccepted(_) => if request.username.is_empty() {
 											Signal.noop
-										},
+										} else {
+											Http.get_text(profile_task, Api.profile_uri(request.username))
+										}
+										_ => Signal.noop
+									},
 								),
 								Ui.when(
 									is_loading,
@@ -185,7 +187,11 @@ Profile := {}.{
 	classify_follow = |response| {
 		status = Http.response_status(response)
 		if status == 200 {
-			FollowAccepted
+			match Api.decode_profile(Api.response_text(response)) {
+				Ready(profile) => FollowAccepted(profile)
+				Failed(message) => FollowRejected(message)
+				Loading => FollowRejected("The server returned an empty profile response.")
+			}
 		} else if status == 401 {
 			FollowRejected("Please sign in to follow profiles.")
 		} else if status == 404 {
@@ -262,7 +268,7 @@ Profile := {}.{
 	follow_done_of : Profile.FollowResult -> Bool
 	follow_done_of = |result|
 		match result {
-			FollowAccepted => True
+			FollowAccepted(_) => True
 			_ => False
 		}
 

@@ -27,7 +27,7 @@ Article := {}.{
 
 	DeleteResult : [DeleteIdle, DeleteAccepted, DeleteRejected(Str)]
 
-	FavoriteResult : [FavoriteIdle, FavoriteAccepted, FavoriteRejected(Str)]
+	FavoriteResult : [FavoriteIdle, FavoriteAccepted(Api.Article), FavoriteRejected(Str)]
 
 	CommentResult : [CommentIdle, CommentAccepted, CommentRejected(List(Str)), CommentErrored(Str)]
 
@@ -116,11 +116,10 @@ Article := {}.{
 							|value| { serial: value.model.comment_delete_serial, id: value.model.comment_delete_id, slug: value.slug, token: value.token },
 						)
 
-						comment_refetch_inputs = { created: comment_result.map(comment_done_of), deleted: comment_delete_result.map(comment_delete_done_of), slug: slug }.Signal
-						comment_refetch = comment_refetch_inputs.map(|value| { should_refetch: value.created or value.deleted, slug: value.slug })
+						comment_create_refetch = { result: comment_result, slug: slug }.Signal
+						comment_delete_refetch = { result: comment_delete_result, slug: slug }.Signal
 
-						article_refetch_inputs = { favorite: favorite_result.map(favorite_done_of), slug: slug }.Signal
-						article_refetch = article_refetch_inputs.map(|value| { should_refetch: value.favorite, slug: value.slug })
+						article_refetch = { result: favorite_result, slug: slug }.Signal
 
 						is_loading : Signal.Signal(Bool)
 						is_loading = article_state.map(article_loading)
@@ -163,6 +162,10 @@ Article := {}.{
 							"Article",
 							[Html.class_attr("px-4 py-6")],
 							[
+								# Comments load in parallel with the article, before the
+								# comments view branch mounts. Keep the task source active
+								# in this page scope so its initial request can be routed.
+								Ui.on_change(comments_state, |_| Signal.noop),
 								Ui.on_change_initial(
 									slug,
 									|value|
@@ -229,22 +232,40 @@ Article := {}.{
 										},
 								),
 								Ui.on_change(
-									comment_refetch,
+									comment_create_refetch,
 									|request|
-										if request.should_refetch and !request.slug.is_empty() {
-											Http.get_text(comments_task, Api.comments_uri(request.slug))
-										} else {
-											Signal.noop
+										match request.result {
+											CommentAccepted => if request.slug.is_empty() {
+												Signal.noop
+											} else {
+												Http.get_text(comments_task, Api.comments_uri(request.slug))
+											}
+											_ => Signal.noop
+										},
+								),
+								Ui.on_change(
+									comment_delete_refetch,
+									|request|
+										match request.result {
+											CommentDeleteAccepted => if request.slug.is_empty() {
+												Signal.noop
+											} else {
+												Http.get_text(comments_task, Api.comments_uri(request.slug))
+											}
+											_ => Signal.noop
 										},
 								),
 								Ui.on_change(
 									article_refetch,
 									|request|
-										if request.should_refetch and !request.slug.is_empty() {
-											Http.get_text(article_task, Api.article_uri(request.slug))
-										} else {
+									match request.result {
+										FavoriteAccepted(_) => if request.slug.is_empty() {
 											Signal.noop
-										},
+										} else {
+											Http.get_text(article_task, Api.article_uri(request.slug))
+										}
+										_ => Signal.noop
+									},
 								),
 								Ui.on_change(
 									article_delete_done,
@@ -336,7 +357,11 @@ Article := {}.{
 	classify_favorite = |response| {
 		status = Http.response_status(response)
 		if status == 200 {
-			FavoriteAccepted
+			match Api.decode_article(Api.response_text(response)) {
+				Ready(article) => FavoriteAccepted(article)
+				Failed(message) => FavoriteRejected(message)
+				Loading => FavoriteRejected("The server returned an empty article response.")
+			}
 		} else if status == 401 {
 			FavoriteRejected("Please sign in to favorite articles.")
 		} else if status == 404 {
@@ -487,13 +512,6 @@ Article := {}.{
 			_ => "Favorite Article"
 		}
 
-	favorite_done_of : Article.FavoriteResult -> Bool
-	favorite_done_of = |result|
-		match result {
-			FavoriteAccepted => True
-			_ => False
-		}
-
 	favorite_message_of : Article.FavoriteResult -> Str
 	favorite_message_of = |result|
 		match result {
@@ -512,20 +530,6 @@ Article := {}.{
 	article_delete_done_of = |result|
 		match result {
 			DeleteAccepted => True
-			_ => False
-		}
-
-	comment_done_of : Article.CommentResult -> Bool
-	comment_done_of = |result|
-		match result {
-			CommentAccepted => True
-			_ => False
-		}
-
-	comment_delete_done_of : Article.CommentDeleteResult -> Bool
-	comment_delete_done_of = |result|
-		match result {
-			CommentDeleteAccepted => True
 			_ => False
 		}
 

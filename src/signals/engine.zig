@@ -4283,6 +4283,15 @@ pub fn Engine(comptime Ctx: type) type {
                 spliced_any = true;
             }
 
+            // Removing every old row can shift this each site's insertion point
+            // before replacement rows are collected. Other diffs must retain the
+            // descriptor supplied by the dirty-source pass: a newly mounted outer
+            // branch can temporarily reuse the node id of an older active site.
+            const insertion_site = if (diff.removed_scope_ids.len != 0 and row_ranges.count() == 0)
+                self.activeScopeSiteByNodeId(site.node_id, .each) orelse @panic("active each site disappeared after removing every row")
+            else
+                site;
+
             for (diff.scope_ids, diff.row_items_changed, diff.scope_created, 0..) |row_scope_id, row_item_changed, row_created, row_index| {
                 if (!row_item_changed and !self.scopeSubtreeHasDirtyStructuralSource(&self.active_stream, row_scope_id, dirty_source_node_ids)) {
                     continue;
@@ -4294,13 +4303,13 @@ pub fn Engine(comptime Ctx: type) type {
 
                 const append_created_row = append_created_rows_for_later_moves and defer_render_index_suffixes and row_created;
                 const render_insert_index = if (append_created_row)
-                    renderAppendIndexForEachRowRanges(site, row_ranges)
+                    renderAppendIndexForEachRowRanges(insertion_site, row_ranges)
                 else
-                    renderInsertIndexForEachRowRanges(site, row_ranges, diff.scope_ids, row_index);
+                    renderInsertIndexForEachRowRanges(insertion_site, row_ranges, diff.scope_ids, row_index);
                 const splice = if (defer_render_index_suffixes) splice: {
-                    const child_insertion_index = self.childInsertionIndexForEachRowRanges(allocator, site, row_ranges, render_insert_index);
+                    const child_insertion_index = self.childInsertionIndexForEachRowRanges(allocator, insertion_site, row_ranges, render_insert_index);
                     const child_insert_hint = HostRenderChildInsertHint{
-                        .parent_elem_id = site.parent_elem_id,
+                        .parent_elem_id = insertion_site.parent_elem_id,
                         .insertion_index = child_insertion_index,
                     };
                     break :splice self.spliceActiveStreamReplacingScopeWithOptions(ctx, roc_host, row_scope_id, render_insert_index, &row_stream, child_insert_hint, false);
@@ -5611,7 +5620,15 @@ pub fn Engine(comptime Ctx: type) type {
         }
 
         pub fn startTaskCommand(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, owner_scope_id: u64, cmd: erased_calls.StartTaskCmd) render.Counts {
-            const record = self.activeTaskRecordByToken(cmd.task_token) orelse @panic("StartTask referenced a task source that is not active");
+            const record = self.activeTaskRecordByToken(cmd.task_token) orelse {
+                if (self.activeTaskRecordByName(cmd.task_name.asSlice()) != null) {
+                    @panic("StartTask token did not match the active task source with the same name");
+                }
+                if (comptime @hasDecl(Ctx, "debugInactiveTask")) {
+                    Ctx.debugInactiveTask(ctx, cmd.task_name.asSlice());
+                }
+                @panic("StartTask referenced a task source that is not active");
+            };
             const task_payload = record.requireTaskSource();
             if (!std.mem.eql(u8, task_payload.name, cmd.task_name.asSlice())) {
                 @panic("StartTask task name does not match the referenced task source");

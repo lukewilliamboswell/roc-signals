@@ -64,6 +64,12 @@ const NativeCtx = struct {
         ctx.debug_phase = phase;
     }
 
+    pub fn debugInactiveTask(_: Handle, name: []const u8) void {
+        writeStderr("inactive StartTask name=");
+        writeStderr(name);
+        writeStderr("\n");
+    }
+
     pub fn failWithMessage(_: Handle, message: []const u8) noreturn {
         failHost(message);
     }
@@ -1352,12 +1358,33 @@ const HostEnv = struct {
         self.roc_allocations.deinit(allocator);
     }
 
+    fn appendDescendantText(self: *HostEnv, elem: *const DomElement, text: *std.ArrayListUnmanaged(u8)) void {
+        for (elem.children.items) |child_id| {
+            if (child_id >= self.dom_elements.items.len) continue;
+            const child = &self.dom_elements.items[@intCast(child_id)];
+            if (!child.active) continue;
+            if (child.text) |child_text| text.appendSlice(self.hostAllocator(), child_text) catch @panic("out of memory");
+            self.appendDescendantText(child, text);
+        }
+    }
+
+    fn matchesLocator(self: *HostEnv, elem: *const DomElement, locator: Locator) bool {
+        if (locator.kind != .role_name or sim_dom.accessibleName(elem).len != 0) {
+            return sim_dom.matchesLocator(elem, locator);
+        }
+
+        var descendant_text: std.ArrayListUnmanaged(u8) = .empty;
+        defer descendant_text.deinit(self.hostAllocator());
+        self.appendDescendantText(elem, &descendant_text);
+        return sim_dom.matchesLocatorWithAccessibleName(elem, locator, descendant_text.items);
+    }
+
     fn findElementByLocator(self: *HostEnv, locator: Locator, line_num: usize) ?*DomElement {
         var found: ?*DomElement = null;
         var match_count: usize = 0;
         for (self.dom_elements.items) |*elem| {
             if (!elem.active) continue;
-            if (!sim_dom.matchesLocator(elem, locator)) continue;
+            if (!self.matchesLocator(elem, locator)) continue;
             match_count += 1;
             if (found == null) found = elem;
         }
@@ -1377,7 +1404,7 @@ const HostEnv = struct {
         var match_count: usize = 0;
         for (self.dom_elements.items) |*elem| {
             if (!elem.active) continue;
-            if (!sim_dom.matchesLocator(elem, locator)) continue;
+            if (!self.matchesLocator(elem, locator)) continue;
             match_count += 1;
         }
         return match_count;
@@ -1702,7 +1729,7 @@ fn resolvePendingTask(host: *HostEnv, roc_host: *abi.RocHost, name: []const u8, 
     host.noteTaskResolved(pending.request_id);
     defer host.engine.deinitPendingTask(host, &pending);
 
-    const record = host.engine.activeTaskRecordByName(name) orelse failHost("fake task result matched no active task source");
+    const record = host.engine.activeTaskRecordByToken(pending.task_token) orelse failHost("fake task result matched no active task source");
     const task_payload = switch (record.payload) {
         .task_source => |payload| payload,
         .ref, .const_value, .map, .map2, .combine, .interval_source, .location_source, .online_source, .visibility_source, .storage_source => unreachable,
@@ -3808,6 +3835,39 @@ test "signals host task result callbacks consume heap string payloads" {
     try std.testing.expectEqual(@as(usize, 0), host.engine.pending_tasks.items.len);
 }
 
+test "native task resolution uses the pending source token when active names repeat" {
+    test_erased_callable_drop_count = 0;
+
+    var host = HostEnv.init();
+    var roc_host = makeSignalsRocHost(&host);
+    host.engine.roc_host = &roc_host;
+
+    const first = makeTestConsumingTaskSourceRecord(&host, &roc_host, "favorite");
+    const second = makeTestConsumingTaskSourceRecord(&host, &roc_host, "favorite");
+    host.engine.retainActiveSignalRecord(&host, first);
+    host.engine.retainActiveSignalRecord(&host, second);
+    defer {
+        host.engine.clearActiveSignalGraph(&host);
+        first.release(host.hostAllocator(), &host, &roc_host, &host.engine.pending_roc_metrics);
+        second.release(host.hostAllocator(), &host, &roc_host, &host.engine.pending_roc_metrics);
+        host.deinit();
+        _ = host.gpa.deinit();
+    }
+
+    const second_token = switch (second.payload) {
+        .task_source => |payload| payload.token,
+        else => unreachable,
+    };
+    _ = host.engine.appendPendingTask(&host, 0, second_token, "favorite", "/api/favorite");
+    _ = resolvePendingTask(&host, &roc_host, "favorite", "second result", false);
+
+    try expectCachedTaskSourceText(&roc_host, second, "second result");
+    switch (first.requireTaskSource().cached_value) {
+        .absent => {},
+        .present => return error.TestUnexpectedResult,
+    }
+}
+
 test "signals host task sources reset on start only when requested" {
     test_erased_callable_drop_count = 0;
 
@@ -5653,6 +5713,25 @@ test "signals host dirty each removal refreshes survivor event ids" {
     try std.testing.expectEqual(@as(usize, 2), host.engine.active_events.items.len);
     try std.testing.expectEqual(row_3_button_id, activeTextElementId(&host, "row-action-3-3") orelse unreachable);
     try std.testing.expectEqual(@as(?u64, 2), nodeFixedEventId(&host, row_3_button_id, .click));
+
+    const replacement_items = [_]HostValue{testHostValueI64(4)};
+    testDropHostValue(&roc_host, host.engine.states.items[state_index].cell.value);
+    host.engine.states.items[state_index].cell.value = testHostValueI64List(&roc_host, &replacement_items);
+    host.engine.states.items[state_index].version += 1;
+
+    const replacement_generation = host.nextDirtySignalGeneration();
+    const replacement_record_ids = propagateDirtyActiveSignals(&host, &roc_host, host.hostAllocator(), &dirty_source_node_ids, replacement_generation);
+    const replacement_structural_signals = collectDirtyStructuralSignals(&host, &roc_host, host.hostAllocator(), &dirty_source_node_ids, replacement_record_ids, replacement_generation);
+    defer host.hostAllocator().free(replacement_structural_signals);
+
+    try std.testing.expectEqual(@as(usize, 1), replacement_structural_signals.len);
+    _ = applyDirtyStructuralSignalsLocally(&host, &roc_host, &dirty_source_node_ids, replacement_generation, replacement_structural_signals);
+
+    try std.testing.expectEqual(@as(usize, 1), host.engine.active_events.items.len);
+    try std.testing.expect(activeTextElementId(&host, "row-action-1-1") == null);
+    try std.testing.expect(activeTextElementId(&host, "row-action-3-3") == null);
+    const row_4_button_id = activeTextElementId(&host, "row-action-4-4") orelse unreachable;
+    try std.testing.expectEqual(@as(?u64, 1), nodeFixedEventId(&host, row_4_button_id, .click));
 }
 
 fn freeKeyedRowDiff(host: *HostEnv, diff: HostKeyedRowDiffResult) void {

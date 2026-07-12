@@ -352,6 +352,11 @@ pub fn Runner(comptime Ctx: type) type {
             var metrics_mark: ?RuntimeMetrics = null;
 
             for (commands) |cmd| {
+                if (verbose) {
+                    var buffer: [160]u8 = undefined;
+                    const message = std.fmt.bufPrint(&buffer, "[SPEC] line {d}: {s}\n", .{ cmd.line_num, @tagName(cmd.cmd_type) }) catch "[SPEC] command\n";
+                    Ctx.writeStderr(message);
+                }
                 switch (cmd.cmd_type) {
                     .mark_metrics => {
                         metrics_mark = Ctx.lastRuntimeMetrics(host);

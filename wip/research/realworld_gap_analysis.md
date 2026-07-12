@@ -63,10 +63,10 @@ semantics, native spec injection, and JS runtime validation for URL parsing,
 dispatch ordering, and unmount cleanup. Without this, routing collapses into
 app-local state with anchors.
 
-Current status: `Browser.location`, push/replace commands, live popstate
+Current status: `Browser.location()`, push/replace commands, live popstate
 updates, native initial-location/history primitives, JS runtime validation,
 focused Wasm location fixture exercises, and the routed `service-ops-center`
-workflow have landed. `Browser.visibility` and `Browser.online` have also
+workflow have landed. `Browser.visibility()` and `Browser.online()` have also
 landed as focused inbound-source canaries through service-ops-center polling
 pause/resume and live-search offline/online task gating. `Browser.set_title`
 has landed as a separate route-derived command. Remaining route-adjacent
@@ -253,11 +253,11 @@ If the remaining expansion exceeds that or strains the fiction, split a
 dedicated app instead (fallback, unscheduled).
 
 Current landed status: `service-ops-center` now derives its selected view from
-`Browser.location`, exposes service detail routes such as `/services/api`, uses
+`Browser.location()`, exposes service detail routes such as `/services/api`, uses
 intercepted links plus navigation commands, redirects unknown ready routes with
 replaceState, and is covered by native and wasm route/back-forward checks. It
 also derives document titles from the active route through `Browser.set_title`
-and `Ui.on_change_initial`, and consumes `Browser.visibility` to pause interval
+and `Ui.on_change_initial`, and consumes `Browser.visibility()` to pause interval
 polling while hidden, cancel in-flight polling work on hide, keep manual refresh
 available, and catch up when visible again. The earlier app-state drill-down
 remains useful as the evidence history for why the browser-environment and
@@ -292,7 +292,7 @@ shows; returning online re-runs the current query. The source lives inside the
 toggleable panel scope, so open/close proves branch-scoped start/stop/dispose
 and late-message suppression on top of the app's existing lifecycle specs.
 
-Current landed status: `Browser.online : Signal(Bool)` seeds before mount,
+Current landed status: `Browser.online : () -> Signal(Bool)` seeds before mount,
 updates from native `set_online` and browser `online`/`offline` events, and the
 live-search native/Wasm checks prove offline suppression, online replay, and
 closed-panel cleanup.
@@ -358,7 +358,7 @@ a routed example; markdown and JSON evidence need zero platform surface.
   safety without adding platform surface.
 - Done for the browser-environment trigger: `service-ops-center` first exposed
   app-state service selection plus a nested-JSON detail payload, then promoted
-  that friction into a routed `Browser.location` workflow.
+  that friction into a routed `Browser.location()` workflow.
 - Done for the storage trigger: `team-checkout` reload now restores its saved
   checkout state from namespaced localStorage keys.
 

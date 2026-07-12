@@ -37,7 +37,7 @@ A RealWorld-class SPA needs an honest browser environment:
 - drafts and sessions must persist across reloads through browser storage.
 
 At creation, none of this existed. The first location/history slice now exists:
-`Browser.location`, push/replace commands, live popstate updates, native
+`Browser.location()`, push/replace commands, live popstate updates, native
 history spec primitives, and a routed `service-ops-center` workflow are
 implemented. The storage foundation now exists through declared local/session
 text sources, write/remove commands, native storage spec primitives, and Wasm
@@ -45,8 +45,8 @@ startup reads seeded by the runtime's prepared-mount discovery pass. The
 maintained `team-checkout` persistence workflow now proves restore, write, and
 clear behavior. The service-ops route workflow now proves explicit
 document-title updates through `Browser.set_title` and visibility-aware
-polling through `Browser.visibility`; `live-search` proves online/offline task
-gating through `Browser.online`. App-visible recovery from failed write
+polling through `Browser.visibility()`; `live-search` proves online/offline task
+gating through `Browser.online()`. App-visible recovery from failed write
 commands remains deferred.
 
 ## Current Coverage in `design.md` and the Repository
@@ -56,7 +56,7 @@ commands remains deferred.
   contract.
 - Mounting keeps the `main()` entry shape; `SignalsRuntime.mount()` seeds
   host-owned environment payloads before the first render so sources such as
-  `Browser.location` can reflect the real startup state.
+  `Browser.location()` can reflect the real startup state.
 - `design.md` treats one Wasm instance per active mount as the production
   stance; per-mount ownership is the established registration model.
 - `Signal.interval` is the shipped prior art for a host-backed source with a
@@ -190,7 +190,7 @@ data.
   field order. Zig exposes `SchemaTag.location_schema` plus
   `encodeLocationPayload`; JS exposes `LocationBoundarySchema`,
   `locationSnapshotFromHref`, and `encodeBoundarySchemaPayloadBytes`.
-- Second landed sub-contract: `Browser.location : Signal(Location)` consumes
+- Second landed sub-contract: `Browser.location : () -> Signal(Location)` consumes
   that payload through `Node.SignalExpr.LocationSource`. The signal record and
   engine retain the source token, payload capability, decoder callable, and
   typed location capability; the JS runtime captures the mount's current
@@ -199,7 +199,7 @@ data.
 - Third landed sub-contract: `Browser.push_state` and `Browser.replace_state`
   widen `Node.Cmd` with explicit navigation variants. Native and Wasm hosts
   execute those variants through the command boundary, update the host current
-  location payload, and refresh active `Browser.location` sources in the same
+  location payload, and refresh active `Browser.location()` sources in the same
   engine turn.
 - Fourth landed sub-contract: live updates for the dedicated location source
   enter through `roc_ui_update_location`. `SignalsRuntime` owns a per-mount
@@ -210,14 +210,14 @@ data.
 - Fifth landed sub-contract: the native spec runner owns a deterministic
   fake history stack. `navigate`, `history_back`, `history_forward`,
   `expect_current_location`, and `assert_current_location` update/assert the
-  current location and refresh active `Browser.location` sources.
+  current location and refresh active `Browser.location()` sources.
 - Sixth landed sub-contract: `Browser.set_title` widens `Node.Cmd` with an
   explicit document-title variant. The browser runtime writes
   `document.title`, records telemetry, and native specs assert the host title
   with `expect_document_title`.
 - Seventh landed sub-contract: visibility and online/offline use one-byte bool
   payloads over the same host-backed source path. JS seeds
-  `Browser.visibility` from `document.visibilityState`, seeds `Browser.online`
+  `Browser.visibility()` from `document.visibilityState`, seeds `Browser.online()`
   from `navigator.onLine`, registers per-mount `visibilitychange`,
   `online`, and `offline` listeners, and removes those listeners on unmount.
   Native specs seed and update the same sources with `set_initial_visibility`,
@@ -298,11 +298,11 @@ See `wip/research/realworld_gap_analysis.md` for the full roadmap and phase
 ordering.
 
 Current validation evidence: `service-ops-center` now drives route state from
-`Browser.location`, uses intercepted links with `Browser.push_state`, redirects
+`Browser.location()`, uses intercepted links with `Browser.push_state`, redirects
 unknown ready routes with `Browser.replace_state`, emits route-derived
 `Browser.set_title` commands, and proves deep-link mount plus Back/Forward in
 native and Wasm. It also proves visibility-aware polling through
-`Browser.visibility`; `live-search` proves `Browser.online` task gating and
+`Browser.visibility()`; `live-search` proves `Browser.online()` task gating and
 branch cleanup. The focused location fixtures prove seeded URL pieces, popstate
 updates, Back/Forward, command-backed replace, and popstate listener cleanup
 through native specs and the Wasm mount gate. The focused `storage-commands`
@@ -344,7 +344,7 @@ Slice 3: focused browser sources and title command.
    assert `expect_document_title`, and browser contract tests assert
    `document.title` updates plus command telemetry.
 2. Done for visibility: native and Wasm hosts seed/update a one-byte payload,
-   `service-ops-center` pauses and resumes polling from `Browser.visibility`,
+   `service-ops-center` pauses and resumes polling from `Browser.visibility()`,
    and browser contract tests assert listener install/remove, command drain,
    and stale-dispatch telemetry.
 3. Done for online/offline: native and Wasm hosts seed/update a one-byte

@@ -23,33 +23,34 @@ Action: <promotion trigger recorded in NEXT_STEPS priority N | issue filed |
 
 ## Feature → spec-line map (MoE-1)
 
-Maintained from Phase 1 onward; no unchecked rows at Phase 5 exit. “Implemented”
-below means the app path and its assertion are present. The table is not an
-end-to-end pass record: the current native spec fails during initial mount, so
-MoE-1 remains open until the whole script passes. Line references are to
-`examples/conduit/spec.txt` sections by comment header (line numbers drift;
+Maintained from Phase 1 onward; no unchecked feature rows at Phase 5 exit.
+“Verified” means the app path and assertion are present and the full native
+script passed with `release-fast-afbc7863` on 2026-07-12. Line references are
+to `examples/conduit/spec.txt` sections by comment header (line numbers drift;
 headers are stable).
 
 | Feature | Spec assertion(s) | Status |
 | --- | --- | --- |
-| Deep link cold-mounts routed page + title | "Cold mount at a deep link" section | implemented (Phase 1) |
-| Header nav push_state routing (brand, Sign in, Sign up) | "Brand link navigates home" section | implemented (Phase 1) |
-| Back/forward keep URL, title, view in sync | "Back/forward walk the entry trail" section | implemented (Phase 1) |
-| All 9 route shapes mount with per-route titles | "Every route shape mounts" section | implemented (Phase 1) |
-| Home query params (page, tag) parse into feed state | "Home query params parse" section | implemented (Phase 1) |
-| Unknown route renders not-found without URL rewrite | "Unknown routes render the not-found page" section | implemented (Phase 1) |
-| Feeds, pagination controls, popular tags | "Home"; "Pagination"; "Tag filter"; "Your Feed" sections | implemented (Phase 2-3) |
-| Article page with markdown body | "Cold mount at a deep link" section | implemented (Phase 2) |
-| Profiles (view, tabs) | "Profile page" section | implemented (Phase 2) |
-| Auth: register/login/logout, JWT persist/restore | "Seeded session"; "Settings"; "Login"; "Register" sections | implemented (Phase 3-5) |
-| Guarded routes with replace_state redirects | "Guarded routes redirect anonymous visitors" section | implemented (Phase 3) |
-| Settings | "Settings" section | implemented (Phase 3-5) |
-| Editor create/edit, article delete | "Article writes" section | implemented (Phase 4) |
-| Comments create/delete | "Article writes" section | implemented (Phase 4) |
-| Favorites, follows | "Home"; "Article writes"; "Profile page" sections | implemented (Phase 4) |
-| 422 envelopes on all four forms | "Settings"; "Register"; "Login"; "Article writes" sections | implemented (Phase 5) |
-| Network failure states on every fetch surface | "Network failure matrix for every GET surface" section | implemented (Phase 5) |
-| Submission readiness | README plus `serve.py --no-server` gates | README done; all three direct artifacts were produced before the current compiler postcheck regression appeared; compiler, native spec, and site gates remain open (Phase 5) |
+| Deep link cold-mounts routed page + title | "Deep link cold-mounts the article page" section | verified (Phase 1) |
+| Header navigation and routed URL/title/view updates | navigation throughout the script | verified (Phase 1) |
+| Back/forward keep URL and title in sync | "Back/forward stay in sync across live pages" section | verified for one back/forward pair; planned 10-step trail remains a soak gate |
+| All 9 route shapes mount with per-route titles | routed navigation throughout the script | verified (Phase 1-5) |
+| Home query params (page, tag, feed) parse into feed state | "Pagination"; "Tag filter"; "Your Feed" sections | verified (Phase 1-3) |
+| Unknown route renders not-found without URL rewrite | final not-found assertions | verified (Phase 1) |
+| Feeds, pagination controls, popular tags | "Home"; "Pagination"; "Tag filter"; "Your Feed" sections | verified (Phase 2-3) |
+| Article page with markdown body | "Deep link cold-mounts the article page" section | verified (Phase 2) |
+| Profiles (view, tabs) | "Profile page" section | verified (Phase 2) |
+| Auth: register/login/logout, JWT persist/restore | "Seeded session"; "Settings"; "Login"; "Register" sections | verified (Phase 3-5) |
+| Guarded routes with replace_state redirects | "Guarded routes redirect anonymous visitors" section | verified (Phase 3) |
+| Settings | "Settings" section | verified (Phase 3-5) |
+| Editor create/edit, article delete | "Article writes" section | verified (Phase 4) |
+| Comments create/delete | "Article writes" section | verified (Phase 4) |
+| Favorites, follows | "Home"; "Article writes"; "Profile page" sections | verified, including repeated inverse mutations (Phase 4-5) |
+| 422 envelopes on all four forms | "Settings"; "Register"; "Login"; "Article writes" sections | verified (Phase 5) |
+| Network failure states on every GET surface | "Network failure matrix for every GET surface" section | verified (Phase 5) |
+| Stale response suppression | "Tag filter with request replacement" section | verified with an explicitly delivered stale completion (Phase 5) |
+| `StorageUnavailable` startup | no native directive can currently inject this state | open robustness/tooling gap (Phase 5) |
+| Submission readiness | README plus `serve.py --no-server` gates | README and native behavior gate done; site gates remain open (Phase 5) |
 | Soak and command-wire measurement | Conduit build plus plateau/telemetry gates | structural plateau gate refreshed; Conduit-specific measurements not run (Phase 5) |
 | Comparison study | local LoC baseline plus wasm/public build outputs | local source baseline recorded; payload/reference rows open (Phase 5) |
 
@@ -70,9 +71,9 @@ publication/submission readiness is decided.
 ## Comparison Baseline (Phase 5 WIP)
 
 This is the local half of the RealWorld comparison study. External reference
-implementations and gzipped first-render payloads remain open; compilation is
-no longer the reason to defer them, but the failing authoritative native gate
-takes precedence over comparison polish.
+implementations and gzipped first-render payloads remain open. The native gate
+is now green; release/readiness and robustness evidence take precedence over
+comparison polish.
 
 Measured 2026-07-11 with `wc -l examples/conduit/*.roc
 examples/conduit/spec.txt examples/conduit/README.md`:
@@ -81,12 +82,12 @@ examples/conduit/spec.txt examples/conduit/README.md`:
 | --- | --- | ---: |
 | Shell, routing, session, nav, formatting | `app.roc`, `Route.roc`, `Session.roc`, `Nav.roc`, `Format.roc` | 654 |
 | API, DTOs, request helpers, mock contract | `Api.roc` | 380 |
-| Routed pages, view state, form state | `Home.roc`, `Feed.roc`, `Article.roc`, `Profile.roc`, `Auth.roc`, `Settings.roc`, `Editor.roc` | 2,333 |
+| Routed pages, view state, form state | `Home.roc`, `Feed.roc`, `Article.roc`, `Profile.roc`, `Auth.roc`, `Settings.roc`, `Editor.roc` | 2,343 |
 | Markdown rendering | `Markdown.roc` | 358 |
-| Roc app source total | all `examples/conduit/*.roc` | 3,725 |
-| Native browser spec | `spec.txt` | 347 |
-| Public README | `README.md` | 32 |
-| App source plus evidence docs | Roc source, spec, README | 4,104 |
+| Roc app source total | all `examples/conduit/*.roc` | 3,735 |
+| Native browser spec | `spec.txt` | 357 |
+| Public README | `README.md` | 36 |
+| App source plus evidence docs | Roc source, spec, README | 4,128 |
 
 Interpretation: the Roc app source is inside the plan's 3,000-4,000 line
 target and below the 5,000-line review threshold. Including the native spec and
@@ -95,13 +96,16 @@ than app runtime source. The missing comparison rows remain: Elm/Svelte/React
 reference LoC by category, gzipped first-render payload, cold-load request
 count, static-host deep-link behavior, and reference error-state coverage.
 
-## Open Phase 5 Gates
+## Phase 5 Gate Status
 
-These are the only remaining Phase 5 closeout gates, in execution order:
+The native feature gate is complete. Remaining closeout gates are listed in
+execution order after it:
 
 | Gate | Current evidence | Resume condition |
 | --- | --- | --- |
-| Native spec execution | `release-fast-4828766c` produced a native artifact that failed even with an empty spec (`HostValue operation used a capability that does not own the retained value`); final checks now reproducibly panic earlier on an erased-function `ConstStore` postcheck invariant | minimize/fix the compiler panic, then the runtime capability mismatch, then run `examples/conduit/spec.txt` end to end |
+| Native spec execution | full `examples/conduit/spec.txt` passes with `release-fast-afbc7863`, including explicit stale completion and back/forward assertions | complete |
+| Cross-example native rollout | all Roc checks pass; `service-ops-center` now gets past the baseline capability mismatch but fails its unknown-route overview assertion at spec line 75 | fix the focused route-branch defect, then rerun `scripts/test.py native` |
+| Remaining MoE-3/MoE-4 robustness | ordinary back/forward, loading, errors, and stale suppression pass | inject `StorageUnavailable` and run the planned 10-step navigation trail |
 | Real-backend conformance (MoE-2) | in-page backend shape is covered by node tests, and the Phase 0 cross-origin auth canary passed | wasm Conduit build runs in browser with a base-URL swap against a conformant backend |
 | Public-site publication/readiness (MoE-6) | README exists; direct wasm dev and size builds pass; `public = false` is intentional | after the native gate, `serve.py --no-server` passes in both app optimization modes, including Conduit |
 | Static-host deep-link decision | path-based history routing is the app source of truth; static hosting behavior is untested | public/site build can be served from a static-host-like path and tested |
@@ -123,6 +127,38 @@ until they can be rechecked and filed.
 
 ## Findings
 
+### 2026-07-12 Phase 5 — Source factories expose a pre-existing Service Ops branch defect
+
+Classification: platform-gap
+Severity: friction (outside the Conduit feature gate)
+Evidence: the all-example native suite checks every app, then reaches
+`service-ops-center/spec.txt` line 75: an unknown service URL is canonically
+replaced with `/`, but the overview `Ui.when` branch remains detached. A clean
+`HEAD` archive built with the same `release-fast-afbc7863` compiler fails
+earlier during mount with the retained-value capability mismatch, so this is
+not a regression caused by the keyed-row insertion fix; the source-factory
+change made the deeper existing failure reachable.
+Action: isolate the route-driven branch replacement in a focused fixture before
+rerunning the all-example native suite. Do not describe the repository-wide
+native gate as green until it passes.
+
+### 2026-07-12 Phase 5 — Native behavior gate restored and hardened
+
+Classification: platform-gap
+Severity: blocker (resolved)
+Evidence: `examples/conduit/spec.txt` passes end to end with Roc
+`release-fast-afbc7863`. The reduction changed capability-bearing browser and
+session sources into factories; the native host now resolves repeated task
+names by source token; dirty keyed-row replacement uses live insertion points;
+role/name locators include descendant text; and repeated follow, favorite, and
+comment mutations carry distinct results so their refetches are not pruned.
+Focused Zig regressions cover duplicate task names, full each-row replacement,
+and descendant accessible names. The Conduit script additionally delivers a
+stale feed completion and exercises both history directions.
+Action: treat the native feature map as verified. Keep `StorageUnavailable`,
+the 10-step navigation trail, site builds, real-backend conformance, and soak
+telemetry as explicit closeout gates.
+
 ### 2026-07-12 Phase 5 — Native Conduit mount fails retained-value capability ownership
 
 Classification: platform-gap
@@ -140,6 +176,10 @@ Action: make this the first closeout task. Minimize the Conduit initial-mount
 capability mismatch against a smaller app, fix it in the host/engine or app as
 the reduction proves, and do not claim the feature map verified until the full
 native script passes. Release, soak, and comparison work follows this gate.
+Resolution 2026-07-12: capability-bearing module-level sources were the
+trigger. Converting `Browser.location`, `Browser.visibility`, `Browser.online`,
+and the Conduit session source to factories removed the ownership mismatch;
+the full native script now passes on `release-fast-afbc7863`.
 
 ### 2026-07-12 Phase 5 — Current compiler postcheck regression blocks final verification
 
@@ -158,6 +198,10 @@ Action: treat this as the first compiler/runtime gate and do not conflate it
 with the JSON semantic bug. Minimize the postcheck panic and establish why the
 same version's behavior changed, then recheck Conduit and recreate the small
 JSON probe for its final semantic filing check.
+Resolution 2026-07-12: this remains a PATH-toolchain regression, but it no
+longer blocks Conduit verification. The known-good roc#10072 compiler
+`release-fast-afbc7863` checks and builds the app and produced the passing
+native artifact.
 
 ### 2026-07-11 Phase 5 — Conduit soak and wire-telemetry measurements are compiler-blocked
 
@@ -261,9 +305,10 @@ Posted as roc-lang/roc#10071/comment-4943237173.
 Action: publication is deferred; keep using `roc check`, backend/browser tests,
 and tidy gates for Conduit work. Revisit after the compiler crash is minimized
 or the local compiler is refreshed.
-Resolution 2026-07-12: direct native and wasm builds pass on the current PATH
-compiler. Publication remains deferred for the native runtime failure and the
-unrun site/readiness gates, not for a compiler crash.
+Resolution 2026-07-12: direct native and wasm builds passed on the then-current
+compiler, and the native runtime gate now passes with `release-fast-afbc7863`.
+Publication remains deferred for the unrun site/readiness gates, not for a
+compiler or native behavior failure.
 
 ### 2026-07-10 Phase 4 — Async-loaded records cannot seed controlled form state directly
 

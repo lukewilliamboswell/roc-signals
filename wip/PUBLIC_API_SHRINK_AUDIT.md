@@ -102,7 +102,7 @@ that proves the slice before the end-to-end repository gate.
   values plus Signals-owned transport errors and explicit request/response
   envelopes; do not introduce a second Signals-only request model.
 - `Browser.Location`, `Browser.Visibility`, `Browser.StorageText`,
-  `Browser.location`, `Browser.visibility`, `Browser.online`,
+  `Browser.location()`, `Browser.visibility()`, `Browser.online()`,
   `Browser.local_storage_text`, `Browser.session_storage_text`,
   `Browser.push_state`, `Browser.replace_state`, `Browser.set_title`,
   `Browser.set_local_storage_text`, `Browser.set_session_storage_text`,

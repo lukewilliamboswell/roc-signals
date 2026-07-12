@@ -30,24 +30,29 @@ implemented: the complete 422 and GET-network-error matrices are present, the
 backend contract suite is green, a README exists, and the priority 1-5
 synthesis is drafted in the findings ledger.
 
-The experiment has therefore moved from feature construction to closeout. It
-is not yet correct to call it complete. Direct native arm64mac, wasm dev, and
-wasm size artifacts were produced with `release-fast-4828766c`, and the native
-artifact exposed an initial-mount retained `HostValue` capability mismatch.
-Final verification on the same version now reproducibly panics earlier during
-`roc check` with an erased-function `ConstStore` postcheck invariant. The
-feature assertions are comprehensive but have not passed end to end on the
-current tree.
+The experiment has therefore moved from feature construction to closeout. The
+authoritative native behavior script now passes end to end with
+`release-fast-afbc7863`. Restoring that gate fixed capability-bearing browser
+sources, duplicate-name task routing, keyed-row structural replacement,
+descendant accessible-name lookup, and repeated mutation/refetch behavior. The
+current PATH compiler still has a separate erased-function `ConstStore`
+postcheck regression; that toolchain issue no longer blocks behavior evidence
+because the known-good roc#10072 build checks and builds the app.
 
 Current order:
 
-1. **Restore the authoritative native gate.** Minimize/fix the current compiler
-   postcheck panic, then minimize/fix the initial-mount capability mismatch and
-   run `examples/conduit/spec.txt` end to end.
+1. **Finish the cross-example rollout.** The browser-source factory change lets
+   `service-ops-center` get past the baseline capability mismatch, exposing a
+   separate unknown-route branch replacement failure at native spec line 75.
+   Fix that focused fixture and rerun the all-example native suite.
 2. **Run release/readiness gates.** Exercise both `serve.py --no-server` app
    optimization modes, mount the wasm build, and decide static-host routing and
    publication.
-3. **Close evidence, not features.** Run real-backend conformance, the Conduit
+3. **Close robustness evidence.** Add an injectable `StorageUnavailable`
+   startup case and the planned 10-step back/forward plus long-session soak.
+   The native script already covers ordinary back and forward navigation and
+   explicitly delivers a stale feed result after request replacement.
+4. **Close evidence, not features.** Run real-backend conformance, the Conduit
    soak/action telemetry, payload measurements, and the comparison study; file
    or explicitly defer the JSON escape compiler issue.
 
@@ -128,7 +133,7 @@ Module sketch and size budget (total target 3,000-4,000 lines; crossing
 5,000 is itself a finding about platform ergonomics):
 
 - `app.roc` — shell: header/footer, session wiring, route switch (~400-500).
-- `Route.roc` — `Browser.location` ↔ route parse/format, including query
+- `Route.roc` — `Browser.location()` ↔ route parse/format, including query
   params for pagination and tag filters (~150).
 - `Api.roc` — request builders for all ~19 endpoints, auth header plumbing,
   error-envelope decoding, DTO records and JSON decode/encode via builtin

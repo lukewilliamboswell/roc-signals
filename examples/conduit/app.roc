@@ -234,9 +234,9 @@ main = || {
 	Ui.state(
 		Nav.initial,
 		|route_intent| {
-			location = Browser.location
+				location = Browser.location()
 			route = location.map(Route.from_location)
-			session = Session.current
+				session = Session.current()
 			document_title = route.map(Route.title)
 			guard_inputs = { route: route, session: session }.Signal
 			guard = guard_inputs.map(|value| guard_target(value.route, value.session))

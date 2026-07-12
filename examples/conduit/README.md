@@ -28,9 +28,9 @@ zig build run-check-tidy
 ```
 
 The native `examples/conduit/spec.txt` is the authoritative behavior script.
-On 2026-07-12 the old compiler SIGSEGV was fixed and direct Conduit artifacts
-were produced, but the native script failed during initial mount with a retained
-`HostValue` capability mismatch. Final verification on the same compiler version
-now panics earlier in postcheck. Keep the feature assertions current, but do not
-treat them as verified until both failures are resolved and the script passes
-end to end.
+On 2026-07-12 it passed end to end with Roc `release-fast-afbc7863`, including
+loading, empty, validation, network-error, stale-response, navigation, and
+server-confirmed mutation paths. The current PATH compiler has a separate
+postcheck regression, so use a known-good roc#10072 build until that compiler is
+replaced. Site builds, a real-backend pass, static-host behavior, and the long
+soak remain closeout work rather than feature gaps in this script.

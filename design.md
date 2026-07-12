@@ -513,9 +513,9 @@ Http.response_with_body : Response, List(U8) -> Response
 Browser.Location := { path : Str, query : Str, hash : Str }
 Browser.Visibility := [Visible, Hidden]
 Browser.StorageText := [StorageMissing, StorageValue(Str), StorageUnavailable(Str)]
-Browser.location : Signal(Browser.Location)
-Browser.visibility : Signal(Browser.Visibility)
-Browser.online : Signal(Bool)
+Browser.location : () -> Signal(Browser.Location)
+Browser.visibility : () -> Signal(Browser.Visibility)
+Browser.online : () -> Signal(Bool)
 Browser.local_storage_text : Str -> Signal(Browser.StorageText)
 Browser.session_storage_text : Str -> Signal(Browser.StorageText)
 Browser.push_state : Browser.Location -> Cmd
@@ -1403,7 +1403,7 @@ denials and network failures, become `HttpError.Network`; runtime timeouts
 become `HttpError.Timeout`; and scope disposal or request replacement becomes
 `HttpError.Canceled`.
 
-Browser location is another host-backed source. `Browser.location` is seeded
+Browser location is another host-backed source. `Browser.location()` is seeded
 from the per-mount startup snapshot before `roc_ui_mount`, and the JS runtime
 installs a mount-scoped `popstate` listener that calls
 `roc_ui_update_location` with normalized `{ path, query, hash }` pieces.
@@ -1419,8 +1419,8 @@ should touch the title. The browser runtime writes `document.title`, and the
 native spec host records the title for assertions.
 
 Browser visibility and online/offline state are the other shipped focused
-browser sources. `Browser.visibility` is seeded from `document.visibilityState`
-and refreshed from `visibilitychange`; `Browser.online` is seeded from
+browser sources. `Browser.visibility()` is seeded from `document.visibilityState`
+and refreshed from `visibilitychange`; `Browser.online()` is seeded from
 `navigator.onLine` and refreshed from `online` / `offline`. Both reuse the same
 host-backed source path as location: mount-scoped ids/generations, shared
 boundary payload bytes, stale-message diagnostics, and listener cleanup on
@@ -1509,7 +1509,7 @@ otherwise-unproven capability,"** never size or visual richness. The maintained
 public suite is:
 
 - `service-ops-center` — HTTP text refresh, interval-driven refresh, JSON
-  parsing through the compiler builtin, Browser.location-backed service routes
+  parsing through the compiler builtin, Browser.location()-backed service routes
   with push/replace navigation and Back/Forward coverage, visibility-aware
   polling, nested JSON service drill-downs, custom chart events, behavior hooks,
   and dashboard-scale derived views.

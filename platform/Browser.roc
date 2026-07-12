@@ -153,8 +153,8 @@ Browser := [].{
 	}
 
 	## Current browser location, seeded from the host's startup snapshot.
-	location : Signal(Location)
-	location = {
+	location : () -> Signal(Location)
+	location = || {
 		token : Box(U64)
 		token = Node.new_token()
 		location_cap = Capability.new()
@@ -180,8 +180,8 @@ Browser := [].{
 
 	## Current page visibility, seeded from the host's startup snapshot and
 	## refreshed on browser `visibilitychange`.
-	visibility : Signal(Visibility)
-	visibility = {
+	visibility : () -> Signal(Visibility)
+	visibility = || {
 		token : Box(U64)
 		token = Node.new_token()
 		visibility_cap = Capability.new()
@@ -207,8 +207,8 @@ Browser := [].{
 
 	## Browser online status, seeded from the host's startup snapshot and
 	## refreshed on browser `online` / `offline` events.
-	online : Signal(Bool)
-	online = {
+	online : () -> Signal(Bool)
+	online = || {
 		token : Box(U64)
 		token = Node.new_token()
 		online_cap = Capability.new()
