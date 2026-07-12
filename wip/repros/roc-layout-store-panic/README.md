@@ -1,8 +1,9 @@
 # Optimized wasm compiler panic
 
-This is a reduced version of the panic found while compiling the RealWorld
-team-checkout example. It uses the local roc-signals platform through the
-relative platform path in `app.roc`.
+This is a self-contained reduction of the panic found while compiling the
+RealWorld team-checkout example. The directory includes the reduced platform
+sources and wasm host needed by `app.roc`; it does not depend on files elsewhere
+in the roc-signals repository.
 
 ## Reproduce
 

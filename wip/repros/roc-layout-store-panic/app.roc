@@ -1,4 +1,4 @@
-app [main] { pf: platform "../../../platform/main.roc" }
+app [main] { pf: platform "./platform/main.roc" }
 
 import pf.Browser
 import pf.Elem exposing [Elem]
