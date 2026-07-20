@@ -20,12 +20,7 @@ Home := {}.{
 			|| {
 				feed_task = Http.request_task("feed")
 				tags_task = Http.get_text_task("tags")
-				feed_state = Signal.fold_task(
-					feed_task,
-					Loading,
-					Api.decode_feed_response,
-					|err| Api.request_failed(Http.error_text(err)),
-				)
+				feed_state = Api.response_state(feed_task).map(Api.decode_feed_response)
 				tags_state : Signal.Signal(Api.Remote(List(Str)))
 				tags_state = Signal.fold_task(tags_task, Loading, Api.decode_tags, Api.request_failed)
 				feed = route.map(|value| Route.feed_of(value))

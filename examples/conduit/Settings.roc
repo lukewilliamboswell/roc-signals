@@ -67,12 +67,7 @@ Settings := {}.{
 						token = session.map(|value| Session.token_of(value))
 
 						result : Signal.Signal(Api.AuthResult)
-						result = Signal.fold_task(
-							task,
-							AuthIdle,
-							Api.classify_auth,
-							|err| AuthErrored("Request failed: ${Http.error_text(err)}"),
-						)
+						result = Api.response_state(task).map(Api.classify_auth)
 						submission_inputs = { form: form_signal, token: token }.Signal
 
 						submission : Signal.Signal({ serial : U64, body : Str, token : Str })

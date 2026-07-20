@@ -14,7 +14,24 @@ panel_class = "panel grid gap-4 p-4"
 
 input_class = "w-full max-w-md rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm"
 
-TaskView := [Loading, Done(Str), Failed(Str)]
+TaskView := [Loading, Done(Str), Failed(Str)].{
+	is_eq : TaskView, TaskView -> Bool
+	is_eq = |left, right|
+		match left {
+			Loading => match right {
+				Loading => True
+				_ => False
+			}
+			Done(left_value) => match right {
+				Done(right_value) => left_value == right_value
+				_ => False
+			}
+			Failed(left_error) => match right {
+				Failed(right_error) => left_error == right_error
+				_ => False
+			}
+		}
+}
 
 status_text : TaskView -> Str
 status_text = |status|

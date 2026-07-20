@@ -155,8 +155,6 @@ Browser := [].{
 	## Current browser location, seeded from the host's startup snapshot.
 	location : () -> Signal(Location)
 	location = || {
-		token : Box(U64)
-		token = Node.new_token()
 		location_cap = Capability.new()
 		payload_cap = Capability.new()
 
@@ -166,11 +164,12 @@ Browser := [].{
 			payload_bytes = Box.unbox(Capability.take(payload_hv, payload_cap))
 			Capability.store(Box.box(decode_location_payload(payload_bytes)), location_cap)
 		}
+		from_payload_box = Box.box(from_payload)
 
 		Signal.from_expr(
 			Node.SignalExpr.LocationSource(
-				token,
-				Box.box(from_payload),
+				from_payload_box,
+				from_payload_box,
 				Capability.handle(location_cap),
 				Capability.handle(payload_cap),
 			),
@@ -182,8 +181,6 @@ Browser := [].{
 	## refreshed on browser `visibilitychange`.
 	visibility : () -> Signal(Visibility)
 	visibility = || {
-		token : Box(U64)
-		token = Node.new_token()
 		visibility_cap = Capability.new()
 		payload_cap = Capability.new()
 
@@ -193,11 +190,12 @@ Browser := [].{
 			payload_bytes = Box.unbox(Capability.take(payload_hv, payload_cap))
 			Capability.store(Box.box(decode_visibility_payload(payload_bytes)), visibility_cap)
 		}
+		from_payload_box = Box.box(from_payload)
 
 		Signal.from_expr(
 			Node.SignalExpr.VisibilitySource(
-				token,
-				Box.box(from_payload),
+				from_payload_box,
+				from_payload_box,
 				Capability.handle(visibility_cap),
 				Capability.handle(payload_cap),
 			),
@@ -209,8 +207,6 @@ Browser := [].{
 	## refreshed on browser `online` / `offline` events.
 	online : () -> Signal(Bool)
 	online = || {
-		token : Box(U64)
-		token = Node.new_token()
 		online_cap = Capability.new()
 		payload_cap = Capability.new()
 
@@ -220,11 +216,12 @@ Browser := [].{
 			payload_bytes = Box.unbox(Capability.take(payload_hv, payload_cap))
 			Capability.store(Box.box(decode_online_payload(payload_bytes)), online_cap)
 		}
+		from_payload_box = Box.box(from_payload)
 
 		Signal.from_expr(
 			Node.SignalExpr.OnlineSource(
-				token,
-				Box.box(from_payload),
+				from_payload_box,
+				from_payload_box,
 				Capability.handle(online_cap),
 				Capability.handle(payload_cap),
 			),
@@ -234,8 +231,6 @@ Browser := [].{
 
 	storage_text : U64, Str -> Signal(StorageText)
 	storage_text = |area, key| {
-		token : Box(U64)
-		token = Node.new_token()
 		storage_cap = Capability.new()
 		payload_cap = Capability.new()
 
@@ -245,13 +240,14 @@ Browser := [].{
 			payload_bytes = Box.unbox(Capability.take(payload_hv, payload_cap))
 			Capability.store(Box.box(decode_storage_payload(payload_bytes)), storage_cap)
 		}
+		from_payload_box = Box.box(from_payload)
 
 		Signal.from_expr(
 			Node.SignalExpr.StorageSource(
-				token,
+				from_payload_box,
 				area,
 				key,
-				Box.box(from_payload),
+				from_payload_box,
 				Capability.handle(storage_cap),
 				Capability.handle(payload_cap),
 			),

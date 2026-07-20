@@ -1734,7 +1734,7 @@ fn resolvePendingTask(host: *HostEnv, roc_host: *abi.RocHost, name: []const u8, 
         .task_source => |payload| payload,
         .ref, .const_value, .map, .map2, .combine, .interval_source, .location_source, .online_source, .visibility_source, .storage_source => unreachable,
     };
-    if (task_payload.token != pending.task_token) {
+    if (record.token().? != pending.task_token) {
         failHost("fake task result matched a pending request for a different task source");
     }
 
@@ -3062,6 +3062,11 @@ const TestErasedHostValueCapture = extern struct {
     value: HostValue,
 };
 
+const TestBinderInitialCapture = extern struct {
+    value: HostValue,
+    initialized: bool,
+};
+
 const TestCapabilityCloneCapture = extern struct {
     split: abi.RocErasedCallable,
 };
@@ -3366,6 +3371,13 @@ fn testInitialHostValueCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]c
     writeTestErasedResult(HostValue, ret, hostFromRocHost(roc_host).cloneHostValue(capture.value));
 }
 
+fn testBinderInitialCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8) callconv(.c) void {
+    _ = args;
+    const capture = testCapturePtrAs(TestBinderInitialCapture, capture_ptr);
+    if (!capture.initialized) @panic("test binder initializer was used before receiving its value");
+    writeTestErasedResult(HostValue, ret, hostFromRocHost(roc_host).cloneHostValue(capture.value));
+}
+
 fn testBinaryElemCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8) callconv(.c) void {
     const capture = testCapturePtrAs(TestErasedI64Capture, capture_ptr);
     const call_args = testErasedArgsAs(ErasedHostValueBinaryArgs, args);
@@ -3533,7 +3545,7 @@ fn testCapabilityCloneOnDrop(capture_ptr: ?[*]u8, roc_host: *abi.RocHost) callco
 fn testBinderCaptureOnDrop(capture_ptr: ?[*]u8, roc_host: *abi.RocHost) callconv(.c) void {
     test_erased_callable_drop_count += 1;
     const capture = testCapturePtrAs(TestErasedBinderCapture, capture_ptr);
-    hv.releaseU64Box(capture.condition_binder, roc_host);
+    abi.decrefErasedCallable(capture.condition_binder, roc_host);
     hv.releaseHostValueCapability(capture.condition_cap, roc_host);
 }
 
@@ -3644,6 +3656,12 @@ fn testHostValueCaptureOnDrop(capture_ptr: ?[*]u8, roc_host: *abi.RocHost) callc
     testDropHostValue(roc_host, capture.value);
 }
 
+fn testBinderInitialOnDrop(capture_ptr: ?[*]u8, roc_host: *abi.RocHost) callconv(.c) void {
+    test_erased_callable_drop_count += 1;
+    const capture = testCapturePtrAs(TestBinderInitialCapture, capture_ptr);
+    if (capture.initialized) testDropHostValue(roc_host, capture.value);
+}
+
 fn expectHostValueI64(value: HostValue, expected: i64) error{TestExpectedEqual}!void {
     const roc_host = testCurrentRocHost();
     try std.testing.expectEqual(expected, testReadHostValueI64(roc_host, value));
@@ -3667,17 +3685,17 @@ fn makeTestConsumingTaskSourceRecord(host: *HostEnv, roc_host: *abi.RocHost, nam
     const allocator = host.hostAllocator();
     const payload_cap = testHostValueCapability(roc_host);
     const capture = TestTaskPayloadCapture{ .payload_cap = payload_cap };
+    const initial = writeTestErasedCallable(
+        TestErasedI64Capture,
+        roc_host,
+        &testStableStrHostValueCallable,
+        null,
+        .{ .amount = 0 },
+    );
     return HostSignalRecord.init(allocator, .{ .task_source = .{
-        .token = newTestSignalToken(roc_host),
         .name = allocator.dupe(u8, name) catch @panic("out of memory"),
         .payload_cap = payload_cap,
-        .initial = writeTestErasedCallable(
-            TestErasedI64Capture,
-            roc_host,
-            &testStableStrHostValueCallable,
-            null,
-            .{ .amount = 0 },
-        ),
+        .initial = initial,
         .done = writeTestErasedCallable(
             TestTaskPayloadCapture,
             roc_host,
@@ -3806,19 +3824,13 @@ test "signals host task result callbacks consume heap string payloads" {
     }
 
     const success_payload = "successful task payload that is intentionally longer than the Roc small string limit";
-    _ = host.engine.appendPendingTask(&host, 0, switch (record.payload) {
-        .task_source => |payload| payload.token,
-        else => unreachable,
-    }, "lookup", "/api/test");
+    _ = host.engine.appendPendingTask(&host, 0, record.token().?, "lookup", "/api/test");
     _ = resolvePendingTask(&host, &roc_host, "lookup", success_payload, false);
     try expectCachedTaskSourceText(&roc_host, record, success_payload);
     try std.testing.expectEqual(@as(usize, 0), host.engine.pending_tasks.items.len);
 
     const failed_payload = "failed task payload that is intentionally longer than the Roc small string limit";
-    _ = host.engine.appendPendingTask(&host, 0, switch (record.payload) {
-        .task_source => |payload| payload.token,
-        else => unreachable,
-    }, "lookup", "/api/test");
+    _ = host.engine.appendPendingTask(&host, 0, record.token().?, "lookup", "/api/test");
     _ = resolvePendingTask(&host, &roc_host, "lookup", failed_payload, true);
     try expectCachedTaskSourceText(&roc_host, record, failed_payload);
     try std.testing.expectEqual(@as(usize, 0), host.engine.pending_tasks.items.len);
@@ -3843,10 +3855,7 @@ test "native task resolution uses the pending source token when active names rep
         _ = host.gpa.deinit();
     }
 
-    const second_token = switch (second.payload) {
-        .task_source => |payload| payload.token,
-        else => unreachable,
-    };
+    const second_token = second.token().?;
     _ = host.engine.appendPendingTask(&host, 0, second_token, "favorite", "/api/favorite");
     _ = resolvePendingTask(&host, &roc_host, "favorite", "second result", false);
 
@@ -3888,7 +3897,7 @@ test "signals host task sources reset on start only when requested" {
 
     {
         const cmd = testStartTaskCmd(&roc_host, reset_task, "lookup", "/api/first");
-        defer abi.decref__AnonStruct91(cmd, &roc_host);
+        defer cmd.decref(&roc_host);
         const prune_start = host.engine.pending_roc_metrics.propagation_prunes;
         const counts = host.engine.startTaskCommand(&host, &roc_host, 0, cmd);
         try std.testing.expectEqual(@as(u64, 0), counts.total);
@@ -3902,7 +3911,7 @@ test "signals host task sources reset on start only when requested" {
 
     {
         const cmd = testStartTaskCmd(&roc_host, reset_task, "lookup", "/api/second");
-        defer abi.decref__AnonStruct91(cmd, &roc_host);
+        defer cmd.decref(&roc_host);
         const counts = host.engine.startTaskCommand(&host, &roc_host, 0, cmd);
         try std.testing.expectEqual(@as(u64, 1), counts.set_text);
         try std.testing.expectEqualStrings("loading", host.dom_elements.items[2].text.?);
@@ -3912,7 +3921,7 @@ test "signals host task sources reset on start only when requested" {
 
     {
         const cmd = testStartTaskCmd(&roc_host, sticky_task, "save", "/api/save");
-        defer abi.decref__AnonStruct91(cmd, &roc_host);
+        defer cmd.decref(&roc_host);
         const counts = host.engine.startTaskCommand(&host, &roc_host, 0, cmd);
         try std.testing.expectEqual(@as(u64, 0), counts.total);
         try std.testing.expectEqual(@as(usize, 1), host.engine.pending_tasks.items.len);
@@ -3924,7 +3933,7 @@ test "signals host task sources reset on start only when requested" {
 
     {
         const cmd = testStartTaskCmd(&roc_host, sticky_task, "save", "/api/save-again");
-        defer abi.decref__AnonStruct91(cmd, &roc_host);
+        defer cmd.decref(&roc_host);
         const counts = host.engine.startTaskCommand(&host, &roc_host, 0, cmd);
         try std.testing.expectEqual(@as(u64, 0), counts.total);
         try std.testing.expectEqualStrings("saved", host.dom_elements.items[3].text.?);
@@ -3946,10 +3955,7 @@ test "signals host classifies superseded task results" {
         _ = host.gpa.deinit();
     }
 
-    const task_token = switch (record.payload) {
-        .task_source => |payload| payload.token,
-        else => unreachable,
-    };
+    const task_token = record.token().?;
     const request_id = host.engine.appendPendingTask(&host, 0, task_token, "lookup", "/api/first");
 
     try std.testing.expectEqual(engine.TaskResolutionClass.pending, host.engine.classifyTaskResolution(request_id));
@@ -5800,19 +5806,17 @@ fn boxTestNodeSignalExpr(roc_host: *abi.RocHost, expr: abi.NodeSignalExpr) *abi.
 }
 
 fn newTestBinderToken(roc_host: *abi.RocHost) HostBinderToken {
-    const token: *u64 = @ptrCast(@alignCast(abi.allocateBox(@sizeOf(u64), @alignOf(u64), false, roc_host)));
-    token.* = 0;
-    return token;
+    return writeTestErasedCallable(
+        TestBinderInitialCapture,
+        roc_host,
+        &testBinderInitialCallable,
+        &testBinderInitialOnDrop,
+        .{ .value = 0, .initialized = false },
+    ) orelse @panic("test binder initializer was null");
 }
 
 fn cloneTestBinderToken(token: HostBinderToken) HostBinderToken {
-    abi.increfBox(@ptrCast(token), 1);
-    return token;
-}
-
-fn newTestSignalToken(roc_host: *abi.RocHost) HostSignalToken {
-    const token: *u64 = @ptrCast(@alignCast(abi.allocateBox(@sizeOf(u64), @alignOf(u64), false, roc_host)));
-    token.* = 0;
+    abi.increfErasedCallable(token, 1);
     return token;
 }
 
@@ -5820,16 +5824,18 @@ fn newTestSignalToken(roc_host: *abi.RocHost) HostSignalToken {
 // ownership and capability rules visible here instead of hiding them behind
 // one-line wrappers around production value constructors.
 fn cloneTestSignalToken(token: HostSignalToken) HostSignalToken {
-    abi.increfBox(@ptrCast(token), 1);
+    abi.increfErasedCallable(token, 1);
     return token;
 }
 
 fn testNodeConstExpr(roc_host: *abi.RocHost, value: HostValue) abi.NodeSignalExpr {
     const cap = testHostValueCapability(roc_host);
+    const init = testHostValueInitialThunk(roc_host, value);
+    abi.increfErasedCallable(init, 1);
     return .{
         .payload = .{ .const_value = .{
-            ._0 = newTestSignalToken(roc_host),
-            ._1 = testHostValueInitialThunk(roc_host, value),
+            ._0 = init,
+            ._1 = init,
             ._2 = cap,
         } },
         .tag = .ConstValue,
@@ -5847,7 +5853,7 @@ fn testNodeSignalExprCapability(signal: abi.NodeSignalExpr) ?HostValueCapability
         .LocationSource => signal.payload_location_source()._2,
         .OnlineSource => signal.payload_online_source()._2,
         .VisibilitySource => signal.payload_visibility_source()._2,
-        .StorageSource => signal.payload_storage_source().cap,
+        .StorageSource => signal.payload_storage_source()._4,
         .Ref => null,
     };
 }
@@ -5893,10 +5899,11 @@ fn testNodeMapExpr(roc_host: *abi.RocHost, input: abi.NodeSignalExpr) abi.NodeSi
         .{ .amount = 1 },
     );
     const cap = testHostValueCapability(roc_host);
+    abi.increfErasedCallable(transform, 1);
     return .{
         .payload = .{
             .map = .{
-                ._0 = newTestSignalToken(roc_host),
+                ._0 = transform,
                 ._1 = boxTestNodeSignalExpr(roc_host, input),
                 ._2 = transform,
                 ._3 = cap,
@@ -5915,10 +5922,11 @@ fn testNodeMap2Expr(roc_host: *abi.RocHost, left: abi.NodeSignalExpr, right: abi
         .{ .amount = 0 },
     );
     const cap = testHostValueCapability(roc_host);
+    abi.increfErasedCallable(transform, 1);
     return .{
         .payload = .{
             .map2 = .{
-                ._0 = newTestSignalToken(roc_host),
+                ._0 = transform,
                 ._1 = boxTestNodeSignalExpr(roc_host, left),
                 ._2 = boxTestNodeSignalExpr(roc_host, right),
                 ._3 = transform,
@@ -5938,10 +5946,11 @@ fn testNodeStableStrMapExpr(roc_host: *abi.RocHost, input: abi.NodeSignalExpr) a
         .{ .amount = 0 },
     );
     const cap = testHostValueCapability(roc_host);
+    abi.increfErasedCallable(transform, 1);
     return .{
         .payload = .{
             .map = .{
-                ._0 = newTestSignalToken(roc_host),
+                ._0 = transform,
                 ._1 = boxTestNodeSignalExpr(roc_host, input),
                 ._2 = transform,
                 ._3 = cap,
@@ -5960,10 +5969,11 @@ fn testNodeStableI64MapExpr(roc_host: *abi.RocHost, input: abi.NodeSignalExpr, v
         .{ .amount = value },
     );
     const cap = testHostValueCapability(roc_host);
+    abi.increfErasedCallable(transform, 1);
     return .{
         .payload = .{
             .map = .{
-                ._0 = newTestSignalToken(roc_host),
+                ._0 = transform,
                 ._1 = boxTestNodeSignalExpr(roc_host, input),
                 ._2 = transform,
                 ._3 = cap,
@@ -5982,10 +5992,11 @@ fn testNodeStableBoolMapExpr(roc_host: *abi.RocHost, input: abi.NodeSignalExpr) 
         .{ .amount = 0 },
     );
     const cap = testHostValueCapability(roc_host);
+    abi.increfErasedCallable(transform, 1);
     return .{
         .payload = .{
             .map = .{
-                ._0 = newTestSignalToken(roc_host),
+                ._0 = transform,
                 ._1 = boxTestNodeSignalExpr(roc_host, input),
                 ._2 = transform,
                 ._3 = cap,
@@ -6004,10 +6015,11 @@ fn testNodeBoolIdentityMapExpr(roc_host: *abi.RocHost, input: abi.NodeSignalExpr
         .{ .amount = 0 },
     );
     const cap = testHostValueCapability(roc_host);
+    abi.increfErasedCallable(transform, 1);
     return .{
         .payload = .{
             .map = .{
-                ._0 = newTestSignalToken(roc_host),
+                ._0 = transform,
                 ._1 = boxTestNodeSignalExpr(roc_host, input),
                 ._2 = transform,
                 ._3 = cap,
@@ -6026,10 +6038,11 @@ fn testNodeCombineExpr(roc_host: *abi.RocHost, children: []const abi.NodeSignalE
         .{ .amount = 0 },
     );
     const cap = testHostValueCapabilityWithEq(roc_host, &testAlwaysEqualHostValueCallable);
+    abi.increfErasedCallable(transform, 1);
     return .{
         .payload = .{
             .combine = .{
-                ._0 = newTestSignalToken(roc_host),
+                ._0 = transform,
                 ._1 = abi.RocList(abi.NodeSignalExpr).fromSlice(children, roc_host),
                 ._2 = transform,
                 ._3 = cap,
@@ -6045,6 +6058,8 @@ fn testNodeTaskSourceExpr(roc_host: *abi.RocHost, name: []const u8, initial_text
     const payload_cap = testHostValueCapability(roc_host);
     const initial_value = hostValueStrWithCapability(host, roc_host, initial_text, cap);
     const payload_capture = TestTaskPayloadCapture{ .payload_cap = payload_cap };
+    const initial = testHostValueInitialThunk(roc_host, initial_value);
+    abi.increfErasedCallable(initial, 1);
     return .{
         .payload = .{ .task_source = .{
             .cap = cap,
@@ -6062,10 +6077,10 @@ fn testNodeTaskSourceExpr(roc_host: *abi.RocHost, name: []const u8, initial_text
                 &testErasedCallableOnDrop,
                 payload_capture,
             ),
-            .initial = testHostValueInitialThunk(roc_host, initial_value),
+            .initial = initial,
             .name = RocStr.fromSlice(name, roc_host),
             .payload_cap = payload_cap,
-            .token = newTestSignalToken(roc_host),
+            .token = initial,
             .reset_on_start = reset_on_start,
         } },
         .tag = .TaskSource,
@@ -6075,11 +6090,13 @@ fn testNodeTaskSourceExpr(roc_host: *abi.RocHost, name: []const u8, initial_text
 fn testNodeIntervalSourceExpr(roc_host: *abi.RocHost, period_ms: u64, initial_value: i64) abi.NodeSignalExpr {
     const host = hostFromRocHost(roc_host);
     const cap = testHostValueCapability(roc_host);
+    const initial = testHostValueInitialThunk(roc_host, hv.makeI64WithCapability(host, roc_host, initial_value, cap));
+    abi.increfErasedCallable(initial, 1);
     return .{
         .payload = .{ .interval_source = .{
             .period_ms = period_ms,
             .cap = cap,
-            .initial = testHostValueInitialThunk(roc_host, hv.makeI64WithCapability(host, roc_host, initial_value, cap)),
+            .initial = initial,
             .tick = writeTestErasedCallable(
                 TestErasedI64Capture,
                 roc_host,
@@ -6087,7 +6104,7 @@ fn testNodeIntervalSourceExpr(roc_host: *abi.RocHost, period_ms: u64, initial_va
                 &testErasedCallableOnDrop,
                 .{ .amount = 1 },
             ),
-            .token = newTestSignalToken(roc_host),
+            .token = initial,
         } },
         .tag = .IntervalSource,
     };
@@ -6134,10 +6151,12 @@ fn testLocationPathEqualsCallable(roc_host: *abi.RocHost, cap: HostValueCapabili
 fn testNodeLocationSourceExpr(roc_host: *abi.RocHost) abi.NodeSignalExpr {
     const cap = testHostValueCapability(roc_host);
     const payload_cap = testHostValueCapability(roc_host);
+    const from_payload = testPayloadChecksumCallable(roc_host, cap);
+    abi.increfErasedCallable(from_payload, 1);
     return .{
         .payload = .{ .location_source = .{
-            ._0 = newTestSignalToken(roc_host),
-            ._1 = testPayloadChecksumCallable(roc_host, cap),
+            ._0 = from_payload,
+            ._1 = from_payload,
             ._2 = cap,
             ._3 = payload_cap,
         } },
@@ -6148,10 +6167,12 @@ fn testNodeLocationSourceExpr(roc_host: *abi.RocHost) abi.NodeSignalExpr {
 fn testNodeLocationPathEqualsSourceExpr(roc_host: *abi.RocHost, path: []const u8) abi.NodeSignalExpr {
     const cap = testHostValueCapability(roc_host);
     const payload_cap = testHostValueCapability(roc_host);
+    const from_payload = testLocationPathEqualsCallable(roc_host, cap, path);
+    abi.increfErasedCallable(from_payload, 1);
     return .{
         .payload = .{ .location_source = .{
-            ._0 = newTestSignalToken(roc_host),
-            ._1 = testLocationPathEqualsCallable(roc_host, cap, path),
+            ._0 = from_payload,
+            ._1 = from_payload,
             ._2 = cap,
             ._3 = payload_cap,
         } },
@@ -6162,10 +6183,12 @@ fn testNodeLocationPathEqualsSourceExpr(roc_host: *abi.RocHost, path: []const u8
 fn testNodeVisibilitySourceExpr(roc_host: *abi.RocHost) abi.NodeSignalExpr {
     const cap = testHostValueCapability(roc_host);
     const payload_cap = testHostValueCapability(roc_host);
+    const from_payload = testPayloadChecksumCallable(roc_host, cap);
+    abi.increfErasedCallable(from_payload, 1);
     return .{
         .payload = .{ .visibility_source = .{
-            ._0 = newTestSignalToken(roc_host),
-            ._1 = testPayloadChecksumCallable(roc_host, cap),
+            ._0 = from_payload,
+            ._1 = from_payload,
             ._2 = cap,
             ._3 = payload_cap,
         } },
@@ -6176,10 +6199,12 @@ fn testNodeVisibilitySourceExpr(roc_host: *abi.RocHost) abi.NodeSignalExpr {
 fn testNodeOnlineSourceExpr(roc_host: *abi.RocHost) abi.NodeSignalExpr {
     const cap = testHostValueCapability(roc_host);
     const payload_cap = testHostValueCapability(roc_host);
+    const from_payload = testPayloadChecksumCallable(roc_host, cap);
+    abi.increfErasedCallable(from_payload, 1);
     return .{
         .payload = .{ .online_source = .{
-            ._0 = newTestSignalToken(roc_host),
-            ._1 = testPayloadChecksumCallable(roc_host, cap),
+            ._0 = from_payload,
+            ._1 = from_payload,
             ._2 = cap,
             ._3 = payload_cap,
         } },
@@ -6190,14 +6215,16 @@ fn testNodeOnlineSourceExpr(roc_host: *abi.RocHost) abi.NodeSignalExpr {
 fn testNodeStorageSourceExpr(roc_host: *abi.RocHost, area: boundary.StorageArea, key: []const u8) abi.NodeSignalExpr {
     const cap = testHostValueCapability(roc_host);
     const payload_cap = testHostValueCapability(roc_host);
+    const from_payload = testPayloadChecksumCallable(roc_host, cap);
+    abi.increfErasedCallable(from_payload, 1);
     return .{
         .payload = .{ .storage_source = .{
-            .area = @intFromEnum(area),
-            .token = newTestSignalToken(roc_host),
-            .key = RocStr.fromSlice(key, roc_host),
-            .from_payload = testPayloadChecksumCallable(roc_host, cap),
-            .cap = cap,
-            .payload_cap = payload_cap,
+            ._1 = @intFromEnum(area),
+            ._0 = from_payload,
+            ._2 = RocStr.fromSlice(key, roc_host),
+            ._3 = from_payload,
+            ._4 = cap,
+            ._5 = payload_cap,
         } },
         .tag = .StorageSource,
     };
@@ -6328,7 +6355,7 @@ fn testEventExtractionPlan(roc_host: *abi.RocHost, extraction_plan: EventExtract
     };
 }
 
-fn testNodeEventPolicy(bits: u32) abi.NodeEventPolicy {
+fn testNodeEventPolicy(bits: u32) abi.NodeEventBindingPolicy {
     const policy = render.EventPolicy.fromWireBits(bits);
     return .{
         .capture = policy.capture,
@@ -6466,7 +6493,7 @@ fn testStartTaskCmd(roc_host: *abi.RocHost, task_source: abi.NodeSignalExpr, nam
             .read = testReadStrCallable(roc_host),
         },
         .task_name = RocStr.fromSlice(name, roc_host),
-        .task_token = cloneTestSignalToken(task_payload.token),
+        .task_token = cloneTestSignalToken(task_payload.token.?),
     };
 }
 
@@ -6533,14 +6560,21 @@ fn testNodeStateWithTokenAndInitial(roc_host: *abi.RocHost, binder_token: HostBi
 }
 
 fn testNodeStateWithTokenAndInitialCapability(roc_host: *abi.RocHost, binder_token: HostBinderToken, initial: HostValue, child: abi.Elem, cap: HostValueCapability) abi.Elem {
-    const initial_thunk = testHostValueInitialThunk(roc_host, initial);
+    const capture = testCapturePtrAs(TestBinderInitialCapture, abi.rocErasedCallableCapturePtr(binder_token));
+    if (capture.initialized) {
+        testDropHostValue(roc_host, initial);
+    } else {
+        capture.value = initial;
+        capture.initialized = true;
+    }
+    abi.increfErasedCallable(binder_token, 1);
     return .{
         .payload = .{
             .state = .{
                 .binder = binder_token,
                 .child = boxTestElem(roc_host, child),
                 .cap = cap,
-                .initial = initial_thunk,
+                .initial = binder_token,
             },
         },
         .tag = .State,
@@ -6971,7 +7005,7 @@ test "signals host collects Elem descriptor stream" {
 
     try std.testing.expectEqual(@as(usize, 1), stream.events.items.len);
     try std.testing.expectEqual(RenderEventKind.click, stream.events.items[0].fixedKind().?);
-    try std.testing.expect(stream.events.items[0].binder_token == state_token);
+    try std.testing.expectEqual(state_token, stream.events.items[0].binder_token);
     try std.testing.expectEqual(stream.scope_sites.items[0].node_id, stream.events.items[0].target_node_id);
     try std.testing.expectEqual(BoundaryPayloadDescriptor.init(.unit, .none), stream.events.items[0].payload_descriptor);
 
@@ -7100,7 +7134,7 @@ test "signals host descriptors carry capability-owned extension records" {
     try std.testing.expectEqual(host.engine.active_events.items[0].payload_reducer.transform, event_reducer.transform);
 }
 
-test "signals host preserves explicit signal tokens across cloned descriptors" {
+test "signals host preserves callable identity across cloned descriptors" {
     test_erased_callable_drop_count = 0;
 
     var host = HostEnv.init();
@@ -7131,7 +7165,87 @@ test "signals host preserves explicit signal tokens across cloned descriptors" {
     try std.testing.expect(first == second);
     try std.testing.expectEqual(@as(std.meta.Tag(HostSignalRecordPayload), .map), std.meta.activeTag(first.payload));
     try std.testing.expectEqual(@as(std.meta.Tag(HostSignalRecordPayload), .map), std.meta.activeTag(second.payload));
-    try std.testing.expect(first.payload.map.token == second.payload.map.token);
+    try std.testing.expectEqual(first.token().?, second.token().?);
+}
+
+test "signals host keeps same-specialization maps constants and state binders distinct" {
+    test_erased_callable_drop_count = 0;
+
+    var host = HostEnv.init();
+    var roc_host = makeSignalsRocHost(&host);
+    host.engine.roc_host = &roc_host;
+    defer {
+        host.deinit();
+        _ = host.gpa.deinit();
+    }
+
+    var stream: HostNodeDescriptorStream = .{};
+    defer stream.deinit(host.hostAllocator(), &host, &roc_host, &host.engine.pending_roc_metrics);
+
+    const left_token = newTestBinderToken(&roc_host);
+    const right_token = newTestBinderToken(&roc_host);
+    const left_map = testNodeMapExpr(&roc_host, testNodeRefExpr(left_token));
+    const right_map = testNodeMapExpr(&roc_host, testNodeRefExpr(right_token));
+    const first_const = testNodeConstExpr(&roc_host, testHostValueI64(1));
+    const second_const = testNodeConstExpr(&roc_host, testHostValueI64(1));
+    const children = [_]abi.Elem{
+        testNodeI64TextSignal(&roc_host, left_map),
+        testNodeI64TextSignal(&roc_host, right_map),
+        testNodeI64TextSignal(&roc_host, first_const),
+        testNodeI64TextSignal(&roc_host, second_const),
+    };
+    const inner = testNodeStateWithTokenAndInitial(&roc_host, right_token, testHostValueI64(20), testElement(&roc_host, &children));
+    const root = testNodeStateWithTokenAndInitial(&roc_host, left_token, testHostValueI64(10), inner);
+    defer abi.decrefElem(root, &roc_host);
+
+    host.collectActiveElemRootDescriptors(&roc_host, &stream, root, &.{});
+
+    try std.testing.expectEqual(@as(usize, 4), stream.signal_text_nodes.items.len);
+    const left_record = stream.signal_text_nodes.items[0].signal.record;
+    const right_record = stream.signal_text_nodes.items[1].signal.record;
+    try std.testing.expect(left_record != right_record);
+    try std.testing.expectEqual(
+        abi.rocErasedCallablePayloadPtr(left_record.payload.map.transform).callable_fn_ptr,
+        abi.rocErasedCallablePayloadPtr(right_record.payload.map.transform).callable_fn_ptr,
+    );
+    try std.testing.expect(left_record.token().? == left_record.payload.map.transform.?);
+    try std.testing.expect(right_record.token().? == right_record.payload.map.transform.?);
+
+    const first_const_record = stream.signal_text_nodes.items[2].signal.record;
+    const second_const_record = stream.signal_text_nodes.items[3].signal.record;
+    try std.testing.expect(first_const_record != second_const_record);
+    try std.testing.expect(first_const_record.token().? != second_const_record.token().?);
+    try std.testing.expect(first_const_record.token().? == first_const_record.payload.const_value.init.?);
+    try std.testing.expect(second_const_record.token().? == second_const_record.payload.const_value.init.?);
+
+    try std.testing.expectEqual(@as(usize, 2), stream.states.items.len);
+    try std.testing.expect(stream.states.items[0].initial.? != stream.states.items[1].initial.?);
+    try std.testing.expectEqual(left_token, stream.states.items[0].initial.?);
+    try std.testing.expectEqual(right_token, stream.states.items[1].initial.?);
+}
+
+test "signals host derives browser source identity from from_payload" {
+    test_erased_callable_drop_count = 0;
+
+    var host = HostEnv.init();
+    var roc_host = makeSignalsRocHost(&host);
+    host.engine.roc_host = &roc_host;
+    defer {
+        host.deinit();
+        _ = host.gpa.deinit();
+    }
+
+    var stream: HostNodeDescriptorStream = .{};
+    defer stream.deinit(host.hostAllocator(), &host, &roc_host, &host.engine.pending_roc_metrics);
+
+    const expr = testNodeLocationSourceExpr(&roc_host);
+    defer abi.decrefNodeSignalExpr(expr, &roc_host);
+    const from_payload = expr.payload_location_source()._1.?;
+    const record = host.engine.bindNodeSignalExpr(host.hostAllocator(), &stream, expr, &.{});
+    defer record.release(host.hostAllocator(), &host, &roc_host, &host.engine.pending_roc_metrics);
+
+    try std.testing.expectEqual(from_payload, record.token().?);
+    try std.testing.expectEqual(from_payload, record.payload.location_source.from_payload.?);
 }
 
 test "signals host retains state equality outside descriptor stream" {

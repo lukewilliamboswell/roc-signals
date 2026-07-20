@@ -25,7 +25,7 @@ Action: <promotion trigger recorded in NEXT_STEPS priority N | issue filed |
 
 Maintained from Phase 1 onward; no unchecked feature rows at Phase 5 exit.
 “Verified” means the app path and assertion are present and the full native
-script passed with `release-fast-afbc7863` on 2026-07-12. Line references are
+script passed with PATH Roc `release-fast-8eaa9abd` on 2026-07-20. Line references are
 to `examples/conduit/spec.txt` sections by comment header (line numbers drift;
 headers are stable).
 
@@ -50,19 +50,18 @@ headers are stable).
 | Network failure states on every GET surface | "Network failure matrix for every GET surface" section | verified (Phase 5) |
 | Stale response suppression | "Tag filter with request replacement" section | verified with an explicitly delivered stale completion (Phase 5) |
 | `StorageUnavailable` startup | no native directive can currently inject this state | open robustness/tooling gap (Phase 5) |
-| Submission readiness | README plus `serve.py --no-server` gates | README and native behavior gate done; site gates remain open (Phase 5) |
+| Submission readiness | README plus `serve.py --no-server` gates | published; full dev and size site gates pass (Phase 5) |
 | Soak and command-wire measurement | Conduit build plus plateau/telemetry gates | structural plateau gate refreshed; Conduit-specific measurements not run (Phase 5) |
 | Comparison study | local LoC baseline plus wasm/public build outputs | local source baseline recorded; payload/reference rows open (Phase 5) |
 
 ## NEXT_STEPS Priority Synthesis (Phase 5 WIP)
 
-This is the MoE-5 closeout ledger. It stays WIP until the remaining runtime,
-real-backend, measurement, and publication gates are exercised and final
-publication/submission readiness is decided.
+This is the MoE-5 closeout ledger. It stays WIP until the remaining real-backend,
+measurement, comparison, and static-host gates are exercised.
 
 | Priority | Conduit evidence | Current decision |
 | --- | --- | --- |
-| 1. Browser environment follow-ups | Conduit uses the shipped location/history, storage startup snapshots, document title, visibility/online-adjacent task path, and app-local route parsing. The app has not proven app-visible storage write recovery, cross-tab storage, IndexedDB, or split location sources. Static-host deep-link behavior remains tied to the publication gate, which follows the native runtime fix. | No browser-environment promotion yet; scroll/hash/static-hosting decision remains deferred until publication can be tested. |
+| 1. Browser environment follow-ups | Conduit uses the shipped location/history, storage startup snapshots, document title, visibility/online-adjacent task path, and app-local route parsing. The app has not proven app-visible storage write recovery, cross-tab storage, IndexedDB, or split location sources. Publication passes; static-host deep-link behavior remains untested. | No browser-environment promotion yet; scroll/hash/static-hosting decision remains deferred to the focused static-host check. |
 | 2. Subscriptions and app-specific JS interop | Conduit did not need generic `Sub`, ports-like app interop, or a broader browser source catalog beyond shipped focused sources and ordinary tasks. | Keep generic subscriptions and app-specific interop deferred. |
 | 3. HTTP production hardening | Conduit proves authenticated request envelopes, timeout-bearing requests, task replacement/stale suppression, 422 envelopes, and network errors. Cross-origin header auth already passed the Phase 0 canary, so fetch-policy knobs stay closed. Builtin Json required an app-local escape workaround and string-parsed dynamic 422 keys, but the current issue is compiler JSON behavior/dynamic object parsing, not proof that Signals should own JSON/body helpers. Explicit user abort and typed effect capability routing were not needed. | No HTTP public-surface promotion yet; keep fetch-policy controls, JSON/body helper sugar, explicit abort, and effect registry deferred. Compiler JSON issue remains a compiler finding. |
 | 4. Form/input hardening | Conduit forms use shipped text inputs, textareas, submit prevention, and controlled state. The async edit/settings prefill limitation is recorded as app ergonomics, and no selection, file input, multi-select, constraint validation, focus command, or date/time input need appeared. | No form/input promotion yet; async state hydration remains a documented app pattern unless more maintained forms pay the cost. |
@@ -98,16 +97,16 @@ count, static-host deep-link behavior, and reference error-state coverage.
 
 ## Phase 5 Gate Status
 
-The native feature gate is complete. Remaining closeout gates are listed in
-execution order after it:
+The compiler, native feature, cross-example, and publication gates are complete.
+The table retains the remaining closeout evidence alongside those completed gates:
 
 | Gate | Current evidence | Resume condition |
 | --- | --- | --- |
-| Native spec execution | full `examples/conduit/spec.txt` passes with `release-fast-afbc7863`, including explicit stale completion and back/forward assertions | complete |
-| Cross-example native rollout | all Roc checks and all native specs pass, including `service-ops-center` and the canonical-location branch fixture | complete |
+| Native spec execution | full `examples/conduit/spec.txt` passes with PATH Roc `release-fast-8eaa9abd`, including explicit stale completion and back/forward assertions | complete |
+| Cross-example rollout | `python3 scripts/test.py all --roc-bin roc` passes all checks, native specs, browser tests, wasm mounts, bundles, and benchmarks | complete |
 | Remaining MoE-3/MoE-4 robustness | ordinary back/forward, loading, errors, and stale suppression pass | inject `StorageUnavailable` and run the planned 10-step navigation trail |
 | Real-backend conformance (MoE-2) | in-page backend shape is covered by node tests, and the Phase 0 cross-origin auth canary passed | wasm Conduit build runs in browser with a base-URL swap against a conformant backend |
-| Public-site publication/readiness (MoE-6) | README exists; direct wasm dev and size builds pass; `public = false` is intentional | after the native gate, `serve.py --no-server` passes in both app optimization modes, including Conduit |
+| Public-site publication/readiness (MoE-6) | Conduit is public; full `serve.py --no-server` dev and size builds pass for all 11 examples, including Conduit, and its wasm mounts | complete |
 | Static-host deep-link decision | path-based history routing is the app source of truth; static hosting behavior is untested | public/site build can be served from a static-host-like path and tested |
 | Payload/startup comparison | local source LoC baseline exists | wasm/site output exists so gzipped payload and cold-load request counts can be measured |
 | Conduit soak and action telemetry | structural plateau and static wire estimates are refreshed | native/wasm behavior gate is trustworthy enough to exercise feed/article/login/logout cycles |
@@ -126,6 +125,20 @@ until they can be rechecked and filed.
 | Wide derived JSON record parse crash | already filed as roc-lang/roc#9964 | focused 50-field repro now checks on nightly-2026-July-07, but upstream issue remains open | re-verify when upstream closes it; only reopen/file follow-up if the single-wide parser is still slow or crashes |
 
 ## Findings
+
+### 2026-07-20 Phase 5 — PATH main compiler and publication gates pass
+
+Classification: compiler
+Severity: blocker (resolved)
+Evidence: PATH Roc `release-fast-8eaa9abd` checks and builds Conduit natively
+and for wasm. Its full native spec passes. `python3 scripts/test.py all
+--roc-bin roc` passes the repository gate, and `python3 scripts/serve.py
+--no-server --roc-bin roc` passes in both dev and size modes with Conduit
+published. Folding the package's opaque HTTP response directly into Conduit's
+large domain unions still overflows the compiler stack; `Api.response_state`
+confines response materialization to a small plain record before domain decode.
+Action: compiler recovery and publication are complete. Keep the real-backend,
+static-host, soak/telemetry, and comparison work as the active closeout evidence.
 
 ### 2026-07-12 Phase 5 — Source factories expose a pre-existing Service Ops branch defect
 

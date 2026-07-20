@@ -111,7 +111,15 @@ Http := [].{
 	response_with_body = Response.with_body
 
 	## Create a task for full HTTP request/response values.
-	request_task = |purpose| Signal.task_source("http:send:${purpose}", decode_response_payload, decode_error_payload, False)
+	request_task = |purpose|
+		Signal.task_source_with_eq(
+			"http:send:${purpose}",
+			decode_response_payload,
+			decode_error_payload,
+			False,
+			|_, _| False,
+			|_, _| False,
+		)
 
 	## Start a full HTTP request task.
 	start = |task, request| Signal.start_str(task, encode_request_payload(request))

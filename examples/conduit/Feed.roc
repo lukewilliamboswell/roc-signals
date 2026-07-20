@@ -108,12 +108,7 @@ Feed := {}.{
 					|model| {
 						favorite_task = Http.request_task("feed-favorite")
 						favorite_result : Signal.Signal(Feed.FavoriteResult)
-						favorite_result = Signal.fold_task(
-							favorite_task,
-							FavoriteIdle,
-							classify_favorite,
-							|err| FavoriteRejected("Request failed: ${Http.error_text(err)}"),
-						)
+						favorite_result = Api.response_state(favorite_task).map(classify_favorite)
 
 						model_signal = model.signal()
 						token = session.map(|value| Session.token_of(value))
@@ -211,21 +206,24 @@ Feed := {}.{
 		)
 	}
 
-	classify_favorite : _ -> Feed.FavoriteResult
+	classify_favorite : Api.ResponseState -> Feed.FavoriteResult
 	classify_favorite = |response| {
-		status = Http.response_status(response)
-		if status == 200 {
-			match Api.decode_article(Api.response_text(response)) {
+		if !response.ready {
+			FavoriteIdle
+		} else if !response.error.is_empty() {
+			FavoriteRejected("Request failed: ${response.error}")
+		} else if response.status == 200 {
+			match Api.decode_article(response.body) {
 				Ready(article) => FavoriteAccepted(article)
 				Failed(message) => FavoriteRejected(message)
 				Loading => FavoriteRejected("The server response could not be read.")
 			}
-		} else if status == 401 {
+		} else if response.status == 401 {
 			FavoriteRejected("Please sign in to favorite articles.")
-		} else if status == 404 {
+		} else if response.status == 404 {
 			FavoriteRejected("Article was not found.")
 		} else {
-			FavoriteRejected("The server responded with status ${status.to_str()}.")
+			FavoriteRejected("The server responded with status ${response.status.to_str()}.")
 		}
 	}
 

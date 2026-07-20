@@ -136,8 +136,9 @@ external ABI exactly.
 When coverage points at large engine paths, first look for engine-adjacent logic
 that can live in a focused `src/signals/` module, such as descriptor bookkeeping,
 effect lifecycle state, or borrowed ABI views. Unit-test those seams directly and
-keep host/spec tests for cross-module behavior. If a seam retains or releases Roc
-tokens, allocate real Roc boxes in tests instead of using stack pointers.
+keep host/spec tests for cross-module behavior. If a seam retains or releases
+callable identity, allocate real retained Roc callables in tests instead of
+using stack pointers or boxed `U64` stand-ins.
 
 Run coverage after substantial changes to `src/signals/`, `src/native_host.zig`,
 the native spec runner, the simulated DOM, allocation diagnostics, or host

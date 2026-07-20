@@ -5,6 +5,7 @@
 ## the Remote loading/ready/failed shape every fetch surface renders from.
 import Route
 import pf.Http
+import pf.Signal
 
 Api := {}.{
 	Remote(a) : [Loading, Ready(a), Failed(Str)]
@@ -90,7 +91,7 @@ Api := {}.{
 
 	decode_feed : Str -> Api.Remote(Api.FeedPage)
 	decode_feed = |body| {
-		parse : Str -> Try(Api.FeedPage, Json.ParseErr)
+		parse : Str -> Try(Api.FeedPage, [InvalidJson(Str), MissingRequiredField(Str)])
 		parse = Json.parser_camel()
 		match to_remote(parse(shield_escapes(body))) {
 			Ready(page) => Ready({ ..page, articles: page.articles.map(restore_summary) })
@@ -101,7 +102,7 @@ Api := {}.{
 
 	decode_article : Str -> Api.Remote(Api.Article)
 	decode_article = |body| {
-		parse : Str -> Try({ article : Api.Article }, Json.ParseErr)
+		parse : Str -> Try({ article : Api.Article }, [InvalidJson(Str), MissingRequiredField(Str)])
 		parse = Json.parser_camel()
 		match to_remote(parse(shield_escapes(body))) {
 			Ready(envelope) => Ready(restore_article(envelope.article))
@@ -112,7 +113,7 @@ Api := {}.{
 
 	decode_profile : Str -> Api.Remote(Api.Profile)
 	decode_profile = |body| {
-		parse : Str -> Try({ profile : Api.Profile }, Json.ParseErr)
+		parse : Str -> Try({ profile : Api.Profile }, [InvalidJson(Str), MissingRequiredField(Str)])
 		parse = Json.parser_camel()
 		match to_remote(parse(shield_escapes(body))) {
 			Ready(envelope) => Ready({ ..envelope.profile, bio: restore_text(envelope.profile.bio) })
@@ -123,7 +124,7 @@ Api := {}.{
 
 	decode_comments : Str -> Api.Remote(List(Api.Comment))
 	decode_comments = |body| {
-		parse : Str -> Try({ comments : List(Api.Comment) }, Json.ParseErr)
+		parse : Str -> Try({ comments : List(Api.Comment) }, [InvalidJson(Str), MissingRequiredField(Str)])
 		parse = Json.parser_camel()
 		match to_remote(parse(shield_escapes(body))) {
 			Ready(envelope) => Ready(envelope.comments.map(restore_comment))
@@ -134,7 +135,7 @@ Api := {}.{
 
 	decode_tags : Str -> Api.Remote(List(Str))
 	decode_tags = |body| {
-		parse : Str -> Try({ tags : List(Str) }, Json.ParseErr)
+		parse : Str -> Try({ tags : List(Str) }, [InvalidJson(Str), MissingRequiredField(Str)])
 		parse = Json.parser_camel()
 		match to_remote(parse(shield_escapes(body))) {
 			Ready(envelope) => Ready(envelope.tags)
@@ -211,7 +212,7 @@ Api := {}.{
 		}
 	}
 
-	to_remote : Try(a, Json.ParseErr) -> Api.Remote(a)
+	to_remote : Try(a, [InvalidJson(Str), MissingRequiredField(Str)]) -> Api.Remote(a)
 	to_remote = |result|
 		match result {
 			Ok(value) => Ready(value)
@@ -225,6 +226,19 @@ Api := {}.{
 	User : { email : Str, token : Str, username : Str }
 
 	AuthResult : [AuthIdle, AuthAccepted(Api.User), AuthRejected(List(Str)), AuthErrored(Str)]
+
+	# Keep the package-owned Response value confined to one small transform.
+	# Current Roc main overflows its compiler stack when a task fold transforms
+	# that opaque value directly into Conduit's larger domain unions.
+	ResponseState : { status : U16, body : Str, error : Str, ready : Bool }
+
+	response_state = |task|
+		Signal.fold_task(
+			task,
+			{ status: 0, body: "", error: "", ready: False },
+			|response| { status: Http.response_status(response), body: response_text(response), error: "", ready: True },
+			|err| { status: 0, body: "", error: Http.error_text(err), ready: True },
+		)
 
 	auth_headers : Str -> List(Http.Header)
 	auth_headers = |token| if token.is_empty() { [] } else { [{ name: "authorization", value: "Token ${token}" }] }
@@ -308,33 +322,38 @@ Api := {}.{
 	response_text : _ -> Str
 	response_text = |response| Str.from_utf8_lossy(Http.response_body(response))
 
-	decode_feed_response : _ -> Api.Remote(Api.FeedPage)
+	decode_feed_response : Api.ResponseState -> Api.Remote(Api.FeedPage)
 	decode_feed_response = |response| {
-		status = Http.response_status(response)
-		if status == 200 {
-			decode_feed(response_text(response))
-		} else if status == 401 {
+		if !response.ready {
+			Loading
+		} else if !response.error.is_empty() {
+			request_failed(response.error)
+		} else if response.status == 200 {
+			decode_feed(response.body)
+		} else if response.status == 401 {
 			Failed("Please sign in to see this feed.")
 		} else {
-			Failed("The server responded with status ${status.to_str()}.")
+			Failed("The server responded with status ${response.status.to_str()}.")
 		}
 	}
 
-	classify_auth : _ -> Api.AuthResult
+	classify_auth : Api.ResponseState -> Api.AuthResult
 	classify_auth = |response| {
-		status = Http.response_status(response)
-		body = response_text(response)
-		if status == 200 {
-			parse : Str -> Try({ user : Api.User }, Json.ParseErr)
+		if !response.ready {
+			AuthIdle
+		} else if !response.error.is_empty() {
+			AuthErrored("Request failed: ${response.error}")
+		} else if response.status == 200 {
+			parse : Str -> Try({ user : Api.User }, [InvalidJson(Str), MissingRequiredField(Str)])
 			parse = Json.parser_camel()
-			match parse(shield_escapes(body)) {
+			match parse(shield_escapes(response.body)) {
 				Ok(envelope) => AuthAccepted(envelope.user)
 				Err(_) => AuthErrored("The server response could not be read.")
 			}
-		} else if status == 422 {
-			AuthRejected(parse_errors(body))
+		} else if response.status == 422 {
+			AuthRejected(parse_errors(response.body))
 		} else {
-			AuthErrored("The server responded with status ${status.to_str()}.")
+			AuthErrored("The server responded with status ${response.status.to_str()}.")
 		}
 	}
 

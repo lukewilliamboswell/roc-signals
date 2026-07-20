@@ -49,15 +49,80 @@ prev_step = |step| {
 	}
 }
 
-Plan := [Team, Basic]
+Plan := [Team, Basic].{
+	is_eq : Plan, Plan -> Bool
+	is_eq = |left, right|
+		match left {
+			Team => match right {
+				Team => True
+				Basic => False
+			}
+			Basic => match right {
+				Team => False
+				Basic => True
+			}
+		}
+}
 
-TextDraft := [TextUntouched, TextChanged(Str)]
+TextDraft := [TextUntouched, TextChanged(Str)].{
+	is_eq : TextDraft, TextDraft -> Bool
+	is_eq = |left, right|
+		match left {
+			TextUntouched => match right {
+				TextUntouched => True
+				TextChanged(_) => False
+			}
+			TextChanged(left_value) => match right {
+				TextUntouched => False
+				TextChanged(right_value) => left_value == right_value
+			}
+		}
+}
 
-BoolDraft := [BoolUntouched, BoolChanged(Bool)]
+BoolDraft := [BoolUntouched, BoolChanged(Bool)].{
+	is_eq : BoolDraft, BoolDraft -> Bool
+	is_eq = |left, right|
+		match left {
+			BoolUntouched => match right {
+				BoolUntouched => True
+				BoolChanged(_) => False
+			}
+			BoolChanged(left_value) => match right {
+				BoolUntouched => False
+				BoolChanged(right_value) => left_value == right_value
+			}
+		}
+}
 
-I64Draft := [I64Untouched, I64Changed(I64)]
+I64Draft := [I64Untouched, I64Changed(I64)].{
+	is_eq : I64Draft, I64Draft -> Bool
+	is_eq = |left, right|
+		match left {
+			I64Untouched => match right {
+				I64Untouched => True
+				I64Changed(_) => False
+			}
+			I64Changed(left_value) => match right {
+				I64Untouched => False
+				I64Changed(right_value) => left_value == right_value
+			}
+		}
+}
 
-PlanDraft := [PlanUntouched, PlanChanged(Plan)]
+PlanDraft := [PlanUntouched, PlanChanged(Plan)].{
+	is_eq : PlanDraft, PlanDraft -> Bool
+	is_eq = |left, right|
+		match left {
+			PlanUntouched => match right {
+				PlanUntouched => True
+				PlanChanged(_) => False
+			}
+			PlanChanged(left_value) => match right {
+				PlanUntouched => False
+				PlanChanged(right_value) => left_value.is_eq(right_value)
+			}
+		}
+}
 
 team_button_class : Plan -> Str
 team_button_class = |plan|
@@ -320,7 +385,12 @@ render_line = |label, stored_quantity| {
 							Html.button_c("Decrease ${label}", "button", quantity.on_unit(|draft| decrease_i64(1, draft))),
 							Html.paragraph_s_c(quantity_label, "text-sm font-medium text-zinc-900"),
 							Html.button_c("Increase ${label}", "button", quantity.on_unit(|draft| increase_i64(1, draft))),
-							Ui.on_change(quantity_value, |n| Browser.set_local_storage_text(key, n.to_str())),
+							Ui.on_change(quantity.signal(), |draft|
+								match draft {
+									I64Changed(n) => Browser.set_local_storage_text(key, n.to_str())
+									I64Untouched => Signal.noop
+								}
+							),
 						],
 					),
 				],

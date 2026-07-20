@@ -73,12 +73,7 @@ Auth := {}.{
 							},
 						)
 						result : Signal.Signal(Api.AuthResult)
-						result = Signal.fold_task(
-							task,
-							AuthIdle,
-							Api.classify_auth,
-							|err| AuthErrored("Request failed: ${Http.error_text(err)}"),
-						)
+						result = Api.response_state(task).map(Api.classify_auth)
 
 						form_signal : Signal.Signal(Auth.Form)
 						form_signal = form.signal()

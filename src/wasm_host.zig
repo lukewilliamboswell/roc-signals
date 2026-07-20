@@ -910,7 +910,7 @@ fn resolveTask(request_id: u64, payload_text: []const u8, failed: bool) void {
         .task_source => |payload| payload,
         .ref, .const_value, .map, .map2, .combine, .interval_source, .location_source, .online_source, .visibility_source, .storage_source => unreachable,
     };
-    if (task_payload.token != pending.task_token) failHostWith("task result matched a pending request for a different task source");
+    if (record.token().? != pending.task_token) failHostWith("task result matched a pending request for a different task source");
 
     roc_allocation_phase = 10;
     const payload = hostValueStr(payload_text);
@@ -1375,7 +1375,7 @@ export fn roc_ui_mount() callconv(.c) void {
     }
 
     renderActiveRoot(&.{});
-    clearStorageEnvironment();
+    clearStorageDeclarations();
 }
 
 export fn roc_ui_set_location(payload_ptr: usize, payload_len: usize) callconv(.c) void {

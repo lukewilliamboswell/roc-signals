@@ -6,6 +6,19 @@ import pf.Browser
 import pf.Signal
 
 Session := [Anonymous, SignedIn({ token : Str, username : Str })].{
+	is_eq : Session, Session -> Bool
+	is_eq = |left, right|
+		match left {
+			Anonymous => match right {
+				Anonymous => True
+				SignedIn(_) => False
+			}
+			SignedIn(left_user) => match right {
+				Anonymous => False
+				SignedIn(right_user) => left_user == right_user
+			}
+		}
+
 	jwt_key : Str
 	jwt_key = "conduit.jwt"
 

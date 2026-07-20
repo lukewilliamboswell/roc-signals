@@ -17,6 +17,17 @@ Route := [
 ].{
 	Feed : { page : U64, tag : [AllTags, Tagged(Str)], source : [Global, Yours] }
 
+	is_eq : Route, Route -> Bool
+	is_eq = |left, right| {
+		left_kind = Route.kind(left)
+		right_kind = Route.kind(right)
+		if left_kind != right_kind {
+			False
+		} else {
+			Route.to_location(left) == Route.to_location(right)
+		}
+	}
+
 	default_feed : Route.Feed
 	default_feed = { page: 1, tag: AllTags, source: Global }
 

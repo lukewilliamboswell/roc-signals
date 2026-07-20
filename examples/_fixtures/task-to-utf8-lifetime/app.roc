@@ -6,7 +6,24 @@ import pf.Http
 import pf.Signal
 import pf.Ui
 
-TaskState := [Loading, Ready(U64), Failed(U64)]
+TaskState := [Loading, Ready(U64), Failed(U64)].{
+	is_eq : TaskState, TaskState -> Bool
+	is_eq = |left, right|
+		match left {
+			Loading => match right {
+				Loading => True
+				_ => False
+			}
+			Ready(left_size) => match right {
+				Ready(right_size) => left_size == right_size
+				_ => False
+			}
+			Failed(left_size) => match right {
+				Failed(right_size) => left_size == right_size
+				_ => False
+			}
+		}
+}
 
 decode : Str -> TaskState
 decode = |body| Ready(body.to_utf8().len())

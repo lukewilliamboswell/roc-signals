@@ -13,7 +13,22 @@ Dashboard := {
 }.{
 	ParseErr : [BadJson, MissingData(Str), BadCode(Str), UnsupportedSchema(U64)]
 
-	State := [Loading, Ready(Dashboard), RequestFailed(Str), DecodeFailed(ParseErr)]
+	State := [Loading, Ready(Dashboard), RequestFailed(Str), DecodeFailed(ParseErr)].{
+		is_eq : State, State -> Bool
+		is_eq = |left, right|
+			match left {
+				Loading => match right {
+					Loading => True
+					_ => False
+				}
+				Ready(_) => False
+				RequestFailed(left_message) => match right {
+					RequestFailed(right_message) => left_message == right_message
+					_ => False
+				}
+				DecodeFailed(_) => False
+			}
+	}
 
 	Clock : { hour : U64, minute : U64, second : U64 }
 
@@ -240,41 +255,41 @@ RawServiceDetails : {
 
 parse_dashboard : Str -> Try(Dashboard, Dashboard.ParseErr)
 parse_dashboard = |body| {
-	meta_result : Try(RawMeta, Json.ParseErr)
+	meta_result : Try(RawMeta, [InvalidJson(Str), MissingRequiredField(Str)])
 	meta_result = Json.parse(body)
 	meta = map_json_result("meta", meta_result)?
 	if meta.schema != 1 {
 		return Err(UnsupportedSchema(meta.schema))
 	}
 
-	traffic_result : Try(RawTrafficCore, Json.ParseErr)
+	traffic_result : Try(RawTrafficCore, [InvalidJson(Str), MissingRequiredField(Str)])
 	traffic_result = Json.parse(body)
 	traffic = map_json_result("traffic", traffic_result)?
-	traffic_bars_result : Try(RawTrafficBars, Json.ParseErr)
+	traffic_bars_result : Try(RawTrafficBars, [InvalidJson(Str), MissingRequiredField(Str)])
 	traffic_bars_result = Json.parse(body)
 	traffic_bars = map_json_result("traffic bars", traffic_bars_result)?
-	budget_result : Try(RawBudget, Json.ParseErr)
+	budget_result : Try(RawBudget, [InvalidJson(Str), MissingRequiredField(Str)])
 	budget_result = Json.parse(body)
 	budget = map_json_result("budget", budget_result)?
-	queue_result : Try(RawQueue, Json.ParseErr)
+	queue_result : Try(RawQueue, [InvalidJson(Str), MissingRequiredField(Str)])
 	queue_result = Json.parse(body)
 	queue = map_json_result("queue", queue_result)?
-	service_states_result : Try(RawServiceStates, Json.ParseErr)
+	service_states_result : Try(RawServiceStates, [InvalidJson(Str), MissingRequiredField(Str)])
 	service_states_result = Json.parse(body)
 	service_states = map_json_result("service states", service_states_result)?
-	service_metrics_result : Try(RawServiceMetrics, Json.ParseErr)
+	service_metrics_result : Try(RawServiceMetrics, [InvalidJson(Str), MissingRequiredField(Str)])
 	service_metrics_result = Json.parse(body)
 	service_metrics = map_json_result("service metrics", service_metrics_result)?
-	jobs_a_result : Try(RawJobsA, Json.ParseErr)
+	jobs_a_result : Try(RawJobsA, [InvalidJson(Str), MissingRequiredField(Str)])
 	jobs_a_result = Json.parse(body)
 	jobs_a = map_json_result("jobs a", jobs_a_result)?
-	jobs_b_result : Try(RawJobsB, Json.ParseErr)
+	jobs_b_result : Try(RawJobsB, [InvalidJson(Str), MissingRequiredField(Str)])
 	jobs_b_result = Json.parse(body)
 	jobs_b = map_json_result("jobs b", jobs_b_result)?
-	alerts_result : Try(RawAlerts, Json.ParseErr)
+	alerts_result : Try(RawAlerts, [InvalidJson(Str), MissingRequiredField(Str)])
 	alerts_result = Json.parse(body)
 	alerts = map_json_result("alerts", alerts_result)?
-	service_details_result : Try(RawServiceDetails, Json.ParseErr)
+	service_details_result : Try(RawServiceDetails, [InvalidJson(Str), MissingRequiredField(Str)])
 	service_details_result = Json.parse(body)
 	service_details = map_json_result("service details", service_details_result)?
 
@@ -430,7 +445,7 @@ parse_dashboard = |body| {
 	)
 }
 
-map_json_result : Str, Try(a, Json.ParseErr) -> Try(a, Dashboard.ParseErr)
+map_json_result : Str, Try(a, [InvalidJson(Str), MissingRequiredField(Str)]) -> Try(a, Dashboard.ParseErr)
 map_json_result = |label, result|
 	match result {
 		Ok(value) => Ok(value)

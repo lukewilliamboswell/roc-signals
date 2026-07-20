@@ -38,12 +38,7 @@ Profile := {}.{
 						articles_state = Signal.fold_task(articles_task, Loading, Api.decode_feed, Api.request_failed)
 
 						follow_result : Signal.Signal(Profile.FollowResult)
-						follow_result = Signal.fold_task(
-							follow_task,
-							FollowIdle,
-							classify_follow,
-							|err| FollowRejected("Request failed: ${Http.error_text(err)}"),
-						)
+						follow_result = Api.response_state(follow_task).map(classify_follow)
 
 						username : Signal.Signal(Str)
 						username = route.map(|value| Route.profile_username(value))
@@ -183,21 +178,24 @@ Profile := {}.{
 		)
 	}
 
-	classify_follow : _ -> Profile.FollowResult
+	classify_follow : Api.ResponseState -> Profile.FollowResult
 	classify_follow = |response| {
-		status = Http.response_status(response)
-		if status == 200 {
-			match Api.decode_profile(Api.response_text(response)) {
+		if !response.ready {
+			FollowIdle
+		} else if !response.error.is_empty() {
+			FollowRejected("Request failed: ${response.error}")
+		} else if response.status == 200 {
+			match Api.decode_profile(response.body) {
 				Ready(profile) => FollowAccepted(profile)
 				Failed(message) => FollowRejected(message)
 				Loading => FollowRejected("The server returned an empty profile response.")
 			}
-		} else if status == 401 {
+		} else if response.status == 401 {
 			FollowRejected("Please sign in to follow profiles.")
-		} else if status == 404 {
+		} else if response.status == 404 {
 			FollowRejected("Profile was not found.")
 		} else {
-			FollowRejected("The server responded with status ${status.to_str()}.")
+			FollowRejected("The server responded with status ${response.status.to_str()}.")
 		}
 	}
 

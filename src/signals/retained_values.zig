@@ -1,5 +1,6 @@
 //! Retained Roc value and capability wrappers used by host-agnostic runtime code.
 
+const std = @import("std");
 const abi = @import("roc_platform_abi.zig");
 const erased_calls = @import("erased_calls.zig");
 const hv = @import("host_values.zig");
@@ -10,8 +11,9 @@ pub const HostTextRead = abi.HostValueTextReadHandle;
 pub const HostBoolRead = abi.HostValueBoolReadHandle;
 pub const HostEventReducer = abi.HostValueEventReducerHandle;
 pub const HostTaskRequestRead = abi.HostValueTaskRequestReadHandle;
-pub const HostEachOps = abi.__AnonStruct58;
-pub const HostSignalToken = *u64;
+pub const HostEachOps = abi.ElemEachOps;
+/// Non-null erased-callable pointer used as signal graph identity.
+pub const HostSignalToken = [*]u8;
 pub const HostValueList = abi.RocListWith(HostValue, false);
 
 /// A retained Roc value plus the capability that owns its equality/drop
@@ -90,13 +92,22 @@ pub fn retainHostCallable(callable: abi.RocErasedCallable, metrics: anytype) abi
     return callable;
 }
 
+pub fn hostSignalTokenFromCallable(callable: abi.RocErasedCallable) HostSignalToken {
+    return callable orelse @panic("signal identity callable was null");
+}
+
+test "host signal tokens preserve non-null callable addresses" {
+    const callable: abi.RocErasedCallable = @ptrFromInt(0x1000);
+    try std.testing.expectEqual(callable.?, hostSignalTokenFromCallable(callable));
+}
+
 pub fn retainHostSignalToken(token: HostSignalToken) HostSignalToken {
-    abi.increfBox(@ptrCast(token), 1);
+    abi.increfErasedCallable(token, 1);
     return token;
 }
 
 pub fn releaseHostSignalToken(token: HostSignalToken, roc_host: *abi.RocHost) void {
-    hv.releaseU64Box(token, roc_host);
+    abi.decrefErasedCallable(token, roc_host);
 }
 
 pub fn retainHostValueCapability(capability: HostValueCapability, metrics: anytype) HostValueCapability {

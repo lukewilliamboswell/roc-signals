@@ -69,12 +69,7 @@ Editor := {}.{
 					|form| {
 						task = Http.request_task("editor")
 						result : Signal.Signal(Editor.ArticleResult)
-						result = Signal.fold_task(
-							task,
-							ArticleIdle,
-							classify_article,
-							|err| ArticleErrored("Request failed: ${Http.error_text(err)}"),
-						)
+						result = Api.response_state(task).map(classify_article)
 
 						form_signal : Signal.Signal(Editor.Form)
 						form_signal = form.signal()
@@ -182,12 +177,7 @@ Editor := {}.{
 						article_state = Signal.fold_task(article_task, Loading, Api.decode_article, Api.request_failed)
 
 						result : Signal.Signal(Editor.ArticleResult)
-						result = Signal.fold_task(
-							task,
-							ArticleIdle,
-							classify_article,
-							|err| ArticleErrored("Request failed: ${Http.error_text(err)}"),
-						)
+						result = Api.response_state(task).map(classify_article)
 
 						slug = route.map(|value| Route.article_slug(value))
 						form_signal : Signal.Signal(Editor.Form)
@@ -332,22 +322,24 @@ Editor := {}.{
 		)
 	}
 
-	classify_article : _ -> Editor.ArticleResult
+	classify_article : Api.ResponseState -> Editor.ArticleResult
 	classify_article = |response| {
-		status = Http.response_status(response)
-		body = Api.response_text(response)
-		if status == 200 or status == 201 {
-			match Api.decode_article(body) {
+		if !response.ready {
+			ArticleIdle
+		} else if !response.error.is_empty() {
+			ArticleErrored("Request failed: ${response.error}")
+		} else if response.status == 200 or response.status == 201 {
+			match Api.decode_article(response.body) {
 				Ready(article) => ArticleAccepted(article)
 				Failed(message) => ArticleErrored(message)
 				Loading => ArticleErrored("The server response could not be read.")
 			}
-		} else if status == 422 {
-			ArticleRejected(Api.parse_errors(body))
-		} else if status == 401 {
+		} else if response.status == 422 {
+			ArticleRejected(Api.parse_errors(response.body))
+		} else if response.status == 401 {
 			ArticleErrored("Please sign in to edit articles.")
 		} else {
-			ArticleErrored("The server responded with status ${status.to_str()}.")
+			ArticleErrored("The server responded with status ${response.status.to_str()}.")
 		}
 	}
 

@@ -65,36 +65,16 @@ Article := {}.{
 						comments_state = Signal.fold_task(comments_task, Loading, Api.decode_comments, Api.request_failed)
 
 						article_delete_result : Signal.Signal(Article.DeleteResult)
-						article_delete_result = Signal.fold_task(
-							article_delete_task,
-							DeleteIdle,
-							classify_article_delete,
-							|err| DeleteRejected("Request failed: ${Http.error_text(err)}"),
-						)
+						article_delete_result = Api.response_state(article_delete_task).map(classify_article_delete)
 
 						favorite_result : Signal.Signal(Article.FavoriteResult)
-						favorite_result = Signal.fold_task(
-							favorite_task,
-							FavoriteIdle,
-							classify_favorite,
-							|err| FavoriteRejected("Request failed: ${Http.error_text(err)}"),
-						)
+						favorite_result = Api.response_state(favorite_task).map(classify_favorite)
 
 						comment_result : Signal.Signal(Article.CommentResult)
-						comment_result = Signal.fold_task(
-							comment_task,
-							CommentIdle,
-							classify_comment,
-							|err| CommentErrored("Request failed: ${Http.error_text(err)}"),
-						)
+						comment_result = Api.response_state(comment_task).map(classify_comment)
 
 						comment_delete_result : Signal.Signal(Article.CommentDeleteResult)
-						comment_delete_result = Signal.fold_task(
-							comment_delete_task,
-							CommentDeleteIdle,
-							classify_comment_delete,
-							|err| CommentDeleteRejected("Request failed: ${Http.error_text(err)}"),
-						)
+						comment_delete_result = Api.response_state(comment_delete_task).map(classify_comment_delete)
 
 						slug = route.map(|value| Route.article_slug(value))
 						token = session.map(|value| Session.token_of(value))
@@ -337,70 +317,81 @@ Article := {}.{
 		{ ..state, comment_serial: state.comment_serial + 1, submitted_comment_body: comment_body_json(state.comment_body.trim()) }
 	}
 
-	classify_article_delete : _ -> Article.DeleteResult
+	classify_article_delete : Api.ResponseState -> Article.DeleteResult
 	classify_article_delete = |response| {
-		status = Http.response_status(response)
-		if status == 200 or status == 204 {
+		if !response.ready {
+			DeleteIdle
+		} else if !response.error.is_empty() {
+			DeleteRejected("Request failed: ${response.error}")
+		} else if response.status == 200 or response.status == 204 {
 			DeleteAccepted
-		} else if status == 401 {
+		} else if response.status == 401 {
 			DeleteRejected("Please sign in to delete articles.")
-		} else if status == 403 {
+		} else if response.status == 403 {
 			DeleteRejected("Only the author can delete this article.")
-		} else if status == 404 {
+		} else if response.status == 404 {
 			DeleteRejected("Article was not found.")
 		} else {
-			DeleteRejected("The server responded with status ${status.to_str()}.")
+			DeleteRejected("The server responded with status ${response.status.to_str()}.")
 		}
 	}
 
-	classify_favorite : _ -> Article.FavoriteResult
+	classify_favorite : Api.ResponseState -> Article.FavoriteResult
 	classify_favorite = |response| {
-		status = Http.response_status(response)
-		if status == 200 {
-			match Api.decode_article(Api.response_text(response)) {
+		if !response.ready {
+			FavoriteIdle
+		} else if !response.error.is_empty() {
+			FavoriteRejected("Request failed: ${response.error}")
+		} else if response.status == 200 {
+			match Api.decode_article(response.body) {
 				Ready(article) => FavoriteAccepted(article)
 				Failed(message) => FavoriteRejected(message)
 				Loading => FavoriteRejected("The server returned an empty article response.")
 			}
-		} else if status == 401 {
+		} else if response.status == 401 {
 			FavoriteRejected("Please sign in to favorite articles.")
-		} else if status == 404 {
+		} else if response.status == 404 {
 			FavoriteRejected("Article was not found.")
 		} else {
-			FavoriteRejected("The server responded with status ${status.to_str()}.")
+			FavoriteRejected("The server responded with status ${response.status.to_str()}.")
 		}
 	}
 
-	classify_comment : _ -> Article.CommentResult
+	classify_comment : Api.ResponseState -> Article.CommentResult
 	classify_comment = |response| {
-		status = Http.response_status(response)
-		body = Api.response_text(response)
-		if status == 200 or status == 201 {
+		if !response.ready {
+			CommentIdle
+		} else if !response.error.is_empty() {
+			CommentErrored("Request failed: ${response.error}")
+		} else if response.status == 200 or response.status == 201 {
 			CommentAccepted
-		} else if status == 422 {
-			CommentRejected(Api.parse_errors(body))
-		} else if status == 401 {
+		} else if response.status == 422 {
+			CommentRejected(Api.parse_errors(response.body))
+		} else if response.status == 401 {
 			CommentErrored("Please sign in to comment.")
-		} else if status == 404 {
+		} else if response.status == 404 {
 			CommentErrored("Article was not found.")
 		} else {
-			CommentErrored("The server responded with status ${status.to_str()}.")
+			CommentErrored("The server responded with status ${response.status.to_str()}.")
 		}
 	}
 
-	classify_comment_delete : _ -> Article.CommentDeleteResult
+	classify_comment_delete : Api.ResponseState -> Article.CommentDeleteResult
 	classify_comment_delete = |response| {
-		status = Http.response_status(response)
-		if status == 200 or status == 204 {
+		if !response.ready {
+			CommentDeleteIdle
+		} else if !response.error.is_empty() {
+			CommentDeleteRejected("Request failed: ${response.error}")
+		} else if response.status == 200 or response.status == 204 {
 			CommentDeleteAccepted
-		} else if status == 401 {
+		} else if response.status == 401 {
 			CommentDeleteRejected("Please sign in to delete comments.")
-		} else if status == 403 {
+		} else if response.status == 403 {
 			CommentDeleteRejected("Only the author can delete this comment.")
-		} else if status == 404 {
+		} else if response.status == 404 {
 			CommentDeleteRejected("Comment was not found.")
 		} else {
-			CommentDeleteRejected("The server responded with status ${status.to_str()}.")
+			CommentDeleteRejected("The server responded with status ${response.status.to_str()}.")
 		}
 	}
 

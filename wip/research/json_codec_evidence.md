@@ -16,7 +16,7 @@ git diff --check
 zig build run-check-tidy
 ```
 
-If the service parser or JSON fixture changes, also run:
+If the service parser or JSON example changes, also run:
 
 ```sh
 python3 scripts/test.py roc-check
@@ -49,6 +49,17 @@ nightly-2026-July-07 (`release-fast-050c6975`):
   the migration (see the conduit findings ledger,
   `wip/research/realworld_demo_findings.md`).
 
+Refresh check: re-run on 2026-07-20 with PATH Roc
+`release-fast-8eaa9abd`:
+
+- The temporary private `json-decode`/`JsonProbe` fixture was replaced by the
+  public interactive `examples/json-config-editor` app, which uses builtin
+  `Json` for typed decode and validation behavior.
+- `python3 scripts/test.py all --roc-bin roc` passed, including native, wasm,
+  browser, bundle, benchmark, and generated-ABI coverage.
+- Full public-site dev and size builds passed with both the JSON config editor
+  and Conduit published.
+
 ## Current Evidence
 
 The shipped HTTP surface already returns explicit request/response envelopes.
@@ -58,16 +69,14 @@ decoding separate: the platform owns request scheduling, cancellation,
 stale-result suppression, headers, status, and transport errors; app code owns
 its API schema.
 
-The `examples/_fixtures/json-decode` fixture proves the builtin covers the
-ordinary app-side needs that would otherwise motivate platform sugar:
+The public `examples/json-config-editor` app proves the builtin covers the
+ordinary app-side needs that would otherwise motivate platform sugar in an
+interactive, user-facing workflow:
 
 - nested records,
-- tag-union values,
-- custom parser hooks,
 - missing-required and invalid-json errors,
 - optional fields represented as `Try(..., [Missing])`,
-- camel-case field mapping,
-- encoding plus parse roundtrip.
+- camel-case field mapping.
 
 The maintained `service-ops-center` app proves the remaining friction is not
 an HTTP envelope gap. It decodes one dashboard response into app-domain state,

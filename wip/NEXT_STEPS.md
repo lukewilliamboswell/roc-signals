@@ -72,7 +72,7 @@ active backlog.
 ## Active evidence work
 
 Active Roc toolchain: use `roc` from `PATH` and record `roc version` with gate
-results (reviewed 2026-07-12 as `release-fast-4828766c`). Temporary compiler
+results (reviewed 2026-07-20 as `release-fast-8eaa9abd`). Temporary compiler
 checkouts are retired for this workstream. Use `--no-cache` from this sandbox,
 e.g.
 `roc build --no-cache --target=arm64mac --opt=dev --output=/tmp/conduit-dbg
@@ -90,29 +90,18 @@ Phase 5 feature/error matrices are implemented; completed evidence belongs in
 
 Current closeout order:
 
-1. Restore the compiler and native behavior gate. On 2026-07-12
-   `release-fast-4828766c` first produced native arm64mac, wasm dev, and wasm
-   size artifacts; the native executable then failed even with an empty spec:
-   `HostValue operation used a capability that does not own the retained value`.
-   Final verification on the same version now reproducibly panics during
-   `roc check` on an erased-function `ConstStore` postcheck invariant. Minimize
-   the compiler failure first, then the runtime failure. Do not claim MoE-1
-   until the full spec passes.
-2. Run `python3 scripts/serve.py --no-server` in dev and size app-opt modes,
-   exercise the resulting wasm mount, decide path-vs-hash/static-host behavior,
-   and make an explicit `public` decision.
-3. Run the real-backend base-URL-swap conformance pass (MoE-2).
-4. Run the Conduit soak and action-wire telemetry, then set or re-defer the MoP
+1. Run the real-backend base-URL-swap conformance pass (MoE-2).
+2. Decide path-vs-hash/static-host behavior for deep links.
+3. Run the Conduit soak and action-wire telemetry, then set or re-defer the MoP
    budgets from measurements.
-5. Finish payload/reference comparison rows. Recheck/file the builtin JSON
-   escape issue after minimizing or bypassing the current compiler's new
-   postcheck panic on the probe. Close the findings synthesis only after these
-   decisions are recorded.
+4. Finish payload/reference comparison rows and recheck/file the builtin JSON
+   escape issue. Close the findings synthesis only after these decisions are
+   recorded.
 
-The former compiler-build crash is historical: roc-lang/roc#10071 is filed and
-roc-lang/roc#10072 fixed its reduced/full build repros. The remaining gate is a
-runtime host correctness failure, followed by release evidence—not more Conduit
-feature construction.
+The compiler, native behavior, full repository, wasm mount, and public dev/size
+site gates pass with the reviewed PATH toolchain. Conduit and the JSON config
+editor are published examples; the remaining items above are release evidence,
+not feature construction or compiler recovery.
 
 ## Active priority order
 

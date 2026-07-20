@@ -23,14 +23,44 @@ Card : {
 	note_markdown : Str,
 }
 
-DragState := [Idle, Dragging(Str)]
+DragState := [Idle, Dragging(Str)].{
+	is_eq : DragState, DragState -> Bool
+	is_eq = |left, right|
+		match left {
+			Idle => match right {
+				Idle => True
+				Dragging(_) => False
+			}
+			Dragging(left_id) => match right {
+				Idle => False
+				Dragging(right_id) => left_id == right_id
+			}
+		}
+}
 
 HoverBeforeTarget : {
 	column_id : Str,
 	before_id : Str,
 }
 
-HoverState := [NoHover, HoverEnd(Str), HoverBefore(HoverBeforeTarget)]
+HoverState := [NoHover, HoverEnd(Str), HoverBefore(HoverBeforeTarget)].{
+	is_eq : HoverState, HoverState -> Bool
+	is_eq = |left, right|
+		match left {
+			NoHover => match right {
+				NoHover => True
+				_ => False
+			}
+			HoverEnd(left_column) => match right {
+				HoverEnd(right_column) => left_column == right_column
+				_ => False
+			}
+			HoverBefore(left_target) => match right {
+				HoverBefore(right_target) => left_target == right_target
+				_ => False
+			}
+		}
+}
 
 Board : {
 	cards : List(Card),

@@ -118,6 +118,7 @@ select_remote = |state, select| state.map(|value| DashboardRemote.from_state(val
 select_remote_with : Signal.Signal(Dashboard.State), Signal.Signal(b), (Dashboard, b -> a) -> Signal.Signal(DashboardRemote(a))
 	where [
 		a.is_eq : a, a -> Bool,
+		b.is_eq : b, b -> Bool,
 	]
 select_remote_with = |state, extra, select| {
 	inputs = { state: state, extra: extra }.Signal

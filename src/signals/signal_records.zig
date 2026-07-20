@@ -10,7 +10,6 @@ pub const HostValueCell = retained.HostValueCell;
 pub const HostValueCapability = retained.HostValueCapability;
 pub const HostSignalToken = retained.HostSignalToken;
 
-const releaseHostSignalToken = retained.releaseHostSignalToken;
 const releaseHostValueCapability = retained.releaseHostValueCapability;
 
 fn u64SliceContains(items: []const u64, target: u64) bool {
@@ -60,14 +59,12 @@ pub const EvalResult = struct {
 };
 
 pub const ConstRecord = struct {
-    token: HostSignalToken,
     init: abi.RocErasedCallable,
     cap: HostValueCapability,
     cached_value: CacheSlot = .absent,
 };
 
 pub const MapRecord = struct {
-    token: HostSignalToken,
     input: *Record,
     transform: abi.RocErasedCallable,
     cap: HostValueCapability,
@@ -75,7 +72,6 @@ pub const MapRecord = struct {
 };
 
 pub const Map2Record = struct {
-    token: HostSignalToken,
     left: *Record,
     right: *Record,
     transform: abi.RocErasedCallable,
@@ -84,7 +80,6 @@ pub const Map2Record = struct {
 };
 
 pub const CombineRecord = struct {
-    token: HostSignalToken,
     children: []*Record,
     transform: abi.RocErasedCallable,
     cap: HostValueCapability,
@@ -92,7 +87,6 @@ pub const CombineRecord = struct {
 };
 
 pub const TaskSourceRecord = struct {
-    token: HostSignalToken,
     name: []const u8,
     payload_cap: HostValueCapability,
     initial: abi.RocErasedCallable,
@@ -104,7 +98,6 @@ pub const TaskSourceRecord = struct {
 };
 
 pub const IntervalSourceRecord = struct {
-    token: HostSignalToken,
     period_ms: u64,
     initial: abi.RocErasedCallable,
     tick: abi.RocErasedCallable,
@@ -113,7 +106,6 @@ pub const IntervalSourceRecord = struct {
 };
 
 pub const LocationSourceRecord = struct {
-    token: HostSignalToken,
     payload_cap: HostValueCapability,
     from_payload: abi.RocErasedCallable,
     cap: HostValueCapability,
@@ -121,7 +113,6 @@ pub const LocationSourceRecord = struct {
 };
 
 pub const VisibilitySourceRecord = struct {
-    token: HostSignalToken,
     payload_cap: HostValueCapability,
     from_payload: abi.RocErasedCallable,
     cap: HostValueCapability,
@@ -129,7 +120,6 @@ pub const VisibilitySourceRecord = struct {
 };
 
 pub const OnlineSourceRecord = struct {
-    token: HostSignalToken,
     payload_cap: HostValueCapability,
     from_payload: abi.RocErasedCallable,
     cap: HostValueCapability,
@@ -137,7 +127,6 @@ pub const OnlineSourceRecord = struct {
 };
 
 pub const StorageSourceRecord = struct {
-    token: HostSignalToken,
     area: boundary.StorageArea,
     key: []const u8,
     payload_cap: HostValueCapability,
@@ -214,16 +203,16 @@ pub const Record = struct {
     pub fn token(self: *const Record) ?HostSignalToken {
         return switch (self.payload) {
             .ref => null,
-            .const_value => |payload| payload.token,
-            .map => |payload| payload.token,
-            .map2 => |payload| payload.token,
-            .combine => |payload| payload.token,
-            .task_source => |payload| payload.token,
-            .interval_source => |payload| payload.token,
-            .location_source => |payload| payload.token,
-            .online_source => |payload| payload.token,
-            .visibility_source => |payload| payload.token,
-            .storage_source => |payload| payload.token,
+            .const_value => |payload| retained.hostSignalTokenFromCallable(payload.init),
+            .map => |payload| retained.hostSignalTokenFromCallable(payload.transform),
+            .map2 => |payload| retained.hostSignalTokenFromCallable(payload.transform),
+            .combine => |payload| retained.hostSignalTokenFromCallable(payload.transform),
+            .task_source => |payload| retained.hostSignalTokenFromCallable(payload.initial),
+            .interval_source => |payload| retained.hostSignalTokenFromCallable(payload.initial),
+            .location_source => |payload| retained.hostSignalTokenFromCallable(payload.from_payload),
+            .online_source => |payload| retained.hostSignalTokenFromCallable(payload.from_payload),
+            .visibility_source => |payload| retained.hostSignalTokenFromCallable(payload.from_payload),
+            .storage_source => |payload| retained.hostSignalTokenFromCallable(payload.from_payload),
         };
     }
 
@@ -353,7 +342,6 @@ pub const Record = struct {
             .const_value => |payload| {
                 var cached_value = payload.cached_value;
                 cached_value.deinit(ctx, roc_host, metrics);
-                releaseHostSignalToken(payload.token, roc_host);
                 abi.decrefErasedCallable(payload.init, roc_host);
                 releaseHostValueCapability(payload.cap, roc_host, metrics);
                 metrics.bump(.closure_releases, 1);
@@ -362,7 +350,6 @@ pub const Record = struct {
                 payload.input.release(allocator, ctx, roc_host, metrics);
                 var cached_value = payload.cached_value;
                 cached_value.deinit(ctx, roc_host, metrics);
-                releaseHostSignalToken(payload.token, roc_host);
                 abi.decrefErasedCallable(payload.transform, roc_host);
                 releaseHostValueCapability(payload.cap, roc_host, metrics);
                 metrics.bump(.closure_releases, 1);
@@ -372,7 +359,6 @@ pub const Record = struct {
                 payload.right.release(allocator, ctx, roc_host, metrics);
                 var cached_value = payload.cached_value;
                 cached_value.deinit(ctx, roc_host, metrics);
-                releaseHostSignalToken(payload.token, roc_host);
                 abi.decrefErasedCallable(payload.transform, roc_host);
                 releaseHostValueCapability(payload.cap, roc_host, metrics);
                 metrics.bump(.closure_releases, 1);
@@ -384,7 +370,6 @@ pub const Record = struct {
                 allocator.free(payload.children);
                 var cached_value = payload.cached_value;
                 cached_value.deinit(ctx, roc_host, metrics);
-                releaseHostSignalToken(payload.token, roc_host);
                 abi.decrefErasedCallable(payload.transform, roc_host);
                 releaseHostValueCapability(payload.cap, roc_host, metrics);
                 metrics.bump(.closure_releases, 1);
@@ -392,7 +377,6 @@ pub const Record = struct {
             .task_source => |payload| {
                 var cached_value = payload.cached_value;
                 cached_value.deinit(ctx, roc_host, metrics);
-                releaseHostSignalToken(payload.token, roc_host);
                 allocator.free(payload.name);
                 releaseHostValueCapability(payload.payload_cap, roc_host, metrics);
                 abi.decrefErasedCallable(payload.initial, roc_host);
@@ -404,7 +388,6 @@ pub const Record = struct {
             .interval_source => |payload| {
                 var cached_value = payload.cached_value;
                 cached_value.deinit(ctx, roc_host, metrics);
-                releaseHostSignalToken(payload.token, roc_host);
                 abi.decrefErasedCallable(payload.initial, roc_host);
                 abi.decrefErasedCallable(payload.tick, roc_host);
                 releaseHostValueCapability(payload.cap, roc_host, metrics);
@@ -413,7 +396,6 @@ pub const Record = struct {
             .location_source => |payload| {
                 var cached_value = payload.cached_value;
                 cached_value.deinit(ctx, roc_host, metrics);
-                releaseHostSignalToken(payload.token, roc_host);
                 releaseHostValueCapability(payload.payload_cap, roc_host, metrics);
                 abi.decrefErasedCallable(payload.from_payload, roc_host);
                 releaseHostValueCapability(payload.cap, roc_host, metrics);
@@ -422,7 +404,6 @@ pub const Record = struct {
             .online_source => |payload| {
                 var cached_value = payload.cached_value;
                 cached_value.deinit(ctx, roc_host, metrics);
-                releaseHostSignalToken(payload.token, roc_host);
                 releaseHostValueCapability(payload.payload_cap, roc_host, metrics);
                 abi.decrefErasedCallable(payload.from_payload, roc_host);
                 releaseHostValueCapability(payload.cap, roc_host, metrics);
@@ -431,7 +412,6 @@ pub const Record = struct {
             .visibility_source => |payload| {
                 var cached_value = payload.cached_value;
                 cached_value.deinit(ctx, roc_host, metrics);
-                releaseHostSignalToken(payload.token, roc_host);
                 releaseHostValueCapability(payload.payload_cap, roc_host, metrics);
                 abi.decrefErasedCallable(payload.from_payload, roc_host);
                 releaseHostValueCapability(payload.cap, roc_host, metrics);
@@ -440,7 +420,6 @@ pub const Record = struct {
             .storage_source => |payload| {
                 var cached_value = payload.cached_value;
                 cached_value.deinit(ctx, roc_host, metrics);
-                releaseHostSignalToken(payload.token, roc_host);
                 allocator.free(payload.key);
                 releaseHostValueCapability(payload.payload_cap, roc_host, metrics);
                 abi.decrefErasedCallable(payload.from_payload, roc_host);
@@ -527,7 +506,6 @@ test "appendSignalRecordSourceNodeIds deduplicates source refs" {
     var combine = Record{
         .ref_count = 1,
         .payload = .{ .combine = .{
-            .token = undefined,
             .children = @constCast(children[0..]),
             .transform = undefined,
             .cap = undefined,
