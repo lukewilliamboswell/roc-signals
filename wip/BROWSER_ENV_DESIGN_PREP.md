@@ -385,8 +385,6 @@ change.
   design rather than a storage-only side channel?
 - Are cross-tab storage events in scope, and if so do they ride the
   subscription machinery unchanged?
-- Hash-based routing: does the platform need to distinguish hash navigation,
-  or are raw pieces enough for apps to decide?
 - Scroll restoration: browser default, platform command, or app concern?
 - One location signal, or split path/query/hash signals?
 - Multiple mounts share one browser URL and history: per-mount snapshots hold
@@ -404,3 +402,8 @@ storage write/remove commands, focused storage fixture, JS storage contract
 tests, and maintained `team-checkout` persistence proof have landed. Future
 browser-environment work is limited to the outstanding questions above until a
 maintained app or focused canary proves a new gap.
+
+Conduit resolved the hash-routing question without new platform surface: raw
+`Browser.Location` pieces plus app-local parsing are sufficient for a static
+hosted hash router. Reopen only if another maintained app proves a behavior the
+existing location signal and history commands cannot express.

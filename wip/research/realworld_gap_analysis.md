@@ -6,16 +6,16 @@ Purpose: keep the production-readiness gap analysis and the examples-roadmap
 detail out of the active backlog. `wip/NEXT_STEPS.md` cites this note, and its
 promotion triggers name the example expansions described here.
 
-Refresh check: re-checked 2026-07-05 after the browser-environment, storage,
-focused browser-source, and rich-content example phases landed. Re-check the
+Refresh check: re-checked 2026-07-20 after the Conduit and JSON Config Editor
+publication slice landed. Re-check the
 classifications and the roadmap when another phase ships or an example
 expansion lands, so the backlog never cites stale analysis.
 
-Update 2026-07-11: the dedicated RealWorld demo app (`examples/conduit`) is now
-the active maintained app for production-readiness evidence; the plan, scope,
-and measures live in `wip/REALWORLD_DEMO_PLAN.md`. Conduit stops being only a
-measuring stick and becomes a built app; this note remains the platform-gap
-classification record.
+Update 2026-07-20: the dedicated RealWorld demo (`examples/conduit`) is now a
+featured public example and completed production-readiness evidence source.
+Its plan, measures, and remaining post-merge research live in
+`wip/REALWORLD_DEMO_PLAN.md`; this note remains the platform-gap classification
+record.
 
 ## Focused Gates
 
@@ -30,8 +30,8 @@ zig build run-check-tidy
 
 The RealWorld demo spec (Conduit) is a common cross-framework benchmark for a
 production SPA: routed pages, a persisted auth session, article bodies
-rendered from markdown, and a JSON API. It is used here as a measuring stick
-for platform capability, not as a committed demo app.
+rendered from markdown, and a JSON API. It is both a maintained demo app and a
+measuring stick for platform capability.
 
 Conduit requirements were filtered down to platform/API/runtime gaps
 (app-specific concerns are listed near the end and excluded from platform
@@ -226,10 +226,10 @@ promotion gates in `wip/NEXT_STEPS.md` stay, but the evidence is manufactured
 instead of awaited. Examples are evidence tools, not compatibility surfaces,
 and do not need backwards compatibility.
 
-Current decision (revised 2026-07-11): the expand-existing-apps-only phase is
-complete; the dedicated RealWorld demo app, `examples/conduit`, is the active
-evidence vehicle. It is too large to graft onto an existing app's fiction,
-which was the recorded fallback condition for splitting out a dedicated app.
+Current decision (revised 2026-07-20): the expand-existing-apps-only phase and
+the dedicated RealWorld demo build are complete. `examples/conduit` remains a
+maintained evidence source; it was too large to graft onto an existing app's
+fiction, which was the recorded fallback condition for a dedicated app.
 Scope, phases, MoE/MoP definitions, backend strategy, and the comparison
 method live in `wip/REALWORLD_DEMO_PLAN.md`; findings accumulate in
 `wip/research/realworld_demo_findings.md` from its Phase 0. No other suite
@@ -318,11 +318,11 @@ subset.
 
 ### conduit: RealWorld demo
 
-The full Conduit spec as a dedicated maintained app: routed pages with deep
-links, JWT session persisted in localStorage, paginated feeds, markdown
-article bodies, comments, favorites, follows, and 422 error-envelope
-rendering, driven against an in-page deterministic API backend with a
-cross-origin conformance pass. Planned to drive: representative action
+The full Conduit spec is implemented as a dedicated featured app: hash-routed
+deep links on static hosting, JWT session persisted in localStorage, paginated
+feeds, markdown article bodies, comments, favorites, follows, and 422 error-envelope
+rendering, driven against an in-page deterministic API backend. Post-merge
+evidence will add the real-backend conformance pass and representative action
 telemetry for the command-wire dedupe hypothesis, the scroll-restoration
 trigger (or its explicit re-deferral), post-roc#9964 JSON ergonomics evidence
 at ~19-endpoint scale, and scale evidence for construction-order state

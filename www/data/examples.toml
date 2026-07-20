@@ -100,7 +100,7 @@ bench = true
 [[examples]]
 slug = "conduit"
 title = "Conduit"
-description = "RealWorld (Conduit) demo: history-routed feeds, sessions, profiles, markdown articles, comments, favorites, follows, and server-confirmed write paths."
+description = "RealWorld (Conduit) demo: hash-routed feeds, sessions, profiles, markdown articles, comments, favorites, follows, and server-confirmed write paths."
 source = "examples/conduit/app.roc"
 spec = "examples/conduit/spec.txt"
 public = true

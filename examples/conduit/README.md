@@ -1,7 +1,7 @@
 # Conduit
 
 Conduit is the RealWorld evidence app for `roc-signals`. It is intentionally
-larger than the focused examples: the app exercises history routing, persisted
+larger than the focused examples: the app exercises hash routing, persisted
 sessions, authenticated HTTP tasks, paginated feeds, profiles, markdown article
 bodies, comments, favorites, follows, settings, and server-confirmed write
 paths.

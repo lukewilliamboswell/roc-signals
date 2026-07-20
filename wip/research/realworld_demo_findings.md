@@ -54,10 +54,11 @@ headers are stable).
 | Soak and command-wire measurement | Conduit build plus plateau/telemetry gates | structural plateau gate refreshed; Conduit-specific measurements not run (Phase 5) |
 | Comparison study | local LoC baseline plus wasm/public build outputs | local source baseline recorded; payload/reference rows open (Phase 5) |
 
-## NEXT_STEPS Priority Synthesis (Phase 5 WIP)
+## NEXT_STEPS Priority Synthesis (Phase 5)
 
-This is the MoE-5 closeout ledger. It stays WIP until the remaining real-backend,
-measurement, and comparison gates are exercised.
+This closes the MoE-5 promotion decisions. Remaining real-backend,
+measurement, and comparison work may add evidence, but does not reopen these
+decisions without a concrete new trigger.
 
 | Priority | Conduit evidence | Current decision |
 | --- | --- | --- |
@@ -67,7 +68,7 @@ measurement, and comparison gates are exercised.
 | 4. Form/input hardening | Conduit forms use shipped text inputs, textareas, submit prevention, and controlled state. The async edit/settings prefill limitation is recorded as app ergonomics, and no selection, file input, multi-select, constraint validation, focus command, or date/time input need appeared. | No form/input promotion yet; async state hydration remains a documented app pattern unless more maintained forms pay the cost. |
 | 5. Dynamic event response | Conduit uses static prevent-default form submission and ordinary click/input handlers; no state-dependent event response, handler-chain composition, or payload-only response was needed. | Keep dynamic event response deferred. |
 
-## Comparison Baseline (Phase 5 WIP)
+## Comparison Baseline (post-merge follow-up)
 
 This is the local half of the RealWorld comparison study. External reference
 implementations and gzipped first-render payloads remain open. The native gate
@@ -95,7 +96,7 @@ than app runtime source. The missing comparison rows remain: Elm/Svelte/React
 reference LoC by category, gzipped first-render payload, cold-load request
 count and reference error-state coverage.
 
-## Phase 5 Gate Status
+## Merge and post-merge gate status
 
 The compiler, native feature, cross-example, and publication gates are complete.
 The table retains the remaining closeout evidence alongside those completed gates:
@@ -108,10 +109,11 @@ The table retains the remaining closeout evidence alongside those completed gate
 | Real-backend conformance (MoE-2) | in-page backend shape is covered by node tests, and the Phase 0 cross-origin auth canary passed | wasm Conduit build runs in browser with a base-URL swap against a conformant backend |
 | Public-site publication/readiness (MoE-6) | Conduit is public; full `serve.py --no-server` dev and size builds pass for all 11 examples, including Conduit, and its wasm mounts | complete |
 | Static-host deep-link decision | complete: Conduit uses `#/...` routes beneath `/roc-signals/examples/conduit/`; native cold mounts and the generated static page cover the fixed-path contract | complete |
+| PR #13 required CI | local full gates pass on main `release-fast-8eaa9abd`; the floating July 19 nightly (`cdaa348`) segfaults in `roc check examples/conduit/app.roc` on both Linux and macOS | rerun when CI's floating compiler contains the current-main fix; required checks must be green before merge |
 | Payload/startup comparison | local source LoC baseline exists | wasm/site output exists so gzipped payload and cold-load request counts can be measured |
 | Conduit soak and action telemetry | structural plateau and static wire estimates are refreshed | native/wasm behavior gate is trustworthy enough to exercise feed/article/login/logout cycles |
 
-## Compiler Issue Filing Drafts (Phase 5 WIP)
+## Compiler issue filing follow-ups
 
 These track upstream compiler findings that blocked or shaped Conduit evidence.
 Filed issues are linked here; unfiled issue notes stay summarized in this table
@@ -150,7 +152,20 @@ published. Folding the package's opaque HTTP response directly into Conduit's
 large domain unions still overflows the compiler stack; `Api.response_state`
 confines response materialization to a small plain record before domain decode.
 Action: compiler recovery and publication are complete. Keep the real-backend,
-static-host, soak/telemetry, and comparison work as the active closeout evidence.
+soak/telemetry, and comparison work as post-merge evidence.
+
+### 2026-07-20 Phase 5 — PR CI trails the validated main compiler
+
+Classification: compiler
+Severity: blocker (merge gate only)
+Evidence: PR #13 CI installed floating nightly
+`nightly-2026-July-19-cdaa348`; both Linux and macOS jobs segfault while
+checking Conduit. The identical source passes the full repository gate with
+PATH Roc `release-fast-8eaa9abd`, which is a newer main commit. Browser tests
+and macOS host coverage pass in CI before the compiler check.
+Action: do not change app semantics to accommodate the superseded compiler.
+Rerun required CI after its floating nightly includes the current-main fix,
+then merge only when required checks are green.
 
 ### 2026-07-12 Phase 5 — Source factories expose a pre-existing Service Ops branch defect
 
@@ -337,6 +352,8 @@ Resolution 2026-07-12: direct native and wasm builds passed on the then-current
 compiler, and the native runtime gate now passes with `release-fast-afbc7863`.
 Publication remains deferred for the unrun site/readiness gates, not for a
 compiler or native behavior failure.
+Resolution 2026-07-20: the full site/readiness gates pass with PATH Roc
+`release-fast-8eaa9abd`; Conduit is now a featured public example.
 
 ### 2026-07-10 Phase 4 — Async-loaded records cannot seed controlled form state directly
 

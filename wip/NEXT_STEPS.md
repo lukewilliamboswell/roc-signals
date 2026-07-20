@@ -28,12 +28,12 @@ open follow-up questions. Keep shipped controlled input/forms, canonical
 event-binding, public guide, bundle/release-flow, and native spec runner layers
 current when public surface changes.
 
-The active evidence vehicle is the `examples/conduit` RealWorld demo build,
-planned in `wip/REALWORLD_DEMO_PLAN.md`. The build itself promotes no public
-surface; when it exposes a gap, it names conduit as the trigger against the
-relevant priority below, and its findings ledger
-(`wip/research/realworld_demo_findings.md`, created at the plan's Phase 0)
-records confirmations that gated items stayed unneeded.
+The completed `examples/conduit` RealWorld demo is the current
+production-readiness evidence source; its plan and findings live in
+`wip/REALWORLD_DEMO_PLAN.md` and
+`wip/research/realworld_demo_findings.md`. The build promoted no new public
+surface. Follow-up promotions still require a concrete app or canary trigger
+against the priorities below.
 
 Evidence still gates public surface and structural promotions, but the evidence
 is now manufactured deliberately: the maintained examples are grown along the
@@ -69,7 +69,7 @@ decisions live in `wip/research/realworld_gap_analysis.md`. Use that note to
 choose the proving app or focused canary; keep the roadmap detail out of this
 active backlog.
 
-## Active evidence work
+## Active merge and evidence work
 
 Active Roc toolchain: use `roc` from `PATH` and record `roc version` with gate
 results (reviewed 2026-07-20 as `release-fast-8eaa9abd`). Temporary compiler
@@ -78,29 +78,28 @@ e.g.
 `roc build --no-cache --target=arm64mac --opt=dev --output=/tmp/conduit-dbg
 examples/conduit/app.roc`.
 
-### 0a. RealWorld demo build (`examples/conduit`)
+### 0a. Merge RealWorld demo PR #13
 
-**Goal:** build the first RealWorld-class maintained app as the evidence
-instrument for production readiness, per `wip/REALWORLD_DEMO_PLAN.md` (scope,
-phases, MoE/MoP definitions, backend strategy, comparison method).
+**Goal:** merge the completed RealWorld-class maintained app and callable
+signal-identity refactor once required CI is green.
 
-This is app and evidence work, not a platform promotion. Phases 0-4 and the
-Phase 5 feature/error matrices are implemented; completed evidence belongs in
-`wip/research/realworld_demo_findings.md` rather than this active backlog.
+Implementation, publication, visual polish, hash-route static hosting, native
+behavior, and local release/readiness gates are complete. The PR also adopts
+boxed evaluator callables as signal identity, following roc-lang/roc#10264.
+Completed evidence belongs in `wip/research/realworld_demo_findings.md`, not
+this active backlog.
 
-Current closeout order:
+Current merge order:
 
-1. Run the real-backend base-URL-swap conformance pass (MoE-2).
-2. Run the Conduit soak and action-wire telemetry, then set or re-defer the MoP
-   budgets from measurements.
-3. Finish payload/reference comparison rows and recheck/file the builtin JSON
-   escape issue. Close the findings synthesis only after these decisions are
-   recorded.
+1. Keep PR #13 free of new feature work and resolve only review or current-main
+   CI failures.
+2. Merge when required CI is green.
 
 The compiler, native behavior, full repository, wasm mount, and public dev/size
 site gates pass with the reviewed PATH toolchain. Conduit and the JSON config
-editor are published examples; the remaining items above are release evidence,
-not feature construction or compiler recovery.
+editor are published examples. Real-backend conformance, the long soak/action
+telemetry pass, payload/reference comparison, and the builtin JSON escape
+recheck remain post-merge evidence work; none blocks PR #13.
 
 ## Active priority order
 

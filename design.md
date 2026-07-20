@@ -1553,7 +1553,7 @@ public suite is:
   fields, nested records, lists, optional values, and actionable parse errors.
 
 - `conduit` — the RealWorld spec app and platform evidence instrument
-  (`wip/REALWORLD_DEMO_PLAN.md`): app-code history routing across nine route
+  (`wip/REALWORLD_DEMO_PLAN.md`): app-code hash routing across nine route
   shapes with per-route titles, deep links, Back/Forward coverage, feeds,
   sessions, profiles, markdown articles, comments, favorites, follows, and
   server-confirmed write paths.

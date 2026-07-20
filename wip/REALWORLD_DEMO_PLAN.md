@@ -10,8 +10,7 @@ The build produces two deliverables:
 
 1. The app itself, submission-shaped: spec-complete against the RealWorld
    frontend spec (https://docs.realworld.show/), built through the standard
-   site pipeline, kept local in this repo for fast iteration until we decide
-   to publish.
+   site pipeline, and published as a featured example.
 2. A findings ledger (`wip/research/realworld_demo_findings.md`, created at
    Phase 0) recording every platform gap, friction point, compiler issue, and
    confirmation that a gated backlog item stayed unneeded.
@@ -22,37 +21,29 @@ a better platform shape, propose the breaking change through the normal
 promotion gates with low ceremony; do not paper over API awkwardness in app
 code without a ledger entry.
 
-## Status and next steps (updated 2026-07-12)
+## Status and next steps (updated 2026-07-20)
 
-Work lives on branch `real-world-demo` (draft PR #13). Phases 0-4 are
-implemented in the working tree. Phase 5 feature work is also substantially
-implemented: the complete 422 and GET-network-error matrices are present, the
-backend contract suite is green, a README exists, and the priority 1-5
-synthesis is drafted in the findings ledger.
+Work lives on branch `real-world-demo` (PR #13). Phases 0-5 are implemented.
+Conduit and the replacement JSON Config Editor are public examples; the site
+features Conduit and opens every example on a focused standalone page. Conduit
+uses hash routes beneath `/roc-signals/examples/conduit/`, so GitHub Pages deep
+links refresh without a fallback server.
 
-The experiment has therefore moved from feature construction to closeout. The
-authoritative native behavior script now passes end to end with
-`release-fast-afbc7863`. Restoring that gate fixed capability-bearing browser
+The authoritative native behavior script and full repository gate pass with
+PATH Roc `release-fast-8eaa9abd`. Coverage includes capability-bearing browser
 sources, duplicate-name task routing, keyed-row structural replacement,
-descendant accessible-name lookup, repeated mutation/refetch behavior, and
-same-turn route canonicalization. The full cross-example native suite now
-passes, including the focused canonical-location branch fixture. The
-current PATH compiler still has a separate erased-function `ConstStore`
-postcheck regression; that toolchain issue no longer blocks behavior evidence
-because the known-good roc#10072 build checks and builds the app.
+descendant accessible-name lookup, repeated mutation/refetch behavior,
+same-turn route canonicalization, static-host hash routes, and callable signal
+identity. The full dev and size site builds also pass.
 
 Current order:
 
-1. **Run release/readiness gates.** Exercise both `serve.py --no-server` app
-   optimization modes, mount the wasm build, and decide static-host routing and
-   publication.
-2. **Close robustness evidence.** Add an injectable `StorageUnavailable`
-   startup case and the planned 10-step back/forward plus long-session soak.
-   The native script already covers ordinary back and forward navigation and
-   explicitly delivers a stale feed result after request replacement.
-3. **Close evidence, not features.** Run real-backend conformance, the Conduit
-   soak/action telemetry, payload measurements, and the comparison study; file
-   or explicitly defer the JSON escape compiler issue.
+1. **Merge PR #13.** Make only review and current-main CI fixes; do not add more
+   example or platform scope before merge.
+2. **Close post-merge evidence.** Run real-backend conformance, an injectable
+   `StorageUnavailable` startup case, the longer navigation/soak trace, action
+   telemetry, payload measurements, and the comparison study. Recheck/file the
+   builtin JSON escape compiler issue separately.
 
 Expect further findings — that is the mission, not a schedule slip. The
 project has no users, so platform-shape changes stay cheap; judge every fix
@@ -114,18 +105,19 @@ Out of scope / non-goals:
   routing stays app code (`Route.roc`).
 - No platform surface prebuilt for this app; every promotion goes through the
   `wip/NEXT_STEPS.md` gates with conduit named as the trigger.
-- No commitment yet to publishing/submitting; the app must merely be
-  submission-shaped so that step is small later.
+- No standalone RealWorld deployment commitment yet. The repository demo is
+  published and submission-shaped; a real deployment may replace the in-page
+  backend and change `Route.demo_base_path`.
 - No optimistic mutations in the first pass: favorites/follows/comments are
   server-confirmed with disabled in-flight controls. Promote optimism only if
   UX evidence demands it (that would itself be a ledger finding).
 
 ## App Shape
 
-Location: `examples/conduit`, registered in `www/data/examples.toml`. Phase 5
-keeps it unpublished until the authoritative native behavior gate and both
-site/wasm build modes pass, then flips it to `public = true` if the suite
-decision holds (the `design.md` app-suite list updates in the same slice).
+Location: `examples/conduit`, registered as a public example in
+`www/data/examples.toml`. Its authoritative native behavior gate, wasm mount,
+and both site build modes pass; `design.md` includes it in the maintained app
+suite.
 
 Module sketch and size budget (total target 3,000-4,000 lines; crossing
 5,000 is itself a finding about platform ergonomics):
@@ -276,7 +268,7 @@ table:
   worth knowing either way).
 - A short subjective ergonomics narrative per category.
 
-## Build Phases
+## Build Phases (completed)
 
 Each phase exits by: running the phase-named gates from `wip/NEXT_STEPS.md`
 Green Gates, updating the findings ledger, and keeping evidence notes current
@@ -326,10 +318,10 @@ replacement and stale suppression asserted on every mutating surface.
 
 ### Phase 5 — hardening and measurement
 
-Full MoE-4 error matrix, soak run, budget ratchets, wire-telemetry refresh,
-comparison study, deep-link hosting decision, flip `public = true` if the
-suite decision holds, findings synthesis, and the backlog/evidence-note
-updates that close MoE-5. Decide separately whether to publish/submit.
+The full MoE-4 error matrix, static-host hash-route decision, public example,
+site gates, and findings synthesis landed. The longer soak, action telemetry,
+payload/reference comparison, real-backend conformance, and final JSON escape
+recheck remain post-merge evidence rather than merge blockers.
 
 ## Findings Ledger Protocol
 
@@ -344,15 +336,12 @@ Action: <promotion trigger recorded in NEXT_STEPS priority N | issue filed |
         accepted as app code | breaking-change proposal>
 ```
 
-Expected promotions this app is likely to trigger (go through the normal
-gates, with conduit named): scroll restoration on route change (NEXT_STEPS
-priority 1 — no scroll command exists and a feed→article transition will
-feel it), possibly a shared markdown story, possibly JSON/body ergonomics
-(priority 3) if post-#9964 decode is still clumsy at 19-endpoint scale.
-Items this app should *confirm* stay deferred: generic `Sub`, app-specific
-interop, dynamic event response, fetch-policy knobs, multi-select/file
-inputs, storage write-failure recovery (JWT write failure is an acceptable
-host-level error for the demo).
+Promotion result: Conduit required no new public platform surface. Hash routing,
+markdown rendering, route parsing, and JSON envelope mapping remain app code.
+Scroll restoration, generic `Sub`, app-specific interop, dynamic event
+response, fetch-policy knobs, multi-select/file inputs, and storage
+write-failure recovery remain deferred until a maintained app proves a sharper
+need.
 
 ## Risks
 
@@ -365,8 +354,8 @@ host-level error for the demo).
 - In-page backend fidelity drift vs the real API — mitigated by the MoE-2
   manual cross-origin pass; running the official API spec collection against
   a thin HTTP wrapper stays a stretch option.
-- Public-site weight: conduit will dominate `dist/`; both app-opt builds must
-  pass before publication. Phase 5 keeps `public = false` until the native spec
-  and site/readiness gates pass and the suite decision is explicit.
+- Public-site weight: Conduit is the largest published example. Both app-opt
+  builds and its wasm mount pass; payload comparison remains a post-merge
+  measurement.
 - Spec-runner ergonomics under a very large `spec.txt` — treat as a tooling
   finding if it hurts.
