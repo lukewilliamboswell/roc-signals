@@ -57,11 +57,11 @@ headers are stable).
 ## NEXT_STEPS Priority Synthesis (Phase 5 WIP)
 
 This is the MoE-5 closeout ledger. It stays WIP until the remaining real-backend,
-measurement, comparison, and static-host gates are exercised.
+measurement, and comparison gates are exercised.
 
 | Priority | Conduit evidence | Current decision |
 | --- | --- | --- |
-| 1. Browser environment follow-ups | Conduit uses the shipped location/history, storage startup snapshots, document title, visibility/online-adjacent task path, and app-local route parsing. The app has not proven app-visible storage write recovery, cross-tab storage, IndexedDB, or split location sources. Publication passes; static-host deep-link behavior remains untested. | No browser-environment promotion yet; scroll/hash/static-hosting decision remains deferred to the focused static-host check. |
+| 1. Browser environment follow-ups | Conduit uses the shipped location/history, storage startup snapshots, document title, visibility/online-adjacent task path, and app-local hash-route parsing. The fixed GitHub Pages document path plus hash routes preserve cold deep links without host rewrites. The app has not proven app-visible storage write recovery, cross-tab storage, IndexedDB, or split location sources. | No browser-environment promotion: static hosting was solved in app code with the existing location/history surface. Keep scroll and broader browser-source candidates deferred. |
 | 2. Subscriptions and app-specific JS interop | Conduit did not need generic `Sub`, ports-like app interop, or a broader browser source catalog beyond shipped focused sources and ordinary tasks. | Keep generic subscriptions and app-specific interop deferred. |
 | 3. HTTP production hardening | Conduit proves authenticated request envelopes, timeout-bearing requests, task replacement/stale suppression, 422 envelopes, and network errors. Cross-origin header auth already passed the Phase 0 canary, so fetch-policy knobs stay closed. Builtin Json required an app-local escape workaround and string-parsed dynamic 422 keys, but the current issue is compiler JSON behavior/dynamic object parsing, not proof that Signals should own JSON/body helpers. Explicit user abort and typed effect capability routing were not needed. | No HTTP public-surface promotion yet; keep fetch-policy controls, JSON/body helper sugar, explicit abort, and effect registry deferred. Compiler JSON issue remains a compiler finding. |
 | 4. Form/input hardening | Conduit forms use shipped text inputs, textareas, submit prevention, and controlled state. The async edit/settings prefill limitation is recorded as app ergonomics, and no selection, file input, multi-select, constraint validation, focus command, or date/time input need appeared. | No form/input promotion yet; async state hydration remains a documented app pattern unless more maintained forms pay the cost. |
@@ -93,7 +93,7 @@ target and below the 5,000-line review threshold. Including the native spec and
 README crosses 4,000 lines, but those are evidence/publication artifacts rather
 than app runtime source. The missing comparison rows remain: Elm/Svelte/React
 reference LoC by category, gzipped first-render payload, cold-load request
-count, static-host deep-link behavior, and reference error-state coverage.
+count and reference error-state coverage.
 
 ## Phase 5 Gate Status
 
@@ -107,7 +107,7 @@ The table retains the remaining closeout evidence alongside those completed gate
 | Remaining MoE-3/MoE-4 robustness | ordinary back/forward, loading, errors, and stale suppression pass | inject `StorageUnavailable` and run the planned 10-step navigation trail |
 | Real-backend conformance (MoE-2) | in-page backend shape is covered by node tests, and the Phase 0 cross-origin auth canary passed | wasm Conduit build runs in browser with a base-URL swap against a conformant backend |
 | Public-site publication/readiness (MoE-6) | Conduit is public; full `serve.py --no-server` dev and size builds pass for all 11 examples, including Conduit, and its wasm mounts | complete |
-| Static-host deep-link decision | path-based history routing is the app source of truth; static hosting behavior is untested | public/site build can be served from a static-host-like path and tested |
+| Static-host deep-link decision | complete: Conduit uses `#/...` routes beneath `/roc-signals/examples/conduit/`; native cold mounts and the generated static page cover the fixed-path contract | complete |
 | Payload/startup comparison | local source LoC baseline exists | wasm/site output exists so gzipped payload and cold-load request counts can be measured |
 | Conduit soak and action telemetry | structural plateau and static wire estimates are refreshed | native/wasm behavior gate is trustworthy enough to exercise feed/article/login/logout cycles |
 
@@ -125,6 +125,18 @@ until they can be rechecked and filed.
 | Wide derived JSON record parse crash | already filed as roc-lang/roc#9964 | focused 50-field repro now checks on nightly-2026-July-07, but upstream issue remains open | re-verify when upstream closes it; only reopen/file follow-up if the single-wide parser is still slow or crashes |
 
 ## Findings
+
+### 2026-07-20 Phase 5 — Hash routes close static-host deep links in app code
+
+Classification: app-land
+Severity: paper-cut
+Evidence: `examples/conduit/Route.roc` formats every logical route beneath the
+fixed `/roc-signals/examples/conduit/` document path; `spec.txt` cold-mounts a
+hash-routed article, exercises hash-contained feed queries, redirects and
+unknown routes, and mounts the unhashed published URL as home. The generated
+site contains the matching static document path.
+Action: accept hash routing as demo/deployment configuration. No router DSL,
+split hash source, or other browser-environment API is promoted.
 
 ### 2026-07-20 Phase 5 — PATH main compiler and publication gates pass
 

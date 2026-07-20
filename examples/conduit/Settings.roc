@@ -8,6 +8,7 @@ import Auth
 import Nav
 import Route
 import Session
+import Styles
 import pf.Elem exposing [Elem]
 import pf.Html
 import pf.Http
@@ -99,7 +100,7 @@ Settings := {}.{
 
 						Html.section(
 							"Settings",
-							[Html.class_attr("mx-auto max-w-md px-4 py-6")],
+							[Html.class_attr(Styles.narrow_page)],
 							[
 								Ui.on_change(
 									submission,
@@ -126,12 +127,12 @@ Settings := {}.{
 										Session.clear_username
 									},
 								),
-								Html.heading("Settings"),
-								Html.text_s(signed_in_text),
+								Html.heading_c("Settings", "text-center text-4xl font-semibold tracking-normal text-zinc-950"),
+								Html.paragraph_s_c(signed_in_text, "mb-7 mt-2 text-center text-sm text-zinc-500"),
 								Auth.error_list(errors),
-								Html.paragraph_s(saved),
+								Html.paragraph_s_c(saved, "font-medium text-emerald-700"),
 								Html.form(
-									[Html.on_submit_prevent_default(form.on_unit(submit_form))],
+									[Html.class_attr(Styles.form), Html.on_submit_prevent_default(form.on_unit(submit_form))],
 									[
 										Html.text_input_attrs(
 											"Profile picture URL",
@@ -159,14 +160,14 @@ Settings := {}.{
 										),
 										Html.button_attrs(
 											"Update Settings",
-											[Html.class_attr("rounded bg-emerald-600 px-4 py-2 text-white"), Html.attr("type", "submit")],
+											[Html.class_attr(Styles.primary_button), Html.attr("type", "submit")],
 											form.on_unit(submit_form),
 										),
 									],
 								),
 								Html.button_attrs(
 									"Sign out",
-									[Html.class_attr("mt-4 rounded border border-red-600 px-4 py-2 text-red-600"), Html.attr("type", "button")],
+									[Html.class_attr("mt-8 ${Styles.danger_button}"), Html.attr("type", "button")],
 									form.on_unit(|value| { ..value, logout_serial: value.logout_serial + 1 }),
 								),
 							],

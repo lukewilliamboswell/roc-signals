@@ -31,17 +31,22 @@ Home := {}.{
 
 				Html.section(
 					"Home",
-					[Html.class_attr("px-4 py-6")],
+					[Html.class_attr("pb-12")],
 					[
 						Ui.on_change_initial(fetch_params, |params| Http.start(feed_task, Api.feed_request(params.feed, params.token))),
 						Ui.on_mount(|| Http.get_text(tags_task, Api.tags_uri)),
-						Html.heading("conduit"),
-						Html.paragraph("A place to share your knowledge."),
 						Html.div_c(
-							"flex gap-6",
+							"bg-emerald-700 px-5 py-12 text-center text-white shadow-inner sm:py-16",
+							[
+								Html.heading_c("conduit", "text-5xl font-bold tracking-normal text-white sm:text-6xl"),
+								Html.paragraph_c("A place to share your knowledge.", "mt-3 text-lg text-emerald-50 sm:text-xl"),
+							],
+						),
+						Html.div_c(
+							"mx-auto grid w-full max-w-6xl gap-8 px-5 py-10 sm:px-8 lg:grid-cols-[minmax(0,1fr)_16rem]",
 							[
 								Html.div_c(
-									"grow",
+									"min-w-0",
 									[
 										feed_tabs(feed, signed_in, intent),
 										Html.paragraph_s_c(feed_label, "font-medium text-emerald-700"),
@@ -71,8 +76,8 @@ Home := {}.{
 
 	feed_tabs : Signal.Signal(Route.Feed), Signal.Signal(Bool), Ui.State(Nav.RouteIntent) -> Elem
 	feed_tabs = |feed, signed_in, intent| {
-		active = "border-b-2 border-emerald-600 px-2 font-medium text-emerald-700"
-		idle = "px-2 text-zinc-500"
+		active = "border-b-2 border-emerald-600 px-4 py-3 font-medium text-emerald-700 no-underline hover:no-underline"
+		idle = "px-4 py-3 text-zinc-500 no-underline hover:no-underline"
 		yours_class = feed.map(
 			|value|
 				match value.source {
@@ -94,7 +99,7 @@ Home := {}.{
 		Elem.Element(
 			{
 				tag: "nav",
-				attrs: [Html.attr("aria-label", "Feed tabs"), Html.class_attr("flex gap-2 border-b border-zinc-200 pb-1")],
+				attrs: [Html.attr("aria-label", "Feed tabs"), Html.class_attr("mb-4 flex border-b border-zinc-200")],
 				children: [
 					Ui.when(
 						signed_in,
@@ -121,9 +126,9 @@ Home := {}.{
 		Elem.Element(
 			{
 				tag: "aside",
-				attrs: [Html.class_attr("w-40 shrink-0 rounded bg-zinc-100 p-3")],
+				attrs: [Html.class_attr("h-fit rounded-xl border border-zinc-200 bg-zinc-100 p-5")],
 				children: [
-					Html.paragraph_c("Popular Tags", "font-medium"),
+					Html.paragraph_c("Popular Tags", "mb-3 font-semibold text-zinc-900"),
 					Ui.when(
 						is_loading,
 						|| Html.paragraph("Loading tags..."),
@@ -145,7 +150,7 @@ Home := {}.{
 
 	sidebar_tag : Str, Ui.State(Nav.RouteIntent) -> Elem
 	sidebar_tag = |tag, intent|
-		Nav.link(tag, "rounded bg-zinc-500 px-2 text-xs text-white", Route.feed_location({ page: 1, tag: Tagged(tag), source: Global }), intent)
+		Nav.link(tag, "rounded-full bg-zinc-600 px-3 py-1 text-xs font-medium text-white no-underline hover:bg-emerald-700 hover:text-white hover:no-underline", Route.feed_location({ page: 1, tag: Tagged(tag), source: Global }), intent)
 
 	tags_loading : Api.Remote(List(Str)) -> Bool
 	tags_loading = |remote|

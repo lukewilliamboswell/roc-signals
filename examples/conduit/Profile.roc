@@ -6,6 +6,7 @@ import Feed
 import Nav
 import Route
 import Session
+import Styles
 import pf.Elem exposing [Elem]
 import pf.Html
 import pf.Http
@@ -99,7 +100,7 @@ Profile := {}.{
 
 						Html.section(
 							"Profile",
-							[Html.class_attr("px-4 py-6")],
+							[Html.class_attr(Styles.page)],
 							[
 								Ui.on_change_initial(
 									username,
@@ -136,21 +137,21 @@ Profile := {}.{
 								),
 								Ui.when(
 									is_loading,
-									|| Html.paragraph("Loading profile..."),
+									|| Html.paragraph_c("Loading profile...", "rounded-xl border border-zinc-200 bg-white p-6 text-zinc-500"),
 									|| Ui.when(
 										is_failed,
-										|| Html.paragraph_s_c(message, "text-red-700"),
+										|| Html.paragraph_s_c(message, Styles.status_error),
 										|| Html.div(
-											[Html.attr("data-conduit", "profile")],
+											[Html.attr("data-conduit", "profile"), Html.class_attr("mb-8 rounded-2xl border border-zinc-200 bg-white p-6 text-center shadow-sm sm:p-8")],
 											[
-												Elem.Element({ tag: "h2", attrs: [Html.class_attr("text-xl font-bold")], children: [Html.text_s(name_text)] }),
-												Html.paragraph_s_c(bio_text, "text-zinc-500"),
+												Elem.Element({ tag: "h2", attrs: [Html.class_attr("text-3xl font-semibold tracking-normal text-zinc-950")], children: [Html.text_s(name_text)] }),
+												Html.paragraph_s_c(bio_text, "mx-auto mt-2 max-w-2xl leading-7 text-zinc-600"),
 												Ui.when(
 													can_follow,
 													|| Html.action_button_attrs(
 														follow_label,
 														follow_label.map(|_| False),
-														[Html.class_attr("mt-2 rounded border border-emerald-600 px-3 py-1 text-sm text-emerald-700")],
+														[Html.class_attr("mt-4 rounded-lg border border-emerald-500 bg-white px-4 py-2 text-sm font-medium text-emerald-700 shadow-sm transition hover:bg-emerald-50")],
 														model.on_unit(|value| { follow_serial: value.follow_serial + 1 }),
 													),
 													|| Html.text(""),
@@ -163,7 +164,7 @@ Profile := {}.{
 								Elem.Element(
 									{
 										tag: "nav",
-										attrs: [Html.attr("aria-label", "Profile tabs"), Html.class_attr("flex gap-3 border-b border-zinc-200 py-2")],
+								attrs: [Html.attr("aria-label", "Profile tabs"), Html.class_attr("flex border-b border-zinc-200")],
 										children: [
 											Ui.each_str(tab_rows, |name| name, |name, _| tab_links(name, favorites, intent)),
 										],
@@ -201,10 +202,10 @@ Profile := {}.{
 
 	tab_links : Str, Bool, Ui.State(Nav.RouteIntent) -> Elem
 	tab_links = |username, favorites, intent| {
-		active = "border-b-2 border-emerald-600 font-medium text-emerald-700"
-		idle = "text-zinc-500"
+		active = "border-b-2 border-emerald-600 px-4 py-3 font-medium text-emerald-700 no-underline hover:no-underline"
+		idle = "px-4 py-3 text-zinc-500 no-underline hover:no-underline"
 		Html.div_c(
-			"flex gap-3",
+			"flex",
 			[
 				Nav.link(
 					"My Articles",

@@ -33,7 +33,7 @@ Markdown := {}.{
 	view : Signal.Signal(Str) -> Elem
 	view = |source| {
 		blocks = source.map(parse)
-		Html.div([Html.attr("data-conduit", "markdown")], [Ui.each_str(blocks, |block| block.key, render_block)])
+		Html.div([Html.attr("data-conduit", "markdown"), Html.class_attr("conduit-prose my-10")], [Ui.each_str(blocks, |block| block.key, render_block)])
 	}
 
 	parse : Str -> List(Markdown.Block)
@@ -342,7 +342,7 @@ Markdown := {}.{
 			Elem.Element(
 				{
 					tag: "pre",
-					attrs: [Html.class_attr("rounded bg-zinc-100 p-2 font-mono")],
+					attrs: [Html.class_attr("overflow-x-auto rounded-lg bg-zinc-900 p-4 font-mono text-sm text-zinc-100")],
 					children: [Elem.Element({ tag: "code", attrs: [], children: [Html.text_s(text)] })],
 				},
 			)

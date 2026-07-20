@@ -1,6 +1,8 @@
 ## Conduit route model: `Browser.Location` <-> `Route` parsing and formatting
 ## plus per-route document titles. Routing stays app code by design
 ## (wip/REALWORLD_DEMO_PLAN.md): no router DSL, no platform route table.
+## The published static demo keeps one real document URL and encodes logical
+## routes in its hash, so every deep link survives a GitHub Pages refresh.
 import pf.Browser
 
 Route := [
@@ -31,35 +33,39 @@ Route := [
 	default_feed : Route.Feed
 	default_feed = { page: 1, tag: AllTags, source: Global }
 
+	demo_base_path : Str
+	demo_base_path = "/roc-signals/examples/conduit/"
+
 	home : Route
 	home = Home(default_feed)
 
 	home_location : Browser.Location
-	home_location = { path: "/", query: "", hash: "" }
+	home_location = location_for("/", "")
 
 	login_location : Browser.Location
-	login_location = { path: "/login", query: "", hash: "" }
+	login_location = location_for("/login", "")
 
 	register_location : Browser.Location
-	register_location = { path: "/register", query: "", hash: "" }
+	register_location = location_for("/register", "")
 
 	feed_location : Route.Feed -> Browser.Location
-	feed_location = |feed| { path: "/", query: feed_query(feed), hash: "" }
+	feed_location = |feed| location_for("/", feed_query(feed))
 
 	article_location : Str -> Browser.Location
-	article_location = |slug| { path: "/article/${slug}", query: "", hash: "" }
+	article_location = |slug| location_for("/article/${slug}", "")
 
 	profile_location : Str -> Browser.Location
-	profile_location = |username| { path: "/profile/${username}", query: "", hash: "" }
+	profile_location = |username| location_for("/profile/${username}", "")
 
 	profile_favorites_location : Str -> Browser.Location
-	profile_favorites_location = |username| { path: "/profile/${username}/favorites", query: "", hash: "" }
+	profile_favorites_location = |username| location_for("/profile/${username}/favorites", "")
 
 	from_location : Browser.Location -> Route
 	from_location = |location| {
-		path = location.path
+		logical = logical_location(location.hash)
+		path = logical.path
 		if path == "/" {
-			Home(parse_feed(location.query))
+			Home(parse_feed(logical.query))
 		} else if path == "/login" {
 			Login
 		} else if path == "/register" {
@@ -82,16 +88,38 @@ Route := [
 	to_location : Route -> Browser.Location
 	to_location = |route|
 		match route {
-			Home(feed) => { path: "/", query: feed_query(feed), hash: "" }
+			Home(feed) => feed_location(feed)
 			Login => login_location
 			Register => register_location
-			Settings => { path: "/settings", query: "", hash: "" }
-			EditorNew => { path: "/editor", query: "", hash: "" }
-			EditorEdit(slug) => { path: "/editor/${slug}", query: "", hash: "" }
-			Article(slug) => { path: "/article/${slug}", query: "", hash: "" }
-			Profile(username) => { path: "/profile/${username}", query: "", hash: "" }
-			ProfileFavorites(username) => { path: "/profile/${username}/favorites", query: "", hash: "" }
+			Settings => location_for("/settings", "")
+			EditorNew => location_for("/editor", "")
+			EditorEdit(slug) => location_for("/editor/${slug}", "")
+			Article(slug) => article_location(slug)
+			Profile(username) => profile_location(username)
+			ProfileFavorites(username) => profile_favorites_location(username)
 			NotFound => home_location
+		}
+
+	location_for : Str, Str -> Browser.Location
+	location_for = |path, query| {
+		hash =
+			if query.is_empty() {
+				path
+			} else {
+				"${path}?${query}"
+			}
+		{ path: demo_base_path, query: "", hash }
+	}
+
+	logical_location : Str -> { path : Str, query : Str }
+	logical_location = |hash|
+		if hash.is_empty() {
+			{ path: "/", query: "" }
+		} else {
+			match hash.find_first("?") {
+				Ok(split) => { path: split.before, query: split.after }
+				Err(_) => { path: hash, query: "" }
+			}
 		}
 
 	title : Route -> Str

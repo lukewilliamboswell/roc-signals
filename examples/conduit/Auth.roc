@@ -6,6 +6,7 @@ import Api
 import Nav
 import Route
 import Session
+import Styles
 import pf.Browser
 import pf.Elem exposing [Elem]
 import pf.Html
@@ -107,7 +108,7 @@ Auth := {}.{
 
 						Html.section(
 							heading,
-							[Html.class_attr("mx-auto max-w-md px-4 py-6")],
+							[Html.class_attr(Styles.narrow_page)],
 							[
 								Ui.on_change(
 									submission,
@@ -144,10 +145,29 @@ Auth := {}.{
 										Browser.push_state(Route.home_location)
 									},
 								),
-								Html.heading(heading),
+								Html.heading_c(heading, "text-center text-4xl font-semibold tracking-normal text-zinc-950"),
+								Html.div_c(
+									"mb-7 mt-2 text-center",
+									[
+										Nav.link(
+											if is_register {
+												"Have an account?"
+											} else {
+												"Need an account?"
+											},
+											"font-medium text-emerald-700",
+											if is_register {
+												Route.login_location
+											} else {
+												Route.register_location
+											},
+											intent,
+										),
+									],
+								),
 								error_list(errors),
 								Html.form(
-									[Html.on_submit_prevent_default(form.on_unit(submit_form))],
+									[Html.class_attr(Styles.form), Html.on_submit_prevent_default(form.on_unit(submit_form))],
 									[
 										if is_register {
 											Html.text_input_attrs(
@@ -173,24 +193,10 @@ Auth := {}.{
 										),
 										Html.button_attrs(
 											heading,
-											[Html.class_attr("rounded bg-emerald-600 px-4 py-2 text-white"), Html.attr("type", "submit")],
+											[Html.class_attr(Styles.primary_button), Html.attr("type", "submit")],
 											form.on_unit(submit_form),
 										),
 									],
-								),
-								Nav.link(
-									if is_register {
-										"Have an account?"
-									} else {
-										"Need an account?"
-									},
-									"text-emerald-600 underline",
-									if is_register {
-										Route.login_location
-									} else {
-										Route.register_location
-									},
-									intent,
 								),
 							],
 						)
@@ -201,10 +207,13 @@ Auth := {}.{
 	}
 
 	field_class : Str
-	field_class = "mb-2 w-full rounded border border-zinc-300 px-3 py-2"
+	field_class = Styles.field
 
 	error_list : Signal.Signal(List(Str)) -> Elem
 	error_list = |errors| {
+		has_errors : Signal.Signal(Bool)
+		has_errors = errors.map(|lines| !lines.is_empty())
+
 		keyed : Signal.Signal(List({ key : Str, text : Str }))
 		keyed = errors.map(
 			|lines|
@@ -216,18 +225,22 @@ Auth := {}.{
 					},
 				).items,
 		)
-		Elem.Element(
-			{
-				tag: "ul",
-				attrs: [Html.class_attr("text-red-700")],
-				children: [
-					Ui.each_str(
-						keyed,
-						|item| item.key,
-						|_, item| Elem.Element({ tag: "li", attrs: [], children: [Html.text_s(item.map(|value| value.text))] }),
-					),
-				],
-			},
+		Ui.when(
+			has_errors,
+			|| Elem.Element(
+				{
+					tag: "ul",
+					attrs: [Html.class_attr(Styles.error_list)],
+					children: [
+						Ui.each_str(
+							keyed,
+							|item| item.key,
+							|_, item| Elem.Element({ tag: "li", attrs: [], children: [Html.text_s(item.map(|value| value.text))] }),
+						),
+					],
+				},
+			),
+			|| Html.text(""),
 		)
 	}
 

@@ -91,10 +91,9 @@ Phase 5 feature/error matrices are implemented; completed evidence belongs in
 Current closeout order:
 
 1. Run the real-backend base-URL-swap conformance pass (MoE-2).
-2. Decide path-vs-hash/static-host behavior for deep links.
-3. Run the Conduit soak and action-wire telemetry, then set or re-defer the MoP
+2. Run the Conduit soak and action-wire telemetry, then set or re-defer the MoP
    budgets from measurements.
-4. Finish payload/reference comparison rows and recheck/file the builtin JSON
+3. Finish payload/reference comparison rows and recheck/file the builtin JSON
    escape issue. Close the findings synthesis only after these decisions are
    recorded.
 

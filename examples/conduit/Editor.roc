@@ -5,6 +5,7 @@ import Api
 import Auth
 import Route
 import Session
+import Styles
 import pf.Browser
 import pf.Elem exposing [Elem]
 import pf.Html
@@ -100,7 +101,7 @@ Editor := {}.{
 
 						Html.section(
 							"New article",
-							[Html.class_attr("mx-auto max-w-2xl px-4 py-6")],
+							[Html.class_attr(Styles.wide_page)],
 							[
 								Ui.on_change(
 									submission,
@@ -119,10 +120,10 @@ Editor := {}.{
 										Browser.push_state(Route.article_location(slug))
 									},
 								),
-								Html.heading("New article"),
+								Html.heading_c("New article", "mb-8 text-center text-4xl font-semibold tracking-normal text-zinc-950"),
 								Auth.error_list(errors),
 								Html.form(
-									[Html.on_submit_prevent_default(form.on_unit(submit_form))],
+									[Html.class_attr(Styles.form), Html.on_submit_prevent_default(form.on_unit(submit_form))],
 									[
 										Html.text_input_attrs(
 											"Title",
@@ -150,7 +151,7 @@ Editor := {}.{
 										),
 										Html.button_attrs(
 											"Publish Article",
-											[Html.class_attr("rounded bg-emerald-600 px-4 py-2 text-white"), Html.attr("type", "submit")],
+											[Html.class_attr(Styles.primary_button), Html.attr("type", "submit")],
 											form.on_unit(submit_form),
 										),
 									],
@@ -231,7 +232,7 @@ Editor := {}.{
 
 						Html.section(
 							"Edit article",
-							[Html.class_attr("mx-auto max-w-2xl px-4 py-6")],
+							[Html.class_attr(Styles.wide_page)],
 							[
 								Ui.on_change_initial(
 									slug,
@@ -259,7 +260,7 @@ Editor := {}.{
 										Browser.push_state(Route.article_location(value))
 									},
 								),
-								Html.heading("Edit article"),
+								Html.heading_c("Edit article", "mb-8 text-center text-4xl font-semibold tracking-normal text-zinc-950"),
 								Ui.when(
 									is_loading,
 									|| Html.paragraph("Loading article..."),
@@ -281,7 +282,7 @@ Editor := {}.{
 								),
 								Auth.error_list(errors),
 								Html.form(
-									[Html.on_submit_prevent_default(form.on_unit(submit_form))],
+									[Html.class_attr(Styles.form), Html.on_submit_prevent_default(form.on_unit(submit_form))],
 									[
 										Html.text_input_attrs(
 											"Title",
@@ -309,7 +310,7 @@ Editor := {}.{
 										),
 										Html.button_attrs(
 											"Update Article",
-											[Html.class_attr("rounded bg-emerald-600 px-4 py-2 text-white"), Html.attr("type", "submit")],
+											[Html.class_attr(Styles.primary_button), Html.attr("type", "submit")],
 											form.on_unit(submit_form),
 										),
 									],

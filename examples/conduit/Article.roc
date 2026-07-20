@@ -7,6 +7,7 @@ import Markdown
 import Nav
 import Route
 import Session
+import Styles
 import pf.Browser
 import pf.Elem exposing [Elem]
 import pf.Html
@@ -140,7 +141,7 @@ Article := {}.{
 
 						Html.section(
 							"Article",
-							[Html.class_attr("px-4 py-6")],
+							[Html.class_attr(Styles.wide_page)],
 							[
 								# Comments load in parallel with the article, before the
 								# comments view branch mounts. Keep the task source active
@@ -257,18 +258,18 @@ Article := {}.{
 								),
 								Ui.when(
 									is_loading,
-									|| Html.paragraph("Loading article..."),
+									|| Html.paragraph_c("Loading article...", "rounded-xl border border-zinc-200 bg-white p-6 text-zinc-500"),
 
 									|| Ui.when(
 										is_failed,
-										|| Html.paragraph_s_c(message, "text-red-700"),
+										|| Html.paragraph_s_c(message, Styles.status_error),
 
 										|| Html.div(
-											[Html.attr("data-conduit", "article")],
+											[Html.attr("data-conduit", "article"), Html.class_attr("rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm sm:p-10")],
 											[
-												Elem.Element({ tag: "h2", attrs: [Html.class_attr("text-2xl font-bold")], children: [Html.text_s(title)] }),
+												Elem.Element({ tag: "h2", attrs: [Html.class_attr("text-4xl font-semibold leading-tight tracking-normal text-zinc-950 sm:text-5xl")], children: [Html.text_s(title)] }),
 												Html.div_c(
-													"flex items-center gap-2 py-2 text-sm text-zinc-500",
+													"flex flex-wrap items-center gap-2 py-4 text-sm text-zinc-500",
 													[
 														Ui.each_str(author_rows, |name| name, |name, _| Nav.link(name, "font-medium text-emerald-600", Route.profile_location(name), intent)),
 														Html.text_s(meta),
@@ -279,7 +280,7 @@ Article := {}.{
 													|| Html.action_button_attrs(
 														favorite_label,
 														favorite_label.map(|_| False),
-														[Html.class_attr("mb-4 mr-2 rounded border border-emerald-600 px-3 py-1 text-sm text-emerald-700")],
+														[Html.class_attr("mb-4 mr-2 rounded-lg border border-emerald-500 bg-white px-4 py-2 text-sm font-medium text-emerald-700 shadow-sm transition hover:bg-emerald-50")],
 														model.on_unit(|value| { ..value, favorite_serial: value.favorite_serial + 1 }),
 													),
 													|| Html.text(""),
@@ -289,7 +290,7 @@ Article := {}.{
 													can_delete,
 													|| Html.button_attrs(
 														"Delete Article",
-														[Html.class_attr("mb-4 rounded border border-red-600 px-3 py-1 text-sm text-red-600"), Html.attr("type", "button")],
+														[Html.class_attr("mb-4 ${Styles.danger_button}"), Html.attr("type", "button")],
 														model.on_unit(|value| { ..value, article_delete_serial: value.article_delete_serial + 1 }),
 													),
 													|| Html.text(""),
@@ -402,9 +403,9 @@ Article := {}.{
 		message = comments_state.map(comments_message)
 		comments = comments_state.map(comments_of)
 		Html.div_c(
-			"mt-6 border-t border-zinc-200 pt-4",
+			"mt-10 border-t border-zinc-200 pt-8",
 			[
-				Elem.Element({ tag: "h3", attrs: [Html.class_attr("text-lg font-semibold")], children: [Html.text("Comments")] }),
+				Elem.Element({ tag: "h3", attrs: [Html.class_attr("mb-5 text-2xl font-semibold tracking-normal text-zinc-950")], children: [Html.text("Comments")] }),
 				Ui.when(
 					signed_in,
 					|| comment_form(comment_body, comment_errors, model),
@@ -429,7 +430,7 @@ Article := {}.{
 	comment_form : Signal.Signal(Str), Signal.Signal(List(Str)), Ui.State(Article.State) -> Elem
 	comment_form = |body, errors, model|
 		Html.form(
-			[Html.on_submit_prevent_default(model.on_unit(submit_comment))],
+			[Html.class_attr("mb-8 grid gap-3 rounded-xl border border-zinc-200 bg-zinc-50 p-4"), Html.on_submit_prevent_default(model.on_unit(submit_comment))],
 			[
 				Auth.error_list(errors),
 				Html.textarea_attrs(
@@ -440,7 +441,7 @@ Article := {}.{
 				),
 				Html.button_attrs(
 					"Post Comment",
-					[Html.class_attr("rounded bg-emerald-600 px-4 py-2 text-white"), Html.attr("type", "submit")],
+					[Html.class_attr(Styles.primary_button), Html.attr("type", "submit")],
 					model.on_unit(submit_comment),
 				),
 			],
@@ -453,7 +454,7 @@ Article := {}.{
 		can_delete_inputs = { comment: comment, session: session }.Signal
 		can_delete = can_delete_inputs.map(|value| value.comment.author.username == Session.username_of(value.session))
 		Html.div_c(
-			"my-3 border border-zinc-200 p-3",
+			"my-4 overflow-hidden rounded-xl border border-zinc-200 bg-white p-4",
 			[
 				Html.paragraph_s(body),
 				Html.paragraph_s_c(meta, "text-sm text-zinc-500"),
@@ -461,7 +462,7 @@ Article := {}.{
 					can_delete,
 					|| Html.button_attrs(
 						"Delete Comment",
-						[Html.class_attr("mt-2 rounded border border-red-600 px-2 py-1 text-sm text-red-600"), Html.attr("type", "button")],
+						[Html.class_attr("mt-3 ${Styles.danger_button}"), Html.attr("type", "button")],
 						model.on_unit(|value| { ..value, comment_delete_serial: value.comment_delete_serial + 1, comment_delete_id: comment_id_from_key(key) }),
 					),
 					|| Html.text(""),

@@ -83,4 +83,60 @@
   .prose-signals pre code {
     @apply bg-transparent p-0 text-zinc-50;
   }
+
+  .example-standalone [data-site-header] {
+    @apply hidden;
+  }
+
+  .example-standalone {
+    @apply overflow-x-hidden bg-white;
+  }
+
+  .example-standalone .example-page {
+    @apply block min-h-screen max-w-none p-0;
+  }
+
+  .example-standalone .example-runner {
+    @apply min-h-screen rounded-none border-0 shadow-none;
+  }
+
+  .example-standalone .example-runner-toolbar {
+    @apply sticky top-0 z-50;
+  }
+
+  .example-standalone [data-signals-wasm] > * {
+    min-height: calc(100vh - 4.25rem);
+  }
+
+  .conduit-app {
+    background:
+      radial-gradient(circle at 12% 6%, rgb(209 250 229 / 0.45), transparent 24rem),
+      linear-gradient(to bottom, #fff, #fafafa 48rem);
+  }
+
+  .conduit-app input:focus,
+  .conduit-app textarea:focus {
+    @apply border-emerald-500 outline-none ring-2 ring-emerald-100;
+  }
+
+  .conduit-prose > * + * {
+    @apply mt-4;
+  }
+
+  .conduit-prose h3 {
+    @apply mt-8 text-2xl font-semibold tracking-normal text-zinc-950;
+  }
+
+  .conduit-prose p,
+  .conduit-prose li {
+    @apply leading-7 text-zinc-700;
+  }
+
+  .conduit-prose ul {
+    @apply list-disc pl-6;
+  }
+
+  .conduit-prose blockquote {
+    @apply border-l-2 border-emerald-500 pl-4 italic text-zinc-600;
+  }
 }

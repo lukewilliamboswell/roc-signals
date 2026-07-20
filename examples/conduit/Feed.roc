@@ -9,6 +9,7 @@ import Format
 import Nav
 import Route
 import Session
+import Styles
 import pf.Browser
 import pf.Elem exposing [Elem]
 import pf.Html
@@ -55,13 +56,13 @@ Feed := {}.{
 				[
 					Ui.when(
 						is_loading,
-						|| Html.paragraph("Loading articles..."),
+						|| Html.paragraph_c("Loading articles...", "rounded-xl border border-zinc-200 bg-white p-6 text-zinc-500"),
 						|| Ui.when(
 							is_failed,
-							|| Html.paragraph_s_c(message, "text-red-700"),
+							|| Html.paragraph_s_c(message, Styles.status_error),
 							|| Ui.when(
 								is_empty,
-								|| Html.paragraph("No articles are here... yet."),
+								|| Html.paragraph_c("No articles are here... yet.", "rounded-xl border border-dashed border-zinc-300 bg-white p-8 text-center text-zinc-500"),
 								|| Ui.each_str(articles, article_key, article_row),
 							),
 						),
@@ -145,7 +146,7 @@ Feed := {}.{
 						Elem.Element(
 							{
 								tag: "article",
-								attrs: [Html.class_attr("border-t border-zinc-200 py-4")],
+								attrs: [Html.class_attr("border-b border-zinc-200 bg-white py-6 first:border-t")],
 								children: [
 									Ui.on_change(
 										request,
@@ -159,7 +160,7 @@ Feed := {}.{
 											},
 									),
 									Html.div_c(
-										"flex items-center gap-2 text-sm text-zinc-500",
+										"mb-3 flex flex-wrap items-center gap-2 text-sm text-zinc-500",
 										[
 											Ui.each_str(author_rows, |name| name, |name, _| Nav.link(name, "font-medium text-emerald-600", Route.profile_location(name), intent)),
 											Html.text_s(date_text),
@@ -169,23 +170,23 @@ Feed := {}.{
 										{
 											tag: "a",
 											attrs: [
-												Html.class_attr("block text-lg font-semibold"),
+											Html.class_attr("block text-2xl font-semibold tracking-normal text-zinc-900 no-underline hover:text-emerald-700 hover:no-underline"),
 												Html.attr("href", "/article/${slug}"),
 												Html.on_event("click", Html.event_policy_prevent_default, intent.on_unit(|current| Nav.for_target(current, Route.article_location(slug)))),
 											],
 											children: [Html.text_s(title)],
 										},
 									),
-									Html.paragraph_s_c(description, "text-zinc-500"),
+									Html.paragraph_s_c(description, "mt-2 leading-7 text-zinc-600"),
 									Html.div_c(
-										"flex items-center justify-between text-sm text-zinc-500",
+										"mt-4 flex flex-wrap items-center justify-between gap-3 text-sm text-zinc-500",
 										[
 											Ui.when(
 												signed_in,
 												|| Html.action_button_attrs(
 													favorite_label,
 													favorite_label.map(|_| False),
-													[Html.class_attr("rounded border border-emerald-600 px-2 py-1 text-emerald-700")],
+												[Html.class_attr("rounded-full border border-emerald-500 bg-white px-3 py-1.5 font-medium text-emerald-700 transition hover:bg-emerald-50")],
 													model.on_unit(|value| { favorite_serial: value.favorite_serial + 1 }),
 												),
 												|| Html.text_s(favorites),
@@ -196,7 +197,7 @@ Feed := {}.{
 											),
 										],
 									),
-									Html.paragraph_s_c(favorite_error, "text-red-700"),
+									Html.paragraph_s_c(favorite_error, "mt-3 text-sm text-red-700"),
 								],
 							},
 						)
@@ -258,7 +259,7 @@ Feed := {}.{
 
 	tag_pill : Str, Ui.State(Nav.RouteIntent) -> Elem
 	tag_pill = |tag, intent|
-		Nav.link(tag, "rounded-full border border-zinc-300 px-2 text-xs text-zinc-500", Route.feed_location({ page: 1, tag: Tagged(tag), source: Global }), intent)
+		Nav.link(tag, "rounded-full border border-zinc-300 px-2.5 py-1 text-xs text-zinc-500 no-underline hover:border-emerald-400 hover:text-emerald-700 hover:no-underline", Route.feed_location({ page: 1, tag: Tagged(tag), source: Global }), intent)
 
 	pagination : Signal.Signal(Api.Remote(Api.FeedPage)), Signal.Signal(Route.Feed), Ui.State(Nav.RouteIntent) -> Elem
 	pagination = |remote, feed, intent| {
@@ -267,7 +268,7 @@ Feed := {}.{
 		Elem.Element(
 			{
 				tag: "nav",
-				attrs: [Html.attr("aria-label", "Pagination"), Html.class_attr("flex gap-1 py-2")],
+				attrs: [Html.attr("aria-label", "Pagination"), Html.class_attr("flex flex-wrap gap-2 py-6")],
 				children: [Ui.each_str(items, |item| item.key, page_link_row(intent))],
 			},
 		)
@@ -279,9 +280,9 @@ Feed := {}.{
 			classes = item.map(
 				|value|
 					if value.active {
-						"rounded bg-emerald-600 px-2 text-white"
+						"rounded-lg bg-emerald-600 px-3 py-2 text-sm font-medium text-white no-underline hover:text-white hover:no-underline"
 					} else {
-						"rounded border border-zinc-300 px-2 text-zinc-600"
+						"rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-600 no-underline hover:border-emerald-500 hover:no-underline"
 					},
 			)
 			target = key_location(key)

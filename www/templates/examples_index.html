@@ -8,11 +8,23 @@
   <section class="grid gap-3">
     <p class="text-sm font-medium text-emerald-700">Examples</p>
     <h1 class="text-3xl font-semibold text-zinc-950">Explore the apps</h1>
-    <p class="max-w-3xl leading-7 text-zinc-700">Each example runs from a prebuilt wasm artifact and includes source files you can download, modify, and rebuild locally with Roc.</p>
+    <p class="max-w-3xl leading-7 text-zinc-700">Each example opens on its own focused app page, runs from a prebuilt wasm artifact, and includes source files you can download, modify, and rebuild locally with Roc.</p>
   </section>
+  {% for example in data.examples %}
+  {% if example.public and example.slug == "conduit" %}
+  <a class="group grid gap-5 rounded-2xl border border-emerald-200 bg-gradient-to-br from-emerald-950 to-emerald-800 p-6 text-white no-underline shadow-sm transition hover:border-emerald-400 hover:no-underline sm:p-8 lg:grid-cols-[1fr_auto] lg:items-end" href="{{ get_url(path='examples/' ~ example.slug ~ '/', trailing_slash=true) }}">
+    <div class="grid gap-3">
+      <span class="w-fit rounded-full bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-emerald-100">Featured example</span>
+      <span class="text-3xl font-semibold text-white">{{ example.title }} · RealWorld</span>
+      <span class="max-w-3xl leading-7 text-emerald-100">{{ example.description }}</span>
+    </div>
+    <span class="font-medium text-white">Open application →</span>
+  </a>
+  {% endif %}
+  {% endfor %}
   <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
     {% for example in data.examples %}
-    {% if example.public %}
+    {% if example.public and example.slug != "conduit" %}
     <a class="panel grid gap-2 p-4 no-underline transition hover:border-emerald-500" href="{{ get_url(path='examples/' ~ example.slug ~ '/', trailing_slash=true) }}">
       <span class="font-semibold text-zinc-950">{{ example.title }}</span>
       <span class="text-sm leading-6 text-zinc-600">{{ example.description }}</span>

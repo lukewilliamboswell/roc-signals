@@ -13,6 +13,13 @@ mutations. Unknown task routes fall through to the normal browser fetch path, so
 the same app structure can be tested against a conformant external backend when
 the API base is swapped.
 
+The published demo is a static GitHub Pages app. `Route.roc` therefore keeps the
+document at `/roc-signals/examples/conduit/` and puts app routes in the URL hash,
+for example `#/article/keyed-lists-without-tears` and `#/?page=2`. Refreshing a
+deep link always requests the one real HTML page. A standalone deployment should
+change `Route.demo_base_path` (and can switch back to clean history paths when
+its server provides an SPA fallback).
+
 ## Verification
 
 Useful focused checks while working on this app:
@@ -37,5 +44,5 @@ repository gate and public dev/size site builds pass with the same compiler.
 response into a small plain record before page-specific domain decoding. This
 keeps the package-aligned HTTP API while avoiding a compiler stack overflow
 caused by folding the opaque response directly into Conduit's large domain
-unions. A real-backend pass, static-host behavior decision, and the long soak
-remain closeout evidence rather than feature gaps in the script.
+unions. A real-backend pass and the long soak remain closeout evidence rather
+than feature gaps in the script.

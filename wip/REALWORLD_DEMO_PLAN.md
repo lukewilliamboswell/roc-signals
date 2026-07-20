@@ -150,13 +150,11 @@ Module sketch and size budget (total target 3,000-4,000 lines; crossing
 
 Decisions recorded now:
 
-- Routing mode: path-based history routing (the proven, shipped surface;
-  matches `service-ops-center`). The RealWorld reference demo uses hash-style
-  URLs, but the spec accepts history routing and modern implementations use
-  it. Open question, resolved in Phase 5: deep-link behavior on static
-  hosting (GitHub Pages) — either the 404-redirect trick or a hash-mode
-  variant. If hash mode is chosen it becomes the evidence for the
-  hash-specific-behavior candidate in `wip/NEXT_STEPS.md` priority 1.
+- Routing mode: hash routes under the fixed published document path
+  `/roc-signals/examples/conduit/`. This keeps every deep link refreshable on
+  GitHub Pages without a 404 redirect shim. Route parsing remains app code over
+  the shipped `Browser.Location` and history surfaces; it does not promote a
+  router or hash-specific platform API.
 - Backend strategy: an in-page deterministic JS backend following the
   `www/static/example_tasks.mjs` pattern — a conduit API router with seeded
   users/articles/comments, in-memory mutations, real 422 validation, and

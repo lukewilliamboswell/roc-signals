@@ -31,7 +31,7 @@ Nav := {}.{
 			label,
 			[
 				Html.class_attr(classes),
-				Html.attr("href", target.path),
+				Html.attr("href", href(target)),
 				Html.on_event("click", Html.event_policy_prevent_default, intent.on_unit(|current| for_target(current, target))),
 			],
 		)
@@ -43,9 +43,24 @@ Nav := {}.{
 			label,
 			[
 				Html.class_attr_s(classes),
-				Html.attr("href", target.path),
+				Html.attr("href", href(target)),
 				Html.on_event("click", Html.event_policy_prevent_default, intent.on_unit(|current| for_target(current, target))),
 			],
 		)
+	}
+
+	href : Browser.Location -> Str
+	href = |target| {
+		with_query =
+			if target.query.is_empty() {
+				target.path
+			} else {
+				"${target.path}?${target.query}"
+			}
+		if target.hash.is_empty() {
+			with_query
+		} else {
+			"${with_query}#${target.hash}"
+		}
 	}
 }
