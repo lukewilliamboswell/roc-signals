@@ -1517,11 +1517,10 @@ export fn roc_host_value_get_with_capability(value: HostValue, cap: HostValueCap
     };
 }
 
-export fn roc_host_value_get_with_split(value: HostValue, split_ref: *const abi.RocErasedCallable) callconv(.c) abi.RocBox {
+export fn roc_host_value_get_with_split(value: HostValue, split: abi.RocErasedCallable) callconv(.c) abi.RocBox {
     const previous_phase = roc_allocation_phase;
     roc_allocation_phase = 103;
     defer roc_allocation_phase = previous_phase;
-    const split = split_ref.*;
     defer abi.decrefErasedCallable(split, &roc_host);
     return shared_engine.host_values.getWithSplit(value, split, registryOps()) catch |err| {
         failHostValueRegistryError(err);
@@ -1556,13 +1555,21 @@ export fn roc_host_value_take_with_capability(value: HostValue, cap: HostValueCa
     };
 }
 
-export fn roc_host_value_take_with_split(value: HostValue, split_ref: *const abi.RocErasedCallable) callconv(.c) abi.RocBox {
+export fn roc_host_value_take_with_split(value: HostValue, split: abi.RocErasedCallable) callconv(.c) abi.RocBox {
     const previous_phase = roc_allocation_phase;
     roc_allocation_phase = 107;
     defer roc_allocation_phase = previous_phase;
-    const split = split_ref.*;
     defer abi.decrefErasedCallable(split, &roc_host);
     return shared_engine.host_values.takeWithSplit(value, split, registryOps()) catch |err| {
         failHostValueRegistryError(err);
     };
+}
+
+comptime {
+    if (@TypeOf(&roc_host_value_get_with_split) != @TypeOf(&abi.roc_host_value_get_with_split)) {
+        @compileError("roc_host_value_get_with_split does not match the generated platform ABI");
+    }
+    if (@TypeOf(&roc_host_value_take_with_split) != @TypeOf(&abi.roc_host_value_take_with_split)) {
+        @compileError("roc_host_value_take_with_split does not match the generated platform ABI");
+    }
 }

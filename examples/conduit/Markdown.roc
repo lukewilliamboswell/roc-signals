@@ -187,9 +187,9 @@ Markdown := {}.{
 
 	parse_strong : Markdown.InlineState, Str -> Markdown.InlineState
 	parse_strong = |state, text|
-		match text.find_first("**") {
+		match text.split_first("**") {
 			Ok(open) =>
-				match open.after.find_first("**") {
+				match open.after.split_first("**") {
 					Ok(close) => {
 						before = parse_inline(state, open.before)
 						strong = append_segment(before, "strong", close.before, "")
@@ -202,9 +202,9 @@ Markdown := {}.{
 
 	parse_code : Markdown.InlineState, Str -> Markdown.InlineState
 	parse_code = |state, text|
-		match text.find_first("`") {
+		match text.split_first("`") {
 			Ok(open) =>
-				match open.after.find_first("`") {
+				match open.after.split_first("`") {
 					Ok(close) => {
 						before = parse_inline(state, open.before)
 						code = append_segment(before, "code", close.before, "")
@@ -217,11 +217,11 @@ Markdown := {}.{
 
 	parse_image : Markdown.InlineState, Str -> Markdown.InlineState
 	parse_image = |state, text|
-		match text.find_first("![") {
+		match text.split_first("![") {
 			Ok(open) =>
-				match open.after.find_first("](") {
+				match open.after.split_first("](") {
 					Ok(alt_split) =>
-						match alt_split.after.find_first(")") {
+						match alt_split.after.split_first(")") {
 							Ok(src_split) => {
 								before = parse_inline(state, open.before)
 								image =
@@ -241,11 +241,11 @@ Markdown := {}.{
 
 	parse_link : Markdown.InlineState, Str -> Markdown.InlineState
 	parse_link = |state, text|
-		match text.find_first("[") {
+		match text.split_first("[") {
 			Ok(open) =>
-				match open.after.find_first("](") {
+				match open.after.split_first("](") {
 					Ok(label_split) =>
-						match label_split.after.find_first(")") {
+						match label_split.after.split_first(")") {
 							Ok(href_split) => {
 								before = parse_inline(state, open.before)
 								link =

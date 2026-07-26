@@ -116,7 +116,7 @@ Route := [
 		if hash.is_empty() {
 			{ path: "/", query: "" }
 		} else {
-			match hash.find_first("?") {
+			match hash.split_first("?") {
 				Ok(split) => { path: split.before, query: split.after }
 				Err(_) => { path: hash, query: "" }
 			}
@@ -185,7 +185,7 @@ Route := [
 
 	profile_route : Str -> Route
 	profile_route = |rest|
-		match rest.find_first("/") {
+		match rest.split_first("/") {
 			Ok(split) =>
 				if split.after == "favorites" and valid_segment(split.before) {
 					ProfileFavorites(split.before)
@@ -205,7 +205,7 @@ Route := [
 		if segment.is_empty() {
 			False
 		} else {
-			match segment.find_first("/") {
+			match segment.split_first("/") {
 				Ok(_) => False
 				Err(_) => True
 			}

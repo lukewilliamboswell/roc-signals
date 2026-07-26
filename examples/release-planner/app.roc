@@ -348,11 +348,11 @@ safe_href = |href| {
 
 parse_link_inline : InlineState, Str -> InlineState
 parse_link_inline = |state, text| {
-	match text.find_first("[") {
+	match text.split_first("[") {
 		Ok(open) =>
-			match open.after.find_first("](") {
+			match open.after.split_first("](") {
 				Ok(label_split) =>
-					match label_split.after.find_first(")") {
+					match label_split.after.split_first(")") {
 						Ok(href_split) => {
 							before_state = parse_inline_into(state, open.before)
 							link_state =
@@ -373,9 +373,9 @@ parse_link_inline = |state, text| {
 
 parse_code_inline : InlineState, Str -> InlineState
 parse_code_inline = |state, text| {
-	match text.find_first("`") {
+	match text.split_first("`") {
 		Ok(open) =>
-			match open.after.find_first("`") {
+			match open.after.split_first("`") {
 				Ok(close) => {
 					before_state = parse_inline_into(state, open.before)
 					code_state = append_segment(before_state, "code", close.before, "")
@@ -389,9 +389,9 @@ parse_code_inline = |state, text| {
 
 parse_strong_inline : InlineState, Str -> InlineState
 parse_strong_inline = |state, text| {
-	match text.find_first("**") {
+	match text.split_first("**") {
 		Ok(open) =>
-			match open.after.find_first("**") {
+			match open.after.split_first("**") {
 				Ok(close) => {
 					before_state = parse_inline_into(state, open.before)
 					strong_state = append_segment(before_state, "strong", close.before, "")

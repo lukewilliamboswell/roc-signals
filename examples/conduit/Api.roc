@@ -365,7 +365,7 @@ Api := {}.{
 	parse_errors : Str -> List(Str)
 	parse_errors = |body| {
 		shielded = shield_escapes(body)
-		match shielded.find_first("\"errors\"") {
+		match shielded.split_first("\"errors\"") {
 			Ok(split) => collect_errors(split.after, [])
 			Err(_) => ["The request was rejected."]
 		}
@@ -373,21 +373,21 @@ Api := {}.{
 
 	collect_errors : Str, List(Str) -> List(Str)
 	collect_errors = |rest, acc|
-		match rest.find_first("\"") {
+		match rest.split_first("\"") {
 			Err(_) => acc
 			Ok(key_open) =>
-				match key_open.after.find_first("\"") {
+				match key_open.after.split_first("\"") {
 					Err(_) => acc
 					Ok(key_close) =>
-						match key_close.after.find_first("[\"") {
+						match key_close.after.split_first("[\"") {
 							Err(_) => acc
 							Ok(list_open) =>
-								match list_open.after.find_first("\"") {
+								match list_open.after.split_first("\"") {
 									Err(_) => acc
 									Ok(message_close) => {
 										entry = restore_text("${key_close.before} ${message_close.before}")
 										next = acc.append(entry)
-										match message_close.after.find_first("]") {
+										match message_close.after.split_first("]") {
 											Err(_) => next
 											Ok(list_close) => collect_errors(list_close.after, next)
 										}

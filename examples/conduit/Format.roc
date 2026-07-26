@@ -3,12 +3,12 @@
 Format := {}.{
 	display_date : Str -> Str
 	display_date = |iso|
-		match iso.find_first("-") {
+		match iso.split_first("-") {
 			Ok(year_split) =>
-				match year_split.after.find_first("-") {
+				match year_split.after.split_first("-") {
 					Ok(month_split) => {
 						day_raw =
-							match month_split.after.find_first("T") {
+							match month_split.after.split_first("T") {
 								Ok(day_split) => day_split.before
 								Err(_) => month_split.after
 							}

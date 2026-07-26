@@ -312,14 +312,14 @@ Feed := {}.{
 
 	page_label : Str -> Str
 	page_label = |key|
-		match key.find_first("|") {
+		match key.split_first("|") {
 			Ok(split) => split.before
 			Err(_) => key
 		}
 
 	key_location : Str -> Browser.Location
 	key_location = |key|
-		match key.find_first("|") {
+		match key.split_first("|") {
 			Ok(split) => {
 				page =
 					match U64.from_str(split.before) {
