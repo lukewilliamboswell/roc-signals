@@ -24,11 +24,8 @@ initial_state = {
 	composition_end_count: 0,
 }
 
-concat3 : Str, Str, Str -> Str
-concat3 = |a, b, c| Str.concat(Str.concat(a, b), c)
-
 canonical : Str -> Str
-canonical = |value| Str.concat("canonical:", value)
+canonical = |value| "canonical:${value}"
 
 record_normalized : State, Str -> State
 record_normalized = |state, value| { ..state, normalized: canonical(value) }
@@ -49,24 +46,24 @@ record_composition_end : State -> State
 record_composition_end = |state| { ..state, composition_end_count: state.composition_end_count + 1 }
 
 canonical_label : Str -> Str
-canonical_label = |value| Str.concat("Canonical normalized: ", value)
+canonical_label = |value| "Canonical normalized: ${value}"
 
 counter_label : Str, I64 -> Str
-counter_label = |name, value| concat3(name, ": ", value.to_str())
+counter_label = |name, value| "${name}: ${value.to_str()}"
 
-main : {} -> Elem
-main = |_| {
+main : () -> Elem
+main = || {
 	Ui.state(
 		initial_state,
 		|model| {
 			state_signal = model.signal()
-			normalized_signal = Signal.map(state_signal, |state| state.normalized)
-			echo_signal = Signal.map(state_signal, |state| state.echo)
-			canonical_text = Signal.map(normalized_signal, canonical_label)
-			focus_text = Signal.map(state_signal, |state| counter_label("Focus events", state.focus_count))
-			blur_text = Signal.map(state_signal, |state| counter_label("Blur events", state.blur_count))
-			composition_start_text = Signal.map(state_signal, |state| counter_label("Composition start events", state.composition_start_count))
-			composition_end_text = Signal.map(state_signal, |state| counter_label("Composition end events", state.composition_end_count))
+			normalized_signal = state_signal.map(|state| state.normalized)
+			echo_signal = state_signal.map(|state| state.echo)
+			canonical_text = normalized_signal.map(canonical_label)
+			focus_text = state_signal.map(|state| counter_label("Focus events", state.focus_count))
+			blur_text = state_signal.map(|state| counter_label("Blur events", state.blur_count))
+			composition_start_text = state_signal.map(|state| counter_label("Composition start events", state.composition_start_count))
+			composition_end_text = state_signal.map(|state| counter_label("Composition end events", state.composition_end_count))
 
 			Html.section(
 				"Controlled Input Contract",

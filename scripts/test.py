@@ -268,6 +268,8 @@ def build_wasm_apps(roc_bin: str, examples: tuple[Example, ...]) -> None:
                 mount_cmd.append("--exercise-location-source")
             if example.slug == "location-navigation":
                 mount_cmd.append("--exercise-location-navigation")
+            if example.slug == "location-canonical-branch":
+                mount_cmd.append("--exercise-location-canonical-branch")
             if example.slug == "storage-commands":
                 mount_cmd.append("--exercise-storage-commands")
             if example.slug == "live-search":

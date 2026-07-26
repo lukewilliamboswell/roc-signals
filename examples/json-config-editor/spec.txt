@@ -1,0 +1,17 @@
+# JSON Config Editor scenario
+
+expect_visible role:heading name:"JSON Config Editor"
+expect_visible role:region name:"Configuration"
+expect_text text:"Valid config: api-gateway, 3 replicas, 2 regions, owner Maya, timeout 30s" "Valid config: api-gateway, 3 replicas, 2 regions, owner Maya, timeout 30s"
+
+click role:button name:"Load minimal config"
+expect_text text:"Valid config: worker, 1 replicas, 1 regions, owner Noah, default timeout" "Valid config: worker, 1 replicas, 1 regions, owner Noah, default timeout"
+
+click role:button name:"Load incomplete JSON"
+expect_text text:"Missing required field: owner" "Missing required field: owner"
+
+click role:button name:"Load invalid JSON"
+expect_text text:"Invalid JSON" "Invalid JSON"
+
+click role:button name:"Load complete config"
+expect_text text:"Valid config: api-gateway, 3 replicas, 2 regions, owner Maya, timeout 30s" "Valid config: api-gateway, 3 replicas, 2 regions, owner Maya, timeout 30s"

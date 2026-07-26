@@ -16,7 +16,7 @@ git diff --check
 zig build run-check-tidy
 ```
 
-If the service parser or JSON fixture changes, also run:
+If the service parser or JSON example changes, also run:
 
 ```sh
 python3 scripts/test.py roc-check
@@ -32,6 +32,34 @@ Refresh check: re-run on 2026-07-05:
   maintained apps and fixtures, including the JSON fixture and service
   dashboard parser path.
 
+Refresh check: re-run on 2026-07-08 (conduit Phase 0 canary), on
+nightly-2026-July-07 (`release-fast-050c6975`):
+
+- Upstream renamed the builtin parse error type between the July-05 and
+  July-06 nightlies: annotations are now `Try(a, Json.ParseErr)` with
+  payload-carrying tags `MissingRequiredField(Str)` / `InvalidJson(Str)`, and
+  `Json.encode` became `Json.to_str` / `Json.to_str_try` (roc-lang/roc
+  commit 84f5cc921c). The old `Try(a, Json)` idiom fails to check
+  ("The type Json is not exposed by the module Builtin"), so this repo was
+  red against the floating `nightly-new-compiler` CI toolchain until
+  `Dashboard.roc`, `JsonProbe.roc`, and the wide-record repro were migrated
+  in the same slice as this refresh.
+- `python3 scripts/test.py roc-check` and
+  `python3 scripts/test.py native --native always` exited successfully after
+  the migration (see the conduit findings ledger,
+  `wip/research/realworld_demo_findings.md`).
+
+Refresh check: re-run on 2026-07-20 with PATH Roc
+`release-fast-8eaa9abd`:
+
+- The temporary private `json-decode`/`JsonProbe` fixture was replaced by the
+  public interactive `examples/json-config-editor` app, which uses builtin
+  `Json` for typed decode and validation behavior.
+- `python3 scripts/test.py all --roc-bin roc` passed, including native, wasm,
+  browser, bundle, benchmark, and generated-ABI coverage.
+- Full public-site dev and size builds passed with both the JSON config editor
+  and Conduit published.
+
 ## Current Evidence
 
 The shipped HTTP surface already returns explicit request/response envelopes.
@@ -41,16 +69,14 @@ decoding separate: the platform owns request scheduling, cancellation,
 stale-result suppression, headers, status, and transport errors; app code owns
 its API schema.
 
-The `examples/_fixtures/json-decode` fixture proves the builtin covers the
-ordinary app-side needs that would otherwise motivate platform sugar:
+The public `examples/json-config-editor` app proves the builtin covers the
+ordinary app-side needs that would otherwise motivate platform sugar in an
+interactive, user-facing workflow:
 
 - nested records,
-- tag-union values,
-- custom parser hooks,
 - missing-required and invalid-json errors,
 - optional fields represented as `Try(..., [Missing])`,
-- camel-case field mapping,
-- encoding plus parse roundtrip.
+- camel-case field mapping.
 
 The maintained `service-ops-center` app proves the remaining friction is not
 an HTTP envelope gap. It decodes one dashboard response into app-domain state,
@@ -75,10 +101,30 @@ class of evidence:
 - Adding an executed 63-field `JsonProbe.Wide` parse to the focused
   `json-decode` fixture crashed `roc check` with `SIGSEGV`.
 
-That means the split service parser remains a current compiler workaround. It
-does not prove that Signals needs JSON helpers, because a platform wrapper over
-the same builtin derivation would inherit the compiler failure or hide it behind
-a less explicit API.
+The 2026-07-06 recheck on `roc release-fast-c0cae661` still reproduced the
+compiler crash. A temporary minimization pass showed 45-49 fields pass and
+50-63 fields crash. The focused 50-field repro lives at
+`wip/research/wide_record_json_sigsegv_repro.roc`; on that vintage,
+`roc check wip/research/wide_record_json_sigsegv_repro.roc` exited 139 with the
+Roc compiler SIGSEGV message, and under LLDB stopped thread 12 with
+`EXC_BAD_ACCESS` at an invalid generated-code address. Filed upstream as
+roc-lang/roc#9964 with the equivalent `test/fx` platform repro.
+
+The 2026-07-08 recheck on nightly-2026-July-07 (`release-fast-050c6975`,
+repro updated to the renamed `Json.ParseErr` idiom) no longer reproduces the
+crash: the 50-field check exits 0 in about one second. roc-lang/roc#9964 is
+still open upstream with no closing commit named, so treat the fix as
+unconfirmed-by-upstream; keep the repro file until the issue closes.
+`Dashboard.roc` with its ten-way split parse still spends ~64 seconds in
+`roc check`, so whether a single wide parse is now both correct and fast is
+an unmeasured follow-up — prefer re-testing the single-parse form (and
+simplifying the app parser if it holds) before considering any platform
+surface.
+
+Until that follow-up lands, the split service parser remains a compiler-era
+workaround. It does not prove that Signals needs JSON helpers, because a
+platform wrapper over the same builtin derivation would inherit any compiler
+failure or hide it behind a less explicit API.
 
 ## Decision
 

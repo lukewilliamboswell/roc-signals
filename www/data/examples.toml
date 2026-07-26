@@ -98,15 +98,26 @@ native = true
 bench = true
 
 [[examples]]
-slug = "json-decode"
-title = "Json Decode"
-description = "Internal builtin Json derivation fixture."
-source = "examples/_fixtures/json-decode/app.roc"
-spec = "examples/_fixtures/json-decode/spec.txt"
-public = false
+slug = "conduit"
+title = "Conduit"
+description = "RealWorld (Conduit) demo: hash-routed feeds, sessions, profiles, markdown articles, comments, favorites, follows, and server-confirmed write paths."
+source = "examples/conduit/app.roc"
+spec = "examples/conduit/spec.txt"
+public = true
 wasm = true
 native = true
 bench = false
+
+[[examples]]
+slug = "json-config-editor"
+title = "JSON Config Editor"
+description = "An interactive deployment-config editor using Roc's builtin Json decoder for nested records, lists, camelCase fields, optional values, and useful parse errors."
+source = "examples/json-config-editor/app.roc"
+spec = "examples/json-config-editor/spec.txt"
+public = true
+wasm = true
+native = true
+bench = true
 
 [[examples]]
 slug = "each-duplicate-key"
@@ -148,6 +159,17 @@ title = "Location Navigation"
 description = "Internal browser location navigation command fixture."
 source = "examples/_fixtures/location-navigation/app.roc"
 spec = "examples/_fixtures/location-navigation/spec.txt"
+public = false
+wasm = true
+native = true
+bench = false
+
+[[examples]]
+slug = "location-canonical-branch"
+title = "Canonical Location Branch"
+description = "Internal same-turn location canonicalization and structural branch fixture."
+source = "examples/_fixtures/location-canonical-branch/app.roc"
+spec = "examples/_fixtures/location-canonical-branch/spec.txt"
 public = false
 wasm = true
 native = true
@@ -269,6 +291,17 @@ title = "Signal Record Builder"
 description = "Internal Signal record-builder composition fixture."
 source = "examples/_fixtures/signal-record-builder/app.roc"
 spec = "examples/_fixtures/signal-record-builder/spec.txt"
+public = false
+wasm = false
+native = true
+bench = false
+
+[[examples]]
+slug = "callable-signal-identity"
+title = "Callable Signal Identity"
+description = "Internal callable-allocation signal identity fixture."
+source = "examples/_fixtures/callable-signal-identity/app.roc"
+spec = "examples/_fixtures/callable-signal-identity/spec.txt"
 public = false
 wasm = false
 native = true

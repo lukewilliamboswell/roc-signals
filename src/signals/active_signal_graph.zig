@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const scope_tree = @import("scope_tree.zig");
+const signal_records = @import("signal_records.zig");
 const signal_graph = @import("signal_graph.zig");
 const boundary = @import("boundary.zig");
 
@@ -104,6 +105,9 @@ pub const StructuralSink = struct {
 pub const DirtyStructuralSignal = struct {
     kind: StructuralKind,
     node_id: u64,
+    scope_id: u64,
+    ordinal: u64,
+    record: *signal_records.Record,
     branch: ?scope_tree.Branch = null,
 };
 
@@ -708,7 +712,7 @@ pub fn retainRecord(
     switch (record.payload) {
         .ref => |source_node_id| appendSourceRoute(allocator, source_routes, source_node_count, source_node_id, record_id),
         .const_value, .task_source, .location_source, .online_source, .visibility_source, .storage_source => {},
-        .interval_source => |payload| hooks.ensureInterval(payload.token, payload.period_ms),
+        .interval_source => |payload| hooks.ensureInterval(record.token().?, payload.period_ms),
         .map => |payload| appendDependentId(Record, allocator, nodes.items, requireRecordId(Record, nodes.items, payload.input), record_id),
         .map2 => |payload| {
             appendDependentId(Record, allocator, nodes.items, requireRecordId(Record, nodes.items, payload.left), record_id);
@@ -751,7 +755,7 @@ pub fn releaseRecord(
     switch (record.payload) {
         .ref => |source_node_id| removeSourceRoute(source_routes, source_node_id, record_id),
         .const_value, .task_source, .location_source, .online_source, .visibility_source, .storage_source => {},
-        .interval_source => |payload| hooks.removeInterval(payload.token),
+        .interval_source => hooks.removeInterval(record.token().?),
         .map, .map2, .combine => {},
     }
 
@@ -1030,7 +1034,6 @@ const LifecycleTestRecord = struct {
     };
 
     const IntervalPayload = struct {
-        token: u64,
         period_ms: u64,
     };
 
@@ -1051,6 +1054,13 @@ const LifecycleTestRecord = struct {
     pub fn retain(self: *LifecycleTestRecord) *LifecycleTestRecord {
         self.ref_count += 1;
         return self;
+    }
+
+    pub fn token(self: *const LifecycleTestRecord) ?u64 {
+        return switch (self.payload) {
+            .ref => null,
+            .const_value, .map, .map2, .combine, .task_source, .interval_source, .location_source, .online_source, .visibility_source, .storage_source => self.id,
+        };
     }
 };
 
@@ -1378,7 +1388,7 @@ test "active graph retain and release update moved record ids and routes" {
 }
 
 test "active graph interval records use explicit lifecycle hooks" {
-    var interval = LifecycleTestRecord{ .id = 0, .payload = .{ .interval_source = .{ .token = 7, .period_ms = 250 } } };
+    var interval = LifecycleTestRecord{ .id = 7, .payload = .{ .interval_source = .{ .period_ms = 250 } } };
 
     var nodes: std.ArrayListUnmanaged(Node(LifecycleTestRecord)) = .empty;
     defer nodes.deinit(std.testing.allocator);

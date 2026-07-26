@@ -41,7 +41,7 @@ reconstructs meaning, holds reactive state, or re-decides patches.
                           ┌──────────────────────────────┐
                           │   Engine (host-agnostic)     │
    App (Roc)              │   node table, scheduler,      │
-   build : {} -> Elem     │   dirty set, is_eq pruning,   │
+   build : () -> Elem     │   dirty set, is_eq pruning,   │
    pure descriptor   ───▶ │   scope forest, keyed diff,   │
    (roc_ui_init, once)    │   structural splice/apply     │
                           └───────────────┬──────────────┘
@@ -191,6 +191,16 @@ and dynamic list structure must therefore share one mechanism, never two.
 There are no author-written node ids or event ids. Identity is assigned by the
 host during graph ingestion; keyed rows use app-provided stable key material.
 
+Signal alias identity is the address of the boxed callable the signal already
+needs for evaluation: initializers identify constants, state, tasks, and
+intervals; transforms identify derived signals; browser sources use their
+`from_payload` transforms. The descriptor ABI currently carries this pointer in
+both an explicit identity field and its evaluator field, and ingestion asserts
+that they match. Cloned signal descriptors therefore share a record, while two
+separately constructed signals get distinct callable allocations even when they
+use the same specialization. Callable addresses are lookup keys only; the host
+still owns separate dense node, active-graph, task-request, interval, and DOM ids.
+
 - Within a scope, node identity is **construction order** (the order the app
   built the nodes). The app build is pure and deterministic, so this order is
   stable across rebuilds of the same scope.
@@ -256,7 +266,7 @@ undefined behavior in the thunk.
 Two rules keep this invariant honest:
 
 1. **The routing is consumed, never reconstructed.** The host builds its
-   `event_id -> source`, edge, and sink tables from explicit tokens in the
+   `event_id -> source`, edge, and sink tables from explicit callable identities in the
    descriptor. It never re-derives which thunk owns which value by guessing from
    structure or bytes.
 2. **Capability ownership assertions.** Every opaque `HostValue` cell carries
@@ -399,7 +409,7 @@ Signal.cleanup : Str -> Cleanup
 Signal.interval : U64 -> Signal(U64)  # period ms -> tick count
 Ui.on_change : Signal(a), (a -> Cmd) -> Elem  # sink: fires a Cmd when value changes
 Ui.on_change_initial : Signal(a), (a -> Cmd) -> Elem  # fires for first mounted value, then changes
-Ui.on_mount : ({} -> Cmd) -> Elem
+Ui.on_mount : (() -> Cmd) -> Elem
 Ui.on_cleanup : Cleanup -> Elem               # runs at scope disposal
 
 # Structure
@@ -513,9 +523,9 @@ Http.response_with_body : Response, List(U8) -> Response
 Browser.Location := { path : Str, query : Str, hash : Str }
 Browser.Visibility := [Visible, Hidden]
 Browser.StorageText := [StorageMissing, StorageValue(Str), StorageUnavailable(Str)]
-Browser.location : Signal(Browser.Location)
-Browser.visibility : Signal(Browser.Visibility)
-Browser.online : Signal(Bool)
+Browser.location : () -> Signal(Browser.Location)
+Browser.visibility : () -> Signal(Browser.Visibility)
+Browser.online : () -> Signal(Bool)
 Browser.local_storage_text : Str -> Signal(Browser.StorageText)
 Browser.session_storage_text : Str -> Signal(Browser.StorageText)
 Browser.push_state : Browser.Location -> Cmd
@@ -536,14 +546,14 @@ State.on_bool : State(a), (a, Bool -> a) -> Msg
 State.on_detail : State(a), (a, Str -> a) -> Msg
 Ui.KeyPayload : { key : Str, shift_key : Bool }
 State.on_key : State(a), (a, Ui.KeyPayload -> a) -> Msg
-Ui.when : Signal(Bool), ({} -> Elem), ({} -> Elem) -> Elem
+Ui.when : Signal(Bool), (() -> Elem), (() -> Elem) -> Elem
 Ui.each_str : Signal(List(item)), (item -> Str), (Str, Signal(item) -> Elem) -> Elem
     where [
         item.is_eq : item, item -> Bool,
     ]
 
 # Components (named scopes for local state)
-Ui.component : ({} -> Elem) -> Elem
+Ui.component : (() -> Elem) -> Elem
 ```
 
 The form helpers above are sugar over the same text/bool fields and event
@@ -757,9 +767,8 @@ edges), and the host assigns dense ids by walking identity-bearing construction
 sites in deterministic pre-order. Each signal edge records its kind and inputs:
 
 ```roc
-# Conceptual signal expression shape. Identity is carried via explicit
-# per-edge tokens rather than dense list indices; the host interns those
-# tokens into shared records at ingestion.
+# Conceptual signal expression shape. Identity is carried by the same boxed
+# initializer/transform allocation already required to evaluate each record.
 SignalExpr := [
     Ref(U64),                                          # bound to a host source node id
     ConstValue({ value : HostValue, eq : EqThunk }),
@@ -795,11 +804,11 @@ is deliberately no per-event Roc entrypoint and no `ui_recompute` round-trip.
 
 ```roc
 # platform/main.roc
-roc_ui_init : {} -> Box(Elem)
+roc_ui_init : () -> Box(Elem)
 ```
 
-- `roc_ui_init` runs `main({})` once and returns the boxed descriptor tree. The
-  host ingests it, mints dense ids, interns signal tokens into shared records,
+- `roc_ui_init` runs `main()` once and returns the boxed descriptor tree. The
+  host ingests it, mints dense ids, resolves callable addresses to shared records,
   builds adjacency and topological ranks, computes initial values by calling the
   retained transform thunks in dependency order, and emits the initial render
   patches.
@@ -868,8 +877,11 @@ closure invocation; the only exported entrypoint is the one-time
 case requiring a generic door back into Roc — the host already holds the pointer
 to the exact builder for that exact construction site.
 
-The platform holds **exactly one refcount** per retained closure on the host's
-behalf; the host drops it via `decrefErasedCallable` when a scope is disposed.
+Each signal record retains only its evaluator closure; its lookup identity is
+derived from that owned callable rather than retained separately. Pending tasks
+and active intervals take an additional callable ref while their lifecycle entry
+can outlive the descriptor or record that supplied the pointer. Every owner drops
+its ref via `decrefErasedCallable` when the record, request, or interval is removed.
 
 ## The Engine: Host-Agnostic Reactive Core
 
@@ -892,9 +904,10 @@ Per node id the host stores:
 - the owning scope id.
 
 Adjacency, ranks, and the dirty set are dense integer-indexed structures. The
-app may provide text key material to `Ui.each_str`, but host graph identity does
-not use string keys, scans to rediscover identity, or `Dict(Str, _)`; identity
-is dense integers throughout.
+callable address is used only to preserve signal aliasing while descriptors are
+ingested; active graph/node/runtime identities remain host-owned dense integers.
+The app may provide text key material to `Ui.each_str`, but graph execution does
+not use string keys, scans to rediscover identity, or `Dict(Str, _)`.
 
 ### Complexity Discipline (the foundation budget)
 
@@ -1147,7 +1160,7 @@ holds no reactive state, runs no diff, and never reconstructs meaning.
 ```
   Roc app (wasm)         Engine (Zig, in wasm)              JS runtime (browser)
   --------------         ---------------------              --------------------
-  main : {} -> Elem      node table (mutable)               nodes[]   : Node[]
+  main : () -> Elem      node table (mutable)               nodes[]   : Node[]
   pure descriptor   ──▶  scheduler / dirty set / scopes ──▶ listeners[]: Fn[]
   (roc_ui_init, once)    reducer + transform thunks         applyCmd(op, args...)
                          keyed each diff, ranks              forward event(id,payload)
@@ -1403,14 +1416,18 @@ denials and network failures, become `HttpError.Network`; runtime timeouts
 become `HttpError.Timeout`; and scope disposal or request replacement becomes
 `HttpError.Canceled`.
 
-Browser location is another host-backed source. `Browser.location` is seeded
+Browser location is another host-backed source. `Browser.location()` is seeded
 from the per-mount startup snapshot before `roc_ui_mount`, and the JS runtime
 installs a mount-scoped `popstate` listener that calls
 `roc_ui_update_location` with normalized `{ path, query, hash }` pieces.
 `Browser.push_state` and `Browser.replace_state` travel through the command
 boundary and call `history.pushState` / `history.replaceState`; the host also
 refreshes active location sources in that propagation turn so rendered route
-state and the browser URL stay aligned.
+state and the browser URL stay aligned. When an `Ui.on_change` emits navigation
+while a dirty batch is rendering, the engine applies scalar and structural
+sinks for that generation before redispatching the updated location source.
+This transaction boundary prevents a canonical redirect from invalidating a
+pending `Ui.when` branch change.
 
 `Browser.set_title` is a separate command, not part of location. Apps derive a
 title from route or domain state and emit it with `Ui.on_change_initial` when
@@ -1419,8 +1436,8 @@ should touch the title. The browser runtime writes `document.title`, and the
 native spec host records the title for assertions.
 
 Browser visibility and online/offline state are the other shipped focused
-browser sources. `Browser.visibility` is seeded from `document.visibilityState`
-and refreshed from `visibilitychange`; `Browser.online` is seeded from
+browser sources. `Browser.visibility()` is seeded from `document.visibilityState`
+and refreshed from `visibilitychange`; `Browser.online()` is seeded from
 `navigator.onLine` and refreshed from `online` / `offline`. Both reuse the same
 host-backed source path as location: mount-scoped ids/generations, shared
 boundary payload bytes, stale-message diagnostics, and listener cleanup on
@@ -1509,7 +1526,7 @@ otherwise-unproven capability,"** never size or visual richness. The maintained
 public suite is:
 
 - `service-ops-center` — HTTP text refresh, interval-driven refresh, JSON
-  parsing through the compiler builtin, Browser.location-backed service routes
+  parsing through the compiler builtin, Browser.location()-backed service routes
   with push/replace navigation and Back/Forward coverage, visibility-aware
   polling, nested JSON service drill-downs, custom chart events, behavior hooks,
   and dashboard-scale derived views.
@@ -1532,14 +1549,23 @@ public suite is:
 - `live-search` — task lifecycle, loading/success/failure folds, interval
   freshness ticks, online/offline task gating, cleanup, cancellation, and
   retained-allocation teardown checks.
+- `json-config-editor` — interactive builtin `Json` decoding for camelCase
+  fields, nested records, lists, optional values, and actionable parse errors.
+
+- `conduit` — the RealWorld spec app and platform evidence instrument
+  (`wip/REALWORLD_DEMO_PLAN.md`): app-code hash routing across nine route
+  shapes with per-route titles, deep links, Back/Forward coverage, feeds,
+  sessions, profiles, markdown articles, comments, favorites, follows, and
+  server-confirmed write paths.
 
 Focused internal fixtures carry narrow canaries that should not become broad
-catalog pressure: JSON builtin derivation, duplicate-key diagnostics, task
+catalog pressure: duplicate-key diagnostics, task
 superseding and UTF-8 task ownership, browser environment commands/sources,
 initial-aware signal-change commands, markdown-to-`Elem` structure and link
 safety, controlled input reconciliation, textarea, number, select, radio,
 checkbox, submit/reset default actions, optional text attrs, validation
-patterns, and generated large-`Ui.each_str` scaling.
+patterns, callable-allocation signal identity, and generated large-`Ui.each_str`
+scaling.
 
 Host tests cover topological rank ordering, diamond deduplication, confined
 erasure through carrier tags, retained closure lifecycle accounting, dirty cache

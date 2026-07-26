@@ -98,6 +98,7 @@ pub fn build(b: *std.Build) void {
     const browser_tests = b.addSystemCommand(&.{
         "node",
         "--test",
+        "scripts/browser/conduit_backend.test.mjs",
         "scripts/browser/http_task_router.test.mjs",
         "scripts/browser/runtime_contract.test.mjs",
         "scripts/browser/service_ops_charts.test.mjs",

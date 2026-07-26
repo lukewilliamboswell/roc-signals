@@ -225,8 +225,8 @@ pub fn Cache(comptime Ctx: type) type {
         fn ensureCacheNode(self: *Self, ctx: Ctx.Handle, elem_id: u64, tag: []const u8) bool {
             const allocator = Ctx.allocator(ctx);
             const index: usize = @intCast(elem_id);
-            if (index > self.nodes.items.len) {
-                @panic("render cache node ids must be dense and ordered by elem id");
+            while (index > self.nodes.items.len) {
+                self.nodes.append(allocator, .{}) catch @panic("out of memory");
             }
             if (index == self.nodes.items.len) {
                 self.nodes.append(allocator, ScalarNode.initActive(allocator, tag)) catch @panic("out of memory");
@@ -282,9 +282,21 @@ pub fn Cache(comptime Ctx: type) type {
                     }
                 }
             }
-            self.nodes.items[index].deinit(allocator);
             Ctx.sink(ctx).removeNode(elem_id);
+            self.deactivateSubtree(allocator, elem_id);
             counts.addRemoveNode();
+        }
+
+        fn deactivateSubtree(self: *Self, allocator: std.mem.Allocator, elem_id: u64) void {
+            const index: usize = @intCast(elem_id);
+            if (index >= self.nodes.items.len or !self.nodes.items[index].active) return;
+
+            const child_ids = allocator.dupe(u64, self.nodes.items[index].children.items) catch @panic("out of memory");
+            defer allocator.free(child_ids);
+            for (child_ids) |child_id| {
+                self.deactivateSubtree(allocator, child_id);
+            }
+            self.nodes.items[index].deinit(allocator);
         }
 
         pub fn activeNode(self: *Self, elem_id: u64) *ScalarNode {
@@ -610,6 +622,22 @@ test "applying unchanged text field emits no duplicate command" {
     try std.testing.expect(cache.applyTextField(&host, 1, .text, "hello"));
     try std.testing.expect(!cache.applyTextField(&host, 1, .text, "hello"));
     try std.testing.expectEqual(@as(u64, 1), host.apply_text_field_count);
+}
+
+test "render cache reset accepts sparse element ids" {
+    var host = TestHost{};
+    var cache: Cache(TestCtx) = .{};
+    defer cache.deinit(&host);
+
+    cache.reset(&host);
+    var counts: render.Counts = .{};
+    cache.ensureNode(&host, 3, "div", &counts);
+
+    try std.testing.expectEqual(@as(usize, 4), cache.nodes.items.len);
+    try std.testing.expect(!cache.nodes.items[1].active);
+    try std.testing.expect(!cache.nodes.items[2].active);
+    try std.testing.expect(cache.nodes.items[3].active);
+    try std.testing.expectEqual(@as(u64, 1), counts.create_element);
 }
 
 test "removed cache slot can be recreated with a different tag" {

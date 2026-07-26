@@ -1,0 +1,9 @@
+set_initial_location "/services/workers"
+expect_current_location "/services/workers"
+expect_visible text:"Detail branch"
+
+navigate "/services/missing"
+expect_current_location "/"
+expect_visible text:"Path: /"
+expect_visible text:"Overview branch"
+expect_absent text:"Detail branch"

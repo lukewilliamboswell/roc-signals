@@ -18,11 +18,8 @@ initial_state = {
 	blur_count: 0,
 }
 
-concat3 : Str, Str, Str -> Str
-concat3 = |a, b, c| Str.concat(Str.concat(a, b), c)
-
 canonical : Str -> Str
-canonical = |value| Str.concat("saved:", value)
+canonical = |value| "saved:${value}"
 
 record_body : State, Str -> State
 record_body = |state, value| { ..state, body: canonical(value) }
@@ -34,21 +31,21 @@ record_blur : State -> State
 record_blur = |state| { ..state, blur_count: state.blur_count + 1 }
 
 label_i64 : Str, I64 -> Str
-label_i64 = |name, value| concat3(name, ": ", value.to_str())
+label_i64 = |name, value| "${name}: ${value.to_str()}"
 
 body_label : Str -> Str
-body_label = |value| Str.concat("Canonical body: ", value)
+body_label = |value| "Canonical body: ${value}"
 
-main : {} -> Elem
-main = |_| {
+main : () -> Elem
+main = || {
 	Ui.state(
 		initial_state,
 		|model| {
 			state_signal = model.signal()
-			body_signal = Signal.map(state_signal, |state| state.body)
-			body_text = Signal.map(body_signal, body_label)
-			focus_text = Signal.map(state_signal, |state| label_i64("Focus events", state.focus_count))
-			blur_text = Signal.map(state_signal, |state| label_i64("Blur events", state.blur_count))
+			body_signal = state_signal.map(|state| state.body)
+			body_text = body_signal.map(body_label)
+			focus_text = state_signal.map(|state| label_i64("Focus events", state.focus_count))
+			blur_text = state_signal.map(|state| label_i64("Blur events", state.blur_count))
 
 			Html.section(
 				"Textarea Control",

@@ -20,9 +20,6 @@ initial_state = {
 	errors: 0,
 }
 
-concat3 : Str, Str, Str -> Str
-concat3 = |a, b, c| Str.concat(Str.concat(a, b), c)
-
 set_draft : State, Str -> State
 set_draft = |state, value| { ..state, draft: value }
 
@@ -35,25 +32,25 @@ commit_draft = |state| {
 }
 
 draft_label : Str -> Str
-draft_label = |value| Str.concat("Draft seats: ", value)
+draft_label = |value| "Draft seats: ${value}"
 
 committed_label : U64 -> Str
-committed_label = |value| Str.concat("Committed seats: ", value.to_str())
+committed_label = |value| "Committed seats: ${value.to_str()}"
 
 counter_label : Str, I64 -> Str
-counter_label = |name, value| concat3(name, ": ", value.to_str())
+counter_label = |name, value| "${name}: ${value.to_str()}"
 
-main : {} -> Elem
-main = |_| {
+main : () -> Elem
+main = || {
 	Ui.state(
 		initial_state,
 		|model| {
 			state_signal = model.signal()
-			draft_signal = Signal.map(state_signal, |state| state.draft)
-			draft_text = Signal.map(draft_signal, draft_label)
-			committed_text = Signal.map(state_signal, |state| committed_label(state.committed))
-			commits_text = Signal.map(state_signal, |state| counter_label("Commits", state.commits))
-			errors_text = Signal.map(state_signal, |state| counter_label("Commit errors", state.errors))
+			draft_signal = state_signal.map(|state| state.draft)
+			draft_text = draft_signal.map(draft_label)
+			committed_text = state_signal.map(|state| committed_label(state.committed))
+			commits_text = state_signal.map(|state| counter_label("Commits", state.commits))
+			errors_text = state_signal.map(|state| counter_label("Commit errors", state.errors))
 
 			Html.section(
 				"Number Input Control",

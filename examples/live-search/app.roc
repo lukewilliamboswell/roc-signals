@@ -6,9 +6,6 @@ import pf.Html
 import pf.Signal
 import pf.Ui
 
-concat3 : Str, Str, Str -> Str
-concat3 = |a, b, c| Str.concat(Str.concat(a, b), c)
-
 page_class = "grid gap-5"
 
 hero_class = "panel grid gap-2 p-5"
@@ -17,8 +14,26 @@ panel_class = "panel grid gap-4 p-4"
 
 input_class = "w-full max-w-md rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm"
 
-TaskView := [Loading, Done(Str), Failed(Str)]
+TaskView := [Loading, Done(Str), Failed(Str)].{
+	is_eq : TaskView, TaskView -> Bool
+	is_eq = |left, right|
+		match left {
+			Loading => match right {
+				Loading => True
+				_ => False
+			}
+			Done(left_value) => match right {
+				Done(right_value) => left_value == right_value
+				_ => False
+			}
+			Failed(left_error) => match right {
+				Failed(right_error) => left_error == right_error
+				_ => False
+			}
+		}
+}
 
+status_text : TaskView -> Str
 status_text = |status|
 	match status {
 		Loading => "Search status: loading"
@@ -26,27 +41,31 @@ status_text = |status|
 		Failed(_) => "Search status: failed"
 	}
 
+is_done : TaskView -> Bool
 is_done = |status|
 	match status {
 		Done(_) => True
 		_ => False
 	}
 
+is_failed : TaskView -> Bool
 is_failed = |status|
 	match status {
 		Failed(_) => True
 		_ => False
 	}
 
+done_text : TaskView -> Str
 done_text = |status|
 	match status {
-		Done(value) => concat3("Results: ", value, "")
+		Done(value) => "Results: ${value}"
 		_ => "Waiting for search results"
 	}
 
+failed_text : TaskView -> Str
 failed_text = |status|
 	match status {
-		Failed(err) => concat3("Search error: ", err, "")
+		Failed(err) => "Search error: ${err}"
 		_ => "No search error"
 	}
 
@@ -59,19 +78,19 @@ online_text = |online|
 	}
 
 toggle_label : Bool -> Str
-toggle_label = |shown| {
+toggle_label = |shown|
 	if shown {
 		"Close results"
 	} else {
 		"Open results"
 	}
-}
 
+panel : Ui.State(Str), _ -> Elem
 panel = |query, task| {
 	ticks = Signal.interval(1000)
-	online = Browser.online
-	tick_text = Signal.map(ticks, |n| concat3("Freshness check: ", n.to_str(), ""))
-	network_text = Signal.map(online, online_text)
+	online = Browser.online()
+	tick_text = ticks.map(|n| "Freshness check: ${n.to_str()}")
+	network_text = online.map(online_text)
 	search_request = { query: query.signal(), online: online }.Signal
 	status =
 		Signal.fold_task(
@@ -87,9 +106,9 @@ panel = |query, task| {
 		[
 			Html.text_input_c("Search", query.signal(), input_class, query.on_str(|_, value| value)),
 			Html.paragraph_s_c(network_text, "text-sm font-medium text-zinc-900"),
-			Html.paragraph_s_c(Signal.map(status, status_text), "text-sm font-medium text-zinc-900"),
-			Html.paragraph_s_c(Signal.map(status, done_text), "text-sm text-zinc-700"),
-			Html.paragraph_s_c(Signal.map(status, failed_text), "text-sm text-red-950"),
+			Html.paragraph_s_c(status.map(status_text), "text-sm font-medium text-zinc-900"),
+			Html.paragraph_s_c(status.map(done_text), "text-sm text-zinc-700"),
+			Html.paragraph_s_c(status.map(failed_text), "text-sm text-red-950"),
 			Html.paragraph_s_c(tick_text, "text-sm text-zinc-600"),
 			Ui.on_change(
 				search_request,
@@ -105,8 +124,8 @@ panel = |query, task| {
 	)
 }
 
-main : {} -> Elem
-main = |_| {
+main : () -> Elem
+main = || {
 	Ui.state(
 		True,
 		|show_panel| {
@@ -114,7 +133,7 @@ main = |_| {
 				"",
 				|query| {
 					task = Signal.fake_task("lookup", |value| value, |err| err)
-					toggle_text = Signal.map(show_panel.signal(), toggle_label)
+					toggle_text = show_panel.signal().map(toggle_label)
 
 					Html.div_c(
 						page_class,
@@ -130,8 +149,8 @@ main = |_| {
 							Html.button_s_c(toggle_text, "button-primary justify-self-start", show_panel.on_unit(|value| !value)),
 							Ui.when(
 								show_panel.signal(),
-								|_| panel(query, task),
-								|_| Html.section_c("Search panel closed", panel_class, [Html.paragraph("Closed")]),
+								|| panel(query, task),
+								|| Html.section_c("Search panel closed", panel_class, [Html.paragraph("Closed")]),
 							),
 						],
 					)

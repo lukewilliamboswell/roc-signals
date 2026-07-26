@@ -21,7 +21,7 @@ only the parts of the interface that changed.
 
 Think of a Signals app as a retained reactive graph:
 
-1. Roc runs `main({})` once and returns an `Elem` descriptor tree.
+1. Roc runs `main()` once and returns an `Elem` descriptor tree.
 2. That tree contains markup, signal dependencies, event reducers, dynamic-list
    renderers, conditional branches, and effect descriptors.
 3. The host builds a graph from the descriptor and renders the initial DOM.
@@ -46,8 +46,8 @@ import pf.Html
 import pf.Signal
 import pf.Ui
 
-main : {} -> Elem
-main = |_|
+main : () -> Elem
+main = ||
     Html.section_c(
         "Hello",
         "grid gap-3 rounded border border-zinc-200 p-4",
@@ -97,8 +97,8 @@ Use `Ui.state` for state owned by a piece of UI. The state handle gives you:
   event reducers.
 
 ```roc
-main : {} -> Elem
-main = |_|
+main : () -> Elem
+main = ||
     Ui.state(
         "",
         |name| {
@@ -447,8 +447,8 @@ Use `Ui.when` when a region appears/disappears or switches between two subtrees:
 ```roc
 Ui.when(
     is_delivery_step,
-    |_| delivery_panel,
-    |_| review_panel,
+    || delivery_panel,
+    || review_panel,
 )
 ```
 
@@ -528,22 +528,21 @@ a reusable/stateful piece of UI its own local identity scope:
 counter_component : Str -> Elem
 counter_component = |label|
     Ui.component(
-        |_|
-            Ui.state(
-                0,
-                |count| {
-                    count_label = Signal.map(count.signal(), |n| "${label}: ${n.to_str()}")
+        || Ui.state(
+            0,
+            |count| {
+                count_label = Signal.map(count.signal(), |n| "${label}: ${n.to_str()}")
 
-                    Html.section(
-                        label,
-                        [],
-                        [
-                            Html.button("Increment ${label}", count.on_unit(|n| n + 1)),
-                            Html.text_s(count_label),
-                        ],
-                    )
-                },
-            ),
+                Html.section(
+                    label,
+                    [],
+                    [
+                        Html.button("Increment ${label}", count.on_unit(|n| n + 1)),
+                        Html.text_s(count_label),
+                    ],
+                )
+            },
+        ),
     )
 ```
 
@@ -588,11 +587,11 @@ The current app-facing effect helpers are intentionally small:
 | HTTP request builders/accessors | `Http.method_*`, `Http.request_from_method`, `Http.with_*`, `Http.add_header`, `Http.request_*` |
 | HTTP response/error helpers | `Http.response_*`, `Http.response_status`, `Http.response_headers`, `Http.response_body`, `Http.error_text` |
 | Timer source | `Signal.interval(period_ms)` |
-| Current browser location | `Browser.location` |
+| Current browser location | `Browser.location()` |
 | Browser navigation commands | `Browser.push_state`, `Browser.replace_state` |
 | Browser document title command | `Browser.set_title` |
-| Page visibility source | `Browser.visibility` |
-| Browser online status | `Browser.online` |
+| Page visibility source | `Browser.visibility()` |
+| Browser online status | `Browser.online()` |
 | Browser storage reads | `Browser.local_storage_text`, `Browser.session_storage_text` |
 | Browser storage writes/removals | `Browser.set_local_storage_text`, `Browser.set_session_storage_text`, `Browser.remove_local_storage`, `Browser.remove_session_storage` |
 | Fire a command when a signal changes | `Ui.on_change(signal, to_cmd)` |
@@ -624,19 +623,19 @@ scope disposal or replacement of an in-flight task reports `Http.Canceled`.
 For example, `examples/service-ops-center/app.roc` creates a browser HTTP text task,
 starts it on mount, starts it again on interval ticks, and folds the task status
 into dashboard state, including nested service-detail JSON used by its routed
-drill-down view. It also derives route state from `Browser.location`, intercepts
+drill-down view. It also derives route state from `Browser.location()`, intercepts
 navigation links with the static `prevent_default` event policy, and emits
 `Browser.push_state` / `Browser.replace_state` commands through `Ui.on_change`.
 It derives document titles from the active route and emits `Browser.set_title`
 through `Ui.on_change_initial` so deep links set the first browser title. The
-same app uses `Browser.visibility` to pause polling while the tab is hidden.
-`examples/live-search/app.roc` uses `Browser.online` to suppress task starts
+same app uses `Browser.visibility()` to pause polling while the tab is hidden.
+`examples/live-search/app.roc` uses `Browser.online()` to suppress task starts
 while offline and replay the current query when the browser returns online.
 `examples/team-checkout/app.roc` declares localStorage text keys at mount, folds
 `Browser.StorageText` into draft state, writes edits through storage commands,
 and removes all draft keys when the user clears the saved order.
 
-`Browser.location` is deliberately raw: `path` includes its leading `/`, while
+`Browser.location()` is deliberately raw: `path` includes its leading `/`, while
 `query` and `hash` omit `?` and `#`. Route parsing, key namespacing, storage
 serialization, and domain validation stay in app/package code. Storage reads
 return `Browser.StorageText`: `StorageMissing`, `StorageValue(text)`, or
@@ -649,8 +648,8 @@ A simplified pattern looks like this:
 ```roc
 import pf.Http
 
-main : {} -> Elem
-main = |_| {
+main : () -> Elem
+main = || {
     task = Http.get_text_task("dashboard")
     status = Signal.fold_task(task, Loading, |body| Ready(body), |err| RequestFailed(err))
     ticks = Signal.interval(2000)
@@ -659,7 +658,7 @@ main = |_| {
         "grid gap-3",
         [
             Html.text_s(Signal.map(status, status_to_text)),
-            Ui.on_mount(|_| Http.get_text(task, "/api/ops/dashboard")),
+            Ui.on_mount(|| Http.get_text(task, "/api/ops/dashboard")),
             Ui.on_change(ticks, |_| Http.get_text(task, "/api/ops/dashboard")),
         ],
     )

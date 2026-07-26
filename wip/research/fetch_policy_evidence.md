@@ -31,6 +31,31 @@ scripts/browser/runtime_contract.test.mjs` passed 7/7. The focused runtime
 coverage includes the guard that browser `fetch` receives only `body`,
 `headers`, `method`, and `signal`.
 
+Refresh check: 2026-07-08, conduit Phase 0 cross-origin canary. Previously
+every consumer was same-origin and cross-origin was the one unproven path.
+A real-browser canary (headless Chrome 144, page served from
+`http://localhost` importing the shipped `signals.mjs`, requests issued
+through `httpFetchTaskHandler` with an `Authorization: Token ...` header,
+`timeoutMs` 8000) observed:
+
+- Cross-origin HTTPS GET to a CORS-enabled endpoint
+  (`https://httpbin.org/headers`): the Authorization header makes the
+  request non-simple, so the browser preflights; the preflight passed under
+  browser defaults, the response materialized as status 200 through the
+  normal envelope, and the echoed request headers confirm
+  `Authorization: Token canary-jwt-not-a-secret` was transmitted on the
+  actual GET. Header-based auth works cross-origin with zero policy knobs.
+- Cross-origin HTTPS GET to an endpoint with no CORS headers
+  (`https://example.com/`): the blocked fetch surfaced as
+  `roc-http-error-v1` / `network` / "Failed to fetch" — the documented
+  `Http.Network` classification, renderable by the app, no hang and no
+  silent console-only failure.
+
+Boundary of this canary: it proves preflighted header-authenticated GETs
+and CORS-denial error surfacing. It does not exercise cookie-credentialed
+cross-origin requests (still a reopen trigger) or a full RealWorld backend
+pass (that manual pass is conduit MoE-2, planned for its Phase 5).
+
 ## Current Surface
 
 `platform/Http.roc` wraps the pinned `roc-lang/http` request and response

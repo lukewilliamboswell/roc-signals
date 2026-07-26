@@ -5,6 +5,17 @@ import { mountSignalsApp } from "./signals.mjs";
 let uploadedRuntime = null;
 let uploadedObjectUrl = null;
 
+function setupExamplePage() {
+  const page = document.querySelector("[data-example-page]");
+  if (!page) return;
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      window.location.assign(page.dataset.examplesUrl || "../");
+    }
+  });
+}
+
 async function mountInto(root, wasmUrl, title, errorTarget = null) {
   root.replaceChildren();
   if (errorTarget) {
@@ -145,5 +156,6 @@ function setupUpload() {
   });
 }
 
+setupExamplePage();
 setupExampleMounts();
 setupUpload();

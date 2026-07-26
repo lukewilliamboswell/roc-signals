@@ -39,20 +39,26 @@ pub const RocStrView = struct {
 };
 
 pub const SignalToken = struct {
-    ptr: retained.HostSignalToken,
+    callable: retained.HostSignalToken,
 
-    pub fn fromAbi(ptr: retained.HostSignalToken) SignalToken {
-        return .{ .ptr = ptr };
+    pub fn fromAbi(callable: abi.RocErasedCallable) SignalToken {
+        return .{ .callable = retained.hostSignalTokenFromCallable(callable) };
     }
 };
 
 pub const StateBinderToken = struct {
-    ptr: *u64,
+    callable: retained.HostSignalToken,
 
-    pub fn fromAbi(ptr: *u64) StateBinderToken {
-        return .{ .ptr = ptr };
+    pub fn fromAbi(callable: abi.RocErasedCallable) StateBinderToken {
+        return .{ .callable = retained.hostSignalTokenFromCallable(callable) };
     }
 };
+
+fn validateIdentityCallable(token: SignalToken, evaluator: abi.RocErasedCallable) void {
+    if (token.callable != retained.hostSignalTokenFromCallable(evaluator)) {
+        @panic("signal identity callable did not match its evaluator");
+    }
+}
 
 pub const SignalRef = struct {
     binder: StateBinderToken,
@@ -155,16 +161,20 @@ pub const SignalExpr = union(enum) {
             } },
             .ConstValue => blk: {
                 const payload = expr.payload_const_value();
+                const token = SignalToken.fromAbi(payload._0);
+                validateIdentityCallable(token, payload._1);
                 break :blk .{ .const_value = .{
-                    .token = SignalToken.fromAbi(payload._0),
+                    .token = token,
                     .init = payload._1,
                     .capability = payload._2,
                 } };
             },
             .Map => blk: {
                 const payload = expr.payload_map();
+                const token = SignalToken.fromAbi(payload._0);
+                validateIdentityCallable(token, payload._2);
                 break :blk .{ .map = .{
-                    .token = SignalToken.fromAbi(payload._0),
+                    .token = token,
                     .input = payload._1,
                     .transform = payload._2,
                     .capability = payload._3,
@@ -172,8 +182,10 @@ pub const SignalExpr = union(enum) {
             },
             .Map2 => blk: {
                 const payload = expr.payload_map2();
+                const token = SignalToken.fromAbi(payload._0);
+                validateIdentityCallable(token, payload._3);
                 break :blk .{ .map2 = .{
-                    .token = SignalToken.fromAbi(payload._0),
+                    .token = token,
                     .left = payload._1,
                     .right = payload._2,
                     .transform = payload._3,
@@ -182,8 +194,10 @@ pub const SignalExpr = union(enum) {
             },
             .Combine => blk: {
                 const payload = expr.payload_combine();
+                const token = SignalToken.fromAbi(payload._0);
+                validateIdentityCallable(token, payload._2);
                 break :blk .{ .combine = .{
-                    .token = SignalToken.fromAbi(payload._0),
+                    .token = token,
                     .children = payload._1.items(),
                     .transform = payload._2,
                     .capability = payload._3,
@@ -191,8 +205,10 @@ pub const SignalExpr = union(enum) {
             },
             .TaskSource => blk: {
                 const payload = expr.payload_task_source();
+                const token = SignalToken.fromAbi(payload.token);
+                validateIdentityCallable(token, payload.initial);
                 break :blk .{ .task_source = .{
-                    .token = SignalToken.fromAbi(payload.token),
+                    .token = token,
                     .name = RocStrView.fromAbi(payload.name),
                     .payload_capability = payload.payload_cap,
                     .initial = payload.initial,
@@ -204,8 +220,10 @@ pub const SignalExpr = union(enum) {
             },
             .IntervalSource => blk: {
                 const payload = expr.payload_interval_source();
+                const token = SignalToken.fromAbi(payload.token);
+                validateIdentityCallable(token, payload.initial);
                 break :blk .{ .interval_source = .{
-                    .token = SignalToken.fromAbi(payload.token),
+                    .token = token,
                     .period_ms = payload.period_ms,
                     .initial = payload.initial,
                     .tick = payload.tick,
@@ -214,8 +232,10 @@ pub const SignalExpr = union(enum) {
             },
             .LocationSource => blk: {
                 const payload = expr.payload_location_source();
+                const token = SignalToken.fromAbi(payload._0);
+                validateIdentityCallable(token, payload._1);
                 break :blk .{ .location_source = .{
-                    .token = SignalToken.fromAbi(payload._0),
+                    .token = token,
                     .from_payload = payload._1,
                     .capability = payload._2,
                     .payload_capability = payload._3,
@@ -223,8 +243,10 @@ pub const SignalExpr = union(enum) {
             },
             .VisibilitySource => blk: {
                 const payload = expr.payload_visibility_source();
+                const token = SignalToken.fromAbi(payload._0);
+                validateIdentityCallable(token, payload._1);
                 break :blk .{ .visibility_source = .{
-                    .token = SignalToken.fromAbi(payload._0),
+                    .token = token,
                     .from_payload = payload._1,
                     .capability = payload._2,
                     .payload_capability = payload._3,
@@ -232,8 +254,10 @@ pub const SignalExpr = union(enum) {
             },
             .OnlineSource => blk: {
                 const payload = expr.payload_online_source();
+                const token = SignalToken.fromAbi(payload._0);
+                validateIdentityCallable(token, payload._1);
                 break :blk .{ .online_source = .{
-                    .token = SignalToken.fromAbi(payload._0),
+                    .token = token,
                     .from_payload = payload._1,
                     .capability = payload._2,
                     .payload_capability = payload._3,
@@ -241,14 +265,16 @@ pub const SignalExpr = union(enum) {
             },
             .StorageSource => blk: {
                 const payload = expr.payload_storage_source();
-                const area = boundary.StorageArea.fromId(payload.area) orelse @panic("StorageSource referenced an unknown storage area");
+                const area = boundary.StorageArea.fromId(payload._1) orelse @panic("StorageSource referenced an unknown storage area");
+                const token = SignalToken.fromAbi(payload._0);
+                validateIdentityCallable(token, payload._3);
                 break :blk .{ .storage_source = .{
-                    .token = SignalToken.fromAbi(payload.token),
+                    .token = token,
                     .area = area,
-                    .key = RocStrView.fromAbi(payload.key),
-                    .from_payload = payload.from_payload,
-                    .capability = payload.cap,
-                    .payload_capability = payload.payload_cap,
+                    .key = RocStrView.fromAbi(payload._2),
+                    .from_payload = payload._3,
+                    .capability = payload._4,
+                    .payload_capability = payload._5,
                 } };
             },
         };
@@ -321,7 +347,7 @@ pub const EventMessage = struct {
     payload_descriptor: BoundaryPayloadDescriptor,
     payload_reducer: HostEventReducer,
 
-    pub fn fromAbi(msg: abi.__AnonStruct70) EventMessage {
+    pub fn fromAbi(msg: anytype) EventMessage {
         return .{
             .binder = StateBinderToken.fromAbi(msg.binder),
             .payload_descriptor = boundary.boundaryPayloadDescriptorFromExtractionBytes(msg.event_extraction_plan.bytes.items()),
@@ -343,7 +369,7 @@ pub const NamedEventAttr = struct {
     msg: EventMessage,
 };
 
-pub fn eventPolicyFromAbi(policy: abi.NodeEventPolicy) EventPolicy {
+pub fn eventPolicyFromAbi(policy: abi.NodeEventBindingPolicy) EventPolicy {
     return .{
         .prevent_default = policy.prevent_default,
         .stop_propagation = policy.stop_propagation,
@@ -555,8 +581,12 @@ pub const Elem = union(enum) {
             },
             .State => blk: {
                 const payload = elem.payload_state();
+                const binder = StateBinderToken.fromAbi(payload.binder);
+                if (binder.callable != retained.hostSignalTokenFromCallable(payload.initial)) {
+                    @panic("state binder identity callable did not match its initializer");
+                }
                 break :blk .{ .state = .{
-                    .binder = StateBinderToken.fromAbi(payload.binder),
+                    .binder = binder,
                     .initial = payload.initial,
                     .capability = payload.cap,
                     .child = payload.child,
@@ -607,6 +637,10 @@ fn enumFromAbi(comptime T: type, value: u64, comptime message: []const u8) T {
     @panic(message);
 }
 
+fn testCallableToken(address: usize) retained.HostSignalToken {
+    return @ptrFromInt(address);
+}
+
 test "signal token wrappers keep binder and signal tokens distinct" {
     comptime {
         if (SignalToken == StateBinderToken) {
@@ -625,30 +659,30 @@ fn makeSmallRocStrView() RocStrView {
 }
 
 test "SignalExpr.fromAbi decodes ref and const value expressions" {
-    var binder_token: u64 = 1;
+    const binder_token = testCallableToken(0x1000);
     const ref_expr = abi.NodeSignalExpr{
-        .payload = .{ .ref = &binder_token },
+        .payload = .{ .ref = binder_token },
         .tag = .Ref,
     };
     switch (SignalExpr.fromAbi(ref_expr)) {
-        .ref => |payload| try std.testing.expectEqual(&binder_token, payload.binder.ptr),
+        .ref => |payload| try std.testing.expectEqual(binder_token, payload.binder.callable),
         else => return error.TestUnexpectedResult,
     }
 
-    var signal_token: u64 = 2;
+    const signal_token = testCallableToken(0x2000);
     const capability = std.mem.zeroes(HostValueCapability);
     const const_expr = abi.NodeSignalExpr{
         .payload = .{ .const_value = .{
-            ._0 = &signal_token,
-            ._1 = null,
+            ._0 = signal_token,
+            ._1 = signal_token,
             ._2 = capability,
         } },
         .tag = .ConstValue,
     };
     switch (SignalExpr.fromAbi(const_expr)) {
         .const_value => |payload| {
-            try std.testing.expectEqual(&signal_token, payload.token.ptr);
-            try std.testing.expectEqual(@as(abi.RocErasedCallable, null), payload.init);
+            try std.testing.expectEqual(signal_token, payload.token.callable);
+            try std.testing.expectEqual(@as(abi.RocErasedCallable, signal_token), payload.init);
             try std.testing.expectEqual(capability, payload.capability);
         },
         else => return error.TestUnexpectedResult,
@@ -656,51 +690,51 @@ test "SignalExpr.fromAbi decodes ref and const value expressions" {
 }
 
 test "SignalExpr.fromAbi decodes map, map2, and combine expressions" {
-    var input_token: u64 = 3;
+    const input_token = testCallableToken(0x3000);
     var input = abi.NodeSignalExpr{
-        .payload = .{ .ref = &input_token },
+        .payload = .{ .ref = input_token },
         .tag = .Ref,
     };
-    var right_token: u64 = 4;
+    const right_token = testCallableToken(0x4000);
     var right = abi.NodeSignalExpr{
-        .payload = .{ .ref = &right_token },
+        .payload = .{ .ref = right_token },
         .tag = .Ref,
     };
     const capability = std.mem.zeroes(HostValueCapability);
 
-    var map_token: u64 = 5;
+    const map_token = testCallableToken(0x5000);
     const map_expr = abi.NodeSignalExpr{
         .payload = .{ .map = .{
-            ._0 = &map_token,
+            ._0 = map_token,
             ._1 = &input,
-            ._2 = null,
+            ._2 = map_token,
             ._3 = capability,
         } },
         .tag = .Map,
     };
     switch (SignalExpr.fromAbi(map_expr)) {
         .map => |payload| {
-            try std.testing.expectEqual(&map_token, payload.token.ptr);
+            try std.testing.expectEqual(map_token, payload.token.callable);
             try std.testing.expectEqual(&input, payload.input);
             try std.testing.expectEqual(capability, payload.capability);
         },
         else => return error.TestUnexpectedResult,
     }
 
-    var map2_token: u64 = 6;
+    const map2_token = testCallableToken(0x6000);
     const map2_expr = abi.NodeSignalExpr{
         .payload = .{ .map2 = .{
-            ._0 = &map2_token,
+            ._0 = map2_token,
             ._1 = &input,
             ._2 = &right,
-            ._3 = null,
+            ._3 = map2_token,
             ._4 = capability,
         } },
         .tag = .Map2,
     };
     switch (SignalExpr.fromAbi(map2_expr)) {
         .map2 => |payload| {
-            try std.testing.expectEqual(&map2_token, payload.token.ptr);
+            try std.testing.expectEqual(map2_token, payload.token.callable);
             try std.testing.expectEqual(&input, payload.left);
             try std.testing.expectEqual(&right, payload.right);
             try std.testing.expectEqual(capability, payload.capability);
@@ -708,20 +742,20 @@ test "SignalExpr.fromAbi decodes map, map2, and combine expressions" {
         else => return error.TestUnexpectedResult,
     }
 
-    var combine_token: u64 = 7;
+    const combine_token = testCallableToken(0x7000);
     var children = [_]abi.NodeSignalExpr{ input, right };
     const combine_expr = abi.NodeSignalExpr{
         .payload = .{ .combine = .{
-            ._0 = &combine_token,
+            ._0 = combine_token,
             ._1 = borrowedSignalExprList(children[0..]),
-            ._2 = null,
+            ._2 = combine_token,
             ._3 = capability,
         } },
         .tag = .Combine,
     };
     switch (SignalExpr.fromAbi(combine_expr)) {
         .combine => |payload| {
-            try std.testing.expectEqual(&combine_token, payload.token.ptr);
+            try std.testing.expectEqual(combine_token, payload.token.callable);
             try std.testing.expectEqual(@as(usize, 2), payload.children.len);
             try std.testing.expectEqual(abi.NodeSignalExprTag.Ref, payload.children[0].tag);
             try std.testing.expectEqual(abi.NodeSignalExprTag.Ref, payload.children[1].tag);
@@ -734,13 +768,13 @@ test "SignalExpr.fromAbi decodes map, map2, and combine expressions" {
 test "SignalExpr.fromAbi decodes effect source expressions" {
     const capability = std.mem.zeroes(HostValueCapability);
 
-    var task_token: u64 = 8;
+    const task_token = testCallableToken(0x8000);
     const task_expr = abi.NodeSignalExpr{
         .payload = .{ .task_source = .{
-            .token = &task_token,
+            .token = task_token,
             .name = borrowedRocStr("load-user"),
             .payload_cap = capability,
-            .initial = null,
+            .initial = task_token,
             .done = null,
             .failed = null,
             .cap = capability,
@@ -750,7 +784,7 @@ test "SignalExpr.fromAbi decodes effect source expressions" {
     };
     switch (SignalExpr.fromAbi(task_expr)) {
         .task_source => |payload| {
-            try std.testing.expectEqual(&task_token, payload.token.ptr);
+            try std.testing.expectEqual(task_token, payload.token.callable);
             try std.testing.expectEqualStrings("load-user", payload.name.asSlice());
             try std.testing.expect(payload.reset_on_start);
             try std.testing.expectEqual(capability, payload.payload_capability);
@@ -759,12 +793,12 @@ test "SignalExpr.fromAbi decodes effect source expressions" {
         else => return error.TestUnexpectedResult,
     }
 
-    var interval_token: u64 = 9;
+    const interval_token = testCallableToken(0x9000);
     const interval_expr = abi.NodeSignalExpr{
         .payload = .{ .interval_source = .{
-            .token = &interval_token,
+            .token = interval_token,
             .period_ms = 250,
-            .initial = null,
+            .initial = interval_token,
             .tick = null,
             .cap = capability,
         } },
@@ -772,18 +806,18 @@ test "SignalExpr.fromAbi decodes effect source expressions" {
     };
     switch (SignalExpr.fromAbi(interval_expr)) {
         .interval_source => |payload| {
-            try std.testing.expectEqual(&interval_token, payload.token.ptr);
+            try std.testing.expectEqual(interval_token, payload.token.callable);
             try std.testing.expectEqual(@as(u64, 250), payload.period_ms);
             try std.testing.expectEqual(capability, payload.capability);
         },
         else => return error.TestUnexpectedResult,
     }
 
-    var location_token: u64 = 10;
+    const location_token = testCallableToken(0xa000);
     const location_expr = abi.NodeSignalExpr{
         .payload = .{ .location_source = .{
-            ._0 = &location_token,
-            ._1 = null,
+            ._0 = location_token,
+            ._1 = location_token,
             ._2 = capability,
             ._3 = capability,
         } },
@@ -791,19 +825,19 @@ test "SignalExpr.fromAbi decodes effect source expressions" {
     };
     switch (SignalExpr.fromAbi(location_expr)) {
         .location_source => |payload| {
-            try std.testing.expectEqual(&location_token, payload.token.ptr);
-            try std.testing.expectEqual(@as(abi.RocErasedCallable, null), payload.from_payload);
+            try std.testing.expectEqual(location_token, payload.token.callable);
+            try std.testing.expectEqual(@as(abi.RocErasedCallable, location_token), payload.from_payload);
             try std.testing.expectEqual(capability, payload.capability);
             try std.testing.expectEqual(capability, payload.payload_capability);
         },
         else => return error.TestUnexpectedResult,
     }
 
-    var visibility_token: u64 = 11;
+    const visibility_token = testCallableToken(0xb000);
     const visibility_expr = abi.NodeSignalExpr{
         .payload = .{ .visibility_source = .{
-            ._0 = &visibility_token,
-            ._1 = null,
+            ._0 = visibility_token,
+            ._1 = visibility_token,
             ._2 = capability,
             ._3 = capability,
         } },
@@ -811,19 +845,19 @@ test "SignalExpr.fromAbi decodes effect source expressions" {
     };
     switch (SignalExpr.fromAbi(visibility_expr)) {
         .visibility_source => |payload| {
-            try std.testing.expectEqual(&visibility_token, payload.token.ptr);
-            try std.testing.expectEqual(@as(abi.RocErasedCallable, null), payload.from_payload);
+            try std.testing.expectEqual(visibility_token, payload.token.callable);
+            try std.testing.expectEqual(@as(abi.RocErasedCallable, visibility_token), payload.from_payload);
             try std.testing.expectEqual(capability, payload.capability);
             try std.testing.expectEqual(capability, payload.payload_capability);
         },
         else => return error.TestUnexpectedResult,
     }
 
-    var online_token: u64 = 12;
+    const online_token = testCallableToken(0xc000);
     const online_expr = abi.NodeSignalExpr{
         .payload = .{ .online_source = .{
-            ._0 = &online_token,
-            ._1 = null,
+            ._0 = online_token,
+            ._1 = online_token,
             ._2 = capability,
             ._3 = capability,
         } },
@@ -831,32 +865,32 @@ test "SignalExpr.fromAbi decodes effect source expressions" {
     };
     switch (SignalExpr.fromAbi(online_expr)) {
         .online_source => |payload| {
-            try std.testing.expectEqual(&online_token, payload.token.ptr);
-            try std.testing.expectEqual(@as(abi.RocErasedCallable, null), payload.from_payload);
+            try std.testing.expectEqual(online_token, payload.token.callable);
+            try std.testing.expectEqual(@as(abi.RocErasedCallable, online_token), payload.from_payload);
             try std.testing.expectEqual(capability, payload.capability);
             try std.testing.expectEqual(capability, payload.payload_capability);
         },
         else => return error.TestUnexpectedResult,
     }
 
-    var storage_token: u64 = 13;
+    const storage_token = testCallableToken(0xd000);
     const storage_expr = abi.NodeSignalExpr{
         .payload = .{ .storage_source = .{
-            .area = @intFromEnum(boundary.StorageArea.local),
-            .token = &storage_token,
-            .key = borrowedRocStr("checkout:draft"),
-            .from_payload = null,
-            .cap = capability,
-            .payload_cap = capability,
+            ._1 = @intFromEnum(boundary.StorageArea.local),
+            ._0 = storage_token,
+            ._2 = borrowedRocStr("checkout:draft"),
+            ._3 = storage_token,
+            ._4 = capability,
+            ._5 = capability,
         } },
         .tag = .StorageSource,
     };
     switch (SignalExpr.fromAbi(storage_expr)) {
         .storage_source => |payload| {
-            try std.testing.expectEqual(&storage_token, payload.token.ptr);
+            try std.testing.expectEqual(storage_token, payload.token.callable);
             try std.testing.expectEqual(boundary.StorageArea.local, payload.area);
             try std.testing.expectEqualStrings("checkout:draft", payload.key.asSlice());
-            try std.testing.expectEqual(@as(abi.RocErasedCallable, null), payload.from_payload);
+            try std.testing.expectEqual(@as(abi.RocErasedCallable, storage_token), payload.from_payload);
             try std.testing.expectEqual(capability, payload.capability);
             try std.testing.expectEqual(capability, payload.payload_capability);
         },
@@ -905,9 +939,9 @@ test "NodeAttr.fromAbi decodes text attr targets" {
 }
 
 test "NodeAttr.fromAbi decodes signal text and bool attrs" {
-    var token: u64 = 10;
+    const token = testCallableToken(0xe000);
     var signal = abi.NodeSignalExpr{
-        .payload = .{ .ref = &token },
+        .payload = .{ .ref = token },
         .tag = .Ref,
     };
     const text_read = std.mem.zeroes(HostTextRead);
@@ -976,13 +1010,13 @@ test "NodeAttr.fromAbi decodes static bool attrs and events" {
         else => return error.TestUnexpectedResult,
     }
 
-    var binder: u64 = 11;
+    const binder = testCallableToken(0xf000);
     const reducer = std.mem.zeroes(HostEventReducer);
     const event = abi.NodeAttr{
         .payload = .{ .on = .{
             .kind = .{ .id = @intFromEnum(EventKind.pointer_down) },
             .msg = .{
-                .binder = &binder,
+                .binder = binder,
                 .event_extraction_plan = testEventExtractionPlan(.record_key_shift),
                 .payload_reducer = reducer,
             },
@@ -996,7 +1030,7 @@ test "NodeAttr.fromAbi decodes static bool attrs and events" {
         .event => |payload| {
             try std.testing.expectEqual(EventKind.pointer_down, payload.kind);
             try std.testing.expectEqual(EventDeliveryRequest.native, payload.delivery_request);
-            try std.testing.expectEqual(&binder, payload.msg.binder.ptr);
+            try std.testing.expectEqual(binder, payload.msg.binder.callable);
             try std.testing.expectEqual(BoundaryPayloadDescriptor.init(.bytes, .record_key_shift), payload.msg.payload_descriptor);
             try std.testing.expectEqual(reducer, payload.msg.payload_reducer);
         },
@@ -1005,13 +1039,13 @@ test "NodeAttr.fromAbi decodes static bool attrs and events" {
 }
 
 test "NodeAttr.fromAbi decodes named events" {
-    var binder: u64 = 12;
+    const binder = testCallableToken(0x10000);
     const reducer = std.mem.zeroes(HostEventReducer);
     const attr = abi.NodeAttr{
         .payload = .{ .on = .{
             .kind = .{ .id = 0 },
             .msg = .{
-                .binder = &binder,
+                .binder = binder,
                 .event_extraction_plan = testEventExtractionPlan(.none),
                 .payload_reducer = reducer,
             },
@@ -1026,7 +1060,7 @@ test "NodeAttr.fromAbi decodes named events" {
             try std.testing.expectEqualStrings("keydown", payload.name.asSlice());
             try std.testing.expect(payload.policy.eql(EventPolicy.fromBits(render.listener_option_prevent_default | render.listener_option_self | render.listener_option_trusted)));
             try std.testing.expectEqual(EventDeliveryRequest.auto, payload.delivery_request);
-            try std.testing.expectEqual(&binder, payload.msg.binder.ptr);
+            try std.testing.expectEqual(binder, payload.msg.binder.callable);
             try std.testing.expectEqual(BoundaryPayloadDescriptor.init(.unit, .none), payload.msg.payload_descriptor);
         },
         else => return error.TestUnexpectedResult,
@@ -1085,9 +1119,9 @@ test "Elem.fromAbi decodes element text and cleanup payloads" {
 }
 
 test "Elem.fromAbi decodes lifecycle and state payloads" {
-    var signal_token: u64 = 13;
+    const signal_token = testCallableToken(0x11000);
     var signal = abi.NodeSignalExpr{
-        .payload = .{ .ref = &signal_token },
+        .payload = .{ .ref = signal_token },
         .tag = .Ref,
     };
     const text_read = std.mem.zeroes(HostTextRead);
@@ -1151,7 +1185,6 @@ test "Elem.fromAbi decodes lifecycle and state payloads" {
         else => return error.TestUnexpectedResult,
     }
 
-    var binder: u64 = 14;
     var child = abi.Elem{
         .payload = .{ .text = borrowedRocStr("state-child") },
         .tag = .Text,
@@ -1160,7 +1193,7 @@ test "Elem.fromAbi decodes lifecycle and state payloads" {
     const capability = std.mem.zeroes(HostValueCapability);
     const state = abi.Elem{
         .payload = .{ .state = .{
-            .binder = &binder,
+            .binder = initial,
             .cap = capability,
             .child = &child,
             .initial = initial,
@@ -1169,7 +1202,7 @@ test "Elem.fromAbi decodes lifecycle and state payloads" {
     };
     switch (Elem.fromAbi(state)) {
         .state => |payload| {
-            try std.testing.expectEqual(&binder, payload.binder.ptr);
+            try std.testing.expectEqual(retained.hostSignalTokenFromCallable(initial), payload.binder.callable);
             try std.testing.expectEqual(initial, payload.initial);
             try std.testing.expectEqual(capability, payload.capability);
             try std.testing.expectEqual(&child, payload.child);
@@ -1194,9 +1227,9 @@ test "Elem.fromAbi decodes component when and each payloads" {
         else => return error.TestUnexpectedResult,
     }
 
-    var condition_token: u64 = 15;
+    const condition_token = testCallableToken(0x12000);
     var condition = abi.NodeSignalExpr{
-        .payload = .{ .ref = &condition_token },
+        .payload = .{ .ref = condition_token },
         .tag = .Ref,
     };
     var when_false = abi.Elem{
@@ -1227,9 +1260,9 @@ test "Elem.fromAbi decodes component when and each payloads" {
         else => return error.TestUnexpectedResult,
     }
 
-    var items_token: u64 = 16;
+    const items_token = testCallableToken(0x13000);
     var items = abi.NodeSignalExpr{
-        .payload = .{ .ref = &items_token },
+        .payload = .{ .ref = items_token },
         .tag = .Ref,
     };
     const ops = std.mem.zeroes(HostEachOps);
@@ -1300,7 +1333,7 @@ fn testEventExtractionPlan(plan: EventExtractionPlanKind) abi.NodeEventExtractio
     };
 }
 
-fn testEventPolicy(bits: u32) abi.NodeEventPolicy {
+fn testEventPolicy(bits: u32) abi.NodeEventBindingPolicy {
     const policy = EventPolicy.fromWireBits(bits);
     return .{
         .capture = policy.capture,

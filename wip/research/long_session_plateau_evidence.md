@@ -14,6 +14,15 @@ Refresh check: re-run on 2026-07-05:
 The current dense-table, scratch-capacity, and dirty propagation coverage below
 remained green.
 
+Refresh check: re-run on 2026-07-11 for Conduit Phase 5 measurement triage:
+
+- `zig build run-test-zig -Dtest-filter=plateau -Dtest-filter="dirty queue"`
+  exited successfully.
+
+No structural work is promoted from Conduit Phase 5: the reusable plateau gate is
+green, while the planned Conduit-specific soak run is blocked by current Roc
+compiler crashes before the app can be built for native spec or wasm execution.
+
 ## Focused Gate
 
 For evidence-only edits that do not change coverage or current-state claims, run:

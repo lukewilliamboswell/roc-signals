@@ -9,12 +9,12 @@ page_class = "grid gap-6"
 
 hero_class = "grid gap-2 rounded-lg border border-zinc-200 bg-white p-5"
 
-main : {} -> Elem
-main = |_| {
+main : () -> Elem
+main = || {
 	Ui.state(
 		0,
 		|count| {
-			stable = Signal.map(count.signal(), |_| "Stable")
+			stable = count.signal().map(|_| "Stable")
 
 			Html.div_c(
 				page_class,

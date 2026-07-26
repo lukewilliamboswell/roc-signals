@@ -16,8 +16,8 @@ state_event_msg = |binder, event_extraction_plan, payload_reducer| {
 
 read_byte : List(U8) -> { byte : U8, rest : List(U8) }
 read_byte = |bytes|
-	match List.first(bytes) {
-		Ok(byte) => { byte, rest: List.drop_first(bytes, 1) }
+	match bytes.first() {
+		Ok(byte) => { byte, rest: bytes.drop_first(1) }
 		Err(_) => {
 			crash "malformed key event payload: missing byte"
 		}
@@ -45,7 +45,7 @@ take_bytes = |bytes, count| {
 
 	while $left > 0 {
 		next = read_byte($remaining)
-		$value = List.append($value, next.byte)
+		$value = $value.append(next.byte)
 		$remaining = next.rest
 		$left = $left - 1
 	}
@@ -59,7 +59,7 @@ decode_key_payload = |bytes| {
 	key_bytes = take_bytes(key_len.rest, key_len.value)
 	shift = read_byte(key_bytes.rest)
 
-	if !List.is_empty(shift.rest) {
+	if !shift.rest.is_empty() {
 		crash "malformed key event payload: trailing bytes"
 	}
 
@@ -104,7 +104,7 @@ Ui := [].{
 		on_unit : State(a), (a -> a) -> Node.Msg
 		on_unit = |st, f| {
 			current_cap = st.cap
-			payload_cap = Capability.new({})
+			payload_cap = Capability.new()
 			wrapped : HostValue, HostValue -> HostValue
 			wrapped = |current_hv, _payload_hv| {
 				current : a
@@ -124,7 +124,7 @@ Ui := [].{
 		on_str : State(a), (a, Str -> a) -> Node.Msg
 		on_str = |st, f| {
 			current_cap = st.cap
-			payload_cap = Capability.new({})
+			payload_cap = Capability.new()
 			wrapped : HostValue, HostValue -> HostValue
 			wrapped = |current_hv, payload_hv| {
 				current : a
@@ -146,7 +146,7 @@ Ui := [].{
 		on_bool : State(a), (a, Bool -> a) -> Node.Msg
 		on_bool = |st, f| {
 			current_cap = st.cap
-			payload_cap = Capability.new({})
+			payload_cap = Capability.new()
 			wrapped : HostValue, HostValue -> HostValue
 			wrapped = |current_hv, payload_hv| {
 				current : a
@@ -168,7 +168,7 @@ Ui := [].{
 		on_detail : State(a), (a, Str -> a) -> Node.Msg
 		on_detail = |st, f| {
 			current_cap = st.cap
-			payload_cap = Capability.new({})
+			payload_cap = Capability.new()
 			wrapped : HostValue, HostValue -> HostValue
 			wrapped = |current_hv, payload_hv| {
 				current : a
@@ -190,7 +190,7 @@ Ui := [].{
 		on_key : State(a), (a, KeyPayload -> a) -> Node.Msg
 		on_key = |st, f| {
 			current_cap = st.cap
-			payload_cap = Capability.new({})
+			payload_cap = Capability.new()
 			wrapped : HostValue, HostValue -> HostValue
 			wrapped = |current_hv, payload_hv| {
 				current : a
@@ -217,18 +217,17 @@ Ui := [].{
 			a.is_eq : a, a -> Bool,
 		]
 	state = |init, body| {
-		cap = Capability.new({})
-		initial : {} -> HostValue
-		initial = |_| Capability.store(Box.box(init), cap)
-		token : Box(U64)
-		token = Node.new_token({})
+		cap = Capability.new()
+		initial : () -> HostValue
+		initial = || Capability.store(Box.box(init), cap)
+		initial_box = Box.box(initial)
 		handle : State(a)
-		handle = { ref: Node.BinderRef.BinderRef(token), cap }
+		handle = { ref: Node.BinderRef.BinderRef(initial_box), cap }
 		child = body(handle)
 		Elem.State(
 			{
 				binder: handle.ref,
-				initial: Box.box(initial),
+				initial: initial_box,
 				cap: Capability.handle(cap),
 				child: Box.box(child),
 			},
@@ -238,8 +237,8 @@ Ui := [].{
 	## Introduce a reusable local scope. State/when/each ordinals inside the body
 	## are local to this component instance instead of consuming the caller's
 	## identity sequence.
-	component : ({} -> Elem) -> Elem
-	component = |body| Elem.Component({ child: Box.box(body({})) })
+	component : (() -> Elem) -> Elem
+	component = |body| Elem.Component({ child: Box.box(body()) })
 
 	## Run a command whenever the signal publishes a changed value.
 	on_change : Signal(a), (a -> Node.Cmd) -> Elem
@@ -268,7 +267,7 @@ Ui := [].{
 	}
 
 	## Run a command when the owning scope first mounts.
-	on_mount : ({} -> Node.Cmd) -> Elem
+	on_mount : (() -> Node.Cmd) -> Elem
 	on_mount = |to_cmd| Elem.OnMount({ to_cmd: Box.box(to_cmd) })
 
 	## Register cleanup work for when the owning scope is disposed.
@@ -276,7 +275,7 @@ Ui := [].{
 	on_cleanup = |cleanup| Elem.Cleanup({ cleanup: cleanup })
 
 	## Conditional. Each arm is its own scope; flipping disposes the losing arm.
-	when : Signal(Bool), ({} -> Elem), ({} -> Elem) -> Elem
+	when : Signal(Bool), (() -> Elem), (() -> Elem) -> Elem
 	when = |condition, when_true, when_false| {
 		condition_cap = condition.cap
 		read_condition : HostValue -> Bool
@@ -285,8 +284,8 @@ Ui := [].{
 			{
 				condition: Signal.to_expr(condition),
 				read: { capability: Capability.handle(condition_cap), read: Box.box(read_condition) },
-				when_true: Box.box(when_true({})),
-				when_false: Box.box(when_false({})),
+				when_true: Box.box(when_true()),
+				when_false: Box.box(when_false()),
 			},
 		)
 	}
@@ -301,13 +300,13 @@ Ui := [].{
 		]
 	each_str = |items, key_of, row| {
 		items_cap = items.cap
-		item_cap = Capability.new({})
-		key_cap = Capability.new({})
+		item_cap = Capability.new()
+		key_cap = Capability.new()
 		items_to_values : HostValue -> List(HostValue)
 		items_to_values = |items_hv| {
 			typed_items : List(item)
 			typed_items = Box.unbox(Capability.get(items_hv, items_cap))
-			List.map(typed_items, |item| Capability.store(Box.box(item), item_cap))
+			typed_items.map(|item| Capability.store(Box.box(item), item_cap))
 		}
 		key_of_hv : HostValue -> HostValue
 		key_of_hv = |item_hv| {
@@ -326,16 +325,15 @@ Ui := [].{
 		row_hv = |key_hv, item_hv| {
 			key : Str
 			key = Box.unbox(Capability.get(key_hv, key_cap))
-			row_item : {} -> HostValue
-			row_item = |_| HostValue.clone(item_hv)
-			row_signal_token : Box(U64)
-			row_signal_token = Node.new_token({})
+			row_item : () -> HostValue
+			row_item = || HostValue.clone!(item_hv)
+			row_item_box = Box.box(row_item)
 			row(
 				key,
 				Signal.from_expr(
 					Node.SignalExpr.ConstValue(
-						row_signal_token,
-						Box.box(row_item),
+						row_item_box,
+						row_item_box,
 						Capability.handle(item_cap),
 					),
 					item_cap,

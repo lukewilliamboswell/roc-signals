@@ -180,9 +180,9 @@ DashboardView :: [].{
 
 	chart_focus_text : Str, Str -> Str
 	chart_focus_text = |hovered, selected|
-		if !Str.is_empty(hovered) {
+		if !hovered.is_empty() {
 			"Hover: ${hovered}"
-		} else if !Str.is_empty(selected) {
+		} else if !selected.is_empty() {
 			"Selected: ${selected}"
 		} else {
 			"Hover or click a chart point"
@@ -593,7 +593,7 @@ join_with = |separator, parts|
 	parts.fold(
 		"",
 		|acc, part|
-			if Str.is_empty(acc) {
+			if acc.is_empty() {
 				part
 			} else {
 				"${acc}${separator}${part}"

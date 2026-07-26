@@ -45,6 +45,7 @@ pub fn Scope(comptime Row: type) type {
         parent_scope_id: ?u64,
         step: Step(Row),
         active: bool,
+        retired_at: u64 = 0,
     };
 }
 
@@ -78,7 +79,7 @@ pub fn internRoot(comptime Row: type, allocator: std.mem.Allocator, scopes: *std
     return .{ .scope_id = 0, .created = false };
 }
 
-pub fn internComponent(comptime Row: type, allocator: std.mem.Allocator, scopes: *std.ArrayListUnmanaged(Scope(Row)), parent_scope_id: u64, site_ordinal: u64) Error!InternResult {
+pub fn internComponent(comptime Row: type, allocator: std.mem.Allocator, scopes: *std.ArrayListUnmanaged(Scope(Row)), parent_scope_id: u64, site_ordinal: u64, reuse_barrier: u64) Error!InternResult {
     try validate(Row, scopes.items, parent_scope_id);
 
     for (scopes.items) |scope| {
@@ -96,6 +97,7 @@ pub fn internComponent(comptime Row: type, allocator: std.mem.Allocator, scopes:
 
     for (scopes.items) |*scope| {
         if (scope.active) continue;
+        if (scope.retired_at != 0 and scope.retired_at == reuse_barrier) continue;
         scope.parent_scope_id = parent_scope_id;
         scope.step = .{ .component = .{ .site_ordinal = site_ordinal } };
         scope.active = true;
@@ -112,7 +114,7 @@ pub fn internComponent(comptime Row: type, allocator: std.mem.Allocator, scopes:
     return .{ .scope_id = scope_id, .created = true };
 }
 
-pub fn internWhenBranch(comptime Row: type, allocator: std.mem.Allocator, scopes: *std.ArrayListUnmanaged(Scope(Row)), parent_scope_id: u64, site_ordinal: u64, branch: Branch) Error!InternResult {
+pub fn internWhenBranch(comptime Row: type, allocator: std.mem.Allocator, scopes: *std.ArrayListUnmanaged(Scope(Row)), parent_scope_id: u64, site_ordinal: u64, branch: Branch, reuse_barrier: u64) Error!InternResult {
     try validate(Row, scopes.items, parent_scope_id);
 
     for (scopes.items) |scope| {
@@ -130,6 +132,7 @@ pub fn internWhenBranch(comptime Row: type, allocator: std.mem.Allocator, scopes
 
     for (scopes.items) |*scope| {
         if (scope.active) continue;
+        if (scope.retired_at != 0 and scope.retired_at == reuse_barrier) continue;
         scope.parent_scope_id = parent_scope_id;
         scope.step = .{ .when_branch = .{ .site_ordinal = site_ordinal, .branch = branch } };
         scope.active = true;
@@ -146,11 +149,12 @@ pub fn internWhenBranch(comptime Row: type, allocator: std.mem.Allocator, scopes
     return .{ .scope_id = scope_id, .created = true };
 }
 
-pub fn appendEachRow(comptime Row: type, allocator: std.mem.Allocator, scopes: *std.ArrayListUnmanaged(Scope(Row)), parent_scope_id: u64, row: Row) Error!InternResult {
+pub fn appendEachRow(comptime Row: type, allocator: std.mem.Allocator, scopes: *std.ArrayListUnmanaged(Scope(Row)), parent_scope_id: u64, row: Row, reuse_barrier: u64) Error!InternResult {
     try validate(Row, scopes.items, parent_scope_id);
 
     for (scopes.items) |*scope| {
         if (scope.active) continue;
+        if (scope.retired_at != 0 and scope.retired_at == reuse_barrier) continue;
         scope.parent_scope_id = parent_scope_id;
         scope.step = .{ .each_row = row };
         scope.active = true;
@@ -250,14 +254,14 @@ test "scope tree interns root component and branch scopes" {
     try std.testing.expectEqual(@as(u64, 0), same_root.scope_id);
     try std.testing.expect(!same_root.created);
 
-    const component = try internComponent(TestRow, std.testing.allocator, &scopes, root.scope_id, 4);
+    const component = try internComponent(TestRow, std.testing.allocator, &scopes, root.scope_id, 4, 0);
     try std.testing.expect(component.created);
-    const same_component = try internComponent(TestRow, std.testing.allocator, &scopes, root.scope_id, 4);
+    const same_component = try internComponent(TestRow, std.testing.allocator, &scopes, root.scope_id, 4, 0);
     try std.testing.expectEqual(component.scope_id, same_component.scope_id);
     try std.testing.expect(!same_component.created);
 
-    const false_branch = try internWhenBranch(TestRow, std.testing.allocator, &scopes, root.scope_id, 5, .false_branch);
-    const true_branch = try internWhenBranch(TestRow, std.testing.allocator, &scopes, root.scope_id, 5, .true_branch);
+    const false_branch = try internWhenBranch(TestRow, std.testing.allocator, &scopes, root.scope_id, 5, .false_branch, 0);
+    const true_branch = try internWhenBranch(TestRow, std.testing.allocator, &scopes, root.scope_id, 5, .true_branch, 0);
     try std.testing.expect(false_branch.scope_id != true_branch.scope_id);
     try std.testing.expectEqual(false_branch.scope_id, (try activeWhenBranch(TestRow, scopes.items, root.scope_id, 5, .false_branch)).?);
     try std.testing.expectEqual(true_branch.scope_id, (try activeWhenBranch(TestRow, scopes.items, root.scope_id, 5, .true_branch)).?);
@@ -269,10 +273,10 @@ test "scope tree finds each rows and ancestry" {
     defer scopes.deinit(std.testing.allocator);
 
     const root = (try internRoot(TestRow, std.testing.allocator, &scopes)).scope_id;
-    const row_a = (try appendEachRow(TestRow, std.testing.allocator, &scopes, root, .{ .site_ordinal = 8, .value = 10 })).scope_id;
-    const row_b = (try appendEachRow(TestRow, std.testing.allocator, &scopes, root, .{ .site_ordinal = 8, .value = 20 })).scope_id;
-    const nested_component = (try internComponent(TestRow, std.testing.allocator, &scopes, row_b, 1)).scope_id;
-    _ = try appendEachRow(TestRow, std.testing.allocator, &scopes, root, .{ .site_ordinal = 9, .value = 30 });
+    const row_a = (try appendEachRow(TestRow, std.testing.allocator, &scopes, root, .{ .site_ordinal = 8, .value = 10 }, 0)).scope_id;
+    const row_b = (try appendEachRow(TestRow, std.testing.allocator, &scopes, root, .{ .site_ordinal = 8, .value = 20 }, 0)).scope_id;
+    const nested_component = (try internComponent(TestRow, std.testing.allocator, &scopes, row_b, 1, 0)).scope_id;
+    _ = try appendEachRow(TestRow, std.testing.allocator, &scopes, root, .{ .site_ordinal = 9, .value = 30 }, 0);
 
     const rows = try activeEachRows(TestRow, std.testing.allocator, scopes.items, root, 8);
     defer std.testing.allocator.free(rows);
@@ -288,10 +292,10 @@ test "scope tree reuses inactive each row slots" {
     defer scopes.deinit(std.testing.allocator);
 
     const root = (try internRoot(TestRow, std.testing.allocator, &scopes)).scope_id;
-    const first = (try appendEachRow(TestRow, std.testing.allocator, &scopes, root, .{ .site_ordinal = 8, .value = 10 })).scope_id;
+    const first = (try appendEachRow(TestRow, std.testing.allocator, &scopes, root, .{ .site_ordinal = 8, .value = 10 }, 0)).scope_id;
     scopes.items[@intCast(first)].active = false;
 
-    const reused = try appendEachRow(TestRow, std.testing.allocator, &scopes, root, .{ .site_ordinal = 8, .value = 20 });
+    const reused = try appendEachRow(TestRow, std.testing.allocator, &scopes, root, .{ .site_ordinal = 8, .value = 20 }, 0);
     try std.testing.expect(reused.created);
     try std.testing.expectEqual(first, reused.scope_id);
     try std.testing.expectEqual(@as(usize, 2), scopes.items.len);
@@ -302,17 +306,35 @@ test "scope tree reuses inactive component and branch slots" {
     defer scopes.deinit(std.testing.allocator);
 
     const root = (try internRoot(TestRow, std.testing.allocator, &scopes)).scope_id;
-    const component = (try internComponent(TestRow, std.testing.allocator, &scopes, root, 1)).scope_id;
-    const branch = (try internWhenBranch(TestRow, std.testing.allocator, &scopes, root, 2, .true_branch)).scope_id;
+    const component = (try internComponent(TestRow, std.testing.allocator, &scopes, root, 1, 0)).scope_id;
+    const branch = (try internWhenBranch(TestRow, std.testing.allocator, &scopes, root, 2, .true_branch, 0)).scope_id;
 
     scopes.items[@intCast(component)].active = false;
-    const reused_component = try internComponent(TestRow, std.testing.allocator, &scopes, root, 3);
+    const reused_component = try internComponent(TestRow, std.testing.allocator, &scopes, root, 3, 0);
     try std.testing.expect(reused_component.created);
     try std.testing.expectEqual(component, reused_component.scope_id);
 
     scopes.items[@intCast(branch)].active = false;
-    const reused_branch = try internWhenBranch(TestRow, std.testing.allocator, &scopes, root, 4, .false_branch);
+    const reused_branch = try internWhenBranch(TestRow, std.testing.allocator, &scopes, root, 4, .false_branch, 0);
     try std.testing.expect(reused_branch.created);
     try std.testing.expectEqual(branch, reused_branch.scope_id);
     try std.testing.expectEqual(@as(usize, 3), scopes.items.len);
+}
+
+test "scope ids retired in a dirty generation are not reused until the next one" {
+    var scopes: std.ArrayListUnmanaged(Scope(TestRow)) = .empty;
+    defer scopes.deinit(std.testing.allocator);
+
+    const root = (try internRoot(TestRow, std.testing.allocator, &scopes)).scope_id;
+    const first = (try internComponent(TestRow, std.testing.allocator, &scopes, root, 1, 0)).scope_id;
+
+    scopes.items[@intCast(first)].active = false;
+    scopes.items[@intCast(first)].retired_at = 5;
+
+    const during_flush = try internComponent(TestRow, std.testing.allocator, &scopes, root, 2, 5);
+    try std.testing.expect(during_flush.scope_id != first);
+
+    scopes.items[@intCast(during_flush.scope_id)].active = false;
+    const next_flush = try internComponent(TestRow, std.testing.allocator, &scopes, root, 3, 6);
+    try std.testing.expectEqual(first, next_flush.scope_id);
 }

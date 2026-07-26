@@ -887,14 +887,7 @@ fn dispatchEvent(desc: HostActiveEventDesc, payload: HostValue) void {
     const dirty_generation = shared_engine.nextDirtySignalGeneration();
 
     const changed_record_ids = shared_engine.propagateDirtyActiveSignals(ctx, &roc_host, allocator(), &dirty_source_node_ids, dirty_generation);
-
-    const dirty_structural_signals = shared_engine.collectDirtyStructuralSignals(ctx, &roc_host, allocator(), &dirty_source_node_ids, changed_record_ids, dirty_generation);
-    defer allocator().free(dirty_structural_signals);
-
-    _ = shared_engine.applyDirtyRenderSinks(ctx, &roc_host, &dirty_source_node_ids, changed_record_ids, dirty_generation);
-    if (dirty_structural_signals.len != 0) {
-        _ = shared_engine.applyDirtyStructuralSignalsLocally(ctx, &roc_host, &dirty_source_node_ids, dirty_generation, dirty_structural_signals);
-    }
+    _ = shared_engine.applyDirtySignalBatch(ctx, &roc_host, &dirty_source_node_ids, changed_record_ids, dirty_generation);
 }
 
 fn resolveTask(request_id: u64, payload_text: []const u8, failed: bool) void {
@@ -917,7 +910,7 @@ fn resolveTask(request_id: u64, payload_text: []const u8, failed: bool) void {
         .task_source => |payload| payload,
         .ref, .const_value, .map, .map2, .combine, .interval_source, .location_source, .online_source, .visibility_source, .storage_source => unreachable,
     };
-    if (task_payload.token != pending.task_token) failHostWith("task result matched a pending request for a different task source");
+    if (record.token().? != pending.task_token) failHostWith("task result matched a pending request for a different task source");
 
     roc_allocation_phase = 10;
     const payload = hostValueStr(payload_text);
@@ -1382,7 +1375,7 @@ export fn roc_ui_mount() callconv(.c) void {
     }
 
     renderActiveRoot(&.{});
-    clearStorageEnvironment();
+    clearStorageDeclarations();
 }
 
 export fn roc_ui_set_location(payload_ptr: usize, payload_len: usize) callconv(.c) void {
@@ -1524,11 +1517,10 @@ export fn roc_host_value_get_with_capability(value: HostValue, cap: HostValueCap
     };
 }
 
-export fn roc_host_value_get_with_split(value: HostValue, split_ref: *const abi.RocErasedCallable) callconv(.c) abi.RocBox {
+export fn roc_host_value_get_with_split(value: HostValue, split: abi.RocErasedCallable) callconv(.c) abi.RocBox {
     const previous_phase = roc_allocation_phase;
     roc_allocation_phase = 103;
     defer roc_allocation_phase = previous_phase;
-    const split = split_ref.*;
     defer abi.decrefErasedCallable(split, &roc_host);
     return shared_engine.host_values.getWithSplit(value, split, registryOps()) catch |err| {
         failHostValueRegistryError(err);
@@ -1563,13 +1555,21 @@ export fn roc_host_value_take_with_capability(value: HostValue, cap: HostValueCa
     };
 }
 
-export fn roc_host_value_take_with_split(value: HostValue, split_ref: *const abi.RocErasedCallable) callconv(.c) abi.RocBox {
+export fn roc_host_value_take_with_split(value: HostValue, split: abi.RocErasedCallable) callconv(.c) abi.RocBox {
     const previous_phase = roc_allocation_phase;
     roc_allocation_phase = 107;
     defer roc_allocation_phase = previous_phase;
-    const split = split_ref.*;
     defer abi.decrefErasedCallable(split, &roc_host);
     return shared_engine.host_values.takeWithSplit(value, split, registryOps()) catch |err| {
         failHostValueRegistryError(err);
     };
+}
+
+comptime {
+    if (@TypeOf(&roc_host_value_get_with_split) != @TypeOf(&abi.roc_host_value_get_with_split)) {
+        @compileError("roc_host_value_get_with_split does not match the generated platform ABI");
+    }
+    if (@TypeOf(&roc_host_value_take_with_split) != @TypeOf(&abi.roc_host_value_take_with_split)) {
+        @compileError("roc_host_value_take_with_split does not match the generated platform ABI");
+    }
 }

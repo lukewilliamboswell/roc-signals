@@ -13,7 +13,22 @@ Dashboard := {
 }.{
 	ParseErr : [BadJson, MissingData(Str), BadCode(Str), UnsupportedSchema(U64)]
 
-	State := [Loading, Ready(Dashboard), RequestFailed(Str), DecodeFailed(ParseErr)]
+	State := [Loading, Ready(Dashboard), RequestFailed(Str), DecodeFailed(ParseErr)].{
+		is_eq : State, State -> Bool
+		is_eq = |left, right|
+			match left {
+				Loading => match right {
+					Loading => True
+					_ => False
+				}
+				Ready(_) => False
+				RequestFailed(left_message) => match right {
+					RequestFailed(right_message) => left_message == right_message
+					_ => False
+				}
+				DecodeFailed(_) => False
+			}
+	}
 
 	Clock : { hour : U64, minute : U64, second : U64 }
 
@@ -137,9 +152,10 @@ Dashboard := {
 		}
 }
 
-# Keep the raw JSON records split. With roc release-fast-7da362c8,
-# derived parsing for one 52+ field record segfaults; the 10 small parses are
-# an intentional compiler-workaround until that upstream issue is fixed.
+# Keep the raw JSON records split. Builtin Json-derived parsing for one 50+
+# field record still segfaults on roc release-fast-c0cae661; see roc-lang/roc#9964
+# and wip/research/wide_record_json_sigsegv_repro.roc. The 10 small parses are
+# an intentional compiler workaround until that upstream issue is fixed.
 RawMeta : {
 	schema : U64,
 	updated_version : U64,
@@ -239,41 +255,41 @@ RawServiceDetails : {
 
 parse_dashboard : Str -> Try(Dashboard, Dashboard.ParseErr)
 parse_dashboard = |body| {
-	meta_result : Try(RawMeta, Json)
+	meta_result : Try(RawMeta, [InvalidJson(Str), MissingRequiredField(Str)])
 	meta_result = Json.parse(body)
 	meta = map_json_result("meta", meta_result)?
 	if meta.schema != 1 {
 		return Err(UnsupportedSchema(meta.schema))
 	}
 
-	traffic_result : Try(RawTrafficCore, Json)
+	traffic_result : Try(RawTrafficCore, [InvalidJson(Str), MissingRequiredField(Str)])
 	traffic_result = Json.parse(body)
 	traffic = map_json_result("traffic", traffic_result)?
-	traffic_bars_result : Try(RawTrafficBars, Json)
+	traffic_bars_result : Try(RawTrafficBars, [InvalidJson(Str), MissingRequiredField(Str)])
 	traffic_bars_result = Json.parse(body)
 	traffic_bars = map_json_result("traffic bars", traffic_bars_result)?
-	budget_result : Try(RawBudget, Json)
+	budget_result : Try(RawBudget, [InvalidJson(Str), MissingRequiredField(Str)])
 	budget_result = Json.parse(body)
 	budget = map_json_result("budget", budget_result)?
-	queue_result : Try(RawQueue, Json)
+	queue_result : Try(RawQueue, [InvalidJson(Str), MissingRequiredField(Str)])
 	queue_result = Json.parse(body)
 	queue = map_json_result("queue", queue_result)?
-	service_states_result : Try(RawServiceStates, Json)
+	service_states_result : Try(RawServiceStates, [InvalidJson(Str), MissingRequiredField(Str)])
 	service_states_result = Json.parse(body)
 	service_states = map_json_result("service states", service_states_result)?
-	service_metrics_result : Try(RawServiceMetrics, Json)
+	service_metrics_result : Try(RawServiceMetrics, [InvalidJson(Str), MissingRequiredField(Str)])
 	service_metrics_result = Json.parse(body)
 	service_metrics = map_json_result("service metrics", service_metrics_result)?
-	jobs_a_result : Try(RawJobsA, Json)
+	jobs_a_result : Try(RawJobsA, [InvalidJson(Str), MissingRequiredField(Str)])
 	jobs_a_result = Json.parse(body)
 	jobs_a = map_json_result("jobs a", jobs_a_result)?
-	jobs_b_result : Try(RawJobsB, Json)
+	jobs_b_result : Try(RawJobsB, [InvalidJson(Str), MissingRequiredField(Str)])
 	jobs_b_result = Json.parse(body)
 	jobs_b = map_json_result("jobs b", jobs_b_result)?
-	alerts_result : Try(RawAlerts, Json)
+	alerts_result : Try(RawAlerts, [InvalidJson(Str), MissingRequiredField(Str)])
 	alerts_result = Json.parse(body)
 	alerts = map_json_result("alerts", alerts_result)?
-	service_details_result : Try(RawServiceDetails, Json)
+	service_details_result : Try(RawServiceDetails, [InvalidJson(Str), MissingRequiredField(Str)])
 	service_details_result = Json.parse(body)
 	service_details = map_json_result("service details", service_details_result)?
 
@@ -429,12 +445,12 @@ parse_dashboard = |body| {
 	)
 }
 
-map_json_result : Str, Try(a, Json) -> Try(a, Dashboard.ParseErr)
+map_json_result : Str, Try(a, [InvalidJson(Str), MissingRequiredField(Str)]) -> Try(a, Dashboard.ParseErr)
 map_json_result = |label, result|
 	match result {
 		Ok(value) => Ok(value)
-		Err(MissingRequired) => Err(MissingData(label))
-		Err(InvalidJson) => Err(BadJson)
+		Err(MissingRequiredField(_)) => Err(MissingData(label))
+		Err(InvalidJson(_)) => Err(BadJson)
 	}
 
 get_bar_code : Str, U64 -> Try(U64, Dashboard.ParseErr)

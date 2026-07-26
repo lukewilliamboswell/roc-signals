@@ -1,32 +1,29 @@
 {% extends "base.html" %}
 
 {% block title %}{{ page.title }} · Examples · {{ config.title }}{% endblock title %}
+{% block body_class %}example-standalone{% endblock body_class %}
 
 {% block content %}
 {% set data = load_data(path="data/examples.toml") %}
-<main class="site-shell">
+<main class="site-shell example-page" data-example-page data-examples-url="{{ get_url(path='examples/', trailing_slash=true) }}">
   {% for example in data.examples %}
   {% if example.slug == page.extra.slug %}
-  <section class="grid min-w-0 gap-4">
-    <div class="grid min-w-0 gap-3 sm:flex sm:flex-wrap sm:items-end sm:justify-between">
-      <div class="min-w-0">
-        <p class="text-sm font-medium text-emerald-700">Example</p>
-        <h1 class="text-3xl font-semibold text-zinc-950">{{ example.title }}</h1>
-        <p class="mt-2 max-w-3xl break-words leading-7 text-zinc-700">{{ example.description }}</p>
+  <section class="panel example-runner overflow-hidden" data-example-runner>
+    <div class="example-runner-toolbar flex flex-wrap items-center justify-between gap-3 border-b border-zinc-200 bg-white px-4 py-3">
+      <div class="flex min-w-0 items-center gap-3">
+        <a class="text-sm font-semibold text-zinc-950 no-underline hover:no-underline" href="{{ get_url(path='examples/', trailing_slash=true) }}">Roc Signals</a>
+        <span class="h-5 border-l border-zinc-300"></span>
+        <p class="truncate text-sm text-zinc-600"><strong class="font-medium text-zinc-900">{{ example.title }}</strong></p>
       </div>
-      <div class="flex flex-wrap gap-2">
+      <div class="flex flex-wrap items-center gap-2">
         <a class="button" href="{{ get_url(path='examples/' ~ example.slug ~ '/source/app.roc') }}">Source</a>
         {% if example.spec %}
         <a class="button" href="{{ get_url(path='examples/' ~ example.slug ~ '/source/spec.txt') }}">Spec</a>
         {% endif %}
+        <a class="button-primary" href="{{ get_url(path='examples/', trailing_slash=true) }}">All examples</a>
       </div>
     </div>
-    <section class="panel overflow-hidden">
-      <div class="border-b border-zinc-200 px-4 py-3">
-        <p class="text-sm text-zinc-600">Running <code class="break-all">{{ example.slug }}/app.wasm</code></p>
-      </div>
-      <div data-signals-wasm="{{ get_url(path='examples/' ~ example.slug ~ '/app.wasm') }}" data-signals-title="{{ example.title }}"></div>
-    </section>
+    <div data-signals-wasm="{{ get_url(path='examples/' ~ example.slug ~ '/app.wasm') }}" data-signals-title="{{ example.title }}"></div>
   </section>
   {% endif %}
   {% endfor %}

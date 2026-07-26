@@ -148,13 +148,17 @@ pub fn accessibleName(elem: *const Element) []const u8 {
 }
 
 pub fn matchesLocator(elem: *const Element, locator: spec_parser.Locator) bool {
+    return matchesLocatorWithAccessibleName(elem, locator, accessibleName(elem));
+}
+
+pub fn matchesLocatorWithAccessibleName(elem: *const Element, locator: spec_parser.Locator, accessible_name: []const u8) bool {
     return switch (locator.kind) {
         .none => false,
         .role_name => blk: {
             const role = implicitRole(elem) orelse break :blk false;
             const expected_role = locator.role orelse break :blk false;
             const expected_name = locator.name orelse break :blk false;
-            break :blk std.mem.eql(u8, role, expected_role) and std.mem.eql(u8, accessibleName(elem), expected_name);
+            break :blk std.mem.eql(u8, role, expected_role) and std.mem.eql(u8, accessible_name, expected_name);
         },
         .label => blk: {
             const expected = locator.label orelse break :blk false;
@@ -476,7 +480,15 @@ pub fn appendDetached(allocator: std.mem.Allocator, elements: *std.ArrayListUnma
         elem.* = Element.init(elem_id, tag_copy);
         return;
     }
-    if (elem_id != elements.items.len) @panic("sim DOM append skipped an element id");
+    while (elem_id > elements.items.len) {
+        const inactive_tag = allocator.dupe(u8, "") catch std.process.exit(1);
+        var inactive = Element.init(@intCast(elements.items.len), inactive_tag);
+        inactive.active = false;
+        elements.append(allocator, inactive) catch {
+            inactive.deinit(allocator);
+            std.process.exit(1);
+        };
+    }
     elements.append(allocator, Element.init(elem_id, tag_copy)) catch {
         allocator.free(tag_copy);
         std.process.exit(1);
@@ -514,6 +526,26 @@ pub fn replaceChildren(allocator: std.mem.Allocator, elements: []Element, parent
     parent.children.deinit(allocator);
     parent.children = .empty;
     parent.children.appendSlice(allocator, next_child_ids) catch std.process.exit(1);
+}
+
+test "simulated DOM append supports sparse element ids" {
+    const allocator = std.testing.allocator;
+    var elements: std.ArrayListUnmanaged(Element) = .empty;
+    defer {
+        for (elements.items) |*elem| {
+            elem.deinit(allocator);
+        }
+        elements.deinit(allocator);
+    }
+
+    reset(allocator, &elements);
+    appendDetached(allocator, &elements, 3, "section");
+
+    try std.testing.expectEqual(@as(usize, 4), elements.items.len);
+    try std.testing.expect(!elements.items[1].active);
+    try std.testing.expect(!elements.items[2].active);
+    try std.testing.expect(elements.items[3].active);
+    try std.testing.expectEqualStrings("section", elements.items[3].tag);
 }
 
 test "simulated DOM element indexes attrs and named events" {
@@ -578,6 +610,13 @@ test "simulated DOM locator helpers cover implicit roles and name fallbacks" {
         .role = "heading",
         .name = "Overview",
     }));
+    allocator.free(heading.text.?);
+    heading.text = null;
+    try std.testing.expect(matchesLocatorWithAccessibleName(&heading, .{
+        .kind = .role_name,
+        .role = "heading",
+        .name = "Overview",
+    }, "Overview"));
 
     const section_tag = try allocator.dupe(u8, "section");
     var section = Element.init(5, section_tag);

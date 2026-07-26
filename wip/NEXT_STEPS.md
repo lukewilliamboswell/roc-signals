@@ -12,12 +12,28 @@ candidates, current ordering, and the gates for adding new public surface or
 promoting structural work.
 
 The current phase is production-application readiness, measured against a
-RealWorld (Conduit)-class SPA. The gap analysis, examples roadmap, and per-app
+RealWorld (Conduit)-class SPA. This phase is *expected* to uncover platform
+gaps, engine defects, and developer-experience friction — that is its point,
+not a setback: every finding feeds the ledger and improves the platform. The
+project has no users yet, so there is no compatibility pressure; when evidence
+shows a better shape, change the platform wholesale rather than accreting
+workarounds. The bar for any fix or change is the long-term ideal
+architecture: efficient (preserve the O(1) lookup, local-splice, and
+memory-plateau disciplines in `design.md`), maintainable, and DRY.
+
+The gap analysis, examples roadmap, and per-app
 landed status live in `wip/research/realworld_gap_analysis.md`.
 `wip/BROWSER_ENV_DESIGN_PREP.md` holds browser-environment slice detail and
 open follow-up questions. Keep shipped controlled input/forms, canonical
 event-binding, public guide, bundle/release-flow, and native spec runner layers
 current when public surface changes.
+
+The completed `examples/conduit` RealWorld demo is the current
+production-readiness evidence source; its plan and findings live in
+`wip/REALWORLD_DEMO_PLAN.md` and
+`wip/research/realworld_demo_findings.md`. The build promoted no new public
+surface. Follow-up promotions still require a concrete app or canary trigger
+against the priorities below.
 
 Evidence still gates public surface and structural promotions, but the evidence
 is now manufactured deliberately: the maintained examples are grown along the
@@ -52,6 +68,38 @@ Per-app rationale, phase ordering, landed status, and deferred suite-curation
 decisions live in `wip/research/realworld_gap_analysis.md`. Use that note to
 choose the proving app or focused canary; keep the roadmap detail out of this
 active backlog.
+
+## Active merge and evidence work
+
+Active Roc toolchain: use `roc` from `PATH` and record `roc version` with gate
+results (reviewed 2026-07-20 as `release-fast-8eaa9abd`). Temporary compiler
+checkouts are retired for this workstream. Use `--no-cache` from this sandbox,
+e.g.
+`roc build --no-cache --target=arm64mac --opt=dev --output=/tmp/conduit-dbg
+examples/conduit/app.roc`.
+
+### 0a. Merge RealWorld demo PR #13
+
+**Goal:** merge the completed RealWorld-class maintained app and callable
+signal-identity refactor once required CI is green.
+
+Implementation, publication, visual polish, hash-route static hosting, native
+behavior, and local release/readiness gates are complete. The PR also adopts
+boxed evaluator callables as signal identity, following roc-lang/roc#10264.
+Completed evidence belongs in `wip/research/realworld_demo_findings.md`, not
+this active backlog.
+
+Current merge order:
+
+1. Keep PR #13 free of new feature work and resolve only review or current-main
+   CI failures.
+2. Merge when required CI is green.
+
+The compiler, native behavior, full repository, wasm mount, and public dev/size
+site gates pass with the reviewed PATH toolchain. Conduit and the JSON config
+editor are published examples. Real-backend conformance, the long soak/action
+telemetry pass, payload/reference comparison, and the builtin JSON escape
+recheck remain post-merge evidence work; none blocks PR #13.
 
 ## Active priority order
 

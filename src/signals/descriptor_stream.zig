@@ -99,8 +99,8 @@ pub const CleanupDesc = struct {
     name: []const u8,
 };
 
-/// Identity token interned per `Ui.state` binder.
-pub const BinderToken = *u64;
+/// Boxed state initializer shared by `Ui.state` and its references.
+pub const BinderToken = retained.HostSignalToken;
 
 /// Binds a state binder token to the node id it resolves to within a scope.
 pub const BinderBinding = struct {
@@ -554,8 +554,8 @@ pub const Stream = struct {
     states: std.ArrayListUnmanaged(StateDesc) = .empty,
     whens: std.ArrayListUnmanaged(WhenDesc) = .empty,
     eaches: std.ArrayListUnmanaged(EachDesc) = .empty,
-    signal_records_by_token: std.AutoHashMapUnmanaged(usize, *SignalRecord) = .{},
-    signal_record_descriptor_uses_by_token: std.AutoHashMapUnmanaged(usize, usize) = .{},
+    signal_records_by_token: std.AutoHashMapUnmanaged(HostSignalToken, *SignalRecord) = .{},
+    signal_record_descriptor_uses_by_token: std.AutoHashMapUnmanaged(HostSignalToken, usize) = .{},
     render_metadata_by_elem_id: std.AutoHashMapUnmanaged(u64, RenderElemIndex) = .{},
     named_event_indices_by_elem_id: std.ArrayListUnmanaged(std.ArrayListUnmanaged(usize)) = .empty,
     descriptor_indexes_by_elem_id: std.ArrayListUnmanaged(ElemDescriptorIndex) = .empty,
@@ -1031,12 +1031,12 @@ pub const Stream = struct {
     }
 
     pub fn signalRecordByToken(self: *Stream, token: HostSignalToken) ?*SignalRecord {
-        return self.signal_records_by_token.get(@intFromPtr(token));
+        return self.signal_records_by_token.get(token);
     }
 
     pub fn rememberSignalRecord(self: *Stream, allocator: std.mem.Allocator, record: *SignalRecord) void {
         const token = record.token() orelse return;
-        const entry = self.signal_records_by_token.getOrPut(allocator, @intFromPtr(token)) catch @panic("out of memory");
+        const entry = self.signal_records_by_token.getOrPut(allocator, token) catch @panic("out of memory");
         if (entry.found_existing) {
             if (entry.value_ptr.* != record) @panic("signal token was bound to multiple host records");
             return;
@@ -1046,7 +1046,7 @@ pub const Stream = struct {
 
     fn incrementSignalRecordDescriptorUse(self: *Stream, allocator: std.mem.Allocator, record: *SignalRecord) void {
         const token = record.token() orelse return;
-        const key = @intFromPtr(token);
+        const key = token;
         const entry = self.signal_record_descriptor_uses_by_token.getOrPut(allocator, key) catch @panic("out of memory");
         if (entry.found_existing) {
             entry.value_ptr.* += 1;
@@ -1057,7 +1057,7 @@ pub const Stream = struct {
 
     fn decrementSignalRecordDescriptorUse(self: *Stream, record: *SignalRecord) void {
         const token = record.token() orelse return;
-        const key = @intFromPtr(token);
+        const key = token;
         const count = self.signal_record_descriptor_uses_by_token.getPtr(key) orelse @panic("signal token descriptor use underflow");
         if (count.* == 0) @panic("signal token descriptor use underflow");
         count.* -= 1;
@@ -1577,7 +1577,9 @@ pub const NodeDescriptorIndex = struct {
 };
 
 pub fn setFreshIndex(slot: *?usize, value: usize) void {
-    if (slot.* != null) @panic("descriptor stream recorded duplicate descriptor index");
+    if (slot.* != null) {
+        @panic("descriptor stream recorded duplicate descriptor index");
+    }
     slot.* = value;
 }
 
@@ -1775,7 +1777,8 @@ pub fn clearScopeSiteIndex(comptime StreamType: type, stream: *StreamType, node_
 }
 
 pub fn recordStateIndex(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, node_id: u64, index: usize) void {
-    setFreshIndex(&ensureNodeDescriptorIndex(StreamType, stream, allocator, node_id).state, index);
+    const slot = &ensureNodeDescriptorIndex(StreamType, stream, allocator, node_id).state;
+    setFreshIndex(slot, index);
 }
 
 pub fn updateStateIndex(comptime StreamType: type, stream: *StreamType, node_id: u64, index: usize) void {
@@ -1787,7 +1790,8 @@ pub fn clearStateIndex(comptime StreamType: type, stream: *StreamType, node_id: 
 }
 
 pub fn recordWhenIndex(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, node_id: u64, index: usize) void {
-    setFreshIndex(&ensureNodeDescriptorIndex(StreamType, stream, allocator, node_id).when, index);
+    const slot = &ensureNodeDescriptorIndex(StreamType, stream, allocator, node_id).when;
+    setFreshIndex(slot, index);
 }
 
 pub fn updateWhenIndex(comptime StreamType: type, stream: *StreamType, node_id: u64, index: usize) void {
@@ -1799,7 +1803,8 @@ pub fn clearWhenIndex(comptime StreamType: type, stream: *StreamType, node_id: u
 }
 
 pub fn recordEachIndex(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, node_id: u64, index: usize) void {
-    setFreshIndex(&ensureNodeDescriptorIndex(StreamType, stream, allocator, node_id).each, index);
+    const slot = &ensureNodeDescriptorIndex(StreamType, stream, allocator, node_id).each;
+    setFreshIndex(slot, index);
 }
 
 pub fn updateEachIndex(comptime StreamType: type, stream: *StreamType, node_id: u64, index: usize) void {
@@ -2477,7 +2482,7 @@ test "fixed event descriptors preserve Roc supplied payload descriptors" {
     var env = abi.RocEnv{ .allocator = allocator, .roc_io = abi.RocIo.default() };
     var roc_host = abi.makeRocHost(&env);
     var metrics = TestMetrics{};
-    var binder: u64 = 1;
+    const binder: BinderToken = @ptrFromInt(0x1000);
     const payload_descriptor = BoundaryPayloadDescriptor.init(.str, .target_value);
     const reducer = HostEventReducer{
         .capability = .{ .clone = null, .drop = null, .eq = null },
@@ -2491,7 +2496,7 @@ test "fixed event descriptors preserve Roc supplied payload descriptors" {
         7,
         .pointer_down,
         .auto,
-        &binder,
+        binder,
         42,
         payload_descriptor,
         reducer,

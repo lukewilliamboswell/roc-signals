@@ -1,6 +1,30 @@
 import Dashboard
 
 DashboardRemote(a) := [RemoteLoading, RemoteReady(a), RemoteEmpty, RemoteFailed(Str)].{
+	is_eq : DashboardRemote(a), DashboardRemote(a) -> Bool
+		where [
+			a.is_eq : a, a -> Bool,
+		]
+	is_eq = |left, right|
+		match left {
+			RemoteLoading => match right {
+				RemoteLoading => True
+				_ => False
+			}
+			RemoteReady(left_value) => match right {
+				RemoteReady(right_value) => left_value.is_eq(right_value)
+				_ => False
+			}
+			RemoteEmpty => match right {
+				RemoteEmpty => True
+				_ => False
+			}
+			RemoteFailed(left_message) => match right {
+				RemoteFailed(right_message) => left_message == right_message
+				_ => False
+			}
+		}
+
 	from_state : Dashboard.State, (Dashboard -> a) -> DashboardRemote(a)
 	from_state = |state, select|
 		match state {

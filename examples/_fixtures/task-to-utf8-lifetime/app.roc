@@ -6,13 +6,30 @@ import pf.Http
 import pf.Signal
 import pf.Ui
 
-TaskState := [Loading, Ready(U64), Failed(U64)]
+TaskState := [Loading, Ready(U64), Failed(U64)].{
+	is_eq : TaskState, TaskState -> Bool
+	is_eq = |left, right|
+		match left {
+			Loading => match right {
+				Loading => True
+				_ => False
+			}
+			Ready(left_size) => match right {
+				Ready(right_size) => left_size == right_size
+				_ => False
+			}
+			Failed(left_size) => match right {
+				Failed(right_size) => left_size == right_size
+				_ => False
+			}
+		}
+}
 
 decode : Str -> TaskState
-decode = |body| Ready(Str.to_utf8(body).len())
+decode = |body| Ready(body.to_utf8().len())
 
 failed : Str -> TaskState
-failed = |err| Failed(Str.to_utf8(err).len())
+failed = |err| Failed(err.to_utf8().len())
 
 state_text : TaskState -> Str
 state_text = |state|
@@ -22,18 +39,18 @@ state_text = |state|
 		Failed(n) => "failed bytes ${n.to_str()}"
 	}
 
-main : {} -> Elem
-main = |_| {
+main : () -> Elem
+main = || {
 	task = Http.get_text_task("dashboard")
 	state = Signal.fold_task(task, Loading, decode, failed)
-	text = Signal.map(state, state_text)
+	text = state.map(state_text)
 
 	Html.div_c(
 		"",
 		[
 			Html.heading("Task UTF-8 lifetime"),
 			Html.text_s(text),
-			Ui.on_mount(|_| Http.get_text(task, "/api/ops/dashboard")),
+			Ui.on_mount(|| Http.get_text(task, "/api/ops/dashboard")),
 		],
 	)
 }
