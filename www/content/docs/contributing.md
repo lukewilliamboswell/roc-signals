@@ -1,6 +1,7 @@
 +++
 title = "Contributing"
-weight = 3
+description = "Working on the platform itself — toolchain, test driver, coverage, bundles, and releases."
+weight = 12
 template = "page.html"
 +++
 

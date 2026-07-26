@@ -7,13 +7,22 @@
   <section class="grid gap-3">
     <p class="text-sm font-medium text-emerald-700">Docs</p>
     <h1 class="text-3xl font-semibold text-zinc-950">Learn Roc Signals</h1>
+    <p class="max-w-3xl leading-7 text-zinc-700">A guide to building browser interfaces in Roc. If signals are new to you, read them in order &mdash; each page builds on the one before it.</p>
   </section>
-  <div class="grid gap-3 sm:grid-cols-2">
+  <ol class="grid gap-3">
     {% for page in section.pages %}
-    <a class="panel grid gap-2 p-4 no-underline transition hover:border-emerald-500" href="{{ page.permalink }}">
-      <span class="font-semibold text-zinc-950">{{ page.title }}</span>
-    </a>
+    <li>
+      <a class="panel grid gap-1 p-4 no-underline transition hover:border-emerald-500" href="{{ page.permalink }}">
+        <span class="flex flex-wrap items-baseline gap-2">
+          <span class="text-xs font-medium tabular-nums text-emerald-700">{{ loop.index }}</span>
+          <span class="font-semibold text-zinc-950">{{ page.title }}</span>
+        </span>
+        {% if page.description %}
+        <span class="text-sm leading-6 text-zinc-600">{{ page.description }}</span>
+        {% endif %}
+      </a>
+    </li>
     {% endfor %}
-  </div>
+  </ol>
 </main>
 {% endblock content %}

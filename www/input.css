@@ -59,9 +59,30 @@
     @apply leading-7;
   }
 
+  /* The Tailwind reset strips paragraph margins, so consecutive paragraphs
+     would otherwise run together with no separation. */
+  .prose-signals p {
+    @apply my-4;
+  }
+
+  .prose-signals li p {
+    @apply my-2;
+  }
+
+  .prose-signals h2 + p,
+  .prose-signals h3 + p {
+    @apply mt-0;
+  }
+
   .prose-signals ul,
   .prose-signals ol {
     @apply my-4 grid gap-2 pl-6;
+  }
+
+  /* Grid items default to min-width:auto, so a nested code block would
+     stretch the list past the viewport instead of scrolling inside it. */
+  .prose-signals li {
+    @apply min-w-0;
   }
 
   .prose-signals ul {
@@ -80,8 +101,54 @@
     @apply rounded bg-zinc-100 px-1 py-0.5 text-sm text-zinc-900;
   }
 
+  /* Long identifiers like `Html.on_blur(model.on_unit(commit_seats))` have no
+     break opportunities and would otherwise overflow on narrow screens. */
+  .prose-signals :not(pre) > code {
+    @apply break-words;
+  }
+
   .prose-signals pre code {
     @apply bg-transparent p-0 text-zinc-50;
+  }
+
+  .prose-signals blockquote {
+    @apply my-4 rounded-r-lg border-l-4 border-emerald-500 bg-emerald-50 px-4 py-3;
+  }
+
+  .prose-signals blockquote p {
+    @apply my-2 text-sm text-emerald-950;
+  }
+
+  .prose-signals blockquote p:first-child {
+    @apply mt-0;
+  }
+
+  .prose-signals blockquote p:last-child {
+    @apply mb-0;
+  }
+
+  .prose-signals table {
+    @apply my-4 block w-full max-w-full overflow-x-auto border-collapse text-left text-sm;
+  }
+
+  .prose-signals thead th {
+    @apply border-b border-zinc-300 pb-2 pr-4 font-semibold text-zinc-950;
+  }
+
+  .prose-signals tbody td {
+    @apply border-b border-zinc-200 py-2 pr-4 align-top leading-6;
+  }
+
+  .prose-signals tbody tr:last-child td {
+    @apply border-b-0;
+  }
+
+  .prose-signals a {
+    @apply text-emerald-700 underline underline-offset-2 hover:text-emerald-800;
+  }
+
+  .prose-signals hr {
+    @apply my-8 border-zinc-200;
   }
 
   .example-standalone [data-site-header] {

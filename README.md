@@ -18,11 +18,23 @@ The GitHub Pages site is the front door:
 
 - [Roc Signals site](https://lukewilliamboswell.github.io/roc-signals/)
 
-The maintained docs are also available in the repo:
+The maintained docs live under [www/content/docs/](www/content/docs/) and read in
+this order:
 
-- [Guide](www/content/docs/guide.md) introduces the programming model.
-- [Contributing](www/content/docs/contributing.md) covers local setup, tests,
-  host artifacts, bundles, and release-site builds.
+| Doc | What it covers |
+| --- | --- |
+| [Guide](www/content/docs/guide.md) | What this is, the one idea, reading path |
+| [Thinking in Signals](www/content/docs/thinking-in-signals.md) | The model, and how it maps to React/Solid/Svelte/Vue/Elm |
+| [Getting Started](www/content/docs/getting-started.md) | Install, build, run in a browser, first native test |
+| [Tutorial](www/content/docs/tutorial.md) | Build an app end to end, finishing with passing specs |
+| [State, Events, and Forms](www/content/docs/state-and-events.md) | Local state, reducers, controls, validation |
+| [Lists, Conditionals, and Components](www/content/docs/dynamic-structure.md) | Dynamic structure, keys, row-local state |
+| [Effects, HTTP, and the Browser](www/content/docs/effects-and-browser.md) | Tasks, fetch, timers, routing, storage |
+| [Structuring a Real App](www/content/docs/app-architecture.md) | How Conduit is organized |
+| [Testing](www/content/docs/testing.md) | Spec language, deterministic async, work budgets |
+| [Under the Hood](www/content/docs/under-the-hood.md) | Wire protocol, capabilities, performance model |
+| [Reference](www/content/docs/reference.md) | Complete API surface |
+| [Contributing](www/content/docs/contributing.md) | Local setup, tests, host artifacts, bundles, releases |
 
 The platform architecture and host boundary notes live in [design.md](design.md).
 
