@@ -26,6 +26,36 @@ Worth auditing whether any *other* enumerated ARIA attribute is reachable
 through `bool_attr_s`, since the same trap applies to `aria-expanded`,
 `aria-pressed`, `aria-checked`, and `aria-selected`.
 
+### P0 — `Json.parser_camel()` corrupts long field names on wasm32
+
+The Conduit feed renders "Response was not valid JSON" on every load in the
+browser, while `/api/tags` on the same backend works. Chased to a Roc bug, not
+a Conduit one.
+
+On wasm32, `Json.parser_camel()` reads one byte of the field name it is looking
+for out of uninitialised memory. Any field whose **camelCase form is longer
+than 10 bytes** can never match:
+
+```
+{"abcdefgHij":1}    -> ok                       # 10 bytes
+{"abcdefghIjk":1}   -> Missing 'abcdffghIjk'    # 11 bytes, index 4 e -> f
+{"abcdefghijKlm":1} -> Missing 'abcdffghijKlm'  # 13 bytes
+```
+
+The corrupted byte is always index 4, and its value varies per run and per
+call site. The threshold is exactly where Roc stops storing a `Str` inline, so
+the name is most likely being read through the small-string representation
+after it has become heap-allocated.
+
+Native is unaffected — the full native spec suite passes on the same data —
+which is why no spec caught it and why it only shows up in the browser.
+
+`favoritesCount` is 14 bytes, so Conduit's article DTO can never decode.
+Minimal repro and the full field-length table in
+`repro/json-camel-long-field-name/`. Needs an upstream Roc issue; not
+worked around here, because any workaround (renaming the DTO fields away from
+the RealWorld spec) would make the example lie about the API it implements.
+
 ### P2 — the event-message type has no public name
 
 Factoring a repeated control into a helper is the obvious way to keep a view
@@ -61,6 +91,10 @@ Each example now draws its own caption inside a `field` wrapper. A
 constructors, would remove a whole class of defect.
 
 ## Pre-existing failures found along the way
+
+### conduit — article feed never renders in the browser
+
+Caused by the P0 above, not by anything in the example. Left as-is.
 
 ### markdown-editor — character count off by one
 
