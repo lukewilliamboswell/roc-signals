@@ -1,24 +1,34 @@
 app [main] { pf: platform "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.1/3eLQGNMDG9RuL9sn1A7ep1Rtq7QGmemE89y141WSv1XG.tar.zst" }
 
+## Status Page — four independent service checks fanning in to one rollup.
+##
+## Each service is its own `Signal.task_source`, polled on a 5s interval that
+## only exists while the page is visible. The four checks collapse into a single
+## `Tally` through a balanced `Signal.map2` tree, and the banner, the metrics and
+## every per-service badge are derived from that one value, so the page can never
+## show "All systems operational" beside a red component.
+##
+##     api ──> tally_of ─┐
+##     web ──> tally_of ─┴─> front ─┐
+##                                  ├─> totals ──> rollup / stats / badges
+##     database ──────> tally_of ─┐ │
+##     notifications ─> tally_of ─┴─┘ back
+##
+## The incident feed is a fifth, unrelated task source rendered as a timeline.
+
 import pf.Elem exposing [Elem]
 import pf.Browser
 import pf.Html
 import pf.Signal
 import pf.Ui
 
-page_class = "grid gap-5"
+page_class = "app-shell"
 
-hero_class = "panel grid gap-2 p-5"
+panel_class = "panel grid gap-4 p-5"
 
-panel_class = "panel grid gap-3 p-4"
+service_row_class = "card flex flex-wrap items-center justify-between gap-3"
 
-card_class = "panel grid gap-1 p-3"
-
-headline_class = "text-2xl font-semibold text-zinc-950"
-
-line_class = "text-sm text-zinc-700"
-
-strong_line_class = "text-sm font-medium text-zinc-900"
+incident_card_class = "card grid gap-2"
 
 ## Health of one service check. `CheckFailed` is a refresh that did not come
 ## back; it is deliberately distinct from an observed outage.
@@ -106,14 +116,25 @@ format_uptime = |bps| {
 	"${(bps / 100).to_str()}.${pad}${rest.to_str()}%"
 }
 
+## The badge caption for a service. `CheckFailed` keeps its own wording: a
+## refresh that never came back is not the same claim as an observed outage.
 health_text : Health -> Str
 health_text = |health|
 	match health {
-		Operational => "operational"
-		Degraded => "degraded"
-		Outage => "outage"
-		Unknown => "awaiting first check"
-		CheckFailed(err) => "check failed (${err})"
+		Operational => "Operational"
+		Degraded => "Degraded"
+		Outage => "Outage"
+		Unknown => "Awaiting first check"
+		CheckFailed(_) => "Check failed"
+	}
+
+## The line under a service name. Normally the component's description; when a
+## refresh failed it is the reason, because that is the useful thing to read.
+check_detail : Str, Check -> Str
+check_detail = |detail, check|
+	match check.health {
+		CheckFailed(err) => "Last refresh failed: ${err}"
+		_ => detail
 	}
 
 uptime_text : Check -> Str
@@ -150,30 +171,80 @@ add_tally = |left, right| {
 	reporting: left.reporting + right.reporting,
 }
 
-rollup_text : Tally -> Str
-rollup_text = |tally| {
+## The headline and the colour of the banner come off this one value, so the
+## wording and the tone can never disagree.
+rollup_state : Tally -> [Checking, Healthy, Degraded, Major]
+rollup_state = |tally| {
 	known = tally.operational + tally.degraded + tally.outage
 	if known == 0 {
-		"Checking services"
+		Checking
 	} else if tally.outage > 0 or tally.degraded >= 3 {
-		"Major outage"
+		Major
 	} else if tally.degraded > 0 {
-		"Degraded performance"
+		Degraded
 	} else {
-		"All systems operational"
+		Healthy
 	}
 }
 
-breakdown_text : Tally -> Str
-breakdown_text = |tally|
-	"Operational ${tally.operational.to_str()}, degraded ${tally.degraded.to_str()}, outage ${tally.outage.to_str()}, awaiting ${tally.unknown.to_str()}"
+rollup_text : Tally -> Str
+rollup_text = |tally|
+	match rollup_state(tally) {
+		Checking => "Checking services"
+		Major => "Major outage"
+		Degraded => "Degraded performance"
+		Healthy => "All systems operational"
+	}
 
+banner_class : Tally -> Str
+banner_class = |tally| {
+	tone =
+		match rollup_state(tally) {
+			Checking => "notice-info"
+			Major => "notice-error"
+			Degraded => "notice-warn"
+			Healthy => "notice-ok"
+		}
+	"notice ${tone} flex flex-wrap items-baseline justify-between gap-2 px-4 py-3"
+}
+
+reporting_text : Tally -> Str
+reporting_text = |tally| "${tally.reporting.to_str()} of 4 components reporting"
+
+health_badge_class : Health -> Str
+health_badge_class = |health| {
+	tone =
+		match health {
+			Operational => "badge-ok"
+			Degraded => "badge-warn"
+			Outage => "badge-danger"
+			Unknown => "badge-neutral"
+			CheckFailed(_) => "badge-warn"
+		}
+	"badge ${tone} shrink-0"
+}
+
+severity_badge_class : Str -> Str
+severity_badge_class = |severity| {
+	tone =
+		if severity == "major" {
+			"badge-danger"
+		} else if severity == "minor" {
+			"badge-warn"
+		} else {
+			"badge-info"
+		}
+	"badge ${tone} shrink-0"
+}
+
+## A check that never came back contributes no uptime sample, so the average is
+## over `reporting`, not over four.
 overall_uptime_text : Tally -> Str
 overall_uptime_text = |tally|
 	if tally.reporting == 0 {
-		"Overall uptime: not reported"
+		"not reported"
 	} else {
-		"Overall uptime: ${format_uptime(tally.uptime_bps / tally.reporting)}"
+		format_uptime(tally.uptime_bps / tally.reporting)
 	}
 
 ## `"inc-42~major~Elevated errors~10:02@Investigating^10:20@Identified"`,
@@ -236,6 +307,22 @@ latest_body : List(Update) -> Str
 latest_body = |updates|
 	updates.fold("no updates yet", |_, update| update.summary)
 
+## `summary` is `"10:02 - Investigating elevated 5xx responses"`. The timeline
+## draws the two halves separately; the joined form is what the specs read.
+update_time : Update -> Str
+update_time = |update|
+	match update.summary.split_first(" - ") {
+		Ok(split) => split.before
+		Err(_) => ""
+	}
+
+update_body : Update -> Str
+update_body = |update|
+	match update.summary.split_first(" - ") {
+		Ok(split) => split.after
+		Err(_) => update.summary
+	}
+
 severity_text : Str -> Str
 severity_text = |severity|
 	if severity == "major" {
@@ -275,21 +362,50 @@ is_visible = |visibility|
 		Hidden => False
 	}
 
-## One service card. It reads only its own check signal, so a neighbour
-## degrading never touches this subtree.
-service_card : Str, Str, Signal.Signal(Check) -> Elem
-service_card = |id, name, check|
+## One label-and-number metric. The `test_id` sits on the value, so a spec reads
+## the number the page shows rather than a sentence built for the spec.
+metric : Str, Str, Signal.Signal(Str) -> Elem
+metric = |id, label, value|
+	Html.div_c(
+		"stat",
+		[
+			Html.paragraph_c(label, "stat-label"),
+			Html.paragraph_s_attrs(value, [Html.class_attr("stat-value numeric"), Html.test_id(id), Html.aria_label(label)]),
+		],
+	)
+
+## One component row: name on the left, uptime and a state badge on the right.
+## It reads only its own check signal, so a neighbour degrading never touches
+## this subtree.
+service_card : Str, Str, Str, Signal.Signal(Check) -> Elem
+service_card = |id, name, detail, check|
 	Html.section_c(
 		name,
-		card_class,
+		service_row_class,
 		[
-			Html.paragraph_s_attrs(
-				check.map(|value| "${name} status: ${health_text(value.health)}"),
-				[Html.class_attr(strong_line_class), Html.test_id("service-${id}-status")],
+			Html.div_c(
+				"grid min-w-0 gap-0.5",
+				[
+					Html.paragraph_c(name, "card-title"),
+					Html.paragraph_s_c(check.map(|value| check_detail(detail, value)), "hint"),
+				],
 			),
-			Html.paragraph_s_attrs(
-				check.map(|value| "${name} uptime: ${uptime_text(value)}"),
-				[Html.class_attr(line_class), Html.test_id("service-${id}-uptime")],
+			Html.div_c(
+				"flex items-center gap-3",
+				[
+					Html.paragraph_s_attrs(
+						check.map(uptime_text),
+						[Html.class_attr("numeric hint"), Html.test_id("service-${id}-uptime"), Html.aria_label("${name} uptime")],
+					),
+					Html.paragraph_s_attrs(
+						check.map(|value| health_text(value.health)),
+						[
+							Html.class_attr_s(check.map(|value| health_badge_class(value.health))),
+							Html.test_id("service-${id}-status"),
+							Html.aria_label("${name} status"),
+						],
+					),
+				],
 			),
 		],
 	)
@@ -298,11 +414,12 @@ render_update : Str, Signal.Signal(Update) -> Elem
 render_update = |key, update|
 	Html.section_c(
 		key,
-		"text-sm text-zinc-600",
+		"flex gap-3 border-l-2 border-zinc-200 pl-3",
 		[
+			Html.paragraph_s_c(update.map(update_time), "numeric hint w-12 shrink-0"),
 			Html.paragraph_s_attrs(
-				update.map(|value| value.text),
-				[Html.test_id("update-${key}")],
+				update.map(update_body),
+				[Html.class_attr("min-w-0 text-sm text-zinc-700"), Html.test_id("update-${key}")],
 			),
 		],
 	)
@@ -311,21 +428,45 @@ render_incident : Str, Signal.Signal(Incident) -> Elem
 render_incident = |key, incident|
 	Html.section_c(
 		"Incident ${key}",
-		card_class,
+		incident_card_class,
 		[
-			Html.paragraph_s_attrs(
-				incident.map(|value| "${key} severity: ${severity_text(value.severity)}"),
-				[Html.class_attr(strong_line_class), Html.test_id("incident-${key}-severity")],
+			Html.div_c(
+				"flex flex-wrap items-baseline justify-between gap-2",
+				[
+					Html.paragraph_s_attrs(
+						incident.map(|value| value.title),
+						[Html.class_attr("card-title min-w-0"), Html.test_id("incident-${key}-title")],
+					),
+					Html.paragraph_s_attrs(
+						incident.map(|value| severity_text(value.severity)),
+						[
+							Html.class_attr_s(incident.map(|value| severity_badge_class(value.severity))),
+							Html.test_id("incident-${key}-severity"),
+							Html.aria_label("Severity"),
+						],
+					),
+				],
 			),
 			Html.paragraph_s_attrs(
-				incident.map(|value| "${key} title: ${value.title}"),
-				[Html.class_attr(line_class), Html.test_id("incident-${key}-title")],
-			),
-			Html.paragraph_s_attrs(
-				incident.map(|value| "${key} latest: ${value.latest}"),
-				[Html.class_attr(line_class), Html.test_id("incident-${key}-latest")],
+				incident.map(|value| value.latest),
+				[Html.class_attr("muted"), Html.test_id("incident-${key}-latest")],
 			),
 			Ui.each_str(incident.map(|value| value.updates), |value| value.key, render_update),
+		],
+	)
+
+## The banner is the whole point of a status page: one unmistakable line, in the
+## tone the rollup earned.
+health_banner : Signal.Signal(Tally) -> Elem
+health_banner = |totals|
+	Html.div_sc(
+		totals.map(banner_class),
+		[
+			Html.paragraph_s_attrs(
+				totals.map(rollup_text),
+				[Html.class_attr("text-lg font-semibold"), Html.test_id("overall-rollup")],
+			),
+			Html.paragraph_s_c(totals.map(reporting_text), "text-sm"),
 		],
 	)
 
@@ -335,12 +476,32 @@ overview_panel = |totals, refresh_status, refresh_count, refresh_now|
 		"Overall status",
 		panel_class,
 		[
-			Html.paragraph_s_attrs(totals.map(rollup_text), [Html.class_attr(headline_class), Html.test_id("overall-rollup")]),
-			Html.paragraph_s_attrs(totals.map(breakdown_text), [Html.class_attr(line_class), Html.test_id("status-breakdown")]),
-			Html.paragraph_s_attrs(totals.map(overall_uptime_text), [Html.class_attr(strong_line_class), Html.test_id("overall-uptime")]),
-			Html.paragraph_s_attrs(refresh_status, [Html.class_attr(line_class), Html.test_id("refresh-mode")]),
-			Html.paragraph_s_attrs(refresh_count, [Html.class_attr(line_class), Html.test_id("refresh-count")]),
-			Html.button_c("Refresh now", "button-primary justify-self-start", refresh_now),
+			Html.heading_c("Current status", "panel-title"),
+			# `status-breakdown` names the whole grid; the four counts it used to
+			# spell out as a sentence are now the four metrics inside it.
+			Html.div(
+				[Html.class_attr("stat-grid"), Html.test_id("status-breakdown")],
+				[
+					metric("count-operational", "Operational", totals.map(|value| value.operational.to_str())),
+					metric("count-degraded", "Degraded", totals.map(|value| value.degraded.to_str())),
+					metric("count-outage", "Outage", totals.map(|value| value.outage.to_str())),
+					metric("count-awaiting", "Awaiting check", totals.map(|value| value.unknown.to_str())),
+					metric("overall-uptime", "Overall uptime", totals.map(overall_uptime_text)),
+				],
+			),
+			Html.div_c(
+				"toolbar justify-between border-t border-zinc-200 pt-4",
+				[
+					Html.div_c(
+						"grid gap-0.5",
+						[
+							Html.paragraph_s_attrs(refresh_status, [Html.class_attr("hint"), Html.test_id("refresh-mode")]),
+							Html.paragraph_s_attrs(refresh_count, [Html.class_attr("hint numeric"), Html.test_id("refresh-count")]),
+						],
+					),
+					Html.button_c("Refresh now", "button-primary", refresh_now),
+				],
+			),
 		],
 	)
 
@@ -353,12 +514,21 @@ incidents_panel = |feed| {
 		"Incidents",
 		panel_class,
 		[
-			Html.paragraph_s_attrs(feed.map(|value| value.status), [Html.class_attr(strong_line_class), Html.test_id("incident-feed-status")]),
-			Html.paragraph_s_attrs(items.map(|list| "Open incidents: ${list.len().to_str()}"), [Html.class_attr(line_class), Html.test_id("open-incident-count")]),
+			Html.div_c(
+				"flex flex-wrap items-baseline justify-between gap-2",
+				[
+					Html.heading_c("Incident history", "panel-title"),
+					Html.paragraph_s_attrs(feed.map(|value| value.status), [Html.class_attr("hint"), Html.test_id("incident-feed-status")]),
+				],
+			),
+			Html.div_c(
+				"stat-grid",
+				[metric("open-incident-count", "Open incidents", items.map(|list| list.len().to_str()))],
+			),
 			Ui.when(
 				has_items,
 				|| Html.section_c("Incident timeline", "grid gap-3", [Ui.each_str(items, |item| item.id, render_incident)]),
-				|| Html.section_c("Incident timeline", "grid gap-3", [Html.paragraph_c("No incidents reported", line_class)]),
+				|| Html.section_c("Incident timeline", "grid gap-3", [Html.paragraph_c("No incidents reported in the last 90 days.", "empty-state")]),
 			),
 		],
 	)
@@ -420,21 +590,23 @@ main = ||
 				[
 					Html.section_c(
 						"Status Page",
-						hero_class,
+						"app-header",
 						[
-							Html.heading_c("Status Page", "text-3xl font-semibold text-zinc-950"),
-							Html.paragraph_c("Public service health, rolled up from independent per-service checks that refresh on an interval and pause while the page is hidden.", "max-w-3xl text-sm text-zinc-700"),
+							Html.heading_c("Acme Cloud Status", "app-title"),
+							Html.paragraph_c("Public service health, rolled up from independent per-service checks that refresh on an interval and pause while the page is hidden.", "app-subtitle"),
 						],
 					),
+					health_banner(totals),
 					overview_panel(totals, refresh_status, refresh_count, refreshes.on_unit(|n| n + 1)),
 					Html.section_c(
 						"Services",
 						panel_class,
 						[
-							service_card("api", "API", api),
-							service_card("web", "Web app", web),
-							service_card("database", "Database", database),
-							service_card("notifications", "Notifications", notifications),
+							Html.heading_c("Components", "panel-title"),
+							service_card("api", "API", "api.acme.cloud — REST and GraphQL", api),
+							service_card("web", "Web app", "app.acme.cloud — dashboard and console", web),
+							service_card("database", "Database", "Primary Postgres cluster, eu-west-1", database),
+							service_card("notifications", "Notifications", "Email, SMS and outbound webhooks", notifications),
 						],
 					),
 					incidents_panel(feed),
