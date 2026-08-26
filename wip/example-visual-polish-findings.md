@@ -47,6 +47,8 @@ through `bool_attr_s`, since the same trap applies to `aria-expanded`,
 
 ### P0 — `Json.parser_camel()` corrupts long field names on wasm32
 
+Upstream: https://github.com/roc-lang/roc/issues/10957
+
 The Conduit feed renders "Response was not valid JSON" on every load in the
 browser, while `/api/tags` on the same backend works. Chased to a Roc bug, not
 a Conduit one.
@@ -137,6 +139,8 @@ all of them.
 
 ### flight-search double-frees its task payload on wasm32
 
+Upstream: https://github.com/roc-lang/roc/issues/10958
+
 Now that the example has a browser data source, the first result kills it:
 
 ```
@@ -165,6 +169,8 @@ the pattern worth noting: giving these examples a data source did not create
 these bugs, it revealed how much of the browser path had never been executed.
 
 ### markdown-editor traps with "unreachable" in the browser
+
+Upstream: https://github.com/roc-lang/roc/issues/10959
 
 Opening `examples/markdown-editor/` renders nothing but the host error
 `unreachable` — a wasm trap during mount. All 11 native specs pass. Reproduced
