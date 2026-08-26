@@ -206,7 +206,7 @@ expect_metric_delta scopes_disposed 0
 # Every sibling row in all three each_str levels is re-keyed and reused.
 expect_metric_delta rows_reused 6
 expect_metric_delta_at_most patches_emitted 8
-expect_metric_delta_at_most nodes_recomputed 4
+expect_metric_delta_at_most dirty_source_roots 4
 # The siblings still hold their own values.
 expect_value label:"Value n4" "A"
 expect_value label:"Value n5" "o"

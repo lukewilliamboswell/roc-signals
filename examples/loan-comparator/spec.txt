@@ -117,12 +117,12 @@ expect_metric_delta rows_removed 0
 expect_metric_delta rows_reused 15
 expect_metric_delta scopes_created 0
 expect_metric_delta scopes_disposed 0
-expect_metric_delta nodes_recomputed 1
+expect_metric_delta dirty_source_roots 1
 # 38 derived transforms run: scenario A's whole chain (draft -> parsed ->
 # params -> schedule -> summary), A's five figure sinks, A's twelve row texts,
 # and the four cross-scenario nodes. Scenario B's and C's schedules are NOT
 # among them - recomputing them too would cost roughly forty more calls.
-expect_metric_delta derived_calls_into_roc 38
+expect_metric_delta derived_calls_into_roc 37
 expect_metric_delta patches_emitted 21
 
 # The break-even month moves because A's rate changed.
@@ -239,10 +239,10 @@ expect_text text:"Scenario B month 1: interest $24.00, principal $189.24, balanc
 expect_text text:"Interest spread: $152.72" "Interest spread: $152.72"
 expect_metric_delta rows_created 0
 expect_metric_delta rows_removed 0
-expect_metric_delta nodes_recomputed 1
+expect_metric_delta dirty_source_roots 1
 # 48, exactly twelve more than scenario A's edit above, because scenario C has
 # 24 schedule rows instead of 12. Scenario A's and B's schedules stay quiet.
-expect_metric_delta derived_calls_into_roc 48
+expect_metric_delta derived_calls_into_roc 47
 expect_metric_delta rows_reused 27
 
 select_option label:"Comparison pair" "bc"

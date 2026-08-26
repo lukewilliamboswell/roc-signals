@@ -142,7 +142,7 @@ expect_metric_delta rows_created 0
 expect_metric_delta rows_removed 0
 expect_metric_delta rows_reused 52
 # One root record recompute: the single Signal.map that evaluates the workbook.
-expect_metric_delta nodes_recomputed 1
+expect_metric_delta dirty_source_roots 1
 # Nine value writes: the eight cells whose displayed value changed (B2, D2, B5,
 # D5, F5, D6, D7, D8) plus the formula bar. No other cell is written.
 expect_metric_delta set_value 9
@@ -173,7 +173,7 @@ expect_value label:"D7" "4510"
 expect_value label:"A1" "Item"
 # Only row 12 was re-diffed: 12 outer rows plus its 8 cells.
 expect_metric_delta rows_reused 20
-expect_metric_delta nodes_recomputed 1
+expect_metric_delta dirty_source_roots 1
 expect_metric_delta set_value 2
 expect_metric_delta bind_event 0
 expect_metric_delta patches_emitted 4

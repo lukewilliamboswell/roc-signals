@@ -846,8 +846,9 @@ expect_metric_delta signal_record_table_rebuilt 0
 Pick the metric that answers the question you are asking:
 
 - **Did derived work stay proportional to the change?** `derived_calls_into_roc`
-  counts one call per `map` / `map2` / `combine` transform actually evaluated,
-  plus one for the event dispatch itself. This is the fine-grained budget.
+  counts one call per `map` / `map2` / `combine` transform actually evaluated.
+  This is the fine-grained budget: it should scale with the size of the change,
+  not the size of the graph.
 - **Did an equality cutoff stop propagation?** `propagation_prunes` counts each
   derived node that recomputed to an equal value and therefore did not
   propagate.
@@ -858,16 +859,16 @@ Pick the metric that answers the question you are asking:
   `set_checked`. Their exact values shift with unrelated engine changes, so
   bound them with `expect_metric_delta_at_most` rather than asserting equality.
 
-Note that `nodes_recomputed` does **not** count derived nodes. It counts dirty
-source roots — one per event dispatch, or the number of source signals a host
-change dirtied. It is therefore 1 for almost every user interaction regardless
-of how deep the graph is, and it is not a useful fine-grained budget. Use
-`derived_calls_into_roc` for that.
+`dirty_source_roots` counts the sources a change dirtied — one per event
+dispatch, or the number of host source signals a location, visibility, online,
+or storage change touched. It is 1 for almost every user interaction regardless
+of graph depth, so it is a sanity check that a change entered at one place, not
+a work budget.
 
 `examples/_fixtures/metric-semantics/` demonstrates the difference: one click on
 a source feeding a four-deep chain plus one always-equal node reports
-`nodes_recomputed 1`, `derived_calls_into_roc 7`, `propagation_prunes 1`, and
-`patches_emitted 1`.
+`dirty_source_roots 1`, `derived_calls_into_roc 6`, `propagation_prunes 1`,
+and `patches_emitted 1`.
 
 Other metric names include `stream_nodes_scanned`,
 `stream_nodes_scanned_events`, `render_indexes_refreshed`,

@@ -53,7 +53,7 @@ expect_metric_delta rows_created 0
 expect_metric_delta rows_removed 0
 expect_metric_delta scopes_created 0
 expect_metric_delta patches_emitted 3
-expect_metric_delta nodes_recomputed 1
+expect_metric_delta dirty_source_roots 1
 
 # --- attaching a different project mid-session ------------------------------
 # The clock keeps running; only the project it feeds changes.

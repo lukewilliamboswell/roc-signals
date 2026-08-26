@@ -115,7 +115,7 @@ expect_metric_delta rows_reused 10
 expect_metric_delta rows_removed 0
 expect_metric_delta set_value 1
 expect_metric_delta patches_emitted 5
-expect_metric_delta nodes_recomputed 1
+expect_metric_delta dirty_source_roots 1
 
 # editing the last row on the page
 mark_metrics

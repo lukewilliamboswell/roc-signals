@@ -1062,7 +1062,7 @@ pub fn Runner(comptime Ctx: type) type {
             if (std.mem.eql(u8, name, "host_alloc_bytes_this_event")) return u64MetricAsI64(metrics.host_alloc_bytes_this_event);
             if (std.mem.eql(u8, name, "host_dealloc_bytes_this_event")) return u64MetricAsI64(metrics.host_dealloc_bytes_this_event);
             if (std.mem.eql(u8, name, "events_processed")) return u64MetricAsI64(metrics.events_processed);
-            if (std.mem.eql(u8, name, "nodes_recomputed")) return u64MetricAsI64(metrics.nodes_recomputed);
+            if (std.mem.eql(u8, name, "dirty_source_roots")) return u64MetricAsI64(metrics.dirty_source_roots);
             if (std.mem.eql(u8, name, "propagation_prunes")) return u64MetricAsI64(metrics.propagation_prunes);
             if (std.mem.eql(u8, name, "derived_calls_into_roc")) return u64MetricAsI64(metrics.derived_calls_into_roc);
             if (std.mem.eql(u8, name, "each_key_compares")) return u64MetricAsI64(metrics.each_key_compares);

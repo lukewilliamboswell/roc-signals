@@ -1,0 +1,271 @@
+# Field Notes: offline capture, outbox drain, rollback, and restore.
+#
+# Storage format is "id|slot|queued|rev|body" per note, notes joined by ";".
+# Notes captured in this session get session ids ("s<n>"). Every operation is
+# idempotent, so replaying the log over the value it just persisted is stable.
+
+set_initial_online offline
+seed_local_storage "field-notes:notes" "n0|0|1|r7|Generator hours;n1|1|0|r7|Fence line check"
+
+# --- initial mount ----------------------------------------------------------
+
+expect_visible role:heading name:"Field Notes"
+expect_text test_id:"storage-notice" "Storage notice: notes are restored on reload"
+
+expect_visible role:region name:"Capture"
+expect_visible role:heading name:"New note"
+expect_value label:"Note body" ""
+expect_disabled role:button name:"Save note" true
+
+expect_visible role:region name:"Sync status"
+expect_attr role:region name:"Sync status" data-network "offline"
+expect_text test_id:"network" "Network: offline"
+expect_text test_id:"auto-sync" "Auto sync: on"
+expect_text test_id:"outbox-count" "Outbox: 1"
+expect_text test_id:"syncing" "Syncing: none"
+expect_text test_id:"failed-count" "Failed: 0"
+expect_text test_id:"synced-count" "Synced: 0"
+expect_text test_id:"capacity" "Capacity: 2 of 4"
+expect_checked label:"Sync automatically" true
+expect_checked label:"Hide synced notes" false
+
+expect_visible role:region name:"Outbox"
+expect_text test_id:"outbox-detail" "Outbox holds 1 notes"
+
+expect_visible role:region name:"Notes"
+expect_visible role:region name:"Note n0"
+expect_value label:"Body n0" "Generator hours"
+expect_text test_id:"status-n0" "Note n0 status: queued"
+expect_attr role:region name:"Note n0" data-status "queued"
+expect_disabled role:button name:"Queue note n0" true
+expect_disabled role:button name:"Retry note n0" true
+expect_visible role:region name:"Note n1"
+expect_value label:"Body n1" "Fence line check"
+expect_text test_id:"status-n1" "Note n1 status: draft"
+expect_attr role:region name:"Note n1" data-status "draft"
+expect_disabled role:button name:"Queue note n1" false
+expect_disabled role:button name:"Retry note n1" true
+expect_absent role:region name:"Note s1"
+
+# Offline means nothing is started even though a restored note is queued.
+expect_pending_task "note-sync" 0
+expect_canceled_task "note-sync" 0
+
+# --- capturing while offline ------------------------------------------------
+
+fill label:"Note body" "Pump pressure log"
+expect_value label:"Note body" "Pump pressure log"
+expect_disabled role:button name:"Save note" false
+click role:button name:"Save note"
+expect_value label:"Note body" ""
+expect_disabled role:button name:"Save note" true
+expect_visible role:region name:"Note s1"
+expect_value label:"Body s1" "Pump pressure log"
+expect_text test_id:"status-s1" "Note s1 status: draft"
+expect_text test_id:"capacity" "Capacity: 3 of 4"
+expect_text test_id:"outbox-count" "Outbox: 1"
+expect_pending_task "note-sync" 0
+
+# Whitespace-only drafts cannot be saved.
+fill label:"Note body" "   "
+expect_disabled role:button name:"Save note" true
+
+fill label:"Note body" "Tank level 42"
+click role:button name:"Save note"
+expect_visible role:region name:"Note s2"
+expect_value label:"Body s2" "Tank level 42"
+expect_text test_id:"capacity" "Capacity: full"
+
+# Boundary: the outbox holds four notes, so a fifth capture is refused.
+fill label:"Note body" "Overflow note"
+expect_disabled role:button name:"Save note" true
+fill label:"Note body" ""
+
+# --- queueing while offline -------------------------------------------------
+
+click role:button name:"Queue note s1"
+expect_text test_id:"status-s1" "Note s1 status: queued"
+expect_disabled role:button name:"Queue note s1" true
+click role:button name:"Queue note s2"
+expect_text test_id:"status-s2" "Note s2 status: queued"
+expect_text test_id:"outbox-count" "Outbox: 3"
+expect_text test_id:"outbox-detail" "Outbox holds 3 notes"
+expect_text test_id:"syncing" "Syncing: none"
+expect_pending_task "note-sync" 0
+
+# --- reorder: promoting a note changes the drain order ----------------------
+
+mark_metrics
+click role:button name:"Promote note s2"
+expect_metric_delta rows_created 0
+expect_metric_delta rows_removed 0
+expect_metric_delta rows_reused 4
+click role:button name:"Promote note n0"
+expect_text test_id:"status-n0" "Note n0 status: queued"
+expect_text test_id:"status-s2" "Note s2 status: queued"
+
+# Drain order is now n0, s2, s1.
+
+# --- the connection returns and the outbox drains one at a time -------------
+
+set_online online
+expect_attr role:region name:"Sync status" data-network "online"
+expect_text test_id:"network" "Network: online"
+expect_text test_id:"syncing" "Syncing: n0"
+expect_attr role:region name:"Note n0" data-status "syncing"
+expect_attr role:region name:"Note s2" data-status "queued"
+expect_attr role:region name:"Note s1" data-status "queued"
+expect_attr role:region name:"Note n1" data-status "draft"
+expect_pending_task "note-sync" 1
+
+resolve_task "note-sync" "n0#r7"
+expect_text test_id:"status-n0" "Note n0 status: synced"
+expect_text test_id:"synced-count" "Synced: 1"
+expect_text test_id:"syncing" "Syncing: s2"
+expect_text test_id:"outbox-count" "Outbox: 2"
+expect_pending_task "note-sync" 1
+
+# A failure rolls that note back to failed; its siblings are untouched and the
+# queue keeps draining past it.
+reject_task "note-sync" "s2#r0"
+expect_text test_id:"status-s2" "Note s2 status: failed"
+expect_attr role:region name:"Note s2" data-status "failed"
+expect_text test_id:"failed-count" "Failed: 1"
+expect_text test_id:"status-n0" "Note n0 status: synced"
+expect_text test_id:"syncing" "Syncing: s1"
+expect_pending_task "note-sync" 1
+
+resolve_task "note-sync" "s1#r0"
+expect_text test_id:"status-s1" "Note s1 status: synced"
+expect_text test_id:"synced-count" "Synced: 2"
+expect_text test_id:"failed-count" "Failed: 1"
+expect_text test_id:"syncing" "Syncing: none"
+expect_text test_id:"outbox-count" "Outbox: 1"
+expect_pending_task "note-sync" 0
+
+# --- retrying the failed note -----------------------------------------------
+
+expect_disabled role:button name:"Retry note s2" false
+click role:button name:"Retry note s2"
+expect_text test_id:"status-s2" "Note s2 status: syncing"
+expect_pending_task "note-sync" 1
+resolve_task "note-sync" "s2#s2:1"
+expect_text test_id:"status-s2" "Note s2 status: synced"
+expect_text test_id:"synced-count" "Synced: 3"
+expect_text test_id:"failed-count" "Failed: 0"
+expect_text test_id:"outbox-count" "Outbox: 0"
+expect_visible text:"Outbox is empty"
+expect_pending_task "note-sync" 0
+
+# --- editing an already-synced note re-queues it ----------------------------
+# Documented behaviour: an edit bumps the note's attempt, which invalidates the
+# lane's settled token, so the note re-enters the outbox and syncs again.
+
+mark_metrics
+fill label:"Body n0" "Generator hours 128"
+expect_metric_delta rows_created 0
+expect_metric_delta rows_removed 0
+expect_metric_delta rows_reused 4
+expect_text test_id:"status-n0" "Note n0 status: syncing"
+expect_text test_id:"outbox-count" "Outbox: 1"
+expect_pending_task "note-sync" 1
+
+# Editing one row does not disturb its siblings.
+expect_value label:"Body s1" "Pump pressure log"
+expect_text test_id:"status-s1" "Note s1 status: synced"
+expect_value label:"Body s2" "Tank level 42"
+expect_text test_id:"status-s2" "Note s2 status: synced"
+expect_value label:"Body n1" "Fence line check"
+expect_text test_id:"status-n1" "Note n1 status: draft"
+
+resolve_task "note-sync" "n0#n0:1"
+expect_text test_id:"status-n0" "Note n0 status: synced"
+expect_value label:"Body n0" "Generator hours 128"
+expect_visible text:"Outbox is empty"
+expect_pending_task "note-sync" 0
+
+# --- going offline mid-sync, then a stale result arriving late --------------
+
+click role:button name:"Queue note n1"
+expect_text test_id:"status-n1" "Note n1 status: syncing"
+expect_pending_task "note-sync" 1
+expect_canceled_task "note-sync" 0
+
+set_online offline
+expect_text test_id:"network" "Network: offline"
+expect_text test_id:"status-n1" "Note n1 status: queued"
+expect_text test_id:"syncing" "Syncing: none"
+expect_pending_task "note-sync" 1
+
+set_online online
+expect_text test_id:"status-n1" "Note n1 status: syncing"
+expect_pending_task "note-sync" 1
+expect_canceled_task "note-sync" 1
+
+# The request abandoned at the offline edge settles after the newer one started.
+mark_metrics
+resolve_stale_task "note-sync" "n1#r7"
+expect_metric_delta stale_task_results_ignored 1
+expect_text test_id:"status-n1" "Note n1 status: syncing"
+expect_pending_task "note-sync" 1
+
+resolve_task "note-sync" "n1#r7"
+expect_text test_id:"status-n1" "Note n1 status: synced"
+expect_text test_id:"synced-count" "Synced: 4"
+expect_visible text:"Outbox is empty"
+expect_pending_task "note-sync" 0
+
+# --- pausing auto sync, then deleting a queued note -------------------------
+
+uncheck label:"Sync automatically"
+expect_checked label:"Sync automatically" false
+expect_text test_id:"auto-sync" "Auto sync: paused"
+
+click role:button name:"Delete note s2"
+expect_absent role:region name:"Note s2"
+expect_text test_id:"capacity" "Capacity: 3 of 4"
+expect_text test_id:"synced-count" "Synced: 3"
+
+fill label:"Note body" "Radio check"
+click role:button name:"Save note"
+expect_visible role:region name:"Note s3"
+expect_value label:"Body s3" "Radio check"
+expect_text test_id:"capacity" "Capacity: full"
+
+click role:button name:"Queue note s3"
+expect_text test_id:"status-s3" "Note s3 status: queued"
+expect_text test_id:"outbox-count" "Outbox: 1"
+expect_text test_id:"syncing" "Syncing: none"
+expect_pending_task "note-sync" 0
+
+click role:button name:"Delete note s3"
+expect_absent role:region name:"Note s3"
+expect_text test_id:"outbox-count" "Outbox: 0"
+expect_visible text:"Outbox is empty"
+expect_text test_id:"capacity" "Capacity: 3 of 4"
+expect_pending_task "note-sync" 0
+
+check label:"Sync automatically"
+expect_text test_id:"auto-sync" "Auto sync: on"
+expect_pending_task "note-sync" 0
+
+# --- filtering hides synced rows without touching the others ----------------
+
+mark_metrics
+check label:"Hide synced notes"
+expect_metric_delta rows_removed 3
+expect_metric_delta rows_created 0
+expect_absent role:region name:"Note n0"
+expect_absent role:region name:"Note n1"
+expect_absent role:region name:"Note s1"
+expect_text test_id:"synced-count" "Synced: 3"
+
+uncheck label:"Hide synced notes"
+expect_visible role:region name:"Note n0"
+expect_visible role:region name:"Note n1"
+expect_visible role:region name:"Note s1"
+expect_value label:"Body n0" "Generator hours 128"
+
+# --- persistence ------------------------------------------------------------
+
+expect_local_storage "field-notes:notes" "n0|0|1|n0:1|Generator hours 128;n1|1|1|r7|Fence line check;s1|2|1|r0|Pump pressure log"

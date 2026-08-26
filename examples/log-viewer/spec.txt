@@ -166,7 +166,7 @@ expect_metric_delta rows_reused 40
 expect_metric_delta rows_created 1
 expect_metric_delta rows_removed 0
 expect_metric_delta scopes_created 1
-expect_metric_delta nodes_recomputed 1
+expect_metric_delta dirty_source_roots 1
 expect_metric_delta patches_emitted 15
 
 # One more append, to show the budget is flat per line rather than per buffer.

@@ -45,7 +45,7 @@ expect_visible role:region name:"Billing Hotfix"
 expect_text text:"Billing Hotfix awaiting verification" "Billing Hotfix awaiting verification"
 expect_text text:"Search Index checks: 1" "Search Index checks: 1"
 expect_text text:"Edge Gateway checks: 1" "Edge Gateway checks: 1"
-expect_metric_delta nodes_recomputed 1
+expect_metric_delta dirty_source_roots 1
 expect_metric_delta patches_emitted 20
 expect_metric_delta rows_reused 3
 expect_metric_delta rows_created 1
@@ -68,7 +68,7 @@ expect_absent role:region name:"API Workers"
 expect_text text:"Billing Hotfix checks: 1" "Billing Hotfix checks: 1"
 expect_text text:"Search Index checks: 1" "Search Index checks: 1"
 expect_text text:"Edge Gateway checks: 1" "Edge Gateway checks: 1"
-expect_metric_delta nodes_recomputed 1
+expect_metric_delta dirty_source_roots 1
 # Removing a rendered row emits one subtree removal; descendants deactivate
 # inside the engine rather than producing redundant host remove patches.
 expect_metric_delta patches_emitted 2

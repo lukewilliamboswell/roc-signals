@@ -124,7 +124,7 @@ test "NoMetrics is a zero-size no-op metrics sink" {
     try std.testing.expectEqual(@as(usize, 0), @sizeOf(NoMetrics));
     var metrics: NoMetrics = .{};
     metrics.bump(.closure_retains, 2);
-    metrics.bump(.nodes_recomputed, 1);
+    metrics.bump(.dirty_source_roots, 1);
 }
 
 const EventPayloadKind = engine.EventPayloadKind;
@@ -2027,9 +2027,10 @@ fn dispatchRocEventWithStats(host: *HostEnv, roc_host: *abi.RocHost, event_id: u
 
     host.recordDispatch();
 
+    // A reducer call is not a derived signal evaluation, so it must not inflate
+    // derived_calls_into_roc. Dispatches are already counted by events_processed.
     var metrics = host.engine.pending_roc_metrics;
-    metrics.bump(.nodes_recomputed, 1);
-    metrics.bump(.derived_calls_into_roc, 1);
+    metrics.bump(.dirty_source_roots, 1);
     host.engine.pending_roc_metrics = metrics;
 
     const start_ns = benchmark.nowNs();
@@ -2769,7 +2770,7 @@ fn platform_main(spec_file: []const u8, verbose: bool) error{}!c_int {
         var buf: [256]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "[INFO] UI built: {d} DOM elements, {d} recomputed nodes\n", .{
             host_env.dom_elements.items.len,
-            host_env.engine.last_runtime_metrics.nodes_recomputed,
+            host_env.engine.last_runtime_metrics.dirty_source_roots,
         }) catch "";
         writeStderr(msg);
         host_env.dumpDom();
@@ -2835,7 +2836,7 @@ test "signals metrics accumulate propagation pruning counters" {
     left.host_dealloc_bytes_this_event = 64;
     left.host_retained_alloc_delta = 1;
     left.host_retained_bytes_delta = 64;
-    left.nodes_recomputed = 5;
+    left.dirty_source_roots = 5;
     left.propagation_prunes = 3;
     left.derived_calls_into_roc = 4;
     left.each_key_compares = 6;
@@ -2878,7 +2879,7 @@ test "signals metrics accumulate propagation pruning counters" {
     right.host_dealloc_bytes_this_event = 128;
     right.host_retained_alloc_delta = 4;
     right.host_retained_bytes_delta = 384;
-    right.nodes_recomputed = 8;
+    right.dirty_source_roots = 8;
     right.propagation_prunes = 11;
     right.derived_calls_into_roc = 6;
     right.each_key_compares = 7;
@@ -2922,7 +2923,7 @@ test "signals metrics accumulate propagation pruning counters" {
     try std.testing.expectEqual(@as(u64, 192), total.host_dealloc_bytes_this_event);
     try std.testing.expectEqual(@as(i64, 5), total.host_retained_alloc_delta);
     try std.testing.expectEqual(@as(i64, 448), total.host_retained_bytes_delta);
-    try std.testing.expectEqual(@as(u64, 13), total.nodes_recomputed);
+    try std.testing.expectEqual(@as(u64, 13), total.dirty_source_roots);
     try std.testing.expectEqual(@as(u64, 14), total.propagation_prunes);
     try std.testing.expectEqual(@as(u64, 10), total.derived_calls_into_roc);
     try std.testing.expectEqual(@as(u64, 13), total.each_key_compares);

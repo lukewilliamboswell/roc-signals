@@ -5458,7 +5458,7 @@ pub fn Engine(comptime Ctx: type) type {
 
             self.recordDispatch();
             var metrics = self.pending_roc_metrics;
-            metrics.bump(.nodes_recomputed, 1);
+            metrics.bump(.dirty_source_roots, 1);
             self.pending_roc_metrics = metrics;
             const dirty_generation = self.nextDirtySignalGeneration();
             record.last_dirty_generation = dirty_generation;
@@ -5507,7 +5507,7 @@ pub fn Engine(comptime Ctx: type) type {
 
             self.recordDispatch();
             var metrics = self.pending_roc_metrics;
-            metrics.bump(.nodes_recomputed, @intCast(root_record_ids.items.len));
+            metrics.bump(.dirty_source_roots, @intCast(root_record_ids.items.len));
             self.pending_roc_metrics = metrics;
 
             const dirty_record_ids = self.scratchDirtyActiveSignalRecordIdsForRoots(ctx, root_record_ids.items);
@@ -5536,7 +5536,7 @@ pub fn Engine(comptime Ctx: type) type {
 
             self.recordDispatch();
             var metrics = self.pending_roc_metrics;
-            metrics.bump(.nodes_recomputed, @intCast(root_record_ids.items.len));
+            metrics.bump(.dirty_source_roots, @intCast(root_record_ids.items.len));
             self.pending_roc_metrics = metrics;
 
             const dirty_record_ids = self.scratchDirtyActiveSignalRecordIdsForRoots(ctx, root_record_ids.items);
@@ -5565,7 +5565,7 @@ pub fn Engine(comptime Ctx: type) type {
 
             self.recordDispatch();
             var metrics = self.pending_roc_metrics;
-            metrics.bump(.nodes_recomputed, @intCast(root_record_ids.items.len));
+            metrics.bump(.dirty_source_roots, @intCast(root_record_ids.items.len));
             self.pending_roc_metrics = metrics;
 
             const dirty_record_ids = self.scratchDirtyActiveSignalRecordIdsForRoots(ctx, root_record_ids.items);
@@ -5596,7 +5596,7 @@ pub fn Engine(comptime Ctx: type) type {
 
             self.recordDispatch();
             var metrics = self.pending_roc_metrics;
-            metrics.bump(.nodes_recomputed, @intCast(root_record_ids.items.len));
+            metrics.bump(.dirty_source_roots, @intCast(root_record_ids.items.len));
             self.pending_roc_metrics = metrics;
 
             const dirty_record_ids = self.scratchDirtyActiveSignalRecordIdsForRoots(ctx, root_record_ids.items);

@@ -564,7 +564,7 @@ bench = false
 [[examples]]
 slug = "metric-semantics"
 title = "Metric Semantics"
-description = "Internal fixture documenting what nodes_recomputed counts."
+description = "Internal fixture documenting what dirty_source_roots counts."
 source = "examples/_fixtures/metric-semantics/app.roc"
 spec = "examples/_fixtures/metric-semantics/spec.txt"
 public = false
