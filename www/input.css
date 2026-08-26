@@ -245,8 +245,11 @@
 
   /* Metrics --------------------------------------------------------- */
 
+  /* Auto-fit rather than a fixed four columns, so a five- or seven-tile grid
+     spreads evenly instead of leaving one orphan on a second row. */
   .stat-grid {
-    @apply grid gap-3 sm:grid-cols-2 lg:grid-cols-4;
+    @apply grid gap-3;
+    grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
   }
 
   .stat {
