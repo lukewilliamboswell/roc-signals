@@ -6,25 +6,28 @@ import pf.Html
 import pf.Signal
 import pf.Ui
 
-page_class = "grid gap-5"
+page_class = "app-shell app-shell-wide"
 
-hero_class = "panel grid gap-2 p-5"
+panel_class = "panel grid gap-4 p-4"
 
-panel_class = "panel grid gap-3 p-4"
+## The three scenarios are columns, not a stack: comparing them is the whole
+## point, so they have to sit beside each other at desktop width.
+columns_class = "grid gap-4 lg:grid-cols-3"
 
-list_class = "grid gap-1"
+input_class = "input numeric text-right"
 
-input_class = "w-full max-w-xs rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm"
+## An amortisation schedule is detail, not headline. It scrolls inside its own
+## box so twelve or twenty-four months never push the comparison off screen.
+schedule_scroll_class = "max-h-56 overflow-y-auto rounded-md border border-zinc-200 bg-zinc-50"
 
-figure_class = "text-sm font-medium text-zinc-900"
-
-note_class = "text-sm text-zinc-600"
-
-row_class = "text-sm text-zinc-700"
+row_class = "numeric border-b border-zinc-100 px-3 py-1.5 text-xs text-zinc-700"
 
 ## A schedule row flattened for display, keyed by scenario slug and month. The
 ## key doubles as the row's `test_id`, so a spec can assert a specific month's
 ## figures by identity rather than by matching their text.
+##
+## One string per row on purpose: each row is a single derived node, so editing
+## a scenario recomputes one text per month rather than one per cell.
 RowView : {
 	key : Str,
 	text : Str,
@@ -51,12 +54,12 @@ set_term = |draft, value| { ..draft, term: value }
 set_extra : Loan.Draft, Str -> Loan.Draft
 set_extra = |draft, value| { ..draft, extra: value }
 
-row_views : Str, Str, Loan.Schedule -> List(RowView)
-row_views = |id, name, sched|
+row_views : Str, Loan.Schedule -> List(RowView)
+row_views = |id, sched|
 	sched.rows.map(
 		|row| {
 			key: "${id}-month-${row.month.to_str()}",
-			text: "${name} month ${row.month.to_str()}: interest ${Loan.money(row.interest)}, principal ${Loan.money(row.principal_paid)}, balance ${Loan.money(row.balance)}",
+			text: "Month ${row.month.to_str()} | interest ${Loan.money(row.interest)} | principal ${Loan.money(row.principal_paid)} | balance ${Loan.money(row.balance)}",
 		},
 	)
 
@@ -69,76 +72,162 @@ render_row = |key, row|
 
 render_rows : Str, Str, Signal.Signal(Loan.Schedule) -> Elem
 render_rows = |id, name, sched| {
-	rows = sched.map(|value| row_views(id, name, value))
+	rows = sched.map(|value| row_views(id, value))
 	Html.section_c(
 		"${name} schedule",
-		list_class,
-		[Ui.each_str(rows, |row| row.key, render_row)],
+		"grid gap-2",
+		[
+			Html.paragraph_c("Amortisation", "panel-title"),
+			Html.div_c(
+				schedule_scroll_class,
+				[
+					Ui.when(
+						sched.map(|value| value.rows.is_empty()),
+						|| Html.paragraph_c("Nothing to amortise — this scenario borrows $0.00.", "empty-state border-0 bg-transparent"),
+						|| Ui.each_str(rows, |row| row.key, render_row),
+					),
+				],
+			),
+		],
 	)
 }
 
-## One scenario panel. Every figure below is read from the SAME `sched` signal:
+## A labelled money/number input. `Html.text_input_c`'s first argument is only
+## an accessible name, so the visible caption is drawn here.
+money_field : Str, Str, Signal.Signal(Str), _ -> Elem
+money_field = |label, placeholder, value, msg|
+	Html.div_c(
+		"field",
+		[
+			Html.paragraph_c(label, "field-label"),
+			Html.text_input_attrs(
+				label,
+				value,
+				[Html.class_attr(input_class), Html.attr("placeholder", placeholder)],
+				msg,
+			),
+		],
+	)
+
+## One headline figure. The winner mark beside the label is derived from the
+## same comparison signal that ranks the number, so the badge can never
+## contradict the figure under it.
+metric : Str, Signal.Signal(Str), Str, Str -> Elem
+metric = |label, value, test_id, size|
+	Html.div_c(
+		"stat",
+		[
+			Html.paragraph_c(label, "stat-label"),
+			Html.paragraph_s_attrs(value, [Html.class_attr("stat-value ${size}"), Html.test_id(test_id)]),
+		],
+	)
+
+## As `metric`, plus a "Lowest" badge that appears only on the winning column.
+marked_metric : Str, Signal.Signal(Str), Str, Str, Signal.Signal(Bool) -> Elem
+marked_metric = |label, value, test_id, size, best|
+	Html.div_sc(
+		best.map(stat_class),
+		[
+			Html.div_c(
+				"flex items-center justify-between gap-2",
+				[
+					Html.paragraph_c(label, "stat-label"),
+					Html.paragraph_attrs("Lowest", [Html.class_attr_s(best.map(mark_class))]),
+				],
+			),
+			Html.paragraph_s_attrs(value, [Html.class_attr("stat-value ${size}"), Html.test_id(test_id)]),
+		],
+	)
+
+## The badge is hidden rather than emptied: an empty pill would still draw a
+## border, and a "Lowest" caption on a losing column would be a lie.
+mark_class : Bool -> Str
+mark_class = |best| if best { "badge badge-ok" } else { "hidden" }
+
+stat_class : Bool -> Str
+stat_class = |best|
+	if best {
+		"stat border-emerald-200 bg-emerald-50"
+	} else {
+		"stat"
+	}
+
+## `inputs ok` is the only accepted message; anything else names a bad field.
+input_badge_class : Str -> Str
+input_badge_class = |message| if message == "inputs ok" { "badge badge-ok" } else { "badge badge-danger" }
+
+best_by : List(Loan.Summary), (Loan.Summary -> U64) -> Str
+best_by = |summaries, field|
+	match summaries.first() {
+		Err(_) => ""
+		Ok(head) => summaries.fold(head, |current, item| if field(item) < field(current) { item } else { current }).id
+	}
+
+## One scenario column. Every figure below is read from the SAME `sched` signal:
 ## the schedule is computed once per edit and consumed by five separate sinks.
-scenario_panel : Str, Str, Ui.State(Loan.Draft), Signal.Signal(Loan.Parsed), Signal.Signal(Loan.Schedule) -> Elem
-scenario_panel = |id, name, draft, parsed, sched| {
+## The two "Lowest" marks come off `summaries`, the cross-scenario fan-in.
+scenario_panel : Str, Str, Ui.State(Loan.Draft), Signal.Signal(Loan.Parsed), Signal.Signal(Loan.Schedule), Signal.Signal(List(Loan.Summary)) -> Elem
+scenario_panel = |id, name, draft, parsed, sched, summaries| {
 	draft_signal = draft.signal()
+	best_payment = summaries.map(|list| best_by(list, |item| item.payment) == id)
+	best_cost = summaries.map(|list| best_by(list, |item| item.total_paid) == id)
 
 	Html.section_c(
 		name,
 		panel_class,
 		[
-			Html.heading_c(name, "text-lg font-semibold text-zinc-950"),
-			Html.text_input_c(
-				"${name} principal",
-				draft_signal.map(|value| value.principal),
-				input_class,
-				draft.on_str(set_principal),
+			Html.div_c(
+				"flex flex-wrap items-center justify-between gap-2",
+				[
+					Html.heading_c(name, "card-title text-base"),
+					Html.paragraph_s_attrs(
+						parsed.map(|value| value.message),
+						[Html.class_attr_s(parsed.map(|value| input_badge_class(value.message))), Html.test_id("${id}-inputs")],
+					),
+				],
 			),
-			Html.text_input_c(
-				"${name} annual rate",
-				draft_signal.map(|value| value.rate),
-				input_class,
-				draft.on_str(set_rate),
+			Html.div_c(
+				"grid gap-3 sm:grid-cols-2",
+				[
+					money_field("${name} principal", "2400", draft_signal.map(|value| value.principal), draft.on_str(set_principal)),
+					money_field("${name} annual rate", "6", draft_signal.map(|value| value.rate), draft.on_str(set_rate)),
+					money_field("${name} term months", "12", draft_signal.map(|value| value.term), draft.on_str(set_term)),
+					money_field("${name} extra payment", "0", draft_signal.map(|value| value.extra), draft.on_str(set_extra)),
+				],
 			),
-			Html.text_input_c(
-				"${name} term months",
-				draft_signal.map(|value| value.term),
-				input_class,
-				draft.on_str(set_term),
+			Html.div_c(
+				"grid gap-2 sm:grid-cols-2",
+				[
+					marked_metric(
+						"Monthly payment",
+						sched.map(|value| Loan.money(value.payment)),
+						"${id}-payment",
+						"text-xl",
+						best_payment,
+					),
+					marked_metric(
+						"Total cost",
+						sched.map(|value| Loan.money(value.total_paid)),
+						"${id}-total-paid",
+						"text-xl",
+						best_cost,
+					),
+					metric("Total interest", sched.map(|value| Loan.money(value.total_interest)), "${id}-total-interest", "text-base"),
+					metric("Payoff", sched.map(|value| Loan.months_text(value.months)), "${id}-payoff", "text-base"),
+				],
 			),
-			Html.text_input_c(
-				"${name} extra payment",
-				draft_signal.map(|value| value.extra),
-				input_class,
-				draft.on_str(set_extra),
-			),
-			Html.paragraph_s_attrs(
-				parsed.map(|value| "${name} inputs: ${value.message}"),
-				[Html.class_attr(note_class), Html.test_id("${id}-inputs")],
-			),
-			Html.paragraph_s_attrs(
-				parsed.map(|value| "${name} rate: ${Loan.percent(value.params.rate_bp)}"),
-				[Html.class_attr(note_class), Html.test_id("${id}-rate")],
-			),
-			Html.paragraph_s_attrs(
-				sched.map(|value| "${name} monthly payment: ${Loan.money(value.payment)}"),
-				[Html.class_attr(figure_class), Html.test_id("${id}-payment")],
-			),
-			Html.paragraph_s_attrs(
-				sched.map(|value| "${name} total interest: ${Loan.money(value.total_interest)}"),
-				[Html.class_attr(figure_class), Html.test_id("${id}-total-interest")],
-			),
-			Html.paragraph_s_attrs(
-				sched.map(|value| "${name} total paid: ${Loan.money(value.total_paid)}"),
-				[Html.class_attr(figure_class), Html.test_id("${id}-total-paid")],
-			),
-			Html.paragraph_s_attrs(
-				sched.map(|value| "${name} payoff: ${Loan.months_text(value.months)}"),
-				[Html.class_attr(figure_class), Html.test_id("${id}-payoff")],
-			),
-			Html.paragraph_s_attrs(
-				sched.map(|value| "${name} final balance: ${Loan.money(value.final_balance)}"),
-				[Html.class_attr(figure_class), Html.test_id("${id}-final-balance")],
+			Html.div_c(
+				"flex flex-wrap items-center justify-between gap-2 border-t border-zinc-200 pt-3",
+				[
+					Html.paragraph_s_attrs(
+						parsed.map(|value| Loan.percent(value.params.rate_bp)),
+						[Html.class_attr("hint numeric"), Html.test_id("${id}-rate")],
+					),
+					Html.paragraph_s_attrs(
+						sched.map(|value| Loan.money(value.final_balance)),
+						[Html.class_attr("hint numeric"), Html.test_id("${id}-final-balance")],
+					),
+				],
 			),
 			render_rows(id, name, sched),
 		],
@@ -148,7 +237,7 @@ scenario_panel = |id, name, draft, parsed, sched| {
 cheapest_text : List(Loan.Summary) -> Str
 cheapest_text = |summaries|
 	match summaries.first() {
-		Err(_) => "Cheapest: none"
+		Err(_) => "None"
 		Ok(head) => {
 			best =
 				summaries.fold(
@@ -160,14 +249,14 @@ cheapest_text = |summaries|
 							current
 						},
 				)
-			"Cheapest: ${best.name} at ${Loan.money(best.total_interest)} total interest"
+			"${best.name} (${Loan.money(best.total_interest)})"
 		}
 	}
 
 spread_text : List(Loan.Summary) -> Str
 spread_text = |summaries|
 	match summaries.first() {
-		Err(_) => "Interest spread: none"
+		Err(_) => "None"
 		Ok(head) => {
 			low =
 				summaries.fold(
@@ -179,16 +268,8 @@ spread_text = |summaries|
 					head.total_interest,
 					|current, item| if item.total_interest > current { item.total_interest } else { current },
 				)
-			"Interest spread: ${Loan.money(high - low)}"
+			Loan.money(high - low)
 		}
-	}
-
-pair_name : Str -> Str
-pair_name = |pair|
-	match pair {
-		"ac" => "Scenario A vs Scenario C"
-		"bc" => "Scenario B vs Scenario C"
-		_ => "Scenario A vs Scenario B"
 	}
 
 pair_indexes : Str -> { left : U64, right : U64 }
@@ -206,14 +287,16 @@ pick = |schedules, index|
 		Err(_) => { payment: 0, rows: [], total_interest: 0, total_paid: 0, months: 0, final_balance: 0 }
 	}
 
+## The pair being compared is named by the select beside this figure, so the
+## value is just the month the two cross over.
 break_even_text : Str, List(Loan.Schedule) -> Str
 break_even_text = |pair, schedules| {
 	sides = pair_indexes(pair)
 	month = Loan.break_even_month(pick(schedules, sides.left), pick(schedules, sides.right))
 	if month == 0 {
-		"Break-even (${pair_name(pair)}): none"
+		"Never"
 	} else {
-		"Break-even (${pair_name(pair)}): month ${month.to_str()}"
+		"Month ${month.to_str()}"
 	}
 }
 
@@ -221,21 +304,35 @@ invariant_text : List(Loan.Schedule) -> Str
 invariant_text = |schedules| {
 	bad = schedules.keep_if(|sched| sched.final_balance != 0)
 	if bad.is_empty() {
-		"Schedule invariant: all final balances are $0.00"
+		"All balances clear"
 	} else {
-		"Schedule invariant: ${bad.len().to_str()} schedule(s) did not clear"
+		"${bad.len().to_str()} schedule(s) did not clear"
 	}
 }
 
+invariant_class : List(Loan.Schedule) -> Str
+invariant_class = |schedules|
+	if schedules.keep_if(|sched| sched.final_balance != 0).is_empty() {
+		"badge badge-ok"
+	} else {
+		"badge badge-danger"
+	}
+
 summary_line : Loan.Summary -> Str
 summary_line = |summary|
-	"${summary.name} summary: ${Loan.money(summary.payment)} per month for ${Loan.months_text(summary.months)}, interest ${Loan.money(summary.total_interest)}"
+	"${Loan.money(summary.payment)} / mo, ${Loan.months_text(summary.months)}, ${Loan.money(summary.total_interest)} interest"
 
 render_summary : Str, Signal.Signal(Loan.Summary) -> Elem
 render_summary = |key, summary|
-	Html.paragraph_s_attrs(
-		summary.map(summary_line),
-		[Html.class_attr(row_class), Html.test_id("summary-${key}")],
+	Html.div_c(
+		"flex flex-wrap items-baseline justify-between gap-2 rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2",
+		[
+			Html.paragraph_s_c(summary.map(|value| value.name), "value"),
+			Html.paragraph_s_attrs(
+				summary.map(summary_line),
+				[Html.class_attr("numeric text-sm text-zinc-700"), Html.test_id("summary-${key}")],
+			),
+		],
 	)
 
 comparison_panel : Ui.State(Str), Signal.Signal(List(Loan.Summary)), Signal.Signal(List(Loan.Schedule)) -> Elem
@@ -247,25 +344,45 @@ comparison_panel = |pair, summaries, schedules| {
 		"Comparison",
 		panel_class,
 		[
-			Html.heading_c("Comparison", "text-lg font-semibold text-zinc-950"),
-			Html.paragraph_s_attrs(summaries.map(cheapest_text), [Html.class_attr(figure_class), Html.test_id("cheapest")]),
-			Html.paragraph_s_attrs(summaries.map(spread_text), [Html.class_attr(figure_class), Html.test_id("interest-spread")]),
-			Html.paragraph_s_attrs(schedules.map(invariant_text), [Html.class_attr(figure_class), Html.test_id("schedule-invariant")]),
-			Html.select_c(
-				"Comparison pair",
-				pair_signal,
-				input_class,
+			Html.div_c(
+				"flex flex-wrap items-center justify-between gap-3",
 				[
-					Html.option("ab", "Scenario A vs Scenario B"),
-					Html.option("ac", "Scenario A vs Scenario C"),
-					Html.option("bc", "Scenario B vs Scenario C"),
+					Html.heading_c("Comparison", "panel-title"),
+					Html.paragraph_s_attrs(
+						schedules.map(invariant_text),
+						[Html.class_attr_s(schedules.map(invariant_class)), Html.test_id("schedule-invariant")],
+					),
 				],
-				pair.on_str(|_, value| value),
 			),
-			Html.paragraph_s_attrs(break_even, [Html.class_attr(figure_class), Html.test_id("break-even")]),
+			Html.div_c(
+				"stat-grid lg:grid-cols-3",
+				[
+					metric("Least interest", summaries.map(cheapest_text), "cheapest", "text-base"),
+					metric("Interest spread", summaries.map(spread_text), "interest-spread", "text-base"),
+					metric("Break-even", break_even, "break-even", "text-base"),
+				],
+			),
+			Html.div_c(
+				"field max-w-sm",
+				[
+					Html.paragraph_c("Comparison pair", "field-label"),
+					Html.select_c(
+						"Comparison pair",
+						pair_signal,
+						"input",
+						[
+							Html.option("ab", "Scenario A vs Scenario B"),
+							Html.option("ac", "Scenario A vs Scenario C"),
+							Html.option("bc", "Scenario B vs Scenario C"),
+						],
+						pair.on_str(|_, value| value),
+					),
+					Html.paragraph_c("Break-even is the first month the two running totals swap places.", "hint"),
+				],
+			),
 			Html.section_c(
 				"Scenario summaries",
-				list_class,
+				"grid gap-2",
 				[Ui.each_str(summaries, |summary| summary.id, render_summary)],
 			),
 		],
@@ -324,19 +441,24 @@ main = ||
 										[
 											Html.section_c(
 												"Loan Comparator",
-												hero_class,
+												"app-header",
 												[
-													Html.heading_c("Loan Comparator", "text-3xl font-semibold text-zinc-950"),
+													Html.heading_c("Loan Comparator", "app-title"),
 													Html.paragraph_c(
-														"Compare loan scenarios with integer-cent arithmetic. Each scenario's amortisation schedule is one memoised derived signal that many parts of this page read.",
-														"max-w-3xl text-sm text-zinc-700",
+														"Three loans side by side, in integer cents. Each scenario's amortisation schedule is one memoised derived signal, and every figure in its column — including the Lowest marks — is read from it.",
+														"app-subtitle",
 													),
 												],
 											),
-											scenario_panel("a", "Scenario A", draft_a, parsed_a, sched_a),
-											scenario_panel("b", "Scenario B", draft_b, parsed_b, sched_b),
-											scenario_panel("c", "Scenario C", draft_c, parsed_c, sched_c),
 											comparison_panel(pair, summaries, schedules),
+											Html.div_c(
+												columns_class,
+												[
+													scenario_panel("a", "Scenario A", draft_a, parsed_a, sched_a, summaries),
+													scenario_panel("b", "Scenario B", draft_b, parsed_b, sched_b, summaries),
+													scenario_panel("c", "Scenario C", draft_c, parsed_c, sched_c, summaries),
+												],
+											),
 										],
 									)
 								},

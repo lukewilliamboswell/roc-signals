@@ -4,10 +4,10 @@
 
     (select-option (label "Comparison pair") "ac")
     (expect-value (label "Comparison pair") "ac")
-    (expect-text (test-id "break-even") "Break-even (Scenario A vs Scenario C): month 24")
+    (expect-text (test-id "break-even") "Month 24")
     (select-option (label "Comparison pair") "bc")
-    (expect-text (test-id "break-even") "Break-even (Scenario B vs Scenario C): none")
+    (expect-text (test-id "break-even") "Never")
     (select-option (label "Comparison pair") "ac")
-    (expect-text (test-id "break-even") "Break-even (Scenario A vs Scenario C): month 24")
+    (expect-text (test-id "break-even") "Month 24")
   )
 )

@@ -15,11 +15,11 @@
     ; 7. a term of one month
 
     (fill (label "Scenario A term months") "1")
-    (expect-text (test-id "a-payment") "Scenario A monthly payment: $2400.00")
-    (expect-text (test-id "a-payoff") "Scenario A payoff: 1 month")
-    (expect-text (test-id "a-final-balance") "Scenario A final balance: $0.00")
-    (expect-text (test-id "a-month-1") "Scenario A month 1: interest $0.00, principal $2400.00, balance $0.00")
+    (expect-text (test-id "a-payment") "$2400.00")
+    (expect-text (test-id "a-payoff") "1 month")
+    (expect-text (test-id "a-final-balance") "$0.00")
+    (expect-text (test-id "a-month-1") "Month 1 | interest $0.00 | principal $2400.00 | balance $0.00")
     (expect-absent (test-id "a-month-2"))
-    (expect-text (test-id "summary-a") "Scenario A summary: $2400.00 per month for 1 month, interest $0.00")
+    (expect-text (test-id "summary-a") "$2400.00 / mo, 1 month, $0.00 interest")
   )
 )
