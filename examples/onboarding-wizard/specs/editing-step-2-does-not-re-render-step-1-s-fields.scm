@@ -33,7 +33,11 @@
     (expect-metric-delta rows_reused 4)
     (expect-metric-delta scopes_created 0)
     (expect-metric-delta scopes_disposed 0)
-    (expect-metric-delta derived_calls_into_roc 21)
+    ; 26, not 21, because the polished view derives five more values from this
+    ; same edit: the organisation name's message and tone, the region tone, the
+    ; progress bar width, and the organisation row's badge. Step 1's fields are
+    ; still untouched, which is what this spec is actually guarding.
+    (expect-metric-delta derived_calls_into_roc 26)
     (expect-metric-delta-at-most patches_emitted 6)
   )
 )

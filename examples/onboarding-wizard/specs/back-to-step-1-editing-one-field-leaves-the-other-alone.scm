@@ -54,7 +54,7 @@
     ; Invalid input: per-field message, aria-invalid, and blocked navigation.
     (fill (label "Work email") "ana@")
     (expect-text (test-id "account-email-error") "Work email must look like name@example.com.")
-    (expect-attr (label "Work email") aria-invalid "")
+    (expect-attr (label "Work email") aria-invalid "true")
     (click (role button :name "Next step"))
     (expect-visible (role region :name "Account step"))
     (expect-text (test-id "progress-label") "Step 1 of 4 — Account")
