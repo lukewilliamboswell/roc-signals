@@ -701,6 +701,7 @@ export class SignalsRuntime {
     this.nodes = new Map([[0, root]]);
     this.eventCleanups = new Map();
     this.controlledInputs = new Map();
+    this.pendingSelectValues = new Map();
     this.intervals = new Map();
     this.tasks = new Map();
     this.issuedTasks = new Map();
@@ -1401,6 +1402,7 @@ export class SignalsRuntime {
       this.storageBatch = previousStorageBatch;
       this.flushStorageBatch(storageBatch);
     }
+    this.reapplyPendingSelectValues();
     this.flushBehaviorEffects();
     this.emitTelemetry("commands_applied", {
       phase,
@@ -2232,6 +2234,34 @@ export class SignalsRuntime {
   applyControlledSetValue(elemId, value) {
     const entry = this.controlledInput(elemId);
     entry.writeToDom(applySetValue(entry.state, value));
+    // A <select>'s value is meaningless until its <option> children carry their
+    // own values, and the command stream sets the select's value first. The
+    // assignment then matches nothing, the browser parks selectedIndex at -1,
+    // and the control renders blank forever. Remember the intent and re-apply
+    // it once the whole batch - options included - has been materialised.
+    const node = this.nodes.get(elemId);
+    if (node && node.tagName === "SELECT" && node.selectedIndex === -1 && value !== "") {
+      this.pendingSelectValues.set(elemId, value);
+    } else {
+      this.pendingSelectValues.delete(elemId);
+    }
+  }
+
+  reapplyPendingSelectValues() {
+    if (this.pendingSelectValues.size === 0) {
+      return;
+    }
+    for (const [elemId, value] of [...this.pendingSelectValues]) {
+      const node = this.nodes.get(elemId);
+      if (!node) {
+        this.pendingSelectValues.delete(elemId);
+        continue;
+      }
+      node.value = value;
+      if (node.selectedIndex !== -1) {
+        this.pendingSelectValues.delete(elemId);
+      }
+    }
   }
 
   clearControlledInput(elemId) {
@@ -2241,6 +2271,7 @@ export class SignalsRuntime {
     }
     entry.cleanup();
     this.controlledInputs.delete(elemId);
+    this.pendingSelectValues.delete(elemId);
   }
 
   clearControlledInputs() {
