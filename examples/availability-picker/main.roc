@@ -296,7 +296,7 @@ day_header = |free_names, index| {
 				"No availability",
 				[
 					Html.test_id("free-${name}"),
-					Html.class_attr_s(Signal.map(free_names, |names| if names.contains(name) { "empty-state px-2 py-3" } else { "hidden" })),
+					Html.class_attr_s(Signal.map(free_names, |names| if names.contains(name) { "hint italic" } else { "hidden" })),
 				],
 			),
 		],
@@ -545,8 +545,11 @@ week_panel = |slots, rows, free_names, banner, empty|
 					# One `each_str` over the whole week: the day columns are a CSS
 					# placement of the same rows, so a timezone change moves a block
 					# between columns without the reconciler creating a new row.
+					# `grid-flow-dense` lets a block fill the first free cell in its
+					# own column instead of leaving a hole above it, which is what a
+					# single keyed list placed by `col-start` would otherwise do.
 					Html.div_c(
-						"grid items-start gap-2 sm:grid-cols-7",
+						"grid items-start gap-2 sm:grid-cols-7 sm:[grid-auto-flow:row_dense]",
 						[Ui.each_str(rows, |view| view.id, |key, row| render_row(slots, key, row))],
 					),
 					Ui.when(
