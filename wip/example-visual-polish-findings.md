@@ -137,6 +137,54 @@ Something that opens each published example in a real browser and asserts it
 mounts, has no console error, and reaches a non-loading state would have caught
 all of them.
 
+### Unit event dispatch retained one 8-byte Roc box — fixed in the host
+
+The allocation checkpoint instrumentation found a separate, repeatable leak on
+the pinned 2026-08-25 nightly. Both the small `metric-semantics` fixture and the
+large data-grid retained exactly one additional 8-byte Roc allocation after
+each unit-payload command while the host-value registry's live handle count
+remained flat. The same behavior remains on the 2026-08-26 nightly.
+
+Narrower phase markers showed that the allocation survives the deferred event
+payload drop, after the engine batch has completed. It symbolizes to
+`roc_platform_abi.allocateBox`, has refcount 1, and is the empty `Box({})` that
+the host used for the unit payload. In data-grid's filtering spec the live Roc
+count rose from 944 after mount to 958 after fourteen mutations. The host-only
+allocation count stabilized after collection capacities warmed up.
+
+The host now stores unit payloads using Roc's static-data box convention
+(refcount 0). Unit has no nested payload to tear down, and generated retain/drop
+operations intentionally ignore static boxes. Ten repeated fixture clicks now
+remain exactly flat at 65 live allocations / 5792 bytes, with each interaction
+allocating and freeing eight transient allocations. String input events also
+plateau after their state grows to the new string size.
+
+The same regression was exercised through an actual wasm32 build on the
+2026-08-26 nightly: mount and ten browser-dispatched clicks remained exactly
+flat at 66 live allocations / 4059 bytes, with identical phase-and-size cohorts
+after every command batch. Structural `when`/`each` remove-remount cycles, task
+replacement/completion, and repeated interval ticks now have native spec gates
+which return to the same retained Roc and host byte footprint after warmup.
+All wasm-enabled examples also mount and unmount with both the Roc allocation
+ledger and HostValue registry at zero after teardown; the shared wasm mount
+harness now enforces that invariant.
+
+The ABI was regenerated using `ZigGlue.roc` from the exact pinned Roc commit.
+The host now calls the generated public `value.incref` / `value.decref` methods;
+the former checked-in public helper functions were manual generator edits and
+have been removed.
+
+Reproduce after building a native app with the local platform:
+
+```sh
+.test-out/bin/signals-metric-semantics --trace-allocations \
+  .test-out/native-source/examples/_fixtures/metric-semantics/specs/main.scm
+```
+
+The generic compiler behavior—discarding a returned empty `Box` did not free its
+allocation—may still warrant an upstream reduction, but it no longer causes
+per-event growth in this host.
+
 ### flight-search double-frees its task payload on wasm32
 
 Upstream: https://github.com/roc-lang/roc/issues/10958

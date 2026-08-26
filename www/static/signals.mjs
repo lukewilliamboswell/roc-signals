@@ -1412,7 +1412,35 @@ export class SignalsRuntime {
       liveHostValues: this.liveHostValues(),
       decode: decodeStats,
     });
+    this.emitAllocationTelemetry(phase);
     return records;
+  }
+
+  emitAllocationTelemetry(phase) {
+    if (!this.telemetryLog) return;
+    const countFn = this.exports.roc_ui_debug_live_allocation_count;
+    const bytesFn = this.exports.roc_ui_debug_live_allocation_bytes;
+    const sizeFn = this.exports.roc_ui_debug_live_allocation_size;
+    const phaseFn = this.exports.roc_ui_debug_live_allocation_phase;
+    if (![countFn, bytesFn, sizeFn, phaseFn].every((fn) => typeof fn === "function")) return;
+
+    const live = this.views.callHost(countFn).result;
+    const cohorts = new Map();
+    for (let index = 0; index < live; index += 1) {
+      const size = this.views.callHost(sizeFn, index).result;
+      const allocationPhase = this.views.callHost(phaseFn, index).result;
+      const key = `${allocationPhase}:${size}`;
+      const cohort = cohorts.get(key) ?? { phase: allocationPhase, size, count: 0, bytes: 0 };
+      cohort.count += 1;
+      cohort.bytes += size;
+      cohorts.set(key, cohort);
+    }
+    this.emitTelemetry("allocation_checkpoint", {
+      phase,
+      live,
+      bytes: this.views.callHost(bytesFn).result,
+      cohorts: [...cohorts.values()],
+    });
   }
 
   applyCommand(record) {

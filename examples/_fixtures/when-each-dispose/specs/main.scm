@@ -19,5 +19,14 @@
     (click (role button :name "Toggle"))
     (expect-text (test-id "row-r1") "Row: one!")
     (expect-absent (test-id "empty"))
+
+    ; A second complete disposal/remount cycle returns to exactly the same
+    ; retained Roc and host allocation footprint after capacities are warm.
+    (mark-metrics)
+    (click (role button :name "Toggle"))
+    (click (role button :name "Toggle"))
+    (expect-text (test-id "row-r1") "Row: one!")
+    (expect-metric-delta retained_alloc_delta 0)
+    (expect-metric-delta host_retained_bytes_delta 0)
   )
 )

@@ -16,5 +16,8 @@
     (expect-metric-delta derived_calls_into_roc 6)
     (expect-metric-delta propagation_prunes 1)
     (expect-metric-delta patches_emitted 1)
+    ; Unit event payloads use a static Roc box. Dispatch must not retain an
+    ; otherwise-empty allocation after the reducer has consumed the event.
+    (expect-metric-delta retained_alloc_delta 0)
   )
 )
