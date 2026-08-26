@@ -24,13 +24,15 @@ for every pattern below.
 
 ```sh
 export ROC_BIN=/home/lbw/roc_nightly-linux_x86_64-2026-08-26-b29bef3/roc
-PATH="/home/lbw/Documents/zig-x86_64-linux-0.16.0:$PATH" \
-  python3 scripts/test.py roc-check --roc-bin $ROC_BIN
+scripts/dev/check-example.sh <your-slug>
 ```
 
-That is your inner loop and it must exit 0 before you report done. It checks
-every example, so ignore failures in files you do not own — but make sure the
-only file with errors is never yours.
+That is your inner loop; it takes a second or two and it must report "No
+errors found" before you report done. It checks only your example, in a
+private scratch directory, so it is safe to run while other agents work.
+
+Do NOT run `scripts/test.py` — it shares one output directory and parallel
+runs clobber each other. The orchestrator runs the full native suite.
 
 You cannot run a browser. The orchestrator does the visual pass and will come
 back to you with screenshots if something is off.
