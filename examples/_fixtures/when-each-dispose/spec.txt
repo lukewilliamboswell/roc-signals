@@ -1,0 +1,21 @@
+# Ui.when whose true arm is Ui.each_str must remove its rows when it flips
+# false, including when the condition and the row list arrive by two separate
+# derived chains recomputed in the same batch.
+
+expect_visible role:region name:"When Each"
+expect_text test_id:"row-r1" "Row: one!"
+expect_text test_id:"row-r3" "Row: three!"
+expect_absent test_id:"empty"
+
+click role:button name:"Toggle"
+expect_visible test_id:"empty"
+expect_absent test_id:"row-r1"
+expect_absent test_id:"row-r2"
+expect_absent test_id:"row-r3"
+expect_absent label:"Note for r1"
+expect_absent label:"Note for r2"
+expect_absent label:"Note for r3"
+
+click role:button name:"Toggle"
+expect_text test_id:"row-r1" "Row: one!"
+expect_absent test_id:"empty"

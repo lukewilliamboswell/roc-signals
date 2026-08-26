@@ -263,7 +263,7 @@ expect_metric_delta rows_reused 3
 expect_metric_delta scopes_created 0
 expect_metric_delta scopes_disposed 0
 expect_metric_delta_at_most patches_emitted 6
-expect_metric_delta_at_most nodes_recomputed 4
+expect_metric_delta_at_most dirty_source_roots 4
 expect_text test_id:"body-m1" "customer: My card was declined"
 expect_text test_id:"body-p1" "agent: Refund issued"
 expect_absent role:region name:"Message m10"

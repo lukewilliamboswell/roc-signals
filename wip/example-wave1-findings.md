@@ -226,7 +226,18 @@ Regression assertion added to `examples/_fixtures/signal-combine-caps/spec.txt`.
 - The row-local `Ui.state` + item-signal-read crash
   (`text read extension capability did not match its signal value`).
 - `Ui.when` whose true arm is `Ui.each_str` leaving rows in the DOM when it
-  flips false (reported by the data-grid agent, not yet reproduced here).
+  flips false. Reported by two agents; **not reproduced** here across three
+  variants (shared chain, two independent derived chains recomputed in one
+  batch, and rows containing controlled inputs) — all dispose correctly. The
+  positive cases are locked in at `examples/_fixtures/when-each-dispose/`.
+
+  Both apps ship the workaround (mount `each_str` unconditionally, put only the
+  empty-state note inside the `Ui.when`), so neither can be used to re-check the
+  original shape. One plausible explanation is that this was the wasm-host
+  re-entrancy bug fixed in e96fecc: a partially applied command batch leaves
+  exactly this symptom, stale rows visible alongside the empty-state note. That
+  is a hypothesis, not a diagnosis — the original reporters could not minimise
+  it either.
 - Metric semantics: `nodes_recomputed`, `bind_event` scaling, `patches_emitted`
   surplus.
 - Expressiveness: reducers cannot read another state handle; intervals cannot

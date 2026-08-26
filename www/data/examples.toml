@@ -1,4 +1,26 @@
 [[examples]]
+slug = "field-notes"
+title = "Field Notes"
+description = "Offline-first note capture with an outbox that drains on reconnect, per-note sync status, optimistic writes and rollback."
+source = "examples/field-notes/app.roc"
+spec = "examples/field-notes/spec.txt"
+public = true
+wasm = true
+native = true
+bench = true
+
+[[examples]]
+slug = "support-inbox"
+title = "Support Inbox"
+description = "A polled support inbox merging server truth with optimistic sends, where unread counts update without re-rendering the open thread."
+source = "examples/support-inbox/app.roc"
+spec = "examples/support-inbox/spec.txt"
+public = true
+wasm = true
+native = true
+bench = true
+
+[[examples]]
 slug = "dependency-scheduler"
 title = "Dependency Scheduler"
 description = "Tasks with dependencies where a move cascades through downstream dates, slack is derived, and the critical path shifts as durations change."
@@ -567,6 +589,17 @@ title = "Metric Semantics"
 description = "Internal fixture documenting what dirty_source_roots counts."
 source = "examples/_fixtures/metric-semantics/app.roc"
 spec = "examples/_fixtures/metric-semantics/spec.txt"
+public = false
+wasm = false
+native = true
+bench = false
+
+[[examples]]
+slug = "when-each-dispose"
+title = "When Each Dispose"
+description = "Internal fixture: Ui.when whose true arm is Ui.each_str must dispose its rows."
+source = "examples/_fixtures/when-each-dispose/app.roc"
+spec = "examples/_fixtures/when-each-dispose/spec.txt"
 public = false
 wasm = false
 native = true
