@@ -140,11 +140,37 @@ const SplitTrailingQuoted = struct {
     quoted: []const u8,
 };
 
+/// True when the byte at `idx` is escaped by an odd run of preceding backslashes.
+fn isEscapedAt(input: []const u8, idx: usize) bool {
+    var backslashes: usize = 0;
+    var i = idx;
+    while (i > 0) {
+        i -= 1;
+        if (input[i] != '\\') break;
+        backslashes += 1;
+    }
+    return backslashes % 2 == 1;
+}
+
+/// Index of the last `"` that is not itself escaped.
+///
+/// The quoted values are unescaped later, so the delimiter scan has to skip
+/// `\"` — otherwise an expected string containing a quote splits in the wrong
+/// place and the whole line fails to parse.
+fn findUnescapedQuoteLast(input: []const u8) ?usize {
+    var i = input.len;
+    while (i > 0) {
+        i -= 1;
+        if (input[i] == '"' and !isEscapedAt(input, i)) return i;
+    }
+    return null;
+}
+
 fn splitTrailingQuoted(input: []const u8) ParseError!SplitTrailingQuoted {
-    const end_quote = std.mem.findScalarLast(u8, input, '"') orelse return ParseError.InvalidFormat;
+    const end_quote = findUnescapedQuoteLast(input) orelse return ParseError.InvalidFormat;
     if (end_quote == 0) return ParseError.InvalidFormat;
     const before_end = input[0..end_quote];
-    const start_quote = std.mem.findScalarLast(u8, before_end, '"') orelse return ParseError.InvalidFormat;
+    const start_quote = findUnescapedQuoteLast(before_end) orelse return ParseError.InvalidFormat;
     const tail = std.mem.trim(u8, input[end_quote + 1 ..], " \t");
     if (tail.len != 0) return ParseError.InvalidFormat;
     return .{
@@ -331,7 +357,7 @@ pub fn parseTestSpec(allocator: std.mem.Allocator, content: []const u8) ParseErr
         } else if (std.mem.startsWith(u8, trimmed, "key_down ")) {
             const shift_split = try splitTrailingToken(trimmed["key_down ".len..]);
             const key_split = try splitTrailingQuoted(shift_split.head);
-            const key_copy = allocator.dupe(u8, key_split.quoted) catch return ParseError.OutOfMemory;
+            const key_copy = try dupeUnescapedQuoted(allocator, key_split.quoted);
             errdefer allocator.free(key_copy);
             try appendSpecCommand(&commands, allocator, .key_down, try parseLocator(allocator, key_split.head), key_copy, null, try parseBoolToken(shift_split.token), line_num);
         } else if (std.mem.startsWith(u8, trimmed, "focus ")) {
@@ -340,11 +366,11 @@ pub fn parseTestSpec(allocator: std.mem.Allocator, content: []const u8) ParseErr
             try appendSpecCommand(&commands, allocator, .blur, try parseLocator(allocator, trimmed["blur ".len..]), null, null, null, line_num);
         } else if (std.mem.startsWith(u8, trimmed, "change ")) {
             const split = try splitTrailingQuoted(trimmed["change ".len..]);
-            const value_copy = allocator.dupe(u8, split.quoted) catch return ParseError.OutOfMemory;
+            const value_copy = try dupeUnescapedQuoted(allocator, split.quoted);
             try appendSpecCommand(&commands, allocator, .change, try parseLocator(allocator, split.head), value_copy, null, null, line_num);
         } else if (std.mem.startsWith(u8, trimmed, "select_option ")) {
             const split = try splitTrailingQuoted(trimmed["select_option ".len..]);
-            const value_copy = allocator.dupe(u8, split.quoted) catch return ParseError.OutOfMemory;
+            const value_copy = try dupeUnescapedQuoted(allocator, split.quoted);
             try appendSpecCommand(&commands, allocator, .select_option, try parseLocator(allocator, split.head), value_copy, null, null, line_num);
         } else if (std.mem.startsWith(u8, trimmed, "composition_start ")) {
             try appendSpecCommand(&commands, allocator, .composition_start, try parseLocator(allocator, trimmed["composition_start ".len..]), null, null, null, line_num);
@@ -365,7 +391,7 @@ pub fn parseTestSpec(allocator: std.mem.Allocator, content: []const u8) ParseErr
             try appendSpecCommand(&commands, allocator, .mark_metrics, emptyLocator(), null, null, null, line_num);
         } else if (std.mem.startsWith(u8, trimmed, "fill ")) {
             const split = try splitTrailingQuoted(trimmed[5..]);
-            const value_copy = allocator.dupe(u8, split.quoted) catch return ParseError.OutOfMemory;
+            const value_copy = try dupeUnescapedQuoted(allocator, split.quoted);
             try appendSpecCommand(&commands, allocator, .fill, try parseLocator(allocator, split.head), value_copy, null, null, line_num);
         } else if (std.mem.startsWith(u8, trimmed, "check ")) {
             try appendSpecCommand(&commands, allocator, .check, try parseLocator(allocator, trimmed[6..]), null, null, null, line_num);
@@ -373,7 +399,7 @@ pub fn parseTestSpec(allocator: std.mem.Allocator, content: []const u8) ParseErr
             try appendSpecCommand(&commands, allocator, .uncheck, try parseLocator(allocator, trimmed[8..]), null, null, null, line_num);
         } else if (std.mem.startsWith(u8, trimmed, "expect_text ")) {
             const split = try splitTrailingQuoted(trimmed[12..]);
-            const text_copy = allocator.dupe(u8, split.quoted) catch return ParseError.OutOfMemory;
+            const text_copy = try dupeUnescapedQuoted(allocator, split.quoted);
             try appendSpecCommand(&commands, allocator, .expect_text, try parseLocator(allocator, split.head), text_copy, null, null, line_num);
         } else if (std.mem.startsWith(u8, trimmed, "expect_visible ")) {
             try appendSpecCommand(&commands, allocator, .expect_visible, try parseLocator(allocator, trimmed[15..]), null, null, null, line_num);
@@ -381,14 +407,14 @@ pub fn parseTestSpec(allocator: std.mem.Allocator, content: []const u8) ParseErr
             try appendSpecCommand(&commands, allocator, .expect_absent, try parseLocator(allocator, trimmed[14..]), null, null, null, line_num);
         } else if (std.mem.startsWith(u8, trimmed, "expect_value ")) {
             const split = try splitTrailingQuoted(trimmed[13..]);
-            const value_copy = allocator.dupe(u8, split.quoted) catch return ParseError.OutOfMemory;
+            const value_copy = try dupeUnescapedQuoted(allocator, split.quoted);
             try appendSpecCommand(&commands, allocator, .expect_value, try parseLocator(allocator, split.head), value_copy, null, null, line_num);
         } else if (std.mem.startsWith(u8, trimmed, "expect_attr ")) {
             const value_split = try splitTrailingQuoted(trimmed["expect_attr ".len..]);
             const name_split = try splitTrailingToken(value_split.head);
             const attr_name = allocator.dupe(u8, name_split.token) catch return ParseError.OutOfMemory;
             errdefer allocator.free(attr_name);
-            const value_copy = allocator.dupe(u8, value_split.quoted) catch return ParseError.OutOfMemory;
+            const value_copy = try dupeUnescapedQuoted(allocator, value_split.quoted);
             errdefer allocator.free(value_copy);
             try appendSpecCommand(&commands, allocator, .expect_attr, try parseLocator(allocator, name_split.head), value_copy, null, null, line_num);
             commands.items[commands.items.len - 1].expected_attr = attr_name;
@@ -829,4 +855,14 @@ test "spec parser rejects malformed commands" {
     try std.testing.expectError(ParseError.InvalidFormat, parseTestSpec(std.testing.allocator, "resolve_stale_task \"fetch user\""));
     try std.testing.expectError(ParseError.InvalidFormat, parseTestSpec(std.testing.allocator, "expect_canceled_task \"fetch user\" nope"));
     try std.testing.expectError(ParseError.InvalidFormat, parseTestSpec(std.testing.allocator, "expect_canceled_task fetch 1"));
+}
+
+test "splitTrailingQuoted skips escaped quotes" {
+    const split = try splitTrailingQuoted("test_id:\"greeting\" \"he said \\\"hi\\\"\"");
+    try std.testing.expectEqualStrings("test_id:\"greeting\"", split.head);
+    try std.testing.expectEqualStrings("he said \\\"hi\\\"", split.quoted);
+
+    const unescaped = try dupeUnescapedQuoted(std.testing.allocator, split.quoted);
+    defer std.testing.allocator.free(unescaped);
+    try std.testing.expectEqualStrings("he said \"hi\"", unescaped);
 }

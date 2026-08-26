@@ -250,6 +250,43 @@ expect_checked label:"Accept terms" true
 click role:button name:"Place order"
 ```
 
+### Writing specs that do not rot
+
+**Locate dynamic text by identity, not by content.** A `text:` locator matches
+on rendered content, so it couples the locator to the value: change the value
+and the element stops resolving, and the failure reads "no element has text ..."
+rather than showing a diff. Give the element a `test_id` instead:
+
+```roc
+Html.paragraph_s_attrs(status, [Html.test_id("sync-status")])
+```
+
+```txt
+expect_text test_id:"sync-status" "Synced 3 notes"
+```
+
+Note that `expect_text text:"X" "X"` — the same string as both locator and
+expected value — asserts only that an element with that text exists. It is
+`expect_visible text:"X"` written the long way, and it cannot report a value
+mismatch. Prefer a `test_id` locator with the value as the expectation.
+
+**Assert structural metrics exactly; bound engine-internal ones.** `rows_created`,
+`rows_reused`, `rows_removed`, `scopes_created` and `scopes_disposed` are
+semantic: they describe what the reconciler did, and an exact assertion is a
+real regression test. `patches_emitted` and `nodes_recomputed` count internal
+work whose exact value moves with unrelated engine changes — bound those with
+`expect_metric_delta_at_most` so an unrelated improvement does not fail an
+unrelated spec.
+
+**To see what actually rendered**, assert a deliberately wrong value on the
+enclosing region. `expect_text` falls back to the concatenated descendant text
+of a container that has no text of its own, so the failure prints the real
+content:
+
+```txt
+expect_text role:region name:"Your Region" "PROBE"
+```
+
 Supported locators:
 
 - `role:<role> name:"<accessible name>"`
@@ -281,7 +318,9 @@ Supported assertions:
 
 - `expect_visible <locator>`
 - `expect_absent <locator>`
-- `expect_text <locator> "<text>"`
+- `expect_text <locator> "<text>"` — compares the element's own text; for a
+  container with no text of its own, compares the concatenated descendant text
+  instead, so a region can be asserted by its rendered content
 - `expect_value <locator> "<text>"`
 - `expect_attr <locator> <attr-name> "<value>"`
 - `expect_no_attr <locator> <attr-name>`
@@ -306,6 +345,18 @@ Supported metric commands:
 - `mark_metrics`
 - `expect_metric_delta <metric-name> <delta>`
 - `expect_metric_delta_at_most <metric-name> <delta>`
+
+Quoted values are unescaped (`\n`, `\t`, `\\`, `\"`) for every command that
+takes one, including `fill`, `change`, `select_option`, `key_down`, and the
+`expect_text` / `expect_value` / `expect_attr` comparison values.
+
+`expect_pending_task` asserts an absolute count, not a delta. To prove that an
+interaction did *not* start a request while another is in flight, assert that
+the count is unchanged and that `expect_canceled_task` is still 0.
+
+`resolve_stale_task` requires a previously canceled request for that task name;
+without one the host reports `fake stale task result had no matching canceled
+request`. Force a supersede first.
 
 `real_click` dispatches `pointerdown -> pointerup -> click` through the
 simulated propagation path, including capture/bubble, `self`, and stop policy.

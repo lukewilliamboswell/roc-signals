@@ -37,7 +37,7 @@ expect_visible text:"Updated "
 expect_visible text:"copy"
 expect_visible text:"inline code"
 expect_visible text:"Live link"
-expect_attr test_id:"s:5:link" href "https://example.test/live"
+expect_attr test_id:"s:0:link" href "https://example.test/live"
 expect_visible text:"Bad link"
 expect_no_attr text:"Bad link" href
 expect_metric_delta_at_most patches_emitted 80
