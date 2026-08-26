@@ -209,6 +209,13 @@ Html := [].{
 	aria_invalid_s : Signal(Bool) -> Node.Attr
 	aria_invalid_s = |signal| attr_maybe_s("aria-invalid", signal.map(|flag| if flag { Some("true") } else { None }))
 
+	## Static accessible name. Buttons and inputs take their accessible name
+	## from their visible text, so a control that shows an icon or a shortened
+	## label has no other way to keep a descriptive name for assistive tech and
+	## for specs that address it by name.
+	aria_label : Str -> Node.Attr
+	aria_label = |value| Node.Attr.StaticText({ field: field_label, name: "", value })
+
 	## Static `aria-describedby` attribute.
 	aria_describedby : Str -> Node.Attr
 	aria_describedby = |id| attr("aria-describedby", id)

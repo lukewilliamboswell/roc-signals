@@ -11,9 +11,25 @@ for every pattern below.
 
 - Touch only `examples/<your-slug>/**`. Do NOT edit `www/input.css`,
   `platform/**`, `src/**`, or any other example.
-- Do NOT remove or rename any `Html.test_id(...)`, `data-*` attribute, or
-  accessible label. Native specs address the DOM through those, and a rename
-  silently breaks a spec you cannot see.
+- Keep every `Html.test_id(...)` and `data-*` attribute. Native specs address
+  the DOM through those, and a rename silently breaks a spec you cannot see.
+- You MAY change what an element *says*, and update the specs to match. Many
+  of these examples render metrics as whole sentences ("Board total: 5 cards")
+  purely because a spec asserts that sentence. A status page shows a badge, not
+  a sentence, so move the test-id onto the badge and rewrite the assertion to
+  the badge's text.
+
+  What you must NOT do is keep the sentence alive in a hidden element beside
+  the real UI. `sr-only` duplicate text, `text-[0px]` with `before:content`,
+  and label/value pairs glued together with a load-bearing leading space are
+  all worse than editing the spec: they ship dead text to screen-reader users
+  and leave a trap for the next person. Change the view, then change the spec,
+  and say in the commit why the assertion moved.
+
+  Work-budget assertions (`expect-metric-delta`, `expect-metric-delta-at-most`)
+  may be raised when your change genuinely derives or patches more, but say
+  what the extra work is in a comment above the number. Never raise one to
+  paper over a re-render you did not intend.
 - Do NOT change reducers, signal wiring, or derived values, except where this
   brief explicitly calls for it (empty states, validation tone, placeholders).
 - Keep the comments that explain the signal model. They are the point of the
