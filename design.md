@@ -451,6 +451,7 @@ Html.bool_attr_if : Str, Bool -> List(Attr)
 Html.bool_attr_s : Str, Signal(Bool) -> Attr
 Html.required : Attr
 Html.readonly : Attr
+Html.aria_label : Str -> Attr
 Html.aria_describedby : Str -> Attr
 Html.aria_invalid_s : Signal(Bool) -> Attr
 Html.aria_activedescendant_s : Signal([None, Some(Str)]) -> Attr
