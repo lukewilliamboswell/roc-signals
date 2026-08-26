@@ -80,7 +80,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "suites",
         nargs="*",
-        choices=("all", "zig", "browser", "roc-check", "wasm", "native", "bundle", "bench"),
+        choices=("all", "zig", "browser", "roc-check", "roc-test", "wasm", "native", "bundle", "bench"),
         default=["all"],
         help="Suites to run. Defaults to all.",
     )
@@ -239,6 +239,22 @@ def run_roc_checks(
     )
     for example in examples:
         run([roc_bin, "check", source_root / example.source])
+
+
+def run_roc_tests(
+    roc_bin: str,
+    examples: tuple[Example, ...],
+    *,
+    source_root: Path = ROOT,
+    allow_release_platform_url: bool = False,
+) -> None:
+    ensure_sources_do_not_use_release_platform_urls(
+        examples,
+        source_root,
+        allow_release_platform_url=allow_release_platform_url,
+    )
+    for example in examples:
+        run([roc_bin, "test", source_root / example.source])
 
 
 def build_wasm_apps(roc_bin: str, examples: tuple[Example, ...]) -> None:
@@ -470,7 +486,17 @@ def run_local_roc_checks(roc_bin: str, examples: tuple[Example, ...]) -> None:
     run_roc_checks(roc_bin, examples, source_root=source_root)
 
 
+def run_local_roc_tests(roc_bin: str, examples: tuple[Example, ...]) -> None:
+    source_root = TEST_OUT / "roc-test-source"
+    rewrite_examples_for_platform(str((ROOT / "platform" / "main.roc").resolve()), source_root)
+    run_roc_tests(roc_bin, examples, source_root=source_root)
+
+
 def run_local_benchmarks(roc_bin: str, examples: tuple[Example, ...]) -> None:
+    # Roc links the prebuilt platform host into each app. Rebuild it explicitly:
+    # a Debug host enables quadratic render-cache assertions and makes large-list
+    # timings measure validation machinery rather than production behavior.
+    run(["zig", "build", "build-test-hosts", "-Doptimize=ReleaseFast"])
     source_root = TEST_OUT / "bench-source"
     rewrite_examples_for_platform(str((ROOT / "platform" / "main.roc").resolve()), source_root)
     run_benchmarks(roc_bin, examples, source_root=source_root)
@@ -619,7 +645,7 @@ def main() -> int:
     examples = load_examples()
     suites = set(args.suites)
     if "all" in suites:
-        suites = {"zig", "browser", "roc-check", "wasm", "native", "bundle", "bench"}
+        suites = {"zig", "browser", "roc-check", "roc-test", "wasm", "native", "bundle", "bench"}
 
     validate_args_before_build(args, suites)
     roc_bin = command_path(args.roc_bin)
@@ -633,6 +659,8 @@ def main() -> int:
         run_browser_suite()
     if "roc-check" in suites:
         run_local_roc_checks(roc_bin, examples)
+    if "roc-test" in suites:
+        run_local_roc_tests(roc_bin, examples)
     if "wasm" in suites:
         build_wasm_apps(roc_bin, examples)
 

@@ -48,6 +48,7 @@ Useful targeted suites:
 python3 scripts/test.py zig
 python3 scripts/test.py browser
 python3 scripts/test.py roc-check
+python3 scripts/test.py roc-test
 python3 scripts/test.py wasm
 python3 scripts/test.py native --native always
 python3 scripts/test.py bundle --bundle always

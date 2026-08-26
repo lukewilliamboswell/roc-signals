@@ -44,7 +44,7 @@ jobs:
 
       - name: Run non-native suites
         run: |
-          python3 scripts/test.py zig browser roc-check wasm --native never --bundle never
+          python3 scripts/test.py zig browser roc-check roc-test wasm --native never --bundle never
 
       - name: Build static site
         run: |

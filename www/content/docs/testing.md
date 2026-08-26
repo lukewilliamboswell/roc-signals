@@ -314,6 +314,7 @@ Repository suites:
 ```sh
 python3 scripts/test.py native --native always   # all native specs
 python3 scripts/test.py roc-check                # type-check every app
+python3 scripts/test.py roc-test                 # run every app's `expect` tests
 python3 scripts/test.py wasm                     # build every app to wasm
 python3 scripts/test.py browser                  # JavaScript contract tests
 python3 scripts/test.py                          # everything
