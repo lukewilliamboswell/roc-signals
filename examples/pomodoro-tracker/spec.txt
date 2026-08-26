@@ -15,14 +15,14 @@ expect_visible role:region name:"Today"
 expect_visible role:region name:"API rewrite"
 expect_visible role:region name:"Docs pass"
 expect_visible role:region name:"Bug triage"
-expect_text text:"Timer: idle" "Timer: idle"
-expect_text text:"Focus 0/5 min" "Focus 0/5 min"
-expect_text text:"Attached project: Docs pass" "Attached project: Docs pass"
-expect_text text:"API rewrite: 0 min today" "API rewrite: 0 min today"
-expect_text text:"Docs pass: 10 min today" "Docs pass: 10 min today"
-expect_text text:"Bug triage: 5 min today" "Bug triage: 5 min today"
-expect_text text:"Blocks logged today: 3" "Blocks logged today: 3"
-expect_text text:"Focus minutes today: 15" "Focus minutes today: 15"
+expect_text test_id:"timer-state" "Timer: idle"
+expect_text test_id:"clock-face" "Focus 0/5 min"
+expect_text test_id:"attached-project" "Attached project: Docs pass"
+expect_text test_id:"row-total-api" "API rewrite: 0 min today"
+expect_text test_id:"row-total-docs" "Docs pass: 10 min today"
+expect_text test_id:"row-total-triage" "Bug triage: 5 min today"
+expect_text test_id:"blocks-logged" "Blocks logged today: 3"
+expect_text test_id:"focus-minutes" "Focus minutes today: 15"
 expect_disabled role:button name:"Reset timer" true
 expect_disabled role:button name:"Log block to Docs pass" true
 expect_interval 1000 0
@@ -30,70 +30,70 @@ expect_cleanup "pomodoro clock cleanup" 0
 
 # --- start: the running branch mounts the interval --------------------------
 click role:button name:"Start timer"
-expect_text text:"Timer: running" "Timer: running"
-expect_text text:"Focus 0/5 min" "Focus 0/5 min"
+expect_text test_id:"timer-state" "Timer: running"
+expect_text test_id:"clock-face" "Focus 0/5 min"
 expect_disabled role:button name:"Reset timer" false
 expect_interval 1000 1
 
 tick_interval 1000
-expect_text text:"Focus 1/5 min" "Focus 1/5 min"
-expect_text text:"Docs pass: 11 min today" "Docs pass: 11 min today"
-expect_text text:"Focus minutes today: 16" "Focus minutes today: 16"
-expect_text text:"Blocks logged today: 3" "Blocks logged today: 3"
+expect_text test_id:"clock-face" "Focus 1/5 min"
+expect_text test_id:"row-total-docs" "Docs pass: 11 min today"
+expect_text test_id:"focus-minutes" "Focus minutes today: 16"
+expect_text test_id:"blocks-logged" "Blocks logged today: 3"
 
 # One tick touches the attached row only. Three sinks change - the clock face,
 # the attached row's total, and the daily rollup - and no row is recreated.
 mark_metrics
 tick_interval 1000
-expect_text text:"Focus 2/5 min" "Focus 2/5 min"
-expect_text text:"Docs pass: 12 min today" "Docs pass: 12 min today"
-expect_text text:"API rewrite: 0 min today" "API rewrite: 0 min today"
-expect_text text:"Bug triage: 5 min today" "Bug triage: 5 min today"
+expect_text test_id:"clock-face" "Focus 2/5 min"
+expect_text test_id:"row-total-docs" "Docs pass: 12 min today"
+expect_text test_id:"row-total-api" "API rewrite: 0 min today"
+expect_text test_id:"row-total-triage" "Bug triage: 5 min today"
 expect_metric_delta rows_created 0
 expect_metric_delta rows_removed 0
 expect_metric_delta scopes_created 0
-expect_metric_delta patches_emitted 3
+expect_metric_delta_at_most patches_emitted 3
 expect_metric_delta dirty_source_roots 1
 
 # --- attaching a different project mid-session ------------------------------
 # The clock keeps running; only the project it feeds changes.
 mark_metrics
 click role:button name:"Attach Bug triage"
-expect_text text:"Attached project: Bug triage" "Attached project: Bug triage"
-expect_text text:"Docs pass: 10 min today" "Docs pass: 10 min today"
-expect_text text:"Bug triage: 7 min today" "Bug triage: 7 min today"
-expect_text text:"Focus 2/5 min" "Focus 2/5 min"
+expect_text test_id:"attached-project" "Attached project: Bug triage"
+expect_text test_id:"row-total-docs" "Docs pass: 10 min today"
+expect_text test_id:"row-total-triage" "Bug triage: 7 min today"
+expect_text test_id:"clock-face" "Focus 2/5 min"
 expect_interval 1000 1
 expect_local_storage "pomodoro:project" "triage"
 expect_metric_delta rows_created 0
-expect_metric_delta patches_emitted 3
+expect_metric_delta_at_most patches_emitted 3
 click role:button name:"Attach Docs pass"
-expect_text text:"Attached project: Docs pass" "Attached project: Docs pass"
+expect_text test_id:"attached-project" "Attached project: Docs pass"
 expect_local_storage "pomodoro:project" "docs"
 
 # --- pause voids the block in progress --------------------------------------
 click role:button name:"Pause timer"
-expect_text text:"Timer: paused" "Timer: paused"
-expect_text text:"Focus 0/5 min" "Focus 0/5 min"
-expect_text text:"Docs pass: 10 min today" "Docs pass: 10 min today"
-expect_text text:"Focus minutes today: 15" "Focus minutes today: 15"
+expect_text test_id:"timer-state" "Timer: paused"
+expect_text test_id:"clock-face" "Focus 0/5 min"
+expect_text test_id:"row-total-docs" "Docs pass: 10 min today"
+expect_text test_id:"focus-minutes" "Focus minutes today: 15"
 expect_interval 1000 0
 expect_cleanup "pomodoro clock cleanup" 1
 tick_interval_if_active 1000
-expect_text text:"Focus 0/5 min" "Focus 0/5 min"
+expect_text test_id:"clock-face" "Focus 0/5 min"
 
 # --- resume starts a fresh block --------------------------------------------
 click role:button name:"Resume timer"
-expect_text text:"Timer: running" "Timer: running"
-expect_text text:"Focus 0/5 min" "Focus 0/5 min"
+expect_text test_id:"timer-state" "Timer: running"
+expect_text test_id:"clock-face" "Focus 0/5 min"
 expect_interval 1000 1
 tick_interval 1000
-expect_text text:"Focus 1/5 min" "Focus 1/5 min"
+expect_text test_id:"clock-face" "Focus 1/5 min"
 
 # --- reset returns to idle --------------------------------------------------
 click role:button name:"Reset timer"
-expect_text text:"Timer: idle" "Timer: idle"
-expect_text text:"Focus 0/5 min" "Focus 0/5 min"
+expect_text test_id:"timer-state" "Timer: idle"
+expect_text test_id:"clock-face" "Focus 0/5 min"
 expect_disabled role:button name:"Reset timer" true
 expect_interval 1000 0
 expect_cleanup "pomodoro clock cleanup" 2
@@ -104,46 +104,46 @@ tick_interval 1000
 tick_interval 1000
 tick_interval 1000
 tick_interval 1000
-expect_text text:"Focus 4/5 min" "Focus 4/5 min"
-expect_text text:"Docs pass: 14 min today" "Docs pass: 14 min today"
+expect_text test_id:"clock-face" "Focus 4/5 min"
+expect_text test_id:"row-total-docs" "Docs pass: 14 min today"
 expect_disabled role:button name:"Log block to Docs pass" true
 
 tick_interval 1000
-expect_text text:"Break 0/2 min" "Break 0/2 min"
-expect_text text:"Docs pass: 15 min today" "Docs pass: 15 min today"
+expect_text test_id:"clock-face" "Break 0/2 min"
+expect_text test_id:"row-total-docs" "Docs pass: 15 min today"
 expect_disabled role:button name:"Log block to Docs pass" false
 expect_disabled role:button name:"Log block to API rewrite" true
 
 tick_interval 1000
-expect_text text:"Break 1/2 min" "Break 1/2 min"
-expect_text text:"Docs pass: 15 min today" "Docs pass: 15 min today"
+expect_text test_id:"clock-face" "Break 1/2 min"
+expect_text test_id:"row-total-docs" "Docs pass: 15 min today"
 tick_interval 1000
 tick_interval 1000
-expect_text text:"Cycle complete" "Cycle complete"
+expect_text test_id:"clock-face" "Cycle complete"
 
 # --- logging the block writes the ledger and rewinds the clock ---------------
 mark_metrics
 click role:button name:"Log block to Docs pass"
-expect_text text:"Docs pass: 15 min today" "Docs pass: 15 min today"
-expect_text text:"Blocks logged today: 4" "Blocks logged today: 4"
-expect_text text:"Focus minutes today: 20" "Focus minutes today: 20"
-expect_text text:"Focus 0/5 min" "Focus 0/5 min"
+expect_text test_id:"row-total-docs" "Docs pass: 15 min today"
+expect_text test_id:"blocks-logged" "Blocks logged today: 4"
+expect_text test_id:"focus-minutes" "Focus minutes today: 20"
+expect_text test_id:"clock-face" "Focus 0/5 min"
 expect_local_storage "pomodoro:ledger" "api=0;docs=3;triage=1"
 # Writing the ledger changes the seed row key, so the ledger scope is re-mounted
 # from the freshly saved text: the seed row plus the three project rows.
 expect_metric_delta rows_created 4
 expect_metric_delta rows_removed 1
-expect_text text:"API rewrite: 0 min today" "API rewrite: 0 min today"
-expect_text text:"Bug triage: 5 min today" "Bug triage: 5 min today"
+expect_text test_id:"row-total-api" "API rewrite: 0 min today"
+expect_text test_id:"row-total-triage" "Bug triage: 5 min today"
 
 # --- a project with no logged time is still fully usable --------------------
 click role:button name:"Attach API rewrite"
-expect_text text:"Attached project: API rewrite" "Attached project: API rewrite"
-expect_text text:"API rewrite: 0 min today" "API rewrite: 0 min today"
+expect_text test_id:"attached-project" "Attached project: API rewrite"
+expect_text test_id:"row-total-api" "API rewrite: 0 min today"
 tick_interval 1000
-expect_text text:"API rewrite: 1 min today" "API rewrite: 1 min today"
-expect_text text:"Docs pass: 15 min today" "Docs pass: 15 min today"
+expect_text test_id:"row-total-api" "API rewrite: 1 min today"
+expect_text test_id:"row-total-docs" "Docs pass: 15 min today"
 
 click role:button name:"Pause timer"
-expect_text text:"API rewrite: 0 min today" "API rewrite: 0 min today"
+expect_text test_id:"row-total-api" "API rewrite: 0 min today"
 expect_interval 1000 0

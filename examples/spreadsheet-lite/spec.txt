@@ -74,26 +74,26 @@ expect_attr label:"B9" data-kind "error"
 expect_attr label:"A11" data-kind "empty"
 
 # Status line: a three-way fan-in of selection, grid mode, and error count.
-expect_text text:"Selected: A1 | Grid mode: values | Errors: 4" "Selected: A1 | Grid mode: values | Errors: 4"
+expect_text test_id:"status-line" "Selected: A1 | Grid mode: values | Errors: 4"
 
 # Formula bar for the initially selected cell.
 expect_value label:"Formula" "Item"
-expect_text text:"Cell: A1" "Cell: A1"
-expect_text text:"Source: Item" "Source: Item"
-expect_text text:"Value: Item" "Value: Item"
-expect_text text:"Depends on: none" "Depends on: none"
-expect_text text:"Mode: showing value" "Mode: showing value"
+expect_text test_id:"bar-cell" "Cell: A1"
+expect_text test_id:"bar-source" "Source: Item"
+expect_text test_id:"bar-value" "Value: Item"
+expect_text test_id:"bar-depends" "Depends on: none"
+expect_text test_id:"bar-mode" "Mode: showing value"
 
 # ------------------------------------------------------- selection and the bar
 
 focus label:"D2"
-expect_text text:"Cell: D2" "Cell: D2"
-expect_text text:"Mode: editing" "Mode: editing"
+expect_text test_id:"bar-cell" "Cell: D2"
+expect_text test_id:"bar-mode" "Mode: editing"
 expect_value label:"Formula" "=B2+C2"
-expect_text text:"Source: =B2+C2" "Source: =B2+C2"
-expect_text text:"Value: 2500" "Value: 2500"
-expect_text text:"Depends on: B2, C2" "Depends on: B2, C2"
-expect_text text:"Selected: D2 | Grid mode: values | Errors: 4" "Selected: D2 | Grid mode: values | Errors: 4"
+expect_text test_id:"bar-source" "Source: =B2+C2"
+expect_text test_id:"bar-value" "Value: 2500"
+expect_text test_id:"bar-depends" "Depends on: B2, C2"
+expect_text test_id:"status-line" "Selected: D2 | Grid mode: values | Errors: 4"
 # The grid keeps showing computed values; the bar is where the formula lives.
 expect_value label:"D2" "2500"
 expect_value label:"D3" "1200"
@@ -102,22 +102,22 @@ expect_value label:"D3" "1200"
 # cursor state to choose the target cell.
 fill label:"Formula" "=B2+C2+100"
 expect_value label:"Formula" "=B2+C2+100"
-expect_text text:"Value: 2600" "Value: 2600"
+expect_text test_id:"bar-value" "Value: 2600"
 fill label:"Formula" "=B2+C2"
-expect_text text:"Value: 2500" "Value: 2500"
+expect_text test_id:"bar-value" "Value: 2500"
 
 blur label:"D2"
-expect_text text:"Mode: showing value" "Mode: showing value"
+expect_text test_id:"bar-mode" "Mode: showing value"
 expect_value label:"Formula" "2500"
 expect_value label:"D2" "2500"
 
 # A SUM cell reports every member of its range as a dependency.
 focus label:"D5"
-expect_text text:"Depends on: D2, D3, D4" "Depends on: D2, D3, D4"
+expect_text test_id:"bar-depends" "Depends on: D2, D3, D4"
 blur label:"D5"
 
 focus label:"F5"
-expect_text text:"Depends on: B2, C2, B3, C3, B4, C4" "Depends on: B2, C2, B3, C3, B4, C4"
+expect_text test_id:"bar-depends" "Depends on: B2, C2, B3, C3, B4, C4"
 blur label:"F5"
 
 # ------------------------------------------- editing one cell recomputes its
@@ -158,7 +158,7 @@ expect_metric_delta set_metadata 0
 # Event bindings are refreshed for the whole grid when this many rows change;
 # see the single-row and two-row edits below, which refresh none.
 expect_metric_delta bind_event 96
-expect_metric_delta patches_emitted 107
+expect_metric_delta_at_most patches_emitted 107
 
 # Restoring the old value restores every dependent.
 mark_metrics
@@ -184,7 +184,7 @@ expect_metric_delta rows_reused 20
 expect_metric_delta dirty_source_roots 1
 expect_metric_delta set_value 2
 expect_metric_delta bind_event 0
-expect_metric_delta patches_emitted 4
+expect_metric_delta_at_most patches_emitted 4
 fill label:"C12" "7"
 blur label:"C12"
 
@@ -201,7 +201,7 @@ expect_value label:"D8" "#VALUE!"
 expect_attr label:"D5" data-kind "error"
 # SUM skips text members rather than failing.
 expect_value label:"C5" "2100"
-expect_text text:"Selected: C4 | Grid mode: values | Errors: 9" "Selected: C4 | Grid mode: values | Errors: 9"
+expect_text test_id:"status-line" "Selected: C4 | Grid mode: values | Errors: 9"
 fill label:"C4" "150"
 expect_value label:"D4" "400"
 expect_value label:"D8" "1127.5"
@@ -304,7 +304,7 @@ expect_value label:"G6" ""
 # ----------------------------------------------------------- grid mode toggle
 
 click role:button name:"Show formulas"
-expect_text text:"Selected: G6 | Grid mode: formulas | Errors: 4" "Selected: G6 | Grid mode: formulas | Errors: 4"
+expect_text test_id:"status-line" "Selected: G6 | Grid mode: formulas | Errors: 4"
 expect_value label:"D2" "=B2+C2"
 expect_value label:"D5" "=SUM(D2:D4)"
 expect_value label:"A2" "Rent"
@@ -359,7 +359,7 @@ fill label:"B3" "400"
 expect_value label:"D3" "1200"
 blur label:"B3"
 
-expect_text text:"Selected: B3 | Grid mode: values | Errors: 4" "Selected: B3 | Grid mode: values | Errors: 4"
+expect_text test_id:"status-line" "Selected: B3 | Grid mode: values | Errors: 4"
 
 # ------------------------------------------ a new formula adds a new edge, and
 # ------------------------------------------ the new dependent updates with it
@@ -368,7 +368,7 @@ focus label:"G1"
 fill label:"G1" "=C12+1"
 blur label:"G1"
 expect_value label:"G1" "8"
-expect_text text:"Depends on: C12" "Depends on: C12"
+expect_text test_id:"bar-depends" "Depends on: C12"
 
 focus label:"C12"
 mark_metrics

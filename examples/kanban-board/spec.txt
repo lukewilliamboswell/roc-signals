@@ -17,31 +17,31 @@ expect_visible role:region name:"Done"
 expect_value label:"Filter cards" ""
 expect_value label:"WIP limit" "1"
 expect_value label:"New card title" ""
-expect_text text:"Add status: enter a title" "Add status: enter a title"
+expect_text test_id:"add-status" "Enter a title"
 expect_disabled role:button name:"Add card" true
 
-expect_text text:"Board total: 5 cards" "Board total: 5 cards"
-expect_text text:"Matching cards: 5" "Matching cards: 5"
-expect_text text:"Columns over WIP: 1" "Columns over WIP: 1"
-expect_text text:"WIP warning: rebalance the board" "WIP warning: rebalance the board"
+expect_text test_id:"board-total" "Board total: 5 cards"
+expect_text test_id:"board-matching" "Matching cards: 5"
+expect_text test_id:"board-over" "Columns over WIP: 1"
+expect_visible text:"WIP warning: rebalance the board"
 
-expect_text text:"Backlog count: 2" "Backlog count: 2"
-expect_text text:"Backlog matching: 2" "Backlog matching: 2"
-expect_text text:"Backlog WIP: 2 of 1 - over limit" "Backlog WIP: 2 of 1 - over limit"
-expect_text text:"Backlog is showing cards" "Backlog is showing cards"
+expect_text test_id:"count-backlog" "Count: 2"
+expect_text test_id:"matching-backlog" "Matching: 2"
+expect_text test_id:"wip-backlog" "WIP: 2 of 1 - over limit"
+expect_text test_id:"empty-backlog" "Showing cards"
 expect_attr role:region name:"Backlog" data-wip "over"
 
-expect_text text:"In Progress count: 1" "In Progress count: 1"
-expect_text text:"In Progress matching: 1" "In Progress matching: 1"
-expect_text text:"In Progress WIP: 1 of 1 - within limit" "In Progress WIP: 1 of 1 - within limit"
+expect_text test_id:"count-progress" "Count: 1"
+expect_text test_id:"matching-progress" "Matching: 1"
+expect_text test_id:"wip-progress" "WIP: 1 of 1 - within limit"
 expect_attr role:region name:"In Progress" data-wip "ok"
 
-expect_text text:"Review count: 1" "Review count: 1"
-expect_text text:"Review matching: 1" "Review matching: 1"
-expect_text text:"Review WIP: 1 of 1 - within limit" "Review WIP: 1 of 1 - within limit"
-expect_text text:"Done count: 1" "Done count: 1"
-expect_text text:"Done matching: 1" "Done matching: 1"
-expect_text text:"Done WIP: 1 of 1 - within limit" "Done WIP: 1 of 1 - within limit"
+expect_text test_id:"count-review" "Count: 1"
+expect_text test_id:"matching-review" "Matching: 1"
+expect_text test_id:"wip-review" "WIP: 1 of 1 - within limit"
+expect_text test_id:"count-done" "Count: 1"
+expect_text test_id:"matching-done" "Matching: 1"
+expect_text test_id:"wip-done" "WIP: 1 of 1 - within limit"
 
 expect_visible role:region name:"Draft onboarding copy"
 expect_visible role:region name:"Design login screen"
@@ -49,12 +49,12 @@ expect_visible role:region name:"Ship search filters"
 expect_visible role:region name:"Audit billing events"
 expect_visible role:region name:"Rotate API keys"
 
-expect_text text:"Draft onboarding copy position: 1 of 2 in Backlog" "Draft onboarding copy position: 1 of 2 in Backlog"
-expect_text text:"Design login screen position: 2 of 2 in Backlog" "Design login screen position: 2 of 2 in Backlog"
-expect_text text:"Ship search filters position: 1 of 1 in In Progress" "Ship search filters position: 1 of 1 in In Progress"
-expect_text text:"Audit billing events position: 1 of 1 in Review" "Audit billing events position: 1 of 1 in Review"
-expect_text text:"Rotate API keys position: 1 of 1 in Done" "Rotate API keys position: 1 of 1 in Done"
-expect_text text:"Draft onboarding copy flags: 0" "Draft onboarding copy flags: 0"
+expect_text test_id:"card-position-Draft onboarding copy" "Position 1 of 2 in Backlog"
+expect_text test_id:"card-position-Design login screen" "Position 2 of 2 in Backlog"
+expect_text test_id:"card-position-Ship search filters" "Position 1 of 1 in In Progress"
+expect_text test_id:"card-position-Audit billing events" "Position 1 of 1 in Review"
+expect_text test_id:"card-position-Rotate API keys" "Position 1 of 1 in Done"
+expect_text test_id:"card-flags-Draft onboarding copy" "Flags: 0"
 expect_attr role:region name:"Draft onboarding copy" data-card "Draft onboarding copy"
 
 # boundary controls on mount
@@ -77,17 +77,17 @@ click role:button name:"Move right: Draft onboarding copy"
 expect_metric_delta rows_created 1
 expect_metric_delta rows_removed 1
 expect_metric_delta rows_reused 2
-expect_text text:"Backlog count: 1" "Backlog count: 1"
-expect_text text:"In Progress count: 2" "In Progress count: 2"
-expect_text text:"Design login screen position: 1 of 1 in Backlog" "Design login screen position: 1 of 1 in Backlog"
-expect_text text:"Ship search filters position: 1 of 2 in In Progress" "Ship search filters position: 1 of 2 in In Progress"
-expect_text text:"Draft onboarding copy position: 2 of 2 in In Progress" "Draft onboarding copy position: 2 of 2 in In Progress"
-expect_text text:"Backlog WIP: 1 of 1 - within limit" "Backlog WIP: 1 of 1 - within limit"
-expect_text text:"In Progress WIP: 2 of 1 - over limit" "In Progress WIP: 2 of 1 - over limit"
+expect_text test_id:"count-backlog" "Count: 1"
+expect_text test_id:"count-progress" "Count: 2"
+expect_text test_id:"card-position-Design login screen" "Position 1 of 1 in Backlog"
+expect_text test_id:"card-position-Ship search filters" "Position 1 of 2 in In Progress"
+expect_text test_id:"card-position-Draft onboarding copy" "Position 2 of 2 in In Progress"
+expect_text test_id:"wip-backlog" "WIP: 1 of 1 - within limit"
+expect_text test_id:"wip-progress" "WIP: 2 of 1 - over limit"
 expect_attr role:region name:"Backlog" data-wip "ok"
 expect_attr role:region name:"In Progress" data-wip "over"
-expect_text text:"Columns over WIP: 1" "Columns over WIP: 1"
-expect_text text:"Board total: 5 cards" "Board total: 5 cards"
+expect_text test_id:"board-over" "Columns over WIP: 1"
+expect_text test_id:"board-total" "Board total: 5 cards"
 expect_disabled role:button name:"Move left: Draft onboarding copy" false
 expect_disabled role:button name:"Move up: Draft onboarding copy" false
 expect_disabled role:button name:"Move down: Draft onboarding copy" true
@@ -101,8 +101,8 @@ click role:button name:"Move up: Draft onboarding copy"
 expect_metric_delta rows_reused 2
 expect_metric_delta rows_created 0
 expect_metric_delta rows_removed 0
-expect_text text:"Draft onboarding copy position: 1 of 2 in In Progress" "Draft onboarding copy position: 1 of 2 in In Progress"
-expect_text text:"Ship search filters position: 2 of 2 in In Progress" "Ship search filters position: 2 of 2 in In Progress"
+expect_text test_id:"card-position-Draft onboarding copy" "Position 1 of 2 in In Progress"
+expect_text test_id:"card-position-Ship search filters" "Position 2 of 2 in In Progress"
 expect_disabled role:button name:"Move up: Draft onboarding copy" true
 expect_disabled role:button name:"Move down: Draft onboarding copy" false
 expect_disabled role:button name:"Move up: Ship search filters" false
@@ -113,8 +113,8 @@ click role:button name:"Move down: Draft onboarding copy"
 expect_metric_delta rows_reused 2
 expect_metric_delta rows_created 0
 expect_metric_delta rows_removed 0
-expect_text text:"Ship search filters position: 1 of 2 in In Progress" "Ship search filters position: 1 of 2 in In Progress"
-expect_text text:"Draft onboarding copy position: 2 of 2 in In Progress" "Draft onboarding copy position: 2 of 2 in In Progress"
+expect_text test_id:"card-position-Ship search filters" "Position 1 of 2 in In Progress"
+expect_text test_id:"card-position-Draft onboarding copy" "Position 2 of 2 in In Progress"
 
 # --- per-row edit does not disturb siblings -------------------------------
 mark_metrics
@@ -122,10 +122,10 @@ click role:button name:"Flag: Ship search filters"
 expect_metric_delta rows_reused 2
 expect_metric_delta rows_created 0
 expect_metric_delta rows_removed 0
-expect_text text:"Ship search filters flags: 1" "Ship search filters flags: 1"
-expect_text text:"Draft onboarding copy flags: 0" "Draft onboarding copy flags: 0"
-expect_text text:"Design login screen flags: 0" "Design login screen flags: 0"
-expect_text text:"Ship search filters position: 1 of 2 in In Progress" "Ship search filters position: 1 of 2 in In Progress"
+expect_text test_id:"card-flags-Ship search filters" "Flags: 1"
+expect_text test_id:"card-flags-Draft onboarding copy" "Flags: 0"
+expect_text test_id:"card-flags-Design login screen" "Flags: 0"
+expect_text test_id:"card-position-Ship search filters" "Position 1 of 2 in In Progress"
 
 # --- filter fans in with column membership --------------------------------
 mark_metrics
@@ -139,17 +139,17 @@ expect_absent role:region name:"Ship search filters"
 expect_absent role:region name:"Draft onboarding copy"
 expect_absent role:region name:"Audit billing events"
 expect_absent role:region name:"Rotate API keys"
-expect_text text:"Matching cards: 1" "Matching cards: 1"
-expect_text text:"Board total: 5 cards" "Board total: 5 cards"
-expect_text text:"Backlog matching: 1" "Backlog matching: 1"
-expect_text text:"In Progress matching: 0" "In Progress matching: 0"
-expect_text text:"No cards shown in In Progress" "No cards shown in In Progress"
-expect_text text:"No cards shown in Review" "No cards shown in Review"
-expect_text text:"No cards shown in Done" "No cards shown in Done"
+expect_text test_id:"board-matching" "Matching cards: 1"
+expect_text test_id:"board-total" "Board total: 5 cards"
+expect_text test_id:"matching-backlog" "Matching: 1"
+expect_text test_id:"matching-progress" "Matching: 0"
+expect_text test_id:"empty-progress" "No cards shown"
+expect_text test_id:"empty-review" "No cards shown"
+expect_text test_id:"empty-done" "No cards shown"
 # counts and WIP stay membership-based, not filter-based
-expect_text text:"In Progress count: 2" "In Progress count: 2"
-expect_text text:"In Progress WIP: 2 of 1 - over limit" "In Progress WIP: 2 of 1 - over limit"
-expect_text text:"Columns over WIP: 1" "Columns over WIP: 1"
+expect_text test_id:"count-progress" "Count: 2"
+expect_text test_id:"wip-progress" "WIP: 2 of 1 - over limit"
+expect_text test_id:"board-over" "Columns over WIP: 1"
 
 mark_metrics
 fill label:"Filter cards" ""
@@ -157,14 +157,14 @@ expect_metric_delta rows_created 4
 expect_metric_delta rows_removed 0
 expect_metric_delta rows_reused 0
 expect_visible role:region name:"Ship search filters"
-expect_text text:"Matching cards: 5" "Matching cards: 5"
+expect_text test_id:"board-matching" "Matching cards: 5"
 # card data lives in board state, so it survives the row being rebuilt
-expect_text text:"Ship search filters flags: 1" "Ship search filters flags: 1"
+expect_text test_id:"card-flags-Ship search filters" "Flags: 1"
 
 # --- delete the card that currently matches the filter ---------------------
 fill label:"Filter cards" "Rotate"
-expect_text text:"Matching cards: 1" "Matching cards: 1"
-expect_text text:"Done matching: 1" "Done matching: 1"
+expect_text test_id:"board-matching" "Matching cards: 1"
+expect_text test_id:"matching-done" "Matching: 1"
 expect_visible role:region name:"Rotate API keys"
 
 mark_metrics
@@ -173,17 +173,17 @@ expect_metric_delta rows_removed 1
 expect_metric_delta rows_created 0
 expect_metric_delta rows_reused 0
 expect_absent role:region name:"Rotate API keys"
-expect_text text:"Done count: 0" "Done count: 0"
-expect_text text:"Done matching: 0" "Done matching: 0"
-expect_text text:"No cards shown in Done" "No cards shown in Done"
-expect_text text:"Done WIP: 0 of 1 - within limit" "Done WIP: 0 of 1 - within limit"
-expect_text text:"Board total: 4 cards" "Board total: 4 cards"
-expect_text text:"Matching cards: 0" "Matching cards: 0"
+expect_text test_id:"count-done" "Count: 0"
+expect_text test_id:"matching-done" "Matching: 0"
+expect_text test_id:"empty-done" "No cards shown"
+expect_text test_id:"wip-done" "WIP: 0 of 1 - within limit"
+expect_text test_id:"board-total" "Board total: 4 cards"
+expect_text test_id:"board-matching" "Matching cards: 0"
 
 fill label:"Filter cards" ""
-expect_text text:"Board total: 4 cards" "Board total: 4 cards"
-expect_text text:"Matching cards: 4" "Matching cards: 4"
-expect_text text:"Review count: 1" "Review count: 1"
+expect_text test_id:"board-total" "Board total: 4 cards"
+expect_text test_id:"board-matching" "Matching cards: 4"
+expect_text test_id:"count-review" "Count: 1"
 
 # --- move the only card out of a column, leaving it empty ------------------
 mark_metrics
@@ -191,62 +191,62 @@ click role:button name:"Move right: Audit billing events"
 expect_metric_delta rows_removed 1
 expect_metric_delta rows_created 1
 expect_metric_delta rows_reused 0
-expect_text text:"Review count: 0" "Review count: 0"
-expect_text text:"No cards shown in Review" "No cards shown in Review"
-expect_text text:"Review WIP: 0 of 1 - within limit" "Review WIP: 0 of 1 - within limit"
-expect_text text:"Done count: 1" "Done count: 1"
-expect_text text:"Audit billing events position: 1 of 1 in Done" "Audit billing events position: 1 of 1 in Done"
+expect_text test_id:"count-review" "Count: 0"
+expect_text test_id:"empty-review" "No cards shown"
+expect_text test_id:"wip-review" "WIP: 0 of 1 - within limit"
+expect_text test_id:"count-done" "Count: 1"
+expect_text test_id:"card-position-Audit billing events" "Position 1 of 1 in Done"
 expect_disabled role:button name:"Move right: Audit billing events" true
 expect_disabled role:button name:"Move left: Audit billing events" false
 
 click role:button name:"Move left: Audit billing events"
-expect_text text:"Review count: 1" "Review count: 1"
-expect_text text:"Done count: 0" "Done count: 0"
-expect_text text:"Audit billing events position: 1 of 1 in Review" "Audit billing events position: 1 of 1 in Review"
-expect_text text:"Review is showing cards" "Review is showing cards"
+expect_text test_id:"count-review" "Count: 1"
+expect_text test_id:"count-done" "Count: 0"
+expect_text test_id:"card-position-Audit billing events" "Position 1 of 1 in Review"
+expect_text test_id:"empty-review" "Showing cards"
 
 # --- WIP limit crosses and un-crosses -------------------------------------
 fill label:"WIP limit" "2"
-expect_text text:"In Progress WIP: 2 of 2 - within limit" "In Progress WIP: 2 of 2 - within limit"
+expect_text test_id:"wip-progress" "WIP: 2 of 2 - within limit"
 expect_attr role:region name:"In Progress" data-wip "ok"
-expect_text text:"Columns over WIP: 0" "Columns over WIP: 0"
-expect_text text:"WIP status: every column is within its limit" "WIP status: every column is within its limit"
+expect_text test_id:"board-over" "Columns over WIP: 0"
+expect_visible text:"WIP status: every column is within its limit"
 expect_absent text:"WIP warning: rebalance the board"
 
 fill label:"WIP limit" "1"
-expect_text text:"In Progress WIP: 2 of 1 - over limit" "In Progress WIP: 2 of 1 - over limit"
+expect_text test_id:"wip-progress" "WIP: 2 of 1 - over limit"
 expect_attr role:region name:"In Progress" data-wip "over"
-expect_text text:"Columns over WIP: 1" "Columns over WIP: 1"
-expect_text text:"WIP warning: rebalance the board" "WIP warning: rebalance the board"
+expect_text test_id:"board-over" "Columns over WIP: 1"
+expect_visible text:"WIP warning: rebalance the board"
 expect_absent text:"WIP status: every column is within its limit"
 
 # invalid input falls back to "unlimited"
 fill label:"WIP limit" "abc"
-expect_text text:"In Progress WIP: 2 - unlimited" "In Progress WIP: 2 - unlimited"
-expect_text text:"Review WIP: 1 - unlimited" "Review WIP: 1 - unlimited"
+expect_text test_id:"wip-progress" "WIP: 2 - unlimited"
+expect_text test_id:"wip-review" "WIP: 1 - unlimited"
 expect_attr role:region name:"In Progress" data-wip "unlimited"
-expect_text text:"Columns over WIP: 0" "Columns over WIP: 0"
+expect_text test_id:"board-over" "Columns over WIP: 0"
 
 fill label:"WIP limit" ""
-expect_text text:"In Progress WIP: 2 - unlimited" "In Progress WIP: 2 - unlimited"
-expect_text text:"Columns over WIP: 0" "Columns over WIP: 0"
+expect_text test_id:"wip-progress" "WIP: 2 - unlimited"
+expect_text test_id:"board-over" "Columns over WIP: 0"
 
 fill label:"WIP limit" "3"
-expect_text text:"In Progress WIP: 2 of 3 - within limit" "In Progress WIP: 2 of 3 - within limit"
-expect_text text:"Columns over WIP: 0" "Columns over WIP: 0"
+expect_text test_id:"wip-progress" "WIP: 2 of 3 - within limit"
+expect_text test_id:"board-over" "Columns over WIP: 0"
 
 # --- adding cards: empty, duplicate, valid ---------------------------------
 expect_disabled role:button name:"Add card" true
 fill label:"New card title" "   "
-expect_text text:"Add status: enter a title" "Add status: enter a title"
+expect_text test_id:"add-status" "Enter a title"
 expect_disabled role:button name:"Add card" true
 
 fill label:"New card title" "Design login screen"
-expect_text text:"Add status: duplicate title" "Add status: duplicate title"
+expect_text test_id:"add-status" "Duplicate title"
 expect_disabled role:button name:"Add card" true
 
 fill label:"New card title" "Write release notes"
-expect_text text:"Add status: ready" "Add status: ready"
+expect_text test_id:"add-status" "Ready"
 expect_disabled role:button name:"Add card" false
 
 mark_metrics
@@ -255,12 +255,12 @@ expect_metric_delta rows_created 1
 expect_metric_delta rows_removed 0
 expect_metric_delta rows_reused 1
 expect_visible role:region name:"Write release notes"
-expect_text text:"Write release notes position: 2 of 2 in Backlog" "Write release notes position: 2 of 2 in Backlog"
-expect_text text:"Design login screen position: 1 of 2 in Backlog" "Design login screen position: 1 of 2 in Backlog"
-expect_text text:"Backlog count: 2" "Backlog count: 2"
-expect_text text:"Board total: 5 cards" "Board total: 5 cards"
+expect_text test_id:"card-position-Write release notes" "Position 2 of 2 in Backlog"
+expect_text test_id:"card-position-Design login screen" "Position 1 of 2 in Backlog"
+expect_text test_id:"count-backlog" "Count: 2"
+expect_text test_id:"board-total" "Board total: 5 cards"
 expect_value label:"New card title" ""
-expect_text text:"Add status: enter a title" "Add status: enter a title"
+expect_text test_id:"add-status" "Enter a title"
 expect_disabled role:button name:"Add card" true
 expect_disabled role:button name:"Move left: Write release notes" true
 expect_disabled role:button name:"Move up: Write release notes" false
@@ -269,7 +269,7 @@ expect_disabled role:button name:"Move down: Write release notes" true
 # --- empty a whole column --------------------------------------------------
 click role:button name:"Delete: Write release notes"
 expect_absent role:region name:"Write release notes"
-expect_text text:"Backlog count: 1" "Backlog count: 1"
+expect_text test_id:"count-backlog" "Count: 1"
 
 mark_metrics
 click role:button name:"Delete: Design login screen"
@@ -277,18 +277,18 @@ expect_metric_delta rows_removed 1
 expect_metric_delta rows_created 0
 expect_metric_delta rows_reused 0
 expect_absent role:region name:"Design login screen"
-expect_text text:"Backlog count: 0" "Backlog count: 0"
-expect_text text:"Backlog matching: 0" "Backlog matching: 0"
-expect_text text:"No cards shown in Backlog" "No cards shown in Backlog"
-expect_text text:"Backlog WIP: 0 of 3 - within limit" "Backlog WIP: 0 of 3 - within limit"
-expect_text text:"Board total: 3 cards" "Board total: 3 cards"
-expect_text text:"Matching cards: 3" "Matching cards: 3"
+expect_text test_id:"count-backlog" "Count: 0"
+expect_text test_id:"matching-backlog" "Matching: 0"
+expect_text test_id:"empty-backlog" "No cards shown"
+expect_text test_id:"wip-backlog" "WIP: 0 of 3 - within limit"
+expect_text test_id:"board-total" "Board total: 3 cards"
+expect_text test_id:"board-matching" "Matching cards: 3"
 
 # a card can still be moved back into the now-empty column
 click role:button name:"Move left: Ship search filters"
-expect_text text:"Backlog count: 1" "Backlog count: 1"
-expect_text text:"Ship search filters position: 1 of 1 in Backlog" "Ship search filters position: 1 of 1 in Backlog"
-expect_text text:"Ship search filters flags: 1" "Ship search filters flags: 1"
-expect_text text:"In Progress count: 1" "In Progress count: 1"
-expect_text text:"Draft onboarding copy position: 1 of 1 in In Progress" "Draft onboarding copy position: 1 of 1 in In Progress"
-expect_text text:"Backlog is showing cards" "Backlog is showing cards"
+expect_text test_id:"count-backlog" "Count: 1"
+expect_text test_id:"card-position-Ship search filters" "Position 1 of 1 in Backlog"
+expect_text test_id:"card-flags-Ship search filters" "Flags: 1"
+expect_text test_id:"count-progress" "Count: 1"
+expect_text test_id:"card-position-Draft onboarding copy" "Position 1 of 1 in In Progress"
+expect_text test_id:"empty-backlog" "Showing cards"

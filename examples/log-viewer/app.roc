@@ -147,8 +147,8 @@ render_row = |key, line| {
 		"Log ${key}",
 		row_class,
 		[
-			Html.paragraph_s_c(line_text, "font-mono text-sm text-zinc-900"),
-			Html.paragraph_s_c(marker_text, "text-xs text-zinc-600"),
+			Html.paragraph_s_attrs(line_text, [Html.class_attr("font-mono text-sm text-zinc-900"), Html.test_id("text-${key}")]),
+			Html.paragraph_s_attrs(marker_text, [Html.class_attr("text-xs text-zinc-600"), Html.test_id("match-${key}")]),
 		],
 	)
 }
@@ -197,17 +197,17 @@ stream_panel = |levels, query, follow_tail, newest_first| {
 		"Log stream",
 		panel_class,
 		[
-			Html.paragraph_s_c(summary_text, "text-sm font-medium text-zinc-900"),
-			Html.paragraph_s_c(matches_text, "text-sm text-zinc-700"),
-			Html.paragraph_s_c(order_text, "text-sm text-zinc-700"),
+			Html.paragraph_s_attrs(summary_text, [Html.class_attr("text-sm font-medium text-zinc-900"), Html.test_id("line-count")]),
+			Html.paragraph_s_attrs(matches_text, [Html.class_attr("text-sm text-zinc-700"), Html.test_id("query-matches")]),
+			Html.paragraph_s_attrs(order_text, [Html.class_attr("text-sm text-zinc-700"), Html.test_id("order-mode")]),
 			Ui.when(
 				no_matches,
-				|| Html.paragraph_c("No lines match the query.", "text-sm text-amber-800"),
-				|| Html.paragraph_c("Query filter idle.", "text-sm text-zinc-600"),
+				|| Html.paragraph_attrs("No lines match the query.", [Html.class_attr("text-sm text-amber-800"), Html.test_id("query-note")]),
+				|| Html.paragraph_attrs("Query filter idle.", [Html.class_attr("text-sm text-zinc-600"), Html.test_id("query-note")]),
 			),
 			Ui.when(
 				follow_tail,
-				|| Html.section_c("Tail", panel_class, [Html.paragraph_s_c(visible.map(tail_text), "font-mono text-sm text-zinc-900")]),
+				|| Html.section_c("Tail", panel_class, [Html.paragraph_s_attrs(visible.map(tail_text), [Html.class_attr("font-mono text-sm text-zinc-900"), Html.test_id("tail-line")])]),
 				|| Html.section_c("Tail paused", panel_class, [Html.paragraph("Follow tail is off")]),
 			),
 			Ui.when(
@@ -222,10 +222,8 @@ stream_panel = |levels, query, follow_tail, newest_first| {
 
 page : Ui.State(Bool), Ui.State(Bool), Ui.State(Bool), Ui.State(Bool), Ui.State(Str), Ui.State(Bool), Ui.State(Bool), Ui.State(Bool) -> Elem
 page = |show_debug, show_info, show_warn, show_error, query, follow_tail, newest_first, epoch| {
-	# Four independent level toggles fan in to one list-of-flags signal.
-	# `Signal.combine` cannot be used here: it reads every input through the
-	# first input's capability, which fails for sources that own separate
-	# capabilities.
+	# Four independent level toggles fan in to one list-of-flags signal via the
+	# record-builder `.Signal`.
 	level_flags =
 		{
 			debug: show_debug.signal(),
@@ -268,9 +266,18 @@ page = |show_debug, show_info, show_warn, show_error, query, follow_tail, newest
 					Html.button_c("Clear log", "button justify-self-start", epoch.on_unit(|value| !value)),
 				],
 			),
-			# Clearing flips this flag, disposing the mounted stream scope and its
-			# interval, and mounting a fresh one with an empty buffer. The control
-			# state above the branch survives the clear.
+			# The buffer is derived from the tick count, so "clear" means "rewind
+			# the clock": flipping this flag disposes the mounted stream scope and
+			# its interval and mounts a fresh one, whose interval starts again at
+			# zero. The control state above the branch survives the clear.
+			#
+			# `State.set_cmd` now lets a signal change write retained state, so the
+			# buffer could be a `Ui.state(List(LogLine))` fed by
+			# `Ui.on_change(ticks, ...)`. It is not, because appending needs the
+			# buffer's current value and the `on_change` callback only receives the
+			# signal's value - so a retained buffer would still have to rebuild
+			# itself from the tick count, and would trade one derived signal for a
+			# state plus a write hook.
 			Ui.when(
 				epoch.signal(),
 				|| stream_panel(levels, query_signal, follow_signal, newest_signal),

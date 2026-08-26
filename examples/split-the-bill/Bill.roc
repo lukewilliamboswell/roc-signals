@@ -331,23 +331,23 @@ Bill := {}.{
 				status =
 					match Bill.parse_cents(expense.amount_text) {
 						Err(_) =>
-							"${expense.description} status: amount not recognised, treated as ${Bill.money(0)}"
+							"Status: amount not recognised, treated as ${Bill.money(0)}"
 						Ok(_) =>
 							if !people.contains(expense.payer) {
-								"${expense.description} status: payer ${expense.payer} is not on the trip, excluded"
+								"Status: payer ${expense.payer} is not on the trip, excluded"
 							} else if parts.is_empty() {
-								"${expense.description} status: nobody is sharing it, excluded"
+								"Status: nobody is sharing it, excluded"
 							} else {
-								"${expense.description} status: ${Bill.money(Bill.amount_cents(expense))} paid by ${expense.payer}, split ${Bill.ways(Bill.count(parts))}"
+								"Status: ${Bill.money(Bill.amount_cents(expense))} paid by ${expense.payer}, split ${Bill.ways(Bill.count(parts))}"
 							}
 					}
 				breakdown =
 					if parts.is_empty() {
-						"${expense.description} shares: none"
+						"Shares: none"
 					} else {
 						joined =
 							Str.join_with(parts.map(|share| "${share.name} ${Bill.money(share.cents)}"), ", ")
-						"${expense.description} shares: ${joined}"
+						"Shares: ${joined}"
 					}
 				members =
 					people.map(|name| { name, included: !(expense.excluded.contains(name)) })

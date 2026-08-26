@@ -35,7 +35,7 @@ expect_absent test_id:"match-Dee"
 expect_absent test_id:"match-Eli"
 # The root group is not deletable.
 expect_absent role:button name:"Delete n1"
-expect_text text:"Root group cannot be deleted" "Root group cannot be deleted"
+expect_visible text:"Root group cannot be deleted"
 
 # ------------------------------------------------- edge case: empty leaf value
 fill label:"Value n2" ""

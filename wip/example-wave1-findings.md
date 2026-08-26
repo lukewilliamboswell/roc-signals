@@ -242,3 +242,66 @@ Regression assertion added to `examples/_fixtures/signal-combine-caps/spec.txt`.
   surplus.
 - Expressiveness: reducers cannot read another state handle; intervals cannot
   write state.
+
+
+---
+
+# Resolved: the three expressiveness gaps
+
+All three constraints that shaped every example in the wave are fixed.
+
+## `reset_on_start` update loss — fixed (2b17162)
+
+A keyed list driven by both a `Ui.state` and a task status silently dropped an
+append when the task restarted in the same flush: the items signal was correct
+but no row appeared, and the next unrelated list change recovered it. Reported
+independently by the field-notes and support-inbox agents. Structural updates
+now apply before queued `on_change` commands.
+
+## Intervals and task results can now write state — `State.set_cmd` (cef846a)
+
+`Ui.on_change` yields a `Node.Cmd`, and `State.set_cmd(state, value)` produces
+one, so a tick or a task result can push into retained state:
+
+```roc
+Ui.on_change(ticks, |n| elapsed.set_cmd(n))
+```
+
+Covered by `examples/_fixtures/state-commands/`.
+
+This was previously total: pomodoro-tracker had to derive elapsed time from the
+tick count and model reset as a branch swap, and field-notes had to make the
+lane settlement itself the record because a task result could not be stored.
+Those designs still work and are not wrong, but they were forced and no longer
+are.
+
+## Reducers can now read another state handle (cb29897)
+
+`on_unit_with`, `on_str_with`, `on_bool_with`, `on_detail_with` and
+`on_key_with` read a second handle atomically:
+
+```roc
+sheet.on_str_with(cursor, |sheet_value, cursor_value, text| ...)
+```
+
+Covered by `examples/_fixtures/state-reads/`, and `spreadsheet-lite` now edits
+the selected cell through the formula bar without merging sheet and cursor
+state — the exact feature that was previously impossible to build.
+
+This was the single most-cited constraint across all eighteen examples. It is
+why data-grid merged `query` and `selected` into one record, why support-inbox
+merged selection, draft and outbox, and why several apps kept a draft field
+inside the collection state it belonged to.
+
+### Follow-up worth doing
+
+Earlier examples merged state purely to work around this and have not been
+revisited. Candidates for decomposition now that the constraint is gone:
+
+- `data-grid` — `filter : { query, selected }` and `sort : { key, desc }`
+- `support-inbox` — `session : Inbox.Session`
+- `kanban-board` — the `draft` field inside `board`
+- `split-the-bill` — the drafts inside `Roster` and `Ledger`
+
+None are wrong as written; they are just no longer the only option, and the
+gallery's job is to show the ideal shape.

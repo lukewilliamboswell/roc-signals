@@ -161,6 +161,25 @@ Report, concisely:
 Do not report success unless the native suite actually passed. If you could not
 get it green, say exactly what fails.
 
+## Reading another state handle in a reducer
+
+A reducer can read a second state handle atomically with `on_unit_with`,
+`on_str_with`, `on_bool_with`, `on_detail_with` and `on_key_with`:
+
+```roc
+# update `sheet` using the current value of `cursor`
+sheet.on_str_with(cursor, |sheet_value, cursor_value, text| ...)
+```
+
+This removes the constraint that used to force unrelated state into one record
+just because a single action needed both. Prefer several small handles plus a
+`*_with` reducer over a god-record. `examples/spreadsheet-lite` edits the
+selected cell through the formula bar this way, and
+`examples/_fixtures/state-reads/` is the minimal case.
+
+Several earlier examples merged state for exactly this reason and have not been
+revisited; do not copy that pattern.
+
 ## Known platform traps (read before you design)
 
 These were found by earlier agents and confirmed. Design around them; do not try
@@ -188,12 +207,19 @@ If you need per-row state, try it early — do not build your whole app on the
 assumption that it works. If it crashes, prefer lifting the state up (keep a
 per-row field in the parent's collection) and report the shape that failed.
 
-### Intervals cannot write to `Ui.state`
+### Writing state from a signal change: use `State.set_cmd`
 
-`Ui.on_change` yields a `Node.Cmd`, and there is no "dispatch a message to a
-state handle" command. So an `interval` cannot push into retained state. Model
-timer-driven data as *derived from the tick count* instead, and model "reset" or
-"clear" as swapping a branch so the mounted scope is disposed and remounted.
+`Ui.on_change` / `Ui.on_change_initial` yield a `Node.Cmd`, and `State.set_cmd`
+turns a value into one:
+
+```roc
+Ui.on_change(ticks, |n| elapsed.set_cmd(n))
+```
+
+So an interval or a task result CAN push into retained state. Earlier examples
+predate this and derive timer data from the tick count instead — that is still
+a fine shape, but it is no longer forced. See
+`examples/_fixtures/state-commands/`.
 
 ### Unannotated number literals in `Ui.state` infer as `Frac`
 

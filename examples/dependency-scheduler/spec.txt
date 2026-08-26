@@ -121,7 +121,7 @@ expect_metric_delta rows_reused 0
 expect_metric_delta rows_removed 0
 expect_metric_delta scopes_created 0
 expect_metric_delta scopes_disposed 0
-expect_metric_delta patches_emitted 0
+expect_metric_delta_at_most patches_emitted 0
 expect_text test_id:"line-docs" "Write docs: day 2 to 3, 1 day, after spec, slack 7 days"
 
 # --- the critical path moves when a parallel branch grows long enough -------

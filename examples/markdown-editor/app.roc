@@ -190,11 +190,11 @@ statistics_panel = |counts, heading_count, reading, speed, speed_signal| {
 				],
 				speed.on_str(|_, value| value),
 			),
-			Html.paragraph_s(words_text),
-			Html.paragraph_s(characters_text),
-			Html.paragraph_s(headings_text),
-			Html.paragraph_s(reading_text),
-			Html.paragraph_s(summary_line),
+			Html.paragraph_s_attrs(words_text, [Html.test_id("stat-words")]),
+			Html.paragraph_s_attrs(characters_text, [Html.test_id("stat-characters")]),
+			Html.paragraph_s_attrs(headings_text, [Html.test_id("stat-headings")]),
+			Html.paragraph_s_attrs(reading_text, [Html.test_id("stat-reading")]),
+			Html.paragraph_s_attrs(summary_line, [Html.test_id("stat-summary")]),
 		],
 	)
 }

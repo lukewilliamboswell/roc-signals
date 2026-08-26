@@ -180,7 +180,7 @@ expect_metric_delta rows_created 0
 expect_metric_delta rows_removed 0
 expect_metric_delta rows_reused 0
 expect_metric_delta scopes_created 0
-expect_metric_delta patches_emitted 1
+expect_metric_delta_at_most patches_emitted 1
 
 # Moving the watch to another row is symmetric.
 click role:button name:"Watch roc-parser"

@@ -855,9 +855,14 @@ Pick the metric that answers the question you are asking:
 - **Did the reconciler reuse rows?** `rows_reused`, `rows_created`,
   `rows_removed`, `scopes_created`, `scopes_disposed`. These are semantic —
   assert them exactly.
-- **How much reached the DOM?** `patches_emitted`, `set_text`, `set_value`,
-  `set_checked`. Their exact values shift with unrelated engine changes, so
-  bound them with `expect_metric_delta_at_most` rather than asserting equality.
+- **How much reached the DOM?** `set_text`, `set_value`, `set_checked` count the
+  writes that actually landed, and are the honest answer for a keyed-list app.
+  `patches_emitted` also carries per-row reconciler bookkeeping — in an
+  `each_str`-heavy view it can run several times `set_text` even when every row
+  is reused — so treat it as an upper bound, not a measure of DOM writes.
+  Bound all of them with `expect_metric_delta_at_most`; their exact values shift
+  with unrelated engine changes, and creating a row emits one patch per static
+  attribute, so adding a `test_id` moves them.
 
 `dirty_source_roots` counts the sources a change dirtied — one per event
 dispatch, or the number of host source signals a location, visibility, online,

@@ -241,19 +241,22 @@ formula_bar = |sheet, cursor, book| {
 				[Html.test_id("formula-bar")],
 				sheet.on_str_with(cursor, |sources, caret, text| set_source(sources, caret.selected, text)),
 			),
-			Html.paragraph_s(Signal.map(bar, |view| "Cell: ${view.ref}")),
-			Html.paragraph_s(
+			Html.paragraph_s_attrs(Signal.map(bar, |view| "Cell: ${view.ref}"), [Html.test_id("bar-cell")]),
+			Html.paragraph_s_attrs(
 				Signal.map(
 					bar,
 					|view| if view.source.is_empty() { "Source: (empty)" } else { "Source: ${view.source}" },
 				),
+				[Html.test_id("bar-source")],
 			),
-			Html.paragraph_s(
+			Html.paragraph_s_attrs(
 				Signal.map(bar, |view| if view.value.is_empty() { "Value: (empty)" } else { "Value: ${view.value}" }),
+				[Html.test_id("bar-value")],
 			),
-			Html.paragraph_s(Signal.map(bar, |view| "Depends on: ${view.depends}")),
-			Html.paragraph_s(
+			Html.paragraph_s_attrs(Signal.map(bar, |view| "Depends on: ${view.depends}"), [Html.test_id("bar-depends")]),
+			Html.paragraph_s_attrs(
 				Signal.map(bar, |view| if view.editing { "Mode: editing" } else { "Mode: showing value" }),
+				[Html.test_id("bar-mode")],
 			),
 		],
 	)
@@ -370,7 +373,7 @@ main = || {
 																),
 																reverse_rows.on_unit(|on| !on),
 															),
-															Html.paragraph_s(status),
+															Html.paragraph_s_attrs(status, [Html.test_id("status-line")]),
 														],
 													),
 													Html.section_c(

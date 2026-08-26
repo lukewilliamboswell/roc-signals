@@ -252,7 +252,11 @@ row_text = |flight|
 # --- view --------------------------------------------------------------------
 
 render_row : Str, Signal.Signal(Flight) -> Elem
-render_row = |_key, flight| Html.div_c(row_class, [Html.text_s(flight.map(row_text))])
+render_row = |key, flight|
+	Html.paragraph_s_attrs(
+		flight.map(row_text),
+		[Html.class_attr(row_class), Html.test_id("flight-row-${key}")],
+	)
 
 filter_select : Str, Signal.Signal(Str), List(Elem), _ -> Elem
 filter_select = |label, value, options, msg| Html.select_c(label, value, select_class, options, msg)
@@ -377,8 +381,8 @@ main = ||
 																	),
 																],
 															),
-															Html.paragraph_s_c(criteria.map(filters_text), strong_class),
-															Html.paragraph_s_c(criteria.map(request_text), muted_class),
+															Html.paragraph_s_attrs(criteria.map(filters_text), [Html.class_attr(strong_class), Html.test_id("filters-summary")]),
+															Html.paragraph_s_attrs(criteria.map(request_text), [Html.class_attr(muted_class), Html.test_id("request-key")]),
 														],
 													),
 													Html.section_c(
@@ -395,7 +399,7 @@ main = ||
 																],
 																sort_by.on_str(|_, value| value),
 															),
-															Html.paragraph_s_c(sort_by.signal().map(sort_text), strong_class),
+															Html.paragraph_s_attrs(sort_by.signal().map(sort_text), [Html.class_attr(strong_class), Html.test_id("sort-summary")]),
 															Html.paragraph_c("Sorting reorders the flights already returned. It does not issue a new search.", muted_class),
 														],
 													),
@@ -403,12 +407,12 @@ main = ||
 														"Results",
 														panel_class,
 														[
-															Html.paragraph_s_c(outcome.map(status_text), strong_class),
-															Html.paragraph_s_c(summary, strong_class),
-															Html.paragraph_s_c(outcome.map(|value| "Flights returned: ${returned_count(value).to_str()}"), muted_class),
-															Html.paragraph_s_c(rows.map(order_text), muted_class),
-															Html.paragraph_s_c(rows.map(top_text), muted_class),
-															Html.paragraph_s_c(outcome.map(error_text), error_class),
+															Html.paragraph_s_attrs(outcome.map(status_text), [Html.class_attr(strong_class), Html.test_id("search-status")]),
+															Html.paragraph_s_attrs(summary, [Html.class_attr(strong_class), Html.test_id("result-summary")]),
+															Html.paragraph_s_attrs(outcome.map(|value| "Flights returned: ${returned_count(value).to_str()}"), [Html.class_attr(muted_class), Html.test_id("flights-returned")]),
+															Html.paragraph_s_attrs(rows.map(order_text), [Html.class_attr(muted_class), Html.test_id("result-order")]),
+															Html.paragraph_s_attrs(rows.map(top_text), [Html.class_attr(muted_class), Html.test_id("top-result")]),
+															Html.paragraph_s_attrs(outcome.map(error_text), [Html.class_attr(error_class), Html.test_id("search-error")]),
 															Html.div_c("grid gap-2", [Ui.each_str(rows, |flight| flight.id, render_row)]),
 														],
 													),

@@ -4,11 +4,16 @@ app [main] { pf: platform "https://github.com/lukewilliamboswell/roc-signals/rel
 #
 # A focus timer with per-project time tracking. Three things are worth studying:
 #
-# 1. Elapsed time is *derived*, never accumulated. An interval can only publish a
-#    tick count into the signal graph; it cannot write to a `Ui.state`. So the
-#    clock is `Signal.interval(1000)` and every timer reading is a `Signal.map`
-#    of that tick count. Starting/pausing swaps a `Ui.when` branch, and the
-#    branch swap is what disposes the interval and rewinds the clock to zero.
+# 1. Elapsed time is *derived*, never accumulated. The clock is
+#    `Signal.interval(1000)` and every timer reading is a `Signal.map` of that
+#    tick count. Starting/pausing swaps a `Ui.when` branch, and the branch swap
+#    is what disposes the interval and rewinds the clock to zero.
+#    `Ui.on_change(ticks, |n| elapsed.set_cmd(n))` could push ticks into a
+#    `Ui.state` instead, but that would only mirror the tick count into storage:
+#    `set_cmd` takes a value, and the `on_change` callback cannot read the
+#    state's current value, so nothing here could actually be *accumulated*.
+#    Deriving also gives the intended semantics for free - "pausing voids the
+#    block in progress" is exactly what disposing the interval scope means.
 # 2. Retained state is seeded from localStorage through a keyed row. `Ui.state`
 #    takes a plain initial value, so it cannot await a host source. But an
 #    `Ui.each_str` row body runs when the row mounts, with the row key in hand -
@@ -229,7 +234,7 @@ render_row = |attach, ledger, live, key, item| {
 		name,
 		[Html.class_attr(row_class)],
 		[
-			Html.paragraph_s_c(view.map(row_text), text_class),
+			Html.paragraph_s_attrs(view.map(row_text), [Html.class_attr(text_class), Html.test_id("row-total-${key}")]),
 			Html.div_c(
 				toolbar_class,
 				[
@@ -266,9 +271,9 @@ board = |attach, run, ledger, attached, ticks, extras| {
 				panel_class,
 				[
 					Html.heading_c("Timer", "text-xl font-semibold text-zinc-950"),
-					Html.paragraph_s_c(run_signal.map(run_text), text_class),
-					Html.paragraph_s_c(ticks.map(phase_text), text_class),
-					Html.paragraph_s_c(attached.map(attached_text), muted_class),
+					Html.paragraph_s_attrs(run_signal.map(run_text), [Html.class_attr(text_class), Html.test_id("timer-state")]),
+					Html.paragraph_s_attrs(ticks.map(phase_text), [Html.class_attr(text_class), Html.test_id("clock-face")]),
+					Html.paragraph_s_attrs(attached.map(attached_text), [Html.class_attr(muted_class), Html.test_id("attached-project")]),
 					Html.div_c(
 						toolbar_class,
 						[
@@ -300,8 +305,8 @@ board = |attach, run, ledger, attached, ticks, extras| {
 				panel_class,
 				[
 					Html.heading_c("Today", "text-xl font-semibold text-zinc-950"),
-					Html.paragraph_s_c(projects.map(|list| "Blocks logged today: ${logged_blocks(list).to_str()}"), text_class),
-					Html.paragraph_s_c(rollup.map(|total| "Focus minutes today: ${total.to_str()}"), text_class),
+					Html.paragraph_s_attrs(projects.map(|list| "Blocks logged today: ${logged_blocks(list).to_str()}"), [Html.class_attr(text_class), Html.test_id("blocks-logged")]),
+					Html.paragraph_s_attrs(rollup.map(|total| "Focus minutes today: ${total.to_str()}"), [Html.class_attr(text_class), Html.test_id("focus-minutes")]),
 				],
 			),
 		],

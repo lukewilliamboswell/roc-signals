@@ -66,6 +66,20 @@ column_at = |index|
 		done
 	}
 
+## Stable, spec-facing id fragment for a column. Ids are derived from this so
+## an assertion never has to spell out a rendered value.
+column_slug : Str -> Str
+column_slug = |name|
+	if name == backlog {
+		"backlog"
+	} else if name == progress {
+		"progress"
+	} else if name == review {
+		"review"
+	} else {
+		"done"
+	}
+
 initial_board : Board
 initial_board = {
 	cards: [
@@ -170,16 +184,16 @@ add_status : Board -> Str
 add_status = |board| {
 	title = board.draft.trim()
 	if title.is_empty() {
-		"Add status: enter a title"
+		"Enter a title"
 	} else if !board.cards.keep_if(|card| card.title == title).is_empty() {
-		"Add status: duplicate title"
+		"Duplicate title"
 	} else {
-		"Add status: ready"
+		"Ready"
 	}
 }
 
 can_add : Board -> Bool
-can_add = |board| add_status(board) == "Add status: ready"
+can_add = |board| add_status(board) == "Ready"
 
 add_card : Board -> Board
 add_card = |board|
@@ -229,14 +243,14 @@ parse_limit = |raw| {
 	}
 }
 
-limit_text : Str, U64, U64 -> Str
-limit_text = |column, count, limit|
+limit_text : U64, U64 -> Str
+limit_text = |count, limit|
 	if limit == 0 {
-		"${column} WIP: ${count.to_str()} - unlimited"
+		"WIP: ${count.to_str()} - unlimited"
 	} else if count > limit {
-		"${column} WIP: ${count.to_str()} of ${limit.to_str()} - over limit"
+		"WIP: ${count.to_str()} of ${limit.to_str()} - over limit"
 	} else {
-		"${column} WIP: ${count.to_str()} of ${limit.to_str()} - within limit"
+		"WIP: ${count.to_str()} of ${limit.to_str()} - within limit"
 	}
 
 limit_state : U64, U64 -> Str
@@ -280,8 +294,8 @@ input_class = "w-full max-w-xs rounded-md border border-zinc-300 bg-white px-3 p
 ## `Signal(CardView)`; the row itself stores nothing.
 render_card : Ui.State(Board), Str, Signal.Signal(CardView) -> Elem
 render_card = |board, key, view| {
-	position_text = Signal.map(view, |item| "${item.title} position: ${item.position.to_str()} of ${item.total.to_str()} in ${item.column}")
-	flags_text = Signal.map(view, |item| "${item.title} flags: ${item.flags.to_str()}")
+	position_text = Signal.map(view, |item| "Position ${item.position.to_str()} of ${item.total.to_str()} in ${item.column}")
+	flags_text = Signal.map(view, |item| "Flags: ${item.flags.to_str()}")
 	left_disabled = Signal.map(view, |item| !item.can_left)
 	right_disabled = Signal.map(view, |item| !item.can_right)
 	up_disabled = Signal.map(view, |item| item.is_first)
@@ -292,8 +306,8 @@ render_card = |board, key, view| {
 		[Html.class_attr(card_class), Html.attr("data-card", key)],
 		[
 			Html.heading_c(key, "text-base font-semibold text-zinc-950"),
-			Html.paragraph_s_c(position_text, "text-sm text-zinc-700"),
-			Html.paragraph_s_c(flags_text, "text-sm text-zinc-700"),
+			Html.paragraph_s_attrs(position_text, [Html.class_attr("text-sm text-zinc-700"), Html.test_id("card-position-${key}")]),
+			Html.paragraph_s_attrs(flags_text, [Html.class_attr("text-sm text-zinc-700"), Html.test_id("card-flags-${key}")]),
 			Html.div_c(
 				toolbar_class,
 				[
@@ -337,7 +351,7 @@ column_signals = |cards, query, limit, column| {
 
 	# Fan-in: derived column count x parsed WIP limit.
 	over = Signal.map2(count, limit, |value, cap| cap > 0 and value > cap)
-	limit_line = Signal.map2(count, limit, |value, cap| limit_text(column, value, cap))
+	limit_line = Signal.map2(count, limit, limit_text)
 	state_attr = Signal.map2(count, limit, limit_state)
 
 	{ views, count, matching, over, limit_line, state_attr }
@@ -345,19 +359,20 @@ column_signals = |cards, query, limit, column| {
 
 render_column : Ui.State(Board), Str, ColumnSignals -> Elem
 render_column = |board, column, signals| {
-	count_text = Signal.map(signals.count, |value| "${column} count: ${value.to_str()}")
-	matching_text = Signal.map(signals.matching, |value| "${column} matching: ${value.to_str()}")
-	empty_text = Signal.map(signals.matching, |value| if value == 0 { "No cards shown in ${column}" } else { "${column} is showing cards" })
+	slug = column_slug(column)
+	count_text = Signal.map(signals.count, |value| "Count: ${value.to_str()}")
+	matching_text = Signal.map(signals.matching, |value| "Matching: ${value.to_str()}")
+	empty_text = Signal.map(signals.matching, |value| if value == 0 { "No cards shown" } else { "Showing cards" })
 
 	Html.section(
 		column,
 		[Html.class_attr(column_class), Html.attr_s("data-wip", signals.state_attr)],
 		[
 			Html.heading_c(column, "text-lg font-semibold text-zinc-950"),
-			Html.paragraph_s_c(count_text, "text-sm font-medium text-zinc-900"),
-			Html.paragraph_s_c(matching_text, "text-sm text-zinc-700"),
-			Html.paragraph_s_c(signals.limit_line, "text-sm font-medium text-zinc-900"),
-			Html.paragraph_s_c(empty_text, "text-sm text-zinc-600"),
+			Html.paragraph_s_attrs(count_text, [Html.class_attr("text-sm font-medium text-zinc-900"), Html.test_id("count-${slug}")]),
+			Html.paragraph_s_attrs(matching_text, [Html.class_attr("text-sm text-zinc-700"), Html.test_id("matching-${slug}")]),
+			Html.paragraph_s_attrs(signals.limit_line, [Html.class_attr("text-sm font-medium text-zinc-900"), Html.test_id("wip-${slug}")]),
+			Html.paragraph_s_attrs(empty_text, [Html.class_attr("text-sm text-zinc-600"), Html.test_id("empty-${slug}")]),
 			Ui.each_str(signals.views, |item| item.title, |key, item| render_card(board, key, item)),
 		],
 	)
@@ -442,16 +457,16 @@ main = ||
 													Html.action_button_c(Signal.const("Add card"), add_disabled, "button-primary", board.on_unit(|state| add_card(state))),
 												],
 											),
-											Html.paragraph_s_c(status_text, "text-sm font-medium text-zinc-900"),
+											Html.paragraph_s_attrs(status_text, [Html.class_attr("text-sm font-medium text-zinc-900"), Html.test_id("add-status")]),
 										],
 									),
 									Html.section_c(
 										"Board summary",
 										panel_class,
 										[
-											Html.paragraph_s_c(total_text, "text-sm font-medium text-zinc-900"),
-											Html.paragraph_s_c(matching_total, "text-sm font-medium text-zinc-900"),
-											Html.paragraph_s_c(over_total, "text-sm font-medium text-zinc-900"),
+											Html.paragraph_s_attrs(total_text, [Html.class_attr("text-sm font-medium text-zinc-900"), Html.test_id("board-total")]),
+											Html.paragraph_s_attrs(matching_total, [Html.class_attr("text-sm font-medium text-zinc-900"), Html.test_id("board-matching")]),
+											Html.paragraph_s_attrs(over_total, [Html.class_attr("text-sm font-medium text-zinc-900"), Html.test_id("board-over")]),
 											Ui.when(
 												any_over,
 												|| Html.paragraph_c("WIP warning: rebalance the board", "text-sm font-medium text-red-950"),

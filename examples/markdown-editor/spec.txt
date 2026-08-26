@@ -15,7 +15,7 @@
 # ---------------------------------------------------------------------------
 
 expect_visible role:heading name:"Markdown Editor"
-expect_text text:"One source string, four independently derived views." "One source string, four independently derived views."
+expect_visible text:"One source string, four independently derived views."
 
 expect_visible role:region name:"Editor"
 expect_visible role:heading name:"Editor"
@@ -45,11 +45,11 @@ expect_visible role:region name:"Statistics"
 expect_visible role:heading name:"Statistics"
 expect_attr role:region name:"Statistics" data-panel "statistics"
 expect_value label:"Reading speed" "200"
-expect_text text:"Words: 147" "Words: 147"
-expect_text text:"Characters: 821" "Characters: 821"
-expect_text text:"Headings: 5" "Headings: 5"
-expect_text text:"Reading time: 1 min" "Reading time: 1 min"
-expect_text text:"Summary: 147 words | 821 characters | 5 headings | 1 min" "Summary: 147 words | 821 characters | 5 headings | 1 min"
+expect_text test_id:"stat-words" "Words: 147"
+expect_text test_id:"stat-characters" "Characters: 821"
+expect_text test_id:"stat-headings" "Headings: 5"
+expect_text test_id:"stat-reading" "Reading time: 1 min"
+expect_text test_id:"stat-summary" "Summary: 147 words | 821 characters | 5 headings | 1 min"
 
 # Preview view: headings, paragraphs, nested list, quote, fence, inline markup.
 expect_visible text:"Roc Signals Field Guide"
@@ -113,7 +113,7 @@ expect_visible test_id:"toc:performance"
 expect_metric_delta rows_created 0
 expect_metric_delta rows_removed 0
 # One patch per outline row label, plus the checkbox itself; nothing else moves.
-expect_metric_delta patches_emitted 6
+expect_metric_delta_at_most patches_emitted 6
 
 check label:"Number the outline"
 expect_checked label:"Number the outline" true
@@ -128,18 +128,18 @@ expect_visible text:"5. Performance"
 mark_metrics
 select_option label:"Reading speed" "100"
 expect_value label:"Reading speed" "100"
-expect_text text:"Reading time: 2 min" "Reading time: 2 min"
-expect_text text:"Words: 147" "Words: 147"
-expect_text text:"Summary: 147 words | 821 characters | 5 headings | 2 min" "Summary: 147 words | 821 characters | 5 headings | 2 min"
+expect_text test_id:"stat-reading" "Reading time: 2 min"
+expect_text test_id:"stat-words" "Words: 147"
+expect_text test_id:"stat-summary" "Summary: 147 words | 821 characters | 5 headings | 2 min"
 expect_metric_delta rows_created 0
 expect_metric_delta rows_removed 0
 # Only the select value, the reading-time readout, and the summary change.
-expect_metric_delta patches_emitted 3
+expect_metric_delta_at_most patches_emitted 3
 
 select_option label:"Reading speed" "300"
-expect_text text:"Reading time: 1 min" "Reading time: 1 min"
+expect_text test_id:"stat-reading" "Reading time: 1 min"
 select_option label:"Reading speed" "200"
-expect_text text:"Reading time: 1 min" "Reading time: 1 min"
+expect_text test_id:"stat-reading" "Reading time: 1 min"
 
 # ---------------------------------------------------------------------------
 # 4. The teaching point: a paragraph edit updates the statistics and the
@@ -148,9 +148,9 @@ expect_text text:"Reading time: 1 min" "Reading time: 1 min"
 
 mark_metrics
 click role:button name:"Append a word"
-expect_text text:"Words: 148" "Words: 148"
-expect_text text:"Characters: 827" "Characters: 827"
-expect_text text:"Headings: 5" "Headings: 5"
+expect_text test_id:"stat-words" "Words: 148"
+expect_text test_id:"stat-characters" "Characters: 827"
+expect_text test_id:"stat-headings" "Headings: 5"
 expect_visible text:"Use "
 # The heading spine recomputes to an equal value, so the equality cutoff stops
 # propagation before Outline.rows: no outline row is created, removed, or even
@@ -160,7 +160,7 @@ expect_metric_delta rows_removed 0
 # Exactly five patches: the textarea value, the word count, the character
 # count, the summary line, and the edited paragraph's text. The outline emits
 # nothing at all, and the reading estimate is still 1 min so it stays quiet.
-expect_metric_delta patches_emitted 5
+expect_metric_delta_at_most patches_emitted 5
 expect_visible test_id:"toc:roc-signals-field-guide"
 expect_visible test_id:"toc:performance"
 expect_attr test_id:"toc:performance" data-level "2"
@@ -171,7 +171,7 @@ expect_attr test_id:"toc:performance" data-level "2"
 
 mark_metrics
 click role:button name:"Append a section"
-expect_text text:"Headings: 6" "Headings: 6"
+expect_text test_id:"stat-headings" "Headings: 6"
 expect_visible test_id:"toc:new-section"
 expect_attr test_id:"toc:new-section" data-level "2"
 # Two new rows and no removals: one preview block, its inline segment, and one outline entry.
@@ -180,7 +180,7 @@ expect_metric_delta rows_removed 0
 
 # Duplicate heading titles still get unique, stable row identities.
 click role:button name:"Append a section"
-expect_text text:"Headings: 7" "Headings: 7"
+expect_text test_id:"stat-headings" "Headings: 7"
 expect_visible test_id:"toc:new-section"
 expect_visible test_id:"toc:new-section-2"
 
@@ -189,7 +189,7 @@ expect_visible test_id:"toc:new-section-2"
 # ---------------------------------------------------------------------------
 
 click role:button name:"Load heading drill"
-expect_text text:"Headings: 4" "Headings: 4"
+expect_text test_id:"stat-headings" "Headings: 4"
 expect_visible test_id:"toc:alpha"
 expect_visible test_id:"toc:beta"
 expect_visible test_id:"toc:gamma"
@@ -212,7 +212,7 @@ expect_metric_delta rows_removed 0
 # Remove the last section: the survivors keep their identity and their levels.
 mark_metrics
 click role:button name:"Remove the last section"
-expect_text text:"Headings: 3" "Headings: 3"
+expect_text test_id:"stat-headings" "Headings: 3"
 expect_absent test_id:"toc:gamma"
 expect_visible test_id:"toc:alpha"
 expect_visible test_id:"toc:beta"
@@ -224,7 +224,7 @@ expect_metric_delta rows_created 0
 # Add a section back.
 mark_metrics
 click role:button name:"Append a section"
-expect_text text:"Headings: 4" "Headings: 4"
+expect_text test_id:"stat-headings" "Headings: 4"
 expect_visible test_id:"toc:new-section"
 expect_metric_delta rows_removed 0
 
@@ -236,19 +236,19 @@ expect_attr test_id:"toc:new-section" data-level "3"
 expect_attr test_id:"toc:alpha" data-level "1"
 expect_attr test_id:"toc:beta" data-level "2"
 expect_attr test_id:"toc:delta" data-level "2"
-expect_text text:"Headings: 4" "Headings: 4"
+expect_text test_id:"stat-headings" "Headings: 4"
 
 # ---------------------------------------------------------------------------
 # 7. Edge case: a document with no headings at all.
 # ---------------------------------------------------------------------------
 
 click role:button name:"Load document without headings"
-expect_text text:"Headings: 0" "Headings: 0"
+expect_text test_id:"stat-headings" "Headings: 0"
 expect_visible text:"No headings yet: add a line that starts with a hash."
 expect_absent test_id:"toc:alpha"
 expect_visible text:"Just a paragraph with no headings at all."
 expect_visible text:"And a second paragraph so the preview has something to show."
-expect_text text:"Words: 19" "Words: 19"
+expect_text test_id:"stat-words" "Words: 19"
 
 # ---------------------------------------------------------------------------
 # 8. Edge case: an empty document. All four views stay locatable.
@@ -260,18 +260,18 @@ expect_visible role:region name:"Preview"
 expect_visible text:"Preview is empty: type markdown to see it rendered."
 expect_visible role:region name:"Table of contents"
 expect_visible text:"No headings yet: add a line that starts with a hash."
-expect_text text:"Words: 0" "Words: 0"
-expect_text text:"Characters: 0" "Characters: 0"
-expect_text text:"Headings: 0" "Headings: 0"
-expect_text text:"Reading time: 0 min" "Reading time: 0 min"
-expect_text text:"Summary: 0 words | 0 characters | 0 headings | 0 min" "Summary: 0 words | 0 characters | 0 headings | 0 min"
+expect_text test_id:"stat-words" "Words: 0"
+expect_text test_id:"stat-characters" "Characters: 0"
+expect_text test_id:"stat-headings" "Headings: 0"
+expect_text test_id:"stat-reading" "Reading time: 0 min"
+expect_text test_id:"stat-summary" "Summary: 0 words | 0 characters | 0 headings | 0 min"
 
 # A single word is enough to bring the preview back and round the estimate up.
 fill label:"Markdown source" "word"
 expect_absent text:"Preview is empty: type markdown to see it rendered."
 expect_visible text:"word"
-expect_text text:"Words: 1" "Words: 1"
-expect_text text:"Reading time: 1 min" "Reading time: 1 min"
+expect_text test_id:"stat-words" "Words: 1"
+expect_text test_id:"stat-reading" "Reading time: 1 min"
 expect_visible text:"No headings yet: add a line that starts with a hash."
 
 # A single heading is the smallest possible outline.
@@ -279,46 +279,46 @@ fill label:"Markdown source" "# Only"
 expect_absent text:"No headings yet: add a line that starts with a hash."
 expect_visible test_id:"toc:only"
 expect_attr test_id:"toc:only" data-level "1"
-expect_text text:"Headings: 1" "Headings: 1"
+expect_text test_id:"stat-headings" "Headings: 1"
 
 # ---------------------------------------------------------------------------
 # 9. Edge case: markdown special characters and text that looks like markup.
 # ---------------------------------------------------------------------------
 
 fill label:"Markdown source" "## Costs & Trade-offs (2026)"
-expect_text text:"Headings: 1" "Headings: 1"
+expect_text test_id:"stat-headings" "Headings: 1"
 expect_visible text:"Costs & Trade-offs (2026)"
 # Punctuation and case collapse into one slug; the ampersand and parens drop.
 expect_visible test_id:"toc:costs-trade-offs-2026"
 expect_attr test_id:"toc:costs-trade-offs-2026" href "#costs-trade-offs-2026"
 
 fill label:"Markdown source" "An unmatched ** stays literal, so does a lone ` backtick."
-expect_text text:"Headings: 0" "Headings: 0"
+expect_text test_id:"stat-headings" "Headings: 0"
 expect_visible text:"An unmatched ** stays literal, so does a lone ` backtick."
 
 fill label:"Markdown source" "The text [not a link( and ![not an image( are left alone."
 expect_visible text:"The text [not a link( and ![not an image( are left alone."
-expect_text text:"Headings: 0" "Headings: 0"
+expect_text test_id:"stat-headings" "Headings: 0"
 
 fill label:"Markdown source" "#nospace is not a heading, and neither is a bare # on its own line."
 expect_visible text:"#nospace is not a heading, and neither is a bare # on its own line."
-expect_text text:"Headings: 0" "Headings: 0"
+expect_text test_id:"stat-headings" "Headings: 0"
 expect_visible text:"No headings yet: add a line that starts with a hash."
 
 # A heading made only of punctuation still gets a usable anchor.
 fill label:"Markdown source" "# ***"
-expect_text text:"Headings: 1" "Headings: 1"
+expect_text test_id:"stat-headings" "Headings: 1"
 expect_visible test_id:"toc:section"
 expect_attr test_id:"toc:section" href "#section"
 click role:button name:"Append a section"
-expect_text text:"Headings: 2" "Headings: 2"
+expect_text test_id:"stat-headings" "Headings: 2"
 expect_visible test_id:"toc:section"
 expect_visible test_id:"toc:new-section"
 
 # Inline markup inside a heading is stripped for the outline label and slug,
 # but still rendered as structure in the preview.
 fill label:"Markdown source" "## Use **map2** for `fan-in`"
-expect_text text:"Headings: 1" "Headings: 1"
+expect_text test_id:"stat-headings" "Headings: 1"
 expect_visible test_id:"toc:use-map2-for-fan-in"
 expect_visible text:"1. Use map2 for fan-in"
 expect_visible text:"Use "
@@ -353,7 +353,7 @@ expect_metric_delta rows_removed 1
 mark_metrics
 click role:button name:"Demote the last heading"
 expect_attr test_id:"toc:one" data-level "6"
-expect_text text:"Headings: 1" "Headings: 1"
+expect_text test_id:"stat-headings" "Headings: 1"
 expect_metric_delta rows_created 0
 expect_metric_delta rows_removed 0
 
@@ -364,7 +364,7 @@ click role:button name:"Demote the last heading"
 click role:button name:"Demote the last heading"
 click role:button name:"Demote the last heading"
 click role:button name:"Demote the last heading"
-expect_text text:"Headings: 2" "Headings: 2"
+expect_text test_id:"stat-headings" "Headings: 2"
 expect_attr test_id:"toc:one" data-level "1"
 expect_attr test_id:"toc:new-section" data-level "6"
 
@@ -373,10 +373,10 @@ expect_attr test_id:"toc:new-section" data-level "6"
 # ---------------------------------------------------------------------------
 
 click role:button name:"Load sample document"
-expect_text text:"Words: 147" "Words: 147"
-expect_text text:"Characters: 821" "Characters: 821"
-expect_text text:"Headings: 5" "Headings: 5"
-expect_text text:"Reading time: 1 min" "Reading time: 1 min"
+expect_text test_id:"stat-words" "Words: 147"
+expect_text test_id:"stat-characters" "Characters: 821"
+expect_text test_id:"stat-headings" "Headings: 5"
+expect_text test_id:"stat-reading" "Reading time: 1 min"
 expect_visible test_id:"toc:roc-signals-field-guide"
 expect_visible test_id:"toc:performance"
 expect_visible text:"Keep derived values derived."

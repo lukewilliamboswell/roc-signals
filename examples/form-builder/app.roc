@@ -77,7 +77,7 @@ render_builder_row = |schema, key, field| {
 		"Field ${key}",
 		row_class,
 		[
-			Html.paragraph_s_c(summary, hint_class),
+			Html.paragraph_s_attrs(summary, [Html.class_attr(hint_class), Html.test_id("field-${key}-summary")]),
 			Html.text_input_attrs(
 				"Label ${key}",
 				label_value,
@@ -164,7 +164,7 @@ render_preview_row = |answers, key, row| {
 		"Preview field ${key}",
 		row_class,
 		[
-			Html.paragraph_s_c(label_text, "text-sm font-medium text-zinc-900"),
+			Html.paragraph_s_attrs(label_text, [Html.class_attr("text-sm font-medium text-zinc-900"), Html.test_id("preview-${key}-label")]),
 			Ui.when(
 				checkbox_field,
 				|| Html.checkbox_attrs(
@@ -202,7 +202,7 @@ render_preview_row = |answers, key, row| {
 					),
 				),
 			),
-			Html.paragraph_s_c(verdict, hint_class),
+			Html.paragraph_s_attrs(verdict, [Html.class_attr(hint_class), Html.test_id("preview-${key}-verdict")]),
 		],
 	)
 }
@@ -214,7 +214,7 @@ designer_panel = |schema, fields, has_fields, designer_status|
 		panel_class,
 		[
 			Html.heading_c("Field designer", heading_class),
-			Html.paragraph_s_c(designer_status, hint_class),
+			Html.paragraph_s_attrs(designer_status, [Html.class_attr(hint_class), Html.test_id("designer-status")]),
 			Ui.when(
 				has_fields,
 				|| Ui.each_str(fields, |field| field.id, |key, field| render_builder_row(schema, key, field)),
@@ -230,7 +230,7 @@ preview_panel = |answers, submits, rows, has_fields, preview_status, submit_disa
 		panel_class,
 		[
 			Html.heading_c("Live preview", heading_class),
-			Html.paragraph_s_c(preview_status, hint_class),
+			Html.paragraph_s_attrs(preview_status, [Html.class_attr(hint_class), Html.test_id("preview-status")]),
 			Html.form_label(
 				"Preview form",
 				[Html.on_submit_prevent_default(submits.on_unit(|count| count))],
@@ -240,14 +240,14 @@ preview_panel = |answers, submits, rows, has_fields, preview_status, submit_disa
 						|| Ui.each_str(rows, |row| row.id, |key, row| render_preview_row(answers, key, row)),
 						|| Html.paragraph_c("No fields yet. The generated form is empty.", hint_class),
 					),
-					Html.paragraph_s_c(submittable_text, hint_class),
+					Html.paragraph_s_attrs(submittable_text, [Html.class_attr(hint_class), Html.test_id("submittable-state")]),
 					Html.action_button_attrs(
 						Signal.const("Submit form"),
 						submit_disabled,
 						[Html.attr("type", "button")],
 						submits.on_unit(|count| count + 1),
 					),
-					Html.paragraph_s_c(submissions_text, hint_class),
+					Html.paragraph_s_attrs(submissions_text, [Html.class_attr(hint_class), Html.test_id("submissions-count")]),
 				],
 			),
 		],

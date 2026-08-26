@@ -22,7 +22,9 @@ note_class = "text-sm text-zinc-600"
 
 row_class = "text-sm text-zinc-700"
 
-## A schedule row flattened for display, keyed by scenario id and month.
+## A schedule row flattened for display, keyed by scenario slug and month. The
+## key doubles as the row's `test_id`, so a spec can assert a specific month's
+## figures by identity rather than by matching their text.
 RowView : {
 	key : Str,
 	text : Str,
@@ -49,21 +51,25 @@ set_term = |draft, value| { ..draft, term: value }
 set_extra : Loan.Draft, Str -> Loan.Draft
 set_extra = |draft, value| { ..draft, extra: value }
 
-row_views : Str, Loan.Schedule -> List(RowView)
-row_views = |name, sched|
+row_views : Str, Str, Loan.Schedule -> List(RowView)
+row_views = |id, name, sched|
 	sched.rows.map(
 		|row| {
-			key: "${name} month ${row.month.to_str()}",
+			key: "${id}-month-${row.month.to_str()}",
 			text: "${name} month ${row.month.to_str()}: interest ${Loan.money(row.interest)}, principal ${Loan.money(row.principal_paid)}, balance ${Loan.money(row.balance)}",
 		},
 	)
 
 render_row : Str, Signal.Signal(RowView) -> Elem
-render_row = |_key, row| Html.paragraph_s_c(row.map(|value| value.text), row_class)
+render_row = |key, row|
+	Html.paragraph_s_attrs(
+		row.map(|value| value.text),
+		[Html.class_attr(row_class), Html.test_id(key)],
+	)
 
-render_rows : Str, Signal.Signal(Loan.Schedule) -> Elem
-render_rows = |name, sched| {
-	rows = sched.map(|value| row_views(name, value))
+render_rows : Str, Str, Signal.Signal(Loan.Schedule) -> Elem
+render_rows = |id, name, sched| {
+	rows = sched.map(|value| row_views(id, name, value))
 	Html.section_c(
 		"${name} schedule",
 		list_class,
@@ -73,8 +79,8 @@ render_rows = |name, sched| {
 
 ## One scenario panel. Every figure below is read from the SAME `sched` signal:
 ## the schedule is computed once per edit and consumed by five separate sinks.
-scenario_panel : Str, Ui.State(Loan.Draft), Signal.Signal(Loan.Parsed), Signal.Signal(Loan.Schedule) -> Elem
-scenario_panel = |name, draft, parsed, sched| {
+scenario_panel : Str, Str, Ui.State(Loan.Draft), Signal.Signal(Loan.Parsed), Signal.Signal(Loan.Schedule) -> Elem
+scenario_panel = |id, name, draft, parsed, sched| {
 	draft_signal = draft.signal()
 
 	Html.section_c(
@@ -106,35 +112,35 @@ scenario_panel = |name, draft, parsed, sched| {
 				input_class,
 				draft.on_str(set_extra),
 			),
-			Html.paragraph_s_c(
+			Html.paragraph_s_attrs(
 				parsed.map(|value| "${name} inputs: ${value.message}"),
-				note_class,
+				[Html.class_attr(note_class), Html.test_id("${id}-inputs")],
 			),
-			Html.paragraph_s_c(
+			Html.paragraph_s_attrs(
 				parsed.map(|value| "${name} rate: ${Loan.percent(value.params.rate_bp)}"),
-				note_class,
+				[Html.class_attr(note_class), Html.test_id("${id}-rate")],
 			),
-			Html.paragraph_s_c(
+			Html.paragraph_s_attrs(
 				sched.map(|value| "${name} monthly payment: ${Loan.money(value.payment)}"),
-				figure_class,
+				[Html.class_attr(figure_class), Html.test_id("${id}-payment")],
 			),
-			Html.paragraph_s_c(
+			Html.paragraph_s_attrs(
 				sched.map(|value| "${name} total interest: ${Loan.money(value.total_interest)}"),
-				figure_class,
+				[Html.class_attr(figure_class), Html.test_id("${id}-total-interest")],
 			),
-			Html.paragraph_s_c(
+			Html.paragraph_s_attrs(
 				sched.map(|value| "${name} total paid: ${Loan.money(value.total_paid)}"),
-				figure_class,
+				[Html.class_attr(figure_class), Html.test_id("${id}-total-paid")],
 			),
-			Html.paragraph_s_c(
+			Html.paragraph_s_attrs(
 				sched.map(|value| "${name} payoff: ${Loan.months_text(value.months)}"),
-				figure_class,
+				[Html.class_attr(figure_class), Html.test_id("${id}-payoff")],
 			),
-			Html.paragraph_s_c(
+			Html.paragraph_s_attrs(
 				sched.map(|value| "${name} final balance: ${Loan.money(value.final_balance)}"),
-				figure_class,
+				[Html.class_attr(figure_class), Html.test_id("${id}-final-balance")],
 			),
-			render_rows(name, sched),
+			render_rows(id, name, sched),
 		],
 	)
 }
@@ -226,7 +232,11 @@ summary_line = |summary|
 	"${summary.name} summary: ${Loan.money(summary.payment)} per month for ${Loan.months_text(summary.months)}, interest ${Loan.money(summary.total_interest)}"
 
 render_summary : Str, Signal.Signal(Loan.Summary) -> Elem
-render_summary = |_key, summary| Html.paragraph_s_c(summary.map(summary_line), row_class)
+render_summary = |key, summary|
+	Html.paragraph_s_attrs(
+		summary.map(summary_line),
+		[Html.class_attr(row_class), Html.test_id("summary-${key}")],
+	)
 
 comparison_panel : Ui.State(Str), Signal.Signal(List(Loan.Summary)), Signal.Signal(List(Loan.Schedule)) -> Elem
 comparison_panel = |pair, summaries, schedules| {
@@ -238,9 +248,9 @@ comparison_panel = |pair, summaries, schedules| {
 		panel_class,
 		[
 			Html.heading_c("Comparison", "text-lg font-semibold text-zinc-950"),
-			Html.paragraph_s_c(summaries.map(cheapest_text), figure_class),
-			Html.paragraph_s_c(summaries.map(spread_text), figure_class),
-			Html.paragraph_s_c(schedules.map(invariant_text), figure_class),
+			Html.paragraph_s_attrs(summaries.map(cheapest_text), [Html.class_attr(figure_class), Html.test_id("cheapest")]),
+			Html.paragraph_s_attrs(summaries.map(spread_text), [Html.class_attr(figure_class), Html.test_id("interest-spread")]),
+			Html.paragraph_s_attrs(schedules.map(invariant_text), [Html.class_attr(figure_class), Html.test_id("schedule-invariant")]),
 			Html.select_c(
 				"Comparison pair",
 				pair_signal,
@@ -252,7 +262,7 @@ comparison_panel = |pair, summaries, schedules| {
 				],
 				pair.on_str(|_, value| value),
 			),
-			Html.paragraph_s_c(break_even, figure_class),
+			Html.paragraph_s_attrs(break_even, [Html.class_attr(figure_class), Html.test_id("break-even")]),
 			Html.section_c(
 				"Scenario summaries",
 				list_class,
@@ -323,9 +333,9 @@ main = ||
 													),
 												],
 											),
-											scenario_panel("Scenario A", draft_a, parsed_a, sched_a),
-											scenario_panel("Scenario B", draft_b, parsed_b, sched_b),
-											scenario_panel("Scenario C", draft_c, parsed_c, sched_c),
+											scenario_panel("a", "Scenario A", draft_a, parsed_a, sched_a),
+											scenario_panel("b", "Scenario B", draft_b, parsed_b, sched_b),
+											scenario_panel("c", "Scenario C", draft_c, parsed_c, sched_c),
 											comparison_panel(pair, summaries, schedules),
 										],
 									)

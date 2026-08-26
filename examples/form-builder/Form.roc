@@ -509,8 +509,11 @@ Form := {}.{
 	}
 
 	## Value text shown for the preview field, used by the row status line.
+	##
+	## The row's own `test_id` identifies which field this verdict belongs to, so
+	## the text does not need to repeat the field label to stay locatable.
 	verdict_text : Form.Row -> Str
-	verdict_text = |row| if row.error == "" { "${row.label}: Valid" } else { "${row.label}: ${row.error}" }
+	verdict_text = |row| if row.error == "" { "Valid" } else { row.error }
 
 	# ------------------------------------------------------------ signal lenses
 

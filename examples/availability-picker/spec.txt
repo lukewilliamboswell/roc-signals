@@ -1,0 +1,229 @@
+# Availability picker: timezone reprojection, conflict fan-in, hours summary.
+#
+# The app is fully synchronous (no tasks, intervals or browser sources), so the
+# async section of the spec checklist does not apply. Everything below is user
+# interaction plus derived state.
+
+# --- initial mount ------------------------------------------------------
+expect_visible role:heading name:"Availability Picker"
+expect_visible role:region name:"Summary"
+expect_visible role:region name:"Week"
+expect_visible role:region name:"Add slot"
+expect_value label:"Timezone" "utc"
+expect_text test_id:"zone-label" "Timezone: UTC+00:00"
+expect_text test_id:"summary" "Available 3h 0m across 5 slots, 0 conflicts"
+expect_text test_id:"free-days" "Tue, Thu, Fri, Sat, Sun"
+
+expect_visible role:region name:"Slot sunrise"
+expect_text test_id:"title-sunrise" "Sunrise block"
+expect_text test_id:"when-sunrise" "Mon 00:00-01:00"
+expect_text test_id:"status-sunrise" "Available"
+expect_text test_id:"conflict-sunrise" "Clear"
+expect_text test_id:"title-standup" "Standup"
+expect_text test_id:"when-standup" "Mon 09:00-09:30"
+expect_text test_id:"status-standup" "Busy"
+expect_text test_id:"conflict-standup" "Clear"
+expect_text test_id:"title-review" "Design review"
+expect_text test_id:"when-review" "Mon 09:15-10:15"
+expect_text test_id:"status-review" "Unmarked"
+expect_text test_id:"conflict-review" "Clear"
+expect_text test_id:"title-midnight" "Late shift"
+expect_text test_id:"when-midnight" "Mon 23:30-00:00"
+expect_text test_id:"status-midnight" "Unmarked"
+expect_text test_id:"title-focus" "Wednesday focus"
+expect_text test_id:"when-focus" "Wed 12:00-14:00"
+expect_text test_id:"status-focus" "Available"
+expect_text test_id:"conflict-focus" "Clear"
+
+expect_value label:"Slot name" ""
+expect_value label:"Day" "Mon"
+expect_value label:"Start time" "09:00"
+expect_value label:"Length" "30"
+expect_text test_id:"draft-status" "Enter a name for the new slot"
+expect_disabled role:button name:"Add slot" true
+
+# --- marking one slot available leaves its siblings alone ---------------
+mark_metrics
+click role:button name:"Mark review available"
+expect_text test_id:"status-review" "Available"
+expect_text test_id:"summary" "Available 4h 0m across 5 slots, 0 conflicts"
+expect_text test_id:"when-standup" "Mon 09:00-09:30"
+expect_text test_id:"status-standup" "Busy"
+expect_text test_id:"status-sunrise" "Available"
+expect_metric_delta rows_created 0
+expect_metric_delta rows_removed 0
+expect_metric_delta scopes_created 0
+expect_metric_delta scopes_disposed 0
+expect_metric_delta_at_most set_text 3
+expect_metric_delta_at_most patches_emitted 10
+
+# --- marking it busy creates an overlapping-commitment conflict ---------
+click role:button name:"Mark review busy"
+expect_text test_id:"status-review" "Busy"
+expect_text test_id:"conflict-review" "Conflict"
+expect_text test_id:"conflict-standup" "Conflict"
+expect_text test_id:"conflict-sunrise" "Clear"
+expect_text test_id:"conflict-focus" "Clear"
+expect_text test_id:"summary" "Available 3h 0m across 5 slots, 2 conflicts"
+
+# --- the headline: one timezone change reprojects every rendered slot ---
+# Auckland is +13:00, so "Late shift" crosses forward over local midnight
+# (Mon 23:30 UTC becomes Tue 12:30) and "Wednesday focus" lands on Thursday.
+# No row is created, removed or re-scoped; only text sinks are patched.
+mark_metrics
+select_option label:"Timezone" "auckland"
+expect_text test_id:"zone-label" "Timezone: Auckland UTC+13:00"
+expect_text test_id:"when-sunrise" "Mon 13:00-14:00"
+expect_text test_id:"when-standup" "Mon 22:00-22:30"
+expect_text test_id:"when-review" "Mon 22:15-23:15"
+expect_text test_id:"when-midnight" "Tue 12:30-13:00"
+expect_text test_id:"when-focus" "Thu 01:00-03:00"
+expect_metric_delta rows_created 0
+expect_metric_delta rows_removed 0
+expect_metric_delta rows_reused 5
+expect_metric_delta scopes_created 0
+expect_metric_delta scopes_disposed 0
+# Exactly seven DOM text writes: the five slot times, the free-day list and the
+# zone label. Nothing else in the graph is even asked to recompute.
+expect_metric_delta_at_most set_text 7
+expect_metric_delta_at_most patches_emitted 32
+# derived work is proportional to the rows on screen (5 rows x 4 field maps
+# plus the zone, row-view and free-day nodes), not to the size of the graph:
+# the conflict/summary chain is untouched.
+expect_metric_delta_at_most derived_calls_into_roc 26
+
+# conflicts and totals compare instants, so the timezone did not touch them
+expect_text test_id:"conflict-standup" "Conflict"
+expect_text test_id:"conflict-review" "Conflict"
+expect_text test_id:"summary" "Available 3h 0m across 5 slots, 2 conflicts"
+# ... but which local day is free does move with the zone
+expect_text test_id:"free-days" "Tue, Wed, Fri, Sat, Sun"
+
+# --- resolving the conflict --------------------------------------------
+click role:button name:"Mark review available"
+expect_text test_id:"status-review" "Available"
+expect_text test_id:"conflict-review" "Clear"
+expect_text test_id:"conflict-standup" "Clear"
+expect_text test_id:"summary" "Available 4h 0m across 5 slots, 0 conflicts"
+
+# --- half-hour offset zone ----------------------------------------------
+select_option label:"Timezone" "kolkata"
+expect_text test_id:"zone-label" "Timezone: Kolkata UTC+05:30"
+expect_text test_id:"when-sunrise" "Mon 05:30-06:30"
+expect_text test_id:"when-standup" "Mon 14:30-15:00"
+expect_text test_id:"when-review" "Mon 14:45-15:45"
+expect_text test_id:"when-midnight" "Tue 05:00-05:30"
+expect_text test_id:"when-focus" "Wed 17:30-19:30"
+expect_text test_id:"free-days" "Tue, Thu, Fri, Sat, Sun"
+
+# --- negative offset pushes a slot backwards past the week boundary -----
+select_option label:"Timezone" "nyc"
+expect_text test_id:"zone-label" "Timezone: New York UTC-05:00"
+expect_text test_id:"when-sunrise" "Sun 19:00-20:00"
+expect_text test_id:"when-standup" "Mon 04:00-04:30"
+expect_text test_id:"when-review" "Mon 04:15-05:15"
+expect_text test_id:"when-midnight" "Mon 18:30-19:00"
+expect_text test_id:"when-focus" "Wed 07:00-09:00"
+expect_text test_id:"free-days" "Tue, Thu, Fri, Sat"
+
+# --- draft validation ---------------------------------------------------
+fill label:"Slot name" "Client call"
+expect_text test_id:"draft-status" "Ready to add Client call"
+expect_disabled role:button name:"Add slot" false
+fill label:"Start time" "25:00"
+expect_text test_id:"draft-status" "Start time must be HH:MM"
+expect_disabled role:button name:"Add slot" true
+fill label:"Start time" "0830"
+expect_text test_id:"draft-status" "Start time must be HH:MM"
+fill label:"Start time" "08:60"
+expect_text test_id:"draft-status" "Start time must be HH:MM"
+fill label:"Start time" "08:30"
+fill label:"Length" "0"
+expect_text test_id:"draft-status" "Length must be 1-720 minutes"
+expect_disabled role:button name:"Add slot" true
+fill label:"Length" "abc"
+expect_text test_id:"draft-status" "Length must be 1-720 minutes"
+fill label:"Length" "45"
+select_option label:"Day" "Fri"
+expect_text test_id:"draft-status" "Ready to add Client call"
+expect_disabled role:button name:"Add slot" false
+
+# --- adding a slot: one new row, and the draft clears via State.set_cmd -
+mark_metrics
+click role:button name:"Add slot"
+expect_visible role:region name:"Slot s6"
+expect_text test_id:"title-s6" "Client call"
+expect_text test_id:"when-s6" "Fri 08:30-09:15"
+expect_text test_id:"status-s6" "Unmarked"
+expect_text test_id:"summary" "Available 4h 0m across 6 slots, 0 conflicts"
+expect_metric_delta rows_created 1
+expect_metric_delta rows_removed 0
+expect_value label:"Slot name" ""
+expect_value label:"Day" "Mon"
+expect_value label:"Start time" "09:00"
+expect_value label:"Length" "30"
+expect_text test_id:"draft-status" "Enter a name for the new slot"
+expect_disabled role:button name:"Add slot" true
+
+# the typed time was a New York wall clock, so it stores a real instant
+select_option label:"Timezone" "utc"
+expect_text test_id:"when-s6" "Fri 13:30-14:15"
+select_option label:"Timezone" "nyc"
+expect_text test_id:"when-s6" "Fri 08:30-09:15"
+
+# --- total-hours summary tracks a per-row edit --------------------------
+click role:button name:"Mark s6 available"
+expect_text test_id:"summary" "Available 4h 45m across 6 slots, 0 conflicts"
+expect_text test_id:"free-days" "Tue, Thu, Sat"
+
+# --- reorder keeps every row scope --------------------------------------
+mark_metrics
+click role:button name:"Move s6 earlier"
+expect_metric_delta rows_created 0
+expect_metric_delta rows_removed 0
+expect_text test_id:"when-s6" "Fri 08:30-09:15"
+expect_text test_id:"when-focus" "Wed 07:00-09:00"
+expect_text test_id:"status-s6" "Available"
+expect_text test_id:"summary" "Available 4h 45m across 6 slots, 0 conflicts"
+
+# --- removal, down to a day with no availability at all -----------------
+mark_metrics
+click role:button name:"Remove sunrise"
+expect_absent role:region name:"Slot sunrise"
+expect_metric_delta rows_created 0
+expect_metric_delta rows_removed 1
+click role:button name:"Remove review"
+click role:button name:"Remove focus"
+click role:button name:"Remove s6"
+expect_text test_id:"summary" "Available 0h 0m across 2 slots, 0 conflicts"
+expect_text test_id:"free-days" "Mon, Tue, Wed, Thu, Fri, Sat, Sun"
+
+# --- single item, then the empty list -----------------------------------
+click role:button name:"Remove midnight"
+expect_text test_id:"summary" "Available 0h 0m across 1 slots, 0 conflicts"
+expect_visible role:region name:"Slot standup"
+expect_absent role:region name:"Slot midnight"
+click role:button name:"Remove standup"
+expect_absent role:region name:"Slot standup"
+expect_visible role:region name:"Week"
+expect_text test_id:"summary" "Available 0h 0m across 0 slots, 0 conflicts"
+expect_text test_id:"free-days" "Mon, Tue, Wed, Thu, Fri, Sat, Sun"
+
+# --- boundary times: exactly midnight and exactly 23:30 -----------------
+fill label:"Slot name" "Midnight watch"
+fill label:"Start time" "00:00"
+click role:button name:"Add slot"
+expect_text test_id:"when-s1" "Mon 00:00-00:30"
+fill label:"Slot name" "Late watch"
+fill label:"Start time" "23:30"
+click role:button name:"Add slot"
+expect_text test_id:"when-s2" "Mon 23:30-00:00"
+
+select_option label:"Timezone" "utc"
+expect_text test_id:"when-s1" "Mon 05:00-05:30"
+expect_text test_id:"when-s2" "Tue 04:30-05:00"
+
+click role:button name:"Mark s1 available"
+click role:button name:"Mark s2 available"
+expect_text test_id:"summary" "Available 1h 0m across 2 slots, 0 conflicts"
+expect_text test_id:"free-days" "Wed, Thu, Fri, Sat, Sun"

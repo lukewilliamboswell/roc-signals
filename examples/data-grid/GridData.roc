@@ -115,8 +115,6 @@ GridData :: [].{
 
 	Note : { id : U64, note : Str }
 
-	Filter : { query : Str, selected : List(U64) }
-
 	ViewRow : { id : U64, name : Str, team : Str, score : U64, note : Str, selected : Bool }
 
 	Summary : { matching : U64, total : U64, average : U64, highest : U64, lowest : U64, selected_here : U64, selected_all : U64 }

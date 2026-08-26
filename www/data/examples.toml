@@ -1,4 +1,15 @@
 [[examples]]
+slug = "availability-picker"
+title = "Availability Picker"
+description = "A weekly availability grid where one timezone signal converts every slot, with pairwise conflict detection over busy commitments."
+source = "examples/availability-picker/app.roc"
+spec = "examples/availability-picker/spec.txt"
+public = true
+wasm = true
+native = true
+bench = true
+
+[[examples]]
 slug = "field-notes"
 title = "Field Notes"
 description = "Offline-first note capture with an outbox that drains on reconnect, per-note sync status, optimistic writes and rollback."

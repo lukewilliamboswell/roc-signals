@@ -277,20 +277,35 @@ is_visible = |visibility|
 
 ## One service card. It reads only its own check signal, so a neighbour
 ## degrading never touches this subtree.
-service_card : Str, Signal.Signal(Check) -> Elem
-service_card = |name, check|
+service_card : Str, Str, Signal.Signal(Check) -> Elem
+service_card = |id, name, check|
 	Html.section_c(
 		name,
 		card_class,
 		[
-			Html.paragraph_s_c(check.map(|value| "${name} status: ${health_text(value.health)}"), strong_line_class),
-			Html.paragraph_s_c(check.map(|value| "${name} uptime: ${uptime_text(value)}"), line_class),
+			Html.paragraph_s_attrs(
+				check.map(|value| "${name} status: ${health_text(value.health)}"),
+				[Html.class_attr(strong_line_class), Html.test_id("service-${id}-status")],
+			),
+			Html.paragraph_s_attrs(
+				check.map(|value| "${name} uptime: ${uptime_text(value)}"),
+				[Html.class_attr(line_class), Html.test_id("service-${id}-uptime")],
+			),
 		],
 	)
 
 render_update : Str, Signal.Signal(Update) -> Elem
 render_update = |key, update|
-	Html.section_c(key, "text-sm text-zinc-600", [Html.text_s(update.map(|value| value.text))])
+	Html.section_c(
+		key,
+		"text-sm text-zinc-600",
+		[
+			Html.paragraph_s_attrs(
+				update.map(|value| value.text),
+				[Html.test_id("update-${key}")],
+			),
+		],
+	)
 
 render_incident : Str, Signal.Signal(Incident) -> Elem
 render_incident = |key, incident|
@@ -298,9 +313,18 @@ render_incident = |key, incident|
 		"Incident ${key}",
 		card_class,
 		[
-			Html.paragraph_s_c(incident.map(|value| "${key} severity: ${severity_text(value.severity)}"), strong_line_class),
-			Html.paragraph_s_c(incident.map(|value| "${key} title: ${value.title}"), line_class),
-			Html.paragraph_s_c(incident.map(|value| "${key} latest: ${value.latest}"), line_class),
+			Html.paragraph_s_attrs(
+				incident.map(|value| "${key} severity: ${severity_text(value.severity)}"),
+				[Html.class_attr(strong_line_class), Html.test_id("incident-${key}-severity")],
+			),
+			Html.paragraph_s_attrs(
+				incident.map(|value| "${key} title: ${value.title}"),
+				[Html.class_attr(line_class), Html.test_id("incident-${key}-title")],
+			),
+			Html.paragraph_s_attrs(
+				incident.map(|value| "${key} latest: ${value.latest}"),
+				[Html.class_attr(line_class), Html.test_id("incident-${key}-latest")],
+			),
 			Ui.each_str(incident.map(|value| value.updates), |value| value.key, render_update),
 		],
 	)
@@ -311,11 +335,11 @@ overview_panel = |totals, refresh_status, refresh_count, refresh_now|
 		"Overall status",
 		panel_class,
 		[
-			Html.paragraph_s_c(totals.map(rollup_text), headline_class),
-			Html.paragraph_s_c(totals.map(breakdown_text), line_class),
-			Html.paragraph_s_c(totals.map(overall_uptime_text), strong_line_class),
-			Html.paragraph_s_c(refresh_status, line_class),
-			Html.paragraph_s_c(refresh_count, line_class),
+			Html.paragraph_s_attrs(totals.map(rollup_text), [Html.class_attr(headline_class), Html.test_id("overall-rollup")]),
+			Html.paragraph_s_attrs(totals.map(breakdown_text), [Html.class_attr(line_class), Html.test_id("status-breakdown")]),
+			Html.paragraph_s_attrs(totals.map(overall_uptime_text), [Html.class_attr(strong_line_class), Html.test_id("overall-uptime")]),
+			Html.paragraph_s_attrs(refresh_status, [Html.class_attr(line_class), Html.test_id("refresh-mode")]),
+			Html.paragraph_s_attrs(refresh_count, [Html.class_attr(line_class), Html.test_id("refresh-count")]),
 			Html.button_c("Refresh now", "button-primary justify-self-start", refresh_now),
 		],
 	)
@@ -329,8 +353,8 @@ incidents_panel = |feed| {
 		"Incidents",
 		panel_class,
 		[
-			Html.paragraph_s_c(feed.map(|value| value.status), strong_line_class),
-			Html.paragraph_s_c(items.map(|list| "Open incidents: ${list.len().to_str()}"), line_class),
+			Html.paragraph_s_attrs(feed.map(|value| value.status), [Html.class_attr(strong_line_class), Html.test_id("incident-feed-status")]),
+			Html.paragraph_s_attrs(items.map(|list| "Open incidents: ${list.len().to_str()}"), [Html.class_attr(line_class), Html.test_id("open-incident-count")]),
 			Ui.when(
 				has_items,
 				|| Html.section_c("Incident timeline", "grid gap-3", [Ui.each_str(items, |item| item.id, render_incident)]),
@@ -407,10 +431,10 @@ main = ||
 						"Services",
 						panel_class,
 						[
-							service_card("API", api),
-							service_card("Web app", web),
-							service_card("Database", database),
-							service_card("Notifications", notifications),
+							service_card("api", "API", api),
+							service_card("web", "Web app", web),
+							service_card("database", "Database", database),
+							service_card("notifications", "Notifications", notifications),
 						],
 					),
 					incidents_panel(feed),

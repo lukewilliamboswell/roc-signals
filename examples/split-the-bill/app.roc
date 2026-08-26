@@ -171,16 +171,16 @@ expense_draft_note = |ledger, people| {
 
 person_totals_line : Bill.Balance -> Str
 person_totals_line = |row|
-	"${row.name} totals: paid ${Bill.money(row.paid_cents)}, owes ${Bill.money(row.owed_cents)}"
+	"Totals: paid ${Bill.money(row.paid_cents)}, owes ${Bill.money(row.owed_cents)}"
 
 person_net_line : Bill.Balance -> Str
 person_net_line = |row|
 	if row.net_cents > 0 {
-		"${row.name} net: is owed ${Bill.money(row.net_cents)}"
+		"Net: is owed ${Bill.money(row.net_cents)}"
 	} else if row.net_cents < 0 {
-		"${row.name} net: owes ${Bill.money(row.net_cents.abs())}"
+		"Net: owes ${Bill.money(row.net_cents.abs())}"
 	} else {
-		"${row.name} net: settled up"
+		"Net: settled up"
 	}
 
 person_locked : Bill.Balance -> Bool
@@ -189,11 +189,11 @@ person_locked = |row| row.payer_count > 0
 person_removal_line : Bill.Balance -> Str
 person_removal_line = |row|
 	if row.payer_count == 0 {
-		"${row.name} removal: allowed"
+		"Removal: allowed"
 	} else if row.payer_count == 1 {
-		"${row.name} removal: blocked, payer on 1 expense"
+		"Removal: blocked, payer on 1 expense"
 	} else {
-		"${row.name} removal: blocked, payer on ${row.payer_count.to_str()} expenses"
+		"Removal: blocked, payer on ${row.payer_count.to_str()} expenses"
 	}
 
 people_line : List(Str) -> Str
@@ -306,12 +306,21 @@ main = ||
 								panel_class,
 								[
 									Html.heading_c("Settlement plan", "text-xl font-semibold text-zinc-950"),
-									Html.paragraph_s_c(settlement.map(settlement_summary), "text-sm font-medium text-zinc-900"),
+									Html.paragraph_s_attrs(
+										settlement.map(settlement_summary),
+										[
+											Html.class_attr("text-sm font-medium text-zinc-900"),
+											Html.test_id("settlement-summary"),
+										],
+									),
 									Ui.each_str(
 										settlement,
 										Bill.transfer_key,
-										|_key, transfer|
-											Html.paragraph_s_c(transfer.map(Bill.transfer_line), "text-sm text-zinc-700"),
+										|key, transfer|
+											Html.paragraph_s_attrs(
+												transfer.map(Bill.transfer_line),
+												[Html.class_attr("text-sm text-zinc-700"), Html.test_id("transfer-${key}")],
+											),
 									),
 								],
 							),
@@ -320,11 +329,14 @@ main = ||
 								panel_class,
 								[
 									Html.heading_c("Trip totals", "text-xl font-semibold text-zinc-950"),
-									Html.paragraph_s(people_count_text),
-									Html.paragraph_s(expense_count_text),
-									Html.paragraph_s(total_text),
-									Html.paragraph_s(check_text),
-									Html.paragraph_s_c(summary_text, "text-sm text-zinc-600"),
+									Html.paragraph_s_attrs(people_count_text, [Html.test_id("trip-people-count")]),
+									Html.paragraph_s_attrs(expense_count_text, [Html.test_id("trip-expense-count")]),
+									Html.paragraph_s_attrs(total_text, [Html.test_id("trip-total")]),
+									Html.paragraph_s_attrs(check_text, [Html.test_id("trip-balances-check")]),
+									Html.paragraph_s_attrs(
+										summary_text,
+										[Html.class_attr("text-sm text-zinc-600"), Html.test_id("trip-summary")],
+									),
 								],
 							),
 						],
@@ -361,7 +373,10 @@ people_panel = |roster, person_rows, has_people| {
 						[Html.class_attr("button-primary"), Html.attr("type", "button")],
 						roster.on_unit(add_person),
 					),
-					Html.paragraph_s_c(roster_signal.map(person_draft_note), "text-sm text-zinc-700"),
+					Html.paragraph_s_attrs(
+						roster_signal.map(person_draft_note),
+						[Html.class_attr("text-sm text-zinc-700"), Html.test_id("person-draft-note")],
+					),
 				],
 			),
 			Ui.when(
@@ -382,9 +397,18 @@ person_row = |roster, name, row|
 		row_class,
 		[
 			Html.heading_c(name, "text-lg font-semibold text-zinc-950"),
-			Html.paragraph_s_c(row.map(person_totals_line), "text-sm text-zinc-700"),
-			Html.paragraph_s_c(row.map(person_net_line), "text-sm font-medium text-zinc-900"),
-			Html.paragraph_s_c(row.map(person_removal_line), "text-sm text-zinc-600"),
+			Html.paragraph_s_attrs(
+				row.map(person_totals_line),
+				[Html.class_attr("text-sm text-zinc-700"), Html.test_id("person-${name}-totals")],
+			),
+			Html.paragraph_s_attrs(
+				row.map(person_net_line),
+				[Html.class_attr("text-sm font-medium text-zinc-900"), Html.test_id("person-${name}-net")],
+			),
+			Html.paragraph_s_attrs(
+				row.map(person_removal_line),
+				[Html.class_attr("text-sm text-zinc-600"), Html.test_id("person-${name}-removal")],
+			),
 			Html.action_button_attrs(
 				Signal.const("Remove ${name}"),
 				row.map(person_locked),
@@ -440,7 +464,10 @@ expenses_panel = |ledger, people, expense_views, has_expenses| {
 						[Html.class_attr("button-primary"), Html.attr("type", "button")],
 						ledger.on_unit(add_expense),
 					),
-					Html.paragraph_s_c(draft_note, "text-sm text-zinc-700"),
+					Html.paragraph_s_attrs(
+						draft_note,
+						[Html.class_attr("text-sm text-zinc-700"), Html.test_id("expense-draft-note")],
+					),
 				],
 			),
 			Ui.when(
@@ -471,8 +498,14 @@ expense_row = |ledger, description, view|
 				input_class,
 				ledger.on_str(|current, text| { ..current, items: Bill.set_amount(current.items, description, text) }),
 			),
-			Html.paragraph_s_c(view.map(|value| value.status), "text-sm font-medium text-zinc-900"),
-			Html.paragraph_s_c(view.map(|value| value.breakdown), "text-sm text-zinc-700"),
+			Html.paragraph_s_attrs(
+				view.map(|value| value.status),
+				[Html.class_attr("text-sm font-medium text-zinc-900"), Html.test_id("expense-${description}-status")],
+			),
+			Html.paragraph_s_attrs(
+				view.map(|value| value.breakdown),
+				[Html.class_attr("text-sm text-zinc-700"), Html.test_id("expense-${description}-shares")],
+			),
 			Ui.each_str(
 				view.map(|value| value.members),
 				|member| member.name,
