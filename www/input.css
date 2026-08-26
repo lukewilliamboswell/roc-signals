@@ -151,6 +151,239 @@
     @apply my-8 border-zinc-200;
   }
 
+  /* ------------------------------------------------------------------
+     Example app design system
+
+     Every gallery example composes its UI from these classes so the apps
+     read as one product rather than twenty unrelated demos. Examples keep
+     Tailwind utilities for layout (grid/gap/columns); these components own
+     the shared surface, type, and control vocabulary.
+     ------------------------------------------------------------------ */
+
+  /* The runner strips the site container from an example page, so each app
+     supplies its own centred measure. */
+  .app-shell {
+    @apply mx-auto grid w-full max-w-5xl gap-6 px-4 py-8 sm:px-6 lg:px-8;
+  }
+
+  .app-shell.app-shell-wide {
+    @apply max-w-7xl;
+  }
+
+  /* Single-column form apps read better at a shorter measure. */
+  .app-shell.app-shell-narrow {
+    @apply max-w-3xl;
+  }
+
+  .app-shell > * {
+    min-width: 0;
+  }
+
+  .app-header {
+    @apply grid gap-2 border-b border-zinc-200 pb-6;
+  }
+
+  .app-title {
+    @apply text-2xl font-semibold tracking-tight text-zinc-950;
+  }
+
+  .app-subtitle {
+    @apply max-w-3xl text-sm leading-6 text-zinc-600;
+  }
+
+  /* Surfaces -------------------------------------------------------- */
+
+  .panel-head {
+    @apply flex flex-wrap items-center justify-between gap-3 border-b border-zinc-200 px-4 py-3;
+  }
+
+  .panel-title {
+    @apply text-sm font-semibold uppercase tracking-wide text-zinc-500;
+  }
+
+  .panel-body {
+    @apply grid gap-4 p-4;
+  }
+
+  .card {
+    @apply grid gap-2 rounded-md border border-zinc-200 bg-white p-3 shadow-sm transition hover:border-zinc-300;
+  }
+
+  .card-title {
+    @apply text-sm font-semibold text-zinc-950;
+  }
+
+  .toolbar {
+    @apply flex flex-wrap items-end gap-3;
+  }
+
+  .empty-state {
+    @apply rounded-md border border-dashed border-zinc-300 bg-zinc-50 px-4 py-6 text-center text-sm text-zinc-500;
+  }
+
+  /* Type ------------------------------------------------------------ */
+
+  .label {
+    @apply text-xs font-medium uppercase tracking-wide text-zinc-500;
+  }
+
+  .value {
+    @apply text-sm font-medium text-zinc-900;
+  }
+
+  .muted {
+    @apply text-sm text-zinc-600;
+  }
+
+  .hint {
+    @apply text-xs text-zinc-500;
+  }
+
+  .numeric {
+    @apply tabular-nums;
+  }
+
+  /* Metrics --------------------------------------------------------- */
+
+  .stat-grid {
+    @apply grid gap-3 sm:grid-cols-2 lg:grid-cols-4;
+  }
+
+  .stat {
+    @apply grid gap-1 rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2;
+  }
+
+  .stat-label {
+    @apply text-xs font-medium uppercase tracking-wide text-zinc-500;
+  }
+
+  .stat-value {
+    @apply text-lg font-semibold tabular-nums text-zinc-950;
+  }
+
+  /* Badges ---------------------------------------------------------- */
+
+  .badge {
+    @apply inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium;
+  }
+
+  .badge-neutral {
+    @apply border-zinc-200 bg-zinc-100 text-zinc-700;
+  }
+
+  .badge-ok {
+    @apply border-emerald-200 bg-emerald-50 text-emerald-800;
+  }
+
+  .badge-warn {
+    @apply border-amber-200 bg-amber-50 text-amber-800;
+  }
+
+  .badge-danger {
+    @apply border-red-200 bg-red-50 text-red-800;
+  }
+
+  .badge-info {
+    @apply border-sky-200 bg-sky-50 text-sky-800;
+  }
+
+  /* Controls -------------------------------------------------------- */
+
+  .field {
+    @apply grid gap-1.5;
+  }
+
+  /* Form labels stay sentence case; the uppercase eyebrow treatment is
+     reserved for section titles and metric captions. */
+  .field-label {
+    @apply text-sm font-medium text-zinc-700;
+  }
+
+  .input {
+    @apply w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm transition placeholder:text-zinc-400 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-100;
+  }
+
+  .input:disabled {
+    @apply cursor-not-allowed bg-zinc-100 text-zinc-500;
+  }
+
+  .input[aria-invalid="true"] {
+    @apply border-red-400 focus:border-red-500 focus:ring-red-100;
+  }
+
+  .textarea {
+    @apply min-h-24 resize-y leading-6;
+  }
+
+  .checkbox {
+    @apply h-4 w-4 rounded border-zinc-300 text-emerald-600 focus:ring-2 focus:ring-emerald-200;
+  }
+
+  .check-row {
+    @apply flex items-center gap-2 text-sm text-zinc-800;
+  }
+
+  .button:disabled,
+  .button-primary:disabled {
+    @apply cursor-not-allowed opacity-50;
+  }
+
+  .button-ghost {
+    @apply inline-flex items-center justify-center rounded-md border border-transparent px-2.5 py-1.5 text-sm font-medium text-zinc-600 transition hover:bg-zinc-100 hover:text-zinc-900 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .button-danger {
+    @apply inline-flex items-center justify-center rounded-md border border-red-300 bg-white px-3 py-2 text-sm font-medium text-red-700 shadow-sm transition hover:border-red-500 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .button-sm {
+    @apply px-2.5 py-1 text-xs;
+  }
+
+  /* Notices --------------------------------------------------------- */
+
+  .notice {
+    @apply rounded-md border px-3 py-2 text-sm;
+  }
+
+  .notice-error {
+    @apply border-red-200 bg-red-50 text-red-800;
+  }
+
+  .notice-ok {
+    @apply border-emerald-200 bg-emerald-50 text-emerald-800;
+  }
+
+  .notice-warn {
+    @apply border-amber-200 bg-amber-50 text-amber-900;
+  }
+
+  .notice-info {
+    @apply border-sky-200 bg-sky-50 text-sky-900;
+  }
+
+  /* Data tables ----------------------------------------------------- */
+
+  .data-table {
+    @apply w-full border-collapse text-left text-sm;
+  }
+
+  .data-table th {
+    @apply whitespace-nowrap border-b border-zinc-200 bg-zinc-50 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-zinc-500;
+  }
+
+  .data-table td {
+    @apply border-b border-zinc-100 px-3 py-2 align-middle text-zinc-800;
+  }
+
+  .data-table tr:last-child td {
+    @apply border-b-0;
+  }
+
+  .table-scroll {
+    @apply -mx-4 overflow-x-auto px-4;
+  }
+
   .example-standalone [data-site-header] {
     @apply hidden;
   }
