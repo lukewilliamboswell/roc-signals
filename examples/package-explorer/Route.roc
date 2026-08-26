@@ -6,15 +6,24 @@
 import pf.Browser
 
 Route := [Search, Package(Str), Unknown].{
+	## Structural equality. A route is compared on the signal-invalidation hot
+	## path, so it matches on the tags directly rather than encoding each side
+	## to a string first.
 	is_eq : Route, Route -> Bool
-	is_eq = |left, right| Route.key(left) == Route.key(right)
-
-	key : Route -> Str
-	key = |route|
-		match route {
-			Search => "search"
-			Package(id) => "package:${id}"
-			Unknown => "unknown"
+	is_eq = |left, right|
+		match left {
+			Search => match right {
+				Search => True
+				_ => False
+			}
+			Package(left_id) => match right {
+				Package(right_id) => left_id == right_id
+				_ => False
+			}
+			Unknown => match right {
+				Unknown => True
+				_ => False
+			}
 		}
 
 	search_location : Browser.Location
@@ -74,3 +83,13 @@ Route := [Search, Package(Str), Unknown].{
 			Unknown => "Package Explorer"
 		}
 }
+
+expect Route.from_location({ path: "/", query: "", hash: "" }) == Search
+expect Route.from_location({ path: "/packages/roc-json", query: "", hash: "" }) == Package("roc-json")
+expect Route.from_location({ path: "/packages/", query: "", hash: "" }) == Unknown
+expect Route.from_location({ path: "/packages/roc-json/versions", query: "", hash: "" }) == Unknown
+expect Route.from_location({ path: "/nope", query: "", hash: "" }) == Unknown
+expect Route.to_location(Package("roc-http")).path == "/packages/roc-http"
+expect Route.from_location(Route.to_location(Package("roc-http"))) == Package("roc-http")
+expect Package("roc-json") != Package("roc-http")
+expect Route.title(Package("roc-json")) == "roc-json - Package Explorer"

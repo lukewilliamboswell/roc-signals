@@ -16,13 +16,138 @@
 # nothing silently infers as `Frac`.
 
 Recipes := [].{
+	## The canonical unit an ingredient is measured in. `unit_code` renders the
+	## wire code (`"g"`, `"ml"`, `"tsp"`, `"pinch"`) that shopping-list keys and
+	## metric labels are built from.
+	Unit := [Grams, Millilitres, Teaspoons, Pinches].{
+		is_eq : Recipes.Unit, Recipes.Unit -> Bool
+		is_eq = |left, right|
+			match left {
+				Grams => match right {
+					Grams => True
+					_ => False
+				}
+				Millilitres => match right {
+					Millilitres => True
+					_ => False
+				}
+				Teaspoons => match right {
+					Teaspoons => True
+					_ => False
+				}
+				Pinches => match right {
+					Pinches => True
+					_ => False
+				}
+			}
+	}
+
+	## The unit system the quantities are displayed in.
+	UnitSystem := [Metric, Imperial].{
+		is_eq : Recipes.UnitSystem, Recipes.UnitSystem -> Bool
+		is_eq = |left, right|
+			match left {
+				Metric => match right {
+					Metric => True
+					_ => False
+				}
+				Imperial => match right {
+					Imperial => True
+					_ => False
+				}
+			}
+	}
+
+	## Which control the target scale is taken from.
+	ScaleMode := [ByServings, ByPan].{
+		is_eq : Recipes.ScaleMode, Recipes.ScaleMode -> Bool
+		is_eq = |left, right|
+			match left {
+				ByServings => match right {
+					ByServings => True
+					_ => False
+				}
+				ByPan => match right {
+					ByPan => True
+					_ => False
+				}
+			}
+	}
+
+	## The tin the finished dish is going into. `OwnTin` is the recipe's own,
+	## which is the identity ratio rather than an area of its own.
+	Pan := [OwnTin, Round20, Round24, Tray30].{
+		is_eq : Recipes.Pan, Recipes.Pan -> Bool
+		is_eq = |left, right|
+			match left {
+				OwnTin => match right {
+					OwnTin => True
+					_ => False
+				}
+				Round20 => match right {
+					Round20 => True
+					_ => False
+				}
+				Round24 => match right {
+					Round24 => True
+					_ => False
+				}
+				Tray30 => match right {
+					Tray30 => True
+					_ => False
+				}
+			}
+	}
+
+	## The wire code for a unit, as it appears in shopping-list keys and as the
+	## metric display label.
+	unit_code : Recipes.Unit -> Str
+	unit_code = |unit|
+		match unit {
+			Grams => "g"
+			Millilitres => "ml"
+			Teaspoons => "tsp"
+			Pinches => "pinch"
+		}
+
+	## Decode the unit-system radio value. This and `pan_from_str` /
+	## `mode_from_str` are the only places a control's `Str` becomes a tag.
+	system_from_str : Str -> Recipes.UnitSystem
+	system_from_str = |value|
+		if value == "imperial" {
+			Imperial
+		} else {
+			Metric
+		}
+
+	## Decode the scale-mode radio value.
+	mode_from_str : Str -> Recipes.ScaleMode
+	mode_from_str = |value|
+		if value == "pan" {
+			ByPan
+		} else {
+			ByServings
+		}
+
+	## Decode the pan-size select value.
+	pan_from_str : Str -> Recipes.Pan
+	pan_from_str = |value|
+		if value == "round20" {
+			Round20
+		} else if value == "round24" {
+			Round24
+		} else if value == "tray30" {
+			Tray30
+		} else {
+			OwnTin
+		}
+
 	## An ingredient line, normalised to a per-serving amount so that the value
-	## is independent of the current target servings. `unit_code` is one of
-	## `"g"`, `"ml"`, `"tsp"`, `"pinch"`.
+	## is independent of the current target servings.
 	Ingredient : {
 		slug : Str,
 		name : Str,
-		unit_code : Str,
+		unit : Recipes.Unit,
 		per_serving : U64,
 	}
 
@@ -36,23 +161,23 @@ Recipes := [].{
 		ingredients : List(Ingredient),
 	}
 
-	## An aggregated shopping-list line. `key` is `"<slug>-<unit_code>"`, so the
+	## An aggregated shopping-list line. `key` is `"<slug>-<unit code>"`, so the
 	## same ingredient in two different units stays on two separate lines.
 	ShoppingLine : {
 		key : Str,
 		name : Str,
-		unit_code : Str,
+		unit : Recipes.Unit,
 		per_serving : U64,
 		sources : U64,
 	}
 
 	## Build a per-serving ingredient from a printed amount in whole canonical
 	## units and the recipe's own base serving count.
-	ingredient : Str, Str, Str, U64, U64 -> Ingredient
-	ingredient = |slug, name, unit_code, amount, base_servings| {
+	ingredient : Str, Str, Recipes.Unit, U64, U64 -> Ingredient
+	ingredient = |slug, name, unit, amount, base_servings| {
 		micro : U64
 		micro = amount * 1_000_000
-		{ slug, name, unit_code, per_serving: micro / base_servings }
+		{ slug, name, unit, per_serving: micro / base_servings }
 	}
 
 	pancakes : Recipe
@@ -62,11 +187,11 @@ Recipes := [].{
 		base_servings: 4,
 		base_area: 452,
 		ingredients: [
-			ingredient("flour", "Plain flour", "g", 200, 4),
-			ingredient("buttermilk", "Buttermilk", "ml", 300, 4),
-			ingredient("butter", "Butter", "g", 50, 4),
-			ingredient("baking-powder", "Baking powder", "tsp", 2, 4),
-			ingredient("salt", "Salt", "pinch", 1, 4),
+			ingredient("flour", "Plain flour", Grams, 200, 4),
+			ingredient("buttermilk", "Buttermilk", Millilitres, 300, 4),
+			ingredient("butter", "Butter", Grams, 50, 4),
+			ingredient("baking-powder", "Baking powder", Teaspoons, 2, 4),
+			ingredient("salt", "Salt", Pinches, 1, 4),
 		],
 	}
 
@@ -79,10 +204,10 @@ Recipes := [].{
 		base_servings: 3,
 		base_area: 452,
 		ingredients: [
-			ingredient("tomatoes", "Tomatoes", "g", 900, 3),
-			ingredient("stock", "Vegetable stock", "ml", 500, 3),
-			ingredient("butter", "Butter", "tsp", 3, 3),
-			ingredient("salt", "Salt", "pinch", 2, 3),
+			ingredient("tomatoes", "Tomatoes", Grams, 900, 3),
+			ingredient("stock", "Vegetable stock", Millilitres, 500, 3),
+			ingredient("butter", "Butter", Teaspoons, 3, 3),
+			ingredient("salt", "Salt", Pinches, 2, 3),
 		],
 	}
 
@@ -93,10 +218,10 @@ Recipes := [].{
 		base_servings: 8,
 		base_area: 600,
 		ingredients: [
-			ingredient("flour", "Plain flour", "g", 500, 8),
-			ingredient("water", "Water", "ml", 320, 8),
-			ingredient("butter", "Butter", "g", 20, 8),
-			ingredient("salt", "Salt", "pinch", 1, 8),
+			ingredient("flour", "Plain flour", Grams, 500, 8),
+			ingredient("water", "Water", Millilitres, 320, 8),
+			ingredient("butter", "Butter", Grams, 20, 8),
+			ingredient("salt", "Salt", Pinches, 1, 8),
 		],
 	}
 
@@ -111,83 +236,81 @@ Recipes := [].{
 			Err(_) => pancakes
 		}
 
-	## Area in cm^2 for a pan-size option value.
-	pan_area : Str -> U64
+	## Area in cm^2 of the tin a pan-size option names. `OwnTin` has no area of
+	## its own: it is whatever the recipe was printed for.
+	pan_area : Recipes.Pan -> Try(U64, [OwnTin])
 	pan_area = |pan|
-		if pan == "round20" {
-			314
-		} else if pan == "round24" {
-			452
-		} else if pan == "tray30" {
-			600
-		} else {
-			0
+		match pan {
+			Round20 => Ok(314)
+			Round24 => Ok(452)
+			Tray30 => Ok(600)
+			OwnTin => Err(OwnTin)
 		}
 
-	## Human label for a pan-size option value, phrased for the summary note.
-	pan_label : Str -> Str
+	## Human label for a pan size, phrased for the summary note.
+	pan_label : Recipes.Pan -> Str
 	pan_label = |pan|
-		if pan == "round20" {
-			"a 20 cm round tin"
-		} else if pan == "round24" {
-			"a 24 cm round tin"
-		} else if pan == "tray30" {
-			"a 30x20 cm tray"
-		} else {
-			"the recipe's own tin"
+		match pan {
+			Round20 => "a 20 cm round tin"
+			Round24 => "a 24 cm round tin"
+			Tray30 => "a 30x20 cm tray"
+			OwnTin => "the recipe's own tin"
 		}
 
-	## Parse the servings draft. `Err` means the draft is not a whole number in
-	## the supported range; the caller decides what to show instead.
+	## Parse the servings draft. `Err(Invalid)` means the draft is not a whole
+	## number in the supported range; the caller decides what to show instead.
+	##
+	## The digit and length checks come first so that the only strings reaching
+	## `U64.from_str` are the ones this app calls a serving count: no sign, no
+	## whitespace inside, at most three digits.
 	parse_servings : Str -> Try(U64, [Invalid])
 	parse_servings = |draft| {
-		digits = draft.trim().to_utf8()
-		if digits.is_empty() or digits.len() > 3 {
+		trimmed = draft.trim()
+		digits = trimmed.to_utf8()
+		if digits.is_empty() or digits.len() > 3 or !digits.all(|byte| byte >= 48 and byte <= 57) {
 			Err(Invalid)
 		} else {
-			folded =
-				digits.fold(
-					{ ok: True, value: 0 },
-					|acc, byte|
-						if !acc.ok {
-							acc
-						} else if byte >= 48 and byte <= 57 {
-							{ ok: True, value: acc.value * 10 + byte.to_u64() - 48 }
-						} else {
-							{ ok: False, value: 0 }
-						},
-				)
-
-			if folded.ok and folded.value <= 96 {
-				Ok(folded.value)
+			servings = U64.from_str(trimmed).map_err(|_| Invalid)?
+			if servings <= 96 {
+				Ok(servings)
 			} else {
 				Err(Invalid)
 			}
 		}
 	}
 
+	# The draft box is deliberately strict: only 1-3 ASCII digits, and only up
+	# to the 96-serving ceiling the hint promises.
+	expect parse_servings("4") == Ok(4)
+	expect parse_servings(" 12 ") == Ok(12)
+	expect parse_servings("007") == Ok(7)
+	expect parse_servings("0") == Ok(0)
+	expect parse_servings("96") == Ok(96)
+	expect parse_servings("97") == Err(Invalid)
+	expect parse_servings("") == Err(Invalid)
+	expect parse_servings("two") == Err(Invalid)
+	expect parse_servings("1x") == Err(Invalid)
+	expect parse_servings("999") == Err(Invalid)
+	expect parse_servings("1000") == Err(Invalid)
+
 	## Target scale in milli-servings.
 	##
-	## In `"servings"` mode this is the parsed servings box; when the draft is
+	## In `ByServings` mode this is the parsed servings box; when the draft is
 	## not a whole number the recipe's own base servings are used instead so the
 	## page keeps showing a usable recipe while the warning is visible.
-	## In `"pan"` mode the servings box is ignored and the scale comes from the
+	## In `ByPan` mode the servings box is ignored and the scale comes from the
 	## ratio between the chosen tin area and the recipe's own tin area.
-	scale_milli : Recipe, Str, Str, Str -> U64
-	scale_milli = |recipe, mode, draft, pan|
-		if mode == "pan" {
-			area = pan_area(pan)
-			if area == 0 {
-				recipe.base_servings * 1000
-			} else {
-				recipe.base_servings * 1000 * area / recipe.base_area
+	scale_milli : Recipe, Recipes.ScaleMode, Str, Recipes.Pan -> U64
+	scale_milli = |recipe, mode, draft, pan| {
+		base = recipe.base_servings * 1000
+		match mode {
+			ByPan => match pan_area(pan) {
+				Ok(area) => base * area / recipe.base_area
+				Err(OwnTin) => base
 			}
-		} else {
-			match parse_servings(draft) {
-				Ok(value) => value * 1000
-				Err(_) => recipe.base_servings * 1000
-			}
+			ByServings => Try.ok_or(parse_servings(draft).map_ok(|servings| servings * 1000), base)
 		}
+	}
 
 	## Scaled amount in milli-units of the ingredient's canonical unit.
 	scaled_milli : U64, U64 -> U64
@@ -195,26 +318,16 @@ Recipes := [].{
 
 	## Convert a canonical milli-amount into the displayed unit system.
 	## `tsp` and `pinch` are the same in both systems and are returned unchanged.
-	convert : Str, Str, U64 -> { amount : U64, label : Str }
-	convert = |unit_code, system, milli|
-		if system == "imperial" {
-			if unit_code == "g" {
-				{ amount: milli * 1000 / 28350, label: "oz" }
-			} else if unit_code == "ml" {
-				{ amount: milli * 1000 / 29574, label: "fl oz" }
-			} else if unit_code == "tsp" {
-				{ amount: milli, label: "tsp" }
-			} else {
-				{ amount: milli, label: "pinch" }
+	convert : Recipes.Unit, Recipes.UnitSystem, U64 -> { amount : U64, label : Str }
+	convert = |unit, system, milli|
+		match system {
+			Imperial => match unit {
+				Grams => { amount: milli * 1000 / 28350, label: "oz" }
+				Millilitres => { amount: milli * 1000 / 29574, label: "fl oz" }
+				Teaspoons => { amount: milli, label: "tsp" }
+				Pinches => { amount: milli, label: "pinch" }
 			}
-		} else if unit_code == "g" {
-			{ amount: milli, label: "g" }
-		} else if unit_code == "ml" {
-			{ amount: milli, label: "ml" }
-		} else if unit_code == "tsp" {
-			{ amount: milli, label: "tsp" }
-		} else {
-			{ amount: milli, label: "pinch" }
+			Metric => { amount: milli, label: unit_code(unit) }
 		}
 
 	pad2 : U64 -> Str
@@ -241,10 +354,16 @@ Recipes := [].{
 		}
 	}
 
+	expect format_amount(200_000) == "200"
+	expect format_amount(37_500) == "37.5"
+	expect format_amount(666_666) == "666.67"
+	expect format_amount(0) == "0"
+	expect format_amount(1_050) == "1.05"
+
 	## The full display string for one ingredient line.
-	quantity_text : U64, Str, U64, Str -> Str
-	quantity_text = |per_serving, unit_code, scale, system| {
-		converted = convert(unit_code, system, scaled_milli(per_serving, scale))
+	quantity_text : U64, Recipes.Unit, U64, Recipes.UnitSystem -> Str
+	quantity_text = |per_serving, unit, scale, system| {
+		converted = convert(unit, system, scaled_milli(per_serving, scale))
 		"${format_amount(converted.amount)} ${converted.label}"
 	}
 
@@ -264,6 +383,13 @@ Recipes := [].{
 			Err(_) => acc.append(line)
 		}
 
+	expect quantity_text(50_000_000, Grams, 4000, Metric) == "200 g"
+	expect quantity_text(50_000_000, Grams, 4000, Imperial) == "7.05 oz"
+	expect quantity_text(500_000, Teaspoons, 4000, Imperial) == "2 tsp"
+	expect scale_milli(pancakes, ByPan, "20", Tray30) == 5309
+	expect scale_milli(pancakes, ByPan, "20", OwnTin) == 4000
+	expect scale_milli(pancakes, ByServings, "two", OwnTin) == 4000
+
 	## Aggregate the ingredients of every selected recipe. Lines are keyed by
 	## slug *and* unit, so `Butter` in grams and `Butter` in teaspoons stay
 	## separate. The result depends only on the selection, never on the target
@@ -278,9 +404,9 @@ Recipes := [].{
 				|recipe|
 					recipe.ingredients.map(
 						|item| {
-							key: "${item.slug}-${item.unit_code}",
+							key: "${item.slug}-${unit_code(item.unit)}",
 							name: item.name,
-							unit_code: item.unit_code,
+							unit: item.unit,
 							per_serving: item.per_serving,
 							sources: 1,
 						},

@@ -33,24 +33,26 @@ network_class = |online| if online { "notice notice-ok" } else { "notice notice-
 auto_class : Bool -> Str
 auto_class = |auto| if auto { "badge badge-ok" } else { "badge badge-warn" }
 
-## Badge tone per note, derived from the same `status` string that produces the
-## badge's caption.
-status_class : Str -> Str
+## Badge tone per note, derived from the same `Notes.Status` tag that produces
+## the badge's caption, so the colour can never disagree with the word.
+status_class : Notes.Status -> Str
 status_class = |status|
-	if status == "synced" {
-		"badge badge-ok"
-	} else if status == "failed" {
-		"badge badge-danger"
-	} else if status == "queued" or status == "syncing" {
-		"badge badge-warn"
-	} else {
-		"badge badge-neutral"
+	match status {
+		Draft => "badge badge-neutral"
+		Queued => "badge badge-warn"
+		Syncing => "badge badge-warn"
+		Synced => "badge badge-ok"
+		Failed => "badge badge-danger"
 	}
 
 ## A failed note has to offer its retry where the failure is shown, so the retry
 ## control is loud exactly while it is the thing to do.
-retry_class : Str -> Str
-retry_class = |status| if status == "failed" { "button-danger button-sm" } else { "button button-sm" }
+retry_class : Notes.Status -> Str
+retry_class = |status|
+	match status {
+		Failed => "button-danger button-sm"
+		_ => "button button-sm"
+	}
 
 ## One metric tile. A count is a label and a number, not a sentence.
 stat : Str, Signal.Signal(Str), Str -> Elem
@@ -75,14 +77,14 @@ render_note : Ui.State(Notes.Capture), Str, Signal.Signal(Notes.Row) -> Elem
 render_note = |capture, key, row|
 	Html.section(
 		"Note ${key}",
-		[Html.class_attr(note_class), Html.attr_s("data-status", row.map(|value| value.status))],
+		[Html.class_attr(note_class), Html.attr_s("data-status", row.map(|value| Notes.status_code(value.status)))],
 		[
 			Html.div_c(
 				"flex flex-wrap items-center justify-between gap-2",
 				[
 					Html.heading_c("Note ${key}", "card-title"),
 					Html.paragraph_s_attrs(
-						row.map(|value| value.status_label),
+						row.map(|value| Notes.status_title(value.status)),
 						[Html.class_attr_s(row.map(|value| status_class(value.status))), Html.test_id("status-${key}")],
 					),
 				],
@@ -122,14 +124,14 @@ render_note = |capture, key, row|
 		],
 	)
 
+## The one place a lane request becomes wire text.
 sync_lane = |board, task, slot|
 	Ui.on_change_initial(
 		board.map(|value| Notes.request_at(value, slot)),
 		|request|
-			if request == "" {
-				Signal.noop
-			} else {
-				Signal.start_str(task, request)
+			match request {
+				Idle => Signal.noop
+				Send(request_token) => Signal.start_str(task, request_token)
 			},
 	)
 
@@ -183,7 +185,7 @@ main = || {
 									hide_synced.signal(),
 									|all_rows, hide|
 										if hide {
-											all_rows.fold([], |acc, row| if row.status == "synced" { acc } else { acc.append(row) })
+											all_rows.keep_if(|row| row.status != Synced)
 										} else {
 											all_rows
 										},
@@ -224,8 +226,8 @@ main = || {
 												[
 													stat("Outbox", rows.map(|value| Notes.outbox_count(value).to_str()), "outbox-count"),
 													stat("Syncing", rows.map(Notes.syncing_text), "syncing"),
-													stat("Failed", rows.map(|value| Notes.count_status(value, "failed").to_str()), "failed-count"),
-													stat("Synced", rows.map(|value| Notes.count_status(value, "synced").to_str()), "synced-count"),
+													stat("Failed", rows.map(|value| Notes.count_status(value, Failed).to_str()), "failed-count"),
+													stat("Synced", rows.map(|value| Notes.count_status(value, Synced).to_str()), "synced-count"),
 												],
 											),
 											Html.div_c(

@@ -5,26 +5,36 @@
 ## 100000, and contrast ratios are reported as hundredths (454 means 4.54:1).
 ## No `Frac` appears anywhere, so every derived value is bit-for-bit
 ## reproducible on the native host and in the browser.
+##
+## Parsing returns `Try`, never a record with an `ok` flag: an unparseable
+## draft carries an error tag that the UI turns into both a message and a tone,
+## and `?` propagates that tag out of the parsers for free.
 Tokens :: [].{
-	## A parsed colour token. `ok` is False when the draft text is not `#rrggbb`.
+	## A parsed colour token: three integer channels.
 	Colour : {
-		ok : Bool,
 		r : U64,
 		g : U64,
 		b : U64,
 	}
 
-	## A parsed non-negative size token, in pixels.
-	Size : {
-		ok : Bool,
-		px : U64,
-	}
+	## Why a colour draft failed: it was not `#rrggbb`.
+	ColourError : [NotAHexColour]
 
-	## A contrast measurement between two colours.
-	Contrast : {
-		ok : Bool,
-		ratio : U64,
-	}
+	## Why a size draft failed: it was empty, too long, or not all digits.
+	SizeError : [NotADecimalSize]
+
+	## A colour token as the editor holds it: parsed, or the reason it is not.
+	ColourToken : Try(Colour, ColourError)
+
+	## A parsed non-negative size token, in pixels.
+	SizeToken : Try(U64, SizeError)
+
+	## WCAG relative luminance, scaled by 100000. A colour that never parsed has
+	## no luminance, and the error travels with it.
+	Luminance : Try(U64, ColourError)
+
+	## A contrast measurement between two colours, in hundredths.
+	Contrast : Try(U64, ColourError)
 
 	## One preview component, fully resolved from the current token values.
 	Preview : {
@@ -39,12 +49,6 @@ Tokens :: [].{
 	aa_threshold : U64
 	aa_threshold = 450
 
-	invalid_colour : Colour
-	invalid_colour = { ok: False, r: 0, g: 0, b: 0 }
-
-	invalid_size : Size
-	invalid_size = { ok: False, px: 0 }
-
 	byte_at : List(U8), U64 -> U64
 	byte_at = |bytes, index|
 		match bytes.get(index) {
@@ -52,71 +56,68 @@ Tokens :: [].{
 			Err(_) => 0
 		}
 
-	## One hex digit as a value, or `ok: False` when the byte is not a hex digit.
-	hex_digit : U64 -> Size
+	## One hex digit as a value.
+	hex_digit : U64 -> Try(U64, ColourError)
 	hex_digit = |code|
 		if code >= 48 and code <= 57 {
-			{ ok: True, px: code - 48 }
+			Ok(code - 48)
 		} else if code >= 97 and code <= 102 {
-			{ ok: True, px: (code - 97) + 10 }
+			Ok((code - 97) + 10)
 		} else if code >= 65 and code <= 70 {
-			{ ok: True, px: (code - 65) + 10 }
+			Ok((code - 65) + 10)
 		} else {
-			invalid_size
+			Err(NotAHexColour)
 		}
 
-	hex_pair : List(U8), U64 -> Size
+	hex_pair : List(U8), U64 -> Try(U64, ColourError)
 	hex_pair = |bytes, index| {
-		high = hex_digit(byte_at(bytes, index))
-		low = hex_digit(byte_at(bytes, index + 1))
-		if high.ok and low.ok {
-			{ ok: True, px: (high.px * 16) + low.px }
-		} else {
-			invalid_size
-		}
+		high = hex_digit(byte_at(bytes, index))?
+		low = hex_digit(byte_at(bytes, index + 1))?
+		Ok((high * 16) + low)
 	}
 
-	## Parse `#rrggbb` into integer channels. Anything else is invalid.
-	parse_colour : Str -> Colour
+	## Parse `#rrggbb` into integer channels. Anything else is `Err`.
+	parse_colour : Str -> ColourToken
 	parse_colour = |raw| {
 		text = raw.trim()
 		bytes = text.to_utf8()
 		if bytes.len() != 7 or !text.starts_with("#") {
-			invalid_colour
+			Err(NotAHexColour)
 		} else {
-			red = hex_pair(bytes, 1)
-			green = hex_pair(bytes, 3)
-			blue = hex_pair(bytes, 5)
-			if red.ok and green.ok and blue.ok {
-				{ ok: True, r: red.px, g: green.px, b: blue.px }
-			} else {
-				invalid_colour
-			}
+			red = hex_pair(bytes, 1)?
+			green = hex_pair(bytes, 3)?
+			blue = hex_pair(bytes, 5)?
+			Ok({ r: red, g: green, b: blue })
 		}
 	}
 
+	expect parse_colour("#2563eb") == Ok({ r: 37, g: 99, b: 235 })
+	expect parse_colour("#2563EB") == Ok({ r: 37, g: 99, b: 235 })
+	expect parse_colour("#77zz77") == Err(NotAHexColour)
+	expect parse_colour("#777") == Err(NotAHexColour)
+	expect parse_colour("white") == Err(NotAHexColour)
+
 	## Parse a decimal pixel size. Empty text and non-digits are invalid; zero is
-	## a perfectly good spacing value and stays valid.
-	parse_size : Str -> Size
+	## a perfectly good spacing value and stays valid. The explicit digit filter
+	## is what keeps `"-2"` and `"1 2"` invalid, which `U64.from_str` alone would
+	## not, and the length bound keeps the conversion in range.
+	parse_size : Str -> SizeToken
 	parse_size = |raw| {
 		text = raw.trim()
 		bytes = text.to_utf8()
-		if bytes.len() == 0 or bytes.len() > 4 {
-			invalid_size
+		if bytes.len() == 0 or bytes.len() > 4 or !bytes.all(|byte| byte >= 48 and byte <= 57) {
+			Err(NotADecimalSize)
 		} else {
-			bytes.fold(
-				{ ok: True, px: 0 },
-				|acc, byte| {
-					digit = hex_digit(byte.to_u64())
-					if acc.ok and digit.ok and digit.px <= 9 {
-						{ ok: True, px: (acc.px * 10) + digit.px }
-					} else {
-						invalid_size
-					}
-				},
-			)
+			Try.map_err(U64.from_str(text), |_| NotADecimalSize)
 		}
 	}
+
+	expect parse_size("0") == Ok(0)
+	expect parse_size("16") == Ok(16)
+	expect parse_size("") == Err(NotADecimalSize)
+	expect parse_size("-2") == Err(NotADecimalSize)
+	expect parse_size("abc") == Err(NotADecimalSize)
+	expect parse_size("12345") == Err(NotADecimalSize)
 
 	## sRGB linearisation table, scaled by 100000. `linear_table.get(c)` is the
 	## linearised value of channel byte `c`.
@@ -162,30 +163,31 @@ Tokens :: [].{
 			Ok(value) => value
 			Err(_) => 0
 		}
-
 	## WCAG relative luminance, scaled by 100000.
-	luminance : Colour -> Size
+	luminance : ColourToken -> Luminance
 	luminance = |colour|
-		if colour.ok {
-			weighted = (2126 * linear(colour.r)) + (7152 * linear(colour.g)) + (722 * linear(colour.b))
-			{ ok: True, px: weighted / 10000 }
-		} else {
-			invalid_size
-		}
+		Try.map_ok(
+			colour,
+			|c| ((2126 * linear(c.r)) + (7152 * linear(c.g)) + (722 * linear(c.b))) / 10000,
+		)
 
 	## Contrast ratio between two luminances, in hundredths (454 = 4.54:1).
-	contrast : Size, Size -> Contrast
-	contrast = |left, right|
-		if left.ok and right.ok {
-			lighter = if left.px >= right.px { left.px } else { right.px }
-			darker = if left.px >= right.px { right.px } else { left.px }
-			{ ok: True, ratio: ((lighter + 5000) * 100) / (darker + 5000) }
-		} else {
-			{ ok: False, ratio: 0 }
-		}
+	## `?` short-circuits: one unparseable colour makes the whole pair `Err`.
+	contrast : Luminance, Luminance -> Contrast
+	contrast = |left, right| {
+		l = left?
+		r = right?
+		lighter = if l >= r { l } else { r }
+		darker = if l >= r { r } else { l }
+		Ok(((lighter + 5000) * 100) / (darker + 5000))
+	}
 
 	passes_aa : Contrast -> Bool
-	passes_aa = |value| value.ok and value.ratio >= aa_threshold
+	passes_aa = |value|
+		match value {
+			Ok(ratio) => ratio >= aa_threshold
+			Err(_) => False
+		}
 
 	pad_two : U64 -> Str
 	pad_two = |value|
@@ -198,11 +200,13 @@ Tokens :: [].{
 	## "4.54:1", or "n/a" when either colour failed to parse.
 	format_ratio : Contrast -> Str
 	format_ratio = |value|
-		if value.ok {
-			"${(value.ratio / 100).to_str()}.${pad_two(value.ratio % 100)}:1"
-		} else {
-			"n/a"
+		match value {
+			Ok(ratio) => "${(ratio / 100).to_str()}.${pad_two(ratio % 100)}:1"
+			Err(_) => "n/a"
 		}
+
+	expect format_ratio(contrast(luminance(parse_colour("#767676")), luminance(parse_colour("#ffffff")))) == "4.54:1"
+	expect format_ratio(contrast(luminance(parse_colour("#77zz77")), luminance(parse_colour("#ffffff")))) == "n/a"
 
 	hex_alphabet : List(Str)
 	hex_alphabet = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f"]
@@ -218,21 +222,25 @@ Tokens :: [].{
 	hex_byte = |value| "${hex_char(value / 16)}${hex_char(value % 16)}"
 
 	## Canonical lowercase `#rrggbb`, or a CSS comment when the token is invalid.
-	colour_css : Colour -> Str
+	colour_css : ColourToken -> Str
 	colour_css = |colour|
-		if colour.ok {
-			"#${hex_byte(colour.r)}${hex_byte(colour.g)}${hex_byte(colour.b)}"
-		} else {
-			"/* invalid */"
+		match colour {
+			Ok(c) => "#${hex_byte(c.r)}${hex_byte(c.g)}${hex_byte(c.b)}"
+			Err(_) => "/* invalid */"
 		}
 
-	size_css : Size -> Str
+	expect colour_css(parse_colour("#2563EB")) == "#2563eb"
+	expect colour_css(parse_colour("nope")) == "/* invalid */"
+
+	size_css : SizeToken -> Str
 	size_css = |size|
-		if size.ok {
-			"${size.px.to_str()}px"
-		} else {
-			"/* invalid */"
+		match size {
+			Ok(px) => "${px.to_str()}px"
+			Err(_) => "/* invalid */"
 		}
+
+	expect size_css(parse_size("0")) == "0px"
+	expect size_css(parse_size("")) == "/* invalid */"
 
 	css_declaration : Str, Str -> Str
 	css_declaration = |name, value| "--${name}: ${value};"

@@ -22,11 +22,11 @@ code_class = "overflow-x-auto rounded-md bg-zinc-900 p-4 text-xs leading-5 text-
 ## The six source tokens, already parsed. This is the fan-in point that the
 ## preview list and the validation panel both hang off.
 Design : {
-	bg : Tokens.Colour,
-	fg : Tokens.Colour,
-	accent : Tokens.Colour,
-	space : Tokens.Size,
-	font : Tokens.Size,
+	bg : Tokens.ColourToken,
+	fg : Tokens.ColourToken,
+	accent : Tokens.ColourToken,
+	space : Tokens.SizeToken,
+	font : Tokens.SizeToken,
 }
 
 ## Resolve the tokens into the three preview components. `id` is the keyed-row
@@ -111,34 +111,51 @@ render_preview = |key, preview| {
 aaa_threshold : U64
 aaa_threshold = 700
 
-grade_label : Tokens.Contrast -> Str
-grade_label = |value|
-	if !value.ok {
-		"Invalid"
-	} else if value.ratio >= aaa_threshold {
-		"AAA"
-	} else if Tokens.passes_aa(value) {
-		"AA"
-	} else {
-		"Fail"
+## The verdict for one measured pair. Both the badge text and the badge tone are
+## read off this tag, so the two can never disagree about the same ratio.
+Grade : [Unmeasurable, Aaa, Aa, Fail]
+
+grade_of : Tokens.Contrast -> Grade
+grade_of = |value|
+	match value {
+		Err(_) => Unmeasurable
+		Ok(ratio) =>
+			if ratio >= aaa_threshold {
+				Aaa
+			} else if ratio >= Tokens.aa_threshold {
+				Aa
+			} else {
+				Fail
+			}
 	}
 
-## The badge tone comes off the same contrast signal as the number beside it, so
-## the grade can never disagree with the ratio it is grading.
-grade_class : Tokens.Contrast -> Str
-grade_class = |value|
-	if !value.ok {
-		"badge badge-neutral"
-	} else if value.ratio >= aaa_threshold {
-		"badge badge-ok"
-	} else if Tokens.passes_aa(value) {
-		"badge badge-ok"
-	} else {
-		"badge badge-danger"
+grade_label : Grade -> Str
+grade_label = |grade|
+	match grade {
+		Unmeasurable => "Invalid"
+		Aaa => "AAA"
+		Aa => "AA"
+		Fail => "Fail"
 	}
+
+grade_class : Grade -> Str
+grade_class = |grade|
+	match grade {
+		Unmeasurable => "badge badge-neutral"
+		Aaa => "badge badge-ok"
+		Aa => "badge badge-ok"
+		Fail => "badge badge-danger"
+	}
+
+expect grade_label(grade_of(Err(NotAHexColour))) == "Invalid"
+expect grade_label(grade_of(Ok(449))) == "Fail"
+expect grade_label(grade_of(Ok(454))) == "AA"
+expect grade_label(grade_of(Ok(700))) == "AAA"
 
 pair_line : Str, Str, Signal.Signal(Tokens.Contrast) -> Elem
-pair_line = |id, label, pair|
+pair_line = |id, label, pair| {
+	grade = pair.map(grade_of)
+
 	Html.section(
 		label,
 		[Html.class_attr("card gap-1.5")],
@@ -148,8 +165,8 @@ pair_line = |id, label, pair|
 				[
 					Html.paragraph_c(label, "card-title"),
 					Html.paragraph_s_attrs(
-						pair.map(grade_label),
-						[Html.test_id("aa-${id}"), Html.class_attr_s(pair.map(grade_class))],
+						grade.map(grade_label),
+						[Html.test_id("aa-${id}"), Html.class_attr_s(grade.map(grade_class))],
 					),
 				],
 			),
@@ -159,10 +176,11 @@ pair_line = |id, label, pair|
 			),
 		],
 	)
+}
 
 ## A colour token: the chip is the token. Reading a design token editor without
 ## seeing the colour is reading a spreadsheet.
-colour_field : Str, Ui.State(Str), Str, Signal.Signal(Tokens.Colour) -> Elem
+colour_field : Str, Ui.State(Str), Str, Signal.Signal(Tokens.ColourToken) -> Elem
 colour_field = |label, state, css_name, parsed| {
 	resolved = parsed.map(Tokens.colour_css)
 
@@ -207,19 +225,13 @@ colour_field = |label, state, css_name, parsed| {
 
 ## Size chips are drawn to scale, capped at the width of the chip so a runaway
 ## font size cannot blow out the column.
-size_bar_style : Tokens.Size -> Str
+size_bar_style : Tokens.SizeToken -> Str
 size_bar_style = |size| {
-	width = if !size.ok {
-		0
-	} else if size.px > 32 {
-		32
-	} else {
-		size.px
-	}
+	width = Try.ok_or(Try.map_ok(size, |px| if px > 32 { 32 } else { px }), 0)
 	"width: ${width.to_str()}px; height: 8px"
 }
 
-size_field : Str, Ui.State(Str), Str, Signal.Signal(Tokens.Size) -> Elem
+size_field : Str, Ui.State(Str), Str, Signal.Signal(Tokens.SizeToken) -> Elem
 size_field = |label, state, css_name, parsed|
 	Html.section(
 		"Token ${css_name}",
@@ -261,59 +273,93 @@ size_field = |label, state, css_name, parsed|
 		],
 	)
 
-## Two independent booleans feeding one rollup.
-aa_summary : Bool, Bool -> Str
-aa_summary = |text_ok, button_ok| {
+## Two independent AA flags feeding one rollup. They travel as a named record,
+## not as two bare `Bool`s: `aa_summary(button_ok, text_ok)` would type-check
+## just as happily as the right order.
+AaFlags : {
+	text : Bool,
+	button : Bool,
+}
+
+aa_summary : AaFlags -> Str
+aa_summary = |flags| {
 	passing : U64
-	passing = (if text_ok { 1 } else { 0 }) + (if button_ok { 1 } else { 0 })
+	passing = (if flags.text { 1 } else { 0 }) + (if flags.button { 1 } else { 0 })
 	"${passing.to_str()} of 2 pairs pass AA"
 }
 
-aa_summary_class : Bool, Bool -> Str
-aa_summary_class = |text_ok, button_ok|
-	if text_ok and button_ok {
+aa_summary_class : AaFlags -> Str
+aa_summary_class = |flags|
+	if flags.text and flags.button {
 		"badge badge-ok"
 	} else {
 		"badge badge-warn"
 	}
 
-validity_summary : Design, Tokens.Size -> Str
-validity_summary = |design, radius| {
+expect aa_summary({ text: True, button: False }) == "1 of 2 pairs pass AA"
+expect aa_summary_class({ text: True, button: True }) == "badge badge-ok"
+
+## Which of the six tokens currently fail to parse. The notice renders from this
+## tag: the sentence and the tone are two views of the same value, so neither
+## has to be recovered by sniffing the other.
+Validity : [AllValid, SomeInvalid(List(Str))]
+
+token_validity : Design, Tokens.SizeToken -> Validity
+token_validity = |design, radius| {
 	flags = [
-		{ name: "color-bg", ok: design.bg.ok },
-		{ name: "color-fg", ok: design.fg.ok },
-		{ name: "color-accent", ok: design.accent.ok },
-		{ name: "space-sm", ok: design.space.ok },
-		{ name: "font-md", ok: design.font.ok },
-		{ name: "radius-md", ok: radius.ok },
+		{ name: "color-bg", ok: design.bg.is_ok() },
+		{ name: "color-fg", ok: design.fg.is_ok() },
+		{ name: "color-accent", ok: design.accent.is_ok() },
+		{ name: "space-sm", ok: design.space.is_ok() },
+		{ name: "font-md", ok: design.font.is_ok() },
+		{ name: "radius-md", ok: radius.is_ok() },
 	]
 	broken = flags.keep_if(|flag| !flag.ok).map(|flag| flag.name)
 	if broken.is_empty() {
-		"All 6 tokens valid"
+		AllValid
 	} else {
-		"Invalid tokens: ${Str.join_with(broken, ", ")}"
+		SomeInvalid(broken)
 	}
 }
 
-## The notice tone is derived from the very message it tints, so a red banner
-## can never carry the all-clear sentence.
-validity_class : Str -> Str
-validity_class = |text|
-	if text.starts_with("Invalid") {
-		"notice notice-error"
-	} else {
-		"notice notice-ok"
+validity_text : Validity -> Str
+validity_text = |validity|
+	match validity {
+		AllValid => "All 6 tokens valid"
+		SomeInvalid(names) => "Invalid tokens: ${Str.join_with(names, ", ")}"
 	}
 
-editor : Ui.State(Str), Ui.State(Str), Ui.State(Str), Ui.State(Str), Ui.State(Str), Ui.State(Str) -> Elem
-editor = |bg, fg, accent, space, font, radius| {
+validity_class : Validity -> Str
+validity_class = |validity|
+	match validity {
+		AllValid => "notice notice-ok"
+		SomeInvalid(_) => "notice notice-error"
+	}
+
+expect validity_text(AllValid) == "All 6 tokens valid"
+expect validity_text(SomeInvalid(["color-bg", "font-md"])) == "Invalid tokens: color-bg, font-md"
+
+## The six draft text boxes. Six positional `Ui.State(Str)` parameters are
+## indistinguishable to the type checker, so they travel named instead: swapping
+## `bg` and `fg` at the call site is now a compile error, not a silent bug.
+Drafts : {
+	bg : Ui.State(Str),
+	fg : Ui.State(Str),
+	accent : Ui.State(Str),
+	space : Ui.State(Str),
+	font : Ui.State(Str),
+	radius : Ui.State(Str),
+}
+
+editor : Drafts -> Elem
+editor = |drafts| {
 	# Hop 1: raw draft text -> parsed token.
-	bg_colour = bg.signal().map(Tokens.parse_colour)
-	fg_colour = fg.signal().map(Tokens.parse_colour)
-	accent_colour = accent.signal().map(Tokens.parse_colour)
-	space_size = space.signal().map(Tokens.parse_size)
-	font_size = font.signal().map(Tokens.parse_size)
-	radius_size = radius.signal().map(Tokens.parse_size)
+	bg_colour = drafts.bg.signal().map(Tokens.parse_colour)
+	fg_colour = drafts.fg.signal().map(Tokens.parse_colour)
+	accent_colour = drafts.accent.signal().map(Tokens.parse_colour)
+	space_size = drafts.space.signal().map(Tokens.parse_size)
+	font_size = drafts.font.signal().map(Tokens.parse_size)
+	radius_size = drafts.radius.signal().map(Tokens.parse_size)
 
 	# Hop 2: five parsed tokens fan in to one design record...
 	design : Signal.Signal(Design)
@@ -341,10 +387,11 @@ editor = |bg, fg, accent, space, font, radius| {
 
 	text_passes = text_pair.map(Tokens.passes_aa)
 	button_passes = button_pair.map(Tokens.passes_aa)
-	summary = Signal.map2(text_passes, button_passes, aa_summary)
-	summary_class = Signal.map2(text_passes, button_passes, aa_summary_class)
+	aa_flags = Signal.map2(text_passes, button_passes, |text, button| { text: text, button: button })
+	summary = aa_flags.map(aa_summary)
+	summary_class = aa_flags.map(aa_summary_class)
 
-	validity = Signal.map2(design, radius_size, validity_summary)
+	validity = Signal.map2(design, radius_size, token_validity)
 
 	# Wide fan-in: six independently created declaration signals combined into
 	# one stylesheet. `radius-md` is in here and nowhere else, so editing it
@@ -384,14 +431,14 @@ editor = |bg, fg, accent, space, font, radius| {
 						panel_class,
 						[
 							Html.heading_c("Tokens", "panel-title"),
-							colour_field("Background colour", bg, "color-bg", bg_colour),
-							colour_field("Text colour", fg, "color-fg", fg_colour),
-							colour_field("Accent colour", accent, "color-accent", accent_colour),
-							size_field("Spacing small", space, "space-sm", space_size),
-							size_field("Font size medium", font, "font-md", font_size),
-							size_field("Corner radius medium", radius, "radius-md", radius_size),
+							colour_field("Background colour", drafts.bg, "color-bg", bg_colour),
+							colour_field("Text colour", drafts.fg, "color-fg", fg_colour),
+							colour_field("Accent colour", drafts.accent, "color-accent", accent_colour),
+							size_field("Spacing small", drafts.space, "space-sm", space_size),
+							size_field("Font size medium", drafts.font, "font-md", font_size),
+							size_field("Corner radius medium", drafts.radius, "radius-md", radius_size),
 							Html.paragraph_s_attrs(
-								validity,
+								validity.map(validity_text),
 								[Html.test_id("token-validity"), Html.class_attr_s(validity.map(validity_class))],
 							),
 						],
@@ -465,7 +512,17 @@ main = ||
 										|font|
 											Ui.state(
 												"4",
-												|radius| editor(bg, fg, accent, space, font, radius),
+												|radius|
+													editor(
+														{
+															bg: bg,
+															fg: fg,
+															accent: accent,
+															space: space,
+															font: font,
+															radius: radius,
+														},
+													),
 											),
 									),
 							),
