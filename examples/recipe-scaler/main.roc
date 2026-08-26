@@ -6,27 +6,19 @@ import pf.Html
 import pf.Signal
 import pf.Ui
 
-page_class = "grid gap-5"
+page_class = "app-shell app-shell-narrow"
 
-hero_class = "panel grid gap-2 p-5"
+panel_class = "panel"
 
-panel_class = "panel grid gap-4 p-4"
+## Quantity column first, ingredient name second, so the figures form one column
+## down the page instead of drifting with the length of each name.
+line_class = "grid grid-cols-[6.5rem_minmax(0,1fr)] items-baseline gap-4 border-b border-zinc-100 py-1.5"
 
-controls_class = "flex flex-wrap items-end gap-4"
+qty_class = "numeric font-mono text-right text-sm font-medium text-zinc-950"
 
-rows_class = "grid gap-2"
+name_class = "min-w-0 text-sm text-zinc-800"
 
-row_class = "flex items-baseline justify-between gap-4"
-
-name_class = "text-sm font-medium text-zinc-900"
-
-qty_class = "text-sm tabular-nums text-zinc-700"
-
-note_class = "text-sm text-zinc-700"
-
-input_class = "w-32 rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm"
-
-select_class = "rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm"
+input_class = "input"
 
 ## The context every ingredient quantity is derived from: the target scale in
 ## milli-servings and the unit system. This is the single fan-in point that a
@@ -54,20 +46,60 @@ scale_note = |inputs, scale|
 		}
 	}
 
+## The banner tone is derived from the very sentence it tints, so a red notice
+## can never carry the "recipe as printed" message.
+scale_note_class : Str -> Str
+scale_note_class = |text|
+	if text.starts_with("Servings must") {
+		"notice notice-error"
+	} else if text.starts_with("Nothing to make") {
+		"notice notice-warn"
+	} else {
+		"notice notice-info"
+	}
+
 effective_text : U64 -> Str
-effective_text = |scale| "Effective servings: ${Recipes.format_amount(scale)}"
+effective_text = |scale| Recipes.format_amount(scale)
+
+## The scale factor the whole page is multiplied by, as a badge caption. `scale`
+## is already in milli-servings, so dividing by the printed serving count lands
+## back in milli-units, which is exactly what `format_amount` renders.
+factor_text : U64, Recipes.Recipe -> Str
+factor_text = |scale, recipe| "×${Recipes.format_amount(scale / recipe.base_servings)}"
 
 unit_text : Str -> Str
 unit_text = |system|
 	if system == "imperial" {
-		"Units: imperial (tsp and pinch are unchanged)"
+		"Imperial"
 	} else {
-		"Units: metric (tsp and pinch are unchanged)"
+		"Metric"
 	}
 
 shopping_summary : List(Str), List(Recipes.ShoppingLine) -> Str
 shopping_summary = |selected, lines|
-	"Shopping list: ${lines.len().to_str()} lines from ${selected.len().to_str()} recipes"
+	"${lines.len().to_str()} lines from ${selected.len().to_str()} recipes"
+
+stat : Str, Signal.Signal(Str), Str -> Elem
+stat = |label, value, id|
+	Html.div_c(
+		"stat",
+		[
+			Html.paragraph_c(label, "stat-label"),
+			Html.paragraph_s_attrs(value, [Html.test_id(id), Html.class_attr("stat-value")]),
+		],
+	)
+
+## The column captions for the ingredient and shopping lists, on the same grid
+## as the rows beneath them.
+line_head : Str -> Elem
+line_head = |name_label|
+	Html.div_c(
+		line_class,
+		[
+			Html.paragraph_c("Quantity", "hint text-right uppercase tracking-wide"),
+			Html.paragraph_c(name_label, "hint uppercase tracking-wide"),
+		],
+	)
 
 ingredient_row : Str, Signal.Signal(Recipes.Ingredient), Signal.Signal(DisplayCtx) -> Elem
 ingredient_row = |key, item, ctx| {
@@ -80,10 +112,10 @@ ingredient_row = |key, item, ctx| {
 		)
 
 	Html.div_c(
-		row_class,
+		line_class,
 		[
-			Html.paragraph_s_attrs(name, [Html.test_id("ing-name-${key}"), Html.class_attr(name_class)]),
 			Html.paragraph_s_attrs(quantity, [Html.test_id("ing-qty-${key}"), Html.class_attr(qty_class)]),
+			Html.paragraph_s_attrs(name, [Html.test_id("ing-name-${key}"), Html.class_attr(name_class)]),
 		],
 	)
 }
@@ -107,14 +139,16 @@ shopping_row = |key, item, ctx| {
 		)
 
 	Html.div_c(
-		row_class,
+		line_class,
 		[
-			Html.paragraph_s_attrs(name, [Html.test_id("shop-name-${key}"), Html.class_attr(name_class)]),
 			Html.paragraph_s_attrs(quantity, [Html.test_id("shop-qty-${key}"), Html.class_attr(qty_class)]),
+			Html.paragraph_s_attrs(name, [Html.test_id("shop-name-${key}"), Html.class_attr(name_class)]),
 		],
 	)
 }
 
+## Checkboxes and radios are bare inputs, so the visible caption is drawn beside
+## them here; the string passed to the control is only its accessible name.
 include_checkbox : Recipes.Recipe, Ui.State(List(Str)) -> Elem
 include_checkbox = |recipe, selected| {
 	id = recipe.id
@@ -133,8 +167,24 @@ include_checkbox = |recipe, selected| {
 				},
 		)
 
-	Html.checkbox("Include ${recipe.title}", checked, toggle)
+	Html.div_c(
+		"check-row",
+		[
+			Html.checkbox_c("Include ${recipe.title}", checked, "checkbox", toggle),
+			Html.text(recipe.title),
+		],
+	)
 }
+
+radio_row : Str, Str, Str, Signal.Signal(Str), _ -> Elem
+radio_row = |label, group, value, selected, msg|
+	Html.div_c(
+		"check-row",
+		[
+			Html.radio_c(label, group, value, selected, "checkbox", msg),
+			Html.text(label),
+		],
+	)
 
 recipe_option : Recipes.Recipe -> Elem
 recipe_option = |recipe| Html.option(recipe.id, recipe.title)
@@ -187,6 +237,9 @@ page = |recipe_id, servings_draft, scale_mode, pan, units, selected| {
 	ctx = { scale: scale_signal, system: units.signal() }.Signal
 
 	note_signal = Signal.map2(scale_inputs, scale_signal, scale_note)
+	# The headline badge and the ingredient quantities share `scale_signal`, so
+	# the factor on the badge is always the factor the list was scaled by.
+	factor_signal = Signal.map2(scale_signal, recipe_signal, factor_text)
 
 	# A wide, same-shaped fan-in: four Str sources combined into one summary.
 	controls_signal =
@@ -202,12 +255,12 @@ page = |recipe_id, servings_draft, scale_mode, pan, units, selected| {
 		[
 			Html.section_c(
 				"Recipe Scaler",
-				hero_class,
+				"app-header",
 				[
-					Html.heading_c("Recipe Scaler", "text-3xl font-semibold text-zinc-950"),
+					Html.heading_c("Recipe Scaler", "app-title"),
 					Html.paragraph_c(
 						"Scale a recipe by target servings or by tin size, switch between metric and imperial units, and aggregate several recipes into one shopping list.",
-						"max-w-3xl text-sm text-zinc-700",
+						"app-subtitle",
 					),
 				],
 			),
@@ -216,64 +269,144 @@ page = |recipe_id, servings_draft, scale_mode, pan, units, selected| {
 				panel_class,
 				[
 					Html.div_c(
-						controls_class,
+						"panel-head",
 						[
-							Html.select_c(
-								"Recipe",
-								recipe_id.signal(),
-								select_class,
-								Recipes.catalogue.map(recipe_option),
-								recipe_id.on_str(|_, value| value),
-							),
-							Html.number_input_c(
-								"Target servings",
-								servings_draft.signal(),
-								input_class,
-								servings_draft.on_str(|_, value| value),
-							),
-							Html.select_c(
-								"Pan size",
-								pan.signal(),
-								select_class,
-								[
-									Html.option("recipe", "Recipe's own tin"),
-									Html.option("round20", "20 cm round"),
-									Html.option("round24", "24 cm round"),
-									Html.option("tray30", "30x20 cm tray"),
-								],
-								pan.on_str(|_, value| value),
-							),
+							Html.heading_c("Scale", "panel-title"),
+							Html.paragraph_s_attrs(factor_signal, [Html.test_id("scale-factor"), Html.class_attr("badge badge-info numeric")]),
 						],
 					),
 					Html.div_c(
-						controls_class,
+						"panel-body",
 						[
-							Html.radio("Scale by servings", "scale-mode", "servings", scale_mode.signal(), scale_mode.on_str(|_, value| value)),
-							Html.radio("Scale by pan size", "scale-mode", "pan", scale_mode.signal(), scale_mode.on_str(|_, value| value)),
-							Html.radio("Metric units", "unit-system", "metric", units.signal(), units.on_str(|_, value| value)),
-							Html.radio("Imperial units", "unit-system", "imperial", units.signal(), units.on_str(|_, value| value)),
+							Html.div_c(
+								"grid gap-4 sm:grid-cols-2",
+								[
+									Html.div_c(
+										"field",
+										[
+											Html.paragraph_c("Recipe", "field-label"),
+											Html.select_c(
+												"Recipe",
+												recipe_id.signal(),
+												input_class,
+												Recipes.catalogue.map(recipe_option),
+												recipe_id.on_str(|_, value| value),
+											),
+										],
+									),
+									Html.div_c(
+										"field",
+										[
+											Html.paragraph_c("Target servings", "field-label"),
+											Html.number_input_attrs(
+												"Target servings",
+												servings_draft.signal(),
+												[Html.class_attr(input_class), Html.attr("placeholder", "6"), Html.attr("min", "0"), Html.attr("max", "96")],
+												servings_draft.on_str(|_, value| value),
+											),
+											Html.paragraph_c("A whole number from 0 to 96.", "hint"),
+										],
+									),
+								],
+							),
+							Html.div_c(
+								"grid gap-4 sm:grid-cols-2",
+								[
+									Html.div_c(
+										"field",
+										[
+											Html.paragraph_c("Scale by", "field-label"),
+											Html.div(
+												[Html.class_attr("grid gap-2"), Html.attr("role", "radiogroup"), Html.attr("aria-label", "Scale by")],
+												[
+													radio_row("Scale by servings", "scale-mode", "servings", scale_mode.signal(), scale_mode.on_str(|_, value| value)),
+													radio_row("Scale by pan size", "scale-mode", "pan", scale_mode.signal(), scale_mode.on_str(|_, value| value)),
+												],
+											),
+										],
+									),
+									Html.div_c(
+										"field",
+										[
+											Html.paragraph_c("Pan size", "field-label"),
+											Html.select_c(
+												"Pan size",
+												pan.signal(),
+												input_class,
+												[
+													Html.option("recipe", "Recipe's own tin"),
+													Html.option("round20", "20 cm round"),
+													Html.option("round24", "24 cm round"),
+													Html.option("tray30", "30x20 cm tray"),
+												],
+												pan.on_str(|_, value| value),
+											),
+											Html.paragraph_c("Used only while scaling by pan size.", "hint"),
+										],
+									),
+								],
+							),
+							Html.div_c(
+								"field",
+								[
+									Html.paragraph_c("Units", "field-label"),
+									Html.div(
+										[Html.class_attr("flex flex-wrap gap-4"), Html.attr("role", "radiogroup"), Html.attr("aria-label", "Units")],
+										[
+											radio_row("Metric units", "unit-system", "metric", units.signal(), units.on_str(|_, value| value)),
+											radio_row("Imperial units", "unit-system", "imperial", units.signal(), units.on_str(|_, value| value)),
+										],
+									),
+									Html.paragraph_c("Teaspoons and pinches are the same in both systems.", "hint"),
+								],
+							),
 						],
 					),
 				],
 			),
 			Html.section_c(
 				"Scale summary",
-				panel_class,
+				"grid gap-3",
 				[
-					Html.paragraph_s_attrs(scale_signal.map(effective_text), [Html.test_id("effective-servings"), Html.class_attr(note_class)]),
-					Html.paragraph_s_attrs(note_signal, [Html.test_id("scale-note"), Html.class_attr(note_class)]),
-					Html.paragraph_s_attrs(units.signal().map(unit_text), [Html.test_id("unit-system"), Html.class_attr(note_class)]),
-					Html.paragraph_s_attrs(controls_signal, [Html.test_id("controls-summary"), Html.class_attr(note_class)]),
+					Html.div_c(
+						"stat-grid",
+						[
+							stat("Effective servings", scale_signal.map(effective_text), "effective-servings"),
+							stat("Units", units.signal().map(unit_text), "unit-system"),
+						],
+					),
+					Html.paragraph_s_attrs(note_signal, [Html.test_id("scale-note"), Html.class_attr_s(note_signal.map(scale_note_class))]),
+					Html.paragraph_s_attrs(controls_signal, [Html.test_id("controls-summary"), Html.class_attr("hint font-mono")]),
 				],
 			),
 			Html.section_c(
 				"Ingredients",
 				panel_class,
 				[
-					Html.paragraph_s_attrs(recipe_signal.map(|recipe| recipe.title), [Html.test_id("recipe-title"), Html.class_attr("text-lg font-semibold text-zinc-950")]),
-					Html.div(
-						[Html.test_id("ingredient-rows"), Html.class_attr(rows_class)],
-						[Ui.each_str(ingredients_signal, |item| item.slug, |key, item| ingredient_row(key, item, ctx))],
+					Html.div_c(
+						"panel-head",
+						[
+							Html.div_c(
+								"grid gap-0.5",
+								[
+									Html.paragraph_c("Ingredients", "panel-title"),
+									Html.paragraph_s_attrs(
+										recipe_signal.map(|recipe| recipe.title),
+										[Html.test_id("recipe-title"), Html.class_attr("text-base font-semibold text-zinc-950")],
+									),
+								],
+							),
+						],
+					),
+					Html.div_c(
+						"panel-body gap-1",
+						[
+							line_head("Ingredient"),
+							Html.div(
+								[Html.test_id("ingredient-rows"), Html.class_attr("grid")],
+								[Ui.each_str(ingredients_signal, |item| item.slug, |key, item| ingredient_row(key, item, ctx))],
+							),
+						],
 					),
 				],
 			),
@@ -281,18 +414,41 @@ page = |recipe_id, servings_draft, scale_mode, pan, units, selected| {
 				"Shopping list",
 				panel_class,
 				[
-					Html.div_c(controls_class, Recipes.catalogue.map(|recipe| include_checkbox(recipe, selected))),
-					Html.paragraph_s_attrs(Signal.map2(selected.signal(), lines_signal, shopping_summary), [Html.test_id("shopping-count"), Html.class_attr(note_class)]),
-					Ui.when(
-						has_selection,
-						|| Html.div(
-							[Html.test_id("shopping-rows"), Html.class_attr(rows_class)],
-							[Ui.each_str(lines_signal, |line| line.key, |key, item| shopping_row(key, item, ctx))],
-						),
-						|| Html.paragraph_attrs(
-							"Shopping list is empty. Include a recipe to build one.",
-							[Html.test_id("shopping-empty"), Html.class_attr(note_class)],
-						),
+					Html.div_c(
+						"panel-head",
+						[
+							Html.heading_c("Shopping list", "panel-title"),
+							Html.paragraph_s_attrs(
+								Signal.map2(selected.signal(), lines_signal, shopping_summary),
+								[Html.test_id("shopping-count"), Html.class_attr("badge badge-neutral numeric")],
+							),
+						],
+					),
+					Html.div_c(
+						"panel-body gap-3",
+						[
+							Html.div_c(
+								"flex flex-wrap gap-x-6 gap-y-2",
+								Recipes.catalogue.map(|recipe| include_checkbox(recipe, selected)),
+							),
+							Ui.when(
+								has_selection,
+								|| Html.div_c(
+									"grid gap-1",
+									[
+										line_head("Combined ingredient"),
+										Html.div(
+											[Html.test_id("shopping-rows"), Html.class_attr("grid")],
+											[Ui.each_str(lines_signal, |line| line.key, |key, item| shopping_row(key, item, ctx))],
+										),
+									],
+								),
+								|| Html.paragraph_attrs(
+									"No recipes included yet. Tick one above to build a combined list.",
+									[Html.test_id("shopping-empty"), Html.class_attr("empty-state")],
+								),
+							),
+						],
 					),
 				],
 			),

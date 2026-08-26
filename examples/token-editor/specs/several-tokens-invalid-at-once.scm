@@ -28,7 +28,7 @@
     (fill (label "Background colour") "#ffffff")
     (fill (label "Font size medium") "20")
     (expect-text (test-id "token-validity") "All 6 tokens valid")
-    (expect-text (test-id "preview-surface") "color: #767676; background: #ffffff; padding: 8px; font-size: 20px")
+    (expect-attr (test-id "preview-surface") style "color: #767676; background: #ffffff; padding: 8px; font-size: 20px")
     (expect-text (test-id "aa-summary") "2 of 2 pairs pass AA")
   )
 )
