@@ -1,0 +1,288 @@
+# Data Grid: 1200 generated rows, 10 rendered at a time.
+
+# --- 1. initial mount ------------------------------------------------------
+expect_visible role:heading name:"Data Grid"
+expect_visible role:region name:"Data Grid"
+expect_visible role:region name:"Grid controls"
+expect_visible role:region name:"Summary"
+expect_visible role:region name:"Rows"
+expect_visible role:region name:"Paging"
+expect_text text:"Dataset rows: 1200" "Dataset rows: 1200"
+expect_value label:"Filter" ""
+expect_text text:"Sorted by id ascending" "Sorted by id ascending"
+expect_text text:"Matching rows: 1200" "Matching rows: 1200"
+expect_text text:"Total score: 596952" "Total score: 596952"
+expect_text text:"Average score: 497" "Average score: 497"
+expect_text text:"Highest score: 999" "Highest score: 999"
+expect_text text:"Lowest score: 0" "Lowest score: 0"
+expect_text text:"Selected in filter: 0" "Selected in filter: 0"
+expect_text text:"Selected overall: 0" "Selected overall: 0"
+expect_text text:"Showing 10 of 1200 rows" "Showing 10 of 1200 rows"
+expect_text text:"Page 1 of 120" "Page 1 of 120"
+expect_checked label:"Select all matching rows" false
+expect_disabled role:button name:"Previous page" true
+expect_disabled role:button name:"Next page" false
+
+# only the first ten rows are rendered
+expect_text text:"Node-0000" "Node-0000"
+expect_text text:"Node-0000 team: Delta" "Node-0000 team: Delta"
+expect_text text:"Node-0000 score: 0" "Node-0000 score: 0"
+expect_text text:"Node-0009" "Node-0009"
+expect_text text:"Node-0009 score: 414" "Node-0009 score: 414"
+expect_absent text:"Node-0010"
+expect_absent text:"Node-1199"
+expect_value label:"Note for Node-0000" ""
+expect_checked label:"Select Node-0000" false
+
+# --- 2. sorting ------------------------------------------------------------
+mark_metrics
+click role:button name:"Sort by score"
+expect_text text:"Sorted by score ascending" "Sorted by score ascending"
+expect_text text:"Node-0000 score: 0" "Node-0000 score: 0"
+expect_text text:"Node-0621 score: 0" "Node-0621 score: 0"
+expect_text text:"Node-1108 score: 5" "Node-1108 score: 5"
+expect_absent text:"Node-0001"
+expect_text text:"Showing 10 of 1200 rows" "Showing 10 of 1200 rows"
+expect_text text:"Total score: 596952" "Total score: 596952"
+expect_metric_delta rows_created 9
+expect_metric_delta rows_reused 1
+expect_metric_delta rows_removed 9
+expect_metric_delta set_value 9
+expect_metric_delta patches_emitted 275
+
+# reverse the same column
+mark_metrics
+click role:button name:"Sort by score"
+expect_text text:"Sorted by score descending" "Sorted by score descending"
+expect_text text:"Node-0702 score: 999" "Node-0702 score: 999"
+expect_text text:"Node-0540 score: 993" "Node-0540 score: 993"
+expect_absent text:"Node-0000"
+expect_metric_delta rows_created 10
+expect_metric_delta rows_reused 0
+expect_metric_delta rows_removed 10
+
+click role:button name:"Sort by name"
+expect_text text:"Sorted by name ascending" "Sorted by name ascending"
+expect_text text:"Node-0000" "Node-0000"
+expect_text text:"Node-0009" "Node-0009"
+click role:button name:"Sort by name"
+expect_text text:"Sorted by name descending" "Sorted by name descending"
+expect_text text:"Node-1199" "Node-1199"
+expect_text text:"Node-1190" "Node-1190"
+expect_absent text:"Node-0000"
+click role:button name:"Sort by team"
+expect_text text:"Sorted by team ascending" "Sorted by team ascending"
+expect_text text:"Node-0003 team: Atlas" "Node-0003 team: Atlas"
+expect_text text:"Node-0039 team: Atlas" "Node-0039 team: Atlas"
+click role:button name:"Sort by id"
+expect_text text:"Sorted by id ascending" "Sorted by id ascending"
+expect_text text:"Node-0000" "Node-0000"
+
+# --- 3. paging -------------------------------------------------------------
+mark_metrics
+click role:button name:"Next page"
+expect_text text:"Page 2 of 120" "Page 2 of 120"
+expect_text text:"Node-0010" "Node-0010"
+expect_text text:"Node-0019 score: 761" "Node-0019 score: 761"
+expect_absent text:"Node-0009"
+expect_text text:"Showing 10 of 1200 rows" "Showing 10 of 1200 rows"
+expect_disabled role:button name:"Previous page" false
+expect_metric_delta rows_created 10
+expect_metric_delta rows_reused 0
+expect_metric_delta rows_removed 10
+expect_metric_delta set_value 10
+expect_metric_delta patches_emitted 303
+expect_metric_delta each_key_hashes 10
+expect_metric_delta_at_most each_key_compares 10
+
+click role:button name:"Previous page"
+expect_text text:"Page 1 of 120" "Page 1 of 120"
+expect_text text:"Node-0000" "Node-0000"
+expect_disabled role:button name:"Previous page" true
+click role:button name:"First page"
+expect_text text:"Page 1 of 120" "Page 1 of 120"
+
+# --- 4. inline editing -----------------------------------------------------
+mark_metrics
+fill label:"Note for Node-0003" "needs review"
+expect_value label:"Note for Node-0003" "needs review"
+expect_value label:"Note for Node-0002" ""
+expect_value label:"Note for Node-0004" ""
+expect_text text:"Node-0003" "Node-0003"
+expect_text text:"Node-0003 score: 120" "Node-0003 score: 120"
+expect_metric_delta rows_created 0
+expect_metric_delta rows_reused 10
+expect_metric_delta rows_removed 0
+expect_metric_delta set_value 1
+expect_metric_delta patches_emitted 5
+expect_metric_delta nodes_recomputed 1
+
+# editing the last row on the page
+mark_metrics
+fill label:"Note for Node-0009" "last on page"
+expect_value label:"Note for Node-0009" "last on page"
+expect_value label:"Note for Node-0008" ""
+expect_value label:"Note for Node-0003" "needs review"
+expect_metric_delta rows_created 0
+expect_metric_delta rows_reused 10
+expect_metric_delta rows_removed 0
+expect_metric_delta set_value 1
+
+# notes survive paging away and back
+click role:button name:"Next page"
+expect_value label:"Note for Node-0010" ""
+click role:button name:"Previous page"
+expect_value label:"Note for Node-0003" "needs review"
+expect_value label:"Note for Node-0009" "last on page"
+
+# --- 5. per-row selection --------------------------------------------------
+mark_metrics
+check label:"Select Node-0002"
+expect_checked label:"Select Node-0002" true
+expect_checked label:"Select Node-0001" false
+expect_checked label:"Select Node-0003" false
+expect_text text:"Selected in filter: 1" "Selected in filter: 1"
+expect_text text:"Selected overall: 1" "Selected overall: 1"
+expect_checked label:"Select all matching rows" false
+expect_metric_delta rows_created 0
+expect_metric_delta rows_reused 10
+expect_metric_delta rows_removed 0
+expect_metric_delta set_checked 1
+expect_metric_delta set_value 0
+expect_metric_delta patches_emitted 7
+
+uncheck label:"Select Node-0002"
+expect_checked label:"Select Node-0002" false
+expect_text text:"Selected overall: 0" "Selected overall: 0"
+
+# --- 6. filtering ----------------------------------------------------------
+mark_metrics
+fill label:"Filter" "Node-119"
+expect_value label:"Filter" "Node-119"
+expect_text text:"Matching rows: 10" "Matching rows: 10"
+expect_text text:"Total score: 2585" "Total score: 2585"
+expect_text text:"Average score: 258" "Average score: 258"
+expect_text text:"Highest score: 431" "Highest score: 431"
+expect_text text:"Lowest score: 104" "Lowest score: 104"
+expect_text text:"Showing 10 of 10 rows" "Showing 10 of 10 rows"
+expect_text text:"Page 1 of 1" "Page 1 of 1"
+expect_disabled role:button name:"Next page" true
+expect_text text:"Node-1190" "Node-1190"
+expect_text text:"Node-1199 score: 431" "Node-1199 score: 431"
+expect_absent text:"Node-0000"
+expect_metric_delta rows_created 10
+expect_metric_delta rows_reused 0
+expect_metric_delta rows_removed 10
+expect_metric_delta set_value 11
+expect_metric_delta patches_emitted 310
+
+# select all, scoped to the current filter
+mark_metrics
+check label:"Select all matching rows"
+expect_checked label:"Select all matching rows" true
+expect_checked label:"Select Node-1190" true
+expect_checked label:"Select Node-1199" true
+expect_text text:"Selected in filter: 10" "Selected in filter: 10"
+expect_text text:"Selected overall: 10" "Selected overall: 10"
+expect_metric_delta rows_created 0
+expect_metric_delta rows_reused 10
+expect_metric_delta rows_removed 0
+expect_metric_delta set_checked 11
+expect_metric_delta set_value 0
+
+# selection survives a filter change: it is keyed by row id, not by the query
+fill label:"Filter" ""
+expect_text text:"Matching rows: 1200" "Matching rows: 1200"
+expect_text text:"Selected in filter: 10" "Selected in filter: 10"
+expect_text text:"Selected overall: 10" "Selected overall: 10"
+expect_checked label:"Select all matching rows" false
+expect_checked label:"Select Node-0000" false
+expect_text text:"Page 1 of 120" "Page 1 of 120"
+
+# and it is still there when the narrower filter comes back
+fill label:"Filter" "Node-119"
+expect_checked label:"Select all matching rows" true
+expect_checked label:"Select Node-1195" true
+uncheck label:"Select all matching rows"
+expect_text text:"Selected overall: 0" "Selected overall: 0"
+expect_checked label:"Select Node-1190" false
+
+# --- 7. single-row filter result -------------------------------------------
+fill label:"Filter" "Node-0007"
+expect_text text:"Matching rows: 1" "Matching rows: 1"
+expect_text text:"Total score: 308" "Total score: 308"
+expect_text text:"Average score: 308" "Average score: 308"
+expect_text text:"Highest score: 308" "Highest score: 308"
+expect_text text:"Lowest score: 308" "Lowest score: 308"
+expect_text text:"Showing 1 of 1 rows" "Showing 1 of 1 rows"
+expect_text text:"Page 1 of 1" "Page 1 of 1"
+expect_text text:"Node-0007 team: Atlas" "Node-0007 team: Atlas"
+expect_disabled role:button name:"Next page" true
+expect_disabled role:button name:"Previous page" true
+
+# --- 8. empty filter result ------------------------------------------------
+mark_metrics
+fill label:"Filter" "no-such-row"
+expect_text text:"Matching rows: 0" "Matching rows: 0"
+expect_text text:"Total score: 0" "Total score: 0"
+expect_text text:"Average score: 0" "Average score: 0"
+expect_text text:"Highest score: 0" "Highest score: 0"
+expect_text text:"Lowest score: 0" "Lowest score: 0"
+expect_text text:"Showing 0 of 0 rows" "Showing 0 of 0 rows"
+expect_text text:"Page 1 of 1" "Page 1 of 1"
+expect_visible text:"No rows match the filter"
+expect_absent text:"Filter matches rows"
+expect_absent text:"Node-0007"
+expect_absent text:"Node-0007 team: Atlas"
+expect_absent text:"Node-0007 score: 308"
+expect_absent label:"Note for Node-0007"
+expect_absent label:"Select Node-0007"
+expect_checked label:"Select all matching rows" false
+expect_disabled role:button name:"Next page" true
+expect_disabled role:button name:"Previous page" true
+expect_metric_delta rows_removed 1
+expect_metric_delta rows_created 0
+
+# sorting an empty result set must not crash and must not create rows
+mark_metrics
+click role:button name:"Sort by score"
+expect_text text:"Sorted by score ascending" "Sorted by score ascending"
+expect_text text:"Matching rows: 0" "Matching rows: 0"
+expect_visible text:"No rows match the filter"
+expect_absent text:"Filter matches rows"
+click role:button name:"Sort by score"
+expect_text text:"Sorted by score descending" "Sorted by score descending"
+expect_visible text:"No rows match the filter"
+expect_absent text:"Filter matches rows"
+click role:button name:"Sort by id"
+expect_text text:"Sorted by id ascending" "Sorted by id ascending"
+expect_metric_delta rows_created 0
+expect_metric_delta rows_reused 0
+
+# select-all is hidden while nothing matches, so selection cannot be changed here
+expect_text text:"Selected overall: 0" "Selected overall: 0"
+
+# --- 9. paging past the end ------------------------------------------------
+fill label:"Filter" ""
+expect_text text:"Page 1 of 120" "Page 1 of 120"
+click role:button name:"Next page"
+click role:button name:"Next page"
+click role:button name:"Next page"
+expect_text text:"Page 4 of 120" "Page 4 of 120"
+expect_text text:"Node-0030" "Node-0030"
+
+# narrowing the filter strands the requested page past the end; the derived
+# page clamps to the last real page instead of rendering an empty window
+fill label:"Filter" "Node-119"
+expect_text text:"Page 1 of 1" "Page 1 of 1"
+expect_text text:"Showing 10 of 10 rows" "Showing 10 of 10 rows"
+expect_text text:"Node-1190" "Node-1190"
+expect_disabled role:button name:"Next page" true
+
+# widening again restores the originally requested page
+fill label:"Filter" ""
+expect_text text:"Page 4 of 120" "Page 4 of 120"
+expect_text text:"Node-0030" "Node-0030"
+click role:button name:"First page"
+expect_text text:"Page 1 of 120" "Page 1 of 120"
+expect_value label:"Note for Node-0003" "needs review"

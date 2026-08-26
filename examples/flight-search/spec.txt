@@ -1,0 +1,211 @@
+# Flight search: filters are effect triggers, sorting is a derived view.
+#
+# Every `select_option label:"Sort by" ...` in this spec is followed by
+# `expect_pending_task "flight-search" 0`, proving a sort never refetches.
+# Every filter change is followed by `expect_pending_task "flight-search" 1`,
+# proving a filter always does.
+
+# --- initial mount -----------------------------------------------------------
+
+expect_visible role:heading name:"Flight Search"
+expect_visible role:region name:"Search filters"
+expect_visible role:region name:"Sort controls"
+expect_visible role:region name:"Results"
+expect_value label:"Departure date" "2026-09-01"
+expect_value label:"Max stops" "any"
+expect_value label:"Max price" "any"
+expect_value label:"Airline" "any"
+expect_value label:"Sort by" "price"
+expect_text text:"Filters: 2026-09-01, any stops, any price, any airline" "Filters: 2026-09-01, any stops, any price, any airline"
+expect_text text:"Request: 2026-09-01|any|any|any" "Request: 2026-09-01|any|any|any"
+expect_text text:"Sorted by: price" "Sorted by: price"
+expect_text text:"Search status: loading" "Search status: loading"
+expect_text text:"Fetching flights" "Fetching flights"
+expect_text text:"Flights returned: 0" "Flights returned: 0"
+expect_text text:"Result order: none" "Result order: none"
+expect_text text:"Top result: none" "Top result: none"
+expect_text text:"No search error" "No search error"
+expect_pending_task "flight-search" 1
+expect_cleanup "flight search cleanup" 0
+
+# --- success -----------------------------------------------------------------
+
+resolve_task "flight-search" "AU101,Aurora,06:00,305,0,145;BO220,Borealis,09:30,210,1,215;CE310,Cirrus,07:15,480,0,130;DE440,Aurora,14:05,265,2,300"
+expect_pending_task "flight-search" 0
+expect_text text:"Search status: results ready" "Search status: results ready"
+expect_text text:"Showing 4 of 4 flights." "Showing 4 of 4 flights."
+expect_text text:"Flights returned: 4" "Flights returned: 4"
+expect_text text:"Result order: BO220, DE440, AU101, CE310" "Result order: BO220, DE440, AU101, CE310"
+expect_text text:"Top result: BO220" "Top result: BO220"
+expect_text text:"No search error" "No search error"
+expect_text text:"BO220 - Borealis - departs 09:30 - $210 - 1 stops - 215 min" "BO220 - Borealis - departs 09:30 - $210 - 1 stops - 215 min"
+expect_text text:"CE310 - Cirrus - departs 07:15 - $480 - 0 stops - 130 min" "CE310 - Cirrus - departs 07:15 - $480 - 0 stops - 130 min"
+
+# --- sorting is local: no refetch, and the rows are reused not recreated ------
+
+mark_metrics
+select_option label:"Sort by" "duration"
+expect_pending_task "flight-search" 0
+expect_text text:"Sorted by: duration" "Sorted by: duration"
+expect_text text:"Result order: CE310, AU101, BO220, DE440" "Result order: CE310, AU101, BO220, DE440"
+expect_text text:"Top result: CE310" "Top result: CE310"
+expect_text text:"Showing 4 of 4 flights." "Showing 4 of 4 flights."
+expect_metric_delta rows_created 0
+expect_metric_delta rows_reused 4
+expect_metric_delta rows_removed 0
+
+mark_metrics
+select_option label:"Sort by" "departure"
+expect_pending_task "flight-search" 0
+expect_text text:"Sorted by: departure time" "Sorted by: departure time"
+expect_text text:"Result order: AU101, CE310, BO220, DE440" "Result order: AU101, CE310, BO220, DE440"
+expect_text text:"Top result: AU101" "Top result: AU101"
+expect_metric_delta rows_created 0
+expect_metric_delta rows_reused 4
+
+# --- a filter is an effect trigger ------------------------------------------
+
+select_option label:"Airline" "Aurora"
+expect_pending_task "flight-search" 1
+expect_text text:"Request: 2026-09-01|any|any|Aurora" "Request: 2026-09-01|any|any|Aurora"
+expect_text text:"Filters: 2026-09-01, any stops, any price, Aurora" "Filters: 2026-09-01, any stops, any price, Aurora"
+expect_text text:"Search status: loading" "Search status: loading"
+expect_text text:"Fetching flights" "Fetching flights"
+expect_text text:"Result order: none" "Result order: none"
+
+resolve_task "flight-search" "AU101,Aurora,06:00,305,0,145;BO220,Borealis,09:30,210,1,215;CE310,Cirrus,07:15,480,0,130;DE440,Aurora,14:05,265,2,300"
+expect_pending_task "flight-search" 0
+expect_text text:"Showing 2 of 4 flights." "Showing 2 of 4 flights."
+expect_text text:"Result order: AU101, DE440" "Result order: AU101, DE440"
+expect_absent text:"BO220 - Borealis - departs 09:30 - $210 - 1 stops - 215 min"
+
+# --- sorting while a request is in flight ------------------------------------
+
+select_option label:"Airline" "any"
+expect_pending_task "flight-search" 1
+expect_text text:"Search status: loading" "Search status: loading"
+
+# The sort changes while the filter's request is still in flight. The pending
+# count stays at the one already-in-flight request and nothing is canceled:
+# the sort neither issued nor superseded a request.
+select_option label:"Sort by" "price"
+expect_pending_task "flight-search" 1
+expect_canceled_task "flight-search" 0
+expect_text text:"Sorted by: price" "Sorted by: price"
+expect_text text:"Search status: loading" "Search status: loading"
+expect_text text:"Fetching flights" "Fetching flights"
+expect_text text:"Result order: none" "Result order: none"
+
+resolve_task "flight-search" "AU101,Aurora,06:00,305,0,145;BO220,Borealis,09:30,210,1,215;CE310,Cirrus,07:15,480,0,130;DE440,Aurora,14:05,265,2,300"
+expect_pending_task "flight-search" 0
+expect_text text:"Result order: BO220, DE440, AU101, CE310" "Result order: BO220, DE440, AU101, CE310"
+
+# --- fan-in: two filters combined --------------------------------------------
+
+select_option label:"Max stops" "0"
+expect_pending_task "flight-search" 1
+expect_text text:"Request: 2026-09-01|0|any|any" "Request: 2026-09-01|0|any|any"
+resolve_task "flight-search" "AU101,Aurora,06:00,305,0,145;BO220,Borealis,09:30,210,1,215;CE310,Cirrus,07:15,480,0,130;DE440,Aurora,14:05,265,2,300"
+expect_text text:"Result order: AU101, CE310" "Result order: AU101, CE310"
+expect_text text:"Showing 2 of 4 flights." "Showing 2 of 4 flights."
+
+select_option label:"Airline" "Aurora"
+expect_pending_task "flight-search" 1
+expect_text text:"Request: 2026-09-01|0|any|Aurora" "Request: 2026-09-01|0|any|Aurora"
+resolve_task "flight-search" "AU101,Aurora,06:00,305,0,145;BO220,Borealis,09:30,210,1,215;CE310,Cirrus,07:15,480,0,130;DE440,Aurora,14:05,265,2,300"
+expect_text text:"Filters: 2026-09-01, max 0 stops, any price, Aurora" "Filters: 2026-09-01, max 0 stops, any price, Aurora"
+expect_text text:"Result order: AU101" "Result order: AU101"
+expect_text text:"Top result: AU101" "Top result: AU101"
+expect_text text:"Showing 1 of 4 flights." "Showing 1 of 4 flights."
+expect_absent text:"CE310 - Cirrus - departs 07:15 - $480 - 0 stops - 130 min"
+
+# --- a filter that excludes every returned flight ----------------------------
+
+select_option label:"Max price" "200"
+expect_pending_task "flight-search" 1
+resolve_task "flight-search" "AU101,Aurora,06:00,305,0,145;BO220,Borealis,09:30,210,1,215;CE310,Cirrus,07:15,480,0,130;DE440,Aurora,14:05,265,2,300"
+expect_pending_task "flight-search" 0
+expect_text text:"Search status: results ready" "Search status: results ready"
+expect_text text:"Flights returned: 4" "Flights returned: 4"
+expect_text text:"0 of 4 flights match the local filters." "0 of 4 flights match the local filters."
+expect_text text:"Result order: none" "Result order: none"
+expect_text text:"Top result: none" "Top result: none"
+
+# --- sorting an empty set still does not refetch -----------------------------
+
+select_option label:"Sort by" "duration"
+expect_pending_task "flight-search" 0
+expect_text text:"Sorted by: duration" "Sorted by: duration"
+expect_text text:"Result order: none" "Result order: none"
+expect_text text:"0 of 4 flights match the local filters." "0 of 4 flights match the local filters."
+
+# --- an empty result set from the backend ------------------------------------
+
+select_option label:"Departure date" "2026-09-02"
+expect_pending_task "flight-search" 1
+resolve_task "flight-search" ""
+expect_pending_task "flight-search" 0
+expect_text text:"Search status: results ready" "Search status: results ready"
+expect_text text:"Flights returned: 0" "Flights returned: 0"
+expect_text text:"No flights returned for these filters." "No flights returned for these filters."
+expect_text text:"Result order: none" "Result order: none"
+
+# --- failure -----------------------------------------------------------------
+
+select_option label:"Departure date" "2026-09-03"
+expect_pending_task "flight-search" 1
+reject_task "flight-search" "flight search backend unavailable for this deterministic scenario payload"
+expect_pending_task "flight-search" 0
+expect_text text:"Search status: failed" "Search status: failed"
+expect_text text:"Search error: flight search backend unavailable for this deterministic scenario payload" "Search error: flight search backend unavailable for this deterministic scenario payload"
+expect_text text:"No flights to show" "No flights to show"
+expect_text text:"Result order: none" "Result order: none"
+
+# --- latest wins: a superseded response is ignored ---------------------------
+
+select_option label:"Airline" "Borealis"
+expect_pending_task "flight-search" 1
+select_option label:"Max price" "any"
+expect_pending_task "flight-search" 1
+expect_canceled_task "flight-search" 1
+expect_text text:"Request: 2026-09-03|0|any|Borealis" "Request: 2026-09-03|0|any|Borealis"
+
+mark_metrics
+resolve_stale_task "flight-search" "ZZ999,Zephyr,05:00,100,0,90"
+expect_pending_task "flight-search" 1
+expect_text text:"Search status: loading" "Search status: loading"
+expect_text text:"Fetching flights" "Fetching flights"
+expect_text text:"Result order: none" "Result order: none"
+expect_absent text:"ZZ999 - Zephyr - departs 05:00 - $100 - 0 stops - 90 min"
+expect_metric_delta stale_task_results_ignored 1
+expect_metric_delta rows_created 0
+
+resolve_task "flight-search" "AU101,Aurora,06:00,305,0,145;BO220,Borealis,09:30,210,1,215;CE310,Cirrus,07:15,480,0,130;DE440,Aurora,14:05,265,2,300"
+expect_pending_task "flight-search" 0
+expect_text text:"Search status: results ready" "Search status: results ready"
+expect_text text:"No search error" "No search error"
+expect_text text:"Result order: none" "Result order: none"
+expect_text text:"0 of 4 flights match the local filters." "0 of 4 flights match the local filters."
+
+# --- widen back to every flight, then a final re-sort over four rows ----------
+
+select_option label:"Max stops" "any"
+expect_pending_task "flight-search" 1
+resolve_task "flight-search" "AU101,Aurora,06:00,305,0,145;BO220,Borealis,09:30,210,1,215;CE310,Cirrus,07:15,480,0,130;DE440,Aurora,14:05,265,2,300"
+expect_text text:"Result order: BO220" "Result order: BO220"
+expect_text text:"Showing 1 of 4 flights." "Showing 1 of 4 flights."
+
+select_option label:"Airline" "any"
+expect_pending_task "flight-search" 1
+resolve_task "flight-search" "AU101,Aurora,06:00,305,0,145;BO220,Borealis,09:30,210,1,215;CE310,Cirrus,07:15,480,0,130;DE440,Aurora,14:05,265,2,300"
+expect_pending_task "flight-search" 0
+expect_text text:"Result order: CE310, AU101, BO220, DE440" "Result order: CE310, AU101, BO220, DE440"
+expect_text text:"Showing 4 of 4 flights." "Showing 4 of 4 flights."
+
+mark_metrics
+select_option label:"Sort by" "price"
+expect_pending_task "flight-search" 0
+expect_text text:"Result order: BO220, DE440, AU101, CE310" "Result order: BO220, DE440, AU101, CE310"
+expect_metric_delta rows_created 0
+expect_metric_delta rows_reused 4
+expect_metric_delta rows_removed 0

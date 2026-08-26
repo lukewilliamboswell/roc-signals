@@ -1,0 +1,157 @@
+# Design token editor: token edits fan out to previews, WCAG AA validation,
+# and the generated stylesheet.
+
+# --- initial state -----------------------------------------------------------
+expect_visible role:heading name:"Design Token Editor"
+expect_visible role:region name:"Tokens"
+expect_visible role:region name:"Preview"
+expect_visible role:region name:"Contrast validation"
+expect_visible role:region name:"CSS export"
+expect_visible role:heading name:"Tokens"
+expect_visible role:heading name:"Preview"
+expect_visible role:heading name:"Contrast validation"
+expect_visible role:heading name:"CSS export"
+
+expect_value label:"Background colour" "#ffffff"
+expect_value label:"Text colour" "#767676"
+expect_value label:"Accent colour" "#2563eb"
+expect_value label:"Spacing small" "8"
+expect_value label:"Font size medium" "16"
+expect_value label:"Corner radius medium" "4"
+expect_text test_id:"token-validity" "All 6 tokens valid"
+
+expect_visible role:region name:"Preview surface"
+expect_visible role:region name:"Preview button"
+expect_visible role:region name:"Preview badge"
+expect_text test_id:"preview-surface" "color: #767676; background: #ffffff; padding: 8px; font-size: 16px"
+expect_text test_id:"preview-button" "color: #ffffff; background: #2563eb; padding: 8px; font-size: 16px"
+expect_text test_id:"preview-badge" "color: #ffffff; background: #767676; padding: 8px; font-size: 16px"
+
+expect_text test_id:"ratio-text" "4.54:1"
+expect_text test_id:"aa-text" "AA pass"
+expect_text test_id:"ratio-button" "5.16:1"
+expect_text test_id:"aa-button" "AA pass"
+expect_text test_id:"aa-summary" "2 of 2 pairs pass AA"
+
+expect_text test_id:"stylesheet" ":root { --color-bg: #ffffff; --color-fg: #767676; --color-accent: #2563eb; --space-sm: 8px; --font-md: 16px; --radius-md: 4px; }"
+
+# --- one colour edit reaches every dependent binding, without rebuilding rows -
+mark_metrics
+fill label:"Text colour" "#777777"
+expect_text test_id:"preview-surface" "color: #777777; background: #ffffff; padding: 8px; font-size: 16px"
+expect_text test_id:"preview-badge" "color: #ffffff; background: #777777; padding: 8px; font-size: 16px"
+expect_text test_id:"preview-button" "color: #ffffff; background: #2563eb; padding: 8px; font-size: 16px"
+expect_text test_id:"stylesheet" ":root { --color-bg: #ffffff; --color-fg: #777777; --color-accent: #2563eb; --space-sm: 8px; --font-md: 16px; --radius-md: 4px; }"
+expect_metric_delta rows_created 0
+expect_metric_delta rows_removed 0
+expect_metric_delta rows_reused 3
+expect_metric_delta scopes_created 0
+expect_metric_delta scopes_disposed 0
+expect_metric_delta_at_most nodes_recomputed 4
+expect_metric_delta_at_most patches_emitted 8
+
+# --- the AA flag crosses 4.5:1 in both directions ----------------------------
+# #767676 on white is 4.54:1 (pass); #777777 on white is 4.47:1 (fail).
+expect_text test_id:"ratio-text" "4.47:1"
+expect_text test_id:"aa-text" "AA fail"
+expect_text test_id:"aa-button" "AA pass"
+expect_text test_id:"aa-summary" "1 of 2 pairs pass AA"
+
+fill label:"Text colour" "#767676"
+expect_text test_id:"ratio-text" "4.54:1"
+expect_text test_id:"aa-text" "AA pass"
+expect_text test_id:"aa-summary" "2 of 2 pairs pass AA"
+
+# --- a second pair crossing AA independently ---------------------------------
+fill label:"Accent colour" "#6f8ff0"
+expect_text test_id:"ratio-button" "3.05:1"
+expect_text test_id:"aa-button" "AA fail"
+expect_text test_id:"aa-text" "AA pass"
+expect_text test_id:"aa-summary" "1 of 2 pairs pass AA"
+expect_text test_id:"preview-button" "color: #ffffff; background: #6f8ff0; padding: 8px; font-size: 16px"
+
+fill label:"Accent colour" "#2563eb"
+expect_text test_id:"ratio-button" "5.16:1"
+expect_text test_id:"aa-button" "AA pass"
+expect_text test_id:"aa-summary" "2 of 2 pairs pass AA"
+
+# --- invalid hex -------------------------------------------------------------
+fill label:"Text colour" "#77zz77"
+expect_text test_id:"token-validity" "Invalid tokens: color-fg"
+expect_text test_id:"ratio-text" "n/a"
+expect_text test_id:"aa-text" "AA fail"
+expect_text test_id:"aa-button" "AA pass"
+expect_text test_id:"aa-summary" "1 of 2 pairs pass AA"
+expect_text test_id:"preview-surface" "color: /* invalid */; background: #ffffff; padding: 8px; font-size: 16px"
+expect_text test_id:"stylesheet" ":root { --color-bg: #ffffff; --color-fg: /* invalid */; --color-accent: #2563eb; --space-sm: 8px; --font-md: 16px; --radius-md: 4px; }"
+
+# A too-short hex is invalid the same way, and the app recovers from it.
+fill label:"Text colour" "#777"
+expect_text test_id:"token-validity" "Invalid tokens: color-fg"
+expect_text test_id:"ratio-text" "n/a"
+fill label:"Text colour" "#767676"
+expect_text test_id:"token-validity" "All 6 tokens valid"
+expect_text test_id:"ratio-text" "4.54:1"
+
+# --- boundary: a spacing token of zero ---------------------------------------
+fill label:"Spacing small" "0"
+expect_text test_id:"token-validity" "All 6 tokens valid"
+expect_text test_id:"preview-surface" "color: #767676; background: #ffffff; padding: 0px; font-size: 16px"
+expect_text test_id:"preview-button" "color: #ffffff; background: #2563eb; padding: 0px; font-size: 16px"
+expect_text test_id:"preview-badge" "color: #ffffff; background: #767676; padding: 0px; font-size: 16px"
+expect_text test_id:"stylesheet" ":root { --color-bg: #ffffff; --color-fg: #767676; --color-accent: #2563eb; --space-sm: 0px; --font-md: 16px; --radius-md: 4px; }"
+
+# Empty is not zero: it is an invalid size, and it does not disturb contrast.
+fill label:"Spacing small" ""
+expect_text test_id:"token-validity" "Invalid tokens: space-sm"
+expect_text test_id:"preview-surface" "color: #767676; background: #ffffff; padding: /* invalid */; font-size: 16px"
+expect_text test_id:"ratio-text" "4.54:1"
+expect_text test_id:"aa-summary" "2 of 2 pairs pass AA"
+
+fill label:"Spacing small" "8"
+expect_text test_id:"token-validity" "All 6 tokens valid"
+expect_text test_id:"preview-surface" "color: #767676; background: #ffffff; padding: 8px; font-size: 16px"
+
+# --- a token nothing references ----------------------------------------------
+# --radius-md appears only in the stylesheet, so editing it must not touch the
+# preview list or the contrast graph at all.
+mark_metrics
+fill label:"Corner radius medium" "12"
+expect_text test_id:"stylesheet" ":root { --color-bg: #ffffff; --color-fg: #767676; --color-accent: #2563eb; --space-sm: 8px; --font-md: 16px; --radius-md: 12px; }"
+expect_text test_id:"preview-surface" "color: #767676; background: #ffffff; padding: 8px; font-size: 16px"
+expect_text test_id:"ratio-text" "4.54:1"
+expect_metric_delta rows_created 0
+expect_metric_delta rows_reused 0
+expect_metric_delta rows_removed 0
+expect_metric_delta scopes_created 0
+expect_metric_delta scopes_disposed 0
+expect_metric_delta_at_most patches_emitted 2
+
+fill label:"Corner radius medium" "abc"
+expect_text test_id:"token-validity" "Invalid tokens: radius-md"
+expect_text test_id:"stylesheet" ":root { --color-bg: #ffffff; --color-fg: #767676; --color-accent: #2563eb; --space-sm: 8px; --font-md: 16px; --radius-md: /* invalid */; }"
+expect_text test_id:"aa-summary" "2 of 2 pairs pass AA"
+fill label:"Corner radius medium" "4"
+expect_text test_id:"token-validity" "All 6 tokens valid"
+
+# --- several tokens invalid at once ------------------------------------------
+fill label:"Background colour" "white"
+fill label:"Font size medium" "-2"
+expect_text test_id:"token-validity" "Invalid tokens: color-bg, font-md"
+expect_text test_id:"ratio-text" "n/a"
+expect_text test_id:"ratio-button" "n/a"
+expect_text test_id:"aa-summary" "0 of 2 pairs pass AA"
+expect_text test_id:"stylesheet" ":root { --color-bg: /* invalid */; --color-fg: #767676; --color-accent: #2563eb; --space-sm: 8px; --font-md: /* invalid */; --radius-md: 4px; }"
+
+fill label:"Background colour" "#ffffff"
+fill label:"Font size medium" "20"
+expect_text test_id:"token-validity" "All 6 tokens valid"
+expect_text test_id:"preview-surface" "color: #767676; background: #ffffff; padding: 8px; font-size: 20px"
+expect_text test_id:"aa-summary" "2 of 2 pairs pass AA"
+
+# --- uppercase hex normalises through every binding --------------------------
+fill label:"Text colour" "#767676"
+fill label:"Accent colour" "#2563EB"
+expect_text test_id:"preview-button" "color: #ffffff; background: #2563eb; padding: 8px; font-size: 20px"
+expect_text test_id:"ratio-button" "5.16:1"
+expect_text test_id:"stylesheet" ":root { --color-bg: #ffffff; --color-fg: #767676; --color-accent: #2563eb; --space-sm: 8px; --font-md: 20px; --radius-md: 4px; }"

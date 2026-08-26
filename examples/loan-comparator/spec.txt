@@ -1,0 +1,251 @@
+# Loan comparator: derived amortisation schedules and cross-scenario comparison
+#
+# Every figure below is integer-cent fixed-point arithmetic, so the expected
+# values are exact on every target.
+
+# --- 1. initial mounted state -------------------------------------------------
+
+expect_visible role:heading name:"Loan Comparator"
+expect_visible role:region name:"Loan Comparator"
+expect_visible role:region name:"Scenario A"
+expect_visible role:region name:"Scenario B"
+expect_visible role:region name:"Scenario C"
+expect_visible role:region name:"Scenario A schedule"
+expect_visible role:region name:"Scenario B schedule"
+expect_visible role:region name:"Scenario C schedule"
+expect_visible role:region name:"Comparison"
+expect_visible role:region name:"Scenario summaries"
+expect_visible role:heading name:"Scenario A"
+expect_visible role:heading name:"Scenario B"
+expect_visible role:heading name:"Scenario C"
+expect_visible role:heading name:"Comparison"
+
+expect_value label:"Scenario A principal" "2400"
+expect_value label:"Scenario A annual rate" "6"
+expect_value label:"Scenario A term months" "12"
+expect_value label:"Scenario A extra payment" "0"
+expect_value label:"Scenario B principal" "2400"
+expect_value label:"Scenario B annual rate" "12"
+expect_value label:"Scenario B term months" "12"
+expect_value label:"Scenario B extra payment" "0"
+expect_value label:"Scenario C principal" "2400"
+expect_value label:"Scenario C annual rate" "6"
+expect_value label:"Scenario C term months" "24"
+expect_value label:"Scenario C extra payment" "0"
+
+expect_text text:"Scenario A inputs: inputs ok" "Scenario A inputs: inputs ok"
+expect_text text:"Scenario B inputs: inputs ok" "Scenario B inputs: inputs ok"
+expect_text text:"Scenario C inputs: inputs ok" "Scenario C inputs: inputs ok"
+expect_text text:"Scenario A rate: 6.00%" "Scenario A rate: 6.00%"
+expect_text text:"Scenario B rate: 12.00%" "Scenario B rate: 12.00%"
+expect_text text:"Scenario C rate: 6.00%" "Scenario C rate: 6.00%"
+
+expect_text text:"Scenario A monthly payment: $206.56" "Scenario A monthly payment: $206.56"
+expect_text text:"Scenario A total interest: $78.62" "Scenario A total interest: $78.62"
+expect_text text:"Scenario A total paid: $2478.62" "Scenario A total paid: $2478.62"
+expect_text text:"Scenario A payoff: 12 months" "Scenario A payoff: 12 months"
+expect_text text:"Scenario A final balance: $0.00" "Scenario A final balance: $0.00"
+
+expect_text text:"Scenario B monthly payment: $213.24" "Scenario B monthly payment: $213.24"
+expect_text text:"Scenario B total interest: $158.78" "Scenario B total interest: $158.78"
+expect_text text:"Scenario B total paid: $2558.78" "Scenario B total paid: $2558.78"
+expect_text text:"Scenario B payoff: 12 months" "Scenario B payoff: 12 months"
+expect_text text:"Scenario B final balance: $0.00" "Scenario B final balance: $0.00"
+
+expect_text text:"Scenario C monthly payment: $106.37" "Scenario C monthly payment: $106.37"
+expect_text text:"Scenario C total interest: $152.71" "Scenario C total interest: $152.71"
+expect_text text:"Scenario C total paid: $2552.71" "Scenario C total paid: $2552.71"
+expect_text text:"Scenario C payoff: 24 months" "Scenario C payoff: 24 months"
+expect_text text:"Scenario C final balance: $0.00" "Scenario C final balance: $0.00"
+
+# Amortisation rows: first, second and final month of each schedule.
+expect_text text:"Scenario A month 1: interest $12.00, principal $194.56, balance $2205.44" "Scenario A month 1: interest $12.00, principal $194.56, balance $2205.44"
+expect_text text:"Scenario A month 2: interest $11.02, principal $195.54, balance $2009.90" "Scenario A month 2: interest $11.02, principal $195.54, balance $2009.90"
+expect_text text:"Scenario A month 12: interest $1.02, principal $205.44, balance $0.00" "Scenario A month 12: interest $1.02, principal $205.44, balance $0.00"
+expect_text text:"Scenario B month 1: interest $24.00, principal $189.24, balance $2210.76" "Scenario B month 1: interest $24.00, principal $189.24, balance $2210.76"
+expect_text text:"Scenario B month 12: interest $2.11, principal $211.03, balance $0.00" "Scenario B month 12: interest $2.11, principal $211.03, balance $0.00"
+expect_text text:"Scenario C month 1: interest $12.00, principal $94.37, balance $2305.63" "Scenario C month 1: interest $12.00, principal $94.37, balance $2305.63"
+expect_text text:"Scenario C month 24: interest $0.52, principal $105.68, balance $0.00" "Scenario C month 24: interest $0.52, principal $105.68, balance $0.00"
+expect_absent text:"Scenario A month 13: interest $0.00, principal $0.00, balance $0.00"
+
+# Cross-scenario derived comparison.
+expect_text text:"Cheapest: Scenario A at $78.62 total interest" "Cheapest: Scenario A at $78.62 total interest"
+expect_text text:"Interest spread: $80.16" "Interest spread: $80.16"
+expect_text text:"Schedule invariant: all final balances are $0.00" "Schedule invariant: all final balances are $0.00"
+expect_value label:"Comparison pair" "ab"
+expect_text text:"Break-even (Scenario A vs Scenario B): none" "Break-even (Scenario A vs Scenario B): none"
+expect_text text:"Scenario A summary: $206.56 per month for 12 months, interest $78.62" "Scenario A summary: $206.56 per month for 12 months, interest $78.62"
+expect_text text:"Scenario B summary: $213.24 per month for 12 months, interest $158.78" "Scenario B summary: $213.24 per month for 12 months, interest $158.78"
+expect_text text:"Scenario C summary: $106.37 per month for 24 months, interest $152.71" "Scenario C summary: $106.37 per month for 24 months, interest $152.71"
+
+# --- 2. switching the compared pair ------------------------------------------
+
+select_option label:"Comparison pair" "ac"
+expect_value label:"Comparison pair" "ac"
+expect_text text:"Break-even (Scenario A vs Scenario C): month 24" "Break-even (Scenario A vs Scenario C): month 24"
+
+select_option label:"Comparison pair" "bc"
+expect_text text:"Break-even (Scenario B vs Scenario C): none" "Break-even (Scenario B vs Scenario C): none"
+
+select_option label:"Comparison pair" "ac"
+expect_text text:"Break-even (Scenario A vs Scenario C): month 24" "Break-even (Scenario A vs Scenario C): month 24"
+
+# --- 3. editing scenario A's rate: derived figures follow, siblings do not ----
+#
+# The schedule for A is one derived signal read by the payment, interest, paid,
+# payoff, final-balance, row-list and comparison sinks. Editing A's rate must
+# recompute A's schedule once and must not recompute B's or C's schedules at all.
+
+mark_metrics
+fill label:"Scenario A annual rate" "3"
+expect_text text:"Scenario A rate: 3.00%" "Scenario A rate: 3.00%"
+expect_text text:"Scenario A monthly payment: $203.27" "Scenario A monthly payment: $203.27"
+expect_text text:"Scenario A total interest: $39.12" "Scenario A total interest: $39.12"
+expect_text text:"Scenario A total paid: $2439.12" "Scenario A total paid: $2439.12"
+expect_text text:"Scenario A payoff: 12 months" "Scenario A payoff: 12 months"
+expect_text text:"Scenario A final balance: $0.00" "Scenario A final balance: $0.00"
+expect_text text:"Scenario A month 1: interest $6.00, principal $197.27, balance $2202.73" "Scenario A month 1: interest $6.00, principal $197.27, balance $2202.73"
+expect_text text:"Scenario A month 12: interest $0.50, principal $202.65, balance $0.00" "Scenario A month 12: interest $0.50, principal $202.65, balance $0.00"
+# B and C are untouched by A's edit.
+expect_text text:"Scenario B monthly payment: $213.24" "Scenario B monthly payment: $213.24"
+expect_text text:"Scenario B month 1: interest $24.00, principal $189.24, balance $2210.76" "Scenario B month 1: interest $24.00, principal $189.24, balance $2210.76"
+expect_text text:"Scenario C month 1: interest $12.00, principal $94.37, balance $2305.63" "Scenario C month 1: interest $12.00, principal $94.37, balance $2305.63"
+# A keeps 12 rows, so no row is created or removed anywhere, and only A's 12
+# schedule rows plus the 3 summary rows are re-synced.
+expect_metric_delta rows_created 0
+expect_metric_delta rows_removed 0
+expect_metric_delta rows_reused 15
+expect_metric_delta scopes_created 0
+expect_metric_delta scopes_disposed 0
+expect_metric_delta nodes_recomputed 1
+# 38 derived transforms run: scenario A's whole chain (draft -> parsed ->
+# params -> schedule -> summary), A's five figure sinks, A's twelve row texts,
+# and the four cross-scenario nodes. Scenario B's and C's schedules are NOT
+# among them - recomputing them too would cost roughly forty more calls.
+expect_metric_delta derived_calls_into_roc 38
+expect_metric_delta patches_emitted 21
+
+# The break-even month moves because A's rate changed.
+expect_text text:"Break-even (Scenario A vs Scenario C): month 23" "Break-even (Scenario A vs Scenario C): month 23"
+expect_text text:"Cheapest: Scenario A at $39.12 total interest" "Cheapest: Scenario A at $39.12 total interest"
+expect_text text:"Interest spread: $119.66" "Interest spread: $119.66"
+
+# --- 4. an extra payment large enough to shorten the schedule ----------------
+
+mark_metrics
+fill label:"Scenario A extra payment" "50"
+expect_text text:"Scenario A monthly payment: $253.27" "Scenario A monthly payment: $253.27"
+expect_text text:"Scenario A total interest: $31.97" "Scenario A total interest: $31.97"
+expect_text text:"Scenario A payoff: 10 months" "Scenario A payoff: 10 months"
+expect_text text:"Scenario A final balance: $0.00" "Scenario A final balance: $0.00"
+expect_text text:"Scenario A month 10: interest $0.38, principal $152.16, balance $0.00" "Scenario A month 10: interest $0.38, principal $152.16, balance $0.00"
+expect_absent text:"Scenario A month 11: interest $0.00, principal $0.00, balance $0.00"
+expect_text text:"Scenario A summary: $253.27 per month for 10 months, interest $31.97" "Scenario A summary: $253.27 per month for 10 months, interest $31.97"
+expect_text text:"Break-even (Scenario A vs Scenario C): month 23" "Break-even (Scenario A vs Scenario C): month 23"
+expect_metric_delta rows_removed 2
+expect_metric_delta rows_created 0
+# B's and C's rows are untouched.
+expect_text text:"Scenario B month 12: interest $2.11, principal $211.03, balance $0.00" "Scenario B month 12: interest $2.11, principal $211.03, balance $0.00"
+expect_text text:"Scenario C month 24: interest $0.52, principal $105.68, balance $0.00" "Scenario C month 24: interest $0.52, principal $105.68, balance $0.00"
+
+# --- 5. zero extra payment restores the full term ----------------------------
+
+mark_metrics
+fill label:"Scenario A extra payment" "0"
+expect_text text:"Scenario A monthly payment: $203.27" "Scenario A monthly payment: $203.27"
+expect_text text:"Scenario A payoff: 12 months" "Scenario A payoff: 12 months"
+expect_text text:"Scenario A month 12: interest $0.50, principal $202.65, balance $0.00" "Scenario A month 12: interest $0.50, principal $202.65, balance $0.00"
+expect_metric_delta rows_created 2
+
+# --- 6. a rate of zero --------------------------------------------------------
+
+fill label:"Scenario A annual rate" "0"
+expect_text text:"Scenario A rate: 0.00%" "Scenario A rate: 0.00%"
+expect_text text:"Scenario A monthly payment: $200.00" "Scenario A monthly payment: $200.00"
+expect_text text:"Scenario A total interest: $0.00" "Scenario A total interest: $0.00"
+expect_text text:"Scenario A total paid: $2400.00" "Scenario A total paid: $2400.00"
+expect_text text:"Scenario A payoff: 12 months" "Scenario A payoff: 12 months"
+expect_text text:"Scenario A final balance: $0.00" "Scenario A final balance: $0.00"
+expect_text text:"Scenario A month 1: interest $0.00, principal $200.00, balance $2200.00" "Scenario A month 1: interest $0.00, principal $200.00, balance $2200.00"
+expect_text text:"Scenario A month 12: interest $0.00, principal $200.00, balance $0.00" "Scenario A month 12: interest $0.00, principal $200.00, balance $0.00"
+expect_text text:"Schedule invariant: all final balances are $0.00" "Schedule invariant: all final balances are $0.00"
+
+# --- 7. a term of one month ---------------------------------------------------
+
+fill label:"Scenario A term months" "1"
+expect_text text:"Scenario A monthly payment: $2400.00" "Scenario A monthly payment: $2400.00"
+expect_text text:"Scenario A payoff: 1 month" "Scenario A payoff: 1 month"
+expect_text text:"Scenario A final balance: $0.00" "Scenario A final balance: $0.00"
+expect_text text:"Scenario A month 1: interest $0.00, principal $2400.00, balance $0.00" "Scenario A month 1: interest $0.00, principal $2400.00, balance $0.00"
+expect_absent text:"Scenario A month 2: interest $0.00, principal $0.00, balance $0.00"
+expect_text text:"Scenario A summary: $2400.00 per month for 1 month, interest $0.00" "Scenario A summary: $2400.00 per month for 1 month, interest $0.00"
+
+# --- 8. a principal of zero: an empty schedule that still clears --------------
+
+fill label:"Scenario A principal" "0"
+expect_text text:"Scenario A inputs: inputs ok" "Scenario A inputs: inputs ok"
+expect_text text:"Scenario A monthly payment: $0.00" "Scenario A monthly payment: $0.00"
+expect_text text:"Scenario A total interest: $0.00" "Scenario A total interest: $0.00"
+expect_text text:"Scenario A total paid: $0.00" "Scenario A total paid: $0.00"
+expect_text text:"Scenario A payoff: 0 months" "Scenario A payoff: 0 months"
+expect_text text:"Scenario A final balance: $0.00" "Scenario A final balance: $0.00"
+expect_visible role:region name:"Scenario A schedule"
+expect_absent text:"Scenario A month 1: interest $0.00, principal $2400.00, balance $0.00"
+expect_text text:"Schedule invariant: all final balances are $0.00" "Schedule invariant: all final balances are $0.00"
+expect_text text:"Break-even (Scenario A vs Scenario C): none" "Break-even (Scenario A vs Scenario C): none"
+expect_text text:"Cheapest: Scenario A at $0.00 total interest" "Cheapest: Scenario A at $0.00 total interest"
+
+# --- 9. back to the baseline scenario A --------------------------------------
+
+fill label:"Scenario A principal" "2400"
+fill label:"Scenario A term months" "12"
+fill label:"Scenario A annual rate" "6"
+expect_text text:"Scenario A monthly payment: $206.56" "Scenario A monthly payment: $206.56"
+expect_text text:"Scenario A total interest: $78.62" "Scenario A total interest: $78.62"
+expect_text text:"Scenario A month 12: interest $1.02, principal $205.44, balance $0.00" "Scenario A month 12: interest $1.02, principal $205.44, balance $0.00"
+expect_text text:"Break-even (Scenario A vs Scenario C): month 24" "Break-even (Scenario A vs Scenario C): month 24"
+
+# --- 10. invalid input --------------------------------------------------------
+
+fill label:"Scenario A annual rate" "abc"
+expect_text text:"Scenario A inputs: check rate" "Scenario A inputs: check rate"
+expect_text text:"Scenario A rate: 0.00%" "Scenario A rate: 0.00%"
+expect_text text:"Scenario A monthly payment: $200.00" "Scenario A monthly payment: $200.00"
+expect_text text:"Scenario A final balance: $0.00" "Scenario A final balance: $0.00"
+
+fill label:"Scenario A term months" "zz"
+expect_text text:"Scenario A inputs: check rate, term" "Scenario A inputs: check rate, term"
+expect_text text:"Scenario A monthly payment: $2400.00" "Scenario A monthly payment: $2400.00"
+expect_text text:"Scenario A payoff: 1 month" "Scenario A payoff: 1 month"
+expect_text text:"Scenario A final balance: $0.00" "Scenario A final balance: $0.00"
+
+fill label:"Scenario A annual rate" "6"
+fill label:"Scenario A term months" "12"
+expect_text text:"Scenario A inputs: inputs ok" "Scenario A inputs: inputs ok"
+expect_text text:"Scenario A monthly payment: $206.56" "Scenario A monthly payment: $206.56"
+
+# --- 11. editing scenario C does not disturb A or B --------------------------
+
+mark_metrics
+fill label:"Scenario C annual rate" "9"
+expect_text text:"Scenario C monthly payment: $109.64" "Scenario C monthly payment: $109.64"
+expect_text text:"Scenario C total interest: $231.34" "Scenario C total interest: $231.34"
+expect_text text:"Scenario C month 1: interest $18.00, principal $91.64, balance $2308.36" "Scenario C month 1: interest $18.00, principal $91.64, balance $2308.36"
+expect_text text:"Scenario C month 24: interest $0.81, principal $108.81, balance $0.00" "Scenario C month 24: interest $0.81, principal $108.81, balance $0.00"
+expect_text text:"Scenario A monthly payment: $206.56" "Scenario A monthly payment: $206.56"
+expect_text text:"Scenario A month 1: interest $12.00, principal $194.56, balance $2205.44" "Scenario A month 1: interest $12.00, principal $194.56, balance $2205.44"
+expect_text text:"Scenario B monthly payment: $213.24" "Scenario B monthly payment: $213.24"
+expect_text text:"Scenario B month 1: interest $24.00, principal $189.24, balance $2210.76" "Scenario B month 1: interest $24.00, principal $189.24, balance $2210.76"
+expect_text text:"Interest spread: $152.72" "Interest spread: $152.72"
+expect_metric_delta rows_created 0
+expect_metric_delta rows_removed 0
+expect_metric_delta nodes_recomputed 1
+# 48, exactly twelve more than scenario A's edit above, because scenario C has
+# 24 schedule rows instead of 12. Scenario A's and B's schedules stay quiet.
+expect_metric_delta derived_calls_into_roc 48
+expect_metric_delta rows_reused 27
+
+select_option label:"Comparison pair" "bc"
+expect_text text:"Break-even (Scenario B vs Scenario C): month 24" "Break-even (Scenario B vs Scenario C): month 24"
+select_option label:"Comparison pair" "ab"
+expect_text text:"Break-even (Scenario A vs Scenario B): none" "Break-even (Scenario A vs Scenario B): none"

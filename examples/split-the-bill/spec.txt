@@ -1,0 +1,338 @@
+# Split the Bill — derived state end to end.
+#
+# The app owns two source collections: the roster and the ledger. Balances, the
+# per-expense shares, and the settlement plan are derived from them. This spec
+# drives every interaction and asserts the derived values after each one,
+# including the invariant that the net balances always sum to $0.00.
+
+# --- initial render ---------------------------------------------------------
+
+expect_visible role:heading name:"Split the Bill"
+expect_visible role:region name:"People"
+expect_visible role:region name:"Expenses"
+expect_visible role:region name:"Settlement plan"
+expect_visible role:region name:"Trip totals"
+
+expect_visible role:form name:"Add person form"
+expect_value label:"New person name" ""
+expect_text text:"Person form: enter a name" "Person form: enter a name"
+expect_disabled role:button name:"Add person" true
+
+expect_visible role:form name:"Add expense form"
+expect_value label:"New expense description" ""
+expect_value label:"New expense amount" ""
+expect_value label:"New expense payer" "Ana"
+expect_text text:"Expense form: enter a description" "Expense form: enter a description"
+expect_disabled role:button name:"Add expense" true
+
+expect_visible role:region name:"Ana"
+expect_visible role:region name:"Bo"
+expect_visible role:region name:"Cy"
+expect_text text:"Ana totals: paid $300.00, owes $120.84" "Ana totals: paid $300.00, owes $120.84"
+expect_text text:"Ana net: is owed $179.16" "Ana net: is owed $179.16"
+expect_text text:"Ana removal: blocked, payer on 1 expense" "Ana removal: blocked, payer on 1 expense"
+expect_disabled role:button name:"Remove Ana" true
+expect_text text:"Bo totals: paid $62.50, owes $132.83" "Bo totals: paid $62.50, owes $132.83"
+expect_text text:"Bo net: owes $70.33" "Bo net: owes $70.33"
+expect_text text:"Cy totals: paid $24.00, owes $132.83" "Cy totals: paid $24.00, owes $132.83"
+expect_text text:"Cy net: owes $108.83" "Cy net: owes $108.83"
+
+expect_visible role:region name:"Cabin"
+expect_value label:"Cabin amount" "300.00"
+expect_text text:"Cabin status: $300.00 paid by Ana, split 3 ways" "Cabin status: $300.00 paid by Ana, split 3 ways"
+expect_text text:"Cabin shares: Ana $100.00, Bo $100.00, Cy $100.00" "Cabin shares: Ana $100.00, Bo $100.00, Cy $100.00"
+expect_checked label:"Cabin includes Ana" true
+expect_checked label:"Cabin includes Bo" true
+expect_checked label:"Cabin includes Cy" true
+
+# 6250 cents over 3 people does not divide evenly: the first participant in trip
+# order takes the leftover cent, so the shares still add back to $62.50.
+expect_visible role:region name:"Dinner"
+expect_value label:"Dinner amount" "62.50"
+expect_text text:"Dinner status: $62.50 paid by Bo, split 3 ways" "Dinner status: $62.50 paid by Bo, split 3 ways"
+expect_text text:"Dinner shares: Ana $20.84, Bo $20.83, Cy $20.83" "Dinner shares: Ana $20.84, Bo $20.83, Cy $20.83"
+
+# An expense shared by a subset: Ana is not on the taxi.
+expect_visible role:region name:"Taxi"
+expect_value label:"Taxi amount" "24.00"
+expect_text text:"Taxi status: $24.00 paid by Cy, split 2 ways" "Taxi status: $24.00 paid by Cy, split 2 ways"
+expect_text text:"Taxi shares: Bo $12.00, Cy $12.00" "Taxi shares: Bo $12.00, Cy $12.00"
+expect_checked label:"Taxi includes Ana" false
+expect_checked label:"Taxi includes Bo" true
+expect_checked label:"Taxi includes Cy" true
+
+expect_text text:"Settlement: 2 transfers" "Settlement: 2 transfers"
+expect_text text:"Cy owes Ana $108.83" "Cy owes Ana $108.83"
+expect_text text:"Bo owes Ana $70.33" "Bo owes Ana $70.33"
+
+expect_text text:"People on the trip: 3" "People on the trip: 3"
+expect_text text:"Expenses recorded: 3" "Expenses recorded: 3"
+expect_text text:"Trip total: $386.50" "Trip total: $386.50"
+expect_text text:"Balances check: $0.00" "Balances check: $0.00"
+expect_text text:"People on the trip: 3 / Expenses recorded: 3 / Trip total: $386.50 / Balances check: $0.00" "People on the trip: 3 / Expenses recorded: 3 / Trip total: $386.50 / Balances check: $0.00"
+
+# --- editing one expense reuses every row -----------------------------------
+
+mark_metrics
+fill label:"Dinner amount" "90.00"
+expect_value label:"Dinner amount" "90.00"
+expect_text text:"Dinner status: $90.00 paid by Bo, split 3 ways" "Dinner status: $90.00 paid by Bo, split 3 ways"
+expect_text text:"Dinner shares: Ana $30.00, Bo $30.00, Cy $30.00" "Dinner shares: Ana $30.00, Bo $30.00, Cy $30.00"
+# Sibling rows keep their own values and identity.
+expect_value label:"Cabin amount" "300.00"
+expect_text text:"Cabin shares: Ana $100.00, Bo $100.00, Cy $100.00" "Cabin shares: Ana $100.00, Bo $100.00, Cy $100.00"
+expect_value label:"Taxi amount" "24.00"
+expect_text text:"Taxi shares: Bo $12.00, Cy $12.00" "Taxi shares: Bo $12.00, Cy $12.00"
+expect_text text:"Ana net: is owed $170.00" "Ana net: is owed $170.00"
+expect_text text:"Bo net: owes $52.00" "Bo net: owes $52.00"
+expect_text text:"Cy net: owes $118.00" "Cy net: owes $118.00"
+expect_text text:"Trip total: $414.00" "Trip total: $414.00"
+expect_text text:"Balances check: $0.00" "Balances check: $0.00"
+expect_text text:"Cy owes Ana $118.00" "Cy owes Ana $118.00"
+expect_text text:"Bo owes Ana $52.00" "Bo owes Ana $52.00"
+# Nothing structural happens: no row is created, removed, or re-scoped. The 11
+# reused rows are the three expense rows, the three person rows, the two
+# settlement rows, and the three participation checkboxes belonging to the one
+# expense whose display record changed. Cabin's and Taxi's checkbox lists are
+# not re-diffed at all, because their row values are unchanged.
+expect_metric_delta rows_created 0
+expect_metric_delta rows_removed 0
+expect_metric_delta scopes_created 0
+expect_metric_delta scopes_disposed 0
+expect_metric_delta rows_reused 11
+expect_metric_delta nodes_recomputed 1
+expect_metric_delta patches_emitted 27
+
+# --- rounding that does not divide evenly -----------------------------------
+
+fill label:"Dinner amount" "0.10"
+expect_text text:"Dinner status: $0.10 paid by Bo, split 3 ways" "Dinner status: $0.10 paid by Bo, split 3 ways"
+expect_text text:"Dinner shares: Ana $0.04, Bo $0.03, Cy $0.03" "Dinner shares: Ana $0.04, Bo $0.03, Cy $0.03"
+expect_text text:"Trip total: $324.10" "Trip total: $324.10"
+expect_text text:"Balances check: $0.00" "Balances check: $0.00"
+expect_text text:"Bo owes Ana $111.93" "Bo owes Ana $111.93"
+expect_text text:"Cy owes Ana $88.03" "Cy owes Ana $88.03"
+
+# --- invalid amounts --------------------------------------------------------
+
+fill label:"Dinner amount" "12.345"
+expect_text text:"Dinner status: amount not recognised, treated as $0.00" "Dinner status: amount not recognised, treated as $0.00"
+expect_text text:"Dinner shares: Ana $0.00, Bo $0.00, Cy $0.00" "Dinner shares: Ana $0.00, Bo $0.00, Cy $0.00"
+expect_text text:"Trip total: $324.00" "Trip total: $324.00"
+expect_text text:"Balances check: $0.00" "Balances check: $0.00"
+expect_text text:"Bo owes Ana $112.00" "Bo owes Ana $112.00"
+expect_text text:"Cy owes Ana $88.00" "Cy owes Ana $88.00"
+
+fill label:"Dinner amount" "-5"
+expect_text text:"Dinner status: amount not recognised, treated as $0.00" "Dinner status: amount not recognised, treated as $0.00"
+
+fill label:"Dinner amount" ""
+expect_text text:"Dinner status: amount not recognised, treated as $0.00" "Dinner status: amount not recognised, treated as $0.00"
+
+# A zero amount is valid, not an error.
+fill label:"Dinner amount" "0"
+expect_text text:"Dinner status: $0.00 paid by Bo, split 3 ways" "Dinner status: $0.00 paid by Bo, split 3 ways"
+expect_text text:"Dinner shares: Ana $0.00, Bo $0.00, Cy $0.00" "Dinner shares: Ana $0.00, Bo $0.00, Cy $0.00"
+expect_text text:"Trip total: $324.00" "Trip total: $324.00"
+expect_text text:"Balances check: $0.00" "Balances check: $0.00"
+
+fill label:"Dinner amount" "62.50"
+expect_text text:"Dinner shares: Ana $20.84, Bo $20.83, Cy $20.83" "Dinner shares: Ana $20.84, Bo $20.83, Cy $20.83"
+expect_text text:"Trip total: $386.50" "Trip total: $386.50"
+
+# --- changing who shares an expense -----------------------------------------
+
+uncheck label:"Cabin includes Cy"
+expect_checked label:"Cabin includes Cy" false
+expect_text text:"Cabin status: $300.00 paid by Ana, split 2 ways" "Cabin status: $300.00 paid by Ana, split 2 ways"
+expect_text text:"Cabin shares: Ana $150.00, Bo $150.00" "Cabin shares: Ana $150.00, Bo $150.00"
+expect_text text:"Cy totals: paid $24.00, owes $32.83" "Cy totals: paid $24.00, owes $32.83"
+expect_text text:"Balances check: $0.00" "Balances check: $0.00"
+expect_text text:"Bo owes Ana $120.33" "Bo owes Ana $120.33"
+expect_text text:"Cy owes Ana $8.83" "Cy owes Ana $8.83"
+
+check label:"Cabin includes Cy"
+expect_checked label:"Cabin includes Cy" true
+expect_text text:"Cabin shares: Ana $100.00, Bo $100.00, Cy $100.00" "Cabin shares: Ana $100.00, Bo $100.00, Cy $100.00"
+
+# An expense nobody shares is excluded entirely, payer included, so the plan
+# still balances.
+uncheck label:"Taxi includes Bo"
+uncheck label:"Taxi includes Cy"
+expect_text text:"Taxi status: nobody is sharing it, excluded" "Taxi status: nobody is sharing it, excluded"
+expect_text text:"Taxi shares: none" "Taxi shares: none"
+expect_text text:"Trip total: $362.50" "Trip total: $362.50"
+expect_text text:"Balances check: $0.00" "Balances check: $0.00"
+expect_text text:"Cy totals: paid $0.00, owes $120.83" "Cy totals: paid $0.00, owes $120.83"
+# Cy no longer pays for anything, so Cy may now leave the trip.
+expect_text text:"Cy removal: allowed" "Cy removal: allowed"
+expect_disabled role:button name:"Remove Cy" false
+expect_text text:"Cy owes Ana $120.83" "Cy owes Ana $120.83"
+expect_text text:"Bo owes Ana $58.33" "Bo owes Ana $58.33"
+
+check label:"Taxi includes Bo"
+check label:"Taxi includes Cy"
+expect_text text:"Taxi shares: Bo $12.00, Cy $12.00" "Taxi shares: Bo $12.00, Cy $12.00"
+expect_text text:"Cy removal: blocked, payer on 1 expense" "Cy removal: blocked, payer on 1 expense"
+expect_text text:"Trip total: $386.50" "Trip total: $386.50"
+
+# --- adding a person re-splits every expense --------------------------------
+
+fill label:"New person name" "Ana"
+expect_text text:"Person form: Ana is already on the trip" "Person form: Ana is already on the trip"
+expect_disabled role:button name:"Add person" true
+
+fill label:"New person name" " Di "
+expect_text text:"Person form: ready to add Di" "Person form: ready to add Di"
+expect_disabled role:button name:"Add person" false
+
+mark_metrics
+click role:button name:"Add person"
+# Adding a person creates exactly six rows: the person's balance card, the new
+# payer option, one participation checkbox in each of the three expenses, and
+# the extra settlement transfer. Every existing row is reused.
+expect_metric_delta rows_created 6
+expect_metric_delta rows_reused 20
+expect_metric_delta rows_removed 0
+expect_value label:"New person name" ""
+expect_visible role:region name:"Di"
+expect_text text:"People on the trip: 4" "People on the trip: 4"
+expect_text text:"Cabin shares: Ana $75.00, Bo $75.00, Cy $75.00, Di $75.00" "Cabin shares: Ana $75.00, Bo $75.00, Cy $75.00, Di $75.00"
+expect_text text:"Dinner shares: Ana $15.63, Bo $15.63, Cy $15.62, Di $15.62" "Dinner shares: Ana $15.63, Bo $15.63, Cy $15.62, Di $15.62"
+expect_text text:"Taxi shares: Bo $8.00, Cy $8.00, Di $8.00" "Taxi shares: Bo $8.00, Cy $8.00, Di $8.00"
+expect_checked label:"Taxi includes Di" true
+expect_text text:"Di totals: paid $0.00, owes $98.62" "Di totals: paid $0.00, owes $98.62"
+expect_text text:"Di net: owes $98.62" "Di net: owes $98.62"
+expect_text text:"Di removal: allowed" "Di removal: allowed"
+expect_text text:"Balances check: $0.00" "Balances check: $0.00"
+expect_text text:"Settlement: 3 transfers" "Settlement: 3 transfers"
+expect_text text:"Di owes Ana $98.62" "Di owes Ana $98.62"
+expect_text text:"Cy owes Ana $74.62" "Cy owes Ana $74.62"
+expect_text text:"Bo owes Ana $36.13" "Bo owes Ana $36.13"
+
+# --- removing a person -------------------------------------------------------
+
+expect_disabled role:button name:"Remove Di" false
+click role:button name:"Remove Di"
+expect_absent role:region name:"Di"
+expect_text text:"People on the trip: 3" "People on the trip: 3"
+expect_text text:"Cabin shares: Ana $100.00, Bo $100.00, Cy $100.00" "Cabin shares: Ana $100.00, Bo $100.00, Cy $100.00"
+expect_text text:"Taxi shares: Bo $12.00, Cy $12.00" "Taxi shares: Bo $12.00, Cy $12.00"
+expect_text text:"Balances check: $0.00" "Balances check: $0.00"
+expect_text text:"Settlement: 2 transfers" "Settlement: 2 transfers"
+
+# --- adding an expense -------------------------------------------------------
+
+fill label:"New expense description" "Coffee"
+expect_text text:"Expense form: enter an amount such as 12.50" "Expense form: enter an amount such as 12.50"
+expect_disabled role:button name:"Add expense" true
+fill label:"New expense amount" "5.00"
+expect_text text:"Expense form: ready to add Coffee for $5.00" "Expense form: ready to add Coffee for $5.00"
+expect_disabled role:button name:"Add expense" false
+
+select_option label:"New expense payer" "Bo"
+expect_value label:"New expense payer" "Bo"
+select_option label:"New expense payer" "Ana"
+expect_value label:"New expense payer" "Ana"
+
+click role:button name:"Add expense"
+expect_value label:"New expense description" ""
+expect_value label:"New expense amount" ""
+expect_visible role:region name:"Coffee"
+expect_text text:"Expenses recorded: 4" "Expenses recorded: 4"
+expect_text text:"Coffee status: $5.00 paid by Ana, split 3 ways" "Coffee status: $5.00 paid by Ana, split 3 ways"
+expect_text text:"Coffee shares: Ana $1.67, Bo $1.67, Cy $1.66" "Coffee shares: Ana $1.67, Bo $1.67, Cy $1.66"
+expect_text text:"Ana removal: blocked, payer on 2 expenses" "Ana removal: blocked, payer on 2 expenses"
+expect_text text:"Trip total: $391.50" "Trip total: $391.50"
+expect_text text:"Balances check: $0.00" "Balances check: $0.00"
+expect_text text:"Cy owes Ana $110.49" "Cy owes Ana $110.49"
+expect_text text:"Bo owes Ana $72.00" "Bo owes Ana $72.00"
+
+fill label:"New expense description" "Coffee"
+expect_text text:"Expense form: Coffee is already recorded" "Expense form: Coffee is already recorded"
+expect_disabled role:button name:"Add expense" true
+
+fill label:"New expense description" "Snacks"
+fill label:"New expense amount" "1.00"
+submit role:form name:"Add expense form"
+expect_visible role:region name:"Snacks"
+expect_text text:"Expenses recorded: 5" "Expenses recorded: 5"
+expect_text text:"Snacks shares: Ana $0.34, Bo $0.33, Cy $0.33" "Snacks shares: Ana $0.34, Bo $0.33, Cy $0.33"
+expect_text text:"Ana removal: blocked, payer on 3 expenses" "Ana removal: blocked, payer on 3 expenses"
+expect_text text:"Trip total: $392.50" "Trip total: $392.50"
+expect_text text:"Balances check: $0.00" "Balances check: $0.00"
+
+# --- removing expenses -------------------------------------------------------
+
+click role:button name:"Remove Snacks"
+expect_absent role:region name:"Snacks"
+click role:button name:"Remove Coffee"
+expect_absent role:region name:"Coffee"
+expect_text text:"Expenses recorded: 3" "Expenses recorded: 3"
+expect_text text:"Trip total: $386.50" "Trip total: $386.50"
+expect_text text:"Cy owes Ana $108.83" "Cy owes Ana $108.83"
+expect_text text:"Bo owes Ana $70.33" "Bo owes Ana $70.33"
+
+click role:button name:"Remove Cabin"
+click role:button name:"Remove Dinner"
+click role:button name:"Remove Taxi"
+expect_absent role:region name:"Cabin"
+expect_text text:"No expenses yet, record what someone paid for." "No expenses yet, record what someone paid for."
+expect_text text:"Expenses recorded: 0" "Expenses recorded: 0"
+expect_text text:"Trip total: $0.00" "Trip total: $0.00"
+expect_text text:"Balances check: $0.00" "Balances check: $0.00"
+expect_text text:"Settlement: everyone is settled up" "Settlement: everyone is settled up"
+expect_text text:"Ana totals: paid $0.00, owes $0.00" "Ana totals: paid $0.00, owes $0.00"
+expect_text text:"Ana net: settled up" "Ana net: settled up"
+expect_text text:"Ana removal: allowed" "Ana removal: allowed"
+expect_disabled role:button name:"Remove Ana" false
+
+# --- one person, then none ---------------------------------------------------
+
+click role:button name:"Remove Bo"
+click role:button name:"Remove Cy"
+expect_absent role:region name:"Bo"
+expect_text text:"People on the trip: 1" "People on the trip: 1"
+expect_text text:"Ana net: settled up" "Ana net: settled up"
+expect_text text:"Settlement: everyone is settled up" "Settlement: everyone is settled up"
+
+click role:button name:"Remove Ana"
+expect_absent role:region name:"Ana"
+expect_text text:"No people yet, add someone to start." "No people yet, add someone to start."
+expect_text text:"People on the trip: 0" "People on the trip: 0"
+expect_text text:"Trip total: $0.00" "Trip total: $0.00"
+expect_text text:"Balances check: $0.00" "Balances check: $0.00"
+expect_text text:"Settlement: everyone is settled up" "Settlement: everyone is settled up"
+expect_text text:"People on the trip: 0 / Expenses recorded: 0 / Trip total: $0.00 / Balances check: $0.00" "People on the trip: 0 / Expenses recorded: 0 / Trip total: $0.00 / Balances check: $0.00"
+
+# With nobody on the trip there is no valid payer, so the draft cannot be added.
+fill label:"New expense description" "Ferry"
+fill label:"New expense amount" "9.00"
+expect_text text:"Expense form: choose who paid" "Expense form: choose who paid"
+expect_disabled role:button name:"Add expense" true
+
+fill label:"New person name" "Zed"
+click role:button name:"Add person"
+expect_text text:"People on the trip: 1" "People on the trip: 1"
+expect_text text:"Expense form: choose who paid" "Expense form: choose who paid"
+expect_disabled role:button name:"Add expense" true
+
+select_option label:"New expense payer" "Zed"
+expect_text text:"Expense form: ready to add Ferry for $9.00" "Expense form: ready to add Ferry for $9.00"
+expect_disabled role:button name:"Add expense" false
+click role:button name:"Add expense"
+expect_visible role:region name:"Ferry"
+expect_text text:"Ferry status: $9.00 paid by Zed, split 1 way" "Ferry status: $9.00 paid by Zed, split 1 way"
+expect_text text:"Ferry shares: Zed $9.00" "Ferry shares: Zed $9.00"
+expect_text text:"Zed net: settled up" "Zed net: settled up"
+expect_text text:"Zed removal: blocked, payer on 1 expense" "Zed removal: blocked, payer on 1 expense"
+expect_text text:"Trip total: $9.00" "Trip total: $9.00"
+expect_text text:"Balances check: $0.00" "Balances check: $0.00"
+expect_text text:"Settlement: everyone is settled up" "Settlement: everyone is settled up"
+
+uncheck label:"Ferry includes Zed"
+expect_text text:"Ferry status: nobody is sharing it, excluded" "Ferry status: nobody is sharing it, excluded"
+expect_text text:"Ferry shares: none" "Ferry shares: none"
+expect_text text:"Trip total: $0.00" "Trip total: $0.00"
+expect_text text:"Zed removal: allowed" "Zed removal: allowed"
+expect_text text:"Balances check: $0.00" "Balances check: $0.00"

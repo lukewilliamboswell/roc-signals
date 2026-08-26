@@ -1,0 +1,286 @@
+# Query Builder: a recursive AND/OR filter tree.
+#
+# Documented semantics locked below:
+#  - a condition with an empty value imposes no constraint and matches every row
+#    (it renders as ANY);
+#  - an empty group imposes no constraint and matches every row in both AND and
+#    OR mode (it renders as ALL), so a negated empty group matches nothing;
+#  - > and < only apply to the numeric Level field; on a text field they match
+#    nothing.
+
+# ---------------------------------------------------------------- initial state
+expect_visible role:heading name:"Query Builder"
+expect_visible role:region name:"Dataset"
+expect_visible role:region name:"Generated query"
+expect_visible role:region name:"Matches"
+expect_visible role:region name:"Filter tree"
+expect_visible role:region name:"Group n1"
+expect_visible role:region name:"Condition n2"
+expect_checked label:"Include archived rows" false
+expect_text test_id:"dataset-summary" "Dataset rows: 5"
+expect_text test_id:"query-text" "(dept = 'Platform')"
+expect_text test_id:"shape-stats" "Conditions 1 / Groups 1 / Depth 1"
+expect_text test_id:"match-summary" "Matching rows: 2 of 5"
+expect_text test_id:"summary-n1" "(dept = 'Platform')"
+expect_text test_id:"summary-n2" "dept = 'Platform'"
+expect_value label:"Mode n1" "AND"
+expect_checked label:"Negate n1" false
+expect_value label:"Field n2" "dept"
+expect_value label:"Operator n2" "eq"
+expect_value label:"Value n2" "Platform"
+expect_visible test_id:"match-Ada"
+expect_visible test_id:"match-Bo"
+expect_absent test_id:"match-Cy"
+expect_absent test_id:"match-Dee"
+expect_absent test_id:"match-Eli"
+# The root group is not deletable.
+expect_absent role:button name:"Delete n1"
+expect_text text:"Root group cannot be deleted" "Root group cannot be deleted"
+
+# ------------------------------------------------- edge case: empty leaf value
+fill label:"Value n2" ""
+expect_text test_id:"summary-n2" "ANY"
+expect_text test_id:"query-text" "(ANY)"
+expect_text test_id:"match-summary" "Matching rows: 5 of 5"
+expect_visible test_id:"match-Cy"
+fill label:"Value n2" "Platform"
+expect_text test_id:"match-summary" "Matching rows: 2 of 5"
+
+# ------------------------------------------------------------- every operator
+# eq is the initial operator and is asserted above.
+select_option label:"Operator n2" "ne"
+expect_text test_id:"query-text" "(dept != 'Platform')"
+expect_text test_id:"match-summary" "Matching rows: 3 of 5"
+expect_absent test_id:"match-Ada"
+expect_visible test_id:"match-Cy"
+expect_visible test_id:"match-Dee"
+expect_visible test_id:"match-Eli"
+
+select_option label:"Operator n2" "contains"
+fill label:"Value n2" "esi"
+expect_text test_id:"query-text" "(dept ~ 'esi')"
+expect_text test_id:"match-summary" "Matching rows: 2 of 5"
+expect_visible test_id:"match-Cy"
+expect_visible test_id:"match-Eli"
+
+# > and < on a text field match nothing.
+select_option label:"Field n2" "name"
+select_option label:"Operator n2" "gt"
+fill label:"Value n2" "3"
+expect_text test_id:"query-text" "(name > '3')"
+expect_text test_id:"match-summary" "Matching rows: 0 of 5"
+expect_absent test_id:"match-Ada"
+
+select_option label:"Field n2" "level"
+expect_text test_id:"query-text" "(level > '3')"
+expect_text test_id:"match-summary" "Matching rows: 2 of 5"
+expect_visible test_id:"match-Ada"
+expect_visible test_id:"match-Cy"
+
+select_option label:"Operator n2" "lt"
+expect_text test_id:"query-text" "(level < '3')"
+expect_text test_id:"match-summary" "Matching rows: 2 of 5"
+expect_visible test_id:"match-Bo"
+expect_visible test_id:"match-Dee"
+
+# A non-numeric value on a numeric comparison matches nothing.
+fill label:"Value n2" "three"
+expect_text test_id:"query-text" "(level < 'three')"
+expect_text test_id:"match-summary" "Matching rows: 0 of 5"
+
+# Back to the starting condition.
+select_option label:"Field n2" "dept"
+select_option label:"Operator n2" "eq"
+fill label:"Value n2" "Platform"
+expect_text test_id:"query-text" "(dept = 'Platform')"
+expect_text test_id:"match-summary" "Matching rows: 2 of 5"
+
+# ------------------------------------------- second independent source fan-in
+mark_metrics
+check label:"Include archived rows"
+expect_text test_id:"dataset-summary" "Dataset rows: 6"
+expect_text test_id:"match-summary" "Matching rows: 3 of 6"
+expect_visible test_id:"match-Fay"
+# Only the matched-row list grows; the tree editor is untouched.
+expect_metric_delta rows_created 1
+expect_metric_delta rows_removed 0
+expect_metric_delta rows_reused 2
+
+uncheck label:"Include archived rows"
+expect_text test_id:"dataset-summary" "Dataset rows: 5"
+expect_text test_id:"match-summary" "Matching rows: 2 of 5"
+expect_absent test_id:"match-Fay"
+
+# ---------------------------------------------- nesting: a group inside a group
+mark_metrics
+click role:button name:"Add group to n1"
+expect_visible role:region name:"Group n3"
+expect_value label:"Mode n3" "AND"
+expect_checked label:"Negate n3" false
+expect_text test_id:"summary-n3" "(ALL)"
+expect_text test_id:"query-text" "(dept = 'Platform' AND (ALL))"
+expect_text test_id:"shape-stats" "Conditions 1 / Groups 2 / Depth 2"
+# An empty group imposes no constraint.
+expect_text test_id:"match-summary" "Matching rows: 2 of 5"
+expect_metric_delta rows_created 1
+expect_metric_delta rows_removed 0
+expect_metric_delta rows_reused 1
+
+# A negated empty group matches nothing.
+check label:"Negate n3"
+expect_text test_id:"summary-n3" "NOT (ALL)"
+expect_text test_id:"query-text" "(dept = 'Platform' AND NOT (ALL))"
+expect_text test_id:"match-summary" "Matching rows: 0 of 5"
+uncheck label:"Negate n3"
+expect_text test_id:"match-summary" "Matching rows: 2 of 5"
+
+click role:button name:"Add condition to n3"
+expect_visible role:region name:"Condition n4"
+expect_value label:"Field n4" "name"
+expect_value label:"Operator n4" "contains"
+expect_value label:"Value n4" ""
+expect_text test_id:"summary-n4" "ANY"
+expect_text test_id:"query-text" "(dept = 'Platform' AND (ANY))"
+expect_text test_id:"shape-stats" "Conditions 2 / Groups 2 / Depth 2"
+expect_text test_id:"match-summary" "Matching rows: 2 of 5"
+
+fill label:"Value n4" "A"
+expect_text test_id:"summary-n4" "name ~ 'A'"
+expect_text test_id:"query-text" "(dept = 'Platform' AND (name ~ 'A'))"
+expect_text test_id:"match-summary" "Matching rows: 1 of 5"
+expect_visible test_id:"match-Ada"
+expect_absent test_id:"match-Bo"
+
+# ------------------------------------------------------- AND / OR on a group
+click role:button name:"Add condition to n3"
+fill label:"Value n5" "o"
+expect_text test_id:"summary-n5" "name ~ 'o'"
+expect_text test_id:"query-text" "(dept = 'Platform' AND (name ~ 'A' AND name ~ 'o'))"
+expect_text test_id:"match-summary" "Matching rows: 0 of 5"
+
+select_option label:"Mode n3" "OR"
+expect_text test_id:"query-text" "(dept = 'Platform' AND (name ~ 'A' OR name ~ 'o'))"
+expect_text test_id:"match-summary" "Matching rows: 2 of 5"
+expect_visible test_id:"match-Ada"
+expect_visible test_id:"match-Bo"
+# The sibling leaves kept their own values across the mode switch.
+expect_value label:"Value n4" "A"
+expect_value label:"Value n5" "o"
+
+# ------------------------------------------------------ three levels of nesting
+click role:button name:"Add group to n3"
+expect_visible role:region name:"Group n6"
+expect_text test_id:"summary-n6" "(ALL)"
+expect_text test_id:"query-text" "(dept = 'Platform' AND (name ~ 'A' OR name ~ 'o' OR (ALL)))"
+expect_text test_id:"shape-stats" "Conditions 3 / Groups 3 / Depth 3"
+
+click role:button name:"Add condition to n6"
+expect_visible role:region name:"Condition n7"
+expect_text test_id:"shape-stats" "Conditions 4 / Groups 3 / Depth 3"
+select_option label:"Field n7" "level"
+select_option label:"Operator n7" "gt"
+fill label:"Value n7" "4"
+expect_text test_id:"summary-n7" "level > '4'"
+expect_text test_id:"summary-n6" "(level > '4')"
+expect_text test_id:"query-text" "(dept = 'Platform' AND (name ~ 'A' OR name ~ 'o' OR (level > '4')))"
+expect_text test_id:"match-summary" "Matching rows: 2 of 5"
+
+# Switching the middle group to AND changes the match count.
+select_option label:"Mode n3" "AND"
+expect_text test_id:"query-text" "(dept = 'Platform' AND (name ~ 'A' AND name ~ 'o' AND (level > '4')))"
+expect_text test_id:"match-summary" "Matching rows: 0 of 5"
+select_option label:"Mode n3" "OR"
+expect_text test_id:"match-summary" "Matching rows: 2 of 5"
+
+# --------------- editing a leaf three levels deep does not recreate its siblings
+mark_metrics
+fill label:"Value n7" "3"
+expect_text test_id:"summary-n7" "level > '3'"
+expect_text test_id:"query-text" "(dept = 'Platform' AND (name ~ 'A' OR name ~ 'o' OR (level > '3')))"
+expect_text test_id:"match-summary" "Matching rows: 2 of 5"
+# Sibling branches are untouched: no row is created, removed, or re-scoped.
+expect_metric_delta rows_created 0
+expect_metric_delta rows_removed 0
+expect_metric_delta scopes_created 0
+expect_metric_delta scopes_disposed 0
+# Every sibling row in all three each_str levels is re-keyed and reused.
+expect_metric_delta rows_reused 6
+expect_metric_delta_at_most patches_emitted 8
+expect_metric_delta_at_most nodes_recomputed 4
+# The siblings still hold their own values.
+expect_value label:"Value n4" "A"
+expect_value label:"Value n5" "o"
+expect_value label:"Value n2" "Platform"
+
+# ------------------------------------------------------ deleting a nested group
+mark_metrics
+click role:button name:"Delete n6"
+expect_absent role:region name:"Group n6"
+expect_absent role:region name:"Condition n7"
+expect_visible role:region name:"Condition n4"
+expect_visible role:region name:"Condition n5"
+expect_text test_id:"query-text" "(dept = 'Platform' AND (name ~ 'A' OR name ~ 'o'))"
+expect_text test_id:"shape-stats" "Conditions 3 / Groups 2 / Depth 2"
+expect_text test_id:"match-summary" "Matching rows: 2 of 5"
+expect_metric_delta rows_created 0
+expect_metric_delta rows_removed 1
+# The group scope and its child condition scope are disposed; the surviving
+# sibling rows at both levels are reused.
+expect_metric_delta scopes_disposed 2
+expect_metric_delta rows_reused 4
+
+# ------------------------------------------------------- deleting a leaf sibling
+click role:button name:"Delete n5"
+expect_absent role:region name:"Condition n5"
+expect_text test_id:"query-text" "(dept = 'Platform' AND (name ~ 'A'))"
+expect_text test_id:"shape-stats" "Conditions 2 / Groups 2 / Depth 2"
+expect_text test_id:"match-summary" "Matching rows: 1 of 5"
+expect_value label:"Value n4" "A"
+
+# ------------------------------------------------------------- negating the root
+check label:"Negate n1"
+expect_text test_id:"query-text" "NOT (dept = 'Platform' AND (name ~ 'A'))"
+expect_text test_id:"match-summary" "Matching rows: 4 of 5"
+expect_absent test_id:"match-Ada"
+expect_visible test_id:"match-Bo"
+expect_visible test_id:"match-Cy"
+uncheck label:"Negate n1"
+expect_text test_id:"match-summary" "Matching rows: 1 of 5"
+
+# ------------------------------------------------- back to a single condition
+click role:button name:"Delete n3"
+expect_absent role:region name:"Group n3"
+expect_absent role:region name:"Condition n4"
+expect_visible role:region name:"Condition n2"
+expect_text test_id:"query-text" "(dept = 'Platform')"
+expect_text test_id:"shape-stats" "Conditions 1 / Groups 1 / Depth 1"
+expect_text test_id:"match-summary" "Matching rows: 2 of 5"
+
+# ------------------------------------------------------------- empty root group
+click role:button name:"Delete n2"
+expect_absent role:region name:"Condition n2"
+expect_text test_id:"query-text" "(ALL)"
+expect_text test_id:"summary-n1" "(ALL)"
+expect_text test_id:"shape-stats" "Conditions 0 / Groups 1 / Depth 1"
+expect_text test_id:"match-summary" "Matching rows: 5 of 5"
+expect_visible test_id:"match-Ada"
+expect_visible test_id:"match-Eli"
+
+check label:"Negate n1"
+expect_text test_id:"query-text" "NOT (ALL)"
+expect_text test_id:"match-summary" "Matching rows: 0 of 5"
+expect_absent test_id:"match-Ada"
+uncheck label:"Negate n1"
+expect_text test_id:"match-summary" "Matching rows: 5 of 5"
+
+# The tree can be rebuilt from empty.
+click role:button name:"Add condition to n1"
+expect_visible role:region name:"Condition n2"
+expect_text test_id:"query-text" "(ANY)"
+expect_text test_id:"match-summary" "Matching rows: 5 of 5"
+select_option label:"Field n2" "dept"
+fill label:"Value n2" "Design"
+expect_text test_id:"query-text" "(dept ~ 'Design')"
+expect_text test_id:"match-summary" "Matching rows: 2 of 5"
+expect_visible test_id:"match-Cy"
+expect_visible test_id:"match-Eli"

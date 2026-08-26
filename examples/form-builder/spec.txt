@@ -1,0 +1,285 @@
+# Form Builder — native semantic spec.
+#
+# The app has two levels of state: the designer's schema and the answers typed
+# into the generated preview. Every assertion below about a preview label, a
+# preview error, or the submittable flag is an assertion about derived state:
+# nothing in the app writes those values from an event handler.
+
+# ---------------------------------------------------------------- initial mount
+expect_visible role:heading name:"Form Builder"
+expect_visible role:region name:"Form Builder"
+expect_visible role:region name:"Field toolbar"
+expect_visible role:heading name:"Add a field"
+expect_visible role:region name:"Field designer"
+expect_visible role:heading name:"Field designer"
+expect_visible role:region name:"Live preview"
+expect_visible role:heading name:"Live preview"
+expect_visible role:form name:"Preview form"
+expect_visible role:button name:"Add text field"
+expect_visible role:button name:"Add number field"
+expect_visible role:button name:"Add email field"
+expect_visible role:button name:"Add select field"
+expect_visible role:button name:"Add checkbox field"
+expect_visible role:button name:"Clear preview answers"
+
+expect_text text:"Designer status: 2 fields" "Designer status: 2 fields"
+expect_visible role:region name:"Field f1"
+expect_visible role:region name:"Field f2"
+expect_text text:"Full name field: Text - required" "Full name field: Text - required"
+expect_text text:"Work email field: Email - required" "Work email field: Email - required"
+expect_value label:"Label f1" "Full name"
+expect_checked label:"Required f1" true
+expect_value label:"Minimum f1" "2"
+expect_value label:"Maximum f1" ""
+expect_absent label:"Options f1"
+expect_value label:"Label f2" "Work email"
+expect_checked label:"Required f2" true
+expect_visible role:button name:"Move up f1"
+expect_visible role:button name:"Move down f1"
+expect_visible role:button name:"Delete f1"
+
+expect_visible role:region name:"Preview field f1"
+expect_visible role:region name:"Preview field f2"
+expect_text text:"Full name (required)" "Full name (required)"
+expect_text text:"Work email (required)" "Work email (required)"
+expect_value label:"Answer f1" ""
+expect_value label:"Answer f2" ""
+expect_attr label:"Answer f1" aria-invalid ""
+expect_text text:"Full name: This field is required" "Full name: This field is required"
+expect_text text:"Work email: This field is required" "Work email: This field is required"
+expect_text text:"Preview status: 2 fields, 2 problems" "Preview status: 2 fields, 2 problems"
+expect_text text:"Form is not submittable" "Form is not submittable"
+expect_text text:"Submissions: 0" "Submissions: 0"
+expect_disabled role:button name:"Submit form" true
+
+# -------------------------------------------- answering the generated form
+# One answer at a time: the submittable fan-in only flips when BOTH inputs are
+# satisfied.
+fill label:"Answer f1" "Ada"
+expect_text text:"Full name: Valid" "Full name: Valid"
+expect_no_attr label:"Answer f1" aria-invalid
+expect_text text:"Preview status: 2 fields, 1 problem" "Preview status: 2 fields, 1 problem"
+expect_text text:"Form is not submittable" "Form is not submittable"
+
+fill label:"Answer f2" "ada@example"
+expect_text text:"Work email: Enter a valid email address" "Work email: Enter a valid email address"
+expect_text text:"Form is not submittable" "Form is not submittable"
+fill label:"Answer f2" "ada@example.com"
+expect_text text:"Work email: Valid" "Work email: Valid"
+expect_text text:"Preview status: 2 fields, 0 problems" "Preview status: 2 fields, 0 problems"
+expect_text text:"Form is submittable" "Form is submittable"
+expect_disabled role:button name:"Submit form" false
+click role:button name:"Submit form"
+expect_text text:"Submissions: 1" "Submissions: 1"
+
+# ------------------------------------- the key cross-level assertion
+# Tighten a rule in the DESIGNER and watch previously-valid PREVIEW input turn
+# invalid, with the submittable signal flipping in the same propagation.
+fill label:"Minimum f1" "5"
+expect_text text:"Full name: Must be at least 5 characters" "Full name: Must be at least 5 characters"
+expect_attr label:"Answer f1" aria-invalid ""
+expect_value label:"Answer f1" "Ada"
+expect_text text:"Preview status: 2 fields, 1 problem" "Preview status: 2 fields, 1 problem"
+expect_text text:"Form is not submittable" "Form is not submittable"
+expect_disabled role:button name:"Submit form" true
+
+# Relaxing the same rule restores validity without touching the answer.
+fill label:"Minimum f1" "2"
+expect_text text:"Full name: Valid" "Full name: Valid"
+expect_text text:"Form is submittable" "Form is submittable"
+expect_disabled role:button name:"Submit form" false
+
+# ------------------------------- editing one field's label, fine-grained
+mark_metrics
+fill label:"Label f1" "Given name"
+expect_metric_delta rows_created 0
+expect_metric_delta rows_removed 0
+expect_metric_delta rows_reused 4
+expect_metric_delta patches_emitted 8
+expect_metric_delta scopes_created 0
+expect_metric_delta scopes_disposed 0
+expect_text text:"Given name (required)" "Given name (required)"
+expect_text text:"Given name: Valid" "Given name: Valid"
+expect_text text:"Given name field: Text - required" "Given name field: Text - required"
+# the sibling row is untouched
+expect_text text:"Work email (required)" "Work email (required)"
+expect_value label:"Answer f2" "ada@example.com"
+expect_value label:"Label f2" "Work email"
+
+# required is a rule too: toggling it re-derives the preview label and verdict
+uncheck label:"Required f2"
+expect_text text:"Work email field: Email - optional" "Work email field: Email - optional"
+expect_text text:"Work email" "Work email"
+check label:"Required f2"
+expect_text text:"Work email (required)" "Work email (required)"
+
+# ------------------------------------------------ adding a number field
+click role:button name:"Add number field"
+expect_text text:"Designer status: 3 fields" "Designer status: 3 fields"
+expect_visible role:region name:"Field f3"
+expect_visible role:region name:"Preview field f3"
+expect_text text:"Number 3 field: Number - optional" "Number 3 field: Number - optional"
+expect_text text:"Number 3" "Number 3"
+expect_text text:"Number 3: Valid" "Number 3: Valid"
+expect_text text:"Form is submittable" "Form is submittable"
+
+fill label:"Answer f3" "abc"
+expect_text text:"Number 3: Enter a whole number" "Number 3: Enter a whole number"
+fill label:"Answer f3" "42"
+expect_text text:"Number 3: Valid" "Number 3: Valid"
+fill label:"Maximum f3" "10"
+expect_text text:"Number 3: Must be at most 10" "Number 3: Must be at most 10"
+expect_text text:"Form is not submittable" "Form is not submittable"
+
+# contradictory rule: minimum greater than maximum
+fill label:"Minimum f3" "20"
+expect_text text:"Number 3 field: Number - optional - Rule error: minimum is greater than maximum" "Number 3 field: Number - optional - Rule error: minimum is greater than maximum"
+expect_text text:"Number 3: Rule error: minimum is greater than maximum" "Number 3: Rule error: minimum is greater than maximum"
+expect_attr label:"Minimum f3" aria-invalid ""
+expect_attr label:"Maximum f3" aria-invalid ""
+expect_text text:"Form is not submittable" "Form is not submittable"
+# a non-numeric bound is its own rule error
+fill label:"Minimum f3" "2x"
+expect_text text:"Number 3: Rule error: minimum is not a number" "Number 3: Rule error: minimum is not a number"
+fill label:"Maximum f3" "50"
+fill label:"Minimum f3" "20"
+expect_no_attr label:"Minimum f3" aria-invalid
+expect_text text:"Number 3: Valid" "Number 3: Valid"
+fill label:"Answer f3" "5"
+expect_text text:"Number 3: Must be at least 20" "Number 3: Must be at least 20"
+fill label:"Answer f3" "25"
+expect_text text:"Number 3: Valid" "Number 3: Valid"
+expect_text text:"Form is submittable" "Form is submittable"
+
+# ------------------------------------------------ adding a select field
+click role:button name:"Add select field"
+expect_visible role:region name:"Field f4"
+expect_visible label:"Options f4"
+expect_absent label:"Minimum f4"
+expect_absent label:"Maximum f4"
+# a select with zero options can never be answered, so it blocks submission
+expect_text text:"Select 4 field: Select - optional - Rule error: select has no options" "Select 4 field: Select - optional - Rule error: select has no options"
+expect_text text:"Select 4: Rule error: select has no options" "Select 4: Rule error: select has no options"
+expect_text text:"Form is not submittable" "Form is not submittable"
+
+fill label:"Options f4" "Small, Medium, Large"
+expect_text text:"Select 4: Valid" "Select 4: Valid"
+expect_text text:"Form is submittable" "Form is submittable"
+select_option label:"Answer f4" "Medium"
+expect_value label:"Answer f4" "Medium"
+expect_text text:"Select 4: Valid" "Select 4: Valid"
+
+# removing the option the preview already holds invalidates the answer
+fill label:"Options f4" "Small, Large"
+expect_text text:"Select 4: Choose one of the configured options" "Select 4: Choose one of the configured options"
+expect_text text:"Form is not submittable" "Form is not submittable"
+select_option label:"Answer f4" "Large"
+expect_value label:"Answer f4" "Large"
+expect_text text:"Select 4: Valid" "Select 4: Valid"
+expect_text text:"Form is submittable" "Form is submittable"
+
+# ---------------------------------------------- adding a checkbox field
+click role:button name:"Add checkbox field"
+expect_visible role:region name:"Field f5"
+expect_checked label:"Answer f5" false
+expect_text text:"Checkbox 5: Valid" "Checkbox 5: Valid"
+check label:"Required f5"
+expect_text text:"Checkbox 5: Must be checked" "Checkbox 5: Must be checked"
+expect_text text:"Form is not submittable" "Form is not submittable"
+check label:"Answer f5"
+expect_checked label:"Answer f5" true
+expect_text text:"Checkbox 5: Valid" "Checkbox 5: Valid"
+expect_text text:"Form is submittable" "Form is submittable"
+
+# ------------------------------------- adding the remaining field types
+click role:button name:"Add text field"
+click role:button name:"Add email field"
+expect_text text:"Designer status: 7 fields" "Designer status: 7 fields"
+expect_visible role:region name:"Field f6"
+expect_visible role:region name:"Field f7"
+expect_text text:"Text 6 field: Text - optional" "Text 6 field: Text - optional"
+expect_text text:"Email 7 field: Email - optional" "Email 7 field: Email - optional"
+expect_text text:"Preview status: 7 fields, 0 problems" "Preview status: 7 fields, 0 problems"
+
+# ------------------------------------------------------------- reordering
+# Reordering is a list permutation, not a rebuild: rows keep their identity and
+# every answer travels with its field.
+mark_metrics
+click role:button name:"Move up f2"
+expect_metric_delta rows_created 0
+expect_metric_delta rows_removed 0
+expect_metric_delta rows_reused 14
+expect_metric_delta scopes_created 0
+expect_metric_delta scopes_disposed 0
+expect_value label:"Answer f2" "ada@example.com"
+expect_value label:"Answer f4" "Large"
+expect_checked label:"Answer f5" true
+expect_value label:"Label f1" "Given name"
+expect_text text:"Preview status: 7 fields, 0 problems" "Preview status: 7 fields, 0 problems"
+
+click role:button name:"Move down f2"
+expect_value label:"Answer f2" "ada@example.com"
+expect_value label:"Answer f1" "Ada"
+
+# moving the first field up is a no-op
+click role:button name:"Move up f1"
+click role:button name:"Move up f1"
+expect_text text:"Designer status: 7 fields" "Designer status: 7 fields"
+expect_value label:"Answer f1" "Ada"
+# moving the last field down is a no-op
+click role:button name:"Move down f7"
+expect_text text:"Designer status: 7 fields" "Designer status: 7 fields"
+
+# --------------------------- deleting a field that holds invalid input
+check label:"Required f6"
+expect_text text:"Text 6: This field is required" "Text 6: This field is required"
+expect_text text:"Preview status: 7 fields, 1 problem" "Preview status: 7 fields, 1 problem"
+expect_text text:"Form is not submittable" "Form is not submittable"
+mark_metrics
+click role:button name:"Delete f6"
+expect_metric_delta rows_removed 2
+expect_metric_delta rows_created 0
+expect_metric_delta rows_reused 12
+expect_absent role:region name:"Field f6"
+expect_absent role:region name:"Preview field f6"
+expect_text text:"Designer status: 6 fields" "Designer status: 6 fields"
+expect_text text:"Preview status: 6 fields, 0 problems" "Preview status: 6 fields, 0 problems"
+expect_text text:"Form is submittable" "Form is submittable"
+expect_disabled role:button name:"Submit form" false
+
+# ------------------------------------------- clearing the preview answers
+# Answers are a separate source; clearing them re-derives every verdict without
+# touching the schema.
+click role:button name:"Clear preview answers"
+expect_value label:"Answer f1" ""
+expect_checked label:"Answer f5" false
+expect_text text:"Given name: This field is required" "Given name: This field is required"
+expect_text text:"Checkbox 5: Must be checked" "Checkbox 5: Must be checked"
+expect_text text:"Form is not submittable" "Form is not submittable"
+expect_text text:"Designer status: 6 fields" "Designer status: 6 fields"
+
+# --------------------------------------------------------- the empty form
+click role:button name:"Delete f1"
+click role:button name:"Delete f2"
+click role:button name:"Delete f3"
+click role:button name:"Delete f4"
+click role:button name:"Delete f5"
+click role:button name:"Delete f7"
+expect_text text:"Designer status: 0 fields" "Designer status: 0 fields"
+expect_text text:"No fields yet. Add a field to start designing." "No fields yet. Add a field to start designing."
+expect_text text:"No fields yet. The generated form is empty." "No fields yet. The generated form is empty."
+expect_text text:"Preview status: 0 fields, 0 problems" "Preview status: 0 fields, 0 problems"
+# Decision: an empty form has nothing to submit, so it is NOT submittable.
+expect_text text:"Form is not submittable" "Form is not submittable"
+expect_disabled role:button name:"Submit form" true
+expect_absent role:region name:"Preview field f1"
+
+# ------------------------------------------------------ a single-field form
+click role:button name:"Add text field"
+expect_text text:"Designer status: 1 field" "Designer status: 1 field"
+expect_text text:"Preview status: 1 field, 0 problems" "Preview status: 1 field, 0 problems"
+expect_absent text:"No fields yet. Add a field to start designing."
+expect_text text:"Form is submittable" "Form is submittable"
+expect_disabled role:button name:"Submit form" false
+click role:button name:"Submit form"
+expect_text text:"Submissions: 2" "Submissions: 2"

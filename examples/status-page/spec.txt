@@ -1,0 +1,289 @@
+# Status page: independent service checks fanned into one rollup, interval
+# refresh gated on page visibility, and an incident timeline.
+
+# --- Initial mount -----------------------------------------------------------
+
+expect_visible role:heading name:"Status Page"
+expect_visible role:region name:"Overall status"
+expect_visible role:region name:"Services"
+expect_visible role:region name:"API"
+expect_visible role:region name:"Web app"
+expect_visible role:region name:"Database"
+expect_visible role:region name:"Notifications"
+expect_visible role:region name:"Incidents"
+expect_visible role:region name:"Incident timeline"
+
+expect_text text:"Checking services" "Checking services"
+expect_text text:"Operational 0, degraded 0, outage 0, awaiting 4" "Operational 0, degraded 0, outage 0, awaiting 4"
+expect_text text:"Overall uptime: not reported" "Overall uptime: not reported"
+expect_text text:"Auto refresh every 5s" "Auto refresh every 5s"
+expect_text text:"Refreshes requested: 0" "Refreshes requested: 0"
+
+expect_text text:"API status: awaiting first check" "API status: awaiting first check"
+expect_text text:"API uptime: not reported" "API uptime: not reported"
+expect_text text:"Web app status: awaiting first check" "Web app status: awaiting first check"
+expect_text text:"Database status: awaiting first check" "Database status: awaiting first check"
+expect_text text:"Notifications status: awaiting first check" "Notifications status: awaiting first check"
+
+expect_text text:"Incident feed: loading" "Incident feed: loading"
+expect_text text:"Open incidents: 0" "Open incidents: 0"
+expect_text text:"No incidents reported" "No incidents reported"
+
+expect_interval 5000 1
+expect_pending_task "check:api" 1
+expect_pending_task "check:web" 1
+expect_pending_task "check:database" 1
+expect_pending_task "check:notifications" 1
+expect_pending_task "incidents" 1
+expect_cleanup "status page cleanup" 0
+
+# --- First results: everything healthy, empty incident timeline ---------------
+
+resolve_task "check:api" "operational|99.98"
+expect_text text:"API status: operational" "API status: operational"
+expect_text text:"API uptime: 99.98%" "API uptime: 99.98%"
+expect_text text:"Operational 1, degraded 0, outage 0, awaiting 3" "Operational 1, degraded 0, outage 0, awaiting 3"
+expect_text text:"All systems operational" "All systems operational"
+
+resolve_task "check:web" "operational|99.99"
+resolve_task "check:database" "operational|99.90"
+resolve_task "check:notifications" "operational|99.95"
+resolve_task "incidents" ""
+
+expect_pending_task "check:api" 0
+expect_pending_task "incidents" 0
+expect_text text:"All systems operational" "All systems operational"
+expect_text text:"Operational 4, degraded 0, outage 0, awaiting 0" "Operational 4, degraded 0, outage 0, awaiting 0"
+expect_text text:"Overall uptime: 99.95%" "Overall uptime: 99.95%"
+expect_text text:"Web app uptime: 99.99%" "Web app uptime: 99.99%"
+expect_text text:"Database uptime: 99.90%" "Database uptime: 99.90%"
+expect_text text:"Notifications uptime: 99.95%" "Notifications uptime: 99.95%"
+expect_text text:"Incident feed: updated" "Incident feed: updated"
+expect_text text:"Open incidents: 0" "Open incidents: 0"
+expect_text text:"No incidents reported" "No incidents reported"
+
+# --- One service degrades; the rollup follows --------------------------------
+
+tick_interval 5000
+expect_pending_task "check:api" 1
+expect_pending_task "check:web" 1
+expect_pending_task "incidents" 1
+
+resolve_task "check:api" "degraded|97.40"
+expect_text text:"API status: degraded" "API status: degraded"
+expect_text text:"API uptime: 97.40%" "API uptime: 97.40%"
+expect_text text:"Degraded performance" "Degraded performance"
+expect_text text:"Operational 3, degraded 1, outage 0, awaiting 0" "Operational 3, degraded 1, outage 0, awaiting 0"
+expect_text text:"Web app status: operational" "Web app status: operational"
+
+resolve_task "check:web" "operational|99.99"
+resolve_task "check:database" "operational|99.90"
+resolve_task "check:notifications" "operational|99.95"
+expect_text text:"Degraded performance" "Degraded performance"
+expect_text text:"Overall uptime: 99.31%" "Overall uptime: 99.31%"
+
+# --- First incident arrives, with three updates in publish order -------------
+
+resolve_task "incidents" "inc-42~major~Elevated API error rate~10:02@Investigating elevated 5xx responses^10:20@Identified a bad deploy^10:45@Monitoring after rollback"
+expect_text text:"Open incidents: 1" "Open incidents: 1"
+expect_absent text:"No incidents reported"
+expect_visible role:region name:"Incident inc-42"
+expect_text text:"inc-42 severity: Major" "inc-42 severity: Major"
+expect_text text:"inc-42 title: Elevated API error rate" "inc-42 title: Elevated API error rate"
+expect_text text:"inc-42 latest: 10:45 - Monitoring after rollback" "inc-42 latest: 10:45 - Monitoring after rollback"
+expect_visible role:region name:"inc-42#1"
+expect_visible role:region name:"inc-42#2"
+expect_visible role:region name:"inc-42#3"
+expect_text text:"inc-42 update 1 - 10:02 - Investigating elevated 5xx responses" "inc-42 update 1 - 10:02 - Investigating elevated 5xx responses"
+expect_text text:"inc-42 update 2 - 10:20 - Identified a bad deploy" "inc-42 update 2 - 10:20 - Identified a bad deploy"
+expect_text text:"inc-42 update 3 - 10:45 - Monitoring after rollback" "inc-42 update 3 - 10:45 - Monitoring after rollback"
+
+# --- Several services degrade: the rollup escalates to a major outage --------
+
+tick_interval 5000
+resolve_task "check:api" "degraded|97.40"
+resolve_task "check:web" "degraded|98.10"
+expect_text text:"Degraded performance" "Degraded performance"
+resolve_task "check:database" "degraded|96.00"
+expect_text text:"Major outage" "Major outage"
+expect_text text:"Operational 1, degraded 3, outage 0, awaiting 0" "Operational 1, degraded 3, outage 0, awaiting 0"
+resolve_task "check:notifications" "operational|99.95"
+expect_text text:"Major outage" "Major outage"
+expect_text text:"Overall uptime: 97.86%" "Overall uptime: 97.86%"
+
+# Adding a second incident creates its incident row plus its single update row.
+# The untouched incident is reused and its three update rows are never revisited.
+mark_metrics
+resolve_task "incidents" "inc-42~major~Elevated API error rate~10:02@Investigating elevated 5xx responses^10:20@Identified a bad deploy^10:45@Monitoring after rollback#inc-51~minor~Delayed notification delivery~11:10@Investigating a backlog"
+expect_metric_delta rows_created 2
+expect_metric_delta rows_reused 1
+expect_metric_delta rows_removed 0
+expect_text text:"Open incidents: 2" "Open incidents: 2"
+expect_visible role:region name:"Incident inc-51"
+expect_text text:"inc-51 severity: Minor" "inc-51 severity: Minor"
+expect_text text:"inc-51 latest: 11:10 - Investigating a backlog" "inc-51 latest: 11:10 - Investigating a backlog"
+
+# --- A real outage keeps the page at major outage ----------------------------
+
+tick_interval 5000
+resolve_task "check:api" "operational|99.98"
+resolve_task "check:web" "operational|99.99"
+resolve_task "check:database" "outage|82.50"
+resolve_task "check:notifications" "operational|99.95"
+expect_text text:"Database status: outage" "Database status: outage"
+expect_text text:"Major outage" "Major outage"
+expect_text text:"Operational 3, degraded 0, outage 1, awaiting 0" "Operational 3, degraded 0, outage 1, awaiting 0"
+expect_text text:"Overall uptime: 95.60%" "Overall uptime: 95.60%"
+
+# Editing one incident (new severity plus a new update) creates only that
+# incident's new update row; the sibling incident is reused untouched.
+mark_metrics
+resolve_task "incidents" "inc-42~major~Elevated API error rate~10:02@Investigating elevated 5xx responses^10:20@Identified a bad deploy^10:45@Monitoring after rollback#inc-51~major~Delayed notification delivery~11:10@Investigating a backlog^11:40@Identified queue saturation"
+expect_metric_delta rows_created 1
+expect_metric_delta rows_reused 3
+expect_metric_delta rows_removed 0
+expect_text text:"inc-51 severity: Major" "inc-51 severity: Major"
+expect_text text:"inc-51 latest: 11:40 - Identified queue saturation" "inc-51 latest: 11:40 - Identified queue saturation"
+expect_text text:"inc-51 update 2 - 11:40 - Identified queue saturation" "inc-51 update 2 - 11:40 - Identified queue saturation"
+expect_text text:"inc-42 severity: Major" "inc-42 severity: Major"
+expect_text text:"inc-42 latest: 10:45 - Monitoring after rollback" "inc-42 latest: 10:45 - Monitoring after rollback"
+expect_text text:"inc-42 update 3 - 10:45 - Monitoring after rollback" "inc-42 update 3 - 10:45 - Monitoring after rollback"
+
+# --- Recovery, and reordering the timeline -----------------------------------
+
+tick_interval 5000
+resolve_task "check:api" "operational|99.98"
+resolve_task "check:web" "operational|99.99"
+resolve_task "check:database" "operational|99.90"
+resolve_task "check:notifications" "operational|99.95"
+expect_text text:"All systems operational" "All systems operational"
+expect_text text:"Operational 4, degraded 0, outage 0, awaiting 0" "Operational 4, degraded 0, outage 0, awaiting 0"
+expect_text text:"Overall uptime: 99.95%" "Overall uptime: 99.95%"
+expect_text text:"Database status: operational" "Database status: operational"
+
+mark_metrics
+resolve_task "incidents" "inc-51~major~Delayed notification delivery~11:10@Investigating a backlog^11:40@Identified queue saturation#inc-42~major~Elevated API error rate~10:02@Investigating elevated 5xx responses^10:20@Identified a bad deploy^10:45@Monitoring after rollback"
+expect_metric_delta rows_created 0
+expect_metric_delta rows_reused 2
+expect_metric_delta rows_removed 0
+expect_text text:"Open incidents: 2" "Open incidents: 2"
+expect_visible role:region name:"Incident inc-42"
+expect_visible role:region name:"Incident inc-51"
+
+# --- One refresh fails while the others succeed ------------------------------
+
+tick_interval 5000
+reject_task "check:notifications" "gateway timeout"
+resolve_task "check:api" "operational|99.98"
+resolve_task "check:web" "operational|99.99"
+resolve_task "check:database" "operational|99.90"
+expect_text text:"Notifications status: check failed (gateway timeout)" "Notifications status: check failed (gateway timeout)"
+expect_text text:"Notifications uptime: not reported" "Notifications uptime: not reported"
+expect_text text:"Degraded performance" "Degraded performance"
+expect_text text:"Operational 3, degraded 1, outage 0, awaiting 0" "Operational 3, degraded 1, outage 0, awaiting 0"
+expect_text text:"Overall uptime: 99.95%" "Overall uptime: 99.95%"
+expect_text text:"API status: operational" "API status: operational"
+
+# An empty incident payload clears the timeline back to the empty state. The
+# `Ui.when` arm flips, so the whole keyed list scope is disposed rather than the
+# rows being removed one at a time.
+mark_metrics
+resolve_task "incidents" ""
+expect_metric_delta rows_removed 0
+expect_metric_delta rows_created 0
+expect_metric_delta scopes_disposed 8
+expect_text text:"Open incidents: 0" "Open incidents: 0"
+expect_text text:"No incidents reported" "No incidents reported"
+expect_absent role:region name:"Incident inc-42"
+expect_absent role:region name:"Incident inc-51"
+
+# --- A stale check result arriving after a newer request is ignored ----------
+
+tick_interval 5000
+expect_pending_task "check:api" 1
+expect_canceled_task "check:api" 0
+tick_interval 5000
+expect_pending_task "check:api" 1
+expect_canceled_task "check:api" 1
+mark_metrics
+resolve_stale_task "check:api" "outage|10.00"
+expect_metric_delta stale_task_results_ignored 1
+expect_pending_task "check:api" 1
+expect_text text:"API status: operational" "API status: operational"
+expect_text text:"API uptime: 99.98%" "API uptime: 99.98%"
+expect_text text:"Degraded performance" "Degraded performance"
+
+resolve_task "check:api" "operational|99.98"
+resolve_task "check:web" "operational|99.99"
+resolve_task "check:database" "operational|99.90"
+resolve_task "check:notifications" "operational|99.95"
+resolve_task "incidents" ""
+expect_text text:"All systems operational" "All systems operational"
+
+# --- Hiding the page stops polling -------------------------------------------
+
+tick_interval 5000
+expect_pending_task "check:api" 1
+
+set_visibility hidden
+expect_text text:"Auto refresh paused while the page is hidden" "Auto refresh paused while the page is hidden"
+expect_interval 5000 0
+expect_pending_task "check:api" 0
+expect_pending_task "check:web" 0
+expect_pending_task "check:database" 0
+expect_pending_task "check:notifications" 0
+expect_pending_task "incidents" 0
+tick_interval_if_active 5000
+expect_pending_task "check:api" 0
+expect_text text:"All systems operational" "All systems operational"
+
+# Manual refresh still works while hidden; it is not gated on visibility.
+click role:button name:"Refresh now"
+expect_text text:"Refreshes requested: 1" "Refreshes requested: 1"
+expect_pending_task "check:api" 1
+expect_pending_task "incidents" 1
+resolve_task "check:api" "degraded|97.40"
+resolve_task "check:web" "operational|99.99"
+resolve_task "check:database" "operational|99.90"
+resolve_task "check:notifications" "operational|99.95"
+resolve_task "incidents" ""
+expect_text text:"Degraded performance" "Degraded performance"
+expect_interval 5000 0
+
+# --- Returning to visible resumes polling ------------------------------------
+
+set_visibility visible
+expect_text text:"Auto refresh every 5s" "Auto refresh every 5s"
+expect_interval 5000 1
+expect_pending_task "check:api" 1
+expect_pending_task "check:web" 1
+expect_pending_task "check:database" 1
+expect_pending_task "check:notifications" 1
+expect_pending_task "incidents" 1
+
+resolve_task "check:api" "operational|99.98"
+resolve_task "check:web" "operational|99.99"
+resolve_task "check:database" "operational|99.90"
+resolve_task "check:notifications" "operational|99.95"
+resolve_task "incidents" ""
+expect_text text:"All systems operational" "All systems operational"
+expect_text text:"Overall uptime: 99.95%" "Overall uptime: 99.95%"
+
+tick_interval 5000
+expect_pending_task "check:api" 1
+resolve_task "check:api" "operational|99.98"
+resolve_task "check:web" "operational|99.99"
+resolve_task "check:database" "operational|99.90"
+resolve_task "check:notifications" "operational|99.95"
+resolve_task "incidents" ""
+
+# A service degrading patches only its own card: no rows, no new scopes.
+mark_metrics
+tick_interval 5000
+resolve_task "check:database" "degraded|96.00"
+expect_metric_delta rows_created 0
+expect_metric_delta scopes_created 0
+expect_text text:"Database status: degraded" "Database status: degraded"
+expect_text text:"Degraded performance" "Degraded performance"
+expect_text text:"API status: operational" "API status: operational"
+expect_text text:"Web app status: operational" "Web app status: operational"

@@ -1,0 +1,322 @@
+# Package Explorer semantic spec.
+#
+# Every line of dynamic text carries a stable test_id, so each assertion below
+# reports a value diff rather than a missing element when something changes.
+#
+# Sections:
+#   A  deep link straight to a package detail (this is also the initial route)
+#   B  navigating away while three requests are in flight cancels all three
+#   C  the search page's own loading -> loaded transition
+#   D  search interactions: latest-wins, a stale result, one match, no matches,
+#      failure
+#   E  keyed-row budgets: reorder, per-row edit, add + remove
+#   F  opening a package: three panels loading and settling independently,
+#      including one panel failing while the others succeed
+#   G  Back and Forward restore the exact view and remount the panels
+#   H  an unknown address is replaced with the search route
+
+# --- A. deep link -------------------------------------------------------------
+
+set_initial_location "/packages/roc-json"
+expect_current_location "/packages/roc-json"
+expect_document_title "roc-json - Package Explorer"
+
+expect_visible role:heading name:"Package Explorer"
+expect_visible role:region name:"Package Explorer"
+expect_visible role:region name:"Package detail"
+expect_visible role:heading name:"Package detail"
+expect_visible role:region name:"Overview"
+expect_visible role:region name:"Versions"
+expect_visible role:region name:"Version history"
+expect_visible role:region name:"Dependencies"
+expect_visible role:region name:"Dependency list"
+expect_visible role:link name:"Back to search"
+expect_absent role:region name:"Package search"
+expect_absent role:region name:"Search results"
+
+expect_text test_id:"package-id" "Package: roc-json"
+expect_text test_id:"panel-summary" "Panels: 0 ready, 3 loading, 0 failed"
+expect_visible text:"Some panels are still loading."
+expect_absent text:"All panels settled."
+expect_text test_id:"overview-status" "Overview: loading"
+expect_text test_id:"overview-empty" "Overview details pending."
+expect_text test_id:"versions-status" "Versions: loading"
+expect_text test_id:"versions-empty" "Version history pending."
+expect_text test_id:"deps-status" "Dependencies: loading"
+expect_text test_id:"deps-empty" "Dependency list pending."
+
+# The search query is a separate source, so a cold deep link also starts the
+# empty-query search. The context line is the map2 fan-in of route + matches.
+expect_text test_id:"context" "Context: package roc-json (0 search matches retained)"
+expect_pending_task "detail" 1
+expect_pending_task "versions" 1
+expect_pending_task "deps" 1
+expect_pending_task "search" 1
+expect_canceled_task "detail" 0
+expect_canceled_task "versions" 0
+expect_canceled_task "deps" 0
+expect_cleanup "package detail panels" 0
+
+# --- B. navigating away cancels the in-flight panel requests ------------------
+
+click role:link name:"Back to search"
+expect_current_location "/"
+expect_document_title "Package Explorer"
+expect_absent role:region name:"Package detail"
+expect_absent role:region name:"Overview"
+expect_pending_task "detail" 0
+expect_pending_task "versions" 0
+expect_pending_task "deps" 0
+expect_canceled_task "detail" 1
+expect_canceled_task "versions" 1
+expect_canceled_task "deps" 1
+expect_cleanup "package detail panels" 1
+
+# --- C. the search page's own loading -> loaded transition --------------------
+
+expect_visible role:region name:"Package search"
+expect_visible role:heading name:"Package search"
+expect_visible role:region name:"Search results"
+expect_value label:"Search packages" ""
+expect_checked label:"Reverse order" false
+expect_text test_id:"search-status" "Search status: searching"
+expect_text test_id:"search-empty" "Loading packages..."
+expect_text test_id:"order" "Order: A to Z"
+expect_text test_id:"context" "Context: search results (0 matches)"
+expect_pending_task "search" 1
+
+resolve_task "search" "roc-json|JSON codec for Roc;roc-http|HTTP client for Roc;roc-parser|Parser combinators for Roc"
+expect_pending_task "search" 0
+expect_text test_id:"search-status" "Search status: 3 packages"
+expect_text test_id:"context" "Context: search results (3 matches)"
+expect_absent test_id:"search-empty"
+expect_visible role:link name:"Open roc-json"
+expect_visible role:link name:"Open roc-http"
+expect_visible role:link name:"Open roc-parser"
+expect_text test_id:"summary-roc-json" "JSON codec for Roc"
+expect_text test_id:"summary-roc-http" "HTTP client for Roc"
+expect_text test_id:"summary-roc-parser" "Parser combinators for Roc"
+expect_text test_id:"watch-roc-json" "roc-json: not watching"
+
+# --- D. latest-wins search and a stale result ---------------------------------
+
+fill label:"Search packages" "js"
+expect_value label:"Search packages" "js"
+expect_pending_task "search" 1
+expect_text test_id:"search-status" "Search status: searching"
+expect_canceled_task "search" 0
+
+# Typing again supersedes the first request: the old one is cancelled and only
+# the newest may land.
+fill label:"Search packages" "json"
+expect_pending_task "search" 1
+expect_canceled_task "search" 1
+
+mark_metrics
+resolve_stale_task "search" "stale-package|This superseded payload must never render"
+expect_metric_delta stale_task_results_ignored 1
+expect_text test_id:"search-status" "Search status: searching"
+expect_absent role:link name:"Open stale-package"
+expect_pending_task "search" 1
+
+# One matching package: the singular boundary case.
+resolve_task "search" "roc-json|JSON codec for Roc"
+expect_pending_task "search" 0
+expect_text test_id:"search-status" "Search status: 1 package"
+expect_text test_id:"context" "Context: search results (1 matches)"
+expect_visible role:link name:"Open roc-json"
+expect_absent role:link name:"Open roc-http"
+
+# No matches: the empty branch of the list.
+fill label:"Search packages" "zzzz"
+expect_pending_task "search" 1
+resolve_task "search" ""
+expect_text test_id:"search-status" "Search status: no packages match"
+expect_text test_id:"search-empty" "No packages match this search."
+expect_text test_id:"context" "Context: search results (0 matches)"
+expect_visible role:region name:"Search results"
+expect_absent role:link name:"Open roc-json"
+
+# Failure path.
+fill label:"Search packages" "boom"
+reject_task "search" "registry unreachable"
+expect_pending_task "search" 0
+expect_text test_id:"search-status" "Search status: failed - registry unreachable"
+expect_text test_id:"search-empty" "Search unavailable."
+expect_text test_id:"context" "Context: search results (0 matches)"
+
+# --- E. keyed-row budgets and per-row edits -----------------------------------
+
+fill label:"Search packages" "roc"
+resolve_task "search" "roc-json|JSON codec for Roc;roc-http|HTTP client for Roc;roc-parser|Parser combinators for Roc"
+expect_text test_id:"search-status" "Search status: 3 packages"
+expect_text test_id:"order" "Order: A to Z"
+expect_text test_id:"watch-roc-json" "roc-json: not watching"
+expect_text test_id:"watch-roc-http" "roc-http: not watching"
+expect_text test_id:"watch-roc-parser" "roc-parser: not watching"
+
+# Reorder: the order toggle is client-side, so the same three row scopes are
+# reused and nothing is created or removed.
+mark_metrics
+check label:"Reverse order"
+expect_checked label:"Reverse order" true
+expect_text test_id:"order" "Order: Z to A"
+expect_metric_delta rows_created 0
+expect_metric_delta rows_removed 0
+expect_metric_delta rows_reused 3
+expect_visible role:link name:"Open roc-parser"
+expect_visible role:link name:"Open roc-json"
+expect_visible role:link name:"Open roc-http"
+expect_text test_id:"summary-roc-json" "JSON codec for Roc"
+
+# Per-row edit: watching one package must not recreate any row and must not
+# disturb its siblings. One text patch is the whole cost.
+mark_metrics
+click role:button name:"Watch roc-http"
+expect_text test_id:"watch-roc-http" "roc-http: watching"
+expect_text test_id:"watch-roc-json" "roc-json: not watching"
+expect_text test_id:"watch-roc-parser" "roc-parser: not watching"
+expect_metric_delta rows_created 0
+expect_metric_delta rows_removed 0
+expect_metric_delta rows_reused 0
+expect_metric_delta scopes_created 0
+expect_metric_delta patches_emitted 1
+
+# Moving the watch to another row is symmetric.
+click role:button name:"Watch roc-parser"
+expect_text test_id:"watch-roc-parser" "roc-parser: watching"
+expect_text test_id:"watch-roc-http" "roc-http: not watching"
+expect_text test_id:"watch-roc-json" "roc-json: not watching"
+
+uncheck label:"Reverse order"
+expect_checked label:"Reverse order" false
+expect_text test_id:"order" "Order: A to Z"
+
+# Add one package and remove another through a fresh search.
+fill label:"Search packages" "roc core"
+resolve_task "search" "roc-json|JSON codec for Roc;roc-parser|Parser combinators for Roc;roc-bytes|Byte helpers for Roc"
+expect_text test_id:"search-status" "Search status: 3 packages"
+expect_visible role:link name:"Open roc-bytes"
+expect_absent role:link name:"Open roc-http"
+expect_absent test_id:"summary-roc-http"
+expect_text test_id:"summary-roc-bytes" "Byte helpers for Roc"
+
+# One row's summary changes while its siblings keep theirs.
+fill label:"Search packages" "roc core "
+resolve_task "search" "roc-json|JSON codec for Roc, revised;roc-parser|Parser combinators for Roc;roc-bytes|Byte helpers for Roc"
+expect_text test_id:"summary-roc-json" "JSON codec for Roc, revised"
+expect_text test_id:"summary-roc-parser" "Parser combinators for Roc"
+expect_text test_id:"summary-roc-bytes" "Byte helpers for Roc"
+
+# --- F. opening a package: three panels settle independently ------------------
+
+click role:link name:"Open roc-json"
+expect_current_location "/packages/roc-json"
+expect_document_title "roc-json - Package Explorer"
+expect_visible role:region name:"Package detail"
+expect_absent role:region name:"Package search"
+expect_text test_id:"package-id" "Package: roc-json"
+expect_text test_id:"context" "Context: package roc-json (3 search matches retained)"
+expect_text test_id:"panel-summary" "Panels: 0 ready, 3 loading, 0 failed"
+expect_pending_task "detail" 1
+expect_pending_task "versions" 1
+expect_pending_task "deps" 1
+expect_cleanup "package detail panels" 1
+
+# Versions resolves first. Its own loading -> loaded transition must not move
+# the other two panels.
+resolve_task "versions" "1.2.0|2026-05-02;1.1.0|2026-03-14;1.0.0|2026-01-09"
+expect_pending_task "versions" 0
+expect_text test_id:"versions-status" "Versions: 3 released"
+expect_text test_id:"version-1.2.0" "1.2.0 released 2026-05-02"
+expect_text test_id:"version-1.1.0" "1.1.0 released 2026-03-14"
+expect_text test_id:"version-1.0.0" "1.0.0 released 2026-01-09"
+expect_absent test_id:"versions-empty"
+expect_text test_id:"overview-status" "Overview: loading"
+expect_text test_id:"deps-status" "Dependencies: loading"
+expect_text test_id:"panel-summary" "Panels: 1 ready, 2 loading, 0 failed"
+expect_visible text:"Some panels are still loading."
+expect_pending_task "detail" 1
+expect_pending_task "deps" 1
+
+# Dependencies resolves next. It creates only its own rows; the version rows
+# are untouched.
+mark_metrics
+resolve_task "deps" "roc-parser|0.4.0;roc-bytes|1.1.0"
+expect_metric_delta rows_created 2
+expect_metric_delta rows_removed 0
+expect_metric_delta rows_reused 0
+expect_pending_task "deps" 0
+expect_text test_id:"deps-status" "Dependencies: 2 required"
+expect_text test_id:"dep-roc-parser" "roc-parser requires 0.4.0"
+expect_text test_id:"dep-roc-bytes" "roc-bytes requires 1.1.0"
+expect_text test_id:"versions-status" "Versions: 3 released"
+expect_text test_id:"version-1.2.0" "1.2.0 released 2026-05-02"
+expect_text test_id:"overview-status" "Overview: loading"
+expect_text test_id:"panel-summary" "Panels: 2 ready, 1 loading, 0 failed"
+
+# The overview fails while its two siblings stay loaded.
+reject_task "detail" "overview service unavailable"
+expect_pending_task "detail" 0
+expect_text test_id:"overview-status" "Overview: failed - overview service unavailable"
+expect_text test_id:"overview-empty" "Overview details unavailable."
+expect_text test_id:"versions-status" "Versions: 3 released"
+expect_text test_id:"deps-status" "Dependencies: 2 required"
+expect_text test_id:"panel-summary" "Panels: 2 ready, 0 loading, 1 failed"
+expect_visible text:"All panels settled."
+expect_absent text:"Some panels are still loading."
+
+# --- G. Back and Forward ------------------------------------------------------
+
+history_back
+expect_current_location "/"
+expect_document_title "Package Explorer"
+expect_visible role:region name:"Package search"
+expect_absent role:region name:"Package detail"
+expect_text test_id:"search-status" "Search status: 3 packages"
+expect_text test_id:"context" "Context: search results (3 matches)"
+expect_cleanup "package detail panels" 2
+expect_canceled_task "detail" 1
+
+history_forward
+expect_current_location "/packages/roc-json"
+expect_document_title "roc-json - Package Explorer"
+expect_visible role:region name:"Package detail"
+expect_text test_id:"package-id" "Package: roc-json"
+expect_text test_id:"panel-summary" "Panels: 0 ready, 3 loading, 0 failed"
+expect_pending_task "detail" 1
+expect_pending_task "versions" 1
+expect_pending_task "deps" 1
+
+# The overview succeeds this time; every field is derived from one payload.
+resolve_task "detail" "roc-json|JSON codec for Roc|Apache-2.0|18422"
+expect_text test_id:"overview-status" "Overview: ready"
+expect_text test_id:"overview-summary" "Summary: JSON codec for Roc"
+expect_text test_id:"overview-license" "License: Apache-2.0"
+expect_text test_id:"overview-downloads" "Downloads: 18422"
+expect_absent test_id:"overview-empty"
+expect_text test_id:"panel-summary" "Panels: 1 ready, 2 loading, 0 failed"
+
+# A package with nothing published and nothing depended on: both empty branches.
+resolve_task "versions" ""
+resolve_task "deps" ""
+expect_text test_id:"versions-status" "Versions: none published"
+expect_text test_id:"versions-empty" "No versions published yet."
+expect_text test_id:"deps-status" "Dependencies: none"
+expect_text test_id:"deps-empty" "This package has no dependencies."
+expect_text test_id:"panel-summary" "Panels: 3 ready, 0 loading, 0 failed"
+expect_visible text:"All panels settled."
+
+history_back
+expect_current_location "/"
+expect_visible role:region name:"Package search"
+expect_cleanup "package detail panels" 3
+
+# --- H. unknown address -------------------------------------------------------
+
+navigate "/not/a/package"
+expect_current_location "/"
+expect_document_title "Package Explorer"
+expect_visible role:region name:"Package search"
+expect_absent role:region name:"Package detail"
+expect_text test_id:"context" "Context: search results (3 matches)"

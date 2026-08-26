@@ -1,0 +1,325 @@
+# Recipe Scaler
+#
+# One servings input drives dozens of independent derived leaves. The point of
+# this spec is that a servings edit patches exactly the ingredient quantity
+# sinks and does nothing structural: no rows created, reused, removed, no
+# scopes mounted or disposed.
+#
+# Quantities are integers in a fixed-point unit (micro-units per serving,
+# scaled by milli-servings, rounded to hundredths for display), so every value
+# below is exact on every host.
+
+# --- Initial mount -----------------------------------------------------------
+
+expect_visible role:heading name:"Recipe Scaler"
+expect_visible role:region name:"Scaling controls"
+expect_visible role:region name:"Scale summary"
+expect_visible role:region name:"Ingredients"
+expect_visible role:region name:"Shopping list"
+
+expect_value label:"Recipe" "pancakes"
+expect_value label:"Target servings" "4"
+expect_value label:"Pan size" "recipe"
+expect_checked label:"Scale by servings" true
+expect_checked label:"Scale by pan size" false
+expect_checked label:"Metric units" true
+expect_checked label:"Imperial units" false
+expect_checked label:"Include Buttermilk Pancakes" false
+expect_checked label:"Include Roasted Tomato Soup" false
+expect_checked label:"Include Seeded Bread Loaf" false
+
+expect_text test_id:"effective-servings" "Effective servings: 4"
+expect_text test_id:"scale-note" "Unscaled: this is the recipe as printed."
+expect_text test_id:"unit-system" "Units: metric (tsp and pinch are unchanged)"
+expect_text test_id:"controls-summary" "Controls: pancakes / servings / recipe / metric"
+
+expect_text test_id:"recipe-title" "Buttermilk Pancakes"
+expect_text test_id:"ing-name-flour" "Plain flour"
+expect_text test_id:"ing-qty-flour" "200 g"
+expect_text test_id:"ing-name-buttermilk" "Buttermilk"
+expect_text test_id:"ing-qty-buttermilk" "300 ml"
+expect_text test_id:"ing-name-butter" "Butter"
+expect_text test_id:"ing-qty-butter" "50 g"
+expect_text test_id:"ing-name-baking-powder" "Baking powder"
+expect_text test_id:"ing-qty-baking-powder" "2 tsp"
+expect_text test_id:"ing-name-salt" "Salt"
+expect_text test_id:"ing-qty-salt" "1 pinch"
+
+# Empty shopping list.
+expect_text test_id:"shopping-count" "Shopping list: 0 lines from 0 recipes"
+expect_visible test_id:"shopping-empty"
+expect_absent test_id:"shopping-rows"
+
+# --- Building the shopping list ---------------------------------------------
+
+# One recipe: every line comes from a single source.
+check label:"Include Buttermilk Pancakes"
+expect_checked label:"Include Buttermilk Pancakes" true
+expect_visible test_id:"shopping-rows"
+expect_absent test_id:"shopping-empty"
+expect_text test_id:"shopping-count" "Shopping list: 5 lines from 1 recipes"
+expect_text test_id:"shop-name-flour-g" "Plain flour"
+expect_text test_id:"shop-qty-flour-g" "200 g"
+expect_text test_id:"shop-name-butter-g" "Butter"
+expect_text test_id:"shop-qty-butter-g" "50 g"
+expect_text test_id:"shop-qty-salt-pinch" "1 pinch"
+
+# A second recipe: shared ingredients in the same unit aggregate into one line.
+check label:"Include Seeded Bread Loaf"
+expect_text test_id:"shopping-count" "Shopping list: 6 lines from 2 recipes"
+expect_text test_id:"shop-name-flour-g" "Plain flour (2 recipes)"
+expect_text test_id:"shop-qty-flour-g" "450 g"
+expect_text test_id:"shop-name-butter-g" "Butter (2 recipes)"
+expect_text test_id:"shop-qty-butter-g" "60 g"
+expect_text test_id:"shop-name-salt-pinch" "Salt (2 recipes)"
+expect_text test_id:"shop-qty-salt-pinch" "1.5 pinch"
+expect_text test_id:"shop-qty-water-ml" "160 ml"
+# Unshared lines are untouched by the new recipe.
+expect_text test_id:"shop-name-buttermilk-ml" "Buttermilk"
+expect_text test_id:"shop-qty-buttermilk-ml" "300 ml"
+
+# A third recipe brings Butter in teaspoons. Two recipes sharing an ingredient
+# in different units must NOT aggregate: butter-g and butter-tsp stay separate.
+check label:"Include Roasted Tomato Soup"
+expect_text test_id:"shopping-count" "Shopping list: 9 lines from 3 recipes"
+expect_text test_id:"shop-name-butter-g" "Butter (2 recipes)"
+expect_text test_id:"shop-qty-butter-g" "60 g"
+expect_text test_id:"shop-name-butter-tsp" "Butter"
+expect_text test_id:"shop-qty-butter-tsp" "4 tsp"
+expect_text test_id:"shop-name-salt-pinch" "Salt (3 recipes)"
+expect_text test_id:"shop-qty-salt-pinch" "4.17 pinch"
+expect_text test_id:"shop-qty-tomatoes-g" "1200 g"
+# Aggregating three per-serving amounts and rounding to hundredths.
+expect_text test_id:"shop-qty-stock-ml" "666.67 ml"
+
+# --- The fan-out: one input, many leaves, nothing structural -----------------
+
+# 5 ingredient sinks + 9 shopping sinks + the two summary lines + the input's
+# own value sink all recompute from a single servings edit. No row is created,
+# reused or removed, and no scope is mounted or disposed, because neither
+# each_str list signal depends on servings: the row items carry per-serving
+# amounts, and the target scale reaches them as a separate signal.
+# Observed here: nodes_recomputed 1 (one dirty source root), patches_emitted 17
+# -- exactly the 14 quantity sinks, effective-servings, scale-note, and the
+# servings input value. Nothing structural.
+mark_metrics
+fill label:"Target servings" "8"
+expect_metric_delta rows_created 0
+expect_metric_delta rows_reused 0
+expect_metric_delta rows_removed 0
+expect_metric_delta scopes_created 0
+expect_metric_delta scopes_disposed 0
+expect_metric_delta_at_most nodes_recomputed 4
+expect_metric_delta_at_most patches_emitted 20
+
+expect_text test_id:"effective-servings" "Effective servings: 8"
+expect_text test_id:"scale-note" "Scaled from the recipe's 4 servings."
+expect_text test_id:"ing-qty-flour" "400 g"
+expect_text test_id:"ing-qty-buttermilk" "600 ml"
+expect_text test_id:"ing-qty-butter" "100 g"
+expect_text test_id:"ing-qty-baking-powder" "4 tsp"
+expect_text test_id:"ing-qty-salt" "2 pinch"
+expect_text test_id:"shop-qty-flour-g" "900 g"
+expect_text test_id:"shop-qty-stock-ml" "1333.33 ml"
+expect_text test_id:"shop-qty-salt-pinch" "8.33 pinch"
+# Structure is unchanged: the same nine lines, same count.
+expect_text test_id:"shopping-count" "Shopping list: 9 lines from 3 recipes"
+
+# --- Scaling down, rounding, and the boundaries ------------------------------
+
+fill label:"Target servings" "3"
+expect_text test_id:"effective-servings" "Effective servings: 3"
+expect_text test_id:"ing-qty-flour" "150 g"
+expect_text test_id:"ing-qty-buttermilk" "225 ml"
+# Fractional results are rounded to hundredths, trailing zeros trimmed.
+expect_text test_id:"ing-qty-butter" "37.5 g"
+expect_text test_id:"ing-qty-baking-powder" "1.5 tsp"
+expect_text test_id:"ing-qty-salt" "0.75 pinch"
+
+fill label:"Target servings" "1"
+expect_text test_id:"effective-servings" "Effective servings: 1"
+expect_text test_id:"scale-note" "Scaled from the recipe's 4 servings."
+expect_text test_id:"ing-qty-flour" "50 g"
+expect_text test_id:"ing-qty-buttermilk" "75 ml"
+expect_text test_id:"ing-qty-butter" "12.5 g"
+expect_text test_id:"ing-qty-baking-powder" "0.5 tsp"
+expect_text test_id:"ing-qty-salt" "0.25 pinch"
+
+# Zero servings is a valid target, not an error: every quantity becomes zero,
+# the units are still shown, and no row disappears.
+fill label:"Target servings" "0"
+expect_text test_id:"effective-servings" "Effective servings: 0"
+expect_text test_id:"scale-note" "Nothing to make at 0 servings: every quantity is 0."
+expect_text test_id:"ing-qty-flour" "0 g"
+expect_text test_id:"ing-qty-buttermilk" "0 ml"
+expect_text test_id:"ing-qty-butter" "0 g"
+expect_text test_id:"ing-qty-baking-powder" "0 tsp"
+expect_text test_id:"ing-qty-salt" "0 pinch"
+expect_text test_id:"shop-qty-flour-g" "0 g"
+expect_text test_id:"shop-qty-stock-ml" "0 ml"
+expect_text test_id:"shopping-count" "Shopping list: 9 lines from 3 recipes"
+
+# Invalid drafts keep the draft in the box but fall back to the recipe's own
+# serving count so the page still shows a usable recipe.
+fill label:"Target servings" "two"
+expect_value label:"Target servings" "two"
+expect_text test_id:"effective-servings" "Effective servings: 4"
+expect_text test_id:"scale-note" "Servings must be a whole number from 0 to 96. Showing the recipe's own 4 servings."
+expect_text test_id:"ing-qty-flour" "200 g"
+
+fill label:"Target servings" ""
+expect_text test_id:"effective-servings" "Effective servings: 4"
+expect_text test_id:"scale-note" "Servings must be a whole number from 0 to 96. Showing the recipe's own 4 servings."
+
+fill label:"Target servings" "999"
+expect_text test_id:"effective-servings" "Effective servings: 4"
+expect_text test_id:"scale-note" "Servings must be a whole number from 0 to 96. Showing the recipe's own 4 servings."
+
+fill label:"Target servings" "4"
+expect_text test_id:"effective-servings" "Effective servings: 4"
+expect_text test_id:"scale-note" "Unscaled: this is the recipe as printed."
+expect_text test_id:"ing-qty-flour" "200 g"
+
+# --- The unit system toggle changes every convertible quantity ---------------
+
+# Same shape as the servings fan-out, but the equality cutoff shows through:
+# observed patches_emitted 13, not 17, because the tsp and pinch sinks
+# recompute to the same string and are never patched.
+mark_metrics
+real_click label:"Imperial units"
+expect_metric_delta rows_created 0
+expect_metric_delta rows_reused 0
+expect_metric_delta rows_removed 0
+expect_metric_delta scopes_created 0
+expect_metric_delta scopes_disposed 0
+expect_metric_delta_at_most nodes_recomputed 4
+expect_metric_delta_at_most patches_emitted 20
+
+expect_checked label:"Imperial units" true
+expect_checked label:"Metric units" false
+expect_text test_id:"unit-system" "Units: imperial (tsp and pinch are unchanged)"
+expect_text test_id:"controls-summary" "Controls: pancakes / servings / recipe / imperial"
+expect_text test_id:"ing-qty-flour" "7.05 oz"
+expect_text test_id:"ing-qty-buttermilk" "10.14 fl oz"
+expect_text test_id:"ing-qty-butter" "1.76 oz"
+# tsp and pinch have no imperial counterpart, so they do not convert.
+expect_text test_id:"ing-qty-baking-powder" "2 tsp"
+expect_text test_id:"ing-qty-salt" "1 pinch"
+expect_text test_id:"shop-qty-flour-g" "15.87 oz"
+expect_text test_id:"shop-qty-tomatoes-g" "42.33 oz"
+expect_text test_id:"shop-qty-stock-ml" "22.54 fl oz"
+expect_text test_id:"shop-qty-butter-tsp" "4 tsp"
+
+real_click label:"Metric units"
+expect_checked label:"Metric units" true
+expect_text test_id:"unit-system" "Units: metric (tsp and pinch are unchanged)"
+expect_text test_id:"ing-qty-flour" "200 g"
+expect_text test_id:"shop-qty-stock-ml" "666.67 ml"
+
+# --- Scaling by pan size instead of servings ---------------------------------
+
+real_click label:"Scale by pan size"
+expect_checked label:"Scale by pan size" true
+expect_checked label:"Scale by servings" false
+# "Recipe's own tin" is the identity ratio, so nothing moves yet.
+expect_text test_id:"effective-servings" "Effective servings: 4"
+expect_text test_id:"scale-note" "Pan scaling: the recipe's own tin. The servings box is ignored."
+expect_text test_id:"ing-qty-flour" "200 g"
+
+select_option label:"Pan size" "tray30"
+expect_value label:"Pan size" "tray30"
+expect_text test_id:"controls-summary" "Controls: pancakes / pan / tray30 / metric"
+expect_text test_id:"scale-note" "Pan scaling: a 30x20 cm tray. The servings box is ignored."
+# 4 servings * 600 cm2 / 452 cm2 = 5.309 servings, kept in milli-servings.
+expect_text test_id:"effective-servings" "Effective servings: 5.31"
+expect_text test_id:"ing-qty-flour" "265.45 g"
+expect_text test_id:"ing-qty-buttermilk" "398.18 ml"
+expect_text test_id:"ing-qty-butter" "66.36 g"
+expect_text test_id:"ing-qty-baking-powder" "2.65 tsp"
+expect_text test_id:"ing-qty-salt" "1.33 pinch"
+
+# In pan mode the servings box really is ignored.
+fill label:"Target servings" "20"
+expect_text test_id:"effective-servings" "Effective servings: 5.31"
+expect_text test_id:"ing-qty-flour" "265.45 g"
+
+select_option label:"Pan size" "round20"
+expect_text test_id:"effective-servings" "Effective servings: 2.78"
+expect_text test_id:"ing-qty-flour" "138.9 g"
+
+# Back to servings mode: the servings box takes over again.
+real_click label:"Scale by servings"
+expect_text test_id:"effective-servings" "Effective servings: 20"
+expect_text test_id:"ing-qty-flour" "1000 g"
+select_option label:"Pan size" "recipe"
+fill label:"Target servings" "2"
+expect_text test_id:"effective-servings" "Effective servings: 2"
+
+# --- Switching recipe: this IS structural --------------------------------
+
+# Pancakes and soup share the keys "butter" and "salt", so those rows survive;
+# the rest are created and removed.
+mark_metrics
+select_option label:"Recipe" "soup"
+expect_metric_delta rows_created 2
+expect_metric_delta rows_reused 2
+expect_metric_delta rows_removed 3
+
+expect_text test_id:"recipe-title" "Roasted Tomato Soup"
+expect_text test_id:"controls-summary" "Controls: soup / servings / recipe / metric"
+expect_text test_id:"scale-note" "Scaled from the recipe's 3 servings."
+expect_absent test_id:"ing-qty-flour"
+expect_absent test_id:"ing-qty-buttermilk"
+expect_absent test_id:"ing-qty-baking-powder"
+expect_text test_id:"ing-name-tomatoes" "Tomatoes"
+expect_text test_id:"ing-qty-tomatoes" "600 g"
+# 500 ml over 3 base servings scaled to 2 is a repeating fraction.
+expect_text test_id:"ing-qty-stock" "333.33 ml"
+expect_text test_id:"ing-qty-butter" "2 tsp"
+expect_text test_id:"ing-qty-salt" "1.33 pinch"
+
+# The shopping list is independent of which recipe is on screen.
+expect_text test_id:"shopping-count" "Shopping list: 9 lines from 3 recipes"
+expect_text test_id:"shop-qty-flour-g" "225 g"
+
+# --- Removing recipes from the shopping list ---------------------------------
+
+# Removing one recipe rewrites only the lines it contributed to; sibling lines
+# that it never touched keep their exact values.
+uncheck label:"Include Seeded Bread Loaf"
+expect_checked label:"Include Seeded Bread Loaf" false
+expect_text test_id:"shopping-count" "Shopping list: 8 lines from 2 recipes"
+expect_absent test_id:"shop-qty-water-ml"
+expect_text test_id:"shop-name-flour-g" "Plain flour"
+expect_text test_id:"shop-qty-flour-g" "100 g"
+expect_text test_id:"shop-name-butter-g" "Butter"
+expect_text test_id:"shop-qty-butter-g" "25 g"
+# Untouched siblings.
+expect_text test_id:"shop-qty-buttermilk-ml" "150 ml"
+expect_text test_id:"shop-qty-tomatoes-g" "600 g"
+expect_text test_id:"shop-qty-butter-tsp" "2 tsp"
+
+uncheck label:"Include Roasted Tomato Soup"
+expect_text test_id:"shopping-count" "Shopping list: 5 lines from 1 recipes"
+expect_absent test_id:"shop-qty-butter-tsp"
+expect_absent test_id:"shop-qty-tomatoes-g"
+expect_text test_id:"shop-qty-flour-g" "100 g"
+
+# Back to an empty list. The Ui.when branch flips, so the whole rows subtree is
+# disposed as scopes rather than as row removals: scopes_disposed 6 is the
+# each_str scope plus its five row scopes, and rows_removed stays 0.
+mark_metrics
+uncheck label:"Include Buttermilk Pancakes"
+expect_metric_delta rows_created 0
+expect_metric_delta rows_reused 0
+expect_metric_delta rows_removed 0
+expect_metric_delta scopes_created 1
+expect_metric_delta scopes_disposed 6
+expect_text test_id:"shopping-count" "Shopping list: 0 lines from 0 recipes"
+expect_visible test_id:"shopping-empty"
+expect_absent test_id:"shopping-rows"
+
+# The ingredient panel is untouched by shopping-list churn.
+expect_text test_id:"recipe-title" "Roasted Tomato Soup"
+expect_text test_id:"ing-qty-tomatoes" "600 g"
+expect_text test_id:"ing-qty-stock" "333.33 ml"

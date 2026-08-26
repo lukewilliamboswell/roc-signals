@@ -1,4 +1,180 @@
 [[examples]]
+slug = "dependency-scheduler"
+title = "Dependency Scheduler"
+description = "Tasks with dependencies where a move cascades through downstream dates, slack is derived, and the critical path shifts as durations change."
+source = "examples/dependency-scheduler/app.roc"
+spec = "examples/dependency-scheduler/spec.txt"
+public = true
+wasm = true
+native = true
+bench = true
+
+[[examples]]
+slug = "recipe-scaler"
+title = "Recipe Scaler"
+description = "Scale recipes by servings or tin size with unit conversion, where one input fans out to dozens of derived quantities and no structural work."
+source = "examples/recipe-scaler/app.roc"
+spec = "examples/recipe-scaler/spec.txt"
+public = true
+wasm = true
+native = true
+bench = true
+
+[[examples]]
+slug = "query-builder"
+title = "Query Builder"
+description = "A recursive AND/OR filter tree with nesting, negation, a generated query string, and a live match count."
+source = "examples/query-builder/app.roc"
+spec = "examples/query-builder/spec.txt"
+public = true
+wasm = true
+native = true
+bench = true
+
+[[examples]]
+slug = "token-editor"
+title = "Design Token Editor"
+description = "Design tokens driving live previews, derived WCAG contrast validation, and a generated stylesheet in exact integer arithmetic."
+source = "examples/token-editor/app.roc"
+spec = "examples/token-editor/spec.txt"
+public = true
+wasm = true
+native = true
+bench = true
+
+[[examples]]
+slug = "package-explorer"
+title = "Package Explorer"
+description = "A routed registry explorer with three independently loading panels, latest-wins search, and requests cancelled by navigation."
+source = "examples/package-explorer/app.roc"
+spec = "examples/package-explorer/spec.txt"
+public = true
+wasm = true
+native = true
+bench = true
+
+[[examples]]
+slug = "loan-comparator"
+title = "Loan Comparator"
+description = "Three loan scenarios with memoised amortisation schedules, a cheapest-option rollup, and a cross-scenario break-even point in exact fixed-point arithmetic."
+source = "examples/loan-comparator/app.roc"
+spec = "examples/loan-comparator/spec.txt"
+public = true
+wasm = true
+native = true
+bench = true
+
+[[examples]]
+slug = "data-grid"
+title = "Data Grid"
+description = "A 1200-row sortable, filterable, editable grid that renders one page at a time while a summary row aggregates the full dataset."
+source = "examples/data-grid/app.roc"
+spec = "examples/data-grid/spec.txt"
+public = true
+wasm = true
+native = true
+bench = true
+
+[[examples]]
+slug = "pomodoro-tracker"
+title = "Pomodoro Tracker"
+description = "A focus timer with per-project totals and a daily rollup, deriving elapsed time from interval ticks and persisting to local storage."
+source = "examples/pomodoro-tracker/app.roc"
+spec = "examples/pomodoro-tracker/spec.txt"
+public = true
+wasm = true
+native = true
+bench = true
+
+[[examples]]
+slug = "form-builder"
+title = "Form Builder"
+description = "A field designer beside a live preview that validates as you type, where tightening a rule in the designer invalidates preview input across two levels of signal graph."
+source = "examples/form-builder/app.roc"
+spec = "examples/form-builder/spec.txt"
+public = true
+wasm = true
+native = true
+bench = true
+
+[[examples]]
+slug = "status-page"
+title = "Status Page"
+description = "A public status page rolling four independent service checks into one derived status, with visibility-gated polling and an incident timeline."
+source = "examples/status-page/app.roc"
+spec = "examples/status-page/spec.txt"
+public = true
+wasm = true
+native = true
+bench = true
+
+[[examples]]
+slug = "flight-search"
+title = "Flight Search"
+description = "A flight search where filters refetch and sort controls are a purely derived local view of the results already held."
+source = "examples/flight-search/app.roc"
+spec = "examples/flight-search/spec.txt"
+public = true
+wasm = true
+native = true
+bench = true
+
+[[examples]]
+slug = "kanban-board"
+title = "Kanban Board"
+description = "A four-column board with cross-column moves, within-column reorder, per-column WIP limits, and derived counts over keyed rows."
+source = "examples/kanban-board/app.roc"
+spec = "examples/kanban-board/spec.txt"
+public = true
+wasm = true
+native = true
+bench = true
+
+[[examples]]
+slug = "spreadsheet-lite"
+title = "Spreadsheet Lite"
+description = "An 8x12 formula grid with cell references, precedence, SUM ranges, error propagation, and cycle detection over fixed-point arithmetic."
+source = "examples/spreadsheet-lite/app.roc"
+spec = "examples/spreadsheet-lite/spec.txt"
+public = true
+wasm = true
+native = true
+bench = true
+
+[[examples]]
+slug = "split-the-bill"
+title = "Split the Bill"
+description = "A trip expense splitter where balances and a minimal settlement plan are derived, never stored, with exact integer-cent arithmetic."
+source = "examples/split-the-bill/app.roc"
+spec = "examples/split-the-bill/spec.txt"
+public = true
+wasm = true
+native = true
+bench = true
+
+[[examples]]
+slug = "markdown-editor"
+title = "Markdown Editor"
+description = "One markdown source string feeding four independently derived views: preview, outline, statistics, and reading time."
+source = "examples/markdown-editor/app.roc"
+spec = "examples/markdown-editor/spec.txt"
+public = true
+wasm = true
+native = true
+bench = true
+
+[[examples]]
+slug = "log-viewer"
+title = "Log Viewer"
+description = "A streaming log pane with level filters, text query highlighting, follow-tail, and derived visible-set counts."
+source = "examples/log-viewer/app.roc"
+spec = "examples/log-viewer/spec.txt"
+public = true
+wasm = true
+native = true
+bench = true
+
+[[examples]]
 slug = "service-ops-center"
 title = "Service Ops Center"
 description = "A routed service operations dashboard with async refresh, Browser.location-backed service routes, visibility-aware polling, nested JSON drill-downs, and a deterministic browser backend."
@@ -372,3 +548,15 @@ public = false
 wasm = false
 native = true
 bench = true
+
+[[examples]]
+slug = "signal-combine-caps"
+title = "Signal Combine Caps"
+description = "Internal fixture: Signal.combine over independently created signals."
+source = "examples/_fixtures/signal-combine-caps/app.roc"
+spec = "examples/_fixtures/signal-combine-caps/spec.txt"
+public = false
+wasm = false
+native = true
+bench = false
+
