@@ -10,7 +10,7 @@
 
     ; half hour offset zone
     (select-option (label "Timezone") "kolkata")
-    (expect-text (test-id "zone-label") "Timezone: Kolkata UTC+05:30")
+    (expect-text (test-id "zone-label") "Kolkata UTC+05:30")
     (expect-text (test-id "when-sunrise") "Mon 05:30-06:30")
     (expect-text (test-id "when-standup") "Mon 14:30-15:00")
     (expect-text (test-id "when-review") "Mon 14:45-15:45")

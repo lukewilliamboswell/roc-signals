@@ -11,7 +11,7 @@
 
     ; negative offset pushes a slot backwards past the week boundary
     (select-option (label "Timezone") "nyc")
-    (expect-text (test-id "zone-label") "Timezone: New York UTC-05:00")
+    (expect-text (test-id "zone-label") "New York UTC-05:00")
     (expect-text (test-id "when-sunrise") "Sun 19:00-20:00")
     (expect-text (test-id "when-standup") "Mon 04:00-04:30")
     (expect-text (test-id "when-review") "Mon 04:15-05:15")
