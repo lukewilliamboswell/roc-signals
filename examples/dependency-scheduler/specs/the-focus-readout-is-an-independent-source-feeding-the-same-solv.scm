@@ -32,9 +32,9 @@
 
     (select-option (label "Focus task") "launch")
     (expect-value (label "Focus task") "launch")
-    (expect-text (test-id "focus-detail") "Focus Launch: earliest start day 10, latest start day 10, slack 0 days, moved 0 days")
-    (expect-text (test-id "project-summary") "Project finishes on day 10 across 7 tasks")
+    (expect-text (test-id "focus-detail") "Earliest day 10 · latest day 10 · slack 0 days · moved 0 days")
+    (expect-text (test-id "project-summary") "10 days")
     (select-option (label "Focus task") "docs")
-    (expect-text (test-id "focus-detail") "Focus Write docs: earliest start day 2, latest start day 9, slack 7 days, moved 0 days")
+    (expect-text (test-id "focus-detail") "Earliest day 2 · latest day 9 · slack 7 days · moved 0 days")
   )
 )
