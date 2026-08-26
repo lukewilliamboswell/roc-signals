@@ -30,13 +30,16 @@ import pf.Html
 import pf.Signal
 import pf.Ui
 
-page_class = "grid gap-5"
-hero_class = "panel grid gap-2 p-5"
-panel_class = "panel grid gap-3 p-4"
-row_class = "panel grid gap-2 p-3"
-toolbar_class = "flex flex-wrap items-center gap-3"
-text_class = "text-sm font-medium text-zinc-900"
-muted_class = "text-sm text-zinc-600"
+page_class = "app-shell app-shell-narrow"
+stack_class = "grid gap-5"
+header_class = "app-header"
+panel_class = "panel grid gap-4 p-5"
+card_class = "card grid gap-3"
+toolbar_class = "toolbar"
+clock_class = "text-5xl font-semibold tabular-nums text-zinc-950"
+value_class = "value numeric"
+muted_class = "muted"
+hint_class = "hint"
 
 ## One focus block, in minutes. This demo ticks once per second and counts each
 ## tick as a minute so the whole cycle is short enough to watch.
@@ -162,6 +165,16 @@ run_text = |run|
 		Paused => "Timer: paused"
 	}
 
+## The badge tone comes off the same signal as its caption, so the two can
+## never disagree.
+run_badge_class : RunState -> Str
+run_badge_class = |run|
+	match run {
+		Idle => "badge badge-neutral shrink-0"
+		Running => "badge badge-ok shrink-0"
+		Paused => "badge badge-warn shrink-0"
+	}
+
 start_label : RunState -> Str
 start_label = |run|
 	match run {
@@ -210,8 +223,10 @@ row_view = |project, live| {
 	}
 }
 
-row_text : RowView -> Str
-row_text = |view| "${view.name}: ${view.minutes.to_str()} min today"
+## The row's name sits in the card title, so the value beside it carries only
+## the number and its unit.
+row_minutes_text : RowView -> Str
+row_minutes_text = |view| "${view.minutes.to_str()} min today"
 
 attached_text : Str -> Str
 attached_text = |id| "Attached project: ${project_name(id)}"
@@ -232,17 +247,25 @@ render_row = |attach, ledger, live, key, item| {
 
 	Html.section(
 		name,
-		[Html.class_attr(row_class)],
+		[Html.class_attr(card_class)],
 		[
-			Html.paragraph_s_attrs(view.map(row_text), [Html.class_attr(text_class), Html.test_id("row-total-${key}")]),
+			Html.div_c(
+				"flex flex-wrap items-baseline justify-between gap-2",
+				[
+					Html.paragraph_c(name, "card-title"),
+					# One text sink for the number, so attaching a project costs one
+					# patch per row whose total actually moved.
+					Html.paragraph_s_attrs(view.map(row_minutes_text), [Html.class_attr(value_class), Html.test_id("row-total-${key}")]),
+				],
+			),
 			Html.div_c(
 				toolbar_class,
 				[
-					Html.button_c("Attach ${name}", "button", attach.on_unit(|_| key)),
+					Html.button_c("Attach ${name}", "button button-sm", attach.on_unit(|_| key)),
 					Html.action_button_c(
 						Signal.const("Log block to ${name}"),
 						view.map(|v| !v.can_log),
-						"button-primary",
+						"button button-sm",
 						ledger.on_unit(|projects| log_block(projects, key)),
 					),
 				],
@@ -250,6 +273,18 @@ render_row = |attach, ledger, live, key, item| {
 		],
 	)
 }
+
+## One metric tile: a label and the number under it. The test id rides on the
+## value, which is the part a spec cares about.
+stat_tile : Str, Str, Signal.Signal(Str) -> Elem
+stat_tile = |test_id, label, value|
+	Html.div_c(
+		"stat",
+		[
+			Html.paragraph_c(label, "stat-label"),
+			Html.paragraph_s_attrs(value, [Html.class_attr("stat-value numeric"), Html.test_id(test_id)]),
+		],
+	)
 
 board : Ui.State(Str), Ui.State(RunState), Ui.State(List(Project)), Signal.Signal(Str), Signal.Signal(U64), List(Elem) -> Elem
 board = |attach, run, ledger, attached, ticks, extras| {
@@ -264,15 +299,24 @@ board = |attach, run, ledger, attached, ticks, extras| {
 	rollup = Signal.map2(projects, live, |list, l| logged_blocks(list) * focus_len + live_minutes(l))
 
 	Html.div_c(
-		page_class,
+		stack_class,
 		[
 			Html.section_c(
 				"Timer",
 				panel_class,
 				[
-					Html.heading_c("Timer", "text-xl font-semibold text-zinc-950"),
-					Html.paragraph_s_attrs(run_signal.map(run_text), [Html.class_attr(text_class), Html.test_id("timer-state")]),
-					Html.paragraph_s_attrs(ticks.map(phase_text), [Html.class_attr(text_class), Html.test_id("clock-face")]),
+					Html.heading_c("Timer", "panel-title"),
+					# The hero: one big calm countdown, with the run state beside it.
+					Html.div_c(
+						"flex flex-wrap items-center justify-between gap-3",
+						[
+							Html.paragraph_s_attrs(ticks.map(phase_text), [Html.class_attr(clock_class), Html.test_id("clock-face")]),
+							Html.paragraph_s_attrs(
+								run_signal.map(run_text),
+								[Html.class_attr_s(run_signal.map(run_badge_class)), Html.test_id("timer-state")],
+							),
+						],
+					),
 					Html.paragraph_s_attrs(attached.map(attached_text), [Html.class_attr(muted_class), Html.test_id("attached-project")]),
 					Html.div_c(
 						toolbar_class,
@@ -288,7 +332,7 @@ board = |attach, run, ledger, attached, ticks, extras| {
 					),
 					Html.paragraph_c(
 						"Pausing voids the block in progress: a pomodoro is indivisible. Resuming starts a fresh block.",
-						muted_class,
+						hint_class,
 					),
 				].concat(extras),
 			),
@@ -296,17 +340,26 @@ board = |attach, run, ledger, attached, ticks, extras| {
 				"Projects",
 				panel_class,
 				[
-					Html.heading_c("Projects", "text-xl font-semibold text-zinc-950"),
-					Ui.each_str(projects, |p| p.id, |key, item| render_row(attach, ledger, live, key, item)),
+					Html.heading_c("Projects", "panel-title"),
+					Ui.when(
+						projects.map(|list| list.is_empty()),
+						|| Html.paragraph_c("No projects in the ledger yet.", "empty-state"),
+						|| Ui.each_str(projects, |p| p.id, |key, item| render_row(attach, ledger, live, key, item)),
+					),
 				],
 			),
 			Html.section_c(
 				"Today",
 				panel_class,
 				[
-					Html.heading_c("Today", "text-xl font-semibold text-zinc-950"),
-					Html.paragraph_s_attrs(projects.map(|list| "Blocks logged today: ${logged_blocks(list).to_str()}"), [Html.class_attr(text_class), Html.test_id("blocks-logged")]),
-					Html.paragraph_s_attrs(rollup.map(|total| "Focus minutes today: ${total.to_str()}"), [Html.class_attr(text_class), Html.test_id("focus-minutes")]),
+					Html.heading_c("Today", "panel-title"),
+					Html.div_c(
+						"stat-grid",
+						[
+							stat_tile("blocks-logged", "Blocks logged today", projects.map(|list| logged_blocks(list).to_str())),
+							stat_tile("focus-minutes", "Focus minutes today", rollup.map(|total| total.to_str())),
+						],
+					),
 				],
 			),
 		],
@@ -321,7 +374,7 @@ tracker = |attach, run, attached, saved|
 		decode_ledger(saved),
 		|ledger|
 			Html.div_c(
-				page_class,
+				stack_class,
 				[
 					Ui.when(
 						run.signal().map(is_running),
@@ -355,12 +408,12 @@ main = ||
 						[
 							Html.section_c(
 								"Pomodoro Tracker",
-								hero_class,
+								header_class,
 								[
-									Html.heading_c("Pomodoro Tracker", "text-3xl font-semibold text-zinc-950"),
+									Html.heading_c("Pomodoro Tracker", "app-title"),
 									Html.paragraph_c(
 										"Attach the timer to a project, run a focus block, then log it. Elapsed time is derived from interval ticks; totals are derived from the ledger.",
-										"max-w-3xl text-sm text-zinc-700",
+										"app-subtitle",
 									),
 								],
 							),
