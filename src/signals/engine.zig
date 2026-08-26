@@ -4395,7 +4395,13 @@ pub fn Engine(comptime Ctx: type) type {
         }
 
         pub fn evalOnChangeInitialCommand(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, desc: *HostNodeOnChangeDesc) render.Counts {
-            if (!desc.run_initial_pending) return .{};
+            const pending = self.evalOnChangeInitialPendingCommand(ctx, roc_host, desc) orelse return .{};
+            defer abi.decrefNodeCmd(pending.cmd, roc_host);
+            return self.runCommand(ctx, roc_host, pending.scope_id, pending.cmd);
+        }
+
+        fn evalOnChangeInitialPendingCommand(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, desc: *HostNodeOnChangeDesc) ?HostPendingOnChangeCommand {
+            if (!desc.run_initial_pending) return null;
             desc.run_initial_pending = false;
 
             const cap = self.hostSignalBindingCapability(ctx, &desc.signal);
@@ -4403,27 +4409,52 @@ pub fn Engine(comptime Ctx: type) type {
             defer callHostValueToUnitWithCapability(ctx, roc_host, cap, hv.hostValueCapabilityDrop(cap), value);
 
             const cmd = callHostValueToCmdWithCapability(ctx, roc_host, cap, desc.to_cmd, value);
-            defer abi.decrefNodeCmd(cmd, roc_host);
-            return self.runCommand(ctx, roc_host, desc.scope_id, cmd);
+            abi.increfNodeCmd(cmd, 1);
+            abi.decrefNodeCmd(cmd, roc_host);
+            return .{ .scope_id = desc.scope_id, .cmd = cmd };
+        }
+
+        fn runPendingOnChangeCommands(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, pending_commands: []const HostPendingOnChangeCommand) render.Counts {
+            var counts: render.Counts = .{};
+            for (pending_commands) |pending| {
+                counts.addAll(self.runCommand(ctx, roc_host, pending.scope_id, pending.cmd));
+            }
+            return counts;
         }
 
         pub fn runActiveOnChangeInitialCommandIndices(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, indices: []const usize) render.Counts {
-            var counts: render.Counts = .{};
+            const allocator = Ctx.allocator(ctx);
+            var pending_commands: std.ArrayListUnmanaged(HostPendingOnChangeCommand) = .empty;
+            defer {
+                for (pending_commands.items) |pending| abi.decrefNodeCmd(pending.cmd, roc_host);
+                pending_commands.deinit(allocator);
+            }
+
             self.recordStreamNodesScannedBy(.stream_nodes_scanned_on_change, indices.len);
             for (indices) |on_change_index| {
                 if (on_change_index >= self.active_stream.on_changes.items.len) @panic("on_change descriptor index exceeded active descriptor stream");
-                counts.addAll(self.evalOnChangeInitialCommand(ctx, roc_host, &self.active_stream.on_changes.items[on_change_index]));
+                if (self.evalOnChangeInitialPendingCommand(ctx, roc_host, &self.active_stream.on_changes.items[on_change_index])) |pending| {
+                    pending_commands.append(allocator, pending) catch @panic("out of memory");
+                }
             }
-            return counts;
+            return self.runPendingOnChangeCommands(ctx, roc_host, pending_commands.items);
         }
 
         pub fn runActiveOnChangeInitialCommands(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost) render.Counts {
-            var counts: render.Counts = .{};
+            const allocator = Ctx.allocator(ctx);
+            var pending_commands: std.ArrayListUnmanaged(HostPendingOnChangeCommand) = .empty;
+            defer {
+                for (pending_commands.items) |pending| abi.decrefNodeCmd(pending.cmd, roc_host);
+                pending_commands.deinit(allocator);
+            }
+
             self.recordStreamNodesScannedBy(.stream_nodes_scanned_on_change, self.active_stream.on_changes.items.len);
             for (self.active_stream.on_changes.items) |*desc| {
-                counts.addAll(self.evalOnChangeInitialCommand(ctx, roc_host, desc));
+                if (self.evalOnChangeInitialPendingCommand(ctx, roc_host, desc)) |pending| {
+                    pending_commands.append(allocator, pending) catch @panic("out of memory");
+                }
             }
-            return counts;
+            return self.runPendingOnChangeCommands(ctx, roc_host, pending_commands.items);
         }
 
         pub fn evalMountCommand(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, desc: *HostNodeMountDesc) render.Counts {
