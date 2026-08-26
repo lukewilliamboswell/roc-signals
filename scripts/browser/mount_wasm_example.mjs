@@ -6,12 +6,13 @@ import { basename } from "node:path";
 import { publicExampleTaskHandler } from "../../www/static/example_tasks.mjs";
 import { serviceOpsBehaviors } from "../../www/static/service_ops_charts.mjs";
 import { SignalsRuntime, instantiateSignalsBytes } from "../../www/static/signals.mjs";
-import { findByText, fireEvent, installDomDouble } from "./dom_double.mjs";
+import { findByText, findNode, fireEvent, installDomDouble } from "./dom_double.mjs";
 
 const args = process.argv.slice(2);
 const wasmPath = args.shift();
 let expectError = "";
 let printTelemetrySummary = false;
+let exerciseClickFirstLink = false;
 let exerciseServiceOpsRefresh = false;
 let exerciseTeamCheckoutPlans = false;
 let exerciseLocationSource = false;
@@ -27,6 +28,8 @@ while (args.length > 0) {
     expectError = args.shift() ?? "";
   } else if (arg === "--telemetry-summary") {
     printTelemetrySummary = true;
+  } else if (arg === "--exercise-click-first-link") {
+    exerciseClickFirstLink = true;
   } else if (arg === "--exercise-service-ops-refresh") {
     exerciseServiceOpsRefresh = true;
   } else if (arg === "--exercise-team-checkout-plans") {
@@ -209,6 +212,20 @@ if (missingBehaviors.length !== 0) {
 
 if (root.textContent.trim() === "") {
   fail(`mounted ${name}, but no DOM text was rendered`);
+}
+
+if (exerciseClickFirstLink) {
+  const link = findNode(root, (node) => node.tagName === "A");
+  if (!link) {
+    fail(`mounted ${name}, but no <a> element was rendered to click`);
+  }
+  fireEvent(link, "click", { bubbles: true });
+  await new Promise((resolve) => setTimeout(resolve, settleMs));
+  if (errors.length !== 0) {
+    const details = errors.map((err) => err?.stack ?? err).join("\n");
+    fail(`clicking the first link in ${name} reported errors:\n${details}`);
+  }
+  console.log(`clicked first link in ${name}`);
 }
 
 if (exerciseServiceOpsRefresh) {
