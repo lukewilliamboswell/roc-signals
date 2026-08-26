@@ -273,6 +273,19 @@ disagree.
   keyed-list source really does only tolerate one consumer, that should be an
   error rather than a silent miscompile - worth reproducing properly.
 
+### 10b. A section's name collides with control label locators
+
+`Html.section_c("Timezone", ...)` writes the same `field_label` that a
+`select`'s accessible name writes, and the spec runner's `.label` locator arm
+has no role filter. So `(select-option (label "Timezone") ...)` matched two
+elements and every spec in the example failed at once, purely because a panel
+was named after the control inside it.
+
+The workaround is to name the panel something else, which is a strange
+constraint to discover by breaking fourteen specs. Either the locator should
+accept a role, or naming a region should not compete in the same namespace as
+naming a control.
+
 ### 11. `Html.section` welds its label to `role="region"`
 
 There is no way to give an element an accessible name without also making it a
