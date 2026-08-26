@@ -22,7 +22,7 @@ the primitives in the preceding pages — no framework escape hatches.
 
 ```text
 examples/conduit/
-  app.roc          265   shell, route switch, session and history wiring
+  main.roc          265   shell, route switch, session and history wiring
   Route.roc        272   Location <-> Route, titles, link targets
   Api.roc          399   DTOs, JSON codecs, URIs, request builders
   Session.roc       74   auth state over namespaced localStorage
@@ -37,7 +37,7 @@ examples/conduit/
   Auth.roc         268
   Format.roc        45   date display
   Styles.roc        55   shared class-name constants
-  spec.txt         363   native behaviour script
+  specs/           16 cases   native behaviour suite
 ```
 
 The shape that emerged, which generalizes:
@@ -54,7 +54,7 @@ The shape that emerged, which generalizes:
 
 ## The shell
 
-`app.roc` does five things and then delegates:
+`main.roc` does five things and then delegates:
 
 ```roc
 main : () -> Elem
@@ -108,26 +108,17 @@ sync with the URL, because they are all functions of the same signal.
 
 ## Layering
 
-The consistent rule across both large examples:
+Conduit follows a simple layering rule:
 
 > Domain types know nothing about presentation. Presentation types know nothing
 > about CSS. CSS lives in one place.
 
-[Service Ops Center](@/examples/service-ops-center.md) makes this explicit with
-one module per layer:
-
-| Module | Lines | Responsibility |
-| --- | --- | --- |
-| `Dashboard.roc` | 541 | domain types, parsing, state transitions |
-| `DashboardRemote.roc` | 84 | per-section remote/loading state |
-| `DashboardView.roc` | 601 | domain values → display records (`Tone`, strings) |
-| `DashboardTheme.roc` | 242 | display enums → class names |
-| `app.roc` | 904 | signal wiring and page composition |
-
-The payoff is that each layer is separately testable and separately readable. A
-`Tone` of `Warning` is a domain fact; whether that means `text-amber-700` is a
-theme decision. Conduit collapses view and theme into `Styles.roc` because it is
-a single visual design.
+`Api.roc` owns transport types, JSON codecs, and request construction without
+knowing how anything is rendered. Page modules own state transitions and turn
+domain values into elements. `Styles.roc` owns shared class names without
+knowing which state selected them. The payoff is that changing an endpoint does
+not require editing presentation code, while changing a shared visual treatment
+does not disturb request or state logic.
 
 ### Container and presentational
 
@@ -264,7 +255,7 @@ a string to markup.
 
 ## Testing at this scale
 
-Conduit's `spec.txt` is 363 lines covering feeds, pagination, auth, guards,
+Conduit's `specs/` directory contains focused cases covering feeds, pagination, auth, guards,
 validation envelopes, network failures, stale-response suppression, navigation,
 and every mutation. It runs in milliseconds with no browser and no server.
 

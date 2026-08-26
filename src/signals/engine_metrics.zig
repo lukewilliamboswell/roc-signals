@@ -16,6 +16,9 @@ pub const RuntimeMetrics = struct {
     closure_retains: u64,
     create_element: u64,
     deallocs_this_event: u64,
+    /// One per `map` / `map2` / `combine` transform actually evaluated. This is
+    /// the fine-grained budget: it should scale with the size of the change,
+    /// not with the size of the graph.
     derived_calls_into_roc: u64,
     each_key_compares: u64,
     each_key_hashes: u64,
@@ -33,7 +36,12 @@ pub const RuntimeMetrics = struct {
     host_retained_alloc_delta: i64,
     host_retained_bytes_delta: i64,
     move_before: u64,
-    nodes_recomputed: u64,
+    /// Source signals dirtied by a change: one per event dispatch, or the
+    /// number of host source signals a location/visibility/online/storage
+    /// change touched. This says nothing about how much derived work followed —
+    /// use `derived_calls_into_roc` for that, and `propagation_prunes` for
+    /// equality cutoffs that stopped propagation.
+    dirty_source_roots: u64,
     patches_emitted: u64,
     propagation_prunes: u64,
     recompute_batches: u64,
@@ -112,26 +120,26 @@ test "zeroRuntimeMetrics clears every runtime metric field" {
 
 test "RuntimeMetrics bump updates requested counter when metrics are enabled" {
     var metrics = zeroRuntimeMetrics();
-    metrics.bump(.nodes_recomputed, 3);
+    metrics.bump(.dirty_source_roots, 3);
 
     if (comptime enable_runtime_metrics) {
-        try std.testing.expectEqual(@as(u64, 3), metrics.nodes_recomputed);
+        try std.testing.expectEqual(@as(u64, 3), metrics.dirty_source_roots);
     } else {
-        try std.testing.expectEqual(@as(u64, 0), metrics.nodes_recomputed);
+        try std.testing.expectEqual(@as(u64, 0), metrics.dirty_source_roots);
     }
 }
 
 test "addRuntimeMetrics folds unsigned and signed counters" {
     var left = zeroRuntimeMetrics();
     var right = zeroRuntimeMetrics();
-    left.nodes_recomputed = 3;
-    right.nodes_recomputed = 4;
+    left.dirty_source_roots = 3;
+    right.dirty_source_roots = 4;
     left.host_retained_alloc_delta = -2;
     right.host_retained_alloc_delta = 5;
 
     const total = addRuntimeMetrics(left, right);
 
-    try std.testing.expectEqual(@as(u64, 7), total.nodes_recomputed);
+    try std.testing.expectEqual(@as(u64, 7), total.dirty_source_roots);
     try std.testing.expectEqual(@as(i64, 3), total.host_retained_alloc_delta);
 }
 
@@ -139,5 +147,5 @@ test "NoMetrics is a zero-size no-op metrics sink" {
     try std.testing.expectEqual(@as(usize, 0), @sizeOf(NoMetrics));
     var metrics: NoMetrics = .{};
     metrics.bump(.closure_retains, 2);
-    metrics.bump(.nodes_recomputed, 1);
+    metrics.bump(.dirty_source_roots, 1);
 }

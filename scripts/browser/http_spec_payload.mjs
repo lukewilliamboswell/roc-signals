@@ -1,6 +1,6 @@
 // Dev helper for authoring native specs: turn a JSON (or text) body into a
-// resolve_task HTTP wire payload with escaped newlines, ready to paste into
-// a spec.txt line.
+// resolve-task HTTP wire payload with escaped newlines, ready to paste into
+// a *.scm string.
 //
 //   node scripts/browser/http_spec_payload.mjs '<body text>' [status]
 //

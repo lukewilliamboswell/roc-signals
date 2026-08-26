@@ -271,6 +271,7 @@ pub const HostEventDescriptor = active_graph.EventDescriptor;
 
 pub const HostActiveEventDesc = struct {
     target_node_id: u64,
+    read_node_id: u64,
     payload_descriptor: BoundaryPayloadDescriptor,
     payload_reducer: HostEventReducer,
 };
@@ -1724,8 +1725,8 @@ pub fn Engine(comptime Ctx: type) type {
                 if (!u64SliceContains(copied_elem_ids.items, desc.elem_id)) continue;
                 const payload_reducer = if (desc.owns_payload_reducer) desc.payload_reducer else self.activeEventReducerByIndex(event_index) catch @panic("active event table is missing a retained payload reducer");
                 switch (desc.binding) {
-                    .fixed => |kind| stream.appendEvent(allocator, roc_host, &self.pending_roc_metrics, desc.elem_id, kind, desc.delivery_request, desc.binder_token, desc.target_node_id, desc.payload_descriptor, payload_reducer),
-                    .named => |binding| stream.appendNamedEvent(allocator, roc_host, &self.pending_roc_metrics, desc.elem_id, binding.name, binding.policy, binding.delivery_request, desc.binder_token, desc.target_node_id, desc.payload_descriptor, payload_reducer),
+                    .fixed => |kind| stream.appendEvent(allocator, roc_host, &self.pending_roc_metrics, desc.elem_id, kind, desc.delivery_request, desc.binder_token, desc.target_node_id, desc.read_binder_token, desc.read_node_id, desc.payload_descriptor, payload_reducer),
+                    .named => |binding| stream.appendNamedEvent(allocator, roc_host, &self.pending_roc_metrics, desc.elem_id, binding.name, binding.policy, binding.delivery_request, desc.binder_token, desc.target_node_id, desc.read_binder_token, desc.read_node_id, desc.payload_descriptor, payload_reducer),
                 }
             }
 
@@ -1912,12 +1913,16 @@ pub fn Engine(comptime Ctx: type) type {
                 .event => |payload| {
                     const binder_token = payload.msg.binder.callable;
                     const target_node_id = resolveNodeBinderRef(binder_stack, binder_token);
-                    stream.appendEvent(allocator, roc_host, &self.pending_roc_metrics, elem_id, payload.kind, payload.delivery_request, binder_token, target_node_id, payload.msg.payload_descriptor, payload.msg.payload_reducer);
+                    const read_binder_token = payload.msg.read_binder.callable;
+                    const read_node_id = resolveNodeBinderRef(binder_stack, read_binder_token);
+                    stream.appendEvent(allocator, roc_host, &self.pending_roc_metrics, elem_id, payload.kind, payload.delivery_request, binder_token, target_node_id, read_binder_token, read_node_id, payload.msg.payload_descriptor, payload.msg.payload_reducer);
                 },
                 .named_event => |payload| {
                     const binder_token = payload.msg.binder.callable;
                     const target_node_id = resolveNodeBinderRef(binder_stack, binder_token);
-                    stream.appendNamedEvent(allocator, roc_host, &self.pending_roc_metrics, elem_id, payload.name.asSlice(), payload.policy, payload.delivery_request, binder_token, target_node_id, payload.msg.payload_descriptor, payload.msg.payload_reducer);
+                    const read_binder_token = payload.msg.read_binder.callable;
+                    const read_node_id = resolveNodeBinderRef(binder_stack, read_binder_token);
+                    stream.appendNamedEvent(allocator, roc_host, &self.pending_roc_metrics, elem_id, payload.name.asSlice(), payload.policy, payload.delivery_request, binder_token, target_node_id, read_binder_token, read_node_id, payload.msg.payload_descriptor, payload.msg.payload_reducer);
                 },
             }
         }
@@ -2960,6 +2965,7 @@ pub fn Engine(comptime Ctx: type) type {
                 }
                 self.active_events.insert(allocator, event_base + offset, .{
                     .target_node_id = desc.target_node_id,
+                    .read_node_id = desc.read_node_id,
                     .payload_descriptor = desc.payload_descriptor,
                     .payload_reducer = desc.payload_reducer,
                 }) catch @panic("out of memory");
@@ -3987,6 +3993,34 @@ pub fn Engine(comptime Ctx: type) type {
             return depth;
         }
 
+        fn resolveStateCommandTarget(self: *Self, owner_scope_id: u64, binder_token: HostBinderToken) u64 {
+            var target_node_id: ?u64 = null;
+            var target_depth: usize = 0;
+
+            for (self.active_stream.scope_sites.items) |site| {
+                if (site.kind != .state) continue;
+                if (!(self.scopeIsDescendantOrSelf(owner_scope_id, site.scope_id) catch @panic("state command owner referenced an unknown scope"))) continue;
+
+                var matching_state: ?HostNodeStateDesc = null;
+                for (self.active_stream.states.items) |state| {
+                    if (state.node_id == site.node_id) {
+                        matching_state = state;
+                        break;
+                    }
+                }
+                const state = matching_state orelse continue;
+                if (retained_values.hostSignalTokenFromCallable(state.initial) != binder_token) continue;
+
+                const depth = self.scopeDepth(site.scope_id);
+                if (target_node_id == null or depth > target_depth) {
+                    target_node_id = site.node_id;
+                    target_depth = depth;
+                }
+            }
+
+            return target_node_id orelse @panic("UpdateState referenced a state binder outside the command's active scope");
+        }
+
         pub fn scopeIsEachSiteRowDescendantOrSelf(self: *Self, scope_id: u64, site: HostEachSite) scope_tree.Error!bool {
             return scope_tree.eachSiteRowDescendantOrSelf(HostEachRowScopeStep, self.scopes.items, scope_id, site.parent_scope_id, site.site_ordinal);
         }
@@ -4361,7 +4395,13 @@ pub fn Engine(comptime Ctx: type) type {
         }
 
         pub fn evalOnChangeInitialCommand(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, desc: *HostNodeOnChangeDesc) render.Counts {
-            if (!desc.run_initial_pending) return .{};
+            const pending = self.evalOnChangeInitialPendingCommand(ctx, roc_host, desc) orelse return .{};
+            defer abi.decrefNodeCmd(pending.cmd, roc_host);
+            return self.runCommand(ctx, roc_host, pending.scope_id, pending.cmd);
+        }
+
+        fn evalOnChangeInitialPendingCommand(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, desc: *HostNodeOnChangeDesc) ?HostPendingOnChangeCommand {
+            if (!desc.run_initial_pending) return null;
             desc.run_initial_pending = false;
 
             const cap = self.hostSignalBindingCapability(ctx, &desc.signal);
@@ -4369,27 +4409,52 @@ pub fn Engine(comptime Ctx: type) type {
             defer callHostValueToUnitWithCapability(ctx, roc_host, cap, hv.hostValueCapabilityDrop(cap), value);
 
             const cmd = callHostValueToCmdWithCapability(ctx, roc_host, cap, desc.to_cmd, value);
-            defer abi.decrefNodeCmd(cmd, roc_host);
-            return self.runCommand(ctx, roc_host, desc.scope_id, cmd);
+            abi.increfNodeCmd(cmd, 1);
+            abi.decrefNodeCmd(cmd, roc_host);
+            return .{ .scope_id = desc.scope_id, .cmd = cmd };
+        }
+
+        fn runPendingOnChangeCommands(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, pending_commands: []const HostPendingOnChangeCommand) render.Counts {
+            var counts: render.Counts = .{};
+            for (pending_commands) |pending| {
+                counts.addAll(self.runCommand(ctx, roc_host, pending.scope_id, pending.cmd));
+            }
+            return counts;
         }
 
         pub fn runActiveOnChangeInitialCommandIndices(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, indices: []const usize) render.Counts {
-            var counts: render.Counts = .{};
+            const allocator = Ctx.allocator(ctx);
+            var pending_commands: std.ArrayListUnmanaged(HostPendingOnChangeCommand) = .empty;
+            defer {
+                for (pending_commands.items) |pending| abi.decrefNodeCmd(pending.cmd, roc_host);
+                pending_commands.deinit(allocator);
+            }
+
             self.recordStreamNodesScannedBy(.stream_nodes_scanned_on_change, indices.len);
             for (indices) |on_change_index| {
                 if (on_change_index >= self.active_stream.on_changes.items.len) @panic("on_change descriptor index exceeded active descriptor stream");
-                counts.addAll(self.evalOnChangeInitialCommand(ctx, roc_host, &self.active_stream.on_changes.items[on_change_index]));
+                if (self.evalOnChangeInitialPendingCommand(ctx, roc_host, &self.active_stream.on_changes.items[on_change_index])) |pending| {
+                    pending_commands.append(allocator, pending) catch @panic("out of memory");
+                }
             }
-            return counts;
+            return self.runPendingOnChangeCommands(ctx, roc_host, pending_commands.items);
         }
 
         pub fn runActiveOnChangeInitialCommands(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost) render.Counts {
-            var counts: render.Counts = .{};
+            const allocator = Ctx.allocator(ctx);
+            var pending_commands: std.ArrayListUnmanaged(HostPendingOnChangeCommand) = .empty;
+            defer {
+                for (pending_commands.items) |pending| abi.decrefNodeCmd(pending.cmd, roc_host);
+                pending_commands.deinit(allocator);
+            }
+
             self.recordStreamNodesScannedBy(.stream_nodes_scanned_on_change, self.active_stream.on_changes.items.len);
             for (self.active_stream.on_changes.items) |*desc| {
-                counts.addAll(self.evalOnChangeInitialCommand(ctx, roc_host, desc));
+                if (self.evalOnChangeInitialPendingCommand(ctx, roc_host, desc)) |pending| {
+                    pending_commands.append(allocator, pending) catch @panic("out of memory");
+                }
             }
-            return counts;
+            return self.runPendingOnChangeCommands(ctx, roc_host, pending_commands.items);
         }
 
         pub fn evalMountCommand(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, desc: *HostNodeMountDesc) render.Counts {
@@ -5384,6 +5449,7 @@ pub fn Engine(comptime Ctx: type) type {
                 if (!desc.owns_payload_reducer) @panic("event descriptor payload reducer ownership was already transferred");
                 self.active_events.append(allocator, .{
                     .target_node_id = desc.target_node_id,
+                    .read_node_id = desc.read_node_id,
                     .payload_descriptor = desc.payload_descriptor,
                     .payload_reducer = desc.payload_reducer,
                 }) catch @panic("out of memory");
@@ -5423,6 +5489,14 @@ pub fn Engine(comptime Ctx: type) type {
             const stable_changed_record_ids = allocator.dupe(u64, changed_record_ids) catch @panic("out of memory");
             defer allocator.free(stable_changed_record_ids);
 
+            var pending_on_change_commands: std.ArrayListUnmanaged(HostPendingOnChangeCommand) = .empty;
+            defer {
+                for (pending_on_change_commands.items) |pending| {
+                    abi.decrefNodeCmd(pending.cmd, roc_host);
+                }
+                pending_on_change_commands.deinit(allocator);
+            }
+
             var deferred_storage_effects: std.ArrayListUnmanaged(HostDeferredStorageEffect) = .empty;
             defer {
                 for (deferred_storage_effects.items) |effect| allocator.free(effect.key);
@@ -5431,14 +5505,13 @@ pub fn Engine(comptime Ctx: type) type {
             var deferred_location_effect = false;
 
             debugPhase(ctx, 350);
-            var counts = self.applyDirtyRenderSinksDeferringSourceEffects(
+            var counts = self.collectDirtyRenderSinksAndCommands(
                 ctx,
                 roc_host,
                 dirty_source_node_ids,
                 stable_changed_record_ids,
                 dirty_generation,
-                &deferred_location_effect,
-                &deferred_storage_effects,
+                &pending_on_change_commands,
             );
 
             debugPhase(ctx, 360);
@@ -5448,6 +5521,13 @@ pub fn Engine(comptime Ctx: type) type {
                 debugPhase(ctx, 370);
                 counts.addAll(self.applyDirtyStructuralSignalsLocally(ctx, roc_host, dirty_source_node_ids, dirty_generation, dirty_structural_signals));
             }
+            counts.addAll(self.runPendingOnChangeCommandsDeferringSourceEffects(
+                ctx,
+                roc_host,
+                pending_on_change_commands.items,
+                &deferred_location_effect,
+                &deferred_storage_effects,
+            ));
             counts.addAll(self.flushDeferredSourceEffects(ctx, roc_host, deferred_location_effect, deferred_storage_effects.items));
             return counts;
         }
@@ -5458,7 +5538,7 @@ pub fn Engine(comptime Ctx: type) type {
 
             self.recordDispatch();
             var metrics = self.pending_roc_metrics;
-            metrics.bump(.nodes_recomputed, 1);
+            metrics.bump(.dirty_source_roots, 1);
             self.pending_roc_metrics = metrics;
             const dirty_generation = self.nextDirtySignalGeneration();
             record.last_dirty_generation = dirty_generation;
@@ -5507,7 +5587,7 @@ pub fn Engine(comptime Ctx: type) type {
 
             self.recordDispatch();
             var metrics = self.pending_roc_metrics;
-            metrics.bump(.nodes_recomputed, @intCast(root_record_ids.items.len));
+            metrics.bump(.dirty_source_roots, @intCast(root_record_ids.items.len));
             self.pending_roc_metrics = metrics;
 
             const dirty_record_ids = self.scratchDirtyActiveSignalRecordIdsForRoots(ctx, root_record_ids.items);
@@ -5536,7 +5616,7 @@ pub fn Engine(comptime Ctx: type) type {
 
             self.recordDispatch();
             var metrics = self.pending_roc_metrics;
-            metrics.bump(.nodes_recomputed, @intCast(root_record_ids.items.len));
+            metrics.bump(.dirty_source_roots, @intCast(root_record_ids.items.len));
             self.pending_roc_metrics = metrics;
 
             const dirty_record_ids = self.scratchDirtyActiveSignalRecordIdsForRoots(ctx, root_record_ids.items);
@@ -5565,7 +5645,7 @@ pub fn Engine(comptime Ctx: type) type {
 
             self.recordDispatch();
             var metrics = self.pending_roc_metrics;
-            metrics.bump(.nodes_recomputed, @intCast(root_record_ids.items.len));
+            metrics.bump(.dirty_source_roots, @intCast(root_record_ids.items.len));
             self.pending_roc_metrics = metrics;
 
             const dirty_record_ids = self.scratchDirtyActiveSignalRecordIdsForRoots(ctx, root_record_ids.items);
@@ -5596,7 +5676,7 @@ pub fn Engine(comptime Ctx: type) type {
 
             self.recordDispatch();
             var metrics = self.pending_roc_metrics;
-            metrics.bump(.nodes_recomputed, @intCast(root_record_ids.items.len));
+            metrics.bump(.dirty_source_roots, @intCast(root_record_ids.items.len));
             self.pending_roc_metrics = metrics;
 
             const dirty_record_ids = self.scratchDirtyActiveSignalRecordIdsForRoots(ctx, root_record_ids.items);
@@ -5660,6 +5740,29 @@ pub fn Engine(comptime Ctx: type) type {
             return .{};
         }
 
+        pub fn updateStateCommand(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, owner_scope_id: u64, cmd: erased_calls.UpdateStateCmd) render.Counts {
+            const binder_token = retained_values.hostSignalTokenFromCallable(cmd.binder);
+            const target_node_id = self.resolveStateCommandTarget(owner_scope_id, binder_token);
+            const state_cap = Ctx.stateCapability(ctx, target_node_id);
+            assertHostValueCapabilitiesMatch(cmd.update.capability, state_cap, "state command value capability did not match its target state");
+
+            if (!Ctx.updateStateValue(ctx, roc_host, target_node_id, cmd.update.value)) {
+                self.recordSignalPrune();
+                return .{};
+            }
+
+            self.recordDispatch();
+            var metrics = self.pending_roc_metrics;
+            metrics.bump(.dirty_source_roots, 1);
+            self.pending_roc_metrics = metrics;
+
+            const dirty_source_node_ids = [_]u64{target_node_id};
+            const dirty_generation = self.nextDirtySignalGeneration();
+            const dirty_record_ids = self.scratchDirtyActiveSignalRecordIdsForSources(ctx, &dirty_source_node_ids);
+            const changed_record_ids = self.propagateDirtyActiveSignalRecordIds(ctx, roc_host, dirty_record_ids, &dirty_source_node_ids, dirty_generation);
+            return self.applyDirtySignalBatch(ctx, roc_host, &dirty_source_node_ids, changed_record_ids, dirty_generation);
+        }
+
         pub fn runCommand(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, owner_scope_id: u64, cmd: erased_calls.Cmd) render.Counts {
             return switch (cmd.tag) {
                 .Noop => .{},
@@ -5675,6 +5778,7 @@ pub fn Engine(comptime Ctx: type) type {
                 .SetStorageText => self.setStorageTextCommand(ctx, roc_host, cmd.payload_set_storage_text()),
                 .StartTask => self.startTaskCommand(ctx, roc_host, owner_scope_id, cmd.payload_start_task()),
                 .SetDocumentTitle => self.setDocumentTitleCommand(ctx, cmd.payload_set_document_title()),
+                .UpdateState => self.updateStateCommand(ctx, roc_host, owner_scope_id, cmd.payload_update_state()),
             };
         }
 
@@ -5721,25 +5825,17 @@ pub fn Engine(comptime Ctx: type) type {
             return self.runCommand(ctx, roc_host, pending.scope_id, cmd);
         }
 
-        fn applyDirtyRenderSinksDeferringSourceEffects(
+        fn collectDirtyRenderSinksAndCommands(
             self: *Self,
             ctx: Ctx.Handle,
             roc_host: *abi.RocHost,
             dirty_source_node_ids: []const u64,
             changed_record_ids: []const u64,
             dirty_generation: u64,
-            deferred_location_effect: *bool,
-            deferred_storage_effects: *std.ArrayListUnmanaged(HostDeferredStorageEffect),
+            pending_on_change_commands: *std.ArrayListUnmanaged(HostPendingOnChangeCommand),
         ) render.Counts {
             var counts: render.Counts = .{};
             const allocator = Ctx.allocator(ctx);
-            var pending_on_change_commands: std.ArrayListUnmanaged(HostPendingOnChangeCommand) = .empty;
-            defer {
-                for (pending_on_change_commands.items) |pending| {
-                    abi.decrefNodeCmd(pending.cmd, roc_host);
-                }
-                pending_on_change_commands.deinit(allocator);
-            }
 
             for (changed_record_ids) |record_id| {
                 const route_index: usize = @intCast(record_id);
@@ -5803,7 +5899,29 @@ pub fn Engine(comptime Ctx: type) type {
                 }
             }
 
-            for (pending_on_change_commands.items) |pending| {
+            if (comptime enable_runtime_metrics) self.render_metrics.addCommandCounts(counts);
+            return counts;
+        }
+
+        fn runPendingOnChangeCommandsDeferringSourceEffects(
+            self: *Self,
+            ctx: Ctx.Handle,
+            roc_host: *abi.RocHost,
+            pending_on_change_commands: []const HostPendingOnChangeCommand,
+            deferred_location_effect: *bool,
+            deferred_storage_effects: *std.ArrayListUnmanaged(HostDeferredStorageEffect),
+        ) render.Counts {
+            var counts: render.Counts = .{};
+            const allocator = Ctx.allocator(ctx);
+
+            for (pending_on_change_commands) |pending| {
+                if (pending.scope_id >= self.scopes.items.len or !self.scopes.items[@intCast(pending.scope_id)].active) {
+                    if (pending.cmd.tag == .UpdateState) {
+                        const update = pending.cmd.payload_update_state().update;
+                        callHostValueToUnitWithCapability(ctx, roc_host, update.capability, hv.hostValueCapabilityDrop(update.capability), update.value);
+                    }
+                    continue;
+                }
                 switch (pending.cmd.tag) {
                     .PushState => {
                         const payload = pending.cmd.payload_push_state();
@@ -5850,21 +5968,34 @@ pub fn Engine(comptime Ctx: type) type {
 
         pub fn applyDirtyRenderSinks(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, dirty_source_node_ids: []const u64, changed_record_ids: []const u64, dirty_generation: u64) render.Counts {
             const allocator = Ctx.allocator(ctx);
+            var pending_on_change_commands: std.ArrayListUnmanaged(HostPendingOnChangeCommand) = .empty;
+            defer {
+                for (pending_on_change_commands.items) |pending| {
+                    abi.decrefNodeCmd(pending.cmd, roc_host);
+                }
+                pending_on_change_commands.deinit(allocator);
+            }
             var deferred_storage_effects: std.ArrayListUnmanaged(HostDeferredStorageEffect) = .empty;
             defer {
                 for (deferred_storage_effects.items) |effect| allocator.free(effect.key);
                 deferred_storage_effects.deinit(allocator);
             }
             var deferred_location_effect = false;
-            var counts = self.applyDirtyRenderSinksDeferringSourceEffects(
+            var counts = self.collectDirtyRenderSinksAndCommands(
                 ctx,
                 roc_host,
                 dirty_source_node_ids,
                 changed_record_ids,
                 dirty_generation,
+                &pending_on_change_commands,
+            );
+            counts.addAll(self.runPendingOnChangeCommandsDeferringSourceEffects(
+                ctx,
+                roc_host,
+                pending_on_change_commands.items,
                 &deferred_location_effect,
                 &deferred_storage_effects,
-            );
+            ));
             counts.addAll(self.flushDeferredSourceEffects(ctx, roc_host, deferred_location_effect, deferred_storage_effects.items));
             return counts;
         }
@@ -5884,6 +6015,8 @@ test "structural event validation rejects descriptors outside seen render stream
         .binding = .{ .fixed = .click },
         .binder_token = binder,
         .target_node_id = 1,
+        .read_binder_token = binder,
+        .read_node_id = 1,
         .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none),
         .payload_reducer = undefined,
         .owns_payload_reducer = false,

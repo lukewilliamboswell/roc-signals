@@ -13,8 +13,8 @@ full RealWorld app runs in milliseconds and cannot flake, because there is no
 real clock, no real network, and no real event loop to race.
 
 ```sh
-roc build --target=arm64mac --output=/tmp/app examples/my-app/app.roc
-/tmp/app examples/my-app/spec.txt
+roc build --target=arm64mac --output=/tmp/app examples/my-app/main.roc
+python3 scripts/spec_driver.py /tmp/app examples/my-app/specs
 ```
 
 Exit code `0` and no output means everything passed. Failures name the line:
@@ -25,6 +25,20 @@ TEST FAILED at line 4: locator did not resolve to one element
 
 Targets: `arm64mac`, `x64mac`, `arm64musl`, `x64musl`.
 
+Each `*.scm` file is one data-only S-expression test case. Put cases under the
+app's `specs/` directory; the driver discovers them recursively, sorts their
+relative paths, and runs each against a fresh app process. It supports bounded
+parallelism, glob filters, deterministic sharding, per-case timeouts, and
+fail-fast scheduling.
+
+```lisp
+(test "checkout succeeds"
+  (steps
+    (fill (label "Email") "team@example.com")
+    (click (role button :name "Place order"))
+    (expect-visible (text "Order confirmed"))))
+```
+
 ## Locators are semantic
 
 Elements are found the way a user or screen reader finds them — never by CSS
@@ -32,10 +46,10 @@ selector or DOM position:
 
 | Locator | Example |
 | --- | --- |
-| Role and accessible name | `role:button name:"Send invite"` |
-| Associated label | `label:"Invite email"` |
-| Exact visible text | `text:"Submit status: idle"` |
-| Test id | `test_id:"traffic-chart"` |
+| Role and accessible name | `(role button :name "Send invite")` |
+| Associated label | `(label "Invite email")` |
+| Exact visible text | `(text "Submit status: idle")` |
+| Test id | `(test-id "traffic-chart")` |
 
 A locator must resolve to exactly one element. Matching several is an error
 (*locator matched 2 elements*), which catches ambiguous labels early — a real
@@ -53,55 +67,55 @@ Html.checkbox_attrs("Read", read, [Html.test_id("book-${id}")], msg)
 
 ## Actions
 
-```txt
-click role:button name:"Save"
-real_click role:button name:"Open note"
-fill label:"Message" "draft"
-check label:"Accept terms"
-uncheck label:"Accept terms"
-change label:"Plan" "growth"
-select_option label:"Plan" "enterprise"
-submit role:form name:"Signup form"
-focus label:"Message"
-blur label:"Message"
-key_down label:"Command search" "Enter" false
-pointer_down role:region name:"Release card"
-pointer_up role:region name:"Release card"
-pointer_enter role:region name:"Drop target"
-pointer_leave role:region name:"Drop target"
-composition_start label:"Message"
-composition_end label:"Message"
-custom_event test_id:"traffic-chart" "chart-select" "point-1"
+```lisp
+(click (role button :name "Save"))
+(real-click (role button :name "Open note"))
+(fill (label "Message") "draft")
+(check (label "Accept terms"))
+(uncheck (label "Accept terms"))
+(change (label "Plan") "growth")
+(select-option (label "Plan") "enterprise")
+(submit (role form :name "Signup form"))
+(focus (label "Message"))
+(blur (label "Message"))
+(key-down (label "Command search") "Enter" false)
+(pointer-down (role region :name "Release card"))
+(pointer-up (role region :name "Release card"))
+(pointer-enter (role region :name "Drop target"))
+(pointer-leave (role region :name "Drop target"))
+(composition-start (label "Message"))
+(composition-end (label "Message"))
+(custom-event (test-id "traffic-chart") "chart-select" "point-1")
 ```
 
-**`click` versus `real_click`.** `click` dispatches directly to the target's own
-click binding. `real_click` dispatches `pointerdown → pointerup → click` through
+**`click` versus `real-click`.** `click` dispatches directly to the target's own
+click binding. `real-click` dispatches `pointerdown → pointerup → click` through
 the full propagation path — capture, bubble, `self`, and stop policies — and
-runs default actions. Use `real_click` for nested controls inside clickable or
+runs default actions. Use `real-click` for nested controls inside clickable or
 draggable parents, and for submit buttons inside forms.
 
-`key_down` takes the key name and a shift-key boolean. `custom_event` sends its
+`key-down` takes the key name and a shift-key boolean. `custom-event` sends its
 final argument as `event.detail`.
 
 Checkboxes use the checked-change path, so use `check` / `uncheck` — or
-`real_click`, which runs the browser's default toggle action. A bare `click` on
+`real-click`, which runs the browser's default toggle action. A bare `click` on
 a checkbox with no click binding fails with *target has no click binding*.
 
 ## Assertions
 
-```txt
-expect_visible role:heading name:"Team Checkout"
-expect_absent role:region name:"Queue Widget"
-expect_text text:"Submit status: sending" "Submit status: sending"
-expect_value label:"Invite email" "ops@example.com"
-expect_attr label:"Invite email" aria-invalid ""
-expect_no_attr label:"Invite email" aria-invalid
-expect_checked label:"Accept terms" true
-expect_disabled role:button name:"Send invite" true
-expect_updates label:"Message" 2
+```lisp
+(expect-visible (role heading :name "Team Checkout"))
+(expect-absent (role region :name "Queue Widget"))
+(expect-text (text "Submit status: sending") "Submit status: sending")
+(expect-value (label "Invite email") "ops@example.com")
+(expect-attr (label "Invite email") aria-invalid "")
+(expect-no-attr (label "Invite email") aria-invalid)
+(expect-checked (label "Accept terms") true)
+(expect-disabled (role button :name "Send invite") true)
+(expect-updates (label "Message") 2)
 ```
 
-`expect_updates` asserts how many times a specific element was patched, summed
+`expect-updates` asserts how many times a specific element was patched, summed
 across its text, value, checked, and disabled sinks — a direct way to prove that
 an unrelated change did *not* touch something.
 
@@ -110,31 +124,31 @@ an unrelated change did *not* touch something.
 Tasks and timers are driven by the spec, not by a clock. There is no sleeping
 and no polling.
 
-```txt
-expect_pending_task "form-submit" 1
-resolve_task "form-submit" "queued"
-reject_task "lookup" "offline"
-resolve_stale_task "lookup" "late"
-expect_canceled_task "lookup" 1
+```lisp
+(expect-pending-task "form-submit" 1)
+(resolve-task "form-submit" "queued")
+(reject-task "lookup" "offline")
+(resolve-stale-task "lookup" "late")
+(expect-canceled-task "lookup" 1)
 
-tick_interval 1000
-tick_interval_if_active 1000
-expect_interval 1000 1
+(tick-interval 1000)
+(tick-interval-if-active 1000)
+(expect-interval 1000 1)
 
-expect_cleanup "live search panel cleanup" 1
+(expect-cleanup "live search panel cleanup" 1)
 ```
 
-`resolve_stale_task` is the interesting one: it delivers a result for a request
+`resolve-stale-task` is the interesting one: it delivers a result for a request
 that has already been superseded. Pair it with an assertion that the UI did
 **not** change, and you have locked out an entire class of race condition:
 
-```txt
-fill label:"Search" "ro"
-fill label:"Search" "roc"
-resolve_stale_task "lookup" "results for ro"
-expect_text text:"Search status: loading" "Search status: loading"
-resolve_task "lookup" "results for roc"
-expect_text text:"Results: results for roc" "Results: results for roc"
+```lisp
+(fill (label "Search") "ro")
+(fill (label "Search") "roc")
+(resolve-stale-task "lookup" "results for ro")
+(expect-text (text "Search status: loading") "Search status: loading")
+(resolve-task "lookup" "results for roc")
+(expect-text (text "Results: results for roc") "Results: results for roc")
 ```
 
 Task names come from `Signal.fake_task(name, ...)` or, for HTTP, from
@@ -144,46 +158,47 @@ Task names come from `Signal.fake_task(name, ...)` or, for HTTP, from
 
 Location, history, visibility, online status, and storage are all controllable:
 
-```txt
-set_initial_location "/article/keyed-lists"
-set_initial_visibility hidden
-set_initial_online offline
-seed_local_storage "conduit.jwt" "test-token"
-seed_session_storage "draft" "hello"
-
-navigate "/profile/alice"
-history_back
-history_forward
-set_visibility visible
-set_online online
-
-expect_current_location "/about"
-expect_document_title "About"
-expect_local_storage "conduit.jwt" "test-token"
-expect_no_local_storage "conduit.jwt"
-expect_session_storage "draft" "hello"
-expect_no_session_storage "draft"
+```lisp
+(test "restored navigation"
+  (setup
+    (initial-location "/article/keyed-lists")
+    (initial-visibility hidden)
+    (initial-online offline)
+    (local-storage "conduit.jwt" "test-token")
+    (session-storage "draft" "hello"))
+  (steps
+    (navigate "/profile/alice")
+    (history-back)
+    (history-forward)
+    (set-visibility visible)
+    (set-online online)
+    (expect-current-location "/about")
+    (expect-document-title "About")
+    (expect-local-storage "conduit.jwt" "test-token")
+    (expect-no-local-storage "conduit.jwt")
+    (expect-session-storage "draft" "hello")
+    (expect-no-session-storage "draft")))
 ```
 
-The `set_initial_*` and `seed_*` commands run **before** the first render, which
+The forms in `(setup ...)` run **before** the first render, which
 is how you test deep links and restored sessions — exactly the paths that are
 awkward to test in a real browser.
 
 A full navigation test:
 
-```txt
-expect_document_title "Home"
-expect_text text:"You are home" "You are home"
-click role:link name:"Go to About"
-expect_current_location "/about"
-expect_document_title "About"
-history_back
-expect_current_location "/"
-expect_text text:"You are home" "You are home"
-history_forward
-expect_current_location "/about"
-navigate "/nowhere"
-expect_document_title "Not found"
+```lisp
+(expect-document-title "Home")
+(expect-text (text "You are home") "You are home")
+(click (role link :name "Go to About"))
+(expect-current-location "/about")
+(expect-document-title "About")
+(history-back)
+(expect-current-location "/")
+(expect-text (text "You are home") "You are home")
+(history-forward)
+(expect-current-location "/about")
+(navigate "/nowhere")
+(expect-document-title "Not found")
 ```
 
 ## Work budgets
@@ -191,16 +206,16 @@ expect_document_title "Not found"
 This is the capability with no real equivalent elsewhere: **asserting how much
 work an interaction did.**
 
-Call `mark_metrics`, perform an action, then assert exact or maximum deltas:
+Call `mark-metrics`, perform an action, then assert exact or maximum deltas:
 
-```txt
-mark_metrics
-click role:button name:"Reverse rows"
-expect_metric_delta rows_reused 4
-expect_metric_delta rows_created 0
-expect_metric_delta rows_removed 0
-expect_metric_delta_at_most stream_nodes_scanned 4096
-expect_metric_delta signal_record_table_rebuilt 0
+```lisp
+(mark-metrics)
+(click (role button :name "Reverse rows"))
+(expect-metric-delta rows_reused 4)
+(expect-metric-delta rows_created 0)
+(expect-metric-delta rows_removed 0)
+(expect-metric-delta-at-most stream_nodes_scanned 4096)
+(expect-metric-delta signal_record_table_rebuilt 0)
 ```
 
 That turns "reordering reuses rows instead of rebuilding them" from a claim into
@@ -226,7 +241,7 @@ The authoritative list is in `src/spec/spec_runner.zig`.
 
 **A practical way to use these:** write the assertion loosely first, run it, read
 the actual number from the failure, then pin it. Ratchet it down when you
-improve something. `expect_metric_delta_at_most` is the right form for anything
+improve something. `expect-metric-delta-at-most` is the right form for anything
 that legitimately varies.
 
 `propagation_prunes` is worth watching specifically — it counts how often
@@ -251,8 +266,8 @@ browser-shaped concerns get a slower one that runs less often.
 Individual app:
 
 ```sh
-roc build --target=arm64mac --output=/tmp/app examples/my-app/app.roc
-/tmp/app examples/my-app/spec.txt
+roc build --target=arm64mac --output=/tmp/app examples/my-app/main.roc
+python3 scripts/spec_driver.py /tmp/app examples/my-app/specs
 ```
 
 Repository suites:

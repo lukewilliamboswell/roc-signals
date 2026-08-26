@@ -17,10 +17,10 @@ You should have finished [Getting Started](@/docs/getting-started.md) so that
 [Thinking in Signals](@/docs/thinking-in-signals.md) first will make the *why*
 of each step obvious.
 
-Create `examples/reading-list/app.roc` and follow along. After each step, run:
+Create `examples/reading-list/main.roc` and follow along. After each step, run:
 
 ```sh
-roc check examples/reading-list/app.roc
+roc check examples/reading-list/main.roc
 ```
 
 ## Step 1 — Static structure
@@ -506,46 +506,47 @@ main = ||
 
 ## Step 7 — Test it
 
-Write `examples/reading-list/spec.txt`:
+Write `examples/reading-list/specs/reading-list.scm`:
 
-```txt
-expect_visible role:heading name:"Reading List"
-expect_text text:"1 unread" "1 unread"
-
-fill label:"Title" "Thinking in Bets"
-click role:button name:"Add book"
-expect_text text:"2 unread" "2 unread"
-expect_value label:"Title" ""
-
-check label:"Unread only"
-expect_absent text:"Structure and Interpretation"
-expect_visible text:"Thinking in Systems"
-
-uncheck label:"Unread only"
-expect_visible text:"Structure and Interpretation"
+```lisp
+(test "reading list workflow"
+  (steps
+    (expect-visible (role heading :name "Reading List"))
+    (expect-text (text "1 unread") "1 unread")
+    (fill (label "Title") "Thinking in Bets")
+    (click (role button :name "Add book"))
+    (expect-text (text "2 unread") "2 unread")
+    (expect-value (label "Title") "")
+    (check (label "Unread only"))
+    (expect-absent (text "Structure and Interpretation"))
+    (expect-visible (text "Thinking in Systems"))
+    (uncheck (label "Unread only"))
+    (expect-visible (text "Structure and Interpretation"))))
 ```
 
 Build and run:
 
 ```sh
-roc build --target=arm64mac --output=/tmp/reading-list examples/reading-list/app.roc
-/tmp/reading-list examples/reading-list/spec.txt
+roc build --target=arm64mac --output=/tmp/reading-list examples/reading-list/main.roc
+python3 scripts/spec_driver.py /tmp/reading-list examples/reading-list/specs
 ```
 
 Exit code `0`, no output — everything passed. The whole run takes milliseconds
 and there is no browser involved.
 
-Now assert something stronger. Add `examples/reading-list/toggle_spec.txt`:
+Now assert something stronger. Add `examples/reading-list/specs/toggle.scm`:
 
-```txt
-expect_checked test_id:"book-b2" false
-expect_text text:"1 unread" "1 unread"
-mark_metrics
-check test_id:"book-b2"
-expect_checked test_id:"book-b2" true
-expect_text text:"0 unread" "0 unread"
-expect_metric_delta rows_created 0
-expect_metric_delta rows_removed 0
+```lisp
+(test "toggle reuses its row"
+  (steps
+    (expect-checked (test-id "book-b2") false)
+    (expect-text (text "1 unread") "1 unread")
+    (mark-metrics)
+    (check (test-id "book-b2"))
+    (expect-checked (test-id "book-b2") true)
+    (expect-text (text "0 unread") "0 unread")
+    (expect-metric-delta rows_created 0)
+    (expect-metric-delta rows_removed 0)))
 ```
 
 The last two lines assert that toggling a checkbox created and destroyed **zero
@@ -555,13 +556,13 @@ test suite rather than assumed. If a future refactor accidentally makes the list
 rebuild, this fails.
 
 ```sh
-/tmp/reading-list examples/reading-list/toggle_spec.txt
+python3 scripts/spec_driver.py /tmp/reading-list examples/reading-list/specs
 ```
 
 ## See it in a browser
 
 ```sh
-roc build --target=wasm32 --opt=size --output=/tmp/reading-list.wasm examples/reading-list/app.roc
+roc build --target=wasm32 --opt=size --output=/tmp/reading-list.wasm examples/reading-list/main.roc
 ```
 
 Drop `/tmp/reading-list.wasm` on the [home page](@/_index.md), or register the

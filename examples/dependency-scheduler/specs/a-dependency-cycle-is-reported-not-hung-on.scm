@@ -1,0 +1,50 @@
+(test "Dependency scheduler — a dependency cycle is reported, not hung on"
+  (steps
+    ; Given the state established by earlier scenarios
+    (mark-metrics)
+    (click (role button :name "Delay Write spec"))
+    (click (role button :name "Pull in Write spec"))
+    (mark-metrics)
+    (click (role button :name "Delay Write docs"))
+    (click (role button :name "Pull in Write docs"))
+    (mark-metrics)
+    (click (role button :name "Pull in Write docs"))
+    (select-option (label "Focus task") "ui")
+    (click (role button :name "Extend Build UI"))
+    (click (role button :name "Extend Build UI"))
+    (click (role button :name "Shorten Build UI"))
+    (click (role button :name "Shorten Build UI"))
+    (click (role button :name "Extend Launch"))
+    (click (role button :name "Shorten Launch"))
+    (click (role button :name "Shorten Launch"))
+    (mark-metrics)
+    (check (label "QA pass after Write docs"))
+    (uncheck (label "QA pass after Write docs"))
+
+    ; a dependency cycle is reported, not hung on
+
+    ; The cycle swaps one `Ui.when` branch: one scope disposed, one created, and
+    ; the keyed rows are still reused rather than rebuilt.
+    (mark-metrics)
+    (check (label "Write spec after Launch"))
+    (expect-metric-delta scopes_created 1)
+    (expect-metric-delta scopes_disposed 1)
+    (expect-metric-delta rows_created 0)
+    (expect-metric-delta rows_reused 7)
+    (expect-metric-delta rows_removed 0)
+    (expect-visible (role region :name "Cycle report"))
+    (expect-absent (role region :name "Plan health"))
+    (expect-text (test-id "cycle-report") "Cycle detected among 7 tasks: Write spec, Build API, Build UI, Write docs, Integrate, QA pass, Launch")
+    (expect-text (test-id "project-summary") "Project end unknown while the dependency graph is cyclic")
+    (expect-text (test-id "critical-path") "Critical path: none")
+    (expect-text (test-id "line-spec") "Write spec: unscheduled while the plan is cyclic, 2 days, after launch")
+    (expect-text (test-id "line-launch") "Launch: unscheduled while the plan is cyclic, milestone, after qa")
+    (expect-attr (test-id "row-spec") data-tone "unscheduled")
+    ; The matrix stays usable while cyclic, so the edge can be removed again.
+    (uncheck (label "Write spec after Launch"))
+    (expect-visible (role region :name "Plan health"))
+    (expect-absent (role region :name "Cycle report"))
+    (expect-text (test-id "project-summary") "Project finishes on day 10 across 7 tasks")
+    (expect-text (test-id "line-spec") "Write spec: day 0 to 2, 2 days, after none, critical")
+  )
+)

@@ -27,14 +27,8 @@ TAILWIND_INPUT = WWW / "input.css"
 TAILWIND_OUTPUT = WWW / "static" / "signals.css"
 TAILWIND_CONFIG = ROOT / "tailwind.config.js"
 PLATFORM_HEADER_RE = re.compile(r'platform\s+"[^"]+"')
-LINUX_WASM_SKIPS = {
-    "live-search": "Roc compiler segfaults while building this example for wasm32 on Linux",
-}
-LINUX_WASM_OPT_SKIPS = {
-    ("dev", "service-ops-center"): (
-        "Roc compiler hangs while building this example for wasm32 with --opt=dev on Linux"
-    ),
-}
+LINUX_WASM_SKIPS: dict[str, str] = {}
+LINUX_WASM_OPT_SKIPS: dict[tuple[str, str], str] = {}
 
 
 def load_examples() -> list[dict[str, object]]:

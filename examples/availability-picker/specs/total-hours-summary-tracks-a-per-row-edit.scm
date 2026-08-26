@@ -1,0 +1,31 @@
+(test "Availability picker — total hours summary tracks a per row edit"
+  (steps
+    ; Given the state established by earlier scenarios
+    (mark-metrics)
+    (click (role button :name "Mark review available"))
+    (click (role button :name "Mark review busy"))
+    (mark-metrics)
+    (select-option (label "Timezone") "auckland")
+    (click (role button :name "Mark review available"))
+    (select-option (label "Timezone") "kolkata")
+    (select-option (label "Timezone") "nyc")
+    (fill (label "Slot name") "Client call")
+    (fill (label "Start time") "25:00")
+    (fill (label "Start time") "0830")
+    (fill (label "Start time") "08:60")
+    (fill (label "Start time") "08:30")
+    (fill (label "Length") "0")
+    (fill (label "Length") "abc")
+    (fill (label "Length") "45")
+    (select-option (label "Day") "Fri")
+    (mark-metrics)
+    (click (role button :name "Add slot"))
+    (select-option (label "Timezone") "utc")
+    (select-option (label "Timezone") "nyc")
+
+    ; total hours summary tracks a per row edit
+    (click (role button :name "Mark s6 available"))
+    (expect-text (test-id "summary") "Available 4h 45m across 6 slots, 0 conflicts")
+    (expect-text (test-id "free-days") "Tue, Thu, Sat")
+  )
+)

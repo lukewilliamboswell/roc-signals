@@ -25,16 +25,16 @@ its server provides an SPA fallback).
 Useful focused checks while working on this app:
 
 ```sh
-roc check --no-cache examples/conduit/app.roc
-roc build --no-cache --target=arm64mac --opt=dev --output=/tmp/conduit examples/conduit/app.roc
-/tmp/conduit examples/conduit/spec.txt
+roc check --no-cache examples/conduit/main.roc
+roc build --no-cache --target=arm64mac --opt=dev --output=/tmp/conduit examples/conduit/main.roc
+python3 scripts/spec_driver.py /tmp/conduit examples/conduit/specs
 node --test scripts/browser/conduit_backend.test.mjs
 zig build run-test-browser
 git diff --check
 zig build run-check-tidy
 ```
 
-The native `examples/conduit/spec.txt` is the authoritative behavior script.
+The native `examples/conduit/specs/` suite is the authoritative behavior spec.
 On 2026-07-20 it passed end to end with the PATH Roc
 `release-fast-8eaa9abd`, including loading, empty, validation, network-error,
 stale-response, navigation, and server-confirmed mutation paths. The full

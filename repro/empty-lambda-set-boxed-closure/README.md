@@ -8,7 +8,7 @@ With the pinned Roc nightly installed:
 zig build build-wasm-host
 roc build --target=wasm32 --opt=size --no-cache \
   --output=/tmp/roc-signals-empty-lambda-set.wasm \
-  repro/empty-lambda-set-boxed-closure/app.roc
+  repro/empty-lambda-set-boxed-closure/main.roc
 node scripts/browser/mount_wasm_example.mjs \
   /tmp/roc-signals-empty-lambda-set.wasm empty-lambda-set --exercise-click-first-link
 ```

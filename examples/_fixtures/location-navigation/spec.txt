@@ -1,6 +1,0 @@
-set_initial_location "/"
-expect_visible text:"Location Navigation"
-expect_visible text:"Path: /services/web"
-expect_visible text:"Query: tab=deploys"
-expect_visible text:"Hash: events"
-expect_current_location "/services/web?tab=deploys#events"

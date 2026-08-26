@@ -1,0 +1,27 @@
+(test "Signal record builder"
+  (steps
+    ; Signal record-builder scenario
+
+    (expect-visible (role heading :name "Signal Record Builder"))
+    (expect-attr (role region :name "Signal Record Builder") data-fixture "signal-record-builder")
+    (expect-value (label "First name") "Ada")
+    (expect-value (label "Last name") "Lovelace")
+    (expect-checked (label "Active profile") true)
+    (expect-text (text "Profile: Ada Lovelace is active") "Profile: Ada Lovelace is active")
+    (expect-text (text "Ready: yes") "Ready: yes")
+    (expect-disabled (role button :name "Continue") false)
+    (fill (label "First name") "Grace")
+    (expect-text (text "Profile: Grace Lovelace is active") "Profile: Grace Lovelace is active")
+    (expect-text (text "Ready: yes") "Ready: yes")
+    (expect-disabled (role button :name "Continue") false)
+    (fill (label "Last name") "")
+    (expect-text (text "Profile: Grace  is active") "Profile: Grace  is active")
+    (expect-text (text "Ready: no") "Ready: no")
+    (expect-disabled (role button :name "Continue") true)
+    (fill (label "Last name") "Hopper")
+    (uncheck (label "Active profile"))
+    (expect-text (text "Profile: Grace Hopper is paused") "Profile: Grace Hopper is paused")
+    (expect-text (text "Ready: no") "Ready: no")
+    (expect-disabled (role button :name "Continue") true)
+  )
+)

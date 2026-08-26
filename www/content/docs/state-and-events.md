@@ -401,21 +401,21 @@ cannot be clicked, so if the submit button is disabled while the form is
 invalid, clicking it can never set `attempted` and the user never sees why. The
 form's `on_submit_prevent_default` handler is what reveals the errors:
 
-```txt
-expect_disabled role:button name:"Send invite" true
-submit role:form name:"Invite form"
-expect_text text:"Enter an email address." "Enter an email address."
-expect_attr label:"Invite email" aria-invalid ""
-expect_pending_task "form-submit" 0
+```lisp
+(expect-disabled (role button :name "Send invite") true)
+(submit (role form :name "Invite form"))
+(expect-text (text "Enter an email address.") "Enter an email address.")
+(expect-attr (label "Invite email") aria-invalid "")
+(expect-pending-task "form-submit" 0)
 
-fill label:"Invite email" "ops@example.com"
-check label:"Accept terms"
-expect_disabled role:button name:"Send invite" false
-click role:button name:"Send invite"
-expect_pending_task "form-submit" 1
+(fill (label "Invite email") "ops@example.com")
+(check (label "Accept terms"))
+(expect-disabled (role button :name "Send invite") false)
+(click (role button :name "Send invite"))
+(expect-pending-task "form-submit" 1)
 ```
 
-Note the `expect_pending_task "form-submit" 0` — the invalid submit marked the
+Note `(expect-pending-task "form-submit" 0)` — the invalid submit marked the
 fields and started no request. That assertion is the whole point of the pattern.
 
 This is locked by the `form-validation-pattern` fixture and used by every form

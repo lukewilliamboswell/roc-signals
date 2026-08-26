@@ -231,96 +231,86 @@ or `Html.text_s`.
 
 ## Spec language
 
-Run with `<app-binary> <spec-file>`. See [Testing](@/docs/testing.md).
+Run a `specs/` directory with `scripts/spec_driver.py`. Each `.scm` file wraps
+one case as `(test "name" (steps ...))`. See [Testing](@/docs/testing.md).
 
 ### Locators
 
-`role:<role> name:"<name>"` · `label:"<label>"` · `text:"<exact text>"` ·
-`test_id:"<id>"`
+`(role <role> :name "<name>")` · `(label "<label>")` ·
+`(text "<exact text>")` · `(test-id "<id>")`
 
 ### Actions
 
-```txt
-click <locator>
-real_click <locator>
-fill <locator> "<text>"
-check <locator>
-uncheck <locator>
-change <locator> "<value>"
-select_option <locator> "<value>"
-submit <locator>
-focus <locator>
-blur <locator>
-key_down <locator> "<key>" true|false
-pointer_down <locator>
-pointer_up <locator>
-pointer_enter <locator>
-pointer_leave <locator>
-composition_start <locator>
-composition_end <locator>
-custom_event <locator> "<event-name>" "<detail>"
+```lisp
+(click <locator>)                 (real-click <locator>)
+(fill <locator> "<text>")        (change <locator> "<value>")
+(check <locator>)                 (uncheck <locator>)
+(select-option <locator> "<value>")
+(submit <locator>)                (focus <locator>)  (blur <locator>)
+(key-down <locator> "<key>" true|false)
+(pointer-down <locator>)          (pointer-up <locator>)
+(pointer-enter <locator>)         (pointer-leave <locator>)
+(composition-start <locator>)     (composition-end <locator>)
+(custom-event <locator> "<event-name>" "<detail>")
 ```
 
 ### Assertions
 
-```txt
-expect_visible <locator>
-expect_absent <locator>
-expect_text <locator> "<text>"
-expect_value <locator> "<text>"
-expect_attr <locator> <attr-name> "<value>"
-expect_no_attr <locator> <attr-name>
-expect_checked <locator> true|false
-expect_disabled <locator> true|false
-expect_updates <locator> <count>
+```lisp
+(expect-visible <locator>)
+(expect-absent <locator>)
+(expect-text <locator> "<text>")
+(expect-value <locator> "<text>")
+(expect-attr <locator> <attr-name> "<value>")
+(expect-no-attr <locator> <attr-name>)
+(expect-checked <locator> true|false)
+(expect-disabled <locator> true|false)
+(expect-updates <locator> <count>)
 ```
 
 ### Async and lifecycle
 
-```txt
-resolve_task "<name>" "<payload>"
-resolve_stale_task "<name>" "<payload>"
-reject_task "<name>" "<payload>"
-expect_pending_task "<name>" <count>
-expect_canceled_task "<name>" <count>
-tick_interval <period-ms>
-tick_interval_if_active <period-ms>
-expect_interval <period-ms> <count>
-expect_cleanup "<name>" <count>
+```lisp
+(resolve-task "<name>" "<payload>")
+(resolve-stale-task "<name>" "<payload>")
+(reject-task "<name>" "<payload>")
+(expect-pending-task "<name>" <count>)
+(expect-canceled-task "<name>" <count>)
+(tick-interval <period-ms>)
+(tick-interval-if-active <period-ms>)
+(expect-interval <period-ms> <count>)
+(expect-cleanup "<name>" <count>)
 ```
 
 ### Browser environment
 
-```txt
-set_initial_location "<path>"
-set_initial_visibility visible|hidden
-set_initial_online online|offline
-seed_local_storage "<key>" "<value>"
-seed_session_storage "<key>" "<value>"
+```lisp
+(setup
+  (initial-location "<path>")
+  (initial-visibility visible|hidden)
+  (initial-online online|offline)
+  (local-storage "<key>" "<value>")
+  (session-storage "<key>" "<value>"))
 
-navigate "<path>"
-history_back
-history_forward
-set_visibility visible|hidden
-set_online online|offline
-
-expect_current_location "<path>"
-assert_current_location "<path>"
-expect_document_title "<title>"
-expect_local_storage "<key>" "<value>"
-expect_no_local_storage "<key>"
-expect_session_storage "<key>" "<value>"
-expect_no_session_storage "<key>"
+(navigate "<path>")
+(history-back)  (history-forward)
+(set-visibility visible|hidden)  (set-online online|offline)
+(expect-current-location "<path>")
+(expect-document-title "<title>")
+(expect-local-storage "<key>" "<value>")
+(expect-no-local-storage "<key>")
+(expect-session-storage "<key>" "<value>")
+(expect-no-session-storage "<key>")
 ```
 
-`set_initial_*` and `seed_*` apply **before** the first render.
+Forms inside `(setup ...)` apply **before** the first render.
 
 ### Work budgets
 
-```txt
-mark_metrics
-expect_metric_delta <metric> <delta>
-expect_metric_delta_at_most <metric> <delta>
+```lisp
+(mark-metrics)
+(expect-metric-delta <metric> <delta>)
+(expect-metric-delta-at-most <metric> <delta>)
 ```
 
 Common metrics: `nodes_recomputed`, `patches_emitted`, `rows_created`,
@@ -392,7 +382,7 @@ resolves `role:` locators for roles set by the built-in helpers (`section`,
 **An interval only runs while a live node depends on it.** Disposing the scope
 that consumes a `Signal.interval` genuinely cancels the timer. That is the
 mechanism behind pause-when-hidden polling, and it is what
-`tick_interval_if_active` asserts.
+`tick-interval-if-active` asserts.
 
 ## Build commands
 
@@ -401,14 +391,14 @@ mechanism behind pause-when-hidden polling, and it is what
 zig build build-test-hosts -Doptimize=ReleaseSmall
 
 # Type-check
-roc check examples/my-app/app.roc
+roc check examples/my-app/main.roc
 
 # Native test binary
-roc build --target=arm64mac --output=/tmp/app examples/my-app/app.roc
-/tmp/app examples/my-app/spec.txt
+roc build --target=arm64mac --output=/tmp/app examples/my-app/main.roc
+python3 scripts/spec_driver.py /tmp/app examples/my-app/specs
 
 # Browser build
-roc build --target=wasm32 --opt=size --output=/tmp/app.wasm examples/my-app/app.roc
+roc build --target=wasm32 --opt=size --output=/tmp/app.wasm examples/my-app/main.roc
 
 # Inspect the startup command stream
 node scripts/browser/mount_wasm_example.mjs /tmp/app.wasm my-app --telemetry-summary

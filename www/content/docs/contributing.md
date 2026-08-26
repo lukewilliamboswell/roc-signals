@@ -182,7 +182,7 @@ mount an artifact with telemetry summarization:
 
 ```sh
 python3 scripts/test.py wasm --keep-output
-node scripts/browser/mount_wasm_example.mjs .test-out/wasm/service-ops-center.wasm service-ops-center --telemetry-summary
+node scripts/browser/mount_wasm_example.mjs .test-out/wasm/package-explorer.wasm package-explorer --telemetry-summary
 ```
 
 Repeat the mount command for each public wasm app when refreshing a public-app
@@ -212,7 +212,7 @@ builds do not depend on a published release.
 Useful variants:
 
 ```sh
-python3 scripts/serve.py --example service-ops-center --port 9001
+python3 scripts/serve.py --example package-explorer --port 9001
 python3 scripts/serve.py --app-opt dev
 python3 scripts/serve.py --host-opt Debug
 python3 scripts/serve.py --platform-url https://example.com/platform/release.tar.zst
@@ -242,73 +242,130 @@ Native app specs use semantic locators rather than positional DOM indices. They
 are app-facing semantic tests, not a browser emulator; keep browser-only event
 ordering and rendering details in JavaScript/browser contract tests.
 
-```txt
-expect_visible role:heading name:"Team Checkout"
-fill label:"Email" "team@example.com"
-expect_value label:"Email" "team@example.com"
-check label:"Accept terms"
-expect_checked label:"Accept terms" true
-click role:button name:"Place order"
+```lisp
+(test "checkout succeeds"
+  (steps
+    (expect-visible (role heading :name "Team Checkout"))
+    (fill (label "Email") "team@example.com")
+    (expect-value (label "Email") "team@example.com")
+    (check (label "Accept terms"))
+    (expect-checked (label "Accept terms") true)
+    (click (role button :name "Place order"))))
+```
+
+Put each independent case in its own `*.scm` file under the app's
+`specs/` directory. The driver discovers files recursively and gives each one a
+fresh app process. Keep pre-mount state in an optional `(setup ...)` form;
+setup accepts only `initial-location`, `initial-visibility`, `initial-online`,
+`local-storage`, and `session-storage`.
+
+### Writing specs that do not rot
+
+**Locate dynamic text by identity, not by content.** A `text:` locator matches
+on rendered content, so it couples the locator to the value: change the value
+and the element stops resolving, and the failure reads "no element has text ..."
+rather than showing a diff. Give the element a `test_id` instead:
+
+```roc
+Html.paragraph_s_attrs(status, [Html.test_id("sync-status")])
+```
+
+```lisp
+(expect-text (test-id "sync-status") "Synced 3 notes")
+```
+
+Note that `(expect-text (text "X") "X")` — the same string as both locator and
+expected value — asserts only that an element with that text exists. It is
+`(expect-visible (text "X"))` written the long way, and it cannot report a
+value mismatch. Prefer a `test-id` locator with the value as the expectation.
+
+**`dirty_source_roots` counts sources, not derived nodes.** It is 1 for almost
+every interaction no matter how deep the graph. Use `derived_calls_into_roc`
+(one per `map`/`map2`/`combine` evaluation) as the fine-grained budget, and
+`propagation_prunes` to show an equality cutoff fired. See
+`examples/_fixtures/metric-semantics/`.
+
+**Assert structural metrics exactly; bound engine-internal ones.** `rows_created`,
+`rows_reused`, `rows_removed`, `scopes_created` and `scopes_disposed` are
+semantic: they describe what the reconciler did, and an exact assertion is a
+real regression test. `patches_emitted` and `dirty_source_roots` count internal
+work whose exact value moves with unrelated engine changes — bound those with
+`expect-metric-delta-at-most` so an unrelated improvement does not fail an
+unrelated spec.
+
+**To see what actually rendered**, assert a deliberately wrong value on the
+enclosing region. `expect-text` falls back to the concatenated descendant text
+of a container that has no text of its own, so the failure prints the real
+content:
+
+```lisp
+(expect-text (role region :name "Your Region") "PROBE")
 ```
 
 Supported locators:
 
-- `role:<role> name:"<accessible name>"`
-- `label:"<label>"`
-- `text:"<exact text>"`
-- `test_id:"<id>"`
+- `(role <role> :name "<accessible name>")`
+- `(label "<label>")`
+- `(text "<exact text>")`
+- `(test-id "<id>")`
 
 Supported action commands:
 
-- `click <locator>`
-- `real_click <locator>`
-- `pointer_down <locator>`
-- `pointer_up <locator>`
-- `pointer_enter <locator>`
-- `pointer_leave <locator>`
-- `key_down <locator> "<key>" true|false`
-- `focus <locator>`
-- `blur <locator>`
-- `composition_start <locator>`
-- `composition_end <locator>`
-- `change <locator> "<value>"`
-- `select_option <locator> "<value>"`
-- `custom_event <locator> "<event-name>" "<detail>"`
-- `submit <locator>`
-- `fill <locator> "<text>"`
-- `check <locator>` and `uncheck <locator>`
+- `(click <locator>)`, `(real-click <locator>)`
+- `(pointer-down <locator>)`, `(pointer-up <locator>)`
+- `(pointer-enter <locator>)`, `(pointer-leave <locator>)`
+- `(key-down <locator> "<key>" true|false)`
+- `(focus <locator>)`, `(blur <locator>)`
+- `(composition-start <locator>)`, `(composition-end <locator>)`
+- `(change <locator> "<value>")`, `(select-option <locator> "<value>")`
+- `(custom-event <locator> "<event-name>" "<detail>")`
+- `(submit <locator>)`, `(fill <locator> "<text>")`
+- `(check <locator>)` and `(uncheck <locator>)`
 
 Supported assertions:
 
-- `expect_visible <locator>`
-- `expect_absent <locator>`
-- `expect_text <locator> "<text>"`
-- `expect_value <locator> "<text>"`
-- `expect_attr <locator> <attr-name> "<value>"`
-- `expect_no_attr <locator> <attr-name>`
-- `expect_checked <locator> true|false`
-- `expect_disabled <locator> true|false`
-- `expect_updates <locator> <count>`
+- `(expect-visible <locator>)`
+- `(expect-absent <locator>)`
+- `(expect-text <locator> "<text>")` — compares the element's own text; for a
+  container with no text of its own, compares the concatenated descendant text
+  instead, so a region can be asserted by its rendered content
+- `(expect-value <locator> "<text>")`
+- `(expect-attr <locator> <attr-name> "<value>")`
+- `(expect-no-attr <locator> <attr-name>)`
+- `(expect-checked <locator> true|false)`
+- `(expect-disabled <locator> true|false)`
+- `(expect-updates <locator> <count>)`
 
 Supported async and lifecycle commands:
 
-- `resolve_task "<task-name>" "<payload>"`
-- `resolve_stale_task "<task-name>" "<payload>"`
-- `reject_task "<task-name>" "<payload>"`
-- `tick_interval <period-ms>`
-- `tick_interval_if_active <period-ms>`
-- `expect_pending_task "<task-name>" <count>`
-- `expect_canceled_task "<task-name>" <count>`
-- `expect_interval <period-ms> <count>`
-- `expect_cleanup "<cleanup-name>" <count>`
+- `(resolve-task "<task-name>" "<payload>")`
+- `(resolve-stale-task "<task-name>" "<payload>")`
+- `(reject-task "<task-name>" "<payload>")`
+- `(tick-interval <period-ms>)`, `(tick-interval-if-active <period-ms>)`
+- `(expect-pending-task "<task-name>" <count>)`
+- `(expect-canceled-task "<task-name>" <count>)`
+- `(expect-interval <period-ms> <count>)`
+- `(expect-cleanup "<cleanup-name>" <count>)`
 
 Supported metric commands:
 
-- `mark_metrics`
-- `expect_metric_delta <metric-name> <delta>`
-- `expect_metric_delta_at_most <metric-name> <delta>`
+- `(mark-metrics)`
+- `(expect-metric-delta <metric-name> <delta>)`
+- `(expect-metric-delta-at-most <metric-name> <delta>)`
 
-`real_click` dispatches `pointerdown -> pointerup -> click` through the
+Quoted values are unescaped (`\n`, `\t`, `\\`, `\"`) for every command that
+takes one, including `fill`, `change`, `select-option`, `key-down`, and the
+`expect-text` / `expect-value` / `expect-attr` comparison values.
+
+`expect-pending-task` asserts an absolute count, not a delta. To prove that an
+interaction did *not* start a request while another is in flight, assert that
+the count is unchanged and that `expect-canceled-task` is still 0.
+
+`resolve-stale-task` requires a previously canceled request for that task name;
+without one the host reports `fake stale task result had no matching canceled
+request`. Force a supersede first.
+
+`real-click` dispatches `pointerdown -> pointerup -> click` through the
 simulated propagation path, including capture/bubble, `self`, and stop policy.
 Use it for nested controls where parent event flow matters; use `click` for a
 direct unit click binding on one target. For buttons inside forms, omitted
@@ -316,10 +373,10 @@ direct unit click binding on one target. For buttons inside forms, omitted
 click-only. Reset buttons dispatch app-managed prevent-default `reset` bindings.
 Checkbox controls use the checked-change default path even without a click
 handler. `submit` is for app-managed forms and requires a unit submit binding
-from `Html.on_submit_prevent_default`. `custom_event` sends its detail argument
+from `Html.on_submit_prevent_default`. `custom-event` sends its detail argument
 as `event.detail`, which reducers built with `State.on_detail` receive as text.
 
-Common metric names include `nodes_recomputed`, `patches_emitted`, `rows_reused`,
+Common metric names include `dirty_source_roots`, `patches_emitted`, `rows_reused`,
 `rows_created`, `rows_removed`, `scopes_created`, `scopes_disposed`,
 `stream_nodes_scanned`, `stream_nodes_scanned_events`,
 `render_indexes_refreshed`, `active_intervals_synced`,
@@ -336,7 +393,7 @@ hosts; use `python3 scripts/test.py bench --native always` to force the focused
 bench gate. A built app binary also accepts benchmark flags directly:
 
 ```sh
-.test-out/bench-bin/signals-service-ops-center-bench --bench-app --bench-name signals-service-ops-center --bench-iterations 100 --bench-samples 3 examples/service-ops-center/spec.txt
+.test-out/bench-bin/signals-data-grid-bench --bench-app --bench-name signals-data-grid --bench-iterations 100 --bench-samples 3 examples/data-grid/specs/initial-mount.scm
 ```
 
 The host initializes a fresh app per iteration, applies the initial command

@@ -53,7 +53,7 @@ python3 scripts/serve.py --port 8000
 ```
 
 The examples live under [examples/](examples/). Each public example has its own
-directory with `app.roc`, any supporting modules, and a native test spec.
+directory with `main.roc`, any supporting modules, and a native test spec.
 
 To run the validation suite:
 

@@ -1,0 +1,53 @@
+(test "Package explorer — H. unknown address"
+  (setup
+    ; A. deep link
+
+    (initial-location "/packages/roc-json")
+  )
+  (steps
+    ; Given the state established by earlier scenarios
+    (click (role link :name "Back to search"))
+    (resolve-task "search" "roc-json|JSON codec for Roc;roc-http|HTTP client for Roc;roc-parser|Parser combinators for Roc")
+    (fill (label "Search packages") "js")
+    (fill (label "Search packages") "json")
+    (mark-metrics)
+    (resolve-stale-task "search" "stale-package|This superseded payload must never render")
+    (resolve-task "search" "roc-json|JSON codec for Roc")
+    (fill (label "Search packages") "zzzz")
+    (resolve-task "search" "")
+    (fill (label "Search packages") "boom")
+    (reject-task "search" "registry unreachable")
+    (fill (label "Search packages") "roc")
+    (resolve-task "search" "roc-json|JSON codec for Roc;roc-http|HTTP client for Roc;roc-parser|Parser combinators for Roc")
+    (mark-metrics)
+    (check (label "Reverse order"))
+    (mark-metrics)
+    (click (role button :name "Watch roc-http"))
+    (click (role button :name "Watch roc-parser"))
+    (uncheck (label "Reverse order"))
+    (fill (label "Search packages") "roc core")
+    (resolve-task "search" "roc-json|JSON codec for Roc;roc-parser|Parser combinators for Roc;roc-bytes|Byte helpers for Roc")
+    (fill (label "Search packages") "roc core ")
+    (resolve-task "search" "roc-json|JSON codec for Roc, revised;roc-parser|Parser combinators for Roc;roc-bytes|Byte helpers for Roc")
+    (click (role link :name "Open roc-json"))
+    (resolve-task "versions" "1.2.0|2026-05-02;1.1.0|2026-03-14;1.0.0|2026-01-09")
+    (mark-metrics)
+    (resolve-task "deps" "roc-parser|0.4.0;roc-bytes|1.1.0")
+    (reject-task "detail" "overview service unavailable")
+    (history-back)
+    (history-forward)
+    (resolve-task "detail" "roc-json|JSON codec for Roc|Apache-2.0|18422")
+    (resolve-task "versions" "")
+    (resolve-task "deps" "")
+    (history-back)
+
+    ; H. unknown address
+
+    (navigate "/not/a/package")
+    (expect-current-location "/")
+    (expect-document-title "Package Explorer")
+    (expect-visible (role region :name "Package search"))
+    (expect-absent (role region :name "Package detail"))
+    (expect-text (test-id "context") "Context: search results (3 matches)")
+  )
+)

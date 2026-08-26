@@ -1,0 +1,66 @@
+(test "Markdown editor — List behaviour: add, remove, reorder, and per-row edits in the outline."
+  (steps
+    ; Given the state established by earlier scenarios
+    (mark-metrics)
+    (uncheck (label "Number the outline"))
+    (check (label "Number the outline"))
+    (mark-metrics)
+    (select-option (label "Reading speed") "100")
+    (select-option (label "Reading speed") "300")
+    (select-option (label "Reading speed") "200")
+    (mark-metrics)
+    (click (role button :name "Append a word"))
+    (mark-metrics)
+    (click (role button :name "Append a section"))
+    (click (role button :name "Append a section"))
+
+    ; 6. List behaviour: add, remove, reorder, and per-row edits in the outline.
+    ; ---------------------------------------------------------------------------
+
+    (click (role button :name "Load heading drill"))
+    (expect-text (test-id "stat-headings") "Headings: 4")
+    (expect-visible (test-id "toc:alpha"))
+    (expect-visible (test-id "toc:beta"))
+    (expect-visible (test-id "toc:gamma"))
+    (expect-visible (test-id "toc:delta"))
+    (expect-attr (test-id "toc:alpha") data-level "1")
+    (expect-attr (test-id "toc:beta") data-level "2")
+    (expect-visible (text "3. Gamma"))
+    (expect-visible (text "4. Delta"))
+    ; Reorder: the same four keys in a different order move rather than remount.
+    (mark-metrics)
+    (click (role button :name "Move the last section up"))
+    (expect-visible (text "3. Delta"))
+    (expect-visible (text "4. Gamma"))
+    (expect-visible (test-id "toc:gamma"))
+    (expect-visible (test-id "toc:delta"))
+    (expect-metric-delta rows_created 0)
+    (expect-metric-delta rows_removed 0)
+    ; Remove the last section: the survivors keep their identity and their levels.
+    (mark-metrics)
+    (click (role button :name "Remove the last section"))
+    (expect-text (test-id "stat-headings") "Headings: 3")
+    (expect-absent (test-id "toc:gamma"))
+    (expect-visible (test-id "toc:alpha"))
+    (expect-visible (test-id "toc:beta"))
+    (expect-visible (test-id "toc:delta"))
+    (expect-attr (test-id "toc:alpha") data-level "1")
+    (expect-attr (test-id "toc:delta") data-level "2")
+    (expect-metric-delta rows_created 0)
+    ; Add a section back.
+    (mark-metrics)
+    (click (role button :name "Append a section"))
+    (expect-text (test-id "stat-headings") "Headings: 4")
+    (expect-visible (test-id "toc:new-section"))
+    (expect-metric-delta rows_removed 0)
+    ; Per-row edit: demote just the last heading. Its outline key is the slug, so
+    ; the outline row is patched in place and its siblings are untouched.
+    (mark-metrics)
+    (click (role button :name "Demote the last heading"))
+    (expect-attr (test-id "toc:new-section") data-level "3")
+    (expect-attr (test-id "toc:alpha") data-level "1")
+    (expect-attr (test-id "toc:beta") data-level "2")
+    (expect-attr (test-id "toc:delta") data-level "2")
+    (expect-text (test-id "stat-headings") "Headings: 4")
+  )
+)

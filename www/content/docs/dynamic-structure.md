@@ -168,16 +168,16 @@ line_row = |sku, line|
 Because identity is the key, this state **follows the row** through reordering
 and filtering. That is testable, not just claimed:
 
-```txt
-click test_id:"add-a1"
-click test_id:"add-a1"
-expect_text text:"Keyboard x3" "Keyboard x3"
+```lisp
+(click (test-id "add-a1"))
+(click (test-id "add-a1"))
+(expect-text (text "Keyboard x3") "Keyboard x3")
 
-mark_metrics
-click role:button name:"Reverse"
-expect_text text:"Keyboard x3" "Keyboard x3"
-expect_metric_delta rows_created 0
-expect_metric_delta rows_removed 0
+(mark-metrics)
+(click (role button :name "Reverse"))
+(expect-text (text "Keyboard x3") "Keyboard x3")
+(expect-metric-delta rows_created 0)
+(expect-metric-delta rows_removed 0)
 ```
 
 After reversing the list the quantity is still 3, and the host created and
@@ -283,7 +283,7 @@ Avoid funnelling everything through one giant state record feeding one giant
 view-model. Independent panels deriving from independent sources stay quiet when
 unrelated things change.
 
-And you can assert all of this: `expect_metric_delta rows_created 0` and
+And you can assert all of this: `(expect-metric-delta rows_created 0)` and
 friends turn a performance intention into a test. See
 [Testing](@/docs/testing.md#work-budgets).
 

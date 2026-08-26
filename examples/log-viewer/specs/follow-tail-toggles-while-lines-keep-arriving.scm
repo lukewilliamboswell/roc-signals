@@ -1,0 +1,30 @@
+(test "Log viewer — Follow tail toggles while lines keep arriving."
+  (steps
+    ; Given the state established by earlier scenarios
+    (tick-interval 1000)
+    (tick-interval 1000)
+    (tick-interval 1000)
+    (tick-interval 1000)
+    (uncheck (label "Show debug"))
+    (fill (label "Query") "timeout")
+    (fill (label "Query") "zzz-not-present")
+    (check (label "Show debug"))
+    (fill (label "Query") "debug")
+    (uncheck (label "Show debug"))
+
+    ; Follow tail toggles while lines keep arriving.
+    (uncheck (label "Follow tail"))
+    (expect-checked (label "Follow tail") false)
+    (expect-absent (role region :name "Tail"))
+    (expect-visible (role region :name "Tail paused"))
+    (expect-visible (text "Follow tail is off"))
+    (tick-interval 1000)
+    (expect-text (test-id "line-count") "Showing 4 of 5 lines")
+    (expect-visible (role region :name "Log line-5"))
+    (expect-visible (role region :name "Tail paused"))
+    (check (label "Follow tail"))
+    (expect-visible (role region :name "Tail"))
+    (expect-absent (role region :name "Tail paused"))
+    (expect-text (test-id "tail-line") "Tail: [5] info session expired")
+  )
+)

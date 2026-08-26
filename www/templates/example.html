@@ -16,9 +16,9 @@
         <p class="truncate text-sm text-zinc-600"><strong class="font-medium text-zinc-900">{{ example.title }}</strong></p>
       </div>
       <div class="flex flex-wrap items-center gap-2">
-        <a class="button" href="{{ get_url(path='examples/' ~ example.slug ~ '/source/app.roc') }}">Source</a>
-        {% if example.spec %}
-        <a class="button" href="{{ get_url(path='examples/' ~ example.slug ~ '/source/spec.txt') }}">Spec</a>
+        <a class="button" href="{{ get_url(path='examples/' ~ example.slug ~ '/source/main.roc') }}">Source</a>
+        {% if example.specs %}
+        <a class="button" href="{{ config.extra.github_url }}/tree/main/{{ example.specs }}">Specs</a>
         {% endif %}
         <a class="button-primary" href="{{ get_url(path='examples/', trailing_slash=true) }}">All examples</a>
       </div>

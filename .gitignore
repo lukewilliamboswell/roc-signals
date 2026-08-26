@@ -28,3 +28,5 @@ __pycache__/
 .test-out/
 plan.md
 *.mdtodo
+
+!vendor/tree-sitter-roc.wasm

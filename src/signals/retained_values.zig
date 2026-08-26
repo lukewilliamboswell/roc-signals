@@ -195,6 +195,13 @@ pub fn callHostValueHostValueToHostValueWithCapabilities(comptime Ctx: type, ctx
     return erased_calls.callErasedHostValueHostValueToHostValue(roc_host, callable, left, right);
 }
 
+pub fn callHostValueHostValueHostValueToHostValueWithCapabilities(comptime Ctx: type, ctx: Ctx.Handle, roc_host: *abi.RocHost, first_cap: HostValueCapability, second_cap: HostValueCapability, third_cap: HostValueCapability, callable: abi.RocErasedCallable, first: HostValue, second: HostValue, third: HostValue) HostValue {
+    const caps = [_]HostValueCapability{ first_cap, second_cap, third_cap };
+    pushCapabilities(Ctx, ctx, &caps);
+    defer popCapabilities(Ctx, ctx);
+    return erased_calls.callErasedHostValueHostValueHostValueToHostValue(roc_host, callable, first, second, third);
+}
+
 pub fn callHostValueHostValueToElemWithCapabilities(comptime Ctx: type, ctx: Ctx.Handle, roc_host: *abi.RocHost, left_cap: HostValueCapability, right_cap: HostValueCapability, callable: abi.RocErasedCallable, left: HostValue, right: HostValue) abi.Elem {
     const caps = [_]HostValueCapability{ left_cap, right_cap };
     pushCapabilities(Ctx, ctx, &caps);
@@ -230,6 +237,7 @@ pub fn releaseHostBoolRead(read: HostBoolRead, roc_host: *abi.RocHost, metrics: 
 
 pub fn retainHostEventReducer(reducer: HostEventReducer, metrics: anytype) HostEventReducer {
     _ = retainHostValueCapability(reducer.capability, metrics);
+    _ = retainHostValueCapability(reducer.read_capability, metrics);
     abi.increfErasedCallable(reducer.transform, 1);
     metrics.bump(.closure_retains, 1);
     return reducer;
@@ -237,6 +245,7 @@ pub fn retainHostEventReducer(reducer: HostEventReducer, metrics: anytype) HostE
 
 pub fn releaseHostEventReducer(reducer: HostEventReducer, roc_host: *abi.RocHost, metrics: anytype) void {
     releaseHostValueCapability(reducer.capability, roc_host, metrics);
+    releaseHostValueCapability(reducer.read_capability, roc_host, metrics);
     abi.decrefErasedCallable(reducer.transform, roc_host);
     metrics.bump(.closure_releases, 1);
 }

@@ -33,6 +33,34 @@ fn writeLocatorFailureForCtx(comptime Ctx: type, line_num: usize, message: []con
     Ctx.writeStderr(msg);
 }
 
+/// Locator-aware "not found" message.
+///
+/// A `text:` locator matches on rendered content, so when the value changes the
+/// element stops resolving and the failure reads as "missing element" rather
+/// than "wrong value". That has repeatedly been misread as "the text never
+/// rendered", so say what actually happened and point at the fix.
+fn writeLocatorMiss(comptime Ctx: type, line_num: usize, locator: spec_parser.Locator) void {
+    var buf: [512]u8 = undefined;
+    const msg = switch (locator.kind) {
+        .text => std.fmt.bufPrint(
+            &buf,
+            "TEST FAILED at line {d}: no element has text \"{s}\"\n" ++
+                "  A text: locator matches on content, so a changed value looks like a\n" ++
+                "  missing element. Give the element a test_id and assert its value:\n" ++
+                "    expect_text test_id:\"...\" \"{s}\"\n" ++
+                "  To see what did render, assert a wrong value on the container:\n" ++
+                "    expect_text role:region name:\"...\" \"PROBE\"\n",
+            .{ line_num, locator.text orelse "", locator.text orelse "" },
+        ) catch "TEST FAILED\n",
+        else => std.fmt.bufPrint(
+            &buf,
+            "TEST FAILED at line {d}: locator did not resolve to one element\n",
+            .{line_num},
+        ) catch "TEST FAILED\n",
+    };
+    Ctx.writeStderr(msg);
+}
+
 const UnitEventDispatchResult = struct {
     ok: bool,
     default_prevented: bool = false,
@@ -341,6 +369,26 @@ fn dispatchRealClickDefaultAction(comptime Ctx: type, host: *Ctx.Host, roc_host:
     }
 
     return true;
+}
+
+/// Depth-first concatenation of an element's descendant text.
+///
+/// `expect_text` reads an element's own `text` field first; containers whose
+/// content comes from signal-backed text children have no such field, so this
+/// walks the subtree to build the rendered text instead.
+fn appendDescendantText(
+    comptime Ctx: type,
+    host: *Ctx.Host,
+    elem: anytype,
+    out: *std.ArrayListUnmanaged(u8),
+) void {
+    if (elem.text) |own_text| {
+        out.appendSlice(Ctx.allocator(host), own_text) catch @panic("descendant text allocation failed");
+    }
+    for (elem.children.items) |child_id| {
+        const child = Ctx.elementById(host, child_id) orelse continue;
+        appendDescendantText(Ctx, host, child, out);
+    }
 }
 
 pub fn Runner(comptime Ctx: type) type {
@@ -762,7 +810,7 @@ pub fn Runner(comptime Ctx: type) type {
 
                     .expect_visible => {
                         _ = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
-                            writeLocatorFailure(cmd.line_num, "locator did not resolve to one visible element");
+                            writeLocatorMiss(Ctx, cmd.line_num, cmd.locator);
                             return 1;
                         };
                     },
@@ -778,13 +826,26 @@ pub fn Runner(comptime Ctx: type) type {
                     .expect_text => {
                         const expected = cmd.expected_text orelse "";
                         const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
-                            writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
+                            writeLocatorMiss(Ctx, cmd.line_num, cmd.locator);
                             return 1;
                         };
-                        const actual = elem.text orelse "";
-                        if (!std.mem.eql(u8, actual, expected)) {
-                            writeStringMismatch(cmd.line_num, "text", expected, actual);
-                            return 1;
+                        if (elem.text) |own_text| {
+                            if (!std.mem.eql(u8, own_text, expected)) {
+                                writeStringMismatch(cmd.line_num, "text", expected, own_text);
+                                return 1;
+                            }
+                        } else {
+                            // An element with no text field of its own may still carry
+                            // signal-backed text children. Fall back to the concatenated
+                            // descendant text so a container can be asserted by its
+                            // rendered content.
+                            var buffer: std.ArrayListUnmanaged(u8) = .empty;
+                            defer buffer.deinit(Ctx.allocator(host));
+                            appendDescendantText(Ctx, host, elem, &buffer);
+                            if (!std.mem.eql(u8, buffer.items, expected)) {
+                                writeStringMismatch(cmd.line_num, "text", expected, buffer.items);
+                                return 1;
+                            }
                         }
                     },
 
@@ -1001,7 +1062,7 @@ pub fn Runner(comptime Ctx: type) type {
             if (std.mem.eql(u8, name, "host_alloc_bytes_this_event")) return u64MetricAsI64(metrics.host_alloc_bytes_this_event);
             if (std.mem.eql(u8, name, "host_dealloc_bytes_this_event")) return u64MetricAsI64(metrics.host_dealloc_bytes_this_event);
             if (std.mem.eql(u8, name, "events_processed")) return u64MetricAsI64(metrics.events_processed);
-            if (std.mem.eql(u8, name, "nodes_recomputed")) return u64MetricAsI64(metrics.nodes_recomputed);
+            if (std.mem.eql(u8, name, "dirty_source_roots")) return u64MetricAsI64(metrics.dirty_source_roots);
             if (std.mem.eql(u8, name, "propagation_prunes")) return u64MetricAsI64(metrics.propagation_prunes);
             if (std.mem.eql(u8, name, "derived_calls_into_roc")) return u64MetricAsI64(metrics.derived_calls_into_roc);
             if (std.mem.eql(u8, name, "each_key_compares")) return u64MetricAsI64(metrics.each_key_compares);

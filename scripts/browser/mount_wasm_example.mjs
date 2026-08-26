@@ -13,13 +13,10 @@ const wasmPath = args.shift();
 let expectError = "";
 let printTelemetrySummary = false;
 let exerciseClickFirstLink = false;
-let exerciseServiceOpsRefresh = false;
-let exerciseTeamCheckoutPlans = false;
 let exerciseLocationSource = false;
 let exerciseLocationNavigation = false;
 let exerciseLocationCanonicalBranch = false;
 let exerciseStorageCommands = false;
-let exerciseLiveSearchOnline = false;
 let rawName;
 
 while (args.length > 0) {
@@ -30,11 +27,7 @@ while (args.length > 0) {
     printTelemetrySummary = true;
   } else if (arg === "--exercise-click-first-link") {
     exerciseClickFirstLink = true;
-  } else if (arg === "--exercise-service-ops-refresh") {
-    exerciseServiceOpsRefresh = true;
-  } else if (arg === "--exercise-team-checkout-plans") {
-    exerciseTeamCheckoutPlans = true;
-  } else if (arg === "--exercise-location-source") {
+} else if (arg === "--exercise-location-source") {
     exerciseLocationSource = true;
   } else if (arg === "--exercise-location-navigation") {
     exerciseLocationNavigation = true;
@@ -42,9 +35,7 @@ while (args.length > 0) {
     exerciseLocationCanonicalBranch = true;
   } else if (arg === "--exercise-storage-commands") {
     exerciseStorageCommands = true;
-  } else if (arg === "--exercise-live-search-online") {
-    exerciseLiveSearchOnline = true;
-  } else if (arg.startsWith("--")) {
+} else if (arg.startsWith("--")) {
     console.error(`unknown argument: ${arg}`);
     process.exit(2);
   } else if (rawName === undefined) {
@@ -57,24 +48,13 @@ while (args.length > 0) {
 
 if (!wasmPath) {
   console.error(
-    "usage: mount_wasm_example.mjs <wasm-path> [name] [--expect-error <substring>] [--telemetry-summary] [--exercise-service-ops-refresh] [--exercise-team-checkout-plans] [--exercise-location-source] [--exercise-location-navigation] [--exercise-location-canonical-branch] [--exercise-storage-commands] [--exercise-live-search-online]",
+    "usage: mount_wasm_example.mjs <wasm-path> [name] [--expect-error <substring>] [--telemetry-summary] [--exercise-location-source] [--exercise-location-navigation] [--exercise-location-canonical-branch] [--exercise-storage-commands]",
   );
   process.exit(2);
 }
 
 const name = rawName ?? basename(wasmPath);
 const settleMs = 50;
-const teamCheckoutStorageSeed = {
-  "team-checkout:step": "1",
-  "team-checkout:email": "saved@example.com",
-  "team-checkout:address": "Saved Signal Lane",
-  "team-checkout:terms": "false",
-  "team-checkout:plan": "team",
-  "team-checkout:qty:3-seats": "1",
-  "team-checkout:qty:priority-support": "3",
-  "team-checkout:qty:audit-log-export": "4",
-};
-const teamCheckoutStorageKeys = Object.keys(teamCheckoutStorageSeed);
 
 function createStorageDouble(initial = {}) {
   const values = new Map(Object.entries(initial));
@@ -99,9 +79,6 @@ function initialLocalStorage() {
   const initial = {};
   if (exerciseStorageCommands) {
     initial["checkout:draft"] = "seeded local";
-  }
-  if (exerciseTeamCheckoutPlans) {
-    Object.assign(initial, teamCheckoutStorageSeed);
   }
   return initial;
 }
@@ -228,14 +205,6 @@ if (exerciseClickFirstLink) {
   console.log(`clicked first link in ${name}`);
 }
 
-if (exerciseServiceOpsRefresh) {
-  await exerciseRefreshWorkflow(name, root, errors, browserHistory, browserEvents, browserDocument);
-}
-
-if (exerciseTeamCheckoutPlans) {
-  await exerciseTeamCheckoutPlanWorkflow(name, root, errors, localStorageDouble);
-}
-
 if (exerciseLocationSource) {
   await exerciseLocationSourceWorkflow(name, root, errors, browserHistory, browserEvents);
 }
@@ -250,10 +219,6 @@ if (exerciseLocationCanonicalBranch) {
 
 if (exerciseStorageCommands) {
   await exerciseStorageCommandsWorkflow(name, root, errors, localStorageDouble, sessionStorageDouble);
-}
-
-if (exerciseLiveSearchOnline) {
-  await exerciseLiveSearchOnlineWorkflow(name, root, errors, browserNavigator, browserEvents);
 }
 
 try {
@@ -334,92 +299,6 @@ function commandTelemetrySummary(name, entries) {
   return summary;
 }
 
-async function exerciseRefreshWorkflow(name, root, errors, browserHistory, browserEvents, browserDocument) {
-  if (browserEvents.listenerCount("popstate") !== 1) {
-    fail(`mounted ${name}, but the popstate listener was not installed`);
-  }
-  if (browserDocument.listenerCount("visibilitychange") !== 1) {
-    fail(`mounted ${name}, but the visibilitychange listener was not installed`);
-  }
-  expectBrowserPath(name, browserHistory, "/", "mounting the overview");
-  if (!root.textContent.includes("Traffic")) {
-    fail(`mounted ${name}, but the service overview was not rendered`);
-  }
-  if (!root.textContent.includes("Auto refresh active")) {
-    fail(`mounted ${name}, but the auto-refresh active status was not rendered`);
-  }
-
-  const apiLink = findByText(root, "a", "Open api details");
-  if (!apiLink) {
-    fail(`mounted ${name}, but the API service route link was not rendered`);
-  }
-
-  const linkEvent = fireEvent(apiLink, "click", { bubbles: true });
-  await new Promise((resolve) => setTimeout(resolve, settleMs));
-  failOnRuntimeErrors(name, errors, "opening the API service route");
-
-  if (!linkEvent.defaultPrevented) {
-    fail(`opened ${name} API details, but the route link did not prevent default navigation`);
-  }
-  expectBrowserPath(name, browserHistory, "/services/api", "opening the API service route");
-  if (!root.textContent.includes("api service detail")) {
-    fail(`opened ${name} API service route, but the detail panel was not rendered`);
-  }
-
-  if (!browserHistory.back()) {
-    fail(`opened ${name} API service route, but browser Back had no history entry`);
-  }
-  await new Promise((resolve) => setTimeout(resolve, settleMs));
-  failOnRuntimeErrors(name, errors, "going back to the service overview");
-  expectBrowserPath(name, browserHistory, "/", "going back to the service overview");
-  if (!root.textContent.includes("Traffic")) {
-    fail(`went back in ${name}, but the service overview was not restored`);
-  }
-
-  if (!browserHistory.forward()) {
-    fail(`went back in ${name}, but browser Forward had no history entry`);
-  }
-  await new Promise((resolve) => setTimeout(resolve, settleMs));
-  failOnRuntimeErrors(name, errors, "going forward to the API service route");
-  expectBrowserPath(name, browserHistory, "/services/api", "going forward to the API service route");
-  if (!root.textContent.includes("api service detail")) {
-    fail(`went forward in ${name}, but the API detail panel was not restored`);
-  }
-
-  const button = findByText(root, "button", "Refresh now");
-  if (!button) {
-    fail(`mounted ${name}, but the Refresh now button was not rendered`);
-  }
-
-  fireEvent(button, "click", { bubbles: true });
-  await new Promise((resolve) => setTimeout(resolve, settleMs));
-
-  if (errors.length !== 0) {
-    const details = errors.map((err) => err?.stack ?? err).join("\n");
-    fail(`runtime reported errors while exercising ${name} refresh:\n${details}`);
-  }
-
-  if (!root.textContent.includes("Manual refreshes: 1")) {
-    fail(`exercised ${name} refresh, but the manual refresh counter did not update`);
-  }
-
-  browserDocument.visibilityState = "hidden";
-  browserDocument.dispatch("visibilitychange");
-  await new Promise((resolve) => setTimeout(resolve, settleMs));
-  failOnRuntimeErrors(name, errors, "hiding the service ops tab");
-  if (!root.textContent.includes("Auto refresh paused while tab is hidden")) {
-    fail(`hid ${name}, but the auto-refresh paused status was not rendered`);
-  }
-
-  browserDocument.visibilityState = "visible";
-  browserDocument.dispatch("visibilitychange");
-  await new Promise((resolve) => setTimeout(resolve, settleMs));
-  failOnRuntimeErrors(name, errors, "showing the service ops tab");
-  if (!root.textContent.includes("Auto refresh active")) {
-    fail(`showed ${name}, but the auto-refresh active status was not restored`);
-  }
-}
-
 async function exerciseLocationSourceWorkflow(name, root, errors, browserHistory, browserEvents) {
   if (browserEvents.listenerCount("popstate") !== 1) {
     fail(`mounted ${name}, but the popstate listener was not installed`);
@@ -477,165 +356,6 @@ async function exerciseLocationCanonicalBranchWorkflow(name, root, errors, brows
   }
   if (root.textContent.includes("Detail branch")) {
     fail(`canonicalized ${name}, but the stale detail branch remained mounted`);
-  }
-}
-
-async function exerciseLiveSearchOnlineWorkflow(name, root, errors, browserNavigator, browserEvents) {
-  if (browserEvents.listenerCount("online") !== 1 || browserEvents.listenerCount("offline") !== 1) {
-    fail(`mounted ${name}, but the online/offline listeners were not installed`);
-  }
-  failOnRuntimeErrors(name, errors, "checking live search online listener setup");
-
-  if (!root.textContent.includes("Network: online")) {
-    fail(`mounted ${name}, but the online status was not rendered`);
-  }
-
-  const input = root.querySelector('[aria-label="Search"]');
-  if (!input) {
-    fail(`mounted ${name}, but the Search input was not rendered`);
-  }
-
-  browserNavigator.onLine = false;
-  browserEvents.dispatch("offline");
-  await new Promise((resolve) => setTimeout(resolve, settleMs));
-  failOnRuntimeErrors(name, errors, "switching live search offline");
-  if (!root.textContent.includes("Network: offline - search paused")) {
-    fail(`switched ${name} offline, but the offline search status was not rendered`);
-  }
-
-  input.value = "roc";
-  fireEvent(input, "input", { bubbles: true });
-  await new Promise((resolve) => setTimeout(resolve, settleMs * 3));
-  failOnRuntimeErrors(name, errors, "typing a live search query while offline");
-  if (root.textContent.includes('Top results for "roc"')) {
-    fail(`typed in ${name} while offline, but a lookup result was rendered`);
-  }
-
-  browserNavigator.onLine = true;
-  browserEvents.dispatch("online");
-  await new Promise((resolve) => setTimeout(resolve, settleMs * 3));
-  failOnRuntimeErrors(name, errors, "switching live search online");
-  if (!root.textContent.includes("Network: online")) {
-    fail(`switched ${name} online, but the online search status was not restored`);
-  }
-  if (!root.textContent.includes('Top results for "roc"')) {
-    fail(`switched ${name} online, but the current query was not looked up`);
-  }
-}
-
-async function exerciseTeamCheckoutPlanWorkflow(name, root, errors, localStorageDouble) {
-  failOnRuntimeErrors(name, errors, "checking restored team checkout storage");
-
-  if (!root.textContent.includes("Resume saved order")) {
-    fail(`mounted ${name}, but the saved order resume panel was not rendered`);
-  }
-  if (!root.textContent.includes("Step 2 - Delivery")) {
-    fail(`mounted ${name}, but the saved checkout step was not restored`);
-  }
-
-  const emailInput = root.querySelector('[aria-label="Email"]');
-  const addressInput = root.querySelector('[aria-label="Address"]');
-  const termsInput = root.querySelector('[aria-label="Accept terms"]');
-  if (!emailInput || !addressInput || !termsInput) {
-    fail(`mounted ${name}, but the delivery inputs were not rendered from saved state`);
-  }
-  if (emailInput.value !== "saved@example.com" || addressInput.value !== "Saved Signal Lane") {
-    fail(`mounted ${name}, but delivery input values were not restored from storage`);
-  }
-  if (termsInput.checked !== false) {
-    fail(`mounted ${name}, but the saved terms checkbox state was not restored`);
-  }
-
-  emailInput.value = "team@example.com";
-  fireEvent(emailInput, "input", { bubbles: true });
-  addressInput.value = "42 Signal Way";
-  fireEvent(addressInput, "input", { bubbles: true });
-  termsInput.checked = true;
-  fireEvent(termsInput, "change", { bubbles: true });
-  await new Promise((resolve) => setTimeout(resolve, settleMs));
-  failOnRuntimeErrors(name, errors, "updating restored delivery fields");
-  expectStorageValue(name, localStorageDouble, "team-checkout:email", "team@example.com");
-  expectStorageValue(name, localStorageDouble, "team-checkout:address", "42 Signal Way");
-  expectStorageValue(name, localStorageDouble, "team-checkout:terms", "true");
-
-  const backButton = findByText(root, "button", "Back");
-  if (!backButton) {
-    fail(`mounted ${name}, but the checkout Back button was not rendered`);
-  }
-  fireEvent(backButton, "click", { bubbles: true });
-  await new Promise((resolve) => setTimeout(resolve, settleMs));
-  failOnRuntimeErrors(name, errors, "returning restored checkout to the cart");
-  expectStorageValue(name, localStorageDouble, "team-checkout:step", "0");
-
-  const basicButton = findByText(root, "button", "Use basic plan");
-  const teamButton = findByText(root, "button", "Use team plan");
-  if (!basicButton || !teamButton) {
-    fail(`mounted ${name}, but the team checkout plan buttons were not rendered`);
-  }
-
-  if (!root.textContent.includes("Priority support") || !root.textContent.includes("Audit log export")) {
-    fail(`mounted ${name}, but the team plan rows were not initially rendered`);
-  }
-  for (const text of [
-    "3 seats quantity: 1",
-    "Priority support quantity: 3",
-    "Audit log export quantity: 4",
-  ]) {
-    if (!root.textContent.includes(text)) {
-      fail(`mounted ${name}, but restored cart quantity text was missing: ${text}`);
-    }
-  }
-  if (teamButton.getAttribute("aria-pressed") !== "true" || basicButton.getAttribute("aria-pressed") !== "false") {
-    fail(`mounted ${name}, but the team plan button state was not initially selected`);
-  }
-
-  fireEvent(basicButton, "click", { bubbles: true });
-  await new Promise((resolve) => setTimeout(resolve, settleMs));
-  failOnRuntimeErrors(name, errors, "switching to the basic plan");
-
-  if (!root.textContent.includes("3 seats")) {
-    fail(`switched ${name} to the basic plan, but the base row was removed`);
-  }
-  if (root.textContent.includes("Priority support") || root.textContent.includes("Audit log export")) {
-    fail(`switched ${name} to the basic plan, but team-only rows remained`);
-  }
-  if (teamButton.getAttribute("aria-pressed") !== "false" || basicButton.getAttribute("aria-pressed") !== "true") {
-    fail(`switched ${name} to the basic plan, but button state did not update`);
-  }
-
-  fireEvent(teamButton, "click", { bubbles: true });
-  await new Promise((resolve) => setTimeout(resolve, settleMs));
-  failOnRuntimeErrors(name, errors, "switching back to the team plan");
-
-  if (!root.textContent.includes("Priority support") || !root.textContent.includes("Audit log export")) {
-    fail(`switched ${name} back to the team plan, but team rows were not restored`);
-  }
-  if (teamButton.getAttribute("aria-pressed") !== "true" || basicButton.getAttribute("aria-pressed") !== "false") {
-    fail(`switched ${name} back to the team plan, but button state did not update`);
-  }
-  expectStorageValue(name, localStorageDouble, "team-checkout:plan", "team");
-
-  const increaseSeatsButton = findByText(root, "button", "Increase 3 seats");
-  if (!increaseSeatsButton) {
-    fail(`mounted ${name}, but the 3 seats increment button was not rendered`);
-  }
-  fireEvent(increaseSeatsButton, "click", { bubbles: true });
-  await new Promise((resolve) => setTimeout(resolve, settleMs));
-  failOnRuntimeErrors(name, errors, "increasing the restored cart quantity");
-  if (!root.textContent.includes("3 seats quantity: 2")) {
-    fail(`increased ${name} 3 seats quantity, but the cart text did not update`);
-  }
-  expectStorageValue(name, localStorageDouble, "team-checkout:qty:3-seats", "2");
-
-  const clearButton = findByText(root, "button", "Clear saved order");
-  if (!clearButton) {
-    fail(`mounted ${name}, but the clear saved order button was not rendered`);
-  }
-  fireEvent(clearButton, "click", { bubbles: true });
-  await new Promise((resolve) => setTimeout(resolve, settleMs));
-  failOnRuntimeErrors(name, errors, "clearing the saved checkout");
-  for (const key of teamCheckoutStorageKeys) {
-    expectNoStorageValue(name, localStorageDouble, key);
   }
 }
 

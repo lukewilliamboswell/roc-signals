@@ -59,7 +59,7 @@ fail with `MISSING TARGET FILE`.
 
 ## Your first app
 
-Create `examples/hello/app.roc`:
+Create `examples/hello/main.roc`:
 
 ```roc
 app [main] { pf: platform "../../platform/main.roc" }
@@ -103,7 +103,7 @@ Three things to notice, since they are unusual if you are new to Roc:
 Type-check it:
 
 ```sh
-roc check examples/hello/app.roc
+roc check examples/hello/main.roc
 ```
 
 Expect `No errors found in ...`. This takes well under a second and is the loop
@@ -115,21 +115,23 @@ This is the part most worth learning early. Your app compiles to a **native
 binary** that runs browser-style specs against a simulated DOM — no browser, no
 headless Chrome, no flakiness, and a full run in milliseconds.
 
-Write `examples/hello/spec.txt`:
+Write `examples/hello/specs/increments.scm`:
 
-```txt
-expect_visible role:heading name:"Hello from Roc"
-expect_text text:"Count: 0" "Count: 0"
-click role:button name:"Increment"
-expect_text text:"Count: 1" "Count: 1"
+```lisp
+(test "increments"
+  (steps
+    (expect-visible (role heading :name "Hello from Roc"))
+    (expect-text (text "Count: 0") "Count: 0")
+    (click (role button :name "Increment"))
+    (expect-text (text "Count: 1") "Count: 1")))
 ```
 
 Build and run it. Use the target matching your machine — `arm64mac`, `x64mac`,
 `arm64musl`, or `x64musl`:
 
 ```sh
-roc build --target=arm64mac --output=/tmp/hello examples/hello/app.roc
-/tmp/hello examples/hello/spec.txt
+roc build --target=arm64mac --output=/tmp/hello examples/hello/main.roc
+python3 scripts/spec_driver.py /tmp/hello examples/hello/specs
 ```
 
 Silence and exit code `0` mean every assertion passed. A failure names the line:
@@ -150,7 +152,7 @@ Your app is the same source either way; only the target changes.
 ### Build the WebAssembly module
 
 ```sh
-roc build --target=wasm32 --opt=size --output=/tmp/hello.wasm examples/hello/app.roc
+roc build --target=wasm32 --opt=size --output=/tmp/hello.wasm examples/hello/main.roc
 ```
 
 A hello-world app lands around 270 KB uncompressed. You can sanity-check that it
@@ -195,8 +197,8 @@ To run your app as part of the local site, register it in `www/data/examples.tom
 slug = "hello"
 title = "Hello"
 description = "My first Roc Signals app."
-source = "examples/hello/app.roc"
-spec = "examples/hello/spec.txt"
+source = "examples/hello/main.roc"
+specs = "examples/hello/specs"
 public = true
 wasm = true
 native = true
@@ -242,19 +244,19 @@ fails immediately on a mismatch rather than misbehaving.
 
 Nothing requires your app to live in `examples/`. That directory is just where
 this repository keeps apps so its test driver can find them. An app is any
-directory with an `app.roc` whose header points at `platform/main.roc`.
+directory with an `main.roc` whose header points at `platform/main.roc`.
 
 A typical larger app looks like:
 
 ```text
 my-app/
-  app.roc          # main, shell layout, top-level wiring
+  main.roc          # main, shell layout, top-level wiring
   Route.roc        # URL <-> route parsing
   Api.roc          # request builders and JSON decoding
   Home.roc         # page modules
   Article.roc
   Styles.roc       # shared class-name constants
-  spec.txt         # native test script
+  specs/           # one native test case per .scm file
 ```
 
 That is Conduit's shape, described in

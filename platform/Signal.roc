@@ -299,17 +299,17 @@ Signal(a) := { expr : Box(Node.SignalExpr), cap : Capability(a) }.{
 			a.is_eq : a, a -> Bool,
 		]
 	combine = |signals| {
-		input_cap =
-			match signals.first() {
-				Ok(first) => first.cap
-				Err(_) => Capability.new()
-			}
+		# Each input signal owns its own capability, so every element has to be
+		# read back through the capability that stored it. Reading them all
+		# through the first signal's capability fails at runtime as soon as the
+		# inputs come from different call sites.
+		input_caps = signals.map(|s| s.cap)
 		output_cap = Capability.new()
 		exprs = signals.map(|s| Box.unbox(Signal.clone_expr(s.expr)))
 		transform : List(HostValue) -> HostValue
 		transform = |items| {
 			values : List(a)
-			values = items.map(|host_value| Box.unbox(Capability.get(host_value, input_cap)))
+			values = List.map2(items, input_caps, |host_value, cap| Box.unbox(Capability.get(host_value, cap)))
 			Capability.store(Box.box(values), output_cap)
 		}
 		transform_box = Box.box(transform)

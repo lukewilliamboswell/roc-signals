@@ -1,0 +1,37 @@
+(test "Loan comparator — invalid input"
+  (steps
+    ; Given the state established by earlier scenarios
+    (select-option (label "Comparison pair") "ac")
+    (select-option (label "Comparison pair") "bc")
+    (select-option (label "Comparison pair") "ac")
+    (mark-metrics)
+    (fill (label "Scenario A annual rate") "3")
+    (mark-metrics)
+    (fill (label "Scenario A extra payment") "50")
+    (mark-metrics)
+    (fill (label "Scenario A extra payment") "0")
+    (fill (label "Scenario A annual rate") "0")
+    (fill (label "Scenario A term months") "1")
+    (fill (label "Scenario A principal") "0")
+    (fill (label "Scenario A principal") "2400")
+    (fill (label "Scenario A term months") "12")
+    (fill (label "Scenario A annual rate") "6")
+
+    ; 10. invalid input
+
+    (fill (label "Scenario A annual rate") "abc")
+    (expect-text (test-id "a-inputs") "Scenario A inputs: check rate")
+    (expect-text (test-id "a-rate") "Scenario A rate: 0.00%")
+    (expect-text (test-id "a-payment") "Scenario A monthly payment: $200.00")
+    (expect-text (test-id "a-final-balance") "Scenario A final balance: $0.00")
+    (fill (label "Scenario A term months") "zz")
+    (expect-text (test-id "a-inputs") "Scenario A inputs: check rate, term")
+    (expect-text (test-id "a-payment") "Scenario A monthly payment: $2400.00")
+    (expect-text (test-id "a-payoff") "Scenario A payoff: 1 month")
+    (expect-text (test-id "a-final-balance") "Scenario A final balance: $0.00")
+    (fill (label "Scenario A annual rate") "6")
+    (fill (label "Scenario A term months") "12")
+    (expect-text (test-id "a-inputs") "Scenario A inputs: inputs ok")
+    (expect-text (test-id "a-payment") "Scenario A monthly payment: $206.56")
+  )
+)

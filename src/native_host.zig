@@ -90,6 +90,10 @@ const NativeCtx = struct {
         return ctx.stateCapability(node_id);
     }
 
+    pub fn updateStateValue(ctx: Handle, roc_host: *abi.RocHost, node_id: u64, value: HostValue) bool {
+        return ctx.updateStateValue(roc_host, node_id, value);
+    }
+
     pub fn initialLocationPayload(ctx: Handle, roc_host: *abi.RocHost, cap: HostValueCapability) HostValue {
         return ctx.initialLocationPayload(roc_host, cap);
     }
@@ -124,7 +128,7 @@ test "NoMetrics is a zero-size no-op metrics sink" {
     try std.testing.expectEqual(@as(usize, 0), @sizeOf(NoMetrics));
     var metrics: NoMetrics = .{};
     metrics.bump(.closure_retains, 2);
-    metrics.bump(.nodes_recomputed, 1);
+    metrics.bump(.dirty_source_roots, 1);
 }
 
 const EventPayloadKind = engine.EventPayloadKind;
@@ -159,6 +163,35 @@ pub const panic = crash_handlers.panic;
 
 fn writeStderr(bytes: []const u8) void {
     crash_handlers.writeStderr(bytes);
+}
+
+fn writeUsage() void {
+    writeStderr("Usage: ./app [--verbose] [--run-spec-json] <case.scm>\n       ./app --bench-app [--bench-name NAME] [--bench-iterations N] [--bench-samples N] <case.scm>\n");
+}
+
+const SpecJsonFailure = struct {
+    phase: []const u8,
+    kind: []const u8,
+    message: []const u8,
+};
+
+const SpecJsonResult = struct {
+    protocol: []const u8 = "roc-signals/spec-result/v1",
+    id: []const u8,
+    name: []const u8,
+    status: []const u8,
+    duration_ns: u64,
+    failure: ?SpecJsonFailure,
+};
+
+fn writeSpecJsonResult(result: SpecJsonResult) void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_state = std.Io.File.stdout().writer(io, &stdout_buffer);
+    var stream: std.json.Stringify = .{ .writer = &stdout_state.interface };
+    stream.write(result) catch return;
+    stdout_state.interface.writeByte('\n') catch return;
+    stdout_state.interface.flush() catch {};
 }
 
 const DomElement = sim_dom.Element;
@@ -1191,7 +1224,7 @@ const HostEnv = struct {
         return self.cloneHostValue(self.engine.states.items[state_index].cell.value);
     }
 
-    fn updateStateValue(self: *HostEnv, roc_host: *abi.RocHost, node_id: u64, value: HostValue) bool {
+    pub fn updateStateValue(self: *HostEnv, roc_host: *abi.RocHost, node_id: u64, value: HostValue) bool {
         const state_index = self.engine.stateIndexByNodeId(node_id) orelse failHost("event referenced an unknown active state node");
         const state = &self.engine.states.items[state_index];
         if (state.cell.valueEquals(self, roc_host, value)) {
@@ -1900,11 +1933,13 @@ fn hostValueU8List(host: *HostEnv, roc_host: *abi.RocHost, bytes: []const u8) Ho
 
 const ErasedHostValueUnaryArgs = erased_calls.ErasedHostValueUnaryArgs;
 const ErasedHostValueBinaryArgs = erased_calls.ErasedHostValueBinaryArgs;
+const ErasedHostValueTernaryArgs = erased_calls.ErasedHostValueTernaryArgs;
 const ErasedRocBoxUnaryArgs = erased_calls.ErasedRocBoxUnaryArgs;
 
 const callErasedHostValueToHostValue = erased_calls.callErasedHostValueToHostValue;
 
 const callErasedHostValueHostValueToHostValue = erased_calls.callErasedHostValueHostValueToHostValue;
+const callErasedHostValueHostValueHostValueToHostValue = erased_calls.callErasedHostValueHostValueHostValueToHostValue;
 
 const callErasedHostValueHostValueToElem = erased_calls.callErasedHostValueHostValueToElem;
 
@@ -1931,6 +1966,13 @@ fn callHostValueHostValueToHostValueWithCapabilities(host: *HostEnv, roc_host: *
     host.pushHostValueCapabilities(&caps);
     defer host.popHostValueCapabilities();
     return callErasedHostValueHostValueToHostValue(roc_host, callable, left, right);
+}
+
+fn callHostValueHostValueHostValueToHostValueWithCapabilities(host: *HostEnv, roc_host: *abi.RocHost, first_cap: HostValueCapability, second_cap: HostValueCapability, third_cap: HostValueCapability, callable: abi.RocErasedCallable, first: HostValue, second: HostValue, third: HostValue) HostValue {
+    const caps = [_]HostValueCapability{ first_cap, second_cap, third_cap };
+    host.pushHostValueCapabilities(&caps);
+    defer host.popHostValueCapabilities();
+    return callErasedHostValueHostValueHostValueToHostValue(roc_host, callable, first, second, third);
 }
 
 fn hostEventById(host: *HostEnv, event_id: u64) HostActiveEventDesc {
@@ -2027,16 +2069,20 @@ fn dispatchRocEventWithStats(host: *HostEnv, roc_host: *abi.RocHost, event_id: u
 
     host.recordDispatch();
 
+    // A reducer call is not a derived signal evaluation, so it must not inflate
+    // derived_calls_into_roc. Dispatches are already counted by events_processed.
     var metrics = host.engine.pending_roc_metrics;
-    metrics.bump(.nodes_recomputed, 1);
-    metrics.bump(.derived_calls_into_roc, 1);
+    metrics.bump(.dirty_source_roots, 1);
     host.engine.pending_roc_metrics = metrics;
 
     const start_ns = benchmark.nowNs();
     const current = host.stateValueByNodeId(desc.target_node_id);
     const state_cap = host.stateCapability(desc.target_node_id);
     defer callHostValueToUnitWithCapability(host, roc_host, state_cap, hv.hostValueCapabilityDrop(state_cap), current);
-    const next = callHostValueHostValueToHostValueWithCapabilities(host, roc_host, state_cap, payload_cap, desc.payload_reducer.transform, current, payload);
+    const read = host.stateValueByNodeId(desc.read_node_id);
+    const read_cap = host.stateCapability(desc.read_node_id);
+    defer callHostValueToUnitWithCapability(host, roc_host, read_cap, hv.hostValueCapabilityDrop(read_cap), read);
+    const next = callHostValueHostValueHostValueToHostValueWithCapabilities(host, roc_host, state_cap, read_cap, payload_cap, desc.payload_reducer.transform, current, read, payload);
     if (stats) |s| s.dispatch_roc_ns += benchmark.nowNs() - start_ns;
 
     const changed = host.updateStateValue(roc_host, desc.target_node_id, next);
@@ -2619,6 +2665,7 @@ fn __main() callconv(.c) void {}
 
 fn main(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
     var verbose = false;
+    var result_json = false;
     var bench_app = false;
     var bench_name: []const u8 = "app_dispatch";
     var bench_iterations: usize = 100;
@@ -2631,19 +2678,21 @@ fn main(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
         const arg = std.mem.span(argv[i]);
         if (std.mem.eql(u8, arg, "--verbose") or std.mem.eql(u8, arg, "-v")) {
             verbose = true;
+        } else if (std.mem.eql(u8, arg, "--run-spec-json")) {
+            result_json = true;
         } else if (std.mem.eql(u8, arg, "--bench-app")) {
             bench_app = true;
         } else if (std.mem.eql(u8, arg, "--bench-name")) {
             i += 1;
             if (i >= arg_count) {
-                writeStderr("Usage: ./app [--verbose] <test_spec.txt>\n       ./app --bench-app [--bench-name NAME] [--bench-iterations N] [--bench-samples N] <test_spec.txt>\n");
+                writeUsage();
                 return 1;
             }
             bench_name = std.mem.span(argv[i]);
         } else if (std.mem.eql(u8, arg, "--bench-iterations")) {
             i += 1;
             if (i >= arg_count) {
-                writeStderr("Usage: ./app [--verbose] <test_spec.txt>\n       ./app --bench-app [--bench-name NAME] [--bench-iterations N] [--bench-samples N] <test_spec.txt>\n");
+                writeUsage();
                 return 1;
             }
             bench_iterations = std.fmt.parseInt(usize, std.mem.span(argv[i]), 10) catch {
@@ -2657,7 +2706,7 @@ fn main(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
         } else if (std.mem.eql(u8, arg, "--bench-samples")) {
             i += 1;
             if (i >= arg_count) {
-                writeStderr("Usage: ./app [--verbose] <test_spec.txt>\n       ./app --bench-app [--bench-name NAME] [--bench-iterations N] [--bench-samples N] <test_spec.txt>\n");
+                writeUsage();
                 return 1;
             }
             bench_samples = std.fmt.parseInt(usize, std.mem.span(argv[i]), 10) catch {
@@ -2671,13 +2720,13 @@ fn main(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
         } else if (arg.len > 0 and arg[0] != '-') {
             spec_file = arg;
         } else {
-            writeStderr("Usage: ./app [--verbose] <test_spec.txt>\n       ./app --bench-app [--bench-name NAME] [--bench-iterations N] [--bench-samples N] <test_spec.txt>\n");
+            writeUsage();
             return 1;
         }
     }
 
     if (spec_file == null) {
-        writeStderr("Usage: ./app [--verbose] <test_spec.txt>\n       ./app --bench-app [--bench-name NAME] [--bench-iterations N] [--bench-samples N] <test_spec.txt>\n");
+        writeUsage();
         return 1;
     }
 
@@ -2690,7 +2739,7 @@ fn main(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
         };
     }
 
-    return platform_main(spec_file.?, verbose) catch |err| {
+    return platform_main(spec_file.?, verbose, result_json) catch |err| {
         writeStderr("HOST ERROR: ");
         writeStderr(@errorName(err));
         writeStderr("\n");
@@ -2740,18 +2789,33 @@ fn applyPreMountSpecCommands(host: *HostEnv, commands: []const SpecCommand) void
     }
 }
 
-fn platform_main(spec_file: []const u8, verbose: bool) error{}!c_int {
+fn platform_main(spec_file: []const u8, verbose: bool, result_json: bool) error{}!c_int {
+    const started_ns = benchmark.nowNs();
     var host_env = HostEnv.init();
     const allocator = host_env.hostAllocator();
 
-    host_env.test_state.commands = parseTestSpecFile(allocator, spec_file) catch |err| {
+    const parsed_spec = parseTestSpecFile(allocator, spec_file) catch |err| {
+        const message = switch (err) {
+            ParseError.FileNotFound => "test spec file not found",
+            ParseError.InvalidFormat => "invalid test spec format",
+            else => "failed to parse test spec",
+        };
         switch (err) {
             ParseError.FileNotFound => writeStderr("Error: Test spec file not found\n"),
             ParseError.InvalidFormat => writeStderr("Error: Invalid test spec format\n"),
             else => writeStderr("Error: Failed to parse test spec\n"),
         }
-        return 1;
+        if (result_json) writeSpecJsonResult(.{
+            .id = spec_file,
+            .name = spec_file,
+            .status = "error",
+            .duration_ns = benchmark.nowNs() - started_ns,
+            .failure = .{ .phase = "parse", .kind = "invalid_spec", .message = message },
+        });
+        return 2;
     };
+    defer allocator.free(parsed_spec.name);
+    host_env.test_state.commands = parsed_spec.commands;
     host_env.test_state.verbose = verbose;
 
     var roc_host = makeSignalsRocHost(&host_env);
@@ -2769,13 +2833,25 @@ fn platform_main(spec_file: []const u8, verbose: bool) error{}!c_int {
         var buf: [256]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "[INFO] UI built: {d} DOM elements, {d} recomputed nodes\n", .{
             host_env.dom_elements.items.len,
-            host_env.engine.last_runtime_metrics.nodes_recomputed,
+            host_env.engine.last_runtime_metrics.dirty_source_roots,
         }) catch "";
         writeStderr(msg);
         host_env.dumpDom();
     }
 
-    return SpecRunner.run(&host_env, &roc_host, host_env.test_state.commands, verbose);
+    const result = SpecRunner.run(&host_env, &roc_host, host_env.test_state.commands, verbose);
+    if (result_json) writeSpecJsonResult(.{
+        .id = spec_file,
+        .name = parsed_spec.name,
+        .status = if (result == 0) "passed" else "failed",
+        .duration_ns = benchmark.nowNs() - started_ns,
+        .failure = if (result == 0) null else .{
+            .phase = "step",
+            .kind = "assertion",
+            .message = "spec step failed; see captured stderr for details",
+        },
+    });
+    return result;
 }
 
 fn deinitTestHostGraph(host: *HostEnv) void {
@@ -2835,7 +2911,7 @@ test "signals metrics accumulate propagation pruning counters" {
     left.host_dealloc_bytes_this_event = 64;
     left.host_retained_alloc_delta = 1;
     left.host_retained_bytes_delta = 64;
-    left.nodes_recomputed = 5;
+    left.dirty_source_roots = 5;
     left.propagation_prunes = 3;
     left.derived_calls_into_roc = 4;
     left.each_key_compares = 6;
@@ -2878,7 +2954,7 @@ test "signals metrics accumulate propagation pruning counters" {
     right.host_dealloc_bytes_this_event = 128;
     right.host_retained_alloc_delta = 4;
     right.host_retained_bytes_delta = 384;
-    right.nodes_recomputed = 8;
+    right.dirty_source_roots = 8;
     right.propagation_prunes = 11;
     right.derived_calls_into_roc = 6;
     right.each_key_compares = 7;
@@ -2922,7 +2998,7 @@ test "signals metrics accumulate propagation pruning counters" {
     try std.testing.expectEqual(@as(u64, 192), total.host_dealloc_bytes_this_event);
     try std.testing.expectEqual(@as(i64, 5), total.host_retained_alloc_delta);
     try std.testing.expectEqual(@as(i64, 448), total.host_retained_bytes_delta);
-    try std.testing.expectEqual(@as(u64, 13), total.nodes_recomputed);
+    try std.testing.expectEqual(@as(u64, 13), total.dirty_source_roots);
     try std.testing.expectEqual(@as(u64, 14), total.propagation_prunes);
     try std.testing.expectEqual(@as(u64, 10), total.derived_calls_into_roc);
     try std.testing.expectEqual(@as(u64, 13), total.each_key_compares);
@@ -3356,11 +3432,20 @@ fn testBinaryHostValueCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]co
     writeTestErasedResult(HostValue, ret, capabilityTestHostValue(host, roc_host, hostValueI64(host, roc_host, left + right + capture.amount)));
 }
 
+fn testTernaryEventHostValueCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
+    const capture = testCapturePtrAs(TestErasedI64Capture, capture_ptr);
+    const call_args = testErasedArgsAs(ErasedHostValueTernaryArgs, args);
+    const current = testReadHostValueI64(roc_host, call_args.arg0);
+    const payload = testReadHostValueI64(roc_host, call_args.arg2);
+    const host = hostFromRocHost(roc_host);
+    writeTestErasedResult(HostValue, ret, capabilityTestHostValue(host, roc_host, hostValueI64(host, roc_host, current + payload + capture.amount)));
+}
+
 fn testUnitIncrementHostValueCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
     _ = capture_ptr;
-    const call_args = testErasedArgsAs(ErasedHostValueBinaryArgs, args);
+    const call_args = testErasedArgsAs(ErasedHostValueTernaryArgs, args);
     const current = testReadHostValueI64(roc_host, call_args.arg0);
-    if (hostFromRocHost(roc_host).testHostValueKind(call_args.arg1) != .unit) @panic("test unit event callable expected unit payload");
+    if (hostFromRocHost(roc_host).testHostValueKind(call_args.arg2) != .unit) @panic("test unit event callable expected unit payload");
     const host = hostFromRocHost(roc_host);
     writeTestErasedResult(HostValue, ret, capabilityTestHostValue(host, roc_host, hostValueI64(host, roc_host, current + 1)));
 }
@@ -6378,7 +6463,7 @@ fn testNodeEventAttr(roc_host: *abi.RocHost, kind: RenderEventKind, binder_token
     const transform = writeTestErasedCallable(
         TestErasedI64Capture,
         roc_host,
-        &testBinaryHostValueCallable,
+        &testTernaryEventHostValueCallable,
         &testErasedCallableOnDrop,
         .{ .amount = 0 },
     );
@@ -6389,9 +6474,11 @@ fn testNodeEventAttr(roc_host: *abi.RocHost, kind: RenderEventKind, binder_token
                 .kind = .{ .id = @intFromEnum(kind) },
                 .msg = .{
                     .binder = cloneTestBinderToken(binder_token),
+                    .read_binder = cloneTestBinderToken(binder_token),
                     .event_extraction_plan = testEventExtractionPlan(roc_host, extraction_plan),
                     .payload_reducer = .{
                         .capability = payload_cap,
+                        .read_capability = hv.retainHostValueCapability(payload_cap),
                         .transform = transform,
                     },
                 },
@@ -6419,9 +6506,11 @@ fn testNodeUnitIncrementEventAttr(roc_host: *abi.RocHost, kind: RenderEventKind,
                 .kind = .{ .id = @intFromEnum(kind) },
                 .msg = .{
                     .binder = cloneTestBinderToken(binder_token),
+                    .read_binder = cloneTestBinderToken(binder_token),
                     .event_extraction_plan = testEventExtractionPlan(roc_host, .none),
                     .payload_reducer = .{
                         .capability = payload_cap,
+                        .read_capability = hv.retainHostValueCapability(payload_cap),
                         .transform = transform,
                     },
                 },
@@ -7066,13 +7155,13 @@ test "signals host tracks descriptor stream closure lifecycle metrics" {
 
     host.collectActiveElemRootDescriptors(&roc_host, &stream, root, &.{});
 
-    try std.testing.expectEqual(@as(u64, 59), host.engine.pending_roc_metrics.closure_retains);
+    try std.testing.expectEqual(@as(u64, 62), host.engine.pending_roc_metrics.closure_retains);
     try std.testing.expectEqual(@as(u64, 0), host.engine.pending_roc_metrics.closure_releases);
 
     stream.deinit(host.hostAllocator(), &host, &roc_host, &host.engine.pending_roc_metrics);
 
-    try std.testing.expectEqual(@as(u64, 59), host.engine.pending_roc_metrics.closure_retains);
-    try std.testing.expectEqual(@as(u64, 47), host.engine.pending_roc_metrics.closure_releases);
+    try std.testing.expectEqual(@as(u64, 62), host.engine.pending_roc_metrics.closure_retains);
+    try std.testing.expectEqual(@as(u64, 50), host.engine.pending_roc_metrics.closure_releases);
 }
 
 test "signals host descriptors carry capability-owned extension records" {

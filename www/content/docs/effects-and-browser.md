@@ -61,10 +61,10 @@ runner drives directly:
 task = Signal.fake_task("lookup", |value| value, |err| err)
 ```
 
-```txt
-expect_pending_task "lookup" 1
-resolve_task "lookup" "3 results"
-reject_task "lookup" "offline"
+```lisp
+(expect-pending-task "lookup" 1)
+(resolve-task "lookup" "3 results")
+(reject-task "lookup" "offline")
 ```
 
 Use these for examples and for testing async flows without a server.
@@ -186,8 +186,7 @@ parse = Json.parser_camel()
 `Json.parser_camel()` maps `camelCase` JSON fields to `snake_case` Roc fields.
 `Json.to_str(value)` encodes. See
 [Conduit's `Api.roc`](https://github.com/lukewilliamboswell/roc-signals/blob/main/examples/conduit/Api.roc)
-for the full treatment, and the
-[JSON Config Editor](@/examples/json-config-editor.md) example for a focused one.
+for the full treatment.
 
 ### What the browser does
 
@@ -377,8 +376,8 @@ Cleanup is mostly automatic. Disposing a scope cancels its timers and requests
 and releases its retained closures. `Ui.on_cleanup(Signal.cleanup("name"))`
 registers a *named* cleanup that native specs can assert on:
 
-```txt
-expect_cleanup "live search panel cleanup" 1
+```lisp
+(expect-cleanup "live search panel cleanup" 1)
 ```
 
 Useful for proving that closing a panel really did tear its work down.

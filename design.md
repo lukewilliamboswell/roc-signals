@@ -1525,32 +1525,47 @@ loudly if it regresses. The bar for adding an app is **"it exercises an
 otherwise-unproven capability,"** never size or visual richness. The maintained
 public suite is:
 
-- `service-ops-center` — HTTP text refresh, interval-driven refresh, JSON
-  parsing through the compiler builtin, Browser.location()-backed service routes
-  with push/replace navigation and Back/Forward coverage, visibility-aware
-  polling, nested JSON service drill-downs, custom chart events, behavior hooks,
-  and dashboard-scale derived views.
-- `team-checkout` — retained cart quantities, delivery form state, checkbox
-  state, review/receipt branches, list replacement, and localStorage-backed
-  checkout persistence with clear-saved removals.
-- `command-palette` — keyboard-friendly text input, shortcut metadata, link
-  attributes, custom attributes, and submit events.
-- `team-signup` — realistic validation, required/read-only/ARIA attrs, checkbox
-  terms acceptance, focus/blur tracking, and submission state.
-- `api-request-console` — full-response package-aligned HTTP tasks, request
-  method/body/header construction, non-2xx responses, and failure rendering.
-- `release-planner` — pointer-driven card reorder, move-only structural patches,
-  priority filtering, reviewer input, and markdown card notes rendered as
-  ordinary `Elem` structure.
-- `deployment-queue` — keyed priority reorder, hotfix insertion, filtering,
-  pause/resume, row-local checks, and row create/remove budgets.
-- `workspace-widgets` — independent widget components preserving local state
-  through reorder, reset, and hide/show.
-- `live-search` — task lifecycle, loading/success/failure folds, interval
-  freshness ticks, online/offline task gating, cleanup, cancellation, and
-  retained-allocation teardown checks.
-- `json-config-editor` — interactive builtin `Json` decoding for camelCase
-  fields, nested records, lists, optional values, and actionable parse errors.
+- `spreadsheet-lite` — a formula grid: cell references, precedence, `SUM`
+  ranges, error propagation, cycle detection, and dependency-scoped rendering
+  over fixed-point arithmetic.
+- `data-grid` — 1200 generated rows rendered a page at a time, sortable and
+  filterable, with inline editing, selection spanning unrendered rows, and a
+  summary aggregating the full dataset. The gallery's performance watch point.
+- `dependency-scheduler` — cascading dates through a dependency graph, derived
+  slack, critical-path shifts, and cycle reporting.
+- `kanban-board` — keyed reorder across containers, WIP limits, and derived
+  per-column counts.
+- `query-builder` — a recursive AND/OR tree with nesting, negation, and a live
+  match count.
+- `package-explorer` — routed detail pages with three independently loading
+  panels, latest-wins search, and requests cancelled by navigation.
+- `support-inbox` — polled server state merged with optimistic sends, unread
+  counts that do not re-render the open thread, and rollback on failure.
+- `field-notes` — offline-first capture with an outbox that drains on
+  reconnect, `Browser.online()` gating, and localStorage as the base of truth.
+- `status-page` — visibility-gated polling and a rollup fanning in from several
+  independent service checks.
+- `flight-search` — the derived-view versus effect-trigger distinction: filters
+  refetch, sorting does not.
+- `onboarding-wizard` — multi-step validation, plan-dependent options,
+  cross-state reducers, a saved draft, and an async submit.
+- `availability-picker` — one timezone signal converting every rendered slot,
+  with pairwise conflict detection.
+- `form-builder` — a designer whose generated form is itself reactive: signals
+  composing across two levels.
+- `token-editor` — tokens driving live previews and derived WCAG contrast
+  validation.
+- `loan-comparator` — an expensive derived value memoised per scenario and read
+  by seven sinks, with a cross-scenario break-even point.
+- `split-the-bill` — a balance diamond fanning into a minimal settlement plan in
+  exact integer cents.
+- `recipe-scaler` — one input fanning out to dozens of derived leaves with no
+  structural work.
+- `markdown-editor` — one source string feeding four independently derived
+  views, with markdown rendered as ordinary `Elem` structure.
+- `log-viewer` — high-frequency appends where only the tail mutates.
+- `pomodoro-tracker` — interval-derived elapsed time, per-project rollups, and
+  localStorage restore.
 
 - `conduit` — the RealWorld spec app and platform evidence instrument
   (`wip/REALWORLD_DEMO_PLAN.md`): app-code hash routing across nine route
@@ -1564,7 +1579,9 @@ superseding and UTF-8 task ownership, browser environment commands/sources,
 initial-aware signal-change commands, markdown-to-`Elem` structure and link
 safety, controlled input reconciliation, textarea, number, select, radio,
 checkbox, submit/reset default actions, optional text attrs, validation
-patterns, callable-allocation signal identity, and generated large-`Ui.each_str`
+patterns, callable-allocation signal identity, keyboard events, custom DOM
+events, cross-capability `Signal.combine`, asynchronous state writes,
+cross-state reducer reads, metric semantics, and generated large-`Ui.each_str`
 scaling.
 
 Host tests cover topological rank ordering, diamond deduplication, confined
@@ -1586,8 +1603,8 @@ than passing silently:
   than a catalog. Its specs assert the budget for single-row update, append,
   remove, filter, and reorder — including the `active_graph_records_rebuilt`,
   `stream_nodes_scanned`, `each_key_compares`, and per-event allocation counters.
-- **Work assertions on structural and lifecycle paths.** `release-planner`
-  move-only reorder, `deployment-queue` row create/remove, `live-search`
+- **Work assertions on structural and lifecycle paths.** `kanban-board`
+  cross-container reorder, `data-grid` row create/remove, `field-notes`
   cleanup, `task-latest-wins` stale-result handling, and the generated
   `large-each-*` fixtures carry `expect_metric_delta` blocks that bound work and
   prove no retained closure, allocation, row, or stale-task leak across the
