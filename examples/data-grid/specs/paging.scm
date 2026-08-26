@@ -23,7 +23,10 @@
     (expect-metric-delta rows_reused 0)
     (expect-metric-delta rows_removed 10)
     (expect-metric-delta set_value 10)
-    (expect-metric-delta-at-most patches_emitted 333)
+    ; The polished grid renders each row as cells on a shared column
+    ; template rather than one text line, so a re-render touches a few more
+    ; nodes per row. Still O(visible rows), which is what this bounds.
+    (expect-metric-delta-at-most patches_emitted 346)
     (expect-metric-delta each_key_hashes 10)
     (expect-metric-delta-at-most each_key_compares 10)
     (click (role button :name "Previous page"))
