@@ -20,9 +20,9 @@
     (expect-disabled (role button :name "Save note") true)
     (expect-visible (role region :name "Note s1"))
     (expect-value (label "Body s1") "Pump pressure log")
-    (expect-text (test-id "status-s1") "Note s1 status: draft")
-    (expect-text (test-id "capacity") "Capacity: 3 of 4")
-    (expect-text (test-id "outbox-count") "Outbox: 1")
+    (expect-text (test-id "status-s1") "Draft")
+    (expect-text (test-id "capacity") "3 of 4")
+    (expect-text (test-id "outbox-count") "1")
     (expect-pending-task "note-sync" 0)
     ; Whitespace-only drafts cannot be saved.
     (fill (label "Note body") "   ")
@@ -31,7 +31,7 @@
     (click (role button :name "Save note"))
     (expect-visible (role region :name "Note s2"))
     (expect-value (label "Body s2") "Tank level 42")
-    (expect-text (test-id "capacity") "Capacity: full")
+    (expect-text (test-id "capacity") "Full")
     ; Boundary: the outbox holds four notes, so a fifth capture is refused.
     (fill (label "Note body") "Overflow note")
     (expect-disabled (role button :name "Save note") true)

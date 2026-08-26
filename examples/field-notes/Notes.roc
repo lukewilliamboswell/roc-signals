@@ -36,6 +36,7 @@ Notes := {}.{
 		body : Str,
 		status : Str,
 		status_label : Str,
+		detail : Str,
 		queue_disabled : Bool,
 		retry_disabled : Bool,
 	}
@@ -158,8 +159,8 @@ Notes := {}.{
 	storage_notice : Browser.StorageText -> Str
 	storage_notice = |stored|
 		match stored {
-			StorageUnavailable(_) => "Storage notice: local storage is unavailable"
-			_ => "Storage notice: notes are restored on reload"
+			StorageUnavailable(_) => "Local storage is unavailable, so nothing survives a reload"
+			_ => "Notes are restored from local storage on reload"
 		}
 
 	## --- operation log ---
@@ -345,7 +346,8 @@ Notes := {}.{
 					id: note.id,
 					body: note.body,
 					status: status,
-					status_label: "Note ${note.id} status: ${status}",
+					status_label: status_title(status),
+					detail: "Outbox slot ${(note.slot + 1).to_str()}, revision ${note.rev}",
 					queue_disabled: note.queued,
 					retry_disabled: status != "failed",
 				}
@@ -375,6 +377,32 @@ Notes := {}.{
 			}
 		}
 
+	## The status word a row shows in its badge. The badge class is derived from
+	## the same `status` field, so the colour can never disagree with the word.
+	status_title : Str -> Str
+	status_title = |status|
+		if status == "draft" {
+			"Draft"
+		} else if status == "queued" {
+			"Queued"
+		} else if status == "syncing" {
+			"Syncing"
+		} else if status == "synced" {
+			"Synced"
+		} else {
+			"Failed"
+		}
+
+	outbox_text : List(Row) -> Str
+	outbox_text = |rows| {
+		count = outbox_count(rows)
+		if count == 1 {
+			"1 note waiting to sync"
+		} else {
+			"${count.to_str()} notes waiting to sync"
+		}
+	}
+
 	count_status : List(Row), Str -> U64
 	count_status = |rows, status| rows.fold(0, |count, row| if row.status == status { count + 1 } else { count })
 
@@ -394,26 +422,26 @@ Notes := {}.{
 	syncing_text = |rows| {
 		found = rows.fold("", |acc, row| if acc != "" { acc } else if row.status == "syncing" { row.id } else { acc })
 		if found == "" {
-			"Syncing: none"
+			"None"
 		} else {
-			"Syncing: ${found}"
+			found
 		}
 	}
 
 	network_text : Bool -> Str
 	network_text = |online|
 		if online {
-			"Network: online"
+			"Online. The outbox drains one note at a time."
 		} else {
-			"Network: offline"
+			"Offline. Notes stay in the outbox until the connection returns."
 		}
 
 	auto_text : Bool -> Str
 	auto_text = |auto|
 		if auto {
-			"Auto sync: on"
+			"Auto sync on"
 		} else {
-			"Auto sync: paused"
+			"Auto sync paused"
 		}
 
 	is_full : List(Row) -> Bool
@@ -423,9 +451,9 @@ Notes := {}.{
 	capacity_text = |rows| {
 		used = rows.fold(0, |count, _row| count + 1)
 		if used >= slot_count {
-			"Capacity: full"
+			"Full"
 		} else {
-			"Capacity: ${used.to_str()} of ${slot_count.to_str()}"
+			"${used.to_str()} of ${slot_count.to_str()}"
 		}
 	}
 }
