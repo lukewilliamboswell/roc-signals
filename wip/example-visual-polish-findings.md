@@ -116,6 +116,25 @@ Something that opens each published example in a real browser and asserts it
 mounts, has no console error, and reaches a non-loading state would have caught
 all of them.
 
+### flight-search double-frees its task payload on wasm32
+
+Now that the example has a browser data source, the first result kills it:
+
+```
+roc_dealloc received a pointer that was already freed
+  ptr=0x8e6f00 align=4 requested_size=169 allocated_size=169
+  freed_phase=421 current_phase=421: unreachable
+```
+
+169 bytes is exactly the length of the task result string the handler returns,
+so it is the payload allocation being freed twice while `parse_flights` decodes
+it. The page renders the shell and then stops; no rows ever appear.
+
+The native specs feed the same payload shape through the same decode and pass,
+so this is wasm32-only — the same family as the two below and as the JSON
+field-name corruption above. Nothing in the example can work around a double
+free; it needs a runtime fix.
+
 ### markdown-editor traps with "unreachable" in the browser
 
 Opening `examples/markdown-editor/` renders nothing but the host error
