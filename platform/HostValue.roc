@@ -33,6 +33,12 @@ HostValue := [HostValue(U64)].{
 		transform : Box((HostValue, HostValue -> HostValue)),
 	}
 
+	## Owned state value emitted by a command.
+	StateValueHandle := {
+		capability : CapabilityHandle,
+		value : HostValue,
+	}
+
 	## Clone a host-owned value.
 	clone! : HostValue -> HostValue
 

@@ -209,6 +209,19 @@ Ui := [].{
 				{ capability: Capability.handle(payload_cap), transform: Box.box(wrapped) },
 			)
 		}
+
+		## Build a command that replaces this state. Unlike event messages, state
+		## commands can be returned from `Ui.on_change`, `Ui.on_mount`, and other
+		## command-producing hooks.
+		set_cmd : State(a), a -> Node.Cmd
+		set_cmd = |st, next| {
+			Node.Cmd.UpdateState(
+				{
+					binder: st.ref,
+					update: { capability: Capability.handle(st.cap), value: Capability.store(Box.box(next), st.cap) },
+				},
+			)
+		}
 	}
 
 	## Introduce a state binder. `init` is the initial value; `body` receives a

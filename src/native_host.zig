@@ -90,6 +90,10 @@ const NativeCtx = struct {
         return ctx.stateCapability(node_id);
     }
 
+    pub fn updateStateValue(ctx: Handle, roc_host: *abi.RocHost, node_id: u64, value: HostValue) bool {
+        return ctx.updateStateValue(roc_host, node_id, value);
+    }
+
     pub fn initialLocationPayload(ctx: Handle, roc_host: *abi.RocHost, cap: HostValueCapability) HostValue {
         return ctx.initialLocationPayload(roc_host, cap);
     }
@@ -1191,7 +1195,7 @@ const HostEnv = struct {
         return self.cloneHostValue(self.engine.states.items[state_index].cell.value);
     }
 
-    fn updateStateValue(self: *HostEnv, roc_host: *abi.RocHost, node_id: u64, value: HostValue) bool {
+    pub fn updateStateValue(self: *HostEnv, roc_host: *abi.RocHost, node_id: u64, value: HostValue) bool {
         const state_index = self.engine.stateIndexByNodeId(node_id) orelse failHost("event referenced an unknown active state node");
         const state = &self.engine.states.items[state_index];
         if (state.cell.valueEquals(self, roc_host, value)) {

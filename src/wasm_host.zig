@@ -66,6 +66,10 @@ const WasmCtx = struct {
         return shared_engine.stateCapability(node_id) catch failHost();
     }
 
+    pub fn updateStateValue(_: Handle, _: *abi.RocHost, node_id: u64, value: HostValue) bool {
+        return updateStateCell(node_id, value);
+    }
+
     pub fn initialLocationPayload(_: Handle, _: *abi.RocHost, cap: HostValueCapability) HostValue {
         return makeInitialLocationPayload(cap);
     }
@@ -800,7 +804,7 @@ fn currentStateValue(node_id: u64) HostValue {
     return cloneHostValue(shared_engine.states.items[state_index].cell.value);
 }
 
-fn updateStateValue(node_id: u64, value: HostValue) bool {
+fn updateStateCell(node_id: u64, value: HostValue) bool {
     const state_index = shared_engine.stateIndexByNodeId(node_id) orelse failHost();
     const state = &shared_engine.states.items[state_index];
     const ctx = WasmCtx{};
@@ -881,7 +885,7 @@ fn dispatchEvent(desc: HostActiveEventDesc, payload: HostValue) void {
     const state_cap = shared_engine.stateCapability(desc.target_node_id) catch failHost();
     defer callHostValueToUnitWithCapability(state_cap, hv.hostValueCapabilityDrop(state_cap), current);
     const next = callHostValueHostValueToHostValueWithCapabilities(state_cap, payload_cap, desc.payload_reducer.transform, current, payload);
-    if (!updateStateValue(desc.target_node_id, next)) return;
+    if (!updateStateCell(desc.target_node_id, next)) return;
 
     const dirty_source_node_ids = [_]u64{desc.target_node_id};
     const dirty_generation = shared_engine.nextDirtySignalGeneration();

@@ -84,6 +84,7 @@ Node := [].{
 			},
 		),
 		SetDocumentTitle({ title : Str }),
+		UpdateState({ binder : BinderRef, update : HostValue.StateValueHandle }),
 	]
 
 	## Cleanup descriptor run when a scope is disposed.

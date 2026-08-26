@@ -3987,6 +3987,34 @@ pub fn Engine(comptime Ctx: type) type {
             return depth;
         }
 
+        fn resolveStateCommandTarget(self: *Self, owner_scope_id: u64, binder_token: HostBinderToken) u64 {
+            var target_node_id: ?u64 = null;
+            var target_depth: usize = 0;
+
+            for (self.active_stream.scope_sites.items) |site| {
+                if (site.kind != .state) continue;
+                if (!(self.scopeIsDescendantOrSelf(owner_scope_id, site.scope_id) catch @panic("state command owner referenced an unknown scope"))) continue;
+
+                var matching_state: ?HostNodeStateDesc = null;
+                for (self.active_stream.states.items) |state| {
+                    if (state.node_id == site.node_id) {
+                        matching_state = state;
+                        break;
+                    }
+                }
+                const state = matching_state orelse continue;
+                if (retained_values.hostSignalTokenFromCallable(state.initial) != binder_token) continue;
+
+                const depth = self.scopeDepth(site.scope_id);
+                if (target_node_id == null or depth > target_depth) {
+                    target_node_id = site.node_id;
+                    target_depth = depth;
+                }
+            }
+
+            return target_node_id orelse @panic("UpdateState referenced a state binder outside the command's active scope");
+        }
+
         pub fn scopeIsEachSiteRowDescendantOrSelf(self: *Self, scope_id: u64, site: HostEachSite) scope_tree.Error!bool {
             return scope_tree.eachSiteRowDescendantOrSelf(HostEachRowScopeStep, self.scopes.items, scope_id, site.parent_scope_id, site.site_ordinal);
         }
@@ -5674,6 +5702,29 @@ pub fn Engine(comptime Ctx: type) type {
             return .{};
         }
 
+        pub fn updateStateCommand(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, owner_scope_id: u64, cmd: erased_calls.UpdateStateCmd) render.Counts {
+            const binder_token = retained_values.hostSignalTokenFromCallable(cmd.binder);
+            const target_node_id = self.resolveStateCommandTarget(owner_scope_id, binder_token);
+            const state_cap = Ctx.stateCapability(ctx, target_node_id);
+            assertHostValueCapabilitiesMatch(cmd.update.capability, state_cap, "state command value capability did not match its target state");
+
+            if (!Ctx.updateStateValue(ctx, roc_host, target_node_id, cmd.update.value)) {
+                self.recordSignalPrune();
+                return .{};
+            }
+
+            self.recordDispatch();
+            var metrics = self.pending_roc_metrics;
+            metrics.bump(.dirty_source_roots, 1);
+            self.pending_roc_metrics = metrics;
+
+            const dirty_source_node_ids = [_]u64{target_node_id};
+            const dirty_generation = self.nextDirtySignalGeneration();
+            const dirty_record_ids = self.scratchDirtyActiveSignalRecordIdsForSources(ctx, &dirty_source_node_ids);
+            const changed_record_ids = self.propagateDirtyActiveSignalRecordIds(ctx, roc_host, dirty_record_ids, &dirty_source_node_ids, dirty_generation);
+            return self.applyDirtySignalBatch(ctx, roc_host, &dirty_source_node_ids, changed_record_ids, dirty_generation);
+        }
+
         pub fn runCommand(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, owner_scope_id: u64, cmd: erased_calls.Cmd) render.Counts {
             return switch (cmd.tag) {
                 .Noop => .{},
@@ -5689,6 +5740,7 @@ pub fn Engine(comptime Ctx: type) type {
                 .SetStorageText => self.setStorageTextCommand(ctx, roc_host, cmd.payload_set_storage_text()),
                 .StartTask => self.startTaskCommand(ctx, roc_host, owner_scope_id, cmd.payload_start_task()),
                 .SetDocumentTitle => self.setDocumentTitleCommand(ctx, cmd.payload_set_document_title()),
+                .UpdateState => self.updateStateCommand(ctx, roc_host, owner_scope_id, cmd.payload_update_state()),
             };
         }
 
@@ -5825,6 +5877,13 @@ pub fn Engine(comptime Ctx: type) type {
             const allocator = Ctx.allocator(ctx);
 
             for (pending_on_change_commands) |pending| {
+                if (pending.scope_id >= self.scopes.items.len or !self.scopes.items[@intCast(pending.scope_id)].active) {
+                    if (pending.cmd.tag == .UpdateState) {
+                        const update = pending.cmd.payload_update_state().update;
+                        callHostValueToUnitWithCapability(ctx, roc_host, update.capability, hv.hostValueCapabilityDrop(update.capability), update.value);
+                    }
+                    continue;
+                }
                 switch (pending.cmd.tag) {
                     .PushState => {
                         const payload = pending.cmd.payload_push_state();

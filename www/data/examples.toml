@@ -396,6 +396,17 @@ native = true
 bench = false
 
 [[examples]]
+slug = "state-commands"
+title = "State Commands"
+description = "Internal fixture for state updates emitted by interval and task signal changes."
+source = "examples/_fixtures/state-commands/app.roc"
+spec = "examples/_fixtures/state-commands/spec.txt"
+public = false
+wasm = true
+native = true
+bench = false
+
+[[examples]]
 slug = "markdown-elem"
 title = "Markdown Elem"
 description = "Internal app-side markdown-to-Elem fixture."
