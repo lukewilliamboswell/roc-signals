@@ -2,7 +2,7 @@
 #
 # Everything here is pure: wire parsing, unread counting, filtering, and the
 # optimistic merge that reconciles the polled server snapshot with locally
-# queued messages. `app.roc` only wires these functions into signals.
+# queued messages. `main.roc` only wires these functions into signals.
 
 Inbox :: [].{
 

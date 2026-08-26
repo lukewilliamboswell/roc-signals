@@ -1,5 +1,5 @@
 ## Shared navigation intent: every in-app link routes through one Ui.state
-## so history push_state stays a single app-owned effect in app.roc.
+## so history push_state stays a single app-owned effect in main.roc.
 import pf.Browser
 import pf.Elem exposing [Elem]
 import pf.Html

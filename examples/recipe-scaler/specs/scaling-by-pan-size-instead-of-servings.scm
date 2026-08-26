@@ -1,0 +1,55 @@
+(test "Recipe scaler — Scaling by pan size instead of servings"
+  (steps
+    ; Given the state established by earlier scenarios
+    (check (label "Include Buttermilk Pancakes"))
+    (check (label "Include Seeded Bread Loaf"))
+    (check (label "Include Roasted Tomato Soup"))
+    (mark-metrics)
+    (fill (label "Target servings") "8")
+    (fill (label "Target servings") "3")
+    (fill (label "Target servings") "1")
+    (fill (label "Target servings") "0")
+    (fill (label "Target servings") "two")
+    (fill (label "Target servings") "")
+    (fill (label "Target servings") "999")
+    (fill (label "Target servings") "4")
+    (mark-metrics)
+    (real-click (label "Imperial units"))
+    (real-click (label "Metric units"))
+
+    ; Scaling by pan size instead of servings
+
+    (real-click (label "Scale by pan size"))
+    (expect-checked (label "Scale by pan size") true)
+    (expect-checked (label "Scale by servings") false)
+    ; "Recipe's own tin" is the identity ratio, so nothing moves yet.
+    (expect-text (test-id "effective-servings") "Effective servings: 4")
+    (expect-text (test-id "scale-note") "Pan scaling: the recipe's own tin. The servings box is ignored.")
+    (expect-text (test-id "ing-qty-flour") "200 g")
+    (select-option (label "Pan size") "tray30")
+    (expect-value (label "Pan size") "tray30")
+    (expect-text (test-id "controls-summary") "Controls: pancakes / pan / tray30 / metric")
+    (expect-text (test-id "scale-note") "Pan scaling: a 30x20 cm tray. The servings box is ignored.")
+    ; 4 servings * 600 cm2 / 452 cm2 = 5.309 servings, kept in milli-servings.
+    (expect-text (test-id "effective-servings") "Effective servings: 5.31")
+    (expect-text (test-id "ing-qty-flour") "265.45 g")
+    (expect-text (test-id "ing-qty-buttermilk") "398.18 ml")
+    (expect-text (test-id "ing-qty-butter") "66.36 g")
+    (expect-text (test-id "ing-qty-baking-powder") "2.65 tsp")
+    (expect-text (test-id "ing-qty-salt") "1.33 pinch")
+    ; In pan mode the servings box really is ignored.
+    (fill (label "Target servings") "20")
+    (expect-text (test-id "effective-servings") "Effective servings: 5.31")
+    (expect-text (test-id "ing-qty-flour") "265.45 g")
+    (select-option (label "Pan size") "round20")
+    (expect-text (test-id "effective-servings") "Effective servings: 2.78")
+    (expect-text (test-id "ing-qty-flour") "138.9 g")
+    ; Back to servings mode: the servings box takes over again.
+    (real-click (label "Scale by servings"))
+    (expect-text (test-id "effective-servings") "Effective servings: 20")
+    (expect-text (test-id "ing-qty-flour") "1000 g")
+    (select-option (label "Pan size") "recipe")
+    (fill (label "Target servings") "2")
+    (expect-text (test-id "effective-servings") "Effective servings: 2")
+  )
+)

@@ -1,0 +1,31 @@
+(test "Log viewer — Clearing while a level filter and a query are active keeps the controls."
+  (steps
+    ; Given the state established by earlier scenarios
+    (tick-interval 1000)
+    (tick-interval 1000)
+    (tick-interval 1000)
+    (tick-interval 1000)
+    (uncheck (label "Show debug"))
+    (fill (label "Query") "timeout")
+    (fill (label "Query") "zzz-not-present")
+    (check (label "Show debug"))
+    (fill (label "Query") "debug")
+    (uncheck (label "Show debug"))
+    (uncheck (label "Follow tail"))
+    (tick-interval 1000)
+    (check (label "Follow tail"))
+
+    ; Clearing while a level filter and a query are active keeps the controls.
+    (click (role button :name "Clear log"))
+    (expect-cleanup "log stream cleanup" 1)
+    (expect-interval 1000 1)
+    (expect-checked (label "Show debug") false)
+    (expect-checked (label "Follow tail") true)
+    (expect-value (label "Query") "debug")
+    (expect-text (test-id "line-count") "Showing 0 of 0 lines")
+    (expect-text (test-id "query-matches") "Query matches: 0")
+    (expect-visible (role region :name "Log empty"))
+    (expect-absent (role region :name "Log line-1"))
+    (expect-text (test-id "tail-line") "Tail: waiting for the first line")
+  )
+)

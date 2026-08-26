@@ -1,0 +1,28 @@
+(test "Radio group control"
+  (steps
+    ; Radio group control scenario
+
+    (expect-visible (role heading :name "Radio Group Control"))
+    (expect-attr (role region :name "Radio Group Control") data-fixture "radio-group-control")
+    (expect-attr (label "Monthly") type "radio")
+    (expect-attr (label "Monthly") name "billing")
+    (expect-attr (label "Annual") type "radio")
+    (expect-attr (label "Annual") name "billing")
+    (expect-value (label "Monthly") "monthly")
+    (expect-value (label "Annual") "annual")
+    (expect-checked (label "Monthly") true)
+    (expect-checked (label "Annual") false)
+    (expect-text (text "Billing cadence: monthly") "Billing cadence: monthly")
+    (expect-text (text "Changes: 0") "Changes: 0")
+    (real-click (label "Annual"))
+    (expect-checked (label "Monthly") false)
+    (expect-checked (label "Annual") true)
+    (expect-text (text "Billing cadence: annual") "Billing cadence: annual")
+    (expect-text (text "Changes: 1") "Changes: 1")
+    (real-click (label "Monthly"))
+    (expect-checked (label "Monthly") true)
+    (expect-checked (label "Annual") false)
+    (expect-text (text "Billing cadence: monthly") "Billing cadence: monthly")
+    (expect-text (text "Changes: 2") "Changes: 2")
+  )
+)

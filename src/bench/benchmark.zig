@@ -200,7 +200,7 @@ pub fn Runner(comptime Ctx: type) type {
             var bench_gpa = std.heap.DebugAllocator(.{ .safety = true }){};
             defer _ = bench_gpa.deinit();
             const allocator = bench_gpa.allocator();
-            const commands = spec_parser.parseTestSpecFile(allocator, spec_file) catch |err| {
+            const spec = spec_parser.parseTestSpecFile(allocator, spec_file) catch |err| {
                 switch (err) {
                     spec_parser.ParseError.FileNotFound => writeStderr("Error: Test spec file not found\n"),
                     spec_parser.ParseError.InvalidFormat => writeStderr("Error: Invalid test spec format\n"),
@@ -208,13 +208,13 @@ pub fn Runner(comptime Ctx: type) type {
                 }
                 return 1;
             };
-            defer spec_parser.freeSpecCommands(allocator, commands);
+            defer spec.deinit(allocator);
 
             printHeader();
             for (0..samples) |sample| {
                 var stats: Stats = .{};
                 for (0..iterations) |_| {
-                    runBenchmarkIteration(commands, verbose, &stats);
+                    runBenchmarkIteration(spec.commands, verbose, &stats);
                 }
                 printRow(case_name, sample, iterations, stats);
             }

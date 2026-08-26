@@ -165,6 +165,35 @@ fn writeStderr(bytes: []const u8) void {
     crash_handlers.writeStderr(bytes);
 }
 
+fn writeUsage() void {
+    writeStderr("Usage: ./app [--verbose] [--run-spec-json] <case.scm>\n       ./app --bench-app [--bench-name NAME] [--bench-iterations N] [--bench-samples N] <case.scm>\n");
+}
+
+const SpecJsonFailure = struct {
+    phase: []const u8,
+    kind: []const u8,
+    message: []const u8,
+};
+
+const SpecJsonResult = struct {
+    protocol: []const u8 = "roc-signals/spec-result/v1",
+    id: []const u8,
+    name: []const u8,
+    status: []const u8,
+    duration_ns: u64,
+    failure: ?SpecJsonFailure,
+};
+
+fn writeSpecJsonResult(result: SpecJsonResult) void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_state = std.Io.File.stdout().writer(io, &stdout_buffer);
+    var stream: std.json.Stringify = .{ .writer = &stdout_state.interface };
+    stream.write(result) catch return;
+    stdout_state.interface.writeByte('\n') catch return;
+    stdout_state.interface.flush() catch {};
+}
+
 const DomElement = sim_dom.Element;
 const DomNamedEvent = sim_dom.NamedEvent;
 
@@ -2636,6 +2665,7 @@ fn __main() callconv(.c) void {}
 
 fn main(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
     var verbose = false;
+    var result_json = false;
     var bench_app = false;
     var bench_name: []const u8 = "app_dispatch";
     var bench_iterations: usize = 100;
@@ -2648,19 +2678,21 @@ fn main(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
         const arg = std.mem.span(argv[i]);
         if (std.mem.eql(u8, arg, "--verbose") or std.mem.eql(u8, arg, "-v")) {
             verbose = true;
+        } else if (std.mem.eql(u8, arg, "--run-spec-json")) {
+            result_json = true;
         } else if (std.mem.eql(u8, arg, "--bench-app")) {
             bench_app = true;
         } else if (std.mem.eql(u8, arg, "--bench-name")) {
             i += 1;
             if (i >= arg_count) {
-                writeStderr("Usage: ./app [--verbose] <test_spec.txt>\n       ./app --bench-app [--bench-name NAME] [--bench-iterations N] [--bench-samples N] <test_spec.txt>\n");
+                writeUsage();
                 return 1;
             }
             bench_name = std.mem.span(argv[i]);
         } else if (std.mem.eql(u8, arg, "--bench-iterations")) {
             i += 1;
             if (i >= arg_count) {
-                writeStderr("Usage: ./app [--verbose] <test_spec.txt>\n       ./app --bench-app [--bench-name NAME] [--bench-iterations N] [--bench-samples N] <test_spec.txt>\n");
+                writeUsage();
                 return 1;
             }
             bench_iterations = std.fmt.parseInt(usize, std.mem.span(argv[i]), 10) catch {
@@ -2674,7 +2706,7 @@ fn main(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
         } else if (std.mem.eql(u8, arg, "--bench-samples")) {
             i += 1;
             if (i >= arg_count) {
-                writeStderr("Usage: ./app [--verbose] <test_spec.txt>\n       ./app --bench-app [--bench-name NAME] [--bench-iterations N] [--bench-samples N] <test_spec.txt>\n");
+                writeUsage();
                 return 1;
             }
             bench_samples = std.fmt.parseInt(usize, std.mem.span(argv[i]), 10) catch {
@@ -2688,13 +2720,13 @@ fn main(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
         } else if (arg.len > 0 and arg[0] != '-') {
             spec_file = arg;
         } else {
-            writeStderr("Usage: ./app [--verbose] <test_spec.txt>\n       ./app --bench-app [--bench-name NAME] [--bench-iterations N] [--bench-samples N] <test_spec.txt>\n");
+            writeUsage();
             return 1;
         }
     }
 
     if (spec_file == null) {
-        writeStderr("Usage: ./app [--verbose] <test_spec.txt>\n       ./app --bench-app [--bench-name NAME] [--bench-iterations N] [--bench-samples N] <test_spec.txt>\n");
+        writeUsage();
         return 1;
     }
 
@@ -2707,7 +2739,7 @@ fn main(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
         };
     }
 
-    return platform_main(spec_file.?, verbose) catch |err| {
+    return platform_main(spec_file.?, verbose, result_json) catch |err| {
         writeStderr("HOST ERROR: ");
         writeStderr(@errorName(err));
         writeStderr("\n");
@@ -2757,18 +2789,33 @@ fn applyPreMountSpecCommands(host: *HostEnv, commands: []const SpecCommand) void
     }
 }
 
-fn platform_main(spec_file: []const u8, verbose: bool) error{}!c_int {
+fn platform_main(spec_file: []const u8, verbose: bool, result_json: bool) error{}!c_int {
+    const started_ns = benchmark.nowNs();
     var host_env = HostEnv.init();
     const allocator = host_env.hostAllocator();
 
-    host_env.test_state.commands = parseTestSpecFile(allocator, spec_file) catch |err| {
+    const parsed_spec = parseTestSpecFile(allocator, spec_file) catch |err| {
+        const message = switch (err) {
+            ParseError.FileNotFound => "test spec file not found",
+            ParseError.InvalidFormat => "invalid test spec format",
+            else => "failed to parse test spec",
+        };
         switch (err) {
             ParseError.FileNotFound => writeStderr("Error: Test spec file not found\n"),
             ParseError.InvalidFormat => writeStderr("Error: Invalid test spec format\n"),
             else => writeStderr("Error: Failed to parse test spec\n"),
         }
-        return 1;
+        if (result_json) writeSpecJsonResult(.{
+            .id = spec_file,
+            .name = spec_file,
+            .status = "error",
+            .duration_ns = benchmark.nowNs() - started_ns,
+            .failure = .{ .phase = "parse", .kind = "invalid_spec", .message = message },
+        });
+        return 2;
     };
+    defer allocator.free(parsed_spec.name);
+    host_env.test_state.commands = parsed_spec.commands;
     host_env.test_state.verbose = verbose;
 
     var roc_host = makeSignalsRocHost(&host_env);
@@ -2792,7 +2839,19 @@ fn platform_main(spec_file: []const u8, verbose: bool) error{}!c_int {
         host_env.dumpDom();
     }
 
-    return SpecRunner.run(&host_env, &roc_host, host_env.test_state.commands, verbose);
+    const result = SpecRunner.run(&host_env, &roc_host, host_env.test_state.commands, verbose);
+    if (result_json) writeSpecJsonResult(.{
+        .id = spec_file,
+        .name = parsed_spec.name,
+        .status = if (result == 0) "passed" else "failed",
+        .duration_ns = benchmark.nowNs() - started_ns,
+        .failure = if (result == 0) null else .{
+            .phase = "step",
+            .kind = "assertion",
+            .message = "spec step failed; see captured stderr for details",
+        },
+    });
+    return result;
 }
 
 fn deinitTestHostGraph(host: *HostEnv) void {

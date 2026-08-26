@@ -1,0 +1,26 @@
+(test "Flight search — initial mount"
+  (steps
+    ; initial mount
+
+    (expect-visible (role heading :name "Flight Search"))
+    (expect-visible (role region :name "Search filters"))
+    (expect-visible (role region :name "Sort controls"))
+    (expect-visible (role region :name "Results"))
+    (expect-value (label "Departure date") "2026-09-01")
+    (expect-value (label "Max stops") "any")
+    (expect-value (label "Max price") "any")
+    (expect-value (label "Airline") "any")
+    (expect-value (label "Sort by") "price")
+    (expect-text (test-id "filters-summary") "Filters: 2026-09-01, any stops, any price, any airline")
+    (expect-text (test-id "request-key") "Request: 2026-09-01|any|any|any")
+    (expect-text (test-id "sort-summary") "Sorted by: price")
+    (expect-text (test-id "search-status") "Search status: loading")
+    (expect-text (test-id "result-summary") "Fetching flights")
+    (expect-text (test-id "flights-returned") "Flights returned: 0")
+    (expect-text (test-id "result-order") "Result order: none")
+    (expect-text (test-id "top-result") "Top result: none")
+    (expect-text (test-id "search-error") "No search error")
+    (expect-pending-task "flight-search" 1)
+    (expect-cleanup "flight search cleanup" 0)
+  )
+)
