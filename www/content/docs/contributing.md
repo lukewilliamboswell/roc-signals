@@ -1,6 +1,7 @@
 +++
 title = "Contributing"
-weight = 3
+description = "Working on the platform itself — toolchain, test driver, coverage, bundles, and releases."
+weight = 12
 template = "page.html"
 +++
 
@@ -353,7 +354,7 @@ Supported metric commands:
 - `(expect-metric-delta-at-most <metric-name> <delta>)`
 
 Quoted values are unescaped (`\n`, `\t`, `\\`, `\"`) for every command that
-takes one, including `fill`, `change`, `select_option`, `key_down`, and the
+takes one, including `fill`, `change`, `select-option`, `key-down`, and the
 `expect-text` / `expect-value` / `expect-attr` comparison values.
 
 `expect-pending-task` asserts an absolute count, not a delta. To prove that an
@@ -372,7 +373,7 @@ direct unit click binding on one target. For buttons inside forms, omitted
 click-only. Reset buttons dispatch app-managed prevent-default `reset` bindings.
 Checkbox controls use the checked-change default path even without a click
 handler. `submit` is for app-managed forms and requires a unit submit binding
-from `Html.on_submit_prevent_default`. `custom_event` sends its detail argument
+from `Html.on_submit_prevent_default`. `custom-event` sends its detail argument
 as `event.detail`, which reducers built with `State.on_detail` receive as text.
 
 Common metric names include `dirty_source_roots`, `patches_emitted`, `rows_reused`,
