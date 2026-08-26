@@ -3,26 +3,24 @@
 You are building ONE new example app for the Roc Signals gallery. First pass:
 **correctness, interaction, and a comprehensive spec** — NOT styling.
 
-## FIRST: sync the platform into your worktree
+## FIRST: make sure your worktree is current
 
-Platform and host fixes may be UNCOMMITTED working-tree changes in the primary
-repo. A git worktree is a checkout, so it will NOT have them — and resetting your
-worktree to any commit reverts you to the unfixed platform. Before anything else:
+A git worktree is a checkout, so it only has committed state. Before anything
+else, bring your worktree up to the working branch:
 
 ```sh
-cp /home/lbw/Documents/Github/roc-signals/platform/*.roc platform/
-cp /home/lbw/Documents/Github/roc-signals/src/spec/spec_parser.zig src/spec/
-cp /home/lbw/Documents/Github/roc-signals/src/spec/spec_runner.zig src/spec/
-cp -r /home/lbw/Documents/Github/roc-signals/examples/_fixtures/signal-combine-caps examples/_fixtures/ 2>/dev/null || true
+git merge pin-roc-nightly-2026-08-13   # or rebase onto it
 zig build
 ```
 
-If you skip this you will "discover" bugs that are already fixed. Never report a
-platform bug without first confirming your `platform/` matches the primary repo:
+Confirm before you report any platform bug:
 
 ```sh
 diff -r /home/lbw/Documents/Github/roc-signals/platform platform
 ```
+
+If that diff is non-empty your platform is stale and you will "discover" bugs
+that are already fixed. Never report a platform bug without running it first.
 
 ## Toolchain
 
