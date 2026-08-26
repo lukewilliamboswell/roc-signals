@@ -1470,8 +1470,8 @@ export fn roc_dbg(_: [*]const u8, _: usize) callconv(.c) void {}
 
 export fn roc_expect_failed(_: [*]const u8, _: usize) callconv(.c) void {}
 
-export fn roc_crashed(_: [*]const u8, _: usize) callconv(.c) void {
-    failHost();
+export fn roc_crashed(ptr: [*]const u8, len: usize) callconv(.c) void {
+    failHostWithFmt("Roc crashed: {s}", .{ptr[0..len]});
 }
 
 fn rocAllocForAbi(_: *abi.RocHost, length: usize, alignment: usize) callconv(.c) ?*anyopaque {
