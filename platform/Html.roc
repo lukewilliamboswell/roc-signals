@@ -410,6 +410,35 @@ Html := [].{
 		)
 	}
 
+	## Paragraph element with signal-backed text and caller-supplied attrs.
+	##
+	## Use this to put a stable `test_id` on a line of dynamic text, so a spec can
+	## locate it by identity and assert its value:
+	##
+	##     Html.paragraph_s_attrs(status, [Html.test_id("sync-status")])
+	##     expect_text test_id:"sync-status" "Synced 3 notes"
+	##
+	## Locating dynamic text by its own content instead couples the locator to the
+	## value, so a changed value reads as a missing element rather than a diff.
+	paragraph_s_attrs : Signal(Str), List(Node.Attr) -> Elem
+	paragraph_s_attrs = |signal, attrs| {
+		cap = signal.cap
+		read : HostValue -> Str
+		read = |value| Box.unbox(Capability.get(value, cap))
+		Elem.Element(
+			{
+				tag: "p",
+				attrs: List.concat(
+					[
+						Node.Attr.SignalText({ field: field_text, name: "", signal: Signal.to_expr(signal), read: { capability: Capability.handle(cap), read: Box.box(read) } }),
+					],
+					attrs,
+				),
+				children: [],
+			},
+		)
+	}
+
 	## Raw text node with static text.
 	text : Str -> Elem
 	text = |value| Elem.Text(value)
