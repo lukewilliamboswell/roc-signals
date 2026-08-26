@@ -3,6 +3,7 @@
 const std = @import("std");
 const signals = @import("signals");
 const boundary = signals.boundary;
+const sexpr = @import("sexpr.zig");
 
 pub const SpecCommandType = enum {
     click,
@@ -117,6 +118,16 @@ pub fn freeSpecCommands(allocator: std.mem.Allocator, commands: []SpecCommand) v
     }
 }
 
+pub const ParsedTestSpec = struct {
+    name: []const u8,
+    commands: []SpecCommand,
+
+    pub fn deinit(self: ParsedTestSpec, allocator: std.mem.Allocator) void {
+        allocator.free(self.name);
+        freeSpecCommands(allocator, self.commands);
+    }
+};
+
 pub const ParseError = error{
     InvalidFormat,
     OutOfMemory,
@@ -124,7 +135,7 @@ pub const ParseError = error{
     IoError,
 };
 
-pub fn parseTestSpecFile(allocator: std.mem.Allocator, file_path: []const u8) ParseError![]SpecCommand {
+pub fn parseTestSpecFile(allocator: std.mem.Allocator, file_path: []const u8) ParseError!ParsedTestSpec {
     const io = std.Io.Threaded.global_single_threaded.io();
     const content = std.Io.Dir.cwd().readFileAlloc(io, file_path, allocator, .limited(1024 * 1024)) catch |err| switch (err) {
         error.FileNotFound => return ParseError.FileNotFound,
@@ -132,7 +143,7 @@ pub fn parseTestSpecFile(allocator: std.mem.Allocator, file_path: []const u8) Pa
     };
     defer allocator.free(content);
 
-    return parseTestSpec(allocator, content);
+    return parseSExprTestSpec(allocator, content);
 }
 
 const SplitTrailingQuoted = struct {
@@ -223,6 +234,7 @@ fn dupeUnescapedQuoted(allocator: std.mem.Allocator, input: []const u8) ParseErr
         if (index >= input.len) return ParseError.InvalidFormat;
         const escaped: u8 = switch (input[index]) {
             'n' => '\n',
+            'r' => '\r',
             't' => '\t',
             '\\' => '\\',
             '"' => '"',
@@ -600,6 +612,279 @@ pub fn parseTestSpec(allocator: std.mem.Allocator, content: []const u8) ParseErr
     }
 
     return commands.toOwnedSlice(allocator) catch ParseError.OutOfMemory;
+}
+
+pub fn parseSExprTestSpec(allocator: std.mem.Allocator, content: []const u8) ParseError!ParsedTestSpec {
+    var reader = sexpr.Reader.init(allocator, content);
+    const root = reader.readOne() catch |err| switch (err) {
+        error.InvalidSyntax => return ParseError.InvalidFormat,
+        error.OutOfMemory => return ParseError.OutOfMemory,
+    };
+    defer root.deinit(allocator);
+
+    const root_items = exprList(root) orelse return ParseError.InvalidFormat;
+    if (root_items.len < 3 or !exprSymbolEql(root_items[0], "test")) return ParseError.InvalidFormat;
+    const name = exprString(root_items[1]) orelse return ParseError.InvalidFormat;
+    const name_copy = allocator.dupe(u8, name) catch return ParseError.OutOfMemory;
+    errdefer allocator.free(name_copy);
+
+    var commands: std.ArrayListUnmanaged(SpecCommand) = .empty;
+    errdefer freeCommandList(allocator, &commands);
+    var saw_setup = false;
+    var saw_steps = false;
+
+    for (root_items[2..]) |section| {
+        const section_items = exprList(section) orelse return ParseError.InvalidFormat;
+        if (section_items.len == 0) return ParseError.InvalidFormat;
+        if (exprSymbolEql(section_items[0], "setup")) {
+            if (saw_setup or saw_steps) return ParseError.InvalidFormat;
+            saw_setup = true;
+            for (section_items[1..]) |form| try appendDecodedForm(allocator, &commands, form, true);
+        } else if (exprSymbolEql(section_items[0], "steps")) {
+            if (saw_steps) return ParseError.InvalidFormat;
+            saw_steps = true;
+            if (section_items.len == 1) return ParseError.InvalidFormat;
+            for (section_items[1..]) |form| try appendDecodedForm(allocator, &commands, form, false);
+        } else {
+            return ParseError.InvalidFormat;
+        }
+    }
+    if (!saw_steps) return ParseError.InvalidFormat;
+
+    return .{
+        .name = name_copy,
+        .commands = commands.toOwnedSlice(allocator) catch return ParseError.OutOfMemory,
+    };
+}
+
+fn appendDecodedForm(
+    allocator: std.mem.Allocator,
+    commands: *std.ArrayListUnmanaged(SpecCommand),
+    form: sexpr.Expr,
+    is_setup: bool,
+) ParseError!void {
+    const items = exprList(form) orelse return ParseError.InvalidFormat;
+    if (items.len == 0) return ParseError.InvalidFormat;
+    const head = exprSymbol(items[0]) orelse return ParseError.InvalidFormat;
+
+    var line: std.Io.Writer.Allocating = .init(allocator);
+    defer line.deinit();
+    const writer = &line.writer;
+
+    if (is_setup) {
+        const legacy_head = if (std.mem.eql(u8, head, "initial-location"))
+            "set_initial_location"
+        else if (std.mem.eql(u8, head, "initial-visibility"))
+            "set_initial_visibility"
+        else if (std.mem.eql(u8, head, "initial-online"))
+            "set_initial_online"
+        else if (std.mem.eql(u8, head, "local-storage"))
+            "seed_local_storage"
+        else if (std.mem.eql(u8, head, "session-storage"))
+            "seed_session_storage"
+        else
+            return ParseError.InvalidFormat;
+        writer.writeAll(legacy_head) catch return ParseError.OutOfMemory;
+    } else {
+        if (std.mem.startsWith(u8, head, "initial-") or
+            std.mem.eql(u8, head, "local-storage") or
+            std.mem.eql(u8, head, "session-storage")) return ParseError.InvalidFormat;
+        try writeLegacyHead(writer, head);
+    }
+
+    for (items[1..]) |arg| {
+        writer.writeByte(' ') catch return ParseError.OutOfMemory;
+        try writeLegacyArg(writer, arg);
+    }
+
+    const parsed = try parseTestSpec(allocator, line.written());
+    if (parsed.len != 1) {
+        freeSpecCommands(allocator, parsed);
+        return ParseError.InvalidFormat;
+    }
+    var command = parsed[0];
+    command.line_num = form.span.line;
+    allocator.free(parsed);
+    commands.append(allocator, command) catch {
+        freeOneCommand(allocator, command);
+        return ParseError.OutOfMemory;
+    };
+}
+
+fn writeLegacyHead(writer: anytype, head: []const u8) ParseError!void {
+    if (std.mem.eql(u8, head, "assert-current-location")) {
+        writer.writeAll("expect_current_location") catch return ParseError.OutOfMemory;
+        return;
+    }
+    for (head) |byte| {
+        writer.writeByte(if (byte == '-') '_' else byte) catch return ParseError.OutOfMemory;
+    }
+}
+
+fn writeLegacyArg(writer: anytype, expr: sexpr.Expr) ParseError!void {
+    switch (expr.value) {
+        .list => try writeLegacyLocator(writer, expr),
+        .atom => |atom| switch (atom) {
+            .symbol => |value| writer.writeAll(value) catch return ParseError.OutOfMemory,
+            .string => |value| try writeLegacyQuoted(writer, value),
+            .integer => |value| writer.print("{d}", .{value}) catch return ParseError.OutOfMemory,
+            .boolean => |value| writer.writeAll(if (value) "true" else "false") catch return ParseError.OutOfMemory,
+        },
+    }
+}
+
+fn writeLegacyLocator(writer: anytype, expr: sexpr.Expr) ParseError!void {
+    const items = exprList(expr) orelse return ParseError.InvalidFormat;
+    if (items.len == 0) return ParseError.InvalidFormat;
+    const kind = exprSymbol(items[0]) orelse return ParseError.InvalidFormat;
+    if (std.mem.eql(u8, kind, "role")) {
+        if (items.len != 4 or !exprSymbolEql(items[2], ":name")) return ParseError.InvalidFormat;
+        const role = exprSymbol(items[1]) orelse exprString(items[1]) orelse return ParseError.InvalidFormat;
+        const name = exprString(items[3]) orelse return ParseError.InvalidFormat;
+        writer.writeAll("role:") catch return ParseError.OutOfMemory;
+        writer.writeAll(role) catch return ParseError.OutOfMemory;
+        writer.writeAll(" name:") catch return ParseError.OutOfMemory;
+        try writeLegacyQuoted(writer, name);
+        return;
+    }
+    if (items.len != 2) return ParseError.InvalidFormat;
+    const value = exprString(items[1]) orelse return ParseError.InvalidFormat;
+    if (std.mem.eql(u8, kind, "label")) {
+        writer.writeAll("label:") catch return ParseError.OutOfMemory;
+    } else if (std.mem.eql(u8, kind, "text")) {
+        writer.writeAll("text:") catch return ParseError.OutOfMemory;
+    } else if (std.mem.eql(u8, kind, "test-id")) {
+        writer.writeAll("test_id:") catch return ParseError.OutOfMemory;
+    } else {
+        return ParseError.InvalidFormat;
+    }
+    try writeLegacyQuoted(writer, value);
+}
+
+fn writeLegacyQuoted(writer: anytype, value: []const u8) ParseError!void {
+    writer.writeByte('"') catch return ParseError.OutOfMemory;
+    for (value) |byte| {
+        switch (byte) {
+            '\n' => writer.writeAll("\\n") catch return ParseError.OutOfMemory,
+            '\r' => writer.writeAll("\\r") catch return ParseError.OutOfMemory,
+            '\t' => writer.writeAll("\\t") catch return ParseError.OutOfMemory,
+            '\\' => writer.writeAll("\\\\") catch return ParseError.OutOfMemory,
+            '"' => writer.writeAll("\\\"") catch return ParseError.OutOfMemory,
+            else => writer.writeByte(byte) catch return ParseError.OutOfMemory,
+        }
+    }
+    writer.writeByte('"') catch return ParseError.OutOfMemory;
+}
+
+fn exprList(expr: sexpr.Expr) ?[]const sexpr.Expr {
+    return switch (expr.value) {
+        .list => |items| items,
+        else => null,
+    };
+}
+
+fn exprSymbol(expr: sexpr.Expr) ?[]const u8 {
+    return switch (expr.value) {
+        .atom => |atom| switch (atom) {
+            .symbol => |value| value,
+            else => null,
+        },
+        else => null,
+    };
+}
+
+fn exprString(expr: sexpr.Expr) ?[]const u8 {
+    return switch (expr.value) {
+        .atom => |atom| switch (atom) {
+            .string => |value| value,
+            else => null,
+        },
+        else => null,
+    };
+}
+
+fn exprSymbolEql(expr: sexpr.Expr, expected: []const u8) bool {
+    const actual = exprSymbol(expr) orelse return false;
+    return std.mem.eql(u8, actual, expected);
+}
+
+fn freeOneCommand(allocator: std.mem.Allocator, command: SpecCommand) void {
+    command.locator.deinit(allocator);
+    if (command.task_name) |name| allocator.free(name);
+    if (command.expected_attr) |attr| allocator.free(attr);
+    if (command.expected_text) |text| allocator.free(text);
+}
+
+fn freeCommandList(allocator: std.mem.Allocator, commands: *std.ArrayListUnmanaged(SpecCommand)) void {
+    for (commands.items) |command| freeOneCommand(allocator, command);
+    commands.deinit(allocator);
+}
+
+test "S-expression spec parser decodes setup locators actions and assertions" {
+    const content =
+        \\(test "save a profile"
+        \\  ; setup is applied before roc_ui_init
+        \\  (setup
+        \\    (initial-location "/profile")
+        \\    (initial-online offline)
+        \\    (local-storage "draft" "saved"))
+        \\  (steps
+        \\    (fill (label "Email") "a@example.com")
+        \\    (real-click (role button :name "Save"))
+        \\    (expect-text (test-id "status") "Saved")
+        \\    (expect-metric-delta rows_reused 2)))
+    ;
+    const spec = try parseSExprTestSpec(std.testing.allocator, content);
+    defer spec.deinit(std.testing.allocator);
+
+    try std.testing.expectEqualStrings("save a profile", spec.name);
+    try std.testing.expectEqual(@as(usize, 7), spec.commands.len);
+    try std.testing.expectEqual(SpecCommandType.set_initial_location, spec.commands[0].cmd_type);
+    try std.testing.expectEqual(@as(usize, 4), spec.commands[0].line_num);
+    try std.testing.expectEqual(SpecCommandType.seed_local_storage, spec.commands[2].cmd_type);
+    try std.testing.expectEqual(SpecCommandType.fill, spec.commands[3].cmd_type);
+    try std.testing.expectEqual(LocatorKind.label, spec.commands[3].locator.kind);
+    try std.testing.expectEqualStrings("a@example.com", spec.commands[3].expected_text.?);
+    try std.testing.expectEqual(SpecCommandType.real_click, spec.commands[4].cmd_type);
+    try std.testing.expectEqual(LocatorKind.role_name, spec.commands[4].locator.kind);
+    try std.testing.expectEqual(SpecCommandType.expect_metric_delta, spec.commands[6].cmd_type);
+}
+
+test "S-expression spec parser rejects executable setup and empty steps" {
+    try std.testing.expectError(
+        ParseError.InvalidFormat,
+        parseSExprTestSpec(std.testing.allocator,
+            \\(test "bad" (setup (click (text "No"))) (steps (mark-metrics)))
+        ),
+    );
+    try std.testing.expectError(
+        ParseError.InvalidFormat,
+        parseSExprTestSpec(std.testing.allocator,
+            \\(test "bad" (steps))
+        ),
+    );
+}
+
+test "all checked-in S-expression specs parse" {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const examples = try std.Io.Dir.cwd().openDir(io, "examples", .{ .iterate = true });
+    defer examples.close(io);
+    var walker = try examples.walk(std.testing.allocator);
+    defer walker.deinit();
+
+    var count: usize = 0;
+    while (try walker.next(io)) |entry| {
+        if (entry.kind != .file or !std.mem.endsWith(u8, entry.path, ".scm")) continue;
+        const path = try std.fs.path.join(std.testing.allocator, &.{ "examples", entry.path });
+        defer std.testing.allocator.free(path);
+        var parsed = parseTestSpecFile(std.testing.allocator, path) catch |err| {
+            std.debug.print("failed to parse {s}: {s}\n", .{ path, @errorName(err) });
+            return err;
+        };
+        parsed.deinit(std.testing.allocator);
+        count += 1;
+    }
+    try std.testing.expect(count > 100);
 }
 
 test "spec parser parses actions and assertions" {

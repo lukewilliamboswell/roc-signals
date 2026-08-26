@@ -1,0 +1,31 @@
+(test "Token editor — uppercase hex normalises through every binding"
+  (steps
+    ; Given the state established by earlier scenarios
+    (mark-metrics)
+    (fill (label "Text colour") "#777777")
+    (fill (label "Text colour") "#767676")
+    (fill (label "Accent colour") "#6f8ff0")
+    (fill (label "Accent colour") "#2563eb")
+    (fill (label "Text colour") "#77zz77")
+    (fill (label "Text colour") "#777")
+    (fill (label "Text colour") "#767676")
+    (fill (label "Spacing small") "0")
+    (fill (label "Spacing small") "")
+    (fill (label "Spacing small") "8")
+    (mark-metrics)
+    (fill (label "Corner radius medium") "12")
+    (fill (label "Corner radius medium") "abc")
+    (fill (label "Corner radius medium") "4")
+    (fill (label "Background colour") "white")
+    (fill (label "Font size medium") "-2")
+    (fill (label "Background colour") "#ffffff")
+    (fill (label "Font size medium") "20")
+
+    ; uppercase hex normalises through every binding
+    (fill (label "Text colour") "#767676")
+    (fill (label "Accent colour") "#2563EB")
+    (expect-text (test-id "preview-button") "color: #ffffff; background: #2563eb; padding: 8px; font-size: 20px")
+    (expect-text (test-id "ratio-button") "5.16:1")
+    (expect-text (test-id "stylesheet") ":root { --color-bg: #ffffff; --color-fg: #767676; --color-accent: #2563eb; --space-sm: 8px; --font-md: 20px; --radius-md: 4px; }")
+  )
+)

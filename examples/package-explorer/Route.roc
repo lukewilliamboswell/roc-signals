@@ -2,7 +2,7 @@
 ##
 ## Two real routes plus a not-found sink. Routing is app code: `Browser.location`
 ## is the single source of truth, and every in-app link publishes a navigation
-## intent that `app.roc` turns into exactly one `Browser.push_state`.
+## intent that `main.roc` turns into exactly one `Browser.push_state`.
 import pf.Browser
 
 Route := [Search, Package(Str), Unknown].{

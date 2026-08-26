@@ -8,7 +8,7 @@ Query :: [].{
 	## The recursive filter tree. A `Group` holds an ordered list of child nodes and
 	## combines them with `AND` or `OR`, optionally negated. A `Cond` is a leaf.
 	##
-	## Semantics locked by `spec.txt`:
+	## Semantics locked by the `specs/` suite:
 	## - a condition whose value is empty imposes no constraint and matches every row
 	##   (rendered as `ANY` in the query text);
 	## - an empty group imposes no constraint and matches every row in both `AND` and

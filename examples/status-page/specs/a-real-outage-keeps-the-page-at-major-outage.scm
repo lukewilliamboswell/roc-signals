@@ -1,0 +1,48 @@
+(test "Status page — A real outage keeps the page at major outage"
+  (steps
+    ; Given the state established by earlier scenarios
+    (resolve-task "check:api" "operational|99.98")
+    (resolve-task "check:web" "operational|99.99")
+    (resolve-task "check:database" "operational|99.90")
+    (resolve-task "check:notifications" "operational|99.95")
+    (resolve-task "incidents" "")
+    (tick-interval 5000)
+    (resolve-task "check:api" "degraded|97.40")
+    (resolve-task "check:web" "operational|99.99")
+    (resolve-task "check:database" "operational|99.90")
+    (resolve-task "check:notifications" "operational|99.95")
+    (resolve-task "incidents" "inc-42~major~Elevated API error rate~10:02@Investigating elevated 5xx responses^10:20@Identified a bad deploy^10:45@Monitoring after rollback")
+    (tick-interval 5000)
+    (resolve-task "check:api" "degraded|97.40")
+    (resolve-task "check:web" "degraded|98.10")
+    (resolve-task "check:database" "degraded|96.00")
+    (resolve-task "check:notifications" "operational|99.95")
+    (mark-metrics)
+    (resolve-task "incidents" "inc-42~major~Elevated API error rate~10:02@Investigating elevated 5xx responses^10:20@Identified a bad deploy^10:45@Monitoring after rollback#inc-51~minor~Delayed notification delivery~11:10@Investigating a backlog")
+
+    ; A real outage keeps the page at major outage
+
+    (tick-interval 5000)
+    (resolve-task "check:api" "operational|99.98")
+    (resolve-task "check:web" "operational|99.99")
+    (resolve-task "check:database" "outage|82.50")
+    (resolve-task "check:notifications" "operational|99.95")
+    (expect-text (test-id "service-database-status") "Database status: outage")
+    (expect-text (test-id "overall-rollup") "Major outage")
+    (expect-text (test-id "status-breakdown") "Operational 3, degraded 0, outage 1, awaiting 0")
+    (expect-text (test-id "overall-uptime") "Overall uptime: 95.60%")
+    ; Editing one incident (new severity plus a new update) creates only that
+    ; incident's new update row; the sibling incident is reused untouched.
+    (mark-metrics)
+    (resolve-task "incidents" "inc-42~major~Elevated API error rate~10:02@Investigating elevated 5xx responses^10:20@Identified a bad deploy^10:45@Monitoring after rollback#inc-51~major~Delayed notification delivery~11:10@Investigating a backlog^11:40@Identified queue saturation")
+    (expect-metric-delta rows_created 1)
+    (expect-metric-delta rows_reused 3)
+    (expect-metric-delta rows_removed 0)
+    (expect-text (test-id "incident-inc-51-severity") "inc-51 severity: Major")
+    (expect-text (test-id "incident-inc-51-latest") "inc-51 latest: 11:40 - Identified queue saturation")
+    (expect-text (test-id "update-inc-51#2") "inc-51 update 2 - 11:40 - Identified queue saturation")
+    (expect-text (test-id "incident-inc-42-severity") "inc-42 severity: Major")
+    (expect-text (test-id "incident-inc-42-latest") "inc-42 latest: 10:45 - Monitoring after rollback")
+    (expect-text (test-id "update-inc-42#3") "inc-42 update 3 - 10:45 - Monitoring after rollback")
+  )
+)

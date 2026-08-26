@@ -1,0 +1,56 @@
+(test "Dependency scheduler — reordering the list keeps every row scope"
+  (steps
+    ; Given the state established by earlier scenarios
+    (mark-metrics)
+    (click (role button :name "Delay Write spec"))
+    (click (role button :name "Pull in Write spec"))
+    (mark-metrics)
+    (click (role button :name "Delay Write docs"))
+    (click (role button :name "Pull in Write docs"))
+    (mark-metrics)
+    (click (role button :name "Pull in Write docs"))
+    (select-option (label "Focus task") "ui")
+    (click (role button :name "Extend Build UI"))
+    (click (role button :name "Extend Build UI"))
+    (click (role button :name "Shorten Build UI"))
+    (click (role button :name "Shorten Build UI"))
+    (click (role button :name "Extend Launch"))
+    (click (role button :name "Shorten Launch"))
+    (click (role button :name "Shorten Launch"))
+    (mark-metrics)
+    (check (label "QA pass after Write docs"))
+    (uncheck (label "QA pass after Write docs"))
+    (mark-metrics)
+    (check (label "Write spec after Launch"))
+    (uncheck (label "Write spec after Launch"))
+    (mark-metrics)
+    (check (label "Only critical path"))
+    (mark-metrics)
+    (uncheck (label "Only critical path"))
+    (select-option (label "Focus task") "launch")
+    (select-option (label "Focus task") "docs")
+
+    ; reordering the list keeps every row scope
+    ;
+    ; Sorting by slack moves Write docs and Build UI to the top. Keyed rows follow
+    ; their key, so nothing is created, destroyed, or re-rendered: the only patches
+    ; are the DOM moves plus the one filter line.
+
+    (mark-metrics)
+    (check (label "Sort by slack"))
+    (expect-metric-delta rows_created 0)
+    (expect-metric-delta rows_reused 7)
+    (expect-metric-delta rows_removed 0)
+    (expect-metric-delta scopes_created 0)
+    (expect-metric-delta scopes_disposed 0)
+    (expect-metric-delta create_element 0)
+    (expect-metric-delta set_text 1)
+    (expect-metric-delta-at-most patches_emitted 8)
+    (expect-text (test-id "filter-state") "Showing all tasks, 7 rows, most slack first")
+    (expect-text (test-id "line-docs") "Write docs: day 2 to 3, 1 day, after spec, slack 7 days")
+    (expect-text (test-id "line-launch") "Launch: day 10 to 10, milestone, after qa, critical")
+    (expect-checked (label "Integrate after Build API") true)
+    (uncheck (label "Sort by slack"))
+    (expect-text (test-id "filter-state") "Showing all tasks, 7 rows, plan order")
+  )
+)

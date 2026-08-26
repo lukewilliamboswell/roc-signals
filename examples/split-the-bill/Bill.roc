@@ -2,7 +2,7 @@
 ##
 ## Everything in this module is a plain function of the two source collections
 ## the app owns: the list of people and the list of expenses. Balances, splits,
-## and the settlement plan are *computed* here and never stored, so `app.roc` can
+## and the settlement plan are *computed* here and never stored, so `main.roc` can
 ## expose them as derived signals instead of fields it has to keep in sync.
 ##
 ## Money is integer minor units (cents) everywhere. The only text/number boundary

@@ -1,0 +1,43 @@
+(test "Dependency scheduler — adding and removing a dependency edge"
+  (steps
+    ; Given the state established by earlier scenarios
+    (mark-metrics)
+    (click (role button :name "Delay Write spec"))
+    (click (role button :name "Pull in Write spec"))
+    (mark-metrics)
+    (click (role button :name "Delay Write docs"))
+    (click (role button :name "Pull in Write docs"))
+    (mark-metrics)
+    (click (role button :name "Pull in Write docs"))
+    (select-option (label "Focus task") "ui")
+    (click (role button :name "Extend Build UI"))
+    (click (role button :name "Extend Build UI"))
+    (click (role button :name "Shorten Build UI"))
+    (click (role button :name "Shorten Build UI"))
+    (click (role button :name "Extend Launch"))
+    (click (role button :name "Shorten Launch"))
+    (click (role button :name "Shorten Launch"))
+
+    ; adding and removing a dependency edge
+
+    ; Adding one edge changes the schedule of exactly two tasks (QA pass gains a
+    ; prerequisite, Write docs loses slack), so exactly two lines are rewritten.
+    (mark-metrics)
+    (check (label "QA pass after Write docs"))
+    (expect-metric-delta set_text 2)
+    (expect-metric-delta set_checked 1)
+    (expect-metric-delta rows_created 0)
+    (expect-metric-delta rows_reused 7)
+    (expect-metric-delta rows_removed 0)
+    (expect-metric-delta scopes_disposed 0)
+    (expect-metric-delta-at-most patches_emitted 40)
+    (expect-checked (label "QA pass after Write docs") true)
+    (expect-text (test-id "line-qa") "QA pass: day 8 to 10, 2 days, after sync+docs, critical")
+    (expect-text (test-id "line-docs") "Write docs: day 2 to 3, 1 day, after spec, slack 5 days")
+    (expect-text (test-id "project-summary") "Project finishes on day 10 across 7 tasks")
+    (uncheck (label "QA pass after Write docs"))
+    (expect-checked (label "QA pass after Write docs") false)
+    (expect-text (test-id "line-qa") "QA pass: day 8 to 10, 2 days, after sync, critical")
+    (expect-text (test-id "line-docs") "Write docs: day 2 to 3, 1 day, after spec, slack 7 days")
+  )
+)

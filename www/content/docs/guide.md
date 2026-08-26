@@ -433,7 +433,7 @@ lists, blockquotes, code spans, emphasis, and links to `Elem.Element` trees, wit
 all user-controlled copy placed in `Html.text` or `Html.text_s` leaves. Do not
 inject raw HTML into the browser runtime.
 
-`examples/markdown-editor/app.roc` shows the current pattern: the editor stores a
+`examples/markdown-editor/main.roc` shows the current pattern: the editor stores a
 small markdown subset, the app parses that text into block/inline records, and
 the preview renders those records with `Ui.each_str`, `Elem.Element`, and
 signal-backed text. Link safety is an app concern; the example allowlists
@@ -568,7 +568,7 @@ The [Package Explorer](@/examples/package-explorer.md) follows this shape with:
 - `DashboardRemote.roc` for per-section remote state,
 - `DashboardView.roc` for display records,
 - `DashboardTheme.roc` for class mapping,
-- `app.roc` for signal wiring and page composition.
+- `main.roc` for signal wiring and page composition.
 
 ## Effects, HTTP, timers, and cleanup
 
@@ -620,7 +620,7 @@ CORS denial, DNS failure, blocked request, or other rejected `fetch` is reported
 to Roc as `Http.Network(message)`. Runtime timeouts report `Http.Timeout`, and
 scope disposal or replacement of an in-flight task reports `Http.Canceled`.
 
-For example, `examples/package-explorer/app.roc` creates a task per panel,
+For example, `examples/package-explorer/main.roc` creates a task per panel,
 starts it on mount, starts it again on interval ticks, and folds the task status
 into dashboard state, including nested service-detail JSON used by its routed
 drill-down view. It also derives route state from `Browser.location()`, intercepts
@@ -629,9 +629,9 @@ navigation links with the static `prevent_default` event policy, and emits
 It derives document titles from the active route and emits `Browser.set_title`
 through `Ui.on_change_initial` so deep links set the first browser title. The
 same app uses `Browser.visibility()` to pause polling while the tab is hidden.
-`examples/field-notes/app.roc` uses `Browser.online()` to hold captured notes in
+`examples/field-notes/main.roc` uses `Browser.online()` to hold captured notes in
 an outbox while offline and drain them when the browser returns online.
-`examples/pomodoro-tracker/app.roc` declares localStorage text keys at mount, folds
+`examples/pomodoro-tracker/main.roc` declares localStorage text keys at mount, folds
 `Browser.StorageText` into draft state, writes edits through storage commands,
 and removes all draft keys when the user clears the saved order.
 
@@ -745,49 +745,58 @@ examples be tested without a browser while still describing user-facing behavior
 Use native specs for app semantics and work budgets; keep browser-only details,
 such as exact IME event ordering or CSS layout, in browser contract tests.
 
-A spec looks like:
+A spec is one data-only S-expression test case. Files use the `*.scm` suffix so
+editors recognize the Scheme syntax, and live in an app's `specs/`
+directory:
 
-```txt
-expect_visible role:heading name:"Team Checkout"
-expect_attr role:region name:"Cart" data-panel "cart"
-fill label:"Email" "team@example.com"
-expect_value label:"Email" "team@example.com"
-check label:"Accept terms"
-expect_checked label:"Accept terms" true
-click role:button name:"Place order"
-expect_text text:"Receipt sent: 1" "Receipt sent: 1"
+```lisp
+(test "checkout succeeds"
+  (steps
+    (expect-visible (role heading :name "Team Checkout"))
+    (expect-attr (role region :name "Cart") data-panel "cart")
+    (fill (label "Email") "team@example.com")
+    (expect-value (label "Email") "team@example.com")
+    (check (label "Accept terms"))
+    (expect-checked (label "Accept terms") true)
+    (click (role button :name "Place order"))
+    (expect-text (text "Receipt sent: 1") "Receipt sent: 1")))
 ```
+
+The directory driver discovers cases recursively, sorts their relative paths,
+and runs each in a fresh process. It supports bounded parallelism, glob filters,
+deterministic `CURRENT/TOTAL` sharding, per-case timeouts, and fail-fast
+scheduling through `scripts/test.py` or the standalone `scripts/spec_driver.py`.
 
 Locators are semantic:
 
 | Locator | Example |
 | --- | --- |
-| Role and accessible name | `role:button name:"Send invite"` |
-| Associated label | `label:"Invite email"` |
-| Exact visible text | `text:"Submit status: idle"` |
-| Test id | `test_id:"chart"` |
+| Role and accessible name | `(role button :name "Send invite")` |
+| Associated label | `(label "Invite email")` |
+| Exact visible text | `(text "Submit status: idle")` |
+| Test id | `(test-id "chart")` |
 
 Action commands model the event surface the native host supports:
 
-```txt
-click role:button name:"Save"
-real_click role:button name:"Open note"
-pointer_down role:region name:"Release card"
-pointer_up role:region name:"Release card"
-pointer_enter role:region name:"Drop target"
-pointer_leave role:region name:"Drop target"
-key_down label:"Command search" "Enter" false
-focus label:"Message"
-fill label:"Message" "draft"
-composition_start label:"Message"
-composition_end label:"Message"
-blur label:"Message"
-change label:"Plan" "growth"
-select_option label:"Plan" "enterprise"
-submit role:form name:"Signup form"
-check label:"Accept terms"
-uncheck label:"Accept terms"
-custom_event test_id:"traffic-chart" "chart-select" "point-1"
+```lisp
+(click (role button :name "Save"))
+(real-click (role button :name "Open note"))
+(pointer-down (role region :name "Release card"))
+(pointer-up (role region :name "Release card"))
+(pointer-enter (role region :name "Drop target"))
+(pointer-leave (role region :name "Drop target"))
+(key-down (label "Command search") "Enter" false)
+(focus (label "Message"))
+(fill (label "Message") "draft")
+(composition-start (label "Message"))
+(composition-end (label "Message"))
+(blur (label "Message"))
+(change (label "Plan") "growth")
+(select-option (label "Plan") "enterprise")
+(submit (role form :name "Signup form"))
+(check (label "Accept terms"))
+(uncheck (label "Accept terms"))
+(custom-event (test-id "traffic-chart") "chart-select" "point-1")
 ```
 
 `custom_event` sends its final string argument as `event.detail`; handlers built
@@ -806,41 +815,41 @@ binding from `Html.on_submit_prevent_default`.
 
 Assertions cover visible semantics and host state:
 
-```txt
-expect_visible role:heading name:"Form Validation Pattern"
-expect_absent role:region name:"Queue Widget"
-expect_text text:"Submit status: sending" "Submit status: sending"
-expect_value label:"Invite email" "ops@example.com"
-expect_attr label:"Invite email" aria-invalid ""
-expect_no_attr label:"Invite email" aria-invalid
-expect_checked label:"Accept terms" true
-expect_disabled role:button name:"Send invite" true
-expect_updates label:"Message" 2
+```lisp
+(expect-visible (role heading :name "Form Validation Pattern"))
+(expect-absent (role region :name "Queue Widget"))
+(expect-text (text "Submit status: sending") "Submit status: sending")
+(expect-value (label "Invite email") "ops@example.com")
+(expect-attr (label "Invite email") aria-invalid "")
+(expect-no-attr (label "Invite email") aria-invalid)
+(expect-checked (label "Accept terms") true)
+(expect-disabled (role button :name "Send invite") true)
+(expect-updates (label "Message") 2)
 ```
 
 Task, interval, and cleanup commands make async workflows deterministic:
 
-```txt
-expect_pending_task "form-submit" 1
-resolve_task "form-submit" "queued"
-reject_task "lookup" "offline"
-resolve_stale_task "lookup" "late"
-expect_canceled_task "lookup" 1
-tick_interval 1000
-tick_interval_if_active 1000
-expect_interval 1000 1
-expect_cleanup "live search panel cleanup" 1
+```lisp
+(expect-pending-task "form-submit" 1)
+(resolve-task "form-submit" "queued")
+(reject-task "lookup" "offline")
+(resolve-stale-task "lookup" "late")
+(expect-canceled-task "lookup" 1)
+(tick-interval 1000)
+(tick-interval-if-active 1000)
+(expect-interval 1000 1)
+(expect-cleanup "live search panel cleanup" 1)
 ```
 
 Metric assertions let specs lock scaling budgets around a specific action. Call
-`mark_metrics` before the action, then assert exact or maximum deltas:
+`mark-metrics` before the action, then assert exact or maximum deltas:
 
-```txt
-mark_metrics
-click role:button name:"Reverse rows"
-expect_metric_delta rows_reused 4
-expect_metric_delta_at_most stream_nodes_scanned 4096
-expect_metric_delta signal_record_table_rebuilt 0
+```lisp
+(mark-metrics)
+(click (role button :name "Reverse rows"))
+(expect-metric-delta rows_reused 4)
+(expect-metric-delta-at-most stream_nodes_scanned 4096)
+(expect-metric-delta signal_record_table_rebuilt 0)
 ```
 
 Pick the metric that answers the question you are asking:
@@ -952,7 +961,7 @@ For contributor setup and release-site details, see
 
 - Browse the [Examples](@/examples/_index.md) page and open each example's
   **Source** and **Spec** links.
-- Read `examples/package-explorer/app.roc` for routing and independent async
+- Read `examples/package-explorer/main.roc` for routing and independent async
   panels, and `examples/conduit/` for the largest end-to-end application.
 - Read `www/static/signals.mjs` if you want to understand the JavaScript runtime
   that applies Wasm command buffers to the DOM.

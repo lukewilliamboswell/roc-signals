@@ -1,0 +1,21 @@
+(test "Log viewer — One line: the single-item boundary."
+  (steps
+    ; One line: the single-item boundary.
+    (tick-interval 1000)
+    (expect-visible (role region :name "Log lines"))
+    (expect-absent (role region :name "Log empty"))
+    (expect-visible (role region :name "Log line-1"))
+    (expect-text (test-id "text-line-1") "[1] info request handled")
+    (expect-text (test-id "match-line-1") "line-1 match: no")
+    (expect-text (test-id "line-count") "Showing 1 of 1 lines")
+    (expect-text (test-id "tail-line") "Tail: [1] info request handled")
+    (tick-interval 1000)
+    (tick-interval 1000)
+    (tick-interval 1000)
+    (expect-text (test-id "line-count") "Showing 4 of 4 lines")
+    (expect-text (test-id "text-line-2") "[2] warn disk pressure rising")
+    (expect-text (test-id "text-line-3") "[3] error upstream timeout")
+    (expect-text (test-id "text-line-4") "[4] debug config reloaded")
+    (expect-text (test-id "tail-line") "Tail: [4] debug config reloaded")
+  )
+)

@@ -1,0 +1,25 @@
+(test "Textarea control"
+  (steps
+    ; Textarea control scenario
+
+    (expect-visible (role heading :name "Textarea Control"))
+    (expect-attr (role region :name "Textarea Control") data-fixture "textarea-control")
+    (expect-value (label "Message") "")
+    (expect-attr (label "Message") id "message-body")
+    (expect-attr (label "Message") placeholder "Write a note")
+    (expect-text (text "Canonical body: ") "Canonical body: ")
+    (expect-text (text "Focus events: 0") "Focus events: 0")
+    (expect-text (text "Blur events: 0") "Blur events: 0")
+    (focus (label "Message"))
+    (expect-text (text "Focus events: 1") "Focus events: 1")
+    (fill (label "Message") "draft note")
+    (expect-value (label "Message") "draft note")
+    (expect-text (text "Canonical body: saved:draft note") "Canonical body: saved:draft note")
+    (fill (label "Message") "second draft")
+    (expect-value (label "Message") "second draft")
+    (expect-text (text "Canonical body: saved:second draft") "Canonical body: saved:second draft")
+    (blur (label "Message"))
+    (expect-value (label "Message") "saved:second draft")
+    (expect-text (text "Blur events: 1") "Blur events: 1")
+  )
+)

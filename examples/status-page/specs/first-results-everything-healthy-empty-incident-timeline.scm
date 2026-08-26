@@ -1,0 +1,26 @@
+(test "Status page — First results: everything healthy, empty incident timeline"
+  (steps
+    ; First results: everything healthy, empty incident timeline
+
+    (resolve-task "check:api" "operational|99.98")
+    (expect-text (test-id "service-api-status") "API status: operational")
+    (expect-text (test-id "service-api-uptime") "API uptime: 99.98%")
+    (expect-text (test-id "status-breakdown") "Operational 1, degraded 0, outage 0, awaiting 3")
+    (expect-text (test-id "overall-rollup") "All systems operational")
+    (resolve-task "check:web" "operational|99.99")
+    (resolve-task "check:database" "operational|99.90")
+    (resolve-task "check:notifications" "operational|99.95")
+    (resolve-task "incidents" "")
+    (expect-pending-task "check:api" 0)
+    (expect-pending-task "incidents" 0)
+    (expect-text (test-id "overall-rollup") "All systems operational")
+    (expect-text (test-id "status-breakdown") "Operational 4, degraded 0, outage 0, awaiting 0")
+    (expect-text (test-id "overall-uptime") "Overall uptime: 99.95%")
+    (expect-text (test-id "service-web-uptime") "Web app uptime: 99.99%")
+    (expect-text (test-id "service-database-uptime") "Database uptime: 99.90%")
+    (expect-text (test-id "service-notifications-uptime") "Notifications uptime: 99.95%")
+    (expect-text (test-id "incident-feed-status") "Incident feed: updated")
+    (expect-text (test-id "open-incident-count") "Open incidents: 0")
+    (expect-visible (text "No incidents reported"))
+  )
+)

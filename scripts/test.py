@@ -19,6 +19,8 @@ import tomllib
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
+import spec_driver
+
 
 ROOT = Path(__file__).resolve().parent.parent
 TEST_OUT = ROOT / ".test-out"
@@ -36,7 +38,7 @@ class Example:
     slug: str
     title: str
     source: Path
-    spec: Path | None
+    specs: Path | None
     public: bool
     wasm: bool
     native: bool
@@ -54,13 +56,13 @@ def load_examples() -> tuple[Example, ...]:
 
     examples = []
     for raw in manifest.get("examples", []):
-        spec = raw.get("spec")
+        specs = raw.get("specs")
         examples.append(
             Example(
                 slug=str(raw["slug"]),
                 title=str(raw.get("title", raw["slug"])),
                 source=Path(str(raw["source"])),
-                spec=Path(str(spec)) if spec else None,
+                specs=Path(str(specs)) if specs else None,
                 public=bool(raw.get("public", True)),
                 wasm=bool(raw.get("wasm", True)),
                 native=bool(raw.get("native", True)),
@@ -117,6 +119,23 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Keep .test-out after the run.",
     )
+    parser.add_argument(
+        "--jobs",
+        type=spec_driver.parse_jobs,
+        default=None,
+        metavar="auto|N",
+        help="Concurrent native spec workers. Defaults to half the logical CPUs.",
+    )
+    parser.add_argument(
+        "--spec-filter",
+        action="append",
+        default=[],
+        metavar="GLOB",
+        help="Run native specs whose suite-relative path matches GLOB. Repeatable.",
+    )
+    parser.add_argument("--shard", type=spec_driver.parse_shard, metavar="CURRENT/TOTAL")
+    parser.add_argument("--fail-fast", action="store_true", help="Stop scheduling specs after the first failure.")
+    parser.add_argument("--spec-timeout", type=float, default=30.0, metavar="SECONDS")
     return parser.parse_args()
 
 
@@ -199,6 +218,7 @@ def build_hosts() -> None:
 
 def run_zig_suite() -> None:
     run(["zig", "build", "test"])
+    run([sys.executable, "-m", "unittest", "scripts/test_spec_driver.py"])
 
 
 def run_browser_suite() -> None:
@@ -323,6 +343,11 @@ def run_native_specs(
     source_root: Path = ROOT,
     bin_dir: Path = TEST_OUT / "bin",
     allow_release_platform_url: bool = False,
+    jobs: int | None = None,
+    spec_filters: tuple[str, ...] = (),
+    shard: tuple[int, int] | None = None,
+    fail_fast: bool = False,
+    spec_timeout: float = 30.0,
 ) -> None:
     ensure_sources_do_not_use_release_platform_urls(
         examples,
@@ -337,13 +362,28 @@ def run_native_specs(
         if reason := should_skip_native_example(target, example):
             print(f"\nSkipping native spec for {example.slug} on {target}: {reason}.")
             continue
-        if example.spec is None:
-            raise SystemExit(f"{example.slug} is native but has no spec")
+        if example.specs is None:
+            raise SystemExit(f"{example.slug} is native but has no specs directory")
         source = source_root / example.source
-        spec = source_root / example.spec
+        specs = source_root / example.specs
         exe = native_exe_path(bin_dir, example.exe_name)
         run([roc_bin, "build", f"--target={target}", "--opt=dev", *native_cache_args(target), f"--output={exe}", source])
-        run([exe, spec])
+        print(f"\n==> {exe} {specs}", flush=True)
+        try:
+            results = spec_driver.run_suite(
+                exe,
+                specs,
+                jobs=jobs,
+                patterns=spec_filters,
+                shard=shard,
+                fail_fast=fail_fast,
+                timeout_seconds=spec_timeout,
+            )
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+        spec_driver.print_summary(results)
+        if not all(result.passed for result in results):
+            raise SystemExit(f"native specs failed for {example.slug}")
 
 
 def run_benchmarks(roc_bin: str, examples: tuple[Example, ...], *, source_root: Path = ROOT) -> None:
@@ -361,25 +401,26 @@ def run_benchmarks(roc_bin: str, examples: tuple[Example, ...], *, source_root: 
         if reason := should_skip_native_example(target, example):
             print(f"\nSkipping benchmark for {example.slug} on {target}: {reason}.")
             continue
-        if example.spec is None:
-            raise SystemExit(f"{example.slug} is benchmarked but has no spec")
+        if example.specs is None:
+            raise SystemExit(f"{example.slug} is benchmarked but has no specs directory")
         source = source_root / example.source
-        spec = source_root / example.spec
+        specs = source_root / example.specs
         exe = native_exe_path(bin_dir, f"{example.exe_name}-bench")
         run([roc_bin, "build", f"--target={target}", "--opt=speed", *native_cache_args(target), f"--output={exe}", source])
-        run(
-            [
-                exe,
-                "--bench-app",
-                "--bench-name",
-                example.exe_name,
-                "--bench-iterations",
-                "20",
-                "--bench-samples",
-                "1",
-                spec,
-            ]
-        )
+        for case in spec_driver.discover_specs(specs):
+            run(
+                [
+                    exe,
+                    "--bench-app",
+                    "--bench-name",
+                    f"{example.exe_name}/{case.id}",
+                    "--bench-iterations",
+                    "20",
+                    "--bench-samples",
+                    "1",
+                    case.path,
+                ]
+            )
 
 
 def rewrite_platform_headers(root: Path, platform_ref: str) -> None:
@@ -399,10 +440,28 @@ def rewrite_examples_for_platform(platform_ref: str, dest_root: Path) -> None:
     rewrite_platform_headers(examples_dest, platform_ref)
 
 
-def run_local_native_specs(roc_bin: str, examples: tuple[Example, ...]) -> None:
+def run_local_native_specs(
+    roc_bin: str,
+    examples: tuple[Example, ...],
+    *,
+    jobs: int | None,
+    spec_filters: tuple[str, ...],
+    shard: tuple[int, int] | None,
+    fail_fast: bool,
+    spec_timeout: float,
+) -> None:
     source_root = TEST_OUT / "native-source"
     rewrite_examples_for_platform(str((ROOT / "platform" / "main.roc").resolve()), source_root)
-    run_native_specs(roc_bin, examples, source_root=source_root)
+    run_native_specs(
+        roc_bin,
+        examples,
+        source_root=source_root,
+        jobs=jobs,
+        spec_filters=spec_filters,
+        shard=shard,
+        fail_fast=fail_fast,
+        spec_timeout=spec_timeout,
+    )
 
 
 def run_local_roc_checks(roc_bin: str, examples: tuple[Example, ...]) -> None:
@@ -465,6 +524,11 @@ def run_bundle_specs(
     bundle_url: str,
     *,
     allow_release_platform_url: bool,
+    jobs: int | None,
+    spec_filters: tuple[str, ...],
+    shard: tuple[int, int] | None,
+    fail_fast: bool,
+    spec_timeout: float,
 ) -> None:
     ensure_release_platform_url_allowed(bundle_url, allow_release_platform_url=allow_release_platform_url)
     print(f"\nTesting bundled platform: {bundle_url}")
@@ -476,13 +540,23 @@ def run_bundle_specs(
         source_root=source_root,
         bin_dir=TEST_OUT / "bundle-bin",
         allow_release_platform_url=allow_release_platform_url,
+        jobs=jobs,
+        spec_filters=spec_filters,
+        shard=shard,
+        fail_fast=fail_fast,
+        spec_timeout=spec_timeout,
     )
 
 
-def run_bundle_file_suite(roc_bin: str, examples: tuple[Example, ...], bundle: Path) -> None:
+def run_bundle_file_suite(
+    roc_bin: str,
+    examples: tuple[Example, ...],
+    bundle: Path,
+    **spec_options: object,
+) -> None:
     with BundleServer(bundle.resolve().parent) as server:
         bundle_url = f"http://127.0.0.1:{server.port}/{bundle.name}"
-        run_bundle_specs(roc_bin, examples, bundle_url, allow_release_platform_url=False)
+        run_bundle_specs(roc_bin, examples, bundle_url, allow_release_platform_url=False, **spec_options)
 
 
 def run_bundle_suite(
@@ -491,13 +565,31 @@ def run_bundle_suite(
     bundle_ref: str | None,
     *,
     allow_release_platform_url: bool,
+    jobs: int | None,
+    spec_filters: tuple[str, ...],
+    shard: tuple[int, int] | None,
+    fail_fast: bool,
+    spec_timeout: float,
 ) -> None:
+    spec_options = {
+        "jobs": jobs,
+        "spec_filters": spec_filters,
+        "shard": shard,
+        "fail_fast": fail_fast,
+        "spec_timeout": spec_timeout,
+    }
     if bundle_ref is None:
-        run_bundle_file_suite(roc_bin, examples, bundle_platform(roc_bin))
+        run_bundle_file_suite(roc_bin, examples, bundle_platform(roc_bin), **spec_options)
         return
 
     if is_url_ref(bundle_ref):
-        run_bundle_specs(roc_bin, examples, bundle_ref, allow_release_platform_url=allow_release_platform_url)
+        run_bundle_specs(
+            roc_bin,
+            examples,
+            bundle_ref,
+            allow_release_platform_url=allow_release_platform_url,
+            **spec_options,
+        )
         return
 
     bundle = Path(bundle_ref)
@@ -505,10 +597,12 @@ def run_bundle_suite(
         bundle = ROOT / bundle
     if not bundle.is_file():
         raise SystemExit(f"bundle file not found: {bundle_ref}")
-    run_bundle_file_suite(roc_bin, examples, bundle)
+    run_bundle_file_suite(roc_bin, examples, bundle, **spec_options)
 
 
 def validate_args_before_build(args: argparse.Namespace, suites: set[str]) -> None:
+    if args.spec_timeout <= 0:
+        raise SystemExit("--spec-timeout must be greater than zero")
     if "bundle" not in suites:
         return
     if not should_run_hosted(args.bundle):
@@ -544,7 +638,15 @@ def main() -> int:
 
     if "native" in suites:
         if should_run_hosted(args.native):
-            run_local_native_specs(roc_bin, examples)
+            run_local_native_specs(
+                roc_bin,
+                examples,
+                jobs=args.jobs,
+                spec_filters=tuple(args.spec_filter),
+                shard=args.shard,
+                fail_fast=args.fail_fast,
+                spec_timeout=args.spec_timeout,
+            )
         else:
             print("\nSkipping native specs: platform manifest exposes macOS and Linux musl native targets only.")
 
@@ -555,6 +657,11 @@ def main() -> int:
                 examples,
                 args.bundle_ref,
                 allow_release_platform_url=args.allow_release_platform_url,
+                jobs=args.jobs,
+                spec_filters=tuple(args.spec_filter),
+                shard=args.shard,
+                fail_fast=args.fail_fast,
+                spec_timeout=args.spec_timeout,
             )
         else:
             print("\nSkipping bundle executable tests: platform manifest exposes macOS and Linux musl native targets only.")

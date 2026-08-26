@@ -1,0 +1,50 @@
+(test "Query builder — every operator"
+  (steps
+    ; Given the state established by earlier scenarios
+    (fill (label "Value n2") "")
+    (fill (label "Value n2") "Platform")
+
+    ; every operator
+    ; eq is the initial operator and is asserted above.
+    (select-option (label "Operator n2") "ne")
+    (expect-text (test-id "query-text") "(dept != 'Platform')")
+    (expect-text (test-id "match-summary") "Matching rows: 3 of 5")
+    (expect-absent (test-id "match-Ada"))
+    (expect-visible (test-id "match-Cy"))
+    (expect-visible (test-id "match-Dee"))
+    (expect-visible (test-id "match-Eli"))
+    (select-option (label "Operator n2") "contains")
+    (fill (label "Value n2") "esi")
+    (expect-text (test-id "query-text") "(dept ~ 'esi')")
+    (expect-text (test-id "match-summary") "Matching rows: 2 of 5")
+    (expect-visible (test-id "match-Cy"))
+    (expect-visible (test-id "match-Eli"))
+    ; > and < on a text field match nothing.
+    (select-option (label "Field n2") "name")
+    (select-option (label "Operator n2") "gt")
+    (fill (label "Value n2") "3")
+    (expect-text (test-id "query-text") "(name > '3')")
+    (expect-text (test-id "match-summary") "Matching rows: 0 of 5")
+    (expect-absent (test-id "match-Ada"))
+    (select-option (label "Field n2") "level")
+    (expect-text (test-id "query-text") "(level > '3')")
+    (expect-text (test-id "match-summary") "Matching rows: 2 of 5")
+    (expect-visible (test-id "match-Ada"))
+    (expect-visible (test-id "match-Cy"))
+    (select-option (label "Operator n2") "lt")
+    (expect-text (test-id "query-text") "(level < '3')")
+    (expect-text (test-id "match-summary") "Matching rows: 2 of 5")
+    (expect-visible (test-id "match-Bo"))
+    (expect-visible (test-id "match-Dee"))
+    ; A non-numeric value on a numeric comparison matches nothing.
+    (fill (label "Value n2") "three")
+    (expect-text (test-id "query-text") "(level < 'three')")
+    (expect-text (test-id "match-summary") "Matching rows: 0 of 5")
+    ; Back to the starting condition.
+    (select-option (label "Field n2") "dept")
+    (select-option (label "Operator n2") "eq")
+    (fill (label "Value n2") "Platform")
+    (expect-text (test-id "query-text") "(dept = 'Platform')")
+    (expect-text (test-id "match-summary") "Matching rows: 2 of 5")
+  )
+)

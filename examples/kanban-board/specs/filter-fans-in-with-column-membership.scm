@@ -1,0 +1,46 @@
+(test "Kanban board — filter fans in with column membership"
+  (steps
+    ; Given the state established by earlier scenarios
+    (mark-metrics)
+    (click (role button :name "Move right: Draft onboarding copy"))
+    (mark-metrics)
+    (click (role button :name "Move up: Draft onboarding copy"))
+    (mark-metrics)
+    (click (role button :name "Move down: Draft onboarding copy"))
+    (mark-metrics)
+    (click (role button :name "Flag: Ship search filters"))
+
+    ; filter fans in with column membership
+    (mark-metrics)
+    (fill (label "Filter cards") "Design")
+    (expect-metric-delta rows_removed 4)
+    (expect-metric-delta rows_created 0)
+    ; the Backlog list value is unchanged, so that keyed list never re-runs at all
+    (expect-metric-delta rows_reused 0)
+    (expect-visible (role region :name "Design login screen"))
+    (expect-absent (role region :name "Ship search filters"))
+    (expect-absent (role region :name "Draft onboarding copy"))
+    (expect-absent (role region :name "Audit billing events"))
+    (expect-absent (role region :name "Rotate API keys"))
+    (expect-text (test-id "board-matching") "Matching cards: 1")
+    (expect-text (test-id "board-total") "Board total: 5 cards")
+    (expect-text (test-id "matching-backlog") "Matching: 1")
+    (expect-text (test-id "matching-progress") "Matching: 0")
+    (expect-text (test-id "empty-progress") "No cards shown")
+    (expect-text (test-id "empty-review") "No cards shown")
+    (expect-text (test-id "empty-done") "No cards shown")
+    ; counts and WIP stay membership-based, not filter-based
+    (expect-text (test-id "count-progress") "Count: 2")
+    (expect-text (test-id "wip-progress") "WIP: 2 of 1 - over limit")
+    (expect-text (test-id "board-over") "Columns over WIP: 1")
+    (mark-metrics)
+    (fill (label "Filter cards") "")
+    (expect-metric-delta rows_created 4)
+    (expect-metric-delta rows_removed 0)
+    (expect-metric-delta rows_reused 0)
+    (expect-visible (role region :name "Ship search filters"))
+    (expect-text (test-id "board-matching") "Matching cards: 5")
+    ; card data lives in board state, so it survives the row being rebuilt
+    (expect-text (test-id "card-flags-Ship search filters") "Flags: 1")
+  )
+)

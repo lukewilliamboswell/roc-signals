@@ -1,0 +1,51 @@
+(test "Split the bill — adding a person re splits every expense"
+  (steps
+    ; Given the state established by earlier scenarios
+    (mark-metrics)
+    (fill (label "Dinner amount") "90.00")
+    (fill (label "Dinner amount") "0.10")
+    (fill (label "Dinner amount") "12.345")
+    (fill (label "Dinner amount") "-5")
+    (fill (label "Dinner amount") "")
+    (fill (label "Dinner amount") "0")
+    (fill (label "Dinner amount") "62.50")
+    (uncheck (label "Cabin includes Cy"))
+    (check (label "Cabin includes Cy"))
+    (uncheck (label "Taxi includes Bo"))
+    (uncheck (label "Taxi includes Cy"))
+    (check (label "Taxi includes Bo"))
+    (check (label "Taxi includes Cy"))
+
+    ; adding a person re splits every expense
+
+    (fill (label "New person name") "Ana")
+    (expect-text (test-id "person-draft-note") "Person form: Ana is already on the trip")
+    (expect-disabled (role button :name "Add person") true)
+    (fill (label "New person name") " Di ")
+    (expect-text (test-id "person-draft-note") "Person form: ready to add Di")
+    (expect-disabled (role button :name "Add person") false)
+    (mark-metrics)
+    (click (role button :name "Add person"))
+    ; Adding a person creates exactly six rows: the person's balance card, the new
+    ; payer option, one participation checkbox in each of the three expenses, and
+    ; the extra settlement transfer. Every existing row is reused.
+    (expect-metric-delta rows_created 6)
+    (expect-metric-delta rows_reused 20)
+    (expect-metric-delta rows_removed 0)
+    (expect-value (label "New person name") "")
+    (expect-visible (role region :name "Di"))
+    (expect-text (test-id "trip-people-count") "People on the trip: 4")
+    (expect-text (test-id "expense-Cabin-shares") "Shares: Ana $75.00, Bo $75.00, Cy $75.00, Di $75.00")
+    (expect-text (test-id "expense-Dinner-shares") "Shares: Ana $15.63, Bo $15.63, Cy $15.62, Di $15.62")
+    (expect-text (test-id "expense-Taxi-shares") "Shares: Bo $8.00, Cy $8.00, Di $8.00")
+    (expect-checked (label "Taxi includes Di") true)
+    (expect-text (test-id "person-Di-totals") "Totals: paid $0.00, owes $98.62")
+    (expect-text (test-id "person-Di-net") "Net: owes $98.62")
+    (expect-text (test-id "person-Di-removal") "Removal: allowed")
+    (expect-text (test-id "trip-balances-check") "Balances check: $0.00")
+    (expect-text (test-id "settlement-summary") "Settlement: 3 transfers")
+    (expect-text (test-id "transfer-Di>Ana") "Di owes Ana $98.62")
+    (expect-text (test-id "transfer-Cy>Ana") "Cy owes Ana $74.62")
+    (expect-text (test-id "transfer-Bo>Ana") "Bo owes Ana $36.13")
+  )
+)
