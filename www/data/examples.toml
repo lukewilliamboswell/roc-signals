@@ -1,4 +1,15 @@
 [[examples]]
+slug = "onboarding-wizard"
+title = "Onboarding Wizard"
+description = "A four-step signup flow with per-step validation, plan-dependent options, a saved draft, and an async submit."
+source = "examples/onboarding-wizard/app.roc"
+spec = "examples/onboarding-wizard/spec.txt"
+public = true
+wasm = true
+native = true
+bench = true
+
+[[examples]]
 slug = "availability-picker"
 title = "Availability Picker"
 description = "A weekly availability grid where one timezone signal converts every slot, with pairwise conflict detection over busy commitments."
@@ -208,105 +219,6 @@ native = true
 bench = true
 
 [[examples]]
-slug = "service-ops-center"
-title = "Service Ops Center"
-description = "A routed service operations dashboard with async refresh, Browser.location-backed service routes, visibility-aware polling, nested JSON drill-downs, and a deterministic browser backend."
-source = "examples/service-ops-center/app.roc"
-spec = "examples/service-ops-center/spec.txt"
-public = true
-wasm = true
-native = true
-bench = true
-
-[[examples]]
-slug = "team-checkout"
-title = "Team Checkout"
-description = "A persisted team purchasing flow with retained cart quantities, delivery details, review/receipt state, localStorage restore, and clear-saved removals."
-source = "examples/team-checkout/app.roc"
-spec = "examples/team-checkout/spec.txt"
-public = true
-wasm = true
-native = true
-bench = true
-
-[[examples]]
-slug = "command-palette"
-title = "Command Palette"
-description = "A keyboard-friendly command surface that captures text input, shortcut metadata, link attributes, and submit events."
-source = "examples/command-palette/app.roc"
-spec = "examples/command-palette/spec.txt"
-public = true
-wasm = true
-native = true
-bench = true
-
-[[examples]]
-slug = "team-signup"
-title = "Team Signup"
-description = "A realistic signup form with validation, terms acceptance, a read-only reference field, and submission state."
-source = "examples/team-signup/app.roc"
-spec = "examples/team-signup/spec.txt"
-public = true
-wasm = true
-native = true
-bench = true
-
-[[examples]]
-slug = "api-request-console"
-title = "API Request Console"
-description = "A deterministic API console that sends POST requests and displays success, non-2xx, and failure responses."
-source = "examples/api-request-console/app.roc"
-spec = "examples/api-request-console/spec.txt"
-public = true
-wasm = true
-native = true
-bench = true
-
-[[examples]]
-slug = "release-planner"
-title = "Release Planner"
-description = "A release planning board with drag reorder, priority filtering, reviewer input, and markdown card notes rendered as ordinary Elem structure."
-source = "examples/release-planner/app.roc"
-spec = "examples/release-planner/spec.txt"
-public = true
-wasm = true
-native = true
-bench = true
-
-[[examples]]
-slug = "deployment-queue"
-title = "Deployment Queue"
-description = "A deployment queue with priority reorder, hotfix insertion, filtering, pause/resume, and row-local checks."
-source = "examples/deployment-queue/app.roc"
-spec = "examples/deployment-queue/spec.txt"
-public = true
-wasm = true
-native = true
-bench = true
-
-[[examples]]
-slug = "workspace-widgets"
-title = "Workspace Widgets"
-description = "A workspace dashboard where independent widgets keep local state through reorder, reset, and hide/show."
-source = "examples/workspace-widgets/app.roc"
-spec = "examples/workspace-widgets/spec.txt"
-public = true
-wasm = true
-native = true
-bench = true
-
-[[examples]]
-slug = "live-search"
-title = "Live Search"
-description = "A live search panel with loading, results, failures, freshness ticks, online/offline task gating, cancellation, and cleanup."
-source = "examples/live-search/app.roc"
-spec = "examples/live-search/spec.txt"
-public = true
-wasm = true
-native = true
-bench = true
-
-[[examples]]
 slug = "conduit"
 title = "Conduit"
 description = "RealWorld (Conduit) demo: hash-routed feeds, sessions, profiles, markdown articles, comments, favorites, follows, and server-confirmed write paths."
@@ -316,17 +228,6 @@ public = true
 wasm = true
 native = true
 bench = false
-
-[[examples]]
-slug = "json-config-editor"
-title = "JSON Config Editor"
-description = "An interactive deployment-config editor using Roc's builtin Json decoder for nested records, lists, camelCase fields, optional values, and useful parse errors."
-source = "examples/json-config-editor/app.roc"
-spec = "examples/json-config-editor/spec.txt"
-public = true
-wasm = true
-native = true
-bench = true
 
 [[examples]]
 slug = "each-duplicate-key"
@@ -633,6 +534,28 @@ title = "When Each Dispose"
 description = "Internal fixture: Ui.when whose true arm is Ui.each_str must dispose its rows."
 source = "examples/_fixtures/when-each-dispose/app.roc"
 spec = "examples/_fixtures/when-each-dispose/spec.txt"
+public = false
+wasm = false
+native = true
+bench = false
+
+[[examples]]
+slug = "keyboard-events"
+title = "Keyboard Events"
+description = "Internal fixture: on_key_down and KeyPayload."
+source = "examples/_fixtures/keyboard-events/app.roc"
+spec = "examples/_fixtures/keyboard-events/spec.txt"
+public = false
+wasm = false
+native = true
+bench = false
+
+[[examples]]
+slug = "custom-events"
+title = "Custom Events"
+description = "Internal fixture: on_custom and State.on_detail."
+source = "examples/_fixtures/custom-events/app.roc"
+spec = "examples/_fixtures/custom-events/spec.txt"
 public = false
 wasm = false
 native = true

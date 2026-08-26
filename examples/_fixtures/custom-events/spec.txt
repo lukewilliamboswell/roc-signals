@@ -1,0 +1,20 @@
+# Custom DOM event coverage. Preserved from the retired service-ops-center
+# example, which was the only place Html.on_custom and State.on_detail were
+# exercised.
+
+expect_visible role:region name:"Custom Events"
+expect_text test_id:"hover" "Hover: none"
+expect_text test_id:"selected" "Selected: none"
+
+custom_event test_id:"chart" "chart-hover" "-2m | 1,490 rpm"
+expect_text test_id:"hover" "Hover: -2m | 1,490 rpm"
+expect_text test_id:"selected" "Selected: none"
+
+custom_event test_id:"chart" "chart-select" "now | 1,558 rpm"
+expect_text test_id:"selected" "Selected: now | 1,558 rpm"
+expect_text test_id:"hover" "Hover: -2m | 1,490 rpm"
+
+# An empty detail clears the value rather than being ignored.
+custom_event test_id:"chart" "chart-hover" ""
+expect_text test_id:"hover" "Hover: none"
+expect_text test_id:"selected" "Selected: now | 1,558 rpm"

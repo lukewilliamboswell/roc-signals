@@ -27,12 +27,8 @@ PLATFORM_HEADER_RE = re.compile(r'platform\s+"[^"]+"')
 PLATFORM_HEADER_CAPTURE_RE = re.compile(r'platform\s+"([^"]+)"')
 URL_SCHEMES = {"http", "https"}
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
-MUSL_NATIVE_SKIPS = {
-    "live-search": "Roc compiler segfaults intermittently while building this example for Linux musl",
-}
-LINUX_WASM_SKIPS = {
-    "live-search": "Roc compiler segfaults while building this example for wasm32 on Linux",
-}
+MUSL_NATIVE_SKIPS: dict[str, str] = {}
+LINUX_WASM_SKIPS: dict[str, str] = {}
 
 
 @dataclass(frozen=True)
@@ -260,10 +256,6 @@ def build_wasm_apps(roc_bin: str, examples: tuple[Example, ...]) -> None:
             mount_cmd = ["node", "scripts/browser/mount_wasm_example.mjs", output, example.slug]
             if example.expect_mount_error is not None:
                 mount_cmd.extend(["--expect-error", example.expect_mount_error])
-            if example.slug == "service-ops-center":
-                mount_cmd.append("--exercise-service-ops-refresh")
-            if example.slug == "team-checkout":
-                mount_cmd.append("--exercise-team-checkout-plans")
             if example.slug == "location-source":
                 mount_cmd.append("--exercise-location-source")
             if example.slug == "location-navigation":
@@ -272,8 +264,6 @@ def build_wasm_apps(roc_bin: str, examples: tuple[Example, ...]) -> None:
                 mount_cmd.append("--exercise-location-canonical-branch")
             if example.slug == "storage-commands":
                 mount_cmd.append("--exercise-storage-commands")
-            if example.slug == "live-search":
-                mount_cmd.append("--exercise-live-search-online")
             run(mount_cmd)
 
 

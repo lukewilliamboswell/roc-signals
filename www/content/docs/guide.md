@@ -433,7 +433,7 @@ lists, blockquotes, code spans, emphasis, and links to `Elem.Element` trees, wit
 all user-controlled copy placed in `Html.text` or `Html.text_s` leaves. Do not
 inject raw HTML into the browser runtime.
 
-`examples/release-planner/app.roc` shows the current pattern: card notes store a
+`examples/markdown-editor/app.roc` shows the current pattern: the editor stores a
 small markdown subset, the app parses that text into block/inline records, and
 the preview renders those records with `Ui.each_str`, `Elem.Element`, and
 signal-backed text. Link safety is an app concern; the example allowlists
@@ -516,8 +516,8 @@ render_line = |label, _line| {
 }
 ```
 
-The [Team Checkout](@/examples/team-checkout.md) uses this pattern for cart
-line quantities.
+The [Data Grid](@/examples/data-grid.md) uses this pattern for inline cell
+editing across a windowed row list.
 
 ## Components and larger apps
 
@@ -562,7 +562,7 @@ A useful convention is: pass one signal of one props record across a component
 boundary, then derive leaf fields inside the component. Avoid long parameter
 lists of field signals unless there is a specific reason.
 
-The [Service Ops Center](@/examples/service-ops-center.md) follows this shape with:
+The [Package Explorer](@/examples/package-explorer.md) follows this shape with:
 
 - `Dashboard.roc` for domain parsing/state,
 - `DashboardRemote.roc` for per-section remote state,
@@ -620,7 +620,7 @@ CORS denial, DNS failure, blocked request, or other rejected `fetch` is reported
 to Roc as `Http.Network(message)`. Runtime timeouts report `Http.Timeout`, and
 scope disposal or replacement of an in-flight task reports `Http.Canceled`.
 
-For example, `examples/service-ops-center/app.roc` creates a browser HTTP text task,
+For example, `examples/package-explorer/app.roc` creates a task per panel,
 starts it on mount, starts it again on interval ticks, and folds the task status
 into dashboard state, including nested service-detail JSON used by its routed
 drill-down view. It also derives route state from `Browser.location()`, intercepts
@@ -629,9 +629,9 @@ navigation links with the static `prevent_default` event policy, and emits
 It derives document titles from the active route and emits `Browser.set_title`
 through `Ui.on_change_initial` so deep links set the first browser title. The
 same app uses `Browser.visibility()` to pause polling while the tab is hidden.
-`examples/live-search/app.roc` uses `Browser.online()` to suppress task starts
-while offline and replay the current query when the browser returns online.
-`examples/team-checkout/app.roc` declares localStorage text keys at mount, folds
+`examples/field-notes/app.roc` uses `Browser.online()` to hold captured notes in
+an outbox while offline and drain them when the browser returns online.
+`examples/pomodoro-tracker/app.roc` declares localStorage text keys at mount, folds
 `Browser.StorageText` into draft state, writes edits through storage commands,
 and removes all draft keys when the user clears the saved order.
 
@@ -911,7 +911,7 @@ under `dist/examples/<slug>/source/`, and starts a local static server.
 Useful variants:
 
 ```sh
-python3 scripts/serve.py --example service-ops-center --port 9001
+python3 scripts/serve.py --example package-explorer --port 9001
 python3 scripts/serve.py --app-opt dev
 python3 scripts/serve.py --no-server
 ```
@@ -952,8 +952,8 @@ For contributor setup and release-site details, see
 
 - Browse the [Examples](@/examples/_index.md) page and open each example's
   **Source** and **Spec** links.
-- Read `examples/service-ops-center/app.roc` for the most complete current browser
-  implementation.
+- Read `examples/package-explorer/app.roc` for routing and independent async
+  panels, and `examples/conduit/` for the largest end-to-end application.
 - Read `www/static/signals.mjs` if you want to understand the JavaScript runtime
   that applies Wasm command buffers to the DOM.
 - Read `design.md` in the repository root for deeper architecture notes.

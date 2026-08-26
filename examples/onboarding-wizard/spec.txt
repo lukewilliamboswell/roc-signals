@@ -1,0 +1,232 @@
+# Onboarding Wizard
+#
+# The app mounts with a part-finished draft in local storage, so the "initial
+# state" this spec asserts first is the *restored* one: step 4 (Review), with
+# the organisation step still missing a data region. The empty/initial state is
+# asserted at the end, after "Start over" clears every handle and removes the
+# saved draft.
+
+seed_local_storage "onboarding:draft" "ana@example.com|Ana Diaz|Northwind|growth|||member|review"
+
+# --- 1. restored initial state ------------------------------------------------
+
+expect_visible role:heading name:"Onboarding Wizard"
+expect_visible role:region name:"Progress"
+expect_text test_id:"progress-label" "Step 4 of 4 — Review"
+expect_text test_id:"progress-complete" "2 of 4 steps complete"
+expect_attr role:region name:"Progress" data-complete "2"
+expect_text test_id:"summary-account" "Account: ana@example.com / Ana Diaz (complete)"
+expect_text test_id:"summary-organisation" "Organisation: Northwind on Growth in not chosen (incomplete)"
+expect_text test_id:"summary-invites" "Team invites: 0 invite(s) as Member (complete)"
+expect_text test_id:"summary-review" "Review: Finish the earlier steps first (incomplete)"
+
+expect_visible role:region name:"Review step"
+expect_text test_id:"review-account" "Account: ana@example.com / Ana Diaz (complete)"
+expect_text test_id:"review-organisation" "Organisation: Northwind on Growth in not chosen (incomplete)"
+expect_text test_id:"review-invites" "Team invites: 0 invite(s) as Member (complete)"
+expect_text test_id:"submit-status" "Not submitted yet."
+expect_disabled role:button name:"Create workspace" true
+expect_text test_id:"nav-status" "Go back and finish the incomplete steps."
+expect_disabled role:button name:"Back" false
+
+# Only the active step is mounted.
+expect_absent label:"Work email"
+expect_absent label:"Organisation name"
+expect_absent label:"Invite emails"
+
+# --- 2. jump backwards to a step, answers preserved ---------------------------
+
+click role:button name:"Go to Organisation"
+expect_text test_id:"progress-label" "Step 2 of 4 — Organisation"
+expect_visible role:region name:"Organisation step"
+expect_absent role:region name:"Review step"
+expect_value label:"Organisation name" "Northwind"
+expect_value label:"Plan" "growth"
+expect_checked label:"United States" false
+expect_checked label:"European Union" false
+expect_text test_id:"org-name-error" "Organisation name looks good."
+expect_text test_id:"org-region-error" "Choose a data region."
+expect_text test_id:"nav-status" "Complete this step to continue."
+
+# --- 3. an invalid step blocks navigation -------------------------------------
+
+click role:button name:"Next step"
+expect_visible role:region name:"Organisation step"
+expect_text test_id:"progress-label" "Step 2 of 4 — Organisation"
+
+# --- 4. editing step 2 does not re-render step 1's fields ---------------------
+#
+# The progress list is one Ui.each_str over a Signal.combine of four
+# per-step summary signals. Editing the organisation name recomputes only
+# org_summary and the combined list; the account row keeps its scope, its row
+# is reused, and its text sink never fires.
+
+expect_updates test_id:"summary-account" 2
+mark_metrics
+fill label:"Organisation name" "Northwind Labs"
+expect_text test_id:"summary-organisation" "Organisation: Northwind Labs on Growth in not chosen (incomplete)"
+expect_text test_id:"summary-account" "Account: ana@example.com / Ana Diaz (complete)"
+expect_updates test_id:"summary-account" 2
+expect_metric_delta rows_created 0
+expect_metric_delta rows_removed 0
+expect_metric_delta rows_reused 4
+expect_metric_delta scopes_created 0
+expect_metric_delta scopes_disposed 0
+expect_metric_delta derived_calls_into_roc 21
+expect_metric_delta_at_most patches_emitted 6
+
+# --- 5. fix the step and move on ----------------------------------------------
+
+real_click label:"European Union"
+expect_checked label:"European Union" true
+expect_text test_id:"org-region-error" "Data stored in European Union."
+expect_text test_id:"nav-status" "Ready for the next step."
+expect_text test_id:"progress-complete" "4 of 4 steps complete"
+
+click role:button name:"Next step"
+expect_text test_id:"progress-label" "Step 3 of 4 — Team invites"
+expect_visible role:region name:"Team invites step"
+
+# --- 6. a later field whose options depend on an earlier answer ---------------
+#
+# Growth includes Member and Admin, but not Billing admin.
+
+expect_visible label:"Member"
+expect_visible label:"Admin"
+expect_absent label:"Billing admin"
+expect_checked label:"Member" true
+expect_text test_id:"invite-role-note" "Growth plans include Member and Admin."
+expect_text test_id:"invite-emails-error" "No invites yet. You can add teammates later."
+
+real_click label:"Admin"
+expect_checked label:"Admin" true
+expect_checked label:"Member" false
+expect_text test_id:"summary-invites" "Team invites: 0 invite(s) as Admin (complete)"
+
+# --- 7. per-field validation on the invite list --------------------------------
+
+fill label:"Invite emails" "bo@example.com, not-an-email"
+expect_text test_id:"invite-emails-error" "Not a valid email: not-an-email"
+click role:button name:"Next step"
+expect_visible role:region name:"Team invites step"
+expect_text test_id:"progress-label" "Step 3 of 4 — Team invites"
+expect_text test_id:"summary-invites" "Team invites: 2 invite(s) as Admin (incomplete)"
+
+fill label:"Invite emails" "bo@example.com, cy@example.com"
+expect_text test_id:"invite-emails-error" "2 invite(s) ready."
+expect_text test_id:"summary-invites" "Team invites: 2 invite(s) as Admin (complete)"
+
+# --- 8. changing the earlier answer RESETS the dependent field -----------------
+#
+# Documented decision: dropping to Starter does not merely hide the Admin
+# option, it writes Member back into the role handle. Returning to Growth does
+# not restore Admin.
+
+click role:button name:"Go to Organisation"
+select_option label:"Plan" "starter"
+expect_value label:"Plan" "starter"
+expect_text test_id:"summary-invites" "Team invites: 2 invite(s) as Member (complete)"
+expect_text test_id:"summary-organisation" "Organisation: Northwind Labs on Starter in European Union (complete)"
+
+click role:button name:"Next step"
+expect_visible role:region name:"Team invites step"
+expect_absent label:"Admin"
+expect_absent label:"Billing admin"
+expect_checked label:"Member" true
+expect_text test_id:"invite-role-note" "Starter plans have one role. Upgrade to invite admins."
+expect_value label:"Invite emails" "bo@example.com, cy@example.com"
+
+# (plan stays on Starter: the role reset is permanent)
+
+# --- 9. forward again, answers preserved --------------------------------------
+
+click role:button name:"Next step"
+expect_text test_id:"progress-label" "Step 4 of 4 — Review"
+expect_text test_id:"progress-complete" "4 of 4 steps complete"
+expect_attr role:region name:"Progress" data-complete "4"
+expect_text test_id:"review-account" "Account: ana@example.com / Ana Diaz (complete)"
+expect_text test_id:"review-organisation" "Organisation: Northwind Labs on Starter in European Union (complete)"
+expect_text test_id:"review-invites" "Team invites: 2 invite(s) as Member (complete)"
+expect_disabled role:button name:"Create workspace" false
+expect_text test_id:"nav-status" "Everything checks out. Create the workspace."
+
+expect_local_storage "onboarding:draft" "ana@example.com|Ana Diaz|Northwind Labs|starter|eu|bo@example.com, cy@example.com|member|review"
+
+# --- 10. submitting: pending, supersede, stale, success, failure ---------------
+
+click role:button name:"Create workspace"
+expect_pending_task "onboarding-submit" 1
+expect_text test_id:"submit-status" "Creating workspace…"
+
+# Submitting again supersedes the in-flight request.
+click role:button name:"Create workspace"
+expect_pending_task "onboarding-submit" 1
+expect_canceled_task "onboarding-submit" 1
+resolve_stale_task "onboarding-submit" "stale-workspace"
+expect_text test_id:"submit-status" "Creating workspace…"
+
+resolve_task "onboarding-submit" "acme-42"
+expect_text test_id:"submit-status" "Workspace ready: acme-42"
+
+click role:button name:"Create workspace"
+expect_text test_id:"submit-status" "Creating workspace…"
+reject_task "onboarding-submit" "region unavailable"
+expect_text test_id:"submit-status" "Submit failed: region unavailable"
+
+# --- 11. back to step 1: editing one field leaves the other alone --------------
+
+click role:button name:"Go to Account"
+expect_text test_id:"progress-label" "Step 1 of 4 — Account"
+expect_value label:"Work email" "ana@example.com"
+expect_value label:"Full name" "Ana Diaz"
+expect_disabled role:button name:"Back" true
+
+# Both fields live in one Account handle, but each input is its own signal
+# sink: editing one leaves the other's value untouched.
+expect_updates label:"Work email" 1
+mark_metrics
+fill label:"Full name" "Ana Diaz-Ruiz"
+expect_updates label:"Work email" 1
+expect_metric_delta scopes_created 0
+expect_metric_delta rows_reused 4
+expect_metric_delta rows_created 0
+expect_text test_id:"account-name-error" "Full name looks good."
+expect_text test_id:"account-email-error" "Work email looks good."
+
+# Invalid input: per-field message, aria-invalid, and blocked navigation.
+fill label:"Work email" "ana@"
+expect_text test_id:"account-email-error" "Work email must look like name@example.com."
+expect_attr label:"Work email" aria-invalid ""
+click role:button name:"Next step"
+expect_visible role:region name:"Account step"
+expect_text test_id:"progress-label" "Step 1 of 4 — Account"
+
+fill label:"Work email" ""
+expect_text test_id:"account-email-error" "Work email is required."
+fill label:"Work email" "ana@example.com"
+expect_no_attr label:"Work email" aria-invalid
+click role:button name:"Next step"
+expect_text test_id:"progress-label" "Step 2 of 4 — Organisation"
+
+# --- 12. start over: the empty initial state ----------------------------------
+
+click role:button name:"Start over"
+expect_text test_id:"progress-label" "Step 1 of 4 — Account"
+expect_text test_id:"progress-complete" "1 of 4 steps complete"
+expect_attr role:region name:"Progress" data-complete "1"
+expect_text test_id:"summary-account" "Account: No email yet (incomplete)"
+expect_text test_id:"summary-organisation" "Organisation: No organisation yet (incomplete)"
+expect_text test_id:"summary-invites" "Team invites: 0 invite(s) as Member (complete)"
+expect_text test_id:"summary-review" "Review: Finish the earlier steps first (incomplete)"
+expect_visible role:region name:"Account step"
+expect_value label:"Work email" ""
+expect_value label:"Full name" ""
+expect_text test_id:"account-email-error" "Work email is required."
+expect_text test_id:"account-name-error" "Full name is required."
+expect_text test_id:"nav-status" "Complete this step to continue."
+expect_disabled role:button name:"Back" true
+expect_no_local_storage "onboarding:draft"
+
+# A single character is enough to start saving again.
+fill label:"Full name" "B"
+expect_local_storage "onboarding:draft" "|B||starter|||member|account"

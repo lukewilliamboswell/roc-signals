@@ -181,7 +181,7 @@ mount an artifact with telemetry summarization:
 
 ```sh
 python3 scripts/test.py wasm --keep-output
-node scripts/browser/mount_wasm_example.mjs .test-out/wasm/service-ops-center.wasm service-ops-center --telemetry-summary
+node scripts/browser/mount_wasm_example.mjs .test-out/wasm/package-explorer.wasm package-explorer --telemetry-summary
 ```
 
 Repeat the mount command for each public wasm app when refreshing a public-app
@@ -211,7 +211,7 @@ builds do not depend on a published release.
 Useful variants:
 
 ```sh
-python3 scripts/serve.py --example service-ops-center --port 9001
+python3 scripts/serve.py --example package-explorer --port 9001
 python3 scripts/serve.py --app-opt dev
 python3 scripts/serve.py --host-opt Debug
 python3 scripts/serve.py --platform-url https://example.com/platform/release.tar.zst
@@ -392,7 +392,7 @@ hosts; use `python3 scripts/test.py bench --native always` to force the focused
 bench gate. A built app binary also accepts benchmark flags directly:
 
 ```sh
-.test-out/bench-bin/signals-service-ops-center-bench --bench-app --bench-name signals-service-ops-center --bench-iterations 100 --bench-samples 3 examples/service-ops-center/spec.txt
+.test-out/bench-bin/signals-data-grid-bench --bench-app --bench-name signals-data-grid --bench-iterations 100 --bench-samples 3 examples/data-grid/spec.txt
 ```
 
 The host initializes a fresh app per iteration, applies the initial command

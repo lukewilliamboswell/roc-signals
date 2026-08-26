@@ -1,0 +1,18 @@
+# Keyboard event coverage. Preserved from the retired command-palette example,
+# which was the only place Html.on_key_down and Ui.KeyPayload were exercised.
+
+expect_visible role:region name:"Keyboard"
+expect_text test_id:"last-key" "No key yet"
+expect_text test_id:"key-count" "Keys seen: 0"
+
+key_down label:"Key capture" "K" true
+expect_text test_id:"last-key" "Key: K with Shift"
+expect_text test_id:"key-count" "Keys seen: 1"
+
+key_down label:"Key capture" "Enter" false
+expect_text test_id:"last-key" "Key: Enter"
+expect_text test_id:"key-count" "Keys seen: 2"
+
+key_down label:"Key capture" "Escape" false
+expect_text test_id:"last-key" "Key: Escape"
+expect_text test_id:"key-count" "Keys seen: 3"
