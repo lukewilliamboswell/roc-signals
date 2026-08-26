@@ -186,8 +186,7 @@ parse = Json.parser_camel()
 `Json.parser_camel()` maps `camelCase` JSON fields to `snake_case` Roc fields.
 `Json.to_str(value)` encodes. See
 [Conduit's `Api.roc`](https://github.com/lukewilliamboswell/roc-signals/blob/main/examples/conduit/Api.roc)
-for the full treatment, and the
-[JSON Config Editor](@/examples/json-config-editor.md) example for a focused one.
+for the full treatment.
 
 ### What the browser does
 

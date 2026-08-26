@@ -108,26 +108,17 @@ sync with the URL, because they are all functions of the same signal.
 
 ## Layering
 
-The consistent rule across both large examples:
+Conduit follows a simple layering rule:
 
 > Domain types know nothing about presentation. Presentation types know nothing
 > about CSS. CSS lives in one place.
 
-[Service Ops Center](@/examples/service-ops-center.md) makes this explicit with
-one module per layer:
-
-| Module | Lines | Responsibility |
-| --- | --- | --- |
-| `Dashboard.roc` | 541 | domain types, parsing, state transitions |
-| `DashboardRemote.roc` | 84 | per-section remote/loading state |
-| `DashboardView.roc` | 601 | domain values → display records (`Tone`, strings) |
-| `DashboardTheme.roc` | 242 | display enums → class names |
-| `main.roc` | 904 | signal wiring and page composition |
-
-The payoff is that each layer is separately testable and separately readable. A
-`Tone` of `Warning` is a domain fact; whether that means `text-amber-700` is a
-theme decision. Conduit collapses view and theme into `Styles.roc` because it is
-a single visual design.
+`Api.roc` owns transport types, JSON codecs, and request construction without
+knowing how anything is rendered. Page modules own state transitions and turn
+domain values into elements. `Styles.roc` owns shared class names without
+knowing which state selected them. The payoff is that changing an endpoint does
+not require editing presentation code, while changing a shared visual treatment
+does not disturb request or state logic.
 
 ### Container and presentational
 
