@@ -1136,16 +1136,16 @@ pub const NodeEventBinding = if (@sizeOf(usize) == 4) extern struct {
     kind: NodeFixedEventKind,
     msg: NodeMsg,
     name: RocStr,
-    policy: __AnonStruct_b2fd8769c5bbb26a,
     delivery: NodeEventDelivery,
+    policy: __AnonStruct_b2fd8769c5bbb26a,
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
         value.kind.decref(roc_host);
         value.msg.decref(roc_host);
         value.name.decref(roc_host);
-        value.policy.decref(roc_host);
         value.delivery.decref(roc_host);
+        value.policy.decref(roc_host);
     }
 
     /// Increment Roc-owned fields.
@@ -1154,23 +1154,23 @@ pub const NodeEventBinding = if (@sizeOf(usize) == 4) extern struct {
         value.kind.incref(amount);
         value.msg.incref(amount);
         value.name.incref(amount);
-        value.policy.incref(amount);
         value.delivery.incref(amount);
+        value.policy.incref(amount);
     }
 } else extern struct {
     kind: NodeFixedEventKind,
     msg: NodeMsg,
     name: RocStr,
-    policy: __AnonStruct_b2fd8769c5bbb26a,
     delivery: NodeEventDelivery,
+    policy: __AnonStruct_b2fd8769c5bbb26a,
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
         value.kind.decref(roc_host);
         value.msg.decref(roc_host);
         value.name.decref(roc_host);
-        value.policy.decref(roc_host);
         value.delivery.decref(roc_host);
+        value.policy.decref(roc_host);
     }
 
     /// Increment Roc-owned fields.
@@ -1179,8 +1179,8 @@ pub const NodeEventBinding = if (@sizeOf(usize) == 4) extern struct {
         value.kind.incref(amount);
         value.msg.incref(amount);
         value.name.incref(amount);
-        value.policy.incref(amount);
         value.delivery.incref(amount);
+        value.policy.incref(amount);
     }
 };
 

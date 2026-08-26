@@ -104,6 +104,8 @@ Ui := [].{
 		on_unit : State(a), (a -> a) -> Node.Msg
 		on_unit = |st, f| {
 			current_cap = st.cap
+			## Keep the host's unit extraction payload inhabited across the erased ABI.
+			payload_cap : Capability({})
 			payload_cap = Capability.new()
 			wrapped : HostValue, HostValue -> HostValue
 			wrapped = |current_hv, _payload_hv| {
