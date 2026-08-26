@@ -317,11 +317,11 @@ Markdown := {}.{
 		if key.ends_with(":strong") {
 			Elem.Element({ tag: "strong", attrs: [], children: [Html.text_s(text)] })
 		} else if key.ends_with(":code") {
-			Elem.Element({ tag: "code", attrs: [Html.class_attr("rounded bg-zinc-100 px-1 font-mono")], children: [Html.text_s(text)] })
+			Elem.Element({ tag: "code", attrs: [], children: [Html.text_s(text)] })
 		} else if key.ends_with(":image") {
-			Elem.Element({ tag: "img", attrs: [Html.attr_s("src", href), Html.attr_s("alt", text)], children: [] })
+			Elem.Element({ tag: "img", attrs: [Html.attr_s("src", href), Html.attr_s("alt", text), Html.class_attr("max-w-full rounded-md")], children: [] })
 		} else if key.ends_with(":link") {
-			Elem.Element({ tag: "a", attrs: [Html.attr_s("href", href)], children: [Html.text_s(text)] })
+			Elem.Element({ tag: "a", attrs: [Html.attr_s("href", href), Html.class_attr("font-medium text-emerald-700 underline underline-offset-2")], children: [Html.text_s(text)] })
 		} else {
 			Html.text_s(text)
 		}
@@ -363,7 +363,7 @@ Markdown := {}.{
 					Ui.when(
 						empty_children,
 						|| Html.text(""),
-						|| Elem.Element({ tag: "ul", attrs: [Html.class_attr("list-disc pl-5")], children: [Ui.each_str(children_signal, |child| child.key, render_child)] }),
+						|| Elem.Element({ tag: "ul", attrs: [], children: [Ui.each_str(children_signal, |child| child.key, render_child)] }),
 					),
 				],
 			},
@@ -386,6 +386,16 @@ Markdown := {}.{
 			"h6"
 		}
 
+	## `prose-signals` styles h1-h3; levels four to six are rarer and get an
+	## explicit, progressively quieter treatment so the hierarchy stays visible.
+	heading_class : Str -> Str
+	heading_class = |key|
+		if key.ends_with(":heading1") or key.ends_with(":heading2") or key.ends_with(":heading3") {
+			""
+		} else {
+			"mt-6 text-base font-semibold text-zinc-950"
+		}
+
 	is_heading_key : Str -> Bool
 	is_heading_key = |key|
 		key.ends_with(":heading1")
@@ -401,14 +411,14 @@ Markdown := {}.{
 		text = block.map(|value| value.text)
 
 		if is_heading_key(key) {
-			Elem.Element({ tag: heading_tag(key), attrs: [Html.class_attr("font-semibold")], children: [inline_view(text)] })
+			Elem.Element({ tag: heading_tag(key), attrs: [Html.class_attr(heading_class(key))], children: [inline_view(text)] })
 		} else if key.ends_with(":quote") {
-			Elem.Element({ tag: "blockquote", attrs: [Html.class_attr("border-l-2 border-zinc-300 pl-3")], children: [inline_view(text)] })
+			Elem.Element({ tag: "blockquote", attrs: [], children: [inline_view(text)] })
 		} else if key.ends_with(":codeblock") {
 			Elem.Element(
 				{
 					tag: "pre",
-					attrs: [Html.class_attr("overflow-x-auto rounded bg-zinc-900 p-3 font-mono text-sm text-zinc-100")],
+					attrs: [],
 					children: [Elem.Element({ tag: "code", attrs: [], children: [Html.text_s(text)] })],
 				},
 			)
@@ -416,7 +426,7 @@ Markdown := {}.{
 			items : Signal.Signal(List(Markdown.ListItem))
 			items = block.map(|value| value.items)
 
-			Elem.Element({ tag: "ul", attrs: [Html.class_attr("list-disc pl-5")], children: [Ui.each_str(items, |item| item.key, render_item)] })
+			Elem.Element({ tag: "ul", attrs: [], children: [Ui.each_str(items, |item| item.key, render_item)] })
 		} else {
 			Elem.Element({ tag: "p", attrs: [], children: [inline_view(text)] })
 		}
@@ -428,7 +438,7 @@ Markdown := {}.{
 	view_blocks : Signal.Signal(List(Markdown.Block)) -> Elem
 	view_blocks = |blocks|
 		Html.div(
-			[Html.attr("data-panel", "preview-body"), Html.class_attr("grid gap-3")],
+			[Html.attr("data-panel", "preview-body"), Html.class_attr("prose-signals")],
 			[Ui.each_str(blocks, |block| block.key, render_block)],
 		)
 }

@@ -68,6 +68,7 @@ render_outline_row = |key, row| {
 							Html.test_id(key),
 							Html.attr_s("href", href),
 							Html.attr_s("data-level", level_text),
+							Html.class_attr("block rounded px-2 py-1 text-sm text-zinc-700 transition hover:bg-zinc-100 hover:text-emerald-700"),
 						],
 						children: [Html.text_s(label)],
 					},
@@ -77,31 +78,72 @@ render_outline_row = |key, row| {
 	)
 }
 
+## A labelled group of document buttons. The editor has nine commands, which is
+## too many for one undifferentiated row, so they are split by what they do.
+button_group : Str, List(Elem) -> Elem
+button_group = |caption, buttons|
+	Html.div_c(
+		"grid gap-2",
+		[
+			Html.paragraph_c(caption, "hint"),
+			Html.div_c("toolbar", buttons),
+		],
+	)
+
+## One metric tile. The test id sits on the value, not on a sentence, so the
+## spec asserts the number the reader actually sees.
+stat_tile : Str, Str, Signal.Signal(Str) -> Elem
+stat_tile = |caption, id, value|
+	Html.div_c(
+		"stat",
+		[
+			Html.paragraph_c(caption, "stat-label"),
+			Html.paragraph_s_attrs(value, [Html.test_id(id), Html.class_attr("stat-value numeric")]),
+		],
+	)
+
 editor_panel : Ui.State(Str), Signal.Signal(Str) -> Elem
 editor_panel = |source, source_signal|
 	Html.section(
 		"Editor",
-		[Html.attr("data-panel", "editor"), Html.class_attr("grid gap-3 rounded border border-zinc-200 p-4")],
+		[Html.attr("data-panel", "editor"), Html.class_attr("panel flex flex-col")],
 		[
-			Html.heading("Editor"),
-			Html.textarea_c(
-				"Markdown source",
-				source_signal,
-				"min-h-64 w-full font-mono text-sm",
-				source.on_str(|_, value| value),
-			),
+			Html.div_c("panel-head", [Html.heading_c("Editor", "panel-title")]),
 			Html.div_c(
-				"flex flex-wrap gap-2",
+				"panel-body content-start",
 				[
-					Html.button_c("Load sample document", "rounded border px-2 py-1", source.on_unit(|_| sample_document)),
-					Html.button_c("Load document without headings", "rounded border px-2 py-1", source.on_unit(|_| no_heading_document)),
-					Html.button_c("Load heading drill", "rounded border px-2 py-1", source.on_unit(|_| heading_drill_document)),
-					Html.button_c("Append a word", "rounded border px-2 py-1", source.on_unit(Edit.append_word)),
-					Html.button_c("Append a section", "rounded border px-2 py-1", source.on_unit(Edit.append_section)),
-					Html.button_c("Move the last section up", "rounded border px-2 py-1", source.on_unit(Edit.move_last_section_up)),
-					Html.button_c("Demote the last heading", "rounded border px-2 py-1", source.on_unit(Edit.demote_last_heading)),
-					Html.button_c("Remove the last section", "rounded border px-2 py-1", source.on_unit(Edit.remove_last_section)),
-					Html.button_c("Clear document", "rounded border px-2 py-1", source.on_unit(|_| "")),
+					Html.div_c(
+						"field",
+						[
+							Html.paragraph_c("Markdown source", "field-label"),
+							Html.textarea_c(
+								"Markdown source",
+								source_signal,
+								"input textarea font-mono min-h-96 text-sm",
+								source.on_str(|_, value| value),
+							),
+							Html.paragraph_c("Headings, lists, fenced code, quotes, and links all render live in the preview.", "hint"),
+						],
+					),
+					button_group(
+						"Documents",
+						[
+							Html.button_c("Load sample document", "button button-primary button-sm", source.on_unit(|_| sample_document)),
+							Html.button_c("Load document without headings", "button button-sm", source.on_unit(|_| no_heading_document)),
+							Html.button_c("Load heading drill", "button button-sm", source.on_unit(|_| heading_drill_document)),
+						],
+					),
+					button_group(
+						"Edit the document",
+						[
+							Html.button_c("Append a word", "button button-sm", source.on_unit(Edit.append_word)),
+							Html.button_c("Append a section", "button button-sm", source.on_unit(Edit.append_section)),
+							Html.button_c("Move the last section up", "button button-sm", source.on_unit(Edit.move_last_section_up)),
+							Html.button_c("Demote the last heading", "button button-sm", source.on_unit(Edit.demote_last_heading)),
+							Html.button_c("Remove the last section", "button button-sm", source.on_unit(Edit.remove_last_section)),
+							Html.button_c("Clear document", "button-danger button-sm", source.on_unit(|_| "")),
+						],
+					),
 				],
 			),
 		],
@@ -113,13 +155,18 @@ preview_panel = |blocks| {
 
 	Html.section(
 		"Preview",
-		[Html.attr("data-panel", "preview"), Html.class_attr("grid gap-3 rounded border border-zinc-200 p-4")],
+		[Html.attr("data-panel", "preview"), Html.class_attr("panel flex flex-col")],
 		[
-			Html.heading("Preview"),
-			Ui.when(
-				empty,
-				|| Html.paragraph("Preview is empty: type markdown to see it rendered."),
-				|| Markdown.view_blocks(blocks),
+			Html.div_c("panel-head", [Html.heading_c("Preview", "panel-title")]),
+			Html.div_c(
+				"panel-body content-start",
+				[
+					Ui.when(
+						empty,
+						|| Html.paragraph_c("Preview is empty: type markdown to see it rendered.", "empty-state"),
+						|| Markdown.view_blocks(blocks),
+					),
+				],
 			),
 		],
 	)
@@ -131,20 +178,36 @@ outline_panel = |rows, numbered, numbered_signal| {
 
 	Html.section(
 		"Table of contents",
-		[Html.attr("data-panel", "outline"), Html.class_attr("grid gap-3 rounded border border-zinc-200 p-4")],
+		[Html.attr("data-panel", "outline"), Html.class_attr("panel")],
 		[
-			Html.heading("Table of contents"),
-			Html.checkbox_c("Number the outline", numbered_signal, "mr-2", numbered.on_bool(|_, value| value)),
-			Ui.when(
-				empty,
-				|| Html.paragraph("No headings yet: add a line that starts with a hash."),
-				|| Elem.Element(
-					{
-						tag: "ul",
-						attrs: [Html.attr("data-panel", "outline-body"), Html.class_attr("grid gap-1")],
-						children: [Ui.each_str(rows, |row| row.key, render_outline_row)],
-					},
-				),
+			Html.div_c(
+				"panel-head",
+				[
+					Html.heading_c("Table of contents", "panel-title"),
+					Html.div_c(
+						"check-row",
+						[
+							Html.checkbox_c("Number the outline", numbered_signal, "checkbox", numbered.on_bool(|_, value| value)),
+							Html.paragraph_c("Number the outline", ""),
+						],
+					),
+				],
+			),
+			Html.div_c(
+				"panel-body",
+				[
+					Ui.when(
+						empty,
+						|| Html.paragraph_c("No headings yet: add a line that starts with a hash.", "empty-state"),
+						|| Elem.Element(
+							{
+								tag: "ul",
+								attrs: [Html.attr("data-panel", "outline-body"), Html.class_attr("grid gap-0.5")],
+								children: [Ui.each_str(rows, |row| row.key, render_outline_row)],
+							},
+						),
+					),
+				],
 			),
 		],
 	)
@@ -152,10 +215,10 @@ outline_panel = |rows, numbered, numbered_signal| {
 
 statistics_panel : Signal.Signal(Stats.Counts), Signal.Signal(U64), Signal.Signal(U64), Ui.State(Str), Signal.Signal(Str) -> Elem
 statistics_panel = |counts, heading_count, reading, speed, speed_signal| {
-	words_text = counts.map(|value| "Words: ${value.words.to_str()}")
-	characters_text = counts.map(|value| "Characters: ${value.characters.to_str()}")
-	headings_text = heading_count.map(|value| "Headings: ${value.to_str()}")
-	reading_text = reading.map(|value| "Reading time: ${value.to_str()} min")
+	words_text = counts.map(|value| value.words.to_str())
+	characters_text = counts.map(|value| value.characters.to_str())
+	headings_text = heading_count.map(|value| value.to_str())
+	reading_text = reading.map(|value| "${value.to_str()} min")
 
 	# Wide fan-in: the raw counts, the heading spine size, and the reading
 	# estimate meet in one record-builder signal.
@@ -170,31 +233,53 @@ statistics_panel = |counts, heading_count, reading, speed, speed_signal| {
 				characters = value.counts.characters.to_str()
 				headings = value.headings.to_str()
 				minutes = value.minutes.to_str()
-				"Summary: ${words} words | ${characters} characters | ${headings} headings | ${minutes} min"
+				"${words} words | ${characters} characters | ${headings} headings | ${minutes} min"
 			},
 		)
 
 	Html.section(
 		"Statistics",
-		[Html.attr("data-panel", "statistics"), Html.class_attr("grid gap-2 rounded border border-zinc-200 p-4")],
+		[Html.attr("data-panel", "statistics"), Html.class_attr("panel")],
 		[
-			Html.heading("Statistics"),
-			Html.select_c(
-				"Reading speed",
-				speed_signal,
-				"rounded border px-2 py-1",
+			Html.div_c(
+				"panel-head",
 				[
-					Html.option("100", "Careful (100 wpm)"),
-					Html.option("200", "Average (200 wpm)"),
-					Html.option("300", "Fast (300 wpm)"),
+					Html.heading_c("Statistics", "panel-title"),
+					Html.paragraph_s_attrs(summary_line, [Html.test_id("stat-summary"), Html.class_attr("hint numeric")]),
 				],
-				speed.on_str(|_, value| value),
 			),
-			Html.paragraph_s_attrs(words_text, [Html.test_id("stat-words")]),
-			Html.paragraph_s_attrs(characters_text, [Html.test_id("stat-characters")]),
-			Html.paragraph_s_attrs(headings_text, [Html.test_id("stat-headings")]),
-			Html.paragraph_s_attrs(reading_text, [Html.test_id("stat-reading")]),
-			Html.paragraph_s_attrs(summary_line, [Html.test_id("stat-summary")]),
+			Html.div_c(
+				"panel-body",
+				[
+					Html.div_c(
+						"stat-grid",
+						[
+							stat_tile("Words", "stat-words", words_text),
+							stat_tile("Characters", "stat-characters", characters_text),
+							stat_tile("Headings", "stat-headings", headings_text),
+							stat_tile("Reading time", "stat-reading", reading_text),
+						],
+					),
+					Html.div_c(
+						"field sm:max-w-xs",
+						[
+							Html.paragraph_c("Reading speed", "field-label"),
+							Html.select_c(
+								"Reading speed",
+								speed_signal,
+								"input",
+								[
+									Html.option("100", "Careful (100 wpm)"),
+									Html.option("200", "Average (200 wpm)"),
+									Html.option("300", "Fast (300 wpm)"),
+								],
+								speed.on_str(|_, value| value),
+							),
+							Html.paragraph_c("The estimate is a fan-in of the word count and this speed; it never touches the preview or the outline.", "hint"),
+						],
+					),
+				],
+			),
 		],
 	)
 }
@@ -248,16 +333,26 @@ main = ||
 									|value, wpm| Stats.reading_minutes(value.words, wpm),
 								)
 
-							Html.section(
-								"Markdown Editor",
-								[Html.class_attr("grid gap-4")],
+							Html.div_c(
+								"app-shell app-shell-wide",
 								[
-									Html.heading("Markdown Editor"),
-									Html.paragraph("One source string, four independently derived views."),
-									editor_panel(source, source_signal),
-									preview_panel(blocks),
-									outline_panel(outline_rows, numbered, numbered_signal),
+									Html.section_c(
+										"Markdown Editor",
+										"app-header",
+										[
+											Html.heading_c("Markdown Editor", "app-title"),
+											Html.paragraph_c("One source string, four independently derived views.", "app-subtitle"),
+										],
+									),
 									statistics_panel(counts, heading_count, reading, speed, speed_signal),
+									Html.div_c(
+										"grid gap-6 lg:grid-cols-2",
+										[
+											editor_panel(source, source_signal),
+											preview_panel(blocks),
+										],
+									),
+									outline_panel(outline_rows, numbered, numbered_signal),
 								],
 							)
 						},

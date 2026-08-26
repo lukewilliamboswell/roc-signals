@@ -60,7 +60,7 @@
     (mark-metrics)
     (click (role button :name "Demote the last heading"))
     (expect-attr (test-id "toc:one") data-level "6")
-    (expect-text (test-id "stat-headings") "Headings: 1")
+    (expect-text (test-id "stat-headings") "1")
     (expect-metric-delta rows_created 0)
     (expect-metric-delta rows_removed 0)
     ; A level-one heading straight to a level-six heading: the jump is preserved.
@@ -70,7 +70,7 @@
     (click (role button :name "Demote the last heading"))
     (click (role button :name "Demote the last heading"))
     (click (role button :name "Demote the last heading"))
-    (expect-text (test-id "stat-headings") "Headings: 2")
+    (expect-text (test-id "stat-headings") "2")
     (expect-attr (test-id "toc:one") data-level "1")
     (expect-attr (test-id "toc:new-section") data-level "6")
   )
