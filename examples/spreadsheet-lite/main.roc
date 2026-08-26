@@ -9,21 +9,30 @@ import pf.Html
 import pf.Signal
 import pf.Ui
 
-page_class = "grid gap-5"
+page_class : Str
+page_class = "app-shell app-shell-wide"
 
-hero_class = "panel grid gap-2 p-5"
+panel_class : Str
+panel_class = "panel grid gap-4 p-5"
 
-panel_class = "panel grid gap-3 p-4"
+## The grid is drawn as nested flex rows rather than a `<table>`, because each
+## row has to stay a labelled `section` for the keyed-reorder specs to address
+## it. Borders are hung off the bottom/right of every cell so the frame reads as
+## one continuous ruled grid.
+grid_frame_class : Str
+grid_frame_class = "min-w-max overflow-hidden rounded-md border-l border-t border-zinc-200"
 
-grid_class = "grid gap-1"
+row_class : Str
+row_class = "flex items-stretch"
 
-row_class = "flex gap-1 items-center"
+header_row_class : Str
+header_row_class = "flex items-stretch bg-zinc-50"
 
-header_row_class = "flex gap-1 items-center font-semibold"
+header_cell_class : Str
+header_cell_class = "w-28 shrink-0 border-b border-r border-zinc-200 px-2 py-1.5 text-center text-xs font-semibold uppercase tracking-wide text-zinc-500"
 
-header_cell_class = "w-24 text-center text-xs uppercase text-zinc-600"
-
-row_label_class = "w-16 text-xs font-semibold text-zinc-600"
+gutter_class : Str
+gutter_class = "flex w-12 shrink-0 items-center justify-center border-b border-r border-zinc-200 bg-zinc-50 px-2 py-1.5 text-xs font-semibold uppercase tracking-wide tabular-nums text-zinc-500"
 
 ## Where the caret is and whether that cell is being edited. Editing is a
 ## property of the cursor, not of the document, so it lives here.
@@ -37,6 +46,10 @@ CellView : { key : Str, ref : Str, value : Str, kind : Str, selected : Bool }
 ## One rendered row. The key is the row number, so a row keeps its identity (and
 ## its cell scopes) through hide/show and reorder.
 RowView : { key : Str, cells : List(CellView) }
+
+## The three unrelated readouts that make up the summary strip. Joining them
+## into one record keeps the fan-in visible in the signal graph.
+Status : { selected : Str, mode : Str, errors : Str }
 
 GridInput : {
 	outs : List(Sheet.CellOut),
@@ -133,29 +146,53 @@ build_rows = |input| {
 	}
 }
 
+## How many rows survive the "hide empty rows" filter.
+visible_row_text : List(Str), Bool -> Str
+visible_row_text = |sources, hide|
+	if !hide {
+		Cells.row_count.to_str()
+	} else {
+		var $row = 0
+		var $shown = 0.U64
+
+		while $row < Cells.row_count {
+			if !row_is_empty(sources, $row) {
+				$shown = $shown + 1
+			}
+			$row = $row + 1
+		}
+
+		$shown.to_str()
+	}
+
 count_errors : List(Sheet.CellOut) -> U64
 count_errors = |outs| outs.keep_if(|out| out.kind == "error").len()
 
+## A cell's presentation and its error state come from the same `CellView`, so
+## the red tint and the `#REF`/`#DIV/0!` text can never disagree: both are read
+## off `kind`, which is the tag the evaluator produced for that value.
 tone_class : CellView -> Str
 tone_class = |cell| {
-	base = "w-24 rounded border px-1 py-1 text-sm"
+	base = "w-28 shrink-0 rounded-none border-0 border-b border-r border-zinc-200 px-2 py-1.5 text-sm tabular-nums focus:relative focus:z-10 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-emerald-500"
 	tone =
 		if cell.kind == "error" {
-			" border-red-400 bg-red-50 text-red-900"
+			" bg-red-50 text-right font-semibold text-red-700"
 		} else if cell.kind == "number" {
-			" border-zinc-300 bg-white text-right"
+			" bg-white text-right text-zinc-900"
 		} else {
-			" border-zinc-300 bg-white"
+			" bg-white text-left text-zinc-900"
 		}
-	selection = if cell.selected { " ring-2 ring-blue-500" } else { "" }
+	selection = if cell.selected { " relative z-10 bg-emerald-50 ring-2 ring-inset ring-emerald-500" } else { "" }
 	"${base}${tone}${selection}"
 }
 
+## The column header strip: an empty corner over the row-number gutter, then one
+## muted uppercase heading per column.
 column_header : Elem
 column_header = {
 	Html.div_c(
 		header_row_class,
-		[Html.div_c(row_label_class, [Html.text("")])].concat(
+		[Html.div_c(gutter_class, [Html.text("")])].concat(
 			Cells.col_letters.map(|letter| Html.div_c(header_cell_class, [Html.text(letter)])),
 		),
 	)
@@ -203,7 +240,7 @@ render_row = |sheet, cursor, key, row| {
 		"Row ${key}",
 		row_class,
 		[
-			Html.div_c(row_label_class, [Html.text("Row ${key}")]),
+			Html.div_c(gutter_class, [Html.text(key)]),
 			Ui.each_str(cells, |cell| cell.key, |cell_key, cell| render_cell(sheet, cursor, cell_key, cell)),
 		],
 	)
@@ -225,6 +262,7 @@ formula_bar = |sheet, cursor, book| {
 					editing: caret.editing,
 					source,
 					value: out.text,
+					kind: out.kind,
 					depends: Formula.depends_on(source),
 				}
 			},
@@ -232,35 +270,116 @@ formula_bar = |sheet, cursor, book| {
 
 	Html.section_c(
 		"Formula bar",
-		panel_class,
+		"panel",
 		[
-			Html.heading_c("Formula bar", "text-lg font-semibold"),
-			Html.text_input_attrs(
-				"Formula",
-				Signal.map(bar, |view| if view.editing { view.source } else { view.value }),
-				[Html.test_id("formula-bar")],
-				sheet.on_str_with(cursor, |sources, caret, text| set_source(sources, caret.selected, text)),
+			Html.div_c(
+				"panel-head",
+				[
+					Html.div_c(
+						"flex items-baseline gap-2",
+						[
+							Html.paragraph_c("Formula bar", "panel-title"),
+							Html.paragraph_s_attrs(
+								Signal.map(bar, |view| view.ref),
+								[Html.test_id("bar-cell"), Html.class_attr("text-base font-semibold tabular-nums text-zinc-950")],
+							),
+						],
+					),
+					Html.paragraph_s_attrs(
+						Signal.map(bar, |view| if view.editing { "Editing" } else { "Showing value" }),
+						[
+							Html.test_id("bar-mode"),
+							Html.class_attr_s(Signal.map(bar, |view| if view.editing { "badge badge-info" } else { "badge badge-neutral" })),
+						],
+					),
+				],
 			),
-			Html.paragraph_s_attrs(Signal.map(bar, |view| "Cell: ${view.ref}"), [Html.test_id("bar-cell")]),
-			Html.paragraph_s_attrs(
-				Signal.map(
-					bar,
-					|view| if view.source.is_empty() { "Source: (empty)" } else { "Source: ${view.source}" },
-				),
-				[Html.test_id("bar-source")],
-			),
-			Html.paragraph_s_attrs(
-				Signal.map(bar, |view| if view.value.is_empty() { "Value: (empty)" } else { "Value: ${view.value}" }),
-				[Html.test_id("bar-value")],
-			),
-			Html.paragraph_s_attrs(Signal.map(bar, |view| "Depends on: ${view.depends}"), [Html.test_id("bar-depends")]),
-			Html.paragraph_s_attrs(
-				Signal.map(bar, |view| if view.editing { "Mode: editing" } else { "Mode: showing value" }),
-				[Html.test_id("bar-mode")],
+			Html.div_c(
+				"panel-body",
+				[
+					Html.div_c(
+						"field",
+						[
+							Html.paragraph_c("Contents of the selected cell", "field-label"),
+							Html.text_input_attrs(
+								"Formula",
+								Signal.map(bar, |view| if view.editing { view.source } else { view.value }),
+								[
+									Html.test_id("formula-bar"),
+									Html.class_attr("input tabular-nums"),
+									Html.attr("placeholder", "=B2+C2"),
+								],
+								sheet.on_str_with(cursor, |sources, caret, text| set_source(sources, caret.selected, text)),
+							),
+							Html.paragraph_c(
+								"Typing here writes the selected cell. The grid keeps showing computed values.",
+								"hint",
+							),
+						],
+					),
+					Html.div_c(
+						"grid gap-3 sm:grid-cols-3",
+						[
+							readout(
+								"Source",
+								Signal.map(bar, |view| if view.source.is_empty() { "(empty)" } else { view.source }),
+								"bar-source",
+							),
+							# The bar's value tone is read off the same `kind` tag as the
+							# cell's, so a red cell can never sit beside a black bar.
+							Html.div_c(
+								"grid min-w-0 gap-1",
+								[
+									Html.paragraph_c("Value", "label"),
+									Html.paragraph_s_attrs(
+										Signal.map(bar, |view| if view.value.is_empty() { "(empty)" } else { view.value }),
+										[
+											Html.test_id("bar-value"),
+											Html.class_attr_s(Signal.map(bar, value_tone_class)),
+										],
+									),
+								],
+							),
+							readout("Depends on", Signal.map(bar, |view| view.depends), "bar-depends"),
+						],
+					),
+				],
 			),
 		],
 	)
 }
+
+## The formula bar's value shares the grid's error tone.
+value_tone_class : { ref : Str, editing : Bool, source : Str, value : Str, kind : Str, depends : Str } -> Str
+value_tone_class = |view|
+	if view.kind == "error" {
+		"text-sm font-semibold tabular-nums text-red-700"
+	} else {
+		"value break-words tabular-nums"
+	}
+
+## A caption over a monospaced-figures readout. The label is drawn beside the
+## value instead of being folded into it, so the assertion targets the value.
+readout : Str, Signal.Signal(Str), Str -> Elem
+readout = |label, value, id|
+	Html.div_c(
+		"grid min-w-0 gap-1",
+		[
+			Html.paragraph_c(label, "label"),
+			Html.paragraph_s_attrs(value, [Html.test_id(id), Html.class_attr("value break-words tabular-nums")]),
+		],
+	)
+
+## One metric tile in the summary strip.
+stat_tile : Str, Signal.Signal(Str), Str -> Elem
+stat_tile = |label, value, id|
+	Html.div_c(
+		"stat",
+		[
+			Html.paragraph_c(label, "stat-label"),
+			Html.paragraph_s_attrs(value, [Html.test_id(id), Html.class_attr("stat-value")]),
+		],
+	)
 
 main : () -> Elem
 main = || {
@@ -315,82 +434,140 @@ main = || {
 
 											rows = Signal.map(grid_input, build_rows)
 
-											# Fan-in: selection, grid mode, and error count are three
-											# unrelated signals joined into one status line.
-											selection_text =
-												Signal.map(selected_index, |index| "Selected: ${Cells.ref_of(index)}")
-											mode_text =
-												Signal.map(
-													formulas_signal,
-													|on| if on { "Grid mode: formulas" } else { "Grid mode: values" },
-												)
-											error_text =
-												Signal.map(outs, |computed| "Errors: ${count_errors(computed).to_str()}")
-											status =
-												Signal.map2(
-													selection_text,
-													Signal.map2(mode_text, error_text, |mode, errors| "${mode} | ${errors}"),
-													|selection, rest| "${selection} | ${rest}",
-												)
-
-											Html.div_c(
-												page_class,
-												[
-													Html.section_c(
-														"Spreadsheet Lite",
-														hero_class,
-														[
-															Html.heading_c("Spreadsheet Lite", "text-3xl font-semibold"),
-															Html.paragraph_c(
-																"An 8 by 12 sheet where every formula is a dependency edge. Editing a cell recomputes only the cells that transitively depend on it.",
-																"max-w-3xl text-sm text-zinc-700",
-															),
-														],
-													),
-													formula_bar(sheet, cursor, book),
-													Html.section_c(
-														"Sheet controls",
-														panel_class,
-														[
-															Html.button_s(
-																Signal.map(
-																	formulas_signal,
-																	|on| if on { "Show values" } else { "Show formulas" },
-																),
-																show_formulas.on_unit(|on| !on),
-															),
-															Html.button_s(
-																Signal.map(
-																	hide_signal,
-																	|on| if on { "Show all rows" } else { "Hide empty rows" },
-																),
-																hide_empty.on_unit(|on| !on),
-															),
-															Html.button_s(
-																Signal.map(
-																	reversed_signal,
-																	|on| if on { "Top to bottom" } else { "Reverse row order" },
-																),
-																reverse_rows.on_unit(|on| !on),
-															),
-															Html.paragraph_s_attrs(status, [Html.test_id("status-line")]),
-														],
-													),
-													Html.section_c(
-														"Sheet grid",
-														"${panel_class} ${grid_class}",
-														[
-															column_header,
-															Ui.each_str(
-																rows,
-																|row| row.key,
-																|key, row| render_row(sheet, cursor, key, row),
-															),
-														],
-													),
-												],
+										# Fan-in: selection, grid mode, and error count are three
+										# unrelated signals joined into one status record, which then
+										# drives the three tiles of the summary strip.
+										selection_text = Signal.map(selected_index, |index| Cells.ref_of(index))
+										mode_text =
+											Signal.map(formulas_signal, |on| if on { "Formulas" } else { "Values" })
+										error_text =
+											Signal.map(outs, |computed| count_errors(computed).to_str())
+										status : Signal.Signal(Status)
+										status =
+											Signal.map2(
+												selection_text,
+												Signal.map2(mode_text, error_text, |mode, errors| { mode, errors }),
+												|selection, rest| { selected: selection, mode: rest.mode, errors: rest.errors },
 											)
-										},
+
+										# How many rows the grid is currently drawing, for the tile
+										# that explains what "Hide empty rows" just did. Derived from
+										# the same two inputs `build_rows` filters on rather than from
+										# `rows` itself, which is already consumed as a keyed list.
+										visible_rows = Signal.map2(sources, hide_signal, visible_row_text)
+
+										Html.div_c(
+											page_class,
+											[
+												Html.section_c(
+													"Spreadsheet Lite",
+													"app-header",
+													[
+														Html.heading_c("Spreadsheet Lite", "app-title"),
+														Html.paragraph_c(
+															"A quarterly budget on an 8 by 12 sheet, where every formula is a dependency edge. Editing a cell recomputes only the cells that transitively depend on it.",
+															"app-subtitle",
+														),
+													],
+												),
+												formula_bar(sheet, cursor, book),
+												Html.section_c(
+													"Sheet controls",
+													"panel",
+													[
+														Html.div_c(
+															"panel-head",
+															[
+																Html.paragraph_c("Sheet controls", "panel-title"),
+																Html.div_c(
+																	"toolbar",
+																	[
+																		Html.button_s_attrs(
+																			Signal.map(
+																				formulas_signal,
+																				|on| if on { "Show values" } else { "Show formulas" },
+																			),
+																			[Html.attr("type", "button"), Html.class_attr("button button-sm")],
+																			show_formulas.on_unit(|on| !on),
+																		),
+																		Html.button_s_attrs(
+																			Signal.map(
+																				hide_signal,
+																				|on| if on { "Show all rows" } else { "Hide empty rows" },
+																			),
+																			[Html.attr("type", "button"), Html.class_attr("button button-sm")],
+																			hide_empty.on_unit(|on| !on),
+																		),
+																		Html.button_s_attrs(
+																			Signal.map(
+																				reversed_signal,
+																				|on| if on { "Top to bottom" } else { "Reverse row order" },
+																			),
+																			[Html.attr("type", "button"), Html.class_attr("button button-sm")],
+																			reverse_rows.on_unit(|on| !on),
+																		),
+																	],
+																),
+															],
+														),
+														Html.div_c(
+															"panel-body",
+															[
+																Html.div_c(
+																	"stat-grid",
+																	[
+																		stat_tile("Selected cell", Signal.map(status, |view| view.selected), "stat-selected"),
+																		stat_tile("Grid mode", Signal.map(status, |view| view.mode), "stat-mode"),
+																		stat_tile("Formula errors", Signal.map(status, |view| view.errors), "status-line"),
+																		stat_tile("Rows shown", visible_rows, "stat-rows"),
+																	],
+																),
+															],
+														),
+													],
+												),
+												Html.section_c(
+													"Sheet grid",
+													"panel",
+													[
+														Html.div_c(
+															"panel-head",
+															[
+																Html.paragraph_c("Sheet grid", "panel-title"),
+																Html.paragraph_c(
+																	"Numbers right-aligned, text left-aligned, errors in red.",
+																	"hint",
+																),
+															],
+														),
+														Html.div_c(
+															"panel-body",
+															[
+																# The cell area scrolls sideways inside the panel; the
+																# page itself never grows a horizontal scrollbar.
+																Html.div_c(
+																	"table-scroll",
+																	[
+																		Html.div_c(
+																			grid_frame_class,
+																			[
+																				column_header,
+																				Ui.each_str(
+																					rows,
+																					|row| row.key,
+																					|key, row| render_row(sheet, cursor, key, row),
+																				),
+																			],
+																		),
+																	],
+																),
+															],
+														),
+													],
+												),
+											],
+										)
+																			},
 									),
 							),
 					),

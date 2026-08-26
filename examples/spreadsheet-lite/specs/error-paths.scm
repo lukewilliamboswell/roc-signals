@@ -34,7 +34,9 @@
     (expect-attr (label "D5") data-kind "error")
     ; SUM skips text members rather than failing.
     (expect-value (label "C5") "2100")
-    (expect-text (test-id "status-line") "Selected: C4 | Grid mode: values | Errors: 9")
+    (expect-text (test-id "stat-selected") "C4")
+    (expect-text (test-id "stat-mode") "Values")
+    (expect-text (test-id "status-line") "9")
     (fill (label "C4") "150")
     (expect-value (label "D4") "400")
     (expect-value (label "D8") "1127.5")
