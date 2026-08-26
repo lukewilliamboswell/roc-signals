@@ -108,7 +108,7 @@ a checkbox with no click binding fails with *target has no click binding*.
 (expect-absent (role region :name "Queue Widget"))
 (expect-text (text "Submit status: sending") "Submit status: sending")
 (expect-value (label "Invite email") "ops@example.com")
-(expect-attr (label "Invite email") aria-invalid "")
+(expect-attr (label "Invite email") aria-invalid "true")
 (expect-no-attr (label "Invite email") aria-invalid)
 (expect-checked (label "Accept terms") true)
 (expect-disabled (role button :name "Send invite") true)

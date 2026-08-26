@@ -37,7 +37,7 @@
     (expect-text (test-id "preview-f2-label") "Work email (required)")
     (expect-value (label "Answer f1") "")
     (expect-value (label "Answer f2") "")
-    (expect-attr (label "Answer f1") aria-invalid "")
+    (expect-attr (label "Answer f1") aria-invalid "true")
     (expect-text (test-id "preview-f1-verdict") "This field is required")
     (expect-text (test-id "preview-f2-verdict") "This field is required")
     (expect-text (test-id "preview-status") "Preview status: 2 fields, 2 problems")

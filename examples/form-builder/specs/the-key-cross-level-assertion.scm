@@ -11,7 +11,7 @@
     ; invalid, with the submittable signal flipping in the same propagation.
     (fill (label "Minimum f1") "5")
     (expect-text (test-id "preview-f1-verdict") "Must be at least 5 characters")
-    (expect-attr (label "Answer f1") aria-invalid "")
+    (expect-attr (label "Answer f1") aria-invalid "true")
     (expect-value (label "Answer f1") "Ada")
     (expect-text (test-id "preview-status") "Preview status: 2 fields, 1 problem")
     (expect-text (test-id "submittable-state") "Form is not submittable")

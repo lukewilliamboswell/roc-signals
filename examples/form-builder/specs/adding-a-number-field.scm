@@ -32,8 +32,8 @@
     (fill (label "Minimum f3") "20")
     (expect-text (test-id "field-f3-summary") "Number 3 field: Number - optional - Rule error: minimum is greater than maximum")
     (expect-text (test-id "preview-f3-verdict") "Rule error: minimum is greater than maximum")
-    (expect-attr (label "Minimum f3") aria-invalid "")
-    (expect-attr (label "Maximum f3") aria-invalid "")
+    (expect-attr (label "Minimum f3") aria-invalid "true")
+    (expect-attr (label "Maximum f3") aria-invalid "true")
     (expect-text (test-id "submittable-state") "Form is not submittable")
     ; a non-numeric bound is its own rule error
     (fill (label "Minimum f3") "2x")
