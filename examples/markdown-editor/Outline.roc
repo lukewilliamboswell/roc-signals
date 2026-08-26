@@ -33,21 +33,22 @@ Outline := {}.{
 
 	collect_heading : Outline.CollectState, Markdown.Block -> Outline.CollectState
 	collect_heading = |state, block|
-		if block.kind == "heading" {
-			text = Markdown.plain_text(block.text)
-			base = slugify(text)
-			seen = state.used.keep_if(|value| value == base).len()
-			slug = if seen == 0 {
-				base
-			} else {
-				"${base}-${(seen + 1).to_str()}"
+		match block.kind {
+			Heading(level) => {
+				text = Markdown.plain_text(block.text)
+				base = slugify(text)
+				seen = state.used.keep_if(|value| value == base).len()
+				slug = if seen == 0 {
+					base
+				} else {
+					"${base}-${(seen + 1).to_str()}"
+				}
+				{
+					headings: state.headings.append({ level, text, slug }),
+					used: state.used.append(base),
+				}
 			}
-			{
-				headings: state.headings.append({ level: block.level, text, slug }),
-				used: state.used.append(base),
-			}
-		} else {
-			state
+			_ => state
 		}
 
 	## Lowercase ASCII slug: letters and digits survive, every other run of
@@ -126,3 +127,16 @@ Outline := {}.{
 			_ => "pl-16"
 		}
 }
+
+expect Outline.slugify("Roc Signals Field Guide") == "roc-signals-field-guide"
+expect Outline.slugify("Deep Dive!") == "deep-dive"
+expect Outline.slugify("***") == "section"
+expect Outline.headings(Markdown.parse("# Alpha\n\ntext\n\n## Beta")) == [
+	{ level: 1, text: "Alpha", slug: "alpha" },
+	{ level: 2, text: "Beta", slug: "beta" },
+]
+# Duplicate titles keep distinct, stable row keys.
+expect Outline.headings(Markdown.parse("# Alpha\n\n# Alpha")).map(|heading| heading.slug) == ["alpha", "alpha-2"]
+expect Outline.rows([{ level: 3, text: "Beta", slug: "beta" }], True).map(|row| row.label) == ["1. Beta"]
+expect Outline.rows([{ level: 3, text: "Beta", slug: "beta" }], False).map(|row| row.label) == ["Beta"]
+expect Outline.rows([{ level: 3, text: "Beta", slug: "beta" }], False).map(|row| row.indent) == ["pl-6"]

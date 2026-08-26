@@ -93,55 +93,35 @@ Api := {}.{
 	decode_feed = |body| {
 		parse : Str -> Try(Api.FeedPage, [InvalidJson(Str), MissingRequiredField(Str)])
 		parse = Json.parser_camel()
-		match to_remote(parse(shield_escapes(body))) {
-			Ready(page) => Ready({ ..page, articles: page.articles.map(restore_summary) })
-			Loading => Loading
-			Failed(message) => Failed(message)
-		}
+		to_remote(parse(shield_escapes(body)).map_ok(|page| { ..page, articles: page.articles.map(restore_summary) }))
 	}
 
 	decode_article : Str -> Api.Remote(Api.Article)
 	decode_article = |body| {
 		parse : Str -> Try({ article : Api.Article }, [InvalidJson(Str), MissingRequiredField(Str)])
 		parse = Json.parser_camel()
-		match to_remote(parse(shield_escapes(body))) {
-			Ready(envelope) => Ready(restore_article(envelope.article))
-			Loading => Loading
-			Failed(message) => Failed(message)
-		}
+		to_remote(parse(shield_escapes(body)).map_ok(|envelope| restore_article(envelope.article)))
 	}
 
 	decode_profile : Str -> Api.Remote(Api.Profile)
 	decode_profile = |body| {
 		parse : Str -> Try({ profile : Api.Profile }, [InvalidJson(Str), MissingRequiredField(Str)])
 		parse = Json.parser_camel()
-		match to_remote(parse(shield_escapes(body))) {
-			Ready(envelope) => Ready({ ..envelope.profile, bio: restore_text(envelope.profile.bio) })
-			Loading => Loading
-			Failed(message) => Failed(message)
-		}
+		to_remote(parse(shield_escapes(body)).map_ok(|envelope| { ..envelope.profile, bio: restore_text(envelope.profile.bio) }))
 	}
 
 	decode_comments : Str -> Api.Remote(List(Api.Comment))
 	decode_comments = |body| {
 		parse : Str -> Try({ comments : List(Api.Comment) }, [InvalidJson(Str), MissingRequiredField(Str)])
 		parse = Json.parser_camel()
-		match to_remote(parse(shield_escapes(body))) {
-			Ready(envelope) => Ready(envelope.comments.map(restore_comment))
-			Loading => Loading
-			Failed(message) => Failed(message)
-		}
+		to_remote(parse(shield_escapes(body)).map_ok(|envelope| envelope.comments.map(restore_comment)))
 	}
 
 	decode_tags : Str -> Api.Remote(List(Str))
 	decode_tags = |body| {
 		parse : Str -> Try({ tags : List(Str) }, [InvalidJson(Str), MissingRequiredField(Str)])
 		parse = Json.parser_camel()
-		match to_remote(parse(shield_escapes(body))) {
-			Ready(envelope) => Ready(envelope.tags)
-			Loading => Loading
-			Failed(message) => Failed(message)
-		}
+		to_remote(parse(shield_escapes(body)).map_ok(|envelope| envelope.tags))
 	}
 
 	# TODO remove once https://github.com/roc-lang/roc/pull/10045 is merged
@@ -211,6 +191,30 @@ Api := {}.{
 			author: restore_author(comment.author),
 		}
 	}
+
+	## Every fetch surface renders `Remote` the same three ways, so the
+	## predicates and the failure message live here instead of being
+	## re-derived once per page module.
+	is_loading : Api.Remote(a) -> Bool
+	is_loading = |remote|
+		match remote {
+			Loading => True
+			_ => False
+		}
+
+	is_failed : Api.Remote(a) -> Bool
+	is_failed = |remote|
+		match remote {
+			Failed(_) => True
+			_ => False
+		}
+
+	failure_message : Api.Remote(a) -> Str
+	failure_message = |remote|
+		match remote {
+			Failed(message) => message
+			_ => ""
+		}
 
 	to_remote : Try(a, [InvalidJson(Str), MissingRequiredField(Str)]) -> Api.Remote(a)
 	to_remote = |result|
@@ -309,9 +313,6 @@ Api := {}.{
 	feed_request : Route.Feed, Str -> _
 	feed_request = |feed, token| get_request(feed_uri(feed), token)
 
-	feed_uri_for : Route.Feed -> Str
-	feed_uri_for = |feed| feed_uri(feed)
-
 	login_body : Str, Str -> Str
 	login_body = |email, password| Json.to_str({ user: { email: email, password: password } })
 
@@ -365,35 +366,35 @@ Api := {}.{
 	parse_errors : Str -> List(Str)
 	parse_errors = |body| {
 		shielded = shield_escapes(body)
-		match shielded.split_first("\"errors\"") {
-			Ok(split) => collect_errors(split.after, [])
-			Err(_) => ["The request was rejected."]
-		}
+		Try.ok_or(
+			shielded.split_first("\"errors\"").map_ok(|split| collect_errors(split.after, [])),
+			["The request was rejected."],
+		)
 	}
 
+	## Each step of the scan may run out of input; `?` short-circuits to the
+	## entries collected so far, which is exactly the old nested-match
+	## behaviour without the staircase.
 	collect_errors : Str, List(Str) -> List(Str)
-	collect_errors = |rest, acc|
-		match rest.split_first("\"") {
-			Err(_) => acc
-			Ok(key_open) =>
-				match key_open.after.split_first("\"") {
-					Err(_) => acc
-					Ok(key_close) =>
-						match key_close.after.split_first("[\"") {
-							Err(_) => acc
-							Ok(list_open) =>
-								match list_open.after.split_first("\"") {
-									Err(_) => acc
-									Ok(message_close) => {
-										entry = restore_text("${key_close.before} ${message_close.before}")
-										next = acc.append(entry)
-										match message_close.after.split_first("]") {
-											Err(_) => next
-											Ok(list_close) => collect_errors(list_close.after, next)
-										}
-									}
-								}
-						}
-				}
-		}
+	collect_errors = |rest, acc| Try.ok_or(collect_one_error(rest, acc), acc)
+
+	collect_one_error : Str, List(Str) -> Try(List(Str), _)
+	collect_one_error = |rest, acc| {
+		key_open = rest.split_first("\"")?
+		key_close = key_open.after.split_first("\"")?
+		list_open = key_close.after.split_first("[\"")?
+		message_close = list_open.after.split_first("\"")?
+		entry = restore_text("${key_close.before} ${message_close.before}")
+		next = acc.append(entry)
+		Ok(
+			Try.ok_or(
+				message_close.after.split_first("]").map_ok(|list_close| collect_errors(list_close.after, next)),
+				next,
+			),
+		)
+	}
 }
+
+expect Api.parse_errors("{\"errors\":{\"email\":[\"can't be blank\"],\"password\":[\"is too short\"]}}") == ["email can't be blank", "password is too short"]
+
+expect Api.parse_errors("{\"message\":\"nope\"}") == ["The request was rejected."]

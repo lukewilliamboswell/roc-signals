@@ -24,39 +24,23 @@ Cells := [].{
 	ref_of = |index| {
 		col = index % col_count
 		row = index // col_count
-		letter =
-			match col_letters.get(col) {
-				Ok(value) => value
-				Err(_) => "?"
-			}
+		letter = col_letters.get(col).ok_or("?")
 		"${letter}${(row + 1).to_str()}"
 	}
 
 	## Parse "B2" into a cell index.
 	index_of : Str -> Try(U64, [NotARef])
-	index_of = |text|
-		match Cells.parse_ref(text.to_utf8()) {
-			Ok(parsed) =>
-				if parsed.rest.is_empty() {
-					Ok(parsed.index)
-				} else {
-					Err(NotARef)
-				}
-			Err(_) => Err(NotARef)
+	index_of = |text| {
+		parsed = Cells.parse_ref(text.to_utf8())?
+		if parsed.rest.is_empty() {
+			Ok(parsed.index)
+		} else {
+			Err(NotARef)
 		}
+	}
 
 	byte_at : List(U8), U64 -> U8
-	byte_at = |bytes, index|
-		match bytes.get(index) {
-			Ok(value) => value
-			Err(_) => 0
-		}
-
-	no : Bool
-	no = False
-
-	yes : Bool
-	yes = True
+	byte_at = |bytes, index| bytes.get(index).ok_or(0)
 
 	is_digit : U8 -> Bool
 	is_digit = |byte| byte >= '0' and byte <= '9'
@@ -241,3 +225,27 @@ Cells := [].{
 		}
 	}
 }
+
+expect Cells.ref_of(0) == "A1"
+expect Cells.ref_of(9) == "B2"
+expect Cells.ref_of(95) == "H12"
+expect Cells.index_of("B2") == Ok(9)
+expect Cells.index_of("H12") == Ok(95)
+expect Cells.index_of("Z9") == Err(NotARef)
+expect Cells.index_of("B13") == Err(NotARef)
+expect Cells.index_of("B2x") == Err(NotARef)
+
+# Fixed point round-trips through the display format without trailing zeros.
+expect Cells.format_number(0) == "0"
+expect Cells.format_number(2500 * Cells.scale) == "2500"
+expect Cells.format_number(11275000) == "1127.5"
+expect Cells.format_number(33333) == "3.3333"
+expect Cells.format_number(0 - 25000) == "-2.5"
+
+expect Cells.take_number("2.5".to_utf8()) == Ok({ value: 25000, rest: [] })
+expect Cells.take_number(".".to_utf8()) == Err(NotANumber)
+expect Cells.take_number("1.23456".to_utf8()) == Err(NotANumber)
+
+expect Cells.expand_range(9, 25) == [9, 17, 25]
+expect Cells.expand_range(9, 26) == [9, 10, 17, 18, 25, 26]
+expect Cells.divide(10 * Cells.scale, 0) == Err(DivideByZero)

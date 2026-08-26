@@ -41,11 +41,27 @@ Cursor : { selected : U64, editing : Bool }
 ## One rendered cell. `value` is what the cell input shows: the raw source in
 ## formula mode, the computed value otherwise. While a cell has focus the host
 ## leaves the user's own text alone and resyncs on blur.
-CellView : { key : Str, ref : Str, value : Str, kind : Str, selected : Bool }
+CellView : { key : Str, ref : Str, value : Str, kind : Sheet.CellKind, selected : Bool }
 
 ## One rendered row. The key is the row number, so a row keeps its identity (and
 ## its cell scopes) through hide/show and reorder.
 RowView : { key : Str, cells : List(CellView) }
+
+## The workbook as the formula bar sees it: the raw sources and the evaluated
+## outputs, joined so the bar can show either without a second pass.
+Book : { sources : List(Str), outs : List(Sheet.CellOut) }
+
+## What the formula bar shows about the selected cell: its address, whether the
+## caret is editing it, its raw source, its computed text, the kind tag that
+## text came from, and the cells it reads.
+BarView : {
+	ref : Str,
+	editing : Bool,
+	source : Str,
+	value : Str,
+	kind : Sheet.CellKind,
+	depends : Str,
+}
 
 ## The three unrelated readouts that make up the summary strip. Joining them
 ## into one record keeps the fan-in visible in the signal graph.
@@ -61,18 +77,10 @@ GridInput : {
 }
 
 out_at : List(Sheet.CellOut), U64 -> Sheet.CellOut
-out_at = |outs, index|
-	match outs.get(index) {
-		Ok(value) => value
-		Err(_) => { text: "", kind: "empty" }
-	}
+out_at = |outs, index| outs.get(index).ok_or({ text: "", kind: Empty })
 
 source_at : List(Str), U64 -> Str
-source_at = |sources, index|
-	match sources.get(index) {
-		Ok(value) => value
-		Err(_) => ""
-	}
+source_at = |sources, index| sources.get(index).ok_or("")
 
 cell_view : GridInput, U64 -> CellView
 cell_view = |input, index| {
@@ -166,7 +174,7 @@ visible_row_text = |sources, hide|
 	}
 
 count_errors : List(Sheet.CellOut) -> U64
-count_errors = |outs| outs.keep_if(|out| out.kind == "error").len()
+count_errors = |outs| outs.keep_if(|out| out.kind == Error).len()
 
 ## A cell's presentation and its error state come from the same `CellView`, so
 ## the red tint and the `#REF`/`#DIV/0!` text can never disagree: both are read
@@ -175,12 +183,11 @@ tone_class : CellView -> Str
 tone_class = |cell| {
 	base = "w-28 shrink-0 rounded-none border-0 border-b border-r border-zinc-200 px-2 py-1.5 text-sm tabular-nums focus:relative focus:z-10 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-emerald-500"
 	tone =
-		if cell.kind == "error" {
-			" bg-red-50 text-right font-semibold text-red-700"
-		} else if cell.kind == "number" {
-			" bg-white text-right text-zinc-900"
-		} else {
-			" bg-white text-left text-zinc-900"
+		match cell.kind {
+			Error => " bg-red-50 text-right font-semibold text-red-700"
+			Number => " bg-white text-right text-zinc-900"
+			Empty => " bg-white text-left text-zinc-900"
+			Text => " bg-white text-left text-zinc-900"
 		}
 	selection = if cell.selected { " relative z-10 bg-emerald-50 ring-2 ring-inset ring-emerald-500" } else { "" }
 	"${base}${tone}${selection}"
@@ -199,22 +206,14 @@ column_header = {
 }
 
 set_source : List(Str), U64, Str -> List(Str)
-set_source = |sources, index, text|
-	match sources.set(index, text) {
-		Ok(updated) => updated
-		Err(_) => sources
-	}
+set_source = |sources, index, text| sources.set(index, text).ok_or(sources)
 
 ## A cell is a labelled text input. Its index is known statically from the row
 ## key, so its reducer can write straight into the sheet without the sheet state
 ## needing to know where the caret is.
 render_cell : Ui.State(List(Str)), Ui.State(Cursor), Str, Signal.Signal(CellView) -> Elem
 render_cell = |sheet, cursor, key, cell| {
-	index =
-		match Cells.index_of(key) {
-			Ok(value) => value
-			Err(_) => 0
-		}
+	index = Cells.index_of(key).ok_or(0)
 
 	Html.text_input_attrs(
 		key,
@@ -222,7 +221,7 @@ render_cell = |sheet, cursor, key, cell| {
 		[
 			Html.test_id("cell-${key}"),
 			Html.class_attr_s(Signal.map(cell, tone_class)),
-			Html.attr_s("data-kind", Signal.map(cell, |view| view.kind)),
+			Html.attr_s("data-kind", Signal.map(cell, |view| Sheet.CellKind.to_str(view.kind))),
 			Html.on_focus(cursor.on_unit(|current| { ..current, selected: index, editing: True })),
 			Html.on_blur(cursor.on_unit(|current| { ..current, editing: False })),
 		],
@@ -248,8 +247,9 @@ render_row = |sheet, cursor, key, row| {
 
 ## The formula bar: a fan-in of the caret and the evaluated workbook. It shows
 ## the source while the selected cell is being edited and the value otherwise.
-formula_bar : Ui.State(List(Str)), Ui.State(Cursor), Signal.Signal({ sources : List(Str), outs : List(Sheet.CellOut) }) -> Elem
+formula_bar : Ui.State(List(Str)), Ui.State(Cursor), Signal.Signal(Book) -> Elem
 formula_bar = |sheet, cursor, book| {
+	bar : Signal.Signal(BarView)
 	bar =
 		Signal.map2(
 			cursor.signal(),
@@ -350,12 +350,13 @@ formula_bar = |sheet, cursor, book| {
 }
 
 ## The formula bar's value shares the grid's error tone.
-value_tone_class : { ref : Str, editing : Bool, source : Str, value : Str, kind : Str, depends : Str } -> Str
+value_tone_class : BarView -> Str
 value_tone_class = |view|
-	if view.kind == "error" {
-		"text-sm font-semibold tabular-nums text-red-700"
-	} else {
-		"value break-words tabular-nums"
+	match view.kind {
+		Error => "text-sm font-semibold tabular-nums text-red-700"
+		Empty => "value break-words tabular-nums"
+		Number => "value break-words tabular-nums"
+		Text => "value break-words tabular-nums"
 	}
 
 ## A caption over a monospaced-figures readout. The label is drawn beside the
@@ -413,6 +414,7 @@ main = || {
 											reversed_signal = reverse_rows.signal()
 
 											# Fan-in: sources and computed values feed the formula bar.
+											book : Signal.Signal(Book)
 											book =
 												Signal.map2(
 													sources,
@@ -574,3 +576,21 @@ main = || {
 			),
 	)
 }
+
+# The tone is read off the `kind` tag, never off the rendered text, so an error
+# cell and the formula bar showing it always agree.
+expect tone_class({ key: "B9", ref: "B9", value: "#DIV/0!", kind: Error, selected: False }).contains("bg-red-50")
+expect tone_class({ key: "B2", ref: "B2", value: "1200", kind: Number, selected: False }).contains("text-right")
+expect tone_class({ key: "A2", ref: "A2", value: "Rent", kind: Text, selected: False }).contains("text-left")
+expect tone_class({ key: "A2", ref: "A2", value: "Rent", kind: Text, selected: True }).contains("ring-emerald-500")
+
+expect value_tone_class({ ref: "B9", editing: False, source: "=1/0", value: "#DIV/0!", kind: Error, depends: "none" })
+	== "text-sm font-semibold tabular-nums text-red-700"
+expect value_tone_class({ ref: "B2", editing: False, source: "1200", value: "1200", kind: Number, depends: "none" })
+	== "value break-words tabular-nums"
+
+expect count_errors(Sheet.evaluate_out(Sheet.initial_cells)) == 4
+expect row_is_empty(Sheet.initial_cells, 10)
+expect !row_is_empty(Sheet.initial_cells, 0)
+expect visible_row_text(Sheet.initial_cells, False) == "12"
+expect visible_row_text(Sheet.initial_cells, True) == "11"

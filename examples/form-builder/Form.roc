@@ -16,7 +16,15 @@ Form := {}.{
 	## The kind of control a field renders in the preview.
 	Kind := [FieldText, FieldNumber, FieldEmail, FieldSelect, FieldCheckbox].{
 		is_eq : Form.Kind, Form.Kind -> Bool
-		is_eq = |left, right| Form.kind_code(left) == Form.kind_code(right)
+		is_eq = |left, right|
+			match (left, right) {
+				(FieldText, FieldText) => True
+				(FieldNumber, FieldNumber) => True
+				(FieldEmail, FieldEmail) => True
+				(FieldSelect, FieldSelect) => True
+				(FieldCheckbox, FieldCheckbox) => True
+				_ => False
+			}
 	}
 
 	## One field definition in the designer.
@@ -65,23 +73,10 @@ Form := {}.{
 		error : Str,
 	}
 
-	## A parsed numeric rule bound. `set` distinguishes "no bound" from "0", and
-	## `bad` marks text that is present but not a number.
-	Bound : {
-		set : Bool,
-		bad : Bool,
-		value : I64,
-	}
-
-	kind_code : Form.Kind -> U64
-	kind_code = |kind|
-		match kind {
-			FieldText => 0
-			FieldNumber => 1
-			FieldEmail => 2
-			FieldSelect => 3
-			FieldCheckbox => 4
-		}
+	## A parsed numeric rule bound. `NoBound` is empty text, `BadBound` is text
+	## that is present but not a whole number, and `HasBound` carries the value —
+	## so "no bound" and "0" can never be confused for one another.
+	Bound : [NoBound, BadBound, HasBound(I64)]
 
 	## Human-readable name of a field kind, used in headings and default labels.
 	kind_title : Form.Kind -> Str
@@ -110,13 +105,13 @@ Form := {}.{
 	checkbox_kind = FieldCheckbox
 
 	is_select : Form.Kind -> Bool
-	is_select = |kind| Form.kind_code(kind) == 3
+	is_select = |kind| match kind { FieldSelect => True, _ => False }
 
 	is_checkbox : Form.Kind -> Bool
-	is_checkbox = |kind| Form.kind_code(kind) == 4
+	is_checkbox = |kind| match kind { FieldCheckbox => True, _ => False }
 
 	is_number : Form.Kind -> Bool
-	is_number = |kind| Form.kind_code(kind) == 1
+	is_number = |kind| match kind { FieldNumber => True, _ => False }
 
 	## Whether this kind is configured with min/max bounds rather than options.
 	uses_bounds : Form.Kind -> Bool
@@ -190,10 +185,8 @@ Form := {}.{
 	set_options = |schema, id, value| Form.update_field(schema, id, |field| { ..field, options_text: value })
 
 	delete_field : Form.Schema, Str -> Form.Schema
-	delete_field = |schema, id| {
-		kept = schema.fields.fold([], |acc, field| if field.id == id { acc } else { acc.append(field) })
-		{ ..schema, fields: kept }
-	}
+	delete_field = |schema, id|
+		{ ..schema, fields: schema.fields.keep_if(|field| field.id != id) }
 
 	## Move the field with `id` one position earlier. The fold carries the
 	## previous element so the swap needs no index arithmetic.
@@ -226,50 +219,40 @@ Form := {}.{
 
 	# --------------------------------------------------------------- answer ops
 
+	## The answer bound to `id`, if the preview has one yet.
+	find_answer : List(Form.Answer), Str -> Try(Form.Answer, [NotFound])
+	find_answer = |answers, id| answers.find_first(|answer| answer.id == id)
+
 	answer_text : List(Form.Answer), Str -> Str
 	answer_text = |answers, id|
-		answers.fold("", |acc, answer| if answer.id == id { answer.text } else { acc })
+		Form.find_answer(answers, id).map_ok(|answer| answer.text).ok_or("")
 
 	answer_flag : List(Form.Answer), Str -> Bool
 	answer_flag = |answers, id|
-		answers.fold(False, |acc, answer| if answer.id == id { answer.flag } else { acc })
+		Form.find_answer(answers, id).map_ok(|answer| answer.flag).ok_or(False)
 
 	set_answer_text : List(Form.Answer), Str, Str -> List(Form.Answer)
-	set_answer_text = |answers, id, value| {
-		found = answers.fold(False, |acc, answer| if answer.id == id { True } else { acc })
-		if found {
+	set_answer_text = |answers, id, value|
+		if Form.find_answer(answers, id).is_ok() {
 			answers.map(|answer| if answer.id == id { { ..answer, text: value } } else { answer })
 		} else {
 			answers.append({ id, text: value, flag: False })
 		}
-	}
 
 	set_answer_flag : List(Form.Answer), Str, Bool -> List(Form.Answer)
-	set_answer_flag = |answers, id, value| {
-		found = answers.fold(False, |acc, answer| if answer.id == id { True } else { acc })
-		if found {
+	set_answer_flag = |answers, id, value|
+		if Form.find_answer(answers, id).is_ok() {
 			answers.map(|answer| if answer.id == id { { ..answer, flag: value } } else { answer })
 		} else {
 			answers.append({ id, text: "", flag: value })
 		}
-	}
 
 	# ------------------------------------------------------------- text helpers
 
 	## Comma-separated option list, trimmed, with blanks discarded.
 	options_of : Str -> List(Str)
 	options_of = |text|
-		text.split_on(",").fold(
-			[],
-			|acc, part| {
-				trimmed = part.trim()
-				if trimmed.is_empty() {
-					acc
-				} else {
-					acc.append(trimmed)
-				}
-			},
-		)
+		text.split_on(",").map(|part| part.trim()).keep_if(|part| !part.is_empty())
 
 	contains_text : Str, Str -> Bool
 	contains_text = |haystack, needle| haystack.split_on(needle).len() > 1
@@ -280,63 +263,32 @@ Form := {}.{
 	length_of : Str -> I64
 	length_of = |text| text.to_utf8().fold(0, |acc, _byte| acc + 1)
 
-	## Decimal digit byte to `I64`, written out because this Roc build exposes no
-	## `U8 -> I64` conversion.
-	digit_value : U8 -> I64
-	digit_value = |byte|
-		if byte == 49 {
-			1
-		} else if byte == 50 {
-			2
-		} else if byte == 51 {
-			3
-		} else if byte == 52 {
-			4
-		} else if byte == 53 {
-			5
-		} else if byte == 54 {
-			6
-		} else if byte == 55 {
-			7
-		} else if byte == 56 {
-			8
-		} else if byte == 57 {
-			9
-		} else {
-			0
-		}
+	## Only plain decimal digits count as a number here. `I64.from_str` is more
+	## generous than the rule syntax this example documents — it would accept
+	## `"+5"` and `"1_0"` — so the digits are checked before it is asked.
+	all_digits : Str -> Bool
+	all_digits = |text| {
+		bytes = text.to_utf8()
+		!bytes.is_empty() and bytes.all(|byte| byte >= 48 and byte <= 57)
+	}
 
-	## Parse a rule bound. Empty text means "no bound"; unparsable text is `bad`.
+	## Parse a rule bound. Empty text means "no bound"; anything that is not a
+	## whole number is `BadBound`.
 	bound_of : Str -> Form.Bound
 	bound_of = |text| {
 		trimmed = text.trim()
 		if trimmed.is_empty() {
-			{ set: False, bad: False, value: 0 }
+			NoBound
 		} else {
 			negative = trimmed.starts_with("-")
 			digits = if negative { trimmed.drop_prefix("-") } else { trimmed }
-			bytes = digits.to_utf8()
-			if bytes.is_empty() {
-				{ set: True, bad: True, value: 0 }
-			} else {
-				folded =
-					bytes.fold(
-						{ ok: True, value: 0 },
-						|acc, byte| {
-							if acc.ok and byte >= 48 and byte <= 57 {
-								{ ok: True, value: acc.value * 10 + Form.digit_value(byte) }
-							} else {
-								{ ok: False, value: 0 }
-							}
-						},
-					)
-				if !folded.ok {
-					{ set: True, bad: True, value: 0 }
-				} else if negative {
-					{ set: True, bad: False, value: 0 - folded.value }
-				} else {
-					{ set: True, bad: False, value: folded.value }
+			if Form.all_digits(digits) {
+				match I64.from_str(trimmed) {
+					Ok(value) => HasBound(value)
+					Err(_) => BadBound
 				}
+			} else {
+				BadBound
 			}
 		}
 	}
@@ -354,16 +306,12 @@ Form := {}.{
 				""
 			}
 		} else {
-			min = Form.bound_of(field.min_text)
-			max = Form.bound_of(field.max_text)
-			if min.bad {
-				"Rule error: minimum is not a number"
-			} else if max.bad {
-				"Rule error: maximum is not a number"
-			} else if min.set and max.set and min.value > max.value {
-				"Rule error: minimum is greater than maximum"
-			} else {
-				""
+			match (Form.bound_of(field.min_text), Form.bound_of(field.max_text)) {
+				(BadBound, _) => "Rule error: minimum is not a number"
+				(_, BadBound) => "Rule error: maximum is not a number"
+				(HasBound(min), HasBound(max)) =>
+					if min > max { "Rule error: minimum is greater than maximum" } else { "" }
+				_ => ""
 			}
 		}
 	}
@@ -386,7 +334,7 @@ Form := {}.{
 					} else {
 						""
 					}
-				} else if options.fold(False, |acc, option| acc or option == trimmed) {
+				} else if options.any(|option| option == trimmed) {
 					""
 				} else {
 					"Choose one of the configured options"
@@ -400,17 +348,9 @@ Form := {}.{
 						""
 					}
 				} else {
-					parsed = Form.bound_of(trimmed)
-					min = Form.bound_of(field.min_text)
-					max = Form.bound_of(field.max_text)
-					if parsed.bad {
-						"Enter a whole number"
-					} else if min.set and parsed.value < min.value {
-						"Must be at least ${min.value.to_str()}"
-					} else if max.set and parsed.value > max.value {
-						"Must be at most ${max.value.to_str()}"
-					} else {
-						""
+					match Form.bound_of(trimmed) {
+						HasBound(value) => Form.range_error(field, value, "")
+						_ => "Enter a whole number"
 					}
 				}
 			}
@@ -442,16 +382,24 @@ Form := {}.{
 	}
 
 	length_error : Form.Field, Str -> Str
-	length_error = |field, trimmed| {
-		min = Form.bound_of(field.min_text)
-		max = Form.bound_of(field.max_text)
-		length = Form.length_of(trimmed)
-		if min.set and length < min.value {
-			"Must be at least ${min.value.to_str()} characters"
-		} else if max.set and length > max.value {
-			"Must be at most ${max.value.to_str()} characters"
+	length_error = |field, trimmed| Form.range_error(field, Form.length_of(trimmed), " characters")
+
+	## Check one measured value against the field's own bounds. `unit` is the
+	## word the message ends with: numbers are bare, text lengths are characters.
+	range_error : Form.Field, I64, Str -> Str
+	range_error = |field, value, unit| {
+		below =
+			match Form.bound_of(field.min_text) {
+				HasBound(min) => if value < min { "Must be at least ${min.to_str()}${unit}" } else { "" }
+				_ => ""
+			}
+		if below != "" {
+			below
 		} else {
-			""
+			match Form.bound_of(field.max_text) {
+				HasBound(max) => if value > max { "Must be at most ${max.to_str()}${unit}" } else { "" }
+				_ => ""
+			}
 		}
 	}
 
@@ -480,7 +428,7 @@ Form := {}.{
 	rows_of = |fields, answers| fields.map(|field| Form.row_of(field, answers))
 
 	problem_count : List(Form.Row) -> U64
-	problem_count = |rows| rows.fold(0, |acc, row| if row.error == "" { acc } else { acc + 1 })
+	problem_count = |rows| rows.keep_if(|row| row.error != "").len()
 
 	all_valid : List(Form.Row) -> Bool
 	all_valid = |rows| Form.problem_count(rows) == 0

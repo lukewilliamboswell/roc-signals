@@ -115,10 +115,10 @@ Home := {}.{
 	tags_sidebar : Signal.Signal(Api.Remote(List(Str))), Ui.State(Nav.RouteIntent) -> Elem
 	tags_sidebar = |tags_state, intent| {
 		is_loading : Signal.Signal(Bool)
-		is_loading = tags_state.map(tags_loading)
+		is_loading = tags_state.map(Api.is_loading)
 
 		is_failed : Signal.Signal(Bool)
-		is_failed = tags_state.map(tags_failed)
+		is_failed = tags_state.map(Api.is_failed)
 
 		tags : Signal.Signal(List(Str))
 		tags = tags_state.map(tags_of)
@@ -152,19 +152,7 @@ Home := {}.{
 	sidebar_tag = |tag, intent|
 		Nav.link(tag, "rounded-full bg-zinc-600 px-3 py-1 text-xs font-medium text-white no-underline hover:bg-emerald-700 hover:text-white hover:no-underline", Route.feed_location({ page: 1, tag: Tagged(tag), source: Global }), intent)
 
-	tags_loading : Api.Remote(List(Str)) -> Bool
-	tags_loading = |remote|
-		match remote {
-			Loading => True
-			_ => False
-		}
 
-	tags_failed : Api.Remote(List(Str)) -> Bool
-	tags_failed = |remote|
-		match remote {
-			Failed(_) => True
-			_ => False
-		}
 
 	tags_of : Api.Remote(List(Str)) -> List(Str)
 	tags_of = |remote|

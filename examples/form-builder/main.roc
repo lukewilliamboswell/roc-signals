@@ -34,6 +34,58 @@ import pf.Html
 import pf.Signal
 import pf.Ui
 
+# ---------------------------------------------------------------- domain tests
+#
+# These sit next to the pure functions the UI derives everything from, and they
+# pin the exact strings the specs assert.
+
+expect Form.bound_of("") == NoBound
+expect Form.bound_of("  7 ") == HasBound(7)
+expect Form.bound_of("-3") == HasBound(-3)
+expect Form.bound_of("2x") == BadBound
+expect Form.bound_of("-") == BadBound
+expect Form.bound_of("+5") == BadBound
+
+expect Form.options_of("") == []
+expect Form.options_of(" Small , Medium ,, Large ") == ["Small", "Medium", "Large"]
+
+expect Form.kind_title(Form.select_kind) == "Select"
+expect Form.text_kind.is_eq(Form.text_kind)
+expect !Form.text_kind.is_eq(Form.email_kind)
+
+sample_number_field : Form.Field
+sample_number_field = {
+	id: "f1",
+	kind: Form.number_kind,
+	label: "Age",
+	required: True,
+	min_text: "2",
+	max_text: "10",
+	options_text: "",
+}
+
+expect Form.rule_error(sample_number_field) == ""
+expect Form.rule_error({ ..sample_number_field, min_text: "2x" }) == "Rule error: minimum is not a number"
+expect Form.rule_error({ ..sample_number_field, max_text: "2x" }) == "Rule error: maximum is not a number"
+expect Form.rule_error({ ..sample_number_field, min_text: "20" }) == "Rule error: minimum is greater than maximum"
+
+expect Form.answer_error(sample_number_field, "5", False) == ""
+expect Form.answer_error(sample_number_field, "", False) == "This field is required"
+expect Form.answer_error(sample_number_field, "x", False) == "Enter a whole number"
+expect Form.answer_error(sample_number_field, "1", False) == "Must be at least 2"
+expect Form.answer_error(sample_number_field, "11", False) == "Must be at most 10"
+
+sample_text_field : Form.Field
+sample_text_field = { ..sample_number_field, kind: Form.text_kind, min_text: "2", max_text: "4" }
+
+expect Form.answer_error(sample_text_field, "a", False) == "Must be at least 2 characters"
+expect Form.answer_error(sample_text_field, "abcde", False) == "Must be at most 4 characters"
+expect Form.answer_error(sample_text_field, "abc", False) == ""
+
+expect Form.answer_text(Form.set_answer_text([], "f1", "hi"), "f1") == "hi"
+expect Form.answer_text([], "f1") == ""
+expect Form.answer_flag(Form.set_answer_flag([], "f1", True), "f1")
+
 page_class = "app-shell app-shell-wide"
 
 panel_class = "panel"
@@ -310,8 +362,21 @@ designer_panel = |schema, fields, has_fields|
 		],
 	)
 
-preview_panel : Ui.State(List(Form.Answer)), Ui.State(U64), Signal.Signal(List(Form.Row)), Signal.Signal(Bool), Signal.Signal(Bool), Signal.Signal(Str), Signal.Signal(Str) -> Elem
-preview_panel = |answers, submits, rows, has_fields, submit_disabled, submittable_text, submittable_class|
+## Everything the preview pane reads, in one record.
+##
+## The pane needs two independent `Bool` signals and two independent `Str`
+## signals; as positional arguments those four are indistinguishable at the call
+## site, and transposing a pair would type-check and render nonsense.
+PreviewView : {
+	rows : Signal.Signal(List(Form.Row)),
+	has_fields : Signal.Signal(Bool),
+	submit_disabled : Signal.Signal(Bool),
+	submittable_text : Signal.Signal(Str),
+	submittable_class : Signal.Signal(Str),
+}
+
+preview_panel : Ui.State(List(Form.Answer)), Ui.State(U64), PreviewView -> Elem
+preview_panel = |answers, submits, view|
 	Html.section_c(
 		"Live preview",
 		panel_class,
@@ -324,8 +389,8 @@ preview_panel = |answers, submits, rows, has_fields, submit_disabled, submittabl
 						"flex items-center gap-2",
 						[
 							Html.paragraph_s_attrs(
-								submittable_text,
-								[Html.class_attr_s(submittable_class), Html.test_id("submittable-state")],
+								view.submittable_text,
+								[Html.class_attr_s(view.submittable_class), Html.test_id("submittable-state")],
 							),
 							Html.button_attrs(
 								"Clear preview answers",
@@ -344,8 +409,8 @@ preview_panel = |answers, submits, rows, has_fields, submit_disabled, submittabl
 						[Html.class_attr("grid gap-4"), Html.on_submit_prevent_default(submits.on_unit(|count| count))],
 						[
 							Ui.when(
-								has_fields,
-								|| Ui.each_str(rows, |row| row.id, |key, row| render_preview_row(answers, key, row)),
+								view.has_fields,
+								|| Ui.each_str(view.rows, |row| row.id, |key, row| render_preview_row(answers, key, row)),
 								|| empty_state("No fields yet. The generated form is empty."),
 							),
 							Html.div_c(
@@ -353,7 +418,7 @@ preview_panel = |answers, submits, rows, has_fields, submit_disabled, submittabl
 								[
 									Html.action_button_attrs(
 										Signal.const("Submit form"),
-										submit_disabled,
+										view.submit_disabled,
 										[Html.attr("type", "button"), Html.class_attr("button-primary")],
 										submits.on_unit(|count| count + 1),
 									),
@@ -467,11 +532,13 @@ main = ||
 											preview_panel(
 												answers,
 												submits,
-												preview_rows,
-												has_fields,
-												submit_disabled,
-												submittable_text,
-												submittable_class,
+												{
+													rows: preview_rows,
+													has_fields,
+													submit_disabled,
+													submittable_text,
+													submittable_class,
+												},
 											),
 										],
 									),

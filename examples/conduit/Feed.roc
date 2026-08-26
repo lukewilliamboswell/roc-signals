@@ -30,10 +30,10 @@ Feed := {}.{
 	view : Signal.Signal(Api.Remote(Api.FeedPage)), Signal.Signal(Session), Ui.State(Nav.RouteIntent) -> Elem
 	view = |remote, session, intent| {
 		is_loading : Signal.Signal(Bool)
-		is_loading = remote.map(is_loading_state)
+		is_loading = remote.map(Api.is_loading)
 
 		is_failed : Signal.Signal(Bool)
-		is_failed = remote.map(is_failed_state)
+		is_failed = remote.map(Api.is_failed)
 
 		is_empty : Signal.Signal(Bool)
 		is_empty = remote.map(is_empty_state)
@@ -42,7 +42,7 @@ Feed := {}.{
 		articles = remote.map(articles_of)
 
 		message : Signal.Signal(Str)
-		message = remote.map(failure_message)
+		message = remote.map(Api.failure_message)
 
 		article_key : Api.ArticleSummary -> Str
 		article_key = |article| article.slug
@@ -72,12 +72,6 @@ Feed := {}.{
 		)
 	}
 
-	is_failed_state : Api.Remote(Api.FeedPage) -> Bool
-	is_failed_state = |remote|
-		match remote {
-			Failed(_) => True
-			_ => False
-		}
 
 	is_empty_state : Api.Remote(Api.FeedPage) -> Bool
 	is_empty_state = |remote|
@@ -93,12 +87,6 @@ Feed := {}.{
 			_ => []
 		}
 
-	failure_message : Api.Remote(Api.FeedPage) -> Str
-	failure_message = |remote|
-		match remote {
-			Failed(message) => message
-			_ => ""
-		}
 
 	preview_row : Str, Signal.Signal(Api.ArticleSummary), Signal.Signal(Session), Ui.State(Nav.RouteIntent) -> Elem
 	preview_row = |slug, article, session, intent| {
@@ -311,31 +299,25 @@ Feed := {}.{
 		}
 
 	page_label : Str -> Str
-	page_label = |key|
-		match key.split_first("|") {
-			Ok(split) => split.before
-			Err(_) => key
-		}
+	page_label = |key| Try.ok_or(key.split_first("|").map_ok(|split| split.before), key)
 
 	key_location : Str -> Browser.Location
 	key_location = |key|
-		match key.split_first("|") {
-			Ok(split) => {
-				page =
-					match U64.from_str(split.before) {
-						Ok(number) => number
-						Err(_) => 1
-					}
-				tag =
-					if split.after.is_empty() {
-						AllTags
-					} else {
-						Tagged(split.after)
-					}
-				Route.feed_location({ page: page, tag: tag, source: Global })
-			}
-			Err(_) => Route.home_location
-		}
+		Try.ok_or(
+			key.split_first("|").map_ok(
+				|split| {
+					page = Try.ok_or(U64.from_str(split.before), 1)
+					tag =
+						if split.after.is_empty() {
+							AllTags
+						} else {
+							Tagged(split.after)
+						}
+					Route.feed_location({ page: page, tag: tag, source: Global })
+				},
+			),
+			Route.home_location,
+		)
 
 	number_range : U64, U64 -> List(U64)
 	number_range = |from, to|
@@ -345,11 +327,14 @@ Feed := {}.{
 			[from].concat(number_range(from + 1, to))
 		}
 
-	is_loading_state : Api.Remote(Api.FeedPage) -> Bool
-	is_loading_state = |remote|
-		match remote {
-			Loading => True
-			_ => False
-		}
 
 }
+
+expect {
+	# Pagination row keys are the only channel a keyed row has back to its
+	# target, so the encode/decode pair has to agree exactly.
+	key = Feed.page_key(3, Tagged("roc"))
+	Feed.page_label(key) == "3" and Feed.key_location(key) == Route.feed_location({ page: 3, tag: Tagged("roc"), source: Global })
+}
+
+expect Feed.key_location(Feed.page_key(1, AllTags)) == Route.home_location

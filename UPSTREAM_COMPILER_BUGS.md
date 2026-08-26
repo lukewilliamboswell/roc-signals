@@ -20,6 +20,7 @@ export ROC_BIN=/path/to/roc_nightly-linux_x86_64-2026-08-25-cc03aa8/roc
 | 3 | markdown-editor traps with `unreachable` in the browser | [#10959](https://github.com/roc-lang/roc/issues/10959) | — | yes |
 | 4 | Empty lambda set at a boxed-closure call | not filed | `repro/empty-lambda-set-boxed-closure/` | n/a |
 | 5 | Method-position dispatch rejects a nested nominal, printing two identical types | not filed | in-situ (below) | yes |
+| 6 | `var $x = False` infers an open tag union, not `Bool`, so `!$x` fails method lookup | not filed | `repro/var-bool-inference/` | yes |
 
 Details for 1-3 are in `wip/example-visual-polish-findings.md`; 4 has its own
 `README.md` beside its repro.
@@ -108,6 +109,51 @@ so none of them is the trigger on its own:
 So the trigger needs something further from `support-inbox` — plausibly the size
 of the `Inbox` module or the number of sibling bindings in the same block. The
 in-situ reproduction above is reliable.
+
+---
+
+## 6. `var $x = False` infers an open tag union, so `!$x` fails
+
+**Status:** not filed upstream. Found 2026-08-27 in `examples/spreadsheet-lite`.
+
+A `var` initialised to a bare `False` (or `True`) infers an *open* tag union
+rather than `Bool`, so calling the `!` method on it fails method lookup. Note
+the inferred type does pick up both tags from the later assignment — it is
+`[False, True, ..]`, structurally a superset of `Bool` — but the open extension
+variable is enough to defeat method lookup.
+
+`repro/var-bool-inference/Repro.roc`:
+
+```roc
+f : U64 -> Bool
+f = |n| {
+	var $flag = False
+	if n > 3 {
+		$flag = True
+	}
+	!$flag
+}
+```
+
+```
+── ✗ missing method ─ Repro.roc:9:2
+
+This not method is being called on a value whose type doesn't have that method.
+
+!$flag
+^^^^^^
+
+The value's type, which does not have a method named not, is:
+
+    [False, True, ..]
+```
+
+### Workaround
+
+Annotate the var, or avoid `!` on it. `examples/spreadsheet-lite/Cells.roc`
+previously carried module-level `no = False` / `yes = True` aliases purely to
+give the vars a `Bool` type; they were replaced by inverting the flags so they
+are named positively and never need `!` (`$closed` became `$open`).
 
 ---
 

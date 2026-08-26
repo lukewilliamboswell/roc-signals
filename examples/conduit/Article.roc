@@ -103,13 +103,13 @@ Article := {}.{
 						article_refetch = { result: favorite_result, slug: slug }.Signal
 
 						is_loading : Signal.Signal(Bool)
-						is_loading = article_state.map(article_loading)
+						is_loading = article_state.map(Api.is_loading)
 
 						is_failed : Signal.Signal(Bool)
-						is_failed = article_state.map(article_failed)
+						is_failed = article_state.map(Api.is_failed)
 
 						message : Signal.Signal(Str)
-						message = article_state.map(article_message)
+						message = article_state.map(Api.failure_message)
 
 						title : Signal.Signal(Str)
 						title = article_state.map(article_title)
@@ -398,9 +398,9 @@ Article := {}.{
 
 	comments_section : Signal.Signal(Api.Remote(List(Api.Comment))), Signal.Signal(Session), Signal.Signal(Bool), Signal.Signal(Str), Signal.Signal(List(Str)), Signal.Signal(Str), Ui.State(Article.State) -> Elem
 	comments_section = |comments_state, session, signed_in, comment_body, comment_errors, comment_delete_message, model| {
-		is_loading = comments_state.map(comments_loading)
-		is_failed = comments_state.map(comments_failed)
-		message = comments_state.map(comments_message)
+		is_loading = comments_state.map(Api.is_loading)
+		is_failed = comments_state.map(Api.is_failed)
+		message = comments_state.map(Api.failure_message)
 		comments = comments_state.map(comments_of)
 		Html.div_c(
 			"mt-10 border-t border-zinc-200 pt-8",
@@ -472,11 +472,7 @@ Article := {}.{
 	}
 
 	comment_id_from_key : Str -> U64
-	comment_id_from_key = |key|
-		match U64.from_str(key) {
-			Ok(id) => id
-			Err(_) => 0
-		}
+	comment_id_from_key = |key| Try.ok_or(U64.from_str(key), 0)
 
 	can_delete_article : Api.Remote(Api.Article), Session -> Bool
 	can_delete_article = |remote, session|
@@ -540,26 +536,8 @@ Article := {}.{
 			_ => ""
 		}
 
-	comments_loading : Api.Remote(List(Api.Comment)) -> Bool
-	comments_loading = |remote|
-		match remote {
-			Loading => True
-			_ => False
-		}
 
-	comments_failed : Api.Remote(List(Api.Comment)) -> Bool
-	comments_failed = |remote|
-		match remote {
-			Failed(_) => True
-			_ => False
-		}
 
-	comments_message : Api.Remote(List(Api.Comment)) -> Str
-	comments_message = |remote|
-		match remote {
-			Failed(message) => message
-			_ => ""
-		}
 
 	comments_of : Api.Remote(List(Api.Comment)) -> List(Api.Comment)
 	comments_of = |remote|
@@ -568,26 +546,8 @@ Article := {}.{
 			_ => []
 		}
 
-	article_loading : Api.Remote(Api.Article) -> Bool
-	article_loading = |remote|
-		match remote {
-			Loading => True
-			_ => False
-		}
 
-	article_failed : Api.Remote(Api.Article) -> Bool
-	article_failed = |remote|
-		match remote {
-			Failed(_) => True
-			_ => False
-		}
 
-	article_message : Api.Remote(Api.Article) -> Str
-	article_message = |remote|
-		match remote {
-			Failed(message) => message
-			_ => ""
-		}
 
 	article_title : Api.Remote(Api.Article) -> Str
 	article_title = |remote|

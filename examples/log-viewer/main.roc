@@ -46,63 +46,91 @@ stream_class = "grid gap-0.5 overflow-y-auto rounded-lg border border-zinc-800 b
 
 # --- domain ------------------------------------------------------------------
 
-LogLine : { id : Str, index : U64, level : U64, text : Str }
+## The four severities a line can carry. The wire tag, the console tag, the
+## tag colour and the message tint all come off this one value, so a row can
+## never show `ERROR` in the info colour.
+Level := [Debug, Info, Warn, Error].{
+	is_eq : Level, Level -> Bool
+	is_eq = |left, right|
+		match left {
+			Debug => match right {
+				Debug => True
+				_ => False
+			}
+			Info => match right {
+				Info => True
+				_ => False
+			}
+			Warn => match right {
+				Warn => True
+				_ => False
+			}
+			Error => match right {
+				Error => True
+				_ => False
+			}
+		}
+
+	## The lower-case name written into the line text itself.
+	to_str : Level -> Str
+	to_str = |level|
+		match level {
+			Debug => "debug"
+			Info => "info"
+			Warn => "warn"
+			Error => "error"
+		}
+
+	## The tag drawn in the stream: the same value as `to_str`, uppercased for
+	## the fixed-width column.
+	tag : Level -> Str
+	tag = |level|
+		match level {
+			Debug => "DEBUG"
+			Info => "INFO"
+			Warn => "WARN"
+			Error => "ERROR"
+		}
+
+	## Full class strings, because Tailwind scans this file literally.
+	tag_class : Level -> Str
+	tag_class = |level|
+		match level {
+			Debug => "w-14 shrink-0 font-semibold text-zinc-500"
+			Info => "w-14 shrink-0 font-semibold text-emerald-400"
+			Warn => "w-14 shrink-0 font-semibold text-amber-400"
+			Error => "w-14 shrink-0 font-semibold text-red-400"
+		}
+
+	## The message tints with the level too, but far more gently: the tag
+	## carries the signal, the message carries the words.
+	text_class : Level -> Str
+	text_class = |level|
+		match level {
+			Debug => "min-w-0 flex-1 text-zinc-400"
+			Info => "min-w-0 flex-1 text-zinc-100"
+			Warn => "min-w-0 flex-1 text-amber-200"
+			Error => "min-w-0 flex-1 text-red-200"
+		}
+
+	## Lines cycle through the four levels by line number.
+	from_index : U64 -> Level
+	from_index = |index|
+		match index % 4 {
+			0 => Debug
+			1 => Info
+			2 => Warn
+			_ => Error
+		}
+}
+
+expect Level.to_str(Level.from_index(41)) == "info"
+expect Level.tag(Level.from_index(3)) == "ERROR"
+expect Level.is_eq(Level.from_index(4), Level.Debug)
+
+LogLine : { id : Str, index : U64, level : Level, text : Str }
 
 VisibleLine : { id : Str, text : Str, matched : Bool }
-
-level_name : U64 -> Str
-level_name = |code|
-	if code == 0 {
-		"debug"
-	} else if code == 1 {
-		"info"
-	} else if code == 2 {
-		"warn"
-	} else {
-		"error"
-	}
-
-## The tag drawn in the stream. Same source value as `level_name`, uppercased
-## for the fixed-width column.
-level_tag : U64 -> Str
-level_tag = |code|
-	if code == 0 {
-		"DEBUG"
-	} else if code == 1 {
-		"INFO"
-	} else if code == 2 {
-		"WARN"
-	} else {
-		"ERROR"
-	}
-
-## Colour is derived from the same `level` the tag is, so the two cannot
-## disagree. Full class strings, because Tailwind scans this file literally.
-level_tag_class : U64 -> Str
-level_tag_class = |code|
-	if code == 0 {
-		"w-14 shrink-0 font-semibold text-zinc-500"
-	} else if code == 1 {
-		"w-14 shrink-0 font-semibold text-emerald-400"
-	} else if code == 2 {
-		"w-14 shrink-0 font-semibold text-amber-400"
-	} else {
-		"w-14 shrink-0 font-semibold text-red-400"
-	}
-
-## The message tints with the level too, but far more gently: the tag carries
-## the signal, the message carries the words.
-level_text_class : U64 -> Str
-level_text_class = |code|
-	if code == 0 {
-		"min-w-0 flex-1 text-zinc-400"
-	} else if code == 1 {
-		"min-w-0 flex-1 text-zinc-100"
-	} else if code == 2 {
-		"min-w-0 flex-1 text-amber-200"
-	} else {
-		"min-w-0 flex-1 text-red-200"
-	}
 
 message_text : U64 -> Str
 message_text = |slot|
@@ -122,8 +150,8 @@ message_text = |slot|
 
 make_line : U64 -> LogLine
 make_line = |index| {
-	level = index % 4
-	name = level_name(level)
+	level = Level.from_index(index)
+	name = Level.to_str(level)
 	message = message_text(index % 6)
 	number = index.to_str()
 
@@ -154,14 +182,19 @@ contains_text = |haystack, needle|
 		haystack.split_on(needle).len() > 1
 	}
 
-level_enabled : List(Bool), U64 -> Bool
-level_enabled = |levels, code|
-	match levels.get(code) {
-		Ok(flag) => flag
-		Err(_) => False
-	}
+expect contains_text("[3] error upstream timeout", "upstream")
+expect !contains_text("[3] error upstream timeout", "")
 
-select_lines : List(LogLine), List(Bool), Str -> List(VisibleLine)
+## `levels` is the set of levels currently switched on, so there is no parallel
+## array of flags to keep aligned with the level order.
+level_enabled : List(Level), Level -> Bool
+level_enabled = |levels, level|
+	Try.is_ok(List.find_first(levels, |candidate| Level.is_eq(candidate, level)))
+
+expect level_enabled([Level.Info, Level.Error], Level.Error)
+expect !level_enabled([Level.Info, Level.Error], Level.Warn)
+
+select_lines : List(LogLine), List(Level), Str -> List(VisibleLine)
 select_lines = |lines, levels, query|
 	lines
 		.keep_if(|line| level_enabled(levels, line.level))
@@ -178,10 +211,10 @@ match_count = |lines| lines.keep_if(|line| line.matched).len()
 
 ## Errors currently on screen, counted from the buffer rather than the visible
 ## set so the level filter is what decides whether they count.
-error_count : List(LogLine), List(Bool) -> U64
+error_count : List(LogLine), List(Level) -> U64
 error_count = |lines, levels|
-	if level_enabled(levels, 3) {
-		lines.keep_if(|line| line.level == 3).len()
+	if level_enabled(levels, Level.Error) {
+		lines.keep_if(|line| Level.is_eq(line.level, Level.Error)).len()
 	} else {
 		0
 	}
@@ -215,17 +248,19 @@ reverse_lines = |lines| reverse_from(lines, lines.len(), [])
 
 # --- row rendering -----------------------------------------------------------
 
-digits_to_u64 : Str -> U64
-digits_to_u64 = |text|
-	text.to_utf8().fold(
-		0,
-		|acc, byte|
-			if byte >= 48 and byte <= 57 {
-				acc * 10 + (U8.to_u64(byte) - 48)
-			} else {
-				acc
-			},
-	)
+## Row keys look like `line-12`, so the line number has to be picked back out
+## of the key. The digits are filtered out first because `U64.from_str` would
+## reject the `line-` prefix; `Try.ok_or` covers a key carrying no digits at
+## all, which answers 0.
+key_index : Str -> U64
+key_index = |key| {
+	digits = key.to_utf8().keep_if(|byte| byte >= 48 and byte <= 57)
+	Str.from_utf8(digits).map_ok(U64.from_str).ok_or(Ok(0)).ok_or(0)
+}
+
+expect key_index("line-12") == 12
+expect key_index("line-0") == 0
+expect key_index("line-") == 0
 
 pad2 : U64 -> Str
 pad2 = |value| if value < 10 { "0${value.to_str()}" } else { value.to_str() }
@@ -255,8 +290,8 @@ row_class_for = |line|
 ## nothing has to print "match: yes" into a console the user is reading.
 render_row : Str, Signal.Signal(VisibleLine) -> Elem
 render_row = |key, line| {
-	index = digits_to_u64(key)
-	level = index % 4
+	index = key_index(key)
+	level = Level.from_index(index)
 	line_text = line.map(|value| value.text)
 	match_flag = line.map(|value| if value.matched { "yes" } else { "no" })
 
@@ -269,8 +304,8 @@ render_row = |key, line| {
 		],
 		[
 			Html.paragraph_c(clock_text(index), "shrink-0 tabular-nums text-zinc-500"),
-			Html.paragraph_c(level_tag(level), level_tag_class(level)),
-			Html.paragraph_s_attrs(line_text, [Html.class_attr(level_text_class(level)), Html.test_id("text-${key}")]),
+			Html.paragraph_c(Level.tag(level), Level.tag_class(level)),
+			Html.paragraph_s_attrs(line_text, [Html.class_attr(Level.text_class(level)), Html.test_id("text-${key}")]),
 		],
 	)
 }
@@ -287,8 +322,18 @@ stat = |label, value|
 		],
 	)
 
-stream_panel : Signal.Signal(List(Bool)), Signal.Signal(Str), Signal.Signal(Bool), Signal.Signal(Bool) -> Elem
-stream_panel = |levels, query, follow_tail, newest_first| {
+## The four signals the stream reads. They are a record rather than four
+## positional arguments so the two `Signal(Bool)`s cannot be transposed at the
+## call site.
+StreamInputs : {
+	levels : Signal.Signal(List(Level)),
+	query : Signal.Signal(Str),
+	follow_tail : Signal.Signal(Bool),
+	newest_first : Signal.Signal(Bool),
+}
+
+stream_panel : StreamInputs -> Elem
+stream_panel = |{ levels, query, follow_tail, newest_first }| {
 	ticks = Signal.interval(1000)
 
 	all_lines : Signal.Signal(List(LogLine))
@@ -423,10 +468,24 @@ check_row = |label, checked, msg|
 		],
 	)
 
-page : Ui.State(Bool), Ui.State(Bool), Ui.State(Bool), Ui.State(Bool), Ui.State(Str), Ui.State(Bool), Ui.State(Bool), Ui.State(Bool) -> Elem
-page = |show_debug, show_info, show_warn, show_error, query, follow_tail, newest_first, epoch| {
-	# Four independent level toggles fan in to one list-of-flags signal via the
-	# record-builder `.Signal`.
+## Every control the page owns. Eight `Ui.State`s in a row, seven of them
+## `Bool`, would be indistinguishable at the call site; named fields make a
+## transposition a compile error instead of a silently wrong checkbox.
+Controls : {
+	show_debug : Ui.State(Bool),
+	show_info : Ui.State(Bool),
+	show_warn : Ui.State(Bool),
+	show_error : Ui.State(Bool),
+	query : Ui.State(Str),
+	follow_tail : Ui.State(Bool),
+	newest_first : Ui.State(Bool),
+	epoch : Ui.State(Bool),
+}
+
+page : Controls -> Elem
+page = |{ show_debug, show_info, show_warn, show_error, query, follow_tail, newest_first, epoch }| {
+	# Four independent level toggles fan in to one signal of the *enabled set*
+	# via the record-builder `.Signal`.
 	level_flags =
 		{
 			debug: show_debug.signal(),
@@ -434,7 +493,18 @@ page = |show_debug, show_info, show_warn, show_error, query, follow_tail, newest
 			warn: show_warn.signal(),
 			error: show_error.signal(),
 		}.Signal
-	levels = level_flags.map(|flags| [flags.debug, flags.info, flags.warn, flags.error])
+	levels =
+		level_flags.map(
+			|flags|
+				[
+					{ level: Level.Debug, on: flags.debug },
+					{ level: Level.Info, on: flags.info },
+					{ level: Level.Warn, on: flags.warn },
+					{ level: Level.Error, on: flags.error },
+				]
+					.keep_if(|entry| entry.on)
+					.map(|entry| entry.level),
+		)
 	query_signal = query.signal()
 	follow_signal = follow_tail.signal()
 	newest_signal = newest_first.signal()
@@ -526,8 +596,8 @@ page = |show_debug, show_info, show_warn, show_error, query, follow_tail, newest
 			# state plus a write hook.
 			Ui.when(
 				epoch.signal(),
-				|| stream_panel(levels, query_signal, follow_signal, newest_signal),
-				|| stream_panel(levels, query_signal, follow_signal, newest_signal),
+				|| stream_panel({ levels, query: query_signal, follow_tail: follow_signal, newest_first: newest_signal }),
+				|| stream_panel({ levels, query: query_signal, follow_tail: follow_signal, newest_first: newest_signal }),
 			),
 		],
 	)
@@ -558,7 +628,7 @@ main = ||
 														|newest_first|
 															Ui.state(
 																True,
-																|epoch| page(show_debug, show_info, show_warn, show_error, query, follow_tail, newest_first, epoch),
+																|epoch| page({ show_debug, show_info, show_warn, show_error, query, follow_tail, newest_first, epoch }),
 															),
 													),
 											),

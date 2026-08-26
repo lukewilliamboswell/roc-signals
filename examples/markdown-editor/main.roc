@@ -213,17 +213,28 @@ outline_panel = |rows, numbered, numbered_signal| {
 	)
 }
 
-statistics_panel : Signal.Signal(Stats.Counts), Signal.Signal(U64), Signal.Signal(U64), Ui.State(Str), Signal.Signal(Str) -> Elem
-statistics_panel = |counts, heading_count, reading, speed, speed_signal| {
+## The four inputs of the statistics panel. `heading_count` and `minutes` are
+## both `Signal(U64)`, so they travel in a named record rather than as adjacent
+## positional arguments a caller could silently transpose.
+StatisticsInputs : {
+	counts : Signal.Signal(Stats.Counts),
+	heading_count : Signal.Signal(U64),
+	minutes : Signal.Signal(U64),
+	speed : Ui.State(Str),
+	speed_signal : Signal.Signal(Str),
+}
+
+statistics_panel : StatisticsInputs -> Elem
+statistics_panel = |{ counts, heading_count, minutes, speed, speed_signal }| {
 	words_text = counts.map(|value| value.words.to_str())
 	characters_text = counts.map(|value| value.characters.to_str())
 	headings_text = heading_count.map(|value| value.to_str())
-	reading_text = reading.map(|value| "${value.to_str()} min")
+	reading_text = minutes.map(|value| "${value.to_str()} min")
 
 	# Wide fan-in: the raw counts, the heading spine size, and the reading
 	# estimate meet in one record-builder signal.
 	summary_input : Signal.Signal({ counts : Stats.Counts, headings : U64, minutes : U64 })
-	summary_input = { counts, headings: heading_count, minutes: reading }.Signal
+	summary_input = { counts, headings: heading_count, minutes }.Signal
 
 	summary_line : Signal.Signal(Str)
 	summary_line =
@@ -232,8 +243,8 @@ statistics_panel = |counts, heading_count, reading, speed, speed_signal| {
 				words = value.counts.words.to_str()
 				characters = value.counts.characters.to_str()
 				headings = value.headings.to_str()
-				minutes = value.minutes.to_str()
-				"${words} words | ${characters} characters | ${headings} headings | ${minutes} min"
+				estimate = value.minutes.to_str()
+				"${words} words | ${characters} characters | ${headings} headings | ${estimate} min"
 			},
 		)
 
@@ -344,7 +355,7 @@ main = ||
 											Html.paragraph_c("One source string, four independently derived views.", "app-subtitle"),
 										],
 									),
-									statistics_panel(counts, heading_count, reading, speed, speed_signal),
+									statistics_panel({ counts, heading_count, minutes: reading, speed, speed_signal }),
 									Html.div_c(
 										"grid gap-6 lg:grid-cols-2",
 										[

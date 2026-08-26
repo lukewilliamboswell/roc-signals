@@ -57,17 +57,11 @@ Edit := {}.{
 		Str.join_with(body, "\n")
 	}
 
+	## The section at `wanted`, or an empty section when the index is past the
+	## end. Callers have already checked the count, so out of range is not an
+	## error worth propagating.
 	at : Edit.Sections, U64 -> List(Str)
-	at = |sections, wanted|
-		sections.fold(
-			{ out: [], index: 0 },
-			|acc, section|
-				if acc.index == wanted {
-					{ out: section, index: acc.index + 1 }
-				} else {
-					{ out: acc.out, index: acc.index + 1 }
-				},
-		).out
+	at = |sections, wanted| Try.ok_or(sections.get(wanted), [])
 
 	append_word : Str -> Str
 	append_word = |source|
@@ -179,3 +173,13 @@ Edit := {}.{
 		).out
 	}
 }
+
+expect Edit.append_word("") == "extra"
+expect Edit.append_word("hello") == "hello extra"
+expect Edit.append_section("") == "## New Section"
+expect Edit.demote_last_heading("# Alpha\n\n## Beta") == "# Alpha\n\n### Beta"
+# Level six is the floor; a further demotion is a no-op.
+expect Edit.demote_last_heading("###### Beta") == "###### Beta"
+expect Edit.remove_last_section("# Alpha\n\nbody\n\n## Beta") == "# Alpha\n\nbody\n"
+# Sections carry their own trailing blank line, so the swap moves it too.
+expect Edit.move_last_section_up("# Alpha\n\n## Beta") == "## Beta\n# Alpha\n"

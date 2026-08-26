@@ -70,13 +70,13 @@ Profile := {}.{
 						)
 
 						is_loading : Signal.Signal(Bool)
-						is_loading = profile_state.map(profile_loading)
+						is_loading = profile_state.map(Api.is_loading)
 
 						is_failed : Signal.Signal(Bool)
-						is_failed = profile_state.map(profile_failed)
+						is_failed = profile_state.map(Api.is_failed)
 
 						message : Signal.Signal(Str)
-						message = profile_state.map(profile_message)
+						message = profile_state.map(Api.failure_message)
 
 						name_text : Signal.Signal(Str)
 						name_text = profile_state.map(profile_name)
@@ -264,13 +264,6 @@ Profile := {}.{
 			_ => "Follow"
 		}
 
-	follow_done_of : Profile.FollowResult -> Bool
-	follow_done_of = |result|
-		match result {
-			FollowAccepted(_) => True
-			_ => False
-		}
-
 	follow_message_of : Profile.FollowResult -> Str
 	follow_message_of = |result|
 		match result {
@@ -278,26 +271,8 @@ Profile := {}.{
 			_ => ""
 		}
 
-	profile_loading : Api.Remote(Api.Profile) -> Bool
-	profile_loading = |remote|
-		match remote {
-			Loading => True
-			_ => False
-		}
 
-	profile_failed : Api.Remote(Api.Profile) -> Bool
-	profile_failed = |remote|
-		match remote {
-			Failed(_) => True
-			_ => False
-		}
 
-	profile_message : Api.Remote(Api.Profile) -> Str
-	profile_message = |remote|
-		match remote {
-			Failed(message) => message
-			_ => ""
-		}
 
 	profile_name : Api.Remote(Api.Profile) -> Str
 	profile_name = |remote|

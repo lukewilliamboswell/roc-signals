@@ -60,3 +60,16 @@ Stats := {}.{
 			_ => 200
 		}
 }
+
+expect Stats.counts("") == { words: 0, characters: 0 }
+expect Stats.counts("one two  three\nfour") == { words: 4, characters: 19 }
+# Multi-byte punctuation is one character, not one per byte.
+expect Stats.counts("a\u(2014)b") == { words: 1, characters: 3 }
+expect Stats.reading_minutes(0, 200) == 0
+expect Stats.reading_minutes(1, 200) == 1
+expect Stats.reading_minutes(400, 200) == 2
+expect Stats.reading_minutes(401, 200) == 3
+# A zero speed would divide by zero, so it falls back to the default.
+expect Stats.reading_minutes(200, 0) == 1
+expect Stats.parse_wpm("100") == 100
+expect Stats.parse_wpm("nonsense") == 200
