@@ -38,17 +38,41 @@ for every pattern below.
 
 ## Toolchain
 
+Use the Roc nightly pinned in `.roc-version`, not whatever is on PATH — CI
+installs that exact tag, so anything else can pass locally and fail there.
+
+Type-check loop:
+
 ```sh
-export ROC_BIN=/home/lbw/roc_nightly-linux_x86_64-2026-08-26-b29bef3/roc
+export ROC_BIN=/path/to/roc_nightly-<tag-from-.roc-version>/roc
 scripts/dev/check-example.sh <your-slug>
 ```
 
-That is your inner loop; it takes a second or two and it must report "No
-errors found" before you report done. It checks only your example, in a
-private scratch directory, so it is safe to run while other agents work.
+That takes a second or two and must report "No errors found". It checks only
+your example, in a private scratch directory, so it is safe to run while other
+agents work.
 
-Do NOT run `scripts/test.py` — it shares one output directory and parallel
-runs clobber each other. The orchestrator runs the full native suite.
+Spec loop — copy your example somewhere private, rewrite its platform header to
+the local platform, build it, and run **one spec file per invocation**. The
+built binary takes a single `.scm` file; handing it the `specs/` directory
+fails with `Error: Failed to parse test spec`, which reads like a broken spec
+rather than a usage error:
+
+```sh
+OUT=.test-out/<slug>-agent && rm -rf $OUT && mkdir -p $OUT
+cp -r examples/<slug> $OUT/<slug>
+find $OUT/<slug> -name '*.roc' -print0 |
+  xargs -0 sed -i -E 's|platform "[^"]+"|platform "'"$PWD"'/platform/main.roc"|'
+$ROC_BIN build --target=x64musl --opt=dev --no-cache --output=$OUT/bin $OUT/<slug>/main.roc
+zig build build-test-hosts
+for f in $OUT/<slug>/specs/*.scm; do $OUT/bin "$f" || echo "FAIL $f"; done
+```
+
+Edit the **real** specs under `examples/<slug>/specs/`; the copy is only for
+running. Every spec must pass before you report done.
+
+Do NOT run `scripts/test.py` — it shares one `.test-out/` directory, so
+parallel runs clobber each other.
 
 You cannot run a browser. The orchestrator does the visual pass and will come
 back to you with screenshots if something is off.
