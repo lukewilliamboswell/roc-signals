@@ -90,11 +90,50 @@ Each example now draws its own caption inside a `field` wrapper. A
 `Html.field(label, control)` helper, or a `placeholder` parameter on the input
 constructors, would remove a whole class of defect.
 
+### P1 — a `<select>`'s value is applied before its options have values
+
+Every `<select>` in `flight-search` renders blank. The options are all present
+and correct, and assigning `select.value = "SYD"` by hand works, so the markup
+is fine — but `selectedIndex` is `-1` after mount.
+
+The host applies `set_value` to the select before the `set_attr_text` ops that
+give each `<option>` its `value`. Assigning a value that matches no option
+leaves `selectedIndex` at `-1`, and nothing re-applies it once the options
+become valid, so the control stays blank until the user touches it.
+
+Either emit a select's `set_value` after its children are fully materialised,
+or re-apply the pending value when an `<option>` under a controlled select
+gains a value.
+
+## Browser-only failures the native suite cannot see
+
+This is the recurring shape of everything below, and it is the single most
+useful thing in this log: **a green native suite says nothing about whether an
+example works in a browser.** Three unrelated defects this pass were invisible
+to specs that all passed, and one of them broke the featured example.
+
+Something that opens each published example in a real browser and asserts it
+mounts, has no console error, and reaches a non-loading state would have caught
+all of them.
+
+### markdown-editor traps with "unreachable" in the browser
+
+Opening `examples/markdown-editor/` renders nothing but the host error
+`unreachable` — a wasm trap during mount. All 11 native specs pass. Reproduced
+on the commit before the polish work as well, so it predates this pass.
+
+### Several examples have no data source in the browser at all
+
+`status-page` sits at "Checking services", "Refreshes requested: 0" forever;
+`support-inbox` shows "No conversations to show" and "Syncing…" forever. Their
+tasks are plain `Signal.task_source` names (`check:api`, `incidents`, `inbox`,
+`send`) and nothing in `www/static/example_tasks.mjs` answers them. They only
+ever "worked" under the native host, where the spec script supplies results.
+
+These are published in the gallery with `wasm = true`, so a visitor sees an app
+that never loads.
+
 ## Pre-existing failures found along the way
-
-### conduit — article feed never renders in the browser
-
-Caused by the P0 above, not by anything in the example. Left as-is.
 
 ### markdown-editor — character count off by one
 
