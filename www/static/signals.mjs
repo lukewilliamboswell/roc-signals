@@ -737,6 +737,9 @@ export class SignalsRuntime {
     // by the most recent host call so guards can assert the per-event patch
     // budget (mirrors the native host's `patches_emitted` discipline).
     this.lastCommands = [];
+    // Non-null while a drained command batch is being applied; see
+    // snapshotCommandBuffers.
+    this.commandBuffers = null;
     this.commandDecodeStats = null;
     if (this.telemetryLog) {
       this.installPointerProbe();
@@ -1264,6 +1267,30 @@ export class SignalsRuntime {
     this.onError(err);
   }
 
+  /// Copy the host's string and dynamic payload buffers into JS-owned arrays.
+  ///
+  /// Applying a command can re-enter the host (moving DOM focus fires a focus
+  /// listener, which dispatches into Roc), and every host entry point starts by
+  /// clearing these buffers. Reading them lazily during apply therefore races
+  /// with that clear: the dynamic buffer reports a null base and throws, and the
+  /// string buffer silently decodes from address 0. Snapshotting at drain time
+  /// makes apply independent of what the host does next.
+  snapshotCommandBuffers() {
+    this.views.afterHostCall();
+    const stringLen = this.exports.roc_ui_string_buffer_len();
+    const stringBase = this.exports.roc_ui_string_buffer_ptr();
+    const dynamicLen = this.exports.roc_ui_dynamic_buffer_len();
+    const dynamicBase = this.exports.roc_ui_dynamic_buffer_ptr();
+    return {
+      strings: stringLen === 0 || stringBase === 0
+        ? new Uint8Array(0)
+        : this.views.u8.slice(stringBase, stringBase + stringLen),
+      dynamic: dynamicLen === 0 || dynamicBase === 0
+        ? new Uint8Array(0)
+        : this.views.u8.slice(dynamicBase, dynamicBase + dynamicLen),
+    };
+  }
+
   readPendingCommands() {
     this.views.afterHostCall();
     const words = this.exports.roc_ui_command_record_words();
@@ -1295,8 +1322,21 @@ export class SignalsRuntime {
       return "";
     }
 
+    const snapshot = this.commandBuffers;
+    if (snapshot) {
+      if (offset + length > snapshot.strings.byteLength) {
+        throw new Error(
+          `render command string slice ${offset}:${offset + length} exceeds string buffer length ${snapshot.strings.byteLength}`,
+        );
+      }
+      return textDecoder.decode(snapshot.strings.subarray(offset, offset + length));
+    }
+
     this.views.afterHostCall();
     const base = this.exports.roc_ui_string_buffer_ptr();
+    if (base === 0) {
+      throw new Error("render command referenced an empty string buffer");
+    }
     const bytes = this.views.u8.subarray(base + offset, base + offset + length);
     return textDecoder.decode(bytes);
   }
@@ -1310,12 +1350,23 @@ export class SignalsRuntime {
   }
 
   readDynamicBytes(offset, length) {
-    this.views.afterHostCall();
-    const base = this.exports.roc_ui_dynamic_buffer_ptr();
-    const available = this.exports.roc_ui_dynamic_buffer_len();
     if (length === 0) {
       return new Uint8Array(0);
     }
+
+    const snapshot = this.commandBuffers;
+    if (snapshot) {
+      if (offset + length > snapshot.dynamic.byteLength) {
+        throw new Error(
+          `dynamic render command slice ${offset}:${offset + length} exceeds dynamic buffer length ${snapshot.dynamic.byteLength}`,
+        );
+      }
+      return snapshot.dynamic.subarray(offset, offset + length);
+    }
+
+    this.views.afterHostCall();
+    const base = this.exports.roc_ui_dynamic_buffer_ptr();
+    const available = this.exports.roc_ui_dynamic_buffer_len();
     if (base === 0) {
       throw new Error("dynamic render command referenced an empty dynamic buffer");
     }
@@ -1329,7 +1380,10 @@ export class SignalsRuntime {
 
   applyPendingCommands(phase = "host-call") {
     const records = this.readPendingCommands();
+    const buffers = records.length === 0 ? null : this.snapshotCommandBuffers();
     this.lastCommands = records;
+    const previousBuffers = this.commandBuffers;
+    this.commandBuffers = buffers;
     this.emitCommandTelemetry(phase, records);
     const previousDecodeStats = this.commandDecodeStats;
     const previousStorageBatch = this.storageBatch;
@@ -1342,6 +1396,7 @@ export class SignalsRuntime {
       }
     } finally {
       const storageBatch = this.storageBatch;
+      this.commandBuffers = previousBuffers;
       this.commandDecodeStats = previousDecodeStats;
       this.storageBatch = previousStorageBatch;
       this.flushStorageBatch(storageBatch);

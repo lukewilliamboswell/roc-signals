@@ -1,0 +1,346 @@
+# Support Inbox
+#
+# Wire format for the "inbox" sync task:
+#   <conversations> # <messages>
+#   conversation: id|subject|customer|owner
+#   message:      id|conversation|author|body|read-flag|client-id
+#
+# The "send" task echoes the client id on both success and failure.
+#
+# Product decisions this spec locks in:
+#   - Filtering never closes the open thread. The row can leave the list; the
+#     thread pane stays put and a notice explains the mismatch.
+#   - A message keeps its client id as its row key for its whole life, so the
+#     server acknowledgement reuses the row instead of recreating it.
+#   - Only one send is ever in flight; the composer stays disabled while a send
+#     is pending and while a failed send is waiting to be discarded.
+#   - A conversation the inbox no longer lists shows an empty thread.
+
+# ---------------------------------------------------------------- initial mount
+
+expect_visible role:heading name:"Support Inbox"
+expect_visible role:region name:"Inbox summary"
+expect_visible role:region name:"Conversations"
+expect_visible role:region name:"Thread"
+expect_visible role:region name:"Poll loop"
+expect_visible role:form name:"Composer"
+
+expect_text test_id:"inbox-summary" "0 conversations, 0 unread, 0 sending"
+expect_text test_id:"sync-status" "Sync: loading"
+expect_text test_id:"filter-state" "Filter: all"
+expect_text test_id:"poll-state" "Polling: every 4s"
+expect_text test_id:"poll-count" "Polls issued: 0"
+expect_text test_id:"filter-notice" "All open conversations are listed."
+expect_text test_id:"conv-empty" "No conversations to show."
+expect_text test_id:"thread-title" "Thread: no conversation selected"
+expect_text test_id:"thread-empty" "No messages yet."
+expect_text test_id:"send-state" "Send state: idle"
+expect_text test_id:"send-error" "No send errors"
+expect_value label:"Message" ""
+expect_checked label:"All" true
+expect_checked label:"Unread" false
+expect_checked label:"Assigned to me" false
+expect_checked label:"Poll for updates" true
+expect_disabled role:button name:"Send message" true
+
+expect_interval 4000 1
+expect_pending_task "inbox" 1
+expect_pending_task "send" 0
+expect_cleanup "inbox polling cleanup" 0
+
+# ------------------------------------------------------ first snapshot arrives
+
+resolve_task "inbox" "c1|Card declined|Ada Lovelace|me;c2|Cannot log in|Grace Hopper|sam;c3|Refund status|Alan Turing|me#m1|c1|customer|My card was declined|read|-;m2|c1|agent|Looking into it now|read|-;m3|c2|customer|Login loop on mobile|new|-"
+expect_pending_task "inbox" 0
+expect_text test_id:"sync-status" "Sync: up to date"
+expect_text test_id:"inbox-summary" "3 conversations, 1 unread, 0 sending"
+expect_absent test_id:"conv-empty"
+
+expect_visible role:region name:"Conversation c1"
+expect_visible role:region name:"Conversation c2"
+expect_visible role:region name:"Conversation c3"
+expect_text test_id:"meta-c1" "Ada Lovelace / me"
+expect_text test_id:"meta-c2" "Grace Hopper / sam"
+expect_text test_id:"unread-c1" "no unread"
+expect_text test_id:"unread-c2" "1 unread"
+expect_text test_id:"unread-c3" "no unread"
+expect_text test_id:"state-c1" "closed"
+expect_text test_id:"state-c2" "closed"
+expect_text test_id:"state-c3" "closed"
+expect_text test_id:"thread-title" "Thread: no conversation selected"
+expect_text test_id:"thread-empty" "No messages yet."
+
+# ------------------------------------------------- selecting a conversation
+
+click test_id:"open-c1"
+expect_text test_id:"state-c1" "open"
+expect_text test_id:"state-c2" "closed"
+expect_text test_id:"thread-title" "Thread: Card declined"
+expect_absent test_id:"thread-empty"
+expect_visible role:region name:"Message m1"
+expect_visible role:region name:"Message m2"
+expect_text test_id:"body-m1" "customer: My card was declined"
+expect_text test_id:"body-m2" "agent: Looking into it now"
+expect_text test_id:"mstate-m1" "delivered"
+expect_pending_task "inbox" 1
+
+# ------- a newer read request cancels the older one; the stale result is ignored
+
+mark_metrics
+click test_id:"open-c3"
+expect_canceled_task "inbox" 1
+expect_pending_task "inbox" 1
+expect_text test_id:"thread-title" "Thread: Refund status"
+expect_text test_id:"thread-empty" "No messages yet."
+expect_absent test_id:"msg-m1"
+resolve_stale_task "inbox" "c9|Stale conversation|Nobody|me#"
+expect_metric_delta stale_task_results_ignored 1
+expect_text test_id:"inbox-summary" "3 conversations, 1 unread, 0 sending"
+expect_visible role:region name:"Conversation c1"
+expect_absent role:region name:"Conversation c9"
+
+# ------------------------------------------- unread clears when the thread is read
+
+click test_id:"open-c2"
+expect_pending_task "inbox" 1
+expect_text test_id:"thread-title" "Thread: Cannot log in"
+expect_text test_id:"body-m3" "customer: Login loop on mobile"
+expect_text test_id:"mstate-m3" "unread"
+resolve_task "inbox" "c1|Card declined|Ada Lovelace|me;c2|Cannot log in|Grace Hopper|sam;c3|Refund status|Alan Turing|me#m1|c1|customer|My card was declined|read|-;m2|c1|agent|Looking into it now|read|-;m3|c2|customer|Login loop on mobile|read|-"
+expect_text test_id:"unread-c2" "no unread"
+expect_text test_id:"mstate-m3" "delivered"
+expect_text test_id:"inbox-summary" "3 conversations, 0 unread, 0 sending"
+
+# --------------------------------------------------- filter meets selection
+#
+# Decision: filtering never closes the open thread. The row can leave the list,
+# the thread pane stays put, and a notice explains the mismatch.
+
+change label:"Assigned to me" "mine"
+expect_text test_id:"filter-state" "Filter: mine"
+expect_checked label:"Assigned to me" true
+expect_visible role:region name:"Conversation c1"
+expect_absent role:region name:"Conversation c2"
+expect_visible role:region name:"Conversation c3"
+expect_text test_id:"filter-notice" "The open conversation is hidden by the current filter."
+expect_text test_id:"thread-title" "Thread: Cannot log in"
+expect_text test_id:"body-m3" "customer: Login loop on mobile"
+
+change label:"Unread" "unread"
+expect_text test_id:"filter-state" "Filter: unread"
+expect_text test_id:"conv-empty" "No conversations to show."
+expect_absent role:region name:"Conversation c1"
+expect_text test_id:"filter-notice" "The open conversation is hidden by the current filter."
+expect_text test_id:"thread-title" "Thread: Cannot log in"
+
+change label:"All" "all"
+expect_text test_id:"filter-state" "Filter: all"
+expect_absent test_id:"conv-empty"
+expect_text test_id:"filter-notice" "All open conversations are listed."
+expect_text test_id:"state-c2" "open"
+
+# ------------------------------------------------------- optimistic sending
+
+click test_id:"open-c1"
+resolve_task "inbox" "c1|Card declined|Ada Lovelace|me;c2|Cannot log in|Grace Hopper|sam;c3|Refund status|Alan Turing|me#m1|c1|customer|My card was declined|read|-;m2|c1|agent|Looking into it now|read|-;m3|c2|customer|Login loop on mobile|read|-"
+expect_text test_id:"thread-title" "Thread: Card declined"
+expect_disabled role:button name:"Send message" true
+
+fill label:"Message" "Refund issued"
+expect_value label:"Message" "Refund issued"
+expect_disabled role:button name:"Send message" false
+
+mark_metrics
+click role:button name:"Send message"
+expect_value label:"Message" ""
+expect_pending_task "send" 1
+expect_text test_id:"send-state" "Send state: sending"
+expect_text test_id:"inbox-summary" "3 conversations, 0 unread, 1 sending"
+expect_visible role:region name:"Message p1"
+expect_text test_id:"body-p1" "you: Refund issued"
+expect_text test_id:"mstate-p1" "sending"
+expect_disabled role:button name:"Send message" true
+expect_metric_delta rows_created 1
+expect_metric_delta rows_removed 0
+
+# A poll lands while the send is still in flight. The snapshot does not carry
+# the client id yet, so the optimistic row must survive untouched - not dropped
+# by the newer server truth, and not duplicated by it either.
+tick_interval 4000
+expect_text test_id:"poll-count" "Polls issued: 1"
+expect_pending_task "inbox" 1
+mark_metrics
+resolve_task "inbox" "c1|Card declined|Ada Lovelace|me;c2|Cannot log in|Grace Hopper|sam;c3|Refund status|Alan Turing|me#m1|c1|customer|My card was declined|read|-;m2|c1|agent|Looking into it now|read|-;m3|c2|customer|Login loop on mobile|read|-"
+expect_metric_delta rows_created 0
+expect_metric_delta rows_removed 0
+expect_visible role:region name:"Message p1"
+expect_text test_id:"body-p1" "you: Refund issued"
+expect_text test_id:"mstate-p1" "sending"
+expect_text test_id:"inbox-summary" "3 conversations, 0 unread, 1 sending"
+expect_pending_task "send" 1
+
+resolve_task "send" "p1"
+expect_pending_task "send" 0
+expect_text test_id:"send-state" "Send state: sent"
+expect_text test_id:"mstate-p1" "sent"
+expect_text test_id:"inbox-summary" "3 conversations, 0 unread, 0 sending"
+
+# ----------------------------------------- a conversation with no messages
+
+click test_id:"open-c3"
+expect_pending_task "inbox" 1
+resolve_task "inbox" "c1|Card declined|Ada Lovelace|me;c2|Cannot log in|Grace Hopper|sam;c3|Refund status|Alan Turing|me#m1|c1|customer|My card was declined|read|-;m2|c1|agent|Looking into it now|read|-;m3|c2|customer|Login loop on mobile|read|-;m9|c1|agent|Refund issued|read|p1"
+expect_text test_id:"thread-title" "Thread: Refund status"
+expect_text test_id:"thread-empty" "No messages yet."
+expect_text test_id:"thread-count" "Messages: 0"
+expect_absent role:region name:"Message p1"
+expect_absent role:region name:"Message m1"
+expect_disabled role:button name:"Send message" true
+
+# ------------------------------------------- a send fails and rolls back
+
+click test_id:"open-c1"
+expect_pending_task "inbox" 1
+resolve_task "inbox" "c1|Card declined|Ada Lovelace|me;c2|Cannot log in|Grace Hopper|sam;c3|Refund status|Alan Turing|me#m1|c1|customer|My card was declined|read|-;m2|c1|agent|Looking into it now|read|-;m3|c2|customer|Login loop on mobile|read|-;m9|c1|agent|Refund issued|read|p1"
+expect_text test_id:"thread-count" "Messages: 3"
+expect_text test_id:"body-p1" "agent: Refund issued"
+
+fill label:"Message" "Second reply"
+expect_disabled role:button name:"Send message" false
+mark_metrics
+click role:button name:"Send message"
+expect_pending_task "send" 1
+expect_metric_delta rows_created 1
+expect_text test_id:"thread-count" "Messages: 4"
+expect_visible role:region name:"Message p2"
+expect_text test_id:"body-p2" "you: Second reply"
+expect_text test_id:"mstate-p2" "sending"
+expect_text test_id:"send-state" "Send state: sending"
+expect_text test_id:"inbox-summary" "3 conversations, 0 unread, 1 sending"
+
+mark_metrics
+reject_task "send" "p2"
+expect_pending_task "send" 0
+expect_absent role:region name:"Message p2"
+expect_metric_delta rows_removed 1
+expect_metric_delta rows_created 0
+expect_text test_id:"thread-count" "Messages: 3"
+expect_text test_id:"send-state" "Send state: failed"
+expect_text test_id:"send-error" "Send failed: Second reply"
+expect_text test_id:"inbox-summary" "3 conversations, 0 unread, 0 sending"
+
+# the composer stays locked until the failure is dealt with
+expect_disabled role:button name:"Send message" true
+
+# the rollback must not disturb its siblings
+expect_visible role:region name:"Message p1"
+expect_text test_id:"body-p1" "agent: Refund issued"
+expect_text test_id:"mstate-p1" "delivered"
+expect_text test_id:"body-m1" "customer: My card was declined"
+
+click role:button name:"Discard failed message"
+expect_text test_id:"send-state" "Send state: discarded"
+expect_text test_id:"send-error" "No send errors"
+expect_absent role:region name:"Message p2"
+expect_visible role:region name:"Message p1"
+
+# ------------------------------------------------------------- the key budget
+#
+# A poll adds a message to c2, which is NOT the open conversation. Its unread
+# count must rise while the open thread is left completely alone: no thread row
+# is created, removed, or even re-rendered.
+
+expect_text test_id:"state-c1" "open"
+expect_text test_id:"unread-c2" "no unread"
+mark_metrics
+tick_interval 4000
+resolve_task "inbox" "c1|Card declined|Ada Lovelace|me;c2|Cannot log in|Grace Hopper|sam;c3|Refund status|Alan Turing|me#m1|c1|customer|My card was declined|read|-;m2|c1|agent|Looking into it now|read|-;m3|c2|customer|Login loop on mobile|read|-;m9|c1|agent|Refund issued|read|p1;m10|c2|customer|Still broken|new|-"
+expect_text test_id:"unread-c2" "1 unread"
+expect_text test_id:"inbox-summary" "3 conversations, 1 unread, 0 sending"
+expect_metric_delta rows_created 0
+expect_metric_delta rows_removed 0
+expect_metric_delta rows_reused 3
+expect_metric_delta scopes_created 0
+expect_metric_delta scopes_disposed 0
+expect_metric_delta_at_most patches_emitted 6
+expect_metric_delta_at_most nodes_recomputed 4
+expect_text test_id:"body-m1" "customer: My card was declined"
+expect_text test_id:"body-p1" "agent: Refund issued"
+expect_absent role:region name:"Message m10"
+# Sibling isolation, measured: the open thread's first message and the two
+# untouched conversation rows have each had their text written exactly once
+# since they were mounted; only c2's unread counter was written a second time.
+expect_updates test_id:"body-m1" 1
+expect_updates test_id:"unread-c1" 1
+expect_updates test_id:"unread-c3" 1
+expect_updates test_id:"unread-c2" 2
+
+# -------------------------------------------------- the server reorders rows
+#
+# A poll returns the same three conversations in a different order. Keyed rows
+# move; none is created or destroyed, and each keeps its own data.
+
+tick_interval 4000
+mark_metrics
+resolve_task "inbox" "c2|Cannot log in|Grace Hopper|sam;c3|Refund status|Alan Turing|me;c1|Card declined|Ada Lovelace|me#m1|c1|customer|My card was declined|read|-;m2|c1|agent|Looking into it now|read|-;m3|c2|customer|Login loop on mobile|read|-;m9|c1|agent|Refund issued|read|p1;m10|c2|customer|Still broken|new|-"
+expect_metric_delta rows_created 0
+expect_metric_delta rows_removed 0
+expect_metric_delta rows_reused 3
+expect_text test_id:"meta-c1" "Ada Lovelace / me"
+expect_text test_id:"meta-c2" "Grace Hopper / sam"
+expect_text test_id:"meta-c3" "Alan Turing / me"
+expect_text test_id:"unread-c2" "1 unread"
+expect_text test_id:"unread-c1" "no unread"
+expect_text test_id:"state-c1" "open"
+expect_text test_id:"thread-count" "Messages: 3"
+
+# ------------------------------------------------- pausing and resuming polling
+
+uncheck label:"Poll for updates"
+expect_checked label:"Poll for updates" false
+expect_text test_id:"poll-state" "Polling: paused"
+expect_text test_id:"poll-paused" "Polling is paused."
+expect_absent role:region name:"Poll loop"
+expect_interval 4000 0
+expect_cleanup "inbox polling cleanup" 1
+tick_interval_if_active 4000
+expect_pending_task "inbox" 0
+
+check label:"Poll for updates"
+expect_checked label:"Poll for updates" true
+expect_visible role:region name:"Poll loop"
+expect_text test_id:"poll-count" "Polls issued: 0"
+expect_text test_id:"poll-state" "Polling: every 4s"
+expect_interval 4000 1
+expect_absent test_id:"poll-paused"
+
+# ---------------------------------------------------------- empty inbox edge
+
+tick_interval 4000
+expect_pending_task "inbox" 1
+resolve_task "inbox" "#"
+expect_text test_id:"inbox-summary" "0 conversations, 0 unread, 0 sending"
+expect_text test_id:"conv-empty" "No conversations to show."
+expect_absent role:region name:"Conversation c1"
+expect_text test_id:"thread-title" "Thread: c1 (not in inbox)"
+expect_text test_id:"thread-empty" "No messages yet."
+expect_text test_id:"thread-count" "Messages: 0"
+expect_text test_id:"filter-notice" "The open conversation is hidden by the current filter."
+
+# ----------------------------------------------------------- a failed sync
+
+tick_interval 4000
+expect_pending_task "inbox" 1
+reject_task "inbox" "gateway timeout"
+expect_pending_task "inbox" 0
+expect_text test_id:"sync-status" "Sync: failed - gateway timeout"
+expect_text test_id:"inbox-summary" "0 conversations, 0 unread, 0 sending"
+
+# a later poll recovers
+tick_interval 4000
+resolve_task "inbox" "c1|Card declined|Ada Lovelace|me;c2|Cannot log in|Grace Hopper|sam;c3|Refund status|Alan Turing|me#m1|c1|customer|My card was declined|read|-;m2|c1|agent|Looking into it now|read|-"
+expect_text test_id:"sync-status" "Sync: up to date"
+expect_text test_id:"inbox-summary" "3 conversations, 0 unread, 0 sending"
+expect_text test_id:"thread-title" "Thread: Card declined"
+expect_text test_id:"body-m1" "customer: My card was declined"
+expect_text test_id:"filter-notice" "All open conversations are listed."
