@@ -843,13 +843,38 @@ expect_metric_delta_at_most stream_nodes_scanned 4096
 expect_metric_delta signal_record_table_rebuilt 0
 ```
 
-Useful metric names include `nodes_recomputed`, `patches_emitted`,
-`rows_reused`, `rows_created`, `rows_removed`, `scopes_created`,
-`scopes_disposed`, `stream_nodes_scanned`, `stream_nodes_scanned_events`,
-`render_indexes_refreshed`, `active_intervals_synced`,
-`active_graph_records_rebuilt`, `signal_record_table_rebuilt`,
-`stale_task_results_ignored`, `retained_alloc_delta`,
-`host_retained_alloc_delta`, and `host_retained_bytes_delta`. The authoritative
+Pick the metric that answers the question you are asking:
+
+- **Did derived work stay proportional to the change?** `derived_calls_into_roc`
+  counts one call per `map` / `map2` / `combine` transform actually evaluated,
+  plus one for the event dispatch itself. This is the fine-grained budget.
+- **Did an equality cutoff stop propagation?** `propagation_prunes` counts each
+  derived node that recomputed to an equal value and therefore did not
+  propagate.
+- **Did the reconciler reuse rows?** `rows_reused`, `rows_created`,
+  `rows_removed`, `scopes_created`, `scopes_disposed`. These are semantic —
+  assert them exactly.
+- **How much reached the DOM?** `patches_emitted`, `set_text`, `set_value`,
+  `set_checked`. Their exact values shift with unrelated engine changes, so
+  bound them with `expect_metric_delta_at_most` rather than asserting equality.
+
+Note that `nodes_recomputed` does **not** count derived nodes. It counts dirty
+source roots — one per event dispatch, or the number of source signals a host
+change dirtied. It is therefore 1 for almost every user interaction regardless
+of how deep the graph is, and it is not a useful fine-grained budget. Use
+`derived_calls_into_roc` for that.
+
+`examples/_fixtures/metric-semantics/` demonstrates the difference: one click on
+a source feeding a four-deep chain plus one always-equal node reports
+`nodes_recomputed 1`, `derived_calls_into_roc 7`, `propagation_prunes 1`, and
+`patches_emitted 1`.
+
+Other metric names include `stream_nodes_scanned`,
+`stream_nodes_scanned_events`, `render_indexes_refreshed`,
+`active_intervals_synced`, `active_graph_records_rebuilt`,
+`signal_record_table_rebuilt`, `stale_task_results_ignored`,
+`retained_alloc_delta`, `host_retained_alloc_delta`, and
+`host_retained_bytes_delta`. The authoritative
 metric list lives in `src/spec/spec_runner.zig`.
 
 Run the representative native suite from the repository root:

@@ -127,9 +127,15 @@ static content.
 
 **Metric assertions:** assert `rows_created` / `rows_reused` / `rows_removed` /
 `scopes_created` / `scopes_disposed` exactly — they are semantic. Bound
-`patches_emitted` and `nodes_recomputed` with `expect_metric_delta_at_most`
-instead of asserting them exactly; their precise values move with unrelated
-engine changes and exact assertions there make the suite brittle.
+`patches_emitted` with `expect_metric_delta_at_most`; its precise value moves
+with unrelated engine changes.
+
+Do NOT use `nodes_recomputed` as a fine-grained budget. It counts dirty source
+roots — one per event dispatch — so it is 1 for almost every interaction no
+matter how deep the graph. Use `derived_calls_into_roc` (one per
+`map`/`map2`/`combine` evaluation, plus one for the dispatch) and
+`propagation_prunes` (equality cutoffs that fired). See
+`examples/_fixtures/metric-semantics/`.
 
 ## Accessibility and markup
 

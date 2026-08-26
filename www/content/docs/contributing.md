@@ -270,6 +270,13 @@ expected value — asserts only that an element with that text exists. It is
 `expect_visible text:"X"` written the long way, and it cannot report a value
 mismatch. Prefer a `test_id` locator with the value as the expectation.
 
+**`nodes_recomputed` does not count derived nodes.** It counts dirty source
+roots — one per event dispatch. It is 1 for almost every interaction no matter
+how deep the graph. Use `derived_calls_into_roc` (one per `map`/`map2`/`combine`
+evaluation, plus one for the dispatch) as the fine-grained budget, and
+`propagation_prunes` to show an equality cutoff fired. See
+`examples/_fixtures/metric-semantics/`.
+
 **Assert structural metrics exactly; bound engine-internal ones.** `rows_created`,
 `rows_reused`, `rows_removed`, `scopes_created` and `scopes_disposed` are
 semantic: they describe what the reconciler did, and an exact assertion is a
