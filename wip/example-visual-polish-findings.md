@@ -4,6 +4,25 @@ Running log from the pass that brought every gallery example up to a shared
 visual bar. Platform friction and cross-cutting bugs go here; per-example
 notes stay in the commits.
 
+## Where the gallery ended up
+
+All 21 examples were restyled onto the shared design system, and the native
+spec suite is green. Opening each one in Chrome at 1440px:
+
+| Result | Examples |
+| --- | --- |
+| Mounts and works | availability-picker, data-grid, dependency-scheduler, field-notes, form-builder, kanban-board, loan-comparator, log-viewer, onboarding-wizard, package-explorer, pomodoro-tracker, query-builder, recipe-scaler, split-the-bill, spreadsheet-lite, status-page, support-inbox, token-editor |
+| Blocked by a platform bug | conduit, flight-search, markdown-editor |
+
+The three that do not work are not blocked on anything visual. Each is a
+wasm32-only memory or codegen bug that the native suite cannot see, and each is
+written up below with a reproduction. Their view layers are finished and will
+come good the moment the underlying bug is fixed.
+
+Six of the eighteen in the first row had no data source in the browser at all
+before this pass and sat in a loading state forever; they now have seeded
+backends in `www/static/example_tasks.mjs`.
+
 ## Platform bugs
 
 ### P1 — `Html.aria_invalid_s` set `aria-invalid=""`, which reads as *valid* — FIXED
