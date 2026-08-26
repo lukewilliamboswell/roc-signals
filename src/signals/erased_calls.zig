@@ -41,14 +41,19 @@ pub fn erasedCallablePayload(callable: abi.RocErasedCallable) *abi.RocErasedCall
     return abi.rocErasedCallablePayloadPtr(callable);
 }
 
+fn callErasedCallable(payload: *abi.RocErasedCallablePayload, roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture: ?[*]u8) void {
+    var out_desc: ?*const anyopaque = null;
+    payload.callable_fn_ptr(roc_host, ret, args, capture, null, &out_desc);
+}
+
 pub fn callValueInitThunk(roc_host: *abi.RocHost, callable: abi.RocErasedCallable) HostValue {
     const payload = erasedCallablePayload(callable);
-    var call_args = ErasedUnitArgs{};
     var result: HostValue = undefined;
-    payload.callable_fn_ptr(
+    callErasedCallable(
+        payload,
         roc_host,
         @ptrCast(&result),
-        @ptrCast(&call_args),
+        null,
         abi.rocErasedCallableCapturePtr(callable),
     );
     return result;
@@ -58,7 +63,8 @@ pub fn callErasedHostValueToHostValue(roc_host: *abi.RocHost, callable: abi.RocE
     const payload = erasedCallablePayload(callable);
     var call_args = ErasedHostValueUnaryArgs{ .arg0 = arg0 };
     var result: HostValue = undefined;
-    payload.callable_fn_ptr(
+    callErasedCallable(
+        payload,
         roc_host,
         @ptrCast(&result),
         @ptrCast(&call_args),
@@ -71,7 +77,8 @@ pub fn callErasedHostValueToCmd(roc_host: *abi.RocHost, callable: abi.RocErasedC
     const payload = erasedCallablePayload(callable);
     var call_args = ErasedHostValueUnaryArgs{ .arg0 = arg0 };
     var result: Cmd = undefined;
-    payload.callable_fn_ptr(
+    callErasedCallable(
+        payload,
         roc_host,
         @ptrCast(&result),
         @ptrCast(&call_args),
@@ -82,12 +89,12 @@ pub fn callErasedHostValueToCmd(roc_host: *abi.RocHost, callable: abi.RocErasedC
 
 pub fn callUnitToCmd(roc_host: *abi.RocHost, callable: abi.RocErasedCallable) Cmd {
     const payload = erasedCallablePayload(callable);
-    var call_args = ErasedUnitArgs{};
     var result: Cmd = undefined;
-    payload.callable_fn_ptr(
+    callErasedCallable(
+        payload,
         roc_host,
         @ptrCast(&result),
-        @ptrCast(&call_args),
+        null,
         abi.rocErasedCallableCapturePtr(callable),
     );
     return result;
@@ -97,7 +104,8 @@ pub fn callErasedHostValueHostValueToHostValue(roc_host: *abi.RocHost, callable:
     const payload = erasedCallablePayload(callable);
     var call_args = ErasedHostValueBinaryArgs{ .arg0 = arg0, .arg1 = arg1 };
     var result: HostValue = undefined;
-    payload.callable_fn_ptr(
+    callErasedCallable(
+        payload,
         roc_host,
         @ptrCast(&result),
         @ptrCast(&call_args),
@@ -110,7 +118,8 @@ pub fn callErasedHostValueHostValueToElem(roc_host: *abi.RocHost, callable: abi.
     const payload = erasedCallablePayload(callable);
     var call_args = ErasedHostValueBinaryArgs{ .arg0 = arg0, .arg1 = arg1 };
     var result: abi.Elem = undefined;
-    payload.callable_fn_ptr(
+    callErasedCallable(
+        payload,
         roc_host,
         @ptrCast(&result),
         @ptrCast(&call_args),
@@ -123,7 +132,8 @@ pub fn callErasedHostValueHostValueToBool(roc_host: *abi.RocHost, callable: abi.
     const payload = erasedCallablePayload(callable);
     var call_args = ErasedHostValueBinaryArgs{ .arg0 = arg0, .arg1 = arg1 };
     var result: usize = 0;
-    payload.callable_fn_ptr(
+    callErasedCallable(
+        payload,
         roc_host,
         @ptrCast(&result),
         @ptrCast(&call_args),
@@ -136,7 +146,8 @@ pub fn callErasedHostValueToUnit(roc_host: *abi.RocHost, callable: abi.RocErased
     const payload = erasedCallablePayload(callable);
     var call_args = ErasedHostValueUnaryArgs{ .arg0 = arg0 };
     var result: usize = 0;
-    payload.callable_fn_ptr(
+    callErasedCallable(
+        payload,
         roc_host,
         @ptrCast(&result),
         @ptrCast(&call_args),
@@ -148,7 +159,8 @@ pub fn callErasedHostValueToStr(roc_host: *abi.RocHost, callable: abi.RocErasedC
     const payload = erasedCallablePayload(callable);
     var call_args = ErasedHostValueUnaryArgs{ .arg0 = arg0 };
     var result: abi.RocStr = undefined;
-    payload.callable_fn_ptr(
+    callErasedCallable(
+        payload,
         roc_host,
         @ptrCast(&result),
         @ptrCast(&call_args),
@@ -161,7 +173,8 @@ pub fn callErasedHostValueToBool(roc_host: *abi.RocHost, callable: abi.RocErased
     const payload = erasedCallablePayload(callable);
     var call_args = ErasedHostValueUnaryArgs{ .arg0 = arg0 };
     var result: usize = 0;
-    payload.callable_fn_ptr(
+    callErasedCallable(
+        payload,
         roc_host,
         @ptrCast(&result),
         @ptrCast(&call_args),
@@ -174,7 +187,8 @@ pub fn callErasedHostValueToU64(roc_host: *abi.RocHost, callable: abi.RocErasedC
     const payload = erasedCallablePayload(callable);
     var call_args = ErasedHostValueUnaryArgs{ .arg0 = arg0 };
     var result: u64 = undefined;
-    payload.callable_fn_ptr(
+    callErasedCallable(
+        payload,
         roc_host,
         @ptrCast(&result),
         @ptrCast(&call_args),
@@ -187,7 +201,8 @@ pub fn callErasedHostValueToHostValueList(roc_host: *abi.RocHost, callable: abi.
     const payload = erasedCallablePayload(callable);
     var call_args = ErasedHostValueUnaryArgs{ .arg0 = arg0 };
     var result: HostValueList = undefined;
-    payload.callable_fn_ptr(
+    callErasedCallable(
+        payload,
         roc_host,
         @ptrCast(&result),
         @ptrCast(&call_args),
@@ -200,7 +215,8 @@ pub fn callErasedRocBoxToRocBoxPair(roc_host: *abi.RocHost, callable: abi.RocEra
     const payload = erasedCallablePayload(callable);
     var call_args = ErasedRocBoxUnaryArgs{ .arg0 = arg0 };
     var result: RocBoxPair = undefined;
-    payload.callable_fn_ptr(
+    callErasedCallable(
+        payload,
         roc_host,
         @ptrCast(&result),
         @ptrCast(&call_args),
@@ -214,7 +230,8 @@ pub fn callErasedHostValueListToHostValue(roc_host: *abi.RocHost, callable: abi.
     arg0.incref(1);
     var call_args = ErasedHostValueListUnaryArgs{ .arg0 = arg0 };
     var result: HostValue = undefined;
-    payload.callable_fn_ptr(
+    callErasedCallable(
+        payload,
         roc_host,
         @ptrCast(&result),
         @ptrCast(&call_args),

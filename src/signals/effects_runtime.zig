@@ -486,7 +486,7 @@ fn testIntervalRecord(token: HostSignalToken, period_ms: u64) HostSignalRecord {
 
 var test_signal_token_drop_count: u64 = 0;
 
-fn testSignalTokenCallable(_: *abi.RocHost, _: ?[*]u8, _: ?[*]const u8, _: ?[*]u8) callconv(.c) void {}
+fn testSignalTokenCallable(_: *abi.RocHost, _: ?[*]u8, _: ?[*]const u8, _: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {}
 
 fn testSignalTokenOnDrop(_: ?[*]u8, _: *abi.RocHost) callconv(.c) void {
     test_signal_token_drop_count += 1;

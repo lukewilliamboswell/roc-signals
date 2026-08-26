@@ -59,7 +59,7 @@ expect_pending_task "lookup" 0
 tick_interval_if_active 1000
 expect_visible role:region name:"Search panel closed"
 expect_interval 1000 0
-expect_metric_delta retained_alloc_delta -19
+expect_metric_delta retained_alloc_delta -18
 
 click role:button name:"Open results"
 expect_visible role:region name:"Search results"
