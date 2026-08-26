@@ -194,12 +194,10 @@ main = || {
 							inbox_task = Signal.task_source("inbox", Inbox.parse_snapshot, |err| err, False)
 
 							# Send endpoint. Both payloads are the client id, so the app
-							# can tell which optimistic message settled. `reset_on_start`
-							# is False here too: on this platform build, restarting a
-							# `reset_on_start = True` task from the same reducer flush
-							# that grew an `each_str` list makes the host drop that
-							# list update (see the notes in spec.txt).
-							send_task = Signal.task_source("send", |value| "ok:${value}", |err| "fail:${err}", False)
+							# can tell which optimistic message settled. Starting a send
+							# publishes Loading while the optimistic row is inserted in
+							# the same flush; the spec below guards that structural update.
+							send_task = Signal.task_source("send", |value| "ok:${value}", |err| "fail:${err}", True)
 
 							snapshot = Signal.fold_task(inbox_task, Inbox.empty_snapshot, |value| value, |_| Inbox.empty_snapshot)
 							sync_status =

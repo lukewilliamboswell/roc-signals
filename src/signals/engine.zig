@@ -5423,6 +5423,14 @@ pub fn Engine(comptime Ctx: type) type {
             const stable_changed_record_ids = allocator.dupe(u64, changed_record_ids) catch @panic("out of memory");
             defer allocator.free(stable_changed_record_ids);
 
+            var pending_on_change_commands: std.ArrayListUnmanaged(HostPendingOnChangeCommand) = .empty;
+            defer {
+                for (pending_on_change_commands.items) |pending| {
+                    abi.decrefNodeCmd(pending.cmd, roc_host);
+                }
+                pending_on_change_commands.deinit(allocator);
+            }
+
             var deferred_storage_effects: std.ArrayListUnmanaged(HostDeferredStorageEffect) = .empty;
             defer {
                 for (deferred_storage_effects.items) |effect| allocator.free(effect.key);
@@ -5431,14 +5439,13 @@ pub fn Engine(comptime Ctx: type) type {
             var deferred_location_effect = false;
 
             debugPhase(ctx, 350);
-            var counts = self.applyDirtyRenderSinksDeferringSourceEffects(
+            var counts = self.collectDirtyRenderSinksAndCommands(
                 ctx,
                 roc_host,
                 dirty_source_node_ids,
                 stable_changed_record_ids,
                 dirty_generation,
-                &deferred_location_effect,
-                &deferred_storage_effects,
+                &pending_on_change_commands,
             );
 
             debugPhase(ctx, 360);
@@ -5448,6 +5455,13 @@ pub fn Engine(comptime Ctx: type) type {
                 debugPhase(ctx, 370);
                 counts.addAll(self.applyDirtyStructuralSignalsLocally(ctx, roc_host, dirty_source_node_ids, dirty_generation, dirty_structural_signals));
             }
+            counts.addAll(self.runPendingOnChangeCommandsDeferringSourceEffects(
+                ctx,
+                roc_host,
+                pending_on_change_commands.items,
+                &deferred_location_effect,
+                &deferred_storage_effects,
+            ));
             counts.addAll(self.flushDeferredSourceEffects(ctx, roc_host, deferred_location_effect, deferred_storage_effects.items));
             return counts;
         }
@@ -5721,25 +5735,17 @@ pub fn Engine(comptime Ctx: type) type {
             return self.runCommand(ctx, roc_host, pending.scope_id, cmd);
         }
 
-        fn applyDirtyRenderSinksDeferringSourceEffects(
+        fn collectDirtyRenderSinksAndCommands(
             self: *Self,
             ctx: Ctx.Handle,
             roc_host: *abi.RocHost,
             dirty_source_node_ids: []const u64,
             changed_record_ids: []const u64,
             dirty_generation: u64,
-            deferred_location_effect: *bool,
-            deferred_storage_effects: *std.ArrayListUnmanaged(HostDeferredStorageEffect),
+            pending_on_change_commands: *std.ArrayListUnmanaged(HostPendingOnChangeCommand),
         ) render.Counts {
             var counts: render.Counts = .{};
             const allocator = Ctx.allocator(ctx);
-            var pending_on_change_commands: std.ArrayListUnmanaged(HostPendingOnChangeCommand) = .empty;
-            defer {
-                for (pending_on_change_commands.items) |pending| {
-                    abi.decrefNodeCmd(pending.cmd, roc_host);
-                }
-                pending_on_change_commands.deinit(allocator);
-            }
 
             for (changed_record_ids) |record_id| {
                 const route_index: usize = @intCast(record_id);
@@ -5803,7 +5809,22 @@ pub fn Engine(comptime Ctx: type) type {
                 }
             }
 
-            for (pending_on_change_commands.items) |pending| {
+            if (comptime enable_runtime_metrics) self.render_metrics.addCommandCounts(counts);
+            return counts;
+        }
+
+        fn runPendingOnChangeCommandsDeferringSourceEffects(
+            self: *Self,
+            ctx: Ctx.Handle,
+            roc_host: *abi.RocHost,
+            pending_on_change_commands: []const HostPendingOnChangeCommand,
+            deferred_location_effect: *bool,
+            deferred_storage_effects: *std.ArrayListUnmanaged(HostDeferredStorageEffect),
+        ) render.Counts {
+            var counts: render.Counts = .{};
+            const allocator = Ctx.allocator(ctx);
+
+            for (pending_on_change_commands) |pending| {
                 switch (pending.cmd.tag) {
                     .PushState => {
                         const payload = pending.cmd.payload_push_state();
@@ -5850,21 +5871,34 @@ pub fn Engine(comptime Ctx: type) type {
 
         pub fn applyDirtyRenderSinks(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, dirty_source_node_ids: []const u64, changed_record_ids: []const u64, dirty_generation: u64) render.Counts {
             const allocator = Ctx.allocator(ctx);
+            var pending_on_change_commands: std.ArrayListUnmanaged(HostPendingOnChangeCommand) = .empty;
+            defer {
+                for (pending_on_change_commands.items) |pending| {
+                    abi.decrefNodeCmd(pending.cmd, roc_host);
+                }
+                pending_on_change_commands.deinit(allocator);
+            }
             var deferred_storage_effects: std.ArrayListUnmanaged(HostDeferredStorageEffect) = .empty;
             defer {
                 for (deferred_storage_effects.items) |effect| allocator.free(effect.key);
                 deferred_storage_effects.deinit(allocator);
             }
             var deferred_location_effect = false;
-            var counts = self.applyDirtyRenderSinksDeferringSourceEffects(
+            var counts = self.collectDirtyRenderSinksAndCommands(
                 ctx,
                 roc_host,
                 dirty_source_node_ids,
                 changed_record_ids,
                 dirty_generation,
+                &pending_on_change_commands,
+            );
+            counts.addAll(self.runPendingOnChangeCommandsDeferringSourceEffects(
+                ctx,
+                roc_host,
+                pending_on_change_commands.items,
                 &deferred_location_effect,
                 &deferred_storage_effects,
-            );
+            ));
             counts.addAll(self.flushDeferredSourceEffects(ctx, roc_host, deferred_location_effect, deferred_storage_effects.items));
             return counts;
         }
