@@ -41,7 +41,9 @@
     (expect-text (test-id "body-p2") "Second reply")
     (expect-text (test-id "mstate-p2") "sending")
     (expect-text (test-id "send-state") "Sending…")
-    (expect-text (test-id "inbox-summary") "Conversations3Unread0Sending1")
+    (expect-text (test-id "summary-conversations") "3")
+    (expect-text (test-id "summary-unread") "0")
+    (expect-text (test-id "summary-sending") "1")
     (mark-metrics)
     (reject-task "send" "p2")
     (expect-pending-task "send" 0)
@@ -51,7 +53,9 @@
     (expect-text (test-id "thread-count") "3 messages")
     (expect-text (test-id "send-state") "Failed")
     (expect-text (test-id "send-error") "Send failed: Second reply")
-    (expect-text (test-id "inbox-summary") "Conversations3Unread0Sending0")
+    (expect-text (test-id "summary-conversations") "3")
+    (expect-text (test-id "summary-unread") "0")
+    (expect-text (test-id "summary-sending") "0")
     ; the composer stays locked until the failure is dealt with
     (expect-disabled (role button :name "Send message") true)
     ; the rollback must not disturb its siblings

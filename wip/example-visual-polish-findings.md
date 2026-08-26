@@ -135,6 +135,16 @@ so this is wasm32-only — the same family as the two below and as the JSON
 field-name corruption above. Nothing in the example can work around a double
 free; it needs a runtime fix.
 
+### support-inbox traps with "unreachable" when a conversation is opened
+
+Polling works and the list populates, but clicking a conversation - which
+issues the `read:<id>` task - traps the app with a bare `unreachable`.
+
+This path was previously unreachable in a browser because the example had no
+data at all, so nothing here is newly broken; it is newly *exposed*. That is
+the pattern worth noting: giving these examples a data source did not create
+these bugs, it revealed how much of the browser path had never been executed.
+
 ### markdown-editor traps with "unreachable" in the browser
 
 Opening `examples/markdown-editor/` renders nothing but the host error

@@ -379,13 +379,15 @@ poller = |inbox_task| {
 	)
 }
 
-stat : Str, Signal.Signal(Str) -> Elem
-stat = |label, value|
+## A metric tile. The id goes on the figure, not the tile, so a spec asserts a
+## number rather than the tile's concatenated label-and-value text.
+stat : Str, Signal.Signal(Str), Str -> Elem
+stat = |label, value, id|
 	Html.div_c(
 		"stat",
 		[
 			Html.paragraph_c(label, "stat-label"),
-			Html.paragraph_s_attrs(value, [Html.class_attr("stat-value numeric")]),
+			Html.paragraph_s_attrs(value, [Html.test_id(id), Html.class_attr("stat-value numeric")]),
 		],
 	)
 
@@ -478,14 +480,18 @@ main = || {
 														"Inbox summary",
 														panel_class,
 														[
-															# The three tiles share one `Signal.combine`, so the
-															# test id sits on the grid that holds all three.
+															# The three tiles share one `Signal.combine`. The grid
+															# keeps the id the specs use to locate the summary; each
+															# figure carries its own so an assertion reads as a
+															# number. Three fixed columns, because the shared
+															# `stat-grid` breakpoints assume full page width and this
+															# sits in a 20rem sidebar.
 															Html.div(
-																[Html.class_attr("stat-grid"), Html.test_id("inbox-summary")],
+																[Html.class_attr("grid grid-cols-3 gap-2"), Html.test_id("inbox-summary")],
 																[
-																	stat("Conversations", summary.map(conversations_text)),
-																	stat("Unread", summary.map(unread_text)),
-																	stat("Sending", summary.map(sending_text)),
+																	stat("Threads", summary.map(conversations_text), "summary-conversations"),
+																	stat("Unread", summary.map(unread_text), "summary-unread"),
+																	stat("Sending", summary.map(sending_text), "summary-sending"),
 																],
 															),
 															Html.div_c(
