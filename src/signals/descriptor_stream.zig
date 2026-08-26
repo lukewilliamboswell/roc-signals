@@ -258,6 +258,8 @@ pub const EventDesc = struct {
     delivery_request: EventDeliveryRequest = .auto,
     binder_token: BinderToken,
     target_node_id: u64,
+    read_binder_token: BinderToken,
+    read_node_id: u64,
     payload_descriptor: BoundaryPayloadDescriptor,
     payload_reducer: HostEventReducer,
     owns_payload_reducer: bool = true,
@@ -1283,7 +1285,7 @@ pub const Stream = struct {
         appendCleanupImpl(Stream, self, allocator, scope_id, name);
     }
 
-    pub fn appendEvent(self: *Stream, allocator: std.mem.Allocator, roc_host: *abi.RocHost, metrics: anytype, elem_id: u64, kind: EventKind, delivery_request: EventDeliveryRequest, binder_token: BinderToken, target_node_id: u64, payload_descriptor: BoundaryPayloadDescriptor, payload_reducer: HostEventReducer) void {
+    pub fn appendEvent(self: *Stream, allocator: std.mem.Allocator, roc_host: *abi.RocHost, metrics: anytype, elem_id: u64, kind: EventKind, delivery_request: EventDeliveryRequest, binder_token: BinderToken, target_node_id: u64, read_binder_token: BinderToken, read_node_id: u64, payload_descriptor: BoundaryPayloadDescriptor, payload_reducer: HostEventReducer) void {
         const retained_reducer = retainHostEventReducer(payload_reducer, metrics);
         const event_index = self.events.items.len;
         self.events.append(allocator, .{
@@ -1292,6 +1294,8 @@ pub const Stream = struct {
             .delivery_request = delivery_request,
             .binder_token = binder_token,
             .target_node_id = target_node_id,
+            .read_binder_token = read_binder_token,
+            .read_node_id = read_node_id,
             .payload_descriptor = payload_descriptor,
             .payload_reducer = retained_reducer,
         }) catch {
@@ -1301,6 +1305,8 @@ pub const Stream = struct {
                 .delivery_request = delivery_request,
                 .binder_token = binder_token,
                 .target_node_id = target_node_id,
+                .read_binder_token = read_binder_token,
+                .read_node_id = read_node_id,
                 .payload_descriptor = payload_descriptor,
                 .payload_reducer = retained_reducer,
             };
@@ -1320,7 +1326,7 @@ pub const Stream = struct {
         return false;
     }
 
-    pub fn appendNamedEvent(self: *Stream, allocator: std.mem.Allocator, roc_host: *abi.RocHost, metrics: anytype, elem_id: u64, name: []const u8, policy: EventPolicy, delivery_request: EventDeliveryRequest, binder_token: BinderToken, target_node_id: u64, payload_descriptor: BoundaryPayloadDescriptor, payload_reducer: HostEventReducer) void {
+    pub fn appendNamedEvent(self: *Stream, allocator: std.mem.Allocator, roc_host: *abi.RocHost, metrics: anytype, elem_id: u64, name: []const u8, policy: EventPolicy, delivery_request: EventDeliveryRequest, binder_token: BinderToken, target_node_id: u64, read_binder_token: BinderToken, read_node_id: u64, payload_descriptor: BoundaryPayloadDescriptor, payload_reducer: HostEventReducer) void {
         if (name.len == 0) @panic("named event descriptor used an empty event name");
         if (self.namedEventDescriptorExists(elem_id, name)) @panic("element has duplicate named event descriptors");
 
@@ -1340,6 +1346,8 @@ pub const Stream = struct {
             .delivery_request = delivery_request,
             .binder_token = binder_token,
             .target_node_id = target_node_id,
+            .read_binder_token = read_binder_token,
+            .read_node_id = read_node_id,
             .payload_descriptor = payload_descriptor,
             .payload_reducer = retained_reducer,
         }) catch {
@@ -1353,6 +1361,8 @@ pub const Stream = struct {
                 .delivery_request = delivery_request,
                 .binder_token = binder_token,
                 .target_node_id = target_node_id,
+                .read_binder_token = read_binder_token,
+                .read_node_id = read_node_id,
                 .payload_descriptor = payload_descriptor,
                 .payload_reducer = retained_reducer,
             };
@@ -2486,6 +2496,7 @@ test "fixed event descriptors preserve Roc supplied payload descriptors" {
     const payload_descriptor = BoundaryPayloadDescriptor.init(.str, .target_value);
     const reducer = HostEventReducer{
         .capability = .{ .clone = null, .drop = null, .eq = null },
+        .read_capability = .{ .clone = null, .drop = null, .eq = null },
         .transform = null,
     };
 
@@ -2496,6 +2507,8 @@ test "fixed event descriptors preserve Roc supplied payload descriptors" {
         7,
         .pointer_down,
         .auto,
+        binder,
+        42,
         binder,
         42,
         payload_descriptor,

@@ -271,6 +271,7 @@ pub const HostEventDescriptor = active_graph.EventDescriptor;
 
 pub const HostActiveEventDesc = struct {
     target_node_id: u64,
+    read_node_id: u64,
     payload_descriptor: BoundaryPayloadDescriptor,
     payload_reducer: HostEventReducer,
 };
@@ -1724,8 +1725,8 @@ pub fn Engine(comptime Ctx: type) type {
                 if (!u64SliceContains(copied_elem_ids.items, desc.elem_id)) continue;
                 const payload_reducer = if (desc.owns_payload_reducer) desc.payload_reducer else self.activeEventReducerByIndex(event_index) catch @panic("active event table is missing a retained payload reducer");
                 switch (desc.binding) {
-                    .fixed => |kind| stream.appendEvent(allocator, roc_host, &self.pending_roc_metrics, desc.elem_id, kind, desc.delivery_request, desc.binder_token, desc.target_node_id, desc.payload_descriptor, payload_reducer),
-                    .named => |binding| stream.appendNamedEvent(allocator, roc_host, &self.pending_roc_metrics, desc.elem_id, binding.name, binding.policy, binding.delivery_request, desc.binder_token, desc.target_node_id, desc.payload_descriptor, payload_reducer),
+                    .fixed => |kind| stream.appendEvent(allocator, roc_host, &self.pending_roc_metrics, desc.elem_id, kind, desc.delivery_request, desc.binder_token, desc.target_node_id, desc.read_binder_token, desc.read_node_id, desc.payload_descriptor, payload_reducer),
+                    .named => |binding| stream.appendNamedEvent(allocator, roc_host, &self.pending_roc_metrics, desc.elem_id, binding.name, binding.policy, binding.delivery_request, desc.binder_token, desc.target_node_id, desc.read_binder_token, desc.read_node_id, desc.payload_descriptor, payload_reducer),
                 }
             }
 
@@ -1912,12 +1913,16 @@ pub fn Engine(comptime Ctx: type) type {
                 .event => |payload| {
                     const binder_token = payload.msg.binder.callable;
                     const target_node_id = resolveNodeBinderRef(binder_stack, binder_token);
-                    stream.appendEvent(allocator, roc_host, &self.pending_roc_metrics, elem_id, payload.kind, payload.delivery_request, binder_token, target_node_id, payload.msg.payload_descriptor, payload.msg.payload_reducer);
+                    const read_binder_token = payload.msg.read_binder.callable;
+                    const read_node_id = resolveNodeBinderRef(binder_stack, read_binder_token);
+                    stream.appendEvent(allocator, roc_host, &self.pending_roc_metrics, elem_id, payload.kind, payload.delivery_request, binder_token, target_node_id, read_binder_token, read_node_id, payload.msg.payload_descriptor, payload.msg.payload_reducer);
                 },
                 .named_event => |payload| {
                     const binder_token = payload.msg.binder.callable;
                     const target_node_id = resolveNodeBinderRef(binder_stack, binder_token);
-                    stream.appendNamedEvent(allocator, roc_host, &self.pending_roc_metrics, elem_id, payload.name.asSlice(), payload.policy, payload.delivery_request, binder_token, target_node_id, payload.msg.payload_descriptor, payload.msg.payload_reducer);
+                    const read_binder_token = payload.msg.read_binder.callable;
+                    const read_node_id = resolveNodeBinderRef(binder_stack, read_binder_token);
+                    stream.appendNamedEvent(allocator, roc_host, &self.pending_roc_metrics, elem_id, payload.name.asSlice(), payload.policy, payload.delivery_request, binder_token, target_node_id, read_binder_token, read_node_id, payload.msg.payload_descriptor, payload.msg.payload_reducer);
                 },
             }
         }
@@ -2960,6 +2965,7 @@ pub fn Engine(comptime Ctx: type) type {
                 }
                 self.active_events.insert(allocator, event_base + offset, .{
                     .target_node_id = desc.target_node_id,
+                    .read_node_id = desc.read_node_id,
                     .payload_descriptor = desc.payload_descriptor,
                     .payload_reducer = desc.payload_reducer,
                 }) catch @panic("out of memory");
@@ -5412,6 +5418,7 @@ pub fn Engine(comptime Ctx: type) type {
                 if (!desc.owns_payload_reducer) @panic("event descriptor payload reducer ownership was already transferred");
                 self.active_events.append(allocator, .{
                     .target_node_id = desc.target_node_id,
+                    .read_node_id = desc.read_node_id,
                     .payload_descriptor = desc.payload_descriptor,
                     .payload_reducer = desc.payload_reducer,
                 }) catch @panic("out of memory");
@@ -5977,6 +5984,8 @@ test "structural event validation rejects descriptors outside seen render stream
         .binding = .{ .fixed = .click },
         .binder_token = binder,
         .target_node_id = 1,
+        .read_binder_token = binder,
+        .read_node_id = 1,
         .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none),
         .payload_reducer = undefined,
         .owns_payload_reducer = false,

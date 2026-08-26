@@ -1,0 +1,9 @@
+# An event reducer can atomically read one state while writing another.
+
+expect_visible role:heading name:"State reads"
+expect_text test_id:"result" "waiting"
+click role:button name:"Copy source"
+expect_text test_id:"result" "alpha"
+fill label:"Source" "beta"
+click role:button name:"Copy source"
+expect_text test_id:"result" "beta"

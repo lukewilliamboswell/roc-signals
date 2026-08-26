@@ -27,10 +27,11 @@ HostValue := [HostValue(U64)].{
 		read : Box((HostValue -> Str)),
 	}
 
-	## Event reducer paired with the payload capability it expects.
+	## Event reducer paired with the read-state and payload capabilities it expects.
 	EventReducerHandle := {
 		capability : CapabilityHandle,
-		transform : Box((HostValue, HostValue -> HostValue)),
+		read_capability : CapabilityHandle,
+		transform : Box((HostValue, HostValue, HostValue -> HostValue)),
 	}
 
 	## Owned state value emitted by a command.

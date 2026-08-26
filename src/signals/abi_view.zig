@@ -344,12 +344,14 @@ pub const SignalBoolAttr = struct {
 
 pub const EventMessage = struct {
     binder: StateBinderToken,
+    read_binder: StateBinderToken,
     payload_descriptor: BoundaryPayloadDescriptor,
     payload_reducer: HostEventReducer,
 
     pub fn fromAbi(msg: anytype) EventMessage {
         return .{
             .binder = StateBinderToken.fromAbi(msg.binder),
+            .read_binder = StateBinderToken.fromAbi(msg.read_binder),
             .payload_descriptor = boundary.boundaryPayloadDescriptorFromExtractionBytes(msg.event_extraction_plan.bytes.items()),
             .payload_reducer = msg.payload_reducer,
         };
@@ -1017,6 +1019,7 @@ test "NodeAttr.fromAbi decodes static bool attrs and events" {
             .kind = .{ .id = @intFromEnum(EventKind.pointer_down) },
             .msg = .{
                 .binder = binder,
+                .read_binder = binder,
                 .event_extraction_plan = testEventExtractionPlan(.record_key_shift),
                 .payload_reducer = reducer,
             },
@@ -1046,6 +1049,7 @@ test "NodeAttr.fromAbi decodes named events" {
             .kind = .{ .id = 0 },
             .msg = .{
                 .binder = binder,
+                .read_binder = binder,
                 .event_extraction_plan = testEventExtractionPlan(.none),
                 .payload_reducer = reducer,
             },

@@ -407,6 +407,17 @@ native = true
 bench = false
 
 [[examples]]
+slug = "state-reads"
+title = "State Reads"
+description = "Internal fixture for reducers that atomically read one state while writing another."
+source = "examples/_fixtures/state-reads/app.roc"
+spec = "examples/_fixtures/state-reads/spec.txt"
+public = false
+wasm = true
+native = true
+bench = false
+
+[[examples]]
 slug = "markdown-elem"
 title = "Markdown Elem"
 description = "Internal app-side markdown-to-Elem fixture."

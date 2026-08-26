@@ -26,6 +26,14 @@ pub const RocDec = extern struct {
     num: i128,
 };
 
+pub fn decrefHostValueCapabilityHandle(value: HostValueCapabilityHandle, roc_host: *RocHost) void {
+    value.decref(roc_host);
+}
+
+pub fn increfHostValueCapabilityHandle(value: HostValueCapabilityHandle, amount: isize) void {
+    value.incref(amount);
+}
+
 comptime {
     if (@sizeOf(RocDec) != 16) @compileError("RocDec size mismatch");
     if (@alignOf(RocDec) != 16) @compileError("RocDec alignment mismatch");
@@ -742,13 +750,6 @@ pub const HostValueCapabilityHandle = if (@sizeOf(usize) == 4) extern struct {
     }
 };
 
-pub fn decrefHostValueCapabilityHandle(value: HostValueCapabilityHandle, roc_host: *RocHost) void {
-    value.decref(roc_host);
-}
-pub fn increfHostValueCapabilityHandle(value: HostValueCapabilityHandle, amount: isize) void {
-    value.incref(amount);
-}
-
 comptime {
     if (@sizeOf(usize) == 8) {
         if (@sizeOf(HostValueCapabilityHandle) != 24) @compileError("HostValueCapabilityHandle size mismatch");
@@ -1253,11 +1254,11 @@ pub const NodeEventBinding = if (@sizeOf(usize) == 4) extern struct {
 
 comptime {
     if (@sizeOf(usize) == 8) {
-        if (@sizeOf(NodeEventBinding) != 112) @compileError("NodeEventBinding size mismatch");
+        if (@sizeOf(NodeEventBinding) != 144) @compileError("NodeEventBinding size mismatch");
         if (@alignOf(NodeEventBinding) != 8) @compileError("NodeEventBinding alignment mismatch");
     }
     if (@sizeOf(usize) == 4) {
-        if (@sizeOf(NodeEventBinding) != 64) @compileError("NodeEventBinding size mismatch");
+        if (@sizeOf(NodeEventBinding) != 80) @compileError("NodeEventBinding size mismatch");
         if (@alignOf(NodeEventBinding) != 8) @compileError("NodeEventBinding alignment mismatch");
     }
 }
@@ -1355,12 +1356,14 @@ pub const NodeMsg = if (@sizeOf(usize) == 4) extern struct {
     binder: RocErasedCallable,
     event_extraction_plan: NodeEventExtractionPlan,
     payload_reducer: HostValueEventReducerHandle,
+    read_binder: RocErasedCallable,
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
         decrefErasedCallable(value.binder, roc_host);
         value.event_extraction_plan.decref(roc_host);
         value.payload_reducer.decref(roc_host);
+        decrefErasedCallable(value.read_binder, roc_host);
     }
 
     /// Increment Roc-owned fields.
@@ -1369,17 +1372,20 @@ pub const NodeMsg = if (@sizeOf(usize) == 4) extern struct {
         increfErasedCallable(value.binder, amount);
         value.event_extraction_plan.incref(amount);
         value.payload_reducer.incref(amount);
+        increfErasedCallable(value.read_binder, amount);
     }
 } else extern struct {
     binder: RocErasedCallable,
     event_extraction_plan: NodeEventExtractionPlan,
     payload_reducer: HostValueEventReducerHandle,
+    read_binder: RocErasedCallable,
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
         decrefErasedCallable(value.binder, roc_host);
         value.event_extraction_plan.decref(roc_host);
         value.payload_reducer.decref(roc_host);
+        decrefErasedCallable(value.read_binder, roc_host);
     }
 
     /// Increment Roc-owned fields.
@@ -1388,16 +1394,17 @@ pub const NodeMsg = if (@sizeOf(usize) == 4) extern struct {
         increfErasedCallable(value.binder, amount);
         value.event_extraction_plan.incref(amount);
         value.payload_reducer.incref(amount);
+        increfErasedCallable(value.read_binder, amount);
     }
 };
 
 comptime {
     if (@sizeOf(usize) == 8) {
-        if (@sizeOf(NodeMsg) != 64) @compileError("NodeMsg size mismatch");
+        if (@sizeOf(NodeMsg) != 96) @compileError("NodeMsg size mismatch");
         if (@alignOf(NodeMsg) != 8) @compileError("NodeMsg alignment mismatch");
     }
     if (@sizeOf(usize) == 4) {
-        if (@sizeOf(NodeMsg) != 32) @compileError("NodeMsg size mismatch");
+        if (@sizeOf(NodeMsg) != 48) @compileError("NodeMsg size mismatch");
         if (@alignOf(NodeMsg) != 4) @compileError("NodeMsg alignment mismatch");
     }
 }
@@ -1445,11 +1452,13 @@ comptime {
 /// Element type for HostValue.EventReducerHandle
 pub const HostValueEventReducerHandle = if (@sizeOf(usize) == 4) extern struct {
     capability: HostValueCapabilityHandle,
+    read_capability: HostValueCapabilityHandle,
     transform: RocErasedCallable,
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
         value.capability.decref(roc_host);
+        value.read_capability.decref(roc_host);
         decrefErasedCallable(value.transform, roc_host);
     }
 
@@ -1457,15 +1466,18 @@ pub const HostValueEventReducerHandle = if (@sizeOf(usize) == 4) extern struct {
     pub fn incref(self: @This(), amount: isize) void {
         const value = self;
         value.capability.incref(amount);
+        value.read_capability.incref(amount);
         increfErasedCallable(value.transform, amount);
     }
 } else extern struct {
     capability: HostValueCapabilityHandle,
+    read_capability: HostValueCapabilityHandle,
     transform: RocErasedCallable,
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
         value.capability.decref(roc_host);
+        value.read_capability.decref(roc_host);
         decrefErasedCallable(value.transform, roc_host);
     }
 
@@ -1473,17 +1485,18 @@ pub const HostValueEventReducerHandle = if (@sizeOf(usize) == 4) extern struct {
     pub fn incref(self: @This(), amount: isize) void {
         const value = self;
         value.capability.incref(amount);
+        value.read_capability.incref(amount);
         increfErasedCallable(value.transform, amount);
     }
 };
 
 comptime {
     if (@sizeOf(usize) == 8) {
-        if (@sizeOf(HostValueEventReducerHandle) != 32) @compileError("HostValueEventReducerHandle size mismatch");
+        if (@sizeOf(HostValueEventReducerHandle) != 56) @compileError("HostValueEventReducerHandle size mismatch");
         if (@alignOf(HostValueEventReducerHandle) != 8) @compileError("HostValueEventReducerHandle alignment mismatch");
     }
     if (@sizeOf(usize) == 4) {
-        if (@sizeOf(HostValueEventReducerHandle) != 16) @compileError("HostValueEventReducerHandle size mismatch");
+        if (@sizeOf(HostValueEventReducerHandle) != 28) @compileError("HostValueEventReducerHandle size mismatch");
         if (@alignOf(HostValueEventReducerHandle) != 4) @compileError("HostValueEventReducerHandle alignment mismatch");
     }
 }
@@ -3140,7 +3153,7 @@ pub const NodeAttrPayload = extern union {
 
 /// Tag union: Node.Attr
 pub const NodeAttr = if (@sizeOf(usize) == 4) extern struct {
-    payload: [64]u8 align(8),
+    payload: [80]u8 align(8),
     tag: NodeAttrTag,
     pub fn payload_on(self: *const @This()) NodeEventBinding {
         const ptr: *const NodeEventBinding = @ptrCast(@alignCast(&self.payload));
@@ -3209,14 +3222,14 @@ pub const NodeAttr = if (@sizeOf(usize) == 4) extern struct {
 
 comptime {
     if (@sizeOf(usize) == 8) {
-        if (@sizeOf(NodeAttr) != 120) @compileError("NodeAttr size mismatch");
+        if (@sizeOf(NodeAttr) != 152) @compileError("NodeAttr size mismatch");
         if (@alignOf(NodeAttr) != 8) @compileError("NodeAttr alignment mismatch");
-        if (@offsetOf(NodeAttr, "tag") != 112) @compileError("NodeAttr tag offset mismatch");
+        if (@offsetOf(NodeAttr, "tag") != 144) @compileError("NodeAttr tag offset mismatch");
     }
     if (@sizeOf(usize) == 4) {
-        if (@sizeOf(NodeAttr) != 72) @compileError("NodeAttr size mismatch");
+        if (@sizeOf(NodeAttr) != 88) @compileError("NodeAttr size mismatch");
         if (@alignOf(NodeAttr) != 8) @compileError("NodeAttr alignment mismatch");
-        if (@offsetOf(NodeAttr, "tag") != 64) @compileError("NodeAttr tag offset mismatch");
+        if (@offsetOf(NodeAttr, "tag") != 80) @compileError("NodeAttr tag offset mismatch");
     }
 }
 

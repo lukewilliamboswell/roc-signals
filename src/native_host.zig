@@ -1904,11 +1904,13 @@ fn hostValueU8List(host: *HostEnv, roc_host: *abi.RocHost, bytes: []const u8) Ho
 
 const ErasedHostValueUnaryArgs = erased_calls.ErasedHostValueUnaryArgs;
 const ErasedHostValueBinaryArgs = erased_calls.ErasedHostValueBinaryArgs;
+const ErasedHostValueTernaryArgs = erased_calls.ErasedHostValueTernaryArgs;
 const ErasedRocBoxUnaryArgs = erased_calls.ErasedRocBoxUnaryArgs;
 
 const callErasedHostValueToHostValue = erased_calls.callErasedHostValueToHostValue;
 
 const callErasedHostValueHostValueToHostValue = erased_calls.callErasedHostValueHostValueToHostValue;
+const callErasedHostValueHostValueHostValueToHostValue = erased_calls.callErasedHostValueHostValueHostValueToHostValue;
 
 const callErasedHostValueHostValueToElem = erased_calls.callErasedHostValueHostValueToElem;
 
@@ -1935,6 +1937,13 @@ fn callHostValueHostValueToHostValueWithCapabilities(host: *HostEnv, roc_host: *
     host.pushHostValueCapabilities(&caps);
     defer host.popHostValueCapabilities();
     return callErasedHostValueHostValueToHostValue(roc_host, callable, left, right);
+}
+
+fn callHostValueHostValueHostValueToHostValueWithCapabilities(host: *HostEnv, roc_host: *abi.RocHost, first_cap: HostValueCapability, second_cap: HostValueCapability, third_cap: HostValueCapability, callable: abi.RocErasedCallable, first: HostValue, second: HostValue, third: HostValue) HostValue {
+    const caps = [_]HostValueCapability{ first_cap, second_cap, third_cap };
+    host.pushHostValueCapabilities(&caps);
+    defer host.popHostValueCapabilities();
+    return callErasedHostValueHostValueHostValueToHostValue(roc_host, callable, first, second, third);
 }
 
 fn hostEventById(host: *HostEnv, event_id: u64) HostActiveEventDesc {
@@ -2041,7 +2050,10 @@ fn dispatchRocEventWithStats(host: *HostEnv, roc_host: *abi.RocHost, event_id: u
     const current = host.stateValueByNodeId(desc.target_node_id);
     const state_cap = host.stateCapability(desc.target_node_id);
     defer callHostValueToUnitWithCapability(host, roc_host, state_cap, hv.hostValueCapabilityDrop(state_cap), current);
-    const next = callHostValueHostValueToHostValueWithCapabilities(host, roc_host, state_cap, payload_cap, desc.payload_reducer.transform, current, payload);
+    const read = host.stateValueByNodeId(desc.read_node_id);
+    const read_cap = host.stateCapability(desc.read_node_id);
+    defer callHostValueToUnitWithCapability(host, roc_host, read_cap, hv.hostValueCapabilityDrop(read_cap), read);
+    const next = callHostValueHostValueHostValueToHostValueWithCapabilities(host, roc_host, state_cap, read_cap, payload_cap, desc.payload_reducer.transform, current, read, payload);
     if (stats) |s| s.dispatch_roc_ns += benchmark.nowNs() - start_ns;
 
     const changed = host.updateStateValue(roc_host, desc.target_node_id, next);
@@ -3361,11 +3373,20 @@ fn testBinaryHostValueCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]co
     writeTestErasedResult(HostValue, ret, capabilityTestHostValue(host, roc_host, hostValueI64(host, roc_host, left + right + capture.amount)));
 }
 
+fn testTernaryEventHostValueCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
+    const capture = testCapturePtrAs(TestErasedI64Capture, capture_ptr);
+    const call_args = testErasedArgsAs(ErasedHostValueTernaryArgs, args);
+    const current = testReadHostValueI64(roc_host, call_args.arg0);
+    const payload = testReadHostValueI64(roc_host, call_args.arg2);
+    const host = hostFromRocHost(roc_host);
+    writeTestErasedResult(HostValue, ret, capabilityTestHostValue(host, roc_host, hostValueI64(host, roc_host, current + payload + capture.amount)));
+}
+
 fn testUnitIncrementHostValueCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
     _ = capture_ptr;
-    const call_args = testErasedArgsAs(ErasedHostValueBinaryArgs, args);
+    const call_args = testErasedArgsAs(ErasedHostValueTernaryArgs, args);
     const current = testReadHostValueI64(roc_host, call_args.arg0);
-    if (hostFromRocHost(roc_host).testHostValueKind(call_args.arg1) != .unit) @panic("test unit event callable expected unit payload");
+    if (hostFromRocHost(roc_host).testHostValueKind(call_args.arg2) != .unit) @panic("test unit event callable expected unit payload");
     const host = hostFromRocHost(roc_host);
     writeTestErasedResult(HostValue, ret, capabilityTestHostValue(host, roc_host, hostValueI64(host, roc_host, current + 1)));
 }
@@ -6383,7 +6404,7 @@ fn testNodeEventAttr(roc_host: *abi.RocHost, kind: RenderEventKind, binder_token
     const transform = writeTestErasedCallable(
         TestErasedI64Capture,
         roc_host,
-        &testBinaryHostValueCallable,
+        &testTernaryEventHostValueCallable,
         &testErasedCallableOnDrop,
         .{ .amount = 0 },
     );
@@ -6394,9 +6415,11 @@ fn testNodeEventAttr(roc_host: *abi.RocHost, kind: RenderEventKind, binder_token
                 .kind = .{ .id = @intFromEnum(kind) },
                 .msg = .{
                     .binder = cloneTestBinderToken(binder_token),
+                    .read_binder = cloneTestBinderToken(binder_token),
                     .event_extraction_plan = testEventExtractionPlan(roc_host, extraction_plan),
                     .payload_reducer = .{
                         .capability = payload_cap,
+                        .read_capability = hv.retainHostValueCapability(payload_cap),
                         .transform = transform,
                     },
                 },
@@ -6424,9 +6447,11 @@ fn testNodeUnitIncrementEventAttr(roc_host: *abi.RocHost, kind: RenderEventKind,
                 .kind = .{ .id = @intFromEnum(kind) },
                 .msg = .{
                     .binder = cloneTestBinderToken(binder_token),
+                    .read_binder = cloneTestBinderToken(binder_token),
                     .event_extraction_plan = testEventExtractionPlan(roc_host, .none),
                     .payload_reducer = .{
                         .capability = payload_cap,
+                        .read_capability = hv.retainHostValueCapability(payload_cap),
                         .transform = transform,
                     },
                 },
@@ -7071,13 +7096,13 @@ test "signals host tracks descriptor stream closure lifecycle metrics" {
 
     host.collectActiveElemRootDescriptors(&roc_host, &stream, root, &.{});
 
-    try std.testing.expectEqual(@as(u64, 59), host.engine.pending_roc_metrics.closure_retains);
+    try std.testing.expectEqual(@as(u64, 62), host.engine.pending_roc_metrics.closure_retains);
     try std.testing.expectEqual(@as(u64, 0), host.engine.pending_roc_metrics.closure_releases);
 
     stream.deinit(host.hostAllocator(), &host, &roc_host, &host.engine.pending_roc_metrics);
 
-    try std.testing.expectEqual(@as(u64, 59), host.engine.pending_roc_metrics.closure_retains);
-    try std.testing.expectEqual(@as(u64, 47), host.engine.pending_roc_metrics.closure_releases);
+    try std.testing.expectEqual(@as(u64, 62), host.engine.pending_roc_metrics.closure_retains);
+    try std.testing.expectEqual(@as(u64, 50), host.engine.pending_roc_metrics.closure_releases);
 }
 
 test "signals host descriptors carry capability-owned extension records" {

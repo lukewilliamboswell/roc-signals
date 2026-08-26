@@ -29,6 +29,12 @@ pub const ErasedHostValueBinaryArgs = extern struct {
     arg1: HostValue,
 };
 
+pub const ErasedHostValueTernaryArgs = extern struct {
+    arg0: HostValue,
+    arg1: HostValue,
+    arg2: HostValue,
+};
+
 pub const ErasedHostValueListUnaryArgs = extern struct {
     arg0: HostValueList,
 };
@@ -105,6 +111,20 @@ pub fn callErasedHostValueHostValueToHostValue(roc_host: *abi.RocHost, callable:
     const payload = erasedCallablePayload(callable);
     var call_args = ErasedHostValueBinaryArgs{ .arg0 = arg0, .arg1 = arg1 };
     var result: HostValue = undefined;
+    callErasedCallable(
+        payload,
+        roc_host,
+        @ptrCast(&result),
+        @ptrCast(&call_args),
+        abi.rocErasedCallableCapturePtr(callable),
+    );
+    return result;
+}
+
+pub fn callErasedHostValueHostValueHostValueToHostValue(roc_host: *abi.RocHost, callable: abi.RocErasedCallable, arg0: HostValue, arg1: HostValue, arg2: HostValue) HostValue {
+    const payload = erasedCallablePayload(callable);
+    var result: HostValue = undefined;
+    var call_args = ErasedHostValueTernaryArgs{ .arg0 = arg0, .arg1 = arg1, .arg2 = arg2 };
     callErasedCallable(
         payload,
         roc_host,

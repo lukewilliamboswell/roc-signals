@@ -457,6 +457,7 @@ fn appendBoolFieldCommand(field: RenderBoolField, elem_id: u32, value: bool) voi
 
 const callErasedHostValueToHostValue = erased_calls.callErasedHostValueToHostValue;
 const callErasedHostValueHostValueToHostValue = erased_calls.callErasedHostValueHostValueToHostValue;
+const callErasedHostValueHostValueHostValueToHostValue = erased_calls.callErasedHostValueHostValueHostValueToHostValue;
 const callErasedHostValueToUnit = erased_calls.callErasedHostValueToUnit;
 
 fn callHostValueToUnitWithCapability(cap: HostValueCapability, callable: abi.RocErasedCallable, value: HostValue) void {
@@ -478,6 +479,13 @@ fn callHostValueHostValueToHostValueWithCapabilities(left_cap: HostValueCapabili
     active_capabilities.push(&caps);
     defer active_capabilities.pop();
     return callErasedHostValueHostValueToHostValue(&roc_host, callable, left, right);
+}
+
+fn callHostValueHostValueHostValueToHostValueWithCapabilities(first_cap: HostValueCapability, second_cap: HostValueCapability, third_cap: HostValueCapability, callable: abi.RocErasedCallable, first: HostValue, second: HostValue, third: HostValue) HostValue {
+    const caps = [_]HostValueCapability{ first_cap, second_cap, third_cap };
+    active_capabilities.push(&caps);
+    defer active_capabilities.pop();
+    return callErasedHostValueHostValueHostValueToHostValue(&roc_host, callable, first, second, third);
 }
 
 // --- Host value registry glue (all routed through the engine's registry) ---
@@ -884,7 +892,10 @@ fn dispatchEvent(desc: HostActiveEventDesc, payload: HostValue) void {
     const current = currentStateValue(desc.target_node_id);
     const state_cap = shared_engine.stateCapability(desc.target_node_id) catch failHost();
     defer callHostValueToUnitWithCapability(state_cap, hv.hostValueCapabilityDrop(state_cap), current);
-    const next = callHostValueHostValueToHostValueWithCapabilities(state_cap, payload_cap, desc.payload_reducer.transform, current, payload);
+    const read = currentStateValue(desc.read_node_id);
+    const read_cap = shared_engine.stateCapability(desc.read_node_id) catch failHost();
+    defer callHostValueToUnitWithCapability(read_cap, hv.hostValueCapabilityDrop(read_cap), read);
+    const next = callHostValueHostValueHostValueToHostValueWithCapabilities(state_cap, read_cap, payload_cap, desc.payload_reducer.transform, current, read, payload);
     if (!updateStateCell(desc.target_node_id, next)) return;
 
     const dirty_source_node_ids = [_]u64{desc.target_node_id};

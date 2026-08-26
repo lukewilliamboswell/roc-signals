@@ -211,8 +211,8 @@ render_row = |sheet, cursor, key, row| {
 
 ## The formula bar: a fan-in of the caret and the evaluated workbook. It shows
 ## the source while the selected cell is being edited and the value otherwise.
-formula_bar : Ui.State(Cursor), Signal.Signal({ sources : List(Str), outs : List(Sheet.CellOut) }) -> Elem
-formula_bar = |cursor, book| {
+formula_bar : Ui.State(List(Str)), Ui.State(Cursor), Signal.Signal({ sources : List(Str), outs : List(Sheet.CellOut) }) -> Elem
+formula_bar = |sheet, cursor, book| {
 	bar =
 		Signal.map2(
 			cursor.signal(),
@@ -238,8 +238,8 @@ formula_bar = |cursor, book| {
 			Html.text_input_attrs(
 				"Formula",
 				Signal.map(bar, |view| if view.editing { view.source } else { view.value }),
-				[Html.readonly, Html.test_id("formula-bar")],
-				cursor.on_str(|current, _text| current),
+				[Html.test_id("formula-bar")],
+				sheet.on_str_with(cursor, |sources, caret, text| set_source(sources, caret.selected, text)),
 			),
 			Html.paragraph_s(Signal.map(bar, |view| "Cell: ${view.ref}")),
 			Html.paragraph_s(
@@ -344,7 +344,7 @@ main = || {
 															),
 														],
 													),
-													formula_bar(cursor, book),
+													formula_bar(sheet, cursor, book),
 													Html.section_c(
 														"Sheet controls",
 														panel_class,

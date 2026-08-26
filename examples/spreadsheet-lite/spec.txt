@@ -98,6 +98,14 @@ expect_text text:"Selected: D2 | Grid mode: values | Errors: 4" "Selected: D2 | 
 expect_value label:"D2" "2500"
 expect_value label:"D3" "1200"
 
+# The formula bar writes the sheet while atomically reading the independent
+# cursor state to choose the target cell.
+fill label:"Formula" "=B2+C2+100"
+expect_value label:"Formula" "=B2+C2+100"
+expect_text text:"Value: 2600" "Value: 2600"
+fill label:"Formula" "=B2+C2"
+expect_text text:"Value: 2500" "Value: 2500"
+
 blur label:"D2"
 expect_text text:"Mode: showing value" "Mode: showing value"
 expect_value label:"Formula" "2500"

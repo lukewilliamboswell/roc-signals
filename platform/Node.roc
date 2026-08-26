@@ -25,6 +25,7 @@ Node := [].{
 	## host derives compact dispatch descriptors when it ingests the ABI data.
 	Msg := {
 		binder : BinderRef,
+		read_binder : BinderRef,
 		event_extraction_plan : EventExtractionPlan,
 		payload_reducer : HostValue.EventReducerHandle,
 	}
