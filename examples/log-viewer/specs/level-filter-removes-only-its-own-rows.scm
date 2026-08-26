@@ -12,6 +12,6 @@
     (expect-absent (role region :name "Log line-4"))
     (expect-visible (role region :name "Log line-1"))
     (expect-text (test-id "line-count") "Showing 3 of 4 lines")
-    (expect-text (test-id "tail-line") "Tail: [3] error upstream timeout")
+    (expect-text (test-id "tail-line") "[3] error upstream timeout")
   )
 )

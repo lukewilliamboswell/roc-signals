@@ -71,7 +71,7 @@
     (expect-text (test-id "line-count") "Showing 42 of 42 lines")
     (expect-visible (role region :name "Log line-1"))
     (expect-visible (role region :name "Log line-42"))
-    (expect-text (test-id "tail-line") "Tail: [42] warn cache warmed")
+    (expect-text (test-id "tail-line") "[42] warn cache warmed")
     (expect-metric-delta rows_reused 42)
     (expect-metric-delta rows_created 0)
     (expect-metric-delta rows_removed 0)

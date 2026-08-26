@@ -18,7 +18,7 @@
     (expect-text (test-id "query-matches") "Query matches: 0")
     (expect-text (test-id "query-note") "Query filter idle.")
     (expect-visible (role region :name "Tail"))
-    (expect-text (test-id "tail-line") "Tail: waiting for the first line")
+    (expect-text (test-id "tail-line") "waiting for the first line")
     (expect-visible (role region :name "Log empty"))
     (expect-visible (text "Log buffer is empty"))
     (expect-absent (role region :name "Log lines"))

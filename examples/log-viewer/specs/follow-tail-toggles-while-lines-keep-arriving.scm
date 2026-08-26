@@ -25,6 +25,6 @@
     (check (label "Follow tail"))
     (expect-visible (role region :name "Tail"))
     (expect-absent (role region :name "Tail paused"))
-    (expect-text (test-id "tail-line") "Tail: [5] info session expired")
+    (expect-text (test-id "tail-line") "[5] info session expired")
   )
 )
