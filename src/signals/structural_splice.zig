@@ -72,6 +72,9 @@ pub const NodeOwnedRemovalScratch = struct {
     state_indexes: std.ArrayListUnmanaged(usize) = .empty,
     when_indexes: std.ArrayListUnmanaged(usize) = .empty,
     each_indexes: std.ArrayListUnmanaged(usize) = .empty,
+    on_change_indexes: std.ArrayListUnmanaged(usize) = .empty,
+    mount_indexes: std.ArrayListUnmanaged(usize) = .empty,
+    cleanup_indexes: std.ArrayListUnmanaged(usize) = .empty,
 
     /// Releases all prepared node-owned removal indexes.
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
@@ -79,6 +82,9 @@ pub const NodeOwnedRemovalScratch = struct {
         self.state_indexes.deinit(allocator);
         self.when_indexes.deinit(allocator);
         self.each_indexes.deinit(allocator);
+        self.on_change_indexes.deinit(allocator);
+        self.mount_indexes.deinit(allocator);
+        self.cleanup_indexes.deinit(allocator);
         self.* = .{};
     }
 };
@@ -404,6 +410,23 @@ pub fn prepareRemoval(comptime Stream: type, allocator: std.mem.Allocator, strea
     try prepared.node_indexes.state_indexes.ensureUnusedCapacity(allocator, stream.states.items.len);
     try prepared.node_indexes.when_indexes.ensureUnusedCapacity(allocator, stream.whens.items.len);
     try prepared.node_indexes.each_indexes.ensureUnusedCapacity(allocator, stream.eaches.items.len);
+    var lifecycle_counts = [_]usize{0} ** 3;
+    for (target_scopes, 0..) |targeted, scope_id| if (targeted) for (stream.lifecycleIndices(scope_id)) |lifecycle| {
+        const offset: usize = switch (lifecycle.kind) {
+            .on_change => 0,
+            .mount => 1,
+            .cleanup => 2,
+        };
+        lifecycle_counts[offset] = std.math.add(usize, lifecycle_counts[offset], 1) catch return error.OutOfMemory;
+    };
+    try prepared.node_indexes.on_change_indexes.ensureUnusedCapacity(allocator, lifecycle_counts[0]);
+    try prepared.node_indexes.mount_indexes.ensureUnusedCapacity(allocator, lifecycle_counts[1]);
+    try prepared.node_indexes.cleanup_indexes.ensureUnusedCapacity(allocator, lifecycle_counts[2]);
+    for (target_scopes, 0..) |targeted, scope_id| if (targeted) for (stream.lifecycleIndices(scope_id)) |lifecycle| switch (lifecycle.kind) {
+        .on_change => prepared.node_indexes.on_change_indexes.appendAssumeCapacity(lifecycle.index),
+        .mount => prepared.node_indexes.mount_indexes.appendAssumeCapacity(lifecycle.index),
+        .cleanup => prepared.node_indexes.cleanup_indexes.appendAssumeCapacity(lifecycle.index),
+    };
     for (stream.scope_sites.items, 0..) |site, index| {
         if (scopeIsInTargetSet(target_scopes, site.scope_id)) prepared.node_indexes.scope_site_indexes.appendAssumeCapacity(index);
     }
@@ -429,6 +452,9 @@ pub fn prepareRemoval(comptime Stream: type, allocator: std.mem.Allocator, strea
     sortRemovalIndexesDescending(prepared.node_indexes.state_indexes.items);
     sortRemovalIndexesDescending(prepared.node_indexes.when_indexes.items);
     sortRemovalIndexesDescending(prepared.node_indexes.each_indexes.items);
+    sortRemovalIndexesDescending(prepared.node_indexes.on_change_indexes.items);
+    sortRemovalIndexesDescending(prepared.node_indexes.mount_indexes.items);
+    sortRemovalIndexesDescending(prepared.node_indexes.cleanup_indexes.items);
     return prepared;
 }
 
@@ -753,6 +779,11 @@ const TestStream = struct {
 
     /// This minimal stream fixture has no custom attribute descriptors.
     pub fn customAttrIndices(_: *const @This(), _: u64) []const descriptor_stream.CustomAttrDescriptorIndex {
+        return &.{};
+    }
+
+    /// This minimal stream fixture has no lifecycle descriptors.
+    pub fn lifecycleIndices(_: *const @This(), _: u64) []const descriptor_stream.LifecycleDescriptorIndex {
         return &.{};
     }
 
