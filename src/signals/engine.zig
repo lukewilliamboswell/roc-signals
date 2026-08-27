@@ -3483,7 +3483,7 @@ pub fn Engine(comptime Ctx: type) type {
                 for (self.replacement_stream.signal_bool_attrs.items, 0..) |desc, offset| try self.appendBoolRoute(allocator, &bools, graph_plan, desc.signal.record, .{ .kind = .bool_attr, .index = bool_attr_base + offset });
                 const custom_bool_base = self.engine.active_stream.signal_custom_bool_attrs.items.len - self.removal.?.descriptor_indexes.signal_custom_bool_attr_indexes.items.len;
                 for (self.replacement_stream.signal_custom_bool_attrs.items, 0..) |desc, offset| try self.appendBoolRoute(allocator, &bools, graph_plan, desc.signal.record, .{ .kind = .custom_bool_attr, .index = custom_bool_base + offset });
-                const change_base = self.engine.active_stream.on_changes.items.len;
+                const change_base = self.engine.active_stream.on_changes.items.len - self.removal.?.node_indexes.on_change_indexes.items.len;
                 for (self.replacement_stream.on_changes.items, 0..) |desc, offset| try self.appendChangeRoute(allocator, &changes, graph_plan, desc.signal.record, .{ .index = change_base + offset });
                 const when_base = self.engine.active_stream.whens.items.len - self.removal.?.node_indexes.when_indexes.items.len;
                 for (self.replacement_stream.whens.items, 0..) |desc, offset| try self.appendStructuralRoute(allocator, &structural, graph_plan, desc.condition.record, .{ .kind = .when, .index = when_base + offset });
@@ -3575,6 +3575,7 @@ pub fn Engine(comptime Ctx: type) type {
                 for (indexes.signal_optional_custom_text_attr_indexes.items) |index| roots.append(allocator, self.engine.active_stream.signal_optional_custom_text_attrs.items[index].signal.record) catch return error.OutOfMemory;
                 for (indexes.signal_bool_attr_indexes.items) |index| roots.append(allocator, self.engine.active_stream.signal_bool_attrs.items[index].signal.record) catch return error.OutOfMemory;
                 for (indexes.signal_custom_bool_attr_indexes.items) |index| roots.append(allocator, self.engine.active_stream.signal_custom_bool_attrs.items[index].signal.record) catch return error.OutOfMemory;
+                for (self.removal.?.node_indexes.on_change_indexes.items) |index| roots.append(allocator, self.engine.active_stream.on_changes.items[index].signal.record) catch return error.OutOfMemory;
                 for (self.removal.?.node_indexes.when_indexes.items) |index| roots.append(allocator, self.engine.active_stream.whens.items[index].condition.record) catch return error.OutOfMemory;
                 for (self.removal.?.node_indexes.each_indexes.items) |index| roots.append(allocator, self.engine.active_stream.eaches.items[index].items.record) catch return error.OutOfMemory;
             }
@@ -3586,6 +3587,7 @@ pub fn Engine(comptime Ctx: type) type {
                 for (self.replacement_stream.signal_optional_custom_text_attrs.items) |*desc| roots.append(allocator, desc.signal.record) catch return error.OutOfMemory;
                 for (self.replacement_stream.signal_bool_attrs.items) |*desc| roots.append(allocator, desc.signal.record) catch return error.OutOfMemory;
                 for (self.replacement_stream.signal_custom_bool_attrs.items) |*desc| roots.append(allocator, desc.signal.record) catch return error.OutOfMemory;
+                for (self.replacement_stream.on_changes.items) |*desc| roots.append(allocator, desc.signal.record) catch return error.OutOfMemory;
                 for (self.replacement_stream.whens.items) |*desc| roots.append(allocator, desc.condition.record) catch return error.OutOfMemory;
                 for (self.replacement_stream.eaches.items) |*desc| roots.append(allocator, desc.items.record) catch return error.OutOfMemory;
             }
@@ -3597,6 +3599,8 @@ pub fn Engine(comptime Ctx: type) type {
                 defer bools.deinit(allocator);
                 var structural: std.ArrayListUnmanaged(active_graph.StructuralSinkEdit) = .empty;
                 defer structural.deinit(allocator);
+                var changes: std.ArrayListUnmanaged(active_graph.ChangeSinkEdit) = .empty;
+                defer changes.deinit(allocator);
                 const indexes = &self.removal.?.descriptor_indexes;
                 var text_removals = std.math.add(usize, indexes.signal_text_node_indexes.items.len, indexes.signal_text_attr_indexes.items.len) catch return error.ResourceLimit;
                 text_removals = std.math.add(usize, text_removals, indexes.signal_custom_text_attr_indexes.items.len) catch return error.ResourceLimit;
@@ -3606,12 +3610,14 @@ pub fn Engine(comptime Ctx: type) type {
                 text.ensureTotalCapacity(allocator, std.math.mul(usize, 2, text_removals) catch return error.ResourceLimit) catch return error.OutOfMemory;
                 bools.ensureTotalCapacity(allocator, std.math.mul(usize, 2, bool_removals) catch return error.ResourceLimit) catch return error.OutOfMemory;
                 structural.ensureTotalCapacity(allocator, std.math.mul(usize, 2, structural_removals) catch return error.ResourceLimit) catch return error.OutOfMemory;
+                changes.ensureTotalCapacity(allocator, std.math.mul(usize, 2, self.removal.?.node_indexes.on_change_indexes.items.len) catch return error.ResourceLimit) catch return error.OutOfMemory;
                 appendTextSinkEdits(self.engine, &text, self.engine.active_stream.signal_text_nodes.items, indexes.signal_text_node_indexes.items, .text_node);
                 appendTextSinkEdits(self.engine, &text, self.engine.active_stream.signal_text_attrs.items, indexes.signal_text_attr_indexes.items, .text_attr);
                 appendTextSinkEdits(self.engine, &text, self.engine.active_stream.signal_custom_text_attrs.items, indexes.signal_custom_text_attr_indexes.items, .custom_text_attr);
                 appendTextSinkEdits(self.engine, &text, self.engine.active_stream.signal_optional_custom_text_attrs.items, indexes.signal_optional_custom_text_attr_indexes.items, .custom_text_optional_attr);
                 appendBoolSinkEdits(self.engine, &bools, self.engine.active_stream.signal_bool_attrs.items, indexes.signal_bool_attr_indexes.items, .bool_attr);
                 appendBoolSinkEdits(self.engine, &bools, self.engine.active_stream.signal_custom_bool_attrs.items, indexes.signal_custom_bool_attr_indexes.items, .custom_bool_attr);
+                appendChangeSinkEdits(self.engine, &changes, self.engine.active_stream.on_changes.items, self.removal.?.node_indexes.on_change_indexes.items);
                 appendStructuralSinkEdits(self.engine, &structural, self.engine.active_stream.whens.items, self.removal.?.node_indexes.when_indexes.items, .when);
                 appendStructuralSinkEdits(self.engine, &structural, self.engine.active_stream.eaches.items, self.removal.?.node_indexes.each_indexes.items, .each);
                 return active_graph.prepareSinkRouteEdits(
@@ -3622,7 +3628,7 @@ pub fn Engine(comptime Ctx: type) type {
                     &self.engine.active_structural_signal_routes,
                     text.items,
                     bools.items,
-                    &.{},
+                    changes.items,
                     structural.items,
                 ) catch return error.OutOfMemory;
             }
@@ -3643,6 +3649,16 @@ pub fn Engine(comptime Ctx: type) type {
                     edits.appendAssumeCapacity(.{ .record_id = engine_ptr.requireActiveSignalRecordId(descriptors[index].signal.record), .kind = kind, .old_index = index });
                     const last_index = live_len - 1;
                     if (index != last_index) edits.appendAssumeCapacity(.{ .record_id = engine_ptr.requireActiveSignalRecordId(descriptors[last_index].signal.record), .kind = kind, .old_index = last_index, .new_index = index });
+                    live_len = last_index;
+                }
+            }
+
+            fn appendChangeSinkEdits(engine_ptr: *Self, edits: *std.ArrayListUnmanaged(active_graph.ChangeSinkEdit), descriptors: anytype, removal_indexes: []const usize) void {
+                var live_len = descriptors.len;
+                for (removal_indexes) |index| {
+                    edits.appendAssumeCapacity(.{ .record_id = engine_ptr.requireActiveSignalRecordId(descriptors[index].signal.record), .old_index = index });
+                    const last_index = live_len - 1;
+                    if (index != last_index) edits.appendAssumeCapacity(.{ .record_id = engine_ptr.requireActiveSignalRecordId(descriptors[last_index].signal.record), .old_index = last_index, .new_index = index });
                     live_len = last_index;
                 }
             }
