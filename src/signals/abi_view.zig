@@ -29,10 +29,12 @@ pub const BoundaryPayloadDescriptor = boundary.BoundaryPayloadDescriptor;
 pub const RocStrView = struct {
     value: abi.RocStr,
 
+    /// Provides the `fromAbi` operation.
     pub fn fromAbi(value: abi.RocStr) RocStrView {
         return .{ .value = value };
     }
 
+    /// Provides the `asSlice` operation.
     pub fn asSlice(self: *const RocStrView) []const u8 {
         return self.value.asSlice();
     }
@@ -41,6 +43,7 @@ pub const RocStrView = struct {
 pub const SignalToken = struct {
     callable: retained.HostSignalToken,
 
+    /// Provides the `fromAbi` operation.
     pub fn fromAbi(callable: abi.RocErasedCallable) SignalToken {
         return .{ .callable = retained.hostSignalTokenFromCallable(callable) };
     }
@@ -49,6 +52,7 @@ pub const SignalToken = struct {
 pub const StateBinderToken = struct {
     callable: retained.HostSignalToken,
 
+    /// Provides the `fromAbi` operation.
     pub fn fromAbi(callable: abi.RocErasedCallable) StateBinderToken {
         return .{ .callable = retained.hostSignalTokenFromCallable(callable) };
     }
@@ -154,6 +158,7 @@ pub const SignalExpr = union(enum) {
     visibility_source: VisibilitySourceSignal,
     storage_source: StorageSourceSignal,
 
+    /// Provides the `fromAbi` operation.
     pub fn fromAbi(expr: abi.NodeSignalExpr) SignalExpr {
         return switch (expr.tag) {
             .Ref => .{ .ref = .{
@@ -285,6 +290,7 @@ pub const TextAttrTarget = union(enum) {
     fixed: TextField,
     custom: RocStrView,
 
+    /// Provides the `fromAbi` operation.
     pub fn fromAbi(field: abi.NodeTextField, name: abi.RocStr) TextAttrTarget {
         const field_id = field.id;
         const name_slice = name.asSlice();
@@ -301,6 +307,7 @@ pub const BoolAttrTarget = union(enum) {
     fixed: BoolField,
     custom: RocStrView,
 
+    /// Provides the `fromAbi` operation.
     pub fn fromAbi(field: abi.NodeBoolField, name: abi.RocStr) BoolAttrTarget {
         const field_id = field.id;
         const name_slice = name.asSlice();
@@ -348,6 +355,7 @@ pub const EventMessage = struct {
     payload_descriptor: BoundaryPayloadDescriptor,
     payload_reducer: HostEventReducer,
 
+    /// Provides the `fromAbi` operation.
     pub fn fromAbi(msg: anytype) EventMessage {
         return .{
             .binder = StateBinderToken.fromAbi(msg.binder),
@@ -371,6 +379,7 @@ pub const NamedEventAttr = struct {
     msg: EventMessage,
 };
 
+/// Provides the `eventPolicyFromAbi` operation.
 pub fn eventPolicyFromAbi(policy: abi.NodeEventBindingPolicy) EventPolicy {
     return .{
         .prevent_default = policy.prevent_default,
@@ -384,6 +393,7 @@ pub fn eventPolicyFromAbi(policy: abi.NodeEventBindingPolicy) EventPolicy {
     };
 }
 
+/// Provides the `eventDeliveryRequestFromAbi` operation.
 pub fn eventDeliveryRequestFromAbi(delivery: abi.NodeEventDelivery) EventDeliveryRequest {
     return if (delivery.native) .native else .auto;
 }
@@ -397,6 +407,7 @@ pub const NodeAttr = union(enum) {
     event: EventAttr,
     named_event: NamedEventAttr,
 
+    /// Provides the `fromAbi` operation.
     pub fn fromAbi(attr: abi.NodeAttr) NodeAttr {
         return switch (attr.tag) {
             .StaticText => blk: {
@@ -533,6 +544,7 @@ pub const Elem = union(enum) {
     when: WhenElem,
     each: EachElem,
 
+    /// Provides the `fromAbi` operation.
     pub fn fromAbi(elem: abi.Elem) Elem {
         return switch (elem.tag) {
             .Element => blk: {
@@ -620,14 +632,17 @@ pub const Elem = union(enum) {
     }
 };
 
+/// Provides the `textFieldFromAbi` operation.
 pub fn textFieldFromAbi(field: u64) TextField {
     return enumFromAbi(TextField, field, "Roc render text descriptor used an unknown field");
 }
 
+/// Provides the `boolFieldFromAbi` operation.
 pub fn boolFieldFromAbi(field: u64) BoolField {
     return enumFromAbi(BoolField, field, "Roc render bool descriptor used an unknown field");
 }
 
+/// Provides the `eventKindFromAbi` operation.
 pub fn eventKindFromAbi(kind: u64) EventKind {
     return enumFromAbi(EventKind, kind, "Roc render event descriptor used an unknown event kind");
 }

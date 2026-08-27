@@ -80,10 +80,12 @@ pub const RuntimeMetrics = struct {
     }
 };
 
+/// Provides the `zeroRuntimeMetrics` operation.
 pub fn zeroRuntimeMetrics() RuntimeMetrics {
     return std.mem.zeroes(RuntimeMetrics);
 }
 
+/// Provides the `addRuntimeMetrics` operation.
 pub fn addRuntimeMetrics(left: RuntimeMetrics, right: RuntimeMetrics) RuntimeMetrics {
     var result: RuntimeMetrics = undefined;
     inline for (std.meta.fields(RuntimeMetrics)) |field| {

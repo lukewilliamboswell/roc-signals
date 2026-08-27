@@ -38,6 +38,7 @@ const native_targets = [_]RocTarget{
     .arm64musl,
 };
 
+/// Defines the repository build, check, test, and artifact steps.
 pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
     const native_target = b.standardTargetOptions(.{});

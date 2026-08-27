@@ -20,6 +20,7 @@ pub const IdentityOverlay = struct {
     prepared_remaining: usize = 0,
     committed: bool = false,
 
+    /// Provides the `deinit` operation.
     pub fn deinit(self: *IdentityOverlay, allocator: std.mem.Allocator) void {
         self.provisional_by_key.deinit(allocator);
         self.reserved_ids.deinit(allocator);
@@ -27,6 +28,7 @@ pub const IdentityOverlay = struct {
         self.* = .{};
     }
 
+    /// Provides the `prepare` operation.
     pub fn prepare(self: *IdentityOverlay, allocator: std.mem.Allocator, additional: usize) std.mem.Allocator.Error!void {
         const next_remaining = std.math.add(usize, self.prepared_remaining, additional) catch return error.OutOfMemory;
         try self.provisional_by_key.ensureUnusedCapacity(allocator, @intCast(additional));
@@ -35,6 +37,7 @@ pub const IdentityOverlay = struct {
         self.prepared_remaining = next_remaining;
     }
 
+    /// Provides the `lookup` operation.
     pub fn lookup(self: *const IdentityOverlay, key: IdentityKey, active_id: ?u64) ?u64 {
         return self.provisional_by_key.get(key) orelse active_id;
     }
@@ -57,6 +60,7 @@ pub const IdentityOverlay = struct {
         return error.NoAvailableIdentity;
     }
 
+    /// Provides the `abort` operation.
     pub fn abort(self: *IdentityOverlay) void {
         if (self.committed) @panic("committed identity overlay cannot abort");
         self.provisional_by_key.clearRetainingCapacity();
@@ -65,6 +69,7 @@ pub const IdentityOverlay = struct {
         self.prepared_remaining = 0;
     }
 
+    /// Provides the `commit` operation.
     pub fn commit(self: *IdentityOverlay, publisher: anytype) void {
         if (self.committed) @panic("identity overlay committed twice");
         for (self.intents.items) |intent| publisher.publishIdentity(intent.key, intent.id);
@@ -91,6 +96,7 @@ pub const ScopeOverlay = struct {
     prepared_remaining: usize = 0,
     committed: bool = false,
 
+    /// Provides the `deinit` operation.
     pub fn deinit(self: *ScopeOverlay, allocator: std.mem.Allocator) void {
         self.provisional_by_key.deinit(allocator);
         self.reserved_ids.deinit(allocator);
@@ -98,6 +104,7 @@ pub const ScopeOverlay = struct {
         self.* = .{};
     }
 
+    /// Provides the `prepare` operation.
     pub fn prepare(self: *ScopeOverlay, allocator: std.mem.Allocator, additional: usize) std.mem.Allocator.Error!void {
         const next_remaining = std.math.add(usize, self.prepared_remaining, additional) catch return error.OutOfMemory;
         try self.provisional_by_key.ensureUnusedCapacity(allocator, @intCast(additional));
@@ -106,10 +113,12 @@ pub const ScopeOverlay = struct {
         self.prepared_remaining = next_remaining;
     }
 
+    /// Provides the `lookup` operation.
     pub fn lookup(self: *const ScopeOverlay, key: ScopeKey, active_id: ?u64) ?u64 {
         return self.provisional_by_key.get(key) orelse active_id;
     }
 
+    /// Provides the `reserve` operation.
     pub fn reserve(self: *ScopeOverlay, key: ScopeKey, active_id: ?u64, candidates: []const u64) error{ NoCapacity, NoAvailableScope }!u64 {
         if (self.committed) @panic("scope overlay cannot reserve after commit");
         if (self.lookup(key, active_id)) |id| return id;
@@ -125,6 +134,7 @@ pub const ScopeOverlay = struct {
         return error.NoAvailableScope;
     }
 
+    /// Provides the `abort` operation.
     pub fn abort(self: *ScopeOverlay) void {
         if (self.committed) @panic("committed scope overlay cannot abort");
         self.provisional_by_key.clearRetainingCapacity();
@@ -133,6 +143,7 @@ pub const ScopeOverlay = struct {
         self.prepared_remaining = 0;
     }
 
+    /// Provides the `commit` operation.
     pub fn commit(self: *ScopeOverlay, publisher: anytype) void {
         if (self.committed) @panic("scope overlay committed twice");
         for (self.intents.items) |intent| publisher.publishScope(intent.key, intent.id);
@@ -140,27 +151,32 @@ pub const ScopeOverlay = struct {
     }
 };
 
+/// Provides the `OwnedValues` operation.
 pub fn OwnedValues(comptime Value: type) type {
     return struct {
         const Self = @This();
         values: std.ArrayListUnmanaged(Value) = .empty,
         committed: bool = false,
 
+        /// Provides the `deinit` operation.
         pub fn deinit(self: *Self, allocator: std.mem.Allocator, dropper: anytype) void {
             if (!self.committed) self.abort(dropper);
             self.values.deinit(allocator);
             self.* = .{};
         }
 
+        /// Provides the `prepare` operation.
         pub fn prepare(self: *Self, allocator: std.mem.Allocator, additional: usize) std.mem.Allocator.Error!void {
             try self.values.ensureUnusedCapacity(allocator, additional);
         }
 
+        /// Provides the `appendAssumeCapacity` operation.
         pub fn appendAssumeCapacity(self: *Self, value: Value) void {
             if (self.committed) @panic("owned values cannot append after commit");
             self.values.appendAssumeCapacity(value);
         }
 
+        /// Provides the `abort` operation.
         pub fn abort(self: *Self, dropper: anytype) void {
             if (self.committed) @panic("committed values cannot abort");
             var index = self.values.items.len;
@@ -171,6 +187,7 @@ pub fn OwnedValues(comptime Value: type) type {
             self.values.clearRetainingCapacity();
         }
 
+        /// Provides the `commit` operation.
         pub fn commit(self: *Self, publisher: anytype) void {
             if (self.committed) @panic("owned values committed twice");
             for (self.values.items) |value| publisher.publishValue(value);
@@ -189,21 +206,25 @@ pub fn RecordOverlay(comptime Token: type, comptime Record: type) type {
         owned: std.ArrayListUnmanaged(*Record) = .empty,
         committed: bool = false,
 
+        /// Provides the `prepare` operation.
         pub fn prepare(self: *Self, allocator: std.mem.Allocator, additional: usize) std.mem.Allocator.Error!void {
             try self.provisional_by_token.ensureUnusedCapacity(allocator, @intCast(additional));
             try self.owned.ensureUnusedCapacity(allocator, additional);
         }
 
+        /// Provides the `lookup` operation.
         pub fn lookup(self: *const Self, token: Token, persistent: ?*Record) ?*Record {
             return self.provisional_by_token.get(token) orelse persistent;
         }
 
+        /// Provides the `ownAssumeCapacity` operation.
         pub fn ownAssumeCapacity(self: *Self, token: Token, record: *Record) void {
             if (self.committed) @panic("record overlay cannot own after commit");
             self.provisional_by_token.putAssumeCapacity(token, record);
             self.owned.appendAssumeCapacity(record);
         }
 
+        /// Provides the `abort` operation.
         pub fn abort(self: *Self, releaser: anytype) void {
             if (self.committed) @panic("committed record overlay cannot abort");
             var index = self.owned.items.len;
@@ -215,12 +236,14 @@ pub fn RecordOverlay(comptime Token: type, comptime Record: type) type {
             self.owned.clearRetainingCapacity();
         }
 
+        /// Provides the `commit` operation.
         pub fn commit(self: *Self, publisher: anytype) void {
             if (self.committed) @panic("record overlay committed twice");
             for (self.owned.items) |record| publisher.publishRecord(record);
             self.committed = true;
         }
 
+        /// Provides the `deinit` operation.
         pub fn deinit(self: *Self, allocator: std.mem.Allocator, releaser: anytype) void {
             if (!self.committed) self.abort(releaser);
             self.provisional_by_token.deinit(allocator);
@@ -241,16 +264,19 @@ pub fn SignalRecordPlan(comptime Token: type, comptime Record: type) type {
         descriptor_roots: std.ArrayListUnmanaged(struct { record: *Record, owned: bool }) = .empty,
         committed: bool = false,
 
+        /// Provides the `prepare` operation.
         pub fn prepare(self: *Self, allocator: std.mem.Allocator, tokens: usize, roots: usize) std.mem.Allocator.Error!void {
             try self.by_token.ensureUnusedCapacity(allocator, @intCast(tokens));
             try self.token_intents.ensureUnusedCapacity(allocator, tokens);
             try self.descriptor_roots.ensureUnusedCapacity(allocator, roots);
         }
 
+        /// Provides the `lookup` operation.
         pub fn lookup(self: *const Self, token: Token, persistent: ?*Record) ?*Record {
             return self.by_token.get(token) orelse persistent;
         }
 
+        /// Provides the `rememberTokenAssumeCapacity` operation.
         pub fn rememberTokenAssumeCapacity(self: *Self, token: Token, record: *Record) void {
             if (self.committed) @panic("signal record plan cannot remember after commit");
             if (self.by_token.contains(token)) return;
@@ -258,6 +284,7 @@ pub fn SignalRecordPlan(comptime Token: type, comptime Record: type) type {
             self.token_intents.appendAssumeCapacity(.{ .token = token, .record = record });
         }
 
+        /// Provides the `ownDescriptorRootAssumeCapacity` operation.
         pub fn ownDescriptorRootAssumeCapacity(self: *Self, record: *Record) void {
             if (self.committed) @panic("signal record plan cannot own after commit");
             self.descriptor_roots.appendAssumeCapacity(.{ .record = record, .owned = true });
@@ -273,6 +300,7 @@ pub fn SignalRecordPlan(comptime Token: type, comptime Record: type) type {
             root.owned = false;
         }
 
+        /// Provides the `abort` operation.
         pub fn abort(self: *Self, releaser: anytype) void {
             if (self.committed) @panic("committed signal record plan cannot abort");
             var index = self.descriptor_roots.items.len;
@@ -286,6 +314,7 @@ pub fn SignalRecordPlan(comptime Token: type, comptime Record: type) type {
             self.descriptor_roots.clearRetainingCapacity();
         }
 
+        /// Provides the `commit` operation.
         pub fn commit(self: *Self, publisher: anytype) void {
             if (self.committed) @panic("signal record plan committed twice");
             for (self.token_intents.items) |intent| publisher.publishToken(intent.token, intent.record);
@@ -293,6 +322,7 @@ pub fn SignalRecordPlan(comptime Token: type, comptime Record: type) type {
             self.committed = true;
         }
 
+        /// Provides the `deinit` operation.
         pub fn deinit(self: *Self, allocator: std.mem.Allocator, releaser: anytype) void {
             if (!self.committed) self.abort(releaser);
             self.by_token.deinit(allocator);
@@ -312,6 +342,7 @@ test "signal record plan releases descriptor roots but not token intents" {
         count: *usize,
         root: *TestRecord,
         child: *TestRecord,
+        /// Provides the `releaseRecord` operation.
         pub fn releaseRecord(self: @This(), record: *TestRecord) void {
             std.debug.assert(record == self.root);
             self.count.* += 1;
@@ -334,13 +365,16 @@ test "signal record plan transfer prevents abort release and preserves publicati
     const TestRecord = struct { id: u8 };
     const Releaser = struct {
         count: *usize,
+        /// Provides the `releaseRecord` operation.
         pub fn releaseRecord(self: @This(), _: *TestRecord) void {
             self.count.* += 1;
         }
     };
     const Publisher = struct {
         published: *?*TestRecord,
+        /// Provides the `publishToken` operation.
         pub fn publishToken(_: @This(), _: u64, _: *TestRecord) void {}
+        /// Provides the `publishDescriptorRoot` operation.
         pub fn publishDescriptorRoot(self: @This(), record: *TestRecord) void {
             self.published.* = record;
         }
@@ -372,6 +406,7 @@ test "signal record plan preparation sweeps allocation failures and retries" {
     const TestRecord = struct { id: u8 };
     const Releaser = struct {
         count: *usize,
+        /// Provides the `releaseRecord` operation.
         pub fn releaseRecord(self: @This(), _: *TestRecord) void {
             self.count.* += 1;
         }
@@ -412,6 +447,7 @@ test "record overlay aborts in reverse and commits without allocation" {
     const Releaser = struct {
         values: *[2]u8,
         len: *usize,
+        /// Provides the `releaseRecord` operation.
         pub fn releaseRecord(self: @This(), record: *TestRecord) void {
             self.values[self.len.*] = record.id;
             self.len.* += 1;
@@ -427,6 +463,7 @@ test "record overlay aborts in reverse and commits without allocation" {
     overlay.deinit(std.testing.allocator, Releaser{ .values = &released, .len = &release_len });
 }
 
+/// Provides the `Plan` operation.
 pub fn Plan(comptime Action: type) type {
     return struct {
         const Self = @This();
@@ -434,16 +471,19 @@ pub fn Plan(comptime Action: type) type {
         actions: std.ArrayListUnmanaged(Action) = .empty,
         committed: bool = false,
 
+        /// Provides the `deinit` operation.
         pub fn deinit(self: *Self, allocator: std.mem.Allocator, ctx: anytype) void {
             if (!self.committed) self.abort(ctx);
             self.actions.deinit(allocator);
             self.* = .{};
         }
 
+        /// Provides the `ensureUnusedCapacity` operation.
         pub fn ensureUnusedCapacity(self: *Self, allocator: std.mem.Allocator, count: usize) std.mem.Allocator.Error!void {
             try self.actions.ensureUnusedCapacity(allocator, count);
         }
 
+        /// Provides the `appendAssumeCapacity` operation.
         pub fn appendAssumeCapacity(self: *Self, action: Action) void {
             if (self.committed) @panic("collection plan cannot append after commit");
             self.actions.appendAssumeCapacity(action);
@@ -458,6 +498,7 @@ pub fn Plan(comptime Action: type) type {
             self.committed = true;
         }
 
+        /// Provides the `abort` operation.
         pub fn abort(self: *Self, ctx: anytype) void {
             if (self.committed) @panic("committed collection plan cannot abort");
             var index = self.actions.items.len;

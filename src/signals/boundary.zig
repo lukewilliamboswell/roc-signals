@@ -136,6 +136,7 @@ pub const EventExtractionPlanKind = enum(u64) {
     record_key_shift = 4,
     detail = 5,
 
+    /// Provides the `payloadKind` operation.
     pub fn payloadKind(self: EventExtractionPlanKind) PayloadKind {
         return switch (self) {
             .none => .unit,
@@ -146,6 +147,7 @@ pub const EventExtractionPlanKind = enum(u64) {
         };
     }
 
+    /// Provides the `bytes` operation.
     pub fn bytes(self: EventExtractionPlanKind) []const u8 {
         return switch (self) {
             .none => &SchemaTag.unit_schema,
@@ -156,6 +158,7 @@ pub const EventExtractionPlanKind = enum(u64) {
         };
     }
 
+    /// Provides the `schemaBytes` operation.
     pub fn schemaBytes(self: EventExtractionPlanKind) []const u8 {
         return switch (self) {
             .none => &SchemaTag.unit_schema,
@@ -171,6 +174,7 @@ pub const BoundaryPayloadDescriptor = struct {
     payload_kind: PayloadKind,
     extraction_plan: EventExtractionPlanKind,
 
+    /// Provides the `init` operation.
     pub fn init(payload_kind: PayloadKind, extraction_plan: EventExtractionPlanKind) BoundaryPayloadDescriptor {
         validateBoundaryPayloadDescriptor(payload_kind, extraction_plan);
         return .{
@@ -179,27 +183,33 @@ pub const BoundaryPayloadDescriptor = struct {
         };
     }
 
+    /// Provides the `payloadKind` operation.
     pub fn payloadKind(self: BoundaryPayloadDescriptor) PayloadKind {
         return self.payload_kind;
     }
 
+    /// Provides the `extractionPlan` operation.
     pub fn extractionPlan(self: BoundaryPayloadDescriptor) EventExtractionPlanKind {
         return self.extraction_plan;
     }
 
+    /// Provides the `schemaBytes` operation.
     pub fn schemaBytes(self: BoundaryPayloadDescriptor) []const u8 {
         return self.extraction_plan.schemaBytes();
     }
 
+    /// Provides the `extractionBytes` operation.
     pub fn extractionBytes(self: BoundaryPayloadDescriptor) []const u8 {
         return self.extraction_plan.bytes();
     }
 
+    /// Provides the `eql` operation.
     pub fn eql(self: BoundaryPayloadDescriptor, other: BoundaryPayloadDescriptor) bool {
         return self.payload_kind == other.payload_kind and self.extraction_plan == other.extraction_plan;
     }
 };
 
+/// Provides the `boundaryPayloadDescriptorEql` operation.
 pub fn boundaryPayloadDescriptorEql(left: ?BoundaryPayloadDescriptor, right: ?BoundaryPayloadDescriptor) bool {
     if (left) |left_value| {
         const right_value = right orelse return false;
@@ -248,6 +258,7 @@ pub const StorageArea = enum(u64) {
     local = 1,
     session = 2,
 
+    /// Provides the `fromId` operation.
     pub fn fromId(id: u64) ?StorageArea {
         return switch (id) {
             1 => .local,
@@ -286,6 +297,7 @@ const Cursor = struct {
     }
 };
 
+/// Provides the `encodeLocationPayload` operation.
 pub fn encodeLocationPayload(allocator: std.mem.Allocator, location: LocationSnapshot) EncodeError![]u8 {
     var total_len: usize = 0;
     total_len = try addBoundaryTextPayloadLen(total_len, location.path);
@@ -301,6 +313,7 @@ pub fn encodeLocationPayload(allocator: std.mem.Allocator, location: LocationSna
     return bytes;
 }
 
+/// Provides the `encodeVisibilityPayload` operation.
 pub fn encodeVisibilityPayload(allocator: std.mem.Allocator, visibility: VisibilitySnapshot) EncodeError![]u8 {
     const bytes = try allocator.alloc(u8, 1);
     bytes[0] = switch (visibility) {
@@ -310,6 +323,7 @@ pub fn encodeVisibilityPayload(allocator: std.mem.Allocator, visibility: Visibil
     return bytes;
 }
 
+/// Provides the `encodeOnlinePayload` operation.
 pub fn encodeOnlinePayload(allocator: std.mem.Allocator, online: OnlineSnapshot) EncodeError![]u8 {
     const bytes = try allocator.alloc(u8, 1);
     bytes[0] = switch (online) {
@@ -319,6 +333,7 @@ pub fn encodeOnlinePayload(allocator: std.mem.Allocator, online: OnlineSnapshot)
     return bytes;
 }
 
+/// Provides the `encodeStoragePayload` operation.
 pub fn encodeStoragePayload(allocator: std.mem.Allocator, snapshot: StorageSnapshot) EncodeError![]u8 {
     var total_len: usize = 1;
     switch (snapshot) {
@@ -392,6 +407,7 @@ fn parseBoundaryRecord(cursor: *Cursor, comptime parseNode: fn (*Cursor) ParseEr
     return .bytes;
 }
 
+/// Provides the `parseEventExtractionPayloadKind` operation.
 pub fn parseEventExtractionPayloadKind(extraction_bytes: []const u8) ParseError!PayloadKind {
     var cursor = Cursor{ .bytes = extraction_bytes };
     const payload_kind = try parseEventExtractionNode(&cursor);
@@ -399,6 +415,7 @@ pub fn parseEventExtractionPayloadKind(extraction_bytes: []const u8) ParseError!
     return payload_kind;
 }
 
+/// Provides the `parseBoundarySchemaPayloadKind` operation.
 pub fn parseBoundarySchemaPayloadKind(schema_bytes: []const u8) ParseError!PayloadKind {
     var cursor = Cursor{ .bytes = schema_bytes };
     const payload_kind = try parseBoundarySchemaNode(&cursor);
@@ -499,10 +516,12 @@ fn parseSupportedEventExtractionPlanKind(extraction_bytes: []const u8) ParseErro
     return error.UnsupportedEventExtractionPlan;
 }
 
+/// Provides the `eventExtractionPlanKindFromBytes` operation.
 pub fn eventExtractionPlanKindFromBytes(extraction_bytes: []const u8) ?EventExtractionPlanKind {
     return parseSupportedEventExtractionPlanKind(extraction_bytes) catch null;
 }
 
+/// Provides the `boundaryPayloadDescriptorFromExtractionBytes` operation.
 pub fn boundaryPayloadDescriptorFromExtractionBytes(extraction_bytes: []const u8) BoundaryPayloadDescriptor {
     const extraction = parseSupportedEventExtractionPlanKind(extraction_bytes) catch |err| std.debug.panic(
         "Roc event extraction plan bytes were malformed or unsupported: {s} ({d} byte(s))",
@@ -511,6 +530,7 @@ pub fn boundaryPayloadDescriptorFromExtractionBytes(extraction_bytes: []const u8
     return BoundaryPayloadDescriptor.init(extraction.payloadKind(), extraction);
 }
 
+/// Provides the `validateBoundaryPayloadDescriptor` operation.
 pub fn validateBoundaryPayloadDescriptor(schema: PayloadKind, extraction: EventExtractionPlanKind) void {
     if (boundaryPayloadDescriptorMatches(schema, extraction)) return;
     std.debug.panic(
@@ -519,6 +539,7 @@ pub fn validateBoundaryPayloadDescriptor(schema: PayloadKind, extraction: EventE
     );
 }
 
+/// Provides the `boundaryPayloadDescriptorMatches` operation.
 pub fn boundaryPayloadDescriptorMatches(schema: PayloadKind, extraction: EventExtractionPlanKind) bool {
     return schema == extraction.payloadKind();
 }

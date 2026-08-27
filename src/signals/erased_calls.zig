@@ -43,6 +43,7 @@ pub const ErasedRocBoxUnaryArgs = extern struct {
     arg0: abi.RocBox,
 };
 
+/// Provides the `erasedCallablePayload` operation.
 pub fn erasedCallablePayload(callable: abi.RocErasedCallable) *abi.RocErasedCallablePayload {
     if (callable == null) @panic("host attempted to call a null Roc erased callable");
     return abi.rocErasedCallablePayloadPtr(callable);
@@ -53,6 +54,7 @@ fn callErasedCallable(payload: *abi.RocErasedCallablePayload, roc_host: *abi.Roc
     payload.callable_fn_ptr(roc_host, ret, args, capture, null, &out_desc);
 }
 
+/// Provides the `callValueInitThunk` operation.
 pub fn callValueInitThunk(roc_host: *abi.RocHost, callable: abi.RocErasedCallable) HostValue {
     const payload = erasedCallablePayload(callable);
     var result: HostValue = undefined;
@@ -66,6 +68,7 @@ pub fn callValueInitThunk(roc_host: *abi.RocHost, callable: abi.RocErasedCallabl
     return result;
 }
 
+/// Provides the `callErasedHostValueToHostValue` operation.
 pub fn callErasedHostValueToHostValue(roc_host: *abi.RocHost, callable: abi.RocErasedCallable, arg0: HostValue) HostValue {
     const payload = erasedCallablePayload(callable);
     var call_args = ErasedHostValueUnaryArgs{ .arg0 = arg0 };
@@ -80,6 +83,7 @@ pub fn callErasedHostValueToHostValue(roc_host: *abi.RocHost, callable: abi.RocE
     return result;
 }
 
+/// Provides the `callErasedHostValueToCmd` operation.
 pub fn callErasedHostValueToCmd(roc_host: *abi.RocHost, callable: abi.RocErasedCallable, arg0: HostValue) Cmd {
     const payload = erasedCallablePayload(callable);
     var call_args = ErasedHostValueUnaryArgs{ .arg0 = arg0 };
@@ -94,6 +98,7 @@ pub fn callErasedHostValueToCmd(roc_host: *abi.RocHost, callable: abi.RocErasedC
     return result;
 }
 
+/// Provides the `callUnitToCmd` operation.
 pub fn callUnitToCmd(roc_host: *abi.RocHost, callable: abi.RocErasedCallable) Cmd {
     const payload = erasedCallablePayload(callable);
     var result: Cmd = undefined;
@@ -107,6 +112,7 @@ pub fn callUnitToCmd(roc_host: *abi.RocHost, callable: abi.RocErasedCallable) Cm
     return result;
 }
 
+/// Provides the `callErasedHostValueHostValueToHostValue` operation.
 pub fn callErasedHostValueHostValueToHostValue(roc_host: *abi.RocHost, callable: abi.RocErasedCallable, arg0: HostValue, arg1: HostValue) HostValue {
     const payload = erasedCallablePayload(callable);
     var call_args = ErasedHostValueBinaryArgs{ .arg0 = arg0, .arg1 = arg1 };
@@ -121,6 +127,7 @@ pub fn callErasedHostValueHostValueToHostValue(roc_host: *abi.RocHost, callable:
     return result;
 }
 
+/// Provides the `callErasedHostValueHostValueHostValueToHostValue` operation.
 pub fn callErasedHostValueHostValueHostValueToHostValue(roc_host: *abi.RocHost, callable: abi.RocErasedCallable, arg0: HostValue, arg1: HostValue, arg2: HostValue) HostValue {
     const payload = erasedCallablePayload(callable);
     var result: HostValue = undefined;
@@ -135,6 +142,7 @@ pub fn callErasedHostValueHostValueHostValueToHostValue(roc_host: *abi.RocHost, 
     return result;
 }
 
+/// Provides the `callErasedHostValueHostValueToElem` operation.
 pub fn callErasedHostValueHostValueToElem(roc_host: *abi.RocHost, callable: abi.RocErasedCallable, arg0: HostValue, arg1: HostValue) abi.Elem {
     const payload = erasedCallablePayload(callable);
     var call_args = ErasedHostValueBinaryArgs{ .arg0 = arg0, .arg1 = arg1 };
@@ -149,6 +157,7 @@ pub fn callErasedHostValueHostValueToElem(roc_host: *abi.RocHost, callable: abi.
     return result;
 }
 
+/// Provides the `callErasedHostValueHostValueToBool` operation.
 pub fn callErasedHostValueHostValueToBool(roc_host: *abi.RocHost, callable: abi.RocErasedCallable, arg0: HostValue, arg1: HostValue) bool {
     const payload = erasedCallablePayload(callable);
     var call_args = ErasedHostValueBinaryArgs{ .arg0 = arg0, .arg1 = arg1 };
@@ -163,6 +172,7 @@ pub fn callErasedHostValueHostValueToBool(roc_host: *abi.RocHost, callable: abi.
     return (result & 0xff) != 0;
 }
 
+/// Provides the `callErasedHostValueToUnit` operation.
 pub fn callErasedHostValueToUnit(roc_host: *abi.RocHost, callable: abi.RocErasedCallable, arg0: HostValue) void {
     const payload = erasedCallablePayload(callable);
     var call_args = ErasedHostValueUnaryArgs{ .arg0 = arg0 };
@@ -176,6 +186,7 @@ pub fn callErasedHostValueToUnit(roc_host: *abi.RocHost, callable: abi.RocErased
     );
 }
 
+/// Provides the `callErasedHostValueToStr` operation.
 pub fn callErasedHostValueToStr(roc_host: *abi.RocHost, callable: abi.RocErasedCallable, arg0: HostValue) abi.RocStr {
     const payload = erasedCallablePayload(callable);
     var call_args = ErasedHostValueUnaryArgs{ .arg0 = arg0 };
@@ -190,6 +201,7 @@ pub fn callErasedHostValueToStr(roc_host: *abi.RocHost, callable: abi.RocErasedC
     return result;
 }
 
+/// Provides the `callErasedHostValueToBool` operation.
 pub fn callErasedHostValueToBool(roc_host: *abi.RocHost, callable: abi.RocErasedCallable, arg0: HostValue) bool {
     const payload = erasedCallablePayload(callable);
     var call_args = ErasedHostValueUnaryArgs{ .arg0 = arg0 };
@@ -204,6 +216,7 @@ pub fn callErasedHostValueToBool(roc_host: *abi.RocHost, callable: abi.RocErased
     return (result & 0xff) != 0;
 }
 
+/// Provides the `callErasedHostValueToU64` operation.
 pub fn callErasedHostValueToU64(roc_host: *abi.RocHost, callable: abi.RocErasedCallable, arg0: HostValue) u64 {
     const payload = erasedCallablePayload(callable);
     var call_args = ErasedHostValueUnaryArgs{ .arg0 = arg0 };
@@ -218,6 +231,7 @@ pub fn callErasedHostValueToU64(roc_host: *abi.RocHost, callable: abi.RocErasedC
     return result;
 }
 
+/// Provides the `callErasedHostValueToHostValueList` operation.
 pub fn callErasedHostValueToHostValueList(roc_host: *abi.RocHost, callable: abi.RocErasedCallable, arg0: HostValue) HostValueList {
     const payload = erasedCallablePayload(callable);
     var call_args = ErasedHostValueUnaryArgs{ .arg0 = arg0 };
@@ -232,6 +246,7 @@ pub fn callErasedHostValueToHostValueList(roc_host: *abi.RocHost, callable: abi.
     return result;
 }
 
+/// Provides the `callErasedRocBoxToRocBoxPair` operation.
 pub fn callErasedRocBoxToRocBoxPair(roc_host: *abi.RocHost, callable: abi.RocErasedCallable, arg0: abi.RocBox) RocBoxPair {
     const payload = erasedCallablePayload(callable);
     var call_args = ErasedRocBoxUnaryArgs{ .arg0 = arg0 };
@@ -246,6 +261,7 @@ pub fn callErasedRocBoxToRocBoxPair(roc_host: *abi.RocHost, callable: abi.RocEra
     return result;
 }
 
+/// Provides the `callErasedHostValueListToHostValue` operation.
 pub fn callErasedHostValueListToHostValue(roc_host: *abi.RocHost, callable: abi.RocErasedCallable, arg0: HostValueList) HostValue {
     const payload = erasedCallablePayload(callable);
     arg0.incref(1);

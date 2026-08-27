@@ -26,6 +26,7 @@ pub const ActiveInterval = struct {
 
 pub const CleanupEvents = std.ArrayListUnmanaged([]const u8);
 
+/// Provides the `appendCleanupEvent` operation.
 pub fn appendCleanupEvent(allocator: std.mem.Allocator, events: *CleanupEvents, name: []const u8) void {
     const copy = allocator.dupe(u8, name) catch @panic("out of memory");
     events.append(allocator, copy) catch {
@@ -34,6 +35,7 @@ pub fn appendCleanupEvent(allocator: std.mem.Allocator, events: *CleanupEvents, 
     };
 }
 
+/// Provides the `cleanupEventCount` operation.
 pub fn cleanupEventCount(events: []const []const u8, name: []const u8) u64 {
     var count: u64 = 0;
     for (events) |event_name| {
@@ -42,6 +44,7 @@ pub fn cleanupEventCount(events: []const []const u8, name: []const u8) u64 {
     return count;
 }
 
+/// Provides the `deinitCleanupEvents` operation.
 pub fn deinitCleanupEvents(allocator: std.mem.Allocator, events: *CleanupEvents) void {
     for (events.items) |name| {
         allocator.free(name);
@@ -50,6 +53,7 @@ pub fn deinitCleanupEvents(allocator: std.mem.Allocator, events: *CleanupEvents)
     events.* = .empty;
 }
 
+/// Provides the `activeTaskRecordByToken` operation.
 pub fn activeTaskRecordByToken(active_signal_graph: anytype, token: HostSignalToken) ?*HostSignalRecord {
     for (active_signal_graph) |node| {
         if (node.record.taskSource() != null) {
@@ -59,6 +63,7 @@ pub fn activeTaskRecordByToken(active_signal_graph: anytype, token: HostSignalTo
     return null;
 }
 
+/// Provides the `activeTaskRecordByName` operation.
 pub fn activeTaskRecordByName(active_signal_graph: anytype, name: []const u8) ?*HostSignalRecord {
     var found: ?*HostSignalRecord = null;
     for (active_signal_graph) |node| {
@@ -70,6 +75,7 @@ pub fn activeTaskRecordByName(active_signal_graph: anytype, name: []const u8) ?*
     return found;
 }
 
+/// Provides the `activeIntervalRecordCountByPeriod` operation.
 pub fn activeIntervalRecordCountByPeriod(active_signal_graph: anytype, period_ms: u64) u64 {
     var count: u64 = 0;
     for (active_signal_graph) |node| {
@@ -80,6 +86,7 @@ pub fn activeIntervalRecordCountByPeriod(active_signal_graph: anytype, period_ms
     return count;
 }
 
+/// Provides the `activeIntervalRecordByToken` operation.
 pub fn activeIntervalRecordByToken(active_signal_graph: anytype, source_token: HostSignalToken) ?*HostSignalRecord {
     var found: ?*HostSignalRecord = null;
     for (active_signal_graph) |node| {
@@ -91,6 +98,7 @@ pub fn activeIntervalRecordByToken(active_signal_graph: anytype, source_token: H
     return found;
 }
 
+/// Provides the `activeIntervalRecordByPeriod` operation.
 pub fn activeIntervalRecordByPeriod(active_signal_graph: anytype, period_ms: u64) ?*HostSignalRecord {
     var found: ?*HostSignalRecord = null;
     for (active_signal_graph) |node| {
@@ -102,6 +110,7 @@ pub fn activeIntervalRecordByPeriod(active_signal_graph: anytype, period_ms: u64
     return found;
 }
 
+/// Provides the `appendPendingTask` operation.
 pub fn appendPendingTask(
     allocator: std.mem.Allocator,
     tasks: *std.ArrayListUnmanaged(PendingTask),
@@ -138,6 +147,7 @@ pub fn appendPendingTask(
     return request_id;
 }
 
+/// Provides the `appendAndStartPendingTask` operation.
 pub fn appendAndStartPendingTask(
     comptime Ctx: type,
     ctx: Ctx.Handle,
@@ -155,6 +165,7 @@ pub fn appendAndStartPendingTask(
     return request_id;
 }
 
+/// Provides the `deinitPendingTask` operation.
 pub fn deinitPendingTask(allocator: std.mem.Allocator, roc_host: *abi.RocHost, task: *PendingTask) void {
     retained_values.releaseHostSignalToken(task.task_token, roc_host);
     allocator.free(task.task_name);
@@ -162,6 +173,7 @@ pub fn deinitPendingTask(allocator: std.mem.Allocator, roc_host: *abi.RocHost, t
     task.* = undefined;
 }
 
+/// Provides the `cancelPendingTask` operation.
 pub fn cancelPendingTask(comptime Ctx: type, ctx: Ctx.Handle, allocator: std.mem.Allocator, roc_host: *abi.RocHost, task: *PendingTask) void {
     if (task.active) {
         Ctx.sink(ctx).cancelTask(task.request_id);
@@ -169,6 +181,7 @@ pub fn cancelPendingTask(comptime Ctx: type, ctx: Ctx.Handle, allocator: std.mem
     deinitPendingTask(allocator, roc_host, task);
 }
 
+/// Provides the `clearPendingTasks` operation.
 pub fn clearPendingTasks(comptime Ctx: type, ctx: Ctx.Handle, allocator: std.mem.Allocator, tasks: *std.ArrayListUnmanaged(PendingTask), roc_host: ?*abi.RocHost) void {
     const host = roc_host orelse {
         if (tasks.items.len != 0) @panic("pending tasks cannot release tokens without a Roc host");
@@ -180,6 +193,7 @@ pub fn clearPendingTasks(comptime Ctx: type, ctx: Ctx.Handle, allocator: std.mem
     tasks.items.len = 0;
 }
 
+/// Provides the `pendingTaskIndexByName` operation.
 pub fn pendingTaskIndexByName(tasks: []const PendingTask, name: []const u8) ?usize {
     var found: ?usize = null;
     for (tasks, 0..) |task, index| {
@@ -191,6 +205,7 @@ pub fn pendingTaskIndexByName(tasks: []const PendingTask, name: []const u8) ?usi
     return found;
 }
 
+/// Provides the `pendingTaskCountByName` operation.
 pub fn pendingTaskCountByName(tasks: []const PendingTask, name: []const u8) u64 {
     var count: u64 = 0;
     for (tasks) |task| {
@@ -199,6 +214,7 @@ pub fn pendingTaskCountByName(tasks: []const PendingTask, name: []const u8) u64 
     return count;
 }
 
+/// Provides the `pendingTaskIndexByRequestId` operation.
 pub fn pendingTaskIndexByRequestId(tasks: []const PendingTask, request_id: u64) ?usize {
     var found: ?usize = null;
     for (tasks, 0..) |task, index| {
@@ -209,6 +225,7 @@ pub fn pendingTaskIndexByRequestId(tasks: []const PendingTask, request_id: u64) 
     return found;
 }
 
+/// Provides the `removePendingTaskAt` operation.
 pub fn removePendingTaskAt(tasks: *std.ArrayListUnmanaged(PendingTask), index: usize) PendingTask {
     if (index >= tasks.items.len) @panic("pending task index is out of bounds");
     const task = tasks.items[index];
@@ -220,6 +237,7 @@ pub fn removePendingTaskAt(tasks: *std.ArrayListUnmanaged(PendingTask), index: u
     return task;
 }
 
+/// Provides the `cancelPendingTasksByTaskToken` operation.
 pub fn cancelPendingTasksByTaskToken(comptime Ctx: type, ctx: Ctx.Handle, allocator: std.mem.Allocator, tasks: *std.ArrayListUnmanaged(PendingTask), roc_host: ?*abi.RocHost, task_token: HostSignalToken) void {
     const host = roc_host orelse {
         for (tasks.items) |task| {
@@ -240,6 +258,7 @@ pub fn cancelPendingTasksByTaskToken(comptime Ctx: type, ctx: Ctx.Handle, alloca
     }
 }
 
+/// Provides the `cancelPendingTasksInScopeSubtree` operation.
 pub fn cancelPendingTasksInScopeSubtree(comptime Ctx: type, ctx: Ctx.Handle, allocator: std.mem.Allocator, tasks: *std.ArrayListUnmanaged(PendingTask), roc_host: ?*abi.RocHost, scope_id: u64, scope_lookup: anytype) void {
     const host = roc_host orelse {
         for (tasks.items) |task| {
@@ -260,6 +279,7 @@ pub fn cancelPendingTasksInScopeSubtree(comptime Ctx: type, ctx: Ctx.Handle, all
     tasks.items.len = write_index;
 }
 
+/// Provides the `activeIntervalSourceTokenByRuntimeToken` operation.
 pub fn activeIntervalSourceTokenByRuntimeToken(intervals: []const ActiveInterval, token: u64) ?HostSignalToken {
     var found: ?HostSignalToken = null;
     for (intervals) |interval| {
@@ -270,6 +290,7 @@ pub fn activeIntervalSourceTokenByRuntimeToken(intervals: []const ActiveInterval
     return found;
 }
 
+/// Provides the `activeIntervalBySourceToken` operation.
 pub fn activeIntervalBySourceToken(intervals: []ActiveInterval, source_token: HostSignalToken) ?*ActiveInterval {
     var found: ?*ActiveInterval = null;
     for (intervals) |*interval| {
@@ -280,6 +301,7 @@ pub fn activeIntervalBySourceToken(intervals: []ActiveInterval, source_token: Ho
     return found;
 }
 
+/// Provides the `activeIntervalIndexBySourceToken` operation.
 pub fn activeIntervalIndexBySourceToken(intervals: []const ActiveInterval, source_token: HostSignalToken) ?usize {
     var found_index: ?usize = null;
     for (intervals, 0..) |interval, index| {
@@ -290,12 +312,14 @@ pub fn activeIntervalIndexBySourceToken(intervals: []const ActiveInterval, sourc
     return found_index;
 }
 
+/// Provides the `markActiveIntervalsInactive` operation.
 pub fn markActiveIntervalsInactive(intervals: []ActiveInterval) void {
     for (intervals) |*interval| {
         interval.active = false;
     }
 }
 
+/// Provides the `removeActiveIntervalAt` operation.
 pub fn removeActiveIntervalAt(intervals: *std.ArrayListUnmanaged(ActiveInterval), index: usize) ActiveInterval {
     if (index >= intervals.items.len) @panic("active interval index is out of bounds");
     const interval = intervals.items[index];
@@ -307,6 +331,7 @@ pub fn removeActiveIntervalAt(intervals: *std.ArrayListUnmanaged(ActiveInterval)
     return interval;
 }
 
+/// Provides the `clearActiveIntervals` operation.
 pub fn clearActiveIntervals(comptime Ctx: type, ctx: Ctx.Handle, intervals: *std.ArrayListUnmanaged(ActiveInterval), roc_host: ?*abi.RocHost) void {
     const host = roc_host orelse {
         if (intervals.items.len != 0) @panic("active intervals cannot release tokens without a Roc host");
@@ -322,6 +347,7 @@ pub fn clearActiveIntervals(comptime Ctx: type, ctx: Ctx.Handle, intervals: *std
     intervals.clearRetainingCapacity();
 }
 
+/// Provides the `ensureActiveInterval` operation.
 pub fn ensureActiveInterval(comptime Ctx: type, ctx: Ctx.Handle, allocator: std.mem.Allocator, intervals: *std.ArrayListUnmanaged(ActiveInterval), next_interval_token: *u64, roc_host: *abi.RocHost, source_token: HostSignalToken, period_ms: u64) void {
     if (activeIntervalBySourceToken(intervals.items, source_token)) |interval| {
         if (interval.period_ms != period_ms) @panic("interval source token changed period");
@@ -344,6 +370,7 @@ pub fn ensureActiveInterval(comptime Ctx: type, ctx: Ctx.Handle, allocator: std.
     Ctx.sink(ctx).startInterval(token, period_ms);
 }
 
+/// Provides the `removeActiveIntervalBySourceToken` operation.
 pub fn removeActiveIntervalBySourceToken(comptime Ctx: type, ctx: Ctx.Handle, intervals: *std.ArrayListUnmanaged(ActiveInterval), roc_host: *abi.RocHost, source_token: HostSignalToken) void {
     const index = activeIntervalIndexBySourceToken(intervals.items, source_token) orelse @panic("active interval removal missed its source token");
     const interval = removeActiveIntervalAt(intervals, index);
@@ -353,6 +380,7 @@ pub fn removeActiveIntervalBySourceToken(comptime Ctx: type, ctx: Ctx.Handle, in
     retained_values.releaseHostSignalToken(interval.source_token, roc_host);
 }
 
+/// Provides the `finishActiveIntervalSync` operation.
 pub fn finishActiveIntervalSync(comptime Ctx: type, ctx: Ctx.Handle, intervals: *std.ArrayListUnmanaged(ActiveInterval), roc_host: ?*abi.RocHost) void {
     const host = roc_host orelse {
         for (intervals.items) |interval| {
@@ -374,6 +402,7 @@ pub fn finishActiveIntervalSync(comptime Ctx: type, ctx: Ctx.Handle, intervals: 
     intervals.items.len = write_index;
 }
 
+/// Provides the `syncActiveIntervalsFromGraph` operation.
 pub fn syncActiveIntervalsFromGraph(
     comptime Ctx: type,
     ctx: Ctx.Handle,
@@ -403,6 +432,7 @@ const TestActiveNode = struct {
 const TestMetrics = struct {
     active_intervals_synced: u64 = 0,
 
+    /// Provides the `bump` operation.
     pub fn bump(self: *@This(), comptime field: enum { active_intervals_synced }, n: u64) void {
         @field(self, @tagName(field)) += n;
     }
@@ -420,20 +450,24 @@ const TestIntervalHost = struct {
 const TestIntervalSink = struct {
     host: *TestIntervalHost,
 
+    /// Provides the `startTask` operation.
     pub fn startTask(self: @This(), request_id: u64, _: []const u8, _: []const u8) void {
         self.host.start_task_count += 1;
         self.host.last_started_task = request_id;
     }
 
+    /// Provides the `cancelTask` operation.
     pub fn cancelTask(self: @This(), request_id: u64) void {
         self.host.cancel_task_count += 1;
         self.host.last_canceled_task = request_id;
     }
 
+    /// Provides the `startInterval` operation.
     pub fn startInterval(self: @This(), _: u64, _: u64) void {
         self.host.start_interval_count += 1;
     }
 
+    /// Provides the `cancelInterval` operation.
     pub fn cancelInterval(self: @This(), _: u64) void {
         self.host.cancel_interval_count += 1;
     }
@@ -443,6 +477,7 @@ const TestIntervalCtx = struct {
     pub const Handle = *TestIntervalHost;
     pub const Sink = TestIntervalSink;
 
+    /// Provides the `sink` operation.
     pub fn sink(ctx: Handle) Sink {
         return .{ .host = ctx };
     }
@@ -452,6 +487,7 @@ const TestScopeLookup = struct {
     root_scope_id: u64,
     child_scope_id: u64,
 
+    /// Provides the `descendantOrSelf` operation.
     pub fn descendantOrSelf(self: @This(), owner_scope_id: u64, scope_id: u64) bool {
         return owner_scope_id == scope_id or (scope_id == self.root_scope_id and owner_scope_id == self.child_scope_id);
     }

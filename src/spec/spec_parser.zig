@@ -106,6 +106,7 @@ pub const SpecCommand = struct {
     line_num: usize,
 };
 
+/// Provides the `freeSpecCommands` operation.
 pub fn freeSpecCommands(allocator: std.mem.Allocator, commands: []SpecCommand) void {
     for (commands) |cmd| {
         cmd.locator.deinit(allocator);
@@ -122,6 +123,7 @@ pub const ParsedTestSpec = struct {
     name: []const u8,
     commands: []SpecCommand,
 
+    /// Provides the `deinit` operation.
     pub fn deinit(self: ParsedTestSpec, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
         freeSpecCommands(allocator, self.commands);
@@ -135,6 +137,7 @@ pub const ParseError = error{
     IoError,
 };
 
+/// Provides the `parseTestSpecFile` operation.
 pub fn parseTestSpecFile(allocator: std.mem.Allocator, file_path: []const u8) ParseError!ParsedTestSpec {
     const io = std.Io.Threaded.global_single_threaded.io();
     const content = std.Io.Dir.cwd().readFileAlloc(io, file_path, allocator, .limited(1024 * 1024)) catch |err| switch (err) {
@@ -251,6 +254,7 @@ fn dupePlain(allocator: std.mem.Allocator, input: []const u8) ParseError![]u8 {
     return allocator.dupe(u8, input) catch return ParseError.OutOfMemory;
 }
 
+/// Provides the `locationSnapshotFromSpecText` operation.
 pub fn locationSnapshotFromSpecText(text: []const u8) ParseError!boundary.LocationSnapshot {
     var before_hash = text;
     var hash: []const u8 = "";
@@ -271,12 +275,14 @@ pub fn locationSnapshotFromSpecText(text: []const u8) ParseError!boundary.Locati
     return .{ .path = path, .query = query, .hash = hash };
 }
 
+/// Provides the `visibilitySnapshotFromSpecText` operation.
 pub fn visibilitySnapshotFromSpecText(text: []const u8) ParseError!boundary.VisibilitySnapshot {
     if (std.mem.eql(u8, text, "visible")) return .visible;
     if (std.mem.eql(u8, text, "hidden")) return .hidden;
     return ParseError.InvalidFormat;
 }
 
+/// Provides the `onlineSnapshotFromSpecText` operation.
 pub fn onlineSnapshotFromSpecText(text: []const u8) ParseError!boundary.OnlineSnapshot {
     if (std.mem.eql(u8, text, "online")) return .online;
     if (std.mem.eql(u8, text, "offline")) return .offline;
@@ -342,6 +348,7 @@ fn parseBoolToken(token: []const u8) ParseError!bool {
     return ParseError.InvalidFormat;
 }
 
+/// Provides the `parseTestSpec` operation.
 pub fn parseTestSpec(allocator: std.mem.Allocator, content: []const u8) ParseError![]SpecCommand {
     var commands: std.ArrayListUnmanaged(SpecCommand) = .empty;
     errdefer commands.deinit(allocator);
@@ -614,6 +621,7 @@ pub fn parseTestSpec(allocator: std.mem.Allocator, content: []const u8) ParseErr
     return commands.toOwnedSlice(allocator) catch ParseError.OutOfMemory;
 }
 
+/// Provides the `parseSExprTestSpec` operation.
 pub fn parseSExprTestSpec(allocator: std.mem.Allocator, content: []const u8) ParseError!ParsedTestSpec {
     var reader = sexpr.Reader.init(allocator, content);
     const root = reader.readOne() catch |err| switch (err) {

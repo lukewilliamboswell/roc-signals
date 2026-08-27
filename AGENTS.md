@@ -125,6 +125,13 @@
   workflow in the contributing docs, detailed Roc conventions in `style.md`,
   public behavior in reference or module documentation, and local invariants
   beside the code they constrain.
+- Review documentation as part of every pull request, including every added or
+  changed Zig `pub fn` doc comment. Do not treat satisfying the `///` lint as
+  sufficient: each comment must be well written and give a helpful narrative
+  explanation of the function's purpose and, where relevant, its contract,
+  ownership, failure behavior, or architectural role. Reject comments that
+  merely restate the function name or signature without helping a reader
+  understand why or how to use it.
 - Use `UPSTREAM_COMPILER_BUGS.md` for reproducible compiler limitations. Keep a
   workaround narrow and identifiable; do not let an upstream defect become an
   undocumented platform semantic or weaken the target architecture.

@@ -15,10 +15,12 @@ pub const FaultAllocator = struct {
         .free = free,
     };
 
+    /// Provides the `init` operation.
     pub fn init(backing: std.mem.Allocator) FaultAllocator {
         return .{ .backing = backing };
     }
 
+    /// Provides the `allocator` operation.
     pub fn allocator(self: *FaultAllocator) std.mem.Allocator {
         return .{ .ptr = self, .vtable = &vtable };
     }

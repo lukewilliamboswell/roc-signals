@@ -50,68 +50,84 @@ const NativeCtx = struct {
     pub const Metrics = RuntimeMetrics;
     pub const Sink = render_sink.DomSink(HostEnv);
 
+    /// Provides the `zeroMetrics` operation.
     pub fn zeroMetrics() Metrics {
         return zeroRuntimeMetrics();
     }
 
+    /// Provides the `allocator` operation.
     pub fn allocator(ctx: Handle) std.mem.Allocator {
         return ctx.hostAllocator();
     }
 
+    /// Provides the `cloneHostValue` operation.
     pub fn cloneHostValue(ctx: Handle, value: HostValue) HostValue {
         return ctx.cloneHostValue(value);
     }
 
+    /// Provides the `debugPhase` operation.
     pub fn debugPhase(ctx: Handle, phase: DebugPhase) void {
         ctx.debug_phase = phase;
     }
 
+    /// Provides the `debugInactiveTask` operation.
     pub fn debugInactiveTask(_: Handle, name: []const u8) void {
         writeStderr("inactive StartTask name=");
         writeStderr(name);
         writeStderr("\n");
     }
 
+    /// Provides the `failWithMessage` operation.
     pub fn failWithMessage(_: Handle, message: []const u8) noreturn {
         failHost(message);
     }
 
+    /// Provides the `pushHostValueCapabilities` operation.
     pub fn pushHostValueCapabilities(ctx: Handle, caps: []const HostValueCapability) void {
         ctx.active_capabilities.push(caps);
     }
 
+    /// Provides the `popHostValueCapabilities` operation.
     pub fn popHostValueCapabilities(ctx: Handle) void {
         ctx.active_capabilities.pop();
     }
 
+    /// Provides the `stateValueByNodeId` operation.
     pub fn stateValueByNodeId(ctx: Handle, node_id: u64) HostValue {
         return ctx.stateValueByNodeId(node_id);
     }
 
+    /// Provides the `stateCapability` operation.
     pub fn stateCapability(ctx: Handle, node_id: u64) HostValueCapability {
         return ctx.stateCapability(node_id);
     }
 
+    /// Provides the `updateStateValue` operation.
     pub fn updateStateValue(ctx: Handle, roc_host: *abi.RocHost, node_id: u64, value: HostValue) bool {
         return ctx.updateStateValue(roc_host, node_id, value);
     }
 
+    /// Provides the `initialLocationPayload` operation.
     pub fn initialLocationPayload(ctx: Handle, roc_host: *abi.RocHost, cap: HostValueCapability) HostValue {
         return ctx.initialLocationPayload(roc_host, cap);
     }
 
+    /// Provides the `initialVisibilityPayload` operation.
     pub fn initialVisibilityPayload(ctx: Handle, roc_host: *abi.RocHost, cap: HostValueCapability) HostValue {
         return ctx.initialVisibilityPayload(roc_host, cap);
     }
 
+    /// Provides the `initialOnlinePayload` operation.
     pub fn initialOnlinePayload(ctx: Handle, roc_host: *abi.RocHost, cap: HostValueCapability) HostValue {
         return ctx.initialOnlinePayload(roc_host, cap);
     }
 
+    /// Provides the `initialStoragePayload` operation.
     pub fn initialStoragePayload(ctx: Handle, roc_host: *abi.RocHost, area: boundary.StorageArea, key: []const u8, cap: HostValueCapability) HostValue {
         return ctx.initialStoragePayload(roc_host, area, key, cap);
     }
 
+    /// Provides the `sink` operation.
     pub fn sink(ctx: Handle) Sink {
         return ctx.sink();
     }
@@ -557,78 +573,98 @@ const HostEnv = struct {
         self.engine.pending_roc_metrics.bump(.deallocs_this_event, 1);
     }
 
+    /// Provides the `sink` operation.
     pub fn sink(self: *HostEnv) render_sink.DomSink(HostEnv) {
         return .{ .host = self };
     }
 
+    /// Provides the `sinkReset` operation.
     pub fn sinkReset(self: *HostEnv) void {
         resetSimulatedDom(self);
     }
 
+    /// Provides the `sinkAppendNode` operation.
     pub fn sinkAppendNode(self: *HostEnv, elem_id: u64, parent_elem_id: u64, tag: []const u8) void {
         appendDomNode(self, elem_id, parent_elem_id, tag);
     }
 
+    /// Provides the `sinkEnsureNode` operation.
     pub fn sinkEnsureNode(self: *HostEnv, elem_id: u64, tag: []const u8) void {
         ensureDomNode(self, elem_id, tag);
     }
 
+    /// Provides the `sinkRemoveNode` operation.
     pub fn sinkRemoveNode(self: *HostEnv, elem_id: u64) void {
         removeDomNode(self, elem_id);
     }
 
+    /// Provides the `sinkReplaceChildren` operation.
     pub fn sinkReplaceChildren(self: *HostEnv, parent_elem_id: u64, next_child_ids: []const u64) void {
         replaceDomChildrenForStructuralParent(self, parent_elem_id, next_child_ids);
     }
 
+    /// Provides the `sinkReplaceChildrenForMoves` operation.
     pub fn sinkReplaceChildrenForMoves(self: *HostEnv, parent_elem_id: u64, next_child_ids: []const u64) void {
         replaceDomChildrenForStructuralParentMoves(self, parent_elem_id, next_child_ids);
     }
 
+    /// Provides the `sinkApplyTextField` operation.
     pub fn sinkApplyTextField(self: *HostEnv, elem_id: u64, field: RenderTextField, value: []const u8) void {
         setRenderTextField(self, elem_id, field, value);
     }
 
+    /// Provides the `sinkApplyTextAttr` operation.
     pub fn sinkApplyTextAttr(self: *HostEnv, elem_id: u64, name: []const u8, value: []const u8) void {
         setRenderTextAttr(self, elem_id, name, value);
     }
 
+    /// Provides the `sinkApplyBoolField` operation.
     pub fn sinkApplyBoolField(self: *HostEnv, elem_id: u64, field: RenderBoolField, value: bool) void {
         setRenderBoolField(self, elem_id, field, value);
     }
 
+    /// Provides the `sinkClearTextField` operation.
     pub fn sinkClearTextField(self: *HostEnv, elem_id: u64, field: RenderTextField) void {
         clearRenderTextField(self, elem_id, field);
     }
 
+    /// Provides the `sinkClearTextAttr` operation.
     pub fn sinkClearTextAttr(self: *HostEnv, elem_id: u64, name: []const u8) void {
         clearRenderTextAttr(self, elem_id, name);
     }
 
+    /// Provides the `sinkClearBoolField` operation.
     pub fn sinkClearBoolField(self: *HostEnv, elem_id: u64, field: RenderBoolField) void {
         clearRenderBoolField(self, elem_id, field);
     }
 
+    /// Provides the `sinkBindEvent` operation.
     pub fn sinkBindEvent(self: *HostEnv, command: render_sink.EventBindCommand) void {
         bindNodeEvent(self, command);
     }
 
+    /// Provides the `sinkClearEvent` operation.
     pub fn sinkClearEvent(self: *HostEnv, command: render_sink.EventClearCommand) void {
         clearNodeEvent(self, command);
     }
 
+    /// Provides the `sinkStartInterval` operation.
     pub fn sinkStartInterval(_: *HostEnv, _: u64, _: u64) void {}
 
+    /// Provides the `sinkCancelInterval` operation.
     pub fn sinkCancelInterval(_: *HostEnv, _: u64) void {}
 
+    /// Provides the `sinkStartTask` operation.
     pub fn sinkStartTask(self: *HostEnv, request_id: u64, task_name: []const u8, _: []const u8) void {
         self.recordStartedTask(request_id, task_name);
     }
 
+    /// Provides the `sinkCancelTask` operation.
     pub fn sinkCancelTask(self: *HostEnv, request_id: u64) void {
         self.recordCanceledTask(request_id);
     }
 
+    /// Provides the `sinkNavigate` operation.
     pub fn sinkNavigate(self: *HostEnv, kind: render_sink.NavigationKind, location: boundary.LocationSnapshot) void {
         switch (kind) {
             .push => self.pushCurrentLocation(location),
@@ -636,18 +672,22 @@ const HostEnv = struct {
         }
     }
 
+    /// Provides the `sinkSetDocumentTitle` operation.
     pub fn sinkSetDocumentTitle(self: *HostEnv, title: []const u8) void {
         self.setDocumentTitle(title);
     }
 
+    /// Provides the `sinkSetStorageText` operation.
     pub fn sinkSetStorageText(self: *HostEnv, area: boundary.StorageArea, key: []const u8, value: []const u8) void {
         self.setStorageText(area, key, value);
     }
 
+    /// Provides the `sinkRemoveStorage` operation.
     pub fn sinkRemoveStorage(self: *HostEnv, area: boundary.StorageArea, key: []const u8) void {
         self.removeStorage(area, key);
     }
 
+    /// Provides the `sinkDebugAssertNode` operation.
     pub fn sinkDebugAssertNode(self: *HostEnv, elem_id: u64, active: bool, tag: ?[]const u8, parent_id: ?u64, children: []const u64, click_event: ?u64, input_event: ?u64, check_event: ?u64, pointer_down_event: ?u64, pointer_up_event: ?u64, pointer_enter_event: ?u64, pointer_leave_event: ?u64) void {
         if (elem_id >= self.dom_elements.items.len) {
             if (!active) return;
@@ -687,24 +727,29 @@ const HostEnv = struct {
         };
     }
 
+    /// Provides the `pushHostValueCapabilities` operation.
     pub fn pushHostValueCapabilities(self: *HostEnv, caps: []const HostValueCapability) void {
         self.active_capabilities.push(caps);
     }
 
+    /// Provides the `popHostValueCapabilities` operation.
     pub fn popHostValueCapabilities(self: *HostEnv) void {
         self.active_capabilities.pop();
     }
 
     // `ctx` surface consumed by the shared `host_values` box constructors
     // (`pub` so the `host_values` module can call them through `anytype`).
+    /// Provides the `store` operation.
     pub fn store(self: *HostEnv, box: abi.RocBox) HostValue {
         return self.storeHostValue(box);
     }
 
+    /// Provides the `storeWithCapability` operation.
     pub fn storeWithCapability(self: *HostEnv, box: abi.RocBox, cap: HostValueCapability) HostValue {
         return self.storeHostValueWithRetainedCapability(box, cap);
     }
 
+    /// Provides the `recordKind` operation.
     pub fn recordKind(self: *HostEnv, value: HostValue, kind: hv.ValueKind) void {
         if (builtin.is_test) self.setTestHostValueKind(value, switch (kind) {
             .unit => .unit,
@@ -1027,6 +1072,7 @@ const HostEnv = struct {
 
     // `pub` so the shared `engine.HostValueCell.cloneRetained` can clone a value
     // through the host's registry (the engine treats `self` as its clone ctx).
+    /// Provides the `cloneHostValue` operation.
     pub fn cloneHostValue(self: *HostEnv, value: HostValue) HostValue {
         const allocator = self.hostAllocator();
         const previous_phase = self.debug_phase;
@@ -1238,11 +1284,13 @@ const HostEnv = struct {
         };
     }
 
+    /// Provides the `stateValueByNodeId` operation.
     pub fn stateValueByNodeId(self: *HostEnv, node_id: u64) HostValue {
         const state_index = self.engine.stateIndexByNodeId(node_id) orelse failHost("signal referenced an unknown active state node");
         return self.cloneHostValue(self.engine.states.items[state_index].cell.value);
     }
 
+    /// Provides the `updateStateValue` operation.
     pub fn updateStateValue(self: *HostEnv, roc_host: *abi.RocHost, node_id: u64, value: HostValue) bool {
         const state_index = self.engine.stateIndexByNodeId(node_id) orelse failHost("event referenced an unknown active state node");
         const state = &self.engine.states.items[state_index];
@@ -1256,6 +1304,7 @@ const HostEnv = struct {
         return true;
     }
 
+    /// Provides the `stateCapability` operation.
     pub fn stateCapability(self: *HostEnv, node_id: u64) HostValueCapability {
         return self.engine.stateCapability(node_id) catch |err| switch (err) {
             error.MissingActiveState => failHost("active state has no capability"),
@@ -2381,52 +2430,64 @@ const BenchmarkCtx = struct {
     pub const RocHost = abi.RocHost;
     pub const DomElement = BenchmarkDomElement;
 
+    /// Provides the `fail` operation.
     pub fn fail(message: []const u8) noreturn {
         failHost(message);
     }
 
+    /// Provides the `initHost` operation.
     pub fn initHost() Host {
         return Host.init();
     }
 
+    /// Provides the `deinitHost` operation.
     pub fn deinitHost(host: *Host) void {
         host.deinit();
     }
 
+    /// Provides the `setVerbose` operation.
     pub fn setVerbose(host: *Host, verbose: bool) void {
         host.test_state.verbose = verbose;
     }
 
+    /// Provides the `makeRocHost` operation.
     pub fn makeRocHost(host: *Host) RocHost {
         return makeSignalsRocHost(host);
     }
 
+    /// Provides the `attachRocHost` operation.
     pub fn attachRocHost(host: *Host, roc_host: *RocHost) void {
         host.engine.roc_host = roc_host;
     }
 
+    /// Provides the `enterCurrent` operation.
     pub fn enterCurrent(host: *Host, roc_host: *RocHost) void {
         current_host = host;
         current_roc_host = roc_host;
     }
 
+    /// Provides the `leaveCurrent` operation.
     pub fn leaveCurrent() void {
         current_host = null;
         current_roc_host = null;
     }
 
+    /// Provides the `initRocUi` operation.
     pub fn initRocUi() ElemBox {
         return abi.roc_ui_init();
     }
 
+    /// Provides the `acceptInitElemMeasured` operation.
     pub fn acceptInitElemMeasured(host: *Host, roc_host: *RocHost, root_box: ElemBox, apply_ns: ?*u64, command_counts: ?*CommandCounts) void {
         acceptInitElemWithStats(host, roc_host, root_box, apply_ns, command_counts);
     }
 
+    /// Provides the `findElementByLocator` operation.
     pub fn findElementByLocator(host: *Host, locator: Locator, line_num: usize) ?*BenchmarkDomElement {
         return host.findElementByLocator(locator, line_num);
     }
 
+    /// Provides the `elementById` operation.
     pub fn elementById(host: *Host, elem_id: u64) ?*BenchmarkDomElement {
         if (elem_id >= host.dom_elements.items.len) return null;
         const elem = &host.dom_elements.items[@intCast(elem_id)];
@@ -2434,183 +2495,227 @@ const BenchmarkCtx = struct {
         return elem;
     }
 
+    /// Provides the `elementDisabled` operation.
     pub fn elementDisabled(elem: *const BenchmarkDomElement) bool {
         return elem.disabled;
     }
 
+    /// Provides the `fixedEventId` operation.
     pub fn fixedEventId(elem: *const BenchmarkDomElement, kind: render.EventKind) ?u64 {
         return sim_dom.fixedEventId(elem, kind);
     }
 
+    /// Provides the `clickEventId` operation.
     pub fn clickEventId(elem: *const BenchmarkDomElement) ?u64 {
         return sim_dom.fixedEventId(elem, .click);
     }
 
+    /// Provides the `pointerEventId` operation.
     pub fn pointerEventId(elem: *const BenchmarkDomElement, cmd_type: SpecCommandType) ?u64 {
         return pointerEventIdForCommand(elem, cmd_type);
     }
 
+    /// Provides the `inputEventId` operation.
     pub fn inputEventId(elem: *const BenchmarkDomElement) ?u64 {
         return sim_dom.fixedEventId(elem, .input);
     }
 
+    /// Provides the `checkEventId` operation.
     pub fn checkEventId(elem: *const BenchmarkDomElement) ?u64 {
         return sim_dom.fixedEventId(elem, .check);
     }
 
+    /// Provides the `namedEvent` operation.
     pub fn namedEvent(elem: *const BenchmarkDomElement, name: []const u8) ?DomNamedEvent {
         return nodeEventName(elem, name);
     }
 
+    /// Provides the `elementTextAttr` operation.
     pub fn elementTextAttr(elem: *const BenchmarkDomElement, name: []const u8) ?[]const u8 {
         return sim_dom.textAttr(elem, name);
     }
 
+    /// Provides the `dispatchRocEventMeasured` operation.
     pub fn dispatchRocEventMeasured(host: *Host, roc_host: *RocHost, event_id: u64, payload_descriptor: BoundaryPayloadDescriptor, payload: HostValue, stats: ?*BenchmarkStats) void {
         dispatchRocEventWithStats(host, roc_host, event_id, payload_descriptor, payload, stats);
     }
 
+    /// Provides the `hostValueUnit` operation.
     pub fn hostValueUnit(host: *Host, roc_host: *RocHost) HostValue {
         return hostValueUnitForBenchmark(host, roc_host);
     }
 
+    /// Provides the `hostValueStr` operation.
     pub fn hostValueStr(host: *Host, roc_host: *RocHost, value: []const u8) HostValue {
         return hostValueStrForBenchmark(host, roc_host, value);
     }
 
+    /// Provides the `hostValueBool` operation.
     pub fn hostValueBool(host: *Host, roc_host: *RocHost, value: bool) HostValue {
         return hostValueBoolForBenchmark(host, roc_host, value);
     }
 
+    /// Provides the `dispatchKeyDownMeasured` operation.
     pub fn dispatchKeyDownMeasured(host: *Host, roc_host: *RocHost, elem: *const BenchmarkDomElement, key: []const u8, shift_key: bool, stats: ?*BenchmarkStats) bool {
         return dispatchKeyDownWithStats(host, roc_host, elem, key, shift_key, stats);
     }
 
+    /// Provides the `dispatchSubmitMeasured` operation.
     pub fn dispatchSubmitMeasured(host: *Host, roc_host: *RocHost, elem: *const BenchmarkDomElement, stats: ?*BenchmarkStats) void {
         dispatchSubmitWithStats(host, roc_host, elem, stats);
     }
 
+    /// Provides the `dispatchResetMeasured` operation.
     pub fn dispatchResetMeasured(host: *Host, roc_host: *RocHost, elem: *const BenchmarkDomElement, stats: ?*BenchmarkStats) void {
         dispatchResetWithStats(host, roc_host, elem, stats);
     }
 
+    /// Provides the `setElementValueIfChanged` operation.
     pub fn setElementValueIfChanged(host: *Host, elem: *BenchmarkDomElement, value: []const u8) bool {
         return setElementValueForBenchmark(host, elem, value);
     }
 
+    /// Provides the `focusElement` operation.
     pub fn focusElement(_: *Host, elem: *BenchmarkDomElement) void {
         sim_dom.focusElement(elem);
     }
 
+    /// Provides the `blurElement` operation.
     pub fn blurElement(host: *Host, elem: *BenchmarkDomElement) void {
         _ = sim_dom.blurElement(host.hostAllocator(), elem);
     }
 
+    /// Provides the `beginComposition` operation.
     pub fn beginComposition(_: *Host, elem: *BenchmarkDomElement) void {
         sim_dom.beginComposition(elem);
     }
 
+    /// Provides the `endComposition` operation.
     pub fn endComposition(host: *Host, elem: *BenchmarkDomElement) void {
         _ = sim_dom.endComposition(host.hostAllocator(), elem);
     }
 
+    /// Provides the `setElementCheckedIfChanged` operation.
     pub fn setElementCheckedIfChanged(elem: *BenchmarkDomElement, checked: bool) bool {
         return setElementCheckedForBenchmark(elem, checked);
     }
 
+    /// Provides the `resolvePendingTask` operation.
     pub fn resolvePendingTask(host: *Host, roc_host: *RocHost, name: []const u8, payload_text: []const u8, failed: bool) CommandCounts {
         return resolvePendingTaskForBenchmark(host, roc_host, name, payload_text, failed);
     }
 
+    /// Provides the `resolveStalePendingTask` operation.
     pub fn resolveStalePendingTask(host: *Host, _: *RocHost, name: []const u8, payload_text: []const u8, failed: bool) CommandCounts {
         return resolveStalePendingTaskForBenchmark(host, name, payload_text, failed);
     }
 
+    /// Provides the `tickIntervalSource` operation.
     pub fn tickIntervalSource(host: *Host, roc_host: *RocHost, period_ms: u64) CommandCounts {
         return tickIntervalSourceForBenchmark(host, roc_host, period_ms);
     }
 
+    /// Provides the `setInitialLocation` operation.
     pub fn setInitialLocation(host: *Host, location: boundary.LocationSnapshot) void {
         host.setCurrentLocation(location);
     }
 
+    /// Provides the `setInitialVisibility` operation.
     pub fn setInitialVisibility(host: *Host, visibility: boundary.VisibilitySnapshot) void {
         host.setVisibility(visibility);
     }
 
+    /// Provides the `setInitialOnline` operation.
     pub fn setInitialOnline(host: *Host, online: boundary.OnlineSnapshot) void {
         host.setOnline(online);
     }
 
+    /// Provides the `seedStorage` operation.
     pub fn seedStorage(host: *Host, area: boundary.StorageArea, key: []const u8, value: []const u8) void {
         host.setStorageText(area, key, value);
     }
 
+    /// Provides the `navigateLocation` operation.
     pub fn navigateLocation(host: *Host, roc_host: *RocHost, location: boundary.LocationSnapshot) CommandCounts {
         host.pushCurrentLocation(location);
         return dispatchCurrentLocationSources(host, roc_host);
     }
 
+    /// Provides the `historyBack` operation.
     pub fn historyBack(host: *Host, roc_host: *RocHost) CommandCounts {
         if (!host.backCurrentLocation()) failHost("history_back had no previous location");
         return dispatchCurrentLocationSources(host, roc_host);
     }
 
+    /// Provides the `historyForward` operation.
     pub fn historyForward(host: *Host, roc_host: *RocHost) CommandCounts {
         if (!host.forwardCurrentLocation()) failHost("history_forward had no next location");
         return dispatchCurrentLocationSources(host, roc_host);
     }
 
+    /// Provides the `setVisibility` operation.
     pub fn setVisibility(host: *Host, roc_host: *RocHost, visibility: boundary.VisibilitySnapshot) CommandCounts {
         host.setVisibility(visibility);
         return dispatchCurrentVisibilitySources(host, roc_host);
     }
 
+    /// Provides the `setOnline` operation.
     pub fn setOnline(host: *Host, roc_host: *RocHost, online: boundary.OnlineSnapshot) CommandCounts {
         host.setOnline(online);
         return dispatchCurrentOnlineSources(host, roc_host);
     }
 
+    /// Provides the `activeIntervalRecordCountByPeriod` operation.
     pub fn activeIntervalRecordCountByPeriod(host: *const Host, period_ms: u64) u64 {
         return host.engine.activeIntervalRecordCountByPeriod(period_ms);
     }
 
+    /// Provides the `finishHostMetrics` operation.
     pub fn finishHostMetrics(host: *Host) void {
         finishHostMetricsForBenchmark(host);
     }
 
+    /// Provides the `allocCount` operation.
     pub fn allocCount(host: *const Host) usize {
         return host.alloc_count;
     }
 
+    /// Provides the `deallocCount` operation.
     pub fn deallocCount(host: *const Host) usize {
         return host.dealloc_count;
     }
 
+    /// Provides the `hostAllocCount` operation.
     pub fn hostAllocCount(host: *const Host) u64 {
         return host.host_alloc_count;
     }
 
+    /// Provides the `hostDeallocCount` operation.
     pub fn hostDeallocCount(host: *const Host) u64 {
         return host.host_dealloc_count;
     }
 
+    /// Provides the `hostAllocBytes` operation.
     pub fn hostAllocBytes(host: *const Host) u64 {
         return host.host_alloc_bytes;
     }
 
+    /// Provides the `hostDeallocBytes` operation.
     pub fn hostDeallocBytes(host: *const Host) u64 {
         return host.host_dealloc_bytes;
     }
 
+    /// Provides the `lastRuntimeMetrics` operation.
     pub fn lastRuntimeMetrics(host: *const Host) RuntimeMetrics {
         return host.engine.last_runtime_metrics;
     }
 
+    /// Provides the `canceledTaskCountByName` operation.
     pub fn canceledTaskCountByName(host: *const Host, name: []const u8) u64 {
         return host.canceledTaskCountByName(name);
     }
 
+    /// Provides the `addRuntimeMetrics` operation.
     pub fn addRuntimeMetrics(left: RuntimeMetrics, right: RuntimeMetrics) RuntimeMetrics {
         return addRuntimeMetricsForBenchmark(left, right);
     }
@@ -2623,22 +2728,27 @@ const SpecRunnerCtx = struct {
     pub const Host = HostEnv;
     pub const RocHost = abi.RocHost;
 
+    /// Provides the `fail` operation.
     pub fn fail(message: []const u8) noreturn {
         failHost(message);
     }
 
+    /// Provides the `writeStderr` operation.
     pub fn writeStderr(bytes: []const u8) void {
         crash_handlers.writeStderr(bytes);
     }
 
+    /// Provides the `allocator` operation.
     pub fn allocator(host: *Host) std.mem.Allocator {
         return host.hostAllocator();
     }
 
+    /// Provides the `findElementByLocator` operation.
     pub fn findElementByLocator(host: *Host, locator: Locator, line_num: usize) ?*DomElement {
         return host.findElementByLocator(locator, line_num);
     }
 
+    /// Provides the `elementById` operation.
     pub fn elementById(host: *Host, elem_id: u64) ?*DomElement {
         if (elem_id >= host.dom_elements.items.len) return null;
         const elem = &host.dom_elements.items[@intCast(elem_id)];
@@ -2646,139 +2756,172 @@ const SpecRunnerCtx = struct {
         return elem;
     }
 
+    /// Provides the `countElementsByLocator` operation.
     pub fn countElementsByLocator(host: *Host, locator: Locator) usize {
         return host.countElementsByLocator(locator);
     }
 
+    /// Provides the `namedEvent` operation.
     pub fn namedEvent(elem: *const DomElement, name: []const u8) ?DomNamedEvent {
         return nodeEventName(elem, name);
     }
 
+    /// Provides the `fixedEventId` operation.
     pub fn fixedEventId(elem: *const DomElement, kind: RenderEventKind) ?u64 {
         return sim_dom.fixedEventId(elem, kind);
     }
 
+    /// Provides the `dispatchRocEvent` operation.
     pub fn dispatchRocEvent(host: *Host, roc_host: *RocHost, event_id: u64, payload_descriptor: BoundaryPayloadDescriptor, payload: HostValue) void {
         dispatchRocEventWithStats(host, roc_host, event_id, payload_descriptor, payload, null);
     }
 
+    /// Provides the `hostValueUnit` operation.
     pub fn hostValueUnit(host: *Host, roc_host: *RocHost) HostValue {
         return hostValueUnitForBenchmark(host, roc_host);
     }
 
+    /// Provides the `hostValueStr` operation.
     pub fn hostValueStr(host: *Host, roc_host: *RocHost, value: []const u8) HostValue {
         return hostValueStrForBenchmark(host, roc_host, value);
     }
 
+    /// Provides the `hostValueBool` operation.
     pub fn hostValueBool(host: *Host, roc_host: *RocHost, value: bool) HostValue {
         return hostValueBoolForBenchmark(host, roc_host, value);
     }
 
+    /// Provides the `hostValueU8List` operation.
     pub fn hostValueU8List(host: *Host, roc_host: *RocHost, bytes: []const u8) HostValue {
         return hv.makeU8List(host, roc_host, bytes);
     }
 
+    /// Provides the `setElementValueIfChanged` operation.
     pub fn setElementValueIfChanged(host: *Host, elem: *DomElement, value: []const u8) bool {
         return sim_dom.setUserValueIfChanged(host.hostAllocator(), elem, value);
     }
 
+    /// Provides the `focusElement` operation.
     pub fn focusElement(_: *Host, elem: *DomElement) void {
         sim_dom.focusElement(elem);
     }
 
+    /// Provides the `blurElement` operation.
     pub fn blurElement(host: *Host, elem: *DomElement) void {
         _ = sim_dom.blurElement(host.hostAllocator(), elem);
     }
 
+    /// Provides the `beginComposition` operation.
     pub fn beginComposition(_: *Host, elem: *DomElement) void {
         sim_dom.beginComposition(elem);
     }
 
+    /// Provides the `endComposition` operation.
     pub fn endComposition(host: *Host, elem: *DomElement) void {
         _ = sim_dom.endComposition(host.hostAllocator(), elem);
     }
 
+    /// Provides the `setElementCheckedIfChanged` operation.
     pub fn setElementCheckedIfChanged(elem: *DomElement, checked: bool) bool {
         return sim_dom.setCheckedIfChanged(elem, checked);
     }
 
+    /// Provides the `elementTextAttr` operation.
     pub fn elementTextAttr(elem: *const DomElement, name: []const u8) ?[]const u8 {
         return sim_dom.textAttr(elem, name);
     }
 
+    /// Provides the `resolvePendingTask` operation.
     pub fn resolvePendingTask(host: *Host, roc_host: *RocHost, name: []const u8, payload_text: []const u8, failed: bool) CommandCounts {
         return resolvePendingTaskForBenchmark(host, roc_host, name, payload_text, failed);
     }
 
+    /// Provides the `resolveStalePendingTask` operation.
     pub fn resolveStalePendingTask(host: *Host, _: *RocHost, name: []const u8, payload_text: []const u8, failed: bool) CommandCounts {
         return resolveStalePendingTaskForBenchmark(host, name, payload_text, failed);
     }
 
+    /// Provides the `tickIntervalSource` operation.
     pub fn tickIntervalSource(host: *Host, roc_host: *RocHost, period_ms: u64) CommandCounts {
         return tickIntervalSourceForBenchmark(host, roc_host, period_ms);
     }
 
+    /// Provides the `navigateLocation` operation.
     pub fn navigateLocation(host: *Host, roc_host: *RocHost, location: boundary.LocationSnapshot) CommandCounts {
         host.pushCurrentLocation(location);
         return dispatchCurrentLocationSources(host, roc_host);
     }
 
+    /// Provides the `historyBack` operation.
     pub fn historyBack(host: *Host, roc_host: *RocHost) CommandCounts {
         if (!host.backCurrentLocation()) failHost("history_back had no previous location");
         return dispatchCurrentLocationSources(host, roc_host);
     }
 
+    /// Provides the `historyForward` operation.
     pub fn historyForward(host: *Host, roc_host: *RocHost) CommandCounts {
         if (!host.forwardCurrentLocation()) failHost("history_forward had no next location");
         return dispatchCurrentLocationSources(host, roc_host);
     }
 
+    /// Provides the `currentLocation` operation.
     pub fn currentLocation(host: *const Host) boundary.LocationSnapshot {
         return host.currentLocation();
     }
 
+    /// Provides the `setVisibility` operation.
     pub fn setVisibility(host: *Host, roc_host: *RocHost, visibility: boundary.VisibilitySnapshot) CommandCounts {
         host.setVisibility(visibility);
         return dispatchCurrentVisibilitySources(host, roc_host);
     }
 
+    /// Provides the `setOnline` operation.
     pub fn setOnline(host: *Host, roc_host: *RocHost, online: boundary.OnlineSnapshot) CommandCounts {
         host.setOnline(online);
         return dispatchCurrentOnlineSources(host, roc_host);
     }
 
+    /// Provides the `storageValue` operation.
     pub fn storageValue(host: *const Host, area: boundary.StorageArea, key: []const u8) ?[]const u8 {
         return host.storageValue(area, key);
     }
 
+    /// Provides the `documentTitle` operation.
     pub fn documentTitle(host: *const Host) []const u8 {
         return host.currentDocumentTitle();
     }
 
+    /// Provides the `finishHostMetrics` operation.
     pub fn finishHostMetrics(host: *Host) void {
         finishHostMetricsForBenchmark(host);
     }
 
+    /// Provides the `cleanupEventCount` operation.
     pub fn cleanupEventCount(host: *const Host, name: []const u8) u64 {
         return host.engine.cleanupEventCount(name);
     }
 
+    /// Provides the `pendingTaskCountByName` operation.
     pub fn pendingTaskCountByName(host: *const Host, name: []const u8) u64 {
         return host.engine.pendingTaskCountByName(name);
     }
 
+    /// Provides the `canceledTaskCountByName` operation.
     pub fn canceledTaskCountByName(host: *const Host, name: []const u8) u64 {
         return host.canceledTaskCountByName(name);
     }
 
+    /// Provides the `activeIntervalRecordCountByPeriod` operation.
     pub fn activeIntervalRecordCountByPeriod(host: *const Host, period_ms: u64) u64 {
         return host.engine.activeIntervalRecordCountByPeriod(period_ms);
     }
 
+    /// Provides the `lastRuntimeMetrics` operation.
     pub fn lastRuntimeMetrics(host: *const Host) RuntimeMetrics {
         return host.engine.last_runtime_metrics;
     }
 
+    /// Provides the `traceAllocationCheckpoint` operation.
     pub fn traceAllocationCheckpoint(host: *Host, line_num: usize, command_name: []const u8) void {
         host.traceAllocationCheckpoint(line_num, command_name);
     }

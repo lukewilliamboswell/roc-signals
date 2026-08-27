@@ -22,18 +22,21 @@ pub const DomIdentity = struct {
     retired_at: u64 = 0,
 };
 
+/// Provides the `appendFreshNode` operation.
 pub fn appendFreshNode(allocator: std.mem.Allocator, identities: *std.ArrayListUnmanaged(NodeIdentity), scope_id: u64, ordinal: u64) Error!u64 {
     const node_id: u64 = @intCast(identities.items.len);
     identities.append(allocator, .{ .node_id = node_id, .scope_id = scope_id, .ordinal = ordinal, .active = true }) catch return Error.OutOfMemory;
     return node_id;
 }
 
+/// Provides the `appendFreshDom` operation.
 pub fn appendFreshDom(allocator: std.mem.Allocator, identities: *std.ArrayListUnmanaged(DomIdentity), scope_id: u64, ordinal: u64) Error!u64 {
     const elem_id: u64 = @intCast(identities.items.len + 1);
     identities.append(allocator, .{ .elem_id = elem_id, .scope_id = scope_id, .ordinal = ordinal, .active = true }) catch return Error.OutOfMemory;
     return elem_id;
 }
 
+/// Provides the `internNode` operation.
 pub fn internNode(allocator: std.mem.Allocator, identities: *std.ArrayListUnmanaged(NodeIdentity), scope_id: u64, ordinal: u64, reuse_barrier: u64) Error!u64 {
     for (identities.items) |identity| {
         if (!identity.active) continue;
@@ -71,11 +74,13 @@ pub fn internNode(allocator: std.mem.Allocator, identities: *std.ArrayListUnmana
 }
 
 pub const NoActiveDomIds = struct {
+    /// Provides the `elemIdIsActive` operation.
     pub fn elemIdIsActive(_: @This(), _: u64) bool {
         return false;
     }
 };
 
+/// Provides the `internDom` operation.
 pub fn internDom(allocator: std.mem.Allocator, identities: *std.ArrayListUnmanaged(DomIdentity), scope_id: u64, ordinal: u64, reuse_barrier: u64, active_dom_ids: anytype) Error!u64 {
     for (identities.items) |identity| {
         if (!identity.active) continue;
@@ -108,6 +113,7 @@ pub fn internDom(allocator: std.mem.Allocator, identities: *std.ArrayListUnmanag
     return elem_id;
 }
 
+/// Provides the `deactivateNodesInScope` operation.
 pub fn deactivateNodesInScope(identities: *std.ArrayListUnmanaged(NodeIdentity), scope_id: u64, generation: u64, hooks: anytype) void {
     for (identities.items) |*identity| {
         if (identity.active and identity.scope_id == scope_id) {
@@ -118,6 +124,7 @@ pub fn deactivateNodesInScope(identities: *std.ArrayListUnmanaged(NodeIdentity),
     }
 }
 
+/// Provides the `deactivateDomsInScope` operation.
 pub fn deactivateDomsInScope(identities: *std.ArrayListUnmanaged(DomIdentity), scope_id: u64, generation: u64) void {
     for (identities.items) |*identity| {
         if (identity.active and identity.scope_id == scope_id) {
@@ -195,6 +202,7 @@ test "dom ids retired in a dirty generation are not reused until the next one" {
 const TestActiveDomIds = struct {
     elem_id: u64,
 
+    /// Provides the `elemIdIsActive` operation.
     pub fn elemIdIsActive(self: @This(), elem_id: u64) bool {
         return elem_id == self.elem_id;
     }
@@ -222,6 +230,7 @@ const TestDeactivateHook = struct {
         self.deactivated_nodes.deinit(allocator);
     }
 
+    /// Provides the `deactivateNode` operation.
     pub fn deactivateNode(self: *@This(), node_id: u64) void {
         self.deactivated_nodes.append(std.testing.allocator, node_id) catch @panic("out of memory");
     }

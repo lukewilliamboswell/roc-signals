@@ -48,64 +48,79 @@ const WasmCtx = struct {
     pub const Metrics = engine.NoMetrics;
     pub const Sink = WasmSink;
 
+    /// Provides the `zeroMetrics` operation.
     pub fn zeroMetrics() Metrics {
         return .{};
     }
 
+    /// Provides the `allocator` operation.
     pub fn allocator(_: Handle) std.mem.Allocator {
         return wasm_fault_allocator.allocator();
     }
 
+    /// Provides the `cloneHostValue` operation.
     pub fn cloneHostValue(_: Handle, value: HostValue) HostValue {
         return shared_engine.host_values.clone(wasm_fault_allocator.allocator(), value, registryOps()) catch |err| {
             failHostValueRegistryError(err);
         };
     }
 
+    /// Provides the `stateValueByNodeId` operation.
     pub fn stateValueByNodeId(_: Handle, node_id: u64) HostValue {
         return currentStateValue(node_id);
     }
 
+    /// Provides the `stateCapability` operation.
     pub fn stateCapability(_: Handle, node_id: u64) HostValueCapability {
         return shared_engine.stateCapability(node_id) catch failHost();
     }
 
+    /// Provides the `updateStateValue` operation.
     pub fn updateStateValue(_: Handle, _: *abi.RocHost, node_id: u64, value: HostValue) bool {
         return updateStateCell(node_id, value);
     }
 
+    /// Provides the `initialLocationPayload` operation.
     pub fn initialLocationPayload(_: Handle, _: *abi.RocHost, cap: HostValueCapability) HostValue {
         return makeInitialLocationPayload(cap);
     }
 
+    /// Provides the `initialVisibilityPayload` operation.
     pub fn initialVisibilityPayload(_: Handle, _: *abi.RocHost, cap: HostValueCapability) HostValue {
         return makeInitialVisibilityPayload(cap);
     }
 
+    /// Provides the `initialOnlinePayload` operation.
     pub fn initialOnlinePayload(_: Handle, _: *abi.RocHost, cap: HostValueCapability) HostValue {
         return makeInitialOnlinePayload(cap);
     }
 
+    /// Provides the `initialStoragePayload` operation.
     pub fn initialStoragePayload(_: Handle, _: *abi.RocHost, area: boundary.StorageArea, key: []const u8, cap: HostValueCapability) HostValue {
         return makeInitialStoragePayload(area, key, cap);
     }
 
+    /// Provides the `sink` operation.
     pub fn sink(_: Handle) Sink {
         return .{};
     }
 
+    /// Provides the `debugPhase` operation.
     pub fn debugPhase(_: Handle, phase: DebugPhase) void {
         roc_allocation_phase = phase;
     }
 
+    /// Provides the `failWithMessage` operation.
     pub fn failWithMessage(_: Handle, message: []const u8) noreturn {
         failHostWithFmt("{s}", .{message});
     }
 
+    /// Provides the `pushHostValueCapabilities` operation.
     pub fn pushHostValueCapabilities(_: Handle, caps: []const HostValueCapability) void {
         active_capabilities.push(caps);
     }
 
+    /// Provides the `popHostValueCapabilities` operation.
     pub fn popHostValueCapabilities(_: Handle) void {
         active_capabilities.pop();
     }
@@ -117,10 +132,12 @@ const WasmCtx = struct {
 // silent "build cache only" phase in the browser host (teardown never touches
 // the sink), so the sink carries no state.
 const WasmSink = struct {
+    /// Provides the `reset` operation.
     pub fn reset(_: WasmSink) void {
         appendCommand(.reset_dom, 0, 0, 0, 0, 0);
     }
 
+    /// Provides the `appendNode` operation.
     pub fn appendNode(_: WasmSink, elem_id: u64, parent_elem_id: u64, tag: []const u8) void {
         if (std.mem.eql(u8, tag, "text")) {
             appendStringCommand(.create_text, toU32(elem_id), "");
@@ -130,6 +147,7 @@ const WasmSink = struct {
         appendCommand(.append_child, toU32(parent_elem_id), toU32(elem_id), 0, 0, 0);
     }
 
+    /// Provides the `ensureNode` operation.
     pub fn ensureNode(_: WasmSink, elem_id: u64, tag: []const u8) void {
         if (std.mem.eql(u8, tag, "text")) {
             appendStringCommand(.create_text, toU32(elem_id), "");
@@ -138,6 +156,7 @@ const WasmSink = struct {
         }
     }
 
+    /// Provides the `removeNode` operation.
     pub fn removeNode(_: WasmSink, elem_id: u64) void {
         appendCommand(.remove_node, toU32(elem_id), 0, 0, 0, 0);
     }
@@ -147,14 +166,17 @@ const WasmSink = struct {
     // for already-attached nodes and a parent-link for freshly created ones. The
     // engine still computes the minimal-move count for its telemetry; this thin
     // executor just realises the order it was given.
+    /// Provides the `replaceChildren` operation.
     pub fn replaceChildren(_: WasmSink, parent_elem_id: u64, next_child_ids: []const u64) void {
         emitAppendChildren(parent_elem_id, next_child_ids);
     }
 
+    /// Provides the `replaceChildrenForMoves` operation.
     pub fn replaceChildrenForMoves(_: WasmSink, parent_elem_id: u64, next_child_ids: []const u64) void {
         emitAppendChildren(parent_elem_id, next_child_ids);
     }
 
+    /// Provides the `applyTextField` operation.
     pub fn applyTextField(_: WasmSink, elem_id: u64, field: RenderTextField, value: []const u8) void {
         if (textAttrNameForField(field)) |name| {
             appendDynamicSetAttrText(toU32(elem_id), name, value);
@@ -163,14 +185,17 @@ const WasmSink = struct {
         }
     }
 
+    /// Provides the `applyTextAttr` operation.
     pub fn applyTextAttr(_: WasmSink, elem_id: u64, name: []const u8, value: []const u8) void {
         appendDynamicSetAttrText(toU32(elem_id), name, value);
     }
 
+    /// Provides the `applyBoolField` operation.
     pub fn applyBoolField(_: WasmSink, elem_id: u64, field: RenderBoolField, value: bool) void {
         appendBoolFieldCommand(field, toU32(elem_id), value);
     }
 
+    /// Provides the `clearTextField` operation.
     pub fn clearTextField(_: WasmSink, elem_id: u64, field: RenderTextField) void {
         if (textAttrNameForField(field)) |name| {
             appendDynamicRemoveAttr(toU32(elem_id), name);
@@ -179,40 +204,49 @@ const WasmSink = struct {
         }
     }
 
+    /// Provides the `clearTextAttr` operation.
     pub fn clearTextAttr(_: WasmSink, elem_id: u64, name: []const u8) void {
         appendDynamicRemoveAttr(toU32(elem_id), name);
     }
 
+    /// Provides the `clearBoolField` operation.
     pub fn clearBoolField(_: WasmSink, elem_id: u64, field: RenderBoolField) void {
         appendBoolFieldCommand(field, toU32(elem_id), false);
     }
 
+    /// Provides the `bindEvent` operation.
     pub fn bindEvent(_: WasmSink, elem_id: u64, key: EventBindingKey, binding: EventBinding) void {
         appendEventBindCommand(.{ .elem_id = elem_id, .key = key, .binding = binding });
     }
 
+    /// Provides the `clearEvent` operation.
     pub fn clearEvent(_: WasmSink, elem_id: u64, key: EventBindingKey) void {
         appendEventClearCommand(.{ .elem_id = elem_id, .key = key });
     }
 
+    /// Provides the `startInterval` operation.
     pub fn startInterval(_: WasmSink, token: u64, period_ms: u64) void {
         appendCommand(.start_interval, toU32(token), toU32(period_ms), 0, 0, 0);
     }
 
+    /// Provides the `cancelInterval` operation.
     pub fn cancelInterval(_: WasmSink, token: u64) void {
         appendCommand(.cancel_interval, toU32(token), 0, 0, 0, 0);
     }
 
+    /// Provides the `startTask` operation.
     pub fn startTask(_: WasmSink, request_id: u64, task_name: []const u8, request: []const u8) void {
         const name_offset = storeBytes(task_name);
         const request_offset = storeBytes(request);
         appendCommand(.start_task, toU32(request_id), name_offset, toU32(task_name.len), request_offset, toU32(request.len));
     }
 
+    /// Provides the `cancelTask` operation.
     pub fn cancelTask(_: WasmSink, request_id: u64) void {
         appendCommand(.cancel_task, toU32(request_id), 0, 0, 0, 0);
     }
 
+    /// Provides the `navigate` operation.
     pub fn navigate(_: WasmSink, kind: render_sink.NavigationKind, location: boundary.LocationSnapshot) void {
         setCurrentLocationSnapshot(location);
         appendLocationCommand(switch (kind) {
@@ -221,18 +255,22 @@ const WasmSink = struct {
         }, location);
     }
 
+    /// Provides the `setDocumentTitle` operation.
     pub fn setDocumentTitle(_: WasmSink, title: []const u8) void {
         appendDocumentTitleCommand(title);
     }
 
+    /// Provides the `setStorageText` operation.
     pub fn setStorageText(_: WasmSink, area: boundary.StorageArea, key: []const u8, value: []const u8) void {
         appendStorageSetCommand(area, key, value);
     }
 
+    /// Provides the `removeStorage` operation.
     pub fn removeStorage(_: WasmSink, area: boundary.StorageArea, key: []const u8) void {
         appendStorageRemoveCommand(area, key);
     }
 
+    /// Provides the `debugAssertNode` operation.
     pub fn debugAssertNode(_: WasmSink, _: u64, _: bool, _: ?[]const u8, _: ?u64, _: []const u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64) void {}
 };
 
@@ -592,18 +630,21 @@ fn assertHostValueTakenAfter(value: HostValue, epoch: u64) void {
 // `ctx` surface consumed by the shared `host_values` box constructors. The
 // browser host has no test-kind bookkeeping, so `recordKind` is a no-op.
 const HostValueOpsCtx = struct {
+    /// Provides the `store` operation.
     pub fn store(_: HostValueOpsCtx, box: abi.RocBox) HostValue {
         return shared_engine.host_values.storeOwnedCapability(allocator(), box, null, registryOps()) catch |err| {
             failHostValueRegistryError(err);
         };
     }
 
+    /// Provides the `storeWithCapability` operation.
     pub fn storeWithCapability(_: HostValueOpsCtx, box: abi.RocBox, cap: HostValueCapability) HostValue {
         return shared_engine.host_values.storeRetainedCapability(allocator(), box, cap, registryOps()) catch |err| {
             failHostValueRegistryError(err);
         };
     }
 
+    /// Provides the `recordKind` operation.
     pub fn recordKind(_: HostValueOpsCtx, _: HostValue, _: hv.ValueKind) void {}
 };
 

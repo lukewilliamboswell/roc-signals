@@ -27,6 +27,7 @@ pub const EventBindingKey = union(enum) {
     fixed: EventKind,
     named: []const u8,
 
+    /// Provides the `deliveryFor` operation.
     pub fn deliveryFor(self: EventBindingKey, requested: EventDeliveryRequest, policy: EventPolicy) EventDelivery {
         return EventDelivery.derive(requested, policy, self.deliveryTraits());
     }
@@ -76,6 +77,7 @@ pub const EventDelivery = struct {
     effective: EventDeliveryEffective = .native,
     reason: EventDeliveryReason = .native_runtime_default,
 
+    /// Provides the `derive` operation.
     pub fn derive(requested: EventDeliveryRequest, policy: EventPolicy, traits: EventDeliveryTraits) EventDelivery {
         if (requested == .native) {
             return .{ .requested = requested, .effective = .native, .reason = .requested_native };
@@ -99,12 +101,14 @@ pub const EventDelivery = struct {
         return .native_runtime_default;
     }
 
+    /// Provides the `eql` operation.
     pub fn eql(self: EventDelivery, other: EventDelivery) bool {
         return self.requested == other.requested and
             self.effective == other.effective and
             self.reason == other.reason;
     }
 
+    /// Provides the `toWire` operation.
     pub fn toWire(self: EventDelivery) render.EventDeliveryWire {
         return .{
             .requested = switch (self.requested) {
@@ -137,12 +141,14 @@ pub const EventBinding = struct {
     delivery: EventDelivery = .{},
     payload_descriptor: BoundaryPayloadDescriptor,
 
+    /// Provides the `withDeliveryFor` operation.
     pub fn withDeliveryFor(self: EventBinding, key: EventBindingKey) EventBinding {
         var next = self;
         next.delivery = key.deliveryFor(next.delivery.requested, next.policy);
         return next;
     }
 
+    /// Provides the `eql` operation.
     pub fn eql(self: EventBinding, other: EventBinding) bool {
         return self.event_id == other.event_id and
             self.policy.eql(other.policy) and
@@ -150,6 +156,7 @@ pub const EventBinding = struct {
             self.payload_descriptor.eql(other.payload_descriptor);
     }
 
+    /// Provides the `canUseFixedOpcode` operation.
     pub fn canUseFixedOpcode(self: EventBinding, kind: EventKind) bool {
         return self.policy.isNone() and self.payload_descriptor.eql(kind.payloadDescriptor());
     }
@@ -166,98 +173,122 @@ pub const EventClearCommand = struct {
     key: EventBindingKey,
 };
 
+/// Provides the `DomSink` operation.
 pub fn DomSink(comptime Host: type) type {
     return struct {
         host: *Host,
 
+        /// Provides the `reset` operation.
         pub fn reset(self: @This()) void {
             self.host.sinkReset();
         }
 
+        /// Provides the `appendNode` operation.
         pub fn appendNode(self: @This(), elem_id: u64, parent_elem_id: u64, tag: []const u8) void {
             self.host.sinkAppendNode(elem_id, parent_elem_id, tag);
         }
 
+        /// Provides the `ensureNode` operation.
         pub fn ensureNode(self: @This(), elem_id: u64, tag: []const u8) void {
             self.host.sinkEnsureNode(elem_id, tag);
         }
 
+        /// Provides the `removeNode` operation.
         pub fn removeNode(self: @This(), elem_id: u64) void {
             self.host.sinkRemoveNode(elem_id);
         }
 
+        /// Provides the `replaceChildren` operation.
         pub fn replaceChildren(self: @This(), parent_elem_id: u64, next_child_ids: []const u64) void {
             self.host.sinkReplaceChildren(parent_elem_id, next_child_ids);
         }
 
+        /// Provides the `replaceChildrenForMoves` operation.
         pub fn replaceChildrenForMoves(self: @This(), parent_elem_id: u64, next_child_ids: []const u64) void {
             self.host.sinkReplaceChildrenForMoves(parent_elem_id, next_child_ids);
         }
 
+        /// Provides the `applyTextField` operation.
         pub fn applyTextField(self: @This(), elem_id: u64, field: TextField, value: []const u8) void {
             self.host.sinkApplyTextField(elem_id, field, value);
         }
 
+        /// Provides the `applyTextAttr` operation.
         pub fn applyTextAttr(self: @This(), elem_id: u64, name: []const u8, value: []const u8) void {
             self.host.sinkApplyTextAttr(elem_id, name, value);
         }
 
+        /// Provides the `applyBoolField` operation.
         pub fn applyBoolField(self: @This(), elem_id: u64, field: BoolField, value: bool) void {
             self.host.sinkApplyBoolField(elem_id, field, value);
         }
 
+        /// Provides the `clearTextField` operation.
         pub fn clearTextField(self: @This(), elem_id: u64, field: TextField) void {
             self.host.sinkClearTextField(elem_id, field);
         }
 
+        /// Provides the `clearTextAttr` operation.
         pub fn clearTextAttr(self: @This(), elem_id: u64, name: []const u8) void {
             self.host.sinkClearTextAttr(elem_id, name);
         }
 
+        /// Provides the `clearBoolField` operation.
         pub fn clearBoolField(self: @This(), elem_id: u64, field: BoolField) void {
             self.host.sinkClearBoolField(elem_id, field);
         }
 
+        /// Provides the `bindEvent` operation.
         pub fn bindEvent(self: @This(), elem_id: u64, key: EventBindingKey, binding: EventBinding) void {
             self.host.sinkBindEvent(.{ .elem_id = elem_id, .key = key, .binding = binding });
         }
 
+        /// Provides the `clearEvent` operation.
         pub fn clearEvent(self: @This(), elem_id: u64, key: EventBindingKey) void {
             self.host.sinkClearEvent(.{ .elem_id = elem_id, .key = key });
         }
 
+        /// Provides the `startInterval` operation.
         pub fn startInterval(self: @This(), token: u64, period_ms: u64) void {
             self.host.sinkStartInterval(token, period_ms);
         }
 
+        /// Provides the `cancelInterval` operation.
         pub fn cancelInterval(self: @This(), token: u64) void {
             self.host.sinkCancelInterval(token);
         }
 
+        /// Provides the `startTask` operation.
         pub fn startTask(self: @This(), request_id: u64, task_name: []const u8, request: []const u8) void {
             self.host.sinkStartTask(request_id, task_name, request);
         }
 
+        /// Provides the `cancelTask` operation.
         pub fn cancelTask(self: @This(), request_id: u64) void {
             self.host.sinkCancelTask(request_id);
         }
 
+        /// Provides the `navigate` operation.
         pub fn navigate(self: @This(), kind: NavigationKind, location: LocationSnapshot) void {
             self.host.sinkNavigate(kind, location);
         }
 
+        /// Provides the `setDocumentTitle` operation.
         pub fn setDocumentTitle(self: @This(), title: []const u8) void {
             self.host.sinkSetDocumentTitle(title);
         }
 
+        /// Provides the `setStorageText` operation.
         pub fn setStorageText(self: @This(), area: StorageArea, key: []const u8, value: []const u8) void {
             self.host.sinkSetStorageText(area, key, value);
         }
 
+        /// Provides the `removeStorage` operation.
         pub fn removeStorage(self: @This(), area: StorageArea, key: []const u8) void {
             self.host.sinkRemoveStorage(area, key);
         }
 
+        /// Provides the `debugAssertNode` operation.
         pub fn debugAssertNode(self: @This(), elem_id: u64, active: bool, tag: ?[]const u8, parent_id: ?u64, children: []const u64, click_event: ?u64, input_event: ?u64, check_event: ?u64, pointer_down_event: ?u64, pointer_up_event: ?u64, pointer_enter_event: ?u64, pointer_leave_event: ?u64) void {
             self.host.sinkDebugAssertNode(elem_id, active, tag, parent_id, children, click_event, input_event, check_event, pointer_down_event, pointer_up_event, pointer_enter_event, pointer_leave_event);
         }
@@ -339,55 +370,68 @@ test "DomSink forwards every render seam method to the host" {
             self.seen |= @as(u32, 1) << bit;
         }
 
+        /// Provides the `sinkReset` operation.
         pub fn sinkReset(self: *@This()) void {
             self.mark(0);
         }
 
+        /// Provides the `sinkAppendNode` operation.
         pub fn sinkAppendNode(self: *@This(), _: u64, _: u64, _: []const u8) void {
             self.mark(1);
         }
 
+        /// Provides the `sinkEnsureNode` operation.
         pub fn sinkEnsureNode(self: *@This(), _: u64, _: []const u8) void {
             self.mark(2);
         }
 
+        /// Provides the `sinkRemoveNode` operation.
         pub fn sinkRemoveNode(self: *@This(), _: u64) void {
             self.mark(3);
         }
 
+        /// Provides the `sinkReplaceChildren` operation.
         pub fn sinkReplaceChildren(self: *@This(), _: u64, children: []const u64) void {
             self.mark(4);
             self.last_children_len = children.len;
         }
 
+        /// Provides the `sinkReplaceChildrenForMoves` operation.
         pub fn sinkReplaceChildrenForMoves(self: *@This(), _: u64, _: []const u64) void {
             self.mark(5);
         }
 
+        /// Provides the `sinkApplyTextField` operation.
         pub fn sinkApplyTextField(self: *@This(), _: u64, _: TextField, _: []const u8) void {
             self.mark(6);
         }
 
+        /// Provides the `sinkApplyTextAttr` operation.
         pub fn sinkApplyTextAttr(self: *@This(), _: u64, _: []const u8, _: []const u8) void {
             self.mark(17);
         }
 
+        /// Provides the `sinkApplyBoolField` operation.
         pub fn sinkApplyBoolField(self: *@This(), _: u64, _: BoolField, _: bool) void {
             self.mark(7);
         }
 
+        /// Provides the `sinkClearTextField` operation.
         pub fn sinkClearTextField(self: *@This(), _: u64, _: TextField) void {
             self.mark(8);
         }
 
+        /// Provides the `sinkClearTextAttr` operation.
         pub fn sinkClearTextAttr(self: *@This(), _: u64, _: []const u8) void {
             self.mark(18);
         }
 
+        /// Provides the `sinkClearBoolField` operation.
         pub fn sinkClearBoolField(self: *@This(), _: u64, _: BoolField) void {
             self.mark(9);
         }
 
+        /// Provides the `sinkBindEvent` operation.
         pub fn sinkBindEvent(self: *@This(), command: EventBindCommand) void {
             self.mark(10);
             self.last_event_descriptor = command.binding.payload_descriptor;
@@ -397,6 +441,7 @@ test "DomSink forwards every render seam method to the host" {
             }
         }
 
+        /// Provides the `sinkClearEvent` operation.
         pub fn sinkClearEvent(self: *@This(), command: EventClearCommand) void {
             self.mark(11);
             switch (command.key) {
@@ -405,24 +450,29 @@ test "DomSink forwards every render seam method to the host" {
             }
         }
 
+        /// Provides the `sinkStartInterval` operation.
         pub fn sinkStartInterval(self: *@This(), _: u64, _: u64) void {
             self.mark(12);
         }
 
+        /// Provides the `sinkCancelInterval` operation.
         pub fn sinkCancelInterval(self: *@This(), _: u64) void {
             self.mark(13);
         }
 
+        /// Provides the `sinkStartTask` operation.
         pub fn sinkStartTask(self: *@This(), _: u64, task_name: []const u8, request: []const u8) void {
             self.mark(14);
             self.last_task_name = task_name;
             self.last_task_request = request;
         }
 
+        /// Provides the `sinkCancelTask` operation.
         pub fn sinkCancelTask(self: *@This(), _: u64) void {
             self.mark(15);
         }
 
+        /// Provides the `sinkNavigate` operation.
         pub fn sinkNavigate(self: *@This(), kind: NavigationKind, location: LocationSnapshot) void {
             self.mark(19);
             self.last_task_name = switch (kind) {
@@ -432,12 +482,14 @@ test "DomSink forwards every render seam method to the host" {
             self.last_task_request = location.path;
         }
 
+        /// Provides the `sinkSetDocumentTitle` operation.
         pub fn sinkSetDocumentTitle(self: *@This(), title: []const u8) void {
             self.mark(22);
             self.last_task_name = "title";
             self.last_task_request = title;
         }
 
+        /// Provides the `sinkSetStorageText` operation.
         pub fn sinkSetStorageText(self: *@This(), area: StorageArea, key: []const u8, value: []const u8) void {
             self.mark(20);
             self.last_task_name = switch (area) {
@@ -448,6 +500,7 @@ test "DomSink forwards every render seam method to the host" {
             self.last_dynamic_value = value;
         }
 
+        /// Provides the `sinkRemoveStorage` operation.
         pub fn sinkRemoveStorage(self: *@This(), area: StorageArea, key: []const u8) void {
             self.mark(21);
             self.last_task_name = switch (area) {
@@ -457,6 +510,7 @@ test "DomSink forwards every render seam method to the host" {
             self.last_task_request = key;
         }
 
+        /// Provides the `sinkDebugAssertNode` operation.
         pub fn sinkDebugAssertNode(self: *@This(), _: u64, _: bool, _: ?[]const u8, _: ?u64, children: []const u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64) void {
             self.mark(16);
             self.last_debug_children_len = children.len;

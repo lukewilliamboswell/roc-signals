@@ -6,10 +6,12 @@ const signal_records = @import("signal_records.zig");
 const signal_graph = @import("signal_graph.zig");
 const boundary = @import("boundary.zig");
 
+/// Provides the `Node` operation.
 pub fn Node(comptime Record: type) type {
     return signal_graph.Node(Record);
 }
 
+/// Provides the `RouteTable` operation.
 pub fn RouteTable(comptime Route: type) type {
     return std.ArrayListUnmanaged(std.ArrayListUnmanaged(Route));
 }
@@ -111,6 +113,7 @@ pub const DirtyStructuralSignal = struct {
     branch: ?scope_tree.Branch = null,
 };
 
+/// Provides the `sourceSignalIdsForEvent` operation.
 pub fn sourceSignalIdsForEvent(routes: []const EventRoute, event_id: u64) EventLookupError![]const u64 {
     if (event_id == 0) return EventLookupError.EventIdZero;
 
@@ -122,6 +125,7 @@ pub fn sourceSignalIdsForEvent(routes: []const EventRoute, event_id: u64) EventL
     return route.signal_ids;
 }
 
+/// Provides the `eventPayloadDescriptor` operation.
 pub fn eventPayloadDescriptor(descriptors: []const EventDescriptor, event_id: u64) EventLookupError!boundary.BoundaryPayloadDescriptor {
     if (event_id == 0) return EventLookupError.EventIdZero;
 
@@ -133,6 +137,7 @@ pub fn eventPayloadDescriptor(descriptors: []const EventDescriptor, event_id: u6
     return descriptor.payload_descriptor;
 }
 
+/// Provides the `signalIdsForState` operation.
 pub fn signalIdsForState(routes: []const StateRoute, state_id: u64) SignalLookupError![]const u64 {
     if (state_id >= routes.len) return SignalLookupError.MissingSignalRoute;
 
@@ -141,6 +146,7 @@ pub fn signalIdsForState(routes: []const StateRoute, state_id: u64) SignalLookup
     return route.signal_ids;
 }
 
+/// Provides the `dependentSignalIdsForSignal` operation.
 pub fn dependentSignalIdsForSignal(routes: []const DependentsRoute, signal_id: u64) SignalLookupError![]const u64 {
     if (signal_id >= routes.len) return SignalLookupError.MissingSignalDependentRoute;
 
@@ -149,6 +155,7 @@ pub fn dependentSignalIdsForSignal(routes: []const DependentsRoute, signal_id: u
     return route.signal_ids;
 }
 
+/// Provides the `signalRank` operation.
 pub fn signalRank(descriptors: []const Descriptor, signal_id: u64) SignalLookupError!u64 {
     if (signal_id >= descriptors.len) return SignalLookupError.MissingSignalDescriptor;
 
@@ -157,10 +164,12 @@ pub fn signalRank(descriptors: []const Descriptor, signal_id: u64) SignalLookupE
     return descriptor.rank;
 }
 
+/// Provides the `rank` operation.
 pub fn rank(comptime Record: type, nodes: []const Node(Record), record_id: u64) u64 {
     return signal_graph.rank(Record, nodes, record_id) catch @panic("active signal record id has no graph node");
 }
 
+/// Provides the `dependentIds` operation.
 pub fn dependentIds(comptime Record: type, nodes: []const Node(Record), record_id: u64) []const u64 {
     return signal_graph.dependentIds(Record, nodes, record_id) catch @panic("active signal record id has no dependent table");
 }
@@ -249,6 +258,7 @@ pub const DirtyRecordQueue = struct {
     rank_counts: std.ArrayListUnmanaged(usize) = .empty,
     rank_offsets: std.ArrayListUnmanaged(usize) = .empty,
 
+    /// Provides the `deinit` operation.
     pub fn deinit(self: *DirtyRecordQueue, allocator: std.mem.Allocator) void {
         self.seen_generations.deinit(allocator);
         self.pending_record_ids.deinit(allocator);
@@ -258,6 +268,7 @@ pub const DirtyRecordQueue = struct {
         self.* = .{};
     }
 
+    /// Provides the `collectForSources` operation.
     pub fn collectForSources(
         self: *DirtyRecordQueue,
         comptime Record: type,
@@ -281,6 +292,7 @@ pub const DirtyRecordQueue = struct {
         return self.finish(Record, allocator, nodes, max_rank);
     }
 
+    /// Provides the `collectForRoots` operation.
     pub fn collectForRoots(
         self: *DirtyRecordQueue,
         comptime Record: type,
@@ -372,6 +384,7 @@ pub const DirtyRecordQueue = struct {
     }
 };
 
+/// Provides the `recordId` operation.
 pub fn recordId(comptime Record: type, nodes: []const Node(Record), record: *const Record) ?u64 {
     const record_id = record.active_graph_id orelse return null;
     if (record_id >= nodes.len) @panic("active signal record dense id exceeded the graph table");
@@ -381,10 +394,12 @@ pub fn recordId(comptime Record: type, nodes: []const Node(Record), record: *con
     return record_id;
 }
 
+/// Provides the `requireRecordId` operation.
 pub fn requireRecordId(comptime Record: type, nodes: []const Node(Record), record: *const Record) u64 {
     return recordId(Record, nodes, record) orelse @panic("active signal graph referenced a record that was not registered");
 }
 
+/// Provides the `appendNode` operation.
 pub fn appendNode(comptime Record: type, allocator: std.mem.Allocator, nodes: *std.ArrayListUnmanaged(Node(Record)), record: *Record, node_rank: u64) u64 {
     const record_id: u64 = @intCast(nodes.items.len);
     nodes.append(allocator, .{
@@ -395,6 +410,7 @@ pub fn appendNode(comptime Record: type, allocator: std.mem.Allocator, nodes: *s
     return record_id;
 }
 
+/// Provides the `appendDependentId` operation.
 pub fn appendDependentId(comptime Record: type, allocator: std.mem.Allocator, nodes: []Node(Record), input_record_id: u64, dependent_record_id: u64) void {
     signal_graph.appendDependent(Record, allocator, nodes, input_record_id, dependent_record_id) catch |err| switch (err) {
         error.OutOfMemory => @panic("out of memory"),
@@ -403,6 +419,7 @@ pub fn appendDependentId(comptime Record: type, allocator: std.mem.Allocator, no
     };
 }
 
+/// Provides the `removeDependentId` operation.
 pub fn removeDependentId(comptime Record: type, allocator: std.mem.Allocator, nodes: []Node(Record), input_record_id: u64, dependent_record_id: u64) void {
     signal_graph.removeDependent(Record, allocator, nodes, input_record_id, dependent_record_id) catch |err| switch (err) {
         error.OutOfMemory => @panic("out of memory"),
@@ -411,6 +428,7 @@ pub fn removeDependentId(comptime Record: type, allocator: std.mem.Allocator, no
     };
 }
 
+/// Provides the `replaceDependentId` operation.
 pub fn replaceDependentId(comptime Record: type, nodes: []Node(Record), input_record_id: u64, old_dependent_id: u64, new_dependent_id: u64) void {
     signal_graph.replaceDependent(Record, nodes, input_record_id, old_dependent_id, new_dependent_id) catch |err| switch (err) {
         error.UnknownNode => @panic("active signal dependent rewrite referenced an unknown input record"),
@@ -418,10 +436,12 @@ pub fn replaceDependentId(comptime Record: type, nodes: []Node(Record), input_re
     };
 }
 
+/// Provides the `clearSourceRoutes` operation.
 pub fn clearSourceRoutes(allocator: std.mem.Allocator, source_routes: *RouteTable(u64)) void {
     clearRouteTable(u64, allocator, source_routes);
 }
 
+/// Provides the `clearSinkRoutes` operation.
 pub fn clearSinkRoutes(
     allocator: std.mem.Allocator,
     text_routes: *RouteTable(TextSink),
@@ -435,6 +455,7 @@ pub fn clearSinkRoutes(
     clearRouteTable(StructuralSink, allocator, structural_routes);
 }
 
+/// Provides the `clearRoutes` operation.
 pub fn clearRoutes(
     allocator: std.mem.Allocator,
     source_routes: *RouteTable(u64),
@@ -447,6 +468,7 @@ pub fn clearRoutes(
     clearSinkRoutes(allocator, text_routes, bool_routes, change_routes, structural_routes);
 }
 
+/// Provides the `ensureSourceRoute` operation.
 pub fn ensureSourceRoute(allocator: std.mem.Allocator, source_routes: *RouteTable(u64), source_node_count: usize, source_node_id: u64) *std.ArrayListUnmanaged(u64) {
     if (source_node_id >= source_node_count) @panic("active source signal route referenced an unknown source node");
     const route_index: usize = @intCast(source_node_id);
@@ -456,6 +478,7 @@ pub fn ensureSourceRoute(allocator: std.mem.Allocator, source_routes: *RouteTabl
     return &source_routes.items[route_index];
 }
 
+/// Provides the `appendSourceRoute` operation.
 pub fn appendSourceRoute(allocator: std.mem.Allocator, source_routes: *RouteTable(u64), source_node_count: usize, source_node_id: u64, record_id: u64) void {
     const route = ensureSourceRoute(allocator, source_routes, source_node_count, source_node_id);
     if (!containsU64(route.items, record_id)) {
@@ -463,11 +486,13 @@ pub fn appendSourceRoute(allocator: std.mem.Allocator, source_routes: *RouteTabl
     }
 }
 
+/// Provides the `appendFreshSourceRoute` operation.
 pub fn appendFreshSourceRoute(allocator: std.mem.Allocator, source_routes: *RouteTable(u64), source_node_count: usize, source_node_id: u64, record_id: u64) void {
     const route = ensureSourceRoute(allocator, source_routes, source_node_count, source_node_id);
     route.append(allocator, record_id) catch @panic("out of memory");
 }
 
+/// Provides the `removeSourceRoute` operation.
 pub fn removeSourceRoute(source_routes: *RouteTable(u64), source_node_id: u64, record_id: u64) void {
     if (source_node_id >= source_routes.items.len) @panic("active source signal route removal referenced an unknown source node");
     var route = &source_routes.items[@intCast(source_node_id)];
@@ -479,6 +504,7 @@ pub fn removeSourceRoute(source_routes: *RouteTable(u64), source_node_id: u64, r
     @panic("active source signal route removal missed its record");
 }
 
+/// Provides the `replaceSourceRouteId` operation.
 pub fn replaceSourceRouteId(source_routes: *RouteTable(u64), source_node_id: u64, old_record_id: u64, new_record_id: u64) void {
     if (source_node_id >= source_routes.items.len) @panic("active source signal route rewrite referenced an unknown source node");
     const route = source_routes.items[@intCast(source_node_id)].items;
@@ -490,22 +516,27 @@ pub fn replaceSourceRouteId(source_routes: *RouteTable(u64), source_node_id: u64
     @panic("active source signal route rewrite missed its record");
 }
 
+/// Provides the `ensureTextRoute` operation.
 pub fn ensureTextRoute(allocator: std.mem.Allocator, text_routes: *RouteTable(TextSink), graph_len: usize, record_id: u64) *std.ArrayListUnmanaged(TextSink) {
     return ensureSinkRoute(TextSink, allocator, text_routes, graph_len, record_id, "active text signal route referenced an unknown signal record");
 }
 
+/// Provides the `ensureBoolRoute` operation.
 pub fn ensureBoolRoute(allocator: std.mem.Allocator, bool_routes: *RouteTable(BoolSink), graph_len: usize, record_id: u64) *std.ArrayListUnmanaged(BoolSink) {
     return ensureSinkRoute(BoolSink, allocator, bool_routes, graph_len, record_id, "active bool signal route referenced an unknown signal record");
 }
 
+/// Provides the `ensureChangeRoute` operation.
 pub fn ensureChangeRoute(allocator: std.mem.Allocator, change_routes: *RouteTable(ChangeSink), graph_len: usize, record_id: u64) *std.ArrayListUnmanaged(ChangeSink) {
     return ensureSinkRoute(ChangeSink, allocator, change_routes, graph_len, record_id, "active change signal route referenced an unknown signal record");
 }
 
+/// Provides the `ensureStructuralRoute` operation.
 pub fn ensureStructuralRoute(allocator: std.mem.Allocator, structural_routes: *RouteTable(StructuralSink), graph_len: usize, record_id: u64) *std.ArrayListUnmanaged(StructuralSink) {
     return ensureSinkRoute(StructuralSink, allocator, structural_routes, graph_len, record_id, "active structural signal route referenced an unknown signal record");
 }
 
+/// Provides the `removeSinkRoutesForRecordId` operation.
 pub fn removeSinkRoutesForRecordId(
     allocator: std.mem.Allocator,
     text_routes: *RouteTable(TextSink),
@@ -521,10 +552,12 @@ pub fn removeSinkRoutesForRecordId(
     removeRouteTableRecordId(StructuralSink, allocator, structural_routes, record_index, last_index, "active signal graph removed a record with live structural sinks");
 }
 
+/// Provides the `appendTextRoute` operation.
 pub fn appendTextRoute(allocator: std.mem.Allocator, text_routes: *RouteTable(TextSink), graph_len: usize, record_id: u64, route: TextSink) void {
     ensureTextRoute(allocator, text_routes, graph_len, record_id).append(allocator, route) catch @panic("out of memory");
 }
 
+/// Provides the `removeTextRoute` operation.
 pub fn removeTextRoute(text_routes: *RouteTable(TextSink), record_id: u64, kind: TextSinkKind, index: usize) void {
     const route_index: usize = @intCast(record_id);
     if (route_index >= text_routes.items.len) @panic("active text signal route removal referenced an unknown signal record");
@@ -538,6 +571,7 @@ pub fn removeTextRoute(text_routes: *RouteTable(TextSink), record_id: u64, kind:
     @panic("active text signal route removal missed its sink");
 }
 
+/// Provides the `updateTextRouteIndex` operation.
 pub fn updateTextRouteIndex(text_routes: *RouteTable(TextSink), record_id: u64, kind: TextSinkKind, old_index: usize, new_index: usize) void {
     if (old_index == new_index) return;
     const route_index: usize = @intCast(record_id);
@@ -551,10 +585,12 @@ pub fn updateTextRouteIndex(text_routes: *RouteTable(TextSink), record_id: u64, 
     @panic("active text signal route update missed its sink");
 }
 
+/// Provides the `appendBoolRoute` operation.
 pub fn appendBoolRoute(allocator: std.mem.Allocator, bool_routes: *RouteTable(BoolSink), graph_len: usize, record_id: u64, route: BoolSink) void {
     ensureBoolRoute(allocator, bool_routes, graph_len, record_id).append(allocator, route) catch @panic("out of memory");
 }
 
+/// Provides the `removeBoolRoute` operation.
 pub fn removeBoolRoute(bool_routes: *RouteTable(BoolSink), record_id: u64, kind: BoolSinkKind, index: usize) void {
     const route_index: usize = @intCast(record_id);
     if (route_index >= bool_routes.items.len) @panic("active bool signal route removal referenced an unknown signal record");
@@ -568,6 +604,7 @@ pub fn removeBoolRoute(bool_routes: *RouteTable(BoolSink), record_id: u64, kind:
     @panic("active bool signal route removal missed its sink");
 }
 
+/// Provides the `updateBoolRouteIndex` operation.
 pub fn updateBoolRouteIndex(bool_routes: *RouteTable(BoolSink), record_id: u64, kind: BoolSinkKind, old_index: usize, new_index: usize) void {
     if (old_index == new_index) return;
     const route_index: usize = @intCast(record_id);
@@ -581,10 +618,12 @@ pub fn updateBoolRouteIndex(bool_routes: *RouteTable(BoolSink), record_id: u64, 
     @panic("active bool signal route update missed its sink");
 }
 
+/// Provides the `appendChangeRoute` operation.
 pub fn appendChangeRoute(allocator: std.mem.Allocator, change_routes: *RouteTable(ChangeSink), graph_len: usize, record_id: u64, route: ChangeSink) void {
     ensureChangeRoute(allocator, change_routes, graph_len, record_id).append(allocator, route) catch @panic("out of memory");
 }
 
+/// Provides the `removeChangeRoute` operation.
 pub fn removeChangeRoute(change_routes: *RouteTable(ChangeSink), record_id: u64, index: usize) void {
     const route_index: usize = @intCast(record_id);
     if (route_index >= change_routes.items.len) @panic("active change signal route removal referenced an unknown signal record");
@@ -598,6 +637,7 @@ pub fn removeChangeRoute(change_routes: *RouteTable(ChangeSink), record_id: u64,
     @panic("active change signal route removal missed its sink");
 }
 
+/// Provides the `updateChangeRouteIndex` operation.
 pub fn updateChangeRouteIndex(change_routes: *RouteTable(ChangeSink), record_id: u64, old_index: usize, new_index: usize) void {
     if (old_index == new_index) return;
     const route_index: usize = @intCast(record_id);
@@ -611,10 +651,12 @@ pub fn updateChangeRouteIndex(change_routes: *RouteTable(ChangeSink), record_id:
     @panic("active change signal route update missed its sink");
 }
 
+/// Provides the `appendStructuralRoute` operation.
 pub fn appendStructuralRoute(allocator: std.mem.Allocator, structural_routes: *RouteTable(StructuralSink), graph_len: usize, record_id: u64, route: StructuralSink) void {
     ensureStructuralRoute(allocator, structural_routes, graph_len, record_id).append(allocator, route) catch @panic("out of memory");
 }
 
+/// Provides the `removeStructuralRoute` operation.
 pub fn removeStructuralRoute(structural_routes: *RouteTable(StructuralSink), record_id: u64, kind: StructuralKind, index: usize) void {
     const route_index: usize = @intCast(record_id);
     if (route_index >= structural_routes.items.len) @panic("active structural signal route removal referenced an unknown signal record");
@@ -628,6 +670,7 @@ pub fn removeStructuralRoute(structural_routes: *RouteTable(StructuralSink), rec
     @panic("active structural signal route removal missed its sink");
 }
 
+/// Provides the `updateStructuralRouteIndex` operation.
 pub fn updateStructuralRouteIndex(structural_routes: *RouteTable(StructuralSink), record_id: u64, kind: StructuralKind, old_index: usize, new_index: usize) void {
     if (old_index == new_index) return;
     const route_index: usize = @intCast(record_id);
@@ -641,6 +684,7 @@ pub fn updateStructuralRouteIndex(structural_routes: *RouteTable(StructuralSink)
     @panic("active structural signal route update missed its sink");
 }
 
+/// Provides the `recordSliceContains` operation.
 pub fn recordSliceContains(comptime Record: type, records: []const *Record, record: *Record) bool {
     for (records) |existing| {
         if (existing == record) return true;
@@ -648,6 +692,7 @@ pub fn recordSliceContains(comptime Record: type, records: []const *Record, reco
     return false;
 }
 
+/// Provides the `appendInputRecords` operation.
 pub fn appendInputRecords(comptime Record: type, allocator: std.mem.Allocator, records: *std.ArrayListUnmanaged(*Record), record: *Record) void {
     switch (record.payload) {
         .ref, .const_value, .task_source, .interval_source, .location_source, .online_source, .visibility_source, .storage_source => {},
@@ -664,6 +709,7 @@ pub fn appendInputRecords(comptime Record: type, allocator: std.mem.Allocator, r
     }
 }
 
+/// Provides the `retainRecord` operation.
 pub fn retainRecord(
     comptime Record: type,
     allocator: std.mem.Allocator,
@@ -738,6 +784,7 @@ pub fn retainRecord(
     return records_rebuilt;
 }
 
+/// Provides the `releaseRecord` operation.
 pub fn releaseRecord(
     comptime Record: type,
     allocator: std.mem.Allocator,
@@ -777,6 +824,7 @@ pub fn releaseRecord(
     }
 }
 
+/// Provides the `clear` operation.
 pub fn clear(comptime Record: type, allocator: std.mem.Allocator, nodes: *std.ArrayListUnmanaged(Node(Record)), hooks: anytype) void {
     for (nodes.items, 0..) |node, index| {
         allocator.free(node.dependents);
@@ -789,6 +837,7 @@ pub fn clear(comptime Record: type, allocator: std.mem.Allocator, nodes: *std.Ar
     nodes.items.len = 0;
 }
 
+/// Provides the `retainStreamRecords` operation.
 pub fn retainStreamRecords(
     comptime Record: type,
     allocator: std.mem.Allocator,
@@ -831,6 +880,7 @@ pub fn retainStreamRecords(
     return records_rebuilt;
 }
 
+/// Provides the `rebuildSinkRoutesFromStream` operation.
 pub fn rebuildSinkRoutesFromStream(
     comptime Record: type,
     allocator: std.mem.Allocator,
@@ -1058,11 +1108,13 @@ const LifecycleTestRecord = struct {
         storage_source,
     };
 
+    /// Provides the `retain` operation.
     pub fn retain(self: *LifecycleTestRecord) *LifecycleTestRecord {
         self.ref_count += 1;
         return self;
     }
 
+    /// Provides the `token` operation.
     pub fn token(self: *const LifecycleTestRecord) ?u64 {
         return switch (self.payload) {
             .ref => null,
@@ -1076,17 +1128,20 @@ const LifecycleTestHooks = struct {
     interval_removes: u64 = 0,
     record_releases: u64 = 0,
 
+    /// Provides the `ensureInterval` operation.
     pub fn ensureInterval(self: *@This(), token: u64, period_ms: u64) void {
         if (token == 0) @panic("test interval token must be explicit");
         if (period_ms == 0) @panic("test interval period must be explicit");
         self.interval_ensures += 1;
     }
 
+    /// Provides the `removeInterval` operation.
     pub fn removeInterval(self: *@This(), token: u64) void {
         if (token == 0) @panic("test interval token must be explicit");
         self.interval_removes += 1;
     }
 
+    /// Provides the `releaseRecord` operation.
     pub fn releaseRecord(self: *@This(), record: *LifecycleTestRecord) void {
         if (record.ref_count == 0) @panic("test record release underflow");
         record.ref_count -= 1;

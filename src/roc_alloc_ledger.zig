@@ -59,15 +59,18 @@ pub const ReallocError = error{
 
 pub const recent_freed_capacity = 4096;
 
+/// Provides the `allocatedSizeForRequest` operation.
 pub fn allocatedSizeForRequest(length: usize) usize {
     return if (length == 0) 1 else length;
 }
 
+/// Provides the `alignmentFromAbi` operation.
 pub fn alignmentFromAbi(alignment: usize) std.mem.Alignment {
     const min_alignment: usize = @max(alignment, @alignOf(usize));
     return std.mem.Alignment.fromByteUnits(min_alignment);
 }
 
+/// Provides the `deallocErrorMessage` operation.
 pub fn deallocErrorMessage(err: DeallocError) []const u8 {
     return switch (err) {
         error.LedgerIndexOutOfBounds => "Roc allocation ledger index is out of bounds",
@@ -79,6 +82,7 @@ pub fn deallocErrorMessage(err: DeallocError) []const u8 {
     };
 }
 
+/// Provides the `reallocErrorMessage` operation.
 pub fn reallocErrorMessage(err: ReallocError) []const u8 {
     return switch (err) {
         error.OutOfMemory => "Roc reallocation failed",
@@ -99,6 +103,7 @@ pub const Ledger = struct {
     recent_freed_next: usize = 0,
     next_id: u64 = 1,
 
+    /// Provides the `snapshot` operation.
     pub fn snapshot(self: *const Ledger) Snapshot {
         var live_bytes: usize = 0;
         for (self.allocations.items) |alloc| live_bytes += alloc.requested_size;
@@ -109,6 +114,7 @@ pub const Ledger = struct {
         };
     }
 
+    /// Provides the `liveBytesSince` operation.
     pub fn liveBytesSince(self: *const Ledger, snapshot_value: Snapshot) usize {
         var bytes: usize = 0;
         for (self.allocations.items) |alloc| {
@@ -117,6 +123,7 @@ pub const Ledger = struct {
         return bytes;
     }
 
+    /// Provides the `liveCountSince` operation.
     pub fn liveCountSince(self: *const Ledger, snapshot_value: Snapshot) usize {
         var count: usize = 0;
         for (self.allocations.items) |alloc| {
@@ -125,11 +132,13 @@ pub const Ledger = struct {
         return count;
     }
 
+    /// Provides the `deinit` operation.
     pub fn deinit(self: *Ledger, allocator: std.mem.Allocator) void {
         self.exact_indexes.deinit(allocator);
         self.allocations.deinit(allocator);
     }
 
+    /// Provides the `findContainingIndex` operation.
     pub fn findContainingIndex(self: *const Ledger, ptr: *anyopaque) ?usize {
         const ptr_addr = @intFromPtr(ptr);
         for (self.allocations.items, 0..) |alloc, index| {
@@ -140,10 +149,12 @@ pub const Ledger = struct {
         return null;
     }
 
+    /// Provides the `findExactIndex` operation.
     pub fn findExactIndex(self: *const Ledger, ptr: *anyopaque) ?usize {
         return self.exact_indexes.get(@intFromPtr(ptr));
     }
 
+    /// Provides the `removeAt` operation.
     pub fn removeAt(self: *Ledger, _: std.mem.Allocator, index: usize) ?Allocation {
         if (index >= self.allocations.items.len) return null;
         const removed = self.allocations.swapRemove(index);
@@ -159,6 +170,7 @@ pub const Ledger = struct {
         return removed;
     }
 
+    /// Provides the `recordFreed` operation.
     pub fn recordFreed(self: *Ledger, alloc: Allocation) void {
         self.recent_freed[self.recent_freed_next] = .{
             .user_ptr_addr = @intFromPtr(alloc.user_ptr),
@@ -170,6 +182,7 @@ pub const Ledger = struct {
         self.recent_freed_len = @min(self.recent_freed_len + 1, recent_freed_capacity);
     }
 
+    /// Provides the `findRecentlyFreed` operation.
     pub fn findRecentlyFreed(self: *const Ledger, ptr: *anyopaque) ?FreedAllocation {
         const ptr_addr = @intFromPtr(ptr);
         for (self.recent_freed[0..self.recent_freed_len]) |alloc| {
@@ -178,6 +191,7 @@ pub const Ledger = struct {
         return null;
     }
 
+    /// Provides the `record` operation.
     pub fn record(self: *Ledger, allocator: std.mem.Allocator, user_ptr: [*]u8, requested_size: usize, allocated_size: usize, alignment: std.mem.Alignment, phase: DebugPhase, return_address: usize) std.mem.Allocator.Error!void {
         const index = self.allocations.items.len;
         try self.allocations.append(allocator, .{
@@ -196,6 +210,7 @@ pub const Ledger = struct {
         self.next_id += 1;
     }
 
+    /// Provides the `allocate` operation.
     pub fn allocate(self: *Ledger, ledger_allocator: std.mem.Allocator, backing_allocator: std.mem.Allocator, length: usize, alignment_arg: usize, phase: DebugPhase, ret_addr: usize) ?AllocResult {
         const alignment = alignmentFromAbi(alignment_arg);
         const allocated_size = allocatedSizeForRequest(length);
@@ -210,12 +225,14 @@ pub const Ledger = struct {
         };
     }
 
+    /// Provides the `deallocate` operation.
     pub fn deallocate(self: *Ledger, ledger_allocator: std.mem.Allocator, backing_allocator: std.mem.Allocator, ptr: *anyopaque, alignment_arg: usize, ret_addr: usize) DeallocError!Allocation {
         const alloc = try self.removeForDealloc(ledger_allocator, ptr, alignment_arg);
         backing_allocator.rawFree(alloc.user_ptr[0..alloc.allocated_size], alloc.alignment, ret_addr);
         return alloc;
     }
 
+    /// Provides the `reallocate` operation.
     pub fn reallocate(self: *Ledger, ledger_allocator: std.mem.Allocator, backing_allocator: std.mem.Allocator, ptr: *anyopaque, new_length: usize, alignment_arg: usize, phase: DebugPhase, ret_addr: usize) ReallocError!ReallocResult {
         const pending = try self.beginRealloc(ptr, alignment_arg);
 

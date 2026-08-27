@@ -23,6 +23,7 @@ pub const Expr = struct {
         list: []Expr,
     },
 
+    /// Provides the `deinit` operation.
     pub fn deinit(self: Expr, allocator: std.mem.Allocator) void {
         switch (self.value) {
             .atom => |atom| switch (atom) {
@@ -52,10 +53,12 @@ pub const Reader = struct {
     column: usize = 1,
     diagnostic: ?Diagnostic = null,
 
+    /// Provides the `init` operation.
     pub fn init(allocator: std.mem.Allocator, input: []const u8) Reader {
         return .{ .allocator = allocator, .input = input };
     }
 
+    /// Provides the `readOne` operation.
     pub fn readOne(self: *Reader) ReadError!Expr {
         self.skipTrivia();
         if (self.index == self.input.len) return self.fail("expected one S-expression");

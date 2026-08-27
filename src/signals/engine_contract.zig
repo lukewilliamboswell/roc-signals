@@ -58,6 +58,7 @@ fn verifyTypeDecl(comptime owner_name: []const u8, comptime Owner: type, comptim
     }
 }
 
+/// Provides the `verifyRegistryOps` operation.
 pub fn verifyRegistryOps(comptime Ops: type) void {
     verifyDeclFn("engine RegistryOps", Ops, "retainCapability", .{ Ops, HostValueCapability }, void);
     verifyDeclFn("engine RegistryOps", Ops, "releaseCapability", .{ Ops, HostValueCapability }, void);
@@ -68,6 +69,7 @@ pub fn verifyRegistryOps(comptime Ops: type) void {
     verifyDeclFn("engine RegistryOps", Ops, "splitBoxWithSplit", .{ Ops, abi.RocBox, abi.RocErasedCallable }, erased_calls.RocBoxPair);
 }
 
+/// Provides the `verifySink` operation.
 pub fn verifySink(comptime Sink: type) void {
     verifyDeclFn("engine Sink", Sink, "reset", .{Sink}, void);
     verifyDeclFn("engine Sink", Sink, "appendNode", .{ Sink, u64, u64, []const u8 }, void);
@@ -92,10 +94,12 @@ pub fn verifySink(comptime Sink: type) void {
     verifyDeclFn("engine Sink", Sink, "debugAssertNode", .{ Sink, u64, bool, ?[]const u8, ?u64, []const u64, ?u64, ?u64, ?u64, ?u64, ?u64, ?u64, ?u64 }, void);
 }
 
+/// Provides the `verifyMetrics` operation.
 pub fn verifyMetrics(comptime Metrics: type) void {
     verifyDeclFn("engine Metrics", Metrics, "bump", .{ *Metrics, engine_metrics.RuntimeMetrics.Field, u64 }, void);
 }
 
+/// Provides the `verifyCtx` operation.
 pub fn verifyCtx(comptime Ctx: type) void {
     verifyTypeDecl("engine Ctx", Ctx, "Handle");
     verifyTypeDecl("engine Ctx", Ctx, "RegistryOps");
@@ -117,26 +121,47 @@ pub fn verifyCtx(comptime Ctx: type) void {
 }
 
 const VerifySink = struct {
+    /// Provides the `reset` operation.
     pub fn reset(_: VerifySink) void {}
+    /// Provides the `appendNode` operation.
     pub fn appendNode(_: VerifySink, _: u64, _: u64, _: []const u8) void {}
+    /// Provides the `ensureNode` operation.
     pub fn ensureNode(_: VerifySink, _: u64, _: []const u8) void {}
+    /// Provides the `removeNode` operation.
     pub fn removeNode(_: VerifySink, _: u64) void {}
+    /// Provides the `replaceChildren` operation.
     pub fn replaceChildren(_: VerifySink, _: u64, _: []const u64) void {}
+    /// Provides the `replaceChildrenForMoves` operation.
     pub fn replaceChildrenForMoves(_: VerifySink, _: u64, _: []const u64) void {}
+    /// Provides the `applyTextField` operation.
     pub fn applyTextField(_: VerifySink, _: u64, _: RenderTextField, _: []const u8) void {}
+    /// Provides the `applyTextAttr` operation.
     pub fn applyTextAttr(_: VerifySink, _: u64, _: []const u8, _: []const u8) void {}
+    /// Provides the `applyBoolField` operation.
     pub fn applyBoolField(_: VerifySink, _: u64, _: RenderBoolField, _: bool) void {}
+    /// Provides the `clearTextField` operation.
     pub fn clearTextField(_: VerifySink, _: u64, _: RenderTextField) void {}
+    /// Provides the `clearTextAttr` operation.
     pub fn clearTextAttr(_: VerifySink, _: u64, _: []const u8) void {}
+    /// Provides the `clearBoolField` operation.
     pub fn clearBoolField(_: VerifySink, _: u64, _: RenderBoolField) void {}
+    /// Provides the `bindEvent` operation.
     pub fn bindEvent(_: VerifySink, _: u64, _: EventBindingKey, _: EventBinding) void {}
+    /// Provides the `clearEvent` operation.
     pub fn clearEvent(_: VerifySink, _: u64, _: EventBindingKey) void {}
+    /// Provides the `startInterval` operation.
     pub fn startInterval(_: VerifySink, _: u64, _: u64) void {}
+    /// Provides the `cancelInterval` operation.
     pub fn cancelInterval(_: VerifySink, _: u64) void {}
+    /// Provides the `startTask` operation.
     pub fn startTask(_: VerifySink, _: u64, _: []const u8, _: []const u8) void {}
+    /// Provides the `cancelTask` operation.
     pub fn cancelTask(_: VerifySink, _: u64) void {}
+    /// Provides the `navigate` operation.
     pub fn navigate(_: VerifySink, _: NavigationKind, _: LocationSnapshot) void {}
+    /// Provides the `setDocumentTitle` operation.
     pub fn setDocumentTitle(_: VerifySink, _: []const u8) void {}
+    /// Provides the `debugAssertNode` operation.
     pub fn debugAssertNode(_: VerifySink, _: u64, _: bool, _: ?[]const u8, _: ?u64, _: []const u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64) void {}
 };
 
@@ -148,34 +173,43 @@ const VerifyCtx = struct {
     pub const Metrics = engine_metrics.RuntimeMetrics;
     pub const Sink = VerifySink;
 
+    /// Provides the `zeroMetrics` operation.
     pub fn zeroMetrics() Metrics {
         return engine_metrics.zeroRuntimeMetrics();
     }
 
+    /// Provides the `allocator` operation.
     pub fn allocator(_: Handle) std.mem.Allocator {
         return std.heap.page_allocator;
     }
 
+    /// Provides the `cloneHostValue` operation.
     pub fn cloneHostValue(_: Handle, value: HostValue) HostValue {
         return value;
     }
 
+    /// Provides the `pushHostValueCapabilities` operation.
     pub fn pushHostValueCapabilities(_: Handle, _: []const HostValueCapability) void {}
 
+    /// Provides the `popHostValueCapabilities` operation.
     pub fn popHostValueCapabilities(_: Handle) void {}
 
+    /// Provides the `stateValueByNodeId` operation.
     pub fn stateValueByNodeId(_: Handle, _: u64) HostValue {
         return 0;
     }
 
+    /// Provides the `stateCapability` operation.
     pub fn stateCapability(_: Handle, _: u64) HostValueCapability {
         return undefined;
     }
 
+    /// Provides the `initialLocationPayload` operation.
     pub fn initialLocationPayload(_: Handle, _: *abi.RocHost, _: HostValueCapability) HostValue {
         return 0;
     }
 
+    /// Provides the `sink` operation.
     pub fn sink(_: Handle) Sink {
         return .{};
     }

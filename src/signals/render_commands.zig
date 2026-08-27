@@ -38,6 +38,7 @@ pub const EventPolicy = struct {
 
     pub const none: EventPolicy = .{};
 
+    /// Provides the `fromBits` operation.
     pub fn fromBits(bits: u64) EventPolicy {
         const bits_u32 = std.math.cast(u32, bits) orelse std.debug.panic(
             "event listener options exceeded u32 range: {}",
@@ -46,6 +47,7 @@ pub const EventPolicy = struct {
         return fromWireBits(bits_u32);
     }
 
+    /// Provides the `fromWireBits` operation.
     pub fn fromWireBits(bits: u32) EventPolicy {
         if ((bits & ~listener_option_mask) != 0) {
             std.debug.panic("event listener options used unsupported bits: 0x{x}", .{bits});
@@ -62,6 +64,7 @@ pub const EventPolicy = struct {
         };
     }
 
+    /// Provides the `toWireBits` operation.
     pub fn toWireBits(self: EventPolicy) u32 {
         return (if (self.prevent_default) listener_option_prevent_default else 0) |
             (if (self.stop_propagation) listener_option_stop_propagation else 0) |
@@ -73,6 +76,7 @@ pub const EventPolicy = struct {
             (if (self.trusted) listener_option_trusted else 0);
     }
 
+    /// Provides the `eql` operation.
     pub fn eql(self: EventPolicy, other: EventPolicy) bool {
         return self.prevent_default == other.prevent_default and
             self.stop_propagation == other.stop_propagation and
@@ -84,6 +88,7 @@ pub const EventPolicy = struct {
             self.trusted == other.trusted;
     }
 
+    /// Provides the `isNone` operation.
     pub fn isNone(self: EventPolicy) bool {
         return self.eql(EventPolicy.none);
     }
@@ -170,6 +175,7 @@ pub const Record = extern struct {
 
     pub const word_count = @divExact(@sizeOf(Record), @sizeOf(u32));
 
+    /// Provides the `init` operation.
     pub fn init(op: Op, a: u32, b: u32, c: u32, d: u32, e: u32) Record {
         return .{
             .op = @intFromEnum(op),
@@ -185,28 +191,34 @@ pub const Record = extern struct {
 pub const Buffer = struct {
     records: std.ArrayListUnmanaged(Record) = .empty,
 
+    /// Provides the `deinit` operation.
     pub fn deinit(self: *Buffer, allocator: std.mem.Allocator) void {
         self.records.deinit(allocator);
         self.* = .{};
     }
 
+    /// Provides the `clearRetainingCapacity` operation.
     pub fn clearRetainingCapacity(self: *Buffer) void {
         self.records.clearRetainingCapacity();
     }
 
+    /// Provides the `len` operation.
     pub fn len(self: *const Buffer) usize {
         return self.records.items.len;
     }
 
+    /// Provides the `ptrAddress` operation.
     pub fn ptrAddress(self: *const Buffer) usize {
         if (self.records.items.len == 0) return 0;
         return @intFromPtr(self.records.items.ptr);
     }
 
+    /// Provides the `append` operation.
     pub fn append(self: *Buffer, allocator: std.mem.Allocator, op: Op, a: u32, b: u32, c: u32, d: u32, e: u32) std.mem.Allocator.Error!void {
         try self.records.append(allocator, Record.init(op, a, b, c, d, e));
     }
 
+    /// Provides the `ensureTotalCapacity` operation.
     pub fn ensureTotalCapacity(self: *Buffer, allocator: std.mem.Allocator, capacity: usize) std.mem.Allocator.Error!void {
         try self.records.ensureTotalCapacity(allocator, capacity);
     }
@@ -220,28 +232,34 @@ pub const DynamicSlice = struct {
 pub const DynamicBuffer = struct {
     bytes: std.ArrayListUnmanaged(u8) = .empty,
 
+    /// Provides the `deinit` operation.
     pub fn deinit(self: *DynamicBuffer, allocator: std.mem.Allocator) void {
         self.bytes.deinit(allocator);
         self.* = .{};
     }
 
+    /// Provides the `clearRetainingCapacity` operation.
     pub fn clearRetainingCapacity(self: *DynamicBuffer) void {
         self.bytes.clearRetainingCapacity();
     }
 
+    /// Provides the `len` operation.
     pub fn len(self: *const DynamicBuffer) usize {
         return self.bytes.items.len;
     }
 
+    /// Provides the `ptrAddress` operation.
     pub fn ptrAddress(self: *const DynamicBuffer) usize {
         if (self.bytes.items.len == 0) return 0;
         return @intFromPtr(self.bytes.items.ptr);
     }
 
+    /// Provides the `ensureTotalCapacity` operation.
     pub fn ensureTotalCapacity(self: *DynamicBuffer, allocator: std.mem.Allocator, capacity: usize) std.mem.Allocator.Error!void {
         try self.bytes.ensureTotalCapacity(allocator, capacity);
     }
 
+    /// Provides the `appendSetAttrText` operation.
     pub fn appendSetAttrText(self: *DynamicBuffer, allocator: std.mem.Allocator, elem_id: u32, name: []const u8, value: []const u8) std.mem.Allocator.Error!DynamicSlice {
         const payload_len = @sizeOf(u32) + @sizeOf(u32) + name.len + @sizeOf(u32) + value.len;
         const record = try self.appendRecord(allocator, .set_attr_text, payload_len);
@@ -254,6 +272,7 @@ pub const DynamicBuffer = struct {
         return record.slice;
     }
 
+    /// Provides the `appendRemoveAttr` operation.
     pub fn appendRemoveAttr(self: *DynamicBuffer, allocator: std.mem.Allocator, elem_id: u32, name: []const u8) std.mem.Allocator.Error!DynamicSlice {
         const payload_len = @sizeOf(u32) + @sizeOf(u32) + name.len;
         const record = try self.appendRecord(allocator, .remove_attr, payload_len);
@@ -264,6 +283,7 @@ pub const DynamicBuffer = struct {
         return record.slice;
     }
 
+    /// Provides the `appendBindEvent` operation.
     pub fn appendBindEvent(
         self: *DynamicBuffer,
         allocator: std.mem.Allocator,
@@ -291,6 +311,7 @@ pub const DynamicBuffer = struct {
         return record.slice;
     }
 
+    /// Provides the `appendClearEvent` operation.
     pub fn appendClearEvent(self: *DynamicBuffer, allocator: std.mem.Allocator, elem_id: u32, event_name: []const u8) std.mem.Allocator.Error!DynamicSlice {
         const payload_len = @sizeOf(u32) + @sizeOf(u32) + event_name.len;
         const record = try self.appendRecord(allocator, .clear_event, payload_len);
@@ -344,6 +365,7 @@ pub const BatchLimits = struct {
     string_bytes: usize = hard_max_string_bytes,
     dynamic_bytes: usize = hard_max_dynamic_bytes,
 
+    /// Provides the `validate` operation.
     pub fn validate(self: BatchLimits) error{ResourceLimit}!void {
         if (self.command_records > hard_max_command_records or
             self.string_bytes > hard_max_string_bytes or
@@ -386,22 +408,26 @@ pub const TransactionalBatch = struct {
     staged: BatchBuffers = .{},
     limits: BatchLimits = .{},
 
+    /// Provides the `setLimits` operation.
     pub fn setLimits(self: *TransactionalBatch, limits: BatchLimits) error{ResourceLimit}!void {
         try limits.validate();
         self.limits = limits;
     }
 
+    /// Provides the `deinit` operation.
     pub fn deinit(self: *TransactionalBatch, allocator: std.mem.Allocator) void {
         self.published.deinit(allocator);
         self.staged.deinit(allocator);
         self.* = .{};
     }
 
+    /// Provides the `begin` operation.
     pub fn begin(self: *TransactionalBatch) void {
         self.published.clearRetainingCapacity();
         self.staged.clearRetainingCapacity();
     }
 
+    /// Provides the `preflight` operation.
     pub fn preflight(self: *TransactionalBatch, allocator: std.mem.Allocator, capacity: BatchCapacity) PreflightError!void {
         if (capacity.commands > self.limits.command_records or
             capacity.strings > self.limits.string_bytes or
@@ -412,6 +438,7 @@ pub const TransactionalBatch = struct {
         try self.staged.ensureTotalCapacity(allocator, capacity);
     }
 
+    /// Provides the `preflightAdditional` operation.
     pub fn preflightAdditional(self: *TransactionalBatch, allocator: std.mem.Allocator, additional: BatchCapacity) PreflightError!void {
         const capacity = BatchCapacity{
             .commands = std.math.add(usize, self.staged.commands.len(), additional.commands) catch return error.ResourceLimit,
@@ -421,21 +448,25 @@ pub const TransactionalBatch = struct {
         try self.preflight(allocator, capacity);
     }
 
+    /// Provides the `commit` operation.
     pub fn commit(self: *TransactionalBatch) void {
         std.mem.swap(BatchBuffers, &self.published, &self.staged);
         self.staged.clearRetainingCapacity();
     }
 
+    /// Provides the `abort` operation.
     pub fn abort(self: *TransactionalBatch) void {
         self.published.clearRetainingCapacity();
         self.staged.clearRetainingCapacity();
     }
 
+    /// Provides the `clearPublished` operation.
     pub fn clearPublished(self: *TransactionalBatch) void {
         self.published.clearRetainingCapacity();
     }
 };
 
+/// Provides the `align4` operation.
 pub fn align4(len: usize) usize {
     return (len + 3) & ~@as(usize, 3);
 }
@@ -545,6 +576,7 @@ pub const TextField = enum(u64) {
     value = 5,
     class = 6,
 
+    /// Provides the `setOp` operation.
     pub fn setOp(self: TextField) Op {
         return switch (self) {
             .text => .set_text,
@@ -561,6 +593,7 @@ pub const BoolField = enum(u64) {
     checked = 1,
     disabled = 2,
 
+    /// Provides the `setOp` operation.
     pub fn setOp(self: BoolField) Op {
         return switch (self) {
             .checked => .set_checked,
@@ -578,6 +611,7 @@ pub const EventKind = enum(u64) {
     pointer_enter = 6,
     pointer_leave = 7,
 
+    /// Provides the `bindOp` operation.
     pub fn bindOp(self: EventKind) Op {
         return switch (self) {
             .click => .bind_click,
@@ -590,6 +624,7 @@ pub const EventKind = enum(u64) {
         };
     }
 
+    /// Provides the `payloadDescriptor` operation.
     pub fn payloadDescriptor(self: EventKind) boundary.BoundaryPayloadDescriptor {
         return switch (self) {
             .click, .pointer_down, .pointer_up, .pointer_enter, .pointer_leave => boundary.BoundaryPayloadDescriptor.init(.unit, .none),
@@ -598,6 +633,7 @@ pub const EventKind = enum(u64) {
         };
     }
 
+    /// Provides the `domEventName` operation.
     pub fn domEventName(self: EventKind) []const u8 {
         return switch (self) {
             .click => "click",
@@ -627,6 +663,7 @@ pub const Counts = struct {
     set_metadata: u64 = 0,
     bind_event: u64 = 0,
 
+    /// Provides the `addOp` operation.
     pub fn addOp(self: *Counts, op: Op) void {
         self.total += 1;
         switch (op) {
@@ -649,46 +686,57 @@ pub const Counts = struct {
         }
     }
 
+    /// Provides the `addHostReset` operation.
     pub fn addHostReset(self: *Counts) void {
         self.addOp(.reset_dom);
     }
 
+    /// Provides the `addCreateElement` operation.
     pub fn addCreateElement(self: *Counts) void {
         self.addOp(.create_element);
     }
 
+    /// Provides the `addAppendChild` operation.
     pub fn addAppendChild(self: *Counts) void {
         self.addOp(.append_child);
     }
 
+    /// Provides the `addRemoveNode` operation.
     pub fn addRemoveNode(self: *Counts) void {
         self.addOp(.remove_node);
     }
 
+    /// Provides the `addMoveBefore` operation.
     pub fn addMoveBefore(self: *Counts) void {
         self.addOp(.move_before);
     }
 
+    /// Provides the `addTextField` operation.
     pub fn addTextField(self: *Counts, field: TextField) void {
         self.addOp(field.setOp());
     }
 
+    /// Provides the `addTextAttr` operation.
     pub fn addTextAttr(self: *Counts) void {
         self.addOp(.extended);
     }
 
+    /// Provides the `addBoolField` operation.
     pub fn addBoolField(self: *Counts, field: BoolField) void {
         self.addOp(field.setOp());
     }
 
+    /// Provides the `addEventBinding` operation.
     pub fn addEventBinding(self: *Counts) void {
         self.addOp(.bind_click);
     }
 
+    /// Provides the `addEventBindingKind` operation.
     pub fn addEventBindingKind(self: *Counts, kind: EventKind) void {
         self.addOp(kind.bindOp());
     }
 
+    /// Provides the `addAll` operation.
     pub fn addAll(self: *Counts, other: Counts) void {
         self.total += other.total;
         self.reset_dom += other.reset_dom;
@@ -719,6 +767,7 @@ pub const Metrics = struct {
     set_metadata: u64 = 0,
     bind_event: u64 = 0,
 
+    /// Provides the `addCommandCounts` operation.
     pub fn addCommandCounts(self: *Metrics, counts: Counts) void {
         self.patches_emitted += counts.total;
         self.reset_dom += counts.reset_dom;

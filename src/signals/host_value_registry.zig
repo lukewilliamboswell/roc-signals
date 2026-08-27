@@ -19,6 +19,7 @@ pub const Error = error{
     CloneReturnedSource,
 };
 
+/// Provides the `Registry` operation.
 pub fn Registry(comptime Capability: type) type {
     const Cell = struct {
         box: abi.RocBox,
@@ -43,10 +44,12 @@ pub fn Registry(comptime Capability: type) type {
         first_vacant: ?usize = null,
         take_epoch: u64 = 0,
 
+        /// Provides the `deinit` operation.
         pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
             self.slots.deinit(allocator);
         }
 
+        /// Provides the `hasLiveValues` operation.
         pub fn hasLiveValues(self: *const Self) bool {
             for (self.slots.items) |entry| {
                 switch (entry) {
@@ -57,6 +60,7 @@ pub fn Registry(comptime Capability: type) type {
             return false;
         }
 
+        /// Provides the `liveCount` operation.
         pub fn liveCount(self: *const Self) usize {
             var count: usize = 0;
             for (self.slots.items) |entry| {
@@ -86,11 +90,13 @@ pub fn Registry(comptime Capability: type) type {
             };
         }
 
+        /// Provides the `capability` operation.
         pub fn capability(self: *Self, value: HostValue) Error!?Capability {
             const occupied = try self.occupiedCell(value);
             return occupied.capability;
         }
 
+        /// Provides the `storeOwnedCapability` operation.
         pub fn storeOwnedCapability(self: *Self, allocator: std.mem.Allocator, box: abi.RocBox, owned_capability: ?Capability, ops: anytype) Error!HostValue {
             if (self.first_vacant) |index| {
                 const vacant = switch (self.slots.items[index]) {
@@ -109,6 +115,7 @@ pub fn Registry(comptime Capability: type) type {
             return @intCast(self.slots.items.len);
         }
 
+        /// Provides the `storeRetainedCapability` operation.
         pub fn storeRetainedCapability(self: *Self, allocator: std.mem.Allocator, box: abi.RocBox, borrowed_capability: ?Capability, ops: anytype) Error!HostValue {
             if (borrowed_capability) |capability_value| {
                 ops.retainCapability(capability_value);
@@ -117,6 +124,7 @@ pub fn Registry(comptime Capability: type) type {
             return try self.storeOwnedCapability(allocator, box, borrowed_capability, ops);
         }
 
+        /// Provides the `storeRetainedExistingCapability` operation.
         pub fn storeRetainedExistingCapability(self: *Self, allocator: std.mem.Allocator, box: abi.RocBox, source_value: HostValue, ops: anytype) Error!HostValue {
             const capability_value = try self.storedCapability(source_value);
             return try self.storeRetainedCapability(allocator, box, capability_value, ops);
@@ -131,25 +139,30 @@ pub fn Registry(comptime Capability: type) type {
             return (try self.capability(value)) orelse Error.MissingCapability;
         }
 
+        /// Provides the `assertCapability` operation.
         pub fn assertCapability(self: *Self, value: HostValue, expected_capability: Capability, ops: anytype) Error!void {
             const actual_capability = try self.storedCapability(value);
             if (!ops.capabilitiesMatch(actual_capability, expected_capability)) return Error.CapabilityMismatch;
         }
 
+        /// Provides the `assertCapabilityActive` operation.
         pub fn assertCapabilityActive(self: *Self, value: HostValue, ops: anytype) Error!void {
             const actual_capability = try self.storedCapability(value);
             if (!ops.capabilityIsActive(actual_capability)) return Error.InactiveCapability;
         }
 
+        /// Provides the `getWithCapability` operation.
         pub fn getWithCapability(self: *Self, allocator: std.mem.Allocator, value: HostValue, expected_capability: Capability, ops: anytype) Error!abi.RocBox {
             try self.assertCapability(value, expected_capability, ops);
             return try self.getWithStoredCapability(allocator, value, ops);
         }
 
+        /// Provides the `get` operation.
         pub fn get(self: *Self, allocator: std.mem.Allocator, value: HostValue, ops: anytype) Error!abi.RocBox {
             return try self.getWithStoredCapability(allocator, value, ops);
         }
 
+        /// Provides the `getWithSplit` operation.
         pub fn getWithSplit(self: *Self, value: HostValue, split: abi.RocErasedCallable, ops: anytype) Error!abi.RocBox {
             try self.assertCapabilityActive(value, ops);
             return try self.getWithSplitUnchecked(value, split, ops);
@@ -172,6 +185,7 @@ pub fn Registry(comptime Capability: type) type {
             };
         }
 
+        /// Provides the `take` operation.
         pub fn take(self: *Self, value: HostValue, ops: anytype) Error!abi.RocBox {
             const entry = try self.slot(value);
             return switch (entry.*) {
@@ -187,16 +201,19 @@ pub fn Registry(comptime Capability: type) type {
             };
         }
 
+        /// Provides the `takeWithCapability` operation.
         pub fn takeWithCapability(self: *Self, value: HostValue, expected_capability: Capability, ops: anytype) Error!abi.RocBox {
             try self.assertCapability(value, expected_capability, ops);
             return try self.take(value, ops);
         }
 
+        /// Provides the `takeWithSplit` operation.
         pub fn takeWithSplit(self: *Self, value: HostValue, _: abi.RocErasedCallable, ops: anytype) Error!abi.RocBox {
             try self.assertCapabilityActive(value, ops);
             return try self.take(value, ops);
         }
 
+        /// Provides the `assertReleased` operation.
         pub fn assertReleased(self: *Self, value: HostValue) Error!void {
             const entry = try self.slot(value);
             return switch (entry.*) {
@@ -205,10 +222,12 @@ pub fn Registry(comptime Capability: type) type {
             };
         }
 
+        /// Provides the `takeEpoch` operation.
         pub fn takeEpoch(self: *const Self) u64 {
             return self.take_epoch;
         }
 
+        /// Provides the `assertTakenAfter` operation.
         pub fn assertTakenAfter(self: *Self, value: HostValue, epoch: u64) Error!void {
             const entry = try self.slot(value);
             const last_taken_epoch = switch (entry.*) {
@@ -218,6 +237,7 @@ pub fn Registry(comptime Capability: type) type {
             if (last_taken_epoch <= epoch) return Error.UnconsumedHandle;
         }
 
+        /// Provides the `clone` operation.
         pub fn clone(self: *Self, allocator: std.mem.Allocator, value: HostValue, ops: anytype) Error!HostValue {
             try self.ensureStoreCapacity(allocator);
             const capability_value = try self.storedCapability(value);
@@ -228,6 +248,7 @@ pub fn Registry(comptime Capability: type) type {
             return cloned;
         }
 
+        /// Provides the `setCapability` operation.
         pub fn setCapability(self: *Self, value: HostValue, borrowed_capability: Capability, ops: anytype) Error!void {
             const entry = try self.slot(value);
             switch (entry.*) {
@@ -262,23 +283,28 @@ const TestOps = struct {
     clone_uses_wrong_capability: bool = false,
     active_capability: ?TestCapability = null,
 
+    /// Provides the `retainCapability` operation.
     pub fn retainCapability(self: TestOps, _: TestCapability) void {
         self.retained_capabilities.* += 1;
     }
 
+    /// Provides the `releaseCapability` operation.
     pub fn releaseCapability(self: TestOps, _: TestCapability) void {
         self.released_capabilities.* += 1;
     }
 
+    /// Provides the `capabilitiesMatch` operation.
     pub fn capabilitiesMatch(_: TestOps, actual: TestCapability, expected: TestCapability) bool {
         return actual.clone == expected.clone and actual.eq == expected.eq and actual.drop == expected.drop;
     }
 
+    /// Provides the `capabilityIsActive` operation.
     pub fn capabilityIsActive(self: TestOps, actual: TestCapability) bool {
         const active = self.active_capability orelse return false;
         return self.capabilitiesMatch(actual, active);
     }
 
+    /// Provides the `cloneValueWithCapability` operation.
     pub fn cloneValueWithCapability(self: TestOps, value: HostValue, capability: TestCapability) HostValue {
         self.split_boxes.* += 1;
         if (self.clone_returns_source) return value;
@@ -294,6 +320,7 @@ const TestOps = struct {
         ) catch unreachable;
     }
 
+    /// Provides the `splitBoxWithSplit` operation.
     pub fn splitBoxWithSplit(self: TestOps, box: abi.RocBox, _: abi.RocErasedCallable) erased_calls.RocBoxPair {
         self.split_boxes.* += 1;
         const addr = @intFromPtr(box orelse unreachable);

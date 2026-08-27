@@ -43,6 +43,7 @@ pub fn deinitScopeStep(step: *ScopeStep, ctx: anytype, roc_host: *abi.RocHost, m
     }
 }
 
+/// Provides the `appendEachRow` operation.
 pub fn appendEachRow(allocator: std.mem.Allocator, scopes: *std.ArrayListUnmanaged(Scope), parent_scope_id: u64, site_ordinal: u64, key_hash: u64, key: HostValue, item: HostValue, key_cap: HostValueCapability, item_cap: HostValueCapability, metrics: anytype, reuse_barrier: u64) scope_tree.Error!scope_tree.InternResult {
     try scope_tree.validate(EachRowScopeStep, scopes.items, parent_scope_id);
 
@@ -56,6 +57,7 @@ pub fn appendEachRow(allocator: std.mem.Allocator, scopes: *std.ArrayListUnmanag
     }, reuse_barrier);
 }
 
+/// Provides the `appendFreshEachRow` operation.
 pub fn appendFreshEachRow(allocator: std.mem.Allocator, scopes: *std.ArrayListUnmanaged(Scope), parent_scope_id: u64, site_ordinal: u64, key_hash: u64, key: HostValue, item: HostValue, key_cap: HostValueCapability, item_cap: HostValueCapability, metrics: anytype) scope_tree.Error!scope_tree.InternResult {
     try scope_tree.validate(EachRowScopeStep, scopes.items, parent_scope_id);
 
@@ -69,6 +71,7 @@ pub fn appendFreshEachRow(allocator: std.mem.Allocator, scopes: *std.ArrayListUn
     });
 }
 
+/// Provides the `eachRow` operation.
 pub fn eachRow(scopes: []Scope, scope_id: u64) *EachRowScopeStep {
     scope_tree.validate(EachRowScopeStep, scopes, scope_id) catch @panic("scope id has no host scope descriptor");
     const scope = &scopes[@intCast(scope_id)];
@@ -78,6 +81,7 @@ pub fn eachRow(scopes: []Scope, scope_id: u64) *EachRowScopeStep {
     };
 }
 
+/// Provides the `eachRowConst` operation.
 pub fn eachRowConst(scopes: []const Scope, scope_id: u64) *const EachRowScopeStep {
     scope_tree.validate(EachRowScopeStep, scopes, scope_id) catch @panic("scope id has no host scope descriptor");
     const scope = &scopes[@intCast(scope_id)];
@@ -87,38 +91,46 @@ pub fn eachRowConst(scopes: []const Scope, scope_id: u64) *const EachRowScopeSte
     };
 }
 
+/// Provides the `eachRowKeyEquals` operation.
 pub fn eachRowKeyEquals(scopes: []const Scope, ctx: anytype, roc_host: *abi.RocHost, scope_id: u64, key: HostValue, key_cap: HostValueCapability) bool {
     return eachRowConst(scopes, scope_id).key.valueEqualsIncoming(ctx, roc_host, key, key_cap);
 }
 
+/// Provides the `eachRowItemEquals` operation.
 pub fn eachRowItemEquals(scopes: []const Scope, ctx: anytype, roc_host: *abi.RocHost, scope_id: u64, item: HostValue, item_cap: HostValueCapability) bool {
     return eachRowConst(scopes, scope_id).item.valueEqualsIncoming(ctx, roc_host, item, item_cap);
 }
 
+/// Provides the `replaceEachRowKey` operation.
 pub fn replaceEachRowKey(scopes: []Scope, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, scope_id: u64, key_hash: u64, key: HostValue, key_cap: HostValueCapability) void {
     const row = eachRow(scopes, scope_id);
     row.key_hash = key_hash;
     row.key.replaceRetained(ctx, roc_host, metrics, key, key_cap);
 }
 
+/// Provides the `replaceEachRowItem` operation.
 pub fn replaceEachRowItem(scopes: []Scope, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, scope_id: u64, item: HostValue, item_cap: HostValueCapability) void {
     const row = eachRow(scopes, scope_id);
     row.item.replaceRetained(ctx, roc_host, metrics, item, item_cap);
 }
 
+/// Provides the `eachRowValues` operation.
 pub fn eachRowValues(scopes: []const Scope, scope_id: u64) EachRowValues {
     const row = eachRowConst(scopes, scope_id);
     return .{ .key = row.key.value, .item = row.item.value };
 }
 
+/// Provides the `eachRowKeyValue` operation.
 pub fn eachRowKeyValue(scopes: []const Scope, scope_id: u64) HostValue {
     return eachRowConst(scopes, scope_id).key.value;
 }
 
+/// Provides the `eachRowKeyHash` operation.
 pub fn eachRowKeyHash(scopes: []const Scope, scope_id: u64) u64 {
     return eachRowConst(scopes, scope_id).key_hash;
 }
 
+/// Provides the `disposeSubtree` operation.
 pub fn disposeSubtree(comptime Row: type, scopes: []scope_tree.Scope(Row), scope_id: u64, retired_at: u64, hooks: anytype) void {
     if (scope_id >= scopes.len) @panic("scope disposal referenced an unknown scope");
     if (scopes[@intCast(scope_id)].scope_id != scope_id or !scopes[@intCast(scope_id)].active) @panic("scope id has no host scope descriptor");
@@ -170,27 +182,33 @@ const TestDisposeHooks = struct {
         self.removed_rows.deinit(allocator);
     }
 
+    /// Provides the `deactivateNodeIdentities` operation.
     pub fn deactivateNodeIdentities(self: *@This(), scope_id: u64) void {
         self.node_deactivations.append(std.testing.allocator, scope_id) catch @panic("out of memory");
     }
 
+    /// Provides the `appendCleanupEvents` operation.
     pub fn appendCleanupEvents(self: *@This(), scope_id: u64) void {
         self.cleanup_events.append(std.testing.allocator, scope_id) catch @panic("out of memory");
     }
 
+    /// Provides the `cancelPendingTasks` operation.
     pub fn cancelPendingTasks(self: *@This(), scope_id: u64) void {
         self.task_cancellations.append(std.testing.allocator, scope_id) catch @panic("out of memory");
     }
 
+    /// Provides the `deactivateDomIdentities` operation.
     pub fn deactivateDomIdentities(self: *@This(), scope_id: u64) void {
         self.dom_deactivations.append(std.testing.allocator, scope_id) catch @panic("out of memory");
     }
 
+    /// Provides the `removeEachRow` operation.
     pub fn removeEachRow(self: *@This(), scope_id: u64, key_hash: u64) void {
         _ = scope_id;
         self.removed_rows.append(std.testing.allocator, key_hash) catch @panic("out of memory");
     }
 
+    /// Provides the `deinitScopeStep` operation.
     pub fn deinitScopeStep(self: *@This(), step: *scope_tree.Step(TestRow)) void {
         switch (step.*) {
             .each_row, .root, .component, .when_branch => {},
@@ -198,6 +216,7 @@ const TestDisposeHooks = struct {
         self.deinit_steps += 1;
     }
 
+    /// Provides the `recordScopeDisposed` operation.
     pub fn recordScopeDisposed(self: *@This()) void {
         self.disposed_scopes += 1;
     }
@@ -238,6 +257,7 @@ test "scope runtime owns each-row scope values and key hash" {
     _ = try scope_tree.internRoot(EachRowScopeStep, std.testing.allocator, &scopes);
 
     var metrics = struct {
+        /// Provides the `bump` operation.
         pub fn bump(_: *@This(), comptime _: anytype, _: u64) void {}
     }{};
     const key_cap: HostValueCapability = std.mem.zeroes(HostValueCapability);

@@ -22,6 +22,7 @@ pub const HostValueCell = struct {
     value: HostValue,
     cap: HostValueCapability,
 
+    /// Provides the `initRetained` operation.
     pub fn initRetained(value: HostValue, cap: HostValueCapability, metrics: anytype) HostValueCell {
         _ = retainHostValueCapability(cap, metrics);
         return .{ .value = value, .cap = cap };
@@ -35,6 +36,7 @@ pub const HostValueCell = struct {
         return .{ .value = value, .cap = self.cap };
     }
 
+    /// Provides the `deinit` operation.
     pub fn deinit(self: *HostValueCell, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
         const caps = [_]HostValueCapability{self.cap};
         ctx.pushHostValueCapabilities(&caps);
@@ -44,6 +46,7 @@ pub const HostValueCell = struct {
         self.* = undefined;
     }
 
+    /// Provides the `valueEquals` operation.
     pub fn valueEquals(self: *const HostValueCell, ctx: anytype, roc_host: *abi.RocHost, value: HostValue) bool {
         const caps = [_]HostValueCapability{self.cap};
         ctx.pushHostValueCapabilities(&caps);
@@ -51,6 +54,7 @@ pub const HostValueCell = struct {
         return erased_calls.callErasedHostValueHostValueToBool(roc_host, hv.hostValueCapabilityEq(self.cap), self.value, value);
     }
 
+    /// Provides the `valueEqualsIncoming` operation.
     pub fn valueEqualsIncoming(self: *const HostValueCell, ctx: anytype, roc_host: *abi.RocHost, value: HostValue, incoming_cap: HostValueCapability) bool {
         const caps = [_]HostValueCapability{ self.cap, incoming_cap };
         ctx.pushHostValueCapabilities(&caps);
@@ -58,6 +62,7 @@ pub const HostValueCell = struct {
         return erased_calls.callErasedHostValueHostValueToBool(roc_host, hv.hostValueCapabilityEq(self.cap), self.value, value);
     }
 
+    /// Provides the `dropIncoming` operation.
     pub fn dropIncoming(self: *const HostValueCell, ctx: anytype, roc_host: *abi.RocHost, value: HostValue) void {
         const caps = [_]HostValueCapability{self.cap};
         ctx.pushHostValueCapabilities(&caps);
@@ -65,6 +70,7 @@ pub const HostValueCell = struct {
         erased_calls.callErasedHostValueToUnit(roc_host, hv.hostValueCapabilityDrop(self.cap), value);
     }
 
+    /// Provides the `replaceValue` operation.
     pub fn replaceValue(self: *HostValueCell, ctx: anytype, roc_host: *abi.RocHost, value: HostValue) void {
         const caps = [_]HostValueCapability{self.cap};
         ctx.pushHostValueCapabilities(&caps);
@@ -73,6 +79,7 @@ pub const HostValueCell = struct {
         self.value = value;
     }
 
+    /// Provides the `replaceRetained` operation.
     pub fn replaceRetained(self: *HostValueCell, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, value: HostValue, cap: HostValueCapability) void {
         const old_cap = self.cap;
         _ = retainHostValueCapability(cap, metrics);
@@ -92,6 +99,7 @@ pub fn retainHostCallable(callable: abi.RocErasedCallable, metrics: anytype) abi
     return callable;
 }
 
+/// Provides the `hostSignalTokenFromCallable` operation.
 pub fn hostSignalTokenFromCallable(callable: abi.RocErasedCallable) HostSignalToken {
     return callable orelse @panic("signal identity callable was null");
 }
@@ -101,25 +109,30 @@ test "host signal tokens preserve non-null callable addresses" {
     try std.testing.expectEqual(callable.?, hostSignalTokenFromCallable(callable));
 }
 
+/// Provides the `retainHostSignalToken` operation.
 pub fn retainHostSignalToken(token: HostSignalToken) HostSignalToken {
     abi.increfErasedCallable(token, 1);
     return token;
 }
 
+/// Provides the `releaseHostSignalToken` operation.
 pub fn releaseHostSignalToken(token: HostSignalToken, roc_host: *abi.RocHost) void {
     abi.decrefErasedCallable(token, roc_host);
 }
 
+/// Provides the `retainHostValueCapability` operation.
 pub fn retainHostValueCapability(capability: HostValueCapability, metrics: anytype) HostValueCapability {
     metrics.bump(.closure_retains, 3);
     return hv.retainHostValueCapability(capability);
 }
 
+/// Provides the `releaseHostValueCapability` operation.
 pub fn releaseHostValueCapability(capability: HostValueCapability, roc_host: *abi.RocHost, metrics: anytype) void {
     metrics.bump(.closure_releases, 3);
     hv.releaseHostValueCapability(capability, roc_host);
 }
 
+/// Provides the `assertHostValueCapabilitiesMatch` operation.
 pub fn assertHostValueCapabilitiesMatch(actual: HostValueCapability, expected: HostValueCapability, message: []const u8) void {
     if (!hv.hostValueCapabilitiesMatch(actual, expected)) @panic(message);
 }
@@ -132,6 +145,7 @@ fn popCapabilities(comptime Ctx: type, ctx: Ctx.Handle) void {
     Ctx.popHostValueCapabilities(ctx);
 }
 
+/// Provides the `callHostValueToUnitWithCapability` operation.
 pub fn callHostValueToUnitWithCapability(comptime Ctx: type, ctx: Ctx.Handle, roc_host: *abi.RocHost, cap: HostValueCapability, callable: abi.RocErasedCallable, value: HostValue) void {
     const caps = [_]HostValueCapability{cap};
     pushCapabilities(Ctx, ctx, &caps);
@@ -139,6 +153,7 @@ pub fn callHostValueToUnitWithCapability(comptime Ctx: type, ctx: Ctx.Handle, ro
     erased_calls.callErasedHostValueToUnit(roc_host, callable, value);
 }
 
+/// Provides the `callHostValueToHostValueWithCapability` operation.
 pub fn callHostValueToHostValueWithCapability(comptime Ctx: type, ctx: Ctx.Handle, roc_host: *abi.RocHost, cap: HostValueCapability, callable: abi.RocErasedCallable, value: HostValue) HostValue {
     const caps = [_]HostValueCapability{cap};
     pushCapabilities(Ctx, ctx, &caps);
@@ -146,6 +161,7 @@ pub fn callHostValueToHostValueWithCapability(comptime Ctx: type, ctx: Ctx.Handl
     return erased_calls.callErasedHostValueToHostValue(roc_host, callable, value);
 }
 
+/// Provides the `callHostValueToCmdWithCapability` operation.
 pub fn callHostValueToCmdWithCapability(comptime Ctx: type, ctx: Ctx.Handle, roc_host: *abi.RocHost, cap: HostValueCapability, callable: abi.RocErasedCallable, value: HostValue) erased_calls.Cmd {
     const caps = [_]HostValueCapability{cap};
     pushCapabilities(Ctx, ctx, &caps);
@@ -153,6 +169,7 @@ pub fn callHostValueToCmdWithCapability(comptime Ctx: type, ctx: Ctx.Handle, roc
     return erased_calls.callErasedHostValueToCmd(roc_host, callable, value);
 }
 
+/// Provides the `callHostValueToStrWithCapability` operation.
 pub fn callHostValueToStrWithCapability(comptime Ctx: type, ctx: Ctx.Handle, roc_host: *abi.RocHost, cap: HostValueCapability, callable: abi.RocErasedCallable, value: HostValue) abi.RocStr {
     const caps = [_]HostValueCapability{cap};
     pushCapabilities(Ctx, ctx, &caps);
@@ -160,6 +177,7 @@ pub fn callHostValueToStrWithCapability(comptime Ctx: type, ctx: Ctx.Handle, roc
     return erased_calls.callErasedHostValueToStr(roc_host, callable, value);
 }
 
+/// Provides the `callHostValueToBoolWithCapability` operation.
 pub fn callHostValueToBoolWithCapability(comptime Ctx: type, ctx: Ctx.Handle, roc_host: *abi.RocHost, cap: HostValueCapability, callable: abi.RocErasedCallable, value: HostValue) bool {
     const caps = [_]HostValueCapability{cap};
     pushCapabilities(Ctx, ctx, &caps);
@@ -167,6 +185,7 @@ pub fn callHostValueToBoolWithCapability(comptime Ctx: type, ctx: Ctx.Handle, ro
     return erased_calls.callErasedHostValueToBool(roc_host, callable, value);
 }
 
+/// Provides the `callHostValueToHostValueListWithCapability` operation.
 pub fn callHostValueToHostValueListWithCapability(comptime Ctx: type, ctx: Ctx.Handle, roc_host: *abi.RocHost, cap: HostValueCapability, callable: abi.RocErasedCallable, value: HostValue) HostValueList {
     const caps = [_]HostValueCapability{cap};
     pushCapabilities(Ctx, ctx, &caps);
@@ -174,6 +193,7 @@ pub fn callHostValueToHostValueListWithCapability(comptime Ctx: type, ctx: Ctx.H
     return erased_calls.callErasedHostValueToHostValueList(roc_host, callable, value);
 }
 
+/// Provides the `callHostValueListToHostValueWithCapability` operation.
 pub fn callHostValueListToHostValueWithCapability(comptime Ctx: type, ctx: Ctx.Handle, roc_host: *abi.RocHost, cap: HostValueCapability, callable: abi.RocErasedCallable, value: HostValueList) HostValue {
     const caps = [_]HostValueCapability{cap};
     pushCapabilities(Ctx, ctx, &caps);
@@ -181,6 +201,7 @@ pub fn callHostValueListToHostValueWithCapability(comptime Ctx: type, ctx: Ctx.H
     return erased_calls.callErasedHostValueListToHostValue(roc_host, callable, value);
 }
 
+/// Provides the `callHostValueHostValueToBoolWithCapability` operation.
 pub fn callHostValueHostValueToBoolWithCapability(comptime Ctx: type, ctx: Ctx.Handle, roc_host: *abi.RocHost, cap: HostValueCapability, callable: abi.RocErasedCallable, left: HostValue, right: HostValue) bool {
     const caps = [_]HostValueCapability{cap};
     pushCapabilities(Ctx, ctx, &caps);
@@ -188,6 +209,7 @@ pub fn callHostValueHostValueToBoolWithCapability(comptime Ctx: type, ctx: Ctx.H
     return erased_calls.callErasedHostValueHostValueToBool(roc_host, callable, left, right);
 }
 
+/// Provides the `callHostValueHostValueToHostValueWithCapabilities` operation.
 pub fn callHostValueHostValueToHostValueWithCapabilities(comptime Ctx: type, ctx: Ctx.Handle, roc_host: *abi.RocHost, left_cap: HostValueCapability, right_cap: HostValueCapability, callable: abi.RocErasedCallable, left: HostValue, right: HostValue) HostValue {
     const caps = [_]HostValueCapability{ left_cap, right_cap };
     pushCapabilities(Ctx, ctx, &caps);
@@ -195,6 +217,7 @@ pub fn callHostValueHostValueToHostValueWithCapabilities(comptime Ctx: type, ctx
     return erased_calls.callErasedHostValueHostValueToHostValue(roc_host, callable, left, right);
 }
 
+/// Provides the `callHostValueHostValueHostValueToHostValueWithCapabilities` operation.
 pub fn callHostValueHostValueHostValueToHostValueWithCapabilities(comptime Ctx: type, ctx: Ctx.Handle, roc_host: *abi.RocHost, first_cap: HostValueCapability, second_cap: HostValueCapability, third_cap: HostValueCapability, callable: abi.RocErasedCallable, first: HostValue, second: HostValue, third: HostValue) HostValue {
     const caps = [_]HostValueCapability{ first_cap, second_cap, third_cap };
     pushCapabilities(Ctx, ctx, &caps);
@@ -202,6 +225,7 @@ pub fn callHostValueHostValueHostValueToHostValueWithCapabilities(comptime Ctx: 
     return erased_calls.callErasedHostValueHostValueHostValueToHostValue(roc_host, callable, first, second, third);
 }
 
+/// Provides the `callHostValueHostValueToElemWithCapabilities` operation.
 pub fn callHostValueHostValueToElemWithCapabilities(comptime Ctx: type, ctx: Ctx.Handle, roc_host: *abi.RocHost, left_cap: HostValueCapability, right_cap: HostValueCapability, callable: abi.RocErasedCallable, left: HostValue, right: HostValue) abi.Elem {
     const caps = [_]HostValueCapability{ left_cap, right_cap };
     pushCapabilities(Ctx, ctx, &caps);
@@ -209,6 +233,7 @@ pub fn callHostValueHostValueToElemWithCapabilities(comptime Ctx: type, ctx: Ctx
     return erased_calls.callErasedHostValueHostValueToElem(roc_host, callable, left, right);
 }
 
+/// Provides the `retainHostTextRead` operation.
 pub fn retainHostTextRead(read: HostTextRead, metrics: anytype) HostTextRead {
     _ = retainHostValueCapability(read.capability, metrics);
     abi.increfErasedCallable(read.read, 1);
@@ -216,12 +241,14 @@ pub fn retainHostTextRead(read: HostTextRead, metrics: anytype) HostTextRead {
     return read;
 }
 
+/// Provides the `releaseHostTextRead` operation.
 pub fn releaseHostTextRead(read: HostTextRead, roc_host: *abi.RocHost, metrics: anytype) void {
     releaseHostValueCapability(read.capability, roc_host, metrics);
     abi.decrefErasedCallable(read.read, roc_host);
     metrics.bump(.closure_releases, 1);
 }
 
+/// Provides the `retainHostBoolRead` operation.
 pub fn retainHostBoolRead(read: HostBoolRead, metrics: anytype) HostBoolRead {
     _ = retainHostValueCapability(read.capability, metrics);
     abi.increfErasedCallable(read.read, 1);
@@ -229,12 +256,14 @@ pub fn retainHostBoolRead(read: HostBoolRead, metrics: anytype) HostBoolRead {
     return read;
 }
 
+/// Provides the `releaseHostBoolRead` operation.
 pub fn releaseHostBoolRead(read: HostBoolRead, roc_host: *abi.RocHost, metrics: anytype) void {
     releaseHostValueCapability(read.capability, roc_host, metrics);
     abi.decrefErasedCallable(read.read, roc_host);
     metrics.bump(.closure_releases, 1);
 }
 
+/// Provides the `retainHostEventReducer` operation.
 pub fn retainHostEventReducer(reducer: HostEventReducer, metrics: anytype) HostEventReducer {
     _ = retainHostValueCapability(reducer.capability, metrics);
     _ = retainHostValueCapability(reducer.read_capability, metrics);
@@ -243,6 +272,7 @@ pub fn retainHostEventReducer(reducer: HostEventReducer, metrics: anytype) HostE
     return reducer;
 }
 
+/// Provides the `releaseHostEventReducer` operation.
 pub fn releaseHostEventReducer(reducer: HostEventReducer, roc_host: *abi.RocHost, metrics: anytype) void {
     releaseHostValueCapability(reducer.capability, roc_host, metrics);
     releaseHostValueCapability(reducer.read_capability, roc_host, metrics);
@@ -250,6 +280,7 @@ pub fn releaseHostEventReducer(reducer: HostEventReducer, roc_host: *abi.RocHost
     metrics.bump(.closure_releases, 1);
 }
 
+/// Provides the `retainHostEachOps` operation.
 pub fn retainHostEachOps(ops: HostEachOps, metrics: anytype) HostEachOps {
     _ = retainHostValueCapability(ops.items_capability, metrics);
     _ = retainHostValueCapability(ops.item_capability, metrics);
@@ -262,6 +293,7 @@ pub fn retainHostEachOps(ops: HostEachOps, metrics: anytype) HostEachOps {
     return ops;
 }
 
+/// Provides the `releaseHostEachOps` operation.
 pub fn releaseHostEachOps(ops: HostEachOps, roc_host: *abi.RocHost, metrics: anytype) void {
     releaseHostValueCapability(ops.items_capability, roc_host, metrics);
     releaseHostValueCapability(ops.item_capability, roc_host, metrics);

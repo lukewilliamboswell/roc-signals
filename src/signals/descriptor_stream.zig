@@ -88,6 +88,7 @@ pub const MountDesc = struct {
     to_cmd: abi.RocErasedCallable,
     run_on_mount: bool,
 
+    /// Provides the `deinit` operation.
     pub fn deinit(self: MountDesc, roc_host: *abi.RocHost, metrics: anytype) void {
         metrics.bump(.closure_releases, 1);
         abi.decrefErasedCallable(self.to_cmd, roc_host);
@@ -126,6 +127,7 @@ pub const SignalTextNodeDesc = struct {
     read: HostTextRead,
     cached_value: HostSignalCacheSlot = .absent,
 
+    /// Provides the `deinit` operation.
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
         deinitSignalTextFields(&self.signal, &self.cached_value, self.read, allocator, ctx, roc_host, metrics);
     }
@@ -138,6 +140,7 @@ pub const SignalTextAttrDesc = struct {
     read: HostTextRead,
     cached_value: HostSignalCacheSlot = .absent,
 
+    /// Provides the `deinit` operation.
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
         deinitSignalTextFields(&self.signal, &self.cached_value, self.read, allocator, ctx, roc_host, metrics);
     }
@@ -150,6 +153,7 @@ pub const SignalCustomTextAttrDesc = struct {
     read: HostTextRead,
     cached_value: HostSignalCacheSlot = .absent,
 
+    /// Provides the `deinit` operation.
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
         allocator.free(self.name);
         deinitSignalTextFields(&self.signal, &self.cached_value, self.read, allocator, ctx, roc_host, metrics);
@@ -164,6 +168,7 @@ pub const SignalOptionalCustomTextAttrDesc = struct {
     read: HostTextRead,
     cached_value: HostSignalCacheSlot = .absent,
 
+    /// Provides the `deinit` operation.
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
         allocator.free(self.name);
         deinitSignalOptionalTextFields(&self.signal, &self.cached_value, self.present, self.read, allocator, ctx, roc_host, metrics);
@@ -177,6 +182,7 @@ pub const SignalCustomBoolAttrDesc = struct {
     read: HostBoolRead,
     cached_value: HostSignalCacheSlot = .absent,
 
+    /// Provides the `deinit` operation.
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
         allocator.free(self.name);
         deinitSignalBoolFields(&self.signal, &self.cached_value, self.read, allocator, ctx, roc_host, metrics);
@@ -195,6 +201,7 @@ pub const CustomAttrKind = enum {
     static_bool,
     signal_bool,
 
+    /// Provides the `valueKind` operation.
     pub fn valueKind(self: CustomAttrKind) CustomAttrValueKind {
         return switch (self) {
             .static_text, .signal_text, .signal_text_optional => .text,
@@ -208,6 +215,7 @@ pub const CustomAttrRef = struct {
     elem_id: u64,
     name: []const u8,
 
+    /// Provides the `matches` operation.
     pub fn matches(self: CustomAttrRef, elem_id: u64, name: []const u8) bool {
         return self.elem_id == elem_id and std.mem.eql(u8, self.name, name);
     }
@@ -219,10 +227,12 @@ const CustomAttrKey = struct {
 };
 
 const CustomAttrKeyContext = struct {
+    /// Provides the `hash` operation.
     pub fn hash(_: @This(), key: CustomAttrKey) u64 {
         return std.hash.Wyhash.hash(key.elem_id, key.name);
     }
 
+    /// Provides the `eql` operation.
     pub fn eql(_: @This(), left: CustomAttrKey, right: CustomAttrKey) bool {
         return left.elem_id == right.elem_id and std.mem.eql(u8, left.name, right.name);
     }
@@ -237,6 +247,7 @@ pub const SignalBoolAttrDesc = struct {
     read: HostBoolRead,
     cached_value: HostSignalCacheSlot = .absent,
 
+    /// Provides the `deinit` operation.
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
         deinitSignalBoolFields(&self.signal, &self.cached_value, self.read, allocator, ctx, roc_host, metrics);
     }
@@ -250,6 +261,7 @@ pub const OnChangeDesc = struct {
     to_cmd: abi.RocErasedCallable,
     cached_value: HostSignalCacheSlot = .absent,
 
+    /// Provides the `deinit` operation.
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
         self.cached_value.deinit(ctx, roc_host, metrics);
         self.signal.deinit(allocator, ctx, roc_host, metrics);
@@ -281,6 +293,7 @@ pub const EventDesc = struct {
     payload_reducer: HostEventReducer,
     owns_payload_reducer: bool = true,
 
+    /// Provides the `fixedKind` operation.
     pub fn fixedKind(self: EventDesc) ?EventKind {
         return switch (self.binding) {
             .fixed => |kind| kind,
@@ -288,6 +301,7 @@ pub const EventDesc = struct {
         };
     }
 
+    /// Provides the `named` operation.
     pub fn named(self: EventDesc) ?NamedEventBinding {
         return switch (self.binding) {
             .fixed => null,
@@ -295,6 +309,7 @@ pub const EventDesc = struct {
         };
     }
 
+    /// Provides the `deinit` operation.
     pub fn deinit(self: EventDesc, allocator: std.mem.Allocator, roc_host: *abi.RocHost, metrics: anytype) void {
         if (self.named()) |binding| allocator.free(binding.name);
         if (self.owns_payload_reducer) releaseHostEventReducer(self.payload_reducer, roc_host, metrics);
@@ -306,6 +321,7 @@ pub const StateDesc = struct {
     initial: abi.RocErasedCallable,
     cap: HostValueCapability,
 
+    /// Provides the `deinit` operation.
     pub fn deinit(self: StateDesc, roc_host: *abi.RocHost, metrics: anytype) void {
         metrics.bump(.closure_releases, 1);
         abi.decrefErasedCallable(self.initial, roc_host);
@@ -321,6 +337,7 @@ pub const WhenDesc = struct {
     when_true: abi.Elem,
     cached_value: HostSignalCacheSlot = .absent,
 
+    /// Provides the `deinit` operation.
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
         self.cached_value.deinit(ctx, roc_host, metrics);
         self.condition.deinit(allocator, ctx, roc_host, metrics);
@@ -336,6 +353,7 @@ pub const EachDesc = struct {
     ops: HostEachOps,
     cached_value: HostSignalCacheSlot = .absent,
 
+    /// Provides the `deinit` operation.
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
         self.cached_value.deinit(ctx, roc_host, metrics);
         self.items.deinit(allocator, ctx, roc_host, metrics);
@@ -399,12 +417,14 @@ const StreamElementDesc = ElementDesc;
 const StreamTextNodeDesc = TextNodeDesc;
 const StreamSignalTextNodeDesc = SignalTextNodeDesc;
 
+/// Provides the `CustomAttrRefs` operation.
 pub fn CustomAttrRefs(comptime StreamType: type) type {
     return struct {
         stream: *const StreamType,
         kind: CustomAttrKind = .static_text,
         index: usize = 0,
 
+        /// Provides the `next` operation.
         pub fn next(self: *@This()) ?CustomAttrRef {
             while (true) {
                 switch (self.kind) {
@@ -458,6 +478,7 @@ pub fn CustomAttrRefs(comptime StreamType: type) type {
     };
 }
 
+/// Provides the `customAttrRefs` operation.
 pub fn customAttrRefs(comptime StreamType: type, stream: *const StreamType) CustomAttrRefs(StreamType) {
     return .{ .stream = stream };
 }
@@ -576,102 +597,127 @@ pub const Stream = struct {
     descriptor_indexes_by_node_id: std.ArrayListUnmanaged(NodeDescriptorIndex) = .empty,
     next_elem_id: u64 = 1,
 
+    /// Provides the `ensureElemDescriptorIndex` operation.
     pub fn ensureElemDescriptorIndex(self: *Stream, allocator: std.mem.Allocator, elem_id: u64) *ElemDescriptorIndex {
         return ensureElemDescriptorIndexImpl(Stream, self, allocator, elem_id);
     }
 
+    /// Provides the `elemDescriptorIndex` operation.
     pub fn elemDescriptorIndex(self: *const Stream, elem_id: u64) ?ElemDescriptorIndex {
         return elemDescriptorIndexImpl(Stream, self, elem_id);
     }
 
+    /// Provides the `ensureNodeDescriptorIndex` operation.
     pub fn ensureNodeDescriptorIndex(self: *Stream, allocator: std.mem.Allocator, node_id: u64) *NodeDescriptorIndex {
         return ensureNodeDescriptorIndexImpl(Stream, self, allocator, node_id);
     }
 
+    /// Provides the `nodeDescriptorIndex` operation.
     pub fn nodeDescriptorIndex(self: *const Stream, node_id: u64) ?NodeDescriptorIndex {
         return nodeDescriptorIndexImpl(Stream, self, node_id);
     }
 
+    /// Provides the `ensureRenderMetadata` operation.
     pub fn ensureRenderMetadata(self: *Stream, allocator: std.mem.Allocator, elem_id: u64) *RenderElemIndex {
         return ensureRenderMetadataImpl(Stream, self, allocator, elem_id);
     }
 
+    /// Provides the `removeRenderMetadataIfEmpty` operation.
     pub fn removeRenderMetadataIfEmpty(self: *Stream, elem_id: u64) void {
         removeRenderMetadataIfEmptyImpl(Stream, self, elem_id);
     }
 
+    /// Provides the `renderNodeIndex` operation.
     pub fn renderNodeIndex(self: *const Stream, elem_id: u64) ?usize {
         return renderNodeIndexImpl(Stream, self, elem_id);
     }
 
+    /// Provides the `recordRenderNodeIndex` operation.
     pub fn recordRenderNodeIndex(self: *Stream, allocator: std.mem.Allocator, elem_id: u64, index: usize) void {
         recordRenderNodeIndexImpl(Stream, self, allocator, elem_id, index);
     }
 
+    /// Provides the `updateRenderNodeIndex` operation.
     pub fn updateRenderNodeIndex(self: *Stream, elem_id: u64, index: usize) void {
         updateRenderNodeIndexImpl(Stream, self, elem_id, index);
     }
 
+    /// Provides the `clearRenderNodeIndex` operation.
     pub fn clearRenderNodeIndex(self: *Stream, elem_id: u64, expected: usize) void {
         clearRenderNodeIndexImpl(Stream, self, elem_id, expected);
     }
 
+    /// Provides the `ensureFirstRenderChildSlot` operation.
     pub fn ensureFirstRenderChildSlot(self: *Stream, allocator: std.mem.Allocator, parent_elem_id: u64) *?u64 {
         return ensureFirstRenderChildSlotImpl(Stream, self, allocator, parent_elem_id);
     }
 
+    /// Provides the `ensureLastRenderChildSlot` operation.
     pub fn ensureLastRenderChildSlot(self: *Stream, allocator: std.mem.Allocator, parent_elem_id: u64) *?u64 {
         return ensureLastRenderChildSlotImpl(Stream, self, allocator, parent_elem_id);
     }
 
+    /// Provides the `ensureNextRenderSiblingSlot` operation.
     pub fn ensureNextRenderSiblingSlot(self: *Stream, allocator: std.mem.Allocator, elem_id: u64) *?u64 {
         return ensureNextRenderSiblingSlotImpl(Stream, self, allocator, elem_id);
     }
 
+    /// Provides the `firstRenderChild` operation.
     pub fn firstRenderChild(self: *const Stream, parent_elem_id: u64) ?u64 {
         return firstRenderChildImpl(Stream, self, parent_elem_id);
     }
 
+    /// Provides the `lastRenderChild` operation.
     pub fn lastRenderChild(self: *const Stream, parent_elem_id: u64) ?u64 {
         return lastRenderChildImpl(Stream, self, parent_elem_id);
     }
 
+    /// Provides the `nextRenderSibling` operation.
     pub fn nextRenderSibling(self: *const Stream, elem_id: u64) ?u64 {
         return nextRenderSiblingImpl(Stream, self, elem_id);
     }
 
+    /// Provides the `appendRenderChild` operation.
     pub fn appendRenderChild(self: *Stream, allocator: std.mem.Allocator, parent_elem_id: u64, elem_id: u64) void {
         appendRenderChildImpl(Stream, self, allocator, parent_elem_id, elem_id);
     }
 
+    /// Provides the `clearRenderChildren` operation.
     pub fn clearRenderChildren(self: *Stream, parent_elem_id: u64) void {
         clearRenderChildrenImpl(Stream, self, parent_elem_id);
     }
 
+    /// Provides the `removeRenderChild` operation.
     pub fn removeRenderChild(self: *Stream, parent_elem_id: u64, elem_id: u64) void {
         removeRenderChildImpl(Stream, self, parent_elem_id, elem_id);
     }
 
+    /// Provides the `insertRenderChildren` operation.
     pub fn insertRenderChildren(self: *Stream, allocator: std.mem.Allocator, parent_elem_id: u64, index: usize, elem_ids: []const u64) void {
         insertRenderChildrenImpl(Stream, self, allocator, parent_elem_id, index, elem_ids);
     }
 
+    /// Provides the `replaceRenderChildrenIndex` operation.
     pub fn replaceRenderChildrenIndex(self: *Stream, allocator: std.mem.Allocator, parent_elem_id: u64, elem_ids: []const u64) void {
         replaceRenderChildrenIndexImpl(Stream, self, allocator, parent_elem_id, elem_ids);
     }
 
+    /// Provides the `childInsertionIndexForRenderIndex` operation.
     pub fn childInsertionIndexForRenderIndex(self: *const Stream, parent_elem_id: u64, render_insert_index: usize) usize {
         return childInsertionIndexForRenderIndexImpl(Stream, self, parent_elem_id, render_insert_index);
     }
 
+    /// Provides the `refreshRenderIndexesFrom` operation.
     pub fn refreshRenderIndexesFrom(self: *Stream, allocator: std.mem.Allocator, start_index: usize, metrics: anytype) void {
         refreshRenderIndexesFromImpl(Stream, self, allocator, start_index, metrics);
     }
 
+    /// Provides the `refreshRenderIndexesInRange` operation.
     pub fn refreshRenderIndexesInRange(self: *Stream, allocator: std.mem.Allocator, start_index: usize, count: usize, metrics: anytype) void {
         refreshRenderIndexesInRangeImpl(Stream, self, allocator, start_index, count, metrics);
     }
 
+    /// Provides the `moveReplacementRenderChildren` operation.
     pub fn moveReplacementRenderChildren(self: *Stream, allocator: std.mem.Allocator, replacement: *Stream, elem_id: u64) void {
         self.clearRenderChildren(elem_id);
         const first_child = replacement.firstRenderChild(elem_id) orelse return;
@@ -692,10 +738,12 @@ pub const Stream = struct {
         replacement.removeRenderMetadataIfEmpty(elem_id);
     }
 
+    /// Provides the `replaceRenderRangeWithStream` operation.
     pub fn replaceRenderRangeWithStream(self: *Stream, allocator: std.mem.Allocator, render_start: usize, removed_nodes: []const StreamRenderNode, replacement: *Stream, metrics: anytype) void {
         self.replaceRenderRangeWithStreamOptions(allocator, render_start, removed_nodes, replacement, null, true, metrics);
     }
 
+    /// Provides the `replaceRenderRangeWithStreamOptions` operation.
     pub fn replaceRenderRangeWithStreamOptions(self: *Stream, allocator: std.mem.Allocator, render_start: usize, removed_nodes: []const StreamRenderNode, replacement: *Stream, child_insert_hint: ?RenderChildInsertHint, refresh_suffix_indexes: bool, metrics: anytype) void {
         const ChildInsert = struct {
             parent_elem_id: u64,
@@ -778,166 +826,207 @@ pub const Stream = struct {
         }
     }
 
+    /// Provides the `recordElementIndex` operation.
     pub fn recordElementIndex(self: *Stream, allocator: std.mem.Allocator, elem_id: u64, index: usize) void {
         recordElementIndexImpl(Stream, self, allocator, elem_id, index);
     }
 
+    /// Provides the `updateElementIndex` operation.
     pub fn updateElementIndex(self: *Stream, elem_id: u64, index: usize) void {
         updateElementIndexImpl(Stream, self, elem_id, index);
     }
 
+    /// Provides the `clearElementIndex` operation.
     pub fn clearElementIndex(self: *Stream, elem_id: u64, expected: usize) void {
         clearElementIndexImpl(Stream, self, elem_id, expected);
     }
 
+    /// Provides the `recordTextNodeIndex` operation.
     pub fn recordTextNodeIndex(self: *Stream, allocator: std.mem.Allocator, elem_id: u64, index: usize) void {
         recordTextNodeIndexImpl(Stream, self, allocator, elem_id, index);
     }
 
+    /// Provides the `updateTextNodeIndex` operation.
     pub fn updateTextNodeIndex(self: *Stream, elem_id: u64, index: usize) void {
         updateTextNodeIndexImpl(Stream, self, elem_id, index);
     }
 
+    /// Provides the `clearTextNodeIndex` operation.
     pub fn clearTextNodeIndex(self: *Stream, elem_id: u64, expected: usize) void {
         clearTextNodeIndexImpl(Stream, self, elem_id, expected);
     }
 
+    /// Provides the `recordSignalTextNodeIndex` operation.
     pub fn recordSignalTextNodeIndex(self: *Stream, allocator: std.mem.Allocator, elem_id: u64, index: usize) void {
         recordSignalTextNodeIndexImpl(Stream, self, allocator, elem_id, index);
     }
 
+    /// Provides the `updateSignalTextNodeIndex` operation.
     pub fn updateSignalTextNodeIndex(self: *Stream, elem_id: u64, index: usize) void {
         updateSignalTextNodeIndexImpl(Stream, self, elem_id, index);
     }
 
+    /// Provides the `clearSignalTextNodeIndex` operation.
     pub fn clearSignalTextNodeIndex(self: *Stream, elem_id: u64, expected: usize) void {
         clearSignalTextNodeIndexImpl(Stream, self, elem_id, expected);
     }
 
+    /// Provides the `recordStaticTextAttrIndex` operation.
     pub fn recordStaticTextAttrIndex(self: *Stream, allocator: std.mem.Allocator, elem_id: u64, field: TextField, index: usize) void {
         recordStaticTextAttrIndexImpl(Stream, self, allocator, elem_id, field, index);
     }
 
+    /// Provides the `updateStaticTextAttrIndex` operation.
     pub fn updateStaticTextAttrIndex(self: *Stream, elem_id: u64, field: TextField, index: usize) void {
         updateStaticTextAttrIndexImpl(Stream, self, elem_id, field, index);
     }
 
+    /// Provides the `clearStaticTextAttrIndex` operation.
     pub fn clearStaticTextAttrIndex(self: *Stream, elem_id: u64, field: TextField, expected: usize) void {
         clearStaticTextAttrIndexImpl(Stream, self, elem_id, field, expected);
     }
 
+    /// Provides the `recordSignalTextAttrIndex` operation.
     pub fn recordSignalTextAttrIndex(self: *Stream, allocator: std.mem.Allocator, elem_id: u64, field: TextField, index: usize) void {
         recordSignalTextAttrIndexImpl(Stream, self, allocator, elem_id, field, index);
     }
 
+    /// Provides the `updateSignalTextAttrIndex` operation.
     pub fn updateSignalTextAttrIndex(self: *Stream, elem_id: u64, field: TextField, index: usize) void {
         updateSignalTextAttrIndexImpl(Stream, self, elem_id, field, index);
     }
 
+    /// Provides the `clearSignalTextAttrIndex` operation.
     pub fn clearSignalTextAttrIndex(self: *Stream, elem_id: u64, field: TextField, expected: usize) void {
         clearSignalTextAttrIndexImpl(Stream, self, elem_id, field, expected);
     }
 
+    /// Provides the `recordStaticBoolAttrIndex` operation.
     pub fn recordStaticBoolAttrIndex(self: *Stream, allocator: std.mem.Allocator, elem_id: u64, field: BoolField, index: usize) void {
         recordStaticBoolAttrIndexImpl(Stream, self, allocator, elem_id, field, index);
     }
 
+    /// Provides the `updateStaticBoolAttrIndex` operation.
     pub fn updateStaticBoolAttrIndex(self: *Stream, elem_id: u64, field: BoolField, index: usize) void {
         updateStaticBoolAttrIndexImpl(Stream, self, elem_id, field, index);
     }
 
+    /// Provides the `clearStaticBoolAttrIndex` operation.
     pub fn clearStaticBoolAttrIndex(self: *Stream, elem_id: u64, field: BoolField, expected: usize) void {
         clearStaticBoolAttrIndexImpl(Stream, self, elem_id, field, expected);
     }
 
+    /// Provides the `recordSignalBoolAttrIndex` operation.
     pub fn recordSignalBoolAttrIndex(self: *Stream, allocator: std.mem.Allocator, elem_id: u64, field: BoolField, index: usize) void {
         recordSignalBoolAttrIndexImpl(Stream, self, allocator, elem_id, field, index);
     }
 
+    /// Provides the `updateSignalBoolAttrIndex` operation.
     pub fn updateSignalBoolAttrIndex(self: *Stream, elem_id: u64, field: BoolField, index: usize) void {
         updateSignalBoolAttrIndexImpl(Stream, self, elem_id, field, index);
     }
 
+    /// Provides the `clearSignalBoolAttrIndex` operation.
     pub fn clearSignalBoolAttrIndex(self: *Stream, elem_id: u64, field: BoolField, expected: usize) void {
         clearSignalBoolAttrIndexImpl(Stream, self, elem_id, field, expected);
     }
 
+    /// Provides the `recordEventIndex` operation.
     pub fn recordEventIndex(self: *Stream, allocator: std.mem.Allocator, elem_id: u64, kind: EventKind, index: usize) void {
         recordEventIndexImpl(Stream, self, allocator, elem_id, kind, index);
     }
 
+    /// Provides the `updateEventIndex` operation.
     pub fn updateEventIndex(self: *Stream, elem_id: u64, kind: EventKind, index: usize) void {
         updateEventIndexImpl(Stream, self, elem_id, kind, index);
     }
 
+    /// Provides the `clearEventIndex` operation.
     pub fn clearEventIndex(self: *Stream, elem_id: u64, kind: EventKind, expected: usize) void {
         clearEventIndexImpl(Stream, self, elem_id, kind, expected);
     }
 
+    /// Provides the `recordNamedEventIndex` operation.
     pub fn recordNamedEventIndex(self: *Stream, allocator: std.mem.Allocator, elem_id: u64, index: usize) void {
         recordNamedEventIndexImpl(Stream, self, allocator, elem_id, index);
     }
 
+    /// Provides the `updateNamedEventIndex` operation.
     pub fn updateNamedEventIndex(self: *Stream, elem_id: u64, old_index: usize, new_index: usize) void {
         updateNamedEventIndexImpl(Stream, self, elem_id, old_index, new_index);
     }
 
+    /// Provides the `clearNamedEventIndex` operation.
     pub fn clearNamedEventIndex(self: *Stream, elem_id: u64, expected: usize) void {
         clearNamedEventIndexImpl(Stream, self, elem_id, expected);
     }
 
+    /// Provides the `namedEventIndices` operation.
     pub fn namedEventIndices(self: *const Stream, elem_id: u64) []const usize {
         return namedEventIndicesImpl(Stream, self, elem_id);
     }
 
+    /// Provides the `recordScopeSiteIndex` operation.
     pub fn recordScopeSiteIndex(self: *Stream, allocator: std.mem.Allocator, node_id: u64, kind: ScopeSiteKind, index: usize) void {
         recordScopeSiteIndexImpl(Stream, self, allocator, node_id, kind, index);
     }
 
+    /// Provides the `updateScopeSiteIndex` operation.
     pub fn updateScopeSiteIndex(self: *Stream, node_id: u64, kind: ScopeSiteKind, index: usize) void {
         updateScopeSiteIndexImpl(Stream, self, node_id, kind, index);
     }
 
+    /// Provides the `clearScopeSiteIndex` operation.
     pub fn clearScopeSiteIndex(self: *Stream, node_id: u64, kind: ScopeSiteKind, expected: usize) void {
         clearScopeSiteIndexImpl(Stream, self, node_id, kind, expected);
     }
 
+    /// Provides the `recordStateIndex` operation.
     pub fn recordStateIndex(self: *Stream, allocator: std.mem.Allocator, node_id: u64, index: usize) void {
         recordStateIndexImpl(Stream, self, allocator, node_id, index);
     }
 
+    /// Provides the `updateStateIndex` operation.
     pub fn updateStateIndex(self: *Stream, node_id: u64, index: usize) void {
         updateStateIndexImpl(Stream, self, node_id, index);
     }
 
+    /// Provides the `clearStateIndex` operation.
     pub fn clearStateIndex(self: *Stream, node_id: u64, expected: usize) void {
         clearStateIndexImpl(Stream, self, node_id, expected);
     }
 
+    /// Provides the `recordWhenIndex` operation.
     pub fn recordWhenIndex(self: *Stream, allocator: std.mem.Allocator, node_id: u64, index: usize) void {
         recordWhenIndexImpl(Stream, self, allocator, node_id, index);
     }
 
+    /// Provides the `updateWhenIndex` operation.
     pub fn updateWhenIndex(self: *Stream, node_id: u64, index: usize) void {
         updateWhenIndexImpl(Stream, self, node_id, index);
     }
 
+    /// Provides the `clearWhenIndex` operation.
     pub fn clearWhenIndex(self: *Stream, node_id: u64, expected: usize) void {
         clearWhenIndexImpl(Stream, self, node_id, expected);
     }
 
+    /// Provides the `recordEachIndex` operation.
     pub fn recordEachIndex(self: *Stream, allocator: std.mem.Allocator, node_id: u64, index: usize) void {
         recordEachIndexImpl(Stream, self, allocator, node_id, index);
     }
 
+    /// Provides the `updateEachIndex` operation.
     pub fn updateEachIndex(self: *Stream, node_id: u64, index: usize) void {
         updateEachIndexImpl(Stream, self, node_id, index);
     }
 
+    /// Provides the `clearEachIndex` operation.
     pub fn clearEachIndex(self: *Stream, node_id: u64, expected: usize) void {
         clearEachIndexImpl(Stream, self, node_id, expected);
     }
 
+    /// Provides the `deinit` operation.
     pub fn deinit(self: *Stream, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
         self.render_nodes.deinit(allocator);
 
@@ -1050,15 +1139,18 @@ pub const Stream = struct {
         self.* = .{};
     }
 
+    /// Provides the `signalRecordByToken` operation.
     pub fn signalRecordByToken(self: *Stream, token: HostSignalToken) ?*SignalRecord {
         return self.signal_records_by_token.get(token);
     }
 
+    /// Provides the `reservePreparedSignalRecordPublication` operation.
     pub fn reservePreparedSignalRecordPublication(self: *Stream, allocator: std.mem.Allocator, additional_records: usize) std.mem.Allocator.Error!void {
         try self.signal_records_by_token.ensureUnusedCapacity(allocator, @intCast(additional_records));
         try self.signal_record_descriptor_uses_by_token.ensureUnusedCapacity(allocator, @intCast(additional_records));
     }
 
+    /// Provides the `rememberSignalRecordAssumeCapacity` operation.
     pub fn rememberSignalRecordAssumeCapacity(self: *Stream, token: HostSignalToken, record: *SignalRecord) void {
         const entry = self.signal_records_by_token.getOrPutAssumeCapacity(token);
         if (entry.found_existing) {
@@ -1068,6 +1160,7 @@ pub const Stream = struct {
         entry.value_ptr.* = record;
     }
 
+    /// Provides the `incrementSignalRecordDescriptorTreeAssumeCapacity` operation.
     pub fn incrementSignalRecordDescriptorTreeAssumeCapacity(self: *Stream, root: *SignalRecord) void {
         const Context = struct {
             stream: *Stream,
@@ -1085,6 +1178,7 @@ pub const Stream = struct {
         signal_records.walkTree(Context, .{ .stream = self }, root, Context.visit);
     }
 
+    /// Provides the `rememberSignalRecord` operation.
     pub fn rememberSignalRecord(self: *Stream, allocator: std.mem.Allocator, record: *SignalRecord) void {
         const token = record.token() orelse return;
         const entry = self.signal_records_by_token.getOrPut(allocator, token) catch @panic("out of memory");
@@ -1120,6 +1214,7 @@ pub const Stream = struct {
         _ = self.signal_records_by_token.fetchRemove(key) orelse @panic("signal token record disappeared during removal");
     }
 
+    /// Provides the `rememberSignalRecordTree` operation.
     pub fn rememberSignalRecordTree(self: *Stream, allocator: std.mem.Allocator, record: *SignalRecord) void {
         const Context = struct {
             stream: *Stream,
@@ -1133,6 +1228,7 @@ pub const Stream = struct {
         signal_records.walkTree(Context, .{ .stream = self, .allocator = allocator }, record, Context.visit);
     }
 
+    /// Provides the `forgetSignalRecordTree` operation.
     pub fn forgetSignalRecordTree(self: *Stream, record: *SignalRecord) void {
         const Context = struct {
             stream: *Stream,
@@ -1144,10 +1240,12 @@ pub const Stream = struct {
         signal_records.walkTree(Context, .{ .stream = self }, record, Context.visit);
     }
 
+    /// Provides the `appendElement` operation.
     pub fn appendElement(self: *Stream, allocator: std.mem.Allocator, elem_id: u64, parent_elem_id: u64, scope_id: u64, tag: []const u8) u64 {
         return appendElementImpl(Stream, self, allocator, elem_id, parent_elem_id, scope_id, tag);
     }
 
+    /// Provides the `appendTextNode` operation.
     pub fn appendTextNode(self: *Stream, allocator: std.mem.Allocator, elem_id: u64, parent_elem_id: u64, scope_id: u64, value: []const u8) void {
         appendTextNodeImpl(Stream, self, allocator, elem_id, parent_elem_id, scope_id, value);
     }
@@ -1157,6 +1255,7 @@ pub const Stream = struct {
         element: Payload,
         text: Payload,
 
+        /// Provides the `abort` operation.
         pub fn abort(self: @This(), allocator: std.mem.Allocator) void {
             switch (self) {
                 inline else => |prepared| allocator.free(prepared.text),
@@ -1186,6 +1285,7 @@ pub const Stream = struct {
         custom_text: struct { elem_id: u64, name: []u8, value: []u8 },
         custom_boolean: struct { elem_id: u64, name: []u8, value: bool },
 
+        /// Provides the `abort` operation.
         pub fn abort(self: @This(), allocator: std.mem.Allocator) void {
             switch (self) {
                 .text => |prepared| allocator.free(prepared.value),
@@ -1211,6 +1311,7 @@ pub const Stream = struct {
         optional_custom_text_attr: SignalOptionalCustomTextAttrDesc,
         custom_bool_attr: SignalCustomBoolAttrDesc,
 
+        /// Provides the `abort` operation.
         pub fn abort(self: *@This(), allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
             switch (self.*) {
                 .text_node => |*desc| desc.deinit(allocator, ctx, roc_host, metrics),
@@ -1226,6 +1327,7 @@ pub const Stream = struct {
     pub const PreparedEventDescriptor = struct {
         desc: EventDesc,
 
+        /// Provides the `abort` operation.
         pub fn abort(self: @This(), allocator: std.mem.Allocator, roc_host: *abi.RocHost, metrics: anytype) void {
             self.desc.deinit(allocator, roc_host, metrics);
         }
@@ -1236,6 +1338,7 @@ pub const Stream = struct {
         existed: bool,
         event_ordinals: std.ArrayListUnmanaged(usize) = .empty,
 
+        /// Provides the `abort` operation.
         pub fn abort(self: *@This(), allocator: std.mem.Allocator) void {
             self.event_ordinals.deinit(allocator);
             self.* = undefined;
@@ -1245,6 +1348,7 @@ pub const Stream = struct {
     pub const PreparedScopeSite = struct {
         desc: ScopeSiteDesc,
 
+        /// Provides the `abort` operation.
         pub fn abort(self: @This(), allocator: std.mem.Allocator) void {
             allocator.free(self.desc.binder_bindings);
         }
@@ -1253,6 +1357,7 @@ pub const Stream = struct {
     pub const PreparedState = struct {
         desc: StateDesc,
 
+        /// Provides the `abort` operation.
         pub fn abort(self: @This(), roc_host: *abi.RocHost, metrics: anytype) void {
             self.desc.deinit(roc_host, metrics);
         }
@@ -1261,11 +1366,13 @@ pub const Stream = struct {
     pub const PreparedWhen = struct {
         desc: WhenDesc,
 
+        /// Provides the `abort` operation.
         pub fn abort(self: *@This(), allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
             self.desc.deinit(allocator, ctx, roc_host, metrics);
         }
     };
 
+    /// Provides the `reservePreparedWhens` operation.
     pub fn reservePreparedWhens(self: *Stream, allocator: std.mem.Allocator, additional: usize, highest_node_id: u64) std.mem.Allocator.Error!void {
         try self.whens.ensureUnusedCapacity(allocator, additional);
         const highest_index = std.math.cast(usize, highest_node_id) orelse return error.OutOfMemory;
@@ -1273,6 +1380,7 @@ pub const Stream = struct {
         if (descriptor_len > self.descriptor_indexes_by_node_id.items.len) try self.descriptor_indexes_by_node_id.ensureTotalCapacity(allocator, descriptor_len);
     }
 
+    /// Provides the `prepareWhen` operation.
     pub fn prepareWhen(_: *const Stream, node_id: u64, condition: HostSignalBinding, read: HostBoolRead, when_false: abi.Elem, when_true: abi.Elem, metrics: anytype) PreparedWhen {
         const retained_read = retainHostBoolRead(read, metrics);
         when_false.incref(1);
@@ -1286,6 +1394,7 @@ pub const Stream = struct {
         } };
     }
 
+    /// Provides the `appendPreparedWhen` operation.
     pub fn appendPreparedWhen(self: *Stream, prepared: PreparedWhen) void {
         const node_id = prepared.desc.node_id;
         while (self.descriptor_indexes_by_node_id.items.len <= node_id) self.descriptor_indexes_by_node_id.appendAssumeCapacity(.{});
@@ -1294,6 +1403,7 @@ pub const Stream = struct {
         setFreshIndex(&self.descriptor_indexes_by_node_id.items[@intCast(node_id)].when, index);
     }
 
+    /// Provides the `reservePreparedStateSites` operation.
     pub fn reservePreparedStateSites(self: *Stream, allocator: std.mem.Allocator, additional: usize, highest_node_id: u64) std.mem.Allocator.Error!void {
         try self.scope_sites.ensureUnusedCapacity(allocator, additional);
         try self.states.ensureUnusedCapacity(allocator, additional);
@@ -1302,6 +1412,7 @@ pub const Stream = struct {
         if (descriptor_len > self.descriptor_indexes_by_node_id.items.len) try self.descriptor_indexes_by_node_id.ensureTotalCapacity(allocator, descriptor_len);
     }
 
+    /// Provides the `prepareScopeSite` operation.
     pub fn prepareScopeSite(self: *const Stream, allocator: std.mem.Allocator, node_id: u64, scope_id: u64, ordinal: u64, parent_elem_id: u64, kind: ScopeSiteKind, binder_bindings: []const BinderBinding) std.mem.Allocator.Error!PreparedScopeSite {
         return .{ .desc = .{
             .node_id = node_id,
@@ -1314,6 +1425,7 @@ pub const Stream = struct {
         } };
     }
 
+    /// Provides the `prepareState` operation.
     pub fn prepareState(_: *const Stream, node_id: u64, initial: abi.RocErasedCallable, cap: HostValueCapability, metrics: anytype) PreparedState {
         _ = retainHostValueCapability(cap, metrics);
         abi.increfErasedCallable(initial, 1);
@@ -1321,6 +1433,7 @@ pub const Stream = struct {
         return .{ .desc = .{ .node_id = node_id, .initial = initial, .cap = cap } };
     }
 
+    /// Provides the `appendPreparedStateSite` operation.
     pub fn appendPreparedStateSite(self: *Stream, site: PreparedScopeSite, state: PreparedState) void {
         const node_id = site.desc.node_id;
         if (state.desc.node_id != node_id or site.desc.kind != .state) @panic("prepared state site mismatch");
@@ -1328,6 +1441,7 @@ pub const Stream = struct {
         self.appendPreparedState(state);
     }
 
+    /// Provides the `appendPreparedState` operation.
     pub fn appendPreparedState(self: *Stream, state: PreparedState) void {
         const node_id = state.desc.node_id;
         const state_index = self.states.items.len;
@@ -1335,6 +1449,7 @@ pub const Stream = struct {
         setFreshIndex(&self.descriptor_indexes_by_node_id.items[@intCast(node_id)].state, state_index);
     }
 
+    /// Provides the `appendPreparedScopeSite` operation.
     pub fn appendPreparedScopeSite(self: *Stream, site: PreparedScopeSite) void {
         const node_id = site.desc.node_id;
         while (self.descriptor_indexes_by_node_id.items.len <= node_id) self.descriptor_indexes_by_node_id.appendAssumeCapacity(.{});
@@ -1343,6 +1458,7 @@ pub const Stream = struct {
         setFreshIndex(self.descriptor_indexes_by_node_id.items[@intCast(node_id)].scope_sites.slot(site.desc.kind), site_index);
     }
 
+    /// Provides the `reservePreparedEvents` operation.
     pub fn reservePreparedEvents(self: *Stream, allocator: std.mem.Allocator, additional: usize, highest_elem_id: u64) std.mem.Allocator.Error!void {
         try self.events.ensureUnusedCapacity(allocator, additional);
         const highest_index = std.math.cast(usize, highest_elem_id) orelse return error.OutOfMemory;
@@ -1351,10 +1467,12 @@ pub const Stream = struct {
         if (descriptor_len > self.named_event_indices_by_elem_id.items.len) try self.named_event_indices_by_elem_id.ensureTotalCapacity(allocator, descriptor_len);
     }
 
+    /// Provides the `namedEventIndexSlotExists` operation.
     pub fn namedEventIndexSlotExists(self: *const Stream, elem_id: u64) bool {
         return elem_id < self.named_event_indices_by_elem_id.items.len;
     }
 
+    /// Provides the `reserveExistingNamedEventIndexes` operation.
     pub fn reserveExistingNamedEventIndexes(self: *Stream, allocator: std.mem.Allocator, elem_id: u64, additional: usize) std.mem.Allocator.Error!void {
         if (!self.namedEventIndexSlotExists(elem_id)) return;
         const slot = &self.named_event_indices_by_elem_id.items[@intCast(elem_id)];
@@ -1362,6 +1480,7 @@ pub const Stream = struct {
         try slot.ensureTotalCapacity(allocator, total);
     }
 
+    /// Provides the `appendPreparedEvent` operation.
     pub fn appendPreparedEvent(self: *Stream, prepared: PreparedEventDescriptor) void {
         const desc = prepared.desc;
         while (self.descriptor_indexes_by_elem_id.items.len <= desc.elem_id) self.descriptor_indexes_by_elem_id.appendAssumeCapacity(.{});
@@ -1370,6 +1489,7 @@ pub const Stream = struct {
         if (desc.fixedKind()) |kind| setFreshIndex(self.descriptor_indexes_by_elem_id.items[@intCast(desc.elem_id)].events.slot(kind), index);
     }
 
+    /// Provides the `publishPreparedNamedEventIndexes` operation.
     pub fn publishPreparedNamedEventIndexes(self: *Stream, groups: []PreparedNamedEventIndexGroup, event_base: usize) void {
         for (groups) |*group| {
             while (self.named_event_indices_by_elem_id.items.len <= group.elem_id) self.named_event_indices_by_elem_id.appendAssumeCapacity(.empty);
@@ -1386,6 +1506,7 @@ pub const Stream = struct {
         }
     }
 
+    /// Provides the `reservePreparedSignalTextNodes` operation.
     pub fn reservePreparedSignalTextNodes(self: *Stream, allocator: std.mem.Allocator, additional: usize, highest_elem_id: u64) std.mem.Allocator.Error!void {
         try self.render_nodes.ensureUnusedCapacity(allocator, additional);
         try self.signal_text_nodes.ensureUnusedCapacity(allocator, additional);
@@ -1396,6 +1517,7 @@ pub const Stream = struct {
         try self.render_metadata_by_elem_id.ensureUnusedCapacity(allocator, @intCast(metadata_entries));
     }
 
+    /// Provides the `reservePreparedSignalAttrs` operation.
     pub fn reservePreparedSignalAttrs(self: *Stream, allocator: std.mem.Allocator, additional: usize, highest_elem_id: u64) std.mem.Allocator.Error!void {
         try self.signal_text_attrs.ensureUnusedCapacity(allocator, additional);
         try self.signal_bool_attrs.ensureUnusedCapacity(allocator, additional);
@@ -1449,6 +1571,7 @@ pub const Stream = struct {
         }
     }
 
+    /// Provides the `reservePreparedStaticAttrs` operation.
     pub fn reservePreparedStaticAttrs(self: *Stream, allocator: std.mem.Allocator, additional: usize) std.mem.Allocator.Error!void {
         try self.static_text_attrs.ensureUnusedCapacity(allocator, additional);
         try self.static_bool_attrs.ensureUnusedCapacity(allocator, additional);
@@ -1456,30 +1579,36 @@ pub const Stream = struct {
         try self.static_custom_bool_attrs.ensureUnusedCapacity(allocator, additional);
     }
 
+    /// Provides the `prepareStaticTextAttr` operation.
     pub fn prepareStaticTextAttr(_: *Stream, allocator: std.mem.Allocator, elem_id: u64, field: TextField, value: []const u8) std.mem.Allocator.Error!PreparedStaticAttr {
         return .{ .text = .{ .elem_id = elem_id, .field = field, .value = try allocator.dupe(u8, value) } };
     }
 
+    /// Provides the `prepareStaticBoolAttr` operation.
     pub fn prepareStaticBoolAttr(_: *Stream, elem_id: u64, field: BoolField, value: bool) PreparedStaticAttr {
         return .{ .boolean = .{ .elem_id = elem_id, .field = field, .value = value } };
     }
 
+    /// Provides the `prepareStaticCustomTextAttr` operation.
     pub fn prepareStaticCustomTextAttr(_: *Stream, allocator: std.mem.Allocator, elem_id: u64, name: []const u8, value: []const u8) std.mem.Allocator.Error!PreparedStaticAttr {
         const name_copy = try allocator.dupe(u8, name);
         errdefer allocator.free(name_copy);
         return .{ .custom_text = .{ .elem_id = elem_id, .name = name_copy, .value = try allocator.dupe(u8, value) } };
     }
 
+    /// Provides the `prepareStaticCustomBoolAttr` operation.
     pub fn prepareStaticCustomBoolAttr(_: *Stream, allocator: std.mem.Allocator, elem_id: u64, name: []const u8, value: bool) std.mem.Allocator.Error!PreparedStaticAttr {
         return .{ .custom_boolean = .{ .elem_id = elem_id, .name = try allocator.dupe(u8, name), .value = value } };
     }
 
+    /// Provides the `canStageLinearCustomAttrs` operation.
     pub fn canStageLinearCustomAttrs(self: *const Stream, additional: usize) bool {
         if (self.custom_attr_index_active) return false;
         const current = self.static_custom_text_attrs.items.len + self.signal_custom_text_attrs.items.len + self.signal_optional_custom_text_attrs.items.len + self.static_custom_bool_attrs.items.len + self.signal_custom_bool_attrs.items.len;
         return current <= custom_attr_index_threshold and additional <= custom_attr_index_threshold - current;
     }
 
+    /// Provides the `appendPreparedStaticAttr` operation.
     pub fn appendPreparedStaticAttr(self: *Stream, prepared: PreparedStaticAttr) void {
         switch (prepared) {
             .text => |value| {
@@ -1519,14 +1648,17 @@ pub const Stream = struct {
         };
     }
 
+    /// Provides the `prepareElement` operation.
     pub fn prepareElement(self: *Stream, allocator: std.mem.Allocator, elem_id: u64, parent_elem_id: u64, scope_id: u64, tag: []const u8) std.mem.Allocator.Error!PreparedStaticNode {
         return self.prepareStaticNode(allocator, elem_id, parent_elem_id, scope_id, tag, .element);
     }
 
+    /// Provides the `prepareTextNode` operation.
     pub fn prepareTextNode(self: *Stream, allocator: std.mem.Allocator, elem_id: u64, parent_elem_id: u64, scope_id: u64, value: []const u8) std.mem.Allocator.Error!PreparedStaticNode {
         return self.prepareStaticNode(allocator, elem_id, parent_elem_id, scope_id, value, .text);
     }
 
+    /// Provides the `appendPreparedStaticNode` operation.
     pub fn appendPreparedStaticNode(self: *Stream, prepared_node: PreparedStaticNode) void {
         const prepared = switch (prepared_node) {
             inline else => |value| value,
@@ -1568,6 +1700,7 @@ pub const Stream = struct {
         self.next_elem_id += 1;
     }
 
+    /// Provides the `appendSignalTextNode` operation.
     pub fn appendSignalTextNode(self: *Stream, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, elem_id: u64, parent_elem_id: u64, scope_id: u64, signal: HostSignalBinding, read: HostTextRead) void {
         self.next_elem_id += 1;
         self.rememberSignalRecordTree(allocator, signal.record);
@@ -1594,10 +1727,12 @@ pub const Stream = struct {
         self.appendRenderChild(allocator, parent_elem_id, elem_id);
     }
 
+    /// Provides the `appendStaticTextAttr` operation.
     pub fn appendStaticTextAttr(self: *Stream, allocator: std.mem.Allocator, elem_id: u64, field: TextField, value: []const u8) void {
         appendStaticTextAttrImpl(Stream, self, allocator, elem_id, field, value);
     }
 
+    /// Provides the `appendSignalTextAttr` operation.
     pub fn appendSignalTextAttr(self: *Stream, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, elem_id: u64, field: TextField, signal: HostSignalBinding, read: HostTextRead) void {
         self.rememberSignalRecordTree(allocator, signal.record);
         const retained_read = retainHostTextRead(read, metrics);
@@ -1614,14 +1749,17 @@ pub const Stream = struct {
         self.recordSignalTextAttrIndex(allocator, elem_id, field, attr_index);
     }
 
+    /// Provides the `customTextAttrDescriptorExists` operation.
     pub fn customTextAttrDescriptorExists(self: *const Stream, elem_id: u64, name: []const u8) bool {
         return customTextAttrDescriptorExistsImpl(Stream, self, elem_id, name);
     }
 
+    /// Provides the `appendStaticCustomTextAttr` operation.
     pub fn appendStaticCustomTextAttr(self: *Stream, allocator: std.mem.Allocator, elem_id: u64, name: []const u8, value: []const u8) void {
         appendStaticCustomTextAttrImpl(Stream, self, allocator, elem_id, name, value);
     }
 
+    /// Provides the `appendSignalCustomTextAttr` operation.
     pub fn appendSignalCustomTextAttr(self: *Stream, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, elem_id: u64, name: []const u8, signal: HostSignalBinding, read: HostTextRead) void {
         if (name.len == 0) @panic("custom text attr descriptor used an empty name");
         if (customAttrDescriptorExistsForAppend(Stream, self, allocator, elem_id, name)) @panic("element has duplicate custom text attr descriptors");
@@ -1642,6 +1780,7 @@ pub const Stream = struct {
         };
     }
 
+    /// Provides the `appendSignalOptionalCustomTextAttr` operation.
     pub fn appendSignalOptionalCustomTextAttr(self: *Stream, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, elem_id: u64, name: []const u8, signal: HostSignalBinding, present: HostBoolRead, read: HostTextRead) void {
         if (name.len == 0) @panic("custom text attr descriptor used an empty name");
         if (customAttrDescriptorExistsForAppend(Stream, self, allocator, elem_id, name)) @panic("element has duplicate custom text attr descriptors");
@@ -1664,10 +1803,12 @@ pub const Stream = struct {
         };
     }
 
+    /// Provides the `appendStaticCustomBoolAttr` operation.
     pub fn appendStaticCustomBoolAttr(self: *Stream, allocator: std.mem.Allocator, elem_id: u64, name: []const u8, value: bool) void {
         appendStaticCustomBoolAttrImpl(Stream, self, allocator, elem_id, name, value);
     }
 
+    /// Provides the `appendSignalCustomBoolAttr` operation.
     pub fn appendSignalCustomBoolAttr(self: *Stream, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, elem_id: u64, name: []const u8, signal: HostSignalBinding, read: HostBoolRead) void {
         if (name.len == 0) @panic("custom bool attr descriptor used an empty name");
         if (customAttrDescriptorExistsForAppend(Stream, self, allocator, elem_id, name)) @panic("element has duplicate custom attr descriptors");
@@ -1688,10 +1829,12 @@ pub const Stream = struct {
         };
     }
 
+    /// Provides the `appendStaticBoolAttr` operation.
     pub fn appendStaticBoolAttr(self: *Stream, allocator: std.mem.Allocator, elem_id: u64, field: BoolField, value: bool) void {
         appendStaticBoolAttrImpl(Stream, self, allocator, elem_id, field, value);
     }
 
+    /// Provides the `appendSignalBoolAttr` operation.
     pub fn appendSignalBoolAttr(self: *Stream, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, elem_id: u64, field: BoolField, signal: HostSignalBinding, read: HostBoolRead) void {
         self.rememberSignalRecordTree(allocator, signal.record);
         const retained_read = retainHostBoolRead(read, metrics);
@@ -1708,6 +1851,7 @@ pub const Stream = struct {
         self.recordSignalBoolAttrIndex(allocator, elem_id, field, attr_index);
     }
 
+    /// Provides the `appendOnChange` operation.
     pub fn appendOnChange(self: *Stream, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, scope_id: u64, signal: HostSignalBinding, to_cmd: abi.RocErasedCallable, run_initial: bool, run_initial_pending: bool) void {
         self.rememberSignalRecordTree(allocator, signal.record);
         abi.increfErasedCallable(to_cmd, 1);
@@ -1731,6 +1875,7 @@ pub const Stream = struct {
         };
     }
 
+    /// Provides the `appendMount` operation.
     pub fn appendMount(self: *Stream, allocator: std.mem.Allocator, roc_host: *abi.RocHost, metrics: anytype, scope_id: u64, to_cmd: abi.RocErasedCallable, run_on_mount: bool) void {
         abi.increfErasedCallable(to_cmd, 1);
         metrics.bump(.closure_retains, 1);
@@ -1749,10 +1894,12 @@ pub const Stream = struct {
         };
     }
 
+    /// Provides the `appendCleanup` operation.
     pub fn appendCleanup(self: *Stream, allocator: std.mem.Allocator, scope_id: u64, name: []const u8) void {
         appendCleanupImpl(Stream, self, allocator, scope_id, name);
     }
 
+    /// Provides the `appendEvent` operation.
     pub fn appendEvent(self: *Stream, allocator: std.mem.Allocator, roc_host: *abi.RocHost, metrics: anytype, elem_id: u64, kind: EventKind, delivery_request: EventDeliveryRequest, binder_token: BinderToken, target_node_id: u64, read_binder_token: BinderToken, read_node_id: u64, payload_descriptor: BoundaryPayloadDescriptor, payload_reducer: HostEventReducer) void {
         const retained_reducer = retainHostEventReducer(payload_reducer, metrics);
         const event_index = self.events.items.len;
@@ -1784,6 +1931,7 @@ pub const Stream = struct {
         self.recordEventIndex(allocator, elem_id, kind, event_index);
     }
 
+    /// Provides the `namedEventDescriptorExists` operation.
     pub fn namedEventDescriptorExists(self: *const Stream, elem_id: u64, name: []const u8) bool {
         for (self.namedEventIndices(elem_id)) |index| {
             if (index >= self.events.items.len) @panic("named event index exceeded descriptor table");
@@ -1794,6 +1942,7 @@ pub const Stream = struct {
         return false;
     }
 
+    /// Provides the `appendNamedEvent` operation.
     pub fn appendNamedEvent(self: *Stream, allocator: std.mem.Allocator, roc_host: *abi.RocHost, metrics: anytype, elem_id: u64, name: []const u8, policy: EventPolicy, delivery_request: EventDeliveryRequest, binder_token: BinderToken, target_node_id: u64, read_binder_token: BinderToken, read_node_id: u64, payload_descriptor: BoundaryPayloadDescriptor, payload_reducer: HostEventReducer) void {
         if (name.len == 0) @panic("named event descriptor used an empty event name");
         if (self.namedEventDescriptorExists(elem_id, name)) @panic("element has duplicate named event descriptors");
@@ -1840,14 +1989,17 @@ pub const Stream = struct {
         self.recordNamedEventIndex(allocator, elem_id, event_index);
     }
 
+    /// Provides the `appendScopeSite` operation.
     pub fn appendScopeSite(self: *Stream, allocator: std.mem.Allocator, node_id: u64, scope_id: u64, ordinal: u64, parent_elem_id: u64, kind: ScopeSiteKind, binder_bindings: []const BinderBinding) void {
         appendScopeSiteImpl(Stream, self, allocator, node_id, scope_id, ordinal, parent_elem_id, kind, binder_bindings);
     }
 
+    /// Provides the `appendScopeSiteAt` operation.
     pub fn appendScopeSiteAt(self: *Stream, allocator: std.mem.Allocator, node_id: u64, scope_id: u64, ordinal: u64, parent_elem_id: u64, render_insert_index: usize, kind: ScopeSiteKind, binder_bindings: []const BinderBinding) void {
         appendScopeSiteAtImpl(Stream, self, allocator, node_id, scope_id, ordinal, parent_elem_id, render_insert_index, kind, binder_bindings);
     }
 
+    /// Provides the `appendState` operation.
     pub fn appendState(self: *Stream, allocator: std.mem.Allocator, roc_host: *abi.RocHost, metrics: anytype, node_id: u64, initial: abi.RocErasedCallable, cap: HostValueCapability) void {
         _ = retainHostValueCapability(cap, metrics);
         abi.increfErasedCallable(initial, 1);
@@ -1869,6 +2021,7 @@ pub const Stream = struct {
         self.recordStateIndex(allocator, node_id, state_index);
     }
 
+    /// Provides the `appendWhen` operation.
     pub fn appendWhen(self: *Stream, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, node_id: u64, condition: HostSignalBinding, read: HostBoolRead, when_false: abi.Elem, when_true: abi.Elem) void {
         self.rememberSignalRecordTree(allocator, condition.record);
         const retained_read = retainHostBoolRead(read, metrics);
@@ -1895,6 +2048,7 @@ pub const Stream = struct {
         self.recordWhenIndex(allocator, node_id, when_index);
     }
 
+    /// Provides the `appendEach` operation.
     pub fn appendEach(self: *Stream, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, node_id: u64, items: HostSignalBinding, ops: HostEachOps) void {
         self.rememberSignalRecordTree(allocator, items.record);
         const retained_ops = retainHostEachOps(ops, metrics);
@@ -1920,11 +2074,13 @@ pub const DescriptorIndex = enum(u32) {
     none = std.math.maxInt(u32),
     _,
 
+    /// Provides the `init` operation.
     pub fn init(index: usize) DescriptorIndex {
         if (index >= @intFromEnum(DescriptorIndex.none)) @panic("descriptor index exceeded u32 storage");
         return @enumFromInt(@as(u32, @intCast(index)));
     }
 
+    /// Provides the `get` operation.
     pub fn get(self: DescriptorIndex) ?usize {
         return if (self == .none) null else @intFromEnum(self);
     }
@@ -1938,6 +2094,7 @@ pub const TextFieldDescriptorIndexes = struct {
     value: DescriptorIndex = .none,
     class: DescriptorIndex = .none,
 
+    /// Provides the `get` operation.
     pub fn get(self: TextFieldDescriptorIndexes, field: TextField) ?usize {
         return switch (field) {
             .text => self.text.get(),
@@ -1949,6 +2106,7 @@ pub const TextFieldDescriptorIndexes = struct {
         };
     }
 
+    /// Provides the `slot` operation.
     pub fn slot(self: *TextFieldDescriptorIndexes, field: TextField) *DescriptorIndex {
         return switch (field) {
             .text => &self.text,
@@ -1965,6 +2123,7 @@ pub const BoolFieldDescriptorIndexes = struct {
     checked: DescriptorIndex = .none,
     disabled: DescriptorIndex = .none,
 
+    /// Provides the `get` operation.
     pub fn get(self: BoolFieldDescriptorIndexes, field: BoolField) ?usize {
         return switch (field) {
             .checked => self.checked.get(),
@@ -1972,6 +2131,7 @@ pub const BoolFieldDescriptorIndexes = struct {
         };
     }
 
+    /// Provides the `slot` operation.
     pub fn slot(self: *BoolFieldDescriptorIndexes, field: BoolField) *DescriptorIndex {
         return switch (field) {
             .checked => &self.checked,
@@ -1989,6 +2149,7 @@ pub const EventDescriptorIndexes = struct {
     pointer_enter: DescriptorIndex = .none,
     pointer_leave: DescriptorIndex = .none,
 
+    /// Provides the `get` operation.
     pub fn get(self: EventDescriptorIndexes, kind: EventKind) ?usize {
         return switch (kind) {
             .click => self.click.get(),
@@ -2001,6 +2162,7 @@ pub const EventDescriptorIndexes = struct {
         };
     }
 
+    /// Provides the `slot` operation.
     pub fn slot(self: *EventDescriptorIndexes, kind: EventKind) *DescriptorIndex {
         return switch (kind) {
             .click => &self.click,
@@ -2020,6 +2182,7 @@ pub const RenderElemIndex = struct {
     last_child: ?u64 = null,
     next_sibling: ?u64 = null,
 
+    /// Provides the `empty` operation.
     pub fn empty(self: RenderElemIndex) bool {
         return self.render_node == null and self.first_child == null and self.last_child == null and self.next_sibling == null;
     }
@@ -2042,6 +2205,7 @@ pub const ScopeSiteDescriptorIndexes = struct {
     when: DescriptorIndex = .none,
     each: DescriptorIndex = .none,
 
+    /// Provides the `get` operation.
     pub fn get(self: ScopeSiteDescriptorIndexes, kind: ScopeSiteKind) ?usize {
         return switch (kind) {
             .component => self.component.get(),
@@ -2051,6 +2215,7 @@ pub const ScopeSiteDescriptorIndexes = struct {
         };
     }
 
+    /// Provides the `slot` operation.
     pub fn slot(self: *ScopeSiteDescriptorIndexes, kind: ScopeSiteKind) *DescriptorIndex {
         return switch (kind) {
             .component => &self.component,
@@ -2068,6 +2233,7 @@ pub const NodeDescriptorIndex = struct {
     each: DescriptorIndex = .none,
 };
 
+/// Provides the `setFreshIndex` operation.
 pub fn setFreshIndex(slot: *DescriptorIndex, value: usize) void {
     if (slot.* != .none) {
         @panic("descriptor stream recorded duplicate descriptor index");
@@ -2075,17 +2241,20 @@ pub fn setFreshIndex(slot: *DescriptorIndex, value: usize) void {
     slot.* = DescriptorIndex.init(value);
 }
 
+/// Provides the `updateIndex` operation.
 pub fn updateIndex(slot: *DescriptorIndex, value: usize) void {
     if (slot.* == .none) @panic("descriptor stream updated a missing descriptor index");
     slot.* = DescriptorIndex.init(value);
 }
 
+/// Provides the `clearIndex` operation.
 pub fn clearIndex(slot: *DescriptorIndex, expected: usize) void {
     const existing = slot.get() orelse @panic("descriptor stream cleared a missing descriptor index");
     if (existing != expected) @panic("descriptor stream cleared the wrong descriptor index");
     slot.* = .none;
 }
 
+/// Provides the `ensureElemDescriptorIndex` operation.
 pub fn ensureElemDescriptorIndex(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, elem_id: u64) *ElemDescriptorIndex {
     const index: usize = @intCast(elem_id);
     while (stream.descriptor_indexes_by_elem_id.items.len <= index) {
@@ -2094,11 +2263,13 @@ pub fn ensureElemDescriptorIndex(comptime StreamType: type, stream: *StreamType,
     return &stream.descriptor_indexes_by_elem_id.items[index];
 }
 
+/// Provides the `elemDescriptorIndex` operation.
 pub fn elemDescriptorIndex(comptime StreamType: type, stream: *const StreamType, elem_id: u64) ?ElemDescriptorIndex {
     if (elem_id >= stream.descriptor_indexes_by_elem_id.items.len) return null;
     return stream.descriptor_indexes_by_elem_id.items[@intCast(elem_id)];
 }
 
+/// Provides the `ensureNodeDescriptorIndex` operation.
 pub fn ensureNodeDescriptorIndex(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, node_id: u64) *NodeDescriptorIndex {
     const index: usize = @intCast(node_id);
     while (stream.descriptor_indexes_by_node_id.items.len <= index) {
@@ -2107,107 +2278,133 @@ pub fn ensureNodeDescriptorIndex(comptime StreamType: type, stream: *StreamType,
     return &stream.descriptor_indexes_by_node_id.items[index];
 }
 
+/// Provides the `nodeDescriptorIndex` operation.
 pub fn nodeDescriptorIndex(comptime StreamType: type, stream: *const StreamType, node_id: u64) ?NodeDescriptorIndex {
     if (node_id >= stream.descriptor_indexes_by_node_id.items.len) return null;
     return stream.descriptor_indexes_by_node_id.items[@intCast(node_id)];
 }
 
+/// Provides the `recordElementIndex` operation.
 pub fn recordElementIndex(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, elem_id: u64, index: usize) void {
     setFreshIndex(&ensureElemDescriptorIndex(StreamType, stream, allocator, elem_id).element, index);
 }
 
+/// Provides the `updateElementIndex` operation.
 pub fn updateElementIndex(comptime StreamType: type, stream: *StreamType, elem_id: u64, index: usize) void {
     updateIndex(&stream.descriptor_indexes_by_elem_id.items[@intCast(elem_id)].element, index);
 }
 
+/// Provides the `clearElementIndex` operation.
 pub fn clearElementIndex(comptime StreamType: type, stream: *StreamType, elem_id: u64, expected: usize) void {
     clearIndex(&stream.descriptor_indexes_by_elem_id.items[@intCast(elem_id)].element, expected);
 }
 
+/// Provides the `recordTextNodeIndex` operation.
 pub fn recordTextNodeIndex(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, elem_id: u64, index: usize) void {
     setFreshIndex(&ensureElemDescriptorIndex(StreamType, stream, allocator, elem_id).text_node, index);
 }
 
+/// Provides the `updateTextNodeIndex` operation.
 pub fn updateTextNodeIndex(comptime StreamType: type, stream: *StreamType, elem_id: u64, index: usize) void {
     updateIndex(&stream.descriptor_indexes_by_elem_id.items[@intCast(elem_id)].text_node, index);
 }
 
+/// Provides the `clearTextNodeIndex` operation.
 pub fn clearTextNodeIndex(comptime StreamType: type, stream: *StreamType, elem_id: u64, expected: usize) void {
     clearIndex(&stream.descriptor_indexes_by_elem_id.items[@intCast(elem_id)].text_node, expected);
 }
 
+/// Provides the `recordSignalTextNodeIndex` operation.
 pub fn recordSignalTextNodeIndex(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, elem_id: u64, index: usize) void {
     setFreshIndex(&ensureElemDescriptorIndex(StreamType, stream, allocator, elem_id).signal_text_node, index);
 }
 
+/// Provides the `updateSignalTextNodeIndex` operation.
 pub fn updateSignalTextNodeIndex(comptime StreamType: type, stream: *StreamType, elem_id: u64, index: usize) void {
     updateIndex(&stream.descriptor_indexes_by_elem_id.items[@intCast(elem_id)].signal_text_node, index);
 }
 
+/// Provides the `clearSignalTextNodeIndex` operation.
 pub fn clearSignalTextNodeIndex(comptime StreamType: type, stream: *StreamType, elem_id: u64, expected: usize) void {
     clearIndex(&stream.descriptor_indexes_by_elem_id.items[@intCast(elem_id)].signal_text_node, expected);
 }
 
+/// Provides the `recordStaticTextAttrIndex` operation.
 pub fn recordStaticTextAttrIndex(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, elem_id: u64, field: TextField, index: usize) void {
     setFreshIndex(ensureElemDescriptorIndex(StreamType, stream, allocator, elem_id).static_text_attrs.slot(field), index);
 }
 
+/// Provides the `updateStaticTextAttrIndex` operation.
 pub fn updateStaticTextAttrIndex(comptime StreamType: type, stream: *StreamType, elem_id: u64, field: TextField, index: usize) void {
     updateIndex(stream.descriptor_indexes_by_elem_id.items[@intCast(elem_id)].static_text_attrs.slot(field), index);
 }
 
+/// Provides the `clearStaticTextAttrIndex` operation.
 pub fn clearStaticTextAttrIndex(comptime StreamType: type, stream: *StreamType, elem_id: u64, field: TextField, expected: usize) void {
     clearIndex(stream.descriptor_indexes_by_elem_id.items[@intCast(elem_id)].static_text_attrs.slot(field), expected);
 }
 
+/// Provides the `recordSignalTextAttrIndex` operation.
 pub fn recordSignalTextAttrIndex(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, elem_id: u64, field: TextField, index: usize) void {
     setFreshIndex(ensureElemDescriptorIndex(StreamType, stream, allocator, elem_id).signal_text_attrs.slot(field), index);
 }
 
+/// Provides the `updateSignalTextAttrIndex` operation.
 pub fn updateSignalTextAttrIndex(comptime StreamType: type, stream: *StreamType, elem_id: u64, field: TextField, index: usize) void {
     updateIndex(stream.descriptor_indexes_by_elem_id.items[@intCast(elem_id)].signal_text_attrs.slot(field), index);
 }
 
+/// Provides the `clearSignalTextAttrIndex` operation.
 pub fn clearSignalTextAttrIndex(comptime StreamType: type, stream: *StreamType, elem_id: u64, field: TextField, expected: usize) void {
     clearIndex(stream.descriptor_indexes_by_elem_id.items[@intCast(elem_id)].signal_text_attrs.slot(field), expected);
 }
 
+/// Provides the `recordStaticBoolAttrIndex` operation.
 pub fn recordStaticBoolAttrIndex(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, elem_id: u64, field: BoolField, index: usize) void {
     setFreshIndex(ensureElemDescriptorIndex(StreamType, stream, allocator, elem_id).static_bool_attrs.slot(field), index);
 }
 
+/// Provides the `updateStaticBoolAttrIndex` operation.
 pub fn updateStaticBoolAttrIndex(comptime StreamType: type, stream: *StreamType, elem_id: u64, field: BoolField, index: usize) void {
     updateIndex(stream.descriptor_indexes_by_elem_id.items[@intCast(elem_id)].static_bool_attrs.slot(field), index);
 }
 
+/// Provides the `clearStaticBoolAttrIndex` operation.
 pub fn clearStaticBoolAttrIndex(comptime StreamType: type, stream: *StreamType, elem_id: u64, field: BoolField, expected: usize) void {
     clearIndex(stream.descriptor_indexes_by_elem_id.items[@intCast(elem_id)].static_bool_attrs.slot(field), expected);
 }
 
+/// Provides the `recordSignalBoolAttrIndex` operation.
 pub fn recordSignalBoolAttrIndex(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, elem_id: u64, field: BoolField, index: usize) void {
     setFreshIndex(ensureElemDescriptorIndex(StreamType, stream, allocator, elem_id).signal_bool_attrs.slot(field), index);
 }
 
+/// Provides the `updateSignalBoolAttrIndex` operation.
 pub fn updateSignalBoolAttrIndex(comptime StreamType: type, stream: *StreamType, elem_id: u64, field: BoolField, index: usize) void {
     updateIndex(stream.descriptor_indexes_by_elem_id.items[@intCast(elem_id)].signal_bool_attrs.slot(field), index);
 }
 
+/// Provides the `clearSignalBoolAttrIndex` operation.
 pub fn clearSignalBoolAttrIndex(comptime StreamType: type, stream: *StreamType, elem_id: u64, field: BoolField, expected: usize) void {
     clearIndex(stream.descriptor_indexes_by_elem_id.items[@intCast(elem_id)].signal_bool_attrs.slot(field), expected);
 }
 
+/// Provides the `recordEventIndex` operation.
 pub fn recordEventIndex(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, elem_id: u64, kind: EventKind, index: usize) void {
     setFreshIndex(ensureElemDescriptorIndex(StreamType, stream, allocator, elem_id).events.slot(kind), index);
 }
 
+/// Provides the `updateEventIndex` operation.
 pub fn updateEventIndex(comptime StreamType: type, stream: *StreamType, elem_id: u64, kind: EventKind, index: usize) void {
     updateIndex(stream.descriptor_indexes_by_elem_id.items[@intCast(elem_id)].events.slot(kind), index);
 }
 
+/// Provides the `clearEventIndex` operation.
 pub fn clearEventIndex(comptime StreamType: type, stream: *StreamType, elem_id: u64, kind: EventKind, expected: usize) void {
     clearIndex(stream.descriptor_indexes_by_elem_id.items[@intCast(elem_id)].events.slot(kind), expected);
 }
 
+/// Provides the `ensureNamedEventIndexList` operation.
 pub fn ensureNamedEventIndexList(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, elem_id: u64) *std.ArrayListUnmanaged(usize) {
     const index: usize = @intCast(elem_id);
     while (stream.named_event_indices_by_elem_id.items.len <= index) {
@@ -2216,15 +2413,18 @@ pub fn ensureNamedEventIndexList(comptime StreamType: type, stream: *StreamType,
     return &stream.named_event_indices_by_elem_id.items[index];
 }
 
+/// Provides the `namedEventIndices` operation.
 pub fn namedEventIndices(comptime StreamType: type, stream: *const StreamType, elem_id: u64) []const usize {
     if (elem_id >= stream.named_event_indices_by_elem_id.items.len) return &.{};
     return stream.named_event_indices_by_elem_id.items[@intCast(elem_id)].items;
 }
 
+/// Provides the `recordNamedEventIndex` operation.
 pub fn recordNamedEventIndex(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, elem_id: u64, index: usize) void {
     ensureNamedEventIndexList(StreamType, stream, allocator, elem_id).append(allocator, index) catch @panic("out of memory");
 }
 
+/// Provides the `updateNamedEventIndex` operation.
 pub fn updateNamedEventIndex(comptime StreamType: type, stream: *StreamType, elem_id: u64, old_index: usize, new_index: usize) void {
     if (elem_id >= stream.named_event_indices_by_elem_id.items.len) @panic("descriptor stream updated a missing named event index");
     const indices = &stream.named_event_indices_by_elem_id.items[@intCast(elem_id)];
@@ -2237,6 +2437,7 @@ pub fn updateNamedEventIndex(comptime StreamType: type, stream: *StreamType, ele
     @panic("descriptor stream updated a missing named event index");
 }
 
+/// Provides the `clearNamedEventIndex` operation.
 pub fn clearNamedEventIndex(comptime StreamType: type, stream: *StreamType, elem_id: u64, expected: usize) void {
     if (elem_id >= stream.named_event_indices_by_elem_id.items.len) @panic("descriptor stream cleared a missing named event index");
     const indices = &stream.named_event_indices_by_elem_id.items[@intCast(elem_id)];
@@ -2249,6 +2450,7 @@ pub fn clearNamedEventIndex(comptime StreamType: type, stream: *StreamType, elem
     @panic("descriptor stream cleared a missing named event index");
 }
 
+/// Provides the `deinitNamedEventIndexLists` operation.
 pub fn deinitNamedEventIndexLists(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator) void {
     for (stream.named_event_indices_by_elem_id.items) |*indices| {
         indices.deinit(allocator);
@@ -2256,63 +2458,77 @@ pub fn deinitNamedEventIndexLists(comptime StreamType: type, stream: *StreamType
     stream.named_event_indices_by_elem_id.deinit(allocator);
 }
 
+/// Provides the `recordScopeSiteIndex` operation.
 pub fn recordScopeSiteIndex(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, node_id: u64, kind: ScopeSiteKind, index: usize) void {
     setFreshIndex(ensureNodeDescriptorIndex(StreamType, stream, allocator, node_id).scope_sites.slot(kind), index);
 }
 
+/// Provides the `updateScopeSiteIndex` operation.
 pub fn updateScopeSiteIndex(comptime StreamType: type, stream: *StreamType, node_id: u64, kind: ScopeSiteKind, index: usize) void {
     updateIndex(stream.descriptor_indexes_by_node_id.items[@intCast(node_id)].scope_sites.slot(kind), index);
 }
 
+/// Provides the `clearScopeSiteIndex` operation.
 pub fn clearScopeSiteIndex(comptime StreamType: type, stream: *StreamType, node_id: u64, kind: ScopeSiteKind, expected: usize) void {
     clearIndex(stream.descriptor_indexes_by_node_id.items[@intCast(node_id)].scope_sites.slot(kind), expected);
 }
 
+/// Provides the `recordStateIndex` operation.
 pub fn recordStateIndex(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, node_id: u64, index: usize) void {
     const slot = &ensureNodeDescriptorIndex(StreamType, stream, allocator, node_id).state;
     setFreshIndex(slot, index);
 }
 
+/// Provides the `updateStateIndex` operation.
 pub fn updateStateIndex(comptime StreamType: type, stream: *StreamType, node_id: u64, index: usize) void {
     updateIndex(&stream.descriptor_indexes_by_node_id.items[@intCast(node_id)].state, index);
 }
 
+/// Provides the `clearStateIndex` operation.
 pub fn clearStateIndex(comptime StreamType: type, stream: *StreamType, node_id: u64, expected: usize) void {
     clearIndex(&stream.descriptor_indexes_by_node_id.items[@intCast(node_id)].state, expected);
 }
 
+/// Provides the `recordWhenIndex` operation.
 pub fn recordWhenIndex(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, node_id: u64, index: usize) void {
     const slot = &ensureNodeDescriptorIndex(StreamType, stream, allocator, node_id).when;
     setFreshIndex(slot, index);
 }
 
+/// Provides the `updateWhenIndex` operation.
 pub fn updateWhenIndex(comptime StreamType: type, stream: *StreamType, node_id: u64, index: usize) void {
     updateIndex(&stream.descriptor_indexes_by_node_id.items[@intCast(node_id)].when, index);
 }
 
+/// Provides the `clearWhenIndex` operation.
 pub fn clearWhenIndex(comptime StreamType: type, stream: *StreamType, node_id: u64, expected: usize) void {
     clearIndex(&stream.descriptor_indexes_by_node_id.items[@intCast(node_id)].when, expected);
 }
 
+/// Provides the `recordEachIndex` operation.
 pub fn recordEachIndex(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, node_id: u64, index: usize) void {
     const slot = &ensureNodeDescriptorIndex(StreamType, stream, allocator, node_id).each;
     setFreshIndex(slot, index);
 }
 
+/// Provides the `updateEachIndex` operation.
 pub fn updateEachIndex(comptime StreamType: type, stream: *StreamType, node_id: u64, index: usize) void {
     updateIndex(&stream.descriptor_indexes_by_node_id.items[@intCast(node_id)].each, index);
 }
 
+/// Provides the `clearEachIndex` operation.
 pub fn clearEachIndex(comptime StreamType: type, stream: *StreamType, node_id: u64, expected: usize) void {
     clearIndex(&stream.descriptor_indexes_by_node_id.items[@intCast(node_id)].each, expected);
 }
 
+/// Provides the `ensureRenderMetadata` operation.
 pub fn ensureRenderMetadata(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, elem_id: u64) *RenderElemIndex {
     const entry = stream.render_metadata_by_elem_id.getOrPut(allocator, elem_id) catch @panic("out of memory");
     if (!entry.found_existing) entry.value_ptr.* = .{};
     return entry.value_ptr;
 }
 
+/// Provides the `removeRenderMetadataIfEmpty` operation.
 pub fn removeRenderMetadataIfEmpty(comptime StreamType: type, stream: *StreamType, elem_id: u64) void {
     const metadata = stream.render_metadata_by_elem_id.get(elem_id) orelse return;
     if (metadata.empty()) {
@@ -2320,23 +2536,27 @@ pub fn removeRenderMetadataIfEmpty(comptime StreamType: type, stream: *StreamTyp
     }
 }
 
+/// Provides the `renderNodeIndex` operation.
 pub fn renderNodeIndex(comptime StreamType: type, stream: *const StreamType, elem_id: u64) ?usize {
     const metadata = stream.render_metadata_by_elem_id.get(elem_id) orelse return null;
     return metadata.render_node;
 }
 
+/// Provides the `recordRenderNodeIndex` operation.
 pub fn recordRenderNodeIndex(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, elem_id: u64, index: usize) void {
     const metadata = ensureRenderMetadata(StreamType, stream, allocator, elem_id);
     if (metadata.render_node != null) @panic("descriptor stream recorded duplicate render index");
     metadata.render_node = index;
 }
 
+/// Provides the `updateRenderNodeIndex` operation.
 pub fn updateRenderNodeIndex(comptime StreamType: type, stream: *StreamType, elem_id: u64, index: usize) void {
     const metadata = stream.render_metadata_by_elem_id.getPtr(elem_id) orelse @panic("descriptor stream updated a missing render index");
     if (metadata.render_node == null) @panic("descriptor stream updated a missing render index");
     metadata.render_node = index;
 }
 
+/// Provides the `clearRenderNodeIndex` operation.
 pub fn clearRenderNodeIndex(comptime StreamType: type, stream: *StreamType, elem_id: u64, expected: usize) void {
     const metadata = stream.render_metadata_by_elem_id.getPtr(elem_id) orelse @panic("descriptor stream cleared a missing render index");
     const existing = metadata.render_node orelse @panic("descriptor stream cleared a missing render index");
@@ -2345,33 +2565,40 @@ pub fn clearRenderNodeIndex(comptime StreamType: type, stream: *StreamType, elem
     removeRenderMetadataIfEmpty(StreamType, stream, elem_id);
 }
 
+/// Provides the `ensureFirstRenderChildSlot` operation.
 pub fn ensureFirstRenderChildSlot(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, parent_elem_id: u64) *?u64 {
     return &ensureRenderMetadata(StreamType, stream, allocator, parent_elem_id).first_child;
 }
 
+/// Provides the `ensureLastRenderChildSlot` operation.
 pub fn ensureLastRenderChildSlot(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, parent_elem_id: u64) *?u64 {
     return &ensureRenderMetadata(StreamType, stream, allocator, parent_elem_id).last_child;
 }
 
+/// Provides the `ensureNextRenderSiblingSlot` operation.
 pub fn ensureNextRenderSiblingSlot(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, elem_id: u64) *?u64 {
     return &ensureRenderMetadata(StreamType, stream, allocator, elem_id).next_sibling;
 }
 
+/// Provides the `firstRenderChild` operation.
 pub fn firstRenderChild(comptime StreamType: type, stream: *const StreamType, parent_elem_id: u64) ?u64 {
     const metadata = stream.render_metadata_by_elem_id.get(parent_elem_id) orelse return null;
     return metadata.first_child;
 }
 
+/// Provides the `lastRenderChild` operation.
 pub fn lastRenderChild(comptime StreamType: type, stream: *const StreamType, parent_elem_id: u64) ?u64 {
     const metadata = stream.render_metadata_by_elem_id.get(parent_elem_id) orelse return null;
     return metadata.last_child;
 }
 
+/// Provides the `nextRenderSibling` operation.
 pub fn nextRenderSibling(comptime StreamType: type, stream: *const StreamType, elem_id: u64) ?u64 {
     const metadata = stream.render_metadata_by_elem_id.get(elem_id) orelse return null;
     return metadata.next_sibling;
 }
 
+/// Provides the `appendRenderChild` operation.
 pub fn appendRenderChild(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, parent_elem_id: u64, elem_id: u64) void {
     _ = ensureRenderMetadata(StreamType, stream, allocator, parent_elem_id);
     _ = ensureRenderMetadata(StreamType, stream, allocator, elem_id);
@@ -2389,6 +2616,7 @@ pub fn appendRenderChild(comptime StreamType: type, stream: *StreamType, allocat
     parent_metadata.last_child = elem_id;
 }
 
+/// Provides the `clearRenderChildren` operation.
 pub fn clearRenderChildren(comptime StreamType: type, stream: *StreamType, parent_elem_id: u64) void {
     var child = firstRenderChild(StreamType, stream, parent_elem_id);
     while (child) |child_id| {
@@ -2405,6 +2633,7 @@ pub fn clearRenderChildren(comptime StreamType: type, stream: *StreamType, paren
     removeRenderMetadataIfEmpty(StreamType, stream, parent_elem_id);
 }
 
+/// Provides the `removeRenderChild` operation.
 pub fn removeRenderChild(comptime StreamType: type, stream: *StreamType, parent_elem_id: u64, elem_id: u64) void {
     const parent_metadata = stream.render_metadata_by_elem_id.getPtr(parent_elem_id) orelse @panic("render child index was missing its parent list");
 
@@ -2434,6 +2663,7 @@ pub fn removeRenderChild(comptime StreamType: type, stream: *StreamType, parent_
     @panic("render child index was missing a child");
 }
 
+/// Provides the `insertRenderChildren` operation.
 pub fn insertRenderChildren(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, parent_elem_id: u64, index: usize, elem_ids: []const u64) void {
     if (elem_ids.len == 0) return;
 
@@ -2469,11 +2699,13 @@ pub fn insertRenderChildren(comptime StreamType: type, stream: *StreamType, allo
     }
 }
 
+/// Provides the `replaceRenderChildrenIndex` operation.
 pub fn replaceRenderChildrenIndex(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, parent_elem_id: u64, elem_ids: []const u64) void {
     clearRenderChildren(StreamType, stream, parent_elem_id);
     insertRenderChildren(StreamType, stream, allocator, parent_elem_id, 0, elem_ids);
 }
 
+/// Provides the `childInsertionIndexForRenderIndex` operation.
 pub fn childInsertionIndexForRenderIndex(comptime StreamType: type, stream: *const StreamType, parent_elem_id: u64, render_insert_index: usize) usize {
     var index: usize = 0;
     var child = firstRenderChild(StreamType, stream, parent_elem_id);
@@ -2485,6 +2717,7 @@ pub fn childInsertionIndexForRenderIndex(comptime StreamType: type, stream: *con
     return index;
 }
 
+/// Provides the `refreshRenderIndexesFrom` operation.
 pub fn refreshRenderIndexesFrom(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, start_index: usize, metrics: anytype) void {
     if (start_index > stream.render_nodes.items.len) @panic("render index refresh started past render node table");
     metrics.bump(.render_indexes_refreshed, @intCast(stream.render_nodes.items.len - start_index));
@@ -2493,6 +2726,7 @@ pub fn refreshRenderIndexesFrom(comptime StreamType: type, stream: *StreamType, 
     }
 }
 
+/// Provides the `refreshRenderIndexesInRange` operation.
 pub fn refreshRenderIndexesInRange(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, start_index: usize, count: usize, metrics: anytype) void {
     if (start_index > stream.render_nodes.items.len) @panic("render index range refresh started past render node table");
     if (count > stream.render_nodes.items.len - start_index) @panic("render index range refresh exceeded render node table");
@@ -2502,6 +2736,7 @@ pub fn refreshRenderIndexesInRange(comptime StreamType: type, stream: *StreamTyp
     }
 }
 
+/// Provides the `appendElement` operation.
 pub fn appendElement(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, elem_id: u64, parent_elem_id: u64, scope_id: u64, tag: []const u8) u64 {
     stream.next_elem_id += 1;
 
@@ -2527,6 +2762,7 @@ pub fn appendElement(comptime StreamType: type, stream: *StreamType, allocator: 
     return elem_id;
 }
 
+/// Provides the `appendTextNode` operation.
 pub fn appendTextNode(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, elem_id: u64, parent_elem_id: u64, scope_id: u64, value: []const u8) void {
     stream.next_elem_id += 1;
 
@@ -2551,6 +2787,7 @@ pub fn appendTextNode(comptime StreamType: type, stream: *StreamType, allocator:
     appendRenderChild(StreamType, stream, allocator, parent_elem_id, elem_id);
 }
 
+/// Provides the `appendStaticTextAttr` operation.
 pub fn appendStaticTextAttr(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, elem_id: u64, field: TextField, value: []const u8) void {
     const value_copy = allocator.dupe(u8, value) catch @panic("out of memory");
     const attr_index = stream.static_text_attrs.items.len;
@@ -2565,10 +2802,12 @@ pub fn appendStaticTextAttr(comptime StreamType: type, stream: *StreamType, allo
     recordStaticTextAttrIndex(StreamType, stream, allocator, elem_id, field, attr_index);
 }
 
+/// Provides the `customTextAttrDescriptorExists` operation.
 pub fn customTextAttrDescriptorExists(comptime StreamType: type, stream: *const StreamType, elem_id: u64, name: []const u8) bool {
     return customAttrDescriptorExists(StreamType, stream, elem_id, name);
 }
 
+/// Provides the `customAttrDescriptorExists` operation.
 pub fn customAttrDescriptorExists(comptime StreamType: type, stream: *const StreamType, elem_id: u64, name: []const u8) bool {
     if (@hasField(StreamType, "custom_attr_keys")) {
         if (stream.custom_attr_index_active) {
@@ -2615,6 +2854,7 @@ fn recordCustomAttrKey(comptime StreamType: type, stream: *StreamType, allocator
     stream.custom_attr_keys.put(allocator, .{ .elem_id = elem_id, .name = name }, {}) catch @panic("out of memory");
 }
 
+/// Provides the `appendStaticCustomTextAttr` operation.
 pub fn appendStaticCustomTextAttr(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, elem_id: u64, name: []const u8, value: []const u8) void {
     if (name.len == 0) @panic("custom text attr descriptor used an empty name");
     if (customAttrDescriptorExistsForAppend(StreamType, stream, allocator, elem_id, name)) @panic("element has duplicate custom text attr descriptors");
@@ -2636,6 +2876,7 @@ pub fn appendStaticCustomTextAttr(comptime StreamType: type, stream: *StreamType
     };
 }
 
+/// Provides the `appendStaticCustomBoolAttr` operation.
 pub fn appendStaticCustomBoolAttr(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, elem_id: u64, name: []const u8, value: bool) void {
     if (name.len == 0) @panic("custom bool attr descriptor used an empty name");
     if (customAttrDescriptorExistsForAppend(StreamType, stream, allocator, elem_id, name)) @panic("element has duplicate custom attr descriptors");
@@ -2652,6 +2893,7 @@ pub fn appendStaticCustomBoolAttr(comptime StreamType: type, stream: *StreamType
     };
 }
 
+/// Provides the `appendStaticBoolAttr` operation.
 pub fn appendStaticBoolAttr(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, elem_id: u64, field: BoolField, value: bool) void {
     const attr_index = stream.static_bool_attrs.items.len;
     stream.static_bool_attrs.append(allocator, .{
@@ -2662,6 +2904,7 @@ pub fn appendStaticBoolAttr(comptime StreamType: type, stream: *StreamType, allo
     recordStaticBoolAttrIndex(StreamType, stream, allocator, elem_id, field, attr_index);
 }
 
+/// Provides the `appendCleanup` operation.
 pub fn appendCleanup(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, scope_id: u64, name: []const u8) void {
     const name_copy = allocator.dupe(u8, name) catch @panic("out of memory");
     stream.cleanups.append(allocator, .{
@@ -2673,10 +2916,12 @@ pub fn appendCleanup(comptime StreamType: type, stream: *StreamType, allocator: 
     };
 }
 
+/// Provides the `appendScopeSite` operation.
 pub fn appendScopeSite(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, node_id: u64, scope_id: u64, ordinal: u64, parent_elem_id: u64, kind: ScopeSiteKind, binder_bindings: []const BinderBinding) void {
     appendScopeSiteAt(StreamType, stream, allocator, node_id, scope_id, ordinal, parent_elem_id, stream.render_nodes.items.len, kind, binder_bindings);
 }
 
+/// Provides the `appendScopeSiteAt` operation.
 pub fn appendScopeSiteAt(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, node_id: u64, scope_id: u64, ordinal: u64, parent_elem_id: u64, render_insert_index: usize, kind: ScopeSiteKind, binder_bindings: []const BinderBinding) void {
     const binder_copy = allocator.dupe(BinderBinding, binder_bindings) catch @panic("out of memory");
     const scope_site_index = stream.scope_sites.items.len;
@@ -2695,6 +2940,7 @@ pub fn appendScopeSiteAt(comptime StreamType: type, stream: *StreamType, allocat
     recordScopeSiteIndex(StreamType, stream, allocator, node_id, kind, scope_site_index);
 }
 
+/// Provides the `findElementDesc` operation.
 pub fn findElementDesc(comptime StreamType: type, stream: *const StreamType, elem_id: u64) ?StreamType.ElementDesc {
     const descriptor_index = stream.elemDescriptorIndex(elem_id) orelse return null;
     const index = descriptor_index.element.get() orelse return null;
@@ -2704,6 +2950,7 @@ pub fn findElementDesc(comptime StreamType: type, stream: *const StreamType, ele
     return desc;
 }
 
+/// Provides the `findTextNodeDesc` operation.
 pub fn findTextNodeDesc(comptime StreamType: type, stream: *const StreamType, elem_id: u64) ?StreamType.TextNodeDesc {
     const descriptor_index = stream.elemDescriptorIndex(elem_id) orelse return null;
     const index = descriptor_index.text_node.get() orelse return null;
@@ -2713,6 +2960,7 @@ pub fn findTextNodeDesc(comptime StreamType: type, stream: *const StreamType, el
     return desc;
 }
 
+/// Provides the `findSignalTextNodeDesc` operation.
 pub fn findSignalTextNodeDesc(comptime StreamType: type, stream: *const StreamType, elem_id: u64) ?StreamType.SignalTextNodeDesc {
     const descriptor_index = stream.elemDescriptorIndex(elem_id) orelse return null;
     const index = descriptor_index.signal_text_node.get() orelse return null;
@@ -2722,6 +2970,7 @@ pub fn findSignalTextNodeDesc(comptime StreamType: type, stream: *const StreamTy
     return desc;
 }
 
+/// Provides the `findSignalTextNodeDescMutable` operation.
 pub fn findSignalTextNodeDescMutable(comptime StreamType: type, stream: *StreamType, elem_id: u64) ?*StreamType.SignalTextNodeDesc {
     const descriptor_index = stream.elemDescriptorIndex(elem_id) orelse return null;
     const index = descriptor_index.signal_text_node.get() orelse return null;
@@ -2731,6 +2980,7 @@ pub fn findSignalTextNodeDescMutable(comptime StreamType: type, stream: *StreamT
     return desc;
 }
 
+/// Provides the `streamHasTextField` operation.
 pub fn streamHasTextField(comptime StreamType: type, stream: *const StreamType, elem_id: u64, field: TextField) bool {
     const descriptor_index = stream.elemDescriptorIndex(elem_id) orelse return false;
     if (field == .text and descriptor_index.text_node != .none) return true;
@@ -2751,6 +3001,7 @@ pub fn streamHasTextField(comptime StreamType: type, stream: *const StreamType, 
     return false;
 }
 
+/// Provides the `streamHasCustomTextAttr` operation.
 pub fn streamHasCustomTextAttr(comptime StreamType: type, stream: *const StreamType, elem_id: u64, name: []const u8) bool {
     var attrs = customAttrRefs(StreamType, stream);
     while (attrs.next()) |attr| {
@@ -2759,6 +3010,7 @@ pub fn streamHasCustomTextAttr(comptime StreamType: type, stream: *const StreamT
     return false;
 }
 
+/// Provides the `streamHasBoolField` operation.
 pub fn streamHasBoolField(comptime StreamType: type, stream: *const StreamType, elem_id: u64, field: BoolField) bool {
     const descriptor_index = stream.elemDescriptorIndex(elem_id) orelse return false;
     if (descriptor_index.static_bool_attrs.get(field)) |attr_index| {
@@ -2776,6 +3028,7 @@ pub fn streamHasBoolField(comptime StreamType: type, stream: *const StreamType, 
     return false;
 }
 
+/// Provides the `maxRenderElemId` operation.
 pub fn maxRenderElemId(comptime StreamType: type, stream: *const StreamType) u64 {
     var max_elem_id: u64 = 0;
     for (stream.render_nodes.items) |node| {
@@ -2784,6 +3037,7 @@ pub fn maxRenderElemId(comptime StreamType: type, stream: *const StreamType) u64
     return max_elem_id;
 }
 
+/// Provides the `renderNodeTag` operation.
 pub fn renderNodeTag(comptime StreamType: type, stream: *const StreamType, node: StreamType.RenderNode) []const u8 {
     return switch (node.kind) {
         .element => (findElementDesc(StreamType, stream, node.elem_id) orelse @panic("renderNodeTag: render node has no matching descriptor")).tag,
@@ -2791,6 +3045,7 @@ pub fn renderNodeTag(comptime StreamType: type, stream: *const StreamType, node:
     };
 }
 
+/// Provides the `streamElemTag` operation.
 pub fn streamElemTag(comptime StreamType: type, stream: *const StreamType, elem_id: u64) []const u8 {
     const descriptor_index = stream.elemDescriptorIndex(elem_id) orelse @panic("elem id had no descriptor index");
     if (descriptor_index.element.get()) |index| {
@@ -2803,6 +3058,7 @@ pub fn streamElemTag(comptime StreamType: type, stream: *const StreamType, elem_
     @panic("elem id had no render descriptor");
 }
 
+/// Provides the `renderNodeParentElemId` operation.
 pub fn renderNodeParentElemId(comptime StreamType: type, stream: *const StreamType, node: StreamType.RenderNode) u64 {
     return switch (node.kind) {
         .element => (findElementDesc(StreamType, stream, node.elem_id) orelse @panic("renderNodeParentElemId: render node has no matching descriptor")).parent_elem_id,
@@ -2811,6 +3067,7 @@ pub fn renderNodeParentElemId(comptime StreamType: type, stream: *const StreamTy
     };
 }
 
+/// Provides the `streamElemParentElemId` operation.
 pub fn streamElemParentElemId(comptime StreamType: type, stream: *const StreamType, elem_id: u64) u64 {
     const descriptor_index = stream.elemDescriptorIndex(elem_id) orelse @panic("elem id had no descriptor index");
     if (descriptor_index.element.get()) |index| {
@@ -2834,6 +3091,7 @@ pub fn streamElemParentElemId(comptime StreamType: type, stream: *const StreamTy
     @panic("elem id had no render descriptor");
 }
 
+/// Provides the `appendStreamDirectChildren` operation.
 pub fn appendStreamDirectChildren(comptime StreamType: type, allocator: std.mem.Allocator, stream: *const StreamType, parent_elem_id: u64, children: *std.ArrayListUnmanaged(u64)) void {
     var child = stream.firstRenderChild(parent_elem_id);
     while (child) |child_id| {
@@ -2842,12 +3100,14 @@ pub fn appendStreamDirectChildren(comptime StreamType: type, allocator: std.mem.
     }
 }
 
+/// Provides the `streamDirectChildrenInto` operation.
 pub fn streamDirectChildrenInto(comptime StreamType: type, allocator: std.mem.Allocator, stream: *const StreamType, parent_elem_id: u64, children: *std.ArrayListUnmanaged(u64)) []const u64 {
     children.clearRetainingCapacity();
     appendStreamDirectChildren(StreamType, allocator, stream, parent_elem_id, children);
     return children.items;
 }
 
+/// Provides the `streamDirectChildren` operation.
 pub fn streamDirectChildren(comptime StreamType: type, allocator: std.mem.Allocator, stream: *const StreamType, parent_elem_id: u64) []u64 {
     var children: std.ArrayListUnmanaged(u64) = .empty;
     errdefer children.deinit(allocator);
@@ -2856,6 +3116,7 @@ pub fn streamDirectChildren(comptime StreamType: type, allocator: std.mem.Alloca
     return children.toOwnedSlice(allocator) catch @panic("out of memory");
 }
 
+/// Provides the `renderNodeScopeId` operation.
 pub fn renderNodeScopeId(comptime StreamType: type, stream: *const StreamType, node: StreamType.RenderNode) u64 {
     return switch (node.kind) {
         .element => (findElementDesc(StreamType, stream, node.elem_id) orelse @panic("renderNodeScopeId: render node has no matching descriptor")).scope_id,
@@ -2864,6 +3125,7 @@ pub fn renderNodeScopeId(comptime StreamType: type, stream: *const StreamType, n
     };
 }
 
+/// Provides the `elemScopeId` operation.
 pub fn elemScopeId(comptime StreamType: type, stream: *const StreamType, elem_id: u64) ?u64 {
     const descriptor_index = stream.elemDescriptorIndex(elem_id) orelse return null;
     if (descriptor_index.element.get()) |index| {
@@ -2887,6 +3149,7 @@ pub fn elemScopeId(comptime StreamType: type, stream: *const StreamType, elem_id
     return null;
 }
 
+/// Provides the `adjustedRenderInsertIndex` operation.
 pub fn adjustedRenderInsertIndex(old_index: usize, replace_index: usize, removed_count: usize, replacement_count: usize) usize {
     if (removed_count == 0) {
         if (old_index < replace_index) return old_index;
@@ -2995,6 +3258,7 @@ fn ensureTestElemDescriptorIndex(stream: *TestStream, allocator: std.mem.Allocat
 const TestMetrics = struct {
     render_indexes_refreshed: u64 = 0,
 
+    /// Provides the `bump` operation.
     pub fn bump(self: *TestMetrics, comptime field: anytype, count: u64) void {
         switch (field) {
             .render_indexes_refreshed => self.render_indexes_refreshed += count,
@@ -3087,7 +3351,9 @@ test "prepared signal attr reservation leaves logical stream empty" {
 test "prepared signal attr publication is allocation free" {
     const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
     const TestCtx = struct {
+        /// Provides the `pushHostValueCapabilities` operation.
         pub fn pushHostValueCapabilities(_: *@This(), _: []const retained.HostValueCapability) void {}
+        /// Provides the `popHostValueCapabilities` operation.
         pub fn popHostValueCapabilities(_: *@This()) void {}
     };
 
@@ -3131,7 +3397,9 @@ test "prepared signal attr publication is allocation free" {
 test "prepared signal record tree publication is allocation free" {
     const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
     const TestCtx = struct {
+        /// Provides the `pushHostValueCapabilities` operation.
         pub fn pushHostValueCapabilities(_: *@This(), _: []const retained.HostValueCapability) void {}
+        /// Provides the `popHostValueCapabilities` operation.
         pub fn popHostValueCapabilities(_: *@This()) void {}
     };
 
@@ -3214,7 +3482,9 @@ test "fixed event descriptors preserve Roc supplied payload descriptors" {
 test "prepared named event indexes publish allocation free for existing and new elements" {
     const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
     const TestCtx = struct {
+        /// Provides the `pushHostValueCapabilities` operation.
         pub fn pushHostValueCapabilities(_: *@This(), _: []const retained.HostValueCapability) void {}
+        /// Provides the `popHostValueCapabilities` operation.
         pub fn popHostValueCapabilities(_: *@This()) void {}
     };
 
@@ -3281,7 +3551,9 @@ test "prepared named event indexes publish allocation free for existing and new 
 test "prepared state site publication is allocation free" {
     const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
     const TestCtx = struct {
+        /// Provides the `pushHostValueCapabilities` operation.
         pub fn pushHostValueCapabilities(_: *@This(), _: []const retained.HostValueCapability) void {}
+        /// Provides the `popHostValueCapabilities` operation.
         pub fn popHostValueCapabilities(_: *@This()) void {}
     };
     const Callable = struct {
@@ -3317,7 +3589,9 @@ test "prepared state site publication is allocation free" {
 test "prepared when publication is allocation free" {
     const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
     const TestCtx = struct {
+        /// Provides the `pushHostValueCapabilities` operation.
         pub fn pushHostValueCapabilities(_: *@This(), _: []const retained.HostValueCapability) void {}
+        /// Provides the `popHostValueCapabilities` operation.
         pub fn popHostValueCapabilities(_: *@This()) void {}
     };
     var fault = FaultAllocator.init(std.testing.allocator);

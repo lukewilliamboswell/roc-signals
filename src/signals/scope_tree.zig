@@ -13,6 +13,7 @@ pub const Branch = enum(u8) {
     false_branch,
     true_branch,
 
+    /// Provides the `opposite` operation.
     pub fn opposite(self: Branch) Branch {
         return switch (self) {
             .false_branch => .true_branch,
@@ -30,6 +31,7 @@ pub const WhenBranchStep = struct {
     branch: Branch,
 };
 
+/// Provides the `Step` operation.
 pub fn Step(comptime Row: type) type {
     return union(enum) {
         root,
@@ -39,6 +41,7 @@ pub fn Step(comptime Row: type) type {
     };
 }
 
+/// Provides the `Scope` operation.
 pub fn Scope(comptime Row: type) type {
     return struct {
         scope_id: u64,
@@ -54,6 +57,7 @@ pub const InternResult = struct {
     created: bool,
 };
 
+/// Provides the `validate` operation.
 pub fn validate(comptime Row: type, scopes: []const Scope(Row), scope_id: u64) Error!void {
     if (scope_id >= scopes.len) return Error.UnknownScope;
     const scope = scopes[@intCast(scope_id)];
@@ -61,6 +65,7 @@ pub fn validate(comptime Row: type, scopes: []const Scope(Row), scope_id: u64) E
     if (!scope.active) return Error.InactiveScope;
 }
 
+/// Provides the `internRoot` operation.
 pub fn internRoot(comptime Row: type, allocator: std.mem.Allocator, scopes: *std.ArrayListUnmanaged(Scope(Row))) Error!InternResult {
     if (scopes.items.len == 0) {
         scopes.append(allocator, .{
@@ -79,6 +84,7 @@ pub fn internRoot(comptime Row: type, allocator: std.mem.Allocator, scopes: *std
     return .{ .scope_id = 0, .created = false };
 }
 
+/// Provides the `internComponent` operation.
 pub fn internComponent(comptime Row: type, allocator: std.mem.Allocator, scopes: *std.ArrayListUnmanaged(Scope(Row)), parent_scope_id: u64, site_ordinal: u64, reuse_barrier: u64) Error!InternResult {
     try validate(Row, scopes.items, parent_scope_id);
 
@@ -114,6 +120,7 @@ pub fn internComponent(comptime Row: type, allocator: std.mem.Allocator, scopes:
     return .{ .scope_id = scope_id, .created = true };
 }
 
+/// Provides the `internWhenBranch` operation.
 pub fn internWhenBranch(comptime Row: type, allocator: std.mem.Allocator, scopes: *std.ArrayListUnmanaged(Scope(Row)), parent_scope_id: u64, site_ordinal: u64, branch: Branch, reuse_barrier: u64) Error!InternResult {
     try validate(Row, scopes.items, parent_scope_id);
 
@@ -149,6 +156,7 @@ pub fn internWhenBranch(comptime Row: type, allocator: std.mem.Allocator, scopes
     return .{ .scope_id = scope_id, .created = true };
 }
 
+/// Provides the `appendEachRow` operation.
 pub fn appendEachRow(comptime Row: type, allocator: std.mem.Allocator, scopes: *std.ArrayListUnmanaged(Scope(Row)), parent_scope_id: u64, row: Row, reuse_barrier: u64) Error!InternResult {
     try validate(Row, scopes.items, parent_scope_id);
 
@@ -164,6 +172,7 @@ pub fn appendEachRow(comptime Row: type, allocator: std.mem.Allocator, scopes: *
     return appendFreshEachRow(Row, allocator, scopes, parent_scope_id, row);
 }
 
+/// Provides the `appendFreshEachRow` operation.
 pub fn appendFreshEachRow(comptime Row: type, allocator: std.mem.Allocator, scopes: *std.ArrayListUnmanaged(Scope(Row)), parent_scope_id: u64, row: Row) Error!InternResult {
     try validate(Row, scopes.items, parent_scope_id);
     const scope_id: u64 = @intCast(scopes.items.len);
@@ -176,6 +185,7 @@ pub fn appendFreshEachRow(comptime Row: type, allocator: std.mem.Allocator, scop
     return .{ .scope_id = scope_id, .created = true };
 }
 
+/// Provides the `activeWhenBranch` operation.
 pub fn activeWhenBranch(comptime Row: type, scopes: []const Scope(Row), parent_scope_id: u64, site_ordinal: u64, branch: Branch) Error!?u64 {
     try validate(Row, scopes, parent_scope_id);
 
@@ -192,6 +202,7 @@ pub fn activeWhenBranch(comptime Row: type, scopes: []const Scope(Row), parent_s
     return null;
 }
 
+/// Provides the `activeEachRows` operation.
 pub fn activeEachRows(comptime Row: type, allocator: std.mem.Allocator, scopes: []const Scope(Row), parent_scope_id: u64, site_ordinal: u64) Error![]u64 {
     var ids: std.ArrayListUnmanaged(u64) = .empty;
     errdefer ids.deinit(allocator);
@@ -212,6 +223,7 @@ pub fn activeEachRows(comptime Row: type, allocator: std.mem.Allocator, scopes: 
     return ids.toOwnedSlice(allocator) catch return Error.OutOfMemory;
 }
 
+/// Provides the `eachSiteRowAncestor` operation.
 pub fn eachSiteRowAncestor(comptime Row: type, scopes: []const Scope(Row), scope_id: u64, parent_scope_id: u64, site_ordinal: u64) Error!?u64 {
     var current: ?u64 = scope_id;
     while (current) |id| {
@@ -228,6 +240,7 @@ pub fn eachSiteRowAncestor(comptime Row: type, scopes: []const Scope(Row), scope
     return null;
 }
 
+/// Provides the `descendantOrSelf` operation.
 pub fn descendantOrSelf(comptime Row: type, scopes: []const Scope(Row), scope_id: u64, root_scope_id: u64) Error!bool {
     var current: ?u64 = scope_id;
     while (current) |id| {
@@ -238,6 +251,7 @@ pub fn descendantOrSelf(comptime Row: type, scopes: []const Scope(Row), scope_id
     return false;
 }
 
+/// Provides the `eachSiteRowDescendantOrSelf` operation.
 pub fn eachSiteRowDescendantOrSelf(comptime Row: type, scopes: []const Scope(Row), scope_id: u64, parent_scope_id: u64, site_ordinal: u64) Error!bool {
     return (try eachSiteRowAncestor(Row, scopes, scope_id, parent_scope_id, site_ordinal)) != null;
 }

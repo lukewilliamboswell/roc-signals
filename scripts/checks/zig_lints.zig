@@ -13,6 +13,7 @@ const TermColor = struct {
     const reset = "\x1b[0m";
 };
 
+/// Runs every repository-wide Zig source lint.
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     var gpa_impl = std.heap.DebugAllocator(.{}){};
@@ -32,10 +33,12 @@ pub fn main(init: std.process.Init) !void {
 
     var found_errors = false;
     for (zig_files.items) |file_path| {
-        const errors = try checkSeparatorComments(gpa, io, file_path);
-        defer gpa.free(errors);
-        if (errors.len != 0) {
-            try stdout.print("{s}", .{errors});
+        const separator_errors = try checkSeparatorComments(gpa, io, file_path);
+        defer gpa.free(separator_errors);
+        const doc_errors = try checkPublicFunctionDocs(gpa, io, file_path);
+        defer gpa.free(doc_errors);
+        if (separator_errors.len != 0 or doc_errors.len != 0) {
+            try stdout.print("{s}{s}", .{ separator_errors, doc_errors });
             found_errors = true;
         }
     }
@@ -48,6 +51,45 @@ pub fn main(init: std.process.Init) !void {
 
     try stdout.print("{s}[OK]{s} All Zig lints passed\n", .{ TermColor.green, TermColor.reset });
     try stdout.flush();
+}
+
+fn checkPublicFunctionDocs(allocator: Allocator, io: std.Io, file_path: []const u8) ![]u8 {
+    if (std.mem.endsWith(u8, file_path, "src/signals/roc_platform_abi.zig")) {
+        return try allocator.dupe(u8, "");
+    }
+
+    const source = try readSourceFile(allocator, io, file_path);
+    defer allocator.free(source);
+    return checkPublicFunctionDocsInSource(allocator, file_path, source);
+}
+
+fn checkPublicFunctionDocsInSource(allocator: Allocator, file_path: []const u8, source: []const u8) ![]u8 {
+    var errors: std.ArrayList(u8) = .empty;
+    errdefer errors.deinit(allocator);
+
+    var previous_line: []const u8 = "";
+    var line_num: usize = 1;
+    var lines = std.mem.splitScalar(u8, source, '\n');
+    while (lines.next()) |line| {
+        defer line_num += 1;
+        const trimmed = std.mem.trimStart(u8, line, " \t");
+        if (std.mem.startsWith(u8, trimmed, "pub fn ") and !isDocComment(previous_line)) {
+            const msg = try std.fmt.allocPrint(
+                allocator,
+                "{s}:{d}: public function must have a /// doc comment\n",
+                .{ file_path, line_num },
+            );
+            defer allocator.free(msg);
+            try errors.appendSlice(allocator, msg);
+        }
+        previous_line = line;
+    }
+
+    return errors.toOwnedSlice(allocator);
+}
+
+fn isDocComment(line: []const u8) bool {
+    return std.mem.startsWith(u8, std.mem.trimStart(u8, line, " \t"), "///");
 }
 
 fn walkTree(allocator: Allocator, io: std.Io, dir_path: []const u8, zig_files: *PathList) !void {
@@ -144,4 +186,41 @@ fn readSourceFile(allocator: Allocator, io: std.Io, path: []const u8) ![:0]u8 {
 fn freePathList(paths: *PathList, allocator: Allocator) void {
     for (paths.items) |path| allocator.free(path);
     paths.deinit(allocator);
+}
+
+test "public functions require an immediately preceding doc comment" {
+    const allocator = std.testing.allocator;
+    const errors = try checkPublicFunctionDocsInSource(
+        allocator,
+        "fixture.zig",
+        "pub fn undocumented() void {}\n" ++
+            "/// Explains the function.\n" ++
+            "pub fn documented() void {}\n",
+    );
+    defer allocator.free(errors);
+
+    try std.testing.expectEqualStrings(
+        "fixture.zig:1: public function must have a /// doc comment\n",
+        errors,
+    );
+}
+
+test "ordinary comments and separated doc comments do not document a public function" {
+    const allocator = std.testing.allocator;
+    const errors = try checkPublicFunctionDocsInSource(
+        allocator,
+        "fixture.zig",
+        "// Not a doc comment.\n" ++
+            "pub fn ordinary() void {}\n" ++
+            "/// Too far away.\n" ++
+            "\n" ++
+            "    pub fn separated() void {}\n",
+    );
+    defer allocator.free(errors);
+
+    try std.testing.expectEqualStrings(
+        "fixture.zig:2: public function must have a /// doc comment\n" ++
+            "fixture.zig:5: public function must have a /// doc comment\n",
+        errors,
+    );
 }
