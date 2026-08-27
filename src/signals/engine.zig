@@ -2115,10 +2115,11 @@ pub fn Engine(comptime Ctx: type) type {
             signal_records: collection_plan.SignalRecordPlan(HostSignalToken, HostSignalRecord) = .{},
             signal_bindings: std.ArrayListUnmanaged(HostSignalBinding) = .empty,
             signal_roc_host: ?*abi.RocHost = null,
-            signal_capacity: usize = 0,
+            signal_token_capacity: usize = 0,
+            signal_root_capacity: usize = 0,
             committed: bool = false,
 
-            fn init(engine_ptr: *Self, host_ctx: Ctx.Handle, stream: *HostNodeDescriptorStream, limits: collection_budget.Limits, expected_nodes: usize, expected_attrs: usize) CollectionError!@This() {
+            fn init(engine_ptr: *Self, host_ctx: Ctx.Handle, stream: *HostNodeDescriptorStream, limits: collection_budget.Limits, expected_nodes: usize, expected_attrs: usize, expected_signal_records: usize) CollectionError!@This() {
                 var self = @This(){
                     .engine = engine_ptr,
                     .host_ctx = host_ctx,
@@ -2133,9 +2134,10 @@ pub fn Engine(comptime Ctx: type) type {
                 self.prepared_nodes.ensureTotalCapacity(allocator, expected_nodes) catch return error.OutOfMemory;
                 self.prepared_attrs.ensureTotalCapacity(allocator, expected_attrs) catch return error.OutOfMemory;
                 self.prepared_signal_attrs.ensureTotalCapacity(allocator, expected_attrs) catch return error.OutOfMemory;
-                self.signal_records.prepare(allocator, expected_attrs, expected_attrs) catch return error.OutOfMemory;
+                self.signal_records.prepare(allocator, expected_signal_records, expected_attrs) catch return error.OutOfMemory;
                 self.signal_bindings.ensureTotalCapacity(allocator, expected_attrs) catch return error.OutOfMemory;
-                self.signal_capacity = expected_attrs;
+                self.signal_token_capacity = expected_signal_records;
+                self.signal_root_capacity = expected_attrs;
                 self.engine.scopes.ensureUnusedCapacity(allocator, 1) catch return error.OutOfMemory;
                 self.engine.dom_identities.ensureUnusedCapacity(allocator, expected_nodes) catch return error.OutOfMemory;
                 self.engine.active_dom_identity_ids.ensureUnusedCapacity(allocator, @intCast(expected_nodes)) catch return error.OutOfMemory;
@@ -2143,6 +2145,7 @@ pub fn Engine(comptime Ctx: type) type {
                 self.stream.reservePreparedStaticNodes(allocator, expected_nodes, highest_elem_id) catch return error.OutOfMemory;
                 self.stream.reservePreparedStaticAttrs(allocator, expected_attrs) catch return error.OutOfMemory;
                 self.stream.reservePreparedSignalAttrs(allocator, expected_attrs, highest_elem_id) catch return error.OutOfMemory;
+                self.stream.reservePreparedSignalRecordPublication(allocator, expected_signal_records) catch return error.OutOfMemory;
                 if (!self.stream.canStageLinearCustomAttrs(expected_attrs)) return error.ResourceLimit;
                 return self;
             }
@@ -2293,7 +2296,7 @@ pub fn Engine(comptime Ctx: type) type {
                     const record = self.collection.signal_records.lookup(token, persistent) orelse return null;
                     validateExistingSignalRecord(record, expected_tag);
                     if (!self.collection.signal_records.by_token.contains(token)) {
-                        if (self.collection.signal_records.token_intents.items.len >= self.collection.signal_capacity) return error.OutOfMemory;
+                        if (self.collection.signal_records.token_intents.items.len >= self.collection.signal_token_capacity) return error.OutOfMemory;
                         self.collection.signal_records.rememberTokenAssumeCapacity(token, record);
                     }
                     return record.retain();
@@ -2312,13 +2315,13 @@ pub fn Engine(comptime Ctx: type) type {
                 fn remember(self: @This(), record: *HostSignalRecord) error{OutOfMemory}!void {
                     const token = record.token() orelse return;
                     if (self.collection.signal_records.by_token.contains(token)) return;
-                    if (self.collection.signal_records.token_intents.items.len >= self.collection.signal_capacity) return error.OutOfMemory;
+                    if (self.collection.signal_records.token_intents.items.len >= self.collection.signal_token_capacity) return error.OutOfMemory;
                     self.collection.signal_records.rememberTokenAssumeCapacity(token, record);
                 }
             };
 
             fn bindSignalRoot(self: *@This(), roc_host: *abi.RocHost, expr: abi.NodeSignalExpr, binder_stack: []const HostBinderBinding) CollectionError!HostSignalBinding {
-                if (self.signal_records.descriptor_roots.items.len >= self.signal_capacity) return error.OutOfMemory;
+                if (self.signal_records.descriptor_roots.items.len >= self.signal_root_capacity) return error.OutOfMemory;
                 self.signal_roc_host = roc_host;
                 const binding = StagedSignalRecordCtx{ .collection = self, .allocator = Ctx.allocator(self.host_ctx) };
                 const record = self.engine.bindSignalExprViewWith(StagedSignalRecordCtx, binding, abi_view.SignalExpr.fromAbi(expr), binder_stack) catch return error.OutOfMemory;
@@ -2576,7 +2579,7 @@ pub fn Engine(comptime Ctx: type) type {
         /// collector until their ownership operations are staged as well.
         pub fn collectStaticRootDescriptorsTransactional(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, root: abi.Elem, limits: collection_budget.Limits) CollectionError!void {
             const expected = try countStaticRootNodes(root);
-            var collection = try StagedCollectionCtx.init(self, ctx, stream, limits, expected.nodes, expected.attrs);
+            var collection = try StagedCollectionCtx.init(self, ctx, stream, limits, expected.nodes, expected.attrs, expected.signal_records);
             defer collection.deinit();
             try self.collectActiveElemRootDescriptorsWith(*StagedCollectionCtx, &collection, ctx, roc_host, stream, root, &.{});
             collection.commit();
@@ -6766,6 +6769,23 @@ test "static root counts nested signal attribute records" {
     try std.testing.expectEqual(@as(usize, 1), count.nodes);
     try std.testing.expectEqual(@as(usize, 1), count.attrs);
     try std.testing.expectEqual(@as(usize, 5), count.signal_records);
+}
+
+test "staged collection preflights signal records separately from descriptor roots" {
+    var ctx = VerifyCtxHost{ .allocator = std.testing.allocator };
+    var engine = Engine(VerifyCtx).init();
+    defer deinitVerifyStaticEngine(&engine, &ctx);
+    var stream: HostNodeDescriptorStream = .{};
+    var roc_host: abi.RocHost = undefined;
+    defer stream.deinit(std.testing.allocator, &ctx, &roc_host, &engine.pending_roc_metrics);
+
+    var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&engine, &ctx, &stream, .{}, 1, 2, 5);
+    defer collection.deinit();
+    try std.testing.expectEqual(@as(usize, 5), collection.signal_token_capacity);
+    try std.testing.expectEqual(@as(usize, 2), collection.signal_root_capacity);
+    try std.testing.expect(collection.signal_records.token_intents.capacity >= 5);
+    try std.testing.expect(collection.signal_records.descriptor_roots.capacity >= 2);
+    try std.testing.expect(collection.signal_bindings.capacity >= 2);
 }
 
 test "transactional static engine root sweeps every allocation and retries cleanly" {
