@@ -3276,6 +3276,7 @@ pub fn Engine(comptime Ctx: type) type {
                 var dom_ordinal: u64 = 0;
                 try engine_ptr.collectActiveElemDescriptorsWith(*StagedCollectionCtx, &plan.collection, ctx, roc_host, &plan.replacement_stream, selected_elem, branch_scope.scope_id, site.parent_elem_id, &ordinal, &dom_ordinal, &binder_stack, true, dirty_source_node_ids);
                 plan.collection.materializeStream();
+                engine_ptr.active_stream.reserveMovedStreamPublication(allocator, &plan.replacement_stream) catch return error.OutOfMemory;
 
                 plan.target_scopes = allocator.alloc(bool, engine_ptr.scopes.items.len) catch return error.OutOfMemory;
                 errdefer allocator.free(plan.target_scopes);

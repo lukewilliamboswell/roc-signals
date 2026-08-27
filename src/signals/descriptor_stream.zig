@@ -597,6 +597,56 @@ pub const Stream = struct {
     descriptor_indexes_by_node_id: std.ArrayListUnmanaged(NodeDescriptorIndex) = .empty,
     next_elem_id: u64 = 1,
 
+    /// Reserves every outer destination touched when moving a materialized
+    /// replacement stream into this stream. Logical lengths remain unchanged.
+    pub fn reserveMovedStreamPublication(self: *Stream, allocator: std.mem.Allocator, replacement: *const Stream) std.mem.Allocator.Error!void {
+        try self.render_nodes.ensureUnusedCapacity(allocator, replacement.render_nodes.items.len);
+        try self.elements.ensureUnusedCapacity(allocator, replacement.elements.items.len);
+        try self.text_nodes.ensureUnusedCapacity(allocator, replacement.text_nodes.items.len);
+        try self.signal_text_nodes.ensureUnusedCapacity(allocator, replacement.signal_text_nodes.items.len);
+        try self.static_text_attrs.ensureUnusedCapacity(allocator, replacement.static_text_attrs.items.len);
+        try self.signal_text_attrs.ensureUnusedCapacity(allocator, replacement.signal_text_attrs.items.len);
+        try self.static_custom_text_attrs.ensureUnusedCapacity(allocator, replacement.static_custom_text_attrs.items.len);
+        try self.signal_custom_text_attrs.ensureUnusedCapacity(allocator, replacement.signal_custom_text_attrs.items.len);
+        try self.signal_optional_custom_text_attrs.ensureUnusedCapacity(allocator, replacement.signal_optional_custom_text_attrs.items.len);
+        try self.static_custom_bool_attrs.ensureUnusedCapacity(allocator, replacement.static_custom_bool_attrs.items.len);
+        try self.signal_custom_bool_attrs.ensureUnusedCapacity(allocator, replacement.signal_custom_bool_attrs.items.len);
+        try self.static_bool_attrs.ensureUnusedCapacity(allocator, replacement.static_bool_attrs.items.len);
+        try self.signal_bool_attrs.ensureUnusedCapacity(allocator, replacement.signal_bool_attrs.items.len);
+        try self.on_changes.ensureUnusedCapacity(allocator, replacement.on_changes.items.len);
+        try self.mounts.ensureUnusedCapacity(allocator, replacement.mounts.items.len);
+        try self.cleanups.ensureUnusedCapacity(allocator, replacement.cleanups.items.len);
+        try self.events.ensureUnusedCapacity(allocator, replacement.events.items.len);
+        try self.scope_sites.ensureUnusedCapacity(allocator, replacement.scope_sites.items.len);
+        try self.states.ensureUnusedCapacity(allocator, replacement.states.items.len);
+        try self.whens.ensureUnusedCapacity(allocator, replacement.whens.items.len);
+        try self.eaches.ensureUnusedCapacity(allocator, replacement.eaches.items.len);
+        try self.signal_records_by_token.ensureUnusedCapacity(allocator, @intCast(replacement.signal_records_by_token.count()));
+        try self.signal_record_descriptor_uses_by_token.ensureUnusedCapacity(allocator, @intCast(replacement.signal_record_descriptor_uses_by_token.count()));
+        var custom_attrs = std.math.add(usize, replacement.static_custom_text_attrs.items.len, replacement.signal_custom_text_attrs.items.len) catch return error.OutOfMemory;
+        custom_attrs = std.math.add(usize, custom_attrs, replacement.signal_optional_custom_text_attrs.items.len) catch return error.OutOfMemory;
+        custom_attrs = std.math.add(usize, custom_attrs, replacement.static_custom_bool_attrs.items.len) catch return error.OutOfMemory;
+        custom_attrs = std.math.add(usize, custom_attrs, replacement.signal_custom_bool_attrs.items.len) catch return error.OutOfMemory;
+        try self.custom_attr_keys.ensureUnusedCapacity(allocator, @intCast(custom_attrs));
+        try self.render_metadata_by_elem_id.ensureUnusedCapacity(allocator, @intCast(replacement.render_metadata_by_elem_id.count()));
+
+        var highest_elem_id: usize = 0;
+        for (replacement.render_nodes.items) |node| highest_elem_id = @max(highest_elem_id, std.math.cast(usize, node.elem_id) orelse return error.OutOfMemory);
+        const elem_index_len = std.math.add(usize, highest_elem_id, 1) catch return error.OutOfMemory;
+        try self.descriptor_indexes_by_elem_id.ensureTotalCapacity(allocator, elem_index_len);
+        try self.named_event_indices_by_elem_id.ensureTotalCapacity(allocator, elem_index_len);
+
+        var highest_node_id: usize = 0;
+        for (replacement.scope_sites.items) |site| highest_node_id = @max(highest_node_id, std.math.cast(usize, site.node_id) orelse return error.OutOfMemory);
+        const node_index_len = if (replacement.scope_sites.items.len == 0) self.descriptor_indexes_by_node_id.items.len else std.math.add(usize, highest_node_id, 1) catch return error.OutOfMemory;
+        try self.descriptor_indexes_by_node_id.ensureTotalCapacity(allocator, node_index_len);
+
+        for (replacement.named_event_indices_by_elem_id.items, 0..) |replacement_indexes, elem_id| {
+            if (replacement_indexes.items.len == 0 or elem_id >= self.named_event_indices_by_elem_id.items.len) continue;
+            try self.named_event_indices_by_elem_id.items[elem_id].ensureUnusedCapacity(allocator, replacement_indexes.items.len);
+        }
+    }
+
     /// Ensures elem descriptor index capacity or state before publication can begin.
     pub fn ensureElemDescriptorIndex(self: *Stream, allocator: std.mem.Allocator, elem_id: u64) *ElemDescriptorIndex {
         return ensureElemDescriptorIndexImpl(Stream, self, allocator, elem_id);
