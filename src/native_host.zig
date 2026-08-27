@@ -4824,6 +4824,59 @@ test "signals host interval sources tick by period and runtime token" {
     try std.testing.expectEqualStrings("3", host.dom_elements.items[1].text.?);
 }
 
+test "signals host prepared interval transaction sweeps host OOM and retries" {
+    const Runner = struct {
+        fn run(fail_at: ?usize) !usize {
+            test_erased_callable_drop_count = 0;
+            var host = HostEnv.init();
+            var roc_host = makeSignalsRocHost(&host);
+            host.engine.roc_host = &roc_host;
+            defer {
+                host.configureAllocationFailure(null);
+                host.deinit();
+                _ = host.gpa.deinit();
+            }
+            const interval = testNodeIntervalSourceExpr(&roc_host, 100, 1);
+            const root = testNodeI64TextSignal(&roc_host, interval);
+            defer root.decref(&roc_host);
+            var stream: HostNodeDescriptorStream = .{};
+            host.collectActiveElemRootDescriptors(&roc_host, &stream, root, &.{});
+            _ = applyNodeDescriptorStream(&host, &roc_host, &stream);
+            host.engine.active_stream = stream;
+            const record = host.engine.activeIntervalRecordByPeriod(100).?;
+            const next = testHostValueI64(2);
+
+            host.configureAllocationFailure(fail_at);
+            const result = host.engine.tryDispatchEffectSourceValue(&host, &roc_host, record, next);
+            const attempts = host.allocation_fault.?.attempts;
+            if (result) |counts| {
+                try std.testing.expect(fail_at == null);
+                try std.testing.expectEqual(@as(u64, 1), counts.set_text);
+                try std.testing.expectEqualStrings("2", host.dom_elements.items[1].text.?);
+                return attempts;
+            } else |err| {
+                try std.testing.expectEqual(error.OutOfMemory, err);
+                try std.testing.expectEqualStrings("1", host.dom_elements.items[1].text.?);
+                try std.testing.expectEqual(@as(i64, 1), testReadHostValueI64(&roc_host, record.requireIntervalSource().cached_value.present.value));
+                host.configureAllocationFailure(null);
+                const retry_next = testHostValueI64(2);
+                const retry = try host.engine.tryDispatchEffectSourceValue(&host, &roc_host, record, retry_next);
+                try std.testing.expectEqual(@as(u64, 1), retry.set_text);
+                try std.testing.expectEqualStrings("2", host.dom_elements.items[1].text.?);
+                return attempts;
+            }
+        }
+    };
+
+    const attempts = try Runner.run(null);
+    var induced: usize = 0;
+    for (1..attempts + 1) |fail_at| {
+        _ = try Runner.run(fail_at);
+        induced += 1;
+    }
+    try std.testing.expectEqual(attempts, induced);
+}
+
 test "signals host browser environment sources and commands update native state" {
     test_erased_callable_drop_count = 0;
 

@@ -7587,6 +7587,7 @@ pub fn Engine(comptime Ctx: type) type {
                 if (index < self.active_text_signal_routes.items.len) text_count = std.math.add(usize, text_count, self.active_text_signal_routes.items[index].items.len) catch return error.ResourceLimit;
                 if (index < self.active_bool_signal_routes.items.len) bool_count = std.math.add(usize, bool_count, self.active_bool_signal_routes.items[index].items.len) catch return error.ResourceLimit;
                 if (index < self.active_change_signal_routes.items.len and self.active_change_signal_routes.items[index].items.len != 0) return error.ResourceLimit;
+                if (index < self.active_structural_signal_routes.items.len and self.active_structural_signal_routes.items[index].items.len != 0) return error.ResourceLimit;
             }
             const wire_count = std.math.add(usize, text_count, bool_count) catch return error.ResourceLimit;
             var splice = render_cache_mod.PreparedRenderSplice(Ctx).init(Ctx.allocator(ctx), &self.render_cache, .{
@@ -9855,26 +9856,124 @@ pub fn Engine(comptime Ctx: type) type {
 
         /// Dispatches effect source value through validated routing and dependency-ordered propagation.
         pub fn dispatchEffectSourceValue(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, record: *HostSignalRecord, value: HostValue) render.Counts {
-            debugPhase(ctx, .dispatch_effect_source);
-            if (!self.updateEffectSourceCache(ctx, roc_host, record, value)) return .{};
+            return self.tryDispatchEffectSourceValue(ctx, roc_host, record, value) catch @panic("failed to prepare atomic effect-source transaction");
+        }
 
-            self.recordDispatch();
+        /// Runs the same effect-source transaction as production while exposing
+        /// recoverable host-preparation failure to deterministic fault tests.
+        pub fn tryDispatchEffectSourceValue(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, record: *HostSignalRecord, value: HostValue) CollectionError!render.Counts {
+            const transaction = try PreparedSourceTransaction.prepare(self, ctx, roc_host, record, value) orelse {
+                self.recordSignalPrune();
+                return .{};
+            };
+            defer transaction.deinit();
             var metrics = self.pending_roc_metrics;
             metrics.bump(.dirty_source_roots, 1);
             self.pending_roc_metrics = metrics;
-            const dirty_generation = self.nextDirtySignalGeneration();
-            record.last_dirty_generation = dirty_generation;
-            record.last_dirty_changed = true;
-
-            const record_id = self.requireActiveSignalRecordId(record);
-            const roots = [_]u64{record_id};
-            const dirty_record_ids = self.scratchDirtyActiveSignalRecordIdsForRoots(ctx, &roots);
-
-            debugPhase(ctx, .dispatch_effect_propagate);
-            const changed_record_ids = self.propagateDirtyActiveSignalRecordIds(ctx, roc_host, dirty_record_ids, &.{}, dirty_generation);
-            debugPhase(ctx, .dispatch_effect_apply);
-            return self.applyDirtySignalBatch(ctx, roc_host, &.{}, changed_record_ids, dirty_generation);
+            return transaction.commit();
         }
+
+        const PreparedSourceTransaction = struct {
+            const HostRenderPublication = if (@hasDecl(Ctx, "RenderPublication")) Ctx.RenderPublication else void;
+            engine: *Self,
+            host_ctx: Ctx.Handle,
+            roc_host: *abi.RocHost,
+            generation: u64,
+            caches: signal_records.PreparedCacheUpdates,
+            changed_record_ids: []u64,
+            render_splice: render_cache_mod.PreparedRenderSplice(Ctx),
+            fallback_batch: render.TransactionalBatch = .{},
+            batch_target: *render.TransactionalBatch,
+            batch_preflighted: bool = false,
+            batch_published: bool = false,
+            host_publication: ?HostRenderPublication = null,
+            host_published: bool = false,
+
+            fn prepare(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, record: *HostSignalRecord, incoming: HostValue) CollectionError!?*@This() {
+                const allocator = Ctx.allocator(ctx);
+                const source = record.effectSource() orelse return error.ResourceLimit;
+                const cap = source.capability();
+                var incoming_owned = true;
+                errdefer if (incoming_owned) callHostValueToUnitWithCapability(ctx, roc_host, cap, hv.hostValueCapabilityDrop(cap), incoming);
+                const live_slot = source.cachedSlot();
+                if (live_slot.* == .present and live_slot.present.valueEquals(ctx, roc_host, incoming)) {
+                    live_slot.present.dropIncoming(ctx, roc_host, incoming);
+                    incoming_owned = false;
+                    return null;
+                }
+                const generation = std.math.add(u64, engine.dirty_signal_generation, 1) catch return error.ResourceLimit;
+                var expected = engine.active_signal_graph.items.len;
+                for (engine.active_text_signal_routes.items) |routes| expected = std.math.add(usize, expected, routes.items.len) catch return error.ResourceLimit;
+                for (engine.active_bool_signal_routes.items) |routes| expected = std.math.add(usize, expected, routes.items.len) catch return error.ResourceLimit;
+                const plan = allocator.create(@This()) catch return error.OutOfMemory;
+                errdefer allocator.destroy(plan);
+                var caches = signal_records.PreparedCacheUpdates.init(allocator, expected) catch return error.OutOfMemory;
+                errdefer caches.deinit(ctx, roc_host, &engine.pending_roc_metrics);
+                caches.stageAssumeCapacity(live_slot, incoming, cap, &engine.pending_roc_metrics);
+                incoming_owned = false;
+                caches.rememberResultAssumeCapacity(@ptrCast(record), generation, true);
+                engine.scratch.dirty_active_records.reserveForGraph(HostSignalRecord, allocator, engine.active_signal_graph.items) catch return error.OutOfMemory;
+                const record_id = engine.requireActiveSignalRecordId(record);
+                const dirty_ids = engine.scratchDirtyActiveSignalRecordIdsForRoots(ctx, &.{record_id});
+                const changed = try engine.prepareChangedActiveSignalRecordIds(ctx, roc_host, &caches, dirty_ids, &.{}, generation);
+                errdefer allocator.free(changed);
+                var splice = try engine.prepareNonStructuralRenderSplice(ctx, roc_host, &caches, changed, &.{}, generation);
+                errdefer splice.deinit();
+                plan.* = .{
+                    .engine = engine,
+                    .host_ctx = ctx,
+                    .roc_host = roc_host,
+                    .generation = generation,
+                    .caches = caches,
+                    .changed_record_ids = changed,
+                    .render_splice = splice,
+                    .batch_target = undefined,
+                };
+                plan.batch_target = if (comptime @hasDecl(Ctx, "renderCommandBatch")) Ctx.renderCommandBatch(ctx) else &plan.fallback_batch;
+                errdefer plan.fallback_batch.deinit(allocator);
+                plan.render_splice.wire.preflight(plan.batch_target, allocator) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.ResourceLimit => return error.ResourceLimit,
+                };
+                plan.batch_preflighted = true;
+                errdefer plan.batch_target.abort();
+                if (comptime @hasDecl(Ctx, "prepareRenderPublication")) {
+                    plan.host_publication = Ctx.prepareRenderPublication(ctx, &plan.render_splice) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        error.ResourceLimit => return error.ResourceLimit,
+                    };
+                }
+                return plan;
+            }
+
+            fn commit(self: *@This()) render.Counts {
+                const allocator = Ctx.allocator(self.host_ctx);
+                self.render_splice.wire.stageAssumeCapacity(self.batch_target, allocator) catch @panic("prepared source batch violated preflight");
+                self.engine.commitPreparedDirtySignalCaches(&self.caches);
+                self.engine.dirty_signal_generation = self.generation;
+                self.engine.identity_reuse_barrier = self.generation;
+                self.render_splice.apply(&self.engine.render_cache);
+                self.batch_target.commit();
+                self.batch_published = true;
+                if (comptime @hasDecl(Ctx, "publishRenderPublication")) {
+                    Ctx.publishRenderPublication(self.host_ctx, &self.host_publication.?);
+                    self.host_published = true;
+                }
+                self.engine.recordDispatch();
+                return self.render_splice.wire.counts();
+            }
+
+            fn deinit(self: *@This()) void {
+                const allocator = Ctx.allocator(self.host_ctx);
+                if (self.batch_preflighted and !self.batch_published) self.batch_target.abort();
+                if (comptime @hasDecl(Ctx, "RenderPublication")) if (self.host_publication) |*publication| publication.deinit();
+                self.render_splice.deinit();
+                allocator.free(self.changed_record_ids);
+                self.caches.deinit(self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
+                self.fallback_batch.deinit(allocator);
+                allocator.destroy(self);
+            }
+        };
 
         fn locationSnapshotFromCommandPayload(payload: anytype) boundary.LocationSnapshot {
             return .{
