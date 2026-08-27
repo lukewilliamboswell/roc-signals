@@ -2351,6 +2351,32 @@ pub fn Engine(comptime Ctx: type) type {
             try self.collectActiveElemDescriptorsWith(Collection, collection, ctx, roc_host, stream, root, root_scope_id, 0, &ordinal, &dom_ordinal, binder_stack, root_scope.created, dirty_source_node_ids);
         }
 
+        fn countStaticRootNodes(elem: abi.Elem) CollectionError!usize {
+            return switch (abi_view.Elem.fromAbi(elem)) {
+                .element => |payload| blk: {
+                    if (payload.attrs.len != 0) return error.ResourceLimit;
+                    var count: usize = 1;
+                    for (payload.children) |child| {
+                        count = std.math.add(usize, count, try countStaticRootNodes(child)) catch return error.ResourceLimit;
+                    }
+                    break :blk count;
+                },
+                .text => 1,
+                else => error.ResourceLimit,
+            };
+        }
+
+        /// Transactional production seam for roots composed only of static
+        /// elements and text. Unsupported variants remain on the immediate
+        /// collector until their ownership operations are staged as well.
+        pub fn collectStaticRootDescriptorsTransactional(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, root: abi.Elem, limits: collection_budget.Limits) CollectionError!void {
+            const expected_nodes = try countStaticRootNodes(root);
+            var collection = try StagedCollectionCtx.init(self, ctx, stream, limits, expected_nodes);
+            defer collection.deinit();
+            try self.collectActiveElemRootDescriptorsWith(*StagedCollectionCtx, &collection, ctx, roc_host, stream, root, &.{});
+            collection.commit();
+        }
+
         pub fn collectActiveElemRootDescriptors(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, root: abi.Elem, dirty_source_node_ids: []const u64) void {
             const collection = ImmediateCollectionCtx{ .engine = self, .host_ctx = ctx, .stream = stream };
             self.collectActiveElemRootDescriptorsWith(ImmediateCollectionCtx, collection, ctx, roc_host, stream, root, dirty_source_node_ids) catch @panic("immediate root descriptor collection failed");
