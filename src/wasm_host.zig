@@ -23,6 +23,8 @@ const host_value_registry = signals.host_value_registry;
 const erased_calls = signals.erased_calls;
 const hv = signals.host_values;
 const engine = signals.engine;
+const debug_phase = signals.debug_phase;
+const DebugPhase = debug_phase.Phase;
 
 const HostValue = u64;
 const HostValueCapability = hv.HostValueCapabilityHandle;
@@ -92,7 +94,7 @@ const WasmCtx = struct {
         return .{};
     }
 
-    pub fn debugPhase(_: Handle, phase: u32) void {
+    pub fn debugPhase(_: Handle, phase: DebugPhase) void {
         roc_allocation_phase = phase;
     }
 
@@ -272,7 +274,7 @@ const RocAllocation = struct {
     requested_size: usize,
     allocated_size: usize,
     alignment: std.mem.Alignment,
-    phase: u32,
+    phase: DebugPhase,
 };
 
 const FreedRocAllocation = struct {
@@ -280,7 +282,7 @@ const FreedRocAllocation = struct {
     requested_size: usize,
     allocated_size: usize,
     alignment: std.mem.Alignment,
-    phase: u32,
+    phase: DebugPhase,
 };
 
 const NearestRocAllocation = struct {
@@ -295,7 +297,7 @@ var roc_allocations: std.ArrayListUnmanaged(RocAllocation) = .empty;
 var recent_freed_roc_allocations: [recent_freed_roc_allocation_capacity]FreedRocAllocation = undefined;
 var recent_freed_roc_allocation_len: usize = 0;
 var recent_freed_roc_allocation_next: usize = 0;
-var roc_allocation_phase: u32 = 0;
+var roc_allocation_phase: DebugPhase = .idle;
 var active_capabilities: hv.ActiveCapabilityStack = .{};
 var roc_host_env: u8 = 0;
 var roc_host = abi.RocHost{
@@ -979,18 +981,18 @@ fn resolveTask(request_id: u64, payload_text: []const u8, failed: bool) void {
     };
     if (record.token().? != pending.task_token) failHostWith("task result matched a pending request for a different task source");
 
-    roc_allocation_phase = 10;
+    roc_allocation_phase = .task_payload;
     const payload = hostValueStr(payload_text);
     setHostValueCapability(payload, task_payload.payload_cap);
     const payload_take_epoch = hostValueTakeEpoch();
 
-    roc_allocation_phase = 20;
+    roc_allocation_phase = .task_transform;
     const next = if (failed)
         callHostValueToHostValueWithCapability(task_payload.payload_cap, task_payload.failed, payload)
     else
         callHostValueToHostValueWithCapability(task_payload.payload_cap, task_payload.done, payload);
     assertHostValueTakenAfter(payload, payload_take_epoch);
-    roc_allocation_phase = 30;
+    roc_allocation_phase = .task_dispatch;
     _ = shared_engine.dispatchEffectSourceValue(ctx, &roc_host, record, next);
 }
 
@@ -1278,13 +1280,13 @@ fn freeRocAllocation(ptr: *anyopaque, alignment_arg: usize) RocAllocation {
             const alloc = roc_allocations.items[interior_index];
             const base = @intFromPtr(alloc.user_ptr);
             const ptr_addr = @intFromPtr(ptr);
-            failHostWithFmt("roc_dealloc received an interior pointer ptr=0x{x} align={} base=0x{x} offset={} requested_size={} allocated_size={} tracked_align={} current_phase={}", .{ ptr_addr, alignment_arg, base, ptr_addr - base, alloc.requested_size, alloc.allocated_size, alloc.alignment.toByteUnits(), roc_allocation_phase });
+            failHostWithFmt("roc_dealloc received an interior pointer ptr=0x{x} align={} base=0x{x} offset={} requested_size={} allocated_size={} tracked_align={} current_phase={}", .{ ptr_addr, alignment_arg, base, ptr_addr - base, alloc.requested_size, alloc.allocated_size, alloc.alignment.toByteUnits(), debug_phase.encode(roc_allocation_phase) });
         }
         if (findRecentlyFreedRocAllocation(ptr)) |freed| {
             if (freed.alignment != alignment) {
-                failHostWithFmt("roc_dealloc received an already freed pointer ptr=0x{x} align={} with tracked_align={} requested_size={} allocated_size={} freed_phase={} current_phase={}", .{ @intFromPtr(ptr), alignment_arg, freed.alignment.toByteUnits(), freed.requested_size, freed.allocated_size, freed.phase, roc_allocation_phase });
+                failHostWithFmt("roc_dealloc received an already freed pointer ptr=0x{x} align={} with tracked_align={} requested_size={} allocated_size={} freed_phase={} current_phase={}", .{ @intFromPtr(ptr), alignment_arg, freed.alignment.toByteUnits(), freed.requested_size, freed.allocated_size, debug_phase.encode(freed.phase), debug_phase.encode(roc_allocation_phase) });
             }
-            failHostWithFmt("roc_dealloc received a pointer that was already freed ptr=0x{x} align={} requested_size={} allocated_size={} freed_phase={} current_phase={}", .{ @intFromPtr(ptr), alignment_arg, freed.requested_size, freed.allocated_size, freed.phase, roc_allocation_phase });
+            failHostWithFmt("roc_dealloc received a pointer that was already freed ptr=0x{x} align={} requested_size={} allocated_size={} freed_phase={} current_phase={}", .{ @intFromPtr(ptr), alignment_arg, freed.requested_size, freed.allocated_size, debug_phase.encode(freed.phase), debug_phase.encode(roc_allocation_phase) });
         }
         failUnknownRocAllocation("roc_dealloc", ptr, alignment_arg);
     };
@@ -1336,7 +1338,7 @@ export fn roc_ui_debug_live_allocation_size(index: usize) callconv(.c) usize {
 
 export fn roc_ui_debug_live_allocation_phase(index: usize) callconv(.c) u32 {
     if (index >= roc_allocations.items.len) return 0;
-    return roc_allocations.items[index].phase;
+    return debug_phase.encode(roc_allocations.items[index].phase);
 }
 
 export fn roc_dealloc(ptr: *anyopaque, alignment: usize) callconv(.c) void {
@@ -1349,7 +1351,7 @@ export fn roc_realloc(ptr: *anyopaque, new_length: usize, alignment_arg: usize) 
             const alloc = roc_allocations.items[interior_index];
             const base = @intFromPtr(alloc.user_ptr);
             const ptr_addr = @intFromPtr(ptr);
-            failHostWithFmt("roc_realloc received an interior pointer ptr=0x{x} align={} base=0x{x} offset={} requested_size={} allocated_size={} tracked_align={} current_phase={}", .{ ptr_addr, alignment_arg, base, ptr_addr - base, alloc.requested_size, alloc.allocated_size, alloc.alignment.toByteUnits(), roc_allocation_phase });
+            failHostWithFmt("roc_realloc received an interior pointer ptr=0x{x} align={} base=0x{x} offset={} requested_size={} allocated_size={} tracked_align={} current_phase={}", .{ ptr_addr, alignment_arg, base, ptr_addr - base, alloc.requested_size, alloc.allocated_size, alloc.alignment.toByteUnits(), debug_phase.encode(roc_allocation_phase) });
         }
         if (findRecentlyFreedRocAllocation(ptr)) |freed| {
             const min_alignment = @max(alignment_arg, @sizeOf(usize));
@@ -1625,7 +1627,7 @@ fn rocCrashedForAbi(_: *abi.RocHost, bytes: [*]const u8, len: usize) callconv(.c
 
 export fn roc_host_value_clone(value: HostValue) callconv(.c) HostValue {
     const previous_phase = roc_allocation_phase;
-    roc_allocation_phase = 101;
+    roc_allocation_phase = .host_value_clone;
     defer roc_allocation_phase = previous_phase;
     return shared_engine.host_values.clone(allocator(), value, registryOps()) catch |err| {
         failHostValueRegistryError(err);
@@ -1634,7 +1636,7 @@ export fn roc_host_value_clone(value: HostValue) callconv(.c) HostValue {
 
 export fn roc_host_value_get_with_capability(value: HostValue, cap: HostValueCapability) callconv(.c) abi.RocBox {
     const previous_phase = roc_allocation_phase;
-    roc_allocation_phase = 108;
+    roc_allocation_phase = .host_value_get;
     defer roc_allocation_phase = previous_phase;
     defer hv.releaseHostValueCapability(cap, &roc_host);
     return shared_engine.host_values.getWithCapability(allocator(), value, cap, registryOps()) catch |err| {
@@ -1644,7 +1646,7 @@ export fn roc_host_value_get_with_capability(value: HostValue, cap: HostValueCap
 
 export fn roc_host_value_get_with_split(value: HostValue, split: abi.RocErasedCallable) callconv(.c) abi.RocBox {
     const previous_phase = roc_allocation_phase;
-    roc_allocation_phase = 103;
+    roc_allocation_phase = .host_value_get_with_split;
     defer roc_allocation_phase = previous_phase;
     defer abi.decrefErasedCallable(split, &roc_host);
     return shared_engine.host_values.getWithSplit(value, split, registryOps()) catch |err| {
@@ -1654,7 +1656,7 @@ export fn roc_host_value_get_with_split(value: HostValue, split: abi.RocErasedCa
 
 export fn roc_host_value_store_with_capability(box: abi.RocBox, cap: HostValueCapability) callconv(.c) HostValue {
     const previous_phase = roc_allocation_phase;
-    roc_allocation_phase = 109;
+    roc_allocation_phase = .host_value_store;
     defer roc_allocation_phase = previous_phase;
     return shared_engine.host_values.storeOwnedCapability(allocator(), box, cap, registryOps()) catch |err| {
         failHostValueRegistryError(err);
@@ -1663,7 +1665,7 @@ export fn roc_host_value_store_with_capability(box: abi.RocBox, cap: HostValueCa
 
 export fn roc_host_value_store_with_existing_capability(box: abi.RocBox, source_value: HostValue) callconv(.c) HostValue {
     const previous_phase = roc_allocation_phase;
-    roc_allocation_phase = 109;
+    roc_allocation_phase = .host_value_store;
     defer roc_allocation_phase = previous_phase;
     return shared_engine.host_values.storeRetainedExistingCapability(allocator(), box, source_value, registryOps()) catch |err| {
         failHostValueRegistryError(err);
@@ -1672,7 +1674,7 @@ export fn roc_host_value_store_with_existing_capability(box: abi.RocBox, source_
 
 export fn roc_host_value_take_with_capability(value: HostValue, cap: HostValueCapability) callconv(.c) abi.RocBox {
     const previous_phase = roc_allocation_phase;
-    roc_allocation_phase = 110;
+    roc_allocation_phase = .host_value_take;
     defer roc_allocation_phase = previous_phase;
     defer hv.releaseHostValueCapability(cap, &roc_host);
     return shared_engine.host_values.takeWithCapability(value, cap, registryOps()) catch |err| {
@@ -1682,7 +1684,7 @@ export fn roc_host_value_take_with_capability(value: HostValue, cap: HostValueCa
 
 export fn roc_host_value_take_with_split(value: HostValue, split: abi.RocErasedCallable) callconv(.c) abi.RocBox {
     const previous_phase = roc_allocation_phase;
-    roc_allocation_phase = 107;
+    roc_allocation_phase = .host_value_take_with_split;
     defer roc_allocation_phase = previous_phase;
     defer abi.decrefErasedCallable(split, &roc_host);
     return shared_engine.host_values.takeWithSplit(value, split, registryOps()) catch |err| {

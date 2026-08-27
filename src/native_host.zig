@@ -17,6 +17,7 @@ const scope_tree = signals.scope_tree;
 const erased_calls = signals.erased_calls;
 const hv = signals.host_values;
 const engine = signals.engine;
+const DebugPhase = signals.debug_phase.Phase;
 const FaultAllocator = signals.fault_allocator.FaultAllocator;
 const spec_parser = @import("spec/spec_parser.zig");
 const spec_runner = @import("spec/spec_runner.zig");
@@ -61,7 +62,7 @@ const NativeCtx = struct {
         return ctx.cloneHostValue(value);
     }
 
-    pub fn debugPhase(ctx: Handle, phase: u32) void {
+    pub fn debugPhase(ctx: Handle, phase: DebugPhase) void {
         ctx.debug_phase = phase;
     }
 
@@ -411,7 +412,7 @@ const HostEnv = struct {
     host_dealloc_count: u64 = 0,
     host_alloc_bytes: u64 = 0,
     host_dealloc_bytes: u64 = 0,
-    debug_phase: u32 = 0,
+    debug_phase: DebugPhase = .idle,
     active_capabilities: hv.ActiveCapabilityStack = .{},
     dom_elements: std.ArrayListUnmanaged(DomElement) = .empty,
     started_tasks: std.ArrayListUnmanaged(NativeTaskRecord) = .empty,
@@ -729,7 +730,7 @@ const HostEnv = struct {
     fn storeHostValueWithOwnedCapability(self: *HostEnv, box: abi.RocBox, owned_cap: HostValueCapability) HostValue {
         const allocator = self.hostAllocator();
         const previous_phase = self.debug_phase;
-        self.debug_phase = 109;
+        self.debug_phase = .host_value_store;
         defer self.debug_phase = previous_phase;
         const value = self.engine.host_values.storeOwnedCapability(allocator, box, owned_cap, self.hostValueRegistryOps()) catch |err| {
             failHostValueRegistryError(err);
@@ -750,7 +751,7 @@ const HostEnv = struct {
     fn storeHostValueWithExistingCapability(self: *HostEnv, box: abi.RocBox, source_value: HostValue) HostValue {
         const allocator = self.hostAllocator();
         const previous_phase = self.debug_phase;
-        self.debug_phase = 109;
+        self.debug_phase = .host_value_store;
         defer self.debug_phase = previous_phase;
         const value = self.engine.host_values.storeRetainedExistingCapability(allocator, box, source_value, self.hostValueRegistryOps()) catch |err| {
             failHostValueRegistryError(err);
@@ -793,7 +794,7 @@ const HostEnv = struct {
 
     fn getHostValue(self: *HostEnv, value: HostValue) abi.RocBox {
         const previous_phase = self.debug_phase;
-        self.debug_phase = 108;
+        self.debug_phase = .host_value_get;
         defer self.debug_phase = previous_phase;
         return self.engine.host_values.get(self.hostAllocator(), value, self.hostValueRegistryOps()) catch |err| {
             failHostValueRegistryError(err);
@@ -802,7 +803,7 @@ const HostEnv = struct {
 
     fn getHostValueWithCapability(self: *HostEnv, value: HostValue, owned_cap: HostValueCapability) abi.RocBox {
         const previous_phase = self.debug_phase;
-        self.debug_phase = 108;
+        self.debug_phase = .host_value_get;
         defer self.debug_phase = previous_phase;
         defer self.releaseOwnedHostValueCapability(owned_cap);
         return self.engine.host_values.getWithCapability(self.hostAllocator(), value, owned_cap, self.hostValueRegistryOps()) catch |err| {
@@ -812,7 +813,7 @@ const HostEnv = struct {
 
     fn getHostValueWithSplit(self: *HostEnv, value: HostValue, owned_split: abi.RocErasedCallable) abi.RocBox {
         const previous_phase = self.debug_phase;
-        self.debug_phase = 103;
+        self.debug_phase = .host_value_get_with_split;
         defer self.debug_phase = previous_phase;
         defer abi.decrefErasedCallable(owned_split, self.activeRocHost());
         return self.engine.host_values.getWithSplit(value, owned_split, self.hostValueRegistryOps()) catch |err| {
@@ -830,7 +831,7 @@ const HostEnv = struct {
 
     fn takeHostValueWithCapability(self: *HostEnv, value: HostValue, owned_cap: HostValueCapability) abi.RocBox {
         const previous_phase = self.debug_phase;
-        self.debug_phase = 110;
+        self.debug_phase = .host_value_take;
         defer self.debug_phase = previous_phase;
         defer self.releaseOwnedHostValueCapability(owned_cap);
         return self.engine.host_values.takeWithCapability(value, owned_cap, self.hostValueRegistryOps()) catch |err| {
@@ -840,7 +841,7 @@ const HostEnv = struct {
 
     fn takeHostValueWithSplit(self: *HostEnv, value: HostValue, owned_split: abi.RocErasedCallable) abi.RocBox {
         const previous_phase = self.debug_phase;
-        self.debug_phase = 107;
+        self.debug_phase = .host_value_take_with_split;
         defer self.debug_phase = previous_phase;
         defer abi.decrefErasedCallable(owned_split, self.activeRocHost());
         const box = self.engine.host_values.takeWithSplit(value, owned_split, self.hostValueRegistryOps()) catch |err| {
@@ -1029,7 +1030,7 @@ const HostEnv = struct {
     pub fn cloneHostValue(self: *HostEnv, value: HostValue) HostValue {
         const allocator = self.hostAllocator();
         const previous_phase = self.debug_phase;
-        self.debug_phase = 101;
+        self.debug_phase = .host_value_clone;
         defer self.debug_phase = previous_phase;
         const cloned = self.engine.host_values.clone(allocator, value, self.hostValueRegistryOps()) catch |err| {
             failHostValueRegistryError(err);
@@ -1412,7 +1413,7 @@ const HostEnv = struct {
             writeStderr(summary);
             for (self.roc_allocations.allocations.items) |alloc| {
                 const detail = std.fmt.bufPrint(&buf, "  phase={d} caller=0x{x} size={d} ptr=0x{x}\n", .{
-                    alloc.phase,
+                    @intFromEnum(alloc.phase),
                     alloc.return_address,
                     alloc.requested_size,
                     @intFromPtr(alloc.user_ptr),
@@ -1567,7 +1568,7 @@ const HostEnv = struct {
             else
                 0;
             const cohort = std.fmt.bufPrint(&buf, "[ALLOC TRACE]   phase={d} caller=0x{x} size={d} count={d} bytes={d} sample=0x{x} first_word=0x{x}\n", .{
-                alloc.phase,
+                @intFromEnum(alloc.phase),
                 alloc.return_address,
                 alloc.requested_size,
                 cohort_count,
@@ -2203,7 +2204,7 @@ fn dispatchRocEventWithStats(host: *HostEnv, roc_host: *abi.RocHost, event_id: u
     const payload_cap = desc.payload_reducer.capability;
     host.setHostValueCapability(payload, payload_cap);
     defer {
-        host.debug_phase = 201;
+        host.debug_phase = .event_drop_payload;
         callHostValueToUnitWithCapability(host, roc_host, payload_cap, hv.hostValueCapabilityDrop(payload_cap), payload);
     }
 
@@ -2219,13 +2220,13 @@ fn dispatchRocEventWithStats(host: *HostEnv, roc_host: *abi.RocHost, event_id: u
     const current = host.stateValueByNodeId(desc.target_node_id);
     const state_cap = host.stateCapability(desc.target_node_id);
     defer {
-        host.debug_phase = 202;
+        host.debug_phase = .event_drop_state;
         callHostValueToUnitWithCapability(host, roc_host, state_cap, hv.hostValueCapabilityDrop(state_cap), current);
     }
     const read = host.stateValueByNodeId(desc.read_node_id);
     const read_cap = host.stateCapability(desc.read_node_id);
     defer {
-        host.debug_phase = 203;
+        host.debug_phase = .event_drop_read;
         callHostValueToUnitWithCapability(host, roc_host, read_cap, hv.hostValueCapabilityDrop(read_cap), read);
     }
     const next = callHostValueHostValueHostValueToHostValueWithCapabilities(host, roc_host, state_cap, read_cap, payload_cap, desc.payload_reducer.transform, current, read, payload);

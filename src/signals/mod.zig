@@ -16,6 +16,7 @@ pub const descriptor_stream = @import("descriptor_stream.zig");
 pub const each_runtime = @import("each_runtime.zig");
 pub const effects_runtime = @import("effects_runtime.zig");
 pub const engine = @import("engine.zig");
+pub const debug_phase = @import("debug_phase.zig");
 pub const engine_contract = @import("engine_contract.zig");
 pub const engine_metrics = @import("engine_metrics.zig");
 pub const engine_scratch = @import("engine_scratch.zig");

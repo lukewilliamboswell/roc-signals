@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const FaultAllocator = @import("signals").fault_allocator.FaultAllocator;
+const DebugPhase = @import("signals").debug_phase.Phase;
 
 pub const Allocation = struct {
     id: u64,
@@ -9,7 +10,7 @@ pub const Allocation = struct {
     requested_size: usize,
     allocated_size: usize,
     alignment: std.mem.Alignment,
-    phase: u32,
+    phase: DebugPhase,
     return_address: usize,
 };
 
@@ -177,7 +178,7 @@ pub const Ledger = struct {
         return null;
     }
 
-    pub fn record(self: *Ledger, allocator: std.mem.Allocator, user_ptr: [*]u8, requested_size: usize, allocated_size: usize, alignment: std.mem.Alignment, phase: u32, return_address: usize) std.mem.Allocator.Error!void {
+    pub fn record(self: *Ledger, allocator: std.mem.Allocator, user_ptr: [*]u8, requested_size: usize, allocated_size: usize, alignment: std.mem.Alignment, phase: DebugPhase, return_address: usize) std.mem.Allocator.Error!void {
         const index = self.allocations.items.len;
         try self.allocations.append(allocator, .{
             .id = self.next_id,
@@ -195,7 +196,7 @@ pub const Ledger = struct {
         self.next_id += 1;
     }
 
-    pub fn allocate(self: *Ledger, ledger_allocator: std.mem.Allocator, backing_allocator: std.mem.Allocator, length: usize, alignment_arg: usize, phase: u32, ret_addr: usize) ?AllocResult {
+    pub fn allocate(self: *Ledger, ledger_allocator: std.mem.Allocator, backing_allocator: std.mem.Allocator, length: usize, alignment_arg: usize, phase: DebugPhase, ret_addr: usize) ?AllocResult {
         const alignment = alignmentFromAbi(alignment_arg);
         const allocated_size = allocatedSizeForRequest(length);
         const user_ptr = backing_allocator.rawAlloc(allocated_size, alignment, ret_addr) orelse return null;
@@ -215,7 +216,7 @@ pub const Ledger = struct {
         return alloc;
     }
 
-    pub fn reallocate(self: *Ledger, ledger_allocator: std.mem.Allocator, backing_allocator: std.mem.Allocator, ptr: *anyopaque, new_length: usize, alignment_arg: usize, phase: u32, ret_addr: usize) ReallocError!ReallocResult {
+    pub fn reallocate(self: *Ledger, ledger_allocator: std.mem.Allocator, backing_allocator: std.mem.Allocator, ptr: *anyopaque, new_length: usize, alignment_arg: usize, phase: DebugPhase, ret_addr: usize) ReallocError!ReallocResult {
         const pending = try self.beginRealloc(ptr, alignment_arg);
 
         const alignment = alignmentFromAbi(alignment_arg);
@@ -296,7 +297,7 @@ test "roc allocation ledger records exact and recently freed pointers" {
     const bytes = try allocator.alloc(u8, 16);
     defer allocator.free(bytes);
 
-    try ledger.record(allocator, bytes.ptr, 16, 16, .@"8", 0, @returnAddress());
+    try ledger.record(allocator, bytes.ptr, 16, 16, .@"8", .idle, @returnAddress());
     try std.testing.expectEqual(@as(?usize, 0), ledger.findExactIndex(bytes.ptr));
     try std.testing.expectEqual(@as(?usize, 0), ledger.findContainingIndex(bytes.ptr + 4));
 
@@ -319,9 +320,9 @@ test "roc allocation ledger keeps exact indexes after middle removal" {
     const last = try allocator.alloc(u8, 24);
     defer allocator.free(last);
 
-    try ledger.record(allocator, first.ptr, first.len, first.len, .@"8", 0, @returnAddress());
-    try ledger.record(allocator, middle.ptr, middle.len, middle.len, .@"8", 0, @returnAddress());
-    try ledger.record(allocator, last.ptr, last.len, last.len, .@"8", 0, @returnAddress());
+    try ledger.record(allocator, first.ptr, first.len, first.len, .@"8", .idle, @returnAddress());
+    try ledger.record(allocator, middle.ptr, middle.len, middle.len, .@"8", .idle, @returnAddress());
+    try ledger.record(allocator, last.ptr, last.len, last.len, .@"8", .idle, @returnAddress());
 
     const removed = ledger.removeAt(allocator, 1).?;
     try std.testing.expectEqual(@intFromPtr(middle.ptr), @intFromPtr(removed.user_ptr));
@@ -336,11 +337,11 @@ test "roc allocation ledger allocates reallocates and frees backing memory" {
     var ledger: Ledger = .{};
     defer ledger.deinit(allocator);
 
-    const first = ledger.allocate(allocator, allocator, 8, 8, 12, @returnAddress()).?;
+    const first = ledger.allocate(allocator, allocator, 8, 8, .task_payload, @returnAddress()).?;
     const first_ptr: [*]u8 = @ptrCast(first.ptr);
     first_ptr[0] = 42;
 
-    const grown = try ledger.reallocate(allocator, allocator, first.ptr, 32, 8, 13, @returnAddress());
+    const grown = try ledger.reallocate(allocator, allocator, first.ptr, 32, 8, .task_transform, @returnAddress());
     const grown_ptr: [*]u8 = @ptrCast(grown.ptr);
     try std.testing.expectEqual(@as(u8, 42), grown_ptr[0]);
     try std.testing.expectEqual(@as(?usize, null), ledger.findExactIndex(first.ptr));
@@ -358,8 +359,8 @@ test "roc allocation ledger snapshots identify allocations that survive a checkp
     defer ledger.deinit(allocator);
 
     const before = ledger.snapshot();
-    const first = ledger.allocate(allocator, allocator, 11, 8, 401, 0xabc).?;
-    const second = ledger.allocate(allocator, allocator, 17, 8, 402, 0xdef).?;
+    const first = ledger.allocate(allocator, allocator, 11, 8, .eval_dirty_ref, 0xabc).?;
+    const second = ledger.allocate(allocator, allocator, 17, 8, .eval_dirty_const_initialize, 0xdef).?;
     _ = try ledger.deallocate(allocator, allocator, first.ptr, 8, @returnAddress());
 
     try std.testing.expectEqual(@as(usize, 1), ledger.liveCountSince(before));
@@ -368,7 +369,7 @@ test "roc allocation ledger snapshots identify allocations that survive a checkp
     const after = ledger.snapshot();
     try std.testing.expectEqual(@as(usize, 1), after.live_count);
     try std.testing.expectEqual(@as(usize, 17), after.live_bytes);
-    try std.testing.expectEqual(@as(u32, 402), ledger.allocations.items[0].phase);
+    try std.testing.expectEqual(DebugPhase.eval_dirty_const_initialize, ledger.allocations.items[0].phase);
     try std.testing.expectEqual(@as(usize, 0xdef), ledger.allocations.items[0].return_address);
 
     _ = try ledger.deallocate(allocator, allocator, second.ptr, 8, @returnAddress());
@@ -379,7 +380,7 @@ test "roc allocation ledger classifies dealloc diagnostics" {
     var ledger: Ledger = .{};
     defer ledger.deinit(allocator);
 
-    const alloc = ledger.allocate(allocator, allocator, 16, 8, 0, @returnAddress()).?;
+    const alloc = ledger.allocate(allocator, allocator, 16, 8, .idle, @returnAddress()).?;
     const alloc_ptr: [*]u8 = @ptrCast(alloc.ptr);
 
     try std.testing.expectError(error.InteriorPointer, ledger.deallocate(allocator, allocator, alloc_ptr + 1, 8, @returnAddress()));
@@ -393,7 +394,7 @@ test "roc allocation ledger classifies dealloc diagnostics" {
 test "roc allocation ledger sweeps every allocation failure and retries" {
     var counter = FaultAllocator.init(std.testing.allocator);
     var counted_ledger: Ledger = .{};
-    const counted = counted_ledger.allocate(counter.allocator(), counter.allocator(), 32, 8, 0, @returnAddress()) orelse return error.OutOfMemory;
+    const counted = counted_ledger.allocate(counter.allocator(), counter.allocator(), 32, 8, .idle, @returnAddress()) orelse return error.OutOfMemory;
     const attempt_count = counter.attempts;
     _ = try counted_ledger.deallocate(counter.allocator(), counter.allocator(), counted.ptr, 8, @returnAddress());
     counted_ledger.deinit(counter.allocator());
@@ -405,13 +406,13 @@ test "roc allocation ledger sweeps every allocation failure and retries" {
         var ledger: Ledger = .{};
         defer ledger.deinit(fault.allocator());
 
-        try std.testing.expect(ledger.allocate(fault.allocator(), fault.allocator(), 32, 8, 0, @returnAddress()) == null);
+        try std.testing.expect(ledger.allocate(fault.allocator(), fault.allocator(), 32, 8, .idle, @returnAddress()) == null);
         try std.testing.expectEqual(@as(usize, 0), ledger.allocations.items.len);
         try std.testing.expectEqual(@as(usize, 0), ledger.exact_indexes.count());
         try std.testing.expectEqual(@as(u64, 1), ledger.next_id);
 
         fault.configure(null);
-        const recovered = ledger.allocate(fault.allocator(), fault.allocator(), 32, 8, 0, @returnAddress()) orelse return error.OutOfMemory;
+        const recovered = ledger.allocate(fault.allocator(), fault.allocator(), 32, 8, .idle, @returnAddress()) orelse return error.OutOfMemory;
         _ = try ledger.deallocate(fault.allocator(), fault.allocator(), recovered.ptr, 8, @returnAddress());
         try std.testing.expectEqual(@as(usize, 0), ledger.allocations.items.len);
     }
@@ -420,16 +421,16 @@ test "roc allocation ledger sweeps every allocation failure and retries" {
 test "roc allocation ledger realloc OOM preserves old allocation and accepts retry" {
     var ledger: Ledger = .{};
     defer ledger.deinit(std.testing.allocator);
-    const original = ledger.allocate(std.testing.allocator, std.testing.allocator, 8, 8, 0, @returnAddress()) orelse return error.OutOfMemory;
+    const original = ledger.allocate(std.testing.allocator, std.testing.allocator, 8, 8, .idle, @returnAddress()) orelse return error.OutOfMemory;
 
     var fault = FaultAllocator.init(std.testing.allocator);
     fault.configure(1);
-    try std.testing.expectError(error.OutOfMemory, ledger.reallocate(fault.allocator(), fault.allocator(), original.ptr, 64, 8, 1, @returnAddress()));
+    try std.testing.expectError(error.OutOfMemory, ledger.reallocate(fault.allocator(), fault.allocator(), original.ptr, 64, 8, .host_value_clone, @returnAddress()));
     try std.testing.expectEqual(@as(usize, 1), ledger.allocations.items.len);
     try std.testing.expectEqual(@intFromPtr(original.ptr), @intFromPtr(ledger.allocations.items[0].user_ptr));
 
     fault.configure(null);
-    const replaced = try ledger.reallocate(fault.allocator(), fault.allocator(), original.ptr, 64, 8, 1, @returnAddress());
+    const replaced = try ledger.reallocate(fault.allocator(), fault.allocator(), original.ptr, 64, 8, .host_value_clone, @returnAddress());
     try std.testing.expectEqual(@as(usize, 1), ledger.allocations.items.len);
     _ = try ledger.deallocate(fault.allocator(), fault.allocator(), replaced.ptr, 8, @returnAddress());
 }

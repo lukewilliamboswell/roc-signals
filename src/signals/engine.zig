@@ -37,6 +37,7 @@ const collection_budget = @import("collection_budget.zig");
 const collection_plan = @import("collection_plan.zig");
 const structural_splice = @import("structural_splice.zig");
 const engine_scratch = @import("engine_scratch.zig");
+const DebugPhase = @import("debug_phase.zig").Phase;
 
 const enable_runtime_metrics = engine_metrics.enable_runtime_metrics;
 
@@ -767,7 +768,7 @@ pub fn Engine(comptime Ctx: type) type {
             return &self.scratch.binder_stack;
         }
 
-        fn debugPhase(ctx: Ctx.Handle, phase: u32) void {
+        fn debugPhase(ctx: Ctx.Handle, phase: DebugPhase) void {
             if (comptime @hasDecl(Ctx, "debugPhase")) {
                 Ctx.debugPhase(ctx, phase);
             }
@@ -1296,7 +1297,7 @@ pub fn Engine(comptime Ctx: type) type {
 
         pub fn cloneCachedSignalValue(self: *Self, ctx: Ctx.Handle, cache_slot: *const HostSignalCacheSlot) HostValue {
             _ = self;
-            debugPhase(ctx, 409);
+            debugPhase(ctx, .clone_cached_signal);
             return switch (cache_slot.*) {
                 .absent => @panic("cached signal expression value was requested before initialization"),
                 .present => |cached| Ctx.cloneHostValue(ctx, cached.value),
@@ -1306,26 +1307,26 @@ pub fn Engine(comptime Ctx: type) type {
         pub fn updateDirtySignalExprCache(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, cache_slot: *HostSignalCacheSlot, value: HostValue, cap: HostValueCapability) HostSignalEvalResult {
             switch (cache_slot.*) {
                 .absent => {
-                    debugPhase(ctx, 450);
+                    debugPhase(ctx, .dirty_cache_initialize);
                     return .{
                         .value = self.replaceSignalExprCacheAndClone(ctx, cache_slot, roc_host, value, cap),
                         .changed = true,
                     };
                 },
                 .present => |*cached| {
-                    debugPhase(ctx, 451);
+                    debugPhase(ctx, .dirty_cache_compare);
                     const values_equal = cached.valueEquals(ctx, roc_host, value);
                     if (values_equal) {
-                        debugPhase(ctx, 452);
+                        debugPhase(ctx, .dirty_cache_drop_equal);
                         cached.dropIncoming(ctx, roc_host, value);
                         self.recordSignalPrune();
-                        debugPhase(ctx, 453);
+                        debugPhase(ctx, .dirty_cache_clone_equal);
                         return .{ .value = Ctx.cloneHostValue(ctx, cached.value), .changed = false };
                     }
 
-                    debugPhase(ctx, 454);
+                    debugPhase(ctx, .dirty_cache_replace);
                     cached.replaceValue(ctx, roc_host, value);
-                    debugPhase(ctx, 455);
+                    debugPhase(ctx, .dirty_cache_clone_changed);
                     return .{ .value = Ctx.cloneHostValue(ctx, cached.value), .changed = true };
                 },
             }
@@ -4492,12 +4493,12 @@ pub fn Engine(comptime Ctx: type) type {
 
         pub fn evalDirtyHostSignalRecord(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, record: *HostSignalRecord, dirty_source_node_ids: []const u64, dirty_generation: u64) HostSignalEvalResult {
             if (dirty_generation == 0) @panic("dirty signal evaluation used generation 0");
-            debugPhase(ctx, 400);
+            debugPhase(ctx, .eval_dirty_signal);
             if (self.cloneMemoizedDirtySignalResult(ctx, record, dirty_generation)) |result| return result;
 
             switch (record.payload) {
                 .ref => |node_id| {
-                    debugPhase(ctx, 401);
+                    debugPhase(ctx, .eval_dirty_ref);
                     return .{
                         .value = Ctx.stateValueByNodeId(ctx, node_id),
                         .changed = u64SliceContains(dirty_source_node_ids, node_id),
@@ -4505,11 +4506,11 @@ pub fn Engine(comptime Ctx: type) type {
                 },
                 .const_value => |*payload| {
                     if (payload.cached_value == .absent) {
-                        debugPhase(ctx, 402);
+                        debugPhase(ctx, .eval_dirty_const_initialize);
                         const value = erased_calls.callValueInitThunk(roc_host, payload.init);
                         return self.rememberDirtySignalResult(record, dirty_generation, self.updateDirtySignalExprCache(ctx, roc_host, &payload.cached_value, value, payload.cap));
                     }
-                    debugPhase(ctx, 403);
+                    debugPhase(ctx, .eval_dirty_const_cached);
                     return self.rememberDirtySignalResult(record, dirty_generation, .{
                         .value = self.cloneCachedSignalValue(ctx, &payload.cached_value),
                         .changed = false,
@@ -4517,40 +4518,40 @@ pub fn Engine(comptime Ctx: type) type {
                 },
                 .map => |*payload| {
                     const cache_was_absent = payload.cached_value == .absent;
-                    debugPhase(ctx, 420);
+                    debugPhase(ctx, .eval_dirty_map_input);
                     const input = self.evalDirtyHostSignalRecord(ctx, roc_host, payload.input, dirty_source_node_ids, dirty_generation);
                     defer self.dropHostSignalRecordValue(ctx, roc_host, payload.input, input.value);
                     if (!input.changed and !cache_was_absent) {
-                        debugPhase(ctx, 423);
+                        debugPhase(ctx, .eval_dirty_map_cached);
                         return self.rememberDirtySignalResult(record, dirty_generation, .{ .value = self.cloneCachedSignalValue(ctx, &payload.cached_value), .changed = false });
                     }
 
                     self.recordDerivedCall();
-                    debugPhase(ctx, 421);
+                    debugPhase(ctx, .eval_dirty_map_transform);
                     const input_cap = self.hostSignalRecordCapability(ctx, payload.input);
                     const value = callHostValueToHostValueWithCapability(ctx, roc_host, input_cap, payload.transform, input.value);
-                    debugPhase(ctx, 422);
+                    debugPhase(ctx, .eval_dirty_map_cache);
                     return self.rememberDirtySignalResult(record, dirty_generation, self.updateDirtySignalExprCache(ctx, roc_host, &payload.cached_value, value, payload.cap));
                 },
                 .map2 => |*payload| {
                     const cache_was_absent = payload.cached_value == .absent;
-                    debugPhase(ctx, 430);
+                    debugPhase(ctx, .eval_dirty_map2_left);
                     const left = self.evalDirtyHostSignalRecord(ctx, roc_host, payload.left, dirty_source_node_ids, dirty_generation);
                     defer self.dropHostSignalRecordValue(ctx, roc_host, payload.left, left.value);
-                    debugPhase(ctx, 431);
+                    debugPhase(ctx, .eval_dirty_map2_right);
                     const right = self.evalDirtyHostSignalRecord(ctx, roc_host, payload.right, dirty_source_node_ids, dirty_generation);
                     defer self.dropHostSignalRecordValue(ctx, roc_host, payload.right, right.value);
                     if (!left.changed and !right.changed and !cache_was_absent) {
-                        debugPhase(ctx, 434);
+                        debugPhase(ctx, .eval_dirty_map2_cached);
                         return self.rememberDirtySignalResult(record, dirty_generation, .{ .value = self.cloneCachedSignalValue(ctx, &payload.cached_value), .changed = false });
                     }
 
                     self.recordDerivedCall();
-                    debugPhase(ctx, 432);
+                    debugPhase(ctx, .eval_dirty_map2_transform);
                     const left_cap = self.hostSignalRecordCapability(ctx, payload.left);
                     const right_cap = self.hostSignalRecordCapability(ctx, payload.right);
                     const value = callHostValueHostValueToHostValueWithCapabilities(ctx, roc_host, left_cap, right_cap, payload.transform, left.value, right.value);
-                    debugPhase(ctx, 433);
+                    debugPhase(ctx, .eval_dirty_map2_cache);
                     return self.rememberDirtySignalResult(record, dirty_generation, self.updateDirtySignalExprCache(ctx, roc_host, &payload.cached_value, value, payload.cap));
                 },
                 .combine => |*payload| {
@@ -4566,14 +4567,14 @@ pub fn Engine(comptime Ctx: type) type {
 
                     var any_changed = false;
                     for (payload.children) |child| {
-                        debugPhase(ctx, 440);
+                        debugPhase(ctx, .eval_dirty_combine_child);
                         const child_result = self.evalDirtyHostSignalRecord(ctx, roc_host, child, dirty_source_node_ids, dirty_generation);
                         any_changed = any_changed or child_result.changed;
                         values.append(allocator, child_result.value) catch @panic("out of memory");
                     }
 
                     if (!any_changed and !cache_was_absent) {
-                        debugPhase(ctx, 443);
+                        debugPhase(ctx, .eval_dirty_combine_cached);
                         for (payload.children, values.items) |child, value| {
                             self.dropHostSignalRecordValue(ctx, roc_host, child, value);
                         }
@@ -4584,10 +4585,10 @@ pub fn Engine(comptime Ctx: type) type {
                     const list = HostValueList.fromSlice(values.items, roc_host);
                     defer list.decref(roc_host);
                     self.recordDerivedCall();
-                    debugPhase(ctx, 441);
+                    debugPhase(ctx, .eval_dirty_combine_transform);
                     const input_cap = if (payload.children.len == 0) payload.cap else self.hostSignalRecordCapability(ctx, payload.children[0]);
                     const value = callHostValueListToHostValueWithCapability(ctx, roc_host, input_cap, payload.transform, list);
-                    debugPhase(ctx, 442);
+                    debugPhase(ctx, .eval_dirty_combine_cache);
                     for (payload.children, values.items) |child, child_value| {
                         self.dropHostSignalRecordValue(ctx, roc_host, child, child_value);
                     }
@@ -4595,42 +4596,42 @@ pub fn Engine(comptime Ctx: type) type {
                     return self.rememberDirtySignalResult(record, dirty_generation, self.updateDirtySignalExprCache(ctx, roc_host, &payload.cached_value, value, payload.cap));
                 },
                 .task_source => |*payload| {
-                    debugPhase(ctx, 410);
+                    debugPhase(ctx, .eval_dirty_task_source);
                     return self.rememberDirtySignalResult(record, dirty_generation, .{
                         .value = self.cloneCachedSignalValue(ctx, &payload.cached_value),
                         .changed = record.last_dirty_generation == dirty_generation and record.last_dirty_changed,
                     });
                 },
                 .interval_source => |*payload| {
-                    debugPhase(ctx, 411);
+                    debugPhase(ctx, .eval_dirty_interval_source);
                     return self.rememberDirtySignalResult(record, dirty_generation, .{
                         .value = self.cloneCachedSignalValue(ctx, &payload.cached_value),
                         .changed = record.last_dirty_generation == dirty_generation and record.last_dirty_changed,
                     });
                 },
                 .location_source => |*payload| {
-                    debugPhase(ctx, 412);
+                    debugPhase(ctx, .eval_dirty_location_source);
                     return self.rememberDirtySignalResult(record, dirty_generation, .{
                         .value = self.cloneCachedSignalValue(ctx, &payload.cached_value),
                         .changed = record.last_dirty_generation == dirty_generation and record.last_dirty_changed,
                     });
                 },
                 .visibility_source => |*payload| {
-                    debugPhase(ctx, 414);
+                    debugPhase(ctx, .eval_dirty_visibility_source);
                     return self.rememberDirtySignalResult(record, dirty_generation, .{
                         .value = self.cloneCachedSignalValue(ctx, &payload.cached_value),
                         .changed = record.last_dirty_generation == dirty_generation and record.last_dirty_changed,
                     });
                 },
                 .online_source => |*payload| {
-                    debugPhase(ctx, 415);
+                    debugPhase(ctx, .eval_dirty_online_source);
                     return self.rememberDirtySignalResult(record, dirty_generation, .{
                         .value = self.cloneCachedSignalValue(ctx, &payload.cached_value),
                         .changed = record.last_dirty_generation == dirty_generation and record.last_dirty_changed,
                     });
                 },
                 .storage_source => |*payload| {
-                    debugPhase(ctx, 413);
+                    debugPhase(ctx, .eval_dirty_storage_source);
                     return self.rememberDirtySignalResult(record, dirty_generation, .{
                         .value = self.cloneCachedSignalValue(ctx, &payload.cached_value),
                         .changed = record.last_dirty_generation == dirty_generation and record.last_dirty_changed,
@@ -4661,12 +4662,12 @@ pub fn Engine(comptime Ctx: type) type {
 
             for (dirty_record_ids) |record_id| {
                 const record = self.active_signal_graph.items[@intCast(record_id)].record;
-                debugPhase(ctx, 331);
+                debugPhase(ctx, .propagate_record_before_eval);
                 const result = self.evalDirtyHostSignalRecord(ctx, roc_host, record, dirty_source_node_ids, dirty_generation);
                 if (result.changed) {
                     changed_record_ids.append(allocator, record_id) catch @panic("out of memory");
                 }
-                debugPhase(ctx, 332);
+                debugPhase(ctx, .propagate_record_before_drop);
                 self.dropHostSignalRecordValue(ctx, roc_host, record, result.value);
             }
 
@@ -6497,19 +6498,19 @@ pub fn Engine(comptime Ctx: type) type {
         pub fn updateEffectSourceCacheSlot(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, cache_slot: *HostSignalCacheSlot, value: HostValue, cap: HostValueCapability) bool {
             switch (cache_slot.*) {
                 .absent => {
-                    debugPhase(ctx, 301);
+                    debugPhase(ctx, .effect_cache_initialize);
                     cache_slot.replace(ctx, roc_host, &self.pending_roc_metrics, value, cap);
                     return true;
                 },
                 .present => |*cached| {
-                    debugPhase(ctx, 310);
+                    debugPhase(ctx, .effect_cache_compare);
                     if (cached.valueEquals(ctx, roc_host, value)) {
-                        debugPhase(ctx, 311);
+                        debugPhase(ctx, .effect_cache_drop_equal);
                         cached.dropIncoming(ctx, roc_host, value);
                         self.recordSignalPrune();
                         return false;
                     }
-                    debugPhase(ctx, 312);
+                    debugPhase(ctx, .effect_cache_replace);
                     cached.replaceValue(ctx, roc_host, value);
                     return true;
                 },
@@ -6541,7 +6542,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
             var deferred_location_effect = false;
 
-            debugPhase(ctx, 350);
+            debugPhase(ctx, .collect_dirty_sinks);
             var counts = self.collectDirtyRenderSinksAndCommands(
                 ctx,
                 roc_host,
@@ -6551,14 +6552,14 @@ pub fn Engine(comptime Ctx: type) type {
                 &pending_on_change_commands,
             );
 
-            debugPhase(ctx, 360);
+            debugPhase(ctx, .collect_dirty_structure);
             const dirty_structural_signals = self.collectDirtyStructuralSignals(ctx, roc_host, allocator, dirty_source_node_ids, stable_changed_record_ids, dirty_generation);
             defer allocator.free(dirty_structural_signals);
             if (dirty_structural_signals.len != 0) {
-                debugPhase(ctx, 370);
+                debugPhase(ctx, .apply_dirty_structure);
                 counts.addAll(self.applyDirtyStructuralSignalsLocally(ctx, roc_host, dirty_source_node_ids, dirty_generation, dirty_structural_signals));
             }
-            debugPhase(ctx, 361);
+            debugPhase(ctx, .apply_dirty_commands);
             counts.addAll(self.runPendingOnChangeCommandsDeferringSourceEffects(
                 ctx,
                 roc_host,
@@ -6566,14 +6567,14 @@ pub fn Engine(comptime Ctx: type) type {
                 &deferred_location_effect,
                 &deferred_storage_effects,
             ));
-            debugPhase(ctx, 362);
+            debugPhase(ctx, .flush_deferred_effects);
             counts.addAll(self.flushDeferredSourceEffects(ctx, roc_host, deferred_location_effect, deferred_storage_effects.items));
-            debugPhase(ctx, 363);
+            debugPhase(ctx, .dirty_batch_complete);
             return counts;
         }
 
         pub fn dispatchEffectSourceValue(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, record: *HostSignalRecord, value: HostValue) render.Counts {
-            debugPhase(ctx, 300);
+            debugPhase(ctx, .dispatch_effect_source);
             if (!self.updateEffectSourceCache(ctx, roc_host, record, value)) return .{};
 
             self.recordDispatch();
@@ -6588,9 +6589,9 @@ pub fn Engine(comptime Ctx: type) type {
             const roots = [_]u64{record_id};
             const dirty_record_ids = self.scratchDirtyActiveSignalRecordIdsForRoots(ctx, &roots);
 
-            debugPhase(ctx, 330);
+            debugPhase(ctx, .dispatch_effect_propagate);
             const changed_record_ids = self.propagateDirtyActiveSignalRecordIds(ctx, roc_host, dirty_record_ids, &.{}, dirty_generation);
-            debugPhase(ctx, 340);
+            debugPhase(ctx, .dispatch_effect_apply);
             return self.applyDirtySignalBatch(ctx, roc_host, &.{}, changed_record_ids, dirty_generation);
         }
 

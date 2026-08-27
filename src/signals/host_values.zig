@@ -7,6 +7,7 @@
 //! and native-only test-kind bookkeeping — are supplied by the caller.
 
 const std = @import("std");
+const DebugPhase = @import("debug_phase.zig").Phase;
 const abi = @import("roc_platform_abi.zig");
 
 pub const HostValue = u64;
@@ -112,7 +113,7 @@ pub fn RegistryOps() type {
     return struct {
         roc_host: *abi.RocHost,
         active_capabilities: *ActiveCapabilityStack,
-        debug_phase: ?*const u32 = null,
+        debug_phase: ?*const DebugPhase = null,
 
         pub fn retainCapability(_: @This(), capability: HostValueCapabilityHandle) void {
             capability.incref(1);
