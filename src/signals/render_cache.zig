@@ -391,6 +391,51 @@ pub const PreparedFixedEventUpdate = struct {
     }
 };
 
+/// Owns the complete custom-text attribute set for one touched node.
+pub const PreparedCustomTextAttrsReplacement = struct {
+    elem_id: u64,
+    next: []CustomTextAttr,
+    retired: std.ArrayListUnmanaged(CustomTextAttr) = .empty,
+    committed: bool = false,
+
+    /// Copies final names and values without changing the active cache.
+    pub fn prepare(comptime Ctx: type, allocator: std.mem.Allocator, cache: *const Cache(Ctx), elem_id: u64, attrs: []const CustomTextAttr) (std.mem.Allocator.Error || error{MissingNode})!PreparedCustomTextAttrsReplacement {
+        const index = std.math.cast(usize, elem_id) orelse return error.MissingNode;
+        if (index >= cache.nodes.items.len or !cache.nodes.items[index].active) return error.MissingNode;
+        const next = try allocator.alloc(CustomTextAttr, attrs.len);
+        errdefer allocator.free(next);
+        var initialized: usize = 0;
+        errdefer for (next[0..initialized]) |attr| attr.deinit(allocator);
+        for (attrs, 0..) |attr, offset| {
+            const name = try allocator.dupe(u8, attr.name);
+            errdefer allocator.free(name);
+            const value = try allocator.dupe(u8, attr.value);
+            next[offset] = .{ .name = name, .value = value };
+            initialized += 1;
+        }
+        return .{ .elem_id = elem_id, .next = next };
+    }
+
+    /// Swaps final attributes into the active cache without allocating.
+    pub fn apply(self: *PreparedCustomTextAttrsReplacement, comptime Ctx: type, cache: *Cache(Ctx)) void {
+        if (self.committed) @panic("prepared custom attribute replacement committed twice");
+        const node = &cache.nodes.items[@intCast(self.elem_id)];
+        self.retired = node.custom_text_attrs;
+        node.custom_text_attrs = .{ .items = self.next, .capacity = self.next.len };
+        self.next = &.{};
+        self.committed = true;
+    }
+
+    /// Releases provisional attributes on abort or retired attributes after commit.
+    pub fn deinit(self: *PreparedCustomTextAttrsReplacement, allocator: std.mem.Allocator) void {
+        for (self.next) |attr| attr.deinit(allocator);
+        allocator.free(self.next);
+        for (self.retired.items) |attr| attr.deinit(allocator);
+        self.retired.deinit(allocator);
+        self.* = undefined;
+    }
+};
+
 /// Defines the engine-owned rendered-state cache used to emit only changed host commands.
 pub fn Cache(comptime Ctx: type) type {
     return struct {
@@ -1111,6 +1156,50 @@ test "prepared scalar fields abort cleanly and publish allocation free" {
     try std.testing.expectEqualStrings("old", text.retired.?);
     fault.configure(null);
     text.deinit(allocator);
+}
+
+test "prepared custom attributes sweep failures and publish allocation free" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var fault = FaultAllocator.init(std.testing.allocator);
+    const allocator = fault.allocator();
+    var cache: Cache(TestCtx) = .{};
+    defer {
+        for (cache.nodes.items) |*node| node.deinit(allocator);
+        cache.nodes.deinit(allocator);
+    }
+    var node = ScalarNode.initActive("div");
+    try node.custom_text_attrs.append(allocator, .{
+        .name = try allocator.dupe(u8, "data-old"),
+        .value = try allocator.dupe(u8, "old"),
+    });
+    try cache.nodes.append(allocator, node);
+    const desired = [_]CustomTextAttr{
+        .{ .name = "data-a", .value = "one" },
+        .{ .name = "data-b", .value = "two" },
+    };
+
+    fault.configure(null);
+    var counted = try PreparedCustomTextAttrsReplacement.prepare(TestCtx, allocator, &cache, 0, &desired);
+    const attempts = fault.attempts;
+    counted.deinit(allocator);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| {
+        fault.configure(failure_number);
+        try std.testing.expectError(error.OutOfMemory, PreparedCustomTextAttrsReplacement.prepare(TestCtx, allocator, &cache, 0, &desired));
+        try std.testing.expectEqualStrings("data-old", cache.nodes.items[0].custom_text_attrs.items[0].name);
+        fault.configure(null);
+        var retry = try PreparedCustomTextAttrsReplacement.prepare(TestCtx, allocator, &cache, 0, &desired);
+        retry.deinit(allocator);
+    }
+
+    var committed = try PreparedCustomTextAttrsReplacement.prepare(TestCtx, allocator, &cache, 0, &desired);
+    fault.configure(1);
+    committed.apply(TestCtx, &cache);
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqualStrings("data-a", cache.nodes.items[0].custom_text_attrs.items[0].name);
+    try std.testing.expectEqualStrings("data-old", committed.retired.items[0].name);
+    fault.configure(null);
+    committed.deinit(allocator);
 }
 
 test "render cache reset accepts sparse element ids" {
