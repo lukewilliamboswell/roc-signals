@@ -31,6 +31,73 @@ pub const EachRowValues = struct {
     item: HostValue,
 };
 
+/// Provisional each-row scopes whose retained key/item cells remain private
+/// until an enclosing row transaction publishes them.
+pub const PreparedEachRowScopes = struct {
+    allocator: std.mem.Allocator,
+    original_scope_len: usize,
+    rows: std.ArrayListUnmanaged(Scope) = .empty,
+    committed: bool = false,
+
+    /// Starts an empty overlay over the current persistent scope table.
+    pub fn init(allocator: std.mem.Allocator, scopes: []const Scope) PreparedEachRowScopes {
+        return .{ .allocator = allocator, .original_scope_len = scopes.len };
+    }
+
+    /// Retains one provisional row and cumulatively reserves its final scope slot.
+    pub fn prepareRow(self: *PreparedEachRowScopes, scopes: *std.ArrayListUnmanaged(Scope), ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, parent_scope_id: u64, site_ordinal: u64, key_hash: u64, key: HostValue, item: HostValue, key_cap: HostValueCapability, item_cap: HostValueCapability) std.mem.Allocator.Error!u64 {
+        if (self.committed or scopes.items.len != self.original_scope_len) @panic("invalid provisional each-row scope state");
+        scope_tree.validate(EachRowScopeStep, scopes.items, parent_scope_id) catch @panic("scope id has no host scope descriptor");
+        const next_len = std.math.add(usize, self.original_scope_len, self.rows.items.len + 1) catch return error.OutOfMemory;
+        try scopes.ensureTotalCapacity(self.allocator, next_len);
+        try self.rows.ensureUnusedCapacity(self.allocator, 1);
+
+        var key_cell = HostValueCell.initRetained(key, key_cap, metrics);
+        errdefer key_cell.deinit(ctx, roc_host, metrics);
+        var item_cell = HostValueCell.initRetained(item, item_cap, metrics);
+        errdefer item_cell.deinit(ctx, roc_host, metrics);
+        const scope_id: u64 = @intCast(self.original_scope_len + self.rows.items.len);
+        self.rows.appendAssumeCapacity(.{
+            .scope_id = scope_id,
+            .parent_scope_id = parent_scope_id,
+            .step = .{ .each_row = .{
+                .site_ordinal = site_ordinal,
+                .key_hash = key_hash,
+                .key = key_cell,
+                .item = item_cell,
+            } },
+            .active = true,
+        });
+        return scope_id;
+    }
+
+    /// Publishes all provisional rows without allocation and transfers cell ownership.
+    pub fn commit(self: *PreparedEachRowScopes, scopes: *std.ArrayListUnmanaged(Scope)) void {
+        if (self.committed or scopes.items.len != self.original_scope_len) @panic("invalid provisional each-row scope commit");
+        scopes.appendSliceAssumeCapacity(self.rows.items);
+        self.rows.clearRetainingCapacity();
+        self.committed = true;
+    }
+
+    /// Releases provisional key/item cells in reverse construction order.
+    pub fn abort(self: *PreparedEachRowScopes, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
+        if (self.committed) return;
+        var index = self.rows.items.len;
+        while (index != 0) {
+            index -= 1;
+            deinitScopeStep(&self.rows.items[index].step, ctx, roc_host, metrics);
+        }
+        self.rows.clearRetainingCapacity();
+    }
+
+    /// Releases overlay storage; callers must abort or commit first.
+    pub fn deinit(self: *PreparedEachRowScopes) void {
+        if (self.rows.items.len != 0) @panic("provisional each-row scopes still own values");
+        self.rows.deinit(self.allocator);
+        self.* = undefined;
+    }
+};
+
 /// Drop the retained cells owned by an each-row scope step (no-op for the
 /// structural scope kinds, which carry no Roc values).
 pub fn deinitScopeStep(step: *ScopeStep, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {

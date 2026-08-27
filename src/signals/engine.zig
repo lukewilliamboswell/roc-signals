@@ -660,21 +660,25 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             /// Reports whether h key is present in maintained state.
+            /// Hashes an incoming key through the each descriptor capability.
             pub fn hashKey(self: *@This(), key: HostValue) u64 {
                 return self.engine.hashEachKeyValue(self.ctx, self.roc_host, self.ops.key_text, self.ops.key_capability, key);
             }
 
             /// Compares candidate row keys exactly after hash lookup, preserving collision correctness.
+            /// Compares two incoming keys before persistent publication.
             pub fn nextKeysEqual(self: *@This(), left: HostValue, right: HostValue) bool {
                 return self.engine.eachKeysEqual(self.ctx, self.roc_host, self.ops, left, right);
             }
 
             /// Performs existing key equals inside the shared engine while preserving transaction and changed-set invariants.
+            /// Compares an incoming key with one persistent row key.
             pub fn existingKeyEquals(self: *@This(), scope_id: u64, key: HostValue) bool {
                 return self.engine.eachRowScopeKeyEquals(self.ctx, self.roc_host, scope_id, key, self.ops.key_capability);
             }
 
             /// Performs row item equals through the keyed-row capabilities that own key and item values.
+            /// Compares an incoming item with one persistent row item.
             pub fn rowItemEquals(self: *@This(), scope_id: u64, item: HostValue) bool {
                 return self.engine.eachRowScopeItemEquals(self.ctx, self.roc_host, scope_id, item, self.ops.item_capability);
             }
@@ -736,6 +740,114 @@ pub fn Engine(comptime Ctx: type) type {
                     second_index,
                     key,
                 );
+            }
+        };
+
+        const PreparedEachRowSyncHooks = struct {
+            base: EachRowSync,
+            scopes: scope_runtime.PreparedEachRowScopes,
+
+            fn init(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, ops: HostEachOps) @This() {
+                return .{
+                    .base = .{ .engine = engine, .ctx = ctx, .roc_host = roc_host, .ops = ops },
+                    .scopes = scope_runtime.PreparedEachRowScopes.init(Ctx.allocator(ctx), engine.scopes.items),
+                };
+            }
+
+            /// Hashes an incoming key through the each descriptor capability.
+            pub fn hashKey(self: *@This(), key: HostValue) u64 {
+                return self.base.hashKey(key);
+            }
+
+            /// Compares two incoming keys before persistent publication.
+            pub fn nextKeysEqual(self: *@This(), left: HostValue, right: HostValue) bool {
+                return self.base.nextKeysEqual(left, right);
+            }
+
+            /// Compares an incoming key with one persistent row key.
+            pub fn existingKeyEquals(self: *@This(), scope_id: u64, key: HostValue) bool {
+                return self.base.existingKeyEquals(scope_id, key);
+            }
+
+            /// Compares an incoming item with one persistent row item.
+            pub fn rowItemEquals(self: *@This(), scope_id: u64, item: HostValue) bool {
+                return self.base.rowItemEquals(scope_id, item);
+            }
+
+            /// Retains a new row in the plan-local scope overlay.
+            pub fn prepareCreatedRow(self: *@This(), allocator: std.mem.Allocator, parent_scope_id: u64, site_ordinal: u64, key_hash: u64, key: HostValue, item: HostValue) std.mem.Allocator.Error!u64 {
+                _ = allocator;
+                return self.scopes.prepareRow(
+                    &self.base.engine.scopes,
+                    self.base.ctx,
+                    self.base.roc_host,
+                    &self.base.engine.pending_roc_metrics,
+                    parent_scope_id,
+                    site_ordinal,
+                    key_hash,
+                    key,
+                    item,
+                    self.base.ops.key_capability,
+                    self.base.ops.item_capability,
+                );
+            }
+
+            /// Reserves engine retirement journals; populated by the enclosing transaction.
+            pub fn prepareExistingRowsCommit(_: *@This(), _: std.mem.Allocator, _: usize) std.mem.Allocator.Error!void {}
+
+            /// Validates that reconciliation references a prepared scope identity.
+            pub fn commitCreatedRow(self: *@This(), scope_id: u64) void {
+                const first: u64 = @intCast(self.scopes.original_scope_len);
+                if (scope_id < first or scope_id >= first + self.scopes.rows.items.len) @panic("unknown provisional each-row scope");
+            }
+
+            /// Publishes all provisional scope records without allocation.
+            pub fn finishPreparedRowsCommit(self: *@This()) void {
+                self.scopes.commit(&self.base.engine.scopes);
+            }
+
+            /// Drops every provisional row cell while persistent scopes remain unchanged.
+            pub fn abortPreparedRows(self: *@This()) void {
+                self.scopes.abort(self.base.ctx, self.base.roc_host, &self.base.engine.pending_roc_metrics);
+            }
+
+            /// Replaces a surviving row key at the allocation-free commit boundary.
+            pub fn replaceRowKey(self: *@This(), scope_id: u64, key_hash: u64, key: HostValue) void {
+                self.base.replaceRowKey(scope_id, key_hash, key);
+            }
+
+            /// Replaces a surviving row item at the allocation-free commit boundary.
+            pub fn replaceRowItem(self: *@This(), scope_id: u64, item: HostValue) void {
+                self.base.replaceRowItem(scope_id, item);
+            }
+
+            /// Releases an unchanged incoming key after publication succeeds.
+            pub fn dropIncomingKey(self: *@This(), key: HostValue) void {
+                self.base.dropIncomingKey(key);
+            }
+
+            /// Releases an unchanged incoming item after publication succeeds.
+            pub fn dropIncomingItem(self: *@This(), item: HostValue) void {
+                self.base.dropIncomingItem(item);
+            }
+
+            /// Retires an obsolete row scope after all preparation succeeds.
+            pub fn disposeScope(self: *@This(), scope_id: u64) void {
+                self.base.disposeScope(scope_id);
+            }
+
+            /// Reads a committed row hash while rebuilding the site index.
+            pub fn rowKeyHash(self: *@This(), scope_id: u64) u64 {
+                return self.base.rowKeyHash(scope_id);
+            }
+
+            /// Reports duplicate incoming keys through the bounded host diagnostic.
+            pub fn failDuplicateEachKey(self: *@This(), parent_scope_id: u64, site_ordinal: u64, first_index: usize, second_index: usize, key: HostValue) noreturn {
+                self.base.failDuplicateEachKey(parent_scope_id, site_ordinal, first_index, second_index, key);
+            }
+
+            fn deinit(self: *@This()) void {
+                self.scopes.deinit();
             }
         };
 
@@ -9604,6 +9716,70 @@ fn deinitVerifyStateEngine(engine: *Engine(VerifyCtx), ctx: *VerifyCtxHost, roc_
     for (engine.scopes.items) |*scope| if (scope.active) deinitHostScopeStep(&scope.step, ctx, roc_host, &engine.pending_roc_metrics);
     engine.clearEachRowSites(ctx.allocator);
     deinitVerifyStaticEngine(engine, ctx);
+}
+
+test "provisional each-row scopes abort and publish without partial scope mutation" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&env);
+    const callable = abi.rocErasedCallableAllocate(&roc_host, verifyErasedCallable, null, 0).?;
+    defer abi.decrefErasedCallable(callable, &roc_host);
+    const capability = HostValueCapability{ .clone = callable, .drop = callable, .eq = callable };
+
+    const Runner = struct {
+        fn run(host: *abi.RocHost, cap: HostValueCapability, fail_at: ?usize) !usize {
+            var fault = FaultAllocator.init(std.testing.allocator);
+            var ctx = VerifyCtxHost{ .allocator = fault.allocator() };
+            var engine = Engine(VerifyCtx).init();
+            defer deinitVerifyStateEngine(&engine, &ctx, host);
+            _ = try engine.internRootScope(ctx.allocator);
+            fault.configure(fail_at);
+            var overlay = scope_runtime.PreparedEachRowScopes.init(ctx.allocator, engine.scopes.items);
+            defer overlay.deinit();
+
+            const first = overlay.prepareRow(&engine.scopes, &ctx, host, &engine.pending_roc_metrics, 0, 9, 101, 11, 21, cap, cap);
+            if (first) |first_id| {
+                const second = overlay.prepareRow(&engine.scopes, &ctx, host, &engine.pending_roc_metrics, 0, 9, 202, 12, 22, cap, cap);
+                if (second) |second_id| {
+                    try std.testing.expectEqual(@as(u64, 1), first_id);
+                    try std.testing.expectEqual(@as(u64, 2), second_id);
+                    try std.testing.expectEqual(@as(usize, 1), engine.scopes.items.len);
+                    const attempts = fault.attempts;
+                    fault.configure(1);
+                    overlay.commit(&engine.scopes);
+                    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+                    try std.testing.expectEqual(@as(usize, 3), engine.scopes.items.len);
+                    try std.testing.expectEqual(@as(u64, 101), scope_runtime.eachRowConst(engine.scopes.items, first_id).key_hash);
+                    try std.testing.expectEqual(@as(u64, 202), scope_runtime.eachRowConst(engine.scopes.items, second_id).key_hash);
+                    return attempts;
+                } else |err| {
+                    try std.testing.expectEqual(error.OutOfMemory, err);
+                }
+            } else |err| {
+                try std.testing.expectEqual(error.OutOfMemory, err);
+            }
+            try std.testing.expectEqual(@as(usize, 1), engine.scopes.items.len);
+            overlay.abort(&ctx, host, &engine.pending_roc_metrics);
+            try std.testing.expectEqual(@as(usize, 1), engine.scopes.items.len);
+
+            fault.configure(null);
+            const retry_first = try overlay.prepareRow(&engine.scopes, &ctx, host, &engine.pending_roc_metrics, 0, 9, 101, 11, 21, cap, cap);
+            const retry_second = try overlay.prepareRow(&engine.scopes, &ctx, host, &engine.pending_roc_metrics, 0, 9, 202, 12, 22, cap, cap);
+            try std.testing.expectEqual(@as(u64, 1), retry_first);
+            try std.testing.expectEqual(@as(u64, 2), retry_second);
+            overlay.commit(&engine.scopes);
+            try std.testing.expectEqual(@as(usize, 3), engine.scopes.items.len);
+            return fault.attempts;
+        }
+    };
+
+    const attempts = try Runner.run(&roc_host, capability, null);
+    var failures: usize = 0;
+    for (1..attempts + 1) |fail_at| {
+        _ = try Runner.run(&roc_host, capability, fail_at);
+        failures += 1;
+    }
+    try std.testing.expectEqual(attempts, failures);
 }
 
 test "dirty when cache remains detached until commit and abort releases it" {
