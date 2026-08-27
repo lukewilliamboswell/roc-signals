@@ -1469,26 +1469,40 @@ pub const Stream = struct {
     }
 };
 
+pub const DescriptorIndex = enum(u32) {
+    none = std.math.maxInt(u32),
+    _,
+
+    pub fn init(index: usize) DescriptorIndex {
+        if (index >= @intFromEnum(DescriptorIndex.none)) @panic("descriptor index exceeded u32 storage");
+        return @enumFromInt(@as(u32, @intCast(index)));
+    }
+
+    pub fn get(self: DescriptorIndex) ?usize {
+        return if (self == .none) null else @intFromEnum(self);
+    }
+};
+
 pub const TextFieldDescriptorIndexes = struct {
-    text: ?usize = null,
-    role: ?usize = null,
-    label: ?usize = null,
-    test_id: ?usize = null,
-    value: ?usize = null,
-    class: ?usize = null,
+    text: DescriptorIndex = .none,
+    role: DescriptorIndex = .none,
+    label: DescriptorIndex = .none,
+    test_id: DescriptorIndex = .none,
+    value: DescriptorIndex = .none,
+    class: DescriptorIndex = .none,
 
     pub fn get(self: TextFieldDescriptorIndexes, field: TextField) ?usize {
         return switch (field) {
-            .text => self.text,
-            .role => self.role,
-            .label => self.label,
-            .test_id => self.test_id,
-            .value => self.value,
-            .class => self.class,
+            .text => self.text.get(),
+            .role => self.role.get(),
+            .label => self.label.get(),
+            .test_id => self.test_id.get(),
+            .value => self.value.get(),
+            .class => self.class.get(),
         };
     }
 
-    pub fn slot(self: *TextFieldDescriptorIndexes, field: TextField) *?usize {
+    pub fn slot(self: *TextFieldDescriptorIndexes, field: TextField) *DescriptorIndex {
         return switch (field) {
             .text => &self.text,
             .role => &self.role,
@@ -1501,17 +1515,17 @@ pub const TextFieldDescriptorIndexes = struct {
 };
 
 pub const BoolFieldDescriptorIndexes = struct {
-    checked: ?usize = null,
-    disabled: ?usize = null,
+    checked: DescriptorIndex = .none,
+    disabled: DescriptorIndex = .none,
 
     pub fn get(self: BoolFieldDescriptorIndexes, field: BoolField) ?usize {
         return switch (field) {
-            .checked => self.checked,
-            .disabled => self.disabled,
+            .checked => self.checked.get(),
+            .disabled => self.disabled.get(),
         };
     }
 
-    pub fn slot(self: *BoolFieldDescriptorIndexes, field: BoolField) *?usize {
+    pub fn slot(self: *BoolFieldDescriptorIndexes, field: BoolField) *DescriptorIndex {
         return switch (field) {
             .checked => &self.checked,
             .disabled => &self.disabled,
@@ -1520,27 +1534,27 @@ pub const BoolFieldDescriptorIndexes = struct {
 };
 
 pub const EventDescriptorIndexes = struct {
-    click: ?usize = null,
-    input: ?usize = null,
-    check: ?usize = null,
-    pointer_down: ?usize = null,
-    pointer_up: ?usize = null,
-    pointer_enter: ?usize = null,
-    pointer_leave: ?usize = null,
+    click: DescriptorIndex = .none,
+    input: DescriptorIndex = .none,
+    check: DescriptorIndex = .none,
+    pointer_down: DescriptorIndex = .none,
+    pointer_up: DescriptorIndex = .none,
+    pointer_enter: DescriptorIndex = .none,
+    pointer_leave: DescriptorIndex = .none,
 
     pub fn get(self: EventDescriptorIndexes, kind: EventKind) ?usize {
         return switch (kind) {
-            .click => self.click,
-            .input => self.input,
-            .check => self.check,
-            .pointer_down => self.pointer_down,
-            .pointer_up => self.pointer_up,
-            .pointer_enter => self.pointer_enter,
-            .pointer_leave => self.pointer_leave,
+            .click => self.click.get(),
+            .input => self.input.get(),
+            .check => self.check.get(),
+            .pointer_down => self.pointer_down.get(),
+            .pointer_up => self.pointer_up.get(),
+            .pointer_enter => self.pointer_enter.get(),
+            .pointer_leave => self.pointer_leave.get(),
         };
     }
 
-    pub fn slot(self: *EventDescriptorIndexes, kind: EventKind) *?usize {
+    pub fn slot(self: *EventDescriptorIndexes, kind: EventKind) *DescriptorIndex {
         return switch (kind) {
             .click => &self.click,
             .input => &self.input,
@@ -1565,9 +1579,9 @@ pub const RenderElemIndex = struct {
 };
 
 pub const ElemDescriptorIndex = struct {
-    element: ?usize = null,
-    text_node: ?usize = null,
-    signal_text_node: ?usize = null,
+    element: DescriptorIndex = .none,
+    text_node: DescriptorIndex = .none,
+    signal_text_node: DescriptorIndex = .none,
     static_text_attrs: TextFieldDescriptorIndexes = .{},
     signal_text_attrs: TextFieldDescriptorIndexes = .{},
     static_bool_attrs: BoolFieldDescriptorIndexes = .{},
@@ -1576,21 +1590,21 @@ pub const ElemDescriptorIndex = struct {
 };
 
 pub const ScopeSiteDescriptorIndexes = struct {
-    component: ?usize = null,
-    state: ?usize = null,
-    when: ?usize = null,
-    each: ?usize = null,
+    component: DescriptorIndex = .none,
+    state: DescriptorIndex = .none,
+    when: DescriptorIndex = .none,
+    each: DescriptorIndex = .none,
 
     pub fn get(self: ScopeSiteDescriptorIndexes, kind: ScopeSiteKind) ?usize {
         return switch (kind) {
-            .component => self.component,
-            .state => self.state,
-            .when => self.when,
-            .each => self.each,
+            .component => self.component.get(),
+            .state => self.state.get(),
+            .when => self.when.get(),
+            .each => self.each.get(),
         };
     }
 
-    pub fn slot(self: *ScopeSiteDescriptorIndexes, kind: ScopeSiteKind) *?usize {
+    pub fn slot(self: *ScopeSiteDescriptorIndexes, kind: ScopeSiteKind) *DescriptorIndex {
         return switch (kind) {
             .component => &self.component,
             .state => &self.state,
@@ -1602,27 +1616,27 @@ pub const ScopeSiteDescriptorIndexes = struct {
 
 pub const NodeDescriptorIndex = struct {
     scope_sites: ScopeSiteDescriptorIndexes = .{},
-    state: ?usize = null,
-    when: ?usize = null,
-    each: ?usize = null,
+    state: DescriptorIndex = .none,
+    when: DescriptorIndex = .none,
+    each: DescriptorIndex = .none,
 };
 
-pub fn setFreshIndex(slot: *?usize, value: usize) void {
-    if (slot.* != null) {
+pub fn setFreshIndex(slot: *DescriptorIndex, value: usize) void {
+    if (slot.* != .none) {
         @panic("descriptor stream recorded duplicate descriptor index");
     }
-    slot.* = value;
+    slot.* = DescriptorIndex.init(value);
 }
 
-pub fn updateIndex(slot: *?usize, value: usize) void {
-    if (slot.* == null) @panic("descriptor stream updated a missing descriptor index");
-    slot.* = value;
+pub fn updateIndex(slot: *DescriptorIndex, value: usize) void {
+    if (slot.* == .none) @panic("descriptor stream updated a missing descriptor index");
+    slot.* = DescriptorIndex.init(value);
 }
 
-pub fn clearIndex(slot: *?usize, expected: usize) void {
-    const existing = slot.* orelse @panic("descriptor stream cleared a missing descriptor index");
+pub fn clearIndex(slot: *DescriptorIndex, expected: usize) void {
+    const existing = slot.get() orelse @panic("descriptor stream cleared a missing descriptor index");
     if (existing != expected) @panic("descriptor stream cleared the wrong descriptor index");
-    slot.* = null;
+    slot.* = .none;
 }
 
 pub fn ensureElemDescriptorIndex(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, elem_id: u64) *ElemDescriptorIndex {
@@ -2236,7 +2250,7 @@ pub fn appendScopeSiteAt(comptime StreamType: type, stream: *StreamType, allocat
 
 pub fn findElementDesc(comptime StreamType: type, stream: *const StreamType, elem_id: u64) ?StreamType.ElementDesc {
     const descriptor_index = stream.elemDescriptorIndex(elem_id) orelse return null;
-    const index = descriptor_index.element orelse return null;
+    const index = descriptor_index.element.get() orelse return null;
     if (index >= stream.elements.items.len) @panic("element descriptor index exceeded descriptor table");
     const desc = stream.elements.items[index];
     if (desc.elem_id != elem_id) @panic("element descriptor index pointed at the wrong elem id");
@@ -2245,7 +2259,7 @@ pub fn findElementDesc(comptime StreamType: type, stream: *const StreamType, ele
 
 pub fn findTextNodeDesc(comptime StreamType: type, stream: *const StreamType, elem_id: u64) ?StreamType.TextNodeDesc {
     const descriptor_index = stream.elemDescriptorIndex(elem_id) orelse return null;
-    const index = descriptor_index.text_node orelse return null;
+    const index = descriptor_index.text_node.get() orelse return null;
     if (index >= stream.text_nodes.items.len) @panic("text node descriptor index exceeded descriptor table");
     const desc = stream.text_nodes.items[index];
     if (desc.elem_id != elem_id) @panic("text node descriptor index pointed at the wrong elem id");
@@ -2254,7 +2268,7 @@ pub fn findTextNodeDesc(comptime StreamType: type, stream: *const StreamType, el
 
 pub fn findSignalTextNodeDesc(comptime StreamType: type, stream: *const StreamType, elem_id: u64) ?StreamType.SignalTextNodeDesc {
     const descriptor_index = stream.elemDescriptorIndex(elem_id) orelse return null;
-    const index = descriptor_index.signal_text_node orelse return null;
+    const index = descriptor_index.signal_text_node.get() orelse return null;
     if (index >= stream.signal_text_nodes.items.len) @panic("signal text node descriptor index exceeded descriptor table");
     const desc = stream.signal_text_nodes.items[index];
     if (desc.elem_id != elem_id) @panic("signal text node descriptor index pointed at the wrong elem id");
@@ -2263,7 +2277,7 @@ pub fn findSignalTextNodeDesc(comptime StreamType: type, stream: *const StreamTy
 
 pub fn findSignalTextNodeDescMutable(comptime StreamType: type, stream: *StreamType, elem_id: u64) ?*StreamType.SignalTextNodeDesc {
     const descriptor_index = stream.elemDescriptorIndex(elem_id) orelse return null;
-    const index = descriptor_index.signal_text_node orelse return null;
+    const index = descriptor_index.signal_text_node.get() orelse return null;
     if (index >= stream.signal_text_nodes.items.len) @panic("signal text node descriptor index exceeded descriptor table");
     const desc = &stream.signal_text_nodes.items[index];
     if (desc.elem_id != elem_id) @panic("signal text node descriptor index pointed at the wrong elem id");
@@ -2272,8 +2286,8 @@ pub fn findSignalTextNodeDescMutable(comptime StreamType: type, stream: *StreamT
 
 pub fn streamHasTextField(comptime StreamType: type, stream: *const StreamType, elem_id: u64, field: TextField) bool {
     const descriptor_index = stream.elemDescriptorIndex(elem_id) orelse return false;
-    if (field == .text and descriptor_index.text_node != null) return true;
-    if (field == .text and descriptor_index.signal_text_node != null) return true;
+    if (field == .text and descriptor_index.text_node != .none) return true;
+    if (field == .text and descriptor_index.signal_text_node != .none) return true;
 
     if (descriptor_index.static_text_attrs.get(field)) |attr_index| {
         if (attr_index >= stream.static_text_attrs.items.len) @panic("static text attr descriptor index exceeded descriptor table");
@@ -2332,13 +2346,13 @@ pub fn renderNodeTag(comptime StreamType: type, stream: *const StreamType, node:
 
 pub fn streamElemTag(comptime StreamType: type, stream: *const StreamType, elem_id: u64) []const u8 {
     const descriptor_index = stream.elemDescriptorIndex(elem_id) orelse @panic("elem id had no descriptor index");
-    if (descriptor_index.element) |index| {
+    if (descriptor_index.element.get()) |index| {
         if (index >= stream.elements.items.len) @panic("element descriptor index exceeded descriptor table");
         const desc = stream.elements.items[index];
         if (desc.elem_id != elem_id) @panic("element descriptor index pointed at the wrong elem id");
         return desc.tag;
     }
-    if (descriptor_index.text_node != null or descriptor_index.signal_text_node != null) return "text";
+    if (descriptor_index.text_node != .none or descriptor_index.signal_text_node != .none) return "text";
     @panic("elem id had no render descriptor");
 }
 
@@ -2352,19 +2366,19 @@ pub fn renderNodeParentElemId(comptime StreamType: type, stream: *const StreamTy
 
 pub fn streamElemParentElemId(comptime StreamType: type, stream: *const StreamType, elem_id: u64) u64 {
     const descriptor_index = stream.elemDescriptorIndex(elem_id) orelse @panic("elem id had no descriptor index");
-    if (descriptor_index.element) |index| {
+    if (descriptor_index.element.get()) |index| {
         if (index >= stream.elements.items.len) @panic("element descriptor index exceeded descriptor table");
         const desc = stream.elements.items[index];
         if (desc.elem_id != elem_id) @panic("element descriptor index pointed at the wrong elem id");
         return desc.parent_elem_id;
     }
-    if (descriptor_index.text_node) |index| {
+    if (descriptor_index.text_node.get()) |index| {
         if (index >= stream.text_nodes.items.len) @panic("text node descriptor index exceeded descriptor table");
         const desc = stream.text_nodes.items[index];
         if (desc.elem_id != elem_id) @panic("text node descriptor index pointed at the wrong elem id");
         return desc.parent_elem_id;
     }
-    if (descriptor_index.signal_text_node) |index| {
+    if (descriptor_index.signal_text_node.get()) |index| {
         if (index >= stream.signal_text_nodes.items.len) @panic("signal text node descriptor index exceeded descriptor table");
         const desc = stream.signal_text_nodes.items[index];
         if (desc.elem_id != elem_id) @panic("signal text node descriptor index pointed at the wrong elem id");
@@ -2405,19 +2419,19 @@ pub fn renderNodeScopeId(comptime StreamType: type, stream: *const StreamType, n
 
 pub fn elemScopeId(comptime StreamType: type, stream: *const StreamType, elem_id: u64) ?u64 {
     const descriptor_index = stream.elemDescriptorIndex(elem_id) orelse return null;
-    if (descriptor_index.element) |index| {
+    if (descriptor_index.element.get()) |index| {
         if (index >= stream.elements.items.len) @panic("element descriptor index exceeded descriptor table");
         const desc = stream.elements.items[index];
         if (desc.elem_id != elem_id) @panic("element descriptor index pointed at the wrong elem id");
         return desc.scope_id;
     }
-    if (descriptor_index.text_node) |index| {
+    if (descriptor_index.text_node.get()) |index| {
         if (index >= stream.text_nodes.items.len) @panic("text node descriptor index exceeded descriptor table");
         const desc = stream.text_nodes.items[index];
         if (desc.elem_id != elem_id) @panic("text node descriptor index pointed at the wrong elem id");
         return desc.scope_id;
     }
-    if (descriptor_index.signal_text_node) |index| {
+    if (descriptor_index.signal_text_node.get()) |index| {
         if (index >= stream.signal_text_nodes.items.len) @panic("signal text node descriptor index exceeded descriptor table");
         const desc = stream.signal_text_nodes.items[index];
         if (desc.elem_id != elem_id) @panic("signal text node descriptor index pointed at the wrong elem id");
@@ -2584,27 +2598,27 @@ test "fixed event descriptors preserve Roc supplied payload descriptors" {
 
 test "field descriptor indexes round-trip by enum field" {
     var text: TextFieldDescriptorIndexes = .{};
-    text.slot(.label).* = 12;
-    text.slot(.class).* = 18;
+    text.slot(.label).* = DescriptorIndex.init(12);
+    text.slot(.class).* = DescriptorIndex.init(18);
     try std.testing.expectEqual(@as(?usize, 12), text.get(.label));
     try std.testing.expectEqual(@as(?usize, 18), text.get(.class));
     try std.testing.expectEqual(@as(?usize, null), text.get(.role));
 
     var bools: BoolFieldDescriptorIndexes = .{};
-    bools.slot(.checked).* = 3;
+    bools.slot(.checked).* = DescriptorIndex.init(3);
     try std.testing.expectEqual(@as(?usize, 3), bools.get(.checked));
     try std.testing.expectEqual(@as(?usize, null), bools.get(.disabled));
 
     var events: EventDescriptorIndexes = .{};
-    events.slot(.pointer_enter).* = 7;
+    events.slot(.pointer_enter).* = DescriptorIndex.init(7);
     try std.testing.expectEqual(@as(?usize, 7), events.get(.pointer_enter));
     try std.testing.expectEqual(@as(?usize, null), events.get(.click));
 }
 
 test "scope site descriptor indexes round-trip by kind" {
     var indexes: ScopeSiteDescriptorIndexes = .{};
-    indexes.slot(.component).* = 1;
-    indexes.slot(.when).* = 5;
+    indexes.slot(.component).* = DescriptorIndex.init(1);
+    indexes.slot(.when).* = DescriptorIndex.init(5);
 
     try std.testing.expectEqual(@as(?usize, 1), indexes.get(.component));
     try std.testing.expectEqual(@as(?usize, 5), indexes.get(.when));
@@ -2612,16 +2626,22 @@ test "scope site descriptor indexes round-trip by kind" {
 }
 
 test "descriptor index mutation helpers preserve explicit slots" {
-    var slot: ?usize = null;
+    var slot: DescriptorIndex = .none;
 
     setFreshIndex(&slot, 4);
-    try std.testing.expectEqual(@as(?usize, 4), slot);
+    try std.testing.expectEqual(@as(?usize, 4), slot.get());
 
     updateIndex(&slot, 9);
-    try std.testing.expectEqual(@as(?usize, 9), slot);
+    try std.testing.expectEqual(@as(?usize, 9), slot.get());
 
     clearIndex(&slot, 9);
-    try std.testing.expectEqual(@as(?usize, null), slot);
+    try std.testing.expectEqual(@as(?usize, null), slot.get());
+}
+
+test "descriptor indexes retain a cache-dense layout" {
+    try std.testing.expectEqual(@as(usize, 4), @sizeOf(DescriptorIndex));
+    try std.testing.expectEqual(@as(usize, 104), @sizeOf(ElemDescriptorIndex));
+    try std.testing.expectEqual(@as(usize, 28), @sizeOf(NodeDescriptorIndex));
 }
 
 test "render elem index reports empty only when no render metadata remains" {
@@ -2650,27 +2670,27 @@ test "stream reader helpers validate descriptor indexes" {
         .scope_id = 10,
         .tag = "div",
     }) catch @panic("out of memory");
-    ensureTestElemDescriptorIndex(&stream, allocator, 1).element = 0;
+    ensureTestElemDescriptorIndex(&stream, allocator, 1).element = DescriptorIndex.init(0);
 
     stream.text_nodes.append(allocator, .{
         .elem_id = 2,
         .parent_elem_id = 1,
         .scope_id = 10,
     }) catch @panic("out of memory");
-    ensureTestElemDescriptorIndex(&stream, allocator, 2).text_node = 0;
+    ensureTestElemDescriptorIndex(&stream, allocator, 2).text_node = DescriptorIndex.init(0);
 
     stream.signal_text_nodes.append(allocator, .{
         .elem_id = 3,
         .parent_elem_id = 1,
         .scope_id = 11,
     }) catch @panic("out of memory");
-    ensureTestElemDescriptorIndex(&stream, allocator, 3).signal_text_node = 0;
+    ensureTestElemDescriptorIndex(&stream, allocator, 3).signal_text_node = DescriptorIndex.init(0);
 
     stream.static_text_attrs.append(allocator, .{
         .elem_id = 1,
         .field = .label,
     }) catch @panic("out of memory");
-    ensureTestElemDescriptorIndex(&stream, allocator, 1).static_text_attrs.slot(.label).* = 0;
+    ensureTestElemDescriptorIndex(&stream, allocator, 1).static_text_attrs.slot(.label).* = DescriptorIndex.init(0);
 
     stream.static_custom_text_attrs.append(allocator, .{
         .elem_id = 1,
@@ -2681,7 +2701,7 @@ test "stream reader helpers validate descriptor indexes" {
         .elem_id = 1,
         .field = .checked,
     }) catch @panic("out of memory");
-    ensureTestElemDescriptorIndex(&stream, allocator, 1).static_bool_attrs.slot(.checked).* = 0;
+    ensureTestElemDescriptorIndex(&stream, allocator, 1).static_bool_attrs.slot(.checked).* = DescriptorIndex.init(0);
 
     stream.render_nodes.appendSlice(allocator, &.{
         .{ .elem_id = 1, .kind = .element },

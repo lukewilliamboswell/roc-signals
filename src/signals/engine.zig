@@ -423,32 +423,32 @@ pub fn elemScopeId(stream: *const HostNodeDescriptorStream, elem_id: u64) ?u64 {
 }
 
 fn textFieldDescriptorIndexesActive(indexes: HostTextFieldDescriptorIndexes) bool {
-    return indexes.text != null or
-        indexes.role != null or
-        indexes.label != null or
-        indexes.test_id != null or
-        indexes.value != null or
-        indexes.class != null;
+    return indexes.text != .none or
+        indexes.role != .none or
+        indexes.label != .none or
+        indexes.test_id != .none or
+        indexes.value != .none or
+        indexes.class != .none;
 }
 
 fn boolFieldDescriptorIndexesActive(indexes: HostBoolFieldDescriptorIndexes) bool {
-    return indexes.checked != null or indexes.disabled != null;
+    return indexes.checked != .none or indexes.disabled != .none;
 }
 
 fn eventDescriptorIndexesActive(indexes: HostEventDescriptorIndexes) bool {
-    return indexes.click != null or
-        indexes.input != null or
-        indexes.check != null or
-        indexes.pointer_down != null or
-        indexes.pointer_up != null or
-        indexes.pointer_enter != null or
-        indexes.pointer_leave != null;
+    return indexes.click != .none or
+        indexes.input != .none or
+        indexes.check != .none or
+        indexes.pointer_down != .none or
+        indexes.pointer_up != .none or
+        indexes.pointer_enter != .none or
+        indexes.pointer_leave != .none;
 }
 
 fn elemDescriptorIndexActive(index: HostElemDescriptorIndex) bool {
-    return index.element != null or
-        index.text_node != null or
-        index.signal_text_node != null or
+    return index.element != .none or
+        index.text_node != .none or
+        index.signal_text_node != .none or
         textFieldDescriptorIndexesActive(index.static_text_attrs) or
         textFieldDescriptorIndexesActive(index.signal_text_attrs) or
         boolFieldDescriptorIndexesActive(index.static_bool_attrs) or
@@ -931,7 +931,7 @@ pub fn Engine(comptime Ctx: type) type {
             const descriptor_index = stream.elemDescriptorIndex(node.elem_id) orelse @panic("render node had no descriptor index");
             return switch (node.kind) {
                 .element => blk: {
-                    const index = descriptor_index.element orelse @panic("element render node had no element descriptor");
+                    const index = descriptor_index.element.get() orelse @panic("element render node had no element descriptor");
                     if (index >= stream.elements.items.len) @panic("element descriptor index exceeded descriptor table");
                     const desc = stream.elements.items[index];
                     if (desc.elem_id != node.elem_id) @panic("element descriptor index pointed at the wrong elem id");
@@ -945,21 +945,21 @@ pub fn Engine(comptime Ctx: type) type {
             const descriptor_index = stream.elemDescriptorIndex(node.elem_id) orelse @panic("render node had no descriptor index");
             return switch (node.kind) {
                 .element => blk: {
-                    const index = descriptor_index.element orelse @panic("element render node had no element descriptor");
+                    const index = descriptor_index.element.get() orelse @panic("element render node had no element descriptor");
                     if (index >= stream.elements.items.len) @panic("element descriptor index exceeded descriptor table");
                     const desc = stream.elements.items[index];
                     if (desc.elem_id != node.elem_id) @panic("element descriptor index pointed at the wrong elem id");
                     break :blk desc.parent_elem_id;
                 },
                 .text => blk: {
-                    const index = descriptor_index.text_node orelse @panic("text render node had no text descriptor");
+                    const index = descriptor_index.text_node.get() orelse @panic("text render node had no text descriptor");
                     if (index >= stream.text_nodes.items.len) @panic("text descriptor index exceeded descriptor table");
                     const desc = stream.text_nodes.items[index];
                     if (desc.elem_id != node.elem_id) @panic("text descriptor index pointed at the wrong elem id");
                     break :blk desc.parent_elem_id;
                 },
                 .signal_text => blk: {
-                    const index = descriptor_index.signal_text_node orelse @panic("signal text render node had no signal text descriptor");
+                    const index = descriptor_index.signal_text_node.get() orelse @panic("signal text render node had no signal text descriptor");
                     if (index >= stream.signal_text_nodes.items.len) @panic("signal text descriptor index exceeded descriptor table");
                     const desc = stream.signal_text_nodes.items[index];
                     if (desc.elem_id != node.elem_id) @panic("signal text descriptor index pointed at the wrong elem id");
@@ -1603,10 +1603,10 @@ pub fn Engine(comptime Ctx: type) type {
                 index: ?usize,
             };
             const scope_site_slots = [_]ScopeSiteSlot{
-                .{ .kind = .component, .index = descriptor_index.scope_sites.component },
-                .{ .kind = .state, .index = descriptor_index.scope_sites.state },
-                .{ .kind = .when, .index = descriptor_index.scope_sites.when },
-                .{ .kind = .each, .index = descriptor_index.scope_sites.each },
+                .{ .kind = .component, .index = descriptor_index.scope_sites.component.get() },
+                .{ .kind = .state, .index = descriptor_index.scope_sites.state.get() },
+                .{ .kind = .when, .index = descriptor_index.scope_sites.when.get() },
+                .{ .kind = .each, .index = descriptor_index.scope_sites.each.get() },
             };
             for (scope_site_slots) |slot| {
                 const site_index = slot.index orelse continue;
@@ -2834,7 +2834,7 @@ pub fn Engine(comptime Ctx: type) type {
 
             for (removed_elem_ids) |elem_id| {
                 const descriptor_index = self.active_stream.elemDescriptorIndex(elem_id) orelse @panic("removed elem id had no descriptor index");
-                const has_render_descriptor = descriptor_index.element != null or descriptor_index.text_node != null or descriptor_index.signal_text_node != null;
+                const has_render_descriptor = descriptor_index.element != .none or descriptor_index.text_node != .none or descriptor_index.signal_text_node != .none;
                 if (!has_render_descriptor) @panic("removed rendered elem id had no render-owned descriptor");
 
                 scratch.appendDescriptorIndexes(allocator, descriptor_index);
@@ -3897,7 +3897,7 @@ pub fn Engine(comptime Ctx: type) type {
 
         pub fn activeWhenIndexByNodeId(self: *Self, node_id: u64) ?usize {
             const descriptor_index = self.active_stream.nodeDescriptorIndex(node_id) orelse return null;
-            const when_index = descriptor_index.when orelse return null;
+            const when_index = descriptor_index.when.get() orelse return null;
             if (when_index >= self.active_stream.whens.items.len) @panic("active when index exceeded descriptor table");
             if (self.active_stream.whens.items[when_index].node_id != node_id) @panic("active when index pointed at the wrong node");
             return when_index;
@@ -3905,7 +3905,7 @@ pub fn Engine(comptime Ctx: type) type {
 
         pub fn activeEachIndexByNodeId(self: *Self, node_id: u64) ?usize {
             const descriptor_index = self.active_stream.nodeDescriptorIndex(node_id) orelse return null;
-            const each_index = descriptor_index.each orelse return null;
+            const each_index = descriptor_index.each.get() orelse return null;
             if (each_index >= self.active_stream.eaches.items.len) @panic("active each index exceeded descriptor table");
             if (self.active_stream.eaches.items[each_index].node_id != node_id) @panic("active each index pointed at the wrong node");
             return each_index;
@@ -4785,7 +4785,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
             self.clearRenderTextAttrsMissingFromStream(ctx, &self.active_stream, elem_id, counts);
 
-            if (descriptor_index.text_node) |text_index| {
+            if (descriptor_index.text_node.get()) |text_index| {
                 if (text_index >= self.active_stream.text_nodes.items.len) @panic("active text node index exceeded descriptor table");
                 const desc = self.active_stream.text_nodes.items[text_index];
                 if (desc.elem_id != elem_id) @panic("active text node index pointed at the wrong elem id");
@@ -4794,7 +4794,7 @@ pub fn Engine(comptime Ctx: type) type {
                 }
             }
 
-            if (descriptor_index.signal_text_node) |signal_text_index| {
+            if (descriptor_index.signal_text_node.get()) |signal_text_index| {
                 if (signal_text_index >= self.active_stream.signal_text_nodes.items.len) @panic("active signal text node index exceeded descriptor table");
                 const desc = &self.active_stream.signal_text_nodes.items[signal_text_index];
                 if (desc.elem_id != elem_id) @panic("active signal text node index pointed at the wrong elem id");

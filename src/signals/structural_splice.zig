@@ -99,9 +99,9 @@ pub const ElemOwnedRemovalScratch = struct {
     }
 
     pub fn appendDescriptorIndexes(self: *@This(), allocator: std.mem.Allocator, descriptor_index: anytype) void {
-        appendRemovalIndex(allocator, &self.element_indexes, descriptor_index.element);
-        appendRemovalIndex(allocator, &self.text_node_indexes, descriptor_index.text_node);
-        appendRemovalIndex(allocator, &self.signal_text_node_indexes, descriptor_index.signal_text_node);
+        appendRemovalIndex(allocator, &self.element_indexes, descriptorIndexValue(descriptor_index.element));
+        appendRemovalIndex(allocator, &self.text_node_indexes, descriptorIndexValue(descriptor_index.text_node));
+        appendRemovalIndex(allocator, &self.signal_text_node_indexes, descriptorIndexValue(descriptor_index.signal_text_node));
         appendTextFieldRemovalIndexes(allocator, &self.static_text_attr_indexes, descriptor_index.static_text_attrs);
         appendTextFieldRemovalIndexes(allocator, &self.signal_text_attr_indexes, descriptor_index.signal_text_attrs);
         appendBoolFieldRemovalIndexes(allocator, &self.static_bool_attr_indexes, descriptor_index.static_bool_attrs);
@@ -138,28 +138,33 @@ pub fn appendRemovalIndex(allocator: std.mem.Allocator, indexes: *std.ArrayListU
     indexes.append(allocator, index orelse return) catch @panic("out of memory");
 }
 
+fn descriptorIndexValue(index: anytype) ?usize {
+    if (@TypeOf(index) == descriptor_stream.DescriptorIndex) return index.get();
+    return index;
+}
+
 pub fn appendTextFieldRemovalIndexes(allocator: std.mem.Allocator, indexes: *std.ArrayListUnmanaged(usize), fields: anytype) void {
-    appendRemovalIndex(allocator, indexes, fields.text);
-    appendRemovalIndex(allocator, indexes, fields.role);
-    appendRemovalIndex(allocator, indexes, fields.label);
-    appendRemovalIndex(allocator, indexes, fields.test_id);
-    appendRemovalIndex(allocator, indexes, fields.value);
-    appendRemovalIndex(allocator, indexes, fields.class);
+    appendRemovalIndex(allocator, indexes, descriptorIndexValue(fields.text));
+    appendRemovalIndex(allocator, indexes, descriptorIndexValue(fields.role));
+    appendRemovalIndex(allocator, indexes, descriptorIndexValue(fields.label));
+    appendRemovalIndex(allocator, indexes, descriptorIndexValue(fields.test_id));
+    appendRemovalIndex(allocator, indexes, descriptorIndexValue(fields.value));
+    appendRemovalIndex(allocator, indexes, descriptorIndexValue(fields.class));
 }
 
 pub fn appendBoolFieldRemovalIndexes(allocator: std.mem.Allocator, indexes: *std.ArrayListUnmanaged(usize), fields: anytype) void {
-    appendRemovalIndex(allocator, indexes, fields.checked);
-    appendRemovalIndex(allocator, indexes, fields.disabled);
+    appendRemovalIndex(allocator, indexes, descriptorIndexValue(fields.checked));
+    appendRemovalIndex(allocator, indexes, descriptorIndexValue(fields.disabled));
 }
 
 pub fn appendEventRemovalIndexes(allocator: std.mem.Allocator, indexes: *std.ArrayListUnmanaged(usize), events: anytype) void {
-    appendRemovalIndex(allocator, indexes, events.click);
-    appendRemovalIndex(allocator, indexes, events.input);
-    appendRemovalIndex(allocator, indexes, events.check);
-    appendRemovalIndex(allocator, indexes, events.pointer_down);
-    appendRemovalIndex(allocator, indexes, events.pointer_up);
-    appendRemovalIndex(allocator, indexes, events.pointer_enter);
-    appendRemovalIndex(allocator, indexes, events.pointer_leave);
+    appendRemovalIndex(allocator, indexes, descriptorIndexValue(events.click));
+    appendRemovalIndex(allocator, indexes, descriptorIndexValue(events.input));
+    appendRemovalIndex(allocator, indexes, descriptorIndexValue(events.check));
+    appendRemovalIndex(allocator, indexes, descriptorIndexValue(events.pointer_down));
+    appendRemovalIndex(allocator, indexes, descriptorIndexValue(events.pointer_up));
+    appendRemovalIndex(allocator, indexes, descriptorIndexValue(events.pointer_enter));
+    appendRemovalIndex(allocator, indexes, descriptorIndexValue(events.pointer_leave));
 }
 
 pub fn buildTargetScopeSet(comptime Scope: type, allocator: std.mem.Allocator, scratch: *std.ArrayListUnmanaged(bool), scopes: []const Scope, target: ReplacementTarget, lookup: anytype) []const bool {
@@ -398,13 +403,13 @@ const TestStream = struct {
 
     pub fn elemDescriptorIndex(self: *const @This(), elem_id: u64) ?descriptor_stream.ElemDescriptorIndex {
         for (self.elements.items, 0..) |desc, index| {
-            if (desc.elem_id == elem_id) return .{ .element = index };
+            if (desc.elem_id == elem_id) return .{ .element = descriptor_stream.DescriptorIndex.init(index) };
         }
         for (self.text_nodes.items, 0..) |desc, index| {
-            if (desc.elem_id == elem_id) return .{ .text_node = index };
+            if (desc.elem_id == elem_id) return .{ .text_node = descriptor_stream.DescriptorIndex.init(index) };
         }
         for (self.signal_text_nodes.items, 0..) |desc, index| {
-            if (desc.elem_id == elem_id) return .{ .signal_text_node = index };
+            if (desc.elem_id == elem_id) return .{ .signal_text_node = descriptor_stream.DescriptorIndex.init(index) };
         }
         return null;
     }
