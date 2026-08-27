@@ -1033,6 +1033,10 @@ pub fn Engine(comptime Ctx: type) type {
             rows: []*PreparedActiveEachRows,
             replacements: []*PreparedEachRowReplacementCollection,
             replacement_owner: ?*PreparedReplacementOwner = null,
+            layouts: []PreparedEachRowRenderLayout = &.{},
+            descriptor_target_scopes: []bool = &.{},
+            retired_scope_ids: []u64 = &.{},
+            final_render_topology: ?PreparedFinalRenderTopology = null,
             prepared_len: usize = 0,
             committed: bool = false,
 
@@ -1114,6 +1118,95 @@ pub fn Engine(comptime Ctx: type) type {
                 self.replacement_owner = owner;
             }
 
+            fn prepareRenderLayouts(self: *@This(), sites: []const HostNodeScopeSiteDesc) CollectionError!void {
+                if (self.replacement_owner == null or self.layouts.len != 0 or sites.len != self.prepared_len) return error.ResourceLimit;
+                const layouts = self.allocator.alloc(PreparedEachRowRenderLayout, self.prepared_len) catch return error.OutOfMemory;
+                var prepared_len: usize = 0;
+                errdefer {
+                    for (layouts[0..prepared_len]) |*layout| layout.deinit();
+                    self.allocator.free(layouts);
+                }
+                for (layouts, sites, self.rows[0..self.prepared_len], self.replacements[0..self.prepared_len]) |*layout, site, rows, replacement| {
+                    layout.* = try PreparedEachRowRenderLayout.prepare(self.engine, self.allocator, site, &rows.rows, replacement.replacement_rows);
+                    prepared_len += 1;
+                }
+
+                const order = self.allocator.alloc(usize, self.prepared_len) catch return error.OutOfMemory;
+                defer self.allocator.free(order);
+                for (order, 0..) |*index, i| index.* = i;
+                const Sort = struct {
+                    sites: []const HostNodeScopeSiteDesc,
+                    fn lessThan(sort: @This(), left: usize, right: usize) bool {
+                        if (sort.sites[left].render_insert_index != sort.sites[right].render_insert_index) return sort.sites[left].render_insert_index < sort.sites[right].render_insert_index;
+                        return sort.sites[left].node_id < sort.sites[right].node_id;
+                    }
+                };
+                std.mem.sort(usize, order, Sort{ .sites = sites }, Sort.lessThan);
+
+                var placement_count: usize = 0;
+                var removed_render_count: usize = 0;
+                for (layouts) |*layout| {
+                    placement_count = std.math.add(usize, placement_count, layout.survivor_moves.len) catch return error.ResourceLimit;
+                    removed_render_count = std.math.add(usize, removed_render_count, layout.removal.removal.scan.removed_render_count) catch return error.ResourceLimit;
+                }
+                for (self.replacements[0..self.prepared_len]) |replacement| placement_count = std.math.add(usize, placement_count, replacement.replacement_rows.len) catch return error.ResourceLimit;
+                const placements = self.allocator.alloc(PreparedFinalRenderTopology.Placement, placement_count) catch return error.OutOfMemory;
+                defer self.allocator.free(placements);
+                const targets = self.allocator.alloc(bool, self.engine.scopes.items.len) catch return error.OutOfMemory;
+                errdefer self.allocator.free(targets);
+                @memset(targets, false);
+                var retired_count: usize = 0;
+                for (layouts) |*layout| for (layout.targets.descriptor_target_scopes, 0..) |targeted, scope_index| if (targeted) {
+                    if (targets[scope_index]) return error.ResourceLimit;
+                    targets[scope_index] = true;
+                };
+                for (layouts) |*layout| retired_count = std.math.add(usize, retired_count, layout.targets.scope_retirement.?.scope_ids.len) catch return error.ResourceLimit;
+                const retired_scope_ids = self.allocator.alloc(u64, retired_count) catch return error.OutOfMemory;
+                errdefer self.allocator.free(retired_scope_ids);
+                var retired_write: usize = 0;
+                for (layouts) |*layout| for (layout.targets.scope_retirement.?.scope_ids) |scope_id| {
+                    for (retired_scope_ids[0..retired_write]) |existing| if (existing == scope_id) return error.ResourceLimit;
+                    retired_scope_ids[retired_write] = scope_id;
+                    retired_write += 1;
+                };
+
+                var write: usize = 0;
+                var cumulative_delta: isize = 0;
+                var previous_end: usize = 0;
+                for (order) |site_index| {
+                    const site = sites[site_index];
+                    const layout = &layouts[site_index];
+                    const replacement = self.replacements[site_index];
+                    if (site.render_insert_index < previous_end) return error.ResourceLimit;
+                    var site_final_end = site.render_insert_index;
+                    for (layout.final_starts) |start| site_final_end = @max(site_final_end, start);
+                    for (layout.survivor_moves) |move| {
+                        const final_start = std.math.cast(usize, std.math.add(isize, std.math.cast(isize, move.new_start) orelse return error.ResourceLimit, cumulative_delta) catch return error.ResourceLimit) orelse return error.ResourceLimit;
+                        placements[write] = .{ .source = .active, .source_start = move.old_start, .final_start = final_start, .len = move.len };
+                        write += 1;
+                        site_final_end = @max(site_final_end, std.math.add(usize, move.new_start, move.len) catch return error.ResourceLimit);
+                    }
+                    var replacement_len: usize = 0;
+                    for (replacement.replacement_rows) |row| {
+                        const base = layout.final_starts[row.row_index];
+                        const final_start = std.math.cast(usize, std.math.add(isize, std.math.cast(isize, base) orelse return error.ResourceLimit, cumulative_delta) catch return error.ResourceLimit) orelse return error.ResourceLimit;
+                        placements[write] = .{ .source = .replacement, .source_start = row.start, .final_start = final_start, .len = row.len };
+                        write += 1;
+                        replacement_len = std.math.add(usize, replacement_len, row.len) catch return error.ResourceLimit;
+                        site_final_end = @max(site_final_end, std.math.add(usize, base, row.len) catch return error.ResourceLimit);
+                    }
+                    previous_end = site_final_end;
+                    const removed = layout.removal.removal.scan.removed_render_count;
+                    cumulative_delta = std.math.add(isize, cumulative_delta, std.math.cast(isize, replacement_len) orelse return error.ResourceLimit) catch return error.ResourceLimit;
+                    cumulative_delta = std.math.sub(isize, cumulative_delta, std.math.cast(isize, removed) orelse return error.ResourceLimit) catch return error.ResourceLimit;
+                }
+                if (write != placements.len) return error.ResourceLimit;
+                self.final_render_topology = try PreparedFinalRenderTopology.preparePlaced(self.engine, self.allocator, self.replacement_owner.?, targets, removed_render_count, placements);
+                self.descriptor_target_scopes = targets;
+                self.retired_scope_ids = retired_scope_ids;
+                self.layouts = layouts;
+            }
+
             fn commit(self: *@This()) void {
                 if (self.committed) @panic("prepared composite rows committed twice");
                 self.scope_claims.commit(&self.engine.scopes);
@@ -1125,6 +1218,11 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             fn deinit(self: *@This()) void {
+                if (self.final_render_topology) |*topology| topology.deinit();
+                self.allocator.free(self.retired_scope_ids);
+                self.allocator.free(self.descriptor_target_scopes);
+                for (self.layouts) |*layout| layout.deinit();
+                self.allocator.free(self.layouts);
                 if (self.replacement_owner) |owner| owner.deinit();
                 for (self.replacements[0..self.prepared_len]) |replacement| replacement.deinit();
                 for (self.rows[0..self.prepared_len]) |rows| rows.deinit();
@@ -11634,6 +11732,7 @@ test "composite rows share provisional scope claims across two sites and sweep O
             try composite.prepareOne(first_site, first, null);
             try composite.prepareOne(second_site, second, null);
             try composite.prepareReplacement(&.{ first_site, second_site }, &.{ first, second }, .{}, &.{});
+            try composite.prepareRenderLayouts(&.{ first_site, second_site });
             return composite;
         }
 
@@ -11641,8 +11740,12 @@ test "composite rows share provisional scope claims across two sites and sweep O
             var fault = FaultAllocator.init(std.testing.allocator);
             var ctx = VerifyCtxHost{ .allocator = fault.allocator() };
             var engine = Engine(VerifyCtx).init();
-            defer deinitVerifyStateEngine(&engine, &ctx, host);
+            defer {
+                engine.active_stream.deinit(ctx.allocator, &ctx, host, &engine.pending_roc_metrics);
+                deinitVerifyStateEngine(&engine, &ctx, host);
+            }
             _ = try engine.internRootScope(ctx.allocator);
+            engine.active_stream.appendTextNode(ctx.allocator, 100, 0, 0, "between-sites");
             const first_site_index = engine.ensureEachRowSiteIndex(ctx.allocator, 0, 10);
             const second_site_index = engine.ensureEachRowSiteIndex(ctx.allocator, 0, 20);
             var first_record = HostSignalRecord{ .ref_count = 1, .payload = .{ .const_value = .{ .init = null, .cap = cap } } };
@@ -11662,7 +11765,7 @@ test "composite rows share provisional scope claims across two sites and sweep O
             };
             defer second.cached_value.deinit(&ctx, host, &engine.pending_roc_metrics);
             const first_site = HostNodeScopeSiteDesc{ .node_id = 10, .scope_id = 0, .ordinal = 10, .parent_elem_id = 0, .render_insert_index = 0, .kind = .each, .binder_bindings = &.{} };
-            const second_site = HostNodeScopeSiteDesc{ .node_id = 20, .scope_id = 0, .ordinal = 20, .parent_elem_id = 0, .render_insert_index = 0, .kind = .each, .binder_bindings = &.{} };
+            const second_site = HostNodeScopeSiteDesc{ .node_id = 20, .scope_id = 0, .ordinal = 20, .parent_elem_id = 0, .render_insert_index = 1, .kind = .each, .binder_bindings = &.{} };
 
             fault.configure(fail_at);
             const composite = prepareAll(&engine, &ctx, host, first_site, &first, second_site, &second) catch |err| {
@@ -11672,6 +11775,7 @@ test "composite rows share provisional scope claims across two sites and sweep O
                 fault.configure(null);
                 const retry = try prepareAll(&engine, &ctx, host, first_site, &first, second_site, &second);
                 try std.testing.expectEqual(@as(usize, 2), retry.replacement_owner.?.stream.text_nodes.items.len);
+                try std.testing.expectEqual(@as(usize, 3), retry.final_render_topology.?.render_nodes.items.len);
                 retry.deinit();
                 try std.testing.expectEqual(@as(usize, 1), engine.scopes.items.len);
                 return attempts;
@@ -11687,6 +11791,14 @@ test "composite rows share provisional scope claims across two sites and sweep O
             try std.testing.expectEqual(@as(usize, 1), composite.replacements[1].replacement_rows[0].start);
             try std.testing.expectEqual(@as(usize, 1), composite.replacements[1].replacement_rows[0].len);
             try std.testing.expectEqual(@as(usize, 0), engine.dom_identities.items.len);
+            const final_nodes = composite.final_render_topology.?.render_nodes.items;
+            try std.testing.expectEqual(@as(usize, 3), final_nodes.len);
+            try std.testing.expectEqual(replacement_owner.stream.text_nodes.items[0].elem_id, final_nodes[0].elem_id);
+            try std.testing.expectEqual(@as(u64, 100), final_nodes[1].elem_id);
+            try std.testing.expectEqual(replacement_owner.stream.text_nodes.items[1].elem_id, final_nodes[2].elem_id);
+            try std.testing.expectEqual(@as(u64, 100), engine.active_stream.render_nodes.items[0].elem_id);
+            try std.testing.expectEqual(@as(usize, 0), composite.retired_scope_ids.len);
+            try std.testing.expectEqualSlices(bool, &.{false}, composite.descriptor_target_scopes);
             const attempts = fault.attempts;
             fault.configure(1);
             composite.commit();
