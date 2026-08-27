@@ -4248,15 +4248,39 @@ pub fn Engine(comptime Ctx: type) type {
         };
 
         const PreparedFinalRenderTopology = struct {
+            const PlacementSource = enum { active, replacement };
+            const Placement = struct {
+                source: PlacementSource,
+                source_start: usize,
+                final_start: usize,
+                len: usize,
+            };
             allocator: std.mem.Allocator,
             render_nodes: std.ArrayListUnmanaged(HostRenderNode) = .empty,
             metadata: std.AutoHashMapUnmanaged(u64, HostRenderElemIndex) = .empty,
 
             fn prepare(engine: *Self, allocator: std.mem.Allocator, replacement: *const PreparedEachRowReplacementCollection, layout: *const PreparedEachRowRenderLayout) CollectionError!@This() {
+                const placement_count = std.math.add(usize, layout.survivor_moves.len, replacement.replacement_rows.len) catch return error.ResourceLimit;
+                const placements = allocator.alloc(Placement, placement_count) catch return error.OutOfMemory;
+                defer allocator.free(placements);
+                var write: usize = 0;
+                for (layout.survivor_moves) |move| {
+                    placements[write] = .{ .source = .active, .source_start = move.old_start, .final_start = move.new_start, .len = move.len };
+                    write += 1;
+                }
+                for (replacement.replacement_rows) |row| {
+                    if (row.row_index >= layout.final_starts.len) return error.ResourceLimit;
+                    placements[write] = .{ .source = .replacement, .source_start = row.start, .final_start = layout.final_starts[row.row_index], .len = row.len };
+                    write += 1;
+                }
+                return preparePlaced(engine, allocator, replacement.replacement, layout.targets.descriptor_target_scopes, layout.removal.removal.scan.removed_render_count, placements);
+            }
+
+            fn preparePlaced(engine: *Self, allocator: std.mem.Allocator, replacement: *const PreparedReplacementOwner, target_scopes: []const bool, removed_render_count: usize, placements: []const Placement) CollectionError!@This() {
                 var prepared: @This() = .{ .allocator = allocator };
                 errdefer prepared.deinit();
-                const retained_len = std.math.sub(usize, engine.active_stream.render_nodes.items.len, layout.removal.removal.scan.removed_render_count) catch return error.ResourceLimit;
-                const final_len = std.math.add(usize, retained_len, replacement.replacement.stream.render_nodes.items.len) catch return error.ResourceLimit;
+                const retained_len = std.math.sub(usize, engine.active_stream.render_nodes.items.len, removed_render_count) catch return error.ResourceLimit;
+                const final_len = std.math.add(usize, retained_len, replacement.stream.render_nodes.items.len) catch return error.ResourceLimit;
                 prepared.render_nodes = .{ .items = allocator.alloc(HostRenderNode, final_len) catch return error.OutOfMemory, .capacity = final_len };
                 const filled = allocator.alloc(bool, final_len) catch return error.OutOfMemory;
                 defer allocator.free(filled);
@@ -4264,27 +4288,27 @@ pub fn Engine(comptime Ctx: type) type {
                 const old_used = allocator.alloc(bool, engine.active_stream.render_nodes.items.len) catch return error.OutOfMemory;
                 defer allocator.free(old_used);
                 @memset(old_used, false);
-                for (layout.survivor_moves) |move| {
-                    if (move.old_start > engine.active_stream.render_nodes.items.len or move.len > engine.active_stream.render_nodes.items.len - move.old_start) return error.ResourceLimit;
-                    if (move.new_start > final_len or move.len > final_len - move.new_start) return error.ResourceLimit;
-                    @memcpy(prepared.render_nodes.items[move.new_start..][0..move.len], engine.active_stream.render_nodes.items[move.old_start..][0..move.len]);
-                    @memset(filled[move.new_start..][0..move.len], true);
-                    @memset(old_used[move.old_start..][0..move.len], true);
-                }
-                for (replacement.replacement_rows) |row| {
-                    if (row.start > replacement.replacement.stream.render_nodes.items.len or row.len > replacement.replacement.stream.render_nodes.items.len - row.start) return error.ResourceLimit;
-                    const final_start = layout.final_starts[row.row_index];
-                    if (final_start > final_len or row.len > final_len - final_start) return error.ResourceLimit;
-                    for (filled[final_start..][0..row.len]) |is_filled| if (is_filled) return error.ResourceLimit;
-                    @memcpy(prepared.render_nodes.items[final_start..][0..row.len], replacement.replacement.stream.render_nodes.items[row.start..][0..row.len]);
-                    @memset(filled[final_start..][0..row.len], true);
+                for (placements) |placement| {
+                    const source_nodes = switch (placement.source) {
+                        .active => engine.active_stream.render_nodes.items,
+                        .replacement => replacement.stream.render_nodes.items,
+                    };
+                    if (placement.source_start > source_nodes.len or placement.len > source_nodes.len - placement.source_start) return error.ResourceLimit;
+                    if (placement.final_start > final_len or placement.len > final_len - placement.final_start) return error.ResourceLimit;
+                    for (filled[placement.final_start..][0..placement.len]) |is_filled| if (is_filled) return error.ResourceLimit;
+                    @memcpy(prepared.render_nodes.items[placement.final_start..][0..placement.len], source_nodes[placement.source_start..][0..placement.len]);
+                    @memset(filled[placement.final_start..][0..placement.len], true);
+                    if (placement.source == .active) {
+                        for (old_used[placement.source_start..][0..placement.len]) |is_used| if (is_used) return error.ResourceLimit;
+                        @memset(old_used[placement.source_start..][0..placement.len], true);
+                    }
                 }
                 var final_cursor: usize = 0;
                 for (engine.active_stream.render_nodes.items, 0..) |node, old_index| {
                     if (old_used[old_index]) continue;
                     const scope_id = renderNodeScopeId(&engine.active_stream, node);
-                    if (scope_id >= layout.targets.descriptor_target_scopes.len) return error.ResourceLimit;
-                    if (layout.targets.descriptor_target_scopes[@intCast(scope_id)]) continue;
+                    if (scope_id >= target_scopes.len) return error.ResourceLimit;
+                    if (target_scopes[@intCast(scope_id)]) continue;
                     while (final_cursor < filled.len and filled[final_cursor]) final_cursor += 1;
                     if (final_cursor == filled.len) return error.ResourceLimit;
                     prepared.render_nodes.items[final_cursor] = node;
@@ -4293,7 +4317,7 @@ pub fn Engine(comptime Ctx: type) type {
                 for (filled) |is_filled| if (!is_filled) return error.ResourceLimit;
                 prepared.metadata.ensureTotalCapacity(allocator, @intCast(std.math.mul(usize, final_len, 2) catch return error.ResourceLimit)) catch return error.OutOfMemory;
                 for (prepared.render_nodes.items, 0..) |node, render_index| {
-                    const source = if (renderNodeSliceContainsElem(replacement.replacement.stream.render_nodes.items, node.elem_id)) &replacement.replacement.stream else &engine.active_stream;
+                    const source = if (renderNodeSliceContainsElem(replacement.stream.render_nodes.items, node.elem_id)) &replacement.stream else &engine.active_stream;
                     _ = renderNodeScopeId(source, node);
                     const parent_elem_id = renderNodeParentElemId(source, node);
                     const node_entry = prepared.metadata.getOrPutAssumeCapacity(node.elem_id);
@@ -4590,20 +4614,12 @@ pub fn Engine(comptime Ctx: type) type {
 
             fn prepareEachRenderTopology(self: *@This(), rows: *const PreparedEachRowReplacementCollection, layout: *const PreparedEachRowRenderLayout) CollectionError!void {
                 self.final_render_topology = try PreparedFinalRenderTopology.prepare(self.engine, Ctx.allocator(self.host_ctx), rows, layout);
+                try self.prepareFinalRenderTopology(&.{layout.parent_elem_id});
+            }
+
+            fn prepareFinalRenderTopology(self: *@This(), parent_elem_ids: []const u64) CollectionError!void {
                 const splice = &(self.render_splice orelse return);
                 const allocator = Ctx.allocator(self.host_ctx);
-                var children: std.ArrayListUnmanaged(u64) = .empty;
-                defer children.deinit(allocator);
-                var child_id = if (self.final_render_topology.?.metadata.get(layout.parent_elem_id)) |entry| entry.first_child else null;
-                while (child_id) |id| {
-                    children.append(allocator, id) catch return error.OutOfMemory;
-                    child_id = (self.final_render_topology.?.metadata.get(id) orelse return error.ResourceLimit).next_sibling;
-                }
-                const parent_index = std.math.cast(usize, layout.parent_elem_id) orelse return error.ResourceLimit;
-                const old_child_count = if (parent_index < self.engine.render_cache.nodes.items.len and self.engine.render_cache.nodes.items[parent_index].active)
-                    self.engine.render_cache.nodes.items[parent_index].children.items.len
-                else
-                    0;
                 if (self.render_batch_preflighted) {
                     self.render_batch_target.?.abort();
                     self.render_batch_preflighted = false;
@@ -4612,11 +4628,32 @@ pub fn Engine(comptime Ctx: type) type {
                     publication.deinit();
                     self.host_render_publication = null;
                 };
-                try splice.reserveAdditionalChildren(std.math.add(usize, old_child_count, children.items.len) catch return error.ResourceLimit);
-                splice.addChildren(&self.engine.render_cache, layout.parent_elem_id, children.items) catch |err| switch (err) {
-                    error.OutOfMemory => return error.OutOfMemory,
-                    else => return error.ResourceLimit,
-                };
+                var child_capacity: usize = 0;
+                for (parent_elem_ids) |parent_elem_id| {
+                    const parent_index = std.math.cast(usize, parent_elem_id) orelse return error.ResourceLimit;
+                    if (parent_index < self.engine.render_cache.nodes.items.len and self.engine.render_cache.nodes.items[parent_index].active)
+                        child_capacity = std.math.add(usize, child_capacity, self.engine.render_cache.nodes.items[parent_index].children.items.len) catch return error.ResourceLimit;
+                    var child_id = if (self.final_render_topology.?.metadata.get(parent_elem_id)) |entry| entry.first_child else null;
+                    while (child_id) |id| {
+                        child_capacity = std.math.add(usize, child_capacity, 1) catch return error.ResourceLimit;
+                        child_id = (self.final_render_topology.?.metadata.get(id) orelse return error.ResourceLimit).next_sibling;
+                    }
+                }
+                try splice.reserveAdditionalChildren(child_capacity);
+                for (parent_elem_ids, 0..) |parent_elem_id, parent_offset| {
+                    for (parent_elem_ids[0..parent_offset]) |previous| if (previous == parent_elem_id) return error.ResourceLimit;
+                    var children: std.ArrayListUnmanaged(u64) = .empty;
+                    defer children.deinit(allocator);
+                    var child_id = if (self.final_render_topology.?.metadata.get(parent_elem_id)) |entry| entry.first_child else null;
+                    while (child_id) |id| {
+                        children.append(allocator, id) catch return error.OutOfMemory;
+                        child_id = (self.final_render_topology.?.metadata.get(id) orelse return error.ResourceLimit).next_sibling;
+                    }
+                    splice.addChildren(&self.engine.render_cache, parent_elem_id, children.items) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        else => return error.ResourceLimit,
+                    };
+                }
                 splice.wire.preflight(self.render_batch_target.?, allocator) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.ResourceLimit => return error.ResourceLimit,
@@ -11379,6 +11416,58 @@ test "combined replacement owner assigns distinct identities across two each sit
     const attempts = try Runner.run(&roc_host, null);
     try std.testing.expect(attempts != 0);
     for (1..attempts + 1) |failure_number| _ = try Runner.run(&roc_host, failure_number);
+}
+
+test "final render placements preserve two disjoint intervals under one parent" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&env);
+
+    const Runner = struct {
+        fn run(host: *abi.RocHost, fail_at: ?usize) !usize {
+            var fault = FaultAllocator.init(std.testing.allocator);
+            var ctx = VerifyCtxHost{ .allocator = fault.allocator() };
+            var engine = Engine(VerifyCtx).init();
+            defer {
+                engine.active_stream.deinit(ctx.allocator, &ctx, host, &engine.pending_roc_metrics);
+                deinitVerifyStateEngine(&engine, &ctx, host);
+            }
+            for (0..5) |_| _ = try engine.internRootScope(ctx.allocator);
+            engine.active_stream.appendTextNode(ctx.allocator, 1, 0, 0, "a");
+            engine.active_stream.appendTextNode(ctx.allocator, 2, 0, 1, "old-left");
+            engine.active_stream.appendTextNode(ctx.allocator, 3, 0, 0, "middle");
+            engine.active_stream.appendTextNode(ctx.allocator, 4, 0, 2, "old-right");
+            engine.active_stream.appendTextNode(ctx.allocator, 5, 0, 0, "z");
+            const replacement = try Engine(VerifyCtx).PreparedReplacementOwner.create(&engine, &ctx, host, .{}, .{}, 0);
+            defer replacement.deinit();
+            replacement.stream.appendTextNode(ctx.allocator, 6, 0, 3, "new-left");
+            replacement.stream.appendTextNode(ctx.allocator, 7, 0, 4, "new-right");
+            const before = try ctx.allocator.dupe(HostRenderNode, engine.active_stream.render_nodes.items);
+            defer ctx.allocator.free(before);
+            const targets = [_]bool{ false, true, true, false, false };
+            const Placement = Engine(VerifyCtx).PreparedFinalRenderTopology.Placement;
+            const placements = [_]Placement{
+                .{ .source = .replacement, .source_start = 0, .final_start = 1, .len = 1 },
+                .{ .source = .replacement, .source_start = 1, .final_start = 3, .len = 1 },
+            };
+            fault.configure(fail_at);
+            var topology = Engine(VerifyCtx).PreparedFinalRenderTopology.preparePlaced(&engine, ctx.allocator, replacement, &targets, 2, &placements) catch |err| {
+                try std.testing.expectEqual(error.OutOfMemory, err);
+                try std.testing.expectEqualDeep(before, engine.active_stream.render_nodes.items);
+                return fault.attempts;
+            };
+            const attempts = fault.attempts;
+            fault.configure(null);
+            defer topology.deinit();
+            const expected = [_]u64{ 1, 6, 3, 7, 5 };
+            for (topology.render_nodes.items, expected) |node, elem_id| try std.testing.expectEqual(elem_id, node.elem_id);
+            try std.testing.expectEqualDeep(before, engine.active_stream.render_nodes.items);
+            return attempts;
+        }
+    };
+
+    const attempts = try Runner.run(&roc_host, null);
+    for (1..attempts + 1) |fail_at| _ = try Runner.run(&roc_host, fail_at);
 }
 
 test "owned aggregate graph root ingests two signal branches around a survivor" {
