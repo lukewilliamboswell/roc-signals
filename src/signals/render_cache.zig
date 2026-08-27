@@ -436,6 +436,52 @@ pub const PreparedCustomTextAttrsReplacement = struct {
     }
 };
 
+/// Owns the complete named-event set for one touched node.
+pub const PreparedNamedEventsReplacement = struct {
+    elem_id: u64,
+    next: []NamedEvent,
+    retired: std.ArrayListUnmanaged(NamedEvent) = .empty,
+    committed: bool = false,
+
+    /// Copies final event names and canonicalizes bindings without cache mutation.
+    pub fn prepare(comptime Ctx: type, allocator: std.mem.Allocator, cache: *const Cache(Ctx), elem_id: u64, events: []const NamedEvent) (std.mem.Allocator.Error || error{MissingNode})!PreparedNamedEventsReplacement {
+        const index = std.math.cast(usize, elem_id) orelse return error.MissingNode;
+        if (index >= cache.nodes.items.len or !cache.nodes.items[index].active) return error.MissingNode;
+        const next = try allocator.alloc(NamedEvent, events.len);
+        errdefer allocator.free(next);
+        var initialized: usize = 0;
+        errdefer for (next[0..initialized]) |event| event.deinit(allocator);
+        for (events, 0..) |event, offset| {
+            const name = try allocator.dupe(u8, event.name);
+            next[offset] = .{
+                .name = name,
+                .binding = event.binding.withDeliveryFor(.{ .named = name }),
+            };
+            initialized += 1;
+        }
+        return .{ .elem_id = elem_id, .next = next };
+    }
+
+    /// Swaps final named events into the active cache without allocating.
+    pub fn apply(self: *PreparedNamedEventsReplacement, comptime Ctx: type, cache: *Cache(Ctx)) void {
+        if (self.committed) @panic("prepared named event replacement committed twice");
+        const node = &cache.nodes.items[@intCast(self.elem_id)];
+        self.retired = node.named_events;
+        node.named_events = .{ .items = self.next, .capacity = self.next.len };
+        self.next = &.{};
+        self.committed = true;
+    }
+
+    /// Releases provisional events on abort or retired events after commit.
+    pub fn deinit(self: *PreparedNamedEventsReplacement, allocator: std.mem.Allocator) void {
+        for (self.next) |event| event.deinit(allocator);
+        allocator.free(self.next);
+        for (self.retired.items) |event| event.deinit(allocator);
+        self.retired.deinit(allocator);
+        self.* = undefined;
+    }
+};
+
 /// Defines the engine-owned rendered-state cache used to emit only changed host commands.
 pub fn Cache(comptime Ctx: type) type {
     return struct {
@@ -1198,6 +1244,49 @@ test "prepared custom attributes sweep failures and publish allocation free" {
     try std.testing.expectEqual(@as(usize, 0), fault.attempts);
     try std.testing.expectEqualStrings("data-a", cache.nodes.items[0].custom_text_attrs.items[0].name);
     try std.testing.expectEqualStrings("data-old", committed.retired.items[0].name);
+    fault.configure(null);
+    committed.deinit(allocator);
+}
+
+test "prepared named events sweep failures and publish allocation free" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var fault = FaultAllocator.init(std.testing.allocator);
+    const allocator = fault.allocator();
+    var cache: Cache(TestCtx) = .{};
+    defer {
+        for (cache.nodes.items) |*node| node.deinit(allocator);
+        cache.nodes.deinit(allocator);
+    }
+    var node = ScalarNode.initActive("div");
+    try node.named_events.append(allocator, .{
+        .name = try allocator.dupe(u8, "old"),
+        .binding = .{ .event_id = 1, .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) },
+    });
+    try cache.nodes.append(allocator, node);
+    const desired = [_]NamedEvent{
+        .{ .name = "focus", .binding = .{ .event_id = 2, .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) } },
+        .{ .name = "blur", .binding = .{ .event_id = 3, .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) } },
+    };
+
+    fault.configure(null);
+    var counted = try PreparedNamedEventsReplacement.prepare(TestCtx, allocator, &cache, 0, &desired);
+    const attempts = fault.attempts;
+    counted.deinit(allocator);
+    for (1..attempts + 1) |failure_number| {
+        fault.configure(failure_number);
+        try std.testing.expectError(error.OutOfMemory, PreparedNamedEventsReplacement.prepare(TestCtx, allocator, &cache, 0, &desired));
+        try std.testing.expectEqualStrings("old", cache.nodes.items[0].named_events.items[0].name);
+        fault.configure(null);
+        var retry = try PreparedNamedEventsReplacement.prepare(TestCtx, allocator, &cache, 0, &desired);
+        retry.deinit(allocator);
+    }
+
+    var committed = try PreparedNamedEventsReplacement.prepare(TestCtx, allocator, &cache, 0, &desired);
+    fault.configure(1);
+    committed.apply(TestCtx, &cache);
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqualStrings("focus", cache.nodes.items[0].named_events.items[0].name);
+    try std.testing.expectEqualStrings("old", committed.retired.items[0].name);
     fault.configure(null);
     committed.deinit(allocator);
 }
