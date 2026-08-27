@@ -8598,12 +8598,22 @@ test "branch replacement preparation leaves the active branch unpublished" {
         .{ .payload = .{ .static_bool = .{ .field = .{ .id = @intFromEnum(RenderBoolField.disabled) }, .name = abi.RocStr.empty(), .value = true } }, .tag = .StaticBool },
         .{ .payload = .{ .signal_bool = .{ .field = .{ .id = @intFromEnum(RenderBoolField.checked) }, .name = abi.RocStr.empty(), .read = std.mem.zeroes(HostBoolRead), .signal = false_signal_expr } }, .tag = .SignalBool },
         .{ .payload = .{ .signal_text = .{ .field = .{ .id = @intFromEnum(RenderTextField.role) }, .name = abi.RocStr.empty(), .read = std.mem.zeroes(HostTextRead), .signal = false_signal_expr } }, .tag = .SignalText },
+        .{ .payload = .{ .static_text = .{ .field = .{ .id = abi_view.node_text_field_custom }, .name = abi.RocStr.fromSlice("data-mode", undefined), .value = abi.RocStr.fromSlice("off", undefined) } }, .tag = .StaticText },
+        .{ .payload = .{ .static_bool = .{ .field = .{ .id = abi_view.node_bool_field_custom }, .name = abi.RocStr.fromSlice("aria-busy", undefined), .value = true } }, .tag = .StaticBool },
+        .{ .payload = .{ .signal_text = .{ .field = .{ .id = abi_view.node_text_field_custom }, .name = abi.RocStr.fromSlice("data-live", undefined), .read = std.mem.zeroes(HostTextRead), .signal = false_signal_expr } }, .tag = .SignalText },
+        .{ .payload = .{ .text_optional_signal = .{ .field = .{ .id = abi_view.node_text_field_custom }, .name = abi.RocStr.fromSlice("data-maybe", undefined), .present = std.mem.zeroes(HostBoolRead), .read = std.mem.zeroes(HostTextRead), .signal = false_signal_expr } }, .tag = .TextOptionalSignal },
+        .{ .payload = .{ .signal_bool = .{ .field = .{ .id = abi_view.node_bool_field_custom }, .name = abi.RocStr.fromSlice("aria-live", undefined), .read = std.mem.zeroes(HostBoolRead), .signal = false_signal_expr } }, .tag = .SignalBool },
     };
     const true_attrs = [_]abi.NodeAttr{
         .{ .payload = .{ .static_text = .{ .field = .{ .id = @intFromEnum(RenderTextField.label) }, .name = abi.RocStr.empty(), .value = abi.RocStr.fromSlice("on", undefined) } }, .tag = .StaticText },
         .{ .payload = .{ .static_bool = .{ .field = .{ .id = @intFromEnum(RenderBoolField.disabled) }, .name = abi.RocStr.empty(), .value = false } }, .tag = .StaticBool },
         .{ .payload = .{ .signal_bool = .{ .field = .{ .id = @intFromEnum(RenderBoolField.checked) }, .name = abi.RocStr.empty(), .read = std.mem.zeroes(HostBoolRead), .signal = true_signal_expr } }, .tag = .SignalBool },
         .{ .payload = .{ .signal_text = .{ .field = .{ .id = @intFromEnum(RenderTextField.role) }, .name = abi.RocStr.empty(), .read = std.mem.zeroes(HostTextRead), .signal = true_signal_expr } }, .tag = .SignalText },
+        .{ .payload = .{ .static_text = .{ .field = .{ .id = abi_view.node_text_field_custom }, .name = abi.RocStr.fromSlice("data-mode", undefined), .value = abi.RocStr.fromSlice("on", undefined) } }, .tag = .StaticText },
+        .{ .payload = .{ .static_bool = .{ .field = .{ .id = abi_view.node_bool_field_custom }, .name = abi.RocStr.fromSlice("aria-busy", undefined), .value = false } }, .tag = .StaticBool },
+        .{ .payload = .{ .signal_text = .{ .field = .{ .id = abi_view.node_text_field_custom }, .name = abi.RocStr.fromSlice("data-live", undefined), .read = std.mem.zeroes(HostTextRead), .signal = true_signal_expr } }, .tag = .SignalText },
+        .{ .payload = .{ .text_optional_signal = .{ .field = .{ .id = abi_view.node_text_field_custom }, .name = abi.RocStr.fromSlice("data-maybe", undefined), .present = std.mem.zeroes(HostBoolRead), .read = std.mem.zeroes(HostTextRead), .signal = true_signal_expr } }, .tag = .TextOptionalSignal },
+        .{ .payload = .{ .signal_bool = .{ .field = .{ .id = abi_view.node_bool_field_custom }, .name = abi.RocStr.fromSlice("aria-live", undefined), .read = std.mem.zeroes(HostBoolRead), .signal = true_signal_expr } }, .tag = .SignalBool },
     };
     var false_text = verifyStaticText();
     false_text.payload.text = abi.RocStr.fromSlice("no", undefined);
@@ -8671,8 +8681,8 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 try std.testing.expectEqual(@as(usize, 0), plan.pending_task_indexes.len);
                 try std.testing.expectEqual(@as(usize, 1), plan.cleanup_event_names.items.len);
                 try std.testing.expectEqualStrings("branch-cleanup", plan.cleanup_event_names.items[0]);
-                try std.testing.expectEqual(@as(usize, 2), plan.sink_edits.?.text.len);
-                try std.testing.expectEqual(@as(usize, 1), plan.sink_edits.?.bools.len);
+                try std.testing.expectEqual(@as(usize, 4), plan.sink_edits.?.text.len);
+                try std.testing.expectEqual(@as(usize, 2), plan.sink_edits.?.bools.len);
                 try std.testing.expect(plan.graph_release != null);
                 try std.testing.expect(plan.graph_append != null);
                 try std.testing.expect(plan.graph_append.?.records.len != 0);
@@ -8685,6 +8695,11 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 try std.testing.expectEqualSlices(usize, &.{0}, plan.removal.?.descriptor_indexes.signal_bool_attr_indexes.items);
                 try std.testing.expectEqualSlices(usize, &.{0}, plan.removal.?.descriptor_indexes.signal_text_attr_indexes.items);
                 try std.testing.expectEqualSlices(usize, &.{0}, plan.removal.?.descriptor_indexes.signal_text_node_indexes.items);
+                try std.testing.expectEqualSlices(usize, &.{0}, plan.removal.?.descriptor_indexes.static_custom_text_attr_indexes.items);
+                try std.testing.expectEqualSlices(usize, &.{0}, plan.removal.?.descriptor_indexes.signal_custom_text_attr_indexes.items);
+                try std.testing.expectEqualSlices(usize, &.{0}, plan.removal.?.descriptor_indexes.signal_optional_custom_text_attr_indexes.items);
+                try std.testing.expectEqualSlices(usize, &.{0}, plan.removal.?.descriptor_indexes.static_custom_bool_attr_indexes.items);
+                try std.testing.expectEqualSlices(usize, &.{0}, plan.removal.?.descriptor_indexes.signal_custom_bool_attr_indexes.items);
                 try std.testing.expectEqualSlices(u64, &.{ 4, 5, 6 }, plan.publication.?.replacement_elem_ids);
                 try std.testing.expectEqual(@as(usize, 1), plan.state_cell_indexes.len);
                 try std.testing.expect(plan.retired_node_identity_ids.len != 0);
@@ -8697,6 +8712,9 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 const planned_signal_record_id = plan.graph_append.?.plannedRecordId(engine.active_signal_graph.items, replacement_signal_record) orelse return error.TestUnexpectedResult;
                 const planned_text_attr_record_id = plan.graph_append.?.plannedRecordId(engine.active_signal_graph.items, plan.replacement_stream.signal_text_attrs.items[0].signal.record) orelse return error.TestUnexpectedResult;
                 const planned_text_node_record_id = plan.graph_append.?.plannedRecordId(engine.active_signal_graph.items, plan.replacement_stream.signal_text_nodes.items[0].signal.record) orelse return error.TestUnexpectedResult;
+                const planned_custom_text_record_id = plan.graph_append.?.plannedRecordId(engine.active_signal_graph.items, plan.replacement_stream.signal_custom_text_attrs.items[0].signal.record) orelse return error.TestUnexpectedResult;
+                const planned_optional_text_record_id = plan.graph_append.?.plannedRecordId(engine.active_signal_graph.items, plan.replacement_stream.signal_optional_custom_text_attrs.items[0].signal.record) orelse return error.TestUnexpectedResult;
+                const planned_custom_bool_record_id = plan.graph_append.?.plannedRecordId(engine.active_signal_graph.items, plan.replacement_stream.signal_custom_bool_attrs.items[0].signal.record) orelse return error.TestUnexpectedResult;
                 const replacement_record_refs_before_graph = replacement_signal_record.ref_count;
                 fault.configure(1);
                 plan.sink_edits.?.apply(
@@ -8743,11 +8761,18 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 try std.testing.expectEqual(@as(u64, 0), engine.active_signal_graph.items[@intCast(planned_signal_record_id)].rank);
                 try std.testing.expectEqualSlices(u64, &.{}, engine.active_signal_graph.items[@intCast(planned_signal_record_id)].dependents);
                 const replacement_source_route = engine.active_source_signal_routes.items[@intCast(replacement_state_id)].items;
-                try std.testing.expectEqualSlices(u64, &.{ planned_text_node_record_id, planned_text_attr_record_id, planned_signal_record_id }, replacement_source_route);
+                try std.testing.expectEqual(@as(usize, 6), replacement_source_route.len);
+                const expected_source_records = [_]u64{ planned_text_node_record_id, planned_text_attr_record_id, planned_signal_record_id, planned_custom_text_record_id, planned_optional_text_record_id, planned_custom_bool_record_id };
+                for (&expected_source_records) |record_id| {
+                    try std.testing.expect(std.mem.indexOfScalar(u64, replacement_source_route, record_id) != null);
+                }
                 for (replacement_source_route) |record_id| try std.testing.expect(record_id < engine.active_signal_graph.items.len);
                 try std.testing.expectEqual(@as(usize, 1), engine.active_text_signal_routes.items[@intCast(planned_text_node_record_id)].items.len);
                 try std.testing.expectEqual(@as(usize, 1), engine.active_text_signal_routes.items[@intCast(planned_text_attr_record_id)].items.len);
                 try std.testing.expectEqual(@as(usize, 1), engine.active_bool_signal_routes.items[@intCast(planned_signal_record_id)].items.len);
+                try std.testing.expectEqual(@as(usize, 1), engine.active_text_signal_routes.items[@intCast(planned_custom_text_record_id)].items.len);
+                try std.testing.expectEqual(@as(usize, 1), engine.active_text_signal_routes.items[@intCast(planned_optional_text_record_id)].items.len);
+                try std.testing.expectEqual(@as(usize, 1), engine.active_bool_signal_routes.items[@intCast(planned_custom_bool_record_id)].items.len);
                 try std.testing.expectEqual(@as(usize, 1), engine.cleanup_events.items.len);
                 try std.testing.expectEqualStrings("branch-cleanup", engine.cleanup_events.items[0]);
                 try std.testing.expect(!engine.scopes.items[@intCast(retired_row_scope_id)].active);
