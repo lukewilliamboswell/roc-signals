@@ -9100,11 +9100,21 @@ pub fn Engine(comptime Ctx: type) type {
 
         /// Applies dirty structural signals locally after preparation has fixed semantics and reserved fallible growth.
         pub fn applyDirtyStructuralSignalsLocally(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, dirty_source_node_ids: []const u64, dirty_generation: u64, changes: []HostDirtyStructuralSignal) render.Counts {
+            var all_when = changes.len != 0;
+            for (changes) |change| all_when = all_when and change.kind == .when;
+            if (all_when) {
+                if (self.tryApplyPreparedDirtyWhenSet(ctx, roc_host, dirty_source_node_ids, changes) catch {
+                    @panic("failed to prepare atomic dirty-when transaction");
+                }) |counts| return counts;
+                @panic("dirty-when set could not enter the atomic transaction");
+            }
             if (changes.len == 1 and changes[0].kind == .each) {
                 if (self.tryApplyPreparedDirtyEach(ctx, roc_host, dirty_source_node_ids, &changes[0]) catch {
                     @panic("failed to prepare atomic dirty-each transaction");
                 }) |counts| return counts;
+                @panic("dirty-each change could not enter the atomic transaction");
             }
+            if (changes.len != 0) @panic("mixed or multiple dirty-each structural changes require one atomic transaction");
             const DirtyStructuralOrder = struct {
                 engine: *Self,
 
@@ -9454,7 +9464,6 @@ pub fn Engine(comptime Ctx: type) type {
             for (changes) |change| {
                 if (change.kind != .when) @panic("non-when structural change reached when-only test helper");
             }
-            if (self.tryApplyPreparedDirtyWhenSet(ctx, roc_host, dirty_source_node_ids, changes) catch @panic("failed to prepare atomic dirty-when transaction")) |counts| return counts;
             return self.applyDirtyStructuralSignalsLocally(ctx, roc_host, dirty_source_node_ids, dirty_generation, changes);
         }
 
