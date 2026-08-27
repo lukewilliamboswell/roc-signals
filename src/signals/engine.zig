@@ -2110,7 +2110,7 @@ pub fn Engine(comptime Ctx: type) type {
             dom_identities: collection_plan.IdentityOverlay = .{},
             prepared_nodes: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedStaticNode) = .empty,
             prepared_attrs: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedStaticAttr) = .empty,
-            signal_records: collection_plan.RecordOverlay(HostSignalToken, HostSignalRecord) = .{},
+            signal_records: collection_plan.SignalRecordPlan(HostSignalToken, HostSignalRecord) = .{},
             signal_roc_host: ?*abi.RocHost = null,
             committed: bool = false,
 
@@ -2128,7 +2128,7 @@ pub fn Engine(comptime Ctx: type) type {
                 self.dom_identities.prepare(allocator, expected_nodes) catch return error.OutOfMemory;
                 self.prepared_nodes.ensureTotalCapacity(allocator, expected_nodes) catch return error.OutOfMemory;
                 self.prepared_attrs.ensureTotalCapacity(allocator, expected_attrs) catch return error.OutOfMemory;
-                self.signal_records.prepare(allocator, expected_attrs) catch return error.OutOfMemory;
+                self.signal_records.prepare(allocator, expected_attrs, expected_attrs) catch return error.OutOfMemory;
                 self.engine.scopes.ensureUnusedCapacity(allocator, 1) catch return error.OutOfMemory;
                 self.engine.dom_identities.ensureUnusedCapacity(allocator, expected_nodes) catch return error.OutOfMemory;
                 self.engine.active_dom_identity_ids.ensureUnusedCapacity(allocator, @intCast(expected_nodes)) catch return error.OutOfMemory;
