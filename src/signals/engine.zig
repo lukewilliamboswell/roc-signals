@@ -2349,6 +2349,7 @@ pub fn Engine(comptime Ctx: type) type {
             signal_roc_host: ?*abi.RocHost = null,
             signal_token_capacity: usize = 0,
             signal_root_capacity: usize = 0,
+            stream_materialized: bool = false,
             committed: bool = false,
 
             fn init(engine_ptr: *Self, host_ctx: Ctx.Handle, stream: *HostNodeDescriptorStream, limits: collection_budget.Limits, expected_nodes: usize, expected_attrs: usize, expected_signal_records: usize, expected_state_sites: usize, expected_component_sites: usize, expected_when_sites: usize) CollectionError!@This() {
@@ -2410,56 +2411,60 @@ pub fn Engine(comptime Ctx: type) type {
                 const allocator = Ctx.allocator(self.host_ctx);
                 if (!self.committed) {
                     var index = self.prepared_nodes.items.len;
-                    while (index != 0) {
-                        index -= 1;
-                        self.prepared_nodes.items[index].abort(allocator);
-                    }
-                    index = self.prepared_events.items.len;
-                    while (index != 0) {
-                        index -= 1;
-                        self.prepared_events.items[index].abort(allocator, self.signal_roc_host orelse @panic("staged event lacked Roc host"), &self.engine.pending_roc_metrics);
-                    }
-                    index = self.prepared_named_event_groups.items.len;
-                    while (index != 0) {
-                        index -= 1;
-                        self.prepared_named_event_groups.items[index].abort(allocator);
+                    if (!self.stream_materialized) {
+                        while (index != 0) {
+                            index -= 1;
+                            self.prepared_nodes.items[index].abort(allocator);
+                        }
+                        index = self.prepared_events.items.len;
+                        while (index != 0) {
+                            index -= 1;
+                            self.prepared_events.items[index].abort(allocator, self.signal_roc_host orelse @panic("staged event lacked Roc host"), &self.engine.pending_roc_metrics);
+                        }
+                        index = self.prepared_named_event_groups.items.len;
+                        while (index != 0) {
+                            index -= 1;
+                            self.prepared_named_event_groups.items[index].abort(allocator);
+                        }
                     }
                     index = self.prepared_state_cells.items.len;
                     while (index != 0) {
                         index -= 1;
                         self.prepared_state_cells.items[index].cell.deinit(self.host_ctx, self.signal_roc_host orelse @panic("staged state lacked Roc host"), &self.engine.pending_roc_metrics);
                     }
-                    index = self.prepared_states.items.len;
-                    while (index != 0) {
-                        index -= 1;
-                        self.prepared_states.items[index].abort(self.signal_roc_host orelse @panic("staged state lacked Roc host"), &self.engine.pending_roc_metrics);
+                    if (!self.stream_materialized) {
+                        index = self.prepared_states.items.len;
+                        while (index != 0) {
+                            index -= 1;
+                            self.prepared_states.items[index].abort(self.signal_roc_host orelse @panic("staged state lacked Roc host"), &self.engine.pending_roc_metrics);
+                        }
+                        index = self.prepared_state_sites.items.len;
+                        while (index != 0) {
+                            index -= 1;
+                            self.prepared_state_sites.items[index].abort(allocator);
+                        }
+                        index = self.prepared_whens.items.len;
+                        while (index != 0) {
+                            index -= 1;
+                            self.prepared_whens.items[index].abort(allocator, self.host_ctx, self.signal_roc_host orelse @panic("staged when lacked Roc host"), &self.engine.pending_roc_metrics);
+                        }
+                        index = self.prepared_attrs.items.len;
+                        while (index != 0) {
+                            index -= 1;
+                            self.prepared_attrs.items[index].abort(allocator);
+                        }
+                        index = self.prepared_signal_attrs.items.len;
+                        while (index != 0) {
+                            index -= 1;
+                            self.prepared_signal_attrs.items[index].abort(
+                                allocator,
+                                self.host_ctx,
+                                self.signal_roc_host orelse @panic("staged signal descriptor lacked Roc host"),
+                                &self.engine.pending_roc_metrics,
+                            );
+                        }
+                        for (self.signal_bindings.items) |binding| allocator.free(binding.source_node_ids);
                     }
-                    index = self.prepared_state_sites.items.len;
-                    while (index != 0) {
-                        index -= 1;
-                        self.prepared_state_sites.items[index].abort(allocator);
-                    }
-                    index = self.prepared_whens.items.len;
-                    while (index != 0) {
-                        index -= 1;
-                        self.prepared_whens.items[index].abort(allocator, self.host_ctx, self.signal_roc_host orelse @panic("staged when lacked Roc host"), &self.engine.pending_roc_metrics);
-                    }
-                    index = self.prepared_attrs.items.len;
-                    while (index != 0) {
-                        index -= 1;
-                        self.prepared_attrs.items[index].abort(allocator);
-                    }
-                    index = self.prepared_signal_attrs.items.len;
-                    while (index != 0) {
-                        index -= 1;
-                        self.prepared_signal_attrs.items[index].abort(
-                            allocator,
-                            self.host_ctx,
-                            self.signal_roc_host orelse @panic("staged signal descriptor lacked Roc host"),
-                            &self.engine.pending_roc_metrics,
-                        );
-                    }
-                    for (self.signal_bindings.items) |binding| allocator.free(binding.source_node_ids);
                     self.scopes.abort();
                     self.node_identities.abort();
                     self.dom_identities.abort();
@@ -2961,10 +2966,36 @@ pub fn Engine(comptime Ctx: type) type {
                 }
             };
 
+            /// Transfers prepared descriptor ownership into the plan-local
+            /// stream without publishing persistent engine identities/scopes.
+            fn materializeStream(self: *@This()) void {
+                if (self.stream_materialized) @panic("staged collection stream materialized twice");
+                for (self.prepared_nodes.items) |prepared| self.stream.appendPreparedStaticNode(prepared);
+                self.prepared_nodes.clearRetainingCapacity();
+                for (self.prepared_attrs.items) |prepared| self.stream.appendPreparedStaticAttr(prepared);
+                self.prepared_attrs.clearRetainingCapacity();
+                self.signal_records.commit(SignalPublisher{ .stream = self.stream });
+                for (self.prepared_signal_attrs.items) |prepared| self.stream.appendPreparedSignalDescriptor(prepared);
+                self.prepared_signal_attrs.clearRetainingCapacity();
+                const event_base = self.stream.events.items.len;
+                for (self.prepared_events.items) |prepared| self.stream.appendPreparedEvent(prepared);
+                self.stream.publishPreparedNamedEventIndexes(self.prepared_named_event_groups.items, event_base);
+                self.prepared_events.clearRetainingCapacity();
+                self.prepared_named_event_groups.clearRetainingCapacity();
+                for (self.prepared_state_sites.items) |site| self.stream.appendPreparedScopeSite(site);
+                for (self.prepared_states.items) |state| self.stream.appendPreparedState(state);
+                self.prepared_state_sites.clearRetainingCapacity();
+                self.prepared_states.clearRetainingCapacity();
+                for (self.prepared_whens.items) |prepared| self.stream.appendPreparedWhen(prepared);
+                self.prepared_whens.clearRetainingCapacity();
+                self.stream_materialized = true;
+            }
+
             /// Publishes only pre-reserved state. This function must remain
             /// allocation-free so preparation is the last recoverable point.
             fn commit(self: *@This()) void {
                 if (self.committed) @panic("staged collection committed twice");
+                if (!self.stream_materialized) self.materializeStream();
                 for (self.scopes.intents.items) |intent| {
                     if (intent.id != self.engine.scopes.items.len) @panic("unsupported staged scope intent");
                     const scope: HostScope = switch (intent.key.kind) {
@@ -2996,21 +3027,6 @@ pub fn Engine(comptime Ctx: type) type {
                     self.engine.node_identities.appendAssumeCapacity(.{ .node_id = intent.id, .scope_id = scope_id, .ordinal = ordinal, .active = true });
                     self.engine.active_node_identity_ids.putAssumeCapacity(intent.key, intent.id);
                 }
-                for (self.prepared_nodes.items) |prepared| self.stream.appendPreparedStaticNode(prepared);
-                for (self.prepared_attrs.items) |prepared| self.stream.appendPreparedStaticAttr(prepared);
-                self.signal_records.commit(SignalPublisher{ .stream = self.stream });
-                for (self.prepared_signal_attrs.items) |prepared| self.stream.appendPreparedSignalDescriptor(prepared);
-                self.prepared_signal_attrs.clearRetainingCapacity();
-                const event_base = self.stream.events.items.len;
-                for (self.prepared_events.items) |prepared| self.stream.appendPreparedEvent(prepared);
-                self.stream.publishPreparedNamedEventIndexes(self.prepared_named_event_groups.items, event_base);
-                self.prepared_events.clearRetainingCapacity();
-                for (self.prepared_state_sites.items) |site| self.stream.appendPreparedScopeSite(site);
-                for (self.prepared_states.items) |state| self.stream.appendPreparedState(state);
-                self.prepared_state_sites.clearRetainingCapacity();
-                self.prepared_states.clearRetainingCapacity();
-                for (self.prepared_whens.items) |prepared| self.stream.appendPreparedWhen(prepared);
-                self.prepared_whens.clearRetainingCapacity();
                 for (self.prepared_state_cells.items) |state| {
                     while (self.engine.state_indexes_by_node_id.items.len <= state.state_id) self.engine.state_indexes_by_node_id.appendAssumeCapacity(null);
                     const state_index = self.engine.states.items.len;
@@ -3228,6 +3244,7 @@ pub fn Engine(comptime Ctx: type) type {
             retired_scope_id: u64 = 0,
             target_scopes: []bool = &.{},
             removal: ?structural_splice.PreparedRemoval = null,
+            publication: ?structural_splice.PreparedPublicationDeltas = null,
 
             fn prepare(engine_ptr: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, site: HostNodeScopeSiteDesc, when: HostNodeWhenDesc, selected_branch: HostScopeBranch, limits: collection_budget.Limits, dirty_source_node_ids: []const u64) CollectionError!*@This() {
                 if (site.kind != .when or site.node_id != when.node_id) return error.ResourceLimit;
@@ -3258,6 +3275,7 @@ pub fn Engine(comptime Ctx: type) type {
                 var ordinal: u64 = 0;
                 var dom_ordinal: u64 = 0;
                 try engine_ptr.collectActiveElemDescriptorsWith(*StagedCollectionCtx, &plan.collection, ctx, roc_host, &plan.replacement_stream, selected_elem, branch_scope.scope_id, site.parent_elem_id, &ordinal, &dom_ordinal, &binder_stack, true, dirty_source_node_ids);
+                plan.collection.materializeStream();
 
                 plan.target_scopes = allocator.alloc(bool, engine_ptr.scopes.items.len) catch return error.OutOfMemory;
                 errdefer allocator.free(plan.target_scopes);
@@ -3267,11 +3285,22 @@ pub fn Engine(comptime Ctx: type) type {
                 const render_start = engine_ptr.renderStartForReplacementTargetSet(site.render_insert_index, plan.target_scopes);
                 plan.removal = structural_splice.prepareRemoval(HostNodeDescriptorStream, allocator, &engine_ptr.active_stream, render_start, plan.target_scopes) catch return error.OutOfMemory;
                 errdefer if (plan.removal) |*removal| removal.deinit(allocator);
+                plan.publication = structural_splice.preparePublicationDeltas(
+                    allocator,
+                    plan.replacement_stream.render_nodes.items,
+                    &.{},
+                    engine_ptr.active_stream.on_changes.items.len,
+                    plan.replacement_stream.on_changes.items.len,
+                    engine_ptr.active_stream.mounts.items.len,
+                    plan.replacement_stream.mounts.items.len,
+                ) catch return error.OutOfMemory;
+                errdefer if (plan.publication) |*publication| publication.deinit(allocator);
                 return plan;
             }
 
             fn deinit(self: *@This()) void {
                 const allocator = Ctx.allocator(self.host_ctx);
+                if (self.publication) |*publication| publication.deinit(allocator);
                 if (self.removal) |*removal| removal.deinit(allocator);
                 allocator.free(self.target_scopes);
                 self.collection.deinit();
@@ -8095,12 +8124,13 @@ test "branch replacement preparation leaves the active branch unpublished" {
             if (failure_number == null) {
                 var plan = try prepared;
                 const attempts = fault.attempts;
-                try std.testing.expectEqual(@as(usize, 0), plan.replacement_stream.text_nodes.items.len);
-                try std.testing.expectEqualStrings("no", plan.collection.prepared_nodes.items[0].text.text);
+                try std.testing.expectEqual(@as(usize, 1), plan.replacement_stream.text_nodes.items.len);
+                try std.testing.expectEqualStrings("no", plan.replacement_stream.text_nodes.items[0].value);
                 try std.testing.expectEqual(engine.scopes.items[1].scope_id, plan.retired_scope_id);
                 try std.testing.expect(plan.target_scopes[@intCast(plan.retired_scope_id)]);
                 try std.testing.expectEqualSlices(u64, &.{1}, plan.removal.?.scan.removed_elem_ids);
                 try std.testing.expectEqualSlices(usize, &.{0}, plan.removal.?.descriptor_indexes.text_node_indexes.items);
+                try std.testing.expectEqualSlices(u64, &.{2}, plan.publication.?.replacement_elem_ids);
                 plan.deinit();
                 try std.testing.expectEqual(retained_before, engine.pending_roc_metrics.closure_retains - engine.pending_roc_metrics.closure_releases);
                 return attempts;
