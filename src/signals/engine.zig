@@ -2111,6 +2111,7 @@ pub fn Engine(comptime Ctx: type) type {
             dom_identities: collection_plan.IdentityOverlay = .{},
             prepared_nodes: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedStaticNode) = .empty,
             prepared_attrs: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedStaticAttr) = .empty,
+            prepared_signal_attrs: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedSignalDescriptor) = .empty,
             signal_records: collection_plan.SignalRecordPlan(HostSignalToken, HostSignalRecord) = .{},
             signal_bindings: std.ArrayListUnmanaged(HostSignalBinding) = .empty,
             signal_roc_host: ?*abi.RocHost = null,
@@ -2131,6 +2132,7 @@ pub fn Engine(comptime Ctx: type) type {
                 self.dom_identities.prepare(allocator, expected_nodes) catch return error.OutOfMemory;
                 self.prepared_nodes.ensureTotalCapacity(allocator, expected_nodes) catch return error.OutOfMemory;
                 self.prepared_attrs.ensureTotalCapacity(allocator, expected_attrs) catch return error.OutOfMemory;
+                self.prepared_signal_attrs.ensureTotalCapacity(allocator, expected_attrs) catch return error.OutOfMemory;
                 self.signal_records.prepare(allocator, expected_attrs, expected_attrs) catch return error.OutOfMemory;
                 self.signal_bindings.ensureTotalCapacity(allocator, expected_attrs) catch return error.OutOfMemory;
                 self.signal_capacity = expected_attrs;
@@ -2140,6 +2142,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const highest_elem_id = std.math.add(u64, @intCast(self.engine.dom_identities.items.len), @as(u64, @intCast(expected_nodes))) catch return error.ResourceLimit;
                 self.stream.reservePreparedStaticNodes(allocator, expected_nodes, highest_elem_id) catch return error.OutOfMemory;
                 self.stream.reservePreparedStaticAttrs(allocator, expected_attrs) catch return error.OutOfMemory;
+                self.stream.reservePreparedSignalAttrs(allocator, expected_attrs, highest_elem_id) catch return error.OutOfMemory;
                 if (!self.stream.canStageLinearCustomAttrs(expected_attrs)) return error.ResourceLimit;
                 return self;
             }
@@ -2157,12 +2160,23 @@ pub fn Engine(comptime Ctx: type) type {
                         index -= 1;
                         self.prepared_attrs.items[index].abort(allocator);
                     }
+                    index = self.prepared_signal_attrs.items.len;
+                    while (index != 0) {
+                        index -= 1;
+                        self.prepared_signal_attrs.items[index].abort(
+                            allocator,
+                            self.host_ctx,
+                            self.signal_roc_host orelse @panic("staged signal descriptor lacked Roc host"),
+                            &self.engine.pending_roc_metrics,
+                        );
+                    }
                     for (self.signal_bindings.items) |binding| allocator.free(binding.source_node_ids);
                     self.scopes.abort();
                     self.dom_identities.abort();
                 }
                 self.prepared_nodes.deinit(allocator);
                 self.prepared_attrs.deinit(allocator);
+                self.prepared_signal_attrs.deinit(allocator);
                 self.signal_bindings.deinit(allocator);
                 const SignalReleaser = struct {
                     collection: *Collection,
@@ -2357,6 +2371,8 @@ pub fn Engine(comptime Ctx: type) type {
                 }
                 for (self.prepared_nodes.items) |prepared| self.stream.appendPreparedStaticNode(prepared);
                 for (self.prepared_attrs.items) |prepared| self.stream.appendPreparedStaticAttr(prepared);
+                for (self.prepared_signal_attrs.items) |prepared| self.stream.appendPreparedSignalDescriptor(prepared);
+                self.prepared_signal_attrs.clearRetainingCapacity();
                 self.scopes.committed = true;
                 self.dom_identities.committed = true;
                 self.committed = true;
