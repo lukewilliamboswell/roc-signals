@@ -12,6 +12,7 @@ const signals = @import("signals");
 const abi = signals.abi;
 const boundary = signals.boundary;
 const render = signals.render;
+const render_cache = signals.render_cache;
 const render_sink = signals.render_sink;
 const scope_tree = signals.scope_tree;
 const erased_calls = signals.erased_calls;
@@ -44,11 +45,172 @@ const RenderEventKind = render.EventKind;
 const CommandCounts = render.Counts;
 const HostScopeBranch = scope_tree.Branch;
 
+const NativeRenderPublication = struct {
+    dom: sim_dom.PreparedPublication,
+
+    fn prepareTextField(allocator: std.mem.Allocator, node: *sim_dom.Element, field: RenderTextField, next: ?[]const u8) std.mem.Allocator.Error!void {
+        const slot: *?[]const u8 = switch (field) {
+            .text => &node.text,
+            .role => &node.role,
+            .label => &node.label,
+            .test_id => &node.test_id,
+            .value => &node.value,
+            .class => &node.class,
+        };
+        if (field == .value) value: {
+            if (next == null) {
+                if (slot.*) |old| allocator.free(old);
+                slot.* = null;
+                node.value_update_count += 1;
+                break :value;
+            }
+            if (node.value) |old_value| if (std.mem.eql(u8, old_value, next.?)) {
+                if (node.pending_value) |pending| allocator.free(pending);
+                node.pending_value = null;
+                break :value;
+            };
+            const copied = try allocator.dupe(u8, next.?);
+            if (node.focused or node.composing) {
+                if (node.pending_value) |old| allocator.free(old);
+                node.pending_value = copied;
+                break :value;
+            }
+            if (node.pending_value) |pending| allocator.free(pending);
+            node.pending_value = null;
+            if (slot.*) |old| allocator.free(old);
+            slot.* = copied;
+            node.value_update_count += 1;
+        } else {
+            const copied = if (next) |value| try allocator.dupe(u8, value) else null;
+            if (slot.*) |old| allocator.free(old);
+            slot.* = copied;
+            if (field == .text) node.text_update_count += 1;
+        }
+    }
+
+    fn prepare(host: *HostEnv, splice: anytype) (std.mem.Allocator.Error || error{ResourceLimit})!NativeRenderPublication {
+        const allocator = host.hostAllocator();
+        var touched: std.AutoHashMapUnmanaged(u64, void) = .empty;
+        defer touched.deinit(allocator);
+        var count: usize = 0;
+        inline for (.{ splice.removals.items.len, splice.creations.items.len, splice.children.items.len, splice.parent_intents.items.len, splice.text_fields.items.len, splice.bool_fields.items.len, splice.fixed_events.items.len, splice.custom_attrs.items.len, splice.named_events.items.len }) |additional| {
+            count = std.math.add(usize, count, additional) catch return error.ResourceLimit;
+        }
+        try touched.ensureUnusedCapacity(allocator, std.math.cast(u32, count) orelse return error.ResourceLimit);
+        var max_elem_id: u64 = if (host.dom_elements.items.len == 0) 0 else host.dom_elements.items.len - 1;
+        for (splice.removals.items) |entry| {
+            touched.putAssumeCapacity(entry.elem_id, {});
+            max_elem_id = @max(max_elem_id, entry.elem_id);
+        }
+        for (splice.creations.items) |entry| {
+            touched.putAssumeCapacity(entry.elem_id, {});
+            max_elem_id = @max(max_elem_id, entry.elem_id);
+        }
+        for (splice.children.items) |entry| {
+            touched.putAssumeCapacity(entry.parent_elem_id, {});
+            max_elem_id = @max(max_elem_id, entry.parent_elem_id);
+        }
+        for (splice.parent_intents.items) |intent| {
+            touched.putAssumeCapacity(intent.child_id, {});
+            max_elem_id = @max(max_elem_id, intent.child_id);
+        }
+        inline for (.{ splice.text_fields.items, splice.bool_fields.items, splice.fixed_events.items, splice.custom_attrs.items, splice.named_events.items }) |entries| for (entries) |entry| {
+            touched.putAssumeCapacity(entry.elem_id, {});
+            max_elem_id = @max(max_elem_id, entry.elem_id);
+        };
+        const ids = try allocator.alloc(u64, touched.count());
+        defer allocator.free(ids);
+        var iterator = touched.keyIterator();
+        var write: usize = 0;
+        while (iterator.next()) |id| : (write += 1) ids[write] = id.*;
+        var dom = sim_dom.PreparedPublication.init(allocator, &host.dom_elements, ids, max_elem_id) catch |err| return switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            else => error.ResourceLimit,
+        };
+        errdefer dom.deinit();
+        for (splice.removals.items) |entry| sim_dom.deactivateRemovedNode(allocator, dom.node(entry.elem_id) orelse return error.ResourceLimit);
+        for (splice.creations.items) |entry| {
+            const node = dom.node(entry.elem_id) orelse return error.ResourceLimit;
+            const tag = try allocator.dupe(u8, entry.tag);
+            node.deinit(allocator);
+            node.* = sim_dom.Element.init(entry.elem_id, tag);
+        }
+        for (splice.children.items) |entry| {
+            const parent = dom.node(entry.parent_elem_id) orelse return error.ResourceLimit;
+            parent.children.deinit(allocator);
+            parent.children = .empty;
+            try parent.children.appendSlice(allocator, entry.next);
+        }
+        for (splice.parent_intents.items) |intent| (dom.node(intent.child_id) orelse return error.ResourceLimit).parent_id = intent.next;
+        for (splice.text_fields.items) |entry| {
+            const node = dom.node(entry.elem_id) orelse return error.ResourceLimit;
+            try prepareTextField(allocator, node, entry.field, entry.next);
+        }
+        for (splice.bool_fields.items) |entry| {
+            const node = dom.node(entry.elem_id) orelse return error.ResourceLimit;
+            switch (entry.field) {
+                .checked => {
+                    node.checked = entry.next orelse false;
+                    node.checked_update_count += 1;
+                },
+                .disabled => {
+                    node.disabled = entry.next orelse false;
+                    node.disabled_update_count += 1;
+                },
+            }
+        }
+        for (splice.fixed_events.items) |entry| {
+            const node = dom.node(entry.elem_id) orelse return error.ResourceLimit;
+            switch (entry.kind) {
+                .click => node.event_bindings.click = entry.next,
+                .input => node.event_bindings.input = entry.next,
+                .check => node.event_bindings.check = entry.next,
+                .pointer_down => node.event_bindings.pointer_down = entry.next,
+                .pointer_up => node.event_bindings.pointer_up = entry.next,
+                .pointer_enter => node.event_bindings.pointer_enter = entry.next,
+                .pointer_leave => node.event_bindings.pointer_leave = entry.next,
+            }
+        }
+        for (splice.custom_attrs.items) |entry| {
+            const node = dom.node(entry.elem_id) orelse return error.ResourceLimit;
+            for (node.attrs.items) |attr| attr.deinit(allocator);
+            node.attrs.clearRetainingCapacity();
+            try node.attrs.ensureTotalCapacity(allocator, entry.next.len);
+            for (entry.next) |attr| {
+                const name = try allocator.dupe(u8, attr.name);
+                errdefer allocator.free(name);
+                const value = try allocator.dupe(u8, attr.value);
+                node.attrs.appendAssumeCapacity(.{ .name = name, .value = value });
+            }
+        }
+        for (splice.named_events.items) |entry| {
+            const node = dom.node(entry.elem_id) orelse return error.ResourceLimit;
+            for (node.named_events.items) |event| event.deinit(allocator);
+            node.named_events.clearRetainingCapacity();
+            try node.named_events.ensureTotalCapacity(allocator, entry.next.len);
+            for (entry.next) |event| node.named_events.appendAssumeCapacity(.{
+                .name = try allocator.dupe(u8, event.name),
+                .binding = event.binding,
+            });
+        }
+        return .{ .dom = dom };
+    }
+
+    fn apply(self: *NativeRenderPublication, host: *HostEnv) void {
+        self.dom.apply(&host.dom_elements);
+    }
+
+    fn deinit(self: *NativeRenderPublication) void {
+        self.dom.deinit();
+    }
+};
+
 const NativeCtx = struct {
     pub const Handle = *HostEnv;
     pub const RegistryOps = hv.RegistryOps();
     pub const Metrics = RuntimeMetrics;
     pub const Sink = render_sink.DomSink(HostEnv);
+    pub const RenderPublication = NativeRenderPublication;
 
     /// Creates the host's zeroed metric accumulator for a new engine operation.
     pub fn zeroMetrics() Metrics {
@@ -58,6 +220,16 @@ const NativeCtx = struct {
     /// Returns the allocator owned by this host context for shared-engine work.
     pub fn allocator(ctx: Handle) std.mem.Allocator {
         return ctx.hostAllocator();
+    }
+
+    /// Prepares the native simulated-DOM shadow without mutating host-visible state.
+    pub fn prepareRenderPublication(ctx: Handle, splice: anytype) (std.mem.Allocator.Error || error{ResourceLimit})!RenderPublication {
+        return RenderPublication.prepare(ctx, splice);
+    }
+
+    /// Makes the already-prepared native DOM shadow host-visible without allocation.
+    pub fn publishRenderPublication(ctx: Handle, publication: *RenderPublication) void {
+        publication.apply(ctx);
     }
 
     /// Produces an independently owned copy through the value's app-compiled capability.
@@ -3492,6 +3664,121 @@ test "native Roc ABI allocation failures terminate in a subprocess" {
         }
         try std.testing.expect(std.mem.endsWith(u8, result.stderr, case.diagnostic));
     }
+}
+
+test "native prepared render publication keeps DOM unchanged until armed apply" {
+    var host = HostEnv.init();
+    var roc_host = makeSignalsRocHost(&host);
+    host.engine.roc_host = &roc_host;
+    defer {
+        host.deinit();
+        _ = host.gpa.deinit();
+    }
+    const allocator = host.hostAllocator();
+    host.engine.resetRenderTree(&host);
+    host.engine.appendRenderNode(&host, 1, 0, "button");
+    var splice = try render_cache.PreparedRenderSplice(NativeCtx).init(allocator, &host.engine.render_cache, .{
+        .node_capacity = 4,
+        .new_tags = 1,
+        .removals = 1,
+        .creations = 1,
+        .children = 2,
+        .child_links = 3,
+        .text_fields = 1,
+        .bool_fields = 1,
+        .fixed_events = 1,
+        .custom_attrs = 1,
+        .named_events = 1,
+        .wire_commands = 10,
+    });
+    defer splice.deinit();
+    try splice.addNodeReplacement(&host.engine.render_cache, 1, "section");
+    try splice.addCreation(&host.engine.render_cache, 3, "text");
+    try splice.addChildren(&host.engine.render_cache, 0, &.{1});
+    try splice.addChildren(&host.engine.render_cache, 1, &.{3});
+    try splice.addTextField(&host.engine.render_cache, 3, .text, "prepared");
+    try splice.addBoolField(&host.engine.render_cache, 1, .checked, true);
+    const click_binding = render_sink.EventBinding{ .event_id = 17, .payload_descriptor = RenderEventKind.click.payloadDescriptor() };
+    try splice.addFixedEvent(&host.engine.render_cache, 1, .click, click_binding);
+    try splice.addCustomAttrs(&host.engine.render_cache, 1, &.{.{ .name = "data-state", .value = "ready" }});
+    try splice.addNamedEvents(&host.engine.render_cache, 1, &.{.{
+        .name = "submit",
+        .binding = .{ .event_id = 19, .payload_descriptor = boundary.BoundaryPayloadDescriptor.init(.unit, .none) },
+    }});
+
+    var publication = try NativeRenderPublication.prepare(&host, &splice);
+    defer publication.deinit();
+    try std.testing.expectEqualStrings("button", host.dom_elements.items[1].tag);
+    try std.testing.expectEqual(@as(usize, 2), host.dom_elements.items.len);
+    host.configureAllocationFailure(1);
+    publication.apply(&host);
+    try std.testing.expectEqual(@as(usize, 0), host.allocation_fault.?.attempts);
+    try std.testing.expectEqualStrings("section", host.dom_elements.items[1].tag);
+    try std.testing.expect(host.dom_elements.items[1].checked);
+    try std.testing.expectEqualStrings("ready", host.dom_elements.items[1].attrs.items[0].value);
+    try std.testing.expectEqual(@as(?u64, 17), if (host.dom_elements.items[1].event_bindings.click) |binding| binding.event_id else null);
+    try std.testing.expectEqualStrings("submit", host.dom_elements.items[1].named_events.items[0].name);
+    try std.testing.expectEqual(@as(u64, 19), host.dom_elements.items[1].named_events.items[0].binding.event_id);
+    try std.testing.expectEqualStrings("prepared", host.dom_elements.items[3].text.?);
+    try std.testing.expectEqualSlices(u64, &.{1}, host.dom_elements.items[0].children.items);
+    try std.testing.expectEqualSlices(u64, &.{3}, host.dom_elements.items[1].children.items);
+    try std.testing.expectEqual(@as(?u64, 1), host.dom_elements.items[3].parent_id);
+    host.configureAllocationFailure(null);
+
+    var counted = try NativeRenderPublication.prepare(&host, &splice);
+    const prepare_attempts = host.allocation_fault.?.attempts;
+    counted.deinit();
+    try std.testing.expect(prepare_attempts != 0);
+    for (1..prepare_attempts + 1) |failure_number| {
+        host.configureAllocationFailure(failure_number);
+        try std.testing.expectError(error.OutOfMemory, NativeRenderPublication.prepare(&host, &splice));
+        try std.testing.expectEqual(@as(usize, 1), host.allocation_fault.?.induced_failures);
+        try std.testing.expectEqualStrings("section", host.dom_elements.items[1].tag);
+        try std.testing.expectEqualStrings("prepared", host.dom_elements.items[3].text.?);
+        host.configureAllocationFailure(null);
+        var retry = try NativeRenderPublication.prepare(&host, &splice);
+        retry.deinit();
+    }
+
+    const dom_value_node = &host.dom_elements.items[1];
+    dom_value_node.value = try allocator.dupe(u8, "same");
+    dom_value_node.pending_value = try allocator.dupe(u8, "stale");
+    dom_value_node.focused = true;
+    const updates_before = dom_value_node.value_update_count;
+    var equal_value = try render_cache.PreparedRenderSplice(NativeCtx).init(allocator, &host.engine.render_cache, .{ .node_capacity = 4, .text_fields = 1, .wire_commands = 1 });
+    defer equal_value.deinit();
+    try equal_value.addTextField(&host.engine.render_cache, 1, .value, "same");
+    var equal_publication = try NativeRenderPublication.prepare(&host, &equal_value);
+    try std.testing.expectEqualStrings("same", equal_publication.dom.node(1).?.value.?);
+    try std.testing.expectEqual(@as(?[]const u8, null), equal_publication.dom.node(1).?.pending_value);
+    try std.testing.expectEqual(updates_before, equal_publication.dom.node(1).?.value_update_count);
+    equal_publication.deinit();
+
+    var differing_value = try render_cache.PreparedRenderSplice(NativeCtx).init(allocator, &host.engine.render_cache, .{ .node_capacity = 4, .text_fields = 1, .wire_commands = 1 });
+    defer differing_value.deinit();
+    try differing_value.addTextField(&host.engine.render_cache, 1, .value, "different");
+    var differing_publication = try NativeRenderPublication.prepare(&host, &differing_value);
+    try std.testing.expectEqualStrings("same", differing_publication.dom.node(1).?.value.?);
+    try std.testing.expectEqualStrings("different", differing_publication.dom.node(1).?.pending_value.?);
+    try std.testing.expectEqual(updates_before, differing_publication.dom.node(1).?.value_update_count);
+    differing_publication.deinit();
+
+    host.engine.render_cache.nodes.items[1].value = try allocator.dupe(u8, "cache-value");
+    var clear_value = try render_cache.PreparedRenderSplice(NativeCtx).init(allocator, &host.engine.render_cache, .{ .node_capacity = 4, .text_fields = 1, .wire_commands = 1 });
+    defer clear_value.deinit();
+    try clear_value.addTextField(&host.engine.render_cache, 1, .value, null);
+    var clear_publication = try NativeRenderPublication.prepare(&host, &clear_value);
+    try std.testing.expectEqual(@as(?[]const u8, null), clear_publication.dom.node(1).?.value);
+    try std.testing.expectEqualStrings("stale", clear_publication.dom.node(1).?.pending_value.?);
+    try std.testing.expectEqual(updates_before + 1, clear_publication.dom.node(1).?.value_update_count);
+    clear_publication.deinit();
+
+    host.configureAllocationFailure(1);
+    try NativeRenderPublication.prepareTextField(host.hostAllocator(), dom_value_node, .value, "same");
+    try std.testing.expectEqual(@as(usize, 0), host.allocation_fault.?.attempts);
+    try std.testing.expectEqualStrings("same", dom_value_node.value.?);
+    try std.testing.expectEqual(@as(?[]const u8, null), dom_value_node.pending_value);
+    host.configureAllocationFailure(null);
 }
 
 test "native engine identity preparation sweeps all recoverable allocation failures" {

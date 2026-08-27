@@ -3296,6 +3296,7 @@ pub fn Engine(comptime Ctx: type) type {
         }
 
         const BranchReplacementPlan = struct {
+            const HostRenderPublication = if (@hasDecl(Ctx, "RenderPublication")) Ctx.RenderPublication else void;
             engine: *Self,
             host_ctx: Ctx.Handle,
             roc_host: *abi.RocHost,
@@ -3331,6 +3332,8 @@ pub fn Engine(comptime Ctx: type) type {
             render_batch_target: ?*render.TransactionalBatch = null,
             render_batch_preflighted: bool = false,
             render_batch_published: bool = false,
+            host_render_publication: ?HostRenderPublication = null,
+            host_render_published: bool = false,
 
             fn stateIndexDescending(_: void, left: usize, right: usize) bool {
                 return left > right;
@@ -3500,6 +3503,7 @@ pub fn Engine(comptime Ctx: type) type {
             fn prepareGraphAndRender(self: *@This(), allocator: std.mem.Allocator) CollectionError!void {
                 errdefer {
                     if (self.render_batch_preflighted) self.render_batch_target.?.abort();
+                    if (@hasDecl(Ctx, "RenderPublication")) if (self.host_render_publication) |*publication| publication.deinit();
                     self.render_batch.deinit(allocator);
                     if (self.render_splice) |*splice| splice.deinit();
                     self.deinitGraphRoutes(allocator);
@@ -3527,6 +3531,12 @@ pub fn Engine(comptime Ctx: type) type {
                         error.ResourceLimit => return error.ResourceLimit,
                     };
                     self.render_batch_preflighted = true;
+                    if (comptime @hasDecl(Ctx, "prepareRenderPublication")) {
+                        self.host_render_publication = Ctx.prepareRenderPublication(self.host_ctx, &self.render_splice.?) catch |err| switch (err) {
+                            error.OutOfMemory => return error.OutOfMemory,
+                            error.ResourceLimit => return error.ResourceLimit,
+                        };
+                    }
                 }
             }
 
@@ -3923,6 +3933,10 @@ pub fn Engine(comptime Ctx: type) type {
                 if (self.render_splice == null) return;
                 self.render_batch_target.?.commit();
                 self.render_batch_published = true;
+                if (comptime @hasDecl(Ctx, "publishRenderPublication")) {
+                    Ctx.publishRenderPublication(self.host_ctx, &self.host_render_publication.?);
+                    self.host_render_published = true;
+                }
             }
 
             fn collectRetiredGraphRoots(self: *@This(), allocator: std.mem.Allocator, roots: *std.ArrayListUnmanaged(*HostSignalRecord)) CollectionError!void {
@@ -4099,6 +4113,7 @@ pub fn Engine(comptime Ctx: type) type {
             fn deinit(self: *@This()) void {
                 const allocator = Ctx.allocator(self.host_ctx);
                 if (self.render_batch_preflighted and !self.render_batch_published and self.render_batch_target != &self.render_batch) self.render_batch_target.?.abort();
+                if (@hasDecl(Ctx, "RenderPublication")) if (self.host_render_publication) |*publication| publication.deinit();
                 self.render_batch.deinit(allocator);
                 if (self.render_splice) |*splice| splice.deinit();
                 if (self.publication) |*publication| publication.deinit(allocator);

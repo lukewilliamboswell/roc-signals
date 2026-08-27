@@ -181,7 +181,7 @@ pub const PreparedPublication = struct {
     committed: bool = false,
 
     /// Clones touched active slots and prepares owned inactive sparse slots.
-    pub fn init(allocator: std.mem.Allocator, elements: *std.ArrayListUnmanaged(Element), touched_ids: []const u64, max_elem_id: u64) (std.mem.Allocator.Error || error{DuplicateNode, ResourceLimit})!PreparedPublication {
+    pub fn init(allocator: std.mem.Allocator, elements: *std.ArrayListUnmanaged(Element), touched_ids: []const u64, max_elem_id: u64) (std.mem.Allocator.Error || error{ DuplicateNode, ResourceLimit })!PreparedPublication {
         var self = PreparedPublication{ .allocator = allocator, .original_len = elements.items.len };
         errdefer self.deinit();
         try elements.ensureTotalCapacity(allocator, std.math.add(usize, std.math.cast(usize, max_elem_id) orelse return error.ResourceLimit, 1) catch return error.ResourceLimit);
@@ -803,6 +803,7 @@ test "prepared native DOM publication aborts or swaps allocation free" {
         failing_elements.items[1].active = false;
         failing.configure(failure_number);
         try std.testing.expectError(error.OutOfMemory, PreparedPublication.init(failing.allocator(), &failing_elements, &.{ 1, 3 }, 3));
+        try std.testing.expectEqual(@as(usize, 1), failing.induced_failures);
         try std.testing.expectEqual(@as(usize, 2), failing_elements.items.len);
         try std.testing.expectEqualStrings("active", failing_elements.items[1].tag);
         try std.testing.expect(!failing_elements.items[1].active);
