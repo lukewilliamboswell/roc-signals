@@ -109,6 +109,81 @@ pub const BoolSinkEdit = struct { record_id: u64, kind: BoolSinkKind, old_index:
 pub const ChangeSinkEdit = struct { record_id: u64, old_index: usize, new_index: ?usize = null };
 pub const StructuralSinkEdit = struct { record_id: u64, kind: StructuralKind, old_index: usize, new_index: ?usize = null };
 
+pub fn RouteAppend(comptime Route: type) type {
+    return struct { route_index: u64, value: Route };
+}
+
+pub fn PreparedRouteAppends(comptime Route: type) type {
+    return struct {
+        replacements: []Replacement,
+
+        const Replacement = struct {
+            route_index: u64,
+            items: []Route,
+            retired: std.ArrayListUnmanaged(Route) = .empty,
+        };
+
+        pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            for (self.replacements) |*replacement| {
+                allocator.free(replacement.items);
+                replacement.retired.deinit(allocator);
+            }
+            allocator.free(self.replacements);
+            self.* = undefined;
+        }
+
+        pub fn reserveOuter(self: *const @This(), allocator: std.mem.Allocator, routes: *RouteTable(Route), final_count: usize) std.mem.Allocator.Error!void {
+            _ = self;
+            try routes.ensureTotalCapacity(allocator, final_count);
+        }
+
+        pub fn apply(self: *@This(), routes: *RouteTable(Route), final_count: usize) void {
+            while (routes.items.len < final_count) routes.appendAssumeCapacity(.empty);
+            for (self.replacements) |*replacement| {
+                const index: usize = @intCast(replacement.route_index);
+                if (index >= routes.items.len) @panic("prepared route append exceeded its destination table");
+                replacement.retired = routes.items[index];
+                routes.items[index] = .{ .items = replacement.items, .capacity = replacement.items.len };
+                replacement.items = &.{};
+            }
+        }
+    };
+}
+
+pub fn prepareRouteAppends(comptime Route: type, allocator: std.mem.Allocator, routes: *const RouteTable(Route), final_count: usize, appends: []const RouteAppend(Route)) (std.mem.Allocator.Error || error{InvalidAppend})!PreparedRouteAppends(Route) {
+    const sorted = try allocator.dupe(RouteAppend(Route), appends);
+    defer allocator.free(sorted);
+    std.mem.sort(RouteAppend(Route), sorted, {}, struct {
+        fn lessThan(_: void, left: RouteAppend(Route), right: RouteAppend(Route)) bool {
+            return left.route_index < right.route_index;
+        }
+    }.lessThan);
+    var group_count: usize = 0;
+    for (sorted, 0..) |entry, index| {
+        if (entry.route_index >= final_count) return error.InvalidAppend;
+        if (index == 0 or entry.route_index != sorted[index - 1].route_index) group_count += 1;
+    }
+    const replacements = try allocator.alloc(PreparedRouteAppends(Route).Replacement, group_count);
+    errdefer allocator.free(replacements);
+    var written: usize = 0;
+    errdefer for (replacements[0..written]) |replacement| allocator.free(replacement.items);
+    var start: usize = 0;
+    while (start < sorted.len) {
+        var end = start + 1;
+        while (end < sorted.len and sorted[end].route_index == sorted[start].route_index) end += 1;
+        const route_index: usize = @intCast(sorted[start].route_index);
+        const existing = if (route_index < routes.items.len) routes.items[route_index].items else &.{};
+        const merged_len = std.math.add(usize, existing.len, end - start) catch return error.InvalidAppend;
+        const merged = try allocator.alloc(Route, merged_len);
+        @memcpy(merged[0..existing.len], existing);
+        for (sorted[start..end], existing.len..) |entry, index| merged[index] = entry.value;
+        replacements[written] = .{ .route_index = @intCast(route_index), .items = merged };
+        written += 1;
+        start = end;
+    }
+    return .{ .replacements = replacements };
+}
+
 /// Owns validated sink-route removals and moved-descriptor index patches.
 pub const PreparedSinkRouteEdits = struct {
     text: []TextSinkEdit,
@@ -1851,6 +1926,39 @@ const LifecycleStream = struct {
         self.eaches.deinit(allocator);
     }
 };
+
+test "prepared route appends sweep failures and publish without allocation" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var routes: RouteTable(TextSink) = .empty;
+    defer {
+        clearRouteTable(TextSink, std.testing.allocator, &routes);
+        routes.deinit(std.testing.allocator);
+    }
+    try routes.append(std.testing.allocator, .empty);
+    try routes.items[0].append(std.testing.allocator, .{ .kind = .text_node, .index = 4 });
+    const appends = [_]RouteAppend(TextSink){
+        .{ .route_index = 0, .value = .{ .kind = .text_attr, .index = 7 } },
+        .{ .route_index = 2, .value = .{ .kind = .custom_text_attr, .index = 9 } },
+    };
+    var counter = FaultAllocator.init(std.testing.allocator);
+    var baseline = try prepareRouteAppends(TextSink, counter.allocator(), &routes, 3, &appends);
+    defer baseline.deinit(counter.allocator());
+    const attempts = counter.attempts;
+    for (1..attempts + 1) |failure_number| {
+        var fault = FaultAllocator.init(std.testing.allocator);
+        fault.configure(failure_number);
+        try std.testing.expectError(error.OutOfMemory, prepareRouteAppends(TextSink, fault.allocator(), &routes, 3, &appends));
+        try std.testing.expectEqual(@as(usize, 1), routes.items.len);
+        try std.testing.expectEqualDeep(TextSink{ .kind = .text_node, .index = 4 }, routes.items[0].items[0]);
+    }
+    try baseline.reserveOuter(counter.allocator(), &routes, 3);
+    counter.configure(1);
+    baseline.apply(&routes, 3);
+    try std.testing.expectEqual(@as(usize, 0), counter.attempts);
+    try std.testing.expectEqual(@as(usize, 3), routes.items.len);
+    try std.testing.expectEqualSlices(TextSink, &.{ .{ .kind = .text_node, .index = 4 }, .{ .kind = .text_attr, .index = 7 } }, routes.items[0].items);
+    try std.testing.expectEqualSlices(TextSink, &.{.{ .kind = .custom_text_attr, .index = 9 }}, routes.items[2].items);
+}
 
 test "prepared graph append enumerates missing topology without mutating survivors" {
     const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
