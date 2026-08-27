@@ -208,9 +208,21 @@ pub fn Cache(comptime Ctx: type) type {
             return self.nodes.items.len != 0 and self.nodes.items[0].active;
         }
 
-        /// Ensures node capacity capacity or state before publication can begin.
+        /// Reserves the node table without changing its logical contents.
+        pub fn preflightNodeCapacity(self: *Self, allocator: std.mem.Allocator, capacity: usize) std.mem.Allocator.Error!void {
+            try self.nodes.ensureTotalCapacity(allocator, capacity);
+        }
+
+        /// Reserves one active parent's final child-list capacity without changing its contents.
+        pub fn preflightChildCapacity(self: *Self, allocator: std.mem.Allocator, parent_elem_id: u64, capacity: usize) (std.mem.Allocator.Error || error{MissingParent})!void {
+            const index = std.math.cast(usize, parent_elem_id) orelse return error.MissingParent;
+            if (index >= self.nodes.items.len or !self.nodes.items[index].active) return error.MissingParent;
+            try self.nodes.items[index].children.ensureTotalCapacity(allocator, capacity);
+        }
+
+        /// Ensures node capacity or traps at the legacy infallible boundary.
         pub fn ensureNodeCapacity(self: *Self, ctx: Ctx.Handle, capacity: usize) void {
-            self.nodes.ensureTotalCapacity(Ctx.allocator(ctx), capacity) catch @panic("out of memory");
+            self.preflightNodeCapacity(Ctx.allocator(ctx), capacity) catch @panic("out of memory");
         }
 
         /// Reports whether active node is present in maintained state.
@@ -683,6 +695,38 @@ test "applying unchanged text field emits no duplicate command" {
     try std.testing.expect(cache.applyTextField(&host, 1, .text, "hello"));
     try std.testing.expect(!cache.applyTextField(&host, 1, .text, "hello"));
     try std.testing.expectEqual(@as(u64, 1), host.apply_text_field_count);
+}
+
+test "render cache capacity preflight is recoverable and logically inert" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var fault = FaultAllocator.init(std.testing.allocator);
+    const allocator = fault.allocator();
+    var cache: Cache(TestCtx) = .{};
+    defer {
+        cache.nodes.items[0].children.deinit(allocator);
+        cache.nodes.deinit(allocator);
+    }
+    try cache.nodes.append(allocator, ScalarNode.initActive("root"));
+
+    fault.configure(1);
+    try std.testing.expectError(error.OutOfMemory, cache.preflightNodeCapacity(allocator, 32));
+    try std.testing.expectEqual(@as(usize, 1), cache.nodes.items.len);
+    try std.testing.expectEqual(@as(usize, 0), cache.nodes.items[0].children.items.len);
+
+    fault.configure(null);
+    try cache.preflightNodeCapacity(allocator, 32);
+    fault.configure(1);
+    try std.testing.expectError(error.OutOfMemory, cache.preflightChildCapacity(allocator, 0, 16));
+    try std.testing.expectEqual(@as(usize, 1), cache.nodes.items.len);
+    try std.testing.expectEqual(@as(usize, 0), cache.nodes.items[0].children.items.len);
+
+    fault.configure(null);
+    try cache.preflightChildCapacity(allocator, 0, 16);
+    fault.configure(1);
+    cache.nodes.items[0].children.appendAssumeCapacity(7);
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqualSlices(u64, &.{7}, cache.nodes.items[0].children.items);
+    fault.configure(null);
 }
 
 test "render cache reset accepts sparse element ids" {
