@@ -4098,29 +4098,20 @@ pub fn Engine(comptime Ctx: type) type {
                     replacement_scope_ids[replacement_write] = scope_id;
                     replacement_write += 1;
                 };
-                try plan.replacement.collection.attachExternalScopeIds(replacement_scope_ids);
+                try plan.replacement.attachExternalScopeIds(replacement_scope_ids);
 
                 for (plan.row_elems, 0..) |*entry, replacement_index| {
                     const row_index = entry.row_index;
                     const row_scope_id = rows.next_scope_ids[row_index];
-                    var binder_stack: std.ArrayListUnmanaged(HostBinderBinding) = .empty;
-                    defer binder_stack.deinit(allocator);
-                    const counts = try countStaticRootNodes(entry.elem);
-                    const binder_capacity = std.math.add(usize, site.binder_bindings.len, counts.state_sites) catch return error.ResourceLimit;
-                    binder_stack.ensureTotalCapacity(allocator, binder_capacity) catch return error.OutOfMemory;
-                    binder_stack.appendSliceAssumeCapacity(site.binder_bindings);
-                    var ordinal: u64 = 0;
-                    var dom_ordinal: u64 = 0;
-                    const render_start = plan.replacement.collection.prepared_render_order.items.len;
-                    try engine.collectActiveEachRowElemDescriptorsWith(*StagedCollectionCtx, &plan.replacement.collection, ctx, roc_host, &plan.replacement.stream, each, entry.elem, row_scope_id, site.parent_elem_id, &ordinal, &dom_ordinal, &binder_stack, rows.scope_created[row_index], dirty_source_node_ids);
+                    const segment = try plan.replacement.collectEachRow(site, each, entry.elem, row_scope_id, rows.scope_created[row_index], dirty_source_node_ids);
                     plan.replacement_rows[replacement_index] = .{
                         .row_index = row_index,
                         .scope_id = row_scope_id,
-                        .start = render_start,
-                        .len = plan.replacement.collection.prepared_render_order.items.len - render_start,
+                        .start = segment.start,
+                        .len = segment.len,
                     };
                 }
-                plan.replacement.collection.materializeStream();
+                plan.replacement.materialize();
                 for (plan.row_elems) |*entry| entry.elem.decref(roc_host);
                 allocator.free(plan.row_elems);
                 plan.row_elems = &.{};
@@ -4439,6 +4430,22 @@ pub fn Engine(comptime Ctx: type) type {
             stream: HostNodeDescriptorStream = .{},
             collection: StagedCollectionCtx = undefined,
 
+            fn addRootCounts(total: *StaticRootCounts, next: StaticRootCounts) CollectionError!void {
+                total.nodes = std.math.add(usize, total.nodes, next.nodes) catch return error.ResourceLimit;
+                total.attrs = std.math.add(usize, total.attrs, next.attrs) catch return error.ResourceLimit;
+                total.lifecycle = std.math.add(usize, total.lifecycle, next.lifecycle) catch return error.ResourceLimit;
+                total.signal_records = std.math.add(usize, total.signal_records, next.signal_records) catch return error.ResourceLimit;
+                total.state_sites = std.math.add(usize, total.state_sites, next.state_sites) catch return error.ResourceLimit;
+                total.component_sites = std.math.add(usize, total.component_sites, next.component_sites) catch return error.ResourceLimit;
+                total.when_sites = std.math.add(usize, total.when_sites, next.when_sites) catch return error.ResourceLimit;
+            }
+
+            fn countRoots(elems: []const abi.Elem) CollectionError!StaticRootCounts {
+                var total: StaticRootCounts = .{};
+                for (elems) |elem| try addRootCounts(&total, try countStaticRootNodes(elem));
+                return total;
+            }
+
             fn create(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, limits: collection_budget.Limits, counts: StaticRootCounts, expected_roots: usize) CollectionError!*@This() {
                 const allocator = Ctx.allocator(ctx);
                 const owner = allocator.create(@This()) catch return error.OutOfMemory;
@@ -4447,6 +4454,46 @@ pub fn Engine(comptime Ctx: type) type {
                 errdefer owner.stream.deinit(allocator, ctx, roc_host, &engine.pending_roc_metrics);
                 owner.collection = try StagedCollectionCtx.init(engine, ctx, &owner.stream, limits, counts.nodes, counts.attrs, counts.lifecycle, counts.signal_records, counts.state_sites, counts.component_sites, counts.when_sites, expected_roots);
                 return owner;
+            }
+
+            fn attachExternalScopeIds(self: *@This(), scope_ids: []const u64) CollectionError!void {
+                try self.collection.attachExternalScopeIds(scope_ids);
+            }
+
+            fn collectWhenSelection(self: *@This(), selection: AggregateBranchSelection, dirty_source_node_ids: []const u64) CollectionError!u64 {
+                try self.collection.validateScope(selection.parent_scope_id);
+                const branch_scope = try self.collection.reserveWhenBranchScope(selection.parent_scope_id, selection.site_ordinal, selection.branch);
+                if (!branch_scope.created) return error.ResourceLimit;
+                const allocator = Ctx.allocator(self.host_ctx);
+                var binder_stack: std.ArrayListUnmanaged(HostBinderBinding) = .empty;
+                defer binder_stack.deinit(allocator);
+                const counts = try countStaticRootNodes(selection.elem);
+                const binder_capacity = std.math.add(usize, selection.binder_bindings.len, counts.state_sites) catch return error.ResourceLimit;
+                binder_stack.ensureTotalCapacity(allocator, binder_capacity) catch return error.OutOfMemory;
+                binder_stack.appendSliceAssumeCapacity(selection.binder_bindings);
+                var ordinal: u64 = 0;
+                var dom_ordinal: u64 = 0;
+                try self.engine.collectActiveElemDescriptorsWith(*StagedCollectionCtx, &self.collection, self.host_ctx, self.roc_host, &self.stream, selection.elem, branch_scope.scope_id, selection.parent_elem_id, &ordinal, &dom_ordinal, &binder_stack, true, dirty_source_node_ids);
+                return branch_scope.scope_id;
+            }
+
+            fn collectEachRow(self: *@This(), site: HostNodeScopeSiteDesc, each: HostNodeEachDesc, elem: abi.Elem, row_scope_id: u64, scope_created: bool, dirty_source_node_ids: []const u64) CollectionError!struct { start: usize, len: usize } {
+                const allocator = Ctx.allocator(self.host_ctx);
+                var binder_stack: std.ArrayListUnmanaged(HostBinderBinding) = .empty;
+                defer binder_stack.deinit(allocator);
+                const counts = try countStaticRootNodes(elem);
+                const binder_capacity = std.math.add(usize, site.binder_bindings.len, counts.state_sites) catch return error.ResourceLimit;
+                binder_stack.ensureTotalCapacity(allocator, binder_capacity) catch return error.OutOfMemory;
+                binder_stack.appendSliceAssumeCapacity(site.binder_bindings);
+                var ordinal: u64 = 0;
+                var dom_ordinal: u64 = 0;
+                const render_start = self.collection.prepared_render_order.items.len;
+                try self.engine.collectActiveEachRowElemDescriptorsWith(*StagedCollectionCtx, &self.collection, self.host_ctx, self.roc_host, &self.stream, each, elem, row_scope_id, site.parent_elem_id, &ordinal, &dom_ordinal, &binder_stack, scope_created, dirty_source_node_ids);
+                return .{ .start = render_start, .len = self.collection.prepared_render_order.items.len - render_start };
+            }
+
+            fn materialize(self: *@This()) void {
+                self.collection.materializeStream();
             }
 
             fn deinit(self: *@This()) void {
@@ -4496,13 +4543,7 @@ pub fn Engine(comptime Ctx: type) type {
             retired_active_events: std.ArrayListUnmanaged(ActiveEventDesc) = .empty,
 
             fn addCounts(total: *StaticRootCounts, next: StaticRootCounts) CollectionError!void {
-                total.nodes = std.math.add(usize, total.nodes, next.nodes) catch return error.ResourceLimit;
-                total.attrs = std.math.add(usize, total.attrs, next.attrs) catch return error.ResourceLimit;
-                total.lifecycle = std.math.add(usize, total.lifecycle, next.lifecycle) catch return error.ResourceLimit;
-                total.signal_records = std.math.add(usize, total.signal_records, next.signal_records) catch return error.ResourceLimit;
-                total.state_sites = std.math.add(usize, total.state_sites, next.state_sites) catch return error.ResourceLimit;
-                total.component_sites = std.math.add(usize, total.component_sites, next.component_sites) catch return error.ResourceLimit;
-                total.when_sites = std.math.add(usize, total.when_sites, next.when_sites) catch return error.ResourceLimit;
+                try PreparedReplacementOwner.addRootCounts(total, next);
             }
 
             fn prepare(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, selections: []const AggregateBranchSelection, limits: collection_budget.Limits, dirty_source_node_ids: []const u64) CollectionError!*@This() {
@@ -4521,22 +4562,9 @@ pub fn Engine(comptime Ctx: type) type {
                 errdefer allocator.free(plan.replacement_scope_ids);
 
                 for (selections, 0..) |selection, index| {
-                    try plan.replacement.collection.validateScope(selection.parent_scope_id);
-                    const branch_scope = try plan.replacement.collection.reserveWhenBranchScope(selection.parent_scope_id, selection.site_ordinal, selection.branch);
-                    if (!branch_scope.created) return error.ResourceLimit;
-                    plan.replacement_scope_ids[index] = branch_scope.scope_id;
-
-                    var binder_stack: std.ArrayListUnmanaged(HostBinderBinding) = .empty;
-                    defer binder_stack.deinit(allocator);
-                    const branch_count = try countStaticRootNodes(selection.elem);
-                    const binder_capacity = std.math.add(usize, selection.binder_bindings.len, branch_count.state_sites) catch return error.ResourceLimit;
-                    binder_stack.ensureTotalCapacity(allocator, binder_capacity) catch return error.OutOfMemory;
-                    binder_stack.appendSliceAssumeCapacity(selection.binder_bindings);
-                    var ordinal: u64 = 0;
-                    var dom_ordinal: u64 = 0;
-                    try engine.collectActiveElemDescriptorsWith(*StagedCollectionCtx, &plan.replacement.collection, ctx, roc_host, &plan.replacement.stream, selection.elem, branch_scope.scope_id, selection.parent_elem_id, &ordinal, &dom_ordinal, &binder_stack, true, dirty_source_node_ids);
+                    plan.replacement_scope_ids[index] = try plan.replacement.collectWhenSelection(selection, dirty_source_node_ids);
                 }
-                plan.replacement.collection.materializeStream();
+                plan.replacement.materialize();
 
                 const retired_scope_ids = allocator.alloc(u64, selections.len) catch return error.OutOfMemory;
                 defer allocator.free(retired_scope_ids);
@@ -11278,6 +11306,79 @@ test "owned retained element fixture keeps nested Roc lists alive" {
     try std.testing.expectEqual(@as(usize, 1), elem.payload_element().children.items().len);
     try std.testing.expect(elem.payload_element().attrs.items()[0].payload_static_bool().value);
     elem.decref(&roc_host);
+}
+
+test "combined replacement owner assigns distinct identities across two each sites and sweeps OOM" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    const Runner = struct {
+        fn run(roc_host: *abi.RocHost, failure_number: ?usize) !usize {
+            var fault = FaultAllocator.init(std.testing.allocator);
+            var ctx = VerifyCtxHost{ .allocator = fault.allocator() };
+            var engine = Engine(VerifyCtx).init();
+            defer deinitVerifyStateEngine(&engine, &ctx, roc_host);
+            _ = try engine.internRootScope(ctx.allocator);
+            const first_elem = abi.Elem{ .payload = .{ .text = abi.RocStr.fromSlice("first combined replacement row with retained text", roc_host) }, .tag = .Text };
+            defer first_elem.decref(roc_host);
+            const second_elem = abi.Elem{ .payload = .{ .text = abi.RocStr.fromSlice("second combined replacement row with retained text", roc_host) }, .tag = .Text };
+            defer second_elem.decref(roc_host);
+            const when_elem = abi.Elem{ .payload = .{ .text = abi.RocStr.fromSlice("combined replacement when branch with retained text", roc_host) }, .tag = .Text };
+            defer when_elem.decref(roc_host);
+            const counts = try Engine(VerifyCtx).PreparedReplacementOwner.countRoots(&.{ first_elem, second_elem, when_elem });
+            const each = HostNodeEachDesc{ .node_id = 0, .items = undefined, .ops = std.mem.zeroes(HostEachOps) };
+            const first_site = HostNodeScopeSiteDesc{ .node_id = 10, .scope_id = 0, .ordinal = 10, .parent_elem_id = 0, .render_insert_index = 0, .kind = .each, .binder_bindings = &.{} };
+            const second_site = HostNodeScopeSiteDesc{ .node_id = 20, .scope_id = 0, .ordinal = 20, .parent_elem_id = 0, .render_insert_index = 0, .kind = .each, .binder_bindings = &.{} };
+
+            fault.configure(failure_number);
+            const owner = Engine(VerifyCtx).PreparedReplacementOwner.create(&engine, &ctx, roc_host, .{}, counts, 3) catch |err| {
+                try std.testing.expectEqual(error.OutOfMemory, err);
+                return fault.attempts;
+            };
+            defer owner.deinit();
+            owner.attachExternalScopeIds(&.{ 1, 2 }) catch |err| {
+                try std.testing.expectEqual(error.OutOfMemory, err);
+                return fault.attempts;
+            };
+            _ = owner.collectEachRow(first_site, each, first_elem, 1, true, &.{}) catch |err| {
+                try std.testing.expectEqual(error.OutOfMemory, err);
+                return fault.attempts;
+            };
+            _ = owner.collectEachRow(second_site, each, second_elem, 2, true, &.{}) catch |err| {
+                try std.testing.expectEqual(error.OutOfMemory, err);
+                return fault.attempts;
+            };
+            const branch_scope_id = owner.collectWhenSelection(.{
+                .parent_scope_id = 0,
+                .site_ordinal = 30,
+                .parent_elem_id = 0,
+                .retired_scope_id = 0,
+                .render_insert_index = 0,
+                .binder_bindings = &.{},
+                .branch = .true_branch,
+                .elem = when_elem,
+            }, &.{}) catch |err| {
+                try std.testing.expectEqual(error.OutOfMemory, err);
+                return fault.attempts;
+            };
+            owner.materialize();
+            try std.testing.expect(failure_number == null);
+            try std.testing.expectEqual(@as(u64, 3), branch_scope_id);
+            try std.testing.expectEqual(@as(usize, 3), owner.stream.text_nodes.items.len);
+            try std.testing.expectEqual(@as(u64, 1), owner.stream.text_nodes.items[0].scope_id);
+            try std.testing.expectEqual(@as(u64, 2), owner.stream.text_nodes.items[1].scope_id);
+            try std.testing.expectEqual(@as(u64, 3), owner.stream.text_nodes.items[2].scope_id);
+            try std.testing.expect(owner.stream.text_nodes.items[0].elem_id != owner.stream.text_nodes.items[1].elem_id);
+            try std.testing.expect(owner.stream.text_nodes.items[1].elem_id != owner.stream.text_nodes.items[2].elem_id);
+            try std.testing.expectEqual(@as(usize, 1), engine.scopes.items.len);
+            try std.testing.expectEqual(@as(usize, 0), engine.dom_identities.items.len);
+            return fault.attempts;
+        }
+    };
+
+    var env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&env);
+    const attempts = try Runner.run(&roc_host, null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(&roc_host, failure_number);
 }
 
 test "owned aggregate graph root ingests two signal branches around a survivor" {
