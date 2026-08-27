@@ -2096,6 +2096,14 @@ pub fn Engine(comptime Ctx: type) type {
                 self.stream.appendTextNode(Ctx.allocator(self.host_ctx), elem_id, parent_elem_id, scope_id, text);
             }
 
+            fn appendSignalText(self: @This(), roc_host: *abi.RocHost, scope_id: u64, parent_elem_id: u64, dom_ordinal: *u64, payload: abi_view.TextSignalElem, binder_stack: []const HostBinderBinding) CollectionError!void {
+                const allocator = Ctx.allocator(self.host_ctx);
+                const elem_id = self.engine.internDomIdentity(allocator, scope_id, dom_ordinal.*) catch @panic("scope id has no host scope descriptor");
+                dom_ordinal.* += 1;
+                const signal = self.engine.bindNodeSignal(allocator, self.stream, payload.signal.*, binder_stack);
+                self.stream.appendSignalTextNode(allocator, self.host_ctx, roc_host, &self.engine.pending_roc_metrics, elem_id, parent_elem_id, scope_id, signal, payload.read);
+            }
+
             fn appendAttr(self: @This(), roc_host: *abi.RocHost, elem_id: u64, attr: abi.NodeAttr, binder_stack: []const HostBinderBinding) CollectionError!void {
                 self.engine.collectNodeAttrDescriptor(self.host_ctx, roc_host, self.stream, elem_id, attr, binder_stack);
             }
@@ -2145,6 +2153,7 @@ pub fn Engine(comptime Ctx: type) type {
                 self.stream.reservePreparedStaticNodes(allocator, expected_nodes, highest_elem_id) catch return error.OutOfMemory;
                 self.stream.reservePreparedStaticAttrs(allocator, expected_attrs) catch return error.OutOfMemory;
                 self.stream.reservePreparedSignalAttrs(allocator, expected_attrs, highest_elem_id) catch return error.OutOfMemory;
+                self.stream.reservePreparedSignalTextNodes(allocator, expected_nodes, highest_elem_id) catch return error.OutOfMemory;
                 self.stream.reservePreparedSignalRecordPublication(allocator, expected_signal_records) catch return error.OutOfMemory;
                 if (!self.stream.canStageLinearCustomAttrs(expected_attrs)) return error.ResourceLimit;
                 return self;
@@ -2239,6 +2248,24 @@ pub fn Engine(comptime Ctx: type) type {
                 const elem_id = try self.reserveDomIdentity(scope_id, dom_ordinal.*);
                 const prepared = self.stream.prepareTextNode(Ctx.allocator(self.host_ctx), elem_id, parent_elem_id, scope_id, value) catch return error.OutOfMemory;
                 self.prepared_nodes.appendAssumeCapacity(prepared);
+                dom_ordinal.* += 1;
+            }
+
+            fn appendSignalText(self: *@This(), roc_host: *abi.RocHost, scope_id: u64, parent_elem_id: u64, dom_ordinal: *u64, payload: abi_view.TextSignalElem, binder_stack: []const HostBinderBinding) CollectionError!void {
+                try self.budget.charge(1, @sizeOf(HostNodeSignalTextNodeDesc));
+                const elem_id = try self.reserveDomIdentity(scope_id, dom_ordinal.*);
+                const signal = try self.bindSignalRoot(roc_host, payload.signal.*, binder_stack);
+                const read = retainHostTextRead(payload.read, &self.engine.pending_roc_metrics);
+                self.prepared_signal_attrs.appendAssumeCapacity(.{ .text_node = .{
+                    .elem_id = elem_id,
+                    .parent_elem_id = parent_elem_id,
+                    .scope_id = scope_id,
+                    .signal = signal,
+                    .read = read,
+                } });
+                self.signal_records.transferDescriptorRoot(signal.record);
+                const journaled = self.signal_bindings.pop() orelse @panic("staged signal binding journal underflow");
+                if (journaled.record != signal.record or journaled.source_node_ids.ptr != signal.source_node_ids.ptr or journaled.source_node_ids.len != signal.source_node_ids.len) @panic("staged signal binding journal transfer mismatch");
                 dom_ordinal.* += 1;
             }
 
@@ -2521,10 +2548,7 @@ pub fn Engine(comptime Ctx: type) type {
                     try collection.appendText(scope_id, parent_elem_id, dom_ordinal, payload.text.asSlice());
                 },
                 .text_signal => |payload| {
-                    const elem_id = self.internDomIdentity(Ctx.allocator(ctx), scope_id, dom_ordinal.*) catch @panic("scope id has no host scope descriptor");
-                    dom_ordinal.* += 1;
-                    const signal = self.bindNodeSignal(allocator, stream, payload.signal.*, binder_stack.items);
-                    stream.appendSignalTextNode(allocator, ctx, roc_host, &self.pending_roc_metrics, elem_id, parent_elem_id, scope_id, signal, payload.read);
+                    try collection.appendSignalText(roc_host, scope_id, parent_elem_id, dom_ordinal, payload, binder_stack.items);
                 },
                 .cleanup => |payload| {
                     stream.appendCleanup(allocator, scope_id, payload.name.asSlice());
@@ -2691,6 +2715,7 @@ pub fn Engine(comptime Ctx: type) type {
                     break :blk count;
                 },
                 .text => .{ .nodes = 1 },
+                .text_signal => |payload| .{ .nodes = 1, .signal_records = try countSignalExprRecords(payload.signal.*) },
                 else => error.ResourceLimit,
             };
         }
@@ -6996,6 +7021,10 @@ test "transactional static engine root sweeps every allocation and retries clean
         .signal = &signal_expr,
     } }, .tag = .TextOptionalSignal };
     const child = verifyStaticText();
+    const signal_child = abi.Elem{ .payload = .{ .text_signal = .{
+        .read = std.mem.zeroes(HostTextRead),
+        .signal = &signal_expr,
+    } }, .tag = .TextSignal };
     const attr = abi.NodeAttr{
         .payload = .{ .static_text = .{
             .field = .{ .id = @intFromEnum(RenderTextField.label) },
@@ -7028,7 +7057,7 @@ test "transactional static engine root sweeps every allocation and retries clean
         } },
         .tag = .StaticBool,
     };
-    const root = verifyStaticRoot(&.{ attr, bool_attr, custom_text_attr, custom_bool_attr, signal_attr, signal_bool_attr, signal_custom_text_attr, signal_custom_bool_attr, signal_optional_text_attr }, &.{child});
+    const root = verifyStaticRoot(&.{ attr, bool_attr, custom_text_attr, custom_bool_attr, signal_attr, signal_bool_attr, signal_custom_text_attr, signal_custom_bool_attr, signal_optional_text_attr }, &.{ child, signal_child });
 
     var counter = FaultAllocator.init(std.testing.allocator);
     var counter_ctx = VerifyCtxHost{ .allocator = counter.allocator() };
@@ -7058,6 +7087,7 @@ test "transactional static engine root sweeps every allocation and retries clean
         try std.testing.expect(stream.elemDescriptorIndex(1) == null);
         try std.testing.expect(findElementDesc(&stream, 1) == null);
         try std.testing.expect(findTextNodeDesc(&stream, 2) == null);
+        try std.testing.expectEqual(@as(usize, 0), stream.signal_text_nodes.items.len);
         try std.testing.expect(!streamHasTextField(&stream, 1, .label));
         try std.testing.expect(!streamHasBoolField(&stream, 1, .disabled));
         try std.testing.expect(!stream.customTextAttrDescriptorExists(1, "data-state"));
@@ -7074,9 +7104,11 @@ test "transactional static engine root sweeps every allocation and retries clean
         fault.configure(null);
         try engine.collectStaticRootDescriptorsTransactional(&ctx, &roc_host, &stream, root, .{});
         try std.testing.expectEqual(@as(usize, 1), engine.scopes.items.len);
-        try std.testing.expectEqual(@as(usize, 2), engine.dom_identities.items.len);
+        try std.testing.expectEqual(@as(usize, 3), engine.dom_identities.items.len);
         try std.testing.expectEqualStrings("div", findElementDesc(&stream, 1).?.tag);
         try std.testing.expectEqualStrings("hello", findTextNodeDesc(&stream, 2).?.value);
+        try std.testing.expectEqual(@as(usize, 1), stream.signal_text_nodes.items.len);
+        try std.testing.expectEqual(@as(u64, 3), stream.signal_text_nodes.items[0].elem_id);
         try std.testing.expect(streamHasTextField(&stream, 1, .label));
         try std.testing.expect(streamHasBoolField(&stream, 1, .disabled));
         try std.testing.expect(stream.customTextAttrDescriptorExists(1, "data-state"));
