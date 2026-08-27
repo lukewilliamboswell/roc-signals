@@ -4095,13 +4095,37 @@ pub fn Engine(comptime Ctx: type) type {
             }
         };
 
-        const AggregateBranchCollection = struct {
-            const HostRenderPublication = if (@hasDecl(Ctx, "RenderPublication")) Ctx.RenderPublication else void;
+        const PreparedReplacementOwner = struct {
             engine: *Self,
             host_ctx: Ctx.Handle,
             roc_host: *abi.RocHost,
             stream: HostNodeDescriptorStream = .{},
             collection: StagedCollectionCtx = undefined,
+
+            fn create(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, limits: collection_budget.Limits, counts: StaticRootCounts, expected_roots: usize) CollectionError!*@This() {
+                const allocator = Ctx.allocator(ctx);
+                const owner = allocator.create(@This()) catch return error.OutOfMemory;
+                errdefer allocator.destroy(owner);
+                owner.* = .{ .engine = engine, .host_ctx = ctx, .roc_host = roc_host };
+                errdefer owner.stream.deinit(allocator, ctx, roc_host, &engine.pending_roc_metrics);
+                owner.collection = try StagedCollectionCtx.init(engine, ctx, &owner.stream, limits, counts.nodes, counts.attrs, counts.lifecycle, counts.signal_records, counts.state_sites, counts.component_sites, counts.when_sites, expected_roots);
+                return owner;
+            }
+
+            fn deinit(self: *@This()) void {
+                const allocator = Ctx.allocator(self.host_ctx);
+                self.collection.deinit();
+                self.stream.deinit(allocator, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
+                allocator.destroy(self);
+            }
+        };
+
+        const AggregateBranchCollection = struct {
+            const HostRenderPublication = if (@hasDecl(Ctx, "RenderPublication")) Ctx.RenderPublication else void;
+            engine: *Self,
+            host_ctx: Ctx.Handle,
+            roc_host: *abi.RocHost,
+            replacement: *PreparedReplacementOwner = undefined,
             replacement_scope_ids: []u64 = &.{},
             targets: ?PreparedStructuralTargets = null,
             removal: ?structural_splice.PreparedMultiRemoval = null,
@@ -4149,16 +4173,15 @@ pub fn Engine(comptime Ctx: type) type {
                 const plan = allocator.create(@This()) catch return error.OutOfMemory;
                 errdefer allocator.destroy(plan);
                 plan.* = .{ .engine = engine, .host_ctx = ctx, .roc_host = roc_host };
-                errdefer plan.stream.deinit(allocator, ctx, roc_host, &engine.pending_roc_metrics);
                 errdefer plan.retired_stream.deinit(allocator, ctx, roc_host, &engine.pending_roc_metrics);
-                plan.collection = try StagedCollectionCtx.init(engine, ctx, &plan.stream, limits, total.nodes, total.attrs, total.lifecycle, total.signal_records, total.state_sites, total.component_sites, total.when_sites, selections.len);
-                errdefer plan.collection.deinit();
+                plan.replacement = try PreparedReplacementOwner.create(engine, ctx, roc_host, limits, total, selections.len);
+                errdefer plan.replacement.deinit();
                 plan.replacement_scope_ids = allocator.alloc(u64, selections.len) catch return error.OutOfMemory;
                 errdefer allocator.free(plan.replacement_scope_ids);
 
                 for (selections, 0..) |selection, index| {
-                    try plan.collection.validateScope(selection.parent_scope_id);
-                    const branch_scope = try plan.collection.reserveWhenBranchScope(selection.parent_scope_id, selection.site_ordinal, selection.branch);
+                    try plan.replacement.collection.validateScope(selection.parent_scope_id);
+                    const branch_scope = try plan.replacement.collection.reserveWhenBranchScope(selection.parent_scope_id, selection.site_ordinal, selection.branch);
                     if (!branch_scope.created) return error.ResourceLimit;
                     plan.replacement_scope_ids[index] = branch_scope.scope_id;
 
@@ -4170,9 +4193,9 @@ pub fn Engine(comptime Ctx: type) type {
                     binder_stack.appendSliceAssumeCapacity(selection.binder_bindings);
                     var ordinal: u64 = 0;
                     var dom_ordinal: u64 = 0;
-                    try engine.collectActiveElemDescriptorsWith(*StagedCollectionCtx, &plan.collection, ctx, roc_host, &plan.stream, selection.elem, branch_scope.scope_id, selection.parent_elem_id, &ordinal, &dom_ordinal, &binder_stack, true, dirty_source_node_ids);
+                    try engine.collectActiveElemDescriptorsWith(*StagedCollectionCtx, &plan.replacement.collection, ctx, roc_host, &plan.replacement.stream, selection.elem, branch_scope.scope_id, selection.parent_elem_id, &ordinal, &dom_ordinal, &binder_stack, true, dirty_source_node_ids);
                 }
-                plan.collection.materializeStream();
+                plan.replacement.collection.materializeStream();
 
                 const retired_scope_ids = allocator.alloc(u64, selections.len) catch return error.OutOfMemory;
                 defer allocator.free(retired_scope_ids);
@@ -4203,18 +4226,18 @@ pub fn Engine(comptime Ctx: type) type {
                 errdefer if (plan.effects_retirement) |*effects| effects.deinit(allocator, null);
                 plan.retired_scope_steps.ensureUnusedCapacity(allocator, retirement_scope_ids.len) catch return error.OutOfMemory;
                 errdefer plan.retired_scope_steps.deinit(allocator);
-                engine.active_stream.reserveMovedStreamPublication(allocator, &plan.stream) catch return error.OutOfMemory;
+                engine.active_stream.reserveMovedStreamPublication(allocator, &plan.replacement.stream) catch return error.OutOfMemory;
                 try prepareRetiredStreamCapacity(engine, allocator, &plan.retired_stream, &plan.removal.?.removal, retirement_scope_ids);
                 const on_change_base = std.math.sub(usize, engine.active_stream.on_changes.items.len, plan.removal.?.removal.node_indexes.on_change_indexes.items.len) catch return error.ResourceLimit;
                 const mount_base = std.math.sub(usize, engine.active_stream.mounts.items.len, plan.removal.?.removal.node_indexes.mount_indexes.items.len) catch return error.ResourceLimit;
                 plan.publication = structural_splice.preparePublicationDeltas(
                     allocator,
-                    plan.stream.render_nodes.items,
+                    plan.replacement.stream.render_nodes.items,
                     &.{},
                     on_change_base,
-                    plan.stream.on_changes.items.len,
+                    plan.replacement.stream.on_changes.items.len,
                     mount_base,
-                    plan.stream.mounts.items.len,
+                    plan.replacement.stream.mounts.items.len,
                 ) catch return error.OutOfMemory;
                 errdefer if (plan.publication) |*publication| publication.deinit(allocator);
                 if (engine.active_signal_graph.items.len != 0) {
@@ -4227,7 +4250,7 @@ pub fn Engine(comptime Ctx: type) type {
                     errdefer if (plan.graph_release) |*release| release.deinit(allocator);
                     var replacement_roots: std.ArrayListUnmanaged(*HostSignalRecord) = .empty;
                     defer replacement_roots.deinit(allocator);
-                    try collectReplacementGraphRootsForStream(allocator, &plan.stream, &replacement_roots);
+                    try collectReplacementGraphRootsForStream(allocator, &plan.replacement.stream, &replacement_roots);
                     plan.graph_append = active_graph.prepareGraphAppend(HostSignalRecord, allocator, engine.active_signal_graph.items, plan.graph_release.?.final_record_ids, replacement_roots.items) catch return error.OutOfMemory;
                     errdefer if (plan.graph_append) |*append| append.deinit(allocator);
                     try plan.prepareGraphRoutes(allocator);
@@ -4251,8 +4274,8 @@ pub fn Engine(comptime Ctx: type) type {
                     .engine = self.engine,
                     .host_ctx = self.host_ctx,
                     .roc_host = self.roc_host,
-                    .replacement_stream = self.stream,
-                    .collection = self.collection,
+                    .replacement_stream = self.replacement.stream,
+                    .collection = self.replacement.collection,
                     .removal = self.removal.?.removal,
                 };
                 self.render_splice = try facade.prepareRenderTopology(allocator);
@@ -4273,7 +4296,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             fn commitCollection(self: *@This()) void {
-                self.collection.commit();
+                self.replacement.collection.commit();
             }
 
             fn commitGraphAssumeCapacity(self: *@This()) void {
@@ -4335,7 +4358,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const removal = &self.removal.?.removal;
                 const indexes = &removal.descriptor_indexes;
                 self.engine.active_stream.commitStaticDescriptorReplacementAssumeCapacity(
-                    &self.stream,
+                    &self.replacement.stream,
                     &self.retired_stream,
                     indexes.element_indexes.items,
                     indexes.text_node_indexes.items,
@@ -4351,7 +4374,7 @@ pub fn Engine(comptime Ctx: type) type {
                     removal.node_indexes.each_indexes.items,
                 );
                 self.engine.active_stream.commitCustomDescriptorReplacementAssumeCapacity(
-                    &self.stream,
+                    &self.replacement.stream,
                     &self.retired_stream,
                     indexes.static_custom_text_attr_indexes.items,
                     indexes.signal_custom_text_attr_indexes.items,
@@ -4360,7 +4383,7 @@ pub fn Engine(comptime Ctx: type) type {
                     indexes.signal_custom_bool_attr_indexes.items,
                 );
                 self.engine.active_stream.commitLifecycleReplacementAssumeCapacity(
-                    &self.stream,
+                    &self.replacement.stream,
                     &self.retired_stream,
                     removal.node_indexes.on_change_indexes.items,
                     removal.node_indexes.mount_indexes.items,
@@ -4368,7 +4391,7 @@ pub fn Engine(comptime Ctx: type) type {
                 );
 
                 self.state_retirement.?.apply(self.engine, &self.retired_state_cells);
-                self.collection.commit();
+                self.replacement.collection.commit();
                 self.identity_retirements.?.apply(self.engine);
                 var row_keys = EachRowScopeKeyLookup{ .engine = self.engine };
                 self.row_retirement.?.apply(&self.engine.each_row_sites, &self.engine.each_row_memberships_by_scope_id, &row_keys);
@@ -4393,8 +4416,7 @@ pub fn Engine(comptime Ctx: type) type {
                 if (@hasDecl(Ctx, "RenderPublication")) if (self.host_render_publication) |*publication| publication.deinit();
                 self.render_batch.deinit(allocator);
                 if (self.render_splice) |*splice| splice.deinit();
-                self.collection.deinit();
-                self.stream.deinit(allocator, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
+                self.replacement.deinit();
                 if (self.removal) |*removal| removal.deinit(allocator);
                 if (self.state_retirement) |*retirement| retirement.deinit(allocator);
                 for (self.retired_state_cells.items) |*state| state.cell.deinit(self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
@@ -4478,23 +4500,23 @@ pub fn Engine(comptime Ctx: type) type {
                 const removal = &self.removal.?.removal;
                 const indexes = &removal.descriptor_indexes;
                 const text_node_base = std.math.sub(usize, self.engine.active_stream.signal_text_nodes.items.len, indexes.signal_text_node_indexes.items.len) catch return error.ResourceLimit;
-                for (self.stream.signal_text_nodes.items, 0..) |desc, offset| try self.appendTextRoute(allocator, &text, desc.signal.record, .{ .kind = .text_node, .index = text_node_base + offset });
+                for (self.replacement.stream.signal_text_nodes.items, 0..) |desc, offset| try self.appendTextRoute(allocator, &text, desc.signal.record, .{ .kind = .text_node, .index = text_node_base + offset });
                 const text_attr_base = std.math.sub(usize, self.engine.active_stream.signal_text_attrs.items.len, indexes.signal_text_attr_indexes.items.len) catch return error.ResourceLimit;
-                for (self.stream.signal_text_attrs.items, 0..) |desc, offset| try self.appendTextRoute(allocator, &text, desc.signal.record, .{ .kind = .text_attr, .index = text_attr_base + offset });
+                for (self.replacement.stream.signal_text_attrs.items, 0..) |desc, offset| try self.appendTextRoute(allocator, &text, desc.signal.record, .{ .kind = .text_attr, .index = text_attr_base + offset });
                 const custom_text_base = std.math.sub(usize, self.engine.active_stream.signal_custom_text_attrs.items.len, indexes.signal_custom_text_attr_indexes.items.len) catch return error.ResourceLimit;
-                for (self.stream.signal_custom_text_attrs.items, 0..) |desc, offset| try self.appendTextRoute(allocator, &text, desc.signal.record, .{ .kind = .custom_text_attr, .index = custom_text_base + offset });
+                for (self.replacement.stream.signal_custom_text_attrs.items, 0..) |desc, offset| try self.appendTextRoute(allocator, &text, desc.signal.record, .{ .kind = .custom_text_attr, .index = custom_text_base + offset });
                 const optional_text_base = std.math.sub(usize, self.engine.active_stream.signal_optional_custom_text_attrs.items.len, indexes.signal_optional_custom_text_attr_indexes.items.len) catch return error.ResourceLimit;
-                for (self.stream.signal_optional_custom_text_attrs.items, 0..) |desc, offset| try self.appendTextRoute(allocator, &text, desc.signal.record, .{ .kind = .custom_text_optional_attr, .index = optional_text_base + offset });
+                for (self.replacement.stream.signal_optional_custom_text_attrs.items, 0..) |desc, offset| try self.appendTextRoute(allocator, &text, desc.signal.record, .{ .kind = .custom_text_optional_attr, .index = optional_text_base + offset });
                 const bool_attr_base = std.math.sub(usize, self.engine.active_stream.signal_bool_attrs.items.len, indexes.signal_bool_attr_indexes.items.len) catch return error.ResourceLimit;
-                for (self.stream.signal_bool_attrs.items, 0..) |desc, offset| try self.appendBoolRoute(allocator, &bools, desc.signal.record, .{ .kind = .bool_attr, .index = bool_attr_base + offset });
+                for (self.replacement.stream.signal_bool_attrs.items, 0..) |desc, offset| try self.appendBoolRoute(allocator, &bools, desc.signal.record, .{ .kind = .bool_attr, .index = bool_attr_base + offset });
                 const custom_bool_base = std.math.sub(usize, self.engine.active_stream.signal_custom_bool_attrs.items.len, indexes.signal_custom_bool_attr_indexes.items.len) catch return error.ResourceLimit;
-                for (self.stream.signal_custom_bool_attrs.items, 0..) |desc, offset| try self.appendBoolRoute(allocator, &bools, desc.signal.record, .{ .kind = .custom_bool_attr, .index = custom_bool_base + offset });
+                for (self.replacement.stream.signal_custom_bool_attrs.items, 0..) |desc, offset| try self.appendBoolRoute(allocator, &bools, desc.signal.record, .{ .kind = .custom_bool_attr, .index = custom_bool_base + offset });
                 const change_base = std.math.sub(usize, self.engine.active_stream.on_changes.items.len, removal.node_indexes.on_change_indexes.items.len) catch return error.ResourceLimit;
-                for (self.stream.on_changes.items, 0..) |desc, offset| try self.appendChangeRoute(allocator, &changes, desc.signal.record, .{ .index = change_base + offset });
+                for (self.replacement.stream.on_changes.items, 0..) |desc, offset| try self.appendChangeRoute(allocator, &changes, desc.signal.record, .{ .index = change_base + offset });
                 const when_base = std.math.sub(usize, self.engine.active_stream.whens.items.len, removal.node_indexes.when_indexes.items.len) catch return error.ResourceLimit;
-                for (self.stream.whens.items, 0..) |desc, offset| try self.appendStructuralRoute(allocator, &structural, desc.condition.record, .{ .kind = .when, .index = when_base + offset });
+                for (self.replacement.stream.whens.items, 0..) |desc, offset| try self.appendStructuralRoute(allocator, &structural, desc.condition.record, .{ .kind = .when, .index = when_base + offset });
                 const each_base = std.math.sub(usize, self.engine.active_stream.eaches.items.len, removal.node_indexes.each_indexes.items.len) catch return error.ResourceLimit;
-                for (self.stream.eaches.items, 0..) |desc, offset| try self.appendStructuralRoute(allocator, &structural, desc.items.record, .{ .kind = .each, .index = each_base + offset });
+                for (self.replacement.stream.eaches.items, 0..) |desc, offset| try self.appendStructuralRoute(allocator, &structural, desc.items.record, .{ .kind = .each, .index = each_base + offset });
                 var source_count = self.engine.active_source_signal_routes.items.len;
                 for (source.items) |entry| source_count = @max(source_count, std.math.add(usize, @intCast(entry.route_index), 1) catch return error.ResourceLimit);
                 self.graph_source_route_count = source_count;
@@ -11636,7 +11658,7 @@ test "aggregate branch collection sweeps allocation failures without publication
                 fault.configure(null);
                 const retry = try Engine(VerifyCtx).AggregateBranchCollection.prepare(&engine, &ctx, &roc_host, &selections, .{}, &.{});
                 defer retry.deinit();
-                try std.testing.expectEqual(@as(usize, 2), retry.stream.signal_text_nodes.items.len);
+                try std.testing.expectEqual(@as(usize, 2), retry.replacement.stream.signal_text_nodes.items.len);
                 try std.testing.expect(retry.graph_release.?.steps.len != 0);
                 try std.testing.expectEqual(@as(usize, 4), retry.graph_append.?.records.len);
                 try std.testing.expect(retry.render_splice != null);
@@ -11645,13 +11667,13 @@ test "aggregate branch collection sweeps allocation failures without publication
             };
             const attempts = fault.attempts;
             defer prepared.deinit();
-            try std.testing.expectEqual(@as(usize, 2), prepared.stream.signal_text_nodes.items.len);
+            try std.testing.expectEqual(@as(usize, 2), prepared.replacement.stream.signal_text_nodes.items.len);
             try std.testing.expectEqual(@as(usize, 2), prepared.removal.?.removal.descriptor_indexes.signal_text_node_indexes.items.len);
             try std.testing.expect(prepared.graph_release.?.steps.len != 0);
             try std.testing.expectEqual(@as(usize, 4), prepared.graph_append.?.records.len);
             try std.testing.expect(prepared.render_splice != null);
-            const first_new = prepared.stream.signal_text_nodes.items[0].signal.record;
-            const second_new = prepared.stream.signal_text_nodes.items[1].signal.record;
+            const first_new = prepared.replacement.stream.signal_text_nodes.items[0].signal.record;
+            const second_new = prepared.replacement.stream.signal_text_nodes.items[1].signal.record;
             const first_input = switch (first_new.payload) {
                 .map => |payload| payload.input,
                 else => return error.TestUnexpectedResult,
