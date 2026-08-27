@@ -3995,6 +3995,40 @@ pub fn Engine(comptime Ctx: type) type {
             for (stream.eaches.items) |*desc| roots.append(allocator, desc.items.record) catch return error.OutOfMemory;
         }
 
+        const PreparedStructuralTargets = struct {
+            descriptor_target_scopes: []bool = &.{},
+            scope_retirement: ?scope_runtime.PreparedSubtreeRetirement = null,
+
+            fn prepare(engine: *Self, allocator: std.mem.Allocator, descriptor_root_scope_ids: []const u64, retired_root_scope_ids: []const u64) CollectionError!@This() {
+                var prepared: @This() = .{};
+                errdefer prepared.deinit(allocator);
+                prepared.descriptor_target_scopes = allocator.alloc(bool, engine.scopes.items.len) catch return error.OutOfMemory;
+                @memset(prepared.descriptor_target_scopes, false);
+                for (descriptor_root_scope_ids) |root_scope_id| {
+                    if (root_scope_id >= engine.scopes.items.len) return error.ResourceLimit;
+                    for (engine.scopes.items) |scope| {
+                        if (engine.scopeIsDescendantOrSelf(scope.scope_id, root_scope_id) catch return error.ResourceLimit) {
+                            prepared.descriptor_target_scopes[@intCast(scope.scope_id)] = true;
+                        }
+                    }
+                }
+                prepared.scope_retirement = scope_runtime.prepareSubtreesRetirement(HostEachRowScopeStep, allocator, engine.scopes.items, retired_root_scope_ids) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.OverlappingSubtrees => return error.ResourceLimit,
+                };
+                for (prepared.scope_retirement.?.scope_ids) |scope_id| {
+                    if (scope_id >= prepared.descriptor_target_scopes.len or !prepared.descriptor_target_scopes[@intCast(scope_id)]) return error.ResourceLimit;
+                }
+                return prepared;
+            }
+
+            fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+                if (self.scope_retirement) |*retirement| retirement.deinit(allocator);
+                allocator.free(self.descriptor_target_scopes);
+                self.* = .{};
+            }
+        };
+
         const AggregateBranchCollection = struct {
             const HostRenderPublication = if (@hasDecl(Ctx, "RenderPublication")) Ctx.RenderPublication else void;
             engine: *Self,
@@ -4003,8 +4037,7 @@ pub fn Engine(comptime Ctx: type) type {
             stream: HostNodeDescriptorStream = .{},
             collection: StagedCollectionCtx = undefined,
             replacement_scope_ids: []u64 = &.{},
-            target_scopes: []bool = &.{},
-            scope_retirement: ?scope_runtime.PreparedSubtreeRetirement = null,
+            targets: ?PreparedStructuralTargets = null,
             removal: ?structural_splice.PreparedMultiRemoval = null,
             identity_retirements: ?PreparedIdentityRetirements = null,
             state_retirement: ?PreparedStateRetirementIndexes = null,
@@ -4075,9 +4108,6 @@ pub fn Engine(comptime Ctx: type) type {
                 }
                 plan.collection.materializeStream();
 
-                plan.target_scopes = allocator.alloc(bool, engine.scopes.items.len) catch return error.OutOfMemory;
-                errdefer allocator.free(plan.target_scopes);
-                @memset(plan.target_scopes, false);
                 const retired_scope_ids = allocator.alloc(u64, selections.len) catch return error.OutOfMemory;
                 defer allocator.free(retired_scope_ids);
                 const render_insert_indexes = allocator.alloc(usize, selections.len) catch return error.OutOfMemory;
@@ -4085,20 +4115,14 @@ pub fn Engine(comptime Ctx: type) type {
                 for (selections, 0..) |selection, index| {
                     retired_scope_ids[index] = selection.retired_scope_id;
                     render_insert_indexes[index] = selection.render_insert_index;
-                    for (engine.scopes.items) |scope| {
-                        if (engine.scopeIsDescendantOrSelf(scope.scope_id, selection.retired_scope_id) catch return error.ResourceLimit) {
-                            plan.target_scopes[@intCast(scope.scope_id)] = true;
-                        }
-                    }
                 }
-                plan.scope_retirement = scope_runtime.prepareSubtreesRetirement(HostEachRowScopeStep, allocator, engine.scopes.items, retired_scope_ids) catch |err| switch (err) {
-                    error.OutOfMemory => return error.OutOfMemory,
-                    error.OverlappingSubtrees => return error.ResourceLimit,
-                };
-                errdefer if (plan.scope_retirement) |*retirement| retirement.deinit(allocator);
-                plan.identity_retirements = try PreparedIdentityRetirements.prepare(engine, allocator, plan.target_scopes);
+                plan.targets = try PreparedStructuralTargets.prepare(engine, allocator, retired_scope_ids, retired_scope_ids);
+                errdefer if (plan.targets) |*targets| targets.deinit(allocator);
+                const target_scopes = plan.targets.?.descriptor_target_scopes;
+                const retirement_scope_ids = plan.targets.?.scope_retirement.?.scope_ids;
+                plan.identity_retirements = try PreparedIdentityRetirements.prepare(engine, allocator, target_scopes);
                 errdefer if (plan.identity_retirements) |*retirements| retirements.deinit(allocator);
-                plan.removal = structural_splice.prepareMultiRemoval(HostNodeDescriptorStream, allocator, &engine.active_stream, render_insert_indexes, plan.target_scopes) catch |err| switch (err) {
+                plan.removal = structural_splice.prepareMultiRemoval(HostNodeDescriptorStream, allocator, &engine.active_stream, render_insert_indexes, target_scopes) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.OverlappingIntervals => return error.ResourceLimit,
                 };
@@ -4107,14 +4131,14 @@ pub fn Engine(comptime Ctx: type) type {
                 errdefer if (plan.state_retirement) |*retirement| retirement.deinit(allocator);
                 try plan.state_retirement.?.reserveRetired(allocator, &plan.retired_state_cells);
                 errdefer plan.retired_state_cells.deinit(allocator);
-                plan.row_retirement = try prepareRowRetirementForScopes(engine, allocator, plan.scope_retirement.?.scope_ids);
+                plan.row_retirement = try prepareRowRetirementForScopes(engine, allocator, retirement_scope_ids);
                 errdefer if (plan.row_retirement) |*retirement| retirement.deinit(allocator);
-                plan.effects_retirement = try PreparedEffectRetirements.prepare(engine, allocator, plan.target_scopes, plan.removal.?.removal.node_indexes.cleanup_indexes.items);
+                plan.effects_retirement = try PreparedEffectRetirements.prepare(engine, allocator, target_scopes, plan.removal.?.removal.node_indexes.cleanup_indexes.items);
                 errdefer if (plan.effects_retirement) |*effects| effects.deinit(allocator, null);
-                plan.retired_scope_steps.ensureUnusedCapacity(allocator, plan.scope_retirement.?.scope_ids.len) catch return error.OutOfMemory;
+                plan.retired_scope_steps.ensureUnusedCapacity(allocator, retirement_scope_ids.len) catch return error.OutOfMemory;
                 errdefer plan.retired_scope_steps.deinit(allocator);
                 engine.active_stream.reserveMovedStreamPublication(allocator, &plan.stream) catch return error.OutOfMemory;
-                try prepareRetiredStreamCapacity(engine, allocator, &plan.retired_stream, &plan.removal.?.removal, plan.scope_retirement.?.scope_ids);
+                try prepareRetiredStreamCapacity(engine, allocator, &plan.retired_stream, &plan.removal.?.removal, retirement_scope_ids);
                 const on_change_base = std.math.sub(usize, engine.active_stream.on_changes.items.len, plan.removal.?.removal.node_indexes.on_change_indexes.items.len) catch return error.ResourceLimit;
                 const mount_base = std.math.sub(usize, engine.active_stream.mounts.items.len, plan.removal.?.removal.node_indexes.mount_indexes.items.len) catch return error.ResourceLimit;
                 plan.publication = structural_splice.preparePublicationDeltas(
@@ -4282,13 +4306,14 @@ pub fn Engine(comptime Ctx: type) type {
                 self.identity_retirements.?.apply(self.engine);
                 var row_keys = EachRowScopeKeyLookup{ .engine = self.engine };
                 self.row_retirement.?.apply(&self.engine.each_row_sites, &self.engine.each_row_memberships_by_scope_id, &row_keys);
-                for (self.scope_retirement.?.scope_ids) |scope_id| {
+                const scope_retirement = &self.targets.?.scope_retirement.?;
+                for (scope_retirement.scope_ids) |scope_id| {
                     const scope = &self.engine.scopes.items[@intCast(scope_id)];
                     self.retired_scope_steps.appendAssumeCapacity(scope.step);
                     scope.step = .root;
                 }
-                self.scope_retirement.?.applyMetadata(HostEachRowScopeStep, self.engine.scopes.items, self.engine.identity_reuse_barrier);
-                self.engine.has_inactive_scopes = self.scope_retirement.?.scope_ids.len != 0 or self.engine.has_inactive_scopes;
+                scope_retirement.applyMetadata(HostEachRowScopeStep, self.engine.scopes.items, self.engine.identity_reuse_barrier);
+                self.engine.has_inactive_scopes = scope_retirement.scope_ids.len != 0 or self.engine.has_inactive_scopes;
 
                 self.publishRenderLast();
                 // Cancellations and cleanup publication may call the host, so they
@@ -4317,10 +4342,9 @@ pub fn Engine(comptime Ctx: type) type {
                 self.deinitGraphRoutes(allocator);
                 self.retired_stream.deinit(allocator, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
                 if (self.identity_retirements) |*retirements| retirements.deinit(allocator);
-                if (self.scope_retirement) |*retirement| retirement.deinit(allocator);
+                if (self.targets) |*targets| targets.deinit(allocator);
                 for (self.retired_scope_steps.items) |*step| deinitHostScopeStep(step, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
                 self.retired_scope_steps.deinit(allocator);
-                allocator.free(self.target_scopes);
                 allocator.free(self.replacement_scope_ids);
                 allocator.destroy(self);
             }
