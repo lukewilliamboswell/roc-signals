@@ -200,7 +200,8 @@ const NativeRenderPublication = struct {
         self.dom.apply(&host.dom_elements);
     }
 
-    fn deinit(self: *NativeRenderPublication) void {
+    /// Releases provisional DOM slots on abort or displaced slots after publication.
+    pub fn deinit(self: *NativeRenderPublication) void {
         self.dom.deinit();
     }
 };

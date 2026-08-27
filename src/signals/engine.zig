@@ -4110,6 +4110,56 @@ pub fn Engine(comptime Ctx: type) type {
                 self.engine.has_inactive_scopes = self.scope_retirement.?.scope_ids.len != 0 or self.engine.has_inactive_scopes;
             }
 
+            fn commitAssumeCapacity(self: *@This()) void {
+                self.commitRenderCacheAssumeCapacity();
+                if (self.sink_edits) |*edits| edits.apply(
+                    &self.engine.active_text_signal_routes,
+                    &self.engine.active_bool_signal_routes,
+                    &self.engine.active_change_signal_routes,
+                    &self.engine.active_structural_signal_routes,
+                );
+                if (self.graph_release != null) self.commitGraphAssumeCapacity();
+                const indexes = &self.removal.?.descriptor_indexes;
+                self.engine.active_stream.commitStaticDescriptorReplacementAssumeCapacity(
+                    &self.replacement_stream,
+                    &self.retired_stream,
+                    indexes.element_indexes.items,
+                    indexes.text_node_indexes.items,
+                    indexes.static_text_attr_indexes.items,
+                    indexes.static_bool_attr_indexes.items,
+                    indexes.signal_text_node_indexes.items,
+                    indexes.signal_text_attr_indexes.items,
+                    indexes.signal_bool_attr_indexes.items,
+                    indexes.event_indexes.items,
+                    self.removal.?.node_indexes.scope_site_indexes.items,
+                    self.removal.?.node_indexes.state_indexes.items,
+                    self.removal.?.node_indexes.when_indexes.items,
+                    self.removal.?.node_indexes.each_indexes.items,
+                );
+                self.engine.active_stream.commitCustomDescriptorReplacementAssumeCapacity(
+                    &self.replacement_stream,
+                    &self.retired_stream,
+                    indexes.static_custom_text_attr_indexes.items,
+                    indexes.signal_custom_text_attr_indexes.items,
+                    indexes.signal_optional_custom_text_attr_indexes.items,
+                    indexes.static_custom_bool_attr_indexes.items,
+                    indexes.signal_custom_bool_attr_indexes.items,
+                );
+                self.engine.active_stream.commitLifecycleReplacementAssumeCapacity(
+                    &self.replacement_stream,
+                    &self.retired_stream,
+                    self.removal.?.node_indexes.on_change_indexes.items,
+                    self.removal.?.node_indexes.mount_indexes.items,
+                    self.removal.?.node_indexes.cleanup_indexes.items,
+                );
+                self.commitStateCellsAssumeCapacity();
+                self.commitIdentityRetirement();
+                self.commitRowRetirement();
+                self.commitEffectsRetirement();
+                self.commitScopeRetirementLast();
+                self.publishRenderBatchLast();
+            }
+
             fn deinit(self: *@This()) void {
                 const allocator = Ctx.allocator(self.host_ctx);
                 if (self.render_batch_preflighted and !self.render_batch_published and self.render_batch_target != &self.render_batch) self.render_batch_target.?.abort();
@@ -8409,6 +8459,10 @@ const VerifySink = struct {
     pub fn startTask(_: VerifySink, _: u64, _: []const u8, _: []const u8) void {}
     /// Cancels host work for a task request retired by engine lifecycle policy.
     pub fn cancelTask(_: VerifySink, _: u64) void {}
+    /// Applies an engine-issued storage write without deriving storage semantics.
+    pub fn setStorageText(_: VerifySink, _: boundary.StorageArea, _: []const u8, _: []const u8) void {}
+    /// Applies an engine-issued storage removal without deriving storage semantics.
+    pub fn removeStorage(_: VerifySink, _: boundary.StorageArea, _: []const u8) void {}
     /// Applies an engine-issued browser-history command without deriving routing semantics.
     pub fn navigate(_: VerifySink, _: NavigationKind, _: boundary.LocationSnapshot) void {}
     /// Applies the document title already selected by graph propagation.
@@ -8452,6 +8506,11 @@ const VerifyCtx = struct {
     /// Resolves a state cell by dense node id without scanning the signal graph.
     pub fn stateValueByNodeId(_: Handle, _: u64) HostValue {
         return 0;
+    }
+
+    /// Replaces a state source value in the verification host.
+    pub fn updateStateValue(_: Handle, _: *abi.RocHost, _: u64, _: HostValue) bool {
+        return true;
     }
 
     /// Returns the exact app-compiled capability that owns the requested state cell.
@@ -9182,53 +9241,7 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 const planned_change_record_id = plan.graph_append.?.plannedRecordId(engine.active_signal_graph.items, plan.replacement_stream.on_changes.items[0].signal.record) orelse return error.TestUnexpectedResult;
                 const replacement_record_refs_before_graph = replacement_signal_record.ref_count;
                 fault.configure(1);
-                plan.commitRenderCacheAssumeCapacity();
-                plan.sink_edits.?.apply(
-                    &engine.active_text_signal_routes,
-                    &engine.active_bool_signal_routes,
-                    &engine.active_change_signal_routes,
-                    &engine.active_structural_signal_routes,
-                );
-                plan.commitGraphAssumeCapacity();
-                const indexes = &plan.removal.?.descriptor_indexes;
-                engine.active_stream.commitStaticDescriptorReplacementAssumeCapacity(
-                    &plan.replacement_stream,
-                    &plan.retired_stream,
-                    indexes.element_indexes.items,
-                    indexes.text_node_indexes.items,
-                    indexes.static_text_attr_indexes.items,
-                    indexes.static_bool_attr_indexes.items,
-                    indexes.signal_text_node_indexes.items,
-                    indexes.signal_text_attr_indexes.items,
-                    indexes.signal_bool_attr_indexes.items,
-                    indexes.event_indexes.items,
-                    plan.removal.?.node_indexes.scope_site_indexes.items,
-                    plan.removal.?.node_indexes.state_indexes.items,
-                    plan.removal.?.node_indexes.when_indexes.items,
-                    plan.removal.?.node_indexes.each_indexes.items,
-                );
-                engine.active_stream.commitCustomDescriptorReplacementAssumeCapacity(
-                    &plan.replacement_stream,
-                    &plan.retired_stream,
-                    indexes.static_custom_text_attr_indexes.items,
-                    indexes.signal_custom_text_attr_indexes.items,
-                    indexes.signal_optional_custom_text_attr_indexes.items,
-                    indexes.static_custom_bool_attr_indexes.items,
-                    indexes.signal_custom_bool_attr_indexes.items,
-                );
-                engine.active_stream.commitLifecycleReplacementAssumeCapacity(
-                    &plan.replacement_stream,
-                    &plan.retired_stream,
-                    plan.removal.?.node_indexes.on_change_indexes.items,
-                    plan.removal.?.node_indexes.mount_indexes.items,
-                    plan.removal.?.node_indexes.cleanup_indexes.items,
-                );
-                plan.commitStateCellsAssumeCapacity();
-                plan.commitIdentityRetirement();
-                plan.commitRowRetirement();
-                plan.commitEffectsRetirement();
-                plan.commitScopeRetirementLast();
-                plan.publishRenderBatchLast();
+                plan.commitAssumeCapacity();
                 try std.testing.expectEqual(@as(usize, 0), fault.attempts);
                 try std.testing.expectEqual(@as(usize, 0), ctx.render_batch.staged.commands.len());
                 try std.testing.expect(ctx.render_batch.published.commands.len() != 0);
