@@ -3907,6 +3907,17 @@ pub fn Engine(comptime Ctx: type) type {
                 release.releaseRetired(Ctx.allocator(self.host_ctx), &lifecycle);
             }
 
+            fn commitRenderCacheAssumeCapacity(self: *@This()) void {
+                const splice = &(self.render_splice orelse return);
+                splice.wire.stageAssumeCapacity(&self.render_batch, Ctx.allocator(self.host_ctx)) catch @panic("prepared render batch violated its preflight contract");
+                splice.apply(&self.engine.render_cache);
+            }
+
+            fn publishRenderBatchLast(self: *@This()) void {
+                if (self.render_splice == null) return;
+                self.render_batch.commit();
+            }
+
             fn collectRetiredGraphRoots(self: *@This(), allocator: std.mem.Allocator, roots: *std.ArrayListUnmanaged(*HostSignalRecord)) CollectionError!void {
                 const indexes = &self.removal.?.descriptor_indexes;
                 for (indexes.signal_text_node_indexes.items) |index| roots.append(allocator, self.engine.active_stream.signal_text_nodes.items[index].signal.record) catch return error.OutOfMemory;
@@ -9061,7 +9072,7 @@ test "branch replacement preparation leaves the active branch unpublished" {
             stream = .{};
             engine.roc_host = host;
             engine.rebuildActiveSignalGraphFromStream(&ctx, &engine.active_stream);
-            engine.appendRenderNode(&ctx, 0, 0, "root");
+            engine.resetRenderTree(&ctx);
             engine.appendRenderNode(&ctx, 1, 0, "div");
             engine.appendRenderNode(&ctx, 2, 1, "text");
             engine.appendRenderNode(&ctx, 3, 1, "text");
@@ -9138,6 +9149,7 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 const planned_change_record_id = plan.graph_append.?.plannedRecordId(engine.active_signal_graph.items, plan.replacement_stream.on_changes.items[0].signal.record) orelse return error.TestUnexpectedResult;
                 const replacement_record_refs_before_graph = replacement_signal_record.ref_count;
                 fault.configure(1);
+                plan.commitRenderCacheAssumeCapacity();
                 plan.sink_edits.?.apply(
                     &engine.active_text_signal_routes,
                     &engine.active_bool_signal_routes,
@@ -9183,7 +9195,17 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 plan.commitRowRetirement();
                 plan.commitEffectsRetirement();
                 plan.commitScopeRetirementLast();
+                plan.publishRenderBatchLast();
                 try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+                try std.testing.expectEqual(@as(usize, 0), plan.render_batch.staged.commands.len());
+                try std.testing.expect(plan.render_batch.published.commands.len() != 0);
+                try std.testing.expectEqualStrings("div", engine.render_cache.nodes.items[4].tag.?);
+                try std.testing.expectEqualStrings("no", engine.render_cache.nodes.items[5].text.?);
+                try std.testing.expectEqualStrings("signal", engine.render_cache.nodes.items[6].text.?);
+                try std.testing.expect(engine.render_cache.nodes.items[4].checked.?);
+                try std.testing.expectEqualStrings("signal", engine.render_cache.nodes.items[4].role.?);
+                try std.testing.expectEqualSlices(u64, &.{4}, engine.render_cache.nodes.items[0].children.items);
+                try std.testing.expectEqualSlices(u64, &.{ 5, 6 }, engine.render_cache.nodes.items[4].children.items);
                 try std.testing.expectEqual(@as(?u64, planned_signal_record_id), replacement_signal_record.active_graph_id);
                 try std.testing.expectEqual(replacement_record_refs_before_graph + 1, replacement_signal_record.ref_count);
                 try std.testing.expectEqual(@as(u64, 0), engine.active_signal_graph.items[@intCast(planned_signal_record_id)].rank);
