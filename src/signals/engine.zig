@@ -3256,6 +3256,7 @@ pub fn Engine(comptime Ctx: type) type {
             retired_pending_tasks: std.ArrayListUnmanaged(HostPendingTask) = .empty,
             cleanup_event_names: std.ArrayListUnmanaged([]const u8) = .empty,
             retired_scope_steps: std.ArrayListUnmanaged(HostScopeStep) = .empty,
+            sink_edits: ?active_graph.PreparedSinkRouteEdits = null,
 
             fn stateIndexDescending(_: void, left: usize, right: usize) bool {
                 return left > right;
@@ -3402,7 +3403,82 @@ pub fn Engine(comptime Ctx: type) type {
                     plan.replacement_stream.mounts.items.len,
                 ) catch return error.OutOfMemory;
                 errdefer if (plan.publication) |*publication| publication.deinit(allocator);
+                if (engine_ptr.active_signal_graph.items.len != 0) {
+                    plan.sink_edits = try plan.prepareSinkEdits(allocator);
+                    errdefer if (plan.sink_edits) |*edits| edits.deinit(allocator);
+                }
                 return plan;
+            }
+
+            fn prepareSinkEdits(self: *@This(), allocator: std.mem.Allocator) CollectionError!active_graph.PreparedSinkRouteEdits {
+                var text: std.ArrayListUnmanaged(active_graph.TextSinkEdit) = .empty;
+                defer text.deinit(allocator);
+                var bools: std.ArrayListUnmanaged(active_graph.BoolSinkEdit) = .empty;
+                defer bools.deinit(allocator);
+                var structural: std.ArrayListUnmanaged(active_graph.StructuralSinkEdit) = .empty;
+                defer structural.deinit(allocator);
+                const indexes = &self.removal.?.descriptor_indexes;
+                const text_removals = std.math.add(usize, indexes.signal_text_node_indexes.items.len, indexes.signal_text_attr_indexes.items.len) catch return error.ResourceLimit;
+                const structural_removals = std.math.add(usize, self.removal.?.node_indexes.when_indexes.items.len, self.removal.?.node_indexes.each_indexes.items.len) catch return error.ResourceLimit;
+                text.ensureTotalCapacity(allocator, std.math.mul(usize, 2, text_removals) catch return error.ResourceLimit) catch return error.OutOfMemory;
+                bools.ensureTotalCapacity(allocator, std.math.mul(usize, 2, indexes.signal_bool_attr_indexes.items.len) catch return error.ResourceLimit) catch return error.OutOfMemory;
+                structural.ensureTotalCapacity(allocator, std.math.mul(usize, 2, structural_removals) catch return error.ResourceLimit) catch return error.OutOfMemory;
+                appendTextSinkEdits(self.engine, &text, self.engine.active_stream.signal_text_nodes.items, indexes.signal_text_node_indexes.items, .text_node);
+                appendTextSinkEdits(self.engine, &text, self.engine.active_stream.signal_text_attrs.items, indexes.signal_text_attr_indexes.items, .text_attr);
+                appendBoolSinkEdits(self.engine, &bools, self.engine.active_stream.signal_bool_attrs.items, indexes.signal_bool_attr_indexes.items, .bool_attr);
+                appendStructuralSinkEdits(self.engine, &structural, self.engine.active_stream.whens.items, self.removal.?.node_indexes.when_indexes.items, .when);
+                appendStructuralSinkEdits(self.engine, &structural, self.engine.active_stream.eaches.items, self.removal.?.node_indexes.each_indexes.items, .each);
+                return active_graph.prepareSinkRouteEdits(
+                    allocator,
+                    &self.engine.active_text_signal_routes,
+                    &self.engine.active_bool_signal_routes,
+                    &self.engine.active_change_signal_routes,
+                    &self.engine.active_structural_signal_routes,
+                    text.items,
+                    bools.items,
+                    &.{},
+                    structural.items,
+                ) catch return error.OutOfMemory;
+            }
+
+            fn appendTextSinkEdits(engine_ptr: *Self, edits: *std.ArrayListUnmanaged(active_graph.TextSinkEdit), descriptors: anytype, removal_indexes: []const usize, kind: active_graph.TextSinkKind) void {
+                var live_len = descriptors.len;
+                for (removal_indexes) |index| {
+                    edits.appendAssumeCapacity(.{ .record_id = engine_ptr.requireActiveSignalRecordId(descriptors[index].signal.record), .kind = kind, .old_index = index });
+                    const last_index = live_len - 1;
+                    if (index != last_index) edits.appendAssumeCapacity(.{ .record_id = engine_ptr.requireActiveSignalRecordId(descriptors[last_index].signal.record), .kind = kind, .old_index = last_index, .new_index = index });
+                    live_len = last_index;
+                }
+            }
+
+            fn appendBoolSinkEdits(engine_ptr: *Self, edits: *std.ArrayListUnmanaged(active_graph.BoolSinkEdit), descriptors: anytype, removal_indexes: []const usize, kind: active_graph.BoolSinkKind) void {
+                var live_len = descriptors.len;
+                for (removal_indexes) |index| {
+                    edits.appendAssumeCapacity(.{ .record_id = engine_ptr.requireActiveSignalRecordId(descriptors[index].signal.record), .kind = kind, .old_index = index });
+                    const last_index = live_len - 1;
+                    if (index != last_index) edits.appendAssumeCapacity(.{ .record_id = engine_ptr.requireActiveSignalRecordId(descriptors[last_index].signal.record), .kind = kind, .old_index = last_index, .new_index = index });
+                    live_len = last_index;
+                }
+            }
+
+            fn appendStructuralSinkEdits(engine_ptr: *Self, edits: *std.ArrayListUnmanaged(active_graph.StructuralSinkEdit), descriptors: anytype, removal_indexes: []const usize, comptime kind: active_graph.StructuralKind) void {
+                var live_len = descriptors.len;
+                for (removal_indexes) |index| {
+                    const record = switch (kind) {
+                        .when => descriptors[index].condition.record,
+                        .each => descriptors[index].items.record,
+                    };
+                    edits.appendAssumeCapacity(.{ .record_id = engine_ptr.requireActiveSignalRecordId(record), .kind = kind, .old_index = index });
+                    const last_index = live_len - 1;
+                    if (index != last_index) {
+                        const moved_record = switch (kind) {
+                            .when => descriptors[last_index].condition.record,
+                            .each => descriptors[last_index].items.record,
+                        };
+                        edits.appendAssumeCapacity(.{ .record_id = engine_ptr.requireActiveSignalRecordId(moved_record), .kind = kind, .old_index = last_index, .new_index = index });
+                    }
+                    live_len = last_index;
+                }
             }
 
             fn commitStateCellsAssumeCapacity(self: *@This()) void {
@@ -3463,6 +3539,7 @@ pub fn Engine(comptime Ctx: type) type {
             fn deinit(self: *@This()) void {
                 const allocator = Ctx.allocator(self.host_ctx);
                 if (self.publication) |*publication| publication.deinit(allocator);
+                if (self.sink_edits) |*edits| edits.deinit(allocator);
                 if (self.removal) |*removal| removal.deinit(allocator);
                 if (self.scope_retirement) |*retirement| retirement.deinit(allocator);
                 if (self.row_retirement) |*retirement| retirement.deinit(allocator);
@@ -8370,6 +8447,16 @@ test "branch replacement preparation leaves the active branch unpublished" {
             var engine = Engine(VerifyCtx).init();
             var stream: HostNodeDescriptorStream = .{};
             defer {
+                if (engine.active_signal_graph.items.len != 0) {
+                    engine.clearActiveSignalRoutes(&ctx);
+                    engine.clearActiveSignalGraph(&ctx);
+                }
+                engine.active_signal_graph.deinit(ctx.allocator);
+                engine.active_source_signal_routes.deinit(ctx.allocator);
+                engine.active_text_signal_routes.deinit(ctx.allocator);
+                engine.active_bool_signal_routes.deinit(ctx.allocator);
+                engine.active_change_signal_routes.deinit(ctx.allocator);
+                engine.active_structural_signal_routes.deinit(ctx.allocator);
                 stream.deinit(ctx.allocator, &ctx, host, &engine.pending_roc_metrics);
                 engine.active_stream.deinit(ctx.allocator, &ctx, host, &engine.pending_roc_metrics);
                 deinitVerifyStateEngine(&engine, &ctx, host);
@@ -8377,6 +8464,8 @@ test "branch replacement preparation leaves the active branch unpublished" {
             try engine.collectStaticRootDescriptorsTransactional(&ctx, host, &stream, root_elem, .{});
             engine.active_stream = stream;
             stream = .{};
+            engine.roc_host = host;
+            engine.rebuildActiveSignalGraphFromStream(&ctx, &engine.active_stream);
             const retired_row_scope_id = engine.createEachRowScope(&ctx, 1, 77, 55, 101, 202, row_capability, row_capability);
             try engine.active_stream.cleanups.append(ctx.allocator, .{ .scope_id = 1, .name = try ctx.allocator.dupe(u8, "branch-cleanup") });
             const scope_len = engine.scopes.items.len;
@@ -8399,6 +8488,8 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 try std.testing.expectEqual(@as(usize, 0), plan.pending_task_indexes.len);
                 try std.testing.expectEqual(@as(usize, 1), plan.cleanup_event_names.items.len);
                 try std.testing.expectEqualStrings("branch-cleanup", plan.cleanup_event_names.items[0]);
+                try std.testing.expectEqual(@as(usize, 2), plan.sink_edits.?.text.len);
+                try std.testing.expectEqual(@as(usize, 1), plan.sink_edits.?.bools.len);
                 try std.testing.expect(engine.scopes.items[@intCast(plan.retired_scope_id)].active);
                 try std.testing.expectEqualSlices(u64, &.{ 1, 2, 3 }, plan.removal.?.scan.removed_elem_ids);
                 try std.testing.expectEqualSlices(usize, &.{0}, plan.removal.?.descriptor_indexes.element_indexes.items);
@@ -8417,6 +8508,12 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 const old_state_id = engine.states.items[plan.state_cell_indexes[0]].state_id;
                 const replacement_state_id = plan.replacement_stream.states.items[0].node_id;
                 fault.configure(1);
+                plan.sink_edits.?.apply(
+                    &engine.active_text_signal_routes,
+                    &engine.active_bool_signal_routes,
+                    &engine.active_change_signal_routes,
+                    &engine.active_structural_signal_routes,
+                );
                 const indexes = &plan.removal.?.descriptor_indexes;
                 engine.active_stream.commitStaticDescriptorReplacementAssumeCapacity(
                     &plan.replacement_stream,
