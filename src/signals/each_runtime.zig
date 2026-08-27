@@ -31,6 +31,40 @@ pub const Membership = struct {
     row_index: usize,
 };
 
+pub const RowRemoval = struct {
+    scope_id: u64,
+    key_hash: u64,
+};
+
+/// Owns validated keyed-row removals until the structural publication boundary.
+pub const PreparedRowRemovals = struct {
+    rows: []RowRemoval,
+
+    /// Releases preparation storage without changing live row indexes.
+    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+        allocator.free(self.rows);
+        self.* = undefined;
+    }
+
+    /// Removes every prepared row and repairs moved dense/hash indexes without allocation.
+    pub fn apply(self: *const @This(), sites: *std.ArrayListUnmanaged(Site), memberships: *std.ArrayListUnmanaged(?Membership), row_keys: anytype) void {
+        for (self.rows) |row| removeRowFromSiteIndex(sites, memberships, row.scope_id, row.key_hash, row_keys);
+    }
+};
+
+/// Copies and validates exact row removals without mutating maintained indexes.
+pub fn prepareRowRemovals(allocator: std.mem.Allocator, sites: []const Site, memberships: []const ?Membership, rows: []const RowRemoval) std.mem.Allocator.Error!PreparedRowRemovals {
+    const owned = try allocator.dupe(RowRemoval, rows);
+    errdefer allocator.free(owned);
+    for (owned) |row| {
+        if (row.scope_id >= memberships.len) return error.OutOfMemory;
+        const membership = memberships[@intCast(row.scope_id)] orelse return error.OutOfMemory;
+        if (membership.site_index >= sites.len or membership.row_index >= sites[membership.site_index].scope_ids.items.len) return error.OutOfMemory;
+        if (sites[membership.site_index].scope_ids.items[membership.row_index] != row.scope_id) return error.OutOfMemory;
+    }
+    return .{ .rows = owned };
+}
+
 pub const Site = struct {
     key: SiteKey,
     scope_ids: std.ArrayListUnmanaged(u64) = .empty,
@@ -801,6 +835,36 @@ test "each runtime removes rows and rewrites moved memberships" {
     try std.testing.expectEqual(Membership{ .site_index = site_index, .row_index = 0 }, memberships.items[12].?);
     try std.testing.expectEqual(@as(usize, 0), sites.items[site_index].hash_heads.get(7).?);
     try std.testing.expectEqual(@as(?usize, null), sites.items[site_index].hash_heads.get(5));
+}
+
+test "prepared row removals fail without mutation and apply without allocation" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var sites: std.ArrayListUnmanaged(Site) = .empty;
+    var indexes: SiteIndexMap = .empty;
+    var memberships: std.ArrayListUnmanaged(?Membership) = .empty;
+    defer clearSites(std.testing.allocator, &sites, &indexes, &memberships);
+    const site_index = ensureSiteIndex(std.testing.allocator, &sites, &indexes, 1, 2);
+    appendRowToSiteIndex(std.testing.allocator, &sites, &memberships, site_index, 10, 5);
+    appendRowToSiteIndex(std.testing.allocator, &sites, &memberships, site_index, 11, 6);
+    appendRowToSiteIndex(std.testing.allocator, &sites, &memberships, site_index, 12, 7);
+    const hashes = [_]u64{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 6, 7 };
+    const row_keys = TestRowKeys{ .hashes = &hashes };
+
+    var failing = FaultAllocator.init(std.testing.allocator);
+    failing.configure(1);
+    try std.testing.expectError(error.OutOfMemory, prepareRowRemovals(failing.allocator(), sites.items, memberships.items, &.{.{ .scope_id = 10, .key_hash = 5 }}));
+    try std.testing.expectEqualSlices(u64, &.{ 10, 11, 12 }, sites.items[site_index].scope_ids.items);
+    try std.testing.expectEqual(Membership{ .site_index = site_index, .row_index = 0 }, memberships.items[10].?);
+
+    var fault = FaultAllocator.init(std.testing.allocator);
+    var prepared = try prepareRowRemovals(fault.allocator(), sites.items, memberships.items, &.{.{ .scope_id = 10, .key_hash = 5 }});
+    defer prepared.deinit(fault.allocator());
+    fault.configure(1);
+    prepared.apply(&sites, &memberships, &row_keys);
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqualSlices(u64, &.{ 12, 11 }, sites.items[site_index].scope_ids.items);
+    try std.testing.expectEqual(@as(?Membership, null), memberships.items[10]);
+    try std.testing.expectEqual(Membership{ .site_index = site_index, .row_index = 0 }, memberships.items[12].?);
 }
 
 test "each runtime replaces row order and rebuilds indexes" {
