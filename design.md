@@ -1476,10 +1476,12 @@ failure or unwind owned values crosses a fatal containment boundary for the
 duration of that call. In particular, a pure Roc reader may allocate while its
 erased callback has no OOM result channel. Failure there poisons and traps the
 instance, but still clears staged publication and leaves the last committed DOM
-as the only observable state. No boundary may convert a null allocation into an
-unchecked pointer and then continue execution. A future callback ABI may make
-such failures recoverable only by defining explicit failure and ownership-unwind
-semantics; host policy must not infer them from callback purity alone.
+as the only observable state. The platform allocator handles this failure
+itself: `roc_alloc` and `roc_realloc` must enter bounded fatal containment and
+must not return a null or failed allocation result to compiled Roc code. A
+future callback ABI may make such failures recoverable only by defining explicit
+failure and ownership-unwind semantics; host policy must not infer them from
+callback purity alone.
 
 An allocation failure after an irreversible ownership or mutation boundary is
 **fatal**. Continuing a partly mutated refcounted graph would be memory-unsafe,
