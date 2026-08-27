@@ -56,12 +56,26 @@ pub const RenderRemovalScan = struct {
 pub const PreparedRemoval = struct {
     scan: RenderRemovalScan,
     descriptor_indexes: ElemOwnedRemovalScratch,
+    node_indexes: NodeOwnedRemovalScratch,
 
     /// Releases all provisional removal metadata without touching the source stream.
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
         self.descriptor_indexes.deinit(allocator);
+        self.node_indexes.deinit(allocator);
         self.scan.deinit(allocator);
         self.* = undefined;
+    }
+};
+
+pub const NodeOwnedRemovalScratch = struct {
+    scope_site_indexes: std.ArrayListUnmanaged(usize) = .empty,
+    state_indexes: std.ArrayListUnmanaged(usize) = .empty,
+
+    /// Releases all prepared node-owned removal indexes.
+    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+        self.scope_site_indexes.deinit(allocator);
+        self.state_indexes.deinit(allocator);
+        self.* = .{};
     }
 };
 
@@ -320,6 +334,7 @@ pub fn prepareRemoval(comptime Stream: type, allocator: std.mem.Allocator, strea
     var prepared = PreparedRemoval{
         .scan = try prepareRenderRemovalScan(Stream, allocator, stream, render_insert_index, target_scopes),
         .descriptor_indexes = .{},
+        .node_indexes = .{},
     };
     errdefer prepared.deinit(allocator);
     try prepared.descriptor_indexes.prepare(allocator, prepared.scan.removed_elem_ids.len);
@@ -333,6 +348,19 @@ pub fn prepareRemoval(comptime Stream: type, allocator: std.mem.Allocator, strea
         prepared.descriptor_indexes.event_indexes.appendSliceAssumeCapacity(stream.namedEventIndices(elem_id));
     }
     prepared.descriptor_indexes.sortDescending();
+    try prepared.node_indexes.scope_site_indexes.ensureUnusedCapacity(allocator, stream.scope_sites.items.len);
+    try prepared.node_indexes.state_indexes.ensureUnusedCapacity(allocator, stream.states.items.len);
+    for (stream.scope_sites.items, 0..) |site, index| {
+        if (scopeIsInTargetSet(target_scopes, site.scope_id)) prepared.node_indexes.scope_site_indexes.appendAssumeCapacity(index);
+    }
+    for (stream.states.items, 0..) |state, index| {
+        const node_index = stream.nodeDescriptorIndex(state.node_id) orelse return error.OutOfMemory;
+        const site_index = node_index.scope_sites.get(.state) orelse return error.OutOfMemory;
+        if (site_index >= stream.scope_sites.items.len) return error.OutOfMemory;
+        if (scopeIsInTargetSet(target_scopes, stream.scope_sites.items[site_index].scope_id)) prepared.node_indexes.state_indexes.appendAssumeCapacity(index);
+    }
+    sortRemovalIndexesDescending(prepared.node_indexes.scope_site_indexes.items);
+    sortRemovalIndexesDescending(prepared.node_indexes.state_indexes.items);
     return prepared;
 }
 

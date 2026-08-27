@@ -664,6 +664,8 @@ pub const Stream = struct {
         event_count: usize,
         removed_elem_ids: []const u64,
         source: *const Stream,
+        scope_site_indexes: []const usize,
+        state_count: usize,
     ) std.mem.Allocator.Error!void {
         try self.elements.ensureUnusedCapacity(allocator, element_count);
         try self.text_nodes.ensureUnusedCapacity(allocator, text_count);
@@ -684,6 +686,13 @@ pub const Stream = struct {
         for (removed_elem_ids) |elem_id| {
             try self.named_event_indices_by_elem_id.items[@intCast(elem_id)].ensureUnusedCapacity(allocator, source.namedEventIndices(elem_id).len);
         }
+        try self.scope_sites.ensureUnusedCapacity(allocator, scope_site_indexes.len);
+        try self.states.ensureUnusedCapacity(allocator, state_count);
+        var highest_node_id: usize = 0;
+        for (scope_site_indexes) |index| highest_node_id = @max(highest_node_id, std.math.cast(usize, source.scope_sites.items[index].node_id) orelse return error.OutOfMemory);
+        const node_index_len = if (scope_site_indexes.len == 0) 0 else std.math.add(usize, highest_node_id, 1) catch return error.OutOfMemory;
+        try self.descriptor_indexes_by_node_id.ensureTotalCapacity(allocator, node_index_len);
+        while (self.descriptor_indexes_by_node_id.items.len < node_index_len) self.descriptor_indexes_by_node_id.appendAssumeCapacity(.{});
     }
 
     /// Moves the element/text/fixed-static descriptor families according to a
@@ -701,6 +710,8 @@ pub const Stream = struct {
         signal_text_indexes: []const usize,
         signal_bool_indexes: []const usize,
         event_indexes: []const usize,
+        scope_site_indexes: []const usize,
+        state_indexes: []const usize,
     ) void {
         for (element_indexes) |index| {
             const removed = self.elements.swapRemove(index);
@@ -780,6 +791,25 @@ pub const Stream = struct {
                 if (moved.fixedKind()) |kind| self.updateEventIndex(moved.elem_id, kind, index) else self.updateNamedEventIndex(moved.elem_id, self.events.items.len, index);
             }
         }
+        for (state_indexes) |index| {
+            const removed = self.states.swapRemove(index);
+            self.clearStateIndex(removed.node_id, index);
+            const retired_index = retired.states.items.len;
+            retired.states.appendAssumeCapacity(removed);
+            setFreshIndex(&retired.descriptor_indexes_by_node_id.items[@intCast(removed.node_id)].state, retired_index);
+            if (index < self.states.items.len) self.updateStateIndex(self.states.items[index].node_id, index);
+        }
+        for (scope_site_indexes) |index| {
+            const removed = self.scope_sites.swapRemove(index);
+            self.clearScopeSiteIndex(removed.node_id, removed.kind, index);
+            const retired_index = retired.scope_sites.items.len;
+            retired.scope_sites.appendAssumeCapacity(removed);
+            setFreshIndex(retired.descriptor_indexes_by_node_id.items[@intCast(removed.node_id)].scope_sites.slot(removed.kind), retired_index);
+            if (index < self.scope_sites.items.len) {
+                const moved = self.scope_sites.items[index];
+                self.updateScopeSiteIndex(moved.node_id, moved.kind, index);
+            }
+        }
 
         for (replacement.elements.items) |desc| {
             const index = self.elements.items.len;
@@ -850,6 +880,19 @@ pub const Stream = struct {
                 replacement_indexes.clearRetainingCapacity();
             }
         }
+        for (replacement.scope_sites.items) |desc| {
+            const index = self.scope_sites.items.len;
+            self.scope_sites.appendAssumeCapacity(desc);
+            while (self.descriptor_indexes_by_node_id.items.len <= desc.node_id) self.descriptor_indexes_by_node_id.appendAssumeCapacity(.{});
+            setFreshIndex(self.descriptor_indexes_by_node_id.items[@intCast(desc.node_id)].scope_sites.slot(desc.kind), index);
+        }
+        replacement.scope_sites.items.len = 0;
+        for (replacement.states.items) |desc| {
+            const index = self.states.items.len;
+            self.states.appendAssumeCapacity(desc);
+            setFreshIndex(&self.descriptor_indexes_by_node_id.items[@intCast(desc.node_id)].state, index);
+        }
+        replacement.states.items.len = 0;
     }
 
     fn rememberSignalRecordTreeAssumeCapacity(self: *Stream, record: *SignalRecord) void {
@@ -3881,6 +3924,49 @@ test "prepared state site publication is allocation free" {
     try std.testing.expectEqual(binder, stream.scope_sites.items[0].binder_bindings[0].token);
 }
 
+test "prepared state site replacement transfers ownership without allocation" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    const TestCtx = struct {
+        /// Opens a checked capability frame for an app-compiled erased call.
+        pub fn pushHostValueCapabilities(_: *@This(), _: []const retained.HostValueCapability) void {}
+        /// Closes the current capability frame after an app-compiled erased call.
+        pub fn popHostValueCapabilities(_: *@This()) void {}
+    };
+    const Callable = struct {
+        fn call(_: *abi.RocHost, _: ?[*]u8, _: ?[*]const u8, _: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {}
+    };
+    var fault = FaultAllocator.init(std.testing.allocator);
+    const allocator = fault.allocator();
+    var ctx: TestCtx = .{};
+    var env = abi.RocEnv{ .allocator = allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&env);
+    var metrics = TestMetrics{};
+    var active: Stream = .{};
+    var replacement: Stream = .{};
+    var retired: Stream = .{};
+    defer active.deinit(allocator, &ctx, &roc_host, &metrics);
+    defer replacement.deinit(allocator, &ctx, &roc_host, &metrics);
+    defer retired.deinit(allocator, &ctx, &roc_host, &metrics);
+    const initial = abi.rocErasedCallableAllocate(&roc_host, Callable.call, null, 0).?;
+    defer abi.decrefErasedCallable(initial, &roc_host);
+    const token: BinderToken = @ptrFromInt(0x9200);
+
+    try active.reservePreparedStateSites(allocator, 1, 4);
+    active.appendPreparedStateSite(try active.prepareScopeSite(allocator, 4, 1, 0, 1, .state, &.{.{ .token = token, .node_id = 4 }}), active.prepareState(4, initial, std.mem.zeroes(HostValueCapability), &metrics));
+    try replacement.reservePreparedStateSites(allocator, 1, 5);
+    replacement.appendPreparedStateSite(try replacement.prepareScopeSite(allocator, 5, 2, 0, 2, .state, &.{.{ .token = token, .node_id = 5 }}), replacement.prepareState(5, initial, std.mem.zeroes(HostValueCapability), &metrics));
+    try active.reserveMovedStreamPublication(allocator, &replacement);
+    try retired.reserveRetiredStaticPublication(allocator, 0, 0, 0, 0, 0, 0, 0, 0, 0, &.{}, &active, &.{0}, 1);
+
+    fault.configure(1);
+    active.commitStaticDescriptorReplacementAssumeCapacity(&replacement, &retired, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{0}, &.{0});
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqual(@as(u64, 5), active.scope_sites.items[0].node_id);
+    try std.testing.expectEqual(@as(?usize, 0), active.nodeDescriptorIndex(5).?.state.get());
+    try std.testing.expectEqual(@as(u64, 4), retired.states.items[0].node_id);
+    try std.testing.expectEqual(token, retired.scope_sites.items[0].binder_bindings[0].token);
+}
+
 test "prepared when publication is allocation free" {
     const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
     const TestCtx = struct {
@@ -3946,9 +4032,9 @@ test "prepared fixed and named event replacement is allocation free" {
     replacement.appendNamedEvent(allocator, &roc_host, &metrics, 2, "new", .{}, .auto, token, 8, token, 8, payload, reducer);
 
     try active.reserveMovedStreamPublication(allocator, &replacement);
-    try retired.reserveRetiredStaticPublication(allocator, 0, 0, 0, 0, 0, 0, 0, 0, 2, &.{1}, &active);
+    try retired.reserveRetiredStaticPublication(allocator, 0, 0, 0, 0, 0, 0, 0, 0, 2, &.{1}, &active, &.{}, 0);
     fault.configure(1);
-    active.commitStaticDescriptorReplacementAssumeCapacity(&replacement, &retired, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{ 1, 0 });
+    active.commitStaticDescriptorReplacementAssumeCapacity(&replacement, &retired, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{ 1, 0 }, &.{}, &.{});
     try std.testing.expectEqual(@as(usize, 0), fault.attempts);
     try std.testing.expectEqual(@as(usize, 2), active.events.items.len);
     try std.testing.expectEqualStrings("new", active.events.items[1].named().?.name);
