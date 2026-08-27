@@ -10527,7 +10527,7 @@ test "staged collection reserves multiple external branch scopes atomically" {
 test "aggregate branch collection sweeps allocation failures without publication" {
     const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
     const Runner = struct {
-        fn run(failure_number: ?usize) !usize {
+        fn run(failure_number: ?usize, live_count: usize) !usize {
             var fault = FaultAllocator.init(std.testing.allocator);
             var ctx = VerifyCtxHost{ .allocator = fault.allocator() };
             var roc_env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
@@ -10600,6 +10600,36 @@ test "aggregate branch collection sweeps allocation failures without publication
                 .{ .parent_scope_id = first_site.scope_id, .site_ordinal = first_site.ordinal, .parent_elem_id = first_site.parent_elem_id, .retired_scope_id = first_old, .render_insert_index = first_site.render_insert_index, .binder_bindings = first_site.binder_bindings, .branch = .false_branch, .elem = first_when.when_false },
                 .{ .parent_scope_id = second_site.scope_id, .site_ordinal = second_site.ordinal, .parent_elem_id = second_site.parent_elem_id, .retired_scope_id = second_old, .render_insert_index = second_site.render_insert_index, .binder_bindings = second_site.binder_bindings, .branch = .false_branch, .elem = second_when.when_false },
             };
+
+            if (live_count != 0) {
+                const cache_cap = HostValueCapability{ .clone = fixture.value_callable, .drop = fixture.value_callable, .eq = fixture.value_callable };
+                var changes = [_]HostDirtyStructuralSignal{
+                    .{ .kind = .when, .node_id = first_when.node_id, .scope_id = first_site.scope_id, .ordinal = first_site.ordinal, .record = first_when.condition.record, .branch = .false_branch, .pending_when_cache = HostValueCell.initRetained(0, cache_cap, &engine.pending_roc_metrics) },
+                    .{ .kind = .when, .node_id = second_when.node_id, .scope_id = second_site.scope_id, .ordinal = second_site.ordinal, .record = second_when.condition.record, .branch = .false_branch, .pending_when_cache = HostValueCell.initRetained(0, cache_cap, &engine.pending_roc_metrics) },
+                };
+                defer for (&changes) |*change| change.abortPendingWhenCache(&ctx, &roc_host, &engine.pending_roc_metrics);
+                const dirty_changes = changes[0..live_count];
+                fault.configure(failure_number);
+                const maybe_counts = engine.tryApplyPreparedDirtyWhenSet(&ctx, &roc_host, &.{}, dirty_changes) catch |err| {
+                    try std.testing.expectEqual(error.OutOfMemory, err);
+                    try std.testing.expectEqualSlices(u64, old_root_children, engine.render_cache.nodes.items[1].children.items);
+                    try std.testing.expectEqual(old_graph_len, engine.active_signal_graph.items.len);
+                    try std.testing.expectEqual(@as(usize, 1), engine.pending_tasks.items.len);
+                    try std.testing.expectEqual(@as(usize, 0), ctx.cancelled_tasks);
+                    for (dirty_changes) |change| try std.testing.expect(change.pending_when_cache != null);
+                    const attempts = fault.attempts;
+                    fault.configure(null);
+                    const retry_counts = (try engine.tryApplyPreparedDirtyWhenSet(&ctx, &roc_host, &.{}, dirty_changes)).?;
+                    try std.testing.expect(retry_counts.total != 0);
+                    for (dirty_changes) |change| try std.testing.expect(change.pending_when_cache == null);
+                    try std.testing.expectEqual(@as(usize, 1), ctx.cancelled_tasks);
+                    return attempts;
+                };
+                try std.testing.expect(maybe_counts.?.total != 0);
+                for (dirty_changes) |change| try std.testing.expect(change.pending_when_cache == null);
+                try std.testing.expectEqual(@as(usize, 1), ctx.cancelled_tasks);
+                return fault.attempts;
+            }
 
             fault.configure(failure_number);
             const prepared = Engine(VerifyCtx).AggregateBranchCollection.prepare(&engine, &ctx, &roc_host, &selections, .{}, &.{}) catch |err| {
@@ -10697,9 +10727,14 @@ test "aggregate branch collection sweeps allocation failures without publication
         }
     };
 
-    const attempts = try Runner.run(null);
+    const attempts = try Runner.run(null, 0);
     try std.testing.expect(attempts != 0);
-    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number, 0);
+    for (1..3) |live_count| {
+        const live_attempts = try Runner.run(null, live_count);
+        try std.testing.expect(live_attempts != 0);
+        for (1..live_attempts + 1) |failure_number| _ = try Runner.run(failure_number, live_count);
+    }
 }
 
 comptime {
