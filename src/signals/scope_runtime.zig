@@ -193,6 +193,30 @@ pub fn prepareSubtreeRetirement(comptime Row: type, allocator: std.mem.Allocator
     return .{ .scope_ids = try ids.toOwnedSlice(allocator) };
 }
 
+/// Prepares disjoint scope subtrees as one stable post-order retirement journal.
+pub fn prepareSubtreesRetirement(comptime Row: type, allocator: std.mem.Allocator, scopes: []const scope_tree.Scope(Row), root_scope_ids: []const u64) (std.mem.Allocator.Error || error{OverlappingSubtrees})!PreparedSubtreeRetirement {
+    const selected = try allocator.alloc(bool, scopes.len);
+    defer allocator.free(selected);
+    @memset(selected, false);
+    var ids: std.ArrayListUnmanaged(u64) = .empty;
+    errdefer ids.deinit(allocator);
+    try ids.ensureTotalCapacity(allocator, scopes.len);
+    for (root_scope_ids) |root_scope_id| {
+        if (root_scope_id >= scopes.len or scopes[@intCast(root_scope_id)].scope_id != root_scope_id or !scopes[@intCast(root_scope_id)].active) return error.OverlappingSubtrees;
+        try appendDisjointSubtreePostOrder(Row, scopes, root_scope_id, selected, &ids);
+    }
+    return .{ .scope_ids = try ids.toOwnedSlice(allocator) };
+}
+
+fn appendDisjointSubtreePostOrder(comptime Row: type, scopes: []const scope_tree.Scope(Row), scope_id: u64, selected: []bool, ids: *std.ArrayListUnmanaged(u64)) error{OverlappingSubtrees}!void {
+    if (selected[@intCast(scope_id)]) return error.OverlappingSubtrees;
+    selected[@intCast(scope_id)] = true;
+    for (scopes) |child| {
+        if (child.active and child.parent_scope_id != null and child.parent_scope_id.? == scope_id) try appendDisjointSubtreePostOrder(Row, scopes, child.scope_id, selected, ids);
+    }
+    ids.appendAssumeCapacity(scope_id);
+}
+
 fn appendSubtreePostOrder(comptime Row: type, scopes: []const scope_tree.Scope(Row), scope_id: u64, ids: *std.ArrayListUnmanaged(u64)) std.mem.Allocator.Error!void {
     for (scopes) |child| {
         if (child.active and child.parent_scope_id != null and child.parent_scope_id.? == scope_id) try appendSubtreePostOrder(Row, scopes, child.scope_id, ids);
@@ -324,6 +348,37 @@ test "prepared scope retirement sweeps allocation failures and applies without a
     try std.testing.expect(!scopes.items[3].active);
     try std.testing.expect(scopes.items[0].active);
     try std.testing.expect(scopes.items[4].active);
+}
+
+test "prepared disjoint scope retirement unions roots and rejects overlap" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var scopes: std.ArrayListUnmanaged(scope_tree.Scope(TestRow)) = .empty;
+    defer scopes.deinit(std.testing.allocator);
+    _ = try scope_tree.internRoot(TestRow, std.testing.allocator, &scopes);
+    _ = try scope_tree.internComponent(TestRow, std.testing.allocator, &scopes, 0, 1, 0);
+    _ = try scope_tree.appendEachRow(TestRow, std.testing.allocator, &scopes, 1, .{ .site_ordinal = 4, .key_hash = 40 }, 0);
+    _ = try scope_tree.internComponent(TestRow, std.testing.allocator, &scopes, 2, 1, 0);
+    _ = try scope_tree.internComponent(TestRow, std.testing.allocator, &scopes, 0, 2, 0);
+
+    var counter = FaultAllocator.init(std.testing.allocator);
+    var successful = try prepareSubtreesRetirement(TestRow, counter.allocator(), scopes.items, &.{ 1, 4 });
+    const attempts = counter.attempts;
+    try std.testing.expect(attempts != 0);
+    try std.testing.expectEqualSlices(u64, &.{ 3, 2, 1, 4 }, successful.scope_ids);
+    successful.deinit(counter.allocator());
+
+    for (1..attempts + 1) |failure_number| {
+        var fault = FaultAllocator.init(std.testing.allocator);
+        fault.configure(failure_number);
+        try std.testing.expectError(error.OutOfMemory, prepareSubtreesRetirement(TestRow, fault.allocator(), scopes.items, &.{ 1, 4 }));
+        for (scopes.items) |scope| try std.testing.expect(scope.active);
+        fault.configure(null);
+        var retry = try prepareSubtreesRetirement(TestRow, fault.allocator(), scopes.items, &.{ 1, 4 });
+        retry.deinit(fault.allocator());
+    }
+
+    try std.testing.expectError(error.OverlappingSubtrees, prepareSubtreesRetirement(TestRow, std.testing.allocator, scopes.items, &.{ 1, 2 }));
+    for (scopes.items) |scope| try std.testing.expect(scope.active);
 }
 
 test "scope runtime owns each-row scope values and key hash" {
