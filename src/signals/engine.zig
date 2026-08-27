@@ -11181,6 +11181,55 @@ test "prepared source cache update aborts or swaps allocation free" {
     try std.testing.expectEqual(metrics.closure_retains, metrics.closure_releases + 3);
 }
 
+test "prepared source cache overlay sweeps reservation and publishes allocation free" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&env);
+    const callable = abi.rocErasedCallableAllocate(&roc_host, verifyStateCallable, null, 0).?;
+    defer abi.decrefErasedCallable(callable, &roc_host);
+    const cap = HostValueCapability{ .clone = callable, .drop = callable, .eq = callable };
+
+    const Runner = struct {
+        fn run(host: *abi.RocHost, capability: HostValueCapability, fail_at: ?usize) !usize {
+            var fault = FaultAllocator.init(std.testing.allocator);
+            fault.configure(fail_at);
+            var ctx = VerifyCtxHost{ .allocator = fault.allocator() };
+            var metrics = zeroRuntimeMetrics();
+            var first = HostSignalCacheSlot{ .present = HostValueCell.initRetained(1, capability, &metrics) };
+            defer first.deinit(&ctx, host, &metrics);
+            var second = HostSignalCacheSlot{ .present = HostValueCell.initRetained(2, capability, &metrics) };
+            defer second.deinit(&ctx, host, &metrics);
+
+            var overlay = signal_records.PreparedCacheUpdates.init(ctx.allocator, 2) catch |err| {
+                try std.testing.expectEqual(error.OutOfMemory, err);
+                try std.testing.expectEqual(@as(HostValue, 1), first.present.value);
+                try std.testing.expectEqual(@as(HostValue, 2), second.present.value);
+                return fault.attempts;
+            };
+            defer overlay.deinit(&ctx, host, &metrics);
+            const attempts = fault.attempts;
+            overlay.stageAssumeCapacity(&first, 11, capability, &metrics);
+            overlay.stageAssumeCapacity(&second, 22, capability, &metrics);
+            try std.testing.expectEqual(@as(HostValue, 11), overlay.readSlot(&first).present.value);
+            try std.testing.expectEqual(@as(HostValue, 1), first.present.value);
+            fault.configure(1);
+            overlay.commit();
+            try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+            try std.testing.expectEqual(@as(HostValue, 11), first.present.value);
+            try std.testing.expectEqual(@as(HostValue, 22), second.present.value);
+            return attempts;
+        }
+    };
+
+    const attempts = try Runner.run(&roc_host, cap, null);
+    var induced: usize = 0;
+    for (1..attempts + 1) |fail_at| {
+        _ = try Runner.run(&roc_host, cap, fail_at);
+        induced += 1;
+    }
+    try std.testing.expectEqual(attempts, induced);
+}
+
 test "static root counts nested signal attribute records" {
     const capability = std.mem.zeroes(HostValueCapability);
     var left = abi.NodeSignalExpr{ .payload = .{ .ref = @ptrFromInt(0x1000) }, .tag = .Ref };

@@ -94,6 +94,58 @@ pub const PreparedCacheUpdate = struct {
     }
 };
 
+/// Pre-reserved cache overlay shared by all roots and derived records in one
+/// source transaction. Lookup is O(1), staging performs no allocation after
+/// `init`, and commit only swaps ownership into persistent cache slots.
+pub const PreparedCacheUpdates = struct {
+    allocator: std.mem.Allocator,
+    updates: std.ArrayListUnmanaged(PreparedCacheUpdate) = .empty,
+    indexes: std.AutoHashMapUnmanaged(*CacheSlot, usize) = .empty,
+    committed: bool = false,
+
+    /// Reserves the exact upper bound before any callback result is adopted.
+    pub fn init(allocator: std.mem.Allocator, expected: usize) std.mem.Allocator.Error!PreparedCacheUpdates {
+        var self = PreparedCacheUpdates{ .allocator = allocator };
+        errdefer self.deinitStorage();
+        try self.updates.ensureTotalCapacity(allocator, expected);
+        try self.indexes.ensureTotalCapacity(allocator, std.math.cast(u32, expected) orelse return error.OutOfMemory);
+        return self;
+    }
+
+    /// Adopts one unique incoming value using already-reserved storage.
+    pub fn stageAssumeCapacity(self: *PreparedCacheUpdates, live: *CacheSlot, value: HostValue, cap: HostValueCapability, metrics: anytype) void {
+        if (self.committed or self.indexes.contains(live)) @panic("duplicate or late prepared cache update");
+        const index = self.updates.items.len;
+        self.updates.appendAssumeCapacity(PreparedCacheUpdate.init(live, value, cap, metrics));
+        self.indexes.putAssumeCapacity(live, index);
+    }
+
+    /// Returns the provisional slot when staged, otherwise the persistent slot.
+    pub fn readSlot(self: *const PreparedCacheUpdates, live: *CacheSlot) *const CacheSlot {
+        const index = self.indexes.get(live) orelse return live;
+        return &self.updates.items[index].next;
+    }
+
+    /// Publishes every staged cache replacement without allocation.
+    pub fn commit(self: *PreparedCacheUpdates) void {
+        if (self.committed) @panic("prepared cache overlay committed twice");
+        for (self.updates.items) |*update| update.commit();
+        self.committed = true;
+    }
+
+    /// Releases provisional or displaced values and all overlay storage.
+    pub fn deinit(self: *PreparedCacheUpdates, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
+        for (self.updates.items) |*update| update.deinit(ctx, roc_host, metrics);
+        self.deinitStorage();
+        self.* = undefined;
+    }
+
+    fn deinitStorage(self: *PreparedCacheUpdates) void {
+        self.updates.deinit(self.allocator);
+        self.indexes.deinit(self.allocator);
+    }
+};
+
 pub const EvalResult = struct {
     value: HostValue,
     changed: bool,
