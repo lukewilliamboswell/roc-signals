@@ -333,6 +333,12 @@ pub const BatchCapacity = struct {
     dynamic: usize = 0,
 };
 
+pub const PreflightError = std.mem.Allocator.Error || error{ResourceLimit};
+
+pub const hard_max_command_records: usize = std.math.maxInt(u32);
+pub const hard_max_string_bytes: usize = std.math.maxInt(u32);
+pub const hard_max_dynamic_bytes: usize = std.math.maxInt(u32);
+
 pub const BatchBuffers = struct {
     commands: Buffer = .{},
     strings: std.ArrayListUnmanaged(u8) = .empty,
@@ -375,8 +381,23 @@ pub const TransactionalBatch = struct {
         self.staged.clearRetainingCapacity();
     }
 
-    pub fn preflight(self: *TransactionalBatch, allocator: std.mem.Allocator, capacity: BatchCapacity) std.mem.Allocator.Error!void {
+    pub fn preflight(self: *TransactionalBatch, allocator: std.mem.Allocator, capacity: BatchCapacity) PreflightError!void {
+        if (capacity.commands > hard_max_command_records or
+            capacity.strings > hard_max_string_bytes or
+            capacity.dynamic > hard_max_dynamic_bytes)
+        {
+            return error.ResourceLimit;
+        }
         try self.staged.ensureTotalCapacity(allocator, capacity);
+    }
+
+    pub fn preflightAdditional(self: *TransactionalBatch, allocator: std.mem.Allocator, additional: BatchCapacity) PreflightError!void {
+        const capacity = BatchCapacity{
+            .commands = std.math.add(usize, self.staged.commands.len(), additional.commands) catch return error.ResourceLimit,
+            .strings = std.math.add(usize, self.staged.strings.items.len, additional.strings) catch return error.ResourceLimit,
+            .dynamic = std.math.add(usize, self.staged.dynamic.len(), additional.dynamic) catch return error.ResourceLimit,
+        };
+        try self.preflight(allocator, capacity);
     }
 
     pub fn commit(self: *TransactionalBatch) void {
@@ -462,6 +483,20 @@ test "transaction command preflight sweeps every allocation failure" {
         try std.testing.expectError(error.OutOfMemory, exerciseTransactionalBatch(std.testing.allocator, failing.allocator(), true));
         try std.testing.expect(failing.has_induced_failure);
     }
+}
+
+test "transaction command preflight rejects wire limits without publication" {
+    var batch: TransactionalBatch = .{};
+    defer batch.deinit(std.testing.allocator);
+
+    batch.begin();
+    try std.testing.expectError(error.ResourceLimit, batch.preflightAdditional(std.testing.allocator, .{
+        .strings = hard_max_string_bytes + 1,
+    }));
+    batch.abort();
+    try std.testing.expectEqual(@as(usize, 0), batch.published.commands.len());
+    try std.testing.expectEqual(@as(usize, 0), batch.published.strings.items.len);
+    try std.testing.expectEqual(@as(usize, 0), batch.published.dynamic.len());
 }
 
 pub const TextField = enum(u64) {

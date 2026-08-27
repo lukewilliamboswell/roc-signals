@@ -345,7 +345,25 @@ fn alignmentFromBytes(alignment: usize) std.mem.Alignment {
     return @enumFromInt(std.math.log2_int(usize, alignment));
 }
 
+fn preflightCommandStorage(additional: render.BatchCapacity) void {
+    command_batch.preflightAdditional(allocator(), additional) catch |err| switch (err) {
+        error.OutOfMemory => failHostWith("out of memory while reserving render command storage"),
+        error.ResourceLimit => failHostWith("render command exceeded Wasm wire resource limit"),
+    };
+}
+
+fn checkedWireSize(parts: []const usize) usize {
+    var total: usize = 0;
+    for (parts) |part| total = std.math.add(usize, total, part) catch failHostWith("render command exceeded Wasm wire resource limit");
+    return total;
+}
+
+fn checkedWireAlign4(len: usize) usize {
+    return (std.math.add(usize, len, 3) catch failHostWith("render command exceeded Wasm wire resource limit")) & ~@as(usize, 3);
+}
+
 fn appendCommand(op: render.Op, a: u32, b: u32, c: u32, d: u32, e: u32) void {
+    preflightCommandStorage(.{ .commands = 1 });
     command_batch.staged.commands.append(allocator(), op, a, b, c, d, e) catch failHostWith("out of memory while staging render commands");
 }
 
@@ -362,12 +380,14 @@ fn commitCommandTransaction() void {
 }
 
 fn storeBytes(bytes: []const u8) u32 {
+    preflightCommandStorage(.{ .strings = bytes.len });
     const offset = toU32(command_batch.staged.strings.items.len);
     command_batch.staged.strings.appendSlice(allocator(), bytes) catch failHostWith("out of memory while staging render strings");
     return offset;
 }
 
 fn appendStringCommand(op: render.Op, elem_id: u32, bytes: []const u8) void {
+    preflightCommandStorage(.{ .commands = 1, .strings = bytes.len });
     appendCommand(op, elem_id, storeBytes(bytes), toU32(bytes.len), 0, 0);
 }
 
@@ -417,11 +437,15 @@ fn textAttrNameForField(field: RenderTextField) ?[]const u8 {
 }
 
 fn appendDynamicSetAttrText(elem_id: u32, name: []const u8, value: []const u8) void {
+    const payload_len = checkedWireSize(&.{ 3 * @sizeOf(u32), name.len, value.len });
+    preflightCommandStorage(.{ .commands = 1, .dynamic = checkedWireSize(&.{ 2 * @sizeOf(u16), @sizeOf(u32), checkedWireAlign4(payload_len) }) });
     const slice = command_batch.staged.dynamic.appendSetAttrText(allocator(), elem_id, name, value) catch failHostWith("out of memory while staging dynamic render command");
     appendCommand(.extended, slice.offset, slice.len, 0, 0, 0);
 }
 
 fn appendDynamicRemoveAttr(elem_id: u32, name: []const u8) void {
+    const payload_len = checkedWireSize(&.{ 2 * @sizeOf(u32), name.len });
+    preflightCommandStorage(.{ .commands = 1, .dynamic = checkedWireSize(&.{ 2 * @sizeOf(u16), @sizeOf(u32), checkedWireAlign4(payload_len) }) });
     const slice = command_batch.staged.dynamic.appendRemoveAttr(allocator(), elem_id, name) catch failHostWith("out of memory while staging dynamic render command");
     appendCommand(.extended, slice.offset, slice.len, 0, 0, 0);
 }
@@ -453,11 +477,15 @@ fn appendEventClearCommand(command: EventClearCommand) void {
 }
 
 fn appendDynamicBindEvent(elem_id: u32, name: []const u8, event_id: u32, options: u32, delivery: render.EventDeliveryWire, payload_descriptor: BoundaryPayloadDescriptor) void {
+    const payload_len = checkedWireSize(&.{ 8 * @sizeOf(u32), name.len, payload_descriptor.extractionBytes().len });
+    preflightCommandStorage(.{ .commands = 1, .dynamic = checkedWireSize(&.{ 2 * @sizeOf(u16), @sizeOf(u32), checkedWireAlign4(payload_len) }) });
     const slice = command_batch.staged.dynamic.appendBindEvent(allocator(), elem_id, event_id, name, options, delivery, payload_descriptor) catch failHostWith("out of memory while staging dynamic event command");
     appendCommand(.extended, slice.offset, slice.len, 0, 0, 0);
 }
 
 fn appendDynamicClearEvent(elem_id: u32, name: []const u8) void {
+    const payload_len = checkedWireSize(&.{ 2 * @sizeOf(u32), name.len });
+    preflightCommandStorage(.{ .commands = 1, .dynamic = checkedWireSize(&.{ 2 * @sizeOf(u16), @sizeOf(u32), checkedWireAlign4(payload_len) }) });
     const slice = command_batch.staged.dynamic.appendClearEvent(allocator(), elem_id, name) catch failHostWith("out of memory while staging dynamic event command");
     appendCommand(.extended, slice.offset, slice.len, 0, 0, 0);
 }
