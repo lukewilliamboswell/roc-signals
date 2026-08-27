@@ -98,9 +98,17 @@ pub const PreparedCacheUpdate = struct {
 /// source transaction. Lookup is O(1), staging performs no allocation after
 /// `init`, and commit only swaps ownership into persistent cache slots.
 pub const PreparedCacheUpdates = struct {
+    pub const Result = struct {
+        key: *anyopaque,
+        dirty_generation: u64,
+        changed: bool,
+    };
+
     allocator: std.mem.Allocator,
     updates: std.ArrayListUnmanaged(PreparedCacheUpdate) = .empty,
     indexes: std.AutoHashMapUnmanaged(*CacheSlot, usize) = .empty,
+    results: std.ArrayListUnmanaged(Result) = .empty,
+    result_indexes: std.AutoHashMapUnmanaged(*anyopaque, usize) = .empty,
     committed: bool = false,
 
     /// Reserves the exact upper bound before any callback result is adopted.
@@ -109,6 +117,8 @@ pub const PreparedCacheUpdates = struct {
         errdefer self.deinitStorage();
         try self.updates.ensureTotalCapacity(allocator, expected);
         try self.indexes.ensureTotalCapacity(allocator, std.math.cast(u32, expected) orelse return error.OutOfMemory);
+        try self.results.ensureTotalCapacity(allocator, expected);
+        try self.result_indexes.ensureTotalCapacity(allocator, std.math.cast(u32, expected) orelse return error.OutOfMemory);
         return self;
     }
 
@@ -124,6 +134,20 @@ pub const PreparedCacheUpdates = struct {
     pub fn readSlot(self: *const PreparedCacheUpdates, live: *CacheSlot) *const CacheSlot {
         const index = self.indexes.get(live) orelse return live;
         return &self.updates.items[index].next;
+    }
+
+    /// Memoizes one evaluated record without touching its persistent dirty-generation fields.
+    pub fn rememberResultAssumeCapacity(self: *PreparedCacheUpdates, key: *anyopaque, dirty_generation: u64, changed: bool) void {
+        if (self.result_indexes.contains(key)) @panic("prepared signal result memoized twice");
+        const index = self.results.items.len;
+        self.results.appendAssumeCapacity(.{ .key = key, .dirty_generation = dirty_generation, .changed = changed });
+        self.result_indexes.putAssumeCapacity(key, index);
+    }
+
+    /// Returns a previously memoized provisional dirty result.
+    pub fn rememberedResult(self: *const PreparedCacheUpdates, key: *anyopaque) ?bool {
+        const index = self.result_indexes.get(key) orelse return null;
+        return self.results.items[index].changed;
     }
 
     /// Publishes every staged cache replacement without allocation.
@@ -143,6 +167,8 @@ pub const PreparedCacheUpdates = struct {
     fn deinitStorage(self: *PreparedCacheUpdates) void {
         self.updates.deinit(self.allocator);
         self.indexes.deinit(self.allocator);
+        self.results.deinit(self.allocator);
+        self.result_indexes.deinit(self.allocator);
     }
 };
 
