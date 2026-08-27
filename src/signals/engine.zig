@@ -1586,24 +1586,6 @@ pub fn Engine(comptime Ctx: type) type {
                     if (targeted and !inside_target) removal_starts.append(allocator, index) catch return error.OutOfMemory;
                     inside_target = targeted;
                 }
-                var parent_elem_ids = std.ArrayListUnmanaged(u64).empty;
-                defer parent_elem_ids.deinit(allocator);
-                for (selections) |selection| {
-                    var seen = false;
-                    for (parent_elem_ids.items) |parent_id| if (parent_id == selection.parent_elem_id) {
-                        seen = true;
-                        break;
-                    };
-                    if (!seen) parent_elem_ids.append(allocator, selection.parent_elem_id) catch return error.OutOfMemory;
-                }
-                for (sites) |site| {
-                    var seen = false;
-                    for (parent_elem_ids.items) |parent_id| if (parent_id == site.parent_elem_id) {
-                        seen = true;
-                        break;
-                    };
-                    if (!seen) parent_elem_ids.append(allocator, site.parent_elem_id) catch return error.OutOfMemory;
-                }
                 const downstream = try PreparedStructuralDownstream.prepareExternal(engine, ctx, roc_host, replacement_owner, descriptor_roots, retired_roots, removal_starts.items, null);
                 errdefer downstream.deinit();
                 const when_retired_roots_list = allocator.alloc(u64, selections.len) catch return error.OutOfMemory;
@@ -1614,7 +1596,6 @@ pub fn Engine(comptime Ctx: type) type {
                 downstream.row_retirement = try prepareRowRetirementForScopes(engine, allocator, when_retired_roots);
                 downstream.final_render_topology = final_render_topology;
                 final_topology_owned = false;
-                try downstream.prepareFinalRenderTopology(parent_elem_ids.items);
                 targets.deinit(allocator);
                 targets_owned = false;
 

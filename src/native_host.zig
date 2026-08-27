@@ -4444,6 +4444,23 @@ fn testReadBoolHostValueCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]
     writeTestErasedResult(bool, ret, testReadHostValueBool(roc_host, call_args.arg0));
 }
 
+const TestCapabilityCapture = extern struct { cap: HostValueCapability };
+
+fn testCapabilityCaptureOnDrop(capture_ptr: ?[*]u8, roc_host: *abi.RocHost) callconv(.c) void {
+    hv.releaseHostValueCapability(testCapturePtrAs(TestCapabilityCapture, capture_ptr).cap, roc_host);
+}
+
+fn testI64ListContainsOneCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
+    const host = hostFromRocHost(roc_host);
+    const capture = testCapturePtrAs(TestCapabilityCapture, capture_ptr);
+    const call_args = testErasedArgsAs(ErasedHostValueUnaryArgs, args);
+    const values = testReadHostValueI64List(roc_host, call_args.arg0);
+    const result = hostValueBool(host, roc_host, std.mem.indexOfScalar(i64, values.items(), 1) != null);
+    host.setTestHostValueKind(result, .bool);
+    host.setHostValueCapability(result, capture.cap);
+    writeTestErasedResult(HostValue, ret, result);
+}
+
 fn testI64ListToHostValuesCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
     _ = capture_ptr;
     const host = hostFromRocHost(roc_host);
@@ -5937,6 +5954,91 @@ test "one state transaction updates two each sites atomically through production
     for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
+test "one state transaction updates sibling when and each atomically through production" {
+    const Runner = struct {
+        fn run(failure_number: ?usize) !usize {
+            var host = HostEnv.init();
+            var roc_host = makeSignalsRocHost(&host);
+            host.engine.roc_host = &roc_host;
+            defer {
+                host.deinit();
+                _ = host.gpa.deinit();
+            }
+
+            const state_token = newTestBinderToken(&roc_host);
+            const state_cap = testHostValueCapability(&roc_host);
+            const when = testNodeWhenWithSignal(&roc_host, testNodeListContainsOneExpr(&roc_host, testNodeRefExpr(state_token)), testNodeText(&roc_host, "mixed-true"), testNodeText(&roc_host, "mixed-false"));
+            const each = testNodeEachWithSignalCapabilityAndRow(&roc_host, testNodeRefExpr(state_token), state_cap, &testStatefulRowElemCallable);
+            const section = testElementWith(&roc_host, "section", &.{}, &.{ when, testNodeText(&roc_host, "mixed-between"), each });
+            const initial_items = [_]HostValue{ testHostValueI64(1), testHostValueI64(2) };
+            const root = testNodeStateWithTokenAndInitialCapability(&roc_host, state_token, testHostValueI64ListWithCapability(&roc_host, &initial_items, state_cap), section, state_cap);
+            defer root.decref(&roc_host);
+            var stream: HostNodeDescriptorStream = .{};
+            host.collectActiveElemRootDescriptors(&roc_host, &stream, root, &.{});
+            _ = applyNodeDescriptorStream(&host, &roc_host, &stream);
+            host.engine.active_stream = stream;
+
+            const state_id = host.engine.active_stream.scope_sites.items[0].node_id;
+            const state_index = host.engine.stateIndexByNodeId(state_id).?;
+            var each_site: ?engine.HostNodeScopeSiteDesc = null;
+            for (host.engine.active_stream.scope_sites.items) |site| {
+                if (site.kind == .each) each_site = site;
+            }
+            const rows_before = try host.engine.activeEachRowScopes(std.testing.allocator, each_site.?.scope_id, each_site.?.ordinal);
+            defer std.testing.allocator.free(rows_before);
+            const generation_before = host.engine.dirty_signal_generation;
+            const graph_len_before = host.engine.active_signal_graph.items.len;
+            const scope_len_before = host.engine.scopes.items.len;
+            const render_len_before = host.engine.active_stream.render_nodes.items.len;
+            const dom_len_before = host.dom_elements.items.len;
+            const state_value_before = host.engine.states.items[state_index].cell.value;
+            const batches_before = host.engine.dispatch_metrics.recompute_batches;
+            const root_children_before = try std.testing.allocator.dupe(u64, host.engine.render_cache.nodes.items[1].children.items);
+            defer std.testing.allocator.free(root_children_before);
+            const allocations_before = host.roc_allocations.snapshot();
+
+            const next_items = [_]HostValue{ testHostValueI64(2), testHostValueI64(3) };
+            var fault = FaultAllocator.init(host.gpa.allocator());
+            fault.configure(failure_number);
+            host.engine_allocator_override = fault.allocator();
+            const result = host.engine.tryDispatchStateValue(&host, &roc_host, state_id, testHostValueI64ListWithCapability(&roc_host, &next_items, state_cap), state_cap);
+            const attempts = fault.attempts;
+            if (failure_number != null) {
+                try std.testing.expectError(error.OutOfMemory, result);
+                try std.testing.expectEqual(generation_before, host.engine.dirty_signal_generation);
+                try std.testing.expectEqual(graph_len_before, host.engine.active_signal_graph.items.len);
+                try std.testing.expectEqual(scope_len_before, host.engine.scopes.items.len);
+                try std.testing.expectEqual(render_len_before, host.engine.active_stream.render_nodes.items.len);
+                try std.testing.expectEqual(dom_len_before, host.dom_elements.items.len);
+                try std.testing.expectEqual(state_value_before, host.engine.states.items[state_index].cell.value);
+                try std.testing.expectEqualSlices(u64, root_children_before, host.engine.render_cache.nodes.items[1].children.items);
+                const rows_after_failure = try host.engine.activeEachRowScopes(std.testing.allocator, each_site.?.scope_id, each_site.?.ordinal);
+                defer std.testing.allocator.free(rows_after_failure);
+                try std.testing.expectEqualSlices(u64, rows_before, rows_after_failure);
+                try std.testing.expectEqual(@as(usize, 0), host.roc_allocations.liveCountSince(allocations_before));
+                try std.testing.expect(activeTextElementId(&host, "mixed-true") != null);
+                try std.testing.expect(activeTextElementId(&host, "mixed-false") == null);
+                fault.configure(null);
+                const retry_items = [_]HostValue{ testHostValueI64(2), testHostValueI64(3) };
+                _ = try host.engine.tryDispatchStateValue(&host, &roc_host, state_id, testHostValueI64ListWithCapability(&roc_host, &retry_items, state_cap), state_cap);
+            } else _ = try result;
+
+            try std.testing.expectEqual(batches_before + 1, host.engine.dispatch_metrics.recompute_batches);
+            try std.testing.expect(activeTextElementId(&host, "mixed-true") == null);
+            try std.testing.expect(activeTextElementId(&host, "mixed-false") != null);
+            try std.testing.expect(activeTextElementId(&host, "mixed-between") != null);
+            try std.testing.expect(activeTextElementId(&host, "row-1-1") == null);
+            try std.testing.expect(activeTextElementId(&host, "row-2-2") != null);
+            try std.testing.expect(activeTextElementId(&host, "row-3-3") != null);
+            return attempts;
+        }
+    };
+
+    const attempts = try Runner.run(null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
+}
+
 test "event state transaction sweeps host OOM and retries without mutation" {
     const Runner = struct {
         fn run(failure_number: ?usize) !usize {
@@ -7233,6 +7335,28 @@ fn testNodeMapExpr(roc_host: *abi.RocHost, input: abi.NodeSignalExpr) abi.NodeSi
     };
 }
 
+fn testNodeListContainsOneExpr(roc_host: *abi.RocHost, input: abi.NodeSignalExpr) abi.NodeSignalExpr {
+    const cap = testHostValueCapability(roc_host);
+    const transform = writeTestErasedCallable(TestCapabilityCapture, roc_host, &testI64ListContainsOneCallable, &testCapabilityCaptureOnDrop, .{ .cap = hv.retainHostValueCapability(cap) });
+    abi.increfErasedCallable(transform, 1);
+    return .{ .payload = .{ .map = .{
+        ._0 = transform,
+        ._1 = boxTestNodeSignalExpr(roc_host, input),
+        ._2 = transform,
+        ._3 = cap,
+    } }, .tag = .Map };
+}
+
+fn testNodeWhenWithSignal(roc_host: *abi.RocHost, condition: abi.NodeSignalExpr, when_true: abi.Elem, when_false: abi.Elem) abi.Elem {
+    const condition_cap = testNodeSignalExprCapabilityOrPanic(condition);
+    return .{ .payload = .{ .when = .{
+        .condition = boxTestNodeSignalExpr(roc_host, condition),
+        .read = testBoolReadHandle(roc_host, condition_cap),
+        .when_false = boxTestElem(roc_host, when_false),
+        .when_true = boxTestElem(roc_host, when_true),
+    } }, .tag = .When };
+}
+
 fn testNodeMap2Expr(roc_host: *abi.RocHost, left: abi.NodeSignalExpr, right: abi.NodeSignalExpr) abi.NodeSignalExpr {
     const transform = writeTestErasedCallable(
         TestErasedI64Capture,
@@ -7966,6 +8090,24 @@ fn testHostValueI64List(roc_host: *abi.RocHost, items: []const HostValue) HostVa
     const host_value = host.storeHostValue(@ptrCast(payload));
     host.setTestHostValueKind(host_value, .i64_list);
     return capabilityTestHostValue(host, roc_host, host_value);
+}
+
+fn testHostValueI64ListWithCapability(roc_host: *abi.RocHost, items: []const HostValue, cap: HostValueCapability) HostValue {
+    const host = hostFromRocHost(roc_host);
+    const values = I64List.allocate(items.len, roc_host);
+    if (items.len > 0) {
+        const dest = values.elements_ptr orelse unreachable;
+        for (items, 0..) |item, index| {
+            dest[index] = testReadHostValueI64(roc_host, item);
+            testDropHostValue(roc_host, item);
+        }
+    }
+    const payload: *I64List = @ptrCast(@alignCast(abi.allocateBox(@sizeOf(I64List), @alignOf(I64List), true, roc_host)));
+    payload.* = values;
+    const value = host.storeHostValue(@ptrCast(payload));
+    host.setTestHostValueKind(value, .i64_list);
+    host.setHostValueCapability(value, cap);
+    return value;
 }
 
 fn testNodeEachWithSignalAndRow(roc_host: *abi.RocHost, signal: abi.NodeSignalExpr, row_fn: abi.RocErasedCallableFn) abi.Elem {
