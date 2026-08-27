@@ -3582,6 +3582,7 @@ pub fn Engine(comptime Ctx: type) type {
             removal: ?structural_splice.PreparedMultiRemoval = null,
             identity_retirements: ?PreparedIdentityRetirements = null,
             state_retirement: ?PreparedStateRetirementIndexes = null,
+            retired_state_cells: std.ArrayListUnmanaged(HostState) = .empty,
             row_retirement: ?each_runtime.PreparedRowRemovals = null,
             effects_retirement: ?PreparedEffectRetirements = null,
             retired_stream: HostNodeDescriptorStream = .{},
@@ -3602,6 +3603,7 @@ pub fn Engine(comptime Ctx: type) type {
             render_batch_published: bool = false,
             host_render_publication: ?HostRenderPublication = null,
             host_render_published: bool = false,
+            retired_scope_steps: std.ArrayListUnmanaged(HostScopeStep) = .empty,
 
             fn addCounts(total: *StaticRootCounts, next: StaticRootCounts) CollectionError!void {
                 total.nodes = std.math.add(usize, total.nodes, next.nodes) catch return error.ResourceLimit;
@@ -3677,10 +3679,14 @@ pub fn Engine(comptime Ctx: type) type {
                 errdefer if (plan.removal) |*removal| removal.deinit(allocator);
                 plan.state_retirement = try PreparedStateRetirementIndexes.prepare(engine, allocator, plan.removal.?.removal.node_indexes.state_indexes.items);
                 errdefer if (plan.state_retirement) |*retirement| retirement.deinit(allocator);
+                try plan.state_retirement.?.reserveRetired(allocator, &plan.retired_state_cells);
+                errdefer plan.retired_state_cells.deinit(allocator);
                 plan.row_retirement = try prepareRowRetirementForScopes(engine, allocator, plan.scope_retirement.?.scope_ids);
                 errdefer if (plan.row_retirement) |*retirement| retirement.deinit(allocator);
                 plan.effects_retirement = try PreparedEffectRetirements.prepare(engine, allocator, plan.target_scopes, plan.removal.?.removal.node_indexes.cleanup_indexes.items);
                 errdefer if (plan.effects_retirement) |*effects| effects.deinit(allocator, null);
+                plan.retired_scope_steps.ensureUnusedCapacity(allocator, plan.scope_retirement.?.scope_ids.len) catch return error.OutOfMemory;
+                errdefer plan.retired_scope_steps.deinit(allocator);
                 engine.active_stream.reserveMovedStreamPublication(allocator, &plan.stream) catch return error.OutOfMemory;
                 try prepareRetiredStreamCapacity(engine, allocator, &plan.retired_stream, &plan.removal.?.removal, plan.scope_retirement.?.scope_ids);
                 plan.publication = structural_splice.preparePublicationDeltas(
@@ -3804,6 +3810,64 @@ pub fn Engine(comptime Ctx: type) type {
                 }
             }
 
+            fn commitAssumeCapacity(self: *@This()) void {
+                self.commitRenderAssumeCapacity();
+                if (self.graph_release != null) self.commitGraphAssumeCapacity();
+
+                const removal = &self.removal.?.removal;
+                const indexes = &removal.descriptor_indexes;
+                self.engine.active_stream.commitStaticDescriptorReplacementAssumeCapacity(
+                    &self.stream,
+                    &self.retired_stream,
+                    indexes.element_indexes.items,
+                    indexes.text_node_indexes.items,
+                    indexes.static_text_attr_indexes.items,
+                    indexes.static_bool_attr_indexes.items,
+                    indexes.signal_text_node_indexes.items,
+                    indexes.signal_text_attr_indexes.items,
+                    indexes.signal_bool_attr_indexes.items,
+                    indexes.event_indexes.items,
+                    removal.node_indexes.scope_site_indexes.items,
+                    removal.node_indexes.state_indexes.items,
+                    removal.node_indexes.when_indexes.items,
+                    removal.node_indexes.each_indexes.items,
+                );
+                self.engine.active_stream.commitCustomDescriptorReplacementAssumeCapacity(
+                    &self.stream,
+                    &self.retired_stream,
+                    indexes.static_custom_text_attr_indexes.items,
+                    indexes.signal_custom_text_attr_indexes.items,
+                    indexes.signal_optional_custom_text_attr_indexes.items,
+                    indexes.static_custom_bool_attr_indexes.items,
+                    indexes.signal_custom_bool_attr_indexes.items,
+                );
+                self.engine.active_stream.commitLifecycleReplacementAssumeCapacity(
+                    &self.stream,
+                    &self.retired_stream,
+                    removal.node_indexes.on_change_indexes.items,
+                    removal.node_indexes.mount_indexes.items,
+                    removal.node_indexes.cleanup_indexes.items,
+                );
+
+                self.state_retirement.?.apply(self.engine, &self.retired_state_cells);
+                self.collection.commit();
+                self.identity_retirements.?.apply(self.engine);
+                var row_keys = EachRowScopeKeyLookup{ .engine = self.engine };
+                self.row_retirement.?.apply(&self.engine.each_row_sites, &self.engine.each_row_memberships_by_scope_id, &row_keys);
+                for (self.scope_retirement.?.scope_ids) |scope_id| {
+                    const scope = &self.engine.scopes.items[@intCast(scope_id)];
+                    self.retired_scope_steps.appendAssumeCapacity(scope.step);
+                    scope.step = .root;
+                }
+                self.scope_retirement.?.applyMetadata(HostEachRowScopeStep, self.engine.scopes.items, self.engine.identity_reuse_barrier);
+                self.engine.has_inactive_scopes = self.scope_retirement.?.scope_ids.len != 0 or self.engine.has_inactive_scopes;
+
+                self.publishRenderLast();
+                // Cancellations and cleanup publication may call the host, so they
+                // deliberately run only after the engine/cache/host publication is visible.
+                self.effects_retirement.?.apply(self.engine, self.host_ctx);
+            }
+
             fn deinit(self: *@This()) void {
                 const allocator = Ctx.allocator(self.host_ctx);
                 if (self.render_batch_preflighted and !self.render_batch_published and self.render_batch_target != &self.render_batch) self.render_batch_target.?.abort();
@@ -3814,8 +3878,10 @@ pub fn Engine(comptime Ctx: type) type {
                 self.stream.deinit(allocator, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
                 if (self.removal) |*removal| removal.deinit(allocator);
                 if (self.state_retirement) |*retirement| retirement.deinit(allocator);
+                for (self.retired_state_cells.items) |*state| state.cell.deinit(self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
+                self.retired_state_cells.deinit(allocator);
                 if (self.row_retirement) |*retirement| retirement.deinit(allocator);
-                if (self.effects_retirement) |*effects| effects.deinit(allocator, null);
+                if (self.effects_retirement) |*effects| effects.deinit(allocator, self.roc_host);
                 if (self.publication) |*publication| publication.deinit(allocator);
                 if (self.graph_append) |*append| append.deinit(allocator);
                 if (self.graph_release) |*release| release.deinit(allocator);
@@ -3824,6 +3890,8 @@ pub fn Engine(comptime Ctx: type) type {
                 self.retired_stream.deinit(allocator, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
                 if (self.identity_retirements) |*retirements| retirements.deinit(allocator);
                 if (self.scope_retirement) |*retirement| retirement.deinit(allocator);
+                for (self.retired_scope_steps.items) |*step| deinitHostScopeStep(step, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
+                self.retired_scope_steps.deinit(allocator);
                 allocator.free(self.target_scopes);
                 allocator.free(self.replacement_scope_ids);
                 allocator.destroy(self);
@@ -10457,6 +10525,9 @@ test "aggregate branch collection sweeps allocation failures without publication
             const old_second_record = engine.active_stream.signal_text_nodes.items[1].signal.record;
             const old_first_id = old_first_record.active_graph_id.?;
             const old_second_id = old_second_record.active_graph_id.?;
+            const old_scope_len = engine.scopes.items.len;
+            const old_state_len = engine.states.items.len;
+            const old_render_len = engine.active_stream.render_nodes.items.len;
             const old_root_children = try std.testing.allocator.dupe(u64, engine.render_cache.nodes.items[1].children.items);
             defer std.testing.allocator.free(old_root_children);
             try std.testing.expectEqual(@as(usize, 1), engine.active_text_signal_routes.items[@intCast(old_first_id)].items.len);
@@ -10472,6 +10543,11 @@ test "aggregate branch collection sweeps allocation failures without publication
                 try std.testing.expectEqual(old_graph_len, engine.active_signal_graph.items.len);
                 try std.testing.expectEqual(@as(?u64, old_first_id), old_first_record.active_graph_id);
                 try std.testing.expectEqual(@as(?u64, old_second_id), old_second_record.active_graph_id);
+                try std.testing.expectEqual(old_scope_len, engine.scopes.items.len);
+                try std.testing.expectEqual(old_state_len, engine.states.items.len);
+                try std.testing.expectEqual(old_render_len, engine.active_stream.render_nodes.items.len);
+                try std.testing.expect(engine.scopes.items[@intCast(first_old)].active);
+                try std.testing.expect(engine.scopes.items[@intCast(second_old)].active);
                 try std.testing.expectEqualSlices(u64, old_root_children, engine.render_cache.nodes.items[1].children.items);
                 try std.testing.expectEqual(@as(usize, 0), ctx.render_batch.staged.commands.len());
                 try std.testing.expectEqual(@as(usize, 0), ctx.render_batch.published.commands.len());
@@ -10507,18 +10583,23 @@ test "aggregate branch collection sweeps allocation failures without publication
             const second_new_id = prepared.graph_append.?.plannedRecordId(engine.active_signal_graph.items, second_new).?;
             const first_input_id = prepared.graph_append.?.plannedRecordId(engine.active_signal_graph.items, first_input).?;
             const second_input_id = prepared.graph_append.?.plannedRecordId(engine.active_signal_graph.items, second_input).?;
+            const first_new_scope = prepared.replacement_scope_ids[0];
+            const second_new_scope = prepared.replacement_scope_ids[1];
             try std.testing.expect(first_new_id != second_new_id);
             const first_refs = first_new.ref_count;
             const second_refs = second_new.ref_count;
             const first_input_refs = first_input.ref_count;
             const second_input_refs = second_input.ref_count;
             fault.configure(1);
-            prepared.commitRenderAssumeCapacity();
-            prepared.commitGraphAssumeCapacity();
-            prepared.publishRenderLast();
+            prepared.commitAssumeCapacity();
             try std.testing.expectEqual(@as(usize, 0), fault.attempts);
             try std.testing.expectEqual(@as(usize, 0), ctx.render_batch.staged.commands.len());
             try std.testing.expect(ctx.render_batch.published.commands.len() != 0);
+            try std.testing.expect(!engine.scopes.items[@intCast(first_old)].active);
+            try std.testing.expect(!engine.scopes.items[@intCast(second_old)].active);
+            try std.testing.expect(engine.scopes.items[@intCast(first_new_scope)].active);
+            try std.testing.expect(engine.scopes.items[@intCast(second_new_scope)].active);
+            try std.testing.expectEqual(@as(usize, 2), engine.active_stream.signal_text_nodes.items.len);
             try std.testing.expectEqual(old_graph_len, engine.active_signal_graph.items.len);
             try std.testing.expectEqual(@as(?u64, null), old_first_record.active_graph_id);
             try std.testing.expectEqual(@as(?u64, null), old_second_record.active_graph_id);
