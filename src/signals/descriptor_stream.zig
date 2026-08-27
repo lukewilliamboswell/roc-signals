@@ -1193,6 +1193,30 @@ pub const Stream = struct {
         }
     }
 
+    /// Publishes a prepared fixed signal attribute using capacity reserved by
+    /// `reservePreparedSignalAttrs`. Ownership transfers to the stream.
+    pub fn appendPreparedSignalDescriptor(self: *Stream, prepared: PreparedSignalDescriptor) void {
+        const elem_id = switch (prepared) {
+            inline else => |desc| desc.elem_id,
+        };
+        while (self.descriptor_indexes_by_elem_id.items.len <= elem_id) {
+            self.descriptor_indexes_by_elem_id.appendAssumeCapacity(.{});
+        }
+        const descriptor = &self.descriptor_indexes_by_elem_id.items[@intCast(elem_id)];
+        switch (prepared) {
+            .text_attr => |desc| {
+                const index = self.signal_text_attrs.items.len;
+                self.signal_text_attrs.appendAssumeCapacity(desc);
+                setFreshIndex(descriptor.signal_text_attrs.slot(desc.field), index);
+            },
+            .bool_attr => |desc| {
+                const index = self.signal_bool_attrs.items.len;
+                self.signal_bool_attrs.appendAssumeCapacity(desc);
+                setFreshIndex(descriptor.signal_bool_attrs.slot(desc.field), index);
+            },
+        }
+    }
+
     pub fn reservePreparedStaticAttrs(self: *Stream, allocator: std.mem.Allocator, additional: usize) std.mem.Allocator.Error!void {
         try self.static_text_attrs.ensureUnusedCapacity(allocator, additional);
         try self.static_bool_attrs.ensureUnusedCapacity(allocator, additional);
@@ -2823,6 +2847,50 @@ test "prepared signal attr reservation leaves logical stream empty" {
     try std.testing.expectEqual(@as(usize, 0), stream.signal_bool_attrs.items.len);
     try std.testing.expectEqual(@as(usize, 0), stream.descriptor_indexes_by_elem_id.items.len);
     try std.testing.expect(stream.elemDescriptorIndex(7) == null);
+}
+
+test "prepared signal attr publication is allocation free" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    const TestCtx = struct {
+        pub fn pushHostValueCapabilities(_: *@This(), _: []const retained.HostValueCapability) void {}
+        pub fn popHostValueCapabilities(_: *@This()) void {}
+    };
+
+    var fault = FaultAllocator.init(std.testing.allocator);
+    const allocator = fault.allocator();
+    var stream: Stream = .{};
+    var ctx: TestCtx = .{};
+    var env = abi.RocEnv{ .allocator = allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&env);
+    var metrics = TestMetrics{};
+    defer stream.deinit(allocator, &ctx, &roc_host, &metrics);
+
+    try stream.reservePreparedSignalAttrs(allocator, 2, 2);
+    const text_record = try SignalRecord.tryInit(allocator, .{ .ref = 1 });
+    const bool_record = try SignalRecord.tryInit(allocator, .{ .ref = 2 });
+    const text_sources = try allocator.dupe(u64, &.{1});
+    const bool_sources = try allocator.dupe(u64, &.{2});
+    const text = Stream.PreparedSignalDescriptor{ .text_attr = .{
+        .elem_id = 1,
+        .field = .label,
+        .signal = .{ .record = text_record, .source_node_ids = text_sources },
+        .read = std.mem.zeroes(HostTextRead),
+    } };
+    const boolean = Stream.PreparedSignalDescriptor{ .bool_attr = .{
+        .elem_id = 2,
+        .field = .disabled,
+        .signal = .{ .record = bool_record, .source_node_ids = bool_sources },
+        .read = std.mem.zeroes(HostBoolRead),
+    } };
+
+    fault.configure(1);
+    stream.appendPreparedSignalDescriptor(text);
+    stream.appendPreparedSignalDescriptor(boolean);
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqual(@as(?usize, 0), stream.elemDescriptorIndex(1).?.signal_text_attrs.get(.label));
+    try std.testing.expectEqual(@as(?usize, 0), stream.elemDescriptorIndex(2).?.signal_bool_attrs.get(.disabled));
+    try std.testing.expectEqual(@as(u64, 1), stream.signal_text_attrs.items[0].elem_id);
+    try std.testing.expectEqual(@as(u64, 2), stream.signal_bool_attrs.items[0].elem_id);
 }
 
 test "fixed event descriptors preserve Roc supplied payload descriptors" {
