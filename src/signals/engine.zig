@@ -3226,6 +3226,8 @@ pub fn Engine(comptime Ctx: type) type {
             collection: StagedCollectionCtx = undefined,
             replacement_scope_id: u64 = 0,
             retired_scope_id: u64 = 0,
+            target_scopes: []bool = &.{},
+            removal: ?structural_splice.PreparedRemoval = null,
 
             fn prepare(engine_ptr: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, site: HostNodeScopeSiteDesc, when: HostNodeWhenDesc, selected_branch: HostScopeBranch, limits: collection_budget.Limits, dirty_source_node_ids: []const u64) CollectionError!*@This() {
                 if (site.kind != .when or site.node_id != when.node_id) return error.ResourceLimit;
@@ -3256,11 +3258,22 @@ pub fn Engine(comptime Ctx: type) type {
                 var ordinal: u64 = 0;
                 var dom_ordinal: u64 = 0;
                 try engine_ptr.collectActiveElemDescriptorsWith(*StagedCollectionCtx, &plan.collection, ctx, roc_host, &plan.replacement_stream, selected_elem, branch_scope.scope_id, site.parent_elem_id, &ordinal, &dom_ordinal, &binder_stack, true, dirty_source_node_ids);
+
+                plan.target_scopes = allocator.alloc(bool, engine_ptr.scopes.items.len) catch return error.OutOfMemory;
+                errdefer allocator.free(plan.target_scopes);
+                for (engine_ptr.scopes.items, 0..) |scope, index| {
+                    plan.target_scopes[index] = engine_ptr.scopeIsInReplacementTarget(scope.scope_id, .{ .scope = retired_scope_id });
+                }
+                const render_start = engine_ptr.renderStartForReplacementTargetSet(site.render_insert_index, plan.target_scopes);
+                plan.removal = structural_splice.prepareRemoval(HostNodeDescriptorStream, allocator, &engine_ptr.active_stream, render_start, plan.target_scopes) catch return error.OutOfMemory;
+                errdefer if (plan.removal) |*removal| removal.deinit(allocator);
                 return plan;
             }
 
             fn deinit(self: *@This()) void {
                 const allocator = Ctx.allocator(self.host_ctx);
+                if (self.removal) |*removal| removal.deinit(allocator);
+                allocator.free(self.target_scopes);
                 self.collection.deinit();
                 self.replacement_stream.deinit(allocator, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
                 allocator.destroy(self);
@@ -8067,21 +8080,27 @@ test "branch replacement preparation leaves the active branch unpublished" {
             var stream: HostNodeDescriptorStream = .{};
             defer {
                 stream.deinit(ctx.allocator, &ctx, host, &engine.pending_roc_metrics);
+                engine.active_stream.deinit(ctx.allocator, &ctx, host, &engine.pending_roc_metrics);
                 deinitVerifyStateEngine(&engine, &ctx, host);
             }
             try engine.collectStaticRootDescriptorsTransactional(&ctx, host, &stream, root_elem, .{});
+            engine.active_stream = stream;
+            stream = .{};
             const scope_len = engine.scopes.items.len;
             const identity_len = engine.dom_identities.items.len;
-            const text_len = stream.text_nodes.items.len;
+            const text_len = engine.active_stream.text_nodes.items.len;
             const retained_before = engine.pending_roc_metrics.closure_retains - engine.pending_roc_metrics.closure_releases;
             fault.configure(failure_number);
-            const prepared = Engine(VerifyCtx).BranchReplacementPlan.prepare(&engine, &ctx, host, stream.scope_sites.items[0], stream.whens.items[0], .false_branch, .{}, &.{});
+            const prepared = Engine(VerifyCtx).BranchReplacementPlan.prepare(&engine, &ctx, host, engine.active_stream.scope_sites.items[0], engine.active_stream.whens.items[0], .false_branch, .{}, &.{});
             if (failure_number == null) {
                 var plan = try prepared;
                 const attempts = fault.attempts;
                 try std.testing.expectEqual(@as(usize, 0), plan.replacement_stream.text_nodes.items.len);
                 try std.testing.expectEqualStrings("no", plan.collection.prepared_nodes.items[0].text.text);
                 try std.testing.expectEqual(engine.scopes.items[1].scope_id, plan.retired_scope_id);
+                try std.testing.expect(plan.target_scopes[@intCast(plan.retired_scope_id)]);
+                try std.testing.expectEqualSlices(u64, &.{1}, plan.removal.?.scan.removed_elem_ids);
+                try std.testing.expectEqualSlices(usize, &.{0}, plan.removal.?.descriptor_indexes.text_node_indexes.items);
                 plan.deinit();
                 try std.testing.expectEqual(retained_before, engine.pending_roc_metrics.closure_retains - engine.pending_roc_metrics.closure_releases);
                 return attempts;
@@ -8090,15 +8109,15 @@ test "branch replacement preparation leaves the active branch unpublished" {
             try std.testing.expectEqual(@as(usize, 1), fault.induced_failures);
             try std.testing.expectEqual(scope_len, engine.scopes.items.len);
             try std.testing.expectEqual(identity_len, engine.dom_identities.items.len);
-            try std.testing.expectEqual(text_len, stream.text_nodes.items.len);
+            try std.testing.expectEqual(text_len, engine.active_stream.text_nodes.items.len);
             try std.testing.expectEqual(retained_before, engine.pending_roc_metrics.closure_retains - engine.pending_roc_metrics.closure_releases);
 
             fault.configure(null);
-            var retry = try Engine(VerifyCtx).BranchReplacementPlan.prepare(&engine, &ctx, host, stream.scope_sites.items[0], stream.whens.items[0], .false_branch, .{}, &.{});
+            var retry = try Engine(VerifyCtx).BranchReplacementPlan.prepare(&engine, &ctx, host, engine.active_stream.scope_sites.items[0], engine.active_stream.whens.items[0], .false_branch, .{}, &.{});
             retry.deinit();
             try std.testing.expectEqual(scope_len, engine.scopes.items.len);
             try std.testing.expectEqual(identity_len, engine.dom_identities.items.len);
-            try std.testing.expectEqual(text_len, stream.text_nodes.items.len);
+            try std.testing.expectEqual(text_len, engine.active_stream.text_nodes.items.len);
             return 0;
         }
     };
