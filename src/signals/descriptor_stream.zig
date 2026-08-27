@@ -4755,7 +4755,9 @@ test "descriptor indexes retain a cache-dense layout" {
 test "custom attribute index tracks family and swap-moved dense index" {
     const allocator = std.testing.allocator;
     const TestCtx = struct {
+        /// Opens a no-op capability frame for descriptor teardown.
         pub fn pushHostValueCapabilities(_: *@This(), _: []const retained.HostValueCapability) void {}
+        /// Closes the no-op capability frame.
         pub fn popHostValueCapabilities(_: *@This()) void {}
     };
     var ctx: TestCtx = .{};
@@ -4820,7 +4822,9 @@ test "custom attribute index preflight sweeps allocation failures" {
 test "prepared custom attribute publication is allocation free" {
     const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
     const TestCtx = struct {
+        /// Opens a no-op capability frame for descriptor teardown.
         pub fn pushHostValueCapabilities(_: *@This(), _: []const retained.HostValueCapability) void {}
+        /// Closes the no-op capability frame.
         pub fn popHostValueCapabilities(_: *@This()) void {}
     };
     var fault = FaultAllocator.init(std.testing.allocator);
@@ -4848,7 +4852,9 @@ test "prepared custom attribute publication is allocation free" {
 test "custom descriptor retirement and replacement repairs both indexes without allocation" {
     const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
     const TestCtx = struct {
+        /// Opens a no-op capability frame for descriptor teardown.
         pub fn pushHostValueCapabilities(_: *@This(), _: []const retained.HostValueCapability) void {}
+        /// Closes the no-op capability frame.
         pub fn popHostValueCapabilities(_: *@This()) void {}
     };
     var fault = FaultAllocator.init(std.testing.allocator);
@@ -4909,7 +4915,9 @@ test "lifecycle ownership index preflight sweeps failures and repairs moved desc
     }
 
     const TestCtx = struct {
+        /// Opens a no-op capability frame for descriptor teardown.
         pub fn pushHostValueCapabilities(_: *@This(), _: []const retained.HostValueCapability) void {}
+        /// Closes the no-op capability frame.
         pub fn popHostValueCapabilities(_: *@This()) void {}
     };
     var fault = FaultAllocator.init(std.testing.allocator);
@@ -4946,7 +4954,9 @@ test "lifecycle ownership index preflight sweeps failures and repairs moved desc
 test "prepared lifecycle descriptors publish allocation free and tear down ownership" {
     const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
     const TestCtx = struct {
+        /// Opens a no-op capability frame for descriptor teardown.
         pub fn pushHostValueCapabilities(_: *@This(), _: []const retained.HostValueCapability) void {}
+        /// Closes the no-op capability frame.
         pub fn popHostValueCapabilities(_: *@This()) void {}
     };
     const Callable = struct {

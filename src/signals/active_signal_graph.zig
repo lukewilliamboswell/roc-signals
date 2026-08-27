@@ -109,10 +109,12 @@ pub const BoolSinkEdit = struct { record_id: u64, kind: BoolSinkKind, old_index:
 pub const ChangeSinkEdit = struct { record_id: u64, old_index: usize, new_index: ?usize = null };
 pub const StructuralSinkEdit = struct { record_id: u64, kind: StructuralKind, old_index: usize, new_index: ?usize = null };
 
+/// Describes one route entry to append to a prepared route table.
 pub fn RouteAppend(comptime Route: type) type {
     return struct { route_index: u64, value: Route };
 }
 
+/// Owns allocation-free replacements for selected route-table entries.
 pub fn PreparedRouteAppends(comptime Route: type) type {
     return struct {
         replacements: []Replacement,
@@ -123,6 +125,7 @@ pub fn PreparedRouteAppends(comptime Route: type) type {
             retired: std.ArrayListUnmanaged(Route) = .empty,
         };
 
+        /// Releases provisional and retired route storage.
         pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
             for (self.replacements) |*replacement| {
                 allocator.free(replacement.items);
@@ -132,11 +135,13 @@ pub fn PreparedRouteAppends(comptime Route: type) type {
             self.* = undefined;
         }
 
+        /// Reserves the destination outer route table before publication.
         pub fn reserveOuter(self: *const @This(), allocator: std.mem.Allocator, routes: *RouteTable(Route), final_count: usize) std.mem.Allocator.Error!void {
             _ = self;
             try routes.ensureTotalCapacity(allocator, final_count);
         }
 
+        /// Publishes every prepared inner route list without allocation.
         pub fn apply(self: *@This(), routes: *RouteTable(Route), final_count: usize) void {
             while (routes.items.len < final_count) routes.appendAssumeCapacity(.empty);
             for (self.replacements) |*replacement| {
@@ -150,6 +155,7 @@ pub fn PreparedRouteAppends(comptime Route: type) type {
     };
 }
 
+/// Builds grouped route-table replacements without mutating active routes.
 pub fn prepareRouteAppends(comptime Route: type, allocator: std.mem.Allocator, routes: *const RouteTable(Route), final_count: usize, appends: []const RouteAppend(Route)) (std.mem.Allocator.Error || error{InvalidAppend})!PreparedRouteAppends(Route) {
     const sorted = try allocator.dupe(RouteAppend(Route), appends);
     defer allocator.free(sorted);
