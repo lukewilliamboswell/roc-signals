@@ -537,12 +537,18 @@ pub const PreparedCommand = union(enum) {
 pub const PreparedBatch = struct {
     commands: std.ArrayListUnmanaged(PreparedCommand) = .empty,
     capacity: BatchCapacity = .{},
+    command_limit: usize = 0,
 
     /// Reserves the plan-local command journal.
     pub fn init(allocator: std.mem.Allocator, expected_commands: usize) std.mem.Allocator.Error!PreparedBatch {
         var self: PreparedBatch = .{};
         try self.commands.ensureTotalCapacity(allocator, expected_commands);
+        self.command_limit = expected_commands;
         return self;
+    }
+
+    fn ensureJournalSlot(self: *const PreparedBatch) error{ResourceLimit}!void {
+        if (self.commands.items.len >= self.command_limit) return error.ResourceLimit;
     }
 
     /// Releases the borrowed command journal.
@@ -553,36 +559,42 @@ pub const PreparedBatch = struct {
 
     /// Adds one fixed-width command.
     pub fn addFixed(self: *PreparedBatch, command: PreparedFixedCommand) error{ResourceLimit}!void {
+        try self.ensureJournalSlot();
         try self.capacity.addFixed(0);
         self.commands.appendAssumeCapacity(.{ .fixed = command });
     }
 
     /// Adds one command with bytes in the string side buffer.
     pub fn addString(self: *PreparedBatch, command: PreparedStringCommand) error{ResourceLimit}!void {
+        try self.ensureJournalSlot();
         try self.capacity.addFixed(command.bytes.len);
         self.commands.appendAssumeCapacity(.{ .string = command });
     }
 
     /// Adds one dynamic custom-attribute set.
     pub fn addSetAttrText(self: *PreparedBatch, elem_id: u32, name: []const u8, value: []const u8) error{ResourceLimit}!void {
+        try self.ensureJournalSlot();
         try self.capacity.addSetAttrText(name.len, value.len);
         self.commands.appendAssumeCapacity(.{ .set_attr_text = .{ .elem_id = elem_id, .name = name, .value = value } });
     }
 
     /// Adds one dynamic custom-attribute removal.
     pub fn addRemoveAttr(self: *PreparedBatch, elem_id: u32, name: []const u8) error{ResourceLimit}!void {
+        try self.ensureJournalSlot();
         try self.capacity.addRemoveAttr(name.len);
         self.commands.appendAssumeCapacity(.{ .remove_attr = .{ .elem_id = elem_id, .name = name } });
     }
 
     /// Adds one dynamic event binding.
     pub fn addBindEvent(self: *PreparedBatch, command: PreparedBindEventCommand) error{ResourceLimit}!void {
+        try self.ensureJournalSlot();
         try self.capacity.addBindEvent(command.name.len, command.payload_descriptor.extractionBytes().len);
         self.commands.appendAssumeCapacity(.{ .bind_event = command });
     }
 
     /// Adds one dynamic event clear.
     pub fn addClearEvent(self: *PreparedBatch, elem_id: u32, name: []const u8) error{ResourceLimit}!void {
+        try self.ensureJournalSlot();
         try self.capacity.addClearEvent(name.len);
         self.commands.appendAssumeCapacity(.{ .clear_event = .{ .elem_id = elem_id, .name = name } });
     }
@@ -814,6 +826,16 @@ test "prepared command batch sweeps preflight and stages allocation free" {
         batch.commit();
         try std.testing.expectEqual(prepared.capacity.commands, batch.published.commands.len());
     }
+}
+
+test "prepared command journal rejects an underestimated command count" {
+    var prepared = try PreparedBatch.init(std.testing.allocator, 1);
+    defer prepared.deinit(std.testing.allocator);
+    try prepared.addFixed(.{ .op = .set_checked });
+    const before = prepared.capacity;
+    try std.testing.expectError(error.ResourceLimit, prepared.addFixed(.{ .op = .set_disabled }));
+    try std.testing.expectEqual(@as(usize, 1), prepared.commands.items.len);
+    try std.testing.expectEqualDeep(before, prepared.capacity);
 }
 
 test "command capacity estimation rejects overflow before allocation" {
