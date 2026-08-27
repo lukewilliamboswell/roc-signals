@@ -3561,6 +3561,7 @@ pub fn Engine(comptime Ctx: type) type {
             publication: ?structural_splice.PreparedPublicationDeltas = null,
             graph_release: ?active_graph.PreparedReleaseClosure(HostSignalRecord) = null,
             graph_append: ?active_graph.PreparedGraphAppend(HostSignalRecord) = null,
+            sink_edits: ?active_graph.PreparedSinkRouteEdits = null,
 
             fn addCounts(total: *StaticRootCounts, next: StaticRootCounts) CollectionError!void {
                 total.nodes = std.math.add(usize, total.nodes, next.nodes) catch return error.ResourceLimit;
@@ -3653,6 +3654,8 @@ pub fn Engine(comptime Ctx: type) type {
                 ) catch return error.OutOfMemory;
                 errdefer if (plan.publication) |*publication| publication.deinit(allocator);
                 if (engine.active_signal_graph.items.len != 0) {
+                    plan.sink_edits = try plan.prepareSinkEdits(allocator);
+                    errdefer if (plan.sink_edits) |*edits| edits.deinit(allocator);
                     var retired_roots: std.ArrayListUnmanaged(*HostSignalRecord) = .empty;
                     defer retired_roots.deinit(allocator);
                     try collectRetiredGraphRootsForRemoval(engine, allocator, &plan.removal.?.removal, &retired_roots);
@@ -3682,12 +3685,55 @@ pub fn Engine(comptime Ctx: type) type {
                 if (self.publication) |*publication| publication.deinit(allocator);
                 if (self.graph_append) |*append| append.deinit(allocator);
                 if (self.graph_release) |*release| release.deinit(allocator);
+                if (self.sink_edits) |*edits| edits.deinit(allocator);
                 self.retired_stream.deinit(allocator, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
                 if (self.identity_retirements) |*retirements| retirements.deinit(allocator);
                 if (self.scope_retirement) |*retirement| retirement.deinit(allocator);
                 allocator.free(self.target_scopes);
                 allocator.free(self.replacement_scope_ids);
                 allocator.destroy(self);
+            }
+
+            fn prepareSinkEdits(self: *@This(), allocator: std.mem.Allocator) CollectionError!active_graph.PreparedSinkRouteEdits {
+                var text: std.ArrayListUnmanaged(active_graph.TextSinkEdit) = .empty;
+                defer text.deinit(allocator);
+                var bools: std.ArrayListUnmanaged(active_graph.BoolSinkEdit) = .empty;
+                defer bools.deinit(allocator);
+                var structural: std.ArrayListUnmanaged(active_graph.StructuralSinkEdit) = .empty;
+                defer structural.deinit(allocator);
+                var changes: std.ArrayListUnmanaged(active_graph.ChangeSinkEdit) = .empty;
+                defer changes.deinit(allocator);
+                const removal = &self.removal.?.removal;
+                const indexes = &removal.descriptor_indexes;
+                var text_removals = std.math.add(usize, indexes.signal_text_node_indexes.items.len, indexes.signal_text_attr_indexes.items.len) catch return error.ResourceLimit;
+                text_removals = std.math.add(usize, text_removals, indexes.signal_custom_text_attr_indexes.items.len) catch return error.ResourceLimit;
+                text_removals = std.math.add(usize, text_removals, indexes.signal_optional_custom_text_attr_indexes.items.len) catch return error.ResourceLimit;
+                const bool_removals = std.math.add(usize, indexes.signal_bool_attr_indexes.items.len, indexes.signal_custom_bool_attr_indexes.items.len) catch return error.ResourceLimit;
+                const structural_removals = std.math.add(usize, removal.node_indexes.when_indexes.items.len, removal.node_indexes.each_indexes.items.len) catch return error.ResourceLimit;
+                text.ensureTotalCapacity(allocator, std.math.mul(usize, 2, text_removals) catch return error.ResourceLimit) catch return error.OutOfMemory;
+                bools.ensureTotalCapacity(allocator, std.math.mul(usize, 2, bool_removals) catch return error.ResourceLimit) catch return error.OutOfMemory;
+                structural.ensureTotalCapacity(allocator, std.math.mul(usize, 2, structural_removals) catch return error.ResourceLimit) catch return error.OutOfMemory;
+                changes.ensureTotalCapacity(allocator, std.math.mul(usize, 2, removal.node_indexes.on_change_indexes.items.len) catch return error.ResourceLimit) catch return error.OutOfMemory;
+                BranchReplacementPlan.appendTextSinkEdits(self.engine, &text, self.engine.active_stream.signal_text_nodes.items, indexes.signal_text_node_indexes.items, .text_node);
+                BranchReplacementPlan.appendTextSinkEdits(self.engine, &text, self.engine.active_stream.signal_text_attrs.items, indexes.signal_text_attr_indexes.items, .text_attr);
+                BranchReplacementPlan.appendTextSinkEdits(self.engine, &text, self.engine.active_stream.signal_custom_text_attrs.items, indexes.signal_custom_text_attr_indexes.items, .custom_text_attr);
+                BranchReplacementPlan.appendTextSinkEdits(self.engine, &text, self.engine.active_stream.signal_optional_custom_text_attrs.items, indexes.signal_optional_custom_text_attr_indexes.items, .custom_text_optional_attr);
+                BranchReplacementPlan.appendBoolSinkEdits(self.engine, &bools, self.engine.active_stream.signal_bool_attrs.items, indexes.signal_bool_attr_indexes.items, .bool_attr);
+                BranchReplacementPlan.appendBoolSinkEdits(self.engine, &bools, self.engine.active_stream.signal_custom_bool_attrs.items, indexes.signal_custom_bool_attr_indexes.items, .custom_bool_attr);
+                BranchReplacementPlan.appendChangeSinkEdits(self.engine, &changes, self.engine.active_stream.on_changes.items, removal.node_indexes.on_change_indexes.items);
+                BranchReplacementPlan.appendStructuralSinkEdits(self.engine, &structural, self.engine.active_stream.whens.items, removal.node_indexes.when_indexes.items, .when);
+                BranchReplacementPlan.appendStructuralSinkEdits(self.engine, &structural, self.engine.active_stream.eaches.items, removal.node_indexes.each_indexes.items, .each);
+                return active_graph.prepareSinkRouteEdits(
+                    allocator,
+                    &self.engine.active_text_signal_routes,
+                    &self.engine.active_bool_signal_routes,
+                    &self.engine.active_change_signal_routes,
+                    &self.engine.active_structural_signal_routes,
+                    text.items,
+                    bools.items,
+                    changes.items,
+                    structural.items,
+                ) catch return error.OutOfMemory;
             }
         };
 
@@ -9995,6 +10041,12 @@ test "aggregate branch collection sweeps allocation failures without publication
                 engine.active_node_identity_ids.deinit(ctx.allocator);
                 engine.states.deinit(ctx.allocator);
                 engine.state_indexes_by_node_id.deinit(ctx.allocator);
+                engine.active_signal_graph.deinit(ctx.allocator);
+                engine.active_source_signal_routes.deinit(ctx.allocator);
+                engine.active_text_signal_routes.deinit(ctx.allocator);
+                engine.active_bool_signal_routes.deinit(ctx.allocator);
+                engine.active_change_signal_routes.deinit(ctx.allocator);
+                engine.active_structural_signal_routes.deinit(ctx.allocator);
             }
             _ = try engine.internRootScope(ctx.allocator);
             const first_old = try engine.internWhenBranchScope(ctx.allocator, 0, 1, .false_branch);
@@ -10003,6 +10055,12 @@ test "aggregate branch collection sweeps allocation failures without publication
             _ = try engine.internNodeIdentity(ctx.allocator, second_old.scope_id, 0);
             _ = try engine.internDomIdentity(ctx.allocator, first_old.scope_id, 0);
             _ = try engine.internDomIdentity(ctx.allocator, second_old.scope_id, 0);
+            var graph_record = HostSignalRecord{
+                .ref_count = 1,
+                .payload = .{ .const_value = .{ .init = @ptrFromInt(0x9000), .cap = std.mem.zeroes(HostValueCapability) } },
+                .active_graph_id = 0,
+            };
+            try engine.active_signal_graph.append(ctx.allocator, .{ .record = &graph_record });
             const child = verifyStaticText();
             const selections = [_]Engine(VerifyCtx).AggregateBranchSelection{
                 .{ .parent_scope_id = 0, .site_ordinal = 1, .parent_elem_id = 0, .retired_scope_id = first_old.scope_id, .render_insert_index = 0, .binder_bindings = &.{}, .branch = .true_branch, .elem = child },
@@ -10015,6 +10073,8 @@ test "aggregate branch collection sweeps allocation failures without publication
                 try std.testing.expectEqual(@as(usize, 3), engine.scopes.items.len);
                 try std.testing.expectEqual(@as(usize, 2), engine.dom_identities.items.len);
                 try std.testing.expectEqual(@as(usize, 2), engine.active_dom_identity_ids.count());
+                try std.testing.expectEqual(@as(usize, 1), engine.active_signal_graph.items.len);
+                try std.testing.expectEqual(@as(?u64, 0), graph_record.active_graph_id);
                 const attempts = fault.attempts;
                 fault.configure(null);
                 const retry = try Engine(VerifyCtx).AggregateBranchCollection.prepare(&engine, &ctx, &roc_host, &selections, .{}, &.{});
@@ -10025,6 +10085,9 @@ test "aggregate branch collection sweeps allocation failures without publication
                 try std.testing.expectEqualSlices(u64, &.{ 1, 2 }, retry.scope_retirement.?.scope_ids);
                 try std.testing.expectEqualSlices(u64, &.{ 0, 1 }, retry.identity_retirements.?.node_ids);
                 try std.testing.expectEqualSlices(u64, &.{ 1, 2 }, retry.identity_retirements.?.dom_ids);
+                try std.testing.expect(retry.sink_edits != null);
+                try std.testing.expect(retry.graph_release != null);
+                try std.testing.expect(retry.graph_append != null);
                 try std.testing.expect(retry.stream.text_nodes.items[0].elem_id != retry.stream.text_nodes.items[1].elem_id);
                 retry.deinit();
                 return attempts;
@@ -10037,6 +10100,9 @@ test "aggregate branch collection sweeps allocation failures without publication
             try std.testing.expectEqualSlices(u64, &.{ 1, 2 }, prepared.scope_retirement.?.scope_ids);
             try std.testing.expectEqualSlices(u64, &.{ 0, 1 }, prepared.identity_retirements.?.node_ids);
             try std.testing.expectEqualSlices(u64, &.{ 1, 2 }, prepared.identity_retirements.?.dom_ids);
+            try std.testing.expect(prepared.sink_edits != null);
+            try std.testing.expect(prepared.graph_release != null);
+            try std.testing.expect(prepared.graph_append != null);
             prepared.deinit();
             return attempts;
         }
