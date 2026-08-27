@@ -1461,13 +1461,25 @@ before it, commands are private scratch; after it, the complete immutable batch
 is visible. The browser applies only a successful published batch and never
 observes or executes a prefix from a failed transaction.
 
-An allocation failure during preparation is **recoverable**. It returns
-`out_of_memory`, publishes no commands, invokes no effectful callback, releases
-all provisional results from pure evaluation, and preserves the previous
-committed engine and DOM state. Owned replacements follow
+An allocation failure during preparation is **recoverable when the allocating
+call has an error-and-unwind channel**. Host-owned allocation, copying, and
+preflight use that channel: they return `out_of_memory`, publish no commands,
+invoke no effectful callback, release all provisional results, and preserve the
+previous committed engine and DOM state. Owned replacements follow
 allocate-copy-commit-release order, so failure cannot destroy the old value. A
 recoverable transaction may be retried when memory becomes available; pure
 evaluators may therefore run again and must not encode once-only effects.
+
+Recoverability is a property of the call boundary, not merely of when the
+allocation occurs. Code entered through an ABI that cannot report allocation
+failure or unwind owned values crosses a fatal containment boundary for the
+duration of that call. In particular, a pure Roc reader may allocate while its
+erased callback has no OOM result channel. Failure there poisons and traps the
+instance, but still clears staged publication and leaves the last committed DOM
+as the only observable state. No boundary may convert a null allocation into an
+unchecked pointer and then continue execution. A future callback ABI may make
+such failures recoverable only by defining explicit failure and ownership-unwind
+semantics; host policy must not infer them from callback purity alone.
 
 An allocation failure after an irreversible ownership or mutation boundary is
 **fatal**. Continuing a partly mutated refcounted graph would be memory-unsafe,
