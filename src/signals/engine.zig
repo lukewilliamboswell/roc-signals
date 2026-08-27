@@ -8441,7 +8441,66 @@ pub fn Engine(comptime Ctx: type) type {
             for (changes) |change| {
                 if (change.kind != .when) @panic("non-when structural change reached when-only test helper");
             }
+            if (self.tryApplyPreparedDirtyWhenSet(ctx, roc_host, dirty_source_node_ids, changes) catch @panic("failed to prepare atomic dirty-when transaction")) |counts| return counts;
             return self.applyDirtyStructuralSignalsLocally(ctx, roc_host, dirty_source_node_ids, dirty_generation, changes);
+        }
+
+        fn tryApplyPreparedDirtyWhenSet(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, dirty_source_node_ids: []const u64, changes: []HostDirtyStructuralSignal) CollectionError!?render.Counts {
+            if (changes.len == 0 or !self.render_cache.hasRoot()) return null;
+            const allocator = Ctx.allocator(ctx);
+            var normalized = try PreparedDirtyWhenSet.prepare(self, allocator, changes);
+            defer normalized.deinit(allocator);
+            if (normalized.selected_indexes.len == 0) return null;
+
+            const selections = allocator.alloc(AggregateBranchSelection, normalized.selected_indexes.len) catch return error.OutOfMemory;
+            defer allocator.free(selections);
+            for (normalized.selected_indexes, 0..) |change_index, selection_index| {
+                const change = changes[change_index];
+                const site = self.activeScopeSiteByNodeId(change.node_id, .when) orelse return null;
+                if (site.scope_id != change.scope_id or site.ordinal != change.ordinal) return null;
+                const when_index = self.activeWhenIndexByNodeId(change.node_id) orelse return null;
+                const when_desc = self.active_stream.whens.items[when_index];
+                if (when_desc.condition.record != change.record) return null;
+                const branch = change.branch orelse return error.ResourceLimit;
+                const retired_scope_id = (self.activeWhenBranchScopeId(site.scope_id, site.ordinal, branch.opposite()) catch return error.ResourceLimit) orelse return null;
+                // Reusing a previously active branch requires a different ownership
+                // transfer plan; retain the legacy path until that case is staged.
+                if ((self.activeWhenBranchScopeId(site.scope_id, site.ordinal, branch) catch return error.ResourceLimit) != null) return null;
+                selections[selection_index] = .{
+                    .parent_scope_id = site.scope_id,
+                    .site_ordinal = site.ordinal,
+                    .parent_elem_id = site.parent_elem_id,
+                    .retired_scope_id = retired_scope_id,
+                    .render_insert_index = site.render_insert_index,
+                    .binder_bindings = site.binder_bindings,
+                    .branch = branch,
+                    .elem = switch (branch) {
+                        .true_branch => when_desc.when_true,
+                        .false_branch => when_desc.when_false,
+                    },
+                };
+            }
+
+            const plan = try AggregateBranchCollection.prepare(self, ctx, roc_host, selections, .{}, dirty_source_node_ids);
+            defer plan.deinit();
+            // Event delivery and mount execution have additional host-side indexes;
+            // keep those cases on the legacy path until their prepared publication
+            // journal is composed into this transaction.
+            const removal = &plan.removal.?.removal.node_indexes;
+            if (plan.stream.events.items.len != 0 or plan.stream.on_changes.items.len != 0 or plan.stream.mounts.items.len != 0 or plan.stream.cleanups.items.len != 0 or
+                removal.on_change_indexes.items.len != 0 or removal.mount_indexes.items.len != 0 or removal.cleanup_indexes.items.len != 0)
+            {
+                return null;
+            }
+            const counts = plan.render_splice.?.wire.counts();
+            plan.commitAssumeCapacity();
+            for (normalized.selected_indexes) |change_index| {
+                const change = &changes[change_index];
+                const when_index = self.activeWhenIndexByNodeId(change.node_id) orelse @panic("published dirty when descriptor disappeared");
+                change.commitPendingWhenCache(&self.active_stream.whens.items[when_index].cached_value, ctx, roc_host, &self.pending_roc_metrics);
+            }
+            for (normalized.subsumed_indexes) |change_index| changes[change_index].abortPendingWhenCache(ctx, roc_host, &self.pending_roc_metrics);
+            return counts;
         }
 
         /// Appends pending task using capacity that must already satisfy the caller's transaction contract.

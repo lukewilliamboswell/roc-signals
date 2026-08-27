@@ -568,6 +568,19 @@ pub const PreparedBatch = struct {
         self.* = undefined;
     }
 
+    /// Computes the public command counters from the prepared semantic journal.
+    pub fn counts(self: *const PreparedBatch) Counts {
+        var result: Counts = .{};
+        for (self.commands.items) |command| switch (command) {
+            .fixed => |value| result.addOp(value.op),
+            .string => |value| result.addOp(value.op),
+            .set_attr_text, .remove_attr => result.addOp(.extended),
+            .bind_event => result.addOp(.bind_click),
+            .clear_event => result.addOp(.clear_event),
+        };
+        return result;
+    }
+
     /// Adds one fixed-width command.
     pub fn addFixed(self: *PreparedBatch, command: PreparedFixedCommand) error{ResourceLimit}!void {
         try self.ensureJournalSlot();
@@ -814,6 +827,12 @@ test "prepared command batch sweeps preflight and stages allocation free" {
         .payload_descriptor = descriptor,
     });
     try prepared.addClearEvent(2, "blur");
+    const command_counts = prepared.counts();
+    try std.testing.expectEqual(@as(u64, 6), command_counts.total);
+    try std.testing.expectEqual(@as(u64, 1), command_counts.create_element);
+    try std.testing.expectEqual(@as(u64, 1), command_counts.set_checked);
+    try std.testing.expectEqual(@as(u64, 2), command_counts.set_metadata);
+    try std.testing.expectEqual(@as(u64, 2), command_counts.bind_event);
 
     var counter = FaultAllocator.init(std.testing.allocator);
     var counted: TransactionalBatch = .{};
