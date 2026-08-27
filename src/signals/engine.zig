@@ -3689,13 +3689,15 @@ pub fn Engine(comptime Ctx: type) type {
                 errdefer plan.retired_scope_steps.deinit(allocator);
                 engine.active_stream.reserveMovedStreamPublication(allocator, &plan.stream) catch return error.OutOfMemory;
                 try prepareRetiredStreamCapacity(engine, allocator, &plan.retired_stream, &plan.removal.?.removal, plan.scope_retirement.?.scope_ids);
+                const on_change_base = std.math.sub(usize, engine.active_stream.on_changes.items.len, plan.removal.?.removal.node_indexes.on_change_indexes.items.len) catch return error.ResourceLimit;
+                const mount_base = std.math.sub(usize, engine.active_stream.mounts.items.len, plan.removal.?.removal.node_indexes.mount_indexes.items.len) catch return error.ResourceLimit;
                 plan.publication = structural_splice.preparePublicationDeltas(
                     allocator,
                     plan.stream.render_nodes.items,
                     &.{},
-                    engine.active_stream.on_changes.items.len,
+                    on_change_base,
                     plan.stream.on_changes.items.len,
-                    engine.active_stream.mounts.items.len,
+                    mount_base,
                     plan.stream.mounts.items.len,
                 ) catch return error.OutOfMemory;
                 errdefer if (plan.publication) |*publication| publication.deinit(allocator);
@@ -4122,13 +4124,15 @@ pub fn Engine(comptime Ctx: type) type {
                 try state_retirement.reserveRetired(allocator, &plan.retired_state_cells);
                 errdefer plan.retired_state_cells.deinit(allocator);
                 try prepareRetiredStreamCapacity(engine_ptr, allocator, &plan.retired_stream, &plan.removal.?, plan.scope_retirement.?.scope_ids);
+                const on_change_base = std.math.sub(usize, engine_ptr.active_stream.on_changes.items.len, plan.removal.?.node_indexes.on_change_indexes.items.len) catch return error.ResourceLimit;
+                const mount_base = std.math.sub(usize, engine_ptr.active_stream.mounts.items.len, plan.removal.?.node_indexes.mount_indexes.items.len) catch return error.ResourceLimit;
                 plan.publication = structural_splice.preparePublicationDeltas(
                     allocator,
                     plan.replacement_stream.render_nodes.items,
                     &.{},
-                    engine_ptr.active_stream.on_changes.items.len,
+                    on_change_base,
                     plan.replacement_stream.on_changes.items.len,
-                    engine_ptr.active_stream.mounts.items.len,
+                    mount_base,
                     plan.replacement_stream.mounts.items.len,
                 ) catch return error.OutOfMemory;
                 errdefer if (plan.publication) |*publication| publication.deinit(allocator);
@@ -8483,16 +8487,7 @@ pub fn Engine(comptime Ctx: type) type {
 
             const plan = try AggregateBranchCollection.prepare(self, ctx, roc_host, selections, .{}, dirty_source_node_ids);
             defer plan.deinit();
-            // Event delivery and mount execution have additional host-side indexes;
-            // keep those cases on the legacy path until their prepared publication
-            // journal is composed into this transaction.
-            const removal = &plan.removal.?.removal.node_indexes;
-            if (plan.stream.events.items.len != 0 or plan.stream.on_changes.items.len != 0 or plan.stream.mounts.items.len != 0 or plan.stream.cleanups.items.len != 0 or
-                removal.on_change_indexes.items.len != 0 or removal.mount_indexes.items.len != 0 or removal.cleanup_indexes.items.len != 0)
-            {
-                return null;
-            }
-            const counts = plan.render_splice.?.wire.counts();
+            var counts = plan.render_splice.?.wire.counts();
             plan.commitAssumeCapacity();
             for (normalized.selected_indexes) |change_index| {
                 const change = &changes[change_index];
@@ -8500,6 +8495,10 @@ pub fn Engine(comptime Ctx: type) type {
                 change.commitPendingWhenCache(&self.active_stream.whens.items[when_index].cached_value, ctx, roc_host, &self.pending_roc_metrics);
             }
             for (normalized.subsumed_indexes) |change_index| changes[change_index].abortPendingWhenCache(ctx, roc_host, &self.pending_roc_metrics);
+            // These callbacks can allocate and trigger user effects, so they run
+            // only after the atomic engine/cache/host publication above.
+            counts.addAll(self.runActiveOnChangeInitialCommandIndices(ctx, roc_host, plan.publication.?.replacement_on_change_indices));
+            counts.addAll(self.runActiveMountCommandIndices(ctx, roc_host, plan.publication.?.replacement_mount_indices));
             return counts;
         }
 
