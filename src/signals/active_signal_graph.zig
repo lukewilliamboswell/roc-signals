@@ -190,6 +190,51 @@ pub fn prepareRouteAppends(comptime Route: type, allocator: std.mem.Allocator, r
     return .{ .replacements = replacements };
 }
 
+/// Builds sink route replacements against the dense record layout that will
+/// exist after a prepared release. Slots without a surviving old record start
+/// empty instead of inheriting routes from the old occupant of that dense ID.
+pub fn prepareRouteAppendsAfterRelease(comptime Route: type, allocator: std.mem.Allocator, routes: *const RouteTable(Route), final_record_ids: []const ?u64, final_count: usize, appends: []const RouteAppend(Route)) (std.mem.Allocator.Error || error{InvalidAppend})!PreparedRouteAppends(Route) {
+    const sorted = try allocator.dupe(RouteAppend(Route), appends);
+    defer allocator.free(sorted);
+    std.mem.sort(RouteAppend(Route), sorted, {}, struct {
+        fn lessThan(_: void, left: RouteAppend(Route), right: RouteAppend(Route)) bool {
+            return left.route_index < right.route_index;
+        }
+    }.lessThan);
+    var group_count: usize = 0;
+    for (sorted, 0..) |entry, index| {
+        if (entry.route_index >= final_count) return error.InvalidAppend;
+        if (index == 0 or entry.route_index != sorted[index - 1].route_index) group_count += 1;
+    }
+    const replacements = try allocator.alloc(PreparedRouteAppends(Route).Replacement, group_count);
+    errdefer allocator.free(replacements);
+    var written: usize = 0;
+    errdefer for (replacements[0..written]) |replacement| allocator.free(replacement.items);
+    var start: usize = 0;
+    while (start < sorted.len) {
+        var end = start + 1;
+        while (end < sorted.len and sorted[end].route_index == sorted[start].route_index) end += 1;
+        const route_index: usize = @intCast(sorted[start].route_index);
+        var survivor_old_index: ?usize = null;
+        for (final_record_ids, 0..) |final_id, old_index| if (final_id == route_index) {
+            if (survivor_old_index != null) return error.InvalidAppend;
+            survivor_old_index = old_index;
+        };
+        const existing = if (survivor_old_index) |old_index|
+            if (old_index < routes.items.len) routes.items[old_index].items else &.{}
+        else
+            &.{};
+        const merged_len = std.math.add(usize, existing.len, end - start) catch return error.InvalidAppend;
+        const merged = try allocator.alloc(Route, merged_len);
+        @memcpy(merged[0..existing.len], existing);
+        for (sorted[start..end], existing.len..) |entry, index| merged[index] = entry.value;
+        replacements[written] = .{ .route_index = @intCast(route_index), .items = merged };
+        written += 1;
+        start = end;
+    }
+    return .{ .replacements = replacements };
+}
+
 /// Merges new source routes against the post-retirement dense record mapping.
 pub fn prepareSourceRouteAppendsAfterRelease(allocator: std.mem.Allocator, routes: *const RouteTable(u64), final_record_ids: []const ?u64, final_source_count: usize, appends: []const RouteAppend(u64)) (std.mem.Allocator.Error || error{InvalidAppend})!PreparedRouteAppends(u64) {
     const sorted = try allocator.dupe(RouteAppend(u64), appends);

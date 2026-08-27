@@ -2398,7 +2398,8 @@ pub fn Engine(comptime Ctx: type) type {
                 self.prepared_nodes.ensureTotalCapacity(allocator, expected_nodes) catch return error.OutOfMemory;
                 self.prepared_render_order.ensureTotalCapacity(allocator, expected_nodes) catch return error.OutOfMemory;
                 self.prepared_attrs.ensureTotalCapacity(allocator, expected_attrs) catch return error.OutOfMemory;
-                self.prepared_signal_attrs.ensureTotalCapacity(allocator, expected_attrs) catch return error.OutOfMemory;
+                const expected_signal_descriptors = std.math.add(usize, expected_attrs, expected_nodes) catch return error.ResourceLimit;
+                self.prepared_signal_attrs.ensureTotalCapacity(allocator, expected_signal_descriptors) catch return error.OutOfMemory;
                 self.prepared_events.ensureTotalCapacity(allocator, expected_attrs) catch return error.OutOfMemory;
                 self.prepared_lifecycle.ensureTotalCapacity(allocator, expected_lifecycle) catch return error.OutOfMemory;
                 self.stream.reservePreparedLifecycle(allocator, expected_lifecycle) catch return error.OutOfMemory;
@@ -2592,7 +2593,8 @@ pub fn Engine(comptime Ctx: type) type {
                 binder_stack.ensureUnusedCapacity(allocator, 1) catch return error.OutOfMemory;
                 const site_ordinal = ordinal.*;
                 const node_id = try self.reserveNodeIdentity(scope_id, site_ordinal);
-                const prepared_site = self.stream.prepareScopeSite(allocator, node_id, scope_id, site_ordinal, parent_elem_id, .state, binder_stack.items) catch return error.OutOfMemory;
+                var prepared_site = self.stream.prepareScopeSite(allocator, node_id, scope_id, site_ordinal, parent_elem_id, .state, binder_stack.items) catch return error.OutOfMemory;
+                prepared_site.desc.render_insert_index = self.prepared_render_order.items.len;
                 errdefer prepared_site.abort(allocator);
                 self.signal_roc_host = roc_host;
                 const prepared_state = self.stream.prepareState(node_id, state.initial, state.capability, &self.engine.pending_roc_metrics);
@@ -2613,7 +2615,8 @@ pub fn Engine(comptime Ctx: type) type {
                 try self.budget.charge(0, std.math.add(usize, @sizeOf(HostNodeScopeSiteDesc), binder_bytes) catch return error.ResourceLimit);
                 const site_ordinal = ordinal.*;
                 const node_id = try self.reserveNodeIdentity(scope_id, site_ordinal);
-                const prepared = self.stream.prepareScopeSite(Ctx.allocator(self.host_ctx), node_id, scope_id, site_ordinal, parent_elem_id, .component, binder_stack) catch return error.OutOfMemory;
+                var prepared = self.stream.prepareScopeSite(Ctx.allocator(self.host_ctx), node_id, scope_id, site_ordinal, parent_elem_id, .component, binder_stack) catch return error.OutOfMemory;
+                prepared.desc.render_insert_index = self.prepared_render_order.items.len;
                 errdefer prepared.abort(Ctx.allocator(self.host_ctx));
                 const key: collection_plan.ScopeKey = .{ .parent_id = scope_id, .ordinal = site_ordinal, .kind = .component };
                 var active_id: ?u64 = null;
@@ -2643,7 +2646,8 @@ pub fn Engine(comptime Ctx: type) type {
                 try self.budget.charge(0, std.math.add(usize, @sizeOf(HostNodeScopeSiteDesc) + @sizeOf(HostNodeWhenDesc), binder_bytes) catch return error.ResourceLimit);
                 const site_ordinal = ordinal.*;
                 const node_id = try self.reserveNodeIdentity(scope_id, site_ordinal);
-                const site = self.stream.prepareScopeSite(allocator, node_id, scope_id, site_ordinal, parent_elem_id, .when, binder_stack) catch return error.OutOfMemory;
+                var site = self.stream.prepareScopeSite(allocator, node_id, scope_id, site_ordinal, parent_elem_id, .when, binder_stack) catch return error.OutOfMemory;
+                site.desc.render_insert_index = self.prepared_render_order.items.len;
                 errdefer site.abort(allocator);
                 const condition = try self.bindSignalRoot(roc_host, payload.condition.*, binder_stack);
                 var prepared = self.stream.prepareWhen(node_id, condition, payload.read, payload.when_false.*, payload.when_true.*, &self.engine.pending_roc_metrics);
@@ -3703,6 +3707,41 @@ pub fn Engine(comptime Ctx: type) type {
                 self.collection.commit();
             }
 
+            fn commitGraphAssumeCapacity(self: *@This()) void {
+                self.sink_edits.?.apply(
+                    &self.engine.active_text_signal_routes,
+                    &self.engine.active_bool_signal_routes,
+                    &self.engine.active_change_signal_routes,
+                    &self.engine.active_structural_signal_routes,
+                );
+                const release = &self.graph_release.?;
+                const append = &self.graph_append.?;
+                release.applyAdjacency(self.engine.active_signal_graph.items);
+                release.applyDense(
+                    &self.engine.active_signal_graph,
+                    &self.engine.active_source_signal_routes,
+                    &self.engine.active_text_signal_routes,
+                    &self.engine.active_bool_signal_routes,
+                    &self.engine.active_change_signal_routes,
+                    &self.engine.active_structural_signal_routes,
+                );
+                append.commitNodes(&self.engine.active_signal_graph);
+                append.commitParallelRoutes(
+                    &self.engine.active_text_signal_routes,
+                    &self.engine.active_bool_signal_routes,
+                    &self.engine.active_change_signal_routes,
+                    &self.engine.active_structural_signal_routes,
+                );
+                self.source_route_appends.?.apply(&self.engine.active_source_signal_routes, self.graph_source_route_count);
+                const graph_count = append.finalGraphCount();
+                self.text_route_appends.?.apply(&self.engine.active_text_signal_routes, graph_count);
+                self.bool_route_appends.?.apply(&self.engine.active_bool_signal_routes, graph_count);
+                self.change_route_appends.?.apply(&self.engine.active_change_signal_routes, graph_count);
+                self.structural_route_appends.?.apply(&self.engine.active_structural_signal_routes, graph_count);
+                var lifecycle = ActiveSignalGraphLifecycle{ .engine = self.engine, .ctx = self.host_ctx };
+                release.releaseRetired(Ctx.allocator(self.host_ctx), &lifecycle);
+            }
+
             fn deinit(self: *@This()) void {
                 const allocator = Ctx.allocator(self.host_ctx);
                 self.collection.deinit();
@@ -3808,10 +3847,10 @@ pub fn Engine(comptime Ctx: type) type {
                 for (source.items) |entry| source_count = @max(source_count, std.math.add(usize, @intCast(entry.route_index), 1) catch return error.ResourceLimit);
                 self.graph_source_route_count = source_count;
                 self.source_route_appends = active_graph.prepareSourceRouteAppendsAfterRelease(allocator, &self.engine.active_source_signal_routes, self.graph_release.?.final_record_ids, source_count, source.items) catch return error.OutOfMemory;
-                self.text_route_appends = active_graph.prepareRouteAppends(active_graph.TextSink, allocator, &self.engine.active_text_signal_routes, graph_count, text.items) catch return error.OutOfMemory;
-                self.bool_route_appends = active_graph.prepareRouteAppends(active_graph.BoolSink, allocator, &self.engine.active_bool_signal_routes, graph_count, bools.items) catch return error.OutOfMemory;
-                self.change_route_appends = active_graph.prepareRouteAppends(active_graph.ChangeSink, allocator, &self.engine.active_change_signal_routes, graph_count, changes.items) catch return error.OutOfMemory;
-                self.structural_route_appends = active_graph.prepareRouteAppends(active_graph.StructuralSink, allocator, &self.engine.active_structural_signal_routes, graph_count, structural.items) catch return error.OutOfMemory;
+                self.text_route_appends = active_graph.prepareRouteAppendsAfterRelease(active_graph.TextSink, allocator, &self.engine.active_text_signal_routes, self.graph_release.?.final_record_ids, graph_count, text.items) catch return error.OutOfMemory;
+                self.bool_route_appends = active_graph.prepareRouteAppendsAfterRelease(active_graph.BoolSink, allocator, &self.engine.active_bool_signal_routes, self.graph_release.?.final_record_ids, graph_count, bools.items) catch return error.OutOfMemory;
+                self.change_route_appends = active_graph.prepareRouteAppendsAfterRelease(active_graph.ChangeSink, allocator, &self.engine.active_change_signal_routes, self.graph_release.?.final_record_ids, graph_count, changes.items) catch return error.OutOfMemory;
+                self.structural_route_appends = active_graph.prepareRouteAppendsAfterRelease(active_graph.StructuralSink, allocator, &self.engine.active_structural_signal_routes, self.graph_release.?.final_record_ids, graph_count, structural.items) catch return error.OutOfMemory;
                 graph_plan.reservePublication(allocator, &self.engine.active_signal_graph) catch return error.OutOfMemory;
                 graph_plan.reserveParallelRoutes(allocator, &self.engine.active_text_signal_routes, &self.engine.active_bool_signal_routes, &self.engine.active_change_signal_routes, &self.engine.active_structural_signal_routes) catch return error.OutOfMemory;
                 try self.source_route_appends.?.reserveOuter(allocator, &self.engine.active_source_signal_routes, source_count);
@@ -9142,6 +9181,14 @@ const OwnedAggregateGraphRoot = struct {
     allocator: std.mem.Allocator,
     roc_host: *abi.RocHost,
     value_callable: abi.RocErasedCallable,
+    first_false_callable: abi.RocErasedCallable,
+    first_true_callable: abi.RocErasedCallable,
+    second_false_callable: abi.RocErasedCallable,
+    second_true_callable: abi.RocErasedCallable,
+    first_false_transform: abi.RocErasedCallable,
+    first_true_transform: abi.RocErasedCallable,
+    second_false_transform: abi.RocErasedCallable,
+    second_true_transform: abi.RocErasedCallable,
     bool_callable: abi.RocErasedCallable,
     text_callable: abi.RocErasedCallable,
     capability_callable: abi.RocErasedCallable,
@@ -9152,17 +9199,19 @@ const OwnedAggregateGraphRoot = struct {
     second_true: *abi.Elem,
     root: abi.Elem,
 
-    fn signalBranch(self: *@This(), label: []const u8) *abi.Elem {
+    fn signalBranch(self: *@This(), label: []const u8, binder: abi.RocErasedCallable, transform: abi.RocErasedCallable) *abi.Elem {
         const capability = HostValueCapability{ .clone = self.capability_callable, .drop = self.capability_callable, .eq = self.capability_callable };
         const read = HostTextRead{ .capability = capability, .read = self.text_callable };
-        const signal = boxOwnedVerifySignalExpr(self.roc_host, .{ .payload = .{ .ref = self.value_callable }, .tag = .Ref });
+        const input = boxOwnedVerifySignalExpr(self.roc_host, .{ .payload = .{ .ref = binder }, .tag = .Ref });
+        const signal = boxOwnedVerifySignalExpr(self.roc_host, .{ .payload = .{ .map = .{ ._0 = transform, ._1 = input, ._2 = transform, ._3 = capability } }, .tag = .Map });
+        decrefOwnedVerifySignalExprBox(input, self.roc_host);
         var static_text = verifyStaticText();
         static_text.payload.text = abi.RocStr.fromSlice(label, self.roc_host);
         const signal_text = abi.Elem{ .payload = .{ .text_signal = .{ .read = read, .signal = signal } }, .tag = .TextSignal };
         const element = ownedVerifyStaticRoot(self.roc_host, &.{}, &.{ static_text, signal_text });
         static_text.decref(self.roc_host);
         signal_text.decref(self.roc_host);
-        return boxOwnedVerifyElem(self.roc_host, ownedVerifyStateRoot(self.roc_host, self.value_callable, self.capability_callable, element));
+        return boxOwnedVerifyElem(self.roc_host, ownedVerifyStateRoot(self.roc_host, binder, self.capability_callable, element));
     }
 
     fn init(allocator: std.mem.Allocator, roc_host: *abi.RocHost) !*@This() {
@@ -9173,16 +9222,32 @@ const OwnedAggregateGraphRoot = struct {
         self.roc_host = roc_host;
         self.value_callable = abi.rocErasedCallableAllocate(roc_host, verifyStateCallable, null, 0) orelse return error.OutOfMemory;
         errdefer abi.decrefErasedCallable(self.value_callable, roc_host);
+        self.first_false_callable = abi.rocErasedCallableAllocate(roc_host, verifyStateCallable, null, 0) orelse return error.OutOfMemory;
+        errdefer abi.decrefErasedCallable(self.first_false_callable, roc_host);
+        self.first_true_callable = abi.rocErasedCallableAllocate(roc_host, verifyStateCallable, null, 0) orelse return error.OutOfMemory;
+        errdefer abi.decrefErasedCallable(self.first_true_callable, roc_host);
+        self.second_false_callable = abi.rocErasedCallableAllocate(roc_host, verifyStateCallable, null, 0) orelse return error.OutOfMemory;
+        errdefer abi.decrefErasedCallable(self.second_false_callable, roc_host);
+        self.second_true_callable = abi.rocErasedCallableAllocate(roc_host, verifyStateCallable, null, 0) orelse return error.OutOfMemory;
+        errdefer abi.decrefErasedCallable(self.second_true_callable, roc_host);
+        self.first_false_transform = abi.rocErasedCallableAllocate(roc_host, verifyStateCallable, null, 0) orelse return error.OutOfMemory;
+        errdefer abi.decrefErasedCallable(self.first_false_transform, roc_host);
+        self.first_true_transform = abi.rocErasedCallableAllocate(roc_host, verifyStateCallable, null, 0) orelse return error.OutOfMemory;
+        errdefer abi.decrefErasedCallable(self.first_true_transform, roc_host);
+        self.second_false_transform = abi.rocErasedCallableAllocate(roc_host, verifyStateCallable, null, 0) orelse return error.OutOfMemory;
+        errdefer abi.decrefErasedCallable(self.second_false_transform, roc_host);
+        self.second_true_transform = abi.rocErasedCallableAllocate(roc_host, verifyStateCallable, null, 0) orelse return error.OutOfMemory;
+        errdefer abi.decrefErasedCallable(self.second_true_transform, roc_host);
         self.bool_callable = abi.rocErasedCallableAllocate(roc_host, verifyBoolCallable, null, 0) orelse return error.OutOfMemory;
         errdefer abi.decrefErasedCallable(self.bool_callable, roc_host);
         self.text_callable = abi.rocErasedCallableAllocate(roc_host, verifyTextCallable, null, 0) orelse return error.OutOfMemory;
         errdefer abi.decrefErasedCallable(self.text_callable, roc_host);
         self.capability_callable = abi.rocErasedCallableAllocate(roc_host, verifyErasedCallable, null, 0) orelse return error.OutOfMemory;
         errdefer abi.decrefErasedCallable(self.capability_callable, roc_host);
-        self.first_false = self.signalBranch("first-new");
-        self.first_true = self.signalBranch("first-old");
-        self.second_false = self.signalBranch("second-new");
-        self.second_true = self.signalBranch("second-old");
+        self.first_false = self.signalBranch("first-new", self.first_false_callable, self.first_false_transform);
+        self.first_true = self.signalBranch("first-old", self.first_true_callable, self.first_true_transform);
+        self.second_false = self.signalBranch("second-new", self.second_false_callable, self.second_false_transform);
+        self.second_true = self.signalBranch("second-old", self.second_true_callable, self.second_true_transform);
         const condition_capability = HostValueCapability{ .clone = self.value_callable, .drop = self.value_callable, .eq = self.value_callable };
         const condition = abi.NodeSignalExpr{ .payload = .{ .const_value = .{ ._0 = self.value_callable, ._1 = self.value_callable, ._2 = condition_capability } }, .tag = .ConstValue };
         self.first_condition = boxOwnedVerifySignalExpr(roc_host, condition);
@@ -9205,6 +9270,14 @@ const OwnedAggregateGraphRoot = struct {
         abi.decrefErasedCallable(self.capability_callable, self.roc_host);
         abi.decrefErasedCallable(self.text_callable, self.roc_host);
         abi.decrefErasedCallable(self.bool_callable, self.roc_host);
+        abi.decrefErasedCallable(self.second_true_transform, self.roc_host);
+        abi.decrefErasedCallable(self.second_false_transform, self.roc_host);
+        abi.decrefErasedCallable(self.first_true_transform, self.roc_host);
+        abi.decrefErasedCallable(self.first_false_transform, self.roc_host);
+        abi.decrefErasedCallable(self.second_true_callable, self.roc_host);
+        abi.decrefErasedCallable(self.second_false_callable, self.roc_host);
+        abi.decrefErasedCallable(self.first_true_callable, self.roc_host);
+        abi.decrefErasedCallable(self.first_false_callable, self.roc_host);
         abi.decrefErasedCallable(self.value_callable, self.roc_host);
         self.allocator.destroy(self);
     }
@@ -9248,7 +9321,7 @@ test "owned aggregate graph root ingests two signal branches around a survivor" 
     }
 
     const expected = try Engine(VerifyCtx).countStaticRootNodes(fixture.root);
-    try std.testing.expectEqual(@as(usize, 4), expected.signal_records);
+    try std.testing.expectEqual(@as(usize, 6), expected.signal_records);
     try engine.collectStaticRootDescriptorsTransactional(&ctx, &roc_host, &stream, fixture.root, .{});
     try std.testing.expectEqual(@as(usize, 2), stream.whens.items.len);
     try std.testing.expectEqual(@as(usize, 2), stream.signal_text_nodes.items.len);
@@ -10259,79 +10332,130 @@ test "aggregate branch collection sweeps allocation failures without publication
             var ctx = VerifyCtxHost{ .allocator = fault.allocator() };
             var roc_env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
             var roc_host = abi.makeRocHost(&roc_env);
+            const fixture = try OwnedAggregateGraphRoot.init(std.testing.allocator, &roc_host);
+            defer fixture.deinit();
             var engine = Engine(VerifyCtx).init();
             defer {
+                if (engine.active_signal_graph.items.len != 0) {
+                    engine.clearActiveSignalRoutes(&ctx);
+                    engine.clearActiveSignalGraph(&ctx);
+                }
                 engine.active_stream.deinit(ctx.allocator, &ctx, &roc_host, &engine.pending_roc_metrics);
-                engine.scopes.deinit(ctx.allocator);
-                engine.dom_identities.deinit(ctx.allocator);
-                engine.active_dom_identity_ids.deinit(ctx.allocator);
-                engine.node_identities.deinit(ctx.allocator);
-                engine.active_node_identity_ids.deinit(ctx.allocator);
-                engine.states.deinit(ctx.allocator);
-                engine.state_indexes_by_node_id.deinit(ctx.allocator);
                 engine.active_signal_graph.deinit(ctx.allocator);
                 engine.active_source_signal_routes.deinit(ctx.allocator);
                 engine.active_text_signal_routes.deinit(ctx.allocator);
                 engine.active_bool_signal_routes.deinit(ctx.allocator);
                 engine.active_change_signal_routes.deinit(ctx.allocator);
                 engine.active_structural_signal_routes.deinit(ctx.allocator);
+                effects_runtime.clearPendingTasks(VerifyCtx, &ctx, ctx.allocator, &engine.pending_tasks, &roc_host);
+                effects_runtime.deinitCleanupEvents(ctx.allocator, &engine.cleanup_events);
+                for (engine.states.items) |*state| state.cell.deinit(&ctx, &roc_host, &engine.pending_roc_metrics);
+                engine.states.deinit(ctx.allocator);
+                engine.state_indexes_by_node_id.deinit(ctx.allocator);
+                engine.node_identities.deinit(ctx.allocator);
+                engine.active_node_identity_ids.deinit(ctx.allocator);
+                for (engine.scopes.items) |*scope| if (scope.active) deinitHostScopeStep(&scope.step, &ctx, &roc_host, &engine.pending_roc_metrics);
+                engine.clearEachRowSites(ctx.allocator);
+                engine.scopes.deinit(ctx.allocator);
+                engine.dom_identities.deinit(ctx.allocator);
+                engine.active_dom_identity_ids.deinit(ctx.allocator);
+                engine.deinitScratch(&ctx);
             }
-            _ = try engine.internRootScope(ctx.allocator);
-            const first_old = try engine.internWhenBranchScope(ctx.allocator, 0, 1, .false_branch);
-            const second_old = try engine.internWhenBranchScope(ctx.allocator, 0, 2, .true_branch);
-            _ = try engine.internNodeIdentity(ctx.allocator, first_old.scope_id, 0);
-            _ = try engine.internNodeIdentity(ctx.allocator, second_old.scope_id, 0);
-            _ = try engine.internDomIdentity(ctx.allocator, first_old.scope_id, 0);
-            _ = try engine.internDomIdentity(ctx.allocator, second_old.scope_id, 0);
-            var graph_record = HostSignalRecord{
-                .ref_count = 1,
-                .payload = .{ .const_value = .{ .init = @ptrFromInt(0x9000), .cap = std.mem.zeroes(HostValueCapability) } },
-                .active_graph_id = 0,
-            };
-            try engine.active_signal_graph.append(ctx.allocator, .{ .record = &graph_record });
-            const child = verifyStaticText();
+            var initial_stream: HostNodeDescriptorStream = .{};
+            try engine.collectStaticRootDescriptorsTransactional(&ctx, &roc_host, &initial_stream, fixture.root, .{});
+            engine.active_stream = initial_stream;
+            initial_stream = .{};
+            engine.roc_host = &roc_host;
+            engine.rebuildActiveSignalGraphFromStream(&ctx, &engine.active_stream);
+            try std.testing.expectEqual(@as(usize, 5), engine.active_signal_graph.items.len);
+            try std.testing.expectEqual(@as(usize, 2), engine.active_stream.whens.items.len);
+            try std.testing.expectEqual(@as(usize, 2), engine.active_stream.signal_text_nodes.items.len);
+            const first_when = engine.active_stream.whens.items[0];
+            const second_when = engine.active_stream.whens.items[1];
+            const first_site = engine.active_stream.scope_sites.items[engine.active_stream.nodeDescriptorIndex(first_when.node_id).?.scope_sites.when.get().?];
+            const second_site = engine.active_stream.scope_sites.items[engine.active_stream.nodeDescriptorIndex(second_when.node_id).?.scope_sites.when.get().?];
+            const first_old = (try engine.activeWhenBranchScopeId(first_site.scope_id, first_site.ordinal, .true_branch)).?;
+            const second_old = (try engine.activeWhenBranchScopeId(second_site.scope_id, second_site.ordinal, .true_branch)).?;
+            const old_graph_len = engine.active_signal_graph.items.len;
+            const old_first_record = engine.active_stream.signal_text_nodes.items[0].signal.record;
+            const old_second_record = engine.active_stream.signal_text_nodes.items[1].signal.record;
+            const old_first_id = old_first_record.active_graph_id.?;
+            const old_second_id = old_second_record.active_graph_id.?;
+            try std.testing.expectEqual(@as(usize, 1), engine.active_text_signal_routes.items[@intCast(old_first_id)].items.len);
+            try std.testing.expectEqual(@as(usize, 1), engine.active_text_signal_routes.items[@intCast(old_second_id)].items.len);
             const selections = [_]Engine(VerifyCtx).AggregateBranchSelection{
-                .{ .parent_scope_id = 0, .site_ordinal = 1, .parent_elem_id = 0, .retired_scope_id = first_old.scope_id, .render_insert_index = 0, .binder_bindings = &.{}, .branch = .true_branch, .elem = child },
-                .{ .parent_scope_id = 0, .site_ordinal = 2, .parent_elem_id = 0, .retired_scope_id = second_old.scope_id, .render_insert_index = 0, .binder_bindings = &.{}, .branch = .false_branch, .elem = child },
+                .{ .parent_scope_id = first_site.scope_id, .site_ordinal = first_site.ordinal, .parent_elem_id = first_site.parent_elem_id, .retired_scope_id = first_old, .render_insert_index = first_site.render_insert_index, .binder_bindings = first_site.binder_bindings, .branch = .false_branch, .elem = first_when.when_false },
+                .{ .parent_scope_id = second_site.scope_id, .site_ordinal = second_site.ordinal, .parent_elem_id = second_site.parent_elem_id, .retired_scope_id = second_old, .render_insert_index = second_site.render_insert_index, .binder_bindings = second_site.binder_bindings, .branch = .false_branch, .elem = second_when.when_false },
             };
 
             fault.configure(failure_number);
             const prepared = Engine(VerifyCtx).AggregateBranchCollection.prepare(&engine, &ctx, &roc_host, &selections, .{}, &.{}) catch |err| {
                 try std.testing.expectEqual(error.OutOfMemory, err);
-                try std.testing.expectEqual(@as(usize, 3), engine.scopes.items.len);
-                try std.testing.expectEqual(@as(usize, 2), engine.dom_identities.items.len);
-                try std.testing.expectEqual(@as(usize, 2), engine.active_dom_identity_ids.count());
-                try std.testing.expectEqual(@as(usize, 1), engine.active_signal_graph.items.len);
-                try std.testing.expectEqual(@as(?u64, 0), graph_record.active_graph_id);
+                try std.testing.expectEqual(old_graph_len, engine.active_signal_graph.items.len);
+                try std.testing.expectEqual(@as(?u64, old_first_id), old_first_record.active_graph_id);
+                try std.testing.expectEqual(@as(?u64, old_second_id), old_second_record.active_graph_id);
                 const attempts = fault.attempts;
                 fault.configure(null);
                 const retry = try Engine(VerifyCtx).AggregateBranchCollection.prepare(&engine, &ctx, &roc_host, &selections, .{}, &.{});
-                try std.testing.expectEqual(@as(usize, 3), engine.scopes.items.len);
-                try std.testing.expectEqual(@as(usize, 2), engine.dom_identities.items.len);
-                try std.testing.expectEqual(@as(usize, 2), retry.stream.text_nodes.items.len);
-                try std.testing.expectEqualSlices(u64, &.{ 3, 4 }, retry.replacement_scope_ids);
-                try std.testing.expectEqualSlices(u64, &.{ 1, 2 }, retry.scope_retirement.?.scope_ids);
-                try std.testing.expectEqualSlices(u64, &.{ 0, 1 }, retry.identity_retirements.?.node_ids);
-                try std.testing.expectEqualSlices(u64, &.{ 1, 2 }, retry.identity_retirements.?.dom_ids);
-                try std.testing.expect(retry.sink_edits != null);
-                try std.testing.expect(retry.graph_release != null);
-                try std.testing.expect(retry.graph_append != null);
-                try std.testing.expect(retry.stream.text_nodes.items[0].elem_id != retry.stream.text_nodes.items[1].elem_id);
-                retry.deinit();
+                defer retry.deinit();
+                try std.testing.expectEqual(@as(usize, 2), retry.stream.signal_text_nodes.items.len);
+                try std.testing.expect(retry.graph_release.?.steps.len != 0);
+                try std.testing.expectEqual(@as(usize, 4), retry.graph_append.?.records.len);
                 return attempts;
             };
             const attempts = fault.attempts;
-            try std.testing.expectEqual(@as(usize, 3), engine.scopes.items.len);
-            try std.testing.expectEqual(@as(usize, 2), engine.dom_identities.items.len);
-            try std.testing.expectEqual(@as(usize, 2), prepared.stream.text_nodes.items.len);
-            try std.testing.expectEqualSlices(u64, &.{ 3, 4 }, prepared.replacement_scope_ids);
-            try std.testing.expectEqualSlices(u64, &.{ 1, 2 }, prepared.scope_retirement.?.scope_ids);
-            try std.testing.expectEqualSlices(u64, &.{ 0, 1 }, prepared.identity_retirements.?.node_ids);
-            try std.testing.expectEqualSlices(u64, &.{ 1, 2 }, prepared.identity_retirements.?.dom_ids);
-            try std.testing.expect(prepared.sink_edits != null);
-            try std.testing.expect(prepared.graph_release != null);
-            try std.testing.expect(prepared.graph_append != null);
-            prepared.deinit();
+            defer prepared.deinit();
+            try std.testing.expectEqual(@as(usize, 2), prepared.stream.signal_text_nodes.items.len);
+            try std.testing.expectEqual(@as(usize, 2), prepared.removal.?.removal.descriptor_indexes.signal_text_node_indexes.items.len);
+            try std.testing.expect(prepared.graph_release.?.steps.len != 0);
+            try std.testing.expectEqual(@as(usize, 4), prepared.graph_append.?.records.len);
+            const first_new = prepared.stream.signal_text_nodes.items[0].signal.record;
+            const second_new = prepared.stream.signal_text_nodes.items[1].signal.record;
+            const first_input = switch (first_new.payload) {
+                .map => |payload| payload.input,
+                else => return error.TestUnexpectedResult,
+            };
+            const second_input = switch (second_new.payload) {
+                .map => |payload| payload.input,
+                else => return error.TestUnexpectedResult,
+            };
+            const first_new_id = prepared.graph_append.?.plannedRecordId(engine.active_signal_graph.items, first_new).?;
+            const second_new_id = prepared.graph_append.?.plannedRecordId(engine.active_signal_graph.items, second_new).?;
+            const first_input_id = prepared.graph_append.?.plannedRecordId(engine.active_signal_graph.items, first_input).?;
+            const second_input_id = prepared.graph_append.?.plannedRecordId(engine.active_signal_graph.items, second_input).?;
+            try std.testing.expect(first_new_id != second_new_id);
+            const first_refs = first_new.ref_count;
+            const second_refs = second_new.ref_count;
+            const first_input_refs = first_input.ref_count;
+            const second_input_refs = second_input.ref_count;
+            fault.configure(1);
+            prepared.commitGraphAssumeCapacity();
+            try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+            try std.testing.expectEqual(old_graph_len, engine.active_signal_graph.items.len);
+            try std.testing.expectEqual(@as(?u64, null), old_first_record.active_graph_id);
+            try std.testing.expectEqual(@as(?u64, null), old_second_record.active_graph_id);
+            try std.testing.expectEqual(@as(?u64, first_new_id), first_new.active_graph_id);
+            try std.testing.expectEqual(@as(?u64, second_new_id), second_new.active_graph_id);
+            try std.testing.expectEqual(first_refs + 1, first_new.ref_count);
+            try std.testing.expectEqual(second_refs + 1, second_new.ref_count);
+            try std.testing.expectEqual(first_input_refs + 1, first_input.ref_count);
+            try std.testing.expectEqual(second_input_refs + 1, second_input.ref_count);
+            try std.testing.expectEqual(@as(u64, 1), active_graph.rank(HostSignalRecord, engine.active_signal_graph.items, first_new_id));
+            try std.testing.expectEqual(@as(u64, 1), active_graph.rank(HostSignalRecord, engine.active_signal_graph.items, second_new_id));
+            try std.testing.expect(std.mem.indexOfScalar(u64, active_graph.dependentIds(HostSignalRecord, engine.active_signal_graph.items, first_input_id), first_new_id) != null);
+            try std.testing.expect(std.mem.indexOfScalar(u64, active_graph.dependentIds(HostSignalRecord, engine.active_signal_graph.items, second_input_id), second_new_id) != null);
+            const first_source_id = switch (first_input.payload) {
+                .ref => |source_id| source_id,
+                else => return error.TestUnexpectedResult,
+            };
+            const second_source_id = switch (second_input.payload) {
+                .ref => |source_id| source_id,
+                else => return error.TestUnexpectedResult,
+            };
+            try std.testing.expect(std.mem.indexOfScalar(u64, engine.active_source_signal_routes.items[@intCast(first_source_id)].items, first_input_id) != null);
+            try std.testing.expect(std.mem.indexOfScalar(u64, engine.active_source_signal_routes.items[@intCast(second_source_id)].items, second_input_id) != null);
+            try std.testing.expectEqual(@as(usize, 1), engine.active_text_signal_routes.items[@intCast(first_new_id)].items.len);
+            try std.testing.expectEqual(@as(usize, 1), engine.active_text_signal_routes.items[@intCast(second_new_id)].items.len);
             return attempts;
         }
     };
