@@ -7509,7 +7509,10 @@ pub fn Engine(comptime Ctx: type) type {
             if (dirty_generation == 0) @panic("prepared dirty signal evaluation used generation 0");
             if (overlay.rememberedResult(@ptrCast(record))) |changed| {
                 const slot = record.cachedSlot() orelse switch (record.payload) {
-                    .ref => |node_id| return .{ .value = Ctx.stateValueByNodeId(ctx, node_id), .changed = changed },
+                    .ref => |node_id| return .{
+                        .value = if (overlay.provisionalValue(@ptrCast(record))) |cell| Ctx.cloneHostValue(ctx, cell.value) else Ctx.stateValueByNodeId(ctx, node_id),
+                        .changed = changed,
+                    },
                     else => unreachable,
                 };
                 return .{ .value = self.cloneCachedSignalValue(ctx, overlay.readSlot(slot)), .changed = changed };
@@ -7517,7 +7520,7 @@ pub fn Engine(comptime Ctx: type) type {
 
             const result: HostSignalEvalResult = switch (record.payload) {
                 .ref => |node_id| .{
-                    .value = Ctx.stateValueByNodeId(ctx, node_id),
+                    .value = if (overlay.provisionalValue(@ptrCast(record))) |cell| Ctx.cloneHostValue(ctx, cell.value) else Ctx.stateValueByNodeId(ctx, node_id),
                     .changed = u64SliceContains(dirty_source_node_ids, node_id),
                 },
                 .const_value => |*payload| blk: {
@@ -10014,14 +10017,89 @@ pub fn Engine(comptime Ctx: type) type {
             return transaction.commit();
         }
 
+        /// Prepares and publishes an owned state value atomically after the
+        /// reducer callback has returned across the fatal Roc boundary.
+        pub fn tryDispatchStateValue(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, node_id: u64, value: HostValue, cap: HostValueCapability) CollectionError!render.Counts {
+            const transaction = try PreparedSourceTransaction.prepareState(self, ctx, roc_host, node_id, value, cap) orelse return .{};
+            defer transaction.deinit();
+            var metrics = self.pending_roc_metrics;
+            metrics.bump(.dirty_source_roots, transaction.root_count);
+            self.pending_roc_metrics = metrics;
+            return transaction.commit();
+        }
+
+        /// Publishes an owned state value or terminates on unrecoverable host
+        /// preparation failure at the infallible production boundary.
+        pub fn dispatchStateValue(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, node_id: u64, value: HostValue, cap: HostValueCapability) render.Counts {
+            return self.tryDispatchStateValue(ctx, roc_host, node_id, value, cap) catch @panic("failed to prepare atomic state transaction");
+        }
+
+        /// Prepares a task-source update while retaining its pending registry
+        /// entry until the allocation-free transaction commit.
+        pub fn tryDispatchTaskSourceValue(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, request_id: u64, record: *HostSignalRecord, value: HostValue) CollectionError!render.Counts {
+            const cap = record.requireTaskSource().cap;
+            const pending_index = self.pendingTaskIndexByRequestId(request_id) orelse {
+                callHostValueToUnitWithCapability(ctx, roc_host, cap, hv.hostValueCapabilityDrop(cap), value);
+                return error.ResourceLimit;
+            };
+            if (self.pending_tasks.items[pending_index].task_token != record.token().?) {
+                callHostValueToUnitWithCapability(ctx, roc_host, cap, hv.hostValueCapabilityDrop(cap), value);
+                return error.ResourceLimit;
+            }
+            const transaction = try PreparedSourceTransaction.prepare(self, ctx, roc_host, record, value) orelse {
+                var pending = self.removePendingTaskAt(pending_index);
+                if (comptime @hasDecl(Ctx, "noteTaskResolved")) Ctx.noteTaskResolved(ctx, request_id);
+                self.deinitPendingTask(ctx, &pending);
+                return .{};
+            };
+            defer transaction.deinit();
+            transaction.pending_task_request_id = request_id;
+            transaction.pending_task_token = record.token().?;
+            var metrics = self.pending_roc_metrics;
+            metrics.bump(.dirty_source_roots, transaction.root_count);
+            self.pending_roc_metrics = metrics;
+            return transaction.commit();
+        }
+
+        /// Publishes a task result or terminates if recoverable host preparation
+        /// cannot complete at this infallible host entrypoint.
+        pub fn dispatchTaskSourceValue(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, request_id: u64, record: *HostSignalRecord, value: HostValue) render.Counts {
+            return self.tryDispatchTaskSourceValue(ctx, roc_host, request_id, record, value) catch @panic("failed to prepare atomic task settlement");
+        }
+
         const PreparedSourceTransaction = struct {
             const HostRenderPublication = if (@hasDecl(Ctx, "RenderPublication")) Ctx.RenderPublication else void;
+            const PreparedStateUpdate = struct {
+                live: *HostState,
+                next: HostValueCell,
+                displaced: ?HostValueCell = null,
+                committed: bool = false,
+
+                fn commit(self: *@This()) void {
+                    if (self.committed) @panic("prepared state update committed twice");
+                    self.displaced = self.live.cell;
+                    self.live.cell = self.next;
+                    self.live.version += 1;
+                    self.committed = true;
+                }
+
+                fn deinit(self: *@This(), ctx: Ctx.Handle, roc_host: *abi.RocHost, metrics: anytype) void {
+                    if (self.committed) {
+                        self.displaced.?.deinit(ctx, roc_host, metrics);
+                    } else {
+                        self.next.deinit(ctx, roc_host, metrics);
+                    }
+                }
+            };
             engine: *Self,
             host_ctx: Ctx.Handle,
             roc_host: *abi.RocHost,
             generation: u64,
             root_count: u64,
             caches: signal_records.PreparedCacheUpdates,
+            state_update: ?PreparedStateUpdate = null,
+            pending_task_request_id: ?u64 = null,
+            pending_task_token: ?HostSignalToken = null,
             changed_record_ids: []u64,
             render_splice: ?render_cache_mod.PreparedRenderSplice(Ctx) = null,
             structural_changes: []HostDirtyStructuralSignal = &.{},
@@ -10085,8 +10163,33 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             fn prepareMany(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, owned: *signal_records.OwnedSourceUpdates) CollectionError!?*@This() {
+                return prepareRoots(engine, ctx, roc_host, owned, null);
+            }
+
+            fn prepareState(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, node_id: u64, incoming: HostValue, cap: HostValueCapability) CollectionError!?*@This() {
+                const state_index = engine.stateIndexByNodeId(node_id) orelse {
+                    callHostValueToUnitWithCapability(ctx, roc_host, cap, hv.hostValueCapabilityDrop(cap), incoming);
+                    return error.ResourceLimit;
+                };
+                const live = &engine.states.items[state_index];
+                assertHostValueCapabilitiesMatch(live.cell.cap, cap, "prepared state update used the wrong value capability");
+                if (live.cell.valueEqualsIncoming(ctx, roc_host, incoming, cap)) {
+                    callHostValueToUnitWithCapability(ctx, roc_host, cap, hv.hostValueCapabilityDrop(cap), incoming);
+                    engine.recordSignalPrune();
+                    return null;
+                }
+                var state_update = PreparedStateUpdate{ .live = live, .next = HostValueCell.initRetained(incoming, cap, &engine.pending_roc_metrics) };
+                errdefer state_update.deinit(ctx, roc_host, &engine.pending_roc_metrics);
+                var owned = signal_records.OwnedSourceUpdates.init(Ctx.allocator(ctx), 0) catch return error.OutOfMemory;
+                defer owned.deinit(ctx, roc_host, &engine.pending_roc_metrics);
+                const plan = try prepareRoots(engine, ctx, roc_host, &owned, &state_update);
+                if (plan != null) state_update = undefined;
+                return plan;
+            }
+
+            fn prepareRoots(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, owned: *signal_records.OwnedSourceUpdates, state_update: ?*PreparedStateUpdate) CollectionError!?*@This() {
                 const allocator = Ctx.allocator(ctx);
-                if (owned.entries.items.len == 0) return null;
+                if (owned.entries.items.len == 0 and state_update == null) return null;
                 const generation = std.math.add(u64, engine.dirty_signal_generation, 1) catch return error.ResourceLimit;
                 var expected = engine.active_signal_graph.items.len;
                 for (engine.active_text_signal_routes.items) |routes| expected = std.math.add(usize, expected, routes.items.len) catch return error.ResourceLimit;
@@ -10114,32 +10217,49 @@ pub fn Engine(comptime Ctx: type) type {
                     caches.rememberResultAssumeCapacity(@ptrCast(entry.record), generation, true);
                     root_record_ids.appendAssumeCapacity(engine.requireActiveSignalRecordId(entry.record));
                 }
-                if (root_record_ids.items.len == 0) {
+                if (root_record_ids.items.len == 0 and state_update == null) {
                     caches.deinit(ctx, roc_host, &engine.pending_roc_metrics);
                     allocator.destroy(plan);
                     return null;
                 }
                 engine.scratch.dirty_active_records.reserveForGraph(HostSignalRecord, allocator, engine.active_signal_graph.items) catch return error.OutOfMemory;
-                const dirty_ids = engine.scratchDirtyActiveSignalRecordIdsForRoots(ctx, root_record_ids.items);
-                const changed = try engine.prepareChangedActiveSignalRecordIds(ctx, roc_host, &caches, dirty_ids, &.{}, generation);
+                const state_node_ids: []const u64 = if (state_update) |update| @as(*const [1]u64, @ptrCast(&update.live.state_id)) else &.{};
+                const dirty_ids = if (state_update != null)
+                    engine.scratchDirtyActiveSignalRecordIdsForSources(ctx, state_node_ids)
+                else
+                    engine.scratchDirtyActiveSignalRecordIdsForRoots(ctx, root_record_ids.items);
+                if (state_update) |update| {
+                    for (dirty_ids) |record_id| {
+                        const record = engine.active_signal_graph.items[@intCast(record_id)].record;
+                        switch (record.payload) {
+                            .ref => |ref_node_id| if (ref_node_id == update.live.state_id) {
+                                caches.bindProvisionalValueAssumeCapacity(@ptrCast(record), &update.next);
+                                caches.rememberResultAssumeCapacity(@ptrCast(record), generation, true);
+                            },
+                            else => {},
+                        }
+                    }
+                }
+                const changed = try engine.prepareChangedActiveSignalRecordIds(ctx, roc_host, &caches, dirty_ids, state_node_ids, generation);
                 errdefer allocator.free(changed);
-                var splice = try engine.prepareNonStructuralRenderSplice(ctx, roc_host, &caches, changed, &.{}, generation);
+                var splice = try engine.prepareNonStructuralRenderSplice(ctx, roc_host, &caches, changed, state_node_ids, generation);
                 errdefer splice.deinit();
-                const structural_changes = try engine.collectPreparedDirtyStructuralSignals(ctx, roc_host, allocator, &caches, changed, &.{}, generation);
+                const structural_changes = try engine.collectPreparedDirtyStructuralSignals(ctx, roc_host, allocator, &caches, changed, state_node_ids, generation);
                 errdefer allocator.free(structural_changes);
                 plan.* = .{
                     .engine = engine,
                     .host_ctx = ctx,
                     .roc_host = roc_host,
                     .generation = generation,
-                    .root_count = @intCast(root_record_ids.items.len),
+                    .root_count = if (state_update != null) 1 else @intCast(root_record_ids.items.len),
                     .caches = caches,
+                    .state_update = null,
                     .changed_record_ids = changed,
                     .render_splice = splice,
                     .structural_changes = structural_changes,
                     .batch_target = undefined,
                 };
-                engine.prepareOnChangeCommands(ctx, roc_host, &plan.caches, changed, &.{}, generation, &plan.pending_on_change_commands) catch |err| return err;
+                engine.prepareOnChangeCommands(ctx, roc_host, &plan.caches, changed, state_node_ids, generation, &plan.pending_on_change_commands) catch |err| return err;
                 errdefer {
                     for (plan.pending_on_change_commands.items) |pending| pending.cmd.decref(roc_host);
                     plan.pending_on_change_commands.deinit(allocator);
@@ -10172,6 +10292,10 @@ pub fn Engine(comptime Ctx: type) type {
                     try plan.structural_downstream.?.adoptScalarRenderSplice(&plan.render_splice.?);
                     plan.render_splice.?.deinit();
                     plan.render_splice = null;
+                    if (state_update) |update| {
+                        plan.caches.clearProvisionalValues();
+                        plan.state_update = update.*;
+                    }
                     return plan;
                 }
                 plan.batch_target = if (comptime @hasDecl(Ctx, "renderCommandBatch")) Ctx.renderCommandBatch(ctx) else &plan.fallback_batch;
@@ -10187,6 +10311,10 @@ pub fn Engine(comptime Ctx: type) type {
                         error.OutOfMemory => return error.OutOfMemory,
                         error.ResourceLimit => return error.ResourceLimit,
                     };
+                }
+                if (state_update) |update| {
+                    plan.caches.clearProvisionalValues();
+                    plan.state_update = update.*;
                 }
                 return plan;
             }
@@ -10234,7 +10362,18 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             fn commitSourceCaches(self: *@This()) void {
+                const pending_index = if (self.pending_task_request_id) |request_id| blk: {
+                    const index = self.engine.pendingTaskIndexByRequestId(request_id) orelse @panic("prepared task settlement disappeared before commit");
+                    if (self.engine.pending_tasks.items[index].task_token != self.pending_task_token.?) @panic("prepared task settlement changed source token before commit");
+                    break :blk index;
+                } else null;
+                if (self.state_update) |*update| update.commit();
                 self.engine.commitPreparedDirtySignalCaches(&self.caches);
+                if (self.pending_task_request_id) |request_id| {
+                    var pending = self.engine.removePendingTaskAt(pending_index.?);
+                    if (comptime @hasDecl(Ctx, "noteTaskResolved")) Ctx.noteTaskResolved(self.host_ctx, request_id);
+                    self.engine.deinitPendingTask(self.host_ctx, &pending);
+                }
                 self.engine.dirty_signal_generation = self.generation;
                 self.engine.identity_reuse_barrier = self.generation;
                 self.engine.recordDispatch();
@@ -10267,6 +10406,7 @@ pub fn Engine(comptime Ctx: type) type {
                 allocator.free(self.structural_changes);
                 allocator.free(self.changed_record_ids);
                 self.caches.deinit(self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
+                if (self.state_update) |*update| update.deinit(self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
                 self.fallback_batch.deinit(allocator);
                 allocator.destroy(self);
             }
@@ -10457,21 +10597,7 @@ pub fn Engine(comptime Ctx: type) type {
             const state_cap = Ctx.stateCapability(ctx, target_node_id);
             assertHostValueCapabilitiesMatch(cmd.update.capability, state_cap, "state command value capability did not match its target state");
 
-            if (!Ctx.updateStateValue(ctx, roc_host, target_node_id, cmd.update.value)) {
-                self.recordSignalPrune();
-                return .{};
-            }
-
-            self.recordDispatch();
-            var metrics = self.pending_roc_metrics;
-            metrics.bump(.dirty_source_roots, 1);
-            self.pending_roc_metrics = metrics;
-
-            const dirty_source_node_ids = [_]u64{target_node_id};
-            const dirty_generation = self.nextDirtySignalGeneration();
-            const dirty_record_ids = self.scratchDirtyActiveSignalRecordIdsForSources(ctx, &dirty_source_node_ids);
-            const changed_record_ids = self.propagateDirtyActiveSignalRecordIds(ctx, roc_host, dirty_record_ids, &dirty_source_node_ids, dirty_generation);
-            return self.applyDirtySignalBatch(ctx, roc_host, &dirty_source_node_ids, changed_record_ids, dirty_generation);
+            return self.dispatchStateValue(ctx, roc_host, target_node_id, cmd.update.value, state_cap);
         }
 
         /// Runs command using the host semantics and measurement boundaries defined by this module.

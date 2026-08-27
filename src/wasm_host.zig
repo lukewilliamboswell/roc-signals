@@ -988,8 +988,6 @@ fn dispatchEvent(desc: HostActiveEventDesc, payload: HostValue) void {
     setHostValueCapability(payload, payload_cap);
     defer callHostValueToUnitWithCapability(payload_cap, hv.hostValueCapabilityDrop(payload_cap), payload);
 
-    shared_engine.recordDispatch();
-
     const current = currentStateValue(desc.target_node_id);
     const state_cap = shared_engine.stateCapability(desc.target_node_id) catch failHost();
     defer callHostValueToUnitWithCapability(state_cap, hv.hostValueCapabilityDrop(state_cap), current);
@@ -997,13 +995,7 @@ fn dispatchEvent(desc: HostActiveEventDesc, payload: HostValue) void {
     const read_cap = shared_engine.stateCapability(desc.read_node_id) catch failHost();
     defer callHostValueToUnitWithCapability(read_cap, hv.hostValueCapabilityDrop(read_cap), read);
     const next = callHostValueHostValueHostValueToHostValueWithCapabilities(state_cap, read_cap, payload_cap, desc.payload_reducer.transform, current, read, payload);
-    if (!updateStateCell(desc.target_node_id, next)) return;
-
-    const dirty_source_node_ids = [_]u64{desc.target_node_id};
-    const dirty_generation = shared_engine.nextDirtySignalGeneration();
-
-    const changed_record_ids = shared_engine.propagateDirtyActiveSignals(ctx, &roc_host, allocator(), &dirty_source_node_ids, dirty_generation);
-    _ = shared_engine.applyDirtySignalBatch(ctx, &roc_host, &dirty_source_node_ids, changed_record_ids, dirty_generation);
+    _ = shared_engine.dispatchStateValue(ctx, &roc_host, desc.target_node_id, next, state_cap);
 }
 
 fn resolveTask(request_id: u64, payload_text: []const u8, failed: bool) void {
@@ -1018,8 +1010,7 @@ fn resolveTask(request_id: u64, payload_text: []const u8, failed: bool) void {
         },
         .unknown => failHostWith("task result had no matching pending request"),
     };
-    var pending = shared_engine.removePendingTaskAt(pending_index);
-    defer shared_engine.deinitPendingTask(ctx, &pending);
+    const pending = shared_engine.pending_tasks.items[pending_index];
 
     const record = shared_engine.activeTaskRecordByToken(pending.task_token) orelse failHostWith("task result matched no active task source");
     const task_payload = switch (record.payload) {
@@ -1040,7 +1031,7 @@ fn resolveTask(request_id: u64, payload_text: []const u8, failed: bool) void {
         callHostValueToHostValueWithCapability(task_payload.payload_cap, task_payload.done, payload);
     assertHostValueTakenAfter(payload, payload_take_epoch);
     roc_allocation_phase = .task_dispatch;
-    _ = shared_engine.dispatchEffectSourceValue(ctx, &roc_host, record, next);
+    _ = shared_engine.dispatchTaskSourceValue(ctx, &roc_host, pending.request_id, record, next);
 }
 
 fn tickInterval(token: u64) void {

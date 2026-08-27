@@ -280,6 +280,11 @@ const NativeCtx = struct {
         return ctx.updateStateValue(roc_host, node_id, value);
     }
 
+    /// Marks a task request settled when its prepared source transaction commits.
+    pub fn noteTaskResolved(ctx: Handle, request_id: u64) void {
+        ctx.noteTaskResolved(request_id);
+    }
+
     /// Materializes the mount-time browser location through the source's owning capability.
     pub fn initialLocationPayload(ctx: Handle, roc_host: *abi.RocHost, cap: HostValueCapability) HostValue {
         return ctx.initialLocationPayload(roc_host, cap);
@@ -2120,9 +2125,7 @@ fn updateDirtySignalCache(host: *HostEnv, roc_host: *abi.RocHost, cache_slot: *H
 
 fn resolvePendingTask(host: *HostEnv, roc_host: *abi.RocHost, name: []const u8, payload_text: []const u8, failed: bool) CommandCounts {
     const pending_index = host.engine.pendingTaskIndexByName(name) orelse failHost("fake task result had no matching pending request");
-    var pending = host.engine.removePendingTaskAt(pending_index);
-    host.noteTaskResolved(pending.request_id);
-    defer host.engine.deinitPendingTask(host, &pending);
+    const pending = host.engine.pending_tasks.items[pending_index];
 
     const record = host.engine.activeTaskRecordByToken(pending.task_token) orelse failHost("fake task result matched no active task source");
     const task_payload = switch (record.payload) {
@@ -2140,7 +2143,7 @@ fn resolvePendingTask(host: *HostEnv, roc_host: *abi.RocHost, name: []const u8, 
     else
         callHostValueToHostValueWithCapability(host, roc_host, task_payload.payload_cap, task_payload.done, payload_value);
     host.assertHostValueTakenAfter(payload_value, payload_take_epoch);
-    return host.engine.dispatchEffectSourceValue(host, roc_host, record, next);
+    return host.engine.dispatchTaskSourceValue(host, roc_host, pending.request_id, record, next);
 }
 
 fn resolveStalePendingTask(host: *HostEnv, name: []const u8, _: []const u8, _: bool) CommandCounts {
@@ -2436,14 +2439,6 @@ fn dispatchRocEventWithStats(host: *HostEnv, roc_host: *abi.RocHost, event_id: u
         callHostValueToUnitWithCapability(host, roc_host, payload_cap, hv.hostValueCapabilityDrop(payload_cap), payload);
     }
 
-    host.recordDispatch();
-
-    // A reducer call is not a derived signal evaluation, so it must not inflate
-    // derived_calls_into_roc. Dispatches are already counted by events_processed.
-    var metrics = host.engine.pending_roc_metrics;
-    metrics.bump(.dirty_source_roots, 1);
-    host.engine.pending_roc_metrics = metrics;
-
     const start_ns = benchmark.nowNs();
     const current = host.stateValueByNodeId(desc.target_node_id);
     const state_cap = host.stateCapability(desc.target_node_id);
@@ -2460,33 +2455,12 @@ fn dispatchRocEventWithStats(host: *HostEnv, roc_host: *abi.RocHost, event_id: u
     const next = callHostValueHostValueHostValueToHostValueWithCapabilities(host, roc_host, state_cap, read_cap, payload_cap, desc.payload_reducer.transform, current, read, payload);
     if (stats) |s| s.dispatch_roc_ns += benchmark.nowNs() - start_ns;
 
-    const changed = host.updateStateValue(roc_host, desc.target_node_id, next);
-    if (!changed) {
-        var prune_metrics = host.engine.pending_roc_metrics;
-        prune_metrics.bump(.propagation_prunes, 1);
-        host.engine.pending_roc_metrics = prune_metrics;
-        if (stats) |s| s.actions += 1;
-        return;
-    }
-
+    const apply_start_ns = benchmark.nowNs();
+    const counts = host.engine.dispatchStateValue(host, roc_host, desc.target_node_id, next, state_cap);
     if (stats) |s| {
-        const dirty_source_node_ids = [_]u64{desc.target_node_id};
-        const dirty_generation = host.nextDirtySignalGeneration();
-        const changed_record_ids = propagateDirtyActiveSignals(host, roc_host, host.hostAllocator(), &dirty_source_node_ids, dirty_generation);
-        const stable_changed_record_ids = host.hostAllocator().dupe(u64, changed_record_ids) catch @panic("out of memory");
-        defer host.hostAllocator().free(stable_changed_record_ids);
-        const apply_start_ns = benchmark.nowNs();
-        const counts = host.engine.applyDirtySignalBatch(host, roc_host, &dirty_source_node_ids, stable_changed_record_ids, dirty_generation);
         s.dispatch_apply_ns += benchmark.nowNs() - apply_start_ns;
         s.commands.addAll(counts);
         s.actions += 1;
-    } else {
-        const dirty_source_node_ids = [_]u64{desc.target_node_id};
-        const dirty_generation = host.nextDirtySignalGeneration();
-        const changed_record_ids = propagateDirtyActiveSignals(host, roc_host, host.hostAllocator(), &dirty_source_node_ids, dirty_generation);
-        const stable_changed_record_ids = host.hostAllocator().dupe(u64, changed_record_ids) catch @panic("out of memory");
-        defer host.hostAllocator().free(stable_changed_record_ids);
-        _ = host.engine.applyDirtySignalBatch(host, roc_host, &dirty_source_node_ids, stable_changed_record_ids, dirty_generation);
     }
 }
 
@@ -3641,6 +3615,19 @@ test "native Roc ABI allocation failures terminate in a subprocess" {
             const original = rocAllocFn(&roc_host, 32, 8) orelse unreachable;
             host.configureAllocationFailure(1);
             _ = rocReallocFn(&roc_host, original, 64, 8);
+        } else if (std.mem.eql(u8, mode, "event_callback")) {
+            const cap = testHostValueCapability(&roc_host);
+            const reducer = writeTestErasedCallable(TestErasedI64Capture, &roc_host, &testUnitIncrementHostValueCallable, &testErasedCallableOnDrop, .{ .amount = 0 });
+            const current = testHostValueI64(1);
+            const payload = testHostValueUnit();
+            host.configureAllocationFailure(1);
+            _ = callHostValueHostValueHostValueToHostValueWithCapabilities(&host, &roc_host, cap, cap, cap, reducer, current, current, payload);
+        } else if (std.mem.eql(u8, mode, "task_callback")) {
+            const cap = testHostValueCapability(&roc_host);
+            const transform = writeTestErasedCallable(TestErasedI64Capture, &roc_host, &testStableStrHostValueCallable, &testErasedCallableOnDrop, .{ .amount = 0 });
+            const payload = testHostValueI64(1);
+            host.configureAllocationFailure(1);
+            _ = callHostValueToHostValueWithCapability(&host, &roc_host, cap, transform, payload);
         } else unreachable;
         unreachable;
     }
@@ -3648,6 +3635,8 @@ test "native Roc ABI allocation failures terminate in a subprocess" {
     for ([_]struct { mode: []const u8, diagnostic: []const u8 }{
         .{ .mode = "alloc", .diagnostic = "HOST ERROR: Roc allocation failed\n" },
         .{ .mode = "realloc", .diagnostic = "HOST ERROR: Roc reallocation failed\n" },
+        .{ .mode = "event_callback", .diagnostic = "HOST ERROR: Roc allocation failed\n" },
+        .{ .mode = "task_callback", .diagnostic = "HOST ERROR: Roc allocation failed\n" },
     }) |case| {
         var environment = try std.testing.environ.createMap(std.testing.allocator);
         defer environment.deinit();
@@ -4655,6 +4644,76 @@ test "signals host task result callbacks consume heap string payloads" {
     _ = resolvePendingTask(&host, &roc_host, "lookup", failed_payload, true);
     try expectCachedTaskSourceText(&roc_host, record, failed_payload);
     try std.testing.expectEqual(@as(usize, 0), host.engine.pending_tasks.items.len);
+}
+
+test "task settlement sweeps host OOM without consuming pending ownership" {
+    const Runner = struct {
+        fn run(failure_number: ?usize) !usize {
+            var host = HostEnv.init();
+            var roc_host = makeSignalsRocHost(&host);
+            host.engine.roc_host = &roc_host;
+            defer {
+                host.deinit();
+                _ = host.gpa.deinit();
+            }
+            const task = testNodeTaskSourceExpr(&roc_host, "lookup", "loading", false);
+            const root = testElement(&roc_host, &.{testNodeTextSignal(&roc_host, task)});
+            defer root.decref(&roc_host);
+            var stream: HostNodeDescriptorStream = .{};
+            host.collectActiveElemRootDescriptors(&roc_host, &stream, root, &.{});
+            _ = applyNodeDescriptorStream(&host, &roc_host, &stream);
+            host.engine.active_stream = stream;
+            const record = host.engine.activeTaskRecordByName("lookup").?;
+            const request_id = host.engine.appendPendingTask(&host, 0, record.token().?, "lookup", "/api/test");
+            const source_before = record.requireTaskSource().cached_value.present.value;
+            const generation_before = host.engine.dirty_signal_generation;
+            const graph_len_before = host.engine.active_signal_graph.items.len;
+            const dom_len_before = host.dom_elements.items.len;
+            const allocations_before = host.roc_allocations.snapshot();
+
+            const next = hostValueStrWithCapability(&host, &roc_host, "done", record.requireTaskSource().cap);
+            var fault = FaultAllocator.init(host.gpa.allocator());
+            fault.configure(failure_number);
+            host.engine_allocator_override = fault.allocator();
+            const result = host.engine.tryDispatchTaskSourceValue(&host, &roc_host, request_id, record, next);
+            const attempts = fault.attempts;
+            if (failure_number != null) {
+                try std.testing.expectError(error.OutOfMemory, result);
+                try std.testing.expectEqual(@as(usize, 1), fault.induced_failures);
+                try std.testing.expectEqual(@as(usize, 1), host.engine.pending_tasks.items.len);
+                try std.testing.expectEqual(request_id, host.engine.pending_tasks.items[0].request_id);
+                try std.testing.expectEqual(source_before, record.requireTaskSource().cached_value.present.value);
+                try std.testing.expectEqual(generation_before, host.engine.dirty_signal_generation);
+                try std.testing.expectEqual(graph_len_before, host.engine.active_signal_graph.items.len);
+                try std.testing.expectEqual(dom_len_before, host.dom_elements.items.len);
+                try std.testing.expect(activeTextElementId(&host, "loading") != null);
+                try std.testing.expectEqual(@as(usize, 0), host.roc_allocations.liveCountSince(allocations_before));
+                fault.configure(null);
+                _ = try host.engine.tryDispatchTaskSourceValue(&host, &roc_host, request_id, record, hostValueStrWithCapability(&host, &roc_host, "done", record.requireTaskSource().cap));
+            } else {
+                _ = try result;
+            }
+            try std.testing.expectEqual(@as(usize, 0), host.engine.pending_tasks.items.len);
+            try std.testing.expect(activeTextElementId(&host, "done") != null);
+            try std.testing.expectEqual(engine.TaskResolutionClass.superseded, host.engine.classifyTaskResolution(request_id));
+            const equal_request_id = host.engine.appendPendingTask(&host, 0, record.token().?, "lookup", "/api/equal");
+            const generation_after_change = host.engine.dirty_signal_generation;
+            const equal_counts = try host.engine.tryDispatchTaskSourceValue(&host, &roc_host, equal_request_id, record, hostValueStrWithCapability(&host, &roc_host, "done", record.requireTaskSource().cap));
+            try std.testing.expectEqual(@as(u64, 0), equal_counts.total);
+            try std.testing.expectEqual(generation_after_change, host.engine.dirty_signal_generation);
+            try std.testing.expectEqual(@as(usize, 0), host.engine.pending_tasks.items.len);
+            try std.testing.expectEqual(engine.TaskResolutionClass.superseded, host.engine.classifyTaskResolution(equal_request_id));
+            try std.testing.expectError(error.ResourceLimit, host.engine.tryDispatchTaskSourceValue(&host, &roc_host, equal_request_id, record, hostValueStrWithCapability(&host, &roc_host, "duplicate", record.requireTaskSource().cap)));
+            try std.testing.expectEqual(generation_after_change, host.engine.dirty_signal_generation);
+            try std.testing.expectEqual(@as(usize, 0), host.engine.pending_tasks.items.len);
+            try std.testing.expect(activeTextElementId(&host, "done") != null);
+            return attempts;
+        }
+    };
+
+    const attempts = try Runner.run(null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
 test "native task resolution uses the pending source token when active names repeat" {
@@ -5768,6 +5827,69 @@ test "list source each transaction sweeps host OOM and retries without publicati
             try std.testing.expect(activeTextElementId(&host, "row-2-2") != null);
             try std.testing.expect(activeTextElementId(&host, "row-3-3") != null);
             try std.testing.expect(activeTextElementId(&host, "row-4-4") != null);
+            return attempts;
+        }
+    };
+
+    const attempts = try Runner.run(null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
+}
+
+test "event state transaction sweeps host OOM and retries without mutation" {
+    const Runner = struct {
+        fn run(failure_number: ?usize) !usize {
+            var host = HostEnv.init();
+            var roc_host = makeSignalsRocHost(&host);
+            host.engine.roc_host = &roc_host;
+            defer {
+                host.deinit();
+                _ = host.gpa.deinit();
+            }
+            const token = newTestBinderToken(&roc_host);
+            const state_cap = testHostValueCapability(&roc_host);
+            const child = abi.Elem{ .payload = .{ .text_signal = .{
+                .read = testI64TextReadHandle(&roc_host, state_cap),
+                .signal = boxTestNodeSignalExpr(&roc_host, testNodeRefExpr(token)),
+            } }, .tag = .TextSignal };
+            const root = testNodeStateWithTokenAndInitialCapability(&roc_host, token, testHostValueI64(1), child, state_cap);
+            defer root.decref(&roc_host);
+            var stream: HostNodeDescriptorStream = .{};
+            host.collectActiveElemRootDescriptors(&roc_host, &stream, root, &.{});
+            _ = applyNodeDescriptorStream(&host, &roc_host, &stream);
+            host.engine.active_stream = stream;
+            const state_id = host.engine.active_stream.scope_sites.items[0].node_id;
+            const state_index = host.engine.stateIndexByNodeId(state_id).?;
+            const state_value_before = host.engine.states.items[state_index].cell.value;
+            const state_version_before = host.engine.states.items[state_index].version;
+            const generation_before = host.engine.dirty_signal_generation;
+            const graph_len_before = host.engine.active_signal_graph.items.len;
+            const dom_len_before = host.dom_elements.items.len;
+            const allocations_before = host.roc_allocations.snapshot();
+
+            const next = testHostValueI64(2);
+            var fault = FaultAllocator.init(host.gpa.allocator());
+            fault.configure(failure_number);
+            host.engine_allocator_override = fault.allocator();
+            const result = host.engine.tryDispatchStateValue(&host, &roc_host, state_id, next, state_cap);
+            const attempts = fault.attempts;
+            if (failure_number != null) {
+                try std.testing.expectError(error.OutOfMemory, result);
+                try std.testing.expectEqual(@as(usize, 1), fault.induced_failures);
+                try std.testing.expectEqual(state_value_before, host.engine.states.items[state_index].cell.value);
+                try std.testing.expectEqual(state_version_before, host.engine.states.items[state_index].version);
+                try std.testing.expectEqual(generation_before, host.engine.dirty_signal_generation);
+                try std.testing.expectEqual(graph_len_before, host.engine.active_signal_graph.items.len);
+                try std.testing.expectEqual(dom_len_before, host.dom_elements.items.len);
+                try std.testing.expectEqualStrings("1", host.dom_elements.items[1].text.?);
+                try std.testing.expectEqual(@as(usize, 0), host.roc_allocations.liveCountSince(allocations_before));
+                fault.configure(null);
+                _ = try host.engine.tryDispatchStateValue(&host, &roc_host, state_id, testHostValueI64(2), state_cap);
+            } else {
+                _ = try result;
+            }
+            try std.testing.expectEqual(state_version_before + 1, host.engine.states.items[state_index].version);
+            try std.testing.expectEqualStrings("2", host.dom_elements.items[1].text.?);
             return attempts;
         }
     };

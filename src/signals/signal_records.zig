@@ -114,6 +114,7 @@ pub const PreparedCacheUpdates = struct {
     indexes: std.AutoHashMapUnmanaged(*CacheSlot, usize) = .empty,
     results: std.ArrayListUnmanaged(Result) = .empty,
     result_indexes: std.AutoHashMapUnmanaged(*anyopaque, usize) = .empty,
+    provisional_values: std.AutoHashMapUnmanaged(*anyopaque, *const HostValueCell) = .empty,
     derived_calls: u64 = 0,
     propagation_prunes: u64 = 0,
     committed: bool = false,
@@ -126,6 +127,7 @@ pub const PreparedCacheUpdates = struct {
         try self.indexes.ensureTotalCapacity(allocator, std.math.cast(u32, expected) orelse return error.OutOfMemory);
         try self.results.ensureTotalCapacity(allocator, expected);
         try self.result_indexes.ensureTotalCapacity(allocator, std.math.cast(u32, expected) orelse return error.OutOfMemory);
+        try self.provisional_values.ensureTotalCapacity(allocator, std.math.cast(u32, expected) orelse return error.OutOfMemory);
         return self;
     }
 
@@ -165,6 +167,24 @@ pub const PreparedCacheUpdates = struct {
         return self.results.items[index].changed;
     }
 
+    /// Associates a memoized record without a persistent cache slot, such as
+    /// a state reference, with its transaction-private value.
+    pub fn bindProvisionalValueAssumeCapacity(self: *PreparedCacheUpdates, key: *anyopaque, cell: *const HostValueCell) void {
+        if (self.provisional_values.contains(key)) @panic("prepared provisional value bound twice");
+        self.provisional_values.putAssumeCapacity(key, cell);
+    }
+
+    /// Returns the transaction-private value for a slotless memoized record.
+    pub fn provisionalValue(self: *const PreparedCacheUpdates, key: *anyopaque) ?*const HostValueCell {
+        return self.provisional_values.get(key);
+    }
+
+    /// Clears preparation-only borrowed value bindings before their owner is
+    /// moved into the durable transaction plan.
+    pub fn clearProvisionalValues(self: *PreparedCacheUpdates) void {
+        self.provisional_values.clearRetainingCapacity();
+    }
+
     /// Publishes every staged cache replacement without allocation.
     pub fn commit(self: *PreparedCacheUpdates) void {
         if (self.committed) @panic("prepared cache overlay committed twice");
@@ -184,6 +204,7 @@ pub const PreparedCacheUpdates = struct {
         self.indexes.deinit(self.allocator);
         self.results.deinit(self.allocator);
         self.result_indexes.deinit(self.allocator);
+        self.provisional_values.deinit(self.allocator);
     }
 };
 
