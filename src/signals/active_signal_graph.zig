@@ -104,6 +104,89 @@ pub const StructuralSink = struct {
     index: usize,
 };
 
+pub const TextSinkEdit = struct { record_id: u64, kind: TextSinkKind, old_index: usize, new_index: ?usize = null };
+pub const BoolSinkEdit = struct { record_id: u64, kind: BoolSinkKind, old_index: usize, new_index: ?usize = null };
+pub const ChangeSinkEdit = struct { record_id: u64, old_index: usize, new_index: ?usize = null };
+pub const StructuralSinkEdit = struct { record_id: u64, kind: StructuralKind, old_index: usize, new_index: ?usize = null };
+
+/// Owns validated sink-route removals and moved-descriptor index patches.
+pub const PreparedSinkRouteEdits = struct {
+    text: []TextSinkEdit,
+    bools: []BoolSinkEdit,
+    changes: []ChangeSinkEdit,
+    structural: []StructuralSinkEdit,
+
+    /// Releases preparation storage without changing live routes.
+    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+        allocator.free(self.text);
+        allocator.free(self.bools);
+        allocator.free(self.changes);
+        allocator.free(self.structural);
+        self.* = undefined;
+    }
+
+    /// Applies exact route removals and index patches without allocation.
+    pub fn apply(self: *const @This(), text_routes: *RouteTable(TextSink), bool_routes: *RouteTable(BoolSink), change_routes: *RouteTable(ChangeSink), structural_routes: *RouteTable(StructuralSink)) void {
+        for (self.text) |edit| if (edit.new_index) |new_index|
+            updateTextRouteIndex(text_routes, edit.record_id, edit.kind, edit.old_index, new_index)
+        else
+            removeTextRoute(text_routes, edit.record_id, edit.kind, edit.old_index);
+        for (self.bools) |edit| if (edit.new_index) |new_index|
+            updateBoolRouteIndex(bool_routes, edit.record_id, edit.kind, edit.old_index, new_index)
+        else
+            removeBoolRoute(bool_routes, edit.record_id, edit.kind, edit.old_index);
+        for (self.changes) |edit| if (edit.new_index) |new_index|
+            updateChangeRouteIndex(change_routes, edit.record_id, edit.old_index, new_index)
+        else
+            removeChangeRoute(change_routes, edit.record_id, edit.old_index);
+        for (self.structural) |edit| if (edit.new_index) |new_index|
+            updateStructuralRouteIndex(structural_routes, edit.record_id, edit.kind, edit.old_index, new_index)
+        else
+            removeStructuralRoute(structural_routes, edit.record_id, edit.kind, edit.old_index);
+    }
+};
+
+/// Copies and validates sink edits before route mutation begins.
+pub fn prepareSinkRouteEdits(allocator: std.mem.Allocator, text_routes: *const RouteTable(TextSink), bool_routes: *const RouteTable(BoolSink), change_routes: *const RouteTable(ChangeSink), structural_routes: *const RouteTable(StructuralSink), text: []const TextSinkEdit, bools: []const BoolSinkEdit, changes: []const ChangeSinkEdit, structural: []const StructuralSinkEdit) std.mem.Allocator.Error!PreparedSinkRouteEdits {
+    for (text) |edit| if (!containsTextSink(text_routes, edit)) return error.OutOfMemory;
+    for (bools) |edit| if (!containsBoolSink(bool_routes, edit)) return error.OutOfMemory;
+    for (changes) |edit| if (!containsChangeSink(change_routes, edit)) return error.OutOfMemory;
+    for (structural) |edit| if (!containsStructuralSink(structural_routes, edit)) return error.OutOfMemory;
+    const owned_text = try allocator.dupe(TextSinkEdit, text);
+    errdefer allocator.free(owned_text);
+    const owned_bools = try allocator.dupe(BoolSinkEdit, bools);
+    errdefer allocator.free(owned_bools);
+    const owned_changes = try allocator.dupe(ChangeSinkEdit, changes);
+    errdefer allocator.free(owned_changes);
+    return .{
+        .text = owned_text,
+        .bools = owned_bools,
+        .changes = owned_changes,
+        .structural = try allocator.dupe(StructuralSinkEdit, structural),
+    };
+}
+
+fn containsTextSink(routes: *const RouteTable(TextSink), edit: TextSinkEdit) bool {
+    if (edit.record_id >= routes.items.len) return false;
+    for (routes.items[@intCast(edit.record_id)].items) |sink| if (sink.kind == edit.kind and sink.index == edit.old_index) return true;
+    return false;
+}
+fn containsBoolSink(routes: *const RouteTable(BoolSink), edit: BoolSinkEdit) bool {
+    if (edit.record_id >= routes.items.len) return false;
+    for (routes.items[@intCast(edit.record_id)].items) |sink| if (sink.kind == edit.kind and sink.index == edit.old_index) return true;
+    return false;
+}
+fn containsChangeSink(routes: *const RouteTable(ChangeSink), edit: ChangeSinkEdit) bool {
+    if (edit.record_id >= routes.items.len) return false;
+    for (routes.items[@intCast(edit.record_id)].items) |sink| if (sink.index == edit.old_index) return true;
+    return false;
+}
+fn containsStructuralSink(routes: *const RouteTable(StructuralSink), edit: StructuralSinkEdit) bool {
+    if (edit.record_id >= routes.items.len) return false;
+    for (routes.items[@intCast(edit.record_id)].items) |sink| if (sink.kind == edit.kind and sink.index == edit.old_index) return true;
+    return false;
+}
+
 pub const DirtyStructuralSignal = struct {
     kind: StructuralKind,
     node_id: u64,
@@ -248,6 +331,53 @@ test "active graph route lookup helpers validate indexed ids" {
 
     try std.testing.expectError(SignalLookupError.MissingSignalDescriptor, signalRank(&descriptors, 1));
     try std.testing.expectError(SignalLookupError.SignalDescriptorIndexMismatch, signalRank(&mismatched_descriptors, 0));
+}
+
+test "prepared sink route edits sweep failures and commit without allocation" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var text_routes: RouteTable(TextSink) = .empty;
+    var bool_routes: RouteTable(BoolSink) = .empty;
+    var change_routes: RouteTable(ChangeSink) = .empty;
+    var structural_routes: RouteTable(StructuralSink) = .empty;
+    defer {
+        clearSinkRoutes(std.testing.allocator, &text_routes, &bool_routes, &change_routes, &structural_routes);
+        text_routes.deinit(std.testing.allocator);
+        bool_routes.deinit(std.testing.allocator);
+        change_routes.deinit(std.testing.allocator);
+        structural_routes.deinit(std.testing.allocator);
+    }
+    appendTextRoute(std.testing.allocator, &text_routes, 1, 0, .{ .kind = .text_node, .index = 0 });
+    appendTextRoute(std.testing.allocator, &text_routes, 1, 0, .{ .kind = .text_attr, .index = 9 });
+    appendBoolRoute(std.testing.allocator, &bool_routes, 1, 0, .{ .kind = .bool_attr, .index = 0 });
+    appendBoolRoute(std.testing.allocator, &bool_routes, 1, 0, .{ .kind = .custom_bool_attr, .index = 9 });
+    appendChangeRoute(std.testing.allocator, &change_routes, 1, 0, .{ .index = 0 });
+    appendChangeRoute(std.testing.allocator, &change_routes, 1, 0, .{ .index = 9 });
+    appendStructuralRoute(std.testing.allocator, &structural_routes, 1, 0, .{ .kind = .when, .index = 0 });
+    appendStructuralRoute(std.testing.allocator, &structural_routes, 1, 0, .{ .kind = .each, .index = 9 });
+    const text_edits = [_]TextSinkEdit{ .{ .record_id = 0, .kind = .text_node, .old_index = 0 }, .{ .record_id = 0, .kind = .text_attr, .old_index = 9, .new_index = 1 } };
+    const bool_edits = [_]BoolSinkEdit{ .{ .record_id = 0, .kind = .bool_attr, .old_index = 0 }, .{ .record_id = 0, .kind = .custom_bool_attr, .old_index = 9, .new_index = 1 } };
+    const change_edits = [_]ChangeSinkEdit{ .{ .record_id = 0, .old_index = 0 }, .{ .record_id = 0, .old_index = 9, .new_index = 1 } };
+    const structural_edits = [_]StructuralSinkEdit{ .{ .record_id = 0, .kind = .when, .old_index = 0 }, .{ .record_id = 0, .kind = .each, .old_index = 9, .new_index = 1 } };
+
+    var counter = FaultAllocator.init(std.testing.allocator);
+    var baseline = try prepareSinkRouteEdits(counter.allocator(), &text_routes, &bool_routes, &change_routes, &structural_routes, &text_edits, &bool_edits, &change_edits, &structural_edits);
+    const attempts = counter.attempts;
+    for (1..attempts + 1) |failure_number| {
+        var fault = FaultAllocator.init(std.testing.allocator);
+        fault.configure(failure_number);
+        try std.testing.expectError(error.OutOfMemory, prepareSinkRouteEdits(fault.allocator(), &text_routes, &bool_routes, &change_routes, &structural_routes, &text_edits, &bool_edits, &change_edits, &structural_edits));
+        try std.testing.expectEqualSlices(TextSink, &.{ .{ .kind = .text_node, .index = 0 }, .{ .kind = .text_attr, .index = 9 } }, text_routes.items[0].items);
+        try std.testing.expectEqualSlices(BoolSink, &.{ .{ .kind = .bool_attr, .index = 0 }, .{ .kind = .custom_bool_attr, .index = 9 } }, bool_routes.items[0].items);
+    }
+    counter.configure(1);
+    baseline.apply(&text_routes, &bool_routes, &change_routes, &structural_routes);
+    try std.testing.expectEqual(@as(usize, 0), counter.attempts);
+    try std.testing.expectEqualSlices(TextSink, &.{.{ .kind = .text_attr, .index = 1 }}, text_routes.items[0].items);
+    try std.testing.expectEqualSlices(BoolSink, &.{.{ .kind = .custom_bool_attr, .index = 1 }}, bool_routes.items[0].items);
+    try std.testing.expectEqualSlices(ChangeSink, &.{.{ .index = 1 }}, change_routes.items[0].items);
+    try std.testing.expectEqualSlices(StructuralSink, &.{.{ .kind = .each, .index = 1 }}, structural_routes.items[0].items);
+    counter.configure(null);
+    baseline.deinit(counter.allocator());
 }
 
 pub const DirtyRecordQueue = struct {
