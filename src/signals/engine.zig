@@ -9119,6 +9119,7 @@ const VerifyCtxHost = struct {
     allocator: std.mem.Allocator,
     render_batch: render.TransactionalBatch = .{},
     state_capability: HostValueCapability = std.mem.zeroes(HostValueCapability),
+    cancelled_tasks: usize = 0,
 
     /// Produces an independently owned copy through the value's app-compiled capability.
     pub fn cloneHostValue(_: *@This(), value: HostValue) HostValue {
@@ -9158,6 +9159,7 @@ test "structural event validation rejects descriptors outside seen render stream
 }
 
 const VerifySink = struct {
+    ctx: *VerifyCtxHost,
     /// Stages a complete render-surface reset in the host command sink.
     pub fn reset(_: VerifySink) void {}
     /// Emits the already-decided command that attaches a newly created render node.
@@ -9193,7 +9195,9 @@ const VerifySink = struct {
     /// Starts bounded asynchronous host work for an engine-issued task request.
     pub fn startTask(_: VerifySink, _: u64, _: []const u8, _: []const u8) void {}
     /// Cancels host work for a task request retired by engine lifecycle policy.
-    pub fn cancelTask(_: VerifySink, _: u64) void {}
+    pub fn cancelTask(self: VerifySink, _: u64) void {
+        self.ctx.cancelled_tasks += 1;
+    }
     /// Applies an engine-issued storage write without deriving storage semantics.
     pub fn setStorageText(_: VerifySink, _: boundary.StorageArea, _: []const u8, _: []const u8) void {}
     /// Applies an engine-issued storage removal without deriving storage semantics.
@@ -9274,8 +9278,8 @@ const VerifyCtx = struct {
     }
 
     /// Returns the thin render-command sink used by the shared engine.
-    pub fn sink(_: Handle) Sink {
-        return .{};
+    pub fn sink(ctx: Handle) Sink {
+        return .{ .ctx = ctx };
     }
 };
 
@@ -10547,6 +10551,7 @@ test "aggregate branch collection sweeps allocation failures without publication
                 ctx.render_batch.deinit(ctx.allocator);
                 engine.deinitRenderCache(&ctx);
                 effects_runtime.clearPendingTasks(VerifyCtx, &ctx, ctx.allocator, &engine.pending_tasks, &roc_host);
+                engine.pending_tasks.deinit(ctx.allocator);
                 effects_runtime.deinitCleanupEvents(ctx.allocator, &engine.cleanup_events);
                 for (engine.states.items) |*state| state.cell.deinit(&ctx, &roc_host, &engine.pending_roc_metrics);
                 engine.states.deinit(ctx.allocator);
@@ -10578,6 +10583,7 @@ test "aggregate branch collection sweeps allocation failures without publication
             const second_site = engine.active_stream.scope_sites.items[engine.active_stream.nodeDescriptorIndex(second_when.node_id).?.scope_sites.when.get().?];
             const first_old = (try engine.activeWhenBranchScopeId(first_site.scope_id, first_site.ordinal, .true_branch)).?;
             const second_old = (try engine.activeWhenBranchScopeId(second_site.scope_id, second_site.ordinal, .true_branch)).?;
+            _ = engine.appendPendingTask(&ctx, first_old, fixture.first_true_callable.?, "retired-branch-task", "request");
             const old_graph_len = engine.active_signal_graph.items.len;
             const old_first_record = engine.active_stream.signal_text_nodes.items[0].signal.record;
             const old_second_record = engine.active_stream.signal_text_nodes.items[1].signal.record;
@@ -10606,6 +10612,8 @@ test "aggregate branch collection sweeps allocation failures without publication
                 try std.testing.expectEqual(old_render_len, engine.active_stream.render_nodes.items.len);
                 try std.testing.expect(engine.scopes.items[@intCast(first_old)].active);
                 try std.testing.expect(engine.scopes.items[@intCast(second_old)].active);
+                try std.testing.expectEqual(@as(usize, 1), engine.pending_tasks.items.len);
+                try std.testing.expectEqual(@as(usize, 0), ctx.cancelled_tasks);
                 try std.testing.expectEqualSlices(u64, old_root_children, engine.render_cache.nodes.items[1].children.items);
                 try std.testing.expectEqual(@as(usize, 0), ctx.render_batch.staged.commands.len());
                 try std.testing.expectEqual(@as(usize, 0), ctx.render_batch.published.commands.len());
@@ -10658,6 +10666,8 @@ test "aggregate branch collection sweeps allocation failures without publication
             try std.testing.expect(engine.scopes.items[@intCast(first_new_scope)].active);
             try std.testing.expect(engine.scopes.items[@intCast(second_new_scope)].active);
             try std.testing.expectEqual(@as(usize, 2), engine.active_stream.signal_text_nodes.items.len);
+            try std.testing.expectEqual(@as(usize, 0), engine.pending_tasks.items.len);
+            try std.testing.expectEqual(@as(usize, 1), ctx.cancelled_tasks);
             try std.testing.expectEqual(old_graph_len, engine.active_signal_graph.items.len);
             try std.testing.expectEqual(@as(?u64, null), old_first_record.active_graph_id);
             try std.testing.expectEqual(@as(?u64, null), old_second_record.active_graph_id);
