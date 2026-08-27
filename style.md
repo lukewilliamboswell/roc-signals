@@ -202,6 +202,7 @@ main! = |args| {
 - Avoid long chained `and` expressions when checking several related facts.
 - For multi-signal behavior, build a labeled `actual` report string and compare it to a labeled multiline `expected` string.
 - Use `Str.inspect(...)` in report strings for booleans, tags, records, and nested values.
+- Multiline string lines start with `\\`. A `#` inside one is literal text, not a comment.
 - Include negative parse tests for important parser behavior.
 - CI should run `roc test` for every example so top-level expects in examples are exercised.
 
@@ -212,16 +213,16 @@ expect {
 	inline = Strong([Text("Roc")])
 
 	actual =
-		\inline inspect: ${Str.inspect(inline)}
-		\inline debug: ${Markdown.inline_to_debug_str(inline)}
-		\inline eq same: ${Str.inspect(inline == Strong([Text("Roc")]))}
-		\inline eq different: ${Str.inspect(inline == Emphasis([Text("Roc")]))}
+		\\inline inspect: ${Str.inspect(inline)}
+		\\inline debug: ${Markdown.inline_to_debug_str(inline)}
+		\\inline eq same: ${Str.inspect(inline == Strong([Text("Roc")]))}
+		\\inline eq different: ${Str.inspect(inline == Emphasis([Text("Roc")]))}
 
 	expected =
-		\inline inspect: Strong([Text("Roc")])
-		\inline debug: Strong([Text("Roc")])
-		\inline eq same: True
-		\inline eq different: False
+		\\inline inspect: Strong([Text("Roc")])
+		\\inline debug: Strong([Text("Roc")])
+		\\inline eq same: True
+		\\inline eq different: False
 
 	actual == expected
 }
