@@ -235,7 +235,23 @@ pub fn deinitOwnedPayload(allocator: std.mem.Allocator, ctx: anytype, roc_host: 
             releaseHostValueCapability(payload.cap, roc_host, metrics);
             metrics.bump(.closure_releases, 2);
         },
-        .location_source, .online_source, .visibility_source => |payload| {
+        .location_source => |payload| {
+            var cached = payload.cached_value;
+            cached.deinit(ctx, roc_host, metrics);
+            releaseHostValueCapability(payload.payload_cap, roc_host, metrics);
+            abi.decrefErasedCallable(payload.from_payload, roc_host);
+            releaseHostValueCapability(payload.cap, roc_host, metrics);
+            metrics.bump(.closure_releases, 1);
+        },
+        .online_source => |payload| {
+            var cached = payload.cached_value;
+            cached.deinit(ctx, roc_host, metrics);
+            releaseHostValueCapability(payload.payload_cap, roc_host, metrics);
+            abi.decrefErasedCallable(payload.from_payload, roc_host);
+            releaseHostValueCapability(payload.cap, roc_host, metrics);
+            metrics.bump(.closure_releases, 1);
+        },
+        .visibility_source => |payload| {
             var cached = payload.cached_value;
             cached.deinit(ctx, roc_host, metrics);
             releaseHostValueCapability(payload.payload_cap, roc_host, metrics);
