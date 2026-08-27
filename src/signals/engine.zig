@@ -2489,7 +2489,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             fn rootScope(self: *@This()) CollectionError!scope_tree.InternResult {
-                const key: collection_plan.ScopeKey = .{ .parent_id = 0, .ordinal = 0, .kind = 0 };
+                const key: collection_plan.ScopeKey = .{ .parent_id = 0, .ordinal = 0, .kind = .root };
                 const active_id: ?u64 = if (self.engine.scopes.items.len != 0) 0 else null;
                 const scope_id = self.scopes.reserve(key, active_id, &.{0}) catch |err| switch (err) {
                     error.NoCapacity => return error.OutOfMemory,
@@ -2499,7 +2499,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             fn validateScope(self: *@This(), scope_id: u64) CollectionError!void {
-                const root_key: collection_plan.ScopeKey = .{ .parent_id = 0, .ordinal = 0, .kind = 0 };
+                const root_key: collection_plan.ScopeKey = .{ .parent_id = 0, .ordinal = 0, .kind = .root };
                 if (self.scopes.lookup(root_key, null) == scope_id) return;
                 if (self.scopes.reserved_ids.contains(scope_id)) return;
                 self.engine.validateScopeId(scope_id) catch return error.ResourceLimit;
@@ -2556,7 +2556,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const node_id = try self.reserveNodeIdentity(scope_id, site_ordinal);
                 const prepared = self.stream.prepareScopeSite(Ctx.allocator(self.host_ctx), node_id, scope_id, site_ordinal, parent_elem_id, .component, binder_stack) catch return error.OutOfMemory;
                 errdefer prepared.abort(Ctx.allocator(self.host_ctx));
-                const key: collection_plan.ScopeKey = .{ .parent_id = scope_id, .ordinal = site_ordinal, .kind = 1 };
+                const key: collection_plan.ScopeKey = .{ .parent_id = scope_id, .ordinal = site_ordinal, .kind = .component };
                 var active_id: ?u64 = null;
                 for (self.engine.scopes.items) |scope| {
                     if (!scope.active or scope.parent_scope_id != scope_id) continue;
@@ -2599,7 +2599,7 @@ pub fn Engine(comptime Ctx: type) type {
                 prepared.desc.cached_value = .{ .present = HostValueCell.initRetained(value, cap, &self.engine.pending_roc_metrics) };
                 const persistent_parent = scope_id < self.engine.scopes.items.len;
                 if (persistent_parent and (self.engine.activeWhenBranchScopeId(scope_id, site_ordinal, branch.opposite()) catch return error.ResourceLimit) != null) return error.ResourceLimit;
-                const key: collection_plan.ScopeKey = .{ .parent_id = scope_id, .ordinal = site_ordinal, .kind = 2, .branch = @intFromEnum(branch) };
+                const key: collection_plan.ScopeKey = .{ .parent_id = scope_id, .ordinal = site_ordinal, .kind = .{ .when_branch = branch } };
                 const active_id = if (persistent_parent) self.engine.activeWhenBranchScopeId(scope_id, site_ordinal, branch) catch return error.ResourceLimit else null;
                 const fresh_id: u64 = @intCast(self.engine.scopes.items.len + self.scopes.intents.items.len);
                 const branch_scope_id = self.scopes.reserve(key, active_id, &.{fresh_id}) catch |err| switch (err) {
@@ -2957,10 +2957,9 @@ pub fn Engine(comptime Ctx: type) type {
                 for (self.scopes.intents.items) |intent| {
                     if (intent.id != self.engine.scopes.items.len) @panic("unsupported staged scope intent");
                     const scope: HostScope = switch (intent.key.kind) {
-                        0 => .{ .scope_id = intent.id, .parent_scope_id = null, .step = .root, .active = true },
-                        1 => .{ .scope_id = intent.id, .parent_scope_id = intent.key.parent_id, .step = .{ .component = .{ .site_ordinal = intent.key.ordinal } }, .active = true },
-                        2 => .{ .scope_id = intent.id, .parent_scope_id = intent.key.parent_id, .step = .{ .when_branch = .{ .site_ordinal = intent.key.ordinal, .branch = @enumFromInt(intent.key.branch) } }, .active = true },
-                        else => @panic("unsupported staged scope kind"),
+                        .root => .{ .scope_id = intent.id, .parent_scope_id = null, .step = .root, .active = true },
+                        .component => .{ .scope_id = intent.id, .parent_scope_id = intent.key.parent_id, .step = .{ .component = .{ .site_ordinal = intent.key.ordinal } }, .active = true },
+                        .when_branch => |branch| .{ .scope_id = intent.id, .parent_scope_id = intent.key.parent_id, .step = .{ .when_branch = .{ .site_ordinal = intent.key.ordinal, .branch = branch } }, .active = true },
                     };
                     self.engine.scopes.appendAssumeCapacity(scope);
                     self.engine.recordScopeCreated();

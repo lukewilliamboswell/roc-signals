@@ -6,6 +6,7 @@ const signals = @import("signals");
 const boundary = signals.boundary;
 const engine = signals.engine;
 const render = signals.render;
+const runtime_limits = signals.runtime_limits;
 const spec_parser = @import("../spec/spec_parser.zig");
 
 pub const Stats = struct {
@@ -674,7 +675,7 @@ pub fn Runner(comptime Ctx: type) type {
         }
 
         fn dispatchBubblingUnitEventMeasured(host: *Host, roc_host: *RocHost, target_id: u64, fixed_kind: render.EventKind, event_name: []const u8, stats: *Stats) UnitEventDispatchResult {
-            var path: [128]u64 = undefined;
+            var path: [runtime_limits.event_propagation_depth]u64 = undefined;
             var path_len: usize = 0;
             var next_id: ?u64 = target_id;
             while (next_id) |elem_id| {

@@ -28,6 +28,7 @@ pub const identity_table = @import("identity_table.zig");
 pub const render = @import("render_commands.zig");
 pub const render_cache = @import("render_cache.zig");
 pub const render_sink = @import("render_sink.zig");
+pub const runtime_limits = @import("runtime_limits.zig");
 pub const retained_values = @import("retained_values.zig");
 pub const scope_runtime = @import("scope_runtime.zig");
 pub const scope_tree = @import("scope_tree.zig");

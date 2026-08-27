@@ -16,10 +16,17 @@ pub const PayloadKind = enum(u64) {
 /// that crosses a host boundary; individual producers such as DOM events add
 /// their own extraction data after scalar schema tags.
 pub const SchemaTag = struct {
-    pub const unit: u8 = 1;
-    pub const text: u8 = 2;
-    pub const bool_: u8 = 3;
-    pub const record: u8 = 4;
+    pub const Kind = enum(u8) {
+        unit = 1,
+        text = 2,
+        boolean = 3,
+        record = 4,
+    };
+
+    pub const unit: u8 = @intFromEnum(Kind.unit);
+    pub const text: u8 = @intFromEnum(Kind.text);
+    pub const bool_: u8 = @intFromEnum(Kind.boolean);
+    pub const record: u8 = @intFromEnum(Kind.record);
 
     pub const unit_schema = [_]u8{unit};
     pub const text_schema = [_]u8{text};
@@ -73,15 +80,29 @@ pub const SchemaTag = struct {
 /// by one source byte and one leaf byte telling JS what to read from the browser
 /// event before encoding the resulting boundary payload.
 pub const DomEventExtractionPlan = struct {
-    pub const source_event: u8 = 1;
-    pub const source_target: u8 = 2;
-    pub const source_current_target: u8 = 3;
+    pub const Source = enum(u8) {
+        event = 1,
+        target = 2,
+        current_target = 3,
+    };
 
-    pub const leaf_key: u8 = 1;
-    pub const leaf_value: u8 = 2;
-    pub const leaf_checked: u8 = 3;
-    pub const leaf_shift_key: u8 = 4;
-    pub const leaf_detail: u8 = 5;
+    pub const Leaf = enum(u8) {
+        key = 1,
+        value = 2,
+        checked = 3,
+        shift_key = 4,
+        detail = 5,
+    };
+
+    pub const source_event: u8 = @intFromEnum(Source.event);
+    pub const source_target: u8 = @intFromEnum(Source.target);
+    pub const source_current_target: u8 = @intFromEnum(Source.current_target);
+
+    pub const leaf_key: u8 = @intFromEnum(Leaf.key);
+    pub const leaf_value: u8 = @intFromEnum(Leaf.value);
+    pub const leaf_checked: u8 = @intFromEnum(Leaf.checked);
+    pub const leaf_shift_key: u8 = @intFromEnum(Leaf.shift_key);
+    pub const leaf_detail: u8 = @intFromEnum(Leaf.detail);
 
     pub const target_value = [_]u8{
         SchemaTag.text,
@@ -424,30 +445,28 @@ pub fn parseBoundarySchemaPayloadKind(schema_bytes: []const u8) ParseError!Paylo
 }
 
 fn parseBoundarySchemaNode(cursor: *Cursor) ParseError!PayloadKind {
-    const tag = try cursor.readByte();
+    const tag = std.enums.fromInt(SchemaTag.Kind, try cursor.readByte()) orelse return error.UnknownSchemaTag;
     return switch (tag) {
-        SchemaTag.unit => .unit,
-        SchemaTag.text => .str,
-        SchemaTag.bool_ => .bool,
-        SchemaTag.record => try parseBoundaryRecord(cursor, parseBoundarySchemaNode),
-        else => error.UnknownSchemaTag,
+        .unit => .unit,
+        .text => .str,
+        .boolean => .bool,
+        .record => try parseBoundaryRecord(cursor, parseBoundarySchemaNode),
     };
 }
 
 fn parseEventExtractionNode(cursor: *Cursor) ParseError!PayloadKind {
-    const tag = try cursor.readByte();
+    const tag = std.enums.fromInt(SchemaTag.Kind, try cursor.readByte()) orelse return error.UnknownSchemaTag;
     return switch (tag) {
-        SchemaTag.unit => .unit,
-        SchemaTag.text => blk: {
+        .unit => .unit,
+        .text => blk: {
             try parseEventScalarExtraction(cursor, .str);
             break :blk .str;
         },
-        SchemaTag.bool_ => blk: {
+        .boolean => blk: {
             try parseEventScalarExtraction(cursor, .bool);
             break :blk .bool;
         },
-        SchemaTag.record => try parseBoundaryRecord(cursor, parseEventExtractionNode),
-        else => error.UnknownSchemaTag,
+        .record => try parseBoundaryRecord(cursor, parseEventExtractionNode),
     };
 }
 
@@ -460,28 +479,18 @@ fn parseEventScalarExtraction(cursor: *Cursor, payload_kind: PayloadKind) ParseE
 }
 
 fn validateEventExtractionSource(source: u8) ParseError!void {
-    switch (source) {
-        DomEventExtractionPlan.source_event,
-        DomEventExtractionPlan.source_target,
-        DomEventExtractionPlan.source_current_target,
-        => return,
-        else => return error.UnknownEventExtractionSource,
-    }
+    _ = std.enums.fromInt(DomEventExtractionPlan.Source, source) orelse return error.UnknownEventExtractionSource;
 }
 
 fn validateEventExtractionLeaf(payload_kind: PayloadKind, leaf: u8) ParseError!void {
+    const typed_leaf = std.enums.fromInt(DomEventExtractionPlan.Leaf, leaf) orelse return error.IncompatibleEventExtractionLeaf;
     switch (payload_kind) {
-        .str => switch (leaf) {
-            DomEventExtractionPlan.leaf_key,
-            DomEventExtractionPlan.leaf_value,
-            DomEventExtractionPlan.leaf_detail,
-            => return,
+        .str => switch (typed_leaf) {
+            .key, .value, .detail => return,
             else => return error.IncompatibleEventExtractionLeaf,
         },
-        .bool => switch (leaf) {
-            DomEventExtractionPlan.leaf_checked,
-            DomEventExtractionPlan.leaf_shift_key,
-            => return,
+        .bool => switch (typed_leaf) {
+            .checked, .shift_key => return,
             else => return error.IncompatibleEventExtractionLeaf,
         },
         else => return error.IncompatibleEventExtractionLeaf,
@@ -489,19 +498,15 @@ fn validateEventExtractionLeaf(payload_kind: PayloadKind, leaf: u8) ParseError!v
 }
 
 fn validateEventExtractionSourceLeaf(source: u8, leaf: u8) ParseError!void {
-    switch (leaf) {
-        DomEventExtractionPlan.leaf_key,
-        DomEventExtractionPlan.leaf_shift_key,
-        DomEventExtractionPlan.leaf_detail,
-        => {
-            if (source == DomEventExtractionPlan.source_event) return;
+    const typed_source = std.enums.fromInt(DomEventExtractionPlan.Source, source) orelse return error.UnknownEventExtractionSource;
+    const typed_leaf = std.enums.fromInt(DomEventExtractionPlan.Leaf, leaf) orelse return error.IncompatibleEventExtractionLeaf;
+    switch (typed_leaf) {
+        .key, .shift_key, .detail => {
+            if (typed_source == .event) return;
         },
-        DomEventExtractionPlan.leaf_value,
-        DomEventExtractionPlan.leaf_checked,
-        => {
-            if (source == DomEventExtractionPlan.source_target or source == DomEventExtractionPlan.source_current_target) return;
+        .value, .checked => {
+            if (typed_source == .target or typed_source == .current_target) return;
         },
-        else => unreachable,
     }
     return error.IncompatibleEventExtractionSource;
 }

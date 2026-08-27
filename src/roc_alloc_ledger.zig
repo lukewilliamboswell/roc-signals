@@ -3,6 +3,7 @@
 const std = @import("std");
 const FaultAllocator = @import("signals").fault_allocator.FaultAllocator;
 const DebugPhase = @import("signals").debug_phase.Phase;
+const runtime_limits = @import("signals").runtime_limits;
 
 pub const Allocation = struct {
     id: u64,
@@ -57,7 +58,7 @@ pub const ReallocError = error{
     AlignmentMismatch,
 };
 
-pub const recent_freed_capacity = 4096;
+pub const recent_freed_capacity = runtime_limits.recent_freed_allocation_count;
 
 /// Provides the `allocatedSizeForRequest` operation.
 pub fn allocatedSizeForRequest(length: usize) usize {
