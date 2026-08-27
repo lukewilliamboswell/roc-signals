@@ -59,6 +59,11 @@ const WasmCtx = struct {
         return wasm_fault_allocator.allocator();
     }
 
+    /// Returns the host-owned reusable bank used for atomic command publication.
+    pub fn renderCommandBatch(_: Handle) *render.TransactionalBatch {
+        return &command_batch;
+    }
+
     /// Produces an independently owned copy through the value's app-compiled capability.
     pub fn cloneHostValue(_: Handle, value: HostValue) HostValue {
         return shared_engine.host_values.clone(wasm_fault_allocator.allocator(), value, registryOps()) catch |err| {
@@ -1342,8 +1347,8 @@ fn freeRocAllocation(ptr: *anyopaque, alignment_arg: usize) RocAllocation {
 }
 
 export fn roc_alloc(length: usize, alignment: usize) callconv(.c) ?*anyopaque {
-    if (host_poisoned) return null;
-    return allocRocMemory(length, alignment);
+    if (host_poisoned) @trap();
+    return allocRocMemory(length, alignment) orelse failHostWith("Roc allocation failed");
 }
 
 export fn roc_ui_debug_live_allocation_count() callconv(.c) usize {
@@ -1412,7 +1417,7 @@ export fn roc_realloc(ptr: *anyopaque, new_length: usize, alignment_arg: usize) 
         failHostWithFmt("roc_realloc alignment did not match the tracked allocation ptr=0x{x} align={} tracked_align={}", .{ @intFromPtr(ptr), alignment_arg, old_alloc.alignment.toByteUnits() });
     }
 
-    const new_allocation_ptr = allocRocMemory(new_length, alignment_arg) orelse return null;
+    const new_allocation_ptr = allocRocMemory(new_length, alignment_arg) orelse failHostWith("Roc reallocation failed");
     const new_allocation_user_ptr: [*]u8 = @ptrCast(new_allocation_ptr);
     const old_user_ptr: [*]const u8 = @ptrCast(ptr);
     const copy_size = @min(old_alloc.requested_size, new_length);
