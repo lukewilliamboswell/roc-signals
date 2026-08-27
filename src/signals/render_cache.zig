@@ -308,6 +308,64 @@ pub const PreparedNodeCreation = struct {
     }
 };
 
+/// Owns one text-field value until an allocation-free cache update.
+pub const PreparedTextFieldUpdate = struct {
+    elem_id: u64,
+    field: TextField,
+    next: ?[]u8,
+    retired: ?[]const u8 = null,
+    committed: bool = false,
+
+    /// Copies an optional next value without changing the active node.
+    pub fn prepare(comptime Ctx: type, allocator: std.mem.Allocator, cache: *const Cache(Ctx), elem_id: u64, field: TextField, value: ?[]const u8) (std.mem.Allocator.Error || error{MissingNode})!PreparedTextFieldUpdate {
+        const index = std.math.cast(usize, elem_id) orelse return error.MissingNode;
+        if (index >= cache.nodes.items.len or !cache.nodes.items[index].active) return error.MissingNode;
+        return .{ .elem_id = elem_id, .field = field, .next = if (value) |bytes| try allocator.dupe(u8, bytes) else null };
+    }
+
+    /// Swaps the prepared value into the active cache without allocating.
+    pub fn apply(self: *PreparedTextFieldUpdate, comptime Ctx: type, cache: *Cache(Ctx)) void {
+        if (self.committed) @panic("prepared text field update committed twice");
+        const slot = cache.nodes.items[@intCast(self.elem_id)].textSlot(self.field);
+        self.retired = slot.*;
+        slot.* = self.next;
+        self.next = null;
+        self.committed = true;
+    }
+
+    /// Releases the provisional value on abort or the retired value after commit.
+    pub fn deinit(self: *PreparedTextFieldUpdate, allocator: std.mem.Allocator) void {
+        if (self.next) |value| allocator.free(value);
+        if (self.retired) |value| allocator.free(value);
+        self.* = undefined;
+    }
+};
+
+/// Stores one allocation-free boolean cache update.
+pub const PreparedBoolFieldUpdate = struct {
+    elem_id: u64,
+    field: BoolField,
+    next: ?bool,
+    retired: ?bool = null,
+    committed: bool = false,
+
+    /// Validates the active node without changing it.
+    pub fn prepare(comptime Ctx: type, cache: *const Cache(Ctx), elem_id: u64, field: BoolField, value: ?bool) error{MissingNode}!PreparedBoolFieldUpdate {
+        const index = std.math.cast(usize, elem_id) orelse return error.MissingNode;
+        if (index >= cache.nodes.items.len or !cache.nodes.items[index].active) return error.MissingNode;
+        return .{ .elem_id = elem_id, .field = field, .next = value };
+    }
+
+    /// Swaps the prepared value into the active cache without allocating.
+    pub fn apply(self: *PreparedBoolFieldUpdate, comptime Ctx: type, cache: *Cache(Ctx)) void {
+        if (self.committed) @panic("prepared boolean field update committed twice");
+        const slot = cache.nodes.items[@intCast(self.elem_id)].boolSlot(self.field);
+        self.retired = slot.*;
+        slot.* = self.next;
+        self.committed = true;
+    }
+};
+
 /// Defines the engine-owned rendered-state cache used to emit only changed host commands.
 pub fn Cache(comptime Ctx: type) type {
     return struct {
@@ -984,6 +1042,43 @@ test "prepared render node creation sweeps allocation failures and retries" {
     const attempts = try Runner.run(null);
     try std.testing.expect(attempts != 0);
     for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
+}
+
+test "prepared scalar fields abort cleanly and publish allocation free" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var fault = FaultAllocator.init(std.testing.allocator);
+    const allocator = fault.allocator();
+    var cache: Cache(TestCtx) = .{};
+    defer {
+        for (cache.nodes.items) |*node| node.deinit(allocator);
+        cache.nodes.deinit(allocator);
+    }
+    var node = ScalarNode.initActive("input");
+    node.value = try allocator.dupe(u8, "old");
+    node.checked = false;
+    try cache.nodes.append(allocator, node);
+
+    fault.configure(1);
+    try std.testing.expectError(error.OutOfMemory, PreparedTextFieldUpdate.prepare(TestCtx, allocator, &cache, 0, .value, "new"));
+    try std.testing.expectEqualStrings("old", cache.nodes.items[0].value.?);
+    try std.testing.expectEqual(false, cache.nodes.items[0].checked.?);
+
+    fault.configure(null);
+    var aborted = try PreparedTextFieldUpdate.prepare(TestCtx, allocator, &cache, 0, .value, "new");
+    aborted.deinit(allocator);
+    try std.testing.expectEqualStrings("old", cache.nodes.items[0].value.?);
+
+    var text = try PreparedTextFieldUpdate.prepare(TestCtx, allocator, &cache, 0, .value, "new");
+    var boolean = try PreparedBoolFieldUpdate.prepare(TestCtx, &cache, 0, .checked, true);
+    fault.configure(1);
+    text.apply(TestCtx, &cache);
+    boolean.apply(TestCtx, &cache);
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqualStrings("new", cache.nodes.items[0].value.?);
+    try std.testing.expect(cache.nodes.items[0].checked.?);
+    try std.testing.expectEqualStrings("old", text.retired.?);
+    fault.configure(null);
+    text.deinit(allocator);
 }
 
 test "render cache reset accepts sparse element ids" {
