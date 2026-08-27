@@ -208,6 +208,35 @@ pub const PreparedChildrenReplacement = struct {
     }
 };
 
+/// Defers ownership transfer for one cache-node removal until commit.
+pub const PreparedNodeRemoval = struct {
+    elem_id: u64,
+    retired: ScalarNode = .{},
+    committed: bool = false,
+
+    /// Validates an active non-root cache node without mutating it.
+    pub fn prepare(comptime Ctx: type, cache: *const Cache(Ctx), elem_id: u64) error{MissingNode}!PreparedNodeRemoval {
+        const index = std.math.cast(usize, elem_id) orelse return error.MissingNode;
+        if (elem_id == 0 or index >= cache.nodes.items.len or !cache.nodes.items[index].active) return error.MissingNode;
+        return .{ .elem_id = elem_id };
+    }
+
+    /// Transfers the active node into retired ownership without allocating.
+    pub fn apply(self: *PreparedNodeRemoval, comptime Ctx: type, cache: *Cache(Ctx)) void {
+        if (self.committed) @panic("prepared render node removal committed twice");
+        const node = &cache.nodes.items[@intCast(self.elem_id)];
+        self.retired = node.*;
+        node.* = .{};
+        self.committed = true;
+    }
+
+    /// Releases a committed retired node; abort before commit owns nothing.
+    pub fn deinit(self: *PreparedNodeRemoval, allocator: std.mem.Allocator) void {
+        if (self.committed) self.retired.deinit(allocator);
+        self.* = undefined;
+    }
+};
+
 /// Defines the engine-owned rendered-state cache used to emit only changed host commands.
 pub fn Cache(comptime Ctx: type) type {
     return struct {
@@ -788,6 +817,36 @@ test "prepared child replacement aborts cleanly and commits allocation free" {
     try std.testing.expectEqual(@as(usize, 0), fault.attempts);
     try std.testing.expectEqualSlices(u64, &.{ 2, 3 }, cache.nodes.items[0].children.items);
     try std.testing.expectEqualSlices(u64, &.{ 1, 2 }, committed.retired.items);
+    fault.configure(null);
+    committed.deinit(allocator);
+}
+
+test "prepared render node removal defers ownership and applies allocation free" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var fault = FaultAllocator.init(std.testing.allocator);
+    const allocator = fault.allocator();
+    var cache: Cache(TestCtx) = .{};
+    defer {
+        for (cache.nodes.items) |*node| node.deinit(allocator);
+        cache.nodes.deinit(allocator);
+    }
+    try cache.nodes.append(allocator, ScalarNode.initActive("root"));
+    var child = ScalarNode.initActive("div");
+    child.parent_id = 0;
+    child.text = try allocator.dupe(u8, "owned");
+    try cache.nodes.append(allocator, child);
+
+    var aborted = try PreparedNodeRemoval.prepare(TestCtx, &cache, 1);
+    aborted.deinit(allocator);
+    try std.testing.expect(cache.nodes.items[1].active);
+    try std.testing.expectEqualStrings("owned", cache.nodes.items[1].text.?);
+
+    var committed = try PreparedNodeRemoval.prepare(TestCtx, &cache, 1);
+    fault.configure(1);
+    committed.apply(TestCtx, &cache);
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expect(!cache.nodes.items[1].active);
+    try std.testing.expectEqualStrings("owned", committed.retired.text.?);
     fault.configure(null);
     committed.deinit(allocator);
 }
