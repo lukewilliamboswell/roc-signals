@@ -9762,6 +9762,25 @@ test "owned aggregate graph root ingests two signal branches around a survivor" 
 
 fn verifyErasedCallable(_: *abi.RocHost, _: ?[*]u8, _: ?[*]const u8, _: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {}
 
+fn verifyEachKeyTextCallable(roc_host: *abi.RocHost, result: ?[*]u8, args: ?[*]const u8, _: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
+    const input: *const erased_calls.ErasedHostValueUnaryArgs = @ptrCast(@alignCast(args.?));
+    const text = switch (input.arg0) {
+        1 => "one",
+        2 => "two",
+        3 => "three",
+        4 => "four",
+        else => "other",
+    };
+    const out: *abi.RocStr = @ptrCast(@alignCast(result.?));
+    out.* = abi.RocStr.fromSlice(text, roc_host);
+}
+
+fn verifyEachValueEqCallable(_: *abi.RocHost, result: ?[*]u8, args: ?[*]const u8, _: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
+    const input: *const erased_calls.ErasedHostValueBinaryArgs = @ptrCast(@alignCast(args.?));
+    const out: *usize = @ptrCast(@alignCast(result.?));
+    out.* = @intFromBool(input.arg0 == input.arg1);
+}
+
 var verifyStateInitCalls: usize = 0;
 
 fn verifyStateCallable(_: *abi.RocHost, result: ?[*]u8, _: ?[*]const u8, _: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
@@ -9819,7 +9838,10 @@ test "provisional each-row scopes abort and publish without partial scope mutati
             var fault = FaultAllocator.init(std.testing.allocator);
             var ctx = VerifyCtxHost{ .allocator = fault.allocator() };
             var engine = Engine(VerifyCtx).init();
-            defer deinitVerifyStateEngine(&engine, &ctx, host);
+            defer {
+                engine.active_stream.deinit(ctx.allocator, &ctx, host, &engine.pending_roc_metrics);
+                deinitVerifyStateEngine(&engine, &ctx, host);
+            }
             _ = try engine.internRootScope(ctx.allocator);
             fault.configure(fail_at);
             var overlay = scope_runtime.PreparedEachRowScopes.init(ctx.allocator, engine.scopes.items);
@@ -9926,6 +9948,132 @@ test "prepared each-row subtree retirement is atomic and allocation free" {
     var failures: usize = 0;
     for (1..attempts + 1) |fail_at| {
         _ = try Runner.run(&roc_host, capability, fail_at);
+        failures += 1;
+    }
+    try std.testing.expectEqual(attempts, failures);
+}
+
+test "engine prepared each sync atomically removes reuses changes and creates rows" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&env);
+    const noop = abi.rocErasedCallableAllocate(&roc_host, verifyErasedCallable, null, 0).?;
+    defer abi.decrefErasedCallable(noop, &roc_host);
+    const eq = abi.rocErasedCallableAllocate(&roc_host, verifyEachValueEqCallable, null, 0).?;
+    defer abi.decrefErasedCallable(eq, &roc_host);
+    const key_text = abi.rocErasedCallableAllocate(&roc_host, verifyEachKeyTextCallable, null, 0).?;
+    defer abi.decrefErasedCallable(key_text, &roc_host);
+    const capability = HostValueCapability{ .clone = noop, .drop = noop, .eq = eq };
+    const ops = std.mem.zeroInit(HostEachOps, .{
+        .item_capability = capability,
+        .items_capability = capability,
+        .items_to_values = noop,
+        .key_capability = capability,
+        .key_of = noop,
+        .key_text = key_text,
+        .row = noop,
+    });
+
+    const Runner = struct {
+        fn retry(engine: *Engine(VerifyCtx), ctx: *VerifyCtxHost, host: *abi.RocHost, each_ops: HostEachOps, site_index: usize, keys: []const HostValue, items: []const HostValue) !void {
+            var hooks = Engine(VerifyCtx).PreparedEachRowSyncHooks.init(engine, ctx, host, each_ops);
+            var rows = try each_runtime.PreparedRowSync.prepare(ctx.allocator, &engine.each_row_sites, &engine.each_row_memberships_by_scope_id, site_index, 0, 44, keys, items, &hooks);
+            var retirement = try Engine(VerifyCtx).PreparedEachRowSubtreeRetirement.prepare(engine, ctx.allocator, rows.removed_scope_ids);
+            retirement.applyBeforeRowCommit(engine);
+            var diff = rows.commit(&engine.each_row_sites, &engine.each_row_memberships_by_scope_id, keys, items, &hooks);
+            retirement.applyAfterRowCommit(engine);
+            retirement.applyEffectsAfterPublication(engine, ctx);
+            diff.deinit(ctx.allocator);
+            rows.deinit();
+            hooks.deinit();
+            retirement.deinit(engine, ctx.allocator, ctx, host);
+        }
+
+        fn run(host: *abi.RocHost, each_ops: HostEachOps, fail_at: ?usize) !usize {
+            var fault = FaultAllocator.init(std.testing.allocator);
+            var ctx = VerifyCtxHost{ .allocator = fault.allocator() };
+            var engine = Engine(VerifyCtx).init();
+            defer {
+                engine.active_stream.deinit(ctx.allocator, &ctx, host, &engine.pending_roc_metrics);
+                deinitVerifyStateEngine(&engine, &ctx, host);
+            }
+            _ = try engine.internRootScope(ctx.allocator);
+            const removed_scope_id = engine.createEachRowScope(&ctx, 0, 44, hashEachKeyText("one"), 1, 100, each_ops.key_capability, each_ops.item_capability);
+            _ = engine.createEachRowScope(&ctx, 0, 44, hashEachKeyText("two"), 2, 200, each_ops.key_capability, each_ops.item_capability);
+            _ = engine.createEachRowScope(&ctx, 0, 44, hashEachKeyText("three"), 3, 300, each_ops.key_capability, each_ops.item_capability);
+            const retired_node_id = try engine.internNodeIdentity(ctx.allocator, removed_scope_id, 71);
+            const retired_elem_id = try engine.internDomIdentity(ctx.allocator, removed_scope_id, 72);
+            engine.active_stream.appendCleanup(ctx.allocator, removed_scope_id, "each-cleanup");
+            const site_index = engine.activeEachRowSiteIndex(0, 44).?;
+            const old_ids = try ctx.allocator.dupe(u64, engine.each_row_sites.items[site_index].scope_ids.items);
+            defer ctx.allocator.free(old_ids);
+            const keys = [_]HostValue{ 2, 3, 4 };
+            const items = [_]HostValue{ 201, 300, 400 };
+
+            fault.configure(fail_at);
+            var hooks = Engine(VerifyCtx).PreparedEachRowSyncHooks.init(&engine, &ctx, host, each_ops);
+            var rows = each_runtime.PreparedRowSync.prepare(ctx.allocator, &engine.each_row_sites, &engine.each_row_memberships_by_scope_id, site_index, 0, 44, &keys, &items, &hooks) catch |err| {
+                hooks.deinit();
+                try std.testing.expectEqual(error.OutOfMemory, err);
+                try std.testing.expectEqualSlices(u64, old_ids, engine.each_row_sites.items[site_index].scope_ids.items);
+                try std.testing.expectEqual(@as(usize, 4), engine.scopes.items.len);
+                try std.testing.expect(engine.node_identities.items[@intCast(retired_node_id)].active);
+                try std.testing.expect(engine.dom_identities.items[@intCast(retired_elem_id - 1)].active);
+                try std.testing.expectEqual(@as(usize, 0), ctx.cancelled_tasks);
+                try std.testing.expectEqual(@as(usize, 0), engine.cleanup_events.items.len);
+                const failed_attempts = fault.attempts;
+                fault.configure(null);
+                try retry(&engine, &ctx, host, each_ops, site_index, &keys, &items);
+                try std.testing.expectEqualSlices(u64, &.{ 2, 3, 4 }, engine.each_row_sites.items[site_index].scope_ids.items);
+                return failed_attempts;
+            };
+            var retirement = Engine(VerifyCtx).PreparedEachRowSubtreeRetirement.prepare(&engine, ctx.allocator, rows.removed_scope_ids) catch |err| {
+                rows.abort(&hooks);
+                rows.deinit();
+                hooks.deinit();
+                try std.testing.expect(err == error.OutOfMemory or err == error.ResourceLimit);
+                try std.testing.expectEqualSlices(u64, old_ids, engine.each_row_sites.items[site_index].scope_ids.items);
+                try std.testing.expectEqual(@as(usize, 4), engine.scopes.items.len);
+                try std.testing.expect(engine.node_identities.items[@intCast(retired_node_id)].active);
+                try std.testing.expect(engine.dom_identities.items[@intCast(retired_elem_id - 1)].active);
+                try std.testing.expectEqual(@as(usize, 0), ctx.cancelled_tasks);
+                try std.testing.expectEqual(@as(usize, 0), engine.cleanup_events.items.len);
+                const failed_attempts = fault.attempts;
+                fault.configure(null);
+                try retry(&engine, &ctx, host, each_ops, site_index, &keys, &items);
+                try std.testing.expectEqualSlices(u64, &.{ 2, 3, 4 }, engine.each_row_sites.items[site_index].scope_ids.items);
+                return failed_attempts;
+            };
+            const attempts = fault.attempts;
+            fault.configure(1);
+            retirement.applyBeforeRowCommit(&engine);
+            var diff = rows.commit(&engine.each_row_sites, &engine.each_row_memberships_by_scope_id, &keys, &items, &hooks);
+            retirement.applyAfterRowCommit(&engine);
+            retirement.applyEffectsAfterPublication(&engine, &ctx);
+            try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+            try std.testing.expectEqualSlices(u64, &.{ 2, 3, 4 }, diff.scope_ids);
+            try std.testing.expectEqualSlices(bool, &.{ true, false, true }, diff.row_items_changed);
+            try std.testing.expectEqualSlices(bool, &.{ false, false, true }, diff.scope_created);
+            try std.testing.expectEqual(@as(u64, 201), engine.eachRowScopeValues(2).item);
+            try std.testing.expectEqual(@as(u64, 400), engine.eachRowScopeValues(4).item);
+            try std.testing.expect(!engine.scopes.items[1].active);
+            try std.testing.expect(!engine.node_identities.items[@intCast(retired_node_id)].active);
+            try std.testing.expect(!engine.dom_identities.items[@intCast(retired_elem_id - 1)].active);
+            try std.testing.expectEqual(@as(usize, 1), engine.cleanup_events.items.len);
+            try std.testing.expectEqualStrings("each-cleanup", engine.cleanup_events.items[0]);
+            fault.configure(null);
+            diff.deinit(ctx.allocator);
+            rows.deinit();
+            hooks.deinit();
+            retirement.deinit(&engine, ctx.allocator, &ctx, host);
+            return attempts;
+        }
+    };
+
+    const attempts = try Runner.run(&roc_host, ops, null);
+    var failures: usize = 0;
+    for (1..attempts + 1) |fail_at| {
+        _ = try Runner.run(&roc_host, ops, fail_at);
         failures += 1;
     }
     try std.testing.expectEqual(attempts, failures);
