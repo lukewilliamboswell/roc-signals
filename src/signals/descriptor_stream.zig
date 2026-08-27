@@ -1204,6 +1204,7 @@ pub const Stream = struct {
     /// binding, cached value, and read callable exactly as a published
     /// descriptor would during stream teardown.
     pub const PreparedSignalDescriptor = union(enum) {
+        text_node: StreamSignalTextNodeDesc,
         text_attr: SignalTextAttrDesc,
         bool_attr: SignalBoolAttrDesc,
         custom_text_attr: SignalCustomTextAttrDesc,
@@ -1212,6 +1213,7 @@ pub const Stream = struct {
 
         pub fn abort(self: *@This(), allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
             switch (self.*) {
+                .text_node => |*desc| desc.deinit(allocator, ctx, roc_host, metrics),
                 .text_attr => |*desc| desc.deinit(allocator, ctx, roc_host, metrics),
                 .bool_attr => |*desc| desc.deinit(allocator, ctx, roc_host, metrics),
                 .custom_text_attr => |*desc| desc.deinit(allocator, ctx, roc_host, metrics),
@@ -1220,6 +1222,16 @@ pub const Stream = struct {
             }
         }
     };
+
+    pub fn reservePreparedSignalTextNodes(self: *Stream, allocator: std.mem.Allocator, additional: usize, highest_elem_id: u64) std.mem.Allocator.Error!void {
+        try self.render_nodes.ensureUnusedCapacity(allocator, additional);
+        try self.signal_text_nodes.ensureUnusedCapacity(allocator, additional);
+        const highest_index = std.math.cast(usize, highest_elem_id) orelse return error.OutOfMemory;
+        const descriptor_len = std.math.add(usize, highest_index, 1) catch return error.OutOfMemory;
+        if (descriptor_len > self.descriptor_indexes_by_elem_id.items.len) try self.descriptor_indexes_by_elem_id.ensureTotalCapacity(allocator, descriptor_len);
+        const metadata_entries = std.math.mul(usize, additional, 2) catch return error.OutOfMemory;
+        try self.render_metadata_by_elem_id.ensureUnusedCapacity(allocator, @intCast(metadata_entries));
+    }
 
     pub fn reservePreparedSignalAttrs(self: *Stream, allocator: std.mem.Allocator, additional: usize, highest_elem_id: u64) std.mem.Allocator.Error!void {
         try self.signal_text_attrs.ensureUnusedCapacity(allocator, additional);
@@ -1244,6 +1256,20 @@ pub const Stream = struct {
         }
         const descriptor = &self.descriptor_indexes_by_elem_id.items[@intCast(elem_id)];
         switch (prepared) {
+            .text_node => |desc| {
+                const render_index = self.render_nodes.items.len;
+                const index = self.signal_text_nodes.items.len;
+                self.render_nodes.appendAssumeCapacity(.{ .elem_id = desc.elem_id, .kind = .signal_text });
+                self.signal_text_nodes.appendAssumeCapacity(desc);
+                setFreshIndex(&descriptor.signal_text_node, index);
+                const elem_entry = self.render_metadata_by_elem_id.getOrPutAssumeCapacity(desc.elem_id);
+                if (!elem_entry.found_existing) elem_entry.value_ptr.* = .{};
+                elem_entry.value_ptr.render_node = render_index;
+                const parent_entry = self.render_metadata_by_elem_id.getOrPutAssumeCapacity(desc.parent_elem_id);
+                if (!parent_entry.found_existing) parent_entry.value_ptr.* = .{};
+                parent_entry.value_ptr.last_child = desc.elem_id;
+                self.next_elem_id += 1;
+            },
             .text_attr => |desc| {
                 const index = self.signal_text_attrs.items.len;
                 self.signal_text_attrs.appendAssumeCapacity(desc);
