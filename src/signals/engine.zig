@@ -2098,6 +2098,11 @@ pub fn Engine(comptime Ctx: type) type {
                 if (expected_nodes > limits.nodes) return error.ResourceLimit;
                 self.dom_identities.prepare(allocator, expected_nodes) catch return error.OutOfMemory;
                 self.prepared_nodes.ensureTotalCapacity(allocator, expected_nodes) catch return error.OutOfMemory;
+                self.engine.scopes.ensureUnusedCapacity(allocator, 1) catch return error.OutOfMemory;
+                self.engine.dom_identities.ensureUnusedCapacity(allocator, expected_nodes) catch return error.OutOfMemory;
+                self.engine.active_dom_identity_ids.ensureUnusedCapacity(allocator, @intCast(expected_nodes)) catch return error.OutOfMemory;
+                const highest_elem_id = std.math.add(u64, @intCast(self.engine.dom_identities.items.len), @as(u64, @intCast(expected_nodes))) catch return error.ResourceLimit;
+                self.stream.reservePreparedStaticNodes(allocator, expected_nodes, highest_elem_id) catch return error.OutOfMemory;
                 return self;
             }
 
@@ -2131,6 +2136,35 @@ pub fn Engine(comptime Ctx: type) type {
                 const root_key: collection_plan.ScopeKey = .{ .parent_id = 0, .ordinal = 0, .kind = 0 };
                 if (self.scopes.lookup(root_key, null) == scope_id) return;
                 self.engine.validateScopeId(scope_id) catch return error.ResourceLimit;
+            }
+
+            fn reserveDomIdentity(self: *@This(), scope_id: u64, ordinal: u64) CollectionError!u64 {
+                const key = identityKey(scope_id, ordinal);
+                const active_id = self.engine.active_dom_identity_ids.get(key);
+                const fresh_id = std.math.add(u64, @intCast(self.engine.dom_identities.items.len + self.dom_identities.intents.items.len), 1) catch return error.ResourceLimit;
+                return self.dom_identities.reserve(key, active_id, &.{fresh_id}) catch |err| switch (err) {
+                    error.NoCapacity => error.OutOfMemory,
+                    error.NoAvailableIdentity => error.ResourceLimit,
+                };
+            }
+
+            fn appendElement(self: *@This(), scope_id: u64, parent_elem_id: u64, dom_ordinal: *u64, tag: []const u8) CollectionError!u64 {
+                const descriptor_bytes = std.math.add(usize, @sizeOf(HostElementDesc), tag.len) catch return error.ResourceLimit;
+                try self.budget.charge(1, descriptor_bytes);
+                const elem_id = try self.reserveDomIdentity(scope_id, dom_ordinal.*);
+                const prepared = self.stream.prepareElement(Ctx.allocator(self.host_ctx), elem_id, parent_elem_id, scope_id, tag) catch return error.OutOfMemory;
+                self.prepared_nodes.appendAssumeCapacity(prepared);
+                dom_ordinal.* += 1;
+                return elem_id;
+            }
+
+            fn appendText(self: *@This(), scope_id: u64, parent_elem_id: u64, dom_ordinal: *u64, value: []const u8) CollectionError!void {
+                const descriptor_bytes = std.math.add(usize, @sizeOf(HostNodeTextNodeDesc), value.len) catch return error.ResourceLimit;
+                try self.budget.charge(1, descriptor_bytes);
+                const elem_id = try self.reserveDomIdentity(scope_id, dom_ordinal.*);
+                const prepared = self.stream.prepareTextNode(Ctx.allocator(self.host_ctx), elem_id, parent_elem_id, scope_id, value) catch return error.OutOfMemory;
+                self.prepared_nodes.appendAssumeCapacity(prepared);
+                dom_ordinal.* += 1;
             }
         };
 

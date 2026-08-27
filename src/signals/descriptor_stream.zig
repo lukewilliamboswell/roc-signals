@@ -1133,6 +1133,21 @@ pub const Stream = struct {
         }
     };
 
+    /// Reserves every container touched by a batch of prepared static nodes.
+    /// Logical stream state is unchanged; callers may then prepare strings and
+    /// publish the whole batch without allocating during publication.
+    pub fn reservePreparedStaticNodes(self: *Stream, allocator: std.mem.Allocator, additional: usize, highest_elem_id: u64) std.mem.Allocator.Error!void {
+        try self.render_nodes.ensureUnusedCapacity(allocator, additional);
+        try self.elements.ensureUnusedCapacity(allocator, additional);
+        try self.text_nodes.ensureUnusedCapacity(allocator, additional);
+        const descriptor_len = std.math.add(usize, @as(usize, @intCast(highest_elem_id)), 1) catch return error.OutOfMemory;
+        if (descriptor_len > self.descriptor_indexes_by_elem_id.items.len) {
+            try self.descriptor_indexes_by_elem_id.ensureTotalCapacity(allocator, descriptor_len);
+        }
+        const metadata_entries = std.math.mul(usize, additional, 2) catch return error.OutOfMemory;
+        try self.render_metadata_by_elem_id.ensureUnusedCapacity(allocator, @intCast(metadata_entries));
+    }
+
     fn prepareStaticNode(self: *Stream, allocator: std.mem.Allocator, elem_id: u64, parent_elem_id: u64, scope_id: u64, text: []const u8, kind: RenderNodeKind) std.mem.Allocator.Error!PreparedStaticNode {
         _ = std.math.add(u64, self.next_elem_id, 1) catch return error.OutOfMemory;
         const copy = try allocator.dupe(u8, text);
