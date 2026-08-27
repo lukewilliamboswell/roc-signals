@@ -9417,7 +9417,7 @@ const OwnedAggregateGraphRoot = struct {
         } }, .tag = .State });
     }
 
-    fn init(allocator: std.mem.Allocator, roc_host: *abi.RocHost) !*@This() {
+    fn initWithShape(allocator: std.mem.Allocator, roc_host: *abi.RocHost, nested: bool) !*@This() {
         const self = try allocator.create(@This());
         errdefer allocator.destroy(self);
         self.* = undefined;
@@ -9453,17 +9453,36 @@ const OwnedAggregateGraphRoot = struct {
         const condition = abi.NodeSignalExpr{ .payload = .{ .const_value = .{ ._0 = self.value_callable, ._1 = self.value_callable, ._2 = condition_capability } }, .tag = .ConstValue };
         self.first_condition = boxOwnedVerifySignalExpr(roc_host, condition);
         const bool_read = HostBoolRead{ .capability = condition_capability, .read = self.bool_callable };
-        const first_when = abi.Elem{ .payload = .{ .when = .{ .condition = self.first_condition, .read = bool_read, .when_false = self.first_false, .when_true = self.first_true } }, .tag = .When };
+        var nested_box: ?*abi.Elem = null;
+        defer if (nested_box) |boxed| decrefOwnedVerifyElemBox(boxed, roc_host);
+        const first_true = if (nested) blk: {
+            var inner_when = abi.Elem{ .payload = .{ .when = .{ .condition = self.first_condition, .read = bool_read, .when_false = self.second_false, .when_true = self.first_true } }, .tag = .When };
+            inner_when.incref(1);
+            nested_box = boxOwnedVerifyElem(roc_host, inner_when);
+            break :blk nested_box.?;
+        } else self.first_true;
+        const first_when = abi.Elem{ .payload = .{ .when = .{ .condition = self.first_condition, .read = bool_read, .when_false = self.first_false, .when_true = first_true } }, .tag = .When };
         const second_when = abi.Elem{ .payload = .{ .when = .{ .condition = self.first_condition, .read = bool_read, .when_false = self.second_false, .when_true = self.second_true } }, .tag = .When };
         var separator = verifyStaticText();
         separator.payload.text = abi.RocStr.fromSlice("separator", roc_host);
-        self.root = ownedVerifyStaticRoot(roc_host, &.{}, &.{ first_when, separator, second_when });
+        self.root = if (nested)
+            ownedVerifyStaticRoot(roc_host, &.{}, &.{first_when})
+        else
+            ownedVerifyStaticRoot(roc_host, &.{}, &.{ first_when, separator, second_when });
         decrefOwnedVerifySignalExprBox(self.first_condition, roc_host);
         decrefOwnedVerifyElemBox(self.first_false, roc_host);
         decrefOwnedVerifyElemBox(self.first_true, roc_host);
         decrefOwnedVerifyElemBox(self.second_false, roc_host);
         decrefOwnedVerifyElemBox(self.second_true, roc_host);
         return self;
+    }
+
+    fn init(allocator: std.mem.Allocator, roc_host: *abi.RocHost) !*@This() {
+        return initWithShape(allocator, roc_host, false);
+    }
+
+    fn initNested(allocator: std.mem.Allocator, roc_host: *abi.RocHost) !*@This() {
+        return initWithShape(allocator, roc_host, true);
     }
 
     fn deinit(self: *@This()) void {
@@ -10735,6 +10754,119 @@ test "aggregate branch collection sweeps allocation failures without publication
         try std.testing.expect(live_attempts != 0);
         for (1..live_attempts + 1) |failure_number| _ = try Runner.run(failure_number, live_count);
     }
+}
+
+test "nested live when transaction subsumes inner change atomically" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    const Runner = struct {
+        fn run(failure_number: ?usize) !usize {
+            var fault = FaultAllocator.init(std.testing.allocator);
+            var ctx = VerifyCtxHost{ .allocator = fault.allocator() };
+            var roc_env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
+            var roc_host = abi.makeRocHost(&roc_env);
+            const fixture = try OwnedAggregateGraphRoot.initNested(std.testing.allocator, &roc_host);
+            defer fixture.deinit();
+            ctx.state_capability = .{ .clone = fixture.value_callable, .drop = fixture.value_callable, .eq = fixture.value_callable };
+            var engine = Engine(VerifyCtx).init();
+            defer {
+                if (engine.active_signal_graph.items.len != 0) {
+                    engine.clearActiveSignalRoutes(&ctx);
+                    engine.clearActiveSignalGraph(&ctx);
+                }
+                engine.active_stream.deinit(ctx.allocator, &ctx, &roc_host, &engine.pending_roc_metrics);
+                engine.active_signal_graph.deinit(ctx.allocator);
+                engine.active_source_signal_routes.deinit(ctx.allocator);
+                engine.active_text_signal_routes.deinit(ctx.allocator);
+                engine.active_bool_signal_routes.deinit(ctx.allocator);
+                engine.active_change_signal_routes.deinit(ctx.allocator);
+                engine.active_structural_signal_routes.deinit(ctx.allocator);
+                ctx.render_batch.deinit(ctx.allocator);
+                engine.deinitRenderCache(&ctx);
+                effects_runtime.clearPendingTasks(VerifyCtx, &ctx, ctx.allocator, &engine.pending_tasks, &roc_host);
+                engine.pending_tasks.deinit(ctx.allocator);
+                effects_runtime.deinitCleanupEvents(ctx.allocator, &engine.cleanup_events);
+                for (engine.states.items) |*state| state.cell.deinit(&ctx, &roc_host, &engine.pending_roc_metrics);
+                engine.states.deinit(ctx.allocator);
+                engine.state_indexes_by_node_id.deinit(ctx.allocator);
+                engine.node_identities.deinit(ctx.allocator);
+                engine.active_node_identity_ids.deinit(ctx.allocator);
+                for (engine.scopes.items) |*scope| if (scope.active) deinitHostScopeStep(&scope.step, &ctx, &roc_host, &engine.pending_roc_metrics);
+                engine.clearEachRowSites(ctx.allocator);
+                engine.scopes.deinit(ctx.allocator);
+                engine.dom_identities.deinit(ctx.allocator);
+                engine.active_dom_identity_ids.deinit(ctx.allocator);
+                engine.deinitScratch(&ctx);
+            }
+            var stream: HostNodeDescriptorStream = .{};
+            try engine.collectStaticRootDescriptorsTransactional(&ctx, &roc_host, &stream, fixture.root, .{});
+            engine.active_stream = stream;
+            stream = .{};
+            engine.roc_host = &roc_host;
+            _ = engine.applyNodeDescriptorStream(&ctx, &roc_host, &engine.active_stream);
+            try std.testing.expectEqual(@as(usize, 2), engine.active_stream.whens.items.len);
+            try std.testing.expectEqual(@as(usize, 1), engine.active_stream.signal_text_nodes.items.len);
+            const outer_when = engine.active_stream.whens.items[0];
+            const inner_when = engine.active_stream.whens.items[1];
+            const outer_site = engine.active_stream.scope_sites.items[engine.active_stream.nodeDescriptorIndex(outer_when.node_id).?.scope_sites.when.get().?];
+            const inner_site = engine.active_stream.scope_sites.items[engine.active_stream.nodeDescriptorIndex(inner_when.node_id).?.scope_sites.when.get().?];
+            const outer_old = (try engine.activeWhenBranchScopeId(outer_site.scope_id, outer_site.ordinal, .true_branch)).?;
+            const inner_old = (try engine.activeWhenBranchScopeId(inner_site.scope_id, inner_site.ordinal, .true_branch)).?;
+            try std.testing.expect(try engine.scopeIsDescendantOrSelf(inner_old, outer_old));
+            _ = engine.appendPendingTask(&ctx, inner_old, fixture.first_true_callable.?, "nested-task", "request");
+            const old_graph_len = engine.active_signal_graph.items.len;
+            const old_inner_record = engine.active_stream.signal_text_nodes.items[0].signal.record;
+            const old_inner_id = old_inner_record.active_graph_id.?;
+            const old_children = try std.testing.allocator.dupe(u64, engine.render_cache.nodes.items[1].children.items);
+            defer std.testing.allocator.free(old_children);
+            const cap = HostValueCapability{ .clone = fixture.value_callable, .drop = fixture.value_callable, .eq = fixture.value_callable };
+            var changes = [_]HostDirtyStructuralSignal{
+                .{ .kind = .when, .node_id = outer_when.node_id, .scope_id = outer_site.scope_id, .ordinal = outer_site.ordinal, .record = outer_when.condition.record, .branch = .false_branch, .pending_when_cache = HostValueCell.initRetained(0, cap, &engine.pending_roc_metrics) },
+                .{ .kind = .when, .node_id = inner_when.node_id, .scope_id = inner_site.scope_id, .ordinal = inner_site.ordinal, .record = inner_when.condition.record, .branch = .false_branch, .pending_when_cache = HostValueCell.initRetained(0, cap, &engine.pending_roc_metrics) },
+            };
+            defer for (&changes) |*change| change.abortPendingWhenCache(&ctx, &roc_host, &engine.pending_roc_metrics);
+            fault.configure(failure_number);
+            const result = engine.tryApplyPreparedDirtyWhenSet(&ctx, &roc_host, &.{}, &changes) catch |err| {
+                try std.testing.expectEqual(error.OutOfMemory, err);
+                try std.testing.expectEqual(old_graph_len, engine.active_signal_graph.items.len);
+                try std.testing.expectEqual(@as(?u64, old_inner_id), old_inner_record.active_graph_id);
+                try std.testing.expectEqualSlices(u64, old_children, engine.render_cache.nodes.items[1].children.items);
+                try std.testing.expectEqual(@as(usize, 1), engine.pending_tasks.items.len);
+                try std.testing.expectEqual(@as(usize, 0), ctx.cancelled_tasks);
+                for (changes) |change| try std.testing.expect(change.pending_when_cache != null);
+                const attempts = fault.attempts;
+                fault.configure(null);
+                try std.testing.expect((try engine.tryApplyPreparedDirtyWhenSet(&ctx, &roc_host, &.{}, &changes)) != null);
+                try verifyCommitted(&engine, &ctx, &changes, old_inner_record);
+                return attempts;
+            };
+            try std.testing.expect(result != null);
+            try verifyCommitted(&engine, &ctx, &changes, old_inner_record);
+            return fault.attempts;
+        }
+
+        fn verifyCommitted(engine: *Engine(VerifyCtx), ctx: *VerifyCtxHost, changes: []const HostDirtyStructuralSignal, old_inner_record: *HostSignalRecord) !void {
+            for (changes) |change| try std.testing.expect(change.pending_when_cache == null);
+            try std.testing.expectEqual(@as(usize, 1), engine.active_stream.whens.items.len);
+            try std.testing.expectEqual(@as(?u64, null), old_inner_record.active_graph_id);
+            try std.testing.expectEqual(@as(usize, 3), engine.active_signal_graph.items.len);
+            const next_record = engine.active_stream.signal_text_nodes.items[0].signal.record;
+            const next_id = next_record.active_graph_id.?;
+            try std.testing.expectEqual(@as(u64, 1), active_graph.rank(HostSignalRecord, engine.active_signal_graph.items, next_id));
+            try std.testing.expectEqual(@as(usize, 1), engine.active_text_signal_routes.items[@intCast(next_id)].items.len);
+            try std.testing.expect(next_record.active_use_count != 0);
+            try std.testing.expectEqual(@as(usize, 0), engine.pending_tasks.items.len);
+            try std.testing.expectEqual(@as(usize, 1), ctx.cancelled_tasks);
+            try std.testing.expect(ctx.render_batch.published.commands.len() != 0);
+            var found_outer_result = false;
+            for (engine.active_stream.text_nodes.items) |text_node| found_outer_result = found_outer_result or std.mem.eql(u8, text_node.value, "first-new");
+            try std.testing.expect(found_outer_result);
+        }
+    };
+
+    const attempts = try Runner.run(null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
+    _ = try Runner.run(attempts + 1);
 }
 
 comptime {
