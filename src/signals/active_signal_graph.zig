@@ -463,6 +463,11 @@ pub fn appendSourceRoute(allocator: std.mem.Allocator, source_routes: *RouteTabl
     }
 }
 
+pub fn appendFreshSourceRoute(allocator: std.mem.Allocator, source_routes: *RouteTable(u64), source_node_count: usize, source_node_id: u64, record_id: u64) void {
+    const route = ensureSourceRoute(allocator, source_routes, source_node_count, source_node_id);
+    route.append(allocator, record_id) catch @panic("out of memory");
+}
+
 pub fn removeSourceRoute(source_routes: *RouteTable(u64), source_node_id: u64, record_id: u64) void {
     if (source_node_id >= source_routes.items.len) @panic("active source signal route removal referenced an unknown source node");
     var route = &source_routes.items[@intCast(source_node_id)];
@@ -710,7 +715,9 @@ pub fn retainRecord(
     records_rebuilt += 1;
 
     switch (record.payload) {
-        .ref => |source_node_id| appendSourceRoute(allocator, source_routes, source_node_count, source_node_id, record_id),
+        // appendNode assigned a fresh active-graph id, so this route cannot
+        // already contain it. Avoid a growing linear duplicate scan here.
+        .ref => |source_node_id| appendFreshSourceRoute(allocator, source_routes, source_node_count, source_node_id, record_id),
         .const_value, .task_source, .location_source, .online_source, .visibility_source, .storage_source => {},
         .interval_source => |payload| hooks.ensureInterval(record.token().?, payload.period_ms),
         .map => |payload| appendDependentId(Record, allocator, nodes.items, requireRecordId(Record, nodes.items, payload.input), record_id),
