@@ -558,6 +558,13 @@ pub const PreparedBatch = struct {
         return self;
     }
 
+    /// Cumulatively reserves additional semantic commands during recoverable preparation.
+    pub fn reserveAdditional(self: *PreparedBatch, allocator: std.mem.Allocator, additional: usize) (std.mem.Allocator.Error || error{ResourceLimit})!void {
+        const next_limit = std.math.add(usize, self.command_limit, additional) catch return error.ResourceLimit;
+        try self.commands.ensureTotalCapacity(allocator, next_limit);
+        self.command_limit = next_limit;
+    }
+
     fn ensureJournalSlot(self: *const PreparedBatch) error{ResourceLimit}!void {
         if (self.commands.items.len >= self.command_limit) return error.ResourceLimit;
     }

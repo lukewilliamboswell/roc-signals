@@ -588,6 +588,15 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             return &cache.nodes.items[index];
         }
 
+        /// Reserves one additional final child-list replacement before journal mutation.
+        pub fn reserveAdditionalChildren(self: *Self, child_links: usize) (std.mem.Allocator.Error || error{ResourceLimit})!void {
+            try self.children.ensureUnusedCapacity(self.allocator, 1);
+            const link_count = std.math.cast(u32, child_links) orelse return error.ResourceLimit;
+            try self.parent_intent_indexes.ensureUnusedCapacity(self.allocator, link_count);
+            try self.parent_intents.ensureUnusedCapacity(self.allocator, child_links);
+            try self.wire.reserveAdditional(self.allocator, child_links);
+        }
+
         /// Adds one active node retirement and its corresponding host removal.
         pub fn addRemoval(self: *Self, cache: *const Cache(Ctx), elem_id: u64) error{ MissingNode, ResourceLimit }!void {
             self.removals.appendAssumeCapacity(try PreparedNodeRemoval.prepare(Ctx, cache, elem_id));
@@ -654,18 +663,70 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
         pub fn addChildren(self: *Self, cache: *const Cache(Ctx), parent_elem_id: u64, next: []const u64) (std.mem.Allocator.Error || error{ ConflictingParent, DuplicateChild, MissingNode, ResourceLimit })!void {
             if (!self.nodeExists(cache, parent_elem_id)) return error.MissingNode;
             const parent_index = std.math.cast(usize, parent_elem_id) orelse return error.ResourceLimit;
+            const old_children: []const u64 = if (parent_index < cache.nodes.items.len and cache.nodes.items[parent_index].active)
+                cache.nodes.items[parent_index].children.items
+            else
+                &.{};
             if (parent_index < cache.nodes.items.len and cache.nodes.items[parent_index].active) {
-                for (cache.nodes.items[parent_index].children.items) |child_id| try self.setParentIntent(cache, child_id, null);
+                for (old_children) |child_id| try self.setParentIntent(cache, child_id, null);
             }
             for (next) |child_id| try self.setParentIntent(cache, child_id, parent_elem_id);
             const copied = try self.allocator.dupe(u64, next);
             self.children.appendAssumeCapacity(.{ .parent_elem_id = parent_elem_id, .next = copied });
             const parent_id = std.math.cast(u32, parent_elem_id) orelse return error.ResourceLimit;
-            for (next) |child_id| try self.wire.addFixed(.{
+            var old_indexes = std.AutoHashMapUnmanaged(u64, usize).empty;
+            defer old_indexes.deinit(self.allocator);
+            try old_indexes.ensureTotalCapacity(self.allocator, std.math.cast(u32, old_children.len) orelse return error.ResourceLimit);
+            for (old_children, 0..) |child_id, index| {
+                const entry = old_indexes.getOrPutAssumeCapacity(child_id);
+                if (entry.found_existing) return error.DuplicateChild;
+                entry.value_ptr.* = index;
+            }
+            const retained = try self.allocator.alloc(bool, next.len);
+            defer self.allocator.free(retained);
+            const stable = try self.allocator.alloc(bool, next.len);
+            defer self.allocator.free(stable);
+            const previous = try self.allocator.alloc(?usize, next.len);
+            defer self.allocator.free(previous);
+            const tails = try self.allocator.alloc(usize, next.len);
+            defer self.allocator.free(tails);
+            @memset(retained, false);
+            @memset(stable, false);
+            var tails_len: usize = 0;
+            for (next, 0..) |child_id, index| if (old_indexes.get(child_id)) |old_index| {
+                retained[index] = true;
+                var low: usize = 0;
+                var high = tails_len;
+                while (low < high) {
+                    const middle = low + (high - low) / 2;
+                    const middle_old = old_indexes.get(next[tails[middle]]) orelse unreachable;
+                    if (middle_old < old_index) low = middle + 1 else high = middle;
+                }
+                previous[index] = if (low == 0) null else tails[low - 1];
+                tails[low] = index;
+                if (low == tails_len) tails_len += 1;
+            };
+            var stable_index: ?usize = if (tails_len == 0) null else tails[tails_len - 1];
+            while (stable_index) |index| {
+                stable[index] = true;
+                stable_index = previous[index];
+            }
+            for (next, retained) |child_id, is_retained| if (!is_retained) try self.wire.addFixed(.{
                 .op = .append_child,
                 .a = parent_id,
                 .b = std.math.cast(u32, child_id) orelse return error.ResourceLimit,
             });
+            var index = next.len;
+            while (index != 0) {
+                index -= 1;
+                if (!retained[index] or stable[index]) continue;
+                try self.wire.addFixed(.{
+                    .op = .move_before,
+                    .a = parent_id,
+                    .b = std.math.cast(u32, next[index]) orelse return error.ResourceLimit,
+                    .c = if (index + 1 == next.len) 0 else std.math.cast(u32, next[index + 1]) orelse return error.ResourceLimit,
+                });
+            }
         }
 
         /// Adds a text field for an active or provisional node.

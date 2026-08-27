@@ -37,6 +37,10 @@ pub const PreparedEachRowScopes = struct {
     allocator: std.mem.Allocator,
     original_scope_len: usize,
     rows: std.ArrayListUnmanaged(Scope) = .empty,
+    inactive_scope_ids: std.ArrayListUnmanaged(u64) = .empty,
+    inactive_cursor: usize = 0,
+    candidates_prepared: bool = false,
+    new_scope_count: usize = 0,
     committed: bool = false,
 
     /// Starts an empty overlay over the current persistent scope table.
@@ -48,15 +52,26 @@ pub const PreparedEachRowScopes = struct {
     pub fn prepareRow(self: *PreparedEachRowScopes, scopes: *std.ArrayListUnmanaged(Scope), ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, parent_scope_id: u64, site_ordinal: u64, key_hash: u64, key: HostValue, item: HostValue, key_cap: HostValueCapability, item_cap: HostValueCapability) std.mem.Allocator.Error!u64 {
         if (self.committed or scopes.items.len != self.original_scope_len) @panic("invalid provisional each-row scope state");
         scope_tree.validate(EachRowScopeStep, scopes.items, parent_scope_id) catch @panic("scope id has no host scope descriptor");
-        const next_len = std.math.add(usize, self.original_scope_len, self.rows.items.len + 1) catch return error.OutOfMemory;
-        try scopes.ensureTotalCapacity(self.allocator, next_len);
+        if (!self.candidates_prepared) {
+            try self.inactive_scope_ids.ensureTotalCapacity(self.allocator, scopes.items.len);
+            for (scopes.items) |scope| if (!scope.active) self.inactive_scope_ids.appendAssumeCapacity(scope.scope_id);
+            self.candidates_prepared = true;
+        }
+        const reuses_inactive = self.inactive_cursor < self.inactive_scope_ids.items.len;
+        const scope_id: u64 = if (reuses_inactive)
+            self.inactive_scope_ids.items[self.inactive_cursor]
+        else
+            @intCast(std.math.add(usize, self.original_scope_len, self.new_scope_count) catch return error.OutOfMemory);
+        if (!reuses_inactive) {
+            const next_len = std.math.add(usize, @intCast(scope_id), 1) catch return error.OutOfMemory;
+            try scopes.ensureTotalCapacity(self.allocator, next_len);
+        }
         try self.rows.ensureUnusedCapacity(self.allocator, 1);
 
         var key_cell = HostValueCell.initRetained(key, key_cap, metrics);
         errdefer key_cell.deinit(ctx, roc_host, metrics);
         var item_cell = HostValueCell.initRetained(item, item_cap, metrics);
         errdefer item_cell.deinit(ctx, roc_host, metrics);
-        const scope_id: u64 = @intCast(self.original_scope_len + self.rows.items.len);
         self.rows.appendAssumeCapacity(.{
             .scope_id = scope_id,
             .parent_scope_id = parent_scope_id,
@@ -68,14 +83,26 @@ pub const PreparedEachRowScopes = struct {
             } },
             .active = true,
         });
+        if (reuses_inactive) self.inactive_cursor += 1 else self.new_scope_count += 1;
         return scope_id;
     }
 
     /// Publishes all provisional rows without allocation and transfers cell ownership.
     pub fn commit(self: *PreparedEachRowScopes, scopes: *std.ArrayListUnmanaged(Scope)) void {
         if (self.committed or scopes.items.len != self.original_scope_len) @panic("invalid provisional each-row scope commit");
-        scopes.appendSliceAssumeCapacity(self.rows.items);
+        for (self.rows.items) |scope| {
+            const index: usize = @intCast(scope.scope_id);
+            if (index < self.original_scope_len) {
+                if (scopes.items[index].active) @panic("provisional each-row scope reused an active slot");
+                scopes.items[index] = scope;
+            } else {
+                if (index != scopes.items.len) @panic("provisional each-row scope suffix was not contiguous");
+                scopes.appendAssumeCapacity(scope);
+            }
+        }
         self.rows.clearRetainingCapacity();
+        self.inactive_cursor = 0;
+        self.new_scope_count = 0;
         self.committed = true;
     }
 
@@ -88,12 +115,15 @@ pub const PreparedEachRowScopes = struct {
             deinitScopeStep(&self.rows.items[index].step, ctx, roc_host, metrics);
         }
         self.rows.clearRetainingCapacity();
+        self.inactive_cursor = 0;
+        self.new_scope_count = 0;
     }
 
     /// Releases overlay storage; callers must abort or commit first.
     pub fn deinit(self: *PreparedEachRowScopes) void {
         if (self.rows.items.len != 0) @panic("provisional each-row scopes still own values");
         self.rows.deinit(self.allocator);
+        self.inactive_scope_ids.deinit(self.allocator);
         self.* = undefined;
     }
 };
