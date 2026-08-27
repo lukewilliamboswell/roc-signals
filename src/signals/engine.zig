@@ -3307,6 +3307,63 @@ pub fn Engine(comptime Ctx: type) type {
             elem: abi.Elem,
         };
 
+        const PreparedIdentityRetirements = struct {
+            node_ids: []u64,
+            dom_ids: []u64,
+
+            fn prepare(engine: *Self, allocator: std.mem.Allocator, target_scopes: []const bool) CollectionError!@This() {
+                var node_count: usize = 0;
+                for (engine.node_identities.items) |identity| {
+                    if (identity.scope_id >= target_scopes.len) return error.ResourceLimit;
+                    if (identity.active and target_scopes[@intCast(identity.scope_id)]) node_count = std.math.add(usize, node_count, 1) catch return error.ResourceLimit;
+                }
+                const node_ids = allocator.alloc(u64, node_count) catch return error.OutOfMemory;
+                errdefer allocator.free(node_ids);
+                var node_write: usize = 0;
+                for (engine.node_identities.items) |identity| if (identity.active and target_scopes[@intCast(identity.scope_id)]) {
+                    node_ids[node_write] = identity.node_id;
+                    node_write += 1;
+                };
+
+                var dom_count: usize = 0;
+                for (engine.dom_identities.items) |identity| {
+                    if (identity.scope_id >= target_scopes.len) return error.ResourceLimit;
+                    if (identity.active and target_scopes[@intCast(identity.scope_id)]) dom_count = std.math.add(usize, dom_count, 1) catch return error.ResourceLimit;
+                }
+                const dom_ids = allocator.alloc(u64, dom_count) catch return error.OutOfMemory;
+                errdefer allocator.free(dom_ids);
+                var dom_write: usize = 0;
+                for (engine.dom_identities.items, 1..) |identity, elem_id| if (identity.active and target_scopes[@intCast(identity.scope_id)]) {
+                    dom_ids[dom_write] = elem_id;
+                    dom_write += 1;
+                };
+                return .{ .node_ids = node_ids, .dom_ids = dom_ids };
+            }
+
+            fn apply(self: *const @This(), engine: *Self) void {
+                for (self.node_ids) |node_id| {
+                    const identity = &engine.node_identities.items[@intCast(node_id)];
+                    if (!engine.active_node_identity_ids.remove(identityKey(identity.scope_id, identity.ordinal))) @panic("prepared node identity retirement no longer matched active index");
+                    identity.active = false;
+                    identity.retired_at = engine.identity_reuse_barrier;
+                }
+                for (self.dom_ids) |elem_id| {
+                    const identity = &engine.dom_identities.items[@intCast(elem_id - 1)];
+                    if (!engine.active_dom_identity_ids.remove(identityKey(identity.scope_id, identity.ordinal))) @panic("prepared DOM identity retirement no longer matched active index");
+                    identity.active = false;
+                    identity.retired_at = engine.identity_reuse_barrier;
+                }
+                engine.has_inactive_node_identities = engine.has_inactive_node_identities or self.node_ids.len != 0;
+                engine.has_inactive_dom_identities = engine.has_inactive_dom_identities or self.dom_ids.len != 0;
+            }
+
+            fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+                allocator.free(self.node_ids);
+                allocator.free(self.dom_ids);
+                self.* = undefined;
+            }
+        };
+
         const AggregateBranchCollection = struct {
             engine: *Self,
             host_ctx: Ctx.Handle,
@@ -3317,6 +3374,7 @@ pub fn Engine(comptime Ctx: type) type {
             target_scopes: []bool = &.{},
             scope_retirement: ?scope_runtime.PreparedSubtreeRetirement = null,
             removal: ?structural_splice.PreparedMultiRemoval = null,
+            identity_retirements: ?PreparedIdentityRetirements = null,
 
             fn addCounts(total: *StaticRootCounts, next: StaticRootCounts) CollectionError!void {
                 total.nodes = std.math.add(usize, total.nodes, next.nodes) catch return error.ResourceLimit;
@@ -3382,6 +3440,8 @@ pub fn Engine(comptime Ctx: type) type {
                     error.OverlappingSubtrees => return error.ResourceLimit,
                 };
                 errdefer if (plan.scope_retirement) |*retirement| retirement.deinit(allocator);
+                plan.identity_retirements = try PreparedIdentityRetirements.prepare(engine, allocator, plan.target_scopes);
+                errdefer if (plan.identity_retirements) |*retirements| retirements.deinit(allocator);
                 plan.removal = structural_splice.prepareMultiRemoval(HostNodeDescriptorStream, allocator, &engine.active_stream, render_insert_indexes, plan.target_scopes) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.OverlappingIntervals => return error.ResourceLimit,
@@ -3399,6 +3459,7 @@ pub fn Engine(comptime Ctx: type) type {
                 self.collection.deinit();
                 self.stream.deinit(allocator, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
                 if (self.removal) |*removal| removal.deinit(allocator);
+                if (self.identity_retirements) |*retirements| retirements.deinit(allocator);
                 if (self.scope_retirement) |*retirement| retirement.deinit(allocator);
                 allocator.free(self.target_scopes);
                 allocator.free(self.replacement_scope_ids);
@@ -3490,28 +3551,11 @@ pub fn Engine(comptime Ctx: type) type {
                 }
                 plan.scope_retirement = scope_runtime.prepareSubtreeRetirement(HostEachRowScopeStep, allocator, engine_ptr.scopes.items, retired_scope_id) catch return error.OutOfMemory;
                 errdefer if (plan.scope_retirement) |*retirement| retirement.deinit(allocator);
-                var node_identity_count: usize = 0;
-                for (engine_ptr.node_identities.items) |identity| if (identity.active and plan.target_scopes[@intCast(identity.scope_id)]) {
-                    node_identity_count = std.math.add(usize, node_identity_count, 1) catch return error.ResourceLimit;
-                };
-                plan.retired_node_identity_ids = allocator.alloc(u64, node_identity_count) catch return error.OutOfMemory;
+                const identity_retirements = try PreparedIdentityRetirements.prepare(engine_ptr, allocator, plan.target_scopes);
+                plan.retired_node_identity_ids = identity_retirements.node_ids;
                 errdefer allocator.free(plan.retired_node_identity_ids);
-                var node_write: usize = 0;
-                for (engine_ptr.node_identities.items) |identity| if (identity.active and plan.target_scopes[@intCast(identity.scope_id)]) {
-                    plan.retired_node_identity_ids[node_write] = identity.node_id;
-                    node_write += 1;
-                };
-                var dom_identity_count: usize = 0;
-                for (engine_ptr.dom_identities.items) |identity| if (identity.active and plan.target_scopes[@intCast(identity.scope_id)]) {
-                    dom_identity_count = std.math.add(usize, dom_identity_count, 1) catch return error.ResourceLimit;
-                };
-                plan.retired_dom_identity_ids = allocator.alloc(u64, dom_identity_count) catch return error.OutOfMemory;
+                plan.retired_dom_identity_ids = identity_retirements.dom_ids;
                 errdefer allocator.free(plan.retired_dom_identity_ids);
-                var dom_write: usize = 0;
-                for (engine_ptr.dom_identities.items, 1..) |identity, elem_id| if (identity.active and plan.target_scopes[@intCast(identity.scope_id)]) {
-                    plan.retired_dom_identity_ids[dom_write] = elem_id;
-                    dom_write += 1;
-                };
                 var row_removals: std.ArrayListUnmanaged(each_runtime.RowRemoval) = .empty;
                 defer row_removals.deinit(allocator);
                 row_removals.ensureTotalCapacity(allocator, plan.scope_retirement.?.scope_ids.len) catch return error.OutOfMemory;
@@ -4180,20 +4224,8 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             fn commitIdentityRetirement(self: *@This()) void {
-                for (self.retired_node_identity_ids) |node_id| {
-                    const identity = &self.engine.node_identities.items[@intCast(node_id)];
-                    if (!self.engine.active_node_identity_ids.remove(identityKey(identity.scope_id, identity.ordinal))) @panic("prepared node identity retirement no longer matched active index");
-                    identity.active = false;
-                    identity.retired_at = self.engine.identity_reuse_barrier;
-                }
-                for (self.retired_dom_identity_ids) |elem_id| {
-                    const identity = &self.engine.dom_identities.items[@intCast(elem_id - 1)];
-                    if (!self.engine.active_dom_identity_ids.remove(identityKey(identity.scope_id, identity.ordinal))) @panic("prepared DOM identity retirement no longer matched active index");
-                    identity.active = false;
-                    identity.retired_at = self.engine.identity_reuse_barrier;
-                }
-                self.engine.has_inactive_node_identities = self.engine.has_inactive_node_identities or self.retired_node_identity_ids.len != 0;
-                self.engine.has_inactive_dom_identities = self.engine.has_inactive_dom_identities or self.retired_dom_identity_ids.len != 0;
+                const retirements = PreparedIdentityRetirements{ .node_ids = self.retired_node_identity_ids, .dom_ids = self.retired_dom_identity_ids };
+                retirements.apply(self.engine);
             }
 
             fn commitRowRetirement(self: *@This()) void {
@@ -9848,6 +9880,10 @@ test "aggregate branch collection sweeps allocation failures without publication
             _ = try engine.internRootScope(ctx.allocator);
             const first_old = try engine.internWhenBranchScope(ctx.allocator, 0, 1, .false_branch);
             const second_old = try engine.internWhenBranchScope(ctx.allocator, 0, 2, .true_branch);
+            _ = try engine.internNodeIdentity(ctx.allocator, first_old.scope_id, 0);
+            _ = try engine.internNodeIdentity(ctx.allocator, second_old.scope_id, 0);
+            _ = try engine.internDomIdentity(ctx.allocator, first_old.scope_id, 0);
+            _ = try engine.internDomIdentity(ctx.allocator, second_old.scope_id, 0);
             const child = verifyStaticText();
             const selections = [_]Engine(VerifyCtx).AggregateBranchSelection{
                 .{ .parent_scope_id = 0, .site_ordinal = 1, .parent_elem_id = 0, .retired_scope_id = first_old.scope_id, .render_insert_index = 0, .binder_bindings = &.{}, .branch = .true_branch, .elem = child },
@@ -9858,26 +9894,30 @@ test "aggregate branch collection sweeps allocation failures without publication
             const prepared = Engine(VerifyCtx).AggregateBranchCollection.prepare(&engine, &ctx, &roc_host, &selections, .{}, &.{}) catch |err| {
                 try std.testing.expectEqual(error.OutOfMemory, err);
                 try std.testing.expectEqual(@as(usize, 3), engine.scopes.items.len);
-                try std.testing.expectEqual(@as(usize, 0), engine.dom_identities.items.len);
-                try std.testing.expectEqual(@as(usize, 0), engine.active_dom_identity_ids.count());
+                try std.testing.expectEqual(@as(usize, 2), engine.dom_identities.items.len);
+                try std.testing.expectEqual(@as(usize, 2), engine.active_dom_identity_ids.count());
                 const attempts = fault.attempts;
                 fault.configure(null);
                 const retry = try Engine(VerifyCtx).AggregateBranchCollection.prepare(&engine, &ctx, &roc_host, &selections, .{}, &.{});
                 try std.testing.expectEqual(@as(usize, 3), engine.scopes.items.len);
-                try std.testing.expectEqual(@as(usize, 0), engine.dom_identities.items.len);
+                try std.testing.expectEqual(@as(usize, 2), engine.dom_identities.items.len);
                 try std.testing.expectEqual(@as(usize, 2), retry.stream.text_nodes.items.len);
                 try std.testing.expectEqualSlices(u64, &.{ 3, 4 }, retry.replacement_scope_ids);
                 try std.testing.expectEqualSlices(u64, &.{ 1, 2 }, retry.scope_retirement.?.scope_ids);
+                try std.testing.expectEqualSlices(u64, &.{ 0, 1 }, retry.identity_retirements.?.node_ids);
+                try std.testing.expectEqualSlices(u64, &.{ 1, 2 }, retry.identity_retirements.?.dom_ids);
                 try std.testing.expect(retry.stream.text_nodes.items[0].elem_id != retry.stream.text_nodes.items[1].elem_id);
                 retry.deinit();
                 return attempts;
             };
             const attempts = fault.attempts;
             try std.testing.expectEqual(@as(usize, 3), engine.scopes.items.len);
-            try std.testing.expectEqual(@as(usize, 0), engine.dom_identities.items.len);
+            try std.testing.expectEqual(@as(usize, 2), engine.dom_identities.items.len);
             try std.testing.expectEqual(@as(usize, 2), prepared.stream.text_nodes.items.len);
             try std.testing.expectEqualSlices(u64, &.{ 3, 4 }, prepared.replacement_scope_ids);
             try std.testing.expectEqualSlices(u64, &.{ 1, 2 }, prepared.scope_retirement.?.scope_ids);
+            try std.testing.expectEqualSlices(u64, &.{ 0, 1 }, prepared.identity_retirements.?.node_ids);
+            try std.testing.expectEqualSlices(u64, &.{ 1, 2 }, prepared.identity_retirements.?.dom_ids);
             prepared.deinit();
             return attempts;
         }
