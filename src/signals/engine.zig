@@ -3423,6 +3423,61 @@ pub fn Engine(comptime Ctx: type) type {
             return each_runtime.prepareRowRemovals(allocator, engine.each_row_sites.items, engine.each_row_memberships_by_scope_id.items, removals.items) catch return error.OutOfMemory;
         }
 
+        const PreparedEffectRetirements = struct {
+            task_indexes_descending: []usize = &.{},
+            retired_tasks: std.ArrayListUnmanaged(HostPendingTask) = .empty,
+            cleanup_names: std.ArrayListUnmanaged([]const u8) = .empty,
+
+            fn descending(_: void, left: usize, right: usize) bool {
+                return left > right;
+            }
+
+            fn prepare(engine: *Self, allocator: std.mem.Allocator, target_scopes: []const bool, cleanup_indexes: []const usize) CollectionError!@This() {
+                var self: @This() = .{};
+                errdefer self.deinit(allocator, null);
+                var task_count: usize = 0;
+                for (engine.pending_tasks.items) |task| {
+                    if (task.owner_scope_id >= target_scopes.len) return error.ResourceLimit;
+                    if (target_scopes[@intCast(task.owner_scope_id)]) task_count = std.math.add(usize, task_count, 1) catch return error.ResourceLimit;
+                }
+                self.task_indexes_descending = allocator.alloc(usize, task_count) catch return error.OutOfMemory;
+                var write: usize = 0;
+                for (engine.pending_tasks.items, 0..) |task, index| if (target_scopes[@intCast(task.owner_scope_id)]) {
+                    self.task_indexes_descending[write] = index;
+                    write += 1;
+                };
+                std.mem.sort(usize, self.task_indexes_descending, {}, descending);
+                self.retired_tasks.ensureUnusedCapacity(allocator, task_count) catch return error.OutOfMemory;
+                self.cleanup_names.ensureTotalCapacity(allocator, cleanup_indexes.len) catch return error.OutOfMemory;
+                for (cleanup_indexes) |cleanup_index| {
+                    if (cleanup_index >= engine.active_stream.cleanups.items.len) return error.ResourceLimit;
+                    const name = allocator.dupe(u8, engine.active_stream.cleanups.items[cleanup_index].name) catch return error.OutOfMemory;
+                    self.cleanup_names.appendAssumeCapacity(name);
+                }
+                engine.cleanup_events.ensureUnusedCapacity(allocator, self.cleanup_names.items.len) catch return error.OutOfMemory;
+                return self;
+            }
+
+            fn apply(self: *@This(), engine: *Self, ctx: Ctx.Handle) void {
+                for (self.task_indexes_descending) |index| {
+                    const task = effects_runtime.removePendingTaskAt(&engine.pending_tasks, index);
+                    if (task.active) Ctx.sink(ctx).cancelTask(task.request_id);
+                    self.retired_tasks.appendAssumeCapacity(task);
+                }
+                engine.cleanup_events.appendSliceAssumeCapacity(self.cleanup_names.items);
+                self.cleanup_names.items.len = 0;
+            }
+
+            fn deinit(self: *@This(), allocator: std.mem.Allocator, roc_host: ?*abi.RocHost) void {
+                allocator.free(self.task_indexes_descending);
+                if (roc_host) |host| for (self.retired_tasks.items) |*task| effects_runtime.deinitPendingTask(allocator, host, task);
+                self.retired_tasks.deinit(allocator);
+                for (self.cleanup_names.items) |name| allocator.free(name);
+                self.cleanup_names.deinit(allocator);
+                self.* = undefined;
+            }
+        };
+
         const AggregateBranchCollection = struct {
             engine: *Self,
             host_ctx: Ctx.Handle,
@@ -3436,6 +3491,7 @@ pub fn Engine(comptime Ctx: type) type {
             identity_retirements: ?PreparedIdentityRetirements = null,
             state_retirement: ?PreparedStateRetirementIndexes = null,
             row_retirement: ?each_runtime.PreparedRowRemovals = null,
+            effects_retirement: ?PreparedEffectRetirements = null,
 
             fn addCounts(total: *StaticRootCounts, next: StaticRootCounts) CollectionError!void {
                 total.nodes = std.math.add(usize, total.nodes, next.nodes) catch return error.ResourceLimit;
@@ -3512,6 +3568,8 @@ pub fn Engine(comptime Ctx: type) type {
                 errdefer if (plan.state_retirement) |*retirement| retirement.deinit(allocator);
                 plan.row_retirement = try prepareRowRetirementForScopes(engine, allocator, plan.scope_retirement.?.scope_ids);
                 errdefer if (plan.row_retirement) |*retirement| retirement.deinit(allocator);
+                plan.effects_retirement = try PreparedEffectRetirements.prepare(engine, allocator, plan.target_scopes, plan.removal.?.removal.node_indexes.cleanup_indexes.items);
+                errdefer if (plan.effects_retirement) |*effects| effects.deinit(allocator, null);
                 return plan;
             }
 
@@ -3526,6 +3584,7 @@ pub fn Engine(comptime Ctx: type) type {
                 if (self.removal) |*removal| removal.deinit(allocator);
                 if (self.state_retirement) |*retirement| retirement.deinit(allocator);
                 if (self.row_retirement) |*retirement| retirement.deinit(allocator);
+                if (self.effects_retirement) |*effects| effects.deinit(allocator, null);
                 if (self.identity_retirements) |*retirements| retirements.deinit(allocator);
                 if (self.scope_retirement) |*retirement| retirement.deinit(allocator);
                 allocator.free(self.target_scopes);
@@ -3553,9 +3612,7 @@ pub fn Engine(comptime Ctx: type) type {
             retired_node_identity_ids: []u64 = &.{},
             retired_dom_identity_ids: []u64 = &.{},
             row_retirement: ?each_runtime.PreparedRowRemovals = null,
-            pending_task_indexes: []usize = &.{},
-            retired_pending_tasks: std.ArrayListUnmanaged(HostPendingTask) = .empty,
-            cleanup_event_names: std.ArrayListUnmanaged([]const u8) = .empty,
+            effects_retirement: ?PreparedEffectRetirements = null,
             retired_scope_steps: std.ArrayListUnmanaged(HostScopeStep) = .empty,
             sink_edits: ?active_graph.PreparedSinkRouteEdits = null,
             graph_release: ?active_graph.PreparedReleaseClosure(HostSignalRecord) = null,
@@ -3625,35 +3682,13 @@ pub fn Engine(comptime Ctx: type) type {
                 errdefer allocator.free(plan.retired_dom_identity_ids);
                 plan.row_retirement = try prepareRowRetirementForScopes(engine_ptr, allocator, plan.scope_retirement.?.scope_ids);
                 errdefer if (plan.row_retirement) |*retirement| retirement.deinit(allocator);
-                var task_count: usize = 0;
-                for (engine_ptr.pending_tasks.items) |task| if (plan.target_scopes[@intCast(task.owner_scope_id)]) {
-                    task_count = std.math.add(usize, task_count, 1) catch return error.ResourceLimit;
-                };
-                plan.pending_task_indexes = allocator.alloc(usize, task_count) catch return error.OutOfMemory;
-                errdefer allocator.free(plan.pending_task_indexes);
-                var task_write: usize = 0;
-                for (engine_ptr.pending_tasks.items, 0..) |task, index| if (plan.target_scopes[@intCast(task.owner_scope_id)]) {
-                    plan.pending_task_indexes[task_write] = index;
-                    task_write += 1;
-                };
-                std.mem.sort(usize, plan.pending_task_indexes, {}, stateIndexDescending);
-                plan.retired_pending_tasks.ensureUnusedCapacity(allocator, task_count) catch return error.OutOfMemory;
-                errdefer plan.retired_pending_tasks.deinit(allocator);
-                errdefer {
-                    for (plan.cleanup_event_names.items) |name| allocator.free(name);
-                    plan.cleanup_event_names.deinit(allocator);
-                }
                 plan.retired_scope_steps.ensureUnusedCapacity(allocator, plan.scope_retirement.?.scope_ids.len) catch return error.OutOfMemory;
                 errdefer plan.retired_scope_steps.deinit(allocator);
                 const render_start = engine_ptr.renderStartForReplacementTargetSet(site.render_insert_index, plan.target_scopes);
                 plan.removal = structural_splice.prepareRemoval(HostNodeDescriptorStream, allocator, &engine_ptr.active_stream, render_start, plan.target_scopes) catch return error.OutOfMemory;
                 errdefer if (plan.removal) |*removal| removal.deinit(allocator);
-                try plan.cleanup_event_names.ensureTotalCapacity(allocator, plan.removal.?.node_indexes.cleanup_indexes.items.len);
-                for (plan.removal.?.node_indexes.cleanup_indexes.items) |cleanup_index| {
-                    const name = allocator.dupe(u8, engine_ptr.active_stream.cleanups.items[cleanup_index].name) catch return error.OutOfMemory;
-                    plan.cleanup_event_names.appendAssumeCapacity(name);
-                }
-                engine_ptr.cleanup_events.ensureUnusedCapacity(allocator, plan.cleanup_event_names.items.len) catch return error.OutOfMemory;
+                plan.effects_retirement = try PreparedEffectRetirements.prepare(engine_ptr, allocator, plan.target_scopes, plan.removal.?.node_indexes.cleanup_indexes.items);
+                errdefer if (plan.effects_retirement) |*effects| effects.deinit(allocator, null);
                 const state_retirement = try PreparedStateRetirementIndexes.prepare(engine_ptr, allocator, plan.removal.?.node_indexes.state_indexes.items);
                 plan.state_cell_indexes = state_retirement.indexes_descending;
                 errdefer allocator.free(plan.state_cell_indexes);
@@ -4282,13 +4317,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             fn commitEffectsRetirement(self: *@This()) void {
-                for (self.pending_task_indexes) |index| {
-                    const task = effects_runtime.removePendingTaskAt(&self.engine.pending_tasks, index);
-                    if (task.active) Ctx.sink(self.host_ctx).cancelTask(task.request_id);
-                    self.retired_pending_tasks.appendAssumeCapacity(task);
-                }
-                self.engine.cleanup_events.appendSliceAssumeCapacity(self.cleanup_event_names.items);
-                self.cleanup_event_names.items.len = 0;
+                self.effects_retirement.?.apply(self.engine, self.host_ctx);
             }
 
             fn commitScopeRetirementLast(self: *@This()) void {
@@ -4365,11 +4394,7 @@ pub fn Engine(comptime Ctx: type) type {
                 if (self.removal) |*removal| removal.deinit(allocator);
                 if (self.scope_retirement) |*retirement| retirement.deinit(allocator);
                 if (self.row_retirement) |*retirement| retirement.deinit(allocator);
-                allocator.free(self.pending_task_indexes);
-                for (self.retired_pending_tasks.items) |*task| effects_runtime.deinitPendingTask(allocator, self.roc_host, task);
-                self.retired_pending_tasks.deinit(allocator);
-                for (self.cleanup_event_names.items) |name| allocator.free(name);
-                self.cleanup_event_names.deinit(allocator);
+                if (self.effects_retirement) |*effects| effects.deinit(allocator, self.roc_host);
                 for (self.retired_scope_steps.items) |*step| deinitHostScopeStep(step, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
                 self.retired_scope_steps.deinit(allocator);
                 allocator.free(self.state_cell_indexes);
@@ -9464,9 +9489,9 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 try std.testing.expect(plan.target_scopes[@intCast(plan.retired_scope_id)]);
                 try std.testing.expectEqualSlices(u64, &.{ retired_row_scope_id, plan.retired_scope_id }, plan.scope_retirement.?.scope_ids);
                 try std.testing.expectEqual(@as(usize, 1), plan.row_retirement.?.rows.len);
-                try std.testing.expectEqual(@as(usize, 0), plan.pending_task_indexes.len);
-                try std.testing.expectEqual(@as(usize, 1), plan.cleanup_event_names.items.len);
-                try std.testing.expectEqualStrings("branch-cleanup-new", plan.cleanup_event_names.items[0]);
+                try std.testing.expectEqual(@as(usize, 0), plan.effects_retirement.?.task_indexes_descending.len);
+                try std.testing.expectEqual(@as(usize, 1), plan.effects_retirement.?.cleanup_names.items.len);
+                try std.testing.expectEqualStrings("branch-cleanup-new", plan.effects_retirement.?.cleanup_names.items[0]);
                 try std.testing.expectEqual(@as(usize, 4), plan.sink_edits.?.text.len);
                 try std.testing.expectEqual(@as(usize, 2), plan.sink_edits.?.bools.len);
                 try std.testing.expectEqual(@as(usize, 1), plan.sink_edits.?.changes.len);
