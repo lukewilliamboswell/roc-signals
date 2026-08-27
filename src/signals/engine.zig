@@ -2101,6 +2101,7 @@ pub fn Engine(comptime Ctx: type) type {
         };
 
         const StagedCollectionCtx = struct {
+            const Collection = @This();
             engine: *Self,
             host_ctx: Ctx.Handle,
             stream: *HostNodeDescriptorStream,
@@ -2109,6 +2110,8 @@ pub fn Engine(comptime Ctx: type) type {
             dom_identities: collection_plan.IdentityOverlay = .{},
             prepared_nodes: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedStaticNode) = .empty,
             prepared_attrs: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedStaticAttr) = .empty,
+            signal_records: collection_plan.RecordOverlay(HostSignalToken, HostSignalRecord) = .{},
+            signal_roc_host: ?*abi.RocHost = null,
             committed: bool = false,
 
             fn init(engine_ptr: *Self, host_ctx: Ctx.Handle, stream: *HostNodeDescriptorStream, limits: collection_budget.Limits, expected_nodes: usize, expected_attrs: usize) CollectionError!@This() {
@@ -2125,6 +2128,7 @@ pub fn Engine(comptime Ctx: type) type {
                 self.dom_identities.prepare(allocator, expected_nodes) catch return error.OutOfMemory;
                 self.prepared_nodes.ensureTotalCapacity(allocator, expected_nodes) catch return error.OutOfMemory;
                 self.prepared_attrs.ensureTotalCapacity(allocator, expected_attrs) catch return error.OutOfMemory;
+                self.signal_records.prepare(allocator, expected_attrs) catch return error.OutOfMemory;
                 self.engine.scopes.ensureUnusedCapacity(allocator, 1) catch return error.OutOfMemory;
                 self.engine.dom_identities.ensureUnusedCapacity(allocator, expected_nodes) catch return error.OutOfMemory;
                 self.engine.active_dom_identity_ids.ensureUnusedCapacity(allocator, @intCast(expected_nodes)) catch return error.OutOfMemory;
@@ -2153,6 +2157,18 @@ pub fn Engine(comptime Ctx: type) type {
                 }
                 self.prepared_nodes.deinit(allocator);
                 self.prepared_attrs.deinit(allocator);
+                const SignalReleaser = struct {
+                    collection: *Collection,
+                    pub fn releaseRecord(releaser: @This(), record: *HostSignalRecord) void {
+                        record.release(
+                            Ctx.allocator(releaser.collection.host_ctx),
+                            releaser.collection.host_ctx,
+                            releaser.collection.signal_roc_host orelse @panic("staged signal record lacked Roc host"),
+                            &releaser.collection.engine.pending_roc_metrics,
+                        );
+                    }
+                };
+                self.signal_records.deinit(allocator, SignalReleaser{ .collection = self });
                 self.scopes.deinit(allocator);
                 self.dom_identities.deinit(allocator);
             }
