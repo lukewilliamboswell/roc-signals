@@ -1032,6 +1032,7 @@ pub fn Engine(comptime Ctx: type) type {
             scope_claims: scope_runtime.PreparedScopeClaims,
             rows: []*PreparedActiveEachRows,
             replacements: []*PreparedEachRowReplacementCollection,
+            replacement_owner: ?*PreparedReplacementOwner = null,
             prepared_len: usize = 0,
             committed: bool = false,
 
@@ -1039,6 +1040,7 @@ pub fn Engine(comptime Ctx: type) type {
                 if (changes.len < 2) return error.ResourceLimit;
                 const owner = try create(engine, ctx, roc_host, changes.len);
                 errdefer owner.deinit();
+                const allocator = Ctx.allocator(ctx);
                 for (changes) |change| {
                     if (change.kind != .each) return error.ResourceLimit;
                     const site = engine.activeScopeSiteByNodeId(change.node_id, .each) orelse return error.ResourceLimit;
@@ -1048,6 +1050,16 @@ pub fn Engine(comptime Ctx: type) type {
                     if (each.items.record != change.record) return error.ResourceLimit;
                     try owner.prepareOne(site, each, overlay);
                 }
+                const sites = allocator.alloc(HostNodeScopeSiteDesc, changes.len) catch return error.OutOfMemory;
+                defer allocator.free(sites);
+                const eaches = allocator.alloc(*const HostNodeEachDesc, changes.len) catch return error.OutOfMemory;
+                defer allocator.free(eaches);
+                for (changes, 0..) |change, index| {
+                    sites[index] = engine.activeScopeSiteByNodeId(change.node_id, .each) orelse return error.ResourceLimit;
+                    const each_index = engine.activeEachIndexByNodeId(change.node_id) orelse return error.ResourceLimit;
+                    eaches[index] = &engine.active_stream.eaches.items[each_index];
+                }
+                try owner.prepareReplacement(sites, eaches, .{}, &.{});
                 return owner;
             }
 
@@ -1084,6 +1096,24 @@ pub fn Engine(comptime Ctx: type) type {
                 self.prepared_len += 1;
             }
 
+            fn prepareReplacement(self: *@This(), sites: []const HostNodeScopeSiteDesc, eaches: []const *const HostNodeEachDesc, limits: collection_budget.Limits, dirty_source_node_ids: []const u64) CollectionError!void {
+                if (self.replacement_owner != null or sites.len != self.prepared_len or eaches.len != self.prepared_len) return error.ResourceLimit;
+                var total: StaticRootCounts = .{};
+                var root_count: usize = 0;
+                for (self.replacements[0..self.prepared_len]) |replacement| {
+                    try PreparedReplacementOwner.addRootCounts(&total, replacement.counts);
+                    root_count = std.math.add(usize, root_count, replacement.row_elems.len) catch return error.ResourceLimit;
+                }
+                const owner = try PreparedReplacementOwner.create(self.engine, self.host_ctx, self.roc_host, limits, total, root_count);
+                errdefer owner.deinit();
+                for (self.replacements[0..self.prepared_len], sites, eaches, 0..) |replacement, site, each, index| {
+                    try replacement.collectInto(site, each.*, &self.rows[index].rows, owner, dirty_source_node_ids);
+                }
+                owner.materialize();
+                for (self.replacements[0..self.prepared_len]) |replacement| replacement.releaseEvaluatedRows();
+                self.replacement_owner = owner;
+            }
+
             fn commit(self: *@This()) void {
                 if (self.committed) @panic("prepared composite rows committed twice");
                 self.scope_claims.commit(&self.engine.scopes);
@@ -1095,6 +1125,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             fn deinit(self: *@This()) void {
+                if (self.replacement_owner) |owner| owner.deinit();
                 for (self.replacements[0..self.prepared_len]) |replacement| replacement.deinit();
                 for (self.rows[0..self.prepared_len]) |rows| rows.deinit();
                 if (!self.committed) self.scope_claims.abort(self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
@@ -11597,6 +11628,15 @@ test "composite rows share provisional scope claims across two sites and sweep O
     });
 
     const Runner = struct {
+        fn prepareAll(engine: *Engine(VerifyCtx), ctx: *VerifyCtxHost, host: *abi.RocHost, first_site: HostNodeScopeSiteDesc, first: *const HostNodeEachDesc, second_site: HostNodeScopeSiteDesc, second: *const HostNodeEachDesc) !*Engine(VerifyCtx).PreparedCompositeRows {
+            const composite = try Engine(VerifyCtx).PreparedCompositeRows.create(engine, ctx, host, 2);
+            errdefer composite.deinit();
+            try composite.prepareOne(first_site, first, null);
+            try composite.prepareOne(second_site, second, null);
+            try composite.prepareReplacement(&.{ first_site, second_site }, &.{ first, second }, .{}, &.{});
+            return composite;
+        }
+
         fn run(host: *abi.RocHost, each_ops: HostEachOps, cap: HostValueCapability, fail_at: ?usize) !usize {
             var fault = FaultAllocator.init(std.testing.allocator);
             var ctx = VerifyCtxHost{ .allocator = fault.allocator() };
@@ -11625,21 +11665,28 @@ test "composite rows share provisional scope claims across two sites and sweep O
             const second_site = HostNodeScopeSiteDesc{ .node_id = 20, .scope_id = 0, .ordinal = 20, .parent_elem_id = 0, .render_insert_index = 0, .kind = .each, .binder_bindings = &.{} };
 
             fault.configure(fail_at);
-            const composite = Engine(VerifyCtx).PreparedCompositeRows.create(&engine, &ctx, host, 2) catch |err| {
+            const composite = prepareAll(&engine, &ctx, host, first_site, &first, second_site, &second) catch |err| {
                 try std.testing.expectEqual(error.OutOfMemory, err);
-                return fault.attempts;
+                try std.testing.expectEqual(@as(usize, 1), engine.scopes.items.len);
+                const attempts = fault.attempts;
+                fault.configure(null);
+                const retry = try prepareAll(&engine, &ctx, host, first_site, &first, second_site, &second);
+                try std.testing.expectEqual(@as(usize, 2), retry.replacement_owner.?.stream.text_nodes.items.len);
+                retry.deinit();
+                try std.testing.expectEqual(@as(usize, 1), engine.scopes.items.len);
+                return attempts;
             };
             defer composite.deinit();
-            composite.prepareOne(first_site, &first, null) catch |err| {
-                try std.testing.expectEqual(error.OutOfMemory, err);
-                try std.testing.expectEqual(@as(usize, 1), engine.scopes.items.len);
-                return fault.attempts;
-            };
-            composite.prepareOne(second_site, &second, null) catch |err| {
-                try std.testing.expectEqual(error.OutOfMemory, err);
-                try std.testing.expectEqual(@as(usize, 1), engine.scopes.items.len);
-                return fault.attempts;
-            };
+            const replacement_owner = composite.replacement_owner.?;
+            try std.testing.expectEqual(@as(usize, 2), replacement_owner.stream.text_nodes.items.len);
+            try std.testing.expectEqual(@as(u64, 1), replacement_owner.stream.text_nodes.items[0].scope_id);
+            try std.testing.expectEqual(@as(u64, 2), replacement_owner.stream.text_nodes.items[1].scope_id);
+            try std.testing.expect(replacement_owner.stream.text_nodes.items[0].elem_id != replacement_owner.stream.text_nodes.items[1].elem_id);
+            try std.testing.expectEqual(@as(usize, 0), composite.replacements[0].replacement_rows[0].start);
+            try std.testing.expectEqual(@as(usize, 1), composite.replacements[0].replacement_rows[0].len);
+            try std.testing.expectEqual(@as(usize, 1), composite.replacements[1].replacement_rows[0].start);
+            try std.testing.expectEqual(@as(usize, 1), composite.replacements[1].replacement_rows[0].len);
+            try std.testing.expectEqual(@as(usize, 0), engine.dom_identities.items.len);
             const attempts = fault.attempts;
             fault.configure(1);
             composite.commit();
