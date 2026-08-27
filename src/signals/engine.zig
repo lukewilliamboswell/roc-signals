@@ -3628,8 +3628,7 @@ pub fn Engine(comptime Ctx: type) type {
         };
 
         const PreparedEachRowSubtreeRetirement = struct {
-            target_scopes: []bool = &.{},
-            scopes: ?scope_runtime.PreparedSubtreeRetirement = null,
+            targets: ?PreparedStructuralTargets = null,
             identities: ?PreparedIdentityRetirements = null,
             states: ?PreparedStateRetirementIndexes = null,
             rows: ?each_runtime.PreparedRowRemovals = null,
@@ -3638,16 +3637,16 @@ pub fn Engine(comptime Ctx: type) type {
             retired_steps: std.ArrayListUnmanaged(HostScopeStep) = .empty,
 
             fn prepare(engine: *Self, allocator: std.mem.Allocator, removed_root_scope_ids: []const u64) CollectionError!@This() {
+                return prepareWithTargets(engine, allocator, removed_root_scope_ids, removed_root_scope_ids);
+            }
+
+            fn prepareWithTargets(engine: *Self, allocator: std.mem.Allocator, descriptor_root_scope_ids: []const u64, removed_root_scope_ids: []const u64) CollectionError!@This() {
                 var self: @This() = .{};
                 errdefer self.deinit(engine, allocator, null, null);
-                self.scopes = scope_runtime.prepareSubtreesRetirement(HostEachRowScopeStep, allocator, engine.scopes.items, removed_root_scope_ids) catch |err| switch (err) {
-                    error.OutOfMemory => return error.OutOfMemory,
-                    error.OverlappingSubtrees => return error.ResourceLimit,
-                };
-                self.target_scopes = allocator.alloc(bool, engine.scopes.items.len) catch return error.OutOfMemory;
-                @memset(self.target_scopes, false);
-                for (self.scopes.?.scope_ids) |scope_id| self.target_scopes[@intCast(scope_id)] = true;
-                self.identities = try PreparedIdentityRetirements.prepare(engine, allocator, self.target_scopes);
+                self.targets = try PreparedStructuralTargets.prepare(engine, allocator, descriptor_root_scope_ids, removed_root_scope_ids);
+                const target_scopes = self.targets.?.descriptor_target_scopes;
+                const retirement_scope_ids = self.targets.?.scope_retirement.?.scope_ids;
+                self.identities = try PreparedIdentityRetirements.prepare(engine, allocator, target_scopes);
 
                 var state_indexes: std.ArrayListUnmanaged(usize) = .empty;
                 defer state_indexes.deinit(allocator);
@@ -3657,22 +3656,22 @@ pub fn Engine(comptime Ctx: type) type {
                     const site_index = node_index.scope_sites.get(.state) orelse return error.ResourceLimit;
                     if (site_index >= engine.active_stream.scope_sites.items.len) return error.ResourceLimit;
                     const owner = engine.active_stream.scope_sites.items[site_index].scope_id;
-                    if (owner >= self.target_scopes.len) return error.ResourceLimit;
-                    if (self.target_scopes[@intCast(owner)]) state_indexes.appendAssumeCapacity(state_index);
+                    if (owner >= target_scopes.len) return error.ResourceLimit;
+                    if (target_scopes[@intCast(owner)]) state_indexes.appendAssumeCapacity(state_index);
                 }
                 self.states = try PreparedStateRetirementIndexes.prepare(engine, allocator, state_indexes.items);
                 try self.states.?.reserveRetired(allocator, &self.retired_states);
-                self.rows = try prepareRowRetirementForScopes(engine, allocator, self.scopes.?.scope_ids);
+                self.rows = try prepareRowRetirementForScopes(engine, allocator, retirement_scope_ids);
 
                 var cleanup_indexes: std.ArrayListUnmanaged(usize) = .empty;
                 defer cleanup_indexes.deinit(allocator);
-                for (self.target_scopes, 0..) |targeted, scope_id| if (targeted) {
+                for (target_scopes, 0..) |targeted, scope_id| if (targeted) {
                     for (engine.active_stream.lifecycleIndices(scope_id)) |lifecycle| if (lifecycle.kind == .cleanup) {
                         cleanup_indexes.append(allocator, lifecycle.index) catch return error.OutOfMemory;
                     };
                 };
-                self.effects = try PreparedEffectRetirements.prepare(engine, allocator, self.target_scopes, cleanup_indexes.items);
-                self.retired_steps.ensureUnusedCapacity(allocator, self.scopes.?.scope_ids.len) catch return error.OutOfMemory;
+                self.effects = try PreparedEffectRetirements.prepare(engine, allocator, target_scopes, cleanup_indexes.items);
+                self.retired_steps.ensureUnusedCapacity(allocator, retirement_scope_ids.len) catch return error.OutOfMemory;
                 return self;
             }
 
@@ -3684,13 +3683,14 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             fn applyAfterRowCommit(self: *@This(), engine: *Self) void {
-                for (self.scopes.?.scope_ids) |scope_id| {
+                const scope_retirement = &self.targets.?.scope_retirement.?;
+                for (scope_retirement.scope_ids) |scope_id| {
                     const scope = &engine.scopes.items[@intCast(scope_id)];
                     self.retired_steps.appendAssumeCapacity(scope.step);
                     scope.step = .root;
                 }
-                self.scopes.?.applyMetadata(HostEachRowScopeStep, engine.scopes.items, engine.identity_reuse_barrier);
-                engine.has_inactive_scopes = true;
+                scope_retirement.applyMetadata(HostEachRowScopeStep, engine.scopes.items, engine.identity_reuse_barrier);
+                engine.has_inactive_scopes = scope_retirement.scope_ids.len != 0 or engine.has_inactive_scopes;
             }
 
             fn applyEffectsAfterPublication(self: *@This(), engine: *Self, ctx: Ctx.Handle) void {
@@ -3708,8 +3708,7 @@ pub fn Engine(comptime Ctx: type) type {
                 if (self.rows) |*rows| rows.deinit(allocator);
                 if (self.states) |*states| states.deinit(allocator);
                 if (self.identities) |*identities| identities.deinit(allocator);
-                if (self.scopes) |*scopes| scopes.deinit(allocator);
-                allocator.free(self.target_scopes);
+                if (self.targets) |*targets| targets.deinit(allocator);
                 self.* = undefined;
             }
         };
@@ -3819,7 +3818,7 @@ pub fn Engine(comptime Ctx: type) type {
 
         const PreparedEachRowRenderLayout = struct {
             allocator: std.mem.Allocator,
-            target_scopes: []bool,
+            targets: PreparedStructuralTargets,
             remove_starts: []usize,
             final_starts: []usize,
             survivor_moves: []HostEachRowRenderMove,
@@ -3852,26 +3851,25 @@ pub fn Engine(comptime Ctx: type) type {
                     entry.value_ptr.* = index;
                 }
 
-                var target_scopes = allocator.alloc(bool, engine.scopes.items.len) catch return error.OutOfMemory;
-                errdefer allocator.free(target_scopes);
-                @memset(target_scopes, false);
+                var descriptor_roots: std.ArrayListUnmanaged(u64) = .empty;
+                defer descriptor_roots.deinit(allocator);
+                descriptor_roots.ensureTotalCapacity(allocator, std.math.add(usize, rows.removed_scope_ids.len, replacements.len) catch return error.ResourceLimit) catch return error.OutOfMemory;
+                descriptor_roots.appendSliceAssumeCapacity(rows.removed_scope_ids);
                 var remove_starts_list: std.ArrayListUnmanaged(usize) = .empty;
                 defer remove_starts_list.deinit(allocator);
                 remove_starts_list.ensureTotalCapacity(allocator, std.math.add(usize, rows.removed_scope_ids.len, replacements.len) catch return error.ResourceLimit) catch return error.OutOfMemory;
                 for (rows.removed_scope_ids) |scope_id| {
                     const segment_index = by_scope.get(scope_id) orelse return error.ResourceLimit;
                     remove_starts_list.appendAssumeCapacity(segments.items[segment_index].start);
-                    for (engine.scopes.items) |scope| {
-                        if (engine.scopeIsDescendantOrSelf(scope.scope_id, scope_id) catch return error.ResourceLimit) target_scopes[@intCast(scope.scope_id)] = true;
-                    }
                 }
                 for (replacements) |replacement| if (!rows.scope_created[replacement.row_index]) {
                     const segment_index = by_scope.get(replacement.scope_id) orelse return error.ResourceLimit;
                     remove_starts_list.appendAssumeCapacity(segments.items[segment_index].start);
-                    for (engine.scopes.items) |scope| {
-                        if (engine.scopeIsDescendantOrSelf(scope.scope_id, replacement.scope_id) catch return error.ResourceLimit) target_scopes[@intCast(scope.scope_id)] = true;
-                    }
+                    descriptor_roots.appendAssumeCapacity(replacement.scope_id);
                 };
+                var targets = try PreparedStructuralTargets.prepare(engine, allocator, descriptor_roots.items, rows.removed_scope_ids);
+                errdefer targets.deinit(allocator);
+                const target_scopes = targets.descriptor_target_scopes;
                 remove_starts_list.clearRetainingCapacity();
                 var inside_target = false;
                 for (engine.active_stream.render_nodes.items, 0..) |node, index| {
@@ -3917,7 +3915,7 @@ pub fn Engine(comptime Ctx: type) type {
                     }
                 }
                 if (move_write != survivor_moves.len) return error.ResourceLimit;
-                return .{ .allocator = allocator, .target_scopes = target_scopes, .remove_starts = remove_starts, .final_starts = final_starts, .survivor_moves = survivor_moves, .removal = removal };
+                return .{ .allocator = allocator, .targets = targets, .remove_starts = remove_starts, .final_starts = final_starts, .survivor_moves = survivor_moves, .removal = removal };
             }
 
             fn deinit(self: *@This()) void {
@@ -3925,7 +3923,7 @@ pub fn Engine(comptime Ctx: type) type {
                 self.allocator.free(self.survivor_moves);
                 self.allocator.free(self.final_starts);
                 self.allocator.free(self.remove_starts);
-                self.allocator.free(self.target_scopes);
+                self.targets.deinit(self.allocator);
                 self.* = undefined;
             }
         };
@@ -10234,6 +10232,40 @@ test "prepared each-row subtree retirement is atomic and allocation free" {
     try std.testing.expectEqual(attempts, failures);
 }
 
+test "each descriptor targets preserve changed row scope ownership" {
+    var env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&env);
+    const callable = abi.rocErasedCallableAllocate(&roc_host, verifyErasedCallable, null, 0).?;
+    defer abi.decrefErasedCallable(callable, &roc_host);
+    const capability = HostValueCapability{ .clone = callable, .drop = callable, .eq = callable };
+    var ctx = VerifyCtxHost{ .allocator = std.testing.allocator };
+    var engine = Engine(VerifyCtx).init();
+    defer deinitVerifyStateEngine(&engine, &ctx, &roc_host);
+    _ = try engine.internRootScope(ctx.allocator);
+    const changed_scope_id = engine.createEachRowScope(&ctx, 0, 7, 10, 1, 101, capability, capability);
+    const removed_scope_id = engine.createEachRowScope(&ctx, 0, 7, 20, 2, 202, capability, capability);
+    const site_index = engine.activeEachRowSiteIndex(0, 7).?;
+
+    var prepared = try Engine(VerifyCtx).PreparedEachRowSubtreeRetirement.prepareWithTargets(
+        &engine,
+        ctx.allocator,
+        &.{ changed_scope_id, removed_scope_id },
+        &.{removed_scope_id},
+    );
+    try std.testing.expect(prepared.targets.?.descriptor_target_scopes[@intCast(changed_scope_id)]);
+    try std.testing.expect(prepared.targets.?.descriptor_target_scopes[@intCast(removed_scope_id)]);
+    try std.testing.expectEqualSlices(u64, &.{removed_scope_id}, prepared.targets.?.scope_retirement.?.scope_ids);
+    prepared.applyBeforeRowCommit(&engine);
+    prepared.applyAfterRowCommit(&engine);
+    try std.testing.expect(engine.scopes.items[@intCast(changed_scope_id)].active);
+    try std.testing.expect(!engine.scopes.items[@intCast(removed_scope_id)].active);
+    try std.testing.expectEqualSlices(u64, &.{changed_scope_id}, engine.each_row_sites.items[site_index].scope_ids.items);
+    const values = engine.eachRowScopeValues(changed_scope_id);
+    try std.testing.expectEqual(@as(HostValue, 1), values.key);
+    try std.testing.expectEqual(@as(HostValue, 101), values.item);
+    prepared.deinit(&engine, ctx.allocator, &ctx, &roc_host);
+}
+
 test "engine prepared each sync atomically removes reuses changes and creates rows" {
     const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
     var env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
@@ -10284,6 +10316,9 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
             var layout = try prepareLayout(engine, ctx.allocator, &rows, replacement);
             try std.testing.expectEqualSlices(usize, &.{0}, layout.remove_starts);
             try std.testing.expectEqualSlices(usize, &.{ 0, 1, 2 }, layout.final_starts);
+            try std.testing.expect(layout.targets.descriptor_target_scopes[1]);
+            try std.testing.expect(layout.targets.descriptor_target_scopes[2]);
+            try std.testing.expectEqualSlices(u64, &.{1}, layout.targets.scope_retirement.?.scope_ids);
             layout.deinit();
             replacement.deinit();
             retirement.applyBeforeRowCommit(engine);
@@ -10404,6 +10439,10 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
             try std.testing.expectEqualSlices(usize, &.{0}, layout.remove_starts);
             try std.testing.expectEqualSlices(usize, &.{ 0, 1, 2 }, layout.final_starts);
             try std.testing.expectEqual(@as(usize, 1), layout.survivor_moves.len);
+            try std.testing.expect(layout.targets.descriptor_target_scopes[removed_scope_id]);
+            try std.testing.expect(layout.targets.descriptor_target_scopes[2]);
+            try std.testing.expect(!layout.targets.descriptor_target_scopes[3]);
+            try std.testing.expectEqualSlices(u64, &.{removed_scope_id}, layout.targets.scope_retirement.?.scope_ids);
             layout.deinit();
             replacement.deinit();
             const attempts = fault.attempts;
