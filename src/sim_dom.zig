@@ -95,6 +95,41 @@ pub const Element = struct {
         self.children.deinit(allocator);
     }
 
+    /// Creates a fully independent element snapshot for transactional host publication.
+    pub fn cloneOwned(self: *const Element, allocator: std.mem.Allocator) std.mem.Allocator.Error!Element {
+        const tag = try allocator.dupe(u8, self.tag);
+        var cloned = Element.init(self.id, tag);
+        errdefer cloned.deinit(allocator);
+        cloned.active = self.active;
+        cloned.focused = self.focused;
+        cloned.composing = self.composing;
+        cloned.checked = self.checked;
+        cloned.disabled = self.disabled;
+        cloned.parent_id = self.parent_id;
+        cloned.event_bindings = self.event_bindings;
+        cloned.text_update_count = self.text_update_count;
+        cloned.value_update_count = self.value_update_count;
+        cloned.checked_update_count = self.checked_update_count;
+        cloned.disabled_update_count = self.disabled_update_count;
+        inline for (.{ "role", "label", "test_id", "class", "text", "value", "pending_value" }) |field_name| {
+            if (@field(self, field_name)) |value| @field(cloned, field_name) = try allocator.dupe(u8, value);
+        }
+        try cloned.children.appendSlice(allocator, self.children.items);
+        try cloned.attrs.ensureTotalCapacity(allocator, self.attrs.items.len);
+        for (self.attrs.items) |attr| {
+            const name = try allocator.dupe(u8, attr.name);
+            errdefer allocator.free(name);
+            const value = try allocator.dupe(u8, attr.value);
+            cloned.attrs.appendAssumeCapacity(.{ .name = name, .value = value });
+        }
+        try cloned.named_events.ensureTotalCapacity(allocator, self.named_events.items.len);
+        for (self.named_events.items) |event| {
+            const name = try allocator.dupe(u8, event.name);
+            cloned.named_events.appendAssumeCapacity(.{ .name = name, .binding = event.binding });
+        }
+        return cloned;
+    }
+
     /// Resolves a text attribute by name in the simulated DOM element.
     pub fn textAttrIndex(self: *const Element, name: []const u8) ?usize {
         for (self.attrs.items, 0..) |attr, index| {
@@ -598,6 +633,41 @@ test "simulated DOM append supports sparse element ids" {
     try std.testing.expect(!elements.items[2].active);
     try std.testing.expect(elements.items[3].active);
     try std.testing.expectEqualStrings("section", elements.items[3].tag);
+}
+
+test "simulated DOM snapshots sweep allocation failures without aliasing" {
+    const FaultAllocator = signals.fault_allocator.FaultAllocator;
+    var source = Element.init(7, try std.testing.allocator.dupe(u8, "button"));
+    defer source.deinit(std.testing.allocator);
+    source.role = try std.testing.allocator.dupe(u8, "switch");
+    source.text = try std.testing.allocator.dupe(u8, "ready");
+    try source.children.append(std.testing.allocator, 9);
+    try source.attrs.append(std.testing.allocator, .{
+        .name = try std.testing.allocator.dupe(u8, "data-state"),
+        .value = try std.testing.allocator.dupe(u8, "ready"),
+    });
+    try source.named_events.append(std.testing.allocator, .{
+        .name = try std.testing.allocator.dupe(u8, "submit"),
+        .binding = undefined,
+    });
+
+    var counted = FaultAllocator.init(std.testing.allocator);
+    var clone = try source.cloneOwned(counted.allocator());
+    const attempts = counted.attempts;
+    clone.deinit(counted.allocator());
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| {
+        var fault = FaultAllocator.init(std.testing.allocator);
+        fault.configure(failure_number);
+        try std.testing.expectError(error.OutOfMemory, source.cloneOwned(fault.allocator()));
+        try std.testing.expectEqualStrings("button", source.tag);
+        try std.testing.expectEqualStrings("ready", source.text.?);
+        fault.configure(null);
+        var retry = try source.cloneOwned(fault.allocator());
+        defer retry.deinit(fault.allocator());
+        try std.testing.expectEqualStrings(source.attrs.items[0].value, retry.attrs.items[0].value);
+        try std.testing.expect(source.attrs.items[0].value.ptr != retry.attrs.items[0].value.ptr);
+    }
 }
 
 test "simulated DOM element indexes attrs and named events" {
