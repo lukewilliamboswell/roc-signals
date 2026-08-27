@@ -18,6 +18,7 @@ pub const IdentityOverlay = struct {
     reserved_ids: std.AutoHashMapUnmanaged(u64, void) = .{},
     intents: std.ArrayListUnmanaged(IdentityIntent) = .empty,
     prepared_remaining: usize = 0,
+    committed: bool = false,
 
     pub fn deinit(self: *IdentityOverlay, allocator: std.mem.Allocator) void {
         self.provisional_by_key.deinit(allocator);
@@ -42,6 +43,7 @@ pub const IdentityOverlay = struct {
     /// transaction. Candidate enumeration is supplied by the persistent table;
     /// overlay lookup and reservation membership remain O(1).
     pub fn reserve(self: *IdentityOverlay, key: IdentityKey, active_id: ?u64, candidates: []const u64) error{ NoCapacity, NoAvailableIdentity }!u64 {
+        if (self.committed) @panic("identity overlay cannot reserve after commit");
         if (self.lookup(key, active_id)) |id| return id;
         if (self.prepared_remaining == 0) return error.NoCapacity;
         for (candidates) |id| {
@@ -56,10 +58,17 @@ pub const IdentityOverlay = struct {
     }
 
     pub fn abort(self: *IdentityOverlay) void {
+        if (self.committed) @panic("committed identity overlay cannot abort");
         self.provisional_by_key.clearRetainingCapacity();
         self.reserved_ids.clearRetainingCapacity();
         self.intents.clearRetainingCapacity();
         self.prepared_remaining = 0;
+    }
+
+    pub fn commit(self: *IdentityOverlay, publisher: anytype) void {
+        if (self.committed) @panic("identity overlay committed twice");
+        for (self.intents.items) |intent| publisher.publishIdentity(intent.key, intent.id);
+        self.committed = true;
     }
 };
 
@@ -182,4 +191,27 @@ test "identity overlay abort permits clean retry" {
     try overlay.prepare(std.testing.allocator, 1);
     try std.testing.expectEqual(@as(u64, 3), try overlay.reserve(2, null, &.{3}));
     try std.testing.expectEqual(@as(usize, 1), overlay.intents.items.len);
+}
+
+test "identity overlay publishes only during allocation-free commit" {
+    const Publisher = struct {
+        persistent: *std.AutoHashMapUnmanaged(IdentityKey, u64),
+
+        fn publishIdentity(self: @This(), key: IdentityKey, id: u64) void {
+            self.persistent.putAssumeCapacity(key, id);
+        }
+    };
+
+    var persistent: std.AutoHashMapUnmanaged(IdentityKey, u64) = .{};
+    defer persistent.deinit(std.testing.allocator);
+    try persistent.ensureUnusedCapacity(std.testing.allocator, 2);
+    var overlay: IdentityOverlay = .{};
+    defer overlay.deinit(std.testing.allocator);
+    try overlay.prepare(std.testing.allocator, 2);
+    _ = try overlay.reserve(20, null, &.{ 4, 5 });
+    _ = try overlay.reserve(21, null, &.{ 4, 5 });
+    try std.testing.expectEqual(@as(usize, 0), persistent.count());
+    overlay.commit(Publisher{ .persistent = &persistent });
+    try std.testing.expectEqual(@as(u64, 4), persistent.get(20).?);
+    try std.testing.expectEqual(@as(u64, 5), persistent.get(21).?);
 }
