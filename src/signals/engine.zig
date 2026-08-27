@@ -8132,6 +8132,11 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 try std.testing.expectEqualSlices(u64, &.{1}, plan.removal.?.scan.removed_elem_ids);
                 try std.testing.expectEqualSlices(usize, &.{0}, plan.removal.?.descriptor_indexes.text_node_indexes.items);
                 try std.testing.expectEqualSlices(u64, &.{2}, plan.publication.?.replacement_elem_ids);
+                fault.configure(1);
+                engine.active_stream.commitSingleTextReplacementAssumeCapacity(&plan.replacement_stream, plan.removal.?.scan.removed_elem_ids[0]);
+                try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+                try std.testing.expectEqualStrings("no", engine.active_stream.text_nodes.items[0].value);
+                fault.configure(null);
                 plan.deinit();
                 try std.testing.expectEqual(retained_before, engine.pending_roc_metrics.closure_retains - engine.pending_roc_metrics.closure_releases);
                 return attempts;

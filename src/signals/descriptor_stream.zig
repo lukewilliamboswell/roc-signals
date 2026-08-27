@@ -647,6 +647,33 @@ pub const Stream = struct {
         }
     }
 
+    /// Commits the minimal one-text replacement using only pre-reserved
+    /// storage. The replacement stream receives the displaced descriptor and
+    /// therefore owns its string after the swap.
+    pub fn commitSingleTextReplacementAssumeCapacity(self: *Stream, replacement: *Stream, removed_elem_id: u64) void {
+        if (replacement.text_nodes.items.len != 1 or replacement.render_nodes.items.len != 1) @panic("single-text splice received a non-text replacement");
+        const old_index = self.elemDescriptorIndex(removed_elem_id) orelse @panic("single-text splice target is not indexed");
+        const text_index = old_index.text_node.get() orelse @panic("single-text splice target is not text");
+        const old_render_index = self.renderNodeIndex(removed_elem_id) orelse @panic("single-text splice target is not rendered");
+        const new_elem_id = replacement.text_nodes.items[0].elem_id;
+
+        const displaced_text = self.text_nodes.items[text_index];
+        self.text_nodes.items[text_index] = replacement.text_nodes.items[0];
+        replacement.text_nodes.items[0] = displaced_text;
+        const displaced_render = self.render_nodes.items[old_render_index];
+        self.render_nodes.items[old_render_index] = replacement.render_nodes.items[0];
+        replacement.render_nodes.items[0] = displaced_render;
+
+        clearIndex(&self.descriptor_indexes_by_elem_id.items[@intCast(removed_elem_id)].text_node, text_index);
+        while (self.descriptor_indexes_by_elem_id.items.len <= new_elem_id) self.descriptor_indexes_by_elem_id.appendAssumeCapacity(.{});
+        setFreshIndex(&self.descriptor_indexes_by_elem_id.items[@intCast(new_elem_id)].text_node, text_index);
+        const removed_metadata = self.render_metadata_by_elem_id.fetchRemove(removed_elem_id) orelse @panic("single-text splice target lacked render metadata");
+        var replacement_metadata = removed_metadata.value;
+        replacement_metadata.render_node = old_render_index;
+        self.render_metadata_by_elem_id.putAssumeCapacity(new_elem_id, replacement_metadata);
+        self.next_elem_id = @max(self.next_elem_id, new_elem_id + 1);
+    }
+
     /// Ensures elem descriptor index capacity or state before publication can begin.
     pub fn ensureElemDescriptorIndex(self: *Stream, allocator: std.mem.Allocator, elem_id: u64) *ElemDescriptorIndex {
         return ensureElemDescriptorIndexImpl(Stream, self, allocator, elem_id);
