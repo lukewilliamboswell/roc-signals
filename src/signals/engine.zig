@@ -4059,16 +4059,29 @@ pub fn Engine(comptime Ctx: type) type {
             host_ctx: Ctx.Handle,
             roc_host: *abi.RocHost,
             replacement: *PreparedReplacementOwner = undefined,
+            owns_replacement: bool = true,
             row_elems: []RowElem = &.{},
             replacement_rows: []ReplacementRow = &.{},
+            counts: StaticRootCounts = .{},
             committed: bool = false,
 
             fn prepare(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, site: HostNodeScopeSiteDesc, each: HostNodeEachDesc, rows: *const each_runtime.PreparedRowSync, keys: []const HostValue, items: []const HostValue, limits: collection_budget.Limits, dirty_source_node_ids: []const u64) CollectionError!*@This() {
+                const plan = try prepareEvaluated(engine, ctx, roc_host, each, rows, keys, items);
+                errdefer plan.deinit();
+                plan.replacement = try PreparedReplacementOwner.create(engine, ctx, roc_host, limits, plan.counts, plan.row_elems.len);
+                plan.owns_replacement = true;
+                try plan.collectInto(site, each, rows, plan.replacement, dirty_source_node_ids);
+                plan.replacement.materialize();
+                plan.releaseEvaluatedRows();
+                return plan;
+            }
+
+            fn prepareEvaluated(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, each: HostNodeEachDesc, rows: *const each_runtime.PreparedRowSync, keys: []const HostValue, items: []const HostValue) CollectionError!*@This() {
                 if (keys.len != items.len or keys.len != rows.next_scope_ids.len) return error.ResourceLimit;
                 const allocator = Ctx.allocator(ctx);
                 const plan = allocator.create(@This()) catch return error.OutOfMemory;
                 errdefer allocator.destroy(plan);
-                plan.* = .{ .engine = engine, .host_ctx = ctx, .roc_host = roc_host };
+                plan.* = .{ .engine = engine, .host_ctx = ctx, .roc_host = roc_host, .owns_replacement = false };
 
                 var changed_count: usize = 0;
                 for (rows.row_items_changed) |changed| if (changed) {
@@ -4080,30 +4093,32 @@ pub fn Engine(comptime Ctx: type) type {
                 errdefer allocator.free(plan.replacement_rows);
                 var evaluated: usize = 0;
                 errdefer for (plan.row_elems[0..evaluated]) |*entry| entry.elem.decref(roc_host);
-                var total: StaticRootCounts = .{};
                 for (rows.row_items_changed, keys, items, 0..) |changed, key, item, row_index| {
                     if (!changed) continue;
                     const elem = callHostValueHostValueToElemWithCapabilities(ctx, roc_host, each.ops.key_capability, each.ops.item_capability, each.ops.row, key, item);
                     plan.row_elems[evaluated] = .{ .row_index = row_index, .elem = elem };
                     evaluated += 1;
-                    try AggregateBranchCollection.addCounts(&total, try countStaticRootNodes(elem));
+                    try AggregateBranchCollection.addCounts(&plan.counts, try countStaticRootNodes(elem));
                 }
+                return plan;
+            }
 
-                plan.replacement = try PreparedReplacementOwner.create(engine, ctx, roc_host, limits, total, changed_count);
-                errdefer plan.replacement.deinit();
-                const replacement_scope_ids = allocator.alloc(u64, changed_count) catch return error.OutOfMemory;
+            fn collectInto(plan: *@This(), site: HostNodeScopeSiteDesc, each: HostNodeEachDesc, rows: *const each_runtime.PreparedRowSync, replacement: *PreparedReplacementOwner, dirty_source_node_ids: []const u64) CollectionError!void {
+                const allocator = Ctx.allocator(plan.host_ctx);
+                plan.replacement = replacement;
+                const replacement_scope_ids = allocator.alloc(u64, plan.row_elems.len) catch return error.OutOfMemory;
                 defer allocator.free(replacement_scope_ids);
                 var replacement_write: usize = 0;
                 for (rows.next_scope_ids, rows.row_items_changed) |scope_id, changed| if (changed) {
                     replacement_scope_ids[replacement_write] = scope_id;
                     replacement_write += 1;
                 };
-                try plan.replacement.attachExternalScopeIds(replacement_scope_ids);
+                try replacement.attachExternalScopeIds(replacement_scope_ids);
 
                 for (plan.row_elems, 0..) |*entry, replacement_index| {
                     const row_index = entry.row_index;
                     const row_scope_id = rows.next_scope_ids[row_index];
-                    const segment = try plan.replacement.collectEachRow(site, each, entry.elem, row_scope_id, rows.scope_created[row_index], dirty_source_node_ids);
+                    const segment = try replacement.collectEachRow(site, each, entry.elem, row_scope_id, rows.scope_created[row_index], dirty_source_node_ids);
                     plan.replacement_rows[replacement_index] = .{
                         .row_index = row_index,
                         .scope_id = row_scope_id,
@@ -4111,16 +4126,18 @@ pub fn Engine(comptime Ctx: type) type {
                         .len = segment.len,
                     };
                 }
-                plan.replacement.materialize();
-                for (plan.row_elems) |*entry| entry.elem.decref(roc_host);
+            }
+
+            fn releaseEvaluatedRows(plan: *@This()) void {
+                const allocator = Ctx.allocator(plan.host_ctx);
+                for (plan.row_elems) |*entry| entry.elem.decref(plan.roc_host);
                 allocator.free(plan.row_elems);
                 plan.row_elems = &.{};
-                return plan;
             }
 
             fn commit(self: *@This()) void {
                 if (self.committed) @panic("prepared each replacement collection committed twice");
-                self.replacement.collection.commit();
+                if (self.owns_replacement) self.replacement.collection.commit();
                 self.committed = true;
             }
 
@@ -4129,7 +4146,7 @@ pub fn Engine(comptime Ctx: type) type {
                 for (self.row_elems) |*entry| entry.elem.decref(self.roc_host);
                 allocator.free(self.row_elems);
                 allocator.free(self.replacement_rows);
-                self.replacement.deinit();
+                if (self.owns_replacement) self.replacement.deinit();
                 allocator.destroy(self);
             }
         };
