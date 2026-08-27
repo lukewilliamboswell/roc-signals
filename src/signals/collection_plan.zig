@@ -230,6 +230,95 @@ pub fn RecordOverlay(comptime Token: type, comptime Record: type) type {
     };
 }
 
+/// Signal graph staging separates non-owning token publication from owning
+/// descriptor roots. Child records are transitively owned by their parents;
+/// releasing every token intent would therefore double-release graph edges.
+pub fn SignalRecordPlan(comptime Token: type, comptime Record: type) type {
+    return struct {
+        const Self = @This();
+        by_token: std.AutoHashMapUnmanaged(Token, *Record) = .{},
+        token_intents: std.ArrayListUnmanaged(struct { token: Token, record: *Record }) = .empty,
+        descriptor_roots: std.ArrayListUnmanaged(*Record) = .empty,
+        committed: bool = false,
+
+        pub fn prepare(self: *Self, allocator: std.mem.Allocator, tokens: usize, roots: usize) std.mem.Allocator.Error!void {
+            try self.by_token.ensureUnusedCapacity(allocator, @intCast(tokens));
+            try self.token_intents.ensureUnusedCapacity(allocator, tokens);
+            try self.descriptor_roots.ensureUnusedCapacity(allocator, roots);
+        }
+
+        pub fn lookup(self: *const Self, token: Token, persistent: ?*Record) ?*Record {
+            return self.by_token.get(token) orelse persistent;
+        }
+
+        pub fn rememberTokenAssumeCapacity(self: *Self, token: Token, record: *Record) void {
+            if (self.committed) @panic("signal record plan cannot remember after commit");
+            if (self.by_token.contains(token)) return;
+            self.by_token.putAssumeCapacity(token, record);
+            self.token_intents.appendAssumeCapacity(.{ .token = token, .record = record });
+        }
+
+        pub fn ownDescriptorRootAssumeCapacity(self: *Self, record: *Record) void {
+            if (self.committed) @panic("signal record plan cannot own after commit");
+            self.descriptor_roots.appendAssumeCapacity(record);
+        }
+
+        pub fn abort(self: *Self, releaser: anytype) void {
+            if (self.committed) @panic("committed signal record plan cannot abort");
+            var index = self.descriptor_roots.items.len;
+            while (index != 0) {
+                index -= 1;
+                releaser.releaseRecord(self.descriptor_roots.items[index]);
+            }
+            self.by_token.clearRetainingCapacity();
+            self.token_intents.clearRetainingCapacity();
+            self.descriptor_roots.clearRetainingCapacity();
+        }
+
+        pub fn commit(self: *Self, publisher: anytype) void {
+            if (self.committed) @panic("signal record plan committed twice");
+            for (self.token_intents.items) |intent| publisher.publishToken(intent.token, intent.record);
+            for (self.descriptor_roots.items) |record| publisher.publishDescriptorRoot(record);
+            self.committed = true;
+        }
+
+        pub fn deinit(self: *Self, allocator: std.mem.Allocator, releaser: anytype) void {
+            if (!self.committed) self.abort(releaser);
+            self.by_token.deinit(allocator);
+            self.token_intents.deinit(allocator);
+            self.descriptor_roots.deinit(allocator);
+            self.* = .{};
+        }
+    };
+}
+
+test "signal record plan releases descriptor roots but not token intents" {
+    const TestRecord = struct { id: u8 };
+    var child = TestRecord{ .id = 1 };
+    var root = TestRecord{ .id = 2 };
+    var releases: usize = 0;
+    const Releaser = struct {
+        count: *usize,
+        root: *TestRecord,
+        child: *TestRecord,
+        pub fn releaseRecord(self: @This(), record: *TestRecord) void {
+            std.debug.assert(record == self.root);
+            self.count.* += 1;
+            // Models Record.release recursively releasing its child edge.
+            _ = self.child;
+            self.count.* += 1;
+        }
+    };
+    var plan = SignalRecordPlan(u64, TestRecord){};
+    try plan.prepare(std.testing.allocator, 2, 1);
+    plan.rememberTokenAssumeCapacity(10, &child);
+    plan.rememberTokenAssumeCapacity(20, &root);
+    plan.ownDescriptorRootAssumeCapacity(&root);
+    plan.abort(Releaser{ .count = &releases, .root = &root, .child = &child });
+    try std.testing.expectEqual(@as(usize, 2), releases);
+    plan.deinit(std.testing.allocator, Releaser{ .count = &releases, .root = &root, .child = &child });
+}
+
 test "record overlay aborts in reverse and commits without allocation" {
     const TestRecord = struct { id: u8 };
     var first = TestRecord{ .id = 1 };
