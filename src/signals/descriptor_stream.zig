@@ -1121,6 +1121,89 @@ pub const Stream = struct {
         appendTextNodeImpl(Stream, self, allocator, elem_id, parent_elem_id, scope_id, value);
     }
 
+    pub const PreparedStaticNode = union(enum) {
+        const Payload = struct { elem_id: u64, parent_elem_id: u64, scope_id: u64, text: []u8 };
+        element: Payload,
+        text: Payload,
+
+        pub fn abort(self: @This(), allocator: std.mem.Allocator) void {
+            switch (self) {
+                inline else => |prepared| allocator.free(prepared.text),
+            }
+        }
+    };
+
+    fn prepareStaticNode(self: *Stream, allocator: std.mem.Allocator, elem_id: u64, parent_elem_id: u64, scope_id: u64, text: []const u8, kind: RenderNodeKind) std.mem.Allocator.Error!PreparedStaticNode {
+        _ = std.math.add(u64, self.next_elem_id, 1) catch return error.OutOfMemory;
+        const copy = try allocator.dupe(u8, text);
+        errdefer allocator.free(copy);
+        try self.render_nodes.ensureUnusedCapacity(allocator, 1);
+        switch (kind) {
+            .element => try self.elements.ensureUnusedCapacity(allocator, 1),
+            .text => try self.text_nodes.ensureUnusedCapacity(allocator, 1),
+            .signal_text => unreachable,
+        }
+        const descriptor_len = std.math.add(usize, @as(usize, @intCast(elem_id)), 1) catch return error.OutOfMemory;
+        if (descriptor_len > self.descriptor_indexes_by_elem_id.items.len) {
+            try self.descriptor_indexes_by_elem_id.ensureTotalCapacity(allocator, descriptor_len);
+        }
+        try self.render_metadata_by_elem_id.ensureUnusedCapacity(allocator, 2);
+        return switch (kind) {
+            .element => .{ .element = .{ .elem_id = elem_id, .parent_elem_id = parent_elem_id, .scope_id = scope_id, .text = copy } },
+            .text => .{ .text = .{ .elem_id = elem_id, .parent_elem_id = parent_elem_id, .scope_id = scope_id, .text = copy } },
+            .signal_text => unreachable,
+        };
+    }
+
+    pub fn prepareElement(self: *Stream, allocator: std.mem.Allocator, elem_id: u64, parent_elem_id: u64, scope_id: u64, tag: []const u8) std.mem.Allocator.Error!PreparedStaticNode {
+        return self.prepareStaticNode(allocator, elem_id, parent_elem_id, scope_id, tag, .element);
+    }
+
+    pub fn prepareTextNode(self: *Stream, allocator: std.mem.Allocator, elem_id: u64, parent_elem_id: u64, scope_id: u64, value: []const u8) std.mem.Allocator.Error!PreparedStaticNode {
+        return self.prepareStaticNode(allocator, elem_id, parent_elem_id, scope_id, value, .text);
+    }
+
+    pub fn appendPreparedStaticNode(self: *Stream, prepared_node: PreparedStaticNode) void {
+        const prepared = switch (prepared_node) {
+            inline else => |value| value,
+        };
+        while (self.descriptor_indexes_by_elem_id.items.len <= prepared.elem_id) {
+            self.descriptor_indexes_by_elem_id.appendAssumeCapacity(.{});
+        }
+        const render_index = self.render_nodes.items.len;
+        self.render_nodes.appendAssumeCapacity(.{ .elem_id = prepared.elem_id, .kind = switch (prepared_node) {
+            .element => .element,
+            .text => .text,
+        } });
+        const descriptor = &self.descriptor_indexes_by_elem_id.items[@intCast(prepared.elem_id)];
+        switch (prepared_node) {
+            .element => {
+                const index = self.elements.items.len;
+                self.elements.appendAssumeCapacity(.{ .elem_id = prepared.elem_id, .parent_elem_id = prepared.parent_elem_id, .scope_id = prepared.scope_id, .tag = prepared.text });
+                setFreshIndex(&descriptor.element, index);
+            },
+            .text => {
+                const index = self.text_nodes.items.len;
+                self.text_nodes.appendAssumeCapacity(.{ .elem_id = prepared.elem_id, .parent_elem_id = prepared.parent_elem_id, .scope_id = prepared.scope_id, .value = prepared.text });
+                setFreshIndex(&descriptor.text_node, index);
+            },
+        }
+        const elem_entry = self.render_metadata_by_elem_id.getOrPutAssumeCapacity(prepared.elem_id);
+        if (!elem_entry.found_existing) elem_entry.value_ptr.* = .{};
+        elem_entry.value_ptr.render_node = render_index;
+        const parent_entry = self.render_metadata_by_elem_id.getOrPutAssumeCapacity(prepared.parent_elem_id);
+        if (!parent_entry.found_existing) parent_entry.value_ptr.* = .{};
+        const last = parent_entry.value_ptr.last_child;
+        elem_entry.value_ptr.next_sibling = null;
+        if (last) |last_child| {
+            self.render_metadata_by_elem_id.getPtr(last_child).?.next_sibling = prepared.elem_id;
+        } else {
+            parent_entry.value_ptr.first_child = prepared.elem_id;
+        }
+        parent_entry.value_ptr.last_child = prepared.elem_id;
+        self.next_elem_id += 1;
+    }
+
     pub fn appendSignalTextNode(self: *Stream, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, elem_id: u64, parent_elem_id: u64, scope_id: u64, signal: HostSignalBinding, read: HostTextRead) void {
         self.next_elem_id += 1;
         self.rememberSignalRecordTree(allocator, signal.record);
@@ -2555,6 +2638,49 @@ const TestMetrics = struct {
         }
     }
 };
+
+fn deinitStaticPreparedTestStream(stream: *Stream, allocator: std.mem.Allocator) void {
+    for (stream.elements.items) |desc| allocator.free(desc.tag);
+    for (stream.text_nodes.items) |desc| allocator.free(desc.value);
+    stream.render_nodes.deinit(allocator);
+    stream.elements.deinit(allocator);
+    stream.text_nodes.deinit(allocator);
+    stream.descriptor_indexes_by_elem_id.deinit(allocator);
+    stream.render_metadata_by_elem_id.deinit(allocator);
+}
+
+test "prepared static append sweeps allocation failures without logical mutation and retries" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var counter = FaultAllocator.init(std.testing.allocator);
+    var counted_stream: Stream = .{};
+    const counted = try counted_stream.prepareElement(counter.allocator(), 1, 0, 0, "section");
+    counted.abort(counter.allocator());
+    deinitStaticPreparedTestStream(&counted_stream, std.testing.allocator);
+    const attempts = counter.attempts;
+    try std.testing.expect(attempts >= 5);
+
+    for (1..attempts + 1) |failure_number| {
+        var fault = FaultAllocator.init(std.testing.allocator);
+        var stream: Stream = .{};
+        defer deinitStaticPreparedTestStream(&stream, std.testing.allocator);
+        fault.configure(failure_number);
+        try std.testing.expectError(error.OutOfMemory, stream.prepareElement(fault.allocator(), 1, 0, 0, "section"));
+        try std.testing.expectEqual(@as(u64, 1), stream.next_elem_id);
+        try std.testing.expectEqual(@as(usize, 0), stream.render_nodes.items.len);
+        try std.testing.expectEqual(@as(usize, 0), stream.elements.items.len);
+        try std.testing.expectEqual(@as(usize, 0), stream.descriptor_indexes_by_elem_id.items.len);
+        try std.testing.expectEqual(@as(usize, 0), stream.render_metadata_by_elem_id.count());
+
+        fault.configure(null);
+        const retry = try stream.prepareElement(fault.allocator(), 1, 0, 0, "section");
+        stream.appendPreparedStaticNode(retry);
+        try std.testing.expectEqual(@as(u64, 2), stream.next_elem_id);
+        try std.testing.expectEqual(@as(usize, 1), stream.render_nodes.items.len);
+        try std.testing.expectEqual(@as(usize, 1), stream.elements.items.len);
+        try std.testing.expectEqualStrings("section", stream.elements.items[0].tag);
+        try std.testing.expectEqual(@as(?u64, 1), stream.firstRenderChild(0));
+    }
+}
 
 test "fixed event descriptors preserve Roc supplied payload descriptors" {
     const allocator = std.testing.allocator;
