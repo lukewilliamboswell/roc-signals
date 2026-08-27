@@ -239,9 +239,7 @@ fn emitAppendChildren(parent_elem_id: u64, next_child_ids: []const u64) void {
 }
 
 var shared_engine: SharedEngine = .init();
-var command_buffer: render.Buffer = .{};
-var dynamic_command_buffer: render.DynamicBuffer = .{};
-var string_buffer: std.ArrayListUnmanaged(u8) = .empty;
+var command_batch: render.TransactionalBatch = .{};
 var initial_location_payload: ?[]u8 = null;
 var initial_visibility_payload: ?[]u8 = null;
 var initial_online_payload: ?[]u8 = null;
@@ -309,17 +307,23 @@ var roc_host = abi.RocHost{
 
 var last_host_error: []const u8 = "";
 var last_host_error_buf: [512]u8 = undefined;
+var host_poisoned: bool = false;
 
-fn clearHostError() void {
+fn beginHostCall() void {
+    if (host_poisoned) @trap();
     last_host_error = "";
 }
 
 fn failHostWith(message: []const u8) noreturn {
+    command_batch.abort();
+    host_poisoned = true;
     last_host_error = message;
     @trap();
 }
 
 fn failHostWithFmt(comptime fmt: []const u8, args: anytype) noreturn {
+    command_batch.abort();
+    host_poisoned = true;
     last_host_error = std.fmt.bufPrint(&last_host_error_buf, fmt, args) catch "Signals wasm host invariant failed while formatting diagnostic";
     @trap();
 }
@@ -342,18 +346,24 @@ fn alignmentFromBytes(alignment: usize) std.mem.Alignment {
 }
 
 fn appendCommand(op: render.Op, a: u32, b: u32, c: u32, d: u32, e: u32) void {
-    command_buffer.append(allocator(), op, a, b, c, d, e) catch failHost();
+    command_batch.staged.commands.append(allocator(), op, a, b, c, d, e) catch failHostWith("out of memory while staging render commands");
 }
 
 fn clearCommandBuffers() void {
-    command_buffer.clearRetainingCapacity();
-    dynamic_command_buffer.clearRetainingCapacity();
-    string_buffer.clearRetainingCapacity();
+    command_batch.clearPublished();
+}
+
+fn beginCommandTransaction() void {
+    command_batch.begin();
+}
+
+fn commitCommandTransaction() void {
+    command_batch.commit();
 }
 
 fn storeBytes(bytes: []const u8) u32 {
-    const offset = toU32(string_buffer.items.len);
-    string_buffer.appendSlice(allocator(), bytes) catch failHost();
+    const offset = toU32(command_batch.staged.strings.items.len);
+    command_batch.staged.strings.appendSlice(allocator(), bytes) catch failHostWith("out of memory while staging render strings");
     return offset;
 }
 
@@ -363,17 +373,17 @@ fn appendStringCommand(op: render.Op, elem_id: u32, bytes: []const u8) void {
 
 fn storeLocationHref(location: boundary.LocationSnapshot) render.DynamicSlice {
     if (location.path.len == 0 or location.path[0] != '/') failHostWith("location path must start with /");
-    const offset = toU32(string_buffer.items.len);
-    string_buffer.appendSlice(allocator(), location.path) catch failHost();
+    const offset = toU32(command_batch.staged.strings.items.len);
+    command_batch.staged.strings.appendSlice(allocator(), location.path) catch failHostWith("out of memory while staging location command");
     if (location.query.len != 0) {
-        string_buffer.append(allocator(), '?') catch failHost();
-        string_buffer.appendSlice(allocator(), location.query) catch failHost();
+        command_batch.staged.strings.append(allocator(), '?') catch failHostWith("out of memory while staging location command");
+        command_batch.staged.strings.appendSlice(allocator(), location.query) catch failHostWith("out of memory while staging location command");
     }
     if (location.hash.len != 0) {
-        string_buffer.append(allocator(), '#') catch failHost();
-        string_buffer.appendSlice(allocator(), location.hash) catch failHost();
+        command_batch.staged.strings.append(allocator(), '#') catch failHostWith("out of memory while staging location command");
+        command_batch.staged.strings.appendSlice(allocator(), location.hash) catch failHostWith("out of memory while staging location command");
     }
-    return .{ .offset = offset, .len = toU32(string_buffer.items.len - offset) };
+    return .{ .offset = offset, .len = toU32(command_batch.staged.strings.items.len - offset) };
 }
 
 fn appendLocationCommand(op: render.Op, location: boundary.LocationSnapshot) void {
@@ -407,12 +417,12 @@ fn textAttrNameForField(field: RenderTextField) ?[]const u8 {
 }
 
 fn appendDynamicSetAttrText(elem_id: u32, name: []const u8, value: []const u8) void {
-    const slice = dynamic_command_buffer.appendSetAttrText(allocator(), elem_id, name, value) catch failHost();
+    const slice = command_batch.staged.dynamic.appendSetAttrText(allocator(), elem_id, name, value) catch failHostWith("out of memory while staging dynamic render command");
     appendCommand(.extended, slice.offset, slice.len, 0, 0, 0);
 }
 
 fn appendDynamicRemoveAttr(elem_id: u32, name: []const u8) void {
-    const slice = dynamic_command_buffer.appendRemoveAttr(allocator(), elem_id, name) catch failHost();
+    const slice = command_batch.staged.dynamic.appendRemoveAttr(allocator(), elem_id, name) catch failHostWith("out of memory while staging dynamic render command");
     appendCommand(.extended, slice.offset, slice.len, 0, 0, 0);
 }
 
@@ -443,12 +453,12 @@ fn appendEventClearCommand(command: EventClearCommand) void {
 }
 
 fn appendDynamicBindEvent(elem_id: u32, name: []const u8, event_id: u32, options: u32, delivery: render.EventDeliveryWire, payload_descriptor: BoundaryPayloadDescriptor) void {
-    const slice = dynamic_command_buffer.appendBindEvent(allocator(), elem_id, event_id, name, options, delivery, payload_descriptor) catch failHost();
+    const slice = command_batch.staged.dynamic.appendBindEvent(allocator(), elem_id, event_id, name, options, delivery, payload_descriptor) catch failHostWith("out of memory while staging dynamic event command");
     appendCommand(.extended, slice.offset, slice.len, 0, 0, 0);
 }
 
 fn appendDynamicClearEvent(elem_id: u32, name: []const u8) void {
-    const slice = dynamic_command_buffer.appendClearEvent(allocator(), elem_id, name) catch failHost();
+    const slice = command_batch.staged.dynamic.appendClearEvent(allocator(), elem_id, name) catch failHostWith("out of memory while staging dynamic event command");
     appendCommand(.extended, slice.offset, slice.len, 0, 0, 0);
 }
 
@@ -1247,6 +1257,7 @@ fn freeRocAllocation(ptr: *anyopaque, alignment_arg: usize) RocAllocation {
 }
 
 export fn roc_alloc(length: usize, alignment: usize) callconv(.c) ?*anyopaque {
+    if (host_poisoned) return null;
     return allocRocMemory(length, alignment);
 }
 
@@ -1321,28 +1332,28 @@ export fn roc_ui_protocol_features() callconv(.c) u32 {
 }
 
 export fn roc_ui_command_buffer_ptr() callconv(.c) usize {
-    return command_buffer.ptrAddress();
+    return command_batch.published.commands.ptrAddress();
 }
 
 export fn roc_ui_command_buffer_len() callconv(.c) usize {
-    return command_buffer.len();
+    return command_batch.published.commands.len();
 }
 
 export fn roc_ui_string_buffer_ptr() callconv(.c) usize {
-    if (string_buffer.items.len == 0) return 0;
-    return @intFromPtr(string_buffer.items.ptr);
+    if (command_batch.published.strings.items.len == 0) return 0;
+    return @intFromPtr(command_batch.published.strings.items.ptr);
 }
 
 export fn roc_ui_string_buffer_len() callconv(.c) usize {
-    return string_buffer.items.len;
+    return command_batch.published.strings.items.len;
 }
 
 export fn roc_ui_dynamic_buffer_ptr() callconv(.c) usize {
-    return dynamic_command_buffer.ptrAddress();
+    return command_batch.published.dynamic.ptrAddress();
 }
 
 export fn roc_ui_dynamic_buffer_len() callconv(.c) usize {
-    return dynamic_command_buffer.len();
+    return command_batch.published.dynamic.len();
 }
 
 export fn roc_ui_command_record_words() callconv(.c) usize {
@@ -1361,6 +1372,10 @@ export fn roc_ui_last_error_len() callconv(.c) usize {
     return last_host_error.len;
 }
 
+export fn roc_ui_is_poisoned() callconv(.c) u32 {
+    return @intFromBool(host_poisoned);
+}
+
 /// Number of retained host values currently live in the registry.
 ///
 /// The browser leak guard asserts this returns to zero after `roc_ui_unmount`,
@@ -1370,7 +1385,7 @@ export fn roc_ui_live_host_values() callconv(.c) usize {
 }
 
 export fn roc_ui_prepare_mount() callconv(.c) void {
-    clearHostError();
+    beginHostCall();
     prepareMountRoot();
 }
 
@@ -1396,7 +1411,7 @@ export fn roc_ui_storage_declaration_key_len(index: usize) callconv(.c) usize {
 }
 
 export fn roc_ui_set_storage_payload(area_id: u32, key_ptr: usize, key_len: usize, payload_ptr: usize, payload_len: usize) callconv(.c) void {
-    clearHostError();
+    beginHostCall();
     const area = boundary.StorageArea.fromId(area_id) orelse failHostWith("storage payload used an unknown storage area");
     const key = (@as([*]const u8, @ptrFromInt(key_ptr)))[0..key_len];
     const payload = (@as([*]const u8, @ptrFromInt(payload_ptr)))[0..payload_len];
@@ -1404,52 +1419,55 @@ export fn roc_ui_set_storage_payload(area_id: u32, key_ptr: usize, key_len: usiz
 }
 
 export fn roc_ui_mount() callconv(.c) void {
-    clearHostError();
+    beginHostCall();
+    beginCommandTransaction();
     if (!mount_prepared) {
         clearActiveRuntime();
-        clearCommandBuffers();
         clearStorageEnvironment();
         initRootElem();
     } else {
-        clearCommandBuffers();
         mount_prepared = false;
     }
 
     renderActiveRoot(&.{});
     clearStorageDeclarations();
+    commitCommandTransaction();
 }
 
 export fn roc_ui_set_location(payload_ptr: usize, payload_len: usize) callconv(.c) void {
-    clearHostError();
+    beginHostCall();
     setInitialLocationPayload((@as([*]const u8, @ptrFromInt(payload_ptr)))[0..payload_len]);
 }
 
 export fn roc_ui_update_location(payload_ptr: usize, payload_len: usize) callconv(.c) void {
-    clearHostError();
-    clearCommandBuffers();
+    beginHostCall();
+    beginCommandTransaction();
     dispatchLocationChange((@as([*]const u8, @ptrFromInt(payload_ptr)))[0..payload_len]);
+    commitCommandTransaction();
 }
 
 export fn roc_ui_set_visibility(payload_ptr: usize, payload_len: usize) callconv(.c) void {
-    clearHostError();
+    beginHostCall();
     setInitialVisibilityPayload((@as([*]const u8, @ptrFromInt(payload_ptr)))[0..payload_len]);
 }
 
 export fn roc_ui_update_visibility(payload_ptr: usize, payload_len: usize) callconv(.c) void {
-    clearHostError();
-    clearCommandBuffers();
+    beginHostCall();
+    beginCommandTransaction();
     dispatchVisibilityChange((@as([*]const u8, @ptrFromInt(payload_ptr)))[0..payload_len]);
+    commitCommandTransaction();
 }
 
 export fn roc_ui_set_online(payload_ptr: usize, payload_len: usize) callconv(.c) void {
-    clearHostError();
+    beginHostCall();
     setInitialOnlinePayload((@as([*]const u8, @ptrFromInt(payload_ptr)))[0..payload_len]);
 }
 
 export fn roc_ui_update_online(payload_ptr: usize, payload_len: usize) callconv(.c) void {
-    clearHostError();
-    clearCommandBuffers();
+    beginHostCall();
+    beginCommandTransaction();
     dispatchOnlineChange((@as([*]const u8, @ptrFromInt(payload_ptr)))[0..payload_len]);
+    commitCommandTransaction();
 }
 
 fn payloadKindFromWire(payload_kind: u32) BoundaryPayloadKind {
@@ -1463,8 +1481,8 @@ fn payloadKindFromWire(payload_kind: u32) BoundaryPayloadKind {
 }
 
 export fn roc_ui_event(event_id: u32, payload_kind: u32, payload_ptr: usize, payload_len: usize, bool_value: u32) callconv(.c) u32 {
-    clearHostError();
-    clearCommandBuffers();
+    beginHostCall();
+    beginCommandTransaction();
     const desc = hostEventById(event_id);
     const actual_payload_kind = payloadKindFromWire(payload_kind);
     const expected_payload_kind = desc.payload_descriptor.payloadKind();
@@ -1478,33 +1496,41 @@ export fn roc_ui_event(event_id: u32, payload_kind: u32, payload_ptr: usize, pay
         .bytes => hostValueU8List((@as([*]const u8, @ptrFromInt(payload_ptr)))[0..payload_len]),
     };
     dispatchEvent(desc, payload);
+    commitCommandTransaction();
     return 0;
 }
 
 export fn roc_ui_timer(token: u32) callconv(.c) void {
-    clearHostError();
-    clearCommandBuffers();
+    beginHostCall();
+    beginCommandTransaction();
     tickInterval(token);
+    commitCommandTransaction();
 }
 
 export fn roc_ui_resolve(request_id: u32, payload_ptr: usize, payload_len: usize, failed: u32) callconv(.c) void {
-    clearHostError();
-    clearCommandBuffers();
+    beginHostCall();
+    beginCommandTransaction();
     resolveTask(
         request_id,
         (@as([*]const u8, @ptrFromInt(payload_ptr)))[0..payload_len],
         failed != 0,
     );
+    commitCommandTransaction();
 }
 
 export fn roc_ui_unmount() callconv(.c) void {
-    clearHostError();
-    clearCommandBuffers();
+    if (host_poisoned) {
+        command_batch.abort();
+        return;
+    }
+    beginHostCall();
+    beginCommandTransaction();
     clearActiveRuntime();
     clearInitialLocationPayload();
     clearInitialVisibilityPayload();
     clearInitialOnlinePayload();
     clearStorageEnvironment();
+    commitCommandTransaction();
 }
 
 export fn roc_dbg(_: [*]const u8, _: usize) callconv(.c) void {}
