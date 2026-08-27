@@ -515,6 +515,17 @@ pub const TransactionalBatch = struct {
     pub fn clearPublished(self: *TransactionalBatch) void {
         self.published.clearRetainingCapacity();
     }
+
+    /// Returns whether the consumer has drained the prior publication and no
+    /// unpublished transaction is still staged.
+    pub fn isDrained(self: *const TransactionalBatch) bool {
+        return self.published.commands.len() == 0 and
+            self.published.strings.items.len == 0 and
+            self.published.dynamic.len() == 0 and
+            self.staged.commands.len() == 0 and
+            self.staged.strings.items.len == 0 and
+            self.staged.dynamic.len() == 0;
+    }
 };
 
 /// One borrowed wire command whose backing values remain owned by its render plan.
@@ -601,6 +612,7 @@ pub const PreparedBatch = struct {
 
     /// Reserves the unpublished destination batch without staging any bytes.
     pub fn preflight(self: *const PreparedBatch, batch: *TransactionalBatch, allocator: std.mem.Allocator) PreflightError!void {
+        if (!batch.isDrained()) return error.ResourceLimit;
         batch.begin();
         errdefer batch.abort();
         try batch.preflight(allocator, self.capacity);
@@ -826,6 +838,46 @@ test "prepared command batch sweeps preflight and stages allocation free" {
         batch.commit();
         try std.testing.expectEqual(prepared.capacity.commands, batch.published.commands.len());
     }
+}
+
+test "prepared batch preserves undrained publication and reuses drained capacity" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var prepared = try PreparedBatch.init(std.testing.allocator, 2);
+    defer prepared.deinit(std.testing.allocator);
+    try prepared.addString(.{ .op = .create_element, .elem_id = 1, .bytes = "section" });
+    try prepared.addSetAttrText(1, "data-state", "ready");
+
+    var fault = FaultAllocator.init(std.testing.allocator);
+    var batch: TransactionalBatch = .{};
+    defer batch.deinit(fault.allocator());
+    try prepared.preflight(&batch, fault.allocator());
+    try prepared.stageAssumeCapacity(&batch, fault.allocator());
+    batch.commit();
+    const first_commands_capacity = batch.published.commands.records.capacity;
+    const first_commands_ptr = batch.published.commands.records.items.ptr;
+    const first_strings_ptr = batch.published.strings.items.ptr;
+    const first_dynamic_capacity = batch.published.dynamic.bytes.capacity;
+    const first_dynamic_ptr = batch.published.dynamic.bytes.items.ptr;
+
+    try std.testing.expectError(error.ResourceLimit, prepared.preflight(&batch, fault.allocator()));
+    try std.testing.expectEqual(@as(usize, 2), batch.published.commands.len());
+    try std.testing.expectEqualStrings("section", batch.published.strings.items);
+
+    batch.clearPublished();
+    try prepared.preflight(&batch, fault.allocator());
+    try prepared.stageAssumeCapacity(&batch, fault.allocator());
+    batch.commit();
+    batch.clearPublished();
+    fault.configure(1);
+    try prepared.preflight(&batch, fault.allocator());
+    try prepared.stageAssumeCapacity(&batch, fault.allocator());
+    batch.commit();
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqual(first_commands_capacity, batch.published.commands.records.capacity);
+    try std.testing.expectEqual(first_commands_ptr, batch.published.commands.records.items.ptr);
+    try std.testing.expectEqual(first_strings_ptr, batch.published.strings.items.ptr);
+    try std.testing.expectEqual(first_dynamic_capacity, batch.published.dynamic.bytes.capacity);
+    try std.testing.expectEqual(first_dynamic_ptr, batch.published.dynamic.bytes.items.ptr);
 }
 
 test "prepared command journal rejects an underestimated command count" {

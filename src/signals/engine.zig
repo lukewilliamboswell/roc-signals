@@ -3328,6 +3328,9 @@ pub fn Engine(comptime Ctx: type) type {
             graph_source_route_count: usize = 0,
             render_splice: ?render_cache_mod.PreparedRenderSplice(Ctx) = null,
             render_batch: render.TransactionalBatch = .{},
+            render_batch_target: ?*render.TransactionalBatch = null,
+            render_batch_preflighted: bool = false,
+            render_batch_published: bool = false,
 
             fn stateIndexDescending(_: void, left: usize, right: usize) bool {
                 return left > right;
@@ -3496,6 +3499,7 @@ pub fn Engine(comptime Ctx: type) type {
 
             fn prepareGraphAndRender(self: *@This(), allocator: std.mem.Allocator) CollectionError!void {
                 errdefer {
+                    if (self.render_batch_preflighted) self.render_batch_target.?.abort();
                     self.render_batch.deinit(allocator);
                     if (self.render_splice) |*splice| splice.deinit();
                     self.deinitGraphRoutes(allocator);
@@ -3517,10 +3521,12 @@ pub fn Engine(comptime Ctx: type) type {
                 }
                 if (self.engine.render_cache.hasRoot()) {
                     self.render_splice = try self.prepareRenderTopology(allocator);
-                    self.render_splice.?.wire.preflight(&self.render_batch, allocator) catch |err| switch (err) {
+                    self.render_batch_target = if (comptime @hasDecl(Ctx, "renderCommandBatch")) Ctx.renderCommandBatch(self.host_ctx) else &self.render_batch;
+                    self.render_splice.?.wire.preflight(self.render_batch_target.?, allocator) catch |err| switch (err) {
                         error.OutOfMemory => return error.OutOfMemory,
                         error.ResourceLimit => return error.ResourceLimit,
                     };
+                    self.render_batch_preflighted = true;
                 }
             }
 
@@ -3909,15 +3915,14 @@ pub fn Engine(comptime Ctx: type) type {
 
             fn commitRenderCacheAssumeCapacity(self: *@This()) void {
                 const splice = &(self.render_splice orelse return);
-                splice.wire.stageAssumeCapacity(&self.render_batch, Ctx.allocator(self.host_ctx)) catch @panic("prepared render batch violated its preflight contract");
+                splice.wire.stageAssumeCapacity(self.render_batch_target.?, Ctx.allocator(self.host_ctx)) catch @panic("prepared render batch violated its preflight contract");
                 splice.apply(&self.engine.render_cache);
             }
 
-            fn publishRenderBatchIntoLast(self: *@This(), destination: *render.TransactionalBatch) void {
+            fn publishRenderBatchLast(self: *@This()) void {
                 if (self.render_splice == null) return;
-                if (destination.published.commands.len() != 0 or destination.staged.commands.len() != 0) @panic("render batch destination was not drained before publication");
-                self.render_batch.commit();
-                std.mem.swap(render.TransactionalBatch, &self.render_batch, destination);
+                self.render_batch_target.?.commit();
+                self.render_batch_published = true;
             }
 
             fn collectRetiredGraphRoots(self: *@This(), allocator: std.mem.Allocator, roots: *std.ArrayListUnmanaged(*HostSignalRecord)) CollectionError!void {
@@ -4093,6 +4098,7 @@ pub fn Engine(comptime Ctx: type) type {
 
             fn deinit(self: *@This()) void {
                 const allocator = Ctx.allocator(self.host_ctx);
+                if (self.render_batch_preflighted and !self.render_batch_published and self.render_batch_target != &self.render_batch) self.render_batch_target.?.abort();
                 self.render_batch.deinit(allocator);
                 if (self.render_splice) |*splice| splice.deinit();
                 if (self.publication) |*publication| publication.deinit(allocator);
@@ -8309,6 +8315,7 @@ pub fn Engine(comptime Ctx: type) type {
 
 const VerifyCtxHost = struct {
     allocator: std.mem.Allocator,
+    render_batch: render.TransactionalBatch = .{},
 
     /// Produces an independently owned copy through the value's app-compiled capability.
     pub fn cloneHostValue(_: *@This(), value: HostValue) HostValue {
@@ -8406,6 +8413,11 @@ const VerifyCtx = struct {
     /// Returns the allocator owned by this host context for shared-engine work.
     pub fn allocator(ctx: Handle) std.mem.Allocator {
         return ctx.allocator;
+    }
+
+    /// Returns the reusable unpublished/published render command bank.
+    pub fn renderCommandBatch(ctx: Handle) *render.TransactionalBatch {
+        return &ctx.render_batch;
     }
 
     /// Produces an independently owned copy through the value's app-compiled capability.
@@ -9053,9 +9065,8 @@ test "branch replacement preparation leaves the active branch unpublished" {
             var ctx = VerifyCtxHost{ .allocator = fault.allocator() };
             var engine = Engine(VerifyCtx).init();
             var stream: HostNodeDescriptorStream = .{};
-            var host_render_batch: render.TransactionalBatch = .{};
             defer {
-                host_render_batch.deinit(ctx.allocator);
+                ctx.render_batch.deinit(ctx.allocator);
                 if (engine.active_signal_graph.items.len != 0) {
                     engine.clearActiveSignalRoutes(&ctx);
                     engine.clearActiveSignalGraph(&ctx);
@@ -9199,10 +9210,10 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 plan.commitRowRetirement();
                 plan.commitEffectsRetirement();
                 plan.commitScopeRetirementLast();
-                plan.publishRenderBatchIntoLast(&host_render_batch);
+                plan.publishRenderBatchLast();
                 try std.testing.expectEqual(@as(usize, 0), fault.attempts);
-                try std.testing.expectEqual(@as(usize, 0), host_render_batch.staged.commands.len());
-                try std.testing.expect(host_render_batch.published.commands.len() != 0);
+                try std.testing.expectEqual(@as(usize, 0), ctx.render_batch.staged.commands.len());
+                try std.testing.expect(ctx.render_batch.published.commands.len() != 0);
                 try std.testing.expectEqualStrings("div", engine.render_cache.nodes.items[4].tag.?);
                 try std.testing.expectEqualStrings("no", engine.render_cache.nodes.items[5].text.?);
                 try std.testing.expectEqualStrings("signal", engine.render_cache.nodes.items[6].text.?);
@@ -9269,7 +9280,7 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 try std.testing.expectEqual(@as(?usize, 0), engine.active_stream.elemDescriptorIndex(6).?.signal_text_node.get());
                 fault.configure(null);
                 plan.deinit();
-                try std.testing.expect(host_render_batch.published.commands.len() != 0);
+                try std.testing.expect(ctx.render_batch.published.commands.len() != 0);
                 // Six replacement signal descriptor caches each retain their
                 // three-callable capability after publication; retirement
                 // still releases the six branch-owned closures measured here.
@@ -9282,8 +9293,8 @@ test "branch replacement preparation leaves the active branch unpublished" {
             try std.testing.expectEqual(identity_len, engine.dom_identities.items.len);
             try std.testing.expectEqual(text_len, engine.active_stream.text_nodes.items.len);
             try std.testing.expectEqual(retained_before, engine.pending_roc_metrics.closure_retains - engine.pending_roc_metrics.closure_releases);
-            try std.testing.expectEqual(@as(usize, 0), host_render_batch.published.commands.len());
-            try std.testing.expectEqual(@as(usize, 0), host_render_batch.staged.commands.len());
+            try std.testing.expectEqual(@as(usize, 0), ctx.render_batch.published.commands.len());
+            try std.testing.expectEqual(@as(usize, 0), ctx.render_batch.staged.commands.len());
 
             fault.configure(null);
             const retry_text_reads_before = verifyTextReadCalls;
@@ -9292,7 +9303,7 @@ test "branch replacement preparation leaves the active branch unpublished" {
             retry.deinit();
             try std.testing.expectEqualSlices(u64, &.{1}, engine.render_cache.nodes.items[0].children.items);
             try std.testing.expectEqualStrings("div", engine.render_cache.nodes.items[1].tag.?);
-            try std.testing.expectEqual(@as(usize, 0), host_render_batch.published.commands.len());
+            try std.testing.expectEqual(@as(usize, 0), ctx.render_batch.published.commands.len());
             try std.testing.expectEqual(scope_len, engine.scopes.items.len);
             try std.testing.expectEqual(identity_len, engine.dom_identities.items.len);
             try std.testing.expectEqual(text_len, engine.active_stream.text_nodes.items.len);
