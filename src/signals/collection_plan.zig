@@ -5,6 +5,7 @@
 //! storage and action-specific capacity must be prepared before it begins.
 
 const std = @import("std");
+const scope_tree = @import("scope_tree.zig");
 
 pub const IdentityKey = u128;
 
@@ -75,8 +76,13 @@ pub const IdentityOverlay = struct {
 pub const ScopeKey = struct {
     parent_id: u64,
     ordinal: u64,
-    kind: u8,
-    branch: u8 = 0,
+    kind: Kind,
+
+    pub const Kind = union(enum) {
+        root,
+        component,
+        when_branch: scope_tree.Branch,
+    };
 };
 
 pub const ScopeIntent = struct {
@@ -575,10 +581,10 @@ test "scope overlay uniquely reserves inactive slots for provisional hierarchy" 
     var overlay: ScopeOverlay = .{};
     defer overlay.deinit(std.testing.allocator);
     try overlay.prepare(std.testing.allocator, 3);
-    const root_key: ScopeKey = .{ .parent_id = 0, .ordinal = 0, .kind = 1 };
+    const root_key: ScopeKey = .{ .parent_id = 0, .ordinal = 0, .kind = .root };
     const root_id = try overlay.reserve(root_key, null, &.{ 4, 5, 6 });
-    const child_a: ScopeKey = .{ .parent_id = root_id, .ordinal = 0, .kind = 2 };
-    const child_b: ScopeKey = .{ .parent_id = root_id, .ordinal = 1, .kind = 2 };
+    const child_a: ScopeKey = .{ .parent_id = root_id, .ordinal = 0, .kind = .component };
+    const child_b: ScopeKey = .{ .parent_id = root_id, .ordinal = 1, .kind = .component };
     const child_a_id = try overlay.reserve(child_a, null, &.{ 4, 5, 6 });
     const child_b_id = try overlay.reserve(child_b, null, &.{ 4, 5, 6 });
     try std.testing.expectEqual(@as(u64, 4), root_id);
@@ -590,7 +596,7 @@ test "scope overlay uniquely reserves inactive slots for provisional hierarchy" 
 test "scope overlay abort leaves persistent scopes unchanged and permits retry" {
     var persistent: std.AutoHashMapUnmanaged(ScopeKey, u64) = .{};
     defer persistent.deinit(std.testing.allocator);
-    const key: ScopeKey = .{ .parent_id = 1, .ordinal = 2, .kind = 3, .branch = 1 };
+    const key: ScopeKey = .{ .parent_id = 1, .ordinal = 2, .kind = .{ .when_branch = .true_branch } };
     var overlay: ScopeOverlay = .{};
     defer overlay.deinit(std.testing.allocator);
     try overlay.prepare(std.testing.allocator, 1);
