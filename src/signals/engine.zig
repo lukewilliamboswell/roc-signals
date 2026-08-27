@@ -3913,9 +3913,11 @@ pub fn Engine(comptime Ctx: type) type {
                 splice.apply(&self.engine.render_cache);
             }
 
-            fn publishRenderBatchLast(self: *@This()) void {
+            fn publishRenderBatchIntoLast(self: *@This(), destination: *render.TransactionalBatch) void {
                 if (self.render_splice == null) return;
+                if (destination.published.commands.len() != 0 or destination.staged.commands.len() != 0) @panic("render batch destination was not drained before publication");
                 self.render_batch.commit();
+                std.mem.swap(render.TransactionalBatch, &self.render_batch, destination);
             }
 
             fn collectRetiredGraphRoots(self: *@This(), allocator: std.mem.Allocator, roots: *std.ArrayListUnmanaged(*HostSignalRecord)) CollectionError!void {
@@ -9051,7 +9053,9 @@ test "branch replacement preparation leaves the active branch unpublished" {
             var ctx = VerifyCtxHost{ .allocator = fault.allocator() };
             var engine = Engine(VerifyCtx).init();
             var stream: HostNodeDescriptorStream = .{};
+            var host_render_batch: render.TransactionalBatch = .{};
             defer {
+                host_render_batch.deinit(ctx.allocator);
                 if (engine.active_signal_graph.items.len != 0) {
                     engine.clearActiveSignalRoutes(&ctx);
                     engine.clearActiveSignalGraph(&ctx);
@@ -9195,10 +9199,10 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 plan.commitRowRetirement();
                 plan.commitEffectsRetirement();
                 plan.commitScopeRetirementLast();
-                plan.publishRenderBatchLast();
+                plan.publishRenderBatchIntoLast(&host_render_batch);
                 try std.testing.expectEqual(@as(usize, 0), fault.attempts);
-                try std.testing.expectEqual(@as(usize, 0), plan.render_batch.staged.commands.len());
-                try std.testing.expect(plan.render_batch.published.commands.len() != 0);
+                try std.testing.expectEqual(@as(usize, 0), host_render_batch.staged.commands.len());
+                try std.testing.expect(host_render_batch.published.commands.len() != 0);
                 try std.testing.expectEqualStrings("div", engine.render_cache.nodes.items[4].tag.?);
                 try std.testing.expectEqualStrings("no", engine.render_cache.nodes.items[5].text.?);
                 try std.testing.expectEqualStrings("signal", engine.render_cache.nodes.items[6].text.?);
@@ -9265,6 +9269,7 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 try std.testing.expectEqual(@as(?usize, 0), engine.active_stream.elemDescriptorIndex(6).?.signal_text_node.get());
                 fault.configure(null);
                 plan.deinit();
+                try std.testing.expect(host_render_batch.published.commands.len() != 0);
                 // Six replacement signal descriptor caches each retain their
                 // three-callable capability after publication; retirement
                 // still releases the six branch-owned closures measured here.
@@ -9277,12 +9282,17 @@ test "branch replacement preparation leaves the active branch unpublished" {
             try std.testing.expectEqual(identity_len, engine.dom_identities.items.len);
             try std.testing.expectEqual(text_len, engine.active_stream.text_nodes.items.len);
             try std.testing.expectEqual(retained_before, engine.pending_roc_metrics.closure_retains - engine.pending_roc_metrics.closure_releases);
+            try std.testing.expectEqual(@as(usize, 0), host_render_batch.published.commands.len());
+            try std.testing.expectEqual(@as(usize, 0), host_render_batch.staged.commands.len());
 
             fault.configure(null);
             const retry_text_reads_before = verifyTextReadCalls;
             var retry = try Engine(VerifyCtx).BranchReplacementPlan.prepare(&engine, &ctx, host, engine.active_stream.scope_sites.items[0], engine.active_stream.whens.items[0], .false_branch, .{}, &.{});
             try std.testing.expectEqual(retry_text_reads_before + 4, verifyTextReadCalls);
             retry.deinit();
+            try std.testing.expectEqualSlices(u64, &.{1}, engine.render_cache.nodes.items[0].children.items);
+            try std.testing.expectEqualStrings("div", engine.render_cache.nodes.items[1].tag.?);
+            try std.testing.expectEqual(@as(usize, 0), host_render_batch.published.commands.len());
             try std.testing.expectEqual(scope_len, engine.scopes.items.len);
             try std.testing.expectEqual(identity_len, engine.dom_identities.items.len);
             try std.testing.expectEqual(text_len, engine.active_stream.text_nodes.items.len);
