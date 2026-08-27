@@ -1206,11 +1206,17 @@ pub const Stream = struct {
     pub const PreparedSignalDescriptor = union(enum) {
         text_attr: SignalTextAttrDesc,
         bool_attr: SignalBoolAttrDesc,
+        custom_text_attr: SignalCustomTextAttrDesc,
+        optional_custom_text_attr: SignalOptionalCustomTextAttrDesc,
+        custom_bool_attr: SignalCustomBoolAttrDesc,
 
         pub fn abort(self: *@This(), allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
             switch (self.*) {
                 .text_attr => |*desc| desc.deinit(allocator, ctx, roc_host, metrics),
                 .bool_attr => |*desc| desc.deinit(allocator, ctx, roc_host, metrics),
+                .custom_text_attr => |*desc| desc.deinit(allocator, ctx, roc_host, metrics),
+                .optional_custom_text_attr => |*desc| desc.deinit(allocator, ctx, roc_host, metrics),
+                .custom_bool_attr => |*desc| desc.deinit(allocator, ctx, roc_host, metrics),
             }
         }
     };
@@ -1218,6 +1224,9 @@ pub const Stream = struct {
     pub fn reservePreparedSignalAttrs(self: *Stream, allocator: std.mem.Allocator, additional: usize, highest_elem_id: u64) std.mem.Allocator.Error!void {
         try self.signal_text_attrs.ensureUnusedCapacity(allocator, additional);
         try self.signal_bool_attrs.ensureUnusedCapacity(allocator, additional);
+        try self.signal_custom_text_attrs.ensureUnusedCapacity(allocator, additional);
+        try self.signal_optional_custom_text_attrs.ensureUnusedCapacity(allocator, additional);
+        try self.signal_custom_bool_attrs.ensureUnusedCapacity(allocator, additional);
         const descriptor_len = std.math.add(usize, @as(usize, @intCast(highest_elem_id)), 1) catch return error.OutOfMemory;
         if (descriptor_len > self.descriptor_indexes_by_elem_id.items.len) {
             try self.descriptor_indexes_by_elem_id.ensureTotalCapacity(allocator, descriptor_len);
@@ -1245,6 +1254,9 @@ pub const Stream = struct {
                 self.signal_bool_attrs.appendAssumeCapacity(desc);
                 setFreshIndex(descriptor.signal_bool_attrs.slot(desc.field), index);
             },
+            .custom_text_attr => |desc| self.signal_custom_text_attrs.appendAssumeCapacity(desc),
+            .optional_custom_text_attr => |desc| self.signal_optional_custom_text_attrs.appendAssumeCapacity(desc),
+            .custom_bool_attr => |desc| self.signal_custom_bool_attrs.appendAssumeCapacity(desc),
         }
     }
 
