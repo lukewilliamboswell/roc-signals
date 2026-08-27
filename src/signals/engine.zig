@@ -3562,6 +3562,12 @@ pub fn Engine(comptime Ctx: type) type {
             graph_release: ?active_graph.PreparedReleaseClosure(HostSignalRecord) = null,
             graph_append: ?active_graph.PreparedGraphAppend(HostSignalRecord) = null,
             sink_edits: ?active_graph.PreparedSinkRouteEdits = null,
+            source_route_appends: ?active_graph.PreparedRouteAppends(u64) = null,
+            text_route_appends: ?active_graph.PreparedRouteAppends(active_graph.TextSink) = null,
+            bool_route_appends: ?active_graph.PreparedRouteAppends(active_graph.BoolSink) = null,
+            change_route_appends: ?active_graph.PreparedRouteAppends(active_graph.ChangeSink) = null,
+            structural_route_appends: ?active_graph.PreparedRouteAppends(active_graph.StructuralSink) = null,
+            graph_source_route_count: usize = 0,
 
             fn addCounts(total: *StaticRootCounts, next: StaticRootCounts) CollectionError!void {
                 total.nodes = std.math.add(usize, total.nodes, next.nodes) catch return error.ResourceLimit;
@@ -3666,6 +3672,7 @@ pub fn Engine(comptime Ctx: type) type {
                     try collectReplacementGraphRootsForStream(allocator, &plan.stream, &replacement_roots);
                     plan.graph_append = active_graph.prepareGraphAppend(HostSignalRecord, allocator, engine.active_signal_graph.items, plan.graph_release.?.final_record_ids, replacement_roots.items) catch return error.OutOfMemory;
                     errdefer if (plan.graph_append) |*append| append.deinit(allocator);
+                    try plan.prepareGraphRoutes(allocator);
                 }
                 return plan;
             }
@@ -3686,6 +3693,7 @@ pub fn Engine(comptime Ctx: type) type {
                 if (self.graph_append) |*append| append.deinit(allocator);
                 if (self.graph_release) |*release| release.deinit(allocator);
                 if (self.sink_edits) |*edits| edits.deinit(allocator);
+                self.deinitGraphRoutes(allocator);
                 self.retired_stream.deinit(allocator, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
                 if (self.identity_retirements) |*retirements| retirements.deinit(allocator);
                 if (self.scope_retirement) |*retirement| retirement.deinit(allocator);
@@ -3734,6 +3742,86 @@ pub fn Engine(comptime Ctx: type) type {
                     changes.items,
                     structural.items,
                 ) catch return error.OutOfMemory;
+            }
+
+            fn prepareGraphRoutes(self: *@This(), allocator: std.mem.Allocator) CollectionError!void {
+                errdefer self.deinitGraphRoutes(allocator);
+                const graph_plan = &self.graph_append.?;
+                const graph_count = graph_plan.finalGraphCount();
+                var source: std.ArrayListUnmanaged(active_graph.RouteAppend(u64)) = .empty;
+                defer source.deinit(allocator);
+                var text: std.ArrayListUnmanaged(active_graph.RouteAppend(active_graph.TextSink)) = .empty;
+                defer text.deinit(allocator);
+                var bools: std.ArrayListUnmanaged(active_graph.RouteAppend(active_graph.BoolSink)) = .empty;
+                defer bools.deinit(allocator);
+                var changes: std.ArrayListUnmanaged(active_graph.RouteAppend(active_graph.ChangeSink)) = .empty;
+                defer changes.deinit(allocator);
+                var structural: std.ArrayListUnmanaged(active_graph.RouteAppend(active_graph.StructuralSink)) = .empty;
+                defer structural.deinit(allocator);
+                for (graph_plan.records, graph_plan.record_ids) |record, record_id| switch (record.payload) {
+                    .ref => |source_node_id| source.append(allocator, .{ .route_index = source_node_id, .value = record_id }) catch return error.OutOfMemory,
+                    else => {},
+                };
+                const removal = &self.removal.?.removal;
+                const indexes = &removal.descriptor_indexes;
+                const text_node_base = std.math.sub(usize, self.engine.active_stream.signal_text_nodes.items.len, indexes.signal_text_node_indexes.items.len) catch return error.ResourceLimit;
+                for (self.stream.signal_text_nodes.items, 0..) |desc, offset| try self.appendTextRoute(allocator, &text, desc.signal.record, .{ .kind = .text_node, .index = text_node_base + offset });
+                const text_attr_base = std.math.sub(usize, self.engine.active_stream.signal_text_attrs.items.len, indexes.signal_text_attr_indexes.items.len) catch return error.ResourceLimit;
+                for (self.stream.signal_text_attrs.items, 0..) |desc, offset| try self.appendTextRoute(allocator, &text, desc.signal.record, .{ .kind = .text_attr, .index = text_attr_base + offset });
+                const custom_text_base = std.math.sub(usize, self.engine.active_stream.signal_custom_text_attrs.items.len, indexes.signal_custom_text_attr_indexes.items.len) catch return error.ResourceLimit;
+                for (self.stream.signal_custom_text_attrs.items, 0..) |desc, offset| try self.appendTextRoute(allocator, &text, desc.signal.record, .{ .kind = .custom_text_attr, .index = custom_text_base + offset });
+                const optional_text_base = std.math.sub(usize, self.engine.active_stream.signal_optional_custom_text_attrs.items.len, indexes.signal_optional_custom_text_attr_indexes.items.len) catch return error.ResourceLimit;
+                for (self.stream.signal_optional_custom_text_attrs.items, 0..) |desc, offset| try self.appendTextRoute(allocator, &text, desc.signal.record, .{ .kind = .custom_text_optional_attr, .index = optional_text_base + offset });
+                const bool_attr_base = std.math.sub(usize, self.engine.active_stream.signal_bool_attrs.items.len, indexes.signal_bool_attr_indexes.items.len) catch return error.ResourceLimit;
+                for (self.stream.signal_bool_attrs.items, 0..) |desc, offset| try self.appendBoolRoute(allocator, &bools, desc.signal.record, .{ .kind = .bool_attr, .index = bool_attr_base + offset });
+                const custom_bool_base = std.math.sub(usize, self.engine.active_stream.signal_custom_bool_attrs.items.len, indexes.signal_custom_bool_attr_indexes.items.len) catch return error.ResourceLimit;
+                for (self.stream.signal_custom_bool_attrs.items, 0..) |desc, offset| try self.appendBoolRoute(allocator, &bools, desc.signal.record, .{ .kind = .custom_bool_attr, .index = custom_bool_base + offset });
+                const change_base = std.math.sub(usize, self.engine.active_stream.on_changes.items.len, removal.node_indexes.on_change_indexes.items.len) catch return error.ResourceLimit;
+                for (self.stream.on_changes.items, 0..) |desc, offset| try self.appendChangeRoute(allocator, &changes, desc.signal.record, .{ .index = change_base + offset });
+                const when_base = std.math.sub(usize, self.engine.active_stream.whens.items.len, removal.node_indexes.when_indexes.items.len) catch return error.ResourceLimit;
+                for (self.stream.whens.items, 0..) |desc, offset| try self.appendStructuralRoute(allocator, &structural, desc.condition.record, .{ .kind = .when, .index = when_base + offset });
+                const each_base = std.math.sub(usize, self.engine.active_stream.eaches.items.len, removal.node_indexes.each_indexes.items.len) catch return error.ResourceLimit;
+                for (self.stream.eaches.items, 0..) |desc, offset| try self.appendStructuralRoute(allocator, &structural, desc.items.record, .{ .kind = .each, .index = each_base + offset });
+                var source_count = self.engine.active_source_signal_routes.items.len;
+                for (source.items) |entry| source_count = @max(source_count, std.math.add(usize, @intCast(entry.route_index), 1) catch return error.ResourceLimit);
+                self.graph_source_route_count = source_count;
+                self.source_route_appends = active_graph.prepareSourceRouteAppendsAfterRelease(allocator, &self.engine.active_source_signal_routes, self.graph_release.?.final_record_ids, source_count, source.items) catch return error.OutOfMemory;
+                self.text_route_appends = active_graph.prepareRouteAppends(active_graph.TextSink, allocator, &self.engine.active_text_signal_routes, graph_count, text.items) catch return error.OutOfMemory;
+                self.bool_route_appends = active_graph.prepareRouteAppends(active_graph.BoolSink, allocator, &self.engine.active_bool_signal_routes, graph_count, bools.items) catch return error.OutOfMemory;
+                self.change_route_appends = active_graph.prepareRouteAppends(active_graph.ChangeSink, allocator, &self.engine.active_change_signal_routes, graph_count, changes.items) catch return error.OutOfMemory;
+                self.structural_route_appends = active_graph.prepareRouteAppends(active_graph.StructuralSink, allocator, &self.engine.active_structural_signal_routes, graph_count, structural.items) catch return error.OutOfMemory;
+                graph_plan.reservePublication(allocator, &self.engine.active_signal_graph) catch return error.OutOfMemory;
+                graph_plan.reserveParallelRoutes(allocator, &self.engine.active_text_signal_routes, &self.engine.active_bool_signal_routes, &self.engine.active_change_signal_routes, &self.engine.active_structural_signal_routes) catch return error.OutOfMemory;
+                try self.source_route_appends.?.reserveOuter(allocator, &self.engine.active_source_signal_routes, source_count);
+            }
+
+            fn appendTextRoute(self: *@This(), allocator: std.mem.Allocator, routes: *std.ArrayListUnmanaged(active_graph.RouteAppend(active_graph.TextSink)), record: *HostSignalRecord, sink: active_graph.TextSink) CollectionError!void {
+                const id = self.graph_append.?.plannedRecordId(self.engine.active_signal_graph.items, record) orelse return error.ResourceLimit;
+                routes.append(allocator, .{ .route_index = id, .value = sink }) catch return error.OutOfMemory;
+            }
+            fn appendBoolRoute(self: *@This(), allocator: std.mem.Allocator, routes: *std.ArrayListUnmanaged(active_graph.RouteAppend(active_graph.BoolSink)), record: *HostSignalRecord, sink: active_graph.BoolSink) CollectionError!void {
+                const id = self.graph_append.?.plannedRecordId(self.engine.active_signal_graph.items, record) orelse return error.ResourceLimit;
+                routes.append(allocator, .{ .route_index = id, .value = sink }) catch return error.OutOfMemory;
+            }
+            fn appendChangeRoute(self: *@This(), allocator: std.mem.Allocator, routes: *std.ArrayListUnmanaged(active_graph.RouteAppend(active_graph.ChangeSink)), record: *HostSignalRecord, sink: active_graph.ChangeSink) CollectionError!void {
+                const id = self.graph_append.?.plannedRecordId(self.engine.active_signal_graph.items, record) orelse return error.ResourceLimit;
+                routes.append(allocator, .{ .route_index = id, .value = sink }) catch return error.OutOfMemory;
+            }
+            fn appendStructuralRoute(self: *@This(), allocator: std.mem.Allocator, routes: *std.ArrayListUnmanaged(active_graph.RouteAppend(active_graph.StructuralSink)), record: *HostSignalRecord, sink: active_graph.StructuralSink) CollectionError!void {
+                const id = self.graph_append.?.plannedRecordId(self.engine.active_signal_graph.items, record) orelse return error.ResourceLimit;
+                routes.append(allocator, .{ .route_index = id, .value = sink }) catch return error.OutOfMemory;
+            }
+            fn deinitGraphRoutes(self: *@This(), allocator: std.mem.Allocator) void {
+                if (self.source_route_appends) |*routes| routes.deinit(allocator);
+                if (self.text_route_appends) |*routes| routes.deinit(allocator);
+                if (self.bool_route_appends) |*routes| routes.deinit(allocator);
+                if (self.change_route_appends) |*routes| routes.deinit(allocator);
+                if (self.structural_route_appends) |*routes| routes.deinit(allocator);
+                self.source_route_appends = null;
+                self.text_route_appends = null;
+                self.bool_route_appends = null;
+                self.change_route_appends = null;
+                self.structural_route_appends = null;
             }
         };
 
