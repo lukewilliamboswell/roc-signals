@@ -184,6 +184,54 @@ pub fn prepareRouteAppends(comptime Route: type, allocator: std.mem.Allocator, r
     return .{ .replacements = replacements };
 }
 
+/// Merges new source routes against the post-retirement dense record mapping.
+pub fn prepareSourceRouteAppendsAfterRelease(allocator: std.mem.Allocator, routes: *const RouteTable(u64), final_record_ids: []const ?u64, final_source_count: usize, appends: []const RouteAppend(u64)) (std.mem.Allocator.Error || error{InvalidAppend})!PreparedRouteAppends(u64) {
+    const sorted = try allocator.dupe(RouteAppend(u64), appends);
+    defer allocator.free(sorted);
+    std.mem.sort(RouteAppend(u64), sorted, {}, struct {
+        fn lessThan(_: void, left: RouteAppend(u64), right: RouteAppend(u64)) bool {
+            return left.route_index < right.route_index;
+        }
+    }.lessThan);
+    var group_count: usize = 0;
+    for (sorted, 0..) |entry, index| {
+        if (entry.route_index >= final_source_count) return error.InvalidAppend;
+        if (index == 0 or entry.route_index != sorted[index - 1].route_index) group_count += 1;
+    }
+    const replacements = try allocator.alloc(PreparedRouteAppends(u64).Replacement, group_count);
+    errdefer allocator.free(replacements);
+    var written: usize = 0;
+    errdefer for (replacements[0..written]) |replacement| allocator.free(replacement.items);
+    var start: usize = 0;
+    while (start < sorted.len) {
+        var end = start + 1;
+        while (end < sorted.len and sorted[end].route_index == sorted[start].route_index) end += 1;
+        const route_index: usize = @intCast(sorted[start].route_index);
+        const existing = if (route_index < routes.items.len) routes.items[route_index].items else &.{};
+        var survivor_count: usize = 0;
+        for (existing) |old_id| {
+            const old_index: usize = @intCast(old_id);
+            if (old_index >= final_record_ids.len) return error.InvalidAppend;
+            if (final_record_ids[old_index] != null) survivor_count += 1;
+        }
+        const merged_len = std.math.add(usize, survivor_count, end - start) catch return error.InvalidAppend;
+        const merged = try allocator.alloc(u64, merged_len);
+        var write: usize = 0;
+        for (existing) |old_id| if (final_record_ids[@intCast(old_id)]) |new_id| {
+            merged[write] = new_id;
+            write += 1;
+        };
+        for (sorted[start..end]) |entry| {
+            merged[write] = entry.value;
+            write += 1;
+        }
+        replacements[written] = .{ .route_index = @intCast(route_index), .items = merged };
+        written += 1;
+        start = end;
+    }
+    return .{ .replacements = replacements };
+}
+
 /// Owns validated sink-route removals and moved-descriptor index patches.
 pub const PreparedSinkRouteEdits = struct {
     text: []TextSinkEdit,
@@ -1181,6 +1229,11 @@ pub fn PreparedGraphAppend(comptime Record: type) type {
             }
             for (self.records, self.record_ids) |planned, id| if (planned == record) return id;
             return null;
+        }
+
+        /// Returns the exact dense graph length after retirement and append.
+        pub fn finalGraphCount(self: *const @This()) usize {
+            return self.survivor_count + self.new_nodes.len;
         }
 
         /// Publishes prepared nodes, edges, ids, and use counts without allocating.

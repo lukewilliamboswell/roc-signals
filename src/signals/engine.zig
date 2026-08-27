@@ -3259,6 +3259,12 @@ pub fn Engine(comptime Ctx: type) type {
             sink_edits: ?active_graph.PreparedSinkRouteEdits = null,
             graph_release: ?active_graph.PreparedReleaseClosure(HostSignalRecord) = null,
             graph_append: ?active_graph.PreparedGraphAppend(HostSignalRecord) = null,
+            source_route_appends: ?active_graph.PreparedRouteAppends(u64) = null,
+            text_route_appends: ?active_graph.PreparedRouteAppends(active_graph.TextSink) = null,
+            bool_route_appends: ?active_graph.PreparedRouteAppends(active_graph.BoolSink) = null,
+            change_route_appends: ?active_graph.PreparedRouteAppends(active_graph.ChangeSink) = null,
+            structural_route_appends: ?active_graph.PreparedRouteAppends(active_graph.StructuralSink) = null,
+            graph_source_route_count: usize = 0,
 
             fn stateIndexDescending(_: void, left: usize, right: usize) bool {
                 return left > right;
@@ -3418,8 +3424,118 @@ pub fn Engine(comptime Ctx: type) type {
                     try plan.collectReplacementGraphRoots(allocator, &replacement_roots);
                     plan.graph_append = active_graph.prepareGraphAppend(HostSignalRecord, allocator, engine_ptr.active_signal_graph.items, plan.graph_release.?.final_record_ids, replacement_roots.items) catch return error.OutOfMemory;
                     errdefer if (plan.graph_append) |*append| append.deinit(allocator);
+                    try plan.prepareGraphRoutes(allocator);
+                    errdefer plan.deinitGraphRoutes(allocator);
                 }
                 return plan;
+            }
+
+            fn prepareGraphRoutes(self: *@This(), allocator: std.mem.Allocator) CollectionError!void {
+                errdefer self.deinitGraphRoutes(allocator);
+                const graph_plan = &self.graph_append.?;
+                const graph_count = graph_plan.finalGraphCount();
+                var source: std.ArrayListUnmanaged(active_graph.RouteAppend(u64)) = .empty;
+                defer source.deinit(allocator);
+                var text: std.ArrayListUnmanaged(active_graph.RouteAppend(active_graph.TextSink)) = .empty;
+                defer text.deinit(allocator);
+                var bools: std.ArrayListUnmanaged(active_graph.RouteAppend(active_graph.BoolSink)) = .empty;
+                defer bools.deinit(allocator);
+                var changes: std.ArrayListUnmanaged(active_graph.RouteAppend(active_graph.ChangeSink)) = .empty;
+                defer changes.deinit(allocator);
+                var structural: std.ArrayListUnmanaged(active_graph.RouteAppend(active_graph.StructuralSink)) = .empty;
+                defer structural.deinit(allocator);
+                for (graph_plan.records, graph_plan.record_ids) |record, record_id| switch (record.payload) {
+                    .ref => |source_node_id| source.append(allocator, .{ .route_index = source_node_id, .value = record_id }) catch return error.OutOfMemory,
+                    else => {},
+                };
+                const text_node_base = self.engine.active_stream.signal_text_nodes.items.len - self.removal.?.descriptor_indexes.signal_text_node_indexes.items.len;
+                for (self.replacement_stream.signal_text_nodes.items, 0..) |desc, offset| try self.appendTextRoute(allocator, &text, graph_plan, desc.signal.record, .{ .kind = .text_node, .index = text_node_base + offset });
+                const text_attr_base = self.engine.active_stream.signal_text_attrs.items.len - self.removal.?.descriptor_indexes.signal_text_attr_indexes.items.len;
+                for (self.replacement_stream.signal_text_attrs.items, 0..) |desc, offset| try self.appendTextRoute(allocator, &text, graph_plan, desc.signal.record, .{ .kind = .text_attr, .index = text_attr_base + offset });
+                const bool_attr_base = self.engine.active_stream.signal_bool_attrs.items.len - self.removal.?.descriptor_indexes.signal_bool_attr_indexes.items.len;
+                for (self.replacement_stream.signal_bool_attrs.items, 0..) |desc, offset| try self.appendBoolRoute(allocator, &bools, graph_plan, desc.signal.record, .{ .kind = .bool_attr, .index = bool_attr_base + offset });
+                const change_base = self.engine.active_stream.on_changes.items.len;
+                for (self.replacement_stream.on_changes.items, 0..) |desc, offset| try self.appendChangeRoute(allocator, &changes, graph_plan, desc.signal.record, .{ .index = change_base + offset });
+                const when_base = self.engine.active_stream.whens.items.len - self.removal.?.node_indexes.when_indexes.items.len;
+                for (self.replacement_stream.whens.items, 0..) |desc, offset| try self.appendStructuralRoute(allocator, &structural, graph_plan, desc.condition.record, .{ .kind = .when, .index = when_base + offset });
+                const each_base = self.engine.active_stream.eaches.items.len - self.removal.?.node_indexes.each_indexes.items.len;
+                for (self.replacement_stream.eaches.items, 0..) |desc, offset| try self.appendStructuralRoute(allocator, &structural, graph_plan, desc.items.record, .{ .kind = .each, .index = each_base + offset });
+                var source_count = self.engine.active_source_signal_routes.items.len;
+                for (source.items) |entry| source_count = @max(source_count, std.math.add(usize, @intCast(entry.route_index), 1) catch return error.ResourceLimit);
+                self.graph_source_route_count = source_count;
+                self.source_route_appends = active_graph.prepareSourceRouteAppendsAfterRelease(allocator, &self.engine.active_source_signal_routes, self.graph_release.?.final_record_ids, source_count, source.items) catch return error.OutOfMemory;
+                self.text_route_appends = active_graph.prepareRouteAppends(active_graph.TextSink, allocator, &self.engine.active_text_signal_routes, graph_count, text.items) catch return error.OutOfMemory;
+                self.bool_route_appends = active_graph.prepareRouteAppends(active_graph.BoolSink, allocator, &self.engine.active_bool_signal_routes, graph_count, bools.items) catch return error.OutOfMemory;
+                self.change_route_appends = active_graph.prepareRouteAppends(active_graph.ChangeSink, allocator, &self.engine.active_change_signal_routes, graph_count, changes.items) catch return error.OutOfMemory;
+                self.structural_route_appends = active_graph.prepareRouteAppends(active_graph.StructuralSink, allocator, &self.engine.active_structural_signal_routes, graph_count, structural.items) catch return error.OutOfMemory;
+                graph_plan.reservePublication(allocator, &self.engine.active_signal_graph) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.InvalidAppend => return error.ResourceLimit,
+                };
+                graph_plan.reserveParallelRoutes(allocator, &self.engine.active_text_signal_routes, &self.engine.active_bool_signal_routes, &self.engine.active_change_signal_routes, &self.engine.active_structural_signal_routes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.InvalidAppend => return error.ResourceLimit,
+                };
+                try self.source_route_appends.?.reserveOuter(allocator, &self.engine.active_source_signal_routes, source_count);
+            }
+
+            fn appendTextRoute(self: *@This(), allocator: std.mem.Allocator, routes: *std.ArrayListUnmanaged(active_graph.RouteAppend(active_graph.TextSink)), graph_plan: *const active_graph.PreparedGraphAppend(HostSignalRecord), record: *HostSignalRecord, sink: active_graph.TextSink) CollectionError!void {
+                const id = graph_plan.plannedRecordId(self.engine.active_signal_graph.items, record) orelse return error.ResourceLimit;
+                routes.append(allocator, .{ .route_index = id, .value = sink }) catch return error.OutOfMemory;
+            }
+            fn appendBoolRoute(self: *@This(), allocator: std.mem.Allocator, routes: *std.ArrayListUnmanaged(active_graph.RouteAppend(active_graph.BoolSink)), graph_plan: *const active_graph.PreparedGraphAppend(HostSignalRecord), record: *HostSignalRecord, sink: active_graph.BoolSink) CollectionError!void {
+                const id = graph_plan.plannedRecordId(self.engine.active_signal_graph.items, record) orelse return error.ResourceLimit;
+                routes.append(allocator, .{ .route_index = id, .value = sink }) catch return error.OutOfMemory;
+            }
+            fn appendChangeRoute(self: *@This(), allocator: std.mem.Allocator, routes: *std.ArrayListUnmanaged(active_graph.RouteAppend(active_graph.ChangeSink)), graph_plan: *const active_graph.PreparedGraphAppend(HostSignalRecord), record: *HostSignalRecord, sink: active_graph.ChangeSink) CollectionError!void {
+                const id = graph_plan.plannedRecordId(self.engine.active_signal_graph.items, record) orelse return error.ResourceLimit;
+                routes.append(allocator, .{ .route_index = id, .value = sink }) catch return error.OutOfMemory;
+            }
+            fn appendStructuralRoute(self: *@This(), allocator: std.mem.Allocator, routes: *std.ArrayListUnmanaged(active_graph.RouteAppend(active_graph.StructuralSink)), graph_plan: *const active_graph.PreparedGraphAppend(HostSignalRecord), record: *HostSignalRecord, sink: active_graph.StructuralSink) CollectionError!void {
+                const id = graph_plan.plannedRecordId(self.engine.active_signal_graph.items, record) orelse return error.ResourceLimit;
+                routes.append(allocator, .{ .route_index = id, .value = sink }) catch return error.OutOfMemory;
+            }
+
+            fn deinitGraphRoutes(self: *@This(), allocator: std.mem.Allocator) void {
+                if (self.source_route_appends) |*routes| routes.deinit(allocator);
+                if (self.text_route_appends) |*routes| routes.deinit(allocator);
+                if (self.bool_route_appends) |*routes| routes.deinit(allocator);
+                if (self.change_route_appends) |*routes| routes.deinit(allocator);
+                if (self.structural_route_appends) |*routes| routes.deinit(allocator);
+                self.source_route_appends = null;
+                self.text_route_appends = null;
+                self.bool_route_appends = null;
+                self.change_route_appends = null;
+                self.structural_route_appends = null;
+            }
+
+            fn commitGraphAssumeCapacity(self: *@This()) void {
+                const release = &self.graph_release.?;
+                const append = &self.graph_append.?;
+                release.applyAdjacency(self.engine.active_signal_graph.items);
+                release.applyDense(
+                    &self.engine.active_signal_graph,
+                    &self.engine.active_source_signal_routes,
+                    &self.engine.active_text_signal_routes,
+                    &self.engine.active_bool_signal_routes,
+                    &self.engine.active_change_signal_routes,
+                    &self.engine.active_structural_signal_routes,
+                );
+                append.commitNodes(&self.engine.active_signal_graph);
+                append.commitParallelRoutes(
+                    &self.engine.active_text_signal_routes,
+                    &self.engine.active_bool_signal_routes,
+                    &self.engine.active_change_signal_routes,
+                    &self.engine.active_structural_signal_routes,
+                );
+                self.source_route_appends.?.apply(&self.engine.active_source_signal_routes, self.graph_source_route_count);
+                const graph_count = append.finalGraphCount();
+                self.text_route_appends.?.apply(&self.engine.active_text_signal_routes, graph_count);
+                self.bool_route_appends.?.apply(&self.engine.active_bool_signal_routes, graph_count);
+                self.change_route_appends.?.apply(&self.engine.active_change_signal_routes, graph_count);
+                self.structural_route_appends.?.apply(&self.engine.active_structural_signal_routes, graph_count);
+                var lifecycle = ActiveSignalGraphLifecycle{ .engine = self.engine, .ctx = self.host_ctx };
+                release.releaseRetired(Ctx.allocator(self.host_ctx), &lifecycle);
             }
 
             fn collectRetiredGraphRoots(self: *@This(), allocator: std.mem.Allocator, roots: *std.ArrayListUnmanaged(*HostSignalRecord)) CollectionError!void {
@@ -3571,6 +3687,7 @@ pub fn Engine(comptime Ctx: type) type {
                 if (self.sink_edits) |*edits| edits.deinit(allocator);
                 if (self.graph_append) |*append| append.deinit(allocator);
                 if (self.graph_release) |*release| release.deinit(allocator);
+                self.deinitGraphRoutes(allocator);
                 if (self.removal) |*removal| removal.deinit(allocator);
                 if (self.scope_retirement) |*retirement| retirement.deinit(allocator);
                 if (self.row_retirement) |*retirement| retirement.deinit(allocator);
@@ -8439,7 +8556,7 @@ test "branch replacement preparation leaves the active branch unpublished" {
         ._1 = value_callable,
         ._2 = capability,
     } }, .tag = .ConstValue };
-    const false_signal_expr = boxOwnedVerifySignalExpr(&roc_host, condition);
+    const false_signal_expr = boxOwnedVerifySignalExpr(&roc_host, .{ .payload = .{ .ref = state_callable }, .tag = .Ref });
     const true_signal_expr = boxOwnedVerifySignalExpr(&roc_host, condition);
     const false_attrs = [_]abi.NodeAttr{
         .{ .payload = .{ .static_text = .{ .field = .{ .id = @intFromEnum(RenderTextField.label) }, .name = abi.RocStr.empty(), .value = abi.RocStr.fromSlice("off", undefined) } }, .tag = .StaticText },
@@ -8523,6 +8640,7 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 try std.testing.expectEqual(@as(usize, 1), plan.sink_edits.?.bools.len);
                 try std.testing.expect(plan.graph_release != null);
                 try std.testing.expect(plan.graph_append != null);
+                try std.testing.expect(plan.graph_append.?.records.len != 0);
                 try std.testing.expect(engine.scopes.items[@intCast(plan.retired_scope_id)].active);
                 try std.testing.expectEqualSlices(u64, &.{ 1, 2, 3 }, plan.removal.?.scan.removed_elem_ids);
                 try std.testing.expectEqualSlices(usize, &.{0}, plan.removal.?.descriptor_indexes.element_indexes.items);
@@ -8540,6 +8658,11 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 const retired_elem_id = plan.retired_dom_identity_ids[0];
                 const old_state_id = engine.states.items[plan.state_cell_indexes[0]].state_id;
                 const replacement_state_id = plan.replacement_stream.states.items[0].node_id;
+                const replacement_signal_record = plan.replacement_stream.signal_bool_attrs.items[0].signal.record;
+                const planned_signal_record_id = plan.graph_append.?.plannedRecordId(engine.active_signal_graph.items, replacement_signal_record) orelse return error.TestUnexpectedResult;
+                const planned_text_attr_record_id = plan.graph_append.?.plannedRecordId(engine.active_signal_graph.items, plan.replacement_stream.signal_text_attrs.items[0].signal.record) orelse return error.TestUnexpectedResult;
+                const planned_text_node_record_id = plan.graph_append.?.plannedRecordId(engine.active_signal_graph.items, plan.replacement_stream.signal_text_nodes.items[0].signal.record) orelse return error.TestUnexpectedResult;
+                const replacement_record_refs_before_graph = replacement_signal_record.ref_count;
                 fault.configure(1);
                 plan.sink_edits.?.apply(
                     &engine.active_text_signal_routes,
@@ -8547,6 +8670,7 @@ test "branch replacement preparation leaves the active branch unpublished" {
                     &engine.active_change_signal_routes,
                     &engine.active_structural_signal_routes,
                 );
+                plan.commitGraphAssumeCapacity();
                 const indexes = &plan.removal.?.descriptor_indexes;
                 engine.active_stream.commitStaticDescriptorReplacementAssumeCapacity(
                     &plan.replacement_stream,
@@ -8570,6 +8694,16 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 plan.commitEffectsRetirement();
                 plan.commitScopeRetirementLast();
                 try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+                try std.testing.expectEqual(@as(?u64, planned_signal_record_id), replacement_signal_record.active_graph_id);
+                try std.testing.expectEqual(replacement_record_refs_before_graph + 1, replacement_signal_record.ref_count);
+                try std.testing.expectEqual(@as(u64, 0), engine.active_signal_graph.items[@intCast(planned_signal_record_id)].rank);
+                try std.testing.expectEqualSlices(u64, &.{}, engine.active_signal_graph.items[@intCast(planned_signal_record_id)].dependents);
+                const replacement_source_route = engine.active_source_signal_routes.items[@intCast(replacement_state_id)].items;
+                try std.testing.expectEqualSlices(u64, &.{ planned_text_node_record_id, planned_text_attr_record_id, planned_signal_record_id }, replacement_source_route);
+                for (replacement_source_route) |record_id| try std.testing.expect(record_id < engine.active_signal_graph.items.len);
+                try std.testing.expectEqual(@as(usize, 1), engine.active_text_signal_routes.items[@intCast(planned_text_node_record_id)].items.len);
+                try std.testing.expectEqual(@as(usize, 1), engine.active_text_signal_routes.items[@intCast(planned_text_attr_record_id)].items.len);
+                try std.testing.expectEqual(@as(usize, 1), engine.active_bool_signal_routes.items[@intCast(planned_signal_record_id)].items.len);
                 try std.testing.expectEqual(@as(usize, 1), engine.cleanup_events.items.len);
                 try std.testing.expectEqualStrings("branch-cleanup", engine.cleanup_events.items[0]);
                 try std.testing.expect(!engine.scopes.items[@intCast(retired_row_scope_id)].active);
@@ -8590,9 +8724,10 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 try std.testing.expectEqual(@as(usize, 1), plan.retired_stream.signal_bool_attrs.items.len);
                 try std.testing.expectEqual(@as(usize, 1), engine.active_stream.signal_text_attrs.items.len);
                 try std.testing.expectEqual(@as(usize, 1), engine.active_stream.signal_text_nodes.items.len);
-                const signal_token = engine.active_stream.signal_bool_attrs.items[0].signal.record.token().?;
-                try std.testing.expect(engine.active_stream.signalRecordByToken(signal_token) != null);
-                try std.testing.expect(plan.retired_stream.signalRecordByToken(signal_token) != null);
+                switch (engine.active_stream.signal_bool_attrs.items[0].signal.record.payload) {
+                    .ref => |node_id| try std.testing.expectEqual(replacement_state_id, node_id),
+                    else => return error.TestUnexpectedResult,
+                }
                 try std.testing.expectEqual(@as(?usize, 0), engine.active_stream.elemDescriptorIndex(4).?.signal_bool_attrs.get(.checked));
                 try std.testing.expectEqual(@as(?usize, 0), engine.active_stream.elemDescriptorIndex(4).?.signal_text_attrs.get(.role));
                 try std.testing.expectEqual(@as(?usize, 0), engine.active_stream.elemDescriptorIndex(4).?.element.get());
