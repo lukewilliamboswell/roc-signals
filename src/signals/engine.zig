@@ -1421,7 +1421,7 @@ pub fn Engine(comptime Ctx: type) type {
 
         pub fn bindNodeSignalExpr(self: *Self, allocator: std.mem.Allocator, stream: *HostNodeDescriptorStream, expr: abi.NodeSignalExpr, binder_stack: []const HostBinderBinding) *HostSignalRecord {
             const binding = ImmediateSignalRecordCtx{ .engine = self, .allocator = allocator, .stream = stream };
-            return self.bindSignalExprViewWith(ImmediateSignalRecordCtx, binding, abi_view.SignalExpr.fromAbi(expr), binder_stack);
+            return self.bindSignalExprViewWith(ImmediateSignalRecordCtx, binding, abi_view.SignalExpr.fromAbi(expr), binder_stack) catch @panic("out of memory");
         }
 
         const ImmediateSignalRecordCtx = struct {
@@ -1429,97 +1429,97 @@ pub fn Engine(comptime Ctx: type) type {
             allocator: std.mem.Allocator,
             stream: *HostNodeDescriptorStream,
 
-            fn retainExisting(self: @This(), token: HostSignalToken, expected_tag: std.meta.Tag(HostSignalRecordPayload)) ?*HostSignalRecord {
+            fn retainExisting(self: @This(), token: HostSignalToken, expected_tag: std.meta.Tag(HostSignalRecordPayload)) error{OutOfMemory}!?*HostSignalRecord {
                 return self.engine.retainExistingSignalRecordForStream(self.allocator, self.stream, token, expected_tag);
             }
 
-            fn init(self: @This(), payload: HostSignalRecordPayload) *HostSignalRecord {
+            fn init(self: @This(), payload: HostSignalRecordPayload) error{OutOfMemory}!*HostSignalRecord {
                 return HostSignalRecord.init(self.allocator, payload);
             }
 
-            fn remember(self: @This(), record: *HostSignalRecord) void {
+            fn remember(self: @This(), record: *HostSignalRecord) error{OutOfMemory}!void {
                 self.stream.rememberSignalRecord(self.allocator, record);
             }
         };
 
-        fn bindSignalExprViewWith(self: *Self, comptime Binding: type, binding: Binding, expr: abi_view.SignalExpr, binder_stack: []const HostBinderBinding) *HostSignalRecord {
+        fn bindSignalExprViewWith(self: *Self, comptime Binding: type, binding: Binding, expr: abi_view.SignalExpr, binder_stack: []const HostBinderBinding) error{OutOfMemory}!*HostSignalRecord {
             const allocator = binding.allocator;
             return switch (expr) {
                 .ref => |payload| blk: {
                     const token = payload.binder.callable;
                     const node_id = resolveNodeBinderRef(binder_stack, token);
-                    break :blk binding.init(.{ .ref = node_id });
+                    break :blk try binding.init(.{ .ref = node_id });
                 },
                 .const_value => |payload| blk: {
                     const token = payload.token.callable;
-                    if (binding.retainExisting(token, .const_value)) |record| {
+                    if (try binding.retainExisting(token, .const_value)) |record| {
                         break :blk record;
                     }
 
-                    const record = binding.init(.{ .const_value = .{
+                    const record = try binding.init(.{ .const_value = .{
                         .init = retainHostCallable(payload.init, &self.pending_roc_metrics),
                         .cap = retainHostValueCapability(payload.capability, &self.pending_roc_metrics),
                     } });
-                    binding.remember(record);
+                    try binding.remember(record);
                     break :blk record;
                 },
                 .map => |payload| blk: {
                     const token = payload.token.callable;
-                    if (binding.retainExisting(token, .map)) |record| {
+                    if (try binding.retainExisting(token, .map)) |record| {
                         break :blk record;
                     }
 
-                    const input = self.bindSignalExprViewWith(Binding, binding, abi_view.SignalExpr.fromAbi(payload.input.*), binder_stack);
-                    const record = binding.init(.{ .map = .{
+                    const input = try self.bindSignalExprViewWith(Binding, binding, abi_view.SignalExpr.fromAbi(payload.input.*), binder_stack);
+                    const record = try binding.init(.{ .map = .{
                         .input = input,
                         .transform = retainHostCallable(payload.transform, &self.pending_roc_metrics),
                         .cap = retainHostValueCapability(payload.capability, &self.pending_roc_metrics),
                     } });
-                    binding.remember(record);
+                    try binding.remember(record);
                     break :blk record;
                 },
                 .map2 => |payload| blk: {
                     const token = payload.token.callable;
-                    if (binding.retainExisting(token, .map2)) |record| {
+                    if (try binding.retainExisting(token, .map2)) |record| {
                         break :blk record;
                     }
 
-                    const left = self.bindSignalExprViewWith(Binding, binding, abi_view.SignalExpr.fromAbi(payload.left.*), binder_stack);
-                    const right = self.bindSignalExprViewWith(Binding, binding, abi_view.SignalExpr.fromAbi(payload.right.*), binder_stack);
-                    const record = binding.init(.{ .map2 = .{
+                    const left = try self.bindSignalExprViewWith(Binding, binding, abi_view.SignalExpr.fromAbi(payload.left.*), binder_stack);
+                    const right = try self.bindSignalExprViewWith(Binding, binding, abi_view.SignalExpr.fromAbi(payload.right.*), binder_stack);
+                    const record = try binding.init(.{ .map2 = .{
                         .left = left,
                         .right = right,
                         .transform = retainHostCallable(payload.transform, &self.pending_roc_metrics),
                         .cap = retainHostValueCapability(payload.capability, &self.pending_roc_metrics),
                     } });
-                    binding.remember(record);
+                    try binding.remember(record);
                     break :blk record;
                 },
                 .combine => |payload| blk: {
                     const token = payload.token.callable;
-                    if (binding.retainExisting(token, .combine)) |record| {
+                    if (try binding.retainExisting(token, .combine)) |record| {
                         break :blk record;
                     }
 
                     const children = allocator.alloc(*HostSignalRecord, payload.children.len) catch @panic("out of memory");
                     for (payload.children, children) |child, *dest| {
-                        dest.* = self.bindSignalExprViewWith(Binding, binding, abi_view.SignalExpr.fromAbi(child), binder_stack);
+                        dest.* = try self.bindSignalExprViewWith(Binding, binding, abi_view.SignalExpr.fromAbi(child), binder_stack);
                     }
-                    const record = binding.init(.{ .combine = .{
+                    const record = try binding.init(.{ .combine = .{
                         .children = children,
                         .transform = retainHostCallable(payload.transform, &self.pending_roc_metrics),
                         .cap = retainHostValueCapability(payload.capability, &self.pending_roc_metrics),
                     } });
-                    binding.remember(record);
+                    try binding.remember(record);
                     break :blk record;
                 },
                 .task_source => |payload| blk: {
                     const token = payload.token.callable;
-                    if (binding.retainExisting(token, .task_source)) |record| {
+                    if (try binding.retainExisting(token, .task_source)) |record| {
                         break :blk record;
                     }
 
-                    const record = binding.init(.{ .task_source = .{
+                    const record = try binding.init(.{ .task_source = .{
                         .name = allocator.dupe(u8, payload.name.asSlice()) catch @panic("out of memory"),
                         .payload_cap = retainHostValueCapability(payload.payload_capability, &self.pending_roc_metrics),
                         .initial = retainHostCallable(payload.initial, &self.pending_roc_metrics),
