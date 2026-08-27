@@ -524,6 +524,40 @@ test "fallible signal record construction preserves payload ownership on OOM" {
     std.testing.allocator.destroy(record);
 }
 
+test "owned combine payload releases nested children and capabilities on record OOM" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    const TestCtx = struct {
+        pub fn cloneHostValue(_: *@This(), value: HostValue) HostValue {
+            return value;
+        }
+        pub fn pushHostValueCapabilities(_: *@This(), _: []const HostValueCapability) void {}
+        pub fn popHostValueCapabilities(_: *@This()) void {}
+    };
+    const TestMetrics = struct {
+        closure_releases: u64 = 0,
+        pub fn bump(self: *@This(), comptime field: anytype, count: u64) void {
+            if (field == .closure_releases) self.closure_releases += count;
+        }
+    };
+    var env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&env);
+    var ctx = TestCtx{};
+    var metrics = TestMetrics{};
+    const left = try Record.tryInit(std.testing.allocator, .{ .ref = 1 });
+    const right = try Record.tryInit(std.testing.allocator, .{ .ref = 2 });
+    const children = try std.testing.allocator.dupe(*Record, &.{ left, right });
+
+    var fault = FaultAllocator.init(std.testing.allocator);
+    fault.configure(1);
+    const empty_capability = HostValueCapability{ .clone = null, .drop = null, .eq = null };
+    try std.testing.expectError(error.OutOfMemory, Record.tryInitOwned(fault.allocator(), &ctx, &roc_host, &metrics, .{ .combine = .{
+        .children = children,
+        .transform = null,
+        .cap = empty_capability,
+    } }));
+    try std.testing.expectEqual(@as(u64, 4), metrics.closure_releases);
+}
+
 test "appendSignalRecordSourceNodeIds deduplicates source refs" {
     const allocator = std.testing.allocator;
     var left = Record{ .ref_count = 1, .payload = .{ .ref = 10 } };
