@@ -4001,18 +4001,21 @@ pub fn Engine(comptime Ctx: type) type {
             fn prepare(engine: *Self, allocator: std.mem.Allocator, replacement: *const PreparedEachRowReplacementCollection, layout: *const PreparedEachRowRenderLayout) CollectionError!@This() {
                 var prepared: @This() = .{ .allocator = allocator };
                 errdefer prepared.deinit();
-                var final_len: usize = 0;
-                for (replacement.replacement_rows) |row| final_len = @max(final_len, std.math.add(usize, layout.final_starts[row.row_index], row.len) catch return error.ResourceLimit);
-                for (layout.survivor_moves) |move| final_len = @max(final_len, std.math.add(usize, move.new_start, move.len) catch return error.ResourceLimit);
+                const retained_len = std.math.sub(usize, engine.active_stream.render_nodes.items.len, layout.removal.removal.scan.removed_render_count) catch return error.ResourceLimit;
+                const final_len = std.math.add(usize, retained_len, replacement.replacement.stream.render_nodes.items.len) catch return error.ResourceLimit;
                 prepared.render_nodes = .{ .items = allocator.alloc(HostRenderNode, final_len) catch return error.OutOfMemory, .capacity = final_len };
                 const filled = allocator.alloc(bool, final_len) catch return error.OutOfMemory;
                 defer allocator.free(filled);
                 @memset(filled, false);
+                const old_used = allocator.alloc(bool, engine.active_stream.render_nodes.items.len) catch return error.OutOfMemory;
+                defer allocator.free(old_used);
+                @memset(old_used, false);
                 for (layout.survivor_moves) |move| {
                     if (move.old_start > engine.active_stream.render_nodes.items.len or move.len > engine.active_stream.render_nodes.items.len - move.old_start) return error.ResourceLimit;
                     if (move.new_start > final_len or move.len > final_len - move.new_start) return error.ResourceLimit;
                     @memcpy(prepared.render_nodes.items[move.new_start..][0..move.len], engine.active_stream.render_nodes.items[move.old_start..][0..move.len]);
                     @memset(filled[move.new_start..][0..move.len], true);
+                    @memset(old_used[move.old_start..][0..move.len], true);
                 }
                 for (replacement.replacement_rows) |row| {
                     if (row.start > replacement.replacement.stream.render_nodes.items.len or row.len > replacement.replacement.stream.render_nodes.items.len - row.start) return error.ResourceLimit;
@@ -4021,6 +4024,17 @@ pub fn Engine(comptime Ctx: type) type {
                     for (filled[final_start..][0..row.len]) |is_filled| if (is_filled) return error.ResourceLimit;
                     @memcpy(prepared.render_nodes.items[final_start..][0..row.len], replacement.replacement.stream.render_nodes.items[row.start..][0..row.len]);
                     @memset(filled[final_start..][0..row.len], true);
+                }
+                var final_cursor: usize = 0;
+                for (engine.active_stream.render_nodes.items, 0..) |node, old_index| {
+                    if (old_used[old_index]) continue;
+                    const scope_id = renderNodeScopeId(&engine.active_stream, node);
+                    if (scope_id >= layout.targets.descriptor_target_scopes.len) return error.ResourceLimit;
+                    if (layout.targets.descriptor_target_scopes[@intCast(scope_id)]) continue;
+                    while (final_cursor < filled.len and filled[final_cursor]) final_cursor += 1;
+                    if (final_cursor == filled.len) return error.ResourceLimit;
+                    prepared.render_nodes.items[final_cursor] = node;
+                    filled[final_cursor] = true;
                 }
                 for (filled) |is_filled| if (!is_filled) return error.ResourceLimit;
                 prepared.metadata.ensureTotalCapacity(allocator, @intCast(std.math.mul(usize, final_len, 2) catch return error.ResourceLimit)) catch return error.OutOfMemory;
@@ -4283,6 +4297,19 @@ pub fn Engine(comptime Ctx: type) type {
 
             fn prepareEachRenderTopology(self: *@This(), rows: *const PreparedEachRowReplacementCollection, layout: *const PreparedEachRowRenderLayout) CollectionError!void {
                 self.final_render_topology = try PreparedFinalRenderTopology.prepare(self.engine, Ctx.allocator(self.host_ctx), rows, layout);
+            }
+
+            fn prepareExternalEach(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, rows: *const each_runtime.PreparedRowSync, replacement: *PreparedEachRowReplacementCollection, layout: *const PreparedEachRowRenderLayout) CollectionError!*@This() {
+                const allocator = Ctx.allocator(ctx);
+                var descriptor_roots: std.ArrayListUnmanaged(u64) = .empty;
+                defer descriptor_roots.deinit(allocator);
+                descriptor_roots.ensureTotalCapacity(allocator, std.math.add(usize, rows.removed_scope_ids.len, replacement.replacement_rows.len) catch return error.ResourceLimit) catch return error.OutOfMemory;
+                descriptor_roots.appendSliceAssumeCapacity(rows.removed_scope_ids);
+                for (replacement.replacement_rows) |row| if (!rows.scope_created[row.row_index]) descriptor_roots.appendAssumeCapacity(row.scope_id);
+                const downstream = try prepareExternal(engine, ctx, roc_host, replacement.replacement, descriptor_roots.items, rows.removed_scope_ids, layout.remove_starts);
+                errdefer downstream.deinit();
+                try downstream.prepareEachRenderTopology(replacement, layout);
+                return downstream;
             }
 
             fn prepareDownstream(self: *@This(), allocator: std.mem.Allocator, descriptor_root_scope_ids: []const u64, retired_root_scope_ids: []const u64, render_insert_indexes: []const usize, external_row_sync: bool) CollectionError!void {
@@ -10502,11 +10529,7 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
         }
 
         fn prepareDownstream(engine: *Engine(VerifyCtx), ctx: *VerifyCtxHost, host: *abi.RocHost, rows: *const each_runtime.PreparedRowSync, replacement: *Engine(VerifyCtx).PreparedEachRowReplacementCollection, layout: *const Engine(VerifyCtx).PreparedEachRowRenderLayout) !*Engine(VerifyCtx).PreparedStructuralDownstream {
-            const descriptor_roots = [_]u64{ rows.removed_scope_ids[0], replacement.replacement_rows[0].scope_id };
-            const downstream = try Engine(VerifyCtx).PreparedStructuralDownstream.prepareExternal(engine, ctx, host, replacement.replacement, &descriptor_roots, rows.removed_scope_ids, layout.remove_starts);
-            errdefer downstream.deinit();
-            try downstream.prepareEachRenderTopology(replacement, layout);
-            return downstream;
+            return Engine(VerifyCtx).PreparedStructuralDownstream.prepareExternalEach(engine, ctx, host, rows, replacement, layout);
         }
 
         fn retry(engine: *Engine(VerifyCtx), ctx: *VerifyCtxHost, host: *abi.RocHost, each_ops: HostEachOps, site_index: usize, keys: []const HostValue, items: []const HostValue) !void {
