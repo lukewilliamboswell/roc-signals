@@ -360,7 +360,7 @@ pub const PreparedExistingRows = struct {
     committed: bool = false,
 
     /// Computes matching and reserves every site/index destination without mutation.
-    pub fn prepare(allocator: std.mem.Allocator, sites: *std.ArrayListUnmanaged(Site), memberships: *std.ArrayListUnmanaged(?Membership), site_index: usize, parent_scope_id: u64, site_ordinal: u64, keys: anytype, items: anytype, hooks: anytype) (std.mem.Allocator.Error || error{RequiresCreate})!PreparedExistingRows {
+    pub fn prepare(allocator: std.mem.Allocator, sites: *std.ArrayListUnmanaged(Site), memberships: *std.ArrayListUnmanaged(?Membership), site_index: usize, parent_scope_id: u64, site_ordinal: u64, keys: anytype, items: anytype, hooks: anytype) std.mem.Allocator.Error!PreparedExistingRows {
         if (keys.len != items.len or site_index >= sites.items.len) @panic("invalid prepared each reconciliation input");
         const site = &sites.items[site_index];
         const existing_len = site.scope_ids.items.len;
@@ -450,6 +450,8 @@ pub const PreparedExistingRows = struct {
     pub fn commit(self: *PreparedExistingRows, sites: *std.ArrayListUnmanaged(Site), memberships: *std.ArrayListUnmanaged(?Membership), keys: anytype, items: anytype, hooks: anytype) DiffResult {
         if (self.committed) @panic("prepared each rows committed twice");
         const site = &sites.items[self.site_index];
+        var unchanged_count: u64 = 0;
+        var updated_count: u64 = 0;
         for (self.next_scope_ids, self.row_items_changed, self.scope_created, keys, items) |scope_id, changed, created, key, item| {
             if (created) {
                 hooks.commitCreatedRow(scope_id);
@@ -458,9 +460,11 @@ pub const PreparedExistingRows = struct {
             if (changed) {
                 hooks.replaceRowKey(scope_id, hooks.hashKey(key), key);
                 hooks.replaceRowItem(scope_id, item);
+                updated_count += 1;
             } else {
                 hooks.dropIncomingKey(key);
                 hooks.dropIncomingItem(item);
+                unchanged_count += 1;
             }
         }
         for (self.removed_scope_ids) |scope_id| hooks.disposeScope(scope_id);
@@ -487,8 +491,8 @@ pub const PreparedExistingRows = struct {
             .rows_reused = self.next_scope_ids.len - self.created_count,
             .rows_created = @intCast(self.created_count),
             .rows_removed = @intCast(self.removed_scope_ids.len),
-            .row_items_unchanged = 0,
-            .row_items_updated = 0,
+            .row_items_unchanged = unchanged_count,
+            .row_items_updated = updated_count,
         };
         self.next_scope_ids = &.{};
         self.row_items_changed = &.{};
@@ -1074,6 +1078,8 @@ test "prepared existing each rows sweep failures and commit without allocation" 
                 var diff = retry.commit(&sites, &memberships, &keys, &items, &hooks);
                 defer diff.deinit(allocator);
                 try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+                try std.testing.expectEqual(@as(u64, 0), diff.row_items_unchanged);
+                try std.testing.expectEqual(@as(u64, 1), diff.row_items_updated);
                 try verify(site_index, &sites, &memberships, &hooks, &items_by_scope);
                 return attempts;
             };
@@ -1083,6 +1089,8 @@ test "prepared existing each rows sweep failures and commit without allocation" 
             var diff = prepared.commit(&sites, &memberships, &keys, &items, &hooks);
             defer diff.deinit(allocator);
             try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+            try std.testing.expectEqual(@as(u64, 0), diff.row_items_unchanged);
+            try std.testing.expectEqual(@as(u64, 1), diff.row_items_updated);
             try verify(site_index, &sites, &memberships, &hooks, &items_by_scope);
             return attempts;
         }
