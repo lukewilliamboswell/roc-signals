@@ -5696,6 +5696,87 @@ test "location-driven when source transaction sweeps host OOM and retries withou
     for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
+test "list source each transaction sweeps host OOM and retries without publication" {
+    const Runner = struct {
+        fn run(failure_number: ?usize) !usize {
+            test_erased_callable_drop_count = 0;
+            test_row_elem_call_count = 0;
+            var host = HostEnv.init();
+            var roc_host = makeSignalsRocHost(&host);
+            host.engine.roc_host = &roc_host;
+            defer {
+                host.deinit();
+                _ = host.gpa.deinit();
+            }
+
+            const initial_items = [_]HostValue{ testHostValueI64(1), testHostValueI64(2), testHostValueI64(3) };
+            const source = testNodeIntervalListSourceExpr(&roc_host, 100, testHostValueI64List(&roc_host, &initial_items));
+            const root = testElement(&roc_host, &.{testNodeEachWithSignalAndRow(&roc_host, source, &testStatefulRowElemCallable)});
+            defer root.decref(&roc_host);
+            var stream: HostNodeDescriptorStream = .{};
+            host.collectActiveElemRootDescriptors(&roc_host, &stream, root, &.{});
+            _ = applyNodeDescriptorStream(&host, &roc_host, &stream);
+            host.engine.active_stream = stream;
+
+            const record = host.engine.activeIntervalRecordByPeriod(100).?;
+            const each_site = host.engine.active_stream.scope_sites.items[0];
+            const each_cache_before = host.engine.active_stream.eaches.items[0].cached_value.present.value;
+            const source_cache_before = record.requireIntervalSource().cached_value.present.value;
+            const generation_before = host.engine.dirty_signal_generation;
+            const graph_len_before = host.engine.active_signal_graph.items.len;
+            const scope_len_before = host.engine.scopes.items.len;
+            const render_len_before = host.engine.active_stream.render_nodes.items.len;
+            const dom_len_before = host.dom_elements.items.len;
+            const root_children_before = try std.testing.allocator.dupe(u64, host.engine.render_cache.nodes.items[1].children.items);
+            defer std.testing.allocator.free(root_children_before);
+            const row_scopes_before = try host.engine.activeEachRowScopes(std.testing.allocator, each_site.scope_id, each_site.ordinal);
+            defer std.testing.allocator.free(row_scopes_before);
+            const allocations_before = host.roc_allocations.snapshot();
+
+            const next_items = [_]HostValue{ testHostValueI64(2), testHostValueI64(3), testHostValueI64(4) };
+            const next = testHostValueI64List(&roc_host, &next_items);
+            var fault = FaultAllocator.init(host.gpa.allocator());
+            fault.configure(failure_number);
+            host.engine_allocator_override = fault.allocator();
+            const result = host.engine.tryDispatchEffectSourceValue(&host, &roc_host, record, next);
+            const attempts = fault.attempts;
+            if (failure_number != null) {
+                try std.testing.expectError(error.OutOfMemory, result);
+                try std.testing.expectEqual(@as(usize, 1), fault.induced_failures);
+                try std.testing.expectEqual(generation_before, host.engine.dirty_signal_generation);
+                try std.testing.expectEqual(graph_len_before, host.engine.active_signal_graph.items.len);
+                try std.testing.expectEqual(scope_len_before, host.engine.scopes.items.len);
+                try std.testing.expectEqual(render_len_before, host.engine.active_stream.render_nodes.items.len);
+                try std.testing.expectEqual(dom_len_before, host.dom_elements.items.len);
+                try std.testing.expectEqualSlices(u64, root_children_before, host.engine.render_cache.nodes.items[1].children.items);
+                const row_scopes_after = try host.engine.activeEachRowScopes(std.testing.allocator, each_site.scope_id, each_site.ordinal);
+                defer std.testing.allocator.free(row_scopes_after);
+                try std.testing.expectEqualSlices(u64, row_scopes_before, row_scopes_after);
+                try std.testing.expectEqual(source_cache_before, record.requireIntervalSource().cached_value.present.value);
+                try std.testing.expectEqual(each_cache_before, host.engine.active_stream.eaches.items[0].cached_value.present.value);
+                try std.testing.expect(activeTextElementId(&host, "row-1-1") != null);
+                try std.testing.expect(activeTextElementId(&host, "row-4-4") == null);
+                try std.testing.expectEqual(@as(usize, 0), host.roc_allocations.liveCountSince(allocations_before));
+
+                fault.configure(null);
+                const retry_items = [_]HostValue{ testHostValueI64(2), testHostValueI64(3), testHostValueI64(4) };
+                _ = try host.engine.tryDispatchEffectSourceValue(&host, &roc_host, record, testHostValueI64List(&roc_host, &retry_items));
+            } else {
+                _ = try result;
+            }
+            try std.testing.expect(activeTextElementId(&host, "row-1-1") == null);
+            try std.testing.expect(activeTextElementId(&host, "row-2-2") != null);
+            try std.testing.expect(activeTextElementId(&host, "row-3-3") != null);
+            try std.testing.expect(activeTextElementId(&host, "row-4-4") != null);
+            return attempts;
+        }
+    };
+
+    const attempts = try Runner.run(null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
+}
+
 test "signals host reuses active signal records while collecting dirty when branch" {
     test_erased_callable_drop_count = 0;
 
@@ -7119,6 +7200,28 @@ fn testNodeIntervalSourceExpr(roc_host: *abi.RocHost, period_ms: u64, initial_va
                 &testUnaryHostValueCallable,
                 &testErasedCallableOnDrop,
                 .{ .amount = 1 },
+            ),
+            .token = initial,
+        } },
+        .tag = .IntervalSource,
+    };
+}
+
+fn testNodeIntervalListSourceExpr(roc_host: *abi.RocHost, period_ms: u64, initial_value: HostValue) abi.NodeSignalExpr {
+    const cap = testHostValueCapability(roc_host);
+    const initial = testHostValueInitialThunk(roc_host, initial_value);
+    abi.increfErasedCallable(initial, 1);
+    return .{
+        .payload = .{ .interval_source = .{
+            .period_ms = period_ms,
+            .cap = cap,
+            .initial = initial,
+            .tick = writeTestErasedCallable(
+                TestErasedI64Capture,
+                roc_host,
+                &testUnaryIdentityHostValueCallable,
+                &testErasedCallableOnDrop,
+                .{ .amount = 0 },
             ),
             .token = initial,
         } },
