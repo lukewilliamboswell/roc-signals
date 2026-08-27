@@ -2264,6 +2264,26 @@ pub fn Engine(comptime Ctx: type) type {
                         },
                         .custom => return error.ResourceLimit,
                     },
+                    .signal_bool => |payload| switch (payload.target) {
+                        .fixed => |field| {
+                            try self.budget.charge(0, @sizeOf(HostNodeSignalBoolAttrDesc));
+                            const signal = try self.bindSignalRoot(roc_host, payload.signal.*, binder_stack);
+                            const read = retainHostBoolRead(payload.read, &self.engine.pending_roc_metrics);
+                            self.prepared_signal_attrs.appendAssumeCapacity(.{ .bool_attr = .{
+                                .elem_id = elem_id,
+                                .field = field,
+                                .signal = signal,
+                                .read = read,
+                            } });
+                            self.signal_records.transferDescriptorRoot(signal.record);
+                            const journaled = self.signal_bindings.pop() orelse @panic("staged signal binding journal underflow");
+                            if (journaled.record != signal.record or journaled.source_node_ids.ptr != signal.source_node_ids.ptr or journaled.source_node_ids.len != signal.source_node_ids.len) {
+                                @panic("staged signal binding journal transfer mismatch");
+                            }
+                            return;
+                        },
+                        .custom => return error.ResourceLimit,
+                    },
                     .static_text => |payload| switch (payload.target) {
                         .fixed => |field| blk: {
                             const bytes = std.math.add(usize, @sizeOf(HostNodeStaticTextAttrDesc), payload.value.asSlice().len) catch return error.ResourceLimit;
