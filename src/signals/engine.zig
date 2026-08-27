@@ -3252,6 +3252,9 @@ pub fn Engine(comptime Ctx: type) type {
             retired_node_identity_ids: []u64 = &.{},
             retired_dom_identity_ids: []u64 = &.{},
             row_retirement: ?each_runtime.PreparedRowRemovals = null,
+            pending_task_indexes: []usize = &.{},
+            retired_pending_tasks: std.ArrayListUnmanaged(HostPendingTask) = .empty,
+            cleanup_event_names: std.ArrayListUnmanaged([]const u8) = .empty,
 
             fn stateIndexDescending(_: void, left: usize, right: usize) bool {
                 return left > right;
@@ -3328,6 +3331,32 @@ pub fn Engine(comptime Ctx: type) type {
                 };
                 plan.row_retirement = each_runtime.prepareRowRemovals(allocator, engine_ptr.each_row_sites.items, engine_ptr.each_row_memberships_by_scope_id.items, row_removals.items) catch return error.OutOfMemory;
                 errdefer if (plan.row_retirement) |*retirement| retirement.deinit(allocator);
+                var task_count: usize = 0;
+                for (engine_ptr.pending_tasks.items) |task| if (plan.target_scopes[@intCast(task.owner_scope_id)]) {
+                    task_count = std.math.add(usize, task_count, 1) catch return error.ResourceLimit;
+                };
+                plan.pending_task_indexes = allocator.alloc(usize, task_count) catch return error.OutOfMemory;
+                errdefer allocator.free(plan.pending_task_indexes);
+                var task_write: usize = 0;
+                for (engine_ptr.pending_tasks.items, 0..) |task, index| if (plan.target_scopes[@intCast(task.owner_scope_id)]) {
+                    plan.pending_task_indexes[task_write] = index;
+                    task_write += 1;
+                };
+                std.mem.sort(usize, plan.pending_task_indexes, {}, stateIndexDescending);
+                plan.retired_pending_tasks.ensureUnusedCapacity(allocator, task_count) catch return error.OutOfMemory;
+                errdefer plan.retired_pending_tasks.deinit(allocator);
+                errdefer {
+                    for (plan.cleanup_event_names.items) |name| allocator.free(name);
+                    plan.cleanup_event_names.deinit(allocator);
+                }
+                for (engine_ptr.active_stream.cleanups.items) |cleanup| if (plan.target_scopes[@intCast(cleanup.scope_id)]) {
+                    const name = allocator.dupe(u8, cleanup.name) catch return error.OutOfMemory;
+                    plan.cleanup_event_names.append(allocator, name) catch {
+                        allocator.free(name);
+                        return error.OutOfMemory;
+                    };
+                };
+                engine_ptr.cleanup_events.ensureUnusedCapacity(allocator, plan.cleanup_event_names.items.len) catch return error.OutOfMemory;
                 const render_start = engine_ptr.renderStartForReplacementTargetSet(site.render_insert_index, plan.target_scopes);
                 plan.removal = structural_splice.prepareRemoval(HostNodeDescriptorStream, allocator, &engine_ptr.active_stream, render_start, plan.target_scopes) catch return error.OutOfMemory;
                 errdefer if (plan.removal) |*removal| removal.deinit(allocator);
@@ -3408,12 +3437,27 @@ pub fn Engine(comptime Ctx: type) type {
                 self.row_retirement.?.apply(&self.engine.each_row_sites, &self.engine.each_row_memberships_by_scope_id, &row_keys);
             }
 
+            fn commitEffectsRetirement(self: *@This()) void {
+                for (self.pending_task_indexes) |index| {
+                    const task = effects_runtime.removePendingTaskAt(&self.engine.pending_tasks, index);
+                    if (task.active) Ctx.sink(self.host_ctx).cancelTask(task.request_id);
+                    self.retired_pending_tasks.appendAssumeCapacity(task);
+                }
+                self.engine.cleanup_events.appendSliceAssumeCapacity(self.cleanup_event_names.items);
+                self.cleanup_event_names.items.len = 0;
+            }
+
             fn deinit(self: *@This()) void {
                 const allocator = Ctx.allocator(self.host_ctx);
                 if (self.publication) |*publication| publication.deinit(allocator);
                 if (self.removal) |*removal| removal.deinit(allocator);
                 if (self.scope_retirement) |*retirement| retirement.deinit(allocator);
                 if (self.row_retirement) |*retirement| retirement.deinit(allocator);
+                allocator.free(self.pending_task_indexes);
+                for (self.retired_pending_tasks.items) |*task| effects_runtime.deinitPendingTask(allocator, self.roc_host, task);
+                self.retired_pending_tasks.deinit(allocator);
+                for (self.cleanup_event_names.items) |name| allocator.free(name);
+                self.cleanup_event_names.deinit(allocator);
                 allocator.free(self.state_cell_indexes);
                 allocator.free(self.retired_node_identity_ids);
                 allocator.free(self.retired_dom_identity_ids);
@@ -7874,6 +7918,8 @@ fn deinitVerifyStaticEngine(engine: *Engine(VerifyCtx), ctx: *VerifyCtxHost) voi
 }
 
 fn deinitVerifyStateEngine(engine: *Engine(VerifyCtx), ctx: *VerifyCtxHost, roc_host: *abi.RocHost) void {
+    effects_runtime.clearPendingTasks(VerifyCtx, ctx, ctx.allocator, &engine.pending_tasks, roc_host);
+    effects_runtime.deinitCleanupEvents(ctx.allocator, &engine.cleanup_events);
     for (engine.states.items) |*state| state.cell.deinit(ctx, roc_host, &engine.pending_roc_metrics);
     engine.states.deinit(ctx.allocator);
     engine.state_indexes_by_node_id.deinit(ctx.allocator);
@@ -8314,6 +8360,7 @@ test "branch replacement preparation leaves the active branch unpublished" {
             try engine.collectStaticRootDescriptorsTransactional(&ctx, host, &stream, root_elem, .{});
             engine.active_stream = stream;
             stream = .{};
+            try engine.active_stream.cleanups.append(ctx.allocator, .{ .scope_id = 1, .name = try ctx.allocator.dupe(u8, "branch-cleanup") });
             const scope_len = engine.scopes.items.len;
             const identity_len = engine.dom_identities.items.len;
             const text_len = engine.active_stream.text_nodes.items.len;
@@ -8331,6 +8378,9 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 try std.testing.expect(plan.target_scopes[@intCast(plan.retired_scope_id)]);
                 try std.testing.expectEqualSlices(u64, &.{plan.retired_scope_id}, plan.scope_retirement.?.scope_ids);
                 try std.testing.expectEqual(@as(usize, 0), plan.row_retirement.?.rows.len);
+                try std.testing.expectEqual(@as(usize, 0), plan.pending_task_indexes.len);
+                try std.testing.expectEqual(@as(usize, 1), plan.cleanup_event_names.items.len);
+                try std.testing.expectEqualStrings("branch-cleanup", plan.cleanup_event_names.items[0]);
                 try std.testing.expect(engine.scopes.items[@intCast(plan.retired_scope_id)].active);
                 try std.testing.expectEqualSlices(u64, &.{ 1, 2, 3 }, plan.removal.?.scan.removed_elem_ids);
                 try std.testing.expectEqualSlices(usize, &.{0}, plan.removal.?.descriptor_indexes.element_indexes.items);
@@ -8369,7 +8419,10 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 plan.commitStateCellsAssumeCapacity();
                 plan.commitIdentityRetirement();
                 plan.commitRowRetirement();
+                plan.commitEffectsRetirement();
                 try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+                try std.testing.expectEqual(@as(usize, 1), engine.cleanup_events.items.len);
+                try std.testing.expectEqualStrings("branch-cleanup", engine.cleanup_events.items[0]);
                 try std.testing.expect(!engine.node_identities.items[@intCast(retired_node_id)].active);
                 try std.testing.expect(!engine.dom_identities.items[@intCast(retired_elem_id - 1)].active);
                 try std.testing.expectEqual(@as(usize, 1), plan.retired_state_cells.items.len);
