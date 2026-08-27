@@ -3317,6 +3317,84 @@ test "native host allocation injection reaches host and Roc allocation paths" {
     try std.testing.expectEqual(@as(usize, 0), host.roc_allocations.allocations.items.len);
 }
 
+test "native engine identity preparation sweeps all recoverable allocation failures" {
+    const node_count = blk: {
+        var host = HostEnv.init();
+        var roc_host = makeSignalsRocHost(&host);
+        host.engine.roc_host = &roc_host;
+        defer {
+            host.configureAllocationFailure(null);
+            host.deinit();
+            _ = host.gpa.deinit();
+        }
+        const root = try host.engine.internRootScope(host.hostAllocator());
+        host.configureAllocationFailure(null);
+        _ = try host.engine.internNodeIdentity(host.hostAllocator(), root.scope_id, 0);
+        break :blk host.allocation_fault.?.attempts;
+    };
+    try std.testing.expect(node_count >= 2);
+
+    for (1..node_count + 1) |failure_number| {
+        var host = HostEnv.init();
+        var roc_host = makeSignalsRocHost(&host);
+        host.engine.roc_host = &roc_host;
+        defer {
+            host.configureAllocationFailure(null);
+            host.deinit();
+            _ = host.gpa.deinit();
+        }
+        const root = try host.engine.internRootScope(host.hostAllocator());
+        host.configureAllocationFailure(failure_number);
+
+        try std.testing.expectError(error.OutOfMemory, host.engine.internNodeIdentity(host.hostAllocator(), root.scope_id, 0));
+        try std.testing.expectEqual(@as(usize, 0), host.engine.node_identities.items.len);
+        try std.testing.expectEqual(@as(usize, 0), host.engine.active_node_identity_ids.count());
+
+        host.configureAllocationFailure(null);
+        try std.testing.expectEqual(@as(u64, 0), try host.engine.internNodeIdentity(host.hostAllocator(), root.scope_id, 0));
+        try std.testing.expectEqual(@as(usize, 1), host.engine.node_identities.items.len);
+        try std.testing.expectEqual(@as(usize, 1), host.engine.active_node_identity_ids.count());
+    }
+
+    const dom_count = blk: {
+        var host = HostEnv.init();
+        var roc_host = makeSignalsRocHost(&host);
+        host.engine.roc_host = &roc_host;
+        defer {
+            host.configureAllocationFailure(null);
+            host.deinit();
+            _ = host.gpa.deinit();
+        }
+        const root = try host.engine.internRootScope(host.hostAllocator());
+        host.configureAllocationFailure(null);
+        _ = try host.engine.internDomIdentity(host.hostAllocator(), root.scope_id, 0);
+        break :blk host.allocation_fault.?.attempts;
+    };
+    try std.testing.expect(dom_count >= 2);
+
+    for (1..dom_count + 1) |failure_number| {
+        var host = HostEnv.init();
+        var roc_host = makeSignalsRocHost(&host);
+        host.engine.roc_host = &roc_host;
+        defer {
+            host.configureAllocationFailure(null);
+            host.deinit();
+            _ = host.gpa.deinit();
+        }
+        const root = try host.engine.internRootScope(host.hostAllocator());
+        host.configureAllocationFailure(failure_number);
+
+        try std.testing.expectError(error.OutOfMemory, host.engine.internDomIdentity(host.hostAllocator(), root.scope_id, 0));
+        try std.testing.expectEqual(@as(usize, 0), host.engine.dom_identities.items.len);
+        try std.testing.expectEqual(@as(usize, 0), host.engine.active_dom_identity_ids.count());
+
+        host.configureAllocationFailure(null);
+        try std.testing.expectEqual(@as(u64, 1), try host.engine.internDomIdentity(host.hostAllocator(), root.scope_id, 0));
+        try std.testing.expectEqual(@as(usize, 1), host.engine.dom_identities.items.len);
+        try std.testing.expectEqual(@as(usize, 1), host.engine.active_dom_identity_ids.count());
+    }
+}
+
 const TestErasedI64Capture = extern struct {
     amount: i64,
 };

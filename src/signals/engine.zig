@@ -3945,13 +3945,14 @@ pub fn Engine(comptime Ctx: type) type {
             try self.validateScopeId(scope_id);
             const key = identityKey(scope_id, ordinal);
             if (self.active_node_identity_ids.get(key)) |node_id| return node_id;
+            self.active_node_identity_ids.ensureUnusedCapacity(allocator, 1) catch return IdentityInternError.OutOfMemory;
             const node_id = blk: {
                 if (!self.has_inactive_node_identities and (self.node_identities.items.len == 0 or identityCanAppend(self.node_identities.items[self.node_identities.items.len - 1], scope_id, ordinal))) {
                     break :blk try identity_table.appendFreshNode(allocator, &self.node_identities, scope_id, ordinal);
                 }
                 break :blk try identity_table.internNode(allocator, &self.node_identities, scope_id, ordinal, self.identity_reuse_barrier);
             };
-            self.active_node_identity_ids.put(allocator, key, node_id) catch return IdentityInternError.OutOfMemory;
+            self.active_node_identity_ids.putAssumeCapacity(key, node_id);
             return node_id;
         }
 
@@ -3959,13 +3960,14 @@ pub fn Engine(comptime Ctx: type) type {
             try self.validateScopeId(scope_id);
             const key = identityKey(scope_id, ordinal);
             if (self.active_dom_identity_ids.get(key)) |elem_id| return elem_id;
+            self.active_dom_identity_ids.ensureUnusedCapacity(allocator, 1) catch return IdentityInternError.OutOfMemory;
             const elem_id = blk: {
                 if (!self.has_inactive_dom_identities and (self.dom_identities.items.len == 0 or identityCanAppend(self.dom_identities.items[self.dom_identities.items.len - 1], scope_id, ordinal))) {
                     break :blk try identity_table.appendFreshDom(allocator, &self.dom_identities, scope_id, ordinal);
                 }
                 break :blk try identity_table.internDom(allocator, &self.dom_identities, scope_id, ordinal, self.identity_reuse_barrier, ActiveDomIds{ .stream = &self.active_stream });
             };
-            self.active_dom_identity_ids.put(allocator, key, elem_id) catch return IdentityInternError.OutOfMemory;
+            self.active_dom_identity_ids.putAssumeCapacity(key, elem_id);
             return elem_id;
         }
 
