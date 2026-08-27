@@ -795,11 +795,13 @@ pub fn PreparedReleaseClosure(comptime Record: type) type {
     return struct {
         records: []*Record,
         steps: []PreparedReleaseStep,
+        final_record_ids: []?u64,
 
         /// Releases preparation storage without changing graph state.
         pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
             allocator.free(self.records);
             allocator.free(self.steps);
+            allocator.free(self.final_record_ids);
             self.* = undefined;
         }
     };
@@ -876,7 +878,11 @@ pub fn prepareReleaseClosure(comptime Record: type, allocator: std.mem.Allocator
         }
         live_len = last_index;
     }
-    return .{ .records = try records.toOwnedSlice(allocator), .steps = steps };
+    const final_record_ids = try allocator.alloc(?u64, nodes.len);
+    errdefer allocator.free(final_record_ids);
+    @memset(final_record_ids, null);
+    for (slots[0..live_len], 0..) |original_id, final_id| final_record_ids[@intCast(original_id)] = @intCast(final_id);
+    return .{ .records = try records.toOwnedSlice(allocator), .steps = steps, .final_record_ids = final_record_ids };
 }
 
 /// Releases the test or plan's owned signal record exactly once.
@@ -1310,6 +1316,7 @@ test "prepared release closure preserves shared diamond and computes dense remap
     try std.testing.expectEqualDeep(PreparedReleaseStep{ .record_id = 1, .removal_index = 1, .moved_record_id = 2 }, baseline.steps[1]);
     try std.testing.expectEqualDeep(PreparedReleaseStep{ .record_id = 2, .removal_index = 1, .moved_record_id = null }, baseline.steps[2]);
     try std.testing.expectEqualDeep(PreparedReleaseStep{ .record_id = 0, .removal_index = 0, .moved_record_id = null }, baseline.steps[3]);
+    try std.testing.expectEqualSlices(?u64, &.{ null, null, null, null }, baseline.final_record_ids);
     baseline.deinit(counter.allocator());
     try std.testing.expect(attempts != 0);
 
