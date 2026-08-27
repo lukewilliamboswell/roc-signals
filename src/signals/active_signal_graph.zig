@@ -1078,6 +1078,7 @@ pub fn PreparedGraphAppend(comptime Record: type) type {
                 replacement.dependents = &.{};
             }
             for (self.new_nodes, self.record_ids, self.use_counts) |*node, id, uses| {
+                _ = node.record.retain();
                 node.record.active_graph_id = id;
                 node.record.active_use_count = uses;
                 nodes.appendAssumeCapacity(node.*);
@@ -1849,6 +1850,9 @@ test "prepared graph append enumerates missing topology without mutating survivo
     try std.testing.expectEqualSlices(u64, &.{ 1, 2, 3 }, baseline.record_ids);
     try std.testing.expectEqualSlices(u64, &.{ 1, 0, 2 }, baseline.ranks);
     try std.testing.expectEqualSlices(usize, &.{ 2, 1, 1 }, baseline.use_counts);
+    try std.testing.expectEqual(@as(usize, 1), mapped.ref_count);
+    try std.testing.expectEqual(@as(usize, 1), fresh.ref_count);
+    try std.testing.expectEqual(@as(usize, 1), root.ref_count);
     try std.testing.expectEqualSlices(ExistingUseIncrement, &.{.{ .record_id = 0, .count = 1 }}, baseline.existing_use_increments);
     try std.testing.expectEqual(@as(usize, 1), baseline.survivor_adjacency.len);
     try std.testing.expectEqual(@as(u64, 0), baseline.survivor_adjacency[0].record_id);
@@ -1869,6 +1873,7 @@ test "prepared graph append enumerates missing topology without mutating survivo
         for ([_]*LifecycleTestRecord{ &mapped, &fresh, &root }) |record| {
             try std.testing.expectEqual(@as(?u64, null), record.active_graph_id);
             try std.testing.expectEqual(@as(usize, 0), record.active_use_count);
+            try std.testing.expectEqual(@as(usize, 1), record.ref_count);
         }
     }
     try baseline.reservePublication(counter.allocator(), &nodes);
@@ -1885,6 +1890,9 @@ test "prepared graph append enumerates missing topology without mutating survivo
     try std.testing.expectEqual(@as(usize, 2), mapped.active_use_count);
     try std.testing.expectEqual(@as(?u64, 2), fresh.active_graph_id);
     try std.testing.expectEqual(@as(?u64, 3), root.active_graph_id);
+    try std.testing.expectEqual(@as(usize, 2), mapped.ref_count);
+    try std.testing.expectEqual(@as(usize, 2), fresh.ref_count);
+    try std.testing.expectEqual(@as(usize, 2), root.ref_count);
 }
 
 test "prepared release closure preserves shared diamond and computes dense remaps" {
