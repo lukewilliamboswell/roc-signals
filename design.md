@@ -1342,11 +1342,12 @@ compares `memory.buffer` identity and rebuilds `Uint8Array`/`Int32Array`/
 `DataView` only when it changed. No host-bumped memory-generation export is
 required.
 
-### Allocation failure and out-of-memory policy
+### Memory management and allocation failure
 
 Allocation failure is part of the host contract, not an unchecked implementation
-detail. Memory belongs to one of three lifetime domains, and a value never moves
-between them by implication:
+detail. Separating memory by lifetime prevents scratch aliases from escaping and
+prevents partially built output from becoming observable. Memory belongs to one
+of three lifetime domains, and a value never moves between them by implication:
 
 - **Persistent engine memory** owns committed graph records, scopes, retained Roc
   values, identities, and render-cache state. Its owner releases it when the
