@@ -2166,6 +2166,42 @@ pub fn Engine(comptime Ctx: type) type {
                 self.prepared_nodes.appendAssumeCapacity(prepared);
                 dom_ordinal.* += 1;
             }
+
+            /// Publishes only pre-reserved state. This function must remain
+            /// allocation-free so preparation is the last recoverable point.
+            fn commit(self: *@This()) void {
+                if (self.committed) @panic("staged collection committed twice");
+                for (self.scopes.intents.items) |intent| {
+                    if (intent.id != self.engine.scopes.items.len or intent.key.kind != 0) {
+                        @panic("unsupported staged scope intent");
+                    }
+                    self.engine.scopes.appendAssumeCapacity(.{
+                        .scope_id = intent.id,
+                        .parent_scope_id = null,
+                        .step = .root,
+                        .active = true,
+                    });
+                    self.engine.recordScopeCreated();
+                }
+                for (self.dom_identities.intents.items) |intent| {
+                    const scope_id: u64 = @truncate(intent.key >> 64);
+                    const ordinal: u64 = @truncate(intent.key);
+                    if (intent.id != self.engine.dom_identities.items.len + 1) {
+                        @panic("unsupported staged DOM identity intent");
+                    }
+                    self.engine.dom_identities.appendAssumeCapacity(.{
+                        .elem_id = intent.id,
+                        .scope_id = scope_id,
+                        .ordinal = ordinal,
+                        .active = true,
+                    });
+                    self.engine.active_dom_identity_ids.putAssumeCapacity(intent.key, intent.id);
+                }
+                for (self.prepared_nodes.items) |prepared| self.stream.appendPreparedStaticNode(prepared);
+                self.scopes.committed = true;
+                self.dom_identities.committed = true;
+                self.committed = true;
+            }
         };
 
         fn collectActiveElemDescriptorsWith(self: *Self, comptime Collection: type, collection: Collection, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, elem: abi.Elem, scope_id: u64, parent_elem_id: u64, ordinal: *u64, dom_ordinal: *u64, binder_stack: *std.ArrayListUnmanaged(HostBinderBinding), scope_created: bool, dirty_source_node_ids: []const u64) CollectionError!void {
