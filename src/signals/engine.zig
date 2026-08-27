@@ -7760,6 +7760,92 @@ pub fn Engine(comptime Ctx: type) type {
             return total_counts;
         }
 
+        const PreparedDirtyWhenSet = struct {
+            selected_indexes: []usize,
+            subsumed_indexes: []usize,
+
+            fn prepare(engine: *Self, allocator: std.mem.Allocator, changes: []const HostDirtyStructuralSignal) CollectionError!@This() {
+                const ordered = allocator.alloc(usize, changes.len) catch return error.OutOfMemory;
+                errdefer allocator.free(ordered);
+                for (ordered, 0..) |*index, i| index.* = i;
+
+                const Order = struct {
+                    engine: *Self,
+                    changes: []const HostDirtyStructuralSignal,
+
+                    fn lessThan(order: @This(), lhs_index: usize, rhs_index: usize) bool {
+                        const lhs = order.changes[lhs_index];
+                        const rhs = order.changes[rhs_index];
+                        const lhs_depth = order.engine.scopeDepth(lhs.scope_id);
+                        const rhs_depth = order.engine.scopeDepth(rhs.scope_id);
+                        if (lhs_depth != rhs_depth) return lhs_depth < rhs_depth;
+                        if (lhs.scope_id != rhs.scope_id) return lhs.scope_id < rhs.scope_id;
+                        if (lhs.ordinal != rhs.ordinal) return lhs.ordinal < rhs.ordinal;
+                        return lhs.node_id < rhs.node_id;
+                    }
+                };
+                std.mem.sort(usize, ordered, Order{ .engine = engine, .changes = changes }, Order.lessThan);
+
+                var selected = std.ArrayListUnmanaged(usize).empty;
+                errdefer selected.deinit(allocator);
+                var subsumed = std.ArrayListUnmanaged(usize).empty;
+                errdefer subsumed.deinit(allocator);
+                selected.ensureTotalCapacity(allocator, changes.len) catch return error.OutOfMemory;
+                subsumed.ensureTotalCapacity(allocator, changes.len) catch return error.OutOfMemory;
+
+                var replacement_roots = std.AutoHashMapUnmanaged(u64, void).empty;
+                defer replacement_roots.deinit(allocator);
+                const change_count: u32 = std.math.cast(u32, changes.len) orelse return error.ResourceLimit;
+                replacement_roots.ensureTotalCapacity(allocator, change_count) catch return error.OutOfMemory;
+                var replaces_root = false;
+
+                for (ordered) |index| {
+                    const change = changes[index];
+                    if (change.kind != .when) return error.ResourceLimit;
+
+                    var covered = replaces_root;
+                    var ancestor: ?u64 = change.scope_id;
+                    while (!covered and ancestor != null) {
+                        const scope_id = ancestor.?;
+                        if (replacement_roots.contains(scope_id)) {
+                            covered = true;
+                            break;
+                        }
+                        if (scope_id >= engine.scopes.items.len) return error.ResourceLimit;
+                        ancestor = engine.scopes.items[@intCast(scope_id)].parent_scope_id;
+                    }
+                    if (covered) {
+                        subsumed.appendAssumeCapacity(index);
+                        continue;
+                    }
+
+                    selected.appendAssumeCapacity(index);
+                    const branch = change.branch orelse return error.ResourceLimit;
+                    const replacement_root = engine.activeWhenBranchScopeId(change.scope_id, change.ordinal, branch.opposite()) catch return error.ResourceLimit;
+                    if (replacement_root) |scope_id| {
+                        replacement_roots.putAssumeCapacity(scope_id, {});
+                    } else {
+                        replaces_root = true;
+                    }
+                }
+
+                const selected_indexes = selected.toOwnedSlice(allocator) catch return error.OutOfMemory;
+                errdefer allocator.free(selected_indexes);
+                const subsumed_indexes = subsumed.toOwnedSlice(allocator) catch return error.OutOfMemory;
+                allocator.free(ordered);
+                return .{
+                    .selected_indexes = selected_indexes,
+                    .subsumed_indexes = subsumed_indexes,
+                };
+            }
+
+            fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+                allocator.free(self.selected_indexes);
+                allocator.free(self.subsumed_indexes);
+                self.* = undefined;
+            }
+        };
+
         /// Applies dirty when structural signals after preparation has fixed semantics and reserved fallible growth.
         pub fn applyDirtyWhenStructuralSignals(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, dirty_source_node_ids: []const u64, dirty_generation: u64, changes: []HostDirtyStructuralSignal) render.Counts {
             for (changes) |change| {
@@ -9566,6 +9652,44 @@ test "transactional engine root resource limits preserve state and allow retry" 
     try engine.collectStaticRootDescriptorsTransactional(&ctx, &roc_host, &stream, root, .{});
     try std.testing.expectEqual(@as(usize, 2), engine.dom_identities.items.len);
     try std.testing.expectEqualStrings("hello", findTextNodeDesc(&stream, 2).?.value);
+}
+
+test "dirty when set preparation normalizes nested changes without mutation" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var engine = Engine(VerifyCtx).init();
+    defer engine.scopes.deinit(std.testing.allocator);
+
+    const root = try engine.internRootScope(std.testing.allocator);
+    const outer_old = try engine.internWhenBranchScope(std.testing.allocator, root.scope_id, 10, .false_branch);
+    _ = try engine.internWhenBranchScope(std.testing.allocator, outer_old.scope_id, 11, .false_branch);
+    _ = try engine.internWhenBranchScope(std.testing.allocator, root.scope_id, 20, .false_branch);
+
+    var changes = [_]HostDirtyStructuralSignal{
+        .{ .kind = .when, .node_id = 11, .scope_id = outer_old.scope_id, .ordinal = 11, .record = undefined, .branch = .true_branch },
+        .{ .kind = .when, .node_id = 20, .scope_id = root.scope_id, .ordinal = 20, .record = undefined, .branch = .true_branch },
+        .{ .kind = .when, .node_id = 10, .scope_id = root.scope_id, .ordinal = 10, .record = undefined, .branch = .true_branch },
+    };
+
+    var baseline_fault = FaultAllocator.init(std.testing.allocator);
+    var baseline = try Engine(VerifyCtx).PreparedDirtyWhenSet.prepare(&engine, baseline_fault.allocator(), &changes);
+    const attempts = baseline_fault.attempts;
+    try std.testing.expect(attempts != 0);
+    try std.testing.expectEqualSlices(usize, &.{ 2, 1 }, baseline.selected_indexes);
+    try std.testing.expectEqualSlices(usize, &.{0}, baseline.subsumed_indexes);
+    baseline.deinit(baseline_fault.allocator());
+
+    for (1..attempts + 1) |failure_number| {
+        var fault = FaultAllocator.init(std.testing.allocator);
+        fault.configure(failure_number);
+        try std.testing.expectError(error.OutOfMemory, Engine(VerifyCtx).PreparedDirtyWhenSet.prepare(&engine, fault.allocator(), &changes));
+        try std.testing.expectEqual(@as(?HostScopeBranch, .true_branch), changes[0].branch);
+        try std.testing.expectEqual(outer_old.scope_id, changes[0].scope_id);
+    }
+
+    var retry = try Engine(VerifyCtx).PreparedDirtyWhenSet.prepare(&engine, std.testing.allocator, &changes);
+    defer retry.deinit(std.testing.allocator);
+    try std.testing.expectEqualSlices(usize, &.{ 2, 1 }, retry.selected_indexes);
+    try std.testing.expectEqualSlices(usize, &.{0}, retry.subsumed_indexes);
 }
 
 comptime {
