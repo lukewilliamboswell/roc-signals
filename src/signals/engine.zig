@@ -3478,6 +3478,46 @@ pub fn Engine(comptime Ctx: type) type {
             }
         };
 
+        fn prepareRetiredStreamCapacity(engine: *Self, allocator: std.mem.Allocator, retired: *HostNodeDescriptorStream, removal: *const structural_splice.PreparedRemoval, retired_scope_ids: []const u64) CollectionError!void {
+            const indexes = &removal.descriptor_indexes;
+            retired.reserveRetiredStaticPublication(
+                allocator,
+                indexes.element_indexes.items.len,
+                indexes.text_node_indexes.items.len,
+                indexes.static_text_attr_indexes.items.len,
+                indexes.static_bool_attr_indexes.items.len,
+                indexes.signal_text_node_indexes.items.len,
+                indexes.signal_text_attr_indexes.items.len,
+                indexes.signal_bool_attr_indexes.items.len,
+                engine.active_stream.signal_records_by_token.count(),
+                indexes.event_indexes.items.len,
+                removal.scan.removed_elem_ids,
+                &engine.active_stream,
+                removal.node_indexes.scope_site_indexes.items,
+                removal.node_indexes.state_indexes.items.len,
+                removal.node_indexes.when_indexes.items.len,
+                removal.node_indexes.each_indexes.items.len,
+            ) catch return error.OutOfMemory;
+            retired.reserveRetiredCustomPublication(
+                allocator,
+                &engine.active_stream,
+                removal.scan.removed_elem_ids,
+                indexes.static_custom_text_attr_indexes.items.len,
+                indexes.signal_custom_text_attr_indexes.items.len,
+                indexes.signal_optional_custom_text_attr_indexes.items.len,
+                indexes.static_custom_bool_attr_indexes.items.len,
+                indexes.signal_custom_bool_attr_indexes.items.len,
+            ) catch return error.OutOfMemory;
+            retired.reserveRetiredLifecyclePublication(
+                allocator,
+                &engine.active_stream,
+                retired_scope_ids,
+                removal.node_indexes.on_change_indexes.items.len,
+                removal.node_indexes.mount_indexes.items.len,
+                removal.node_indexes.cleanup_indexes.items.len,
+            ) catch return error.OutOfMemory;
+        }
+
         const AggregateBranchCollection = struct {
             engine: *Self,
             host_ctx: Ctx.Handle,
@@ -3492,6 +3532,8 @@ pub fn Engine(comptime Ctx: type) type {
             state_retirement: ?PreparedStateRetirementIndexes = null,
             row_retirement: ?each_runtime.PreparedRowRemovals = null,
             effects_retirement: ?PreparedEffectRetirements = null,
+            retired_stream: HostNodeDescriptorStream = .{},
+            publication: ?structural_splice.PreparedPublicationDeltas = null,
 
             fn addCounts(total: *StaticRootCounts, next: StaticRootCounts) CollectionError!void {
                 total.nodes = std.math.add(usize, total.nodes, next.nodes) catch return error.ResourceLimit;
@@ -3513,6 +3555,7 @@ pub fn Engine(comptime Ctx: type) type {
                 errdefer allocator.destroy(plan);
                 plan.* = .{ .engine = engine, .host_ctx = ctx, .roc_host = roc_host };
                 errdefer plan.stream.deinit(allocator, ctx, roc_host, &engine.pending_roc_metrics);
+                errdefer plan.retired_stream.deinit(allocator, ctx, roc_host, &engine.pending_roc_metrics);
                 plan.collection = try StagedCollectionCtx.init(engine, ctx, &plan.stream, limits, total.nodes, total.attrs, total.lifecycle, total.signal_records, total.state_sites, total.component_sites, total.when_sites, selections.len);
                 errdefer plan.collection.deinit();
                 plan.replacement_scope_ids = allocator.alloc(u64, selections.len) catch return error.OutOfMemory;
@@ -3570,6 +3613,18 @@ pub fn Engine(comptime Ctx: type) type {
                 errdefer if (plan.row_retirement) |*retirement| retirement.deinit(allocator);
                 plan.effects_retirement = try PreparedEffectRetirements.prepare(engine, allocator, plan.target_scopes, plan.removal.?.removal.node_indexes.cleanup_indexes.items);
                 errdefer if (plan.effects_retirement) |*effects| effects.deinit(allocator, null);
+                engine.active_stream.reserveMovedStreamPublication(allocator, &plan.stream) catch return error.OutOfMemory;
+                try prepareRetiredStreamCapacity(engine, allocator, &plan.retired_stream, &plan.removal.?.removal, plan.scope_retirement.?.scope_ids);
+                plan.publication = structural_splice.preparePublicationDeltas(
+                    allocator,
+                    plan.stream.render_nodes.items,
+                    &.{},
+                    engine.active_stream.on_changes.items.len,
+                    plan.stream.on_changes.items.len,
+                    engine.active_stream.mounts.items.len,
+                    plan.stream.mounts.items.len,
+                ) catch return error.OutOfMemory;
+                errdefer if (plan.publication) |*publication| publication.deinit(allocator);
                 return plan;
             }
 
@@ -3585,6 +3640,8 @@ pub fn Engine(comptime Ctx: type) type {
                 if (self.state_retirement) |*retirement| retirement.deinit(allocator);
                 if (self.row_retirement) |*retirement| retirement.deinit(allocator);
                 if (self.effects_retirement) |*effects| effects.deinit(allocator, null);
+                if (self.publication) |*publication| publication.deinit(allocator);
+                self.retired_stream.deinit(allocator, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
                 if (self.identity_retirements) |*retirements| retirements.deinit(allocator);
                 if (self.scope_retirement) |*retirement| retirement.deinit(allocator);
                 allocator.free(self.target_scopes);
@@ -3694,43 +3751,7 @@ pub fn Engine(comptime Ctx: type) type {
                 errdefer allocator.free(plan.state_cell_indexes);
                 try state_retirement.reserveRetired(allocator, &plan.retired_state_cells);
                 errdefer plan.retired_state_cells.deinit(allocator);
-                const removal_indexes = &plan.removal.?.descriptor_indexes;
-                plan.retired_stream.reserveRetiredStaticPublication(
-                    allocator,
-                    removal_indexes.element_indexes.items.len,
-                    removal_indexes.text_node_indexes.items.len,
-                    removal_indexes.static_text_attr_indexes.items.len,
-                    removal_indexes.static_bool_attr_indexes.items.len,
-                    removal_indexes.signal_text_node_indexes.items.len,
-                    removal_indexes.signal_text_attr_indexes.items.len,
-                    removal_indexes.signal_bool_attr_indexes.items.len,
-                    engine_ptr.active_stream.signal_records_by_token.count(),
-                    removal_indexes.event_indexes.items.len,
-                    plan.removal.?.scan.removed_elem_ids,
-                    &engine_ptr.active_stream,
-                    plan.removal.?.node_indexes.scope_site_indexes.items,
-                    plan.removal.?.node_indexes.state_indexes.items.len,
-                    plan.removal.?.node_indexes.when_indexes.items.len,
-                    plan.removal.?.node_indexes.each_indexes.items.len,
-                ) catch return error.OutOfMemory;
-                plan.retired_stream.reserveRetiredCustomPublication(
-                    allocator,
-                    &engine_ptr.active_stream,
-                    plan.removal.?.scan.removed_elem_ids,
-                    removal_indexes.static_custom_text_attr_indexes.items.len,
-                    removal_indexes.signal_custom_text_attr_indexes.items.len,
-                    removal_indexes.signal_optional_custom_text_attr_indexes.items.len,
-                    removal_indexes.static_custom_bool_attr_indexes.items.len,
-                    removal_indexes.signal_custom_bool_attr_indexes.items.len,
-                ) catch return error.OutOfMemory;
-                plan.retired_stream.reserveRetiredLifecyclePublication(
-                    allocator,
-                    &engine_ptr.active_stream,
-                    plan.scope_retirement.?.scope_ids,
-                    plan.removal.?.node_indexes.on_change_indexes.items.len,
-                    plan.removal.?.node_indexes.mount_indexes.items.len,
-                    plan.removal.?.node_indexes.cleanup_indexes.items.len,
-                ) catch return error.OutOfMemory;
+                try prepareRetiredStreamCapacity(engine_ptr, allocator, &plan.retired_stream, &plan.removal.?, plan.scope_retirement.?.scope_ids);
                 plan.publication = structural_splice.preparePublicationDeltas(
                     allocator,
                     plan.replacement_stream.render_nodes.items,
@@ -9942,6 +9963,7 @@ test "aggregate branch collection sweeps allocation failures without publication
             var roc_host = abi.makeRocHost(&roc_env);
             var engine = Engine(VerifyCtx).init();
             defer {
+                engine.active_stream.deinit(ctx.allocator, &ctx, &roc_host, &engine.pending_roc_metrics);
                 engine.scopes.deinit(ctx.allocator);
                 engine.dom_identities.deinit(ctx.allocator);
                 engine.active_dom_identity_ids.deinit(ctx.allocator);
