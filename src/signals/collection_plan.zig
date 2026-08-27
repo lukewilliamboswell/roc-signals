@@ -140,6 +140,45 @@ pub const ScopeOverlay = struct {
     }
 };
 
+pub fn OwnedValues(comptime Value: type) type {
+    return struct {
+        const Self = @This();
+        values: std.ArrayListUnmanaged(Value) = .empty,
+        committed: bool = false,
+
+        pub fn deinit(self: *Self, allocator: std.mem.Allocator, dropper: anytype) void {
+            if (!self.committed) self.abort(dropper);
+            self.values.deinit(allocator);
+            self.* = .{};
+        }
+
+        pub fn prepare(self: *Self, allocator: std.mem.Allocator, additional: usize) std.mem.Allocator.Error!void {
+            try self.values.ensureUnusedCapacity(allocator, additional);
+        }
+
+        pub fn appendAssumeCapacity(self: *Self, value: Value) void {
+            if (self.committed) @panic("owned values cannot append after commit");
+            self.values.appendAssumeCapacity(value);
+        }
+
+        pub fn abort(self: *Self, dropper: anytype) void {
+            if (self.committed) @panic("committed values cannot abort");
+            var index = self.values.items.len;
+            while (index != 0) {
+                index -= 1;
+                dropper.dropValue(self.values.items[index]);
+            }
+            self.values.clearRetainingCapacity();
+        }
+
+        pub fn commit(self: *Self, publisher: anytype) void {
+            if (self.committed) @panic("owned values committed twice");
+            for (self.values.items) |value| publisher.publishValue(value);
+            self.committed = true;
+        }
+    };
+}
+
 pub fn Plan(comptime Action: type) type {
     return struct {
         const Self = @This();
@@ -312,4 +351,62 @@ test "scope overlay abort leaves persistent scopes unchanged and permits retry" 
     overlay.abort();
     try overlay.prepare(std.testing.allocator, 1);
     try std.testing.expectEqual(@as(u64, 9), try overlay.reserve(key, persistent.get(key), &.{9}));
+}
+
+test "provisional value initializer runs once and abort releases ownership" {
+    const Tracker = struct {
+        initializers: usize = 0,
+        drops: usize = 0,
+        published: usize = 0,
+
+        fn initialize(self: *@This()) u64 {
+            self.initializers += 1;
+            return 42;
+        }
+        fn dropValue(self: *@This(), _: u64) void {
+            self.drops += 1;
+        }
+        fn publishValue(self: *@This(), _: u64) void {
+            self.published += 1;
+        }
+    };
+
+    var tracker: Tracker = .{};
+    var values: OwnedValues(u64) = .{};
+    defer values.deinit(std.testing.allocator, &tracker);
+    try values.prepare(std.testing.allocator, 1);
+    values.appendAssumeCapacity(tracker.initialize());
+    try std.testing.expectEqual(@as(usize, 1), tracker.initializers);
+    try std.testing.expectEqual(@as(usize, 0), tracker.published);
+    values.abort(&tracker);
+    try std.testing.expectEqual(@as(usize, 1), tracker.drops);
+}
+
+test "provisional value commit transfers without rerunning initializer or drop" {
+    const Tracker = struct {
+        initializers: usize = 0,
+        drops: usize = 0,
+        published: usize = 0,
+
+        fn initialize(self: *@This()) u64 {
+            self.initializers += 1;
+            return 7;
+        }
+        fn dropValue(self: *@This(), _: u64) void {
+            self.drops += 1;
+        }
+        fn publishValue(self: *@This(), _: u64) void {
+            self.published += 1;
+        }
+    };
+
+    var tracker: Tracker = .{};
+    var values: OwnedValues(u64) = .{};
+    defer values.deinit(std.testing.allocator, &tracker);
+    try values.prepare(std.testing.allocator, 1);
+    values.appendAssumeCapacity(tracker.initialize());
+    values.commit(&tracker);
+    try std.testing.expectEqual(@as(usize, 1), tracker.initializers);
+    try std.testing.expectEqual(@as(usize, 1), tracker.published);
+    try std.testing.expectEqual(@as(usize, 0), tracker.drops);
 }
