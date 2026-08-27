@@ -4057,6 +4057,60 @@ test "when descriptor replacement transfers ownership without allocation" {
     try std.testing.expectEqual(@as(?usize, 0), retired.nodeDescriptorIndex(4).?.when.get());
 }
 
+test "each descriptor replacement transfers ownership without allocation" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    const TestCtx = struct {
+        /// Opens a checked capability frame for an app-compiled erased call.
+        pub fn pushHostValueCapabilities(_: *@This(), _: []const retained.HostValueCapability) void {}
+        /// Closes the current capability frame after an app-compiled erased call.
+        pub fn popHostValueCapabilities(_: *@This()) void {}
+    };
+    var fault = FaultAllocator.init(std.testing.allocator);
+    const allocator = fault.allocator();
+    var ctx: TestCtx = .{};
+    var env = abi.RocEnv{ .allocator = allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&env);
+    var metrics = TestMetrics{};
+    var active: Stream = .{};
+    var replacement: Stream = .{};
+    var retired: Stream = .{};
+    defer active.deinit(allocator, &ctx, &roc_host, &metrics);
+    defer replacement.deinit(allocator, &ctx, &roc_host, &metrics);
+    defer retired.deinit(allocator, &ctx, &roc_host, &metrics);
+
+    const active_record = try SignalRecord.tryInit(allocator, .{ .ref = 1 });
+    const replacement_record = try SignalRecord.tryInit(allocator, .{ .ref = 2 });
+    try active.eaches.ensureUnusedCapacity(allocator, 1);
+    try active.descriptor_indexes_by_node_id.ensureTotalCapacity(allocator, 5);
+    while (active.descriptor_indexes_by_node_id.items.len < 5) active.descriptor_indexes_by_node_id.appendAssumeCapacity(.{});
+    try active.reservePreparedSignalRecordPublication(allocator, 1);
+    active.eaches.appendAssumeCapacity(.{ .node_id = 4, .items = .{ .record = active_record, .source_node_ids = try allocator.dupe(u64, &.{1}) }, .ops = std.mem.zeroes(HostEachOps) });
+    setFreshIndex(&active.descriptor_indexes_by_node_id.items[4].each, 0);
+    active.rememberSignalRecordTreeAssumeCapacity(active_record);
+    try active.scope_sites.append(allocator, .{ .node_id = 4, .scope_id = 1, .ordinal = 0, .parent_elem_id = 0, .render_insert_index = 0, .kind = .each, .binder_bindings = try allocator.alloc(BinderBinding, 0) });
+    setFreshIndex(active.descriptor_indexes_by_node_id.items[4].scope_sites.slot(.each), 0);
+
+    try replacement.eaches.ensureUnusedCapacity(allocator, 1);
+    try replacement.descriptor_indexes_by_node_id.ensureTotalCapacity(allocator, 6);
+    while (replacement.descriptor_indexes_by_node_id.items.len < 6) replacement.descriptor_indexes_by_node_id.appendAssumeCapacity(.{});
+    try replacement.reservePreparedSignalRecordPublication(allocator, 1);
+    replacement.eaches.appendAssumeCapacity(.{ .node_id = 5, .items = .{ .record = replacement_record, .source_node_ids = try allocator.dupe(u64, &.{2}) }, .ops = std.mem.zeroes(HostEachOps) });
+    setFreshIndex(&replacement.descriptor_indexes_by_node_id.items[5].each, 0);
+    replacement.rememberSignalRecordTreeAssumeCapacity(replacement_record);
+    try replacement.scope_sites.append(allocator, .{ .node_id = 5, .scope_id = 2, .ordinal = 0, .parent_elem_id = 0, .render_insert_index = 0, .kind = .each, .binder_bindings = try allocator.alloc(BinderBinding, 0) });
+    setFreshIndex(replacement.descriptor_indexes_by_node_id.items[5].scope_sites.slot(.each), 0);
+    try active.reserveMovedStreamPublication(allocator, &replacement);
+    try retired.reserveRetiredStaticPublication(allocator, 0, 0, 0, 0, 0, 0, 0, 1, 0, &.{}, &active, &.{0}, 0, 0, 1);
+
+    fault.configure(1);
+    active.commitStaticDescriptorReplacementAssumeCapacity(&replacement, &retired, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{0}, &.{}, &.{}, &.{0});
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqual(@as(u64, 5), active.eaches.items[0].node_id);
+    try std.testing.expectEqual(@as(?usize, 0), active.nodeDescriptorIndex(5).?.each.get());
+    try std.testing.expectEqual(@as(u64, 4), retired.eaches.items[0].node_id);
+    try std.testing.expectEqual(@as(?usize, 0), retired.nodeDescriptorIndex(4).?.each.get());
+}
+
 test "prepared when publication is allocation free" {
     const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
     const TestCtx = struct {
