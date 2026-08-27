@@ -322,7 +322,29 @@ pub const HostActiveBoolSignalSink = active_graph.BoolSink;
 pub const HostActiveChangeSignalSink = active_graph.ChangeSink;
 pub const HostActiveStructuralSignalKind = active_graph.StructuralKind;
 pub const HostActiveStructuralSignal = active_graph.StructuralSink;
-pub const HostDirtyStructuralSignal = active_graph.DirtyStructuralSignal;
+pub const HostDirtyStructuralSignal = struct {
+    kind: HostActiveStructuralSignalKind,
+    node_id: u64,
+    scope_id: u64,
+    ordinal: u64,
+    record: *HostSignalRecord,
+    branch: ?HostScopeBranch = null,
+    pending_when_cache: ?HostValueCell = null,
+
+    /// Drops a provisional dirty value without changing the live cache.
+    pub fn abortPendingWhenCache(self: *@This(), ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
+        if (self.pending_when_cache) |*cell| cell.deinit(ctx, roc_host, metrics);
+        self.pending_when_cache = null;
+    }
+
+    /// Transfers the provisional dirty value into the live cache.
+    pub fn commitPendingWhenCache(self: *@This(), slot: *HostSignalCacheSlot, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
+        const cell = self.pending_when_cache orelse @panic("dirty when change lacked pending cache value");
+        slot.deinit(ctx, roc_host, metrics);
+        slot.* = .{ .present = cell };
+        self.pending_when_cache = null;
+    }
+};
 
 pub const HostEachSite = scope_runtime.EachSite;
 pub const HostStructuralReplacementTarget = structural_splice.ReplacementTarget;
@@ -4676,7 +4698,10 @@ pub fn Engine(comptime Ctx: type) type {
 
         pub fn collectDirtyStructuralSignals(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, allocator: std.mem.Allocator, dirty_source_node_ids: []const u64, changed_record_ids: []const u64, dirty_generation: u64) []HostDirtyStructuralSignal {
             var dirty_structural_signals: std.ArrayListUnmanaged(HostDirtyStructuralSignal) = .empty;
-            errdefer dirty_structural_signals.deinit(allocator);
+            errdefer {
+                for (dirty_structural_signals.items) |*change| change.abortPendingWhenCache(ctx, roc_host, &self.pending_roc_metrics);
+                dirty_structural_signals.deinit(allocator);
+            }
 
             for (changed_record_ids) |record_id| {
                 const route_index: usize = @intCast(record_id);
@@ -4695,16 +4720,28 @@ pub fn Engine(comptime Ctx: type) type {
                                 continue;
                             }
                             const active_branch: HostScopeBranch = if (callHostValueToBoolWithCapability(ctx, roc_host, desc.read.capability, desc.read.read, result.value)) .true_branch else .false_branch;
-                            if (self.updateDirtySignalCache(ctx, roc_host, &desc.cached_value, result.value, cap)) {
-                                dirty_structural_signals.append(allocator, .{
-                                    .kind = .when,
-                                    .node_id = desc.node_id,
-                                    .scope_id = site.scope_id,
-                                    .ordinal = site.ordinal,
-                                    .record = desc.condition.record,
-                                    .branch = active_branch,
-                                }) catch @panic("out of memory");
+                            const changed = switch (desc.cached_value) {
+                                .absent => true,
+                                .present => |cached| !cached.valueEquals(ctx, roc_host, result.value),
+                            };
+                            if (!changed) {
+                                callHostValueToUnitWithCapability(ctx, roc_host, cap, hv.hostValueCapabilityDrop(cap), result.value);
+                                self.recordSignalPrune();
+                                continue;
                             }
+                            var change = HostDirtyStructuralSignal{
+                                .kind = .when,
+                                .node_id = desc.node_id,
+                                .scope_id = site.scope_id,
+                                .ordinal = site.ordinal,
+                                .record = desc.condition.record,
+                                .branch = active_branch,
+                                .pending_when_cache = HostValueCell.initRetained(result.value, cap, &self.pending_roc_metrics),
+                            };
+                            dirty_structural_signals.append(allocator, change) catch {
+                                change.abortPendingWhenCache(ctx, roc_host, &self.pending_roc_metrics);
+                                @panic("out of memory");
+                            };
                         },
                         .each => {
                             const desc = &self.active_stream.eaches.items[route.index];
@@ -6235,7 +6272,7 @@ pub fn Engine(comptime Ctx: type) type {
             return counts;
         }
 
-        pub fn applyDirtyStructuralSignalsLocally(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, dirty_source_node_ids: []const u64, dirty_generation: u64, changes: []const HostDirtyStructuralSignal) render.Counts {
+        pub fn applyDirtyStructuralSignalsLocally(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, dirty_source_node_ids: []const u64, dirty_generation: u64, changes: []HostDirtyStructuralSignal) render.Counts {
             const DirtyStructuralOrder = struct {
                 engine: *Self,
 
@@ -6250,16 +6287,13 @@ pub fn Engine(comptime Ctx: type) type {
                 }
             };
 
-            const dirty_allocator = Ctx.allocator(ctx);
-            const ordered_changes = dirty_allocator.dupe(HostDirtyStructuralSignal, changes) catch @panic("out of memory");
-            defer dirty_allocator.free(ordered_changes);
-            std.mem.sort(HostDirtyStructuralSignal, ordered_changes, DirtyStructuralOrder{ .engine = self }, DirtyStructuralOrder.lessThan);
+            std.mem.sort(HostDirtyStructuralSignal, changes, DirtyStructuralOrder{ .engine = self }, DirtyStructuralOrder.lessThan);
 
             var total_counts: render.Counts = .{};
             var applied_any = false;
             const event_count_before = self.active_stream.events.items.len;
 
-            for (ordered_changes) |change| {
+            for (changes) |*change| {
                 var replacement_stream: HostNodeDescriptorStream = .{};
                 defer replacement_stream.deinit(Ctx.allocator(ctx), ctx, roc_host, &self.pending_roc_metrics);
                 const splice_and_targets: HostStructuralSpliceAndTargets = switch (change.kind) {
@@ -6438,6 +6472,10 @@ pub fn Engine(comptime Ctx: type) type {
                 defer splice_and_targets.splice.deinit(Ctx.allocator(ctx));
 
                 const counts = self.applySplicedStructuralNodeDescriptorTarget(ctx, roc_host, splice_and_targets.splice, splice_and_targets.targets, dirty_source_node_ids, dirty_generation);
+                if (change.kind == .when) {
+                    const when_index = self.activeWhenIndexByNodeId(change.node_id) orelse @panic("committed dirty when descriptor disappeared");
+                    change.commitPendingWhenCache(&self.active_stream.whens.items[when_index].cached_value, ctx, roc_host, &self.pending_roc_metrics);
+                }
                 total_counts.addAll(counts);
                 applied_any = true;
             }
@@ -6452,7 +6490,7 @@ pub fn Engine(comptime Ctx: type) type {
             return total_counts;
         }
 
-        pub fn applyDirtyWhenStructuralSignals(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, dirty_source_node_ids: []const u64, dirty_generation: u64, changes: []const HostDirtyStructuralSignal) render.Counts {
+        pub fn applyDirtyWhenStructuralSignals(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, dirty_source_node_ids: []const u64, dirty_generation: u64, changes: []HostDirtyStructuralSignal) render.Counts {
             for (changes) |change| {
                 if (change.kind != .when) @panic("non-when structural change reached when-only test helper");
             }
@@ -6554,7 +6592,10 @@ pub fn Engine(comptime Ctx: type) type {
 
             debugPhase(ctx, .collect_dirty_structure);
             const dirty_structural_signals = self.collectDirtyStructuralSignals(ctx, roc_host, allocator, dirty_source_node_ids, stable_changed_record_ids, dirty_generation);
-            defer allocator.free(dirty_structural_signals);
+            defer {
+                for (dirty_structural_signals) |*change| change.abortPendingWhenCache(ctx, roc_host, &self.pending_roc_metrics);
+                allocator.free(dirty_structural_signals);
+            }
             if (dirty_structural_signals.len != 0) {
                 debugPhase(ctx, .apply_dirty_structure);
                 counts.addAll(self.applyDirtyStructuralSignalsLocally(ctx, roc_host, dirty_source_node_ids, dirty_generation, dirty_structural_signals));
@@ -7219,6 +7260,43 @@ fn deinitVerifyStateEngine(engine: *Engine(VerifyCtx), ctx: *VerifyCtxHost, roc_
     engine.node_identities.deinit(ctx.allocator);
     engine.active_node_identity_ids.deinit(ctx.allocator);
     deinitVerifyStaticEngine(engine, ctx);
+}
+
+test "dirty when cache remains detached until commit and abort releases it" {
+    var env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&env);
+    const callable = abi.rocErasedCallableAllocate(&roc_host, verifyStateCallable, null, 0).?;
+    defer abi.decrefErasedCallable(callable, &roc_host);
+    const cap = HostValueCapability{ .clone = callable, .drop = callable, .eq = callable };
+    var ctx = VerifyCtxHost{ .allocator = std.testing.allocator };
+    var metrics = zeroRuntimeMetrics();
+    var slot = HostSignalCacheSlot{ .present = HostValueCell.initRetained(1, cap, &metrics) };
+    defer slot.deinit(&ctx, &roc_host, &metrics);
+
+    var aborted = HostDirtyStructuralSignal{
+        .kind = .when,
+        .node_id = 1,
+        .scope_id = 0,
+        .ordinal = 0,
+        .record = undefined,
+        .pending_when_cache = HostValueCell.initRetained(2, cap, &metrics),
+    };
+    aborted.abortPendingWhenCache(&ctx, &roc_host, &metrics);
+    try std.testing.expectEqual(@as(HostValue, 1), slot.present.value);
+    try std.testing.expect(aborted.pending_when_cache == null);
+
+    var committed = HostDirtyStructuralSignal{
+        .kind = .when,
+        .node_id = 1,
+        .scope_id = 0,
+        .ordinal = 0,
+        .record = undefined,
+        .pending_when_cache = HostValueCell.initRetained(3, cap, &metrics),
+    };
+    committed.commitPendingWhenCache(&slot, &ctx, &roc_host, &metrics);
+    try std.testing.expectEqual(@as(HostValue, 3), slot.present.value);
+    try std.testing.expect(committed.pending_when_cache == null);
+    try std.testing.expectEqual(metrics.closure_retains, metrics.closure_releases + 3);
 }
 
 test "static root counts nested signal attribute records" {
