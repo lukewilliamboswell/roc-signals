@@ -804,6 +804,13 @@ pub fn PreparedReleaseClosure(comptime Record: type) type {
         adjacency: []PreparedAdjacencyReplacement,
         retired_adjacency: [][]u64,
         adjacency_committed: bool = false,
+        retired_nodes: []Node(Record),
+        retired_text_routes: []std.ArrayListUnmanaged(TextSink),
+        retired_bool_routes: []std.ArrayListUnmanaged(BoolSink),
+        retired_change_routes: []std.ArrayListUnmanaged(ChangeSink),
+        retired_structural_routes: []std.ArrayListUnmanaged(StructuralSink),
+        dense_committed: bool = false,
+        retired_released: bool = false,
 
         /// Releases preparation storage without changing graph state.
         pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
@@ -817,6 +824,12 @@ pub fn PreparedReleaseClosure(comptime Record: type) type {
             }
             allocator.free(self.adjacency);
             allocator.free(self.retired_adjacency);
+            if (self.dense_committed and !self.retired_released) @panic("committed graph retirement was not finalized");
+            allocator.free(self.retired_nodes);
+            allocator.free(self.retired_text_routes);
+            allocator.free(self.retired_bool_routes);
+            allocator.free(self.retired_change_routes);
+            allocator.free(self.retired_structural_routes);
             self.* = undefined;
         }
 
@@ -831,6 +844,65 @@ pub fn PreparedReleaseClosure(comptime Record: type) type {
                 replacement.dependents = &.{};
             }
             self.adjacency_committed = true;
+        }
+
+        /// Removes prepared dense nodes and parallel route slots without allocation.
+        /// Descriptor sink routes must already have been removed from retiring records.
+        pub fn applyDense(self: *@This(), nodes: *std.ArrayListUnmanaged(Node(Record)), source_routes: *RouteTable(u64), text_routes: *RouteTable(TextSink), bool_routes: *RouteTable(BoolSink), change_routes: *RouteTable(ChangeSink), structural_routes: *RouteTable(StructuralSink)) void {
+            if (!self.adjacency_committed or self.dense_committed) @panic("dense graph retirement commit order was invalid");
+            for (source_routes.items) |*route| {
+                var write: usize = 0;
+                for (route.items) |old_id| {
+                    const next_id = self.final_record_ids[@intCast(old_id)] orelse continue;
+                    route.items[write] = next_id;
+                    write += 1;
+                }
+                route.items.len = write;
+            }
+            var live_len = nodes.items.len;
+            for (self.steps, 0..) |step, step_index| {
+                const removal_index: usize = @intCast(step.removal_index);
+                const last_index = live_len - 1;
+                if (nodes.items[removal_index].record != self.records[step_index]) @panic("prepared dense removal no longer matched graph record");
+                self.retired_nodes[step_index] = nodes.swapRemove(removal_index);
+                self.records[step_index].active_graph_id = null;
+                self.records[step_index].active_use_count = 0;
+                if (removal_index != last_index) nodes.items[removal_index].record.active_graph_id = @intCast(removal_index);
+                retireRouteSlot(TextSink, text_routes, self.retired_text_routes, removal_index, last_index, step_index);
+                retireRouteSlot(BoolSink, bool_routes, self.retired_bool_routes, removal_index, last_index, step_index);
+                retireRouteSlot(ChangeSink, change_routes, self.retired_change_routes, removal_index, last_index, step_index);
+                retireRouteSlot(StructuralSink, structural_routes, self.retired_structural_routes, removal_index, last_index, step_index);
+                live_len = last_index;
+            }
+            self.dense_committed = true;
+        }
+
+        fn retireRouteSlot(comptime Route: type, routes: *RouteTable(Route), retired: []std.ArrayListUnmanaged(Route), removal_index: usize, last_index: usize, step_index: usize) void {
+            if (removal_index >= routes.items.len) return;
+            if (routes.items[removal_index].items.len != 0) @panic("prepared graph removed a record with live sink routes");
+            retired[step_index] = routes.items[removal_index];
+            if (removal_index != last_index and last_index < routes.items.len) {
+                routes.items[removal_index] = routes.items[last_index];
+                routes.items[last_index] = .empty;
+            } else routes.items[removal_index] = .empty;
+        }
+
+        /// Releases displaced graph buffers and record lifecycle ownership after publication.
+        pub fn releaseRetired(self: *@This(), allocator: std.mem.Allocator, hooks: anytype) void {
+            if (!self.dense_committed or self.retired_released) @panic("retired graph ownership release order was invalid");
+            for (self.retired_nodes) |node| {
+                allocator.free(node.dependents);
+                switch (node.record.payload) {
+                    .interval_source => hooks.removeInterval(node.record.token().?),
+                    else => {},
+                }
+                hooks.releaseRecord(node.record);
+            }
+            for (self.retired_text_routes) |*route| route.deinit(allocator);
+            for (self.retired_bool_routes) |*route| route.deinit(allocator);
+            for (self.retired_change_routes) |*route| route.deinit(allocator);
+            for (self.retired_structural_routes) |*route| route.deinit(allocator);
+            self.retired_released = true;
         }
     };
 }
@@ -929,6 +1001,20 @@ pub fn prepareReleaseClosure(comptime Record: type, allocator: std.mem.Allocator
     const retired_adjacency = try allocator.alloc([]u64, adjacency_count);
     errdefer allocator.free(retired_adjacency);
     @memset(retired_adjacency, &.{});
+    const retired_nodes = try allocator.alloc(Node(Record), records.items.len);
+    errdefer allocator.free(retired_nodes);
+    const retired_text_routes = try allocator.alloc(std.ArrayListUnmanaged(TextSink), records.items.len);
+    errdefer allocator.free(retired_text_routes);
+    @memset(retired_text_routes, .empty);
+    const retired_bool_routes = try allocator.alloc(std.ArrayListUnmanaged(BoolSink), records.items.len);
+    errdefer allocator.free(retired_bool_routes);
+    @memset(retired_bool_routes, .empty);
+    const retired_change_routes = try allocator.alloc(std.ArrayListUnmanaged(ChangeSink), records.items.len);
+    errdefer allocator.free(retired_change_routes);
+    @memset(retired_change_routes, .empty);
+    const retired_structural_routes = try allocator.alloc(std.ArrayListUnmanaged(StructuralSink), records.items.len);
+    errdefer allocator.free(retired_structural_routes);
+    @memset(retired_structural_routes, .empty);
     var adjacency_write: usize = 0;
     errdefer for (adjacency[0..adjacency_write]) |replacement| allocator.free(replacement.dependents);
     for (nodes, 0..) |node, original_id| {
@@ -959,6 +1045,11 @@ pub fn prepareReleaseClosure(comptime Record: type, allocator: std.mem.Allocator
         .final_record_ids = final_record_ids,
         .adjacency = adjacency,
         .retired_adjacency = retired_adjacency,
+        .retired_nodes = retired_nodes,
+        .retired_text_routes = retired_text_routes,
+        .retired_bool_routes = retired_bool_routes,
+        .retired_change_routes = retired_change_routes,
+        .retired_structural_routes = retired_structural_routes,
     };
 }
 
@@ -1369,21 +1460,30 @@ const LifecycleStream = struct {
 
 test "prepared release closure preserves shared diamond and computes dense remaps" {
     const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
-    var source = LifecycleTestRecord{ .id = 1, .payload = .const_value };
+    var source = LifecycleTestRecord{ .id = 1, .payload = .{ .ref = 0 } };
     var left = LifecycleTestRecord{ .id = 2, .payload = .{ .map = .{ .input = &source } } };
     var right = LifecycleTestRecord{ .id = 3, .payload = .{ .map = .{ .input = &source } } };
     var root = LifecycleTestRecord{ .id = 4, .payload = .{ .map2 = .{ .left = &left, .right = &right } } };
     var nodes: std.ArrayListUnmanaged(Node(LifecycleTestRecord)) = .empty;
     var source_routes: RouteTable(u64) = .empty;
+    var text_routes: RouteTable(TextSink) = .empty;
+    var bool_routes: RouteTable(BoolSink) = .empty;
+    var change_routes: RouteTable(ChangeSink) = .empty;
+    var structural_routes: RouteTable(StructuralSink) = .empty;
     var hooks: LifecycleTestHooks = .{};
     defer {
         clearSourceRoutes(std.testing.allocator, &source_routes);
         source_routes.deinit(std.testing.allocator);
+        text_routes.deinit(std.testing.allocator);
+        bool_routes.deinit(std.testing.allocator);
+        change_routes.deinit(std.testing.allocator);
+        structural_routes.deinit(std.testing.allocator);
         clear(LifecycleTestRecord, std.testing.allocator, &nodes, &hooks);
         nodes.deinit(std.testing.allocator);
     }
     _ = retainRecord(LifecycleTestRecord, std.testing.allocator, &nodes, &source_routes, 1, &root, &hooks);
     try std.testing.expectEqual(@as(usize, 2), source.active_use_count);
+    try std.testing.expectEqualSlices(u64, &.{0}, source_routes.items[0].items);
 
     var counter = FaultAllocator.init(std.testing.allocator);
     var baseline = try prepareReleaseClosure(LifecycleTestRecord, counter.allocator(), nodes.items, &.{&root});
@@ -1416,6 +1516,11 @@ test "prepared release closure preserves shared diamond and computes dense remap
     try std.testing.expectEqualSlices(u64, &.{}, nodes.items[0].dependents);
     try std.testing.expectEqualSlices(u64, &.{}, nodes.items[1].dependents);
     try std.testing.expectEqualSlices(u64, &.{}, nodes.items[2].dependents);
+    baseline.applyDense(&nodes, &source_routes, &text_routes, &bool_routes, &change_routes, &structural_routes);
+    try std.testing.expectEqual(@as(usize, 0), nodes.items.len);
+    try std.testing.expectEqualSlices(u64, &.{}, source_routes.items[0].items);
+    try std.testing.expectEqual(@as(usize, 0), counter.attempts);
+    baseline.releaseRetired(counter.allocator(), &hooks);
     counter.configure(null);
     baseline.deinit(counter.allocator());
 }
