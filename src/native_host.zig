@@ -3454,6 +3454,45 @@ test "native host allocation injection remains recoverable outside Roc ABI calls
     try std.testing.expectEqual(@as(usize, 0), host.roc_allocations.allocations.items.len);
 }
 
+test "native Roc ABI allocation failures terminate in a subprocess" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+    if (std.process.Environ.getPosix(std.testing.environ, "ROC_SIGNALS_FATAL_ALLOC_FIXTURE")) |mode| {
+        var host = HostEnv.init();
+        var roc_host = makeSignalsRocHost(&host);
+        host.engine.roc_host = &roc_host;
+        if (std.mem.eql(u8, mode, "alloc")) {
+            host.configureAllocationFailure(1);
+            _ = rocAllocFn(&roc_host, 32, 8);
+        } else if (std.mem.eql(u8, mode, "realloc")) {
+            const original = rocAllocFn(&roc_host, 32, 8) orelse unreachable;
+            host.configureAllocationFailure(1);
+            _ = rocReallocFn(&roc_host, original, 64, 8);
+        } else unreachable;
+        unreachable;
+    }
+
+    for ([_]struct { mode: []const u8, diagnostic: []const u8 }{
+        .{ .mode = "alloc", .diagnostic = "HOST ERROR: Roc allocation failed\n" },
+        .{ .mode = "realloc", .diagnostic = "HOST ERROR: Roc reallocation failed\n" },
+    }) |case| {
+        var environment = try std.testing.environ.createMap(std.testing.allocator);
+        defer environment.deinit();
+        try environment.put("ROC_SIGNALS_FATAL_ALLOC_FIXTURE", case.mode);
+        const result = try std.process.run(std.testing.allocator, std.testing.io, .{
+            .argv = &.{"/proc/self/exe"},
+            .environ_map = &environment,
+            .stderr_limit = .limited(4096),
+        });
+        defer std.testing.allocator.free(result.stdout);
+        defer std.testing.allocator.free(result.stderr);
+        switch (result.term) {
+            .exited => |status| try std.testing.expectEqual(@as(u8, 1), status),
+            else => return error.TestUnexpectedResult,
+        }
+        try std.testing.expect(std.mem.endsWith(u8, result.stderr, case.diagnostic));
+    }
+}
+
 test "native engine identity preparation sweeps all recoverable allocation failures" {
     const node_count = blk: {
         var host = HostEnv.init();
