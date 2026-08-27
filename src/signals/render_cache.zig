@@ -72,7 +72,6 @@ pub const ScalarNode = struct {
     disabled: ?bool = null,
 
     fn deinit(self: *ScalarNode, allocator: std.mem.Allocator) void {
-        if (self.tag) |tag| allocator.free(tag);
         if (self.text) |text| allocator.free(text);
         if (self.role) |role| allocator.free(role);
         if (self.label) |label| allocator.free(label);
@@ -91,10 +90,10 @@ pub const ScalarNode = struct {
         self.* = .{};
     }
 
-    fn initActive(allocator: std.mem.Allocator, tag: []const u8) ScalarNode {
+    fn initActive(tag: []const u8) ScalarNode {
         return .{
             .active = true,
-            .tag = allocator.dupe(u8, tag) catch @panic("out of memory"),
+            .tag = tag,
         };
     }
 
@@ -179,6 +178,7 @@ pub fn Cache(comptime Ctx: type) type {
         const Self = @This();
 
         nodes: std.ArrayListUnmanaged(ScalarNode) = .empty,
+        interned_tags: std.StringHashMapUnmanaged([]const u8) = .empty,
         move_child_indexes: std.AutoHashMapUnmanaged(u64, usize) = .empty,
         move_old_indexes: std.ArrayListUnmanaged(usize) = .empty,
         move_stable_subsequence: std.ArrayListUnmanaged(usize) = .empty,
@@ -189,6 +189,9 @@ pub fn Cache(comptime Ctx: type) type {
                 node.deinit(allocator);
             }
             self.nodes.deinit(allocator);
+            var interned_tags = self.interned_tags.valueIterator();
+            while (interned_tags.next()) |tag| allocator.free(tag.*);
+            self.interned_tags.deinit(allocator);
             self.move_child_indexes.deinit(allocator);
             self.move_old_indexes.deinit(allocator);
             self.move_stable_subsequence.deinit(allocator);
@@ -218,8 +221,18 @@ pub fn Cache(comptime Ctx: type) type {
                 node.deinit(allocator);
             }
             self.nodes.items.len = 0;
-            self.nodes.append(allocator, ScalarNode.initActive(allocator, "root")) catch @panic("out of memory");
+            self.nodes.append(allocator, ScalarNode.initActive(self.internTag(allocator, "root"))) catch @panic("out of memory");
             Ctx.sink(ctx).reset();
+        }
+
+        fn internTag(self: *Self, allocator: std.mem.Allocator, tag: []const u8) []const u8 {
+            if (self.interned_tags.get(tag)) |interned| return interned;
+            const owned = allocator.dupe(u8, tag) catch @panic("out of memory");
+            self.interned_tags.put(allocator, owned, owned) catch {
+                allocator.free(owned);
+                @panic("out of memory");
+            };
+            return owned;
         }
 
         fn ensureCacheNode(self: *Self, ctx: Ctx.Handle, elem_id: u64, tag: []const u8) bool {
@@ -229,12 +242,12 @@ pub fn Cache(comptime Ctx: type) type {
                 self.nodes.append(allocator, .{}) catch @panic("out of memory");
             }
             if (index == self.nodes.items.len) {
-                self.nodes.append(allocator, ScalarNode.initActive(allocator, tag)) catch @panic("out of memory");
+                self.nodes.append(allocator, ScalarNode.initActive(self.internTag(allocator, tag))) catch @panic("out of memory");
                 return true;
             }
             const node = &self.nodes.items[index];
             if (!node.active) {
-                node.* = ScalarNode.initActive(allocator, tag);
+                node.* = ScalarNode.initActive(self.internTag(allocator, tag));
                 return true;
             }
             if (node.tag == null or !std.mem.eql(u8, node.tag.?, tag)) {
