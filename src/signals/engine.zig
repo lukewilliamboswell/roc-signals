@@ -2526,16 +2526,43 @@ pub fn Engine(comptime Ctx: type) type {
             try self.collectActiveElemDescriptorsWith(Collection, collection, ctx, roc_host, stream, root, root_scope_id, 0, &ordinal, &dom_ordinal, binder_stack, root_scope.created, dirty_source_node_ids);
         }
 
-        const StaticRootCounts = struct { nodes: usize = 0, attrs: usize = 0 };
+        const StaticRootCounts = struct { nodes: usize = 0, attrs: usize = 0, signal_records: usize = 0 };
+
+        fn countSignalExprRecords(expr: abi.NodeSignalExpr) CollectionError!usize {
+            return switch (abi_view.SignalExpr.fromAbi(expr)) {
+                .ref, .const_value, .task_source, .interval_source, .location_source, .visibility_source, .online_source, .storage_source => 1,
+                .map => |payload| std.math.add(usize, 1, try countSignalExprRecords(payload.input.*)) catch return error.ResourceLimit,
+                .map2 => |payload| blk: {
+                    const left = try countSignalExprRecords(payload.left.*);
+                    const right = try countSignalExprRecords(payload.right.*);
+                    const children = std.math.add(usize, left, right) catch return error.ResourceLimit;
+                    break :blk std.math.add(usize, 1, children) catch return error.ResourceLimit;
+                },
+                .combine => |payload| blk: {
+                    var count: usize = 1;
+                    for (payload.children) |child| {
+                        count = std.math.add(usize, count, try countSignalExprRecords(child)) catch return error.ResourceLimit;
+                    }
+                    break :blk count;
+                },
+            };
+        }
 
         fn countStaticRootNodes(elem: abi.Elem) CollectionError!StaticRootCounts {
             return switch (abi_view.Elem.fromAbi(elem)) {
                 .element => |payload| blk: {
                     var count = StaticRootCounts{ .nodes = 1, .attrs = payload.attrs.len };
+                    for (payload.attrs) |attr| switch (abi_view.NodeAttr.fromAbi(attr)) {
+                        .signal_text => |signal| count.signal_records = std.math.add(usize, count.signal_records, try countSignalExprRecords(signal.signal.*)) catch return error.ResourceLimit,
+                        .signal_optional_text => |signal| count.signal_records = std.math.add(usize, count.signal_records, try countSignalExprRecords(signal.signal.*)) catch return error.ResourceLimit,
+                        .signal_bool => |signal| count.signal_records = std.math.add(usize, count.signal_records, try countSignalExprRecords(signal.signal.*)) catch return error.ResourceLimit,
+                        else => {},
+                    };
                     for (payload.children) |child| {
                         const child_count = try countStaticRootNodes(child);
                         count.nodes = std.math.add(usize, count.nodes, child_count.nodes) catch return error.ResourceLimit;
                         count.attrs = std.math.add(usize, count.attrs, child_count.attrs) catch return error.ResourceLimit;
+                        count.signal_records = std.math.add(usize, count.signal_records, child_count.signal_records) catch return error.ResourceLimit;
                     }
                     break :blk count;
                 },
@@ -6679,6 +6706,11 @@ fn borrowedVerifyAttrList(items: []const abi.NodeAttr) abi.RocList(abi.NodeAttr)
     return .{ .elements_ptr = @constCast(items.ptr), .length = items.len, .capacity_or_alloc_ptr = items.len << 1 };
 }
 
+fn borrowedVerifySignalExprList(items: []const abi.NodeSignalExpr) abi.RocList(abi.NodeSignalExpr) {
+    if (items.len == 0) return abi.RocList(abi.NodeSignalExpr).empty();
+    return .{ .elements_ptr = @constCast(items.ptr), .length = items.len, .capacity_or_alloc_ptr = items.len << 1 };
+}
+
 fn verifyStaticRoot(attrs: []const abi.NodeAttr, children: []const abi.Elem) abi.Elem {
     return .{
         .payload = .{ .element = .{
@@ -6699,6 +6731,41 @@ fn deinitVerifyStaticEngine(engine: *Engine(VerifyCtx), ctx: *VerifyCtxHost) voi
     engine.dom_identities.deinit(std.testing.allocator);
     engine.active_dom_identity_ids.deinit(std.testing.allocator);
     engine.deinitScratch(ctx);
+}
+
+test "static root counts nested signal attribute records" {
+    const capability = std.mem.zeroes(HostValueCapability);
+    var left = abi.NodeSignalExpr{ .payload = .{ .ref = @ptrFromInt(0x1000) }, .tag = .Ref };
+    var right = abi.NodeSignalExpr{ .payload = .{ .ref = @ptrFromInt(0x2000) }, .tag = .Ref };
+    const map2_token: abi.RocErasedCallable = @ptrFromInt(0x3000);
+    const map2 = abi.NodeSignalExpr{ .payload = .{ .map2 = .{
+        ._0 = map2_token,
+        ._1 = &left,
+        ._2 = &right,
+        ._3 = map2_token,
+        ._4 = capability,
+    } }, .tag = .Map2 };
+    const tail = abi.NodeSignalExpr{ .payload = .{ .ref = @ptrFromInt(0x4000) }, .tag = .Ref };
+    var children = [_]abi.NodeSignalExpr{ map2, tail };
+    const combine_token: abi.RocErasedCallable = @ptrFromInt(0x5000);
+    var combine = abi.NodeSignalExpr{ .payload = .{ .combine = .{
+        ._0 = combine_token,
+        ._1 = borrowedVerifySignalExprList(&children),
+        ._2 = combine_token,
+        ._3 = capability,
+    } }, .tag = .Combine };
+    const attr = abi.NodeAttr{ .payload = .{ .signal_text = .{
+        .field = .{ .id = @intFromEnum(RenderTextField.label) },
+        .name = abi.RocStr.empty(),
+        .read = std.mem.zeroes(HostTextRead),
+        .signal = &combine,
+    } }, .tag = .SignalText };
+    const root = verifyStaticRoot(&.{attr}, &.{});
+
+    const count = try Engine(VerifyCtx).countStaticRootNodes(root);
+    try std.testing.expectEqual(@as(usize, 1), count.nodes);
+    try std.testing.expectEqual(@as(usize, 1), count.attrs);
+    try std.testing.expectEqual(@as(usize, 5), count.signal_records);
 }
 
 test "transactional static engine root sweeps every allocation and retries cleanly" {
