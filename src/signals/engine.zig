@@ -4237,23 +4237,27 @@ pub fn Engine(comptime Ctx: type) type {
                     plan.replacement.stream.mounts.items.len,
                 ) catch return error.OutOfMemory;
                 errdefer if (plan.publication) |*publication| publication.deinit(allocator);
-                if (engine.active_signal_graph.items.len != 0) {
-                    plan.sink_edits = try plan.prepareSinkEdits(allocator);
-                    errdefer if (plan.sink_edits) |*edits| edits.deinit(allocator);
+                try plan.prepareGraphRenderAndPublication(allocator);
+                return plan;
+            }
+
+            fn prepareGraphRenderAndPublication(self: *@This(), allocator: std.mem.Allocator) CollectionError!void {
+                if (self.engine.active_signal_graph.items.len != 0) {
+                    self.sink_edits = try self.prepareSinkEdits(allocator);
+                    errdefer if (self.sink_edits) |*edits| edits.deinit(allocator);
                     var retired_roots: std.ArrayListUnmanaged(*HostSignalRecord) = .empty;
                     defer retired_roots.deinit(allocator);
-                    try collectRetiredGraphRootsForRemoval(engine, allocator, &plan.removal.?.removal, &retired_roots);
-                    plan.graph_release = active_graph.prepareReleaseClosure(HostSignalRecord, allocator, engine.active_signal_graph.items, retired_roots.items) catch return error.OutOfMemory;
-                    errdefer if (plan.graph_release) |*release| release.deinit(allocator);
+                    try collectRetiredGraphRootsForRemoval(self.engine, allocator, &self.removal.?.removal, &retired_roots);
+                    self.graph_release = active_graph.prepareReleaseClosure(HostSignalRecord, allocator, self.engine.active_signal_graph.items, retired_roots.items) catch return error.OutOfMemory;
+                    errdefer if (self.graph_release) |*release| release.deinit(allocator);
                     var replacement_roots: std.ArrayListUnmanaged(*HostSignalRecord) = .empty;
                     defer replacement_roots.deinit(allocator);
-                    try collectReplacementGraphRootsForStream(allocator, &plan.replacement.stream, &replacement_roots);
-                    plan.graph_append = active_graph.prepareGraphAppend(HostSignalRecord, allocator, engine.active_signal_graph.items, plan.graph_release.?.final_record_ids, replacement_roots.items) catch return error.OutOfMemory;
-                    errdefer if (plan.graph_append) |*append| append.deinit(allocator);
-                    try plan.prepareGraphRoutes(allocator);
+                    try collectReplacementGraphRootsForStream(allocator, &self.replacement.stream, &replacement_roots);
+                    self.graph_append = active_graph.prepareGraphAppend(HostSignalRecord, allocator, self.engine.active_signal_graph.items, self.graph_release.?.final_record_ids, replacement_roots.items) catch return error.OutOfMemory;
+                    errdefer if (self.graph_append) |*append| append.deinit(allocator);
+                    try self.prepareGraphRoutes(allocator);
                 }
-                try plan.prepareRender(allocator);
-                return plan;
+                try self.prepareRender(allocator);
             }
 
             fn prepareRender(self: *@This(), allocator: std.mem.Allocator) CollectionError!void {
