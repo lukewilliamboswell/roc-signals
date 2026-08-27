@@ -9838,10 +9838,7 @@ test "provisional each-row scopes abort and publish without partial scope mutati
             var fault = FaultAllocator.init(std.testing.allocator);
             var ctx = VerifyCtxHost{ .allocator = fault.allocator() };
             var engine = Engine(VerifyCtx).init();
-            defer {
-                engine.active_stream.deinit(ctx.allocator, &ctx, host, &engine.pending_roc_metrics);
-                deinitVerifyStateEngine(&engine, &ctx, host);
-            }
+            defer deinitVerifyStateEngine(&engine, &ctx, host);
             _ = try engine.internRootScope(ctx.allocator);
             fault.configure(fail_at);
             var overlay = scope_runtime.PreparedEachRowScopes.init(ctx.allocator, engine.scopes.items);
@@ -9963,6 +9960,8 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
     defer abi.decrefErasedCallable(eq, &roc_host);
     const key_text = abi.rocErasedCallableAllocate(&roc_host, verifyEachKeyTextCallable, null, 0).?;
     defer abi.decrefErasedCallable(key_text, &roc_host);
+    const state_init = abi.rocErasedCallableAllocate(&roc_host, verifyStateCallable, null, 0).?;
+    defer abi.decrefErasedCallable(state_init, &roc_host);
     const capability = HostValueCapability{ .clone = noop, .drop = noop, .eq = eq };
     const ops = std.mem.zeroInit(HostEachOps, .{
         .item_capability = capability,
@@ -9989,13 +9988,14 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
             retirement.deinit(engine, ctx.allocator, ctx, host);
         }
 
-        fn run(host: *abi.RocHost, each_ops: HostEachOps, fail_at: ?usize) !usize {
+        fn run(host: *abi.RocHost, state_initializer: abi.RocErasedCallable, each_ops: HostEachOps, fail_at: ?usize) !usize {
             var fault = FaultAllocator.init(std.testing.allocator);
             var ctx = VerifyCtxHost{ .allocator = fault.allocator() };
             var engine = Engine(VerifyCtx).init();
             defer {
                 engine.active_stream.deinit(ctx.allocator, &ctx, host, &engine.pending_roc_metrics);
                 deinitVerifyStateEngine(&engine, &ctx, host);
+                engine.pending_tasks.deinit(ctx.allocator);
             }
             _ = try engine.internRootScope(ctx.allocator);
             const removed_scope_id = engine.createEachRowScope(&ctx, 0, 44, hashEachKeyText("one"), 1, 100, each_ops.key_capability, each_ops.item_capability);
@@ -10003,7 +10003,12 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
             _ = engine.createEachRowScope(&ctx, 0, 44, hashEachKeyText("three"), 3, 300, each_ops.key_capability, each_ops.item_capability);
             const retired_node_id = try engine.internNodeIdentity(ctx.allocator, removed_scope_id, 71);
             const retired_elem_id = try engine.internDomIdentity(ctx.allocator, removed_scope_id, 72);
+            engine.active_stream.appendScopeSiteAt(ctx.allocator, retired_node_id, removed_scope_id, 73, 0, 0, .state, &.{});
+            engine.active_stream.appendState(ctx.allocator, host, &engine.pending_roc_metrics, retired_node_id, state_initializer, each_ops.item_capability);
+            engine.ensureStateFromDesc(&ctx, host, engine.active_stream.states.items[0]);
             engine.active_stream.appendCleanup(ctx.allocator, removed_scope_id, "each-cleanup");
+            engine.roc_host = host;
+            _ = engine.appendPendingTask(&ctx, removed_scope_id, each_ops.row.?, "each-task", "request");
             const site_index = engine.activeEachRowSiteIndex(0, 44).?;
             const old_ids = try ctx.allocator.dupe(u64, engine.each_row_sites.items[site_index].scope_ids.items);
             defer ctx.allocator.free(old_ids);
@@ -10021,6 +10026,10 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
                 try std.testing.expect(engine.dom_identities.items[@intCast(retired_elem_id - 1)].active);
                 try std.testing.expectEqual(@as(usize, 0), ctx.cancelled_tasks);
                 try std.testing.expectEqual(@as(usize, 0), engine.cleanup_events.items.len);
+                try std.testing.expectEqual(@as(usize, 1), engine.pending_tasks.items.len);
+                try std.testing.expect(engine.pending_tasks.items[0].active);
+                try std.testing.expectEqual(@as(usize, 1), engine.states.items.len);
+                try std.testing.expect(engine.states.items[0].active);
                 const failed_attempts = fault.attempts;
                 fault.configure(null);
                 try retry(&engine, &ctx, host, each_ops, site_index, &keys, &items);
@@ -10038,6 +10047,10 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
                 try std.testing.expect(engine.dom_identities.items[@intCast(retired_elem_id - 1)].active);
                 try std.testing.expectEqual(@as(usize, 0), ctx.cancelled_tasks);
                 try std.testing.expectEqual(@as(usize, 0), engine.cleanup_events.items.len);
+                try std.testing.expectEqual(@as(usize, 1), engine.pending_tasks.items.len);
+                try std.testing.expect(engine.pending_tasks.items[0].active);
+                try std.testing.expectEqual(@as(usize, 1), engine.states.items.len);
+                try std.testing.expect(engine.states.items[0].active);
                 const failed_attempts = fault.attempts;
                 fault.configure(null);
                 try retry(&engine, &ctx, host, each_ops, site_index, &keys, &items);
@@ -10061,6 +10074,9 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
             try std.testing.expect(!engine.dom_identities.items[@intCast(retired_elem_id - 1)].active);
             try std.testing.expectEqual(@as(usize, 1), engine.cleanup_events.items.len);
             try std.testing.expectEqualStrings("each-cleanup", engine.cleanup_events.items[0]);
+            try std.testing.expectEqual(@as(usize, 0), engine.pending_tasks.items.len);
+            try std.testing.expectEqual(@as(usize, 1), ctx.cancelled_tasks);
+            try std.testing.expectEqual(@as(usize, 0), engine.states.items.len);
             fault.configure(null);
             diff.deinit(ctx.allocator);
             rows.deinit();
@@ -10070,10 +10086,10 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
         }
     };
 
-    const attempts = try Runner.run(&roc_host, ops, null);
+    const attempts = try Runner.run(&roc_host, state_init, ops, null);
     var failures: usize = 0;
     for (1..attempts + 1) |fail_at| {
-        _ = try Runner.run(&roc_host, ops, fail_at);
+        _ = try Runner.run(&roc_host, state_init, ops, fail_at);
         failures += 1;
     }
     try std.testing.expectEqual(attempts, failures);
