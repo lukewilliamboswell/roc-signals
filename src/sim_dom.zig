@@ -168,6 +168,79 @@ pub const NamedEvent = struct {
     }
 };
 
+/// Owns only the native DOM slots touched by one render transaction.
+pub const PreparedPublication = struct {
+    const Slot = union(enum) { existing: usize, appended: usize };
+
+    allocator: std.mem.Allocator,
+    original_len: usize,
+    existing: std.ArrayListUnmanaged(Element) = .empty,
+    existing_ids: std.ArrayListUnmanaged(u64) = .empty,
+    appended: std.ArrayListUnmanaged(Element) = .empty,
+    indexes: std.AutoHashMapUnmanaged(u64, Slot) = .empty,
+    committed: bool = false,
+
+    /// Clones touched active slots and prepares owned inactive sparse slots.
+    pub fn init(allocator: std.mem.Allocator, elements: *std.ArrayListUnmanaged(Element), touched_ids: []const u64, max_elem_id: u64) (std.mem.Allocator.Error || error{DuplicateNode, ResourceLimit})!PreparedPublication {
+        var self = PreparedPublication{ .allocator = allocator, .original_len = elements.items.len };
+        errdefer self.deinit();
+        try elements.ensureTotalCapacity(allocator, std.math.add(usize, std.math.cast(usize, max_elem_id) orelse return error.ResourceLimit, 1) catch return error.ResourceLimit);
+        try self.existing.ensureTotalCapacity(allocator, touched_ids.len);
+        try self.existing_ids.ensureTotalCapacity(allocator, touched_ids.len);
+        try self.indexes.ensureUnusedCapacity(allocator, std.math.cast(u32, touched_ids.len) orelse return error.ResourceLimit);
+        const required_len = std.math.add(usize, std.math.cast(usize, max_elem_id) orelse return error.ResourceLimit, 1) catch return error.ResourceLimit;
+        const append_count = required_len -| elements.items.len;
+        try self.appended.ensureTotalCapacity(allocator, append_count);
+        for (elements.items.len..elements.items.len + append_count) |index| {
+            var inactive = Element.init(index, try allocator.dupe(u8, ""));
+            inactive.active = false;
+            self.appended.appendAssumeCapacity(inactive);
+        }
+        for (touched_ids) |elem_id| {
+            if (self.indexes.contains(elem_id)) return error.DuplicateNode;
+            const index = std.math.cast(usize, elem_id) orelse return error.ResourceLimit;
+            if (index >= required_len) return error.ResourceLimit;
+            const slot: Slot = if (index < elements.items.len) blk: {
+                const owned = try elements.items[index].cloneOwned(allocator);
+                self.existing.appendAssumeCapacity(owned);
+                self.existing_ids.appendAssumeCapacity(elem_id);
+                break :blk .{ .existing = self.existing.items.len - 1 };
+            } else .{ .appended = index - elements.items.len };
+            self.indexes.putAssumeCapacity(elem_id, slot);
+        }
+        return self;
+    }
+
+    /// Returns the owned provisional slot for an active or fresh sparse id.
+    pub fn node(self: *PreparedPublication, elem_id: u64) ?*Element {
+        const slot = self.indexes.get(elem_id) orelse return null;
+        return switch (slot) {
+            .existing => |index| &self.existing.items[index],
+            .appended => |index| &self.appended.items[index],
+        };
+    }
+
+    /// Atomically swaps existing slots and appends every prebuilt sparse slot.
+    pub fn apply(self: *PreparedPublication, elements: *std.ArrayListUnmanaged(Element)) void {
+        if (self.committed or elements.items.len != self.original_len) @panic("native DOM publication contract violated");
+        for (self.existing.items, self.existing_ids.items) |*next, elem_id| std.mem.swap(Element, next, &elements.items[@intCast(elem_id)]);
+        for (self.appended.items) |next| elements.appendAssumeCapacity(next);
+        self.appended.items.len = 0;
+        self.committed = true;
+    }
+
+    /// Releases provisional slots on abort or displaced slots after commit.
+    pub fn deinit(self: *PreparedPublication) void {
+        for (self.existing.items) |*elem| elem.deinit(self.allocator);
+        self.existing.deinit(self.allocator);
+        self.existing_ids.deinit(self.allocator);
+        for (self.appended.items) |*elem| elem.deinit(self.allocator);
+        self.appended.deinit(self.allocator);
+        self.indexes.deinit(self.allocator);
+        self.* = undefined;
+    }
+};
+
 /// Derives the limited implicit ARIA role vocabulary supported by semantic specs.
 pub fn implicitRole(elem: *const Element) ?[]const u8 {
     if (elem.role) |role| return role;
@@ -667,6 +740,75 @@ test "simulated DOM snapshots sweep allocation failures without aliasing" {
         defer retry.deinit(fault.allocator());
         try std.testing.expectEqualStrings(source.attrs.items[0].value, retry.attrs.items[0].value);
         try std.testing.expect(source.attrs.items[0].value.ptr != retry.attrs.items[0].value.ptr);
+    }
+}
+
+test "prepared native DOM publication aborts or swaps allocation free" {
+    const FaultAllocator = signals.fault_allocator.FaultAllocator;
+    var fault = FaultAllocator.init(std.testing.allocator);
+    var elements: std.ArrayListUnmanaged(Element) = .empty;
+    defer {
+        for (elements.items) |*elem| elem.deinit(fault.allocator());
+        elements.deinit(fault.allocator());
+    }
+    reset(fault.allocator(), &elements);
+    appendDetached(fault.allocator(), &elements, 1, "old");
+
+    var aborted = try PreparedPublication.init(fault.allocator(), &elements, &.{ 1, 3 }, 3);
+    try std.testing.expectEqualStrings("old", aborted.node(1).?.tag);
+    aborted.node(3).?.active = true;
+    aborted.deinit();
+    try std.testing.expectEqual(@as(usize, 2), elements.items.len);
+    try std.testing.expectEqualStrings("old", elements.items[1].tag);
+
+    var plan = try PreparedPublication.init(fault.allocator(), &elements, &.{ 1, 3 }, 3);
+    const next = plan.node(1).?;
+    fault.allocator().free(next.tag);
+    next.tag = try fault.allocator().dupe(u8, "new");
+    plan.node(3).?.active = true;
+    fault.configure(1);
+    plan.apply(&elements);
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqual(@as(usize, 4), elements.items.len);
+    try std.testing.expectEqualStrings("new", elements.items[1].tag);
+    try std.testing.expect(elements.items[3].active);
+    plan.deinit();
+    fault.configure(null);
+
+    try std.testing.expectError(error.DuplicateNode, PreparedPublication.init(fault.allocator(), &elements, &.{ 1, 1 }, 3));
+    try std.testing.expectError(error.ResourceLimit, PreparedPublication.init(fault.allocator(), &elements, &.{4}, 3));
+
+    var counted = FaultAllocator.init(std.testing.allocator);
+    var counted_elements: std.ArrayListUnmanaged(Element) = .empty;
+    defer {
+        for (counted_elements.items) |*elem| elem.deinit(counted.allocator());
+        counted_elements.deinit(counted.allocator());
+    }
+    reset(counted.allocator(), &counted_elements);
+    appendDetached(counted.allocator(), &counted_elements, 1, "active");
+    counted_elements.items[1].active = false;
+    counted.configure(null);
+    var counted_plan = try PreparedPublication.init(counted.allocator(), &counted_elements, &.{ 1, 3 }, 3);
+    const prepare_attempts = counted.attempts;
+    counted_plan.deinit();
+    for (1..prepare_attempts + 1) |failure_number| {
+        var failing = FaultAllocator.init(std.testing.allocator);
+        var failing_elements: std.ArrayListUnmanaged(Element) = .empty;
+        defer {
+            for (failing_elements.items) |*elem| elem.deinit(failing.allocator());
+            failing_elements.deinit(failing.allocator());
+        }
+        reset(failing.allocator(), &failing_elements);
+        appendDetached(failing.allocator(), &failing_elements, 1, "active");
+        failing_elements.items[1].active = false;
+        failing.configure(failure_number);
+        try std.testing.expectError(error.OutOfMemory, PreparedPublication.init(failing.allocator(), &failing_elements, &.{ 1, 3 }, 3));
+        try std.testing.expectEqual(@as(usize, 2), failing_elements.items.len);
+        try std.testing.expectEqualStrings("active", failing_elements.items[1].tag);
+        try std.testing.expect(!failing_elements.items[1].active);
+        failing.configure(null);
+        var retry = try PreparedPublication.init(failing.allocator(), &failing_elements, &.{ 1, 3 }, 3);
+        retry.deinit();
     }
 }
 
