@@ -260,8 +260,9 @@ pub const DynamicBuffer = struct {
     }
 
     /// Appends set attr text using capacity that must already satisfy the caller's transaction contract.
-    pub fn appendSetAttrText(self: *DynamicBuffer, allocator: std.mem.Allocator, elem_id: u32, name: []const u8, value: []const u8) std.mem.Allocator.Error!DynamicSlice {
-        const payload_len = @sizeOf(u32) + @sizeOf(u32) + name.len + @sizeOf(u32) + value.len;
+    pub fn appendSetAttrText(self: *DynamicBuffer, allocator: std.mem.Allocator, elem_id: u32, name: []const u8, value: []const u8) PreflightError!DynamicSlice {
+        var payload_len = std.math.add(usize, 3 * @sizeOf(u32), name.len) catch return error.ResourceLimit;
+        payload_len = std.math.add(usize, payload_len, value.len) catch return error.ResourceLimit;
         const record = try self.appendRecord(allocator, .set_attr_text, payload_len);
         var cursor = record.payload_start;
         writeU32(self.bytes.items, &cursor, elem_id);
@@ -273,8 +274,8 @@ pub const DynamicBuffer = struct {
     }
 
     /// Appends remove attr using capacity that must already satisfy the caller's transaction contract.
-    pub fn appendRemoveAttr(self: *DynamicBuffer, allocator: std.mem.Allocator, elem_id: u32, name: []const u8) std.mem.Allocator.Error!DynamicSlice {
-        const payload_len = @sizeOf(u32) + @sizeOf(u32) + name.len;
+    pub fn appendRemoveAttr(self: *DynamicBuffer, allocator: std.mem.Allocator, elem_id: u32, name: []const u8) PreflightError!DynamicSlice {
+        const payload_len = std.math.add(usize, 2 * @sizeOf(u32), name.len) catch return error.ResourceLimit;
         const record = try self.appendRecord(allocator, .remove_attr, payload_len);
         var cursor = record.payload_start;
         writeU32(self.bytes.items, &cursor, elem_id);
@@ -293,9 +294,10 @@ pub const DynamicBuffer = struct {
         options: u32,
         delivery: EventDeliveryWire,
         payload_descriptor: boundary.BoundaryPayloadDescriptor,
-    ) std.mem.Allocator.Error!DynamicSlice {
+    ) PreflightError!DynamicSlice {
         const event_extraction_plan = payload_descriptor.extractionBytes();
-        const payload_len = @sizeOf(u32) + @sizeOf(u32) + @sizeOf(u32) + event_name.len + @sizeOf(u32) + (3 * @sizeOf(u32)) + @sizeOf(u32) + event_extraction_plan.len;
+        var payload_len = std.math.add(usize, 8 * @sizeOf(u32), event_name.len) catch return error.ResourceLimit;
+        payload_len = std.math.add(usize, payload_len, event_extraction_plan.len) catch return error.ResourceLimit;
         const record = try self.appendRecord(allocator, .bind_event, payload_len);
         var cursor = record.payload_start;
         writeU32(self.bytes.items, &cursor, elem_id);
@@ -312,8 +314,8 @@ pub const DynamicBuffer = struct {
     }
 
     /// Appends clear event using capacity that must already satisfy the caller's transaction contract.
-    pub fn appendClearEvent(self: *DynamicBuffer, allocator: std.mem.Allocator, elem_id: u32, event_name: []const u8) std.mem.Allocator.Error!DynamicSlice {
-        const payload_len = @sizeOf(u32) + @sizeOf(u32) + event_name.len;
+    pub fn appendClearEvent(self: *DynamicBuffer, allocator: std.mem.Allocator, elem_id: u32, event_name: []const u8) PreflightError!DynamicSlice {
+        const payload_len = std.math.add(usize, 2 * @sizeOf(u32), event_name.len) catch return error.ResourceLimit;
         const record = try self.appendRecord(allocator, .clear_event, payload_len);
         var cursor = record.payload_start;
         writeU32(self.bytes.items, &cursor, elem_id);
@@ -327,10 +329,14 @@ pub const DynamicBuffer = struct {
         payload_start: usize,
     };
 
-    fn appendRecord(self: *DynamicBuffer, allocator: std.mem.Allocator, op: DynamicOp, payload_len: usize) std.mem.Allocator.Error!AppendedRecord {
+    fn appendRecord(self: *DynamicBuffer, allocator: std.mem.Allocator, op: DynamicOp, payload_len: usize) PreflightError!AppendedRecord {
         const offset = self.bytes.items.len;
-        const total_len = @sizeOf(u16) + @sizeOf(u16) + @sizeOf(u32) + align4(payload_len);
-        try self.bytes.resize(allocator, offset + total_len);
+        const aligned_payload_len = try checkedAlign4(payload_len);
+        const header_len = @sizeOf(u16) + @sizeOf(u16) + @sizeOf(u32);
+        const total_len = std.math.add(usize, header_len, aligned_payload_len) catch return error.ResourceLimit;
+        const final_len = std.math.add(usize, offset, total_len) catch return error.ResourceLimit;
+        if (offset > std.math.maxInt(u32) or total_len > std.math.maxInt(u32)) return error.ResourceLimit;
+        try self.bytes.resize(allocator, final_len);
         @memset(self.bytes.items[offset..][0..total_len], 0);
 
         var cursor = offset;
@@ -352,6 +358,50 @@ pub const BatchCapacity = struct {
     commands: usize = 0,
     strings: usize = 0,
     dynamic: usize = 0,
+
+    /// Adds another command requirement with overflow-safe resource accounting.
+    pub fn add(self: *BatchCapacity, additional: BatchCapacity) error{ResourceLimit}!void {
+        self.commands = std.math.add(usize, self.commands, additional.commands) catch return error.ResourceLimit;
+        self.strings = std.math.add(usize, self.strings, additional.strings) catch return error.ResourceLimit;
+        self.dynamic = std.math.add(usize, self.dynamic, additional.dynamic) catch return error.ResourceLimit;
+    }
+
+    /// Charges one fixed command and optional bytes stored in the string side buffer.
+    pub fn addFixed(self: *BatchCapacity, string_bytes: usize) error{ResourceLimit}!void {
+        try self.add(.{ .commands = 1, .strings = string_bytes });
+    }
+
+    fn addDynamicPayload(self: *BatchCapacity, payload_len: usize) error{ResourceLimit}!void {
+        const header = @sizeOf(u16) + @sizeOf(u16) + @sizeOf(u32);
+        const record_len = std.math.add(usize, header, try checkedAlign4(payload_len)) catch return error.ResourceLimit;
+        try self.add(.{ .commands = 1, .dynamic = record_len });
+    }
+
+    /// Charges one dynamic custom-attribute set command.
+    pub fn addSetAttrText(self: *BatchCapacity, name_len: usize, value_len: usize) error{ResourceLimit}!void {
+        var payload = std.math.add(usize, 3 * @sizeOf(u32), name_len) catch return error.ResourceLimit;
+        payload = std.math.add(usize, payload, value_len) catch return error.ResourceLimit;
+        try self.addDynamicPayload(payload);
+    }
+
+    /// Charges one dynamic custom-attribute removal command.
+    pub fn addRemoveAttr(self: *BatchCapacity, name_len: usize) error{ResourceLimit}!void {
+        const payload = std.math.add(usize, 2 * @sizeOf(u32), name_len) catch return error.ResourceLimit;
+        try self.addDynamicPayload(payload);
+    }
+
+    /// Charges one dynamic event binding command, including extraction bytes.
+    pub fn addBindEvent(self: *BatchCapacity, event_name_len: usize, extraction_len: usize) error{ResourceLimit}!void {
+        var payload = std.math.add(usize, 8 * @sizeOf(u32), event_name_len) catch return error.ResourceLimit;
+        payload = std.math.add(usize, payload, extraction_len) catch return error.ResourceLimit;
+        try self.addDynamicPayload(payload);
+    }
+
+    /// Charges one dynamic event-clear command.
+    pub fn addClearEvent(self: *BatchCapacity, event_name_len: usize) error{ResourceLimit}!void {
+        const payload = std.math.add(usize, 2 * @sizeOf(u32), event_name_len) catch return error.ResourceLimit;
+        try self.addDynamicPayload(payload);
+    }
 };
 
 pub const PreflightError = std.mem.Allocator.Error || error{ResourceLimit};
@@ -471,6 +521,12 @@ pub fn align4(len: usize) usize {
     return (len + 3) & ~@as(usize, 3);
 }
 
+/// Rounds a wire length with checked arithmetic at untrusted boundaries.
+pub fn checkedAlign4(len: usize) error{ResourceLimit}!usize {
+    const with_padding = std.math.add(usize, len, 3) catch return error.ResourceLimit;
+    return with_padding & ~@as(usize, 3);
+}
+
 fn writeU16(bytes: []u8, cursor: *usize, value: u16) void {
     std.mem.writeInt(u16, bytes[cursor.*..][0..@sizeOf(u16)], value, .little);
     cursor.* += @sizeOf(u16);
@@ -566,6 +622,62 @@ test "transaction command preflight enforces configured limits before allocation
 
     try std.testing.expectError(error.ResourceLimit, batch.setLimits(.{ .dynamic_bytes = hard_max_dynamic_bytes + 1 }));
     try std.testing.expectEqual(@as(usize, 2), batch.limits.command_records);
+}
+
+test "command capacity estimation permits armed allocation-free staging" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var fault = FaultAllocator.init(std.testing.allocator);
+    const allocator = fault.allocator();
+    var batch: TransactionalBatch = .{};
+    defer batch.deinit(allocator);
+    var capacity: BatchCapacity = .{};
+    try capacity.addFixed("button".len);
+    try capacity.addSetAttrText("data-x".len, "ready".len);
+    try capacity.addRemoveAttr("title".len);
+    const descriptor = boundary.BoundaryPayloadDescriptor.init(.str, .target_value);
+    try capacity.addBindEvent("focus".len, descriptor.extractionBytes().len);
+    try capacity.addClearEvent("blur".len);
+
+    batch.begin();
+    try batch.preflight(allocator, capacity);
+    fault.configure(1);
+    try batch.staged.strings.appendSlice(allocator, "button");
+    try batch.staged.commands.append(allocator, .create_element, 1, 0, 0, 0, 0);
+    const set_attr = try batch.staged.dynamic.appendSetAttrText(allocator, 1, "data-x", "ready");
+    try batch.staged.commands.append(allocator, .extended, set_attr.offset, set_attr.len, 0, 0, 0);
+    const remove_attr = try batch.staged.dynamic.appendRemoveAttr(allocator, 1, "title");
+    try batch.staged.commands.append(allocator, .extended, remove_attr.offset, remove_attr.len, 0, 0, 0);
+    const bind = try batch.staged.dynamic.appendBindEvent(allocator, 1, 7, "focus", 0, .{
+        .requested = .auto,
+        .effective = .native,
+        .reason = .native_runtime_default,
+    }, descriptor);
+    try batch.staged.commands.append(allocator, .extended, bind.offset, bind.len, 0, 0, 0);
+    const clear = try batch.staged.dynamic.appendClearEvent(allocator, 1, "blur");
+    try batch.staged.commands.append(allocator, .extended, clear.offset, clear.len, 0, 0, 0);
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqual(capacity.commands, batch.staged.commands.len());
+    try std.testing.expectEqual(capacity.strings, batch.staged.strings.items.len);
+    try std.testing.expectEqual(capacity.dynamic, batch.staged.dynamic.len());
+    batch.commit();
+    try std.testing.expectEqual(capacity.commands, batch.published.commands.len());
+    fault.configure(null);
+}
+
+test "command capacity estimation rejects overflow before allocation" {
+    var capacity = BatchCapacity{ .commands = std.math.maxInt(usize) };
+    try std.testing.expectError(error.ResourceLimit, capacity.addFixed(0));
+    capacity = .{};
+    try std.testing.expectError(error.ResourceLimit, capacity.addSetAttrText(std.math.maxInt(usize), 1));
+    try std.testing.expectEqualDeep(BatchCapacity{}, capacity);
+    try std.testing.expectEqual(std.math.maxInt(usize) - 3, try checkedAlign4(std.math.maxInt(usize) - 3));
+    try std.testing.expectError(error.ResourceLimit, checkedAlign4(std.math.maxInt(usize) - 2));
+
+    var fault = @import("fault_allocator.zig").FaultAllocator.init(std.testing.allocator);
+    var dynamic: DynamicBuffer = .{};
+    fault.configure(1);
+    try std.testing.expectError(error.ResourceLimit, dynamic.appendRecord(fault.allocator(), .remove_attr, std.math.maxInt(usize) - 3));
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
 }
 
 pub const TextField = enum(u64) {
