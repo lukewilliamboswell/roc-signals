@@ -244,6 +244,13 @@ pub const CustomAttrDescriptorIndex = struct {
     index: usize,
 };
 
+pub const LifecycleDescriptorKind = enum { on_change, mount, cleanup };
+
+pub const LifecycleDescriptorIndex = struct {
+    kind: LifecycleDescriptorKind,
+    index: usize,
+};
+
 const CustomAttrKeySet = std.HashMapUnmanaged(CustomAttrKey, CustomAttrDescriptorIndex, CustomAttrKeyContext, 80);
 
 pub const SignalBoolAttrDesc = struct {
@@ -602,6 +609,7 @@ pub const Stream = struct {
     signal_record_descriptor_uses_by_token: std.AutoHashMapUnmanaged(HostSignalToken, usize) = .{},
     custom_attr_keys: CustomAttrKeySet = .empty,
     custom_attr_indices_by_elem_id: std.ArrayListUnmanaged(std.ArrayListUnmanaged(CustomAttrDescriptorIndex)) = .empty,
+    lifecycle_indices_by_scope_id: std.ArrayListUnmanaged(std.ArrayListUnmanaged(LifecycleDescriptorIndex)) = .empty,
     custom_attr_index_active: bool = false,
     render_metadata_by_elem_id: std.AutoHashMapUnmanaged(u64, RenderElemIndex) = .{},
     named_event_indices_by_elem_id: std.ArrayListUnmanaged(std.ArrayListUnmanaged(usize)) = .empty,
@@ -1608,6 +1616,8 @@ pub const Stream = struct {
         self.custom_attr_keys.deinit(allocator);
         for (self.custom_attr_indices_by_elem_id.items) |*indexes| indexes.deinit(allocator);
         self.custom_attr_indices_by_elem_id.deinit(allocator);
+        for (self.lifecycle_indices_by_scope_id.items) |*indexes| indexes.deinit(allocator);
+        self.lifecycle_indices_by_scope_id.deinit(allocator);
         self.render_metadata_by_elem_id.deinit(allocator);
         self.descriptor_indexes_by_elem_id.deinit(allocator);
         self.descriptor_indexes_by_node_id.deinit(allocator);
@@ -2503,52 +2513,104 @@ pub const Stream = struct {
         self.recordSignalBoolAttrIndex(allocator, elem_id, field, attr_index);
     }
 
+    /// Reserves lifecycle ownership entries for a scope without changing its logical index on failure.
+    pub fn reserveLifecycleScope(self: *Stream, allocator: std.mem.Allocator, scope_id: u64, additional: usize) std.mem.Allocator.Error!void {
+        if (additional == 0) return;
+        const scope_index = std.math.cast(usize, scope_id) orelse return error.OutOfMemory;
+        if (scope_index < self.lifecycle_indices_by_scope_id.items.len) {
+            try self.lifecycle_indices_by_scope_id.items[scope_index].ensureUnusedCapacity(allocator, additional);
+            return;
+        }
+        const required = std.math.add(usize, scope_index, 1) catch return error.OutOfMemory;
+        var prepared: std.ArrayListUnmanaged(LifecycleDescriptorIndex) = .empty;
+        errdefer prepared.deinit(allocator);
+        try prepared.ensureUnusedCapacity(allocator, additional);
+        try self.lifecycle_indices_by_scope_id.ensureTotalCapacity(allocator, required);
+        while (self.lifecycle_indices_by_scope_id.items.len < scope_index) self.lifecycle_indices_by_scope_id.appendAssumeCapacity(.empty);
+        self.lifecycle_indices_by_scope_id.appendAssumeCapacity(prepared);
+    }
+
+    fn recordLifecycleAssumeCapacity(self: *Stream, scope_id: u64, value: LifecycleDescriptorIndex) void {
+        self.lifecycle_indices_by_scope_id.items[@intCast(scope_id)].appendAssumeCapacity(value);
+    }
+
+    /// Returns exact lifecycle descriptors owned by one scope.
+    pub fn lifecycleIndices(self: *const Stream, scope_id: u64) []const LifecycleDescriptorIndex {
+        if (scope_id >= self.lifecycle_indices_by_scope_id.items.len) return &.{};
+        return self.lifecycle_indices_by_scope_id.items[@intCast(scope_id)].items;
+    }
+
+    /// Removes one lifecycle ownership entry and validates its dense descriptor index.
+    pub fn removeLifecycleIndex(self: *Stream, scope_id: u64, expected: LifecycleDescriptorIndex) void {
+        if (scope_id >= self.lifecycle_indices_by_scope_id.items.len) @panic("lifecycle removal missed its scope index");
+        const indexes = &self.lifecycle_indices_by_scope_id.items[@intCast(scope_id)];
+        for (indexes.items, 0..) |candidate, offset| if (candidate.kind == expected.kind and candidate.index == expected.index) {
+            _ = indexes.swapRemove(offset);
+            return;
+        };
+        @panic("lifecycle removal missed its descriptor index");
+    }
+
+    /// Repairs the ownership entry for a descriptor moved by dense swap removal.
+    pub fn updateLifecycleIndex(self: *Stream, scope_id: u64, kind: LifecycleDescriptorKind, old_index: usize, new_index: usize) void {
+        if (scope_id >= self.lifecycle_indices_by_scope_id.items.len) @panic("moved lifecycle descriptor missed its scope index");
+        for (self.lifecycle_indices_by_scope_id.items[@intCast(scope_id)].items) |*candidate| if (candidate.kind == kind and candidate.index == old_index) {
+            candidate.index = new_index;
+            return;
+        };
+        @panic("moved lifecycle descriptor index was stale");
+    }
+
     /// Appends on change using capacity that must already satisfy the caller's transaction contract.
     pub fn appendOnChange(self: *Stream, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, scope_id: u64, signal: HostSignalBinding, to_cmd: abi.RocErasedCallable, run_initial: bool, run_initial_pending: bool) void {
+        self.on_changes.ensureUnusedCapacity(allocator, 1) catch @panic("out of memory");
+        self.reserveLifecycleScope(allocator, scope_id, 1) catch @panic("out of memory");
         self.rememberSignalRecordTree(allocator, signal.record);
         abi.increfErasedCallable(to_cmd, 1);
         metrics.bump(.closure_retains, 1);
-        self.on_changes.append(allocator, .{
+        const index = self.on_changes.items.len;
+        self.on_changes.appendAssumeCapacity(.{
             .scope_id = scope_id,
             .run_initial = run_initial,
             .run_initial_pending = run_initial_pending,
             .signal = signal,
             .to_cmd = to_cmd,
-        }) catch {
-            var desc = OnChangeDesc{
-                .scope_id = scope_id,
-                .run_initial = run_initial,
-                .run_initial_pending = run_initial_pending,
-                .signal = signal,
-                .to_cmd = to_cmd,
-            };
-            desc.deinit(allocator, ctx, roc_host, metrics);
-            @panic("out of memory");
-        };
+        });
+        self.recordLifecycleAssumeCapacity(scope_id, .{ .kind = .on_change, .index = index });
+        _ = ctx;
+        _ = roc_host;
     }
 
     /// Appends mount using capacity that must already satisfy the caller's transaction contract.
     pub fn appendMount(self: *Stream, allocator: std.mem.Allocator, roc_host: *abi.RocHost, metrics: anytype, scope_id: u64, to_cmd: abi.RocErasedCallable, run_on_mount: bool) void {
+        self.mounts.ensureUnusedCapacity(allocator, 1) catch @panic("out of memory");
+        self.reserveLifecycleScope(allocator, scope_id, 1) catch @panic("out of memory");
         abi.increfErasedCallable(to_cmd, 1);
         metrics.bump(.closure_retains, 1);
-        self.mounts.append(allocator, .{
+        const index = self.mounts.items.len;
+        self.mounts.appendAssumeCapacity(.{
             .scope_id = scope_id,
             .to_cmd = to_cmd,
             .run_on_mount = run_on_mount,
-        }) catch {
-            const desc = MountDesc{
-                .scope_id = scope_id,
-                .to_cmd = to_cmd,
-                .run_on_mount = run_on_mount,
-            };
-            desc.deinit(roc_host, metrics);
-            @panic("out of memory");
-        };
+        });
+        self.recordLifecycleAssumeCapacity(scope_id, .{ .kind = .mount, .index = index });
+        _ = roc_host;
     }
 
     /// Appends cleanup using capacity that must already satisfy the caller's transaction contract.
     pub fn appendCleanup(self: *Stream, allocator: std.mem.Allocator, scope_id: u64, name: []const u8) void {
-        appendCleanupImpl(Stream, self, allocator, scope_id, name);
+        const name_copy = allocator.dupe(u8, name) catch @panic("out of memory");
+        self.cleanups.ensureUnusedCapacity(allocator, 1) catch {
+            allocator.free(name_copy);
+            @panic("out of memory");
+        };
+        self.reserveLifecycleScope(allocator, scope_id, 1) catch {
+            allocator.free(name_copy);
+            @panic("out of memory");
+        };
+        const index = self.cleanups.items.len;
+        self.cleanups.appendAssumeCapacity(.{ .scope_id = scope_id, .name = name_copy });
+        self.recordLifecycleAssumeCapacity(scope_id, .{ .kind = .cleanup, .index = index });
     }
 
     /// Appends event using capacity that must already satisfy the caller's transaction contract.
@@ -4684,6 +4746,63 @@ test "custom descriptor retirement and replacement repairs both indexes without 
     try std.testing.expectEqual(@as(usize, 2), active.customAttrIndices(3).len);
     try std.testing.expectEqualStrings("old", retired.static_custom_text_attrs.items[0].value);
     try std.testing.expect(retired.static_custom_bool_attrs.items[0].value);
+    fault.configure(null);
+}
+
+test "lifecycle ownership index preflight sweeps failures and repairs moved descriptors" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var counter = FaultAllocator.init(std.testing.allocator);
+    var counted: Stream = .{};
+    try counted.reserveLifecycleScope(counter.allocator(), 8, 3);
+    const attempts = counter.attempts;
+    for (counted.lifecycle_indices_by_scope_id.items) |*indexes| indexes.deinit(counter.allocator());
+    counted.lifecycle_indices_by_scope_id.deinit(counter.allocator());
+    try std.testing.expect(attempts != 0);
+
+    for (1..attempts + 1) |failure_number| {
+        var fault = FaultAllocator.init(std.testing.allocator);
+        fault.configure(failure_number);
+        var failed_stream: Stream = .{};
+        try std.testing.expectError(error.OutOfMemory, failed_stream.reserveLifecycleScope(fault.allocator(), 8, 3));
+        try std.testing.expectEqual(@as(usize, 0), failed_stream.lifecycle_indices_by_scope_id.items.len);
+        fault.configure(null);
+        try failed_stream.reserveLifecycleScope(fault.allocator(), 8, 3);
+        for (failed_stream.lifecycle_indices_by_scope_id.items) |*indexes| indexes.deinit(fault.allocator());
+        failed_stream.lifecycle_indices_by_scope_id.deinit(fault.allocator());
+    }
+
+    const TestCtx = struct {
+        pub fn pushHostValueCapabilities(_: *@This(), _: []const retained.HostValueCapability) void {}
+        pub fn popHostValueCapabilities(_: *@This()) void {}
+    };
+    var fault = FaultAllocator.init(std.testing.allocator);
+    const allocator = fault.allocator();
+    var ctx: TestCtx = .{};
+    var env = abi.RocEnv{ .allocator = allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&env);
+    var metrics = TestMetrics{};
+    var stream: Stream = .{};
+    defer stream.deinit(allocator, &ctx, &roc_host, &metrics);
+    stream.appendCleanup(allocator, 1, "old");
+    stream.appendCleanup(allocator, 2, "moved");
+    try std.testing.expectEqualDeep(&[_]LifecycleDescriptorIndex{.{ .kind = .cleanup, .index = 0 }}, stream.lifecycleIndices(1));
+    const removed = stream.cleanups.swapRemove(0);
+    stream.removeLifecycleIndex(removed.scope_id, .{ .kind = .cleanup, .index = 0 });
+    const moved = stream.cleanups.items[0];
+    stream.updateLifecycleIndex(moved.scope_id, .cleanup, 1, 0);
+    allocator.free(removed.name);
+    try std.testing.expectEqual(@as(usize, 0), stream.lifecycleIndices(1).len);
+    try std.testing.expectEqualDeep(&[_]LifecycleDescriptorIndex{.{ .kind = .cleanup, .index = 0 }}, stream.lifecycleIndices(2));
+
+    try stream.cleanups.ensureUnusedCapacity(allocator, 1);
+    try stream.reserveLifecycleScope(allocator, 3, 1);
+    const name = try allocator.dupe(u8, "new");
+    fault.configure(1);
+    const index = stream.cleanups.items.len;
+    stream.cleanups.appendAssumeCapacity(.{ .scope_id = 3, .name = name });
+    stream.recordLifecycleAssumeCapacity(3, .{ .kind = .cleanup, .index = index });
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqualDeep(&[_]LifecycleDescriptorIndex{.{ .kind = .cleanup, .index = 1 }}, stream.lifecycleIndices(3));
     fault.configure(null);
 }
 
