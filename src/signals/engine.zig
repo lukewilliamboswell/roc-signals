@@ -3570,6 +3570,7 @@ pub fn Engine(comptime Ctx: type) type {
         }
 
         const AggregateBranchCollection = struct {
+            const HostRenderPublication = if (@hasDecl(Ctx, "RenderPublication")) Ctx.RenderPublication else void;
             engine: *Self,
             host_ctx: Ctx.Handle,
             roc_host: *abi.RocHost,
@@ -3594,6 +3595,13 @@ pub fn Engine(comptime Ctx: type) type {
             change_route_appends: ?active_graph.PreparedRouteAppends(active_graph.ChangeSink) = null,
             structural_route_appends: ?active_graph.PreparedRouteAppends(active_graph.StructuralSink) = null,
             graph_source_route_count: usize = 0,
+            render_splice: ?render_cache_mod.PreparedRenderSplice(Ctx) = null,
+            render_batch: render.TransactionalBatch = .{},
+            render_batch_target: ?*render.TransactionalBatch = null,
+            render_batch_preflighted: bool = false,
+            render_batch_published: bool = false,
+            host_render_publication: ?HostRenderPublication = null,
+            host_render_published: bool = false,
 
             fn addCounts(total: *StaticRootCounts, next: StaticRootCounts) CollectionError!void {
                 total.nodes = std.math.add(usize, total.nodes, next.nodes) catch return error.ResourceLimit;
@@ -3700,7 +3708,44 @@ pub fn Engine(comptime Ctx: type) type {
                     errdefer if (plan.graph_append) |*append| append.deinit(allocator);
                     try plan.prepareGraphRoutes(allocator);
                 }
+                try plan.prepareRender(allocator);
                 return plan;
+            }
+
+            fn prepareRender(self: *@This(), allocator: std.mem.Allocator) CollectionError!void {
+                if (!self.engine.render_cache.hasRoot()) return;
+                errdefer {
+                    self.deinitGraphRoutes(allocator);
+                    if (self.graph_append) |*append| append.deinit(allocator);
+                    self.graph_append = null;
+                    if (self.graph_release) |*release| release.deinit(allocator);
+                    self.graph_release = null;
+                    if (self.sink_edits) |*edits| edits.deinit(allocator);
+                    self.sink_edits = null;
+                }
+                var facade = BranchReplacementPlan{
+                    .engine = self.engine,
+                    .host_ctx = self.host_ctx,
+                    .roc_host = self.roc_host,
+                    .replacement_stream = self.stream,
+                    .collection = self.collection,
+                    .removal = self.removal.?.removal,
+                };
+                self.render_splice = try facade.prepareRenderTopology(allocator);
+                errdefer if (self.render_splice) |*splice| splice.deinit();
+                self.render_batch_target = if (comptime @hasDecl(Ctx, "renderCommandBatch")) Ctx.renderCommandBatch(self.host_ctx) else &self.render_batch;
+                self.render_splice.?.wire.preflight(self.render_batch_target.?, allocator) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.ResourceLimit => return error.ResourceLimit,
+                };
+                self.render_batch_preflighted = true;
+                errdefer self.render_batch_target.?.abort();
+                if (comptime @hasDecl(Ctx, "prepareRenderPublication")) {
+                    self.host_render_publication = Ctx.prepareRenderPublication(self.host_ctx, &self.render_splice.?) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        error.ResourceLimit => return error.ResourceLimit,
+                    };
+                }
             }
 
             fn commitCollection(self: *@This()) void {
@@ -3742,8 +3787,29 @@ pub fn Engine(comptime Ctx: type) type {
                 release.releaseRetired(Ctx.allocator(self.host_ctx), &lifecycle);
             }
 
+            fn commitRenderAssumeCapacity(self: *@This()) void {
+                const splice = &(self.render_splice orelse return);
+                splice.wire.stageAssumeCapacity(self.render_batch_target.?, Ctx.allocator(self.host_ctx)) catch @panic("prepared aggregate render batch violated preflight");
+                splice.apply(&self.engine.render_cache);
+                if (comptime @hasDecl(Ctx, "applyRenderPublication")) Ctx.applyRenderPublication(self.host_ctx, &self.host_render_publication.?);
+            }
+
+            fn publishRenderLast(self: *@This()) void {
+                if (self.render_splice == null) return;
+                self.render_batch_target.?.commit();
+                self.render_batch_published = true;
+                if (comptime @hasDecl(Ctx, "publishRenderPublication")) {
+                    Ctx.publishRenderPublication(self.host_ctx, &self.host_render_publication.?);
+                    self.host_render_published = true;
+                }
+            }
+
             fn deinit(self: *@This()) void {
                 const allocator = Ctx.allocator(self.host_ctx);
+                if (self.render_batch_preflighted and !self.render_batch_published and self.render_batch_target != &self.render_batch) self.render_batch_target.?.abort();
+                if (@hasDecl(Ctx, "RenderPublication")) if (self.host_render_publication) |*publication| publication.deinit();
+                self.render_batch.deinit(allocator);
+                if (self.render_splice) |*splice| splice.deinit();
                 self.collection.deinit();
                 self.stream.deinit(allocator, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
                 if (self.removal) |*removal| removal.deinit(allocator);
@@ -8926,6 +8992,7 @@ pub fn Engine(comptime Ctx: type) type {
 const VerifyCtxHost = struct {
     allocator: std.mem.Allocator,
     render_batch: render.TransactionalBatch = .{},
+    state_capability: HostValueCapability = std.mem.zeroes(HostValueCapability),
 
     /// Produces an independently owned copy through the value's app-compiled capability.
     pub fn cloneHostValue(_: *@This(), value: HostValue) HostValue {
@@ -9056,8 +9123,8 @@ const VerifyCtx = struct {
     }
 
     /// Returns the exact app-compiled capability that owns the requested state cell.
-    pub fn stateCapability(_: Handle, _: u64) HostValueCapability {
-        return undefined;
+    pub fn stateCapability(ctx: Handle, _: u64) HostValueCapability {
+        return ctx.state_capability;
     }
 
     /// Materializes the mount-time browser location through the source's owning capability.
@@ -9191,7 +9258,6 @@ const OwnedAggregateGraphRoot = struct {
     second_true_transform: abi.RocErasedCallable,
     bool_callable: abi.RocErasedCallable,
     text_callable: abi.RocErasedCallable,
-    capability_callable: abi.RocErasedCallable,
     first_condition: *abi.NodeSignalExpr,
     first_false: *abi.Elem,
     first_true: *abi.Elem,
@@ -9200,10 +9266,11 @@ const OwnedAggregateGraphRoot = struct {
     root: abi.Elem,
 
     fn signalBranch(self: *@This(), label: []const u8, binder: abi.RocErasedCallable, transform: abi.RocErasedCallable) *abi.Elem {
-        const capability = HostValueCapability{ .clone = self.capability_callable, .drop = self.capability_callable, .eq = self.capability_callable };
-        const read = HostTextRead{ .capability = capability, .read = self.text_callable };
+        const state_capability = HostValueCapability{ .clone = binder, .drop = binder, .eq = binder };
+        const result_capability = HostValueCapability{ .clone = transform, .drop = transform, .eq = transform };
+        const read = HostTextRead{ .capability = result_capability, .read = self.text_callable };
         const input = boxOwnedVerifySignalExpr(self.roc_host, .{ .payload = .{ .ref = binder }, .tag = .Ref });
-        const signal = boxOwnedVerifySignalExpr(self.roc_host, .{ .payload = .{ .map = .{ ._0 = transform, ._1 = input, ._2 = transform, ._3 = capability } }, .tag = .Map });
+        const signal = boxOwnedVerifySignalExpr(self.roc_host, .{ .payload = .{ .map = .{ ._0 = transform, ._1 = input, ._2 = transform, ._3 = result_capability } }, .tag = .Map });
         decrefOwnedVerifySignalExprBox(input, self.roc_host);
         var static_text = verifyStaticText();
         static_text.payload.text = abi.RocStr.fromSlice(label, self.roc_host);
@@ -9211,7 +9278,13 @@ const OwnedAggregateGraphRoot = struct {
         const element = ownedVerifyStaticRoot(self.roc_host, &.{}, &.{ static_text, signal_text });
         static_text.decref(self.roc_host);
         signal_text.decref(self.roc_host);
-        return boxOwnedVerifyElem(self.roc_host, ownedVerifyStateRoot(self.roc_host, binder, self.capability_callable, element));
+        abi.increfErasedCallable(binder, 5);
+        return boxOwnedVerifyElem(self.roc_host, .{ .payload = .{ .state = .{
+            .binder = binder,
+            .cap = state_capability,
+            .child = boxOwnedVerifyElem(self.roc_host, element),
+            .initial = binder,
+        } }, .tag = .State });
     }
 
     fn init(allocator: std.mem.Allocator, roc_host: *abi.RocHost) !*@This() {
@@ -9242,8 +9315,6 @@ const OwnedAggregateGraphRoot = struct {
         errdefer abi.decrefErasedCallable(self.bool_callable, roc_host);
         self.text_callable = abi.rocErasedCallableAllocate(roc_host, verifyTextCallable, null, 0) orelse return error.OutOfMemory;
         errdefer abi.decrefErasedCallable(self.text_callable, roc_host);
-        self.capability_callable = abi.rocErasedCallableAllocate(roc_host, verifyErasedCallable, null, 0) orelse return error.OutOfMemory;
-        errdefer abi.decrefErasedCallable(self.capability_callable, roc_host);
         self.first_false = self.signalBranch("first-new", self.first_false_callable, self.first_false_transform);
         self.first_true = self.signalBranch("first-old", self.first_true_callable, self.first_true_transform);
         self.second_false = self.signalBranch("second-new", self.second_false_callable, self.second_false_transform);
@@ -9267,7 +9338,6 @@ const OwnedAggregateGraphRoot = struct {
 
     fn deinit(self: *@This()) void {
         self.root.decref(self.roc_host);
-        abi.decrefErasedCallable(self.capability_callable, self.roc_host);
         abi.decrefErasedCallable(self.text_callable, self.roc_host);
         abi.decrefErasedCallable(self.bool_callable, self.roc_host);
         abi.decrefErasedCallable(self.second_true_transform, self.roc_host);
@@ -10334,6 +10404,7 @@ test "aggregate branch collection sweeps allocation failures without publication
             var roc_host = abi.makeRocHost(&roc_env);
             const fixture = try OwnedAggregateGraphRoot.init(std.testing.allocator, &roc_host);
             defer fixture.deinit();
+            ctx.state_capability = .{ .clone = fixture.value_callable, .drop = fixture.value_callable, .eq = fixture.value_callable };
             var engine = Engine(VerifyCtx).init();
             defer {
                 if (engine.active_signal_graph.items.len != 0) {
@@ -10347,6 +10418,8 @@ test "aggregate branch collection sweeps allocation failures without publication
                 engine.active_bool_signal_routes.deinit(ctx.allocator);
                 engine.active_change_signal_routes.deinit(ctx.allocator);
                 engine.active_structural_signal_routes.deinit(ctx.allocator);
+                ctx.render_batch.deinit(ctx.allocator);
+                engine.deinitRenderCache(&ctx);
                 effects_runtime.clearPendingTasks(VerifyCtx, &ctx, ctx.allocator, &engine.pending_tasks, &roc_host);
                 effects_runtime.deinitCleanupEvents(ctx.allocator, &engine.cleanup_events);
                 for (engine.states.items) |*state| state.cell.deinit(&ctx, &roc_host, &engine.pending_roc_metrics);
@@ -10366,7 +10439,10 @@ test "aggregate branch collection sweeps allocation failures without publication
             engine.active_stream = initial_stream;
             initial_stream = .{};
             engine.roc_host = &roc_host;
-            engine.rebuildActiveSignalGraphFromStream(&ctx, &engine.active_stream);
+            _ = engine.applyNodeDescriptorStream(&ctx, &roc_host, &engine.active_stream);
+            try std.testing.expect(engine.render_cache.hasRoot());
+            try std.testing.expectEqual(@as(usize, 0), ctx.render_batch.staged.commands.len());
+            try std.testing.expectEqual(@as(usize, 0), ctx.render_batch.published.commands.len());
             try std.testing.expectEqual(@as(usize, 5), engine.active_signal_graph.items.len);
             try std.testing.expectEqual(@as(usize, 2), engine.active_stream.whens.items.len);
             try std.testing.expectEqual(@as(usize, 2), engine.active_stream.signal_text_nodes.items.len);
@@ -10381,6 +10457,8 @@ test "aggregate branch collection sweeps allocation failures without publication
             const old_second_record = engine.active_stream.signal_text_nodes.items[1].signal.record;
             const old_first_id = old_first_record.active_graph_id.?;
             const old_second_id = old_second_record.active_graph_id.?;
+            const old_root_children = try std.testing.allocator.dupe(u64, engine.render_cache.nodes.items[1].children.items);
+            defer std.testing.allocator.free(old_root_children);
             try std.testing.expectEqual(@as(usize, 1), engine.active_text_signal_routes.items[@intCast(old_first_id)].items.len);
             try std.testing.expectEqual(@as(usize, 1), engine.active_text_signal_routes.items[@intCast(old_second_id)].items.len);
             const selections = [_]Engine(VerifyCtx).AggregateBranchSelection{
@@ -10394,6 +10472,9 @@ test "aggregate branch collection sweeps allocation failures without publication
                 try std.testing.expectEqual(old_graph_len, engine.active_signal_graph.items.len);
                 try std.testing.expectEqual(@as(?u64, old_first_id), old_first_record.active_graph_id);
                 try std.testing.expectEqual(@as(?u64, old_second_id), old_second_record.active_graph_id);
+                try std.testing.expectEqualSlices(u64, old_root_children, engine.render_cache.nodes.items[1].children.items);
+                try std.testing.expectEqual(@as(usize, 0), ctx.render_batch.staged.commands.len());
+                try std.testing.expectEqual(@as(usize, 0), ctx.render_batch.published.commands.len());
                 const attempts = fault.attempts;
                 fault.configure(null);
                 const retry = try Engine(VerifyCtx).AggregateBranchCollection.prepare(&engine, &ctx, &roc_host, &selections, .{}, &.{});
@@ -10401,6 +10482,8 @@ test "aggregate branch collection sweeps allocation failures without publication
                 try std.testing.expectEqual(@as(usize, 2), retry.stream.signal_text_nodes.items.len);
                 try std.testing.expect(retry.graph_release.?.steps.len != 0);
                 try std.testing.expectEqual(@as(usize, 4), retry.graph_append.?.records.len);
+                try std.testing.expect(retry.render_splice != null);
+                try std.testing.expect(retry.render_splice.?.wire.commands.items.len != 0);
                 return attempts;
             };
             const attempts = fault.attempts;
@@ -10409,6 +10492,7 @@ test "aggregate branch collection sweeps allocation failures without publication
             try std.testing.expectEqual(@as(usize, 2), prepared.removal.?.removal.descriptor_indexes.signal_text_node_indexes.items.len);
             try std.testing.expect(prepared.graph_release.?.steps.len != 0);
             try std.testing.expectEqual(@as(usize, 4), prepared.graph_append.?.records.len);
+            try std.testing.expect(prepared.render_splice != null);
             const first_new = prepared.stream.signal_text_nodes.items[0].signal.record;
             const second_new = prepared.stream.signal_text_nodes.items[1].signal.record;
             const first_input = switch (first_new.payload) {
@@ -10429,8 +10513,12 @@ test "aggregate branch collection sweeps allocation failures without publication
             const first_input_refs = first_input.ref_count;
             const second_input_refs = second_input.ref_count;
             fault.configure(1);
+            prepared.commitRenderAssumeCapacity();
             prepared.commitGraphAssumeCapacity();
+            prepared.publishRenderLast();
             try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+            try std.testing.expectEqual(@as(usize, 0), ctx.render_batch.staged.commands.len());
+            try std.testing.expect(ctx.render_batch.published.commands.len() != 0);
             try std.testing.expectEqual(old_graph_len, engine.active_signal_graph.items.len);
             try std.testing.expectEqual(@as(?u64, null), old_first_record.active_graph_id);
             try std.testing.expectEqual(@as(?u64, null), old_second_record.active_graph_id);

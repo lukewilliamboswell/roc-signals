@@ -2125,6 +2125,13 @@ pub const Stream = struct {
                 elem_entry.value_ptr.render_node = render_index;
                 const parent_entry = self.render_metadata_by_elem_id.getOrPutAssumeCapacity(desc.parent_elem_id);
                 if (!parent_entry.found_existing) parent_entry.value_ptr.* = .{};
+                const last = parent_entry.value_ptr.last_child;
+                elem_entry.value_ptr.next_sibling = null;
+                if (last) |last_child| {
+                    self.render_metadata_by_elem_id.getPtr(last_child).?.next_sibling = desc.elem_id;
+                } else {
+                    parent_entry.value_ptr.first_child = desc.elem_id;
+                }
                 parent_entry.value_ptr.last_child = desc.elem_id;
                 self.next_elem_id += 1;
             },
