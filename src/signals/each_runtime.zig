@@ -582,6 +582,14 @@ const TestSyncHooks = struct {
     rows_reused: u64 = 0,
     rows_created: u64 = 0,
     rows_removed: u64 = 0,
+    fault_attempts: ?*const usize = null,
+    first_mutation_attempt: ?usize = null,
+
+    fn recordMutation(self: *@This()) void {
+        if (self.first_mutation_attempt == null) {
+            if (self.fault_attempts) |attempts| self.first_mutation_attempt = attempts.*;
+        }
+    }
 
     fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
         self.disposed_scopes.deinit(allocator);
@@ -623,23 +631,30 @@ const TestSyncHooks = struct {
 
     /// Replaces row key while releasing displaced ownership exactly once.
     pub fn replaceRowKey(self: *@This(), scope_id: u64, hash: u64, key: u64) void {
+        self.recordMutation();
         self.expectHash(hash, key);
         self.keys_by_scope[@intCast(scope_id)] = key;
     }
 
     /// Replaces row item while releasing displaced ownership exactly once.
     pub fn replaceRowItem(self: *@This(), scope_id: u64, item: u64) void {
+        self.recordMutation();
         self.items_by_scope[@intCast(scope_id)] = item;
     }
 
     /// Drops the provisional incoming key through its owning capability.
-    pub fn dropIncomingKey(_: *@This(), _: u64) void {}
+    pub fn dropIncomingKey(self: *@This(), _: u64) void {
+        self.recordMutation();
+    }
 
     /// Drops the provisional incoming item through its owning capability.
-    pub fn dropIncomingItem(_: *@This(), _: u64) void {}
+    pub fn dropIncomingItem(self: *@This(), _: u64) void {
+        self.recordMutation();
+    }
 
     /// Creates a new keyed row scope and transfers the incoming key and item into its ownership.
     pub fn createRow(self: *@This(), parent_scope_id: u64, site_ordinal: u64, hash: u64, key: u64, item: u64) u64 {
+        self.recordMutation();
         if (parent_scope_id != 1 or site_ordinal != 2) @panic("test row was created for the wrong site");
         self.expectHash(hash, key);
         const scope_id = self.next_scope_id;
@@ -651,6 +666,7 @@ const TestSyncHooks = struct {
 
     /// Disposes a removed row scope and every render, effect, callable, and value it owns.
     pub fn disposeScope(self: *@This(), scope_id: u64) void {
+        self.recordMutation();
         self.disposed_scopes.append(std.testing.allocator, scope_id) catch @panic("out of memory");
     }
 
@@ -769,6 +785,44 @@ test "each runtime sync reuses creates removes and rebuilds rows" {
     try std.testing.expectEqual(@as(u64, 1), hooks.rows_reused);
     try std.testing.expectEqual(@as(u64, 1), hooks.rows_created);
     try std.testing.expectEqual(@as(u64, 1), hooks.rows_removed);
+}
+
+test "each sync characterization detects allocation attempts after mutation begins" {
+    const CharacterizationFaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var fault = CharacterizationFaultAllocator.init(std.testing.allocator);
+    const allocator = fault.allocator();
+    var sites: std.ArrayListUnmanaged(Site) = .empty;
+    var indexes: SiteIndexMap = .empty;
+    var memberships: std.ArrayListUnmanaged(?Membership) = .empty;
+    defer {
+        fault.configure(null);
+        clearSites(allocator, &sites, &indexes, &memberships);
+    }
+
+    const site_index = ensureSiteIndex(allocator, &sites, &indexes, 1, 2);
+    appendRowToSiteIndex(allocator, &sites, &memberships, site_index, 10, 1);
+    appendRowToSiteIndex(allocator, &sites, &memberships, site_index, 11, 2);
+    var keys_by_scope = [_]u64{0} ** 16;
+    var items_by_scope = [_]u64{0} ** 16;
+    keys_by_scope[10] = 1;
+    items_by_scope[10] = 100;
+    keys_by_scope[11] = 2;
+    items_by_scope[11] = 200;
+    var hooks = TestSyncHooks{
+        .keys_by_scope = &keys_by_scope,
+        .items_by_scope = &items_by_scope,
+        .next_scope_id = 12,
+        .fault_attempts = &fault.attempts,
+    };
+    defer hooks.deinit(std.testing.allocator);
+
+    fault.configure(null);
+    const keys = [_]u64{2};
+    const items = [_]u64{201};
+    const diff = syncRows(allocator, &sites, &memberships, site_index, 1, 2, &keys, &items, &hooks);
+    defer diff.deinit(allocator);
+    const first_mutation = hooks.first_mutation_attempt orelse return error.TestUnexpectedResult;
+    try std.testing.expect(first_mutation < fault.attempts);
 }
 
 test "each runtime sync resolves hash collisions with typed equality" {
