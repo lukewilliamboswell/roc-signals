@@ -180,6 +180,81 @@ pub const EffectSourceRef = union(enum) {
     }
 };
 
+pub fn deinitOwnedPayload(allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, payload_value: Payload) void {
+    switch (payload_value) {
+        .ref => {},
+        .const_value => |payload| {
+            var cached = payload.cached_value;
+            cached.deinit(ctx, roc_host, metrics);
+            abi.decrefErasedCallable(payload.init, roc_host);
+            releaseHostValueCapability(payload.cap, roc_host, metrics);
+            metrics.bump(.closure_releases, 1);
+        },
+        .map => |payload| {
+            payload.input.release(allocator, ctx, roc_host, metrics);
+            var cached = payload.cached_value;
+            cached.deinit(ctx, roc_host, metrics);
+            abi.decrefErasedCallable(payload.transform, roc_host);
+            releaseHostValueCapability(payload.cap, roc_host, metrics);
+            metrics.bump(.closure_releases, 1);
+        },
+        .map2 => |payload| {
+            payload.left.release(allocator, ctx, roc_host, metrics);
+            payload.right.release(allocator, ctx, roc_host, metrics);
+            var cached = payload.cached_value;
+            cached.deinit(ctx, roc_host, metrics);
+            abi.decrefErasedCallable(payload.transform, roc_host);
+            releaseHostValueCapability(payload.cap, roc_host, metrics);
+            metrics.bump(.closure_releases, 1);
+        },
+        .combine => |payload| {
+            for (payload.children) |child| child.release(allocator, ctx, roc_host, metrics);
+            allocator.free(payload.children);
+            var cached = payload.cached_value;
+            cached.deinit(ctx, roc_host, metrics);
+            abi.decrefErasedCallable(payload.transform, roc_host);
+            releaseHostValueCapability(payload.cap, roc_host, metrics);
+            metrics.bump(.closure_releases, 1);
+        },
+        .task_source => |payload| {
+            var cached = payload.cached_value;
+            cached.deinit(ctx, roc_host, metrics);
+            allocator.free(payload.name);
+            releaseHostValueCapability(payload.payload_cap, roc_host, metrics);
+            abi.decrefErasedCallable(payload.initial, roc_host);
+            abi.decrefErasedCallable(payload.done, roc_host);
+            abi.decrefErasedCallable(payload.failed, roc_host);
+            releaseHostValueCapability(payload.cap, roc_host, metrics);
+            metrics.bump(.closure_releases, 3);
+        },
+        .interval_source => |payload| {
+            var cached = payload.cached_value;
+            cached.deinit(ctx, roc_host, metrics);
+            abi.decrefErasedCallable(payload.initial, roc_host);
+            abi.decrefErasedCallable(payload.tick, roc_host);
+            releaseHostValueCapability(payload.cap, roc_host, metrics);
+            metrics.bump(.closure_releases, 2);
+        },
+        .location_source, .online_source, .visibility_source => |payload| {
+            var cached = payload.cached_value;
+            cached.deinit(ctx, roc_host, metrics);
+            releaseHostValueCapability(payload.payload_cap, roc_host, metrics);
+            abi.decrefErasedCallable(payload.from_payload, roc_host);
+            releaseHostValueCapability(payload.cap, roc_host, metrics);
+            metrics.bump(.closure_releases, 1);
+        },
+        .storage_source => |payload| {
+            var cached = payload.cached_value;
+            cached.deinit(ctx, roc_host, metrics);
+            allocator.free(payload.key);
+            releaseHostValueCapability(payload.payload_cap, roc_host, metrics);
+            abi.decrefErasedCallable(payload.from_payload, roc_host);
+            releaseHostValueCapability(payload.cap, roc_host, metrics);
+            metrics.bump(.closure_releases, 1);
+        },
+    }
+}
+
 /// A refcounted, shareable node in the signal graph. Owns its transform/eq/drop
 /// thunks plus a memoized cached value; the active graph holds one reference
 /// while a record is mounted.
@@ -204,6 +279,16 @@ pub const Record = struct {
             .payload = payload,
         };
         return record;
+    }
+
+    /// Constructs a record from an already-owned payload. Allocation failure
+    /// destroys every retained callable, capability, child edge, and copied
+    /// string held by that payload before returning to the caller.
+    pub fn tryInitOwned(allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, payload: Payload) std.mem.Allocator.Error!*Record {
+        return tryInit(allocator, payload) catch |err| {
+            deinitOwnedPayload(allocator, ctx, roc_host, metrics, payload);
+            return err;
+        };
     }
 
     pub fn token(self: *const Record) ?HostSignalToken {
