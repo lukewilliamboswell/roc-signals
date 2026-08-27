@@ -4123,6 +4123,7 @@ pub fn Engine(comptime Ctx: type) type {
             host_ctx: Ctx.Handle,
             roc_host: *abi.RocHost,
             replacement: *PreparedReplacementOwner = undefined,
+            owns_replacement: bool = true,
             replacement_scope_ids: []u64 = &.{},
             targets: ?PreparedStructuralTargets = null,
             removal: ?structural_splice.PreparedMultiRemoval = null,
@@ -4203,6 +4204,16 @@ pub fn Engine(comptime Ctx: type) type {
                     render_insert_indexes[index] = selection.render_insert_index;
                 }
                 try plan.prepareDownstream(allocator, retired_scope_ids, retired_scope_ids, render_insert_indexes);
+                return plan;
+            }
+
+            fn prepareExternal(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, replacement: *PreparedReplacementOwner, descriptor_root_scope_ids: []const u64, retired_root_scope_ids: []const u64, render_insert_indexes: []const usize) CollectionError!*@This() {
+                const allocator = Ctx.allocator(ctx);
+                const plan = allocator.create(@This()) catch return error.OutOfMemory;
+                errdefer allocator.destroy(plan);
+                plan.* = .{ .engine = engine, .host_ctx = ctx, .roc_host = roc_host, .replacement = replacement, .owns_replacement = false };
+                errdefer plan.retired_stream.deinit(allocator, ctx, roc_host, &engine.pending_roc_metrics);
+                try plan.prepareDownstream(allocator, descriptor_root_scope_ids, retired_root_scope_ids, render_insert_indexes);
                 return plan;
             }
 
@@ -4417,7 +4428,7 @@ pub fn Engine(comptime Ctx: type) type {
                 if (@hasDecl(Ctx, "RenderPublication")) if (self.host_render_publication) |*publication| publication.deinit();
                 self.render_batch.deinit(allocator);
                 if (self.render_splice) |*splice| splice.deinit();
-                self.replacement.deinit();
+                if (self.owns_replacement) self.replacement.deinit();
                 if (self.removal) |*removal| removal.deinit(allocator);
                 if (self.state_retirement) |*retirement| retirement.deinit(allocator);
                 for (self.retired_state_cells.items) |*state| state.cell.deinit(self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
@@ -10396,6 +10407,11 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
             return Engine(VerifyCtx).PreparedEachRowRenderLayout.prepare(engine, allocator, site, rows, replacement.replacement_rows);
         }
 
+        fn prepareDownstream(engine: *Engine(VerifyCtx), ctx: *VerifyCtxHost, host: *abi.RocHost, rows: *const each_runtime.PreparedRowSync, replacement: *Engine(VerifyCtx).PreparedEachRowReplacementCollection, layout: *const Engine(VerifyCtx).PreparedEachRowRenderLayout) !*Engine(VerifyCtx).PreparedStructuralDownstream {
+            const descriptor_roots = [_]u64{ rows.removed_scope_ids[0], replacement.replacement_rows[0].scope_id };
+            return Engine(VerifyCtx).PreparedStructuralDownstream.prepareExternal(engine, ctx, host, replacement.replacement, &descriptor_roots, rows.removed_scope_ids, layout.remove_starts);
+        }
+
         fn retry(engine: *Engine(VerifyCtx), ctx: *VerifyCtxHost, host: *abi.RocHost, each_ops: HostEachOps, site_index: usize, keys: []const HostValue, items: []const HostValue) !void {
             var hooks = Engine(VerifyCtx).PreparedEachRowSyncHooks.init(engine, ctx, host, each_ops);
             var rows = try each_runtime.PreparedRowSync.prepare(ctx.allocator, &engine.each_row_sites, &engine.each_row_memberships_by_scope_id, site_index, 0, 44, keys, items, &hooks);
@@ -10408,6 +10424,8 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
             }, replacement.replacement_rows);
             var layout = try prepareLayout(engine, ctx.allocator, &rows, replacement);
             try retirement.refineDescriptorOwnedRetirement(engine, ctx.allocator, &layout.removal.removal);
+            const downstream = try prepareDownstream(engine, ctx, host, &rows, replacement, &layout);
+            downstream.deinit();
             try std.testing.expectEqualSlices(usize, &.{0}, layout.remove_starts);
             try std.testing.expectEqualSlices(usize, &.{ 0, 1, 2 }, layout.final_starts);
             try std.testing.expect(layout.targets.descriptor_target_scopes[1]);
@@ -10548,6 +10566,20 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
                 try retry(&engine, &ctx, host, each_ops, site_index, &keys, &items);
                 return failed_attempts;
             };
+            const downstream = prepareDownstream(&engine, &ctx, host, &rows, replacement, &layout) catch |err| {
+                layout.deinit();
+                replacement.deinit();
+                retirement.deinit(&engine, ctx.allocator, null, null);
+                rows.abort(&hooks);
+                rows.deinit();
+                hooks.deinit();
+                try std.testing.expect(err == error.OutOfMemory or err == error.ResourceLimit);
+                const failed_attempts = fault.attempts;
+                fault.configure(null);
+                try retry(&engine, &ctx, host, each_ops, site_index, &keys, &items);
+                return failed_attempts;
+            };
+            downstream.deinit();
             try std.testing.expectEqualSlices(usize, &.{0}, layout.remove_starts);
             try std.testing.expectEqualSlices(usize, &.{ 0, 1, 2 }, layout.final_starts);
             try std.testing.expectEqual(@as(usize, 1), layout.survivor_moves.len);
