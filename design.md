@@ -37,23 +37,20 @@ semantics and work budgets; the browser runs the apps for real. The JS runtime
 is a thin executor of the engine's already-computed command stream — it never
 reconstructs meaning, holds reactive state, or re-decides patches.
 
-```text
-                          ┌──────────────────────────────┐
-                          │   Engine (host-agnostic)     │
-   App (Roc)              │   node table, scheduler,      │
-   build : () -> Elem     │   dirty set, is_eq pruning,   │
-   pure descriptor   ───▶ │   scope forest, keyed diff,   │
-   (roc_ui_init, once)    │   structural splice/apply     │
-                          └───────────────┬──────────────┘
-                                          │ Ctx + sink()
-                       ┌──────────────────┴───────────────────┐
-                       ▼                                       ▼
-        Native host (Zig binary)                 Wasm host (Zig → wasm32)
-        ─────────────────────────                ─────────────────────────
-        simulated DOM (DomElement[])             command buffer in linear mem
-        spec runner + work counters       ──▶    JS executor applies ops to DOM
-        allocation ledger, lldb-debuggable       payload codec, memory.grow,
-                                                  timers / fetch bridge
+```mermaid
+flowchart LR
+    App["Roc application"] --> Platform["Roc platform<br/>descriptor tree · typed retained closures"]
+    Platform -->|"roc_ui_init once;<br/>direct closure calls thereafter"| Engine["shared Engine(Ctx)<br/>reactivity · structure · ownership · rendering decisions"]
+
+    Engine <-->|"Ctx + sink contract"| Native["native host"]
+    Native --> NativeSurface["simulated DOM<br/>spec runner · metrics · allocation ledger"]
+
+    Engine <-->|"Ctx + sink contract"| Wasm["Wasm boundary host"]
+    Wasm --> Wire["atomic command and payload buffers<br/>in linear memory"]
+    Wire --> JS["JavaScript decoder and executor"]
+    JS --> Browser["browser DOM and resources"]
+    Browser -->|"events · timers · task results"| JS
+    JS -->|"validated integer and byte payloads"| Wasm
 ```
 
 ## Non-Negotiable Constraints
@@ -904,103 +901,77 @@ subtree. Structural work can therefore invalidate more indexes and ownership
 relationships than publishing a descriptor, but it obeys the same
 prepare-then-commit rule.
 
+The engine's major abstractions divide into committed model, execution, and
+host-facing services. Arrows show primary data flow rather than every internal
+lookup; all boxes remain part of the one `Engine(Ctx)` ownership domain.
+
 ```mermaid
 flowchart TB
-    subgraph Roc["Roc platform and application"]
-        App["pure Elem and Signal descriptors"]
-        Callbacks["typed reducers · transforms · readers · builders"]
-        Values["capability-owned opaque values"]
+    Ingress["ingress<br/>mount · event · source update · task result"] --> Tx["transaction coordinator"]
+
+    subgraph Model["committed model"]
+        Identity["identity tables<br/>node · DOM · construction site"]
+        Desc["descriptor stream<br/>render nodes · attrs · events · scope sites"]
+        Values["retained values and signal records<br/>capabilities · state cells · caches"]
+        Scope["scope forest<br/>root · component · when branch · each row"]
     end
 
-    subgraph Core["Host-agnostic Engine(Ctx)"]
-        direction TB
-
-        Inputs["transaction coordinator<br/>mount · event · source update · structural refresh"]
-
-        subgraph Prepare["prepare phase — private scratch and provisional ownership"]
-            Validate["ABI validation · limits · capacity preflight"]
-            DescriptorPlan["descriptor plan<br/>nodes · attrs · signals · events"]
-            StructuralPlan["structural plan<br/>scopes · state · when · each"]
-        end
-
-        Commit["allocation-free atomic commit"]
-
-        subgraph Stores["committed identity and ownership stores"]
-            Identities["node and DOM identities"]
-            Descriptors["descriptor stream and O(1) indexes"]
-            Records["signal-record registry"]
-            Scopes["scope forest and lifecycle ownership"]
-            State["state cells and capability-owned values"]
-        end
-
-        subgraph Reactive["reactive execution"]
-            Events["event router and payload validation"]
-            Graph["active dependency graph<br/>adjacency · rank · source routes"]
-            Scheduler["dirty queue · rank ordering · equality pruning"]
-        end
-
-        subgraph Structure["structural execution"]
-            When["when branch selection"]
-            Each["keyed each diff and row scopes"]
-            Splice["local graph and render-tree splice"]
-        end
-
-        subgraph Services["engine services"]
-            Effects["timers · tasks · browser-backed sources · cleanup"]
-            Render["render cache and minimal diff"]
-            Commands["transactional command sink"]
-            Observe["metrics · bounded diagnostics · poison state"]
-        end
+    subgraph Execute["execution"]
+        Route["dense source and event routes"]
+        Graph["active dependency graph<br/>adjacency · topological rank"]
+        Schedule["dirty scheduler<br/>rank order · equality pruning"]
+        Structure["structural reconciler<br/>when · keyed each · local splice"]
     end
 
-    subgraph Hosts["thin hosts implementing Ctx and sink"]
-        Native["native spec host<br/>simulated DOM · ledger · work counters"]
-        Wasm["Wasm boundary host<br/>linear-memory command and payload buffers"]
-        Browser["JavaScript executor<br/>DOM · events · timers · fetch"]
+    subgraph Services["host-facing services"]
+        Effects["effect lifecycle<br/>tasks · timers · browser-backed sources"]
+        Render["render cache and minimal diff"]
+        Sink["transactional command sink"]
+        Safety["limits · metrics · bounded diagnostics · poison"]
     end
 
-    App --> Inputs
-    Callbacks --> Inputs
-    Values --> Inputs
-    Inputs --> Validate
-    Validate --> DescriptorPlan
-    Validate --> StructuralPlan
-    DescriptorPlan --> Commit
-    StructuralPlan --> Commit
-    Validate -->|recoverable failure| Abort["abort provisional ownership<br/>old generation remains committed"]
+    Tx --> Model
+    Model --> Execute
+    Route --> Schedule
+    Graph --> Schedule
+    Schedule --> Structure
+    Schedule --> Effects
+    Schedule --> Render
+    Structure --> Model
+    Structure --> Render
+    Effects --> Sink
+    Render --> Sink
+    Safety -.-> Tx
+    Safety -.-> Sink
+```
 
-    Commit --> Identities
-    Commit --> Descriptors
-    Commit --> Records
-    Commit --> Scopes
-    Commit --> State
+Descriptors and structure use the same transaction boundary, but make different
+promises. Static and dynamic descriptors both attach behaviour to a tree shape
+that has already been selected: “dynamic” here means signal-backed or
+callable-backed, not that it changes which elements exist. Structural work owns
+changes to that shape and its lifetime topology.
 
-    Descriptors --> Events
-    Records --> Graph
-    Descriptors --> Graph
-    Events --> Scheduler
-    Graph --> Scheduler
-    Scheduler --> Render
-    Scheduler --> Effects
-    Scheduler --> When
-    Scheduler --> Each
-    When --> Splice
-    Each --> Splice
-    Scopes --> When
-    Scopes --> Each
-    State --> Graph
-    Splice --> Graph
-    Splice --> Render
-    Splice --> Inputs
+```mermaid
+flowchart LR
+    subgraph Declarations["descriptor work — selected shape stays fixed"]
+        Static["static descriptors<br/>elements · text · fixed attrs"]
+        Dynamic["dynamic descriptors<br/>signal sinks · event callables"]
+        Static --> DescriptorPlan["descriptor plan"]
+        Dynamic --> DescriptorPlan
+    end
 
-    Render --> Commands
-    Effects --> Commands
-    Observe -. observes and contains .-> Inputs
-    Commands --> Native
-    Commands --> Wasm
-    Wasm --> Browser
-    Native -. Ctx calls .-> Inputs
-    Wasm -. Ctx calls .-> Inputs
+    subgraph Topology["structural work — shape or ownership changes"]
+        Trigger["state/component creation<br/>when selection · each key-set change"]
+        Builder["retained structure builder<br/>produces an Elem subtree"]
+        Trigger --> StructuralPlan["structural plan<br/>scopes · row/state ownership · local splice"]
+        Builder --> StructuralPlan
+    end
+
+    DescriptorPlan --> Prepare["shared prepare phase<br/>validate · check limits · reserve · retain provisionally"]
+    StructuralPlan --> Prepare
+    Prepare -->|"failure"| Abort["abort without publication<br/>release provisional ownership"]
+    Prepare -->|"success"| Commit["allocation-free commit"]
+    Commit --> Publish["publish one generation<br/>engine indexes + complete command batch"]
 ```
 
 The two plans are conceptual lifetime and atomicity domains, not permission to
