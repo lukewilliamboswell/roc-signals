@@ -33,6 +33,8 @@ const active_graph = @import("active_signal_graph.zig");
 const scope_runtime = @import("scope_runtime.zig");
 const each_runtime = @import("each_runtime.zig");
 const effects_runtime = @import("effects_runtime.zig");
+const collection_budget = @import("collection_budget.zig");
+const collection_plan = @import("collection_plan.zig");
 const structural_splice = @import("structural_splice.zig");
 const engine_scratch = @import("engine_scratch.zig");
 
@@ -2070,6 +2072,65 @@ pub fn Engine(comptime Ctx: type) type {
                 const elem_id = self.engine.internDomIdentity(Ctx.allocator(self.host_ctx), scope_id, dom_ordinal.*) catch @panic("scope id has no host scope descriptor");
                 dom_ordinal.* += 1;
                 self.stream.appendTextNode(Ctx.allocator(self.host_ctx), elem_id, parent_elem_id, scope_id, text);
+            }
+        };
+
+        const StagedCollectionCtx = struct {
+            engine: *Self,
+            host_ctx: Ctx.Handle,
+            stream: *HostNodeDescriptorStream,
+            budget: collection_budget.StreamBudget,
+            scopes: collection_plan.ScopeOverlay = .{},
+            dom_identities: collection_plan.IdentityOverlay = .{},
+            prepared_nodes: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedStaticNode) = .empty,
+            committed: bool = false,
+
+            fn init(engine_ptr: *Self, host_ctx: Ctx.Handle, stream: *HostNodeDescriptorStream, limits: collection_budget.Limits, expected_nodes: usize) CollectionError!@This() {
+                var self = @This(){
+                    .engine = engine_ptr,
+                    .host_ctx = host_ctx,
+                    .stream = stream,
+                    .budget = collection_budget.StreamBudget.init(limits) catch return error.ResourceLimit,
+                };
+                errdefer self.deinit();
+                const allocator = Ctx.allocator(host_ctx);
+                self.scopes.prepare(allocator, 1) catch return error.OutOfMemory;
+                if (expected_nodes > limits.nodes) return error.ResourceLimit;
+                self.dom_identities.prepare(allocator, expected_nodes) catch return error.OutOfMemory;
+                self.prepared_nodes.ensureTotalCapacity(allocator, expected_nodes) catch return error.OutOfMemory;
+                return self;
+            }
+
+            fn deinit(self: *@This()) void {
+                const allocator = Ctx.allocator(self.host_ctx);
+                if (!self.committed) {
+                    var index = self.prepared_nodes.items.len;
+                    while (index != 0) {
+                        index -= 1;
+                        self.prepared_nodes.items[index].abort(allocator);
+                    }
+                    self.scopes.abort();
+                    self.dom_identities.abort();
+                }
+                self.prepared_nodes.deinit(allocator);
+                self.scopes.deinit(allocator);
+                self.dom_identities.deinit(allocator);
+            }
+
+            fn rootScope(self: *@This()) CollectionError!scope_tree.InternResult {
+                const key: collection_plan.ScopeKey = .{ .parent_id = 0, .ordinal = 0, .kind = 0 };
+                const active_id: ?u64 = if (self.engine.scopes.items.len != 0) 0 else null;
+                const scope_id = self.scopes.reserve(key, active_id, &.{0}) catch |err| switch (err) {
+                    error.NoCapacity => return error.OutOfMemory,
+                    error.NoAvailableScope => return error.ResourceLimit,
+                };
+                return .{ .scope_id = scope_id, .created = active_id == null };
+            }
+
+            fn validateScope(self: *@This(), scope_id: u64) CollectionError!void {
+                const root_key: collection_plan.ScopeKey = .{ .parent_id = 0, .ordinal = 0, .kind = 0 };
+                if (self.scopes.lookup(root_key, null) == scope_id) return;
+                self.engine.validateScopeId(scope_id) catch return error.ResourceLimit;
             }
         };
 
