@@ -1130,6 +1130,7 @@ pub fn PreparedGraphAppend(comptime Record: type) type {
         survivor_adjacency: []SurvivorAdjacencyAppend,
         new_nodes: []Node(Record),
         retired_adjacency: [][]u64,
+        final_existing_record_ids: []?u64,
         survivor_count: usize,
         committed: bool = false,
 
@@ -1171,6 +1172,17 @@ pub fn PreparedGraphAppend(comptime Record: type) type {
             while (structural_routes.items.len < final_count) structural_routes.appendAssumeCapacity(.empty);
         }
 
+        /// Resolves a record to the dense id it will have after publication.
+        pub fn plannedRecordId(self: *const @This(), original_nodes: []const Node(Record), record: *const Record) ?u64 {
+            if (record.active_graph_id) |original_id| {
+                const index: usize = @intCast(original_id);
+                if (index >= original_nodes.len or original_nodes[index].record != record) return null;
+                return self.final_existing_record_ids[index];
+            }
+            for (self.records, self.record_ids) |planned, id| if (planned == record) return id;
+            return null;
+        }
+
         /// Publishes prepared nodes, edges, ids, and use counts without allocating.
         pub fn commitNodes(self: *@This(), nodes: *std.ArrayListUnmanaged(Node(Record))) void {
             if (self.committed or nodes.items.len != self.survivor_count) @panic("replacement graph publication violated its prepared snapshot");
@@ -1207,6 +1219,7 @@ pub fn PreparedGraphAppend(comptime Record: type) type {
             allocator.free(self.new_nodes);
             for (self.retired_adjacency) |retired| allocator.free(retired);
             allocator.free(self.retired_adjacency);
+            allocator.free(self.final_existing_record_ids);
             self.* = undefined;
         }
     };
@@ -1363,6 +1376,8 @@ pub fn prepareGraphAppend(comptime Record: type, allocator: std.mem.Allocator, n
     const retired_adjacency = try allocator.alloc([]u64, survivor_replacements.len);
     errdefer allocator.free(retired_adjacency);
     @memset(retired_adjacency, &.{});
+    const owned_final_existing_ids = try allocator.dupe(?u64, final_record_ids);
+    errdefer allocator.free(owned_final_existing_ids);
     return .{
         .records = owned_records,
         .record_ids = record_ids,
@@ -1372,6 +1387,7 @@ pub fn prepareGraphAppend(comptime Record: type, allocator: std.mem.Allocator, n
         .survivor_adjacency = survivor_replacements,
         .new_nodes = new_nodes,
         .retired_adjacency = retired_adjacency,
+        .final_existing_record_ids = owned_final_existing_ids,
         .survivor_count = survivor_count,
     };
 }
@@ -1997,6 +2013,10 @@ test "prepared graph append enumerates missing topology without mutating survivo
     try std.testing.expect(attempts != 0);
     try std.testing.expectEqualSlices(*LifecycleTestRecord, &.{ &mapped, &fresh, &root }, baseline.records);
     try std.testing.expectEqualSlices(u64, &.{ 1, 2, 3 }, baseline.record_ids);
+    try std.testing.expectEqual(@as(?u64, 0), baseline.plannedRecordId(nodes.items, &survivor));
+    try std.testing.expectEqual(@as(?u64, 1), baseline.plannedRecordId(nodes.items, &mapped));
+    try std.testing.expectEqual(@as(?u64, 2), baseline.plannedRecordId(nodes.items, &fresh));
+    try std.testing.expectEqual(@as(?u64, 3), baseline.plannedRecordId(nodes.items, &root));
     try std.testing.expectEqualSlices(u64, &.{ 1, 0, 2 }, baseline.ranks);
     try std.testing.expectEqualSlices(usize, &.{ 2, 1, 1 }, baseline.use_counts);
     try std.testing.expectEqual(@as(usize, 1), mapped.ref_count);
