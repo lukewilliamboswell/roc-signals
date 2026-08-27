@@ -3796,8 +3796,7 @@ pub fn Engine(comptime Ctx: type) type {
             engine: *Self,
             host_ctx: Ctx.Handle,
             roc_host: *abi.RocHost,
-            stream: HostNodeDescriptorStream = .{},
-            collection: StagedCollectionCtx = undefined,
+            replacement: *PreparedReplacementOwner = undefined,
             row_elems: []RowElem = &.{},
             replacement_rows: []ReplacementRow = &.{},
             committed: bool = false,
@@ -3808,7 +3807,6 @@ pub fn Engine(comptime Ctx: type) type {
                 const plan = allocator.create(@This()) catch return error.OutOfMemory;
                 errdefer allocator.destroy(plan);
                 plan.* = .{ .engine = engine, .host_ctx = ctx, .roc_host = roc_host };
-                errdefer plan.stream.deinit(allocator, ctx, roc_host, &engine.pending_roc_metrics);
 
                 var changed_count: usize = 0;
                 for (rows.row_items_changed) |changed| if (changed) {
@@ -3829,8 +3827,8 @@ pub fn Engine(comptime Ctx: type) type {
                     try AggregateBranchCollection.addCounts(&total, try countStaticRootNodes(elem));
                 }
 
-                plan.collection = try StagedCollectionCtx.init(engine, ctx, &plan.stream, limits, total.nodes, total.attrs, total.lifecycle, total.signal_records, total.state_sites, total.component_sites, total.when_sites, rows.created_count);
-                errdefer plan.collection.deinit();
+                plan.replacement = try PreparedReplacementOwner.create(engine, ctx, roc_host, limits, total, rows.created_count);
+                errdefer plan.replacement.deinit();
                 const created_scope_ids = allocator.alloc(u64, rows.created_count) catch return error.OutOfMemory;
                 defer allocator.free(created_scope_ids);
                 var created_write: usize = 0;
@@ -3838,7 +3836,7 @@ pub fn Engine(comptime Ctx: type) type {
                     created_scope_ids[created_write] = scope_id;
                     created_write += 1;
                 };
-                try plan.collection.attachExternalScopeIds(created_scope_ids);
+                try plan.replacement.collection.attachExternalScopeIds(created_scope_ids);
 
                 for (plan.row_elems, 0..) |*entry, replacement_index| {
                     const row_index = entry.row_index;
@@ -3851,16 +3849,16 @@ pub fn Engine(comptime Ctx: type) type {
                     binder_stack.appendSliceAssumeCapacity(site.binder_bindings);
                     var ordinal: u64 = 0;
                     var dom_ordinal: u64 = 0;
-                    const render_start = plan.collection.prepared_render_order.items.len;
-                    try engine.collectActiveEachRowElemDescriptorsWith(*StagedCollectionCtx, &plan.collection, ctx, roc_host, &plan.stream, each, entry.elem, row_scope_id, site.parent_elem_id, &ordinal, &dom_ordinal, &binder_stack, rows.scope_created[row_index], dirty_source_node_ids);
+                    const render_start = plan.replacement.collection.prepared_render_order.items.len;
+                    try engine.collectActiveEachRowElemDescriptorsWith(*StagedCollectionCtx, &plan.replacement.collection, ctx, roc_host, &plan.replacement.stream, each, entry.elem, row_scope_id, site.parent_elem_id, &ordinal, &dom_ordinal, &binder_stack, rows.scope_created[row_index], dirty_source_node_ids);
                     plan.replacement_rows[replacement_index] = .{
                         .row_index = row_index,
                         .scope_id = row_scope_id,
                         .start = render_start,
-                        .len = plan.collection.prepared_render_order.items.len - render_start,
+                        .len = plan.replacement.collection.prepared_render_order.items.len - render_start,
                     };
                 }
-                plan.collection.materializeStream();
+                plan.replacement.collection.materializeStream();
                 for (plan.row_elems) |*entry| entry.elem.decref(roc_host);
                 allocator.free(plan.row_elems);
                 plan.row_elems = &.{};
@@ -3869,7 +3867,7 @@ pub fn Engine(comptime Ctx: type) type {
 
             fn commit(self: *@This()) void {
                 if (self.committed) @panic("prepared each replacement collection committed twice");
-                self.collection.commit();
+                self.replacement.collection.commit();
                 self.committed = true;
             }
 
@@ -3878,8 +3876,7 @@ pub fn Engine(comptime Ctx: type) type {
                 for (self.row_elems) |*entry| entry.elem.decref(self.roc_host);
                 allocator.free(self.row_elems);
                 allocator.free(self.replacement_rows);
-                self.collection.deinit();
-                self.stream.deinit(allocator, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
+                self.replacement.deinit();
                 allocator.destroy(self);
             }
         };
@@ -10398,7 +10395,7 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
             var rows = try each_runtime.PreparedRowSync.prepare(ctx.allocator, &engine.each_row_sites, &engine.each_row_memberships_by_scope_id, site_index, 0, 44, keys, items, &hooks);
             var retirement = try Engine(VerifyCtx).PreparedEachRowSubtreeRetirement.prepare(engine, ctx.allocator, rows.removed_scope_ids);
             const replacement = try prepareReplacement(engine, ctx, host, each_ops, &rows, keys, items);
-            try std.testing.expectEqual(@as(usize, 2), replacement.stream.text_nodes.items.len);
+            try std.testing.expectEqual(@as(usize, 2), replacement.replacement.stream.text_nodes.items.len);
             try std.testing.expectEqualDeep(&[_]Engine(VerifyCtx).PreparedEachRowReplacementCollection.ReplacementRow{
                 .{ .row_index = 0, .scope_id = 2, .start = 0, .len = 1 },
                 .{ .row_index = 2, .scope_id = 4, .start = 1, .len = 1 },
@@ -10512,9 +10509,9 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
                 try retry(&engine, &ctx, host, each_ops, site_index, &keys, &items);
                 return failed_attempts;
             };
-            try std.testing.expectEqual(@as(usize, 2), replacement.stream.text_nodes.items.len);
-            try std.testing.expectEqualStrings("changed", replacement.stream.text_nodes.items[0].value);
-            try std.testing.expectEqualStrings("created", replacement.stream.text_nodes.items[1].value);
+            try std.testing.expectEqual(@as(usize, 2), replacement.replacement.stream.text_nodes.items.len);
+            try std.testing.expectEqualStrings("changed", replacement.replacement.stream.text_nodes.items[0].value);
+            try std.testing.expectEqualStrings("created", replacement.replacement.stream.text_nodes.items[1].value);
             try std.testing.expectEqual(@as(usize, 0), replacement.replacement_rows[0].row_index);
             try std.testing.expectEqual(@as(usize, 2), replacement.replacement_rows[1].row_index);
             var layout = prepareLayout(&engine, ctx.allocator, &rows, replacement) catch |err| {
