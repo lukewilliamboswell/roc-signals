@@ -1223,6 +1223,30 @@ pub const Stream = struct {
         }
     };
 
+    pub const PreparedEventDescriptor = struct {
+        desc: EventDesc,
+
+        pub fn abort(self: @This(), allocator: std.mem.Allocator, roc_host: *abi.RocHost, metrics: anytype) void {
+            self.desc.deinit(allocator, roc_host, metrics);
+        }
+    };
+
+    pub fn reservePreparedEvents(self: *Stream, allocator: std.mem.Allocator, additional: usize, highest_elem_id: u64) std.mem.Allocator.Error!void {
+        try self.events.ensureUnusedCapacity(allocator, additional);
+        const highest_index = std.math.cast(usize, highest_elem_id) orelse return error.OutOfMemory;
+        const descriptor_len = std.math.add(usize, highest_index, 1) catch return error.OutOfMemory;
+        if (descriptor_len > self.descriptor_indexes_by_elem_id.items.len) try self.descriptor_indexes_by_elem_id.ensureTotalCapacity(allocator, descriptor_len);
+    }
+
+    pub fn appendPreparedEvent(self: *Stream, prepared: PreparedEventDescriptor) void {
+        const desc = prepared.desc;
+        while (self.descriptor_indexes_by_elem_id.items.len <= desc.elem_id) self.descriptor_indexes_by_elem_id.appendAssumeCapacity(.{});
+        const kind = desc.fixedKind() orelse @panic("prepared named event requires named index reservation");
+        const index = self.events.items.len;
+        self.events.appendAssumeCapacity(desc);
+        setFreshIndex(self.descriptor_indexes_by_elem_id.items[@intCast(desc.elem_id)].events.slot(kind), index);
+    }
+
     pub fn reservePreparedSignalTextNodes(self: *Stream, allocator: std.mem.Allocator, additional: usize, highest_elem_id: u64) std.mem.Allocator.Error!void {
         try self.render_nodes.ensureUnusedCapacity(allocator, additional);
         try self.signal_text_nodes.ensureUnusedCapacity(allocator, additional);
