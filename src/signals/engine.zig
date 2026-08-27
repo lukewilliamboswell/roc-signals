@@ -3489,6 +3489,58 @@ pub fn Engine(comptime Ctx: type) type {
                 return .{ .node_ids = node_ids, .dom_ids = dom_ids };
             }
 
+            fn prepareExactRemoval(engine: *Self, allocator: std.mem.Allocator, retired_scope_ids: []const u64, removal: *const structural_splice.PreparedRemoval) CollectionError!@This() {
+                const retired_scopes = allocator.alloc(bool, engine.scopes.items.len) catch return error.OutOfMemory;
+                defer allocator.free(retired_scopes);
+                @memset(retired_scopes, false);
+                for (retired_scope_ids) |scope_id| {
+                    if (scope_id >= retired_scopes.len) return error.ResourceLimit;
+                    retired_scopes[@intCast(scope_id)] = true;
+                }
+                const node_members = allocator.alloc(bool, engine.node_identities.items.len) catch return error.OutOfMemory;
+                defer allocator.free(node_members);
+                @memset(node_members, false);
+                for (removal.node_indexes.scope_site_indexes.items) |site_index| {
+                    if (site_index >= engine.active_stream.scope_sites.items.len) return error.ResourceLimit;
+                    const node_id = engine.active_stream.scope_sites.items[site_index].node_id;
+                    if (node_id >= node_members.len) return error.ResourceLimit;
+                    node_members[@intCast(node_id)] = true;
+                }
+                var node_count: usize = 0;
+                for (engine.node_identities.items) |identity| {
+                    if (identity.scope_id >= retired_scopes.len) return error.ResourceLimit;
+                    if (identity.active and (retired_scopes[@intCast(identity.scope_id)] or node_members[@intCast(identity.node_id)])) node_count = std.math.add(usize, node_count, 1) catch return error.ResourceLimit;
+                }
+                const node_ids = allocator.alloc(u64, node_count) catch return error.OutOfMemory;
+                errdefer allocator.free(node_ids);
+                var node_write: usize = 0;
+                for (engine.node_identities.items) |identity| if (identity.active and (retired_scopes[@intCast(identity.scope_id)] or node_members[@intCast(identity.node_id)])) {
+                    node_ids[node_write] = identity.node_id;
+                    node_write += 1;
+                };
+
+                const dom_members = allocator.alloc(bool, engine.dom_identities.items.len + 1) catch return error.OutOfMemory;
+                defer allocator.free(dom_members);
+                @memset(dom_members, false);
+                for (removal.scan.removed_elem_ids) |elem_id| {
+                    if (elem_id == 0 or elem_id >= dom_members.len) return error.ResourceLimit;
+                    dom_members[@intCast(elem_id)] = true;
+                }
+                var dom_count: usize = 0;
+                for (engine.dom_identities.items, 1..) |identity, elem_id| {
+                    if (identity.scope_id >= retired_scopes.len) return error.ResourceLimit;
+                    if (identity.active and (retired_scopes[@intCast(identity.scope_id)] or dom_members[elem_id])) dom_count = std.math.add(usize, dom_count, 1) catch return error.ResourceLimit;
+                }
+                const dom_ids = allocator.alloc(u64, dom_count) catch return error.OutOfMemory;
+                errdefer allocator.free(dom_ids);
+                var dom_write: usize = 0;
+                for (engine.dom_identities.items, 1..) |identity, elem_id| if (identity.active and (retired_scopes[@intCast(identity.scope_id)] or dom_members[elem_id])) {
+                    dom_ids[dom_write] = elem_id;
+                    dom_write += 1;
+                };
+                return .{ .node_ids = node_ids, .dom_ids = dom_ids };
+            }
+
             fn apply(self: *const @This(), engine: *Self) void {
                 for (self.node_ids) |node_id| {
                     const identity = &engine.node_identities.items[@intCast(node_id)];
@@ -3680,6 +3732,22 @@ pub fn Engine(comptime Ctx: type) type {
                 self.identities.?.apply(engine);
                 var row_keys = EachRowScopeKeyLookup{ .engine = engine };
                 self.rows.?.apply(&engine.each_row_sites, &engine.each_row_memberships_by_scope_id, &row_keys);
+            }
+
+            fn refineDescriptorOwnedRetirement(self: *@This(), engine: *Self, allocator: std.mem.Allocator, removal: *const structural_splice.PreparedRemoval) CollectionError!void {
+                const retirement_scope_ids = self.targets.?.scope_retirement.?.scope_ids;
+                var exact_identities = try PreparedIdentityRetirements.prepareExactRemoval(engine, allocator, retirement_scope_ids, removal);
+                errdefer exact_identities.deinit(allocator);
+                const retired_scopes = allocator.alloc(bool, engine.scopes.items.len) catch return error.OutOfMemory;
+                defer allocator.free(retired_scopes);
+                @memset(retired_scopes, false);
+                for (retirement_scope_ids) |scope_id| retired_scopes[@intCast(scope_id)] = true;
+                var exact_effects = try PreparedEffectRetirements.prepare(engine, allocator, retired_scopes, removal.node_indexes.cleanup_indexes.items);
+                errdefer exact_effects.deinit(allocator, null);
+                self.identities.?.deinit(allocator);
+                self.identities = exact_identities;
+                self.effects.?.deinit(allocator, null);
+                self.effects = exact_effects;
             }
 
             fn applyAfterRowCommit(self: *@This(), engine: *Self) void {
@@ -10314,6 +10382,7 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
                 .{ .row_index = 2, .scope_id = 4, .start = 1, .len = 1 },
             }, replacement.replacement_rows);
             var layout = try prepareLayout(engine, ctx.allocator, &rows, replacement);
+            try retirement.refineDescriptorOwnedRetirement(engine, ctx.allocator, &layout.removal.removal);
             try std.testing.expectEqualSlices(usize, &.{0}, layout.remove_starts);
             try std.testing.expectEqualSlices(usize, &.{ 0, 1, 2 }, layout.final_starts);
             try std.testing.expect(layout.targets.descriptor_target_scopes[1]);
@@ -10338,6 +10407,7 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
             defer {
                 engine.active_stream.deinit(ctx.allocator, &ctx, host, &engine.pending_roc_metrics);
                 deinitVerifyStateEngine(&engine, &ctx, host);
+                for (engine.pending_tasks.items) |*task| effects_runtime.deinitPendingTask(ctx.allocator, host, task);
                 engine.pending_tasks.deinit(ctx.allocator);
             }
             _ = try engine.internRootScope(ctx.allocator);
@@ -10347,6 +10417,7 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
             const retired_node_id = try engine.internNodeIdentity(ctx.allocator, removed_scope_id, 71);
             const retired_elem_id = try engine.internDomIdentity(ctx.allocator, removed_scope_id, 72);
             const changed_elem_id = try engine.internDomIdentity(ctx.allocator, 2, 72);
+            const persistent_changed_node_id = try engine.internNodeIdentity(ctx.allocator, 2, 99);
             const unchanged_elem_id = try engine.internDomIdentity(ctx.allocator, 3, 72);
             engine.active_stream.appendTextNode(ctx.allocator, retired_elem_id, 0, removed_scope_id, "old-one");
             engine.active_stream.appendTextNode(ctx.allocator, changed_elem_id, 0, 2, "old-two");
@@ -10357,6 +10428,7 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
             engine.active_stream.appendCleanup(ctx.allocator, removed_scope_id, "each-cleanup");
             engine.roc_host = host;
             _ = engine.appendPendingTask(&ctx, removed_scope_id, each_ops.row.?, "each-task", "request");
+            _ = engine.appendPendingTask(&ctx, 2, each_ops.row.?, "changed-row-task", "request");
             const site_index = engine.activeEachRowSiteIndex(0, 44).?;
             const old_ids = try ctx.allocator.dupe(u64, engine.each_row_sites.items[site_index].scope_ids.items);
             defer ctx.allocator.free(old_ids);
@@ -10374,7 +10446,7 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
                 try std.testing.expect(engine.dom_identities.items[@intCast(retired_elem_id - 1)].active);
                 try std.testing.expectEqual(@as(usize, 0), ctx.cancelled_tasks);
                 try std.testing.expectEqual(@as(usize, 0), engine.cleanup_events.items.len);
-                try std.testing.expectEqual(@as(usize, 1), engine.pending_tasks.items.len);
+                try std.testing.expectEqual(@as(usize, 2), engine.pending_tasks.items.len);
                 try std.testing.expect(engine.pending_tasks.items[0].active);
                 try std.testing.expectEqual(@as(usize, 1), engine.states.items.len);
                 try std.testing.expect(engine.states.items[0].active);
@@ -10395,7 +10467,7 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
                 try std.testing.expect(engine.dom_identities.items[@intCast(retired_elem_id - 1)].active);
                 try std.testing.expectEqual(@as(usize, 0), ctx.cancelled_tasks);
                 try std.testing.expectEqual(@as(usize, 0), engine.cleanup_events.items.len);
-                try std.testing.expectEqual(@as(usize, 1), engine.pending_tasks.items.len);
+                try std.testing.expectEqual(@as(usize, 2), engine.pending_tasks.items.len);
                 try std.testing.expect(engine.pending_tasks.items[0].active);
                 try std.testing.expectEqual(@as(usize, 1), engine.states.items.len);
                 try std.testing.expect(engine.states.items[0].active);
@@ -10436,6 +10508,21 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
                 try retry(&engine, &ctx, host, each_ops, site_index, &keys, &items);
                 return failed_attempts;
             };
+            retirement.refineDescriptorOwnedRetirement(&engine, ctx.allocator, &layout.removal.removal) catch |err| {
+                layout.deinit();
+                replacement.deinit();
+                retirement.deinit(&engine, ctx.allocator, null, null);
+                rows.abort(&hooks);
+                rows.deinit();
+                hooks.deinit();
+                try std.testing.expect(err == error.OutOfMemory or err == error.ResourceLimit);
+                try std.testing.expect(engine.node_identities.items[@intCast(persistent_changed_node_id)].active);
+                try std.testing.expectEqual(@as(usize, 2), engine.pending_tasks.items.len);
+                const failed_attempts = fault.attempts;
+                fault.configure(null);
+                try retry(&engine, &ctx, host, each_ops, site_index, &keys, &items);
+                return failed_attempts;
+            };
             try std.testing.expectEqualSlices(usize, &.{0}, layout.remove_starts);
             try std.testing.expectEqualSlices(usize, &.{ 0, 1, 2 }, layout.final_starts);
             try std.testing.expectEqual(@as(usize, 1), layout.survivor_moves.len);
@@ -10452,6 +10539,9 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
             retirement.applyAfterRowCommit(&engine);
             retirement.applyEffectsAfterPublication(&engine, &ctx);
             try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+            try std.testing.expect(engine.node_identities.items[@intCast(persistent_changed_node_id)].active);
+            try std.testing.expectEqual(@as(usize, 1), engine.pending_tasks.items.len);
+            try std.testing.expectEqualStrings("changed-row-task", engine.pending_tasks.items[0].task_name);
             try std.testing.expectEqualSlices(u64, &.{ 2, 3, 4 }, diff.scope_ids);
             try std.testing.expectEqualSlices(bool, &.{ true, false, true }, diff.row_items_changed);
             try std.testing.expectEqualSlices(bool, &.{ false, false, true }, diff.scope_created);
@@ -10462,7 +10552,6 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
             try std.testing.expect(!engine.dom_identities.items[@intCast(retired_elem_id - 1)].active);
             try std.testing.expectEqual(@as(usize, 1), engine.cleanup_events.items.len);
             try std.testing.expectEqualStrings("each-cleanup", engine.cleanup_events.items[0]);
-            try std.testing.expectEqual(@as(usize, 0), engine.pending_tasks.items.len);
             try std.testing.expectEqual(@as(usize, 1), ctx.cancelled_tasks);
             try std.testing.expectEqual(@as(usize, 0), engine.states.items.len);
             fault.configure(null);
