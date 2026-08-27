@@ -2697,6 +2697,26 @@ test "prepared static append sweeps allocation failures without logical mutation
     }
 }
 
+test "prepared static batch reserves cumulative allocation-free publication capacity" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var fault = FaultAllocator.init(std.testing.allocator);
+    var stream: Stream = .{};
+    defer deinitStaticPreparedTestStream(&stream, std.testing.allocator);
+
+    try stream.reservePreparedStaticNodes(fault.allocator(), 2, 2);
+    const element = try stream.prepareElement(fault.allocator(), 1, 0, 0, "div");
+    const text = try stream.prepareTextNode(fault.allocator(), 2, 1, 0, "hello");
+
+    fault.configure(1);
+    stream.appendPreparedStaticNode(element);
+    stream.appendPreparedStaticNode(text);
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqual(@as(usize, 2), stream.render_nodes.items.len);
+    try std.testing.expectEqual(@as(usize, 1), stream.elements.items.len);
+    try std.testing.expectEqual(@as(usize, 1), stream.text_nodes.items.len);
+    try std.testing.expectEqualStrings("hello", stream.text_nodes.items[0].value);
+}
+
 test "fixed event descriptors preserve Roc supplied payload descriptors" {
     const allocator = std.testing.allocator;
     var stream: Stream = .{};
