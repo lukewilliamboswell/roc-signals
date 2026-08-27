@@ -208,7 +208,7 @@ const TestDisposeHooks = struct {
         self.removed_rows.append(std.testing.allocator, key_hash) catch @panic("out of memory");
     }
 
-    /// structural scope kinds, which carry no Roc values).
+    /// Releases scope step and all host registrations or retained values it owns.
     pub fn deinitScopeStep(self: *@This(), step: *scope_tree.Step(TestRow)) void {
         switch (step.*) {
             .each_row, .root, .component, .when_branch => {},

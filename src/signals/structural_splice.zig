@@ -103,6 +103,35 @@ pub const ElemOwnedRemovalScratch = struct {
         self.event_indexes.clearRetainingCapacity();
     }
 
+    /// Reserves the worst-case descriptor-index footprint for `additional`
+    /// elements without changing any logical scratch length.
+    pub fn prepare(self: *@This(), allocator: std.mem.Allocator, additional: usize) std.mem.Allocator.Error!void {
+        const text_fields = std.math.mul(usize, additional, 6) catch return error.OutOfMemory;
+        const bool_fields = std.math.mul(usize, additional, 2) catch return error.OutOfMemory;
+        const events = std.math.mul(usize, additional, 7) catch return error.OutOfMemory;
+        try self.element_indexes.ensureUnusedCapacity(allocator, additional);
+        try self.text_node_indexes.ensureUnusedCapacity(allocator, additional);
+        try self.signal_text_node_indexes.ensureUnusedCapacity(allocator, additional);
+        try self.static_text_attr_indexes.ensureUnusedCapacity(allocator, text_fields);
+        try self.signal_text_attr_indexes.ensureUnusedCapacity(allocator, text_fields);
+        try self.static_bool_attr_indexes.ensureUnusedCapacity(allocator, bool_fields);
+        try self.signal_bool_attr_indexes.ensureUnusedCapacity(allocator, bool_fields);
+        try self.event_indexes.ensureUnusedCapacity(allocator, events);
+    }
+
+    /// Records descriptor indexes without allocating. `prepare` must have
+    /// reserved capacity for every element in the transaction first.
+    pub fn appendDescriptorIndexesAssumeCapacity(self: *@This(), descriptor_index: anytype) void {
+        appendRemovalIndexAssumeCapacity(&self.element_indexes, descriptorIndexValue(descriptor_index.element));
+        appendRemovalIndexAssumeCapacity(&self.text_node_indexes, descriptorIndexValue(descriptor_index.text_node));
+        appendRemovalIndexAssumeCapacity(&self.signal_text_node_indexes, descriptorIndexValue(descriptor_index.signal_text_node));
+        appendTextFieldRemovalIndexesAssumeCapacity(&self.static_text_attr_indexes, descriptor_index.static_text_attrs);
+        appendTextFieldRemovalIndexesAssumeCapacity(&self.signal_text_attr_indexes, descriptor_index.signal_text_attrs);
+        appendBoolFieldRemovalIndexesAssumeCapacity(&self.static_bool_attr_indexes, descriptor_index.static_bool_attrs);
+        appendBoolFieldRemovalIndexesAssumeCapacity(&self.signal_bool_attr_indexes, descriptor_index.signal_bool_attrs);
+        appendEventRemovalIndexesAssumeCapacity(&self.event_indexes, descriptor_index.events);
+    }
+
     /// Appends descriptor indexes using capacity that must already satisfy the caller's transaction contract.
     pub fn appendDescriptorIndexes(self: *@This(), allocator: std.mem.Allocator, descriptor_index: anytype) void {
         appendRemovalIndex(allocator, &self.element_indexes, descriptorIndexValue(descriptor_index.element));
@@ -146,6 +175,34 @@ pub fn sortRemovalIndexesDescending(indexes: []usize) void {
 /// Appends removal index using capacity that must already satisfy the caller's transaction contract.
 pub fn appendRemovalIndex(allocator: std.mem.Allocator, indexes: *std.ArrayListUnmanaged(usize), index: ?usize) void {
     indexes.append(allocator, index orelse return) catch @panic("out of memory");
+}
+
+fn appendRemovalIndexAssumeCapacity(indexes: *std.ArrayListUnmanaged(usize), index: ?usize) void {
+    indexes.appendAssumeCapacity(index orelse return);
+}
+
+fn appendTextFieldRemovalIndexesAssumeCapacity(indexes: *std.ArrayListUnmanaged(usize), fields: anytype) void {
+    appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(fields.text));
+    appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(fields.role));
+    appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(fields.label));
+    appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(fields.test_id));
+    appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(fields.value));
+    appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(fields.class));
+}
+
+fn appendBoolFieldRemovalIndexesAssumeCapacity(indexes: *std.ArrayListUnmanaged(usize), fields: anytype) void {
+    appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(fields.checked));
+    appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(fields.disabled));
+}
+
+fn appendEventRemovalIndexesAssumeCapacity(indexes: *std.ArrayListUnmanaged(usize), events: anytype) void {
+    appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(events.click));
+    appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(events.input));
+    appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(events.check));
+    appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(events.pointer_down));
+    appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(events.pointer_up));
+    appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(events.pointer_enter));
+    appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(events.pointer_leave));
 }
 
 fn descriptorIndexValue(index: anytype) ?usize {
@@ -192,8 +249,8 @@ pub fn buildTargetScopeSet(comptime Scope: type, allocator: std.mem.Allocator, s
     return target_scopes;
 }
 
-/// Collects render removal scan from the explicitly affected graph or scope set.
-pub fn collectRenderRemovalScan(comptime Stream: type, allocator: std.mem.Allocator, stream: *const Stream, render_insert_index: usize, target_scopes: []const bool) RenderRemovalScan {
+/// Prepares a render-removal snapshot without mutating the source stream.
+pub fn prepareRenderRemovalScan(comptime Stream: type, allocator: std.mem.Allocator, stream: *const Stream, render_insert_index: usize, target_scopes: []const bool) std.mem.Allocator.Error!RenderRemovalScan {
     if (render_insert_index > stream.render_nodes.items.len) @panic("structural replacement render insertion point is outside the active stream");
 
     var removed_elem_ids: std.ArrayListUnmanaged(u64) = .empty;
@@ -216,10 +273,10 @@ pub fn collectRenderRemovalScan(comptime Stream: type, allocator: std.mem.Alloca
         const parent_removed = removed_elem_set.contains(parent_elem_id);
         if (!scope_in_target and !parent_removed) break;
         removed_render_count += 1;
-        removed_elem_ids.append(allocator, node.elem_id) catch @panic("out of memory");
-        removed_elem_set.put(allocator, node.elem_id, {}) catch @panic("out of memory");
-        const touched_entry = touched_parent_set.getOrPut(allocator, parent_elem_id) catch @panic("out of memory");
-        if (!touched_entry.found_existing) touched_parent_ids.append(allocator, parent_elem_id) catch @panic("out of memory");
+        try removed_elem_ids.append(allocator, node.elem_id);
+        try removed_elem_set.put(allocator, node.elem_id, {});
+        const touched_entry = try touched_parent_set.getOrPut(allocator, parent_elem_id);
+        if (!touched_entry.found_existing) try touched_parent_ids.append(allocator, parent_elem_id);
     }
 
     var touched_parent_write_index: usize = 0;
@@ -230,12 +287,20 @@ pub fn collectRenderRemovalScan(comptime Stream: type, allocator: std.mem.Alloca
     }
     touched_parent_ids.items.len = touched_parent_write_index;
 
+    const owned_removed = try removed_elem_ids.toOwnedSlice(allocator);
+    errdefer allocator.free(owned_removed);
+    const owned_parents = try touched_parent_ids.toOwnedSlice(allocator);
     return .{
-        .removed_elem_ids = removed_elem_ids.toOwnedSlice(allocator) catch @panic("out of memory"),
-        .touched_parent_ids = touched_parent_ids.toOwnedSlice(allocator) catch @panic("out of memory"),
+        .removed_elem_ids = owned_removed,
+        .touched_parent_ids = owned_parents,
         .removed_render_count = removed_render_count,
         .target_scan_count = target_scan_count,
     };
+}
+
+/// Collects render removal scan for legacy immediate callers.
+pub fn collectRenderRemovalScan(comptime Stream: type, allocator: std.mem.Allocator, stream: *const Stream, render_insert_index: usize, target_scopes: []const bool) RenderRemovalScan {
+    return prepareRenderRemovalScan(Stream, allocator, stream, render_insert_index, target_scopes) catch @panic("out of memory");
 }
 
 /// Returns the render element ids selected by this local structural splice.
@@ -324,6 +389,7 @@ test "structural splice collects removal indexes" {
 }
 
 test "structural splice scratch collects descriptor indexes" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
     const DescriptorIndex = struct {
         element: ?usize = 3,
         text_node: ?usize = null,
@@ -363,11 +429,17 @@ test "structural splice scratch collects descriptor indexes" {
         } = .{},
     };
 
+    var fault = FaultAllocator.init(std.testing.allocator);
+    const allocator = fault.allocator();
     var scratch: ElemOwnedRemovalScratch = .{};
-    defer scratch.deinit(std.testing.allocator);
+    defer scratch.deinit(allocator);
 
     scratch.assertEmpty();
-    scratch.appendDescriptorIndexes(std.testing.allocator, DescriptorIndex{});
+    try scratch.prepare(allocator, 1);
+    fault.configure(1);
+    scratch.appendDescriptorIndexesAssumeCapacity(DescriptorIndex{});
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    fault.configure(null);
     scratch.sortDescending();
 
     try std.testing.expectEqualSlices(usize, &.{3}, scratch.element_indexes.items);
@@ -464,6 +536,42 @@ test "structural splice scans removed render range" {
     try std.testing.expectEqual(@as(usize, 4), scan.target_scan_count);
     try std.testing.expectEqualSlices(u64, &.{ 1, 2, 3 }, scan.removed_elem_ids);
     try std.testing.expectEqualSlices(u64, &.{0}, scan.touched_parent_ids);
+}
+
+test "render removal preparation sweeps allocation failures without source mutation" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var stream = TestStream{};
+    defer stream.deinit(std.testing.allocator);
+    try stream.render_nodes.appendSlice(std.testing.allocator, &.{
+        .{ .elem_id = 1, .kind = .element },
+        .{ .elem_id = 2, .kind = .text },
+        .{ .elem_id = 3, .kind = .text },
+    });
+    try stream.elements.append(std.testing.allocator, .{ .elem_id = 1, .parent_elem_id = 0, .scope_id = 1, .tag = "div" });
+    try stream.text_nodes.appendSlice(std.testing.allocator, &.{
+        .{ .elem_id = 2, .parent_elem_id = 1, .scope_id = 1, .value = "a" },
+        .{ .elem_id = 3, .parent_elem_id = 1, .scope_id = 1, .value = "b" },
+    });
+    const original_nodes = try std.testing.allocator.dupe(TestStream.RenderNode, stream.render_nodes.items);
+    defer std.testing.allocator.free(original_nodes);
+    const target_scopes = &.{ false, true };
+
+    var counter = FaultAllocator.init(std.testing.allocator);
+    const successful = try prepareRenderRemovalScan(TestStream, counter.allocator(), &stream, 0, target_scopes);
+    const attempts = counter.attempts;
+    successful.deinit(counter.allocator());
+    try std.testing.expect(attempts != 0);
+
+    for (1..attempts + 1) |failure_number| {
+        var fault = FaultAllocator.init(std.testing.allocator);
+        fault.configure(failure_number);
+        try std.testing.expectError(error.OutOfMemory, prepareRenderRemovalScan(TestStream, fault.allocator(), &stream, 0, target_scopes));
+        try std.testing.expectEqualSlices(TestStream.RenderNode, original_nodes, stream.render_nodes.items);
+        fault.configure(null);
+        const retry = try prepareRenderRemovalScan(TestStream, fault.allocator(), &stream, 0, target_scopes);
+        try std.testing.expectEqualSlices(u64, &.{ 1, 2, 3 }, retry.removed_elem_ids);
+        retry.deinit(fault.allocator());
+    }
 }
 
 test "structural splice removes rendered descendants of target nodes across scope boundaries" {

@@ -583,6 +583,11 @@ const HostEnv = struct {
         resetSimulatedDom(self);
     }
 
+    /// Adapts the shared engine's reserve nodes command to this host without re-deciding reactive meaning.
+    pub fn sinkReserveNodes(self: *HostEnv, capacity: usize) void {
+        self.dom_elements.ensureTotalCapacity(self.hostAllocator(), capacity) catch failHost("out of memory");
+    }
+
     /// Adapts the shared engine's append node command to this host without re-deciding reactive meaning.
     pub fn sinkAppendNode(self: *HostEnv, elem_id: u64, parent_elem_id: u64, tag: []const u8) void {
         appendDomNode(self, elem_id, parent_elem_id, tag);

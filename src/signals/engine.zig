@@ -1000,6 +1000,11 @@ pub fn Engine(comptime Ctx: type) type {
             self.render_cache.ensureNode(ctx, elem_id, tag, counts);
         }
 
+        fn ensureRenderNodeCapacity(self: *Self, ctx: Ctx.Handle, capacity: usize) void {
+            self.render_cache.ensureNodeCapacity(ctx, capacity);
+            if (comptime @hasDecl(Ctx.Sink, "reserveNodes")) Ctx.sink(ctx).reserveNodes(capacity);
+        }
+
         /// Returns active render node tag differs from the maintained active-runtime indexes.
         pub fn activeRenderNodeTagDiffers(self: *const Self, elem_id: u64, tag: []const u8) bool {
             return self.render_cache.activeNodeTagDiffers(elem_id, tag);
@@ -6050,6 +6055,8 @@ pub fn Engine(comptime Ctx: type) type {
             const max_elem_id = @max(maxRenderElemId(&self.active_stream), maxRenderElemId(stream));
             const required_child_table_len: usize = @intCast(max_elem_id + 1);
             const child_table_len = required_child_table_len;
+            self.ensureRenderNodeCapacity(ctx, required_child_table_len);
+
             var seen = allocator.alloc(bool, child_table_len) catch @panic("out of memory");
             defer allocator.free(seen);
             @memset(seen, false);
@@ -6195,6 +6202,7 @@ pub fn Engine(comptime Ctx: type) type {
             var counts: render.Counts = .{};
             counts.addHostReset();
             self.resetRenderTree(ctx);
+            self.ensureRenderNodeCapacity(ctx, @intCast(maxRenderElemId(stream) + 1));
 
             for (stream.render_nodes.items) |node| {
                 switch (node.kind) {
@@ -6308,6 +6316,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
             const required_child_table_len: usize = @intCast(max_elem_id + 1);
             const child_table_len = required_child_table_len;
+            self.ensureRenderNodeCapacity(ctx, required_child_table_len);
 
             var seen = allocator.alloc(bool, child_table_len) catch @panic("out of memory");
             defer allocator.free(seen);
@@ -6417,6 +6426,7 @@ pub fn Engine(comptime Ctx: type) type {
             const max_elem_id = @max(maxRenderElemId(&self.active_stream), maxRenderElemId(stream));
             const required_child_table_len: usize = @intCast(max_elem_id + 1);
             const child_table_len = required_child_table_len;
+            self.ensureRenderNodeCapacity(ctx, required_child_table_len);
 
             var seen = allocator.alloc(bool, child_table_len) catch @panic("out of memory");
             defer allocator.free(seen);

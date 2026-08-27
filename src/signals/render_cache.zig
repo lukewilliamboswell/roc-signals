@@ -208,6 +208,11 @@ pub fn Cache(comptime Ctx: type) type {
             return self.nodes.items.len != 0 and self.nodes.items[0].active;
         }
 
+        /// Ensures node capacity capacity or state before publication can begin.
+        pub fn ensureNodeCapacity(self: *Self, ctx: Ctx.Handle, capacity: usize) void {
+            self.nodes.ensureTotalCapacity(Ctx.allocator(ctx), capacity) catch @panic("out of memory");
+        }
+
         /// Reports whether active node is present in maintained state.
         pub fn hasActiveNode(self: *const Self, elem_id: u64) bool {
             const index: usize = @intCast(elem_id);

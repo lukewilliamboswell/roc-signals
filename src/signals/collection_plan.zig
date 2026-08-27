@@ -124,7 +124,7 @@ pub const ScopeOverlay = struct {
         return self.provisional_by_key.get(key) orelse active_id;
     }
 
-    /// overlay lookup and reservation membership remain O(1).
+    /// Claims transaction-local identity and capacity without publishing it to the live runtime.
     pub fn reserve(self: *ScopeOverlay, key: ScopeKey, active_id: ?u64, candidates: []const u64) error{ NoCapacity, NoAvailableScope }!u64 {
         if (self.committed) @panic("scope overlay cannot reserve after commit");
         if (self.lookup(key, active_id)) |id| return id;

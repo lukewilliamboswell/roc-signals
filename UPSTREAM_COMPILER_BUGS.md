@@ -23,7 +23,7 @@ export ROC_BIN=/path/to/roc_nightly-linux_x86_64-2026-08-25-cc03aa8/roc
 | 6 | `var $x = False` infers an open tag union, not `Bool`, so `!$x` fails method lookup | not filed | `repro/var-bool-inference/` | yes |
 | 7 | A record-destructured binding loses method dispatch when two different `.map`s are called on it | not filed | in-situ (below) | yes |
 | 8 | `List.sort_with` is a first-element-pivot quicksort, so it is O(n^2) on already-ordered input | not filed | `examples/data-grid` | yes |
-| 9 | Adding *any* import to `platform/Ui.roc` changes an unrelated example's computed values | not filed | in-situ (below) | blocks new `Ui` API |
+| 9 | *(withdrawn -- was a misdiagnosis; see below)* | n/a | n/a | n/a |
 
 For #1, camelCase field names longer than ten bytes are corrupted on wasm32 at
 byte four, while native is unaffected; `favoritesCount` exposed it. For #2, the
@@ -269,59 +269,49 @@ case upstream.
 
 ---
 
-## 9. Adding any import to `platform/Ui.roc` corrupts an unrelated example's values
+## 9. WITHDRAWN -- was a misdiagnosis
 
-**Status:** not filed upstream. **This one blocks adding API to `Ui`.** Found
-2026-08-27 while adding a `Ui.select_of` helper.
+This entry previously claimed that adding any import to `platform/Ui.roc`
+corrupted `loan-comparator`'s values. **That was wrong**, and the entry is kept
+only so the claim is not repeated.
 
-Adding a single import line to `platform/Ui.roc` — with no other change, no new
-code, and every example byte-identical — makes `examples/loan-comparator`
-compute wrong numbers.
+The real cause is a host regression, not a compiler or import problem:
+`5fe35ad Optimize bulk keyed structural updates` breaks
+`examples/loan-comparator/specs/editing-scenario-c-does-not-disturb-a-or-b.scm`.
 
-### Reproduce
+```
+git bisect over 04f5c02..8ef18cf, `python3 scripts/test.py native`
 
-```sh
-export ROC_BIN=/path/to/roc_nightly-linux_x86_64-2026-08-25-cc03aa8/roc
-cd /path/to/roc-signals
-# add ONE unused import to platform/Ui.roc, e.g. `import Http` after `import EventExtraction`
-python3 scripts/test.py native
+04f5c02  Replace stringly-typed state with tag unions (batch 3)   269 pass, 0 fail
+ea3ff9b  Add js-framework benchmark fixture                       269 pass, 0 fail
+5fe35ad  Optimize bulk keyed structural updates                   110 pass, 1 FAIL  <-- first bad
+e0cfd71  Document engine profiling workflow                       110 pass, 1 fail
+11e2d82  Index custom attributes in large descriptor streams      110 pass, 1 fail
+8ef18cf  Intern render cache tag names                            110 pass, 1 fail
 ```
 
 ```
-FAIL: editing-scenario-c-does-not-disturb-a-or-b.scm
 TEST FAILED at line 33:
   Expected text: "Month 1 | interest $12.00 | principal $194.56 | balance $2205.44"
   Got text:      "Month 1 | interest $12.00 | principal $2400.00 | balance $0.00"
 ```
 
-Without the import: 269 specs pass. With it: that spec fails.
+Line 33 asserts on **scenario A** inside the spec that checks *editing scenario C
+does not disturb A or B*, so an edit to C bleeds into A and A's first month
+clears its whole balance. That is a keyed-row identity problem, which matches
+what `5fe35ad` changed: `engine.zig` (+192), `host_value_registry.zig`,
+`identity_table.zig` and `structural_splice.zig`.
 
-Line 33 is the assertion on **scenario A** (`a-month-1`), inside the spec that
-checks *editing scenario C does not disturb A or B*. So editing C now bleeds
-into A: A's month 1 pays off the whole balance at once.
+### Why the original diagnosis was wrong
 
-### What it is not
+Every experiment was run in a worktree created from a `HEAD` that already
+contained `5fe35ad`, so the spec failed no matter what was changed -- an added
+import, an added function with no import, and even a comment-only edit all
+"reproduced" it. The control that would have caught this, an unmodified worktree
+at the *current* `HEAD`, was not run; the passing control being compared against
+was from an earlier `HEAD` predating the host commit.
 
-- Not specific to `Html`: `import Http` reproduces it identically, so it is the
-  act of adding an import, not the module imported.
-- Not the new helper: the import alone, with no `select_of` defined and nothing
-  calling it, is enough.
-- Not the examples: every example is unmodified at the commit under test.
-
-### Likely cause
-
-Capabilities are handed out by `Capability.new()` and referenced by handle. A
-signal reading the wrong cell would produce exactly this symptom — one
-scenario's derived figures showing another's input. Adding a module shifts
-whatever ordering those handles depend on. Specialization order is the other
-candidate.
-
-An alternative reading is that `loan-comparator` has a latent aliasing bug that
-any perturbation exposes; either way the platform cannot currently grow `Ui`
-without silently changing example behaviour, so this needs a root cause before
-new `Ui` API lands.
-
----
+**Lesson for this file: pin the control to the same commit as the experiment.**
 
 ## Not compiler bugs — missing builtins
 

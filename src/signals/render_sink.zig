@@ -183,6 +183,11 @@ pub fn DomSink(comptime Host: type) type {
             self.host.sinkReset();
         }
 
+        /// Preflights sink capacity for all nodes in the pending command transaction.
+        pub fn reserveNodes(self: @This(), capacity: usize) void {
+            self.host.sinkReserveNodes(capacity);
+        }
+
         /// Emits the already-decided command that attaches a newly created render node.
         pub fn appendNode(self: @This(), elem_id: u64, parent_elem_id: u64, tag: []const u8) void {
             self.host.sinkAppendNode(elem_id, parent_elem_id, tag);
