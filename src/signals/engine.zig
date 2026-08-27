@@ -4203,7 +4203,7 @@ pub fn Engine(comptime Ctx: type) type {
                     retired_scope_ids[index] = selection.retired_scope_id;
                     render_insert_indexes[index] = selection.render_insert_index;
                 }
-                try plan.prepareDownstream(allocator, retired_scope_ids, retired_scope_ids, render_insert_indexes);
+                try plan.prepareDownstream(allocator, retired_scope_ids, retired_scope_ids, render_insert_indexes, false);
                 return plan;
             }
 
@@ -4213,11 +4213,11 @@ pub fn Engine(comptime Ctx: type) type {
                 errdefer allocator.destroy(plan);
                 plan.* = .{ .engine = engine, .host_ctx = ctx, .roc_host = roc_host, .replacement = replacement, .owns_replacement = false };
                 errdefer plan.retired_stream.deinit(allocator, ctx, roc_host, &engine.pending_roc_metrics);
-                try plan.prepareDownstream(allocator, descriptor_root_scope_ids, retired_root_scope_ids, render_insert_indexes);
+                try plan.prepareDownstream(allocator, descriptor_root_scope_ids, retired_root_scope_ids, render_insert_indexes, true);
                 return plan;
             }
 
-            fn prepareDownstream(self: *@This(), allocator: std.mem.Allocator, descriptor_root_scope_ids: []const u64, retired_root_scope_ids: []const u64, render_insert_indexes: []const usize) CollectionError!void {
+            fn prepareDownstream(self: *@This(), allocator: std.mem.Allocator, descriptor_root_scope_ids: []const u64, retired_root_scope_ids: []const u64, render_insert_indexes: []const usize, external_row_sync: bool) CollectionError!void {
                 self.targets = try PreparedStructuralTargets.prepare(self.engine, allocator, descriptor_root_scope_ids, retired_root_scope_ids);
                 errdefer if (self.targets) |*targets| targets.deinit(allocator);
                 const target_scopes = self.targets.?.descriptor_target_scopes;
@@ -4233,8 +4233,10 @@ pub fn Engine(comptime Ctx: type) type {
                 errdefer if (self.state_retirement) |*retirement| retirement.deinit(allocator);
                 try self.state_retirement.?.reserveRetired(allocator, &self.retired_state_cells);
                 errdefer self.retired_state_cells.deinit(allocator);
-                self.row_retirement = try prepareRowRetirementForScopes(self.engine, allocator, retirement_scope_ids);
-                errdefer if (self.row_retirement) |*retirement| retirement.deinit(allocator);
+                if (!external_row_sync) {
+                    self.row_retirement = try prepareRowRetirementForScopes(self.engine, allocator, retirement_scope_ids);
+                    errdefer if (self.row_retirement) |*retirement| retirement.deinit(allocator);
+                }
                 const retired_scopes = allocator.alloc(bool, self.engine.scopes.items.len) catch return error.OutOfMemory;
                 defer allocator.free(retired_scopes);
                 @memset(retired_scopes, false);
@@ -4364,6 +4366,12 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             fn commitAssumeCapacity(self: *@This()) void {
+                self.commitAssumeCapacityWith({}, struct {
+                    fn apply(_: void) void {}
+                }.apply);
+            }
+
+            fn commitAssumeCapacityWith(self: *@This(), external: anytype, comptime commit_external: fn (@TypeOf(external)) void) void {
                 self.commitRenderAssumeCapacity();
                 if (self.graph_release != null) self.commitGraphAssumeCapacity();
 
@@ -4403,10 +4411,13 @@ pub fn Engine(comptime Ctx: type) type {
                 );
 
                 self.state_retirement.?.apply(self.engine, &self.retired_state_cells);
+                commit_external(external);
                 self.replacement.collection.commit();
                 self.identity_retirements.?.apply(self.engine);
-                var row_keys = EachRowScopeKeyLookup{ .engine = self.engine };
-                self.row_retirement.?.apply(&self.engine.each_row_sites, &self.engine.each_row_memberships_by_scope_id, &row_keys);
+                if (self.row_retirement) |*row_retirement| {
+                    var row_keys = EachRowScopeKeyLookup{ .engine = self.engine };
+                    row_retirement.apply(&self.engine.each_row_sites, &self.engine.each_row_memberships_by_scope_id, &row_keys);
+                }
                 const scope_retirement = &self.targets.?.scope_retirement.?;
                 for (scope_retirement.scope_ids) |scope_id| {
                     const scope = &self.engine.scopes.items[@intCast(scope_id)];
@@ -10396,6 +10407,19 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
     });
 
     const Runner = struct {
+        const RowCommitCtx = struct {
+            engine: *Engine(VerifyCtx),
+            rows: *each_runtime.PreparedRowSync,
+            hooks: *Engine(VerifyCtx).PreparedEachRowSyncHooks,
+            keys: []const HostValue,
+            items: []const HostValue,
+            diff: ?each_runtime.DiffResult = null,
+
+            fn apply(self: *@This()) void {
+                self.diff = self.rows.commit(&self.engine.each_row_sites, &self.engine.each_row_memberships_by_scope_id, self.keys, self.items, self.hooks);
+            }
+        };
+
         fn prepareReplacement(engine: *Engine(VerifyCtx), ctx: *VerifyCtxHost, host: *abi.RocHost, each_ops: HostEachOps, rows: *const each_runtime.PreparedRowSync, keys: []const HostValue, items: []const HostValue) !*Engine(VerifyCtx).PreparedEachRowReplacementCollection {
             const site = HostNodeScopeSiteDesc{ .node_id = 0, .scope_id = 0, .ordinal = 44, .parent_elem_id = 0, .render_insert_index = 0, .kind = .each, .binder_bindings = &.{} };
             const each = HostNodeEachDesc{ .node_id = 0, .items = undefined, .ops = each_ops };
@@ -10425,13 +10449,13 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
             var layout = try prepareLayout(engine, ctx.allocator, &rows, replacement);
             try retirement.refineDescriptorOwnedRetirement(engine, ctx.allocator, &layout.removal.removal);
             const downstream = try prepareDownstream(engine, ctx, host, &rows, replacement, &layout);
-            downstream.deinit();
             try std.testing.expectEqualSlices(usize, &.{0}, layout.remove_starts);
             try std.testing.expectEqualSlices(usize, &.{ 0, 1, 2 }, layout.final_starts);
             try std.testing.expect(layout.targets.descriptor_target_scopes[1]);
             try std.testing.expect(layout.targets.descriptor_target_scopes[2]);
             try std.testing.expectEqualSlices(u64, &.{1}, layout.targets.scope_retirement.?.scope_ids);
             layout.deinit();
+            downstream.deinit();
             replacement.deinit();
             retirement.applyBeforeRowCommit(engine);
             var diff = rows.commit(&engine.each_row_sites, &engine.each_row_memberships_by_scope_id, keys, items, &hooks);
@@ -10579,7 +10603,6 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
                 try retry(&engine, &ctx, host, each_ops, site_index, &keys, &items);
                 return failed_attempts;
             };
-            downstream.deinit();
             try std.testing.expectEqualSlices(usize, &.{0}, layout.remove_starts);
             try std.testing.expectEqualSlices(usize, &.{ 0, 1, 2 }, layout.final_starts);
             try std.testing.expectEqual(@as(usize, 1), layout.survivor_moves.len);
@@ -10588,13 +10611,12 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
             try std.testing.expect(!layout.targets.descriptor_target_scopes[3]);
             try std.testing.expectEqualSlices(u64, &.{removed_scope_id}, layout.targets.scope_retirement.?.scope_ids);
             layout.deinit();
-            replacement.deinit();
             const attempts = fault.attempts;
+            retirement.deinit(&engine, ctx.allocator, null, null);
             fault.configure(1);
-            retirement.applyBeforeRowCommit(&engine);
-            var diff = rows.commit(&engine.each_row_sites, &engine.each_row_memberships_by_scope_id, &keys, &items, &hooks);
-            retirement.applyAfterRowCommit(&engine);
-            retirement.applyEffectsAfterPublication(&engine, &ctx);
+            var commit_ctx = RowCommitCtx{ .engine = &engine, .rows = &rows, .hooks = &hooks, .keys = &keys, .items = &items };
+            downstream.commitAssumeCapacityWith(&commit_ctx, RowCommitCtx.apply);
+            var diff = commit_ctx.diff.?;
             try std.testing.expectEqual(@as(usize, 0), fault.attempts);
             try std.testing.expect(engine.node_identities.items[@intCast(persistent_changed_node_id)].active);
             try std.testing.expectEqual(@as(usize, 1), engine.pending_tasks.items.len);
@@ -10612,10 +10634,11 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
             try std.testing.expectEqual(@as(usize, 1), ctx.cancelled_tasks);
             try std.testing.expectEqual(@as(usize, 0), engine.states.items.len);
             fault.configure(null);
+            downstream.deinit();
+            replacement.deinit();
             diff.deinit(ctx.allocator);
             rows.deinit();
             hooks.deinit();
-            retirement.deinit(&engine, ctx.allocator, &ctx, host);
             return attempts;
         }
     };
