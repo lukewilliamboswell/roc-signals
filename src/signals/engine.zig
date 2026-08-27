@@ -535,6 +535,7 @@ pub fn Engine(comptime Ctx: type) type {
         dom_identities: std.ArrayListUnmanaged(HostDomIdentity) = .empty,
         active_node_identity_ids: std.AutoHashMapUnmanaged(u128, u64) = .empty,
         active_dom_identity_ids: std.AutoHashMapUnmanaged(u128, u64) = .empty,
+        has_inactive_scopes: bool = false,
         has_inactive_node_identities: bool = false,
         has_inactive_dom_identities: bool = false,
         // Identity ids retired during the current dirty generation must not be
@@ -730,6 +731,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             pub fn recordScopeDisposed(self: *@This()) void {
+                self.engine.has_inactive_scopes = true;
                 var metrics = self.engine.pending_roc_metrics;
                 metrics.bump(.scopes_disposed, 1);
                 self.engine.pending_roc_metrics = metrics;
@@ -1178,6 +1180,7 @@ pub fn Engine(comptime Ctx: type) type {
                 return RocHostRequiredError.MissingRocHost;
             }
             self.scopes.items.len = 0;
+            self.has_inactive_scopes = false;
             self.clearEachRowSites(Ctx.allocator(ctx));
         }
 
@@ -1825,7 +1828,10 @@ pub fn Engine(comptime Ctx: type) type {
         pub fn createEachRowScope(self: *Self, ctx: Ctx.Handle, parent_scope_id: u64, site_ordinal: u64, key_hash: u64, key: HostValue, item: HostValue, key_cap: HostValueCapability, item_cap: HostValueCapability) u64 {
             self.validateScopeId(parent_scope_id) catch @panic("scope id has no host scope descriptor");
 
-            const result = scope_runtime.appendEachRow(Ctx.allocator(ctx), &self.scopes, parent_scope_id, site_ordinal, key_hash, key, item, key_cap, item_cap, &self.pending_roc_metrics, self.identity_reuse_barrier) catch @panic("scope id has no host scope descriptor");
+            const result = if (self.has_inactive_scopes)
+                scope_runtime.appendEachRow(Ctx.allocator(ctx), &self.scopes, parent_scope_id, site_ordinal, key_hash, key, item, key_cap, item_cap, &self.pending_roc_metrics, self.identity_reuse_barrier) catch @panic("scope id has no host scope descriptor")
+            else
+                scope_runtime.appendFreshEachRow(Ctx.allocator(ctx), &self.scopes, parent_scope_id, site_ordinal, key_hash, key, item, key_cap, item_cap, &self.pending_roc_metrics) catch @panic("scope id has no host scope descriptor");
             self.recordScopeCreated();
             const site_index = self.ensureEachRowSiteIndex(Ctx.allocator(ctx), parent_scope_id, site_ordinal);
             self.appendEachRowToSiteIndex(Ctx.allocator(ctx), site_index, result.scope_id, key_hash);

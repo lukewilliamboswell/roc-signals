@@ -161,6 +161,11 @@ pub fn appendEachRow(comptime Row: type, allocator: std.mem.Allocator, scopes: *
         return .{ .scope_id = scope.scope_id, .created = true };
     }
 
+    return appendFreshEachRow(Row, allocator, scopes, parent_scope_id, row);
+}
+
+pub fn appendFreshEachRow(comptime Row: type, allocator: std.mem.Allocator, scopes: *std.ArrayListUnmanaged(Scope(Row)), parent_scope_id: u64, row: Row) Error!InternResult {
+    try validate(Row, scopes.items, parent_scope_id);
     const scope_id: u64 = @intCast(scopes.items.len);
     scopes.append(allocator, .{
         .scope_id = scope_id,
@@ -299,6 +304,19 @@ test "scope tree reuses inactive each row slots" {
     try std.testing.expect(reused.created);
     try std.testing.expectEqual(first, reused.scope_id);
     try std.testing.expectEqual(@as(usize, 2), scopes.items.len);
+}
+
+test "scope tree appends a fresh each row without searching inactive slots" {
+    var scopes: std.ArrayListUnmanaged(Scope(TestRow)) = .empty;
+    defer scopes.deinit(std.testing.allocator);
+
+    const root = (try internRoot(TestRow, std.testing.allocator, &scopes)).scope_id;
+    const first = (try appendEachRow(TestRow, std.testing.allocator, &scopes, root, .{ .site_ordinal = 8, .value = 10 }, 0)).scope_id;
+    scopes.items[@intCast(first)].active = false;
+
+    const fresh = try appendFreshEachRow(TestRow, std.testing.allocator, &scopes, root, .{ .site_ordinal = 8, .value = 20 });
+    try std.testing.expectEqual(@as(u64, 2), fresh.scope_id);
+    try std.testing.expectEqual(@as(usize, 3), scopes.items.len);
 }
 
 test "scope tree reuses inactive component and branch slots" {

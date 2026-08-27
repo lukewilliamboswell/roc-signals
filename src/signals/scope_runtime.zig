@@ -56,6 +56,19 @@ pub fn appendEachRow(allocator: std.mem.Allocator, scopes: *std.ArrayListUnmanag
     }, reuse_barrier);
 }
 
+pub fn appendFreshEachRow(allocator: std.mem.Allocator, scopes: *std.ArrayListUnmanaged(Scope), parent_scope_id: u64, site_ordinal: u64, key_hash: u64, key: HostValue, item: HostValue, key_cap: HostValueCapability, item_cap: HostValueCapability, metrics: anytype) scope_tree.Error!scope_tree.InternResult {
+    try scope_tree.validate(EachRowScopeStep, scopes.items, parent_scope_id);
+
+    const key_cell = HostValueCell.initRetained(key, key_cap, metrics);
+    const item_cell = HostValueCell.initRetained(item, item_cap, metrics);
+    return scope_tree.appendFreshEachRow(EachRowScopeStep, allocator, scopes, parent_scope_id, .{
+        .site_ordinal = site_ordinal,
+        .key_hash = key_hash,
+        .key = key_cell,
+        .item = item_cell,
+    });
+}
+
 pub fn eachRow(scopes: []Scope, scope_id: u64) *EachRowScopeStep {
     scope_tree.validate(EachRowScopeStep, scopes, scope_id) catch @panic("scope id has no host scope descriptor");
     const scope = &scopes[@intCast(scope_id)];
