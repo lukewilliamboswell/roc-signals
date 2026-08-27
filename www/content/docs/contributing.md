@@ -57,18 +57,17 @@ python3 scripts/test.py bench --native always
 
 Use `--keep-output` when debugging generated artifacts under `.test-out/`.
 
-For small documentation or evidence-note edits that do not change behavior or
-coverage claims, run the lightweight tidy gate:
+For small documentation edits that do not change behavior or coverage claims,
+run the lightweight tidy gate:
 
 ```sh
 git diff --check
 zig build run-check-tidy
 ```
 
-`wip/NEXT_STEPS.md` is the active backlog. Keep completed phase notes,
-benchmark snapshots, and retired findings in focused design/evidence notes or
-git history instead. When a backlog or evidence-note edit changes a current-state
-or coverage claim, run the focused gate named by the linked note.
+Track active work in issues and pull requests. Temporary spike notes should not
+be merged; fold enduring conclusions into `design.md`, maintained documentation,
+tests, or local code comments, then remove the notes.
 
 ## Zig Build Steps
 

@@ -105,6 +105,3 @@ guidance, and the validation expected for engine optimizations.
 - [www/](www/) contains the Zola site, static JavaScript runtime, user docs, and
   example-page metadata.
 - [scripts/](scripts/) contains the Python drivers and repository checks.
-- [wip/NEXT_STEPS.md](wip/NEXT_STEPS.md) is the active backlog. Other files under
-  [wip/](wip/) are focused design notes and research evidence that have not been
-  folded into the enduring design.

@@ -1,6 +1,6 @@
 ## Conduit route model: `Browser.Location` <-> `Route` parsing and formatting
-## plus per-route document titles. Routing stays app code by design
-## (wip/REALWORLD_DEMO_PLAN.md): no router DSL, no platform route table.
+## plus per-route document titles. Routing stays app code by design: no router
+## DSL and no platform route table.
 ## The published static demo keeps one real document URL and encodes logical
 ## routes in its hash, so every deep link survives a GitHub Pages refresh.
 import pf.Browser

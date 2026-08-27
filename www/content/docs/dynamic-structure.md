@@ -134,7 +134,7 @@ Html.checkbox_attrs("Read", read, [Html.test_id("book-${id}")], msg)
 link target from more than an id, encode what it needs in the key and parse it
 back. Conduit's pagination does exactly this, using keys like `"2|rust"` for
 page 2 of the `rust` tag. It works, and it is a real wart — noted in the
-project's findings ledger.
+Conduit example itself.
 
 ## Row-local state
 

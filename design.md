@@ -3,8 +3,8 @@
 This document is the single authoritative design for the Signals UI platform. It
 describes the architecture we are building toward and the invariants every part
 of it must hold. It is forward-looking and enduring: it describes the system as
-it is meant to be, not the current state of the work queue. Live work tracking
-lives in the repository's `wip/NEXT_STEPS.md`.
+it is meant to be, not the current state of a work queue. Live work tracking
+belongs in issues and pull requests.
 
 ## Purpose and Dual-Host Architecture
 
@@ -1641,9 +1641,9 @@ public suite is:
 - `pomodoro-tracker` — interval-derived elapsed time, per-project rollups, and
   localStorage restore.
 
-- `conduit` — the RealWorld spec app and platform evidence instrument
-  (`wip/REALWORLD_DEMO_PLAN.md`): app-code hash routing across nine route
-  shapes with per-route titles, deep links, Back/Forward coverage, feeds,
+- `conduit` — the RealWorld spec app and platform evidence instrument: app-code
+  hash routing across nine route shapes with per-route titles, deep links,
+  Back/Forward coverage, feeds,
   sessions, profiles, markdown articles, comments, favorites, follows, and
   server-confirmed write paths.
 

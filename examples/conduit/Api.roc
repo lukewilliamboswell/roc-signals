@@ -1,8 +1,7 @@
 ## RealWorld API surface: DTO records, camelCase JSON decoding through the
-## builtin Json (single wide-enough parses; roc#9964 no longer reproduces on
-## the current nightly, see wip/research/realworld_demo_findings.md), URI
-## builders, auth headers (`Authorization: Token <jwt>` per the spec), and
-## the Remote loading/ready/failed shape every fetch surface renders from.
+## builtin Json, URI builders, auth headers (`Authorization: Token <jwt>` per
+## the spec), and the Remote loading/ready/failed shape every fetch surface
+## renders from.
 import Route
 import pf.Http
 import pf.Signal
@@ -134,7 +133,7 @@ Api := {}.{
 	# and restore the real characters on every decoded string field.
 	# Unicode \uXXXX escapes remain unsupported. Remove this once upstream
 	# escape support lands (finding recorded in
-	# wip/research/realworld_demo_findings.md).
+	# https://github.com/roc-lang/roc/pull/10045).
 
 	replace : Str, Str, Str -> Str
 	replace = |text, from, to| Str.join_with(text.split_on(from), to)
@@ -361,8 +360,7 @@ Api := {}.{
 	# 422 validation envelopes ({"errors": {"field": ["message", ...]}})
 	# carry dynamic object keys, which derived record decoding cannot
 	# express, so the envelope is string-parsed: one "field message" entry
-	# per key, first message only. JSON/body ergonomics evidence for
-	# NEXT_STEPS priority 3 (see the findings ledger).
+	# per key, first message only.
 	parse_errors : Str -> List(Str)
 	parse_errors = |body| {
 		shielded = shield_escapes(body)

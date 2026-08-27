@@ -2,8 +2,7 @@
 ## previews, and pagination links. Used by the home feeds and the profile
 ## tabs. Pagination rows encode page and tag in the row key because keyed
 ## rows only receive static keys plus item signals; the row parses its key
-## back into a target location (a construction-order identity workaround
-## recorded in the findings ledger).
+## back into a target location as a construction-order identity workaround.
 import Api
 import Format
 import Nav

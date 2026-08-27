@@ -25,8 +25,12 @@ export ROC_BIN=/path/to/roc_nightly-linux_x86_64-2026-08-25-cc03aa8/roc
 | 8 | `List.sort_with` is a first-element-pivot quicksort, so it is O(n^2) on already-ordered input | not filed | `examples/data-grid` | yes |
 | 9 | Adding *any* import to `platform/Ui.roc` changes an unrelated example's computed values | not filed | in-situ (below) | blocks new `Ui` API |
 
-Details for 1-3 are in `wip/example-visual-polish-findings.md`; 4 has its own
-`README.md` beside its repro.
+For #1, camelCase field names longer than ten bytes are corrupted on wasm32 at
+byte four, while native is unaffected; `favoritesCount` exposed it. For #2, the
+first flight-search task result double-frees its exact-length string payload on
+wasm32 while native passes. For #3, markdown-editor traps during wasm32 mount
+while all native specs pass. Their linked upstream issues carry the reductions
+and current status. Bug #4 has a `README.md` beside its repro.
 
 ---
 
