@@ -6376,7 +6376,17 @@ pub fn Engine(comptime Ctx: type) type {
     };
 }
 
-const VerifyCtxHost = struct {};
+const VerifyCtxHost = struct {
+    allocator: std.mem.Allocator,
+
+    pub fn cloneHostValue(_: *@This(), value: HostValue) HostValue {
+        return value;
+    }
+
+    pub fn pushHostValueCapabilities(_: *@This(), _: []const HostValueCapability) void {}
+
+    pub fn popHostValueCapabilities(_: *@This()) void {}
+};
 
 test "structural event validation rejects descriptors outside seen render stream" {
     const allocator = std.testing.allocator;
@@ -6437,8 +6447,8 @@ const VerifyCtx = struct {
         return zeroRuntimeMetrics();
     }
 
-    pub fn allocator(_: Handle) std.mem.Allocator {
-        return std.heap.page_allocator;
+    pub fn allocator(ctx: Handle) std.mem.Allocator {
+        return ctx.allocator;
     }
 
     pub fn cloneHostValue(_: Handle, value: HostValue) HostValue {
@@ -6465,10 +6475,93 @@ const VerifyCtx = struct {
         return 0;
     }
 
+    pub fn initialVisibilityPayload(_: Handle, _: *abi.RocHost, _: HostValueCapability) HostValue {
+        return 0;
+    }
+
+    pub fn initialOnlinePayload(_: Handle, _: *abi.RocHost, _: HostValueCapability) HostValue {
+        return 0;
+    }
+
     pub fn sink(_: Handle) Sink {
         return .{};
     }
 };
+
+fn borrowedVerifyElemList(items: []const abi.Elem) abi.RocList(abi.Elem) {
+    if (items.len == 0) return abi.RocList(abi.Elem).empty();
+    return .{
+        .elements_ptr = @constCast(items.ptr),
+        .length = items.len,
+        .capacity_or_alloc_ptr = items.len << 1,
+    };
+}
+
+fn verifyStaticRoot(children: []const abi.Elem) abi.Elem {
+    return .{
+        .payload = .{ .element = .{
+            .attrs = abi.RocList(abi.NodeAttr).empty(),
+            .children = borrowedVerifyElemList(children),
+            .tag = abi.RocStr.fromSlice("div", undefined),
+        } },
+        .tag = .Element,
+    };
+}
+
+fn verifyStaticText() abi.Elem {
+    return .{ .payload = .{ .text = abi.RocStr.fromSlice("hello", undefined) }, .tag = .Text };
+}
+
+fn deinitVerifyStaticEngine(engine: *Engine(VerifyCtx), ctx: *VerifyCtxHost) void {
+    engine.scopes.deinit(std.testing.allocator);
+    engine.dom_identities.deinit(std.testing.allocator);
+    engine.active_dom_identity_ids.deinit(std.testing.allocator);
+    engine.deinitScratch(ctx);
+}
+
+test "transactional static engine root sweeps every allocation and retries cleanly" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    const child = verifyStaticText();
+    const root = verifyStaticRoot(&.{child});
+    var roc_host: abi.RocHost = undefined;
+
+    var counter = FaultAllocator.init(std.testing.allocator);
+    var counter_ctx = VerifyCtxHost{ .allocator = counter.allocator() };
+    var counted_engine = Engine(VerifyCtx).init();
+    var counted_stream: HostNodeDescriptorStream = .{};
+    try counted_engine.collectStaticRootDescriptorsTransactional(&counter_ctx, &roc_host, &counted_stream, root, .{});
+    const successful_attempts = counter.attempts;
+    counted_stream.deinit(std.testing.allocator, &counter_ctx, &roc_host, &counted_engine.pending_roc_metrics);
+    deinitVerifyStaticEngine(&counted_engine, &counter_ctx);
+    try std.testing.expect(successful_attempts != 0);
+
+    for (1..successful_attempts + 1) |failure_number| {
+        var fault = FaultAllocator.init(std.testing.allocator);
+        fault.configure(failure_number);
+        var ctx = VerifyCtxHost{ .allocator = fault.allocator() };
+        var engine = Engine(VerifyCtx).init();
+        var stream: HostNodeDescriptorStream = .{};
+        defer {
+            stream.deinit(std.testing.allocator, &ctx, &roc_host, &engine.pending_roc_metrics);
+            deinitVerifyStaticEngine(&engine, &ctx);
+        }
+
+        try std.testing.expectError(error.OutOfMemory, engine.collectStaticRootDescriptorsTransactional(&ctx, &roc_host, &stream, root, .{}));
+        try std.testing.expectEqual(@as(usize, 0), engine.scopes.items.len);
+        try std.testing.expectEqual(@as(usize, 0), engine.dom_identities.items.len);
+        try std.testing.expectEqual(@as(u32, 0), engine.active_dom_identity_ids.count());
+        try std.testing.expect(stream.elemDescriptorIndex(1) == null);
+        try std.testing.expect(findElementDesc(&stream, 1) == null);
+        try std.testing.expect(findTextNodeDesc(&stream, 2) == null);
+
+        fault.configure(null);
+        try engine.collectStaticRootDescriptorsTransactional(&ctx, &roc_host, &stream, root, .{});
+        try std.testing.expectEqual(@as(usize, 1), engine.scopes.items.len);
+        try std.testing.expectEqual(@as(usize, 2), engine.dom_identities.items.len);
+        try std.testing.expectEqualStrings("div", findElementDesc(&stream, 1).?.tag);
+        try std.testing.expectEqualStrings("hello", findTextNodeDesc(&stream, 2).?.value);
+    }
+}
 
 comptime {
     verifyCtx(VerifyCtx);
