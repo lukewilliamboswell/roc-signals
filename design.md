@@ -1495,9 +1495,12 @@ allocation nor unbounded formatting. The browser catches every fatal host trap,
 refreshes memory views before reading the diagnostic, reports the error, detaches
 listeners and asynchronous work, ignores staged commands, and rejects later
 calls without re-entering Wasm. It may preserve the last committed DOM as fallback
-UI or replace the entire Wasm instance. A trap is therefore the containment
-mechanism for unrecoverable corruption risk, never an unexplained browser failure
-or permission to continue with uncertain state.
+UI or replace the entire Wasm instance. Fatality is scoped to that invocation and
+instance: it does not require terminating the JavaScript thread, worker, page, or
+surrounding application. Recovery creates a fresh instance or chooses a host-side
+fallback; it never resumes the poisoned instance. A trap is therefore the
+containment mechanism for unrecoverable corruption risk, never an unexplained
+browser failure or permission to continue with uncertain state.
 
 All caller-controlled node counts, descriptor bytes, payload/text bytes, command
 records, and dynamic command bytes have configurable limits beneath hard wire and
