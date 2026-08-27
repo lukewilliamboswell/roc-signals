@@ -319,6 +319,42 @@ test "signal record plan releases descriptor roots but not token intents" {
     plan.deinit(std.testing.allocator, Releaser{ .count = &releases, .root = &root, .child = &child });
 }
 
+test "signal record plan preparation sweeps allocation failures and retries" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    const TestRecord = struct { id: u8 };
+    const Releaser = struct {
+        count: *usize,
+        pub fn releaseRecord(self: @This(), _: *TestRecord) void {
+            self.count.* += 1;
+        }
+    };
+
+    var counter = FaultAllocator.init(std.testing.allocator);
+    var counted = SignalRecordPlan(u64, TestRecord){};
+    try counted.prepare(counter.allocator(), 2, 1);
+    const attempts = counter.attempts;
+    var ignored: usize = 0;
+    counted.deinit(std.testing.allocator, Releaser{ .count = &ignored });
+
+    for (1..attempts + 1) |failure_number| {
+        var fault = FaultAllocator.init(std.testing.allocator);
+        fault.configure(failure_number);
+        var plan = SignalRecordPlan(u64, TestRecord){};
+        try std.testing.expectError(error.OutOfMemory, plan.prepare(fault.allocator(), 2, 1));
+        try std.testing.expectEqual(@as(usize, 0), plan.token_intents.items.len);
+        try std.testing.expectEqual(@as(usize, 0), plan.descriptor_roots.items.len);
+
+        fault.configure(null);
+        try plan.prepare(fault.allocator(), 2, 1);
+        var record = TestRecord{ .id = 1 };
+        plan.rememberTokenAssumeCapacity(10, &record);
+        plan.ownDescriptorRootAssumeCapacity(&record);
+        var releases: usize = 0;
+        plan.deinit(std.testing.allocator, Releaser{ .count = &releases });
+        try std.testing.expectEqual(@as(usize, 1), releases);
+    }
+}
+
 test "record overlay aborts in reverse and commits without allocation" {
     const TestRecord = struct { id: u8 };
     var first = TestRecord{ .id = 1 };
