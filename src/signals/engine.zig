@@ -3574,6 +3574,31 @@ pub fn Engine(comptime Ctx: type) type {
                 wire_commands = std.math.add(usize, wire_commands, self.replacement_stream.text_nodes.items.len) catch return error.ResourceLimit;
                 wire_commands = std.math.add(usize, wire_commands, self.replacement_stream.static_text_attrs.items.len) catch return error.ResourceLimit;
                 wire_commands = std.math.add(usize, wire_commands, self.replacement_stream.static_bool_attrs.items.len) catch return error.ResourceLimit;
+                wire_commands = std.math.add(usize, wire_commands, self.replacement_stream.signal_text_nodes.items.len) catch return error.ResourceLimit;
+                wire_commands = std.math.add(usize, wire_commands, self.replacement_stream.signal_text_attrs.items.len) catch return error.ResourceLimit;
+                wire_commands = std.math.add(usize, wire_commands, self.replacement_stream.signal_bool_attrs.items.len) catch return error.ResourceLimit;
+                var element_count: usize = 0;
+                var old_custom_count: usize = 0;
+                var old_named_event_count: usize = 0;
+                for (self.replacement_stream.render_nodes.items) |node| if (node.kind == .element) {
+                    element_count = std.math.add(usize, element_count, 1) catch return error.ResourceLimit;
+                    const index = std.math.cast(usize, node.elem_id) orelse return error.ResourceLimit;
+                    if (index < self.engine.render_cache.nodes.items.len and self.engine.render_cache.nodes.items[index].active) {
+                        old_custom_count = std.math.add(usize, old_custom_count, self.engine.render_cache.nodes.items[index].custom_text_attrs.items.len) catch return error.ResourceLimit;
+                        old_named_event_count = std.math.add(usize, old_named_event_count, self.engine.render_cache.nodes.items[index].named_events.items.len) catch return error.ResourceLimit;
+                    }
+                };
+                wire_commands = std.math.add(usize, wire_commands, old_custom_count) catch return error.ResourceLimit;
+                wire_commands = std.math.add(usize, wire_commands, self.replacement_stream.static_custom_text_attrs.items.len) catch return error.ResourceLimit;
+                wire_commands = std.math.add(usize, wire_commands, self.replacement_stream.static_custom_bool_attrs.items.len) catch return error.ResourceLimit;
+                wire_commands = std.math.add(usize, wire_commands, self.replacement_stream.signal_custom_text_attrs.items.len) catch return error.ResourceLimit;
+                wire_commands = std.math.add(usize, wire_commands, self.replacement_stream.signal_optional_custom_text_attrs.items.len) catch return error.ResourceLimit;
+                wire_commands = std.math.add(usize, wire_commands, self.replacement_stream.signal_custom_bool_attrs.items.len) catch return error.ResourceLimit;
+                wire_commands = std.math.add(usize, wire_commands, self.replacement_stream.events.items.len) catch return error.ResourceLimit;
+                wire_commands = std.math.add(usize, wire_commands, old_named_event_count) catch return error.ResourceLimit;
+                var fixed_event_count: usize = 0;
+                for (self.replacement_stream.events.items) |event| fixed_event_count = std.math.add(usize, fixed_event_count, @intFromBool(event.fixedKind() != null)) catch return error.ResourceLimit;
+                const event_base = std.math.sub(usize, self.engine.active_stream.events.items.len, self.removal.?.descriptor_indexes.event_indexes.items.len) catch return error.ResourceLimit;
                 var child_links = std.math.add(usize, old_child_count, final_child_count) catch return error.ResourceLimit;
                 child_links = std.math.add(usize, child_links, self.removal.?.scan.removed_elem_ids.len) catch return error.ResourceLimit;
                 var splice = render_cache_mod.PreparedRenderSplice(Ctx).init(allocator, &self.engine.render_cache, .{
@@ -3583,8 +3608,11 @@ pub fn Engine(comptime Ctx: type) type {
                     .creations = self.replacement_stream.render_nodes.items.len,
                     .children = touched.count(),
                     .child_links = child_links,
-                    .text_fields = std.math.add(usize, self.replacement_stream.text_nodes.items.len, self.replacement_stream.static_text_attrs.items.len) catch return error.ResourceLimit,
-                    .bool_fields = self.replacement_stream.static_bool_attrs.items.len,
+                    .text_fields = std.math.add(usize, std.math.add(usize, self.replacement_stream.text_nodes.items.len, self.replacement_stream.static_text_attrs.items.len) catch return error.ResourceLimit, std.math.add(usize, self.replacement_stream.signal_text_nodes.items.len, self.replacement_stream.signal_text_attrs.items.len) catch return error.ResourceLimit) catch return error.ResourceLimit,
+                    .bool_fields = std.math.add(usize, self.replacement_stream.static_bool_attrs.items.len, self.replacement_stream.signal_bool_attrs.items.len) catch return error.ResourceLimit,
+                    .custom_attrs = element_count,
+                    .fixed_events = fixed_event_count,
+                    .named_events = element_count,
                     .wire_commands = wire_commands,
                 }) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
@@ -3637,7 +3665,127 @@ pub fn Engine(comptime Ctx: type) type {
                     else => return error.ResourceLimit,
                 };
                 for (self.replacement_stream.static_bool_attrs.items) |desc| splice.addBoolField(&self.engine.render_cache, desc.elem_id, desc.field, desc.value) catch return error.ResourceLimit;
+                for (self.replacement_stream.signal_text_nodes.items) |*desc| {
+                    const text = self.evalPreparedSignalText(&desc.signal, desc.read, &desc.cached_value);
+                    defer text.decref(self.roc_host);
+                    splice.addTextField(&self.engine.render_cache, desc.elem_id, .text, text.asSlice()) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        else => return error.ResourceLimit,
+                    };
+                }
+                for (self.replacement_stream.signal_text_attrs.items) |*desc| {
+                    const text = self.evalPreparedSignalText(&desc.signal, desc.read, &desc.cached_value);
+                    defer text.decref(self.roc_host);
+                    splice.addTextField(&self.engine.render_cache, desc.elem_id, desc.field, text.asSlice()) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        else => return error.ResourceLimit,
+                    };
+                }
+                for (self.replacement_stream.signal_bool_attrs.items) |*desc| splice.addBoolField(&self.engine.render_cache, desc.elem_id, desc.field, self.evalPreparedSignalBool(&desc.signal, desc.read, &desc.cached_value)) catch return error.ResourceLimit;
+                for (self.replacement_stream.render_nodes.items) |node| {
+                    if (node.kind != .element) continue;
+                    var attrs: std.ArrayListUnmanaged(render_cache_mod.CustomTextAttr) = .empty;
+                    defer attrs.deinit(allocator);
+                    attrs.ensureTotalCapacity(allocator, self.replacement_stream.customAttrIndices(node.elem_id).len) catch return error.OutOfMemory;
+                    for (self.replacement_stream.customAttrIndices(node.elem_id)) |custom| switch (custom.kind) {
+                        .static_text => {
+                            const desc = self.replacement_stream.static_custom_text_attrs.items[custom.index];
+                            attrs.appendAssumeCapacity(.{ .name = desc.name, .value = desc.value });
+                        },
+                        .static_bool => {
+                            const desc = self.replacement_stream.static_custom_bool_attrs.items[custom.index];
+                            if (desc.value) attrs.appendAssumeCapacity(.{ .name = desc.name, .value = "" });
+                        },
+                        .signal_text => {
+                            const desc = &self.replacement_stream.signal_custom_text_attrs.items[custom.index];
+                            const text = self.evalPreparedSignalText(&desc.signal, desc.read, &desc.cached_value);
+                            defer text.decref(self.roc_host);
+                            attrs.appendAssumeCapacity(.{ .name = desc.name, .value = text.asSlice() });
+                        },
+                        .signal_text_optional => {
+                            const desc = &self.replacement_stream.signal_optional_custom_text_attrs.items[custom.index];
+                            const evaluated = self.evalPreparedSignalBinding(&desc.signal);
+                            const value = evaluated.value;
+                            const cap = evaluated.cap;
+                            assertHostValueCapabilitiesMatch(desc.present.capability, cap, "prepared optional text presence capability did not match its signal value");
+                            assertHostValueCapabilitiesMatch(desc.read.capability, cap, "prepared optional text read capability did not match its signal value");
+                            if (callHostValueToBoolWithCapability(self.host_ctx, self.roc_host, desc.present.capability, desc.present.read, value)) {
+                                const text = callHostValueToStrWithCapability(self.host_ctx, self.roc_host, desc.read.capability, desc.read.read, value);
+                                defer text.decref(self.roc_host);
+                                attrs.appendAssumeCapacity(.{ .name = desc.name, .value = text.asSlice() });
+                            }
+                            desc.cached_value.replace(self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics, value, cap);
+                        },
+                        .signal_bool => {
+                            const desc = &self.replacement_stream.signal_custom_bool_attrs.items[custom.index];
+                            if (self.evalPreparedSignalBool(&desc.signal, desc.read, &desc.cached_value)) attrs.appendAssumeCapacity(.{ .name = desc.name, .value = "" });
+                        },
+                    };
+                    splice.addCustomAttrs(&self.engine.render_cache, node.elem_id, attrs.items) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        else => return error.ResourceLimit,
+                    };
+                    var named: std.ArrayListUnmanaged(render_cache_mod.NamedEvent) = .empty;
+                    defer named.deinit(allocator);
+                    named.ensureTotalCapacity(allocator, self.replacement_stream.namedEventIndices(node.elem_id).len) catch return error.OutOfMemory;
+                    for (self.replacement_stream.namedEventIndices(node.elem_id)) |event_index| {
+                        const desc = self.replacement_stream.events.items[event_index];
+                        const binding = desc.named() orelse return error.ResourceLimit;
+                        const final_index = std.math.add(usize, event_base, event_index) catch return error.ResourceLimit;
+                        named.appendAssumeCapacity(.{ .name = binding.name, .binding = .{
+                            .event_id = std.math.add(u64, std.math.cast(u64, final_index) orelse return error.ResourceLimit, 1) catch return error.ResourceLimit,
+                            .policy = binding.policy,
+                            .delivery = .{ .requested = binding.delivery_request },
+                            .payload_descriptor = desc.payload_descriptor,
+                        } });
+                    }
+                    splice.addNamedEvents(&self.engine.render_cache, node.elem_id, named.items) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        else => return error.ResourceLimit,
+                    };
+                }
+                for (self.replacement_stream.events.items, 0..) |desc, event_index| if (desc.fixedKind()) |kind| {
+                    const final_index = std.math.add(usize, event_base, event_index) catch return error.ResourceLimit;
+                    splice.addFixedEvent(&self.engine.render_cache, desc.elem_id, kind, .{
+                        .event_id = std.math.add(u64, std.math.cast(u64, final_index) orelse return error.ResourceLimit, 1) catch return error.ResourceLimit,
+                        .delivery = .{ .requested = desc.delivery_request },
+                        .payload_descriptor = desc.payload_descriptor,
+                    }) catch return error.ResourceLimit;
+                };
                 return splice;
+            }
+
+            fn evalPreparedSignalText(self: *@This(), signal: *HostSignalBinding, read: HostTextRead, cache_slot: *HostSignalCacheSlot) abi.RocStr {
+                const evaluated = self.evalPreparedSignalBinding(signal);
+                const value = evaluated.value;
+                const cap = evaluated.cap;
+                assertHostValueCapabilitiesMatch(read.capability, cap, "prepared text read capability did not match its signal value");
+                const text = callHostValueToStrWithCapability(self.host_ctx, self.roc_host, read.capability, read.read, value);
+                cache_slot.replace(self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics, value, cap);
+                return text;
+            }
+
+            fn evalPreparedSignalBool(self: *@This(), signal: *HostSignalBinding, read: HostBoolRead, cache_slot: *HostSignalCacheSlot) bool {
+                const evaluated = self.evalPreparedSignalBinding(signal);
+                const value = evaluated.value;
+                const cap = evaluated.cap;
+                assertHostValueCapabilitiesMatch(read.capability, cap, "prepared bool read capability did not match its signal value");
+                const result = callHostValueToBoolWithCapability(self.host_ctx, self.roc_host, read.capability, read.read, value);
+                cache_slot.replace(self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics, value, cap);
+                return result;
+            }
+
+            fn evalPreparedSignalBinding(self: *@This(), signal: *HostSignalBinding) struct { value: HostValue, cap: HostValueCapability } {
+                switch (signal.record.payload) {
+                    .ref => |node_id| for (self.collection.prepared_state_cells.items) |state| {
+                        if (state.state_id == node_id) return .{ .value = Ctx.cloneHostValue(self.host_ctx, state.cell.value), .cap = state.cell.cap };
+                    },
+                    else => {},
+                }
+                return .{
+                    .value = self.engine.evalHostSignalBinding(self.host_ctx, self.roc_host, signal),
+                    .cap = self.engine.hostSignalBindingCapability(self.host_ctx, signal),
+                };
             }
 
             fn appendReplacementChildren(self: *@This(), allocator: std.mem.Allocator, children: *std.ArrayListUnmanaged(u64), parent_id: u64) CollectionError!void {
@@ -8413,6 +8561,16 @@ fn verifyBoolCallable(_: *abi.RocHost, result: ?[*]u8, _: ?[*]const u8, _: ?[*]u
     if (result) |bytes| bytes[0] = 1;
 }
 
+var verifyTextReadCalls: usize = 0;
+
+fn verifyTextCallable(roc_host: *abi.RocHost, result: ?[*]u8, _: ?[*]const u8, _: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
+    verifyTextReadCalls += 1;
+    if (result) |bytes| {
+        const text: *abi.RocStr = @ptrCast(@alignCast(bytes));
+        text.* = abi.RocStr.fromSlice("signal", roc_host);
+    }
+}
+
 fn deinitVerifyStaticEngine(engine: *Engine(VerifyCtx), ctx: *VerifyCtxHost) void {
     engine.scopes.deinit(std.testing.allocator);
     engine.dom_identities.deinit(std.testing.allocator);
@@ -8813,7 +8971,14 @@ test "branch replacement preparation leaves the active branch unpublished" {
     defer abi.decrefErasedCallable(state_callable, &roc_host);
     const state_capability_callable = abi.rocErasedCallableAllocate(&roc_host, verifyErasedCallable, null, 0).?;
     defer abi.decrefErasedCallable(state_capability_callable, &roc_host);
+    const text_callable = abi.rocErasedCallableAllocate(&roc_host, verifyTextCallable, null, 0).?;
+    defer abi.decrefErasedCallable(text_callable, &roc_host);
     const capability = HostValueCapability{ .clone = value_callable, .drop = value_callable, .eq = value_callable };
+    const state_capability = HostValueCapability{ .clone = state_capability_callable, .drop = state_capability_callable, .eq = state_capability_callable };
+    const false_text_read = HostTextRead{ .capability = state_capability, .read = text_callable };
+    const false_bool_read = HostBoolRead{ .capability = state_capability, .read = bool_callable };
+    const true_text_read = HostTextRead{ .capability = capability, .read = text_callable };
+    const true_bool_read = HostBoolRead{ .capability = capability, .read = bool_callable };
     var condition = abi.NodeSignalExpr{ .payload = .{ .const_value = .{
         ._0 = value_callable,
         ._1 = value_callable,
@@ -8826,31 +8991,31 @@ test "branch replacement preparation leaves the active branch unpublished" {
     const false_attrs = [_]abi.NodeAttr{
         .{ .payload = .{ .static_text = .{ .field = .{ .id = @intFromEnum(RenderTextField.label) }, .name = abi.RocStr.empty(), .value = abi.RocStr.fromSlice("off", undefined) } }, .tag = .StaticText },
         .{ .payload = .{ .static_bool = .{ .field = .{ .id = @intFromEnum(RenderBoolField.disabled) }, .name = abi.RocStr.empty(), .value = true } }, .tag = .StaticBool },
-        .{ .payload = .{ .signal_bool = .{ .field = .{ .id = @intFromEnum(RenderBoolField.checked) }, .name = abi.RocStr.empty(), .read = std.mem.zeroes(HostBoolRead), .signal = false_signal_expr } }, .tag = .SignalBool },
-        .{ .payload = .{ .signal_text = .{ .field = .{ .id = @intFromEnum(RenderTextField.role) }, .name = abi.RocStr.empty(), .read = std.mem.zeroes(HostTextRead), .signal = false_signal_expr } }, .tag = .SignalText },
+        .{ .payload = .{ .signal_bool = .{ .field = .{ .id = @intFromEnum(RenderBoolField.checked) }, .name = abi.RocStr.empty(), .read = false_bool_read, .signal = false_signal_expr } }, .tag = .SignalBool },
+        .{ .payload = .{ .signal_text = .{ .field = .{ .id = @intFromEnum(RenderTextField.role) }, .name = abi.RocStr.empty(), .read = false_text_read, .signal = false_signal_expr } }, .tag = .SignalText },
         .{ .payload = .{ .static_text = .{ .field = .{ .id = abi_view.node_text_field_custom }, .name = abi.RocStr.fromSlice("data-mode", undefined), .value = abi.RocStr.fromSlice("off", undefined) } }, .tag = .StaticText },
         .{ .payload = .{ .static_bool = .{ .field = .{ .id = abi_view.node_bool_field_custom }, .name = abi.RocStr.fromSlice("aria-busy", undefined), .value = true } }, .tag = .StaticBool },
-        .{ .payload = .{ .signal_text = .{ .field = .{ .id = abi_view.node_text_field_custom }, .name = abi.RocStr.fromSlice("data-live", undefined), .read = std.mem.zeroes(HostTextRead), .signal = false_signal_expr } }, .tag = .SignalText },
-        .{ .payload = .{ .text_optional_signal = .{ .field = .{ .id = abi_view.node_text_field_custom }, .name = abi.RocStr.fromSlice("data-maybe", undefined), .present = std.mem.zeroes(HostBoolRead), .read = std.mem.zeroes(HostTextRead), .signal = false_signal_expr } }, .tag = .TextOptionalSignal },
-        .{ .payload = .{ .signal_bool = .{ .field = .{ .id = abi_view.node_bool_field_custom }, .name = abi.RocStr.fromSlice("aria-live", undefined), .read = std.mem.zeroes(HostBoolRead), .signal = false_signal_expr } }, .tag = .SignalBool },
+        .{ .payload = .{ .signal_text = .{ .field = .{ .id = abi_view.node_text_field_custom }, .name = abi.RocStr.fromSlice("data-live", undefined), .read = false_text_read, .signal = false_signal_expr } }, .tag = .SignalText },
+        .{ .payload = .{ .text_optional_signal = .{ .field = .{ .id = abi_view.node_text_field_custom }, .name = abi.RocStr.fromSlice("data-maybe", undefined), .present = false_bool_read, .read = false_text_read, .signal = false_signal_expr } }, .tag = .TextOptionalSignal },
+        .{ .payload = .{ .signal_bool = .{ .field = .{ .id = abi_view.node_bool_field_custom }, .name = abi.RocStr.fromSlice("aria-live", undefined), .read = false_bool_read, .signal = false_signal_expr } }, .tag = .SignalBool },
     };
     const true_attrs = [_]abi.NodeAttr{
         .{ .payload = .{ .static_text = .{ .field = .{ .id = @intFromEnum(RenderTextField.label) }, .name = abi.RocStr.empty(), .value = abi.RocStr.fromSlice("on", undefined) } }, .tag = .StaticText },
         .{ .payload = .{ .static_bool = .{ .field = .{ .id = @intFromEnum(RenderBoolField.disabled) }, .name = abi.RocStr.empty(), .value = false } }, .tag = .StaticBool },
-        .{ .payload = .{ .signal_bool = .{ .field = .{ .id = @intFromEnum(RenderBoolField.checked) }, .name = abi.RocStr.empty(), .read = std.mem.zeroes(HostBoolRead), .signal = true_signal_expr } }, .tag = .SignalBool },
-        .{ .payload = .{ .signal_text = .{ .field = .{ .id = @intFromEnum(RenderTextField.role) }, .name = abi.RocStr.empty(), .read = std.mem.zeroes(HostTextRead), .signal = true_signal_expr } }, .tag = .SignalText },
+        .{ .payload = .{ .signal_bool = .{ .field = .{ .id = @intFromEnum(RenderBoolField.checked) }, .name = abi.RocStr.empty(), .read = true_bool_read, .signal = true_signal_expr } }, .tag = .SignalBool },
+        .{ .payload = .{ .signal_text = .{ .field = .{ .id = @intFromEnum(RenderTextField.role) }, .name = abi.RocStr.empty(), .read = true_text_read, .signal = true_signal_expr } }, .tag = .SignalText },
         .{ .payload = .{ .static_text = .{ .field = .{ .id = abi_view.node_text_field_custom }, .name = abi.RocStr.fromSlice("data-mode", undefined), .value = abi.RocStr.fromSlice("on", undefined) } }, .tag = .StaticText },
         .{ .payload = .{ .static_bool = .{ .field = .{ .id = abi_view.node_bool_field_custom }, .name = abi.RocStr.fromSlice("aria-busy", undefined), .value = false } }, .tag = .StaticBool },
-        .{ .payload = .{ .signal_text = .{ .field = .{ .id = abi_view.node_text_field_custom }, .name = abi.RocStr.fromSlice("data-live", undefined), .read = std.mem.zeroes(HostTextRead), .signal = true_signal_expr } }, .tag = .SignalText },
-        .{ .payload = .{ .text_optional_signal = .{ .field = .{ .id = abi_view.node_text_field_custom }, .name = abi.RocStr.fromSlice("data-maybe", undefined), .present = std.mem.zeroes(HostBoolRead), .read = std.mem.zeroes(HostTextRead), .signal = true_signal_expr } }, .tag = .TextOptionalSignal },
-        .{ .payload = .{ .signal_bool = .{ .field = .{ .id = abi_view.node_bool_field_custom }, .name = abi.RocStr.fromSlice("aria-live", undefined), .read = std.mem.zeroes(HostBoolRead), .signal = true_signal_expr } }, .tag = .SignalBool },
+        .{ .payload = .{ .signal_text = .{ .field = .{ .id = abi_view.node_text_field_custom }, .name = abi.RocStr.fromSlice("data-live", undefined), .read = true_text_read, .signal = true_signal_expr } }, .tag = .SignalText },
+        .{ .payload = .{ .text_optional_signal = .{ .field = .{ .id = abi_view.node_text_field_custom }, .name = abi.RocStr.fromSlice("data-maybe", undefined), .present = true_bool_read, .read = true_text_read, .signal = true_signal_expr } }, .tag = .TextOptionalSignal },
+        .{ .payload = .{ .signal_bool = .{ .field = .{ .id = abi_view.node_bool_field_custom }, .name = abi.RocStr.fromSlice("aria-live", undefined), .read = true_bool_read, .signal = true_signal_expr } }, .tag = .SignalBool },
     };
     var false_text = verifyStaticText();
     false_text.payload.text = abi.RocStr.fromSlice("no", undefined);
     var true_text = verifyStaticText();
     true_text.payload.text = abi.RocStr.fromSlice("yes", undefined);
-    const false_signal_text = abi.Elem{ .payload = .{ .text_signal = .{ .read = std.mem.zeroes(HostTextRead), .signal = false_signal_expr } }, .tag = .TextSignal };
-    const true_signal_text = abi.Elem{ .payload = .{ .text_signal = .{ .read = std.mem.zeroes(HostTextRead), .signal = true_signal_expr } }, .tag = .TextSignal };
+    const false_signal_text = abi.Elem{ .payload = .{ .text_signal = .{ .read = false_text_read, .signal = false_signal_expr } }, .tag = .TextSignal };
+    const true_signal_text = abi.Elem{ .payload = .{ .text_signal = .{ .read = true_text_read, .signal = true_signal_expr } }, .tag = .TextSignal };
     const false_on_change = abi.Elem{ .payload = .{ .on_change_initial = .{ .signal = false_signal_expr, .to_cmd = state_callable } }, .tag = .OnChangeInitial };
     const true_on_change = abi.Elem{ .payload = .{ .on_change_initial = .{ .signal = true_signal_expr, .to_cmd = state_callable } }, .tag = .OnChangeInitial };
     const false_mount = abi.Elem{ .payload = .{ .on_mount = .{ .to_cmd = state_callable } }, .tag = .OnMount };
@@ -8905,6 +9070,7 @@ test "branch replacement preparation leaves the active branch unpublished" {
             const identity_len = engine.dom_identities.items.len;
             const text_len = engine.active_stream.text_nodes.items.len;
             const retained_before = engine.pending_roc_metrics.closure_retains - engine.pending_roc_metrics.closure_releases;
+            const text_reads_before = verifyTextReadCalls;
             fault.configure(failure_number);
             const prepared = Engine(VerifyCtx).BranchReplacementPlan.prepare(&engine, &ctx, host, engine.active_stream.scope_sites.items[0], engine.active_stream.whens.items[0], .false_branch, .{}, &.{});
             if (failure_number == null) {
@@ -8932,6 +9098,7 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 try std.testing.expectEqual(@as(usize, 3), plan.render_splice.?.creations.items.len);
                 try std.testing.expectEqual(@as(usize, 0), plan.render_batch.published.commands.len());
                 try std.testing.expectEqual(@as(usize, 0), plan.render_batch.staged.commands.len());
+                try std.testing.expectEqual(text_reads_before + 4, verifyTextReadCalls);
                 try std.testing.expect(engine.scopes.items[@intCast(plan.retired_scope_id)].active);
                 try std.testing.expectEqualSlices(u64, &.{ 1, 2, 3 }, plan.removal.?.scan.removed_elem_ids);
                 try std.testing.expectEqualSlices(usize, &.{0}, plan.removal.?.descriptor_indexes.element_indexes.items);
@@ -9076,7 +9243,10 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 try std.testing.expectEqual(@as(?usize, 0), engine.active_stream.elemDescriptorIndex(6).?.signal_text_node.get());
                 fault.configure(null);
                 plan.deinit();
-                try std.testing.expectEqual(retained_before - 6, engine.pending_roc_metrics.closure_retains - engine.pending_roc_metrics.closure_releases);
+                // Six replacement signal descriptor caches each retain their
+                // three-callable capability after publication; retirement
+                // still releases the six branch-owned closures measured here.
+                try std.testing.expectEqual(retained_before - 6 + 18, engine.pending_roc_metrics.closure_retains - engine.pending_roc_metrics.closure_releases);
                 return attempts;
             }
             try std.testing.expectError(error.OutOfMemory, prepared);
@@ -9087,7 +9257,9 @@ test "branch replacement preparation leaves the active branch unpublished" {
             try std.testing.expectEqual(retained_before, engine.pending_roc_metrics.closure_retains - engine.pending_roc_metrics.closure_releases);
 
             fault.configure(null);
+            const retry_text_reads_before = verifyTextReadCalls;
             var retry = try Engine(VerifyCtx).BranchReplacementPlan.prepare(&engine, &ctx, host, engine.active_stream.scope_sites.items[0], engine.active_stream.whens.items[0], .false_branch, .{}, &.{});
+            try std.testing.expectEqual(retry_text_reads_before + 4, verifyTextReadCalls);
             retry.deinit();
             try std.testing.expectEqual(scope_len, engine.scopes.items.len);
             try std.testing.expectEqual(identity_len, engine.dom_identities.items.len);
