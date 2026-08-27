@@ -3408,6 +3408,16 @@ pub fn Engine(comptime Ctx: type) type {
                     plan.removal.?.node_indexes.when_indexes.items.len,
                     plan.removal.?.node_indexes.each_indexes.items.len,
                 ) catch return error.OutOfMemory;
+                plan.retired_stream.reserveRetiredCustomPublication(
+                    allocator,
+                    &engine_ptr.active_stream,
+                    plan.removal.?.scan.removed_elem_ids,
+                    removal_indexes.static_custom_text_attr_indexes.items.len,
+                    removal_indexes.signal_custom_text_attr_indexes.items.len,
+                    removal_indexes.signal_optional_custom_text_attr_indexes.items.len,
+                    removal_indexes.static_custom_bool_attr_indexes.items.len,
+                    removal_indexes.signal_custom_bool_attr_indexes.items.len,
+                ) catch return error.OutOfMemory;
                 plan.publication = structural_splice.preparePublicationDeltas(
                     allocator,
                     plan.replacement_stream.render_nodes.items,
@@ -8694,6 +8704,15 @@ test "branch replacement preparation leaves the active branch unpublished" {
                     plan.removal.?.node_indexes.state_indexes.items,
                     plan.removal.?.node_indexes.when_indexes.items,
                     plan.removal.?.node_indexes.each_indexes.items,
+                );
+                engine.active_stream.commitCustomDescriptorReplacementAssumeCapacity(
+                    &plan.replacement_stream,
+                    &plan.retired_stream,
+                    indexes.static_custom_text_attr_indexes.items,
+                    indexes.signal_custom_text_attr_indexes.items,
+                    indexes.signal_optional_custom_text_attr_indexes.items,
+                    indexes.static_custom_bool_attr_indexes.items,
+                    indexes.signal_custom_bool_attr_indexes.items,
                 );
                 plan.commitStateCellsAssumeCapacity();
                 plan.commitIdentityRetirement();

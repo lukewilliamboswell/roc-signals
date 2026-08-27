@@ -89,8 +89,13 @@ pub const ElemOwnedRemovalScratch = struct {
     signal_text_node_indexes: std.ArrayListUnmanaged(usize) = .empty,
     static_text_attr_indexes: std.ArrayListUnmanaged(usize) = .empty,
     signal_text_attr_indexes: std.ArrayListUnmanaged(usize) = .empty,
+    static_custom_text_attr_indexes: std.ArrayListUnmanaged(usize) = .empty,
+    signal_custom_text_attr_indexes: std.ArrayListUnmanaged(usize) = .empty,
+    signal_optional_custom_text_attr_indexes: std.ArrayListUnmanaged(usize) = .empty,
     static_bool_attr_indexes: std.ArrayListUnmanaged(usize) = .empty,
     signal_bool_attr_indexes: std.ArrayListUnmanaged(usize) = .empty,
+    static_custom_bool_attr_indexes: std.ArrayListUnmanaged(usize) = .empty,
+    signal_custom_bool_attr_indexes: std.ArrayListUnmanaged(usize) = .empty,
     event_indexes: std.ArrayListUnmanaged(usize) = .empty,
 
     /// Releases every resource owned by this value and leaves no retained host or Roc ownership behind.
@@ -100,8 +105,13 @@ pub const ElemOwnedRemovalScratch = struct {
         self.signal_text_node_indexes.deinit(allocator);
         self.static_text_attr_indexes.deinit(allocator);
         self.signal_text_attr_indexes.deinit(allocator);
+        self.static_custom_text_attr_indexes.deinit(allocator);
+        self.signal_custom_text_attr_indexes.deinit(allocator);
+        self.signal_optional_custom_text_attr_indexes.deinit(allocator);
         self.static_bool_attr_indexes.deinit(allocator);
         self.signal_bool_attr_indexes.deinit(allocator);
+        self.static_custom_bool_attr_indexes.deinit(allocator);
+        self.signal_custom_bool_attr_indexes.deinit(allocator);
         self.event_indexes.deinit(allocator);
         self.* = .{};
     }
@@ -113,8 +123,13 @@ pub const ElemOwnedRemovalScratch = struct {
             self.signal_text_node_indexes.items.len != 0 or
             self.static_text_attr_indexes.items.len != 0 or
             self.signal_text_attr_indexes.items.len != 0 or
+            self.static_custom_text_attr_indexes.items.len != 0 or
+            self.signal_custom_text_attr_indexes.items.len != 0 or
+            self.signal_optional_custom_text_attr_indexes.items.len != 0 or
             self.static_bool_attr_indexes.items.len != 0 or
             self.signal_bool_attr_indexes.items.len != 0 or
+            self.static_custom_bool_attr_indexes.items.len != 0 or
+            self.signal_custom_bool_attr_indexes.items.len != 0 or
             self.event_indexes.items.len != 0)
         {
             @panic("elem-owned removal scratch was already active");
@@ -128,8 +143,13 @@ pub const ElemOwnedRemovalScratch = struct {
         self.signal_text_node_indexes.clearRetainingCapacity();
         self.static_text_attr_indexes.clearRetainingCapacity();
         self.signal_text_attr_indexes.clearRetainingCapacity();
+        self.static_custom_text_attr_indexes.clearRetainingCapacity();
+        self.signal_custom_text_attr_indexes.clearRetainingCapacity();
+        self.signal_optional_custom_text_attr_indexes.clearRetainingCapacity();
         self.static_bool_attr_indexes.clearRetainingCapacity();
         self.signal_bool_attr_indexes.clearRetainingCapacity();
+        self.static_custom_bool_attr_indexes.clearRetainingCapacity();
+        self.signal_custom_bool_attr_indexes.clearRetainingCapacity();
         self.event_indexes.clearRetainingCapacity();
     }
 
@@ -181,8 +201,13 @@ pub const ElemOwnedRemovalScratch = struct {
         sortRemovalIndexesDescending(self.signal_text_node_indexes.items);
         sortRemovalIndexesDescending(self.static_text_attr_indexes.items);
         sortRemovalIndexesDescending(self.signal_text_attr_indexes.items);
+        sortRemovalIndexesDescending(self.static_custom_text_attr_indexes.items);
+        sortRemovalIndexesDescending(self.signal_custom_text_attr_indexes.items);
+        sortRemovalIndexesDescending(self.signal_optional_custom_text_attr_indexes.items);
         sortRemovalIndexesDescending(self.static_bool_attr_indexes.items);
         sortRemovalIndexesDescending(self.signal_bool_attr_indexes.items);
+        sortRemovalIndexesDescending(self.static_custom_bool_attr_indexes.items);
+        sortRemovalIndexesDescending(self.signal_custom_bool_attr_indexes.items);
         sortRemovalIndexesDescending(self.event_indexes.items);
     }
 };
@@ -343,13 +368,36 @@ pub fn prepareRemoval(comptime Stream: type, allocator: std.mem.Allocator, strea
     errdefer prepared.deinit(allocator);
     try prepared.descriptor_indexes.prepare(allocator, prepared.scan.removed_elem_ids.len);
     var named_event_count: usize = 0;
+    var custom_counts = [_]usize{0} ** 5;
     for (prepared.scan.removed_elem_ids) |elem_id| {
         named_event_count = std.math.add(usize, named_event_count, stream.namedEventIndices(elem_id).len) catch return error.OutOfMemory;
+        for (stream.customAttrIndices(elem_id)) |custom| {
+            const offset: usize = switch (custom.kind) {
+                .static_text => 0,
+                .signal_text => 1,
+                .signal_text_optional => 2,
+                .static_bool => 3,
+                .signal_bool => 4,
+            };
+            custom_counts[offset] = std.math.add(usize, custom_counts[offset], 1) catch return error.OutOfMemory;
+        }
     }
     try prepared.descriptor_indexes.event_indexes.ensureUnusedCapacity(allocator, named_event_count);
+    try prepared.descriptor_indexes.static_custom_text_attr_indexes.ensureUnusedCapacity(allocator, custom_counts[0]);
+    try prepared.descriptor_indexes.signal_custom_text_attr_indexes.ensureUnusedCapacity(allocator, custom_counts[1]);
+    try prepared.descriptor_indexes.signal_optional_custom_text_attr_indexes.ensureUnusedCapacity(allocator, custom_counts[2]);
+    try prepared.descriptor_indexes.static_custom_bool_attr_indexes.ensureUnusedCapacity(allocator, custom_counts[3]);
+    try prepared.descriptor_indexes.signal_custom_bool_attr_indexes.ensureUnusedCapacity(allocator, custom_counts[4]);
     for (prepared.scan.removed_elem_ids) |elem_id| {
         if (stream.elemDescriptorIndex(elem_id)) |descriptor_index| prepared.descriptor_indexes.appendDescriptorIndexesAssumeCapacity(descriptor_index);
         prepared.descriptor_indexes.event_indexes.appendSliceAssumeCapacity(stream.namedEventIndices(elem_id));
+        for (stream.customAttrIndices(elem_id)) |custom| switch (custom.kind) {
+            .static_text => prepared.descriptor_indexes.static_custom_text_attr_indexes.appendAssumeCapacity(custom.index),
+            .signal_text => prepared.descriptor_indexes.signal_custom_text_attr_indexes.appendAssumeCapacity(custom.index),
+            .signal_text_optional => prepared.descriptor_indexes.signal_optional_custom_text_attr_indexes.appendAssumeCapacity(custom.index),
+            .static_bool => prepared.descriptor_indexes.static_custom_bool_attr_indexes.appendAssumeCapacity(custom.index),
+            .signal_bool => prepared.descriptor_indexes.signal_custom_bool_attr_indexes.appendAssumeCapacity(custom.index),
+        };
     }
     prepared.descriptor_indexes.sortDescending();
     try prepared.node_indexes.scope_site_indexes.ensureUnusedCapacity(allocator, stream.scope_sites.items.len);
@@ -700,6 +748,11 @@ const TestStream = struct {
 
     /// This minimal stream fixture has no named-event descriptors.
     pub fn namedEventIndices(_: *const @This(), _: u64) []const usize {
+        return &.{};
+    }
+
+    /// This minimal stream fixture has no custom attribute descriptors.
+    pub fn customAttrIndices(_: *const @This(), _: u64) []const descriptor_stream.CustomAttrDescriptorIndex {
         return &.{};
     }
 

@@ -640,6 +640,9 @@ pub const Stream = struct {
         custom_attrs = std.math.add(usize, custom_attrs, replacement.static_custom_bool_attrs.items.len) catch return error.OutOfMemory;
         custom_attrs = std.math.add(usize, custom_attrs, replacement.signal_custom_bool_attrs.items.len) catch return error.OutOfMemory;
         try self.custom_attr_keys.ensureUnusedCapacity(allocator, @intCast(custom_attrs));
+        for (replacement.custom_attr_indices_by_elem_id.items, 0..) |indexes, elem_id| {
+            if (indexes.items.len != 0) try self.reservePreparedCustomAttrElem(allocator, elem_id, indexes.items.len);
+        }
         try self.render_metadata_by_elem_id.ensureUnusedCapacity(allocator, @intCast(replacement.render_metadata_by_elem_id.count()));
 
         var highest_elem_id: usize = 0;
@@ -709,6 +712,87 @@ pub const Stream = struct {
         const node_index_len = if (scope_site_indexes.len == 0) 0 else std.math.add(usize, highest_node_id, 1) catch return error.OutOfMemory;
         try self.descriptor_indexes_by_node_id.ensureTotalCapacity(allocator, node_index_len);
         while (self.descriptor_indexes_by_node_id.items.len < node_index_len) self.descriptor_indexes_by_node_id.appendAssumeCapacity(.{});
+    }
+
+    /// Reserves ownership and index storage for custom descriptors retired by a
+    /// structural transaction. Exact indexes come from the maintained per-element index.
+    pub fn reserveRetiredCustomPublication(
+        self: *Stream,
+        allocator: std.mem.Allocator,
+        source: *const Stream,
+        removed_elem_ids: []const u64,
+        static_text_count: usize,
+        signal_text_count: usize,
+        optional_text_count: usize,
+        static_bool_count: usize,
+        signal_bool_count: usize,
+    ) std.mem.Allocator.Error!void {
+        try self.static_custom_text_attrs.ensureUnusedCapacity(allocator, static_text_count);
+        try self.signal_custom_text_attrs.ensureUnusedCapacity(allocator, signal_text_count);
+        try self.signal_optional_custom_text_attrs.ensureUnusedCapacity(allocator, optional_text_count);
+        try self.static_custom_bool_attrs.ensureUnusedCapacity(allocator, static_bool_count);
+        try self.signal_custom_bool_attrs.ensureUnusedCapacity(allocator, signal_bool_count);
+        const signal_count = std.math.add(usize, signal_text_count, optional_text_count) catch return error.OutOfMemory;
+        const all_signal_count = std.math.add(usize, signal_count, signal_bool_count) catch return error.OutOfMemory;
+        try self.reservePreparedSignalRecordPublication(allocator, all_signal_count);
+        const total_text = std.math.add(usize, static_text_count, signal_text_count) catch return error.OutOfMemory;
+        const total_optional = std.math.add(usize, total_text, optional_text_count) catch return error.OutOfMemory;
+        const total_bool = std.math.add(usize, total_optional, static_bool_count) catch return error.OutOfMemory;
+        const total = std.math.add(usize, total_bool, signal_bool_count) catch return error.OutOfMemory;
+        try self.custom_attr_keys.ensureUnusedCapacity(allocator, std.math.cast(u32, total) orelse return error.OutOfMemory);
+        for (removed_elem_ids) |elem_id| {
+            try self.reservePreparedCustomAttrElem(allocator, elem_id, source.customAttrIndices(elem_id).len);
+        }
+        self.custom_attr_index_active = true;
+    }
+
+    /// Moves custom descriptor families and repairs both ownership indexes without allocation.
+    pub fn commitCustomDescriptorReplacementAssumeCapacity(
+        self: *Stream,
+        replacement: *Stream,
+        retired: *Stream,
+        static_text_indexes: []const usize,
+        signal_text_indexes: []const usize,
+        optional_text_indexes: []const usize,
+        static_bool_indexes: []const usize,
+        signal_bool_indexes: []const usize,
+    ) void {
+        self.retireStaticCustomTextAssumeCapacity(retired, static_text_indexes);
+        self.retireSignalCustomTextAssumeCapacity(retired, signal_text_indexes);
+        self.retireSignalOptionalCustomTextAssumeCapacity(retired, optional_text_indexes);
+        self.retireStaticCustomBoolAssumeCapacity(retired, static_bool_indexes);
+        self.retireSignalCustomBoolAssumeCapacity(retired, signal_bool_indexes);
+
+        for (replacement.static_custom_text_attrs.items) |desc| {
+            const index = self.static_custom_text_attrs.items.len;
+            self.static_custom_text_attrs.appendAssumeCapacity(desc);
+            self.recordPreparedCustomAttrIndex(desc.elem_id, desc.name, .{ .kind = .static_text, .index = index });
+        }
+        replacement.static_custom_text_attrs.items.len = 0;
+        for (replacement.signal_custom_text_attrs.items) |desc| {
+            const index = self.signal_custom_text_attrs.items.len;
+            self.signal_custom_text_attrs.appendAssumeCapacity(desc);
+            self.recordPreparedCustomAttrIndex(desc.elem_id, desc.name, .{ .kind = .signal_text, .index = index });
+        }
+        replacement.signal_custom_text_attrs.items.len = 0;
+        for (replacement.signal_optional_custom_text_attrs.items) |desc| {
+            const index = self.signal_optional_custom_text_attrs.items.len;
+            self.signal_optional_custom_text_attrs.appendAssumeCapacity(desc);
+            self.recordPreparedCustomAttrIndex(desc.elem_id, desc.name, .{ .kind = .signal_text_optional, .index = index });
+        }
+        replacement.signal_optional_custom_text_attrs.items.len = 0;
+        for (replacement.static_custom_bool_attrs.items) |desc| {
+            const index = self.static_custom_bool_attrs.items.len;
+            self.static_custom_bool_attrs.appendAssumeCapacity(desc);
+            self.recordPreparedCustomAttrIndex(desc.elem_id, desc.name, .{ .kind = .static_bool, .index = index });
+        }
+        replacement.static_custom_bool_attrs.items.len = 0;
+        for (replacement.signal_custom_bool_attrs.items) |desc| {
+            const index = self.signal_custom_bool_attrs.items.len;
+            self.signal_custom_bool_attrs.appendAssumeCapacity(desc);
+            self.recordPreparedCustomAttrIndex(desc.elem_id, desc.name, .{ .kind = .signal_bool, .index = index });
+        }
+        replacement.signal_custom_bool_attrs.items.len = 0;
     }
 
     /// Moves the element/text/fixed-static descriptor families according to a
@@ -2229,6 +2313,82 @@ pub const Stream = struct {
     pub fn customAttrIndices(self: *const Stream, elem_id: u64) []const CustomAttrDescriptorIndex {
         if (!self.custom_attr_index_active or elem_id >= self.custom_attr_indices_by_elem_id.items.len) return &.{};
         return self.custom_attr_indices_by_elem_id.items[@intCast(elem_id)].items;
+    }
+
+    fn retireStaticCustomTextAssumeCapacity(self: *Stream, retired: *Stream, indexes: []const usize) void {
+        for (indexes) |index| {
+            const removed = self.static_custom_text_attrs.swapRemove(index);
+            self.removeCustomAttrIndex(removed.elem_id, removed.name, .{ .kind = .static_text, .index = index });
+            const retired_index = retired.static_custom_text_attrs.items.len;
+            retired.static_custom_text_attrs.appendAssumeCapacity(removed);
+            retired.recordPreparedCustomAttrIndex(removed.elem_id, removed.name, .{ .kind = .static_text, .index = retired_index });
+            if (index < self.static_custom_text_attrs.items.len) {
+                const moved = self.static_custom_text_attrs.items[index];
+                self.updateCustomAttrIndex(moved.elem_id, moved.name, .static_text, self.static_custom_text_attrs.items.len, index);
+            }
+        }
+    }
+
+    fn retireSignalCustomTextAssumeCapacity(self: *Stream, retired: *Stream, indexes: []const usize) void {
+        for (indexes) |index| {
+            const removed = self.signal_custom_text_attrs.swapRemove(index);
+            self.removeCustomAttrIndex(removed.elem_id, removed.name, .{ .kind = .signal_text, .index = index });
+            self.forgetSignalRecordTree(removed.signal.record);
+            retired.rememberSignalRecordTreeAssumeCapacity(removed.signal.record);
+            const retired_index = retired.signal_custom_text_attrs.items.len;
+            retired.signal_custom_text_attrs.appendAssumeCapacity(removed);
+            retired.recordPreparedCustomAttrIndex(removed.elem_id, removed.name, .{ .kind = .signal_text, .index = retired_index });
+            if (index < self.signal_custom_text_attrs.items.len) {
+                const moved = self.signal_custom_text_attrs.items[index];
+                self.updateCustomAttrIndex(moved.elem_id, moved.name, .signal_text, self.signal_custom_text_attrs.items.len, index);
+            }
+        }
+    }
+
+    fn retireSignalOptionalCustomTextAssumeCapacity(self: *Stream, retired: *Stream, indexes: []const usize) void {
+        for (indexes) |index| {
+            const removed = self.signal_optional_custom_text_attrs.swapRemove(index);
+            self.removeCustomAttrIndex(removed.elem_id, removed.name, .{ .kind = .signal_text_optional, .index = index });
+            self.forgetSignalRecordTree(removed.signal.record);
+            retired.rememberSignalRecordTreeAssumeCapacity(removed.signal.record);
+            const retired_index = retired.signal_optional_custom_text_attrs.items.len;
+            retired.signal_optional_custom_text_attrs.appendAssumeCapacity(removed);
+            retired.recordPreparedCustomAttrIndex(removed.elem_id, removed.name, .{ .kind = .signal_text_optional, .index = retired_index });
+            if (index < self.signal_optional_custom_text_attrs.items.len) {
+                const moved = self.signal_optional_custom_text_attrs.items[index];
+                self.updateCustomAttrIndex(moved.elem_id, moved.name, .signal_text_optional, self.signal_optional_custom_text_attrs.items.len, index);
+            }
+        }
+    }
+
+    fn retireStaticCustomBoolAssumeCapacity(self: *Stream, retired: *Stream, indexes: []const usize) void {
+        for (indexes) |index| {
+            const removed = self.static_custom_bool_attrs.swapRemove(index);
+            self.removeCustomAttrIndex(removed.elem_id, removed.name, .{ .kind = .static_bool, .index = index });
+            const retired_index = retired.static_custom_bool_attrs.items.len;
+            retired.static_custom_bool_attrs.appendAssumeCapacity(removed);
+            retired.recordPreparedCustomAttrIndex(removed.elem_id, removed.name, .{ .kind = .static_bool, .index = retired_index });
+            if (index < self.static_custom_bool_attrs.items.len) {
+                const moved = self.static_custom_bool_attrs.items[index];
+                self.updateCustomAttrIndex(moved.elem_id, moved.name, .static_bool, self.static_custom_bool_attrs.items.len, index);
+            }
+        }
+    }
+
+    fn retireSignalCustomBoolAssumeCapacity(self: *Stream, retired: *Stream, indexes: []const usize) void {
+        for (indexes) |index| {
+            const removed = self.signal_custom_bool_attrs.swapRemove(index);
+            self.removeCustomAttrIndex(removed.elem_id, removed.name, .{ .kind = .signal_bool, .index = index });
+            self.forgetSignalRecordTree(removed.signal.record);
+            retired.rememberSignalRecordTreeAssumeCapacity(removed.signal.record);
+            const retired_index = retired.signal_custom_bool_attrs.items.len;
+            retired.signal_custom_bool_attrs.appendAssumeCapacity(removed);
+            retired.recordPreparedCustomAttrIndex(removed.elem_id, removed.name, .{ .kind = .signal_bool, .index = retired_index });
+            if (index < self.signal_custom_bool_attrs.items.len) {
+                const moved = self.signal_custom_bool_attrs.items[index];
+                self.updateCustomAttrIndex(moved.elem_id, moved.name, .signal_bool, self.signal_custom_bool_attrs.items.len, index);
+            }
+        }
     }
 
     /// Appends static custom text attr using capacity that must already satisfy the caller's transaction contract.
@@ -4483,6 +4643,47 @@ test "prepared custom attribute publication is allocation free" {
     try std.testing.expectEqual(@as(usize, 0), fault.attempts);
     try std.testing.expectEqualDeep(CustomAttrDescriptorIndex{ .kind = .static_text, .index = 0 }, stream.customAttrDescriptorIndex(7, "data-state").?);
     try std.testing.expectEqualDeep(&[_]CustomAttrDescriptorIndex{.{ .kind = .static_text, .index = 0 }}, stream.customAttrIndices(7));
+    fault.configure(null);
+}
+
+test "custom descriptor retirement and replacement repairs both indexes without allocation" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    const TestCtx = struct {
+        pub fn pushHostValueCapabilities(_: *@This(), _: []const retained.HostValueCapability) void {}
+        pub fn popHostValueCapabilities(_: *@This()) void {}
+    };
+    var fault = FaultAllocator.init(std.testing.allocator);
+    const allocator = fault.allocator();
+    var ctx: TestCtx = .{};
+    var env = abi.RocEnv{ .allocator = allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&env);
+    var metrics = TestMetrics{};
+    var active: Stream = .{};
+    var replacement: Stream = .{};
+    var retired: Stream = .{};
+    defer active.deinit(allocator, &ctx, &roc_host, &metrics);
+    defer replacement.deinit(allocator, &ctx, &roc_host, &metrics);
+    defer retired.deinit(allocator, &ctx, &roc_host, &metrics);
+
+    active.appendStaticCustomTextAttr(allocator, 1, "data-old", "old");
+    active.appendStaticCustomTextAttr(allocator, 2, "data-keep", "keep");
+    active.appendStaticCustomBoolAttr(allocator, 1, "hidden", true);
+    replacement.appendStaticCustomTextAttr(allocator, 3, "data-new", "new");
+    replacement.appendStaticCustomBoolAttr(allocator, 3, "open", true);
+    try active.reserveMovedStreamPublication(allocator, &replacement);
+    try retired.reserveRetiredCustomPublication(allocator, &active, &.{1}, 1, 0, 0, 1, 0);
+
+    fault.configure(1);
+    active.commitCustomDescriptorReplacementAssumeCapacity(&replacement, &retired, &.{0}, &.{}, &.{}, &.{0}, &.{});
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expect(active.customAttrDescriptorIndex(1, "data-old") == null);
+    try std.testing.expectEqualDeep(CustomAttrDescriptorIndex{ .kind = .static_text, .index = 0 }, active.customAttrDescriptorIndex(2, "data-keep").?);
+    try std.testing.expectEqualDeep(CustomAttrDescriptorIndex{ .kind = .static_text, .index = 1 }, active.customAttrDescriptorIndex(3, "data-new").?);
+    try std.testing.expectEqualDeep(CustomAttrDescriptorIndex{ .kind = .static_bool, .index = 0 }, active.customAttrDescriptorIndex(3, "open").?);
+    try std.testing.expectEqual(@as(usize, 0), active.customAttrIndices(1).len);
+    try std.testing.expectEqual(@as(usize, 2), active.customAttrIndices(3).len);
+    try std.testing.expectEqualStrings("old", retired.static_custom_text_attrs.items[0].value);
+    try std.testing.expect(retired.static_custom_bool_attrs.items[0].value);
     fault.configure(null);
 }
 
