@@ -1345,72 +1345,74 @@ required.
 ### Allocation failure and out-of-memory policy
 
 Allocation failure is part of the host contract, not an unchecked implementation
-detail. Every externally initiated operation (mount, event, timer, task result,
-browser-source update, and unmount) is one **host transaction**. The transaction
-has a preparation phase, a mutation phase, and a publication phase.
+detail. Memory belongs to one of three lifetime domains, and a value never moves
+between them by implication:
 
-During preparation the engine validates caller-controlled sizes and reserves all
-storage whose required size can be derived before mutation: descriptor and node
-tables, render-cache slots, scratch arrays, and fixed/dynamic command bytes.
-Failure in preparation is **recoverable**. It returns `out_of_memory` (or
-`resource_limit` when a configured bound was exceeded), publishes zero commands,
-does not invoke Roc callbacks, and leaves the last committed engine and DOM state
-usable. A retry is allowed.
+- **Persistent engine memory** owns committed graph records, scopes, retained Roc
+  values, identities, and render-cache state. Its owner releases it when the
+  record or scope is retired, or when the instance is torn down.
+- **Transaction scratch memory** owns temporary queues, descriptors, diff state,
+  and staged commands for one externally initiated operation. Capacity may be
+  retained for reuse, but logical contents end with the transaction and cannot
+  become persistent aliases.
+- **Published boundary memory** is an immutable view of one successful command
+  batch. It remains readable until the browser acknowledges or clears it and is
+  never also used as the next transaction's writable staging area.
 
-Commands are transaction-local until publication. The browser may read a command
-buffer only after the host entry point reports success. A failed transaction has
-an empty published command length even when commands had already been staged.
-JavaScript applies a successful command stream as one synchronous batch and never
-applies commands from a failed call. Hosts must use replacement-before-release
-for owned byte strings and table entries so a recoverable failure preserves the
-old value.
+Every mount, event, timer tick, task result, browser-source update, and unmount is
+a **host transaction** with prepare, mutate, and publish phases. Preparation
+validates sizes with overflow-safe arithmetic and reserves every capacity that
+can be derived before mutation. Only then may Roc callbacks, ownership changes,
+graph mutation, or sink emission begin. Publication is a single commit: before
+it, commands are private scratch; after it, the complete immutable batch is
+visible. The browser applies only a successful published batch and never observes
+or executes a prefix from a failed transaction.
 
-Some allocations cannot be predicted safely because they occur inside Roc
-callbacks or after ownership, refcounts, graph topology, or scope state has been
-mutated. An allocation failure beyond the rollback boundary is **fatal**. The
-host records an allocation-free diagnostic, marks the instance poisoned, clears
-all published command lengths, and traps. No further engine entry point is valid
-for that instance except diagnostic reads and teardown. This is deliberately not
-best-effort continuation: resuming a partly mutated refcounted graph is unsafe.
+An allocation failure during preparation is **recoverable**. It returns
+`out_of_memory`, publishes no commands, invokes no callback, and preserves the
+previous committed engine and DOM state. Owned replacements follow
+allocate-copy-commit-release order, so failure cannot destroy the old value. A
+recoverable transaction may be retried when memory becomes available.
 
-The Wasm host owns a fixed diagnostic buffer allocated at instantiation, large
-enough for the stable error code and a bounded message. Reporting OOM must not
-allocate or format into growing storage. The browser runtime catches the trap at
-every host-call boundary, reads the diagnostic after refreshing memory views,
-calls the configured error reporter, detaches listeners and asynchronous work,
-and marks the runtime failed. It must not drain commands or call the poisoned
-instance again. An application may show fallback UI or create a fresh Wasm
-instance; it may not resume the failed one. Thus a fatal Wasm OOM uses a trap as
-the containment mechanism but never becomes an unexplained browser exception or
-partially applied render.
+An allocation failure after an irreversible ownership or mutation boundary is
+**fatal**. Continuing a partly mutated refcounted graph would be memory-unsafe,
+so the host clears published lengths, records a bounded diagnostic, marks the
+instance poisoned, and traps. A poisoned instance accepts only allocation-free
+diagnostic reads and idempotent containment/teardown operations; it never resumes
+engine execution.
 
-The platform has explicit checked limits for caller-controlled node counts,
-descriptor bytes, text/payload bytes, and command bytes. Limits are configurable
-within compile-time hard maxima and are checked with overflow-safe arithmetic
-before allocation. Crossing a limit is a recoverable `resource_limit`, distinct
-from allocator exhaustion. Linear-memory growth is never used as the limit
-policy by itself.
+Diagnostics have storage reserved at instance creation and require neither heap
+allocation nor unbounded formatting. The browser catches every fatal host trap,
+refreshes memory views before reading the diagnostic, reports the error, detaches
+listeners and asynchronous work, ignores staged commands, and rejects later
+calls without re-entering Wasm. It may preserve the last committed DOM as fallback
+UI or replace the entire Wasm instance. A trap is therefore the containment
+mechanism for unrecoverable corruption risk, never an unexplained browser failure
+or permission to continue with uncertain state.
 
-This policy is tested at both layers:
+All caller-controlled node counts, descriptor bytes, payload/text bytes, command
+records, and dynamic command bytes have configurable limits beneath hard wire and
+address-space maxima. Limit checks precede allocation and distinguish
+`resource_limit` from allocator exhaustion. Linear-memory growth is an allocator
+mechanism, not a resource policy. Persistent tables and retained scratch buffers
+must also have plateau invariants so valid repeated activity cannot cause
+unbounded growth.
 
-- Native tests first run each representative transaction successfully to record
-  its allocation count, then rerun it with an allocator that fails allocation
-  number `N` for every `N` from `1` through that count. Each run must terminate
-  as the declared recoverable error or fatal/poisoned result, never leak, double
-  free, publish partial commands, or expose invalid state. Recoverable runs must
-  preserve a snapshot of the previous committed state and accept a subsequent
-  successful transaction.
-- The sweep covers allocation, remap/reallocation, zero-length inputs, checked
-  size overflow, preparation, callback/mutation, publication, and teardown.
-- Wasm integration tests use deterministic allocator fault injection for broad
-  coverage and at least one deliberately bounded-memory fixture for a real
-  `memory.grow` failure. Browser tests assert that the diagnostic reaches the
-  error reporter, pending commands are ignored, listeners/tasks are detached,
-  later calls are rejected without re-entering Wasm, and a fresh instance can
-  mount.
-- Tests name the expected rollback boundary. Adding a new allocation to a
-  transaction therefore extends the sweep automatically rather than silently
-  creating an untested failure point.
+Teardown is logically infallible: it allocates no memory, releases each owned
+resource at most once, tolerates partially initialized preparation state, and is
+idempotent at the containment boundary. Failure reporting and cleanup never
+depend on successfully acquiring more memory.
+
+The verification principle is exhaustive fault placement. A representative
+transaction first records its successful allocation-attempt count, then runs
+with attempt `N` and every later allocation attempt failing for every `N` from
+one through that count. Allocation, resize/remap fallback, preparation,
+mutation, publication, and teardown boundaries are included. Each outcome must
+match its declared recoverable or fatal boundary and prove no leaks, double
+release, partial publication, or invalid reuse. Bounded Wasm memory separately
+proves the real `memory.grow` exhaustion path; overflow and configured-limit
+tests prove rejection occurs before allocation. This method makes a newly added
+allocation a newly exercised failure point rather than an implicit assumption.
 
 ### Controlled inputs
 
