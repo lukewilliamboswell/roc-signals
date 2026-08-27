@@ -2058,11 +2058,10 @@ pub fn Engine(comptime Ctx: type) type {
             }
         };
 
-        pub fn collectActiveElemDescriptors(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, elem: abi.Elem, scope_id: u64, parent_elem_id: u64, ordinal: *u64, dom_ordinal: *u64, binder_stack: *std.ArrayListUnmanaged(HostBinderBinding), scope_created: bool, dirty_source_node_ids: []const u64) void {
+        fn collectActiveElemDescriptorsWith(self: *Self, comptime Collection: type, collection: Collection, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, elem: abi.Elem, scope_id: u64, parent_elem_id: u64, ordinal: *u64, dom_ordinal: *u64, binder_stack: *std.ArrayListUnmanaged(HostBinderBinding), scope_created: bool, dirty_source_node_ids: []const u64) void {
             self.validateScopeId(scope_id) catch @panic("scope id has no host scope descriptor");
 
             const allocator = Ctx.allocator(ctx);
-            const collection = ImmediateCollectionCtx{ .engine = self, .host_ctx = ctx, .stream = stream };
             switch (abi_view.Elem.fromAbi(elem)) {
                 .element => |payload| {
                     const elem_id = collection.appendElement(scope_id, parent_elem_id, dom_ordinal, payload.tag.asSlice());
@@ -2188,6 +2187,11 @@ pub fn Engine(comptime Ctx: type) type {
                     }
                 },
             }
+        }
+
+        pub fn collectActiveElemDescriptors(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, elem: abi.Elem, scope_id: u64, parent_elem_id: u64, ordinal: *u64, dom_ordinal: *u64, binder_stack: *std.ArrayListUnmanaged(HostBinderBinding), scope_created: bool, dirty_source_node_ids: []const u64) void {
+            const collection = ImmediateCollectionCtx{ .engine = self, .host_ctx = ctx, .stream = stream };
+            self.collectActiveElemDescriptorsWith(ImmediateCollectionCtx, collection, ctx, roc_host, stream, elem, scope_id, parent_elem_id, ordinal, dom_ordinal, binder_stack, scope_created, dirty_source_node_ids);
         }
 
         pub fn collectActiveElemRootDescriptors(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, root: abi.Elem, dirty_source_node_ids: []const u64) void {
