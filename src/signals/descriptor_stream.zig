@@ -651,6 +651,9 @@ pub const Stream = struct {
         for (replacement.custom_attr_indices_by_elem_id.items, 0..) |indexes, elem_id| {
             if (indexes.items.len != 0) try self.reservePreparedCustomAttrElem(allocator, elem_id, indexes.items.len);
         }
+        for (replacement.lifecycle_indices_by_scope_id.items, 0..) |indexes, scope_id| {
+            if (indexes.items.len != 0) try self.reserveLifecycleScope(allocator, scope_id, indexes.items.len);
+        }
         try self.render_metadata_by_elem_id.ensureUnusedCapacity(allocator, @intCast(replacement.render_metadata_by_elem_id.count()));
 
         var highest_elem_id: usize = 0;
@@ -807,6 +810,68 @@ pub const Stream = struct {
             self.recordPreparedCustomAttrIndex(desc.elem_id, desc.name, .{ .kind = .signal_bool, .index = index });
         }
         replacement.signal_custom_bool_attrs.items.len = 0;
+    }
+
+    /// Reserves ownership for lifecycle descriptors retired by a structural transaction.
+    pub fn reserveRetiredLifecyclePublication(self: *Stream, allocator: std.mem.Allocator, source: *const Stream, target_scope_ids: []const u64, on_change_count: usize, mount_count: usize, cleanup_count: usize) std.mem.Allocator.Error!void {
+        try self.on_changes.ensureUnusedCapacity(allocator, on_change_count);
+        try self.mounts.ensureUnusedCapacity(allocator, mount_count);
+        try self.cleanups.ensureUnusedCapacity(allocator, cleanup_count);
+        try self.reservePreparedSignalRecordPublication(allocator, on_change_count);
+        for (target_scope_ids) |scope_id| try self.reserveLifecycleScope(allocator, scope_id, source.lifecycleIndices(scope_id).len);
+    }
+
+    /// Retires and publishes lifecycle descriptor ownership without allocation.
+    pub fn commitLifecycleReplacementAssumeCapacity(self: *Stream, replacement: *Stream, retired: *Stream, on_change_indexes: []const usize, mount_indexes: []const usize, cleanup_indexes: []const usize) void {
+        for (on_change_indexes) |index| {
+            const removed = self.on_changes.swapRemove(index);
+            self.removeLifecycleIndex(removed.scope_id, .{ .kind = .on_change, .index = index });
+            self.forgetSignalRecordTree(removed.signal.record);
+            retired.rememberSignalRecordTreeAssumeCapacity(removed.signal.record);
+            const retired_index = retired.on_changes.items.len;
+            retired.on_changes.appendAssumeCapacity(removed);
+            retired.recordLifecycleAssumeCapacity(removed.scope_id, .{ .kind = .on_change, .index = retired_index });
+            if (index < self.on_changes.items.len) {
+                const moved = self.on_changes.items[index];
+                self.updateLifecycleIndex(moved.scope_id, .on_change, self.on_changes.items.len, index);
+            }
+        }
+        for (mount_indexes) |index| {
+            const removed = self.mounts.swapRemove(index);
+            self.removeLifecycleIndex(removed.scope_id, .{ .kind = .mount, .index = index });
+            const retired_index = retired.mounts.items.len;
+            retired.mounts.appendAssumeCapacity(removed);
+            retired.recordLifecycleAssumeCapacity(removed.scope_id, .{ .kind = .mount, .index = retired_index });
+            if (index < self.mounts.items.len) self.updateLifecycleIndex(self.mounts.items[index].scope_id, .mount, self.mounts.items.len, index);
+        }
+        for (cleanup_indexes) |index| {
+            const removed = self.cleanups.swapRemove(index);
+            self.removeLifecycleIndex(removed.scope_id, .{ .kind = .cleanup, .index = index });
+            const retired_index = retired.cleanups.items.len;
+            retired.cleanups.appendAssumeCapacity(removed);
+            retired.recordLifecycleAssumeCapacity(removed.scope_id, .{ .kind = .cleanup, .index = retired_index });
+            if (index < self.cleanups.items.len) self.updateLifecycleIndex(self.cleanups.items[index].scope_id, .cleanup, self.cleanups.items.len, index);
+        }
+        for (replacement.on_changes.items) |desc| {
+            replacement.forgetSignalRecordTree(desc.signal.record);
+            self.rememberSignalRecordTreeAssumeCapacity(desc.signal.record);
+            const index = self.on_changes.items.len;
+            self.on_changes.appendAssumeCapacity(desc);
+            self.recordLifecycleAssumeCapacity(desc.scope_id, .{ .kind = .on_change, .index = index });
+        }
+        replacement.on_changes.items.len = 0;
+        for (replacement.mounts.items) |desc| {
+            const index = self.mounts.items.len;
+            self.mounts.appendAssumeCapacity(desc);
+            self.recordLifecycleAssumeCapacity(desc.scope_id, .{ .kind = .mount, .index = index });
+        }
+        replacement.mounts.items.len = 0;
+        for (replacement.cleanups.items) |desc| {
+            const index = self.cleanups.items.len;
+            self.cleanups.appendAssumeCapacity(desc);
+            self.recordLifecycleAssumeCapacity(desc.scope_id, .{ .kind = .cleanup, .index = index });
+        }
+        replacement.cleanups.items.len = 0;
     }
 
     /// Moves the element/text/fixed-static descriptor families according to a

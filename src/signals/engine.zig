@@ -3366,19 +3366,17 @@ pub fn Engine(comptime Ctx: type) type {
                     for (plan.cleanup_event_names.items) |name| allocator.free(name);
                     plan.cleanup_event_names.deinit(allocator);
                 }
-                for (engine_ptr.active_stream.cleanups.items) |cleanup| if (plan.target_scopes[@intCast(cleanup.scope_id)]) {
-                    const name = allocator.dupe(u8, cleanup.name) catch return error.OutOfMemory;
-                    plan.cleanup_event_names.append(allocator, name) catch {
-                        allocator.free(name);
-                        return error.OutOfMemory;
-                    };
-                };
-                engine_ptr.cleanup_events.ensureUnusedCapacity(allocator, plan.cleanup_event_names.items.len) catch return error.OutOfMemory;
                 plan.retired_scope_steps.ensureUnusedCapacity(allocator, plan.scope_retirement.?.scope_ids.len) catch return error.OutOfMemory;
                 errdefer plan.retired_scope_steps.deinit(allocator);
                 const render_start = engine_ptr.renderStartForReplacementTargetSet(site.render_insert_index, plan.target_scopes);
                 plan.removal = structural_splice.prepareRemoval(HostNodeDescriptorStream, allocator, &engine_ptr.active_stream, render_start, plan.target_scopes) catch return error.OutOfMemory;
                 errdefer if (plan.removal) |*removal| removal.deinit(allocator);
+                try plan.cleanup_event_names.ensureTotalCapacity(allocator, plan.removal.?.node_indexes.cleanup_indexes.items.len);
+                for (plan.removal.?.node_indexes.cleanup_indexes.items) |cleanup_index| {
+                    const name = allocator.dupe(u8, engine_ptr.active_stream.cleanups.items[cleanup_index].name) catch return error.OutOfMemory;
+                    plan.cleanup_event_names.appendAssumeCapacity(name);
+                }
+                engine_ptr.cleanup_events.ensureUnusedCapacity(allocator, plan.cleanup_event_names.items.len) catch return error.OutOfMemory;
                 plan.state_cell_indexes = allocator.alloc(usize, plan.removal.?.node_indexes.state_indexes.items.len) catch return error.OutOfMemory;
                 errdefer allocator.free(plan.state_cell_indexes);
                 for (plan.removal.?.node_indexes.state_indexes.items, 0..) |descriptor_index, offset| {
@@ -3417,6 +3415,14 @@ pub fn Engine(comptime Ctx: type) type {
                     removal_indexes.signal_optional_custom_text_attr_indexes.items.len,
                     removal_indexes.static_custom_bool_attr_indexes.items.len,
                     removal_indexes.signal_custom_bool_attr_indexes.items.len,
+                ) catch return error.OutOfMemory;
+                plan.retired_stream.reserveRetiredLifecyclePublication(
+                    allocator,
+                    &engine_ptr.active_stream,
+                    plan.scope_retirement.?.scope_ids,
+                    plan.removal.?.node_indexes.on_change_indexes.items.len,
+                    plan.removal.?.node_indexes.mount_indexes.items.len,
+                    plan.removal.?.node_indexes.cleanup_indexes.items.len,
                 ) catch return error.OutOfMemory;
                 plan.publication = structural_splice.preparePublicationDeltas(
                     allocator,
@@ -8660,7 +8666,7 @@ test "branch replacement preparation leaves the active branch unpublished" {
             engine.roc_host = host;
             engine.rebuildActiveSignalGraphFromStream(&ctx, &engine.active_stream);
             const retired_row_scope_id = engine.createEachRowScope(&ctx, 1, 77, 55, 101, 202, row_capability, row_capability);
-            try engine.active_stream.cleanups.append(ctx.allocator, .{ .scope_id = 1, .name = try ctx.allocator.dupe(u8, "branch-cleanup") });
+            engine.active_stream.appendCleanup(ctx.allocator, 1, "branch-cleanup");
             const scope_len = engine.scopes.items.len;
             const identity_len = engine.dom_identities.items.len;
             const text_len = engine.active_stream.text_nodes.items.len;
@@ -8749,6 +8755,13 @@ test "branch replacement preparation leaves the active branch unpublished" {
                     indexes.signal_optional_custom_text_attr_indexes.items,
                     indexes.static_custom_bool_attr_indexes.items,
                     indexes.signal_custom_bool_attr_indexes.items,
+                );
+                engine.active_stream.commitLifecycleReplacementAssumeCapacity(
+                    &plan.replacement_stream,
+                    &plan.retired_stream,
+                    plan.removal.?.node_indexes.on_change_indexes.items,
+                    plan.removal.?.node_indexes.mount_indexes.items,
+                    plan.removal.?.node_indexes.cleanup_indexes.items,
                 );
                 plan.commitStateCellsAssumeCapacity();
                 plan.commitIdentityRetirement();
