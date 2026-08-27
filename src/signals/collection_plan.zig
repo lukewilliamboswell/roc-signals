@@ -238,7 +238,7 @@ pub fn SignalRecordPlan(comptime Token: type, comptime Record: type) type {
         const Self = @This();
         by_token: std.AutoHashMapUnmanaged(Token, *Record) = .{},
         token_intents: std.ArrayListUnmanaged(struct { token: Token, record: *Record }) = .empty,
-        descriptor_roots: std.ArrayListUnmanaged(*Record) = .empty,
+        descriptor_roots: std.ArrayListUnmanaged(struct { record: *Record, owned: bool }) = .empty,
         committed: bool = false,
 
         pub fn prepare(self: *Self, allocator: std.mem.Allocator, tokens: usize, roots: usize) std.mem.Allocator.Error!void {
@@ -260,7 +260,17 @@ pub fn SignalRecordPlan(comptime Token: type, comptime Record: type) type {
 
         pub fn ownDescriptorRootAssumeCapacity(self: *Self, record: *Record) void {
             if (self.committed) @panic("signal record plan cannot own after commit");
-            self.descriptor_roots.appendAssumeCapacity(record);
+            self.descriptor_roots.appendAssumeCapacity(.{ .record = record, .owned = true });
+        }
+
+        /// Transfers the most recently staged descriptor root to its prepared
+        /// descriptor while retaining the non-owning publication intent.
+        pub fn transferDescriptorRoot(self: *Self, record: *Record) void {
+            if (self.committed) @panic("signal record plan cannot transfer after commit");
+            if (self.descriptor_roots.items.len == 0) @panic("signal record plan transferred a missing descriptor root");
+            const root = &self.descriptor_roots.items[self.descriptor_roots.items.len - 1];
+            if (root.record != record or !root.owned) @panic("signal record plan transferred an unexpected descriptor root");
+            root.owned = false;
         }
 
         pub fn abort(self: *Self, releaser: anytype) void {
@@ -268,7 +278,8 @@ pub fn SignalRecordPlan(comptime Token: type, comptime Record: type) type {
             var index = self.descriptor_roots.items.len;
             while (index != 0) {
                 index -= 1;
-                releaser.releaseRecord(self.descriptor_roots.items[index]);
+                const root = self.descriptor_roots.items[index];
+                if (root.owned) releaser.releaseRecord(root.record);
             }
             self.by_token.clearRetainingCapacity();
             self.token_intents.clearRetainingCapacity();
@@ -278,7 +289,7 @@ pub fn SignalRecordPlan(comptime Token: type, comptime Record: type) type {
         pub fn commit(self: *Self, publisher: anytype) void {
             if (self.committed) @panic("signal record plan committed twice");
             for (self.token_intents.items) |intent| publisher.publishToken(intent.token, intent.record);
-            for (self.descriptor_roots.items) |record| publisher.publishDescriptorRoot(record);
+            for (self.descriptor_roots.items) |root| publisher.publishDescriptorRoot(root.record);
             self.committed = true;
         }
 
@@ -317,6 +328,43 @@ test "signal record plan releases descriptor roots but not token intents" {
     plan.abort(Releaser{ .count = &releases, .root = &root, .child = &child });
     try std.testing.expectEqual(@as(usize, 2), releases);
     plan.deinit(std.testing.allocator, Releaser{ .count = &releases, .root = &root, .child = &child });
+}
+
+test "signal record plan transfer prevents abort release and preserves publication" {
+    const TestRecord = struct { id: u8 };
+    const Releaser = struct {
+        count: *usize,
+        pub fn releaseRecord(self: @This(), _: *TestRecord) void {
+            self.count.* += 1;
+        }
+    };
+    const Publisher = struct {
+        published: *?*TestRecord,
+        pub fn publishToken(_: @This(), _: u64, _: *TestRecord) void {}
+        pub fn publishDescriptorRoot(self: @This(), record: *TestRecord) void {
+            self.published.* = record;
+        }
+    };
+
+    var record = TestRecord{ .id = 1 };
+    var releases: usize = 0;
+    var aborted = SignalRecordPlan(u64, TestRecord){};
+    try aborted.prepare(std.testing.allocator, 0, 1);
+    aborted.ownDescriptorRootAssumeCapacity(&record);
+    aborted.transferDescriptorRoot(&record);
+    aborted.abort(Releaser{ .count = &releases });
+    try std.testing.expectEqual(@as(usize, 0), releases);
+    aborted.deinit(std.testing.allocator, Releaser{ .count = &releases });
+
+    var published: ?*TestRecord = null;
+    var committed = SignalRecordPlan(u64, TestRecord){};
+    try committed.prepare(std.testing.allocator, 0, 1);
+    committed.ownDescriptorRootAssumeCapacity(&record);
+    committed.transferDescriptorRoot(&record);
+    committed.commit(Publisher{ .published = &published });
+    try std.testing.expect(published == &record);
+    committed.deinit(std.testing.allocator, Releaser{ .count = &releases });
+    try std.testing.expectEqual(@as(usize, 0), releases);
 }
 
 test "signal record plan preparation sweeps allocation failures and retries" {
