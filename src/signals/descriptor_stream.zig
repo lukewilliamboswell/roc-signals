@@ -1151,11 +1151,18 @@ pub const Stream = struct {
     pub const PreparedStaticAttr = union(enum) {
         text: struct { elem_id: u64, field: TextField, value: []u8 },
         boolean: struct { elem_id: u64, field: BoolField, value: bool },
+        custom_text: struct { elem_id: u64, name: []u8, value: []u8 },
+        custom_boolean: struct { elem_id: u64, name: []u8, value: bool },
 
         pub fn abort(self: @This(), allocator: std.mem.Allocator) void {
             switch (self) {
                 .text => |prepared| allocator.free(prepared.value),
                 .boolean => {},
+                .custom_text => |prepared| {
+                    allocator.free(prepared.name);
+                    allocator.free(prepared.value);
+                },
+                .custom_boolean => |prepared| allocator.free(prepared.name),
             }
         }
     };
@@ -1163,6 +1170,8 @@ pub const Stream = struct {
     pub fn reservePreparedStaticAttrs(self: *Stream, allocator: std.mem.Allocator, additional: usize) std.mem.Allocator.Error!void {
         try self.static_text_attrs.ensureUnusedCapacity(allocator, additional);
         try self.static_bool_attrs.ensureUnusedCapacity(allocator, additional);
+        try self.static_custom_text_attrs.ensureUnusedCapacity(allocator, additional);
+        try self.static_custom_bool_attrs.ensureUnusedCapacity(allocator, additional);
     }
 
     pub fn prepareStaticTextAttr(_: *Stream, allocator: std.mem.Allocator, elem_id: u64, field: TextField, value: []const u8) std.mem.Allocator.Error!PreparedStaticAttr {
@@ -1171,6 +1180,22 @@ pub const Stream = struct {
 
     pub fn prepareStaticBoolAttr(_: *Stream, elem_id: u64, field: BoolField, value: bool) PreparedStaticAttr {
         return .{ .boolean = .{ .elem_id = elem_id, .field = field, .value = value } };
+    }
+
+    pub fn prepareStaticCustomTextAttr(_: *Stream, allocator: std.mem.Allocator, elem_id: u64, name: []const u8, value: []const u8) std.mem.Allocator.Error!PreparedStaticAttr {
+        const name_copy = try allocator.dupe(u8, name);
+        errdefer allocator.free(name_copy);
+        return .{ .custom_text = .{ .elem_id = elem_id, .name = name_copy, .value = try allocator.dupe(u8, value) } };
+    }
+
+    pub fn prepareStaticCustomBoolAttr(_: *Stream, allocator: std.mem.Allocator, elem_id: u64, name: []const u8, value: bool) std.mem.Allocator.Error!PreparedStaticAttr {
+        return .{ .custom_boolean = .{ .elem_id = elem_id, .name = try allocator.dupe(u8, name), .value = value } };
+    }
+
+    pub fn canStageLinearCustomAttrs(self: *const Stream, additional: usize) bool {
+        if (self.custom_attr_index_active) return false;
+        const current = self.static_custom_text_attrs.items.len + self.signal_custom_text_attrs.items.len + self.signal_optional_custom_text_attrs.items.len + self.static_custom_bool_attrs.items.len + self.signal_custom_bool_attrs.items.len;
+        return current <= custom_attr_index_threshold and additional <= custom_attr_index_threshold - current;
     }
 
     pub fn appendPreparedStaticAttr(self: *Stream, prepared: PreparedStaticAttr) void {
@@ -1185,6 +1210,8 @@ pub const Stream = struct {
                 self.static_bool_attrs.appendAssumeCapacity(.{ .elem_id = value.elem_id, .field = value.field, .value = value.value });
                 setFreshIndex(self.descriptor_indexes_by_elem_id.items[@intCast(value.elem_id)].static_bool_attrs.slot(value.field), index);
             },
+            .custom_text => |value| self.static_custom_text_attrs.appendAssumeCapacity(.{ .elem_id = value.elem_id, .name = value.name, .value = value.value }),
+            .custom_boolean => |value| self.static_custom_bool_attrs.appendAssumeCapacity(.{ .elem_id = value.elem_id, .name = value.name, .value = value.value }),
         }
     }
 

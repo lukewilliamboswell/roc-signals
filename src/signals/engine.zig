@@ -75,6 +75,7 @@ pub const HostElementDesc = descriptor_stream.ElementDesc;
 pub const HostNodeTextNodeDesc = descriptor_stream.TextNodeDesc;
 pub const HostNodeStaticTextAttrDesc = descriptor_stream.StaticTextAttrDesc;
 pub const HostNodeStaticCustomTextAttrDesc = descriptor_stream.StaticCustomTextAttrDesc;
+pub const HostNodeStaticCustomBoolAttrDesc = descriptor_stream.StaticCustomBoolAttrDesc;
 pub const HostNodeStaticBoolAttrDesc = descriptor_stream.StaticBoolAttrDesc;
 pub const HostNodeScopeSiteDesc = descriptor_stream.ScopeSiteDesc;
 pub const HostNodeSignalTextNodeDesc = descriptor_stream.SignalTextNodeDesc;
@@ -2110,6 +2111,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const highest_elem_id = std.math.add(u64, @intCast(self.engine.dom_identities.items.len), @as(u64, @intCast(expected_nodes))) catch return error.ResourceLimit;
                 self.stream.reservePreparedStaticNodes(allocator, expected_nodes, highest_elem_id) catch return error.OutOfMemory;
                 self.stream.reservePreparedStaticAttrs(allocator, expected_attrs) catch return error.OutOfMemory;
+                if (!self.stream.canStageLinearCustomAttrs(expected_attrs)) return error.ResourceLimit;
                 return self;
             }
 
@@ -2188,18 +2190,41 @@ pub fn Engine(comptime Ctx: type) type {
                             try self.budget.charge(0, bytes);
                             break :blk self.stream.prepareStaticTextAttr(Ctx.allocator(self.host_ctx), elem_id, field, payload.value.asSlice()) catch return error.OutOfMemory;
                         },
-                        .custom => return error.ResourceLimit,
+                        .custom => |name| blk: {
+                            const name_slice = name.asSlice();
+                            if (name_slice.len == 0 or self.customAttrExists(elem_id, name_slice)) return error.ResourceLimit;
+                            const bytes = std.math.add(usize, @sizeOf(HostNodeStaticCustomTextAttrDesc), name_slice.len) catch return error.ResourceLimit;
+                            const total = std.math.add(usize, bytes, payload.value.asSlice().len) catch return error.ResourceLimit;
+                            try self.budget.charge(0, total);
+                            break :blk self.stream.prepareStaticCustomTextAttr(Ctx.allocator(self.host_ctx), elem_id, name_slice, payload.value.asSlice()) catch return error.OutOfMemory;
+                        },
                     },
                     .static_bool => |payload| switch (payload.target) {
                         .fixed => |field| blk: {
                             try self.budget.charge(0, @sizeOf(HostNodeStaticBoolAttrDesc));
                             break :blk self.stream.prepareStaticBoolAttr(elem_id, field, payload.value);
                         },
-                        .custom => return error.ResourceLimit,
+                        .custom => |name| blk: {
+                            const name_slice = name.asSlice();
+                            if (name_slice.len == 0 or self.customAttrExists(elem_id, name_slice)) return error.ResourceLimit;
+                            const bytes = std.math.add(usize, @sizeOf(HostNodeStaticCustomBoolAttrDesc), name_slice.len) catch return error.ResourceLimit;
+                            try self.budget.charge(0, bytes);
+                            break :blk self.stream.prepareStaticCustomBoolAttr(Ctx.allocator(self.host_ctx), elem_id, name_slice, payload.value) catch return error.OutOfMemory;
+                        },
                     },
                     else => return error.ResourceLimit,
                 };
                 self.prepared_attrs.appendAssumeCapacity(prepared);
+            }
+
+            fn customAttrExists(self: *const @This(), elem_id: u64, name: []const u8) bool {
+                if (self.stream.customTextAttrDescriptorExists(elem_id, name)) return true;
+                for (self.prepared_attrs.items) |prepared| switch (prepared) {
+                    .custom_text => |value| if (value.elem_id == elem_id and std.mem.eql(u8, value.name, name)) return true,
+                    .custom_boolean => |value| if (value.elem_id == elem_id and std.mem.eql(u8, value.name, name)) return true,
+                    .text, .boolean => {},
+                };
+                return false;
             }
 
             /// Publishes only pre-reserved state. This function must remain
@@ -5061,6 +5086,7 @@ pub fn Engine(comptime Ctx: type) type {
             const max_elem_id = @max(maxRenderElemId(&self.active_stream), maxRenderElemId(stream));
             const required_child_table_len: usize = @intCast(max_elem_id + 1);
             const child_table_len = required_child_table_len;
+            self.ensureRenderNodeCapacity(ctx, required_child_table_len);
 
             var seen = allocator.alloc(bool, child_table_len) catch @panic("out of memory");
             defer allocator.free(seen);
@@ -6582,7 +6608,23 @@ test "transactional static engine root sweeps every allocation and retries clean
         } },
         .tag = .StaticBool,
     };
-    const root = verifyStaticRoot(&.{ attr, bool_attr }, &.{child});
+    const custom_text_attr = abi.NodeAttr{
+        .payload = .{ .static_text = .{
+            .field = .{ .id = abi_view.node_text_field_custom },
+            .name = abi.RocStr.fromSlice("data-state", undefined),
+            .value = abi.RocStr.fromSlice("ready", undefined),
+        } },
+        .tag = .StaticText,
+    };
+    const custom_bool_attr = abi.NodeAttr{
+        .payload = .{ .static_bool = .{
+            .field = .{ .id = abi_view.node_bool_field_custom },
+            .name = abi.RocStr.fromSlice("aria-hidden", undefined),
+            .value = true,
+        } },
+        .tag = .StaticBool,
+    };
+    const root = verifyStaticRoot(&.{ attr, bool_attr, custom_text_attr, custom_bool_attr }, &.{child});
     var roc_host: abi.RocHost = undefined;
 
     var counter = FaultAllocator.init(std.testing.allocator);
@@ -6615,6 +6657,8 @@ test "transactional static engine root sweeps every allocation and retries clean
         try std.testing.expect(findTextNodeDesc(&stream, 2) == null);
         try std.testing.expect(!streamHasTextField(&stream, 1, .label));
         try std.testing.expect(!streamHasBoolField(&stream, 1, .disabled));
+        try std.testing.expect(!stream.customTextAttrDescriptorExists(1, "data-state"));
+        try std.testing.expect(!stream.customTextAttrDescriptorExists(1, "aria-hidden"));
 
         fault.configure(null);
         try engine.collectStaticRootDescriptorsTransactional(&ctx, &roc_host, &stream, root, .{});
@@ -6624,6 +6668,8 @@ test "transactional static engine root sweeps every allocation and retries clean
         try std.testing.expectEqualStrings("hello", findTextNodeDesc(&stream, 2).?.value);
         try std.testing.expect(streamHasTextField(&stream, 1, .label));
         try std.testing.expect(streamHasBoolField(&stream, 1, .disabled));
+        try std.testing.expect(stream.customTextAttrDescriptorExists(1, "data-state"));
+        try std.testing.expect(stream.customTextAttrDescriptorExists(1, "aria-hidden"));
     }
 }
 
