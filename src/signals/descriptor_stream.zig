@@ -1140,7 +1140,8 @@ pub const Stream = struct {
         try self.render_nodes.ensureUnusedCapacity(allocator, additional);
         try self.elements.ensureUnusedCapacity(allocator, additional);
         try self.text_nodes.ensureUnusedCapacity(allocator, additional);
-        const descriptor_len = std.math.add(usize, @as(usize, @intCast(highest_elem_id)), 1) catch return error.OutOfMemory;
+        const highest_index = std.math.cast(usize, highest_elem_id) orelse return error.OutOfMemory;
+        const descriptor_len = std.math.add(usize, highest_index, 1) catch return error.OutOfMemory;
         if (descriptor_len > self.descriptor_indexes_by_elem_id.items.len) {
             try self.descriptor_indexes_by_elem_id.ensureTotalCapacity(allocator, descriptor_len);
         }
@@ -1182,6 +1183,15 @@ pub const Stream = struct {
             }
         }
     };
+
+    pub fn reservePreparedSignalAttrs(self: *Stream, allocator: std.mem.Allocator, additional: usize, highest_elem_id: u64) std.mem.Allocator.Error!void {
+        try self.signal_text_attrs.ensureUnusedCapacity(allocator, additional);
+        try self.signal_bool_attrs.ensureUnusedCapacity(allocator, additional);
+        const descriptor_len = std.math.add(usize, @as(usize, @intCast(highest_elem_id)), 1) catch return error.OutOfMemory;
+        if (descriptor_len > self.descriptor_indexes_by_elem_id.items.len) {
+            try self.descriptor_indexes_by_elem_id.ensureTotalCapacity(allocator, descriptor_len);
+        }
+    }
 
     pub fn reservePreparedStaticAttrs(self: *Stream, allocator: std.mem.Allocator, additional: usize) std.mem.Allocator.Error!void {
         try self.static_text_attrs.ensureUnusedCapacity(allocator, additional);
@@ -2743,6 +2753,8 @@ fn deinitStaticPreparedTestStream(stream: *Stream, allocator: std.mem.Allocator)
     stream.render_nodes.deinit(allocator);
     stream.elements.deinit(allocator);
     stream.text_nodes.deinit(allocator);
+    stream.signal_text_attrs.deinit(allocator);
+    stream.signal_bool_attrs.deinit(allocator);
     stream.descriptor_indexes_by_elem_id.deinit(allocator);
     stream.render_metadata_by_elem_id.deinit(allocator);
 }
@@ -2798,6 +2810,19 @@ test "prepared static batch reserves cumulative allocation-free publication capa
     try std.testing.expectEqual(@as(usize, 1), stream.elements.items.len);
     try std.testing.expectEqual(@as(usize, 1), stream.text_nodes.items.len);
     try std.testing.expectEqualStrings("hello", stream.text_nodes.items[0].value);
+}
+
+test "prepared signal attr reservation leaves logical stream empty" {
+    var stream: Stream = .{};
+    defer deinitStaticPreparedTestStream(&stream, std.testing.allocator);
+    try stream.reservePreparedSignalAttrs(std.testing.allocator, 3, 7);
+    try std.testing.expect(stream.signal_text_attrs.capacity >= 3);
+    try std.testing.expect(stream.signal_bool_attrs.capacity >= 3);
+    try std.testing.expect(stream.descriptor_indexes_by_elem_id.capacity >= 8);
+    try std.testing.expectEqual(@as(usize, 0), stream.signal_text_attrs.items.len);
+    try std.testing.expectEqual(@as(usize, 0), stream.signal_bool_attrs.items.len);
+    try std.testing.expectEqual(@as(usize, 0), stream.descriptor_indexes_by_elem_id.items.len);
+    try std.testing.expect(stream.elemDescriptorIndex(7) == null);
 }
 
 test "fixed event descriptors preserve Roc supplied payload descriptors" {
