@@ -2039,15 +2039,33 @@ pub fn Engine(comptime Ctx: type) type {
             self.collectActiveElemDescriptors(ctx, roc_host, stream, row_elem, row_scope_id, parent_elem_id, ordinal, dom_ordinal, binder_stack, row_created, dirty_source_node_ids);
         }
 
+        const ImmediateCollectionCtx = struct {
+            engine: *Self,
+            host_ctx: Ctx.Handle,
+            stream: *HostNodeDescriptorStream,
+
+            fn appendElement(self: @This(), scope_id: u64, parent_elem_id: u64, dom_ordinal: *u64, tag: []const u8) u64 {
+                const elem_id = self.engine.internDomIdentity(Ctx.allocator(self.host_ctx), scope_id, dom_ordinal.*) catch @panic("scope id has no host scope descriptor");
+                dom_ordinal.* += 1;
+                _ = self.stream.appendElement(Ctx.allocator(self.host_ctx), elem_id, parent_elem_id, scope_id, tag);
+                return elem_id;
+            }
+
+            fn appendText(self: @This(), scope_id: u64, parent_elem_id: u64, dom_ordinal: *u64, text: []const u8) void {
+                const elem_id = self.engine.internDomIdentity(Ctx.allocator(self.host_ctx), scope_id, dom_ordinal.*) catch @panic("scope id has no host scope descriptor");
+                dom_ordinal.* += 1;
+                self.stream.appendTextNode(Ctx.allocator(self.host_ctx), elem_id, parent_elem_id, scope_id, text);
+            }
+        };
+
         pub fn collectActiveElemDescriptors(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, elem: abi.Elem, scope_id: u64, parent_elem_id: u64, ordinal: *u64, dom_ordinal: *u64, binder_stack: *std.ArrayListUnmanaged(HostBinderBinding), scope_created: bool, dirty_source_node_ids: []const u64) void {
             self.validateScopeId(scope_id) catch @panic("scope id has no host scope descriptor");
 
             const allocator = Ctx.allocator(ctx);
+            const collection = ImmediateCollectionCtx{ .engine = self, .host_ctx = ctx, .stream = stream };
             switch (abi_view.Elem.fromAbi(elem)) {
                 .element => |payload| {
-                    const elem_id = self.internDomIdentity(Ctx.allocator(ctx), scope_id, dom_ordinal.*) catch @panic("scope id has no host scope descriptor");
-                    dom_ordinal.* += 1;
-                    _ = stream.appendElement(allocator, elem_id, parent_elem_id, scope_id, payload.tag.asSlice());
+                    const elem_id = collection.appendElement(scope_id, parent_elem_id, dom_ordinal, payload.tag.asSlice());
                     for (payload.attrs) |attr| {
                         self.collectNodeAttrDescriptor(ctx, roc_host, stream, elem_id, attr, binder_stack.items);
                     }
@@ -2056,9 +2074,7 @@ pub fn Engine(comptime Ctx: type) type {
                     }
                 },
                 .text => |payload| {
-                    const elem_id = self.internDomIdentity(Ctx.allocator(ctx), scope_id, dom_ordinal.*) catch @panic("scope id has no host scope descriptor");
-                    dom_ordinal.* += 1;
-                    stream.appendTextNode(allocator, elem_id, parent_elem_id, scope_id, payload.text.asSlice());
+                    collection.appendText(scope_id, parent_elem_id, dom_ordinal, payload.text.asSlice());
                 },
                 .text_signal => |payload| {
                     const elem_id = self.internDomIdentity(Ctx.allocator(ctx), scope_id, dom_ordinal.*) catch @panic("scope id has no host scope descriptor");
