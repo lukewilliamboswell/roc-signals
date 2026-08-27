@@ -601,10 +601,31 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             });
         }
 
+        /// Journals one same-id remove/recreate operation against the active cache.
+        pub fn addNodeReplacement(self: *Self, cache: *Cache(Ctx), elem_id: u64, tag: []const u8) (std.mem.Allocator.Error || error{ DuplicateNode, MissingNode, ResourceLimit })!void {
+            try self.addRemoval(cache, elem_id);
+            try self.addReplacementCreation(cache, elem_id, tag);
+        }
+
         /// Adds one provisional node and its prepared tag to the journal.
         pub fn addCreation(self: *Self, cache: *Cache(Ctx), elem_id: u64, tag: []const u8) (std.mem.Allocator.Error || error{ ActiveNode, DuplicateNode, ResourceLimit })!void {
+            return self.addCreationOptions(cache, elem_id, tag, false);
+        }
+
+        /// Adds a provisional node whose active slot is retired by this plan.
+        fn addReplacementCreation(self: *Self, cache: *Cache(Ctx), elem_id: u64, tag: []const u8) (std.mem.Allocator.Error || error{ DuplicateNode, ResourceLimit })!void {
+            self.addCreationOptions(cache, elem_id, tag, true) catch |err| switch (err) {
+                error.ActiveNode => unreachable,
+                else => |value| return value,
+            };
+        }
+
+        fn addCreationOptions(self: *Self, cache: *Cache(Ctx), elem_id: u64, tag: []const u8, replaces_active: bool) (std.mem.Allocator.Error || error{ ActiveNode, DuplicateNode, ResourceLimit })!void {
             if (self.provisional_nodes.contains(elem_id)) return error.DuplicateNode;
-            const prepared = try PreparedNodeCreation.prepare(Ctx, self.allocator, cache, &self.tags, elem_id, tag);
+            const prepared = if (replaces_active)
+                try PreparedNodeCreation.prepareReplacing(Ctx, self.allocator, cache, &self.tags, elem_id, tag)
+            else
+                try PreparedNodeCreation.prepare(Ctx, self.allocator, cache, &self.tags, elem_id, tag);
             self.provisional_nodes.putAssumeCapacity(elem_id, {});
             self.creations.appendAssumeCapacity(prepared);
             const wire_elem_id = std.math.cast(u32, elem_id) orelse return error.ResourceLimit;
@@ -1872,6 +1893,48 @@ test "prepared render wire derives retirement and keyed replacement diffs" {
     try std.testing.expectEqual(@as(usize, 5), plan.wire.commands.items.len);
     const expected = [_]std.meta.Tag(render.PreparedCommand){ .remove_attr, .set_attr_text, .clear_event, .bind_event, .fixed };
     for (plan.wire.commands.items, expected) |command, tag| try std.testing.expectEqual(tag, std.meta.activeTag(command));
+}
+
+test "prepared render splice recreates one active slot transactionally" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var fault = FaultAllocator.init(std.testing.allocator);
+    const allocator = fault.allocator();
+    var cache: Cache(TestCtx) = .{};
+    var host = TestHost{};
+    defer cache.deinit(&host);
+    try cache.nodes.append(allocator, ScalarNode.initActive("root"));
+    try cache.nodes.append(allocator, ScalarNode.initActive("old"));
+    var aborted = try PreparedRenderSplice(TestCtx).init(allocator, &cache, .{
+        .node_capacity = 2,
+        .new_tags = 1,
+        .removals = 1,
+        .creations = 1,
+        .child_links = 1,
+        .wire_commands = 2,
+    });
+    fault.configure(1);
+    try std.testing.expectError(error.OutOfMemory, aborted.addNodeReplacement(&cache, 1, "new"));
+    try std.testing.expectEqualStrings("old", cache.nodes.items[1].tag.?);
+    try std.testing.expectEqual(@as(?u64, null), cache.nodes.items[1].parent_id);
+    fault.configure(null);
+    aborted.deinit();
+    var plan = try PreparedRenderSplice(TestCtx).init(allocator, &cache, .{
+        .node_capacity = 2,
+        .new_tags = 1,
+        .removals = 1,
+        .creations = 1,
+        .child_links = 1,
+        .wire_commands = 2,
+    });
+    defer plan.deinit();
+    try plan.addNodeReplacement(&cache, 1, "new");
+    try std.testing.expectEqualStrings("old", cache.nodes.items[1].tag.?);
+    fault.configure(1);
+    plan.apply(&cache);
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqualStrings("new", cache.nodes.items[1].tag.?);
+    try std.testing.expectEqual(@as(usize, 2), plan.wire.commands.items.len);
+    fault.configure(null);
 }
 
 test "prepared render splice sweeps every allocation and retries" {

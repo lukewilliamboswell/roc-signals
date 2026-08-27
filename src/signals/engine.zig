@@ -3326,6 +3326,8 @@ pub fn Engine(comptime Ctx: type) type {
             change_route_appends: ?active_graph.PreparedRouteAppends(active_graph.ChangeSink) = null,
             structural_route_appends: ?active_graph.PreparedRouteAppends(active_graph.StructuralSink) = null,
             graph_source_route_count: usize = 0,
+            render_splice: ?render_cache_mod.PreparedRenderSplice(Ctx) = null,
+            render_batch: render.TransactionalBatch = .{},
 
             fn stateIndexDescending(_: void, left: usize, right: usize) bool {
                 return left > right;
@@ -3488,27 +3490,163 @@ pub fn Engine(comptime Ctx: type) type {
                     plan.replacement_stream.mounts.items.len,
                 ) catch return error.OutOfMemory;
                 errdefer if (plan.publication) |*publication| publication.deinit(allocator);
-                if (engine_ptr.active_signal_graph.items.len != 0) {
-                    plan.sink_edits = try plan.prepareSinkEdits(allocator);
-                    errdefer if (plan.sink_edits) |*edits| edits.deinit(allocator);
-                    var retired_roots: std.ArrayListUnmanaged(*HostSignalRecord) = .empty;
-                    defer retired_roots.deinit(allocator);
-                    try plan.collectRetiredGraphRoots(allocator, &retired_roots);
-                    plan.graph_release = active_graph.prepareReleaseClosure(HostSignalRecord, allocator, engine_ptr.active_signal_graph.items, retired_roots.items) catch return error.OutOfMemory;
-                    errdefer if (plan.graph_release) |*release| release.deinit(allocator);
-                    var replacement_roots: std.ArrayListUnmanaged(*HostSignalRecord) = .empty;
-                    defer replacement_roots.deinit(allocator);
-                    try plan.collectReplacementGraphRoots(allocator, &replacement_roots);
-                    plan.graph_append = active_graph.prepareGraphAppend(HostSignalRecord, allocator, engine_ptr.active_signal_graph.items, plan.graph_release.?.final_record_ids, replacement_roots.items) catch return error.OutOfMemory;
-                    errdefer if (plan.graph_append) |*append| append.deinit(allocator);
-                    try plan.prepareGraphRoutes(allocator);
-                    errdefer plan.deinitGraphRoutes(allocator);
-                }
+                try plan.prepareGraphAndRender(allocator);
                 return plan;
             }
 
+            fn prepareGraphAndRender(self: *@This(), allocator: std.mem.Allocator) CollectionError!void {
+                errdefer {
+                    self.render_batch.deinit(allocator);
+                    if (self.render_splice) |*splice| splice.deinit();
+                    self.deinitGraphRoutes(allocator);
+                    if (self.graph_append) |*append| append.deinit(allocator);
+                    if (self.graph_release) |*release| release.deinit(allocator);
+                    if (self.sink_edits) |*edits| edits.deinit(allocator);
+                }
+                if (self.engine.active_signal_graph.items.len != 0) {
+                    self.sink_edits = try self.prepareSinkEdits(allocator);
+                    var retired_roots: std.ArrayListUnmanaged(*HostSignalRecord) = .empty;
+                    defer retired_roots.deinit(allocator);
+                    try self.collectRetiredGraphRoots(allocator, &retired_roots);
+                    self.graph_release = active_graph.prepareReleaseClosure(HostSignalRecord, allocator, self.engine.active_signal_graph.items, retired_roots.items) catch return error.OutOfMemory;
+                    var replacement_roots: std.ArrayListUnmanaged(*HostSignalRecord) = .empty;
+                    defer replacement_roots.deinit(allocator);
+                    try self.collectReplacementGraphRoots(allocator, &replacement_roots);
+                    self.graph_append = active_graph.prepareGraphAppend(HostSignalRecord, allocator, self.engine.active_signal_graph.items, self.graph_release.?.final_record_ids, replacement_roots.items) catch return error.OutOfMemory;
+                    try self.prepareGraphRoutes(allocator);
+                }
+                if (self.engine.render_cache.hasRoot()) {
+                    self.render_splice = try self.prepareRenderTopology(allocator);
+                    self.render_splice.?.wire.preflight(&self.render_batch, allocator) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        error.ResourceLimit => return error.ResourceLimit,
+                    };
+                }
+            }
+
+            fn prepareRenderTopology(self: *@This(), allocator: std.mem.Allocator) CollectionError!render_cache_mod.PreparedRenderSplice(Ctx) {
+                var retired: std.AutoHashMapUnmanaged(u64, void) = .empty;
+                defer retired.deinit(allocator);
+                const retired_count = std.math.cast(u32, self.removal.?.scan.removed_elem_ids.len) orelse return error.ResourceLimit;
+                retired.ensureUnusedCapacity(allocator, retired_count) catch return error.OutOfMemory;
+                for (self.removal.?.scan.removed_elem_ids) |elem_id| retired.putAssumeCapacity(elem_id, {});
+                var replacements: std.AutoHashMapUnmanaged(u64, void) = .empty;
+                defer replacements.deinit(allocator);
+                replacements.ensureUnusedCapacity(allocator, std.math.cast(u32, self.replacement_stream.render_nodes.items.len) orelse return error.ResourceLimit) catch return error.OutOfMemory;
+                for (self.replacement_stream.render_nodes.items) |node| {
+                    const result = replacements.getOrPutAssumeCapacity(node.elem_id);
+                    if (result.found_existing) return error.ResourceLimit;
+                    result.value_ptr.* = {};
+                }
+
+                var touched: std.AutoHashMapUnmanaged(u64, void) = .empty;
+                defer touched.deinit(allocator);
+                const touched_bound = std.math.add(usize, self.removal.?.scan.touched_parent_ids.len, self.replacement_stream.render_nodes.items.len) catch return error.ResourceLimit;
+                touched.ensureUnusedCapacity(allocator, std.math.cast(u32, touched_bound) orelse return error.ResourceLimit) catch return error.OutOfMemory;
+                for (self.removal.?.scan.touched_parent_ids) |parent_id| {
+                    if (!retired.contains(parent_id) or replacements.contains(parent_id)) touched.putAssumeCapacity(parent_id, {});
+                }
+                var max_elem_id: u64 = 0;
+                for (self.replacement_stream.render_nodes.items) |node| {
+                    max_elem_id = @max(max_elem_id, node.elem_id);
+                    touched.putAssumeCapacity(descriptor_stream.renderNodeParentElemId(HostNodeDescriptorStream, &self.replacement_stream, node), {});
+                }
+
+                var final_child_count: usize = 0;
+                var old_child_count: usize = 0;
+                var iterator = touched.keyIterator();
+                while (iterator.next()) |parent_id| {
+                    const parent_index = std.math.cast(usize, parent_id.*) orelse return error.ResourceLimit;
+                    if (parent_index < self.engine.render_cache.nodes.items.len and self.engine.render_cache.nodes.items[parent_index].active) {
+                        old_child_count = std.math.add(usize, old_child_count, self.engine.render_cache.nodes.items[parent_index].children.items.len) catch return error.ResourceLimit;
+                        for (self.engine.render_cache.nodes.items[parent_index].children.items) |child_id| if (!retired.contains(child_id)) {
+                            final_child_count = std.math.add(usize, final_child_count, 1) catch return error.ResourceLimit;
+                        };
+                    }
+                    for (self.replacement_stream.render_nodes.items) |node| {
+                        if (descriptor_stream.renderNodeParentElemId(HostNodeDescriptorStream, &self.replacement_stream, node) == parent_id.*) {
+                            final_child_count = std.math.add(usize, final_child_count, 1) catch return error.ResourceLimit;
+                        }
+                    }
+                }
+                var wire_commands = std.math.add(usize, self.removal.?.scan.removed_elem_ids.len, self.replacement_stream.render_nodes.items.len) catch return error.ResourceLimit;
+                wire_commands = std.math.add(usize, wire_commands, final_child_count) catch return error.ResourceLimit;
+                wire_commands = std.math.add(usize, wire_commands, self.replacement_stream.text_nodes.items.len) catch return error.ResourceLimit;
+                wire_commands = std.math.add(usize, wire_commands, self.replacement_stream.static_text_attrs.items.len) catch return error.ResourceLimit;
+                wire_commands = std.math.add(usize, wire_commands, self.replacement_stream.static_bool_attrs.items.len) catch return error.ResourceLimit;
+                var child_links = std.math.add(usize, old_child_count, final_child_count) catch return error.ResourceLimit;
+                child_links = std.math.add(usize, child_links, self.removal.?.scan.removed_elem_ids.len) catch return error.ResourceLimit;
+                var splice = render_cache_mod.PreparedRenderSplice(Ctx).init(allocator, &self.engine.render_cache, .{
+                    .node_capacity = std.math.add(usize, std.math.cast(usize, max_elem_id) orelse return error.ResourceLimit, 1) catch return error.ResourceLimit,
+                    .new_tags = self.replacement_stream.render_nodes.items.len,
+                    .removals = self.removal.?.scan.removed_elem_ids.len,
+                    .creations = self.replacement_stream.render_nodes.items.len,
+                    .children = touched.count(),
+                    .child_links = child_links,
+                    .text_fields = std.math.add(usize, self.replacement_stream.text_nodes.items.len, self.replacement_stream.static_text_attrs.items.len) catch return error.ResourceLimit,
+                    .bool_fields = self.replacement_stream.static_bool_attrs.items.len,
+                    .wire_commands = wire_commands,
+                }) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.ResourceLimit => return error.ResourceLimit,
+                };
+                errdefer splice.deinit();
+                for (self.removal.?.scan.removed_elem_ids) |elem_id| if (!replacements.contains(elem_id)) splice.addRemoval(&self.engine.render_cache, elem_id) catch return error.ResourceLimit;
+                for (self.replacement_stream.render_nodes.items) |node| {
+                    const tag = descriptor_stream.renderNodeTag(HostNodeDescriptorStream, &self.replacement_stream, node);
+                    const index = std.math.cast(usize, node.elem_id) orelse return error.ResourceLimit;
+                    if (index < self.engine.render_cache.nodes.items.len and self.engine.render_cache.nodes.items[index].active) {
+                        if (!retired.contains(node.elem_id)) return error.ResourceLimit;
+                        splice.addNodeReplacement(&self.engine.render_cache, node.elem_id, tag) catch |err| switch (err) {
+                            error.OutOfMemory => return error.OutOfMemory,
+                            else => return error.ResourceLimit,
+                        };
+                    } else splice.addCreation(&self.engine.render_cache, node.elem_id, tag) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        else => return error.ResourceLimit,
+                    };
+                }
+                iterator = touched.keyIterator();
+                while (iterator.next()) |parent_id| {
+                    var children: std.ArrayListUnmanaged(u64) = .empty;
+                    defer children.deinit(allocator);
+                    const parent_index = std.math.cast(usize, parent_id.*) orelse return error.ResourceLimit;
+                    var inserted = false;
+                    if (parent_index < self.engine.render_cache.nodes.items.len and self.engine.render_cache.nodes.items[parent_index].active) {
+                        for (self.engine.render_cache.nodes.items[parent_index].children.items) |child_id| {
+                            if (retired.contains(child_id)) {
+                                if (!inserted) {
+                                    try self.appendReplacementChildren(allocator, &children, parent_id.*);
+                                    inserted = true;
+                                }
+                            } else children.append(allocator, child_id) catch return error.OutOfMemory;
+                        }
+                    }
+                    if (!inserted) try self.appendReplacementChildren(allocator, &children, parent_id.*);
+                    splice.addChildren(&self.engine.render_cache, parent_id.*, children.items) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        else => return error.ResourceLimit,
+                    };
+                }
+                for (self.replacement_stream.text_nodes.items) |desc| splice.addTextField(&self.engine.render_cache, desc.elem_id, .text, desc.value) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => return error.ResourceLimit,
+                };
+                for (self.replacement_stream.static_text_attrs.items) |desc| splice.addTextField(&self.engine.render_cache, desc.elem_id, desc.field, desc.value) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => return error.ResourceLimit,
+                };
+                for (self.replacement_stream.static_bool_attrs.items) |desc| splice.addBoolField(&self.engine.render_cache, desc.elem_id, desc.field, desc.value) catch return error.ResourceLimit;
+                return splice;
+            }
+
+            fn appendReplacementChildren(self: *@This(), allocator: std.mem.Allocator, children: *std.ArrayListUnmanaged(u64), parent_id: u64) CollectionError!void {
+                for (self.replacement_stream.render_nodes.items) |node| {
+                    if (descriptor_stream.renderNodeParentElemId(HostNodeDescriptorStream, &self.replacement_stream, node) == parent_id) children.append(allocator, node.elem_id) catch return error.OutOfMemory;
+                }
+            }
+
             fn prepareGraphRoutes(self: *@This(), allocator: std.mem.Allocator) CollectionError!void {
-                errdefer self.deinitGraphRoutes(allocator);
                 const graph_plan = &self.graph_append.?;
                 const graph_count = graph_plan.finalGraphCount();
                 var source: std.ArrayListUnmanaged(active_graph.RouteAppend(u64)) = .empty;
@@ -3794,6 +3932,8 @@ pub fn Engine(comptime Ctx: type) type {
 
             fn deinit(self: *@This()) void {
                 const allocator = Ctx.allocator(self.host_ctx);
+                self.render_batch.deinit(allocator);
+                if (self.render_splice) |*splice| splice.deinit();
                 if (self.publication) |*publication| publication.deinit(allocator);
                 if (self.sink_edits) |*edits| edits.deinit(allocator);
                 if (self.graph_append) |*append| append.deinit(allocator);
@@ -8748,6 +8888,7 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 engine.active_structural_signal_routes.deinit(ctx.allocator);
                 stream.deinit(ctx.allocator, &ctx, host, &engine.pending_roc_metrics);
                 engine.active_stream.deinit(ctx.allocator, &ctx, host, &engine.pending_roc_metrics);
+                engine.deinitRenderCache(&ctx);
                 deinitVerifyStateEngine(&engine, &ctx, host);
             }
             try engine.collectStaticRootDescriptorsTransactional(&ctx, host, &stream, root_elem, .{});
@@ -8755,6 +8896,10 @@ test "branch replacement preparation leaves the active branch unpublished" {
             stream = .{};
             engine.roc_host = host;
             engine.rebuildActiveSignalGraphFromStream(&ctx, &engine.active_stream);
+            engine.appendRenderNode(&ctx, 0, 0, "root");
+            engine.appendRenderNode(&ctx, 1, 0, "div");
+            engine.appendRenderNode(&ctx, 2, 1, "text");
+            engine.appendRenderNode(&ctx, 3, 1, "text");
             const retired_row_scope_id = engine.createEachRowScope(&ctx, 1, 77, 55, 101, 202, row_capability, row_capability);
             const scope_len = engine.scopes.items.len;
             const identity_len = engine.dom_identities.items.len;
@@ -8782,6 +8927,11 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 try std.testing.expect(plan.graph_release != null);
                 try std.testing.expect(plan.graph_append != null);
                 try std.testing.expect(plan.graph_append.?.records.len != 0);
+                try std.testing.expect(plan.render_splice != null);
+                try std.testing.expectEqual(@as(usize, 3), plan.render_splice.?.removals.items.len);
+                try std.testing.expectEqual(@as(usize, 3), plan.render_splice.?.creations.items.len);
+                try std.testing.expectEqual(@as(usize, 0), plan.render_batch.published.commands.len());
+                try std.testing.expectEqual(@as(usize, 0), plan.render_batch.staged.commands.len());
                 try std.testing.expect(engine.scopes.items[@intCast(plan.retired_scope_id)].active);
                 try std.testing.expectEqualSlices(u64, &.{ 1, 2, 3 }, plan.removal.?.scan.removed_elem_ids);
                 try std.testing.expectEqualSlices(usize, &.{0}, plan.removal.?.descriptor_indexes.element_indexes.items);
