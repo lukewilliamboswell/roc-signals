@@ -174,6 +174,69 @@ pub const PreparedCacheUpdates = struct {
     }
 };
 
+/// Owns the complete set of incoming roots for one multi-source transaction.
+/// Storage is fully reserved before the first opaque value is adopted, so a
+/// caller can materialize values while its app-compiled capability frame is
+/// active without exposing partial live mutation. Duplicate records are
+/// rejected before ownership changes hands. Destruction releases every value
+/// that has not been transferred into a prepared cache overlay.
+pub const OwnedSourceUpdates = struct {
+    pub const Entry = struct {
+        record: *Record,
+        cell: ?HostValueCell,
+    };
+
+    pub const AdoptError = error{ DuplicateSource, TooManySources };
+
+    allocator: std.mem.Allocator,
+    expected: usize,
+    entries: std.ArrayListUnmanaged(Entry) = .empty,
+    indexes: std.AutoHashMapUnmanaged(*Record, void) = .empty,
+
+    /// Reserves storage for exactly the declared number of source roots before
+    /// any incoming Roc value is adopted.
+    pub fn init(allocator: std.mem.Allocator, expected: usize) std.mem.Allocator.Error!OwnedSourceUpdates {
+        var self = OwnedSourceUpdates{ .allocator = allocator, .expected = expected };
+        errdefer self.deinitStorage();
+        try self.entries.ensureTotalCapacityPrecise(allocator, expected);
+        try self.indexes.ensureTotalCapacity(allocator, std.math.cast(u32, expected) orelse return error.OutOfMemory);
+        return self;
+    }
+
+    /// Adopts one unique record/value/capability tuple using only pre-reserved
+    /// storage. On rejection the caller retains ownership of `value`.
+    pub fn adoptAssumeCapacity(self: *OwnedSourceUpdates, record: *Record, value: HostValue, cap: HostValueCapability, metrics: anytype) AdoptError!void {
+        if (self.entries.items.len == self.expected) return error.TooManySources;
+        if (self.indexes.contains(record)) return error.DuplicateSource;
+        const cell = HostValueCell.initRetained(value, cap, metrics);
+        self.entries.appendAssumeCapacity(.{ .record = record, .cell = cell });
+        self.indexes.putAssumeCapacity(record, {});
+    }
+
+    /// Transfers one adopted cell to the next preparation stage without
+    /// cloning it. The returned entry owns the cell and must be committed or
+    /// released by that stage.
+    pub fn take(self: *OwnedSourceUpdates, index: usize) Entry {
+        const entry = &self.entries.items[index];
+        const cell = entry.cell orelse @panic("source update ownership transferred twice");
+        entry.cell = null;
+        return .{ .record = entry.record, .cell = cell };
+    }
+
+    /// Releases all values still owned after partial construction or aborted
+    /// downstream preflight, then frees the reservation storage.
+    pub fn deinit(self: *OwnedSourceUpdates, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
+        for (self.entries.items) |*entry| if (entry.cell) |*cell| cell.deinit(ctx, roc_host, metrics);
+        self.deinitStorage();
+        self.* = undefined;
+    }
+
+    fn deinitStorage(self: *OwnedSourceUpdates) void {
+        self.entries.deinit(self.allocator);
+        self.indexes.deinit(self.allocator);
+    }
+};
+
 pub const EvalResult = struct {
     value: HostValue,
     changed: bool,
@@ -735,4 +798,128 @@ test "appendSignalRecordSourceNodeIds deduplicates source refs" {
 
     appendSignalRecordSourceNodeIds(allocator, &source_node_ids, &combine);
     try std.testing.expectEqualSlices(u64, &.{ 10, 20 }, source_node_ids.items);
+}
+
+var owned_source_test_drop_count: usize = 0;
+
+fn ownedSourceTestCallable(_: *abi.RocHost, _: ?[*]u8, _: ?[*]const u8, _: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {}
+
+fn ownedSourceTestDrop(_: *abi.RocHost, _: ?[*]u8, _: ?[*]const u8, _: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
+    owned_source_test_drop_count += 1;
+}
+
+const OwnedSourceTestCtx = struct {
+    /// Returns the same scalar test carrier because these tests model ownership through counters.
+    pub fn cloneHostValue(_: *@This(), value: HostValue) HostValue {
+        return value;
+    }
+
+    /// Opens the no-op capability frame used by the test host.
+    pub fn pushHostValueCapabilities(_: *@This(), _: []const HostValueCapability) void {}
+
+    /// Closes the no-op capability frame used by the test host.
+    pub fn popHostValueCapabilities(_: *@This()) void {}
+};
+
+const OwnedSourceTestMetrics = struct {
+    closure_retains: u64 = 0,
+    closure_releases: u64 = 0,
+
+    /// Records capability retain and release edges so aborted owners must balance exactly.
+    pub fn bump(self: *@This(), comptime field: anytype, count: u64) void {
+        if (field == .closure_retains) self.closure_retains += count;
+        if (field == .closure_releases) self.closure_releases += count;
+    }
+};
+
+test "owned source updates sweep exact reservation failures and retry on the same allocator" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    const Runner = struct {
+        fn reserve(fault: *FaultAllocator, fail_at: ?usize) !usize {
+            fault.configure(fail_at);
+            var updates = OwnedSourceUpdates.init(fault.allocator(), 3) catch |err| {
+                try std.testing.expectEqual(error.OutOfMemory, err);
+                return fault.attempts;
+            };
+            const attempts = fault.attempts;
+            updates.deinitStorage();
+            return attempts;
+        }
+    };
+
+    var counter = FaultAllocator.init(std.testing.allocator);
+    const attempts = try Runner.reserve(&counter, null);
+    try std.testing.expect(attempts >= 2);
+    for (1..attempts + 1) |fail_at| {
+        var fault = FaultAllocator.init(std.testing.allocator);
+        _ = try Runner.reserve(&fault, fail_at);
+        try std.testing.expectEqual(@as(usize, 1), fault.induced_failures);
+
+        // Cleanup after failed reservation leaves the same owner allocator
+        // reusable for a complete retry.
+        _ = try Runner.reserve(&fault, null);
+    }
+}
+
+test "owned source updates release every partial adoption and remain ref neutral" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&env);
+    const ordinary = abi.rocErasedCallableAllocate(&roc_host, ownedSourceTestCallable, null, 0).?;
+    defer abi.decrefErasedCallable(ordinary, &roc_host);
+    const drop = abi.rocErasedCallableAllocate(&roc_host, ownedSourceTestDrop, null, 0).?;
+    defer abi.decrefErasedCallable(drop, &roc_host);
+    const cap = HostValueCapability{ .clone = ordinary, .drop = drop, .eq = ordinary };
+    var records = [_]Record{
+        .{ .ref_count = 1, .payload = .{ .ref = 1 } },
+        .{ .ref_count = 1, .payload = .{ .ref = 2 } },
+        .{ .ref_count = 1, .payload = .{ .ref = 3 } },
+    };
+
+    for (0..records.len + 1) |constructed| {
+        owned_source_test_drop_count = 0;
+        var fault = FaultAllocator.init(std.testing.allocator);
+        var ctx = OwnedSourceTestCtx{};
+        var metrics = OwnedSourceTestMetrics{};
+        var updates = try OwnedSourceUpdates.init(fault.allocator(), records.len);
+        fault.configure(1);
+        for (records[0..constructed], 0..) |*record, index| {
+            try updates.adoptAssumeCapacity(record, @intCast(index + 10), cap, &metrics);
+        }
+        try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+        updates.deinit(&ctx, &roc_host, &metrics);
+        try std.testing.expectEqual(constructed, owned_source_test_drop_count);
+        try std.testing.expectEqual(metrics.closure_retains, metrics.closure_releases);
+    }
+}
+
+test "owned source updates reject duplicates before ownership mutation" {
+    var env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&env);
+    const ordinary = abi.rocErasedCallableAllocate(&roc_host, ownedSourceTestCallable, null, 0).?;
+    defer abi.decrefErasedCallable(ordinary, &roc_host);
+    const drop = abi.rocErasedCallableAllocate(&roc_host, ownedSourceTestDrop, null, 0).?;
+    defer abi.decrefErasedCallable(drop, &roc_host);
+    const cap = HostValueCapability{ .clone = ordinary, .drop = drop, .eq = ordinary };
+    var record = Record{ .ref_count = 1, .payload = .{ .ref = 1 } };
+    var ctx = OwnedSourceTestCtx{};
+    var metrics = OwnedSourceTestMetrics{};
+    var updates = try OwnedSourceUpdates.init(std.testing.allocator, 2);
+
+    try updates.adoptAssumeCapacity(&record, 10, cap, &metrics);
+    const retains_before = metrics.closure_retains;
+    try std.testing.expectError(error.DuplicateSource, updates.adoptAssumeCapacity(&record, 20, cap, &metrics));
+    try std.testing.expectEqual(@as(usize, 1), updates.entries.items.len);
+    try std.testing.expectEqual(retains_before, metrics.closure_retains);
+    var second = Record{ .ref_count = 1, .payload = .{ .ref = 2 } };
+    try updates.adoptAssumeCapacity(&second, 30, cap, &metrics);
+    var third = Record{ .ref_count = 1, .payload = .{ .ref = 3 } };
+    try std.testing.expectError(error.TooManySources, updates.adoptAssumeCapacity(&third, 40, cap, &metrics));
+    try std.testing.expectEqual(@as(usize, 2), updates.entries.items.len);
+    try std.testing.expectEqual(retains_before + 3, metrics.closure_retains);
+
+    owned_source_test_drop_count = 0;
+    updates.deinit(&ctx, &roc_host, &metrics);
+    try std.testing.expectEqual(@as(usize, 2), owned_source_test_drop_count);
+    try std.testing.expectEqual(metrics.closure_retains, metrics.closure_releases);
 }
