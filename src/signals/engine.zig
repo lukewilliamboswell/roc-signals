@@ -1434,7 +1434,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             fn init(self: @This(), payload: HostSignalRecordPayload) error{OutOfMemory}!*HostSignalRecord {
-                return HostSignalRecord.init(self.allocator, payload);
+                return HostSignalRecord.tryInit(self.allocator, payload);
             }
 
             fn remember(self: @This(), record: *HostSignalRecord) error{OutOfMemory}!void {
@@ -1528,82 +1528,82 @@ pub fn Engine(comptime Ctx: type) type {
                         .cap = retainHostValueCapability(payload.capability, &self.pending_roc_metrics),
                         .reset_on_start = payload.reset_on_start,
                     } });
-                    stream.rememberSignalRecord(allocator, record);
+                    try binding.remember(record);
                     break :blk record;
                 },
                 .interval_source => |payload| blk: {
                     const token = payload.token.callable;
-                    if (self.retainExistingSignalRecordForStream(allocator, stream, token, .interval_source)) |record| {
+                    if (try binding.retainExisting(token, .interval_source)) |record| {
                         break :blk record;
                     }
 
-                    const record = HostSignalRecord.init(allocator, .{ .interval_source = .{
+                    const record = try binding.init(.{ .interval_source = .{
                         .period_ms = payload.period_ms,
                         .initial = retainHostCallable(payload.initial, &self.pending_roc_metrics),
                         .tick = retainHostCallable(payload.tick, &self.pending_roc_metrics),
                         .cap = retainHostValueCapability(payload.capability, &self.pending_roc_metrics),
                     } });
-                    stream.rememberSignalRecord(allocator, record);
+                    try binding.remember(record);
                     break :blk record;
                 },
                 .location_source => |payload| blk: {
                     const token = payload.token.callable;
-                    if (self.retainExistingSignalRecordForStream(allocator, stream, token, .location_source)) |record| {
+                    if (try binding.retainExisting(token, .location_source)) |record| {
                         break :blk record;
                     }
 
-                    const record = HostSignalRecord.init(allocator, .{ .location_source = .{
+                    const record = try binding.init(.{ .location_source = .{
                         .payload_cap = retainHostValueCapability(payload.payload_capability, &self.pending_roc_metrics),
                         .from_payload = retainHostCallable(payload.from_payload, &self.pending_roc_metrics),
                         .cap = retainHostValueCapability(payload.capability, &self.pending_roc_metrics),
                     } });
-                    stream.rememberSignalRecord(allocator, record);
+                    try binding.remember(record);
                     break :blk record;
                 },
                 .visibility_source => |payload| blk: {
                     const token = payload.token.callable;
-                    if (self.retainExistingSignalRecordForStream(allocator, stream, token, .visibility_source)) |record| {
+                    if (try binding.retainExisting(token, .visibility_source)) |record| {
                         break :blk record;
                     }
 
-                    const record = HostSignalRecord.init(allocator, .{ .visibility_source = .{
+                    const record = try binding.init(.{ .visibility_source = .{
                         .payload_cap = retainHostValueCapability(payload.payload_capability, &self.pending_roc_metrics),
                         .from_payload = retainHostCallable(payload.from_payload, &self.pending_roc_metrics),
                         .cap = retainHostValueCapability(payload.capability, &self.pending_roc_metrics),
                     } });
-                    stream.rememberSignalRecord(allocator, record);
+                    try binding.remember(record);
                     break :blk record;
                 },
                 .online_source => |payload| blk: {
                     const token = payload.token.callable;
-                    if (self.retainExistingSignalRecordForStream(allocator, stream, token, .online_source)) |record| {
+                    if (try binding.retainExisting(token, .online_source)) |record| {
                         break :blk record;
                     }
 
-                    const record = HostSignalRecord.init(allocator, .{ .online_source = .{
+                    const record = try binding.init(.{ .online_source = .{
                         .payload_cap = retainHostValueCapability(payload.payload_capability, &self.pending_roc_metrics),
                         .from_payload = retainHostCallable(payload.from_payload, &self.pending_roc_metrics),
                         .cap = retainHostValueCapability(payload.capability, &self.pending_roc_metrics),
                     } });
-                    stream.rememberSignalRecord(allocator, record);
+                    try binding.remember(record);
                     break :blk record;
                 },
                 .storage_source => |payload| blk: {
                     const token = payload.token.callable;
-                    if (self.retainExistingSignalRecordForStream(allocator, stream, token, .storage_source)) |record| {
+                    if (try binding.retainExisting(token, .storage_source)) |record| {
                         break :blk record;
                     }
 
                     const key_copy = allocator.dupe(u8, payload.key.asSlice()) catch @panic("out of memory");
                     errdefer allocator.free(key_copy);
-                    const record = HostSignalRecord.init(allocator, .{ .storage_source = .{
+                    const record = try binding.init(.{ .storage_source = .{
                         .area = payload.area,
                         .key = key_copy,
                         .payload_cap = retainHostValueCapability(payload.payload_capability, &self.pending_roc_metrics),
                         .from_payload = retainHostCallable(payload.from_payload, &self.pending_roc_metrics),
                         .cap = retainHostValueCapability(payload.capability, &self.pending_roc_metrics),
                     } });
-                    stream.rememberSignalRecord(allocator, record);
+                    try binding.remember(record);
                     break :blk record;
                 },
             };
