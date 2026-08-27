@@ -23,7 +23,7 @@ pub const EventBindings = struct {
     pointer_leave: ?EventBinding = null,
 };
 
-/// Provides the `eventBindingSlot` operation.
+/// Maps a fixed event kind to its compact cache slot.
 pub fn eventBindingSlot(bindings: *EventBindings, kind: EventKind) *?EventBinding {
     return switch (kind) {
         .click => &bindings.click,
@@ -116,7 +116,7 @@ pub const ScalarNode = struct {
         };
     }
 
-    /// Provides the `customTextAttrIndex` operation.
+    /// Resolves a custom attribute name to its cache entry for targeted updates.
     pub fn customTextAttrIndex(self: *const ScalarNode, name: []const u8) ?usize {
         for (self.custom_text_attrs.items, 0..) |attr, index| {
             if (std.mem.eql(u8, attr.name, name)) return index;
@@ -124,7 +124,7 @@ pub const ScalarNode = struct {
         return null;
     }
 
-    /// Provides the `namedEventIndex` operation.
+    /// Resolves a named event to its cache entry without scanning unrelated bindings.
     pub fn namedEventIndex(self: *const ScalarNode, name: []const u8) ?usize {
         for (self.named_events.items, 0..) |event, index| {
             if (std.mem.eql(u8, event.name, name)) return index;
@@ -176,7 +176,7 @@ fn stableSubsequenceLength(indexes: []const usize, scratch: []usize) usize {
     return len;
 }
 
-/// Provides the `Cache` operation.
+/// Defines the engine-owned rendered-state cache used to emit only changed host commands.
 pub fn Cache(comptime Ctx: type) type {
     return struct {
         const Self = @This();
@@ -187,7 +187,7 @@ pub fn Cache(comptime Ctx: type) type {
         move_old_indexes: std.ArrayListUnmanaged(usize) = .empty,
         move_stable_subsequence: std.ArrayListUnmanaged(usize) = .empty,
 
-        /// Provides the `deinit` operation.
+        /// Releases every resource owned by this value and leaves no retained host or Roc ownership behind.
         pub fn deinit(self: *Self, ctx: Ctx.Handle) void {
             const allocator = Ctx.allocator(ctx);
             for (self.nodes.items) |*node| {
@@ -203,18 +203,18 @@ pub fn Cache(comptime Ctx: type) type {
             self.* = .{};
         }
 
-        /// Provides the `hasRoot` operation.
+        /// Reports whether root is present in maintained state.
         pub fn hasRoot(self: *const Self) bool {
             return self.nodes.items.len != 0 and self.nodes.items[0].active;
         }
 
-        /// Provides the `hasActiveNode` operation.
+        /// Reports whether active node is present in maintained state.
         pub fn hasActiveNode(self: *const Self, elem_id: u64) bool {
             const index: usize = @intCast(elem_id);
             return index < self.nodes.items.len and self.nodes.items[index].active;
         }
 
-        /// Provides the `activeNodeTagDiffers` operation.
+        /// Returns active node tag differs from the maintained active-runtime indexes.
         pub fn activeNodeTagDiffers(self: *const Self, elem_id: u64, tag: []const u8) bool {
             const index: usize = @intCast(elem_id);
             if (index >= self.nodes.items.len) return false;
@@ -223,7 +223,7 @@ pub fn Cache(comptime Ctx: type) type {
             return node.tag == null or !std.mem.eql(u8, node.tag.?, tag);
         }
 
-        /// Provides the `reset` operation.
+        /// Stages a complete render-surface reset in the host command sink.
         pub fn reset(self: *Self, ctx: Ctx.Handle) void {
             const allocator = Ctx.allocator(ctx);
             for (self.nodes.items) |*node| {
@@ -271,7 +271,7 @@ pub fn Cache(comptime Ctx: type) type {
             return false;
         }
 
-        /// Provides the `appendNode` operation.
+        /// Emits the already-decided command that attaches a newly created render node.
         pub fn appendNode(self: *Self, ctx: Ctx.Handle, elem_id: u64, parent_elem_id: u64, tag: []const u8) void {
             const created = self.ensureCacheNode(ctx, elem_id, tag);
             if (!created) @panic("initial render append reused an existing render cache identity");
@@ -282,14 +282,14 @@ pub fn Cache(comptime Ctx: type) type {
             Ctx.sink(ctx).appendNode(elem_id, parent_elem_id, tag);
         }
 
-        /// Provides the `ensureNode` operation.
+        /// Ensures the host render surface contains the engine-selected node and tag.
         pub fn ensureNode(self: *Self, ctx: Ctx.Handle, elem_id: u64, tag: []const u8, counts: *render.Counts) void {
             if (!self.ensureCacheNode(ctx, elem_id, tag)) return;
             Ctx.sink(ctx).ensureNode(elem_id, tag);
             counts.addCreateElement();
         }
 
-        /// Provides the `removeNode` operation.
+        /// Emits removal of a node whose owning scope has already been disposed by the engine.
         pub fn removeNode(self: *Self, ctx: Ctx.Handle, elem_id: u64, counts: *render.Counts) void {
             const allocator = Ctx.allocator(ctx);
             const index: usize = @intCast(elem_id);
@@ -324,7 +324,7 @@ pub fn Cache(comptime Ctx: type) type {
             self.nodes.items[index].deinit(allocator);
         }
 
-        /// Provides the `activeNode` operation.
+        /// Returns active node from the maintained active-runtime indexes.
         pub fn activeNode(self: *Self, elem_id: u64) *ScalarNode {
             const index: usize = @intCast(elem_id);
             if (index >= self.nodes.items.len or !self.nodes.items[index].active) {
@@ -333,21 +333,21 @@ pub fn Cache(comptime Ctx: type) type {
             return &self.nodes.items[index];
         }
 
-        /// Provides the `namedEventNameAt` operation.
+        /// Returns the owned name for an indexed named-event cache entry.
         pub fn namedEventNameAt(self: *Self, elem_id: u64, index: usize) ?[]const u8 {
             const events = self.activeNode(elem_id).named_events.items;
             if (index >= events.len) return null;
             return events[index].name;
         }
 
-        /// Provides the `customTextAttrNameAt` operation.
+        /// Returns the owned name for an indexed custom-attribute cache entry.
         pub fn customTextAttrNameAt(self: *Self, elem_id: u64, index: usize) ?[]const u8 {
             const attrs = self.activeNode(elem_id).custom_text_attrs.items;
             if (index >= attrs.len) return null;
             return attrs[index].name;
         }
 
-        /// Provides the `replaceChildren` operation.
+        /// Publishes the engine-selected child order for one parent.
         pub fn replaceChildren(self: *Self, ctx: Ctx.Handle, parent_elem_id: u64, next_child_ids: []const u64, counts: *render.Counts) void {
             const allocator = Ctx.allocator(ctx);
             const parent = self.activeNode(parent_elem_id);
@@ -371,7 +371,7 @@ pub fn Cache(comptime Ctx: type) type {
             Ctx.sink(ctx).replaceChildren(parent_elem_id, next_child_ids);
         }
 
-        /// Provides the `replaceChildrenForMoves` operation.
+        /// Publishes a moves-only child reorder without rebuilding surviving row structure.
         pub fn replaceChildrenForMoves(self: *Self, ctx: Ctx.Handle, parent_elem_id: u64, next_child_ids: []const u64, counts: *render.Counts) void {
             const allocator = Ctx.allocator(ctx);
             const parent = self.activeNode(parent_elem_id);
@@ -414,7 +414,7 @@ pub fn Cache(comptime Ctx: type) type {
             Ctx.sink(ctx).replaceChildrenForMoves(parent_elem_id, next_child_ids);
         }
 
-        /// Provides the `applyEventBinding` operation.
+        /// Applies event binding after preparation has fixed semantics and reserved fallible growth.
         pub fn applyEventBinding(self: *Self, ctx: Ctx.Handle, elem_id: u64, kind: EventKind, binding: ?EventBinding, counts: *render.Counts) void {
             const node = self.activeNode(elem_id);
             const slot = node.fixedEventBindingSlot(kind);
@@ -437,7 +437,7 @@ pub fn Cache(comptime Ctx: type) type {
             counts.addEventBinding();
         }
 
-        /// Provides the `applyNamedEventBinding` operation.
+        /// Applies named event binding after preparation has fixed semantics and reserved fallible growth.
         pub fn applyNamedEventBinding(self: *Self, ctx: Ctx.Handle, elem_id: u64, name: []const u8, binding: ?EventBinding, counts: *render.Counts) void {
             const allocator = Ctx.allocator(ctx);
             const node = self.activeNode(elem_id);
@@ -473,7 +473,7 @@ pub fn Cache(comptime Ctx: type) type {
             counts.addEventBinding();
         }
 
-        /// Provides the `debugAssertMatchesSink` operation.
+        /// Asserts that committed render-cache state matches the host sink after publication.
         pub fn debugAssertMatchesSink(self: *Self, ctx: Ctx.Handle) void {
             if (comptime builtin.mode != .Debug) return;
 
@@ -495,7 +495,7 @@ pub fn Cache(comptime Ctx: type) type {
             }
         }
 
-        /// Provides the `applyTextField` operation.
+        /// Applies an engine-decided text field value to one render node.
         pub fn applyTextField(self: *Self, ctx: Ctx.Handle, elem_id: u64, field: TextField, value: []const u8) bool {
             const allocator = Ctx.allocator(ctx);
             const slot = self.activeNode(elem_id).textSlot(field);
@@ -510,7 +510,7 @@ pub fn Cache(comptime Ctx: type) type {
             return true;
         }
 
-        /// Provides the `applyTextAttr` operation.
+        /// Applies an engine-decided custom text attribute to one render node.
         pub fn applyTextAttr(self: *Self, ctx: Ctx.Handle, elem_id: u64, name: []const u8, value: []const u8) bool {
             const allocator = Ctx.allocator(ctx);
             const node = self.activeNode(elem_id);
@@ -542,7 +542,7 @@ pub fn Cache(comptime Ctx: type) type {
             return true;
         }
 
-        /// Provides the `applyBoolField` operation.
+        /// Applies an engine-decided boolean field value to one render node.
         pub fn applyBoolField(self: *Self, ctx: Ctx.Handle, elem_id: u64, field: BoolField, value: bool) bool {
             const slot = self.activeNode(elem_id).boolSlot(field);
             if (slot.*) |existing| {
@@ -554,7 +554,7 @@ pub fn Cache(comptime Ctx: type) type {
             return true;
         }
 
-        /// Provides the `clearTextField` operation.
+        /// Clears an engine-decided text field from one render node.
         pub fn clearTextField(self: *Self, ctx: Ctx.Handle, elem_id: u64, field: TextField) bool {
             const allocator = Ctx.allocator(ctx);
             const slot = self.activeNode(elem_id).textSlot(field);
@@ -565,7 +565,7 @@ pub fn Cache(comptime Ctx: type) type {
             return true;
         }
 
-        /// Provides the `clearTextAttr` operation.
+        /// Clears an engine-decided custom text attribute from one render node.
         pub fn clearTextAttr(self: *Self, ctx: Ctx.Handle, elem_id: u64, name: []const u8) bool {
             const allocator = Ctx.allocator(ctx);
             const node = self.activeNode(elem_id);
@@ -576,7 +576,7 @@ pub fn Cache(comptime Ctx: type) type {
             return true;
         }
 
-        /// Provides the `clearBoolField` operation.
+        /// Clears an engine-decided boolean field from one render node.
         pub fn clearBoolField(self: *Self, ctx: Ctx.Handle, elem_id: u64, field: BoolField) bool {
             const slot = self.activeNode(elem_id).boolSlot(field);
             const existing = slot.* orelse return false;
@@ -603,12 +603,12 @@ const TestCtx = struct {
     pub const Handle = *TestHost;
     pub const Sink = TestSink;
 
-    /// Provides the `allocator` operation.
+    /// Returns the allocator owned by this host context for shared-engine work.
     pub fn allocator(_: Handle) std.mem.Allocator {
         return std.testing.allocator;
     }
 
-    /// Provides the `sink` operation.
+    /// Returns the thin render-command sink used by the shared engine.
     pub fn sink(host: Handle) Sink {
         return .{ .host = host };
     }
@@ -617,37 +617,37 @@ const TestCtx = struct {
 const TestSink = struct {
     host: *TestHost,
 
-    /// Provides the `reset` operation.
+    /// Stages a complete render-surface reset in the host command sink.
     pub fn reset(_: TestSink) void {}
-    /// Provides the `appendNode` operation.
+    /// Emits the already-decided command that attaches a newly created render node.
     pub fn appendNode(_: TestSink, _: u64, _: u64, _: []const u8) void {}
-    /// Provides the `ensureNode` operation.
+    /// Ensures the host render surface contains the engine-selected node and tag.
     pub fn ensureNode(_: TestSink, _: u64, _: []const u8) void {}
-    /// Provides the `removeNode` operation.
+    /// Emits removal of a node whose owning scope has already been disposed by the engine.
     pub fn removeNode(_: TestSink, _: u64) void {}
-    /// Provides the `replaceChildren` operation.
+    /// Publishes the engine-selected child order for one parent.
     pub fn replaceChildren(_: TestSink, _: u64, _: []const u64) void {}
-    /// Provides the `replaceChildrenForMoves` operation.
+    /// Publishes a moves-only child reorder without rebuilding surviving row structure.
     pub fn replaceChildrenForMoves(_: TestSink, _: u64, _: []const u64) void {}
-    /// Provides the `applyTextField` operation.
+    /// Applies an engine-decided text field value to one render node.
     pub fn applyTextField(self: TestSink, _: u64, _: TextField, _: []const u8) void {
         self.host.apply_text_field_count += 1;
     }
-    /// Provides the `applyTextAttr` operation.
+    /// Applies an engine-decided custom text attribute to one render node.
     pub fn applyTextAttr(self: TestSink, _: u64, _: []const u8, _: []const u8) void {
         self.host.apply_text_attr_count += 1;
     }
-    /// Provides the `applyBoolField` operation.
+    /// Applies an engine-decided boolean field value to one render node.
     pub fn applyBoolField(_: TestSink, _: u64, _: BoolField, _: bool) void {}
-    /// Provides the `clearTextField` operation.
+    /// Clears an engine-decided text field from one render node.
     pub fn clearTextField(_: TestSink, _: u64, _: TextField) void {}
-    /// Provides the `clearTextAttr` operation.
+    /// Clears an engine-decided custom text attribute from one render node.
     pub fn clearTextAttr(self: TestSink, _: u64, _: []const u8) void {
         self.host.clear_text_attr_count += 1;
     }
-    /// Provides the `clearBoolField` operation.
+    /// Clears an engine-decided boolean field from one render node.
     pub fn clearBoolField(_: TestSink, _: u64, _: BoolField) void {}
-    /// Provides the `bindEvent` operation.
+    /// Publishes a validated canonical event binding selected by the engine.
     pub fn bindEvent(self: TestSink, _: u64, key: EventBindingKey, binding: EventBinding) void {
         self.host.last_event_binding = binding;
         switch (key) {
@@ -655,14 +655,14 @@ const TestSink = struct {
             .named => self.host.bind_named_event_count += 1,
         }
     }
-    /// Provides the `clearEvent` operation.
+    /// Removes a host event registration whose engine-owned binding is no longer active.
     pub fn clearEvent(self: TestSink, _: u64, key: EventBindingKey) void {
         switch (key) {
             .fixed => self.host.clear_event_count += 1,
             .named => self.host.clear_named_event_count += 1,
         }
     }
-    /// Provides the `debugAssertNode` operation.
+    /// Checks that the host render surface matches the engine's committed node metadata.
     pub fn debugAssertNode(_: TestSink, _: u64, _: bool, _: ?[]const u8, _: ?u64, _: []const u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64) void {}
 };
 

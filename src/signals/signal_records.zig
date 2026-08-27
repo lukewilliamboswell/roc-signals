@@ -25,7 +25,7 @@ pub const CacheSlot = union(enum) {
     absent,
     present: HostValueCell,
 
-    /// Provides the `deinit` operation.
+    /// Releases every resource owned by this value and leaves no retained host or Roc ownership behind.
     pub fn deinit(self: *CacheSlot, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
         switch (self.*) {
             .absent => {},
@@ -34,13 +34,13 @@ pub const CacheSlot = union(enum) {
         self.* = .absent;
     }
 
-    /// Provides the `replace` operation.
+    /// Replaces  while releasing displaced ownership exactly once.
     pub fn replace(self: *CacheSlot, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, value: HostValue, cap: HostValueCapability) void {
         self.deinit(ctx, roc_host, metrics);
         self.* = .{ .present = HostValueCell.initRetained(value, cap, metrics) };
     }
 
-    /// Provides the `replaceValue` operation.
+    /// Atomically replaces the retained cell and releases the displaced value.
     pub fn replaceValue(self: *CacheSlot, ctx: anytype, roc_host: *abi.RocHost, value: HostValue) void {
         switch (self.*) {
             .absent => @panic("dirty signal expression was evaluated before its initial value was cached"),
@@ -48,7 +48,7 @@ pub const CacheSlot = union(enum) {
         }
     }
 
-    /// Provides the `cloneRetained` operation.
+    /// Creates an independently owned retained value using its attached capability.
     pub fn cloneRetained(self: CacheSlot, ctx: anytype, metrics: anytype) CacheSlot {
         return switch (self) {
             .absent => .absent,
@@ -161,7 +161,7 @@ pub const EffectSourceRef = union(enum) {
     visibility: *VisibilitySourceRecord,
     storage: *StorageSourceRecord,
 
-    /// Provides the `cachedSlot` operation.
+    /// Returns the retained cache slot owned by this signal record kind.
     pub fn cachedSlot(self: EffectSourceRef) *CacheSlot {
         return switch (self) {
             .task => |payload| &payload.cached_value,
@@ -173,7 +173,7 @@ pub const EffectSourceRef = union(enum) {
         };
     }
 
-    /// Provides the `capability` operation.
+    /// Returns the app-compiled capability that owns values crossing this edge.
     pub fn capability(self: EffectSourceRef) HostValueCapability {
         return switch (self) {
             .task => |payload| payload.cap,
@@ -186,7 +186,7 @@ pub const EffectSourceRef = union(enum) {
     }
 };
 
-/// Provides the `deinitOwnedPayload` operation.
+/// Releases the record payload and every callable or value ownership edge it contains.
 pub fn deinitOwnedPayload(allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, payload_value: Payload) void {
     switch (payload_value) {
         .ref => {},
@@ -289,7 +289,7 @@ pub const Record = struct {
     last_dirty_generation: u64 = 0,
     last_dirty_changed: bool = false,
 
-    /// Provides the `init` operation.
+    /// Creates an initialized value with the ownership and capacity invariants required by this module.
     pub fn init(allocator: std.mem.Allocator, payload: Payload) *Record {
         return tryInit(allocator, payload) catch @panic("out of memory");
     }
@@ -315,7 +315,7 @@ pub const Record = struct {
         };
     }
 
-    /// Provides the `token` operation.
+    /// Returns the opaque identity token carried by this borrowed descriptor.
     pub fn token(self: *const Record) ?HostSignalToken {
         return switch (self.payload) {
             .ref => null,
@@ -332,7 +332,7 @@ pub const Record = struct {
         };
     }
 
-    /// Provides the `cachedSlot` operation.
+    /// Returns the retained cache slot owned by this signal record kind.
     pub fn cachedSlot(self: *Record) ?*CacheSlot {
         return switch (self.payload) {
             .ref => null,
@@ -349,7 +349,7 @@ pub const Record = struct {
         };
     }
 
-    /// Provides the `capability` operation.
+    /// Returns the app-compiled capability that owns values crossing this edge.
     pub fn capability(self: *const Record, comptime Ctx: type, ctx: Ctx.Handle) HostValueCapability {
         return switch (self.payload) {
             .ref => |node_id| Ctx.stateCapability(ctx, node_id),
@@ -366,7 +366,7 @@ pub const Record = struct {
         };
     }
 
-    /// Provides the `taskSource` operation.
+    /// Returns the task source payload when this record has that exact kind.
     pub fn taskSource(self: *Record) ?*TaskSourceRecord {
         return switch (self.payload) {
             .task_source => |*payload| payload,
@@ -374,12 +374,12 @@ pub const Record = struct {
         };
     }
 
-    /// Provides the `requireTaskSource` operation.
+    /// Returns the required task source payload or rejects an internal kind mismatch.
     pub fn requireTaskSource(self: *Record) *TaskSourceRecord {
         return self.taskSource() orelse @panic("signal record was not a task source");
     }
 
-    /// Provides the `intervalSource` operation.
+    /// Returns the interval source payload when this record has that exact kind.
     pub fn intervalSource(self: *Record) ?*IntervalSourceRecord {
         return switch (self.payload) {
             .interval_source => |*payload| payload,
@@ -387,12 +387,12 @@ pub const Record = struct {
         };
     }
 
-    /// Provides the `requireIntervalSource` operation.
+    /// Returns the required interval source payload or rejects an internal kind mismatch.
     pub fn requireIntervalSource(self: *Record) *IntervalSourceRecord {
         return self.intervalSource() orelse @panic("signal record was not an interval source");
     }
 
-    /// Provides the `locationSource` operation.
+    /// Returns the location source payload when this record has that exact kind.
     pub fn locationSource(self: *Record) ?*LocationSourceRecord {
         return switch (self.payload) {
             .location_source => |*payload| payload,
@@ -400,12 +400,12 @@ pub const Record = struct {
         };
     }
 
-    /// Provides the `requireLocationSource` operation.
+    /// Returns the required location source payload or rejects an internal kind mismatch.
     pub fn requireLocationSource(self: *Record) *LocationSourceRecord {
         return self.locationSource() orelse @panic("signal record was not a location source");
     }
 
-    /// Provides the `onlineSource` operation.
+    /// Returns the online source payload when this record has that exact kind.
     pub fn onlineSource(self: *Record) ?*OnlineSourceRecord {
         return switch (self.payload) {
             .online_source => |*payload| payload,
@@ -413,12 +413,12 @@ pub const Record = struct {
         };
     }
 
-    /// Provides the `requireOnlineSource` operation.
+    /// Returns the required online source payload or rejects an internal kind mismatch.
     pub fn requireOnlineSource(self: *Record) *OnlineSourceRecord {
         return self.onlineSource() orelse @panic("signal record was not an online source");
     }
 
-    /// Provides the `visibilitySource` operation.
+    /// Returns the visibility source payload when this record has that exact kind.
     pub fn visibilitySource(self: *Record) ?*VisibilitySourceRecord {
         return switch (self.payload) {
             .visibility_source => |*payload| payload,
@@ -426,12 +426,12 @@ pub const Record = struct {
         };
     }
 
-    /// Provides the `requireVisibilitySource` operation.
+    /// Returns the required visibility source payload or rejects an internal kind mismatch.
     pub fn requireVisibilitySource(self: *Record) *VisibilitySourceRecord {
         return self.visibilitySource() orelse @panic("signal record was not a visibility source");
     }
 
-    /// Provides the `storageSource` operation.
+    /// Returns the storage source payload when this record has that exact kind.
     pub fn storageSource(self: *Record) ?*StorageSourceRecord {
         return switch (self.payload) {
             .storage_source => |*payload| payload,
@@ -439,12 +439,12 @@ pub const Record = struct {
         };
     }
 
-    /// Provides the `requireStorageSource` operation.
+    /// Returns the required storage source payload or rejects an internal kind mismatch.
     pub fn requireStorageSource(self: *Record) *StorageSourceRecord {
         return self.storageSource() orelse @panic("signal record was not a storage source");
     }
 
-    /// Provides the `effectSource` operation.
+    /// Returns the effect source payload when this record has that exact kind.
     pub fn effectSource(self: *Record) ?EffectSourceRef {
         return switch (self.payload) {
             .task_source => |*payload| .{ .task = payload },
@@ -457,13 +457,13 @@ pub const Record = struct {
         };
     }
 
-    /// Provides the `retain` operation.
+    /// Acquires an independent retained reference that the caller must eventually release.
     pub fn retain(self: *Record) *Record {
         self.ref_count += 1;
         return self;
     }
 
-    /// Provides the `release` operation.
+    /// Releases this retained resource through its owning capability or allocator.
     pub fn release(self: *Record, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
         if (self.ref_count == 0) @panic("host signal record release underflow");
         if (self.ref_count == 1 and self.active_graph_id != null) @panic("active signal graph held the last signal record reference");
@@ -481,7 +481,7 @@ pub const Binding = struct {
     record: *Record,
     source_node_ids: []u64,
 
-    /// Provides the `cloneRetained` operation.
+    /// Creates an independently owned retained value using its attached capability.
     pub fn cloneRetained(self: Binding, allocator: std.mem.Allocator, metrics: anytype) Binding {
         _ = metrics;
         return .{
@@ -490,14 +490,14 @@ pub const Binding = struct {
         };
     }
 
-    /// Provides the `deinit` operation.
+    /// Releases every resource owned by this value and leaves no retained host or Roc ownership behind.
     pub fn deinit(self: *Binding, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
         self.record.release(allocator, ctx, roc_host, metrics);
         allocator.free(self.source_node_ids);
     }
 };
 
-/// Provides the `walkTree` operation.
+/// Walks the descriptor tree once during ingestion to build explicit records and edges.
 pub fn walkTree(comptime Context: type, context: Context, record: *Record, comptime visit: fn (Context, *Record) void) void {
     visit(context, record);
     switch (record.payload) {
@@ -515,19 +515,19 @@ pub fn walkTree(comptime Context: type, context: Context, record: *Record, compt
     }
 }
 
-/// Provides the `validateExistingSignalRecord` operation.
+/// Checks that an aliased descriptor agrees with the already-ingested signal record.
 pub fn validateExistingSignalRecord(record: *Record, expected_tag: std.meta.Tag(Payload)) void {
     if (std.meta.activeTag(record.payload) != expected_tag) {
         @panic("signal token was reused for a different signal expression kind");
     }
 }
 
-/// Provides the `appendSignalRecordSourceNodeIds` operation.
+/// Appends signal record source node ids using capacity that must already satisfy the caller's transaction contract.
 pub fn appendSignalRecordSourceNodeIds(allocator: std.mem.Allocator, source_node_ids: *std.ArrayListUnmanaged(u64), record: *Record) void {
     appendSignalRecordSourceNodeIdsFallible(allocator, source_node_ids, record) catch @panic("out of memory");
 }
 
-/// Provides the `appendSignalRecordSourceNodeIdsFallible` operation.
+/// Appends signal record source node ids fallible using capacity that must already satisfy the caller's transaction contract.
 pub fn appendSignalRecordSourceNodeIdsFallible(allocator: std.mem.Allocator, source_node_ids: *std.ArrayListUnmanaged(u64), record: *Record) std.mem.Allocator.Error!void {
     switch (record.payload) {
         .ref => |node_id| {
@@ -563,18 +563,18 @@ test "fallible signal record construction preserves payload ownership on OOM" {
 test "owned combine payload releases nested children and capabilities on record OOM" {
     const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
     const TestCtx = struct {
-        /// Provides the `cloneHostValue` operation.
+        /// Produces an independently owned copy through the value's app-compiled capability.
         pub fn cloneHostValue(_: *@This(), value: HostValue) HostValue {
             return value;
         }
-        /// Provides the `pushHostValueCapabilities` operation.
+        /// Opens a checked capability frame for an app-compiled erased call.
         pub fn pushHostValueCapabilities(_: *@This(), _: []const HostValueCapability) void {}
-        /// Provides the `popHostValueCapabilities` operation.
+        /// Closes the current capability frame after an app-compiled erased call.
         pub fn popHostValueCapabilities(_: *@This()) void {}
     };
     const TestMetrics = struct {
         closure_releases: u64 = 0,
-        /// Provides the `bump` operation.
+        /// Increments  for exact structural-work accounting.
         pub fn bump(self: *@This(), comptime field: anytype, count: u64) void {
             if (field == .closure_releases) self.closure_releases += count;
         }

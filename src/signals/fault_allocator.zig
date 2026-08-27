@@ -15,12 +15,12 @@ pub const FaultAllocator = struct {
         .free = free,
     };
 
-    /// Provides the `init` operation.
+    /// Creates an initialized value with the ownership and capacity invariants required by this module.
     pub fn init(backing: std.mem.Allocator) FaultAllocator {
         return .{ .backing = backing };
     }
 
-    /// Provides the `allocator` operation.
+    /// Returns the allocator owned by this host context for shared-engine work.
     pub fn allocator(self: *FaultAllocator) std.mem.Allocator {
         return .{ .ptr = self, .vtable = &vtable };
     }

@@ -9,7 +9,7 @@ pub const Limits = struct {
     nodes: usize = hard_max_nodes,
     descriptor_bytes: usize = hard_max_descriptor_bytes,
 
-    /// Provides the `validate` operation.
+    /// Rejects malformed boundary data before it can enter committed engine state.
     pub fn validate(self: Limits) error{ResourceLimit}!void {
         if (self.nodes > hard_max_nodes or self.descriptor_bytes > hard_max_descriptor_bytes) {
             return error.ResourceLimit;
@@ -22,7 +22,7 @@ pub const StreamBudget = struct {
     nodes: usize = 0,
     descriptor_bytes: usize = 0,
 
-    /// Provides the `init` operation.
+    /// Creates an initialized value with the ownership and capacity invariants required by this module.
     pub fn init(limits: Limits) error{ResourceLimit}!StreamBudget {
         try limits.validate();
         return .{ .limits = limits };

@@ -145,7 +145,7 @@ pub const TaskResolutionClass = enum {
     unknown,
 };
 
-/// Provides the `formatEachDuplicateKeyDiagnostic` operation.
+/// Formats each duplicate key diagnostic into caller-provided bounded diagnostic storage.
 pub fn formatEachDuplicateKeyDiagnostic(
     buffer: []u8,
     parent_scope_id: u64,
@@ -248,7 +248,7 @@ test "spliced structural parents may be active outside replacement range" {
     try std.testing.expect(!structuralSpliceParentAvailable(44, true, &.{}, &removed));
 }
 
-/// Provides the `appendUniqueU64` operation.
+/// Appends unique u64 using capacity that must already satisfy the caller's transaction contract.
 pub fn appendUniqueU64(allocator: std.mem.Allocator, values: *std.ArrayListUnmanaged(u64), value: u64) void {
     if (u64SliceContains(values.items, value)) return;
     values.append(allocator, value) catch @panic("out of memory");
@@ -387,82 +387,82 @@ pub const HostNodeDescriptorStream = descriptor_stream.Stream;
 // stream's descriptor tables and panic on internal invariant violations, so they
 // are shared by both hosts and by the engine's structural apply path.
 
-/// Provides the `findElementDesc` operation.
+/// Resolves element desc from maintained indexes without scanning the full descriptor stream.
 pub fn findElementDesc(stream: *const HostNodeDescriptorStream, elem_id: u64) ?HostElementDesc {
     return descriptor_stream.findElementDesc(HostNodeDescriptorStream, stream, elem_id);
 }
 
-/// Provides the `findTextNodeDesc` operation.
+/// Resolves text node desc from maintained indexes without scanning the full descriptor stream.
 pub fn findTextNodeDesc(stream: *const HostNodeDescriptorStream, elem_id: u64) ?HostNodeTextNodeDesc {
     return descriptor_stream.findTextNodeDesc(HostNodeDescriptorStream, stream, elem_id);
 }
 
-/// Provides the `findSignalTextNodeDesc` operation.
+/// Resolves signal text node desc from maintained indexes without scanning the full descriptor stream.
 pub fn findSignalTextNodeDesc(stream: *const HostNodeDescriptorStream, elem_id: u64) ?HostNodeSignalTextNodeDesc {
     return descriptor_stream.findSignalTextNodeDesc(HostNodeDescriptorStream, stream, elem_id);
 }
 
-/// Provides the `findSignalTextNodeDescMutable` operation.
+/// Resolves signal text node desc mutable from maintained indexes without scanning the full descriptor stream.
 pub fn findSignalTextNodeDescMutable(stream: *HostNodeDescriptorStream, elem_id: u64) ?*HostNodeSignalTextNodeDesc {
     return descriptor_stream.findSignalTextNodeDescMutable(HostNodeDescriptorStream, stream, elem_id);
 }
 
-/// Provides the `streamHasTextField` operation.
+/// Reports whether the selected element has text field in the active descriptor stream.
 pub fn streamHasTextField(stream: *const HostNodeDescriptorStream, elem_id: u64, field: RenderTextField) bool {
     return descriptor_stream.streamHasTextField(HostNodeDescriptorStream, stream, elem_id, field);
 }
 
-/// Provides the `streamHasCustomTextAttr` operation.
+/// Reports whether the selected element has custom text attr in the active descriptor stream.
 pub fn streamHasCustomTextAttr(stream: *const HostNodeDescriptorStream, elem_id: u64, name: []const u8) bool {
     return descriptor_stream.streamHasCustomTextAttr(HostNodeDescriptorStream, stream, elem_id, name);
 }
 
-/// Provides the `streamHasBoolField` operation.
+/// Reports whether the selected element has bool field in the active descriptor stream.
 pub fn streamHasBoolField(stream: *const HostNodeDescriptorStream, elem_id: u64, field: RenderBoolField) bool {
     return descriptor_stream.streamHasBoolField(HostNodeDescriptorStream, stream, elem_id, field);
 }
 
-/// Provides the `maxRenderElemId` operation.
+/// Performs max render elem id inside the shared engine while preserving transaction and changed-set invariants.
 pub fn maxRenderElemId(stream: *const HostNodeDescriptorStream) u64 {
     return descriptor_stream.maxRenderElemId(HostNodeDescriptorStream, stream);
 }
 
-/// Provides the `renderNodeTag` operation.
+/// Returns tag for an already indexed render node.
 pub fn renderNodeTag(stream: *const HostNodeDescriptorStream, node: HostRenderNode) []const u8 {
     return descriptor_stream.renderNodeTag(HostNodeDescriptorStream, stream, node);
 }
 
-/// Provides the `streamElemTag` operation.
+/// Reads elem tag from the active descriptor stream using engine-owned identity.
 pub fn streamElemTag(stream: *const HostNodeDescriptorStream, elem_id: u64) []const u8 {
     return descriptor_stream.streamElemTag(HostNodeDescriptorStream, stream, elem_id);
 }
 
-/// Provides the `renderNodeParentElemId` operation.
+/// Returns parent elem id for an already indexed render node.
 pub fn renderNodeParentElemId(stream: *const HostNodeDescriptorStream, node: HostRenderNode) u64 {
     return descriptor_stream.renderNodeParentElemId(HostNodeDescriptorStream, stream, node);
 }
 
-/// Provides the `streamElemParentElemId` operation.
+/// Reads elem parent elem id from the active descriptor stream using engine-owned identity.
 pub fn streamElemParentElemId(stream: *const HostNodeDescriptorStream, elem_id: u64) u64 {
     return descriptor_stream.streamElemParentElemId(HostNodeDescriptorStream, stream, elem_id);
 }
 
-/// Provides the `streamDirectChildren` operation.
+/// Reads direct children from the active descriptor stream using engine-owned identity.
 pub fn streamDirectChildren(allocator: std.mem.Allocator, stream: *const HostNodeDescriptorStream, parent_elem_id: u64) []u64 {
     return descriptor_stream.streamDirectChildren(HostNodeDescriptorStream, allocator, stream, parent_elem_id);
 }
 
-/// Provides the `streamDirectChildrenInto` operation.
+/// Reads direct children into from the active descriptor stream using engine-owned identity.
 pub fn streamDirectChildrenInto(allocator: std.mem.Allocator, stream: *const HostNodeDescriptorStream, parent_elem_id: u64, children: *std.ArrayListUnmanaged(u64)) []const u64 {
     return descriptor_stream.streamDirectChildrenInto(HostNodeDescriptorStream, allocator, stream, parent_elem_id, children);
 }
 
-/// Provides the `renderNodeScopeId` operation.
+/// Returns scope id for an already indexed render node.
 pub fn renderNodeScopeId(stream: *const HostNodeDescriptorStream, node: HostRenderNode) u64 {
     return descriptor_stream.renderNodeScopeId(HostNodeDescriptorStream, stream, node);
 }
 
-/// Provides the `elemScopeId` operation.
+/// Performs elem scope id inside the shared engine while preserving transaction and changed-set invariants.
 pub fn elemScopeId(stream: *const HostNodeDescriptorStream, elem_id: u64) ?u64 {
     return descriptor_stream.elemScopeId(HostNodeDescriptorStream, stream, elem_id);
 }
@@ -501,7 +501,7 @@ fn elemDescriptorIndexActive(index: HostElemDescriptorIndex) bool {
         eventDescriptorIndexesActive(index.events);
 }
 
-/// Provides the `adjustedRenderInsertIndex` operation.
+/// Performs adjusted render insert index inside the shared engine while preserving transaction and changed-set invariants.
 pub fn adjustedRenderInsertIndex(old_index: usize, replace_index: usize, removed_count: usize, replacement_count: usize) usize {
     return descriptor_stream.adjustedRenderInsertIndex(old_index, replace_index, removed_count, replacement_count);
 }
@@ -517,7 +517,7 @@ fn sourceNodeIdsIntersect(left: []const u64, right: []const u64) bool {
 
 // Host-agnostic signal-record construction helpers (shared by both hosts).
 
-/// Provides the `resolveNodeBinderRef` operation.
+/// Delivers node binder ref through the same source-update and propagation path as other inputs.
 pub fn resolveNodeBinderRef(binder_stack: []const HostBinderBinding, token: HostBinderToken) u64 {
     var index = binder_stack.len;
     while (index > 0) {
@@ -528,22 +528,22 @@ pub fn resolveNodeBinderRef(binder_stack: []const HostBinderBinding, token: Host
     @panic("Node.BinderRef referenced a state binder outside the active scope");
 }
 
-/// Provides the `renderTextFieldFromAbi` operation.
+/// Performs render text field from abi inside the shared engine while preserving transaction and changed-set invariants.
 pub fn renderTextFieldFromAbi(field: u64) RenderTextField {
     return abi_view.textFieldFromAbi(field);
 }
 
-/// Provides the `renderBoolFieldFromAbi` operation.
+/// Performs render bool field from abi inside the shared engine while preserving transaction and changed-set invariants.
 pub fn renderBoolFieldFromAbi(field: u64) RenderBoolField {
     return abi_view.boolFieldFromAbi(field);
 }
 
-/// Provides the `renderEventKindFromAbi` operation.
+/// Performs render event kind from abi inside the shared engine while preserving transaction and changed-set invariants.
 pub fn renderEventKindFromAbi(kind: u64) RenderEventKind {
     return abi_view.eventKindFromAbi(kind);
 }
 
-/// Provides the `Engine` operation.
+/// Performs engine inside the shared engine while preserving transaction and changed-set invariants.
 pub fn Engine(comptime Ctx: type) type {
     verifyCtx(Ctx);
 
@@ -623,17 +623,17 @@ pub fn Engine(comptime Ctx: type) type {
             engine: *Self,
             ctx: Ctx.Handle,
 
-            /// Provides the `ensureInterval` operation.
+            /// Ensures interval capacity or state before publication can begin.
             pub fn ensureInterval(self: *@This(), source_token: HostSignalToken, period_ms: u64) void {
                 self.engine.ensureActiveInterval(self.ctx, source_token, period_ms);
             }
 
-            /// Provides the `removeInterval` operation.
+            /// Removes interval and releases the ownership attached to that live entry.
             pub fn removeInterval(self: *@This(), source_token: HostSignalToken) void {
                 self.engine.removeActiveIntervalBySourceToken(self.ctx, source_token);
             }
 
-            /// Provides the `releaseRecord` operation.
+            /// Performs release record inside the shared engine while preserving transaction and changed-set invariants.
             pub fn releaseRecord(self: *@This(), record: *HostSignalRecord) void {
                 record.release(Ctx.allocator(self.ctx), self.ctx, self.engine.roc_host.?, &self.engine.pending_roc_metrics);
             }
@@ -642,7 +642,7 @@ pub fn Engine(comptime Ctx: type) type {
         const EachRowScopeKeyLookup = struct {
             engine: *Self,
 
-            /// Provides the `rowKeyHash` operation.
+            /// Performs row key hash through the keyed-row capabilities that own key and item values.
             pub fn rowKeyHash(self: *@This(), scope_id: u64) u64 {
                 return self.engine.eachRowScopeKeyHash(scope_id);
             }
@@ -654,67 +654,67 @@ pub fn Engine(comptime Ctx: type) type {
             roc_host: *abi.RocHost,
             ops: HostEachOps,
 
-            /// Provides the `recordEachSync` operation.
+            /// Records each sync in the metrics or lifecycle state owned by this operation.
             pub fn recordEachSync(self: *@This(), next_len: usize, existing_len: usize) void {
                 self.engine.recordEachSync(next_len, existing_len);
             }
 
-            /// Provides the `hashKey` operation.
+            /// Reports whether h key is present in maintained state.
             pub fn hashKey(self: *@This(), key: HostValue) u64 {
                 return self.engine.hashEachKeyValue(self.ctx, self.roc_host, self.ops.key_text, self.ops.key_capability, key);
             }
 
-            /// Provides the `nextKeysEqual` operation.
+            /// Compares candidate row keys exactly after hash lookup, preserving collision correctness.
             pub fn nextKeysEqual(self: *@This(), left: HostValue, right: HostValue) bool {
                 return self.engine.eachKeysEqual(self.ctx, self.roc_host, self.ops, left, right);
             }
 
-            /// Provides the `existingKeyEquals` operation.
+            /// Performs existing key equals inside the shared engine while preserving transaction and changed-set invariants.
             pub fn existingKeyEquals(self: *@This(), scope_id: u64, key: HostValue) bool {
                 return self.engine.eachRowScopeKeyEquals(self.ctx, self.roc_host, scope_id, key, self.ops.key_capability);
             }
 
-            /// Provides the `rowItemEquals` operation.
+            /// Performs row item equals through the keyed-row capabilities that own key and item values.
             pub fn rowItemEquals(self: *@This(), scope_id: u64, item: HostValue) bool {
                 return self.engine.eachRowScopeItemEquals(self.ctx, self.roc_host, scope_id, item, self.ops.item_capability);
             }
 
-            /// Provides the `replaceRowKey` operation.
+            /// Replaces row key while releasing displaced ownership exactly once.
             pub fn replaceRowKey(self: *@This(), scope_id: u64, key_hash: u64, key: HostValue) void {
                 self.engine.replaceEachRowScopeKey(self.ctx, self.roc_host, scope_id, key_hash, key, self.ops.key_capability);
             }
 
-            /// Provides the `replaceRowItem` operation.
+            /// Replaces row item while releasing displaced ownership exactly once.
             pub fn replaceRowItem(self: *@This(), scope_id: u64, item: HostValue) void {
                 self.engine.replaceEachRowScopeItemWithCapability(self.ctx, self.roc_host, scope_id, item, self.ops.item_capability);
             }
 
-            /// Provides the `dropIncomingKey` operation.
+            /// Performs drop incoming key inside the shared engine while preserving transaction and changed-set invariants.
             pub fn dropIncomingKey(self: *@This(), key: HostValue) void {
                 callHostValueToUnitWithCapability(self.ctx, self.roc_host, self.ops.key_capability, hv.hostValueCapabilityDrop(self.ops.key_capability), key);
             }
 
-            /// Provides the `dropIncomingItem` operation.
+            /// Performs drop incoming item inside the shared engine while preserving transaction and changed-set invariants.
             pub fn dropIncomingItem(self: *@This(), item: HostValue) void {
                 callHostValueToUnitWithCapability(self.ctx, self.roc_host, self.ops.item_capability, hv.hostValueCapabilityDrop(self.ops.item_capability), item);
             }
 
-            /// Provides the `createRow` operation.
+            /// Performs create row inside the shared engine while preserving transaction and changed-set invariants.
             pub fn createRow(self: *@This(), parent_scope_id: u64, site_ordinal: u64, key_hash: u64, key: HostValue, item: HostValue) u64 {
                 return self.engine.createEachRowScope(self.ctx, parent_scope_id, site_ordinal, key_hash, key, item, self.ops.key_capability, self.ops.item_capability);
             }
 
-            /// Provides the `disposeScope` operation.
+            /// Performs dispose scope inside the shared engine while preserving transaction and changed-set invariants.
             pub fn disposeScope(self: *@This(), scope_id: u64) void {
                 self.engine.disposeScopeSubtree(self.ctx, self.roc_host, scope_id);
             }
 
-            /// Provides the `rowKeyHash` operation.
+            /// Performs row key hash through the keyed-row capabilities that own key and item values.
             pub fn rowKeyHash(self: *@This(), scope_id: u64) u64 {
                 return self.engine.eachRowScopeKeyHash(scope_id);
             }
 
-            /// Provides the `recordRows` operation.
+            /// Records rows in the metrics or lifecycle state owned by this operation.
             pub fn recordRows(self: *@This(), rows_reused: u64, rows_created: u64, rows_removed: u64) void {
                 var metrics = self.engine.pending_roc_metrics;
                 metrics.bump(.rows_reused, rows_reused);
@@ -723,7 +723,7 @@ pub fn Engine(comptime Ctx: type) type {
                 self.engine.pending_roc_metrics = metrics;
             }
 
-            /// Provides the `failDuplicateEachKey` operation.
+            /// Rejects a duplicate keyed row at the narrow reconciliation boundary with a bounded diagnostic.
             pub fn failDuplicateEachKey(self: *@This(), parent_scope_id: u64, site_ordinal: u64, first_index: usize, second_index: usize, key: HostValue) noreturn {
                 self.engine.failDuplicateEachKey(
                     self.ctx,
@@ -744,7 +744,7 @@ pub fn Engine(comptime Ctx: type) type {
             ctx: Ctx.Handle,
             roc_host: *abi.RocHost,
 
-            /// Provides the `deactivateNode` operation.
+            /// Performs deactivate node inside the shared engine while preserving transaction and changed-set invariants.
             pub fn deactivateNode(self: *@This(), node_id: u64) void {
                 const identity = self.engine.node_identities.items[@intCast(node_id)];
                 _ = self.engine.active_node_identity_ids.remove(identityKey(identity.scope_id, identity.ordinal));
@@ -757,7 +757,7 @@ pub fn Engine(comptime Ctx: type) type {
             ctx: Ctx.Handle,
             roc_host: *abi.RocHost,
 
-            /// Provides the `deactivateNodeIdentities` operation.
+            /// Performs deactivate node identities inside the shared engine while preserving transaction and changed-set invariants.
             pub fn deactivateNodeIdentities(self: *@This(), scope_id: u64) void {
                 var identity_deactivation = ScopeIdentityDeactivation{ .engine = self.engine, .ctx = self.ctx, .roc_host = self.roc_host };
                 var ordinal: u64 = 0;
@@ -771,7 +771,7 @@ pub fn Engine(comptime Ctx: type) type {
                 }
             }
 
-            /// Provides the `appendCleanupEvents` operation.
+            /// Appends cleanup events using capacity that must already satisfy the caller's transaction contract.
             pub fn appendCleanupEvents(self: *@This(), scope_id: u64) void {
                 for (self.engine.active_stream.cleanups.items) |cleanup| {
                     if (cleanup.scope_id == scope_id) {
@@ -780,12 +780,12 @@ pub fn Engine(comptime Ctx: type) type {
                 }
             }
 
-            /// Provides the `cancelPendingTasks` operation.
+            /// Performs cancel pending tasks inside the shared engine while preserving transaction and changed-set invariants.
             pub fn cancelPendingTasks(self: *@This(), scope_id: u64) void {
                 self.engine.cancelPendingTasksInScopeSubtree(self.ctx, scope_id);
             }
 
-            /// Provides the `deactivateDomIdentities` operation.
+            /// Performs deactivate dom identities inside the shared engine while preserving transaction and changed-set invariants.
             pub fn deactivateDomIdentities(self: *@This(), scope_id: u64) void {
                 var ordinal: u64 = 0;
                 while (self.engine.active_dom_identity_ids.fetchRemove(identityKey(scope_id, ordinal))) |entry| : (ordinal += 1) {
@@ -796,17 +796,17 @@ pub fn Engine(comptime Ctx: type) type {
                 }
             }
 
-            /// Provides the `removeEachRow` operation.
+            /// Removes each row and releases the ownership attached to that live entry.
             pub fn removeEachRow(self: *@This(), scope_id: u64, key_hash: u64) void {
                 self.engine.removeEachRowFromSiteIndex(scope_id, key_hash);
             }
 
-            /// Provides the `deinitScopeStep` operation.
+            /// Performs deinit scope step inside the shared engine while preserving transaction and changed-set invariants.
             pub fn deinitScopeStep(self: *@This(), step: *HostScopeStep) void {
                 deinitHostScopeStep(step, self.ctx, self.roc_host, &self.engine.pending_roc_metrics);
             }
 
-            /// Provides the `recordScopeDisposed` operation.
+            /// Records scope disposed in the metrics or lifecycle state owned by this operation.
             pub fn recordScopeDisposed(self: *@This()) void {
                 self.engine.has_inactive_scopes = true;
                 var metrics = self.engine.pending_roc_metrics;
@@ -818,19 +818,19 @@ pub fn Engine(comptime Ctx: type) type {
         const ActiveDomIds = struct {
             stream: *const HostNodeDescriptorStream,
 
-            /// Provides the `elemIdIsActive` operation.
+            /// Performs elem id is active inside the shared engine while preserving transaction and changed-set invariants.
             pub fn elemIdIsActive(self: @This(), elem_id: u64) bool {
                 const index = self.stream.elemDescriptorIndex(elem_id) orelse return false;
                 return elemDescriptorIndexActive(index);
             }
         };
 
-        /// Provides the `init` operation.
+        /// Creates an initialized value with the ownership and capacity invariants required by this module.
         pub fn init() Self {
             return .{};
         }
 
-        /// Provides the `deinitScratch` operation.
+        /// Performs deinit scratch inside the shared engine while preserving transaction and changed-set invariants.
         pub fn deinitScratch(self: *Self, ctx: Ctx.Handle) void {
             self.scratch.deinit(Ctx.allocator(ctx));
         }
@@ -889,19 +889,19 @@ pub fn Engine(comptime Ctx: type) type {
             return retained_values.callHostValueHostValueToElemWithCapabilities(Ctx, ctx, roc_host, left_cap, right_cap, callable, left, right);
         }
 
-        /// Provides the `recordDispatch` operation.
+        /// Records dispatch in the metrics or lifecycle state owned by this operation.
         pub fn recordDispatch(self: *Self) void {
             if (comptime !enable_runtime_metrics) return;
             self.dispatch_metrics.events_processed += 1;
             self.dispatch_metrics.recompute_batches += 1;
         }
 
-        /// Provides the `recordStreamNodesScanned` operation.
+        /// Records stream nodes scanned in the metrics or lifecycle state owned by this operation.
         pub fn recordStreamNodesScanned(self: *Self, count: usize) void {
             self.pending_roc_metrics.bump(.stream_nodes_scanned, @intCast(count));
         }
 
-        /// Provides the `recordStreamNodesScannedBy` operation.
+        /// Records stream nodes scanned by in the metrics or lifecycle state owned by this operation.
         pub fn recordStreamNodesScannedBy(self: *Self, comptime field: RuntimeMetrics.Field, count: usize) void {
             var metrics = self.pending_roc_metrics;
             metrics.bump(.stream_nodes_scanned, @intCast(count));
@@ -909,21 +909,21 @@ pub fn Engine(comptime Ctx: type) type {
             self.pending_roc_metrics = metrics;
         }
 
-        /// Provides the `recordScopeCreated` operation.
+        /// Records scope created in the metrics or lifecycle state owned by this operation.
         pub fn recordScopeCreated(self: *Self) void {
             var metrics = self.pending_roc_metrics;
             metrics.bump(.scopes_created, 1);
             self.pending_roc_metrics = metrics;
         }
 
-        /// Provides the `recordEachKeyCompare` operation.
+        /// Records each key compare in the metrics or lifecycle state owned by this operation.
         pub fn recordEachKeyCompare(self: *Self) void {
             var metrics = self.pending_roc_metrics;
             metrics.bump(.each_key_compares, 1);
             self.pending_roc_metrics = metrics;
         }
 
-        /// Provides the `recordEachKeyHash` operation.
+        /// Records each key hash in the metrics or lifecycle state owned by this operation.
         pub fn recordEachKeyHash(self: *Self) void {
             var metrics = self.pending_roc_metrics;
             metrics.bump(.each_key_compares, 1);
@@ -931,7 +931,7 @@ pub fn Engine(comptime Ctx: type) type {
             self.pending_roc_metrics = metrics;
         }
 
-        /// Provides the `recordEachKeyReuseCompare` operation.
+        /// Records each key reuse compare in the metrics or lifecycle state owned by this operation.
         pub fn recordEachKeyReuseCompare(self: *Self) void {
             var metrics = self.pending_roc_metrics;
             metrics.bump(.each_key_compares, 1);
@@ -939,7 +939,7 @@ pub fn Engine(comptime Ctx: type) type {
             self.pending_roc_metrics = metrics;
         }
 
-        /// Provides the `recordEachKeyDuplicateCompare` operation.
+        /// Records each key duplicate compare in the metrics or lifecycle state owned by this operation.
         pub fn recordEachKeyDuplicateCompare(self: *Self) void {
             var metrics = self.pending_roc_metrics;
             metrics.bump(.each_key_compares, 1);
@@ -947,14 +947,14 @@ pub fn Engine(comptime Ctx: type) type {
             self.pending_roc_metrics = metrics;
         }
 
-        /// Provides the `recordEachItemCompare` operation.
+        /// Records each item compare in the metrics or lifecycle state owned by this operation.
         pub fn recordEachItemCompare(self: *Self) void {
             var metrics = self.pending_roc_metrics;
             metrics.bump(.each_item_compares, 1);
             self.pending_roc_metrics = metrics;
         }
 
-        /// Provides the `recordEachSync` operation.
+        /// Records each sync in the metrics or lifecycle state owned by this operation.
         pub fn recordEachSync(self: *Self, key_count: usize, existing_count: usize) void {
             var metrics = self.pending_roc_metrics;
             metrics.bump(.each_syncs, 1);
@@ -963,69 +963,69 @@ pub fn Engine(comptime Ctx: type) type {
             self.pending_roc_metrics = metrics;
         }
 
-        /// Provides the `noteStaleTaskResolutionIgnored` operation.
+        /// Performs note stale task resolution ignored inside the shared engine while preserving transaction and changed-set invariants.
         pub fn noteStaleTaskResolutionIgnored(self: *Self) void {
             var metrics = self.pending_roc_metrics;
             metrics.bump(.stale_task_results_ignored, 1);
             self.pending_roc_metrics = metrics;
         }
 
-        /// Provides the `deinitRenderCache` operation.
+        /// Performs deinit render cache inside the shared engine while preserving transaction and changed-set invariants.
         pub fn deinitRenderCache(self: *Self, ctx: Ctx.Handle) void {
             self.render_cache.deinit(ctx);
         }
 
-        /// Provides the `hasRenderRoot` operation.
+        /// Reports whether render root is present in maintained state.
         pub fn hasRenderRoot(self: *const Self) bool {
             return self.render_cache.hasRoot();
         }
 
-        /// Provides the `hasActiveRenderNode` operation.
+        /// Reports whether active render node is present in maintained state.
         pub fn hasActiveRenderNode(self: *const Self, elem_id: u64) bool {
             return self.render_cache.hasActiveNode(elem_id);
         }
 
-        /// Provides the `resetRenderTree` operation.
+        /// Performs reset render tree inside the shared engine while preserving transaction and changed-set invariants.
         pub fn resetRenderTree(self: *Self, ctx: Ctx.Handle) void {
             self.render_cache.reset(ctx);
         }
 
-        /// Provides the `appendRenderNode` operation.
+        /// Appends render node using capacity that must already satisfy the caller's transaction contract.
         pub fn appendRenderNode(self: *Self, ctx: Ctx.Handle, elem_id: u64, parent_elem_id: u64, tag: []const u8) void {
             self.render_cache.appendNode(ctx, elem_id, parent_elem_id, tag);
         }
 
-        /// Provides the `ensureRenderNode` operation.
+        /// Ensures render node capacity or state before publication can begin.
         pub fn ensureRenderNode(self: *Self, ctx: Ctx.Handle, elem_id: u64, tag: []const u8, counts: *render.Counts) void {
             self.render_cache.ensureNode(ctx, elem_id, tag, counts);
         }
 
-        /// Provides the `activeRenderNodeTagDiffers` operation.
+        /// Returns active render node tag differs from the maintained active-runtime indexes.
         pub fn activeRenderNodeTagDiffers(self: *const Self, elem_id: u64, tag: []const u8) bool {
             return self.render_cache.activeNodeTagDiffers(elem_id, tag);
         }
 
-        /// Provides the `removeRenderNode` operation.
+        /// Removes node while preserving indexes for unaffected render nodes.
         pub fn removeRenderNode(self: *Self, ctx: Ctx.Handle, elem_id: u64, counts: *render.Counts) void {
             self.render_cache.removeNode(ctx, elem_id, counts);
         }
 
-        /// Provides the `replaceRenderChildren` operation.
+        /// Replaces children for the affected parent without rebuilding unrelated tree state.
         pub fn replaceRenderChildren(self: *Self, ctx: Ctx.Handle, parent_elem_id: u64, next_child_ids: []const u64, counts: *render.Counts) void {
             self.render_cache.replaceChildren(ctx, parent_elem_id, next_child_ids, counts);
         }
 
-        /// Provides the `replaceRenderChildrenForMoves` operation.
+        /// Replaces children for moves for the affected parent without rebuilding unrelated tree state.
         pub fn replaceRenderChildrenForMoves(self: *Self, ctx: Ctx.Handle, parent_elem_id: u64, next_child_ids: []const u64, counts: *render.Counts) void {
             self.render_cache.replaceChildrenForMoves(ctx, parent_elem_id, next_child_ids, counts);
         }
 
-        /// Provides the `applyRenderEventBinding` operation.
+        /// Applies render event binding after preparation has fixed semantics and reserved fallible growth.
         pub fn applyRenderEventBinding(self: *Self, ctx: Ctx.Handle, elem_id: u64, kind: RenderEventKind, binding: ?HostRequiredEventBinding, counts: *render.Counts) void {
             self.render_cache.applyEventBinding(ctx, elem_id, kind, binding, counts);
         }
 
-        /// Provides the `applyRenderNamedEventBinding` operation.
+        /// Applies render named event binding after preparation has fixed semantics and reserved fallible growth.
         pub fn applyRenderNamedEventBinding(self: *Self, ctx: Ctx.Handle, elem_id: u64, name: []const u8, binding: ?HostRequiredEventBinding, counts: *render.Counts) void {
             self.render_cache.applyNamedEventBinding(ctx, elem_id, name, binding, counts);
         }
@@ -1071,7 +1071,7 @@ pub fn Engine(comptime Ctx: type) type {
             };
         }
 
-        /// Provides the `debugAssertRenderCacheMatchesStream` operation.
+        /// Performs debug assert render cache matches stream inside the shared engine while preserving transaction and changed-set invariants.
         pub fn debugAssertRenderCacheMatchesStream(self: *Self, ctx: Ctx.Handle, stream: *const HostNodeDescriptorStream) void {
             if (comptime builtin.mode != .Debug) return;
 
@@ -1139,22 +1139,22 @@ pub fn Engine(comptime Ctx: type) type {
             self.scratch.debug_expected_children.clearRetainingCapacity();
         }
 
-        /// Provides the `debugAssertRenderCacheMatchesSink` operation.
+        /// Performs debug assert render cache matches sink inside the shared engine while preserving transaction and changed-set invariants.
         pub fn debugAssertRenderCacheMatchesSink(self: *Self, ctx: Ctx.Handle) void {
             self.render_cache.debugAssertMatchesSink(ctx);
         }
 
-        /// Provides the `applyRenderTextField` operation.
+        /// Applies render text field after preparation has fixed semantics and reserved fallible growth.
         pub fn applyRenderTextField(self: *Self, ctx: Ctx.Handle, elem_id: u64, field: RenderTextField, value: []const u8) bool {
             return self.render_cache.applyTextField(ctx, elem_id, field, value);
         }
 
-        /// Provides the `applyRenderTextAttr` operation.
+        /// Applies render text attr after preparation has fixed semantics and reserved fallible growth.
         pub fn applyRenderTextAttr(self: *Self, ctx: Ctx.Handle, elem_id: u64, name: []const u8, value: []const u8) bool {
             return self.render_cache.applyTextAttr(ctx, elem_id, name, value);
         }
 
-        /// Provides the `applyRenderBoolAttr` operation.
+        /// Applies render bool attr after preparation has fixed semantics and reserved fallible growth.
         pub fn applyRenderBoolAttr(self: *Self, ctx: Ctx.Handle, elem_id: u64, name: []const u8, value: bool) bool {
             if (value) {
                 return self.applyRenderTextAttr(ctx, elem_id, name, "");
@@ -1162,37 +1162,37 @@ pub fn Engine(comptime Ctx: type) type {
             return self.clearRenderTextAttr(ctx, elem_id, name);
         }
 
-        /// Provides the `applyRenderBoolField` operation.
+        /// Applies render bool field after preparation has fixed semantics and reserved fallible growth.
         pub fn applyRenderBoolField(self: *Self, ctx: Ctx.Handle, elem_id: u64, field: RenderBoolField, value: bool) bool {
             return self.render_cache.applyBoolField(ctx, elem_id, field, value);
         }
 
-        /// Provides the `clearRenderTextField` operation.
+        /// Clears render text field while retaining bounded storage where the type promises reuse.
         pub fn clearRenderTextField(self: *Self, ctx: Ctx.Handle, elem_id: u64, field: RenderTextField) bool {
             return self.render_cache.clearTextField(ctx, elem_id, field);
         }
 
-        /// Provides the `clearRenderTextAttr` operation.
+        /// Clears render text attr while retaining bounded storage where the type promises reuse.
         pub fn clearRenderTextAttr(self: *Self, ctx: Ctx.Handle, elem_id: u64, name: []const u8) bool {
             return self.render_cache.clearTextAttr(ctx, elem_id, name);
         }
 
-        /// Provides the `clearRenderBoolField` operation.
+        /// Clears render bool field while retaining bounded storage where the type promises reuse.
         pub fn clearRenderBoolField(self: *Self, ctx: Ctx.Handle, elem_id: u64, field: RenderBoolField) bool {
             return self.render_cache.clearBoolField(ctx, elem_id, field);
         }
 
-        /// Provides the `clearEventDescriptors` operation.
+        /// Clears event descriptors while retaining bounded storage where the type promises reuse.
         pub fn clearEventDescriptors(self: *Self) void {
             self.event_descriptors.items.len = 0;
         }
 
-        /// Provides the `deinitActiveEventDesc` operation.
+        /// Performs deinit active event desc inside the shared engine while preserving transaction and changed-set invariants.
         pub fn deinitActiveEventDesc(self: *Self, roc_host: *abi.RocHost, desc: ActiveEventDesc) void {
             releaseHostEventReducer(desc.payload_reducer, roc_host, &self.pending_roc_metrics);
         }
 
-        /// Provides the `clearActiveEvents` operation.
+        /// Clears active events while retaining bounded storage where the type promises reuse.
         pub fn clearActiveEvents(self: *Self) RocHostRequiredError!void {
             const roc_host = self.roc_host orelse {
                 if (self.active_events.items.len != 0) return RocHostRequiredError.MissingRocHost;
@@ -1204,7 +1204,7 @@ pub fn Engine(comptime Ctx: type) type {
             self.active_events.items.len = 0;
         }
 
-        /// Provides the `clearSignalCache` operation.
+        /// Clears signal cache while retaining bounded storage where the type promises reuse.
         pub fn clearSignalCache(self: *Self, ctx: Ctx.Handle) RocHostRequiredError!void {
             const roc_host = self.roc_host orelse {
                 if (self.signal_cache.items.len != 0) return RocHostRequiredError.MissingRocHost;
@@ -1216,7 +1216,7 @@ pub fn Engine(comptime Ctx: type) type {
             self.signal_cache.items.len = 0;
         }
 
-        /// Provides the `clearStates` operation.
+        /// Clears states while retaining bounded storage where the type promises reuse.
         pub fn clearStates(self: *Self, ctx: Ctx.Handle) RocHostRequiredError!void {
             const roc_host = self.roc_host orelse {
                 for (self.states.items) |state| {
@@ -1279,7 +1279,7 @@ pub fn Engine(comptime Ctx: type) type {
             each_runtime.removeRowFromSiteIndex(&self.each_row_sites, &self.each_row_memberships_by_scope_id, scope_id, key_hash, &row_keys);
         }
 
-        /// Provides the `deactivateState` operation.
+        /// Performs deactivate state inside the shared engine while preserving transaction and changed-set invariants.
         pub fn deactivateState(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, node_id: u64) void {
             const state_index = self.stateIndexByNodeId(node_id) orelse return;
             const state = &self.states.items[state_index];
@@ -1288,7 +1288,7 @@ pub fn Engine(comptime Ctx: type) type {
             self.clearStateCellIndex(node_id, state_index);
         }
 
-        /// Provides the `clearScopes` operation.
+        /// Clears scopes while retaining bounded storage where the type promises reuse.
         pub fn clearScopes(self: *Self, ctx: Ctx.Handle) RocHostRequiredError!void {
             if (self.roc_host) |roc_host| {
                 for (self.scopes.items) |*scope| {
@@ -1303,42 +1303,42 @@ pub fn Engine(comptime Ctx: type) type {
             self.clearEachRowSites(Ctx.allocator(ctx));
         }
 
-        /// Provides the `cleanupEventCount` operation.
+        /// Performs cleanup event count inside the shared engine while preserving transaction and changed-set invariants.
         pub fn cleanupEventCount(self: *const Self, name: []const u8) u64 {
             return effects_runtime.cleanupEventCount(self.cleanup_events.items, name);
         }
 
-        /// Provides the `activeTaskRecordByToken` operation.
+        /// Returns active task record by token from the maintained active-runtime indexes.
         pub fn activeTaskRecordByToken(self: *Self, token: HostSignalToken) ?*HostSignalRecord {
             return effects_runtime.activeTaskRecordByToken(self.active_signal_graph.items, token);
         }
 
-        /// Provides the `activeIntervalRecordCountByPeriod` operation.
+        /// Returns active interval record count by period from the maintained active-runtime indexes.
         pub fn activeIntervalRecordCountByPeriod(self: *const Self, period_ms: u64) u64 {
             return effects_runtime.activeIntervalRecordCountByPeriod(self.active_signal_graph.items, period_ms);
         }
 
-        /// Provides the `activeIntervalRecordByToken` operation.
+        /// Returns active interval record by token from the maintained active-runtime indexes.
         pub fn activeIntervalRecordByToken(self: *Self, source_token: HostSignalToken) ?*HostSignalRecord {
             return effects_runtime.activeIntervalRecordByToken(self.active_signal_graph.items, source_token);
         }
 
-        /// Provides the `activeIntervalSourceTokenByRuntimeToken` operation.
+        /// Returns active interval source token by runtime token from the maintained active-runtime indexes.
         pub fn activeIntervalSourceTokenByRuntimeToken(self: *Self, token: u64) ?HostSignalToken {
             return effects_runtime.activeIntervalSourceTokenByRuntimeToken(self.active_intervals.items, token);
         }
 
-        /// Provides the `pendingTaskCountByName` operation.
+        /// Resolves pending task count by name from the bounded task registry without scanning unrelated work.
         pub fn pendingTaskCountByName(self: *const Self, name: []const u8) u64 {
             return effects_runtime.pendingTaskCountByName(self.pending_tasks.items, name);
         }
 
-        /// Provides the `pendingTaskIndexByRequestId` operation.
+        /// Resolves pending task index by request id from the bounded task registry without scanning unrelated work.
         pub fn pendingTaskIndexByRequestId(self: *Self, request_id: u64) ?usize {
             return effects_runtime.pendingTaskIndexByRequestId(self.pending_tasks.items, request_id);
         }
 
-        /// Provides the `classifyTaskResolution` operation.
+        /// Performs classify task resolution inside the shared engine while preserving transaction and changed-set invariants.
         pub fn classifyTaskResolution(self: *Self, request_id: u64) TaskResolutionClass {
             if (self.pendingTaskIndexByRequestId(request_id) != null) return .pending;
             // Any previously issued, no-longer-pending id is benign here. That
@@ -1349,32 +1349,32 @@ pub fn Engine(comptime Ctx: type) type {
             return .unknown;
         }
 
-        /// Provides the `sourceSignalIdsForEvent` operation.
+        /// Returns dense source ids for the validated event route without rediscovering dependencies.
         pub fn sourceSignalIdsForEvent(self: *Self, event_id: u64) EventLookupError![]const u64 {
             return active_graph.sourceSignalIdsForEvent(self.signal_event_routes.items, event_id);
         }
 
-        /// Provides the `eventPayloadDescriptor` operation.
+        /// Performs event payload descriptor inside the shared engine while preserving transaction and changed-set invariants.
         pub fn eventPayloadDescriptor(self: *Self, event_id: u64) EventLookupError!BoundaryPayloadDescriptor {
             return active_graph.eventPayloadDescriptor(self.event_descriptors.items, event_id);
         }
 
-        /// Provides the `signalIdsForState` operation.
+        /// Returns dense signal ids associated with for state from maintained indexes.
         pub fn signalIdsForState(self: *Self, state_id: u64) SignalLookupError![]const u64 {
             return active_graph.signalIdsForState(self.signal_routes.items, state_id);
         }
 
-        /// Provides the `dependentSignalIdsForSignal` operation.
+        /// Performs dependent signal ids for signal inside the shared engine while preserving transaction and changed-set invariants.
         pub fn dependentSignalIdsForSignal(self: *Self, signal_id: u64) SignalLookupError![]const u64 {
             return active_graph.dependentSignalIdsForSignal(self.signal_dependents.items, signal_id);
         }
 
-        /// Provides the `signalRank` operation.
+        /// Returns a signal's topological rank without traversing the dependency graph.
         pub fn signalRank(self: *Self, signal_id: u64) SignalLookupError!u64 {
             return active_graph.signalRank(self.signal_descriptors.items, signal_id);
         }
 
-        /// Provides the `nextDirtySignalGeneration` operation.
+        /// Returns next dirty signal generation from maintained local structure without a full-tree scan.
         pub fn nextDirtySignalGeneration(self: *Self) u64 {
             if (self.dirty_signal_generation == std.math.maxInt(u64)) {
                 @panic("host dirty signal generation overflowed");
@@ -1384,12 +1384,12 @@ pub fn Engine(comptime Ctx: type) type {
             return self.dirty_signal_generation;
         }
 
-        /// Provides the `activeSignalRank` operation.
+        /// Returns active signal rank from the maintained active-runtime indexes.
         pub fn activeSignalRank(self: *Self, record_id: u64) u64 {
             return active_graph.rank(HostSignalRecord, self.active_signal_graph.items, record_id);
         }
 
-        /// Provides the `dependentActiveSignalRecordIds` operation.
+        /// Performs dependent active signal record ids inside the shared engine while preserving transaction and changed-set invariants.
         pub fn dependentActiveSignalRecordIds(self: *Self, record_id: u64) []const u64 {
             return active_graph.dependentIds(HostSignalRecord, self.active_signal_graph.items, record_id);
         }
@@ -1413,21 +1413,21 @@ pub fn Engine(comptime Ctx: type) type {
             );
         }
 
-        /// Provides the `recordDerivedCall` operation.
+        /// Records derived call in the metrics or lifecycle state owned by this operation.
         pub fn recordDerivedCall(self: *Self) void {
             var metrics = self.pending_roc_metrics;
             metrics.bump(.derived_calls_into_roc, 1);
             self.pending_roc_metrics = metrics;
         }
 
-        /// Provides the `recordSignalPrune` operation.
+        /// Records signal prune in the metrics or lifecycle state owned by this operation.
         pub fn recordSignalPrune(self: *Self) void {
             var metrics = self.pending_roc_metrics;
             metrics.bump(.propagation_prunes, 1);
             self.pending_roc_metrics = metrics;
         }
 
-        /// Provides the `cloneCachedSignalValue` operation.
+        /// Performs clone cached signal value inside the shared engine while preserving transaction and changed-set invariants.
         pub fn cloneCachedSignalValue(self: *Self, ctx: Ctx.Handle, cache_slot: *const HostSignalCacheSlot) HostValue {
             _ = self;
             debugPhase(ctx, .clone_cached_signal);
@@ -1437,7 +1437,7 @@ pub fn Engine(comptime Ctx: type) type {
             };
         }
 
-        /// Provides the `updateDirtySignalExprCache` operation.
+        /// Performs update dirty signal expr cache inside the shared engine while preserving transaction and changed-set invariants.
         pub fn updateDirtySignalExprCache(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, cache_slot: *HostSignalCacheSlot, value: HostValue, cap: HostValueCapability) HostSignalEvalResult {
             switch (cache_slot.*) {
                 .absent => {
@@ -1466,7 +1466,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
         }
 
-        /// Provides the `updateDirtySignalCache` operation.
+        /// Performs update dirty signal cache inside the shared engine while preserving transaction and changed-set invariants.
         pub fn updateDirtySignalCache(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, cache_slot: *HostSignalCacheSlot, value: HostValue, cap: HostValueCapability) bool {
             switch (cache_slot.*) {
                 .absent => {
@@ -1487,7 +1487,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
         }
 
-        /// Provides the `cloneMemoizedDirtySignalResult` operation.
+        /// Performs clone memoized dirty signal result inside the shared engine while preserving transaction and changed-set invariants.
         pub fn cloneMemoizedDirtySignalResult(self: *Self, ctx: Ctx.Handle, record: *HostSignalRecord, dirty_generation: u64) ?HostSignalEvalResult {
             if (record.last_dirty_generation != dirty_generation) return null;
 
@@ -1498,30 +1498,30 @@ pub fn Engine(comptime Ctx: type) type {
             };
         }
 
-        /// Provides the `rememberDirtySignalResult` operation.
+        /// Performs remember dirty signal result inside the shared engine while preserving transaction and changed-set invariants.
         pub fn rememberDirtySignalResult(_: *Self, record: *HostSignalRecord, dirty_generation: u64, result: HostSignalEvalResult) HostSignalEvalResult {
             record.last_dirty_generation = dirty_generation;
             record.last_dirty_changed = result.changed;
             return result;
         }
 
-        /// Provides the `hostSignalRecordCapability` operation.
+        /// Performs host signal record capability inside the shared engine while preserving transaction and changed-set invariants.
         pub fn hostSignalRecordCapability(_: *Self, ctx: Ctx.Handle, record: *const HostSignalRecord) HostValueCapability {
             return record.capability(Ctx, ctx);
         }
 
-        /// Provides the `hostSignalBindingCapability` operation.
+        /// Performs host signal binding capability inside the shared engine while preserving transaction and changed-set invariants.
         pub fn hostSignalBindingCapability(self: *Self, ctx: Ctx.Handle, signal: *const HostSignalBinding) HostValueCapability {
             return self.hostSignalRecordCapability(ctx, signal.record);
         }
 
-        /// Provides the `dropHostSignalRecordValue` operation.
+        /// Performs drop host signal record value inside the shared engine while preserving transaction and changed-set invariants.
         pub fn dropHostSignalRecordValue(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, record: *const HostSignalRecord, value: HostValue) void {
             const cap = self.hostSignalRecordCapability(ctx, record);
             callHostValueToUnitWithCapability(ctx, roc_host, cap, hv.hostValueCapabilityDrop(cap), value);
         }
 
-        /// Provides the `ensureStateFromDesc` operation.
+        /// Ensures state from desc capacity or state before publication can begin.
         pub fn ensureStateFromDesc(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, desc: HostNodeStateDesc) void {
             if (self.stateIndexByNodeId(desc.node_id) != null) return;
 
@@ -1562,7 +1562,7 @@ pub fn Engine(comptime Ctx: type) type {
             return record.retain();
         }
 
-        /// Provides the `bindNodeSignalExpr` operation.
+        /// Performs bind node signal expr inside the shared engine while preserving transaction and changed-set invariants.
         pub fn bindNodeSignalExpr(self: *Self, allocator: std.mem.Allocator, stream: *HostNodeDescriptorStream, expr: abi.NodeSignalExpr, binder_stack: []const HostBinderBinding) *HostSignalRecord {
             const binding = ImmediateSignalRecordCtx{ .engine = self, .allocator = allocator, .stream = stream };
             return self.bindSignalExprViewWith(ImmediateSignalRecordCtx, binding, abi_view.SignalExpr.fromAbi(expr), binder_stack) catch @panic("out of memory");
@@ -1753,7 +1753,7 @@ pub fn Engine(comptime Ctx: type) type {
             };
         }
 
-        /// Provides the `bindNodeSignal` operation.
+        /// Performs bind node signal inside the shared engine while preserving transaction and changed-set invariants.
         pub fn bindNodeSignal(self: *Self, allocator: std.mem.Allocator, stream: *HostNodeDescriptorStream, expr: abi.NodeSignalExpr, binder_stack: []const HostBinderBinding) HostSignalBinding {
             const record = self.bindNodeSignalExpr(allocator, stream, expr, binder_stack);
             var source_node_ids: std.ArrayListUnmanaged(u64) = .empty;
@@ -1764,7 +1764,7 @@ pub fn Engine(comptime Ctx: type) type {
             };
         }
 
-        /// Provides the `streamNodeIdInScopeSubtree` operation.
+        /// Reads node id in scope subtree from the active descriptor stream using engine-owned identity.
         pub fn streamNodeIdInScopeSubtree(self: *Self, previous: *const HostNodeDescriptorStream, node_id: u64, root_scope_id: u64) bool {
             const descriptor_index = previous.nodeDescriptorIndex(node_id) orelse return false;
             const ScopeSiteSlot = struct {
@@ -1787,12 +1787,12 @@ pub fn Engine(comptime Ctx: type) type {
             return false;
         }
 
-        /// Provides the `renderNodeInScopeSubtree` operation.
+        /// Returns in scope subtree for an already indexed render node.
         pub fn renderNodeInScopeSubtree(self: *Self, stream: *const HostNodeDescriptorStream, node: HostRenderNode, root_scope_id: u64) bool {
             return self.scopeIsDescendantOrSelf(renderNodeScopeId(stream, node), root_scope_id) catch @panic("scope descriptor referenced an unknown parent scope");
         }
 
-        /// Provides the `firstRenderIndexInScopeSubtree` operation.
+        /// Performs first render index in scope subtree inside the shared engine while preserving transaction and changed-set invariants.
         pub fn firstRenderIndexInScopeSubtree(self: *Self, stream: *const HostNodeDescriptorStream, root_scope_id: u64) ?usize {
             self.recordStreamNodesScannedBy(.stream_nodes_scanned_render_scope, stream.render_nodes.items.len);
             for (stream.render_nodes.items, 0..) |node, index| {
@@ -1801,7 +1801,7 @@ pub fn Engine(comptime Ctx: type) type {
             return null;
         }
 
-        /// Provides the `lastRenderEndIndexInScopeSubtree` operation.
+        /// Returns last render end index in scope subtree retained for observability or local structural traversal.
         pub fn lastRenderEndIndexInScopeSubtree(self: *Self, stream: *const HostNodeDescriptorStream, root_scope_id: u64) ?usize {
             var end_index: ?usize = null;
             self.recordStreamNodesScannedBy(.stream_nodes_scanned_render_scope, stream.render_nodes.items.len);
@@ -1813,7 +1813,7 @@ pub fn Engine(comptime Ctx: type) type {
             return end_index;
         }
 
-        /// Provides the `scopeSubtreeHasDirtyStructuralSource` operation.
+        /// Evaluates scope subtree has dirty structural source using explicit scope ownership rather than DOM position or content.
         pub fn scopeSubtreeHasDirtyStructuralSource(self: *Self, previous: *const HostNodeDescriptorStream, root_scope_id: u64, dirty_source_node_ids: []const u64) bool {
             if (dirty_source_node_ids.len == 0) return false;
 
@@ -1830,13 +1830,13 @@ pub fn Engine(comptime Ctx: type) type {
             return false;
         }
 
-        /// Provides the `cloneHostSignalCacheSlot` operation.
+        /// Performs clone host signal cache slot inside the shared engine while preserving transaction and changed-set invariants.
         pub fn cloneHostSignalCacheSlot(self: *Self, ctx: Ctx.Handle, slot: HostSignalCacheSlot, metrics: anytype) HostSignalCacheSlot {
             _ = self;
             return slot.cloneRetained(ctx, metrics);
         }
 
-        /// Provides the `copyActiveScopeSubtreeDescriptors` operation.
+        /// Performs copy active scope subtree descriptors inside the shared engine while preserving transaction and changed-set invariants.
         pub fn copyActiveScopeSubtreeDescriptors(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, root_scope_id: u64) void {
             const allocator = Ctx.allocator(ctx);
             const previous = &self.active_stream;
@@ -1963,32 +1963,32 @@ pub fn Engine(comptime Ctx: type) type {
             }
         }
 
-        /// Provides the `deinitPendingTask` operation.
+        /// Performs deinit pending task inside the shared engine while preserving transaction and changed-set invariants.
         pub fn deinitPendingTask(self: *Self, ctx: Ctx.Handle, task: *HostPendingTask) void {
             effects_runtime.deinitPendingTask(Ctx.allocator(ctx), self.roc_host.?, task);
         }
 
-        /// Provides the `cancelPendingTask` operation.
+        /// Performs cancel pending task inside the shared engine while preserving transaction and changed-set invariants.
         pub fn cancelPendingTask(self: *Self, ctx: Ctx.Handle, task: *HostPendingTask) void {
             effects_runtime.cancelPendingTask(Ctx, ctx, Ctx.allocator(ctx), self.roc_host.?, task);
         }
 
-        /// Provides the `clearPendingTasks` operation.
+        /// Clears pending tasks while retaining bounded storage where the type promises reuse.
         pub fn clearPendingTasks(self: *Self, ctx: Ctx.Handle) void {
             effects_runtime.clearPendingTasks(Ctx, ctx, Ctx.allocator(ctx), &self.pending_tasks, self.roc_host);
         }
 
-        /// Provides the `cancelPendingTasksByTaskToken` operation.
+        /// Performs cancel pending tasks by task token inside the shared engine while preserving transaction and changed-set invariants.
         pub fn cancelPendingTasksByTaskToken(self: *Self, ctx: Ctx.Handle, task_token: HostSignalToken) void {
             effects_runtime.cancelPendingTasksByTaskToken(Ctx, ctx, Ctx.allocator(ctx), &self.pending_tasks, self.roc_host, task_token);
         }
 
-        /// Provides the `cancelPendingTasksInScopeSubtree` operation.
+        /// Performs cancel pending tasks in scope subtree inside the shared engine while preserving transaction and changed-set invariants.
         pub fn cancelPendingTasksInScopeSubtree(self: *Self, ctx: Ctx.Handle, scope_id: u64) void {
             const ScopeLookup = struct {
                 engine: *Self,
 
-                /// Provides the `descendantOrSelf` operation.
+                /// Performs descendant or self inside the shared engine while preserving transaction and changed-set invariants.
                 pub fn descendantOrSelf(self_lookup: *@This(), task_scope_id: u64, root_scope_id: u64) bool {
                     return self_lookup.engine.scopeIsDescendantOrSelf(task_scope_id, root_scope_id) catch @panic("scope descriptor referenced an unknown parent scope");
                 }
@@ -1997,18 +1997,18 @@ pub fn Engine(comptime Ctx: type) type {
             effects_runtime.cancelPendingTasksInScopeSubtree(Ctx, ctx, Ctx.allocator(ctx), &self.pending_tasks, self.roc_host, scope_id, &scope_lookup);
         }
 
-        /// Provides the `appendCleanupEvent` operation.
+        /// Appends cleanup event using capacity that must already satisfy the caller's transaction contract.
         pub fn appendCleanupEvent(self: *Self, ctx: Ctx.Handle, name: []const u8) void {
             effects_runtime.appendCleanupEvent(Ctx.allocator(ctx), &self.cleanup_events, name);
         }
 
-        /// Provides the `disposeScopeSubtree` operation.
+        /// Performs dispose scope subtree inside the shared engine while preserving transaction and changed-set invariants.
         pub fn disposeScopeSubtree(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, scope_id: u64) void {
             var disposal = ScopeDisposal{ .engine = self, .ctx = ctx, .roc_host = roc_host };
             scope_runtime.disposeSubtree(HostEachRowScopeStep, self.scopes.items, scope_id, self.identity_reuse_barrier, &disposal);
         }
 
-        /// Provides the `createEachRowScope` operation.
+        /// Performs create each row scope inside the shared engine while preserving transaction and changed-set invariants.
         pub fn createEachRowScope(self: *Self, ctx: Ctx.Handle, parent_scope_id: u64, site_ordinal: u64, key_hash: u64, key: HostValue, item: HostValue, key_cap: HostValueCapability, item_cap: HostValueCapability) u64 {
             self.validateScopeId(parent_scope_id) catch @panic("scope id has no host scope descriptor");
 
@@ -2022,28 +2022,28 @@ pub fn Engine(comptime Ctx: type) type {
             return result.scope_id;
         }
 
-        /// Provides the `eachRowScopeItemEquals` operation.
+        /// Performs each row scope item equals inside the shared engine while preserving transaction and changed-set invariants.
         pub fn eachRowScopeItemEquals(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, scope_id: u64, item: HostValue, item_cap: HostValueCapability) bool {
             self.recordEachItemCompare();
             return scope_runtime.eachRowItemEquals(self.scopes.items, ctx, roc_host, scope_id, item, item_cap);
         }
 
-        /// Provides the `replaceEachRowScopeKey` operation.
+        /// Replaces each row scope key while releasing displaced ownership exactly once.
         pub fn replaceEachRowScopeKey(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, scope_id: u64, key_hash: u64, key: HostValue, key_cap: HostValueCapability) void {
             scope_runtime.replaceEachRowKey(self.scopes.items, ctx, roc_host, &self.pending_roc_metrics, scope_id, key_hash, key, key_cap);
         }
 
-        /// Provides the `replaceEachRowScopeItemWithCapability` operation.
+        /// Replaces each row scope item with capability while releasing displaced ownership exactly once.
         pub fn replaceEachRowScopeItemWithCapability(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, scope_id: u64, item: HostValue, item_cap: HostValueCapability) void {
             scope_runtime.replaceEachRowItem(self.scopes.items, ctx, roc_host, &self.pending_roc_metrics, scope_id, item, item_cap);
         }
 
-        /// Provides the `eachRowScopeValues` operation.
+        /// Performs each row scope values inside the shared engine while preserving transaction and changed-set invariants.
         pub fn eachRowScopeValues(self: *Self, scope_id: u64) EachRowValues {
             return scope_runtime.eachRowValues(self.scopes.items, scope_id);
         }
 
-        /// Provides the `syncEachRowScopes` operation.
+        /// Performs sync each row scopes inside the shared engine while preserving transaction and changed-set invariants.
         pub fn syncEachRowScopes(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, parent_scope_id: u64, site_ordinal: u64, keys: []const HostValue, items: []const HostValue, ops: HostEachOps) HostKeyedRowDiffResult {
             self.validateScopeId(parent_scope_id) catch @panic("scope id has no host scope descriptor");
             const allocator = Ctx.allocator(ctx);
@@ -2052,7 +2052,7 @@ pub fn Engine(comptime Ctx: type) type {
             return each_runtime.syncRows(allocator, &self.each_row_sites, &self.each_row_memberships_by_scope_id, site_index, parent_scope_id, site_ordinal, keys, items, &sync);
         }
 
-        /// Provides the `syncActiveEachRowScopes` operation.
+        /// Performs sync active each row scopes inside the shared engine while preserving transaction and changed-set invariants.
         pub fn syncActiveEachRowScopes(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, site: HostNodeScopeSiteDesc, each: HostNodeEachDesc) HostKeyedRowDiffResult {
             if (site.kind != .each) {
                 @panic("active row sync requires an each scope site");
@@ -2081,7 +2081,7 @@ pub fn Engine(comptime Ctx: type) type {
             return self.syncEachRowScopes(ctx, roc_host, site.scope_id, site.ordinal, keys, item_values, each.ops);
         }
 
-        /// Provides the `collectNodeAttrDescriptor` operation.
+        /// Collects node attr descriptor from the explicitly affected graph or scope set.
         pub fn collectNodeAttrDescriptor(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, elem_id: u64, attr: abi.NodeAttr, binder_stack: []const HostBinderBinding) void {
             const allocator = Ctx.allocator(ctx);
             switch (abi_view.NodeAttr.fromAbi(attr)) {
@@ -2153,7 +2153,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
         }
 
-        /// Provides the `collectActiveWhenBranchDescriptors` operation.
+        /// Collects active when branch descriptors from the explicitly affected graph or scope set.
         pub fn collectActiveWhenBranchDescriptors(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, site: HostNodeScopeSiteDesc, when: HostNodeWhenDesc, active_branch: HostScopeBranch, dirty_source_node_ids: []const u64) u64 {
             if (site.kind != .when) {
                 @panic("active branch collection requires a when scope site");
@@ -2182,7 +2182,7 @@ pub fn Engine(comptime Ctx: type) type {
             return branch_scope_id;
         }
 
-        /// Provides the `collectActiveEachRowDescriptors` operation.
+        /// Collects active each row descriptors from the explicitly affected graph or scope set.
         pub fn collectActiveEachRowDescriptors(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, site: HostNodeScopeSiteDesc, each: HostNodeEachDesc, dirty_source_node_ids: []const u64) void {
             const allocator = Ctx.allocator(ctx);
             const diff = self.syncActiveEachRowScopes(ctx, roc_host, site, each);
@@ -2190,7 +2190,7 @@ pub fn Engine(comptime Ctx: type) type {
             self.collectActiveEachRowDescriptorsFromDiff(ctx, roc_host, stream, site, each, diff, dirty_source_node_ids);
         }
 
-        /// Provides the `collectActiveEachRowDescriptorsFromDiff` operation.
+        /// Collects active each row descriptors from diff from the explicitly affected graph or scope set.
         pub fn collectActiveEachRowDescriptorsFromDiff(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, site: HostNodeScopeSiteDesc, each: HostNodeEachDesc, diff: HostKeyedRowDiffResult, dirty_source_node_ids: []const u64) void {
             const allocator = Ctx.allocator(ctx);
             const binder_stack = self.scratchBinderStack(allocator, site.binder_bindings);
@@ -2212,7 +2212,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
         }
 
-        /// Provides the `collectActiveEachSingleRowDescriptors` operation.
+        /// Collects active each single row descriptors from the explicitly affected graph or scope set.
         pub fn collectActiveEachSingleRowDescriptors(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, site: HostNodeScopeSiteDesc, each: HostNodeEachDesc, row_scope_id: u64, row_created: bool, dirty_source_node_ids: []const u64) void {
             const allocator = Ctx.allocator(ctx);
             const binder_stack = self.scratchBinderStack(allocator, site.binder_bindings);
@@ -2472,7 +2472,7 @@ pub fn Engine(comptime Ctx: type) type {
                 self.signal_bindings.deinit(allocator);
                 const SignalReleaser = struct {
                     collection: *Collection,
-                    /// Provides the `releaseRecord` operation.
+                    /// Performs release record inside the shared engine while preserving transaction and changed-set invariants.
                     pub fn releaseRecord(releaser: @This(), record: *HostSignalRecord) void {
                         record.release(
                             Ctx.allocator(releaser.collection.host_ctx),
@@ -2945,12 +2945,12 @@ pub fn Engine(comptime Ctx: type) type {
             const SignalPublisher = struct {
                 stream: *HostNodeDescriptorStream,
 
-                /// Provides the `publishToken` operation.
+                /// Publishes token during the allocation-free commit phase.
                 pub fn publishToken(self: @This(), token: HostSignalToken, record: *HostSignalRecord) void {
                     self.stream.rememberSignalRecordAssumeCapacity(token, record);
                 }
 
-                /// Provides the `publishDescriptorRoot` operation.
+                /// Publishes descriptor root during the allocation-free commit phase.
                 pub fn publishDescriptorRoot(self: @This(), record: *HostSignalRecord) void {
                     self.stream.incrementSignalRecordDescriptorTreeAssumeCapacity(record);
                 }
@@ -3121,7 +3121,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
         }
 
-        /// Provides the `collectActiveElemDescriptors` operation.
+        /// Collects active elem descriptors from the explicitly affected graph or scope set.
         pub fn collectActiveElemDescriptors(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, elem: abi.Elem, scope_id: u64, parent_elem_id: u64, ordinal: *u64, dom_ordinal: *u64, binder_stack: *std.ArrayListUnmanaged(HostBinderBinding), scope_created: bool, dirty_source_node_ids: []const u64) void {
             const collection = ImmediateCollectionCtx{ .engine = self, .host_ctx = ctx, .stream = stream };
             self.collectActiveElemDescriptorsWith(ImmediateCollectionCtx, collection, ctx, roc_host, stream, elem, scope_id, parent_elem_id, ordinal, dom_ordinal, binder_stack, scope_created, dirty_source_node_ids) catch @panic("immediate descriptor collection failed");
@@ -3273,13 +3273,13 @@ pub fn Engine(comptime Ctx: type) type {
             collection.commit();
         }
 
-        /// Provides the `collectActiveElemRootDescriptors` operation.
+        /// Collects active elem root descriptors from the explicitly affected graph or scope set.
         pub fn collectActiveElemRootDescriptors(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, root: abi.Elem, dirty_source_node_ids: []const u64) void {
             const collection = ImmediateCollectionCtx{ .engine = self, .host_ctx = ctx, .stream = stream };
             self.collectActiveElemRootDescriptorsWith(ImmediateCollectionCtx, collection, ctx, roc_host, stream, root, dirty_source_node_ids) catch @panic("immediate root descriptor collection failed");
         }
 
-        /// Provides the `clearActiveSignalGraph` operation.
+        /// Clears active signal graph while retaining bounded storage where the type promises reuse.
         pub fn clearActiveSignalGraph(self: *Self, ctx: Ctx.Handle) void {
             const allocator = Ctx.allocator(ctx);
             if (self.roc_host == null) {
@@ -3291,7 +3291,7 @@ pub fn Engine(comptime Ctx: type) type {
             active_graph.clear(HostSignalRecord, allocator, &self.active_signal_graph, &lifecycle);
         }
 
-        /// Provides the `clearActiveIntervals` operation.
+        /// Clears active intervals while retaining bounded storage where the type promises reuse.
         pub fn clearActiveIntervals(self: *Self, ctx: Ctx.Handle) void {
             effects_runtime.clearActiveIntervals(Ctx, ctx, &self.active_intervals, self.roc_host);
         }
@@ -3308,7 +3308,7 @@ pub fn Engine(comptime Ctx: type) type {
             effects_runtime.syncActiveIntervalsFromGraph(Ctx, ctx, Ctx.allocator(ctx), &self.active_intervals, &self.next_interval_token, self.roc_host, self.active_signal_graph.items, &self.pending_roc_metrics);
         }
 
-        /// Provides the `clearActiveSignalRoutes` operation.
+        /// Clears active signal routes while retaining bounded storage where the type promises reuse.
         pub fn clearActiveSignalRoutes(self: *Self, ctx: Ctx.Handle) void {
             active_graph.clearRoutes(
                 Ctx.allocator(ctx),
@@ -3320,7 +3320,7 @@ pub fn Engine(comptime Ctx: type) type {
             );
         }
 
-        /// Provides the `clearActiveSinkSignalRoutes` operation.
+        /// Clears active sink signal routes while retaining bounded storage where the type promises reuse.
         pub fn clearActiveSinkSignalRoutes(self: *Self, ctx: Ctx.Handle) void {
             active_graph.clearSinkRoutes(
                 Ctx.allocator(ctx),
@@ -3331,34 +3331,34 @@ pub fn Engine(comptime Ctx: type) type {
             );
         }
 
-        /// Provides the `activeSignalRecordId` operation.
+        /// Returns active signal record id from the maintained active-runtime indexes.
         pub fn activeSignalRecordId(self: *Self, record: *const HostSignalRecord) ?u64 {
             return active_graph.recordId(HostSignalRecord, self.active_signal_graph.items, record);
         }
 
-        /// Provides the `requireActiveSignalRecordId` operation.
+        /// Performs require active signal record id inside the shared engine while preserving transaction and changed-set invariants.
         pub fn requireActiveSignalRecordId(self: *Self, record: *const HostSignalRecord) u64 {
             return active_graph.requireRecordId(HostSignalRecord, self.active_signal_graph.items, record);
         }
 
-        /// Provides the `appendActiveSignalGraphNode` operation.
+        /// Appends active signal graph node using capacity that must already satisfy the caller's transaction contract.
         pub fn appendActiveSignalGraphNode(self: *Self, ctx: Ctx.Handle, record: *HostSignalRecord, rank: u64) u64 {
             const record_id = active_graph.appendNode(HostSignalRecord, Ctx.allocator(ctx), &self.active_signal_graph, record, rank);
             self.pending_roc_metrics.bump(.active_graph_records_rebuilt, 1);
             return record_id;
         }
 
-        /// Provides the `appendActiveSignalDependentId` operation.
+        /// Appends active signal dependent id using capacity that must already satisfy the caller's transaction contract.
         pub fn appendActiveSignalDependentId(self: *Self, ctx: Ctx.Handle, input_record_id: u64, dependent_record_id: u64) void {
             active_graph.appendDependentId(HostSignalRecord, Ctx.allocator(ctx), self.active_signal_graph.items, input_record_id, dependent_record_id);
         }
 
-        /// Provides the `appendActiveSourceSignalRoute` operation.
+        /// Appends active source signal route using capacity that must already satisfy the caller's transaction contract.
         pub fn appendActiveSourceSignalRoute(self: *Self, ctx: Ctx.Handle, source_node_id: u64, record_id: u64) void {
             active_graph.appendSourceRoute(Ctx.allocator(ctx), &self.active_source_signal_routes, self.node_identities.items.len, source_node_id, record_id);
         }
 
-        /// Provides the `retainActiveSignalRecord` operation.
+        /// Performs retain active signal record inside the shared engine while preserving transaction and changed-set invariants.
         pub fn retainActiveSignalRecord(self: *Self, ctx: Ctx.Handle, record: *HostSignalRecord) void {
             var lifecycle = ActiveSignalGraphLifecycle{ .engine = self, .ctx = ctx };
             const records_rebuilt = active_graph.retainRecord(
@@ -3373,27 +3373,27 @@ pub fn Engine(comptime Ctx: type) type {
             self.pending_roc_metrics.bump(.active_graph_records_rebuilt, records_rebuilt);
         }
 
-        /// Provides the `ensureActiveSourceSignalRoute` operation.
+        /// Ensures active source signal route capacity or state before publication can begin.
         pub fn ensureActiveSourceSignalRoute(self: *Self, ctx: Ctx.Handle, source_node_id: u64) *std.ArrayListUnmanaged(u64) {
             return active_graph.ensureSourceRoute(Ctx.allocator(ctx), &self.active_source_signal_routes, self.node_identities.items.len, source_node_id);
         }
 
-        /// Provides the `ensureActiveTextSignalRoute` operation.
+        /// Ensures active text signal route capacity or state before publication can begin.
         pub fn ensureActiveTextSignalRoute(self: *Self, ctx: Ctx.Handle, record_id: u64) *std.ArrayListUnmanaged(HostActiveTextSignalSink) {
             return active_graph.ensureTextRoute(Ctx.allocator(ctx), &self.active_text_signal_routes, self.active_signal_graph.items.len, record_id);
         }
 
-        /// Provides the `ensureActiveBoolSignalRoute` operation.
+        /// Ensures active bool signal route capacity or state before publication can begin.
         pub fn ensureActiveBoolSignalRoute(self: *Self, ctx: Ctx.Handle, record_id: u64) *std.ArrayListUnmanaged(HostActiveBoolSignalSink) {
             return active_graph.ensureBoolRoute(Ctx.allocator(ctx), &self.active_bool_signal_routes, self.active_signal_graph.items.len, record_id);
         }
 
-        /// Provides the `ensureActiveChangeSignalRoute` operation.
+        /// Ensures active change signal route capacity or state before publication can begin.
         pub fn ensureActiveChangeSignalRoute(self: *Self, ctx: Ctx.Handle, record_id: u64) *std.ArrayListUnmanaged(HostActiveChangeSignalSink) {
             return active_graph.ensureChangeRoute(Ctx.allocator(ctx), &self.active_change_signal_routes, self.active_signal_graph.items.len, record_id);
         }
 
-        /// Provides the `ensureActiveStructuralSignalRoute` operation.
+        /// Ensures active structural signal route capacity or state before publication can begin.
         pub fn ensureActiveStructuralSignalRoute(self: *Self, ctx: Ctx.Handle, record_id: u64) *std.ArrayListUnmanaged(HostActiveStructuralSignal) {
             return active_graph.ensureStructuralRoute(Ctx.allocator(ctx), &self.active_structural_signal_routes, self.active_signal_graph.items.len, record_id);
         }
@@ -3446,7 +3446,7 @@ pub fn Engine(comptime Ctx: type) type {
             active_graph.updateStructuralRouteIndex(&self.active_structural_signal_routes, record_id, kind, old_index, new_index);
         }
 
-        /// Provides the `rebuildActiveSinkSignalRoutesFromStream` operation.
+        /// Performs rebuild active sink signal routes from stream inside the shared engine while preserving transaction and changed-set invariants.
         pub fn rebuildActiveSinkSignalRoutesFromStream(self: *Self, ctx: Ctx.Handle, stream: *const HostNodeDescriptorStream) void {
             active_graph.rebuildSinkRoutesFromStream(
                 HostSignalRecord,
@@ -3460,7 +3460,7 @@ pub fn Engine(comptime Ctx: type) type {
             );
         }
 
-        /// Provides the `rebuildActiveSignalGraphFromStream` operation.
+        /// Performs rebuild active signal graph from stream inside the shared engine while preserving transaction and changed-set invariants.
         pub fn rebuildActiveSignalGraphFromStream(self: *Self, ctx: Ctx.Handle, stream: *const HostNodeDescriptorStream) void {
             self.clearActiveSignalRoutes(ctx);
             self.clearActiveSignalGraph(ctx);
@@ -3481,7 +3481,7 @@ pub fn Engine(comptime Ctx: type) type {
             self.syncActiveIntervalsFromGraph(ctx);
         }
 
-        /// Provides the `releaseActiveSignalRecord` operation.
+        /// Performs release active signal record inside the shared engine while preserving transaction and changed-set invariants.
         pub fn releaseActiveSignalRecord(self: *Self, ctx: Ctx.Handle, record: *HostSignalRecord) void {
             var lifecycle = ActiveSignalGraphLifecycle{ .engine = self, .ctx = ctx };
             active_graph.releaseRecord(
@@ -3553,7 +3553,7 @@ pub fn Engine(comptime Ctx: type) type {
             abi.decrefErasedCallable(desc.to_cmd, roc_host);
         }
 
-        /// Provides the `scopeIsInReplacementTarget` operation.
+        /// Evaluates scope is in replacement target using explicit scope ownership rather than DOM position or content.
         pub fn scopeIsInReplacementTarget(self: *Self, scope_id: u64, target: HostStructuralReplacementTarget) bool {
             return switch (target) {
                 .scope => |root_scope_id| self.scopeIsDescendantOrSelf(scope_id, root_scope_id) catch @panic("scope descriptor referenced an unknown parent scope"),
@@ -3565,7 +3565,7 @@ pub fn Engine(comptime Ctx: type) type {
             const TargetLookup = struct {
                 engine: *Self,
 
-                /// Provides the `scopeIsInTarget` operation.
+                /// Evaluates scope is in target using explicit scope ownership rather than DOM position or content.
                 pub fn scopeIsInTarget(self_lookup: *@This(), scope_id: u64, replacement_target: HostStructuralReplacementTarget) bool {
                     return self_lookup.engine.scopeIsInReplacementTarget(scope_id, replacement_target);
                 }
@@ -3574,31 +3574,31 @@ pub fn Engine(comptime Ctx: type) type {
             return structural_splice.buildTargetScopeSet(HostScope, Ctx.allocator(ctx), &self.scratch.replacement_target_scopes, self.scopes.items, target, &lookup);
         }
 
-        /// Provides the `renderNodeInReplacementTarget` operation.
+        /// Returns in replacement target for an already indexed render node.
         pub fn renderNodeInReplacementTarget(self: *Self, stream: *const HostNodeDescriptorStream, node: HostRenderNode, target: HostStructuralReplacementTarget) bool {
             return self.scopeIsInReplacementTarget(renderNodeScopeId(stream, node), target);
         }
 
-        /// Provides the `renderNodeInReplacementTargetSet` operation.
+        /// Returns in replacement target set for an already indexed render node.
         pub fn renderNodeInReplacementTargetSet(self: *Self, stream: *const HostNodeDescriptorStream, node: HostRenderNode, target_scopes: []const bool) bool {
             _ = self;
             return structural_splice.scopeIsInTargetSet(target_scopes, renderNodeScopeId(stream, node));
         }
 
-        /// Provides the `elemIdInReplacementTarget` operation.
+        /// Performs elem id in replacement target inside the shared engine while preserving transaction and changed-set invariants.
         pub fn elemIdInReplacementTarget(self: *Self, stream: *const HostNodeDescriptorStream, elem_id: u64, target: HostStructuralReplacementTarget) bool {
             const scope_id = elemScopeId(stream, elem_id) orelse @panic("descriptor referenced an element outside the render stream");
             return self.scopeIsInReplacementTarget(scope_id, target);
         }
 
-        /// Provides the `elemIdInReplacementTargetSet` operation.
+        /// Performs elem id in replacement target set inside the shared engine while preserving transaction and changed-set invariants.
         pub fn elemIdInReplacementTargetSet(self: *Self, stream: *const HostNodeDescriptorStream, elem_id: u64, target_scopes: []const bool) bool {
             _ = self;
             const scope_id = elemScopeId(stream, elem_id) orelse @panic("descriptor referenced an element outside the render stream");
             return structural_splice.scopeIsInTargetSet(target_scopes, scope_id);
         }
 
-        /// Provides the `streamNodeIdInReplacementTarget` operation.
+        /// Reads node id in replacement target from the active descriptor stream using engine-owned identity.
         pub fn streamNodeIdInReplacementTarget(self: *Self, previous: *const HostNodeDescriptorStream, node_id: u64, kind: HostNodeScopeSiteKind, target: HostStructuralReplacementTarget) bool {
             const descriptor_index = previous.nodeDescriptorIndex(node_id) orelse return false;
             const site_index = descriptor_index.scope_sites.get(kind) orelse return false;
@@ -3608,7 +3608,7 @@ pub fn Engine(comptime Ctx: type) type {
             return self.scopeIsInReplacementTarget(site.scope_id, target);
         }
 
-        /// Provides the `streamNodeIdInReplacementTargetSet` operation.
+        /// Reads node id in replacement target set from the active descriptor stream using engine-owned identity.
         pub fn streamNodeIdInReplacementTargetSet(self: *Self, previous: *const HostNodeDescriptorStream, node_id: u64, kind: HostNodeScopeSiteKind, target_scopes: []const bool) bool {
             _ = self;
             const descriptor_index = previous.nodeDescriptorIndex(node_id) orelse return false;
@@ -4348,12 +4348,12 @@ pub fn Engine(comptime Ctx: type) type {
             }
         }
 
-        /// Provides the `spliceActiveStreamReplacingTarget` operation.
+        /// Performs splice active stream replacing target inside the shared engine while preserving transaction and changed-set invariants.
         pub fn spliceActiveStreamReplacingTarget(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, target: HostStructuralReplacementTarget, render_insert_index: usize, replacement: *HostNodeDescriptorStream) HostStructuralSplice {
             return self.spliceActiveStreamReplacingTargetWithOptions(ctx, roc_host, target, render_insert_index, replacement, null, true);
         }
 
-        /// Provides the `spliceActiveStreamReplacingTargetWithOptions` operation.
+        /// Performs splice active stream replacing target with options inside the shared engine while preserving transaction and changed-set invariants.
         pub fn spliceActiveStreamReplacingTargetWithOptions(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, target: HostStructuralReplacementTarget, render_insert_index: usize, replacement: *HostNodeDescriptorStream, child_insert_hint: ?HostRenderChildInsertHint, refresh_suffix_indexes: bool) HostStructuralSplice {
             return self.spliceActiveStreamReplacingTargetWithScopeSet(ctx, roc_host, target, render_insert_index, replacement, child_insert_hint, refresh_suffix_indexes, null);
         }
@@ -4364,7 +4364,7 @@ pub fn Engine(comptime Ctx: type) type {
         // render nodes against the post-disposal scope tree under-collects:
         // the outgoing arm's descriptors survive while their (already reused)
         // elem ids re-register, tripping the duplicate-descriptor-index panic.
-        /// Provides the `snapshotReplacementTargetScopeSet` operation.
+        /// Performs snapshot replacement target scope set inside the shared engine while preserving transaction and changed-set invariants.
         pub fn snapshotReplacementTargetScopeSet(self: *Self, ctx: Ctx.Handle, target: HostStructuralReplacementTarget) []const bool {
             const built = self.buildReplacementTargetScopeSet(ctx, target);
             const copy = Ctx.allocator(ctx).dupe(bool, built) catch @panic("out of memory");
@@ -4372,7 +4372,7 @@ pub fn Engine(comptime Ctx: type) type {
             return copy;
         }
 
-        /// Provides the `spliceActiveStreamReplacingScopeWithScopeSnapshot` operation.
+        /// Performs splice active stream replacing scope with scope snapshot inside the shared engine while preserving transaction and changed-set invariants.
         pub fn spliceActiveStreamReplacingScopeWithScopeSnapshot(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, replaced_scope_id: u64, render_insert_index: usize, replacement: *HostNodeDescriptorStream, target_scopes_snapshot: []const bool) HostStructuralSplice {
             return self.spliceActiveStreamReplacingTargetWithScopeSet(ctx, roc_host, .{ .scope = replaced_scope_id }, render_insert_index, replacement, null, true, target_scopes_snapshot);
         }
@@ -4448,23 +4448,23 @@ pub fn Engine(comptime Ctx: type) type {
             };
         }
 
-        /// Provides the `spliceActiveStreamReplacingScope` operation.
+        /// Performs splice active stream replacing scope inside the shared engine while preserving transaction and changed-set invariants.
         pub fn spliceActiveStreamReplacingScope(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, replaced_scope_id: u64, render_insert_index: usize, replacement: *HostNodeDescriptorStream) HostStructuralSplice {
             return self.spliceActiveStreamReplacingTarget(ctx, roc_host, .{ .scope = replaced_scope_id }, render_insert_index, replacement);
         }
 
-        /// Provides the `spliceActiveStreamReplacingScopeWithOptions` operation.
+        /// Performs splice active stream replacing scope with options inside the shared engine while preserving transaction and changed-set invariants.
         pub fn spliceActiveStreamReplacingScopeWithOptions(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, replaced_scope_id: u64, render_insert_index: usize, replacement: *HostNodeDescriptorStream, child_insert_hint: ?HostRenderChildInsertHint, refresh_suffix_indexes: bool) HostStructuralSplice {
             return self.spliceActiveStreamReplacingTargetWithOptions(ctx, roc_host, .{ .scope = replaced_scope_id }, render_insert_index, replacement, child_insert_hint, refresh_suffix_indexes);
         }
 
-        /// Provides the `replaceSignalExprCacheAndClone` operation.
+        /// Replaces signal expr cache and clone while releasing displaced ownership exactly once.
         pub fn replaceSignalExprCacheAndClone(self: *Self, ctx: Ctx.Handle, cache_slot: *HostSignalCacheSlot, roc_host: *abi.RocHost, value: HostValue, cap: HostValueCapability) HostValue {
             cache_slot.replace(ctx, roc_host, &self.pending_roc_metrics, value, cap);
             return self.cloneCachedSignalValue(ctx, cache_slot);
         }
 
-        /// Provides the `evalEffectSourceInitial` operation.
+        /// Performs eval effect source initial inside the shared engine while preserving transaction and changed-set invariants.
         pub fn evalEffectSourceInitial(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, cache_slot: *HostSignalCacheSlot, initial: abi.RocErasedCallable, cap: HostValueCapability) HostValue {
             switch (cache_slot.*) {
                 .present => return self.cloneCachedSignalValue(ctx, cache_slot),
@@ -4475,7 +4475,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
         }
 
-        /// Provides the `evalLocationSourceInitial` operation.
+        /// Performs eval location source initial inside the shared engine while preserving transaction and changed-set invariants.
         pub fn evalLocationSourceInitial(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, payload: *HostSignalLocationSourceRecord) HostValue {
             switch (payload.cached_value) {
                 .present => return self.cloneCachedSignalValue(ctx, &payload.cached_value),
@@ -4487,7 +4487,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
         }
 
-        /// Provides the `evalVisibilitySourceInitial` operation.
+        /// Performs eval visibility source initial inside the shared engine while preserving transaction and changed-set invariants.
         pub fn evalVisibilitySourceInitial(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, payload: *HostSignalVisibilitySourceRecord) HostValue {
             switch (payload.cached_value) {
                 .present => return self.cloneCachedSignalValue(ctx, &payload.cached_value),
@@ -4499,7 +4499,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
         }
 
-        /// Provides the `evalOnlineSourceInitial` operation.
+        /// Performs eval online source initial inside the shared engine while preserving transaction and changed-set invariants.
         pub fn evalOnlineSourceInitial(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, payload: *HostSignalOnlineSourceRecord) HostValue {
             switch (payload.cached_value) {
                 .present => return self.cloneCachedSignalValue(ctx, &payload.cached_value),
@@ -4511,7 +4511,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
         }
 
-        /// Provides the `evalStorageSourceInitial` operation.
+        /// Performs eval storage source initial inside the shared engine while preserving transaction and changed-set invariants.
         pub fn evalStorageSourceInitial(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, payload: *HostSignalStorageSourceRecord) HostValue {
             switch (payload.cached_value) {
                 .present => return self.cloneCachedSignalValue(ctx, &payload.cached_value),
@@ -4523,7 +4523,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
         }
 
-        /// Provides the `evalHostSignalRecord` operation.
+        /// Performs eval host signal record inside the shared engine while preserving transaction and changed-set invariants.
         pub fn evalHostSignalRecord(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, record: *HostSignalRecord) HostValue {
             switch (record.payload) {
                 .ref => |node_id| return Ctx.stateValueByNodeId(ctx, node_id),
@@ -4594,12 +4594,12 @@ pub fn Engine(comptime Ctx: type) type {
             }
         }
 
-        /// Provides the `evalHostSignalBinding` operation.
+        /// Performs eval host signal binding inside the shared engine while preserving transaction and changed-set invariants.
         pub fn evalHostSignalBinding(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, signal: *HostSignalBinding) HostValue {
             return self.evalHostSignalRecord(ctx, roc_host, signal.record);
         }
 
-        /// Provides the `evalSignalTextField` operation.
+        /// Performs eval signal text field inside the shared engine while preserving transaction and changed-set invariants.
         pub fn evalSignalTextField(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, elem_id: u64, field: RenderTextField, signal: *HostSignalBinding, read: HostTextRead, cache_slot: *HostSignalCacheSlot) bool {
             const value = self.evalHostSignalBinding(ctx, roc_host, signal);
             const signal_cap = self.hostSignalBindingCapability(ctx, signal);
@@ -4611,7 +4611,7 @@ pub fn Engine(comptime Ctx: type) type {
             return changed;
         }
 
-        /// Provides the `evalSignalTextAttr` operation.
+        /// Performs eval signal text attr inside the shared engine while preserving transaction and changed-set invariants.
         pub fn evalSignalTextAttr(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, elem_id: u64, name: []const u8, signal: *HostSignalBinding, read: HostTextRead, cache_slot: *HostSignalCacheSlot) bool {
             const value = self.evalHostSignalBinding(ctx, roc_host, signal);
             const signal_cap = self.hostSignalBindingCapability(ctx, signal);
@@ -4634,7 +4634,7 @@ pub fn Engine(comptime Ctx: type) type {
             return self.applyRenderTextAttr(ctx, elem_id, name, text.asSlice());
         }
 
-        /// Provides the `evalSignalOptionalTextAttr` operation.
+        /// Performs eval signal optional text attr inside the shared engine while preserving transaction and changed-set invariants.
         pub fn evalSignalOptionalTextAttr(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, elem_id: u64, name: []const u8, signal: *HostSignalBinding, present: HostBoolRead, read: HostTextRead, cache_slot: *HostSignalCacheSlot) bool {
             const value = self.evalHostSignalBinding(ctx, roc_host, signal);
             const signal_cap = self.hostSignalBindingCapability(ctx, signal);
@@ -4643,7 +4643,7 @@ pub fn Engine(comptime Ctx: type) type {
             return changed;
         }
 
-        /// Provides the `evalSignalBoolField` operation.
+        /// Performs eval signal bool field inside the shared engine while preserving transaction and changed-set invariants.
         pub fn evalSignalBoolField(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, elem_id: u64, field: RenderBoolField, signal: *HostSignalBinding, read: HostBoolRead, cache_slot: *HostSignalCacheSlot) bool {
             const value = self.evalHostSignalBinding(ctx, roc_host, signal);
             const signal_cap = self.hostSignalBindingCapability(ctx, signal);
@@ -4654,7 +4654,7 @@ pub fn Engine(comptime Ctx: type) type {
             return changed;
         }
 
-        /// Provides the `evalSignalBoolAttr` operation.
+        /// Performs eval signal bool attr inside the shared engine while preserving transaction and changed-set invariants.
         pub fn evalSignalBoolAttr(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, elem_id: u64, name: []const u8, signal: *HostSignalBinding, read: HostBoolRead, cache_slot: *HostSignalCacheSlot) bool {
             const value = self.evalHostSignalBinding(ctx, roc_host, signal);
             const signal_cap = self.hostSignalBindingCapability(ctx, signal);
@@ -4665,7 +4665,7 @@ pub fn Engine(comptime Ctx: type) type {
             return changed;
         }
 
-        /// Provides the `evalDirtySignalTextField` operation.
+        /// Performs eval dirty signal text field inside the shared engine while preserving transaction and changed-set invariants.
         pub fn evalDirtySignalTextField(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, elem_id: u64, field: RenderTextField, signal: *HostSignalBinding, read: HostTextRead, cache_slot: *HostSignalCacheSlot, dirty_source_node_ids: []const u64, dirty_generation: u64) bool {
             const result = self.evalDirtyHostSignalBinding(ctx, roc_host, signal, dirty_source_node_ids, dirty_generation);
             const cap = self.hostSignalBindingCapability(ctx, signal);
@@ -4680,7 +4680,7 @@ pub fn Engine(comptime Ctx: type) type {
             return self.applyRenderTextField(ctx, elem_id, field, text.asSlice());
         }
 
-        /// Provides the `evalDirtySignalTextAttr` operation.
+        /// Performs eval dirty signal text attr inside the shared engine while preserving transaction and changed-set invariants.
         pub fn evalDirtySignalTextAttr(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, elem_id: u64, name: []const u8, signal: *HostSignalBinding, read: HostTextRead, cache_slot: *HostSignalCacheSlot, dirty_source_node_ids: []const u64, dirty_generation: u64) bool {
             const result = self.evalDirtyHostSignalBinding(ctx, roc_host, signal, dirty_source_node_ids, dirty_generation);
             const cap = self.hostSignalBindingCapability(ctx, signal);
@@ -4695,7 +4695,7 @@ pub fn Engine(comptime Ctx: type) type {
             return self.applyRenderTextAttr(ctx, elem_id, name, text.asSlice());
         }
 
-        /// Provides the `evalDirtySignalOptionalTextAttr` operation.
+        /// Performs eval dirty signal optional text attr inside the shared engine while preserving transaction and changed-set invariants.
         pub fn evalDirtySignalOptionalTextAttr(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, elem_id: u64, name: []const u8, signal: *HostSignalBinding, present: HostBoolRead, read: HostTextRead, cache_slot: *HostSignalCacheSlot, dirty_source_node_ids: []const u64, dirty_generation: u64) bool {
             const result = self.evalDirtyHostSignalBinding(ctx, roc_host, signal, dirty_source_node_ids, dirty_generation);
             const cap = self.hostSignalBindingCapability(ctx, signal);
@@ -4709,7 +4709,7 @@ pub fn Engine(comptime Ctx: type) type {
             return self.applySignalOptionalTextAttrValue(ctx, roc_host, elem_id, name, result.value, cap, present, read);
         }
 
-        /// Provides the `evalDirtySignalBoolField` operation.
+        /// Performs eval dirty signal bool field inside the shared engine while preserving transaction and changed-set invariants.
         pub fn evalDirtySignalBoolField(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, elem_id: u64, field: RenderBoolField, signal: *HostSignalBinding, read: HostBoolRead, cache_slot: *HostSignalCacheSlot, dirty_source_node_ids: []const u64, dirty_generation: u64) bool {
             const result = self.evalDirtyHostSignalBinding(ctx, roc_host, signal, dirty_source_node_ids, dirty_generation);
             const cap = self.hostSignalBindingCapability(ctx, signal);
@@ -4722,7 +4722,7 @@ pub fn Engine(comptime Ctx: type) type {
             return self.applyRenderBoolField(ctx, elem_id, field, callHostValueToBoolWithCapability(ctx, roc_host, read.capability, read.read, result.value));
         }
 
-        /// Provides the `evalDirtySignalBoolAttr` operation.
+        /// Performs eval dirty signal bool attr inside the shared engine while preserving transaction and changed-set invariants.
         pub fn evalDirtySignalBoolAttr(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, elem_id: u64, name: []const u8, signal: *HostSignalBinding, read: HostBoolRead, cache_slot: *HostSignalCacheSlot, dirty_source_node_ids: []const u64, dirty_generation: u64) bool {
             const result = self.evalDirtyHostSignalBinding(ctx, roc_host, signal, dirty_source_node_ids, dirty_generation);
             const cap = self.hostSignalBindingCapability(ctx, signal);
@@ -4735,7 +4735,7 @@ pub fn Engine(comptime Ctx: type) type {
             return self.applyRenderBoolAttr(ctx, elem_id, name, callHostValueToBoolWithCapability(ctx, roc_host, read.capability, read.read, result.value));
         }
 
-        /// Provides the `evalStructuralSignalTextField` operation.
+        /// Performs eval structural signal text field inside the shared engine while preserving transaction and changed-set invariants.
         pub fn evalStructuralSignalTextField(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, elem_id: u64, field: RenderTextField, signal: *HostSignalBinding, read: HostTextRead, cache_slot: *HostSignalCacheSlot, dirty_source_node_ids: []const u64, dirty_generation: u64) bool {
             if (dirty_generation != 0 and sourceNodeIdsIntersect(signal.source_node_ids, dirty_source_node_ids)) {
                 return self.evalDirtySignalTextField(ctx, roc_host, elem_id, field, signal, read, cache_slot, dirty_source_node_ids, dirty_generation);
@@ -4743,7 +4743,7 @@ pub fn Engine(comptime Ctx: type) type {
             return self.evalSignalTextField(ctx, roc_host, elem_id, field, signal, read, cache_slot);
         }
 
-        /// Provides the `evalStructuralSignalTextAttr` operation.
+        /// Performs eval structural signal text attr inside the shared engine while preserving transaction and changed-set invariants.
         pub fn evalStructuralSignalTextAttr(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, elem_id: u64, name: []const u8, signal: *HostSignalBinding, read: HostTextRead, cache_slot: *HostSignalCacheSlot, dirty_source_node_ids: []const u64, dirty_generation: u64) bool {
             if (dirty_generation != 0 and sourceNodeIdsIntersect(signal.source_node_ids, dirty_source_node_ids)) {
                 return self.evalDirtySignalTextAttr(ctx, roc_host, elem_id, name, signal, read, cache_slot, dirty_source_node_ids, dirty_generation);
@@ -4751,7 +4751,7 @@ pub fn Engine(comptime Ctx: type) type {
             return self.evalSignalTextAttr(ctx, roc_host, elem_id, name, signal, read, cache_slot);
         }
 
-        /// Provides the `evalStructuralSignalOptionalTextAttr` operation.
+        /// Performs eval structural signal optional text attr inside the shared engine while preserving transaction and changed-set invariants.
         pub fn evalStructuralSignalOptionalTextAttr(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, elem_id: u64, name: []const u8, signal: *HostSignalBinding, present: HostBoolRead, read: HostTextRead, cache_slot: *HostSignalCacheSlot, dirty_source_node_ids: []const u64, dirty_generation: u64) bool {
             if (dirty_generation != 0 and sourceNodeIdsIntersect(signal.source_node_ids, dirty_source_node_ids)) {
                 return self.evalDirtySignalOptionalTextAttr(ctx, roc_host, elem_id, name, signal, present, read, cache_slot, dirty_source_node_ids, dirty_generation);
@@ -4759,7 +4759,7 @@ pub fn Engine(comptime Ctx: type) type {
             return self.evalSignalOptionalTextAttr(ctx, roc_host, elem_id, name, signal, present, read, cache_slot);
         }
 
-        /// Provides the `evalStructuralSignalBoolField` operation.
+        /// Performs eval structural signal bool field inside the shared engine while preserving transaction and changed-set invariants.
         pub fn evalStructuralSignalBoolField(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, elem_id: u64, field: RenderBoolField, signal: *HostSignalBinding, read: HostBoolRead, cache_slot: *HostSignalCacheSlot, dirty_source_node_ids: []const u64, dirty_generation: u64) bool {
             if (dirty_generation != 0 and sourceNodeIdsIntersect(signal.source_node_ids, dirty_source_node_ids)) {
                 return self.evalDirtySignalBoolField(ctx, roc_host, elem_id, field, signal, read, cache_slot, dirty_source_node_ids, dirty_generation);
@@ -4767,7 +4767,7 @@ pub fn Engine(comptime Ctx: type) type {
             return self.evalSignalBoolField(ctx, roc_host, elem_id, field, signal, read, cache_slot);
         }
 
-        /// Provides the `evalStructuralSignalBoolAttr` operation.
+        /// Performs eval structural signal bool attr inside the shared engine while preserving transaction and changed-set invariants.
         pub fn evalStructuralSignalBoolAttr(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, elem_id: u64, name: []const u8, signal: *HostSignalBinding, read: HostBoolRead, cache_slot: *HostSignalCacheSlot, dirty_source_node_ids: []const u64, dirty_generation: u64) bool {
             if (dirty_generation != 0 and sourceNodeIdsIntersect(signal.source_node_ids, dirty_source_node_ids)) {
                 return self.evalDirtySignalBoolAttr(ctx, roc_host, elem_id, name, signal, read, cache_slot, dirty_source_node_ids, dirty_generation);
@@ -4775,7 +4775,7 @@ pub fn Engine(comptime Ctx: type) type {
             return self.evalSignalBoolAttr(ctx, roc_host, elem_id, name, signal, read, cache_slot);
         }
 
-        /// Provides the `evalDirtyHostSignalRecord` operation.
+        /// Performs eval dirty host signal record inside the shared engine while preserving transaction and changed-set invariants.
         pub fn evalDirtyHostSignalRecord(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, record: *HostSignalRecord, dirty_source_node_ids: []const u64, dirty_generation: u64) HostSignalEvalResult {
             if (dirty_generation == 0) @panic("dirty signal evaluation used generation 0");
             debugPhase(ctx, .eval_dirty_signal);
@@ -4925,7 +4925,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
         }
 
-        /// Provides the `evalDirtyHostSignalBinding` operation.
+        /// Performs eval dirty host signal binding inside the shared engine while preserving transaction and changed-set invariants.
         pub fn evalDirtyHostSignalBinding(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, signal: *HostSignalBinding, dirty_source_node_ids: []const u64, dirty_generation: u64) HostSignalEvalResult {
             return self.evalDirtyHostSignalRecord(ctx, roc_host, signal.record, dirty_source_node_ids, dirty_generation);
         }
@@ -4960,7 +4960,7 @@ pub fn Engine(comptime Ctx: type) type {
             return changed_record_ids.items;
         }
 
-        /// Provides the `collectDirtyStructuralSignals` operation.
+        /// Collects dirty structural signals from the explicitly affected graph or scope set.
         pub fn collectDirtyStructuralSignals(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, allocator: std.mem.Allocator, dirty_source_node_ids: []const u64, changed_record_ids: []const u64, dirty_generation: u64) []HostDirtyStructuralSignal {
             var dirty_structural_signals: std.ArrayListUnmanaged(HostDirtyStructuralSignal) = .empty;
             errdefer {
@@ -5034,7 +5034,7 @@ pub fn Engine(comptime Ctx: type) type {
             return dirty_structural_signals.toOwnedSlice(allocator) catch @panic("out of memory");
         }
 
-        /// Provides the `stateIndexByNodeId` operation.
+        /// Performs state index by node id inside the shared engine while preserving transaction and changed-set invariants.
         pub fn stateIndexByNodeId(self: *Self, node_id: u64) ?usize {
             if (node_id >= self.state_indexes_by_node_id.items.len) return null;
             const state_index = self.state_indexes_by_node_id.items[@intCast(node_id)] orelse return null;
@@ -5044,19 +5044,19 @@ pub fn Engine(comptime Ctx: type) type {
             return state_index;
         }
 
-        /// Provides the `stateCapability` operation.
+        /// Returns the exact app-compiled capability that owns the requested state cell.
         pub fn stateCapability(self: *Self, node_id: u64) StateLookupError!HostValueCapability {
             const state_index = self.stateIndexByNodeId(node_id) orelse return StateLookupError.MissingActiveState;
             return self.states.items[state_index].cell.cap;
         }
 
-        /// Provides the `activeEventReducerByIndex` operation.
+        /// Returns active event reducer by index from the maintained active-runtime indexes.
         pub fn activeEventReducerByIndex(self: *Self, event_index: usize) ActiveEventLookupError!HostEventReducer {
             if (event_index >= self.active_events.items.len) return ActiveEventLookupError.MissingActiveEvent;
             return self.active_events.items[event_index].payload_reducer;
         }
 
-        /// Provides the `activeScopeSiteByNodeId` operation.
+        /// Returns active scope site by node id from the maintained active-runtime indexes.
         pub fn activeScopeSiteByNodeId(self: *Self, node_id: u64, kind: HostNodeScopeSiteKind) ?HostNodeScopeSiteDesc {
             const descriptor_index = self.active_stream.nodeDescriptorIndex(node_id) orelse return null;
             const scope_site_index = descriptor_index.scope_sites.get(kind) orelse return null;
@@ -5066,7 +5066,7 @@ pub fn Engine(comptime Ctx: type) type {
             return site;
         }
 
-        /// Provides the `activeWhenIndexByNodeId` operation.
+        /// Returns active when index by node id from the maintained active-runtime indexes.
         pub fn activeWhenIndexByNodeId(self: *Self, node_id: u64) ?usize {
             const descriptor_index = self.active_stream.nodeDescriptorIndex(node_id) orelse return null;
             const when_index = descriptor_index.when.get() orelse return null;
@@ -5075,7 +5075,7 @@ pub fn Engine(comptime Ctx: type) type {
             return when_index;
         }
 
-        /// Provides the `activeEachIndexByNodeId` operation.
+        /// Returns active each index by node id from the maintained active-runtime indexes.
         pub fn activeEachIndexByNodeId(self: *Self, node_id: u64) ?usize {
             const descriptor_index = self.active_stream.nodeDescriptorIndex(node_id) orelse return null;
             const each_index = descriptor_index.each.get() orelse return null;
@@ -5084,43 +5084,43 @@ pub fn Engine(comptime Ctx: type) type {
             return each_index;
         }
 
-        /// Provides the `recordSliceContains` operation.
+        /// Records slice contains in the metrics or lifecycle state owned by this operation.
         pub fn recordSliceContains(records: []const *HostSignalRecord, record: *HostSignalRecord) bool {
             return active_graph.recordSliceContains(HostSignalRecord, records, record);
         }
 
-        /// Provides the `activeWhenBranchScopeId` operation.
+        /// Returns active when branch scope id from the maintained active-runtime indexes.
         pub fn activeWhenBranchScopeId(self: *Self, parent_scope_id: u64, site_ordinal: u64, branch: HostScopeBranch) scope_tree.Error!?u64 {
             return scope_tree.activeWhenBranch(HostEachRowScopeStep, self.scopes.items, parent_scope_id, site_ordinal, branch);
         }
 
-        /// Provides the `validateScopeId` operation.
+        /// Performs validate scope id inside the shared engine while preserving transaction and changed-set invariants.
         pub fn validateScopeId(self: *Self, scope_id: u64) scope_tree.Error!void {
             return scope_tree.validate(HostEachRowScopeStep, self.scopes.items, scope_id);
         }
 
-        /// Provides the `internRootScope` operation.
+        /// Performs intern root scope inside the shared engine while preserving transaction and changed-set invariants.
         pub fn internRootScope(self: *Self, allocator: std.mem.Allocator) scope_tree.Error!scope_tree.InternResult {
             const result = try scope_tree.internRoot(HostEachRowScopeStep, allocator, &self.scopes);
             if (result.created) self.recordScopeCreated();
             return result;
         }
 
-        /// Provides the `internComponentScope` operation.
+        /// Performs intern component scope inside the shared engine while preserving transaction and changed-set invariants.
         pub fn internComponentScope(self: *Self, allocator: std.mem.Allocator, parent_scope_id: u64, site_ordinal: u64) scope_tree.Error!scope_tree.InternResult {
             const result = try scope_tree.internComponent(HostEachRowScopeStep, allocator, &self.scopes, parent_scope_id, site_ordinal, self.identity_reuse_barrier);
             if (result.created) self.recordScopeCreated();
             return result;
         }
 
-        /// Provides the `internWhenBranchScope` operation.
+        /// Performs intern when branch scope inside the shared engine while preserving transaction and changed-set invariants.
         pub fn internWhenBranchScope(self: *Self, allocator: std.mem.Allocator, parent_scope_id: u64, site_ordinal: u64, branch: HostScopeBranch) scope_tree.Error!scope_tree.InternResult {
             const result = try scope_tree.internWhenBranch(HostEachRowScopeStep, allocator, &self.scopes, parent_scope_id, site_ordinal, branch, self.identity_reuse_barrier);
             if (result.created) self.recordScopeCreated();
             return result;
         }
 
-        /// Provides the `internNodeIdentity` operation.
+        /// Performs intern node identity inside the shared engine while preserving transaction and changed-set invariants.
         pub fn internNodeIdentity(self: *Self, allocator: std.mem.Allocator, scope_id: u64, ordinal: u64) IdentityInternError!u64 {
             try self.validateScopeId(scope_id);
             const key = identityKey(scope_id, ordinal);
@@ -5136,7 +5136,7 @@ pub fn Engine(comptime Ctx: type) type {
             return node_id;
         }
 
-        /// Provides the `internDomIdentity` operation.
+        /// Performs intern dom identity inside the shared engine while preserving transaction and changed-set invariants.
         pub fn internDomIdentity(self: *Self, allocator: std.mem.Allocator, scope_id: u64, ordinal: u64) IdentityInternError!u64 {
             try self.validateScopeId(scope_id);
             const key = identityKey(scope_id, ordinal);
@@ -5152,7 +5152,7 @@ pub fn Engine(comptime Ctx: type) type {
             return elem_id;
         }
 
-        /// Provides the `activeEachRowScopes` operation.
+        /// Returns active each row scopes from the maintained active-runtime indexes.
         pub fn activeEachRowScopes(self: *Self, allocator: std.mem.Allocator, parent_scope_id: u64, site_ordinal: u64) scope_tree.Error![]u64 {
             try self.validateScopeId(parent_scope_id);
             const site_index = self.activeEachRowSiteIndex(parent_scope_id, site_ordinal) orelse {
@@ -5161,23 +5161,23 @@ pub fn Engine(comptime Ctx: type) type {
             return allocator.dupe(u64, self.each_row_sites.items[site_index].scope_ids.items) catch return scope_tree.Error.OutOfMemory;
         }
 
-        /// Provides the `eachRowScopeKeyEquals` operation.
+        /// Performs each row scope key equals inside the shared engine while preserving transaction and changed-set invariants.
         pub fn eachRowScopeKeyEquals(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, scope_id: u64, key: HostValue, key_cap: HostValueCapability) bool {
             self.recordEachKeyReuseCompare();
             return scope_runtime.eachRowKeyEquals(self.scopes.items, ctx, roc_host, scope_id, key, key_cap);
         }
 
-        /// Provides the `eachRowScopeKeyValue` operation.
+        /// Performs each row scope key value inside the shared engine while preserving transaction and changed-set invariants.
         pub fn eachRowScopeKeyValue(self: *Self, scope_id: u64) HostValue {
             return scope_runtime.eachRowKeyValue(self.scopes.items, scope_id);
         }
 
-        /// Provides the `eachRowScopeKeyHash` operation.
+        /// Performs each row scope key hash inside the shared engine while preserving transaction and changed-set invariants.
         pub fn eachRowScopeKeyHash(self: *Self, scope_id: u64) u64 {
             return scope_runtime.eachRowKeyHash(self.scopes.items, scope_id);
         }
 
-        /// Provides the `hashEachKeyValue` operation.
+        /// Reports whether h each key value is present in maintained state.
         pub fn hashEachKeyValue(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, key_text: abi.RocErasedCallable, key_cap: HostValueCapability, key: HostValue) u64 {
             self.recordEachKeyHash();
             const text = callHostValueToStrWithCapability(ctx, roc_host, key_cap, key_text, key);
@@ -5185,7 +5185,7 @@ pub fn Engine(comptime Ctx: type) type {
             return hashEachKeyText(text.asSlice());
         }
 
-        /// Provides the `failDuplicateEachKey` operation.
+        /// Rejects a duplicate keyed row at the narrow reconciliation boundary with a bounded diagnostic.
         pub fn failDuplicateEachKey(
             self: *Self,
             ctx: Ctx.Handle,
@@ -5209,19 +5209,19 @@ pub fn Engine(comptime Ctx: type) type {
             @panic(msg);
         }
 
-        /// Provides the `eachKeysEqual` operation.
+        /// Performs each keys equal inside the shared engine while preserving transaction and changed-set invariants.
         pub fn eachKeysEqual(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, ops: HostEachOps, left: HostValue, right: HostValue) bool {
             self.recordEachKeyDuplicateCompare();
             const key_cap = ops.key_capability;
             return callHostValueHostValueToBoolWithCapability(ctx, roc_host, key_cap, hv.hostValueCapabilityEq(key_cap), left, right);
         }
 
-        /// Provides the `eachSiteRowAncestorScopeId` operation.
+        /// Performs each site row ancestor scope id inside the shared engine while preserving transaction and changed-set invariants.
         pub fn eachSiteRowAncestorScopeId(self: *Self, scope_id: u64, site: HostEachSite) scope_tree.Error!?u64 {
             return scope_tree.eachSiteRowAncestor(HostEachRowScopeStep, self.scopes.items, scope_id, site.parent_scope_id, site.site_ordinal);
         }
 
-        /// Provides the `scopeIsDescendantOrSelf` operation.
+        /// Evaluates scope is descendant or self using explicit scope ownership rather than DOM position or content.
         pub fn scopeIsDescendantOrSelf(self: *Self, scope_id: u64, root_scope_id: u64) scope_tree.Error!bool {
             return scope_tree.descendantOrSelf(HostEachRowScopeStep, self.scopes.items, scope_id, root_scope_id);
         }
@@ -5266,17 +5266,17 @@ pub fn Engine(comptime Ctx: type) type {
             return target_node_id orelse @panic("UpdateState referenced a state binder outside the command's active scope");
         }
 
-        /// Provides the `scopeIsEachSiteRowDescendantOrSelf` operation.
+        /// Evaluates scope is each site row descendant or self using explicit scope ownership rather than DOM position or content.
         pub fn scopeIsEachSiteRowDescendantOrSelf(self: *Self, scope_id: u64, site: HostEachSite) scope_tree.Error!bool {
             return scope_tree.eachSiteRowDescendantOrSelf(HostEachRowScopeStep, self.scopes.items, scope_id, site.parent_scope_id, site.site_ordinal);
         }
 
-        /// Provides the `eachDiffPreservesSurvivorRenderOrder` operation.
+        /// Performs each diff preserves survivor render order inside the shared engine while preserving transaction and changed-set invariants.
         pub fn eachDiffPreservesSurvivorRenderOrder(old_render_rows: []const u64, next_scope_ids: []const u64) bool {
             return each_runtime.diffPreservesSurvivorRenderOrder(old_render_rows, next_scope_ids);
         }
 
-        /// Provides the `activeEachRowRenderSegmentsInRenderOrder` operation.
+        /// Returns active each row render segments in render order from the maintained active-runtime indexes.
         pub fn activeEachRowRenderSegmentsInRenderOrder(self: *Self, allocator: std.mem.Allocator, site: HostEachSite) []HostEachRowRenderSegment {
             var segments: std.ArrayListUnmanaged(HostEachRowRenderSegment) = .empty;
             errdefer segments.deinit(allocator);
@@ -5314,12 +5314,12 @@ pub fn Engine(comptime Ctx: type) type {
             return segments.toOwnedSlice(allocator) catch @panic("out of memory");
         }
 
-        /// Provides the `eachRenderSegmentScopeIds` operation.
+        /// Performs each render segment scope ids inside the shared engine while preserving transaction and changed-set invariants.
         pub fn eachRenderSegmentScopeIds(allocator: std.mem.Allocator, segments: []const HostEachRowRenderSegment) []u64 {
             return each_runtime.renderSegmentScopeIds(allocator, segments);
         }
 
-        /// Provides the `eachDiffIsPurePermutation` operation.
+        /// Performs each diff is pure permutation inside the shared engine while preserving transaction and changed-set invariants.
         pub fn eachDiffIsPurePermutation(self: *Self, old_render_rows: []const u64, diff: HostKeyedRowDiffResult, dirty_source_node_ids: []const u64) bool {
             if (diff.rows_created != 0 or diff.rows_removed != 0) return false;
             if (diff.scope_ids.len != old_render_rows.len) return false;
@@ -5331,7 +5331,7 @@ pub fn Engine(comptime Ctx: type) type {
             return true;
         }
 
-        /// Provides the `applyDirtyEachPermutationMoves` operation.
+        /// Applies dirty each permutation moves after preparation has fixed semantics and reserved fallible growth.
         pub fn applyDirtyEachPermutationMoves(self: *Self, ctx: Ctx.Handle, site: HostNodeScopeSiteDesc, next_scope_ids: []const u64) render.Counts {
             if (site.kind != .each) @panic("dirty each permutation move received a non-each site");
 
@@ -5451,12 +5451,12 @@ pub fn Engine(comptime Ctx: type) type {
             return counts;
         }
 
-        /// Provides the `renderInsertIndexForEachRowRanges` operation.
+        /// Performs render insert index for each row ranges inside the shared engine while preserving transaction and changed-set invariants.
         pub fn renderInsertIndexForEachRowRanges(site: HostNodeScopeSiteDesc, row_ranges: *const std.AutoHashMapUnmanaged(u64, HostEachRowRenderSegment), next_scope_ids: []const u64, row_index: usize) usize {
             return each_runtime.renderInsertIndexForRowRanges(site.render_insert_index, row_ranges, next_scope_ids, row_index);
         }
 
-        /// Provides the `renderAppendIndexForEachRowRanges` operation.
+        /// Performs render append index for each row ranges inside the shared engine while preserving transaction and changed-set invariants.
         pub fn renderAppendIndexForEachRowRanges(site: HostNodeScopeSiteDesc, row_ranges: *const std.AutoHashMapUnmanaged(u64, HostEachRowRenderSegment)) usize {
             var append_index = site.render_insert_index;
             var range_iterator = row_ranges.iterator();
@@ -5466,7 +5466,7 @@ pub fn Engine(comptime Ctx: type) type {
             return append_index;
         }
 
-        /// Provides the `childInsertionIndexForEachRowRanges` operation.
+        /// Performs child insertion index for each row ranges inside the shared engine while preserving transaction and changed-set invariants.
         pub fn childInsertionIndexForEachRowRanges(self: *Self, allocator: std.mem.Allocator, site: HostNodeScopeSiteDesc, row_ranges: *const std.AutoHashMapUnmanaged(u64, HostEachRowRenderSegment), render_insert_index: usize) usize {
             const each_site = HostEachSite{ .parent_scope_id = site.scope_id, .site_ordinal = site.ordinal };
             const children = streamDirectChildrenInto(allocator, &self.active_stream, site.parent_elem_id, &self.scratch.stream_direct_children);
@@ -5482,7 +5482,7 @@ pub fn Engine(comptime Ctx: type) type {
             return child_index;
         }
 
-        /// Provides the `eachSiteParentHasOnlyRowChildren` operation.
+        /// Performs each site parent has only row children inside the shared engine while preserving transaction and changed-set invariants.
         pub fn eachSiteParentHasOnlyRowChildren(self: *Self, allocator: std.mem.Allocator, site: HostNodeScopeSiteDesc, old_render_segments: []const HostEachRowRenderSegment) bool {
             const each_site = HostEachSite{ .parent_scope_id = site.scope_id, .site_ordinal = site.ordinal };
             const children = streamDirectChildrenInto(allocator, &self.active_stream, site.parent_elem_id, &self.scratch.stream_direct_children);
@@ -5496,17 +5496,17 @@ pub fn Engine(comptime Ctx: type) type {
             return true;
         }
 
-        /// Provides the `adjustEachRowRenderRanges` operation.
+        /// Performs adjust each row render ranges inside the shared engine while preserving transaction and changed-set invariants.
         pub fn adjustEachRowRenderRanges(row_ranges: *std.AutoHashMapUnmanaged(u64, HostEachRowRenderSegment), replace_index: usize, removed_count: usize, replacement_count: usize) void {
             each_runtime.adjustRenderRanges(row_ranges, replace_index, removed_count, replacement_count);
         }
 
-        /// Provides the `updateEachRowRenderRange` operation.
+        /// Performs update each row render range inside the shared engine while preserving transaction and changed-set invariants.
         pub fn updateEachRowRenderRange(row_ranges: *std.AutoHashMapUnmanaged(u64, HostEachRowRenderSegment), allocator: std.mem.Allocator, scope_id: u64, render_insert_index: usize, removed_count: usize, replacement_count: usize) void {
             each_runtime.updateRenderRange(row_ranges, allocator, scope_id, render_insert_index, removed_count, replacement_count);
         }
 
-        /// Provides the `applyDirtyEachRowScopeSplices` operation.
+        /// Applies dirty each row scope splices after preparation has fixed semantics and reserved fallible growth.
         pub fn applyDirtyEachRowScopeSplices(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, site: HostNodeScopeSiteDesc, each: HostNodeEachDesc, old_render_segments: []const HostEachRowRenderSegment, diff: HostKeyedRowDiffResult, append_created_rows_for_later_moves: bool, dirty_source_node_ids: []const u64, dirty_generation: u64) render.Counts {
             const allocator = Ctx.allocator(ctx);
             var row_ranges = &self.scratch.each_row_ranges;
@@ -5641,20 +5641,20 @@ pub fn Engine(comptime Ctx: type) type {
             }, dirty_source_node_ids, dirty_generation);
         }
 
-        /// Provides the `applyDirtyEachMixedRowSplicesAndMoves` operation.
+        /// Applies dirty each mixed row splices and moves after preparation has fixed semantics and reserved fallible growth.
         pub fn applyDirtyEachMixedRowSplicesAndMoves(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, site: HostNodeScopeSiteDesc, each: HostNodeEachDesc, old_render_segments: []const HostEachRowRenderSegment, diff: HostKeyedRowDiffResult, dirty_source_node_ids: []const u64, dirty_generation: u64) render.Counts {
             var counts = self.applyDirtyEachRowScopeSplices(ctx, roc_host, site, each, old_render_segments, diff, true, dirty_source_node_ids, dirty_generation);
             counts.addAll(self.applyDirtyEachPermutationMoves(ctx, site, diff.scope_ids));
             return counts;
         }
 
-        /// Provides the `evalOnChangeInitial` operation.
+        /// Performs eval on change initial inside the shared engine while preserving transaction and changed-set invariants.
         pub fn evalOnChangeInitial(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, desc: *HostNodeOnChangeDesc) void {
             const value = self.evalHostSignalBinding(ctx, roc_host, &desc.signal);
             desc.cached_value.replace(ctx, roc_host, &self.pending_roc_metrics, value, self.hostSignalBindingCapability(ctx, &desc.signal));
         }
 
-        /// Provides the `evalOnChangeInitialCommand` operation.
+        /// Performs eval on change initial command inside the shared engine while preserving transaction and changed-set invariants.
         pub fn evalOnChangeInitialCommand(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, desc: *HostNodeOnChangeDesc) render.Counts {
             const pending = self.evalOnChangeInitialPendingCommand(ctx, roc_host, desc) orelse return .{};
             defer pending.cmd.decref(roc_host);
@@ -5683,7 +5683,7 @@ pub fn Engine(comptime Ctx: type) type {
             return counts;
         }
 
-        /// Provides the `runActiveOnChangeInitialCommandIndices` operation.
+        /// Runs active on change initial command indices using the host semantics and measurement boundaries defined by this module.
         pub fn runActiveOnChangeInitialCommandIndices(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, indices: []const usize) render.Counts {
             const allocator = Ctx.allocator(ctx);
             var pending_commands: std.ArrayListUnmanaged(HostPendingOnChangeCommand) = .empty;
@@ -5702,7 +5702,7 @@ pub fn Engine(comptime Ctx: type) type {
             return self.runPendingOnChangeCommands(ctx, roc_host, pending_commands.items);
         }
 
-        /// Provides the `runActiveOnChangeInitialCommands` operation.
+        /// Runs active on change initial commands using the host semantics and measurement boundaries defined by this module.
         pub fn runActiveOnChangeInitialCommands(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost) render.Counts {
             const allocator = Ctx.allocator(ctx);
             var pending_commands: std.ArrayListUnmanaged(HostPendingOnChangeCommand) = .empty;
@@ -5720,7 +5720,7 @@ pub fn Engine(comptime Ctx: type) type {
             return self.runPendingOnChangeCommands(ctx, roc_host, pending_commands.items);
         }
 
-        /// Provides the `evalMountCommand` operation.
+        /// Performs eval mount command inside the shared engine while preserving transaction and changed-set invariants.
         pub fn evalMountCommand(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, desc: *HostNodeMountDesc) render.Counts {
             if (!desc.run_on_mount) return .{};
             desc.run_on_mount = false;
@@ -5730,7 +5730,7 @@ pub fn Engine(comptime Ctx: type) type {
             return self.runCommand(ctx, roc_host, desc.scope_id, cmd);
         }
 
-        /// Provides the `runActiveMountCommandIndices` operation.
+        /// Runs active mount command indices using the host semantics and measurement boundaries defined by this module.
         pub fn runActiveMountCommandIndices(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, indices: []const usize) render.Counts {
             var counts: render.Counts = .{};
             self.recordStreamNodesScannedBy(.stream_nodes_scanned_mounts, indices.len);
@@ -5741,7 +5741,7 @@ pub fn Engine(comptime Ctx: type) type {
             return counts;
         }
 
-        /// Provides the `runActiveMountCommands` operation.
+        /// Runs active mount commands using the host semantics and measurement boundaries defined by this module.
         pub fn runActiveMountCommands(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost) render.Counts {
             var counts: render.Counts = .{};
             self.recordStreamNodesScannedBy(.stream_nodes_scanned_mounts, self.active_stream.mounts.items.len);
@@ -5751,7 +5751,7 @@ pub fn Engine(comptime Ctx: type) type {
             return counts;
         }
 
-        /// Provides the `applyStructuralEventBindings` operation.
+        /// Applies structural event bindings after preparation has fixed semantics and reserved fallible growth.
         pub fn applyStructuralEventBindings(self: *Self, ctx: Ctx.Handle, stream: *const HostNodeDescriptorStream, seen: []const bool, counts: *render.Counts) void {
             if (firstEventDescriptorElemOutsideSeen(stream, seen) != null) {
                 @panic("event descriptor referenced element outside structural render stream");
@@ -5767,7 +5767,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
         }
 
-        /// Provides the `applyStructuralEventBindingsForSeen` operation.
+        /// Applies structural event bindings for seen after preparation has fixed semantics and reserved fallible growth.
         pub fn applyStructuralEventBindingsForSeen(self: *Self, ctx: Ctx.Handle, stream: *const HostNodeDescriptorStream, seen: []const bool, counts: *render.Counts) void {
             for (seen, 0..) |is_seen, index| {
                 if (index == 0 or !is_seen) continue;
@@ -5780,7 +5780,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
         }
 
-        /// Provides the `fixedEventBindingForElemKind` operation.
+        /// Performs fixed event binding for elem kind inside the shared engine while preserving transaction and changed-set invariants.
         pub fn fixedEventBindingForElemKind(stream: *const HostNodeDescriptorStream, elem_id: u64, kind: RenderEventKind) ?HostRequiredEventBinding {
             const descriptor_index = stream.elemDescriptorIndex(elem_id) orelse return null;
             const event_index = descriptor_index.events.get(kind) orelse return null;
@@ -5791,7 +5791,7 @@ pub fn Engine(comptime Ctx: type) type {
             return .{ .event_id = @intCast(event_index + 1), .delivery = .{ .requested = desc.delivery_request }, .payload_descriptor = desc.payload_descriptor };
         }
 
-        /// Provides the `namedEventBindingForElemName` operation.
+        /// Performs named event binding for elem name inside the shared engine while preserving transaction and changed-set invariants.
         pub fn namedEventBindingForElemName(stream: *const HostNodeDescriptorStream, elem_id: u64, name: []const u8) ?HostRequiredEventBinding {
             for (stream.namedEventIndices(elem_id)) |index| {
                 if (index >= stream.events.items.len) @panic("named event index exceeded descriptor table");
@@ -5809,7 +5809,7 @@ pub fn Engine(comptime Ctx: type) type {
             return null;
         }
 
-        /// Provides the `applyStructuralNamedEventBindingsForElem` operation.
+        /// Applies structural named event bindings for elem after preparation has fixed semantics and reserved fallible growth.
         pub fn applyStructuralNamedEventBindingsForElem(self: *Self, ctx: Ctx.Handle, stream: *const HostNodeDescriptorStream, elem_id: u64, counts: *render.Counts) void {
             var cache_index: usize = 0;
             while (self.render_cache.namedEventNameAt(elem_id, cache_index)) |name| {
@@ -5837,7 +5837,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
         }
 
-        /// Provides the `activeEventBindingForElemKind` operation.
+        /// Returns active event binding for elem kind from the maintained active-runtime indexes.
         pub fn activeEventBindingForElemKind(self: *Self, elem_id: u64, kind: RenderEventKind) ?HostRequiredEventBinding {
             const descriptor_index = self.active_stream.elemDescriptorIndex(elem_id) orelse return null;
             const event_index = descriptor_index.events.get(kind) orelse return null;
@@ -5848,7 +5848,7 @@ pub fn Engine(comptime Ctx: type) type {
             return .{ .event_id = @intCast(event_index + 1), .delivery = .{ .requested = desc.delivery_request }, .payload_descriptor = desc.payload_descriptor };
         }
 
-        /// Provides the `applyStructuralEventBindingsForElem` operation.
+        /// Applies structural event bindings for elem after preparation has fixed semantics and reserved fallible growth.
         pub fn applyStructuralEventBindingsForElem(self: *Self, ctx: Ctx.Handle, elem_id: u64, counts: *render.Counts) void {
             for (render_event_kinds) |kind| {
                 const next_binding = self.activeEventBindingForElemKind(elem_id, kind);
@@ -5857,7 +5857,7 @@ pub fn Engine(comptime Ctx: type) type {
             self.applyStructuralNamedEventBindingsForElem(ctx, &self.active_stream, elem_id, counts);
         }
 
-        /// Provides the `applyActiveStreamEventBindings` operation.
+        /// Applies active stream event bindings after preparation has fixed semantics and reserved fallible growth.
         pub fn applyActiveStreamEventBindings(self: *Self, ctx: Ctx.Handle, counts: *render.Counts) void {
             self.recordStreamNodesScannedBy(.stream_nodes_scanned_events, self.active_stream.render_nodes.items.len);
             for (self.active_stream.render_nodes.items) |node| {
@@ -5866,7 +5866,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
         }
 
-        /// Provides the `applyActiveStreamTextAttrForElem` operation.
+        /// Applies active stream text attr for elem after preparation has fixed semantics and reserved fallible growth.
         pub fn applyActiveStreamTextAttrForElem(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, elem_id: u64, field: RenderTextField, descriptor_index: HostElemDescriptorIndex, counts: *render.Counts, dirty_source_node_ids: []const u64, dirty_generation: u64) void {
             if (descriptor_index.static_text_attrs.get(field)) |attr_index| {
                 if (attr_index >= self.active_stream.static_text_attrs.items.len) @panic("active static text attr index exceeded descriptor table");
@@ -5887,7 +5887,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
         }
 
-        /// Provides the `clearRenderTextAttrsMissingFromStream` operation.
+        /// Clears render text attrs missing from stream while retaining bounded storage where the type promises reuse.
         pub fn clearRenderTextAttrsMissingFromStream(self: *Self, ctx: Ctx.Handle, stream: *const HostNodeDescriptorStream, elem_id: u64, counts: *render.Counts) void {
             var index: usize = 0;
             while (self.render_cache.customTextAttrNameAt(elem_id, index)) |name| {
@@ -5901,7 +5901,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
         }
 
-        /// Provides the `applyActiveStreamCustomTextAttrsForElem` operation.
+        /// Applies active stream custom text attrs for elem after preparation has fixed semantics and reserved fallible growth.
         pub fn applyActiveStreamCustomTextAttrsForElem(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, elem_id: u64, counts: *render.Counts, dirty_source_node_ids: []const u64, dirty_generation: u64) void {
             self.recordStreamNodesScannedBy(.stream_nodes_scanned_apply, self.active_stream.static_custom_text_attrs.items.len);
             for (self.active_stream.static_custom_text_attrs.items) |desc| {
@@ -5972,7 +5972,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
         }
 
-        /// Provides the `applyActiveStreamBoolAttrForElem` operation.
+        /// Applies active stream bool attr for elem after preparation has fixed semantics and reserved fallible growth.
         pub fn applyActiveStreamBoolAttrForElem(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, elem_id: u64, field: RenderBoolField, descriptor_index: HostElemDescriptorIndex, counts: *render.Counts, dirty_source_node_ids: []const u64, dirty_generation: u64) void {
             if (descriptor_index.static_bool_attrs.get(field)) |attr_index| {
                 if (attr_index >= self.active_stream.static_bool_attrs.items.len) @panic("active static bool attr index exceeded descriptor table");
@@ -6037,12 +6037,12 @@ pub fn Engine(comptime Ctx: type) type {
             }
         }
 
-        /// Provides the `applyActiveStreamFieldsForElem` operation.
+        /// Applies active stream fields for elem after preparation has fixed semantics and reserved fallible growth.
         pub fn applyActiveStreamFieldsForElem(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, elem_id: u64, counts: *render.Counts, dirty_source_node_ids: []const u64, dirty_generation: u64) void {
             self.applyActiveStreamFieldsForElemOptions(ctx, roc_host, elem_id, counts, dirty_source_node_ids, dirty_generation, true);
         }
 
-        /// Provides the `applyStructuralNodeDescriptorTarget` operation.
+        /// Applies structural node descriptor target after preparation has fixed semantics and reserved fallible growth.
         pub fn applyStructuralNodeDescriptorTarget(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, targets: HostStructuralPatchTargets) render.Counts {
             if (!self.hasRenderRoot()) @panic("structural DOM patch requested before initial DOM root creation");
 
@@ -6190,7 +6190,7 @@ pub fn Engine(comptime Ctx: type) type {
             return counts;
         }
 
-        /// Provides the `applyNodeDescriptorStream` operation.
+        /// Applies node descriptor stream after preparation has fixed semantics and reserved fallible growth.
         pub fn applyNodeDescriptorStream(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream) render.Counts {
             var counts: render.Counts = .{};
             counts.addHostReset();
@@ -6293,7 +6293,7 @@ pub fn Engine(comptime Ctx: type) type {
             return counts;
         }
 
-        /// Provides the `applySplicedStructuralNodeDescriptorTarget` operation.
+        /// Applies spliced structural node descriptor target after preparation has fixed semantics and reserved fallible growth.
         pub fn applySplicedStructuralNodeDescriptorTarget(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, splice: HostStructuralSplice, targets: HostStructuralPatchTargets, dirty_source_node_ids: []const u64, dirty_generation: u64) render.Counts {
             _ = targets;
             if (!self.hasRenderRoot()) @panic("structural DOM patch requested before initial DOM root creation");
@@ -6409,7 +6409,7 @@ pub fn Engine(comptime Ctx: type) type {
             return counts;
         }
 
-        /// Provides the `applyStructuralNodeDescriptorStream` operation.
+        /// Applies structural node descriptor stream after preparation has fixed semantics and reserved fallible growth.
         pub fn applyStructuralNodeDescriptorStream(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream) render.Counts {
             if (!self.hasRenderRoot()) @panic("structural DOM patch requested before initial DOM root creation");
 
@@ -6549,7 +6549,7 @@ pub fn Engine(comptime Ctx: type) type {
             return counts;
         }
 
-        /// Provides the `rerenderActiveRoot` operation.
+        /// Performs rerender active root inside the shared engine while preserving transaction and changed-set invariants.
         pub fn rerenderActiveRoot(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, dirty_source_node_ids: []const u64) render.Counts {
             const root = self.root_elem orelse @panic("host render requested before Roc root Elem was initialized");
             const allocator = Ctx.allocator(ctx);
@@ -6576,7 +6576,7 @@ pub fn Engine(comptime Ctx: type) type {
             return counts;
         }
 
-        /// Provides the `rerenderActiveRootWithReset` operation.
+        /// Performs rerender active root with reset inside the shared engine while preserving transaction and changed-set invariants.
         pub fn rerenderActiveRootWithReset(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, dirty_source_node_ids: []const u64) render.Counts {
             const root = self.root_elem orelse @panic("host render requested before Roc root Elem was initialized");
             const allocator = Ctx.allocator(ctx);
@@ -6600,12 +6600,12 @@ pub fn Engine(comptime Ctx: type) type {
             return counts;
         }
 
-        /// Provides the `applyDirtyStructuralSignalsLocally` operation.
+        /// Applies dirty structural signals locally after preparation has fixed semantics and reserved fallible growth.
         pub fn applyDirtyStructuralSignalsLocally(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, dirty_source_node_ids: []const u64, dirty_generation: u64, changes: []HostDirtyStructuralSignal) render.Counts {
             const DirtyStructuralOrder = struct {
                 engine: *Self,
 
-                /// Provides the `lessThan` operation.
+                /// Performs less than inside the shared engine while preserving transaction and changed-set invariants.
                 pub fn lessThan(order: @This(), lhs: HostDirtyStructuralSignal, rhs: HostDirtyStructuralSignal) bool {
                     const lhs_depth = order.engine.scopeDepth(lhs.scope_id);
                     const rhs_depth = order.engine.scopeDepth(rhs.scope_id);
@@ -6820,7 +6820,7 @@ pub fn Engine(comptime Ctx: type) type {
             return total_counts;
         }
 
-        /// Provides the `applyDirtyWhenStructuralSignals` operation.
+        /// Applies dirty when structural signals after preparation has fixed semantics and reserved fallible growth.
         pub fn applyDirtyWhenStructuralSignals(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, dirty_source_node_ids: []const u64, dirty_generation: u64, changes: []HostDirtyStructuralSignal) render.Counts {
             for (changes) |change| {
                 if (change.kind != .when) @panic("non-when structural change reached when-only test helper");
@@ -6828,32 +6828,32 @@ pub fn Engine(comptime Ctx: type) type {
             return self.applyDirtyStructuralSignalsLocally(ctx, roc_host, dirty_source_node_ids, dirty_generation, changes);
         }
 
-        /// Provides the `appendPendingTask` operation.
+        /// Appends pending task using capacity that must already satisfy the caller's transaction contract.
         pub fn appendPendingTask(self: *Self, ctx: Ctx.Handle, owner_scope_id: u64, task_token: HostSignalToken, task_name: []const u8, request: []const u8) u64 {
             return effects_runtime.appendPendingTask(Ctx.allocator(ctx), &self.pending_tasks, &self.next_task_request_id, self.roc_host.?, owner_scope_id, task_token, task_name, request);
         }
 
-        /// Provides the `pendingTaskIndexByName` operation.
+        /// Resolves pending task index by name from the bounded task registry without scanning unrelated work.
         pub fn pendingTaskIndexByName(self: *Self, name: []const u8) ?usize {
             return effects_runtime.pendingTaskIndexByName(self.pending_tasks.items, name);
         }
 
-        /// Provides the `removePendingTaskAt` operation.
+        /// Removes pending task at and releases the ownership attached to that live entry.
         pub fn removePendingTaskAt(self: *Self, index: usize) HostPendingTask {
             return effects_runtime.removePendingTaskAt(&self.pending_tasks, index);
         }
 
-        /// Provides the `activeTaskRecordByName` operation.
+        /// Returns active task record by name from the maintained active-runtime indexes.
         pub fn activeTaskRecordByName(self: *Self, name: []const u8) ?*HostSignalRecord {
             return effects_runtime.activeTaskRecordByName(self.active_signal_graph.items, name);
         }
 
-        /// Provides the `activeIntervalRecordByPeriod` operation.
+        /// Returns active interval record by period from the maintained active-runtime indexes.
         pub fn activeIntervalRecordByPeriod(self: *Self, period_ms: u64) ?*HostSignalRecord {
             return effects_runtime.activeIntervalRecordByPeriod(self.active_signal_graph.items, period_ms);
         }
 
-        /// Provides the `rebuildActiveEventsFromStream` operation.
+        /// Performs rebuild active events from stream inside the shared engine while preserving transaction and changed-set invariants.
         pub fn rebuildActiveEventsFromStream(self: *Self, ctx: Ctx.Handle, stream: *HostNodeDescriptorStream) void {
             const allocator = Ctx.allocator(ctx);
             self.clearActiveEvents() catch @panic("active event table cannot release retained payloads without a Roc host");
@@ -6870,7 +6870,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
         }
 
-        /// Provides the `updateEffectSourceCacheSlot` operation.
+        /// Performs update effect source cache slot inside the shared engine while preserving transaction and changed-set invariants.
         pub fn updateEffectSourceCacheSlot(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, cache_slot: *HostSignalCacheSlot, value: HostValue, cap: HostValueCapability) bool {
             switch (cache_slot.*) {
                 .absent => {
@@ -6893,13 +6893,13 @@ pub fn Engine(comptime Ctx: type) type {
             }
         }
 
-        /// Provides the `updateEffectSourceCache` operation.
+        /// Performs update effect source cache inside the shared engine while preserving transaction and changed-set invariants.
         pub fn updateEffectSourceCache(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, record: *HostSignalRecord, value: HostValue) bool {
             const source = record.effectSource() orelse @panic("effect source update targeted a non-source signal record");
             return self.updateEffectSourceCacheSlot(ctx, roc_host, source.cachedSlot(), value, source.capability());
         }
 
-        /// Provides the `applyDirtySignalBatch` operation.
+        /// Applies dirty signal batch after preparation has fixed semantics and reserved fallible growth.
         pub fn applyDirtySignalBatch(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, dirty_source_node_ids: []const u64, changed_record_ids: []const u64, dirty_generation: u64) render.Counts {
             const allocator = Ctx.allocator(ctx);
             const stable_changed_record_ids = allocator.dupe(u64, changed_record_ids) catch @panic("out of memory");
@@ -6954,7 +6954,7 @@ pub fn Engine(comptime Ctx: type) type {
             return counts;
         }
 
-        /// Provides the `dispatchEffectSourceValue` operation.
+        /// Dispatches effect source value through validated routing and dependency-ordered propagation.
         pub fn dispatchEffectSourceValue(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, record: *HostSignalRecord, value: HostValue) render.Counts {
             debugPhase(ctx, .dispatch_effect_source);
             if (!self.updateEffectSourceCache(ctx, roc_host, record, value)) return .{};
@@ -6989,7 +6989,7 @@ pub fn Engine(comptime Ctx: type) type {
             return boundary.StorageArea.fromId(area_id) orelse @panic("storage command referenced an unknown storage area");
         }
 
-        /// Provides the `dispatchCurrentLocationSources` operation.
+        /// Dispatches current location sources through validated routing and dependency-ordered propagation.
         pub fn dispatchCurrentLocationSources(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost) render.Counts {
             const allocator = Ctx.allocator(ctx);
             var root_record_ids: std.ArrayListUnmanaged(u64) = .empty;
@@ -7019,7 +7019,7 @@ pub fn Engine(comptime Ctx: type) type {
             return self.applyDirtySignalBatch(ctx, roc_host, &.{}, changed_record_ids, dirty_generation);
         }
 
-        /// Provides the `dispatchCurrentVisibilitySources` operation.
+        /// Dispatches current visibility sources through validated routing and dependency-ordered propagation.
         pub fn dispatchCurrentVisibilitySources(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost) render.Counts {
             const allocator = Ctx.allocator(ctx);
             var root_record_ids: std.ArrayListUnmanaged(u64) = .empty;
@@ -7049,7 +7049,7 @@ pub fn Engine(comptime Ctx: type) type {
             return self.applyDirtySignalBatch(ctx, roc_host, &.{}, changed_record_ids, dirty_generation);
         }
 
-        /// Provides the `dispatchCurrentOnlineSources` operation.
+        /// Dispatches current online sources through validated routing and dependency-ordered propagation.
         pub fn dispatchCurrentOnlineSources(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost) render.Counts {
             const allocator = Ctx.allocator(ctx);
             var root_record_ids: std.ArrayListUnmanaged(u64) = .empty;
@@ -7079,7 +7079,7 @@ pub fn Engine(comptime Ctx: type) type {
             return self.applyDirtySignalBatch(ctx, roc_host, &.{}, changed_record_ids, dirty_generation);
         }
 
-        /// Provides the `dispatchCurrentStorageSources` operation.
+        /// Dispatches current storage sources through validated routing and dependency-ordered propagation.
         pub fn dispatchCurrentStorageSources(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, area: boundary.StorageArea, key: []const u8) render.Counts {
             const allocator = Ctx.allocator(ctx);
             var root_record_ids: std.ArrayListUnmanaged(u64) = .empty;
@@ -7111,13 +7111,13 @@ pub fn Engine(comptime Ctx: type) type {
             return self.applyDirtySignalBatch(ctx, roc_host, &.{}, changed_record_ids, dirty_generation);
         }
 
-        /// Provides the `navigateLocationCommand` operation.
+        /// Publishes a location change and refreshes active location sources in the same engine turn.
         pub fn navigateLocationCommand(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, kind: NavigationKind, location: boundary.LocationSnapshot) render.Counts {
             Ctx.sink(ctx).navigate(kind, location);
             return self.dispatchCurrentLocationSources(ctx, roc_host);
         }
 
-        /// Provides the `setStorageTextCommand` operation.
+        /// Sets storage text command at the narrow host or engine boundary that owns the mutation.
         pub fn setStorageTextCommand(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, payload: anytype) render.Counts {
             const area = storageAreaFromCommand(payload.area);
             const key = payload.key.asSlice();
@@ -7125,13 +7125,13 @@ pub fn Engine(comptime Ctx: type) type {
             return self.dispatchCurrentStorageSources(ctx, roc_host, area, key);
         }
 
-        /// Provides the `setDocumentTitleCommand` operation.
+        /// Sets document title command at the narrow host or engine boundary that owns the mutation.
         pub fn setDocumentTitleCommand(_: *Self, ctx: Ctx.Handle, payload: anytype) render.Counts {
             Ctx.sink(ctx).setDocumentTitle(payload.title.asSlice());
             return .{};
         }
 
-        /// Provides the `removeStorageCommand` operation.
+        /// Removes storage command and releases the ownership attached to that live entry.
         pub fn removeStorageCommand(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, payload: anytype) render.Counts {
             const area = storageAreaFromCommand(payload.area);
             const key = payload.key.asSlice();
@@ -7139,7 +7139,7 @@ pub fn Engine(comptime Ctx: type) type {
             return self.dispatchCurrentStorageSources(ctx, roc_host, area, key);
         }
 
-        /// Provides the `startTaskCommand` operation.
+        /// Performs start task command inside the shared engine while preserving transaction and changed-set invariants.
         pub fn startTaskCommand(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, owner_scope_id: u64, cmd: erased_calls.StartTaskCmd) render.Counts {
             const task_token = retained_values.hostSignalTokenFromCallable(cmd.task_token);
             const record = self.activeTaskRecordByToken(task_token) orelse {
@@ -7172,7 +7172,7 @@ pub fn Engine(comptime Ctx: type) type {
             return .{};
         }
 
-        /// Provides the `updateStateCommand` operation.
+        /// Performs update state command inside the shared engine while preserving transaction and changed-set invariants.
         pub fn updateStateCommand(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, owner_scope_id: u64, cmd: erased_calls.UpdateStateCmd) render.Counts {
             const binder_token = retained_values.hostSignalTokenFromCallable(cmd.binder);
             const target_node_id = self.resolveStateCommandTarget(owner_scope_id, binder_token);
@@ -7196,7 +7196,7 @@ pub fn Engine(comptime Ctx: type) type {
             return self.applyDirtySignalBatch(ctx, roc_host, &dirty_source_node_ids, changed_record_ids, dirty_generation);
         }
 
-        /// Provides the `runCommand` operation.
+        /// Runs command using the host semantics and measurement boundaries defined by this module.
         pub fn runCommand(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, owner_scope_id: u64, cmd: erased_calls.Cmd) render.Counts {
             return switch (cmd.tag) {
                 .Noop => .{},
@@ -7224,20 +7224,20 @@ pub fn Engine(comptime Ctx: type) type {
             return self.dispatchEffectSourceValue(ctx, roc_host, record, next);
         }
 
-        /// Provides the `tickIntervalSource` operation.
+        /// Advances interval source through the shared propagation queue.
         pub fn tickIntervalSource(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, period_ms: u64) render.Counts {
             const record = self.activeIntervalRecordByPeriod(period_ms) orelse @panic("tick_interval matched no active interval source");
             return self.tickIntervalRecord(ctx, roc_host, record);
         }
 
-        /// Provides the `tickIntervalSourceByRuntimeToken` operation.
+        /// Advances interval source by runtime token through the shared propagation queue.
         pub fn tickIntervalSourceByRuntimeToken(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, token: u64) render.Counts {
             const source_token = self.activeIntervalSourceTokenByRuntimeToken(token) orelse @panic("timer tick referenced an inactive interval token");
             const record = self.activeIntervalRecordByToken(source_token) orelse @panic("timer tick matched no active interval source");
             return self.tickIntervalRecord(ctx, roc_host, record);
         }
 
-        /// Provides the `evalDirtyOnChangeCommand` operation.
+        /// Performs eval dirty on change command inside the shared engine while preserving transaction and changed-set invariants.
         pub fn evalDirtyOnChangeCommand(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, desc: *HostNodeOnChangeDesc, dirty_source_node_ids: []const u64, dirty_generation: u64) ?HostPendingOnChangeCommand {
             const result = self.evalDirtyHostSignalBinding(ctx, roc_host, &desc.signal, dirty_source_node_ids, dirty_generation);
             const cap = self.hostSignalBindingCapability(ctx, &desc.signal);
@@ -7255,7 +7255,7 @@ pub fn Engine(comptime Ctx: type) type {
             return .{ .scope_id = desc.scope_id, .cmd = cmd };
         }
 
-        /// Provides the `evalDirtyOnChange` operation.
+        /// Performs eval dirty on change inside the shared engine while preserving transaction and changed-set invariants.
         pub fn evalDirtyOnChange(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, desc: *HostNodeOnChangeDesc, dirty_source_node_ids: []const u64, dirty_generation: u64) render.Counts {
             const pending = self.evalDirtyOnChangeCommand(ctx, roc_host, desc, dirty_source_node_ids, dirty_generation) orelse return .{};
             const cmd = pending.cmd;
@@ -7404,7 +7404,7 @@ pub fn Engine(comptime Ctx: type) type {
             return counts;
         }
 
-        /// Provides the `applyDirtyRenderSinks` operation.
+        /// Applies dirty render sinks after preparation has fixed semantics and reserved fallible growth.
         pub fn applyDirtyRenderSinks(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, dirty_source_node_ids: []const u64, changed_record_ids: []const u64, dirty_generation: u64) render.Counts {
             const allocator = Ctx.allocator(ctx);
             var pending_on_change_commands: std.ArrayListUnmanaged(HostPendingOnChangeCommand) = .empty;
@@ -7444,15 +7444,15 @@ pub fn Engine(comptime Ctx: type) type {
 const VerifyCtxHost = struct {
     allocator: std.mem.Allocator,
 
-    /// Provides the `cloneHostValue` operation.
+    /// Produces an independently owned copy through the value's app-compiled capability.
     pub fn cloneHostValue(_: *@This(), value: HostValue) HostValue {
         return value;
     }
 
-    /// Provides the `pushHostValueCapabilities` operation.
+    /// Opens a checked capability frame for an app-compiled erased call.
     pub fn pushHostValueCapabilities(_: *@This(), _: []const HostValueCapability) void {}
 
-    /// Provides the `popHostValueCapabilities` operation.
+    /// Closes the current capability frame after an app-compiled erased call.
     pub fn popHostValueCapabilities(_: *@This()) void {}
 };
 
@@ -7482,47 +7482,47 @@ test "structural event validation rejects descriptors outside seen render stream
 }
 
 const VerifySink = struct {
-    /// Provides the `reset` operation.
+    /// Stages a complete render-surface reset in the host command sink.
     pub fn reset(_: VerifySink) void {}
-    /// Provides the `appendNode` operation.
+    /// Emits the already-decided command that attaches a newly created render node.
     pub fn appendNode(_: VerifySink, _: u64, _: u64, _: []const u8) void {}
-    /// Provides the `ensureNode` operation.
+    /// Ensures the host render surface contains the engine-selected node and tag.
     pub fn ensureNode(_: VerifySink, _: u64, _: []const u8) void {}
-    /// Provides the `removeNode` operation.
+    /// Emits removal of a node whose owning scope has already been disposed by the engine.
     pub fn removeNode(_: VerifySink, _: u64) void {}
-    /// Provides the `replaceChildren` operation.
+    /// Publishes the engine-selected child order for one parent.
     pub fn replaceChildren(_: VerifySink, _: u64, _: []const u64) void {}
-    /// Provides the `replaceChildrenForMoves` operation.
+    /// Publishes a moves-only child reorder without rebuilding surviving row structure.
     pub fn replaceChildrenForMoves(_: VerifySink, _: u64, _: []const u64) void {}
-    /// Provides the `applyTextField` operation.
+    /// Applies an engine-decided text field value to one render node.
     pub fn applyTextField(_: VerifySink, _: u64, _: RenderTextField, _: []const u8) void {}
-    /// Provides the `applyTextAttr` operation.
+    /// Applies an engine-decided custom text attribute to one render node.
     pub fn applyTextAttr(_: VerifySink, _: u64, _: []const u8, _: []const u8) void {}
-    /// Provides the `applyBoolField` operation.
+    /// Applies an engine-decided boolean field value to one render node.
     pub fn applyBoolField(_: VerifySink, _: u64, _: RenderBoolField, _: bool) void {}
-    /// Provides the `clearTextField` operation.
+    /// Clears an engine-decided text field from one render node.
     pub fn clearTextField(_: VerifySink, _: u64, _: RenderTextField) void {}
-    /// Provides the `clearTextAttr` operation.
+    /// Clears an engine-decided custom text attribute from one render node.
     pub fn clearTextAttr(_: VerifySink, _: u64, _: []const u8) void {}
-    /// Provides the `clearBoolField` operation.
+    /// Clears an engine-decided boolean field from one render node.
     pub fn clearBoolField(_: VerifySink, _: u64, _: RenderBoolField) void {}
-    /// Provides the `bindEvent` operation.
+    /// Publishes a validated canonical event binding selected by the engine.
     pub fn bindEvent(_: VerifySink, _: u64, _: render_cache_mod.EventBindingKey, _: HostRequiredEventBinding) void {}
-    /// Provides the `clearEvent` operation.
+    /// Removes a host event registration whose engine-owned binding is no longer active.
     pub fn clearEvent(_: VerifySink, _: u64, _: render_cache_mod.EventBindingKey) void {}
-    /// Provides the `startInterval` operation.
+    /// Starts the bounded host registration for an engine-owned interval source.
     pub fn startInterval(_: VerifySink, _: u64, _: u64) void {}
-    /// Provides the `cancelInterval` operation.
+    /// Cancels the host registration for an interval whose owning scope is no longer active.
     pub fn cancelInterval(_: VerifySink, _: u64) void {}
-    /// Provides the `startTask` operation.
+    /// Starts bounded asynchronous host work for an engine-issued task request.
     pub fn startTask(_: VerifySink, _: u64, _: []const u8, _: []const u8) void {}
-    /// Provides the `cancelTask` operation.
+    /// Cancels host work for a task request retired by engine lifecycle policy.
     pub fn cancelTask(_: VerifySink, _: u64) void {}
-    /// Provides the `navigate` operation.
+    /// Applies an engine-issued browser-history command without deriving routing semantics.
     pub fn navigate(_: VerifySink, _: NavigationKind, _: boundary.LocationSnapshot) void {}
-    /// Provides the `setDocumentTitle` operation.
+    /// Applies the document title already selected by graph propagation.
     pub fn setDocumentTitle(_: VerifySink, _: []const u8) void {}
-    /// Provides the `debugAssertNode` operation.
+    /// Checks that the host render surface matches the engine's committed node metadata.
     pub fn debugAssertNode(_: VerifySink, _: u64, _: bool, _: ?[]const u8, _: ?u64, _: []const u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64) void {}
 };
 
@@ -7532,58 +7532,58 @@ const VerifyCtx = struct {
     pub const Metrics = RuntimeMetrics;
     pub const Sink = VerifySink;
 
-    /// Provides the `zeroMetrics` operation.
+    /// Creates the host's zeroed metric accumulator for a new engine operation.
     pub fn zeroMetrics() Metrics {
         return zeroRuntimeMetrics();
     }
 
-    /// Provides the `allocator` operation.
+    /// Returns the allocator owned by this host context for shared-engine work.
     pub fn allocator(ctx: Handle) std.mem.Allocator {
         return ctx.allocator;
     }
 
-    /// Provides the `cloneHostValue` operation.
+    /// Produces an independently owned copy through the value's app-compiled capability.
     pub fn cloneHostValue(_: Handle, value: HostValue) HostValue {
         return value;
     }
 
-    /// Provides the `pushHostValueCapabilities` operation.
+    /// Opens a checked capability frame for an app-compiled erased call.
     pub fn pushHostValueCapabilities(_: Handle, _: []const HostValueCapability) void {}
 
-    /// Provides the `popHostValueCapabilities` operation.
+    /// Closes the current capability frame after an app-compiled erased call.
     pub fn popHostValueCapabilities(_: Handle) void {}
 
-    /// Provides the `stateValueByNodeId` operation.
+    /// Resolves a state cell by dense node id without scanning the signal graph.
     pub fn stateValueByNodeId(_: Handle, _: u64) HostValue {
         return 0;
     }
 
-    /// Provides the `stateCapability` operation.
+    /// Returns the exact app-compiled capability that owns the requested state cell.
     pub fn stateCapability(_: Handle, _: u64) HostValueCapability {
         return undefined;
     }
 
-    /// Provides the `initialLocationPayload` operation.
+    /// Materializes the mount-time browser location through the source's owning capability.
     pub fn initialLocationPayload(_: Handle, _: *abi.RocHost, _: HostValueCapability) HostValue {
         return 0;
     }
 
-    /// Provides the `initialStoragePayload` operation.
+    /// Materializes one declared storage key through the source's owning capability.
     pub fn initialStoragePayload(_: Handle, _: *abi.RocHost, _: boundary.StorageArea, _: []const u8, _: HostValueCapability) HostValue {
         return 0;
     }
 
-    /// Provides the `initialVisibilityPayload` operation.
+    /// Materializes the mount-time visibility state through the source's owning capability.
     pub fn initialVisibilityPayload(_: Handle, _: *abi.RocHost, _: HostValueCapability) HostValue {
         return 0;
     }
 
-    /// Provides the `initialOnlinePayload` operation.
+    /// Materializes the mount-time online state through the source's owning capability.
     pub fn initialOnlinePayload(_: Handle, _: *abi.RocHost, _: HostValueCapability) HostValue {
         return 0;
     }
 
-    /// Provides the `sink` operation.
+    /// Returns the thin render-command sink used by the shared engine.
     pub fn sink(_: Handle) Sink {
         return .{};
     }

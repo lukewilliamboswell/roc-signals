@@ -22,13 +22,13 @@ pub const Stats = struct {
     metrics: engine.RuntimeMetrics = engine.zeroRuntimeMetrics(),
 };
 
-/// Provides the `nowNs` operation.
+/// Reads the monotonic clock used only for benchmark measurement.
 pub fn nowNs() u64 {
     const ns = std.Io.Clock.awake.now(std.Io.Threaded.global_single_threaded.io()).nanoseconds;
     return @intCast(@max(ns, 0));
 }
 
-/// Provides the `commandIsAction` operation.
+/// Classifies whether a spec command mutates app state and therefore belongs in benchmark replay.
 pub fn commandIsAction(cmd: spec_parser.SpecCommand) bool {
     return switch (cmd.cmd_type) {
         .click, .real_click, .pointer_down, .pointer_up, .pointer_enter, .pointer_leave, .key_down, .focus, .blur, .change, .select_option, .custom_event, .composition_start, .composition_end, .submit, .fill, .check, .uncheck, .resolve_task, .reject_task, .tick_interval, .tick_interval_if_active, .navigate, .set_visibility, .set_online, .history_back, .history_forward => true,
@@ -90,12 +90,12 @@ fn printStdout(comptime fmt: []const u8, args: anytype) void {
     writeStdout(out);
 }
 
-/// Provides the `printHeader` operation.
+/// Writes header in the stable benchmark-report format.
 pub fn printHeader() void {
     writeStdout("case,sample,iterations,actions,init_roc_ns,init_apply_ns,dispatch_roc_ns,dispatch_apply_ns,total_ns,allocs,deallocs,retained_alloc_delta,commands,reset_dom,create_element,append_child,remove_node,move_before,set_text,set_value,set_checked,set_disabled,set_metadata,bind_event,active_graph_records_rebuilt,stream_nodes_scanned,stream_nodes_scanned_apply,stream_nodes_scanned_children,stream_nodes_scanned_dirty_scope,stream_nodes_scanned_events,stream_nodes_scanned_mounts,stream_nodes_scanned_remove_target,stream_nodes_scanned_render_scope,stream_nodes_scanned_splice,signal_record_table_rebuilt,active_intervals_synced,render_indexes_refreshed,each_key_compares,each_key_hashes,each_key_reuse_compares,each_key_duplicate_compares,each_item_compares,each_syncs,each_sync_keys,each_sync_existing_rows,allocs_this_event,deallocs_this_event,host_allocs_this_event,host_deallocs_this_event,host_alloc_bytes_this_event,host_dealloc_bytes_this_event,events_processed,dirty_source_roots,propagation_prunes,derived_calls_into_roc,recompute_batches,patches_emitted,scopes_created,scopes_disposed,rows_reused,rows_created,rows_removed,closure_retains,closure_releases,metrics_retained_alloc_delta,host_retained_alloc_delta,host_retained_bytes_delta\n");
 }
 
-/// Provides the `printRow` operation.
+/// Writes row in the stable benchmark-report format.
 pub fn printRow(case_name: []const u8, sample: usize, iterations: usize, stats: Stats) void {
     const total_ns = stats.init_roc_ns + stats.init_apply_ns + stats.dispatch_roc_ns + stats.dispatch_apply_ns;
     printStdout(
@@ -195,14 +195,14 @@ fn metricAsI64(comptime Ctx: type, value: u64) i64 {
     return std.math.cast(i64, value) orelse Ctx.fail("runtime metric exceeded signed assertion range");
 }
 
-/// Provides the `Runner` operation.
+/// Builds the benchmark runner adapter around a host context without changing engine semantics.
 pub fn Runner(comptime Ctx: type) type {
     return struct {
         const Host = Ctx.Host;
         const RocHost = Ctx.RocHost;
         const SpecCommand = spec_parser.SpecCommand;
 
-        /// Provides the `runAppBenchmarks` operation.
+        /// Runs app benchmarks using the host semantics and measurement boundaries defined by this module.
         pub fn runAppBenchmarks(spec_file: []const u8, case_name: []const u8, iterations: usize, samples: usize, verbose: bool) error{}!c_int {
             var bench_gpa = std.heap.DebugAllocator(.{ .safety = true }){};
             defer _ = bench_gpa.deinit();

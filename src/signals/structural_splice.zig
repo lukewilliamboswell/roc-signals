@@ -24,7 +24,7 @@ pub const Splice = struct {
     replacement_on_change_indices: []usize,
     replacement_mount_indices: []usize,
 
-    /// Provides the `deinit` operation.
+    /// Releases every resource owned by this value and leaves no retained host or Roc ownership behind.
     pub fn deinit(self: Splice, allocator: std.mem.Allocator) void {
         allocator.free(self.removed_elem_ids);
         allocator.free(self.touched_parent_ids);
@@ -46,7 +46,7 @@ pub const RenderRemovalScan = struct {
     removed_render_count: usize,
     target_scan_count: usize,
 
-    /// Provides the `deinit` operation.
+    /// Releases every resource owned by this value and leaves no retained host or Roc ownership behind.
     pub fn deinit(self: RenderRemovalScan, allocator: std.mem.Allocator) void {
         allocator.free(self.removed_elem_ids);
         allocator.free(self.touched_parent_ids);
@@ -63,7 +63,7 @@ pub const ElemOwnedRemovalScratch = struct {
     signal_bool_attr_indexes: std.ArrayListUnmanaged(usize) = .empty,
     event_indexes: std.ArrayListUnmanaged(usize) = .empty,
 
-    /// Provides the `deinit` operation.
+    /// Releases every resource owned by this value and leaves no retained host or Roc ownership behind.
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
         self.element_indexes.deinit(allocator);
         self.text_node_indexes.deinit(allocator);
@@ -76,7 +76,7 @@ pub const ElemOwnedRemovalScratch = struct {
         self.* = .{};
     }
 
-    /// Provides the `assertEmpty` operation.
+    /// Asserts that a splice plan owns no pending actions or provisional resources.
     pub fn assertEmpty(self: *const @This()) void {
         if (self.element_indexes.items.len != 0 or
             self.text_node_indexes.items.len != 0 or
@@ -91,7 +91,7 @@ pub const ElemOwnedRemovalScratch = struct {
         }
     }
 
-    /// Provides the `clearRetainingCapacity` operation.
+    /// Drops live entries while retaining allocated capacity for bounded reuse.
     pub fn clearRetainingCapacity(self: *@This()) void {
         self.element_indexes.clearRetainingCapacity();
         self.text_node_indexes.clearRetainingCapacity();
@@ -103,7 +103,7 @@ pub const ElemOwnedRemovalScratch = struct {
         self.event_indexes.clearRetainingCapacity();
     }
 
-    /// Provides the `appendDescriptorIndexes` operation.
+    /// Appends descriptor indexes using capacity that must already satisfy the caller's transaction contract.
     pub fn appendDescriptorIndexes(self: *@This(), allocator: std.mem.Allocator, descriptor_index: anytype) void {
         appendRemovalIndex(allocator, &self.element_indexes, descriptorIndexValue(descriptor_index.element));
         appendRemovalIndex(allocator, &self.text_node_indexes, descriptorIndexValue(descriptor_index.text_node));
@@ -115,7 +115,7 @@ pub const ElemOwnedRemovalScratch = struct {
         appendEventRemovalIndexes(allocator, &self.event_indexes, descriptor_index.events);
     }
 
-    /// Provides the `sortDescending` operation.
+    /// Orders removal indexes from highest to lowest so earlier positions remain valid during mutation.
     pub fn sortDescending(self: *@This()) void {
         sortRemovalIndexesDescending(self.element_indexes.items);
         sortRemovalIndexesDescending(self.text_node_indexes.items);
@@ -128,7 +128,7 @@ pub const ElemOwnedRemovalScratch = struct {
     }
 };
 
-/// Provides the `scopeIsInTargetSet` operation.
+/// Evaluates scope is in target set using explicit scope ownership rather than DOM position or content.
 pub fn scopeIsInTargetSet(target_scopes: []const bool, scope_id: u64) bool {
     if (scope_id >= target_scopes.len) @panic("descriptor referenced scope outside replacement target set");
     return target_scopes[@intCast(scope_id)];
@@ -138,12 +138,12 @@ fn removalIndexDesc(_: void, lhs: usize, rhs: usize) bool {
     return lhs > rhs;
 }
 
-/// Provides the `sortRemovalIndexesDescending` operation.
+/// Orders removal indexes from highest to lowest so earlier positions remain valid during mutation.
 pub fn sortRemovalIndexesDescending(indexes: []usize) void {
     std.mem.sort(usize, indexes, {}, removalIndexDesc);
 }
 
-/// Provides the `appendRemovalIndex` operation.
+/// Appends removal index using capacity that must already satisfy the caller's transaction contract.
 pub fn appendRemovalIndex(allocator: std.mem.Allocator, indexes: *std.ArrayListUnmanaged(usize), index: ?usize) void {
     indexes.append(allocator, index orelse return) catch @panic("out of memory");
 }
@@ -153,7 +153,7 @@ fn descriptorIndexValue(index: anytype) ?usize {
     return index;
 }
 
-/// Provides the `appendTextFieldRemovalIndexes` operation.
+/// Appends text field removal indexes using capacity that must already satisfy the caller's transaction contract.
 pub fn appendTextFieldRemovalIndexes(allocator: std.mem.Allocator, indexes: *std.ArrayListUnmanaged(usize), fields: anytype) void {
     appendRemovalIndex(allocator, indexes, descriptorIndexValue(fields.text));
     appendRemovalIndex(allocator, indexes, descriptorIndexValue(fields.role));
@@ -163,13 +163,13 @@ pub fn appendTextFieldRemovalIndexes(allocator: std.mem.Allocator, indexes: *std
     appendRemovalIndex(allocator, indexes, descriptorIndexValue(fields.class));
 }
 
-/// Provides the `appendBoolFieldRemovalIndexes` operation.
+/// Appends bool field removal indexes using capacity that must already satisfy the caller's transaction contract.
 pub fn appendBoolFieldRemovalIndexes(allocator: std.mem.Allocator, indexes: *std.ArrayListUnmanaged(usize), fields: anytype) void {
     appendRemovalIndex(allocator, indexes, descriptorIndexValue(fields.checked));
     appendRemovalIndex(allocator, indexes, descriptorIndexValue(fields.disabled));
 }
 
-/// Provides the `appendEventRemovalIndexes` operation.
+/// Appends event removal indexes using capacity that must already satisfy the caller's transaction contract.
 pub fn appendEventRemovalIndexes(allocator: std.mem.Allocator, indexes: *std.ArrayListUnmanaged(usize), events: anytype) void {
     appendRemovalIndex(allocator, indexes, descriptorIndexValue(events.click));
     appendRemovalIndex(allocator, indexes, descriptorIndexValue(events.input));
@@ -180,7 +180,7 @@ pub fn appendEventRemovalIndexes(allocator: std.mem.Allocator, indexes: *std.Arr
     appendRemovalIndex(allocator, indexes, descriptorIndexValue(events.pointer_leave));
 }
 
-/// Provides the `buildTargetScopeSet` operation.
+/// Builds target scope set from validated descriptors without introducing host-specific semantics.
 pub fn buildTargetScopeSet(comptime Scope: type, allocator: std.mem.Allocator, scratch: *std.ArrayListUnmanaged(bool), scopes: []const Scope, target: ReplacementTarget, lookup: anytype) []const bool {
     if (scratch.items.len != 0) @panic("replacement target scope scratch was already active");
     scratch.resize(allocator, scopes.len) catch @panic("out of memory");
@@ -192,7 +192,7 @@ pub fn buildTargetScopeSet(comptime Scope: type, allocator: std.mem.Allocator, s
     return target_scopes;
 }
 
-/// Provides the `collectRenderRemovalScan` operation.
+/// Collects render removal scan from the explicitly affected graph or scope set.
 pub fn collectRenderRemovalScan(comptime Stream: type, allocator: std.mem.Allocator, stream: *const Stream, render_insert_index: usize, target_scopes: []const bool) RenderRemovalScan {
     if (render_insert_index > stream.render_nodes.items.len) @panic("structural replacement render insertion point is outside the active stream");
 
@@ -238,7 +238,7 @@ pub fn collectRenderRemovalScan(comptime Stream: type, allocator: std.mem.Alloca
     };
 }
 
-/// Provides the `renderElemIds` operation.
+/// Returns the render element ids selected by this local structural splice.
 pub fn renderElemIds(allocator: std.mem.Allocator, render_nodes: anytype) []u64 {
     const elem_ids = allocator.alloc(u64, render_nodes.len) catch @panic("out of memory");
     for (render_nodes, 0..) |node, index| {
@@ -247,7 +247,7 @@ pub fn renderElemIds(allocator: std.mem.Allocator, render_nodes: anytype) []u64 
     return elem_ids;
 }
 
-/// Provides the `indexRange` operation.
+/// Returns the contiguous descriptor range affected by this splice.
 pub fn indexRange(allocator: std.mem.Allocator, start: usize, count: usize) []usize {
     const indexes = allocator.alloc(usize, count) catch @panic("out of memory");
     for (indexes, 0..) |*index, offset| {
@@ -256,7 +256,7 @@ pub fn indexRange(allocator: std.mem.Allocator, start: usize, count: usize) []us
     return indexes;
 }
 
-/// Provides the `adjustScopeSiteRenderInsertIndices` operation.
+/// Adjusts only scope-site insertion indexes shifted by the committed local splice.
 pub fn adjustScopeSiteRenderInsertIndices(scope_sites: anytype, replace_index: usize, removed_render_count: usize, replacement_render_count: usize) void {
     for (scope_sites) |*desc| {
         desc.render_insert_index = descriptor_stream.adjustedRenderInsertIndex(desc.render_insert_index, replace_index, removed_render_count, replacement_render_count);
@@ -385,7 +385,7 @@ test "structural splice builds target scope set through explicit lookup" {
         scope_id: u64,
     };
     const Lookup = struct {
-        /// Provides the `scopeIsInTarget` operation.
+        /// Evaluates scope is in target using explicit scope ownership rather than DOM position or content.
         pub fn scopeIsInTarget(_: @This(), scope_id: u64, target: ReplacementTarget) bool {
             return switch (target) {
                 .scope => |root_scope_id| scope_id >= root_scope_id,
@@ -420,7 +420,7 @@ const TestStream = struct {
         self.signal_text_nodes.deinit(allocator);
     }
 
-    /// Provides the `elemDescriptorIndex` operation.
+    /// Resolves an element id through the maintained descriptor index.
     pub fn elemDescriptorIndex(self: *const @This(), elem_id: u64) ?descriptor_stream.ElemDescriptorIndex {
         for (self.elements.items, 0..) |desc, index| {
             if (desc.elem_id == elem_id) return .{ .element = descriptor_stream.DescriptorIndex.init(index) };

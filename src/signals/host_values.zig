@@ -28,7 +28,7 @@ pub const ActiveCapabilityStack = struct {
     capabilities: [max_capabilities]HostValueCapabilityHandle = undefined,
     capability_len: usize = 0,
 
-    /// Provides the `push` operation.
+    /// Pushes a bounded capability frame used to validate erased calls.
     pub fn push(self: *ActiveCapabilityStack, caps: []const HostValueCapabilityHandle) void {
         if (self.frame_len >= max_frames) @panic("HostValue active capability frame stack overflow");
         if (self.capability_len + caps.len > max_capabilities) @panic("HostValue active capability stack overflow");
@@ -45,7 +45,7 @@ pub const ActiveCapabilityStack = struct {
         }
     }
 
-    /// Provides the `pop` operation.
+    /// Pops the capability frame for the completed erased call.
     pub fn pop(self: *ActiveCapabilityStack) void {
         if (self.frame_len == 0) @panic("HostValue active capability stack underflow");
         self.frame_len -= 1;
@@ -53,7 +53,7 @@ pub const ActiveCapabilityStack = struct {
         self.capability_len = frame.start;
     }
 
-    /// Provides the `contains` operation.
+    /// Checks whether a capability is authorized by any active erased-call frame.
     pub fn contains(self: *const ActiveCapabilityStack, capability: HostValueCapabilityHandle) bool {
         for (self.capabilities[0..self.capability_len]) |active| {
             if (hostValueCapabilitiesMatch(active, capability)) return true;
@@ -66,56 +66,56 @@ pub const ActiveCapabilityStack = struct {
 /// uses it for debug type assertions; the browser host ignores it.
 pub const ValueKind = enum { unit, str, bool, i64, u8_list };
 
-/// Provides the `retainHostValueCapability` operation.
+/// Retains the app-compiled ownership operations for a host value.
 pub fn retainHostValueCapability(capability: HostValueCapabilityHandle) HostValueCapabilityHandle {
     capability.incref(1);
     return capability;
 }
 
-/// Provides the `releaseHostValueCapability` operation.
+/// Releases the app-compiled ownership operations for a host value.
 pub fn releaseHostValueCapability(capability: HostValueCapabilityHandle, roc_host: *abi.RocHost) void {
     capability.decref(roc_host);
 }
 
-/// Provides the `hostValueCapabilityId` operation.
+/// Materializes capability id as a capability-owned host value for boundary delivery.
 pub fn hostValueCapabilityId(capability: HostValueCapabilityHandle) usize {
     return @intFromPtr(capability.clone);
 }
 
-/// Provides the `hostValueCapabilityClone` operation.
+/// Materializes capability clone as a capability-owned host value for boundary delivery.
 pub fn hostValueCapabilityClone(capability: HostValueCapabilityHandle) abi.RocErasedCallable {
     return capability.clone;
 }
 
-/// Provides the `hostValueCapabilityEq` operation.
+/// Materializes capability eq as a capability-owned host value for boundary delivery.
 pub fn hostValueCapabilityEq(capability: HostValueCapabilityHandle) abi.RocErasedCallable {
     return capability.eq;
 }
 
-/// Provides the `hostValueCapabilityDrop` operation.
+/// Materializes capability drop as a capability-owned host value for boundary delivery.
 pub fn hostValueCapabilityDrop(capability: HostValueCapabilityHandle) abi.RocErasedCallable {
     return capability.drop;
 }
 
-/// Provides the `hostValueCapabilityEqFn` operation.
+/// Materializes capability eq fn as a capability-owned host value for boundary delivery.
 pub fn hostValueCapabilityEqFn(capability: HostValueCapabilityHandle) ?abi.RocErasedCallableFn {
     const eq = hostValueCapabilityEq(capability) orelse return null;
     return abi.rocErasedCallablePayloadPtr(eq).callable_fn_ptr;
 }
 
-/// Provides the `hostValueCapabilityCloneFn` operation.
+/// Materializes capability clone fn as a capability-owned host value for boundary delivery.
 pub fn hostValueCapabilityCloneFn(capability: HostValueCapabilityHandle) ?abi.RocErasedCallableFn {
     const clone = hostValueCapabilityClone(capability) orelse return null;
     return abi.rocErasedCallablePayloadPtr(clone).callable_fn_ptr;
 }
 
-/// Provides the `hostValueCapabilityDropFn` operation.
+/// Materializes capability drop fn as a capability-owned host value for boundary delivery.
 pub fn hostValueCapabilityDropFn(capability: HostValueCapabilityHandle) ?abi.RocErasedCallableFn {
     const drop = hostValueCapabilityDrop(capability) orelse return null;
     return abi.rocErasedCallablePayloadPtr(drop).callable_fn_ptr;
 }
 
-/// Provides the `hostValueCapabilitiesMatch` operation.
+/// Materializes capabilities match as a capability-owned host value for boundary delivery.
 pub fn hostValueCapabilitiesMatch(actual: HostValueCapabilityHandle, expected: HostValueCapabilityHandle) bool {
     return actual.clone == expected.clone and actual.eq == expected.eq and actual.drop == expected.drop;
 }
@@ -128,32 +128,32 @@ pub fn RegistryOps() type {
         active_capabilities: *ActiveCapabilityStack,
         debug_phase: ?*const DebugPhase = null,
 
-        /// Provides the `retainCapability` operation.
+        /// Retains every callable needed to clone, compare, and drop values on this edge.
         pub fn retainCapability(_: @This(), capability: HostValueCapabilityHandle) void {
             capability.incref(1);
         }
 
-        /// Provides the `releaseCapability` operation.
+        /// Releases the callable bundle owned by a retained edge.
         pub fn releaseCapability(self: @This(), capability: HostValueCapabilityHandle) void {
             releaseHostValueCapability(capability, self.roc_host);
         }
 
-        /// Provides the `capabilitiesMatch` operation.
+        /// Checks capability identity so erased values cannot cross into the wrong typed edge.
         pub fn capabilitiesMatch(_: @This(), actual: HostValueCapabilityHandle, expected: HostValueCapabilityHandle) bool {
             return hostValueCapabilitiesMatch(actual, expected);
         }
 
-        /// Provides the `capabilityIsActive` operation.
+        /// Checks that the owning capability is present in the current app-call frame.
         pub fn capabilityIsActive(self: @This(), actual: HostValueCapabilityHandle) bool {
             return self.active_capabilities.contains(actual);
         }
 
-        /// Provides the `cloneValueWithCapability` operation.
+        /// Clones an opaque value only after validating its owning capability.
         pub fn cloneValueWithCapability(self: @This(), value: HostValue, capability: HostValueCapabilityHandle) HostValue {
             return self.callHostValueToHostValueWithCapability(capability, hostValueCapabilityClone(capability), value);
         }
 
-        /// Provides the `callHostValueToHostValueWithCapability` operation.
+        /// Invokes the retained app-compiled callable using its exact ABI signature and ownership convention.
         pub fn callHostValueToHostValueWithCapability(self: @This(), capability: HostValueCapabilityHandle, callable: abi.RocErasedCallable, value: HostValue) HostValue {
             const caps = [_]HostValueCapabilityHandle{capability};
             self.active_capabilities.push(&caps);
@@ -161,7 +161,7 @@ pub fn RegistryOps() type {
             return @import("erased_calls.zig").callErasedHostValueToHostValue(self.roc_host, callable, value);
         }
 
-        /// Provides the `splitBoxWithSplit` operation.
+        /// Uses the app-compiled split callable to create independent keep and output ownership.
         pub fn splitBoxWithSplit(self: @This(), box: abi.RocBox, split: abi.RocErasedCallable) @import("erased_calls.zig").RocBoxPair {
             return @import("erased_calls.zig").callErasedRocBoxToRocBoxPair(self.roc_host, split, box);
         }
@@ -192,7 +192,7 @@ fn staticUnitPayload() abi.RocBox {
     return @ptrCast(&static_unit_box.payload);
 }
 
-/// Provides the `makeUnit` operation.
+/// Constructs unit with the host references required by the shared engine contract.
 pub fn makeUnit(ctx: anytype, roc_host: *abi.RocHost) HostValue {
     _ = roc_host;
     const value = ctx.store(staticUnitPayload());
@@ -200,7 +200,7 @@ pub fn makeUnit(ctx: anytype, roc_host: *abi.RocHost) HostValue {
     return value;
 }
 
-/// Provides the `makeUnitWithCapability` operation.
+/// Constructs unit with capability with the host references required by the shared engine contract.
 pub fn makeUnitWithCapability(ctx: anytype, roc_host: *abi.RocHost, cap: HostValueCapabilityHandle) HostValue {
     _ = roc_host;
     const value = ctx.storeWithCapability(staticUnitPayload(), cap);
@@ -208,7 +208,7 @@ pub fn makeUnitWithCapability(ctx: anytype, roc_host: *abi.RocHost, cap: HostVal
     return value;
 }
 
-/// Provides the `makeStr` operation.
+/// Constructs str with the host references required by the shared engine contract.
 pub fn makeStr(ctx: anytype, roc_host: *abi.RocHost, bytes: []const u8) HostValue {
     const payload: *abi.RocStr = @ptrCast(@alignCast(abi.allocateBox(@sizeOf(abi.RocStr), @alignOf(abi.RocStr), true, roc_host)));
     payload.* = abi.RocStr.fromSlice(bytes, roc_host);
@@ -217,7 +217,7 @@ pub fn makeStr(ctx: anytype, roc_host: *abi.RocHost, bytes: []const u8) HostValu
     return value;
 }
 
-/// Provides the `makeStrWithCapability` operation.
+/// Constructs str with capability with the host references required by the shared engine contract.
 pub fn makeStrWithCapability(ctx: anytype, roc_host: *abi.RocHost, bytes: []const u8, cap: HostValueCapabilityHandle) HostValue {
     const payload: *abi.RocStr = @ptrCast(@alignCast(abi.allocateBox(@sizeOf(abi.RocStr), @alignOf(abi.RocStr), true, roc_host)));
     payload.* = abi.RocStr.fromSlice(bytes, roc_host);
@@ -226,7 +226,7 @@ pub fn makeStrWithCapability(ctx: anytype, roc_host: *abi.RocHost, bytes: []cons
     return value;
 }
 
-/// Provides the `makeBool` operation.
+/// Constructs bool with the host references required by the shared engine contract.
 pub fn makeBool(ctx: anytype, roc_host: *abi.RocHost, b: bool) HostValue {
     const payload: *bool = @ptrCast(@alignCast(abi.allocateBox(@sizeOf(bool), @alignOf(bool), false, roc_host)));
     payload.* = b;
@@ -235,7 +235,7 @@ pub fn makeBool(ctx: anytype, roc_host: *abi.RocHost, b: bool) HostValue {
     return value;
 }
 
-/// Provides the `makeBoolWithCapability` operation.
+/// Constructs bool with capability with the host references required by the shared engine contract.
 pub fn makeBoolWithCapability(ctx: anytype, roc_host: *abi.RocHost, b: bool, cap: HostValueCapabilityHandle) HostValue {
     const payload: *bool = @ptrCast(@alignCast(abi.allocateBox(@sizeOf(bool), @alignOf(bool), false, roc_host)));
     payload.* = b;
@@ -244,7 +244,7 @@ pub fn makeBoolWithCapability(ctx: anytype, roc_host: *abi.RocHost, b: bool, cap
     return value;
 }
 
-/// Provides the `makeI64` operation.
+/// Constructs i64 with the host references required by the shared engine contract.
 pub fn makeI64(ctx: anytype, roc_host: *abi.RocHost, n: i64) HostValue {
     const payload: *i64 = @ptrCast(@alignCast(abi.allocateBox(@sizeOf(i64), @alignOf(i64), false, roc_host)));
     payload.* = n;
@@ -253,7 +253,7 @@ pub fn makeI64(ctx: anytype, roc_host: *abi.RocHost, n: i64) HostValue {
     return value;
 }
 
-/// Provides the `makeI64WithCapability` operation.
+/// Constructs i64 with capability with the host references required by the shared engine contract.
 pub fn makeI64WithCapability(ctx: anytype, roc_host: *abi.RocHost, n: i64, cap: HostValueCapabilityHandle) HostValue {
     const payload: *i64 = @ptrCast(@alignCast(abi.allocateBox(@sizeOf(i64), @alignOf(i64), false, roc_host)));
     payload.* = n;
@@ -262,7 +262,7 @@ pub fn makeI64WithCapability(ctx: anytype, roc_host: *abi.RocHost, n: i64, cap: 
     return value;
 }
 
-/// Provides the `makeU8List` operation.
+/// Constructs u8 list with the host references required by the shared engine contract.
 pub fn makeU8List(ctx: anytype, roc_host: *abi.RocHost, bytes: []const u8) HostValue {
     const payload: *U8List = @ptrCast(@alignCast(abi.allocateBox(@sizeOf(U8List), @alignOf(U8List), true, roc_host)));
     payload.* = U8List.fromSlice(bytes, roc_host);
@@ -271,7 +271,7 @@ pub fn makeU8List(ctx: anytype, roc_host: *abi.RocHost, bytes: []const u8) HostV
     return value;
 }
 
-/// Provides the `makeU8ListWithCapability` operation.
+/// Constructs u8 list with capability with the host references required by the shared engine contract.
 pub fn makeU8ListWithCapability(ctx: anytype, roc_host: *abi.RocHost, bytes: []const u8, cap: HostValueCapabilityHandle) HostValue {
     const payload: *U8List = @ptrCast(@alignCast(abi.allocateBox(@sizeOf(U8List), @alignOf(U8List), true, roc_host)));
     payload.* = U8List.fromSlice(bytes, roc_host);

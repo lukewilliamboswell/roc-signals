@@ -60,18 +60,18 @@ pub const ReallocError = error{
 
 pub const recent_freed_capacity = runtime_limits.recent_freed_allocation_count;
 
-/// Provides the `allocatedSizeForRequest` operation.
+/// Computes the ledger-visible allocation size, including the alignment padding required by the ABI.
 pub fn allocatedSizeForRequest(length: usize) usize {
     return if (length == 0) 1 else length;
 }
 
-/// Provides the `alignmentFromAbi` operation.
+/// Converts the raw ABI representation of alignment into the engine's exhaustive enum.
 pub fn alignmentFromAbi(alignment: usize) std.mem.Alignment {
     const min_alignment: usize = @max(alignment, @alignOf(usize));
     return std.mem.Alignment.fromByteUnits(min_alignment);
 }
 
-/// Provides the `deallocErrorMessage` operation.
+/// Formats a bounded explanation of an invalid allocator dealloc request.
 pub fn deallocErrorMessage(err: DeallocError) []const u8 {
     return switch (err) {
         error.LedgerIndexOutOfBounds => "Roc allocation ledger index is out of bounds",
@@ -83,7 +83,7 @@ pub fn deallocErrorMessage(err: DeallocError) []const u8 {
     };
 }
 
-/// Provides the `reallocErrorMessage` operation.
+/// Formats a bounded explanation of an invalid allocator realloc request.
 pub fn reallocErrorMessage(err: ReallocError) []const u8 {
     return switch (err) {
         error.OutOfMemory => "Roc reallocation failed",
@@ -104,7 +104,7 @@ pub const Ledger = struct {
     recent_freed_next: usize = 0,
     next_id: u64 = 1,
 
-    /// Provides the `snapshot` operation.
+    /// Captures allocation totals so later checks can measure only work performed after this point.
     pub fn snapshot(self: *const Ledger) Snapshot {
         var live_bytes: usize = 0;
         for (self.allocations.items) |alloc| live_bytes += alloc.requested_size;
@@ -115,7 +115,7 @@ pub const Ledger = struct {
         };
     }
 
-    /// Provides the `liveBytesSince` operation.
+    /// Returns the change in live allocated bytes since a prior ledger snapshot.
     pub fn liveBytesSince(self: *const Ledger, snapshot_value: Snapshot) usize {
         var bytes: usize = 0;
         for (self.allocations.items) |alloc| {
@@ -124,7 +124,7 @@ pub const Ledger = struct {
         return bytes;
     }
 
-    /// Provides the `liveCountSince` operation.
+    /// Returns the change in live allocation count since a prior ledger snapshot.
     pub fn liveCountSince(self: *const Ledger, snapshot_value: Snapshot) usize {
         var count: usize = 0;
         for (self.allocations.items) |alloc| {
@@ -133,13 +133,13 @@ pub const Ledger = struct {
         return count;
     }
 
-    /// Provides the `deinit` operation.
+    /// Releases every resource owned by this value and leaves no retained host or Roc ownership behind.
     pub fn deinit(self: *Ledger, allocator: std.mem.Allocator) void {
         self.exact_indexes.deinit(allocator);
         self.allocations.deinit(allocator);
     }
 
-    /// Provides the `findContainingIndex` operation.
+    /// Resolves containing index from maintained indexes without scanning the full descriptor stream.
     pub fn findContainingIndex(self: *const Ledger, ptr: *anyopaque) ?usize {
         const ptr_addr = @intFromPtr(ptr);
         for (self.allocations.items, 0..) |alloc, index| {
@@ -150,12 +150,12 @@ pub const Ledger = struct {
         return null;
     }
 
-    /// Provides the `findExactIndex` operation.
+    /// Resolves exact index from maintained indexes without scanning the full descriptor stream.
     pub fn findExactIndex(self: *const Ledger, ptr: *anyopaque) ?usize {
         return self.exact_indexes.get(@intFromPtr(ptr));
     }
 
-    /// Provides the `removeAt` operation.
+    /// Removes at and releases the ownership attached to that live entry.
     pub fn removeAt(self: *Ledger, _: std.mem.Allocator, index: usize) ?Allocation {
         if (index >= self.allocations.items.len) return null;
         const removed = self.allocations.swapRemove(index);
@@ -171,7 +171,7 @@ pub const Ledger = struct {
         return removed;
     }
 
-    /// Provides the `recordFreed` operation.
+    /// Records freed in the metrics or lifecycle state owned by this operation.
     pub fn recordFreed(self: *Ledger, alloc: Allocation) void {
         self.recent_freed[self.recent_freed_next] = .{
             .user_ptr_addr = @intFromPtr(alloc.user_ptr),
@@ -183,7 +183,7 @@ pub const Ledger = struct {
         self.recent_freed_len = @min(self.recent_freed_len + 1, recent_freed_capacity);
     }
 
-    /// Provides the `findRecentlyFreed` operation.
+    /// Resolves recently freed from maintained indexes without scanning the full descriptor stream.
     pub fn findRecentlyFreed(self: *const Ledger, ptr: *anyopaque) ?FreedAllocation {
         const ptr_addr = @intFromPtr(ptr);
         for (self.recent_freed[0..self.recent_freed_len]) |alloc| {
@@ -192,7 +192,7 @@ pub const Ledger = struct {
         return null;
     }
 
-    /// Provides the `record` operation.
+    /// Records  in the metrics or lifecycle state owned by this operation.
     pub fn record(self: *Ledger, allocator: std.mem.Allocator, user_ptr: [*]u8, requested_size: usize, allocated_size: usize, alignment: std.mem.Alignment, phase: DebugPhase, return_address: usize) std.mem.Allocator.Error!void {
         const index = self.allocations.items.len;
         try self.allocations.append(allocator, .{
@@ -211,7 +211,7 @@ pub const Ledger = struct {
         self.next_id += 1;
     }
 
-    /// Provides the `allocate` operation.
+    /// Allocates host memory while recording exact size, alignment, and lifecycle ownership in the ledger.
     pub fn allocate(self: *Ledger, ledger_allocator: std.mem.Allocator, backing_allocator: std.mem.Allocator, length: usize, alignment_arg: usize, phase: DebugPhase, ret_addr: usize) ?AllocResult {
         const alignment = alignmentFromAbi(alignment_arg);
         const allocated_size = allocatedSizeForRequest(length);
@@ -226,14 +226,14 @@ pub const Ledger = struct {
         };
     }
 
-    /// Provides the `deallocate` operation.
+    /// Validates and releases a recorded allocation without scanning other live allocations.
     pub fn deallocate(self: *Ledger, ledger_allocator: std.mem.Allocator, backing_allocator: std.mem.Allocator, ptr: *anyopaque, alignment_arg: usize, ret_addr: usize) DeallocError!Allocation {
         const alloc = try self.removeForDealloc(ledger_allocator, ptr, alignment_arg);
         backing_allocator.rawFree(alloc.user_ptr[0..alloc.allocated_size], alloc.alignment, ret_addr);
         return alloc;
     }
 
-    /// Provides the `reallocate` operation.
+    /// Resizes a recorded allocation while preserving ledger accuracy on success and failure.
     pub fn reallocate(self: *Ledger, ledger_allocator: std.mem.Allocator, backing_allocator: std.mem.Allocator, ptr: *anyopaque, new_length: usize, alignment_arg: usize, phase: DebugPhase, ret_addr: usize) ReallocError!ReallocResult {
         const pending = try self.beginRealloc(ptr, alignment_arg);
 

@@ -10,7 +10,7 @@ pub const std_options: std.Options = .{
 
 pub const panic = std.debug.FullPanic(panicImpl);
 
-/// Provides the `writeStderr` operation.
+/// Writes a diagnostic directly to standard error without entering application semantics.
 pub fn writeStderr(bytes: []const u8) void {
     std.Io.File.stderr().writeStreamingAll(std.Io.Threaded.global_single_threaded.io(), bytes) catch {};
 }

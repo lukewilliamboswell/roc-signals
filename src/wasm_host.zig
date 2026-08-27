@@ -49,79 +49,79 @@ const WasmCtx = struct {
     pub const Metrics = engine.NoMetrics;
     pub const Sink = WasmSink;
 
-    /// Provides the `zeroMetrics` operation.
+    /// Creates the host's zeroed metric accumulator for a new engine operation.
     pub fn zeroMetrics() Metrics {
         return .{};
     }
 
-    /// Provides the `allocator` operation.
+    /// Returns the allocator owned by this host context for shared-engine work.
     pub fn allocator(_: Handle) std.mem.Allocator {
         return wasm_fault_allocator.allocator();
     }
 
-    /// Provides the `cloneHostValue` operation.
+    /// Produces an independently owned copy through the value's app-compiled capability.
     pub fn cloneHostValue(_: Handle, value: HostValue) HostValue {
         return shared_engine.host_values.clone(wasm_fault_allocator.allocator(), value, registryOps()) catch |err| {
             failHostValueRegistryError(err);
         };
     }
 
-    /// Provides the `stateValueByNodeId` operation.
+    /// Resolves a state cell by dense node id without scanning the signal graph.
     pub fn stateValueByNodeId(_: Handle, node_id: u64) HostValue {
         return currentStateValue(node_id);
     }
 
-    /// Provides the `stateCapability` operation.
+    /// Returns the exact app-compiled capability that owns the requested state cell.
     pub fn stateCapability(_: Handle, node_id: u64) HostValueCapability {
         return shared_engine.stateCapability(node_id) catch failHost();
     }
 
-    /// Provides the `updateStateValue` operation.
+    /// Replaces a state source value and enters the ordinary dirty-propagation path.
     pub fn updateStateValue(_: Handle, _: *abi.RocHost, node_id: u64, value: HostValue) bool {
         return updateStateCell(node_id, value);
     }
 
-    /// Provides the `initialLocationPayload` operation.
+    /// Materializes the mount-time browser location through the source's owning capability.
     pub fn initialLocationPayload(_: Handle, _: *abi.RocHost, cap: HostValueCapability) HostValue {
         return makeInitialLocationPayload(cap);
     }
 
-    /// Provides the `initialVisibilityPayload` operation.
+    /// Materializes the mount-time visibility state through the source's owning capability.
     pub fn initialVisibilityPayload(_: Handle, _: *abi.RocHost, cap: HostValueCapability) HostValue {
         return makeInitialVisibilityPayload(cap);
     }
 
-    /// Provides the `initialOnlinePayload` operation.
+    /// Materializes the mount-time online state through the source's owning capability.
     pub fn initialOnlinePayload(_: Handle, _: *abi.RocHost, cap: HostValueCapability) HostValue {
         return makeInitialOnlinePayload(cap);
     }
 
-    /// Provides the `initialStoragePayload` operation.
+    /// Materializes one declared storage key through the source's owning capability.
     pub fn initialStoragePayload(_: Handle, _: *abi.RocHost, area: boundary.StorageArea, key: []const u8, cap: HostValueCapability) HostValue {
         return makeInitialStoragePayload(area, key, cap);
     }
 
-    /// Provides the `sink` operation.
+    /// Returns the thin render-command sink used by the shared engine.
     pub fn sink(_: Handle) Sink {
         return .{};
     }
 
-    /// Provides the `debugPhase` operation.
+    /// Provides debug phase at the Wasm boundary without reconstructing reactive meaning.
     pub fn debugPhase(_: Handle, phase: DebugPhase) void {
         roc_allocation_phase = phase;
     }
 
-    /// Provides the `failWithMessage` operation.
+    /// Terminates the current host instance with a bounded diagnostic.
     pub fn failWithMessage(_: Handle, message: []const u8) noreturn {
         failHostWithFmt("{s}", .{message});
     }
 
-    /// Provides the `pushHostValueCapabilities` operation.
+    /// Opens a checked capability frame for an app-compiled erased call.
     pub fn pushHostValueCapabilities(_: Handle, caps: []const HostValueCapability) void {
         active_capabilities.push(caps);
     }
 
-    /// Provides the `popHostValueCapabilities` operation.
+    /// Closes the current capability frame after an app-compiled erased call.
     pub fn popHostValueCapabilities(_: Handle) void {
         active_capabilities.pop();
     }
@@ -133,12 +133,12 @@ const WasmCtx = struct {
 // silent "build cache only" phase in the browser host (teardown never touches
 // the sink), so the sink carries no state.
 const WasmSink = struct {
-    /// Provides the `reset` operation.
+    /// Stages a complete render-surface reset in the host command sink.
     pub fn reset(_: WasmSink) void {
         appendCommand(.reset_dom, 0, 0, 0, 0, 0);
     }
 
-    /// Provides the `appendNode` operation.
+    /// Emits the already-decided command that attaches a newly created render node.
     pub fn appendNode(_: WasmSink, elem_id: u64, parent_elem_id: u64, tag: []const u8) void {
         if (std.mem.eql(u8, tag, "text")) {
             appendStringCommand(.create_text, toU32(elem_id), "");
@@ -148,7 +148,7 @@ const WasmSink = struct {
         appendCommand(.append_child, toU32(parent_elem_id), toU32(elem_id), 0, 0, 0);
     }
 
-    /// Provides the `ensureNode` operation.
+    /// Ensures the host render surface contains the engine-selected node and tag.
     pub fn ensureNode(_: WasmSink, elem_id: u64, tag: []const u8) void {
         if (std.mem.eql(u8, tag, "text")) {
             appendStringCommand(.create_text, toU32(elem_id), "");
@@ -157,7 +157,7 @@ const WasmSink = struct {
         }
     }
 
-    /// Provides the `removeNode` operation.
+    /// Emits removal of a node whose owning scope has already been disposed by the engine.
     pub fn removeNode(_: WasmSink, elem_id: u64) void {
         appendCommand(.remove_node, toU32(elem_id), 0, 0, 0, 0);
     }
@@ -167,17 +167,17 @@ const WasmSink = struct {
     // for already-attached nodes and a parent-link for freshly created ones. The
     // engine still computes the minimal-move count for its telemetry; this thin
     // executor just realises the order it was given.
-    /// Provides the `replaceChildren` operation.
+    /// Publishes the engine-selected child order for one parent.
     pub fn replaceChildren(_: WasmSink, parent_elem_id: u64, next_child_ids: []const u64) void {
         emitAppendChildren(parent_elem_id, next_child_ids);
     }
 
-    /// Provides the `replaceChildrenForMoves` operation.
+    /// Publishes a moves-only child reorder without rebuilding surviving row structure.
     pub fn replaceChildrenForMoves(_: WasmSink, parent_elem_id: u64, next_child_ids: []const u64) void {
         emitAppendChildren(parent_elem_id, next_child_ids);
     }
 
-    /// Provides the `applyTextField` operation.
+    /// Applies an engine-decided text field value to one render node.
     pub fn applyTextField(_: WasmSink, elem_id: u64, field: RenderTextField, value: []const u8) void {
         if (textAttrNameForField(field)) |name| {
             appendDynamicSetAttrText(toU32(elem_id), name, value);
@@ -186,17 +186,17 @@ const WasmSink = struct {
         }
     }
 
-    /// Provides the `applyTextAttr` operation.
+    /// Applies an engine-decided custom text attribute to one render node.
     pub fn applyTextAttr(_: WasmSink, elem_id: u64, name: []const u8, value: []const u8) void {
         appendDynamicSetAttrText(toU32(elem_id), name, value);
     }
 
-    /// Provides the `applyBoolField` operation.
+    /// Applies an engine-decided boolean field value to one render node.
     pub fn applyBoolField(_: WasmSink, elem_id: u64, field: RenderBoolField, value: bool) void {
         appendBoolFieldCommand(field, toU32(elem_id), value);
     }
 
-    /// Provides the `clearTextField` operation.
+    /// Clears an engine-decided text field from one render node.
     pub fn clearTextField(_: WasmSink, elem_id: u64, field: RenderTextField) void {
         if (textAttrNameForField(field)) |name| {
             appendDynamicRemoveAttr(toU32(elem_id), name);
@@ -205,49 +205,49 @@ const WasmSink = struct {
         }
     }
 
-    /// Provides the `clearTextAttr` operation.
+    /// Clears an engine-decided custom text attribute from one render node.
     pub fn clearTextAttr(_: WasmSink, elem_id: u64, name: []const u8) void {
         appendDynamicRemoveAttr(toU32(elem_id), name);
     }
 
-    /// Provides the `clearBoolField` operation.
+    /// Clears an engine-decided boolean field from one render node.
     pub fn clearBoolField(_: WasmSink, elem_id: u64, field: RenderBoolField) void {
         appendBoolFieldCommand(field, toU32(elem_id), false);
     }
 
-    /// Provides the `bindEvent` operation.
+    /// Publishes a validated canonical event binding selected by the engine.
     pub fn bindEvent(_: WasmSink, elem_id: u64, key: EventBindingKey, binding: EventBinding) void {
         appendEventBindCommand(.{ .elem_id = elem_id, .key = key, .binding = binding });
     }
 
-    /// Provides the `clearEvent` operation.
+    /// Removes a host event registration whose engine-owned binding is no longer active.
     pub fn clearEvent(_: WasmSink, elem_id: u64, key: EventBindingKey) void {
         appendEventClearCommand(.{ .elem_id = elem_id, .key = key });
     }
 
-    /// Provides the `startInterval` operation.
+    /// Starts the bounded host registration for an engine-owned interval source.
     pub fn startInterval(_: WasmSink, token: u64, period_ms: u64) void {
         appendCommand(.start_interval, toU32(token), toU32(period_ms), 0, 0, 0);
     }
 
-    /// Provides the `cancelInterval` operation.
+    /// Cancels the host registration for an interval whose owning scope is no longer active.
     pub fn cancelInterval(_: WasmSink, token: u64) void {
         appendCommand(.cancel_interval, toU32(token), 0, 0, 0, 0);
     }
 
-    /// Provides the `startTask` operation.
+    /// Starts bounded asynchronous host work for an engine-issued task request.
     pub fn startTask(_: WasmSink, request_id: u64, task_name: []const u8, request: []const u8) void {
         const name_offset = storeBytes(task_name);
         const request_offset = storeBytes(request);
         appendCommand(.start_task, toU32(request_id), name_offset, toU32(task_name.len), request_offset, toU32(request.len));
     }
 
-    /// Provides the `cancelTask` operation.
+    /// Cancels host work for a task request retired by engine lifecycle policy.
     pub fn cancelTask(_: WasmSink, request_id: u64) void {
         appendCommand(.cancel_task, toU32(request_id), 0, 0, 0, 0);
     }
 
-    /// Provides the `navigate` operation.
+    /// Applies an engine-issued browser-history command without deriving routing semantics.
     pub fn navigate(_: WasmSink, kind: render_sink.NavigationKind, location: boundary.LocationSnapshot) void {
         setCurrentLocationSnapshot(location);
         appendLocationCommand(switch (kind) {
@@ -256,22 +256,22 @@ const WasmSink = struct {
         }, location);
     }
 
-    /// Provides the `setDocumentTitle` operation.
+    /// Applies the document title already selected by graph propagation.
     pub fn setDocumentTitle(_: WasmSink, title: []const u8) void {
         appendDocumentTitleCommand(title);
     }
 
-    /// Provides the `setStorageText` operation.
+    /// Writes one engine-issued text value to the selected browser storage area.
     pub fn setStorageText(_: WasmSink, area: boundary.StorageArea, key: []const u8, value: []const u8) void {
         appendStorageSetCommand(area, key, value);
     }
 
-    /// Provides the `removeStorage` operation.
+    /// Removes one engine-issued key from the selected browser storage area.
     pub fn removeStorage(_: WasmSink, area: boundary.StorageArea, key: []const u8) void {
         appendStorageRemoveCommand(area, key);
     }
 
-    /// Provides the `debugAssertNode` operation.
+    /// Checks that the host render surface matches the engine's committed node metadata.
     pub fn debugAssertNode(_: WasmSink, _: u64, _: bool, _: ?[]const u8, _: ?u64, _: []const u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64) void {}
 };
 
@@ -631,21 +631,21 @@ fn assertHostValueTakenAfter(value: HostValue, epoch: u64) void {
 // `ctx` surface consumed by the shared `host_values` box constructors. The
 // browser host has no test-kind bookkeeping, so `recordKind` is a no-op.
 const HostValueOpsCtx = struct {
-    /// Provides the `store` operation.
+    /// Transfers an owned Roc box into the host value registry.
     pub fn store(_: HostValueOpsCtx, box: abi.RocBox) HostValue {
         return shared_engine.host_values.storeOwnedCapability(allocator(), box, null, registryOps()) catch |err| {
             failHostValueRegistryError(err);
         };
     }
 
-    /// Provides the `storeWithCapability` operation.
+    /// Transfers an owned Roc box into a registry cell tied to its exact capability.
     pub fn storeWithCapability(_: HostValueOpsCtx, box: abi.RocBox, cap: HostValueCapability) HostValue {
         return shared_engine.host_values.storeRetainedCapability(allocator(), box, cap, registryOps()) catch |err| {
             failHostValueRegistryError(err);
         };
     }
 
-    /// Provides the `recordKind` operation.
+    /// Records the debug-only value kind used to detect erased-value routing mistakes.
     pub fn recordKind(_: HostValueOpsCtx, _: HostValue, _: hv.ValueKind) void {}
 };
 

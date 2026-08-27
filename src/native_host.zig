@@ -50,84 +50,84 @@ const NativeCtx = struct {
     pub const Metrics = RuntimeMetrics;
     pub const Sink = render_sink.DomSink(HostEnv);
 
-    /// Provides the `zeroMetrics` operation.
+    /// Creates the host's zeroed metric accumulator for a new engine operation.
     pub fn zeroMetrics() Metrics {
         return zeroRuntimeMetrics();
     }
 
-    /// Provides the `allocator` operation.
+    /// Returns the allocator owned by this host context for shared-engine work.
     pub fn allocator(ctx: Handle) std.mem.Allocator {
         return ctx.hostAllocator();
     }
 
-    /// Provides the `cloneHostValue` operation.
+    /// Produces an independently owned copy through the value's app-compiled capability.
     pub fn cloneHostValue(ctx: Handle, value: HostValue) HostValue {
         return ctx.cloneHostValue(value);
     }
 
-    /// Provides the `debugPhase` operation.
+    /// Provides debug phase for native semantic observation without duplicating engine behavior.
     pub fn debugPhase(ctx: Handle, phase: DebugPhase) void {
         ctx.debug_phase = phase;
     }
 
-    /// Provides the `debugInactiveTask` operation.
+    /// Provides debug inactive task for native semantic observation without duplicating engine behavior.
     pub fn debugInactiveTask(_: Handle, name: []const u8) void {
         writeStderr("inactive StartTask name=");
         writeStderr(name);
         writeStderr("\n");
     }
 
-    /// Provides the `failWithMessage` operation.
+    /// Terminates the current host instance with a bounded diagnostic.
     pub fn failWithMessage(_: Handle, message: []const u8) noreturn {
         failHost(message);
     }
 
-    /// Provides the `pushHostValueCapabilities` operation.
+    /// Opens a checked capability frame for an app-compiled erased call.
     pub fn pushHostValueCapabilities(ctx: Handle, caps: []const HostValueCapability) void {
         ctx.active_capabilities.push(caps);
     }
 
-    /// Provides the `popHostValueCapabilities` operation.
+    /// Closes the current capability frame after an app-compiled erased call.
     pub fn popHostValueCapabilities(ctx: Handle) void {
         ctx.active_capabilities.pop();
     }
 
-    /// Provides the `stateValueByNodeId` operation.
+    /// Resolves a state cell by dense node id without scanning the signal graph.
     pub fn stateValueByNodeId(ctx: Handle, node_id: u64) HostValue {
         return ctx.stateValueByNodeId(node_id);
     }
 
-    /// Provides the `stateCapability` operation.
+    /// Returns the exact app-compiled capability that owns the requested state cell.
     pub fn stateCapability(ctx: Handle, node_id: u64) HostValueCapability {
         return ctx.stateCapability(node_id);
     }
 
-    /// Provides the `updateStateValue` operation.
+    /// Replaces a state source value and enters the ordinary dirty-propagation path.
     pub fn updateStateValue(ctx: Handle, roc_host: *abi.RocHost, node_id: u64, value: HostValue) bool {
         return ctx.updateStateValue(roc_host, node_id, value);
     }
 
-    /// Provides the `initialLocationPayload` operation.
+    /// Materializes the mount-time browser location through the source's owning capability.
     pub fn initialLocationPayload(ctx: Handle, roc_host: *abi.RocHost, cap: HostValueCapability) HostValue {
         return ctx.initialLocationPayload(roc_host, cap);
     }
 
-    /// Provides the `initialVisibilityPayload` operation.
+    /// Materializes the mount-time visibility state through the source's owning capability.
     pub fn initialVisibilityPayload(ctx: Handle, roc_host: *abi.RocHost, cap: HostValueCapability) HostValue {
         return ctx.initialVisibilityPayload(roc_host, cap);
     }
 
-    /// Provides the `initialOnlinePayload` operation.
+    /// Materializes the mount-time online state through the source's owning capability.
     pub fn initialOnlinePayload(ctx: Handle, roc_host: *abi.RocHost, cap: HostValueCapability) HostValue {
         return ctx.initialOnlinePayload(roc_host, cap);
     }
 
-    /// Provides the `initialStoragePayload` operation.
+    /// Materializes one declared storage key through the source's owning capability.
     pub fn initialStoragePayload(ctx: Handle, roc_host: *abi.RocHost, area: boundary.StorageArea, key: []const u8, cap: HostValueCapability) HostValue {
         return ctx.initialStoragePayload(roc_host, area, key, cap);
     }
 
-    /// Provides the `sink` operation.
+    /// Returns the thin render-command sink used by the shared engine.
     pub fn sink(ctx: Handle) Sink {
         return ctx.sink();
     }
@@ -573,98 +573,98 @@ const HostEnv = struct {
         self.engine.pending_roc_metrics.bump(.deallocs_this_event, 1);
     }
 
-    /// Provides the `sink` operation.
+    /// Returns the thin render-command sink used by the shared engine.
     pub fn sink(self: *HostEnv) render_sink.DomSink(HostEnv) {
         return .{ .host = self };
     }
 
-    /// Provides the `sinkReset` operation.
+    /// Adapts the shared engine's reset command to this host without re-deciding reactive meaning.
     pub fn sinkReset(self: *HostEnv) void {
         resetSimulatedDom(self);
     }
 
-    /// Provides the `sinkAppendNode` operation.
+    /// Adapts the shared engine's append node command to this host without re-deciding reactive meaning.
     pub fn sinkAppendNode(self: *HostEnv, elem_id: u64, parent_elem_id: u64, tag: []const u8) void {
         appendDomNode(self, elem_id, parent_elem_id, tag);
     }
 
-    /// Provides the `sinkEnsureNode` operation.
+    /// Adapts the shared engine's ensure node command to this host without re-deciding reactive meaning.
     pub fn sinkEnsureNode(self: *HostEnv, elem_id: u64, tag: []const u8) void {
         ensureDomNode(self, elem_id, tag);
     }
 
-    /// Provides the `sinkRemoveNode` operation.
+    /// Adapts the shared engine's remove node command to this host without re-deciding reactive meaning.
     pub fn sinkRemoveNode(self: *HostEnv, elem_id: u64) void {
         removeDomNode(self, elem_id);
     }
 
-    /// Provides the `sinkReplaceChildren` operation.
+    /// Adapts the shared engine's replace children command to this host without re-deciding reactive meaning.
     pub fn sinkReplaceChildren(self: *HostEnv, parent_elem_id: u64, next_child_ids: []const u64) void {
         replaceDomChildrenForStructuralParent(self, parent_elem_id, next_child_ids);
     }
 
-    /// Provides the `sinkReplaceChildrenForMoves` operation.
+    /// Adapts the shared engine's replace children for moves command to this host without re-deciding reactive meaning.
     pub fn sinkReplaceChildrenForMoves(self: *HostEnv, parent_elem_id: u64, next_child_ids: []const u64) void {
         replaceDomChildrenForStructuralParentMoves(self, parent_elem_id, next_child_ids);
     }
 
-    /// Provides the `sinkApplyTextField` operation.
+    /// Adapts the shared engine's apply text field command to this host without re-deciding reactive meaning.
     pub fn sinkApplyTextField(self: *HostEnv, elem_id: u64, field: RenderTextField, value: []const u8) void {
         setRenderTextField(self, elem_id, field, value);
     }
 
-    /// Provides the `sinkApplyTextAttr` operation.
+    /// Adapts the shared engine's apply text attr command to this host without re-deciding reactive meaning.
     pub fn sinkApplyTextAttr(self: *HostEnv, elem_id: u64, name: []const u8, value: []const u8) void {
         setRenderTextAttr(self, elem_id, name, value);
     }
 
-    /// Provides the `sinkApplyBoolField` operation.
+    /// Adapts the shared engine's apply bool field command to this host without re-deciding reactive meaning.
     pub fn sinkApplyBoolField(self: *HostEnv, elem_id: u64, field: RenderBoolField, value: bool) void {
         setRenderBoolField(self, elem_id, field, value);
     }
 
-    /// Provides the `sinkClearTextField` operation.
+    /// Adapts the shared engine's clear text field command to this host without re-deciding reactive meaning.
     pub fn sinkClearTextField(self: *HostEnv, elem_id: u64, field: RenderTextField) void {
         clearRenderTextField(self, elem_id, field);
     }
 
-    /// Provides the `sinkClearTextAttr` operation.
+    /// Adapts the shared engine's clear text attr command to this host without re-deciding reactive meaning.
     pub fn sinkClearTextAttr(self: *HostEnv, elem_id: u64, name: []const u8) void {
         clearRenderTextAttr(self, elem_id, name);
     }
 
-    /// Provides the `sinkClearBoolField` operation.
+    /// Adapts the shared engine's clear bool field command to this host without re-deciding reactive meaning.
     pub fn sinkClearBoolField(self: *HostEnv, elem_id: u64, field: RenderBoolField) void {
         clearRenderBoolField(self, elem_id, field);
     }
 
-    /// Provides the `sinkBindEvent` operation.
+    /// Adapts the shared engine's bind event command to this host without re-deciding reactive meaning.
     pub fn sinkBindEvent(self: *HostEnv, command: render_sink.EventBindCommand) void {
         bindNodeEvent(self, command);
     }
 
-    /// Provides the `sinkClearEvent` operation.
+    /// Adapts the shared engine's clear event command to this host without re-deciding reactive meaning.
     pub fn sinkClearEvent(self: *HostEnv, command: render_sink.EventClearCommand) void {
         clearNodeEvent(self, command);
     }
 
-    /// Provides the `sinkStartInterval` operation.
+    /// Adapts the shared engine's start interval command to this host without re-deciding reactive meaning.
     pub fn sinkStartInterval(_: *HostEnv, _: u64, _: u64) void {}
 
-    /// Provides the `sinkCancelInterval` operation.
+    /// Adapts the shared engine's cancel interval command to this host without re-deciding reactive meaning.
     pub fn sinkCancelInterval(_: *HostEnv, _: u64) void {}
 
-    /// Provides the `sinkStartTask` operation.
+    /// Adapts the shared engine's start task command to this host without re-deciding reactive meaning.
     pub fn sinkStartTask(self: *HostEnv, request_id: u64, task_name: []const u8, _: []const u8) void {
         self.recordStartedTask(request_id, task_name);
     }
 
-    /// Provides the `sinkCancelTask` operation.
+    /// Adapts the shared engine's cancel task command to this host without re-deciding reactive meaning.
     pub fn sinkCancelTask(self: *HostEnv, request_id: u64) void {
         self.recordCanceledTask(request_id);
     }
 
-    /// Provides the `sinkNavigate` operation.
+    /// Adapts the shared engine's navigate command to this host without re-deciding reactive meaning.
     pub fn sinkNavigate(self: *HostEnv, kind: render_sink.NavigationKind, location: boundary.LocationSnapshot) void {
         switch (kind) {
             .push => self.pushCurrentLocation(location),
@@ -672,22 +672,22 @@ const HostEnv = struct {
         }
     }
 
-    /// Provides the `sinkSetDocumentTitle` operation.
+    /// Adapts the shared engine's set document title command to this host without re-deciding reactive meaning.
     pub fn sinkSetDocumentTitle(self: *HostEnv, title: []const u8) void {
         self.setDocumentTitle(title);
     }
 
-    /// Provides the `sinkSetStorageText` operation.
+    /// Adapts the shared engine's set storage text command to this host without re-deciding reactive meaning.
     pub fn sinkSetStorageText(self: *HostEnv, area: boundary.StorageArea, key: []const u8, value: []const u8) void {
         self.setStorageText(area, key, value);
     }
 
-    /// Provides the `sinkRemoveStorage` operation.
+    /// Adapts the shared engine's remove storage command to this host without re-deciding reactive meaning.
     pub fn sinkRemoveStorage(self: *HostEnv, area: boundary.StorageArea, key: []const u8) void {
         self.removeStorage(area, key);
     }
 
-    /// Provides the `sinkDebugAssertNode` operation.
+    /// Adapts the shared engine's debug assert node command to this host without re-deciding reactive meaning.
     pub fn sinkDebugAssertNode(self: *HostEnv, elem_id: u64, active: bool, tag: ?[]const u8, parent_id: ?u64, children: []const u64, click_event: ?u64, input_event: ?u64, check_event: ?u64, pointer_down_event: ?u64, pointer_up_event: ?u64, pointer_enter_event: ?u64, pointer_leave_event: ?u64) void {
         if (elem_id >= self.dom_elements.items.len) {
             if (!active) return;
@@ -727,29 +727,29 @@ const HostEnv = struct {
         };
     }
 
-    /// Provides the `pushHostValueCapabilities` operation.
+    /// Opens a checked capability frame for an app-compiled erased call.
     pub fn pushHostValueCapabilities(self: *HostEnv, caps: []const HostValueCapability) void {
         self.active_capabilities.push(caps);
     }
 
-    /// Provides the `popHostValueCapabilities` operation.
+    /// Closes the current capability frame after an app-compiled erased call.
     pub fn popHostValueCapabilities(self: *HostEnv) void {
         self.active_capabilities.pop();
     }
 
     // `ctx` surface consumed by the shared `host_values` box constructors
     // (`pub` so the `host_values` module can call them through `anytype`).
-    /// Provides the `store` operation.
+    /// Transfers an owned Roc box into the host value registry.
     pub fn store(self: *HostEnv, box: abi.RocBox) HostValue {
         return self.storeHostValue(box);
     }
 
-    /// Provides the `storeWithCapability` operation.
+    /// Transfers an owned Roc box into a registry cell tied to its exact capability.
     pub fn storeWithCapability(self: *HostEnv, box: abi.RocBox, cap: HostValueCapability) HostValue {
         return self.storeHostValueWithRetainedCapability(box, cap);
     }
 
-    /// Provides the `recordKind` operation.
+    /// Records the debug-only value kind used to detect erased-value routing mistakes.
     pub fn recordKind(self: *HostEnv, value: HostValue, kind: hv.ValueKind) void {
         if (builtin.is_test) self.setTestHostValueKind(value, switch (kind) {
             .unit => .unit,
@@ -1072,7 +1072,7 @@ const HostEnv = struct {
 
     // `pub` so the shared `engine.HostValueCell.cloneRetained` can clone a value
     // through the host's registry (the engine treats `self` as its clone ctx).
-    /// Provides the `cloneHostValue` operation.
+    /// Produces an independently owned copy through the value's app-compiled capability.
     pub fn cloneHostValue(self: *HostEnv, value: HostValue) HostValue {
         const allocator = self.hostAllocator();
         const previous_phase = self.debug_phase;
@@ -1284,13 +1284,13 @@ const HostEnv = struct {
         };
     }
 
-    /// Provides the `stateValueByNodeId` operation.
+    /// Resolves a state cell by dense node id without scanning the signal graph.
     pub fn stateValueByNodeId(self: *HostEnv, node_id: u64) HostValue {
         const state_index = self.engine.stateIndexByNodeId(node_id) orelse failHost("signal referenced an unknown active state node");
         return self.cloneHostValue(self.engine.states.items[state_index].cell.value);
     }
 
-    /// Provides the `updateStateValue` operation.
+    /// Replaces a state source value and enters the ordinary dirty-propagation path.
     pub fn updateStateValue(self: *HostEnv, roc_host: *abi.RocHost, node_id: u64, value: HostValue) bool {
         const state_index = self.engine.stateIndexByNodeId(node_id) orelse failHost("event referenced an unknown active state node");
         const state = &self.engine.states.items[state_index];
@@ -1304,7 +1304,7 @@ const HostEnv = struct {
         return true;
     }
 
-    /// Provides the `stateCapability` operation.
+    /// Returns the exact app-compiled capability that owns the requested state cell.
     pub fn stateCapability(self: *HostEnv, node_id: u64) HostValueCapability {
         return self.engine.stateCapability(node_id) catch |err| switch (err) {
             error.MissingActiveState => failHost("active state has no capability"),
@@ -2430,64 +2430,64 @@ const BenchmarkCtx = struct {
     pub const RocHost = abi.RocHost;
     pub const DomElement = BenchmarkDomElement;
 
-    /// Provides the `fail` operation.
+    /// Terminates this test or host path because continuing could leave runtime meaning incoherent.
     pub fn fail(message: []const u8) noreturn {
         failHost(message);
     }
 
-    /// Provides the `initHost` operation.
+    /// Provides init host for native semantic observation without duplicating engine behavior.
     pub fn initHost() Host {
         return Host.init();
     }
 
-    /// Provides the `deinitHost` operation.
+    /// Provides deinit host for native semantic observation without duplicating engine behavior.
     pub fn deinitHost(host: *Host) void {
         host.deinit();
     }
 
-    /// Provides the `setVerbose` operation.
+    /// Sets verbose at the narrow host or engine boundary that owns the mutation.
     pub fn setVerbose(host: *Host, verbose: bool) void {
         host.test_state.verbose = verbose;
     }
 
-    /// Provides the `makeRocHost` operation.
+    /// Constructs roc host with the host references required by the shared engine contract.
     pub fn makeRocHost(host: *Host) RocHost {
         return makeSignalsRocHost(host);
     }
 
-    /// Provides the `attachRocHost` operation.
+    /// Provides attach roc host for native semantic observation without duplicating engine behavior.
     pub fn attachRocHost(host: *Host, roc_host: *RocHost) void {
         host.engine.roc_host = roc_host;
     }
 
-    /// Provides the `enterCurrent` operation.
+    /// Provides enter current for native semantic observation without duplicating engine behavior.
     pub fn enterCurrent(host: *Host, roc_host: *RocHost) void {
         current_host = host;
         current_roc_host = roc_host;
     }
 
-    /// Provides the `leaveCurrent` operation.
+    /// Provides leave current for native semantic observation without duplicating engine behavior.
     pub fn leaveCurrent() void {
         current_host = null;
         current_roc_host = null;
     }
 
-    /// Provides the `initRocUi` operation.
+    /// Provides init roc ui for native semantic observation without duplicating engine behavior.
     pub fn initRocUi() ElemBox {
         return abi.roc_ui_init();
     }
 
-    /// Provides the `acceptInitElemMeasured` operation.
+    /// Provides accept init elem measured for native semantic observation without duplicating engine behavior.
     pub fn acceptInitElemMeasured(host: *Host, roc_host: *RocHost, root_box: ElemBox, apply_ns: ?*u64, command_counts: ?*CommandCounts) void {
         acceptInitElemWithStats(host, roc_host, root_box, apply_ns, command_counts);
     }
 
-    /// Provides the `findElementByLocator` operation.
+    /// Resolves element by locator from maintained indexes without scanning the full descriptor stream.
     pub fn findElementByLocator(host: *Host, locator: Locator, line_num: usize) ?*BenchmarkDomElement {
         return host.findElementByLocator(locator, line_num);
     }
 
-    /// Provides the `elementById` operation.
+    /// Returns by id from the host's semantic render model.
     pub fn elementById(host: *Host, elem_id: u64) ?*BenchmarkDomElement {
         if (elem_id >= host.dom_elements.items.len) return null;
         const elem = &host.dom_elements.items[@intCast(elem_id)];
@@ -2495,227 +2495,227 @@ const BenchmarkCtx = struct {
         return elem;
     }
 
-    /// Provides the `elementDisabled` operation.
+    /// Returns disabled from the host's semantic render model.
     pub fn elementDisabled(elem: *const BenchmarkDomElement) bool {
         return elem.disabled;
     }
 
-    /// Provides the `fixedEventId` operation.
+    /// Provides fixed event id for native semantic observation without duplicating engine behavior.
     pub fn fixedEventId(elem: *const BenchmarkDomElement, kind: render.EventKind) ?u64 {
         return sim_dom.fixedEventId(elem, kind);
     }
 
-    /// Provides the `clickEventId` operation.
+    /// Provides click event id for native semantic observation without duplicating engine behavior.
     pub fn clickEventId(elem: *const BenchmarkDomElement) ?u64 {
         return sim_dom.fixedEventId(elem, .click);
     }
 
-    /// Provides the `pointerEventId` operation.
+    /// Provides pointer event id for native semantic observation without duplicating engine behavior.
     pub fn pointerEventId(elem: *const BenchmarkDomElement, cmd_type: SpecCommandType) ?u64 {
         return pointerEventIdForCommand(elem, cmd_type);
     }
 
-    /// Provides the `inputEventId` operation.
+    /// Provides input event id for native semantic observation without duplicating engine behavior.
     pub fn inputEventId(elem: *const BenchmarkDomElement) ?u64 {
         return sim_dom.fixedEventId(elem, .input);
     }
 
-    /// Provides the `checkEventId` operation.
+    /// Provides check event id for native semantic observation without duplicating engine behavior.
     pub fn checkEventId(elem: *const BenchmarkDomElement) ?u64 {
         return sim_dom.fixedEventId(elem, .check);
     }
 
-    /// Provides the `namedEvent` operation.
+    /// Provides named event for native semantic observation without duplicating engine behavior.
     pub fn namedEvent(elem: *const BenchmarkDomElement, name: []const u8) ?DomNamedEvent {
         return nodeEventName(elem, name);
     }
 
-    /// Provides the `elementTextAttr` operation.
+    /// Returns text attr from the host's semantic render model.
     pub fn elementTextAttr(elem: *const BenchmarkDomElement, name: []const u8) ?[]const u8 {
         return sim_dom.textAttr(elem, name);
     }
 
-    /// Provides the `dispatchRocEventMeasured` operation.
+    /// Dispatches roc event measured through validated routing and dependency-ordered propagation.
     pub fn dispatchRocEventMeasured(host: *Host, roc_host: *RocHost, event_id: u64, payload_descriptor: BoundaryPayloadDescriptor, payload: HostValue, stats: ?*BenchmarkStats) void {
         dispatchRocEventWithStats(host, roc_host, event_id, payload_descriptor, payload, stats);
     }
 
-    /// Provides the `hostValueUnit` operation.
+    /// Materializes unit as a capability-owned host value for boundary delivery.
     pub fn hostValueUnit(host: *Host, roc_host: *RocHost) HostValue {
         return hostValueUnitForBenchmark(host, roc_host);
     }
 
-    /// Provides the `hostValueStr` operation.
+    /// Materializes str as a capability-owned host value for boundary delivery.
     pub fn hostValueStr(host: *Host, roc_host: *RocHost, value: []const u8) HostValue {
         return hostValueStrForBenchmark(host, roc_host, value);
     }
 
-    /// Provides the `hostValueBool` operation.
+    /// Materializes bool as a capability-owned host value for boundary delivery.
     pub fn hostValueBool(host: *Host, roc_host: *RocHost, value: bool) HostValue {
         return hostValueBoolForBenchmark(host, roc_host, value);
     }
 
-    /// Provides the `dispatchKeyDownMeasured` operation.
+    /// Dispatches key down measured through validated routing and dependency-ordered propagation.
     pub fn dispatchKeyDownMeasured(host: *Host, roc_host: *RocHost, elem: *const BenchmarkDomElement, key: []const u8, shift_key: bool, stats: ?*BenchmarkStats) bool {
         return dispatchKeyDownWithStats(host, roc_host, elem, key, shift_key, stats);
     }
 
-    /// Provides the `dispatchSubmitMeasured` operation.
+    /// Dispatches submit measured through validated routing and dependency-ordered propagation.
     pub fn dispatchSubmitMeasured(host: *Host, roc_host: *RocHost, elem: *const BenchmarkDomElement, stats: ?*BenchmarkStats) void {
         dispatchSubmitWithStats(host, roc_host, elem, stats);
     }
 
-    /// Provides the `dispatchResetMeasured` operation.
+    /// Dispatches reset measured through validated routing and dependency-ordered propagation.
     pub fn dispatchResetMeasured(host: *Host, roc_host: *RocHost, elem: *const BenchmarkDomElement, stats: ?*BenchmarkStats) void {
         dispatchResetWithStats(host, roc_host, elem, stats);
     }
 
-    /// Provides the `setElementValueIfChanged` operation.
+    /// Updates value if changed only when the simulated or browser field actually differs.
     pub fn setElementValueIfChanged(host: *Host, elem: *BenchmarkDomElement, value: []const u8) bool {
         return setElementValueForBenchmark(host, elem, value);
     }
 
-    /// Provides the `focusElement` operation.
+    /// Marks the controlled element focused so conflicting value writes can be deferred safely.
     pub fn focusElement(_: *Host, elem: *BenchmarkDomElement) void {
         sim_dom.focusElement(elem);
     }
 
-    /// Provides the `blurElement` operation.
+    /// Ends controlled-element focus and applies any still-relevant deferred value.
     pub fn blurElement(host: *Host, elem: *BenchmarkDomElement) void {
         _ = sim_dom.blurElement(host.hostAllocator(), elem);
     }
 
-    /// Provides the `beginComposition` operation.
+    /// Marks the controlled input as composing so engine writes do not disrupt IME text.
     pub fn beginComposition(_: *Host, elem: *BenchmarkDomElement) void {
         sim_dom.beginComposition(elem);
     }
 
-    /// Provides the `endComposition` operation.
+    /// Ends IME composition and reconciles the latest engine-selected value.
     pub fn endComposition(host: *Host, elem: *BenchmarkDomElement) void {
         _ = sim_dom.endComposition(host.hostAllocator(), elem);
     }
 
-    /// Provides the `setElementCheckedIfChanged` operation.
+    /// Updates checked if changed only when the simulated or browser field actually differs.
     pub fn setElementCheckedIfChanged(elem: *BenchmarkDomElement, checked: bool) bool {
         return setElementCheckedForBenchmark(elem, checked);
     }
 
-    /// Provides the `resolvePendingTask` operation.
+    /// Delivers pending task through the same source-update and propagation path as other inputs.
     pub fn resolvePendingTask(host: *Host, roc_host: *RocHost, name: []const u8, payload_text: []const u8, failed: bool) CommandCounts {
         return resolvePendingTaskForBenchmark(host, roc_host, name, payload_text, failed);
     }
 
-    /// Provides the `resolveStalePendingTask` operation.
+    /// Consumes a deliberately stale task result for lifecycle testing without reviving canceled work.
     pub fn resolveStalePendingTask(host: *Host, _: *RocHost, name: []const u8, payload_text: []const u8, failed: bool) CommandCounts {
         return resolveStalePendingTaskForBenchmark(host, name, payload_text, failed);
     }
 
-    /// Provides the `tickIntervalSource` operation.
+    /// Advances interval source through the shared propagation queue.
     pub fn tickIntervalSource(host: *Host, roc_host: *RocHost, period_ms: u64) CommandCounts {
         return tickIntervalSourceForBenchmark(host, roc_host, period_ms);
     }
 
-    /// Provides the `setInitialLocation` operation.
+    /// Seeds location before mount so the first graph evaluation observes host state.
     pub fn setInitialLocation(host: *Host, location: boundary.LocationSnapshot) void {
         host.setCurrentLocation(location);
     }
 
-    /// Provides the `setInitialVisibility` operation.
+    /// Seeds visibility before mount so the first graph evaluation observes host state.
     pub fn setInitialVisibility(host: *Host, visibility: boundary.VisibilitySnapshot) void {
         host.setVisibility(visibility);
     }
 
-    /// Provides the `setInitialOnline` operation.
+    /// Seeds online before mount so the first graph evaluation observes host state.
     pub fn setInitialOnline(host: *Host, online: boundary.OnlineSnapshot) void {
         host.setOnline(online);
     }
 
-    /// Provides the `seedStorage` operation.
+    /// Seeds one storage fixture entry before mount without bypassing declared storage sources.
     pub fn seedStorage(host: *Host, area: boundary.StorageArea, key: []const u8, value: []const u8) void {
         host.setStorageText(area, key, value);
     }
 
-    /// Provides the `navigateLocation` operation.
+    /// Publishes a location change and refreshes active location sources in the same engine turn.
     pub fn navigateLocation(host: *Host, roc_host: *RocHost, location: boundary.LocationSnapshot) CommandCounts {
         host.pushCurrentLocation(location);
         return dispatchCurrentLocationSources(host, roc_host);
     }
 
-    /// Provides the `historyBack` operation.
+    /// Moves browser history back and re-enters the location source through propagation.
     pub fn historyBack(host: *Host, roc_host: *RocHost) CommandCounts {
         if (!host.backCurrentLocation()) failHost("history_back had no previous location");
         return dispatchCurrentLocationSources(host, roc_host);
     }
 
-    /// Provides the `historyForward` operation.
+    /// Moves browser history forward and re-enters the location source through propagation.
     pub fn historyForward(host: *Host, roc_host: *RocHost) CommandCounts {
         if (!host.forwardCurrentLocation()) failHost("history_forward had no next location");
         return dispatchCurrentLocationSources(host, roc_host);
     }
 
-    /// Provides the `setVisibility` operation.
+    /// Sets visibility at the narrow host or engine boundary that owns the mutation.
     pub fn setVisibility(host: *Host, roc_host: *RocHost, visibility: boundary.VisibilitySnapshot) CommandCounts {
         host.setVisibility(visibility);
         return dispatchCurrentVisibilitySources(host, roc_host);
     }
 
-    /// Provides the `setOnline` operation.
+    /// Sets online at the narrow host or engine boundary that owns the mutation.
     pub fn setOnline(host: *Host, roc_host: *RocHost, online: boundary.OnlineSnapshot) CommandCounts {
         host.setOnline(online);
         return dispatchCurrentOnlineSources(host, roc_host);
     }
 
-    /// Provides the `activeIntervalRecordCountByPeriod` operation.
+    /// Returns active interval record count by period from the maintained active-runtime indexes.
     pub fn activeIntervalRecordCountByPeriod(host: *const Host, period_ms: u64) u64 {
         return host.engine.activeIntervalRecordCountByPeriod(period_ms);
     }
 
-    /// Provides the `finishHostMetrics` operation.
+    /// Provides finish host metrics for native semantic observation without duplicating engine behavior.
     pub fn finishHostMetrics(host: *Host) void {
         finishHostMetricsForBenchmark(host);
     }
 
-    /// Provides the `allocCount` operation.
+    /// Provides alloc count for native semantic observation without duplicating engine behavior.
     pub fn allocCount(host: *const Host) usize {
         return host.alloc_count;
     }
 
-    /// Provides the `deallocCount` operation.
+    /// Provides dealloc count for native semantic observation without duplicating engine behavior.
     pub fn deallocCount(host: *const Host) usize {
         return host.dealloc_count;
     }
 
-    /// Provides the `hostAllocCount` operation.
+    /// Provides host alloc count for native semantic observation without duplicating engine behavior.
     pub fn hostAllocCount(host: *const Host) u64 {
         return host.host_alloc_count;
     }
 
-    /// Provides the `hostDeallocCount` operation.
+    /// Provides host dealloc count for native semantic observation without duplicating engine behavior.
     pub fn hostDeallocCount(host: *const Host) u64 {
         return host.host_dealloc_count;
     }
 
-    /// Provides the `hostAllocBytes` operation.
+    /// Provides host alloc bytes for native semantic observation without duplicating engine behavior.
     pub fn hostAllocBytes(host: *const Host) u64 {
         return host.host_alloc_bytes;
     }
 
-    /// Provides the `hostDeallocBytes` operation.
+    /// Provides host dealloc bytes for native semantic observation without duplicating engine behavior.
     pub fn hostDeallocBytes(host: *const Host) u64 {
         return host.host_dealloc_bytes;
     }
 
-    /// Provides the `lastRuntimeMetrics` operation.
+    /// Returns last runtime metrics retained for observability or local structural traversal.
     pub fn lastRuntimeMetrics(host: *const Host) RuntimeMetrics {
         return host.engine.last_runtime_metrics;
     }
 
-    /// Provides the `canceledTaskCountByName` operation.
+    /// Provides canceled task count by name for native semantic observation without duplicating engine behavior.
     pub fn canceledTaskCountByName(host: *const Host, name: []const u8) u64 {
         return host.canceledTaskCountByName(name);
     }
 
-    /// Provides the `addRuntimeMetrics` operation.
+    /// Provides add runtime metrics for native semantic observation without duplicating engine behavior.
     pub fn addRuntimeMetrics(left: RuntimeMetrics, right: RuntimeMetrics) RuntimeMetrics {
         return addRuntimeMetricsForBenchmark(left, right);
     }
@@ -2728,27 +2728,27 @@ const SpecRunnerCtx = struct {
     pub const Host = HostEnv;
     pub const RocHost = abi.RocHost;
 
-    /// Provides the `fail` operation.
+    /// Terminates this test or host path because continuing could leave runtime meaning incoherent.
     pub fn fail(message: []const u8) noreturn {
         failHost(message);
     }
 
-    /// Provides the `writeStderr` operation.
+    /// Writes a diagnostic directly to standard error without entering application semantics.
     pub fn writeStderr(bytes: []const u8) void {
         crash_handlers.writeStderr(bytes);
     }
 
-    /// Provides the `allocator` operation.
+    /// Returns the allocator owned by this host context for shared-engine work.
     pub fn allocator(host: *Host) std.mem.Allocator {
         return host.hostAllocator();
     }
 
-    /// Provides the `findElementByLocator` operation.
+    /// Resolves element by locator from maintained indexes without scanning the full descriptor stream.
     pub fn findElementByLocator(host: *Host, locator: Locator, line_num: usize) ?*DomElement {
         return host.findElementByLocator(locator, line_num);
     }
 
-    /// Provides the `elementById` operation.
+    /// Returns by id from the host's semantic render model.
     pub fn elementById(host: *Host, elem_id: u64) ?*DomElement {
         if (elem_id >= host.dom_elements.items.len) return null;
         const elem = &host.dom_elements.items[@intCast(elem_id)];
@@ -2756,172 +2756,172 @@ const SpecRunnerCtx = struct {
         return elem;
     }
 
-    /// Provides the `countElementsByLocator` operation.
+    /// Provides count elements by locator for native semantic observation without duplicating engine behavior.
     pub fn countElementsByLocator(host: *Host, locator: Locator) usize {
         return host.countElementsByLocator(locator);
     }
 
-    /// Provides the `namedEvent` operation.
+    /// Provides named event for native semantic observation without duplicating engine behavior.
     pub fn namedEvent(elem: *const DomElement, name: []const u8) ?DomNamedEvent {
         return nodeEventName(elem, name);
     }
 
-    /// Provides the `fixedEventId` operation.
+    /// Provides fixed event id for native semantic observation without duplicating engine behavior.
     pub fn fixedEventId(elem: *const DomElement, kind: RenderEventKind) ?u64 {
         return sim_dom.fixedEventId(elem, kind);
     }
 
-    /// Provides the `dispatchRocEvent` operation.
+    /// Dispatches roc event through validated routing and dependency-ordered propagation.
     pub fn dispatchRocEvent(host: *Host, roc_host: *RocHost, event_id: u64, payload_descriptor: BoundaryPayloadDescriptor, payload: HostValue) void {
         dispatchRocEventWithStats(host, roc_host, event_id, payload_descriptor, payload, null);
     }
 
-    /// Provides the `hostValueUnit` operation.
+    /// Materializes unit as a capability-owned host value for boundary delivery.
     pub fn hostValueUnit(host: *Host, roc_host: *RocHost) HostValue {
         return hostValueUnitForBenchmark(host, roc_host);
     }
 
-    /// Provides the `hostValueStr` operation.
+    /// Materializes str as a capability-owned host value for boundary delivery.
     pub fn hostValueStr(host: *Host, roc_host: *RocHost, value: []const u8) HostValue {
         return hostValueStrForBenchmark(host, roc_host, value);
     }
 
-    /// Provides the `hostValueBool` operation.
+    /// Materializes bool as a capability-owned host value for boundary delivery.
     pub fn hostValueBool(host: *Host, roc_host: *RocHost, value: bool) HostValue {
         return hostValueBoolForBenchmark(host, roc_host, value);
     }
 
-    /// Provides the `hostValueU8List` operation.
+    /// Materializes u8 list as a capability-owned host value for boundary delivery.
     pub fn hostValueU8List(host: *Host, roc_host: *RocHost, bytes: []const u8) HostValue {
         return hv.makeU8List(host, roc_host, bytes);
     }
 
-    /// Provides the `setElementValueIfChanged` operation.
+    /// Updates value if changed only when the simulated or browser field actually differs.
     pub fn setElementValueIfChanged(host: *Host, elem: *DomElement, value: []const u8) bool {
         return sim_dom.setUserValueIfChanged(host.hostAllocator(), elem, value);
     }
 
-    /// Provides the `focusElement` operation.
+    /// Marks the controlled element focused so conflicting value writes can be deferred safely.
     pub fn focusElement(_: *Host, elem: *DomElement) void {
         sim_dom.focusElement(elem);
     }
 
-    /// Provides the `blurElement` operation.
+    /// Ends controlled-element focus and applies any still-relevant deferred value.
     pub fn blurElement(host: *Host, elem: *DomElement) void {
         _ = sim_dom.blurElement(host.hostAllocator(), elem);
     }
 
-    /// Provides the `beginComposition` operation.
+    /// Marks the controlled input as composing so engine writes do not disrupt IME text.
     pub fn beginComposition(_: *Host, elem: *DomElement) void {
         sim_dom.beginComposition(elem);
     }
 
-    /// Provides the `endComposition` operation.
+    /// Ends IME composition and reconciles the latest engine-selected value.
     pub fn endComposition(host: *Host, elem: *DomElement) void {
         _ = sim_dom.endComposition(host.hostAllocator(), elem);
     }
 
-    /// Provides the `setElementCheckedIfChanged` operation.
+    /// Updates checked if changed only when the simulated or browser field actually differs.
     pub fn setElementCheckedIfChanged(elem: *DomElement, checked: bool) bool {
         return sim_dom.setCheckedIfChanged(elem, checked);
     }
 
-    /// Provides the `elementTextAttr` operation.
+    /// Returns text attr from the host's semantic render model.
     pub fn elementTextAttr(elem: *const DomElement, name: []const u8) ?[]const u8 {
         return sim_dom.textAttr(elem, name);
     }
 
-    /// Provides the `resolvePendingTask` operation.
+    /// Delivers pending task through the same source-update and propagation path as other inputs.
     pub fn resolvePendingTask(host: *Host, roc_host: *RocHost, name: []const u8, payload_text: []const u8, failed: bool) CommandCounts {
         return resolvePendingTaskForBenchmark(host, roc_host, name, payload_text, failed);
     }
 
-    /// Provides the `resolveStalePendingTask` operation.
+    /// Consumes a deliberately stale task result for lifecycle testing without reviving canceled work.
     pub fn resolveStalePendingTask(host: *Host, _: *RocHost, name: []const u8, payload_text: []const u8, failed: bool) CommandCounts {
         return resolveStalePendingTaskForBenchmark(host, name, payload_text, failed);
     }
 
-    /// Provides the `tickIntervalSource` operation.
+    /// Advances interval source through the shared propagation queue.
     pub fn tickIntervalSource(host: *Host, roc_host: *RocHost, period_ms: u64) CommandCounts {
         return tickIntervalSourceForBenchmark(host, roc_host, period_ms);
     }
 
-    /// Provides the `navigateLocation` operation.
+    /// Publishes a location change and refreshes active location sources in the same engine turn.
     pub fn navigateLocation(host: *Host, roc_host: *RocHost, location: boundary.LocationSnapshot) CommandCounts {
         host.pushCurrentLocation(location);
         return dispatchCurrentLocationSources(host, roc_host);
     }
 
-    /// Provides the `historyBack` operation.
+    /// Moves browser history back and re-enters the location source through propagation.
     pub fn historyBack(host: *Host, roc_host: *RocHost) CommandCounts {
         if (!host.backCurrentLocation()) failHost("history_back had no previous location");
         return dispatchCurrentLocationSources(host, roc_host);
     }
 
-    /// Provides the `historyForward` operation.
+    /// Moves browser history forward and re-enters the location source through propagation.
     pub fn historyForward(host: *Host, roc_host: *RocHost) CommandCounts {
         if (!host.forwardCurrentLocation()) failHost("history_forward had no next location");
         return dispatchCurrentLocationSources(host, roc_host);
     }
 
-    /// Provides the `currentLocation` operation.
+    /// Provides current location for native semantic observation without duplicating engine behavior.
     pub fn currentLocation(host: *const Host) boundary.LocationSnapshot {
         return host.currentLocation();
     }
 
-    /// Provides the `setVisibility` operation.
+    /// Sets visibility at the narrow host or engine boundary that owns the mutation.
     pub fn setVisibility(host: *Host, roc_host: *RocHost, visibility: boundary.VisibilitySnapshot) CommandCounts {
         host.setVisibility(visibility);
         return dispatchCurrentVisibilitySources(host, roc_host);
     }
 
-    /// Provides the `setOnline` operation.
+    /// Sets online at the narrow host or engine boundary that owns the mutation.
     pub fn setOnline(host: *Host, roc_host: *RocHost, online: boundary.OnlineSnapshot) CommandCounts {
         host.setOnline(online);
         return dispatchCurrentOnlineSources(host, roc_host);
     }
 
-    /// Provides the `storageValue` operation.
+    /// Provides storage value for native semantic observation without duplicating engine behavior.
     pub fn storageValue(host: *const Host, area: boundary.StorageArea, key: []const u8) ?[]const u8 {
         return host.storageValue(area, key);
     }
 
-    /// Provides the `documentTitle` operation.
+    /// Provides document title for native semantic observation without duplicating engine behavior.
     pub fn documentTitle(host: *const Host) []const u8 {
         return host.currentDocumentTitle();
     }
 
-    /// Provides the `finishHostMetrics` operation.
+    /// Provides finish host metrics for native semantic observation without duplicating engine behavior.
     pub fn finishHostMetrics(host: *Host) void {
         finishHostMetricsForBenchmark(host);
     }
 
-    /// Provides the `cleanupEventCount` operation.
+    /// Provides cleanup event count for native semantic observation without duplicating engine behavior.
     pub fn cleanupEventCount(host: *const Host, name: []const u8) u64 {
         return host.engine.cleanupEventCount(name);
     }
 
-    /// Provides the `pendingTaskCountByName` operation.
+    /// Resolves pending task count by name from the bounded task registry without scanning unrelated work.
     pub fn pendingTaskCountByName(host: *const Host, name: []const u8) u64 {
         return host.engine.pendingTaskCountByName(name);
     }
 
-    /// Provides the `canceledTaskCountByName` operation.
+    /// Provides canceled task count by name for native semantic observation without duplicating engine behavior.
     pub fn canceledTaskCountByName(host: *const Host, name: []const u8) u64 {
         return host.canceledTaskCountByName(name);
     }
 
-    /// Provides the `activeIntervalRecordCountByPeriod` operation.
+    /// Returns active interval record count by period from the maintained active-runtime indexes.
     pub fn activeIntervalRecordCountByPeriod(host: *const Host, period_ms: u64) u64 {
         return host.engine.activeIntervalRecordCountByPeriod(period_ms);
     }
 
-    /// Provides the `lastRuntimeMetrics` operation.
+    /// Returns last runtime metrics retained for observability or local structural traversal.
     pub fn lastRuntimeMetrics(host: *const Host) RuntimeMetrics {
         return host.engine.last_runtime_metrics;
     }
 
-    /// Provides the `traceAllocationCheckpoint` operation.
+    /// Provides trace allocation checkpoint for native semantic observation without duplicating engine behavior.
     pub fn traceAllocationCheckpoint(host: *Host, line_num: usize, command_name: []const u8) void {
         host.traceAllocationCheckpoint(line_num, command_name);
     }

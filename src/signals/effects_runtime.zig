@@ -26,7 +26,7 @@ pub const ActiveInterval = struct {
 
 pub const CleanupEvents = std.ArrayListUnmanaged([]const u8);
 
-/// Provides the `appendCleanupEvent` operation.
+/// Appends cleanup event using capacity that must already satisfy the caller's transaction contract.
 pub fn appendCleanupEvent(allocator: std.mem.Allocator, events: *CleanupEvents, name: []const u8) void {
     const copy = allocator.dupe(u8, name) catch @panic("out of memory");
     events.append(allocator, copy) catch {
@@ -35,7 +35,7 @@ pub fn appendCleanupEvent(allocator: std.mem.Allocator, events: *CleanupEvents, 
     };
 }
 
-/// Provides the `cleanupEventCount` operation.
+/// Counts cleanup callbacks for the selected name in native lifecycle observations.
 pub fn cleanupEventCount(events: []const []const u8, name: []const u8) u64 {
     var count: u64 = 0;
     for (events) |event_name| {
@@ -44,7 +44,7 @@ pub fn cleanupEventCount(events: []const []const u8, name: []const u8) u64 {
     return count;
 }
 
-/// Provides the `deinitCleanupEvents` operation.
+/// Releases cleanup events and all host registrations or retained values it owns.
 pub fn deinitCleanupEvents(allocator: std.mem.Allocator, events: *CleanupEvents) void {
     for (events.items) |name| {
         allocator.free(name);
@@ -53,7 +53,7 @@ pub fn deinitCleanupEvents(allocator: std.mem.Allocator, events: *CleanupEvents)
     events.* = .empty;
 }
 
-/// Provides the `activeTaskRecordByToken` operation.
+/// Returns active task record by token from the maintained active-runtime indexes.
 pub fn activeTaskRecordByToken(active_signal_graph: anytype, token: HostSignalToken) ?*HostSignalRecord {
     for (active_signal_graph) |node| {
         if (node.record.taskSource() != null) {
@@ -63,7 +63,7 @@ pub fn activeTaskRecordByToken(active_signal_graph: anytype, token: HostSignalTo
     return null;
 }
 
-/// Provides the `activeTaskRecordByName` operation.
+/// Returns active task record by name from the maintained active-runtime indexes.
 pub fn activeTaskRecordByName(active_signal_graph: anytype, name: []const u8) ?*HostSignalRecord {
     var found: ?*HostSignalRecord = null;
     for (active_signal_graph) |node| {
@@ -75,7 +75,7 @@ pub fn activeTaskRecordByName(active_signal_graph: anytype, name: []const u8) ?*
     return found;
 }
 
-/// Provides the `activeIntervalRecordCountByPeriod` operation.
+/// Returns active interval record count by period from the maintained active-runtime indexes.
 pub fn activeIntervalRecordCountByPeriod(active_signal_graph: anytype, period_ms: u64) u64 {
     var count: u64 = 0;
     for (active_signal_graph) |node| {
@@ -86,7 +86,7 @@ pub fn activeIntervalRecordCountByPeriod(active_signal_graph: anytype, period_ms
     return count;
 }
 
-/// Provides the `activeIntervalRecordByToken` operation.
+/// Returns active interval record by token from the maintained active-runtime indexes.
 pub fn activeIntervalRecordByToken(active_signal_graph: anytype, source_token: HostSignalToken) ?*HostSignalRecord {
     var found: ?*HostSignalRecord = null;
     for (active_signal_graph) |node| {
@@ -98,7 +98,7 @@ pub fn activeIntervalRecordByToken(active_signal_graph: anytype, source_token: H
     return found;
 }
 
-/// Provides the `activeIntervalRecordByPeriod` operation.
+/// Returns active interval record by period from the maintained active-runtime indexes.
 pub fn activeIntervalRecordByPeriod(active_signal_graph: anytype, period_ms: u64) ?*HostSignalRecord {
     var found: ?*HostSignalRecord = null;
     for (active_signal_graph) |node| {
@@ -110,7 +110,7 @@ pub fn activeIntervalRecordByPeriod(active_signal_graph: anytype, period_ms: u64
     return found;
 }
 
-/// Provides the `appendPendingTask` operation.
+/// Appends pending task using capacity that must already satisfy the caller's transaction contract.
 pub fn appendPendingTask(
     allocator: std.mem.Allocator,
     tasks: *std.ArrayListUnmanaged(PendingTask),
@@ -147,7 +147,7 @@ pub fn appendPendingTask(
     return request_id;
 }
 
-/// Provides the `appendAndStartPendingTask` operation.
+/// Appends and start pending task using capacity that must already satisfy the caller's transaction contract.
 pub fn appendAndStartPendingTask(
     comptime Ctx: type,
     ctx: Ctx.Handle,
@@ -165,7 +165,7 @@ pub fn appendAndStartPendingTask(
     return request_id;
 }
 
-/// Provides the `deinitPendingTask` operation.
+/// Releases pending task and all host registrations or retained values it owns.
 pub fn deinitPendingTask(allocator: std.mem.Allocator, roc_host: *abi.RocHost, task: *PendingTask) void {
     retained_values.releaseHostSignalToken(task.task_token, roc_host);
     allocator.free(task.task_name);
@@ -173,7 +173,7 @@ pub fn deinitPendingTask(allocator: std.mem.Allocator, roc_host: *abi.RocHost, t
     task.* = undefined;
 }
 
-/// Provides the `cancelPendingTask` operation.
+/// Cancels pending task and releases its bounded host-retained work.
 pub fn cancelPendingTask(comptime Ctx: type, ctx: Ctx.Handle, allocator: std.mem.Allocator, roc_host: *abi.RocHost, task: *PendingTask) void {
     if (task.active) {
         Ctx.sink(ctx).cancelTask(task.request_id);
@@ -181,7 +181,7 @@ pub fn cancelPendingTask(comptime Ctx: type, ctx: Ctx.Handle, allocator: std.mem
     deinitPendingTask(allocator, roc_host, task);
 }
 
-/// Provides the `clearPendingTasks` operation.
+/// Clears pending tasks while retaining bounded storage where the type promises reuse.
 pub fn clearPendingTasks(comptime Ctx: type, ctx: Ctx.Handle, allocator: std.mem.Allocator, tasks: *std.ArrayListUnmanaged(PendingTask), roc_host: ?*abi.RocHost) void {
     const host = roc_host orelse {
         if (tasks.items.len != 0) @panic("pending tasks cannot release tokens without a Roc host");
@@ -193,7 +193,7 @@ pub fn clearPendingTasks(comptime Ctx: type, ctx: Ctx.Handle, allocator: std.mem
     tasks.items.len = 0;
 }
 
-/// Provides the `pendingTaskIndexByName` operation.
+/// Resolves pending task index by name from the bounded task registry without scanning unrelated work.
 pub fn pendingTaskIndexByName(tasks: []const PendingTask, name: []const u8) ?usize {
     var found: ?usize = null;
     for (tasks, 0..) |task, index| {
@@ -205,7 +205,7 @@ pub fn pendingTaskIndexByName(tasks: []const PendingTask, name: []const u8) ?usi
     return found;
 }
 
-/// Provides the `pendingTaskCountByName` operation.
+/// Resolves pending task count by name from the bounded task registry without scanning unrelated work.
 pub fn pendingTaskCountByName(tasks: []const PendingTask, name: []const u8) u64 {
     var count: u64 = 0;
     for (tasks) |task| {
@@ -214,7 +214,7 @@ pub fn pendingTaskCountByName(tasks: []const PendingTask, name: []const u8) u64 
     return count;
 }
 
-/// Provides the `pendingTaskIndexByRequestId` operation.
+/// Resolves pending task index by request id from the bounded task registry without scanning unrelated work.
 pub fn pendingTaskIndexByRequestId(tasks: []const PendingTask, request_id: u64) ?usize {
     var found: ?usize = null;
     for (tasks, 0..) |task, index| {
@@ -225,7 +225,7 @@ pub fn pendingTaskIndexByRequestId(tasks: []const PendingTask, request_id: u64) 
     return found;
 }
 
-/// Provides the `removePendingTaskAt` operation.
+/// Removes pending task at and releases the ownership attached to that live entry.
 pub fn removePendingTaskAt(tasks: *std.ArrayListUnmanaged(PendingTask), index: usize) PendingTask {
     if (index >= tasks.items.len) @panic("pending task index is out of bounds");
     const task = tasks.items[index];
@@ -237,7 +237,7 @@ pub fn removePendingTaskAt(tasks: *std.ArrayListUnmanaged(PendingTask), index: u
     return task;
 }
 
-/// Provides the `cancelPendingTasksByTaskToken` operation.
+/// Cancels pending tasks by task token and releases its bounded host-retained work.
 pub fn cancelPendingTasksByTaskToken(comptime Ctx: type, ctx: Ctx.Handle, allocator: std.mem.Allocator, tasks: *std.ArrayListUnmanaged(PendingTask), roc_host: ?*abi.RocHost, task_token: HostSignalToken) void {
     const host = roc_host orelse {
         for (tasks.items) |task| {
@@ -258,7 +258,7 @@ pub fn cancelPendingTasksByTaskToken(comptime Ctx: type, ctx: Ctx.Handle, alloca
     }
 }
 
-/// Provides the `cancelPendingTasksInScopeSubtree` operation.
+/// Cancels pending tasks in scope subtree and releases its bounded host-retained work.
 pub fn cancelPendingTasksInScopeSubtree(comptime Ctx: type, ctx: Ctx.Handle, allocator: std.mem.Allocator, tasks: *std.ArrayListUnmanaged(PendingTask), roc_host: ?*abi.RocHost, scope_id: u64, scope_lookup: anytype) void {
     const host = roc_host orelse {
         for (tasks.items) |task| {
@@ -279,7 +279,7 @@ pub fn cancelPendingTasksInScopeSubtree(comptime Ctx: type, ctx: Ctx.Handle, all
     tasks.items.len = write_index;
 }
 
-/// Provides the `activeIntervalSourceTokenByRuntimeToken` operation.
+/// Returns active interval source token by runtime token from the maintained active-runtime indexes.
 pub fn activeIntervalSourceTokenByRuntimeToken(intervals: []const ActiveInterval, token: u64) ?HostSignalToken {
     var found: ?HostSignalToken = null;
     for (intervals) |interval| {
@@ -290,7 +290,7 @@ pub fn activeIntervalSourceTokenByRuntimeToken(intervals: []const ActiveInterval
     return found;
 }
 
-/// Provides the `activeIntervalBySourceToken` operation.
+/// Returns active interval by source token from the maintained active-runtime indexes.
 pub fn activeIntervalBySourceToken(intervals: []ActiveInterval, source_token: HostSignalToken) ?*ActiveInterval {
     var found: ?*ActiveInterval = null;
     for (intervals) |*interval| {
@@ -301,7 +301,7 @@ pub fn activeIntervalBySourceToken(intervals: []ActiveInterval, source_token: Ho
     return found;
 }
 
-/// Provides the `activeIntervalIndexBySourceToken` operation.
+/// Returns active interval index by source token from the maintained active-runtime indexes.
 pub fn activeIntervalIndexBySourceToken(intervals: []const ActiveInterval, source_token: HostSignalToken) ?usize {
     var found_index: ?usize = null;
     for (intervals, 0..) |interval, index| {
@@ -312,14 +312,14 @@ pub fn activeIntervalIndexBySourceToken(intervals: []const ActiveInterval, sourc
     return found_index;
 }
 
-/// Provides the `markActiveIntervalsInactive` operation.
+/// Marks existing intervals unseen before reconciling declarations from the active graph.
 pub fn markActiveIntervalsInactive(intervals: []ActiveInterval) void {
     for (intervals) |*interval| {
         interval.active = false;
     }
 }
 
-/// Provides the `removeActiveIntervalAt` operation.
+/// Removes active interval at and releases the ownership attached to that live entry.
 pub fn removeActiveIntervalAt(intervals: *std.ArrayListUnmanaged(ActiveInterval), index: usize) ActiveInterval {
     if (index >= intervals.items.len) @panic("active interval index is out of bounds");
     const interval = intervals.items[index];
@@ -331,7 +331,7 @@ pub fn removeActiveIntervalAt(intervals: *std.ArrayListUnmanaged(ActiveInterval)
     return interval;
 }
 
-/// Provides the `clearActiveIntervals` operation.
+/// Clears active intervals while retaining bounded storage where the type promises reuse.
 pub fn clearActiveIntervals(comptime Ctx: type, ctx: Ctx.Handle, intervals: *std.ArrayListUnmanaged(ActiveInterval), roc_host: ?*abi.RocHost) void {
     const host = roc_host orelse {
         if (intervals.items.len != 0) @panic("active intervals cannot release tokens without a Roc host");
@@ -347,7 +347,7 @@ pub fn clearActiveIntervals(comptime Ctx: type, ctx: Ctx.Handle, intervals: *std
     intervals.clearRetainingCapacity();
 }
 
-/// Provides the `ensureActiveInterval` operation.
+/// Ensures active interval capacity or state before publication can begin.
 pub fn ensureActiveInterval(comptime Ctx: type, ctx: Ctx.Handle, allocator: std.mem.Allocator, intervals: *std.ArrayListUnmanaged(ActiveInterval), next_interval_token: *u64, roc_host: *abi.RocHost, source_token: HostSignalToken, period_ms: u64) void {
     if (activeIntervalBySourceToken(intervals.items, source_token)) |interval| {
         if (interval.period_ms != period_ms) @panic("interval source token changed period");
@@ -370,7 +370,7 @@ pub fn ensureActiveInterval(comptime Ctx: type, ctx: Ctx.Handle, allocator: std.
     Ctx.sink(ctx).startInterval(token, period_ms);
 }
 
-/// Provides the `removeActiveIntervalBySourceToken` operation.
+/// Removes active interval by source token and releases the ownership attached to that live entry.
 pub fn removeActiveIntervalBySourceToken(comptime Ctx: type, ctx: Ctx.Handle, intervals: *std.ArrayListUnmanaged(ActiveInterval), roc_host: *abi.RocHost, source_token: HostSignalToken) void {
     const index = activeIntervalIndexBySourceToken(intervals.items, source_token) orelse @panic("active interval removal missed its source token");
     const interval = removeActiveIntervalAt(intervals, index);
@@ -380,7 +380,7 @@ pub fn removeActiveIntervalBySourceToken(comptime Ctx: type, ctx: Ctx.Handle, in
     retained_values.releaseHostSignalToken(interval.source_token, roc_host);
 }
 
-/// Provides the `finishActiveIntervalSync` operation.
+/// Cancels intervals not rediscovered and commits the current bounded registration set.
 pub fn finishActiveIntervalSync(comptime Ctx: type, ctx: Ctx.Handle, intervals: *std.ArrayListUnmanaged(ActiveInterval), roc_host: ?*abi.RocHost) void {
     const host = roc_host orelse {
         for (intervals.items) |interval| {
@@ -402,7 +402,7 @@ pub fn finishActiveIntervalSync(comptime Ctx: type, ctx: Ctx.Handle, intervals: 
     intervals.items.len = write_index;
 }
 
-/// Provides the `syncActiveIntervalsFromGraph` operation.
+/// Reconciles interval registrations from active graph declarations after propagation.
 pub fn syncActiveIntervalsFromGraph(
     comptime Ctx: type,
     ctx: Ctx.Handle,
@@ -432,7 +432,7 @@ const TestActiveNode = struct {
 const TestMetrics = struct {
     active_intervals_synced: u64 = 0,
 
-    /// Provides the `bump` operation.
+    /// Increments  for exact structural-work accounting.
     pub fn bump(self: *@This(), comptime field: enum { active_intervals_synced }, n: u64) void {
         @field(self, @tagName(field)) += n;
     }
@@ -450,24 +450,24 @@ const TestIntervalHost = struct {
 const TestIntervalSink = struct {
     host: *TestIntervalHost,
 
-    /// Provides the `startTask` operation.
+    /// Starts bounded asynchronous host work for an engine-issued task request.
     pub fn startTask(self: @This(), request_id: u64, _: []const u8, _: []const u8) void {
         self.host.start_task_count += 1;
         self.host.last_started_task = request_id;
     }
 
-    /// Provides the `cancelTask` operation.
+    /// Cancels host work for a task request retired by engine lifecycle policy.
     pub fn cancelTask(self: @This(), request_id: u64) void {
         self.host.cancel_task_count += 1;
         self.host.last_canceled_task = request_id;
     }
 
-    /// Provides the `startInterval` operation.
+    /// Starts the bounded host registration for an engine-owned interval source.
     pub fn startInterval(self: @This(), _: u64, _: u64) void {
         self.host.start_interval_count += 1;
     }
 
-    /// Provides the `cancelInterval` operation.
+    /// Cancels the host registration for an interval whose owning scope is no longer active.
     pub fn cancelInterval(self: @This(), _: u64) void {
         self.host.cancel_interval_count += 1;
     }
@@ -477,7 +477,7 @@ const TestIntervalCtx = struct {
     pub const Handle = *TestIntervalHost;
     pub const Sink = TestIntervalSink;
 
-    /// Provides the `sink` operation.
+    /// Returns the thin render-command sink used by the shared engine.
     pub fn sink(ctx: Handle) Sink {
         return .{ .host = ctx };
     }
@@ -487,7 +487,7 @@ const TestScopeLookup = struct {
     root_scope_id: u64,
     child_scope_id: u64,
 
-    /// Provides the `descendantOrSelf` operation.
+    /// Tests explicit scope ancestry without consulting rendered DOM structure.
     pub fn descendantOrSelf(self: @This(), owner_scope_id: u64, scope_id: u64) bool {
         return owner_scope_id == scope_id or (scope_id == self.root_scope_id and owner_scope_id == self.child_scope_id);
     }

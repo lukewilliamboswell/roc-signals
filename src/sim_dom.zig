@@ -45,7 +45,7 @@ pub const Element = struct {
     attrs: std.ArrayListUnmanaged(TextAttr),
     named_events: std.ArrayListUnmanaged(NamedEvent),
 
-    /// Provides the `init` operation.
+    /// Creates an initialized value with the ownership and capacity invariants required by this module.
     pub fn init(id: u64, tag: []const u8) Element {
         return .{
             .id = id,
@@ -74,7 +74,7 @@ pub const Element = struct {
         };
     }
 
-    /// Provides the `deinit` operation.
+    /// Releases every resource owned by this value and leaves no retained host or Roc ownership behind.
     pub fn deinit(self: *Element, allocator: std.mem.Allocator) void {
         allocator.free(self.tag);
         if (self.role) |role| allocator.free(role);
@@ -95,7 +95,7 @@ pub const Element = struct {
         self.children.deinit(allocator);
     }
 
-    /// Provides the `textAttrIndex` operation.
+    /// Resolves a text attribute by name in the simulated DOM element.
     pub fn textAttrIndex(self: *const Element, name: []const u8) ?usize {
         for (self.attrs.items, 0..) |attr, index| {
             if (std.mem.eql(u8, attr.name, name)) return index;
@@ -103,7 +103,7 @@ pub const Element = struct {
         return null;
     }
 
-    /// Provides the `namedEventIndex` operation.
+    /// Resolves a named event to its cache entry without scanning unrelated bindings.
     pub fn namedEventIndex(self: *const Element, name: []const u8) ?usize {
         for (self.named_events.items, 0..) |event, index| {
             if (std.mem.eql(u8, event.name, name)) return index;
@@ -116,7 +116,7 @@ pub const TextAttr = struct {
     name: []const u8,
     value: []const u8,
 
-    /// Provides the `deinit` operation.
+    /// Releases every resource owned by this value and leaves no retained host or Roc ownership behind.
     pub fn deinit(self: TextAttr, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
         allocator.free(self.value);
@@ -127,13 +127,13 @@ pub const NamedEvent = struct {
     name: []const u8,
     binding: EventBinding,
 
-    /// Provides the `deinit` operation.
+    /// Releases every resource owned by this value and leaves no retained host or Roc ownership behind.
     pub fn deinit(self: NamedEvent, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
     }
 };
 
-/// Provides the `implicitRole` operation.
+/// Derives the limited implicit ARIA role vocabulary supported by semantic specs.
 pub fn implicitRole(elem: *const Element) ?[]const u8 {
     if (elem.role) |role| return role;
     if (std.mem.eql(u8, elem.tag, "button")) return "button";
@@ -148,7 +148,7 @@ pub fn implicitRole(elem: *const Element) ?[]const u8 {
     return null;
 }
 
-/// Provides the `accessibleName` operation.
+/// Computes the semantic accessible name used by stable spec locators.
 pub fn accessibleName(elem: *const Element) []const u8 {
     if (elem.label) |label| return label;
     if (elem.text) |text| return text;
@@ -156,12 +156,12 @@ pub fn accessibleName(elem: *const Element) []const u8 {
     return "";
 }
 
-/// Provides the `matchesLocator` operation.
+/// Matches an element against a semantic locator rather than a positional DOM index.
 pub fn matchesLocator(elem: *const Element, locator: spec_parser.Locator) bool {
     return matchesLocatorWithAccessibleName(elem, locator, accessibleName(elem));
 }
 
-/// Provides the `matchesLocatorWithAccessibleName` operation.
+/// Matches an element against a semantic locator rather than a positional DOM index.
 pub fn matchesLocatorWithAccessibleName(elem: *const Element, locator: spec_parser.Locator, accessible_name: []const u8) bool {
     return switch (locator.kind) {
         .none => false,
@@ -198,7 +198,7 @@ fn replaceOwnedString(allocator: std.mem.Allocator, field: *?[]const u8, value: 
     return true;
 }
 
-/// Provides the `setOwnedString` operation.
+/// Sets owned string at the narrow host or engine boundary that owns the mutation.
 pub fn setOwnedString(allocator: std.mem.Allocator, field: *?[]const u8, value: []const u8) void {
     if (field.*) |existing| {
         allocator.free(existing);
@@ -206,7 +206,7 @@ pub fn setOwnedString(allocator: std.mem.Allocator, field: *?[]const u8, value: 
     field.* = allocator.dupe(u8, value) catch std.process.exit(1);
 }
 
-/// Provides the `clearOwnedString` operation.
+/// Clears owned string while retaining bounded storage where the type promises reuse.
 pub fn clearOwnedString(allocator: std.mem.Allocator, field: *?[]const u8) void {
     if (field.*) |existing| {
         allocator.free(existing);
@@ -214,13 +214,13 @@ pub fn clearOwnedString(allocator: std.mem.Allocator, field: *?[]const u8) void 
     field.* = null;
 }
 
-/// Provides the `setText` operation.
+/// Sets text at the narrow host or engine boundary that owns the mutation.
 pub fn setText(allocator: std.mem.Allocator, elem: *Element, text: []const u8) void {
     setOwnedString(allocator, &elem.text, text);
     elem.text_update_count += 1;
 }
 
-/// Provides the `setValueIfChanged` operation.
+/// Sets value if changed at the narrow host or engine boundary that owns the mutation.
 pub fn setValueIfChanged(allocator: std.mem.Allocator, elem: *Element, value: []const u8) bool {
     if (replaceOwnedString(allocator, &elem.value, value)) {
         elem.value_update_count += 1;
@@ -229,7 +229,7 @@ pub fn setValueIfChanged(allocator: std.mem.Allocator, elem: *Element, value: []
     return false;
 }
 
-/// Provides the `setValue` operation.
+/// Sets value at the narrow host or engine boundary that owns the mutation.
 pub fn setValue(allocator: std.mem.Allocator, elem: *Element, value: []const u8) void {
     setOwnedString(allocator, &elem.value, value);
     elem.value_update_count += 1;
@@ -247,7 +247,7 @@ fn replacePendingValue(allocator: std.mem.Allocator, elem: *Element, value: []co
     elem.pending_value = allocator.dupe(u8, value) catch std.process.exit(1);
 }
 
-/// Provides the `setUserValueIfChanged` operation.
+/// Sets user value if changed at the narrow host or engine boundary that owns the mutation.
 pub fn setUserValueIfChanged(allocator: std.mem.Allocator, elem: *Element, value: []const u8) bool {
     const changed = setValueIfChanged(allocator, elem, value);
     if (elem.pending_value) |pending| {
@@ -258,7 +258,7 @@ pub fn setUserValueIfChanged(allocator: std.mem.Allocator, elem: *Element, value
     return changed;
 }
 
-/// Provides the `setControlledValue` operation.
+/// Sets controlled value at the narrow host or engine boundary that owns the mutation.
 pub fn setControlledValue(allocator: std.mem.Allocator, elem: *Element, value: []const u8) bool {
     if (elem.value) |existing| {
         if (std.mem.eql(u8, existing, value)) {
@@ -277,29 +277,29 @@ pub fn setControlledValue(allocator: std.mem.Allocator, elem: *Element, value: [
     return true;
 }
 
-/// Provides the `focusElement` operation.
+/// Marks the controlled element focused so conflicting value writes can be deferred safely.
 pub fn focusElement(elem: *Element) void {
     elem.focused = true;
 }
 
-/// Provides the `blurElement` operation.
+/// Ends controlled-element focus and applies any still-relevant deferred value.
 pub fn blurElement(allocator: std.mem.Allocator, elem: *Element) bool {
     elem.focused = false;
     return flushPendingControlledValue(allocator, elem);
 }
 
-/// Provides the `beginComposition` operation.
+/// Marks the controlled input as composing so engine writes do not disrupt IME text.
 pub fn beginComposition(elem: *Element) void {
     elem.composing = true;
 }
 
-/// Provides the `endComposition` operation.
+/// Ends IME composition and reconciles the latest engine-selected value.
 pub fn endComposition(allocator: std.mem.Allocator, elem: *Element) bool {
     elem.composing = false;
     return flushPendingControlledValue(allocator, elem);
 }
 
-/// Provides the `flushPendingControlledValue` operation.
+/// Applies the latest deferred controlled value after focus or composition no longer blocks it.
 pub fn flushPendingControlledValue(allocator: std.mem.Allocator, elem: *Element) bool {
     const pending = elem.pending_value orelse return false;
 
@@ -321,19 +321,19 @@ pub fn flushPendingControlledValue(allocator: std.mem.Allocator, elem: *Element)
     return true;
 }
 
-/// Provides the `clearText` operation.
+/// Clears text while retaining bounded storage where the type promises reuse.
 pub fn clearText(allocator: std.mem.Allocator, elem: *Element) void {
     clearOwnedString(allocator, &elem.text);
     elem.text_update_count += 1;
 }
 
-/// Provides the `clearValue` operation.
+/// Clears value while retaining bounded storage where the type promises reuse.
 pub fn clearValue(allocator: std.mem.Allocator, elem: *Element) void {
     clearOwnedString(allocator, &elem.value);
     elem.value_update_count += 1;
 }
 
-/// Provides the `setTextAttr` operation.
+/// Sets text attr at the narrow host or engine boundary that owns the mutation.
 pub fn setTextAttr(allocator: std.mem.Allocator, elem: *Element, name: []const u8, value: []const u8) void {
     if (elem.textAttrIndex(name)) |index| {
         const attr = &elem.attrs.items[index];
@@ -357,14 +357,14 @@ pub fn setTextAttr(allocator: std.mem.Allocator, elem: *Element, name: []const u
     };
 }
 
-/// Provides the `clearTextAttr` operation.
+/// Clears an engine-decided custom text attribute from one render node.
 pub fn clearTextAttr(allocator: std.mem.Allocator, elem: *Element, name: []const u8) void {
     const index = elem.textAttrIndex(name) orelse return;
     const removed = elem.attrs.orderedRemove(index);
     removed.deinit(allocator);
 }
 
-/// Provides the `textAttr` operation.
+/// Returns a simulated element's text attribute by name.
 pub fn textAttr(elem: *const Element, name: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, name, "class")) return elem.class;
     if (std.mem.eql(u8, name, "role")) return elem.role;
@@ -374,7 +374,7 @@ pub fn textAttr(elem: *const Element, name: []const u8) ?[]const u8 {
     return elem.attrs.items[index].value;
 }
 
-/// Provides the `setCheckedIfChanged` operation.
+/// Sets checked if changed at the narrow host or engine boundary that owns the mutation.
 pub fn setCheckedIfChanged(elem: *Element, checked: bool) bool {
     if (elem.checked != checked) {
         elem.checked = checked;
@@ -384,19 +384,19 @@ pub fn setCheckedIfChanged(elem: *Element, checked: bool) bool {
     return false;
 }
 
-/// Provides the `setChecked` operation.
+/// Sets checked at the narrow host or engine boundary that owns the mutation.
 pub fn setChecked(elem: *Element, checked: bool) void {
     elem.checked = checked;
     elem.checked_update_count += 1;
 }
 
-/// Provides the `setDisabled` operation.
+/// Sets disabled at the narrow host or engine boundary that owns the mutation.
 pub fn setDisabled(elem: *Element, disabled: bool) void {
     elem.disabled = disabled;
     elem.disabled_update_count += 1;
 }
 
-/// Provides the `childIndex` operation.
+/// Returns a child's local index under its parent in the simulated DOM.
 pub fn childIndex(elem: *const Element, child_id: u64) ?usize {
     for (elem.children.items, 0..) |id, index| {
         if (id == child_id) return index;
@@ -404,13 +404,13 @@ pub fn childIndex(elem: *const Element, child_id: u64) ?usize {
     return null;
 }
 
-/// Provides the `namedEvent` operation.
+/// Returns the canonical named-event binding used by the spec or simulated DOM.
 pub fn namedEvent(elem: *const Element, name: []const u8) ?NamedEvent {
     const index = elem.namedEventIndex(name) orelse return null;
     return elem.named_events.items[index];
 }
 
-/// Provides the `fixedEventBindingSlot` operation.
+/// Returns the canonical fixed-event binding stored in the simulated element.
 pub fn fixedEventBindingSlot(bindings: *FixedEventBindings, kind: render.EventKind) *?EventBinding {
     return switch (kind) {
         .click => &bindings.click,
@@ -423,7 +423,7 @@ pub fn fixedEventBindingSlot(bindings: *FixedEventBindings, kind: render.EventKi
     };
 }
 
-/// Provides the `fixedEventBinding` operation.
+/// Returns the canonical fixed-event binding stored in the simulated element.
 pub fn fixedEventBinding(elem: *const Element, kind: render.EventKind) ?EventBinding {
     return switch (kind) {
         .click => elem.event_bindings.click,
@@ -436,24 +436,24 @@ pub fn fixedEventBinding(elem: *const Element, kind: render.EventKind) ?EventBin
     };
 }
 
-/// Provides the `fixedEventId` operation.
+/// Returns the dense id of the selected fixed event binding for spec dispatch.
 pub fn fixedEventId(elem: *const Element, kind: render.EventKind) ?u64 {
     const binding = fixedEventBinding(elem, kind) orelse return null;
     return binding.event_id;
 }
 
-/// Provides the `bindEventKind` operation.
+/// Installs a canonical event binding in the simulated DOM without owning dispatch semantics.
 pub fn bindEventKind(elem: *Element, kind: render.EventKind, binding: EventBinding) void {
     if (!binding.policy.isNone()) @panic("fixed simulated DOM event binding carried listener policy");
     fixedEventBindingSlot(&elem.event_bindings, kind).* = binding;
 }
 
-/// Provides the `clearEventKind` operation.
+/// Clears event kind while retaining bounded storage where the type promises reuse.
 pub fn clearEventKind(elem: *Element, kind: render.EventKind) void {
     fixedEventBindingSlot(&elem.event_bindings, kind).* = null;
 }
 
-/// Provides the `bindEvent` operation.
+/// Publishes a validated canonical event binding selected by the engine.
 pub fn bindEvent(allocator: std.mem.Allocator, elem: *Element, key: render_sink.EventBindingKey, binding: EventBinding) void {
     switch (key) {
         .fixed => |kind| bindEventKind(elem, kind, binding),
@@ -461,7 +461,7 @@ pub fn bindEvent(allocator: std.mem.Allocator, elem: *Element, key: render_sink.
     }
 }
 
-/// Provides the `clearEvent` operation.
+/// Removes a host event registration whose engine-owned binding is no longer active.
 pub fn clearEvent(allocator: std.mem.Allocator, elem: *Element, key: render_sink.EventBindingKey) void {
     switch (key) {
         .fixed => |kind| clearEventKind(elem, kind),
@@ -469,7 +469,7 @@ pub fn clearEvent(allocator: std.mem.Allocator, elem: *Element, key: render_sink
     }
 }
 
-/// Provides the `bindEventName` operation.
+/// Installs a canonical event binding in the simulated DOM without owning dispatch semantics.
 pub fn bindEventName(allocator: std.mem.Allocator, elem: *Element, name: []const u8, event_id: u64, policy: render.EventPolicy, payload_descriptor: boundary.BoundaryPayloadDescriptor) void {
     var binding: EventBinding = .{
         .event_id = event_id,
@@ -497,14 +497,14 @@ fn bindEventNameBinding(allocator: std.mem.Allocator, elem: *Element, name: []co
     };
 }
 
-/// Provides the `clearEventName` operation.
+/// Clears event name while retaining bounded storage where the type promises reuse.
 pub fn clearEventName(allocator: std.mem.Allocator, elem: *Element, name: []const u8) void {
     const index = elem.namedEventIndex(name) orelse return;
     const removed = elem.named_events.orderedRemove(index);
     removed.deinit(allocator);
 }
 
-/// Provides the `reset` operation.
+/// Stages a complete render-surface reset in the host command sink.
 pub fn reset(allocator: std.mem.Allocator, elements: *std.ArrayListUnmanaged(Element)) void {
     for (elements.items) |*elem| {
         elem.deinit(allocator);
@@ -518,7 +518,7 @@ pub fn reset(allocator: std.mem.Allocator, elements: *std.ArrayListUnmanaged(Ele
     };
 }
 
-/// Provides the `appendDetached` operation.
+/// Appends detached using capacity that must already satisfy the caller's transaction contract.
 pub fn appendDetached(allocator: std.mem.Allocator, elements: *std.ArrayListUnmanaged(Element), elem_id: u64, tag: []const u8) void {
     const tag_copy = allocator.dupe(u8, tag) catch std.process.exit(1);
     if (elem_id < elements.items.len) {
@@ -543,18 +543,18 @@ pub fn appendDetached(allocator: std.mem.Allocator, elements: *std.ArrayListUnma
     };
 }
 
-/// Provides the `appendChild` operation.
+/// Appends child using capacity that must already satisfy the caller's transaction contract.
 pub fn appendChild(allocator: std.mem.Allocator, parent: *Element, child: *Element) void {
     child.parent_id = parent.id;
     parent.children.append(allocator, child.id) catch std.process.exit(1);
 }
 
-/// Provides the `removeChildAt` operation.
+/// Removes child at and releases the ownership attached to that live entry.
 pub fn removeChildAt(parent: *Element, child_index: usize) void {
     _ = parent.children.orderedRemove(child_index);
 }
 
-/// Provides the `deactivateRemovedNode` operation.
+/// Retires removed node so disposed scope identity cannot be routed again.
 pub fn deactivateRemovedNode(allocator: std.mem.Allocator, elem: *Element) void {
     elem.active = false;
     elem.parent_id = null;
@@ -570,7 +570,7 @@ pub fn deactivateRemovedNode(allocator: std.mem.Allocator, elem: *Element) void 
     elem.children = .empty;
 }
 
-/// Provides the `replaceChildren` operation.
+/// Publishes the engine-selected child order for one parent.
 pub fn replaceChildren(allocator: std.mem.Allocator, elements: []Element, parent: *Element, next_child_ids: []const u64) void {
     for (next_child_ids) |child_id| {
         elements[@intCast(child_id)].parent_id = parent.id;

@@ -29,7 +29,7 @@ pub const Scratch = struct {
     dirty_changed_record_ids: std.ArrayListUnmanaged(u64) = .empty,
     elem_owned_removal: structural_splice.ElemOwnedRemovalScratch = .{},
 
-    /// Provides the `deinit` operation.
+    /// Releases every resource owned by this value and leaves no retained host or Roc ownership behind.
     pub fn deinit(self: *Scratch, allocator: std.mem.Allocator) void {
         self.debug_seen_render_nodes.deinit(allocator);
         self.debug_expected_children.deinit(allocator);

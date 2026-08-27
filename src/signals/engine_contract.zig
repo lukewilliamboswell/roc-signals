@@ -58,7 +58,7 @@ fn verifyTypeDecl(comptime owner_name: []const u8, comptime Owner: type, comptim
     }
 }
 
-/// Provides the `verifyRegistryOps` operation.
+/// Performs verify registry ops inside the shared engine while preserving transaction and changed-set invariants.
 pub fn verifyRegistryOps(comptime Ops: type) void {
     verifyDeclFn("engine RegistryOps", Ops, "retainCapability", .{ Ops, HostValueCapability }, void);
     verifyDeclFn("engine RegistryOps", Ops, "releaseCapability", .{ Ops, HostValueCapability }, void);
@@ -69,7 +69,7 @@ pub fn verifyRegistryOps(comptime Ops: type) void {
     verifyDeclFn("engine RegistryOps", Ops, "splitBoxWithSplit", .{ Ops, abi.RocBox, abi.RocErasedCallable }, erased_calls.RocBoxPair);
 }
 
-/// Provides the `verifySink` operation.
+/// Performs verify sink inside the shared engine while preserving transaction and changed-set invariants.
 pub fn verifySink(comptime Sink: type) void {
     verifyDeclFn("engine Sink", Sink, "reset", .{Sink}, void);
     verifyDeclFn("engine Sink", Sink, "appendNode", .{ Sink, u64, u64, []const u8 }, void);
@@ -94,12 +94,12 @@ pub fn verifySink(comptime Sink: type) void {
     verifyDeclFn("engine Sink", Sink, "debugAssertNode", .{ Sink, u64, bool, ?[]const u8, ?u64, []const u64, ?u64, ?u64, ?u64, ?u64, ?u64, ?u64, ?u64 }, void);
 }
 
-/// Provides the `verifyMetrics` operation.
+/// Performs verify metrics inside the shared engine while preserving transaction and changed-set invariants.
 pub fn verifyMetrics(comptime Metrics: type) void {
     verifyDeclFn("engine Metrics", Metrics, "bump", .{ *Metrics, engine_metrics.RuntimeMetrics.Field, u64 }, void);
 }
 
-/// Provides the `verifyCtx` operation.
+/// Performs verify ctx inside the shared engine while preserving transaction and changed-set invariants.
 pub fn verifyCtx(comptime Ctx: type) void {
     verifyTypeDecl("engine Ctx", Ctx, "Handle");
     verifyTypeDecl("engine Ctx", Ctx, "RegistryOps");
@@ -121,47 +121,47 @@ pub fn verifyCtx(comptime Ctx: type) void {
 }
 
 const VerifySink = struct {
-    /// Provides the `reset` operation.
+    /// Stages a complete render-surface reset in the host command sink.
     pub fn reset(_: VerifySink) void {}
-    /// Provides the `appendNode` operation.
+    /// Emits the already-decided command that attaches a newly created render node.
     pub fn appendNode(_: VerifySink, _: u64, _: u64, _: []const u8) void {}
-    /// Provides the `ensureNode` operation.
+    /// Ensures the host render surface contains the engine-selected node and tag.
     pub fn ensureNode(_: VerifySink, _: u64, _: []const u8) void {}
-    /// Provides the `removeNode` operation.
+    /// Emits removal of a node whose owning scope has already been disposed by the engine.
     pub fn removeNode(_: VerifySink, _: u64) void {}
-    /// Provides the `replaceChildren` operation.
+    /// Publishes the engine-selected child order for one parent.
     pub fn replaceChildren(_: VerifySink, _: u64, _: []const u64) void {}
-    /// Provides the `replaceChildrenForMoves` operation.
+    /// Publishes a moves-only child reorder without rebuilding surviving row structure.
     pub fn replaceChildrenForMoves(_: VerifySink, _: u64, _: []const u64) void {}
-    /// Provides the `applyTextField` operation.
+    /// Applies an engine-decided text field value to one render node.
     pub fn applyTextField(_: VerifySink, _: u64, _: RenderTextField, _: []const u8) void {}
-    /// Provides the `applyTextAttr` operation.
+    /// Applies an engine-decided custom text attribute to one render node.
     pub fn applyTextAttr(_: VerifySink, _: u64, _: []const u8, _: []const u8) void {}
-    /// Provides the `applyBoolField` operation.
+    /// Applies an engine-decided boolean field value to one render node.
     pub fn applyBoolField(_: VerifySink, _: u64, _: RenderBoolField, _: bool) void {}
-    /// Provides the `clearTextField` operation.
+    /// Clears an engine-decided text field from one render node.
     pub fn clearTextField(_: VerifySink, _: u64, _: RenderTextField) void {}
-    /// Provides the `clearTextAttr` operation.
+    /// Clears an engine-decided custom text attribute from one render node.
     pub fn clearTextAttr(_: VerifySink, _: u64, _: []const u8) void {}
-    /// Provides the `clearBoolField` operation.
+    /// Clears an engine-decided boolean field from one render node.
     pub fn clearBoolField(_: VerifySink, _: u64, _: RenderBoolField) void {}
-    /// Provides the `bindEvent` operation.
+    /// Publishes a validated canonical event binding selected by the engine.
     pub fn bindEvent(_: VerifySink, _: u64, _: EventBindingKey, _: EventBinding) void {}
-    /// Provides the `clearEvent` operation.
+    /// Removes a host event registration whose engine-owned binding is no longer active.
     pub fn clearEvent(_: VerifySink, _: u64, _: EventBindingKey) void {}
-    /// Provides the `startInterval` operation.
+    /// Starts the bounded host registration for an engine-owned interval source.
     pub fn startInterval(_: VerifySink, _: u64, _: u64) void {}
-    /// Provides the `cancelInterval` operation.
+    /// Cancels the host registration for an interval whose owning scope is no longer active.
     pub fn cancelInterval(_: VerifySink, _: u64) void {}
-    /// Provides the `startTask` operation.
+    /// Starts bounded asynchronous host work for an engine-issued task request.
     pub fn startTask(_: VerifySink, _: u64, _: []const u8, _: []const u8) void {}
-    /// Provides the `cancelTask` operation.
+    /// Cancels host work for a task request retired by engine lifecycle policy.
     pub fn cancelTask(_: VerifySink, _: u64) void {}
-    /// Provides the `navigate` operation.
+    /// Applies an engine-issued browser-history command without deriving routing semantics.
     pub fn navigate(_: VerifySink, _: NavigationKind, _: LocationSnapshot) void {}
-    /// Provides the `setDocumentTitle` operation.
+    /// Applies the document title already selected by graph propagation.
     pub fn setDocumentTitle(_: VerifySink, _: []const u8) void {}
-    /// Provides the `debugAssertNode` operation.
+    /// Checks that the host render surface matches the engine's committed node metadata.
     pub fn debugAssertNode(_: VerifySink, _: u64, _: bool, _: ?[]const u8, _: ?u64, _: []const u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64) void {}
 };
 
@@ -173,43 +173,43 @@ const VerifyCtx = struct {
     pub const Metrics = engine_metrics.RuntimeMetrics;
     pub const Sink = VerifySink;
 
-    /// Provides the `zeroMetrics` operation.
+    /// Creates the host's zeroed metric accumulator for a new engine operation.
     pub fn zeroMetrics() Metrics {
         return engine_metrics.zeroRuntimeMetrics();
     }
 
-    /// Provides the `allocator` operation.
+    /// Returns the allocator owned by this host context for shared-engine work.
     pub fn allocator(_: Handle) std.mem.Allocator {
         return std.heap.page_allocator;
     }
 
-    /// Provides the `cloneHostValue` operation.
+    /// Produces an independently owned copy through the value's app-compiled capability.
     pub fn cloneHostValue(_: Handle, value: HostValue) HostValue {
         return value;
     }
 
-    /// Provides the `pushHostValueCapabilities` operation.
+    /// Opens a checked capability frame for an app-compiled erased call.
     pub fn pushHostValueCapabilities(_: Handle, _: []const HostValueCapability) void {}
 
-    /// Provides the `popHostValueCapabilities` operation.
+    /// Closes the current capability frame after an app-compiled erased call.
     pub fn popHostValueCapabilities(_: Handle) void {}
 
-    /// Provides the `stateValueByNodeId` operation.
+    /// Resolves a state cell by dense node id without scanning the signal graph.
     pub fn stateValueByNodeId(_: Handle, _: u64) HostValue {
         return 0;
     }
 
-    /// Provides the `stateCapability` operation.
+    /// Returns the exact app-compiled capability that owns the requested state cell.
     pub fn stateCapability(_: Handle, _: u64) HostValueCapability {
         return undefined;
     }
 
-    /// Provides the `initialLocationPayload` operation.
+    /// Materializes the mount-time browser location through the source's owning capability.
     pub fn initialLocationPayload(_: Handle, _: *abi.RocHost, _: HostValueCapability) HostValue {
         return 0;
     }
 
-    /// Provides the `sink` operation.
+    /// Returns the thin render-command sink used by the shared engine.
     pub fn sink(_: Handle) Sink {
         return .{};
     }

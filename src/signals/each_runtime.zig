@@ -10,7 +10,7 @@ pub const SiteKey = struct {
 };
 
 pub const SiteKeyContext = struct {
-    /// Provides the `hash` operation.
+    /// Reports whether h is present in maintained state.
     pub fn hash(_: @This(), key: SiteKey) u64 {
         var hasher = std.hash.Wyhash.init(0);
         hasher.update(std.mem.asBytes(&key.parent_scope_id));
@@ -18,7 +18,7 @@ pub const SiteKeyContext = struct {
         return hasher.final();
     }
 
-    /// Provides the `eql` operation.
+    /// Compares values through their owning capability rather than inspecting erased bytes.
     pub fn eql(_: @This(), left: SiteKey, right: SiteKey) bool {
         return left.parent_scope_id == right.parent_scope_id and left.site_ordinal == right.site_ordinal;
     }
@@ -37,7 +37,7 @@ pub const Site = struct {
     hash_heads: std.AutoHashMapUnmanaged(u64, usize) = .empty,
     hash_links: std.ArrayListUnmanaged(usize) = .empty,
 
-    /// Provides the `deinit` operation.
+    /// Releases every resource owned by this value and leaves no retained host or Roc ownership behind.
     pub fn deinit(self: *Site, allocator: std.mem.Allocator) void {
         self.scope_ids.deinit(allocator);
         self.hash_heads.deinit(allocator);
@@ -57,7 +57,7 @@ pub const DiffResult = struct {
     row_items_unchanged: u64,
     row_items_updated: u64,
 
-    /// Provides the `deinit` operation.
+    /// Releases every resource owned by this value and leaves no retained host or Roc ownership behind.
     pub fn deinit(self: DiffResult, allocator: std.mem.Allocator) void {
         allocator.free(self.scope_ids);
         allocator.free(self.row_items_changed);
@@ -87,7 +87,7 @@ pub const DuplicateKeyInfo = struct {
     second_index: usize,
 };
 
-/// Provides the `clearSites` operation.
+/// Clears sites while retaining bounded storage where the type promises reuse.
 pub fn clearSites(allocator: std.mem.Allocator, sites: *std.ArrayListUnmanaged(Site), site_indexes: *SiteIndexMap, memberships: *std.ArrayListUnmanaged(?Membership)) void {
     for (sites.items) |*site| {
         site.deinit(allocator);
@@ -100,7 +100,7 @@ pub fn clearSites(allocator: std.mem.Allocator, sites: *std.ArrayListUnmanaged(S
     memberships.* = .empty;
 }
 
-/// Provides the `ensureMembershipSlot` operation.
+/// Ensures membership slot capacity or state before publication can begin.
 pub fn ensureMembershipSlot(allocator: std.mem.Allocator, memberships: *std.ArrayListUnmanaged(?Membership), scope_id: u64) *?Membership {
     const index: usize = @intCast(scope_id);
     while (memberships.items.len <= index) {
@@ -109,7 +109,7 @@ pub fn ensureMembershipSlot(allocator: std.mem.Allocator, memberships: *std.Arra
     return &memberships.items[index];
 }
 
-/// Provides the `ensureSiteIndex` operation.
+/// Ensures site index capacity or state before publication can begin.
 pub fn ensureSiteIndex(allocator: std.mem.Allocator, sites: *std.ArrayListUnmanaged(Site), site_indexes: *SiteIndexMap, parent_scope_id: u64, site_ordinal: u64) usize {
     const key: SiteKey = .{
         .parent_scope_id = parent_scope_id,
@@ -124,7 +124,7 @@ pub fn ensureSiteIndex(allocator: std.mem.Allocator, sites: *std.ArrayListUnmana
     return site_index;
 }
 
-/// Provides the `activeSiteIndex` operation.
+/// Returns active site index from the maintained active-runtime indexes.
 pub fn activeSiteIndex(site_indexes: *const SiteIndexMap, parent_scope_id: u64, site_ordinal: u64) ?usize {
     return site_indexes.get(.{
         .parent_scope_id = parent_scope_id,
@@ -139,7 +139,7 @@ fn u64SliceContains(items: []const u64, target: u64) bool {
     return false;
 }
 
-/// Provides the `diffPreservesSurvivorRenderOrder` operation.
+/// Reports whether keyed survivors already appear in the requested render order.
 pub fn diffPreservesSurvivorRenderOrder(old_render_rows: []const u64, next_scope_ids: []const u64) bool {
     var old_index: usize = 0;
     for (next_scope_ids) |next_scope_id| {
@@ -154,7 +154,7 @@ pub fn diffPreservesSurvivorRenderOrder(old_render_rows: []const u64, next_scope
     return true;
 }
 
-/// Provides the `renderSegmentScopeIds` operation.
+/// Returns scope ids for the local render segment owned by an each site.
 pub fn renderSegmentScopeIds(allocator: std.mem.Allocator, segments: []const RenderSegment) []u64 {
     const ids = allocator.alloc(u64, segments.len) catch @panic("out of memory");
     for (segments, ids) |segment, *id| {
@@ -163,7 +163,7 @@ pub fn renderSegmentScopeIds(allocator: std.mem.Allocator, segments: []const Ren
     return ids;
 }
 
-/// Provides the `renderInsertIndexForRowRanges` operation.
+/// Computes the local insertion point from maintained keyed-row render ranges.
 pub fn renderInsertIndexForRowRanges(site_render_insert_index: usize, row_ranges: *const std.AutoHashMapUnmanaged(u64, RenderSegment), next_scope_ids: []const u64, row_index: usize) usize {
     if (row_index >= next_scope_ids.len) @panic("each row insertion index was requested outside the next row order");
 
@@ -199,7 +199,7 @@ fn adjustedRenderInsertIndex(old_index: usize, replace_index: usize, removed_cou
     return old_index - removed_count + replacement_count;
 }
 
-/// Provides the `adjustRenderRanges` operation.
+/// Shifts only row render ranges affected by an insertion or removal.
 pub fn adjustRenderRanges(row_ranges: *std.AutoHashMapUnmanaged(u64, RenderSegment), replace_index: usize, removed_count: usize, replacement_count: usize) void {
     var range_iterator = row_ranges.iterator();
     while (range_iterator.next()) |entry| {
@@ -207,7 +207,7 @@ pub fn adjustRenderRanges(row_ranges: *std.AutoHashMapUnmanaged(u64, RenderSegme
     }
 }
 
-/// Provides the `updateRenderRange` operation.
+/// Updates one surviving row's render range after local reconciliation.
 pub fn updateRenderRange(row_ranges: *std.AutoHashMapUnmanaged(u64, RenderSegment), allocator: std.mem.Allocator, scope_id: u64, render_insert_index: usize, removed_count: usize, replacement_count: usize) void {
     const removed_range = row_ranges.fetchRemove(scope_id);
     const old_len = if (removed_range) |entry| entry.value.len else 0;
@@ -222,7 +222,7 @@ pub fn updateRenderRange(row_ranges: *std.AutoHashMapUnmanaged(u64, RenderSegmen
     }
 }
 
-/// Provides the `appendRowToSiteIndex` operation.
+/// Appends row to site index using capacity that must already satisfy the caller's transaction contract.
 pub fn appendRowToSiteIndex(allocator: std.mem.Allocator, sites: *std.ArrayListUnmanaged(Site), memberships: *std.ArrayListUnmanaged(?Membership), site_index: usize, scope_id: u64, key_hash: u64) void {
     if (site_index >= sites.items.len) @panic("each row site index exceeded site table");
     const site = &sites.items[site_index];
@@ -244,7 +244,7 @@ pub fn appendRowToSiteIndex(allocator: std.mem.Allocator, sites: *std.ArrayListU
     };
 }
 
-/// Provides the `removeRowFromSiteIndex` operation.
+/// Removes row from site index and releases the ownership attached to that live entry.
 pub fn removeRowFromSiteIndex(sites: *std.ArrayListUnmanaged(Site), memberships: *std.ArrayListUnmanaged(?Membership), scope_id: u64, key_hash: u64, row_keys: anytype) void {
     if (scope_id >= memberships.items.len) @panic("each row scope was missing its row index");
     const membership = memberships.items[@intCast(scope_id)] orelse @panic("each row scope was missing its row index");
@@ -277,7 +277,7 @@ pub fn removeRowFromSiteIndex(sites: *std.ArrayListUnmanaged(Site), memberships:
     _ = site.hash_links.pop();
 }
 
-/// Provides the `replaceSiteRows` operation.
+/// Replaces site rows while releasing displaced ownership exactly once.
 pub fn replaceSiteRows(allocator: std.mem.Allocator, sites: *std.ArrayListUnmanaged(Site), memberships: *std.ArrayListUnmanaged(?Membership), site_index: usize, scope_ids: []const u64, row_keys: anytype) void {
     if (site_index >= sites.items.len) @panic("each row site index exceeded site table");
     const site = &sites.items[site_index];
@@ -312,7 +312,7 @@ pub fn replaceSiteRows(allocator: std.mem.Allocator, sites: *std.ArrayListUnmana
     }
 }
 
-/// Provides the `syncRows` operation.
+/// Reconciles one keyed each site by exact key identity, preserving surviving row scopes and disposing removed rows.
 pub fn syncRows(
     allocator: std.mem.Allocator,
     sites: *std.ArrayListUnmanaged(Site),
@@ -530,7 +530,7 @@ fn replaceHashIndex(site: *Site, hash: u64, old_index: usize, new_index: usize) 
 const TestRowKeys = struct {
     hashes: []const u64,
 
-    /// Provides the `rowKeyHash` operation.
+    /// Performs row key hash through the keyed-row capabilities that own key and item values.
     pub fn rowKeyHash(self: *const TestRowKeys, scope_id: u64) u64 {
         if (scope_id >= self.hashes.len) @panic("test scope id exceeded row key table");
         return self.hashes[@intCast(scope_id)];
@@ -553,7 +553,7 @@ const TestSyncHooks = struct {
         self.disposed_scopes.deinit(allocator);
     }
 
-    /// Provides the `recordEachSync` operation.
+    /// Records each sync in the metrics or lifecycle state owned by this operation.
     pub fn recordEachSync(self: *@This(), next_len: usize, existing_len: usize) void {
         self.sync_next_len = next_len;
         self.sync_existing_len = existing_len;
@@ -567,44 +567,44 @@ const TestSyncHooks = struct {
         if (hash != self.hashForKey(key)) @panic("test key hash must match key");
     }
 
-    /// Provides the `hashKey` operation.
+    /// Reports whether h key is present in maintained state.
     pub fn hashKey(self: *@This(), key: u64) u64 {
         return self.hashForKey(key);
     }
 
-    /// Provides the `nextKeysEqual` operation.
+    /// Compares candidate row keys exactly after hash lookup, preserving collision correctness.
     pub fn nextKeysEqual(_: *@This(), left: u64, right: u64) bool {
         return left == right;
     }
 
-    /// Provides the `existingKeyEquals` operation.
+    /// Confirms an indexed key match through the key capability to handle hash collisions exactly.
     pub fn existingKeyEquals(self: *@This(), scope_id: u64, key: u64) bool {
         return self.keys_by_scope[@intCast(scope_id)] == key;
     }
 
-    /// Provides the `rowItemEquals` operation.
+    /// Performs row item equals through the keyed-row capabilities that own key and item values.
     pub fn rowItemEquals(self: *@This(), scope_id: u64, item: u64) bool {
         return self.items_by_scope[@intCast(scope_id)] == item;
     }
 
-    /// Provides the `replaceRowKey` operation.
+    /// Replaces row key while releasing displaced ownership exactly once.
     pub fn replaceRowKey(self: *@This(), scope_id: u64, hash: u64, key: u64) void {
         self.expectHash(hash, key);
         self.keys_by_scope[@intCast(scope_id)] = key;
     }
 
-    /// Provides the `replaceRowItem` operation.
+    /// Replaces row item while releasing displaced ownership exactly once.
     pub fn replaceRowItem(self: *@This(), scope_id: u64, item: u64) void {
         self.items_by_scope[@intCast(scope_id)] = item;
     }
 
-    /// Provides the `dropIncomingKey` operation.
+    /// Drops the provisional incoming key through its owning capability.
     pub fn dropIncomingKey(_: *@This(), _: u64) void {}
 
-    /// Provides the `dropIncomingItem` operation.
+    /// Drops the provisional incoming item through its owning capability.
     pub fn dropIncomingItem(_: *@This(), _: u64) void {}
 
-    /// Provides the `createRow` operation.
+    /// Creates a new keyed row scope and transfers the incoming key and item into its ownership.
     pub fn createRow(self: *@This(), parent_scope_id: u64, site_ordinal: u64, hash: u64, key: u64, item: u64) u64 {
         if (parent_scope_id != 1 or site_ordinal != 2) @panic("test row was created for the wrong site");
         self.expectHash(hash, key);
@@ -615,24 +615,24 @@ const TestSyncHooks = struct {
         return scope_id;
     }
 
-    /// Provides the `disposeScope` operation.
+    /// Disposes a removed row scope and every render, effect, callable, and value it owns.
     pub fn disposeScope(self: *@This(), scope_id: u64) void {
         self.disposed_scopes.append(std.testing.allocator, scope_id) catch @panic("out of memory");
     }
 
-    /// Provides the `rowKeyHash` operation.
+    /// Performs row key hash through the keyed-row capabilities that own key and item values.
     pub fn rowKeyHash(self: *@This(), scope_id: u64) u64 {
         return self.hashForKey(self.keys_by_scope[@intCast(scope_id)]);
     }
 
-    /// Provides the `recordRows` operation.
+    /// Records rows in the metrics or lifecycle state owned by this operation.
     pub fn recordRows(self: *@This(), rows_reused: u64, rows_created: u64, rows_removed: u64) void {
         self.rows_reused = rows_reused;
         self.rows_created = rows_created;
         self.rows_removed = rows_removed;
     }
 
-    /// Provides the `failDuplicateEachKey` operation.
+    /// Rejects a duplicate keyed row at the narrow reconciliation boundary with a bounded diagnostic.
     pub fn failDuplicateEachKey(_: *@This(), parent_scope_id: u64, site_ordinal: u64, first_index: usize, second_index: usize, key: u64) noreturn {
         _ = parent_scope_id;
         _ = site_ordinal;

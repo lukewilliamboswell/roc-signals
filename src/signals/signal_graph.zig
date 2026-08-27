@@ -7,7 +7,7 @@ pub const Error = error{
     MissingDependent,
 };
 
-/// Provides the `Node` operation.
+/// Defines one dependency-graph node with its stored rank and forward adjacency.
 pub fn Node(comptime Record: type) type {
     return struct {
         record: *Record,
@@ -16,7 +16,7 @@ pub fn Node(comptime Record: type) type {
     };
 }
 
-/// Provides the `appendDependent` operation.
+/// Appends dependent using capacity that must already satisfy the caller's transaction contract.
 pub fn appendDependent(comptime Record: type, allocator: std.mem.Allocator, nodes: []Node(Record), input_id: u64, dependent_id: u64) (Error || std.mem.Allocator.Error)!void {
     const input_index: usize = @intCast(input_id);
     if (input_index >= nodes.len) return Error.UnknownNode;
@@ -29,7 +29,7 @@ pub fn appendDependent(comptime Record: type, allocator: std.mem.Allocator, node
     dependents.*[previous_len] = dependent_id;
 }
 
-/// Provides the `removeDependent` operation.
+/// Removes dependent and releases the ownership attached to that live entry.
 pub fn removeDependent(comptime Record: type, allocator: std.mem.Allocator, nodes: []Node(Record), input_id: u64, dependent_id: u64) (Error || std.mem.Allocator.Error)!void {
     const input_index: usize = @intCast(input_id);
     if (input_index >= nodes.len) return Error.UnknownNode;
@@ -45,7 +45,7 @@ pub fn removeDependent(comptime Record: type, allocator: std.mem.Allocator, node
     return Error.MissingDependent;
 }
 
-/// Provides the `replaceDependent` operation.
+/// Replaces dependent while releasing displaced ownership exactly once.
 pub fn replaceDependent(comptime Record: type, nodes: []Node(Record), input_id: u64, old_dependent_id: u64, new_dependent_id: u64) Error!void {
     const input_index: usize = @intCast(input_id);
     if (input_index >= nodes.len) return Error.UnknownNode;
@@ -60,14 +60,14 @@ pub fn replaceDependent(comptime Record: type, nodes: []Node(Record), input_id: 
     return Error.MissingDependent;
 }
 
-/// Provides the `rank` operation.
+/// Returns the stored topological rank used for dependency-ordered scheduling.
 pub fn rank(comptime Record: type, nodes: []const Node(Record), record_id: u64) Error!u64 {
     const index: usize = @intCast(record_id);
     if (index >= nodes.len) return Error.UnknownNode;
     return nodes[index].rank;
 }
 
-/// Provides the `dependentIds` operation.
+/// Returns stored forward adjacency for one signal without scanning the graph.
 pub fn dependentIds(comptime Record: type, nodes: []const Node(Record), record_id: u64) Error![]const u64 {
     const index: usize = @intCast(record_id);
     if (index >= nodes.len) return Error.UnknownNode;

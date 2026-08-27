@@ -23,7 +23,7 @@ pub const Expr = struct {
         list: []Expr,
     },
 
-    /// Provides the `deinit` operation.
+    /// Releases every resource owned by this value and leaves no retained host or Roc ownership behind.
     pub fn deinit(self: Expr, allocator: std.mem.Allocator) void {
         switch (self.value) {
             .atom => |atom| switch (atom) {
@@ -53,12 +53,12 @@ pub const Reader = struct {
     column: usize = 1,
     diagnostic: ?Diagnostic = null,
 
-    /// Provides the `init` operation.
+    /// Creates an initialized value with the ownership and capacity invariants required by this module.
     pub fn init(allocator: std.mem.Allocator, input: []const u8) Reader {
         return .{ .allocator = allocator, .input = input };
     }
 
-    /// Provides the `readOne` operation.
+    /// Reads one while preserving parser ownership and error location.
     pub fn readOne(self: *Reader) ReadError!Expr {
         self.skipTrivia();
         if (self.index == self.input.len) return self.fail("expected one S-expression");

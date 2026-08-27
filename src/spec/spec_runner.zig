@@ -392,13 +392,13 @@ fn appendDescendantText(
     }
 }
 
-/// Provides the `Runner` operation.
+/// Builds the semantic spec runner for a host adapter and its observable DOM surface.
 pub fn Runner(comptime Ctx: type) type {
     return struct {
         const Host = Ctx.Host;
         const RocHost = Ctx.RocHost;
 
-        /// Provides the `run` operation.
+        /// Runs  using the host semantics and measurement boundaries defined by this module.
         pub fn run(host: *Host, roc_host: *RocHost, commands: []const SpecCommand, verbose: bool) c_int {
             var metrics_mark: ?RuntimeMetrics = null;
 
@@ -1261,10 +1261,10 @@ test "spec runner real_click dispatch honors capture bubble and stop policies" {
         pub const Host = TestHost;
         pub const RocHost = void;
 
-        /// Provides the `writeStderr` operation.
+        /// Writes a diagnostic directly to standard error without entering application semantics.
         pub fn writeStderr(_: []const u8) void {}
 
-        /// Provides the `elementById` operation.
+        /// Returns by id from the host's semantic render model.
         pub fn elementById(host: *Host, elem_id: u64) ?*sim_dom.Element {
             if (elem_id >= host.elements.items.len) return null;
             const elem = &host.elements.items[@intCast(elem_id)];
@@ -1272,17 +1272,17 @@ test "spec runner real_click dispatch honors capture bubble and stop policies" {
             return elem;
         }
 
-        /// Provides the `fixedEventId` operation.
+        /// Returns the dense id of the selected fixed event binding for spec dispatch.
         pub fn fixedEventId(elem: *const sim_dom.Element, kind: render.EventKind) ?u64 {
             return sim_dom.fixedEventId(elem, kind);
         }
 
-        /// Provides the `namedEvent` operation.
+        /// Returns the canonical named-event binding used by the spec or simulated DOM.
         pub fn namedEvent(elem: *const sim_dom.Element, name: []const u8) ?sim_dom.NamedEvent {
             return sim_dom.namedEvent(elem, name);
         }
 
-        /// Provides the `dispatchRocEvent` operation.
+        /// Dispatches roc event through validated routing and dependency-ordered propagation.
         pub fn dispatchRocEvent(host: *Host, _: *RocHost, event_id: u64, payload_descriptor: BoundaryPayloadDescriptor, payload: anytype) void {
             _ = payload;
             if (!payload_descriptor.eql(BoundaryPayloadDescriptor.init(.unit, .none))) {
@@ -1291,15 +1291,15 @@ test "spec runner real_click dispatch honors capture bubble and stop policies" {
             host.appendDispatch(event_id);
         }
 
-        /// Provides the `hostValueUnit` operation.
+        /// Materializes unit as a capability-owned host value for boundary delivery.
         pub fn hostValueUnit(_: *Host, _: *RocHost) void {}
 
-        /// Provides the `hostValueBool` operation.
+        /// Materializes bool as a capability-owned host value for boundary delivery.
         pub fn hostValueBool(_: *Host, _: *RocHost, value: bool) bool {
             return value;
         }
 
-        /// Provides the `setElementCheckedIfChanged` operation.
+        /// Updates checked if changed only when the simulated or browser field actually differs.
         pub fn setElementCheckedIfChanged(elem: *sim_dom.Element, checked: bool) bool {
             return sim_dom.setCheckedIfChanged(elem, checked);
         }
@@ -1394,10 +1394,10 @@ test "spec runner real_click applies form button default actions" {
         pub const Host = TestHost;
         pub const RocHost = void;
 
-        /// Provides the `writeStderr` operation.
+        /// Writes a diagnostic directly to standard error without entering application semantics.
         pub fn writeStderr(_: []const u8) void {}
 
-        /// Provides the `elementById` operation.
+        /// Returns by id from the host's semantic render model.
         pub fn elementById(host: *Host, elem_id: u64) ?*sim_dom.Element {
             if (elem_id >= host.elements.items.len) return null;
             const elem = &host.elements.items[@intCast(elem_id)];
@@ -1405,22 +1405,22 @@ test "spec runner real_click applies form button default actions" {
             return elem;
         }
 
-        /// Provides the `fixedEventId` operation.
+        /// Returns the dense id of the selected fixed event binding for spec dispatch.
         pub fn fixedEventId(elem: *const sim_dom.Element, kind: render.EventKind) ?u64 {
             return sim_dom.fixedEventId(elem, kind);
         }
 
-        /// Provides the `namedEvent` operation.
+        /// Returns the canonical named-event binding used by the spec or simulated DOM.
         pub fn namedEvent(elem: *const sim_dom.Element, name: []const u8) ?sim_dom.NamedEvent {
             return sim_dom.namedEvent(elem, name);
         }
 
-        /// Provides the `elementTextAttr` operation.
+        /// Returns text attr from the host's semantic render model.
         pub fn elementTextAttr(elem: *const sim_dom.Element, name: []const u8) ?[]const u8 {
             return sim_dom.textAttr(elem, name);
         }
 
-        /// Provides the `dispatchRocEvent` operation.
+        /// Dispatches roc event through validated routing and dependency-ordered propagation.
         pub fn dispatchRocEvent(host: *Host, _: *RocHost, event_id: u64, payload_descriptor: BoundaryPayloadDescriptor, payload: TestPayload) void {
             if (!payload_descriptor.eql(BoundaryPayloadDescriptor.init(.unit, .none))) {
                 @panic("test expected a unit payload descriptor");
@@ -1433,22 +1433,22 @@ test "spec runner real_click applies form button default actions" {
             host.appendDispatch(event_id);
         }
 
-        /// Provides the `hostValueUnit` operation.
+        /// Materializes unit as a capability-owned host value for boundary delivery.
         pub fn hostValueUnit(_: *Host, _: *RocHost) TestPayload {
             return .{ .unit = {} };
         }
 
-        /// Provides the `hostValueBool` operation.
+        /// Materializes bool as a capability-owned host value for boundary delivery.
         pub fn hostValueBool(_: *Host, _: *RocHost, value: bool) TestPayload {
             return .{ .bool = value };
         }
 
-        /// Provides the `hostValueStr` operation.
+        /// Materializes str as a capability-owned host value for boundary delivery.
         pub fn hostValueStr(_: *Host, _: *RocHost, value: []const u8) TestPayload {
             return .{ .str = value };
         }
 
-        /// Provides the `setElementCheckedIfChanged` operation.
+        /// Updates checked if changed only when the simulated or browser field actually differs.
         pub fn setElementCheckedIfChanged(elem: *sim_dom.Element, checked: bool) bool {
             return sim_dom.setCheckedIfChanged(elem, checked);
         }
@@ -1547,10 +1547,10 @@ test "spec runner real_click applies checkbox default action" {
         pub const Host = TestHost;
         pub const RocHost = void;
 
-        /// Provides the `writeStderr` operation.
+        /// Writes a diagnostic directly to standard error without entering application semantics.
         pub fn writeStderr(_: []const u8) void {}
 
-        /// Provides the `elementById` operation.
+        /// Returns by id from the host's semantic render model.
         pub fn elementById(host: *Host, elem_id: u64) ?*sim_dom.Element {
             if (elem_id >= host.elements.items.len) return null;
             const elem = &host.elements.items[@intCast(elem_id)];
@@ -1558,22 +1558,22 @@ test "spec runner real_click applies checkbox default action" {
             return elem;
         }
 
-        /// Provides the `fixedEventId` operation.
+        /// Returns the dense id of the selected fixed event binding for spec dispatch.
         pub fn fixedEventId(elem: *const sim_dom.Element, kind: render.EventKind) ?u64 {
             return sim_dom.fixedEventId(elem, kind);
         }
 
-        /// Provides the `namedEvent` operation.
+        /// Returns the canonical named-event binding used by the spec or simulated DOM.
         pub fn namedEvent(elem: *const sim_dom.Element, name: []const u8) ?sim_dom.NamedEvent {
             return sim_dom.namedEvent(elem, name);
         }
 
-        /// Provides the `elementTextAttr` operation.
+        /// Returns text attr from the host's semantic render model.
         pub fn elementTextAttr(elem: *const sim_dom.Element, name: []const u8) ?[]const u8 {
             return sim_dom.textAttr(elem, name);
         }
 
-        /// Provides the `dispatchRocEvent` operation.
+        /// Dispatches roc event through validated routing and dependency-ordered propagation.
         pub fn dispatchRocEvent(host: *Host, _: *RocHost, event_id: u64, payload_descriptor: BoundaryPayloadDescriptor, payload: TestPayload) void {
             if (payload_descriptor.eql(BoundaryPayloadDescriptor.init(.unit, .none))) {
                 switch (payload) {
@@ -1595,22 +1595,22 @@ test "spec runner real_click applies checkbox default action" {
             @panic("test expected unit or checked payload descriptor");
         }
 
-        /// Provides the `hostValueUnit` operation.
+        /// Materializes unit as a capability-owned host value for boundary delivery.
         pub fn hostValueUnit(_: *Host, _: *RocHost) TestPayload {
             return .{ .unit = {} };
         }
 
-        /// Provides the `hostValueBool` operation.
+        /// Materializes bool as a capability-owned host value for boundary delivery.
         pub fn hostValueBool(_: *Host, _: *RocHost, value: bool) TestPayload {
             return .{ .bool = value };
         }
 
-        /// Provides the `hostValueStr` operation.
+        /// Materializes str as a capability-owned host value for boundary delivery.
         pub fn hostValueStr(_: *Host, _: *RocHost, value: []const u8) TestPayload {
             return .{ .str = value };
         }
 
-        /// Provides the `setElementCheckedIfChanged` operation.
+        /// Updates checked if changed only when the simulated or browser field actually differs.
         pub fn setElementCheckedIfChanged(elem: *sim_dom.Element, checked: bool) bool {
             return sim_dom.setCheckedIfChanged(elem, checked);
         }
@@ -1686,10 +1686,10 @@ test "spec runner real_click applies radio default action" {
         pub const Host = TestHost;
         pub const RocHost = void;
 
-        /// Provides the `writeStderr` operation.
+        /// Writes a diagnostic directly to standard error without entering application semantics.
         pub fn writeStderr(_: []const u8) void {}
 
-        /// Provides the `elementById` operation.
+        /// Returns by id from the host's semantic render model.
         pub fn elementById(host: *Host, elem_id: u64) ?*sim_dom.Element {
             if (elem_id >= host.elements.items.len) return null;
             const elem = &host.elements.items[@intCast(elem_id)];
@@ -1697,22 +1697,22 @@ test "spec runner real_click applies radio default action" {
             return elem;
         }
 
-        /// Provides the `fixedEventId` operation.
+        /// Returns the dense id of the selected fixed event binding for spec dispatch.
         pub fn fixedEventId(elem: *const sim_dom.Element, kind: render.EventKind) ?u64 {
             return sim_dom.fixedEventId(elem, kind);
         }
 
-        /// Provides the `namedEvent` operation.
+        /// Returns the canonical named-event binding used by the spec or simulated DOM.
         pub fn namedEvent(elem: *const sim_dom.Element, name: []const u8) ?sim_dom.NamedEvent {
             return sim_dom.namedEvent(elem, name);
         }
 
-        /// Provides the `elementTextAttr` operation.
+        /// Returns text attr from the host's semantic render model.
         pub fn elementTextAttr(elem: *const sim_dom.Element, name: []const u8) ?[]const u8 {
             return sim_dom.textAttr(elem, name);
         }
 
-        /// Provides the `dispatchRocEvent` operation.
+        /// Dispatches roc event through validated routing and dependency-ordered propagation.
         pub fn dispatchRocEvent(host: *Host, _: *RocHost, event_id: u64, payload_descriptor: BoundaryPayloadDescriptor, payload: TestPayload) void {
             if (payload_descriptor.eql(BoundaryPayloadDescriptor.init(.unit, .none))) {
                 switch (payload) {
@@ -1733,22 +1733,22 @@ test "spec runner real_click applies radio default action" {
             @panic("test expected unit or target-value payload descriptor");
         }
 
-        /// Provides the `hostValueUnit` operation.
+        /// Materializes unit as a capability-owned host value for boundary delivery.
         pub fn hostValueUnit(_: *Host, _: *RocHost) TestPayload {
             return .{ .unit = {} };
         }
 
-        /// Provides the `hostValueBool` operation.
+        /// Materializes bool as a capability-owned host value for boundary delivery.
         pub fn hostValueBool(_: *Host, _: *RocHost, value: bool) TestPayload {
             return .{ .bool = value };
         }
 
-        /// Provides the `hostValueStr` operation.
+        /// Materializes str as a capability-owned host value for boundary delivery.
         pub fn hostValueStr(_: *Host, _: *RocHost, value: []const u8) TestPayload {
             return .{ .str = value };
         }
 
-        /// Provides the `setElementCheckedIfChanged` operation.
+        /// Updates checked if changed only when the simulated or browser field actually differs.
         pub fn setElementCheckedIfChanged(elem: *sim_dom.Element, checked: bool) bool {
             return sim_dom.setCheckedIfChanged(elem, checked);
         }
@@ -1820,10 +1820,10 @@ test "spec runner select_option applies select default action" {
         pub const Host = TestHost;
         pub const RocHost = void;
 
-        /// Provides the `writeStderr` operation.
+        /// Writes a diagnostic directly to standard error without entering application semantics.
         pub fn writeStderr(_: []const u8) void {}
 
-        /// Provides the `elementById` operation.
+        /// Returns by id from the host's semantic render model.
         pub fn elementById(host: *Host, elem_id: u64) ?*sim_dom.Element {
             if (elem_id >= host.elements.items.len) return null;
             const elem = &host.elements.items[@intCast(elem_id)];
@@ -1831,17 +1831,17 @@ test "spec runner select_option applies select default action" {
             return elem;
         }
 
-        /// Provides the `namedEvent` operation.
+        /// Returns the canonical named-event binding used by the spec or simulated DOM.
         pub fn namedEvent(elem: *const sim_dom.Element, name: []const u8) ?sim_dom.NamedEvent {
             return sim_dom.namedEvent(elem, name);
         }
 
-        /// Provides the `elementTextAttr` operation.
+        /// Returns text attr from the host's semantic render model.
         pub fn elementTextAttr(elem: *const sim_dom.Element, name: []const u8) ?[]const u8 {
             return sim_dom.textAttr(elem, name);
         }
 
-        /// Provides the `dispatchRocEvent` operation.
+        /// Dispatches roc event through validated routing and dependency-ordered propagation.
         pub fn dispatchRocEvent(host: *Host, _: *RocHost, event_id: u64, payload_descriptor: BoundaryPayloadDescriptor, payload: TestPayload) void {
             if (!payload_descriptor.eql(BoundaryPayloadDescriptor.init(.str, .target_value))) {
                 @panic("test expected a target-value payload descriptor");
@@ -1853,12 +1853,12 @@ test "spec runner select_option applies select default action" {
             host.str_dispatches.append(host.allocator, .{ .event_id = event_id, .value = value }) catch @panic("test dispatch log allocation failed");
         }
 
-        /// Provides the `hostValueStr` operation.
+        /// Materializes str as a capability-owned host value for boundary delivery.
         pub fn hostValueStr(_: *Host, _: *RocHost, value: []const u8) TestPayload {
             return .{ .str = value };
         }
 
-        /// Provides the `setElementValueIfChanged` operation.
+        /// Updates value if changed only when the simulated or browser field actually differs.
         pub fn setElementValueIfChanged(host: *Host, elem: *sim_dom.Element, value: []const u8) bool {
             return sim_dom.setUserValueIfChanged(host.allocator, elem, value);
         }
@@ -1919,10 +1919,10 @@ test "spec runner Enter key applies text-input submit default action" {
         pub const Host = TestHost;
         pub const RocHost = void;
 
-        /// Provides the `writeStderr` operation.
+        /// Writes a diagnostic directly to standard error without entering application semantics.
         pub fn writeStderr(_: []const u8) void {}
 
-        /// Provides the `elementById` operation.
+        /// Returns by id from the host's semantic render model.
         pub fn elementById(host: *Host, elem_id: u64) ?*sim_dom.Element {
             if (elem_id >= host.elements.items.len) return null;
             const elem = &host.elements.items[@intCast(elem_id)];
@@ -1930,17 +1930,17 @@ test "spec runner Enter key applies text-input submit default action" {
             return elem;
         }
 
-        /// Provides the `namedEvent` operation.
+        /// Returns the canonical named-event binding used by the spec or simulated DOM.
         pub fn namedEvent(elem: *const sim_dom.Element, name: []const u8) ?sim_dom.NamedEvent {
             return sim_dom.namedEvent(elem, name);
         }
 
-        /// Provides the `elementTextAttr` operation.
+        /// Returns text attr from the host's semantic render model.
         pub fn elementTextAttr(elem: *const sim_dom.Element, name: []const u8) ?[]const u8 {
             return sim_dom.textAttr(elem, name);
         }
 
-        /// Provides the `dispatchRocEvent` operation.
+        /// Dispatches roc event through validated routing and dependency-ordered propagation.
         pub fn dispatchRocEvent(host: *Host, _: *RocHost, event_id: u64, payload_descriptor: BoundaryPayloadDescriptor, _: void) void {
             if (!payload_descriptor.eql(BoundaryPayloadDescriptor.init(.unit, .none))) {
                 @panic("test expected a unit payload descriptor");
@@ -1948,7 +1948,7 @@ test "spec runner Enter key applies text-input submit default action" {
             host.dispatches.append(host.allocator, event_id) catch @panic("test dispatch log allocation failed");
         }
 
-        /// Provides the `hostValueUnit` operation.
+        /// Materializes unit as a capability-owned host value for boundary delivery.
         pub fn hostValueUnit(_: *Host, _: *RocHost) void {}
     };
 
@@ -2005,15 +2005,15 @@ test "spec runner submit dispatches enabled unit bindings" {
         pub const Host = TestHost;
         pub const RocHost = void;
 
-        /// Provides the `writeStderr` operation.
+        /// Writes a diagnostic directly to standard error without entering application semantics.
         pub fn writeStderr(_: []const u8) void {}
 
-        /// Provides the `namedEvent` operation.
+        /// Returns the canonical named-event binding used by the spec or simulated DOM.
         pub fn namedEvent(elem: *const sim_dom.Element, name: []const u8) ?sim_dom.NamedEvent {
             return sim_dom.namedEvent(elem, name);
         }
 
-        /// Provides the `dispatchRocEvent` operation.
+        /// Dispatches roc event through validated routing and dependency-ordered propagation.
         pub fn dispatchRocEvent(host: *Host, _: *RocHost, event_id: u64, payload_descriptor: BoundaryPayloadDescriptor, _: void) void {
             if (!payload_descriptor.eql(BoundaryPayloadDescriptor.init(.unit, .none))) {
                 @panic("test expected a unit payload descriptor");
@@ -2021,7 +2021,7 @@ test "spec runner submit dispatches enabled unit bindings" {
             host.appendDispatch(event_id);
         }
 
-        /// Provides the `hostValueUnit` operation.
+        /// Materializes unit as a capability-owned host value for boundary delivery.
         pub fn hostValueUnit(_: *Host, _: *RocHost) void {}
     };
 
@@ -2059,12 +2059,12 @@ test "spec runner resolves runtime metric names" {
         pub const Host = void;
         pub const RocHost = void;
 
-        /// Provides the `fail` operation.
+        /// Terminates this test or host path because continuing could leave runtime meaning incoherent.
         pub fn fail(_: []const u8) noreturn {
             unreachable;
         }
 
-        /// Provides the `writeStderr` operation.
+        /// Writes a diagnostic directly to standard error without entering application semantics.
         pub fn writeStderr(_: []const u8) void {}
     };
     const TestRunner = Runner(TestCtx);
