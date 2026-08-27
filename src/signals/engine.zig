@@ -3251,6 +3251,7 @@ pub fn Engine(comptime Ctx: type) type {
             state_cell_indexes: []usize = &.{},
             retired_node_identity_ids: []u64 = &.{},
             retired_dom_identity_ids: []u64 = &.{},
+            row_retirement: ?each_runtime.PreparedRowRemovals = null,
 
             fn stateIndexDescending(_: void, left: usize, right: usize) bool {
                 return left > right;
@@ -3318,6 +3319,15 @@ pub fn Engine(comptime Ctx: type) type {
                     plan.retired_dom_identity_ids[dom_write] = elem_id;
                     dom_write += 1;
                 };
+                var row_removals: std.ArrayListUnmanaged(each_runtime.RowRemoval) = .empty;
+                defer row_removals.deinit(allocator);
+                row_removals.ensureTotalCapacity(allocator, plan.scope_retirement.?.scope_ids.len) catch return error.OutOfMemory;
+                for (plan.scope_retirement.?.scope_ids) |scope_id| switch (engine_ptr.scopes.items[@intCast(scope_id)].step) {
+                    .each_row => |row| row_removals.appendAssumeCapacity(.{ .scope_id = scope_id, .key_hash = row.key_hash }),
+                    .root, .component, .when_branch => {},
+                };
+                plan.row_retirement = each_runtime.prepareRowRemovals(allocator, engine_ptr.each_row_sites.items, engine_ptr.each_row_memberships_by_scope_id.items, row_removals.items) catch return error.OutOfMemory;
+                errdefer if (plan.row_retirement) |*retirement| retirement.deinit(allocator);
                 const render_start = engine_ptr.renderStartForReplacementTargetSet(site.render_insert_index, plan.target_scopes);
                 plan.removal = structural_splice.prepareRemoval(HostNodeDescriptorStream, allocator, &engine_ptr.active_stream, render_start, plan.target_scopes) catch return error.OutOfMemory;
                 errdefer if (plan.removal) |*removal| removal.deinit(allocator);
@@ -3393,11 +3403,17 @@ pub fn Engine(comptime Ctx: type) type {
                 self.engine.has_inactive_dom_identities = self.engine.has_inactive_dom_identities or self.retired_dom_identity_ids.len != 0;
             }
 
+            fn commitRowRetirement(self: *@This()) void {
+                var row_keys = EachRowScopeKeyLookup{ .engine = self.engine };
+                self.row_retirement.?.apply(&self.engine.each_row_sites, &self.engine.each_row_memberships_by_scope_id, &row_keys);
+            }
+
             fn deinit(self: *@This()) void {
                 const allocator = Ctx.allocator(self.host_ctx);
                 if (self.publication) |*publication| publication.deinit(allocator);
                 if (self.removal) |*removal| removal.deinit(allocator);
                 if (self.scope_retirement) |*retirement| retirement.deinit(allocator);
+                if (self.row_retirement) |*retirement| retirement.deinit(allocator);
                 allocator.free(self.state_cell_indexes);
                 allocator.free(self.retired_node_identity_ids);
                 allocator.free(self.retired_dom_identity_ids);
@@ -8314,6 +8330,7 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 try std.testing.expectEqual(engine.scopes.items[1].scope_id, plan.retired_scope_id);
                 try std.testing.expect(plan.target_scopes[@intCast(plan.retired_scope_id)]);
                 try std.testing.expectEqualSlices(u64, &.{plan.retired_scope_id}, plan.scope_retirement.?.scope_ids);
+                try std.testing.expectEqual(@as(usize, 0), plan.row_retirement.?.rows.len);
                 try std.testing.expect(engine.scopes.items[@intCast(plan.retired_scope_id)].active);
                 try std.testing.expectEqualSlices(u64, &.{ 1, 2, 3 }, plan.removal.?.scan.removed_elem_ids);
                 try std.testing.expectEqualSlices(usize, &.{0}, plan.removal.?.descriptor_indexes.element_indexes.items);
@@ -8351,6 +8368,7 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 );
                 plan.commitStateCellsAssumeCapacity();
                 plan.commitIdentityRetirement();
+                plan.commitRowRetirement();
                 try std.testing.expectEqual(@as(usize, 0), fault.attempts);
                 try std.testing.expect(!engine.node_identities.items[@intCast(retired_node_id)].active);
                 try std.testing.expect(!engine.dom_identities.items[@intCast(retired_elem_id - 1)].active);
