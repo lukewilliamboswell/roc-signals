@@ -1451,17 +1451,23 @@ of three lifetime domains, and a value never moves between them by implication:
 Every mount, event, timer tick, task result, browser-source update, and unmount is
 a **host transaction** with prepare, mutate, and publish phases. Preparation
 validates sizes with overflow-safe arithmetic and reserves every capacity that
-can be derived before mutation. Only then may Roc callbacks, ownership changes,
-graph mutation, or sink emission begin. Publication is a single commit: before
-it, commands are private scratch; after it, the complete immutable batch is
-visible. The browser applies only a successful published batch and never observes
-or executes a prefix from a failed transaction.
+can be derived before mutation. It may evaluate Roc readers and transforms whose
+contract is pure: their provisional results remain transaction-owned and are
+released on abort. Callbacks that start effects, issue commands, or otherwise
+make externally observable changes never run during recoverable preparation.
+Only after preparation succeeds may persistent ownership change, the graph or
+render cache mutate, or a sink become visible. Publication is a single commit:
+before it, commands are private scratch; after it, the complete immutable batch
+is visible. The browser applies only a successful published batch and never
+observes or executes a prefix from a failed transaction.
 
 An allocation failure during preparation is **recoverable**. It returns
-`out_of_memory`, publishes no commands, invokes no callback, and preserves the
-previous committed engine and DOM state. Owned replacements follow
+`out_of_memory`, publishes no commands, invokes no effectful callback, releases
+all provisional results from pure evaluation, and preserves the previous
+committed engine and DOM state. Owned replacements follow
 allocate-copy-commit-release order, so failure cannot destroy the old value. A
-recoverable transaction may be retried when memory becomes available.
+recoverable transaction may be retried when memory becomes available; pure
+evaluators may therefore run again and must not encode once-only effects.
 
 An allocation failure after an irreversible ownership or mutation boundary is
 **fatal**. Continuing a partly mutated refcounted graph would be memory-unsafe,
