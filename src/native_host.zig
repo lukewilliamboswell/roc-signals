@@ -220,7 +220,7 @@ const NativeCtx = struct {
 
     /// Returns the allocator owned by this host context for shared-engine work.
     pub fn allocator(ctx: Handle) std.mem.Allocator {
-        return ctx.hostAllocator();
+        return ctx.engine_allocator_override orelse ctx.hostAllocator();
     }
 
     /// Prepares the native simulated-DOM shadow without mutating host-visible state.
@@ -591,6 +591,7 @@ const HostAllocator = struct {
 const HostEnv = struct {
     gpa: std.heap.DebugAllocator(.{ .safety = true }),
     allocation_fault: ?FaultAllocator = null,
+    engine_allocator_override: ?std.mem.Allocator = null,
     engine: HostEngine = .{},
     test_state: TestState,
     roc_allocations: roc_alloc_ledger.Ledger = .{},
@@ -5618,6 +5619,81 @@ test "signals host applies the final structural branch after deferred location r
     try std.testing.expectEqualStrings("/", host.currentLocation().path);
     try std.testing.expect(activeTextElementId(&host, "detail branch") == null);
     try std.testing.expect(activeTextElementId(&host, "overview branch") != null);
+}
+
+test "location-driven when source transaction sweeps host OOM and retries without publication" {
+    const Runner = struct {
+        fn run(failure_number: ?usize) !usize {
+            test_erased_callable_drop_count = 0;
+            var host = HostEnv.init();
+            var roc_host = makeSignalsRocHost(&host);
+            host.engine.roc_host = &roc_host;
+            defer {
+                host.deinit();
+                _ = host.gpa.deinit();
+            }
+            host.setCurrentLocation(.{ .path = "/detail", .query = "", .hash = "" });
+            const condition = testNodeLocationPathEqualsSourceExpr(&roc_host, "/detail");
+            const condition_cap = testNodeSignalExprCapabilityOrPanic(condition);
+            const root = abi.Elem{ .payload = .{ .when = .{
+                .condition = boxTestNodeSignalExpr(&roc_host, condition),
+                .read = testBoolReadHandle(&roc_host, condition_cap),
+                .when_false = boxTestElem(&roc_host, testNodeText(&roc_host, "overview branch")),
+                .when_true = boxTestElem(&roc_host, testNodeText(&roc_host, "detail branch")),
+            } }, .tag = .When };
+            defer root.decref(&roc_host);
+            var stream: HostNodeDescriptorStream = .{};
+            host.collectActiveElemRootDescriptors(&roc_host, &stream, root, &.{});
+            _ = applyNodeDescriptorStream(&host, &roc_host, &stream);
+            host.engine.active_stream = stream;
+            host.pushCurrentLocation(.{ .path = "/", .query = "", .hash = "" });
+
+            const generation_before = host.engine.dirty_signal_generation;
+            const graph_len_before = host.engine.active_signal_graph.items.len;
+            const scope_len_before = host.engine.scopes.items.len;
+            const render_len_before = host.engine.active_stream.render_nodes.items.len;
+            const dom_len_before = host.dom_elements.items.len;
+            const root_children_before = try std.testing.allocator.dupe(u64, host.engine.render_cache.nodes.items[1].children.items);
+            defer std.testing.allocator.free(root_children_before);
+            var location_record: ?*HostSignalRecord = null;
+            for (host.engine.active_signal_graph.items) |node| if (node.record.locationSource() != null) {
+                location_record = node.record;
+                break;
+            };
+            const source_value_before = location_record.?.locationSource().?.cached_value.present.value;
+
+            var fault = FaultAllocator.init(host.gpa.allocator());
+            fault.configure(failure_number);
+            host.engine_allocator_override = fault.allocator();
+            const result = host.engine.tryDispatchCurrentLocationSources(&host, &roc_host);
+            const attempts = fault.attempts;
+            if (failure_number != null) {
+                try std.testing.expectError(error.OutOfMemory, result);
+                try std.testing.expectEqual(@as(usize, 1), fault.induced_failures);
+                try std.testing.expectEqual(generation_before, host.engine.dirty_signal_generation);
+                try std.testing.expectEqual(graph_len_before, host.engine.active_signal_graph.items.len);
+                try std.testing.expectEqual(scope_len_before, host.engine.scopes.items.len);
+                try std.testing.expectEqual(render_len_before, host.engine.active_stream.render_nodes.items.len);
+                try std.testing.expectEqual(dom_len_before, host.dom_elements.items.len);
+                try std.testing.expectEqualSlices(u64, root_children_before, host.engine.render_cache.nodes.items[1].children.items);
+                try std.testing.expectEqual(source_value_before, location_record.?.locationSource().?.cached_value.present.value);
+                try std.testing.expect(activeTextElementId(&host, "detail branch") != null);
+                try std.testing.expect(activeTextElementId(&host, "overview branch") == null);
+
+                fault.configure(null);
+                _ = try host.engine.tryDispatchCurrentLocationSources(&host, &roc_host);
+            } else {
+                _ = try result;
+            }
+            try std.testing.expect(activeTextElementId(&host, "detail branch") == null);
+            try std.testing.expect(activeTextElementId(&host, "overview branch") != null);
+            return attempts;
+        }
+    };
+
+    const attempts = try Runner.run(null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
 test "signals host reuses active signal records while collecting dirty when branch" {

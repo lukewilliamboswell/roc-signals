@@ -597,6 +597,21 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             try self.wire.reserveAdditional(self.allocator, child_links);
         }
 
+        /// Transfers scalar field journals and their wire commands from a
+        /// separately prepared splice. The donor must contain no topology,
+        /// event, or custom-attribute edits; this keeps structural and scalar
+        /// preparation independent while preserving one atomic publication.
+        pub fn adoptScalarUpdates(self: *Self, donor: *Self) (std.mem.Allocator.Error || error{ResourceLimit})!void {
+            if (donor.removals.items.len != 0 or donor.creations.items.len != 0 or donor.children.items.len != 0 or donor.fixed_events.items.len != 0 or donor.custom_attrs.items.len != 0 or donor.named_events.items.len != 0 or donor.provisional_nodes.count() != 0 or donor.parent_intents.items.len != 0) return error.ResourceLimit;
+            try self.text_fields.ensureUnusedCapacity(self.allocator, donor.text_fields.items.len);
+            try self.bool_fields.ensureUnusedCapacity(self.allocator, donor.bool_fields.items.len);
+            try self.wire.appendPrepared(self.allocator, &donor.wire);
+            self.text_fields.appendSliceAssumeCapacity(donor.text_fields.items);
+            self.bool_fields.appendSliceAssumeCapacity(donor.bool_fields.items);
+            donor.text_fields.clearRetainingCapacity();
+            donor.bool_fields.clearRetainingCapacity();
+        }
+
         /// Adds one active node retirement and its corresponding host removal.
         pub fn addRemoval(self: *Self, cache: *const Cache(Ctx), elem_id: u64) error{ MissingNode, ResourceLimit }!void {
             self.removals.appendAssumeCapacity(try PreparedNodeRemoval.prepare(Ctx, cache, elem_id));

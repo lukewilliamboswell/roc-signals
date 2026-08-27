@@ -565,6 +565,19 @@ pub const PreparedBatch = struct {
         self.command_limit = next_limit;
     }
 
+    /// Appends another prepared journal after reserving its exact command and
+    /// byte requirements. Commands borrow payload storage owned by their
+    /// enclosing render splice, so the donor journal may be deinitialized
+    /// immediately after this transfer.
+    pub fn appendPrepared(self: *PreparedBatch, allocator: std.mem.Allocator, other: *PreparedBatch) (std.mem.Allocator.Error || error{ResourceLimit})!void {
+        try self.reserveAdditional(allocator, other.commands.items.len);
+        try self.capacity.add(other.capacity);
+        self.commands.appendSliceAssumeCapacity(other.commands.items);
+        other.commands.clearRetainingCapacity();
+        other.capacity = .{};
+        other.command_limit = 0;
+    }
+
     fn ensureJournalSlot(self: *const PreparedBatch) error{ResourceLimit}!void {
         if (self.commands.items.len >= self.command_limit) return error.ResourceLimit;
     }

@@ -332,6 +332,7 @@ pub const HostDirtyStructuralSignal = struct {
     record: *HostSignalRecord,
     branch: ?HostScopeBranch = null,
     pending_when_cache: ?HostValueCell = null,
+    cache_staged_in_overlay: bool = false,
 
     /// Drops a provisional dirty value without changing the live cache.
     pub fn abortPendingWhenCache(self: *@This(), ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
@@ -341,6 +342,11 @@ pub const HostDirtyStructuralSignal = struct {
 
     /// Transfers the provisional dirty value into the live cache.
     pub fn commitPendingWhenCache(self: *@This(), slot: *HostSignalCacheSlot, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
+        if (self.cache_staged_in_overlay) {
+            if (self.pending_when_cache != null) @panic("overlay-backed dirty when also owned a standalone cache cell");
+            self.cache_staged_in_overlay = false;
+            return;
+        }
         const cell = self.pending_when_cache orelse @panic("dirty when change lacked pending cache value");
         slot.deinit(ctx, roc_host, metrics);
         slot.* = .{ .present = cell };
@@ -874,7 +880,12 @@ pub fn Engine(comptime Ctx: type) type {
 
             /// Test seam that faults host-side extraction storage without injecting into Roc callbacks.
             pub fn prepareWithAllocator(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, each: HostNodeEachDesc, allocator: std.mem.Allocator) CollectionError!@This() {
-                const items_value = engine.cloneCachedSignalValue(ctx, &each.cached_value);
+                return prepareWithOverlay(engine, ctx, roc_host, &each, allocator, null);
+            }
+
+            fn prepareWithOverlay(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, each: *const HostNodeEachDesc, allocator: std.mem.Allocator, overlay: ?*const signal_records.PreparedCacheUpdates) CollectionError!@This() {
+                const items_slot = if (overlay) |prepared| prepared.readSlot(@constCast(&each.cached_value)) else &each.cached_value;
+                const items_value = engine.cloneCachedSignalValue(ctx, items_slot);
                 const items_cap = engine.hostSignalBindingCapability(ctx, &each.items);
                 assertHostValueCapabilitiesMatch(each.ops.items_capability, items_cap, "each items extension capability did not match its signal value");
                 defer callHostValueToUnitWithCapability(ctx, roc_host, items_cap, hv.hostValueCapabilityDrop(items_cap), items_value);
@@ -944,9 +955,13 @@ pub fn Engine(comptime Ctx: type) type {
 
             /// Extracts owned inputs and prepares row matching without persistent mutation.
             pub fn prepare(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, site: HostNodeScopeSiteDesc, each: HostNodeEachDesc, allocator: std.mem.Allocator) CollectionError!*@This() {
+                return prepareWithOverlay(engine, ctx, roc_host, site, &each, allocator, null);
+            }
+
+            fn prepareWithOverlay(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, site: HostNodeScopeSiteDesc, each: *const HostNodeEachDesc, allocator: std.mem.Allocator, overlay: ?*const signal_records.PreparedCacheUpdates) CollectionError!*@This() {
                 const plan = allocator.create(@This()) catch return error.OutOfMemory;
                 errdefer allocator.destroy(plan);
-                var inputs = try PreparedEachInputs.prepareWithAllocator(engine, ctx, roc_host, each, allocator);
+                var inputs = try PreparedEachInputs.prepareWithOverlay(engine, ctx, roc_host, each, allocator, overlay);
                 errdefer inputs.deinit();
                 var hooks = PreparedEachRowSyncHooks.init(engine, ctx, roc_host, each.ops);
                 errdefer hooks.deinit();
@@ -4561,6 +4576,34 @@ pub fn Engine(comptime Ctx: type) type {
                 }
             }
 
+            fn adoptScalarRenderSplice(self: *@This(), scalar: *render_cache_mod.PreparedRenderSplice(Ctx)) CollectionError!void {
+                const splice = &(self.render_splice orelse return error.ResourceLimit);
+                const allocator = Ctx.allocator(self.host_ctx);
+                if (self.render_batch_preflighted) {
+                    self.render_batch_target.?.abort();
+                    self.render_batch_preflighted = false;
+                }
+                if (comptime @hasDecl(Ctx, "RenderPublication")) if (self.host_render_publication) |*publication| {
+                    publication.deinit();
+                    self.host_render_publication = null;
+                };
+                splice.adoptScalarUpdates(scalar) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.ResourceLimit => return error.ResourceLimit,
+                };
+                splice.wire.preflight(self.render_batch_target.?, allocator) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.ResourceLimit => return error.ResourceLimit,
+                };
+                self.render_batch_preflighted = true;
+                if (comptime @hasDecl(Ctx, "prepareRenderPublication")) {
+                    self.host_render_publication = Ctx.prepareRenderPublication(self.host_ctx, splice) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        error.ResourceLimit => return error.ResourceLimit,
+                    };
+                }
+            }
+
             fn prepareExternalEach(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, rows: *const each_runtime.PreparedRowSync, replacement: *PreparedEachRowReplacementCollection, layout: *const PreparedEachRowRenderLayout) CollectionError!*@This() {
                 const allocator = Ctx.allocator(ctx);
                 var descriptor_roots: std.ArrayListUnmanaged(u64) = .empty;
@@ -4659,6 +4702,7 @@ pub fn Engine(comptime Ctx: type) type {
                 self.render_splice = try facade.prepareRenderTopology(allocator);
                 errdefer if (self.render_splice) |*splice| splice.deinit();
                 self.render_batch_target = if (comptime @hasDecl(Ctx, "renderCommandBatch")) Ctx.renderCommandBatch(self.host_ctx) else &self.render_batch;
+                errdefer if (self.render_batch_target == &self.render_batch) self.render_batch.deinit(allocator);
                 self.render_splice.?.wire.preflight(self.render_batch_target.?, allocator) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.ResourceLimit => return error.ResourceLimit,
@@ -4736,7 +4780,14 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             fn commitAssumeCapacityWith(self: *@This(), external: anytype, comptime commit_external: fn (@TypeOf(external)) void) void {
+                self.commitAssumeCapacityWithEarlyAndLate({}, struct {
+                    fn apply(_: void) void {}
+                }.apply, external, commit_external);
+            }
+
+            fn commitAssumeCapacityWithEarlyAndLate(self: *@This(), early: anytype, comptime commit_early: fn (@TypeOf(early)) void, late: anytype, comptime commit_late: fn (@TypeOf(late)) void) void {
                 self.commitRenderAssumeCapacity();
+                commit_early(early);
                 if (self.graph_release != null) self.commitGraphAssumeCapacity();
 
                 const removal = &self.removal.?.removal;
@@ -4787,7 +4838,7 @@ pub fn Engine(comptime Ctx: type) type {
                 if (self.final_render_topology) |*topology| topology.apply(&self.engine.active_stream);
 
                 self.state_retirement.?.apply(self.engine, &self.retired_state_cells);
-                commit_external(external);
+                commit_late(late);
                 self.replacement.collection.commit();
                 self.identity_retirements.?.apply(self.engine);
                 if (self.row_retirement) |*row_retirement| {
@@ -7586,8 +7637,6 @@ pub fn Engine(comptime Ctx: type) type {
                 const index = std.math.cast(usize, record_id) orelse return error.ResourceLimit;
                 if (index < self.active_text_signal_routes.items.len) text_count = std.math.add(usize, text_count, self.active_text_signal_routes.items[index].items.len) catch return error.ResourceLimit;
                 if (index < self.active_bool_signal_routes.items.len) bool_count = std.math.add(usize, bool_count, self.active_bool_signal_routes.items[index].items.len) catch return error.ResourceLimit;
-                if (index < self.active_change_signal_routes.items.len and self.active_change_signal_routes.items[index].items.len != 0) return error.ResourceLimit;
-                if (index < self.active_structural_signal_routes.items.len and self.active_structural_signal_routes.items[index].items.len != 0) return error.ResourceLimit;
             }
             const wire_count = std.math.add(usize, text_count, bool_count) catch return error.ResourceLimit;
             var splice = render_cache_mod.PreparedRenderSplice(Ctx).init(Ctx.allocator(ctx), &self.render_cache, .{
@@ -7659,6 +7708,99 @@ pub fn Engine(comptime Ctx: type) type {
                 };
             }
             return splice;
+        }
+
+        fn collectPreparedDirtyStructuralSignals(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, allocator: std.mem.Allocator, overlay: *signal_records.PreparedCacheUpdates, changed_record_ids: []const u64, dirty_source_node_ids: []const u64, dirty_generation: u64) CollectionError![]HostDirtyStructuralSignal {
+            var route_count: usize = 0;
+            for (changed_record_ids) |record_id| {
+                const index = std.math.cast(usize, record_id) orelse return error.ResourceLimit;
+                if (index < self.active_structural_signal_routes.items.len) route_count = std.math.add(usize, route_count, self.active_structural_signal_routes.items[index].items.len) catch return error.ResourceLimit;
+            }
+            var changes = std.ArrayListUnmanaged(HostDirtyStructuralSignal).empty;
+            errdefer changes.deinit(allocator);
+            changes.ensureTotalCapacity(allocator, route_count) catch return error.OutOfMemory;
+
+            for (changed_record_ids) |record_id| {
+                const index: usize = @intCast(record_id);
+                if (index >= self.active_structural_signal_routes.items.len) continue;
+                for (self.active_structural_signal_routes.items[index].items) |route| switch (route.kind) {
+                    .when => {
+                        const desc = &self.active_stream.whens.items[route.index];
+                        const site = self.activeScopeSiteByNodeId(desc.node_id, .when) orelse return error.ResourceLimit;
+                        const result = try self.evalPreparedDirtyHostSignalRecord(ctx, roc_host, overlay, desc.condition.record, dirty_source_node_ids, dirty_generation);
+                        const cap = self.hostSignalBindingCapability(ctx, &desc.condition);
+                        assertHostValueCapabilitiesMatch(desc.read.capability, cap, "prepared when read extension capability did not match its signal value");
+                        if (!result.changed) {
+                            self.dropHostSignalRecordValue(ctx, roc_host, desc.condition.record, result.value);
+                            continue;
+                        }
+                        const cached = self.updatePreparedDirtySignalExprCache(ctx, roc_host, overlay, &desc.cached_value, result.value, cap);
+                        defer self.dropHostSignalRecordValue(ctx, roc_host, desc.condition.record, cached.value);
+                        if (!cached.changed) continue;
+                        changes.appendAssumeCapacity(.{
+                            .kind = .when,
+                            .node_id = desc.node_id,
+                            .scope_id = site.scope_id,
+                            .ordinal = site.ordinal,
+                            .record = desc.condition.record,
+                            .branch = if (callHostValueToBoolWithCapability(ctx, roc_host, desc.read.capability, desc.read.read, cached.value)) .true_branch else .false_branch,
+                            .cache_staged_in_overlay = true,
+                        });
+                    },
+                    .each => {
+                        const desc = &self.active_stream.eaches.items[route.index];
+                        const site = self.activeScopeSiteByNodeId(desc.node_id, .each) orelse return error.ResourceLimit;
+                        const result = try self.evalPreparedDirtyHostSignalRecord(ctx, roc_host, overlay, desc.items.record, dirty_source_node_ids, dirty_generation);
+                        const cap = self.hostSignalBindingCapability(ctx, &desc.items);
+                        if (!result.changed) {
+                            self.dropHostSignalRecordValue(ctx, roc_host, desc.items.record, result.value);
+                            continue;
+                        }
+                        const cached = self.updatePreparedDirtySignalExprCache(ctx, roc_host, overlay, &desc.cached_value, result.value, cap);
+                        self.dropHostSignalRecordValue(ctx, roc_host, desc.items.record, cached.value);
+                        if (!cached.changed) continue;
+                        changes.appendAssumeCapacity(.{
+                            .kind = .each,
+                            .node_id = desc.node_id,
+                            .scope_id = site.scope_id,
+                            .ordinal = site.ordinal,
+                            .record = desc.items.record,
+                            .cache_staged_in_overlay = true,
+                        });
+                    },
+                };
+            }
+            return changes.toOwnedSlice(allocator) catch return error.OutOfMemory;
+        }
+
+        fn prepareOnChangeCommands(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, overlay: *signal_records.PreparedCacheUpdates, changed_record_ids: []const u64, dirty_source_node_ids: []const u64, dirty_generation: u64, pending: *std.ArrayListUnmanaged(HostPendingOnChangeCommand)) CollectionError!void {
+            const allocator = Ctx.allocator(ctx);
+            var expected: usize = 0;
+            for (changed_record_ids) |record_id| {
+                const index = std.math.cast(usize, record_id) orelse return error.ResourceLimit;
+                if (index < self.active_change_signal_routes.items.len) expected = std.math.add(usize, expected, self.active_change_signal_routes.items[index].items.len) catch return error.ResourceLimit;
+            }
+            pending.ensureTotalCapacity(allocator, expected) catch return error.OutOfMemory;
+            for (changed_record_ids) |record_id| {
+                const index: usize = @intCast(record_id);
+                if (index >= self.active_change_signal_routes.items.len) continue;
+                for (self.active_change_signal_routes.items[index].items) |route| {
+                    const desc = &self.active_stream.on_changes.items[route.index];
+                    const result = try self.evalPreparedDirtyHostSignalRecord(ctx, roc_host, overlay, desc.signal.record, dirty_source_node_ids, dirty_generation);
+                    const cap = self.hostSignalBindingCapability(ctx, &desc.signal);
+                    if (!result.changed) {
+                        self.dropHostSignalRecordValue(ctx, roc_host, desc.signal.record, result.value);
+                        continue;
+                    }
+                    const cached = self.updatePreparedDirtySignalExprCache(ctx, roc_host, overlay, &desc.cached_value, result.value, cap);
+                    defer self.dropHostSignalRecordValue(ctx, roc_host, desc.signal.record, cached.value);
+                    if (!cached.changed) continue;
+                    const cmd = callHostValueToCmdWithCapability(ctx, roc_host, cap, desc.to_cmd, cached.value);
+                    cmd.incref(1);
+                    cmd.decref(roc_host);
+                    pending.appendAssumeCapacity(.{ .scope_id = desc.scope_id, .cmd = cmd });
+                }
+            }
         }
 
         /// Collects dirty structural signals from the explicitly affected graph or scope set.
@@ -9881,7 +10023,13 @@ pub fn Engine(comptime Ctx: type) type {
             root_count: u64,
             caches: signal_records.PreparedCacheUpdates,
             changed_record_ids: []u64,
-            render_splice: render_cache_mod.PreparedRenderSplice(Ctx),
+            render_splice: ?render_cache_mod.PreparedRenderSplice(Ctx) = null,
+            structural_changes: []HostDirtyStructuralSignal = &.{},
+            structural_downstream: ?*PreparedStructuralDownstream = null,
+            each_rows: ?*PreparedActiveEachRows = null,
+            each_replacement: ?*PreparedEachRowReplacementCollection = null,
+            each_layout: ?PreparedEachRowRenderLayout = null,
+            pending_on_change_commands: std.ArrayListUnmanaged(HostPendingOnChangeCommand) = .empty,
             fallback_batch: render.TransactionalBatch = .{},
             batch_target: *render.TransactionalBatch,
             batch_preflighted: bool = false,
@@ -9902,6 +10050,40 @@ pub fn Engine(comptime Ctx: type) type {
                 return prepareMany(engine, ctx, roc_host, &owned);
             }
 
+            fn prepareWhenDownstream(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, changes: []const HostDirtyStructuralSignal) CollectionError!*PreparedStructuralDownstream {
+                const allocator = Ctx.allocator(ctx);
+                var normalized = try PreparedDirtyWhenSet.prepare(engine, allocator, changes);
+                defer normalized.deinit(allocator);
+                if (normalized.selected_indexes.len == 0) return error.ResourceLimit;
+                const selections = allocator.alloc(AggregateBranchSelection, normalized.selected_indexes.len) catch return error.OutOfMemory;
+                defer allocator.free(selections);
+                for (normalized.selected_indexes, 0..) |change_index, selection_index| {
+                    const change = changes[change_index];
+                    const site = engine.activeScopeSiteByNodeId(change.node_id, .when) orelse return error.ResourceLimit;
+                    if (site.scope_id != change.scope_id or site.ordinal != change.ordinal) return error.ResourceLimit;
+                    const when_index = engine.activeWhenIndexByNodeId(change.node_id) orelse return error.ResourceLimit;
+                    const when_desc = engine.active_stream.whens.items[when_index];
+                    if (when_desc.condition.record != change.record) return error.ResourceLimit;
+                    const branch = change.branch orelse return error.ResourceLimit;
+                    const retired_scope_id = (engine.activeWhenBranchScopeId(site.scope_id, site.ordinal, branch.opposite()) catch return error.ResourceLimit) orelse return error.ResourceLimit;
+                    if ((engine.activeWhenBranchScopeId(site.scope_id, site.ordinal, branch) catch return error.ResourceLimit) != null) return error.ResourceLimit;
+                    selections[selection_index] = .{
+                        .parent_scope_id = site.scope_id,
+                        .site_ordinal = site.ordinal,
+                        .parent_elem_id = site.parent_elem_id,
+                        .retired_scope_id = retired_scope_id,
+                        .render_insert_index = site.render_insert_index,
+                        .binder_bindings = site.binder_bindings,
+                        .branch = branch,
+                        .elem = switch (branch) {
+                            .true_branch => when_desc.when_true,
+                            .false_branch => when_desc.when_false,
+                        },
+                    };
+                }
+                return AggregateBranchCollection.prepare(engine, ctx, roc_host, selections, .{}, &.{});
+            }
+
             fn prepareMany(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, owned: *signal_records.OwnedSourceUpdates) CollectionError!?*@This() {
                 const allocator = Ctx.allocator(ctx);
                 if (owned.entries.items.len == 0) return null;
@@ -9909,6 +10091,8 @@ pub fn Engine(comptime Ctx: type) type {
                 var expected = engine.active_signal_graph.items.len;
                 for (engine.active_text_signal_routes.items) |routes| expected = std.math.add(usize, expected, routes.items.len) catch return error.ResourceLimit;
                 for (engine.active_bool_signal_routes.items) |routes| expected = std.math.add(usize, expected, routes.items.len) catch return error.ResourceLimit;
+                for (engine.active_structural_signal_routes.items) |routes| expected = std.math.add(usize, expected, routes.items.len) catch return error.ResourceLimit;
+                for (engine.active_change_signal_routes.items) |routes| expected = std.math.add(usize, expected, routes.items.len) catch return error.ResourceLimit;
                 const plan = allocator.create(@This()) catch return error.OutOfMemory;
                 errdefer allocator.destroy(plan);
                 var caches = signal_records.PreparedCacheUpdates.init(allocator, expected) catch return error.OutOfMemory;
@@ -9941,6 +10125,8 @@ pub fn Engine(comptime Ctx: type) type {
                 errdefer allocator.free(changed);
                 var splice = try engine.prepareNonStructuralRenderSplice(ctx, roc_host, &caches, changed, &.{}, generation);
                 errdefer splice.deinit();
+                const structural_changes = try engine.collectPreparedDirtyStructuralSignals(ctx, roc_host, allocator, &caches, changed, &.{}, generation);
+                errdefer allocator.free(structural_changes);
                 plan.* = .{
                     .engine = engine,
                     .host_ctx = ctx,
@@ -9950,18 +10136,54 @@ pub fn Engine(comptime Ctx: type) type {
                     .caches = caches,
                     .changed_record_ids = changed,
                     .render_splice = splice,
+                    .structural_changes = structural_changes,
                     .batch_target = undefined,
                 };
+                engine.prepareOnChangeCommands(ctx, roc_host, &plan.caches, changed, &.{}, generation, &plan.pending_on_change_commands) catch |err| return err;
+                errdefer {
+                    for (plan.pending_on_change_commands.items) |pending| pending.cmd.decref(roc_host);
+                    plan.pending_on_change_commands.deinit(allocator);
+                }
+                if (structural_changes.len != 0) {
+                    var each_count: usize = 0;
+                    var when_count: usize = 0;
+                    for (structural_changes) |change| switch (change.kind) {
+                        .when => when_count += 1,
+                        .each => each_count += 1,
+                    };
+                    if ((each_count != 0 and when_count != 0) or each_count > 1) return error.ResourceLimit;
+                    if (each_count == 1) {
+                        const change = structural_changes[0];
+                        const site = engine.activeScopeSiteByNodeId(change.node_id, .each) orelse return error.ResourceLimit;
+                        const each_index = engine.activeEachIndexByNodeId(change.node_id) orelse return error.ResourceLimit;
+                        const each_desc = &engine.active_stream.eaches.items[each_index];
+                        if (each_desc.items.record != change.record) return error.ResourceLimit;
+                        plan.each_rows = try PreparedActiveEachRows.prepareWithOverlay(engine, ctx, roc_host, site, each_desc, allocator, &plan.caches);
+                        errdefer plan.each_rows.?.deinit();
+                        plan.each_replacement = try PreparedEachRowReplacementCollection.prepare(engine, ctx, roc_host, site, each_desc.*, &plan.each_rows.?.rows, plan.each_rows.?.inputs.keys, plan.each_rows.?.inputs.items, .{}, &.{});
+                        errdefer plan.each_replacement.?.deinit();
+                        plan.each_layout = try PreparedEachRowRenderLayout.prepare(engine, allocator, site, &plan.each_rows.?.rows, plan.each_replacement.?.replacement_rows);
+                        errdefer plan.each_layout.?.deinit();
+                        plan.structural_downstream = try PreparedStructuralDownstream.prepareExternalEach(engine, ctx, roc_host, &plan.each_rows.?.rows, plan.each_replacement.?, &plan.each_layout.?);
+                    } else {
+                        plan.structural_downstream = try prepareWhenDownstream(engine, ctx, roc_host, structural_changes);
+                    }
+                    errdefer plan.structural_downstream.?.deinit();
+                    try plan.structural_downstream.?.adoptScalarRenderSplice(&plan.render_splice.?);
+                    plan.render_splice.?.deinit();
+                    plan.render_splice = null;
+                    return plan;
+                }
                 plan.batch_target = if (comptime @hasDecl(Ctx, "renderCommandBatch")) Ctx.renderCommandBatch(ctx) else &plan.fallback_batch;
                 errdefer plan.fallback_batch.deinit(allocator);
-                plan.render_splice.wire.preflight(plan.batch_target, allocator) catch |err| switch (err) {
+                plan.render_splice.?.wire.preflight(plan.batch_target, allocator) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.ResourceLimit => return error.ResourceLimit,
                 };
                 plan.batch_preflighted = true;
                 errdefer plan.batch_target.abort();
                 if (comptime @hasDecl(Ctx, "prepareRenderPublication")) {
-                    plan.host_publication = Ctx.prepareRenderPublication(ctx, &plan.render_splice) catch |err| switch (err) {
+                    plan.host_publication = Ctx.prepareRenderPublication(ctx, &plan.render_splice.?) catch |err| switch (err) {
                         error.OutOfMemory => return error.OutOfMemory,
                         error.ResourceLimit => return error.ResourceLimit,
                     };
@@ -9971,26 +10193,78 @@ pub fn Engine(comptime Ctx: type) type {
 
             fn commit(self: *@This()) render.Counts {
                 const allocator = Ctx.allocator(self.host_ctx);
-                self.render_splice.wire.stageAssumeCapacity(self.batch_target, allocator) catch @panic("prepared source batch violated preflight");
-                self.engine.commitPreparedDirtySignalCaches(&self.caches);
-                self.engine.dirty_signal_generation = self.generation;
-                self.engine.identity_reuse_barrier = self.generation;
-                self.render_splice.apply(&self.engine.render_cache);
+                if (self.structural_downstream) |downstream| {
+                    const counts = downstream.render_splice.?.wire.counts();
+                    if (self.each_rows) |rows| {
+                        const Late = struct {
+                            rows: *PreparedActiveEachRows,
+                            diff: ?HostKeyedRowDiffResult = null,
+                            fn apply(state: *@This()) void {
+                                state.diff = state.rows.commit();
+                            }
+                        };
+                        var late = Late{ .rows = rows };
+                        downstream.commitAssumeCapacityWithEarlyAndLate(self, commitSourceCaches, &late, Late.apply);
+                        var diff = late.diff orelse @panic("prepared source each row commit was skipped");
+                        diff.deinit(allocator);
+                    } else {
+                        downstream.commitAssumeCapacityWithEarlyAndLate(self, commitSourceCaches, {}, struct {
+                            fn apply(_: void) void {}
+                        }.apply);
+                    }
+                    var total = counts;
+                    total.addAll(self.engine.runActiveOnChangeInitialCommandIndices(self.host_ctx, self.roc_host, downstream.publication.?.replacement_on_change_indices));
+                    total.addAll(self.engine.runActiveMountCommandIndices(self.host_ctx, self.roc_host, downstream.publication.?.replacement_mount_indices));
+                    total.addAll(self.runPostCommitCommands());
+                    if (comptime enable_runtime_metrics) self.engine.render_metrics.addCommandCounts(total);
+                    return total;
+                }
+                self.render_splice.?.wire.stageAssumeCapacity(self.batch_target, allocator) catch @panic("prepared source batch violated preflight");
+                commitSourceCaches(self);
+                self.render_splice.?.apply(&self.engine.render_cache);
                 self.batch_target.commit();
                 self.batch_published = true;
                 if (comptime @hasDecl(Ctx, "publishRenderPublication")) {
                     Ctx.publishRenderPublication(self.host_ctx, &self.host_publication.?);
                     self.host_published = true;
                 }
+                var counts = self.render_splice.?.wire.counts();
+                counts.addAll(self.runPostCommitCommands());
+                return counts;
+            }
+
+            fn commitSourceCaches(self: *@This()) void {
+                self.engine.commitPreparedDirtySignalCaches(&self.caches);
+                self.engine.dirty_signal_generation = self.generation;
+                self.engine.identity_reuse_barrier = self.generation;
                 self.engine.recordDispatch();
-                return self.render_splice.wire.counts();
+            }
+
+            fn runPostCommitCommands(self: *@This()) render.Counts {
+                const allocator = Ctx.allocator(self.host_ctx);
+                var deferred_location = false;
+                var deferred_storage: std.ArrayListUnmanaged(HostDeferredStorageEffect) = .empty;
+                defer {
+                    for (deferred_storage.items) |effect| allocator.free(effect.key);
+                    deferred_storage.deinit(allocator);
+                }
+                var counts = self.engine.runPendingOnChangeCommandsDeferringSourceEffects(self.host_ctx, self.roc_host, self.pending_on_change_commands.items, &deferred_location, &deferred_storage);
+                counts.addAll(self.engine.flushDeferredSourceEffects(self.host_ctx, self.roc_host, deferred_location, deferred_storage.items));
+                return counts;
             }
 
             fn deinit(self: *@This()) void {
                 const allocator = Ctx.allocator(self.host_ctx);
                 if (self.batch_preflighted and !self.batch_published) self.batch_target.abort();
                 if (comptime @hasDecl(Ctx, "RenderPublication")) if (self.host_publication) |*publication| publication.deinit();
-                self.render_splice.deinit();
+                if (self.structural_downstream) |downstream| downstream.deinit();
+                if (self.each_layout) |*layout| layout.deinit();
+                if (self.each_replacement) |replacement| replacement.deinit();
+                if (self.each_rows) |rows| rows.deinit();
+                if (self.render_splice) |*splice| splice.deinit();
+                for (self.pending_on_change_commands.items) |pending| pending.cmd.decref(self.roc_host);
+                self.pending_on_change_commands.deinit(allocator);
+                allocator.free(self.structural_changes);
                 allocator.free(self.changed_record_ids);
                 self.caches.deinit(self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
                 self.fallback_batch.deinit(allocator);
@@ -10010,105 +10284,109 @@ pub fn Engine(comptime Ctx: type) type {
             return boundary.StorageArea.fromId(area_id) orelse @panic("storage command referenced an unknown storage area");
         }
 
+        const BrowserSourceRefresh = union(enum) {
+            location,
+            visibility,
+            online,
+            storage: struct { area: boundary.StorageArea, key: []const u8 },
+        };
+
+        fn browserSourceMatches(record: *HostSignalRecord, refresh: BrowserSourceRefresh) bool {
+            return switch (refresh) {
+                .location => record.locationSource() != null,
+                .visibility => record.visibilitySource() != null,
+                .online => record.onlineSource() != null,
+                .storage => |target| if (record.storageSource()) |payload| payload.area == target.area and std.mem.eql(u8, payload.key, target.key) else false,
+            };
+        }
+
+        fn tryDispatchCurrentBrowserSources(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, refresh: BrowserSourceRefresh) CollectionError!render.Counts {
+            const allocator = Ctx.allocator(ctx);
+            var expected: usize = 0;
+            for (self.active_signal_graph.items) |node| {
+                if (browserSourceMatches(node.record, refresh)) expected = std.math.add(usize, expected, 1) catch return error.ResourceLimit;
+            }
+            var owned = signal_records.OwnedSourceUpdates.init(allocator, expected) catch return error.OutOfMemory;
+            defer owned.deinit(ctx, roc_host, &self.pending_roc_metrics);
+            for (self.active_signal_graph.items) |node| {
+                if (!browserSourceMatches(node.record, refresh)) continue;
+                const incoming: struct { value: HostValue, cap: HostValueCapability } = switch (refresh) {
+                    .location => blk: {
+                        const payload = node.record.locationSource().?;
+                        const raw = Ctx.initialLocationPayload(ctx, roc_host, payload.payload_cap);
+                        break :blk .{ .value = callHostValueToHostValueWithCapability(ctx, roc_host, payload.payload_cap, payload.from_payload, raw), .cap = payload.cap };
+                    },
+                    .visibility => blk: {
+                        const payload = node.record.visibilitySource().?;
+                        const raw = Ctx.initialVisibilityPayload(ctx, roc_host, payload.payload_cap);
+                        break :blk .{ .value = callHostValueToHostValueWithCapability(ctx, roc_host, payload.payload_cap, payload.from_payload, raw), .cap = payload.cap };
+                    },
+                    .online => blk: {
+                        const payload = node.record.onlineSource().?;
+                        const raw = Ctx.initialOnlinePayload(ctx, roc_host, payload.payload_cap);
+                        break :blk .{ .value = callHostValueToHostValueWithCapability(ctx, roc_host, payload.payload_cap, payload.from_payload, raw), .cap = payload.cap };
+                    },
+                    .storage => blk: {
+                        const payload = node.record.storageSource().?;
+                        const raw = Ctx.initialStoragePayload(ctx, roc_host, payload.area, payload.key, payload.payload_cap);
+                        break :blk .{ .value = callHostValueToHostValueWithCapability(ctx, roc_host, payload.payload_cap, payload.from_payload, raw), .cap = payload.cap };
+                    },
+                };
+                owned.adoptAssumeCapacity(node.record, incoming.value, incoming.cap, &self.pending_roc_metrics) catch {
+                    callHostValueToUnitWithCapability(ctx, roc_host, incoming.cap, hv.hostValueCapabilityDrop(incoming.cap), incoming.value);
+                    return error.ResourceLimit;
+                };
+            }
+            const transaction = try PreparedSourceTransaction.prepareMany(self, ctx, roc_host, &owned) orelse return .{};
+            defer transaction.deinit();
+            var metrics = self.pending_roc_metrics;
+            metrics.bump(.dirty_source_roots, transaction.root_count);
+            self.pending_roc_metrics = metrics;
+            return transaction.commit();
+        }
+
+        /// Prepares and publishes all location roots atomically, returning host
+        /// allocation or resource failure without changing committed state.
+        pub fn tryDispatchCurrentLocationSources(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost) CollectionError!render.Counts {
+            return self.tryDispatchCurrentBrowserSources(ctx, roc_host, .location);
+        }
+
         /// Dispatches current location sources through validated routing and dependency-ordered propagation.
         pub fn dispatchCurrentLocationSources(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost) render.Counts {
-            const allocator = Ctx.allocator(ctx);
-            var root_record_ids: std.ArrayListUnmanaged(u64) = .empty;
-            defer root_record_ids.deinit(allocator);
-            const dirty_generation = self.nextDirtySignalGeneration();
-            for (self.active_signal_graph.items, 0..) |node, index| {
-                const payload = node.record.locationSource() orelse continue;
-                const raw_payload = Ctx.initialLocationPayload(ctx, roc_host, payload.payload_cap);
-                const next = callHostValueToHostValueWithCapability(ctx, roc_host, payload.payload_cap, payload.from_payload, raw_payload);
-                if (!self.updateEffectSourceCache(ctx, roc_host, node.record, next)) continue;
-                node.record.last_dirty_generation = dirty_generation;
-                node.record.last_dirty_changed = true;
-                root_record_ids.append(allocator, @intCast(index)) catch @panic("out of memory");
-            }
-            if (root_record_ids.items.len == 0) return .{};
-            self.recordDispatch();
-            var metrics = self.pending_roc_metrics;
-            metrics.bump(.dirty_source_roots, @intCast(root_record_ids.items.len));
-            self.pending_roc_metrics = metrics;
-            const dirty_record_ids = self.scratchDirtyActiveSignalRecordIdsForRoots(ctx, root_record_ids.items);
-            const changed_record_ids = self.propagateDirtyActiveSignalRecordIds(ctx, roc_host, dirty_record_ids, &.{}, dirty_generation);
-            return self.applyDirtySignalBatch(ctx, roc_host, &.{}, changed_record_ids, dirty_generation);
+            return self.tryDispatchCurrentLocationSources(ctx, roc_host) catch |err| std.debug.panic("failed to prepare atomic location-source transaction: {s}", .{@errorName(err)});
+        }
+
+        /// Prepares and publishes all visibility roots atomically, returning
+        /// host preparation failure without partial cache or render mutation.
+        pub fn tryDispatchCurrentVisibilitySources(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost) CollectionError!render.Counts {
+            return self.tryDispatchCurrentBrowserSources(ctx, roc_host, .visibility);
         }
 
         /// Dispatches current visibility sources through validated routing and dependency-ordered propagation.
         pub fn dispatchCurrentVisibilitySources(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost) render.Counts {
-            const allocator = Ctx.allocator(ctx);
-            var root_record_ids: std.ArrayListUnmanaged(u64) = .empty;
-            defer root_record_ids.deinit(allocator);
-            const dirty_generation = self.nextDirtySignalGeneration();
-            for (self.active_signal_graph.items, 0..) |node, index| {
-                const payload = node.record.visibilitySource() orelse continue;
-                const raw_payload = Ctx.initialVisibilityPayload(ctx, roc_host, payload.payload_cap);
-                const next = callHostValueToHostValueWithCapability(ctx, roc_host, payload.payload_cap, payload.from_payload, raw_payload);
-                if (!self.updateEffectSourceCache(ctx, roc_host, node.record, next)) continue;
-                node.record.last_dirty_generation = dirty_generation;
-                node.record.last_dirty_changed = true;
-                root_record_ids.append(allocator, @intCast(index)) catch @panic("out of memory");
-            }
-            if (root_record_ids.items.len == 0) return .{};
-            self.recordDispatch();
-            var metrics = self.pending_roc_metrics;
-            metrics.bump(.dirty_source_roots, @intCast(root_record_ids.items.len));
-            self.pending_roc_metrics = metrics;
-            const dirty_record_ids = self.scratchDirtyActiveSignalRecordIdsForRoots(ctx, root_record_ids.items);
-            const changed_record_ids = self.propagateDirtyActiveSignalRecordIds(ctx, roc_host, dirty_record_ids, &.{}, dirty_generation);
-            return self.applyDirtySignalBatch(ctx, roc_host, &.{}, changed_record_ids, dirty_generation);
+            return self.tryDispatchCurrentVisibilitySources(ctx, roc_host) catch @panic("failed to prepare atomic visibility-source transaction");
+        }
+
+        /// Prepares and publishes all online roots atomically, returning host
+        /// preparation failure while leaving the transaction retryable.
+        pub fn tryDispatchCurrentOnlineSources(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost) CollectionError!render.Counts {
+            return self.tryDispatchCurrentBrowserSources(ctx, roc_host, .online);
         }
 
         /// Dispatches current online sources through validated routing and dependency-ordered propagation.
         pub fn dispatchCurrentOnlineSources(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost) render.Counts {
-            const allocator = Ctx.allocator(ctx);
-            var root_record_ids: std.ArrayListUnmanaged(u64) = .empty;
-            defer root_record_ids.deinit(allocator);
-            const dirty_generation = self.nextDirtySignalGeneration();
-            for (self.active_signal_graph.items, 0..) |node, index| {
-                const payload = node.record.onlineSource() orelse continue;
-                const raw_payload = Ctx.initialOnlinePayload(ctx, roc_host, payload.payload_cap);
-                const next = callHostValueToHostValueWithCapability(ctx, roc_host, payload.payload_cap, payload.from_payload, raw_payload);
-                if (!self.updateEffectSourceCache(ctx, roc_host, node.record, next)) continue;
-                node.record.last_dirty_generation = dirty_generation;
-                node.record.last_dirty_changed = true;
-                root_record_ids.append(allocator, @intCast(index)) catch @panic("out of memory");
-            }
-            if (root_record_ids.items.len == 0) return .{};
-            self.recordDispatch();
-            var metrics = self.pending_roc_metrics;
-            metrics.bump(.dirty_source_roots, @intCast(root_record_ids.items.len));
-            self.pending_roc_metrics = metrics;
-            const dirty_record_ids = self.scratchDirtyActiveSignalRecordIdsForRoots(ctx, root_record_ids.items);
-            const changed_record_ids = self.propagateDirtyActiveSignalRecordIds(ctx, roc_host, dirty_record_ids, &.{}, dirty_generation);
-            return self.applyDirtySignalBatch(ctx, roc_host, &.{}, changed_record_ids, dirty_generation);
+            return self.tryDispatchCurrentOnlineSources(ctx, roc_host) catch @panic("failed to prepare atomic online-source transaction");
+        }
+
+        /// Prepares and publishes the matching storage roots atomically,
+        /// returning host preparation failure without partial publication.
+        pub fn tryDispatchCurrentStorageSources(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, area: boundary.StorageArea, key: []const u8) CollectionError!render.Counts {
+            return self.tryDispatchCurrentBrowserSources(ctx, roc_host, .{ .storage = .{ .area = area, .key = key } });
         }
 
         /// Dispatches current storage sources through validated routing and dependency-ordered propagation.
         pub fn dispatchCurrentStorageSources(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, area: boundary.StorageArea, key: []const u8) render.Counts {
-            const allocator = Ctx.allocator(ctx);
-            var root_record_ids: std.ArrayListUnmanaged(u64) = .empty;
-            defer root_record_ids.deinit(allocator);
-            const dirty_generation = self.nextDirtySignalGeneration();
-            for (self.active_signal_graph.items, 0..) |node, index| {
-                const payload = node.record.storageSource() orelse continue;
-                if (payload.area != area or !std.mem.eql(u8, payload.key, key)) continue;
-                const raw_payload = Ctx.initialStoragePayload(ctx, roc_host, payload.area, payload.key, payload.payload_cap);
-                const next = callHostValueToHostValueWithCapability(ctx, roc_host, payload.payload_cap, payload.from_payload, raw_payload);
-                if (!self.updateEffectSourceCache(ctx, roc_host, node.record, next)) continue;
-                node.record.last_dirty_generation = dirty_generation;
-                node.record.last_dirty_changed = true;
-                root_record_ids.append(allocator, @intCast(index)) catch @panic("out of memory");
-            }
-            if (root_record_ids.items.len == 0) return .{};
-            self.recordDispatch();
-            var metrics = self.pending_roc_metrics;
-            metrics.bump(.dirty_source_roots, @intCast(root_record_ids.items.len));
-            self.pending_roc_metrics = metrics;
-            const dirty_record_ids = self.scratchDirtyActiveSignalRecordIdsForRoots(ctx, root_record_ids.items);
-            const changed_record_ids = self.propagateDirtyActiveSignalRecordIds(ctx, roc_host, dirty_record_ids, &.{}, dirty_generation);
-            return self.applyDirtySignalBatch(ctx, roc_host, &.{}, changed_record_ids, dirty_generation);
+            return self.tryDispatchCurrentStorageSources(ctx, roc_host, area, key) catch @panic("failed to prepare atomic storage-source transaction");
         }
 
         /// Publishes a location change and refreshes active location sources in the same engine turn.
