@@ -2051,6 +2051,14 @@ pub fn Engine(comptime Ctx: type) type {
             host_ctx: Ctx.Handle,
             stream: *HostNodeDescriptorStream,
 
+            fn validateScope(self: @This(), scope_id: u64) CollectionError!void {
+                self.engine.validateScopeId(scope_id) catch @panic("scope id has no host scope descriptor");
+            }
+
+            fn rootScope(self: @This()) CollectionError!scope_tree.InternResult {
+                return self.engine.internRootScope(Ctx.allocator(self.host_ctx)) catch @panic("scope id has no host scope descriptor");
+            }
+
             fn appendElement(self: @This(), scope_id: u64, parent_elem_id: u64, dom_ordinal: *u64, tag: []const u8) CollectionError!u64 {
                 const elem_id = self.engine.internDomIdentity(Ctx.allocator(self.host_ctx), scope_id, dom_ordinal.*) catch @panic("scope id has no host scope descriptor");
                 dom_ordinal.* += 1;
@@ -2066,7 +2074,7 @@ pub fn Engine(comptime Ctx: type) type {
         };
 
         fn collectActiveElemDescriptorsWith(self: *Self, comptime Collection: type, collection: Collection, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, elem: abi.Elem, scope_id: u64, parent_elem_id: u64, ordinal: *u64, dom_ordinal: *u64, binder_stack: *std.ArrayListUnmanaged(HostBinderBinding), scope_created: bool, dirty_source_node_ids: []const u64) CollectionError!void {
-            self.validateScopeId(scope_id) catch @panic("scope id has no host scope descriptor");
+            try collection.validateScope(scope_id);
 
             const allocator = Ctx.allocator(ctx);
             switch (abi_view.Elem.fromAbi(elem)) {
@@ -2201,15 +2209,20 @@ pub fn Engine(comptime Ctx: type) type {
             self.collectActiveElemDescriptorsWith(ImmediateCollectionCtx, collection, ctx, roc_host, stream, elem, scope_id, parent_elem_id, ordinal, dom_ordinal, binder_stack, scope_created, dirty_source_node_ids) catch @panic("immediate descriptor collection failed");
         }
 
-        pub fn collectActiveElemRootDescriptors(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, root: abi.Elem, dirty_source_node_ids: []const u64) void {
-            const root_scope = self.internRootScope(Ctx.allocator(ctx)) catch @panic("scope id has no host scope descriptor");
+        fn collectActiveElemRootDescriptorsWith(self: *Self, comptime Collection: type, collection: Collection, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, root: abi.Elem, dirty_source_node_ids: []const u64) CollectionError!void {
+            const root_scope = try collection.rootScope();
             const root_scope_id = root_scope.scope_id;
             const allocator = Ctx.allocator(ctx);
             const binder_stack = self.scratchBinderStack(allocator, &.{});
             defer self.scratch.binder_stack.clearRetainingCapacity();
             var ordinal: u64 = 0;
             var dom_ordinal: u64 = 0;
-            self.collectActiveElemDescriptors(ctx, roc_host, stream, root, root_scope_id, 0, &ordinal, &dom_ordinal, binder_stack, root_scope.created, dirty_source_node_ids);
+            try self.collectActiveElemDescriptorsWith(Collection, collection, ctx, roc_host, stream, root, root_scope_id, 0, &ordinal, &dom_ordinal, binder_stack, root_scope.created, dirty_source_node_ids);
+        }
+
+        pub fn collectActiveElemRootDescriptors(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, root: abi.Elem, dirty_source_node_ids: []const u64) void {
+            const collection = ImmediateCollectionCtx{ .engine = self, .host_ctx = ctx, .stream = stream };
+            self.collectActiveElemRootDescriptorsWith(ImmediateCollectionCtx, collection, ctx, roc_host, stream, root, dirty_source_node_ids) catch @panic("immediate root descriptor collection failed");
         }
 
         pub fn clearActiveSignalGraph(self: *Self, ctx: Ctx.Handle) void {
