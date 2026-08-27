@@ -1242,6 +1242,61 @@ pub const Stream = struct {
         }
     };
 
+    pub const PreparedScopeSite = struct {
+        desc: ScopeSiteDesc,
+
+        pub fn abort(self: @This(), allocator: std.mem.Allocator) void {
+            allocator.free(self.desc.binder_bindings);
+        }
+    };
+
+    pub const PreparedState = struct {
+        desc: StateDesc,
+
+        pub fn abort(self: @This(), roc_host: *abi.RocHost, metrics: anytype) void {
+            self.desc.deinit(roc_host, metrics);
+        }
+    };
+
+    pub fn reservePreparedStateSites(self: *Stream, allocator: std.mem.Allocator, additional: usize, highest_node_id: u64) std.mem.Allocator.Error!void {
+        try self.scope_sites.ensureUnusedCapacity(allocator, additional);
+        try self.states.ensureUnusedCapacity(allocator, additional);
+        const highest_index = std.math.cast(usize, highest_node_id) orelse return error.OutOfMemory;
+        const descriptor_len = std.math.add(usize, highest_index, 1) catch return error.OutOfMemory;
+        if (descriptor_len > self.descriptor_indexes_by_node_id.items.len) try self.descriptor_indexes_by_node_id.ensureTotalCapacity(allocator, descriptor_len);
+    }
+
+    pub fn prepareScopeSite(self: *const Stream, allocator: std.mem.Allocator, node_id: u64, scope_id: u64, ordinal: u64, parent_elem_id: u64, kind: ScopeSiteKind, binder_bindings: []const BinderBinding) std.mem.Allocator.Error!PreparedScopeSite {
+        return .{ .desc = .{
+            .node_id = node_id,
+            .scope_id = scope_id,
+            .ordinal = ordinal,
+            .parent_elem_id = parent_elem_id,
+            .render_insert_index = self.render_nodes.items.len,
+            .kind = kind,
+            .binder_bindings = try allocator.dupe(BinderBinding, binder_bindings),
+        } };
+    }
+
+    pub fn prepareState(_: *const Stream, node_id: u64, initial: abi.RocErasedCallable, cap: HostValueCapability, metrics: anytype) PreparedState {
+        _ = retainHostValueCapability(cap, metrics);
+        abi.increfErasedCallable(initial, 1);
+        metrics.bump(.closure_retains, 1);
+        return .{ .desc = .{ .node_id = node_id, .initial = initial, .cap = cap } };
+    }
+
+    pub fn appendPreparedStateSite(self: *Stream, site: PreparedScopeSite, state: PreparedState) void {
+        const node_id = site.desc.node_id;
+        if (state.desc.node_id != node_id or site.desc.kind != .state) @panic("prepared state site mismatch");
+        while (self.descriptor_indexes_by_node_id.items.len <= node_id) self.descriptor_indexes_by_node_id.appendAssumeCapacity(.{});
+        const site_index = self.scope_sites.items.len;
+        self.scope_sites.appendAssumeCapacity(site.desc);
+        setFreshIndex(self.descriptor_indexes_by_node_id.items[@intCast(node_id)].scope_sites.slot(.state), site_index);
+        const state_index = self.states.items.len;
+        self.states.appendAssumeCapacity(state.desc);
+        setFreshIndex(&self.descriptor_indexes_by_node_id.items[@intCast(node_id)].state, state_index);
+    }
+
     pub fn reservePreparedEvents(self: *Stream, allocator: std.mem.Allocator, additional: usize, highest_elem_id: u64) std.mem.Allocator.Error!void {
         try self.events.ensureUnusedCapacity(allocator, additional);
         const highest_index = std.math.cast(usize, highest_elem_id) orelse return error.OutOfMemory;
@@ -3175,6 +3230,42 @@ test "prepared named event indexes publish allocation free for existing and new 
     try std.testing.expectEqualSlices(usize, &.{1}, stream.namedEventIndices(3));
     try std.testing.expectEqualStrings("existing", stream.events.items[0].named().?.name);
     try std.testing.expectEqualStrings("new", stream.events.items[1].named().?.name);
+}
+
+test "prepared state site publication is allocation free" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    const TestCtx = struct {
+        pub fn pushHostValueCapabilities(_: *@This(), _: []const retained.HostValueCapability) void {}
+        pub fn popHostValueCapabilities(_: *@This()) void {}
+    };
+    const Callable = struct {
+        fn call(_: *abi.RocHost, _: ?[*]u8, _: ?[*]const u8, _: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {}
+    };
+
+    var fault = FaultAllocator.init(std.testing.allocator);
+    const allocator = fault.allocator();
+    var stream: Stream = .{};
+    var ctx: TestCtx = .{};
+    var env = abi.RocEnv{ .allocator = allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&env);
+    var metrics = TestMetrics{};
+    defer stream.deinit(allocator, &ctx, &roc_host, &metrics);
+    const initial = abi.rocErasedCallableAllocate(&roc_host, Callable.call, null, 0).?;
+    defer abi.decrefErasedCallable(initial, &roc_host);
+
+    try stream.reservePreparedStateSites(allocator, 1, 4);
+    const binder: BinderToken = @ptrFromInt(0x9000);
+    const site = try stream.prepareScopeSite(allocator, 4, 0, 0, 1, .state, &.{.{ .token = binder, .node_id = 2 }});
+    const state = stream.prepareState(4, initial, std.mem.zeroes(HostValueCapability), &metrics);
+
+    fault.configure(1);
+    stream.appendPreparedStateSite(site, state);
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqual(@as(usize, 1), stream.scope_sites.items.len);
+    try std.testing.expectEqual(@as(usize, 1), stream.states.items.len);
+    try std.testing.expectEqual(@as(?usize, 0), stream.nodeDescriptorIndex(4).?.scope_sites.get(.state));
+    try std.testing.expectEqual(@as(?usize, 0), stream.nodeDescriptorIndex(4).?.state.get());
+    try std.testing.expectEqual(binder, stream.scope_sites.items[0].binder_bindings[0].token);
 }
 
 test "field descriptor indexes round-trip by enum field" {
