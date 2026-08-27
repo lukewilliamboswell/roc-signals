@@ -25,6 +25,7 @@ const hv = signals.host_values;
 const engine = signals.engine;
 const debug_phase = signals.debug_phase;
 const DebugPhase = debug_phase.Phase;
+const runtime_limits = signals.runtime_limits;
 
 const HostValue = u64;
 const HostValueCapability = hv.HostValueCapabilityHandle;
@@ -291,7 +292,7 @@ const NearestRocAllocation = struct {
     distance: usize,
 };
 
-const recent_freed_roc_allocation_capacity = 4096;
+const recent_freed_roc_allocation_capacity = runtime_limits.recent_freed_allocation_count;
 
 var roc_allocations: std.ArrayListUnmanaged(RocAllocation) = .empty;
 var recent_freed_roc_allocations: [recent_freed_roc_allocation_capacity]FreedRocAllocation = undefined;
