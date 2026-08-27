@@ -206,6 +206,10 @@ pub const Buffer = struct {
     pub fn append(self: *Buffer, allocator: std.mem.Allocator, op: Op, a: u32, b: u32, c: u32, d: u32, e: u32) std.mem.Allocator.Error!void {
         try self.records.append(allocator, Record.init(op, a, b, c, d, e));
     }
+
+    pub fn ensureTotalCapacity(self: *Buffer, allocator: std.mem.Allocator, capacity: usize) std.mem.Allocator.Error!void {
+        try self.records.ensureTotalCapacity(allocator, capacity);
+    }
 };
 
 pub const DynamicSlice = struct {
@@ -232,6 +236,10 @@ pub const DynamicBuffer = struct {
     pub fn ptrAddress(self: *const DynamicBuffer) usize {
         if (self.bytes.items.len == 0) return 0;
         return @intFromPtr(self.bytes.items.ptr);
+    }
+
+    pub fn ensureTotalCapacity(self: *DynamicBuffer, allocator: std.mem.Allocator, capacity: usize) std.mem.Allocator.Error!void {
+        try self.bytes.ensureTotalCapacity(allocator, capacity);
     }
 
     pub fn appendSetAttrText(self: *DynamicBuffer, allocator: std.mem.Allocator, elem_id: u32, name: []const u8, value: []const u8) std.mem.Allocator.Error!DynamicSlice {
@@ -319,6 +327,73 @@ pub const DynamicBuffer = struct {
     }
 };
 
+pub const BatchCapacity = struct {
+    commands: usize = 0,
+    strings: usize = 0,
+    dynamic: usize = 0,
+};
+
+pub const BatchBuffers = struct {
+    commands: Buffer = .{},
+    strings: std.ArrayListUnmanaged(u8) = .empty,
+    dynamic: DynamicBuffer = .{},
+
+    fn deinit(self: *BatchBuffers, allocator: std.mem.Allocator) void {
+        self.commands.deinit(allocator);
+        self.strings.deinit(allocator);
+        self.dynamic.deinit(allocator);
+        self.* = .{};
+    }
+
+    fn clearRetainingCapacity(self: *BatchBuffers) void {
+        self.commands.clearRetainingCapacity();
+        self.strings.clearRetainingCapacity();
+        self.dynamic.clearRetainingCapacity();
+    }
+
+    fn ensureTotalCapacity(self: *BatchBuffers, allocator: std.mem.Allocator, capacity: BatchCapacity) std.mem.Allocator.Error!void {
+        try self.commands.ensureTotalCapacity(allocator, capacity.commands);
+        try self.strings.ensureTotalCapacity(allocator, capacity.strings);
+        try self.dynamic.ensureTotalCapacity(allocator, capacity.dynamic);
+    }
+};
+
+/// Double-buffered command publication. Sinks write only to `staged`; readers
+/// see only `published`, which changes after the whole host call succeeds.
+pub const TransactionalBatch = struct {
+    published: BatchBuffers = .{},
+    staged: BatchBuffers = .{},
+
+    pub fn deinit(self: *TransactionalBatch, allocator: std.mem.Allocator) void {
+        self.published.deinit(allocator);
+        self.staged.deinit(allocator);
+        self.* = .{};
+    }
+
+    pub fn begin(self: *TransactionalBatch) void {
+        self.published.clearRetainingCapacity();
+        self.staged.clearRetainingCapacity();
+    }
+
+    pub fn preflight(self: *TransactionalBatch, allocator: std.mem.Allocator, capacity: BatchCapacity) std.mem.Allocator.Error!void {
+        try self.staged.ensureTotalCapacity(allocator, capacity);
+    }
+
+    pub fn commit(self: *TransactionalBatch) void {
+        std.mem.swap(BatchBuffers, &self.published, &self.staged);
+        self.staged.clearRetainingCapacity();
+    }
+
+    pub fn abort(self: *TransactionalBatch) void {
+        self.published.clearRetainingCapacity();
+        self.staged.clearRetainingCapacity();
+    }
+
+    pub fn clearPublished(self: *TransactionalBatch) void {
+        self.published.clearRetainingCapacity();
+    }
+};
+
 pub fn align4(len: usize) usize {
     return (len + 3) & ~@as(usize, 3);
 }
@@ -336,6 +411,49 @@ fn writeU32(bytes: []u8, cursor: *usize, value: u32) void {
 fn writeBytes(bytes: []u8, cursor: *usize, value: []const u8) void {
     @memcpy(bytes[cursor.*..][0..value.len], value);
     cursor.* += value.len;
+}
+
+fn exerciseTransactionalBatch(allocator: std.mem.Allocator, expect_failure: bool) !usize {
+    var batch: TransactionalBatch = .{};
+    defer batch.deinit(allocator);
+
+    batch.begin();
+    batch.preflight(allocator, .{ .commands = 9, .strings = 257, .dynamic = 513 }) catch |err| {
+        batch.abort();
+        try std.testing.expectEqual(@as(usize, 0), batch.published.commands.len());
+        try std.testing.expectEqual(@as(usize, 0), batch.published.strings.items.len);
+        try std.testing.expectEqual(@as(usize, 0), batch.published.dynamic.len());
+        if (!expect_failure) return err;
+
+        // The recoverable preparation failure leaves a reusable transaction.
+        batch.begin();
+        return error.OutOfMemory;
+    };
+
+    try batch.staged.commands.append(allocator, .set_text, 1, 0, 0, 0, 0);
+    try batch.staged.strings.appendSlice(allocator, "committed");
+    _ = try batch.staged.dynamic.appendRemoveAttr(allocator, 1, "title");
+    batch.commit();
+
+    try std.testing.expectEqual(@as(usize, 1), batch.published.commands.len());
+    try std.testing.expectEqualStrings("committed", batch.published.strings.items);
+    try std.testing.expect(batch.published.dynamic.len() != 0);
+    return 0;
+}
+
+test "transaction command preflight sweeps every allocation failure" {
+    var count_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    _ = try exerciseTransactionalBatch(count_allocator.allocator(), false);
+    const allocation_count = count_allocator.alloc_index;
+    try std.testing.expect(allocation_count >= 3);
+
+    // FailingAllocator is zero-based: fail_index 0 is allocation number 1.
+    for (0..allocation_count) |fail_index| {
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = fail_index });
+        try std.testing.expectError(error.OutOfMemory, exerciseTransactionalBatch(failing.allocator(), true));
+        try std.testing.expect(failing.has_induced_failure);
+        try std.testing.expectEqual(failing.allocated_bytes, failing.freed_bytes);
+    }
 }
 
 pub const TextField = enum(u64) {
