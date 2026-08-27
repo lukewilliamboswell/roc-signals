@@ -1258,6 +1258,42 @@ pub const Stream = struct {
         }
     };
 
+    pub const PreparedWhen = struct {
+        desc: WhenDesc,
+
+        pub fn abort(self: *@This(), allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
+            self.desc.deinit(allocator, ctx, roc_host, metrics);
+        }
+    };
+
+    pub fn reservePreparedWhens(self: *Stream, allocator: std.mem.Allocator, additional: usize, highest_node_id: u64) std.mem.Allocator.Error!void {
+        try self.whens.ensureUnusedCapacity(allocator, additional);
+        const highest_index = std.math.cast(usize, highest_node_id) orelse return error.OutOfMemory;
+        const descriptor_len = std.math.add(usize, highest_index, 1) catch return error.OutOfMemory;
+        if (descriptor_len > self.descriptor_indexes_by_node_id.items.len) try self.descriptor_indexes_by_node_id.ensureTotalCapacity(allocator, descriptor_len);
+    }
+
+    pub fn prepareWhen(_: *const Stream, node_id: u64, condition: HostSignalBinding, read: HostBoolRead, when_false: abi.Elem, when_true: abi.Elem, metrics: anytype) PreparedWhen {
+        const retained_read = retainHostBoolRead(read, metrics);
+        when_false.incref(1);
+        when_true.incref(1);
+        return .{ .desc = .{
+            .node_id = node_id,
+            .condition = condition,
+            .read = retained_read,
+            .when_false = when_false,
+            .when_true = when_true,
+        } };
+    }
+
+    pub fn appendPreparedWhen(self: *Stream, prepared: PreparedWhen) void {
+        const node_id = prepared.desc.node_id;
+        while (self.descriptor_indexes_by_node_id.items.len <= node_id) self.descriptor_indexes_by_node_id.appendAssumeCapacity(.{});
+        const index = self.whens.items.len;
+        self.whens.appendAssumeCapacity(prepared.desc);
+        setFreshIndex(&self.descriptor_indexes_by_node_id.items[@intCast(node_id)].when, index);
+    }
+
     pub fn reservePreparedStateSites(self: *Stream, allocator: std.mem.Allocator, additional: usize, highest_node_id: u64) std.mem.Allocator.Error!void {
         try self.scope_sites.ensureUnusedCapacity(allocator, additional);
         try self.states.ensureUnusedCapacity(allocator, additional);
@@ -3276,6 +3312,37 @@ test "prepared state site publication is allocation free" {
     try std.testing.expectEqual(@as(?usize, 0), stream.nodeDescriptorIndex(4).?.scope_sites.get(.state));
     try std.testing.expectEqual(@as(?usize, 0), stream.nodeDescriptorIndex(4).?.state.get());
     try std.testing.expectEqual(binder, stream.scope_sites.items[0].binder_bindings[0].token);
+}
+
+test "prepared when publication is allocation free" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    const TestCtx = struct {
+        pub fn pushHostValueCapabilities(_: *@This(), _: []const retained.HostValueCapability) void {}
+        pub fn popHostValueCapabilities(_: *@This()) void {}
+    };
+    var fault = FaultAllocator.init(std.testing.allocator);
+    const allocator = fault.allocator();
+    var stream: Stream = .{};
+    var ctx: TestCtx = .{};
+    var env = abi.RocEnv{ .allocator = allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&env);
+    var metrics = TestMetrics{};
+    defer stream.deinit(allocator, &ctx, &roc_host, &metrics);
+
+    try stream.reservePreparedWhens(allocator, 1, 6);
+    const record = try SignalRecord.tryInit(allocator, .{ .ref = 1 });
+    const sources = try allocator.dupe(u64, &.{1});
+    const condition = HostSignalBinding{ .record = record, .source_node_ids = sources };
+    const when_false = abi.Elem{ .payload = .{ .text = abi.RocStr.fromSlice("false", undefined) }, .tag = .Text };
+    const when_true = abi.Elem{ .payload = .{ .text = abi.RocStr.fromSlice("true", undefined) }, .tag = .Text };
+    const prepared = stream.prepareWhen(6, condition, std.mem.zeroes(HostBoolRead), when_false, when_true, &metrics);
+
+    fault.configure(1);
+    stream.appendPreparedWhen(prepared);
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqual(@as(usize, 1), stream.whens.items.len);
+    try std.testing.expectEqual(@as(?usize, 0), stream.nodeDescriptorIndex(6).?.when.get());
+    try std.testing.expect(stream.whens.items[0].condition.record == record);
 }
 
 test "field descriptor indexes round-trip by enum field" {
