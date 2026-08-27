@@ -12,6 +12,8 @@
 
 const std = @import("std");
 const signals = @import("signals");
+
+pub const panic = std.debug.FullPanic(wasmPanic);
 const abi = signals.abi;
 const abi_view = signals.abi_view;
 const boundary = signals.boundary;
@@ -315,11 +317,21 @@ fn beginHostCall() void {
     last_host_error = "";
 }
 
-fn failHostWith(message: []const u8) noreturn {
+fn poisonAndTrap(message: []const u8) noreturn {
     command_batch.abort();
     host_poisoned = true;
-    last_host_error = message;
+    const len = @min(message.len, last_host_error_buf.len);
+    @memcpy(last_host_error_buf[0..len], message[0..len]);
+    last_host_error = last_host_error_buf[0..len];
     @trap();
+}
+
+fn wasmPanic(_: []const u8, _: ?usize) noreturn {
+    poisonAndTrap("Signals wasm host panicked after entering a transaction");
+}
+
+fn failHostWith(message: []const u8) noreturn {
+    poisonAndTrap(message);
 }
 
 fn failHostWithFmt(comptime fmt: []const u8, args: anytype) noreturn {
@@ -1304,6 +1316,11 @@ export fn roc_ui_debug_fail_allocation(number: usize) callconv(.c) void {
 
 export fn roc_ui_debug_allocation_attempts() callconv(.c) usize {
     return wasm_fault_allocator.attempts;
+}
+
+/// Exercises the root panic containment path in a linked-Wasm integration test.
+export fn roc_ui_debug_panic() callconv(.c) void {
+    @panic("debug panic injection");
 }
 
 export fn roc_ui_debug_live_allocation_bytes() callconv(.c) usize {

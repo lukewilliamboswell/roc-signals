@@ -105,7 +105,19 @@ pub fn build(b: *std.Build) void {
         "scripts/browser/runtime_contract.test.mjs",
         "scripts/browser/service_ops_charts.test.mjs",
         "scripts/browser/wasm_memory_views.test.mjs",
+        "scripts/browser/wasm_panic_fixture.test.mjs",
     });
+    const mkdir_wasm_fixture = b.addSystemCommand(&.{ "mkdir", "-p", ".test-out/oom" });
+    const copy_wasm_fixture = b.addSystemCommand(&.{ "cp", "platform/targets/wasm32/host.wasm", ".test-out/oom/host.o" });
+    copy_wasm_fixture.step.dependOn(&mkdir_wasm_fixture.step);
+    copy_wasm_fixture.step.dependOn(wasm_host_step);
+    const link_wasm_fixture = b.addSystemCommand(&.{
+        "zig", "build-exe", ".test-out/oom/host.o",
+        "-target", "wasm32-freestanding-none", "-fno-entry", "-rdynamic",
+        "-fallow-shlib-undefined", "-femit-bin=.test-out/oom/host-fixture.wasm",
+    });
+    link_wasm_fixture.step.dependOn(&copy_wasm_fixture.step);
+    browser_tests.step.dependOn(&link_wasm_fixture.step);
     run_test_browser_step.dependOn(&browser_tests.step);
 
     const fmt_paths = [_][]const u8{ "build.zig", "src", "scripts" };
