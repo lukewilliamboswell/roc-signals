@@ -2121,6 +2121,8 @@ pub fn Engine(comptime Ctx: type) type {
             prepared_attrs: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedStaticAttr) = .empty,
             prepared_signal_attrs: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedSignalDescriptor) = .empty,
             prepared_events: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedEventDescriptor) = .empty,
+            prepared_named_event_groups: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedNamedEventIndexGroup) = .empty,
+            prepared_named_event_group_by_elem: std.AutoHashMapUnmanaged(u64, usize) = .empty,
             signal_records: collection_plan.SignalRecordPlan(HostSignalToken, HostSignalRecord) = .{},
             signal_bindings: std.ArrayListUnmanaged(HostSignalBinding) = .empty,
             signal_roc_host: ?*abi.RocHost = null,
@@ -2144,6 +2146,9 @@ pub fn Engine(comptime Ctx: type) type {
                 self.prepared_attrs.ensureTotalCapacity(allocator, expected_attrs) catch return error.OutOfMemory;
                 self.prepared_signal_attrs.ensureTotalCapacity(allocator, expected_attrs) catch return error.OutOfMemory;
                 self.prepared_events.ensureTotalCapacity(allocator, expected_attrs) catch return error.OutOfMemory;
+                self.prepared_named_event_groups.ensureTotalCapacity(allocator, expected_attrs) catch return error.OutOfMemory;
+                const expected_event_groups = std.math.cast(u32, expected_attrs) orelse return error.ResourceLimit;
+                self.prepared_named_event_group_by_elem.ensureTotalCapacity(allocator, expected_event_groups) catch return error.OutOfMemory;
                 self.signal_records.prepare(allocator, expected_signal_records, expected_attrs) catch return error.OutOfMemory;
                 self.signal_bindings.ensureTotalCapacity(allocator, expected_attrs) catch return error.OutOfMemory;
                 self.signal_token_capacity = expected_signal_records;
@@ -2175,6 +2180,11 @@ pub fn Engine(comptime Ctx: type) type {
                         index -= 1;
                         self.prepared_events.items[index].abort(allocator, self.signal_roc_host orelse @panic("staged event lacked Roc host"), &self.engine.pending_roc_metrics);
                     }
+                    index = self.prepared_named_event_groups.items.len;
+                    while (index != 0) {
+                        index -= 1;
+                        self.prepared_named_event_groups.items[index].abort(allocator);
+                    }
                     index = self.prepared_attrs.items.len;
                     while (index != 0) {
                         index -= 1;
@@ -2198,6 +2208,8 @@ pub fn Engine(comptime Ctx: type) type {
                 self.prepared_attrs.deinit(allocator);
                 self.prepared_signal_attrs.deinit(allocator);
                 self.prepared_events.deinit(allocator);
+                self.prepared_named_event_groups.deinit(allocator);
+                self.prepared_named_event_group_by_elem.deinit(allocator);
                 self.signal_bindings.deinit(allocator);
                 const SignalReleaser = struct {
                     collection: *Collection,
@@ -2406,7 +2418,37 @@ pub fn Engine(comptime Ctx: type) type {
                         } });
                         return;
                     },
-                    .named_event => return error.ResourceLimit,
+                    .named_event => |payload| {
+                        const name = payload.name.asSlice();
+                        if (name.len == 0 or self.namedEventExists(elem_id, name)) return error.ResourceLimit;
+                        const bytes = std.math.add(usize, @sizeOf(HostNodeEventDesc), name.len) catch return error.ResourceLimit;
+                        try self.budget.charge(0, bytes);
+                        const group_index = try self.prepareNamedEventGroup(elem_id);
+                        const allocator = Ctx.allocator(self.host_ctx);
+                        const name_copy = allocator.dupe(u8, name) catch return error.OutOfMemory;
+                        errdefer allocator.free(name_copy);
+                        const binder_token = payload.msg.binder.callable;
+                        const read_binder_token = payload.msg.read_binder.callable;
+                        self.signal_roc_host = roc_host;
+                        const event_ordinal = self.prepared_events.items.len;
+                        self.prepared_events.appendAssumeCapacity(.{ .desc = .{
+                            .elem_id = elem_id,
+                            .binding = .{ .named = .{
+                                .name = name_copy,
+                                .policy = payload.policy,
+                                .delivery_request = payload.delivery_request,
+                            } },
+                            .delivery_request = payload.delivery_request,
+                            .binder_token = binder_token,
+                            .target_node_id = resolveNodeBinderRef(binder_stack, binder_token),
+                            .read_binder_token = read_binder_token,
+                            .read_node_id = resolveNodeBinderRef(binder_stack, read_binder_token),
+                            .payload_descriptor = payload.msg.payload_descriptor,
+                            .payload_reducer = retainHostEventReducer(payload.msg.payload_reducer, &self.engine.pending_roc_metrics),
+                        } });
+                        self.prepared_named_event_groups.items[group_index].event_ordinals.appendAssumeCapacity(event_ordinal);
+                        return;
+                    },
                     .static_text => |payload| switch (payload.target) {
                         .fixed => |field| blk: {
                             const bytes = std.math.add(usize, @sizeOf(HostNodeStaticTextAttrDesc), payload.value.asSlice().len) catch return error.ResourceLimit;
@@ -2447,6 +2489,37 @@ pub fn Engine(comptime Ctx: type) type {
                     .text, .boolean => {},
                 };
                 return false;
+            }
+
+            fn namedEventExists(self: *const @This(), elem_id: u64, name: []const u8) bool {
+                if (self.stream.namedEventDescriptorExists(elem_id, name)) return true;
+                for (self.prepared_events.items) |prepared| {
+                    if (prepared.desc.elem_id != elem_id) continue;
+                    const binding = prepared.desc.named() orelse continue;
+                    if (std.mem.eql(u8, binding.name, name)) return true;
+                }
+                return false;
+            }
+
+            fn prepareNamedEventGroup(self: *@This(), elem_id: u64) CollectionError!usize {
+                const allocator = Ctx.allocator(self.host_ctx);
+                if (self.prepared_named_event_group_by_elem.get(elem_id)) |index| {
+                    const group = &self.prepared_named_event_groups.items[index];
+                    group.event_ordinals.ensureUnusedCapacity(allocator, 1) catch return error.OutOfMemory;
+                    if (group.existed) self.stream.reserveExistingNamedEventIndexes(allocator, elem_id, group.event_ordinals.items.len + 1) catch return error.OutOfMemory;
+                    return index;
+                }
+                var group = HostNodeDescriptorStream.PreparedNamedEventIndexGroup{
+                    .elem_id = elem_id,
+                    .existed = self.stream.namedEventIndexSlotExists(elem_id),
+                };
+                errdefer group.abort(allocator);
+                group.event_ordinals.ensureTotalCapacity(allocator, 1) catch return error.OutOfMemory;
+                if (group.existed) self.stream.reserveExistingNamedEventIndexes(allocator, elem_id, 1) catch return error.OutOfMemory;
+                const index = self.prepared_named_event_groups.items.len;
+                self.prepared_named_event_groups.appendAssumeCapacity(group);
+                self.prepared_named_event_group_by_elem.putAssumeCapacity(elem_id, index);
+                return index;
             }
 
             const StagedSignalRecordCtx = struct {
@@ -2551,7 +2624,9 @@ pub fn Engine(comptime Ctx: type) type {
                 self.signal_records.commit(SignalPublisher{ .stream = self.stream });
                 for (self.prepared_signal_attrs.items) |prepared| self.stream.appendPreparedSignalDescriptor(prepared);
                 self.prepared_signal_attrs.clearRetainingCapacity();
+                const event_base = self.stream.events.items.len;
                 for (self.prepared_events.items) |prepared| self.stream.appendPreparedEvent(prepared);
+                self.stream.publishPreparedNamedEventIndexes(self.prepared_named_event_groups.items, event_base);
                 self.prepared_events.clearRetainingCapacity();
                 self.scopes.committed = true;
                 self.dom_identities.committed = true;
@@ -7041,6 +7116,68 @@ test "staged fixed event publication is allocation free" {
     try std.testing.expectEqual(@as(usize, 1), stream.events.items.len);
     try std.testing.expectEqual(@as(?usize, 0), stream.elemDescriptorIndex(1).?.events.get(.pointer_down));
     try std.testing.expectEqual(@as(u64, 9), stream.events.items[0].target_node_id);
+}
+
+test "staged named event sweeps allocation failures and retries without visibility" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    const binder: HostBinderToken = @ptrFromInt(0x8100);
+    const extraction_bytes = EventExtractionPlanKind.none.bytes();
+    const attr = abi.NodeAttr{ .payload = .{ .on = .{
+        .kind = .{ .id = 0 },
+        .msg = .{
+            .binder = binder,
+            .read_binder = binder,
+            .event_extraction_plan = .{ .bytes = .{ .elements_ptr = @constCast(extraction_bytes.ptr), .length = extraction_bytes.len, .capacity_or_alloc_ptr = extraction_bytes.len << 1 } },
+            .payload_reducer = std.mem.zeroes(HostEventReducer),
+        },
+        .name = abi.RocStr.fromSlice("keydown", undefined),
+        .delivery = .{ .native = false },
+        .policy = std.mem.zeroes(abi.NodeEventBindingPolicy),
+    } }, .tag = .On };
+
+    var counter = FaultAllocator.init(std.testing.allocator);
+    var counter_ctx = VerifyCtxHost{ .allocator = counter.allocator() };
+    var counter_engine = Engine(VerifyCtx).init();
+    var counter_stream: HostNodeDescriptorStream = .{};
+    var roc_env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&roc_env);
+    {
+        var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&counter_engine, &counter_ctx, &counter_stream, .{}, 1, 1, 0);
+        defer collection.deinit();
+        counter.configure(null);
+        try collection.appendAttr(&roc_host, 1, attr, &.{.{ .token = binder, .node_id = 9 }});
+    }
+    const attempts = counter.attempts;
+    counter_stream.deinit(counter_ctx.allocator, &counter_ctx, &roc_host, &counter_engine.pending_roc_metrics);
+    deinitVerifyStaticEngine(&counter_engine, &counter_ctx);
+    try std.testing.expect(attempts >= 2);
+
+    for (1..attempts + 1) |failure_number| {
+        var fault = FaultAllocator.init(std.testing.allocator);
+        var ctx = VerifyCtxHost{ .allocator = fault.allocator() };
+        var engine = Engine(VerifyCtx).init();
+        var stream: HostNodeDescriptorStream = .{};
+        defer {
+            stream.deinit(ctx.allocator, &ctx, &roc_host, &engine.pending_roc_metrics);
+            deinitVerifyStaticEngine(&engine, &ctx);
+        }
+        var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&engine, &ctx, &stream, .{}, 1, 1, 0);
+        defer collection.deinit();
+
+        fault.configure(failure_number);
+        try std.testing.expectError(error.OutOfMemory, collection.appendAttr(&roc_host, 1, attr, &.{.{ .token = binder, .node_id = 9 }}));
+        try std.testing.expectEqual(@as(usize, 0), stream.events.items.len);
+        try std.testing.expectEqual(@as(usize, 0), stream.namedEventIndices(1).len);
+        try std.testing.expectEqual(engine.pending_roc_metrics.closure_retains, engine.pending_roc_metrics.closure_releases);
+
+        fault.configure(null);
+        try collection.appendAttr(&roc_host, 1, attr, &.{.{ .token = binder, .node_id = 9 }});
+        collection.commit();
+        try std.testing.expectEqual(@as(usize, 1), stream.events.items.len);
+        try std.testing.expectEqualSlices(usize, &.{0}, stream.namedEventIndices(1));
+        try std.testing.expectEqualStrings("keydown", stream.events.items[0].named().?.name);
+        try std.testing.expectEqual(@as(u64, 9), stream.events.items[0].target_node_id);
+    }
 }
 
 test "transactional static engine root sweeps every allocation and retries cleanly" {
