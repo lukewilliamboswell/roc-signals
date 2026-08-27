@@ -3518,6 +3518,31 @@ pub fn Engine(comptime Ctx: type) type {
             ) catch return error.OutOfMemory;
         }
 
+        fn collectRetiredGraphRootsForRemoval(engine: *Self, allocator: std.mem.Allocator, removal: *const structural_splice.PreparedRemoval, roots: *std.ArrayListUnmanaged(*HostSignalRecord)) CollectionError!void {
+            const indexes = &removal.descriptor_indexes;
+            for (indexes.signal_text_node_indexes.items) |index| roots.append(allocator, engine.active_stream.signal_text_nodes.items[index].signal.record) catch return error.OutOfMemory;
+            for (indexes.signal_text_attr_indexes.items) |index| roots.append(allocator, engine.active_stream.signal_text_attrs.items[index].signal.record) catch return error.OutOfMemory;
+            for (indexes.signal_custom_text_attr_indexes.items) |index| roots.append(allocator, engine.active_stream.signal_custom_text_attrs.items[index].signal.record) catch return error.OutOfMemory;
+            for (indexes.signal_optional_custom_text_attr_indexes.items) |index| roots.append(allocator, engine.active_stream.signal_optional_custom_text_attrs.items[index].signal.record) catch return error.OutOfMemory;
+            for (indexes.signal_bool_attr_indexes.items) |index| roots.append(allocator, engine.active_stream.signal_bool_attrs.items[index].signal.record) catch return error.OutOfMemory;
+            for (indexes.signal_custom_bool_attr_indexes.items) |index| roots.append(allocator, engine.active_stream.signal_custom_bool_attrs.items[index].signal.record) catch return error.OutOfMemory;
+            for (removal.node_indexes.on_change_indexes.items) |index| roots.append(allocator, engine.active_stream.on_changes.items[index].signal.record) catch return error.OutOfMemory;
+            for (removal.node_indexes.when_indexes.items) |index| roots.append(allocator, engine.active_stream.whens.items[index].condition.record) catch return error.OutOfMemory;
+            for (removal.node_indexes.each_indexes.items) |index| roots.append(allocator, engine.active_stream.eaches.items[index].items.record) catch return error.OutOfMemory;
+        }
+
+        fn collectReplacementGraphRootsForStream(allocator: std.mem.Allocator, stream: *HostNodeDescriptorStream, roots: *std.ArrayListUnmanaged(*HostSignalRecord)) CollectionError!void {
+            for (stream.signal_text_nodes.items) |*desc| roots.append(allocator, desc.signal.record) catch return error.OutOfMemory;
+            for (stream.signal_text_attrs.items) |*desc| roots.append(allocator, desc.signal.record) catch return error.OutOfMemory;
+            for (stream.signal_custom_text_attrs.items) |*desc| roots.append(allocator, desc.signal.record) catch return error.OutOfMemory;
+            for (stream.signal_optional_custom_text_attrs.items) |*desc| roots.append(allocator, desc.signal.record) catch return error.OutOfMemory;
+            for (stream.signal_bool_attrs.items) |*desc| roots.append(allocator, desc.signal.record) catch return error.OutOfMemory;
+            for (stream.signal_custom_bool_attrs.items) |*desc| roots.append(allocator, desc.signal.record) catch return error.OutOfMemory;
+            for (stream.on_changes.items) |*desc| roots.append(allocator, desc.signal.record) catch return error.OutOfMemory;
+            for (stream.whens.items) |*desc| roots.append(allocator, desc.condition.record) catch return error.OutOfMemory;
+            for (stream.eaches.items) |*desc| roots.append(allocator, desc.items.record) catch return error.OutOfMemory;
+        }
+
         const AggregateBranchCollection = struct {
             engine: *Self,
             host_ctx: Ctx.Handle,
@@ -3534,6 +3559,8 @@ pub fn Engine(comptime Ctx: type) type {
             effects_retirement: ?PreparedEffectRetirements = null,
             retired_stream: HostNodeDescriptorStream = .{},
             publication: ?structural_splice.PreparedPublicationDeltas = null,
+            graph_release: ?active_graph.PreparedReleaseClosure(HostSignalRecord) = null,
+            graph_append: ?active_graph.PreparedGraphAppend(HostSignalRecord) = null,
 
             fn addCounts(total: *StaticRootCounts, next: StaticRootCounts) CollectionError!void {
                 total.nodes = std.math.add(usize, total.nodes, next.nodes) catch return error.ResourceLimit;
@@ -3625,6 +3652,18 @@ pub fn Engine(comptime Ctx: type) type {
                     plan.stream.mounts.items.len,
                 ) catch return error.OutOfMemory;
                 errdefer if (plan.publication) |*publication| publication.deinit(allocator);
+                if (engine.active_signal_graph.items.len != 0) {
+                    var retired_roots: std.ArrayListUnmanaged(*HostSignalRecord) = .empty;
+                    defer retired_roots.deinit(allocator);
+                    try collectRetiredGraphRootsForRemoval(engine, allocator, &plan.removal.?.removal, &retired_roots);
+                    plan.graph_release = active_graph.prepareReleaseClosure(HostSignalRecord, allocator, engine.active_signal_graph.items, retired_roots.items) catch return error.OutOfMemory;
+                    errdefer if (plan.graph_release) |*release| release.deinit(allocator);
+                    var replacement_roots: std.ArrayListUnmanaged(*HostSignalRecord) = .empty;
+                    defer replacement_roots.deinit(allocator);
+                    try collectReplacementGraphRootsForStream(allocator, &plan.stream, &replacement_roots);
+                    plan.graph_append = active_graph.prepareGraphAppend(HostSignalRecord, allocator, engine.active_signal_graph.items, plan.graph_release.?.final_record_ids, replacement_roots.items) catch return error.OutOfMemory;
+                    errdefer if (plan.graph_append) |*append| append.deinit(allocator);
+                }
                 return plan;
             }
 
@@ -3641,6 +3680,8 @@ pub fn Engine(comptime Ctx: type) type {
                 if (self.row_retirement) |*retirement| retirement.deinit(allocator);
                 if (self.effects_retirement) |*effects| effects.deinit(allocator, null);
                 if (self.publication) |*publication| publication.deinit(allocator);
+                if (self.graph_append) |*append| append.deinit(allocator);
+                if (self.graph_release) |*release| release.deinit(allocator);
                 self.retired_stream.deinit(allocator, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
                 if (self.identity_retirements) |*retirements| retirements.deinit(allocator);
                 if (self.scope_retirement) |*retirement| retirement.deinit(allocator);
@@ -4206,28 +4247,11 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             fn collectRetiredGraphRoots(self: *@This(), allocator: std.mem.Allocator, roots: *std.ArrayListUnmanaged(*HostSignalRecord)) CollectionError!void {
-                const indexes = &self.removal.?.descriptor_indexes;
-                for (indexes.signal_text_node_indexes.items) |index| roots.append(allocator, self.engine.active_stream.signal_text_nodes.items[index].signal.record) catch return error.OutOfMemory;
-                for (indexes.signal_text_attr_indexes.items) |index| roots.append(allocator, self.engine.active_stream.signal_text_attrs.items[index].signal.record) catch return error.OutOfMemory;
-                for (indexes.signal_custom_text_attr_indexes.items) |index| roots.append(allocator, self.engine.active_stream.signal_custom_text_attrs.items[index].signal.record) catch return error.OutOfMemory;
-                for (indexes.signal_optional_custom_text_attr_indexes.items) |index| roots.append(allocator, self.engine.active_stream.signal_optional_custom_text_attrs.items[index].signal.record) catch return error.OutOfMemory;
-                for (indexes.signal_bool_attr_indexes.items) |index| roots.append(allocator, self.engine.active_stream.signal_bool_attrs.items[index].signal.record) catch return error.OutOfMemory;
-                for (indexes.signal_custom_bool_attr_indexes.items) |index| roots.append(allocator, self.engine.active_stream.signal_custom_bool_attrs.items[index].signal.record) catch return error.OutOfMemory;
-                for (self.removal.?.node_indexes.on_change_indexes.items) |index| roots.append(allocator, self.engine.active_stream.on_changes.items[index].signal.record) catch return error.OutOfMemory;
-                for (self.removal.?.node_indexes.when_indexes.items) |index| roots.append(allocator, self.engine.active_stream.whens.items[index].condition.record) catch return error.OutOfMemory;
-                for (self.removal.?.node_indexes.each_indexes.items) |index| roots.append(allocator, self.engine.active_stream.eaches.items[index].items.record) catch return error.OutOfMemory;
+                try collectRetiredGraphRootsForRemoval(self.engine, allocator, &self.removal.?, roots);
             }
 
             fn collectReplacementGraphRoots(self: *@This(), allocator: std.mem.Allocator, roots: *std.ArrayListUnmanaged(*HostSignalRecord)) CollectionError!void {
-                for (self.replacement_stream.signal_text_nodes.items) |*desc| roots.append(allocator, desc.signal.record) catch return error.OutOfMemory;
-                for (self.replacement_stream.signal_text_attrs.items) |*desc| roots.append(allocator, desc.signal.record) catch return error.OutOfMemory;
-                for (self.replacement_stream.signal_custom_text_attrs.items) |*desc| roots.append(allocator, desc.signal.record) catch return error.OutOfMemory;
-                for (self.replacement_stream.signal_optional_custom_text_attrs.items) |*desc| roots.append(allocator, desc.signal.record) catch return error.OutOfMemory;
-                for (self.replacement_stream.signal_bool_attrs.items) |*desc| roots.append(allocator, desc.signal.record) catch return error.OutOfMemory;
-                for (self.replacement_stream.signal_custom_bool_attrs.items) |*desc| roots.append(allocator, desc.signal.record) catch return error.OutOfMemory;
-                for (self.replacement_stream.on_changes.items) |*desc| roots.append(allocator, desc.signal.record) catch return error.OutOfMemory;
-                for (self.replacement_stream.whens.items) |*desc| roots.append(allocator, desc.condition.record) catch return error.OutOfMemory;
-                for (self.replacement_stream.eaches.items) |*desc| roots.append(allocator, desc.items.record) catch return error.OutOfMemory;
+                try collectReplacementGraphRootsForStream(allocator, &self.replacement_stream, roots);
             }
 
             fn prepareSinkEdits(self: *@This(), allocator: std.mem.Allocator) CollectionError!active_graph.PreparedSinkRouteEdits {
