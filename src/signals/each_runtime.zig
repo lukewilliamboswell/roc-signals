@@ -355,6 +355,8 @@ pub const PreparedExistingRows = struct {
     row_items_changed: []bool,
     scope_created: []bool,
     removed_scope_ids: []u64,
+    created_count: usize = 0,
+    highest_scope_id: u64 = 0,
     committed: bool = false,
 
     /// Computes matching and reserves every site/index destination without mutation.
@@ -383,6 +385,9 @@ pub const PreparedExistingRows = struct {
         errdefer allocator.free(created);
         @memset(created, false);
 
+        var created_count: usize = 0;
+        var highest_scope_id: u64 = 0;
+        errdefer hooks.abortPreparedRows();
         for (key_hashes, keys, items, 0..) |hash, key, item, next_index| {
             var found: ?u64 = null;
             if (site.hash_heads.get(hash)) |head| {
@@ -399,9 +404,17 @@ pub const PreparedExistingRows = struct {
                     existing_index = site.hash_links.items[existing_index];
                 }
             }
-            const scope_id = found orelse return error.RequiresCreate;
-            next_scope_ids[next_index] = scope_id;
-            changed[next_index] = !hooks.rowItemEquals(scope_id, item);
+            if (found) |scope_id| {
+                next_scope_ids[next_index] = scope_id;
+                changed[next_index] = !hooks.rowItemEquals(scope_id, item);
+            } else {
+                const scope_id = try hooks.prepareCreatedRow(allocator, parent_scope_id, site_ordinal, hash, key, item);
+                next_scope_ids[next_index] = scope_id;
+                changed[next_index] = true;
+                created[next_index] = true;
+                created_count += 1;
+            }
+            highest_scope_id = @max(highest_scope_id, next_scope_ids[next_index]);
         }
 
         var removed_count: usize = 0;
@@ -419,7 +432,7 @@ pub const PreparedExistingRows = struct {
         try site.scope_ids.ensureTotalCapacity(allocator, keys.len);
         try site.hash_links.ensureTotalCapacity(allocator, keys.len);
         try site.hash_heads.ensureTotalCapacity(allocator, std.math.cast(u32, keys.len) orelse return error.OutOfMemory);
-        for (next_scope_ids) |scope_id| if (scope_id >= memberships.items.len) @panic("existing each row lacked membership capacity");
+        if (next_scope_ids.len != 0) try memberships.ensureTotalCapacity(allocator, std.math.add(usize, @intCast(highest_scope_id), 1) catch return error.OutOfMemory);
         try hooks.prepareExistingRowsCommit(allocator, removed.len);
         return .{
             .allocator = allocator,
@@ -428,6 +441,8 @@ pub const PreparedExistingRows = struct {
             .row_items_changed = changed,
             .scope_created = created,
             .removed_scope_ids = removed,
+            .created_count = created_count,
+            .highest_scope_id = highest_scope_id,
         };
     }
 
@@ -435,7 +450,11 @@ pub const PreparedExistingRows = struct {
     pub fn commit(self: *PreparedExistingRows, sites: *std.ArrayListUnmanaged(Site), memberships: *std.ArrayListUnmanaged(?Membership), keys: anytype, items: anytype, hooks: anytype) DiffResult {
         if (self.committed) @panic("prepared each rows committed twice");
         const site = &sites.items[self.site_index];
-        for (self.next_scope_ids, self.row_items_changed, keys, items) |scope_id, changed, key, item| {
+        for (self.next_scope_ids, self.row_items_changed, self.scope_created, keys, items) |scope_id, changed, created, key, item| {
+            if (created) {
+                hooks.commitCreatedRow(scope_id);
+                continue;
+            }
             if (changed) {
                 hooks.replaceRowKey(scope_id, hooks.hashKey(key), key);
                 hooks.replaceRowItem(scope_id, item);
@@ -445,6 +464,8 @@ pub const PreparedExistingRows = struct {
             }
         }
         for (self.removed_scope_ids) |scope_id| hooks.disposeScope(scope_id);
+        hooks.finishPreparedRowsCommit();
+        while (memberships.items.len <= self.highest_scope_id) memberships.appendAssumeCapacity(null);
         for (site.scope_ids.items) |scope_id| memberships.items[@intCast(scope_id)] = null;
         site.scope_ids.clearRetainingCapacity();
         site.scope_ids.appendSliceAssumeCapacity(self.next_scope_ids);
@@ -463,8 +484,8 @@ pub const PreparedExistingRows = struct {
             .row_items_changed = self.row_items_changed,
             .scope_created = self.scope_created,
             .removed_scope_ids = self.removed_scope_ids,
-            .rows_reused = self.next_scope_ids.len,
-            .rows_created = 0,
+            .rows_reused = self.next_scope_ids.len - self.created_count,
+            .rows_created = @intCast(self.created_count),
             .rows_removed = @intCast(self.removed_scope_ids.len),
             .row_items_unchanged = 0,
             .row_items_updated = 0,
@@ -484,7 +505,15 @@ pub const PreparedExistingRows = struct {
         self.allocator.free(self.removed_scope_ids);
         self.* = undefined;
     }
+
+    /// Releases provisional created rows while leaving persistent row state unchanged.
+    pub fn abort(self: *PreparedExistingRows, hooks: anytype) void {
+        if (!self.committed) hooks.abortPreparedRows();
+    }
 };
+
+/// Full prepared keyed-row synchronization, including provisional created rows.
+pub const PreparedRowSync = PreparedExistingRows;
 
 /// Reconciles one keyed each site by exact key identity, preserving surviving row scopes and disposing removed rows.
 pub fn syncRows(
@@ -712,6 +741,7 @@ const TestRowKeys = struct {
 };
 
 const TestSyncHooks = struct {
+    const PreparedCreated = struct { scope_id: u64, key: u64, item: u64 };
     keys_by_scope: []u64,
     items_by_scope: []u64,
     next_scope_id: u64,
@@ -724,6 +754,7 @@ const TestSyncHooks = struct {
     rows_removed: u64 = 0,
     fault_attempts: ?*const usize = null,
     first_mutation_attempt: ?usize = null,
+    prepared_created: std.ArrayListUnmanaged(PreparedCreated) = .empty,
 
     fn recordMutation(self: *@This()) void {
         if (self.first_mutation_attempt == null) {
@@ -733,11 +764,42 @@ const TestSyncHooks = struct {
 
     fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
         self.disposed_scopes.deinit(allocator);
+        self.prepared_created.deinit(allocator);
     }
 
     /// Reserves disposal journal capacity before prepared row publication.
     pub fn prepareExistingRowsCommit(self: *@This(), allocator: std.mem.Allocator, removed_count: usize) std.mem.Allocator.Error!void {
         try self.disposed_scopes.ensureUnusedCapacity(allocator, removed_count);
+    }
+
+    /// Owns a provisional created row without publishing key/item tables.
+    pub fn prepareCreatedRow(self: *@This(), allocator: std.mem.Allocator, parent_scope_id: u64, site_ordinal: u64, hash: u64, key: u64, item: u64) std.mem.Allocator.Error!u64 {
+        if (parent_scope_id != 1 or site_ordinal != 2) @panic("test row was prepared for the wrong site");
+        self.expectHash(hash, key);
+        const scope_id = self.next_scope_id + self.prepared_created.items.len;
+        try self.prepared_created.append(allocator, .{ .scope_id = scope_id, .key = key, .item = item });
+        return scope_id;
+    }
+
+    /// Publishes one previously prepared created row without allocation.
+    pub fn commitCreatedRow(self: *@This(), scope_id: u64) void {
+        for (self.prepared_created.items) |prepared| if (prepared.scope_id == scope_id) {
+            self.keys_by_scope[@intCast(scope_id)] = prepared.key;
+            self.items_by_scope[@intCast(scope_id)] = prepared.item;
+            self.next_scope_id = @max(self.next_scope_id, scope_id + 1);
+            return;
+        };
+        @panic("prepared created row was missing");
+    }
+
+    /// Drops all provisional created rows without changing persistent key/item tables.
+    pub fn abortPreparedRows(self: *@This()) void {
+        self.prepared_created.items.len = 0;
+    }
+
+    /// Clears provisional bookkeeping after ownership transfers to persistent rows.
+    pub fn finishPreparedRowsCommit(self: *@This()) void {
+        self.prepared_created.items.len = 0;
     }
 
     /// Records each sync in the metrics or lifecycle state owned by this operation.
@@ -994,8 +1056,8 @@ test "prepared existing each rows sweep failures and commit without allocation" 
             items_by_scope[11] = 200;
             var hooks = TestSyncHooks{ .keys_by_scope = &keys_by_scope, .items_by_scope = &items_by_scope, .next_scope_id = 12 };
             defer hooks.deinit(allocator);
-            const keys = [_]u64{2};
-            const items = [_]u64{201};
+            const keys = [_]u64{ 2, 3 };
+            const items = [_]u64{ 201, 300 };
             const old_scope_ids = [_]u64{ 10, 11 };
 
             fault.configure(failure_number);
@@ -1026,11 +1088,14 @@ test "prepared existing each rows sweep failures and commit without allocation" 
         }
 
         fn verify(site_index: usize, sites: *std.ArrayListUnmanaged(Site), memberships: *std.ArrayListUnmanaged(?Membership), hooks: *TestSyncHooks, items_by_scope: []const u64) !void {
-            try std.testing.expectEqualSlices(u64, &.{11}, sites.items[site_index].scope_ids.items);
+            try std.testing.expectEqualSlices(u64, &.{ 11, 12 }, sites.items[site_index].scope_ids.items);
             try std.testing.expectEqual(@as(u64, 201), items_by_scope[11]);
+            try std.testing.expectEqual(@as(u64, 3), hooks.keys_by_scope[12]);
+            try std.testing.expectEqual(@as(u64, 300), items_by_scope[12]);
             try std.testing.expectEqualSlices(u64, &.{10}, hooks.disposed_scopes.items);
             try std.testing.expect(memberships.items[10] == null);
             try std.testing.expectEqual(Membership{ .site_index = site_index, .row_index = 0 }, memberships.items[11].?);
+            try std.testing.expectEqual(Membership{ .site_index = site_index, .row_index = 1 }, memberships.items[12].?);
         }
     };
     const attempts = try Runner.run(null);
