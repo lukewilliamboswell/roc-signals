@@ -6902,6 +6902,12 @@ test "transactional static engine root sweeps every allocation and retries clean
         .read = std.mem.zeroes(HostTextRead),
         .signal = &signal_expr,
     } }, .tag = .SignalText };
+    const signal_bool_attr = abi.NodeAttr{ .payload = .{ .signal_bool = .{
+        .field = .{ .id = @intFromEnum(RenderBoolField.checked) },
+        .name = abi.RocStr.empty(),
+        .read = std.mem.zeroes(HostBoolRead),
+        .signal = &signal_expr,
+    } }, .tag = .SignalBool };
     const child = verifyStaticText();
     const attr = abi.NodeAttr{
         .payload = .{ .static_text = .{
@@ -6935,7 +6941,7 @@ test "transactional static engine root sweeps every allocation and retries clean
         } },
         .tag = .StaticBool,
     };
-    const root = verifyStaticRoot(&.{ attr, bool_attr, custom_text_attr, custom_bool_attr, signal_attr }, &.{child});
+    const root = verifyStaticRoot(&.{ attr, bool_attr, custom_text_attr, custom_bool_attr, signal_attr, signal_bool_attr }, &.{child});
 
     var counter = FaultAllocator.init(std.testing.allocator);
     var counter_ctx = VerifyCtxHost{ .allocator = counter.allocator() };
@@ -6970,6 +6976,7 @@ test "transactional static engine root sweeps every allocation and retries clean
         try std.testing.expect(!stream.customTextAttrDescriptorExists(1, "data-state"));
         try std.testing.expect(!stream.customTextAttrDescriptorExists(1, "aria-hidden"));
         try std.testing.expectEqual(@as(usize, 0), stream.signal_text_attrs.items.len);
+        try std.testing.expectEqual(@as(usize, 0), stream.signal_bool_attrs.items.len);
         try std.testing.expect(stream.signalRecordByToken(signal_callable.?) == null);
         try std.testing.expectEqual(engine.pending_roc_metrics.closure_retains, engine.pending_roc_metrics.closure_releases);
 
@@ -6984,6 +6991,7 @@ test "transactional static engine root sweeps every allocation and retries clean
         try std.testing.expect(stream.customTextAttrDescriptorExists(1, "data-state"));
         try std.testing.expect(stream.customTextAttrDescriptorExists(1, "aria-hidden"));
         try std.testing.expectEqual(@as(usize, 1), stream.signal_text_attrs.items.len);
+        try std.testing.expectEqual(@as(usize, 1), stream.signal_bool_attrs.items.len);
         try std.testing.expect(stream.signalRecordByToken(signal_callable.?) != null);
     }
 }
