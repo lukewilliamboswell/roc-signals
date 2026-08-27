@@ -1037,6 +1037,7 @@ pub fn Engine(comptime Ctx: type) type {
             descriptor_target_scopes: []bool = &.{},
             retired_scope_ids: []u64 = &.{},
             final_render_topology: ?PreparedFinalRenderTopology = null,
+            downstream: ?*PreparedStructuralDownstream = null,
             prepared_len: usize = 0,
             committed: bool = false,
 
@@ -1207,6 +1208,54 @@ pub fn Engine(comptime Ctx: type) type {
                 self.layouts = layouts;
             }
 
+            fn prepareDownstream(self: *@This(), sites: []const HostNodeScopeSiteDesc) CollectionError!void {
+                if (self.downstream != null or self.final_render_topology == null or sites.len != self.prepared_len) return error.ResourceLimit;
+                var descriptor_roots: std.ArrayListUnmanaged(u64) = .empty;
+                defer descriptor_roots.deinit(self.allocator);
+                var retired_roots: std.ArrayListUnmanaged(u64) = .empty;
+                defer retired_roots.deinit(self.allocator);
+                var remove_starts: std.ArrayListUnmanaged(usize) = .empty;
+                defer remove_starts.deinit(self.allocator);
+                var parents: std.ArrayListUnmanaged(u64) = .empty;
+                defer parents.deinit(self.allocator);
+                for (self.rows[0..self.prepared_len], self.replacements[0..self.prepared_len], self.layouts, sites) |rows, replacement, *layout, site| {
+                    descriptor_roots.appendSlice(self.allocator, rows.rows.removed_scope_ids) catch return error.OutOfMemory;
+                    retired_roots.appendSlice(self.allocator, rows.rows.removed_scope_ids) catch return error.OutOfMemory;
+                    for (replacement.replacement_rows) |row| if (!rows.rows.scope_created[row.row_index]) descriptor_roots.append(self.allocator, row.scope_id) catch return error.OutOfMemory;
+                    remove_starts.appendSlice(self.allocator, layout.remove_starts) catch return error.OutOfMemory;
+                    var seen_parent = false;
+                    for (parents.items) |parent| if (parent == site.parent_elem_id) {
+                        seen_parent = true;
+                        break;
+                    };
+                    if (!seen_parent) parents.append(self.allocator, site.parent_elem_id) catch return error.OutOfMemory;
+                }
+                const downstream = try PreparedStructuralDownstream.prepareExternal(
+                    self.engine,
+                    self.host_ctx,
+                    self.roc_host,
+                    self.replacement_owner.?,
+                    descriptor_roots.items,
+                    retired_roots.items,
+                    remove_starts.items,
+                    null,
+                );
+                errdefer downstream.deinit();
+                downstream.final_render_topology = self.final_render_topology;
+                self.final_render_topology = null;
+                try downstream.prepareFinalRenderTopology(parents.items);
+                self.downstream = downstream;
+            }
+
+            fn commitDownstream(self: *@This()) void {
+                const downstream = self.downstream orelse @panic("composite rows had no prepared downstream");
+                downstream.commitAssumeCapacityWith(self, struct {
+                    fn apply(composite: *PreparedCompositeRows) void {
+                        composite.commit();
+                    }
+                }.apply);
+            }
+
             fn commit(self: *@This()) void {
                 if (self.committed) @panic("prepared composite rows committed twice");
                 self.scope_claims.commit(&self.engine.scopes);
@@ -1218,6 +1267,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             fn deinit(self: *@This()) void {
+                if (self.downstream) |downstream| downstream.deinit();
                 if (self.final_render_topology) |*topology| topology.deinit();
                 self.allocator.free(self.retired_scope_ids);
                 self.allocator.free(self.descriptor_target_scopes);
@@ -11733,6 +11783,7 @@ test "composite rows share provisional scope claims across two sites and sweep O
             try composite.prepareOne(second_site, second, null);
             try composite.prepareReplacement(&.{ first_site, second_site }, &.{ first, second }, .{}, &.{});
             try composite.prepareRenderLayouts(&.{ first_site, second_site });
+            try composite.prepareDownstream(&.{ first_site, second_site });
             return composite;
         }
 
@@ -11742,10 +11793,14 @@ test "composite rows share provisional scope claims across two sites and sweep O
             var engine = Engine(VerifyCtx).init();
             defer {
                 engine.active_stream.deinit(ctx.allocator, &ctx, host, &engine.pending_roc_metrics);
+                ctx.render_batch.deinit(ctx.allocator);
+                engine.deinitRenderCache(&ctx);
                 deinitVerifyStateEngine(&engine, &ctx, host);
             }
             _ = try engine.internRootScope(ctx.allocator);
             engine.active_stream.appendTextNode(ctx.allocator, 100, 0, 0, "between-sites");
+            engine.roc_host = host;
+            _ = engine.applyNodeDescriptorStream(&ctx, host, &engine.active_stream);
             const first_site_index = engine.ensureEachRowSiteIndex(ctx.allocator, 0, 10);
             const second_site_index = engine.ensureEachRowSiteIndex(ctx.allocator, 0, 20);
             var first_record = HostSignalRecord{ .ref_count = 1, .payload = .{ .const_value = .{ .init = null, .cap = cap } } };
@@ -11771,11 +11826,14 @@ test "composite rows share provisional scope claims across two sites and sweep O
             const composite = prepareAll(&engine, &ctx, host, first_site, &first, second_site, &second) catch |err| {
                 try std.testing.expectEqual(error.OutOfMemory, err);
                 try std.testing.expectEqual(@as(usize, 1), engine.scopes.items.len);
+                try std.testing.expectEqual(@as(usize, 1), engine.active_stream.render_nodes.items.len);
+                try std.testing.expectEqual(@as(usize, 0), ctx.render_batch.published.commands.len());
+                try std.testing.expectEqual(@as(usize, 0), ctx.render_batch.staged.commands.len());
                 const attempts = fault.attempts;
                 fault.configure(null);
                 const retry = try prepareAll(&engine, &ctx, host, first_site, &first, second_site, &second);
                 try std.testing.expectEqual(@as(usize, 2), retry.replacement_owner.?.stream.text_nodes.items.len);
-                try std.testing.expectEqual(@as(usize, 3), retry.final_render_topology.?.render_nodes.items.len);
+                try std.testing.expectEqual(@as(usize, 3), retry.downstream.?.final_render_topology.?.render_nodes.items.len);
                 retry.deinit();
                 try std.testing.expectEqual(@as(usize, 1), engine.scopes.items.len);
                 return attempts;
@@ -11791,7 +11849,7 @@ test "composite rows share provisional scope claims across two sites and sweep O
             try std.testing.expectEqual(@as(usize, 1), composite.replacements[1].replacement_rows[0].start);
             try std.testing.expectEqual(@as(usize, 1), composite.replacements[1].replacement_rows[0].len);
             try std.testing.expectEqual(@as(usize, 0), engine.dom_identities.items.len);
-            const final_nodes = composite.final_render_topology.?.render_nodes.items;
+            const final_nodes = composite.downstream.?.final_render_topology.?.render_nodes.items;
             try std.testing.expectEqual(@as(usize, 3), final_nodes.len);
             try std.testing.expectEqual(replacement_owner.stream.text_nodes.items[0].elem_id, final_nodes[0].elem_id);
             try std.testing.expectEqual(@as(u64, 100), final_nodes[1].elem_id);
@@ -11801,11 +11859,14 @@ test "composite rows share provisional scope claims across two sites and sweep O
             try std.testing.expectEqualSlices(bool, &.{false}, composite.descriptor_target_scopes);
             const attempts = fault.attempts;
             fault.configure(1);
-            composite.commit();
+            composite.commitDownstream();
             try std.testing.expectEqual(@as(usize, 0), fault.attempts);
             try std.testing.expectEqual(@as(usize, 3), engine.scopes.items.len);
             try std.testing.expectEqualSlices(u64, &.{1}, engine.each_row_sites.items[first_site_index].scope_ids.items);
             try std.testing.expectEqualSlices(u64, &.{2}, engine.each_row_sites.items[second_site_index].scope_ids.items);
+            try std.testing.expectEqual(@as(usize, 3), engine.active_stream.render_nodes.items.len);
+            try std.testing.expect(ctx.render_batch.published.commands.len() != 0);
+            try std.testing.expectEqual(@as(usize, 0), ctx.render_batch.staged.commands.len());
             return attempts;
         }
     };
