@@ -1,6 +1,7 @@
 //! Allocation ledger for native Roc memory diagnostics and leak checks.
 
 const std = @import("std");
+const FaultAllocator = @import("signals").fault_allocator.FaultAllocator;
 
 pub const Allocation = struct {
     id: u64,
@@ -46,6 +47,7 @@ pub const DeallocError = error{
 };
 
 pub const ReallocError = error{
+    OutOfMemory,
     LedgerIndexOutOfBounds,
     InteriorPointer,
     AlreadyFreedWithDifferentAlignment,
@@ -78,6 +80,7 @@ pub fn deallocErrorMessage(err: DeallocError) []const u8 {
 
 pub fn reallocErrorMessage(err: ReallocError) []const u8 {
     return switch (err) {
+        error.OutOfMemory => "Roc reallocation failed",
         error.LedgerIndexOutOfBounds => "Roc allocation ledger index is out of bounds",
         error.InteriorPointer => "roc_realloc received an interior pointer instead of the pointer returned by roc_alloc",
         error.AlreadyFreedWithDifferentAlignment => "roc_realloc received an already freed pointer with a different alignment",
@@ -140,7 +143,7 @@ pub const Ledger = struct {
         return self.exact_indexes.get(@intFromPtr(ptr));
     }
 
-    pub fn removeAt(self: *Ledger, allocator: std.mem.Allocator, index: usize) ?Allocation {
+    pub fn removeAt(self: *Ledger, _: std.mem.Allocator, index: usize) ?Allocation {
         if (index >= self.allocations.items.len) return null;
         const removed = self.allocations.swapRemove(index);
         if (!self.exact_indexes.remove(@intFromPtr(removed.user_ptr))) {
@@ -148,7 +151,9 @@ pub const Ledger = struct {
         }
         if (index < self.allocations.items.len) {
             const moved = self.allocations.items[index];
-            self.exact_indexes.put(allocator, @intFromPtr(moved.user_ptr), index) catch std.process.exit(1);
+            const moved_index = self.exact_indexes.getPtr(@intFromPtr(moved.user_ptr)) orelse
+                @panic("Roc allocation ledger exact index missing moved allocation");
+            moved_index.* = index;
         }
         return removed;
     }
@@ -172,9 +177,9 @@ pub const Ledger = struct {
         return null;
     }
 
-    pub fn record(self: *Ledger, allocator: std.mem.Allocator, user_ptr: [*]u8, requested_size: usize, allocated_size: usize, alignment: std.mem.Alignment, phase: u32, return_address: usize) void {
+    pub fn record(self: *Ledger, allocator: std.mem.Allocator, user_ptr: [*]u8, requested_size: usize, allocated_size: usize, alignment: std.mem.Alignment, phase: u32, return_address: usize) std.mem.Allocator.Error!void {
         const index = self.allocations.items.len;
-        self.allocations.append(allocator, .{
+        try self.allocations.append(allocator, .{
             .id = self.next_id,
             .user_ptr = user_ptr,
             .requested_size = requested_size,
@@ -182,18 +187,22 @@ pub const Ledger = struct {
             .alignment = alignment,
             .phase = phase,
             .return_address = return_address,
-        }) catch std.process.exit(1);
-        self.next_id += 1;
-        const entry = self.exact_indexes.getOrPut(allocator, @intFromPtr(user_ptr)) catch std.process.exit(1);
+        });
+        errdefer self.allocations.items.len -= 1;
+        const entry = try self.exact_indexes.getOrPut(allocator, @intFromPtr(user_ptr));
         if (entry.found_existing) @panic("Roc allocation ledger recorded duplicate live pointer");
         entry.value_ptr.* = index;
+        self.next_id += 1;
     }
 
     pub fn allocate(self: *Ledger, ledger_allocator: std.mem.Allocator, backing_allocator: std.mem.Allocator, length: usize, alignment_arg: usize, phase: u32, ret_addr: usize) ?AllocResult {
         const alignment = alignmentFromAbi(alignment_arg);
         const allocated_size = allocatedSizeForRequest(length);
-        const user_ptr = backing_allocator.rawAlloc(allocated_size, alignment, ret_addr) orelse std.process.exit(1);
-        self.record(ledger_allocator, user_ptr, length, allocated_size, alignment, phase, ret_addr);
+        const user_ptr = backing_allocator.rawAlloc(allocated_size, alignment, ret_addr) orelse return null;
+        self.record(ledger_allocator, user_ptr, length, allocated_size, alignment, phase, ret_addr) catch {
+            backing_allocator.rawFree(user_ptr[0..allocated_size], alignment, ret_addr);
+            return null;
+        };
         return .{
             .ptr = @ptrCast(user_ptr),
             .allocated_size = allocated_size,
@@ -211,8 +220,11 @@ pub const Ledger = struct {
 
         const alignment = alignmentFromAbi(alignment_arg);
         const allocated_size = allocatedSizeForRequest(new_length);
-        const new_user_ptr = backing_allocator.rawAlloc(allocated_size, alignment, ret_addr) orelse std.process.exit(1);
-        self.record(ledger_allocator, new_user_ptr, new_length, allocated_size, alignment, phase, ret_addr);
+        const new_user_ptr = backing_allocator.rawAlloc(allocated_size, alignment, ret_addr) orelse return error.OutOfMemory;
+        self.record(ledger_allocator, new_user_ptr, new_length, allocated_size, alignment, phase, ret_addr) catch {
+            backing_allocator.rawFree(new_user_ptr[0..allocated_size], alignment, ret_addr);
+            return error.OutOfMemory;
+        };
 
         const old_user_ptr: [*]const u8 = @ptrCast(ptr);
         const copy_size = @min(pending.allocation.requested_size, new_length);
@@ -284,7 +296,7 @@ test "roc allocation ledger records exact and recently freed pointers" {
     const bytes = try allocator.alloc(u8, 16);
     defer allocator.free(bytes);
 
-    ledger.record(allocator, bytes.ptr, 16, 16, .@"8", 0, @returnAddress());
+    try ledger.record(allocator, bytes.ptr, 16, 16, .@"8", 0, @returnAddress());
     try std.testing.expectEqual(@as(?usize, 0), ledger.findExactIndex(bytes.ptr));
     try std.testing.expectEqual(@as(?usize, 0), ledger.findContainingIndex(bytes.ptr + 4));
 
@@ -307,9 +319,9 @@ test "roc allocation ledger keeps exact indexes after middle removal" {
     const last = try allocator.alloc(u8, 24);
     defer allocator.free(last);
 
-    ledger.record(allocator, first.ptr, first.len, first.len, .@"8", 0, @returnAddress());
-    ledger.record(allocator, middle.ptr, middle.len, middle.len, .@"8", 0, @returnAddress());
-    ledger.record(allocator, last.ptr, last.len, last.len, .@"8", 0, @returnAddress());
+    try ledger.record(allocator, first.ptr, first.len, first.len, .@"8", 0, @returnAddress());
+    try ledger.record(allocator, middle.ptr, middle.len, middle.len, .@"8", 0, @returnAddress());
+    try ledger.record(allocator, last.ptr, last.len, last.len, .@"8", 0, @returnAddress());
 
     const removed = ledger.removeAt(allocator, 1).?;
     try std.testing.expectEqual(@intFromPtr(middle.ptr), @intFromPtr(removed.user_ptr));
@@ -376,4 +388,48 @@ test "roc allocation ledger classifies dealloc diagnostics" {
     _ = try ledger.deallocate(allocator, allocator, alloc.ptr, 8, @returnAddress());
     try std.testing.expectError(error.AlreadyFreed, ledger.deallocate(allocator, allocator, alloc.ptr, 8, @returnAddress()));
     try std.testing.expectError(error.AlreadyFreedWithDifferentAlignment, ledger.deallocate(allocator, allocator, alloc.ptr, 16, @returnAddress()));
+}
+
+test "roc allocation ledger sweeps every allocation failure and retries" {
+    var counter = FaultAllocator.init(std.testing.allocator);
+    var counted_ledger: Ledger = .{};
+    const counted = counted_ledger.allocate(counter.allocator(), counter.allocator(), 32, 8, 0, @returnAddress()) orelse return error.OutOfMemory;
+    const attempt_count = counter.attempts;
+    _ = try counted_ledger.deallocate(counter.allocator(), counter.allocator(), counted.ptr, 8, @returnAddress());
+    counted_ledger.deinit(counter.allocator());
+    try std.testing.expect(attempt_count >= 3);
+
+    for (1..attempt_count + 1) |failure_number| {
+        var fault = FaultAllocator.init(std.testing.allocator);
+        fault.configure(failure_number);
+        var ledger: Ledger = .{};
+        defer ledger.deinit(fault.allocator());
+
+        try std.testing.expect(ledger.allocate(fault.allocator(), fault.allocator(), 32, 8, 0, @returnAddress()) == null);
+        try std.testing.expectEqual(@as(usize, 0), ledger.allocations.items.len);
+        try std.testing.expectEqual(@as(usize, 0), ledger.exact_indexes.count());
+        try std.testing.expectEqual(@as(u64, 1), ledger.next_id);
+
+        fault.configure(null);
+        const recovered = ledger.allocate(fault.allocator(), fault.allocator(), 32, 8, 0, @returnAddress()) orelse return error.OutOfMemory;
+        _ = try ledger.deallocate(fault.allocator(), fault.allocator(), recovered.ptr, 8, @returnAddress());
+        try std.testing.expectEqual(@as(usize, 0), ledger.allocations.items.len);
+    }
+}
+
+test "roc allocation ledger realloc OOM preserves old allocation and accepts retry" {
+    var ledger: Ledger = .{};
+    defer ledger.deinit(std.testing.allocator);
+    const original = ledger.allocate(std.testing.allocator, std.testing.allocator, 8, 8, 0, @returnAddress()) orelse return error.OutOfMemory;
+
+    var fault = FaultAllocator.init(std.testing.allocator);
+    fault.configure(1);
+    try std.testing.expectError(error.OutOfMemory, ledger.reallocate(fault.allocator(), fault.allocator(), original.ptr, 64, 8, 1, @returnAddress()));
+    try std.testing.expectEqual(@as(usize, 1), ledger.allocations.items.len);
+    try std.testing.expectEqual(@intFromPtr(original.ptr), @intFromPtr(ledger.allocations.items[0].user_ptr));
+
+    fault.configure(null);
+    const replaced = try ledger.reallocate(fault.allocator(), fault.allocator(), original.ptr, 64, 8, 1, @returnAddress());
+    try std.testing.expectEqual(@as(usize, 1), ledger.allocations.items.len);
+    _ = try ledger.deallocate(fault.allocator(), fault.allocator(), replaced.ptr, 8, @returnAddress());
 }

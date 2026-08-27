@@ -1639,7 +1639,10 @@ fn rocReallocFn(roc_host: *abi.RocHost, ptr: *anyopaque, new_length: usize, alig
 
 fn rocReallocAt(roc_host: *abi.RocHost, ptr: *anyopaque, new_length: usize, alignment_arg: usize, return_address: usize) ?*anyopaque {
     const host = hostFromRocHost(roc_host);
-    const result = host.roc_allocations.reallocate(host.hostAllocator(), host.backingAllocator(), ptr, new_length, alignment_arg, host.debug_phase, return_address) catch |err| failRocReallocError(err);
+    const result = host.roc_allocations.reallocate(host.hostAllocator(), host.backingAllocator(), ptr, new_length, alignment_arg, host.debug_phase, return_address) catch |err| switch (err) {
+        error.OutOfMemory => return null,
+        else => failRocReallocError(err),
+    };
     host.recordHostAlloc(result.allocated_size);
     host.recordRocAllocMetric();
     host.recordRocFreeMetric();
@@ -3279,6 +3282,39 @@ test "signals host allocation ledger tracks exact returned pointers" {
     try std.testing.expectEqual(@as(u64, 4), host.dealloc_count);
     try std.testing.expectEqual(@as(u64, 4), host.engine.pending_roc_metrics.allocs_this_event);
     try std.testing.expectEqual(@as(u64, 4), host.engine.pending_roc_metrics.deallocs_this_event);
+}
+
+test "native host allocation injection reaches host and Roc allocation paths" {
+    var host = HostEnv.init();
+    var roc_host = makeSignalsRocHost(&host);
+    host.engine.roc_host = &roc_host;
+    defer {
+        host.configureAllocationFailure(null);
+        host.deinit();
+        _ = host.gpa.deinit();
+    }
+
+    host.configureAllocationFailure(1);
+    try std.testing.expectError(error.OutOfMemory, host.hostAllocator().alloc(u8, 32));
+    try std.testing.expectEqual(@as(usize, 0), host.roc_allocations.allocations.items.len);
+
+    host.configureAllocationFailure(1);
+    try std.testing.expectEqual(@as(?*anyopaque, null), rocAllocFn(&roc_host, 32, 8));
+    try std.testing.expectEqual(@as(usize, 0), host.roc_allocations.allocations.items.len);
+
+    host.configureAllocationFailure(null);
+    const recovered = rocAllocFn(&roc_host, 32, 8) orelse return error.OutOfMemory;
+    try std.testing.expectEqual(@as(usize, 1), host.roc_allocations.allocations.items.len);
+
+    host.configureAllocationFailure(1);
+    try std.testing.expectEqual(@as(?*anyopaque, null), rocReallocFn(&roc_host, recovered, 64, 8));
+    try std.testing.expectEqual(@as(usize, 1), host.roc_allocations.allocations.items.len);
+    try std.testing.expectEqual(@intFromPtr(recovered), @intFromPtr(host.roc_allocations.allocations.items[0].user_ptr));
+
+    host.configureAllocationFailure(null);
+    const resized = rocReallocFn(&roc_host, recovered, 64, 8) orelse return error.OutOfMemory;
+    rocDeallocFn(&roc_host, resized, 8);
+    try std.testing.expectEqual(@as(usize, 0), host.roc_allocations.allocations.items.len);
 }
 
 const TestErasedI64Capture = extern struct {
