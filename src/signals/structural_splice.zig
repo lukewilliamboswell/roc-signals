@@ -668,12 +668,20 @@ const TestStream = struct {
     elements: std.ArrayListUnmanaged(ElementDesc) = .empty,
     text_nodes: std.ArrayListUnmanaged(TextNodeDesc) = .empty,
     signal_text_nodes: std.ArrayListUnmanaged(SignalTextNodeDesc) = .empty,
+    scope_sites: std.ArrayListUnmanaged(descriptor_stream.ScopeSiteDesc) = .empty,
+    states: std.ArrayListUnmanaged(descriptor_stream.StateDesc) = .empty,
+    whens: std.ArrayListUnmanaged(descriptor_stream.WhenDesc) = .empty,
+    eaches: std.ArrayListUnmanaged(descriptor_stream.EachDesc) = .empty,
 
     fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
         self.render_nodes.deinit(allocator);
         self.elements.deinit(allocator);
         self.text_nodes.deinit(allocator);
         self.signal_text_nodes.deinit(allocator);
+        self.scope_sites.deinit(allocator);
+        self.states.deinit(allocator);
+        self.whens.deinit(allocator);
+        self.eaches.deinit(allocator);
     }
 
     /// Resolves an element id through the maintained descriptor index.
@@ -687,6 +695,16 @@ const TestStream = struct {
         for (self.signal_text_nodes.items, 0..) |desc, index| {
             if (desc.elem_id == elem_id) return .{ .signal_text_node = descriptor_stream.DescriptorIndex.init(index) };
         }
+        return null;
+    }
+
+    /// This minimal stream fixture has no named-event descriptors.
+    pub fn namedEventIndices(_: *const @This(), _: u64) []const usize {
+        return &.{};
+    }
+
+    /// This minimal stream fixture has no node-owned structural descriptors.
+    pub fn nodeDescriptorIndex(_: *const @This(), _: u64) ?descriptor_stream.NodeDescriptorIndex {
         return null;
     }
 };
