@@ -57,6 +57,43 @@ pub const CacheSlot = union(enum) {
     }
 };
 
+/// One source or derived-cache replacement whose incoming value remains
+/// private until the enclosing engine transaction publishes. The incoming
+/// value is already owned by the caller; this journal retains its capability,
+/// transfers both into the live slot without allocation, and defers releasing
+/// the displaced live cell until publication has completed.
+pub const PreparedCacheUpdate = struct {
+    live: *CacheSlot,
+    next: CacheSlot,
+    displaced: CacheSlot = .absent,
+    committed: bool = false,
+
+    /// Adopts an incoming value and retains the capability needed to own it.
+    pub fn init(live: *CacheSlot, value: HostValue, cap: HostValueCapability, metrics: anytype) PreparedCacheUpdate {
+        return .{
+            .live = live,
+            .next = .{ .present = HostValueCell.initRetained(value, cap, metrics) },
+        };
+    }
+
+    /// Swaps the prepared value into the live cache without allocating.
+    pub fn commit(self: *PreparedCacheUpdate) void {
+        if (self.committed) @panic("prepared cache update committed twice");
+        self.displaced = self.live.*;
+        self.live.* = self.next;
+        self.next = .absent;
+        self.committed = true;
+    }
+
+    /// Releases either the uncommitted incoming value or the displaced live
+    /// value after the enclosing transaction has published.
+    pub fn deinit(self: *PreparedCacheUpdate, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
+        self.next.deinit(ctx, roc_host, metrics);
+        self.displaced.deinit(ctx, roc_host, metrics);
+        self.* = undefined;
+    }
+};
+
 pub const EvalResult = struct {
     value: HostValue,
     changed: bool,

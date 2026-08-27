@@ -11153,6 +11153,34 @@ test "dirty when cache remains detached until commit and abort releases it" {
     try std.testing.expectEqual(metrics.closure_retains, metrics.closure_releases + 3);
 }
 
+test "prepared source cache update aborts or swaps allocation free" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&env);
+    const callable = abi.rocErasedCallableAllocate(&roc_host, verifyStateCallable, null, 0).?;
+    defer abi.decrefErasedCallable(callable, &roc_host);
+    const cap = HostValueCapability{ .clone = callable, .drop = callable, .eq = callable };
+    var fault = FaultAllocator.init(std.testing.allocator);
+    var ctx = VerifyCtxHost{ .allocator = fault.allocator() };
+    var metrics = zeroRuntimeMetrics();
+    var live = HostSignalCacheSlot{ .present = HostValueCell.initRetained(1, cap, &metrics) };
+    defer live.deinit(&ctx, &roc_host, &metrics);
+
+    var aborted = signal_records.PreparedCacheUpdate.init(&live, 2, cap, &metrics);
+    aborted.deinit(&ctx, &roc_host, &metrics);
+    try std.testing.expectEqual(@as(HostValue, 1), live.present.value);
+
+    var committed = signal_records.PreparedCacheUpdate.init(&live, 3, cap, &metrics);
+    fault.configure(1);
+    committed.commit();
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqual(@as(HostValue, 3), live.present.value);
+    committed.deinit(&ctx, &roc_host, &metrics);
+    try std.testing.expectEqual(@as(HostValue, 3), live.present.value);
+    fault.configure(null);
+    try std.testing.expectEqual(metrics.closure_retains, metrics.closure_releases + 3);
+}
+
 test "static root counts nested signal attribute records" {
     const capability = std.mem.zeroes(HostValueCapability);
     var left = abi.NodeSignalExpr{ .payload = .{ .ref = @ptrFromInt(0x1000) }, .tag = .Ref };
