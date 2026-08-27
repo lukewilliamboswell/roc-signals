@@ -67,7 +67,8 @@ grid_header =
 ## no longer has to carry the query along.
 render_row : Ui.State(List(U64)), Ui.State(List(GridData.Note)), Str, Signal(GridData.ViewRow) -> Elem
 render_row = |selected, notes, key, row| {
-	row_id = GridData.parse_u64(key)
+	# `key` is the row id `Ui.each_str` was handed, so it is always digits.
+	row_id = U64.from_str(key).ok_or(0)
 	name = "Node-${GridData.pad4(row_id)}"
 
 	Html.div_c(
@@ -144,10 +145,61 @@ summary_panel = |summary|
 		],
 	)
 
+# ---------------------------------------------------------------------------
+# Tests
+#
+# These cover the pure grid logic in `GridData`: the comparator, the caption,
+# and the sort-button reducer. They are the proof that swapping the stringly
+# typed sort key for a tag union left the rendered output alone.
+# ---------------------------------------------------------------------------
+
+by_id : GridData.Sort
+by_id = { key: ById, desc: False }
+
+by_score : GridData.Sort
+by_score = { key: ByScore, desc: False }
+
+expect GridData.pad4(7) == "0007"
+expect GridData.pad4(42) == "0042"
+expect GridData.pad4(1199) == "1199"
+
+expect GridData.str_compare("Atlas", "Borealis") == LT
+expect GridData.str_compare("Node-0009", "Node-0009") == EQ
+expect GridData.str_compare("Node-0010", "Node-0009") == GT
+# A prefix sorts before the string that extends it.
+expect GridData.str_compare("Node", "Node-0000") == LT
+
+expect GridData.sort_caption(by_id) == "Sorted by id ascending"
+expect GridData.sort_caption({ key: ByTeam, desc: True }) == "Sorted by team descending"
+
+# Clicking the active column reverses it; clicking another column starts fresh.
+expect GridData.apply_sort_click(by_score, ByScore) == { key: ByScore, desc: True }
+expect GridData.apply_sort_click({ key: ByScore, desc: True }, ByName) == { key: ByName, desc: False }
+
+# The first page of a score-ascending sort, as the sorting spec asserts it.
+expect {
+	page = GridData.window_of(GridData.sort_rows(GridData.filter_rows(""), by_score), 0)
+	page.map(|row| row.id) == [0, 621, 296, 1133, 52, 837, 79, 647, 782, 1108]
+}
+
+# Descending reverses the id tiebreak too, so 702 leads 592 on a shared 999.
+expect {
+	page = GridData.window_of(GridData.sort_rows(GridData.filter_rows(""), { key: ByScore, desc: True }), 0)
+	page.take_first(2).map(|row| row.id) == [702, 592]
+}
+
+expect GridData.last_page_of(0) == 0
+expect GridData.last_page_of(1200) == 119
+expect GridData.last_page_of(10) == 0
+
+expect GridData.note_for([{ id: 3, note: "check" }], 3) == "check"
+expect GridData.note_for([{ id: 3, note: "check" }], 4) == ""
+expect GridData.note_for(GridData.set_note([], 9, "later"), 9) == "later"
+
 main : () -> Elem
 main = || {
 	initial_sort : GridData.Sort
-	initial_sort = { key: "id", desc: False }
+	initial_sort = { key: ById, desc: False }
 
 	initial_notes : List(GridData.Note)
 	initial_notes = []
@@ -306,10 +358,10 @@ main = || {
 																			Html.div_c(
 																				"flex flex-wrap items-center gap-2",
 																				[
-																					Html.button_c("Sort by id", sort_button_class, sort.on_unit(|current| GridData.apply_sort_click(current, "id"))),
-																					Html.button_c("Sort by name", sort_button_class, sort.on_unit(|current| GridData.apply_sort_click(current, "name"))),
-																					Html.button_c("Sort by team", sort_button_class, sort.on_unit(|current| GridData.apply_sort_click(current, "team"))),
-																					Html.button_c("Sort by score", sort_button_class, sort.on_unit(|current| GridData.apply_sort_click(current, "score"))),
+																					Html.button_c("Sort by id", sort_button_class, sort.on_unit(|current| GridData.apply_sort_click(current, ById))),
+																					Html.button_c("Sort by name", sort_button_class, sort.on_unit(|current| GridData.apply_sort_click(current, ByName))),
+																					Html.button_c("Sort by team", sort_button_class, sort.on_unit(|current| GridData.apply_sort_click(current, ByTeam))),
+																					Html.button_c("Sort by score", sort_button_class, sort.on_unit(|current| GridData.apply_sort_click(current, ByScore))),
 																				],
 																			),
 																			Html.paragraph_s_attrs(

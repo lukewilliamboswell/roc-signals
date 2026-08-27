@@ -117,11 +117,7 @@ set_expense_payer = |ledger, value| { ..ledger, payer: value }
 expense_draft_ready : Ledger -> Bool
 expense_draft_ready = |ledger| {
 	description = ledger.description.trim()
-	amount_ok =
-		match Bill.parse_cents(ledger.amount_text) {
-			Ok(_) => True
-			Err(_) => False
-		}
+	amount_ok = Try.is_ok(Bill.parse_cents(ledger.amount_text))
 	(!description.is_empty())
 	and (!ledger.items.any(|item| item.description == description))
 	and amount_ok
@@ -767,9 +763,9 @@ expense_row = |ledger, description, view|
 						[
 							Html.paragraph_c("Status", "stat-label"),
 							Html.paragraph_s_attrs(
-								view.map(|value| value.status),
+								view.map(|value| Bill.status_text(value.status)),
 								[
-									Html.class_attr_s(view.map(|value| status_class(value.status_tone))),
+									Html.class_attr_s(view.map(|value| status_class(Bill.status_tone(value.status)))),
 									Html.test_id("expense-${description}-status"),
 								],
 							),
@@ -791,7 +787,7 @@ expense_row = |ledger, description, view|
 							Ui.each_str(
 								view.map(|value| value.members),
 								|member| member.name,
-								|name, member| share_row(ledger, description, name, member),
+								|name, member| share_row(ledger, { expense: description, person: name }, member),
 							),
 						],
 					),
@@ -801,23 +797,24 @@ expense_row = |ledger, description, view|
 	)
 
 ## One participation checkbox with its name drawn beside it. The accessible name
-## stays fully qualified so the specs can address one expense's checkbox.
-share_row : Ui.State(Ledger), Str, Str, Signal.Signal(Bill.Member) -> Elem
-share_row = |ledger, description, name, member|
+## stays fully qualified so the specs can address one expense's checkbox. The two
+## names are passed as a record so the expense and the person cannot be swapped.
+share_row : Ui.State(Ledger), { expense : Str, person : Str }, Signal.Signal(Bill.Member) -> Elem
+share_row = |ledger, names, member|
 	Html.div_c(
 		"check-row",
 		[
 			Html.checkbox_c(
-				"${description} includes ${name}",
+				"${names.expense} includes ${names.person}",
 				member.map(|value| value.included),
 				"checkbox",
 				ledger.on_bool(
 					|current, included| {
 						..current,
-						items: Bill.set_share(current.items, description, name, included),
+						items: Bill.set_share(current.items, names.expense, names.person, included),
 					},
 				),
 			),
-			Html.text(name),
+			Html.text(names.person),
 		],
 	)

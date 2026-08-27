@@ -21,7 +21,75 @@ week_minutes = 10080
 offset_base : U64
 offset_base = 1440
 
-Parsed := [Bad, Minutes(U64)]
+## A day column of the week. The form's `<select>` is bound to `to_str`, so the
+## wire value the browser hands back is parsed into a tag at that one edge and
+## every column decision inside the app is a `match`, never a string compare.
+Day := [Mon, Tue, Wed, Thu, Fri, Sat, Sun].{
+	is_eq : Day, Day -> Bool
+	is_eq = |left, right|
+		match (left, right) {
+			(Mon, Mon) => True
+			(Tue, Tue) => True
+			(Wed, Wed) => True
+			(Thu, Thu) => True
+			(Fri, Fri) => True
+			(Sat, Sat) => True
+			(Sun, Sun) => True
+			_ => False
+		}
+
+	to_str : Day -> Str
+	to_str = |day|
+		match day {
+			Mon => "Mon"
+			Tue => "Tue"
+			Wed => "Wed"
+			Thu => "Thu"
+			Fri => "Fri"
+			Sat => "Sat"
+			Sun => "Sun"
+		}
+
+	## Which of the seven columns this day is, counting from Monday.
+	index : Day -> U64
+	index = |day|
+		match day {
+			Mon => 0
+			Tue => 1
+			Wed => 2
+			Thu => 3
+			Fri => 4
+			Sat => 5
+			Sun => 6
+		}
+
+	from_index : U64 -> Try(Day, [NotADay])
+	from_index = |column|
+		match column {
+			0 => Ok(Mon)
+			1 => Ok(Tue)
+			2 => Ok(Wed)
+			3 => Ok(Thu)
+			4 => Ok(Fri)
+			5 => Ok(Sat)
+			6 => Ok(Sun)
+			_ => Err(NotADay)
+		}
+
+	## Parse once, at the edge where the `<select>` hands us its wire value.
+	from_str : Str -> Try(Day, [NotADay])
+	from_str = |text|
+		match text {
+			"Mon" => Ok(Mon)
+			"Tue" => Ok(Tue)
+			"Wed" => Ok(Wed)
+			"Thu" => Ok(Thu)
+			"Fri" => Ok(Fri)
+			"Sat" => Ok(Sat)
+			"Sun" => Ok(Sun)
+			_ => Err(NotADay)
+		}
+}
 
 Status := [Unmarked, Available, Busy].{
 	is_eq : Status, Status -> Bool
@@ -42,6 +110,45 @@ Status := [Unmarked, Available, Busy].{
 		}
 }
 
+## Whether a rendered block is in a clash, and with what. The note's text and
+## the note's class both come off this one tag, so a block can never be tinted
+## for a clash it is not in, or announce a clash with nobody.
+Clash := [NoClash, ClashesWith(List(Str))].{
+	is_eq : Clash, Clash -> Bool
+	is_eq = |left, right|
+		match (left, right) {
+			(NoClash, NoClash) => True
+			(ClashesWith(left_names), ClashesWith(right_names)) => left_names == right_names
+			_ => False
+		}
+
+	to_str : Clash -> Str
+	to_str = |clash|
+		match clash {
+			NoClash => ""
+			ClashesWith(names) => "Clashes with ${Str.join_with(names, ", ")}"
+		}
+}
+
+## The banner above the grid: either nothing to say, or every commitment
+## currently in a clash.
+Banner := [Settled, Overlapping(List(Str))].{
+	is_eq : Banner, Banner -> Bool
+	is_eq = |left, right|
+		match (left, right) {
+			(Settled, Settled) => True
+			(Overlapping(left_titles), Overlapping(right_titles)) => left_titles == right_titles
+			_ => False
+		}
+
+	to_str : Banner -> Str
+	to_str = |banner|
+		match banner {
+			Settled => ""
+			Overlapping(titles) => "${titles.len().to_str()} overlapping commitments: ${Str.join_with(titles, ", ")}"
+		}
+}
+
 ## One commitment on the week. `abs_start` is UTC minutes-from-Monday-00:00, so
 ## it is timezone independent; only its *rendering* depends on the chosen zone.
 Slot : { id : Str, title : Str, abs_start : U64, duration : U64, status : Status }
@@ -49,15 +156,34 @@ Slot : { id : Str, title : Str, abs_start : U64, duration : U64, status : Status
 ## A timezone the picker can display. `shift` is biased (see `offset_base`).
 Zone : { id : Str, label : Str, shift : U64 }
 
-## The add-a-slot form. `abs_start` is recomputed on every field edit from the
-## day, the typed local time, and the *currently selected zone*, which is why
-## its reducers read the zone handle atomically with `on_str_with`.
-Draft : { title : Str, day : Str, start_text : Str, duration : Str, abs_start : U64, valid : Bool }
+## What a valid draft resolves to: the instant it would be stored at, and how
+## long it runs. Only ever reached through `Draft.plan`, so an unparseable form
+## has no readable `abs_start` at all.
+Plan : { abs_start : U64, duration : U64 }
+
+## Why the add form is not ready, when it is not. Both the sentence under the
+## form and its tone are derived from this tag, so the message and the colour
+## cannot disagree.
+DraftError := [MissingTitle, BadStart, BadLength].{
+	is_eq : DraftError, DraftError -> Bool
+	is_eq = |left, right|
+		match (left, right) {
+			(MissingTitle, MissingTitle) => True
+			(BadStart, BadStart) => True
+			(BadLength, BadLength) => True
+			_ => False
+		}
+}
+
+## The add-a-slot form. `plan` is recomputed on every field edit from the day,
+## the typed local time, and the *currently selected zone*, which is why its
+## reducers read the zone handle atomically with `on_str_with`.
+Draft : { title : Str, day : Day, start_text : Str, duration : Str, plan : Try(Plan, DraftError) }
 
 ## What one rendered slot block shows. Everything here is derived; nothing is
 ## stored. `day` is the *local* day column the block lands in, so it moves when
 ## the zone changes; `conflict` names the commitments this one clashes with.
-RowView : { id : Str, title : Str, when : Str, day : U64, status : Str, available : Bool, busy : Bool, clashing : Bool, conflict : Str }
+RowView : { id : Str, title : Str, when : Str, day : Day, status : Status, conflict : Clash }
 
 zones : List(Zone)
 zones = [
@@ -69,40 +195,18 @@ zones = [
 ]
 
 zone_by_id : Str -> Zone
-zone_by_id = |id|
-	match zones.find_first(|zone| zone.id == id) {
-		Ok(zone) => zone
-		Err(_) => { id: "utc", label: "UTC+00:00", shift: offset_base }
-	}
+zone_by_id = |id| zones.find_first(|zone| zone.id == id).ok_or({ id: "utc", label: "UTC+00:00", shift: offset_base })
 
-day_names : List(Str)
-day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+## The seven day columns, in order, so the header strip can be rendered by
+## walking the days themselves rather than by index arithmetic over names.
+days : List(Day)
+days = [Day.Mon, Day.Tue, Day.Wed, Day.Thu, Day.Fri, Day.Sat, Day.Sun]
 
-## The seven day columns, as indices, so the header strip can be rendered by
-## position rather than by searching `day_names` for a name.
-day_indices : List(U64)
-day_indices = [0, 1, 2, 3, 4, 5, 6]
-
-day_name : U64 -> Str
-day_name = |index|
-	match day_names.get(index) {
-		Ok(name) => name
-		Err(_) => "???"
-	}
-
-day_index : Str -> U64
-day_index = |name| {
-	var $index = 0
-	var $found = 0
-	while $index < day_names.len() {
-		if day_name($index) == name {
-			$found = $index
-		} else {
-		}
-		$index = $index + 1
-	}
-	$found
-}
+## The column a week-minute lands in, as a label. Out-of-week indices cannot
+## happen once a minute has been reduced modulo the week, but the fallback is
+## kept so the renderer is total.
+day_label : U64 -> Str
+day_label = |index| Try.map_ok(Day.from_index(index), Day.to_str).ok_or("???")
 
 pad2 : U64 -> Str
 pad2 = |value| if value < 10 { "0${value.to_str()}" } else { value.to_str() }
@@ -122,7 +226,7 @@ span_text : Slot, Zone -> Str
 span_text = |slot, zone| {
 	local = local_of(slot.abs_start, zone)
 	finish = (local + slot.duration) % week_minutes
-	"${day_name(local // 1440)} ${clock(local % 1440)}-${clock(finish % 1440)}"
+	"${day_label(local // 1440)} ${clock(local % 1440)}-${clock(finish % 1440)}"
 }
 
 status_text : Status -> Str
@@ -162,29 +266,24 @@ conflict_ids = |slots| {
 	busy.keep_if(|left| busy.any(|right| right.id != left.id and overlaps(left, right))).map(|slot| slot.id)
 }
 
-## The other commitments this one collides with, by name. The grid shows this
-## instead of a bare "Conflict", so the clash reads without cross-referencing.
-conflict_note : List(Slot), Slot -> Str
-conflict_note = |slots, slot|
-	if !is_busy(slot.status) {
-		""
+## The other commitments this one collides with, by name. The grid shows the
+## names instead of a bare "Conflict", so the clash reads without any
+## cross-referencing.
+conflict_of : List(Slot), List(Str), Slot -> Clash
+conflict_of = |slots, ids, slot|
+	if !ids.contains(slot.id) {
+		Clash.NoClash
 	} else {
-		names = slots.keep_if(|other| other.id != slot.id and is_busy(other.status) and overlaps(slot, other)).map(|other| other.title)
-		if names.is_empty() {
-			""
-		} else {
-			"Clashes with ${Str.join_with(names, ", ")}"
-		}
+		Clash.ClashesWith(slots.keep_if(|other| other.id != slot.id and is_busy(other.status) and overlaps(slot, other)).map(|other| other.title))
 	}
 
-## The banner above the grid: every commitment currently in a clash.
-conflict_banner : List(Slot), List(Str) -> Str
+conflict_banner : List(Slot), List(Str) -> Banner
 conflict_banner = |slots, ids| {
 	titles = slots.keep_if(|slot| ids.contains(slot.id)).map(|slot| slot.title)
 	if titles.is_empty() {
-		""
+		Banner.Settled
 	} else {
-		"${titles.len().to_str()} overlapping commitments: ${Str.join_with(titles, ", ")}"
+		Banner.Overlapping(titles)
 	}
 }
 
@@ -197,33 +296,33 @@ duration_text = |minutes| "${(minutes // 60).to_str()}h ${(minutes % 60).to_str(
 ## Days that have no available slot *in the displayed zone*. This is the second
 ## place a timezone change is visible: moving a slot across local midnight moves
 ## which day counts as free.
-free_day_names : List(Slot), Zone -> List(Str)
-free_day_names = |slots, zone| {
+free_days : List(Slot), Zone -> List(Day)
+free_days = |slots, zone| {
 	covered = slots.keep_if(|slot| is_available(slot.status)).map(|slot| local_of(slot.abs_start, zone) // 1440)
-	day_names.keep_if(|name| !covered.contains(day_index(name)))
+	days.keep_if(|day| !covered.contains(Day.index(day)))
 }
 
-free_text : List(Str) -> Str
-free_text = |names|
-	if names.is_empty() {
+free_text : List(Day) -> Str
+free_text = |free|
+	if free.is_empty() {
 		"None"
 	} else {
-		Str.join_with(names, ", ")
+		Str.join_with(free.map(Day.to_str), ", ")
 	}
 
 row_views : List(Slot), Zone, List(Str) -> List(RowView)
 row_views = |slots, zone, conflicts|
 	slots.map(
 		|slot| {
-			id: slot.id,
-			title: slot.title,
-			when: span_text(slot, zone),
-			day: local_of(slot.abs_start, zone) // 1440,
-			status: status_text(slot.status),
-			available: is_available(slot.status),
-			busy: is_busy(slot.status),
-			clashing: conflicts.contains(slot.id),
-			conflict: conflict_note(slots, slot),
+			local = local_of(slot.abs_start, zone)
+			{
+				id: slot.id,
+				title: slot.title,
+				when: span_text(slot, zone),
+				day: Day.from_index(local // 1440).ok_or(Day.Mon),
+				status: slot.status,
+				conflict: conflict_of(slots, conflicts, slot),
+			}
 		},
 	)
 
@@ -231,16 +330,16 @@ row_views = |slots, zone, conflicts|
 
 ## Which of the seven day columns a block sits in. Spelled out one class per day
 ## so Tailwind's source scan finds every literal.
-day_column_class : U64 -> Str
-day_column_class = |index|
-	match index {
-		0 => "sm:col-start-1"
-		1 => "sm:col-start-2"
-		2 => "sm:col-start-3"
-		3 => "sm:col-start-4"
-		4 => "sm:col-start-5"
-		5 => "sm:col-start-6"
-		_ => "sm:col-start-7"
+day_column_class : Day -> Str
+day_column_class = |day|
+	match day {
+		Mon => "sm:col-start-1"
+		Tue => "sm:col-start-2"
+		Wed => "sm:col-start-3"
+		Thu => "sm:col-start-4"
+		Fri => "sm:col-start-5"
+		Sat => "sm:col-start-6"
+		Sun => "sm:col-start-7"
 	}
 
 ## The block's colour and its column both come off the same row signal, so a
@@ -249,45 +348,46 @@ day_column_class = |index|
 slot_class : RowView -> Str
 slot_class = |view| {
 	base = "card gap-1.5 p-3 ${day_column_class(view.day)}"
-	if view.clashing {
-		"${base} border-red-300 bg-red-50"
-	} else if view.available {
-		"${base} border-emerald-200 bg-emerald-50"
-	} else if view.busy {
-		"${base} border-amber-200 bg-amber-50"
-	} else {
-		base
+	match view.conflict {
+		ClashesWith(_) => "${base} border-red-300 bg-red-50"
+		NoClash =>
+			match view.status {
+				Available => "${base} border-emerald-200 bg-emerald-50"
+				Busy => "${base} border-amber-200 bg-amber-50"
+				Unmarked => base
+			}
 	}
 }
 
 status_badge_class : RowView -> Str
 status_badge_class = |view|
-	if view.available {
-		"badge badge-ok shrink-0"
-	} else if view.busy {
-		"badge badge-warn shrink-0"
-	} else {
-		"badge badge-neutral shrink-0"
+	match view.status {
+		Available => "badge badge-ok shrink-0"
+		Busy => "badge badge-warn shrink-0"
+		Unmarked => "badge badge-neutral shrink-0"
 	}
 
-## An empty note is not drawn at all, rather than drawn as a blank banner.
+## A block with no clash draws no note at all, rather than a blank banner.
 conflict_class : RowView -> Str
 conflict_class = |view|
-	if view.conflict == "" {
-		"hidden"
-	} else {
-		"notice notice-error px-2 py-1 text-xs"
+	match view.conflict {
+		NoClash => "hidden"
+		ClashesWith(_) => "notice notice-error px-2 py-1 text-xs"
 	}
 
-banner_class : Str -> Str
-banner_class = |text| if text == "" { "hidden" } else { "notice notice-error" }
+banner_class : Banner -> Str
+banner_class = |banner|
+	match banner {
+		Settled => "hidden"
+		Overlapping(_) => "notice notice-error"
+	}
 
 ## A day column whose header carries the free-day marker. The marker's text is
 ## constant and only its class changes, so a timezone change repaints the marker
 ## without any DOM text write.
-day_header : Signal.Signal(List(Str)), U64 -> Elem
-day_header = |free_names, index| {
-	name = day_name(index)
+day_header : Signal.Signal(List(Day)), Day -> Elem
+day_header = |free_names, day| {
+	name = Day.to_str(day)
 	Html.div_c(
 		"grid gap-1",
 		[
@@ -296,7 +396,7 @@ day_header = |free_names, index| {
 				"No availability",
 				[
 					Html.test_id("free-${name}"),
-					Html.class_attr_s(Signal.map(free_names, |names| if names.contains(name) { "hint italic" } else { "hidden" })),
+					Html.class_attr_s(Signal.map(free_names, |free| if free.any(|other| Day.is_eq(other, day)) { "hint italic" } else { "hidden" })),
 				],
 			),
 		],
@@ -307,34 +407,24 @@ day_header = |free_names, index| {
 ## touched, and only turns green or red once there is something to say.
 draft_tone : Draft -> Str
 draft_tone = |draft|
-	if draft.valid {
-		"notice notice-ok"
-	} else if draft.title.is_empty() {
-		"hint"
-	} else {
-		"notice notice-error"
+	match draft.plan {
+		Ok(_) => "notice notice-ok"
+		Err(error) =>
+			match error {
+				MissingTitle => "hint"
+				_ => "notice notice-error"
+			}
 	}
+
+empty_slot : Slot
+empty_slot = { id: "", title: "", abs_start: 0, duration: 0, status: Status.Unmarked }
 
 slot_at : List(Slot), U64 -> Slot
-slot_at = |slots, index|
-	match slots.get(index) {
-		Ok(slot) => slot
-		Err(_) => { id: "", title: "", abs_start: 0, duration: 0, status: Status.Unmarked }
-	}
+slot_at = |slots, index| slots.get(index).ok_or(empty_slot)
 
 index_of_id : List(Slot), Str -> U64
-index_of_id = |slots, id| {
-	var $index = 0
-	var $found = 0
-	while $index < slots.len() {
-		if slot_at(slots, $index).id == id {
-			$found = $index
-		} else {
-		}
-		$index = $index + 1
-	}
-	$found
-}
+index_of_id = |slots, id|
+	Try.map_ok(slots.map_with_index(|slot, index| { id: slot.id, index }).find_first(|entry| entry.id == id), |entry| entry.index).ok_or(0)
 
 ## Swap a slot with the one before it. Reordering keeps every row key, so the
 ## reconciler moves rows rather than rebuilding them.
@@ -344,21 +434,16 @@ move_earlier = |slots, id| {
 	if index == 0 {
 		slots
 	} else {
-		var $out = []
-		var $cursor = 0
-		while $cursor < slots.len() {
-			pick =
-				if $cursor == index - 1 {
-					index
-				} else if $cursor == index {
-					index - 1
+		slots.map_with_index(
+			|_, cursor|
+				if cursor == index - 1 {
+					slot_at(slots, index)
+				} else if cursor == index {
+					slot_at(slots, index - 1)
 				} else {
-					$cursor
-				}
-			$out = $out.append(slot_at(slots, pick))
-			$cursor = $cursor + 1
-		}
-		$out
+					slot_at(slots, cursor)
+				},
+		)
 	}
 }
 
@@ -366,101 +451,78 @@ set_status : List(Slot), Str, Status -> List(Slot)
 set_status = |slots, id, status|
 	slots.map(|slot| if slot.id == id { { ..slot, status } } else { slot })
 
-digits_value : List(U8) -> U64
-digits_value = |bytes| bytes.fold(0, |acc, byte| acc * 10 + U8.to_u64(byte) - 48)
+## A non-empty run of ASCII digits. The guard is what rejects "8h", "+9" and
+## "", and the builtin does the actual arithmetic.
+digits_only : Str -> Try(U64, [NotDigits])
+digits_only = |text| {
+	bytes = text.to_utf8()
+	if !bytes.is_empty() and bytes.all(|byte| byte >= 48 and byte <= 57) {
+		Try.map_err(U64.from_str(text), |_| NotDigits)
+	} else {
+		Err(NotDigits)
+	}
+}
 
-all_digits : List(U8) -> Bool
-all_digits = |bytes| !bytes.is_empty() and bytes.all(|byte| byte >= 48 and byte <= 57)
-
-## Parse "HH:MM" into minutes-from-midnight. `Bad` for anything that is not two
-## digit groups in range.
-parse_clock : Str -> Parsed
+## Parse "HH:MM" into minutes-from-midnight. Anything that is not two digit
+## groups in range is an error, never a silently zeroed time.
+parse_clock : Str -> Try(U64, [BadClock])
 parse_clock = |text| {
 	parts = text.split_on(":")
 	if parts.len() != 2 {
-		Parsed.Bad
+		Err(BadClock)
 	} else {
-		hours_bytes = match parts.get(0) {
-			Ok(value) => value.to_utf8()
-			Err(_) => []
-		}
-		minutes_bytes = match parts.get(1) {
-			Ok(value) => value.to_utf8()
-			Err(_) => []
-		}
-		if all_digits(hours_bytes) and all_digits(minutes_bytes) {
-			hours = digits_value(hours_bytes)
-			minutes = digits_value(minutes_bytes)
-			if hours < 24 and minutes < 60 {
-				Parsed.Minutes(hours * 60 + minutes)
-			} else {
-				Parsed.Bad
-			}
+		hours = Try.map_err(digits_only(parts.get(0).ok_or("")), |_| BadClock)?
+		minutes = Try.map_err(digits_only(parts.get(1).ok_or("")), |_| BadClock)?
+		if hours < 24 and minutes < 60 {
+			Ok(hours * 60 + minutes)
 		} else {
-			Parsed.Bad
+			Err(BadClock)
 		}
 	}
 }
 
-parse_duration : Str -> Parsed
+parse_duration : Str -> Try(U64, [BadDuration])
 parse_duration = |text| {
-	bytes = text.to_utf8()
-	if all_digits(bytes) {
-		minutes = digits_value(bytes)
-		if minutes > 0 and minutes <= 720 {
-			Parsed.Minutes(minutes)
-		} else {
-			Parsed.Bad
-		}
+	minutes = Try.map_err(digits_only(text), |_| BadDuration)?
+	if minutes > 0 and minutes <= 720 {
+		Ok(minutes)
 	} else {
-		Parsed.Bad
+		Err(BadDuration)
 	}
 }
-
-clock_ok : Str -> Bool
-clock_ok = |text|
-	match parse_clock(text) {
-		Minutes(_) => True
-		Bad => False
-	}
-
-duration_ok : Str -> Bool
-duration_ok = |text|
-	match parse_duration(text) {
-		Minutes(_) => True
-		Bad => False
-	}
 
 empty_draft : Draft
-empty_draft = { title: "", day: "Mon", start_text: "09:00", duration: "30", abs_start: 540, valid: False }
+empty_draft = { title: "", day: Day.Mon, start_text: "09:00", duration: "30", plan: Err(DraftError.MissingTitle) }
 
-## Re-derive the draft's stored instant from its local fields plus the zone the
+## Re-derive what the draft would store, from its local fields plus the zone the
 ## user is currently looking at. The typed time is a *local* wall clock, so the
-## zone has to be read at the moment the field changes.
+## zone has to be read at the moment the field changes. The three failure tags
+## are checked in the order the form reads, top to bottom.
+plan_of : Draft, Zone -> Try(Plan, DraftError)
+plan_of = |draft, zone|
+	if draft.title.is_empty() {
+		Err(DraftError.MissingTitle)
+	} else {
+		local_minute = Try.map_err(parse_clock(draft.start_text), |_| DraftError.BadStart)?
+		duration = Try.map_err(parse_duration(draft.duration), |_| DraftError.BadLength)?
+		local = Day.index(draft.day) * 1440 + local_minute
+		# Inverse of `local_of`: go from the displayed local instant back to UTC.
+		Ok({ abs_start: (local + week_minutes + offset_base - zone.shift) % week_minutes, duration })
+	}
+
 reprice : Draft, Zone -> Draft
-reprice = |draft, zone| {
-	valid = !draft.title.is_empty() and clock_ok(draft.start_text) and duration_ok(draft.duration)
-	local_minute =
-		match parse_clock(draft.start_text) {
-			Minutes(minute) => minute
-			Bad => 0
-		}
-	local = day_index(draft.day) * 1440 + local_minute
-	# Inverse of `local_of`: go from the displayed local instant back to UTC.
-	abs_start = (local + week_minutes + offset_base - zone.shift) % week_minutes
-	{ ..draft, abs_start, valid }
-}
+reprice = |draft, zone| { ..draft, plan: plan_of(draft, zone) }
 
 draft_status : Draft -> Str
 draft_status = |draft|
-	if draft.title.is_empty() {
-		"Enter a name for the new slot"
-	} else if !clock_ok(draft.start_text) {
-		"Start time must be HH:MM"
-	} else if !duration_ok(draft.duration) {
-		"Length must be 1-720 minutes"
-	} else {
-		"Ready to add ${draft.title}"
+	match draft.plan {
+		Ok(_) => "Ready to add ${draft.title}"
+		Err(error) =>
+			match error {
+				MissingTitle => "Enter a name for the new slot"
+				BadStart => "Start time must be HH:MM"
+				BadLength => "Length must be 1-720 minutes"
+			}
 	}
 
 slot_id_of : List(Slot) -> Str
@@ -475,15 +537,9 @@ slot_id_of = |slots| {
 
 add_slot : List(Slot), Draft -> List(Slot)
 add_slot = |slots, draft|
-	if draft.valid {
-		duration =
-			match parse_duration(draft.duration) {
-				Minutes(value) => value
-				Bad => 30
-			}
-		slots.append({ id: slot_id_of(slots), title: draft.title, abs_start: draft.abs_start, duration, status: Status.Unmarked })
-	} else {
-		slots
+	match draft.plan {
+		Ok(plan) => slots.append({ id: slot_id_of(slots), title: draft.title, abs_start: plan.abs_start, duration: plan.duration, status: Status.Unmarked })
+		Err(_) => slots
 	}
 
 initial_slots : List(Slot)
@@ -507,11 +563,11 @@ render_row = |slots, key, row|
 				"flex items-start justify-between gap-2",
 				[
 					Html.paragraph_s_attrs(Signal.map(row, |view| view.title), [Html.test_id("title-${key}"), Html.class_attr("card-title min-w-0")]),
-					Html.paragraph_s_attrs(Signal.map(row, |view| view.status), [Html.test_id("status-${key}"), Html.class_attr_s(Signal.map(row, status_badge_class))]),
+					Html.paragraph_s_attrs(Signal.map(row, |view| status_text(view.status)), [Html.test_id("status-${key}"), Html.class_attr_s(Signal.map(row, status_badge_class))]),
 				],
 			),
 			Html.paragraph_s_attrs(Signal.map(row, |view| view.when), [Html.test_id("when-${key}"), Html.class_attr("numeric text-xs font-medium text-zinc-700")]),
-			Html.paragraph_s_attrs(Signal.map(row, |view| view.conflict), [Html.test_id("conflict-${key}"), Html.class_attr_s(Signal.map(row, conflict_class))]),
+			Html.paragraph_s_attrs(Signal.map(row, |view| Clash.to_str(view.conflict)), [Html.test_id("conflict-${key}"), Html.class_attr_s(Signal.map(row, conflict_class))]),
 			Html.div_c(
 				"grid grid-cols-2 gap-1 pt-1",
 				[
@@ -524,8 +580,18 @@ render_row = |slots, key, row|
 		],
 	)
 
-week_panel : Ui.State(List(Slot)), Signal.Signal(List(RowView)), Signal.Signal(List(Str)), Signal.Signal(Str), Signal.Signal(Bool) -> Elem
-week_panel = |slots, rows, free_names, banner, empty|
+## The four signals the week grid reads, named rather than positional: `rows`
+## and `free` are both lists off the same fan-in, and nothing but the field name
+## would stop a call site swapping them.
+WeekView : {
+	rows : Signal.Signal(List(RowView)),
+	free : Signal.Signal(List(Day)),
+	banner : Signal.Signal(Banner),
+	empty : Signal.Signal(Bool),
+}
+
+week_panel : Ui.State(List(Slot)), WeekView -> Elem
+week_panel = |slots, view|
 	Html.section_c(
 		"Week",
 		panel_class,
@@ -540,8 +606,8 @@ week_panel = |slots, rows, free_names, banner, empty|
 			Html.div_c(
 				"panel-body",
 				[
-					Html.paragraph_s_attrs(banner, [Html.test_id("conflict-banner"), Html.class_attr_s(Signal.map(banner, banner_class))]),
-					Html.div_c("hidden gap-2 sm:grid sm:grid-cols-7", day_indices.map(|index| day_header(free_names, index))),
+					Html.paragraph_s_attrs(Signal.map(view.banner, Banner.to_str), [Html.test_id("conflict-banner"), Html.class_attr_s(Signal.map(view.banner, banner_class))]),
+					Html.div_c("hidden gap-2 sm:grid sm:grid-cols-7", days.map(|day| day_header(view.free, day))),
 					# One `each_str` over the whole week: the day columns are a CSS
 					# placement of the same rows, so a timezone change moves a block
 					# between columns without the reconciler creating a new row.
@@ -550,10 +616,10 @@ week_panel = |slots, rows, free_names, banner, empty|
 					# single keyed list placed by `col-start` would otherwise do.
 					Html.div_c(
 						"grid items-start gap-2 sm:grid-cols-7 sm:[grid-auto-flow:row_dense]",
-						[Ui.each_str(rows, |view| view.id, |key, row| render_row(slots, key, row))],
+						[Ui.each_str(view.rows, |row| row.id, |key, row| render_row(slots, key, row))],
 					),
 					Ui.when(
-						empty,
+						view.empty,
 						|| Html.paragraph_c("No slots yet. Add the first commitment below.", "empty-state"),
 						|| Html.text(""),
 					),
@@ -607,10 +673,12 @@ add_panel = |draft, zone, slots, draft_signal|
 								"Day",
 								Html.select_c(
 									"Day",
-									Signal.map(draft_signal, |value| value.day),
+									Signal.map(draft_signal, |value| Day.to_str(value.day)),
 									"input",
-									day_names.map(|name| Html.option(name, name)),
-									draft.on_str_with(zone, |value, current_zone, text| reprice({ ..value, day: text }, current_zone)),
+									days.map(|day| Html.option(Day.to_str(day), Day.to_str(day))),
+									# The one place a day arrives as text: parse it here and
+									# the rest of the app only ever sees the tag.
+									draft.on_str_with(zone, |value, current_zone, text| reprice({ ..value, day: Day.from_str(text).ok_or(Day.Mon) }, current_zone)),
 								),
 								"Local day in the selected zone.",
 							),
@@ -645,7 +713,7 @@ add_panel = |draft, zone, slots, draft_signal|
 							),
 							Html.action_button_attrs(
 								Signal.const("Add slot"),
-								Signal.map(draft_signal, |value| !value.valid),
+								Signal.map(draft_signal, |value| Try.is_err(value.plan)),
 								[Html.attr("type", "button"), Html.class_attr("button-primary")],
 								slots.on_unit_with(draft, add_slot),
 							),
@@ -656,19 +724,30 @@ add_panel = |draft, zone, slots, draft_signal|
 		],
 	)
 
-## One metric tile. A number with a caption, never a sentence.
-stat : Str, Signal.Signal(Str), Str, Str -> Elem
-stat = |label, value, id, value_class|
+## One metric tile. A number with a caption, never a sentence. The three strings
+## that describe the tile travel together so they cannot be transposed.
+Tile : { label : Str, test_id : Str, value_class : Str }
+
+stat : Tile, Signal.Signal(Str) -> Elem
+stat = |tile, value|
 	Html.div_c(
 		"stat",
 		[
-			Html.paragraph_c(label, "stat-label"),
-			Html.paragraph_s_attrs(value, [Html.test_id(id), Html.class_attr(value_class)]),
+			Html.paragraph_c(tile.label, "stat-label"),
+			Html.paragraph_s_attrs(value, [Html.test_id(tile.test_id), Html.class_attr(tile.value_class)]),
 		],
 	)
 
-summary_panel : Signal.Signal(Str), Signal.Signal(Str), Signal.Signal(Str), Signal.Signal(Str) -> Elem
-summary_panel = |hours, slot_total, conflicts, free|
+## Four same-typed `Signal(Str)` tiles: named fields, not four positions.
+Totals : {
+	hours : Signal.Signal(Str),
+	slots : Signal.Signal(Str),
+	conflicts : Signal.Signal(Str),
+	free : Signal.Signal(Str),
+}
+
+summary_panel : Totals -> Elem
+summary_panel = |totals|
 	Html.section_c(
 		"Summary",
 		"panel p-4",
@@ -676,10 +755,10 @@ summary_panel = |hours, slot_total, conflicts, free|
 			Html.div_c(
 				"stat-grid",
 				[
-					stat("Hours available", hours, "summary", "stat-value"),
-					stat("Slots", slot_total, "stat-slots", "stat-value"),
-					stat("Conflicts", conflicts, "stat-conflicts", "stat-value"),
-					stat("Days with no availability", free, "free-days", "value numeric"),
+					stat({ label: "Hours available", test_id: "summary", value_class: "stat-value" }, totals.hours),
+					stat({ label: "Slots", test_id: "stat-slots", value_class: "stat-value" }, totals.slots),
+					stat({ label: "Conflicts", test_id: "stat-conflicts", value_class: "stat-value" }, totals.conflicts),
+					stat({ label: "Days with no availability", test_id: "free-days", value_class: "value numeric" }, totals.free),
 				],
 			),
 		],
@@ -721,11 +800,7 @@ zone_panel = |zone, zone_signal|
 	)
 
 metric_at : List(U64), U64 -> U64
-metric_at = |values, index|
-	match values.get(index) {
-		Ok(value) => value
-		Err(_) => 0
-	}
+metric_at = |values, index| values.get(index).ok_or(0)
 
 main : () -> Elem
 main = ||
@@ -763,7 +838,7 @@ main = ||
 								)
 
 							# fan-in C: slots x zone -> which local days have no availability
-							free_names = Signal.map2(slots_signal, zone_signal, free_day_names)
+							free_names = Signal.map2(slots_signal, zone_signal, free_days)
 							free = Signal.map(free_names, free_text)
 
 							banner = Signal.map2(slots_signal, conflicts, conflict_banner)
@@ -780,8 +855,8 @@ main = ||
 										],
 									),
 									zone_panel(zone, zone_signal),
-									summary_panel(hours_text, slots_text, conflicts_text, free),
-									week_panel(slots, rows, free_names, banner, Signal.map(slot_count, |count| count == 0)),
+									summary_panel({ hours: hours_text, slots: slots_text, conflicts: conflicts_text, free }),
+									week_panel(slots, { rows, free: free_names, banner, empty: Signal.map(slot_count, |count| count == 0) }),
 									add_panel(draft, zone, slots, draft_signal),
 									# Clearing the form is a side effect of the slot list changing,
 									# not something derivable from the draft, so it is a command.
@@ -792,3 +867,48 @@ main = ||
 					),
 			),
 	)
+
+expect Day.from_str("Fri").ok_or(Day.Mon) |> Day.to_str() == "Fri"
+expect Day.from_str("Nope").ok_or(Day.Mon) |> Day.to_str() == "Mon"
+expect Day.from_index(Day.index(Day.Sun)).ok_or(Day.Mon) |> Day.is_eq(Day.Sun)
+
+# The four strings the draft-validation spec asserts, byte for byte.
+expect parse_clock("08:30") == Ok(510)
+expect parse_clock("25:00") == Err(BadClock)
+expect parse_clock("0830") == Err(BadClock)
+expect parse_clock("08:60") == Err(BadClock)
+expect parse_duration("45") == Ok(45)
+expect parse_duration("0") == Err(BadDuration)
+expect parse_duration("abc") == Err(BadDuration)
+expect parse_duration("721") == Err(BadDuration)
+
+# A typed local time is stored as the UTC instant it names, and reads back as
+# the same wall clock in the zone it was typed in.
+expect {
+	draft = reprice({ ..empty_draft, title: "Client call", day: Day.Fri, start_text: "08:30", duration: "45" }, zone_by_id("nyc"))
+	draft_status(draft) == "Ready to add Client call"
+}
+expect {
+	nyc = zone_by_id("nyc")
+	draft = reprice({ ..empty_draft, title: "Client call", day: Day.Fri, start_text: "08:30", duration: "45" }, nyc)
+	slot = slot_at(add_slot([], draft), 0)
+	span_text(slot, nyc) == "Fri 08:30-09:15"
+}
+expect draft_status({ ..empty_draft, start_text: "25:00" }) == "Enter a name for the new slot"
+expect draft_status(reprice({ ..empty_draft, title: "X", start_text: "25:00" }, zone_by_id("utc"))) == "Start time must be HH:MM"
+expect draft_status(reprice({ ..empty_draft, title: "X", duration: "0" }, zone_by_id("utc"))) == "Length must be 1-720 minutes"
+
+# Two busy slots that overlap name each other; the same pair unmarked does not.
+expect {
+	slots = [
+		{ id: "a", title: "Standup", abs_start: 540, duration: 30, status: Status.Busy },
+		{ id: "b", title: "Design review", abs_start: 555, duration: 60, status: Status.Busy },
+	]
+	ids = conflict_ids(slots)
+	Clash.to_str(conflict_of(slots, ids, slot_at(slots, 0))) == "Clashes with Design review"
+	and Banner.to_str(conflict_banner(slots, ids)) == "2 overlapping commitments: Standup, Design review"
+}
+expect conflict_banner(initial_slots, conflict_ids(initial_slots)) |> Banner.is_eq(Banner.Settled)
+
+expect move_earlier(initial_slots, "review").map(|slot| slot.id) == ["sunrise", "review", "standup", "midnight", "focus"]
+expect move_earlier(initial_slots, "sunrise").map(|slot| slot.id) == ["sunrise", "standup", "review", "midnight", "focus"]

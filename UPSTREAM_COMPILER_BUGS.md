@@ -21,6 +21,8 @@ export ROC_BIN=/path/to/roc_nightly-linux_x86_64-2026-08-25-cc03aa8/roc
 | 4 | Empty lambda set at a boxed-closure call | not filed | `repro/empty-lambda-set-boxed-closure/` | n/a |
 | 5 | Method-position dispatch rejects a nested nominal, printing two identical types | not filed | in-situ (below) | yes |
 | 6 | `var $x = False` infers an open tag union, not `Bool`, so `!$x` fails method lookup | not filed | `repro/var-bool-inference/` | yes |
+| 7 | A record-destructured binding loses method dispatch when two different `.map`s are called on it | not filed | in-situ (below) | yes |
+| 8 | `List.sort_with` is a first-element-pivot quicksort, so it is O(n^2) on already-ordered input | not filed | `examples/data-grid` | yes |
 
 Details for 1-3 are in `wip/example-visual-polish-findings.md`; 4 has its own
 `README.md` beside its repro.
@@ -157,6 +159,111 @@ are named positively and never need `!` (`$closed` became `$open`).
 
 ---
 
+## 7. A record-destructured binding breaks method dispatch, printing two identical types
+
+**Status:** not filed upstream. Found 2026-08-27 while grouping positional
+arguments into record parameters in `examples/pomodoro-tracker`.
+
+Binding a value out of a record by *destructuring* (`{ run } = ctx`) and then
+calling two differently-typed methods on it fails, where binding the same value
+by *field access* (`run = ctx.run`) succeeds. Like #5, the error prints the
+expected and actual types character-for-character identically — and here it also
+prints the *wrong* function type: the annotation of the sibling `.map` call
+(`RunState -> Str`) is reported for a call whose argument is `RunState -> Bool`.
+
+### Reproduce
+
+In `examples/pomodoro-tracker/main.roc`, replace the field-access preamble of
+`board` with the destructuring form:
+
+```roc
+board = |b, extras| {
+	{ ctx, ledger, ticks } = b
+	{ attach, run, attached } = ctx
+	run_signal = run.signal()
+	...
+```
+
+```sh
+./scripts/dev/check-example.sh pomodoro-tracker
+```
+
+Output:
+
+```
+── ✗ type mismatch ─ .../pomodoro-tracker/main.roc:372:9
+
+run_signal.map(is_idle),
+^^^^^^^^^^
+
+It has the type:
+
+    d where [d.map : d, (RunState -> Str) -> Signal(Str)]
+
+But you are trying to use it as:
+
+    d where [d.map : d, (RunState -> Str) -> Signal(Str)]
+```
+
+`run_signal` is mapped twice in the same block: `run_signal.map(run_text)` and
+`run_signal.map(run_badge_class)` return `Signal(Str)`, while
+`run_signal.map(is_idle)` returns `Signal(Bool)`. Only the last one is rejected,
+and only when `run` reached the block through a destructuring pattern. A
+parameter-position pattern (`board = |{ ctx, ledger, ticks }, extras|`) fails the
+same way.
+
+### Workaround
+
+Bind through field access (`run = b.ctx.run`), which is what
+`examples/pomodoro-tracker/main.roc` now does. The call form
+(`Signal.map(run_signal, is_idle)`) also works, as it does for #5.
+
+A standalone repro under `repro/` did not reproduce with a hand-rolled nominal
+`Box(a)` and a plain record, so the trigger needs something more than
+"destructure a record, then call two methods" — the in-situ reproduction above
+is reliable.
+
+---
+
+## 8. `List.sort_with` degrades to O(n^2) on ordered input
+
+**Status:** not filed upstream. Found 2026-08-27 when `examples/data-grid` was
+switched from its hand-rolled merge sort to the builtin.
+
+`List.sort_with` is a naive quicksort that takes the **first element** as its
+pivot, and partitions with **two** `keep_if` passes (so 2n comparisons per
+level, plus a fresh list allocation for each partition and a `concat` to
+rejoin):
+
+```roc
+Ok(pivot) => {
+    rest = List.drop_first(list, 1)
+    less_or_equal = List.keep_if(rest, |item| ... LT => True, EQ => True, GT => False)
+    greater       = List.keep_if(rest, |item| ... LT => False, EQ => False, GT => True)
+    List.concat(List.sort_with(less_or_equal, order), ...)
+}
+```
+
+First-element pivoting makes **already-sorted input the worst case**, which is
+the common case for a UI list that is regenerated in key order and sorted by
+that same key. It also recurses to depth n there.
+
+Measured on `examples/data-grid` (1200 rows generated in id order, default sort
+by id ascending): `specs/initial-mount.scm` went from **68 ms to 68,751 ms** —
+roughly a thousandfold regression. Every other data-grid spec exceeded the
+30 s spec timeout.
+
+### Workaround
+
+`examples/data-grid/GridData.roc` keeps a hand-rolled merge sort and a comment
+saying why. `examples/flight-search` still uses `sort_with`, which is fine: it
+sorts a handful of rows.
+
+A median-of-three pivot, or a single partitioning pass, would fix the common
+case upstream.
+
+---
+
 ## Not compiler bugs — missing builtins
 
 These cost time this session because they look like they should exist. They are
@@ -169,6 +276,8 @@ API gaps, not defects; recorded so nobody re-derives them.
 | `List.reverse` | Absent. Build the list in the wanted order, or `fold` + `concat`. |
 | `U64.max_value` / a max constant | Absent. `U64.max : U64, U64 -> U64` is a two-argument "greater of". Model "no limit" as a tag instead of a sentinel literal. |
 | `_` in a type alias declaration | Rejected ("Underscores are not allowed in type alias declarations"). Use an inline record annotation at the signature instead. |
+| calling a function held in a record field | `rec.f(x)` parses as a *method* lookup on `rec` and fails. Parenthesise the field: `(rec.f)(x)`. |
+| `Str` ordering | There is no `Str.compare` / `compare_to` / `order` in this build, and `Str` has no `compare` method. Comparing strings for sort order means hand-rolling a byte comparison. |
 
 Present and used, for contrast: `U64.compare`, `U64.from_str`, `Str.contains`,
 `List.find_first`, `List.keep_if`, `List.map2`, `List.all`, `List.any`,
