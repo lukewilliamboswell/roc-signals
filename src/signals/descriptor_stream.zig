@@ -778,12 +778,16 @@ pub const Stream = struct {
         }
         replacement.static_custom_text_attrs.items.len = 0;
         for (replacement.signal_custom_text_attrs.items) |desc| {
+            replacement.forgetSignalRecordTree(desc.signal.record);
+            self.rememberSignalRecordTreeAssumeCapacity(desc.signal.record);
             const index = self.signal_custom_text_attrs.items.len;
             self.signal_custom_text_attrs.appendAssumeCapacity(desc);
             self.recordPreparedCustomAttrIndex(desc.elem_id, desc.name, .{ .kind = .signal_text, .index = index });
         }
         replacement.signal_custom_text_attrs.items.len = 0;
         for (replacement.signal_optional_custom_text_attrs.items) |desc| {
+            replacement.forgetSignalRecordTree(desc.signal.record);
+            self.rememberSignalRecordTreeAssumeCapacity(desc.signal.record);
             const index = self.signal_optional_custom_text_attrs.items.len;
             self.signal_optional_custom_text_attrs.appendAssumeCapacity(desc);
             self.recordPreparedCustomAttrIndex(desc.elem_id, desc.name, .{ .kind = .signal_text_optional, .index = index });
@@ -796,6 +800,8 @@ pub const Stream = struct {
         }
         replacement.static_custom_bool_attrs.items.len = 0;
         for (replacement.signal_custom_bool_attrs.items) |desc| {
+            replacement.forgetSignalRecordTree(desc.signal.record);
+            self.rememberSignalRecordTreeAssumeCapacity(desc.signal.record);
             const index = self.signal_custom_bool_attrs.items.len;
             self.signal_custom_bool_attrs.appendAssumeCapacity(desc);
             self.recordPreparedCustomAttrIndex(desc.elem_id, desc.name, .{ .kind = .signal_bool, .index = index });
