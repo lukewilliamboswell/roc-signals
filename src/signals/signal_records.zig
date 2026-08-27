@@ -109,6 +109,8 @@ pub const PreparedCacheUpdates = struct {
     indexes: std.AutoHashMapUnmanaged(*CacheSlot, usize) = .empty,
     results: std.ArrayListUnmanaged(Result) = .empty,
     result_indexes: std.AutoHashMapUnmanaged(*anyopaque, usize) = .empty,
+    derived_calls: u64 = 0,
+    propagation_prunes: u64 = 0,
     committed: bool = false,
 
     /// Reserves the exact upper bound before any callback result is adopted.

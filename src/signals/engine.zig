@@ -1724,7 +1724,7 @@ pub fn Engine(comptime Ctx: type) type {
                 .present => |*cached| blk: {
                     if (cached.valueEquals(ctx, roc_host, value)) {
                         cached.dropIncoming(ctx, roc_host, value);
-                        self.recordSignalPrune();
+                        overlay.propagation_prunes += 1;
                         break :blk .{ .value = Ctx.cloneHostValue(ctx, cached.value), .changed = false };
                     }
                     overlay.stageAssumeCapacity(cache_slot, value, cap, &self.pending_roc_metrics);
@@ -1738,13 +1738,17 @@ pub fn Engine(comptime Ctx: type) type {
             return result;
         }
 
-        fn commitPreparedDirtySignalCaches(_: *Self, overlay: *signal_records.PreparedCacheUpdates) void {
+        fn commitPreparedDirtySignalCaches(self: *Self, overlay: *signal_records.PreparedCacheUpdates) void {
             overlay.commit();
             for (overlay.results.items) |entry| {
                 const record: *HostSignalRecord = @ptrCast(@alignCast(entry.key));
                 record.last_dirty_generation = entry.dirty_generation;
                 record.last_dirty_changed = entry.changed;
             }
+            var metrics = self.pending_roc_metrics;
+            metrics.bump(.derived_calls_into_roc, overlay.derived_calls);
+            metrics.bump(.propagation_prunes, overlay.propagation_prunes);
+            self.pending_roc_metrics = metrics;
         }
 
         /// Performs update dirty signal cache inside the shared engine while preserving transaction and changed-set invariants.
@@ -7476,7 +7480,7 @@ pub fn Engine(comptime Ctx: type) type {
                     defer self.dropHostSignalRecordValue(ctx, roc_host, payload.input, input.value);
                     const slot = overlay.readSlot(&payload.cached_value);
                     if (!input.changed and slot.* != .absent) break :blk .{ .value = self.cloneCachedSignalValue(ctx, slot), .changed = false };
-                    self.recordDerivedCall();
+                    overlay.derived_calls += 1;
                     const value = callHostValueToHostValueWithCapability(ctx, roc_host, self.hostSignalRecordCapability(ctx, payload.input), payload.transform, input.value);
                     break :blk self.updatePreparedDirtySignalExprCache(ctx, roc_host, overlay, &payload.cached_value, value, payload.cap);
                 },
@@ -7487,7 +7491,7 @@ pub fn Engine(comptime Ctx: type) type {
                     defer self.dropHostSignalRecordValue(ctx, roc_host, payload.right, right.value);
                     const slot = overlay.readSlot(&payload.cached_value);
                     if (!left.changed and !right.changed and slot.* != .absent) break :blk .{ .value = self.cloneCachedSignalValue(ctx, slot), .changed = false };
-                    self.recordDerivedCall();
+                    overlay.derived_calls += 1;
                     const value = callHostValueHostValueToHostValueWithCapabilities(ctx, roc_host, self.hostSignalRecordCapability(ctx, payload.left), self.hostSignalRecordCapability(ctx, payload.right), payload.transform, left.value, right.value);
                     break :blk self.updatePreparedDirtySignalExprCache(ctx, roc_host, overlay, &payload.cached_value, value, payload.cap);
                 },
@@ -7513,19 +7517,14 @@ pub fn Engine(comptime Ctx: type) type {
                     }
                     const list = HostValueList.fromSlice(values.items, roc_host);
                     defer list.decref(roc_host);
-                    self.recordDerivedCall();
+                    overlay.derived_calls += 1;
                     const input_cap = if (payload.children.len == 0) payload.cap else self.hostSignalRecordCapability(ctx, payload.children[0]);
                     const value = callHostValueListToHostValueWithCapability(ctx, roc_host, input_cap, payload.transform, list);
                     for (payload.children, values.items) |child, child_value| self.dropHostSignalRecordValue(ctx, roc_host, child, child_value);
                     values.deinit(allocator);
                     break :blk self.updatePreparedDirtySignalExprCache(ctx, roc_host, overlay, &payload.cached_value, value, payload.cap);
                 },
-                .task_source => |*payload| .{ .value = self.cloneCachedSignalValue(ctx, overlay.readSlot(&payload.cached_value)), .changed = true },
-                .interval_source => |*payload| .{ .value = self.cloneCachedSignalValue(ctx, overlay.readSlot(&payload.cached_value)), .changed = true },
-                .location_source => |*payload| .{ .value = self.cloneCachedSignalValue(ctx, overlay.readSlot(&payload.cached_value)), .changed = true },
-                .visibility_source => |*payload| .{ .value = self.cloneCachedSignalValue(ctx, overlay.readSlot(&payload.cached_value)), .changed = true },
-                .online_source => |*payload| .{ .value = self.cloneCachedSignalValue(ctx, overlay.readSlot(&payload.cached_value)), .changed = true },
-                .storage_source => |*payload| .{ .value = self.cloneCachedSignalValue(ctx, overlay.readSlot(&payload.cached_value)), .changed = true },
+                .task_source, .interval_source, .location_source, .visibility_source, .online_source, .storage_source => return error.ResourceLimit,
             };
             return self.rememberPreparedDirtySignalResult(overlay, record, dirty_generation, result);
         }
@@ -7563,6 +7562,21 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             return changed_record_ids.items;
+        }
+
+        fn prepareChangedActiveSignalRecordIds(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, overlay: *signal_records.PreparedCacheUpdates, dirty_record_ids: []const u64, dirty_source_node_ids: []const u64, dirty_generation: u64) CollectionError![]u64 {
+            const allocator = Ctx.allocator(ctx);
+            var changed = std.ArrayListUnmanaged(u64).empty;
+            errdefer changed.deinit(allocator);
+            changed.ensureTotalCapacity(allocator, dirty_record_ids.len) catch return error.OutOfMemory;
+            for (dirty_record_ids) |record_id| {
+                if (record_id >= self.active_signal_graph.items.len) return error.ResourceLimit;
+                const record = self.active_signal_graph.items[@intCast(record_id)].record;
+                const result = try self.evalPreparedDirtyHostSignalRecord(ctx, roc_host, overlay, record, dirty_source_node_ids, dirty_generation);
+                if (result.changed) changed.appendAssumeCapacity(record_id);
+                self.dropHostSignalRecordValue(ctx, roc_host, record, result.value);
+            }
+            return changed.toOwnedSlice(allocator) catch return error.OutOfMemory;
         }
 
         /// Collects dirty structural signals from the explicitly affected graph or scope set.
@@ -11376,14 +11390,17 @@ test "prepared dirty evaluator reads provisional source through derived map" {
         .cached_value = .{ .present = HostValueCell.initRetained(10, cap, &engine.pending_roc_metrics) },
     } } };
     defer mapped.payload.map.cached_value.deinit(&ctx, &roc_host, &engine.pending_roc_metrics);
+    try engine.active_signal_graph.append(ctx.allocator, .{ .record = &source, .rank = 0 });
+    try engine.active_signal_graph.append(ctx.allocator, .{ .record = &mapped, .rank = 1 });
+    defer engine.active_signal_graph.deinit(ctx.allocator);
 
     var aborted = try signal_records.PreparedCacheUpdates.init(ctx.allocator, 2);
     defer aborted.deinit(&ctx, &roc_host, &engine.pending_roc_metrics);
     aborted.stageAssumeCapacity(&source.payload.interval_source.cached_value, 2, cap, &engine.pending_roc_metrics);
     aborted.rememberResultAssumeCapacity(@ptrCast(&source), 7, true);
-    const aborted_result = try engine.evalPreparedDirtyHostSignalRecord(&ctx, &roc_host, &aborted, &mapped, &.{}, 7);
-    Engine(VerifyCtx).callHostValueToUnitWithCapability(&ctx, &roc_host, cap, hv.hostValueCapabilityDrop(cap), aborted_result.value);
-    try std.testing.expect(aborted_result.changed);
+    const aborted_changed = try engine.prepareChangedActiveSignalRecordIds(&ctx, &roc_host, &aborted, &.{ 0, 1 }, &.{}, 7);
+    defer ctx.allocator.free(aborted_changed);
+    try std.testing.expectEqualSlices(u64, &.{ 0, 1 }, aborted_changed);
     try std.testing.expectEqual(@as(HostValue, 1), source.payload.interval_source.cached_value.present.value);
     try std.testing.expectEqual(@as(HostValue, 10), mapped.payload.map.cached_value.present.value);
     try std.testing.expectEqual(@as(u64, 0), mapped.last_dirty_generation);
@@ -11391,8 +11408,9 @@ test "prepared dirty evaluator reads provisional source through derived map" {
     defer committed.deinit(&ctx, &roc_host, &engine.pending_roc_metrics);
     committed.stageAssumeCapacity(&source.payload.interval_source.cached_value, 2, cap, &engine.pending_roc_metrics);
     committed.rememberResultAssumeCapacity(@ptrCast(&source), 8, true);
-    const committed_result = try engine.evalPreparedDirtyHostSignalRecord(&ctx, &roc_host, &committed, &mapped, &.{}, 8);
-    Engine(VerifyCtx).callHostValueToUnitWithCapability(&ctx, &roc_host, cap, hv.hostValueCapabilityDrop(cap), committed_result.value);
+    const committed_changed = try engine.prepareChangedActiveSignalRecordIds(&ctx, &roc_host, &committed, &.{ 0, 1 }, &.{}, 8);
+    defer ctx.allocator.free(committed_changed);
+    try std.testing.expectEqualSlices(u64, &.{ 0, 1 }, committed_changed);
     engine.commitPreparedDirtySignalCaches(&committed);
     try std.testing.expectEqual(@as(HostValue, 2), source.payload.interval_source.cached_value.present.value);
     try std.testing.expectEqual(@as(HostValue, 42), mapped.payload.map.cached_value.present.value);
