@@ -1054,6 +1054,37 @@ pub const Stream = struct {
         return self.signal_records_by_token.get(token);
     }
 
+    pub fn reservePreparedSignalRecordPublication(self: *Stream, allocator: std.mem.Allocator, additional_records: usize) std.mem.Allocator.Error!void {
+        try self.signal_records_by_token.ensureUnusedCapacity(allocator, @intCast(additional_records));
+        try self.signal_record_descriptor_uses_by_token.ensureUnusedCapacity(allocator, @intCast(additional_records));
+    }
+
+    pub fn rememberSignalRecordAssumeCapacity(self: *Stream, token: HostSignalToken, record: *SignalRecord) void {
+        const entry = self.signal_records_by_token.getOrPutAssumeCapacity(token);
+        if (entry.found_existing) {
+            if (entry.value_ptr.* != record) @panic("signal token was bound to multiple host records");
+            return;
+        }
+        entry.value_ptr.* = record;
+    }
+
+    pub fn incrementSignalRecordDescriptorTreeAssumeCapacity(self: *Stream, root: *SignalRecord) void {
+        const Context = struct {
+            stream: *Stream,
+
+            fn visit(ctx: @This(), current: *SignalRecord) void {
+                const token = current.token() orelse return;
+                const entry = ctx.stream.signal_record_descriptor_uses_by_token.getOrPutAssumeCapacity(token);
+                if (entry.found_existing) {
+                    entry.value_ptr.* += 1;
+                } else {
+                    entry.value_ptr.* = 1;
+                }
+            }
+        };
+        signal_records.walkTree(Context, .{ .stream = self }, root, Context.visit);
+    }
+
     pub fn rememberSignalRecord(self: *Stream, allocator: std.mem.Allocator, record: *SignalRecord) void {
         const token = record.token() orelse return;
         const entry = self.signal_records_by_token.getOrPut(allocator, token) catch @panic("out of memory");
@@ -2891,6 +2922,49 @@ test "prepared signal attr publication is allocation free" {
     try std.testing.expectEqual(@as(?usize, 0), stream.elemDescriptorIndex(2).?.signal_bool_attrs.get(.disabled));
     try std.testing.expectEqual(@as(u64, 1), stream.signal_text_attrs.items[0].elem_id);
     try std.testing.expectEqual(@as(u64, 2), stream.signal_bool_attrs.items[0].elem_id);
+}
+
+test "prepared signal record tree publication is allocation free" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    const TestCtx = struct {
+        pub fn pushHostValueCapabilities(_: *@This(), _: []const retained.HostValueCapability) void {}
+        pub fn popHostValueCapabilities(_: *@This()) void {}
+    };
+
+    var fault = FaultAllocator.init(std.testing.allocator);
+    const allocator = fault.allocator();
+    var stream: Stream = .{};
+    var ctx: TestCtx = .{};
+    var env = abi.RocEnv{ .allocator = allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&env);
+    var metrics = TestMetrics{};
+    defer stream.deinit(allocator, &ctx, &roc_host, &metrics);
+
+    const empty_capability = retained.HostValueCapability{ .clone = null, .drop = null, .eq = null };
+    const child_token: HostSignalToken = @ptrFromInt(0x1000);
+    const root_token: HostSignalToken = @ptrFromInt(0x2000);
+    var child = SignalRecord{ .ref_count = 1, .payload = .{ .const_value = .{
+        .init = child_token,
+        .cap = empty_capability,
+    } } };
+    var root = SignalRecord{ .ref_count = 1, .payload = .{ .map = .{
+        .input = &child,
+        .transform = root_token,
+        .cap = empty_capability,
+    } } };
+
+    try stream.reservePreparedSignalRecordPublication(allocator, 2);
+    fault.configure(1);
+    stream.rememberSignalRecordAssumeCapacity(child_token, &child);
+    stream.rememberSignalRecordAssumeCapacity(root_token, &root);
+    stream.incrementSignalRecordDescriptorTreeAssumeCapacity(&root);
+
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqual(@as(usize, 2), stream.signal_records_by_token.count());
+    try std.testing.expect(stream.signalRecordByToken(child_token) == &child);
+    try std.testing.expect(stream.signalRecordByToken(root_token) == &root);
+    try std.testing.expectEqual(@as(?usize, 1), stream.signal_record_descriptor_uses_by_token.get(child_token));
+    try std.testing.expectEqual(@as(?usize, 1), stream.signal_record_descriptor_uses_by_token.get(root_token));
 }
 
 test "fixed event descriptors preserve Roc supplied payload descriptors" {
