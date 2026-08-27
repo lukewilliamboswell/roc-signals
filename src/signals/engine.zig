@@ -2112,6 +2112,7 @@ pub fn Engine(comptime Ctx: type) type {
             prepared_nodes: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedStaticNode) = .empty,
             prepared_attrs: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedStaticAttr) = .empty,
             signal_records: collection_plan.SignalRecordPlan(HostSignalToken, HostSignalRecord) = .{},
+            signal_bindings: std.ArrayListUnmanaged(HostSignalBinding) = .empty,
             signal_roc_host: ?*abi.RocHost = null,
             signal_capacity: usize = 0,
             committed: bool = false,
@@ -2131,6 +2132,7 @@ pub fn Engine(comptime Ctx: type) type {
                 self.prepared_nodes.ensureTotalCapacity(allocator, expected_nodes) catch return error.OutOfMemory;
                 self.prepared_attrs.ensureTotalCapacity(allocator, expected_attrs) catch return error.OutOfMemory;
                 self.signal_records.prepare(allocator, expected_attrs, expected_attrs) catch return error.OutOfMemory;
+                self.signal_bindings.ensureTotalCapacity(allocator, expected_attrs) catch return error.OutOfMemory;
                 self.signal_capacity = expected_attrs;
                 self.engine.scopes.ensureUnusedCapacity(allocator, 1) catch return error.OutOfMemory;
                 self.engine.dom_identities.ensureUnusedCapacity(allocator, expected_nodes) catch return error.OutOfMemory;
@@ -2155,11 +2157,13 @@ pub fn Engine(comptime Ctx: type) type {
                         index -= 1;
                         self.prepared_attrs.items[index].abort(allocator);
                     }
+                    for (self.signal_bindings.items) |binding| allocator.free(binding.source_node_ids);
                     self.scopes.abort();
                     self.dom_identities.abort();
                 }
                 self.prepared_nodes.deinit(allocator);
                 self.prepared_attrs.deinit(allocator);
+                self.signal_bindings.deinit(allocator);
                 const SignalReleaser = struct {
                     collection: *Collection,
                     pub fn releaseRecord(releaser: @This(), record: *HostSignalRecord) void {
@@ -2310,13 +2314,15 @@ pub fn Engine(comptime Ctx: type) type {
                     source_node_ids.deinit(binding.allocator);
                     return error.OutOfMemory;
                 };
-                return .{
+                const result = HostSignalBinding{
                     .record = record,
                     .source_node_ids = source_node_ids.toOwnedSlice(binding.allocator) catch {
                         source_node_ids.deinit(binding.allocator);
                         return error.OutOfMemory;
                     },
                 };
+                self.signal_bindings.appendAssumeCapacity(result);
+                return result;
             }
 
             /// Publishes only pre-reserved state. This function must remain
