@@ -67,6 +67,23 @@ pub const PreparedRemoval = struct {
     }
 };
 
+pub const RenderRemovalInterval = struct {
+    start: usize,
+    len: usize,
+};
+
+pub const PreparedMultiRemoval = struct {
+    removal: PreparedRemoval,
+    intervals_descending: []RenderRemovalInterval,
+
+    /// Releases the union journal and every prepared interval without mutating the source stream.
+    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+        self.removal.deinit(allocator);
+        allocator.free(self.intervals_descending);
+        self.* = undefined;
+    }
+};
+
 pub const NodeOwnedRemovalScratch = struct {
     scope_site_indexes: std.ArrayListUnmanaged(usize) = .empty,
     state_indexes: std.ArrayListUnmanaged(usize) = .empty,
@@ -365,9 +382,9 @@ pub fn collectRenderRemovalScan(comptime Stream: type, allocator: std.mem.Alloca
 }
 
 /// Prepares the render scan and every descriptor-removal index before mutation.
-pub fn prepareRemoval(comptime Stream: type, allocator: std.mem.Allocator, stream: *const Stream, render_insert_index: usize, target_scopes: []const bool) std.mem.Allocator.Error!PreparedRemoval {
+fn prepareRemovalFromScan(comptime Stream: type, allocator: std.mem.Allocator, stream: *const Stream, scan: RenderRemovalScan, target_scopes: []const bool) std.mem.Allocator.Error!PreparedRemoval {
     var prepared = PreparedRemoval{
-        .scan = try prepareRenderRemovalScan(Stream, allocator, stream, render_insert_index, target_scopes),
+        .scan = scan,
         .descriptor_indexes = .{},
         .node_indexes = .{},
     };
@@ -456,6 +473,76 @@ pub fn prepareRemoval(comptime Stream: type, allocator: std.mem.Allocator, strea
     sortRemovalIndexesDescending(prepared.node_indexes.mount_indexes.items);
     sortRemovalIndexesDescending(prepared.node_indexes.cleanup_indexes.items);
     return prepared;
+}
+
+/// Prepares one contiguous render interval and its union descriptor journals.
+pub fn prepareRemoval(comptime Stream: type, allocator: std.mem.Allocator, stream: *const Stream, render_insert_index: usize, target_scopes: []const bool) std.mem.Allocator.Error!PreparedRemoval {
+    const scan = try prepareRenderRemovalScan(Stream, allocator, stream, render_insert_index, target_scopes);
+    return prepareRemovalFromScan(Stream, allocator, stream, scan, target_scopes);
+}
+
+fn intervalDescending(_: void, lhs: RenderRemovalInterval, rhs: RenderRemovalInterval) bool {
+    return lhs.start > rhs.start;
+}
+
+/// Prepares disjoint render intervals and one authoritative union descriptor journal.
+pub fn prepareMultiRemoval(comptime Stream: type, allocator: std.mem.Allocator, stream: *const Stream, render_insert_indexes: []const usize, target_scopes: []const bool) (std.mem.Allocator.Error || error{OverlappingIntervals})!PreparedMultiRemoval {
+    var elem_ids = std.ArrayListUnmanaged(u64).empty;
+    errdefer elem_ids.deinit(allocator);
+    var parent_ids = std.ArrayListUnmanaged(u64).empty;
+    errdefer parent_ids.deinit(allocator);
+    var intervals = std.ArrayListUnmanaged(RenderRemovalInterval).empty;
+    errdefer intervals.deinit(allocator);
+    var elem_set = std.AutoHashMapUnmanaged(u64, void).empty;
+    defer elem_set.deinit(allocator);
+    var parent_set = std.AutoHashMapUnmanaged(u64, void).empty;
+    defer parent_set.deinit(allocator);
+    var target_scan_count: usize = 0;
+
+    for (render_insert_indexes) |start| {
+        const scan = try prepareRenderRemovalScan(Stream, allocator, stream, start, target_scopes);
+        defer scan.deinit(allocator);
+        const end = std.math.add(usize, start, scan.removed_render_count) catch return error.OutOfMemory;
+        for (intervals.items) |prior| {
+            const prior_end = std.math.add(usize, prior.start, prior.len) catch return error.OutOfMemory;
+            if (start < prior_end and prior.start < end) return error.OverlappingIntervals;
+        }
+        try intervals.append(allocator, .{ .start = start, .len = scan.removed_render_count });
+        target_scan_count = std.math.add(usize, target_scan_count, scan.target_scan_count) catch return error.OutOfMemory;
+        for (scan.removed_elem_ids) |elem_id| {
+            const entry = try elem_set.getOrPut(allocator, elem_id);
+            if (entry.found_existing) return error.OverlappingIntervals;
+            try elem_ids.append(allocator, elem_id);
+        }
+        for (scan.touched_parent_ids) |parent_id| {
+            const entry = try parent_set.getOrPut(allocator, parent_id);
+            if (!entry.found_existing) try parent_ids.append(allocator, parent_id);
+        }
+    }
+    var parent_write: usize = 0;
+    for (parent_ids.items) |parent_id| {
+        if (elem_set.contains(parent_id)) continue;
+        parent_ids.items[parent_write] = parent_id;
+        parent_write += 1;
+    }
+    parent_ids.items.len = parent_write;
+    std.mem.sort(RenderRemovalInterval, intervals.items, {}, intervalDescending);
+
+    const owned_elem_ids = try elem_ids.toOwnedSlice(allocator);
+    var scan_transferred = false;
+    errdefer if (!scan_transferred) allocator.free(owned_elem_ids);
+    const owned_parent_ids = try parent_ids.toOwnedSlice(allocator);
+    errdefer if (!scan_transferred) allocator.free(owned_parent_ids);
+    const owned_intervals = try intervals.toOwnedSlice(allocator);
+    errdefer allocator.free(owned_intervals);
+    scan_transferred = true;
+    const removal = try prepareRemovalFromScan(Stream, allocator, stream, .{
+        .removed_elem_ids = owned_elem_ids,
+        .touched_parent_ids = owned_parent_ids,
+        .removed_render_count = owned_elem_ids.len,
+        .target_scan_count = target_scan_count,
+    }, target_scopes);
+    return .{ .removal = removal, .intervals_descending = owned_intervals };
 }
 
 /// Prepares the render element ids selected by a local structural splice.
@@ -860,6 +947,53 @@ test "render removal preparation sweeps allocation failures without source mutat
         try std.testing.expectEqualSlices(usize, &.{ 1, 0 }, retry.descriptor_indexes.text_node_indexes.items);
         retry.deinit(fault.allocator());
     }
+}
+
+test "multi interval removal prepares one union journal and rejects overlaps" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var stream = TestStream{};
+    defer stream.deinit(std.testing.allocator);
+    try stream.render_nodes.appendSlice(std.testing.allocator, &.{
+        .{ .elem_id = 1, .kind = .element },
+        .{ .elem_id = 2, .kind = .text },
+        .{ .elem_id = 3, .kind = .element },
+        .{ .elem_id = 4, .kind = .element },
+        .{ .elem_id = 5, .kind = .text },
+    });
+    try stream.elements.appendSlice(std.testing.allocator, &.{
+        .{ .elem_id = 1, .parent_elem_id = 0, .scope_id = 1, .tag = "div" },
+        .{ .elem_id = 3, .parent_elem_id = 0, .scope_id = 2, .tag = "hr" },
+        .{ .elem_id = 4, .parent_elem_id = 0, .scope_id = 3, .tag = "aside" },
+    });
+    try stream.text_nodes.appendSlice(std.testing.allocator, &.{
+        .{ .elem_id = 2, .parent_elem_id = 1, .scope_id = 1, .value = "a" },
+        .{ .elem_id = 5, .parent_elem_id = 4, .scope_id = 3, .value = "b" },
+    });
+    const original_nodes = try std.testing.allocator.dupe(TestStream.RenderNode, stream.render_nodes.items);
+    defer std.testing.allocator.free(original_nodes);
+    const target_scopes = &.{ false, true, false, true };
+
+    var counter = FaultAllocator.init(std.testing.allocator);
+    var successful = try prepareMultiRemoval(TestStream, counter.allocator(), &stream, &.{ 0, 3 }, target_scopes);
+    const attempts = counter.attempts;
+    try std.testing.expect(attempts != 0);
+    try std.testing.expectEqualDeep(&[_]RenderRemovalInterval{ .{ .start = 3, .len = 2 }, .{ .start = 0, .len = 2 } }, successful.intervals_descending);
+    try std.testing.expectEqualSlices(u64, &.{ 1, 2, 4, 5 }, successful.removal.scan.removed_elem_ids);
+    try std.testing.expectEqualSlices(usize, &.{ 2, 0 }, successful.removal.descriptor_indexes.element_indexes.items);
+    try std.testing.expectEqualSlices(usize, &.{ 1, 0 }, successful.removal.descriptor_indexes.text_node_indexes.items);
+    successful.deinit(counter.allocator());
+
+    for (1..attempts + 1) |failure_number| {
+        var fault = FaultAllocator.init(std.testing.allocator);
+        fault.configure(failure_number);
+        try std.testing.expectError(error.OutOfMemory, prepareMultiRemoval(TestStream, fault.allocator(), &stream, &.{ 0, 3 }, target_scopes));
+        try std.testing.expectEqualSlices(TestStream.RenderNode, original_nodes, stream.render_nodes.items);
+        fault.configure(null);
+        var retry = try prepareMultiRemoval(TestStream, fault.allocator(), &stream, &.{ 0, 3 }, target_scopes);
+        retry.deinit(fault.allocator());
+    }
+
+    try std.testing.expectError(error.OverlappingIntervals, prepareMultiRemoval(TestStream, std.testing.allocator, &stream, &.{ 0, 1 }, target_scopes));
 }
 
 test "structural splice removes rendered descendants of target nodes across scope boundaries" {
