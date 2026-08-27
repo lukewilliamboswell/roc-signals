@@ -116,3 +116,17 @@ test "fault allocator injects direct resize and remap failures" {
     fault.configure(null);
     allocator.free(remapped);
 }
+
+test "teardown remains allocation-free while faults are armed" {
+    var fault = FaultAllocator.init(std.testing.allocator);
+    const allocator = fault.allocator();
+    const first = try allocator.alloc(u8, 17);
+    const second = try allocator.alloc(u64, 9);
+
+    fault.configure(1);
+    allocator.free(second);
+    allocator.free(first);
+
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqual(@as(usize, 0), fault.induced_failures);
+}
