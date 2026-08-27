@@ -76,6 +76,11 @@ pub const PreparedCacheUpdate = struct {
         };
     }
 
+    /// Adopts an already-retained cell without adding another capability edge.
+    pub fn initOwned(live: *CacheSlot, cell: HostValueCell) PreparedCacheUpdate {
+        return .{ .live = live, .next = .{ .present = cell } };
+    }
+
     /// Swaps the prepared value into the live cache without allocating.
     pub fn commit(self: *PreparedCacheUpdate) void {
         if (self.committed) @panic("prepared cache update committed twice");
@@ -129,6 +134,14 @@ pub const PreparedCacheUpdates = struct {
         if (self.committed or self.indexes.contains(live)) @panic("duplicate or late prepared cache update");
         const index = self.updates.items.len;
         self.updates.appendAssumeCapacity(PreparedCacheUpdate.init(live, value, cap, metrics));
+        self.indexes.putAssumeCapacity(live, index);
+    }
+
+    /// Adopts an already-retained source cell using pre-reserved overlay storage.
+    pub fn stageOwnedAssumeCapacity(self: *PreparedCacheUpdates, live: *CacheSlot, cell: HostValueCell) void {
+        if (self.committed or self.indexes.contains(live)) @panic("duplicate or late prepared cache update");
+        const index = self.updates.items.len;
+        self.updates.appendAssumeCapacity(PreparedCacheUpdate.initOwned(live, cell));
         self.indexes.putAssumeCapacity(live, index);
     }
 
