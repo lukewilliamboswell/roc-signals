@@ -50,12 +50,12 @@
 
     ; a single field form
     (click (role button :name "Add text field"))
-    (expect-text (test-id "designer-status") "Designer status: 1 field")
-    (expect-text (test-id "preview-status") "Preview status: 1 field, 0 problems")
+    (expect-text (test-id "designer-status") "1")
+    (expect-text (test-id "preview-status") "0")
     (expect-absent (text "No fields yet. Add a field to start designing."))
-    (expect-text (test-id "submittable-state") "Form is submittable")
+    (expect-text (test-id "submittable-state") "Ready to submit")
     (expect-disabled (role button :name "Submit form") false)
     (click (role button :name "Submit form"))
-    (expect-text (test-id "submissions-count") "Submissions: 2")
+    (expect-text (test-id "submissions-count") "2")
   )
 )

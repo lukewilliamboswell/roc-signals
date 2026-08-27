@@ -32,7 +32,7 @@
     ; that it never touched keep their exact values.
     (uncheck (label "Include Seeded Bread Loaf"))
     (expect-checked (label "Include Seeded Bread Loaf") false)
-    (expect-text (test-id "shopping-count") "Shopping list: 8 lines from 2 recipes")
+    (expect-text (test-id "shopping-count") "8 lines from 2 recipes")
     (expect-absent (test-id "shop-qty-water-ml"))
     (expect-text (test-id "shop-name-flour-g") "Plain flour")
     (expect-text (test-id "shop-qty-flour-g") "100 g")
@@ -43,7 +43,7 @@
     (expect-text (test-id "shop-qty-tomatoes-g") "600 g")
     (expect-text (test-id "shop-qty-butter-tsp") "2 tsp")
     (uncheck (label "Include Roasted Tomato Soup"))
-    (expect-text (test-id "shopping-count") "Shopping list: 5 lines from 1 recipes")
+    (expect-text (test-id "shopping-count") "5 lines from 1 recipes")
     (expect-absent (test-id "shop-qty-butter-tsp"))
     (expect-absent (test-id "shop-qty-tomatoes-g"))
     (expect-text (test-id "shop-qty-flour-g") "100 g")
@@ -57,7 +57,7 @@
     (expect-metric-delta rows_removed 0)
     (expect-metric-delta scopes_created 1)
     (expect-metric-delta scopes_disposed 6)
-    (expect-text (test-id "shopping-count") "Shopping list: 0 lines from 0 recipes")
+    (expect-text (test-id "shopping-count") "0 lines from 0 recipes")
     (expect-visible (test-id "shopping-empty"))
     (expect-absent (test-id "shopping-rows"))
     ; The ingredient panel is untouched by shopping-list churn.

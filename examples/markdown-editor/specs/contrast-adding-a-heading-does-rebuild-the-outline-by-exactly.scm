@@ -16,7 +16,7 @@
 
     (mark-metrics)
     (click (role button :name "Append a section"))
-    (expect-text (test-id "stat-headings") "Headings: 6")
+    (expect-text (test-id "stat-headings") "6")
     (expect-visible (test-id "toc:new-section"))
     (expect-attr (test-id "toc:new-section") data-level "2")
     ; Two new rows and no removals: one preview block, its inline segment, and one outline entry.
@@ -24,7 +24,7 @@
     (expect-metric-delta rows_removed 0)
     ; Duplicate heading titles still get unique, stable row identities.
     (click (role button :name "Append a section"))
-    (expect-text (test-id "stat-headings") "Headings: 7")
+    (expect-text (test-id "stat-headings") "7")
     (expect-visible (test-id "toc:new-section"))
     (expect-visible (test-id "toc:new-section-2"))
   )

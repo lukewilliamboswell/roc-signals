@@ -308,8 +308,8 @@ pub const WhenDesc = struct {
         self.cached_value.deinit(ctx, roc_host, metrics);
         self.condition.deinit(allocator, ctx, roc_host, metrics);
         releaseHostBoolRead(self.read, roc_host, metrics);
-        abi.decrefElem(self.when_false, roc_host);
-        abi.decrefElem(self.when_true, roc_host);
+        self.when_false.decref(roc_host);
+        self.when_true.decref(roc_host);
     }
 };
 
@@ -1404,8 +1404,8 @@ pub const Stream = struct {
     pub fn appendWhen(self: *Stream, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, node_id: u64, condition: HostSignalBinding, read: HostBoolRead, when_false: abi.Elem, when_true: abi.Elem) void {
         self.rememberSignalRecordTree(allocator, condition.record);
         const retained_read = retainHostBoolRead(read, metrics);
-        abi.increfElem(when_false, 1);
-        abi.increfElem(when_true, 1);
+        when_false.incref(1);
+        when_true.incref(1);
         const when_index = self.whens.items.len;
         self.whens.append(allocator, .{
             .node_id = node_id,

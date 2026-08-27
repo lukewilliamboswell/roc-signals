@@ -137,6 +137,7 @@ class MockHost {
     protocolVersion = Protocol.version,
     protocolFeatures = ProtocolFeature.dynamicAttrs | ProtocolFeature.dynamicEvents,
     storageDeclarations = [],
+    debugAllocations = null,
   } = {}) {
     this.memory = new WebAssembly.Memory({ initial: 1 });
     this.cmdLen = 0;
@@ -284,6 +285,13 @@ class MockHost {
         return this.eventResponseBits.get(eventId) ?? 0;
       },
     };
+    if (debugAllocations !== null) {
+      this.exports.roc_ui_debug_live_allocation_count = () => debugAllocations.length;
+      this.exports.roc_ui_debug_live_allocation_bytes = () =>
+        debugAllocations.reduce((total, allocation) => total + allocation.size, 0);
+      this.exports.roc_ui_debug_live_allocation_size = (index) => debugAllocations[index]?.size ?? 0;
+      this.exports.roc_ui_debug_live_allocation_phase = (index) => debugAllocations[index]?.phase ?? 0;
+    }
   }
 
   writeStorageDeclarationKeys() {
@@ -2676,6 +2684,28 @@ test("telemetry records command batches DOM events and event payload dispatches"
         entry.commands[0].text === "clicked",
     ),
   );
+});
+
+test("allocation telemetry groups live wasm allocations by phase and size", () => {
+  const telemetry = [];
+  mountWith([], {
+    telemetry: (entry) => telemetry.push(entry),
+    debugAllocations: [
+      { phase: 201, size: 8 },
+      { phase: 201, size: 8 },
+      { phase: 409, size: 24 },
+    ],
+  });
+
+  const checkpoint = telemetry.find(
+    (entry) => entry.kind === "allocation_checkpoint" && entry.phase === "mount",
+  );
+  assert.equal(checkpoint.live, 3);
+  assert.equal(checkpoint.bytes, 40);
+  assert.deepEqual(checkpoint.cohorts, [
+    { phase: 201, size: 8, count: 2, bytes: 16 },
+    { phase: 409, size: 24, count: 1, bytes: 24 },
+  ]);
 });
 
 test("memory growth during dispatch keeps the response command stream readable", () => {

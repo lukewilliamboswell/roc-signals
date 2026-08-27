@@ -7,6 +7,10 @@ app [main] { pf: platform "../../platform/main.roc" }
 # per-task slack is shown, and a cyclic dependency is detected and reported
 # instead of hanging.
 #
+# The schedule renders as a Gantt chart: each row's bar is positioned and sized
+# from the same solved `Plan.Row` that feeds its slack figure and its badge, so
+# the bar, the number and the status word can never disagree.
+#
 # The platform's signal edges are static - they are declared once by
 # `Signal.map` / `map2` / `combine` / `Ui.each_str` - so the task dependency
 # graph is deliberately NOT mapped onto the signal graph. `Plan.compute` solves
@@ -14,7 +18,7 @@ app [main] { pf: platform "../../platform/main.roc" }
 # over that single derived value, and keyed rows with per-row equality cutoffs
 # are what keep a one-task move from touching every row.
 #
-# State is decomposed into three independent `Ui.state` handles:
+# State is decomposed into four independent `Ui.state` handles:
 #
 #   tasks         : List(Plan.Task)  the only stored model
 #   focus         : Str              which task the detail readout describes
@@ -22,7 +26,8 @@ app [main] { pf: platform "../../platform/main.roc" }
 #   by_slack      : Bool             whether the list is ordered by slack
 #
 # Everything else - start dates, finish dates, latest starts, slack, the
-# critical path, the cycle report, the visible row set - is derived.
+# critical path, the cycle report, the visible row set, and every bar geometry
+# - is derived.
 
 import Plan
 import pf.Elem exposing [Elem]
@@ -30,25 +35,33 @@ import pf.Html
 import pf.Signal
 import pf.Ui
 
-page_class = "grid gap-5"
+# ---------------------------------------------------------------------------
+# Classes
+# ---------------------------------------------------------------------------
 
-hero_class = "panel grid gap-2 p-5"
+page_class = "app-shell app-shell-wide"
 
-panel_class = "panel grid gap-3 p-4"
+panel_class = "panel"
 
-row_class = "grid gap-1 rounded border border-zinc-200 p-3"
+panel_body_class = "panel-body"
 
-deps_class = "flex flex-wrap gap-3"
+row_class = "card gap-3"
 
-controls_class = "flex flex-wrap gap-2"
+row_grid_class = "grid gap-3 md:grid-cols-[16rem_minmax(0,1fr)_5rem] md:items-center"
 
-note_class = "text-sm text-zinc-700"
+axis_grid_class = "hidden gap-3 md:grid md:grid-cols-[16rem_minmax(0,1fr)_5rem] md:items-center"
 
-strong_class = "text-sm font-medium text-zinc-950"
+track_class = "relative h-6 w-full overflow-hidden rounded-md bg-zinc-100 ring-1 ring-inset ring-zinc-200"
 
-heading_class = "text-lg font-semibold text-zinc-950"
+controls_class = "flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-zinc-100 pt-3"
 
-button_class = "button-secondary"
+stepper_class = "flex items-center gap-1.5"
+
+step_button_class = "button button-sm w-7"
+
+deps_box_class = "flex flex-wrap items-center gap-x-3 gap-y-1"
+
+check_row_class = "check-row text-xs"
 
 task_options : List(Elem)
 task_options = Plan.initial_tasks.map(|t| Html.option(t.id, t.name))
@@ -71,24 +84,51 @@ days = |n| if n == 1 {
 	"${n.to_str()} days"
 }
 
-row_line : Plan.Row -> Str
-row_line = |row| {
-	shape = if row.duration == 0 {
-		"milestone"
-	} else {
-		days(row.duration)
-	}
+## The scheduled window, the one figure that moves on every cascade.
+window_text : Plan.Row -> Str
+window_text = |row|
 	if !row.scheduled {
-		"${row.name}: unscheduled while the plan is cyclic, ${shape}, after ${row.deps_text}"
+		"Not scheduled"
 	} else {
-		standing = if row.critical {
-			"critical"
-		} else {
-			"slack ${days(row.slack)}"
-		}
-		"${row.name}: day ${row.start.to_str()} to ${row.finish.to_str()}, ${shape}, after ${row.deps_text}, ${standing}"
+		"Day ${row.start.to_str()} → ${row.finish.to_str()}"
 	}
+
+## The duration shown between the resize buttons.
+duration_text : Plan.Row -> Str
+duration_text = |row| if row.duration == 0 {
+	"milestone"
+} else {
+	days(row.duration)
 }
+
+## Slack as a bare figure so it can sit in a `tabular-nums` cell.
+slack_text : Plan.Row -> Str
+slack_text = |row| if !row.scheduled {
+	"—"
+} else {
+	row.slack.to_str()
+}
+
+## Prerequisites by name rather than by id, so a row explains why it moved.
+deps_text : Plan.Row -> Str
+deps_text = |row|
+	if row.deps.is_empty() {
+		"Starts the project"
+	} else {
+		"After ${Str.join_with(row.deps.map(name_of), ", ")}"
+	}
+
+## The status word. Derived from `row.critical`, which is `slack == 0`, so the
+## badge and the slack figure beside it are the same fact twice.
+status_text : Plan.Row -> Str
+status_text = |row|
+	if !row.scheduled {
+		"Blocked"
+	} else if row.critical {
+		"Critical"
+	} else {
+		"Has slack"
+	}
 
 row_tone : Plan.Row -> Str
 row_tone = |row|
@@ -100,58 +140,161 @@ row_tone = |row|
 		"slack"
 	}
 
-summary_line : Plan.Schedule -> Str
-summary_line = |schedule|
-	if schedule.cycle.is_empty() {
-		"Project finishes on day ${schedule.project_end.to_str()} across ${schedule.rows.len().to_str()} tasks"
+status_class : Plan.Row -> Str
+status_class = |row|
+	if !row.scheduled {
+		"badge badge-warn"
+	} else if row.critical {
+		"badge badge-danger"
 	} else {
-		"Project end unknown while the dependency graph is cyclic"
+		"badge badge-neutral"
 	}
 
-path_line : Plan.Schedule -> Str
-path_line = |schedule|
-	if schedule.path.is_empty() {
-		"Critical path: none"
+## Zero slack is the alarm colour, one day is a warning, anything looser is
+## quiet. Same three-way split as the badge, one step finer.
+slack_class : Plan.Row -> Str
+slack_class = |row|
+	if !row.scheduled {
+		"value numeric text-zinc-400"
+	} else if row.slack == 0 {
+		"value numeric text-red-600"
+	} else if row.slack == 1 {
+		"value numeric text-amber-600"
 	} else {
-		"Critical path: ${Str.join_with(schedule.path, " -> ")}"
+		"value numeric text-zinc-500"
 	}
 
-cycle_line : Plan.Schedule -> Str
-cycle_line = |schedule|
+bar_class : Plan.Row -> Str
+bar_class = |row|
+	if !row.scheduled {
+		"absolute inset-y-1 rounded-sm bg-zinc-300"
+	} else if row.critical {
+		"absolute inset-y-1 rounded-sm bg-red-500 ring-1 ring-red-600"
+	} else {
+		"absolute inset-y-1 rounded-sm bg-emerald-400"
+	}
+
+## A row's bar needs its own window *and* the project span, so this is the one
+## place the per-row signal is joined with a project-wide one.
+BarGeometry : { row : Plan.Row, span : U64 }
+
+## Tailwind cannot emit a class for a percentage only known at runtime, so the
+## geometry goes through a plain `style` attribute instead.
+bar_style : BarGeometry -> Str
+bar_style = |geometry| {
+	row = geometry.row
+	if !row.scheduled {
+		"display: none"
+	} else {
+		total = if geometry.span == 0 {
+			1
+		} else {
+			geometry.span
+		}
+		raw_left = (row.start * 100) // total
+		left = if raw_left > 98 {
+			98
+		} else {
+			raw_left
+		}
+		raw_width = (row.duration * 100) // total
+		room = Plan.sat_sub(100, left)
+		capped = if raw_width > room {
+			room
+		} else {
+			raw_width
+		}
+		# A milestone has no duration at all, so it gets a minimum nub rather
+		# than a zero-width bar that would render as nothing.
+		width = if capped < 2 {
+			2
+		} else {
+			capped
+		}
+		"left: ${left.to_str()}%; width: ${width.to_str()}%"
+	}
+}
+
+span_text : Plan.Schedule -> Str
+span_text = |schedule| if schedule.cycle.is_empty() {
+	days(schedule.project_end)
+} else {
+	"Unknown"
+}
+
+task_count_text : Plan.Schedule -> Str
+task_count_text = |schedule| schedule.rows.len().to_str()
+
+critical_count_text : Plan.Schedule -> Str
+critical_count_text = |schedule| schedule.path.len().to_str()
+
+## Tasks that still have room to move. The complement of the critical path, so
+## the two figures always add up to the task count.
+slack_count_text : Plan.Schedule -> Str
+slack_count_text = |schedule| schedule.rows.keep_if(|r| r.scheduled and !r.critical).len().to_str()
+
+path_text : Plan.Schedule -> Str
+path_text = |schedule| if schedule.path.is_empty() {
+	"None"
+} else {
+	Str.join_with(schedule.path, " → ")
+}
+
+axis_end_text : Plan.Schedule -> Str
+axis_end_text = |schedule| if schedule.cycle.is_empty() {
+	"Day ${schedule.project_end.to_str()}"
+} else {
+	"—"
+}
+
+cycle_text : Plan.Schedule -> Str
+cycle_text = |schedule|
 	if schedule.cycle.is_empty() {
 		"No dependency cycle"
 	} else {
 		"Cycle detected among ${schedule.cycle.len().to_str()} tasks: ${Str.join_with(schedule.cycle.map(name_of), ", ")}"
 	}
 
-detail_line : Plan.Schedule, Str -> Str
-detail_line = |schedule, focus|
+## The focus readout is four figures about one task, not a sentence about it.
+detail_text : Plan.Schedule, Str -> Str
+detail_text = |schedule, focus|
 	match schedule.rows.find_first(|r| r.id == focus) {
 		Ok(row) =>
 			if row.scheduled {
-				"Focus ${row.name}: earliest start day ${row.start.to_str()}, latest start day ${row.latest_start.to_str()}, slack ${days(row.slack)}, moved ${days(row.lag)}"
+				"Earliest day ${row.start.to_str()} · latest day ${row.latest_start.to_str()} · slack ${days(row.slack)} · moved ${days(row.lag)}"
 			} else {
-				"Focus ${row.name}: unscheduled, moved ${days(row.lag)}"
+				"Not scheduled while the plan is cyclic · moved ${days(row.lag)}"
 			}
-		Err(_) => "Focus ${name_of(focus)}: not in the plan"
+		Err(_) => "${name_of(focus)} is not in the plan"
 	}
 
 RowFilter : { rows : List(Plan.Row), only_critical : Bool, by_slack : Bool }
 
-filter_line : RowFilter -> Str
-filter_line = |view| {
-	scope = if view.only_critical {
-		"critical-path tasks only"
-	} else {
-		"all tasks"
-	}
+filter_text : RowFilter -> Str
+filter_text = |view| {
 	order = if view.by_slack {
 		"most slack first"
 	} else {
 		"plan order"
 	}
-	"Showing ${scope}, ${visible_of(view).len().to_str()} rows, ${order}"
+	"${visible_of(view).len().to_str()} of ${view.rows.len().to_str()} tasks · ${order}"
 }
+
+## The empty state is always in the tree and simply hidden while the list has
+## rows, so toggling the filter never creates or disposes a scope.
+empty_class : RowFilter -> Str
+empty_class = |view| if visible_of(view).is_empty() {
+	"empty-state"
+} else {
+	"hidden"
+}
+
+nth : List(Str), U64 -> Str
+nth = |lines, index|
+	match lines.get(index) {
+		Ok(line) => line
+		Err(_) => ""
+	}
 
 visible_of : RowFilter -> List(Plan.Row)
 visible_of = |view| {
@@ -167,33 +310,74 @@ visible_of = |view| {
 	}
 }
 
-nth : List(Str), U64 -> Str
-nth = |lines, index|
-	match lines.get(index) {
-		Ok(line) => line
-		Err(_) => ""
-	}
-
 # ---------------------------------------------------------------------------
 # View
 # ---------------------------------------------------------------------------
+
+## A metric tile. The value carries a `test_id` so a spec can address the
+## number instead of a sentence wrapped around it.
+stat : Str, Str, Signal.Signal(Str) -> Elem
+stat = |label, id, value|
+	Html.div_c(
+		"stat",
+		[
+			Html.paragraph_c(label, "stat-label"),
+			Html.paragraph_s_attrs(value, [Html.test_id(id), Html.class_attr("stat-value")]),
+		],
+	)
+
+## A visible caption plus its control. `Html.checkbox`'s first argument is only
+## the accessible name, so the text beside it has to be drawn.
+check_row : Str, Signal.Signal(Bool), Ui.State(Bool) -> Elem
+check_row = |label, checked, state|
+	Html.div_c(
+		"check-row",
+		[
+			Html.checkbox_c(label, checked, "checkbox", state.on_bool(|_, value| value)),
+			Html.text(label),
+		],
+	)
 
 ## One prerequisite checkbox. The reducer closes over the two task ids, so it
 ## needs nothing but the task list state it writes to.
 dep_checkbox : Ui.State(List(Plan.Task)), Str, Signal.Signal(Plan.Row), Plan.Task -> Elem
 dep_checkbox = |tasks, key, row, other|
-	Html.checkbox(
-		"${name_of(key)} after ${other.name}",
-		row.map(|value| value.deps.contains(other.id)),
-		tasks.on_bool(|list, checked| Plan.set_dep(list, key, other.id, checked)),
+	Html.div_c(
+		check_row_class,
+		[
+			Html.checkbox_c(
+				"${name_of(key)} after ${other.name}",
+				row.map(|value| value.deps.contains(other.id)),
+				"checkbox",
+				tasks.on_bool(|list, checked| Plan.set_dep(list, key, other.id, checked)),
+			),
+			Html.text(other.name),
+		],
 	)
 
-move_button : Ui.State(List(Plan.Task)), Str, Str, (List(Plan.Task), Str -> List(Plan.Task)) -> Elem
-move_button = |tasks, key, verb, apply|
-	Html.button_c("${verb} ${name_of(key)}", button_class, tasks.on_unit(|list| apply(list, key)))
+## A stepper button. The glyph is the visible label and `aria_label` carries the
+## descriptive name, so the control stays compact without going unnamed.
+step_button : Ui.State(List(Plan.Task)), Str, Str, Str, (List(Plan.Task), Str -> List(Plan.Task)) -> Elem
+step_button = |tasks, key, glyph, name, apply|
+	Html.button_attrs(
+		glyph,
+		[Html.class_attr(step_button_class), Html.aria_label("${name} ${name_of(key)}")],
+		tasks.on_unit(|list| apply(list, key)),
+	)
 
-render_row : Ui.State(List(Plan.Task)), Str, Signal.Signal(Plan.Row) -> Elem
-render_row = |tasks, key, row|
+## A labelled numeric readout between a decrement and an increment button.
+stepper : Str, Elem, Elem, Elem -> Elem
+stepper = |label, down, readout, up|
+	Html.div_c(
+		stepper_class,
+		[Html.paragraph_c(label, "hint"), down, readout, up],
+	)
+
+render_row : Ui.State(List(Plan.Task)), Signal.Signal(U64), Str, Signal.Signal(Plan.Row) -> Elem
+render_row = |tasks, span, key, row| {
+	geometry : Signal.Signal(BarGeometry)
+	geometry = { row: row, span: span }.Signal
+
 	Html.section(
 		"Task ${name_of(key)}",
 		[
@@ -202,22 +386,90 @@ render_row = |tasks, key, row|
 			Html.attr_s("data-tone", row.map(row_tone)),
 		],
 		[
-			Html.paragraph_s_attrs(row.map(row_line), [Html.test_id("line-${key}"), Html.class_attr(note_class)]),
 			Html.div_c(
-				controls_class,
+				row_grid_class,
 				[
-					move_button(tasks, key, "Delay", Plan.delay),
-					move_button(tasks, key, "Pull in", Plan.pull_in),
-					move_button(tasks, key, "Extend", Plan.extend),
-					move_button(tasks, key, "Shorten", Plan.shorten),
+					Html.div_c(
+						"grid gap-1 min-w-0",
+						[
+							Html.div_c(
+								"flex flex-wrap items-center gap-2",
+								[
+									Html.heading_c(name_of(key), "card-title"),
+									Html.paragraph_s_attrs(
+										row.map(status_text),
+										[Html.test_id("status-${key}"), Html.class_attr_s(row.map(status_class))],
+									),
+								],
+							),
+							Html.paragraph_s_attrs(
+								row.map(window_text),
+								[Html.test_id("line-${key}"), Html.class_attr("muted numeric")],
+							),
+							Html.paragraph_s_attrs(
+								row.map(deps_text),
+								[Html.test_id("deps-${key}"), Html.class_attr("hint")],
+							),
+						],
+					),
+					Html.div_c(
+						track_class,
+						[
+							Html.div(
+								[
+									Html.test_id("bar-${key}"),
+									Html.class_attr_s(row.map(bar_class)),
+									Html.attr_s("style", geometry.map(bar_style)),
+								],
+								[],
+							),
+						],
+					),
+					Html.div_c(
+						"flex items-baseline gap-1.5 md:grid md:justify-items-end md:gap-0",
+						[
+							# The column header carries this label on wide screens.
+							Html.paragraph_c("Slack", "hint md:hidden"),
+							Html.paragraph_s_attrs(
+								row.map(slack_text),
+								[Html.test_id("slack-${key}"), Html.class_attr_s(row.map(slack_class))],
+							),
+						],
+					),
 				],
 			),
 			Html.div_c(
-				deps_class,
-				Plan.initial_tasks.keep_if(|t| t.id != key).map(|other| dep_checkbox(tasks, key, row, other)),
+				controls_class,
+				[
+					stepper(
+						"Start",
+						step_button(tasks, key, "◀", "Pull in", Plan.pull_in),
+						Html.paragraph_s_attrs(
+							row.map(|value| "+${value.lag.to_str()}d"),
+							[Html.test_id("lag-${key}"), Html.class_attr("value numeric w-10 text-center")],
+						),
+						step_button(tasks, key, "▶", "Delay", Plan.delay),
+					),
+					stepper(
+						"Duration",
+						step_button(tasks, key, "−", "Shorten", Plan.shorten),
+						Html.paragraph_s_attrs(
+							row.map(duration_text),
+							[Html.test_id("duration-${key}"), Html.class_attr("value numeric w-20 text-center")],
+						),
+						step_button(tasks, key, "+", "Extend", Plan.extend),
+					),
+					Html.div_c(
+						deps_box_class,
+						[Html.paragraph_c("Needs", "hint")].concat(
+							Plan.initial_tasks.keep_if(|t| t.id != key).map(|other| dep_checkbox(tasks, key, row, other)),
+						),
+					),
+				],
 			),
 		],
 	)
+}
 
 main : () -> Elem
 main = || {
@@ -240,14 +492,18 @@ main = || {
 
 									# The single derived solve, shared by every consumer
 									# below. Chain: tasks -> schedule -> rows -> per-row
-									# text and per-row checkbox states.
+									# text, bar geometry and checkbox states.
 									schedule = tasks_signal.map(Plan.compute)
 
-									no_cycle = schedule.map(|s| s.cycle.is_empty())
+									no_cycle = Signal.map(schedule, |s| s.cycle.is_empty())
+
+									# The project span every bar is measured against.
+									span : Signal.Signal(U64)
+									span = Signal.map(schedule, |s| s.project_end)
 
 									# Fan-in A: the task list and the focus selection are
 									# two independent sources meeting in one `map2`.
-									detail = Signal.map2(schedule, focus_signal, detail_line)
+									detail = Signal.map2(schedule, focus_signal, detail_text)
 
 									# Fan-in B: three independent sources - the task list
 									# and both list checkboxes - decide which rows exist
@@ -255,7 +511,7 @@ main = || {
 									row_view : Signal.Signal(RowFilter)
 									row_view =
 										{
-											rows: schedule.map(|s| s.rows),
+											rows: Signal.map(schedule, |s| s.rows),
 											only_critical: critical_only_signal,
 											by_slack: by_slack_signal,
 										}.Signal
@@ -267,22 +523,21 @@ main = || {
 									# `map2` above, so this is four hops from `tasks`.
 									headline =
 										Signal.combine([
-											schedule.map(summary_line),
-											schedule.map(path_line),
+											schedule.map(span_text),
+											schedule.map(path_text),
 											detail,
 										])
 
 									Html.div_c(
 										page_class,
 										[
-											Html.section_c(
-												"Dependency Scheduler",
-												hero_class,
+											Html.div_c(
+												"app-header",
 												[
-													Html.heading_c("Dependency Scheduler", "text-3xl font-semibold text-zinc-950"),
+													Html.heading_c("Dependency Scheduler", "app-title"),
 													Html.paragraph_c(
 														"Move or resize a task and every downstream start date cascades. Slack and the critical path are derived, never stored, and a cyclic dependency is reported instead of hanging.",
-														"max-w-3xl text-sm text-zinc-700",
+														"app-subtitle",
 													),
 												],
 											),
@@ -290,57 +545,123 @@ main = || {
 												"Project summary",
 												panel_class,
 												[
-													Html.heading_c("Project summary", heading_class),
-													Html.paragraph_s_attrs(
-														headline.map(|lines| nth(lines, 0)),
-														[Html.test_id("project-summary"), Html.class_attr(strong_class)],
+													Html.div_c(
+														"panel-head",
+														[Html.heading_c("Project summary", "panel-title")],
 													),
-													Html.paragraph_s_attrs(
-														headline.map(|lines| nth(lines, 1)),
-														[Html.test_id("critical-path"), Html.class_attr(strong_class)],
+													Html.div_c(
+														panel_body_class,
+														[
+															Html.div_c(
+																"stat-grid",
+																[
+																	stat("Project span", "project-summary", headline.map(|lines| nth(lines, 0))),
+																	stat("Tasks", "task-count", schedule.map(task_count_text)),
+																	stat("On the critical path", "path-length", schedule.map(critical_count_text)),
+																	stat("Tasks with slack", "slack-count", schedule.map(slack_count_text)),
+																],
+															),
+															Html.div_c(
+																"field",
+																[
+																	Html.paragraph_c("Critical path", "field-label"),
+																	Html.paragraph_s_attrs(
+																		headline.map(|lines| nth(lines, 1)),
+																		[Html.test_id("critical-path"), Html.class_attr("value")],
+																	),
+																],
+															),
+															Ui.when(
+																no_cycle,
+																|| Html.section_c(
+																	"Plan health",
+																	"notice notice-ok",
+																	[Html.text("Every task is schedulable.")],
+																),
+																|| Html.section_c(
+																	"Cycle report",
+																	"notice notice-error grid gap-1",
+																	[
+																		Html.paragraph_s_attrs(
+																			schedule.map(cycle_text),
+																			[Html.test_id("cycle-report"), Html.class_attr("font-medium")],
+																		),
+																		Html.paragraph_c(
+																			"Clear one of the Needs checkboxes below to schedule the project again.",
+																			"text-xs",
+																		),
+																	],
+																),
+															),
+															Html.div_c(
+																"field",
+																[
+																	Html.paragraph_c("Focus task", "field-label"),
+																	Html.select_c("Focus task", focus_signal, "input", task_options, focus.on_str(|_, value| value)),
+																	Html.paragraph_s_attrs(
+																		headline.map(|lines| nth(lines, 2)),
+																		[Html.test_id("focus-detail"), Html.class_attr("hint numeric")],
+																	),
+																],
+															),
+														],
 													),
-													Html.paragraph_s_attrs(
-														headline.map(|lines| nth(lines, 2)),
-														[Html.test_id("focus-detail"), Html.class_attr(note_class)],
-													),
-													Html.select("Focus task", focus_signal, task_options, focus.on_str(|_, value| value)),
 												],
-											),
-											Ui.when(
-												no_cycle,
-												|| Html.section_c(
-													"Plan health",
-													panel_class,
-													[Html.paragraph_c("Plan health: schedulable", strong_class)],
-												),
-												|| Html.section_c(
-													"Cycle report",
-													panel_class,
-													[
-														Html.heading_c("Cycle report", heading_class),
-														Html.paragraph_s_attrs(
-															schedule.map(cycle_line),
-															[Html.test_id("cycle-report"), Html.class_attr(strong_class)],
-														),
-														Html.paragraph_c(
-															"Clear one of the prerequisite checkboxes below to schedule the project again.",
-															note_class,
-														),
-													],
-												),
 											),
 											Html.section_c(
 												"Schedule",
 												panel_class,
 												[
-													Html.heading_c("Schedule", heading_class),
-													Html.checkbox("Only critical path", critical_only_signal, only_critical.on_bool(|_, checked| checked)),
-													Html.checkbox("Sort by slack", by_slack_signal, by_slack.on_bool(|_, checked| checked)),
-													Html.paragraph_s_attrs(
-														row_view.map(filter_line),
-														[Html.test_id("filter-state"), Html.class_attr(note_class)],
+													Html.div_c(
+														"panel-head",
+														[
+															Html.heading_c("Schedule", "panel-title"),
+															Html.paragraph_s_attrs(
+																row_view.map(filter_text),
+																[Html.test_id("filter-state"), Html.class_attr("hint numeric")],
+															),
+														],
 													),
-													Ui.each_str(visible_rows, |row| row.id, |key, row| render_row(tasks, key, row)),
+													Html.div_c(
+														panel_body_class,
+														[
+															Html.div_c(
+																"toolbar",
+																[
+																	check_row("Only critical path", critical_only_signal, only_critical),
+																	check_row("Sort by slack", by_slack_signal, by_slack),
+																],
+															),
+															Html.div_c(
+																axis_grid_class,
+																[
+																	Html.paragraph_c("Task", "hint"),
+																	Html.div_c(
+																		"flex items-center justify-between",
+																		[
+																			Html.paragraph_c("Day 0", "hint numeric"),
+																			Html.paragraph_s_attrs(
+																				schedule.map(axis_end_text),
+																				[Html.test_id("axis-end"), Html.class_attr("hint numeric")],
+																			),
+																		],
+																	),
+																	Html.paragraph_c("Slack", "hint md:text-right"),
+																],
+															),
+															Html.div_c(
+																"grid gap-3",
+																[Ui.each_str(visible_rows, |row| row.id, |key, row| render_row(tasks, span, key, row))],
+															),
+															Html.div(
+																[
+																	Html.test_id("empty-schedule"),
+																	Html.class_attr_s(row_view.map(empty_class)),
+																],
+																[Html.text("No tasks match this filter. Clear \"Only critical path\" to see the whole plan.")],
+															),
+														],
+													),
 												],
 											),
 										],

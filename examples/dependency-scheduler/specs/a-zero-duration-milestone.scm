@@ -17,14 +17,18 @@
 
     ; a zero duration milestone
 
-    (expect-text (test-id "line-launch") "Launch: day 10 to 10, milestone, after qa, critical")
+    (expect-text (test-id "line-launch") "Day 10 → 10")
+    (expect-text (test-id "duration-launch") "milestone")
     (click (role button :name "Extend Launch"))
-    (expect-text (test-id "line-launch") "Launch: day 10 to 11, 1 day, after qa, critical")
-    (expect-text (test-id "project-summary") "Project finishes on day 11 across 7 tasks")
+    (expect-text (test-id "line-launch") "Day 10 → 11")
+    (expect-text (test-id "duration-launch") "1 day")
+    (expect-text (test-id "project-summary") "11 days")
     (click (role button :name "Shorten Launch"))
-    (expect-text (test-id "line-launch") "Launch: day 10 to 10, milestone, after qa, critical")
+    (expect-text (test-id "line-launch") "Day 10 → 10")
+    (expect-text (test-id "duration-launch") "milestone")
     ; Duration is clamped at zero, so a second shorten is a no-op.
     (click (role button :name "Shorten Launch"))
-    (expect-text (test-id "line-launch") "Launch: day 10 to 10, milestone, after qa, critical")
+    (expect-text (test-id "line-launch") "Day 10 → 10")
+    (expect-text (test-id "duration-launch") "milestone")
   )
 )

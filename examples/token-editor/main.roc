@@ -6,21 +6,18 @@ import pf.Html
 import pf.Signal
 import pf.Ui
 
-page_class = "grid gap-5"
+page_class = "app-shell"
 
-hero_class = "panel grid gap-2 p-5"
+panel_class = "panel grid gap-4 p-5"
 
-panel_class = "panel grid gap-3 p-4"
+token_row_class = "grid gap-2 rounded-lg border border-zinc-200 bg-white p-3"
 
-row_class = "grid gap-1 rounded border border-zinc-200 p-3"
+input_class = "input"
 
-input_class = "w-full max-w-xs rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm"
+## Resolved token text is monospace so the hex digits line up down the column.
+mono_class = "numeric font-mono text-xs font-medium text-zinc-700"
 
-heading_class = "text-lg font-semibold text-zinc-950"
-
-value_class = "text-sm text-zinc-700"
-
-code_class = "overflow-x-auto rounded bg-zinc-900 p-3 text-xs text-zinc-50"
+code_class = "overflow-x-auto rounded-md bg-zinc-900 p-4 text-xs leading-5 text-zinc-50"
 
 ## The six source tokens, already parsed. This is the fan-in point that the
 ## preview list and the validation panel both hang off.
@@ -49,46 +46,218 @@ build_previews = |design| {
 	]
 }
 
+preview_caption : Str -> Str
+preview_caption = |key|
+	if key == "button" {
+		"Primary button — background on accent"
+	} else if key == "badge" {
+		"Badge — background on text colour"
+	} else {
+		"Surface card — text on background"
+	}
+
+## The three keyed rows are the miniature product screen. Each one is painted
+## with the resolved tokens through a `style` attribute, because an arbitrary
+## runtime colour cannot be expressed as a Tailwind class: the derived value has
+## to reach the DOM as real paint, not as a caption describing the paint.
 render_preview : Str, Signal.Signal(Tokens.Preview) -> Elem
-render_preview = |key, preview|
+render_preview = |key, preview| {
+	style = preview.map(Tokens.preview_style)
+
 	Html.section(
 		"Preview ${key}",
-		[Html.class_attr(row_class)],
+		[Html.class_attr("grid gap-1.5")],
 		[
-			Html.paragraph_c(key, "text-sm font-medium text-zinc-950"),
-			Html.paragraph_s_attrs(
-				preview.map(Tokens.preview_style),
-				[Html.class_attr(value_class), Html.test_id("preview-${key}")],
-			),
+			Html.paragraph_c(preview_caption(key), "hint"),
+			if key == "surface" {
+				Html.div(
+					[
+						Html.test_id("preview-surface"),
+						Html.attr_s("style", style),
+						Html.class_attr("grid gap-2 rounded-lg border border-zinc-200 shadow-sm"),
+					],
+					[
+						Html.paragraph_c("Order summary", "font-semibold leading-tight"),
+						Html.paragraph_c(
+							"Two items, arriving Thursday. The card ending 4242 is charged when the order ships.",
+							"leading-6 opacity-90",
+						),
+					],
+				)
+			} else if key == "button" {
+				Html.div(
+					[
+						Html.test_id("preview-button"),
+						Html.attr_s("style", style),
+						Html.class_attr("inline-flex w-fit items-center rounded-md font-medium shadow-sm"),
+					],
+					[Html.text("Place order")],
+				)
+			} else {
+				Html.div(
+					[
+						Html.test_id("preview-badge"),
+						Html.attr_s("style", style),
+						Html.class_attr("inline-flex w-fit items-center rounded-full font-medium"),
+					],
+					[Html.text("New")],
+				)
+			},
 		],
 	)
+}
+
+## WCAG grades, in hundredths. AA is 4.50:1 for normal text, AAA is 7.00:1.
+aaa_threshold : U64
+aaa_threshold = 700
+
+grade_label : Tokens.Contrast -> Str
+grade_label = |value|
+	if !value.ok {
+		"Invalid"
+	} else if value.ratio >= aaa_threshold {
+		"AAA"
+	} else if Tokens.passes_aa(value) {
+		"AA"
+	} else {
+		"Fail"
+	}
+
+## The badge tone comes off the same contrast signal as the number beside it, so
+## the grade can never disagree with the ratio it is grading.
+grade_class : Tokens.Contrast -> Str
+grade_class = |value|
+	if !value.ok {
+		"badge badge-neutral"
+	} else if value.ratio >= aaa_threshold {
+		"badge badge-ok"
+	} else if Tokens.passes_aa(value) {
+		"badge badge-ok"
+	} else {
+		"badge badge-danger"
+	}
 
 pair_line : Str, Str, Signal.Signal(Tokens.Contrast) -> Elem
 pair_line = |id, label, pair|
 	Html.section(
 		label,
-		[Html.class_attr(row_class)],
+		[Html.class_attr("card gap-1.5")],
 		[
-			Html.paragraph_c(label, "text-sm font-medium text-zinc-950"),
-			Html.paragraph_s_attrs(
-				pair.map(Tokens.format_ratio),
-				[Html.class_attr(value_class), Html.test_id("ratio-${id}")],
+			Html.div_c(
+				"flex flex-wrap items-center justify-between gap-3",
+				[
+					Html.paragraph_c(label, "card-title"),
+					Html.paragraph_s_attrs(
+						pair.map(grade_label),
+						[Html.test_id("aa-${id}"), Html.class_attr_s(pair.map(grade_class))],
+					),
+				],
 			),
 			Html.paragraph_s_attrs(
-				pair.map(|value| if Tokens.passes_aa(value) { "AA pass" } else { "AA fail" }),
-				[Html.class_attr(value_class), Html.test_id("aa-${id}")],
+				pair.map(Tokens.format_ratio),
+				[Html.test_id("ratio-${id}"), Html.class_attr("numeric font-mono text-2xl font-semibold text-zinc-950")],
 			),
 		],
 	)
 
-token_field : Str, Ui.State(Str), Str -> Elem
-token_field = |label, state, css_name|
+## A colour token: the chip is the token. Reading a design token editor without
+## seeing the colour is reading a spreadsheet.
+colour_field : Str, Ui.State(Str), Str, Signal.Signal(Tokens.Colour) -> Elem
+colour_field = |label, state, css_name, parsed| {
+	resolved = parsed.map(Tokens.colour_css)
+
 	Html.section(
 		"Token ${css_name}",
-		[Html.class_attr(row_class)],
+		[Html.class_attr(token_row_class)],
 		[
-			Html.text_input_c(label, state.signal(), input_class, state.on_str(|_, value| value)),
-			Html.paragraph_c("var(--${css_name})", "text-xs text-zinc-500"),
+			Html.div_c(
+				"flex items-end gap-3",
+				[
+					Html.div(
+						[
+							Html.class_attr("h-10 w-10 shrink-0 rounded-md border border-zinc-300 shadow-inner"),
+							Html.attr_s("style", resolved.map(|hex| "background-color: ${hex}")),
+						],
+						[],
+					),
+					Html.div_c(
+						"field min-w-0 flex-1",
+						[
+							Html.paragraph_c(label, "field-label"),
+							Html.text_input_attrs(
+								label,
+								state.signal(),
+								[Html.class_attr(input_class), Html.attr("placeholder", "#2563eb"), Html.attr("spellcheck", "false")],
+								state.on_str(|_, value| value),
+							),
+						],
+					),
+				],
+			),
+			Html.div_c(
+				"flex items-center justify-between gap-2",
+				[
+					Html.paragraph_c("var(--${css_name})", "hint font-mono"),
+					Html.paragraph_s_attrs(resolved, [Html.class_attr(mono_class)]),
+				],
+			),
+		],
+	)
+}
+
+## Size chips are drawn to scale, capped at the width of the chip so a runaway
+## font size cannot blow out the column.
+size_bar_style : Tokens.Size -> Str
+size_bar_style = |size| {
+	width = if !size.ok {
+		0
+	} else if size.px > 32 {
+		32
+	} else {
+		size.px
+	}
+	"width: ${width.to_str()}px; height: 8px"
+}
+
+size_field : Str, Ui.State(Str), Str, Signal.Signal(Tokens.Size) -> Elem
+size_field = |label, state, css_name, parsed|
+	Html.section(
+		"Token ${css_name}",
+		[Html.class_attr(token_row_class)],
+		[
+			Html.div_c(
+				"flex items-end gap-3",
+				[
+					Html.div_c(
+						"flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-zinc-200 bg-zinc-100",
+						[
+							Html.div(
+								[Html.class_attr("rounded-sm bg-zinc-900"), Html.attr_s("style", parsed.map(size_bar_style))],
+								[],
+							),
+						],
+					),
+					Html.div_c(
+						"field min-w-0 flex-1",
+						[
+							Html.paragraph_c(label, "field-label"),
+							Html.text_input_attrs(
+								label,
+								state.signal(),
+								[Html.class_attr(input_class), Html.attr("placeholder", "8"), Html.attr("inputmode", "numeric")],
+								state.on_str(|_, value| value),
+							),
+						],
+					),
+				],
+			),
+			Html.div_c(
+				"flex items-center justify-between gap-2",
+				[
+					Html.paragraph_c("var(--${css_name})", "hint font-mono"),
+					Html.paragraph_s_attrs(parsed.map(Tokens.size_css), [Html.class_attr(mono_class)]),
+				],
+			),
 		],
 	)
 
@@ -99,6 +268,14 @@ aa_summary = |text_ok, button_ok| {
 	passing = (if text_ok { 1 } else { 0 }) + (if button_ok { 1 } else { 0 })
 	"${passing.to_str()} of 2 pairs pass AA"
 }
+
+aa_summary_class : Bool, Bool -> Str
+aa_summary_class = |text_ok, button_ok|
+	if text_ok and button_ok {
+		"badge badge-ok"
+	} else {
+		"badge badge-warn"
+	}
 
 validity_summary : Design, Tokens.Size -> Str
 validity_summary = |design, radius| {
@@ -117,6 +294,16 @@ validity_summary = |design, radius| {
 		"Invalid tokens: ${Str.join_with(broken, ", ")}"
 	}
 }
+
+## The notice tone is derived from the very message it tints, so a red banner
+## can never carry the all-clear sentence.
+validity_class : Str -> Str
+validity_class = |text|
+	if text.starts_with("Invalid") {
+		"notice notice-error"
+	} else {
+		"notice notice-ok"
+	}
 
 editor : Ui.State(Str), Ui.State(Str), Ui.State(Str), Ui.State(Str), Ui.State(Str), Ui.State(Str) -> Elem
 editor = |bg, fg, accent, space, font, radius| {
@@ -155,6 +342,7 @@ editor = |bg, fg, accent, space, font, radius| {
 	text_passes = text_pair.map(Tokens.passes_aa)
 	button_passes = button_pair.map(Tokens.passes_aa)
 	summary = Signal.map2(text_passes, button_passes, aa_summary)
+	summary_class = Signal.map2(text_passes, button_passes, aa_summary_class)
 
 	validity = Signal.map2(design, radius_size, validity_summary)
 
@@ -179,57 +367,79 @@ editor = |bg, fg, accent, space, font, radius| {
 		[
 			Html.section_c(
 				"Design Token Editor",
-				hero_class,
+				"app-header",
 				[
-					Html.heading_c("Design Token Editor", "text-3xl font-semibold text-zinc-950"),
+					Html.heading_c("Design Token Editor", "app-title"),
 					Html.paragraph_c(
-						"Edit the design tokens; every preview component, the WCAG AA contrast checks, and the generated stylesheet are derived, never stored.",
-						"max-w-3xl text-sm text-zinc-700",
+						"Edit the six source tokens. The painted preview, the WCAG contrast grades, and the exported stylesheet are all derived from them — nothing here is stored twice.",
+						"app-subtitle",
 					),
 				],
 			),
-			Html.section_c(
-				"Tokens",
-				panel_class,
+			Html.div_c(
+				"grid gap-6 lg:grid-cols-2",
 				[
-					Html.heading_c("Tokens", heading_class),
-					token_field("Background colour", bg, "color-bg"),
-					token_field("Text colour", fg, "color-fg"),
-					token_field("Accent colour", accent, "color-accent"),
-					token_field("Spacing small", space, "space-sm"),
-					token_field("Font size medium", font, "font-md"),
-					token_field("Corner radius medium", radius, "radius-md"),
-					Html.paragraph_s_attrs(validity, [Html.class_attr(value_class), Html.test_id("token-validity")]),
-				],
-			),
-			Html.section_c(
-				"Preview",
-				panel_class,
-				[
-					Html.heading_c("Preview", heading_class),
-					Ui.each_str(previews, |preview| preview.id, render_preview),
-				],
-			),
-			Html.section_c(
-				"Contrast validation",
-				panel_class,
-				[
-					Html.heading_c("Contrast validation", heading_class),
-					pair_line("text", "Text on background", text_pair),
-					pair_line("button", "Button label on accent", button_pair),
-					Html.paragraph_s_attrs(summary, [Html.class_attr(value_class), Html.test_id("aa-summary")]),
+					Html.section_c(
+						"Tokens",
+						panel_class,
+						[
+							Html.heading_c("Tokens", "panel-title"),
+							colour_field("Background colour", bg, "color-bg", bg_colour),
+							colour_field("Text colour", fg, "color-fg", fg_colour),
+							colour_field("Accent colour", accent, "color-accent", accent_colour),
+							size_field("Spacing small", space, "space-sm", space_size),
+							size_field("Font size medium", font, "font-md", font_size),
+							size_field("Corner radius medium", radius, "radius-md", radius_size),
+							Html.paragraph_s_attrs(
+								validity,
+								[Html.test_id("token-validity"), Html.class_attr_s(validity.map(validity_class))],
+							),
+						],
+					),
+					Html.div_c(
+						"grid content-start gap-6",
+						[
+							Html.section_c(
+								"Preview",
+								panel_class,
+								[
+									Html.heading_c("Preview", "panel-title"),
+									Ui.each_str(previews, |preview| preview.id, render_preview),
+								],
+							),
+							Html.section_c(
+								"Contrast validation",
+								panel_class,
+								[
+									Html.div_c(
+										"flex flex-wrap items-center justify-between gap-3",
+										[
+											Html.heading_c("Contrast validation", "panel-title"),
+											Html.paragraph_s_attrs(
+												summary,
+												[Html.test_id("aa-summary"), Html.class_attr_s(summary_class)],
+											),
+										],
+									),
+									pair_line("text", "Text on background", text_pair),
+									pair_line("button", "Button label on accent", button_pair),
+									Html.paragraph_c("AA needs 4.50:1 for body text; AAA needs 7.00:1.", "hint"),
+								],
+							),
+						],
+					),
 				],
 			),
 			Html.section_c(
 				"CSS export",
 				panel_class,
 				[
-					Html.heading_c("CSS export", heading_class),
+					Html.heading_c("CSS export", "panel-title"),
 					Html.div(
 						[Html.test_id("stylesheet")],
 						[Html.pre_s_c(stylesheet, code_class)],
 					),
-					Html.paragraph_c("Unreferenced by any preview: --radius-md", "text-xs text-zinc-500"),
+					Html.paragraph_c("--radius-md is exported but referenced by no preview, so editing it moves this block alone.", "hint"),
 				],
 			),
 		],

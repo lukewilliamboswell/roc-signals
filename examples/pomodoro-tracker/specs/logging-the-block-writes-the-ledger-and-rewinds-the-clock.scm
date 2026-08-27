@@ -36,16 +36,16 @@
     ; logging the block writes the ledger and rewinds the clock
     (mark-metrics)
     (click (role button :name "Log block to Docs pass"))
-    (expect-text (test-id "row-total-docs") "Docs pass: 15 min today")
-    (expect-text (test-id "blocks-logged") "Blocks logged today: 4")
-    (expect-text (test-id "focus-minutes") "Focus minutes today: 20")
+    (expect-text (test-id "row-total-docs") "15 min today")
+    (expect-text (test-id "blocks-logged") "4")
+    (expect-text (test-id "focus-minutes") "20")
     (expect-text (test-id "clock-face") "Focus 0/5 min")
     (expect-local-storage "pomodoro:ledger" "api=0;docs=3;triage=1")
     ; Writing the ledger changes the seed row key, so the ledger scope is re-mounted
     ; from the freshly saved text: the seed row plus the three project rows.
     (expect-metric-delta rows_created 4)
     (expect-metric-delta rows_removed 1)
-    (expect-text (test-id "row-total-api") "API rewrite: 0 min today")
-    (expect-text (test-id "row-total-triage") "Bug triage: 5 min today")
+    (expect-text (test-id "row-total-api") "0 min today")
+    (expect-text (test-id "row-total-triage") "5 min today")
   )
 )

@@ -27,11 +27,11 @@
     ; ---------------------------------------------------------------------------
 
     (click (role button :name "Load document without headings"))
-    (expect-text (test-id "stat-headings") "Headings: 0")
+    (expect-text (test-id "stat-headings") "0")
     (expect-visible (text "No headings yet: add a line that starts with a hash."))
     (expect-absent (test-id "toc:alpha"))
     (expect-visible (text "Just a paragraph with no headings at all."))
     (expect-visible (text "And a second paragraph so the preview has something to show."))
-    (expect-text (test-id "stat-words") "Words: 19")
+    (expect-text (test-id "stat-words") "19")
   )
 )

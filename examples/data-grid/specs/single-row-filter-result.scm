@@ -32,11 +32,11 @@
 
     ; 7. single row filter result
     (fill (label "Filter") "Node-0007")
-    (expect-text (test-id "summary-matching") "Matching rows: 1")
-    (expect-text (test-id "summary-total") "Total score: 308")
-    (expect-text (test-id "summary-average") "Average score: 308")
-    (expect-text (test-id "summary-highest") "Highest score: 308")
-    (expect-text (test-id "summary-lowest") "Lowest score: 308")
+    (expect-text (test-id "summary-matching") "1")
+    (expect-text (test-id "summary-total") "308")
+    (expect-text (test-id "summary-average") "308")
+    (expect-text (test-id "summary-highest") "308")
+    (expect-text (test-id "summary-lowest") "308")
     (expect-text (test-id "rows-showing") "Showing 1 of 1 rows")
     (expect-text (test-id "page-label") "Page 1 of 1")
     (expect-text (test-id "row-team-7") "Atlas")

@@ -405,7 +405,7 @@ form's `on_submit_prevent_default` handler is what reveals the errors:
 (expect-disabled (role button :name "Send invite") true)
 (submit (role form :name "Invite form"))
 (expect-text (text "Enter an email address.") "Enter an email address.")
-(expect-attr (label "Invite email") aria-invalid "")
+(expect-attr (label "Invite email") aria-invalid "true")
 (expect-pending-task "form-submit" 0)
 
 (fill (label "Invite email") "ops@example.com")

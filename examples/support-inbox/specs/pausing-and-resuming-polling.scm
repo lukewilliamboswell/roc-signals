@@ -41,7 +41,7 @@
 
     (uncheck (label "Poll for updates"))
     (expect-checked (label "Poll for updates") false)
-    (expect-text (test-id "poll-state") "Polling: paused")
+    (expect-text (test-id "poll-state") "Paused")
     (expect-text (test-id "poll-paused") "Polling is paused.")
     (expect-absent (role region :name "Poll loop"))
     (expect-interval 4000 0)
@@ -52,7 +52,7 @@
     (expect-checked (label "Poll for updates") true)
     (expect-visible (role region :name "Poll loop"))
     (expect-text (test-id "poll-count") "Polls issued: 0")
-    (expect-text (test-id "poll-state") "Polling: every 4s")
+    (expect-text (test-id "poll-state") "Polling every 4s")
     (expect-interval 4000 1)
     (expect-absent (test-id "poll-paused"))
   )

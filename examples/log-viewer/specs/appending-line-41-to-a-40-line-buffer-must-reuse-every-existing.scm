@@ -69,6 +69,10 @@
     (expect-metric-delta rows_removed 0)
     (expect-metric-delta scopes_created 1)
     (expect-metric-delta dirty_source_roots 1)
-    (expect-metric-delta-at-most patches_emitted 17)
+    ; A console row now carries a timestamp cell and a level tag alongside
+    ; the message, plus a class sink for the match wash and a data-match
+    ; attribute. That is five extra patches for the one created row; the
+    ; budget is still flat per append, not per buffer.
+    (expect-metric-delta-at-most patches_emitted 24)
   )
 )

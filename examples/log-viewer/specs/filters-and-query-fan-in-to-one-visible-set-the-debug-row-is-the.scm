@@ -15,7 +15,7 @@
     (fill (label "Query") "debug")
     (expect-text (test-id "line-count") "Showing 4 of 4 lines")
     (expect-text (test-id "query-matches") "Query matches: 1")
-    (expect-text (test-id "match-line-4") "line-4 match: yes")
+    (expect-attr (test-id "match-line-4") data-match "yes")
     (expect-text (test-id "query-note") "Query filter idle.")
     (uncheck (label "Show debug"))
     (expect-text (test-id "line-count") "Showing 3 of 4 lines")

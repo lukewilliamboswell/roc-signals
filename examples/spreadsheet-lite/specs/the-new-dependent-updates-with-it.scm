@@ -100,7 +100,7 @@
     (fill (label "G1") "=C12+1")
     (blur (label "G1"))
     (expect-value (label "G1") "8")
-    (expect-text (test-id "bar-depends") "Depends on: C12")
+    (expect-text (test-id "bar-depends") "C12")
     (focus (label "C12"))
     (mark-metrics)
     (fill (label "C12") "8")

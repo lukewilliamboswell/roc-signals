@@ -407,6 +407,11 @@ pub fn Runner(comptime Ctx: type) type {
                 }
                 switch (cmd.cmd_type) {
                     .mark_metrics => {
+                        // Refresh absolute retained-allocation gauges at the
+                        // command boundary. Mount and dispatch can release
+                        // transferred values in outer defers after their last
+                        // internal metrics flush.
+                        Ctx.finishHostMetrics(host);
                         metrics_mark = Ctx.lastRuntimeMetrics(host);
                     },
 
@@ -1027,6 +1032,9 @@ pub fn Runner(comptime Ctx: type) type {
                             return 1;
                         }
                     },
+                }
+                if (comptime @hasDecl(Ctx, "traceAllocationCheckpoint")) {
+                    Ctx.traceAllocationCheckpoint(host, cmd.line_num, @tagName(cmd.cmd_type));
                 }
             }
 

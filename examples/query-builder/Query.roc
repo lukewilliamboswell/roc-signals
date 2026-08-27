@@ -522,4 +522,15 @@ Query :: [].{
 			Err(_) => name
 		}
 	}
+
+	## Department and level for a matched row name, looked up in the full dataset
+	## so a matched-row card can show more than a bare name.
+	row_detail : Str -> Str
+	row_detail = |name| {
+		hits = archived_rows.keep_if(|row| row.name == name)
+		match hits.first() {
+			Ok(row) => "${row.dept} / level ${row.level.to_str()}"
+			Err(_) => ""
+		}
+	}
 }

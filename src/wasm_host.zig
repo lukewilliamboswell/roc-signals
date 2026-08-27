@@ -271,6 +271,7 @@ const RocAllocation = struct {
     requested_size: usize,
     allocated_size: usize,
     alignment: std.mem.Alignment,
+    phase: u32,
 };
 
 const FreedRocAllocation = struct {
@@ -1008,7 +1009,7 @@ fn clearActiveRuntime() void {
     engine.deinitCleanupEvents(a, &shared_engine.cleanup_events);
 
     if (shared_engine.root_elem) |root| {
-        abi.decrefElem(root, &roc_host);
+        root.decref(&roc_host);
         shared_engine.root_elem = null;
     }
 
@@ -1197,6 +1198,7 @@ fn recordRocAllocation(user_ptr: [*]u8, requested_size: usize, allocated_size: u
         .requested_size = requested_size,
         .allocated_size = allocated_size,
         .alignment = alignment,
+        .phase = roc_allocation_phase,
     }) catch return false;
     return true;
 }
@@ -1242,6 +1244,26 @@ fn freeRocAllocation(ptr: *anyopaque, alignment_arg: usize) RocAllocation {
 
 export fn roc_alloc(length: usize, alignment: usize) callconv(.c) ?*anyopaque {
     return allocRocMemory(length, alignment);
+}
+
+export fn roc_ui_debug_live_allocation_count() callconv(.c) usize {
+    return roc_allocations.items.len;
+}
+
+export fn roc_ui_debug_live_allocation_bytes() callconv(.c) usize {
+    var bytes: usize = 0;
+    for (roc_allocations.items) |alloc| bytes += alloc.requested_size;
+    return bytes;
+}
+
+export fn roc_ui_debug_live_allocation_size(index: usize) callconv(.c) usize {
+    if (index >= roc_allocations.items.len) return 0;
+    return roc_allocations.items[index].requested_size;
+}
+
+export fn roc_ui_debug_live_allocation_phase(index: usize) callconv(.c) u32 {
+    if (index >= roc_allocations.items.len) return 0;
+    return roc_allocations.items[index].phase;
 }
 
 export fn roc_dealloc(ptr: *anyopaque, alignment: usize) callconv(.c) void {

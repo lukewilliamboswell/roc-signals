@@ -18,5 +18,14 @@
     (resolve-task "lookup" "fresh result")
     (expect-pending-task "lookup" 0)
     (expect-text (text "Task status: done fresh result") "Task status: done fresh result")
+
+    ; Replacing an equal-sized completed result must release the previous task
+    ; payload and return to the same retained allocation footprint.
+    (mark-metrics)
+    (click (role button :name "Refresh"))
+    (resolve-task "lookup" "other result")
+    (expect-text (text "Task status: done other result") "Task status: done other result")
+    (expect-metric-delta retained_alloc_delta 0)
+    (expect-metric-delta host_retained_bytes_delta 0)
   )
 )

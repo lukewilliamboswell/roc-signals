@@ -62,6 +62,6 @@
     (tick-interval 1000)
     (expect-text (test-id "line-count") "Showing 40 of 40 lines")
     (expect-visible (role region :name "Log line-40"))
-    (expect-text (test-id "tail-line") "Tail: [40] debug config reloaded")
+    (expect-text (test-id "tail-line") "[40] debug config reloaded")
   )
 )

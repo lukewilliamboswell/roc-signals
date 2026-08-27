@@ -22,13 +22,13 @@
     ; queueing while offline
 
     (click (role button :name "Queue note s1"))
-    (expect-text (test-id "status-s1") "Note s1 status: queued")
+    (expect-text (test-id "status-s1") "Queued")
     (expect-disabled (role button :name "Queue note s1") true)
     (click (role button :name "Queue note s2"))
-    (expect-text (test-id "status-s2") "Note s2 status: queued")
-    (expect-text (test-id "outbox-count") "Outbox: 3")
-    (expect-text (test-id "outbox-detail") "Outbox holds 3 notes")
-    (expect-text (test-id "syncing") "Syncing: none")
+    (expect-text (test-id "status-s2") "Queued")
+    (expect-text (test-id "outbox-count") "3")
+    (expect-text (test-id "outbox-detail") "3 notes waiting to sync")
+    (expect-text (test-id "syncing") "None")
     (expect-pending-task "note-sync" 0)
   )
 )

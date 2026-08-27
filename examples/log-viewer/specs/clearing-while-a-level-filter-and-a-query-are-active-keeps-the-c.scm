@@ -26,6 +26,6 @@
     (expect-text (test-id "query-matches") "Query matches: 0")
     (expect-visible (role region :name "Log empty"))
     (expect-absent (role region :name "Log line-1"))
-    (expect-text (test-id "tail-line") "Tail: waiting for the first line")
+    (expect-text (test-id "tail-line") "waiting for the first line")
   )
 )

@@ -25,7 +25,9 @@
 
     ; total hours summary tracks a per row edit
     (click (role button :name "Mark s6 available"))
-    (expect-text (test-id "summary") "Available 4h 45m across 6 slots, 0 conflicts")
+    (expect-text (test-id "summary") "4h 45m")
+    (expect-text (test-id "stat-slots") "6")
+    (expect-text (test-id "stat-conflicts") "0")
     (expect-text (test-id "free-days") "Tue, Thu, Sat")
   )
 )

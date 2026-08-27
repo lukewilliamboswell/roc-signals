@@ -16,7 +16,7 @@
     (expect-metric-delta scopes_disposed 0)
     (expect-metric-delta-at-most dirty_source_roots 4)
     (expect-metric-delta-at-most patches_emitted 20)
-    (expect-text (test-id "effective-servings") "Effective servings: 8")
+    (expect-text (test-id "effective-servings") "8")
     (expect-text (test-id "scale-note") "Scaled from the recipe's 4 servings.")
     (expect-text (test-id "ing-qty-flour") "400 g")
     (expect-text (test-id "ing-qty-buttermilk") "600 ml")
@@ -27,6 +27,6 @@
     (expect-text (test-id "shop-qty-stock-ml") "1333.33 ml")
     (expect-text (test-id "shop-qty-salt-pinch") "8.33 pinch")
     ; Structure is unchanged: the same nine lines, same count.
-    (expect-text (test-id "shopping-count") "Shopping list: 9 lines from 3 recipes")
+    (expect-text (test-id "shopping-count") "9 lines from 3 recipes")
   )
 )

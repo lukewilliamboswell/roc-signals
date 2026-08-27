@@ -8,24 +8,60 @@ import pf.Ui
 import GridData
 
 # ---------------------------------------------------------------------------
+# Classes
+# ---------------------------------------------------------------------------
+
+page_class : Str
+page_class = "app-shell app-shell-wide"
+
+panel_class : Str
+panel_class = "panel grid gap-4 p-5"
+
+## The platform has no `table`/`tr`/`td` helpers, so the grid is a CSS grid that
+## borrows the `data-table` treatment: one shared column template keeps the
+## header strip and every row on the same tracks.
+grid_cols_class : Str
+grid_cols_class = "grid grid-cols-[2.5rem_minmax(0,1.2fr)_minmax(0,0.8fr)_minmax(0,0.6fr)_minmax(0,1.6fr)] items-center gap-3"
+
+header_row_class : Str
+header_row_class = "${grid_cols_class} border-b border-zinc-200 bg-zinc-50 px-3 py-2"
+
+header_cell_class : Str
+header_cell_class = "text-xs font-semibold uppercase tracking-wide text-zinc-500"
+
+row_class : Str
+row_class = "${grid_cols_class} border-b border-zinc-100 px-3 py-2"
+
+cell_class : Str
+cell_class = "text-sm text-zinc-800"
+
+numeric_cell_class : Str
+numeric_cell_class = "text-sm text-zinc-800 numeric text-right"
+
+input_class : Str
+input_class = "input"
+
+sort_button_class : Str
+sort_button_class = "button button-sm"
+
+# ---------------------------------------------------------------------------
 # View
 # ---------------------------------------------------------------------------
 
-page_class = "grid gap-5"
-
-hero_class = "panel grid gap-2 p-5"
-
-panel_class = "panel grid gap-4 p-4"
-
-toolbar_class = "flex flex-wrap items-center gap-3"
-
-row_class = "grid grid-cols-5 items-center gap-3 border-b border-zinc-200 py-2"
-
-cell_class = "text-sm text-zinc-800"
-
-input_class = "w-full rounded-md border border-zinc-300 bg-white px-2 py-1 text-sm"
-
-header_button_class = "button text-sm font-semibold"
+## The column headings of the grid. Static, so it renders once and is never
+## touched by a signal update.
+grid_header : Elem
+grid_header =
+	Html.div_c(
+		header_row_class,
+		[
+			Html.paragraph_c("Select", header_cell_class),
+			Html.paragraph_c("Name", header_cell_class),
+			Html.paragraph_c("Team", header_cell_class),
+			Html.paragraph_c("Score", "${header_cell_class} text-right"),
+			Html.paragraph_c("Note", header_cell_class),
+		],
+	)
 
 ## One row. The selection reducer writes only the `selected` handle now that it
 ## no longer has to carry the query along.
@@ -40,47 +76,73 @@ render_row = |selected, notes, key, row| {
 			Html.checkbox_c(
 				"Select ${name}",
 				row.map(|r| r.selected),
-				cell_class,
+				"checkbox",
 				selected.on_bool(|current, on| GridData.toggle_selected(current, row_id, on)),
 			),
-			Html.paragraph_s_attrs(row.map(|r| r.name), [Html.class_attr(cell_class), Html.test_id("row-name-${key}")]),
+			Html.paragraph_s_attrs(row.map(|r| r.name), [Html.class_attr("${cell_class} font-medium numeric"), Html.test_id("row-name-${key}")]),
 			Html.paragraph_s_attrs(row.map(|r| r.team), [Html.class_attr(cell_class), Html.test_id("row-team-${key}")]),
-			Html.paragraph_s_attrs(row.map(|r| r.score.to_str()), [Html.class_attr(cell_class), Html.test_id("row-score-${key}")]),
-			Html.text_input_c(
+			Html.paragraph_s_attrs(row.map(|r| r.score.to_str()), [Html.class_attr(numeric_cell_class), Html.test_id("row-score-${key}")]),
+			Html.text_input_attrs(
 				"Note for ${name}",
 				row.map(|r| r.note),
-				input_class,
+				[Html.class_attr(input_class), Html.attr("placeholder", "e.g. needs review")],
 				notes.on_str(|current, value| GridData.set_note(current, row_id, value)),
 			),
 		],
 	)
 }
 
+## A metric tile: a static caption over the live figure. The `test_id` rides on
+## the number, so a spec asserts the number and never the caption.
+stat_tile : Str, Signal(Str), Str -> Elem
+stat_tile = |label, figure, id|
+	Html.div_c(
+		"stat",
+		[
+			Html.paragraph_c(label, "stat-label"),
+			Html.paragraph_s_attrs(figure, [Html.class_attr("stat-value numeric"), Html.test_id(id)]),
+		],
+	)
+
 ## Select-all needs the current query as well as the current selection. It reads
 ## `query` atomically through `on_bool_with`, so the two stay separate handles.
-summary_panel : Signal(GridData.Summary), Signal(Bool), Ui.State(List(U64)), Ui.State(Str) -> Elem
-summary_panel = |summary, all_checked, selected, query| {
+## It lives in the Rows panel head, next to the rows it acts on.
+select_all_row : Signal(Bool), Ui.State(List(U64)), Ui.State(Str) -> Elem
+select_all_row = |all_checked, selected, query|
+	Html.div_c(
+		"check-row",
+		[
+			Html.checkbox_c(
+				"Select all matching rows",
+				all_checked,
+				"checkbox",
+				selected.on_bool_with(query, |current, query_value, on| GridData.set_all_matching(current, query_value, on)),
+			),
+			Html.paragraph_c("Select all matching rows", "text-sm text-zinc-700"),
+		],
+	)
+
+summary_panel : Signal(GridData.Summary) -> Elem
+summary_panel = |summary|
 	Html.section_c(
 		"Summary",
 		panel_class,
 		[
-			Html.heading_c("Summary", "text-lg font-semibold text-zinc-950"),
-			Html.checkbox_c(
-				"Select all matching rows",
-				all_checked,
-				"text-sm",
-				selected.on_bool_with(query, |current, query_value, on| GridData.set_all_matching(current, query_value, on)),
+			Html.heading_c("Summary", "panel-title"),
+			Html.div_c(
+				"stat-grid",
+				[
+					stat_tile("Matching rows", summary.map(|s| s.matching.to_str()), "summary-matching"),
+					stat_tile("Total score", summary.map(|s| s.total.to_str()), "summary-total"),
+					stat_tile("Average score", summary.map(|s| s.average.to_str()), "summary-average"),
+					stat_tile("Highest score", summary.map(|s| s.highest.to_str()), "summary-highest"),
+					stat_tile("Lowest score", summary.map(|s| s.lowest.to_str()), "summary-lowest"),
+					stat_tile("Selected in filter", summary.map(|s| s.selected_here.to_str()), "summary-selected-here"),
+					stat_tile("Selected overall", summary.map(|s| s.selected_all.to_str()), "summary-selected-all"),
+				],
 			),
-			Html.paragraph_s_attrs(summary.map(|s| "Matching rows: ${s.matching.to_str()}"), [Html.class_attr(cell_class), Html.test_id("summary-matching")]),
-			Html.paragraph_s_attrs(summary.map(|s| "Total score: ${s.total.to_str()}"), [Html.class_attr(cell_class), Html.test_id("summary-total")]),
-			Html.paragraph_s_attrs(summary.map(|s| "Average score: ${s.average.to_str()}"), [Html.class_attr(cell_class), Html.test_id("summary-average")]),
-			Html.paragraph_s_attrs(summary.map(|s| "Highest score: ${s.highest.to_str()}"), [Html.class_attr(cell_class), Html.test_id("summary-highest")]),
-			Html.paragraph_s_attrs(summary.map(|s| "Lowest score: ${s.lowest.to_str()}"), [Html.class_attr(cell_class), Html.test_id("summary-lowest")]),
-			Html.paragraph_s_attrs(summary.map(|s| "Selected in filter: ${s.selected_here.to_str()}"), [Html.class_attr(cell_class), Html.test_id("summary-selected-here")]),
-			Html.paragraph_s_attrs(summary.map(|s| "Selected overall: ${s.selected_all.to_str()}"), [Html.class_attr(cell_class), Html.test_id("summary-selected-all")]),
 		],
 	)
-}
 
 main : () -> Elem
 main = || {
@@ -206,61 +268,108 @@ main = || {
 												[
 													Html.section_c(
 														"Data Grid",
-														hero_class,
+														"app-header",
 														[
-															Html.heading_c("Data Grid", "text-3xl font-semibold text-zinc-950"),
+															Html.heading_c("Data Grid", "app-title"),
 															Html.paragraph_c(
 																"Sort, filter, select, and edit a generated ${GridData.row_count.to_str()}-row dataset while rendering only ${GridData.page_size.to_str()} rows at a time.",
-																"max-w-3xl text-sm text-zinc-700",
+																"app-subtitle",
 															),
-															Html.paragraph_c("Dataset rows: ${GridData.row_count.to_str()}", cell_class),
+															Html.paragraph_c("Dataset rows: ${GridData.row_count.to_str()}", "badge badge-neutral numeric w-fit"),
 														],
 													),
 													Html.section_c(
 														"Grid controls",
 														panel_class,
 														[
-															Html.text_input_c(
-																"Filter",
-																query,
-																input_class,
-																query_state.on_str(|_, value| value),
-															),
+															Html.heading_c("Filter and sort", "panel-title"),
 															Html.div_c(
-																toolbar_class,
+																"toolbar",
 																[
-																	Html.button_c("Sort by id", header_button_class, sort.on_unit(|current| GridData.apply_sort_click(current, "id"))),
-																	Html.button_c("Sort by name", header_button_class, sort.on_unit(|current| GridData.apply_sort_click(current, "name"))),
-																	Html.button_c("Sort by team", header_button_class, sort.on_unit(|current| GridData.apply_sort_click(current, "team"))),
-																	Html.button_c("Sort by score", header_button_class, sort.on_unit(|current| GridData.apply_sort_click(current, "score"))),
+																	Html.div_c(
+																		"field min-w-64 grow",
+																		[
+																			Html.paragraph_c("Filter rows", "field-label"),
+																			Html.text_input_attrs(
+																				"Filter",
+																				query,
+																				[Html.class_attr(input_class), Html.attr("placeholder", "Node-0042 or Atlas")],
+																				query_state.on_str(|_, value| value),
+																			),
+																			Html.paragraph_c("Matches on name or team across all ${GridData.row_count.to_str()} rows.", "hint"),
+																		],
+																	),
+																	Html.div_c(
+																		"field",
+																		[
+																			Html.paragraph_c("Sort by", "field-label"),
+																			Html.div_c(
+																				"flex flex-wrap items-center gap-2",
+																				[
+																					Html.button_c("Sort by id", sort_button_class, sort.on_unit(|current| GridData.apply_sort_click(current, "id"))),
+																					Html.button_c("Sort by name", sort_button_class, sort.on_unit(|current| GridData.apply_sort_click(current, "name"))),
+																					Html.button_c("Sort by team", sort_button_class, sort.on_unit(|current| GridData.apply_sort_click(current, "team"))),
+																					Html.button_c("Sort by score", sort_button_class, sort.on_unit(|current| GridData.apply_sort_click(current, "score"))),
+																				],
+																			),
+																			Html.paragraph_s_attrs(
+																				sort_sig.map(GridData.sort_caption),
+																				[Html.class_attr("badge badge-info w-fit"), Html.test_id("sort-caption")],
+																			),
+																		],
+																	),
 																],
 															),
-															Html.paragraph_s_attrs(sort_sig.map(GridData.sort_caption), [Html.class_attr(cell_class), Html.test_id("sort-caption")]),
 														],
 													),
-													summary_panel(summary, all_checked, selected_state, query_state),
+													summary_panel(summary),
 													Html.section_c(
 														"Rows",
-														panel_class,
+														"panel",
 														[
-															Html.heading_c("Rows", "text-lg font-semibold text-zinc-950"),
-															Html.paragraph_s_attrs(showing_label, [Html.class_attr(cell_class), Html.test_id("rows-showing")]),
-															Ui.each_str(view_rows, |row| row.id.to_str(), |key, row| render_row(selected_state, notes, key, row)),
-															Ui.when(
-																has_rows,
-																|| Html.paragraph_c("Filter matches rows", cell_class),
-																|| Html.paragraph_c("No rows match the filter", cell_class),
+															Html.div_c(
+																"panel-head",
+																[
+																	Html.heading_c("Rows", "panel-title"),
+																	select_all_row(all_checked, selected_state, query_state),
+																	Html.paragraph_s_attrs(showing_label, [Html.class_attr("hint numeric"), Html.test_id("rows-showing")]),
+																],
+															),
+															Html.div_c(
+																"panel-body",
+																[
+																	Html.div_c(
+																		"table-scroll",
+																		[
+																			Html.div_c(
+																				"min-w-[46rem]",
+																				[
+																					grid_header,
+																					Ui.each_str(view_rows, |row| row.id.to_str(), |key, row| render_row(selected_state, notes, key, row)),
+																				],
+																			),
+																		],
+																	),
+																	# The empty branch is the `empty-state`; the populated branch
+																	# is a caption, so the empty text is the only one on screen.
+																	Ui.when(
+																		has_rows,
+																		|| Html.paragraph_c("Notes are per row and survive sorting and paging.", "hint"),
+																		|| Html.div_c("empty-state", [Html.paragraph("No rows match the filter")]),
+																	),
+																],
 															),
 														],
 													),
 													Html.section_c(
 														"Paging",
-														panel_class,
+														"panel flex flex-wrap items-center justify-between gap-3 p-4",
 														[
-															Html.paragraph_s_attrs(page_label, [Html.class_attr(cell_class), Html.test_id("page-label")]),
+															Html.paragraph_s_attrs(page_label, [Html.class_attr("value numeric"), Html.test_id("page-label")]),
 															Html.div_c(
-																toolbar_class,
+																"flex flex-wrap items-center gap-2",
 																[
+																	Html.button_c("First page", "button-ghost", page.on_unit(|_| 0)),
 																	Html.action_button_c(
 																		Signal.const("Previous page"),
 																		prev_disabled,
@@ -274,10 +383,9 @@ main = || {
 																	Html.action_button_c(
 																		Signal.const("Next page"),
 																		next_disabled,
-																		"button",
+																		"button-primary",
 																		page.on_unit(|current| current + 1),
 																	),
-																	Html.button_c("First page", "button", page.on_unit(|_| 0)),
 																],
 															),
 														],

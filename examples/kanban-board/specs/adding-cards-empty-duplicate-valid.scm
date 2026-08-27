@@ -25,7 +25,6 @@
     (fill (label "WIP limit") "abc")
     (fill (label "WIP limit") "")
     (fill (label "WIP limit") "3")
-
     ; adding cards: empty, duplicate, valid
     (expect-disabled (role button :name "Add card") true)
     (fill (label "New card title") "   ")
@@ -43,10 +42,10 @@
     (expect-metric-delta rows_removed 0)
     (expect-metric-delta rows_reused 1)
     (expect-visible (role region :name "Write release notes"))
-    (expect-text (test-id "card-position-Write release notes") "Position 2 of 2 in Backlog")
-    (expect-text (test-id "card-position-Design login screen") "Position 1 of 2 in Backlog")
-    (expect-text (test-id "count-backlog") "Count: 2")
-    (expect-text (test-id "board-total") "Board total: 5 cards")
+    (expect-text (test-id "card-position-Write release notes") "2 of 2 in Backlog")
+    (expect-text (test-id "card-position-Design login screen") "1 of 2 in Backlog")
+    (expect-text (test-id "count-backlog") "2 cards")
+    (expect-text (test-id "board-total") "5")
     (expect-value (label "New card title") "")
     (expect-text (test-id "add-status") "Enter a title")
     (expect-disabled (role button :name "Add card") true)

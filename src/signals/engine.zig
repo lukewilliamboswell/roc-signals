@@ -1975,7 +1975,7 @@ pub fn Engine(comptime Ctx: type) type {
 
                 const row_values = self.eachRowScopeValues(row_scope_id);
                 const row_elem = callHostValueHostValueToElemWithCapabilities(ctx, roc_host, each.ops.key_capability, each.ops.item_capability, each.ops.row, row_values.key, row_values.item);
-                defer abi.decrefElem(row_elem, roc_host);
+                defer row_elem.decref(roc_host);
 
                 var ordinal: u64 = 0;
                 var dom_ordinal: u64 = 0;
@@ -1990,7 +1990,7 @@ pub fn Engine(comptime Ctx: type) type {
 
             const row_values = self.eachRowScopeValues(row_scope_id);
             const row_elem = callHostValueHostValueToElemWithCapabilities(ctx, roc_host, each.ops.key_capability, each.ops.item_capability, each.ops.row, row_values.key, row_values.item);
-            defer abi.decrefElem(row_elem, roc_host);
+            defer row_elem.decref(roc_host);
 
             var ordinal: u64 = 0;
             var dom_ordinal: u64 = 0;
@@ -2129,7 +2129,7 @@ pub fn Engine(comptime Ctx: type) type {
 
                         const row_values = self.eachRowScopeValues(row_scope_id);
                         const row_elem = callHostValueHostValueToElemWithCapabilities(ctx, roc_host, each_desc.ops.key_capability, each_desc.ops.item_capability, each_desc.ops.row, row_values.key, row_values.item);
-                        defer abi.decrefElem(row_elem, roc_host);
+                        defer row_elem.decref(roc_host);
 
                         var row_ordinal: u64 = 0;
                         var row_dom_ordinal: u64 = 0;
@@ -2889,8 +2889,8 @@ pub fn Engine(comptime Ctx: type) type {
                     removed.cached_value.deinit(ctx, roc_host, &self.pending_roc_metrics);
                     removed.condition.deinit(Ctx.allocator(ctx), ctx, roc_host, &self.pending_roc_metrics);
                     releaseHostBoolRead(removed.read, roc_host, &self.pending_roc_metrics);
-                    abi.decrefElem(removed.when_false, roc_host);
-                    abi.decrefElem(removed.when_true, roc_host);
+                    removed.when_false.decref(roc_host);
+                    removed.when_true.decref(roc_host);
                     continue;
                 }
                 const record_id = self.requireActiveSignalRecordId(desc.condition.record);
@@ -4396,7 +4396,7 @@ pub fn Engine(comptime Ctx: type) type {
 
         pub fn evalOnChangeInitialCommand(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, desc: *HostNodeOnChangeDesc) render.Counts {
             const pending = self.evalOnChangeInitialPendingCommand(ctx, roc_host, desc) orelse return .{};
-            defer abi.decrefNodeCmd(pending.cmd, roc_host);
+            defer pending.cmd.decref(roc_host);
             return self.runCommand(ctx, roc_host, pending.scope_id, pending.cmd);
         }
 
@@ -4409,8 +4409,8 @@ pub fn Engine(comptime Ctx: type) type {
             defer callHostValueToUnitWithCapability(ctx, roc_host, cap, hv.hostValueCapabilityDrop(cap), value);
 
             const cmd = callHostValueToCmdWithCapability(ctx, roc_host, cap, desc.to_cmd, value);
-            abi.increfNodeCmd(cmd, 1);
-            abi.decrefNodeCmd(cmd, roc_host);
+            cmd.incref(1);
+            cmd.decref(roc_host);
             return .{ .scope_id = desc.scope_id, .cmd = cmd };
         }
 
@@ -4426,7 +4426,7 @@ pub fn Engine(comptime Ctx: type) type {
             const allocator = Ctx.allocator(ctx);
             var pending_commands: std.ArrayListUnmanaged(HostPendingOnChangeCommand) = .empty;
             defer {
-                for (pending_commands.items) |pending| abi.decrefNodeCmd(pending.cmd, roc_host);
+                for (pending_commands.items) |pending| pending.cmd.decref(roc_host);
                 pending_commands.deinit(allocator);
             }
 
@@ -4444,7 +4444,7 @@ pub fn Engine(comptime Ctx: type) type {
             const allocator = Ctx.allocator(ctx);
             var pending_commands: std.ArrayListUnmanaged(HostPendingOnChangeCommand) = .empty;
             defer {
-                for (pending_commands.items) |pending| abi.decrefNodeCmd(pending.cmd, roc_host);
+                for (pending_commands.items) |pending| pending.cmd.decref(roc_host);
                 pending_commands.deinit(allocator);
             }
 
@@ -4462,7 +4462,7 @@ pub fn Engine(comptime Ctx: type) type {
             desc.run_on_mount = false;
 
             const cmd = erased_calls.callUnitToCmd(roc_host, desc.to_cmd);
-            defer abi.decrefNodeCmd(cmd, roc_host);
+            defer cmd.decref(roc_host);
             return self.runCommand(ctx, roc_host, desc.scope_id, cmd);
         }
 
@@ -5492,7 +5492,7 @@ pub fn Engine(comptime Ctx: type) type {
             var pending_on_change_commands: std.ArrayListUnmanaged(HostPendingOnChangeCommand) = .empty;
             defer {
                 for (pending_on_change_commands.items) |pending| {
-                    abi.decrefNodeCmd(pending.cmd, roc_host);
+                    pending.cmd.decref(roc_host);
                 }
                 pending_on_change_commands.deinit(allocator);
             }
@@ -5521,6 +5521,7 @@ pub fn Engine(comptime Ctx: type) type {
                 debugPhase(ctx, 370);
                 counts.addAll(self.applyDirtyStructuralSignalsLocally(ctx, roc_host, dirty_source_node_ids, dirty_generation, dirty_structural_signals));
             }
+            debugPhase(ctx, 361);
             counts.addAll(self.runPendingOnChangeCommandsDeferringSourceEffects(
                 ctx,
                 roc_host,
@@ -5528,7 +5529,9 @@ pub fn Engine(comptime Ctx: type) type {
                 &deferred_location_effect,
                 &deferred_storage_effects,
             ));
+            debugPhase(ctx, 362);
             counts.addAll(self.flushDeferredSourceEffects(ctx, roc_host, deferred_location_effect, deferred_storage_effects.items));
+            debugPhase(ctx, 363);
             return counts;
         }
 
@@ -5813,15 +5816,15 @@ pub fn Engine(comptime Ctx: type) type {
             const value = self.cloneCachedSignalValue(ctx, &desc.cached_value);
             defer callHostValueToUnitWithCapability(ctx, roc_host, cap, hv.hostValueCapabilityDrop(cap), value);
             const cmd = callHostValueToCmdWithCapability(ctx, roc_host, cap, desc.to_cmd, value);
-            abi.increfNodeCmd(cmd, 1);
-            abi.decrefNodeCmd(cmd, roc_host);
+            cmd.incref(1);
+            cmd.decref(roc_host);
             return .{ .scope_id = desc.scope_id, .cmd = cmd };
         }
 
         pub fn evalDirtyOnChange(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, desc: *HostNodeOnChangeDesc, dirty_source_node_ids: []const u64, dirty_generation: u64) render.Counts {
             const pending = self.evalDirtyOnChangeCommand(ctx, roc_host, desc, dirty_source_node_ids, dirty_generation) orelse return .{};
             const cmd = pending.cmd;
-            defer abi.decrefNodeCmd(cmd, roc_host);
+            defer cmd.decref(roc_host);
             return self.runCommand(ctx, roc_host, pending.scope_id, cmd);
         }
 
@@ -5971,7 +5974,7 @@ pub fn Engine(comptime Ctx: type) type {
             var pending_on_change_commands: std.ArrayListUnmanaged(HostPendingOnChangeCommand) = .empty;
             defer {
                 for (pending_on_change_commands.items) |pending| {
-                    abi.decrefNodeCmd(pending.cmd, roc_host);
+                    pending.cmd.decref(roc_host);
                 }
                 pending_on_change_commands.deinit(allocator);
             }

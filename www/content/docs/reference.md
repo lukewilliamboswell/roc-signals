@@ -137,7 +137,7 @@ Single-select only. No multi-select and no file input.
 | `attr_maybe_s` | signal attribute where `None` removes it |
 | `bool_attr`, `bool_attr_if`, `bool_attr_s` | boolean attributes |
 | `required`, `readonly` | common static booleans |
-| `aria_describedby`, `aria_invalid_s`, `aria_activedescendant_s` | ARIA |
+| `aria_label`, `aria_describedby`, `aria_invalid_s`, `aria_activedescendant_s` | ARIA |
 | `test_id` | test/locator hook |
 | `behavior` | mark for a JavaScript behaviour |
 

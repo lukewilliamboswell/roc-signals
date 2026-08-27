@@ -30,10 +30,10 @@
     (fill (label "Value n5") "o")
     (expect-text (test-id "summary-n5") "name ~ 'o'")
     (expect-text (test-id "query-text") "(dept = 'Platform' AND (name ~ 'A' AND name ~ 'o'))")
-    (expect-text (test-id "match-summary") "Matching rows: 0 of 5")
-    (select-option (label "Mode n3") "OR")
+    (expect-text (test-id "match-summary") "0 of 5")
+    (click (role button :name "Set OR for n3"))
     (expect-text (test-id "query-text") "(dept = 'Platform' AND (name ~ 'A' OR name ~ 'o'))")
-    (expect-text (test-id "match-summary") "Matching rows: 2 of 5")
+    (expect-text (test-id "match-summary") "2 of 5")
     (expect-visible (test-id "match-Ada"))
     (expect-visible (test-id "match-Bo"))
     ; The sibling leaves kept their own values across the mode switch.

@@ -16,17 +16,60 @@ import pf.Ui
 
 ## --- view -------------------------------------------------------------------
 
-page_class = "grid gap-5"
-
-hero_class = "panel grid gap-2 p-5"
+page_class = "app-shell"
 
 panel_class = "panel grid gap-4 p-4"
 
-note_class = "panel grid gap-3 p-4"
+note_class = "card gap-3 p-4"
 
-toolbar_class = "flex flex-wrap items-center gap-3"
+toolbar_class = "flex flex-wrap items-center gap-2"
 
-input_class = "w-full max-w-md rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm"
+## Online/offline is this app's central condition, so it is a banner rather than
+## a line of status text. Both the tone and the sentence come off the same
+## `board.online` field.
+network_class : Bool -> Str
+network_class = |online| if online { "notice notice-ok" } else { "notice notice-warn" }
+
+auto_class : Bool -> Str
+auto_class = |auto| if auto { "badge badge-ok" } else { "badge badge-warn" }
+
+## Badge tone per note, derived from the same `status` string that produces the
+## badge's caption.
+status_class : Str -> Str
+status_class = |status|
+	if status == "synced" {
+		"badge badge-ok"
+	} else if status == "failed" {
+		"badge badge-danger"
+	} else if status == "queued" or status == "syncing" {
+		"badge badge-warn"
+	} else {
+		"badge badge-neutral"
+	}
+
+## A failed note has to offer its retry where the failure is shown, so the retry
+## control is loud exactly while it is the thing to do.
+retry_class : Str -> Str
+retry_class = |status| if status == "failed" { "button-danger button-sm" } else { "button button-sm" }
+
+## One metric tile. A count is a label and a number, not a sentence.
+stat : Str, Signal.Signal(Str), Str -> Elem
+stat = |label, value, test_id|
+	Html.div_c(
+		"stat",
+		[
+			Html.paragraph_c(label, "stat-label"),
+			Html.paragraph_s_attrs(value, [Html.class_attr("stat-value"), Html.test_id(test_id)]),
+		],
+	)
+
+## A checkbox draws no caption of its own, so the visible label is next to it.
+check_row : Str, Signal.Signal(Bool), _ -> Elem
+check_row = |label, checked, msg|
+	Html.div_c(
+		"check-row",
+		[Html.checkbox_c(label, checked, "checkbox", msg), Html.text(label)],
+	)
 
 render_note : Ui.State(Notes.Capture), Str, Signal.Signal(Notes.Row) -> Elem
 render_note = |capture, key, row|
@@ -34,31 +77,46 @@ render_note = |capture, key, row|
 		"Note ${key}",
 		[Html.class_attr(note_class), Html.attr_s("data-status", row.map(|value| value.status))],
 		[
-			Html.heading_c("Note ${key}", "text-lg font-semibold text-zinc-950"),
-			Html.text_input_c(
-				"Body ${key}",
-				row.map(|value| value.body),
-				input_class,
-				capture.on_str(|current, text| Notes.edit_note(current, key, Notes.sanitize(text))),
+			Html.div_c(
+				"flex flex-wrap items-center justify-between gap-2",
+				[
+					Html.heading_c("Note ${key}", "card-title"),
+					Html.paragraph_s_attrs(
+						row.map(|value| value.status_label),
+						[Html.class_attr_s(row.map(|value| status_class(value.status))), Html.test_id("status-${key}")],
+					),
+				],
 			),
-			Html.paragraph_s_attrs(row.map(|value| value.status_label), [Html.class_attr("text-sm font-medium text-zinc-900"), Html.test_id("status-${key}")]),
+			Html.div_c(
+				"field",
+				[
+					Html.paragraph_c("Body ${key}", "field-label"),
+					Html.text_input_attrs(
+						"Body ${key}",
+						row.map(|value| value.body),
+						[Html.class_attr("input"), Html.attr("placeholder", "Generator hours 128")],
+						capture.on_str(|current, text| Notes.edit_note(current, key, Notes.sanitize(text))),
+					),
+				],
+			),
+			Html.paragraph_s_c(row.map(|value| value.detail), "hint numeric"),
 			Html.div_c(
 				toolbar_class,
 				[
 					Html.action_button_c(
 						Signal.const("Queue note ${key}"),
 						row.map(|value| value.queue_disabled),
-						"button",
+						"button button-sm",
 						capture.on_unit(|current| Notes.push_op(current, OpQueue(key))),
 					),
-					Html.action_button_c(
+					Html.action_button_attrs(
 						Signal.const("Retry note ${key}"),
 						row.map(|value| value.retry_disabled),
-						"button",
+						[Html.class_attr_s(row.map(|value| retry_class(value.status)))],
 						capture.on_unit(|current| Notes.retry_note(current, key)),
 					),
-					Html.button_c("Promote note ${key}", "button", capture.on_unit(|current| Notes.push_op(current, OpPromote(key)))),
-					Html.button_c("Delete note ${key}", "button", capture.on_unit(|current| Notes.push_op(current, OpDelete(key)))),
+					Html.button_c("Promote note ${key}", "button-ghost button-sm", capture.on_unit(|current| Notes.push_op(current, OpPromote(key)))),
+					Html.button_c("Delete note ${key}", "button-ghost button-sm", capture.on_unit(|current| Notes.push_op(current, OpDelete(key)))),
 				],
 			),
 		],
@@ -140,53 +198,93 @@ main = || {
 								)
 							outbox_empty = rows.map(|value| Notes.outbox_count(value) == 0)
 							notes_empty = rows.map(|value| value.is_empty())
+							online_signal = board.map(|value| value.online)
 
 							Html.div_c(
 								page_class,
 								[
 									Html.section_c(
 										"Field Notes",
-										hero_class,
+										"app-header",
 										[
-											Html.heading_c("Field Notes", "text-3xl font-semibold text-zinc-950"),
-											Html.paragraph_c("Capture notes while offline, queue them in an outbox, and sync them one at a time when the connection returns.", "max-w-3xl text-sm text-zinc-700"),
-											Html.paragraph_s_attrs(stored.map(Notes.storage_notice), [Html.class_attr("text-sm text-zinc-600"), Html.test_id("storage-notice")]),
-										],
-									),
-									Html.section_c(
-										"Capture",
-										panel_class,
-										[
-											Html.heading_c("New note", "text-xl font-semibold text-zinc-950"),
-											Html.textarea_c("Note body", draft_signal, input_class, capture.on_str(|current, text| { ..current, draft: text })),
-											Html.action_button_c(Signal.const("Save note"), save_disabled, "button-primary justify-self-start", capture.on_unit(Notes.save_note)),
+											Html.heading_c("Field Notes", "app-title"),
+											Html.paragraph_c("Capture notes while offline, queue them in an outbox, and sync them one at a time when the connection returns.", "app-subtitle"),
 										],
 									),
 									Html.section(
 										"Sync status",
 										[Html.class_attr(panel_class), Html.attr_s("data-network", board.map(|value| if value.online { "online" } else { "offline" }))],
 										[
-											Html.heading_c("Sync status", "text-xl font-semibold text-zinc-950"),
-											Html.paragraph_s_attrs(board.map(|value| Notes.network_text(value.online)), [Html.class_attr("text-sm font-medium text-zinc-900"), Html.test_id("network")]),
-											Html.paragraph_s_attrs(board.map(|value| Notes.auto_text(value.auto)), [Html.class_attr("text-sm text-zinc-700"), Html.test_id("auto-sync")]),
-											Html.paragraph_s_attrs(rows.map(|value| "Outbox: ${Notes.outbox_count(value).to_str()}"), [Html.class_attr("text-sm text-zinc-700"), Html.test_id("outbox-count")]),
-											Html.paragraph_s_attrs(rows.map(Notes.syncing_text), [Html.class_attr("text-sm text-zinc-700"), Html.test_id("syncing")]),
-											Html.paragraph_s_attrs(rows.map(|value| "Failed: ${Notes.count_status(value, "failed").to_str()}"), [Html.class_attr("text-sm text-zinc-700"), Html.test_id("failed-count")]),
-											Html.paragraph_s_attrs(rows.map(|value| "Synced: ${Notes.count_status(value, "synced").to_str()}"), [Html.class_attr("text-sm text-zinc-700"), Html.test_id("synced-count")]),
-											Html.paragraph_s_attrs(rows.map(Notes.capacity_text), [Html.class_attr("text-sm text-zinc-700"), Html.test_id("capacity")]),
-											Html.checkbox_c("Sync automatically", auto_sync.signal(), "rounded border-zinc-300", auto_sync.on_bool(|_current, checked| checked)),
-											Html.checkbox_c("Hide synced notes", hide_synced.signal(), "rounded border-zinc-300", hide_synced.on_bool(|_current, checked| checked)),
+											Html.paragraph_s_attrs(
+												online_signal.map(Notes.network_text),
+												[Html.class_attr_s(online_signal.map(network_class)), Html.test_id("network")],
+											),
+											Html.div_c(
+												"stat-grid",
+												[
+													stat("Outbox", rows.map(|value| Notes.outbox_count(value).to_str()), "outbox-count"),
+													stat("Syncing", rows.map(Notes.syncing_text), "syncing"),
+													stat("Failed", rows.map(|value| Notes.count_status(value, "failed").to_str()), "failed-count"),
+													stat("Synced", rows.map(|value| Notes.count_status(value, "synced").to_str()), "synced-count"),
+												],
+											),
+											Html.div_c(
+												"toolbar justify-between border-t border-zinc-200 pt-3",
+												[
+													Html.div_c(
+														toolbar_class,
+														[
+															check_row("Sync automatically", auto_sync.signal(), auto_sync.on_bool(|_current, checked| checked)),
+															check_row("Hide synced notes", hide_synced.signal(), hide_synced.on_bool(|_current, checked| checked)),
+														],
+													),
+													Html.div_c(
+														toolbar_class,
+														[
+															Html.paragraph_s_attrs(
+																board.map(|value| Notes.auto_text(value.auto)),
+																[Html.class_attr_s(board.map(|value| auto_class(value.auto))), Html.test_id("auto-sync")],
+															),
+															Html.paragraph_s_attrs(
+																rows.map(Notes.capacity_text),
+																[Html.class_attr("badge badge-neutral numeric"), Html.test_id("capacity")],
+															),
+														],
+													),
+												],
+											),
+											Html.paragraph_s_attrs(stored.map(Notes.storage_notice), [Html.class_attr("hint"), Html.test_id("storage-notice")]),
+										],
+									),
+									Html.section_c(
+										"Capture",
+										panel_class,
+										[
+											Html.heading_c("New note", "panel-title"),
+											Html.div_c(
+												"field",
+												[
+													Html.paragraph_c("Note body", "field-label"),
+													Html.textarea_attrs(
+														"Note body",
+														draft_signal,
+														[Html.class_attr("input textarea"), Html.attr("placeholder", "Pump pressure 4.2 bar at the west wellhead")],
+														capture.on_str(|current, text| { ..current, draft: text }),
+													),
+												],
+											),
+											Html.action_button_c(Signal.const("Save note"), save_disabled, "button-primary justify-self-start", capture.on_unit(Notes.save_note)),
 										],
 									),
 									Html.section_c(
 										"Outbox",
 										panel_class,
 										[
-											Html.heading_c("Outbox", "text-xl font-semibold text-zinc-950"),
+											Html.heading_c("Outbox", "panel-title"),
 											Ui.when(
 												outbox_empty,
-												|| Html.paragraph_c("Outbox is empty", "text-sm text-zinc-600"),
-												|| Html.paragraph_s_attrs(rows.map(|value| "Outbox holds ${Notes.outbox_count(value).to_str()} notes"), [Html.class_attr("text-sm text-zinc-900"), Html.test_id("outbox-detail")]),
+												|| Html.paragraph_c("Outbox is empty", "empty-state"),
+												|| Html.paragraph_s_attrs(rows.map(Notes.outbox_text), [Html.class_attr("notice notice-info"), Html.test_id("outbox-detail")]),
 											),
 										],
 									),
@@ -194,11 +292,11 @@ main = || {
 										"Notes",
 										panel_class,
 										[
-											Html.heading_c("Captured notes", "text-xl font-semibold text-zinc-950"),
+											Html.heading_c("Captured notes", "panel-title"),
 											Ui.when(
 												notes_empty,
-												|| Html.paragraph_c("No notes captured yet", "text-sm text-zinc-600"),
-												|| Ui.each_str(visible_rows, |row| row.id, |key, row| render_note(capture, key, row)),
+												|| Html.paragraph_c("No notes captured yet. Write one above — it will save even while you are offline.", "empty-state"),
+												|| Html.div_c("grid gap-3", [Ui.each_str(visible_rows, |row| row.id, |key, row| render_note(capture, key, row))]),
 											),
 										],
 									),

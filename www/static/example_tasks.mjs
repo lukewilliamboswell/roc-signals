@@ -10,10 +10,35 @@ import { createConduitTaskHandler } from "./conduit_backend.mjs";
 export function createPublicExampleTaskHandler() {
   const opsBackend = createOpsBackend();
   const conduitTaskHandler = createConduitTaskHandler();
+  // One backend instance per handler, so each mounted app gets its own scripted
+  // sequence starting at the beginning of the story.
+  // They are built on first use because the scripted payload tables below are
+  // module-level `const`s, and this factory also runs at module evaluation time.
+  let namedTaskHandlers = null;
+  const namedHandlers = () => {
+    if (namedTaskHandlers === null) {
+      namedTaskHandlers = [
+        createStatusPageBackend(),
+        createSupportInboxBackend(),
+        createFieldNotesBackend(),
+        createOnboardingBackend(),
+        createPackageExplorerBackend(),
+        createFlightSearchBackend(),
+      ];
+    }
+    return namedTaskHandlers;
+  };
   return function publicExampleTaskHandler(args) {
     const lookup = lookupTaskHandler(args);
     if (lookup !== null && lookup !== undefined) {
       return lookup;
+    }
+
+    for (const handler of namedHandlers()) {
+      const handled = handler(args);
+      if (handled !== null && handled !== undefined) {
+        return handled;
+      }
     }
 
     const apiConsole = apiRequestConsoleTaskHandler(args);
@@ -395,4 +420,450 @@ function progress(base, sequence, speed) {
 
 function twoDigits(value) {
   return String(value).padStart(2, "0");
+}
+
+// --- named task sources for the gallery examples ----------------------------
+//
+// Several examples drive their async work through `Signal.task_source(name, …)`
+// rather than `Http`, so their requests arrive here under a bare name instead of
+// the `http:send:` prefix the routers above match. Under the native spec host a
+// spec script supplies each result; in the browser these handlers stand in for
+// that script.
+//
+// House rules, same as `createOpsBackend`: no `Math.random()`, no wall-clock
+// input. Each backend owns a small counter that advances once per request, and
+// the counter indexes a scripted progression so that successive polls tell a
+// story — healthy, degraded, an incident with updates, a failure, recovery —
+// and then settle on a steady final state.
+//
+// Payload wire formats are copied from the literal payloads in each example's
+// `specs/*.scm`, which are the ground truth the Roc parse functions were
+// written against.
+
+// Tasks resolve after a short delay so the Loading branch of every
+// `Signal.fold_task` is actually visible, and so a superseded request can be
+// cancelled while still in flight (latest-wins in package-explorer).
+function settle(value, { signal, delayMs = 140 } = {}) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error("canceled"));
+      return;
+    }
+    const timer = setTimeout(() => resolve(value), delayMs);
+    signal?.addEventListener?.(
+      "abort",
+      () => {
+        clearTimeout(timer);
+        reject(new Error("canceled"));
+      },
+      { once: true },
+    );
+  });
+}
+
+function failWith(message, options) {
+  return settle(null, options).then(() => {
+    throw new Error(message);
+  });
+}
+
+// Index into a scripted list, holding the last entry once the story has settled.
+function stage(script, index) {
+  return script[Math.min(index, script.length - 1)];
+}
+
+// --- status-page -------------------------------------------------------------
+//
+// Names: "check:api", "check:web", "check:database", "check:notifications",
+// "incidents". Every request payload is the literal string "refresh"; the round
+// number comes from a per-name counter, so each service tells its own part of
+// the same story even though the five tasks are independent.
+//
+// Wire formats (see parse_check / parse_feed in examples/status-page/main.roc):
+//   check      "operational|99.98"          health | uptime percent
+//   incidents  "id~severity~title~hh:mm@body^hh:mm@body#…"   "#" separates incidents
+//
+// Rounds (one round every 5s while the tab is visible):
+//   1  all four services operational, no incidents
+//   2  api degrades, inc-42 opens with its first update
+//   3  database degrades too, web wobbles, inc-42 gains an update
+//   4  the api check itself fails (CheckFailed, distinct from an observed
+//      outage), inc-42 gains the rollback update
+//   5  api and database recovering, notifications degrade, inc-51 opens
+//   6  everything operational again, both incidents resolved
+//   7+ settled on the healthy board with the resolved incident history
+const statusIncident42 = "inc-42~major~Elevated API error rate~";
+const statusIncident51 = "inc-51~minor~Delayed notification delivery~";
+
+const statusChecks = {
+  "check:api": [
+    "operational|99.98",
+    "degraded|97.40",
+    "degraded|96.80",
+    { fail: "check timed out after 5s" },
+    "degraded|98.60",
+    "operational|99.21",
+    "operational|99.40",
+  ],
+  "check:web": [
+    "operational|99.99",
+    "operational|99.99",
+    "degraded|98.10",
+    "operational|99.95",
+    "operational|99.99",
+    "operational|99.99",
+  ],
+  "check:database": [
+    "operational|99.90",
+    "operational|99.90",
+    "degraded|96.00",
+    "degraded|97.10",
+    "operational|99.72",
+    "operational|99.90",
+  ],
+  "check:notifications": [
+    "operational|99.95",
+    "operational|99.95",
+    "operational|99.95",
+    "operational|99.95",
+    "degraded|99.20",
+    "operational|99.95",
+  ],
+};
+
+const statusFeed = [
+  "",
+  `${statusIncident42}10:02@Investigating elevated 5xx responses`,
+  `${statusIncident42}10:02@Investigating elevated 5xx responses^10:20@Identified a bad deploy`,
+  `${statusIncident42}10:02@Investigating elevated 5xx responses^10:20@Identified a bad deploy^10:45@Rolled back the deploy`,
+  `${statusIncident42}10:02@Investigating elevated 5xx responses^10:20@Identified a bad deploy^10:45@Rolled back the deploy^11:05@Monitoring after rollback#${statusIncident51}11:10@Investigating a notification backlog`,
+  `${statusIncident42}10:02@Investigating elevated 5xx responses^10:20@Identified a bad deploy^10:45@Rolled back the deploy^11:05@Monitoring after rollback^11:30@Resolved, error rates back to baseline#${statusIncident51}11:10@Investigating a notification backlog^11:34@Resolved, backlog drained`,
+];
+
+export function createStatusPageBackend() {
+  const rounds = new Map();
+  return function statusPageTaskHandler({ name, signal }) {
+    const script = name === "incidents" ? statusFeed : statusChecks[name];
+    if (!script) {
+      return null;
+    }
+    const round = rounds.get(name) ?? 0;
+    rounds.set(name, round + 1);
+    const entry = stage(script, round);
+    if (entry && typeof entry === "object" && entry.fail) {
+      return failWith(entry.fail, { signal });
+    }
+    return settle(entry, { signal });
+  };
+}
+
+// --- support-inbox -----------------------------------------------------------
+//
+// Names: "inbox" (request "poll" or "read:<conv>") and "send"
+// (request "<cid>|<conv>|<body>", resolving with the cid so the optimistic row
+// can be reconciled).
+//
+// Wire format (Inbox.parse_snapshot):
+//   "<conversations># <messages>" with ";" between records
+//   conversation  id|subject|customer|owner
+//   message       id|conv|author|body|read-flag|client-id   (flag "new" = unread)
+//
+// The backend keeps real server state so the example can demonstrate what it
+// claims. Successive polls (every 4s) deliver new customer messages, which
+// raises unread counts without touching the open thread; opening a conversation
+// issues "read:<id>", which clears that conversation's unread flags server-side.
+//
+//   poll 1  the three seeded conversations, one unread in c2
+//   poll 2  a new unread message lands in c1
+//   poll 3  the poll itself fails (sync status shows the error, the list stays)
+//   poll 4  a new unread message lands in c3
+//   poll 5  another unread lands in c2
+//   poll 6+ settled
+//
+// Sends: the first succeeds, the second fails so the optimistic row rolls back,
+// later ones succeed. A body containing "fail" always fails, so the rollback is
+// reproducible on demand.
+const inboxConversations = [
+  "c1|Card declined|Ada Lovelace|me",
+  "c2|Cannot log in|Grace Hopper|sam",
+  "c3|Refund status|Alan Turing|me",
+];
+
+const inboxSeedMessages = [
+  { id: "m1", conv: "c1", author: "customer", body: "My card was declined", unread: false, cid: "-" },
+  { id: "m2", conv: "c1", author: "agent", body: "Looking into it now", unread: false, cid: "-" },
+  { id: "m3", conv: "c2", author: "customer", body: "Login loop on mobile", unread: true, cid: "-" },
+];
+
+const inboxArrivals = [
+  null,
+  { id: "m4", conv: "c1", author: "customer", body: "Any update on this?", unread: true, cid: "-" },
+  null,
+  { id: "m5", conv: "c3", author: "customer", body: "Still waiting on my refund", unread: true, cid: "-" },
+  { id: "m6", conv: "c2", author: "customer", body: "Still broken after a reinstall", unread: true, cid: "-" },
+];
+
+export function createSupportInboxBackend() {
+  const messages = inboxSeedMessages.map((message) => ({ ...message }));
+  let polls = 0;
+  let sends = 0;
+  let nextServerId = 100;
+
+  const encode = () => {
+    const rows = messages.map(
+      (m) => `${m.id}|${m.conv}|${m.author}|${m.body}|${m.unread ? "new" : "read"}|${m.cid}`,
+    );
+    return `${inboxConversations.join(";")}#${rows.join(";")}`;
+  };
+
+  return function supportInboxTaskHandler({ name, request, signal }) {
+    if (name === "inbox") {
+      const text = String(request);
+      if (text.startsWith("read:")) {
+        const conv = text.slice("read:".length);
+        for (const message of messages) {
+          if (message.conv === conv) {
+            message.unread = false;
+          }
+        }
+        return settle(encode(), { signal });
+      }
+
+      polls += 1;
+      // The third poll fails on purpose: `reset_on_start = False` means the
+      // board keeps showing the last good snapshot while the status line
+      // reports the failure, and the next poll recovers.
+      if (polls === 3) {
+        return failWith("sync gateway timed out", { signal });
+      }
+      const arrival = polls <= inboxArrivals.length ? inboxArrivals[polls - 1] : null;
+      if (arrival && !messages.some((m) => m.id === arrival.id)) {
+        messages.push({ ...arrival });
+      }
+      return settle(encode(), { signal });
+    }
+
+    if (name !== "send") {
+      return null;
+    }
+
+    const [cid, conv, ...bodyParts] = String(request).split("|");
+    const body = bodyParts.join("|");
+    sends += 1;
+    if (sends === 2 || body.toLowerCase().includes("fail")) {
+      return failWith("delivery service rejected the message", { signal });
+    }
+    nextServerId += 1;
+    messages.push({
+      id: `s${nextServerId}`,
+      conv,
+      author: "agent",
+      body,
+      unread: false,
+      // Echoing the client id is what lets the optimistic merge drop the local
+      // copy instead of showing the message twice.
+      cid,
+    });
+    return settle(cid, { signal });
+  };
+}
+
+// --- field-notes -------------------------------------------------------------
+//
+// Name: "note-sync". The request is the note's settlement token, "<id>#<rev>",
+// and both the success and the failure payload must echo that same token back:
+// the app compares the settled token against the note's current token to decide
+// whether a row is synced, failed, or still outstanding.
+//
+// Every third sync request fails, so the outbox demonstrates a failed row and
+// the Retry button; retrying mints a new revision, which produces a new token
+// and (usually) a clean settlement on the next attempt.
+export function createFieldNotesBackend() {
+  let attempts = 0;
+  return function fieldNotesTaskHandler({ name, request, signal }) {
+    if (name !== "note-sync") {
+      return null;
+    }
+    attempts += 1;
+    const token = String(request);
+    if (attempts % 3 === 0) {
+      return failWith(token, { signal });
+    }
+    return settle(token, { signal });
+  };
+}
+
+// --- onboarding-wizard -------------------------------------------------------
+//
+// Name: "onboarding-submit", request "submit-<attempt>". The first attempt
+// fails so the failure branch of the submit status is reachable without any
+// special input; every later attempt creates the workspace.
+export function createOnboardingBackend() {
+  return function onboardingTaskHandler({ name, request, signal }) {
+    if (name !== "onboarding-submit") {
+      return null;
+    }
+    const attempt = Number.parseInt(String(request).replace("submit-", ""), 10) || 1;
+    if (attempt === 1) {
+      return failWith("workspace name already taken", { signal });
+    }
+    return settle(`acme-${40 + attempt}`, { signal });
+  };
+}
+
+// --- package-explorer --------------------------------------------------------
+//
+// Names: "search" (request is the query text) and "detail" / "versions" /
+// "deps" (request is the package id). Wire formats, from Catalog.roc:
+//   search    "id|summary;id|summary"
+//   detail    "id|summary|license|downloads"
+//   versions  "version|released;version|released"
+//   deps      "id|requirement;id|requirement"
+// An empty payload is a legitimate answer everywhere.
+//
+// The registry is a fixed catalogue filtered by substring, so search is
+// deterministic and latest-wins cancellation is observable (a superseded
+// request rejects with "canceled" while in flight). A query containing
+// "offline" fails the search, and an unknown package id fails the detail panel
+// while versions and deps still answer — the point the example makes about
+// panels settling independently.
+const packageCatalog = [
+  {
+    id: "roc-json",
+    summary: "JSON codec for Roc",
+    license: "Apache-2.0",
+    downloads: "18422",
+    versions: "1.2.0|2026-05-02;1.1.0|2026-03-14;1.0.0|2026-01-09",
+    deps: "roc-parser|0.4.0;roc-bytes|1.1.0",
+  },
+  {
+    id: "roc-http",
+    summary: "HTTP client for Roc",
+    license: "MIT",
+    downloads: "9310",
+    versions: "0.9.1|2026-04-22;0.9.0|2026-02-01",
+    deps: "roc-bytes|1.1.0",
+  },
+  {
+    id: "roc-parser",
+    summary: "Parser combinators for Roc",
+    license: "Apache-2.0",
+    downloads: "12045",
+    versions: "0.4.0|2026-03-30;0.3.2|2025-12-11",
+    deps: "",
+  },
+  {
+    id: "roc-bytes",
+    summary: "Byte helpers for Roc",
+    license: "MIT",
+    downloads: "6188",
+    versions: "1.1.0|2026-02-18;1.0.0|2025-11-05",
+    deps: "",
+  },
+  {
+    id: "roc-random",
+    summary: "Seeded random number generators for Roc",
+    license: "MIT",
+    downloads: "3401",
+    versions: "0.2.0|2026-01-27",
+    deps: "roc-bytes|1.1.0",
+  },
+];
+
+export function createPackageExplorerBackend() {
+  return function packageExplorerTaskHandler({ name, request, signal }) {
+    const text = String(request).trim();
+    if (name === "search") {
+      if (text.toLowerCase().includes("offline")) {
+        return failWith("registry unreachable", { signal });
+      }
+      const needle = text.toLowerCase();
+      const rows = packageCatalog.filter(
+        (pkg) =>
+          needle === "" ||
+          pkg.id.toLowerCase().includes(needle) ||
+          pkg.summary.toLowerCase().includes(needle),
+      );
+      return settle(rows.map((pkg) => `${pkg.id}|${pkg.summary}`).join(";"), { signal });
+    }
+
+    if (name !== "detail" && name !== "versions" && name !== "deps") {
+      return null;
+    }
+
+    const pkg = packageCatalog.find((candidate) => candidate.id === text);
+    if (!pkg) {
+      if (name === "detail") {
+        return failWith("overview service unavailable", { signal });
+      }
+      return settle("", { signal });
+    }
+    if (name === "detail") {
+      return settle(`${pkg.id}|${pkg.summary}|${pkg.license}|${pkg.downloads}`, { signal });
+    }
+    if (name === "versions") {
+      return settle(pkg.versions, { signal });
+    }
+    return settle(pkg.deps, { signal });
+  };
+}
+
+// --- flight-search -----------------------------------------------------------
+//
+// Name: "flight-search". The request is the fan-in of the six filter states:
+// "<origin>-<destination>|<date>|<max stops>|<max price>|<airline>". Only the
+// route and date reach the server; stops, price and airline are applied locally
+// to the results already held, which is the point of the example.
+//
+// Wire format: "code,airline,depart,duration,stops,price" records separated by
+// ";" (see parse_flights).
+//
+// Choosing the same city for both ends (MEL to MEL) is a reachable failure, and
+// changing either end back recovers. The board itself is a fixed timetable
+// shifted deterministically by the route and departure date, so no wall clock
+// or randomness is involved.
+const flightTimetable = [
+  { code: "QF421", airline: "Qantas", depart: "06:00", minutes: 305, stops: 0, price: 145 },
+  { code: "VA518", airline: "Virgin Australia", depart: "09:30", minutes: 210, stops: 1, price: 215 },
+  { code: "JQ722", airline: "Jetstar", depart: "07:15", minutes: 480, stops: 0, price: 130 },
+  { code: "QF876", airline: "Qantas", depart: "14:05", minutes: 265, stops: 2, price: 300 },
+  { code: "VA209", airline: "Virgin Australia", depart: "17:40", minutes: 190, stops: 0, price: 265 },
+];
+
+// A tiny stable hash over the route and date, so the same criteria always
+// produce the same board and different criteria visibly differ.
+function criteriaSeed(text) {
+  let seed = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    seed = (seed * 31 + text.charCodeAt(index)) % 997;
+  }
+  return seed;
+}
+
+export function createFlightSearchBackend() {
+  return function flightSearchTaskHandler({ name, request, signal }) {
+    if (name !== "flight-search") {
+      return null;
+    }
+    const [route = "", date = ""] = String(request).split("|");
+    const [origin = "", destination = ""] = route.split("-");
+    if (origin !== "" && origin === destination) {
+      return failWith(`no route ${origin}-${destination}`, { signal });
+    }
+
+    const seed = criteriaSeed(`${route}|${date}`);
+    const rows = flightTimetable.map((flight, index) => {
+      const priceShift = ((seed + index * 17) % 9) * 5;
+      const durationShift = ((seed + index * 23) % 5) * 6;
+      return [
+        flight.code,
+        flight.airline,
+        flight.depart,
+        flight.minutes + durationShift,
+        flight.stops,
+        flight.price + priceShift,
+      ].join(",");
+    });
+    return settle(rows.join(";"), { signal });
+  };
 }

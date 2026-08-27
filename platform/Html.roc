@@ -202,9 +202,19 @@ Html := [].{
 	readonly : Node.Attr
 	readonly = bool_attr("readonly")
 
-	## Signal-backed `aria-invalid` boolean attribute.
+	## Signal-backed `aria-invalid` attribute. `aria-invalid` is an enumerated
+	## ARIA attribute, not an HTML boolean one: an empty value reads as *valid*,
+	## so a true flag has to set the literal string and a false flag has to
+	## remove the attribute outright.
 	aria_invalid_s : Signal(Bool) -> Node.Attr
-	aria_invalid_s = |signal| bool_attr_s("aria-invalid", signal)
+	aria_invalid_s = |signal| attr_maybe_s("aria-invalid", signal.map(|flag| if flag { Some("true") } else { None }))
+
+	## Static accessible name. Buttons and inputs take their accessible name
+	## from their visible text, so a control that shows an icon or a shortened
+	## label has no other way to keep a descriptive name for assistive tech and
+	## for specs that address it by name.
+	aria_label : Str -> Node.Attr
+	aria_label = |value| Node.Attr.StaticText({ field: field_label, name: "", value })
 
 	## Static `aria-describedby` attribute.
 	aria_describedby : Str -> Node.Attr

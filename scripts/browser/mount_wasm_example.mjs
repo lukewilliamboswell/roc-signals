@@ -246,6 +246,14 @@ if (liveHostValues !== 0) {
   fail(`mounted ${name}, but ${liveHostValues} host values are still live after unmount`);
 }
 
+const liveRocAllocations = instance.exports.roc_ui_debug_live_allocation_count?.();
+const liveRocBytes = instance.exports.roc_ui_debug_live_allocation_bytes?.();
+if (liveRocAllocations !== undefined && (liveRocAllocations !== 0 || liveRocBytes !== 0)) {
+  fail(
+    `mounted ${name}, but ${liveRocAllocations} Roc allocations / ${liveRocBytes} bytes are still live after unmount`,
+  );
+}
+
 if (behaviorCounts.attached !== behaviorCounts.cleaned) {
   fail(
     `mounted ${name}, but behavior cleanup count did not match attach count: ${behaviorCounts.attached} attached, ${behaviorCounts.cleaned} cleaned`,

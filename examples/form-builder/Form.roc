@@ -485,28 +485,38 @@ Form := {}.{
 	all_valid : List(Form.Row) -> Bool
 	all_valid = |rows| Form.problem_count(rows) == 0
 
-	## Status line for the preview: field count plus outstanding problems.
-	status_text : List(Form.Row) -> Str
-	status_text = |rows| {
-		count = rows.len()
-		problems = Form.problem_count(rows)
-		fields_part = if count == 1 { "1 field" } else { "${count.to_str()} fields" }
-		problems_part = if problems == 1 { "1 problem" } else { "${problems.to_str()} problems" }
-		"Preview status: ${fields_part}, ${problems_part}"
-	}
+	## How many rows currently hold an acceptable answer.
+	valid_count : List(Form.Row) -> U64
+	valid_count = |rows| rows.len() - Form.problem_count(rows)
 
-	## Field summary line shown in each builder row.
+	## The note under a builder row's title: normally the field's own rule in one
+	## word, and the rule error as soon as the rule contradicts itself.
 	summary_text : Form.Field -> Str
 	summary_text = |field| {
-		required_part = if field.required { "required" } else { "optional" }
 		rule = Form.rule_error(field)
-		base = "${field.label} field: ${Form.kind_title(field.kind)} - ${required_part}"
 		if rule == "" {
-			base
+			if field.required { "Required" } else { "Optional" }
 		} else {
-			"${base} - ${rule}"
+			rule
 		}
 	}
+
+	## Tone for that note. A broken rule is the designer's own mistake, so it is
+	## red the moment it appears; a working rule is a neutral caption.
+	summary_tone : Form.Field -> Str
+	summary_tone = |field| if Form.rule_error(field) == "" { "hint" } else { "text-xs font-medium text-red-600" }
+
+	## The badge tint for a field kind, so the same kind always reads the same
+	## way in the builder list.
+	kind_badge_class : Form.Kind -> Str
+	kind_badge_class = |kind|
+		match kind {
+			FieldText => "badge badge-neutral"
+			FieldNumber => "badge badge-info"
+			FieldEmail => "badge badge-info"
+			FieldSelect => "badge badge-warn"
+			FieldCheckbox => "badge badge-neutral"
+		}
 
 	## Value text shown for the preview field, used by the row status line.
 	##
@@ -514,6 +524,21 @@ Form := {}.{
 	## the text does not need to repeat the field label to stay locatable.
 	verdict_text : Form.Row -> Str
 	verdict_text = |row| if row.error == "" { "Valid" } else { row.error }
+
+	## Tone for that verdict. An untouched field only states its requirement, so
+	## it stays a neutral hint; it turns red once the answer is present and
+	## unacceptable, or once the rule itself is broken.
+	verdict_tone : Form.Row -> Str
+	verdict_tone = |row|
+		if row.error == "" {
+			"text-xs font-medium text-emerald-700"
+		} else if row.rule_error != "" {
+			"text-xs font-medium text-red-600"
+		} else if row.text.trim().is_empty() and !row.flag {
+			"hint"
+		} else {
+			"text-xs font-medium text-red-600"
+		}
 
 	# ------------------------------------------------------------ signal lenses
 

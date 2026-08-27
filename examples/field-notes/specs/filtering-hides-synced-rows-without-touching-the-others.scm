@@ -55,7 +55,7 @@
     (expect-absent (role region :name "Note n0"))
     (expect-absent (role region :name "Note n1"))
     (expect-absent (role region :name "Note s1"))
-    (expect-text (test-id "synced-count") "Synced: 3")
+    (expect-text (test-id "synced-count") "3")
     (uncheck (label "Hide synced notes"))
     (expect-visible (role region :name "Note n0"))
     (expect-visible (role region :name "Note n1"))

@@ -15,9 +15,9 @@
 
     (mark-metrics)
     (click (role button :name "Append a word"))
-    (expect-text (test-id "stat-words") "Words: 148")
-    (expect-text (test-id "stat-characters") "Characters: 827")
-    (expect-text (test-id "stat-headings") "Headings: 5")
+    (expect-text (test-id "stat-words") "148")
+    (expect-text (test-id "stat-characters") "828")
+    (expect-text (test-id "stat-headings") "5")
     (expect-visible (text "Use "))
     ; The heading spine recomputes to an equal value, so the equality cutoff stops
     ; propagation before Outline.rows: no outline row is created, removed, or even

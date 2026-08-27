@@ -24,7 +24,7 @@
     ; uppercase hex normalises through every binding
     (fill (label "Text colour") "#767676")
     (fill (label "Accent colour") "#2563EB")
-    (expect-text (test-id "preview-button") "color: #ffffff; background: #2563eb; padding: 8px; font-size: 20px")
+    (expect-attr (test-id "preview-button") style "color: #ffffff; background: #2563eb; padding: 8px; font-size: 20px")
     (expect-text (test-id "ratio-button") "5.16:1")
     (expect-text (test-id "stylesheet") ":root { --color-bg: #ffffff; --color-fg: #767676; --color-accent: #2563eb; --space-sm: 8px; --font-md: 20px; --radius-md: 4px; }")
   )

@@ -12,7 +12,7 @@
     (fill (label "Query") "zzz-not-present")
     (expect-text (test-id "query-matches") "Query matches: 0")
     (expect-text (test-id "query-note") "No lines match the query.")
-    (expect-text (test-id "match-line-3") "line-3 match: no")
+    (expect-attr (test-id "match-line-3") data-match "no")
     (expect-text (test-id "line-count") "Showing 3 of 4 lines")
   )
 )

@@ -440,4 +440,9 @@ Regenerate glue after changing exposed platform types or provided entrypoints:
 
 ```sh
 roc glue <path-to-roc>/src/glue/src/ZigGlue.roc src/signals platform/main.roc
+zig fmt src/signals/roc_platform_abi.zig
 ```
+
+Use the `ZigGlue.roc` from the same Roc commit named by `.roc-version`. The host
+uses the generated types' public `incref` and `decref` methods; generated helper
+functions are implementation details and must not be made public by hand.

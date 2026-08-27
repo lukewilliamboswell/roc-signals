@@ -5,15 +5,9 @@ import pf.Html
 import pf.Signal
 import pf.Ui
 
-page_class = "grid gap-5"
+page_class = "app-shell app-shell-wide"
 
-hero_class = "panel grid gap-2 p-5"
-
-panel_class = "panel grid gap-3 p-4"
-
-row_class = "flex flex-wrap items-center gap-2 rounded border border-zinc-200 p-2"
-
-input_class = "rounded-md border border-zinc-300 bg-white px-2 py-1 text-sm"
+panel_class = "panel"
 
 ## Minutes in one week. Every instant in this app is an offset from Monday
 ## 00:00 UTC, as an integer number of minutes. No floats, no date library.
@@ -60,8 +54,10 @@ Zone : { id : Str, label : Str, shift : U64 }
 ## its reducers read the zone handle atomically with `on_str_with`.
 Draft : { title : Str, day : Str, start_text : Str, duration : Str, abs_start : U64, valid : Bool }
 
-## What one rendered row shows. Everything here is derived; nothing is stored.
-RowView : { id : Str, title : Str, when : Str, status : Str, conflict : Str }
+## What one rendered slot block shows. Everything here is derived; nothing is
+## stored. `day` is the *local* day column the block lands in, so it moves when
+## the zone changes; `conflict` names the commitments this one clashes with.
+RowView : { id : Str, title : Str, when : Str, day : U64, status : Str, available : Bool, busy : Bool, clashing : Bool, conflict : Str }
 
 zones : List(Zone)
 zones = [
@@ -81,6 +77,11 @@ zone_by_id = |id|
 
 day_names : List(Str)
 day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+## The seven day columns, as indices, so the header strip can be rendered by
+## position rather than by searching `day_names` for a name.
+day_indices : List(U64)
+day_indices = [0, 1, 2, 3, 4, 5, 6]
 
 day_name : U64 -> Str
 day_name = |index|
@@ -161,6 +162,32 @@ conflict_ids = |slots| {
 	busy.keep_if(|left| busy.any(|right| right.id != left.id and overlaps(left, right))).map(|slot| slot.id)
 }
 
+## The other commitments this one collides with, by name. The grid shows this
+## instead of a bare "Conflict", so the clash reads without cross-referencing.
+conflict_note : List(Slot), Slot -> Str
+conflict_note = |slots, slot|
+	if !is_busy(slot.status) {
+		""
+	} else {
+		names = slots.keep_if(|other| other.id != slot.id and is_busy(other.status) and overlaps(slot, other)).map(|other| other.title)
+		if names.is_empty() {
+			""
+		} else {
+			"Clashes with ${Str.join_with(names, ", ")}"
+		}
+	}
+
+## The banner above the grid: every commitment currently in a clash.
+conflict_banner : List(Slot), List(Str) -> Str
+conflict_banner = |slots, ids| {
+	titles = slots.keep_if(|slot| ids.contains(slot.id)).map(|slot| slot.title)
+	if titles.is_empty() {
+		""
+	} else {
+		"${titles.len().to_str()} overlapping commitments: ${Str.join_with(titles, ", ")}"
+	}
+}
+
 available_minutes : List(Slot) -> U64
 available_minutes = |slots| slots.keep_if(|slot| is_available(slot.status)).map(|slot| slot.duration).sum()
 
@@ -170,16 +197,19 @@ duration_text = |minutes| "${(minutes // 60).to_str()}h ${(minutes % 60).to_str(
 ## Days that have no available slot *in the displayed zone*. This is the second
 ## place a timezone change is visible: moving a slot across local midnight moves
 ## which day counts as free.
-free_days : List(Slot), Zone -> Str
-free_days = |slots, zone| {
+free_day_names : List(Slot), Zone -> List(Str)
+free_day_names = |slots, zone| {
 	covered = slots.keep_if(|slot| is_available(slot.status)).map(|slot| local_of(slot.abs_start, zone) // 1440)
-	names = day_names.keep_if(|name| !covered.contains(day_index(name)))
+	day_names.keep_if(|name| !covered.contains(day_index(name)))
+}
+
+free_text : List(Str) -> Str
+free_text = |names|
 	if names.is_empty() {
-		"Every day has availability"
+		"None"
 	} else {
 		Str.join_with(names, ", ")
 	}
-}
 
 row_views : List(Slot), Zone, List(Str) -> List(RowView)
 row_views = |slots, zone, conflicts|
@@ -188,10 +218,102 @@ row_views = |slots, zone, conflicts|
 			id: slot.id,
 			title: slot.title,
 			when: span_text(slot, zone),
+			day: local_of(slot.abs_start, zone) // 1440,
 			status: status_text(slot.status),
-			conflict: if conflicts.contains(slot.id) { "Conflict" } else { "Clear" },
+			available: is_available(slot.status),
+			busy: is_busy(slot.status),
+			clashing: conflicts.contains(slot.id),
+			conflict: conflict_note(slots, slot),
 		},
 	)
+
+# --- presentation -------------------------------------------------------------
+
+## Which of the seven day columns a block sits in. Spelled out one class per day
+## so Tailwind's source scan finds every literal.
+day_column_class : U64 -> Str
+day_column_class = |index|
+	match index {
+		0 => "sm:col-start-1"
+		1 => "sm:col-start-2"
+		2 => "sm:col-start-3"
+		3 => "sm:col-start-4"
+		4 => "sm:col-start-5"
+		5 => "sm:col-start-6"
+		_ => "sm:col-start-7"
+	}
+
+## The block's colour and its column both come off the same row signal, so a
+## block can never be tinted for a status it no longer has, or sit under the
+## wrong day after a timezone change.
+slot_class : RowView -> Str
+slot_class = |view| {
+	base = "card gap-1.5 p-3 ${day_column_class(view.day)}"
+	if view.clashing {
+		"${base} border-red-300 bg-red-50"
+	} else if view.available {
+		"${base} border-emerald-200 bg-emerald-50"
+	} else if view.busy {
+		"${base} border-amber-200 bg-amber-50"
+	} else {
+		base
+	}
+}
+
+status_badge_class : RowView -> Str
+status_badge_class = |view|
+	if view.available {
+		"badge badge-ok shrink-0"
+	} else if view.busy {
+		"badge badge-warn shrink-0"
+	} else {
+		"badge badge-neutral shrink-0"
+	}
+
+## An empty note is not drawn at all, rather than drawn as a blank banner.
+conflict_class : RowView -> Str
+conflict_class = |view|
+	if view.conflict == "" {
+		"hidden"
+	} else {
+		"notice notice-error px-2 py-1 text-xs"
+	}
+
+banner_class : Str -> Str
+banner_class = |text| if text == "" { "hidden" } else { "notice notice-error" }
+
+## A day column whose header carries the free-day marker. The marker's text is
+## constant and only its class changes, so a timezone change repaints the marker
+## without any DOM text write.
+day_header : Signal.Signal(List(Str)), U64 -> Elem
+day_header = |free_names, index| {
+	name = day_name(index)
+	Html.div_c(
+		"grid gap-1",
+		[
+			Html.paragraph_c(name, "panel-title"),
+			Html.paragraph_attrs(
+				"No availability",
+				[
+					Html.test_id("free-${name}"),
+					Html.class_attr_s(Signal.map(free_names, |names| if names.contains(name) { "hint italic" } else { "hidden" })),
+				],
+			),
+		],
+	)
+}
+
+## A validation note reads as a neutral requirement until the field has been
+## touched, and only turns green or red once there is something to say.
+draft_tone : Draft -> Str
+draft_tone = |draft|
+	if draft.valid {
+		"notice notice-ok"
+	} else if draft.title.is_empty() {
+		"hint"
+	} else {
+		"notice notice-error"
+	}
 
 slot_at : List(Slot), U64 -> Slot
 slot_at = |slots, index|
@@ -373,31 +495,82 @@ initial_slots = [
 	{ id: "focus", title: "Wednesday focus", abs_start: 3600, duration: 120, status: Status.Available },
 ]
 
+## One block in the week grid. The visible button captions are short enough to
+## fit a day column, so each one carries its full accessible name explicitly.
 render_row : Ui.State(List(Slot)), Str, Signal.Signal(RowView) -> Elem
 render_row = |slots, key, row|
 	Html.section(
 		"Slot ${key}",
-		[Html.class_attr(row_class), Html.test_id("row-${key}")],
+		[Html.class_attr_s(Signal.map(row, slot_class)), Html.test_id("slot-${key}")],
 		[
-			Html.paragraph_s_attrs(Signal.map(row, |view| view.title), [Html.test_id("title-${key}")]),
-			Html.paragraph_s_attrs(Signal.map(row, |view| view.when), [Html.test_id("when-${key}")]),
-			Html.paragraph_s_attrs(Signal.map(row, |view| view.status), [Html.test_id("status-${key}")]),
-			Html.paragraph_s_attrs(Signal.map(row, |view| view.conflict), [Html.test_id("conflict-${key}")]),
-			Html.button("Mark ${key} available", slots.on_unit(|list| set_status(list, key, Status.Available))),
-			Html.button("Mark ${key} busy", slots.on_unit(|list| set_status(list, key, Status.Busy))),
-			Html.button("Move ${key} earlier", slots.on_unit(|list| move_earlier(list, key))),
-			Html.button("Remove ${key}", slots.on_unit(|list| list.drop_if(|slot| slot.id == key))),
+			Html.div_c(
+				"flex items-start justify-between gap-2",
+				[
+					Html.paragraph_s_attrs(Signal.map(row, |view| view.title), [Html.test_id("title-${key}"), Html.class_attr("card-title min-w-0")]),
+					Html.paragraph_s_attrs(Signal.map(row, |view| view.status), [Html.test_id("status-${key}"), Html.class_attr_s(Signal.map(row, status_badge_class))]),
+				],
+			),
+			Html.paragraph_s_attrs(Signal.map(row, |view| view.when), [Html.test_id("when-${key}"), Html.class_attr("numeric text-xs font-medium text-zinc-700")]),
+			Html.paragraph_s_attrs(Signal.map(row, |view| view.conflict), [Html.test_id("conflict-${key}"), Html.class_attr_s(Signal.map(row, conflict_class))]),
+			Html.div_c(
+				"grid grid-cols-2 gap-1 pt-1",
+				[
+					Html.button_attrs("Available", [Html.aria_label("Mark ${key} available"), Html.class_attr("button button-sm")], slots.on_unit(|list| set_status(list, key, Status.Available))),
+					Html.button_attrs("Busy", [Html.aria_label("Mark ${key} busy"), Html.class_attr("button button-sm")], slots.on_unit(|list| set_status(list, key, Status.Busy))),
+					Html.button_attrs("Earlier", [Html.aria_label("Move ${key} earlier"), Html.class_attr("button-ghost button-sm")], slots.on_unit(|list| move_earlier(list, key))),
+					Html.button_attrs("Remove", [Html.aria_label("Remove ${key}"), Html.class_attr("button-danger button-sm")], slots.on_unit(|list| list.drop_if(|slot| slot.id == key))),
+				],
+			),
 		],
 	)
 
-week_panel : Ui.State(List(Slot)), Signal.Signal(List(RowView)) -> Elem
-week_panel = |slots, rows|
+week_panel : Ui.State(List(Slot)), Signal.Signal(List(RowView)), Signal.Signal(List(Str)), Signal.Signal(Str), Signal.Signal(Bool) -> Elem
+week_panel = |slots, rows, free_names, banner, empty|
 	Html.section_c(
 		"Week",
 		panel_class,
 		[
-			Html.heading_c("Week", "text-xl font-semibold"),
-			Ui.each_str(rows, |view| view.id, |key, row| render_row(slots, key, row)),
+			Html.div_c(
+				"panel-head",
+				[
+					Html.heading_c("Week", "panel-title"),
+					Html.paragraph_c("Monday to Sunday, in the selected timezone. Every block sits in its local day.", "hint"),
+				],
+			),
+			Html.div_c(
+				"panel-body",
+				[
+					Html.paragraph_s_attrs(banner, [Html.test_id("conflict-banner"), Html.class_attr_s(Signal.map(banner, banner_class))]),
+					Html.div_c("hidden gap-2 sm:grid sm:grid-cols-7", day_indices.map(|index| day_header(free_names, index))),
+					# One `each_str` over the whole week: the day columns are a CSS
+					# placement of the same rows, so a timezone change moves a block
+					# between columns without the reconciler creating a new row.
+					# `grid-flow-dense` lets a block fill the first free cell in its
+					# own column instead of leaving a hole above it, which is what a
+					# single keyed list placed by `col-start` would otherwise do.
+					Html.div_c(
+						"grid items-start gap-2 sm:grid-cols-7 sm:[grid-auto-flow:row_dense]",
+						[Ui.each_str(rows, |view| view.id, |key, row| render_row(slots, key, row))],
+					),
+					Ui.when(
+						empty,
+						|| Html.paragraph_c("No slots yet. Add the first commitment below.", "empty-state"),
+						|| Html.text(""),
+					),
+				],
+			),
+		],
+	)
+
+## A labelled control. Every input in the form is drawn the same way.
+field : Str, Elem, Str -> Elem
+field = |label, control, note|
+	Html.div_c(
+		"field",
+		[
+			Html.paragraph_c(label, "field-label"),
+			control,
+			Html.paragraph_c(note, "hint"),
 		],
 	)
 
@@ -407,70 +580,152 @@ add_panel = |draft, zone, slots, draft_signal|
 		"Add slot",
 		panel_class,
 		[
-			Html.heading_c("Add slot", "text-xl font-semibold"),
-			Html.text_input_c(
-				"Slot name",
-				Signal.map(draft_signal, |value| value.title),
-				input_class,
-				draft.on_str_with(zone, |value, current_zone, text| reprice({ ..value, title: text }, current_zone)),
+			Html.div_c(
+				"panel-head",
+				[
+					Html.heading_c("Add slot", "panel-title"),
+					Html.paragraph_c("Times are read as wall clock in the zone above.", "hint"),
+				],
 			),
-			Html.select_c(
-				"Day",
-				Signal.map(draft_signal, |value| value.day),
-				input_class,
-				day_names.map(|name| Html.option(name, name)),
-				draft.on_str_with(zone, |value, current_zone, text| reprice({ ..value, day: text }, current_zone)),
-			),
-			Html.text_input_c(
-				"Start time",
-				Signal.map(draft_signal, |value| value.start_text),
-				input_class,
-				draft.on_str_with(zone, |value, current_zone, text| reprice({ ..value, start_text: text }, current_zone)),
-			),
-			Html.text_input_c(
-				"Length",
-				Signal.map(draft_signal, |value| value.duration),
-				input_class,
-				draft.on_str_with(zone, |value, current_zone, text| reprice({ ..value, duration: text }, current_zone)),
-			),
-			Html.paragraph_s_attrs(Signal.map(draft_signal, draft_status), [Html.test_id("draft-status")]),
-			Html.action_button(
-				Signal.const("Add slot"),
-				Signal.map(draft_signal, |value| !value.valid),
-				slots.on_unit_with(draft, add_slot),
+			Html.div_c(
+				"panel-body",
+				[
+					Html.div_c(
+						"grid gap-3 sm:grid-cols-2 lg:grid-cols-4",
+						[
+							field(
+								"Slot name",
+								Html.text_input_attrs(
+									"Slot name",
+									Signal.map(draft_signal, |value| value.title),
+									[Html.class_attr("input"), Html.attr("placeholder", "Client call")],
+									draft.on_str_with(zone, |value, current_zone, text| reprice({ ..value, title: text }, current_zone)),
+								),
+								"Shown on the block.",
+							),
+							field(
+								"Day",
+								Html.select_c(
+									"Day",
+									Signal.map(draft_signal, |value| value.day),
+									"input",
+									day_names.map(|name| Html.option(name, name)),
+									draft.on_str_with(zone, |value, current_zone, text| reprice({ ..value, day: text }, current_zone)),
+								),
+								"Local day in the selected zone.",
+							),
+							field(
+								"Start time",
+								Html.text_input_attrs(
+									"Start time",
+									Signal.map(draft_signal, |value| value.start_text),
+									[Html.class_attr("input numeric"), Html.attr("placeholder", "08:30")],
+									draft.on_str_with(zone, |value, current_zone, text| reprice({ ..value, start_text: text }, current_zone)),
+								),
+								"24-hour HH:MM.",
+							),
+							field(
+								"Length",
+								Html.text_input_attrs(
+									"Length",
+									Signal.map(draft_signal, |value| value.duration),
+									[Html.class_attr("input numeric"), Html.attr("placeholder", "45")],
+									draft.on_str_with(zone, |value, current_zone, text| reprice({ ..value, duration: text }, current_zone)),
+								),
+								"Minutes, 1 to 720.",
+							),
+						],
+					),
+					Html.div_c(
+						"flex flex-wrap items-center justify-between gap-3 border-t border-zinc-200 pt-4",
+						[
+							Html.paragraph_s_attrs(
+								Signal.map(draft_signal, draft_status),
+								[Html.test_id("draft-status"), Html.class_attr_s(Signal.map(draft_signal, draft_tone))],
+							),
+							Html.action_button_attrs(
+								Signal.const("Add slot"),
+								Signal.map(draft_signal, |value| !value.valid),
+								[Html.attr("type", "button"), Html.class_attr("button-primary")],
+								slots.on_unit_with(draft, add_slot),
+							),
+						],
+					),
+				],
 			),
 		],
 	)
 
-summary_panel : Signal.Signal(Str), Signal.Signal(Str), Signal.Signal(Str) -> Elem
-summary_panel = |zone_label, summary, free|
+## One metric tile. A number with a caption, never a sentence.
+stat : Str, Signal.Signal(Str), Str, Str -> Elem
+stat = |label, value, id, value_class|
+	Html.div_c(
+		"stat",
+		[
+			Html.paragraph_c(label, "stat-label"),
+			Html.paragraph_s_attrs(value, [Html.test_id(id), Html.class_attr(value_class)]),
+		],
+	)
+
+summary_panel : Signal.Signal(Str), Signal.Signal(Str), Signal.Signal(Str), Signal.Signal(Str) -> Elem
+summary_panel = |hours, slot_total, conflicts, free|
 	Html.section_c(
 		"Summary",
-		panel_class,
+		"panel p-4",
 		[
-			Html.heading_c("Summary", "text-xl font-semibold"),
-			Html.paragraph_s_attrs(zone_label, [Html.test_id("zone-label")]),
-			Html.paragraph_s_attrs(summary, [Html.test_id("summary")]),
-			Html.paragraph_s_attrs(free, [Html.test_id("free-days")]),
+			Html.div_c(
+				"stat-grid",
+				[
+					stat("Hours available", hours, "summary", "stat-value"),
+					stat("Slots", slot_total, "stat-slots", "stat-value"),
+					stat("Conflicts", conflicts, "stat-conflicts", "stat-value"),
+					stat("Days with no availability", free, "free-days", "value numeric"),
+				],
+			),
 		],
 	)
 
-summary_text : List(U64) -> Str
-summary_text = |values| {
-	minutes = match values.get(0) {
+## The zone picker is the headline control: one change here reprojects every
+## block in the grid, so it gets its own panel and shows the offset it applies.
+zone_panel : Ui.State(Zone), Signal.Signal(Zone) -> Elem
+zone_panel = |zone, zone_signal|
+	Html.section_c(
+		"Timezone picker",
+		"panel flex flex-wrap items-end justify-between gap-4 p-5",
+		[
+			Html.div_c(
+				"field w-full sm:w-80",
+				[
+					Html.paragraph_c("Show the week in", "field-label"),
+					Html.select_c(
+						"Timezone",
+						Signal.map(zone_signal, |value| value.id),
+						"input",
+						zones.map(|item| Html.option(item.id, item.label)),
+						zone.on_str(|_, text| zone_by_id(text)),
+					),
+					Html.paragraph_c("Slots are stored as UTC instants and reprojected on read.", "hint"),
+				],
+			),
+			Html.div_c(
+				"grid gap-1 sm:text-right",
+				[
+					Html.paragraph_c("Displaying", "stat-label"),
+					Html.paragraph_s_attrs(
+						Signal.map(zone_signal, |value| value.label),
+						[Html.test_id("zone-label"), Html.class_attr("numeric text-lg font-semibold text-zinc-950")],
+					),
+				],
+			),
+		],
+	)
+
+metric_at : List(U64), U64 -> U64
+metric_at = |values, index|
+	match values.get(index) {
 		Ok(value) => value
 		Err(_) => 0
 	}
-	conflicts_found = match values.get(1) {
-		Ok(value) => value
-		Err(_) => 0
-	}
-	total = match values.get(2) {
-		Ok(value) => value
-		Err(_) => 0
-	}
-	"Available ${duration_text(minutes)} across ${total.to_str()} slots, ${conflicts_found.to_str()} conflicts"
-}
 
 main : () -> Elem
 main = ||
@@ -487,16 +742,20 @@ main = ||
 							slots_signal = slots.signal()
 							draft_signal = draft.signal()
 
-							# chain: slots -> conflicts -> conflict_count -> combine -> summary
+							# chain: slots -> conflicts -> conflict_count -> combine -> stats
 							conflicts = Signal.map(slots_signal, conflict_ids)
 							conflict_count = Signal.map(conflicts, |ids| ids.len())
 							avail_minutes = Signal.map(slots_signal, available_minutes)
 							slot_count = Signal.map(slots_signal, |list| list.len())
 
-							# fan-in A: three same-typed derived signals into one summary line
-							summary = Signal.map(Signal.combine([avail_minutes, conflict_count, slot_count]), summary_text)
+							# fan-in A: three same-typed derived signals combined once, then
+							# split into the three metric tiles that read off them.
+							totals = Signal.combine([avail_minutes, conflict_count, slot_count])
+							hours_text = Signal.map(totals, |values| duration_text(metric_at(values, 0)))
+							conflicts_text = Signal.map(totals, |values| metric_at(values, 1).to_str())
+							slots_text = Signal.map(totals, |values| metric_at(values, 2).to_str())
 
-							# fan-in B: slots x zone x conflicts -> every rendered row
+							# fan-in B: slots x zone x conflicts -> every rendered block
 							rows =
 								Signal.map(
 									{ slots: slots_signal, zone: zone_signal, conflicts: conflicts }.Signal,
@@ -504,28 +763,25 @@ main = ||
 								)
 
 							# fan-in C: slots x zone -> which local days have no availability
-							free = Signal.map2(slots_signal, zone_signal, free_days)
+							free_names = Signal.map2(slots_signal, zone_signal, free_day_names)
+							free = Signal.map(free_names, free_text)
+
+							banner = Signal.map2(slots_signal, conflicts, conflict_banner)
 
 							Html.div_c(
 								page_class,
 								[
 									Html.section_c(
 										"Availability Picker",
-										hero_class,
+										"app-header",
 										[
-											Html.heading_c("Availability Picker", "text-3xl font-semibold"),
-											Html.paragraph_c("Mark weekly slots available or busy, spot overlapping commitments, and re-read the whole week in another timezone without rebuilding a single row.", "max-w-3xl text-sm text-zinc-700"),
+											Html.heading_c("Availability Picker", "app-title"),
+											Html.paragraph_c("Mark weekly slots available or busy, spot overlapping commitments, and re-read the whole week in another timezone without rebuilding a single row.", "app-subtitle"),
 										],
 									),
-									Html.select_c(
-										"Timezone",
-										Signal.map(zone_signal, |value| value.id),
-										input_class,
-										zones.map(|item| Html.option(item.id, item.label)),
-										zone.on_str(|_, text| zone_by_id(text)),
-									),
-									summary_panel(Signal.map(zone_signal, |value| "Timezone: ${value.label}"), summary, free),
-									week_panel(slots, rows),
+									zone_panel(zone, zone_signal),
+									summary_panel(hours_text, slots_text, conflicts_text, free),
+									week_panel(slots, rows, free_names, banner, Signal.map(slot_count, |count| count == 0)),
 									add_panel(draft, zone, slots, draft_signal),
 									# Clearing the form is a side effect of the slot list changing,
 									# not something derivable from the draft, so it is a command.

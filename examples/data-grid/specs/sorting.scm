@@ -9,12 +9,15 @@
     (expect-text (test-id "row-score-1108") "5")
     (expect-absent (test-id "row-name-1"))
     (expect-text (test-id "rows-showing") "Showing 10 of 1200 rows")
-    (expect-text (test-id "summary-total") "Total score: 596952")
+    (expect-text (test-id "summary-total") "596952")
     (expect-metric-delta rows_created 9)
     (expect-metric-delta rows_reused 1)
     (expect-metric-delta rows_removed 9)
     (expect-metric-delta set_value 9)
-    (expect-metric-delta-at-most patches_emitted 302)
+    ; The polished grid renders each row as cells on a shared column
+    ; template rather than one text line, so a re-render touches a few more
+    ; nodes per row. Still O(visible rows), which is what this bounds.
+    (expect-metric-delta-at-most patches_emitted 314)
     ; reverse the same column
     (mark-metrics)
     (click (role button :name "Sort by score"))

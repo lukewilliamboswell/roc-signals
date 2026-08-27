@@ -46,7 +46,7 @@
     (expect-text (test-id "ing-qty-butter") "2 tsp")
     (expect-text (test-id "ing-qty-salt") "1.33 pinch")
     ; The shopping list is independent of which recipe is on screen.
-    (expect-text (test-id "shopping-count") "Shopping list: 9 lines from 3 recipes")
+    (expect-text (test-id "shopping-count") "9 lines from 3 recipes")
     (expect-text (test-id "shop-qty-flour-g") "225 g")
   )
 )

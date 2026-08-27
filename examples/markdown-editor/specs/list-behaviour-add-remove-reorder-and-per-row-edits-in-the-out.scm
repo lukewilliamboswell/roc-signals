@@ -18,7 +18,7 @@
     ; ---------------------------------------------------------------------------
 
     (click (role button :name "Load heading drill"))
-    (expect-text (test-id "stat-headings") "Headings: 4")
+    (expect-text (test-id "stat-headings") "4")
     (expect-visible (test-id "toc:alpha"))
     (expect-visible (test-id "toc:beta"))
     (expect-visible (test-id "toc:gamma"))
@@ -39,7 +39,7 @@
     ; Remove the last section: the survivors keep their identity and their levels.
     (mark-metrics)
     (click (role button :name "Remove the last section"))
-    (expect-text (test-id "stat-headings") "Headings: 3")
+    (expect-text (test-id "stat-headings") "3")
     (expect-absent (test-id "toc:gamma"))
     (expect-visible (test-id "toc:alpha"))
     (expect-visible (test-id "toc:beta"))
@@ -50,7 +50,7 @@
     ; Add a section back.
     (mark-metrics)
     (click (role button :name "Append a section"))
-    (expect-text (test-id "stat-headings") "Headings: 4")
+    (expect-text (test-id "stat-headings") "4")
     (expect-visible (test-id "toc:new-section"))
     (expect-metric-delta rows_removed 0)
     ; Per-row edit: demote just the last heading. Its outline key is the slug, so
@@ -61,6 +61,6 @@
     (expect-attr (test-id "toc:alpha") data-level "1")
     (expect-attr (test-id "toc:beta") data-level "2")
     (expect-attr (test-id "toc:delta") data-level "2")
-    (expect-text (test-id "stat-headings") "Headings: 4")
+    (expect-text (test-id "stat-headings") "4")
   )
 )

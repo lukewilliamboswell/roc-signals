@@ -26,14 +26,6 @@ pub const RocDec = extern struct {
     num: i128,
 };
 
-pub fn decrefHostValueCapabilityHandle(value: HostValueCapabilityHandle, roc_host: *RocHost) void {
-    value.decref(roc_host);
-}
-
-pub fn increfHostValueCapabilityHandle(value: HostValueCapabilityHandle, amount: isize) void {
-    value.incref(amount);
-}
-
 comptime {
     if (@sizeOf(RocDec) != 16) @compileError("RocDec size mismatch");
     if (@alignOf(RocDec) != 16) @compileError("RocDec alignment mismatch");
@@ -3775,7 +3767,7 @@ pub const __AnonStruct_7c90a4b245a94e62Release = struct {
     }
 };
 
-pub fn decrefElem(value: Elem, roc_host: *RocHost) void {
+fn decrefElem(value: Elem, roc_host: *RocHost) void {
     switch (value.tag) {
         .Cleanup => {
             value.payload_cleanup().decref(roc_host);
@@ -3813,7 +3805,7 @@ pub fn decrefElem(value: Elem, roc_host: *RocHost) void {
     }
 }
 
-pub fn increfElem(value: Elem, amount: isize) void {
+fn increfElem(value: Elem, amount: isize) void {
     switch (value.tag) {
         .Cleanup => {
             value.payload_cleanup().incref(amount);
@@ -3875,7 +3867,7 @@ pub const __AnonStruct_50eab5e140b9917cRelease = struct {
     }
 };
 
-pub fn decrefNodeSignalExpr(value: NodeSignalExpr, roc_host: *RocHost) void {
+fn decrefNodeSignalExpr(value: NodeSignalExpr, roc_host: *RocHost) void {
     switch (value.tag) {
         .Combine => {
             const payload = value.payload_combine();
@@ -3946,7 +3938,7 @@ pub fn decrefNodeSignalExpr(value: NodeSignalExpr, roc_host: *RocHost) void {
     }
 }
 
-pub fn increfNodeSignalExpr(value: NodeSignalExpr, amount: isize) void {
+fn increfNodeSignalExpr(value: NodeSignalExpr, amount: isize) void {
     switch (value.tag) {
         .Combine => {
             const payload = value.payload_combine();
@@ -4201,7 +4193,7 @@ pub const __AnonStruct_e273a265345e3f00Release = struct {
     }
 };
 
-pub fn decrefNodeCmd(value: NodeCmd, roc_host: *RocHost) void {
+fn decrefNodeCmd(value: NodeCmd, roc_host: *RocHost) void {
     switch (value.tag) {
         .Noop => {},
         .PushState => {
@@ -4228,7 +4220,7 @@ pub fn decrefNodeCmd(value: NodeCmd, roc_host: *RocHost) void {
     }
 }
 
-pub fn increfNodeCmd(value: NodeCmd, amount: isize) void {
+fn increfNodeCmd(value: NodeCmd, amount: isize) void {
     switch (value.tag) {
         .Noop => {},
         .PushState => {

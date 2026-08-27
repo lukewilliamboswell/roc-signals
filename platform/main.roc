@@ -24,6 +24,10 @@ platform ""
 			exports: [
 				"roc_alloc",
 				"roc_dealloc",
+				"roc_ui_debug_live_allocation_bytes",
+				"roc_ui_debug_live_allocation_count",
+				"roc_ui_debug_live_allocation_phase",
+				"roc_ui_debug_live_allocation_size",
 				"roc_ui_command_buffer_len",
 				"roc_ui_command_buffer_ptr",
 				"roc_ui_command_record_words",

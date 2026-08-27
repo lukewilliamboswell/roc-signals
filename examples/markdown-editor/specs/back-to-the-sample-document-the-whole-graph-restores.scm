@@ -53,10 +53,10 @@
     ; ---------------------------------------------------------------------------
 
     (click (role button :name "Load sample document"))
-    (expect-text (test-id "stat-words") "Words: 147")
-    (expect-text (test-id "stat-characters") "Characters: 821")
-    (expect-text (test-id "stat-headings") "Headings: 5")
-    (expect-text (test-id "stat-reading") "Reading time: 1 min")
+    (expect-text (test-id "stat-words") "147")
+    (expect-text (test-id "stat-characters") "822")
+    (expect-text (test-id "stat-headings") "5")
+    (expect-text (test-id "stat-reading") "1 min")
     (expect-visible (test-id "toc:roc-signals-field-guide"))
     (expect-visible (test-id "toc:performance"))
     (expect-visible (text "Keep derived values derived."))

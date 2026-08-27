@@ -108,7 +108,7 @@ a checkbox with no click binding fails with *target has no click binding*.
 (expect-absent (role region :name "Queue Widget"))
 (expect-text (text "Submit status: sending") "Submit status: sending")
 (expect-value (label "Invite email") "ops@example.com")
-(expect-attr (label "Invite email") aria-invalid "")
+(expect-attr (label "Invite email") aria-invalid "true")
 (expect-no-attr (label "Invite email") aria-invalid)
 (expect-checked (label "Accept terms") true)
 (expect-disabled (role button :name "Send invite") true)
@@ -247,6 +247,45 @@ that legitimately varies.
 `propagation_prunes` is worth watching specifically — it counts how often
 `is_eq` stopped work. A zero where you expected pruning usually means a missing
 or wrong equality definition.
+
+For a retained-allocation delta that should not be there, rerun the built native
+app with `--trace-allocations`:
+
+```sh
+.test-out/bin/signals-my-example --trace-allocations examples/my-example/specs/case.scm
+```
+
+The host writes an allocation checkpoint after mount and after every spec
+command. Each summary separates Roc allocations freed since the previous
+checkpoint from newly allocated blocks that are still live, and reports
+host-only live allocation/byte deltas alongside them. Roc backing blocks are
+subtracted from the host allocator totals, so this immediately distinguishes
+Roc retention from growth in host-owned collections. The following cohort lines
+group surviving Roc blocks by requested size, runtime debug phase, and native
+return address. This makes repeated growth attributable: reproduce the same
+interaction several times, find the cohort that grows each time, then symbolize
+its `caller` address with the platform debugger or `addr2line` against that app
+binary. Phase values come from the `debugPhase` sites in `src/signals/engine.zig`
+and the host-value boundary sites in `src/native_host.zig`.
+
+Tracing is opt-in because retaining provenance and scanning live allocations at
+every checkpoint is diagnostic work. Ordinary specs and benchmarks continue to
+pay only for the existing allocation ledger and counters.
+
+`roc_metric_live` is the independent alloc-minus-dealloc counter. It should
+equal the ledger's `roc_live` block count at every checkpoint; a mismatch means
+the instrumentation itself is observing an ownership boundary at the wrong
+time.
+
+In the browser, enabling the runtime's existing `telemetry` option also emits an
+`allocation_checkpoint` after each applied command batch. It includes total live
+Roc blocks and bytes plus phase-and-size cohorts, so a long-running browser repro
+can be captured without a native reproduction or a custom wasm build.
+
+Teardown is also a leak gate. Native specs fail if either the Roc ledger or the
+host debug allocator is non-empty after the runtime is dismantled. The wasm
+mount harness checks that both exported live-allocation gauges and the HostValue
+registry are zero after `unmount`.
 
 ## What belongs where
 

@@ -6,6 +6,7 @@
 //! that genuinely differ per host — which allocator/registry/`roc_host` to use,
 //! and native-only test-kind bookkeeping — are supplied by the caller.
 
+const std = @import("std");
 const abi = @import("roc_platform_abi.zig");
 
 pub const HostValue = u64;
@@ -156,16 +157,30 @@ pub fn RegistryOps() type {
 // `roc_host` is threaded explicitly so the box allocation matches the active
 // host.
 
+const StaticUnitBox = extern struct {
+    refcount: isize,
+    payload: u8,
+};
+
+// Unit has no payload to tear down. A static Roc box avoids allocating a fresh
+// empty box for every unit browser event; Roc's refcount value 0 marks static
+// data and makes all generated incref/decref operations no-ops.
+var static_unit_box: StaticUnitBox = .{ .refcount = 0, .payload = 0 };
+
+fn staticUnitPayload() abi.RocBox {
+    return @ptrCast(&static_unit_box.payload);
+}
+
 pub fn makeUnit(ctx: anytype, roc_host: *abi.RocHost) HostValue {
-    const payload = abi.allocateBox(0, @alignOf(u8), false, roc_host);
-    const value = ctx.store(@ptrCast(payload));
+    _ = roc_host;
+    const value = ctx.store(staticUnitPayload());
     ctx.recordKind(value, .unit);
     return value;
 }
 
 pub fn makeUnitWithCapability(ctx: anytype, roc_host: *abi.RocHost, cap: HostValueCapabilityHandle) HostValue {
-    const payload = abi.allocateBox(0, @alignOf(u8), false, roc_host);
-    const value = ctx.storeWithCapability(@ptrCast(payload), cap);
+    _ = roc_host;
+    const value = ctx.storeWithCapability(staticUnitPayload(), cap);
     ctx.recordKind(value, .unit);
     return value;
 }
@@ -232,4 +247,15 @@ pub fn makeU8ListWithCapability(ctx: anytype, roc_host: *abi.RocHost, bytes: []c
     const value = ctx.storeWithCapability(@ptrCast(payload), cap);
     ctx.recordKind(value, .u8_list);
     return value;
+}
+
+test "unit payload uses one static Roc box" {
+    const first = staticUnitPayload() orelse unreachable;
+    const second = staticUnitPayload() orelse unreachable;
+    try std.testing.expectEqual(@intFromPtr(first), @intFromPtr(second));
+
+    const rc: *const isize = @ptrFromInt(@intFromPtr(first) - @sizeOf(isize));
+    try std.testing.expectEqual(@as(isize, 0), rc.*);
+    abi.increfBox(first, 1);
+    try std.testing.expectEqual(@as(isize, 0), rc.*);
 }

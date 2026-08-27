@@ -13,9 +13,9 @@
 
     (mark-metrics)
     (fill (label "Scenario A extra payment") "0")
-    (expect-text (test-id "a-payment") "Scenario A monthly payment: $203.27")
-    (expect-text (test-id "a-payoff") "Scenario A payoff: 12 months")
-    (expect-text (test-id "a-month-12") "Scenario A month 12: interest $0.50, principal $202.65, balance $0.00")
+    (expect-text (test-id "a-payment") "$203.27")
+    (expect-text (test-id "a-payoff") "12 months")
+    (expect-text (test-id "a-month-12") "Month 12 | interest $0.50 | principal $202.65 | balance $0.00")
     (expect-metric-delta rows_created 2)
   )
 )

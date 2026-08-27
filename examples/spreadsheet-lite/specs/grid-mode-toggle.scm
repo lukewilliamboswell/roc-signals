@@ -84,7 +84,9 @@
     ; grid mode toggle
 
     (click (role button :name "Show formulas"))
-    (expect-text (test-id "status-line") "Selected: G6 | Grid mode: formulas | Errors: 4")
+    (expect-text (test-id "stat-selected") "G6")
+    (expect-text (test-id "stat-mode") "Formulas")
+    (expect-text (test-id "status-line") "4")
     (expect-value (label "D2") "=B2+C2")
     (expect-value (label "D5") "=SUM(D2:D4)")
     (expect-value (label "A2") "Rent")

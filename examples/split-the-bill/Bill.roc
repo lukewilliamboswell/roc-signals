@@ -50,6 +50,7 @@ Bill := {}.{
 		payer : Str,
 		members : List(Bill.Member),
 		status : Str,
+		status_tone : [Ok, Warn, Danger],
 		breakdown : Str,
 	}
 
@@ -310,10 +311,15 @@ Bill := {}.{
 				}
 		}
 
-	## `Ana owes Bo $42.00`
+	## `Chloe pays Ana`. The amount is rendered beside it, in its own numeric cell,
+	## so the settlement row reads as a direction and a figure rather than a
+	## sentence.
 	transfer_line : Bill.Transfer -> Str
-	transfer_line = |transfer|
-		"${transfer.from_name} owes ${transfer.to_name} ${Bill.money(transfer.cents)}"
+	transfer_line = |transfer| "${transfer.from_name} pays ${transfer.to_name}"
+
+	## The money side of one settlement row.
+	transfer_amount : Bill.Transfer -> Str
+	transfer_amount = |transfer| Bill.money(transfer.cents)
 
 	## Stable key for a transfer row.
 	transfer_key : Bill.Transfer -> Str
@@ -328,26 +334,30 @@ Bill := {}.{
 		expenses.map(
 			|expense| {
 				parts = Bill.shares(expense, people)
-				status =
+				# The status is a badge caption plus the tone that badge is drawn in,
+				# derived together so a row can never show an error word in the ok
+				# colour.
+				status_pair =
 					match Bill.parse_cents(expense.amount_text) {
 						Err(_) =>
-							"Status: amount not recognised, treated as ${Bill.money(0)}"
+							{ text: "Amount not recognised, counted as ${Bill.money(0)}", tone: Warn }
 						Ok(_) =>
 							if !people.contains(expense.payer) {
-								"Status: payer ${expense.payer} is not on the trip, excluded"
+								{ text: "${expense.payer} is no longer on the trip", tone: Danger }
 							} else if parts.is_empty() {
-								"Status: nobody is sharing it, excluded"
+								{ text: "Nobody is sharing this", tone: Warn }
 							} else {
-								"Status: ${Bill.money(Bill.amount_cents(expense))} paid by ${expense.payer}, split ${Bill.ways(Bill.count(parts))}"
+								{
+									text: "${Bill.money(Bill.amount_cents(expense))} paid by ${expense.payer}, split ${Bill.ways(Bill.count(parts))}",
+									tone: Ok,
+								}
 							}
 					}
 				breakdown =
 					if parts.is_empty() {
-						"Shares: none"
+						"No shares"
 					} else {
-						joined =
-							Str.join_with(parts.map(|share| "${share.name} ${Bill.money(share.cents)}"), ", ")
-						"Shares: ${joined}"
+						Str.join_with(parts.map(|share| "${share.name} ${Bill.money(share.cents)}"), ", ")
 					}
 				members =
 					people.map(|name| { name, included: !(expense.excluded.contains(name)) })
@@ -356,7 +366,8 @@ Bill := {}.{
 					amount_text: expense.amount_text,
 					payer: expense.payer,
 					members,
-					status,
+					status: status_pair.text,
+					status_tone: status_pair.tone,
 					breakdown,
 				}
 			},

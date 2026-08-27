@@ -363,19 +363,40 @@ complete_count = |rows| rows.keep_if(|row| row.done).len()
 # --- classes -----------------------------------------------------------------
 
 page_class : Str
-page_class = "grid gap-4"
+page_class = "app-shell app-shell-narrow"
 
 panel_class : Str
-panel_class = "grid gap-3 rounded border border-zinc-200 p-4"
+panel_class = "panel grid gap-4 p-5"
 
 row_class : Str
-row_class = "grid gap-1 rounded border border-zinc-200 p-3"
+row_class = "flex flex-wrap items-center justify-between gap-3 rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2"
 
 input_class : Str
-input_class = "w-full max-w-md rounded border border-zinc-300 p-2"
+input_class = "input"
+
+textarea_class : Str
+textarea_class = "input textarea"
 
 note_class : Str
-note_class = "text-sm text-zinc-700"
+note_class = "muted"
+
+hint_class : Str
+hint_class = "hint"
+
+step_title_class : Str
+step_title_class = "panel-title"
+
+## A validation note reads as a neutral requirement until the field has been
+## touched, and only turns red once there is input that cannot be accepted.
+note_tone : Str, Bool -> Str
+note_tone = |text, touched|
+	if text == "" {
+		"hidden"
+	} else if touched {
+		"text-xs font-medium text-red-600"
+	} else {
+		hint_class
+	}
 
 # --- app ---------------------------------------------------------------------
 
@@ -542,12 +563,12 @@ wizard = |h| {
 		[
 			Html.section_c(
 				"Onboarding wizard",
-				panel_class,
+				"app-header",
 				[
-					Html.heading_c("Onboarding Wizard", "text-3xl font-semibold"),
+					Html.heading_c("Onboarding Wizard", "app-title"),
 					Html.paragraph_c(
 						"Four steps, each with its own state handle. Validation is derived, drafts are saved to local storage, and the invite role depends on the plan you chose one step earlier.",
-						note_class,
+						"app-subtitle",
 					),
 				],
 			),
@@ -567,21 +588,25 @@ wizard = |h| {
 			),
 			Html.section_c(
 				"Wizard navigation",
-				panel_class,
+				"panel flex flex-wrap items-center justify-between gap-3 p-4",
 				[
-					Html.heading_c("Navigation", "text-xl font-semibold"),
-					Html.action_button_attrs(
-						Signal.const("Back"),
-						step_signal.map(|index| index == 0),
-						[Html.attr("type", "button")],
-						h.step.on_unit(|index| if index == 0 { 0 } else { index - 1 }),
+					Html.div_c(
+						"flex items-center gap-2",
+						[
+							Html.action_button_attrs(
+								Signal.const("Back"),
+								step_signal.map(|index| index == 0),
+								[Html.attr("type", "button"), Html.class_attr("button")],
+								h.step.on_unit(|index| if index == 0 { 0 } else { index - 1 }),
+							),
+							Html.button_attrs(
+								"Start over",
+								[Html.attr("type", "button"), Html.class_attr("button-ghost")],
+								h.reset_token.on_unit(|n| n + 1),
+							),
+						],
 					),
-					Html.button_attrs(
-						"Start over",
-						[Html.attr("type", "button")],
-						h.reset_token.on_unit(|n| n + 1),
-					),
-					Html.paragraph_s_attrs(nav_status, [Html.test_id("nav-status"), Html.class_attr(note_class)]),
+					Html.paragraph_s_attrs(nav_status, [Html.test_id("nav-status"), Html.class_attr(hint_class)]),
 				],
 			),
 			# Restore a saved draft on mount. Several `Ui.on_change_initial` hooks
@@ -619,12 +644,36 @@ progress_panel = |step, summaries, label, complete, attr|
 		"Progress",
 		[Html.class_attr(panel_class), Html.attr_s("data-complete", attr)],
 		[
-			Html.heading_c("Progress", "text-xl font-semibold"),
-			Html.paragraph_s_attrs(label, [Html.test_id("progress-label"), Html.class_attr("text-lg font-medium")]),
-			Html.paragraph_s_attrs(complete, [Html.test_id("progress-complete"), Html.class_attr(note_class)]),
+			Html.div_c(
+				"flex flex-wrap items-baseline justify-between gap-2",
+				[
+					Html.paragraph_s_attrs(label, [Html.test_id("progress-label"), Html.class_attr("text-base font-semibold text-zinc-950")]),
+					Html.paragraph_s_attrs(complete, [Html.test_id("progress-complete"), Html.class_attr(hint_class)]),
+				],
+			),
+			# The fill width is derived from the same summary fan-in that drives
+			# the text, so the bar can never disagree with the count beside it.
+			Html.div_c(
+				"h-1.5 w-full overflow-hidden rounded-full bg-zinc-200",
+				[Html.div_sc(summaries.map(progress_bar_class), [])],
+			),
 			Ui.each_str(summaries, |row| row.key, |key, row| summary_row(step, key, row)),
 		],
 	)
+
+## Quarter-step widths, so the bar has no value the count cannot explain.
+progress_bar_class : List(StepSummary) -> Str
+progress_bar_class = |rows| {
+	width =
+		match complete_count(rows) {
+			0 => "w-0"
+			1 => "w-1/4"
+			2 => "w-1/2"
+			3 => "w-3/4"
+			_ => "w-full"
+		}
+	"h-full rounded-full bg-emerald-500 transition-all ${width}"
+}
 
 ## One progress row. The jump button is backwards-only: `Next step` is the only
 ## way forward, because it is the only thing that validates.
@@ -634,15 +683,29 @@ summary_row = |step, key, row| {
 	Html.div(
 		[Html.class_attr(row_class)],
 		[
-			Html.paragraph_s_attrs(row.map(summary_line), [Html.test_id("summary-${key}"), Html.class_attr(note_class)]),
+			Html.div_c(
+				"flex min-w-0 items-center gap-3",
+				[
+					Html.paragraph_s_attrs(row.map(step_badge_label), [Html.class_attr_s(row.map(step_badge_class))]),
+					Html.paragraph_s_attrs(row.map(summary_line), [Html.test_id("summary-${key}"), Html.class_attr("min-w-0 text-sm text-zinc-800")]),
+				],
+			),
 			Html.button_attrs(
 				"Go to ${step_title(target)}",
-				[Html.attr("type", "button")],
+				[Html.attr("type", "button"), Html.class_attr("button button-sm shrink-0")],
 				step.on_unit(|current| if target < current { target } else { current }),
 			),
 		],
 	)
 }
+
+step_badge_label : StepSummary -> Str
+step_badge_label = |value| if value.done { "Done" } else { "To do" }
+
+## The badge colour and its caption come off the same row signal, so a row can
+## never show "Done" in the neutral tone.
+step_badge_class : StepSummary -> Str
+step_badge_class = |value| if value.done { "badge badge-ok shrink-0" } else { "badge badge-neutral shrink-0" }
 
 # --- step 1: account ----------------------------------------------------------
 
@@ -652,28 +715,65 @@ account_panel = |step, account, account_signal|
 		"Account step",
 		panel_class,
 		[
-			Html.heading_c("Account", "text-xl font-semibold"),
-			Html.text_input_attrs(
+			Html.heading_c("Account", step_title_class),
+			field(
 				"Work email",
-				account_signal.map(|value| value.email),
-				[Html.class_attr(input_class), Html.aria_describedby("account-email-error"), Html.aria_invalid_s(account_signal.map(|value| !valid_email(value.email)))],
-				account.on_str(|value, text| { ..value, email: text }),
+				Html.text_input_attrs(
+					"Work email",
+					account_signal.map(|value| value.email),
+					[
+						Html.class_attr(input_class),
+						Html.attr("placeholder", "you@company.com"),
+						Html.aria_describedby("account-email-error"),
+						Html.aria_invalid_s(account_signal.map(|value| value.email != "" and !valid_email(value.email))),
+					],
+					account.on_str(|value, text| { ..value, email: text }),
+				),
+				account_signal.map(email_message),
+				account_signal.map(|value| note_tone(email_message(value), value.email != "")),
+				"account-email-error",
 			),
-			Html.paragraph_s_attrs(account_signal.map(email_message), [Html.test_id("account-email-error"), Html.attr("id", "account-email-error"), Html.class_attr(note_class)]),
-			Html.text_input_attrs(
+			field(
 				"Full name",
-				account_signal.map(|value| value.full_name),
-				[Html.class_attr(input_class), Html.aria_describedby("account-name-error")],
-				account.on_str(|value, text| { ..value, full_name: text }),
+				Html.text_input_attrs(
+					"Full name",
+					account_signal.map(|value| value.full_name),
+					[Html.class_attr(input_class), Html.attr("placeholder", "Ada Lovelace"), Html.aria_describedby("account-name-error")],
+					account.on_str(|value, text| { ..value, full_name: text }),
+				),
+				account_signal.map(full_name_message),
+				account_signal.map(|value| note_tone(full_name_message(value), value.full_name != "")),
+				"account-name-error",
 			),
-			Html.paragraph_s_attrs(account_signal.map(full_name_message), [Html.test_id("account-name-error"), Html.attr("id", "account-name-error"), Html.class_attr(note_class)]),
 			# The guard lives in the reducer: it reads `account` while writing `step`.
-			Html.button_attrs(
-				"Next step",
-				[Html.attr("type", "button")],
-				step.on_unit_with(account, |current, value| if account_ok(value) { 1 } else { current }),
+			next_button(step.on_unit_with(account, |current, value| if account_ok(value) { 1 } else { current })),
+		],
+	)
+
+## A labelled control with the validation note that belongs to it. Grouping
+## these three here is what keeps every form in the wizard aligned the same way.
+field : Str, Elem, Signal.Signal(Str), Signal.Signal(Str), Str -> Elem
+field = |label, control, message, tone, error_id|
+	Html.div_c(
+		"field",
+		[
+			Html.paragraph_c(label, "field-label"),
+			control,
+			Html.paragraph_s_attrs(
+				message,
+				[Html.test_id(error_id), Html.attr("id", error_id), Html.class_attr_s(tone)],
 			),
 		],
+	)
+
+## Every step advances with the same control in the same place.
+## The event-message type is platform-internal and has no public name, so the
+## argument is spelled `_`.
+next_button : _ -> Elem
+next_button = |msg|
+	Html.div_c(
+		"flex justify-end border-t border-zinc-200 pt-4",
+		[Html.button_attrs("Next step", [Html.attr("type", "button"), Html.class_attr("button-primary")], msg)],
 	)
 
 # --- step 2: organisation -----------------------------------------------------
@@ -686,38 +786,58 @@ org_panel = |step, org, org_signal| {
 		"Organisation step",
 		panel_class,
 		[
-			Html.heading_c("Organisation", "text-xl font-semibold"),
-			Html.text_input_attrs(
+			Html.heading_c("Organisation", step_title_class),
+			field(
 				"Organisation name",
-				org_signal.map(|value| value.name),
-				[Html.class_attr(input_class), Html.aria_describedby("org-name-error")],
-				org.on_str(|value, text| { ..value, name: text }),
+				Html.text_input_attrs(
+					"Organisation name",
+					org_signal.map(|value| value.name),
+					[Html.class_attr(input_class), Html.attr("placeholder", "Analytical Engines Ltd"), Html.aria_describedby("org-name-error")],
+					org.on_str(|value, text| { ..value, name: text }),
+				),
+				org_signal.map(org_name_message),
+				org_signal.map(|value| note_tone(org_name_message(value), value.name != "")),
+				"org-name-error",
 			),
-			Html.paragraph_s_attrs(org_signal.map(org_name_message), [Html.test_id("org-name-error"), Html.attr("id", "org-name-error"), Html.class_attr(note_class)]),
-			Html.select_c(
-				"Plan",
-				org_signal.map(|value| value.plan),
-				input_class,
+			Html.div_c(
+				"field",
 				[
-					Html.option("starter", "Starter"),
-					Html.option("growth", "Growth"),
-					Html.option("enterprise", "Enterprise"),
+					Html.paragraph_c("Plan", "field-label"),
+					Html.select_c(
+						"Plan",
+						org_signal.map(|value| value.plan),
+						input_class,
+						[
+							Html.option("starter", "Starter"),
+							Html.option("growth", "Growth"),
+							Html.option("enterprise", "Enterprise"),
+						],
+						org.on_str(|value, text| { ..value, plan: text }),
+					),
+					Html.paragraph_c("The plan decides which invite roles step 3 will offer.", hint_class),
 				],
-				org.on_str(|value, text| { ..value, plan: text }),
 			),
-			Html.div(
-				[Html.class_attr("grid gap-1"), Html.attr("role", "radiogroup"), Html.attr("aria-label", "Data region")],
+			Html.div_c(
+				"field",
 				[
-					Html.radio("United States", "region", "us", region_signal, org.on_str(|value, text| { ..value, region: text })),
-					Html.radio("European Union", "region", "eu", region_signal, org.on_str(|value, text| { ..value, region: text })),
+					Html.paragraph_c("Data region", "field-label"),
+					Html.div(
+						[Html.class_attr("grid gap-2"), Html.attr("role", "radiogroup"), Html.attr("aria-label", "Data region")],
+						[
+							radio_row("United States", "region", "us", region_signal, org.on_str(|value, text| { ..value, region: text })),
+							radio_row("European Union", "region", "eu", region_signal, org.on_str(|value, text| { ..value, region: text })),
+						],
+					),
+					Html.paragraph_s_attrs(
+						org_signal.map(region_message),
+						[
+							Html.test_id("org-region-error"),
+							Html.class_attr_s(org_signal.map(|value| note_tone(region_message(value), value.region != ""))),
+						],
+					),
 				],
 			),
-			Html.paragraph_s_attrs(org_signal.map(region_message), [Html.test_id("org-region-error"), Html.class_attr(note_class)]),
-			Html.button_attrs(
-				"Next step",
-				[Html.attr("type", "button")],
-				step.on_unit_with(org, |current, value| if org_ok(value) { 2 } else { current }),
-			),
+			next_button(step.on_unit_with(org, |current, value| if org_ok(value) { 2 } else { current })),
 		],
 	)
 }
@@ -734,36 +854,45 @@ invites_panel = |step, emails, role, org, emails_signal, role_signal, plan_signa
 		"Team invites step",
 		panel_class,
 		[
-			Html.heading_c("Team invites", "text-xl font-semibold"),
-			Html.textarea_attrs(
+			Html.heading_c("Team invites", step_title_class),
+			field(
 				"Invite emails",
-				emails_signal,
-				[Html.class_attr(input_class), Html.aria_describedby("invite-emails-error")],
-				emails.on_str(|_current, text| text),
+				Html.textarea_attrs(
+					"Invite emails",
+					emails_signal,
+					[Html.class_attr(textarea_class), Html.attr("placeholder", "One address per line"), Html.aria_describedby("invite-emails-error")],
+					emails.on_str(|_current, text| text),
+				),
+				emails_signal.map(invite_message),
+				emails_signal.map(|value| note_tone(invite_message(value), value != "")),
+				"invite-emails-error",
 			),
-			Html.paragraph_s_attrs(emails_signal.map(invite_message), [Html.test_id("invite-emails-error"), Html.attr("id", "invite-emails-error"), Html.class_attr(note_class)]),
-			Html.div(
-				[Html.class_attr("grid gap-1"), Html.attr("role", "radiogroup"), Html.attr("aria-label", "Default role")],
+			Html.div_c(
+				"field",
 				[
-					Html.radio("Member", "invite-role", "member", role_signal, pick_role),
-					Ui.when(
-						plan_signal.map(|plan| role_allowed(plan, "admin")),
-						|| Html.radio("Admin", "invite-role", "admin", role_signal, pick_role),
-						|| Html.text(""),
+					Html.paragraph_c("Default role", "field-label"),
+					Html.div(
+						[Html.class_attr("grid gap-2"), Html.attr("role", "radiogroup"), Html.attr("aria-label", "Default role")],
+						[
+							radio_row("Member", "invite-role", "member", role_signal, pick_role),
+							# The plan gates these two, so the option list itself is
+							# derived rather than merely disabled.
+							Ui.when(
+								plan_signal.map(|plan| role_allowed(plan, "admin")),
+								|| radio_row("Admin", "invite-role", "admin", role_signal, pick_role),
+								|| Html.text(""),
+							),
+							Ui.when(
+								plan_signal.map(|plan| role_allowed(plan, "billing")),
+								|| radio_row("Billing admin", "invite-role", "billing", role_signal, pick_role),
+								|| Html.text(""),
+							),
+						],
 					),
-					Ui.when(
-						plan_signal.map(|plan| role_allowed(plan, "billing")),
-						|| Html.radio("Billing admin", "invite-role", "billing", role_signal, pick_role),
-						|| Html.text(""),
-					),
+					Html.paragraph_s_attrs(Signal.map2(plan_signal, role_signal, role_message), [Html.test_id("invite-role-note"), Html.class_attr(hint_class)]),
 				],
 			),
-			Html.paragraph_s_attrs(Signal.map2(plan_signal, role_signal, role_message), [Html.test_id("invite-role-note"), Html.class_attr(note_class)]),
-			Html.button_attrs(
-				"Next step",
-				[Html.attr("type", "button")],
-				step.on_unit_with(emails, |current, value| if invites_ok(value) { 3 } else { current }),
-			),
+			next_button(step.on_unit_with(emails, |current, value| if invites_ok(value) { 3 } else { current })),
 		],
 	)
 }
@@ -776,17 +905,37 @@ review_panel = |attempts, summaries, submit_status, submit_disabled|
 		"Review step",
 		panel_class,
 		[
-			Html.heading_c("Review", "text-xl font-semibold"),
-			Html.paragraph_s_attrs(summaries.map(|rows| summary_line(row_at(rows, 0))), [Html.test_id("review-account"), Html.class_attr(note_class)]),
-			Html.paragraph_s_attrs(summaries.map(|rows| summary_line(row_at(rows, 1))), [Html.test_id("review-organisation"), Html.class_attr(note_class)]),
-			Html.paragraph_s_attrs(summaries.map(|rows| summary_line(row_at(rows, 2))), [Html.test_id("review-invites"), Html.class_attr(note_class)]),
-			Html.action_button_attrs(
-				Signal.const("Create workspace"),
-				submit_disabled,
-				[Html.attr("type", "button")],
-				attempts.on_unit(|n| n + 1),
+			Html.heading_c("Review", step_title_class),
+			Html.div_c(
+				"grid gap-2",
+				[
+					review_row("Account", summaries.map(|rows| summary_line(row_at(rows, 0))), "review-account"),
+					review_row("Organisation", summaries.map(|rows| summary_line(row_at(rows, 1))), "review-organisation"),
+					review_row("Team invites", summaries.map(|rows| summary_line(row_at(rows, 2))), "review-invites"),
+				],
 			),
-			Html.paragraph_s_attrs(submit_status, [Html.test_id("submit-status"), Html.class_attr(note_class)]),
+			Html.div_c(
+				"flex flex-wrap items-center justify-between gap-3 border-t border-zinc-200 pt-4",
+				[
+					Html.paragraph_s_attrs(submit_status, [Html.test_id("submit-status"), Html.class_attr(note_class)]),
+					Html.action_button_attrs(
+						Signal.const("Create workspace"),
+						submit_disabled,
+						[Html.attr("type", "button"), Html.class_attr("button-primary")],
+						attempts.on_unit(|n| n + 1),
+					),
+				],
+			),
+		],
+	)
+
+review_row : Str, Signal.Signal(Str), Str -> Elem
+review_row = |label, line, id|
+	Html.div_c(
+		"grid gap-0.5 rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2",
+		[
+			Html.paragraph_c(label, "field-label"),
+			Html.paragraph_s_attrs(line, [Html.test_id(id), Html.class_attr("text-sm text-zinc-800")]),
 		],
 	)
 
@@ -796,3 +945,14 @@ row_at = |rows, index|
 		Ok(row) => row
 		Err(_) => { key: "missing", title: "Missing", detail: "no data", done: False }
 	}
+
+## Radios are bare inputs, so the visible caption is drawn next to them here.
+radio_row : Str, Str, Str, Signal.Signal(Str), _ -> Elem
+radio_row = |label, group, value, selected, msg|
+	Html.div_c(
+		"check-row",
+		[
+			Html.radio_c(label, group, value, selected, "checkbox", msg),
+			Html.text(label),
+		],
+	)
