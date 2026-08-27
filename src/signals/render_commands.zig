@@ -413,46 +413,54 @@ fn writeBytes(bytes: []u8, cursor: *usize, value: []const u8) void {
     cursor.* += value.len;
 }
 
-fn exerciseTransactionalBatch(allocator: std.mem.Allocator, expect_failure: bool) !usize {
+fn exerciseTransactionalBatch(backing_allocator: std.mem.Allocator, preflight_allocator: std.mem.Allocator, expect_failure: bool) !void {
     var batch: TransactionalBatch = .{};
-    defer batch.deinit(allocator);
+    defer batch.deinit(backing_allocator);
+
+    // Model a previous successful call whose commands have not been drained.
+    try batch.published.commands.append(backing_allocator, .set_text, 99, 0, 0, 0, 0);
 
     batch.begin();
-    batch.preflight(allocator, .{ .commands = 9, .strings = 257, .dynamic = 513 }) catch |err| {
+    batch.preflight(preflight_allocator, .{ .commands = 9, .strings = 257, .dynamic = 513 }) catch |err| {
         batch.abort();
         try std.testing.expectEqual(@as(usize, 0), batch.published.commands.len());
         try std.testing.expectEqual(@as(usize, 0), batch.published.strings.items.len);
         try std.testing.expectEqual(@as(usize, 0), batch.published.dynamic.len());
         if (!expect_failure) return err;
 
-        // The recoverable preparation failure leaves a reusable transaction.
+        // Once memory is available, the same transaction object accepts a
+        // complete retry and publishes only the retry's commands.
         batch.begin();
+        try batch.preflight(backing_allocator, .{ .commands = 9, .strings = 257, .dynamic = 513 });
+        try batch.staged.commands.append(backing_allocator, .set_text, 1, 0, 0, 0, 0);
+        try batch.staged.strings.appendSlice(backing_allocator, "retry");
+        batch.commit();
+        try std.testing.expectEqual(@as(usize, 1), batch.published.commands.len());
+        try std.testing.expectEqualStrings("retry", batch.published.strings.items);
         return error.OutOfMemory;
     };
 
-    try batch.staged.commands.append(allocator, .set_text, 1, 0, 0, 0, 0);
-    try batch.staged.strings.appendSlice(allocator, "committed");
-    _ = try batch.staged.dynamic.appendRemoveAttr(allocator, 1, "title");
+    try batch.staged.commands.append(backing_allocator, .set_text, 1, 0, 0, 0, 0);
+    try batch.staged.strings.appendSlice(backing_allocator, "committed");
+    _ = try batch.staged.dynamic.appendRemoveAttr(backing_allocator, 1, "title");
     batch.commit();
 
     try std.testing.expectEqual(@as(usize, 1), batch.published.commands.len());
     try std.testing.expectEqualStrings("committed", batch.published.strings.items);
     try std.testing.expect(batch.published.dynamic.len() != 0);
-    return 0;
 }
 
 test "transaction command preflight sweeps every allocation failure" {
     var count_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{});
-    _ = try exerciseTransactionalBatch(count_allocator.allocator(), false);
+    try exerciseTransactionalBatch(std.testing.allocator, count_allocator.allocator(), false);
     const allocation_count = count_allocator.alloc_index;
     try std.testing.expect(allocation_count >= 3);
 
     // FailingAllocator is zero-based: fail_index 0 is allocation number 1.
     for (0..allocation_count) |fail_index| {
         var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = fail_index });
-        try std.testing.expectError(error.OutOfMemory, exerciseTransactionalBatch(failing.allocator(), true));
+        try std.testing.expectError(error.OutOfMemory, exerciseTransactionalBatch(std.testing.allocator, failing.allocator(), true));
         try std.testing.expect(failing.has_induced_failure);
-        try std.testing.expectEqual(failing.allocated_bytes, failing.freed_bytes);
     }
 }
 
