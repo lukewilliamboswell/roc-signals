@@ -192,7 +192,13 @@ pub const Record = struct {
     last_dirty_changed: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, payload: Payload) *Record {
-        const record = allocator.create(Record) catch @panic("out of memory");
+        return tryInit(allocator, payload) catch @panic("out of memory");
+    }
+
+    /// Fallible constructor for transactional collection. The payload remains
+    /// owned by the caller when allocation fails.
+    pub fn tryInit(allocator: std.mem.Allocator, payload: Payload) std.mem.Allocator.Error!*Record {
+        const record = try allocator.create(Record);
         record.* = .{
             .ref_count = 1,
             .payload = payload,
@@ -495,6 +501,16 @@ pub fn appendSignalRecordSourceNodeIds(allocator: std.mem.Allocator, source_node
         },
         .task_source, .interval_source, .location_source, .online_source, .visibility_source, .storage_source => {},
     }
+}
+
+test "fallible signal record construction preserves payload ownership on OOM" {
+    var storage: [0]u8 = .{};
+    var fixed = std.heap.FixedBufferAllocator.init(&storage);
+    try std.testing.expectError(error.OutOfMemory, Record.tryInit(fixed.allocator(), .{ .ref = 7 }));
+
+    const record = try Record.tryInit(std.testing.allocator, .{ .ref = 7 });
+    try std.testing.expectEqual(@as(Payload, .{ .ref = 7 }), record.payload);
+    std.testing.allocator.destroy(record);
 }
 
 test "appendSignalRecordSourceNodeIds deduplicates source refs" {
