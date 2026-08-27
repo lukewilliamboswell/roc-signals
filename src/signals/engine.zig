@@ -7536,14 +7536,17 @@ pub fn Engine(comptime Ctx: type) type {
                         const replaced_scope_id = (self.activeWhenBranchScopeId(site.scope_id, site.ordinal, active_branch.opposite()) catch @panic("scope id has no host scope descriptor")) orelse {
                             if (applied_any) continue;
                             total_counts.addAll(self.rerenderActiveRootWithReset(ctx, roc_host, dirty_source_node_ids));
+                            const committed_when_index = self.activeWhenIndexByNodeId(change.node_id) orelse @panic("rerendered dirty when descriptor disappeared");
+                            change.commitPendingWhenCache(&self.active_stream.whens.items[committed_when_index].cached_value, ctx, roc_host, &self.pending_roc_metrics);
                             return total_counts;
                         };
                         const existing_replacement_scope_id = self.activeWhenBranchScopeId(site.scope_id, site.ordinal, active_branch) catch @panic("scope id has no host scope descriptor");
-
                         const target_scopes_snapshot = self.snapshotReplacementTargetScopeSet(ctx, .{ .scope = replaced_scope_id });
                         defer Ctx.allocator(ctx).free(target_scopes_snapshot);
                         if (self.replacementTargetHasNonContiguousDomDescendants(ctx, site.render_insert_index, target_scopes_snapshot)) {
                             total_counts.addAll(self.rerenderActiveRootWithReset(ctx, roc_host, dirty_source_node_ids));
+                            const committed_when_index = self.activeWhenIndexByNodeId(change.node_id) orelse @panic("rerendered dirty when descriptor disappeared");
+                            change.commitPendingWhenCache(&self.active_stream.whens.items[committed_when_index].cached_value, ctx, roc_host, &self.pending_roc_metrics);
                             return total_counts;
                         }
                         if (existing_replacement_scope_id) |replacement_scope_id| {

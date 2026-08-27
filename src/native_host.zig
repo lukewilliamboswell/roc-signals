@@ -5620,6 +5620,7 @@ test "signals host reuses active signal records while collecting dirty when bran
 
     _ = applyDirtyWhenStructuralSignals(&host, &roc_host, &dirty_source_node_ids, dirty_generation, dirty_structural_signals);
 
+    try std.testing.expect(dirty_structural_signals[0].pending_when_cache == null);
     try std.testing.expect(activeTextElementId(&host, "loading") == null);
     try std.testing.expect(activeTextElementId(&host, "stable") != null);
 }
