@@ -7683,8 +7683,39 @@ fn verifyStaticRoot(attrs: []const abi.NodeAttr, children: []const abi.Elem) abi
     };
 }
 
+/// Builds a test element whose nested lists obey Roc ownership rules. Use this
+/// for values retained by descriptors; the borrowed helper is immediate-only.
+fn ownedVerifyStaticRoot(roc_host: *abi.RocHost, attrs: []const abi.NodeAttr, children: []const abi.Elem) abi.Elem {
+    return .{
+        .payload = .{ .element = .{
+            .attrs = abi.RocList(abi.NodeAttr).fromSlice(attrs, roc_host),
+            .children = abi.RocList(abi.Elem).fromSlice(children, roc_host),
+            .tag = abi.RocStr.fromSlice("div", roc_host),
+        } },
+        .tag = .Element,
+    };
+}
+
 fn verifyStaticText() abi.Elem {
     return .{ .payload = .{ .text = abi.RocStr.fromSlice("hello", undefined) }, .tag = .Text };
+}
+
+test "owned retained element fixture keeps nested Roc lists alive" {
+    var env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&env);
+    const attr = abi.NodeAttr{ .payload = .{ .static_bool = .{
+        .field = .{ .id = @intFromEnum(RenderBoolField.disabled) },
+        .name = abi.RocStr.empty(),
+        .value = true,
+    } }, .tag = .StaticBool };
+    const child = verifyStaticText();
+    const elem = ownedVerifyStaticRoot(&roc_host, &.{attr}, &.{child});
+    elem.incref(1);
+    elem.decref(&roc_host);
+    try std.testing.expectEqual(@as(usize, 1), elem.payload_element().attrs.items().len);
+    try std.testing.expectEqual(@as(usize, 1), elem.payload_element().children.items().len);
+    try std.testing.expect(elem.payload_element().attrs.items()[0].payload_static_bool().value);
+    elem.decref(&roc_host);
 }
 
 fn verifyErasedCallable(_: *abi.RocHost, _: ?[*]u8, _: ?[*]const u8, _: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {}
@@ -8101,10 +8132,22 @@ test "branch replacement preparation leaves the active branch unpublished" {
         ._1 = value_callable,
         ._2 = capability,
     } }, .tag = .ConstValue };
-    var when_false = verifyStaticText();
-    when_false.payload.text = abi.RocStr.fromSlice("no", undefined);
-    var when_true = verifyStaticText();
-    when_true.payload.text = abi.RocStr.fromSlice("yes", undefined);
+    const false_attrs = [_]abi.NodeAttr{
+        .{ .payload = .{ .static_text = .{ .field = .{ .id = @intFromEnum(RenderTextField.label) }, .name = abi.RocStr.empty(), .value = abi.RocStr.fromSlice("off", undefined) } }, .tag = .StaticText },
+        .{ .payload = .{ .static_bool = .{ .field = .{ .id = @intFromEnum(RenderBoolField.disabled) }, .name = abi.RocStr.empty(), .value = true } }, .tag = .StaticBool },
+    };
+    const true_attrs = [_]abi.NodeAttr{
+        .{ .payload = .{ .static_text = .{ .field = .{ .id = @intFromEnum(RenderTextField.label) }, .name = abi.RocStr.empty(), .value = abi.RocStr.fromSlice("on", undefined) } }, .tag = .StaticText },
+        .{ .payload = .{ .static_bool = .{ .field = .{ .id = @intFromEnum(RenderBoolField.disabled) }, .name = abi.RocStr.empty(), .value = false } }, .tag = .StaticBool },
+    };
+    var false_text = verifyStaticText();
+    false_text.payload.text = abi.RocStr.fromSlice("no", undefined);
+    var true_text = verifyStaticText();
+    true_text.payload.text = abi.RocStr.fromSlice("yes", undefined);
+    var when_false = ownedVerifyStaticRoot(&roc_host, &false_attrs, &.{false_text});
+    defer when_false.decref(&roc_host);
+    var when_true = ownedVerifyStaticRoot(&roc_host, &true_attrs, &.{true_text});
+    defer when_true.decref(&roc_host);
     const root = abi.Elem{ .payload = .{ .when = .{
         .condition = &condition,
         .read = .{ .capability = capability, .read = bool_callable },
@@ -8136,13 +8179,18 @@ test "branch replacement preparation leaves the active branch unpublished" {
             if (failure_number == null) {
                 var plan = try prepared;
                 const attempts = fault.attempts;
+                try std.testing.expectEqual(@as(usize, 1), plan.replacement_stream.elements.items.len);
+                try std.testing.expectEqual(@as(usize, 2), plan.replacement_stream.render_nodes.items.len);
                 try std.testing.expectEqual(@as(usize, 1), plan.replacement_stream.text_nodes.items.len);
                 try std.testing.expectEqualStrings("no", plan.replacement_stream.text_nodes.items[0].value);
                 try std.testing.expectEqual(engine.scopes.items[1].scope_id, plan.retired_scope_id);
                 try std.testing.expect(plan.target_scopes[@intCast(plan.retired_scope_id)]);
-                try std.testing.expectEqualSlices(u64, &.{1}, plan.removal.?.scan.removed_elem_ids);
+                try std.testing.expectEqualSlices(u64, &.{ 1, 2 }, plan.removal.?.scan.removed_elem_ids);
+                try std.testing.expectEqualSlices(usize, &.{0}, plan.removal.?.descriptor_indexes.element_indexes.items);
                 try std.testing.expectEqualSlices(usize, &.{0}, plan.removal.?.descriptor_indexes.text_node_indexes.items);
-                try std.testing.expectEqualSlices(u64, &.{2}, plan.publication.?.replacement_elem_ids);
+                try std.testing.expectEqualSlices(usize, &.{0}, plan.removal.?.descriptor_indexes.static_text_attr_indexes.items);
+                try std.testing.expectEqualSlices(usize, &.{0}, plan.removal.?.descriptor_indexes.static_bool_attr_indexes.items);
+                try std.testing.expectEqualSlices(u64, &.{ 3, 4 }, plan.publication.?.replacement_elem_ids);
                 fault.configure(1);
                 const indexes = &plan.removal.?.descriptor_indexes;
                 engine.active_stream.commitStaticDescriptorReplacementAssumeCapacity(
@@ -8156,6 +8204,10 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 try std.testing.expectEqual(@as(usize, 0), fault.attempts);
                 try std.testing.expectEqualStrings("no", engine.active_stream.text_nodes.items[0].value);
                 try std.testing.expectEqualStrings("yes", plan.retired_stream.text_nodes.items[0].value);
+                try std.testing.expectEqualStrings("off", engine.active_stream.static_text_attrs.items[0].value);
+                try std.testing.expect(engine.active_stream.static_bool_attrs.items[0].value);
+                try std.testing.expectEqual(@as(?usize, 0), engine.active_stream.elemDescriptorIndex(3).?.element.get());
+                try std.testing.expectEqual(@as(?usize, 0), engine.active_stream.elemDescriptorIndex(4).?.text_node.get());
                 fault.configure(null);
                 plan.deinit();
                 try std.testing.expectEqual(retained_before, engine.pending_roc_metrics.closure_retains - engine.pending_roc_metrics.closure_releases);
