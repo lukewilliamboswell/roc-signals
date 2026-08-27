@@ -112,9 +112,9 @@ pub fn build(b: *std.Build) void {
     copy_wasm_fixture.step.dependOn(&mkdir_wasm_fixture.step);
     copy_wasm_fixture.step.dependOn(wasm_host_step);
     const link_wasm_fixture = b.addSystemCommand(&.{
-        "zig", "build-exe", ".test-out/oom/host.o",
-        "-target", "wasm32-freestanding-none", "-fno-entry", "-rdynamic",
-        "-fallow-shlib-undefined", "-femit-bin=.test-out/oom/host-fixture.wasm",
+        "zig",       "build-exe",                ".test-out/oom/host.o",
+        "-target",   "wasm32-freestanding-none", "-fno-entry",
+        "-rdynamic", "-fallow-shlib-undefined",  "-femit-bin=.test-out/oom/host-fixture.wasm",
     });
     link_wasm_fixture.step.dependOn(&copy_wasm_fixture.step);
     browser_tests.step.dependOn(&link_wasm_fixture.step);
