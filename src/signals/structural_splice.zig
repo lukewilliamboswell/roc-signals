@@ -53,6 +53,18 @@ pub const RenderRemovalScan = struct {
     }
 };
 
+pub const PreparedRemoval = struct {
+    scan: RenderRemovalScan,
+    descriptor_indexes: ElemOwnedRemovalScratch,
+
+    /// Releases all provisional removal metadata without touching the source stream.
+    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+        self.descriptor_indexes.deinit(allocator);
+        self.scan.deinit(allocator);
+        self.* = undefined;
+    }
+};
+
 pub const ElemOwnedRemovalScratch = struct {
     element_indexes: std.ArrayListUnmanaged(usize) = .empty,
     text_node_indexes: std.ArrayListUnmanaged(usize) = .empty,
@@ -303,22 +315,83 @@ pub fn collectRenderRemovalScan(comptime Stream: type, allocator: std.mem.Alloca
     return prepareRenderRemovalScan(Stream, allocator, stream, render_insert_index, target_scopes) catch @panic("out of memory");
 }
 
-/// Returns the render element ids selected by this local structural splice.
-pub fn renderElemIds(allocator: std.mem.Allocator, render_nodes: anytype) []u64 {
-    const elem_ids = allocator.alloc(u64, render_nodes.len) catch @panic("out of memory");
+/// Prepares the render scan and every descriptor-removal index before mutation.
+pub fn prepareRemoval(comptime Stream: type, allocator: std.mem.Allocator, stream: *const Stream, render_insert_index: usize, target_scopes: []const bool) std.mem.Allocator.Error!PreparedRemoval {
+    var prepared = PreparedRemoval{
+        .scan = try prepareRenderRemovalScan(Stream, allocator, stream, render_insert_index, target_scopes),
+        .descriptor_indexes = .{},
+    };
+    errdefer prepared.deinit(allocator);
+    try prepared.descriptor_indexes.prepare(allocator, prepared.scan.removed_elem_ids.len);
+    for (prepared.scan.removed_elem_ids) |elem_id| {
+        const descriptor_index = stream.elemDescriptorIndex(elem_id) orelse continue;
+        prepared.descriptor_indexes.appendDescriptorIndexesAssumeCapacity(descriptor_index);
+    }
+    prepared.descriptor_indexes.sortDescending();
+    return prepared;
+}
+
+/// Prepares the render element ids selected by a local structural splice.
+pub fn prepareRenderElemIds(allocator: std.mem.Allocator, render_nodes: anytype) std.mem.Allocator.Error![]u64 {
+    const elem_ids = try allocator.alloc(u64, render_nodes.len);
     for (render_nodes, 0..) |node, index| {
         elem_ids[index] = node.elem_id;
     }
     return elem_ids;
 }
 
-/// Returns the contiguous descriptor range affected by this splice.
-pub fn indexRange(allocator: std.mem.Allocator, start: usize, count: usize) []usize {
-    const indexes = allocator.alloc(usize, count) catch @panic("out of memory");
+/// Returns the render element ids selected by this local structural splice.
+pub fn renderElemIds(allocator: std.mem.Allocator, render_nodes: anytype) []u64 {
+    return prepareRenderElemIds(allocator, render_nodes) catch @panic("out of memory");
+}
+
+/// Prepares a contiguous descriptor range affected by a splice.
+pub fn prepareIndexRange(allocator: std.mem.Allocator, start: usize, count: usize) std.mem.Allocator.Error![]usize {
+    _ = std.math.add(usize, start, count) catch return error.OutOfMemory;
+    const indexes = try allocator.alloc(usize, count);
     for (indexes, 0..) |*index, offset| {
         index.* = start + offset;
     }
     return indexes;
+}
+
+/// Returns the contiguous descriptor range affected by this splice.
+pub fn indexRange(allocator: std.mem.Allocator, start: usize, count: usize) []usize {
+    return prepareIndexRange(allocator, start, count) catch @panic("out of memory");
+}
+
+pub const PreparedPublicationDeltas = struct {
+    replacement_elem_ids: []u64,
+    moved_event_elem_ids: []u64,
+    replacement_on_change_indices: []usize,
+    replacement_mount_indices: []usize,
+
+    /// Releases provisional publication metadata without mutating active state.
+    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+        allocator.free(self.replacement_elem_ids);
+        allocator.free(self.moved_event_elem_ids);
+        allocator.free(self.replacement_on_change_indices);
+        allocator.free(self.replacement_mount_indices);
+        self.* = undefined;
+    }
+};
+
+/// Copies all metadata needed after a structural stream replacement so commit
+/// can publish it without allocating.
+pub fn preparePublicationDeltas(allocator: std.mem.Allocator, replacement_render_nodes: anytype, moved_event_elem_ids: []const u64, on_change_start: usize, on_change_count: usize, mount_start: usize, mount_count: usize) std.mem.Allocator.Error!PreparedPublicationDeltas {
+    const replacement_elem_ids = try prepareRenderElemIds(allocator, replacement_render_nodes);
+    errdefer allocator.free(replacement_elem_ids);
+    const owned_moved_events = try allocator.dupe(u64, moved_event_elem_ids);
+    errdefer allocator.free(owned_moved_events);
+    const on_change_indices = try prepareIndexRange(allocator, on_change_start, on_change_count);
+    errdefer allocator.free(on_change_indices);
+    const mount_indices = try prepareIndexRange(allocator, mount_start, mount_count);
+    return .{
+        .replacement_elem_ids = replacement_elem_ids,
+        .moved_event_elem_ids = owned_moved_events,
+        .replacement_on_change_indices = on_change_indices,
+        .replacement_mount_indices = mount_indices,
+    };
 }
 
 /// Adjusts only scope-site insertion indexes shifted by the committed local splice.
@@ -366,6 +439,34 @@ test "structural splice allocates replacement metadata snapshots" {
     adjustScopeSiteRenderInsertIndices(scope_sites[0..], 4, 2, 5);
     try std.testing.expectEqual(@as(usize, 2), scope_sites[0].render_insert_index);
     try std.testing.expectEqual(@as(usize, 12), scope_sites[1].render_insert_index);
+}
+
+test "publication deltas sweep failures and retry without source mutation" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    const RenderNode = struct { elem_id: u64 };
+    const nodes = [_]RenderNode{ .{ .elem_id = 4 }, .{ .elem_id = 9 } };
+    const moved = [_]u64{ 3, 8 };
+
+    var counter = FaultAllocator.init(std.testing.allocator);
+    var successful = try preparePublicationDeltas(counter.allocator(), &nodes, &moved, 7, 2, 11, 1);
+    const attempts = counter.attempts;
+    successful.deinit(counter.allocator());
+    try std.testing.expect(attempts >= 4);
+
+    for (1..attempts + 1) |failure_number| {
+        var fault = FaultAllocator.init(std.testing.allocator);
+        fault.configure(failure_number);
+        try std.testing.expectError(error.OutOfMemory, preparePublicationDeltas(fault.allocator(), &nodes, &moved, 7, 2, 11, 1));
+        try std.testing.expectEqualSlices(u64, &.{ 4, 9 }, &.{ nodes[0].elem_id, nodes[1].elem_id });
+        try std.testing.expectEqualSlices(u64, &.{ 3, 8 }, &moved);
+        fault.configure(null);
+        var retry = try preparePublicationDeltas(fault.allocator(), &nodes, &moved, 7, 2, 11, 1);
+        try std.testing.expectEqualSlices(u64, &.{ 4, 9 }, retry.replacement_elem_ids);
+        try std.testing.expectEqualSlices(u64, &.{ 3, 8 }, retry.moved_event_elem_ids);
+        try std.testing.expectEqualSlices(usize, &.{ 7, 8 }, retry.replacement_on_change_indices);
+        try std.testing.expectEqualSlices(usize, &.{11}, retry.replacement_mount_indices);
+        retry.deinit(fault.allocator());
+    }
 }
 
 test "structural splice collects removal indexes" {
@@ -557,7 +658,7 @@ test "render removal preparation sweeps allocation failures without source mutat
     const target_scopes = &.{ false, true };
 
     var counter = FaultAllocator.init(std.testing.allocator);
-    const successful = try prepareRenderRemovalScan(TestStream, counter.allocator(), &stream, 0, target_scopes);
+    var successful = try prepareRemoval(TestStream, counter.allocator(), &stream, 0, target_scopes);
     const attempts = counter.attempts;
     successful.deinit(counter.allocator());
     try std.testing.expect(attempts != 0);
@@ -565,11 +666,13 @@ test "render removal preparation sweeps allocation failures without source mutat
     for (1..attempts + 1) |failure_number| {
         var fault = FaultAllocator.init(std.testing.allocator);
         fault.configure(failure_number);
-        try std.testing.expectError(error.OutOfMemory, prepareRenderRemovalScan(TestStream, fault.allocator(), &stream, 0, target_scopes));
+        try std.testing.expectError(error.OutOfMemory, prepareRemoval(TestStream, fault.allocator(), &stream, 0, target_scopes));
         try std.testing.expectEqualSlices(TestStream.RenderNode, original_nodes, stream.render_nodes.items);
         fault.configure(null);
-        const retry = try prepareRenderRemovalScan(TestStream, fault.allocator(), &stream, 0, target_scopes);
-        try std.testing.expectEqualSlices(u64, &.{ 1, 2, 3 }, retry.removed_elem_ids);
+        var retry = try prepareRemoval(TestStream, fault.allocator(), &stream, 0, target_scopes);
+        try std.testing.expectEqualSlices(u64, &.{ 1, 2, 3 }, retry.scan.removed_elem_ids);
+        try std.testing.expectEqualSlices(usize, &.{0}, retry.descriptor_indexes.element_indexes.items);
+        try std.testing.expectEqualSlices(usize, &.{ 1, 0 }, retry.descriptor_indexes.text_node_indexes.items);
         retry.deinit(fault.allocator());
     }
 }
