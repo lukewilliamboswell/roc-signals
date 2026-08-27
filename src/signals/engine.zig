@@ -7579,6 +7579,87 @@ pub fn Engine(comptime Ctx: type) type {
             return changed.toOwnedSlice(allocator) catch return error.OutOfMemory;
         }
 
+        fn prepareNonStructuralRenderSplice(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, overlay: *signal_records.PreparedCacheUpdates, changed_record_ids: []const u64, dirty_source_node_ids: []const u64, dirty_generation: u64) CollectionError!render_cache_mod.PreparedRenderSplice(Ctx) {
+            var text_count: usize = 0;
+            var bool_count: usize = 0;
+            for (changed_record_ids) |record_id| {
+                const index = std.math.cast(usize, record_id) orelse return error.ResourceLimit;
+                if (index < self.active_text_signal_routes.items.len) text_count = std.math.add(usize, text_count, self.active_text_signal_routes.items[index].items.len) catch return error.ResourceLimit;
+                if (index < self.active_bool_signal_routes.items.len) bool_count = std.math.add(usize, bool_count, self.active_bool_signal_routes.items[index].items.len) catch return error.ResourceLimit;
+                if (index < self.active_change_signal_routes.items.len and self.active_change_signal_routes.items[index].items.len != 0) return error.ResourceLimit;
+            }
+            const wire_count = std.math.add(usize, text_count, bool_count) catch return error.ResourceLimit;
+            var splice = render_cache_mod.PreparedRenderSplice(Ctx).init(Ctx.allocator(ctx), &self.render_cache, .{
+                .node_capacity = self.render_cache.nodes.items.len,
+                .new_tags = 0,
+                .text_fields = text_count,
+                .bool_fields = bool_count,
+                .wire_commands = wire_count,
+            }) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                error.ResourceLimit => return error.ResourceLimit,
+            };
+            errdefer splice.deinit();
+            for (changed_record_ids) |record_id| {
+                const index: usize = @intCast(record_id);
+                if (index < self.active_text_signal_routes.items.len) for (self.active_text_signal_routes.items[index].items) |route| {
+                    const desc_cache: *HostSignalCacheSlot, const binding: *HostSignalBinding, const read: HostTextRead, const elem_id: u64, const field: RenderTextField = switch (route.kind) {
+                        .text_node => blk: {
+                            const desc = &self.active_stream.signal_text_nodes.items[route.index];
+                            break :blk .{ &desc.cached_value, &desc.signal, desc.read, desc.elem_id, .text };
+                        },
+                        .text_attr => blk: {
+                            const desc = &self.active_stream.signal_text_attrs.items[route.index];
+                            break :blk .{ &desc.cached_value, &desc.signal, desc.read, desc.elem_id, desc.field };
+                        },
+                        .custom_text_attr, .custom_text_optional_attr => return error.ResourceLimit,
+                    };
+                    const signal_result = try self.evalPreparedDirtyHostSignalRecord(ctx, roc_host, overlay, binding.record, dirty_source_node_ids, dirty_generation);
+                    const cap = self.hostSignalBindingCapability(ctx, binding);
+                    if (!signal_result.changed) {
+                        self.dropHostSignalRecordValue(ctx, roc_host, binding.record, signal_result.value);
+                        continue;
+                    }
+                    const cache_result = self.updatePreparedDirtySignalExprCache(ctx, roc_host, overlay, desc_cache, signal_result.value, cap);
+                    if (!cache_result.changed) {
+                        self.dropHostSignalRecordValue(ctx, roc_host, binding.record, cache_result.value);
+                        continue;
+                    }
+                    const text = callHostValueToStrWithCapability(ctx, roc_host, read.capability, read.read, cache_result.value);
+                    self.dropHostSignalRecordValue(ctx, roc_host, binding.record, cache_result.value);
+                    defer text.decref(roc_host);
+                    splice.addTextField(&self.render_cache, elem_id, field, text.asSlice()) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        else => return error.ResourceLimit,
+                    };
+                };
+                if (index < self.active_bool_signal_routes.items.len) for (self.active_bool_signal_routes.items[index].items) |route| {
+                    const desc_cache: *HostSignalCacheSlot, const binding: *HostSignalBinding, const read: HostBoolRead, const elem_id: u64, const field: RenderBoolField = switch (route.kind) {
+                        .bool_attr => blk: {
+                            const desc = &self.active_stream.signal_bool_attrs.items[route.index];
+                            break :blk .{ &desc.cached_value, &desc.signal, desc.read, desc.elem_id, desc.field };
+                        },
+                        .custom_bool_attr => return error.ResourceLimit,
+                    };
+                    const signal_result = try self.evalPreparedDirtyHostSignalRecord(ctx, roc_host, overlay, binding.record, dirty_source_node_ids, dirty_generation);
+                    const cap = self.hostSignalBindingCapability(ctx, binding);
+                    if (!signal_result.changed) {
+                        self.dropHostSignalRecordValue(ctx, roc_host, binding.record, signal_result.value);
+                        continue;
+                    }
+                    const cache_result = self.updatePreparedDirtySignalExprCache(ctx, roc_host, overlay, desc_cache, signal_result.value, cap);
+                    if (!cache_result.changed) {
+                        self.dropHostSignalRecordValue(ctx, roc_host, binding.record, cache_result.value);
+                        continue;
+                    }
+                    const value = callHostValueToBoolWithCapability(ctx, roc_host, read.capability, read.read, cache_result.value);
+                    self.dropHostSignalRecordValue(ctx, roc_host, binding.record, cache_result.value);
+                    splice.addBoolField(&self.render_cache, elem_id, field, value) catch return error.ResourceLimit;
+                };
+            }
+            return splice;
+        }
+
         /// Collects dirty structural signals from the explicitly affected graph or scope set.
         pub fn collectDirtyStructuralSignals(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, allocator: std.mem.Allocator, dirty_source_node_ids: []const u64, changed_record_ids: []const u64, dirty_generation: u64) []HostDirtyStructuralSignal {
             var dirty_structural_signals: std.ArrayListUnmanaged(HostDirtyStructuralSignal) = .empty;
@@ -11366,14 +11447,18 @@ test "prepared source cache overlay sweeps reservation and publishes allocation 
 }
 
 test "prepared dirty evaluator reads provisional source through derived map" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
     var env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
     var roc_host = abi.makeRocHost(&env);
     const callable = abi.rocErasedCallableAllocate(&roc_host, verifyStateCallable, null, 0).?;
     defer abi.decrefErasedCallable(callable, &roc_host);
     const eq_callable = abi.rocErasedCallableAllocate(&roc_host, verifyHostValueEqCallable, null, 0).?;
     defer abi.decrefErasedCallable(eq_callable, &roc_host);
+    const text_callable = abi.rocErasedCallableAllocate(&roc_host, verifyTextCallable, null, 0).?;
+    defer abi.decrefErasedCallable(text_callable, &roc_host);
     const cap = HostValueCapability{ .clone = callable, .drop = callable, .eq = eq_callable };
-    var ctx = VerifyCtxHost{ .allocator = std.testing.allocator };
+    var fault = FaultAllocator.init(std.testing.allocator);
+    var ctx = VerifyCtxHost{ .allocator = fault.allocator() };
     var engine = Engine(VerifyCtx).init();
     var source = HostSignalRecord{ .ref_count = 1, .payload = .{ .interval_source = .{
         .period_ms = 10,
@@ -11393,6 +11478,26 @@ test "prepared dirty evaluator reads provisional source through derived map" {
     try engine.active_signal_graph.append(ctx.allocator, .{ .record = &source, .rank = 0 });
     try engine.active_signal_graph.append(ctx.allocator, .{ .record = &mapped, .rank = 1 });
     defer engine.active_signal_graph.deinit(ctx.allocator);
+    engine.render_cache.reset(&ctx);
+    defer engine.render_cache.deinit(&ctx);
+    var render_counts: render.Counts = .{};
+    engine.render_cache.ensureNode(&ctx, 1, "div", &render_counts);
+    try engine.active_stream.signal_text_attrs.append(ctx.allocator, .{
+        .elem_id = 1,
+        .field = .label,
+        .signal = .{ .record = &mapped, .source_node_ids = &.{} },
+        .read = .{ .capability = cap, .read = text_callable },
+        .cached_value = .{ .present = HostValueCell.initRetained(10, cap, &engine.pending_roc_metrics) },
+    });
+    defer {
+        engine.active_stream.signal_text_attrs.items[0].cached_value.deinit(&ctx, &roc_host, &engine.pending_roc_metrics);
+        engine.active_stream.signal_text_attrs.deinit(ctx.allocator);
+    }
+    engine.appendActiveTextSignalRoute(&ctx, 1, .{ .kind = .text_attr, .index = 0 });
+    defer {
+        for (engine.active_text_signal_routes.items) |*routes| routes.deinit(ctx.allocator);
+        engine.active_text_signal_routes.deinit(ctx.allocator);
+    }
 
     var aborted = try signal_records.PreparedCacheUpdates.init(ctx.allocator, 2);
     defer aborted.deinit(&ctx, &roc_host, &engine.pending_roc_metrics);
@@ -11401,8 +11506,12 @@ test "prepared dirty evaluator reads provisional source through derived map" {
     const aborted_changed = try engine.prepareChangedActiveSignalRecordIds(&ctx, &roc_host, &aborted, &.{ 0, 1 }, &.{}, 7);
     defer ctx.allocator.free(aborted_changed);
     try std.testing.expectEqualSlices(u64, &.{ 0, 1 }, aborted_changed);
+    var aborted_render = try engine.prepareNonStructuralRenderSplice(&ctx, &roc_host, &aborted, aborted_changed, &.{}, 7);
+    aborted_render.deinit();
     try std.testing.expectEqual(@as(HostValue, 1), source.payload.interval_source.cached_value.present.value);
     try std.testing.expectEqual(@as(HostValue, 10), mapped.payload.map.cached_value.present.value);
+    try std.testing.expectEqual(@as(HostValue, 10), engine.active_stream.signal_text_attrs.items[0].cached_value.present.value);
+    try std.testing.expect(engine.render_cache.activeNode(1).label == null);
     try std.testing.expectEqual(@as(u64, 0), mapped.last_dirty_generation);
     var committed = try signal_records.PreparedCacheUpdates.init(ctx.allocator, 2);
     defer committed.deinit(&ctx, &roc_host, &engine.pending_roc_metrics);
@@ -11411,9 +11520,22 @@ test "prepared dirty evaluator reads provisional source through derived map" {
     const committed_changed = try engine.prepareChangedActiveSignalRecordIds(&ctx, &roc_host, &committed, &.{ 0, 1 }, &.{}, 8);
     defer ctx.allocator.free(committed_changed);
     try std.testing.expectEqualSlices(u64, &.{ 0, 1 }, committed_changed);
+    var committed_render = try engine.prepareNonStructuralRenderSplice(&ctx, &roc_host, &committed, committed_changed, &.{}, 8);
+    defer committed_render.deinit();
+    var batch: render.TransactionalBatch = .{};
+    defer batch.deinit(ctx.allocator);
+    try committed_render.wire.preflight(&batch, ctx.allocator);
+    fault.configure(1);
+    committed_render.wire.stageAssumeCapacity(&batch, ctx.allocator) catch unreachable;
     engine.commitPreparedDirtySignalCaches(&committed);
+    committed_render.apply(&engine.render_cache);
+    batch.commit();
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    fault.configure(null);
     try std.testing.expectEqual(@as(HostValue, 2), source.payload.interval_source.cached_value.present.value);
     try std.testing.expectEqual(@as(HostValue, 42), mapped.payload.map.cached_value.present.value);
+    try std.testing.expectEqual(@as(HostValue, 42), engine.active_stream.signal_text_attrs.items[0].cached_value.present.value);
+    try std.testing.expectEqualStrings("signal", engine.render_cache.activeNode(1).label.?);
     try std.testing.expectEqual(@as(u64, 8), mapped.last_dirty_generation);
     try std.testing.expect(mapped.last_dirty_changed);
 }
