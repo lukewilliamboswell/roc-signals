@@ -288,8 +288,20 @@ pub const PreparedNodeCreation = struct {
 
     /// Resolves a provisional tag without changing cache indexes.
     pub fn prepare(comptime Ctx: type, allocator: std.mem.Allocator, cache: *Cache(Ctx), tags: *PreparedTagOverlay, elem_id: u64, tag: []const u8) (std.mem.Allocator.Error || error{ ActiveNode, ResourceLimit })!PreparedNodeCreation {
+        return prepareImpl(Ctx, allocator, cache, tags, elem_id, tag, false);
+    }
+
+    /// Resolves a provisional tag for a slot retired by the same render plan.
+    pub fn prepareReplacing(comptime Ctx: type, allocator: std.mem.Allocator, cache: *Cache(Ctx), tags: *PreparedTagOverlay, elem_id: u64, tag: []const u8) (std.mem.Allocator.Error || error{ResourceLimit})!PreparedNodeCreation {
+        return prepareImpl(Ctx, allocator, cache, tags, elem_id, tag, true) catch |err| switch (err) {
+            error.ActiveNode => unreachable,
+            else => |other| other,
+        };
+    }
+
+    fn prepareImpl(comptime Ctx: type, allocator: std.mem.Allocator, cache: *Cache(Ctx), tags: *PreparedTagOverlay, elem_id: u64, tag: []const u8, replaces_active: bool) (std.mem.Allocator.Error || error{ ActiveNode, ResourceLimit })!PreparedNodeCreation {
         const index = std.math.cast(usize, elem_id) orelse return error.ResourceLimit;
-        if (index < cache.nodes.items.len and cache.nodes.items[index].active) return error.ActiveNode;
+        if (!replaces_active and index < cache.nodes.items.len and cache.nodes.items[index].active) return error.ActiveNode;
         return .{ .elem_id = elem_id, .tag = try tags.resolve(Ctx, allocator, cache, tag) };
     }
 
@@ -320,6 +332,10 @@ pub const PreparedTextFieldUpdate = struct {
     pub fn prepare(comptime Ctx: type, allocator: std.mem.Allocator, cache: *const Cache(Ctx), elem_id: u64, field: TextField, value: ?[]const u8) (std.mem.Allocator.Error || error{MissingNode})!PreparedTextFieldUpdate {
         const index = std.math.cast(usize, elem_id) orelse return error.MissingNode;
         if (index >= cache.nodes.items.len or !cache.nodes.items[index].active) return error.MissingNode;
+        return prepareKnownNode(allocator, elem_id, field, value);
+    }
+
+    fn prepareKnownNode(allocator: std.mem.Allocator, elem_id: u64, field: TextField, value: ?[]const u8) std.mem.Allocator.Error!PreparedTextFieldUpdate {
         return .{ .elem_id = elem_id, .field = field, .next = if (value) |bytes| try allocator.dupe(u8, bytes) else null };
     }
 
@@ -402,6 +418,10 @@ pub const PreparedCustomTextAttrsReplacement = struct {
     pub fn prepare(comptime Ctx: type, allocator: std.mem.Allocator, cache: *const Cache(Ctx), elem_id: u64, attrs: []const CustomTextAttr) (std.mem.Allocator.Error || error{MissingNode})!PreparedCustomTextAttrsReplacement {
         const index = std.math.cast(usize, elem_id) orelse return error.MissingNode;
         if (index >= cache.nodes.items.len or !cache.nodes.items[index].active) return error.MissingNode;
+        return prepareKnownNode(allocator, elem_id, attrs);
+    }
+
+    fn prepareKnownNode(allocator: std.mem.Allocator, elem_id: u64, attrs: []const CustomTextAttr) std.mem.Allocator.Error!PreparedCustomTextAttrsReplacement {
         const next = try allocator.alloc(CustomTextAttr, attrs.len);
         errdefer allocator.free(next);
         var initialized: usize = 0;
@@ -447,6 +467,10 @@ pub const PreparedNamedEventsReplacement = struct {
     pub fn prepare(comptime Ctx: type, allocator: std.mem.Allocator, cache: *const Cache(Ctx), elem_id: u64, events: []const NamedEvent) (std.mem.Allocator.Error || error{MissingNode})!PreparedNamedEventsReplacement {
         const index = std.math.cast(usize, elem_id) orelse return error.MissingNode;
         if (index >= cache.nodes.items.len or !cache.nodes.items[index].active) return error.MissingNode;
+        return prepareKnownNode(allocator, elem_id, events);
+    }
+
+    fn prepareKnownNode(allocator: std.mem.Allocator, elem_id: u64, events: []const NamedEvent) std.mem.Allocator.Error!PreparedNamedEventsReplacement {
         const next = try allocator.alloc(NamedEvent, events.len);
         errdefer allocator.free(next);
         var initialized: usize = 0;
@@ -481,6 +505,203 @@ pub const PreparedNamedEventsReplacement = struct {
         self.* = undefined;
     }
 };
+
+/// Upper bounds used to reserve one render splice journal before preparation.
+pub const PreparedRenderCounts = struct {
+    node_capacity: usize = 0,
+    new_tags: usize = 0,
+    removals: usize = 0,
+    creations: usize = 0,
+    children: usize = 0,
+    text_fields: usize = 0,
+    bool_fields: usize = 0,
+    fixed_events: usize = 0,
+    custom_attrs: usize = 0,
+    named_events: usize = 0,
+    child_links: usize = 0,
+};
+
+/// Owns every cache delta for one render splice until atomic publication.
+pub fn PreparedRenderSplice(comptime Ctx: type) type {
+    return struct {
+        const Self = @This();
+
+        allocator: std.mem.Allocator,
+        tags: PreparedTagOverlay,
+        removals: std.ArrayListUnmanaged(PreparedNodeRemoval) = .empty,
+        creations: std.ArrayListUnmanaged(PreparedNodeCreation) = .empty,
+        children: std.ArrayListUnmanaged(PreparedChildrenReplacement) = .empty,
+        text_fields: std.ArrayListUnmanaged(PreparedTextFieldUpdate) = .empty,
+        bool_fields: std.ArrayListUnmanaged(PreparedBoolFieldUpdate) = .empty,
+        fixed_events: std.ArrayListUnmanaged(PreparedFixedEventUpdate) = .empty,
+        custom_attrs: std.ArrayListUnmanaged(PreparedCustomTextAttrsReplacement) = .empty,
+        named_events: std.ArrayListUnmanaged(PreparedNamedEventsReplacement) = .empty,
+        provisional_nodes: std.AutoHashMapUnmanaged(u64, void) = .empty,
+        parent_intent_indexes: std.AutoHashMapUnmanaged(u64, usize) = .empty,
+        parent_intents: std.ArrayListUnmanaged(ParentIntent) = .empty,
+        committed: bool = false,
+
+        const ParentIntent = struct { child_id: u64, next: ?u64, retired: ?u64 };
+
+        /// Reserves every plan-local journal and persistent tag slot before collection.
+        pub fn init(allocator: std.mem.Allocator, cache: *Cache(Ctx), counts: PreparedRenderCounts) (std.mem.Allocator.Error || error{ResourceLimit})!Self {
+            var self = Self{ .allocator = allocator, .tags = try PreparedTagOverlay.init(Ctx, allocator, cache, counts.new_tags) };
+            errdefer self.deinit();
+            try cache.preflightNodeCapacity(allocator, counts.node_capacity);
+            try self.removals.ensureTotalCapacity(allocator, counts.removals);
+            try self.creations.ensureTotalCapacity(allocator, counts.creations);
+            try self.children.ensureTotalCapacity(allocator, counts.children);
+            try self.text_fields.ensureTotalCapacity(allocator, counts.text_fields);
+            try self.bool_fields.ensureTotalCapacity(allocator, counts.bool_fields);
+            try self.fixed_events.ensureTotalCapacity(allocator, counts.fixed_events);
+            try self.custom_attrs.ensureTotalCapacity(allocator, counts.custom_attrs);
+            try self.named_events.ensureTotalCapacity(allocator, counts.named_events);
+            const creation_count = std.math.cast(u32, counts.creations) orelse return error.ResourceLimit;
+            const child_link_count = std.math.cast(u32, counts.child_links) orelse return error.ResourceLimit;
+            try self.provisional_nodes.ensureUnusedCapacity(allocator, creation_count);
+            try self.parent_intent_indexes.ensureUnusedCapacity(allocator, child_link_count);
+            try self.parent_intents.ensureTotalCapacity(allocator, counts.child_links);
+            return self;
+        }
+
+        fn nodeExists(self: *const Self, cache: *const Cache(Ctx), elem_id: u64) bool {
+            const index = std.math.cast(usize, elem_id) orelse return false;
+            return self.provisional_nodes.contains(elem_id) or
+                (index < cache.nodes.items.len and cache.nodes.items[index].active);
+        }
+
+        /// Adds one provisional node and its prepared tag to the journal.
+        pub fn addCreation(self: *Self, cache: *Cache(Ctx), elem_id: u64, tag: []const u8) (std.mem.Allocator.Error || error{ ActiveNode, DuplicateNode, ResourceLimit })!void {
+            if (self.provisional_nodes.contains(elem_id)) return error.DuplicateNode;
+            const prepared = try PreparedNodeCreation.prepare(Ctx, self.allocator, cache, &self.tags, elem_id, tag);
+            self.provisional_nodes.putAssumeCapacity(elem_id, {});
+            self.creations.appendAssumeCapacity(prepared);
+        }
+
+        fn setParentIntent(self: *Self, cache: *const Cache(Ctx), child_id: u64, next: ?u64) error{ ConflictingParent, DuplicateChild, MissingNode, ResourceLimit }!void {
+            if (!self.nodeExists(cache, child_id)) return error.MissingNode;
+            if (self.parent_intent_indexes.get(child_id)) |intent_index| {
+                const intent = &self.parent_intents.items[intent_index];
+                if (next != null and intent.next != null) {
+                    if (intent.next.? == next.?) return error.DuplicateChild;
+                    return error.ConflictingParent;
+                }
+                if (next != null) intent.next = next;
+                return;
+            }
+            const index = std.math.cast(usize, child_id) orelse return error.ResourceLimit;
+            const retired = if (index < cache.nodes.items.len and cache.nodes.items[index].active) cache.nodes.items[index].parent_id else null;
+            const intent_index = self.parent_intents.items.len;
+            self.parent_intents.appendAssumeCapacity(.{ .child_id = child_id, .next = next, .retired = retired });
+            self.parent_intent_indexes.putAssumeCapacity(child_id, intent_index);
+        }
+
+        /// Adds one complete parent-child replacement and final parent intents.
+        pub fn addChildren(self: *Self, cache: *const Cache(Ctx), parent_elem_id: u64, next: []const u64) (std.mem.Allocator.Error || error{ ConflictingParent, DuplicateChild, MissingNode, ResourceLimit })!void {
+            if (!self.nodeExists(cache, parent_elem_id)) return error.MissingNode;
+            const parent_index = std.math.cast(usize, parent_elem_id) orelse return error.ResourceLimit;
+            if (parent_index < cache.nodes.items.len and cache.nodes.items[parent_index].active) {
+                for (cache.nodes.items[parent_index].children.items) |child_id| try self.setParentIntent(cache, child_id, null);
+            }
+            for (next) |child_id| try self.setParentIntent(cache, child_id, parent_elem_id);
+            const copied = try self.allocator.dupe(u64, next);
+            self.children.appendAssumeCapacity(.{ .parent_elem_id = parent_elem_id, .next = copied });
+        }
+
+        /// Adds a text field for an active or provisional node.
+        pub fn addTextField(self: *Self, cache: *const Cache(Ctx), elem_id: u64, field: TextField, value: ?[]const u8) (std.mem.Allocator.Error || error{MissingNode})!void {
+            if (!self.nodeExists(cache, elem_id)) return error.MissingNode;
+            self.text_fields.appendAssumeCapacity(try PreparedTextFieldUpdate.prepareKnownNode(self.allocator, elem_id, field, value));
+        }
+
+        /// Adds a boolean field for an active or provisional node.
+        pub fn addBoolField(self: *Self, cache: *const Cache(Ctx), elem_id: u64, field: BoolField, value: ?bool) error{MissingNode}!void {
+            if (!self.nodeExists(cache, elem_id)) return error.MissingNode;
+            self.bool_fields.appendAssumeCapacity(.{ .elem_id = elem_id, .field = field, .next = value });
+        }
+
+        /// Adds a fixed event for an active or provisional node.
+        pub fn addFixedEvent(self: *Self, cache: *const Cache(Ctx), elem_id: u64, kind: EventKind, binding: ?EventBinding) error{MissingNode}!void {
+            if (!self.nodeExists(cache, elem_id)) return error.MissingNode;
+            self.fixed_events.appendAssumeCapacity(.{ .elem_id = elem_id, .kind = kind, .next = if (binding) |value| value.withDeliveryFor(.{ .fixed = kind }) else null });
+        }
+
+        /// Adds final custom attributes for an active or provisional node.
+        pub fn addCustomAttrs(self: *Self, cache: *const Cache(Ctx), elem_id: u64, attrs: []const CustomTextAttr) (std.mem.Allocator.Error || error{MissingNode})!void {
+            if (!self.nodeExists(cache, elem_id)) return error.MissingNode;
+            self.custom_attrs.appendAssumeCapacity(try PreparedCustomTextAttrsReplacement.prepareKnownNode(self.allocator, elem_id, attrs));
+        }
+
+        /// Adds final named events for an active or provisional node.
+        pub fn addNamedEvents(self: *Self, cache: *const Cache(Ctx), elem_id: u64, events: []const NamedEvent) (std.mem.Allocator.Error || error{MissingNode})!void {
+            if (!self.nodeExists(cache, elem_id)) return error.MissingNode;
+            self.named_events.appendAssumeCapacity(try PreparedNamedEventsReplacement.prepareKnownNode(self.allocator, elem_id, events));
+        }
+
+        /// Publishes every prepared cache delta without allocation.
+        pub fn apply(self: *Self, cache: *Cache(Ctx)) void {
+            if (self.committed) @panic("prepared render splice committed twice");
+            self.tags.apply(Ctx, cache);
+            for (self.removals.items) |*value| value.apply(Ctx, cache);
+            for (self.creations.items) |*value| value.apply(Ctx, cache);
+            for (self.children.items) |*value| value.apply(Ctx, cache);
+            for (self.parent_intents.items) |intent| cache.nodes.items[@intCast(intent.child_id)].parent_id = intent.next;
+            for (self.text_fields.items) |*value| value.apply(Ctx, cache);
+            for (self.bool_fields.items) |*value| value.apply(Ctx, cache);
+            for (self.fixed_events.items) |*value| value.apply(Ctx, cache);
+            for (self.custom_attrs.items) |*value| value.apply(Ctx, cache);
+            for (self.named_events.items) |*value| value.apply(Ctx, cache);
+            self.committed = true;
+        }
+
+        /// Releases provisional deltas on abort or retired cache ownership after commit.
+        pub fn deinit(self: *Self) void {
+            var index = self.named_events.items.len;
+            while (index != 0) {
+                index -= 1;
+                self.named_events.items[index].deinit(self.allocator);
+            }
+            index = self.custom_attrs.items.len;
+            while (index != 0) {
+                index -= 1;
+                self.custom_attrs.items[index].deinit(self.allocator);
+            }
+            index = self.text_fields.items.len;
+            while (index != 0) {
+                index -= 1;
+                self.text_fields.items[index].deinit(self.allocator);
+            }
+            index = self.children.items.len;
+            while (index != 0) {
+                index -= 1;
+                self.children.items[index].deinit(self.allocator);
+            }
+            index = self.creations.items.len;
+            while (index != 0) {
+                index -= 1;
+                self.creations.items[index].deinit();
+            }
+            index = self.removals.items.len;
+            while (index != 0) {
+                index -= 1;
+                self.removals.items[index].deinit(self.allocator);
+            }
+            self.named_events.deinit(self.allocator);
+            self.custom_attrs.deinit(self.allocator);
+            self.fixed_events.deinit(self.allocator);
+            self.bool_fields.deinit(self.allocator);
+            self.text_fields.deinit(self.allocator);
+            self.children.deinit(self.allocator);
+            self.creations.deinit(self.allocator);
+            self.removals.deinit(self.allocator);
+            self.parent_intents.deinit(self.allocator);
+            self.parent_intent_indexes.deinit(self.allocator);
+            self.provisional_nodes.deinit(self.allocator);
+            self.tags.deinit(self.allocator);
+            self.* = undefined;
+        }
+    };
+}
 
 /// Defines the engine-owned rendered-state cache used to emit only changed host commands.
 pub fn Cache(comptime Ctx: type) type {
@@ -1289,6 +1510,160 @@ test "prepared named events sweep failures and publish allocation free" {
     try std.testing.expectEqualStrings("old", committed.retired.items[0].name);
     fault.configure(null);
     committed.deinit(allocator);
+}
+
+test "prepared render splice composes mixed cache deltas allocation free" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var fault = FaultAllocator.init(std.testing.allocator);
+    const allocator = fault.allocator();
+    var cache: Cache(TestCtx) = .{};
+    defer {
+        for (cache.nodes.items) |*node| node.deinit(allocator);
+        cache.nodes.deinit(allocator);
+        var tags = cache.interned_tags.valueIterator();
+        while (tags.next()) |tag| allocator.free(tag.*);
+        cache.interned_tags.deinit(allocator);
+    }
+    try cache.nodes.append(allocator, ScalarNode.initActive("root"));
+    try cache.nodes.append(allocator, ScalarNode.initActive("left"));
+    try cache.nodes.append(allocator, ScalarNode.initActive("right"));
+    var child = ScalarNode.initActive("old");
+    child.parent_id = 1;
+    try cache.nodes.append(allocator, child);
+    try cache.nodes.items[0].children.appendSlice(allocator, &.{ 1, 2 });
+    try cache.nodes.items[1].children.append(allocator, 3);
+
+    const counts = PreparedRenderCounts{
+        .node_capacity = 8,
+        .new_tags = 1,
+        .creations = 1,
+        .children = 2,
+        .child_links = 2,
+        .text_fields = 1,
+        .bool_fields = 1,
+        .fixed_events = 1,
+        .custom_attrs = 1,
+        .named_events = 1,
+    };
+    const custom = [_]CustomTextAttr{.{ .name = "data-new", .value = "yes" }};
+    const named = [_]NamedEvent{.{ .name = "focus", .binding = .{ .event_id = 10, .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) } }};
+
+    var aborted = try PreparedRenderSplice(TestCtx).init(allocator, &cache, counts);
+    try aborted.addCreation(&cache, 7, "button");
+    try aborted.addChildren(&cache, 1, &.{7});
+    try aborted.addChildren(&cache, 2, &.{3});
+    try aborted.addTextField(&cache, 7, .label, "next");
+    try aborted.addBoolField(&cache, 7, .disabled, true);
+    try aborted.addFixedEvent(&cache, 7, .click, .{ .event_id = 9, .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) });
+    try aborted.addCustomAttrs(&cache, 7, &custom);
+    try aborted.addNamedEvents(&cache, 7, &named);
+    aborted.deinit();
+    try std.testing.expectEqualSlices(u64, &.{3}, cache.nodes.items[1].children.items);
+    try std.testing.expectEqual(@as(?u64, 1), cache.nodes.items[3].parent_id);
+    try std.testing.expectEqual(@as(usize, 4), cache.nodes.items.len);
+
+    var plan = try PreparedRenderSplice(TestCtx).init(allocator, &cache, counts);
+    defer plan.deinit();
+    try plan.addCreation(&cache, 7, "button");
+    try plan.addChildren(&cache, 1, &.{7});
+    try plan.addChildren(&cache, 2, &.{3});
+    try plan.addTextField(&cache, 7, .label, "next");
+    try plan.addBoolField(&cache, 7, .disabled, true);
+    try plan.addFixedEvent(&cache, 7, .click, .{ .event_id = 9, .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) });
+    try plan.addCustomAttrs(&cache, 7, &custom);
+    try plan.addNamedEvents(&cache, 7, &named);
+
+    fault.configure(1);
+    plan.apply(&cache);
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqualStrings("button", cache.nodes.items[7].tag.?);
+    try std.testing.expectEqualStrings("next", cache.nodes.items[7].label.?);
+    try std.testing.expect(cache.nodes.items[7].disabled.?);
+    try std.testing.expectEqual(@as(u64, 9), cache.nodes.items[7].event_bindings.click.?.event_id);
+    try std.testing.expectEqualStrings("data-new", cache.nodes.items[7].custom_text_attrs.items[0].name);
+    try std.testing.expectEqualStrings("focus", cache.nodes.items[7].named_events.items[0].name);
+    try std.testing.expectEqualSlices(u64, &.{7}, cache.nodes.items[1].children.items);
+    try std.testing.expectEqualSlices(u64, &.{3}, cache.nodes.items[2].children.items);
+    try std.testing.expectEqual(@as(?u64, 1), cache.nodes.items[7].parent_id);
+    try std.testing.expectEqual(@as(?u64, 2), cache.nodes.items[3].parent_id);
+    fault.configure(null);
+}
+
+test "prepared render splice sweeps every allocation and retries" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    const Plan = PreparedRenderSplice(TestCtx);
+    const Runner = struct {
+        const counts = PreparedRenderCounts{
+            .node_capacity = 8,
+            .new_tags = 1,
+            .creations = 1,
+            .children = 1,
+            .child_links = 1,
+            .text_fields = 1,
+            .bool_fields = 1,
+            .fixed_events = 1,
+            .custom_attrs = 1,
+            .named_events = 1,
+        };
+        const custom = [_]CustomTextAttr{.{ .name = "data-new", .value = "yes" }};
+        const named = [_]NamedEvent{.{ .name = "focus", .binding = .{ .event_id = 10, .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) } }};
+
+        fn prepare(allocator: std.mem.Allocator, cache: *Cache(TestCtx)) !Plan {
+            var plan = try Plan.init(allocator, cache, counts);
+            errdefer plan.deinit();
+            try plan.addCreation(cache, 7, "button");
+            try plan.addChildren(cache, 0, &.{7});
+            try plan.addTextField(cache, 7, .label, "next");
+            try plan.addBoolField(cache, 7, .disabled, true);
+            try plan.addFixedEvent(cache, 7, .click, .{ .event_id = 9, .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) });
+            try plan.addCustomAttrs(cache, 7, &custom);
+            try plan.addNamedEvents(cache, 7, &named);
+            return plan;
+        }
+
+        fn run(failure_number: ?usize) !usize {
+            var fault = FaultAllocator.init(std.testing.allocator);
+            var cache: Cache(TestCtx) = .{};
+            var host = TestHost{};
+            defer cache.deinit(&host);
+            try cache.nodes.append(std.testing.allocator, ScalarNode.initActive("root"));
+            fault.configure(failure_number);
+            const prepared = prepare(fault.allocator(), &cache);
+            if (failure_number == null) {
+                var plan = try prepared;
+                const attempts = fault.attempts;
+                fault.configure(1);
+                plan.apply(&cache);
+                try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+                fault.configure(null);
+                plan.deinit();
+                return attempts;
+            }
+            try std.testing.expectError(error.OutOfMemory, prepared);
+            try std.testing.expectEqual(@as(usize, 1), cache.nodes.items.len);
+            try std.testing.expectEqual(@as(usize, 0), cache.nodes.items[0].children.items.len);
+            try std.testing.expectEqual(@as(usize, 0), cache.interned_tags.count());
+            fault.configure(null);
+            var retry = try prepare(fault.allocator(), &cache);
+            retry.deinit();
+            try std.testing.expectEqual(@as(usize, 1), cache.nodes.items.len);
+            return 0;
+        }
+    };
+
+    const attempts = try Runner.run(null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
+
+    var cache: Cache(TestCtx) = .{};
+    var host = TestHost{};
+    defer cache.deinit(&host);
+    try cache.nodes.append(std.testing.allocator, ScalarNode.initActive("root"));
+    var duplicate = try Plan.init(std.testing.allocator, &cache, .{ .node_capacity = 8, .new_tags = 1, .creations = 1, .children = 1, .child_links = 1 });
+    defer duplicate.deinit();
+    try duplicate.addCreation(&cache, 7, "button");
+    try std.testing.expectError(error.DuplicateChild, duplicate.addChildren(&cache, 0, &.{ 7, 7 }));
+    try std.testing.expectEqual(@as(usize, 0), cache.nodes.items[0].children.items.len);
 }
 
 test "render cache reset accepts sparse element ids" {
