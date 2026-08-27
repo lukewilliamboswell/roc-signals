@@ -1231,20 +1231,56 @@ pub const Stream = struct {
         }
     };
 
+    pub const PreparedNamedEventIndexGroup = struct {
+        elem_id: u64,
+        existed: bool,
+        event_ordinals: std.ArrayListUnmanaged(usize) = .empty,
+
+        pub fn abort(self: *@This(), allocator: std.mem.Allocator) void {
+            self.event_ordinals.deinit(allocator);
+            self.* = undefined;
+        }
+    };
+
     pub fn reservePreparedEvents(self: *Stream, allocator: std.mem.Allocator, additional: usize, highest_elem_id: u64) std.mem.Allocator.Error!void {
         try self.events.ensureUnusedCapacity(allocator, additional);
         const highest_index = std.math.cast(usize, highest_elem_id) orelse return error.OutOfMemory;
         const descriptor_len = std.math.add(usize, highest_index, 1) catch return error.OutOfMemory;
         if (descriptor_len > self.descriptor_indexes_by_elem_id.items.len) try self.descriptor_indexes_by_elem_id.ensureTotalCapacity(allocator, descriptor_len);
+        if (descriptor_len > self.named_event_indices_by_elem_id.items.len) try self.named_event_indices_by_elem_id.ensureTotalCapacity(allocator, descriptor_len);
+    }
+
+    pub fn namedEventIndexSlotExists(self: *const Stream, elem_id: u64) bool {
+        return elem_id < self.named_event_indices_by_elem_id.items.len;
+    }
+
+    pub fn reserveExistingNamedEventIndexes(self: *Stream, allocator: std.mem.Allocator, elem_id: u64, additional: usize) std.mem.Allocator.Error!void {
+        if (!self.namedEventIndexSlotExists(elem_id)) return;
+        try self.named_event_indices_by_elem_id.items[@intCast(elem_id)].ensureUnusedCapacity(allocator, additional);
     }
 
     pub fn appendPreparedEvent(self: *Stream, prepared: PreparedEventDescriptor) void {
         const desc = prepared.desc;
         while (self.descriptor_indexes_by_elem_id.items.len <= desc.elem_id) self.descriptor_indexes_by_elem_id.appendAssumeCapacity(.{});
-        const kind = desc.fixedKind() orelse @panic("prepared named event requires named index reservation");
         const index = self.events.items.len;
         self.events.appendAssumeCapacity(desc);
-        setFreshIndex(self.descriptor_indexes_by_elem_id.items[@intCast(desc.elem_id)].events.slot(kind), index);
+        if (desc.fixedKind()) |kind| setFreshIndex(self.descriptor_indexes_by_elem_id.items[@intCast(desc.elem_id)].events.slot(kind), index);
+    }
+
+    pub fn publishPreparedNamedEventIndexes(self: *Stream, groups: []PreparedNamedEventIndexGroup, event_base: usize) void {
+        for (groups) |*group| {
+            while (self.named_event_indices_by_elem_id.items.len <= group.elem_id) self.named_event_indices_by_elem_id.appendAssumeCapacity(.empty);
+            const slot = &self.named_event_indices_by_elem_id.items[@intCast(group.elem_id)];
+            for (group.event_ordinals.items) |*ordinal| ordinal.* += event_base;
+            if (group.existed) {
+                slot.appendSliceAssumeCapacity(group.event_ordinals.items);
+                group.event_ordinals.clearRetainingCapacity();
+            } else {
+                if (slot.items.len != 0 or slot.capacity != 0) @panic("new named event index slot was already initialized");
+                slot.* = group.event_ordinals;
+                group.event_ordinals = .empty;
+            }
+        }
     }
 
     pub fn reservePreparedSignalTextNodes(self: *Stream, allocator: std.mem.Allocator, additional: usize, highest_elem_id: u64) std.mem.Allocator.Error!void {
@@ -3067,6 +3103,73 @@ test "fixed event descriptors preserve Roc supplied payload descriptors" {
     try std.testing.expectEqual(EventKind.pointer_down, stream.events.items[0].fixedKind().?);
     try std.testing.expect(stream.events.items[0].payload_descriptor.eql(payload_descriptor));
     try std.testing.expectEqual(@as(?usize, 0), stream.elemDescriptorIndex(7).?.events.get(.pointer_down));
+}
+
+test "prepared named event indexes publish allocation free for existing and new elements" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    const TestCtx = struct {
+        pub fn pushHostValueCapabilities(_: *@This(), _: []const retained.HostValueCapability) void {}
+        pub fn popHostValueCapabilities(_: *@This()) void {}
+    };
+
+    var fault = FaultAllocator.init(std.testing.allocator);
+    const allocator = fault.allocator();
+    var stream: Stream = .{};
+    var ctx: TestCtx = .{};
+    var env = abi.RocEnv{ .allocator = allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&env);
+    var metrics = TestMetrics{};
+    defer stream.deinit(allocator, &ctx, &roc_host, &metrics);
+
+    try stream.named_event_indices_by_elem_id.append(allocator, .empty);
+    try stream.named_event_indices_by_elem_id.append(allocator, .empty);
+    try stream.named_event_indices_by_elem_id.items[1].append(allocator, 17);
+    try stream.reservePreparedEvents(allocator, 2, 3);
+    try stream.reserveExistingNamedEventIndexes(allocator, 1, 1);
+
+    var groups = [_]Stream.PreparedNamedEventIndexGroup{
+        .{ .elem_id = 1, .existed = true },
+        .{ .elem_id = 3, .existed = false },
+    };
+    defer for (&groups) |*group| group.abort(allocator);
+    try groups[0].event_ordinals.append(allocator, 0);
+    try groups[1].event_ordinals.append(allocator, 1);
+
+    const reducer = std.mem.zeroes(HostEventReducer);
+    const first_name = try allocator.dupe(u8, "existing");
+    const second_name = try allocator.dupe(u8, "new");
+    const first = Stream.PreparedEventDescriptor{ .desc = .{
+        .elem_id = 1,
+        .binding = .{ .named = .{ .name = first_name, .policy = .none } },
+        .binder_token = @ptrFromInt(0x1000),
+        .target_node_id = 1,
+        .read_binder_token = @ptrFromInt(0x1000),
+        .read_node_id = 1,
+        .payload_descriptor = BoundaryPayloadDescriptor.init(.str, .target_value),
+        .payload_reducer = reducer,
+        .owns_payload_reducer = false,
+    } };
+    const second = Stream.PreparedEventDescriptor{ .desc = .{
+        .elem_id = 3,
+        .binding = .{ .named = .{ .name = second_name, .policy = .none } },
+        .binder_token = @ptrFromInt(0x1000),
+        .target_node_id = 3,
+        .read_binder_token = @ptrFromInt(0x1000),
+        .read_node_id = 3,
+        .payload_descriptor = BoundaryPayloadDescriptor.init(.str, .target_value),
+        .payload_reducer = reducer,
+        .owns_payload_reducer = false,
+    } };
+
+    fault.configure(1);
+    stream.appendPreparedEvent(first);
+    stream.appendPreparedEvent(second);
+    stream.publishPreparedNamedEventIndexes(&groups, 0);
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqualSlices(usize, &.{ 17, 0 }, stream.namedEventIndices(1));
+    try std.testing.expectEqualSlices(usize, &.{1}, stream.namedEventIndices(3));
+    try std.testing.expectEqualStrings("existing", stream.events.items[0].named().?.name);
+    try std.testing.expectEqualStrings("new", stream.events.items[1].named().?.name);
 }
 
 test "field descriptor indexes round-trip by enum field" {
