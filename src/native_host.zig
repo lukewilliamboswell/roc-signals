@@ -7793,3 +7793,22 @@ test "signals host keeps live allocations and table sizes flat across repeated e
 
     try expectHostValueI64(host.stateValueByNodeId(state_id), 100);
 }
+
+test "native host teardown is allocation-free with populated real host state" {
+    var host = HostEnv.init();
+    var roc_host = makeSignalsRocHost(&host);
+    host.engine.roc_host = &roc_host;
+
+    host.sinkReset();
+    host.sinkAppendNode(1, 0, "section");
+    try host.location_history.append(host.hostAllocator(), NativeLocation.init(host.hostAllocator(), .{
+        .path = "/teardown",
+        .query = "fault=armed",
+        .hash = "state",
+    }));
+
+    host.configureAllocationFailure(1);
+    host.deinit();
+    try std.testing.expectEqual(@as(usize, 0), host.allocation_fault.?.attempts);
+    try std.testing.expectEqual(std.heap.Check.ok, host.gpa.deinit());
+}
