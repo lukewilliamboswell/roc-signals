@@ -10863,16 +10863,19 @@ pub fn Engine(comptime Ctx: type) type {
         const PreparedSourceTransaction = struct {
             const HostRenderPublication = if (@hasDecl(Ctx, "RenderPublication")) Ctx.RenderPublication else void;
             const PreparedStateUpdate = struct {
-                live: *HostState,
+                state_index: usize,
+                state_id: u64,
                 next: HostValueCell,
                 displaced: ?HostValueCell = null,
                 committed: bool = false,
 
-                fn commit(self: *@This()) void {
+                fn commit(self: *@This(), engine: *Self) void {
                     if (self.committed) @panic("prepared state update committed twice");
-                    self.displaced = self.live.cell;
-                    self.live.cell = self.next;
-                    self.live.version += 1;
+                    const live = &engine.states.items[self.state_index];
+                    if (live.state_id != self.state_id) @panic("prepared state update target changed before commit");
+                    self.displaced = live.cell;
+                    live.cell = self.next;
+                    live.version += 1;
                     self.committed = true;
                 }
 
@@ -10973,7 +10976,7 @@ pub fn Engine(comptime Ctx: type) type {
                     engine.recordSignalPrune();
                     return null;
                 }
-                var state_update = PreparedStateUpdate{ .live = live, .next = HostValueCell.initRetained(incoming, cap, &engine.pending_roc_metrics) };
+                var state_update = PreparedStateUpdate{ .state_index = state_index, .state_id = live.state_id, .next = HostValueCell.initRetained(incoming, cap, &engine.pending_roc_metrics) };
                 errdefer state_update.deinit(ctx, roc_host, &engine.pending_roc_metrics);
                 var owned = signal_records.OwnedSourceUpdates.init(Ctx.allocator(ctx), 0) catch return error.OutOfMemory;
                 defer owned.deinit(ctx, roc_host, &engine.pending_roc_metrics);
@@ -11018,7 +11021,7 @@ pub fn Engine(comptime Ctx: type) type {
                     return null;
                 }
                 engine.scratch.dirty_active_records.reserveForGraph(HostSignalRecord, allocator, engine.active_signal_graph.items) catch return error.OutOfMemory;
-                const state_node_ids: []const u64 = if (state_update) |update| @as(*const [1]u64, @ptrCast(&update.live.state_id)) else &.{};
+                const state_node_ids: []const u64 = if (state_update) |update| @as(*const [1]u64, @ptrCast(&update.state_id)) else &.{};
                 const dirty_ids = if (state_update != null)
                     engine.scratchDirtyActiveSignalRecordIdsForSources(ctx, state_node_ids)
                 else
@@ -11027,7 +11030,7 @@ pub fn Engine(comptime Ctx: type) type {
                     for (dirty_ids) |record_id| {
                         const record = engine.active_signal_graph.items[@intCast(record_id)].record;
                         switch (record.payload) {
-                            .ref => |ref_node_id| if (ref_node_id == update.live.state_id) {
+                            .ref => |ref_node_id| if (ref_node_id == update.state_id) {
                                 caches.bindProvisionalValueAssumeCapacity(@ptrCast(record), &update.next);
                                 caches.rememberResultAssumeCapacity(@ptrCast(record), generation, true);
                             },
@@ -11212,7 +11215,7 @@ pub fn Engine(comptime Ctx: type) type {
                     if (self.engine.pending_tasks.items[index].task_token != self.pending_task_token.?) @panic("prepared task settlement changed source token before commit");
                     break :blk index;
                 } else null;
-                if (self.state_update) |*update| update.commit();
+                if (self.state_update) |*update| update.commit(self.engine);
                 self.engine.commitPreparedDirtySignalCaches(&self.caches);
                 if (self.pending_task_request_id) |request_id| {
                     var pending = self.engine.removePendingTaskAt(pending_index.?);
