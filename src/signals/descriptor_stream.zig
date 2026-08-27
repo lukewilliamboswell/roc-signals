@@ -213,6 +213,23 @@ pub const CustomAttrRef = struct {
     }
 };
 
+const CustomAttrKey = struct {
+    elem_id: u64,
+    name: []const u8,
+};
+
+const CustomAttrKeyContext = struct {
+    pub fn hash(_: @This(), key: CustomAttrKey) u64 {
+        return std.hash.Wyhash.hash(key.elem_id, key.name);
+    }
+
+    pub fn eql(_: @This(), left: CustomAttrKey, right: CustomAttrKey) bool {
+        return left.elem_id == right.elem_id and std.mem.eql(u8, left.name, right.name);
+    }
+};
+
+const CustomAttrKeySet = std.HashMapUnmanaged(CustomAttrKey, void, CustomAttrKeyContext, 80);
+
 pub const SignalBoolAttrDesc = struct {
     elem_id: u64,
     field: BoolField,
@@ -551,6 +568,8 @@ pub const Stream = struct {
     eaches: std.ArrayListUnmanaged(EachDesc) = .empty,
     signal_records_by_token: std.AutoHashMapUnmanaged(HostSignalToken, *SignalRecord) = .{},
     signal_record_descriptor_uses_by_token: std.AutoHashMapUnmanaged(HostSignalToken, usize) = .{},
+    custom_attr_keys: CustomAttrKeySet = .empty,
+    custom_attr_index_active: bool = false,
     render_metadata_by_elem_id: std.AutoHashMapUnmanaged(u64, RenderElemIndex) = .{},
     named_event_indices_by_elem_id: std.ArrayListUnmanaged(std.ArrayListUnmanaged(usize)) = .empty,
     descriptor_indexes_by_elem_id: std.ArrayListUnmanaged(ElemDescriptorIndex) = .empty,
@@ -1023,6 +1042,7 @@ pub const Stream = struct {
 
         self.signal_records_by_token.deinit(allocator);
         self.signal_record_descriptor_uses_by_token.deinit(allocator);
+        self.custom_attr_keys.deinit(allocator);
         self.render_metadata_by_elem_id.deinit(allocator);
         self.descriptor_indexes_by_elem_id.deinit(allocator);
         self.descriptor_indexes_by_node_id.deinit(allocator);
@@ -1157,10 +1177,11 @@ pub const Stream = struct {
 
     pub fn appendSignalCustomTextAttr(self: *Stream, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, elem_id: u64, name: []const u8, signal: HostSignalBinding, read: HostTextRead) void {
         if (name.len == 0) @panic("custom text attr descriptor used an empty name");
-        if (customAttrDescriptorExists(Stream, self, elem_id, name)) @panic("element has duplicate custom text attr descriptors");
+        if (customAttrDescriptorExistsForAppend(Stream, self, allocator, elem_id, name)) @panic("element has duplicate custom text attr descriptors");
 
         self.rememberSignalRecordTree(allocator, signal.record);
         const name_copy = allocator.dupe(u8, name) catch @panic("out of memory");
+        recordCustomAttrKey(Stream, self, allocator, elem_id, name_copy);
         const retained_read = retainHostTextRead(read, metrics);
         self.signal_custom_text_attrs.append(allocator, .{
             .elem_id = elem_id,
@@ -1176,10 +1197,11 @@ pub const Stream = struct {
 
     pub fn appendSignalOptionalCustomTextAttr(self: *Stream, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, elem_id: u64, name: []const u8, signal: HostSignalBinding, present: HostBoolRead, read: HostTextRead) void {
         if (name.len == 0) @panic("custom text attr descriptor used an empty name");
-        if (customAttrDescriptorExists(Stream, self, elem_id, name)) @panic("element has duplicate custom text attr descriptors");
+        if (customAttrDescriptorExistsForAppend(Stream, self, allocator, elem_id, name)) @panic("element has duplicate custom text attr descriptors");
 
         self.rememberSignalRecordTree(allocator, signal.record);
         const name_copy = allocator.dupe(u8, name) catch @panic("out of memory");
+        recordCustomAttrKey(Stream, self, allocator, elem_id, name_copy);
         const retained_present = retainHostBoolRead(present, metrics);
         const retained_read = retainHostTextRead(read, metrics);
         self.signal_optional_custom_text_attrs.append(allocator, .{
@@ -1201,10 +1223,11 @@ pub const Stream = struct {
 
     pub fn appendSignalCustomBoolAttr(self: *Stream, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, elem_id: u64, name: []const u8, signal: HostSignalBinding, read: HostBoolRead) void {
         if (name.len == 0) @panic("custom bool attr descriptor used an empty name");
-        if (customAttrDescriptorExists(Stream, self, elem_id, name)) @panic("element has duplicate custom attr descriptors");
+        if (customAttrDescriptorExistsForAppend(Stream, self, allocator, elem_id, name)) @panic("element has duplicate custom attr descriptors");
 
         self.rememberSignalRecordTree(allocator, signal.record);
         const name_copy = allocator.dupe(u8, name) catch @panic("out of memory");
+        recordCustomAttrKey(Stream, self, allocator, elem_id, name_copy);
         const retained_read = retainHostBoolRead(read, metrics);
         self.signal_custom_bool_attrs.append(allocator, .{
             .elem_id = elem_id,
@@ -2086,6 +2109,12 @@ pub fn customTextAttrDescriptorExists(comptime StreamType: type, stream: *const 
 }
 
 pub fn customAttrDescriptorExists(comptime StreamType: type, stream: *const StreamType, elem_id: u64, name: []const u8) bool {
+    if (@hasField(StreamType, "custom_attr_keys")) {
+        if (stream.custom_attr_index_active) {
+            return stream.custom_attr_keys.contains(.{ .elem_id = elem_id, .name = name });
+        }
+    }
+
     var attrs = customAttrRefs(StreamType, stream);
     while (attrs.next()) |attr| {
         if (attr.matches(elem_id, name)) return true;
@@ -2093,11 +2122,44 @@ pub fn customAttrDescriptorExists(comptime StreamType: type, stream: *const Stre
     return false;
 }
 
+// Linear duplicate checks are cheaper for small descriptor streams, while a
+// content-keyed index avoids a growing-prefix scan for large rendered tables.
+const custom_attr_index_threshold = 256;
+
+fn customAttrDescriptorExistsForAppend(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, elem_id: u64, name: []const u8) bool {
+    if (@hasField(StreamType, "custom_attr_keys")) {
+        if (!stream.custom_attr_index_active) {
+            const attr_count = stream.static_custom_text_attrs.items.len +
+                stream.signal_custom_text_attrs.items.len +
+                stream.signal_optional_custom_text_attrs.items.len +
+                stream.static_custom_bool_attrs.items.len +
+                stream.signal_custom_bool_attrs.items.len;
+
+            if (attr_count >= custom_attr_index_threshold) {
+                stream.custom_attr_keys.ensureTotalCapacity(allocator, @intCast(attr_count + 1)) catch @panic("out of memory");
+                var attrs = customAttrRefs(StreamType, stream);
+                while (attrs.next()) |attr| {
+                    stream.custom_attr_keys.putAssumeCapacity(.{ .elem_id = attr.elem_id, .name = attr.name }, {});
+                }
+                stream.custom_attr_index_active = true;
+            }
+        }
+    }
+    return customAttrDescriptorExists(StreamType, stream, elem_id, name);
+}
+
+fn recordCustomAttrKey(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, elem_id: u64, name: []const u8) void {
+    if (!@hasField(StreamType, "custom_attr_keys")) return;
+    if (!stream.custom_attr_index_active) return;
+    stream.custom_attr_keys.put(allocator, .{ .elem_id = elem_id, .name = name }, {}) catch @panic("out of memory");
+}
+
 pub fn appendStaticCustomTextAttr(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, elem_id: u64, name: []const u8, value: []const u8) void {
     if (name.len == 0) @panic("custom text attr descriptor used an empty name");
-    if (customAttrDescriptorExists(StreamType, stream, elem_id, name)) @panic("element has duplicate custom text attr descriptors");
+    if (customAttrDescriptorExistsForAppend(StreamType, stream, allocator, elem_id, name)) @panic("element has duplicate custom text attr descriptors");
 
     const name_copy = allocator.dupe(u8, name) catch @panic("out of memory");
+    recordCustomAttrKey(StreamType, stream, allocator, elem_id, name_copy);
     const value_copy = allocator.dupe(u8, value) catch {
         allocator.free(name_copy);
         @panic("out of memory");
@@ -2115,9 +2177,10 @@ pub fn appendStaticCustomTextAttr(comptime StreamType: type, stream: *StreamType
 
 pub fn appendStaticCustomBoolAttr(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, elem_id: u64, name: []const u8, value: bool) void {
     if (name.len == 0) @panic("custom bool attr descriptor used an empty name");
-    if (customAttrDescriptorExists(StreamType, stream, elem_id, name)) @panic("element has duplicate custom attr descriptors");
+    if (customAttrDescriptorExistsForAppend(StreamType, stream, allocator, elem_id, name)) @panic("element has duplicate custom attr descriptors");
 
     const name_copy = allocator.dupe(u8, name) catch @panic("out of memory");
+    recordCustomAttrKey(StreamType, stream, allocator, elem_id, name_copy);
     stream.static_custom_bool_attrs.append(allocator, .{
         .elem_id = elem_id,
         .name = name_copy,
