@@ -42,6 +42,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
     const native_target = b.standardTargetOptions(.{});
     const metrics = b.option(bool, "metrics", "Enable runtime telemetry counters") orelse true;
+    const profile = b.option(bool, "profile", "Preserve native host symbols for profiling") orelse false;
     const test_filters = b.option([]const []const u8, "test-filter", "Skip Zig unit tests that do not match any filter") orelse &.{};
 
     const build_options = b.addOptions();
@@ -67,7 +68,7 @@ pub fn build(b: *std.Build) void {
 
     for (native_targets) |roc_target| {
         const target = b.resolveTargetQuery(roc_target.toZigTarget());
-        const copy_step = buildAndCopyNativeHostLib(b, target, optimize, build_options_module, roc_target);
+        const copy_step = buildAndCopyNativeHostLib(b, target, optimize, build_options_module, roc_target, profile);
         build_hosts_step.dependOn(copy_step);
     }
 
@@ -267,13 +268,14 @@ fn buildNativeHostLib(
     target: ResolvedTarget,
     optimize: OptimizeMode,
     build_options: *std.Build.Module,
+    profile: bool,
 ) *Step.Compile {
     const host_lib = b.addLibrary(.{
         .name = "host",
         .linkage = .static,
         .root_module = createNativeHostModule(b, target, optimize, build_options),
     });
-    host_lib.root_module.strip = optimize != .Debug;
+    host_lib.root_module.strip = optimize != .Debug and !profile;
     host_lib.root_module.pic = true;
     host_lib.bundle_compiler_rt = true;
     host_lib.link_function_sections = true;
@@ -287,8 +289,9 @@ fn buildAndCopyNativeHostLib(
     optimize: OptimizeMode,
     build_options: *std.Build.Module,
     roc_target: RocTarget,
+    profile: bool,
 ) *Step {
-    const host_lib = buildNativeHostLib(b, target, optimize, build_options);
+    const host_lib = buildNativeHostLib(b, target, optimize, build_options, profile);
     const copy = b.addUpdateSourceFiles();
     copy.addCopyFileToSource(
         host_lib.getEmittedBin(),
