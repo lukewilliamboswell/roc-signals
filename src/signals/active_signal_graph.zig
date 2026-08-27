@@ -784,6 +784,101 @@ pub fn retainRecord(
     return records_rebuilt;
 }
 
+pub const PreparedReleaseStep = struct {
+    record_id: u64,
+    removal_index: u64,
+    moved_record_id: ?u64,
+};
+
+/// Owns a read-only simulation of recursive active-record release and dense remaps.
+pub fn PreparedReleaseClosure(comptime Record: type) type {
+    return struct {
+        records: []*Record,
+        steps: []PreparedReleaseStep,
+
+        /// Releases preparation storage without changing graph state.
+        pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            allocator.free(self.records);
+            allocator.free(self.steps);
+            self.* = undefined;
+        }
+    };
+}
+
+/// Simulates descriptor-root releases, recursive zero-use inputs, and dense
+/// swap-remaps without mutating graph records or route state.
+pub fn prepareReleaseClosure(comptime Record: type, allocator: std.mem.Allocator, nodes: []const Node(Record), roots: []const *Record) (std.mem.Allocator.Error || error{InvalidRelease})!PreparedReleaseClosure(Record) {
+    const counts = try allocator.alloc(usize, nodes.len);
+    defer allocator.free(counts);
+    const scheduled = try allocator.alloc(bool, nodes.len);
+    defer allocator.free(scheduled);
+    @memset(scheduled, false);
+    for (nodes, 0..) |node, index| {
+        if (node.record.active_graph_id != @as(u64, @intCast(index))) return error.InvalidRelease;
+        counts[index] = node.record.active_use_count;
+    }
+
+    var records: std.ArrayListUnmanaged(*Record) = .empty;
+    errdefer records.deinit(allocator);
+    try records.ensureTotalCapacity(allocator, nodes.len);
+    const Simulator = struct {
+        fn decrement(record: *Record, graph_nodes: []const Node(Record), simulated_counts: []usize, is_scheduled: []bool, output: *std.ArrayListUnmanaged(*Record)) error{InvalidRelease}!void {
+            const record_id = record.active_graph_id orelse return error.InvalidRelease;
+            const index: usize = @intCast(record_id);
+            if (index >= graph_nodes.len or graph_nodes[index].record != record or simulated_counts[index] == 0) return error.InvalidRelease;
+            simulated_counts[index] -= 1;
+            if (simulated_counts[index] != 0) return;
+            if (is_scheduled[index]) return error.InvalidRelease;
+            is_scheduled[index] = true;
+            output.appendAssumeCapacity(record);
+            switch (record.payload) {
+                .map => |payload| try decrement(payload.input, graph_nodes, simulated_counts, is_scheduled, output),
+                .map2 => |payload| {
+                    try decrement(payload.left, graph_nodes, simulated_counts, is_scheduled, output);
+                    if (payload.right != payload.left) try decrement(payload.right, graph_nodes, simulated_counts, is_scheduled, output);
+                },
+                .combine => |payload| {
+                    for (payload.children, 0..) |child, child_index| {
+                        if (recordSliceContains(Record, payload.children[0..child_index], child)) continue;
+                        try decrement(child, graph_nodes, simulated_counts, is_scheduled, output);
+                    }
+                },
+                .ref, .const_value, .task_source, .interval_source, .location_source, .online_source, .visibility_source, .storage_source => {},
+            }
+        }
+    };
+    for (roots) |root| try Simulator.decrement(root, nodes, counts, scheduled, &records);
+
+    const slots = try allocator.alloc(u64, nodes.len);
+    defer allocator.free(slots);
+    const positions = try allocator.alloc(usize, nodes.len);
+    defer allocator.free(positions);
+    for (slots, positions, 0..) |*slot, *position, index| {
+        slot.* = @intCast(index);
+        position.* = index;
+    }
+    const steps = try allocator.alloc(PreparedReleaseStep, records.items.len);
+    errdefer allocator.free(steps);
+    var live_len = nodes.len;
+    for (records.items, steps) |record, *step| {
+        const original_id = record.active_graph_id.?;
+        const removal_index = positions[@intCast(original_id)];
+        const last_index = live_len - 1;
+        const moved_original_id = slots[last_index];
+        step.* = .{
+            .record_id = original_id,
+            .removal_index = @intCast(removal_index),
+            .moved_record_id = if (removal_index == last_index) null else moved_original_id,
+        };
+        if (removal_index != last_index) {
+            slots[removal_index] = moved_original_id;
+            positions[@intCast(moved_original_id)] = removal_index;
+        }
+        live_len = last_index;
+    }
+    return .{ .records = try records.toOwnedSlice(allocator), .steps = steps };
+}
+
 /// Releases the test or plan's owned signal record exactly once.
 pub fn releaseRecord(
     comptime Record: type,
@@ -1188,6 +1283,47 @@ const LifecycleStream = struct {
         self.eaches.deinit(allocator);
     }
 };
+
+test "prepared release closure preserves shared diamond and computes dense remaps" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var source = LifecycleTestRecord{ .id = 1, .payload = .const_value };
+    var left = LifecycleTestRecord{ .id = 2, .payload = .{ .map = .{ .input = &source } } };
+    var right = LifecycleTestRecord{ .id = 3, .payload = .{ .map = .{ .input = &source } } };
+    var root = LifecycleTestRecord{ .id = 4, .payload = .{ .map2 = .{ .left = &left, .right = &right } } };
+    var nodes: std.ArrayListUnmanaged(Node(LifecycleTestRecord)) = .empty;
+    var source_routes: RouteTable(u64) = .empty;
+    var hooks: LifecycleTestHooks = .{};
+    defer {
+        clearSourceRoutes(std.testing.allocator, &source_routes);
+        source_routes.deinit(std.testing.allocator);
+        clear(LifecycleTestRecord, std.testing.allocator, &nodes, &hooks);
+        nodes.deinit(std.testing.allocator);
+    }
+    _ = retainRecord(LifecycleTestRecord, std.testing.allocator, &nodes, &source_routes, 1, &root, &hooks);
+    try std.testing.expectEqual(@as(usize, 2), source.active_use_count);
+
+    var counter = FaultAllocator.init(std.testing.allocator);
+    var baseline = try prepareReleaseClosure(LifecycleTestRecord, counter.allocator(), nodes.items, &.{&root});
+    const attempts = counter.attempts;
+    try std.testing.expectEqualSlices(*LifecycleTestRecord, &.{ &root, &left, &right, &source }, baseline.records);
+    try std.testing.expectEqualDeep(PreparedReleaseStep{ .record_id = 3, .removal_index = 3, .moved_record_id = null }, baseline.steps[0]);
+    try std.testing.expectEqualDeep(PreparedReleaseStep{ .record_id = 1, .removal_index = 1, .moved_record_id = 2 }, baseline.steps[1]);
+    try std.testing.expectEqualDeep(PreparedReleaseStep{ .record_id = 2, .removal_index = 1, .moved_record_id = null }, baseline.steps[2]);
+    try std.testing.expectEqualDeep(PreparedReleaseStep{ .record_id = 0, .removal_index = 0, .moved_record_id = null }, baseline.steps[3]);
+    baseline.deinit(counter.allocator());
+    try std.testing.expect(attempts != 0);
+
+    for (1..attempts + 1) |failure_number| {
+        var fault = FaultAllocator.init(std.testing.allocator);
+        fault.configure(failure_number);
+        try std.testing.expectError(error.OutOfMemory, prepareReleaseClosure(LifecycleTestRecord, fault.allocator(), nodes.items, &.{&root}));
+        try std.testing.expectEqual(@as(usize, 1), root.active_use_count);
+        try std.testing.expectEqual(@as(usize, 1), left.active_use_count);
+        try std.testing.expectEqual(@as(usize, 1), right.active_use_count);
+        try std.testing.expectEqual(@as(usize, 2), source.active_use_count);
+        for (nodes.items, 0..) |node, index| try std.testing.expectEqual(@as(?u64, @intCast(index)), node.record.active_graph_id);
+    }
+}
 
 test "active graph dirty queue collects roots and dependents by rank" {
     var records = [_]TestRecord{
