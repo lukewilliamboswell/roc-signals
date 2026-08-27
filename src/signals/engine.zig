@@ -5086,8 +5086,6 @@ pub fn Engine(comptime Ctx: type) type {
             const max_elem_id = @max(maxRenderElemId(&self.active_stream), maxRenderElemId(stream));
             const required_child_table_len: usize = @intCast(max_elem_id + 1);
             const child_table_len = required_child_table_len;
-            self.ensureRenderNodeCapacity(ctx, required_child_table_len);
-
             var seen = allocator.alloc(bool, child_table_len) catch @panic("out of memory");
             defer allocator.free(seen);
             @memset(seen, false);
