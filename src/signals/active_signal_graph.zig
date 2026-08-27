@@ -790,19 +790,47 @@ pub const PreparedReleaseStep = struct {
     moved_record_id: ?u64,
 };
 
+pub const PreparedAdjacencyReplacement = struct {
+    record_id: u64,
+    dependents: []u64,
+};
+
 /// Owns a read-only simulation of recursive active-record release and dense remaps.
 pub fn PreparedReleaseClosure(comptime Record: type) type {
     return struct {
         records: []*Record,
         steps: []PreparedReleaseStep,
         final_record_ids: []?u64,
+        adjacency: []PreparedAdjacencyReplacement,
+        retired_adjacency: [][]u64,
+        adjacency_committed: bool = false,
 
         /// Releases preparation storage without changing graph state.
         pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
             allocator.free(self.records);
             allocator.free(self.steps);
             allocator.free(self.final_record_ids);
+            if (self.adjacency_committed) {
+                for (self.retired_adjacency) |items| allocator.free(items);
+            } else {
+                for (self.adjacency) |replacement| allocator.free(replacement.dependents);
+            }
+            allocator.free(self.adjacency);
+            allocator.free(self.retired_adjacency);
             self.* = undefined;
+        }
+
+        /// Swaps every prepared survivor/remap adjacency slice without allocation.
+        pub fn applyAdjacency(self: *@This(), nodes: []Node(Record)) void {
+            if (self.adjacency_committed) @panic("release closure adjacency was already committed");
+            for (self.adjacency, self.retired_adjacency) |*replacement, *retired| {
+                const index: usize = @intCast(replacement.record_id);
+                if (index >= nodes.len) @panic("prepared adjacency referenced an unknown record");
+                retired.* = nodes[index].dependents;
+                nodes[index].dependents = replacement.dependents;
+                replacement.dependents = &.{};
+            }
+            self.adjacency_committed = true;
         }
     };
 }
@@ -882,7 +910,56 @@ pub fn prepareReleaseClosure(comptime Record: type, allocator: std.mem.Allocator
     errdefer allocator.free(final_record_ids);
     @memset(final_record_ids, null);
     for (slots[0..live_len], 0..) |original_id, final_id| final_record_ids[@intCast(original_id)] = @intCast(final_id);
-    return .{ .records = try records.toOwnedSlice(allocator), .steps = steps, .final_record_ids = final_record_ids };
+    var adjacency_count: usize = 0;
+    for (nodes, 0..) |node, original_id| {
+        var next_len: usize = 0;
+        var changed = false;
+        for (node.dependents) |dependent_id| {
+            const final_id = final_record_ids[@intCast(dependent_id)] orelse {
+                changed = true;
+                continue;
+            };
+            if (final_id != dependent_id) changed = true;
+            next_len += 1;
+        }
+        if (changed or next_len != node.dependents.len or final_record_ids[original_id] == null and node.dependents.len != 0) adjacency_count += 1;
+    }
+    const adjacency = try allocator.alloc(PreparedAdjacencyReplacement, adjacency_count);
+    errdefer allocator.free(adjacency);
+    const retired_adjacency = try allocator.alloc([]u64, adjacency_count);
+    errdefer allocator.free(retired_adjacency);
+    @memset(retired_adjacency, &.{});
+    var adjacency_write: usize = 0;
+    errdefer for (adjacency[0..adjacency_write]) |replacement| allocator.free(replacement.dependents);
+    for (nodes, 0..) |node, original_id| {
+        var next_len: usize = 0;
+        var changed = false;
+        for (node.dependents) |dependent_id| {
+            const final_id = final_record_ids[@intCast(dependent_id)] orelse {
+                changed = true;
+                continue;
+            };
+            if (final_id != dependent_id) changed = true;
+            next_len += 1;
+        }
+        if (!changed and next_len == node.dependents.len and !(final_record_ids[original_id] == null and node.dependents.len != 0)) continue;
+        const replacement = try allocator.alloc(u64, next_len);
+        var write: usize = 0;
+        for (node.dependents) |dependent_id| {
+            const final_id = final_record_ids[@intCast(dependent_id)] orelse continue;
+            replacement[write] = final_id;
+            write += 1;
+        }
+        adjacency[adjacency_write] = .{ .record_id = @intCast(original_id), .dependents = replacement };
+        adjacency_write += 1;
+    }
+    return .{
+        .records = try records.toOwnedSlice(allocator),
+        .steps = steps,
+        .final_record_ids = final_record_ids,
+        .adjacency = adjacency,
+        .retired_adjacency = retired_adjacency,
+    };
 }
 
 /// Releases the test or plan's owned signal record exactly once.
@@ -1317,7 +1394,7 @@ test "prepared release closure preserves shared diamond and computes dense remap
     try std.testing.expectEqualDeep(PreparedReleaseStep{ .record_id = 2, .removal_index = 1, .moved_record_id = null }, baseline.steps[2]);
     try std.testing.expectEqualDeep(PreparedReleaseStep{ .record_id = 0, .removal_index = 0, .moved_record_id = null }, baseline.steps[3]);
     try std.testing.expectEqualSlices(?u64, &.{ null, null, null, null }, baseline.final_record_ids);
-    baseline.deinit(counter.allocator());
+    try std.testing.expectEqual(@as(usize, 3), baseline.adjacency.len);
     try std.testing.expect(attempts != 0);
 
     for (1..attempts + 1) |failure_number| {
@@ -1329,7 +1406,18 @@ test "prepared release closure preserves shared diamond and computes dense remap
         try std.testing.expectEqual(@as(usize, 1), right.active_use_count);
         try std.testing.expectEqual(@as(usize, 2), source.active_use_count);
         for (nodes.items, 0..) |node, index| try std.testing.expectEqual(@as(?u64, @intCast(index)), node.record.active_graph_id);
+        try std.testing.expectEqualSlices(u64, &.{ 1, 2 }, nodes.items[0].dependents);
+        try std.testing.expectEqualSlices(u64, &.{3}, nodes.items[1].dependents);
+        try std.testing.expectEqualSlices(u64, &.{3}, nodes.items[2].dependents);
     }
+    counter.configure(1);
+    baseline.applyAdjacency(nodes.items);
+    try std.testing.expectEqual(@as(usize, 0), counter.attempts);
+    try std.testing.expectEqualSlices(u64, &.{}, nodes.items[0].dependents);
+    try std.testing.expectEqualSlices(u64, &.{}, nodes.items[1].dependents);
+    try std.testing.expectEqualSlices(u64, &.{}, nodes.items[2].dependents);
+    counter.configure(null);
+    baseline.deinit(counter.allocator());
 }
 
 test "active graph dirty queue collects roots and dependents by rank" {
