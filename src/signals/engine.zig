@@ -2107,6 +2107,18 @@ pub fn Engine(comptime Ctx: type) type {
             fn appendAttr(self: @This(), roc_host: *abi.RocHost, elem_id: u64, attr: abi.NodeAttr, binder_stack: []const HostBinderBinding) CollectionError!void {
                 self.engine.collectNodeAttrDescriptor(self.host_ctx, roc_host, self.stream, elem_id, attr, binder_stack);
             }
+
+            fn beginState(self: @This(), roc_host: *abi.RocHost, scope_id: u64, parent_elem_id: u64, ordinal: *u64, binder_stack: *std.ArrayListUnmanaged(HostBinderBinding), state: abi_view.StateElem) CollectionError!HostBinderBinding {
+                const allocator = Ctx.allocator(self.host_ctx);
+                binder_stack.ensureUnusedCapacity(allocator, 1) catch @panic("out of memory");
+                const site_ordinal = ordinal.*;
+                const node_id = self.engine.internNodeIdentity(allocator, scope_id, site_ordinal) catch @panic("scope id has no host scope descriptor");
+                ordinal.* += 1;
+                self.stream.appendScopeSite(allocator, node_id, scope_id, site_ordinal, parent_elem_id, .state, binder_stack.items);
+                self.stream.appendState(allocator, roc_host, &self.engine.pending_roc_metrics, node_id, state.initial, state.capability);
+                self.engine.ensureStateFromDesc(self.host_ctx, roc_host, self.stream.states.items[self.stream.states.items.len - 1]);
+                return .{ .token = state.binder.callable, .node_id = node_id };
+            }
         };
 
         const StagedCollectionCtx = struct {
@@ -2116,11 +2128,15 @@ pub fn Engine(comptime Ctx: type) type {
             stream: *HostNodeDescriptorStream,
             budget: collection_budget.StreamBudget,
             scopes: collection_plan.ScopeOverlay = .{},
+            node_identities: collection_plan.IdentityOverlay = .{},
             dom_identities: collection_plan.IdentityOverlay = .{},
             prepared_nodes: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedStaticNode) = .empty,
             prepared_attrs: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedStaticAttr) = .empty,
             prepared_signal_attrs: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedSignalDescriptor) = .empty,
             prepared_events: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedEventDescriptor) = .empty,
+            prepared_state_sites: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedScopeSite) = .empty,
+            prepared_states: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedState) = .empty,
+            prepared_state_cells: std.ArrayListUnmanaged(HostState) = .empty,
             prepared_named_event_groups: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedNamedEventIndexGroup) = .empty,
             prepared_named_event_group_by_elem: std.AutoHashMapUnmanaged(u64, usize) = .empty,
             signal_records: collection_plan.SignalRecordPlan(HostSignalToken, HostSignalRecord) = .{},
@@ -2130,7 +2146,7 @@ pub fn Engine(comptime Ctx: type) type {
             signal_root_capacity: usize = 0,
             committed: bool = false,
 
-            fn init(engine_ptr: *Self, host_ctx: Ctx.Handle, stream: *HostNodeDescriptorStream, limits: collection_budget.Limits, expected_nodes: usize, expected_attrs: usize, expected_signal_records: usize) CollectionError!@This() {
+            fn init(engine_ptr: *Self, host_ctx: Ctx.Handle, stream: *HostNodeDescriptorStream, limits: collection_budget.Limits, expected_nodes: usize, expected_attrs: usize, expected_signal_records: usize, expected_state_sites: usize) CollectionError!@This() {
                 var self = @This(){
                     .engine = engine_ptr,
                     .host_ctx = host_ctx,
@@ -2140,12 +2156,16 @@ pub fn Engine(comptime Ctx: type) type {
                 errdefer self.deinit();
                 const allocator = Ctx.allocator(host_ctx);
                 self.scopes.prepare(allocator, 1) catch return error.OutOfMemory;
+                self.node_identities.prepare(allocator, expected_state_sites) catch return error.OutOfMemory;
                 if (expected_nodes > limits.nodes) return error.ResourceLimit;
                 self.dom_identities.prepare(allocator, expected_nodes) catch return error.OutOfMemory;
                 self.prepared_nodes.ensureTotalCapacity(allocator, expected_nodes) catch return error.OutOfMemory;
                 self.prepared_attrs.ensureTotalCapacity(allocator, expected_attrs) catch return error.OutOfMemory;
                 self.prepared_signal_attrs.ensureTotalCapacity(allocator, expected_attrs) catch return error.OutOfMemory;
                 self.prepared_events.ensureTotalCapacity(allocator, expected_attrs) catch return error.OutOfMemory;
+                self.prepared_state_sites.ensureTotalCapacity(allocator, expected_state_sites) catch return error.OutOfMemory;
+                self.prepared_states.ensureTotalCapacity(allocator, expected_state_sites) catch return error.OutOfMemory;
+                self.prepared_state_cells.ensureTotalCapacity(allocator, expected_state_sites) catch return error.OutOfMemory;
                 self.prepared_named_event_groups.ensureTotalCapacity(allocator, expected_attrs) catch return error.OutOfMemory;
                 const expected_event_groups = std.math.cast(u32, expected_attrs) orelse return error.ResourceLimit;
                 self.prepared_named_event_group_by_elem.ensureTotalCapacity(allocator, expected_event_groups) catch return error.OutOfMemory;
@@ -2154,6 +2174,11 @@ pub fn Engine(comptime Ctx: type) type {
                 self.signal_token_capacity = expected_signal_records;
                 self.signal_root_capacity = expected_attrs;
                 self.engine.scopes.ensureUnusedCapacity(allocator, 1) catch return error.OutOfMemory;
+                self.engine.node_identities.ensureUnusedCapacity(allocator, expected_state_sites) catch return error.OutOfMemory;
+                self.engine.active_node_identity_ids.ensureUnusedCapacity(allocator, std.math.cast(u32, expected_state_sites) orelse return error.ResourceLimit) catch return error.OutOfMemory;
+                self.engine.states.ensureUnusedCapacity(allocator, expected_state_sites) catch return error.OutOfMemory;
+                const state_index_len = std.math.add(usize, self.engine.node_identities.items.len, expected_state_sites) catch return error.ResourceLimit;
+                self.engine.state_indexes_by_node_id.ensureTotalCapacity(allocator, state_index_len) catch return error.OutOfMemory;
                 self.engine.dom_identities.ensureUnusedCapacity(allocator, expected_nodes) catch return error.OutOfMemory;
                 self.engine.active_dom_identity_ids.ensureUnusedCapacity(allocator, @intCast(expected_nodes)) catch return error.OutOfMemory;
                 const highest_elem_id = std.math.add(u64, @intCast(self.engine.dom_identities.items.len), @as(u64, @intCast(expected_nodes))) catch return error.ResourceLimit;
@@ -2163,6 +2188,10 @@ pub fn Engine(comptime Ctx: type) type {
                 self.stream.reservePreparedSignalTextNodes(allocator, expected_nodes, highest_elem_id) catch return error.OutOfMemory;
                 self.stream.reservePreparedSignalRecordPublication(allocator, expected_signal_records) catch return error.OutOfMemory;
                 self.stream.reservePreparedEvents(allocator, expected_attrs, highest_elem_id) catch return error.OutOfMemory;
+                if (expected_state_sites != 0) {
+                    const highest_node_id = std.math.sub(usize, state_index_len, 1) catch return error.ResourceLimit;
+                    self.stream.reservePreparedStateSites(allocator, expected_state_sites, @intCast(highest_node_id)) catch return error.OutOfMemory;
+                }
                 if (!self.stream.canStageLinearCustomAttrs(expected_attrs)) return error.ResourceLimit;
                 return self;
             }
@@ -2185,6 +2214,21 @@ pub fn Engine(comptime Ctx: type) type {
                         index -= 1;
                         self.prepared_named_event_groups.items[index].abort(allocator);
                     }
+                    index = self.prepared_state_cells.items.len;
+                    while (index != 0) {
+                        index -= 1;
+                        self.prepared_state_cells.items[index].cell.deinit(self.host_ctx, self.signal_roc_host orelse @panic("staged state lacked Roc host"), &self.engine.pending_roc_metrics);
+                    }
+                    index = self.prepared_states.items.len;
+                    while (index != 0) {
+                        index -= 1;
+                        self.prepared_states.items[index].abort(self.signal_roc_host orelse @panic("staged state lacked Roc host"), &self.engine.pending_roc_metrics);
+                    }
+                    index = self.prepared_state_sites.items.len;
+                    while (index != 0) {
+                        index -= 1;
+                        self.prepared_state_sites.items[index].abort(allocator);
+                    }
                     index = self.prepared_attrs.items.len;
                     while (index != 0) {
                         index -= 1;
@@ -2202,6 +2246,7 @@ pub fn Engine(comptime Ctx: type) type {
                     }
                     for (self.signal_bindings.items) |binding| allocator.free(binding.source_node_ids);
                     self.scopes.abort();
+                    self.node_identities.abort();
                     self.dom_identities.abort();
                 }
                 self.prepared_nodes.deinit(allocator);
@@ -2210,6 +2255,9 @@ pub fn Engine(comptime Ctx: type) type {
                 self.prepared_events.deinit(allocator);
                 self.prepared_named_event_groups.deinit(allocator);
                 self.prepared_named_event_group_by_elem.deinit(allocator);
+                self.prepared_state_sites.deinit(allocator);
+                self.prepared_states.deinit(allocator);
+                self.prepared_state_cells.deinit(allocator);
                 self.signal_bindings.deinit(allocator);
                 const SignalReleaser = struct {
                     collection: *Collection,
@@ -2224,6 +2272,7 @@ pub fn Engine(comptime Ctx: type) type {
                 };
                 self.signal_records.deinit(allocator, SignalReleaser{ .collection = self });
                 self.scopes.deinit(allocator);
+                self.node_identities.deinit(allocator);
                 self.dom_identities.deinit(allocator);
             }
 
@@ -2251,6 +2300,40 @@ pub fn Engine(comptime Ctx: type) type {
                     error.NoCapacity => error.OutOfMemory,
                     error.NoAvailableIdentity => error.ResourceLimit,
                 };
+            }
+
+            fn reserveNodeIdentity(self: *@This(), scope_id: u64, ordinal: u64) CollectionError!u64 {
+                const key = identityKey(scope_id, ordinal);
+                const active_id = self.engine.active_node_identity_ids.get(key);
+                const fresh_id: u64 = @intCast(self.engine.node_identities.items.len + self.node_identities.intents.items.len);
+                return self.node_identities.reserve(key, active_id, &.{fresh_id}) catch |err| switch (err) {
+                    error.NoCapacity => error.OutOfMemory,
+                    error.NoAvailableIdentity => error.ResourceLimit,
+                };
+            }
+
+            fn beginState(self: *@This(), roc_host: *abi.RocHost, scope_id: u64, parent_elem_id: u64, ordinal: *u64, binder_stack: *std.ArrayListUnmanaged(HostBinderBinding), state: abi_view.StateElem) CollectionError!HostBinderBinding {
+                const allocator = Ctx.allocator(self.host_ctx);
+                const binder_bytes = std.math.mul(usize, binder_stack.items.len, @sizeOf(HostBinderBinding)) catch return error.ResourceLimit;
+                const descriptor_bytes = std.math.add(usize, @sizeOf(HostNodeScopeSiteDesc) + @sizeOf(HostNodeStateDesc), binder_bytes) catch return error.ResourceLimit;
+                try self.budget.charge(0, descriptor_bytes);
+                binder_stack.ensureUnusedCapacity(allocator, 1) catch return error.OutOfMemory;
+                const site_ordinal = ordinal.*;
+                const node_id = try self.reserveNodeIdentity(scope_id, site_ordinal);
+                const prepared_site = self.stream.prepareScopeSite(allocator, node_id, scope_id, site_ordinal, parent_elem_id, .state, binder_stack.items) catch return error.OutOfMemory;
+                errdefer prepared_site.abort(allocator);
+                self.signal_roc_host = roc_host;
+                const prepared_state = self.stream.prepareState(node_id, state.initial, state.capability, &self.engine.pending_roc_metrics);
+                errdefer prepared_state.abort(roc_host, &self.engine.pending_roc_metrics);
+                if (self.engine.stateIndexByNodeId(node_id) == null) {
+                    const initial = erased_calls.callValueInitThunk(roc_host, state.initial);
+                    const cell = HostValueCell.initRetained(initial, state.capability, &self.engine.pending_roc_metrics);
+                    self.prepared_state_cells.appendAssumeCapacity(.{ .state_id = node_id, .cell = cell, .version = 0, .active = true });
+                }
+                self.prepared_state_sites.appendAssumeCapacity(prepared_site);
+                self.prepared_states.appendAssumeCapacity(prepared_state);
+                ordinal.* += 1;
+                return .{ .token = state.binder.callable, .node_id = node_id };
             }
 
             fn appendElement(self: *@This(), scope_id: u64, parent_elem_id: u64, dom_ordinal: *u64, tag: []const u8) CollectionError!u64 {
@@ -2619,6 +2702,13 @@ pub fn Engine(comptime Ctx: type) type {
                     });
                     self.engine.active_dom_identity_ids.putAssumeCapacity(intent.key, intent.id);
                 }
+                for (self.node_identities.intents.items) |intent| {
+                    const scope_id: u64 = @truncate(intent.key >> 64);
+                    const ordinal: u64 = @truncate(intent.key);
+                    if (intent.id != self.engine.node_identities.items.len) @panic("unsupported staged node identity intent");
+                    self.engine.node_identities.appendAssumeCapacity(.{ .node_id = intent.id, .scope_id = scope_id, .ordinal = ordinal, .active = true });
+                    self.engine.active_node_identity_ids.putAssumeCapacity(intent.key, intent.id);
+                }
                 for (self.prepared_nodes.items) |prepared| self.stream.appendPreparedStaticNode(prepared);
                 for (self.prepared_attrs.items) |prepared| self.stream.appendPreparedStaticAttr(prepared);
                 self.signal_records.commit(SignalPublisher{ .stream = self.stream });
@@ -2628,7 +2718,18 @@ pub fn Engine(comptime Ctx: type) type {
                 for (self.prepared_events.items) |prepared| self.stream.appendPreparedEvent(prepared);
                 self.stream.publishPreparedNamedEventIndexes(self.prepared_named_event_groups.items, event_base);
                 self.prepared_events.clearRetainingCapacity();
+                for (self.prepared_state_sites.items, self.prepared_states.items) |site, state| self.stream.appendPreparedStateSite(site, state);
+                self.prepared_state_sites.clearRetainingCapacity();
+                self.prepared_states.clearRetainingCapacity();
+                for (self.prepared_state_cells.items) |state| {
+                    while (self.engine.state_indexes_by_node_id.items.len <= state.state_id) self.engine.state_indexes_by_node_id.appendAssumeCapacity(null);
+                    const state_index = self.engine.states.items.len;
+                    self.engine.states.appendAssumeCapacity(state);
+                    self.engine.state_indexes_by_node_id.items[@intCast(state.state_id)] = state_index;
+                }
+                self.prepared_state_cells.clearRetainingCapacity();
                 self.scopes.committed = true;
+                self.node_identities.committed = true;
                 self.dom_identities.committed = true;
                 self.committed = true;
             }
@@ -2665,14 +2766,8 @@ pub fn Engine(comptime Ctx: type) type {
                     stream.appendMount(allocator, roc_host, &self.pending_roc_metrics, scope_id, payload.to_cmd, scope_created);
                 },
                 .state => |state| {
-                    const site_ordinal = ordinal.*;
-                    const node_id = self.internNodeIdentity(Ctx.allocator(ctx), scope_id, site_ordinal) catch @panic("scope id has no host scope descriptor");
-                    ordinal.* += 1;
-                    stream.appendScopeSite(allocator, node_id, scope_id, site_ordinal, parent_elem_id, .state, binder_stack.items);
-                    stream.appendState(allocator, roc_host, &self.pending_roc_metrics, node_id, state.initial, state.capability);
-                    self.ensureStateFromDesc(ctx, roc_host, stream.states.items[stream.states.items.len - 1]);
-                    const binder_token = state.binder.callable;
-                    binder_stack.append(allocator, .{ .token = binder_token, .node_id = node_id }) catch @panic("out of memory");
+                    const binder = try collection.beginState(roc_host, scope_id, parent_elem_id, ordinal, binder_stack, state);
+                    binder_stack.appendAssumeCapacity(binder);
                     try self.collectActiveElemDescriptorsWith(Collection, collection, ctx, roc_host, stream, state.child.*, scope_id, parent_elem_id, ordinal, dom_ordinal, binder_stack, scope_created, dirty_source_node_ids);
                     _ = binder_stack.pop() orelse unreachable;
                 },
@@ -2778,7 +2873,7 @@ pub fn Engine(comptime Ctx: type) type {
             try self.collectActiveElemDescriptorsWith(Collection, collection, ctx, roc_host, stream, root, root_scope_id, 0, &ordinal, &dom_ordinal, binder_stack, root_scope.created, dirty_source_node_ids);
         }
 
-        const StaticRootCounts = struct { nodes: usize = 0, attrs: usize = 0, signal_records: usize = 0 };
+        const StaticRootCounts = struct { nodes: usize = 0, attrs: usize = 0, signal_records: usize = 0, state_sites: usize = 0 };
 
         fn countSignalExprRecords(expr: abi.NodeSignalExpr) CollectionError!usize {
             return switch (abi_view.SignalExpr.fromAbi(expr)) {
@@ -2815,11 +2910,17 @@ pub fn Engine(comptime Ctx: type) type {
                         count.nodes = std.math.add(usize, count.nodes, child_count.nodes) catch return error.ResourceLimit;
                         count.attrs = std.math.add(usize, count.attrs, child_count.attrs) catch return error.ResourceLimit;
                         count.signal_records = std.math.add(usize, count.signal_records, child_count.signal_records) catch return error.ResourceLimit;
+                        count.state_sites = std.math.add(usize, count.state_sites, child_count.state_sites) catch return error.ResourceLimit;
                     }
                     break :blk count;
                 },
                 .text => .{ .nodes = 1 },
                 .text_signal => |payload| .{ .nodes = 1, .signal_records = try countSignalExprRecords(payload.signal.*) },
+                .state => |payload| blk: {
+                    var count = try countStaticRootNodes(payload.child.*);
+                    count.state_sites = std.math.add(usize, count.state_sites, 1) catch return error.ResourceLimit;
+                    break :blk count;
+                },
                 else => error.ResourceLimit,
             };
         }
@@ -2829,7 +2930,7 @@ pub fn Engine(comptime Ctx: type) type {
         /// collector until their ownership operations are staged as well.
         pub fn collectStaticRootDescriptorsTransactional(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, root: abi.Elem, limits: collection_budget.Limits) CollectionError!void {
             const expected = try countStaticRootNodes(root);
-            var collection = try StagedCollectionCtx.init(self, ctx, stream, limits, expected.nodes, expected.attrs, expected.signal_records);
+            var collection = try StagedCollectionCtx.init(self, ctx, stream, limits, expected.nodes, expected.attrs, expected.signal_records, expected.state_sites);
             defer collection.deinit();
             try self.collectActiveElemRootDescriptorsWith(*StagedCollectionCtx, &collection, ctx, roc_host, stream, root, &.{});
             collection.commit();
@@ -6981,11 +7082,30 @@ fn verifyStaticText() abi.Elem {
 
 fn verifyErasedCallable(_: *abi.RocHost, _: ?[*]u8, _: ?[*]const u8, _: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {}
 
+var verifyStateInitCalls: usize = 0;
+
+fn verifyStateCallable(_: *abi.RocHost, result: ?[*]u8, _: ?[*]const u8, _: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
+    if (result) |bytes| {
+        const value: *HostValue = @ptrCast(@alignCast(bytes));
+        value.* = 42;
+        verifyStateInitCalls += 1;
+    }
+}
+
 fn deinitVerifyStaticEngine(engine: *Engine(VerifyCtx), ctx: *VerifyCtxHost) void {
     engine.scopes.deinit(std.testing.allocator);
     engine.dom_identities.deinit(std.testing.allocator);
     engine.active_dom_identity_ids.deinit(std.testing.allocator);
     engine.deinitScratch(ctx);
+}
+
+fn deinitVerifyStateEngine(engine: *Engine(VerifyCtx), ctx: *VerifyCtxHost, roc_host: *abi.RocHost) void {
+    for (engine.states.items) |*state| state.cell.deinit(ctx, roc_host, &engine.pending_roc_metrics);
+    engine.states.deinit(ctx.allocator);
+    engine.state_indexes_by_node_id.deinit(ctx.allocator);
+    engine.node_identities.deinit(ctx.allocator);
+    engine.active_node_identity_ids.deinit(ctx.allocator);
+    deinitVerifyStaticEngine(engine, ctx);
 }
 
 test "static root counts nested signal attribute records" {
@@ -7031,7 +7151,7 @@ test "staged collection preflights signal records separately from descriptor roo
     var roc_host: abi.RocHost = undefined;
     defer stream.deinit(std.testing.allocator, &ctx, &roc_host, &engine.pending_roc_metrics);
 
-    var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&engine, &ctx, &stream, .{}, 1, 2, 5);
+    var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&engine, &ctx, &stream, .{}, 1, 2, 5, 0);
     defer collection.deinit();
     try std.testing.expectEqual(@as(usize, 5), collection.signal_token_capacity);
     try std.testing.expectEqual(@as(usize, 2), collection.signal_root_capacity);
@@ -7050,7 +7170,7 @@ test "staged signal record publication is allocation free" {
     var roc_host: abi.RocHost = undefined;
     defer stream.deinit(ctx.allocator, &ctx, &roc_host, &engine.pending_roc_metrics);
 
-    var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&engine, &ctx, &stream, .{}, 0, 1, 2);
+    var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&engine, &ctx, &stream, .{}, 0, 1, 2, 0);
     defer collection.deinit();
     const capability = std.mem.zeroes(HostValueCapability);
     const child_token: HostSignalToken = @ptrFromInt(0x6000);
@@ -7092,7 +7212,7 @@ test "staged fixed event publication is allocation free" {
     var roc_env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
     var roc_host = abi.makeRocHost(&roc_env);
     defer stream.deinit(ctx.allocator, &ctx, &roc_host, &engine.pending_roc_metrics);
-    var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&engine, &ctx, &stream, .{}, 1, 1, 0);
+    var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&engine, &ctx, &stream, .{}, 1, 1, 0, 0);
     defer collection.deinit();
 
     const binder: HostBinderToken = @ptrFromInt(0x8000);
@@ -7142,7 +7262,7 @@ test "staged named event sweeps allocation failures and retries without visibili
     var roc_env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
     var roc_host = abi.makeRocHost(&roc_env);
     {
-        var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&counter_engine, &counter_ctx, &counter_stream, .{}, 1, 1, 0);
+        var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&counter_engine, &counter_ctx, &counter_stream, .{}, 1, 1, 0, 0);
         defer collection.deinit();
         counter.configure(null);
         try collection.appendAttr(&roc_host, 1, attr, &.{.{ .token = binder, .node_id = 9 }});
@@ -7161,7 +7281,7 @@ test "staged named event sweeps allocation failures and retries without visibili
             stream.deinit(ctx.allocator, &ctx, &roc_host, &engine.pending_roc_metrics);
             deinitVerifyStaticEngine(&engine, &ctx);
         }
-        var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&engine, &ctx, &stream, .{}, 1, 1, 0);
+        var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&engine, &ctx, &stream, .{}, 1, 1, 0, 0);
         defer collection.deinit();
 
         fault.configure(failure_number);
@@ -7177,6 +7297,80 @@ test "staged named event sweeps allocation failures and retries without visibili
         try std.testing.expectEqualSlices(usize, &.{0}, stream.namedEventIndices(1));
         try std.testing.expectEqualStrings("keydown", stream.events.items[0].named().?.name);
         try std.testing.expectEqual(@as(u64, 9), stream.events.items[0].target_node_id);
+    }
+}
+
+test "transactional state root sweeps failures and publishes initializer once" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var roc_env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&roc_env);
+    const callable = abi.rocErasedCallableAllocate(&roc_host, verifyStateCallable, null, 0).?;
+    defer abi.decrefErasedCallable(callable, &roc_host);
+    const capability = HostValueCapability{ .clone = callable, .drop = callable, .eq = callable };
+    const extraction_bytes = EventExtractionPlanKind.none.bytes();
+    const named_attr = abi.NodeAttr{ .payload = .{ .on = .{
+        .kind = .{ .id = 0 },
+        .msg = .{
+            .binder = callable,
+            .read_binder = callable,
+            .event_extraction_plan = .{ .bytes = .{ .elements_ptr = @constCast(extraction_bytes.ptr), .length = extraction_bytes.len, .capacity_or_alloc_ptr = extraction_bytes.len << 1 } },
+            .payload_reducer = std.mem.zeroes(HostEventReducer),
+        },
+        .name = abi.RocStr.fromSlice("keydown", undefined),
+        .delivery = .{ .native = false },
+        .policy = std.mem.zeroes(abi.NodeEventBindingPolicy),
+    } }, .tag = .On };
+    var child = verifyStaticRoot(&.{named_attr}, &.{});
+    const state_root = abi.Elem{ .payload = .{ .state = .{
+        .binder = callable,
+        .cap = capability,
+        .child = &child,
+        .initial = callable,
+    } }, .tag = .State };
+
+    var counter = FaultAllocator.init(std.testing.allocator);
+    var counter_ctx = VerifyCtxHost{ .allocator = counter.allocator() };
+    var counter_engine = Engine(VerifyCtx).init();
+    var counter_stream: HostNodeDescriptorStream = .{};
+    verifyStateInitCalls = 0;
+    try counter_engine.collectStaticRootDescriptorsTransactional(&counter_ctx, &roc_host, &counter_stream, state_root, .{});
+    const attempts = counter.attempts;
+    try std.testing.expectEqual(@as(usize, 1), verifyStateInitCalls);
+    counter_stream.deinit(counter_ctx.allocator, &counter_ctx, &roc_host, &counter_engine.pending_roc_metrics);
+    deinitVerifyStateEngine(&counter_engine, &counter_ctx, &roc_host);
+    try std.testing.expect(attempts != 0);
+
+    for (1..attempts + 1) |failure_number| {
+        var fault = FaultAllocator.init(std.testing.allocator);
+        fault.configure(failure_number);
+        var ctx = VerifyCtxHost{ .allocator = fault.allocator() };
+        var engine = Engine(VerifyCtx).init();
+        var stream: HostNodeDescriptorStream = .{};
+        defer {
+            stream.deinit(ctx.allocator, &ctx, &roc_host, &engine.pending_roc_metrics);
+            deinitVerifyStateEngine(&engine, &ctx, &roc_host);
+        }
+        verifyStateInitCalls = 0;
+        try std.testing.expectError(error.OutOfMemory, engine.collectStaticRootDescriptorsTransactional(&ctx, &roc_host, &stream, state_root, .{}));
+        try std.testing.expectEqual(@as(usize, 0), engine.node_identities.items.len);
+        try std.testing.expectEqual(@as(usize, 0), engine.states.items.len);
+        try std.testing.expectEqual(@as(usize, 0), stream.scope_sites.items.len);
+        try std.testing.expectEqual(@as(usize, 0), stream.states.items.len);
+        try std.testing.expectEqual(@as(usize, 0), stream.elements.items.len);
+        try std.testing.expectEqual(@as(usize, 0), stream.events.items.len);
+        const calls_before_retry = verifyStateInitCalls;
+
+        fault.configure(null);
+        try engine.collectStaticRootDescriptorsTransactional(&ctx, &roc_host, &stream, state_root, .{});
+        try std.testing.expectEqual(calls_before_retry + 1, verifyStateInitCalls);
+        try std.testing.expectEqual(@as(usize, 1), engine.node_identities.items.len);
+        try std.testing.expectEqual(@as(usize, 1), engine.states.items.len);
+        try std.testing.expectEqual(@as(HostValue, 42), engine.states.items[0].cell.value);
+        try std.testing.expectEqual(@as(usize, 1), stream.scope_sites.items.len);
+        try std.testing.expectEqual(@as(usize, 1), stream.states.items.len);
+        try std.testing.expectEqualStrings("div", stream.elements.items[0].tag);
+        try std.testing.expectEqualStrings("keydown", stream.events.items[0].named().?.name);
+        try std.testing.expectEqualSlices(usize, &.{0}, stream.namedEventIndices(1));
     }
 }
 
