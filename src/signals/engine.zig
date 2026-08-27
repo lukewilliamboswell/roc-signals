@@ -1311,8 +1311,10 @@ pub fn Engine(comptime Ctx: type) type {
             row_ranges: []GlobalRange,
             subsumed_each_indexes: []usize,
             layouts: []PreparedEachRowRenderLayout,
-            targets: PreparedStructuralTargets,
-            final_render_topology: PreparedFinalRenderTopology,
+            downstream: *PreparedStructuralDownstream,
+            changes: []HostDirtyStructuralSignal,
+            overlay: *signal_records.PreparedCacheUpdates,
+            committed: bool = false,
 
             fn scopeCoveredByRetiredBranch(engine: *Self, scope_id: u64, selections: []const AggregateBranchSelection) CollectionError!bool {
                 for (selections) |selection| if (engine.scopeIsDescendantOrSelf(scope_id, selection.retired_scope_id) catch return error.ResourceLimit) return true;
@@ -1350,7 +1352,7 @@ pub fn Engine(comptime Ctx: type) type {
                 return normalized;
             }
 
-            fn prepare(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, changes: []const HostDirtyStructuralSignal, overlay: *const signal_records.PreparedCacheUpdates, limits: collection_budget.Limits, dirty_source_node_ids: []const u64) CollectionError!*@This() {
+            fn prepare(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, changes: []HostDirtyStructuralSignal, overlay: *signal_records.PreparedCacheUpdates, limits: collection_budget.Limits, dirty_source_node_ids: []const u64) CollectionError!*@This() {
                 const allocator = Ctx.allocator(ctx);
                 var when_count: usize = 0;
                 var each_count: usize = 0;
@@ -1496,7 +1498,8 @@ pub fn Engine(comptime Ctx: type) type {
                 const retired_roots = try normalizedScopeRoots(engine, allocator, retired_roots_list.items);
                 defer allocator.free(retired_roots);
                 var targets = try PreparedStructuralTargets.prepare(engine, allocator, descriptor_roots, retired_roots);
-                errdefer targets.deinit(allocator);
+                var targets_owned = true;
+                errdefer if (targets_owned) targets.deinit(allocator);
                 var removed_render_count: usize = 0;
                 for (engine.active_stream.render_nodes.items) |node| {
                     const scope_id = renderNodeScopeId(&engine.active_stream, node);
@@ -1571,7 +1574,49 @@ pub fn Engine(comptime Ctx: type) type {
                 };
                 if (placement_write != placements.len) return error.ResourceLimit;
                 var final_render_topology = try PreparedFinalRenderTopology.preparePlaced(engine, allocator, replacement_owner, targets.descriptor_target_scopes, removed_render_count, placements);
-                errdefer final_render_topology.deinit();
+                var final_topology_owned = true;
+                errdefer if (final_topology_owned) final_render_topology.deinit();
+
+                var removal_starts = std.ArrayListUnmanaged(usize).empty;
+                defer removal_starts.deinit(allocator);
+                var inside_target = false;
+                for (engine.active_stream.render_nodes.items, 0..) |node, index| {
+                    const scope_id = renderNodeScopeId(&engine.active_stream, node);
+                    const targeted = targets.descriptor_target_scopes[@intCast(scope_id)];
+                    if (targeted and !inside_target) removal_starts.append(allocator, index) catch return error.OutOfMemory;
+                    inside_target = targeted;
+                }
+                var parent_elem_ids = std.ArrayListUnmanaged(u64).empty;
+                defer parent_elem_ids.deinit(allocator);
+                for (selections) |selection| {
+                    var seen = false;
+                    for (parent_elem_ids.items) |parent_id| if (parent_id == selection.parent_elem_id) {
+                        seen = true;
+                        break;
+                    };
+                    if (!seen) parent_elem_ids.append(allocator, selection.parent_elem_id) catch return error.OutOfMemory;
+                }
+                for (sites) |site| {
+                    var seen = false;
+                    for (parent_elem_ids.items) |parent_id| if (parent_id == site.parent_elem_id) {
+                        seen = true;
+                        break;
+                    };
+                    if (!seen) parent_elem_ids.append(allocator, site.parent_elem_id) catch return error.OutOfMemory;
+                }
+                const downstream = try PreparedStructuralDownstream.prepareExternal(engine, ctx, roc_host, replacement_owner, descriptor_roots, retired_roots, removal_starts.items, null);
+                errdefer downstream.deinit();
+                const when_retired_roots_list = allocator.alloc(u64, selections.len) catch return error.OutOfMemory;
+                defer allocator.free(when_retired_roots_list);
+                for (selections, 0..) |selection, index| when_retired_roots_list[index] = selection.retired_scope_id;
+                const when_retired_roots = try normalizedScopeRoots(engine, allocator, when_retired_roots_list);
+                defer allocator.free(when_retired_roots);
+                downstream.row_retirement = try prepareRowRetirementForScopes(engine, allocator, when_retired_roots);
+                downstream.final_render_topology = final_render_topology;
+                final_topology_owned = false;
+                try downstream.prepareFinalRenderTopology(parent_elem_ids.items);
+                targets.deinit(allocator);
+                targets_owned = false;
 
                 const plan = allocator.create(@This()) catch return error.OutOfMemory;
                 errdefer allocator.destroy(plan);
@@ -1585,16 +1630,41 @@ pub fn Engine(comptime Ctx: type) type {
                     .row_ranges = row_ranges,
                     .subsumed_each_indexes = subsumed_each_indexes,
                     .layouts = layouts,
-                    .targets = targets,
-                    .final_render_topology = final_render_topology,
+                    .downstream = downstream,
+                    .changes = changes,
+                    .overlay = overlay,
                 };
                 normalized_owned = false;
                 return plan;
             }
 
+            fn commitEarly(self: *@This()) void {
+                self.overlay.commit();
+            }
+
+            fn commitLate(self: *@This()) void {
+                self.rows.commit();
+                for (self.normalized_whens.selected_indexes) |change_index| {
+                    const change = &self.changes[change_index];
+                    const when_index = self.engine.activeWhenIndexByNodeId(change.node_id) orelse @panic("prepared mixed when descriptor disappeared before commit");
+                    change.commitPendingWhenCache(&self.engine.active_stream.whens.items[when_index].cached_value, self.rows.host_ctx, self.rows.roc_host, &self.engine.pending_roc_metrics);
+                }
+                for (self.normalized_whens.subsumed_indexes) |change_index| self.changes[change_index].abortPendingWhenCache(self.rows.host_ctx, self.rows.roc_host, &self.engine.pending_roc_metrics);
+                self.committed = true;
+            }
+
+            fn commitAssumeCapacity(self: *@This()) render.Counts {
+                if (self.committed) @panic("prepared mixed structural transaction committed twice");
+                var counts = if (self.downstream.render_splice) |*splice| splice.wire.counts() else render.Counts{};
+                self.downstream.commitAssumeCapacityWithEarlyAndLate(self, commitEarly, self, commitLate);
+                counts.addAll(self.engine.runActiveOnChangeInitialCommandIndices(self.rows.host_ctx, self.rows.roc_host, self.downstream.publication.?.replacement_on_change_indices));
+                counts.addAll(self.engine.runActiveMountCommandIndices(self.rows.host_ctx, self.rows.roc_host, self.downstream.publication.?.replacement_mount_indices));
+                if (comptime enable_runtime_metrics) self.engine.render_metrics.addCommandCounts(counts);
+                return counts;
+            }
+
             fn deinit(self: *@This()) void {
-                self.final_render_topology.deinit();
-                self.targets.deinit(self.allocator);
+                self.downstream.deinit();
                 for (self.layouts) |*layout| layout.deinit();
                 self.allocator.free(self.layouts);
                 self.replacement_owner.deinit();
@@ -12290,7 +12360,7 @@ test "mixed when and each collection shares one owner and sweeps OOM" {
     const bool_read = HostBoolRead{ .capability = capability, .read = bool_callable };
 
     const Runner = struct {
-        fn prepareMixed(engine: *Engine(VerifyCtx), ctx: *VerifyCtxHost, host: *abi.RocHost, overlay: *const signal_records.PreparedCacheUpdates, changes: []const HostDirtyStructuralSignal) !*Engine(VerifyCtx).PreparedCompositeStructural {
+        fn prepareMixed(engine: *Engine(VerifyCtx), ctx: *VerifyCtxHost, host: *abi.RocHost, overlay: *signal_records.PreparedCacheUpdates, changes: []HostDirtyStructuralSignal) !*Engine(VerifyCtx).PreparedCompositeStructural {
             return Engine(VerifyCtx).PreparedCompositeStructural.prepare(engine, ctx, host, changes, overlay, .{}, &.{});
         }
 
@@ -12299,8 +12369,19 @@ test "mixed when and each collection shares one owner and sweeps OOM" {
             var ctx = VerifyCtxHost{ .allocator = fault.allocator() };
             var engine = Engine(VerifyCtx).init();
             defer {
+                if (engine.active_signal_graph.items.len != 0) {
+                    engine.clearActiveSignalRoutes(&ctx);
+                    engine.clearActiveSignalGraph(&ctx);
+                }
                 engine.active_stream.deinit(ctx.allocator, &ctx, host, &engine.pending_roc_metrics);
+                engine.active_signal_graph.deinit(ctx.allocator);
+                engine.active_source_signal_routes.deinit(ctx.allocator);
+                engine.active_text_signal_routes.deinit(ctx.allocator);
+                engine.active_bool_signal_routes.deinit(ctx.allocator);
+                engine.active_change_signal_routes.deinit(ctx.allocator);
+                engine.active_structural_signal_routes.deinit(ctx.allocator);
                 ctx.render_batch.deinit(ctx.allocator);
+                engine.deinitRenderCache(&ctx);
                 deinitVerifyStateEngine(&engine, &ctx, host);
             }
             const root = try engine.internRootScope(ctx.allocator);
@@ -12322,25 +12403,35 @@ test "mixed when and each collection shares one owner and sweeps OOM" {
             const when_sources = try ctx.allocator.alloc(u64, 0);
             const each_sources = try ctx.allocator.alloc(u64, 0);
             const nested_each_sources = try ctx.allocator.alloc(u64, 0);
-            engine.active_stream.appendScopeSiteAt(ctx.allocator, 10, root.scope_id, 10, 0, 0, .when, &.{});
-            engine.active_stream.appendWhen(ctx.allocator, &ctx, host, &engine.pending_roc_metrics, 10, .{ .record = when_record, .source_node_ids = when_sources }, read, old_branch, next_branch);
-            engine.active_stream.appendTextNode(ctx.allocator, 100, 0, old_when_scope.scope_id, "old mixed when branch");
-            engine.active_stream.appendTextNode(ctx.allocator, 101, 0, root.scope_id, "between mixed sites");
-            engine.active_stream.appendScopeSiteAt(ctx.allocator, 20, root.scope_id, 20, 0, 2, .each, &.{});
-            engine.active_stream.appendEach(ctx.allocator, &ctx, host, &engine.pending_roc_metrics, 20, .{ .record = each_record, .source_node_ids = each_sources }, ops);
+            const when_node_id = try engine.internNodeIdentity(ctx.allocator, root.scope_id, 10);
+            const each_node_id = try engine.internNodeIdentity(ctx.allocator, root.scope_id, 20);
+            const nested_each_node_id = try engine.internNodeIdentity(ctx.allocator, old_when_scope.scope_id, 30);
+            try std.testing.expectEqual(@as(u64, 0), when_node_id);
+            try std.testing.expectEqual(@as(u64, 1), each_node_id);
+            try std.testing.expectEqual(@as(u64, 2), nested_each_node_id);
+            const old_branch_elem_id = try engine.internDomIdentity(ctx.allocator, old_when_scope.scope_id, 0);
+            const sibling_elem_id = try engine.internDomIdentity(ctx.allocator, root.scope_id, 0);
+            engine.active_stream.appendScopeSiteAt(ctx.allocator, 0, root.scope_id, 10, 0, 0, .when, &.{});
+            engine.active_stream.appendWhen(ctx.allocator, &ctx, host, &engine.pending_roc_metrics, 0, .{ .record = when_record, .source_node_ids = when_sources }, read, old_branch, next_branch);
+            engine.active_stream.appendTextNode(ctx.allocator, old_branch_elem_id, 0, old_when_scope.scope_id, "old mixed when branch");
+            engine.active_stream.appendTextNode(ctx.allocator, sibling_elem_id, 0, root.scope_id, "between mixed sites");
+            engine.active_stream.appendScopeSiteAt(ctx.allocator, 1, root.scope_id, 20, 0, 2, .each, &.{});
+            engine.active_stream.appendEach(ctx.allocator, &ctx, host, &engine.pending_roc_metrics, 1, .{ .record = each_record, .source_node_ids = each_sources }, ops);
             engine.active_stream.eaches.items[0].cached_value = .{ .present = HostValueCell.initRetained(2, cap, &engine.pending_roc_metrics) };
-            engine.active_stream.appendScopeSiteAt(ctx.allocator, 30, old_when_scope.scope_id, 30, 100, 0, .each, &.{});
-            engine.active_stream.appendEach(ctx.allocator, &ctx, host, &engine.pending_roc_metrics, 30, .{ .record = each_record.retain(), .source_node_ids = nested_each_sources }, ops);
+            engine.active_stream.appendScopeSiteAt(ctx.allocator, 2, old_when_scope.scope_id, 30, 1, 0, .each, &.{});
+            engine.active_stream.appendEach(ctx.allocator, &ctx, host, &engine.pending_roc_metrics, 2, .{ .record = each_record.retain(), .source_node_ids = nested_each_sources }, ops);
             engine.active_stream.eaches.items[1].cached_value = .{ .present = HostValueCell.initRetained(3, cap, &engine.pending_roc_metrics) };
             const each_site_index = engine.ensureEachRowSiteIndex(ctx.allocator, root.scope_id, 20);
             const changed_row_scope_id = engine.createEachRowScope(&ctx, root.scope_id, 20, hashEachKeyText("two"), 2, 201, cap, cap);
-            engine.active_stream.appendTextNode(ctx.allocator, 102, 0, changed_row_scope_id, "old mixed row");
+            const changed_row_elem_id = try engine.internDomIdentity(ctx.allocator, changed_row_scope_id, 0);
+            engine.active_stream.appendTextNode(ctx.allocator, changed_row_elem_id, 0, changed_row_scope_id, "old mixed row");
+            _ = engine.applyNodeDescriptorStream(&ctx, host, &engine.active_stream);
             var overlay = try signal_records.PreparedCacheUpdates.init(ctx.allocator, 0);
             defer overlay.deinit(&ctx, host, &engine.pending_roc_metrics);
-            const changes = [_]HostDirtyStructuralSignal{
-                .{ .kind = .each, .node_id = 20, .scope_id = root.scope_id, .ordinal = 20, .record = each_record },
-                .{ .kind = .each, .node_id = 30, .scope_id = old_when_scope.scope_id, .ordinal = 30, .record = each_record },
-                .{ .kind = .when, .node_id = 10, .scope_id = root.scope_id, .ordinal = 10, .record = when_record, .branch = .true_branch },
+            var changes = [_]HostDirtyStructuralSignal{
+                .{ .kind = .each, .node_id = 1, .scope_id = root.scope_id, .ordinal = 20, .record = each_record },
+                .{ .kind = .each, .node_id = 2, .scope_id = old_when_scope.scope_id, .ordinal = 30, .record = each_record },
+                .{ .kind = .when, .node_id = 0, .scope_id = root.scope_id, .ordinal = 10, .record = when_record, .branch = .true_branch, .cache_staged_in_overlay = true },
             };
             const live_balance = engine.pending_roc_metrics.closure_retains - engine.pending_roc_metrics.closure_releases;
 
@@ -12349,11 +12440,11 @@ test "mixed when and each collection shares one owner and sweeps OOM" {
                 try std.testing.expectEqual(error.OutOfMemory, err);
                 try std.testing.expectEqual(@as(usize, 3), engine.scopes.items.len);
                 try std.testing.expectEqualSlices(u64, &.{changed_row_scope_id}, engine.each_row_sites.items[each_site_index].scope_ids.items);
-                try std.testing.expectEqual(@as(usize, 0), engine.dom_identities.items.len);
+                try std.testing.expectEqual(@as(usize, 3), engine.dom_identities.items.len);
                 try std.testing.expectEqual(@as(usize, 3), engine.active_stream.render_nodes.items.len);
-                try std.testing.expectEqual(@as(u64, 100), engine.active_stream.render_nodes.items[0].elem_id);
-                try std.testing.expectEqual(@as(u64, 101), engine.active_stream.render_nodes.items[1].elem_id);
-                try std.testing.expectEqual(@as(u64, 102), engine.active_stream.render_nodes.items[2].elem_id);
+                try std.testing.expectEqual(@as(u64, 1), engine.active_stream.render_nodes.items[0].elem_id);
+                try std.testing.expectEqual(@as(u64, 2), engine.active_stream.render_nodes.items[1].elem_id);
+                try std.testing.expectEqual(@as(u64, 3), engine.active_stream.render_nodes.items[2].elem_id);
                 try std.testing.expectEqual(@as(usize, 0), ctx.render_batch.published.commands.len());
                 try std.testing.expectEqual(@as(usize, 0), ctx.render_batch.staged.commands.len());
                 try std.testing.expectEqual(live_balance, engine.pending_roc_metrics.closure_retains - engine.pending_roc_metrics.closure_releases);
@@ -12369,10 +12460,10 @@ test "mixed when and each collection shares one owner and sweeps OOM" {
                 try std.testing.expectEqual(@as(usize, 0), retry.row_ranges[0].change_index);
                 try std.testing.expectEqual(@as(usize, 1), retry.row_ranges[0].start);
                 try std.testing.expectEqual(@as(usize, 2), retry.replacement_owner.stream.text_nodes.items.len);
-                try std.testing.expectEqual(@as(usize, 3), retry.final_render_topology.render_nodes.items.len);
-                try std.testing.expectEqual(retry.branch_ranges[0].scope_id, renderNodeScopeId(&retry.replacement_owner.stream, retry.final_render_topology.render_nodes.items[0]));
-                try std.testing.expectEqual(@as(u64, 101), retry.final_render_topology.render_nodes.items[1].elem_id);
-                try std.testing.expectEqual(retry.row_ranges[0].scope_id, renderNodeScopeId(&retry.replacement_owner.stream, retry.final_render_topology.render_nodes.items[2]));
+                try std.testing.expectEqual(@as(usize, 3), retry.downstream.final_render_topology.?.render_nodes.items.len);
+                try std.testing.expectEqual(retry.branch_ranges[0].scope_id, renderNodeScopeId(&retry.replacement_owner.stream, retry.downstream.final_render_topology.?.render_nodes.items[0]));
+                try std.testing.expectEqual(@as(u64, 2), retry.downstream.final_render_topology.?.render_nodes.items[1].elem_id);
+                try std.testing.expectEqual(retry.row_ranges[0].scope_id, renderNodeScopeId(&retry.replacement_owner.stream, retry.downstream.final_render_topology.?.render_nodes.items[2]));
                 retry.deinit();
                 try std.testing.expectEqual(live_balance, engine.pending_roc_metrics.closure_retains - engine.pending_roc_metrics.closure_releases);
                 return attempts;
@@ -12388,27 +12479,35 @@ test "mixed when and each collection shares one owner and sweeps OOM" {
             try std.testing.expectEqual(@as(usize, 1), mixed.row_ranges[0].start);
             try std.testing.expectEqual(@as(usize, 1), mixed.row_ranges[0].len);
             try std.testing.expectEqual(@as(usize, 2), mixed.replacement_owner.stream.text_nodes.items.len);
-            try std.testing.expectEqual(@as(usize, 3), mixed.final_render_topology.render_nodes.items.len);
-            try std.testing.expectEqual(mixed.replacement_owner.stream.render_nodes.items[mixed.branch_ranges[0].start].elem_id, mixed.final_render_topology.render_nodes.items[0].elem_id);
-            try std.testing.expectEqual(@as(u64, 101), mixed.final_render_topology.render_nodes.items[1].elem_id);
-            try std.testing.expectEqual(mixed.replacement_owner.stream.render_nodes.items[mixed.row_ranges[0].start].elem_id, mixed.final_render_topology.render_nodes.items[2].elem_id);
-            try std.testing.expectEqual(mixed.branch_ranges[0].scope_id, renderNodeScopeId(&mixed.replacement_owner.stream, mixed.final_render_topology.render_nodes.items[0]));
-            try std.testing.expectEqual(root.scope_id, renderNodeScopeId(&engine.active_stream, mixed.final_render_topology.render_nodes.items[1]));
-            try std.testing.expectEqual(mixed.row_ranges[0].scope_id, renderNodeScopeId(&mixed.replacement_owner.stream, mixed.final_render_topology.render_nodes.items[2]));
-            try std.testing.expect(!mixed.targets.descriptor_target_scopes[@intCast(root.scope_id)]);
-            try std.testing.expect(mixed.targets.descriptor_target_scopes[@intCast(old_when_scope.scope_id)]);
-            try std.testing.expect(mixed.targets.descriptor_target_scopes[@intCast(changed_row_scope_id)]);
-            try std.testing.expectEqualSlices(u64, &.{old_when_scope.scope_id}, mixed.targets.scope_retirement.?.scope_ids);
+            try std.testing.expectEqual(@as(usize, 3), mixed.downstream.final_render_topology.?.render_nodes.items.len);
+            try std.testing.expectEqual(mixed.replacement_owner.stream.render_nodes.items[mixed.branch_ranges[0].start].elem_id, mixed.downstream.final_render_topology.?.render_nodes.items[0].elem_id);
+            try std.testing.expectEqual(@as(u64, 2), mixed.downstream.final_render_topology.?.render_nodes.items[1].elem_id);
+            try std.testing.expectEqual(mixed.replacement_owner.stream.render_nodes.items[mixed.row_ranges[0].start].elem_id, mixed.downstream.final_render_topology.?.render_nodes.items[2].elem_id);
+            try std.testing.expectEqual(mixed.branch_ranges[0].scope_id, renderNodeScopeId(&mixed.replacement_owner.stream, mixed.downstream.final_render_topology.?.render_nodes.items[0]));
+            try std.testing.expectEqual(root.scope_id, renderNodeScopeId(&engine.active_stream, mixed.downstream.final_render_topology.?.render_nodes.items[1]));
+            try std.testing.expectEqual(mixed.row_ranges[0].scope_id, renderNodeScopeId(&mixed.replacement_owner.stream, mixed.downstream.final_render_topology.?.render_nodes.items[2]));
+            try std.testing.expect(!mixed.downstream.targets.?.descriptor_target_scopes[@intCast(root.scope_id)]);
+            try std.testing.expect(mixed.downstream.targets.?.descriptor_target_scopes[@intCast(old_when_scope.scope_id)]);
+            try std.testing.expect(mixed.downstream.targets.?.descriptor_target_scopes[@intCast(changed_row_scope_id)]);
+            try std.testing.expectEqualSlices(u64, &.{old_when_scope.scope_id}, mixed.downstream.targets.?.scope_retirement.?.scope_ids);
             try std.testing.expectEqual(@as(usize, 3), engine.scopes.items.len);
             try std.testing.expectEqualSlices(u64, &.{changed_row_scope_id}, engine.each_row_sites.items[each_site_index].scope_ids.items);
             try std.testing.expectEqual(@as(usize, 0), ctx.render_batch.published.commands.len());
             const attempts = fault.attempts;
+            fault.configure(1);
+            _ = mixed.commitAssumeCapacity();
+            try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+            try std.testing.expectEqual(@as(usize, 0), ctx.render_batch.staged.commands.len());
+            try std.testing.expect(ctx.render_batch.published.commands.len() != 0);
+            try std.testing.expect(!engine.scopes.items[@intCast(old_when_scope.scope_id)].active);
+            try std.testing.expect(engine.scopes.items[@intCast(changed_row_scope_id)].active);
+            try std.testing.expectEqualSlices(u64, &.{changed_row_scope_id}, engine.each_row_sites.items[each_site_index].scope_ids.items);
+            try std.testing.expectEqual(@as(usize, 3), engine.active_stream.render_nodes.items.len);
+            try std.testing.expectEqual(mixed.branch_ranges[0].scope_id, renderNodeScopeId(&engine.active_stream, engine.active_stream.render_nodes.items[0]));
+            try std.testing.expectEqual(sibling_elem_id, engine.active_stream.render_nodes.items[1].elem_id);
+            try std.testing.expectEqual(mixed.row_ranges[0].scope_id, renderNodeScopeId(&engine.active_stream, engine.active_stream.render_nodes.items[2]));
             mixed.deinit();
-            try std.testing.expectEqual(live_balance, engine.pending_roc_metrics.closure_retains - engine.pending_roc_metrics.closure_releases);
-            try std.testing.expectEqual(@as(usize, 3), engine.scopes.items.len);
-            try std.testing.expectEqual(@as(u64, 100), engine.active_stream.render_nodes.items[0].elem_id);
-            try std.testing.expectEqual(@as(u64, 101), engine.active_stream.render_nodes.items[1].elem_id);
-            try std.testing.expectEqual(@as(u64, 102), engine.active_stream.render_nodes.items[2].elem_id);
+            try std.testing.expect(engine.pending_roc_metrics.closure_retains - engine.pending_roc_metrics.closure_releases < live_balance);
             return attempts;
         }
     };
