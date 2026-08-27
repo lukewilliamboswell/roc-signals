@@ -1064,6 +1064,38 @@ pub fn PreparedGraphAppend(comptime Record: type) type {
             try nodes.ensureTotalCapacity(allocator, final_count);
         }
 
+        /// Reserves the parallel route-table slots for every final dense node.
+        pub fn reserveParallelRoutes(
+            self: *const @This(),
+            allocator: std.mem.Allocator,
+            text_routes: *RouteTable(TextSink),
+            bool_routes: *RouteTable(BoolSink),
+            change_routes: *RouteTable(ChangeSink),
+            structural_routes: *RouteTable(StructuralSink),
+        ) (std.mem.Allocator.Error || error{InvalidAppend})!void {
+            const final_count = std.math.add(usize, self.survivor_count, self.new_nodes.len) catch return error.InvalidAppend;
+            try text_routes.ensureTotalCapacity(allocator, final_count);
+            try bool_routes.ensureTotalCapacity(allocator, final_count);
+            try change_routes.ensureTotalCapacity(allocator, final_count);
+            try structural_routes.ensureTotalCapacity(allocator, final_count);
+        }
+
+        /// Extends parallel route tables to the final graph length without allocating.
+        pub fn commitParallelRoutes(
+            self: *const @This(),
+            text_routes: *RouteTable(TextSink),
+            bool_routes: *RouteTable(BoolSink),
+            change_routes: *RouteTable(ChangeSink),
+            structural_routes: *RouteTable(StructuralSink),
+        ) void {
+            const final_count = self.survivor_count + self.new_nodes.len;
+            if (text_routes.items.len > final_count or bool_routes.items.len > final_count or change_routes.items.len > final_count or structural_routes.items.len > final_count) @panic("replacement graph route tables exceeded their prepared length");
+            while (text_routes.items.len < final_count) text_routes.appendAssumeCapacity(.empty);
+            while (bool_routes.items.len < final_count) bool_routes.appendAssumeCapacity(.empty);
+            while (change_routes.items.len < final_count) change_routes.appendAssumeCapacity(.empty);
+            while (structural_routes.items.len < final_count) structural_routes.appendAssumeCapacity(.empty);
+        }
+
         /// Publishes prepared nodes, edges, ids, and use counts without allocating.
         pub fn commitNodes(self: *@This(), nodes: *std.ArrayListUnmanaged(Node(Record))) void {
             if (self.committed or nodes.items.len != self.survivor_count) @panic("replacement graph publication violated its prepared snapshot");
@@ -1828,10 +1860,19 @@ test "prepared graph append enumerates missing topology without mutating survivo
     var root = LifecycleTestRecord{ .id = 4, .payload = .{ .map2 = .{ .left = &mapped, .right = &fresh } } };
     var nodes: std.ArrayListUnmanaged(Node(LifecycleTestRecord)) = .empty;
     var source_routes: RouteTable(u64) = .empty;
+    var text_routes: RouteTable(TextSink) = .empty;
+    var bool_routes: RouteTable(BoolSink) = .empty;
+    var change_routes: RouteTable(ChangeSink) = .empty;
+    var structural_routes: RouteTable(StructuralSink) = .empty;
     var hooks: LifecycleTestHooks = .{};
     defer {
         clearSourceRoutes(std.testing.allocator, &source_routes);
         source_routes.deinit(std.testing.allocator);
+        clearSinkRoutes(std.testing.allocator, &text_routes, &bool_routes, &change_routes, &structural_routes);
+        text_routes.deinit(std.testing.allocator);
+        bool_routes.deinit(std.testing.allocator);
+        change_routes.deinit(std.testing.allocator);
+        structural_routes.deinit(std.testing.allocator);
         clear(LifecycleTestRecord, std.testing.allocator, &nodes, &hooks);
         nodes.deinit(std.testing.allocator);
     }
@@ -1877,10 +1918,16 @@ test "prepared graph append enumerates missing topology without mutating survivo
         }
     }
     try baseline.reservePublication(counter.allocator(), &nodes);
+    try baseline.reserveParallelRoutes(counter.allocator(), &text_routes, &bool_routes, &change_routes, &structural_routes);
     counter.configure(1);
     baseline.commitNodes(&nodes);
+    baseline.commitParallelRoutes(&text_routes, &bool_routes, &change_routes, &structural_routes);
     try std.testing.expectEqual(@as(usize, 0), counter.attempts);
     try std.testing.expectEqual(@as(usize, 4), nodes.items.len);
+    try std.testing.expectEqual(@as(usize, 4), text_routes.items.len);
+    try std.testing.expectEqual(@as(usize, 4), bool_routes.items.len);
+    try std.testing.expectEqual(@as(usize, 4), change_routes.items.len);
+    try std.testing.expectEqual(@as(usize, 4), structural_routes.items.len);
     try std.testing.expectEqualSlices(u64, &.{1}, nodes.items[0].dependents);
     try std.testing.expectEqualSlices(u64, &.{3}, nodes.items[1].dependents);
     try std.testing.expectEqualSlices(u64, &.{3}, nodes.items[2].dependents);
