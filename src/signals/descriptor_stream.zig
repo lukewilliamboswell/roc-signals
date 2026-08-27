@@ -1256,7 +1256,9 @@ pub const Stream = struct {
 
     pub fn reserveExistingNamedEventIndexes(self: *Stream, allocator: std.mem.Allocator, elem_id: u64, additional: usize) std.mem.Allocator.Error!void {
         if (!self.namedEventIndexSlotExists(elem_id)) return;
-        try self.named_event_indices_by_elem_id.items[@intCast(elem_id)].ensureUnusedCapacity(allocator, additional);
+        const slot = &self.named_event_indices_by_elem_id.items[@intCast(elem_id)];
+        const total = std.math.add(usize, slot.items.len, additional) catch return error.OutOfMemory;
+        try slot.ensureTotalCapacity(allocator, total);
     }
 
     pub fn appendPreparedEvent(self: *Stream, prepared: PreparedEventDescriptor) void {
