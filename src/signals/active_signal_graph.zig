@@ -1037,6 +1037,110 @@ pub fn PreparedReleaseClosure(comptime Record: type) type {
     };
 }
 
+pub const ExistingUseIncrement = struct { original_record_id: u64, count: usize };
+
+/// Owns read-only topology and use-count decisions for replacement records.
+pub fn PreparedGraphAppend(comptime Record: type) type {
+    return struct {
+        records: []*Record,
+        record_ids: []u64,
+        ranks: []u64,
+        use_counts: []usize,
+        existing_use_increments: []ExistingUseIncrement,
+
+        /// Releases preparation storage without changing the active graph.
+        pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            allocator.free(self.records);
+            allocator.free(self.record_ids);
+            allocator.free(self.ranks);
+            allocator.free(self.use_counts);
+            allocator.free(self.existing_use_increments);
+            self.* = undefined;
+        }
+    };
+}
+
+/// Resolves survivor records and topologically enumerates only missing records.
+pub fn prepareGraphAppend(comptime Record: type, allocator: std.mem.Allocator, nodes: []const Node(Record), final_record_ids: []const ?u64, roots: []const *Record) (std.mem.Allocator.Error || error{InvalidAppend})!PreparedGraphAppend(Record) {
+    if (final_record_ids.len != nodes.len) return error.InvalidAppend;
+    var survivor_count: usize = 0;
+    for (final_record_ids) |final_id| {
+        if (final_id) |id| {
+            const next = std.math.add(usize, @intCast(id), 1) catch return error.InvalidAppend;
+            survivor_count = @max(survivor_count, next);
+        }
+    }
+    const existing_counts = try allocator.alloc(usize, nodes.len);
+    defer allocator.free(existing_counts);
+    @memset(existing_counts, 0);
+    var records: std.ArrayListUnmanaged(*Record) = .empty;
+    errdefer records.deinit(allocator);
+    var ranks: std.ArrayListUnmanaged(u64) = .empty;
+    errdefer ranks.deinit(allocator);
+    var uses: std.ArrayListUnmanaged(usize) = .empty;
+    errdefer uses.deinit(allocator);
+
+    const Builder = struct {
+        fn retain(record: *Record, prepare_allocator: std.mem.Allocator, graph_nodes: []const Node(Record), mapping: []const ?u64, survivor_len: usize, existing: []usize, new_records: *std.ArrayListUnmanaged(*Record), new_ranks: *std.ArrayListUnmanaged(u64), new_uses: *std.ArrayListUnmanaged(usize)) (std.mem.Allocator.Error || error{InvalidAppend})!struct { id: u64, rank: u64 } {
+            if (record.active_graph_id) |original_id| {
+                const index: usize = @intCast(original_id);
+                if (index >= graph_nodes.len or graph_nodes[index].record != record) return error.InvalidAppend;
+                const final_id = mapping[index] orelse return error.InvalidAppend;
+                existing[index] = std.math.add(usize, existing[index], 1) catch return error.InvalidAppend;
+                return .{ .id = final_id, .rank = graph_nodes[index].rank };
+            }
+            for (new_records.items, 0..) |known, index| if (known == record) {
+                new_uses.items[index] = std.math.add(usize, new_uses.items[index], 1) catch return error.InvalidAppend;
+                return .{ .id = @intCast(survivor_len + index), .rank = new_ranks.items[index] };
+            };
+            var new_rank: u64 = 0;
+            switch (record.payload) {
+                .map => |payload| new_rank = std.math.add(u64, (try retain(payload.input, prepare_allocator, graph_nodes, mapping, survivor_len, existing, new_records, new_ranks, new_uses)).rank, 1) catch return error.InvalidAppend,
+                .map2 => |payload| {
+                    const left = try retain(payload.left, prepare_allocator, graph_nodes, mapping, survivor_len, existing, new_records, new_ranks, new_uses);
+                    const right = if (payload.right == payload.left) left else try retain(payload.right, prepare_allocator, graph_nodes, mapping, survivor_len, existing, new_records, new_ranks, new_uses);
+                    new_rank = std.math.add(u64, @max(left.rank, right.rank), 1) catch return error.InvalidAppend;
+                },
+                .combine => |payload| for (payload.children, 0..) |child, child_index| {
+                    if (recordSliceContains(Record, payload.children[0..child_index], child)) continue;
+                    const child_rank = std.math.add(u64, (try retain(child, prepare_allocator, graph_nodes, mapping, survivor_len, existing, new_records, new_ranks, new_uses)).rank, 1) catch return error.InvalidAppend;
+                    new_rank = @max(new_rank, child_rank);
+                },
+                .ref, .const_value, .task_source, .interval_source, .location_source, .online_source, .visibility_source, .storage_source => {},
+            }
+            const id: u64 = @intCast(std.math.add(usize, survivor_len, new_records.items.len) catch return error.InvalidAppend);
+            try new_records.append(prepare_allocator, record);
+            try new_ranks.append(prepare_allocator, new_rank);
+            try new_uses.append(prepare_allocator, 1);
+            return .{ .id = id, .rank = new_rank };
+        }
+    };
+    for (roots) |root| _ = try Builder.retain(root, allocator, nodes, final_record_ids, survivor_count, existing_counts, &records, &ranks, &uses);
+
+    var increments: std.ArrayListUnmanaged(ExistingUseIncrement) = .empty;
+    errdefer increments.deinit(allocator);
+    try increments.ensureTotalCapacity(allocator, nodes.len);
+    for (existing_counts, 0..) |count, original_id| if (count != 0) increments.appendAssumeCapacity(.{ .original_record_id = @intCast(original_id), .count = count });
+    const owned_records = try records.toOwnedSlice(allocator);
+    errdefer allocator.free(owned_records);
+    const record_ids = try allocator.alloc(u64, owned_records.len);
+    errdefer allocator.free(record_ids);
+    for (record_ids, 0..) |*id, index| id.* = @intCast(std.math.add(usize, survivor_count, index) catch return error.InvalidAppend);
+    const owned_ranks = try ranks.toOwnedSlice(allocator);
+    errdefer allocator.free(owned_ranks);
+    const owned_uses = try uses.toOwnedSlice(allocator);
+    errdefer allocator.free(owned_uses);
+    const owned_increments = try increments.toOwnedSlice(allocator);
+    errdefer allocator.free(owned_increments);
+    return .{
+        .records = owned_records,
+        .record_ids = record_ids,
+        .ranks = owned_ranks,
+        .use_counts = owned_uses,
+        .existing_use_increments = owned_increments,
+    };
+}
+
 /// Simulates descriptor-root releases, recursive zero-use inputs, and dense
 /// swap-remaps without mutating graph records or route state.
 pub fn prepareReleaseClosure(comptime Record: type, allocator: std.mem.Allocator, nodes: []const Node(Record), roots: []const *Record) (std.mem.Allocator.Error || error{InvalidRelease})!PreparedReleaseClosure(Record) {
@@ -1587,6 +1691,54 @@ const LifecycleStream = struct {
         self.eaches.deinit(allocator);
     }
 };
+
+test "prepared graph append enumerates missing topology without mutating survivors" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var survivor = LifecycleTestRecord{ .id = 1, .payload = .{ .ref = 0 } };
+    var mapped = LifecycleTestRecord{ .id = 2, .payload = .{ .map = .{ .input = &survivor } } };
+    var fresh = LifecycleTestRecord{ .id = 3, .payload = .const_value };
+    var root = LifecycleTestRecord{ .id = 4, .payload = .{ .map2 = .{ .left = &mapped, .right = &fresh } } };
+    var nodes: std.ArrayListUnmanaged(Node(LifecycleTestRecord)) = .empty;
+    var source_routes: RouteTable(u64) = .empty;
+    var hooks: LifecycleTestHooks = .{};
+    defer {
+        clearSourceRoutes(std.testing.allocator, &source_routes);
+        source_routes.deinit(std.testing.allocator);
+        clear(LifecycleTestRecord, std.testing.allocator, &nodes, &hooks);
+        nodes.deinit(std.testing.allocator);
+    }
+    _ = retainRecord(LifecycleTestRecord, std.testing.allocator, &nodes, &source_routes, 4, &survivor, &hooks);
+    try std.testing.expectEqual(@as(usize, 1), survivor.active_use_count);
+    try std.testing.expectEqualSlices(u64, &.{0}, source_routes.items[0].items);
+    const mapping = [_]?u64{0};
+    const roots = [_]*LifecycleTestRecord{ &mapped, &root };
+
+    var counter = FaultAllocator.init(std.testing.allocator);
+    var baseline = try prepareGraphAppend(LifecycleTestRecord, counter.allocator(), nodes.items, &mapping, &roots);
+    defer baseline.deinit(counter.allocator());
+    const attempts = counter.attempts;
+    try std.testing.expect(attempts != 0);
+    try std.testing.expectEqualSlices(*LifecycleTestRecord, &.{ &mapped, &fresh, &root }, baseline.records);
+    try std.testing.expectEqualSlices(u64, &.{ 1, 2, 3 }, baseline.record_ids);
+    try std.testing.expectEqualSlices(u64, &.{ 1, 0, 2 }, baseline.ranks);
+    try std.testing.expectEqualSlices(usize, &.{ 2, 1, 1 }, baseline.use_counts);
+    try std.testing.expectEqualSlices(ExistingUseIncrement, &.{.{ .original_record_id = 0, .count = 1 }}, baseline.existing_use_increments);
+
+    for (1..attempts + 1) |failure_number| {
+        var fault = FaultAllocator.init(std.testing.allocator);
+        fault.configure(failure_number);
+        try std.testing.expectError(error.OutOfMemory, prepareGraphAppend(LifecycleTestRecord, fault.allocator(), nodes.items, &mapping, &roots));
+        try std.testing.expectEqual(@as(usize, 1), nodes.items.len);
+        try std.testing.expectEqual(@as(?u64, 0), survivor.active_graph_id);
+        try std.testing.expectEqual(@as(usize, 1), survivor.active_use_count);
+        try std.testing.expectEqualSlices(u64, &.{}, nodes.items[0].dependents);
+        try std.testing.expectEqualSlices(u64, &.{0}, source_routes.items[0].items);
+        for ([_]*LifecycleTestRecord{ &mapped, &fresh, &root }) |record| {
+            try std.testing.expectEqual(@as(?u64, null), record.active_graph_id);
+            try std.testing.expectEqual(@as(usize, 0), record.active_use_count);
+        }
+    }
+}
 
 test "prepared release closure preserves shared diamond and computes dense remaps" {
     const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
