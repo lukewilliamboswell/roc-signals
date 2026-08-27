@@ -2910,6 +2910,9 @@ fn deinitStaticPreparedTestStream(stream: *Stream, allocator: std.mem.Allocator)
     stream.text_nodes.deinit(allocator);
     stream.signal_text_attrs.deinit(allocator);
     stream.signal_bool_attrs.deinit(allocator);
+    stream.signal_custom_text_attrs.deinit(allocator);
+    stream.signal_optional_custom_text_attrs.deinit(allocator);
+    stream.signal_custom_bool_attrs.deinit(allocator);
     stream.descriptor_indexes_by_elem_id.deinit(allocator);
     stream.render_metadata_by_elem_id.deinit(allocator);
 }
