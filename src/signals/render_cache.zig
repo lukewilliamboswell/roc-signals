@@ -366,6 +366,31 @@ pub const PreparedBoolFieldUpdate = struct {
     }
 };
 
+/// Stores one allocation-free fixed-event binding update.
+pub const PreparedFixedEventUpdate = struct {
+    elem_id: u64,
+    kind: EventKind,
+    next: ?EventBinding,
+    retired: ?EventBinding = null,
+    committed: bool = false,
+
+    /// Canonicalizes delivery metadata and validates the active node.
+    pub fn prepare(comptime Ctx: type, cache: *const Cache(Ctx), elem_id: u64, kind: EventKind, binding: ?EventBinding) error{MissingNode}!PreparedFixedEventUpdate {
+        const index = std.math.cast(usize, elem_id) orelse return error.MissingNode;
+        if (index >= cache.nodes.items.len or !cache.nodes.items[index].active) return error.MissingNode;
+        return .{ .elem_id = elem_id, .kind = kind, .next = if (binding) |value| value.withDeliveryFor(.{ .fixed = kind }) else null };
+    }
+
+    /// Swaps the prepared binding into the active cache without allocation.
+    pub fn apply(self: *PreparedFixedEventUpdate, comptime Ctx: type, cache: *Cache(Ctx)) void {
+        if (self.committed) @panic("prepared fixed event update committed twice");
+        const slot = cache.nodes.items[@intCast(self.elem_id)].fixedEventBindingSlot(self.kind);
+        self.retired = slot.*;
+        slot.* = self.next;
+        self.committed = true;
+    }
+};
+
 /// Defines the engine-owned rendered-state cache used to emit only changed host commands.
 pub fn Cache(comptime Ctx: type) type {
     return struct {
@@ -1070,12 +1095,19 @@ test "prepared scalar fields abort cleanly and publish allocation free" {
 
     var text = try PreparedTextFieldUpdate.prepare(TestCtx, allocator, &cache, 0, .value, "new");
     var boolean = try PreparedBoolFieldUpdate.prepare(TestCtx, &cache, 0, .checked, true);
+    const old_binding = EventBinding{ .event_id = 1, .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) };
+    cache.nodes.items[0].event_bindings.click = old_binding;
+    const next_binding = EventBinding{ .event_id = 2, .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) };
+    var event = try PreparedFixedEventUpdate.prepare(TestCtx, &cache, 0, .click, next_binding);
     fault.configure(1);
     text.apply(TestCtx, &cache);
     boolean.apply(TestCtx, &cache);
+    event.apply(TestCtx, &cache);
     try std.testing.expectEqual(@as(usize, 0), fault.attempts);
     try std.testing.expectEqualStrings("new", cache.nodes.items[0].value.?);
     try std.testing.expect(cache.nodes.items[0].checked.?);
+    try std.testing.expectEqual(@as(u64, 2), cache.nodes.items[0].event_bindings.click.?.event_id);
+    try std.testing.expectEqual(@as(u64, 1), event.retired.?.event_id);
     try std.testing.expectEqualStrings("old", text.retired.?);
     fault.configure(null);
     text.deinit(allocator);
