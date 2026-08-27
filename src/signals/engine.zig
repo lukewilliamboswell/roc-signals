@@ -2341,6 +2341,10 @@ pub fn Engine(comptime Ctx: type) type {
 
         const StagedCollectionCtx = struct {
             const Collection = @This();
+            const PreparedRenderNode = union(enum) {
+                static: usize,
+                signal: usize,
+            };
             engine: *Self,
             host_ctx: Ctx.Handle,
             stream: *HostNodeDescriptorStream,
@@ -2349,6 +2353,7 @@ pub fn Engine(comptime Ctx: type) type {
             node_identities: collection_plan.IdentityOverlay = .{},
             dom_identities: collection_plan.IdentityOverlay = .{},
             prepared_nodes: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedStaticNode) = .empty,
+            prepared_render_order: std.ArrayListUnmanaged(PreparedRenderNode) = .empty,
             prepared_attrs: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedStaticAttr) = .empty,
             prepared_signal_attrs: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedSignalDescriptor) = .empty,
             prepared_events: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedEventDescriptor) = .empty,
@@ -2377,7 +2382,12 @@ pub fn Engine(comptime Ctx: type) type {
                 errdefer self.deinit();
                 const allocator = Ctx.allocator(host_ctx);
                 const expected_state_component_sites = std.math.add(usize, expected_state_sites, expected_component_sites) catch return error.ResourceLimit;
-                const expected_signal_roots = std.math.add(usize, expected_attrs, expected_lifecycle) catch return error.ResourceLimit;
+                const attr_lifecycle_roots = std.math.add(usize, expected_attrs, expected_lifecycle) catch return error.ResourceLimit;
+                // Every descriptor root contains at least one signal record.
+                // The record count therefore also bounds roots that are not
+                // attributes or lifecycle entries, such as when conditions
+                // and signal-backed text nodes.
+                const expected_signal_roots = @max(attr_lifecycle_roots, expected_signal_records);
                 const expected_scope_sites = std.math.add(usize, expected_state_component_sites, expected_when_sites) catch return error.ResourceLimit;
                 const expected_child_scopes = std.math.add(usize, expected_component_sites, expected_when_sites) catch return error.ResourceLimit;
                 const expected_scope_intents = std.math.add(usize, expected_external_scopes, expected_child_scopes) catch return error.ResourceLimit;
@@ -2386,6 +2396,7 @@ pub fn Engine(comptime Ctx: type) type {
                 if (expected_nodes > limits.nodes) return error.ResourceLimit;
                 self.dom_identities.prepare(allocator, expected_nodes) catch return error.OutOfMemory;
                 self.prepared_nodes.ensureTotalCapacity(allocator, expected_nodes) catch return error.OutOfMemory;
+                self.prepared_render_order.ensureTotalCapacity(allocator, expected_nodes) catch return error.OutOfMemory;
                 self.prepared_attrs.ensureTotalCapacity(allocator, expected_attrs) catch return error.OutOfMemory;
                 self.prepared_signal_attrs.ensureTotalCapacity(allocator, expected_attrs) catch return error.OutOfMemory;
                 self.prepared_events.ensureTotalCapacity(allocator, expected_attrs) catch return error.OutOfMemory;
@@ -2494,6 +2505,7 @@ pub fn Engine(comptime Ctx: type) type {
                     self.dom_identities.abort();
                 }
                 self.prepared_nodes.deinit(allocator);
+                self.prepared_render_order.deinit(allocator);
                 self.prepared_attrs.deinit(allocator);
                 self.prepared_signal_attrs.deinit(allocator);
                 self.prepared_events.deinit(allocator);
@@ -2659,6 +2671,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const elem_id = try self.reserveDomIdentity(scope_id, dom_ordinal.*);
                 const prepared = self.stream.prepareElement(Ctx.allocator(self.host_ctx), elem_id, parent_elem_id, scope_id, tag) catch return error.OutOfMemory;
                 self.prepared_nodes.appendAssumeCapacity(prepared);
+                self.prepared_render_order.appendAssumeCapacity(.{ .static = self.prepared_nodes.items.len - 1 });
                 dom_ordinal.* += 1;
                 return elem_id;
             }
@@ -2669,6 +2682,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const elem_id = try self.reserveDomIdentity(scope_id, dom_ordinal.*);
                 const prepared = self.stream.prepareTextNode(Ctx.allocator(self.host_ctx), elem_id, parent_elem_id, scope_id, value) catch return error.OutOfMemory;
                 self.prepared_nodes.appendAssumeCapacity(prepared);
+                self.prepared_render_order.appendAssumeCapacity(.{ .static = self.prepared_nodes.items.len - 1 });
                 dom_ordinal.* += 1;
             }
 
@@ -2684,6 +2698,7 @@ pub fn Engine(comptime Ctx: type) type {
                     .signal = signal,
                     .read = read,
                 } });
+                self.prepared_render_order.appendAssumeCapacity(.{ .signal = self.prepared_signal_attrs.items.len - 1 });
                 self.signal_records.transferDescriptorRoot(signal.record);
                 const journaled = self.signal_bindings.pop() orelse @panic("staged signal binding journal underflow");
                 if (journaled.record != signal.record or journaled.source_node_ids.ptr != signal.source_node_ids.ptr or journaled.source_node_ids.len != signal.source_node_ids.len) @panic("staged signal binding journal transfer mismatch");
@@ -3027,12 +3042,19 @@ pub fn Engine(comptime Ctx: type) type {
             /// stream without publishing persistent engine identities/scopes.
             fn materializeStream(self: *@This()) void {
                 if (self.stream_materialized) @panic("staged collection stream materialized twice");
-                for (self.prepared_nodes.items) |prepared| self.stream.appendPreparedStaticNode(prepared);
+                for (self.prepared_render_order.items) |entry| switch (entry) {
+                    .static => |index| self.stream.appendPreparedStaticNode(self.prepared_nodes.items[index]),
+                    .signal => |index| self.stream.appendPreparedSignalDescriptor(self.prepared_signal_attrs.items[index]),
+                };
                 self.prepared_nodes.clearRetainingCapacity();
+                self.prepared_render_order.clearRetainingCapacity();
                 for (self.prepared_attrs.items) |prepared| self.stream.appendPreparedStaticAttr(prepared);
                 self.prepared_attrs.clearRetainingCapacity();
                 self.signal_records.commit(SignalPublisher{ .stream = self.stream });
-                for (self.prepared_signal_attrs.items) |prepared| self.stream.appendPreparedSignalDescriptor(prepared);
+                for (self.prepared_signal_attrs.items) |prepared| switch (prepared) {
+                    .text_node => {},
+                    else => self.stream.appendPreparedSignalDescriptor(prepared),
+                };
                 self.prepared_signal_attrs.clearRetainingCapacity();
                 const event_base = self.stream.events.items.len;
                 for (self.prepared_events.items) |prepared| self.stream.appendPreparedEvent(prepared);
@@ -9087,6 +9109,16 @@ fn boxOwnedVerifyElem(roc_host: *abi.RocHost, elem: abi.Elem) *abi.Elem {
     return boxed;
 }
 
+fn decrefOwnedVerifyElemBox(elem: *abi.Elem, roc_host: *abi.RocHost) void {
+    const Drop = struct {
+        fn drop(data: ?*anyopaque, host: *abi.RocHost) callconv(.c) void {
+            const payload: *abi.Elem = @ptrCast(@alignCast(data.?));
+            payload.decref(host);
+        }
+    };
+    abi.decrefBoxWith(@ptrCast(elem), @alignOf(abi.Elem), true, Drop.drop, roc_host);
+}
+
 fn boxOwnedVerifySignalExpr(roc_host: *abi.RocHost, expr: abi.NodeSignalExpr) *abi.NodeSignalExpr {
     expr.incref(1);
     const raw = abi.allocateBox(@sizeOf(abi.NodeSignalExpr), @alignOf(abi.NodeSignalExpr), true, roc_host);
@@ -9105,6 +9137,78 @@ fn ownedVerifyStateRoot(roc_host: *abi.RocHost, binder: abi.RocErasedCallable, c
         .initial = binder,
     } }, .tag = .State };
 }
+
+const OwnedAggregateGraphRoot = struct {
+    allocator: std.mem.Allocator,
+    roc_host: *abi.RocHost,
+    value_callable: abi.RocErasedCallable,
+    bool_callable: abi.RocErasedCallable,
+    text_callable: abi.RocErasedCallable,
+    capability_callable: abi.RocErasedCallable,
+    first_condition: *abi.NodeSignalExpr,
+    first_false: *abi.Elem,
+    first_true: *abi.Elem,
+    second_false: *abi.Elem,
+    second_true: *abi.Elem,
+    root: abi.Elem,
+
+    fn signalBranch(self: *@This(), label: []const u8) *abi.Elem {
+        const capability = HostValueCapability{ .clone = self.capability_callable, .drop = self.capability_callable, .eq = self.capability_callable };
+        const read = HostTextRead{ .capability = capability, .read = self.text_callable };
+        const signal = boxOwnedVerifySignalExpr(self.roc_host, .{ .payload = .{ .ref = self.value_callable }, .tag = .Ref });
+        var static_text = verifyStaticText();
+        static_text.payload.text = abi.RocStr.fromSlice(label, self.roc_host);
+        const signal_text = abi.Elem{ .payload = .{ .text_signal = .{ .read = read, .signal = signal } }, .tag = .TextSignal };
+        const element = ownedVerifyStaticRoot(self.roc_host, &.{}, &.{ static_text, signal_text });
+        static_text.decref(self.roc_host);
+        signal_text.decref(self.roc_host);
+        return boxOwnedVerifyElem(self.roc_host, ownedVerifyStateRoot(self.roc_host, self.value_callable, self.capability_callable, element));
+    }
+
+    fn init(allocator: std.mem.Allocator, roc_host: *abi.RocHost) !*@This() {
+        const self = try allocator.create(@This());
+        errdefer allocator.destroy(self);
+        self.* = undefined;
+        self.allocator = allocator;
+        self.roc_host = roc_host;
+        self.value_callable = abi.rocErasedCallableAllocate(roc_host, verifyStateCallable, null, 0) orelse return error.OutOfMemory;
+        errdefer abi.decrefErasedCallable(self.value_callable, roc_host);
+        self.bool_callable = abi.rocErasedCallableAllocate(roc_host, verifyBoolCallable, null, 0) orelse return error.OutOfMemory;
+        errdefer abi.decrefErasedCallable(self.bool_callable, roc_host);
+        self.text_callable = abi.rocErasedCallableAllocate(roc_host, verifyTextCallable, null, 0) orelse return error.OutOfMemory;
+        errdefer abi.decrefErasedCallable(self.text_callable, roc_host);
+        self.capability_callable = abi.rocErasedCallableAllocate(roc_host, verifyErasedCallable, null, 0) orelse return error.OutOfMemory;
+        errdefer abi.decrefErasedCallable(self.capability_callable, roc_host);
+        self.first_false = self.signalBranch("first-new");
+        self.first_true = self.signalBranch("first-old");
+        self.second_false = self.signalBranch("second-new");
+        self.second_true = self.signalBranch("second-old");
+        const condition_capability = HostValueCapability{ .clone = self.value_callable, .drop = self.value_callable, .eq = self.value_callable };
+        const condition = abi.NodeSignalExpr{ .payload = .{ .const_value = .{ ._0 = self.value_callable, ._1 = self.value_callable, ._2 = condition_capability } }, .tag = .ConstValue };
+        self.first_condition = boxOwnedVerifySignalExpr(roc_host, condition);
+        const bool_read = HostBoolRead{ .capability = condition_capability, .read = self.bool_callable };
+        const first_when = abi.Elem{ .payload = .{ .when = .{ .condition = self.first_condition, .read = bool_read, .when_false = self.first_false, .when_true = self.first_true } }, .tag = .When };
+        const second_when = abi.Elem{ .payload = .{ .when = .{ .condition = self.first_condition, .read = bool_read, .when_false = self.second_false, .when_true = self.second_true } }, .tag = .When };
+        var separator = verifyStaticText();
+        separator.payload.text = abi.RocStr.fromSlice("separator", roc_host);
+        self.root = ownedVerifyStaticRoot(roc_host, &.{}, &.{ first_when, separator, second_when });
+        decrefOwnedVerifySignalExprBox(self.first_condition, roc_host);
+        decrefOwnedVerifyElemBox(self.first_false, roc_host);
+        decrefOwnedVerifyElemBox(self.first_true, roc_host);
+        decrefOwnedVerifyElemBox(self.second_false, roc_host);
+        decrefOwnedVerifyElemBox(self.second_true, roc_host);
+        return self;
+    }
+
+    fn deinit(self: *@This()) void {
+        self.root.decref(self.roc_host);
+        abi.decrefErasedCallable(self.capability_callable, self.roc_host);
+        abi.decrefErasedCallable(self.text_callable, self.roc_host);
+        abi.decrefErasedCallable(self.bool_callable, self.roc_host);
+        abi.decrefErasedCallable(self.value_callable, self.roc_host);
+        self.allocator.destroy(self);
+    }
+};
 
 fn verifyStaticText() abi.Elem {
     return .{ .payload = .{ .text = abi.RocStr.fromSlice("hello", undefined) }, .tag = .Text };
@@ -9126,6 +9230,42 @@ test "owned retained element fixture keeps nested Roc lists alive" {
     try std.testing.expectEqual(@as(usize, 1), elem.payload_element().children.items().len);
     try std.testing.expect(elem.payload_element().attrs.items()[0].payload_static_bool().value);
     elem.decref(&roc_host);
+}
+
+test "owned aggregate graph root ingests two signal branches around a survivor" {
+    var roc_env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&roc_env);
+    const fixture = try OwnedAggregateGraphRoot.init(std.testing.allocator, &roc_host);
+    defer fixture.deinit();
+    try std.testing.expectEqual(fixture.first_condition.payload_const_value()._0, fixture.first_condition.payload_const_value()._1);
+    _ = abi_view.SignalExpr.fromAbi(fixture.first_condition.*);
+    var ctx = VerifyCtxHost{ .allocator = std.testing.allocator };
+    var engine = Engine(VerifyCtx).init();
+    var stream: HostNodeDescriptorStream = .{};
+    defer {
+        stream.deinit(ctx.allocator, &ctx, &roc_host, &engine.pending_roc_metrics);
+        deinitVerifyStateEngine(&engine, &ctx, &roc_host);
+    }
+
+    const expected = try Engine(VerifyCtx).countStaticRootNodes(fixture.root);
+    try std.testing.expectEqual(@as(usize, 4), expected.signal_records);
+    try engine.collectStaticRootDescriptorsTransactional(&ctx, &roc_host, &stream, fixture.root, .{});
+    try std.testing.expectEqual(@as(usize, 2), stream.whens.items.len);
+    try std.testing.expectEqual(@as(usize, 2), stream.signal_text_nodes.items.len);
+    try std.testing.expectEqual(@as(usize, 5), stream.text_nodes.items.len + stream.signal_text_nodes.items.len);
+    try std.testing.expect(stream.whens.items[0].node_id < stream.whens.items[1].node_id);
+    const separator = for (stream.text_nodes.items) |desc| {
+        if (std.mem.eql(u8, desc.value, "separator")) break desc;
+    } else return error.TestUnexpectedResult;
+    const separator_index = stream.renderNodeIndex(separator.elem_id).?;
+    var signals_before: usize = 0;
+    var signals_after: usize = 0;
+    for (stream.signal_text_nodes.items) |desc| {
+        const index = stream.renderNodeIndex(desc.elem_id).?;
+        if (index < separator_index) signals_before += 1 else signals_after += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), signals_before);
+    try std.testing.expectEqual(@as(usize, 1), signals_after);
 }
 
 fn verifyErasedCallable(_: *abi.RocHost, _: ?[*]u8, _: ?[*]const u8, _: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {}
@@ -9257,10 +9397,10 @@ test "staged collection preflights signal records separately from descriptor roo
     var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&engine, &ctx, &stream, .{}, 1, 2, 0, 5, 0, 0, 0, 1);
     defer collection.deinit();
     try std.testing.expectEqual(@as(usize, 5), collection.signal_token_capacity);
-    try std.testing.expectEqual(@as(usize, 2), collection.signal_root_capacity);
+    try std.testing.expectEqual(@as(usize, 5), collection.signal_root_capacity);
     try std.testing.expect(collection.signal_records.token_intents.capacity >= 5);
-    try std.testing.expect(collection.signal_records.descriptor_roots.capacity >= 2);
-    try std.testing.expect(collection.signal_bindings.capacity >= 2);
+    try std.testing.expect(collection.signal_records.descriptor_roots.capacity >= 5);
+    try std.testing.expect(collection.signal_bindings.capacity >= 5);
 }
 
 test "staged signal record publication is allocation free" {
