@@ -647,6 +647,94 @@ pub const Stream = struct {
         }
     }
 
+    /// Reserves ownership storage for descriptors displaced by a prepared
+    /// structural replacement. Publication may then move, rather than free,
+    /// every removed payload while faults are armed.
+    pub fn reserveRetiredStaticPublication(
+        self: *Stream,
+        allocator: std.mem.Allocator,
+        element_count: usize,
+        text_count: usize,
+        static_text_count: usize,
+        static_bool_count: usize,
+    ) std.mem.Allocator.Error!void {
+        try self.elements.ensureUnusedCapacity(allocator, element_count);
+        try self.text_nodes.ensureUnusedCapacity(allocator, text_count);
+        try self.static_text_attrs.ensureUnusedCapacity(allocator, static_text_count);
+        try self.static_bool_attrs.ensureUnusedCapacity(allocator, static_bool_count);
+    }
+
+    /// Moves the element/text/fixed-static descriptor families according to a
+    /// fully prepared removal plan. All destination and index capacity must be
+    /// reserved before this allocation-free publication boundary.
+    pub fn commitStaticDescriptorReplacementAssumeCapacity(
+        self: *Stream,
+        replacement: *Stream,
+        retired: *Stream,
+        element_indexes: []const usize,
+        text_indexes: []const usize,
+        static_text_indexes: []const usize,
+        static_bool_indexes: []const usize,
+    ) void {
+        for (element_indexes) |index| {
+            const removed = self.elements.swapRemove(index);
+            self.clearElementIndex(removed.elem_id, index);
+            retired.elements.appendAssumeCapacity(removed);
+            if (index < self.elements.items.len) self.updateElementIndex(self.elements.items[index].elem_id, index);
+        }
+        for (text_indexes) |index| {
+            const removed = self.text_nodes.swapRemove(index);
+            self.clearTextNodeIndex(removed.elem_id, index);
+            retired.text_nodes.appendAssumeCapacity(removed);
+            if (index < self.text_nodes.items.len) self.updateTextNodeIndex(self.text_nodes.items[index].elem_id, index);
+        }
+        for (static_text_indexes) |index| {
+            const removed = self.static_text_attrs.swapRemove(index);
+            self.clearStaticTextAttrIndex(removed.elem_id, removed.field, index);
+            retired.static_text_attrs.appendAssumeCapacity(removed);
+            if (index < self.static_text_attrs.items.len) {
+                const moved = self.static_text_attrs.items[index];
+                self.updateStaticTextAttrIndex(moved.elem_id, moved.field, index);
+            }
+        }
+        for (static_bool_indexes) |index| {
+            const removed = self.static_bool_attrs.swapRemove(index);
+            self.clearStaticBoolAttrIndex(removed.elem_id, removed.field, index);
+            retired.static_bool_attrs.appendAssumeCapacity(removed);
+            if (index < self.static_bool_attrs.items.len) {
+                const moved = self.static_bool_attrs.items[index];
+                self.updateStaticBoolAttrIndex(moved.elem_id, moved.field, index);
+            }
+        }
+
+        for (replacement.elements.items) |desc| {
+            const index = self.elements.items.len;
+            self.elements.appendAssumeCapacity(desc);
+            while (self.descriptor_indexes_by_elem_id.items.len <= desc.elem_id) self.descriptor_indexes_by_elem_id.appendAssumeCapacity(.{});
+            setFreshIndex(&self.descriptor_indexes_by_elem_id.items[@intCast(desc.elem_id)].element, index);
+        }
+        replacement.elements.items.len = 0;
+        for (replacement.text_nodes.items) |desc| {
+            const index = self.text_nodes.items.len;
+            self.text_nodes.appendAssumeCapacity(desc);
+            while (self.descriptor_indexes_by_elem_id.items.len <= desc.elem_id) self.descriptor_indexes_by_elem_id.appendAssumeCapacity(.{});
+            setFreshIndex(&self.descriptor_indexes_by_elem_id.items[@intCast(desc.elem_id)].text_node, index);
+        }
+        replacement.text_nodes.items.len = 0;
+        for (replacement.static_text_attrs.items) |desc| {
+            const index = self.static_text_attrs.items.len;
+            self.static_text_attrs.appendAssumeCapacity(desc);
+            setFreshIndex(self.descriptor_indexes_by_elem_id.items[@intCast(desc.elem_id)].static_text_attrs.slot(desc.field), index);
+        }
+        replacement.static_text_attrs.items.len = 0;
+        for (replacement.static_bool_attrs.items) |desc| {
+            const index = self.static_bool_attrs.items.len;
+            self.static_bool_attrs.appendAssumeCapacity(desc);
+            setFreshIndex(self.descriptor_indexes_by_elem_id.items[@intCast(desc.elem_id)].static_bool_attrs.slot(desc.field), index);
+        }
+        replacement.static_bool_attrs.items.len = 0;
+    }
+
     /// Commits the minimal one-text replacement using only pre-reserved
     /// storage. The replacement stream receives the displaced descriptor and
     /// therefore owns its string after the swap.

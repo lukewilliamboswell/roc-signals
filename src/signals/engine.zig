@@ -3239,6 +3239,7 @@ pub fn Engine(comptime Ctx: type) type {
             host_ctx: Ctx.Handle,
             roc_host: *abi.RocHost,
             replacement_stream: HostNodeDescriptorStream = .{},
+            retired_stream: HostNodeDescriptorStream = .{},
             collection: StagedCollectionCtx = undefined,
             replacement_scope_id: u64 = 0,
             retired_scope_id: u64 = 0,
@@ -3261,6 +3262,7 @@ pub fn Engine(comptime Ctx: type) type {
                 errdefer allocator.destroy(plan);
                 plan.* = .{ .engine = engine_ptr, .host_ctx = ctx, .roc_host = roc_host, .retired_scope_id = retired_scope_id };
                 errdefer plan.replacement_stream.deinit(allocator, ctx, roc_host, &engine_ptr.pending_roc_metrics);
+                errdefer plan.retired_stream.deinit(allocator, ctx, roc_host, &engine_ptr.pending_roc_metrics);
                 plan.collection = try StagedCollectionCtx.init(engine_ptr, ctx, &plan.replacement_stream, limits, expected.nodes, expected.attrs, expected.signal_records, expected.state_sites, expected.component_sites, expected.when_sites);
                 errdefer plan.collection.deinit();
 
@@ -3286,6 +3288,14 @@ pub fn Engine(comptime Ctx: type) type {
                 const render_start = engine_ptr.renderStartForReplacementTargetSet(site.render_insert_index, plan.target_scopes);
                 plan.removal = structural_splice.prepareRemoval(HostNodeDescriptorStream, allocator, &engine_ptr.active_stream, render_start, plan.target_scopes) catch return error.OutOfMemory;
                 errdefer if (plan.removal) |*removal| removal.deinit(allocator);
+                const removal_indexes = &plan.removal.?.descriptor_indexes;
+                plan.retired_stream.reserveRetiredStaticPublication(
+                    allocator,
+                    removal_indexes.element_indexes.items.len,
+                    removal_indexes.text_node_indexes.items.len,
+                    removal_indexes.static_text_attr_indexes.items.len,
+                    removal_indexes.static_bool_attr_indexes.items.len,
+                ) catch return error.OutOfMemory;
                 plan.publication = structural_splice.preparePublicationDeltas(
                     allocator,
                     plan.replacement_stream.render_nodes.items,
@@ -3305,6 +3315,7 @@ pub fn Engine(comptime Ctx: type) type {
                 if (self.removal) |*removal| removal.deinit(allocator);
                 allocator.free(self.target_scopes);
                 self.collection.deinit();
+                self.retired_stream.deinit(allocator, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
                 self.replacement_stream.deinit(allocator, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
                 allocator.destroy(self);
             }
@@ -8133,9 +8144,18 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 try std.testing.expectEqualSlices(usize, &.{0}, plan.removal.?.descriptor_indexes.text_node_indexes.items);
                 try std.testing.expectEqualSlices(u64, &.{2}, plan.publication.?.replacement_elem_ids);
                 fault.configure(1);
-                engine.active_stream.commitSingleTextReplacementAssumeCapacity(&plan.replacement_stream, plan.removal.?.scan.removed_elem_ids[0]);
+                const indexes = &plan.removal.?.descriptor_indexes;
+                engine.active_stream.commitStaticDescriptorReplacementAssumeCapacity(
+                    &plan.replacement_stream,
+                    &plan.retired_stream,
+                    indexes.element_indexes.items,
+                    indexes.text_node_indexes.items,
+                    indexes.static_text_attr_indexes.items,
+                    indexes.static_bool_attr_indexes.items,
+                );
                 try std.testing.expectEqual(@as(usize, 0), fault.attempts);
                 try std.testing.expectEqualStrings("no", engine.active_stream.text_nodes.items[0].value);
+                try std.testing.expectEqualStrings("yes", plan.retired_stream.text_nodes.items[0].value);
                 fault.configure(null);
                 plan.deinit();
                 try std.testing.expectEqual(retained_before, engine.pending_roc_metrics.closure_retains - engine.pending_roc_metrics.closure_releases);
