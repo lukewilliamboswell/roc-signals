@@ -3481,6 +3481,7 @@ test "native Roc ABI allocation failures terminate in a subprocess" {
         const result = try std.process.run(std.testing.allocator, std.testing.io, .{
             .argv = &.{"/proc/self/exe"},
             .environ_map = &environment,
+            .stdout_limit = .limited(4096),
             .stderr_limit = .limited(4096),
         });
         defer std.testing.allocator.free(result.stdout);
