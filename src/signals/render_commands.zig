@@ -361,9 +361,10 @@ pub const BatchCapacity = struct {
 
     /// Adds another command requirement with overflow-safe resource accounting.
     pub fn add(self: *BatchCapacity, additional: BatchCapacity) error{ResourceLimit}!void {
-        self.commands = std.math.add(usize, self.commands, additional.commands) catch return error.ResourceLimit;
-        self.strings = std.math.add(usize, self.strings, additional.strings) catch return error.ResourceLimit;
-        self.dynamic = std.math.add(usize, self.dynamic, additional.dynamic) catch return error.ResourceLimit;
+        const commands = std.math.add(usize, self.commands, additional.commands) catch return error.ResourceLimit;
+        const strings = std.math.add(usize, self.strings, additional.strings) catch return error.ResourceLimit;
+        const dynamic = std.math.add(usize, self.dynamic, additional.dynamic) catch return error.ResourceLimit;
+        self.* = .{ .commands = commands, .strings = strings, .dynamic = dynamic };
     }
 
     /// Charges one fixed command and optional bytes stored in the string side buffer.
@@ -516,6 +517,113 @@ pub const TransactionalBatch = struct {
     }
 };
 
+/// One borrowed wire command whose backing values remain owned by its render plan.
+pub const PreparedFixedCommand = struct { op: Op, a: u32 = 0, b: u32 = 0, c: u32 = 0, d: u32 = 0, e: u32 = 0 };
+/// One command whose payload is copied into the string side buffer.
+pub const PreparedStringCommand = struct { op: Op, elem_id: u32, bytes: []const u8 };
+/// One canonical dynamic event binding prepared for wire encoding.
+pub const PreparedBindEventCommand = struct { elem_id: u32, event_id: u32, name: []const u8, options: u32, delivery: EventDeliveryWire, payload_descriptor: boundary.BoundaryPayloadDescriptor };
+
+pub const PreparedCommand = union(enum) {
+    fixed: PreparedFixedCommand,
+    string: PreparedStringCommand,
+    set_attr_text: struct { elem_id: u32, name: []const u8, value: []const u8 },
+    remove_attr: struct { elem_id: u32, name: []const u8 },
+    bind_event: PreparedBindEventCommand,
+    clear_event: struct { elem_id: u32, name: []const u8 },
+};
+
+/// Collects exact command capacity and stages it before atomic publication.
+pub const PreparedBatch = struct {
+    commands: std.ArrayListUnmanaged(PreparedCommand) = .empty,
+    capacity: BatchCapacity = .{},
+
+    /// Reserves the plan-local command journal.
+    pub fn init(allocator: std.mem.Allocator, expected_commands: usize) std.mem.Allocator.Error!PreparedBatch {
+        var self: PreparedBatch = .{};
+        try self.commands.ensureTotalCapacity(allocator, expected_commands);
+        return self;
+    }
+
+    /// Releases the borrowed command journal.
+    pub fn deinit(self: *PreparedBatch, allocator: std.mem.Allocator) void {
+        self.commands.deinit(allocator);
+        self.* = undefined;
+    }
+
+    /// Adds one fixed-width command.
+    pub fn addFixed(self: *PreparedBatch, command: PreparedFixedCommand) error{ResourceLimit}!void {
+        try self.capacity.addFixed(0);
+        self.commands.appendAssumeCapacity(.{ .fixed = command });
+    }
+
+    /// Adds one command with bytes in the string side buffer.
+    pub fn addString(self: *PreparedBatch, command: PreparedStringCommand) error{ResourceLimit}!void {
+        try self.capacity.addFixed(command.bytes.len);
+        self.commands.appendAssumeCapacity(.{ .string = command });
+    }
+
+    /// Adds one dynamic custom-attribute set.
+    pub fn addSetAttrText(self: *PreparedBatch, elem_id: u32, name: []const u8, value: []const u8) error{ResourceLimit}!void {
+        try self.capacity.addSetAttrText(name.len, value.len);
+        self.commands.appendAssumeCapacity(.{ .set_attr_text = .{ .elem_id = elem_id, .name = name, .value = value } });
+    }
+
+    /// Adds one dynamic custom-attribute removal.
+    pub fn addRemoveAttr(self: *PreparedBatch, elem_id: u32, name: []const u8) error{ResourceLimit}!void {
+        try self.capacity.addRemoveAttr(name.len);
+        self.commands.appendAssumeCapacity(.{ .remove_attr = .{ .elem_id = elem_id, .name = name } });
+    }
+
+    /// Adds one dynamic event binding.
+    pub fn addBindEvent(self: *PreparedBatch, command: PreparedBindEventCommand) error{ResourceLimit}!void {
+        try self.capacity.addBindEvent(command.name.len, command.payload_descriptor.extractionBytes().len);
+        self.commands.appendAssumeCapacity(.{ .bind_event = command });
+    }
+
+    /// Adds one dynamic event clear.
+    pub fn addClearEvent(self: *PreparedBatch, elem_id: u32, name: []const u8) error{ResourceLimit}!void {
+        try self.capacity.addClearEvent(name.len);
+        self.commands.appendAssumeCapacity(.{ .clear_event = .{ .elem_id = elem_id, .name = name } });
+    }
+
+    /// Reserves the unpublished destination batch without staging any bytes.
+    pub fn preflight(self: *const PreparedBatch, batch: *TransactionalBatch, allocator: std.mem.Allocator) PreflightError!void {
+        batch.begin();
+        errdefer batch.abort();
+        try batch.preflight(allocator, self.capacity);
+    }
+
+    /// Encodes all commands using pre-reserved capacity and no allocation.
+    pub fn stageAssumeCapacity(self: *const PreparedBatch, batch: *TransactionalBatch, allocator: std.mem.Allocator) PreflightError!void {
+        for (self.commands.items) |command| switch (command) {
+            .fixed => |value| try batch.staged.commands.append(allocator, value.op, value.a, value.b, value.c, value.d, value.e),
+            .string => |value| {
+                const offset = std.math.cast(u32, batch.staged.strings.items.len) orelse return error.ResourceLimit;
+                const len = std.math.cast(u32, value.bytes.len) orelse return error.ResourceLimit;
+                try batch.staged.strings.appendSlice(allocator, value.bytes);
+                try batch.staged.commands.append(allocator, value.op, value.elem_id, offset, len, 0, 0);
+            },
+            .set_attr_text => |value| {
+                const slice = try batch.staged.dynamic.appendSetAttrText(allocator, value.elem_id, value.name, value.value);
+                try batch.staged.commands.append(allocator, .extended, slice.offset, slice.len, 0, 0, 0);
+            },
+            .remove_attr => |value| {
+                const slice = try batch.staged.dynamic.appendRemoveAttr(allocator, value.elem_id, value.name);
+                try batch.staged.commands.append(allocator, .extended, slice.offset, slice.len, 0, 0, 0);
+            },
+            .bind_event => |value| {
+                const slice = try batch.staged.dynamic.appendBindEvent(allocator, value.elem_id, value.event_id, value.name, value.options, value.delivery, value.payload_descriptor);
+                try batch.staged.commands.append(allocator, .extended, slice.offset, slice.len, 0, 0, 0);
+            },
+            .clear_event => |value| {
+                const slice = try batch.staged.dynamic.appendClearEvent(allocator, value.elem_id, value.name);
+                try batch.staged.commands.append(allocator, .extended, slice.offset, slice.len, 0, 0, 0);
+            },
+        };
+    }
+};
+
 /// Rounds a wire offset to the protocol's four-byte record alignment.
 pub fn align4(len: usize) usize {
     return (len + 3) & ~@as(usize, 3);
@@ -664,12 +772,60 @@ test "command capacity estimation permits armed allocation-free staging" {
     fault.configure(null);
 }
 
+test "prepared command batch sweeps preflight and stages allocation free" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    const descriptor = boundary.BoundaryPayloadDescriptor.init(.str, .target_value);
+    var prepared = try PreparedBatch.init(std.testing.allocator, 6);
+    defer prepared.deinit(std.testing.allocator);
+    try prepared.addFixed(.{ .op = .set_checked, .a = 1, .b = 1 });
+    try prepared.addString(.{ .op = .create_element, .elem_id = 2, .bytes = "button" });
+    try prepared.addSetAttrText(2, "data-x", "ready");
+    try prepared.addRemoveAttr(2, "title");
+    try prepared.addBindEvent(.{
+        .elem_id = 2,
+        .event_id = 7,
+        .name = "focus",
+        .options = 0,
+        .delivery = .{ .requested = .auto, .effective = .native, .reason = .native_runtime_default },
+        .payload_descriptor = descriptor,
+    });
+    try prepared.addClearEvent(2, "blur");
+
+    var counter = FaultAllocator.init(std.testing.allocator);
+    var counted: TransactionalBatch = .{};
+    defer counted.deinit(counter.allocator());
+    try prepared.preflight(&counted, counter.allocator());
+    const attempts = counter.attempts;
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| {
+        var fault = FaultAllocator.init(std.testing.allocator);
+        var batch: TransactionalBatch = .{};
+        defer batch.deinit(fault.allocator());
+        fault.configure(failure_number);
+        try std.testing.expectError(error.OutOfMemory, prepared.preflight(&batch, fault.allocator()));
+        try std.testing.expectEqual(@as(usize, 0), batch.published.commands.len());
+        try std.testing.expectEqual(@as(usize, 0), batch.staged.commands.len());
+        fault.configure(null);
+        try prepared.preflight(&batch, fault.allocator());
+        fault.configure(1);
+        try prepared.stageAssumeCapacity(&batch, fault.allocator());
+        try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+        try std.testing.expectEqual(prepared.capacity.commands, batch.staged.commands.len());
+        batch.commit();
+        try std.testing.expectEqual(prepared.capacity.commands, batch.published.commands.len());
+    }
+}
+
 test "command capacity estimation rejects overflow before allocation" {
     var capacity = BatchCapacity{ .commands = std.math.maxInt(usize) };
     try std.testing.expectError(error.ResourceLimit, capacity.addFixed(0));
     capacity = .{};
     try std.testing.expectError(error.ResourceLimit, capacity.addSetAttrText(std.math.maxInt(usize), 1));
     try std.testing.expectEqualDeep(BatchCapacity{}, capacity);
+    capacity = .{ .commands = 7, .strings = 9, .dynamic = std.math.maxInt(usize) };
+    const before = capacity;
+    try std.testing.expectError(error.ResourceLimit, capacity.add(.{ .commands = 1, .strings = 1, .dynamic = 1 }));
+    try std.testing.expectEqualDeep(before, capacity);
     try std.testing.expectEqual(std.math.maxInt(usize) - 3, try checkedAlign4(std.math.maxInt(usize) - 3));
     try std.testing.expectError(error.ResourceLimit, checkedAlign4(std.math.maxInt(usize) - 2));
 
