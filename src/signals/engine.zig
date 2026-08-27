@@ -2087,9 +2087,10 @@ pub fn Engine(comptime Ctx: type) type {
             scopes: collection_plan.ScopeOverlay = .{},
             dom_identities: collection_plan.IdentityOverlay = .{},
             prepared_nodes: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedStaticNode) = .empty,
+            prepared_attrs: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedStaticAttr) = .empty,
             committed: bool = false,
 
-            fn init(engine_ptr: *Self, host_ctx: Ctx.Handle, stream: *HostNodeDescriptorStream, limits: collection_budget.Limits, expected_nodes: usize) CollectionError!@This() {
+            fn init(engine_ptr: *Self, host_ctx: Ctx.Handle, stream: *HostNodeDescriptorStream, limits: collection_budget.Limits, expected_nodes: usize, expected_attrs: usize) CollectionError!@This() {
                 var self = @This(){
                     .engine = engine_ptr,
                     .host_ctx = host_ctx,
@@ -2102,11 +2103,13 @@ pub fn Engine(comptime Ctx: type) type {
                 if (expected_nodes > limits.nodes) return error.ResourceLimit;
                 self.dom_identities.prepare(allocator, expected_nodes) catch return error.OutOfMemory;
                 self.prepared_nodes.ensureTotalCapacity(allocator, expected_nodes) catch return error.OutOfMemory;
+                self.prepared_attrs.ensureTotalCapacity(allocator, expected_attrs) catch return error.OutOfMemory;
                 self.engine.scopes.ensureUnusedCapacity(allocator, 1) catch return error.OutOfMemory;
                 self.engine.dom_identities.ensureUnusedCapacity(allocator, expected_nodes) catch return error.OutOfMemory;
                 self.engine.active_dom_identity_ids.ensureUnusedCapacity(allocator, @intCast(expected_nodes)) catch return error.OutOfMemory;
                 const highest_elem_id = std.math.add(u64, @intCast(self.engine.dom_identities.items.len), @as(u64, @intCast(expected_nodes))) catch return error.ResourceLimit;
                 self.stream.reservePreparedStaticNodes(allocator, expected_nodes, highest_elem_id) catch return error.OutOfMemory;
+                self.stream.reservePreparedStaticAttrs(allocator, expected_attrs) catch return error.OutOfMemory;
                 return self;
             }
 
@@ -2118,10 +2121,16 @@ pub fn Engine(comptime Ctx: type) type {
                         index -= 1;
                         self.prepared_nodes.items[index].abort(allocator);
                     }
+                    index = self.prepared_attrs.items.len;
+                    while (index != 0) {
+                        index -= 1;
+                        self.prepared_attrs.items[index].abort(allocator);
+                    }
                     self.scopes.abort();
                     self.dom_identities.abort();
                 }
                 self.prepared_nodes.deinit(allocator);
+                self.prepared_attrs.deinit(allocator);
                 self.scopes.deinit(allocator);
                 self.dom_identities.deinit(allocator);
             }
@@ -2171,8 +2180,26 @@ pub fn Engine(comptime Ctx: type) type {
                 dom_ordinal.* += 1;
             }
 
-            fn appendAttr(_: *@This(), _: *abi.RocHost, _: u64, _: abi.NodeAttr, _: []const HostBinderBinding) CollectionError!void {
-                return error.ResourceLimit;
+            fn appendAttr(self: *@This(), _: *abi.RocHost, elem_id: u64, attr: abi.NodeAttr, _: []const HostBinderBinding) CollectionError!void {
+                const prepared = switch (abi_view.NodeAttr.fromAbi(attr)) {
+                    .static_text => |payload| switch (payload.target) {
+                        .fixed => |field| blk: {
+                            const bytes = std.math.add(usize, @sizeOf(HostNodeStaticTextAttrDesc), payload.value.asSlice().len) catch return error.ResourceLimit;
+                            try self.budget.charge(0, bytes);
+                            break :blk self.stream.prepareStaticTextAttr(Ctx.allocator(self.host_ctx), elem_id, field, payload.value.asSlice()) catch return error.OutOfMemory;
+                        },
+                        .custom => return error.ResourceLimit,
+                    },
+                    .static_bool => |payload| switch (payload.target) {
+                        .fixed => |field| blk: {
+                            try self.budget.charge(0, @sizeOf(HostNodeStaticBoolAttrDesc));
+                            break :blk self.stream.prepareStaticBoolAttr(elem_id, field, payload.value);
+                        },
+                        .custom => return error.ResourceLimit,
+                    },
+                    else => return error.ResourceLimit,
+                };
+                self.prepared_attrs.appendAssumeCapacity(prepared);
             }
 
             /// Publishes only pre-reserved state. This function must remain
@@ -2206,6 +2233,7 @@ pub fn Engine(comptime Ctx: type) type {
                     self.engine.active_dom_identity_ids.putAssumeCapacity(intent.key, intent.id);
                 }
                 for (self.prepared_nodes.items) |prepared| self.stream.appendPreparedStaticNode(prepared);
+                for (self.prepared_attrs.items) |prepared| self.stream.appendPreparedStaticAttr(prepared);
                 self.scopes.committed = true;
                 self.dom_identities.committed = true;
                 self.committed = true;
@@ -2359,16 +2387,20 @@ pub fn Engine(comptime Ctx: type) type {
             try self.collectActiveElemDescriptorsWith(Collection, collection, ctx, roc_host, stream, root, root_scope_id, 0, &ordinal, &dom_ordinal, binder_stack, root_scope.created, dirty_source_node_ids);
         }
 
-        fn countStaticRootNodes(elem: abi.Elem) CollectionError!usize {
+        const StaticRootCounts = struct { nodes: usize = 0, attrs: usize = 0 };
+
+        fn countStaticRootNodes(elem: abi.Elem) CollectionError!StaticRootCounts {
             return switch (abi_view.Elem.fromAbi(elem)) {
                 .element => |payload| blk: {
-                    var count: usize = 1;
+                    var count = StaticRootCounts{ .nodes = 1, .attrs = payload.attrs.len };
                     for (payload.children) |child| {
-                        count = std.math.add(usize, count, try countStaticRootNodes(child)) catch return error.ResourceLimit;
+                        const child_count = try countStaticRootNodes(child);
+                        count.nodes = std.math.add(usize, count.nodes, child_count.nodes) catch return error.ResourceLimit;
+                        count.attrs = std.math.add(usize, count.attrs, child_count.attrs) catch return error.ResourceLimit;
                     }
                     break :blk count;
                 },
-                .text => 1,
+                .text => .{ .nodes = 1 },
                 else => error.ResourceLimit,
             };
         }
@@ -2377,8 +2409,8 @@ pub fn Engine(comptime Ctx: type) type {
         /// elements and text. Unsupported variants remain on the immediate
         /// collector until their ownership operations are staged as well.
         pub fn collectStaticRootDescriptorsTransactional(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, root: abi.Elem, limits: collection_budget.Limits) CollectionError!void {
-            const expected_nodes = try countStaticRootNodes(root);
-            var collection = try StagedCollectionCtx.init(self, ctx, stream, limits, expected_nodes);
+            const expected = try countStaticRootNodes(root);
+            var collection = try StagedCollectionCtx.init(self, ctx, stream, limits, expected.nodes, expected.attrs);
             defer collection.deinit();
             try self.collectActiveElemRootDescriptorsWith(*StagedCollectionCtx, &collection, ctx, roc_host, stream, root, &.{});
             collection.commit();
@@ -6504,10 +6536,15 @@ fn borrowedVerifyElemList(items: []const abi.Elem) abi.RocList(abi.Elem) {
     };
 }
 
-fn verifyStaticRoot(children: []const abi.Elem) abi.Elem {
+fn borrowedVerifyAttrList(items: []const abi.NodeAttr) abi.RocList(abi.NodeAttr) {
+    if (items.len == 0) return abi.RocList(abi.NodeAttr).empty();
+    return .{ .elements_ptr = @constCast(items.ptr), .length = items.len, .capacity_or_alloc_ptr = items.len << 1 };
+}
+
+fn verifyStaticRoot(attrs: []const abi.NodeAttr, children: []const abi.Elem) abi.Elem {
     return .{
         .payload = .{ .element = .{
-            .attrs = abi.RocList(abi.NodeAttr).empty(),
+            .attrs = borrowedVerifyAttrList(attrs),
             .children = borrowedVerifyElemList(children),
             .tag = abi.RocStr.fromSlice("div", undefined),
         } },
@@ -6529,7 +6566,15 @@ fn deinitVerifyStaticEngine(engine: *Engine(VerifyCtx), ctx: *VerifyCtxHost) voi
 test "transactional static engine root sweeps every allocation and retries cleanly" {
     const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
     const child = verifyStaticText();
-    const root = verifyStaticRoot(&.{child});
+    const attr = abi.NodeAttr{
+        .payload = .{ .static_text = .{
+            .field = .{ .id = @intFromEnum(RenderTextField.label) },
+            .name = abi.RocStr.empty(),
+            .value = abi.RocStr.fromSlice("ready", undefined),
+        } },
+        .tag = .StaticText,
+    };
+    const root = verifyStaticRoot(&.{attr}, &.{child});
     var roc_host: abi.RocHost = undefined;
 
     var counter = FaultAllocator.init(std.testing.allocator);
@@ -6567,6 +6612,7 @@ test "transactional static engine root sweeps every allocation and retries clean
         try std.testing.expectEqual(@as(usize, 2), engine.dom_identities.items.len);
         try std.testing.expectEqualStrings("div", findElementDesc(&stream, 1).?.tag);
         try std.testing.expectEqualStrings("hello", findTextNodeDesc(&stream, 2).?.value);
+        try std.testing.expect(streamHasTextField(&stream, 1, .label));
     }
 }
 

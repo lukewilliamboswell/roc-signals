@@ -1148,6 +1148,46 @@ pub const Stream = struct {
         try self.render_metadata_by_elem_id.ensureUnusedCapacity(allocator, @intCast(metadata_entries));
     }
 
+    pub const PreparedStaticAttr = union(enum) {
+        text: struct { elem_id: u64, field: TextField, value: []u8 },
+        boolean: struct { elem_id: u64, field: BoolField, value: bool },
+
+        pub fn abort(self: @This(), allocator: std.mem.Allocator) void {
+            switch (self) {
+                .text => |prepared| allocator.free(prepared.value),
+                .boolean => {},
+            }
+        }
+    };
+
+    pub fn reservePreparedStaticAttrs(self: *Stream, allocator: std.mem.Allocator, additional: usize) std.mem.Allocator.Error!void {
+        try self.static_text_attrs.ensureUnusedCapacity(allocator, additional);
+        try self.static_bool_attrs.ensureUnusedCapacity(allocator, additional);
+    }
+
+    pub fn prepareStaticTextAttr(_: *Stream, allocator: std.mem.Allocator, elem_id: u64, field: TextField, value: []const u8) std.mem.Allocator.Error!PreparedStaticAttr {
+        return .{ .text = .{ .elem_id = elem_id, .field = field, .value = try allocator.dupe(u8, value) } };
+    }
+
+    pub fn prepareStaticBoolAttr(_: *Stream, elem_id: u64, field: BoolField, value: bool) PreparedStaticAttr {
+        return .{ .boolean = .{ .elem_id = elem_id, .field = field, .value = value } };
+    }
+
+    pub fn appendPreparedStaticAttr(self: *Stream, prepared: PreparedStaticAttr) void {
+        switch (prepared) {
+            .text => |value| {
+                const index = self.static_text_attrs.items.len;
+                self.static_text_attrs.appendAssumeCapacity(.{ .elem_id = value.elem_id, .field = value.field, .value = value.value });
+                setFreshIndex(self.descriptor_indexes_by_elem_id.items[@intCast(value.elem_id)].static_text_attrs.slot(value.field), index);
+            },
+            .boolean => |value| {
+                const index = self.static_bool_attrs.items.len;
+                self.static_bool_attrs.appendAssumeCapacity(.{ .elem_id = value.elem_id, .field = value.field, .value = value.value });
+                setFreshIndex(self.descriptor_indexes_by_elem_id.items[@intCast(value.elem_id)].static_bool_attrs.slot(value.field), index);
+            },
+        }
+    }
+
     fn prepareStaticNode(self: *Stream, allocator: std.mem.Allocator, elem_id: u64, parent_elem_id: u64, scope_id: u64, text: []const u8, kind: RenderNodeKind) std.mem.Allocator.Error!PreparedStaticNode {
         _ = std.math.add(u64, self.next_elem_id, 1) catch return error.OutOfMemory;
         const copy = try allocator.dupe(u8, text);
