@@ -3300,6 +3300,8 @@ pub fn Engine(comptime Ctx: type) type {
             parent_scope_id: u64,
             site_ordinal: u64,
             parent_elem_id: u64,
+            retired_scope_id: u64,
+            render_insert_index: usize,
             binder_bindings: []const HostBinderBinding,
             branch: HostScopeBranch,
             elem: abi.Elem,
@@ -3312,6 +3314,9 @@ pub fn Engine(comptime Ctx: type) type {
             stream: HostNodeDescriptorStream = .{},
             collection: StagedCollectionCtx = undefined,
             replacement_scope_ids: []u64 = &.{},
+            target_scopes: []bool = &.{},
+            scope_retirement: ?scope_runtime.PreparedSubtreeRetirement = null,
+            removal: ?structural_splice.PreparedMultiRemoval = null,
 
             fn addCounts(total: *StaticRootCounts, next: StaticRootCounts) CollectionError!void {
                 total.nodes = std.math.add(usize, total.nodes, next.nodes) catch return error.ResourceLimit;
@@ -3355,6 +3360,33 @@ pub fn Engine(comptime Ctx: type) type {
                     try engine.collectActiveElemDescriptorsWith(*StagedCollectionCtx, &plan.collection, ctx, roc_host, &plan.stream, selection.elem, branch_scope.scope_id, selection.parent_elem_id, &ordinal, &dom_ordinal, &binder_stack, true, dirty_source_node_ids);
                 }
                 plan.collection.materializeStream();
+
+                plan.target_scopes = allocator.alloc(bool, engine.scopes.items.len) catch return error.OutOfMemory;
+                errdefer allocator.free(plan.target_scopes);
+                @memset(plan.target_scopes, false);
+                const retired_scope_ids = allocator.alloc(u64, selections.len) catch return error.OutOfMemory;
+                defer allocator.free(retired_scope_ids);
+                const render_insert_indexes = allocator.alloc(usize, selections.len) catch return error.OutOfMemory;
+                defer allocator.free(render_insert_indexes);
+                for (selections, 0..) |selection, index| {
+                    retired_scope_ids[index] = selection.retired_scope_id;
+                    render_insert_indexes[index] = selection.render_insert_index;
+                    for (engine.scopes.items) |scope| {
+                        if (engine.scopeIsDescendantOrSelf(scope.scope_id, selection.retired_scope_id) catch return error.ResourceLimit) {
+                            plan.target_scopes[@intCast(scope.scope_id)] = true;
+                        }
+                    }
+                }
+                plan.scope_retirement = scope_runtime.prepareSubtreesRetirement(HostEachRowScopeStep, allocator, engine.scopes.items, retired_scope_ids) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.OverlappingSubtrees => return error.ResourceLimit,
+                };
+                errdefer if (plan.scope_retirement) |*retirement| retirement.deinit(allocator);
+                plan.removal = structural_splice.prepareMultiRemoval(HostNodeDescriptorStream, allocator, &engine.active_stream, render_insert_indexes, plan.target_scopes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.OverlappingIntervals => return error.ResourceLimit,
+                };
+                errdefer if (plan.removal) |*removal| removal.deinit(allocator);
                 return plan;
             }
 
@@ -3366,6 +3398,9 @@ pub fn Engine(comptime Ctx: type) type {
                 const allocator = Ctx.allocator(self.host_ctx);
                 self.collection.deinit();
                 self.stream.deinit(allocator, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
+                if (self.removal) |*removal| removal.deinit(allocator);
+                if (self.scope_retirement) |*retirement| retirement.deinit(allocator);
+                allocator.free(self.target_scopes);
                 allocator.free(self.replacement_scope_ids);
                 allocator.destroy(self);
             }
@@ -9811,34 +9846,38 @@ test "aggregate branch collection sweeps allocation failures without publication
                 engine.state_indexes_by_node_id.deinit(ctx.allocator);
             }
             _ = try engine.internRootScope(ctx.allocator);
+            const first_old = try engine.internWhenBranchScope(ctx.allocator, 0, 1, .false_branch);
+            const second_old = try engine.internWhenBranchScope(ctx.allocator, 0, 2, .true_branch);
             const child = verifyStaticText();
             const selections = [_]Engine(VerifyCtx).AggregateBranchSelection{
-                .{ .parent_scope_id = 0, .site_ordinal = 1, .parent_elem_id = 0, .binder_bindings = &.{}, .branch = .true_branch, .elem = child },
-                .{ .parent_scope_id = 0, .site_ordinal = 2, .parent_elem_id = 0, .binder_bindings = &.{}, .branch = .false_branch, .elem = child },
+                .{ .parent_scope_id = 0, .site_ordinal = 1, .parent_elem_id = 0, .retired_scope_id = first_old.scope_id, .render_insert_index = 0, .binder_bindings = &.{}, .branch = .true_branch, .elem = child },
+                .{ .parent_scope_id = 0, .site_ordinal = 2, .parent_elem_id = 0, .retired_scope_id = second_old.scope_id, .render_insert_index = 0, .binder_bindings = &.{}, .branch = .false_branch, .elem = child },
             };
 
             fault.configure(failure_number);
             const prepared = Engine(VerifyCtx).AggregateBranchCollection.prepare(&engine, &ctx, &roc_host, &selections, .{}, &.{}) catch |err| {
                 try std.testing.expectEqual(error.OutOfMemory, err);
-                try std.testing.expectEqual(@as(usize, 1), engine.scopes.items.len);
+                try std.testing.expectEqual(@as(usize, 3), engine.scopes.items.len);
                 try std.testing.expectEqual(@as(usize, 0), engine.dom_identities.items.len);
                 try std.testing.expectEqual(@as(usize, 0), engine.active_dom_identity_ids.count());
                 const attempts = fault.attempts;
                 fault.configure(null);
                 const retry = try Engine(VerifyCtx).AggregateBranchCollection.prepare(&engine, &ctx, &roc_host, &selections, .{}, &.{});
-                try std.testing.expectEqual(@as(usize, 1), engine.scopes.items.len);
+                try std.testing.expectEqual(@as(usize, 3), engine.scopes.items.len);
                 try std.testing.expectEqual(@as(usize, 0), engine.dom_identities.items.len);
                 try std.testing.expectEqual(@as(usize, 2), retry.stream.text_nodes.items.len);
-                try std.testing.expectEqualSlices(u64, &.{ 1, 2 }, retry.replacement_scope_ids);
+                try std.testing.expectEqualSlices(u64, &.{ 3, 4 }, retry.replacement_scope_ids);
+                try std.testing.expectEqualSlices(u64, &.{ 1, 2 }, retry.scope_retirement.?.scope_ids);
                 try std.testing.expect(retry.stream.text_nodes.items[0].elem_id != retry.stream.text_nodes.items[1].elem_id);
                 retry.deinit();
                 return attempts;
             };
             const attempts = fault.attempts;
-            try std.testing.expectEqual(@as(usize, 1), engine.scopes.items.len);
+            try std.testing.expectEqual(@as(usize, 3), engine.scopes.items.len);
             try std.testing.expectEqual(@as(usize, 0), engine.dom_identities.items.len);
             try std.testing.expectEqual(@as(usize, 2), prepared.stream.text_nodes.items.len);
-            try std.testing.expectEqualSlices(u64, &.{ 1, 2 }, prepared.replacement_scope_ids);
+            try std.testing.expectEqualSlices(u64, &.{ 3, 4 }, prepared.replacement_scope_ids);
+            try std.testing.expectEqualSlices(u64, &.{ 1, 2 }, prepared.scope_retirement.?.scope_ids);
             prepared.deinit();
             return attempts;
         }
