@@ -237,6 +237,77 @@ pub const PreparedNodeRemoval = struct {
     }
 };
 
+/// Owns and deduplicates tags missing from the active cache until publication.
+pub const PreparedTagOverlay = struct {
+    entries: std.StringHashMapUnmanaged([]const u8) = .empty,
+    committed: bool = false,
+
+    /// Reserves provisional and persistent tag tables for the whole batch.
+    pub fn init(comptime Ctx: type, allocator: std.mem.Allocator, cache: *Cache(Ctx), expected_new_tags: usize) (std.mem.Allocator.Error || error{ResourceLimit})!PreparedTagOverlay {
+        var self: PreparedTagOverlay = .{};
+        errdefer self.entries.deinit(allocator);
+        const additional = std.math.cast(u32, expected_new_tags) orelse return error.ResourceLimit;
+        try self.entries.ensureUnusedCapacity(allocator, additional);
+        try cache.interned_tags.ensureUnusedCapacity(allocator, additional);
+        return self;
+    }
+
+    /// Resolves an active or provisional tag, copying each missing value once.
+    pub fn resolve(self: *PreparedTagOverlay, comptime Ctx: type, allocator: std.mem.Allocator, cache: *const Cache(Ctx), tag: []const u8) std.mem.Allocator.Error![]const u8 {
+        if (cache.interned_tags.get(tag)) |interned| return interned;
+        if (self.entries.get(tag)) |provisional| return provisional;
+        const owned = try allocator.dupe(u8, tag);
+        self.entries.putAssumeCapacity(owned, owned);
+        return owned;
+    }
+
+    /// Publishes every missing tag into pre-reserved persistent storage.
+    pub fn apply(self: *PreparedTagOverlay, comptime Ctx: type, cache: *Cache(Ctx)) void {
+        if (self.committed) @panic("prepared tag overlay committed twice");
+        var iterator = self.entries.iterator();
+        while (iterator.next()) |entry| cache.interned_tags.putAssumeCapacity(entry.key_ptr.*, entry.value_ptr.*);
+        self.committed = true;
+    }
+
+    /// Releases unpublished tags or only the overlay table after commit.
+    pub fn deinit(self: *PreparedTagOverlay, allocator: std.mem.Allocator) void {
+        if (!self.committed) {
+            var values = self.entries.valueIterator();
+            while (values.next()) |value| allocator.free(value.*);
+        }
+        self.entries.deinit(allocator);
+        self.* = undefined;
+    }
+};
+
+/// Owns a cache node until publication; its tag belongs to a tag overlay.
+pub const PreparedNodeCreation = struct {
+    elem_id: u64,
+    tag: []const u8,
+    committed: bool = false,
+
+    /// Resolves a provisional tag without changing cache indexes.
+    pub fn prepare(comptime Ctx: type, allocator: std.mem.Allocator, cache: *Cache(Ctx), tags: *PreparedTagOverlay, elem_id: u64, tag: []const u8) (std.mem.Allocator.Error || error{ ActiveNode, ResourceLimit })!PreparedNodeCreation {
+        const index = std.math.cast(usize, elem_id) orelse return error.ResourceLimit;
+        if (index < cache.nodes.items.len and cache.nodes.items[index].active) return error.ActiveNode;
+        return .{ .elem_id = elem_id, .tag = try tags.resolve(Ctx, allocator, cache, tag) };
+    }
+
+    /// Publishes the node using only pre-reserved storage after tag publication.
+    pub fn apply(self: *PreparedNodeCreation, comptime Ctx: type, cache: *Cache(Ctx)) void {
+        if (self.committed) @panic("prepared render node creation committed twice");
+        const index: usize = @intCast(self.elem_id);
+        while (cache.nodes.items.len <= index) cache.nodes.appendAssumeCapacity(.{});
+        cache.nodes.items[index] = ScalarNode.initActive(self.tag);
+        self.committed = true;
+    }
+
+    /// Clears the non-owning prepared node state.
+    pub fn deinit(self: *PreparedNodeCreation) void {
+        self.* = undefined;
+    }
+};
+
 /// Defines the engine-owned rendered-state cache used to emit only changed host commands.
 pub fn Cache(comptime Ctx: type) type {
     return struct {
@@ -849,6 +920,70 @@ test "prepared render node removal defers ownership and applies allocation free"
     try std.testing.expectEqualStrings("owned", committed.retired.text.?);
     fault.configure(null);
     committed.deinit(allocator);
+}
+
+test "prepared render node creation sweeps allocation failures and retries" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    const Runner = struct {
+        fn deinit(cache: *Cache(TestCtx), allocator: std.mem.Allocator) void {
+            for (cache.nodes.items) |*node| node.deinit(allocator);
+            cache.nodes.deinit(allocator);
+            var tags = cache.interned_tags.valueIterator();
+            while (tags.next()) |tag| allocator.free(tag.*);
+            cache.interned_tags.deinit(allocator);
+        }
+
+        fn run(failure_number: ?usize) !usize {
+            var fault = FaultAllocator.init(std.testing.allocator);
+            const allocator = fault.allocator();
+            var cache: Cache(TestCtx) = .{};
+            defer deinit(&cache, allocator);
+            fault.configure(failure_number);
+            var overlay: ?PreparedTagOverlay = null;
+            defer if (overlay) |*tags| tags.deinit(allocator);
+            const reserved = cache.preflightNodeCapacity(allocator, 5);
+            if (reserved) |_| {
+                overlay = PreparedTagOverlay.init(TestCtx, allocator, &cache, 2) catch null;
+                if (overlay) |*tags| {
+                    const first = PreparedNodeCreation.prepare(TestCtx, allocator, &cache, tags, 2, "section") catch null;
+                    const second = if (first != null) PreparedNodeCreation.prepare(TestCtx, allocator, &cache, tags, 3, "article") catch null else null;
+                    const duplicate = if (second != null) PreparedNodeCreation.prepare(TestCtx, allocator, &cache, tags, 4, "section") catch null else null;
+                    if (first != null and second != null and duplicate != null) {
+                        if (failure_number != null) return error.TestUnexpectedResult;
+                        var nodes = [_]PreparedNodeCreation{ first.?, second.?, duplicate.? };
+                        const attempts = fault.attempts;
+                        fault.configure(1);
+                        tags.apply(TestCtx, &cache);
+                        for (&nodes) |*node| node.apply(TestCtx, &cache);
+                        try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+                        try std.testing.expectEqual(@as(usize, 2), cache.interned_tags.count());
+                        try std.testing.expect(cache.nodes.items[2].tag.?.ptr == cache.nodes.items[4].tag.?.ptr);
+                        fault.configure(null);
+                        for (&nodes) |*node| node.deinit();
+                        return attempts;
+                    }
+                }
+            } else |err| {
+                if (err != error.OutOfMemory) return err;
+            }
+            try std.testing.expectEqual(@as(usize, 0), cache.nodes.items.len);
+            try std.testing.expectEqual(@as(usize, 0), cache.interned_tags.count());
+            fault.configure(null);
+            if (overlay) |*tags| tags.deinit(allocator);
+            overlay = try PreparedTagOverlay.init(TestCtx, allocator, &cache, 2);
+            try cache.preflightNodeCapacity(allocator, 5);
+            var retry = try PreparedNodeCreation.prepare(TestCtx, allocator, &cache, &overlay.?, 3, "section");
+            overlay.?.apply(TestCtx, &cache);
+            retry.apply(TestCtx, &cache);
+            retry.deinit();
+            try std.testing.expect(cache.nodes.items[3].active);
+            return 0;
+        }
+    };
+
+    const attempts = try Runner.run(null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
 test "render cache reset accepts sparse element ids" {
