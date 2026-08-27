@@ -2645,10 +2645,11 @@ pub const Stream = struct {
     }
 
     /// Publishes a prepared lifecycle descriptor using only reserved capacity.
+    /// Signal-record publication for an on-change descriptor must already have
+    /// been committed by the collection plan.
     pub fn appendPreparedLifecycle(self: *Stream, prepared: PreparedLifecycleDescriptor) void {
         switch (prepared) {
             .on_change => |desc| {
-                self.rememberSignalRecordTreeAssumeCapacity(desc.signal.record);
                 const index = self.on_changes.items.len;
                 self.on_changes.appendAssumeCapacity(desc);
                 self.recordLifecycleAssumeCapacity(desc.scope_id, .{ .kind = .on_change, .index = index });
@@ -4961,7 +4962,12 @@ test "prepared lifecycle descriptors publish allocation free and tear down owner
     defer stream.deinit(allocator, &ctx, &roc_host, &metrics);
     const callable = abi.rocErasedCallableAllocate(&roc_host, Callable.call, null, 0).?;
     defer abi.decrefErasedCallable(callable, &roc_host);
-    const record = try SignalRecord.tryInit(allocator, .{ .ref = 11 });
+    abi.increfErasedCallable(callable, 1);
+    metrics.bump(.closure_retains, 1);
+    const record = try SignalRecord.tryInitOwned(allocator, &ctx, &roc_host, &metrics, .{ .const_value = .{
+        .init = callable,
+        .cap = .{ .clone = null, .drop = null, .eq = null },
+    } });
     const sources = try allocator.dupe(u64, &.{11});
     const signal = HostSignalBinding{ .record = record, .source_node_ids = sources };
 
@@ -4971,6 +4977,7 @@ test "prepared lifecycle descriptors publish allocation free and tear down owner
     const mount = stream.prepareMount(callable, 4, true, &metrics);
     const cleanup = try stream.prepareCleanup(allocator, 4, "dispose");
     fault.configure(1);
+    stream.rememberSignalRecordTreeAssumeCapacity(record);
     stream.appendPreparedLifecycle(on_change);
     stream.appendPreparedLifecycle(mount);
     stream.appendPreparedLifecycle(cleanup);
@@ -4980,6 +4987,8 @@ test "prepared lifecycle descriptors publish allocation free and tear down owner
         .{ .kind = .mount, .index = 0 },
         .{ .kind = .cleanup, .index = 0 },
     }, stream.lifecycleIndices(4));
+    const token = retained.hostSignalTokenFromCallable(callable);
+    try std.testing.expectEqual(@as(?usize, 1), stream.signal_record_descriptor_uses_by_token.get(token));
     fault.configure(null);
 }
 
