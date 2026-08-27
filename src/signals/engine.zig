@@ -2505,6 +2505,18 @@ pub fn Engine(comptime Ctx: type) type {
                 self.engine.validateScopeId(scope_id) catch return error.ResourceLimit;
             }
 
+            fn reserveWhenBranchScope(self: *@This(), parent_scope_id: u64, site_ordinal: u64, branch: HostScopeBranch) CollectionError!scope_tree.InternResult {
+                const persistent_parent = parent_scope_id < self.engine.scopes.items.len;
+                const key: collection_plan.ScopeKey = .{ .parent_id = parent_scope_id, .ordinal = site_ordinal, .kind = .{ .when_branch = branch } };
+                const active_id = if (persistent_parent) self.engine.activeWhenBranchScopeId(parent_scope_id, site_ordinal, branch) catch return error.ResourceLimit else null;
+                const fresh_id: u64 = @intCast(self.engine.scopes.items.len + self.scopes.intents.items.len);
+                const branch_scope_id = self.scopes.reserve(key, active_id, &.{fresh_id}) catch |err| switch (err) {
+                    error.NoCapacity => return error.OutOfMemory,
+                    error.NoAvailableScope => return error.ResourceLimit,
+                };
+                return .{ .scope_id = branch_scope_id, .created = active_id == null };
+            }
+
             fn reserveDomIdentity(self: *@This(), scope_id: u64, ordinal: u64) CollectionError!u64 {
                 const key = identityKey(scope_id, ordinal);
                 const active_id = self.engine.active_dom_identity_ids.get(key);
@@ -2599,17 +2611,11 @@ pub fn Engine(comptime Ctx: type) type {
                 prepared.desc.cached_value = .{ .present = HostValueCell.initRetained(value, cap, &self.engine.pending_roc_metrics) };
                 const persistent_parent = scope_id < self.engine.scopes.items.len;
                 if (persistent_parent and (self.engine.activeWhenBranchScopeId(scope_id, site_ordinal, branch.opposite()) catch return error.ResourceLimit) != null) return error.ResourceLimit;
-                const key: collection_plan.ScopeKey = .{ .parent_id = scope_id, .ordinal = site_ordinal, .kind = .{ .when_branch = branch } };
-                const active_id = if (persistent_parent) self.engine.activeWhenBranchScopeId(scope_id, site_ordinal, branch) catch return error.ResourceLimit else null;
-                const fresh_id: u64 = @intCast(self.engine.scopes.items.len + self.scopes.intents.items.len);
-                const branch_scope_id = self.scopes.reserve(key, active_id, &.{fresh_id}) catch |err| switch (err) {
-                    error.NoCapacity => return error.OutOfMemory,
-                    error.NoAvailableScope => return error.ResourceLimit,
-                };
+                const branch_scope = try self.reserveWhenBranchScope(scope_id, site_ordinal, branch);
                 self.prepared_state_sites.appendAssumeCapacity(site);
                 self.prepared_whens.appendAssumeCapacity(prepared);
                 ordinal.* += 1;
-                return .{ .scope = .{ .scope_id = branch_scope_id, .created = active_id == null }, .branch = branch };
+                return .{ .scope = branch_scope, .branch = branch };
             }
 
             fn appendElement(self: *@This(), scope_id: u64, parent_elem_id: u64, dom_ordinal: *u64, tag: []const u8) CollectionError!u64 {
@@ -3206,6 +3212,55 @@ pub fn Engine(comptime Ctx: type) type {
                 else => error.ResourceLimit,
             };
         }
+
+        const BranchReplacementPlan = struct {
+            engine: *Self,
+            host_ctx: Ctx.Handle,
+            roc_host: *abi.RocHost,
+            replacement_stream: HostNodeDescriptorStream = .{},
+            collection: StagedCollectionCtx = undefined,
+            replacement_scope_id: u64 = 0,
+            retired_scope_id: u64 = 0,
+
+            fn prepare(engine_ptr: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, site: HostNodeScopeSiteDesc, when: HostNodeWhenDesc, selected_branch: HostScopeBranch, limits: collection_budget.Limits, dirty_source_node_ids: []const u64) CollectionError!*@This() {
+                if (site.kind != .when or site.node_id != when.node_id) return error.ResourceLimit;
+                const retired_scope_id = (engine_ptr.activeWhenBranchScopeId(site.scope_id, site.ordinal, selected_branch.opposite()) catch return error.ResourceLimit) orelse return error.ResourceLimit;
+                if ((engine_ptr.activeWhenBranchScopeId(site.scope_id, site.ordinal, selected_branch) catch return error.ResourceLimit) != null) return error.ResourceLimit;
+
+                const selected_elem = switch (selected_branch) {
+                    .true_branch => when.when_true,
+                    .false_branch => when.when_false,
+                };
+                const expected = try countStaticRootNodes(selected_elem);
+                const allocator = Ctx.allocator(ctx);
+                const plan = allocator.create(@This()) catch return error.OutOfMemory;
+                errdefer allocator.destroy(plan);
+                plan.* = .{ .engine = engine_ptr, .host_ctx = ctx, .roc_host = roc_host, .retired_scope_id = retired_scope_id };
+                errdefer plan.replacement_stream.deinit(allocator, ctx, roc_host, &engine_ptr.pending_roc_metrics);
+                plan.collection = try StagedCollectionCtx.init(engine_ptr, ctx, &plan.replacement_stream, limits, expected.nodes, expected.attrs, expected.signal_records, expected.state_sites, expected.component_sites, expected.when_sites);
+                errdefer plan.collection.deinit();
+
+                const branch_scope = try plan.collection.reserveWhenBranchScope(site.scope_id, site.ordinal, selected_branch);
+                if (!branch_scope.created) return error.ResourceLimit;
+                plan.replacement_scope_id = branch_scope.scope_id;
+                var binder_stack: std.ArrayListUnmanaged(HostBinderBinding) = .empty;
+                defer binder_stack.deinit(allocator);
+                const binder_capacity = std.math.add(usize, site.binder_bindings.len, expected.state_sites) catch return error.ResourceLimit;
+                binder_stack.ensureTotalCapacity(allocator, binder_capacity) catch return error.OutOfMemory;
+                binder_stack.appendSliceAssumeCapacity(site.binder_bindings);
+                var ordinal: u64 = 0;
+                var dom_ordinal: u64 = 0;
+                try engine_ptr.collectActiveElemDescriptorsWith(*StagedCollectionCtx, &plan.collection, ctx, roc_host, &plan.replacement_stream, selected_elem, branch_scope.scope_id, site.parent_elem_id, &ordinal, &dom_ordinal, &binder_stack, true, dirty_source_node_ids);
+                return plan;
+            }
+
+            fn deinit(self: *@This()) void {
+                const allocator = Ctx.allocator(self.host_ctx);
+                self.collection.deinit();
+                self.replacement_stream.deinit(allocator, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
+                allocator.destroy(self);
+            }
+        };
 
         /// Transactional production seam for roots composed only of static
         /// elements and text. Unsupported variants remain on the immediate
@@ -7967,6 +8022,80 @@ test "transactional initial when root sweeps failures and evaluates once" {
         try std.testing.expectEqual(@as(usize, 1), stream.whens.items.len);
         try std.testing.expectEqualStrings("yes", stream.text_nodes.items[0].value);
     }
+}
+
+test "branch replacement preparation leaves the active branch unpublished" {
+    var roc_env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&roc_env);
+    const value_callable = abi.rocErasedCallableAllocate(&roc_host, verifyStateCallable, null, 0).?;
+    defer abi.decrefErasedCallable(value_callable, &roc_host);
+    const bool_callable = abi.rocErasedCallableAllocate(&roc_host, verifyBoolCallable, null, 0).?;
+    defer abi.decrefErasedCallable(bool_callable, &roc_host);
+    const capability = HostValueCapability{ .clone = value_callable, .drop = value_callable, .eq = value_callable };
+    var condition = abi.NodeSignalExpr{ .payload = .{ .const_value = .{
+        ._0 = value_callable,
+        ._1 = value_callable,
+        ._2 = capability,
+    } }, .tag = .ConstValue };
+    var when_false = verifyStaticText();
+    when_false.payload.text = abi.RocStr.fromSlice("no", undefined);
+    var when_true = verifyStaticText();
+    when_true.payload.text = abi.RocStr.fromSlice("yes", undefined);
+    const root = abi.Elem{ .payload = .{ .when = .{
+        .condition = &condition,
+        .read = .{ .capability = capability, .read = bool_callable },
+        .when_false = &when_false,
+        .when_true = &when_true,
+    } }, .tag = .When };
+
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    const Runner = struct {
+        fn run(root_elem: abi.Elem, host: *abi.RocHost, failure_number: ?usize) !usize {
+            var fault = FaultAllocator.init(std.testing.allocator);
+            var ctx = VerifyCtxHost{ .allocator = fault.allocator() };
+            var engine = Engine(VerifyCtx).init();
+            var stream: HostNodeDescriptorStream = .{};
+            defer {
+                stream.deinit(ctx.allocator, &ctx, host, &engine.pending_roc_metrics);
+                deinitVerifyStateEngine(&engine, &ctx, host);
+            }
+            try engine.collectStaticRootDescriptorsTransactional(&ctx, host, &stream, root_elem, .{});
+            const scope_len = engine.scopes.items.len;
+            const identity_len = engine.dom_identities.items.len;
+            const text_len = stream.text_nodes.items.len;
+            const retained_before = engine.pending_roc_metrics.closure_retains - engine.pending_roc_metrics.closure_releases;
+            fault.configure(failure_number);
+            const prepared = Engine(VerifyCtx).BranchReplacementPlan.prepare(&engine, &ctx, host, stream.scope_sites.items[0], stream.whens.items[0], .false_branch, .{}, &.{});
+            if (failure_number == null) {
+                var plan = try prepared;
+                const attempts = fault.attempts;
+                try std.testing.expectEqual(@as(usize, 0), plan.replacement_stream.text_nodes.items.len);
+                try std.testing.expectEqualStrings("no", plan.collection.prepared_nodes.items[0].text.text);
+                try std.testing.expectEqual(engine.scopes.items[1].scope_id, plan.retired_scope_id);
+                plan.deinit();
+                try std.testing.expectEqual(retained_before, engine.pending_roc_metrics.closure_retains - engine.pending_roc_metrics.closure_releases);
+                return attempts;
+            }
+            try std.testing.expectError(error.OutOfMemory, prepared);
+            try std.testing.expectEqual(@as(usize, 1), fault.induced_failures);
+            try std.testing.expectEqual(scope_len, engine.scopes.items.len);
+            try std.testing.expectEqual(identity_len, engine.dom_identities.items.len);
+            try std.testing.expectEqual(text_len, stream.text_nodes.items.len);
+            try std.testing.expectEqual(retained_before, engine.pending_roc_metrics.closure_retains - engine.pending_roc_metrics.closure_releases);
+
+            fault.configure(null);
+            var retry = try Engine(VerifyCtx).BranchReplacementPlan.prepare(&engine, &ctx, host, stream.scope_sites.items[0], stream.whens.items[0], .false_branch, .{}, &.{});
+            retry.deinit();
+            try std.testing.expectEqual(scope_len, engine.scopes.items.len);
+            try std.testing.expectEqual(identity_len, engine.dom_identities.items.len);
+            try std.testing.expectEqual(text_len, stream.text_nodes.items.len);
+            return 0;
+        }
+    };
+
+    const attempts = try Runner.run(root, &roc_host, null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(root, &roc_host, failure_number);
 }
 
 test "transactional static engine root sweeps every allocation and retries cleanly" {
