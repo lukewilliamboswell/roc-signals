@@ -2112,6 +2112,7 @@ pub fn Engine(comptime Ctx: type) type {
             prepared_attrs: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedStaticAttr) = .empty,
             signal_records: collection_plan.SignalRecordPlan(HostSignalToken, HostSignalRecord) = .{},
             signal_roc_host: ?*abi.RocHost = null,
+            signal_capacity: usize = 0,
             committed: bool = false,
 
             fn init(engine_ptr: *Self, host_ctx: Ctx.Handle, stream: *HostNodeDescriptorStream, limits: collection_budget.Limits, expected_nodes: usize, expected_attrs: usize) CollectionError!@This() {
@@ -2129,6 +2130,7 @@ pub fn Engine(comptime Ctx: type) type {
                 self.prepared_nodes.ensureTotalCapacity(allocator, expected_nodes) catch return error.OutOfMemory;
                 self.prepared_attrs.ensureTotalCapacity(allocator, expected_attrs) catch return error.OutOfMemory;
                 self.signal_records.prepare(allocator, expected_attrs, expected_attrs) catch return error.OutOfMemory;
+                self.signal_capacity = expected_attrs;
                 self.engine.scopes.ensureUnusedCapacity(allocator, 1) catch return error.OutOfMemory;
                 self.engine.dom_identities.ensureUnusedCapacity(allocator, expected_nodes) catch return error.OutOfMemory;
                 self.engine.active_dom_identity_ids.ensureUnusedCapacity(allocator, @intCast(expected_nodes)) catch return error.OutOfMemory;
@@ -2261,6 +2263,41 @@ pub fn Engine(comptime Ctx: type) type {
                     .text, .boolean => {},
                 };
                 return false;
+            }
+
+            const StagedSignalRecordCtx = struct {
+                collection: *Collection,
+                allocator: std.mem.Allocator,
+
+                fn retainExisting(self: @This(), token: HostSignalToken, expected_tag: std.meta.Tag(HostSignalRecordPayload)) error{OutOfMemory}!?*HostSignalRecord {
+                    const persistent = self.collection.engine.signalRecordByTokenForStream(self.collection.stream, token);
+                    const record = self.collection.signal_records.lookup(token, persistent) orelse return null;
+                    validateExistingSignalRecord(record, expected_tag);
+                    if (!self.collection.signal_records.by_token.contains(token)) {
+                        if (self.collection.signal_records.token_intents.items.len >= self.collection.signal_capacity) return error.OutOfMemory;
+                        self.collection.signal_records.rememberTokenAssumeCapacity(token, record);
+                    }
+                    return record.retain();
+                }
+
+                fn init(self: @This(), payload: HostSignalRecordPayload) error{OutOfMemory}!*HostSignalRecord {
+                    return HostSignalRecord.tryInit(self.allocator, payload);
+                }
+
+                fn remember(self: @This(), record: *HostSignalRecord) error{OutOfMemory}!void {
+                    const token = record.token() orelse return;
+                    if (self.collection.signal_records.by_token.contains(token)) return;
+                    if (self.collection.signal_records.token_intents.items.len >= self.collection.signal_capacity) return error.OutOfMemory;
+                    self.collection.signal_records.rememberTokenAssumeCapacity(token, record);
+                }
+            };
+
+            fn bindSignalRoot(self: *@This(), expr: abi.NodeSignalExpr, binder_stack: []const HostBinderBinding) CollectionError!*HostSignalRecord {
+                if (self.signal_records.descriptor_roots.items.len >= self.signal_capacity) return error.OutOfMemory;
+                const binding = StagedSignalRecordCtx{ .collection = self, .allocator = Ctx.allocator(self.host_ctx) };
+                const record = self.engine.bindSignalExprViewWith(StagedSignalRecordCtx, binding, abi_view.SignalExpr.fromAbi(expr), binder_stack) catch return error.OutOfMemory;
+                self.signal_records.ownDescriptorRootAssumeCapacity(record);
+                return record;
             }
 
             /// Publishes only pre-reserved state. This function must remain
