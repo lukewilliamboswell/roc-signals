@@ -661,6 +661,9 @@ pub const Stream = struct {
         signal_text_count: usize,
         signal_bool_count: usize,
         signal_record_count: usize,
+        event_count: usize,
+        removed_elem_ids: []const u64,
+        source: *const Stream,
     ) std.mem.Allocator.Error!void {
         try self.elements.ensureUnusedCapacity(allocator, element_count);
         try self.text_nodes.ensureUnusedCapacity(allocator, text_count);
@@ -670,6 +673,17 @@ pub const Stream = struct {
         try self.signal_text_attrs.ensureUnusedCapacity(allocator, signal_text_count);
         try self.signal_bool_attrs.ensureUnusedCapacity(allocator, signal_bool_count);
         try self.reservePreparedSignalRecordPublication(allocator, signal_record_count);
+        try self.events.ensureUnusedCapacity(allocator, event_count);
+        var highest_elem_id: usize = 0;
+        for (removed_elem_ids) |elem_id| highest_elem_id = @max(highest_elem_id, std.math.cast(usize, elem_id) orelse return error.OutOfMemory);
+        const index_len = if (removed_elem_ids.len == 0) 0 else std.math.add(usize, highest_elem_id, 1) catch return error.OutOfMemory;
+        try self.descriptor_indexes_by_elem_id.ensureTotalCapacity(allocator, index_len);
+        try self.named_event_indices_by_elem_id.ensureTotalCapacity(allocator, index_len);
+        while (self.descriptor_indexes_by_elem_id.items.len < index_len) self.descriptor_indexes_by_elem_id.appendAssumeCapacity(.{});
+        while (self.named_event_indices_by_elem_id.items.len < index_len) self.named_event_indices_by_elem_id.appendAssumeCapacity(.empty);
+        for (removed_elem_ids) |elem_id| {
+            try self.named_event_indices_by_elem_id.items[@intCast(elem_id)].ensureUnusedCapacity(allocator, source.namedEventIndices(elem_id).len);
+        }
     }
 
     /// Moves the element/text/fixed-static descriptor families according to a
@@ -686,6 +700,7 @@ pub const Stream = struct {
         signal_text_node_indexes: []const usize,
         signal_text_indexes: []const usize,
         signal_bool_indexes: []const usize,
+        event_indexes: []const usize,
     ) void {
         for (element_indexes) |index| {
             const removed = self.elements.swapRemove(index);
@@ -747,6 +762,24 @@ pub const Stream = struct {
                 self.updateSignalBoolAttrIndex(moved.elem_id, moved.field, index);
             }
         }
+        for (event_indexes) |index| {
+            const removed = self.events.swapRemove(index);
+            if (removed.fixedKind()) |kind| {
+                self.clearEventIndex(removed.elem_id, kind, index);
+                const retired_index = retired.events.items.len;
+                retired.events.appendAssumeCapacity(removed);
+                setFreshIndex(retired.descriptor_indexes_by_elem_id.items[@intCast(removed.elem_id)].events.slot(kind), retired_index);
+            } else {
+                self.clearNamedEventIndex(removed.elem_id, index);
+                const retired_index = retired.events.items.len;
+                retired.events.appendAssumeCapacity(removed);
+                retired.named_event_indices_by_elem_id.items[@intCast(removed.elem_id)].appendAssumeCapacity(retired_index);
+            }
+            if (index < self.events.items.len) {
+                const moved = self.events.items[index];
+                if (moved.fixedKind()) |kind| self.updateEventIndex(moved.elem_id, kind, index) else self.updateNamedEventIndex(moved.elem_id, self.events.items.len, index);
+            }
+        }
 
         for (replacement.elements.items) |desc| {
             const index = self.elements.items.len;
@@ -796,6 +829,27 @@ pub const Stream = struct {
             setFreshIndex(self.descriptor_indexes_by_elem_id.items[@intCast(desc.elem_id)].signal_bool_attrs.slot(desc.field), index);
         }
         replacement.signal_bool_attrs.items.len = 0;
+        const event_base = self.events.items.len;
+        for (replacement.events.items, 0..) |desc, offset| {
+            const index = event_base + offset;
+            self.events.appendAssumeCapacity(desc);
+            while (self.descriptor_indexes_by_elem_id.items.len <= desc.elem_id) self.descriptor_indexes_by_elem_id.appendAssumeCapacity(.{});
+            if (desc.fixedKind()) |kind| setFreshIndex(self.descriptor_indexes_by_elem_id.items[@intCast(desc.elem_id)].events.slot(kind), index);
+        }
+        replacement.events.items.len = 0;
+        for (replacement.named_event_indices_by_elem_id.items, 0..) |*replacement_indexes, elem_id| {
+            if (replacement_indexes.items.len == 0) continue;
+            while (self.named_event_indices_by_elem_id.items.len <= elem_id) self.named_event_indices_by_elem_id.appendAssumeCapacity(.empty);
+            const destination = &self.named_event_indices_by_elem_id.items[elem_id];
+            for (replacement_indexes.items) |*index| index.* += event_base;
+            if (destination.capacity == 0 and destination.items.len == 0) {
+                destination.* = replacement_indexes.*;
+                replacement_indexes.* = .empty;
+            } else {
+                destination.appendSliceAssumeCapacity(replacement_indexes.items);
+                replacement_indexes.clearRetainingCapacity();
+            }
+        }
     }
 
     fn rememberSignalRecordTreeAssumeCapacity(self: *Stream, record: *SignalRecord) void {
@@ -3858,6 +3912,50 @@ test "prepared when publication is allocation free" {
     try std.testing.expectEqual(@as(usize, 1), stream.whens.items.len);
     try std.testing.expectEqual(@as(?usize, 0), stream.nodeDescriptorIndex(6).?.when.get());
     try std.testing.expect(stream.whens.items[0].condition.record == record);
+}
+
+test "prepared fixed and named event replacement is allocation free" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    const TestCtx = struct {
+        /// Opens a checked capability frame for an app-compiled erased call.
+        pub fn pushHostValueCapabilities(_: *@This(), _: []const retained.HostValueCapability) void {}
+        /// Closes the current capability frame after an app-compiled erased call.
+        pub fn popHostValueCapabilities(_: *@This()) void {}
+    };
+    var fault = FaultAllocator.init(std.testing.allocator);
+    const allocator = fault.allocator();
+    var ctx: TestCtx = .{};
+    var env = abi.RocEnv{ .allocator = allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&env);
+    var metrics = TestMetrics{};
+    var active: Stream = .{};
+    var replacement: Stream = .{};
+    var retired: Stream = .{};
+    defer active.deinit(allocator, &ctx, &roc_host, &metrics);
+    defer replacement.deinit(allocator, &ctx, &roc_host, &metrics);
+    defer retired.deinit(allocator, &ctx, &roc_host, &metrics);
+
+    const token: BinderToken = @ptrFromInt(0x9100);
+    const payload = BoundaryPayloadDescriptor.init(.unit, .none);
+    const reducer = std.mem.zeroes(HostEventReducer);
+    _ = active.appendElement(allocator, 1, 0, 0, "old");
+    _ = replacement.appendElement(allocator, 2, 0, 0, "new");
+    active.appendEvent(allocator, &roc_host, &metrics, 1, .click, .auto, token, 7, token, 7, payload, reducer);
+    active.appendNamedEvent(allocator, &roc_host, &metrics, 1, "old", .{}, .auto, token, 7, token, 7, payload, reducer);
+    replacement.appendEvent(allocator, &roc_host, &metrics, 2, .click, .auto, token, 8, token, 8, payload, reducer);
+    replacement.appendNamedEvent(allocator, &roc_host, &metrics, 2, "new", .{}, .auto, token, 8, token, 8, payload, reducer);
+
+    try active.reserveMovedStreamPublication(allocator, &replacement);
+    try retired.reserveRetiredStaticPublication(allocator, 0, 0, 0, 0, 0, 0, 0, 0, 2, &.{1}, &active);
+    fault.configure(1);
+    active.commitStaticDescriptorReplacementAssumeCapacity(&replacement, &retired, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{ 1, 0 });
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqual(@as(usize, 2), active.events.items.len);
+    try std.testing.expectEqualStrings("new", active.events.items[1].named().?.name);
+    try std.testing.expectEqualSlices(usize, &.{1}, active.namedEventIndices(2));
+    try std.testing.expectEqual(@as(?usize, 0), active.elemDescriptorIndex(2).?.events.get(.click));
+    try std.testing.expectEqualStrings("old", retired.events.items[0].named().?.name);
+    try std.testing.expectEqualSlices(usize, &.{0}, retired.namedEventIndices(1));
 }
 
 test "field descriptor indexes round-trip by enum field" {

@@ -3299,6 +3299,9 @@ pub fn Engine(comptime Ctx: type) type {
                     removal_indexes.signal_text_attr_indexes.items.len,
                     removal_indexes.signal_bool_attr_indexes.items.len,
                     engine_ptr.active_stream.signal_records_by_token.count(),
+                    removal_indexes.event_indexes.items.len,
+                    plan.removal.?.scan.removed_elem_ids,
+                    &engine_ptr.active_stream,
                 ) catch return error.OutOfMemory;
                 plan.publication = structural_splice.preparePublicationDeltas(
                     allocator,
@@ -8216,6 +8219,7 @@ test "branch replacement preparation leaves the active branch unpublished" {
                     indexes.signal_text_node_indexes.items,
                     indexes.signal_text_attr_indexes.items,
                     indexes.signal_bool_attr_indexes.items,
+                    indexes.event_indexes.items,
                 );
                 try std.testing.expectEqual(@as(usize, 0), fault.attempts);
                 try std.testing.expectEqualStrings("no", engine.active_stream.text_nodes.items[0].value);

@@ -323,9 +323,14 @@ pub fn prepareRemoval(comptime Stream: type, allocator: std.mem.Allocator, strea
     };
     errdefer prepared.deinit(allocator);
     try prepared.descriptor_indexes.prepare(allocator, prepared.scan.removed_elem_ids.len);
+    var named_event_count: usize = 0;
     for (prepared.scan.removed_elem_ids) |elem_id| {
-        const descriptor_index = stream.elemDescriptorIndex(elem_id) orelse continue;
-        prepared.descriptor_indexes.appendDescriptorIndexesAssumeCapacity(descriptor_index);
+        named_event_count = std.math.add(usize, named_event_count, stream.namedEventIndices(elem_id).len) catch return error.OutOfMemory;
+    }
+    try prepared.descriptor_indexes.event_indexes.ensureUnusedCapacity(allocator, named_event_count);
+    for (prepared.scan.removed_elem_ids) |elem_id| {
+        if (stream.elemDescriptorIndex(elem_id)) |descriptor_index| prepared.descriptor_indexes.appendDescriptorIndexesAssumeCapacity(descriptor_index);
+        prepared.descriptor_indexes.event_indexes.appendSliceAssumeCapacity(stream.namedEventIndices(elem_id));
     }
     prepared.descriptor_indexes.sortDescending();
     return prepared;
