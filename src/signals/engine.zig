@@ -5203,6 +5203,58 @@ pub fn Engine(comptime Ctx: type) type {
             }
         };
 
+        /// Owns a completely collected root generation until its persistent
+        /// scope, identity, state, signal, and descriptor ownership can be
+        /// committed together. Preparation may allocate and invoke pure Roc
+        /// readers, but it never changes the engine's logical committed state.
+        /// Dropping an uncommitted plan releases every provisional value and
+        /// makes the same engine safe to retry.
+        pub const PreparedRootCollection = struct {
+            owner: *PreparedReplacementOwner,
+
+            /// Collects and materializes one root into plan-owned storage.
+            /// Host allocation failure is recoverable; allocation failure in a
+            /// Roc callback remains the platform allocator's fatal boundary.
+            pub fn prepare(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, root: abi.Elem, limits: collection_budget.Limits, dirty_source_node_ids: []const u64) CollectionError!*@This() {
+                const allocator = Ctx.allocator(ctx);
+                const plan = allocator.create(@This()) catch return error.OutOfMemory;
+                errdefer allocator.destroy(plan);
+                const counts = try countStaticRootNodes(root);
+                const owner = try PreparedReplacementOwner.create(engine, ctx, roc_host, limits, counts, 1);
+                errdefer owner.deinit();
+                try engine.collectActiveElemRootDescriptorsWith(*StagedCollectionCtx, &owner.collection, ctx, roc_host, &owner.stream, root, dirty_source_node_ids);
+                owner.materialize();
+                plan.* = .{ .owner = owner };
+                return plan;
+            }
+
+            /// Returns the fully materialized but unpublished descriptor stream.
+            pub fn descriptorStream(self: *const @This()) *const HostNodeDescriptorStream {
+                return &self.owner.stream;
+            }
+
+            /// Publishes the pre-reserved engine ownership and transfers the
+            /// descriptor stream to the caller without allocating. Render and
+            /// host publication must already have been prepared before this
+            /// irreversible step is used by a complete root transaction.
+            pub fn commit(self: *@This()) HostNodeDescriptorStream {
+                self.owner.collection.commit();
+                const stream = self.owner.stream;
+                self.owner.stream = .{};
+                const allocator = Ctx.allocator(self.owner.host_ctx);
+                self.owner.deinit();
+                allocator.destroy(self);
+                return stream;
+            }
+
+            /// Aborts the plan and releases all provisional ownership.
+            pub fn deinit(self: *@This()) void {
+                const allocator = Ctx.allocator(self.owner.host_ctx);
+                self.owner.deinit();
+                allocator.destroy(self);
+            }
+        };
+
         const PreparedStructuralDownstream = struct {
             const HostRenderPublication = if (@hasDecl(Ctx, "RenderPublication")) Ctx.RenderPublication else void;
             engine: *Self,
@@ -6608,15 +6660,13 @@ pub fn Engine(comptime Ctx: type) type {
             }
         };
 
-        /// Transactional production seam for roots composed only of static
-        /// elements and text. Unsupported variants remain on the immediate
-        /// collector until their ownership operations are staged as well.
+        /// Compatibility seam that prepares and immediately commits a root
+        /// descriptor generation. Production mount and root replacement must
+        /// keep the returned plan provisional until render publication is also
+        /// prepared, rather than using this collection-only convenience call.
         pub fn collectStaticRootDescriptorsTransactional(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, root: abi.Elem, limits: collection_budget.Limits) CollectionError!void {
-            const expected = try countStaticRootNodes(root);
-            var collection = try StagedCollectionCtx.init(self, ctx, stream, limits, expected.nodes, expected.attrs, expected.lifecycle, expected.signal_records, expected.state_sites, expected.component_sites, expected.when_sites, 1);
-            defer collection.deinit();
-            try self.collectActiveElemRootDescriptorsWith(*StagedCollectionCtx, &collection, ctx, roc_host, stream, root, &.{});
-            collection.commit();
+            const plan = try PreparedRootCollection.prepare(self, ctx, roc_host, root, limits, &.{});
+            stream.* = plan.commit();
         }
 
         /// Collects active elem root descriptors from the explicitly affected graph or scope set.
@@ -13658,6 +13708,87 @@ test "transactional component and state root sweeps failures and publishes initi
         try std.testing.expectEqualStrings("div", stream.elements.items[0].tag);
         try std.testing.expectEqualStrings("keydown", stream.events.items[0].named().?.name);
         try std.testing.expectEqualSlices(usize, &.{0}, stream.namedEventIndices(1));
+    }
+}
+
+test "prepared root collection aborts every allocation point and retries on the same engine" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var roc_env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&roc_env);
+    const callable = abi.rocErasedCallableAllocate(&roc_host, verifyStateCallable, null, 0).?;
+    defer abi.decrefErasedCallable(callable, &roc_host);
+    const capability = HostValueCapability{ .clone = callable, .drop = callable, .eq = callable };
+    const extraction_bytes = EventExtractionPlanKind.none.bytes();
+    const named_attr = abi.NodeAttr{ .payload = .{ .on = .{
+        .kind = .{ .id = 0 },
+        .msg = .{
+            .binder = callable,
+            .read_binder = callable,
+            .event_extraction_plan = .{ .bytes = .{ .elements_ptr = @constCast(extraction_bytes.ptr), .length = extraction_bytes.len, .capacity_or_alloc_ptr = extraction_bytes.len << 1 } },
+            .payload_reducer = std.mem.zeroes(HostEventReducer),
+        },
+        .name = abi.RocStr.fromSlice("keydown", undefined),
+        .delivery = .{ .native = false },
+        .policy = std.mem.zeroes(abi.NodeEventBindingPolicy),
+    } }, .tag = .On };
+    var child = verifyStaticRoot(&.{named_attr}, &.{});
+    var state_root = abi.Elem{ .payload = .{ .state = .{
+        .binder = callable,
+        .cap = capability,
+        .child = &child,
+        .initial = callable,
+    } }, .tag = .State };
+    const root = abi.Elem{ .payload = .{ .component = .{ .child = &state_root } }, .tag = .Component };
+
+    var counter = FaultAllocator.init(std.testing.allocator);
+    var counter_ctx = VerifyCtxHost{ .allocator = counter.allocator() };
+    var counter_engine = Engine(VerifyCtx).init();
+    verifyStateInitCalls = 0;
+    const counted = try Engine(VerifyCtx).PreparedRootCollection.prepare(&counter_engine, &counter_ctx, &roc_host, root, .{}, &.{});
+    const attempts = counter.attempts;
+    try std.testing.expectEqual(@as(usize, 1), verifyStateInitCalls);
+    try std.testing.expectEqual(@as(usize, 0), counter_engine.scopes.items.len);
+    try std.testing.expectEqual(@as(usize, 0), counter_engine.node_identities.items.len);
+    try std.testing.expectEqual(@as(usize, 0), counter_engine.states.items.len);
+    try std.testing.expectEqual(@as(usize, 1), counted.descriptorStream().elements.items.len);
+    try std.testing.expectEqual(@as(usize, 1), counted.descriptorStream().events.items.len);
+    counted.deinit();
+    deinitVerifyStateEngine(&counter_engine, &counter_ctx, &roc_host);
+    try std.testing.expect(attempts != 0);
+
+    for (1..attempts + 1) |failure_number| {
+        var fault = FaultAllocator.init(std.testing.allocator);
+        fault.configure(failure_number);
+        var ctx = VerifyCtxHost{ .allocator = fault.allocator() };
+        var engine = Engine(VerifyCtx).init();
+        defer deinitVerifyStateEngine(&engine, &ctx, &roc_host);
+        verifyStateInitCalls = 0;
+
+        try std.testing.expectError(error.OutOfMemory, Engine(VerifyCtx).PreparedRootCollection.prepare(&engine, &ctx, &roc_host, root, .{}, &.{}));
+        try std.testing.expectEqual(@as(usize, 0), engine.scopes.items.len);
+        try std.testing.expectEqual(@as(usize, 0), engine.node_identities.items.len);
+        try std.testing.expectEqual(@as(usize, 0), engine.dom_identities.items.len);
+        try std.testing.expectEqual(@as(usize, 0), engine.states.items.len);
+        try std.testing.expectEqual(@as(usize, 0), engine.active_stream.elements.items.len);
+        try std.testing.expectEqual(engine.pending_roc_metrics.closure_retains, engine.pending_roc_metrics.closure_releases);
+        const calls_before_retry = verifyStateInitCalls;
+
+        fault.configure(null);
+        const retry = try Engine(VerifyCtx).PreparedRootCollection.prepare(&engine, &ctx, &roc_host, root, .{}, &.{});
+        try std.testing.expectEqual(calls_before_retry + 1, verifyStateInitCalls);
+        try std.testing.expectEqual(@as(usize, 0), engine.scopes.items.len);
+        try std.testing.expectEqual(@as(usize, 0), engine.node_identities.items.len);
+        try std.testing.expectEqual(@as(usize, 0), engine.states.items.len);
+        try std.testing.expectEqualStrings("div", retry.descriptorStream().elements.items[0].tag);
+        try std.testing.expectEqualStrings("keydown", retry.descriptorStream().events.items[0].named().?.name);
+
+        var committed_stream = retry.commit();
+        defer committed_stream.deinit(ctx.allocator, &ctx, &roc_host, &engine.pending_roc_metrics);
+        try std.testing.expectEqual(@as(usize, 2), engine.scopes.items.len);
+        try std.testing.expectEqual(@as(usize, 2), engine.node_identities.items.len);
+        try std.testing.expectEqual(@as(usize, 1), engine.states.items.len);
+        try std.testing.expectEqual(@as(HostValue, 42), engine.states.items[0].cell.value);
+        try std.testing.expectEqual(@as(usize, 1), committed_stream.events.items.len);
     }
 }
 
