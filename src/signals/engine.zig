@@ -832,8 +832,9 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             /// Retires an obsolete row scope after all preparation succeeds.
-            pub fn disposeScope(self: *@This(), scope_id: u64) void {
-                self.base.disposeScope(scope_id);
+            pub fn disposeScope(_: *@This(), _: u64) void {
+                // The enclosing prepared subtree-retirement journal owns this
+                // removal. Reconciliation publishes only the final site index.
             }
 
             /// Reads a committed row hash while rebuilding the site index.
@@ -3612,6 +3613,93 @@ pub fn Engine(comptime Ctx: type) type {
                 self.retired_tasks.deinit(allocator);
                 for (self.cleanup_names.items) |name| allocator.free(name);
                 self.cleanup_names.deinit(allocator);
+                self.* = undefined;
+            }
+        };
+
+        const PreparedEachRowSubtreeRetirement = struct {
+            target_scopes: []bool = &.{},
+            scopes: ?scope_runtime.PreparedSubtreeRetirement = null,
+            identities: ?PreparedIdentityRetirements = null,
+            states: ?PreparedStateRetirementIndexes = null,
+            rows: ?each_runtime.PreparedRowRemovals = null,
+            effects: ?PreparedEffectRetirements = null,
+            retired_states: std.ArrayListUnmanaged(HostState) = .empty,
+            retired_steps: std.ArrayListUnmanaged(HostScopeStep) = .empty,
+
+            fn prepare(engine: *Self, allocator: std.mem.Allocator, removed_root_scope_ids: []const u64) CollectionError!@This() {
+                var self: @This() = .{};
+                errdefer self.deinit(engine, allocator, null, null);
+                self.scopes = scope_runtime.prepareSubtreesRetirement(HostEachRowScopeStep, allocator, engine.scopes.items, removed_root_scope_ids) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.OverlappingSubtrees => return error.ResourceLimit,
+                };
+                self.target_scopes = allocator.alloc(bool, engine.scopes.items.len) catch return error.OutOfMemory;
+                @memset(self.target_scopes, false);
+                for (self.scopes.?.scope_ids) |scope_id| self.target_scopes[@intCast(scope_id)] = true;
+                self.identities = try PreparedIdentityRetirements.prepare(engine, allocator, self.target_scopes);
+
+                var state_indexes: std.ArrayListUnmanaged(usize) = .empty;
+                defer state_indexes.deinit(allocator);
+                state_indexes.ensureTotalCapacity(allocator, engine.active_stream.states.items.len) catch return error.OutOfMemory;
+                for (engine.active_stream.states.items, 0..) |state, state_index| {
+                    const node_index = engine.active_stream.nodeDescriptorIndex(state.node_id) orelse return error.ResourceLimit;
+                    const site_index = node_index.scope_sites.get(.state) orelse return error.ResourceLimit;
+                    if (site_index >= engine.active_stream.scope_sites.items.len) return error.ResourceLimit;
+                    const owner = engine.active_stream.scope_sites.items[site_index].scope_id;
+                    if (owner >= self.target_scopes.len) return error.ResourceLimit;
+                    if (self.target_scopes[@intCast(owner)]) state_indexes.appendAssumeCapacity(state_index);
+                }
+                self.states = try PreparedStateRetirementIndexes.prepare(engine, allocator, state_indexes.items);
+                try self.states.?.reserveRetired(allocator, &self.retired_states);
+                self.rows = try prepareRowRetirementForScopes(engine, allocator, self.scopes.?.scope_ids);
+
+                var cleanup_indexes: std.ArrayListUnmanaged(usize) = .empty;
+                defer cleanup_indexes.deinit(allocator);
+                for (self.target_scopes, 0..) |targeted, scope_id| if (targeted) {
+                    for (engine.active_stream.lifecycleIndices(scope_id)) |lifecycle| if (lifecycle.kind == .cleanup) {
+                        cleanup_indexes.append(allocator, lifecycle.index) catch return error.OutOfMemory;
+                    };
+                };
+                self.effects = try PreparedEffectRetirements.prepare(engine, allocator, self.target_scopes, cleanup_indexes.items);
+                self.retired_steps.ensureUnusedCapacity(allocator, self.scopes.?.scope_ids.len) catch return error.OutOfMemory;
+                return self;
+            }
+
+            fn applyBeforeRowCommit(self: *@This(), engine: *Self) void {
+                self.states.?.apply(engine, &self.retired_states);
+                self.identities.?.apply(engine);
+                var row_keys = EachRowScopeKeyLookup{ .engine = engine };
+                self.rows.?.apply(&engine.each_row_sites, &engine.each_row_memberships_by_scope_id, &row_keys);
+            }
+
+            fn applyAfterRowCommit(self: *@This(), engine: *Self) void {
+                for (self.scopes.?.scope_ids) |scope_id| {
+                    const scope = &engine.scopes.items[@intCast(scope_id)];
+                    self.retired_steps.appendAssumeCapacity(scope.step);
+                    scope.step = .root;
+                }
+                self.scopes.?.applyMetadata(HostEachRowScopeStep, engine.scopes.items, engine.identity_reuse_barrier);
+                engine.has_inactive_scopes = true;
+            }
+
+            fn applyEffectsAfterPublication(self: *@This(), engine: *Self, ctx: Ctx.Handle) void {
+                self.effects.?.apply(engine, ctx);
+            }
+
+            fn deinit(self: *@This(), engine: *Self, allocator: std.mem.Allocator, ctx: ?Ctx.Handle, roc_host: ?*abi.RocHost) void {
+                if (ctx) |host_ctx| if (roc_host) |host| {
+                    for (self.retired_states.items) |*state| state.cell.deinit(host_ctx, host, &engine.pending_roc_metrics);
+                    for (self.retired_steps.items) |*step| deinitHostScopeStep(step, host_ctx, host, &engine.pending_roc_metrics);
+                };
+                self.retired_states.deinit(allocator);
+                self.retired_steps.deinit(allocator);
+                if (self.effects) |*effects| effects.deinit(allocator, roc_host);
+                if (self.rows) |*rows| rows.deinit(allocator);
+                if (self.states) |*states| states.deinit(allocator);
+                if (self.identities) |*identities| identities.deinit(allocator);
+                if (self.scopes) |*scopes| scopes.deinit(allocator);
+                allocator.free(self.target_scopes);
                 self.* = undefined;
             }
         };
@@ -9770,6 +9858,67 @@ test "provisional each-row scopes abort and publish without partial scope mutati
             overlay.commit(&engine.scopes);
             try std.testing.expectEqual(@as(usize, 3), engine.scopes.items.len);
             return fault.attempts;
+        }
+    };
+
+    const attempts = try Runner.run(&roc_host, capability, null);
+    var failures: usize = 0;
+    for (1..attempts + 1) |fail_at| {
+        _ = try Runner.run(&roc_host, capability, fail_at);
+        failures += 1;
+    }
+    try std.testing.expectEqual(attempts, failures);
+}
+
+test "prepared each-row subtree retirement is atomic and allocation free" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&env);
+    const callable = abi.rocErasedCallableAllocate(&roc_host, verifyErasedCallable, null, 0).?;
+    defer abi.decrefErasedCallable(callable, &roc_host);
+    const capability = HostValueCapability{ .clone = callable, .drop = callable, .eq = callable };
+
+    const Runner = struct {
+        fn run(host: *abi.RocHost, cap: HostValueCapability, fail_at: ?usize) !usize {
+            var fault = FaultAllocator.init(std.testing.allocator);
+            var ctx = VerifyCtxHost{ .allocator = fault.allocator() };
+            var engine = Engine(VerifyCtx).init();
+            defer deinitVerifyStateEngine(&engine, &ctx, host);
+            _ = try engine.internRootScope(ctx.allocator);
+            const row_scope_id = engine.createEachRowScope(&ctx, 0, 7, 99, 10, 20, cap, cap);
+            const site_index = engine.activeEachRowSiteIndex(0, 7).?;
+            const old_scope_len = engine.scopes.items.len;
+            const old_rows = engine.each_row_sites.items[site_index].scope_ids.items.len;
+
+            fault.configure(fail_at);
+            var prepared = Engine(VerifyCtx).PreparedEachRowSubtreeRetirement.prepare(&engine, ctx.allocator, &.{row_scope_id}) catch |err| {
+                try std.testing.expect(err == error.OutOfMemory or err == error.ResourceLimit);
+                try std.testing.expectEqual(old_scope_len, engine.scopes.items.len);
+                try std.testing.expect(engine.scopes.items[@intCast(row_scope_id)].active);
+                try std.testing.expectEqual(old_rows, engine.each_row_sites.items[site_index].scope_ids.items.len);
+                const attempts = fault.attempts;
+                fault.configure(null);
+                var retry = try Engine(VerifyCtx).PreparedEachRowSubtreeRetirement.prepare(&engine, ctx.allocator, &.{row_scope_id});
+                fault.configure(1);
+                retry.applyBeforeRowCommit(&engine);
+                retry.applyAfterRowCommit(&engine);
+                retry.applyEffectsAfterPublication(&engine, &ctx);
+                try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+                fault.configure(null);
+                retry.deinit(&engine, ctx.allocator, &ctx, host);
+                return attempts;
+            };
+            const attempts = fault.attempts;
+            fault.configure(1);
+            prepared.applyBeforeRowCommit(&engine);
+            prepared.applyAfterRowCommit(&engine);
+            prepared.applyEffectsAfterPublication(&engine, &ctx);
+            try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+            try std.testing.expect(!engine.scopes.items[@intCast(row_scope_id)].active);
+            try std.testing.expectEqual(@as(usize, 0), engine.each_row_sites.items[site_index].scope_ids.items.len);
+            fault.configure(null);
+            prepared.deinit(&engine, ctx.allocator, &ctx, host);
+            return attempts;
         }
     };
 
