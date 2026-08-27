@@ -1024,6 +1024,88 @@ pub fn Engine(comptime Ctx: type) type {
             }
         };
 
+        const PreparedCompositeRows = struct {
+            allocator: std.mem.Allocator,
+            engine: *Self,
+            host_ctx: Ctx.Handle,
+            roc_host: *abi.RocHost,
+            scope_claims: scope_runtime.PreparedScopeClaims,
+            rows: []*PreparedActiveEachRows,
+            replacements: []*PreparedEachRowReplacementCollection,
+            prepared_len: usize = 0,
+            committed: bool = false,
+
+            fn prepare(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, changes: []const HostDirtyStructuralSignal, overlay: *const signal_records.PreparedCacheUpdates) CollectionError!*@This() {
+                if (changes.len < 2) return error.ResourceLimit;
+                const owner = try create(engine, ctx, roc_host, changes.len);
+                errdefer owner.deinit();
+                for (changes) |change| {
+                    if (change.kind != .each) return error.ResourceLimit;
+                    const site = engine.activeScopeSiteByNodeId(change.node_id, .each) orelse return error.ResourceLimit;
+                    if (site.scope_id != change.scope_id or site.ordinal != change.ordinal) return error.ResourceLimit;
+                    const each_index = engine.activeEachIndexByNodeId(change.node_id) orelse return error.ResourceLimit;
+                    const each = &engine.active_stream.eaches.items[each_index];
+                    if (each.items.record != change.record) return error.ResourceLimit;
+                    try owner.prepareOne(site, each, overlay);
+                }
+                return owner;
+            }
+
+            fn create(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, count: usize) CollectionError!*@This() {
+                if (count == 0) return error.ResourceLimit;
+                const allocator = Ctx.allocator(ctx);
+                const owner = allocator.create(@This()) catch return error.OutOfMemory;
+                errdefer allocator.destroy(owner);
+                const rows = allocator.alloc(*PreparedActiveEachRows, count) catch return error.OutOfMemory;
+                errdefer allocator.free(rows);
+                const replacements = allocator.alloc(*PreparedEachRowReplacementCollection, count) catch return error.OutOfMemory;
+                errdefer allocator.free(replacements);
+                owner.* = .{
+                    .allocator = allocator,
+                    .engine = engine,
+                    .host_ctx = ctx,
+                    .roc_host = roc_host,
+                    .scope_claims = scope_runtime.PreparedScopeClaims.init(allocator, engine.scopes.items),
+                    .rows = rows,
+                    .replacements = replacements,
+                };
+                return owner;
+            }
+
+            fn prepareOne(self: *@This(), site: HostNodeScopeSiteDesc, each: *const HostNodeEachDesc, overlay: ?*const signal_records.PreparedCacheUpdates) CollectionError!void {
+                if (self.prepared_len == self.rows.len) return error.ResourceLimit;
+                const prepared_rows = try PreparedActiveEachRows.prepareWithOverlayAndScopeClaims(self.engine, self.host_ctx, self.roc_host, site, each, self.allocator, overlay, &self.scope_claims);
+                self.rows[self.prepared_len] = prepared_rows;
+                const replacement = PreparedEachRowReplacementCollection.prepareEvaluated(self.engine, self.host_ctx, self.roc_host, each.*, &prepared_rows.rows, prepared_rows.inputs.keys, prepared_rows.inputs.items) catch |err| {
+                    prepared_rows.deinit();
+                    return err;
+                };
+                self.replacements[self.prepared_len] = replacement;
+                self.prepared_len += 1;
+            }
+
+            fn commit(self: *@This()) void {
+                if (self.committed) @panic("prepared composite rows committed twice");
+                self.scope_claims.commit(&self.engine.scopes);
+                for (self.rows[0..self.prepared_len]) |rows| {
+                    var diff = rows.commit();
+                    diff.deinit(self.allocator);
+                }
+                self.committed = true;
+            }
+
+            fn deinit(self: *@This()) void {
+                for (self.replacements[0..self.prepared_len]) |replacement| replacement.deinit();
+                for (self.rows[0..self.prepared_len]) |rows| rows.deinit();
+                if (!self.committed) self.scope_claims.abort(self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
+                self.scope_claims.deinit();
+                self.allocator.free(self.replacements);
+                self.allocator.free(self.rows);
+                const allocator = self.allocator;
+                allocator.destroy(self);
+            }
+        };
+
         const ScopeIdentityDeactivation = struct {
             engine: *Self,
             ctx: Ctx.Handle,
@@ -11487,6 +11569,92 @@ test "final render placements preserve two disjoint intervals under one parent" 
     for (1..attempts + 1) |fail_at| _ = try Runner.run(&roc_host, fail_at);
 }
 
+test "composite rows share provisional scope claims across two sites and sweep OOM" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&env);
+    const noop = abi.rocErasedCallableAllocate(&roc_host, verifyErasedCallable, null, 0).?;
+    defer abi.decrefErasedCallable(noop, &roc_host);
+    const eq = abi.rocErasedCallableAllocate(&roc_host, verifyEachValueEqCallable, null, 0).?;
+    defer abi.decrefErasedCallable(eq, &roc_host);
+    const items = abi.rocErasedCallableAllocate(&roc_host, verifyEachItemsCallable, null, 0).?;
+    defer abi.decrefErasedCallable(items, &roc_host);
+    const identity = abi.rocErasedCallableAllocate(&roc_host, verifyEachIdentityCallable, null, 0).?;
+    defer abi.decrefErasedCallable(identity, &roc_host);
+    const key_text = abi.rocErasedCallableAllocate(&roc_host, verifyEachKeyTextCallable, null, 0).?;
+    defer abi.decrefErasedCallable(key_text, &roc_host);
+    const row = abi.rocErasedCallableAllocate(&roc_host, verifyEachRowElemCallable, null, 0).?;
+    defer abi.decrefErasedCallable(row, &roc_host);
+    const capability = HostValueCapability{ .clone = noop, .drop = noop, .eq = eq };
+    const ops = std.mem.zeroInit(HostEachOps, .{
+        .item_capability = capability,
+        .items_capability = capability,
+        .items_to_values = items,
+        .key_capability = capability,
+        .key_of = identity,
+        .key_text = key_text,
+        .row = row,
+    });
+
+    const Runner = struct {
+        fn run(host: *abi.RocHost, each_ops: HostEachOps, cap: HostValueCapability, fail_at: ?usize) !usize {
+            var fault = FaultAllocator.init(std.testing.allocator);
+            var ctx = VerifyCtxHost{ .allocator = fault.allocator() };
+            var engine = Engine(VerifyCtx).init();
+            defer deinitVerifyStateEngine(&engine, &ctx, host);
+            _ = try engine.internRootScope(ctx.allocator);
+            const first_site_index = engine.ensureEachRowSiteIndex(ctx.allocator, 0, 10);
+            const second_site_index = engine.ensureEachRowSiteIndex(ctx.allocator, 0, 20);
+            var first_record = HostSignalRecord{ .ref_count = 1, .payload = .{ .const_value = .{ .init = null, .cap = cap } } };
+            var second_record = HostSignalRecord{ .ref_count = 1, .payload = .{ .const_value = .{ .init = null, .cap = cap } } };
+            var first = HostNodeEachDesc{
+                .node_id = 10,
+                .items = .{ .record = &first_record, .source_node_ids = &.{} },
+                .ops = each_ops,
+                .cached_value = .{ .present = HostValueCell.initRetained(1, cap, &engine.pending_roc_metrics) },
+            };
+            defer first.cached_value.deinit(&ctx, host, &engine.pending_roc_metrics);
+            var second = HostNodeEachDesc{
+                .node_id = 20,
+                .items = .{ .record = &second_record, .source_node_ids = &.{} },
+                .ops = each_ops,
+                .cached_value = .{ .present = HostValueCell.initRetained(2, cap, &engine.pending_roc_metrics) },
+            };
+            defer second.cached_value.deinit(&ctx, host, &engine.pending_roc_metrics);
+            const first_site = HostNodeScopeSiteDesc{ .node_id = 10, .scope_id = 0, .ordinal = 10, .parent_elem_id = 0, .render_insert_index = 0, .kind = .each, .binder_bindings = &.{} };
+            const second_site = HostNodeScopeSiteDesc{ .node_id = 20, .scope_id = 0, .ordinal = 20, .parent_elem_id = 0, .render_insert_index = 0, .kind = .each, .binder_bindings = &.{} };
+
+            fault.configure(fail_at);
+            const composite = Engine(VerifyCtx).PreparedCompositeRows.create(&engine, &ctx, host, 2) catch |err| {
+                try std.testing.expectEqual(error.OutOfMemory, err);
+                return fault.attempts;
+            };
+            defer composite.deinit();
+            composite.prepareOne(first_site, &first, null) catch |err| {
+                try std.testing.expectEqual(error.OutOfMemory, err);
+                try std.testing.expectEqual(@as(usize, 1), engine.scopes.items.len);
+                return fault.attempts;
+            };
+            composite.prepareOne(second_site, &second, null) catch |err| {
+                try std.testing.expectEqual(error.OutOfMemory, err);
+                try std.testing.expectEqual(@as(usize, 1), engine.scopes.items.len);
+                return fault.attempts;
+            };
+            const attempts = fault.attempts;
+            fault.configure(1);
+            composite.commit();
+            try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+            try std.testing.expectEqual(@as(usize, 3), engine.scopes.items.len);
+            try std.testing.expectEqualSlices(u64, &.{1}, engine.each_row_sites.items[first_site_index].scope_ids.items);
+            try std.testing.expectEqualSlices(u64, &.{2}, engine.each_row_sites.items[second_site_index].scope_ids.items);
+            return attempts;
+        }
+    };
+
+    const attempts = try Runner.run(&roc_host, ops, capability, null);
+    for (1..attempts + 1) |fail_at| _ = try Runner.run(&roc_host, ops, capability, fail_at);
+}
+
 test "owned aggregate graph root ingests two signal branches around a survivor" {
     var roc_env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
     var roc_host = abi.makeRocHost(&roc_env);
@@ -11550,6 +11718,19 @@ fn verifyEachRowElemCallable(roc_host: *abi.RocHost, result: ?[*]u8, args: ?[*]c
     elem.payload.text = abi.RocStr.fromSlice(if (input.arg1 == 201) "changed" else "created", roc_host);
     const out: *abi.Elem = @ptrCast(@alignCast(result.?));
     out.* = elem;
+}
+
+fn verifyEachItemsCallable(roc_host: *abi.RocHost, result: ?[*]u8, args: ?[*]const u8, _: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
+    const input: *const erased_calls.ErasedHostValueUnaryArgs = @ptrCast(@alignCast(args.?));
+    const values = [_]HostValue{input.arg0};
+    const out: *HostValueList = @ptrCast(@alignCast(result.?));
+    out.* = HostValueList.fromSlice(&values, roc_host);
+}
+
+fn verifyEachIdentityCallable(_: *abi.RocHost, result: ?[*]u8, args: ?[*]const u8, _: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
+    const input: *const erased_calls.ErasedHostValueUnaryArgs = @ptrCast(@alignCast(args.?));
+    const out: *HostValue = @ptrCast(@alignCast(result.?));
+    out.* = input.arg0;
 }
 
 var verifyStateInitCalls: usize = 0;
