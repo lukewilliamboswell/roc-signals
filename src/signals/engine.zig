@@ -2342,6 +2342,18 @@ pub fn Engine(comptime Ctx: type) type {
                 return result;
             }
 
+            const SignalPublisher = struct {
+                stream: *HostNodeDescriptorStream,
+
+                pub fn publishToken(self: @This(), token: HostSignalToken, record: *HostSignalRecord) void {
+                    self.stream.rememberSignalRecordAssumeCapacity(token, record);
+                }
+
+                pub fn publishDescriptorRoot(self: @This(), record: *HostSignalRecord) void {
+                    self.stream.incrementSignalRecordDescriptorTreeAssumeCapacity(record);
+                }
+            };
+
             /// Publishes only pre-reserved state. This function must remain
             /// allocation-free so preparation is the last recoverable point.
             fn commit(self: *@This()) void {
@@ -2374,6 +2386,7 @@ pub fn Engine(comptime Ctx: type) type {
                 }
                 for (self.prepared_nodes.items) |prepared| self.stream.appendPreparedStaticNode(prepared);
                 for (self.prepared_attrs.items) |prepared| self.stream.appendPreparedStaticAttr(prepared);
+                self.signal_records.commit(SignalPublisher{ .stream = self.stream });
                 for (self.prepared_signal_attrs.items) |prepared| self.stream.appendPreparedSignalDescriptor(prepared);
                 self.prepared_signal_attrs.clearRetainingCapacity();
                 self.scopes.committed = true;
@@ -6786,6 +6799,48 @@ test "staged collection preflights signal records separately from descriptor roo
     try std.testing.expect(collection.signal_records.token_intents.capacity >= 5);
     try std.testing.expect(collection.signal_records.descriptor_roots.capacity >= 2);
     try std.testing.expect(collection.signal_bindings.capacity >= 2);
+}
+
+test "staged signal record publication is allocation free" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var fault = FaultAllocator.init(std.testing.allocator);
+    var ctx = VerifyCtxHost{ .allocator = fault.allocator() };
+    var engine = Engine(VerifyCtx).init();
+    defer deinitVerifyStaticEngine(&engine, &ctx);
+    var stream: HostNodeDescriptorStream = .{};
+    var roc_host: abi.RocHost = undefined;
+    defer stream.deinit(ctx.allocator, &ctx, &roc_host, &engine.pending_roc_metrics);
+
+    var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&engine, &ctx, &stream, .{}, 0, 1, 2);
+    defer collection.deinit();
+    const capability = std.mem.zeroes(HostValueCapability);
+    const child_token: HostSignalToken = @ptrFromInt(0x6000);
+    const root_token: HostSignalToken = @ptrFromInt(0x7000);
+    var child = HostSignalRecord{ .ref_count = 1, .payload = .{ .const_value = .{
+        .init = child_token,
+        .cap = capability,
+    } } };
+    var root = HostSignalRecord{ .ref_count = 1, .payload = .{ .map = .{
+        .input = &child,
+        .transform = root_token,
+        .cap = capability,
+    } } };
+    collection.signal_records.rememberTokenAssumeCapacity(child_token, &child);
+    collection.signal_records.rememberTokenAssumeCapacity(root_token, &root);
+    collection.signal_records.ownDescriptorRootAssumeCapacity(&root);
+    collection.signal_records.transferDescriptorRoot(&root);
+
+    fault.configure(1);
+    collection.commit();
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expect(collection.signal_records.committed);
+    try std.testing.expect(stream.signalRecordByToken(child_token) == &child);
+    try std.testing.expect(stream.signalRecordByToken(root_token) == &root);
+
+    stream.forgetSignalRecordTree(&root);
+    try std.testing.expect(stream.signalRecordByToken(child_token) == null);
+    try std.testing.expect(stream.signalRecordByToken(root_token) == null);
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
 }
 
 test "transactional static engine root sweeps every allocation and retries cleanly" {
