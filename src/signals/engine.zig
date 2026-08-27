@@ -3719,6 +3719,12 @@ pub fn Engine(comptime Ctx: type) type {
                 row_index: usize,
                 elem: abi.Elem,
             };
+            const ReplacementRow = struct {
+                row_index: usize,
+                scope_id: u64,
+                start: usize,
+                len: usize,
+            };
 
             engine: *Self,
             host_ctx: Ctx.Handle,
@@ -3726,6 +3732,7 @@ pub fn Engine(comptime Ctx: type) type {
             stream: HostNodeDescriptorStream = .{},
             collection: StagedCollectionCtx = undefined,
             row_elems: []RowElem = &.{},
+            replacement_rows: []ReplacementRow = &.{},
             committed: bool = false,
 
             fn prepare(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, site: HostNodeScopeSiteDesc, each: HostNodeEachDesc, rows: *const each_runtime.PreparedRowSync, keys: []const HostValue, items: []const HostValue, limits: collection_budget.Limits, dirty_source_node_ids: []const u64) CollectionError!*@This() {
@@ -3742,6 +3749,8 @@ pub fn Engine(comptime Ctx: type) type {
                 };
                 plan.row_elems = allocator.alloc(RowElem, changed_count) catch return error.OutOfMemory;
                 errdefer allocator.free(plan.row_elems);
+                plan.replacement_rows = allocator.alloc(ReplacementRow, changed_count) catch return error.OutOfMemory;
+                errdefer allocator.free(plan.replacement_rows);
                 var evaluated: usize = 0;
                 errdefer for (plan.row_elems[0..evaluated]) |*entry| entry.elem.decref(roc_host);
                 var total: StaticRootCounts = .{};
@@ -3764,7 +3773,7 @@ pub fn Engine(comptime Ctx: type) type {
                 };
                 try plan.collection.attachExternalScopeIds(created_scope_ids);
 
-                for (plan.row_elems) |*entry| {
+                for (plan.row_elems, 0..) |*entry, replacement_index| {
                     const row_index = entry.row_index;
                     const row_scope_id = rows.next_scope_ids[row_index];
                     var binder_stack: std.ArrayListUnmanaged(HostBinderBinding) = .empty;
@@ -3775,7 +3784,14 @@ pub fn Engine(comptime Ctx: type) type {
                     binder_stack.appendSliceAssumeCapacity(site.binder_bindings);
                     var ordinal: u64 = 0;
                     var dom_ordinal: u64 = 0;
+                    const render_start = plan.collection.prepared_render_order.items.len;
                     try engine.collectActiveEachRowElemDescriptorsWith(*StagedCollectionCtx, &plan.collection, ctx, roc_host, &plan.stream, each, entry.elem, row_scope_id, site.parent_elem_id, &ordinal, &dom_ordinal, &binder_stack, rows.scope_created[row_index], dirty_source_node_ids);
+                    plan.replacement_rows[replacement_index] = .{
+                        .row_index = row_index,
+                        .scope_id = row_scope_id,
+                        .start = render_start,
+                        .len = plan.collection.prepared_render_order.items.len - render_start,
+                    };
                 }
                 plan.collection.materializeStream();
                 for (plan.row_elems) |*entry| entry.elem.decref(roc_host);
@@ -3794,9 +3810,123 @@ pub fn Engine(comptime Ctx: type) type {
                 const allocator = Ctx.allocator(self.host_ctx);
                 for (self.row_elems) |*entry| entry.elem.decref(self.roc_host);
                 allocator.free(self.row_elems);
+                allocator.free(self.replacement_rows);
                 self.collection.deinit();
                 self.stream.deinit(allocator, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
                 allocator.destroy(self);
+            }
+        };
+
+        const PreparedEachRowRenderLayout = struct {
+            allocator: std.mem.Allocator,
+            target_scopes: []bool,
+            remove_starts: []usize,
+            final_starts: []usize,
+            survivor_moves: []HostEachRowRenderMove,
+            removal: structural_splice.PreparedMultiRemoval,
+
+            fn prepare(engine: *Self, allocator: std.mem.Allocator, site: HostNodeScopeSiteDesc, rows: *const each_runtime.PreparedRowSync, replacements: []const PreparedEachRowReplacementCollection.ReplacementRow) CollectionError!@This() {
+                var segments: std.ArrayListUnmanaged(HostEachRowRenderSegment) = .empty;
+                defer segments.deinit(allocator);
+                var by_scope: std.AutoHashMapUnmanaged(u64, usize) = .empty;
+                defer by_scope.deinit(allocator);
+                var render_index: usize = 0;
+                const each_site = HostEachSite{ .parent_scope_id = site.scope_id, .site_ordinal = site.ordinal };
+                while (render_index < engine.active_stream.render_nodes.items.len) {
+                    const scope_id = renderNodeScopeId(&engine.active_stream, engine.active_stream.render_nodes.items[render_index]);
+                    const row_scope_id = (engine.eachSiteRowAncestorScopeId(scope_id, each_site) catch return error.ResourceLimit) orelse {
+                        render_index += 1;
+                        continue;
+                    };
+                    const start = render_index;
+                    render_index += 1;
+                    while (render_index < engine.active_stream.render_nodes.items.len) : (render_index += 1) {
+                        const next_scope = renderNodeScopeId(&engine.active_stream, engine.active_stream.render_nodes.items[render_index]);
+                        const next_row = engine.eachSiteRowAncestorScopeId(next_scope, each_site) catch return error.ResourceLimit;
+                        if (next_row == null or next_row.? != row_scope_id) break;
+                    }
+                    const index = segments.items.len;
+                    segments.append(allocator, .{ .scope_id = row_scope_id, .start = start, .len = render_index - start }) catch return error.OutOfMemory;
+                    const entry = by_scope.getOrPut(allocator, row_scope_id) catch return error.OutOfMemory;
+                    if (entry.found_existing) return error.ResourceLimit;
+                    entry.value_ptr.* = index;
+                }
+
+                var target_scopes = allocator.alloc(bool, engine.scopes.items.len) catch return error.OutOfMemory;
+                errdefer allocator.free(target_scopes);
+                @memset(target_scopes, false);
+                var remove_starts_list: std.ArrayListUnmanaged(usize) = .empty;
+                defer remove_starts_list.deinit(allocator);
+                remove_starts_list.ensureTotalCapacity(allocator, std.math.add(usize, rows.removed_scope_ids.len, replacements.len) catch return error.ResourceLimit) catch return error.OutOfMemory;
+                for (rows.removed_scope_ids) |scope_id| {
+                    const segment_index = by_scope.get(scope_id) orelse return error.ResourceLimit;
+                    remove_starts_list.appendAssumeCapacity(segments.items[segment_index].start);
+                    for (engine.scopes.items) |scope| {
+                        if (engine.scopeIsDescendantOrSelf(scope.scope_id, scope_id) catch return error.ResourceLimit) target_scopes[@intCast(scope.scope_id)] = true;
+                    }
+                }
+                for (replacements) |replacement| if (!rows.scope_created[replacement.row_index]) {
+                    const segment_index = by_scope.get(replacement.scope_id) orelse return error.ResourceLimit;
+                    remove_starts_list.appendAssumeCapacity(segments.items[segment_index].start);
+                    for (engine.scopes.items) |scope| {
+                        if (engine.scopeIsDescendantOrSelf(scope.scope_id, replacement.scope_id) catch return error.ResourceLimit) target_scopes[@intCast(scope.scope_id)] = true;
+                    }
+                };
+                remove_starts_list.clearRetainingCapacity();
+                var inside_target = false;
+                for (engine.active_stream.render_nodes.items, 0..) |node, index| {
+                    const scope_id = renderNodeScopeId(&engine.active_stream, node);
+                    if (scope_id >= target_scopes.len) return error.ResourceLimit;
+                    const targeted = target_scopes[@intCast(scope_id)];
+                    if (targeted and !inside_target) remove_starts_list.appendAssumeCapacity(index);
+                    inside_target = targeted;
+                }
+                const remove_starts = remove_starts_list.toOwnedSlice(allocator) catch return error.OutOfMemory;
+                errdefer allocator.free(remove_starts);
+                const removal = structural_splice.prepareMultiRemoval(HostNodeDescriptorStream, allocator, &engine.active_stream, remove_starts, target_scopes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.OverlappingIntervals => return error.ResourceLimit,
+                };
+                errdefer {
+                    var mutable = removal;
+                    mutable.deinit(allocator);
+                }
+
+                const final_starts = allocator.alloc(usize, rows.next_scope_ids.len) catch return error.OutOfMemory;
+                errdefer allocator.free(final_starts);
+                const survivor_count = std.math.sub(usize, rows.next_scope_ids.len, replacements.len) catch return error.ResourceLimit;
+                const survivor_moves = allocator.alloc(HostEachRowRenderMove, survivor_count) catch return error.OutOfMemory;
+                errdefer allocator.free(survivor_moves);
+                var next_start = site.render_insert_index;
+                var move_write: usize = 0;
+                for (rows.next_scope_ids, 0..) |scope_id, row_index| {
+                    final_starts[row_index] = next_start;
+                    var replacement_len: ?usize = null;
+                    for (replacements) |replacement| if (replacement.row_index == row_index) {
+                        replacement_len = replacement.len;
+                        break;
+                    };
+                    if (replacement_len) |len| {
+                        next_start = std.math.add(usize, next_start, len) catch return error.ResourceLimit;
+                    } else {
+                        const segment_index = by_scope.get(scope_id) orelse return error.ResourceLimit;
+                        const segment = segments.items[segment_index];
+                        survivor_moves[move_write] = .{ .old_start = segment.start, .new_start = next_start, .len = segment.len };
+                        move_write += 1;
+                        next_start = std.math.add(usize, next_start, segment.len) catch return error.ResourceLimit;
+                    }
+                }
+                if (move_write != survivor_moves.len) return error.ResourceLimit;
+                return .{ .allocator = allocator, .target_scopes = target_scopes, .remove_starts = remove_starts, .final_starts = final_starts, .survivor_moves = survivor_moves, .removal = removal };
+            }
+
+            fn deinit(self: *@This()) void {
+                self.removal.deinit(self.allocator);
+                self.allocator.free(self.survivor_moves);
+                self.allocator.free(self.final_starts);
+                self.allocator.free(self.remove_starts);
+                self.allocator.free(self.target_scopes);
+                self.* = undefined;
             }
         };
 
@@ -10112,12 +10242,25 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
             return Engine(VerifyCtx).PreparedEachRowReplacementCollection.prepare(engine, ctx, host, site, each, rows, keys, items, .{}, &.{});
         }
 
+        fn prepareLayout(engine: *Engine(VerifyCtx), allocator: std.mem.Allocator, rows: *const each_runtime.PreparedRowSync, replacement: *const Engine(VerifyCtx).PreparedEachRowReplacementCollection) !Engine(VerifyCtx).PreparedEachRowRenderLayout {
+            const site = HostNodeScopeSiteDesc{ .node_id = 0, .scope_id = 0, .ordinal = 44, .parent_elem_id = 0, .render_insert_index = 0, .kind = .each, .binder_bindings = &.{} };
+            return Engine(VerifyCtx).PreparedEachRowRenderLayout.prepare(engine, allocator, site, rows, replacement.replacement_rows);
+        }
+
         fn retry(engine: *Engine(VerifyCtx), ctx: *VerifyCtxHost, host: *abi.RocHost, each_ops: HostEachOps, site_index: usize, keys: []const HostValue, items: []const HostValue) !void {
             var hooks = Engine(VerifyCtx).PreparedEachRowSyncHooks.init(engine, ctx, host, each_ops);
             var rows = try each_runtime.PreparedRowSync.prepare(ctx.allocator, &engine.each_row_sites, &engine.each_row_memberships_by_scope_id, site_index, 0, 44, keys, items, &hooks);
             var retirement = try Engine(VerifyCtx).PreparedEachRowSubtreeRetirement.prepare(engine, ctx.allocator, rows.removed_scope_ids);
             const replacement = try prepareReplacement(engine, ctx, host, each_ops, &rows, keys, items);
             try std.testing.expectEqual(@as(usize, 2), replacement.stream.text_nodes.items.len);
+            try std.testing.expectEqualDeep(&[_]Engine(VerifyCtx).PreparedEachRowReplacementCollection.ReplacementRow{
+                .{ .row_index = 0, .scope_id = 2, .start = 0, .len = 1 },
+                .{ .row_index = 2, .scope_id = 4, .start = 1, .len = 1 },
+            }, replacement.replacement_rows);
+            var layout = try prepareLayout(engine, ctx.allocator, &rows, replacement);
+            try std.testing.expectEqualSlices(usize, &.{0}, layout.remove_starts);
+            try std.testing.expectEqualSlices(usize, &.{ 0, 1, 2 }, layout.final_starts);
+            layout.deinit();
             replacement.deinit();
             retirement.applyBeforeRowCommit(engine);
             var diff = rows.commit(&engine.each_row_sites, &engine.each_row_memberships_by_scope_id, keys, items, &hooks);
@@ -10144,6 +10287,11 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
             _ = engine.createEachRowScope(&ctx, 0, 44, hashEachKeyText("three"), 3, 300, each_ops.key_capability, each_ops.item_capability);
             const retired_node_id = try engine.internNodeIdentity(ctx.allocator, removed_scope_id, 71);
             const retired_elem_id = try engine.internDomIdentity(ctx.allocator, removed_scope_id, 72);
+            const changed_elem_id = try engine.internDomIdentity(ctx.allocator, 2, 72);
+            const unchanged_elem_id = try engine.internDomIdentity(ctx.allocator, 3, 72);
+            engine.active_stream.appendTextNode(ctx.allocator, retired_elem_id, 0, removed_scope_id, "old-one");
+            engine.active_stream.appendTextNode(ctx.allocator, changed_elem_id, 0, 2, "old-two");
+            engine.active_stream.appendTextNode(ctx.allocator, unchanged_elem_id, 0, 3, "old-three");
             engine.active_stream.appendScopeSiteAt(ctx.allocator, retired_node_id, removed_scope_id, 73, 0, 0, .state, &.{});
             engine.active_stream.appendState(ctx.allocator, host, &engine.pending_roc_metrics, retired_node_id, state_initializer, each_ops.item_capability);
             engine.ensureStateFromDesc(&ctx, host, engine.active_stream.states.items[0]);
@@ -10214,6 +10362,25 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
             try std.testing.expectEqual(@as(usize, 2), replacement.stream.text_nodes.items.len);
             try std.testing.expectEqualStrings("changed", replacement.stream.text_nodes.items[0].value);
             try std.testing.expectEqualStrings("created", replacement.stream.text_nodes.items[1].value);
+            try std.testing.expectEqual(@as(usize, 0), replacement.replacement_rows[0].row_index);
+            try std.testing.expectEqual(@as(usize, 2), replacement.replacement_rows[1].row_index);
+            var layout = prepareLayout(&engine, ctx.allocator, &rows, replacement) catch |err| {
+                replacement.deinit();
+                retirement.deinit(&engine, ctx.allocator, null, null);
+                rows.abort(&hooks);
+                rows.deinit();
+                hooks.deinit();
+                try std.testing.expect(err == error.OutOfMemory or err == error.ResourceLimit);
+                try std.testing.expectEqualSlices(u64, old_ids, engine.each_row_sites.items[site_index].scope_ids.items);
+                const failed_attempts = fault.attempts;
+                fault.configure(null);
+                try retry(&engine, &ctx, host, each_ops, site_index, &keys, &items);
+                return failed_attempts;
+            };
+            try std.testing.expectEqualSlices(usize, &.{0}, layout.remove_starts);
+            try std.testing.expectEqualSlices(usize, &.{ 0, 1, 2 }, layout.final_starts);
+            try std.testing.expectEqual(@as(usize, 1), layout.survivor_moves.len);
+            layout.deinit();
             replacement.deinit();
             const attempts = fault.attempts;
             fault.configure(1);
