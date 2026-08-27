@@ -1167,6 +1167,22 @@ pub const Stream = struct {
         }
     };
 
+    /// Owns a fully retained dynamic descriptor until transactional
+    /// publication transfers it into the stream. Aborting releases the
+    /// binding, cached value, and read callable exactly as a published
+    /// descriptor would during stream teardown.
+    pub const PreparedSignalDescriptor = union(enum) {
+        text_attr: SignalTextAttrDesc,
+        bool_attr: SignalBoolAttrDesc,
+
+        pub fn abort(self: *@This(), allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
+            switch (self.*) {
+                .text_attr => |*desc| desc.deinit(allocator, ctx, roc_host, metrics),
+                .bool_attr => |*desc| desc.deinit(allocator, ctx, roc_host, metrics),
+            }
+        }
+    };
+
     pub fn reservePreparedStaticAttrs(self: *Stream, allocator: std.mem.Allocator, additional: usize) std.mem.Allocator.Error!void {
         try self.static_text_attrs.ensureUnusedCapacity(allocator, additional);
         try self.static_bool_attrs.ensureUnusedCapacity(allocator, additional);
