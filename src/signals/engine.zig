@@ -3469,8 +3469,14 @@ pub fn Engine(comptime Ctx: type) type {
                 for (self.replacement_stream.signal_text_nodes.items, 0..) |desc, offset| try self.appendTextRoute(allocator, &text, graph_plan, desc.signal.record, .{ .kind = .text_node, .index = text_node_base + offset });
                 const text_attr_base = self.engine.active_stream.signal_text_attrs.items.len - self.removal.?.descriptor_indexes.signal_text_attr_indexes.items.len;
                 for (self.replacement_stream.signal_text_attrs.items, 0..) |desc, offset| try self.appendTextRoute(allocator, &text, graph_plan, desc.signal.record, .{ .kind = .text_attr, .index = text_attr_base + offset });
+                const custom_text_base = self.engine.active_stream.signal_custom_text_attrs.items.len - self.removal.?.descriptor_indexes.signal_custom_text_attr_indexes.items.len;
+                for (self.replacement_stream.signal_custom_text_attrs.items, 0..) |desc, offset| try self.appendTextRoute(allocator, &text, graph_plan, desc.signal.record, .{ .kind = .custom_text_attr, .index = custom_text_base + offset });
+                const optional_custom_text_base = self.engine.active_stream.signal_optional_custom_text_attrs.items.len - self.removal.?.descriptor_indexes.signal_optional_custom_text_attr_indexes.items.len;
+                for (self.replacement_stream.signal_optional_custom_text_attrs.items, 0..) |desc, offset| try self.appendTextRoute(allocator, &text, graph_plan, desc.signal.record, .{ .kind = .custom_text_optional_attr, .index = optional_custom_text_base + offset });
                 const bool_attr_base = self.engine.active_stream.signal_bool_attrs.items.len - self.removal.?.descriptor_indexes.signal_bool_attr_indexes.items.len;
                 for (self.replacement_stream.signal_bool_attrs.items, 0..) |desc, offset| try self.appendBoolRoute(allocator, &bools, graph_plan, desc.signal.record, .{ .kind = .bool_attr, .index = bool_attr_base + offset });
+                const custom_bool_base = self.engine.active_stream.signal_custom_bool_attrs.items.len - self.removal.?.descriptor_indexes.signal_custom_bool_attr_indexes.items.len;
+                for (self.replacement_stream.signal_custom_bool_attrs.items, 0..) |desc, offset| try self.appendBoolRoute(allocator, &bools, graph_plan, desc.signal.record, .{ .kind = .custom_bool_attr, .index = custom_bool_base + offset });
                 const change_base = self.engine.active_stream.on_changes.items.len;
                 for (self.replacement_stream.on_changes.items, 0..) |desc, offset| try self.appendChangeRoute(allocator, &changes, graph_plan, desc.signal.record, .{ .index = change_base + offset });
                 const when_base = self.engine.active_stream.whens.items.len - self.removal.?.node_indexes.when_indexes.items.len;
@@ -3559,7 +3565,10 @@ pub fn Engine(comptime Ctx: type) type {
                 const indexes = &self.removal.?.descriptor_indexes;
                 for (indexes.signal_text_node_indexes.items) |index| roots.append(allocator, self.engine.active_stream.signal_text_nodes.items[index].signal.record) catch return error.OutOfMemory;
                 for (indexes.signal_text_attr_indexes.items) |index| roots.append(allocator, self.engine.active_stream.signal_text_attrs.items[index].signal.record) catch return error.OutOfMemory;
+                for (indexes.signal_custom_text_attr_indexes.items) |index| roots.append(allocator, self.engine.active_stream.signal_custom_text_attrs.items[index].signal.record) catch return error.OutOfMemory;
+                for (indexes.signal_optional_custom_text_attr_indexes.items) |index| roots.append(allocator, self.engine.active_stream.signal_optional_custom_text_attrs.items[index].signal.record) catch return error.OutOfMemory;
                 for (indexes.signal_bool_attr_indexes.items) |index| roots.append(allocator, self.engine.active_stream.signal_bool_attrs.items[index].signal.record) catch return error.OutOfMemory;
+                for (indexes.signal_custom_bool_attr_indexes.items) |index| roots.append(allocator, self.engine.active_stream.signal_custom_bool_attrs.items[index].signal.record) catch return error.OutOfMemory;
                 for (self.removal.?.node_indexes.when_indexes.items) |index| roots.append(allocator, self.engine.active_stream.whens.items[index].condition.record) catch return error.OutOfMemory;
                 for (self.removal.?.node_indexes.each_indexes.items) |index| roots.append(allocator, self.engine.active_stream.eaches.items[index].items.record) catch return error.OutOfMemory;
             }
@@ -3567,7 +3576,10 @@ pub fn Engine(comptime Ctx: type) type {
             fn collectReplacementGraphRoots(self: *@This(), allocator: std.mem.Allocator, roots: *std.ArrayListUnmanaged(*HostSignalRecord)) CollectionError!void {
                 for (self.replacement_stream.signal_text_nodes.items) |*desc| roots.append(allocator, desc.signal.record) catch return error.OutOfMemory;
                 for (self.replacement_stream.signal_text_attrs.items) |*desc| roots.append(allocator, desc.signal.record) catch return error.OutOfMemory;
+                for (self.replacement_stream.signal_custom_text_attrs.items) |*desc| roots.append(allocator, desc.signal.record) catch return error.OutOfMemory;
+                for (self.replacement_stream.signal_optional_custom_text_attrs.items) |*desc| roots.append(allocator, desc.signal.record) catch return error.OutOfMemory;
                 for (self.replacement_stream.signal_bool_attrs.items) |*desc| roots.append(allocator, desc.signal.record) catch return error.OutOfMemory;
+                for (self.replacement_stream.signal_custom_bool_attrs.items) |*desc| roots.append(allocator, desc.signal.record) catch return error.OutOfMemory;
                 for (self.replacement_stream.whens.items) |*desc| roots.append(allocator, desc.condition.record) catch return error.OutOfMemory;
                 for (self.replacement_stream.eaches.items) |*desc| roots.append(allocator, desc.items.record) catch return error.OutOfMemory;
             }
@@ -3580,14 +3592,20 @@ pub fn Engine(comptime Ctx: type) type {
                 var structural: std.ArrayListUnmanaged(active_graph.StructuralSinkEdit) = .empty;
                 defer structural.deinit(allocator);
                 const indexes = &self.removal.?.descriptor_indexes;
-                const text_removals = std.math.add(usize, indexes.signal_text_node_indexes.items.len, indexes.signal_text_attr_indexes.items.len) catch return error.ResourceLimit;
+                var text_removals = std.math.add(usize, indexes.signal_text_node_indexes.items.len, indexes.signal_text_attr_indexes.items.len) catch return error.ResourceLimit;
+                text_removals = std.math.add(usize, text_removals, indexes.signal_custom_text_attr_indexes.items.len) catch return error.ResourceLimit;
+                text_removals = std.math.add(usize, text_removals, indexes.signal_optional_custom_text_attr_indexes.items.len) catch return error.ResourceLimit;
+                const bool_removals = std.math.add(usize, indexes.signal_bool_attr_indexes.items.len, indexes.signal_custom_bool_attr_indexes.items.len) catch return error.ResourceLimit;
                 const structural_removals = std.math.add(usize, self.removal.?.node_indexes.when_indexes.items.len, self.removal.?.node_indexes.each_indexes.items.len) catch return error.ResourceLimit;
                 text.ensureTotalCapacity(allocator, std.math.mul(usize, 2, text_removals) catch return error.ResourceLimit) catch return error.OutOfMemory;
-                bools.ensureTotalCapacity(allocator, std.math.mul(usize, 2, indexes.signal_bool_attr_indexes.items.len) catch return error.ResourceLimit) catch return error.OutOfMemory;
+                bools.ensureTotalCapacity(allocator, std.math.mul(usize, 2, bool_removals) catch return error.ResourceLimit) catch return error.OutOfMemory;
                 structural.ensureTotalCapacity(allocator, std.math.mul(usize, 2, structural_removals) catch return error.ResourceLimit) catch return error.OutOfMemory;
                 appendTextSinkEdits(self.engine, &text, self.engine.active_stream.signal_text_nodes.items, indexes.signal_text_node_indexes.items, .text_node);
                 appendTextSinkEdits(self.engine, &text, self.engine.active_stream.signal_text_attrs.items, indexes.signal_text_attr_indexes.items, .text_attr);
+                appendTextSinkEdits(self.engine, &text, self.engine.active_stream.signal_custom_text_attrs.items, indexes.signal_custom_text_attr_indexes.items, .custom_text_attr);
+                appendTextSinkEdits(self.engine, &text, self.engine.active_stream.signal_optional_custom_text_attrs.items, indexes.signal_optional_custom_text_attr_indexes.items, .custom_text_optional_attr);
                 appendBoolSinkEdits(self.engine, &bools, self.engine.active_stream.signal_bool_attrs.items, indexes.signal_bool_attr_indexes.items, .bool_attr);
+                appendBoolSinkEdits(self.engine, &bools, self.engine.active_stream.signal_custom_bool_attrs.items, indexes.signal_custom_bool_attr_indexes.items, .custom_bool_attr);
                 appendStructuralSinkEdits(self.engine, &structural, self.engine.active_stream.whens.items, self.removal.?.node_indexes.when_indexes.items, .when);
                 appendStructuralSinkEdits(self.engine, &structural, self.engine.active_stream.eaches.items, self.removal.?.node_indexes.each_indexes.items, .each);
                 return active_graph.prepareSinkRouteEdits(
