@@ -239,9 +239,25 @@ pub fn Runner(comptime Ctx: type) type {
             stats.init_roc_ns += nowNs() - init_start_ns;
             Ctx.acceptInitElemMeasured(&host, &roc_host, init_result, &stats.init_apply_ns, &stats.commands);
 
+            var measurement_started = true;
             for (commands) |cmd| {
-                if (commandIsAction(cmd)) {
-                    runActionCommandMeasured(&host, &roc_host, cmd, stats);
+                if (cmd.cmd_type == .mark_metrics) {
+                    measurement_started = false;
+                    break;
+                }
+            }
+            for (commands) |cmd| {
+                if (cmd.cmd_type == .mark_metrics) {
+                    measurement_started = true;
+                } else if (commandIsAction(cmd)) {
+                    if (measurement_started) {
+                        runActionCommandMeasured(&host, &roc_host, cmd, stats);
+                    } else {
+                        // Setup actions before a mark establish the benchmark's
+                        // required table size without contaminating the timed operation.
+                        var setup_stats: Stats = .{};
+                        runActionCommandMeasured(&host, &roc_host, cmd, &setup_stats);
+                    }
                 }
             }
 

@@ -130,6 +130,7 @@ pub const NamedEvent = struct {
 pub fn implicitRole(elem: *const Element) ?[]const u8 {
     if (elem.role) |role| return role;
     if (std.mem.eql(u8, elem.tag, "button")) return "button";
+    if (std.mem.eql(u8, elem.tag, "a")) return "link";
     if (std.mem.eql(u8, elem.tag, "h1") or
         std.mem.eql(u8, elem.tag, "h2") or
         std.mem.eql(u8, elem.tag, "h3") or
@@ -338,6 +339,10 @@ pub fn clearTextAttr(allocator: std.mem.Allocator, elem: *Element, name: []const
 }
 
 pub fn textAttr(elem: *const Element, name: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, name, "class")) return elem.class;
+    if (std.mem.eql(u8, name, "role")) return elem.role;
+    if (std.mem.eql(u8, name, "aria-label")) return elem.label;
+    if (std.mem.eql(u8, name, "data-testid")) return elem.test_id;
     const index = elem.textAttrIndex(name) orelse return null;
     return elem.attrs.items[index].value;
 }

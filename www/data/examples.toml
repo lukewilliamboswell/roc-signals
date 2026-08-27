@@ -505,6 +505,17 @@ native = true
 bench = true
 
 [[examples]]
+slug = "js-framework-benchmark"
+title = "JS Framework Benchmark"
+description = "Internal keyed fixture implementing the js-framework-benchmark table operations."
+source = "examples/_fixtures/js-framework-benchmark/main.roc"
+specs = "examples/_fixtures/js-framework-benchmark/specs"
+public = false
+wasm = false
+native = true
+bench = true
+
+[[examples]]
 slug = "signal-combine-caps"
 title = "Signal Combine Caps"
 description = "Internal fixture: Signal.combine over independently created signals."
