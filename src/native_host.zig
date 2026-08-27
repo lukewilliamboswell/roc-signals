@@ -5836,6 +5836,107 @@ test "list source each transaction sweeps host OOM and retries without publicati
     for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
+test "one state transaction updates two each sites atomically through production" {
+    const Runner = struct {
+        fn run(failure_number: ?usize) !usize {
+            test_erased_callable_drop_count = 0;
+            test_row_elem_call_count = 0;
+            var host = HostEnv.init();
+            var roc_host = makeSignalsRocHost(&host);
+            host.engine.roc_host = &roc_host;
+            defer {
+                host.deinit();
+                _ = host.gpa.deinit();
+            }
+
+            const state_token = newTestBinderToken(&roc_host);
+            const state_cap = testHostValueCapability(&roc_host);
+            const first_each = testNodeEachWithSignalCapabilityAndRow(&roc_host, testNodeRefExpr(state_token), state_cap, &testStatefulRowElemCallable);
+            const second_each = testNodeEachWithSignalCapabilityAndRow(&roc_host, testNodeRefExpr(state_token), state_cap, &testStatefulRowElemCallable);
+            const section = testElementWith(&roc_host, "section", &.{}, &.{ first_each, testNodeText(&roc_host, "between-each-sites"), second_each });
+            const initial_items = [_]HostValue{ testHostValueI64(1), testHostValueI64(2) };
+            const root = testNodeStateWithTokenAndInitialCapability(&roc_host, state_token, testHostValueI64List(&roc_host, &initial_items), section, state_cap);
+            defer root.decref(&roc_host);
+            var stream: HostNodeDescriptorStream = .{};
+            host.collectActiveElemRootDescriptors(&roc_host, &stream, root, &.{});
+            _ = applyNodeDescriptorStream(&host, &roc_host, &stream);
+            host.engine.active_stream = stream;
+
+            const state_id = host.engine.active_stream.scope_sites.items[0].node_id;
+            const state_index = host.engine.stateIndexByNodeId(state_id).?;
+            var each_sites: [2]engine.HostNodeScopeSiteDesc = undefined;
+            var each_write: usize = 0;
+            for (host.engine.active_stream.scope_sites.items) |site| if (site.kind == .each) {
+                each_sites[each_write] = site;
+                each_write += 1;
+            };
+            try std.testing.expectEqual(@as(usize, 2), each_write);
+            const first_rows_before = try host.engine.activeEachRowScopes(std.testing.allocator, each_sites[0].scope_id, each_sites[0].ordinal);
+            defer std.testing.allocator.free(first_rows_before);
+            const second_rows_before = try host.engine.activeEachRowScopes(std.testing.allocator, each_sites[1].scope_id, each_sites[1].ordinal);
+            defer std.testing.allocator.free(second_rows_before);
+            const generation_before = host.engine.dirty_signal_generation;
+            const graph_len_before = host.engine.active_signal_graph.items.len;
+            const scope_len_before = host.engine.scopes.items.len;
+            const render_len_before = host.engine.active_stream.render_nodes.items.len;
+            const dom_len_before = host.dom_elements.items.len;
+            const state_value_before = host.engine.states.items[state_index].cell.value;
+            const rows_reused_before = host.engine.pending_roc_metrics.rows_reused;
+            const rows_created_before = host.engine.pending_roc_metrics.rows_created;
+            const rows_removed_before = host.engine.pending_roc_metrics.rows_removed;
+            const root_children_before = try std.testing.allocator.dupe(u64, host.engine.render_cache.nodes.items[1].children.items);
+            defer std.testing.allocator.free(root_children_before);
+            const allocations_before = host.roc_allocations.snapshot();
+
+            const next_items = [_]HostValue{ testHostValueI64(2), testHostValueI64(3) };
+            var fault = FaultAllocator.init(host.gpa.allocator());
+            fault.configure(failure_number);
+            host.engine_allocator_override = fault.allocator();
+            const result = host.engine.tryDispatchStateValue(&host, &roc_host, state_id, testHostValueI64List(&roc_host, &next_items), state_cap);
+            const attempts = fault.attempts;
+            if (failure_number != null) {
+                try std.testing.expectError(error.OutOfMemory, result);
+                try std.testing.expectEqual(generation_before, host.engine.dirty_signal_generation);
+                try std.testing.expectEqual(graph_len_before, host.engine.active_signal_graph.items.len);
+                try std.testing.expectEqual(scope_len_before, host.engine.scopes.items.len);
+                try std.testing.expectEqual(render_len_before, host.engine.active_stream.render_nodes.items.len);
+                try std.testing.expectEqual(dom_len_before, host.dom_elements.items.len);
+                try std.testing.expectEqual(state_value_before, host.engine.states.items[state_index].cell.value);
+                try std.testing.expectEqualSlices(u64, root_children_before, host.engine.render_cache.nodes.items[1].children.items);
+                const first_after = try host.engine.activeEachRowScopes(std.testing.allocator, each_sites[0].scope_id, each_sites[0].ordinal);
+                defer std.testing.allocator.free(first_after);
+                const second_after = try host.engine.activeEachRowScopes(std.testing.allocator, each_sites[1].scope_id, each_sites[1].ordinal);
+                defer std.testing.allocator.free(second_after);
+                try std.testing.expectEqualSlices(u64, first_rows_before, first_after);
+                try std.testing.expectEqualSlices(u64, second_rows_before, second_after);
+                try std.testing.expectEqual(@as(usize, 0), host.roc_allocations.liveCountSince(allocations_before));
+                fault.configure(null);
+                const retry_items = [_]HostValue{ testHostValueI64(2), testHostValueI64(3) };
+                _ = try host.engine.tryDispatchStateValue(&host, &roc_host, state_id, testHostValueI64List(&roc_host, &retry_items), state_cap);
+            } else _ = try result;
+
+            const first_rows = try host.engine.activeEachRowScopes(std.testing.allocator, each_sites[0].scope_id, each_sites[0].ordinal);
+            defer std.testing.allocator.free(first_rows);
+            const second_rows = try host.engine.activeEachRowScopes(std.testing.allocator, each_sites[1].scope_id, each_sites[1].ordinal);
+            defer std.testing.allocator.free(second_rows);
+            try std.testing.expectEqual(@as(usize, 2), first_rows.len);
+            try std.testing.expectEqual(@as(usize, 2), second_rows.len);
+            try std.testing.expect(first_rows[0] != second_rows[0]);
+            try std.testing.expect(activeTextElementId(&host, "row-1-1") == null);
+            try std.testing.expect(activeTextElementId(&host, "row-2-2") != null);
+            try std.testing.expect(activeTextElementId(&host, "row-3-3") != null);
+            try std.testing.expectEqual(@as(u64, 2), host.engine.pending_roc_metrics.rows_reused - rows_reused_before);
+            try std.testing.expectEqual(@as(u64, 2), host.engine.pending_roc_metrics.rows_created - rows_created_before);
+            try std.testing.expectEqual(@as(u64, 2), host.engine.pending_roc_metrics.rows_removed - rows_removed_before);
+            return attempts;
+        }
+    };
+
+    const attempts = try Runner.run(null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
+}
+
 test "event state transaction sweeps host OOM and retries without mutation" {
     const Runner = struct {
         fn run(failure_number: ?usize) !usize {

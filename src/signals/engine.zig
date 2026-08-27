@@ -1065,6 +1065,8 @@ pub fn Engine(comptime Ctx: type) type {
                     eaches[index] = &engine.active_stream.eaches.items[each_index];
                 }
                 try owner.prepareReplacement(sites, eaches, .{}, &.{});
+                try owner.prepareRenderLayouts(sites);
+                try owner.prepareDownstream(sites);
                 return owner;
             }
 
@@ -1238,7 +1240,7 @@ pub fn Engine(comptime Ctx: type) type {
                     descriptor_roots.items,
                     retired_roots.items,
                     remove_starts.items,
-                    null,
+                    if (parents.items.len == 1) parents.items[0] else null,
                 );
                 errdefer downstream.deinit();
                 downstream.final_render_topology = self.final_render_topology;
@@ -10473,6 +10475,7 @@ pub fn Engine(comptime Ctx: type) type {
             render_splice: ?render_cache_mod.PreparedRenderSplice(Ctx) = null,
             structural_changes: []HostDirtyStructuralSignal = &.{},
             structural_downstream: ?*PreparedStructuralDownstream = null,
+            composite_rows: ?*PreparedCompositeRows = null,
             each_rows: ?*PreparedActiveEachRows = null,
             each_replacement: ?*PreparedEachRowReplacementCollection = null,
             each_layout: ?PreparedEachRowRenderLayout = null,
@@ -10640,7 +10643,20 @@ pub fn Engine(comptime Ctx: type) type {
                         .when => when_count += 1,
                         .each => each_count += 1,
                     };
-                    if ((each_count != 0 and when_count != 0) or each_count > 1) return error.ResourceLimit;
+                    if (each_count != 0 and when_count != 0) return error.ResourceLimit;
+                    if (each_count > 1) {
+                        plan.composite_rows = try PreparedCompositeRows.prepare(engine, ctx, roc_host, structural_changes, &plan.caches);
+                        errdefer plan.composite_rows.?.deinit();
+                        const downstream = plan.composite_rows.?.downstream.?;
+                        try downstream.adoptScalarRenderSplice(&plan.render_splice.?);
+                        plan.render_splice.?.deinit();
+                        plan.render_splice = null;
+                        if (state_update) |update| {
+                            plan.caches.clearProvisionalValues();
+                            plan.state_update = update.*;
+                        }
+                        return plan;
+                    }
                     if (each_count == 1) {
                         const change = structural_changes[0];
                         const site = engine.activeScopeSiteByNodeId(change.node_id, .each) orelse return error.ResourceLimit;
@@ -10690,6 +10706,21 @@ pub fn Engine(comptime Ctx: type) type {
 
             fn commit(self: *@This()) render.Counts {
                 const allocator = Ctx.allocator(self.host_ctx);
+                if (self.composite_rows) |composite| {
+                    const downstream = composite.downstream.?;
+                    const counts = downstream.render_splice.?.wire.counts();
+                    downstream.commitAssumeCapacityWithEarlyAndLate(self, commitSourceCaches, composite, struct {
+                        fn apply(rows: *PreparedCompositeRows) void {
+                            rows.commit();
+                        }
+                    }.apply);
+                    var total = counts;
+                    total.addAll(self.engine.runActiveOnChangeInitialCommandIndices(self.host_ctx, self.roc_host, downstream.publication.?.replacement_on_change_indices));
+                    total.addAll(self.engine.runActiveMountCommandIndices(self.host_ctx, self.roc_host, downstream.publication.?.replacement_mount_indices));
+                    total.addAll(self.runPostCommitCommands());
+                    if (comptime enable_runtime_metrics) self.engine.render_metrics.addCommandCounts(total);
+                    return total;
+                }
                 if (self.structural_downstream) |downstream| {
                     const counts = downstream.render_splice.?.wire.counts();
                     if (self.each_rows) |rows| {
@@ -10766,6 +10797,7 @@ pub fn Engine(comptime Ctx: type) type {
                 if (self.batch_preflighted and !self.batch_published) self.batch_target.abort();
                 if (comptime @hasDecl(Ctx, "RenderPublication")) if (self.host_publication) |*publication| publication.deinit();
                 if (self.structural_downstream) |downstream| downstream.deinit();
+                if (self.composite_rows) |rows| rows.deinit();
                 if (self.each_layout) |*layout| layout.deinit();
                 if (self.each_replacement) |replacement| replacement.deinit();
                 if (self.each_rows) |rows| rows.deinit();
