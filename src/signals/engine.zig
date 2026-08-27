@@ -2032,16 +2032,18 @@ pub fn Engine(comptime Ctx: type) type {
             self.collectActiveEachRowElemDescriptors(ctx, roc_host, stream, each, row_elem, row_scope_id, site.parent_elem_id, &ordinal, &dom_ordinal, binder_stack, row_created, dirty_source_node_ids);
         }
 
-        fn collectActiveEachRowElemDescriptorsWith(self: *Self, comptime Collection: type, collection: Collection, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, each: HostNodeEachDesc, row_elem: abi.Elem, row_scope_id: u64, parent_elem_id: u64, ordinal: *u64, dom_ordinal: *u64, binder_stack: *std.ArrayListUnmanaged(HostBinderBinding), row_created: bool, dirty_source_node_ids: []const u64) void {
+        const CollectionError = error{ OutOfMemory, ResourceLimit };
+
+        fn collectActiveEachRowElemDescriptorsWith(self: *Self, comptime Collection: type, collection: Collection, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, each: HostNodeEachDesc, row_elem: abi.Elem, row_scope_id: u64, parent_elem_id: u64, ordinal: *u64, dom_ordinal: *u64, binder_stack: *std.ArrayListUnmanaged(HostBinderBinding), row_created: bool, dirty_source_node_ids: []const u64) CollectionError!void {
             const caps = [_]HostValueCapability{ each.ops.key_capability, each.ops.item_capability };
             Ctx.pushHostValueCapabilities(ctx, &caps);
             defer Ctx.popHostValueCapabilities(ctx);
-            self.collectActiveElemDescriptorsWith(Collection, collection, ctx, roc_host, stream, row_elem, row_scope_id, parent_elem_id, ordinal, dom_ordinal, binder_stack, row_created, dirty_source_node_ids);
+            try self.collectActiveElemDescriptorsWith(Collection, collection, ctx, roc_host, stream, row_elem, row_scope_id, parent_elem_id, ordinal, dom_ordinal, binder_stack, row_created, dirty_source_node_ids);
         }
 
         fn collectActiveEachRowElemDescriptors(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, each: HostNodeEachDesc, row_elem: abi.Elem, row_scope_id: u64, parent_elem_id: u64, ordinal: *u64, dom_ordinal: *u64, binder_stack: *std.ArrayListUnmanaged(HostBinderBinding), row_created: bool, dirty_source_node_ids: []const u64) void {
             const collection = ImmediateCollectionCtx{ .engine = self, .host_ctx = ctx, .stream = stream };
-            self.collectActiveEachRowElemDescriptorsWith(ImmediateCollectionCtx, collection, ctx, roc_host, stream, each, row_elem, row_scope_id, parent_elem_id, ordinal, dom_ordinal, binder_stack, row_created, dirty_source_node_ids);
+            self.collectActiveEachRowElemDescriptorsWith(ImmediateCollectionCtx, collection, ctx, roc_host, stream, each, row_elem, row_scope_id, parent_elem_id, ordinal, dom_ordinal, binder_stack, row_created, dirty_source_node_ids) catch @panic("immediate descriptor collection failed");
         }
 
         const ImmediateCollectionCtx = struct {
@@ -2049,36 +2051,36 @@ pub fn Engine(comptime Ctx: type) type {
             host_ctx: Ctx.Handle,
             stream: *HostNodeDescriptorStream,
 
-            fn appendElement(self: @This(), scope_id: u64, parent_elem_id: u64, dom_ordinal: *u64, tag: []const u8) u64 {
+            fn appendElement(self: @This(), scope_id: u64, parent_elem_id: u64, dom_ordinal: *u64, tag: []const u8) CollectionError!u64 {
                 const elem_id = self.engine.internDomIdentity(Ctx.allocator(self.host_ctx), scope_id, dom_ordinal.*) catch @panic("scope id has no host scope descriptor");
                 dom_ordinal.* += 1;
                 _ = self.stream.appendElement(Ctx.allocator(self.host_ctx), elem_id, parent_elem_id, scope_id, tag);
                 return elem_id;
             }
 
-            fn appendText(self: @This(), scope_id: u64, parent_elem_id: u64, dom_ordinal: *u64, text: []const u8) void {
+            fn appendText(self: @This(), scope_id: u64, parent_elem_id: u64, dom_ordinal: *u64, text: []const u8) CollectionError!void {
                 const elem_id = self.engine.internDomIdentity(Ctx.allocator(self.host_ctx), scope_id, dom_ordinal.*) catch @panic("scope id has no host scope descriptor");
                 dom_ordinal.* += 1;
                 self.stream.appendTextNode(Ctx.allocator(self.host_ctx), elem_id, parent_elem_id, scope_id, text);
             }
         };
 
-        fn collectActiveElemDescriptorsWith(self: *Self, comptime Collection: type, collection: Collection, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, elem: abi.Elem, scope_id: u64, parent_elem_id: u64, ordinal: *u64, dom_ordinal: *u64, binder_stack: *std.ArrayListUnmanaged(HostBinderBinding), scope_created: bool, dirty_source_node_ids: []const u64) void {
+        fn collectActiveElemDescriptorsWith(self: *Self, comptime Collection: type, collection: Collection, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, elem: abi.Elem, scope_id: u64, parent_elem_id: u64, ordinal: *u64, dom_ordinal: *u64, binder_stack: *std.ArrayListUnmanaged(HostBinderBinding), scope_created: bool, dirty_source_node_ids: []const u64) CollectionError!void {
             self.validateScopeId(scope_id) catch @panic("scope id has no host scope descriptor");
 
             const allocator = Ctx.allocator(ctx);
             switch (abi_view.Elem.fromAbi(elem)) {
                 .element => |payload| {
-                    const elem_id = collection.appendElement(scope_id, parent_elem_id, dom_ordinal, payload.tag.asSlice());
+                    const elem_id = try collection.appendElement(scope_id, parent_elem_id, dom_ordinal, payload.tag.asSlice());
                     for (payload.attrs) |attr| {
                         self.collectNodeAttrDescriptor(ctx, roc_host, stream, elem_id, attr, binder_stack.items);
                     }
                     for (payload.children) |child| {
-                        self.collectActiveElemDescriptorsWith(Collection, collection, ctx, roc_host, stream, child, scope_id, elem_id, ordinal, dom_ordinal, binder_stack, scope_created, dirty_source_node_ids);
+                        try self.collectActiveElemDescriptorsWith(Collection, collection, ctx, roc_host, stream, child, scope_id, elem_id, ordinal, dom_ordinal, binder_stack, scope_created, dirty_source_node_ids);
                     }
                 },
                 .text => |payload| {
-                    collection.appendText(scope_id, parent_elem_id, dom_ordinal, payload.text.asSlice());
+                    try collection.appendText(scope_id, parent_elem_id, dom_ordinal, payload.text.asSlice());
                 },
                 .text_signal => |payload| {
                     const elem_id = self.internDomIdentity(Ctx.allocator(ctx), scope_id, dom_ordinal.*) catch @panic("scope id has no host scope descriptor");
@@ -2105,7 +2107,7 @@ pub fn Engine(comptime Ctx: type) type {
                     self.ensureStateFromDesc(ctx, roc_host, stream.states.items[stream.states.items.len - 1]);
                     const binder_token = state.binder.callable;
                     binder_stack.append(allocator, .{ .token = binder_token, .node_id = node_id }) catch @panic("out of memory");
-                    self.collectActiveElemDescriptorsWith(Collection, collection, ctx, roc_host, stream, state.child.*, scope_id, parent_elem_id, ordinal, dom_ordinal, binder_stack, scope_created, dirty_source_node_ids);
+                    try self.collectActiveElemDescriptorsWith(Collection, collection, ctx, roc_host, stream, state.child.*, scope_id, parent_elem_id, ordinal, dom_ordinal, binder_stack, scope_created, dirty_source_node_ids);
                     _ = binder_stack.pop() orelse unreachable;
                 },
                 .component => |payload| {
@@ -2117,7 +2119,7 @@ pub fn Engine(comptime Ctx: type) type {
                     const component_scope_id = component_scope.scope_id;
                     var component_ordinal: u64 = 0;
                     var component_dom_ordinal: u64 = 0;
-                    self.collectActiveElemDescriptorsWith(Collection, collection, ctx, roc_host, stream, payload.child.*, component_scope_id, parent_elem_id, &component_ordinal, &component_dom_ordinal, binder_stack, component_scope.created, dirty_source_node_ids);
+                    try self.collectActiveElemDescriptorsWith(Collection, collection, ctx, roc_host, stream, payload.child.*, component_scope_id, parent_elem_id, &component_ordinal, &component_dom_ordinal, binder_stack, component_scope.created, dirty_source_node_ids);
                 },
                 .when => |when_payload| {
                     const site_ordinal = ordinal.*;
@@ -2145,7 +2147,7 @@ pub fn Engine(comptime Ctx: type) type {
                         .false_branch => when_payload.when_false.*,
                     };
                     var branch_dom_ordinal: u64 = 0;
-                    self.collectActiveElemDescriptorsWith(Collection, collection, ctx, roc_host, stream, branch_elem, branch_scope_id, parent_elem_id, &branch_ordinal, &branch_dom_ordinal, binder_stack, branch_scope.created, dirty_source_node_ids);
+                    try self.collectActiveElemDescriptorsWith(Collection, collection, ctx, roc_host, stream, branch_elem, branch_scope_id, parent_elem_id, &branch_ordinal, &branch_dom_ordinal, binder_stack, branch_scope.created, dirty_source_node_ids);
                 },
                 .each => |each_payload| {
                     const site_ordinal = ordinal.*;
@@ -2188,7 +2190,7 @@ pub fn Engine(comptime Ctx: type) type {
 
                         var row_ordinal: u64 = 0;
                         var row_dom_ordinal: u64 = 0;
-                        self.collectActiveEachRowElemDescriptorsWith(Collection, collection, ctx, roc_host, stream, each_desc, row_elem, row_scope_id, parent_elem_id, &row_ordinal, &row_dom_ordinal, binder_stack, row_created, dirty_source_node_ids);
+                        try self.collectActiveEachRowElemDescriptorsWith(Collection, collection, ctx, roc_host, stream, each_desc, row_elem, row_scope_id, parent_elem_id, &row_ordinal, &row_dom_ordinal, binder_stack, row_created, dirty_source_node_ids);
                     }
                 },
             }
@@ -2196,7 +2198,7 @@ pub fn Engine(comptime Ctx: type) type {
 
         pub fn collectActiveElemDescriptors(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, elem: abi.Elem, scope_id: u64, parent_elem_id: u64, ordinal: *u64, dom_ordinal: *u64, binder_stack: *std.ArrayListUnmanaged(HostBinderBinding), scope_created: bool, dirty_source_node_ids: []const u64) void {
             const collection = ImmediateCollectionCtx{ .engine = self, .host_ctx = ctx, .stream = stream };
-            self.collectActiveElemDescriptorsWith(ImmediateCollectionCtx, collection, ctx, roc_host, stream, elem, scope_id, parent_elem_id, ordinal, dom_ordinal, binder_stack, scope_created, dirty_source_node_ids);
+            self.collectActiveElemDescriptorsWith(ImmediateCollectionCtx, collection, ctx, roc_host, stream, elem, scope_id, parent_elem_id, ordinal, dom_ordinal, binder_stack, scope_created, dirty_source_node_ids) catch @panic("immediate descriptor collection failed");
         }
 
         pub fn collectActiveElemRootDescriptors(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, root: abi.Elem, dirty_source_node_ids: []const u64) void {
