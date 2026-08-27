@@ -394,6 +394,20 @@ pub fn preparePublicationDeltas(allocator: std.mem.Allocator, replacement_render
     };
 }
 
+/// Reserves the final backing capacity for an in-place render-range splice.
+pub fn prepareRenderRangeCapacity(allocator: std.mem.Allocator, render_nodes: anytype, removed_count: usize, replacement_count: usize) std.mem.Allocator.Error!void {
+    if (removed_count > render_nodes.items.len) return error.OutOfMemory;
+    const retained = render_nodes.items.len - removed_count;
+    const final_len = std.math.add(usize, retained, replacement_count) catch return error.OutOfMemory;
+    try render_nodes.ensureTotalCapacity(allocator, final_len);
+}
+
+/// Replaces a render range using only capacity established during prepare.
+pub fn commitRenderRangeAssumeCapacity(render_nodes: anytype, start: usize, removed_count: usize, replacement: anytype) void {
+    if (start > render_nodes.items.len or removed_count > render_nodes.items.len - start) @panic("prepared render splice range is invalid");
+    render_nodes.replaceRangeAssumeCapacity(start, removed_count, replacement);
+}
+
 /// Adjusts only scope-site insertion indexes shifted by the committed local splice.
 pub fn adjustScopeSiteRenderInsertIndices(scope_sites: anytype, replace_index: usize, removed_render_count: usize, replacement_render_count: usize) void {
     for (scope_sites) |*desc| {
@@ -467,6 +481,22 @@ test "publication deltas sweep failures and retry without source mutation" {
         try std.testing.expectEqualSlices(usize, &.{11}, retry.replacement_mount_indices);
         retry.deinit(fault.allocator());
     }
+}
+
+test "prepared render range commit is allocation free" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var fault = FaultAllocator.init(std.testing.allocator);
+    const allocator = fault.allocator();
+    var nodes: std.ArrayListUnmanaged(u64) = .empty;
+    defer nodes.deinit(allocator);
+    try nodes.appendSlice(allocator, &.{ 1, 2, 3, 4 });
+    try prepareRenderRangeCapacity(allocator, &nodes, 2, 3);
+    fault.configure(1);
+    commitRenderRangeAssumeCapacity(&nodes, 1, 2, &.{ 8, 9, 10 });
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqualSlices(u64, &.{ 1, 8, 9, 10, 4 }, nodes.items);
+    fault.configure(null);
+    try std.testing.expectError(error.OutOfMemory, prepareRenderRangeCapacity(allocator, &nodes, nodes.items.len + 1, 0));
 }
 
 test "structural splice collects removal indexes" {
