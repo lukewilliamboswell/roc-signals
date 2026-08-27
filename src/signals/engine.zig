@@ -2666,11 +2666,21 @@ pub fn Engine(comptime Ctx: type) type {
                 self.engine.validateScopeId(scope_id) catch return error.ResourceLimit;
             }
 
+            fn attachExternalScopeIds(self: *@This(), scope_ids: []const u64) CollectionError!void {
+                for (scope_ids) |scope_id| {
+                    if (scope_id < self.engine.scopes.items.len) return error.ResourceLimit;
+                    self.scopes.reserveExternal(scope_id) catch |err| switch (err) {
+                        error.NoCapacity => return error.OutOfMemory,
+                        error.DuplicateScope => return error.ResourceLimit,
+                    };
+                }
+            }
+
             fn reserveWhenBranchScope(self: *@This(), parent_scope_id: u64, site_ordinal: u64, branch: HostScopeBranch) CollectionError!scope_tree.InternResult {
                 const persistent_parent = parent_scope_id < self.engine.scopes.items.len;
                 const key: collection_plan.ScopeKey = .{ .parent_id = parent_scope_id, .ordinal = site_ordinal, .kind = .{ .when_branch = branch } };
                 const active_id = if (persistent_parent) self.engine.activeWhenBranchScopeId(parent_scope_id, site_ordinal, branch) catch return error.ResourceLimit else null;
-                const fresh_id: u64 = @intCast(self.engine.scopes.items.len + self.scopes.intents.items.len);
+                const fresh_id: u64 = @intCast(self.engine.scopes.items.len + self.scopes.reserved_ids.count());
                 const branch_scope_id = self.scopes.reserve(key, active_id, &.{fresh_id}) catch |err| switch (err) {
                     error.NoCapacity => return error.OutOfMemory,
                     error.NoAvailableScope => return error.ResourceLimit,
@@ -9887,6 +9897,32 @@ test "provisional each-row scopes abort and publish without partial scope mutati
         failures += 1;
     }
     try std.testing.expectEqual(attempts, failures);
+}
+
+test "staged collection accepts external provisional row scopes without id collisions" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var fault = FaultAllocator.init(std.testing.allocator);
+    var ctx = VerifyCtxHost{ .allocator = fault.allocator() };
+    var engine = Engine(VerifyCtx).init();
+    defer {
+        engine.node_identities.deinit(ctx.allocator);
+        engine.active_node_identity_ids.deinit(ctx.allocator);
+        engine.state_indexes_by_node_id.deinit(ctx.allocator);
+        deinitVerifyStaticEngine(&engine, &ctx);
+    }
+    _ = try engine.internRootScope(ctx.allocator);
+    var stream: HostNodeDescriptorStream = .{};
+    defer stream.deinit(ctx.allocator, &ctx, undefined, &engine.pending_roc_metrics);
+    var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&engine, &ctx, &stream, .{}, 0, 0, 0, 0, 0, 0, 1, 2);
+    defer collection.deinit();
+    fault.configure(1);
+    try collection.attachExternalScopeIds(&.{ 1, 2 });
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try collection.validateScope(1);
+    try collection.validateScope(2);
+    const child = try collection.reserveWhenBranchScope(1, 9, .true_branch);
+    try std.testing.expectEqual(@as(u64, 3), child.scope_id);
+    try std.testing.expectEqual(@as(usize, 1), engine.scopes.items.len);
 }
 
 test "prepared each-row subtree retirement is atomic and allocation free" {

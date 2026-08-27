@@ -140,6 +140,16 @@ pub const ScopeOverlay = struct {
         return error.NoAvailableScope;
     }
 
+    /// Claims an externally owned provisional scope id for validation and
+    /// collision avoidance without publishing a structural scope intent.
+    pub fn reserveExternal(self: *ScopeOverlay, id: u64) error{ NoCapacity, DuplicateScope }!void {
+        if (self.committed) @panic("scope overlay cannot reserve after commit");
+        if (self.reserved_ids.contains(id)) return error.DuplicateScope;
+        if (self.prepared_remaining == 0) return error.NoCapacity;
+        self.reserved_ids.putAssumeCapacity(id, {});
+        self.prepared_remaining -= 1;
+    }
+
     /// Drops provisional resources and restores the plan to an unpublished state.
     pub fn abort(self: *ScopeOverlay) void {
         if (self.committed) @panic("committed scope overlay cannot abort");
@@ -646,6 +656,19 @@ test "scope overlay abort leaves persistent scopes unchanged and permits retry" 
     overlay.abort();
     try overlay.prepare(std.testing.allocator, 1);
     try std.testing.expectEqual(@as(u64, 9), try overlay.reserve(key, persistent.get(key), &.{9}));
+}
+
+test "scope overlay reserves external ids without publishing intents" {
+    var overlay: ScopeOverlay = .{};
+    defer overlay.deinit(std.testing.allocator);
+    try overlay.prepare(std.testing.allocator, 2);
+    try overlay.reserveExternal(7);
+    const key: ScopeKey = .{ .parent_id = 7, .ordinal = 1, .kind = .component };
+    const child = try overlay.reserve(key, null, &.{ 7, 8 });
+    try std.testing.expectEqual(@as(u64, 8), child);
+    try std.testing.expect(overlay.reserved_ids.contains(7));
+    try std.testing.expectEqual(@as(usize, 1), overlay.intents.items.len);
+    try std.testing.expectError(error.DuplicateScope, overlay.reserveExternal(7));
 }
 
 test "provisional value initializer runs once and abort releases ownership" {
