@@ -3296,6 +3296,81 @@ pub fn Engine(comptime Ctx: type) type {
             };
         }
 
+        const AggregateBranchSelection = struct {
+            parent_scope_id: u64,
+            site_ordinal: u64,
+            parent_elem_id: u64,
+            binder_bindings: []const HostBinderBinding,
+            branch: HostScopeBranch,
+            elem: abi.Elem,
+        };
+
+        const AggregateBranchCollection = struct {
+            engine: *Self,
+            host_ctx: Ctx.Handle,
+            roc_host: *abi.RocHost,
+            stream: HostNodeDescriptorStream = .{},
+            collection: StagedCollectionCtx = undefined,
+            replacement_scope_ids: []u64 = &.{},
+
+            fn addCounts(total: *StaticRootCounts, next: StaticRootCounts) CollectionError!void {
+                total.nodes = std.math.add(usize, total.nodes, next.nodes) catch return error.ResourceLimit;
+                total.attrs = std.math.add(usize, total.attrs, next.attrs) catch return error.ResourceLimit;
+                total.lifecycle = std.math.add(usize, total.lifecycle, next.lifecycle) catch return error.ResourceLimit;
+                total.signal_records = std.math.add(usize, total.signal_records, next.signal_records) catch return error.ResourceLimit;
+                total.state_sites = std.math.add(usize, total.state_sites, next.state_sites) catch return error.ResourceLimit;
+                total.component_sites = std.math.add(usize, total.component_sites, next.component_sites) catch return error.ResourceLimit;
+                total.when_sites = std.math.add(usize, total.when_sites, next.when_sites) catch return error.ResourceLimit;
+            }
+
+            fn prepare(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, selections: []const AggregateBranchSelection, limits: collection_budget.Limits, dirty_source_node_ids: []const u64) CollectionError!*@This() {
+                if (selections.len == 0) return error.ResourceLimit;
+                var total: StaticRootCounts = .{};
+                for (selections) |selection| try addCounts(&total, try countStaticRootNodes(selection.elem));
+
+                const allocator = Ctx.allocator(ctx);
+                const plan = allocator.create(@This()) catch return error.OutOfMemory;
+                errdefer allocator.destroy(plan);
+                plan.* = .{ .engine = engine, .host_ctx = ctx, .roc_host = roc_host };
+                errdefer plan.stream.deinit(allocator, ctx, roc_host, &engine.pending_roc_metrics);
+                plan.collection = try StagedCollectionCtx.init(engine, ctx, &plan.stream, limits, total.nodes, total.attrs, total.lifecycle, total.signal_records, total.state_sites, total.component_sites, total.when_sites, selections.len);
+                errdefer plan.collection.deinit();
+                plan.replacement_scope_ids = allocator.alloc(u64, selections.len) catch return error.OutOfMemory;
+                errdefer allocator.free(plan.replacement_scope_ids);
+
+                for (selections, 0..) |selection, index| {
+                    try plan.collection.validateScope(selection.parent_scope_id);
+                    const branch_scope = try plan.collection.reserveWhenBranchScope(selection.parent_scope_id, selection.site_ordinal, selection.branch);
+                    if (!branch_scope.created) return error.ResourceLimit;
+                    plan.replacement_scope_ids[index] = branch_scope.scope_id;
+
+                    var binder_stack: std.ArrayListUnmanaged(HostBinderBinding) = .empty;
+                    defer binder_stack.deinit(allocator);
+                    const branch_count = try countStaticRootNodes(selection.elem);
+                    const binder_capacity = std.math.add(usize, selection.binder_bindings.len, branch_count.state_sites) catch return error.ResourceLimit;
+                    binder_stack.ensureTotalCapacity(allocator, binder_capacity) catch return error.OutOfMemory;
+                    binder_stack.appendSliceAssumeCapacity(selection.binder_bindings);
+                    var ordinal: u64 = 0;
+                    var dom_ordinal: u64 = 0;
+                    try engine.collectActiveElemDescriptorsWith(*StagedCollectionCtx, &plan.collection, ctx, roc_host, &plan.stream, selection.elem, branch_scope.scope_id, selection.parent_elem_id, &ordinal, &dom_ordinal, &binder_stack, true, dirty_source_node_ids);
+                }
+                plan.collection.materializeStream();
+                return plan;
+            }
+
+            fn commitCollection(self: *@This()) void {
+                self.collection.commit();
+            }
+
+            fn deinit(self: *@This()) void {
+                const allocator = Ctx.allocator(self.host_ctx);
+                self.collection.deinit();
+                self.stream.deinit(allocator, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
+                allocator.free(self.replacement_scope_ids);
+                allocator.destroy(self);
+            }
+        };
+
         const BranchReplacementPlan = struct {
             const HostRenderPublication = if (@hasDecl(Ctx, "RenderPublication")) Ctx.RenderPublication else void;
             engine: *Self,
@@ -9715,6 +9790,63 @@ test "staged collection reserves multiple external branch scopes atomically" {
     try std.testing.expectEqual(@as(usize, 3), engine.scopes.items.len);
     try std.testing.expectEqual(first.scope_id, engine.scopes.items[1].scope_id);
     try std.testing.expectEqual(second.scope_id, engine.scopes.items[2].scope_id);
+}
+
+test "aggregate branch collection sweeps allocation failures without publication" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    const Runner = struct {
+        fn run(failure_number: ?usize) !usize {
+            var fault = FaultAllocator.init(std.testing.allocator);
+            var ctx = VerifyCtxHost{ .allocator = fault.allocator() };
+            var roc_env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
+            var roc_host = abi.makeRocHost(&roc_env);
+            var engine = Engine(VerifyCtx).init();
+            defer {
+                engine.scopes.deinit(ctx.allocator);
+                engine.dom_identities.deinit(ctx.allocator);
+                engine.active_dom_identity_ids.deinit(ctx.allocator);
+                engine.node_identities.deinit(ctx.allocator);
+                engine.active_node_identity_ids.deinit(ctx.allocator);
+                engine.states.deinit(ctx.allocator);
+                engine.state_indexes_by_node_id.deinit(ctx.allocator);
+            }
+            _ = try engine.internRootScope(ctx.allocator);
+            const child = verifyStaticText();
+            const selections = [_]Engine(VerifyCtx).AggregateBranchSelection{
+                .{ .parent_scope_id = 0, .site_ordinal = 1, .parent_elem_id = 0, .binder_bindings = &.{}, .branch = .true_branch, .elem = child },
+                .{ .parent_scope_id = 0, .site_ordinal = 2, .parent_elem_id = 0, .binder_bindings = &.{}, .branch = .false_branch, .elem = child },
+            };
+
+            fault.configure(failure_number);
+            const prepared = Engine(VerifyCtx).AggregateBranchCollection.prepare(&engine, &ctx, &roc_host, &selections, .{}, &.{}) catch |err| {
+                try std.testing.expectEqual(error.OutOfMemory, err);
+                try std.testing.expectEqual(@as(usize, 1), engine.scopes.items.len);
+                try std.testing.expectEqual(@as(usize, 0), engine.dom_identities.items.len);
+                try std.testing.expectEqual(@as(usize, 0), engine.active_dom_identity_ids.count());
+                const attempts = fault.attempts;
+                fault.configure(null);
+                const retry = try Engine(VerifyCtx).AggregateBranchCollection.prepare(&engine, &ctx, &roc_host, &selections, .{}, &.{});
+                try std.testing.expectEqual(@as(usize, 1), engine.scopes.items.len);
+                try std.testing.expectEqual(@as(usize, 0), engine.dom_identities.items.len);
+                try std.testing.expectEqual(@as(usize, 2), retry.stream.text_nodes.items.len);
+                try std.testing.expectEqualSlices(u64, &.{ 1, 2 }, retry.replacement_scope_ids);
+                try std.testing.expect(retry.stream.text_nodes.items[0].elem_id != retry.stream.text_nodes.items[1].elem_id);
+                retry.deinit();
+                return attempts;
+            };
+            const attempts = fault.attempts;
+            try std.testing.expectEqual(@as(usize, 1), engine.scopes.items.len);
+            try std.testing.expectEqual(@as(usize, 0), engine.dom_identities.items.len);
+            try std.testing.expectEqual(@as(usize, 2), prepared.stream.text_nodes.items.len);
+            try std.testing.expectEqualSlices(u64, &.{ 1, 2 }, prepared.replacement_scope_ids);
+            prepared.deinit();
+            return attempts;
+        }
+    };
+
+    const attempts = try Runner.run(null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
 comptime {
