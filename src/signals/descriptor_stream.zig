@@ -1288,13 +1288,23 @@ pub const Stream = struct {
     pub fn appendPreparedStateSite(self: *Stream, site: PreparedScopeSite, state: PreparedState) void {
         const node_id = site.desc.node_id;
         if (state.desc.node_id != node_id or site.desc.kind != .state) @panic("prepared state site mismatch");
-        while (self.descriptor_indexes_by_node_id.items.len <= node_id) self.descriptor_indexes_by_node_id.appendAssumeCapacity(.{});
-        const site_index = self.scope_sites.items.len;
-        self.scope_sites.appendAssumeCapacity(site.desc);
-        setFreshIndex(self.descriptor_indexes_by_node_id.items[@intCast(node_id)].scope_sites.slot(.state), site_index);
+        self.appendPreparedScopeSite(site);
+        self.appendPreparedState(state);
+    }
+
+    pub fn appendPreparedState(self: *Stream, state: PreparedState) void {
+        const node_id = state.desc.node_id;
         const state_index = self.states.items.len;
         self.states.appendAssumeCapacity(state.desc);
         setFreshIndex(&self.descriptor_indexes_by_node_id.items[@intCast(node_id)].state, state_index);
+    }
+
+    pub fn appendPreparedScopeSite(self: *Stream, site: PreparedScopeSite) void {
+        const node_id = site.desc.node_id;
+        while (self.descriptor_indexes_by_node_id.items.len <= node_id) self.descriptor_indexes_by_node_id.appendAssumeCapacity(.{});
+        const site_index = self.scope_sites.items.len;
+        self.scope_sites.appendAssumeCapacity(site.desc);
+        setFreshIndex(self.descriptor_indexes_by_node_id.items[@intCast(node_id)].scope_sites.slot(site.desc.kind), site_index);
     }
 
     pub fn reservePreparedEvents(self: *Stream, allocator: std.mem.Allocator, additional: usize, highest_elem_id: u64) std.mem.Allocator.Error!void {
