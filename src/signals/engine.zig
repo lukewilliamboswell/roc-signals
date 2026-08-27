@@ -8187,6 +8187,8 @@ fn verifyStaticRoot(attrs: []const abi.NodeAttr, children: []const abi.Elem) abi
 /// Builds a test element whose nested lists obey Roc ownership rules. Use this
 /// for values retained by descriptors; the borrowed helper is immediate-only.
 fn ownedVerifyStaticRoot(roc_host: *abi.RocHost, attrs: []const abi.NodeAttr, children: []const abi.Elem) abi.Elem {
+    for (attrs) |attr| attr.incref(1);
+    for (children) |child| child.incref(1);
     return .{
         .payload = .{ .element = .{
             .attrs = abi.RocList(abi.NodeAttr).fromSlice(attrs, roc_host),
@@ -8195,6 +8197,16 @@ fn ownedVerifyStaticRoot(roc_host: *abi.RocHost, attrs: []const abi.NodeAttr, ch
         } },
         .tag = .Element,
     };
+}
+
+fn decrefOwnedVerifySignalExprBox(expr: *abi.NodeSignalExpr, roc_host: *abi.RocHost) void {
+    const Drop = struct {
+        fn drop(data: ?*anyopaque, host: *abi.RocHost) callconv(.c) void {
+            const payload: *abi.NodeSignalExpr = @ptrCast(@alignCast(data.?));
+            payload.decref(host);
+        }
+    };
+    abi.decrefBoxWith(@ptrCast(expr), @alignOf(abi.NodeSignalExpr), true, Drop.drop, roc_host);
 }
 
 fn boxOwnedVerifyElem(roc_host: *abi.RocHost, elem: abi.Elem) *abi.Elem {
@@ -8668,7 +8680,9 @@ test "branch replacement preparation leaves the active branch unpublished" {
         ._2 = capability,
     } }, .tag = .ConstValue };
     const false_signal_expr = boxOwnedVerifySignalExpr(&roc_host, .{ .payload = .{ .ref = state_callable }, .tag = .Ref });
+    defer decrefOwnedVerifySignalExprBox(false_signal_expr, &roc_host);
     const true_signal_expr = boxOwnedVerifySignalExpr(&roc_host, condition);
+    defer decrefOwnedVerifySignalExprBox(true_signal_expr, &roc_host);
     const false_attrs = [_]abi.NodeAttr{
         .{ .payload = .{ .static_text = .{ .field = .{ .id = @intFromEnum(RenderTextField.label) }, .name = abi.RocStr.empty(), .value = abi.RocStr.fromSlice("off", undefined) } }, .tag = .StaticText },
         .{ .payload = .{ .static_bool = .{ .field = .{ .id = @intFromEnum(RenderBoolField.disabled) }, .name = abi.RocStr.empty(), .value = true } }, .tag = .StaticBool },
@@ -8697,9 +8711,15 @@ test "branch replacement preparation leaves the active branch unpublished" {
     true_text.payload.text = abi.RocStr.fromSlice("yes", undefined);
     const false_signal_text = abi.Elem{ .payload = .{ .text_signal = .{ .read = std.mem.zeroes(HostTextRead), .signal = false_signal_expr } }, .tag = .TextSignal };
     const true_signal_text = abi.Elem{ .payload = .{ .text_signal = .{ .read = std.mem.zeroes(HostTextRead), .signal = true_signal_expr } }, .tag = .TextSignal };
-    const false_element = ownedVerifyStaticRoot(&roc_host, &false_attrs, &.{ false_text, false_signal_text });
+    const false_on_change = abi.Elem{ .payload = .{ .on_change_initial = .{ .signal = false_signal_expr, .to_cmd = state_callable } }, .tag = .OnChangeInitial };
+    const true_on_change = abi.Elem{ .payload = .{ .on_change_initial = .{ .signal = true_signal_expr, .to_cmd = state_callable } }, .tag = .OnChangeInitial };
+    const false_mount = abi.Elem{ .payload = .{ .on_mount = .{ .to_cmd = state_callable } }, .tag = .OnMount };
+    const true_mount = abi.Elem{ .payload = .{ .on_mount = .{ .to_cmd = state_callable } }, .tag = .OnMount };
+    const false_cleanup = abi.Elem{ .payload = .{ .cleanup = .{ .cleanup = abi.RocStr.fromSlice("branch-cleanup", undefined) } }, .tag = .Cleanup };
+    const true_cleanup = abi.Elem{ .payload = .{ .cleanup = .{ .cleanup = abi.RocStr.fromSlice("branch-cleanup-new", undefined) } }, .tag = .Cleanup };
+    const false_element = ownedVerifyStaticRoot(&roc_host, &false_attrs, &.{ false_text, false_signal_text, false_on_change, false_mount, false_cleanup });
     var when_false = ownedVerifyStateRoot(&roc_host, state_callable, state_capability_callable, false_element);
-    const true_element = ownedVerifyStaticRoot(&roc_host, &true_attrs, &.{ true_text, true_signal_text });
+    const true_element = ownedVerifyStaticRoot(&roc_host, &true_attrs, &.{ true_text, true_signal_text, true_on_change, true_mount, true_cleanup });
     var when_true = ownedVerifyStateRoot(&roc_host, state_callable, state_capability_callable, true_element);
     const root = abi.Elem{ .payload = .{ .when = .{
         .condition = &condition,
@@ -8736,7 +8756,6 @@ test "branch replacement preparation leaves the active branch unpublished" {
             engine.roc_host = host;
             engine.rebuildActiveSignalGraphFromStream(&ctx, &engine.active_stream);
             const retired_row_scope_id = engine.createEachRowScope(&ctx, 1, 77, 55, 101, 202, row_capability, row_capability);
-            engine.active_stream.appendCleanup(ctx.allocator, 1, "branch-cleanup");
             const scope_len = engine.scopes.items.len;
             const identity_len = engine.dom_identities.items.len;
             const text_len = engine.active_stream.text_nodes.items.len;
@@ -8756,9 +8775,10 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 try std.testing.expectEqual(@as(usize, 1), plan.row_retirement.?.rows.len);
                 try std.testing.expectEqual(@as(usize, 0), plan.pending_task_indexes.len);
                 try std.testing.expectEqual(@as(usize, 1), plan.cleanup_event_names.items.len);
-                try std.testing.expectEqualStrings("branch-cleanup", plan.cleanup_event_names.items[0]);
+                try std.testing.expectEqualStrings("branch-cleanup-new", plan.cleanup_event_names.items[0]);
                 try std.testing.expectEqual(@as(usize, 4), plan.sink_edits.?.text.len);
                 try std.testing.expectEqual(@as(usize, 2), plan.sink_edits.?.bools.len);
+                try std.testing.expectEqual(@as(usize, 1), plan.sink_edits.?.changes.len);
                 try std.testing.expect(plan.graph_release != null);
                 try std.testing.expect(plan.graph_append != null);
                 try std.testing.expect(plan.graph_append.?.records.len != 0);
@@ -8776,6 +8796,13 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 try std.testing.expectEqualSlices(usize, &.{0}, plan.removal.?.descriptor_indexes.signal_optional_custom_text_attr_indexes.items);
                 try std.testing.expectEqualSlices(usize, &.{0}, plan.removal.?.descriptor_indexes.static_custom_bool_attr_indexes.items);
                 try std.testing.expectEqualSlices(usize, &.{0}, plan.removal.?.descriptor_indexes.signal_custom_bool_attr_indexes.items);
+                try std.testing.expectEqualSlices(usize, &.{0}, plan.removal.?.node_indexes.on_change_indexes.items);
+                try std.testing.expectEqualSlices(usize, &.{0}, plan.removal.?.node_indexes.mount_indexes.items);
+                try std.testing.expectEqualSlices(usize, &.{0}, plan.removal.?.node_indexes.cleanup_indexes.items);
+                try std.testing.expectEqual(@as(usize, 1), plan.replacement_stream.on_changes.items.len);
+                try std.testing.expectEqual(@as(usize, 1), plan.replacement_stream.mounts.items.len);
+                try std.testing.expectEqual(@as(usize, 1), plan.replacement_stream.cleanups.items.len);
+                try std.testing.expectEqualStrings("branch-cleanup", plan.replacement_stream.cleanups.items[0].name);
                 try std.testing.expectEqualSlices(u64, &.{ 4, 5, 6 }, plan.publication.?.replacement_elem_ids);
                 try std.testing.expectEqual(@as(usize, 1), plan.state_cell_indexes.len);
                 try std.testing.expect(plan.retired_node_identity_ids.len != 0);
@@ -8791,6 +8818,7 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 const planned_custom_text_record_id = plan.graph_append.?.plannedRecordId(engine.active_signal_graph.items, plan.replacement_stream.signal_custom_text_attrs.items[0].signal.record) orelse return error.TestUnexpectedResult;
                 const planned_optional_text_record_id = plan.graph_append.?.plannedRecordId(engine.active_signal_graph.items, plan.replacement_stream.signal_optional_custom_text_attrs.items[0].signal.record) orelse return error.TestUnexpectedResult;
                 const planned_custom_bool_record_id = plan.graph_append.?.plannedRecordId(engine.active_signal_graph.items, plan.replacement_stream.signal_custom_bool_attrs.items[0].signal.record) orelse return error.TestUnexpectedResult;
+                const planned_change_record_id = plan.graph_append.?.plannedRecordId(engine.active_signal_graph.items, plan.replacement_stream.on_changes.items[0].signal.record) orelse return error.TestUnexpectedResult;
                 const replacement_record_refs_before_graph = replacement_signal_record.ref_count;
                 fault.configure(1);
                 plan.sink_edits.?.apply(
@@ -8844,8 +8872,8 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 try std.testing.expectEqual(@as(u64, 0), engine.active_signal_graph.items[@intCast(planned_signal_record_id)].rank);
                 try std.testing.expectEqualSlices(u64, &.{}, engine.active_signal_graph.items[@intCast(planned_signal_record_id)].dependents);
                 const replacement_source_route = engine.active_source_signal_routes.items[@intCast(replacement_state_id)].items;
-                try std.testing.expectEqual(@as(usize, 6), replacement_source_route.len);
-                const expected_source_records = [_]u64{ planned_text_node_record_id, planned_text_attr_record_id, planned_signal_record_id, planned_custom_text_record_id, planned_optional_text_record_id, planned_custom_bool_record_id };
+                try std.testing.expectEqual(@as(usize, 7), replacement_source_route.len);
+                const expected_source_records = [_]u64{ planned_text_node_record_id, planned_text_attr_record_id, planned_signal_record_id, planned_custom_text_record_id, planned_optional_text_record_id, planned_custom_bool_record_id, planned_change_record_id };
                 for (&expected_source_records) |record_id| {
                     try std.testing.expect(std.mem.indexOfScalar(u64, replacement_source_route, record_id) != null);
                 }
@@ -8856,8 +8884,9 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 try std.testing.expectEqual(@as(usize, 1), engine.active_text_signal_routes.items[@intCast(planned_custom_text_record_id)].items.len);
                 try std.testing.expectEqual(@as(usize, 1), engine.active_text_signal_routes.items[@intCast(planned_optional_text_record_id)].items.len);
                 try std.testing.expectEqual(@as(usize, 1), engine.active_bool_signal_routes.items[@intCast(planned_custom_bool_record_id)].items.len);
+                try std.testing.expectEqual(@as(usize, 1), engine.active_change_signal_routes.items[@intCast(planned_change_record_id)].items.len);
                 try std.testing.expectEqual(@as(usize, 1), engine.cleanup_events.items.len);
-                try std.testing.expectEqualStrings("branch-cleanup", engine.cleanup_events.items[0]);
+                try std.testing.expectEqualStrings("branch-cleanup-new", engine.cleanup_events.items[0]);
                 try std.testing.expect(!engine.scopes.items[@intCast(retired_row_scope_id)].active);
                 try std.testing.expect(!engine.scopes.items[@intCast(plan.retired_scope_id)].active);
                 try std.testing.expectEqual(@as(?HostEachRowMembership, null), engine.each_row_memberships_by_scope_id.items[@intCast(retired_row_scope_id)]);
@@ -8876,6 +8905,16 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 try std.testing.expectEqual(@as(usize, 1), plan.retired_stream.signal_bool_attrs.items.len);
                 try std.testing.expectEqual(@as(usize, 1), engine.active_stream.signal_text_attrs.items.len);
                 try std.testing.expectEqual(@as(usize, 1), engine.active_stream.signal_text_nodes.items.len);
+                try std.testing.expectEqual(@as(usize, 1), engine.active_stream.on_changes.items.len);
+                try std.testing.expectEqual(@as(usize, 1), engine.active_stream.mounts.items.len);
+                try std.testing.expectEqual(@as(usize, 1), engine.active_stream.cleanups.items.len);
+                try std.testing.expect(engine.active_stream.on_changes.items[0].run_initial);
+                try std.testing.expect(engine.active_stream.on_changes.items[0].run_initial_pending);
+                try std.testing.expect(engine.active_stream.mounts.items[0].run_on_mount);
+                try std.testing.expectEqualStrings("branch-cleanup", engine.active_stream.cleanups.items[0].name);
+                try std.testing.expectEqual(@as(usize, 1), plan.retired_stream.on_changes.items.len);
+                try std.testing.expectEqual(@as(usize, 1), plan.retired_stream.mounts.items.len);
+                try std.testing.expectEqual(@as(usize, 1), plan.retired_stream.cleanups.items.len);
                 switch (engine.active_stream.signal_bool_attrs.items[0].signal.record.payload) {
                     .ref => |node_id| try std.testing.expectEqual(replacement_state_id, node_id),
                     else => return error.TestUnexpectedResult,
