@@ -2242,8 +2242,28 @@ pub fn Engine(comptime Ctx: type) type {
                 dom_ordinal.* += 1;
             }
 
-            fn appendAttr(self: *@This(), _: *abi.RocHost, elem_id: u64, attr: abi.NodeAttr, _: []const HostBinderBinding) CollectionError!void {
+            fn appendAttr(self: *@This(), roc_host: *abi.RocHost, elem_id: u64, attr: abi.NodeAttr, binder_stack: []const HostBinderBinding) CollectionError!void {
                 const prepared = switch (abi_view.NodeAttr.fromAbi(attr)) {
+                    .signal_text => |payload| switch (payload.target) {
+                        .fixed => |field| {
+                            try self.budget.charge(0, @sizeOf(HostNodeSignalTextAttrDesc));
+                            const signal = try self.bindSignalRoot(roc_host, payload.signal.*, binder_stack);
+                            const read = retainHostTextRead(payload.read, &self.engine.pending_roc_metrics);
+                            self.prepared_signal_attrs.appendAssumeCapacity(.{ .text_attr = .{
+                                .elem_id = elem_id,
+                                .field = field,
+                                .signal = signal,
+                                .read = read,
+                            } });
+                            self.signal_records.transferDescriptorRoot(signal.record);
+                            const journaled = self.signal_bindings.pop() orelse @panic("staged signal binding journal underflow");
+                            if (journaled.record != signal.record or journaled.source_node_ids.ptr != signal.source_node_ids.ptr or journaled.source_node_ids.len != signal.source_node_ids.len) {
+                                @panic("staged signal binding journal transfer mismatch");
+                            }
+                            return;
+                        },
+                        .custom => return error.ResourceLimit,
+                    },
                     .static_text => |payload| switch (payload.target) {
                         .fixed => |field| blk: {
                             const bytes = std.math.add(usize, @sizeOf(HostNodeStaticTextAttrDesc), payload.value.asSlice().len) catch return error.ResourceLimit;
@@ -6742,6 +6762,8 @@ fn verifyStaticText() abi.Elem {
     return .{ .payload = .{ .text = abi.RocStr.fromSlice("hello", undefined) }, .tag = .Text };
 }
 
+fn verifyErasedCallable(_: *abi.RocHost, _: ?[*]u8, _: ?[*]const u8, _: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {}
+
 fn deinitVerifyStaticEngine(engine: *Engine(VerifyCtx), ctx: *VerifyCtxHost) void {
     engine.scopes.deinit(std.testing.allocator);
     engine.dom_identities.deinit(std.testing.allocator);
@@ -6845,6 +6867,21 @@ test "staged signal record publication is allocation free" {
 
 test "transactional static engine root sweeps every allocation and retries cleanly" {
     const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var roc_env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&roc_env);
+    const signal_callable = abi.rocErasedCallableAllocate(&roc_host, verifyErasedCallable, null, 0);
+    defer abi.decrefErasedCallable(signal_callable, &roc_host);
+    var signal_expr = abi.NodeSignalExpr{ .payload = .{ .const_value = .{
+        ._0 = signal_callable,
+        ._1 = signal_callable,
+        ._2 = std.mem.zeroes(HostValueCapability),
+    } }, .tag = .ConstValue };
+    const signal_attr = abi.NodeAttr{ .payload = .{ .signal_text = .{
+        .field = .{ .id = @intFromEnum(RenderTextField.value) },
+        .name = abi.RocStr.empty(),
+        .read = std.mem.zeroes(HostTextRead),
+        .signal = &signal_expr,
+    } }, .tag = .SignalText };
     const child = verifyStaticText();
     const attr = abi.NodeAttr{
         .payload = .{ .static_text = .{
@@ -6878,8 +6915,7 @@ test "transactional static engine root sweeps every allocation and retries clean
         } },
         .tag = .StaticBool,
     };
-    const root = verifyStaticRoot(&.{ attr, bool_attr, custom_text_attr, custom_bool_attr }, &.{child});
-    var roc_host: abi.RocHost = undefined;
+    const root = verifyStaticRoot(&.{ attr, bool_attr, custom_text_attr, custom_bool_attr, signal_attr }, &.{child});
 
     var counter = FaultAllocator.init(std.testing.allocator);
     var counter_ctx = VerifyCtxHost{ .allocator = counter.allocator() };
@@ -6913,6 +6949,9 @@ test "transactional static engine root sweeps every allocation and retries clean
         try std.testing.expect(!streamHasBoolField(&stream, 1, .disabled));
         try std.testing.expect(!stream.customTextAttrDescriptorExists(1, "data-state"));
         try std.testing.expect(!stream.customTextAttrDescriptorExists(1, "aria-hidden"));
+        try std.testing.expectEqual(@as(usize, 0), stream.signal_text_attrs.items.len);
+        try std.testing.expect(stream.signalRecordByToken(signal_callable.?) == null);
+        try std.testing.expectEqual(engine.pending_roc_metrics.closure_retains, engine.pending_roc_metrics.closure_releases);
 
         fault.configure(null);
         try engine.collectStaticRootDescriptorsTransactional(&ctx, &roc_host, &stream, root, .{});
@@ -6924,6 +6963,8 @@ test "transactional static engine root sweeps every allocation and retries clean
         try std.testing.expect(streamHasBoolField(&stream, 1, .disabled));
         try std.testing.expect(stream.customTextAttrDescriptorExists(1, "data-state"));
         try std.testing.expect(stream.customTextAttrDescriptorExists(1, "aria-hidden"));
+        try std.testing.expectEqual(@as(usize, 1), stream.signal_text_attrs.items.len);
+        try std.testing.expect(stream.signalRecordByToken(signal_callable.?) != null);
     }
 }
 
