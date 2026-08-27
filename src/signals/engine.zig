@@ -4117,7 +4117,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
         };
 
-        const AggregateBranchCollection = struct {
+        const PreparedStructuralDownstream = struct {
             const HostRenderPublication = if (@hasDecl(Ctx, "RenderPublication")) Ctx.RenderPublication else void;
             engine: *Self,
             host_ctx: Ctx.Handle,
@@ -4202,43 +4202,43 @@ pub fn Engine(comptime Ctx: type) type {
                     retired_scope_ids[index] = selection.retired_scope_id;
                     render_insert_indexes[index] = selection.render_insert_index;
                 }
-                plan.targets = try PreparedStructuralTargets.prepare(engine, allocator, retired_scope_ids, retired_scope_ids);
-                errdefer if (plan.targets) |*targets| targets.deinit(allocator);
-                const target_scopes = plan.targets.?.descriptor_target_scopes;
-                const retirement_scope_ids = plan.targets.?.scope_retirement.?.scope_ids;
-                plan.identity_retirements = try PreparedIdentityRetirements.prepare(engine, allocator, target_scopes);
-                errdefer if (plan.identity_retirements) |*retirements| retirements.deinit(allocator);
-                plan.removal = structural_splice.prepareMultiRemoval(HostNodeDescriptorStream, allocator, &engine.active_stream, render_insert_indexes, target_scopes) catch |err| switch (err) {
+                try plan.prepareDownstream(allocator, retired_scope_ids, retired_scope_ids, render_insert_indexes);
+                return plan;
+            }
+
+            fn prepareDownstream(self: *@This(), allocator: std.mem.Allocator, descriptor_root_scope_ids: []const u64, retired_root_scope_ids: []const u64, render_insert_indexes: []const usize) CollectionError!void {
+                self.targets = try PreparedStructuralTargets.prepare(self.engine, allocator, descriptor_root_scope_ids, retired_root_scope_ids);
+                errdefer if (self.targets) |*targets| targets.deinit(allocator);
+                const target_scopes = self.targets.?.descriptor_target_scopes;
+                const retirement_scope_ids = self.targets.?.scope_retirement.?.scope_ids;
+                self.removal = structural_splice.prepareMultiRemoval(HostNodeDescriptorStream, allocator, &self.engine.active_stream, render_insert_indexes, target_scopes) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.OverlappingIntervals => return error.ResourceLimit,
                 };
-                errdefer if (plan.removal) |*removal| removal.deinit(allocator);
-                plan.state_retirement = try PreparedStateRetirementIndexes.prepare(engine, allocator, plan.removal.?.removal.node_indexes.state_indexes.items);
-                errdefer if (plan.state_retirement) |*retirement| retirement.deinit(allocator);
-                try plan.state_retirement.?.reserveRetired(allocator, &plan.retired_state_cells);
-                errdefer plan.retired_state_cells.deinit(allocator);
-                plan.row_retirement = try prepareRowRetirementForScopes(engine, allocator, retirement_scope_ids);
-                errdefer if (plan.row_retirement) |*retirement| retirement.deinit(allocator);
-                plan.effects_retirement = try PreparedEffectRetirements.prepare(engine, allocator, target_scopes, plan.removal.?.removal.node_indexes.cleanup_indexes.items);
-                errdefer if (plan.effects_retirement) |*effects| effects.deinit(allocator, null);
-                plan.retired_scope_steps.ensureUnusedCapacity(allocator, retirement_scope_ids.len) catch return error.OutOfMemory;
-                errdefer plan.retired_scope_steps.deinit(allocator);
-                engine.active_stream.reserveMovedStreamPublication(allocator, &plan.replacement.stream) catch return error.OutOfMemory;
-                try prepareRetiredStreamCapacity(engine, allocator, &plan.retired_stream, &plan.removal.?.removal, retirement_scope_ids);
-                const on_change_base = std.math.sub(usize, engine.active_stream.on_changes.items.len, plan.removal.?.removal.node_indexes.on_change_indexes.items.len) catch return error.ResourceLimit;
-                const mount_base = std.math.sub(usize, engine.active_stream.mounts.items.len, plan.removal.?.removal.node_indexes.mount_indexes.items.len) catch return error.ResourceLimit;
-                plan.publication = structural_splice.preparePublicationDeltas(
-                    allocator,
-                    plan.replacement.stream.render_nodes.items,
-                    &.{},
-                    on_change_base,
-                    plan.replacement.stream.on_changes.items.len,
-                    mount_base,
-                    plan.replacement.stream.mounts.items.len,
-                ) catch return error.OutOfMemory;
-                errdefer if (plan.publication) |*publication| publication.deinit(allocator);
-                try plan.prepareGraphRenderAndPublication(allocator);
-                return plan;
+                errdefer if (self.removal) |*removal| removal.deinit(allocator);
+                self.identity_retirements = try PreparedIdentityRetirements.prepareExactRemoval(self.engine, allocator, retirement_scope_ids, &self.removal.?.removal);
+                errdefer if (self.identity_retirements) |*retirements| retirements.deinit(allocator);
+                self.state_retirement = try PreparedStateRetirementIndexes.prepare(self.engine, allocator, self.removal.?.removal.node_indexes.state_indexes.items);
+                errdefer if (self.state_retirement) |*retirement| retirement.deinit(allocator);
+                try self.state_retirement.?.reserveRetired(allocator, &self.retired_state_cells);
+                errdefer self.retired_state_cells.deinit(allocator);
+                self.row_retirement = try prepareRowRetirementForScopes(self.engine, allocator, retirement_scope_ids);
+                errdefer if (self.row_retirement) |*retirement| retirement.deinit(allocator);
+                const retired_scopes = allocator.alloc(bool, self.engine.scopes.items.len) catch return error.OutOfMemory;
+                defer allocator.free(retired_scopes);
+                @memset(retired_scopes, false);
+                for (retirement_scope_ids) |scope_id| retired_scopes[@intCast(scope_id)] = true;
+                self.effects_retirement = try PreparedEffectRetirements.prepare(self.engine, allocator, retired_scopes, self.removal.?.removal.node_indexes.cleanup_indexes.items);
+                errdefer if (self.effects_retirement) |*effects| effects.deinit(allocator, null);
+                self.retired_scope_steps.ensureUnusedCapacity(allocator, retirement_scope_ids.len) catch return error.OutOfMemory;
+                errdefer self.retired_scope_steps.deinit(allocator);
+                self.engine.active_stream.reserveMovedStreamPublication(allocator, &self.replacement.stream) catch return error.OutOfMemory;
+                try prepareRetiredStreamCapacity(self.engine, allocator, &self.retired_stream, &self.removal.?.removal, retirement_scope_ids);
+                const on_change_base = std.math.sub(usize, self.engine.active_stream.on_changes.items.len, self.removal.?.removal.node_indexes.on_change_indexes.items.len) catch return error.ResourceLimit;
+                const mount_base = std.math.sub(usize, self.engine.active_stream.mounts.items.len, self.removal.?.removal.node_indexes.mount_indexes.items.len) catch return error.ResourceLimit;
+                self.publication = structural_splice.preparePublicationDeltas(allocator, self.replacement.stream.render_nodes.items, &.{}, on_change_base, self.replacement.stream.on_changes.items.len, mount_base, self.replacement.stream.mounts.items.len) catch return error.OutOfMemory;
+                errdefer if (self.publication) |*publication| publication.deinit(allocator);
+                try self.prepareGraphRenderAndPublication(allocator);
             }
 
             fn prepareGraphRenderAndPublication(self: *@This(), allocator: std.mem.Allocator) CollectionError!void {
@@ -4560,6 +4560,8 @@ pub fn Engine(comptime Ctx: type) type {
                 self.structural_route_appends = null;
             }
         };
+
+        const AggregateBranchCollection = PreparedStructuralDownstream;
 
         const BranchReplacementPlan = struct {
             const HostRenderPublication = if (@hasDecl(Ctx, "RenderPublication")) Ctx.RenderPublication else void;
