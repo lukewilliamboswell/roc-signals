@@ -3364,6 +3364,51 @@ pub fn Engine(comptime Ctx: type) type {
             }
         };
 
+        const PreparedStateRetirementIndexes = struct {
+            indexes_descending: []usize,
+
+            fn descending(_: void, left: usize, right: usize) bool {
+                return left > right;
+            }
+
+            fn prepare(engine: *Self, allocator: std.mem.Allocator, descriptor_indexes: []const usize) CollectionError!@This() {
+                const indexes = allocator.alloc(usize, descriptor_indexes.len) catch return error.OutOfMemory;
+                errdefer allocator.free(indexes);
+                for (descriptor_indexes, 0..) |descriptor_index, offset| {
+                    if (descriptor_index >= engine.active_stream.states.items.len) return error.ResourceLimit;
+                    const node_id = engine.active_stream.states.items[descriptor_index].node_id;
+                    if (node_id >= engine.state_indexes_by_node_id.items.len) return error.ResourceLimit;
+                    indexes[offset] = engine.state_indexes_by_node_id.items[@intCast(node_id)] orelse return error.ResourceLimit;
+                }
+                std.mem.sort(usize, indexes, {}, descending);
+                if (indexes.len > 1) for (indexes[1..], indexes[0 .. indexes.len - 1]) |current, previous| {
+                    if (current == previous) return error.ResourceLimit;
+                };
+                return .{ .indexes_descending = indexes };
+            }
+
+            fn reserveRetired(self: *const @This(), allocator: std.mem.Allocator, retired: *std.ArrayListUnmanaged(HostState)) CollectionError!void {
+                retired.ensureUnusedCapacity(allocator, self.indexes_descending.len) catch return error.OutOfMemory;
+            }
+
+            fn apply(self: *const @This(), engine: *Self, retired: *std.ArrayListUnmanaged(HostState)) void {
+                for (self.indexes_descending) |index| {
+                    const removed = engine.states.swapRemove(index);
+                    engine.clearStateCellIndex(removed.state_id, index);
+                    retired.appendAssumeCapacity(removed);
+                    if (index < engine.states.items.len) {
+                        const moved = engine.states.items[index];
+                        engine.state_indexes_by_node_id.items[@intCast(moved.state_id)] = index;
+                    }
+                }
+            }
+
+            fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+                allocator.free(self.indexes_descending);
+                self.* = undefined;
+            }
+        };
+
         const AggregateBranchCollection = struct {
             engine: *Self,
             host_ctx: Ctx.Handle,
@@ -3375,6 +3420,7 @@ pub fn Engine(comptime Ctx: type) type {
             scope_retirement: ?scope_runtime.PreparedSubtreeRetirement = null,
             removal: ?structural_splice.PreparedMultiRemoval = null,
             identity_retirements: ?PreparedIdentityRetirements = null,
+            state_retirement: ?PreparedStateRetirementIndexes = null,
 
             fn addCounts(total: *StaticRootCounts, next: StaticRootCounts) CollectionError!void {
                 total.nodes = std.math.add(usize, total.nodes, next.nodes) catch return error.ResourceLimit;
@@ -3447,6 +3493,8 @@ pub fn Engine(comptime Ctx: type) type {
                     error.OverlappingIntervals => return error.ResourceLimit,
                 };
                 errdefer if (plan.removal) |*removal| removal.deinit(allocator);
+                plan.state_retirement = try PreparedStateRetirementIndexes.prepare(engine, allocator, plan.removal.?.removal.node_indexes.state_indexes.items);
+                errdefer if (plan.state_retirement) |*retirement| retirement.deinit(allocator);
                 return plan;
             }
 
@@ -3459,6 +3507,7 @@ pub fn Engine(comptime Ctx: type) type {
                 self.collection.deinit();
                 self.stream.deinit(allocator, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
                 if (self.removal) |*removal| removal.deinit(allocator);
+                if (self.state_retirement) |*retirement| retirement.deinit(allocator);
                 if (self.identity_retirements) |*retirements| retirements.deinit(allocator);
                 if (self.scope_retirement) |*retirement| retirement.deinit(allocator);
                 allocator.free(self.target_scopes);
@@ -3594,15 +3643,10 @@ pub fn Engine(comptime Ctx: type) type {
                     plan.cleanup_event_names.appendAssumeCapacity(name);
                 }
                 engine_ptr.cleanup_events.ensureUnusedCapacity(allocator, plan.cleanup_event_names.items.len) catch return error.OutOfMemory;
-                plan.state_cell_indexes = allocator.alloc(usize, plan.removal.?.node_indexes.state_indexes.items.len) catch return error.OutOfMemory;
+                const state_retirement = try PreparedStateRetirementIndexes.prepare(engine_ptr, allocator, plan.removal.?.node_indexes.state_indexes.items);
+                plan.state_cell_indexes = state_retirement.indexes_descending;
                 errdefer allocator.free(plan.state_cell_indexes);
-                for (plan.removal.?.node_indexes.state_indexes.items, 0..) |descriptor_index, offset| {
-                    const node_id = engine_ptr.active_stream.states.items[descriptor_index].node_id;
-                    if (node_id >= engine_ptr.state_indexes_by_node_id.items.len) return error.ResourceLimit;
-                    plan.state_cell_indexes[offset] = engine_ptr.state_indexes_by_node_id.items[@intCast(node_id)] orelse return error.ResourceLimit;
-                }
-                std.mem.sort(usize, plan.state_cell_indexes, {}, stateIndexDescending);
-                plan.retired_state_cells.ensureUnusedCapacity(allocator, plan.state_cell_indexes.len) catch return error.OutOfMemory;
+                try state_retirement.reserveRetired(allocator, &plan.retired_state_cells);
                 errdefer plan.retired_state_cells.deinit(allocator);
                 const removal_indexes = &plan.removal.?.descriptor_indexes;
                 plan.retired_stream.reserveRetiredStaticPublication(
@@ -4211,15 +4255,8 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             fn commitStateCellsAssumeCapacity(self: *@This()) void {
-                for (self.state_cell_indexes) |index| {
-                    const removed = self.engine.states.swapRemove(index);
-                    self.engine.clearStateCellIndex(removed.state_id, index);
-                    self.retired_state_cells.appendAssumeCapacity(removed);
-                    if (index < self.engine.states.items.len) {
-                        const moved = self.engine.states.items[index];
-                        self.engine.state_indexes_by_node_id.items[@intCast(moved.state_id)] = index;
-                    }
-                }
+                const retirement = PreparedStateRetirementIndexes{ .indexes_descending = self.state_cell_indexes };
+                retirement.apply(self.engine, &self.retired_state_cells);
                 self.collection.commit();
             }
 
