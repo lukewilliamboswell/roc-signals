@@ -3255,6 +3255,7 @@ pub fn Engine(comptime Ctx: type) type {
             pending_task_indexes: []usize = &.{},
             retired_pending_tasks: std.ArrayListUnmanaged(HostPendingTask) = .empty,
             cleanup_event_names: std.ArrayListUnmanaged([]const u8) = .empty,
+            retired_scope_steps: std.ArrayListUnmanaged(HostScopeStep) = .empty,
 
             fn stateIndexDescending(_: void, left: usize, right: usize) bool {
                 return left > right;
@@ -3357,6 +3358,8 @@ pub fn Engine(comptime Ctx: type) type {
                     };
                 };
                 engine_ptr.cleanup_events.ensureUnusedCapacity(allocator, plan.cleanup_event_names.items.len) catch return error.OutOfMemory;
+                plan.retired_scope_steps.ensureUnusedCapacity(allocator, plan.scope_retirement.?.scope_ids.len) catch return error.OutOfMemory;
+                errdefer plan.retired_scope_steps.deinit(allocator);
                 const render_start = engine_ptr.renderStartForReplacementTargetSet(site.render_insert_index, plan.target_scopes);
                 plan.removal = structural_splice.prepareRemoval(HostNodeDescriptorStream, allocator, &engine_ptr.active_stream, render_start, plan.target_scopes) catch return error.OutOfMemory;
                 errdefer if (plan.removal) |*removal| removal.deinit(allocator);
@@ -3447,6 +3450,16 @@ pub fn Engine(comptime Ctx: type) type {
                 self.cleanup_event_names.items.len = 0;
             }
 
+            fn commitScopeRetirementLast(self: *@This()) void {
+                for (self.scope_retirement.?.scope_ids) |scope_id| {
+                    const scope = &self.engine.scopes.items[@intCast(scope_id)];
+                    self.retired_scope_steps.appendAssumeCapacity(scope.step);
+                    scope.step = .root;
+                }
+                self.scope_retirement.?.applyMetadata(HostEachRowScopeStep, self.engine.scopes.items, self.engine.identity_reuse_barrier);
+                self.engine.has_inactive_scopes = self.scope_retirement.?.scope_ids.len != 0 or self.engine.has_inactive_scopes;
+            }
+
             fn deinit(self: *@This()) void {
                 const allocator = Ctx.allocator(self.host_ctx);
                 if (self.publication) |*publication| publication.deinit(allocator);
@@ -3458,6 +3471,8 @@ pub fn Engine(comptime Ctx: type) type {
                 self.retired_pending_tasks.deinit(allocator);
                 for (self.cleanup_event_names.items) |name| allocator.free(name);
                 self.cleanup_event_names.deinit(allocator);
+                for (self.retired_scope_steps.items) |*step| deinitHostScopeStep(step, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
+                self.retired_scope_steps.deinit(allocator);
                 allocator.free(self.state_cell_indexes);
                 allocator.free(self.retired_node_identity_ids);
                 allocator.free(self.retired_dom_identity_ids);
@@ -7925,6 +7940,8 @@ fn deinitVerifyStateEngine(engine: *Engine(VerifyCtx), ctx: *VerifyCtxHost, roc_
     engine.state_indexes_by_node_id.deinit(ctx.allocator);
     engine.node_identities.deinit(ctx.allocator);
     engine.active_node_identity_ids.deinit(ctx.allocator);
+    for (engine.scopes.items) |*scope| if (scope.active) deinitHostScopeStep(&scope.step, ctx, roc_host, &engine.pending_roc_metrics);
+    engine.clearEachRowSites(ctx.allocator);
     deinitVerifyStaticEngine(engine, ctx);
 }
 
@@ -8347,7 +8364,7 @@ test "branch replacement preparation leaves the active branch unpublished" {
 
     const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
     const Runner = struct {
-        fn run(root_elem: abi.Elem, host: *abi.RocHost, failure_number: ?usize) !usize {
+        fn run(root_elem: abi.Elem, host: *abi.RocHost, row_capability: HostValueCapability, failure_number: ?usize) !usize {
             var fault = FaultAllocator.init(std.testing.allocator);
             var ctx = VerifyCtxHost{ .allocator = fault.allocator() };
             var engine = Engine(VerifyCtx).init();
@@ -8360,6 +8377,7 @@ test "branch replacement preparation leaves the active branch unpublished" {
             try engine.collectStaticRootDescriptorsTransactional(&ctx, host, &stream, root_elem, .{});
             engine.active_stream = stream;
             stream = .{};
+            const retired_row_scope_id = engine.createEachRowScope(&ctx, 1, 77, 55, 101, 202, row_capability, row_capability);
             try engine.active_stream.cleanups.append(ctx.allocator, .{ .scope_id = 1, .name = try ctx.allocator.dupe(u8, "branch-cleanup") });
             const scope_len = engine.scopes.items.len;
             const identity_len = engine.dom_identities.items.len;
@@ -8376,8 +8394,8 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 try std.testing.expectEqualStrings("no", plan.replacement_stream.text_nodes.items[0].value);
                 try std.testing.expectEqual(engine.scopes.items[1].scope_id, plan.retired_scope_id);
                 try std.testing.expect(plan.target_scopes[@intCast(plan.retired_scope_id)]);
-                try std.testing.expectEqualSlices(u64, &.{plan.retired_scope_id}, plan.scope_retirement.?.scope_ids);
-                try std.testing.expectEqual(@as(usize, 0), plan.row_retirement.?.rows.len);
+                try std.testing.expectEqualSlices(u64, &.{ retired_row_scope_id, plan.retired_scope_id }, plan.scope_retirement.?.scope_ids);
+                try std.testing.expectEqual(@as(usize, 1), plan.row_retirement.?.rows.len);
                 try std.testing.expectEqual(@as(usize, 0), plan.pending_task_indexes.len);
                 try std.testing.expectEqual(@as(usize, 1), plan.cleanup_event_names.items.len);
                 try std.testing.expectEqualStrings("branch-cleanup", plan.cleanup_event_names.items[0]);
@@ -8420,9 +8438,13 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 plan.commitIdentityRetirement();
                 plan.commitRowRetirement();
                 plan.commitEffectsRetirement();
+                plan.commitScopeRetirementLast();
                 try std.testing.expectEqual(@as(usize, 0), fault.attempts);
                 try std.testing.expectEqual(@as(usize, 1), engine.cleanup_events.items.len);
                 try std.testing.expectEqualStrings("branch-cleanup", engine.cleanup_events.items[0]);
+                try std.testing.expect(!engine.scopes.items[@intCast(retired_row_scope_id)].active);
+                try std.testing.expect(!engine.scopes.items[@intCast(plan.retired_scope_id)].active);
+                try std.testing.expectEqual(@as(?HostEachRowMembership, null), engine.each_row_memberships_by_scope_id.items[@intCast(retired_row_scope_id)]);
                 try std.testing.expect(!engine.node_identities.items[@intCast(retired_node_id)].active);
                 try std.testing.expect(!engine.dom_identities.items[@intCast(retired_elem_id - 1)].active);
                 try std.testing.expectEqual(@as(usize, 1), plan.retired_state_cells.items.len);
@@ -8448,7 +8470,7 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 try std.testing.expectEqual(@as(?usize, 0), engine.active_stream.elemDescriptorIndex(6).?.signal_text_node.get());
                 fault.configure(null);
                 plan.deinit();
-                try std.testing.expectEqual(retained_before, engine.pending_roc_metrics.closure_retains - engine.pending_roc_metrics.closure_releases);
+                try std.testing.expectEqual(retained_before - 6, engine.pending_roc_metrics.closure_retains - engine.pending_roc_metrics.closure_releases);
                 return attempts;
             }
             try std.testing.expectError(error.OutOfMemory, prepared);
@@ -8468,9 +8490,9 @@ test "branch replacement preparation leaves the active branch unpublished" {
         }
     };
 
-    const attempts = try Runner.run(root, &roc_host, null);
+    const attempts = try Runner.run(root, &roc_host, capability, null);
     try std.testing.expect(attempts != 0);
-    for (1..attempts + 1) |failure_number| _ = try Runner.run(root, &roc_host, failure_number);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(root, &roc_host, capability, failure_number);
     try std.testing.expect(abi.isUniqueBox(@ptrCast(when_false.payload_state().child)));
     try std.testing.expect(abi.isUniqueBox(@ptrCast(when_true.payload_state().child)));
     when_false.decref(&roc_host);
