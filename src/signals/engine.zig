@@ -6574,7 +6574,15 @@ test "transactional static engine root sweeps every allocation and retries clean
         } },
         .tag = .StaticText,
     };
-    const root = verifyStaticRoot(&.{attr}, &.{child});
+    const bool_attr = abi.NodeAttr{
+        .payload = .{ .static_bool = .{
+            .field = .{ .id = @intFromEnum(RenderBoolField.disabled) },
+            .name = abi.RocStr.empty(),
+            .value = true,
+        } },
+        .tag = .StaticBool,
+    };
+    const root = verifyStaticRoot(&.{ attr, bool_attr }, &.{child});
     var roc_host: abi.RocHost = undefined;
 
     var counter = FaultAllocator.init(std.testing.allocator);
@@ -6605,6 +6613,8 @@ test "transactional static engine root sweeps every allocation and retries clean
         try std.testing.expect(stream.elemDescriptorIndex(1) == null);
         try std.testing.expect(findElementDesc(&stream, 1) == null);
         try std.testing.expect(findTextNodeDesc(&stream, 2) == null);
+        try std.testing.expect(!streamHasTextField(&stream, 1, .label));
+        try std.testing.expect(!streamHasBoolField(&stream, 1, .disabled));
 
         fault.configure(null);
         try engine.collectStaticRootDescriptorsTransactional(&ctx, &roc_host, &stream, root, .{});
@@ -6613,6 +6623,7 @@ test "transactional static engine root sweeps every allocation and retries clean
         try std.testing.expectEqualStrings("div", findElementDesc(&stream, 1).?.tag);
         try std.testing.expectEqualStrings("hello", findTextNodeDesc(&stream, 2).?.value);
         try std.testing.expect(streamHasTextField(&stream, 1, .label));
+        try std.testing.expect(streamHasBoolField(&stream, 1, .disabled));
     }
 }
 
