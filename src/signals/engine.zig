@@ -10705,6 +10705,10 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
                 renderNodeScopeId(&engine.active_stream, engine.active_stream.render_nodes.items[1]),
                 renderNodeScopeId(&engine.active_stream, engine.active_stream.render_nodes.items[2]),
             });
+            for (engine.active_stream.render_nodes.items, 0..) |node, render_index| {
+                try std.testing.expectEqual(render_index, engine.active_stream.renderNodeIndex(node.elem_id).?);
+                try std.testing.expect(engine.active_stream.descriptor_indexes_by_elem_id.items[@intCast(node.elem_id)].text_node.get() != null);
+            }
             try std.testing.expect(!engine.scopes.items[1].active);
             try std.testing.expect(!engine.node_identities.items[@intCast(retired_node_id)].active);
             try std.testing.expect(!engine.dom_identities.items[@intCast(retired_elem_id - 1)].active);
