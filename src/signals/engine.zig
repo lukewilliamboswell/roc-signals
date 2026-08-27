@@ -2073,6 +2073,10 @@ pub fn Engine(comptime Ctx: type) type {
                 dom_ordinal.* += 1;
                 self.stream.appendTextNode(Ctx.allocator(self.host_ctx), elem_id, parent_elem_id, scope_id, text);
             }
+
+            fn appendAttr(self: @This(), roc_host: *abi.RocHost, elem_id: u64, attr: abi.NodeAttr, binder_stack: []const HostBinderBinding) CollectionError!void {
+                self.engine.collectNodeAttrDescriptor(self.host_ctx, roc_host, self.stream, elem_id, attr, binder_stack);
+            }
         };
 
         const StagedCollectionCtx = struct {
@@ -2167,6 +2171,10 @@ pub fn Engine(comptime Ctx: type) type {
                 dom_ordinal.* += 1;
             }
 
+            fn appendAttr(_: *@This(), _: *abi.RocHost, _: u64, _: abi.NodeAttr, _: []const HostBinderBinding) CollectionError!void {
+                return error.ResourceLimit;
+            }
+
             /// Publishes only pre-reserved state. This function must remain
             /// allocation-free so preparation is the last recoverable point.
             fn commit(self: *@This()) void {
@@ -2212,7 +2220,7 @@ pub fn Engine(comptime Ctx: type) type {
                 .element => |payload| {
                     const elem_id = try collection.appendElement(scope_id, parent_elem_id, dom_ordinal, payload.tag.asSlice());
                     for (payload.attrs) |attr| {
-                        self.collectNodeAttrDescriptor(ctx, roc_host, stream, elem_id, attr, binder_stack.items);
+                        try collection.appendAttr(roc_host, elem_id, attr, binder_stack.items);
                     }
                     for (payload.children) |child| {
                         try self.collectActiveElemDescriptorsWith(Collection, collection, ctx, roc_host, stream, child, scope_id, elem_id, ordinal, dom_ordinal, binder_stack, scope_created, dirty_source_node_ids);
@@ -2354,7 +2362,6 @@ pub fn Engine(comptime Ctx: type) type {
         fn countStaticRootNodes(elem: abi.Elem) CollectionError!usize {
             return switch (abi_view.Elem.fromAbi(elem)) {
                 .element => |payload| blk: {
-                    if (payload.attrs.len != 0) return error.ResourceLimit;
                     var count: usize = 1;
                     for (payload.children) |child| {
                         count = std.math.add(usize, count, try countStaticRootNodes(child)) catch return error.ResourceLimit;
