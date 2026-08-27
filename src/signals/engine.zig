@@ -2281,7 +2281,13 @@ pub fn Engine(comptime Ctx: type) type {
                 }
 
                 fn init(self: @This(), payload: HostSignalRecordPayload) error{OutOfMemory}!*HostSignalRecord {
-                    return HostSignalRecord.tryInit(self.allocator, payload);
+                    return HostSignalRecord.tryInitOwned(
+                        self.allocator,
+                        self.collection.host_ctx,
+                        self.collection.signal_roc_host orelse @panic("staged signal binding lacked Roc host"),
+                        &self.collection.engine.pending_roc_metrics,
+                        payload,
+                    );
                 }
 
                 fn remember(self: @This(), record: *HostSignalRecord) error{OutOfMemory}!void {
@@ -2292,8 +2298,9 @@ pub fn Engine(comptime Ctx: type) type {
                 }
             };
 
-            fn bindSignalRoot(self: *@This(), expr: abi.NodeSignalExpr, binder_stack: []const HostBinderBinding) CollectionError!*HostSignalRecord {
+            fn bindSignalRoot(self: *@This(), roc_host: *abi.RocHost, expr: abi.NodeSignalExpr, binder_stack: []const HostBinderBinding) CollectionError!*HostSignalRecord {
                 if (self.signal_records.descriptor_roots.items.len >= self.signal_capacity) return error.OutOfMemory;
+                self.signal_roc_host = roc_host;
                 const binding = StagedSignalRecordCtx{ .collection = self, .allocator = Ctx.allocator(self.host_ctx) };
                 const record = self.engine.bindSignalExprViewWith(StagedSignalRecordCtx, binding, abi_view.SignalExpr.fromAbi(expr), binder_stack) catch return error.OutOfMemory;
                 self.signal_records.ownDescriptorRootAssumeCapacity(record);
