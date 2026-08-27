@@ -2286,6 +2286,32 @@ pub fn Engine(comptime Ctx: type) type {
                             return;
                         },
                     },
+                    .signal_optional_text => |payload| switch (payload.target) {
+                        .fixed => return error.ResourceLimit,
+                        .custom => |name| {
+                            const name_slice = name.asSlice();
+                            if (name_slice.len == 0 or self.customAttrExists(elem_id, name_slice)) return error.ResourceLimit;
+                            const bytes = std.math.add(usize, @sizeOf(HostNodeSignalOptionalCustomTextAttrDesc), name_slice.len) catch return error.ResourceLimit;
+                            try self.budget.charge(0, bytes);
+                            const allocator = Ctx.allocator(self.host_ctx);
+                            const name_copy = allocator.dupe(u8, name_slice) catch return error.OutOfMemory;
+                            errdefer allocator.free(name_copy);
+                            const signal = try self.bindSignalRoot(roc_host, payload.signal.*, binder_stack);
+                            const present = retainHostBoolRead(payload.present, &self.engine.pending_roc_metrics);
+                            const read = retainHostTextRead(payload.read, &self.engine.pending_roc_metrics);
+                            self.prepared_signal_attrs.appendAssumeCapacity(.{ .optional_custom_text_attr = .{
+                                .elem_id = elem_id,
+                                .name = name_copy,
+                                .signal = signal,
+                                .present = present,
+                                .read = read,
+                            } });
+                            self.signal_records.transferDescriptorRoot(signal.record);
+                            const journaled = self.signal_bindings.pop() orelse @panic("staged signal binding journal underflow");
+                            if (journaled.record != signal.record or journaled.source_node_ids.ptr != signal.source_node_ids.ptr or journaled.source_node_ids.len != signal.source_node_ids.len) @panic("staged signal binding journal transfer mismatch");
+                            return;
+                        },
+                    },
                     .signal_bool => |payload| switch (payload.target) {
                         .fixed => |field| {
                             try self.budget.charge(0, @sizeOf(HostNodeSignalBoolAttrDesc));
@@ -6962,6 +6988,13 @@ test "transactional static engine root sweeps every allocation and retries clean
         .read = std.mem.zeroes(HostBoolRead),
         .signal = &signal_expr,
     } }, .tag = .SignalBool };
+    const signal_optional_text_attr = abi.NodeAttr{ .payload = .{ .text_optional_signal = .{
+        .field = .{ .id = abi_view.node_text_field_custom },
+        .name = abi.RocStr.fromSlice("data-maybe", undefined),
+        .present = std.mem.zeroes(HostBoolRead),
+        .read = std.mem.zeroes(HostTextRead),
+        .signal = &signal_expr,
+    } }, .tag = .TextOptionalSignal };
     const child = verifyStaticText();
     const attr = abi.NodeAttr{
         .payload = .{ .static_text = .{
@@ -6995,7 +7028,7 @@ test "transactional static engine root sweeps every allocation and retries clean
         } },
         .tag = .StaticBool,
     };
-    const root = verifyStaticRoot(&.{ attr, bool_attr, custom_text_attr, custom_bool_attr, signal_attr, signal_bool_attr, signal_custom_text_attr, signal_custom_bool_attr }, &.{child});
+    const root = verifyStaticRoot(&.{ attr, bool_attr, custom_text_attr, custom_bool_attr, signal_attr, signal_bool_attr, signal_custom_text_attr, signal_custom_bool_attr, signal_optional_text_attr }, &.{child});
 
     var counter = FaultAllocator.init(std.testing.allocator);
     var counter_ctx = VerifyCtxHost{ .allocator = counter.allocator() };
@@ -7033,6 +7066,7 @@ test "transactional static engine root sweeps every allocation and retries clean
         try std.testing.expectEqual(@as(usize, 0), stream.signal_bool_attrs.items.len);
         try std.testing.expectEqual(@as(usize, 0), stream.signal_custom_text_attrs.items.len);
         try std.testing.expectEqual(@as(usize, 0), stream.signal_custom_bool_attrs.items.len);
+        try std.testing.expectEqual(@as(usize, 0), stream.signal_optional_custom_text_attrs.items.len);
         try std.testing.expect(!stream.customTextAttrDescriptorExists(1, "data-live"));
         try std.testing.expect(stream.signalRecordByToken(signal_callable.?) == null);
         try std.testing.expectEqual(engine.pending_roc_metrics.closure_retains, engine.pending_roc_metrics.closure_releases);
@@ -7051,6 +7085,7 @@ test "transactional static engine root sweeps every allocation and retries clean
         try std.testing.expectEqual(@as(usize, 1), stream.signal_bool_attrs.items.len);
         try std.testing.expectEqual(@as(usize, 1), stream.signal_custom_text_attrs.items.len);
         try std.testing.expectEqual(@as(usize, 1), stream.signal_custom_bool_attrs.items.len);
+        try std.testing.expectEqual(@as(usize, 1), stream.signal_optional_custom_text_attrs.items.len);
         try std.testing.expect(stream.customTextAttrDescriptorExists(1, "data-live"));
         try std.testing.expect(stream.signalRecordByToken(signal_callable.?) != null);
     }
