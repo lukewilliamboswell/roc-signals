@@ -2691,6 +2691,7 @@ pub fn Engine(comptime Ctx: type) type {
                             const bytes = std.math.add(usize, @sizeOf(HostNodeSignalCustomTextAttrDesc), name_slice.len) catch return error.ResourceLimit;
                             try self.budget.charge(0, bytes);
                             const allocator = Ctx.allocator(self.host_ctx);
+                            self.stream.reservePreparedCustomAttrElem(allocator, elem_id, self.signal_root_capacity) catch return error.OutOfMemory;
                             const name_copy = allocator.dupe(u8, name_slice) catch return error.OutOfMemory;
                             errdefer allocator.free(name_copy);
                             const signal = try self.bindSignalRoot(roc_host, payload.signal.*, binder_stack);
@@ -2717,6 +2718,7 @@ pub fn Engine(comptime Ctx: type) type {
                             const bytes = std.math.add(usize, @sizeOf(HostNodeSignalOptionalCustomTextAttrDesc), name_slice.len) catch return error.ResourceLimit;
                             try self.budget.charge(0, bytes);
                             const allocator = Ctx.allocator(self.host_ctx);
+                            self.stream.reservePreparedCustomAttrElem(allocator, elem_id, self.signal_root_capacity) catch return error.OutOfMemory;
                             const name_copy = allocator.dupe(u8, name_slice) catch return error.OutOfMemory;
                             errdefer allocator.free(name_copy);
                             const signal = try self.bindSignalRoot(roc_host, payload.signal.*, binder_stack);
@@ -2759,6 +2761,7 @@ pub fn Engine(comptime Ctx: type) type {
                             const bytes = std.math.add(usize, @sizeOf(HostNodeSignalCustomBoolAttrDesc), name_slice.len) catch return error.ResourceLimit;
                             try self.budget.charge(0, bytes);
                             const allocator = Ctx.allocator(self.host_ctx);
+                            self.stream.reservePreparedCustomAttrElem(allocator, elem_id, self.signal_root_capacity) catch return error.OutOfMemory;
                             const name_copy = allocator.dupe(u8, name_slice) catch return error.OutOfMemory;
                             errdefer allocator.free(name_copy);
                             const signal = try self.bindSignalRoot(roc_host, payload.signal.*, binder_stack);
@@ -2836,7 +2839,9 @@ pub fn Engine(comptime Ctx: type) type {
                             const bytes = std.math.add(usize, @sizeOf(HostNodeStaticCustomTextAttrDesc), name_slice.len) catch return error.ResourceLimit;
                             const total = std.math.add(usize, bytes, payload.value.asSlice().len) catch return error.ResourceLimit;
                             try self.budget.charge(0, total);
-                            break :blk self.stream.prepareStaticCustomTextAttr(Ctx.allocator(self.host_ctx), elem_id, name_slice, payload.value.asSlice()) catch return error.OutOfMemory;
+                            const allocator = Ctx.allocator(self.host_ctx);
+                            self.stream.reservePreparedCustomAttrElem(allocator, elem_id, self.signal_root_capacity) catch return error.OutOfMemory;
+                            break :blk self.stream.prepareStaticCustomTextAttr(allocator, elem_id, name_slice, payload.value.asSlice()) catch return error.OutOfMemory;
                         },
                     },
                     .static_bool => |payload| switch (payload.target) {
@@ -2849,7 +2854,9 @@ pub fn Engine(comptime Ctx: type) type {
                             if (name_slice.len == 0 or self.customAttrExists(elem_id, name_slice)) return error.ResourceLimit;
                             const bytes = std.math.add(usize, @sizeOf(HostNodeStaticCustomBoolAttrDesc), name_slice.len) catch return error.ResourceLimit;
                             try self.budget.charge(0, bytes);
-                            break :blk self.stream.prepareStaticCustomBoolAttr(Ctx.allocator(self.host_ctx), elem_id, name_slice, payload.value) catch return error.OutOfMemory;
+                            const allocator = Ctx.allocator(self.host_ctx);
+                            self.stream.reservePreparedCustomAttrElem(allocator, elem_id, self.signal_root_capacity) catch return error.OutOfMemory;
+                            break :blk self.stream.prepareStaticCustomBoolAttr(allocator, elem_id, name_slice, payload.value) catch return error.OutOfMemory;
                         },
                     },
                 };

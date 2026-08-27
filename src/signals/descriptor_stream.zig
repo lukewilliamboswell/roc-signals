@@ -601,6 +601,7 @@ pub const Stream = struct {
     signal_records_by_token: std.AutoHashMapUnmanaged(HostSignalToken, *SignalRecord) = .{},
     signal_record_descriptor_uses_by_token: std.AutoHashMapUnmanaged(HostSignalToken, usize) = .{},
     custom_attr_keys: CustomAttrKeySet = .empty,
+    custom_attr_indices_by_elem_id: std.ArrayListUnmanaged(std.ArrayListUnmanaged(CustomAttrDescriptorIndex)) = .empty,
     custom_attr_index_active: bool = false,
     render_metadata_by_elem_id: std.AutoHashMapUnmanaged(u64, RenderElemIndex) = .{},
     named_event_indices_by_elem_id: std.ArrayListUnmanaged(std.ArrayListUnmanaged(usize)) = .empty,
@@ -1521,6 +1522,8 @@ pub const Stream = struct {
         self.signal_records_by_token.deinit(allocator);
         self.signal_record_descriptor_uses_by_token.deinit(allocator);
         self.custom_attr_keys.deinit(allocator);
+        for (self.custom_attr_indices_by_elem_id.items) |*indexes| indexes.deinit(allocator);
+        self.custom_attr_indices_by_elem_id.deinit(allocator);
         self.render_metadata_by_elem_id.deinit(allocator);
         self.descriptor_indexes_by_elem_id.deinit(allocator);
         self.descriptor_indexes_by_node_id.deinit(allocator);
@@ -1957,17 +1960,17 @@ pub const Stream = struct {
             .custom_text_attr => |desc| {
                 const index = self.signal_custom_text_attrs.items.len;
                 self.signal_custom_text_attrs.appendAssumeCapacity(desc);
-                self.custom_attr_keys.putAssumeCapacity(.{ .elem_id = desc.elem_id, .name = desc.name }, .{ .kind = .signal_text, .index = index });
+                self.recordPreparedCustomAttrIndex(desc.elem_id, desc.name, .{ .kind = .signal_text, .index = index });
             },
             .optional_custom_text_attr => |desc| {
                 const index = self.signal_optional_custom_text_attrs.items.len;
                 self.signal_optional_custom_text_attrs.appendAssumeCapacity(desc);
-                self.custom_attr_keys.putAssumeCapacity(.{ .elem_id = desc.elem_id, .name = desc.name }, .{ .kind = .signal_text_optional, .index = index });
+                self.recordPreparedCustomAttrIndex(desc.elem_id, desc.name, .{ .kind = .signal_text_optional, .index = index });
             },
             .custom_bool_attr => |desc| {
                 const index = self.signal_custom_bool_attrs.items.len;
                 self.signal_custom_bool_attrs.appendAssumeCapacity(desc);
-                self.custom_attr_keys.putAssumeCapacity(.{ .elem_id = desc.elem_id, .name = desc.name }, .{ .kind = .signal_bool, .index = index });
+                self.recordPreparedCustomAttrIndex(desc.elem_id, desc.name, .{ .kind = .signal_bool, .index = index });
             },
         }
     }
@@ -2008,6 +2011,30 @@ pub const Stream = struct {
         try self.custom_attr_keys.ensureUnusedCapacity(allocator, @intCast(additional));
     }
 
+    /// Reserves a conservative number of ownership entries for one element without changing
+    /// the committed index if allocation fails. Callers may reserve the whole transaction's
+    /// custom-attribute bound when its exact per-element distribution is not yet known.
+    pub fn reservePreparedCustomAttrElem(self: *Stream, allocator: std.mem.Allocator, elem_id: u64, additional: usize) std.mem.Allocator.Error!void {
+        if (additional == 0) return;
+        const elem_index = std.math.cast(usize, elem_id) orelse return error.OutOfMemory;
+        const required = std.math.add(usize, elem_index, 1) catch return error.OutOfMemory;
+        if (elem_index < self.custom_attr_indices_by_elem_id.items.len) {
+            try self.custom_attr_indices_by_elem_id.items[elem_index].ensureUnusedCapacity(allocator, additional);
+            return;
+        }
+        var prepared_indexes: std.ArrayListUnmanaged(CustomAttrDescriptorIndex) = .empty;
+        errdefer prepared_indexes.deinit(allocator);
+        try prepared_indexes.ensureUnusedCapacity(allocator, additional);
+        try self.custom_attr_indices_by_elem_id.ensureTotalCapacity(allocator, required);
+        while (self.custom_attr_indices_by_elem_id.items.len < elem_index) self.custom_attr_indices_by_elem_id.appendAssumeCapacity(.empty);
+        self.custom_attr_indices_by_elem_id.appendAssumeCapacity(prepared_indexes);
+    }
+
+    fn recordPreparedCustomAttrIndex(self: *Stream, elem_id: u64, name: []const u8, index: CustomAttrDescriptorIndex) void {
+        self.custom_attr_keys.putAssumeCapacity(.{ .elem_id = elem_id, .name = name }, index);
+        self.custom_attr_indices_by_elem_id.items[@intCast(elem_id)].appendAssumeCapacity(index);
+    }
+
     /// Appends prepared static attr using capacity that must already satisfy the caller's transaction contract.
     pub fn appendPreparedStaticAttr(self: *Stream, prepared: PreparedStaticAttr) void {
         switch (prepared) {
@@ -2024,12 +2051,12 @@ pub const Stream = struct {
             .custom_text => |value| {
                 const index = self.static_custom_text_attrs.items.len;
                 self.static_custom_text_attrs.appendAssumeCapacity(.{ .elem_id = value.elem_id, .name = value.name, .value = value.value });
-                self.custom_attr_keys.putAssumeCapacity(.{ .elem_id = value.elem_id, .name = value.name }, .{ .kind = .static_text, .index = index });
+                self.recordPreparedCustomAttrIndex(value.elem_id, value.name, .{ .kind = .static_text, .index = index });
             },
             .custom_boolean => |value| {
                 const index = self.static_custom_bool_attrs.items.len;
                 self.static_custom_bool_attrs.appendAssumeCapacity(.{ .elem_id = value.elem_id, .name = value.name, .value = value.value });
-                self.custom_attr_keys.putAssumeCapacity(.{ .elem_id = value.elem_id, .name = value.name }, .{ .kind = .static_bool, .index = index });
+                self.recordPreparedCustomAttrIndex(value.elem_id, value.name, .{ .kind = .static_bool, .index = index });
             },
         }
     }
@@ -2172,6 +2199,15 @@ pub const Stream = struct {
     pub fn removeCustomAttrIndex(self: *Stream, elem_id: u64, name: []const u8, expected: CustomAttrDescriptorIndex) void {
         const removed = self.custom_attr_keys.fetchRemove(.{ .elem_id = elem_id, .name = name }) orelse @panic("custom attribute index removal missed its descriptor");
         if (removed.value.kind != expected.kind or removed.value.index != expected.index) @panic("custom attribute index removal mismatched its descriptor");
+        if (elem_id >= self.custom_attr_indices_by_elem_id.items.len) @panic("custom attribute per-element removal missed its descriptor");
+        var indexes = &self.custom_attr_indices_by_elem_id.items[@intCast(elem_id)];
+        for (indexes.items, 0..) |candidate, position| {
+            if (candidate.kind == expected.kind and candidate.index == expected.index) {
+                _ = indexes.swapRemove(position);
+                return;
+            }
+        }
+        @panic("custom attribute per-element removal missed its exact descriptor");
     }
 
     /// Patches the dense index of a descriptor moved by swap removal.
@@ -2179,6 +2215,20 @@ pub const Stream = struct {
         const index = self.custom_attr_keys.getPtr(.{ .elem_id = elem_id, .name = name }) orelse @panic("moved custom attribute missed its index");
         if (index.kind != kind or index.index != old_index) @panic("moved custom attribute index was stale");
         index.index = new_index;
+        if (elem_id >= self.custom_attr_indices_by_elem_id.items.len) @panic("moved custom attribute missed its per-element index");
+        for (self.custom_attr_indices_by_elem_id.items[@intCast(elem_id)].items) |*candidate| {
+            if (candidate.kind == kind and candidate.index == old_index) {
+                candidate.index = new_index;
+                return;
+            }
+        }
+        @panic("moved custom attribute per-element index was stale");
+    }
+
+    /// Returns exact custom descriptors owned by one rendered element.
+    pub fn customAttrIndices(self: *const Stream, elem_id: u64) []const CustomAttrDescriptorIndex {
+        if (!self.custom_attr_index_active or elem_id >= self.custom_attr_indices_by_elem_id.items.len) return &.{};
+        return self.custom_attr_indices_by_elem_id.items[@intCast(elem_id)].items;
     }
 
     /// Appends static custom text attr using capacity that must already satisfy the caller's transaction contract.
@@ -2187,47 +2237,57 @@ pub const Stream = struct {
     }
 
     /// Appends signal custom text attr using capacity that must already satisfy the caller's transaction contract.
-    pub fn appendSignalCustomTextAttr(self: *Stream, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, elem_id: u64, name: []const u8, signal: HostSignalBinding, read: HostTextRead) void {
+    pub fn appendSignalCustomTextAttr(self: *Stream, allocator: std.mem.Allocator, _: anytype, _: *abi.RocHost, metrics: anytype, elem_id: u64, name: []const u8, signal: HostSignalBinding, read: HostTextRead) void {
         if (name.len == 0) @panic("custom text attr descriptor used an empty name");
         if (customAttrDescriptorExistsForAppend(Stream, self, allocator, elem_id, name)) @panic("element has duplicate custom text attr descriptors");
 
-        self.rememberSignalRecordTree(allocator, signal.record);
         const name_copy = allocator.dupe(u8, name) catch @panic("out of memory");
-        recordCustomAttrKey(Stream, self, allocator, elem_id, name_copy, .signal_text, self.signal_custom_text_attrs.items.len);
+        self.signal_custom_text_attrs.ensureUnusedCapacity(allocator, 1) catch {
+            allocator.free(name_copy);
+            @panic("out of memory");
+        };
+        reserveCustomAttrIndexEntry(Stream, self, allocator, elem_id) catch {
+            allocator.free(name_copy);
+            @panic("out of memory");
+        };
+        self.rememberSignalRecordTree(allocator, signal.record);
         const retained_read = retainHostTextRead(read, metrics);
-        self.signal_custom_text_attrs.append(allocator, .{
+        const index = self.signal_custom_text_attrs.items.len;
+        self.signal_custom_text_attrs.appendAssumeCapacity(.{
             .elem_id = elem_id,
             .name = name_copy,
             .signal = signal,
             .read = retained_read,
-        }) catch {
-            allocator.free(name_copy);
-            rollbackSignalTextAppend(signal, retained_read, allocator, ctx, roc_host, metrics);
-            @panic("out of memory");
-        };
+        });
+        recordCustomAttrKeyAssumeCapacity(Stream, self, elem_id, name_copy, .signal_text, index);
     }
 
     /// Appends signal optional custom text attr using capacity that must already satisfy the caller's transaction contract.
-    pub fn appendSignalOptionalCustomTextAttr(self: *Stream, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, elem_id: u64, name: []const u8, signal: HostSignalBinding, present: HostBoolRead, read: HostTextRead) void {
+    pub fn appendSignalOptionalCustomTextAttr(self: *Stream, allocator: std.mem.Allocator, _: anytype, _: *abi.RocHost, metrics: anytype, elem_id: u64, name: []const u8, signal: HostSignalBinding, present: HostBoolRead, read: HostTextRead) void {
         if (name.len == 0) @panic("custom text attr descriptor used an empty name");
         if (customAttrDescriptorExistsForAppend(Stream, self, allocator, elem_id, name)) @panic("element has duplicate custom text attr descriptors");
 
-        self.rememberSignalRecordTree(allocator, signal.record);
         const name_copy = allocator.dupe(u8, name) catch @panic("out of memory");
-        recordCustomAttrKey(Stream, self, allocator, elem_id, name_copy, .signal_text_optional, self.signal_optional_custom_text_attrs.items.len);
+        self.signal_optional_custom_text_attrs.ensureUnusedCapacity(allocator, 1) catch {
+            allocator.free(name_copy);
+            @panic("out of memory");
+        };
+        reserveCustomAttrIndexEntry(Stream, self, allocator, elem_id) catch {
+            allocator.free(name_copy);
+            @panic("out of memory");
+        };
+        self.rememberSignalRecordTree(allocator, signal.record);
         const retained_present = retainHostBoolRead(present, metrics);
         const retained_read = retainHostTextRead(read, metrics);
-        self.signal_optional_custom_text_attrs.append(allocator, .{
+        const index = self.signal_optional_custom_text_attrs.items.len;
+        self.signal_optional_custom_text_attrs.appendAssumeCapacity(.{
             .elem_id = elem_id,
             .name = name_copy,
             .signal = signal,
             .present = retained_present,
             .read = retained_read,
-        }) catch {
-            allocator.free(name_copy);
-            rollbackSignalOptionalTextAppend(signal, retained_present, retained_read, allocator, ctx, roc_host, metrics);
-            @panic("out of memory");
-        };
+        });
+        recordCustomAttrKeyAssumeCapacity(Stream, self, elem_id, name_copy, .signal_text_optional, index);
     }
 
     /// Appends static custom bool attr using capacity that must already satisfy the caller's transaction contract.
@@ -2236,24 +2296,29 @@ pub const Stream = struct {
     }
 
     /// Appends signal custom bool attr using capacity that must already satisfy the caller's transaction contract.
-    pub fn appendSignalCustomBoolAttr(self: *Stream, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, elem_id: u64, name: []const u8, signal: HostSignalBinding, read: HostBoolRead) void {
+    pub fn appendSignalCustomBoolAttr(self: *Stream, allocator: std.mem.Allocator, _: anytype, _: *abi.RocHost, metrics: anytype, elem_id: u64, name: []const u8, signal: HostSignalBinding, read: HostBoolRead) void {
         if (name.len == 0) @panic("custom bool attr descriptor used an empty name");
         if (customAttrDescriptorExistsForAppend(Stream, self, allocator, elem_id, name)) @panic("element has duplicate custom attr descriptors");
 
-        self.rememberSignalRecordTree(allocator, signal.record);
         const name_copy = allocator.dupe(u8, name) catch @panic("out of memory");
-        recordCustomAttrKey(Stream, self, allocator, elem_id, name_copy, .signal_bool, self.signal_custom_bool_attrs.items.len);
+        self.signal_custom_bool_attrs.ensureUnusedCapacity(allocator, 1) catch {
+            allocator.free(name_copy);
+            @panic("out of memory");
+        };
+        reserveCustomAttrIndexEntry(Stream, self, allocator, elem_id) catch {
+            allocator.free(name_copy);
+            @panic("out of memory");
+        };
+        self.rememberSignalRecordTree(allocator, signal.record);
         const retained_read = retainHostBoolRead(read, metrics);
-        self.signal_custom_bool_attrs.append(allocator, .{
+        const index = self.signal_custom_bool_attrs.items.len;
+        self.signal_custom_bool_attrs.appendAssumeCapacity(.{
             .elem_id = elem_id,
             .name = name_copy,
             .signal = signal,
             .read = retained_read,
-        }) catch {
-            allocator.free(name_copy);
-            rollbackSignalBoolAppend(signal, retained_read, allocator, ctx, roc_host, metrics);
-            @panic("out of memory");
-        };
+        });
+        recordCustomAttrKeyAssumeCapacity(Stream, self, elem_id, name_copy, .signal_bool, index);
     }
 
     /// Appends static bool attr using capacity that must already satisfy the caller's transaction contract.
@@ -3263,18 +3328,52 @@ fn tryActivateCustomAttrIndex(comptime StreamType: type, stream: *StreamType, al
         stream.signal_optional_custom_text_attrs.items.len +
         stream.static_custom_bool_attrs.items.len +
         stream.signal_custom_bool_attrs.items.len;
-    try stream.custom_attr_keys.ensureTotalCapacity(allocator, @intCast(attr_count + 1));
+    var keys: CustomAttrKeySet = .empty;
+    errdefer keys.deinit(allocator);
+    const key_capacity = std.math.add(usize, attr_count, 1) catch return error.OutOfMemory;
+    try keys.ensureTotalCapacity(allocator, std.math.cast(u32, key_capacity) orelse return error.OutOfMemory);
+    var by_elem: std.ArrayListUnmanaged(std.ArrayListUnmanaged(CustomAttrDescriptorIndex)) = .empty;
+    errdefer {
+        for (by_elem.items) |*indexes| indexes.deinit(allocator);
+        by_elem.deinit(allocator);
+    }
     var attrs = customAttrRefs(StreamType, stream);
     while (attrs.next()) |attr| {
-        stream.custom_attr_keys.putAssumeCapacity(.{ .elem_id = attr.elem_id, .name = attr.name }, .{ .kind = attr.kind, .index = attr.index });
+        const elem_index = std.math.cast(usize, attr.elem_id) orelse return error.OutOfMemory;
+        const required = std.math.add(usize, elem_index, 1) catch return error.OutOfMemory;
+        try by_elem.ensureTotalCapacity(allocator, required);
+        while (by_elem.items.len < required) by_elem.appendAssumeCapacity(.empty);
+        const descriptor_index = CustomAttrDescriptorIndex{ .kind = attr.kind, .index = attr.index };
+        try by_elem.items[elem_index].append(allocator, descriptor_index);
+        const key = CustomAttrKey{ .elem_id = attr.elem_id, .name = attr.name };
+        if (keys.contains(key)) @panic("element has duplicate custom attribute descriptors");
+        keys.putAssumeCapacity(key, descriptor_index);
     }
+    stream.custom_attr_keys.deinit(allocator);
+    for (stream.custom_attr_indices_by_elem_id.items) |*indexes| indexes.deinit(allocator);
+    stream.custom_attr_indices_by_elem_id.deinit(allocator);
+    stream.custom_attr_keys = keys;
+    stream.custom_attr_indices_by_elem_id = by_elem;
     stream.custom_attr_index_active = true;
 }
 
-fn recordCustomAttrKey(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, elem_id: u64, name: []const u8, kind: CustomAttrKind, index: usize) void {
+fn reserveCustomAttrIndexEntry(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, elem_id: u64) std.mem.Allocator.Error!void {
     if (!@hasField(StreamType, "custom_attr_keys")) return;
     if (!stream.custom_attr_index_active) return;
-    stream.custom_attr_keys.put(allocator, .{ .elem_id = elem_id, .name = name }, .{ .kind = kind, .index = index }) catch @panic("out of memory");
+    try stream.custom_attr_keys.ensureUnusedCapacity(allocator, 1);
+    const elem_index = std.math.cast(usize, elem_id) orelse return error.OutOfMemory;
+    const required = std.math.add(usize, elem_index, 1) catch return error.OutOfMemory;
+    try stream.custom_attr_indices_by_elem_id.ensureTotalCapacity(allocator, required);
+    while (stream.custom_attr_indices_by_elem_id.items.len < required) stream.custom_attr_indices_by_elem_id.appendAssumeCapacity(.empty);
+    try stream.custom_attr_indices_by_elem_id.items[elem_index].ensureUnusedCapacity(allocator, 1);
+}
+
+fn recordCustomAttrKeyAssumeCapacity(comptime StreamType: type, stream: *StreamType, elem_id: u64, name: []const u8, kind: CustomAttrKind, index: usize) void {
+    if (!@hasField(StreamType, "custom_attr_keys")) return;
+    if (!stream.custom_attr_index_active) return;
+    const descriptor_index = CustomAttrDescriptorIndex{ .kind = kind, .index = index };
+    stream.custom_attr_keys.putAssumeCapacity(.{ .elem_id = elem_id, .name = name }, descriptor_index);
+    stream.custom_attr_indices_by_elem_id.items[@intCast(elem_id)].appendAssumeCapacity(descriptor_index);
 }
 
 /// Appends static custom text attr using capacity that must already satisfy the caller's transaction contract.
@@ -3283,20 +3382,27 @@ pub fn appendStaticCustomTextAttr(comptime StreamType: type, stream: *StreamType
     if (customAttrDescriptorExistsForAppend(StreamType, stream, allocator, elem_id, name)) @panic("element has duplicate custom text attr descriptors");
 
     const name_copy = allocator.dupe(u8, name) catch @panic("out of memory");
-    recordCustomAttrKey(StreamType, stream, allocator, elem_id, name_copy, .static_text, stream.static_custom_text_attrs.items.len);
     const value_copy = allocator.dupe(u8, value) catch {
         allocator.free(name_copy);
         @panic("out of memory");
     };
-    stream.static_custom_text_attrs.append(allocator, .{
-        .elem_id = elem_id,
-        .name = name_copy,
-        .value = value_copy,
-    }) catch {
+    stream.static_custom_text_attrs.ensureUnusedCapacity(allocator, 1) catch {
         allocator.free(name_copy);
         allocator.free(value_copy);
         @panic("out of memory");
     };
+    reserveCustomAttrIndexEntry(StreamType, stream, allocator, elem_id) catch {
+        allocator.free(name_copy);
+        allocator.free(value_copy);
+        @panic("out of memory");
+    };
+    const index = stream.static_custom_text_attrs.items.len;
+    stream.static_custom_text_attrs.appendAssumeCapacity(.{
+        .elem_id = elem_id,
+        .name = name_copy,
+        .value = value_copy,
+    });
+    recordCustomAttrKeyAssumeCapacity(StreamType, stream, elem_id, name_copy, .static_text, index);
 }
 
 /// Appends static custom bool attr using capacity that must already satisfy the caller's transaction contract.
@@ -3305,15 +3411,21 @@ pub fn appendStaticCustomBoolAttr(comptime StreamType: type, stream: *StreamType
     if (customAttrDescriptorExistsForAppend(StreamType, stream, allocator, elem_id, name)) @panic("element has duplicate custom attr descriptors");
 
     const name_copy = allocator.dupe(u8, name) catch @panic("out of memory");
-    recordCustomAttrKey(StreamType, stream, allocator, elem_id, name_copy, .static_bool, stream.static_custom_bool_attrs.items.len);
-    stream.static_custom_bool_attrs.append(allocator, .{
-        .elem_id = elem_id,
-        .name = name_copy,
-        .value = value,
-    }) catch {
+    stream.static_custom_bool_attrs.ensureUnusedCapacity(allocator, 1) catch {
         allocator.free(name_copy);
         @panic("out of memory");
     };
+    reserveCustomAttrIndexEntry(StreamType, stream, allocator, elem_id) catch {
+        allocator.free(name_copy);
+        @panic("out of memory");
+    };
+    const index = stream.static_custom_bool_attrs.items.len;
+    stream.static_custom_bool_attrs.appendAssumeCapacity(.{
+        .elem_id = elem_id,
+        .name = name_copy,
+        .value = value,
+    });
+    recordCustomAttrKeyAssumeCapacity(StreamType, stream, elem_id, name_copy, .static_bool, index);
 }
 
 /// Appends static bool attr using capacity that must already satisfy the caller's transaction contract.
@@ -4297,6 +4409,8 @@ test "custom attribute index tracks family and swap-moved dense index" {
     stream.appendStaticCustomTextAttr(allocator, 2, "data-second", "two");
     try std.testing.expectEqualDeep(CustomAttrDescriptorIndex{ .kind = .static_text, .index = 0 }, stream.customAttrDescriptorIndex(1, "data-first").?);
     try std.testing.expectEqualDeep(CustomAttrDescriptorIndex{ .kind = .static_text, .index = 1 }, stream.customAttrDescriptorIndex(2, "data-second").?);
+    try std.testing.expectEqualDeep(&[_]CustomAttrDescriptorIndex{.{ .kind = .static_text, .index = 0 }}, stream.customAttrIndices(1));
+    try std.testing.expectEqualDeep(&[_]CustomAttrDescriptorIndex{.{ .kind = .static_text, .index = 1 }}, stream.customAttrIndices(2));
 
     const removed = stream.static_custom_text_attrs.swapRemove(0);
     stream.removeCustomAttrIndex(removed.elem_id, removed.name, .{ .kind = .static_text, .index = 0 });
@@ -4306,6 +4420,8 @@ test "custom attribute index tracks family and swap-moved dense index" {
     allocator.free(removed.value);
     try std.testing.expect(stream.customAttrDescriptorIndex(1, "data-first") == null);
     try std.testing.expectEqualDeep(CustomAttrDescriptorIndex{ .kind = .static_text, .index = 0 }, stream.customAttrDescriptorIndex(2, "data-second").?);
+    try std.testing.expectEqual(@as(usize, 0), stream.customAttrIndices(1).len);
+    try std.testing.expectEqualDeep(&[_]CustomAttrDescriptorIndex{.{ .kind = .static_text, .index = 0 }}, stream.customAttrIndices(2));
 }
 
 test "custom attribute index preflight sweeps allocation failures" {
@@ -4313,19 +4429,61 @@ test "custom attribute index preflight sweeps allocation failures" {
     var counter = FaultAllocator.init(std.testing.allocator);
     var baseline: Stream = .{};
     try baseline.reservePreparedCustomAttrIndex(counter.allocator(), 4);
+    try baseline.reservePreparedCustomAttrElem(counter.allocator(), 7, 4);
     const attempts = counter.attempts;
     baseline.custom_attr_keys.deinit(counter.allocator());
+    for (baseline.custom_attr_indices_by_elem_id.items) |*indexes| indexes.deinit(counter.allocator());
+    baseline.custom_attr_indices_by_elem_id.deinit(counter.allocator());
     try std.testing.expect(attempts != 0);
     for (1..attempts + 1) |failure_number| {
         var fault = FaultAllocator.init(std.testing.allocator);
         fault.configure(failure_number);
         var stream: Stream = .{};
-        try std.testing.expectError(error.OutOfMemory, stream.reservePreparedCustomAttrIndex(fault.allocator(), 4));
+        var failed = false;
+        stream.reservePreparedCustomAttrIndex(fault.allocator(), 4) catch {
+            failed = true;
+        };
+        if (!failed) stream.reservePreparedCustomAttrElem(fault.allocator(), 7, 4) catch {
+            failed = true;
+        };
+        try std.testing.expect(failed);
         try std.testing.expectEqual(@as(usize, 0), stream.custom_attr_keys.count());
+        try std.testing.expectEqual(@as(usize, 0), stream.custom_attr_indices_by_elem_id.items.len);
         fault.configure(null);
         try stream.reservePreparedCustomAttrIndex(fault.allocator(), 4);
+        try stream.reservePreparedCustomAttrElem(fault.allocator(), 7, 4);
         stream.custom_attr_keys.deinit(fault.allocator());
+        for (stream.custom_attr_indices_by_elem_id.items) |*indexes| indexes.deinit(fault.allocator());
+        stream.custom_attr_indices_by_elem_id.deinit(fault.allocator());
     }
+}
+
+test "prepared custom attribute publication is allocation free" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    const TestCtx = struct {
+        pub fn pushHostValueCapabilities(_: *@This(), _: []const retained.HostValueCapability) void {}
+        pub fn popHostValueCapabilities(_: *@This()) void {}
+    };
+    var fault = FaultAllocator.init(std.testing.allocator);
+    const allocator = fault.allocator();
+    var ctx: TestCtx = .{};
+    var env = abi.RocEnv{ .allocator = allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&env);
+    var metrics = TestMetrics{};
+    var stream: Stream = .{};
+    defer stream.deinit(allocator, &ctx, &roc_host, &metrics);
+
+    try stream.reservePreparedStaticAttrs(allocator, 1);
+    try stream.reservePreparedCustomAttrIndex(allocator, 1);
+    try stream.reservePreparedCustomAttrElem(allocator, 7, 1);
+    const prepared = try stream.prepareStaticCustomTextAttr(allocator, 7, "data-state", "ready");
+
+    fault.configure(1);
+    stream.appendPreparedStaticAttr(prepared);
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqualDeep(CustomAttrDescriptorIndex{ .kind = .static_text, .index = 0 }, stream.customAttrDescriptorIndex(7, "data-state").?);
+    try std.testing.expectEqualDeep(&[_]CustomAttrDescriptorIndex{.{ .kind = .static_text, .index = 0 }}, stream.customAttrIndices(7));
+    fault.configure(null);
 }
 
 test "render elem index reports empty only when no render metadata remains" {
