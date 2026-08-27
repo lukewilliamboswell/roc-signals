@@ -3714,6 +3714,92 @@ pub fn Engine(comptime Ctx: type) type {
             }
         };
 
+        const PreparedEachRowReplacementCollection = struct {
+            const RowElem = struct {
+                row_index: usize,
+                elem: abi.Elem,
+            };
+
+            engine: *Self,
+            host_ctx: Ctx.Handle,
+            roc_host: *abi.RocHost,
+            stream: HostNodeDescriptorStream = .{},
+            collection: StagedCollectionCtx = undefined,
+            row_elems: []RowElem = &.{},
+            committed: bool = false,
+
+            fn prepare(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, site: HostNodeScopeSiteDesc, each: HostNodeEachDesc, rows: *const each_runtime.PreparedRowSync, keys: []const HostValue, items: []const HostValue, limits: collection_budget.Limits, dirty_source_node_ids: []const u64) CollectionError!*@This() {
+                if (keys.len != items.len or keys.len != rows.next_scope_ids.len) return error.ResourceLimit;
+                const allocator = Ctx.allocator(ctx);
+                const plan = allocator.create(@This()) catch return error.OutOfMemory;
+                errdefer allocator.destroy(plan);
+                plan.* = .{ .engine = engine, .host_ctx = ctx, .roc_host = roc_host };
+                errdefer plan.stream.deinit(allocator, ctx, roc_host, &engine.pending_roc_metrics);
+
+                var changed_count: usize = 0;
+                for (rows.row_items_changed) |changed| if (changed) {
+                    changed_count = std.math.add(usize, changed_count, 1) catch return error.ResourceLimit;
+                };
+                plan.row_elems = allocator.alloc(RowElem, changed_count) catch return error.OutOfMemory;
+                errdefer allocator.free(plan.row_elems);
+                var evaluated: usize = 0;
+                errdefer for (plan.row_elems[0..evaluated]) |*entry| entry.elem.decref(roc_host);
+                var total: StaticRootCounts = .{};
+                for (rows.row_items_changed, keys, items, 0..) |changed, key, item, row_index| {
+                    if (!changed) continue;
+                    const elem = callHostValueHostValueToElemWithCapabilities(ctx, roc_host, each.ops.key_capability, each.ops.item_capability, each.ops.row, key, item);
+                    plan.row_elems[evaluated] = .{ .row_index = row_index, .elem = elem };
+                    evaluated += 1;
+                    try AggregateBranchCollection.addCounts(&total, try countStaticRootNodes(elem));
+                }
+
+                plan.collection = try StagedCollectionCtx.init(engine, ctx, &plan.stream, limits, total.nodes, total.attrs, total.lifecycle, total.signal_records, total.state_sites, total.component_sites, total.when_sites, rows.created_count);
+                errdefer plan.collection.deinit();
+                const created_scope_ids = allocator.alloc(u64, rows.created_count) catch return error.OutOfMemory;
+                defer allocator.free(created_scope_ids);
+                var created_write: usize = 0;
+                for (rows.next_scope_ids, rows.scope_created) |scope_id, created| if (created) {
+                    created_scope_ids[created_write] = scope_id;
+                    created_write += 1;
+                };
+                try plan.collection.attachExternalScopeIds(created_scope_ids);
+
+                for (plan.row_elems) |*entry| {
+                    const row_index = entry.row_index;
+                    const row_scope_id = rows.next_scope_ids[row_index];
+                    var binder_stack: std.ArrayListUnmanaged(HostBinderBinding) = .empty;
+                    defer binder_stack.deinit(allocator);
+                    const counts = try countStaticRootNodes(entry.elem);
+                    const binder_capacity = std.math.add(usize, site.binder_bindings.len, counts.state_sites) catch return error.ResourceLimit;
+                    binder_stack.ensureTotalCapacity(allocator, binder_capacity) catch return error.OutOfMemory;
+                    binder_stack.appendSliceAssumeCapacity(site.binder_bindings);
+                    var ordinal: u64 = 0;
+                    var dom_ordinal: u64 = 0;
+                    try engine.collectActiveEachRowElemDescriptorsWith(*StagedCollectionCtx, &plan.collection, ctx, roc_host, &plan.stream, each, entry.elem, row_scope_id, site.parent_elem_id, &ordinal, &dom_ordinal, &binder_stack, rows.scope_created[row_index], dirty_source_node_ids);
+                }
+                plan.collection.materializeStream();
+                for (plan.row_elems) |*entry| entry.elem.decref(roc_host);
+                allocator.free(plan.row_elems);
+                plan.row_elems = &.{};
+                return plan;
+            }
+
+            fn commit(self: *@This()) void {
+                if (self.committed) @panic("prepared each replacement collection committed twice");
+                self.collection.commit();
+                self.committed = true;
+            }
+
+            fn deinit(self: *@This()) void {
+                const allocator = Ctx.allocator(self.host_ctx);
+                for (self.row_elems) |*entry| entry.elem.decref(self.roc_host);
+                allocator.free(self.row_elems);
+                self.collection.deinit();
+                self.stream.deinit(allocator, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
+                allocator.destroy(self);
+            }
+        };
+
         fn prepareRetiredStreamCapacity(engine: *Self, allocator: std.mem.Allocator, retired: *HostNodeDescriptorStream, removal: *const structural_splice.PreparedRemoval, retired_scope_ids: []const u64) CollectionError!void {
             const indexes = &removal.descriptor_indexes;
             retired.reserveRetiredStaticPublication(
@@ -9791,6 +9877,14 @@ fn verifyEachValueEqCallable(_: *abi.RocHost, result: ?[*]u8, args: ?[*]const u8
     out.* = @intFromBool(input.arg0 == input.arg1);
 }
 
+fn verifyEachRowElemCallable(roc_host: *abi.RocHost, result: ?[*]u8, args: ?[*]const u8, _: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
+    const input: *const erased_calls.ErasedHostValueBinaryArgs = @ptrCast(@alignCast(args.?));
+    var elem = verifyStaticText();
+    elem.payload.text = abi.RocStr.fromSlice(if (input.arg1 == 201) "changed" else "created", roc_host);
+    const out: *abi.Elem = @ptrCast(@alignCast(result.?));
+    out.* = elem;
+}
+
 var verifyStateInitCalls: usize = 0;
 
 fn verifyStateCallable(_: *abi.RocHost, result: ?[*]u8, _: ?[*]const u8, _: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
@@ -9998,6 +10092,8 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
     defer abi.decrefErasedCallable(key_text, &roc_host);
     const state_init = abi.rocErasedCallableAllocate(&roc_host, verifyStateCallable, null, 0).?;
     defer abi.decrefErasedCallable(state_init, &roc_host);
+    const row_builder = abi.rocErasedCallableAllocate(&roc_host, verifyEachRowElemCallable, null, 0).?;
+    defer abi.decrefErasedCallable(row_builder, &roc_host);
     const capability = HostValueCapability{ .clone = noop, .drop = noop, .eq = eq };
     const ops = std.mem.zeroInit(HostEachOps, .{
         .item_capability = capability,
@@ -10006,14 +10102,23 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
         .key_capability = capability,
         .key_of = noop,
         .key_text = key_text,
-        .row = noop,
+        .row = row_builder,
     });
 
     const Runner = struct {
+        fn prepareReplacement(engine: *Engine(VerifyCtx), ctx: *VerifyCtxHost, host: *abi.RocHost, each_ops: HostEachOps, rows: *const each_runtime.PreparedRowSync, keys: []const HostValue, items: []const HostValue) !*Engine(VerifyCtx).PreparedEachRowReplacementCollection {
+            const site = HostNodeScopeSiteDesc{ .node_id = 0, .scope_id = 0, .ordinal = 44, .parent_elem_id = 0, .render_insert_index = 0, .kind = .each, .binder_bindings = &.{} };
+            const each = HostNodeEachDesc{ .node_id = 0, .items = undefined, .ops = each_ops };
+            return Engine(VerifyCtx).PreparedEachRowReplacementCollection.prepare(engine, ctx, host, site, each, rows, keys, items, .{}, &.{});
+        }
+
         fn retry(engine: *Engine(VerifyCtx), ctx: *VerifyCtxHost, host: *abi.RocHost, each_ops: HostEachOps, site_index: usize, keys: []const HostValue, items: []const HostValue) !void {
             var hooks = Engine(VerifyCtx).PreparedEachRowSyncHooks.init(engine, ctx, host, each_ops);
             var rows = try each_runtime.PreparedRowSync.prepare(ctx.allocator, &engine.each_row_sites, &engine.each_row_memberships_by_scope_id, site_index, 0, 44, keys, items, &hooks);
             var retirement = try Engine(VerifyCtx).PreparedEachRowSubtreeRetirement.prepare(engine, ctx.allocator, rows.removed_scope_ids);
+            const replacement = try prepareReplacement(engine, ctx, host, each_ops, &rows, keys, items);
+            try std.testing.expectEqual(@as(usize, 2), replacement.stream.text_nodes.items.len);
+            replacement.deinit();
             retirement.applyBeforeRowCommit(engine);
             var diff = rows.commit(&engine.each_row_sites, &engine.each_row_memberships_by_scope_id, keys, items, &hooks);
             retirement.applyAfterRowCommit(engine);
@@ -10093,6 +10198,23 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
                 try std.testing.expectEqualSlices(u64, &.{ 2, 3, 4 }, engine.each_row_sites.items[site_index].scope_ids.items);
                 return failed_attempts;
             };
+            const replacement = prepareReplacement(&engine, &ctx, host, each_ops, &rows, &keys, &items) catch |err| {
+                retirement.deinit(&engine, ctx.allocator, null, null);
+                rows.abort(&hooks);
+                rows.deinit();
+                hooks.deinit();
+                try std.testing.expect(err == error.OutOfMemory or err == error.ResourceLimit);
+                try std.testing.expectEqualSlices(u64, old_ids, engine.each_row_sites.items[site_index].scope_ids.items);
+                try std.testing.expectEqual(@as(usize, 4), engine.scopes.items.len);
+                const failed_attempts = fault.attempts;
+                fault.configure(null);
+                try retry(&engine, &ctx, host, each_ops, site_index, &keys, &items);
+                return failed_attempts;
+            };
+            try std.testing.expectEqual(@as(usize, 2), replacement.stream.text_nodes.items.len);
+            try std.testing.expectEqualStrings("changed", replacement.stream.text_nodes.items[0].value);
+            try std.testing.expectEqualStrings("created", replacement.stream.text_nodes.items[1].value);
+            replacement.deinit();
             const attempts = fault.attempts;
             fault.configure(1);
             retirement.applyBeforeRowCommit(&engine);
