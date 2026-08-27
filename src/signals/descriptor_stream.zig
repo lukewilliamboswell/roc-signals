@@ -1881,6 +1881,22 @@ pub const Stream = struct {
         }
     };
 
+    /// Owns a lifecycle descriptor until an allocation-free transaction commit transfers it.
+    pub const PreparedLifecycleDescriptor = union(enum) {
+        on_change: OnChangeDesc,
+        mount: MountDesc,
+        cleanup: CleanupDesc,
+
+        /// Releases provisional signal, callable, or copied-name ownership on abort.
+        pub fn abort(self: *@This(), allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
+            switch (self.*) {
+                .on_change => |*desc| desc.deinit(allocator, ctx, roc_host, metrics),
+                .mount => |desc| desc.deinit(roc_host, metrics),
+                .cleanup => |desc| allocator.free(desc.name),
+            }
+        }
+    };
+
     pub const PreparedEventDescriptor = struct {
         desc: EventDesc,
 
@@ -2599,6 +2615,55 @@ pub const Stream = struct {
         try self.lifecycle_indices_by_scope_id.ensureTotalCapacity(allocator, required);
         while (self.lifecycle_indices_by_scope_id.items.len < scope_index) self.lifecycle_indices_by_scope_id.appendAssumeCapacity(.empty);
         self.lifecycle_indices_by_scope_id.appendAssumeCapacity(prepared);
+    }
+
+    /// Reserves lifecycle descriptor arrays and signal-record publication before preparation begins.
+    pub fn reservePreparedLifecycle(self: *Stream, allocator: std.mem.Allocator, additional: usize) std.mem.Allocator.Error!void {
+        try self.on_changes.ensureUnusedCapacity(allocator, additional);
+        try self.mounts.ensureUnusedCapacity(allocator, additional);
+        try self.cleanups.ensureUnusedCapacity(allocator, additional);
+        try self.reservePreparedSignalRecordPublication(allocator, additional);
+    }
+
+    /// Retains provisional on-change ownership without mutating the stream.
+    pub fn prepareOnChange(_: *Stream, signal: HostSignalBinding, to_cmd: abi.RocErasedCallable, scope_id: u64, run_initial: bool, run_initial_pending: bool, metrics: anytype) PreparedLifecycleDescriptor {
+        abi.increfErasedCallable(to_cmd, 1);
+        metrics.bump(.closure_retains, 1);
+        return .{ .on_change = .{ .scope_id = scope_id, .run_initial = run_initial, .run_initial_pending = run_initial_pending, .signal = signal, .to_cmd = to_cmd } };
+    }
+
+    /// Retains provisional mount ownership without mutating the stream.
+    pub fn prepareMount(_: *Stream, to_cmd: abi.RocErasedCallable, scope_id: u64, run_on_mount: bool, metrics: anytype) PreparedLifecycleDescriptor {
+        abi.increfErasedCallable(to_cmd, 1);
+        metrics.bump(.closure_retains, 1);
+        return .{ .mount = .{ .scope_id = scope_id, .to_cmd = to_cmd, .run_on_mount = run_on_mount } };
+    }
+
+    /// Copies a provisional cleanup name without mutating the stream.
+    pub fn prepareCleanup(_: *Stream, allocator: std.mem.Allocator, scope_id: u64, name: []const u8) std.mem.Allocator.Error!PreparedLifecycleDescriptor {
+        return .{ .cleanup = .{ .scope_id = scope_id, .name = try allocator.dupe(u8, name) } };
+    }
+
+    /// Publishes a prepared lifecycle descriptor using only reserved capacity.
+    pub fn appendPreparedLifecycle(self: *Stream, prepared: PreparedLifecycleDescriptor) void {
+        switch (prepared) {
+            .on_change => |desc| {
+                self.rememberSignalRecordTreeAssumeCapacity(desc.signal.record);
+                const index = self.on_changes.items.len;
+                self.on_changes.appendAssumeCapacity(desc);
+                self.recordLifecycleAssumeCapacity(desc.scope_id, .{ .kind = .on_change, .index = index });
+            },
+            .mount => |desc| {
+                const index = self.mounts.items.len;
+                self.mounts.appendAssumeCapacity(desc);
+                self.recordLifecycleAssumeCapacity(desc.scope_id, .{ .kind = .mount, .index = index });
+            },
+            .cleanup => |desc| {
+                const index = self.cleanups.items.len;
+                self.cleanups.appendAssumeCapacity(desc);
+                self.recordLifecycleAssumeCapacity(desc.scope_id, .{ .kind = .cleanup, .index = index });
+            },
+        }
     }
 
     fn recordLifecycleAssumeCapacity(self: *Stream, scope_id: u64, value: LifecycleDescriptorIndex) void {
@@ -4875,6 +4940,71 @@ test "lifecycle ownership index preflight sweeps failures and repairs moved desc
     try std.testing.expectEqual(@as(usize, 0), fault.attempts);
     try std.testing.expectEqualDeep(&[_]LifecycleDescriptorIndex{.{ .kind = .cleanup, .index = 1 }}, stream.lifecycleIndices(3));
     fault.configure(null);
+}
+
+test "prepared lifecycle descriptors publish allocation free and tear down ownership" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    const TestCtx = struct {
+        pub fn pushHostValueCapabilities(_: *@This(), _: []const retained.HostValueCapability) void {}
+        pub fn popHostValueCapabilities(_: *@This()) void {}
+    };
+    const Callable = struct {
+        fn call(_: *abi.RocHost, _: ?[*]u8, _: ?[*]const u8, _: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {}
+    };
+    var fault = FaultAllocator.init(std.testing.allocator);
+    const allocator = fault.allocator();
+    var ctx: TestCtx = .{};
+    var env = abi.RocEnv{ .allocator = allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&env);
+    var metrics = TestMetrics{};
+    var stream: Stream = .{};
+    defer stream.deinit(allocator, &ctx, &roc_host, &metrics);
+    const callable = abi.rocErasedCallableAllocate(&roc_host, Callable.call, null, 0).?;
+    defer abi.decrefErasedCallable(callable, &roc_host);
+    const record = try SignalRecord.tryInit(allocator, .{ .ref = 11 });
+    const sources = try allocator.dupe(u64, &.{11});
+    const signal = HostSignalBinding{ .record = record, .source_node_ids = sources };
+
+    try stream.reservePreparedLifecycle(allocator, 3);
+    try stream.reserveLifecycleScope(allocator, 4, 3);
+    const on_change = stream.prepareOnChange(signal, callable, 4, true, true, &metrics);
+    const mount = stream.prepareMount(callable, 4, true, &metrics);
+    const cleanup = try stream.prepareCleanup(allocator, 4, "dispose");
+    fault.configure(1);
+    stream.appendPreparedLifecycle(on_change);
+    stream.appendPreparedLifecycle(mount);
+    stream.appendPreparedLifecycle(cleanup);
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqualDeep(&[_]LifecycleDescriptorIndex{
+        .{ .kind = .on_change, .index = 0 },
+        .{ .kind = .mount, .index = 0 },
+        .{ .kind = .cleanup, .index = 0 },
+    }, stream.lifecycleIndices(4));
+    fault.configure(null);
+}
+
+test "prepared cleanup sweeps allocation failure and retries" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var counter = FaultAllocator.init(std.testing.allocator);
+    var stream: Stream = .{};
+    var prepared = try stream.prepareCleanup(counter.allocator(), 2, "cleanup-name");
+    const attempts = counter.attempts;
+    switch (prepared) {
+        .cleanup => |desc| counter.allocator().free(desc.name),
+        else => unreachable,
+    }
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| {
+        var fault = FaultAllocator.init(std.testing.allocator);
+        fault.configure(failure_number);
+        try std.testing.expectError(error.OutOfMemory, stream.prepareCleanup(fault.allocator(), 2, "cleanup-name"));
+        fault.configure(null);
+        prepared = try stream.prepareCleanup(fault.allocator(), 2, "cleanup-name");
+        switch (prepared) {
+            .cleanup => |desc| fault.allocator().free(desc.name),
+            else => unreachable,
+        }
+    }
 }
 
 test "render elem index reports empty only when no render metadata remains" {
