@@ -657,11 +657,19 @@ pub const Stream = struct {
         text_count: usize,
         static_text_count: usize,
         static_bool_count: usize,
+        signal_text_node_count: usize,
+        signal_text_count: usize,
+        signal_bool_count: usize,
+        signal_record_count: usize,
     ) std.mem.Allocator.Error!void {
         try self.elements.ensureUnusedCapacity(allocator, element_count);
         try self.text_nodes.ensureUnusedCapacity(allocator, text_count);
         try self.static_text_attrs.ensureUnusedCapacity(allocator, static_text_count);
         try self.static_bool_attrs.ensureUnusedCapacity(allocator, static_bool_count);
+        try self.signal_text_nodes.ensureUnusedCapacity(allocator, signal_text_node_count);
+        try self.signal_text_attrs.ensureUnusedCapacity(allocator, signal_text_count);
+        try self.signal_bool_attrs.ensureUnusedCapacity(allocator, signal_bool_count);
+        try self.reservePreparedSignalRecordPublication(allocator, signal_record_count);
     }
 
     /// Moves the element/text/fixed-static descriptor families according to a
@@ -675,6 +683,9 @@ pub const Stream = struct {
         text_indexes: []const usize,
         static_text_indexes: []const usize,
         static_bool_indexes: []const usize,
+        signal_text_node_indexes: []const usize,
+        signal_text_indexes: []const usize,
+        signal_bool_indexes: []const usize,
     ) void {
         for (element_indexes) |index| {
             const removed = self.elements.swapRemove(index);
@@ -706,6 +717,36 @@ pub const Stream = struct {
                 self.updateStaticBoolAttrIndex(moved.elem_id, moved.field, index);
             }
         }
+        for (signal_text_node_indexes) |index| {
+            const removed = self.signal_text_nodes.swapRemove(index);
+            self.clearSignalTextNodeIndex(removed.elem_id, index);
+            self.forgetSignalRecordTree(removed.signal.record);
+            retired.rememberSignalRecordTreeAssumeCapacity(removed.signal.record);
+            retired.signal_text_nodes.appendAssumeCapacity(removed);
+            if (index < self.signal_text_nodes.items.len) self.updateSignalTextNodeIndex(self.signal_text_nodes.items[index].elem_id, index);
+        }
+        for (signal_text_indexes) |index| {
+            const removed = self.signal_text_attrs.swapRemove(index);
+            self.clearSignalTextAttrIndex(removed.elem_id, removed.field, index);
+            self.forgetSignalRecordTree(removed.signal.record);
+            retired.rememberSignalRecordTreeAssumeCapacity(removed.signal.record);
+            retired.signal_text_attrs.appendAssumeCapacity(removed);
+            if (index < self.signal_text_attrs.items.len) {
+                const moved = self.signal_text_attrs.items[index];
+                self.updateSignalTextAttrIndex(moved.elem_id, moved.field, index);
+            }
+        }
+        for (signal_bool_indexes) |index| {
+            const removed = self.signal_bool_attrs.swapRemove(index);
+            self.clearSignalBoolAttrIndex(removed.elem_id, removed.field, index);
+            self.forgetSignalRecordTree(removed.signal.record);
+            retired.rememberSignalRecordTreeAssumeCapacity(removed.signal.record);
+            retired.signal_bool_attrs.appendAssumeCapacity(removed);
+            if (index < self.signal_bool_attrs.items.len) {
+                const moved = self.signal_bool_attrs.items[index];
+                self.updateSignalBoolAttrIndex(moved.elem_id, moved.field, index);
+            }
+        }
 
         for (replacement.elements.items) |desc| {
             const index = self.elements.items.len;
@@ -733,6 +774,41 @@ pub const Stream = struct {
             setFreshIndex(self.descriptor_indexes_by_elem_id.items[@intCast(desc.elem_id)].static_bool_attrs.slot(desc.field), index);
         }
         replacement.static_bool_attrs.items.len = 0;
+        for (replacement.signal_text_nodes.items) |desc| {
+            const index = self.signal_text_nodes.items.len;
+            self.signal_text_nodes.appendAssumeCapacity(desc);
+            self.rememberSignalRecordTreeAssumeCapacity(desc.signal.record);
+            while (self.descriptor_indexes_by_elem_id.items.len <= desc.elem_id) self.descriptor_indexes_by_elem_id.appendAssumeCapacity(.{});
+            setFreshIndex(&self.descriptor_indexes_by_elem_id.items[@intCast(desc.elem_id)].signal_text_node, index);
+        }
+        replacement.signal_text_nodes.items.len = 0;
+        for (replacement.signal_text_attrs.items) |desc| {
+            const index = self.signal_text_attrs.items.len;
+            self.signal_text_attrs.appendAssumeCapacity(desc);
+            self.rememberSignalRecordTreeAssumeCapacity(desc.signal.record);
+            setFreshIndex(self.descriptor_indexes_by_elem_id.items[@intCast(desc.elem_id)].signal_text_attrs.slot(desc.field), index);
+        }
+        replacement.signal_text_attrs.items.len = 0;
+        for (replacement.signal_bool_attrs.items) |desc| {
+            const index = self.signal_bool_attrs.items.len;
+            self.signal_bool_attrs.appendAssumeCapacity(desc);
+            self.rememberSignalRecordTreeAssumeCapacity(desc.signal.record);
+            setFreshIndex(self.descriptor_indexes_by_elem_id.items[@intCast(desc.elem_id)].signal_bool_attrs.slot(desc.field), index);
+        }
+        replacement.signal_bool_attrs.items.len = 0;
+    }
+
+    fn rememberSignalRecordTreeAssumeCapacity(self: *Stream, record: *SignalRecord) void {
+        const Context = struct {
+            stream: *Stream,
+            fn visit(ctx: @This(), current: *SignalRecord) void {
+                const token = current.token() orelse return;
+                ctx.stream.rememberSignalRecordAssumeCapacity(token, current);
+                const entry = ctx.stream.signal_record_descriptor_uses_by_token.getOrPutAssumeCapacity(token);
+                if (entry.found_existing) entry.value_ptr.* += 1 else entry.value_ptr.* = 1;
+            }
+        };
+        signal_records.walkTree(Context, .{ .stream = self }, record, Context.visit);
     }
 
     /// Commits the minimal one-text replacement using only pre-reserved

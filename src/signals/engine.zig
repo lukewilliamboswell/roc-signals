@@ -3295,6 +3295,10 @@ pub fn Engine(comptime Ctx: type) type {
                     removal_indexes.text_node_indexes.items.len,
                     removal_indexes.static_text_attr_indexes.items.len,
                     removal_indexes.static_bool_attr_indexes.items.len,
+                    removal_indexes.signal_text_node_indexes.items.len,
+                    removal_indexes.signal_text_attr_indexes.items.len,
+                    removal_indexes.signal_bool_attr_indexes.items.len,
+                    engine_ptr.active_stream.signal_records_by_token.count(),
                 ) catch return error.OutOfMemory;
                 plan.publication = structural_splice.preparePublicationDeltas(
                     allocator,
@@ -8135,18 +8139,24 @@ test "branch replacement preparation leaves the active branch unpublished" {
     const false_attrs = [_]abi.NodeAttr{
         .{ .payload = .{ .static_text = .{ .field = .{ .id = @intFromEnum(RenderTextField.label) }, .name = abi.RocStr.empty(), .value = abi.RocStr.fromSlice("off", undefined) } }, .tag = .StaticText },
         .{ .payload = .{ .static_bool = .{ .field = .{ .id = @intFromEnum(RenderBoolField.disabled) }, .name = abi.RocStr.empty(), .value = true } }, .tag = .StaticBool },
+        .{ .payload = .{ .signal_bool = .{ .field = .{ .id = @intFromEnum(RenderBoolField.checked) }, .name = abi.RocStr.empty(), .read = std.mem.zeroes(HostBoolRead), .signal = &condition } }, .tag = .SignalBool },
+        .{ .payload = .{ .signal_text = .{ .field = .{ .id = @intFromEnum(RenderTextField.role) }, .name = abi.RocStr.empty(), .read = std.mem.zeroes(HostTextRead), .signal = &condition } }, .tag = .SignalText },
     };
     const true_attrs = [_]abi.NodeAttr{
         .{ .payload = .{ .static_text = .{ .field = .{ .id = @intFromEnum(RenderTextField.label) }, .name = abi.RocStr.empty(), .value = abi.RocStr.fromSlice("on", undefined) } }, .tag = .StaticText },
         .{ .payload = .{ .static_bool = .{ .field = .{ .id = @intFromEnum(RenderBoolField.disabled) }, .name = abi.RocStr.empty(), .value = false } }, .tag = .StaticBool },
+        .{ .payload = .{ .signal_bool = .{ .field = .{ .id = @intFromEnum(RenderBoolField.checked) }, .name = abi.RocStr.empty(), .read = std.mem.zeroes(HostBoolRead), .signal = &condition } }, .tag = .SignalBool },
+        .{ .payload = .{ .signal_text = .{ .field = .{ .id = @intFromEnum(RenderTextField.role) }, .name = abi.RocStr.empty(), .read = std.mem.zeroes(HostTextRead), .signal = &condition } }, .tag = .SignalText },
     };
     var false_text = verifyStaticText();
     false_text.payload.text = abi.RocStr.fromSlice("no", undefined);
     var true_text = verifyStaticText();
     true_text.payload.text = abi.RocStr.fromSlice("yes", undefined);
-    var when_false = ownedVerifyStaticRoot(&roc_host, &false_attrs, &.{false_text});
+    const false_signal_text = abi.Elem{ .payload = .{ .text_signal = .{ .read = std.mem.zeroes(HostTextRead), .signal = &condition } }, .tag = .TextSignal };
+    const true_signal_text = abi.Elem{ .payload = .{ .text_signal = .{ .read = std.mem.zeroes(HostTextRead), .signal = &condition } }, .tag = .TextSignal };
+    var when_false = ownedVerifyStaticRoot(&roc_host, &false_attrs, &.{ false_text, false_signal_text });
     defer when_false.decref(&roc_host);
-    var when_true = ownedVerifyStaticRoot(&roc_host, &true_attrs, &.{true_text});
+    var when_true = ownedVerifyStaticRoot(&roc_host, &true_attrs, &.{ true_text, true_signal_text });
     defer when_true.decref(&roc_host);
     const root = abi.Elem{ .payload = .{ .when = .{
         .condition = &condition,
@@ -8180,17 +8190,20 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 var plan = try prepared;
                 const attempts = fault.attempts;
                 try std.testing.expectEqual(@as(usize, 1), plan.replacement_stream.elements.items.len);
-                try std.testing.expectEqual(@as(usize, 2), plan.replacement_stream.render_nodes.items.len);
+                try std.testing.expectEqual(@as(usize, 3), plan.replacement_stream.render_nodes.items.len);
                 try std.testing.expectEqual(@as(usize, 1), plan.replacement_stream.text_nodes.items.len);
                 try std.testing.expectEqualStrings("no", plan.replacement_stream.text_nodes.items[0].value);
                 try std.testing.expectEqual(engine.scopes.items[1].scope_id, plan.retired_scope_id);
                 try std.testing.expect(plan.target_scopes[@intCast(plan.retired_scope_id)]);
-                try std.testing.expectEqualSlices(u64, &.{ 1, 2 }, plan.removal.?.scan.removed_elem_ids);
+                try std.testing.expectEqualSlices(u64, &.{ 1, 2, 3 }, plan.removal.?.scan.removed_elem_ids);
                 try std.testing.expectEqualSlices(usize, &.{0}, plan.removal.?.descriptor_indexes.element_indexes.items);
                 try std.testing.expectEqualSlices(usize, &.{0}, plan.removal.?.descriptor_indexes.text_node_indexes.items);
                 try std.testing.expectEqualSlices(usize, &.{0}, plan.removal.?.descriptor_indexes.static_text_attr_indexes.items);
                 try std.testing.expectEqualSlices(usize, &.{0}, plan.removal.?.descriptor_indexes.static_bool_attr_indexes.items);
-                try std.testing.expectEqualSlices(u64, &.{ 3, 4 }, plan.publication.?.replacement_elem_ids);
+                try std.testing.expectEqualSlices(usize, &.{0}, plan.removal.?.descriptor_indexes.signal_bool_attr_indexes.items);
+                try std.testing.expectEqualSlices(usize, &.{0}, plan.removal.?.descriptor_indexes.signal_text_attr_indexes.items);
+                try std.testing.expectEqualSlices(usize, &.{0}, plan.removal.?.descriptor_indexes.signal_text_node_indexes.items);
+                try std.testing.expectEqualSlices(u64, &.{ 4, 5, 6 }, plan.publication.?.replacement_elem_ids);
                 fault.configure(1);
                 const indexes = &plan.removal.?.descriptor_indexes;
                 engine.active_stream.commitStaticDescriptorReplacementAssumeCapacity(
@@ -8200,14 +8213,27 @@ test "branch replacement preparation leaves the active branch unpublished" {
                     indexes.text_node_indexes.items,
                     indexes.static_text_attr_indexes.items,
                     indexes.static_bool_attr_indexes.items,
+                    indexes.signal_text_node_indexes.items,
+                    indexes.signal_text_attr_indexes.items,
+                    indexes.signal_bool_attr_indexes.items,
                 );
                 try std.testing.expectEqual(@as(usize, 0), fault.attempts);
                 try std.testing.expectEqualStrings("no", engine.active_stream.text_nodes.items[0].value);
                 try std.testing.expectEqualStrings("yes", plan.retired_stream.text_nodes.items[0].value);
                 try std.testing.expectEqualStrings("off", engine.active_stream.static_text_attrs.items[0].value);
                 try std.testing.expect(engine.active_stream.static_bool_attrs.items[0].value);
-                try std.testing.expectEqual(@as(?usize, 0), engine.active_stream.elemDescriptorIndex(3).?.element.get());
-                try std.testing.expectEqual(@as(?usize, 0), engine.active_stream.elemDescriptorIndex(4).?.text_node.get());
+                try std.testing.expectEqual(@as(usize, 1), engine.active_stream.signal_bool_attrs.items.len);
+                try std.testing.expectEqual(@as(usize, 1), plan.retired_stream.signal_bool_attrs.items.len);
+                try std.testing.expectEqual(@as(usize, 1), engine.active_stream.signal_text_attrs.items.len);
+                try std.testing.expectEqual(@as(usize, 1), engine.active_stream.signal_text_nodes.items.len);
+                const signal_token = engine.active_stream.signal_bool_attrs.items[0].signal.record.token().?;
+                try std.testing.expect(engine.active_stream.signalRecordByToken(signal_token) != null);
+                try std.testing.expect(plan.retired_stream.signalRecordByToken(signal_token) != null);
+                try std.testing.expectEqual(@as(?usize, 0), engine.active_stream.elemDescriptorIndex(4).?.signal_bool_attrs.get(.checked));
+                try std.testing.expectEqual(@as(?usize, 0), engine.active_stream.elemDescriptorIndex(4).?.signal_text_attrs.get(.role));
+                try std.testing.expectEqual(@as(?usize, 0), engine.active_stream.elemDescriptorIndex(4).?.element.get());
+                try std.testing.expectEqual(@as(?usize, 0), engine.active_stream.elemDescriptorIndex(5).?.text_node.get());
+                try std.testing.expectEqual(@as(?usize, 0), engine.active_stream.elemDescriptorIndex(6).?.signal_text_node.get());
                 fault.configure(null);
                 plan.deinit();
                 try std.testing.expectEqual(retained_before, engine.pending_roc_metrics.closure_retains - engine.pending_roc_metrics.closure_releases);
