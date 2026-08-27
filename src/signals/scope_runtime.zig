@@ -160,6 +160,46 @@ pub fn disposeSubtree(comptime Row: type, scopes: []scope_tree.Scope(Row), scope
     hooks.recordScopeDisposed();
 }
 
+/// Owns the exact post-order scope ids selected for deferred subtree retirement.
+/// Preparation is fallible and read-only; applying metadata is allocation-free
+/// and intentionally does not release step-owned resources.
+pub const PreparedSubtreeRetirement = struct {
+    scope_ids: []u64,
+
+    /// Releases preparation storage without changing live scopes.
+    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+        allocator.free(self.scope_ids);
+        self.* = undefined;
+    }
+
+    /// Marks the prepared subtree inactive after replacement publication.
+    pub fn applyMetadata(self: *const @This(), comptime Row: type, scopes: []scope_tree.Scope(Row), retired_at: u64) void {
+        for (self.scope_ids) |scope_id| {
+            const scope = &scopes[@intCast(scope_id)];
+            if (!scope.active or scope.scope_id != scope_id) @panic("prepared scope retirement no longer matched live state");
+            scope.active = false;
+            scope.retired_at = retired_at;
+        }
+    }
+};
+
+/// Prepares a stable post-order scope-subtree snapshot without mutating scopes.
+pub fn prepareSubtreeRetirement(comptime Row: type, allocator: std.mem.Allocator, scopes: []const scope_tree.Scope(Row), root_scope_id: u64) std.mem.Allocator.Error!PreparedSubtreeRetirement {
+    if (root_scope_id >= scopes.len or scopes[@intCast(root_scope_id)].scope_id != root_scope_id or !scopes[@intCast(root_scope_id)].active) return error.OutOfMemory;
+    var ids: std.ArrayListUnmanaged(u64) = .empty;
+    errdefer ids.deinit(allocator);
+    try ids.ensureTotalCapacity(allocator, scopes.len);
+    try appendSubtreePostOrder(Row, scopes, root_scope_id, &ids);
+    return .{ .scope_ids = try ids.toOwnedSlice(allocator) };
+}
+
+fn appendSubtreePostOrder(comptime Row: type, scopes: []const scope_tree.Scope(Row), scope_id: u64, ids: *std.ArrayListUnmanaged(u64)) std.mem.Allocator.Error!void {
+    for (scopes) |child| {
+        if (child.active and child.parent_scope_id != null and child.parent_scope_id.? == scope_id) try appendSubtreePostOrder(Row, scopes, child.scope_id, ids);
+    }
+    ids.appendAssumeCapacity(scope_id);
+}
+
 const TestRow = struct {
     site_ordinal: u64,
     key_hash: u64,
@@ -248,6 +288,42 @@ test "scope runtime disposes active subtrees through explicit hooks" {
     try std.testing.expectEqualSlices(u64, &.{40}, hooks.removed_rows.items);
     try std.testing.expectEqual(@as(u64, 3), hooks.deinit_steps);
     try std.testing.expectEqual(@as(u64, 3), hooks.disposed_scopes);
+}
+
+test "prepared scope retirement sweeps allocation failures and applies without allocation" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var scopes: std.ArrayListUnmanaged(scope_tree.Scope(TestRow)) = .empty;
+    defer scopes.deinit(std.testing.allocator);
+    _ = try scope_tree.internRoot(TestRow, std.testing.allocator, &scopes);
+    _ = try scope_tree.internComponent(TestRow, std.testing.allocator, &scopes, 0, 1, 0);
+    _ = try scope_tree.appendEachRow(TestRow, std.testing.allocator, &scopes, 1, .{ .site_ordinal = 4, .key_hash = 40 }, 0);
+    _ = try scope_tree.internComponent(TestRow, std.testing.allocator, &scopes, 2, 1, 0);
+    _ = try scope_tree.internComponent(TestRow, std.testing.allocator, &scopes, 0, 2, 0);
+
+    var baseline_fault = FaultAllocator.init(std.testing.allocator);
+    var baseline = try prepareSubtreeRetirement(TestRow, baseline_fault.allocator(), scopes.items, 1);
+    const attempts = baseline_fault.attempts;
+    baseline.deinit(baseline_fault.allocator());
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| {
+        var fault = FaultAllocator.init(std.testing.allocator);
+        fault.configure(failure_number);
+        try std.testing.expectError(error.OutOfMemory, prepareSubtreeRetirement(TestRow, fault.allocator(), scopes.items, 1));
+        for (scopes.items) |scope| try std.testing.expect(scope.active);
+    }
+
+    var fault = FaultAllocator.init(std.testing.allocator);
+    var prepared = try prepareSubtreeRetirement(TestRow, fault.allocator(), scopes.items, 1);
+    defer prepared.deinit(fault.allocator());
+    try std.testing.expectEqualSlices(u64, &.{ 3, 2, 1 }, prepared.scope_ids);
+    fault.configure(1);
+    prepared.applyMetadata(TestRow, scopes.items, 9);
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expect(!scopes.items[1].active);
+    try std.testing.expect(!scopes.items[2].active);
+    try std.testing.expect(!scopes.items[3].active);
+    try std.testing.expect(scopes.items[0].active);
+    try std.testing.expect(scopes.items[4].active);
 }
 
 test "scope runtime owns each-row scope values and key hash" {
