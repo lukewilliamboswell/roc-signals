@@ -17,6 +17,7 @@ const scope_tree = signals.scope_tree;
 const erased_calls = signals.erased_calls;
 const hv = signals.host_values;
 const engine = signals.engine;
+const FaultAllocator = signals.fault_allocator.FaultAllocator;
 const spec_parser = @import("spec/spec_parser.zig");
 const spec_runner = @import("spec/spec_runner.zig");
 const benchmark = @import("bench/benchmark.zig");
@@ -399,6 +400,7 @@ const HostAllocator = struct {
 
 const HostEnv = struct {
     gpa: std.heap.DebugAllocator(.{ .safety = true }),
+    allocation_fault: ?FaultAllocator = null,
     engine: HostEngine = .{},
     test_state: TestState,
     roc_allocations: roc_alloc_ledger.Ledger = .{},
@@ -429,7 +431,15 @@ const HostEnv = struct {
     }
 
     fn backingAllocator(self: *HostEnv) std.mem.Allocator {
+        if (self.allocation_fault) |*fault| return fault.allocator();
         return self.gpa.allocator();
+    }
+
+    fn configureAllocationFailure(self: *HostEnv, number: ?usize) void {
+        if (self.allocation_fault == null) {
+            self.allocation_fault = FaultAllocator.init(self.gpa.allocator());
+        }
+        if (self.allocation_fault) |*fault| fault.configure(number);
     }
 
     inline fn hostAllocator(self: *HostEnv) std.mem.Allocator {

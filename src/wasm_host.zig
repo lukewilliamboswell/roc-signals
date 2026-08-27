@@ -49,11 +49,11 @@ const WasmCtx = struct {
     }
 
     pub fn allocator(_: Handle) std.mem.Allocator {
-        return std.heap.wasm_allocator;
+        return wasm_fault_allocator.allocator();
     }
 
     pub fn cloneHostValue(_: Handle, value: HostValue) HostValue {
-        return shared_engine.host_values.clone(std.heap.wasm_allocator, value, registryOps()) catch |err| {
+        return shared_engine.host_values.clone(wasm_fault_allocator.allocator(), value, registryOps()) catch |err| {
             failHostValueRegistryError(err);
         };
     }
@@ -239,6 +239,7 @@ fn emitAppendChildren(parent_elem_id: u64, next_child_ids: []const u64) void {
 }
 
 var shared_engine: SharedEngine = .init();
+var wasm_fault_allocator = signals.fault_allocator.FaultAllocator.init(std.heap.wasm_allocator);
 var command_batch: render.TransactionalBatch = .{};
 var initial_location_payload: ?[]u8 = null;
 var initial_visibility_payload: ?[]u8 = null;
@@ -333,7 +334,7 @@ fn failHost() noreturn {
 }
 
 fn allocator() std.mem.Allocator {
-    return std.heap.wasm_allocator;
+    return wasm_fault_allocator.allocator();
 }
 
 fn toU32(value: anytype) u32 {
@@ -1249,9 +1250,9 @@ fn allocRocMemory(length: usize, alignment_arg: usize) ?*anyopaque {
     const min_alignment = @max(alignment_arg, @sizeOf(usize));
     const alignment = alignmentFromBytes(min_alignment);
     const allocated_size = allocatedSizeForRocRequest(length);
-    const user_ptr = std.heap.wasm_allocator.rawAlloc(allocated_size, alignment, @returnAddress()) orelse return null;
+    const user_ptr = allocator().rawAlloc(allocated_size, alignment, @returnAddress()) orelse return null;
     if (!recordRocAllocation(user_ptr, length, allocated_size, alignment)) {
-        std.heap.wasm_allocator.rawFree(user_ptr[0..allocated_size], alignment, @returnAddress());
+        allocator().rawFree(user_ptr[0..allocated_size], alignment, @returnAddress());
         return null;
     }
     return @ptrCast(user_ptr);
@@ -1280,7 +1281,7 @@ fn freeRocAllocation(ptr: *anyopaque, alignment_arg: usize) RocAllocation {
     }
     const alloc = removeRocAllocationAt(index);
     recordFreedRocAllocation(alloc);
-    std.heap.wasm_allocator.rawFree(alloc.user_ptr[0..alloc.allocated_size], alloc.alignment, @returnAddress());
+    allocator().rawFree(alloc.user_ptr[0..alloc.allocated_size], alloc.alignment, @returnAddress());
     return alloc;
 }
 
@@ -1291,6 +1292,18 @@ export fn roc_alloc(length: usize, alignment: usize) callconv(.c) ?*anyopaque {
 
 export fn roc_ui_debug_live_allocation_count() callconv(.c) usize {
     return roc_allocations.items.len;
+}
+
+/// Deterministic host-allocation fault injection for Wasm integration tests.
+/// This `roc_ui_debug_*` instrumentation is deliberately outside the browser
+/// protocol: production runtimes never call it and must not depend on it.
+/// `number` is one-based; zero disables injection and resets the attempt count.
+export fn roc_ui_debug_fail_allocation(number: usize) callconv(.c) void {
+    wasm_fault_allocator.configure(if (number == 0) null else number);
+}
+
+export fn roc_ui_debug_allocation_attempts() callconv(.c) usize {
+    return wasm_fault_allocator.attempts;
 }
 
 export fn roc_ui_debug_live_allocation_bytes() callconv(.c) usize {
@@ -1345,7 +1358,7 @@ export fn roc_realloc(ptr: *anyopaque, new_length: usize, alignment_arg: usize) 
     @memcpy(new_allocation_user_ptr[0..copy_size], old_user_ptr[0..copy_size]);
     const freed = removeRocAllocationAt(old_index);
     recordFreedRocAllocation(freed);
-    std.heap.wasm_allocator.rawFree(freed.user_ptr[0..freed.allocated_size], freed.alignment, @returnAddress());
+    allocator().rawFree(freed.user_ptr[0..freed.allocated_size], freed.alignment, @returnAddress());
     return @ptrCast(new_allocation_user_ptr);
 }
 
@@ -1597,7 +1610,7 @@ export fn roc_host_value_clone(value: HostValue) callconv(.c) HostValue {
     const previous_phase = roc_allocation_phase;
     roc_allocation_phase = 101;
     defer roc_allocation_phase = previous_phase;
-    return shared_engine.host_values.clone(std.heap.wasm_allocator, value, registryOps()) catch |err| {
+    return shared_engine.host_values.clone(allocator(), value, registryOps()) catch |err| {
         failHostValueRegistryError(err);
     };
 }
@@ -1607,7 +1620,7 @@ export fn roc_host_value_get_with_capability(value: HostValue, cap: HostValueCap
     roc_allocation_phase = 108;
     defer roc_allocation_phase = previous_phase;
     defer hv.releaseHostValueCapability(cap, &roc_host);
-    return shared_engine.host_values.getWithCapability(std.heap.wasm_allocator, value, cap, registryOps()) catch |err| {
+    return shared_engine.host_values.getWithCapability(allocator(), value, cap, registryOps()) catch |err| {
         failHostValueRegistryError(err);
     };
 }
@@ -1626,7 +1639,7 @@ export fn roc_host_value_store_with_capability(box: abi.RocBox, cap: HostValueCa
     const previous_phase = roc_allocation_phase;
     roc_allocation_phase = 109;
     defer roc_allocation_phase = previous_phase;
-    return shared_engine.host_values.storeOwnedCapability(std.heap.wasm_allocator, box, cap, registryOps()) catch |err| {
+    return shared_engine.host_values.storeOwnedCapability(allocator(), box, cap, registryOps()) catch |err| {
         failHostValueRegistryError(err);
     };
 }
@@ -1635,7 +1648,7 @@ export fn roc_host_value_store_with_existing_capability(box: abi.RocBox, source_
     const previous_phase = roc_allocation_phase;
     roc_allocation_phase = 109;
     defer roc_allocation_phase = previous_phase;
-    return shared_engine.host_values.storeRetainedExistingCapability(std.heap.wasm_allocator, box, source_value, registryOps()) catch |err| {
+    return shared_engine.host_values.storeRetainedExistingCapability(allocator(), box, source_value, registryOps()) catch |err| {
         failHostValueRegistryError(err);
     };
 }

@@ -18,6 +18,7 @@ pub const engine_contract = @import("engine_contract.zig");
 pub const engine_metrics = @import("engine_metrics.zig");
 pub const engine_scratch = @import("engine_scratch.zig");
 pub const erased_calls = @import("erased_calls.zig");
+pub const fault_allocator = @import("fault_allocator.zig");
 pub const host_value_registry = @import("host_value_registry.zig");
 pub const host_values = @import("host_values.zig");
 pub const identity_table = @import("identity_table.zig");
@@ -42,6 +43,7 @@ test {
     std.testing.refAllDecls(engine_contract);
     std.testing.refAllDecls(engine_metrics);
     std.testing.refAllDecls(engine_scratch);
+    std.testing.refAllDecls(fault_allocator);
     std.testing.refAllDecls(host_value_registry);
     std.testing.refAllDecls(identity_table);
     std.testing.refAllDecls(render);
