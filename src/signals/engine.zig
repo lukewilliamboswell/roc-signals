@@ -3409,6 +3409,20 @@ pub fn Engine(comptime Ctx: type) type {
             }
         };
 
+        fn prepareRowRetirementForScopes(engine: *Self, allocator: std.mem.Allocator, scope_ids: []const u64) CollectionError!each_runtime.PreparedRowRemovals {
+            var removals: std.ArrayListUnmanaged(each_runtime.RowRemoval) = .empty;
+            defer removals.deinit(allocator);
+            removals.ensureTotalCapacity(allocator, scope_ids.len) catch return error.OutOfMemory;
+            for (scope_ids) |scope_id| {
+                if (scope_id >= engine.scopes.items.len) return error.ResourceLimit;
+                switch (engine.scopes.items[@intCast(scope_id)].step) {
+                    .each_row => |row| removals.appendAssumeCapacity(.{ .scope_id = scope_id, .key_hash = row.key_hash }),
+                    .root, .component, .when_branch => {},
+                }
+            }
+            return each_runtime.prepareRowRemovals(allocator, engine.each_row_sites.items, engine.each_row_memberships_by_scope_id.items, removals.items) catch return error.OutOfMemory;
+        }
+
         const AggregateBranchCollection = struct {
             engine: *Self,
             host_ctx: Ctx.Handle,
@@ -3421,6 +3435,7 @@ pub fn Engine(comptime Ctx: type) type {
             removal: ?structural_splice.PreparedMultiRemoval = null,
             identity_retirements: ?PreparedIdentityRetirements = null,
             state_retirement: ?PreparedStateRetirementIndexes = null,
+            row_retirement: ?each_runtime.PreparedRowRemovals = null,
 
             fn addCounts(total: *StaticRootCounts, next: StaticRootCounts) CollectionError!void {
                 total.nodes = std.math.add(usize, total.nodes, next.nodes) catch return error.ResourceLimit;
@@ -3495,6 +3510,8 @@ pub fn Engine(comptime Ctx: type) type {
                 errdefer if (plan.removal) |*removal| removal.deinit(allocator);
                 plan.state_retirement = try PreparedStateRetirementIndexes.prepare(engine, allocator, plan.removal.?.removal.node_indexes.state_indexes.items);
                 errdefer if (plan.state_retirement) |*retirement| retirement.deinit(allocator);
+                plan.row_retirement = try prepareRowRetirementForScopes(engine, allocator, plan.scope_retirement.?.scope_ids);
+                errdefer if (plan.row_retirement) |*retirement| retirement.deinit(allocator);
                 return plan;
             }
 
@@ -3508,6 +3525,7 @@ pub fn Engine(comptime Ctx: type) type {
                 self.stream.deinit(allocator, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
                 if (self.removal) |*removal| removal.deinit(allocator);
                 if (self.state_retirement) |*retirement| retirement.deinit(allocator);
+                if (self.row_retirement) |*retirement| retirement.deinit(allocator);
                 if (self.identity_retirements) |*retirements| retirements.deinit(allocator);
                 if (self.scope_retirement) |*retirement| retirement.deinit(allocator);
                 allocator.free(self.target_scopes);
@@ -3605,14 +3623,7 @@ pub fn Engine(comptime Ctx: type) type {
                 errdefer allocator.free(plan.retired_node_identity_ids);
                 plan.retired_dom_identity_ids = identity_retirements.dom_ids;
                 errdefer allocator.free(plan.retired_dom_identity_ids);
-                var row_removals: std.ArrayListUnmanaged(each_runtime.RowRemoval) = .empty;
-                defer row_removals.deinit(allocator);
-                row_removals.ensureTotalCapacity(allocator, plan.scope_retirement.?.scope_ids.len) catch return error.OutOfMemory;
-                for (plan.scope_retirement.?.scope_ids) |scope_id| switch (engine_ptr.scopes.items[@intCast(scope_id)].step) {
-                    .each_row => |row| row_removals.appendAssumeCapacity(.{ .scope_id = scope_id, .key_hash = row.key_hash }),
-                    .root, .component, .when_branch => {},
-                };
-                plan.row_retirement = each_runtime.prepareRowRemovals(allocator, engine_ptr.each_row_sites.items, engine_ptr.each_row_memberships_by_scope_id.items, row_removals.items) catch return error.OutOfMemory;
+                plan.row_retirement = try prepareRowRetirementForScopes(engine_ptr, allocator, plan.scope_retirement.?.scope_ids);
                 errdefer if (plan.row_retirement) |*retirement| retirement.deinit(allocator);
                 var task_count: usize = 0;
                 for (engine_ptr.pending_tasks.items) |task| if (plan.target_scopes[@intCast(task.owner_scope_id)]) {
