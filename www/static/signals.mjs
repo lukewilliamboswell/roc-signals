@@ -729,6 +729,8 @@ export class SignalsRuntime {
     this.pointerProbeCleanups = [];
     this.lastEventResponseBits = 0;
     this.storageBatch = null;
+    this.failedError = null;
+    this.hasErrorReporter = typeof options.onError === "function";
     this.onError = options.onError ?? ((err) => {
       setTimeout(() => {
         throw err;
@@ -779,6 +781,7 @@ export class SignalsRuntime {
   }
 
   mount() {
+    this.assertUsable();
     this.mounted = true;
     this.mountGeneration += 1;
     this.setInitialLocationSnapshot();
@@ -789,7 +792,11 @@ export class SignalsRuntime {
     this.installVisibilityListener(this.mountGeneration);
     this.installOnlineListener(this.mountGeneration);
     this.emitTelemetry("host_call", { call: "mount" });
-    this.views.callHost(this.exports.roc_ui_mount);
+    try {
+      this.views.callHost(this.exports.roc_ui_mount);
+    } catch (err) {
+      throw this.poisonAfterHostFailure(err);
+    }
     this.applyPendingCommands("mount");
   }
 
@@ -832,7 +839,7 @@ export class SignalsRuntime {
       this.views.callHost(this.exports.roc_ui_prepare_mount);
       this.seedInitialStorageSnapshots();
     } catch (err) {
-      throw this.runtimeError(err);
+      throw this.poisonAfterHostFailure(err);
     }
   }
 
@@ -864,7 +871,7 @@ export class SignalsRuntime {
         key,
       );
       const bytes = encodeStoragePayloadBytes(snapshot);
-      const payloadPtr = this.views.callHost(this.exports.roc_alloc, bytes.length, 1).result;
+      const payloadPtr = this.allocatePayload(bytes.length);
       try {
         this.views.u8.set(bytes, payloadPtr);
         this.emitTelemetry("storage_snapshot", {
@@ -886,7 +893,7 @@ export class SignalsRuntime {
       return false;
     }
     const bytes = encodeBoundarySchemaPayloadBytes(LocationBoundarySchema, snapshot);
-    const ptr = this.views.callHost(this.exports.roc_alloc, bytes.length, 1).result;
+    const ptr = this.allocatePayload(bytes.length);
     try {
       this.views.u8.set(bytes, ptr);
       this.emitTelemetry(telemetryKind, {
@@ -896,7 +903,7 @@ export class SignalsRuntime {
       this.views.callHost(hostCall, ptr, bytes.length);
       return true;
     } catch (err) {
-      throw this.runtimeError(err);
+      throw this.poisonAfterHostFailure(err);
     } finally {
       this.views.callHost(this.exports.roc_dealloc, ptr, 1);
     }
@@ -908,7 +915,7 @@ export class SignalsRuntime {
       return false;
     }
     const bytes = encodeBoundarySchemaPayloadBytes(VisibilityBoundarySchema, visible);
-    const ptr = this.views.callHost(this.exports.roc_alloc, bytes.length, 1).result;
+    const ptr = this.allocatePayload(bytes.length);
     try {
       this.views.u8.set(bytes, ptr);
       this.emitTelemetry(telemetryKind, {
@@ -918,7 +925,7 @@ export class SignalsRuntime {
       this.views.callHost(hostCall, ptr, bytes.length);
       return true;
     } catch (err) {
-      throw this.runtimeError(err);
+      throw this.poisonAfterHostFailure(err);
     } finally {
       this.views.callHost(this.exports.roc_dealloc, ptr, 1);
     }
@@ -930,7 +937,7 @@ export class SignalsRuntime {
       return false;
     }
     const bytes = encodeBoundarySchemaPayloadBytes(OnlineBoundarySchema, online);
-    const ptr = this.views.callHost(this.exports.roc_alloc, bytes.length, 1).result;
+    const ptr = this.allocatePayload(bytes.length);
     try {
       this.views.u8.set(bytes, ptr);
       this.emitTelemetry(telemetryKind, {
@@ -940,7 +947,7 @@ export class SignalsRuntime {
       this.views.callHost(hostCall, ptr, bytes.length);
       return true;
     } catch (err) {
-      throw this.runtimeError(err);
+      throw this.poisonAfterHostFailure(err);
     } finally {
       this.views.callHost(this.exports.roc_dealloc, ptr, 1);
     }
@@ -1101,6 +1108,7 @@ export class SignalsRuntime {
   }
 
   unmount() {
+    if (this.failedError !== null) return;
     this.mounted = false;
     this.clearLocationListener();
     this.clearVisibilityListener();
@@ -1122,7 +1130,7 @@ export class SignalsRuntime {
 
   dispatchString(eventId, value, options = {}) {
     const bytes = textEncoder.encode(value);
-    const ptr = this.views.callHost(this.exports.roc_alloc, bytes.length, 1).result;
+    const ptr = this.allocatePayload(bytes.length);
     let primaryError;
     try {
       this.views.u8.set(bytes, ptr);
@@ -1136,7 +1144,7 @@ export class SignalsRuntime {
   }
 
   dispatchBytes(eventId, bytes, options = {}) {
-    const ptr = this.views.callHost(this.exports.roc_alloc, bytes.length, 1).result;
+    const ptr = this.allocatePayload(bytes.length);
     let primaryError;
     try {
       this.views.u8.set(bytes, ptr);
@@ -1161,6 +1169,7 @@ export class SignalsRuntime {
   }
 
   dispatch(eventId, payloadKind, payloadPtr, payloadLen, boolValue, options = {}) {
+    this.assertUsable();
     this.emitTelemetry("host_call", {
       call: "event",
       eventId,
@@ -1184,21 +1193,27 @@ export class SignalsRuntime {
       }
       return responseBits;
     } catch (err) {
-      throw this.runtimeError(err);
+      throw this.poisonAfterHostFailure(err);
     }
   }
 
   tickTimer(token) {
+    this.assertUsable();
     if (!this.intervals.has(token)) {
       this.emitTelemetry("ignored_timer_tick", { token });
       return;
     }
     this.emitTelemetry("host_call", { call: "timer", token });
-    this.views.callHost(this.exports.roc_ui_timer, token);
+    try {
+      this.views.callHost(this.exports.roc_ui_timer, token);
+    } catch (err) {
+      throw this.poisonAfterHostFailure(err);
+    }
     this.applyPendingCommands(`timer:${token}`);
   }
 
   resolveTask(requestId, value, failed = false) {
+    this.assertUsable();
     const task = this.tasks.get(requestId);
     const issuedTask = this.issuedTasks.get(requestId);
     if (!task && !issuedTask) {
@@ -1215,7 +1230,7 @@ export class SignalsRuntime {
       });
     }
     const bytes = textEncoder.encode(value);
-    const ptr = this.views.callHost(this.exports.roc_alloc, bytes.length, 1).result;
+    const ptr = this.allocatePayload(bytes.length);
     try {
       this.views.u8.set(bytes, ptr);
       if (task) {
@@ -1235,7 +1250,7 @@ export class SignalsRuntime {
       });
       this.views.callHost(this.exports.roc_ui_resolve, requestId, ptr, bytes.length, failed ? 1 : 0);
     } catch (err) {
-      throw this.runtimeError(err);
+      throw this.poisonAfterHostFailure(err);
     } finally {
       this.views.callHost(this.exports.roc_dealloc, ptr, 1);
     }
@@ -1254,6 +1269,52 @@ export class SignalsRuntime {
     return wrapped;
   }
 
+  allocatePayload(length) {
+    this.assertUsable();
+    let result;
+    try {
+      result = this.views.callHost(this.exports.roc_alloc, length, 1).result;
+    } catch (err) {
+      throw this.poisonAfterHostFailure(err);
+    }
+    if ((result === 0 || result == null) && length !== 0) {
+      const err = new Error(`Signals Wasm payload allocation failed for ${length} bytes`);
+      err.code = "out_of_memory";
+      throw err;
+    }
+    return result ?? 0;
+  }
+
+  assertUsable() {
+    if (this.failedError !== null) {
+      throw this.failedError;
+    }
+  }
+
+  poisonAfterHostFailure(err) {
+    if (this.failedError !== null) return this.failedError;
+    const fatal = this.runtimeError(err);
+    this.failedError = fatal;
+    this.mounted = false;
+    this.mountGeneration += 1;
+    this.lastCommands = [];
+    this.commandBuffers = null;
+    this.clearLocationListener();
+    this.clearVisibilityListener();
+    this.clearOnlineListener();
+    this.clearPointerProbe();
+    this.clearAsyncResources();
+    for (const cleanup of this.eventCleanups.values()) cleanup();
+    this.eventCleanups.clear();
+    this.clearControlledInputs();
+    this.cleanupBehaviors();
+    if (this.hasErrorReporter) {
+      this.onError(fatal);
+      fatal.signalsReported = true;
+    }
+    return fatal;
+  }
+
   lastHostError() {
     const ptr = this.exports.roc_ui_last_error_ptr?.() ?? 0;
     const len = this.exports.roc_ui_last_error_len?.() ?? 0;
@@ -1265,6 +1326,7 @@ export class SignalsRuntime {
   }
 
   reportError(err) {
+    if (err?.signalsReported === true) return;
     this.onError(err);
   }
 

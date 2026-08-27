@@ -138,6 +138,7 @@ class MockHost {
     protocolFeatures = ProtocolFeature.dynamicAttrs | ProtocolFeature.dynamicEvents,
     storageDeclarations = [],
     debugAllocations = null,
+    failAllocationNumber = null,
   } = {}) {
     this.memory = new WebAssembly.Memory({ initial: 1 });
     this.cmdLen = 0;
@@ -145,6 +146,9 @@ class MockHost {
     this.dynamicLen = 0;
     this.lastErrorLen = 0;
     this.allocPtr = allocBase;
+    this.allocationAttempts = 0;
+    this.failAllocationNumber = failAllocationNumber;
+    this.deallocCalls = [];
     this.protocolVersion = protocolVersion;
     this.protocolFeatures = protocolFeatures;
     this.dispatches = [];
@@ -192,7 +196,8 @@ class MockHost {
       roc_ui_last_error_len: () => this.lastErrorLen,
       roc_ui_live_host_values: () => 0,
       roc_alloc: (len) => this.alloc(len),
-      roc_dealloc: () => {
+      roc_dealloc: (ptr) => {
+        this.deallocCalls.push(ptr);
         if (this.deallocTrapMessage !== null) {
           this.writeLastError(this.deallocTrapMessage);
           throw new WebAssembly.RuntimeError("unreachable");
@@ -311,6 +316,8 @@ class MockHost {
   }
 
   alloc(len) {
+    this.allocationAttempts += 1;
+    if (this.allocationAttempts === this.failAllocationNumber) return 0;
     const ptr = this.allocPtr;
     const end = ptr + len;
     if (end > this.memory.buffer.byteLength) {
@@ -2304,6 +2311,66 @@ test("event dispatch preserves diagnostics when payload dealloc also traps", () 
     /DOM event payload kind does not match Roc event descriptor: unreachable/,
   );
   assert.deepEqual(host.dispatches, []);
+});
+
+test("mount payload preflight sweeps every allocation failure and remains retryable", () => {
+  const baseline = mountWith([]);
+  const allocationCount = baseline.host.allocationAttempts;
+  baseline.runtime.unmount();
+  assert.ok(allocationCount >= 3);
+
+  for (let allocationNumber = 1; allocationNumber <= allocationCount; allocationNumber += 1) {
+    const host = new MockHost({ failAllocationNumber: allocationNumber });
+    const root = installDomDouble();
+    const runtime = new SignalsRuntime(host.exports, root);
+
+    assert.throws(
+      () => runtime.mount(),
+      (err) => err.code === "out_of_memory" && /payload allocation failed/.test(err.message),
+    );
+    assert.equal(runtime.failedError, null);
+    assert.equal(root.childNodes.length, 0);
+
+    host.failAllocationNumber = null;
+    runtime.mount();
+    assert.equal(runtime.mounted, true);
+    runtime.unmount();
+  }
+});
+
+test("fatal wasm trap poisons runtime detaches resources and rejects re-entry", () => {
+  const errors = [];
+  const { host, root, runtime } = mountWith(
+    [
+      { op: Op.resetDom },
+      { op: Op.createElement, a: 1, s: "input" },
+      { op: Op.bindInput, a: 1, b: 125 },
+      { op: Op.appendChild, a: 0, b: 1 },
+    ],
+    { onError: (err) => errors.push(err) },
+  );
+  host.eventTrapMessages.set(125, "out of memory while staging render strings");
+  const input = findNode(root, (node) => node.tagName === "INPUT");
+  input.value = "still visible";
+  const deallocsBefore = host.deallocCalls.length;
+
+  assert.throws(() => fireEvent(input, "input"), /out of memory while staging render strings/);
+  assert.equal(errors.length, 1);
+  assert.equal(runtime.mounted, false);
+  assert.equal(runtime.lastCommands.length, 0);
+  assert.equal(runtime.eventCleanups.size, 0);
+  assert.equal(runtime.intervals.size, 0);
+  assert.equal(runtime.tasks.size, 0);
+  assert.equal(host.deallocCalls.length, deallocsBefore + 1);
+  assert.equal(input.value, "still visible");
+
+  const dispatchCount = host.dispatches.length;
+  assert.throws(() => runtime.dispatchUnit(125), /out of memory while staging render strings/);
+  assert.equal(host.dispatches.length, dispatchCount);
+
+  const replacement = mountWith([]);
+  assert.equal(replacement.runtime.mounted, true);
+  replacement.runtime.unmount();
 });
 
 test("dynamic form named events dispatch unit and target value payloads", () => {
