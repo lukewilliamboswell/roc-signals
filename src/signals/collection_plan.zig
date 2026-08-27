@@ -72,6 +72,74 @@ pub const IdentityOverlay = struct {
     }
 };
 
+pub const ScopeKey = struct {
+    parent_id: u64,
+    ordinal: u64,
+    kind: u8,
+    branch: u8 = 0,
+};
+
+pub const ScopeIntent = struct {
+    key: ScopeKey,
+    id: u64,
+};
+
+pub const ScopeOverlay = struct {
+    provisional_by_key: std.AutoHashMapUnmanaged(ScopeKey, u64) = .{},
+    reserved_ids: std.AutoHashMapUnmanaged(u64, void) = .{},
+    intents: std.ArrayListUnmanaged(ScopeIntent) = .empty,
+    prepared_remaining: usize = 0,
+    committed: bool = false,
+
+    pub fn deinit(self: *ScopeOverlay, allocator: std.mem.Allocator) void {
+        self.provisional_by_key.deinit(allocator);
+        self.reserved_ids.deinit(allocator);
+        self.intents.deinit(allocator);
+        self.* = .{};
+    }
+
+    pub fn prepare(self: *ScopeOverlay, allocator: std.mem.Allocator, additional: usize) std.mem.Allocator.Error!void {
+        const next_remaining = std.math.add(usize, self.prepared_remaining, additional) catch return error.OutOfMemory;
+        try self.provisional_by_key.ensureUnusedCapacity(allocator, @intCast(additional));
+        try self.reserved_ids.ensureUnusedCapacity(allocator, @intCast(additional));
+        try self.intents.ensureUnusedCapacity(allocator, additional);
+        self.prepared_remaining = next_remaining;
+    }
+
+    pub fn lookup(self: *const ScopeOverlay, key: ScopeKey, active_id: ?u64) ?u64 {
+        return self.provisional_by_key.get(key) orelse active_id;
+    }
+
+    pub fn reserve(self: *ScopeOverlay, key: ScopeKey, active_id: ?u64, candidates: []const u64) error{ NoCapacity, NoAvailableScope }!u64 {
+        if (self.committed) @panic("scope overlay cannot reserve after commit");
+        if (self.lookup(key, active_id)) |id| return id;
+        if (self.prepared_remaining == 0) return error.NoCapacity;
+        for (candidates) |id| {
+            if (self.reserved_ids.contains(id)) continue;
+            self.provisional_by_key.putAssumeCapacity(key, id);
+            self.reserved_ids.putAssumeCapacity(id, {});
+            self.intents.appendAssumeCapacity(.{ .key = key, .id = id });
+            self.prepared_remaining -= 1;
+            return id;
+        }
+        return error.NoAvailableScope;
+    }
+
+    pub fn abort(self: *ScopeOverlay) void {
+        if (self.committed) @panic("committed scope overlay cannot abort");
+        self.provisional_by_key.clearRetainingCapacity();
+        self.reserved_ids.clearRetainingCapacity();
+        self.intents.clearRetainingCapacity();
+        self.prepared_remaining = 0;
+    }
+
+    pub fn commit(self: *ScopeOverlay, publisher: anytype) void {
+        if (self.committed) @panic("scope overlay committed twice");
+        for (self.intents.items) |intent| publisher.publishScope(intent.key, intent.id);
+        self.committed = true;
+    }
+};
+
 pub fn Plan(comptime Action: type) type {
     return struct {
         const Self = @This();
@@ -214,4 +282,34 @@ test "identity overlay publishes only during allocation-free commit" {
     overlay.commit(Publisher{ .persistent = &persistent });
     try std.testing.expectEqual(@as(u64, 4), persistent.get(20).?);
     try std.testing.expectEqual(@as(u64, 5), persistent.get(21).?);
+}
+
+test "scope overlay uniquely reserves inactive slots for provisional hierarchy" {
+    var overlay: ScopeOverlay = .{};
+    defer overlay.deinit(std.testing.allocator);
+    try overlay.prepare(std.testing.allocator, 3);
+    const root_key: ScopeKey = .{ .parent_id = 0, .ordinal = 0, .kind = 1 };
+    const root_id = try overlay.reserve(root_key, null, &.{ 4, 5, 6 });
+    const child_a: ScopeKey = .{ .parent_id = root_id, .ordinal = 0, .kind = 2 };
+    const child_b: ScopeKey = .{ .parent_id = root_id, .ordinal = 1, .kind = 2 };
+    const child_a_id = try overlay.reserve(child_a, null, &.{ 4, 5, 6 });
+    const child_b_id = try overlay.reserve(child_b, null, &.{ 4, 5, 6 });
+    try std.testing.expectEqual(@as(u64, 4), root_id);
+    try std.testing.expectEqual(@as(u64, 5), child_a_id);
+    try std.testing.expectEqual(@as(u64, 6), child_b_id);
+    try std.testing.expectEqual(child_a_id, overlay.lookup(child_a, null).?);
+}
+
+test "scope overlay abort leaves persistent scopes unchanged and permits retry" {
+    var persistent: std.AutoHashMapUnmanaged(ScopeKey, u64) = .{};
+    defer persistent.deinit(std.testing.allocator);
+    const key: ScopeKey = .{ .parent_id = 1, .ordinal = 2, .kind = 3, .branch = 1 };
+    var overlay: ScopeOverlay = .{};
+    defer overlay.deinit(std.testing.allocator);
+    try overlay.prepare(std.testing.allocator, 1);
+    _ = try overlay.reserve(key, persistent.get(key), &.{9});
+    try std.testing.expectEqual(@as(usize, 0), persistent.count());
+    overlay.abort();
+    try overlay.prepare(std.testing.allocator, 1);
+    try std.testing.expectEqual(@as(u64, 9), try overlay.reserve(key, persistent.get(key), &.{9}));
 }
