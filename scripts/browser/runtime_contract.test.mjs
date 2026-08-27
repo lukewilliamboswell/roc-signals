@@ -2329,7 +2329,13 @@ test("mount payload preflight sweeps every allocation failure and remains retrya
       (err) => err.code === "out_of_memory" && /payload allocation failed/.test(err.message),
     );
     assert.equal(runtime.failedError, null);
+    assert.equal(runtime.mounted, false);
     assert.equal(root.childNodes.length, 0);
+    assert.equal(host.initialLocationPayload, null);
+    assert.equal(host.initialVisibilityPayload, null);
+    assert.equal(host.initialOnlinePayload, null);
+    assert.equal(host.prepareMounts, 0);
+    assert.equal(host.deallocCalls.length, allocationNumber - 1);
 
     host.failAllocationNumber = null;
     runtime.mount();

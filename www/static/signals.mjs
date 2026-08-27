@@ -782,11 +782,13 @@ export class SignalsRuntime {
 
   mount() {
     this.assertUsable();
-    this.mounted = true;
+    const initialPayloads = this.prepareInitialEnvironmentPayloads();
+    try {
+      this.commitInitialEnvironmentPayloads(initialPayloads);
+    } finally {
+      this.freePreparedPayloads(initialPayloads);
+    }
     this.mountGeneration += 1;
-    this.setInitialLocationSnapshot();
-    this.setInitialVisibilitySnapshot();
-    this.setInitialOnlineSnapshot();
     this.prepareMountEnvironment();
     this.installLocationListener(this.mountGeneration);
     this.installVisibilityListener(this.mountGeneration);
@@ -798,36 +800,52 @@ export class SignalsRuntime {
       throw this.poisonAfterHostFailure(err);
     }
     this.applyPendingCommands("mount");
+    this.mounted = true;
   }
 
-  setInitialLocationSnapshot() {
-    if (typeof this.exports.roc_ui_set_location !== "function") {
-      return;
+  prepareInitialEnvironmentPayloads() {
+    const specs = [];
+    if (typeof this.exports.roc_ui_set_location === "function") {
+      const value = locationSnapshotFromLocation(this.location);
+      specs.push({ hostCall: this.exports.roc_ui_set_location, value, bytes: encodeBoundarySchemaPayloadBytes(LocationBoundarySchema, value), detail: { location: value } });
     }
-    const snapshot = locationSnapshotFromLocation(this.location);
-    this.writeLocationPayload("roc_ui_set_location", snapshot, "environment_snapshot", {
-      location: snapshot,
-    });
+    if (typeof this.exports.roc_ui_set_visibility === "function") {
+      const value = visibilitySnapshotFromDocument(this.visibilityDocument);
+      specs.push({ hostCall: this.exports.roc_ui_set_visibility, value, bytes: encodeBoundarySchemaPayloadBytes(VisibilityBoundarySchema, value), detail: { visibility: value } });
+    }
+    if (typeof this.exports.roc_ui_set_online === "function") {
+      const value = onlineSnapshotFromNavigator(this.navigator);
+      specs.push({ hostCall: this.exports.roc_ui_set_online, value, bytes: encodeBoundarySchemaPayloadBytes(OnlineBoundarySchema, value), detail: { online: value } });
+    }
+
+    const prepared = [];
+    try {
+      for (const spec of specs) {
+        prepared.push({ ...spec, ptr: this.allocatePayload(spec.bytes.length) });
+      }
+      return prepared;
+    } catch (err) {
+      this.freePreparedPayloads(prepared);
+      throw err;
+    }
   }
 
-  setInitialVisibilitySnapshot() {
-    if (typeof this.exports.roc_ui_set_visibility !== "function") {
-      return;
+  commitInitialEnvironmentPayloads(prepared) {
+    for (const entry of prepared) {
+      this.views.u8.set(entry.bytes, entry.ptr);
+      this.emitTelemetry("environment_snapshot", { ...entry.detail, payloadLen: entry.bytes.length });
+      try {
+        this.views.callHost(entry.hostCall, entry.ptr, entry.bytes.length);
+      } catch (err) {
+        throw this.poisonAfterHostFailure(err);
+      }
     }
-    const visible = visibilitySnapshotFromDocument(this.visibilityDocument);
-    this.writeVisibilityPayload("roc_ui_set_visibility", visible, "environment_snapshot", {
-      visibility: visible,
-    });
   }
 
-  setInitialOnlineSnapshot() {
-    if (typeof this.exports.roc_ui_set_online !== "function") {
-      return;
+  freePreparedPayloads(prepared) {
+    for (const entry of prepared) {
+      this.views.callHost(this.exports.roc_dealloc, entry.ptr, 1);
     }
-    const online = onlineSnapshotFromNavigator(this.navigator);
-    this.writeOnlinePayload("roc_ui_set_online", online, "environment_snapshot", {
-      online,
-    });
   }
 
   prepareMountEnvironment() {
