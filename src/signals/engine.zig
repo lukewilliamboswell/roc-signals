@@ -3249,6 +3249,8 @@ pub fn Engine(comptime Ctx: type) type {
             scope_retirement: ?scope_runtime.PreparedSubtreeRetirement = null,
             retired_state_cells: std.ArrayListUnmanaged(HostState) = .empty,
             state_cell_indexes: []usize = &.{},
+            retired_node_identity_ids: []u64 = &.{},
+            retired_dom_identity_ids: []u64 = &.{},
 
             fn stateIndexDescending(_: void, left: usize, right: usize) bool {
                 return left > right;
@@ -3294,6 +3296,28 @@ pub fn Engine(comptime Ctx: type) type {
                 }
                 plan.scope_retirement = scope_runtime.prepareSubtreeRetirement(HostEachRowScopeStep, allocator, engine_ptr.scopes.items, retired_scope_id) catch return error.OutOfMemory;
                 errdefer if (plan.scope_retirement) |*retirement| retirement.deinit(allocator);
+                var node_identity_count: usize = 0;
+                for (engine_ptr.node_identities.items) |identity| if (identity.active and plan.target_scopes[@intCast(identity.scope_id)]) {
+                    node_identity_count = std.math.add(usize, node_identity_count, 1) catch return error.ResourceLimit;
+                };
+                plan.retired_node_identity_ids = allocator.alloc(u64, node_identity_count) catch return error.OutOfMemory;
+                errdefer allocator.free(plan.retired_node_identity_ids);
+                var node_write: usize = 0;
+                for (engine_ptr.node_identities.items) |identity| if (identity.active and plan.target_scopes[@intCast(identity.scope_id)]) {
+                    plan.retired_node_identity_ids[node_write] = identity.node_id;
+                    node_write += 1;
+                };
+                var dom_identity_count: usize = 0;
+                for (engine_ptr.dom_identities.items) |identity| if (identity.active and plan.target_scopes[@intCast(identity.scope_id)]) {
+                    dom_identity_count = std.math.add(usize, dom_identity_count, 1) catch return error.ResourceLimit;
+                };
+                plan.retired_dom_identity_ids = allocator.alloc(u64, dom_identity_count) catch return error.OutOfMemory;
+                errdefer allocator.free(plan.retired_dom_identity_ids);
+                var dom_write: usize = 0;
+                for (engine_ptr.dom_identities.items, 1..) |identity, elem_id| if (identity.active and plan.target_scopes[@intCast(identity.scope_id)]) {
+                    plan.retired_dom_identity_ids[dom_write] = elem_id;
+                    dom_write += 1;
+                };
                 const render_start = engine_ptr.renderStartForReplacementTargetSet(site.render_insert_index, plan.target_scopes);
                 plan.removal = structural_splice.prepareRemoval(HostNodeDescriptorStream, allocator, &engine_ptr.active_stream, render_start, plan.target_scopes) catch return error.OutOfMemory;
                 errdefer if (plan.removal) |*removal| removal.deinit(allocator);
@@ -3352,12 +3376,31 @@ pub fn Engine(comptime Ctx: type) type {
                 self.collection.commit();
             }
 
+            fn commitIdentityRetirement(self: *@This()) void {
+                for (self.retired_node_identity_ids) |node_id| {
+                    const identity = &self.engine.node_identities.items[@intCast(node_id)];
+                    if (!self.engine.active_node_identity_ids.remove(identityKey(identity.scope_id, identity.ordinal))) @panic("prepared node identity retirement no longer matched active index");
+                    identity.active = false;
+                    identity.retired_at = self.engine.identity_reuse_barrier;
+                }
+                for (self.retired_dom_identity_ids) |elem_id| {
+                    const identity = &self.engine.dom_identities.items[@intCast(elem_id - 1)];
+                    if (!self.engine.active_dom_identity_ids.remove(identityKey(identity.scope_id, identity.ordinal))) @panic("prepared DOM identity retirement no longer matched active index");
+                    identity.active = false;
+                    identity.retired_at = self.engine.identity_reuse_barrier;
+                }
+                self.engine.has_inactive_node_identities = self.engine.has_inactive_node_identities or self.retired_node_identity_ids.len != 0;
+                self.engine.has_inactive_dom_identities = self.engine.has_inactive_dom_identities or self.retired_dom_identity_ids.len != 0;
+            }
+
             fn deinit(self: *@This()) void {
                 const allocator = Ctx.allocator(self.host_ctx);
                 if (self.publication) |*publication| publication.deinit(allocator);
                 if (self.removal) |*removal| removal.deinit(allocator);
                 if (self.scope_retirement) |*retirement| retirement.deinit(allocator);
                 allocator.free(self.state_cell_indexes);
+                allocator.free(self.retired_node_identity_ids);
+                allocator.free(self.retired_dom_identity_ids);
                 for (self.retired_state_cells.items) |*state| state.cell.deinit(self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
                 self.retired_state_cells.deinit(allocator);
                 allocator.free(self.target_scopes);
@@ -8282,6 +8325,10 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 try std.testing.expectEqualSlices(usize, &.{0}, plan.removal.?.descriptor_indexes.signal_text_node_indexes.items);
                 try std.testing.expectEqualSlices(u64, &.{ 4, 5, 6 }, plan.publication.?.replacement_elem_ids);
                 try std.testing.expectEqual(@as(usize, 1), plan.state_cell_indexes.len);
+                try std.testing.expect(plan.retired_node_identity_ids.len != 0);
+                try std.testing.expect(plan.retired_dom_identity_ids.len != 0);
+                const retired_node_id = plan.retired_node_identity_ids[0];
+                const retired_elem_id = plan.retired_dom_identity_ids[0];
                 const old_state_id = engine.states.items[plan.state_cell_indexes[0]].state_id;
                 const replacement_state_id = plan.replacement_stream.states.items[0].node_id;
                 fault.configure(1);
@@ -8303,7 +8350,10 @@ test "branch replacement preparation leaves the active branch unpublished" {
                     plan.removal.?.node_indexes.each_indexes.items,
                 );
                 plan.commitStateCellsAssumeCapacity();
+                plan.commitIdentityRetirement();
                 try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+                try std.testing.expect(!engine.node_identities.items[@intCast(retired_node_id)].active);
+                try std.testing.expect(!engine.dom_identities.items[@intCast(retired_elem_id - 1)].active);
                 try std.testing.expectEqual(@as(usize, 1), plan.retired_state_cells.items.len);
                 try std.testing.expectEqual(old_state_id, plan.retired_state_cells.items[0].state_id);
                 try std.testing.expectEqual(replacement_state_id, engine.states.items[0].state_id);
