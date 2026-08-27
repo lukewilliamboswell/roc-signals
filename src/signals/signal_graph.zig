@@ -31,18 +31,10 @@ pub fn appendDependent(comptime Record: type, allocator: std.mem.Allocator, node
 
 /// Removes dependent and releases the ownership attached to that live entry.
 pub fn removeDependent(comptime Record: type, allocator: std.mem.Allocator, nodes: []Node(Record), input_id: u64, dependent_id: u64) (Error || std.mem.Allocator.Error)!void {
-    const input_index: usize = @intCast(input_id);
-    if (input_index >= nodes.len) return Error.UnknownNode;
-
-    const dependents = &nodes[input_index].dependents;
-    for (dependents.*, 0..) |existing_id, index| {
-        if (existing_id != dependent_id) continue;
-        std.mem.copyForwards(u64, dependents.*[index..], dependents.*[index + 1 ..]);
-        dependents.* = try allocator.realloc(dependents.*, dependents.*.len - 1);
-        return;
-    }
-
-    return Error.MissingDependent;
+    var prepared = try prepareDependentRemoval(Record, allocator, nodes, input_id, dependent_id);
+    defer prepared.deinit(allocator);
+    const retired = prepared.apply(Record, nodes);
+    allocator.free(retired);
 }
 
 /// Owns replacement adjacency until an allocation-free edge-removal commit.
