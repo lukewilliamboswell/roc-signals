@@ -33,7 +33,7 @@ pub const EachRowValues = struct {
 
 /// Provisional each-row scopes whose retained key/item cells remain private
 /// until an enclosing row transaction publishes them.
-pub const PreparedEachRowScopes = struct {
+pub const PreparedScopeClaims = struct {
     allocator: std.mem.Allocator,
     original_scope_len: usize,
     rows: std.ArrayListUnmanaged(Scope) = .empty,
@@ -44,7 +44,7 @@ pub const PreparedEachRowScopes = struct {
     committed: bool = false,
 
     /// Starts an empty overlay over the current persistent scope table.
-    pub fn init(allocator: std.mem.Allocator, scopes: []const Scope) PreparedEachRowScopes {
+    pub fn init(allocator: std.mem.Allocator, scopes: []const Scope) PreparedScopeClaims {
         return .{ .allocator = allocator, .original_scope_len = scopes.len };
     }
 
@@ -127,6 +127,9 @@ pub const PreparedEachRowScopes = struct {
         self.* = undefined;
     }
 };
+
+/// Compatibility name for callers that only claim keyed-row scopes.
+pub const PreparedEachRowScopes = PreparedScopeClaims;
 
 /// Drop the retained cells owned by an each-row scope step (no-op for the
 /// structural scope kinds, which carry no Roc values).
@@ -225,6 +228,79 @@ pub fn eachRowKeyValue(scopes: []const Scope, scope_id: u64) HostValue {
 /// Returns key hash from the keyed row selected by dense scope identity.
 pub fn eachRowKeyHash(scopes: []const Scope, scope_id: u64) u64 {
     return eachRowConst(scopes, scope_id).key_hash;
+}
+
+fn testPreparedScopeCallable(_: *abi.RocHost, _: ?[*]u8, _: ?[*]const u8, _: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {}
+
+test "shared prepared scope claims assign distinct ids and retry after every OOM" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    const TestCtx = struct {
+        /// Returns the scalar test value unchanged.
+        pub fn cloneHostValue(_: *@This(), value: HostValue) HostValue {
+            return value;
+        }
+        /// Opens the no-op scalar test capability frame.
+        pub fn pushHostValueCapabilities(_: *@This(), _: []const HostValueCapability) void {}
+        /// Closes the no-op scalar test capability frame.
+        pub fn popHostValueCapabilities(_: *@This()) void {}
+    };
+    const TestMetrics = struct {
+        /// Accepts retained-edge metrics without affecting the fixture.
+        pub fn bump(_: *@This(), comptime _: anytype, _: u64) void {}
+    };
+    const Runner = struct {
+        fn run(roc_host: *abi.RocHost, cap: HostValueCapability, failure_number: ?usize) !usize {
+            var fault = FaultAllocator.init(std.testing.allocator);
+            var scopes: std.ArrayListUnmanaged(Scope) = .empty;
+            defer scopes.deinit(std.testing.allocator);
+            _ = try scope_tree.internRoot(EachRowScopeStep, std.testing.allocator, &scopes);
+            var ctx = TestCtx{};
+            var metrics = TestMetrics{};
+            var claims = PreparedScopeClaims.init(fault.allocator(), scopes.items);
+            defer {
+                claims.abort(&ctx, roc_host, &metrics);
+                claims.deinit();
+            }
+
+            fault.configure(failure_number);
+            const first = claims.prepareRow(&scopes, &ctx, roc_host, &metrics, 0, 10, 101, 1, 11, cap, cap) catch |err| {
+                try std.testing.expectEqual(error.OutOfMemory, err);
+                claims.abort(&ctx, roc_host, &metrics);
+                fault.configure(null);
+                const retry_first = try claims.prepareRow(&scopes, &ctx, roc_host, &metrics, 0, 10, 101, 1, 11, cap, cap);
+                const retry_second = try claims.prepareRow(&scopes, &ctx, roc_host, &metrics, 0, 20, 202, 2, 22, cap, cap);
+                try std.testing.expectEqual(@as(u64, 1), retry_first);
+                try std.testing.expectEqual(@as(u64, 2), retry_second);
+                try std.testing.expectEqual(@as(usize, 1), scopes.items.len);
+                return fault.attempts;
+            };
+            const second = claims.prepareRow(&scopes, &ctx, roc_host, &metrics, 0, 20, 202, 2, 22, cap, cap) catch |err| {
+                try std.testing.expectEqual(error.OutOfMemory, err);
+                claims.abort(&ctx, roc_host, &metrics);
+                fault.configure(null);
+                const retry_first = try claims.prepareRow(&scopes, &ctx, roc_host, &metrics, 0, 10, 101, 1, 11, cap, cap);
+                const retry_second = try claims.prepareRow(&scopes, &ctx, roc_host, &metrics, 0, 20, 202, 2, 22, cap, cap);
+                try std.testing.expectEqual(@as(u64, 1), retry_first);
+                try std.testing.expectEqual(@as(u64, 2), retry_second);
+                try std.testing.expectEqual(@as(usize, 1), scopes.items.len);
+                return fault.attempts;
+            };
+            try std.testing.expect(failure_number == null);
+            try std.testing.expectEqual(@as(u64, 1), first);
+            try std.testing.expectEqual(@as(u64, 2), second);
+            try std.testing.expectEqual(@as(usize, 1), scopes.items.len);
+            return fault.attempts;
+        }
+    };
+
+    var env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&env);
+    const callable = abi.rocErasedCallableAllocate(&roc_host, testPreparedScopeCallable, null, 0).?;
+    defer abi.decrefErasedCallable(callable, &roc_host);
+    const cap = HostValueCapability{ .clone = callable, .drop = callable, .eq = callable };
+    const attempts = try Runner.run(&roc_host, cap, null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(&roc_host, cap, failure_number);
 }
 
 /// Disposes a scope subtree in post-order, releasing all values, effects, identities, and render ownership.

@@ -751,13 +751,13 @@ pub fn Engine(comptime Ctx: type) type {
 
         const PreparedEachRowSyncHooks = struct {
             base: EachRowSync,
-            scopes: scope_runtime.PreparedEachRowScopes,
+            scopes: *scope_runtime.PreparedScopeClaims,
             inputs: ?*PreparedEachInputs = null,
 
-            fn init(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, ops: HostEachOps) @This() {
+            fn initWithScopeClaims(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, ops: HostEachOps, scopes: *scope_runtime.PreparedScopeClaims) @This() {
                 return .{
                     .base = .{ .engine = engine, .ctx = ctx, .roc_host = roc_host, .ops = ops },
-                    .scopes = scope_runtime.PreparedEachRowScopes.init(Ctx.allocator(ctx), engine.scopes.items),
+                    .scopes = scopes,
                 };
             }
 
@@ -806,18 +806,21 @@ pub fn Engine(comptime Ctx: type) type {
 
             /// Validates that reconciliation references a prepared scope identity.
             pub fn commitCreatedRow(self: *@This(), scope_id: u64) void {
-                for (self.scopes.rows.items) |scope| if (scope.scope_id == scope_id) return;
-                @panic("unknown provisional each-row scope");
+                if (scope_id >= self.base.engine.scopes.items.len or !self.base.engine.scopes.items[@intCast(scope_id)].active) @panic("unknown committed each-row scope");
+                switch (self.base.engine.scopes.items[@intCast(scope_id)].step) {
+                    .each_row => {},
+                    else => @panic("prepared each row claimed a non-row scope"),
+                }
             }
 
             /// Publishes all provisional scope records without allocation.
             pub fn finishPreparedRowsCommit(self: *@This()) void {
-                self.scopes.commit(&self.base.engine.scopes);
+                _ = self;
             }
 
             /// Drops every provisional row cell while persistent scopes remain unchanged.
             pub fn abortPreparedRows(self: *@This()) void {
-                self.scopes.abort(self.base.ctx, self.base.roc_host, &self.base.engine.pending_roc_metrics);
+                _ = self;
             }
 
             /// Replaces a surviving row key at the allocation-free commit boundary.
@@ -857,7 +860,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             fn deinit(self: *@This()) void {
-                self.scopes.deinit();
+                self.* = undefined;
             }
         };
 
@@ -951,6 +954,8 @@ pub fn Engine(comptime Ctx: type) type {
             inputs: PreparedEachInputs,
             hooks: PreparedEachRowSyncHooks,
             rows: each_runtime.PreparedRowSync,
+            owned_scope_claims: ?scope_runtime.PreparedScopeClaims = null,
+            scope_claims: *scope_runtime.PreparedScopeClaims,
             committed: bool = false,
 
             /// Extracts owned inputs and prepares row matching without persistent mutation.
@@ -959,11 +964,22 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             fn prepareWithOverlay(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, site: HostNodeScopeSiteDesc, each: *const HostNodeEachDesc, allocator: std.mem.Allocator, overlay: ?*const signal_records.PreparedCacheUpdates) CollectionError!*@This() {
+                return prepareWithOverlayAndScopeClaims(engine, ctx, roc_host, site, each, allocator, overlay, null);
+            }
+
+            fn prepareWithOverlayAndScopeClaims(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, site: HostNodeScopeSiteDesc, each: *const HostNodeEachDesc, allocator: std.mem.Allocator, overlay: ?*const signal_records.PreparedCacheUpdates, shared_scope_claims: ?*scope_runtime.PreparedScopeClaims) CollectionError!*@This() {
                 const plan = allocator.create(@This()) catch return error.OutOfMemory;
                 errdefer allocator.destroy(plan);
+                plan.* = undefined;
+                plan.owned_scope_claims = if (shared_scope_claims == null) scope_runtime.PreparedScopeClaims.init(allocator, engine.scopes.items) else null;
+                plan.scope_claims = shared_scope_claims orelse &plan.owned_scope_claims.?;
+                errdefer if (plan.owned_scope_claims != null) {
+                    plan.scope_claims.abort(ctx, roc_host, &engine.pending_roc_metrics);
+                    plan.scope_claims.deinit();
+                };
                 var inputs = try PreparedEachInputs.prepareWithOverlay(engine, ctx, roc_host, each, allocator, overlay);
                 errdefer inputs.deinit();
-                var hooks = PreparedEachRowSyncHooks.init(engine, ctx, roc_host, each.ops);
+                var hooks = PreparedEachRowSyncHooks.initWithScopeClaims(engine, ctx, roc_host, each.ops, plan.scope_claims);
                 errdefer hooks.deinit();
                 hooks.inputs = &inputs;
                 const site_index = engine.activeEachRowSiteIndex(site.scope_id, site.ordinal) orelse @panic("active each descriptor had no row site");
@@ -972,7 +988,12 @@ pub fn Engine(comptime Ctx: type) type {
                     rows.abort(&hooks);
                     rows.deinit();
                 }
-                plan.* = .{ .allocator = allocator, .engine = engine, .inputs = inputs, .hooks = hooks, .rows = rows };
+                plan.allocator = allocator;
+                plan.engine = engine;
+                plan.inputs = inputs;
+                plan.hooks = hooks;
+                plan.rows = rows;
+                plan.committed = false;
                 plan.hooks.inputs = &plan.inputs;
                 return plan;
             }
@@ -980,6 +1001,7 @@ pub fn Engine(comptime Ctx: type) type {
             /// Publishes row ownership/order without allocation and returns the structural diff.
             pub fn commit(self: *@This()) HostKeyedRowDiffResult {
                 if (self.committed) @panic("prepared active each rows committed twice");
+                if (self.owned_scope_claims != null) self.scope_claims.commit(&self.engine.scopes);
                 const result = self.rows.commit(&self.engine.each_row_sites, &self.engine.each_row_memberships_by_scope_id, self.inputs.keys, self.inputs.items, &self.hooks);
                 self.inputs.transfer();
                 self.hooks.base.recordRows(result.rows_reused, result.rows_created, result.rows_removed);
@@ -992,6 +1014,10 @@ pub fn Engine(comptime Ctx: type) type {
                 if (!self.committed) self.rows.abort(&self.hooks);
                 self.rows.deinit();
                 self.inputs.deinit();
+                if (self.owned_scope_claims != null) {
+                    self.scope_claims.abort(self.hooks.base.ctx, self.hooks.base.roc_host, &self.engine.pending_roc_metrics);
+                    self.scope_claims.deinit();
+                }
                 self.hooks.deinit();
                 const allocator = self.allocator;
                 allocator.destroy(self);
@@ -11583,11 +11609,13 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
             engine: *Engine(VerifyCtx),
             rows: *each_runtime.PreparedRowSync,
             hooks: *Engine(VerifyCtx).PreparedEachRowSyncHooks,
+            scope_claims: *scope_runtime.PreparedScopeClaims,
             keys: []const HostValue,
             items: []const HostValue,
             diff: ?each_runtime.DiffResult = null,
 
             fn apply(self: *@This()) void {
+                self.scope_claims.commit(&self.engine.scopes);
                 self.diff = self.rows.commit(&self.engine.each_row_sites, &self.engine.each_row_memberships_by_scope_id, self.keys, self.items, self.hooks);
             }
         };
@@ -11608,7 +11636,12 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
         }
 
         fn retry(engine: *Engine(VerifyCtx), ctx: *VerifyCtxHost, host: *abi.RocHost, each_ops: HostEachOps, site_index: usize, keys: []const HostValue, items: []const HostValue) !void {
-            var hooks = Engine(VerifyCtx).PreparedEachRowSyncHooks.init(engine, ctx, host, each_ops);
+            var scope_claims = scope_runtime.PreparedScopeClaims.init(ctx.allocator, engine.scopes.items);
+            defer {
+                scope_claims.abort(ctx, host, &engine.pending_roc_metrics);
+                scope_claims.deinit();
+            }
+            var hooks = Engine(VerifyCtx).PreparedEachRowSyncHooks.initWithScopeClaims(engine, ctx, host, each_ops, &scope_claims);
             var rows = try each_runtime.PreparedRowSync.prepare(ctx.allocator, &engine.each_row_sites, &engine.each_row_memberships_by_scope_id, site_index, 0, 44, keys, items, &hooks);
             var retirement = try Engine(VerifyCtx).PreparedEachRowSubtreeRetirement.prepare(engine, ctx.allocator, rows.removed_scope_ids);
             const replacement = try prepareReplacement(engine, ctx, host, each_ops, &rows, keys, items);
@@ -11629,6 +11662,7 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
             downstream.deinit();
             replacement.deinit();
             retirement.applyBeforeRowCommit(engine);
+            scope_claims.commit(&engine.scopes);
             var diff = rows.commit(&engine.each_row_sites, &engine.each_row_memberships_by_scope_id, keys, items, &hooks);
             retirement.applyAfterRowCommit(engine);
             retirement.applyEffectsAfterPublication(engine, ctx);
@@ -11673,8 +11707,14 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
             const keys = [_]HostValue{ 2, 3, 4 };
             const items = [_]HostValue{ 201, 300, 400 };
 
+            var scope_claims = scope_runtime.PreparedScopeClaims.init(ctx.allocator, engine.scopes.items);
+            defer {
+                scope_claims.abort(&ctx, host, &engine.pending_roc_metrics);
+                scope_claims.deinit();
+            }
+
             fault.configure(fail_at);
-            var hooks = Engine(VerifyCtx).PreparedEachRowSyncHooks.init(&engine, &ctx, host, each_ops);
+            var hooks = Engine(VerifyCtx).PreparedEachRowSyncHooks.initWithScopeClaims(&engine, &ctx, host, each_ops, &scope_claims);
             var rows = each_runtime.PreparedRowSync.prepare(ctx.allocator, &engine.each_row_sites, &engine.each_row_memberships_by_scope_id, site_index, 0, 44, &keys, &items, &hooks) catch |err| {
                 hooks.deinit();
                 try std.testing.expectEqual(error.OutOfMemory, err);
@@ -11785,7 +11825,7 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
             const attempts = fault.attempts;
             retirement.deinit(&engine, ctx.allocator, null, null);
             fault.configure(1);
-            var commit_ctx = RowCommitCtx{ .engine = &engine, .rows = &rows, .hooks = &hooks, .keys = &keys, .items = &items };
+            var commit_ctx = RowCommitCtx{ .engine = &engine, .rows = &rows, .hooks = &hooks, .scope_claims = &scope_claims, .keys = &keys, .items = &items };
             downstream.commitAssumeCapacityWith(&commit_ctx, RowCommitCtx.apply);
             var diff = commit_ctx.diff.?;
             try std.testing.expectEqual(@as(usize, 0), fault.attempts);
