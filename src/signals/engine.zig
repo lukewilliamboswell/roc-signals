@@ -6671,6 +6671,28 @@ test "transactional static engine root sweeps every allocation and retries clean
     }
 }
 
+test "transactional engine root resource limits preserve state and allow retry" {
+    const child = verifyStaticText();
+    const root = verifyStaticRoot(&.{}, &.{child});
+    var roc_host: abi.RocHost = undefined;
+    var ctx = VerifyCtxHost{ .allocator = std.testing.allocator };
+    var engine = Engine(VerifyCtx).init();
+    var stream: HostNodeDescriptorStream = .{};
+    defer {
+        stream.deinit(std.testing.allocator, &ctx, &roc_host, &engine.pending_roc_metrics);
+        deinitVerifyStaticEngine(&engine, &ctx);
+    }
+
+    try std.testing.expectError(error.ResourceLimit, engine.collectStaticRootDescriptorsTransactional(&ctx, &roc_host, &stream, root, .{ .nodes = 1 }));
+    try std.testing.expectEqual(@as(usize, 0), engine.scopes.items.len);
+    try std.testing.expectEqual(@as(usize, 0), engine.dom_identities.items.len);
+    try std.testing.expect(stream.elemDescriptorIndex(1) == null);
+
+    try engine.collectStaticRootDescriptorsTransactional(&ctx, &roc_host, &stream, root, .{});
+    try std.testing.expectEqual(@as(usize, 2), engine.dom_identities.items.len);
+    try std.testing.expectEqualStrings("hello", findTextNodeDesc(&stream, 2).?.value);
+}
+
 comptime {
     verifyCtx(VerifyCtx);
     std.debug.assert(@sizeOf(NoMetrics) == 0);
