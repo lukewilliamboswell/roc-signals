@@ -1377,6 +1377,8 @@ const HostEnv = struct {
         self.engine.scopes.deinit(allocator);
         self.engine.node_identities.deinit(allocator);
         self.engine.dom_identities.deinit(allocator);
+        self.engine.active_node_identity_ids.deinit(allocator);
+        self.engine.active_dom_identity_ids.deinit(allocator);
         self.engine.deinitRenderCache(self);
         self.engine.deinitScratch(self);
         self.clearLocationHistory();
@@ -2866,6 +2868,10 @@ fn main(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
     }
 
     if (bench_app) {
+        if (builtin.mode != .ReleaseFast) {
+            writeStderr("Error: --bench-app requires a ReleaseFast host; run `zig build build-test-hosts -Doptimize=ReleaseFast` before building the Roc app\n");
+            return 1;
+        }
         return runAppBenchmarks(spec_file.?, bench_name, bench_iterations, bench_samples, verbose) catch |err| {
             writeStderr("HOST ERROR: ");
             writeStderr(@errorName(err));
@@ -3030,6 +3036,8 @@ fn deinitTestHostIdentity(host: *HostEnv) void {
     host.engine.scopes.deinit(allocator);
     host.engine.node_identities.deinit(allocator);
     host.engine.dom_identities.deinit(allocator);
+    host.engine.active_node_identity_ids.deinit(allocator);
+    host.engine.active_dom_identity_ids.deinit(allocator);
     host.engine.deinitScratch(host);
     if (host.engine.host_values.hasLiveValues()) failHost("test host value registry still owned a typed cell at shutdown");
     host.engine.host_values.deinit(allocator);

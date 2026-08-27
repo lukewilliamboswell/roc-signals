@@ -26,8 +26,13 @@ pub fn Registry(comptime Capability: type) type {
         last_taken_epoch: u64,
     };
 
+    const Vacant = struct {
+        last_taken_epoch: u64,
+        next: ?usize,
+    };
+
     const Slot = union(enum) {
-        vacant: u64,
+        vacant: Vacant,
         occupied: Cell,
     };
 
@@ -35,6 +40,7 @@ pub fn Registry(comptime Capability: type) type {
         const Self = @This();
 
         slots: std.ArrayListUnmanaged(Slot) = .empty,
+        first_vacant: ?usize = null,
         take_epoch: u64 = 0,
 
         pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
@@ -86,14 +92,14 @@ pub fn Registry(comptime Capability: type) type {
         }
 
         pub fn storeOwnedCapability(self: *Self, allocator: std.mem.Allocator, box: abi.RocBox, owned_capability: ?Capability, ops: anytype) Error!HostValue {
-            for (self.slots.items, 0..) |*entry, index| {
-                switch (entry.*) {
-                    .vacant => |last_taken_epoch| {
-                        entry.* = .{ .occupied = cell(box, owned_capability, last_taken_epoch) };
-                        return @intCast(index + 1);
-                    },
-                    .occupied => {},
-                }
+            if (self.first_vacant) |index| {
+                const vacant = switch (self.slots.items[index]) {
+                    .vacant => |value| value,
+                    .occupied => unreachable,
+                };
+                self.first_vacant = vacant.next;
+                self.slots.items[index] = .{ .occupied = cell(box, owned_capability, vacant.last_taken_epoch) };
+                return @intCast(index + 1);
             }
 
             self.slots.append(allocator, .{ .occupied = cell(box, owned_capability, 0) }) catch {
@@ -116,18 +122,8 @@ pub fn Registry(comptime Capability: type) type {
             return try self.storeRetainedCapability(allocator, box, capability_value, ops);
         }
 
-        fn vacantSlotAvailable(self: *const Self) bool {
-            for (self.slots.items) |entry| {
-                switch (entry) {
-                    .vacant => return true,
-                    .occupied => {},
-                }
-            }
-            return false;
-        }
-
         fn ensureStoreCapacity(self: *Self, allocator: std.mem.Allocator) Error!void {
-            if (self.vacantSlotAvailable()) return;
+            if (self.first_vacant != null) return;
             self.slots.ensureUnusedCapacity(allocator, 1) catch return Error.OutOfMemory;
         }
 
@@ -182,7 +178,9 @@ pub fn Registry(comptime Capability: type) type {
                 .vacant => Error.ReleasedHandle,
                 .occupied => |occupied| blk: {
                     self.take_epoch +%= 1;
-                    entry.* = .{ .vacant = self.take_epoch };
+                    const index: usize = @intCast(value - 1);
+                    entry.* = .{ .vacant = .{ .last_taken_epoch = self.take_epoch, .next = self.first_vacant } };
+                    self.first_vacant = index;
                     if (occupied.capability) |capability_value| ops.releaseCapability(capability_value);
                     break :blk occupied.box;
                 },
@@ -214,7 +212,7 @@ pub fn Registry(comptime Capability: type) type {
         pub fn assertTakenAfter(self: *Self, value: HostValue, epoch: u64) Error!void {
             const entry = try self.slot(value);
             const last_taken_epoch = switch (entry.*) {
-                .vacant => |last| last,
+                .vacant => |vacant| vacant.last_taken_epoch,
                 .occupied => |occupied| occupied.last_taken_epoch,
             };
             if (last_taken_epoch <= epoch) return Error.UnconsumedHandle;

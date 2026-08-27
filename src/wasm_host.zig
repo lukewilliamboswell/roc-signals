@@ -1027,6 +1027,10 @@ fn clearActiveRuntime() void {
     shared_engine.node_identities = .empty;
     shared_engine.dom_identities.deinit(a);
     shared_engine.dom_identities = .empty;
+    shared_engine.active_node_identity_ids.deinit(a);
+    shared_engine.active_node_identity_ids = .empty;
+    shared_engine.active_dom_identity_ids.deinit(a);
+    shared_engine.active_dom_identity_ids = .empty;
 
     shared_engine.deinitRenderCache(ctx);
     shared_engine.deinitScratch(ctx);

@@ -22,6 +22,18 @@ pub const DomIdentity = struct {
     retired_at: u64 = 0,
 };
 
+pub fn appendFreshNode(allocator: std.mem.Allocator, identities: *std.ArrayListUnmanaged(NodeIdentity), scope_id: u64, ordinal: u64) Error!u64 {
+    const node_id: u64 = @intCast(identities.items.len);
+    identities.append(allocator, .{ .node_id = node_id, .scope_id = scope_id, .ordinal = ordinal, .active = true }) catch return Error.OutOfMemory;
+    return node_id;
+}
+
+pub fn appendFreshDom(allocator: std.mem.Allocator, identities: *std.ArrayListUnmanaged(DomIdentity), scope_id: u64, ordinal: u64) Error!u64 {
+    const elem_id: u64 = @intCast(identities.items.len + 1);
+    identities.append(allocator, .{ .elem_id = elem_id, .scope_id = scope_id, .ordinal = ordinal, .active = true }) catch return Error.OutOfMemory;
+    return elem_id;
+}
+
 pub fn internNode(allocator: std.mem.Allocator, identities: *std.ArrayListUnmanaged(NodeIdentity), scope_id: u64, ordinal: u64, reuse_barrier: u64) Error!u64 {
     for (identities.items) |identity| {
         if (!identity.active) continue;

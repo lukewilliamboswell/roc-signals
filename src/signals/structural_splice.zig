@@ -121,18 +121,6 @@ pub const ElemOwnedRemovalScratch = struct {
     }
 };
 
-fn u64SliceContains(items: []const u64, target: u64) bool {
-    for (items) |item| {
-        if (item == target) return true;
-    }
-    return false;
-}
-
-fn appendUniqueU64(allocator: std.mem.Allocator, values: *std.ArrayListUnmanaged(u64), value: u64) void {
-    if (u64SliceContains(values.items, value)) return;
-    values.append(allocator, value) catch @panic("out of memory");
-}
-
 pub fn scopeIsInTargetSet(target_scopes: []const bool, scope_id: u64) bool {
     if (scope_id >= target_scopes.len) @panic("descriptor referenced scope outside replacement target set");
     return target_scopes[@intCast(scope_id)];
@@ -190,8 +178,12 @@ pub fn collectRenderRemovalScan(comptime Stream: type, allocator: std.mem.Alloca
 
     var removed_elem_ids: std.ArrayListUnmanaged(u64) = .empty;
     errdefer removed_elem_ids.deinit(allocator);
+    var removed_elem_set: std.AutoHashMapUnmanaged(u64, void) = .empty;
+    defer removed_elem_set.deinit(allocator);
     var touched_parent_ids: std.ArrayListUnmanaged(u64) = .empty;
     errdefer touched_parent_ids.deinit(allocator);
+    var touched_parent_set: std.AutoHashMapUnmanaged(u64, void) = .empty;
+    defer touched_parent_set.deinit(allocator);
 
     var removed_render_count: usize = 0;
     var target_scan_count: usize = 0;
@@ -201,16 +193,18 @@ pub fn collectRenderRemovalScan(comptime Stream: type, allocator: std.mem.Alloca
         const parent_elem_id = descriptor_stream.renderNodeParentElemId(Stream, stream, node);
         target_scan_count += 1;
         const scope_in_target = scopeIsInTargetSet(target_scopes, descriptor_stream.renderNodeScopeId(Stream, stream, node));
-        const parent_removed = u64SliceContains(removed_elem_ids.items, parent_elem_id);
+        const parent_removed = removed_elem_set.contains(parent_elem_id);
         if (!scope_in_target and !parent_removed) break;
         removed_render_count += 1;
         removed_elem_ids.append(allocator, node.elem_id) catch @panic("out of memory");
-        appendUniqueU64(allocator, &touched_parent_ids, parent_elem_id);
+        removed_elem_set.put(allocator, node.elem_id, {}) catch @panic("out of memory");
+        const touched_entry = touched_parent_set.getOrPut(allocator, parent_elem_id) catch @panic("out of memory");
+        if (!touched_entry.found_existing) touched_parent_ids.append(allocator, parent_elem_id) catch @panic("out of memory");
     }
 
     var touched_parent_write_index: usize = 0;
     for (touched_parent_ids.items) |parent_elem_id| {
-        if (u64SliceContains(removed_elem_ids.items, parent_elem_id)) continue;
+        if (removed_elem_set.contains(parent_elem_id)) continue;
         touched_parent_ids.items[touched_parent_write_index] = parent_elem_id;
         touched_parent_write_index += 1;
     }

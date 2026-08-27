@@ -382,13 +382,6 @@ const StreamElementDesc = ElementDesc;
 const StreamTextNodeDesc = TextNodeDesc;
 const StreamSignalTextNodeDesc = SignalTextNodeDesc;
 
-fn renderNodeSliceContainsElem(items: []const RenderNode, elem_id: u64) bool {
-    for (items) |item| {
-        if (item.elem_id == elem_id) return true;
-    }
-    return false;
-}
-
 pub fn CustomAttrRefs(comptime StreamType: type) type {
     return struct {
         stream: *const StreamType,
@@ -708,9 +701,14 @@ pub const Stream = struct {
             self.refreshRenderIndexesInRange(allocator, render_start, removed_nodes.len, metrics);
         }
 
+        var removed_elem_set: std.AutoHashMapUnmanaged(u64, void) = .empty;
+        defer removed_elem_set.deinit(allocator);
+        removed_elem_set.ensureTotalCapacity(allocator, @intCast(removed_nodes.len)) catch @panic("out of memory");
+        for (removed_nodes) |node| removed_elem_set.putAssumeCapacity(node.elem_id, {});
+
         for (removed_nodes, render_start..) |node, index| {
             const parent_elem_id = renderNodeParentElemId(Stream, self, node);
-            if (!renderNodeSliceContainsElem(removed_nodes, parent_elem_id)) {
+            if (!removed_elem_set.contains(parent_elem_id)) {
                 self.removeRenderChild(parent_elem_id, node.elem_id);
             }
             self.clearRenderChildren(node.elem_id);
