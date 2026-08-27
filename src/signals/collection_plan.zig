@@ -179,6 +179,81 @@ pub fn OwnedValues(comptime Value: type) type {
     };
 }
 
+/// Transaction-local signal records keyed by stable callable token. Newly
+/// constructed records remain owned here until allocation-free publication;
+/// abort releases them in reverse construction order.
+pub fn RecordOverlay(comptime Token: type, comptime Record: type) type {
+    return struct {
+        const Self = @This();
+        provisional_by_token: std.AutoHashMapUnmanaged(Token, *Record) = .{},
+        owned: std.ArrayListUnmanaged(*Record) = .empty,
+        committed: bool = false,
+
+        pub fn prepare(self: *Self, allocator: std.mem.Allocator, additional: usize) std.mem.Allocator.Error!void {
+            try self.provisional_by_token.ensureUnusedCapacity(allocator, @intCast(additional));
+            try self.owned.ensureUnusedCapacity(allocator, additional);
+        }
+
+        pub fn lookup(self: *const Self, token: Token, persistent: ?*Record) ?*Record {
+            return self.provisional_by_token.get(token) orelse persistent;
+        }
+
+        pub fn ownAssumeCapacity(self: *Self, token: Token, record: *Record) void {
+            if (self.committed) @panic("record overlay cannot own after commit");
+            self.provisional_by_token.putAssumeCapacity(token, record);
+            self.owned.appendAssumeCapacity(record);
+        }
+
+        pub fn abort(self: *Self, releaser: anytype) void {
+            if (self.committed) @panic("committed record overlay cannot abort");
+            var index = self.owned.items.len;
+            while (index != 0) {
+                index -= 1;
+                releaser.releaseRecord(self.owned.items[index]);
+            }
+            self.provisional_by_token.clearRetainingCapacity();
+            self.owned.clearRetainingCapacity();
+        }
+
+        pub fn commit(self: *Self, publisher: anytype) void {
+            if (self.committed) @panic("record overlay committed twice");
+            for (self.owned.items) |record| publisher.publishRecord(record);
+            self.committed = true;
+        }
+
+        pub fn deinit(self: *Self, allocator: std.mem.Allocator, releaser: anytype) void {
+            if (!self.committed) self.abort(releaser);
+            self.provisional_by_token.deinit(allocator);
+            self.owned.deinit(allocator);
+            self.* = .{};
+        }
+    };
+}
+
+test "record overlay aborts in reverse and commits without allocation" {
+    const TestRecord = struct { id: u8 };
+    var first = TestRecord{ .id = 1 };
+    var second = TestRecord{ .id = 2 };
+    var released: [2]u8 = undefined;
+    var release_len: usize = 0;
+    const Releaser = struct {
+        values: *[2]u8,
+        len: *usize,
+        pub fn releaseRecord(self: @This(), record: *TestRecord) void {
+            self.values[self.len.*] = record.id;
+            self.len.* += 1;
+        }
+    };
+    var overlay = RecordOverlay(u64, TestRecord){};
+    try overlay.prepare(std.testing.allocator, 2);
+    overlay.ownAssumeCapacity(10, &first);
+    overlay.ownAssumeCapacity(20, &second);
+    try std.testing.expect(overlay.lookup(20, null) == &second);
+    overlay.abort(Releaser{ .values = &released, .len = &release_len });
+    try std.testing.expectEqualSlices(u8, &.{ 2, 1 }, released[0..release_len]);
+    overlay.deinit(std.testing.allocator, Releaser{ .values = &released, .len = &release_len });
+}
+
 pub fn Plan(comptime Action: type) type {
     return struct {
         const Self = @This();
