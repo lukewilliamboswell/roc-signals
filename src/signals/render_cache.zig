@@ -176,6 +176,38 @@ fn stableSubsequenceLength(indexes: []const usize, scratch: []usize) usize {
     return len;
 }
 
+/// Owns one parent-child replacement until an allocation-free cache commit.
+pub const PreparedChildrenReplacement = struct {
+    parent_elem_id: u64,
+    next: []u64,
+    retired: std.ArrayListUnmanaged(u64) = .empty,
+    committed: bool = false,
+
+    /// Copies the next child order without mutating the active cache.
+    pub fn prepare(comptime Ctx: type, allocator: std.mem.Allocator, cache: *const Cache(Ctx), parent_elem_id: u64, next: []const u64) (std.mem.Allocator.Error || error{MissingParent})!PreparedChildrenReplacement {
+        const index = std.math.cast(usize, parent_elem_id) orelse return error.MissingParent;
+        if (index >= cache.nodes.items.len or !cache.nodes.items[index].active) return error.MissingParent;
+        return .{ .parent_elem_id = parent_elem_id, .next = try allocator.dupe(u64, next) };
+    }
+
+    /// Swaps the prepared order into the cache without allocating.
+    pub fn apply(self: *PreparedChildrenReplacement, comptime Ctx: type, cache: *Cache(Ctx)) void {
+        if (self.committed) @panic("prepared child replacement committed twice");
+        const node = &cache.nodes.items[@intCast(self.parent_elem_id)];
+        self.retired = node.children;
+        node.children = .{ .items = self.next, .capacity = self.next.len };
+        self.next = &.{};
+        self.committed = true;
+    }
+
+    /// Releases provisional or retired child storage after abort or commit.
+    pub fn deinit(self: *PreparedChildrenReplacement, allocator: std.mem.Allocator) void {
+        allocator.free(self.next);
+        self.retired.deinit(allocator);
+        self.* = undefined;
+    }
+};
+
 /// Defines the engine-owned rendered-state cache used to emit only changed host commands.
 pub fn Cache(comptime Ctx: type) type {
     return struct {
@@ -727,6 +759,37 @@ test "render cache capacity preflight is recoverable and logically inert" {
     try std.testing.expectEqual(@as(usize, 0), fault.attempts);
     try std.testing.expectEqualSlices(u64, &.{7}, cache.nodes.items[0].children.items);
     fault.configure(null);
+}
+
+test "prepared child replacement aborts cleanly and commits allocation free" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var fault = FaultAllocator.init(std.testing.allocator);
+    const allocator = fault.allocator();
+    var cache: Cache(TestCtx) = .{};
+    defer {
+        cache.nodes.items[0].children.deinit(allocator);
+        cache.nodes.deinit(allocator);
+    }
+    try cache.nodes.append(allocator, ScalarNode.initActive("root"));
+    try cache.nodes.items[0].children.appendSlice(allocator, &.{ 1, 2 });
+
+    fault.configure(1);
+    try std.testing.expectError(error.OutOfMemory, PreparedChildrenReplacement.prepare(TestCtx, allocator, &cache, 0, &.{ 2, 3 }));
+    try std.testing.expectEqualSlices(u64, &.{ 1, 2 }, cache.nodes.items[0].children.items);
+
+    fault.configure(null);
+    var aborted = try PreparedChildrenReplacement.prepare(TestCtx, allocator, &cache, 0, &.{ 2, 3 });
+    aborted.deinit(allocator);
+    try std.testing.expectEqualSlices(u64, &.{ 1, 2 }, cache.nodes.items[0].children.items);
+
+    var committed = try PreparedChildrenReplacement.prepare(TestCtx, allocator, &cache, 0, &.{ 2, 3 });
+    fault.configure(1);
+    committed.apply(TestCtx, &cache);
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqualSlices(u64, &.{ 2, 3 }, cache.nodes.items[0].children.items);
+    try std.testing.expectEqualSlices(u64, &.{ 1, 2 }, committed.retired.items);
+    fault.configure(null);
+    committed.deinit(allocator);
 }
 
 test "render cache reset accepts sparse element ids" {
