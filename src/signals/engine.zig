@@ -1420,86 +1420,106 @@ pub fn Engine(comptime Ctx: type) type {
         }
 
         pub fn bindNodeSignalExpr(self: *Self, allocator: std.mem.Allocator, stream: *HostNodeDescriptorStream, expr: abi.NodeSignalExpr, binder_stack: []const HostBinderBinding) *HostSignalRecord {
-            return self.bindSignalExprView(allocator, stream, abi_view.SignalExpr.fromAbi(expr), binder_stack);
+            const binding = ImmediateSignalRecordCtx{ .engine = self, .allocator = allocator, .stream = stream };
+            return self.bindSignalExprViewWith(ImmediateSignalRecordCtx, binding, abi_view.SignalExpr.fromAbi(expr), binder_stack);
         }
 
-        fn bindSignalExprView(self: *Self, allocator: std.mem.Allocator, stream: *HostNodeDescriptorStream, expr: abi_view.SignalExpr, binder_stack: []const HostBinderBinding) *HostSignalRecord {
+        const ImmediateSignalRecordCtx = struct {
+            engine: *Self,
+            allocator: std.mem.Allocator,
+            stream: *HostNodeDescriptorStream,
+
+            fn retainExisting(self: @This(), token: HostSignalToken, expected_tag: std.meta.Tag(HostSignalRecordPayload)) ?*HostSignalRecord {
+                return self.engine.retainExistingSignalRecordForStream(self.allocator, self.stream, token, expected_tag);
+            }
+
+            fn init(self: @This(), payload: HostSignalRecordPayload) *HostSignalRecord {
+                return HostSignalRecord.init(self.allocator, payload);
+            }
+
+            fn remember(self: @This(), record: *HostSignalRecord) void {
+                self.stream.rememberSignalRecord(self.allocator, record);
+            }
+        };
+
+        fn bindSignalExprViewWith(self: *Self, comptime Binding: type, binding: Binding, expr: abi_view.SignalExpr, binder_stack: []const HostBinderBinding) *HostSignalRecord {
+            const allocator = binding.allocator;
             return switch (expr) {
                 .ref => |payload| blk: {
                     const token = payload.binder.callable;
                     const node_id = resolveNodeBinderRef(binder_stack, token);
-                    break :blk HostSignalRecord.init(allocator, .{ .ref = node_id });
+                    break :blk binding.init(.{ .ref = node_id });
                 },
                 .const_value => |payload| blk: {
                     const token = payload.token.callable;
-                    if (self.retainExistingSignalRecordForStream(allocator, stream, token, .const_value)) |record| {
+                    if (binding.retainExisting(token, .const_value)) |record| {
                         break :blk record;
                     }
 
-                    const record = HostSignalRecord.init(allocator, .{ .const_value = .{
+                    const record = binding.init(.{ .const_value = .{
                         .init = retainHostCallable(payload.init, &self.pending_roc_metrics),
                         .cap = retainHostValueCapability(payload.capability, &self.pending_roc_metrics),
                     } });
-                    stream.rememberSignalRecord(allocator, record);
+                    binding.remember(record);
                     break :blk record;
                 },
                 .map => |payload| blk: {
                     const token = payload.token.callable;
-                    if (self.retainExistingSignalRecordForStream(allocator, stream, token, .map)) |record| {
+                    if (binding.retainExisting(token, .map)) |record| {
                         break :blk record;
                     }
 
-                    const input = self.bindSignalExprView(allocator, stream, abi_view.SignalExpr.fromAbi(payload.input.*), binder_stack);
-                    const record = HostSignalRecord.init(allocator, .{ .map = .{
+                    const input = self.bindSignalExprViewWith(Binding, binding, abi_view.SignalExpr.fromAbi(payload.input.*), binder_stack);
+                    const record = binding.init(.{ .map = .{
                         .input = input,
                         .transform = retainHostCallable(payload.transform, &self.pending_roc_metrics),
                         .cap = retainHostValueCapability(payload.capability, &self.pending_roc_metrics),
                     } });
-                    stream.rememberSignalRecord(allocator, record);
+                    binding.remember(record);
                     break :blk record;
                 },
                 .map2 => |payload| blk: {
                     const token = payload.token.callable;
-                    if (self.retainExistingSignalRecordForStream(allocator, stream, token, .map2)) |record| {
+                    if (binding.retainExisting(token, .map2)) |record| {
                         break :blk record;
                     }
 
-                    const left = self.bindSignalExprView(allocator, stream, abi_view.SignalExpr.fromAbi(payload.left.*), binder_stack);
-                    const right = self.bindSignalExprView(allocator, stream, abi_view.SignalExpr.fromAbi(payload.right.*), binder_stack);
-                    const record = HostSignalRecord.init(allocator, .{ .map2 = .{
+                    const left = self.bindSignalExprViewWith(Binding, binding, abi_view.SignalExpr.fromAbi(payload.left.*), binder_stack);
+                    const right = self.bindSignalExprViewWith(Binding, binding, abi_view.SignalExpr.fromAbi(payload.right.*), binder_stack);
+                    const record = binding.init(.{ .map2 = .{
                         .left = left,
                         .right = right,
                         .transform = retainHostCallable(payload.transform, &self.pending_roc_metrics),
                         .cap = retainHostValueCapability(payload.capability, &self.pending_roc_metrics),
                     } });
-                    stream.rememberSignalRecord(allocator, record);
+                    binding.remember(record);
                     break :blk record;
                 },
                 .combine => |payload| blk: {
                     const token = payload.token.callable;
-                    if (self.retainExistingSignalRecordForStream(allocator, stream, token, .combine)) |record| {
+                    if (binding.retainExisting(token, .combine)) |record| {
                         break :blk record;
                     }
 
                     const children = allocator.alloc(*HostSignalRecord, payload.children.len) catch @panic("out of memory");
                     for (payload.children, children) |child, *dest| {
-                        dest.* = self.bindSignalExprView(allocator, stream, abi_view.SignalExpr.fromAbi(child), binder_stack);
+                        dest.* = self.bindSignalExprViewWith(Binding, binding, abi_view.SignalExpr.fromAbi(child), binder_stack);
                     }
-                    const record = HostSignalRecord.init(allocator, .{ .combine = .{
+                    const record = binding.init(.{ .combine = .{
                         .children = children,
                         .transform = retainHostCallable(payload.transform, &self.pending_roc_metrics),
                         .cap = retainHostValueCapability(payload.capability, &self.pending_roc_metrics),
                     } });
-                    stream.rememberSignalRecord(allocator, record);
+                    binding.remember(record);
                     break :blk record;
                 },
                 .task_source => |payload| blk: {
                     const token = payload.token.callable;
-                    if (self.retainExistingSignalRecordForStream(allocator, stream, token, .task_source)) |record| {
+                    if (binding.retainExisting(token, .task_source)) |record| {
                         break :blk record;
                     }
 
-                    const record = HostSignalRecord.init(allocator, .{ .task_source = .{
+                    const record = binding.init(.{ .task_source = .{
                         .name = allocator.dupe(u8, payload.name.asSlice()) catch @panic("out of memory"),
                         .payload_cap = retainHostValueCapability(payload.payload_capability, &self.pending_roc_metrics),
                         .initial = retainHostCallable(payload.initial, &self.pending_roc_metrics),
