@@ -11,6 +11,7 @@ pub const abi_view = @import("abi_view.zig");
 pub const active_signal_graph = @import("active_signal_graph.zig");
 pub const boundary = @import("boundary.zig");
 pub const collection_budget = @import("collection_budget.zig");
+pub const collection_plan = @import("collection_plan.zig");
 pub const descriptor_stream = @import("descriptor_stream.zig");
 pub const each_runtime = @import("each_runtime.zig");
 pub const effects_runtime = @import("effects_runtime.zig");
@@ -38,6 +39,7 @@ test {
     std.testing.refAllDecls(active_signal_graph);
     std.testing.refAllDecls(boundary);
     std.testing.refAllDecls(collection_budget);
+    std.testing.refAllDecls(collection_plan);
     std.testing.refAllDecls(descriptor_stream);
     std.testing.refAllDecls(each_runtime);
     std.testing.refAllDecls(effects_runtime);
