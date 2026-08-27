@@ -493,21 +493,25 @@ pub fn validateExistingSignalRecord(record: *Record, expected_tag: std.meta.Tag(
 }
 
 pub fn appendSignalRecordSourceNodeIds(allocator: std.mem.Allocator, source_node_ids: *std.ArrayListUnmanaged(u64), record: *Record) void {
+    appendSignalRecordSourceNodeIdsFallible(allocator, source_node_ids, record) catch @panic("out of memory");
+}
+
+pub fn appendSignalRecordSourceNodeIdsFallible(allocator: std.mem.Allocator, source_node_ids: *std.ArrayListUnmanaged(u64), record: *Record) std.mem.Allocator.Error!void {
     switch (record.payload) {
         .ref => |node_id| {
             if (!u64SliceContains(source_node_ids.items, node_id)) {
-                source_node_ids.append(allocator, node_id) catch @panic("out of memory");
+                try source_node_ids.append(allocator, node_id);
             }
         },
         .const_value => {},
-        .map => |payload| appendSignalRecordSourceNodeIds(allocator, source_node_ids, payload.input),
+        .map => |payload| try appendSignalRecordSourceNodeIdsFallible(allocator, source_node_ids, payload.input),
         .map2 => |payload| {
-            appendSignalRecordSourceNodeIds(allocator, source_node_ids, payload.left);
-            appendSignalRecordSourceNodeIds(allocator, source_node_ids, payload.right);
+            try appendSignalRecordSourceNodeIdsFallible(allocator, source_node_ids, payload.left);
+            try appendSignalRecordSourceNodeIdsFallible(allocator, source_node_ids, payload.right);
         },
         .combine => |payload| {
             for (payload.children) |child| {
-                appendSignalRecordSourceNodeIds(allocator, source_node_ids, child);
+                try appendSignalRecordSourceNodeIdsFallible(allocator, source_node_ids, child);
             }
         },
         .task_source, .interval_source, .location_source, .online_source, .visibility_source, .storage_source => {},

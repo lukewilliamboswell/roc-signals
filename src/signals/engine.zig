@@ -201,6 +201,7 @@ test "duplicate key diagnostics truncate at utf8 boundary" {
     try std.testing.expect(std.mem.indexOf(u8, msg, "...") != null);
 }
 pub const appendSignalRecordSourceNodeIds = signal_records.appendSignalRecordSourceNodeIds;
+pub const appendSignalRecordSourceNodeIdsFallible = signal_records.appendSignalRecordSourceNodeIdsFallible;
 
 const render_event_kinds = [_]RenderEventKind{ .click, .input, .check, .pointer_down, .pointer_up, .pointer_enter, .pointer_leave };
 
@@ -2298,13 +2299,24 @@ pub fn Engine(comptime Ctx: type) type {
                 }
             };
 
-            fn bindSignalRoot(self: *@This(), roc_host: *abi.RocHost, expr: abi.NodeSignalExpr, binder_stack: []const HostBinderBinding) CollectionError!*HostSignalRecord {
+            fn bindSignalRoot(self: *@This(), roc_host: *abi.RocHost, expr: abi.NodeSignalExpr, binder_stack: []const HostBinderBinding) CollectionError!HostSignalBinding {
                 if (self.signal_records.descriptor_roots.items.len >= self.signal_capacity) return error.OutOfMemory;
                 self.signal_roc_host = roc_host;
                 const binding = StagedSignalRecordCtx{ .collection = self, .allocator = Ctx.allocator(self.host_ctx) };
                 const record = self.engine.bindSignalExprViewWith(StagedSignalRecordCtx, binding, abi_view.SignalExpr.fromAbi(expr), binder_stack) catch return error.OutOfMemory;
                 self.signal_records.ownDescriptorRootAssumeCapacity(record);
-                return record;
+                var source_node_ids: std.ArrayListUnmanaged(u64) = .empty;
+                appendSignalRecordSourceNodeIdsFallible(binding.allocator, &source_node_ids, record) catch {
+                    source_node_ids.deinit(binding.allocator);
+                    return error.OutOfMemory;
+                };
+                return .{
+                    .record = record,
+                    .source_node_ids = source_node_ids.toOwnedSlice(binding.allocator) catch {
+                        source_node_ids.deinit(binding.allocator);
+                        return error.OutOfMemory;
+                    },
+                };
             }
 
             /// Publishes only pre-reserved state. This function must remain
