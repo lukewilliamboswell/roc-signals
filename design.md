@@ -892,6 +892,123 @@ structural splice/collect/apply algorithms. It calls the host through the `Ctx`
 contract and writes all output through `sink()`. It never knows whether it is
 running under the simulated DOM or the browser.
 
+The engine processes declarations and structural change through one transaction
+boundary, but they affect different kinds of state. A **descriptor transaction**
+ingests declarations for nodes, attributes, signals, and events. A descriptor
+may be static (a fixed value) or dynamic (backed by a signal or retained event
+callable); in either case it describes behaviour attached to an already chosen
+tree shape. A **structural transaction** chooses or changes that shape: it
+creates or retires scopes, selects a `Ui.when` branch, reconciles `Ui.each_str`
+rows, transfers state ownership, and splices the affected graph and render
+subtree. Structural work can therefore invalidate more indexes and ownership
+relationships than publishing a descriptor, but it obeys the same
+prepare-then-commit rule.
+
+```mermaid
+flowchart TB
+    subgraph Roc["Roc platform and application"]
+        App["pure Elem and Signal descriptors"]
+        Callbacks["typed reducers · transforms · readers · builders"]
+        Values["capability-owned opaque values"]
+    end
+
+    subgraph Core["Host-agnostic Engine(Ctx)"]
+        direction TB
+
+        Inputs["transaction coordinator<br/>mount · event · source update · structural refresh"]
+
+        subgraph Prepare["prepare phase — private scratch and provisional ownership"]
+            Validate["ABI validation · limits · capacity preflight"]
+            DescriptorPlan["descriptor plan<br/>nodes · attrs · signals · events"]
+            StructuralPlan["structural plan<br/>scopes · state · when · each"]
+        end
+
+        Commit["allocation-free atomic commit"]
+
+        subgraph Stores["committed identity and ownership stores"]
+            Identities["node and DOM identities"]
+            Descriptors["descriptor stream and O(1) indexes"]
+            Records["signal-record registry"]
+            Scopes["scope forest and lifecycle ownership"]
+            State["state cells and capability-owned values"]
+        end
+
+        subgraph Reactive["reactive execution"]
+            Events["event router and payload validation"]
+            Graph["active dependency graph<br/>adjacency · rank · source routes"]
+            Scheduler["dirty queue · rank ordering · equality pruning"]
+        end
+
+        subgraph Structure["structural execution"]
+            When["when branch selection"]
+            Each["keyed each diff and row scopes"]
+            Splice["local graph and render-tree splice"]
+        end
+
+        subgraph Services["engine services"]
+            Effects["timers · tasks · browser-backed sources · cleanup"]
+            Render["render cache and minimal diff"]
+            Commands["transactional command sink"]
+            Observe["metrics · bounded diagnostics · poison state"]
+        end
+    end
+
+    subgraph Hosts["thin hosts implementing Ctx and sink"]
+        Native["native spec host<br/>simulated DOM · ledger · work counters"]
+        Wasm["Wasm boundary host<br/>linear-memory command and payload buffers"]
+        Browser["JavaScript executor<br/>DOM · events · timers · fetch"]
+    end
+
+    App --> Inputs
+    Callbacks --> Inputs
+    Values --> Inputs
+    Inputs --> Validate
+    Validate --> DescriptorPlan
+    Validate --> StructuralPlan
+    DescriptorPlan --> Commit
+    StructuralPlan --> Commit
+    Validate -->|recoverable failure| Abort["abort provisional ownership<br/>old generation remains committed"]
+
+    Commit --> Identities
+    Commit --> Descriptors
+    Commit --> Records
+    Commit --> Scopes
+    Commit --> State
+
+    Descriptors --> Events
+    Records --> Graph
+    Descriptors --> Graph
+    Events --> Scheduler
+    Graph --> Scheduler
+    Scheduler --> Render
+    Scheduler --> Effects
+    Scheduler --> When
+    Scheduler --> Each
+    When --> Splice
+    Each --> Splice
+    Scopes --> When
+    Scopes --> Each
+    State --> Graph
+    Splice --> Graph
+    Splice --> Render
+    Splice --> Inputs
+
+    Render --> Commands
+    Effects --> Commands
+    Observe -. observes and contains .-> Inputs
+    Commands --> Native
+    Commands --> Wasm
+    Wasm --> Browser
+    Native -. Ctx calls .-> Inputs
+    Wasm -. Ctx calls .-> Inputs
+```
+
+The two plans are conceptual lifetime and atomicity domains, not permission to
+implement two engines. They share identity, ownership, validation, and commit
+machinery. Before `Commit`, neither persistent engine indexes nor host-visible
+commands may reveal a prefix of either plan. After `Commit`, the engine state
+and the command batch describe the same complete generation.
+
 ### Node table and graph
 
 Per node id the host stores:
