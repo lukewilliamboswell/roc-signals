@@ -3993,6 +3993,69 @@ pub fn Engine(comptime Ctx: type) type {
             }
         };
 
+        const PreparedFinalRenderTopology = struct {
+            allocator: std.mem.Allocator,
+            render_nodes: std.ArrayListUnmanaged(HostRenderNode) = .empty,
+            metadata: std.AutoHashMapUnmanaged(u64, HostRenderElemIndex) = .empty,
+
+            fn prepare(engine: *Self, allocator: std.mem.Allocator, replacement: *const PreparedEachRowReplacementCollection, layout: *const PreparedEachRowRenderLayout) CollectionError!@This() {
+                var prepared: @This() = .{ .allocator = allocator };
+                errdefer prepared.deinit();
+                var final_len: usize = 0;
+                for (replacement.replacement_rows) |row| final_len = @max(final_len, std.math.add(usize, layout.final_starts[row.row_index], row.len) catch return error.ResourceLimit);
+                for (layout.survivor_moves) |move| final_len = @max(final_len, std.math.add(usize, move.new_start, move.len) catch return error.ResourceLimit);
+                prepared.render_nodes = .{ .items = allocator.alloc(HostRenderNode, final_len) catch return error.OutOfMemory, .capacity = final_len };
+                const filled = allocator.alloc(bool, final_len) catch return error.OutOfMemory;
+                defer allocator.free(filled);
+                @memset(filled, false);
+                for (layout.survivor_moves) |move| {
+                    if (move.old_start > engine.active_stream.render_nodes.items.len or move.len > engine.active_stream.render_nodes.items.len - move.old_start) return error.ResourceLimit;
+                    if (move.new_start > final_len or move.len > final_len - move.new_start) return error.ResourceLimit;
+                    @memcpy(prepared.render_nodes.items[move.new_start..][0..move.len], engine.active_stream.render_nodes.items[move.old_start..][0..move.len]);
+                    @memset(filled[move.new_start..][0..move.len], true);
+                }
+                for (replacement.replacement_rows) |row| {
+                    if (row.start > replacement.replacement.stream.render_nodes.items.len or row.len > replacement.replacement.stream.render_nodes.items.len - row.start) return error.ResourceLimit;
+                    const final_start = layout.final_starts[row.row_index];
+                    if (final_start > final_len or row.len > final_len - final_start) return error.ResourceLimit;
+                    for (filled[final_start..][0..row.len]) |is_filled| if (is_filled) return error.ResourceLimit;
+                    @memcpy(prepared.render_nodes.items[final_start..][0..row.len], replacement.replacement.stream.render_nodes.items[row.start..][0..row.len]);
+                    @memset(filled[final_start..][0..row.len], true);
+                }
+                for (filled) |is_filled| if (!is_filled) return error.ResourceLimit;
+                prepared.metadata.ensureTotalCapacity(allocator, @intCast(std.math.mul(usize, final_len, 2) catch return error.ResourceLimit)) catch return error.OutOfMemory;
+                for (prepared.render_nodes.items, 0..) |node, render_index| {
+                    const source = if (renderNodeSliceContainsElem(replacement.replacement.stream.render_nodes.items, node.elem_id)) &replacement.replacement.stream else &engine.active_stream;
+                    _ = renderNodeScopeId(source, node);
+                    const parent_elem_id = renderNodeParentElemId(source, node);
+                    const node_entry = prepared.metadata.getOrPutAssumeCapacity(node.elem_id);
+                    if (node_entry.found_existing and node_entry.value_ptr.render_node != null) return error.ResourceLimit;
+                    node_entry.value_ptr.* = .{ .render_node = render_index };
+                    if (parent_elem_id != 0) {
+                        const parent_entry = prepared.metadata.getOrPutAssumeCapacity(parent_elem_id);
+                        if (!parent_entry.found_existing) parent_entry.value_ptr.* = .{};
+                        if (parent_entry.value_ptr.last_child) |previous_id| {
+                            const previous = prepared.metadata.getPtr(previous_id) orelse return error.ResourceLimit;
+                            previous.next_sibling = node.elem_id;
+                        } else parent_entry.value_ptr.first_child = node.elem_id;
+                        parent_entry.value_ptr.last_child = node.elem_id;
+                    }
+                }
+                return prepared;
+            }
+
+            fn apply(self: *@This(), stream: *HostNodeDescriptorStream) void {
+                std.mem.swap(std.ArrayListUnmanaged(HostRenderNode), &self.render_nodes, &stream.render_nodes);
+                std.mem.swap(std.AutoHashMapUnmanaged(u64, HostRenderElemIndex), &self.metadata, &stream.render_metadata_by_elem_id);
+            }
+
+            fn deinit(self: *@This()) void {
+                self.render_nodes.deinit(self.allocator);
+                self.metadata.deinit(self.allocator);
+                self.* = undefined;
+            }
+        };
+
         fn prepareRetiredStreamCapacity(engine: *Self, allocator: std.mem.Allocator, retired: *HostNodeDescriptorStream, removal: *const structural_splice.PreparedRemoval, retired_scope_ids: []const u64) CollectionError!void {
             const indexes = &removal.descriptor_indexes;
             retired.reserveRetiredStaticPublication(
@@ -4134,6 +4197,7 @@ pub fn Engine(comptime Ctx: type) type {
             effects_retirement: ?PreparedEffectRetirements = null,
             retired_stream: HostNodeDescriptorStream = .{},
             publication: ?structural_splice.PreparedPublicationDeltas = null,
+            final_render_topology: ?PreparedFinalRenderTopology = null,
             graph_release: ?active_graph.PreparedReleaseClosure(HostSignalRecord) = null,
             graph_append: ?active_graph.PreparedGraphAppend(HostSignalRecord) = null,
             sink_edits: ?active_graph.PreparedSinkRouteEdits = null,
@@ -4215,6 +4279,10 @@ pub fn Engine(comptime Ctx: type) type {
                 errdefer plan.retired_stream.deinit(allocator, ctx, roc_host, &engine.pending_roc_metrics);
                 try plan.prepareDownstream(allocator, descriptor_root_scope_ids, retired_root_scope_ids, render_insert_indexes, true);
                 return plan;
+            }
+
+            fn prepareEachRenderTopology(self: *@This(), rows: *const PreparedEachRowReplacementCollection, layout: *const PreparedEachRowRenderLayout) CollectionError!void {
+                self.final_render_topology = try PreparedFinalRenderTopology.prepare(self.engine, Ctx.allocator(self.host_ctx), rows, layout);
             }
 
             fn prepareDownstream(self: *@This(), allocator: std.mem.Allocator, descriptor_root_scope_ids: []const u64, retired_root_scope_ids: []const u64, render_insert_indexes: []const usize, external_row_sync: bool) CollectionError!void {
@@ -4409,6 +4477,7 @@ pub fn Engine(comptime Ctx: type) type {
                     removal.node_indexes.mount_indexes.items,
                     removal.node_indexes.cleanup_indexes.items,
                 );
+                if (self.final_render_topology) |*topology| topology.apply(&self.engine.active_stream);
 
                 self.state_retirement.?.apply(self.engine, &self.retired_state_cells);
                 commit_external(external);
@@ -4447,6 +4516,7 @@ pub fn Engine(comptime Ctx: type) type {
                 if (self.row_retirement) |*retirement| retirement.deinit(allocator);
                 if (self.effects_retirement) |*effects| effects.deinit(allocator, self.roc_host);
                 if (self.publication) |*publication| publication.deinit(allocator);
+                if (self.final_render_topology) |*topology| topology.deinit();
                 if (self.graph_append) |*append| append.deinit(allocator);
                 if (self.graph_release) |*release| release.deinit(allocator);
                 if (self.sink_edits) |*edits| edits.deinit(allocator);
@@ -10407,6 +10477,19 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
     });
 
     const Runner = struct {
+        const RowCommitCtx = struct {
+            engine: *Engine(VerifyCtx),
+            rows: *each_runtime.PreparedRowSync,
+            hooks: *Engine(VerifyCtx).PreparedEachRowSyncHooks,
+            keys: []const HostValue,
+            items: []const HostValue,
+            diff: ?each_runtime.DiffResult = null,
+
+            fn apply(self: *@This()) void {
+                self.diff = self.rows.commit(&self.engine.each_row_sites, &self.engine.each_row_memberships_by_scope_id, self.keys, self.items, self.hooks);
+            }
+        };
+
         fn prepareReplacement(engine: *Engine(VerifyCtx), ctx: *VerifyCtxHost, host: *abi.RocHost, each_ops: HostEachOps, rows: *const each_runtime.PreparedRowSync, keys: []const HostValue, items: []const HostValue) !*Engine(VerifyCtx).PreparedEachRowReplacementCollection {
             const site = HostNodeScopeSiteDesc{ .node_id = 0, .scope_id = 0, .ordinal = 44, .parent_elem_id = 0, .render_insert_index = 0, .kind = .each, .binder_bindings = &.{} };
             const each = HostNodeEachDesc{ .node_id = 0, .items = undefined, .ops = each_ops };
@@ -10420,7 +10503,10 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
 
         fn prepareDownstream(engine: *Engine(VerifyCtx), ctx: *VerifyCtxHost, host: *abi.RocHost, rows: *const each_runtime.PreparedRowSync, replacement: *Engine(VerifyCtx).PreparedEachRowReplacementCollection, layout: *const Engine(VerifyCtx).PreparedEachRowRenderLayout) !*Engine(VerifyCtx).PreparedStructuralDownstream {
             const descriptor_roots = [_]u64{ rows.removed_scope_ids[0], replacement.replacement_rows[0].scope_id };
-            return Engine(VerifyCtx).PreparedStructuralDownstream.prepareExternal(engine, ctx, host, replacement.replacement, &descriptor_roots, rows.removed_scope_ids, layout.remove_starts);
+            const downstream = try Engine(VerifyCtx).PreparedStructuralDownstream.prepareExternal(engine, ctx, host, replacement.replacement, &descriptor_roots, rows.removed_scope_ids, layout.remove_starts);
+            errdefer downstream.deinit();
+            try downstream.prepareEachRenderTopology(replacement, layout);
+            return downstream;
         }
 
         fn retry(engine: *Engine(VerifyCtx), ctx: *VerifyCtxHost, host: *abi.RocHost, each_ops: HostEachOps, site_index: usize, keys: []const HostValue, items: []const HostValue) !void {
@@ -10597,15 +10683,13 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
             try std.testing.expect(layout.targets.descriptor_target_scopes[2]);
             try std.testing.expect(!layout.targets.descriptor_target_scopes[3]);
             try std.testing.expectEqualSlices(u64, &.{removed_scope_id}, layout.targets.scope_retirement.?.scope_ids);
-            downstream.deinit();
             layout.deinit();
             const attempts = fault.attempts;
-            replacement.deinit();
+            retirement.deinit(&engine, ctx.allocator, null, null);
             fault.configure(1);
-            retirement.applyBeforeRowCommit(&engine);
-            var diff = rows.commit(&engine.each_row_sites, &engine.each_row_memberships_by_scope_id, &keys, &items, &hooks);
-            retirement.applyAfterRowCommit(&engine);
-            retirement.applyEffectsAfterPublication(&engine, &ctx);
+            var commit_ctx = RowCommitCtx{ .engine = &engine, .rows = &rows, .hooks = &hooks, .keys = &keys, .items = &items };
+            downstream.commitAssumeCapacityWith(&commit_ctx, RowCommitCtx.apply);
+            var diff = commit_ctx.diff.?;
             try std.testing.expectEqual(@as(usize, 0), fault.attempts);
             try std.testing.expect(engine.node_identities.items[@intCast(persistent_changed_node_id)].active);
             try std.testing.expectEqual(@as(usize, 1), engine.pending_tasks.items.len);
@@ -10615,6 +10699,12 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
             try std.testing.expectEqualSlices(bool, &.{ false, false, true }, diff.scope_created);
             try std.testing.expectEqual(@as(u64, 201), engine.eachRowScopeValues(2).item);
             try std.testing.expectEqual(@as(u64, 400), engine.eachRowScopeValues(4).item);
+            try std.testing.expectEqual(@as(usize, 3), engine.active_stream.render_nodes.items.len);
+            try std.testing.expectEqualSlices(u64, &.{ 2, 3, 4 }, &.{
+                renderNodeScopeId(&engine.active_stream, engine.active_stream.render_nodes.items[0]),
+                renderNodeScopeId(&engine.active_stream, engine.active_stream.render_nodes.items[1]),
+                renderNodeScopeId(&engine.active_stream, engine.active_stream.render_nodes.items[2]),
+            });
             try std.testing.expect(!engine.scopes.items[1].active);
             try std.testing.expect(!engine.node_identities.items[@intCast(retired_node_id)].active);
             try std.testing.expect(!engine.dom_identities.items[@intCast(retired_elem_id - 1)].active);
@@ -10623,10 +10713,11 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
             try std.testing.expectEqual(@as(usize, 1), ctx.cancelled_tasks);
             try std.testing.expectEqual(@as(usize, 0), engine.states.items.len);
             fault.configure(null);
+            downstream.deinit();
+            replacement.deinit();
             diff.deinit(ctx.allocator);
             rows.deinit();
             hooks.deinit();
-            retirement.deinit(&engine, ctx.allocator, &ctx, host);
             return attempts;
         }
     };
