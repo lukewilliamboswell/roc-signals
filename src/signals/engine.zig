@@ -2398,12 +2398,12 @@ pub fn Engine(comptime Ctx: type) type {
                 self.stream.reservePreparedSignalTextNodes(allocator, expected_nodes, highest_elem_id) catch return error.OutOfMemory;
                 self.stream.reservePreparedSignalRecordPublication(allocator, expected_signal_records) catch return error.OutOfMemory;
                 self.stream.reservePreparedEvents(allocator, expected_attrs, highest_elem_id) catch return error.OutOfMemory;
+                self.stream.reservePreparedCustomAttrIndex(allocator, expected_attrs) catch return error.OutOfMemory;
                 if (expected_scope_sites != 0) {
                     const highest_node_id = std.math.sub(usize, state_index_len, 1) catch return error.ResourceLimit;
                     self.stream.reservePreparedStateSites(allocator, expected_scope_sites, @intCast(highest_node_id)) catch return error.OutOfMemory;
                     self.stream.reservePreparedWhens(allocator, expected_when_sites, @intCast(highest_node_id)) catch return error.OutOfMemory;
                 }
-                if (!self.stream.canStageLinearCustomAttrs(expected_attrs)) return error.ResourceLimit;
                 return self;
             }
 
