@@ -70,11 +70,15 @@ pub const PreparedRemoval = struct {
 pub const NodeOwnedRemovalScratch = struct {
     scope_site_indexes: std.ArrayListUnmanaged(usize) = .empty,
     state_indexes: std.ArrayListUnmanaged(usize) = .empty,
+    when_indexes: std.ArrayListUnmanaged(usize) = .empty,
+    each_indexes: std.ArrayListUnmanaged(usize) = .empty,
 
     /// Releases all prepared node-owned removal indexes.
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
         self.scope_site_indexes.deinit(allocator);
         self.state_indexes.deinit(allocator);
+        self.when_indexes.deinit(allocator);
+        self.each_indexes.deinit(allocator);
         self.* = .{};
     }
 };
@@ -350,6 +354,8 @@ pub fn prepareRemoval(comptime Stream: type, allocator: std.mem.Allocator, strea
     prepared.descriptor_indexes.sortDescending();
     try prepared.node_indexes.scope_site_indexes.ensureUnusedCapacity(allocator, stream.scope_sites.items.len);
     try prepared.node_indexes.state_indexes.ensureUnusedCapacity(allocator, stream.states.items.len);
+    try prepared.node_indexes.when_indexes.ensureUnusedCapacity(allocator, stream.whens.items.len);
+    try prepared.node_indexes.each_indexes.ensureUnusedCapacity(allocator, stream.eaches.items.len);
     for (stream.scope_sites.items, 0..) |site, index| {
         if (scopeIsInTargetSet(target_scopes, site.scope_id)) prepared.node_indexes.scope_site_indexes.appendAssumeCapacity(index);
     }
@@ -359,8 +365,22 @@ pub fn prepareRemoval(comptime Stream: type, allocator: std.mem.Allocator, strea
         if (site_index >= stream.scope_sites.items.len) return error.OutOfMemory;
         if (scopeIsInTargetSet(target_scopes, stream.scope_sites.items[site_index].scope_id)) prepared.node_indexes.state_indexes.appendAssumeCapacity(index);
     }
+    for (stream.whens.items, 0..) |when, index| {
+        const node_index = stream.nodeDescriptorIndex(when.node_id) orelse return error.OutOfMemory;
+        const site_index = node_index.scope_sites.get(.when) orelse return error.OutOfMemory;
+        if (site_index >= stream.scope_sites.items.len) return error.OutOfMemory;
+        if (scopeIsInTargetSet(target_scopes, stream.scope_sites.items[site_index].scope_id)) prepared.node_indexes.when_indexes.appendAssumeCapacity(index);
+    }
+    for (stream.eaches.items, 0..) |each, index| {
+        const node_index = stream.nodeDescriptorIndex(each.node_id) orelse return error.OutOfMemory;
+        const site_index = node_index.scope_sites.get(.each) orelse return error.OutOfMemory;
+        if (site_index >= stream.scope_sites.items.len) return error.OutOfMemory;
+        if (scopeIsInTargetSet(target_scopes, stream.scope_sites.items[site_index].scope_id)) prepared.node_indexes.each_indexes.appendAssumeCapacity(index);
+    }
     sortRemovalIndexesDescending(prepared.node_indexes.scope_site_indexes.items);
     sortRemovalIndexesDescending(prepared.node_indexes.state_indexes.items);
+    sortRemovalIndexesDescending(prepared.node_indexes.when_indexes.items);
+    sortRemovalIndexesDescending(prepared.node_indexes.each_indexes.items);
     return prepared;
 }
 

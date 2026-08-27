@@ -666,6 +666,8 @@ pub const Stream = struct {
         source: *const Stream,
         scope_site_indexes: []const usize,
         state_count: usize,
+        when_count: usize,
+        each_count: usize,
     ) std.mem.Allocator.Error!void {
         try self.elements.ensureUnusedCapacity(allocator, element_count);
         try self.text_nodes.ensureUnusedCapacity(allocator, text_count);
@@ -688,6 +690,8 @@ pub const Stream = struct {
         }
         try self.scope_sites.ensureUnusedCapacity(allocator, scope_site_indexes.len);
         try self.states.ensureUnusedCapacity(allocator, state_count);
+        try self.whens.ensureUnusedCapacity(allocator, when_count);
+        try self.eaches.ensureUnusedCapacity(allocator, each_count);
         var highest_node_id: usize = 0;
         for (scope_site_indexes) |index| highest_node_id = @max(highest_node_id, std.math.cast(usize, source.scope_sites.items[index].node_id) orelse return error.OutOfMemory);
         const node_index_len = if (scope_site_indexes.len == 0) 0 else std.math.add(usize, highest_node_id, 1) catch return error.OutOfMemory;
@@ -712,6 +716,8 @@ pub const Stream = struct {
         event_indexes: []const usize,
         scope_site_indexes: []const usize,
         state_indexes: []const usize,
+        when_indexes: []const usize,
+        each_indexes: []const usize,
     ) void {
         for (element_indexes) |index| {
             const removed = self.elements.swapRemove(index);
@@ -798,6 +804,26 @@ pub const Stream = struct {
             retired.states.appendAssumeCapacity(removed);
             setFreshIndex(&retired.descriptor_indexes_by_node_id.items[@intCast(removed.node_id)].state, retired_index);
             if (index < self.states.items.len) self.updateStateIndex(self.states.items[index].node_id, index);
+        }
+        for (when_indexes) |index| {
+            const removed = self.whens.swapRemove(index);
+            self.clearWhenIndex(removed.node_id, index);
+            self.forgetSignalRecordTree(removed.condition.record);
+            const retired_index = retired.whens.items.len;
+            retired.rememberSignalRecordTreeAssumeCapacity(removed.condition.record);
+            retired.whens.appendAssumeCapacity(removed);
+            setFreshIndex(&retired.descriptor_indexes_by_node_id.items[@intCast(removed.node_id)].when, retired_index);
+            if (index < self.whens.items.len) self.updateWhenIndex(self.whens.items[index].node_id, index);
+        }
+        for (each_indexes) |index| {
+            const removed = self.eaches.swapRemove(index);
+            self.clearEachIndex(removed.node_id, index);
+            self.forgetSignalRecordTree(removed.items.record);
+            const retired_index = retired.eaches.items.len;
+            retired.rememberSignalRecordTreeAssumeCapacity(removed.items.record);
+            retired.eaches.appendAssumeCapacity(removed);
+            setFreshIndex(&retired.descriptor_indexes_by_node_id.items[@intCast(removed.node_id)].each, retired_index);
+            if (index < self.eaches.items.len) self.updateEachIndex(self.eaches.items[index].node_id, index);
         }
         for (scope_site_indexes) |index| {
             const removed = self.scope_sites.swapRemove(index);
@@ -893,6 +919,20 @@ pub const Stream = struct {
             setFreshIndex(&self.descriptor_indexes_by_node_id.items[@intCast(desc.node_id)].state, index);
         }
         replacement.states.items.len = 0;
+        for (replacement.whens.items) |desc| {
+            const index = self.whens.items.len;
+            self.whens.appendAssumeCapacity(desc);
+            self.rememberSignalRecordTreeAssumeCapacity(desc.condition.record);
+            setFreshIndex(&self.descriptor_indexes_by_node_id.items[@intCast(desc.node_id)].when, index);
+        }
+        replacement.whens.items.len = 0;
+        for (replacement.eaches.items) |desc| {
+            const index = self.eaches.items.len;
+            self.eaches.appendAssumeCapacity(desc);
+            self.rememberSignalRecordTreeAssumeCapacity(desc.items.record);
+            setFreshIndex(&self.descriptor_indexes_by_node_id.items[@intCast(desc.node_id)].each, index);
+        }
+        replacement.eaches.items.len = 0;
     }
 
     fn rememberSignalRecordTreeAssumeCapacity(self: *Stream, record: *SignalRecord) void {
@@ -3956,15 +3996,65 @@ test "prepared state site replacement transfers ownership without allocation" {
     try replacement.reservePreparedStateSites(allocator, 1, 5);
     replacement.appendPreparedStateSite(try replacement.prepareScopeSite(allocator, 5, 2, 0, 2, .state, &.{.{ .token = token, .node_id = 5 }}), replacement.prepareState(5, initial, std.mem.zeroes(HostValueCapability), &metrics));
     try active.reserveMovedStreamPublication(allocator, &replacement);
-    try retired.reserveRetiredStaticPublication(allocator, 0, 0, 0, 0, 0, 0, 0, 0, 0, &.{}, &active, &.{0}, 1);
+    try retired.reserveRetiredStaticPublication(allocator, 0, 0, 0, 0, 0, 0, 0, 0, 0, &.{}, &active, &.{0}, 1, 0, 0);
 
     fault.configure(1);
-    active.commitStaticDescriptorReplacementAssumeCapacity(&replacement, &retired, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{0}, &.{0});
+    active.commitStaticDescriptorReplacementAssumeCapacity(&replacement, &retired, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{0}, &.{0}, &.{}, &.{});
     try std.testing.expectEqual(@as(usize, 0), fault.attempts);
     try std.testing.expectEqual(@as(u64, 5), active.scope_sites.items[0].node_id);
     try std.testing.expectEqual(@as(?usize, 0), active.nodeDescriptorIndex(5).?.state.get());
     try std.testing.expectEqual(@as(u64, 4), retired.states.items[0].node_id);
     try std.testing.expectEqual(token, retired.scope_sites.items[0].binder_bindings[0].token);
+}
+
+test "when descriptor replacement transfers ownership without allocation" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    const TestCtx = struct {
+        /// Opens a checked capability frame for an app-compiled erased call.
+        pub fn pushHostValueCapabilities(_: *@This(), _: []const retained.HostValueCapability) void {}
+        /// Closes the current capability frame after an app-compiled erased call.
+        pub fn popHostValueCapabilities(_: *@This()) void {}
+    };
+    var fault = FaultAllocator.init(std.testing.allocator);
+    const allocator = fault.allocator();
+    var ctx: TestCtx = .{};
+    var env = abi.RocEnv{ .allocator = allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&env);
+    var metrics = TestMetrics{};
+    var active: Stream = .{};
+    var replacement: Stream = .{};
+    var retired: Stream = .{};
+    defer active.deinit(allocator, &ctx, &roc_host, &metrics);
+    defer replacement.deinit(allocator, &ctx, &roc_host, &metrics);
+    defer retired.deinit(allocator, &ctx, &roc_host, &metrics);
+
+    const false_elem = abi.Elem{ .payload = .{ .text = abi.RocStr.fromSlice("false", undefined) }, .tag = .Text };
+    const true_elem = abi.Elem{ .payload = .{ .text = abi.RocStr.fromSlice("true", undefined) }, .tag = .Text };
+    const active_record = try SignalRecord.tryInit(allocator, .{ .ref = 1 });
+    const replacement_record = try SignalRecord.tryInit(allocator, .{ .ref = 2 });
+    try active.reservePreparedWhens(allocator, 1, 4);
+    try active.reservePreparedSignalRecordPublication(allocator, 1);
+    active.appendPreparedWhen(active.prepareWhen(4, .{ .record = active_record, .source_node_ids = try allocator.dupe(u64, &.{1}) }, std.mem.zeroes(HostBoolRead), false_elem, true_elem, &metrics));
+    active.rememberSignalRecordTreeAssumeCapacity(active_record);
+    try active.scope_sites.append(allocator, .{ .node_id = 4, .scope_id = 1, .ordinal = 0, .parent_elem_id = 0, .render_insert_index = 0, .kind = .when, .binder_bindings = try allocator.alloc(BinderBinding, 0) });
+    setFreshIndex(active.descriptor_indexes_by_node_id.items[4].scope_sites.slot(.when), 0);
+
+    try replacement.reservePreparedWhens(allocator, 1, 5);
+    try replacement.reservePreparedSignalRecordPublication(allocator, 1);
+    replacement.appendPreparedWhen(replacement.prepareWhen(5, .{ .record = replacement_record, .source_node_ids = try allocator.dupe(u64, &.{2}) }, std.mem.zeroes(HostBoolRead), false_elem, true_elem, &metrics));
+    replacement.rememberSignalRecordTreeAssumeCapacity(replacement_record);
+    try replacement.scope_sites.append(allocator, .{ .node_id = 5, .scope_id = 2, .ordinal = 0, .parent_elem_id = 0, .render_insert_index = 0, .kind = .when, .binder_bindings = try allocator.alloc(BinderBinding, 0) });
+    setFreshIndex(replacement.descriptor_indexes_by_node_id.items[5].scope_sites.slot(.when), 0);
+    try active.reserveMovedStreamPublication(allocator, &replacement);
+    try retired.reserveRetiredStaticPublication(allocator, 0, 0, 0, 0, 0, 0, 0, 1, 0, &.{}, &active, &.{0}, 0, 1, 0);
+
+    fault.configure(1);
+    active.commitStaticDescriptorReplacementAssumeCapacity(&replacement, &retired, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{0}, &.{}, &.{0}, &.{});
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqual(@as(u64, 5), active.whens.items[0].node_id);
+    try std.testing.expectEqual(@as(?usize, 0), active.nodeDescriptorIndex(5).?.when.get());
+    try std.testing.expectEqual(@as(u64, 4), retired.whens.items[0].node_id);
+    try std.testing.expectEqual(@as(?usize, 0), retired.nodeDescriptorIndex(4).?.when.get());
 }
 
 test "prepared when publication is allocation free" {
@@ -4032,9 +4122,9 @@ test "prepared fixed and named event replacement is allocation free" {
     replacement.appendNamedEvent(allocator, &roc_host, &metrics, 2, "new", .{}, .auto, token, 8, token, 8, payload, reducer);
 
     try active.reserveMovedStreamPublication(allocator, &replacement);
-    try retired.reserveRetiredStaticPublication(allocator, 0, 0, 0, 0, 0, 0, 0, 0, 2, &.{1}, &active, &.{}, 0);
+    try retired.reserveRetiredStaticPublication(allocator, 0, 0, 0, 0, 0, 0, 0, 0, 2, &.{1}, &active, &.{}, 0, 0, 0);
     fault.configure(1);
-    active.commitStaticDescriptorReplacementAssumeCapacity(&replacement, &retired, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{ 1, 0 }, &.{}, &.{});
+    active.commitStaticDescriptorReplacementAssumeCapacity(&replacement, &retired, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{}, &.{ 1, 0 }, &.{}, &.{}, &.{}, &.{});
     try std.testing.expectEqual(@as(usize, 0), fault.attempts);
     try std.testing.expectEqual(@as(usize, 2), active.events.items.len);
     try std.testing.expectEqualStrings("new", active.events.items[1].named().?.name);

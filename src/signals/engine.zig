@@ -3320,6 +3320,8 @@ pub fn Engine(comptime Ctx: type) type {
                     &engine_ptr.active_stream,
                     plan.removal.?.node_indexes.scope_site_indexes.items,
                     plan.removal.?.node_indexes.state_indexes.items.len,
+                    plan.removal.?.node_indexes.when_indexes.items.len,
+                    plan.removal.?.node_indexes.each_indexes.items.len,
                 ) catch return error.OutOfMemory;
                 plan.publication = structural_splice.preparePublicationDeltas(
                     allocator,
@@ -8291,6 +8293,8 @@ test "branch replacement preparation leaves the active branch unpublished" {
                     indexes.event_indexes.items,
                     plan.removal.?.node_indexes.scope_site_indexes.items,
                     plan.removal.?.node_indexes.state_indexes.items,
+                    plan.removal.?.node_indexes.when_indexes.items,
+                    plan.removal.?.node_indexes.each_indexes.items,
                 );
                 plan.commitStateCellsAssumeCapacity();
                 try std.testing.expectEqual(@as(usize, 0), fault.attempts);
