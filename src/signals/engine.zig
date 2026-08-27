@@ -10407,19 +10407,6 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
     });
 
     const Runner = struct {
-        const RowCommitCtx = struct {
-            engine: *Engine(VerifyCtx),
-            rows: *each_runtime.PreparedRowSync,
-            hooks: *Engine(VerifyCtx).PreparedEachRowSyncHooks,
-            keys: []const HostValue,
-            items: []const HostValue,
-            diff: ?each_runtime.DiffResult = null,
-
-            fn apply(self: *@This()) void {
-                self.diff = self.rows.commit(&self.engine.each_row_sites, &self.engine.each_row_memberships_by_scope_id, self.keys, self.items, self.hooks);
-            }
-        };
-
         fn prepareReplacement(engine: *Engine(VerifyCtx), ctx: *VerifyCtxHost, host: *abi.RocHost, each_ops: HostEachOps, rows: *const each_runtime.PreparedRowSync, keys: []const HostValue, items: []const HostValue) !*Engine(VerifyCtx).PreparedEachRowReplacementCollection {
             const site = HostNodeScopeSiteDesc{ .node_id = 0, .scope_id = 0, .ordinal = 44, .parent_elem_id = 0, .render_insert_index = 0, .kind = .each, .binder_bindings = &.{} };
             const each = HostNodeEachDesc{ .node_id = 0, .items = undefined, .ops = each_ops };
@@ -10610,13 +10597,15 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
             try std.testing.expect(layout.targets.descriptor_target_scopes[2]);
             try std.testing.expect(!layout.targets.descriptor_target_scopes[3]);
             try std.testing.expectEqualSlices(u64, &.{removed_scope_id}, layout.targets.scope_retirement.?.scope_ids);
+            downstream.deinit();
             layout.deinit();
             const attempts = fault.attempts;
-            retirement.deinit(&engine, ctx.allocator, null, null);
+            replacement.deinit();
             fault.configure(1);
-            var commit_ctx = RowCommitCtx{ .engine = &engine, .rows = &rows, .hooks = &hooks, .keys = &keys, .items = &items };
-            downstream.commitAssumeCapacityWith(&commit_ctx, RowCommitCtx.apply);
-            var diff = commit_ctx.diff.?;
+            retirement.applyBeforeRowCommit(&engine);
+            var diff = rows.commit(&engine.each_row_sites, &engine.each_row_memberships_by_scope_id, &keys, &items, &hooks);
+            retirement.applyAfterRowCommit(&engine);
+            retirement.applyEffectsAfterPublication(&engine, &ctx);
             try std.testing.expectEqual(@as(usize, 0), fault.attempts);
             try std.testing.expect(engine.node_identities.items[@intCast(persistent_changed_node_id)].active);
             try std.testing.expectEqual(@as(usize, 1), engine.pending_tasks.items.len);
@@ -10634,11 +10623,10 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
             try std.testing.expectEqual(@as(usize, 1), ctx.cancelled_tasks);
             try std.testing.expectEqual(@as(usize, 0), engine.states.items.len);
             fault.configure(null);
-            downstream.deinit();
-            replacement.deinit();
             diff.deinit(ctx.allocator);
             rows.deinit();
             hooks.deinit();
+            retirement.deinit(&engine, ctx.allocator, &ctx, host);
             return attempts;
         }
     };
