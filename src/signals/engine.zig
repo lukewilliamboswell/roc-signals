@@ -746,6 +746,7 @@ pub fn Engine(comptime Ctx: type) type {
         const PreparedEachRowSyncHooks = struct {
             base: EachRowSync,
             scopes: scope_runtime.PreparedEachRowScopes,
+            inputs: ?*PreparedEachInputs = null,
 
             fn init(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, ops: HostEachOps) @This() {
                 return .{
@@ -775,9 +776,9 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             /// Retains a new row in the plan-local scope overlay.
-            pub fn prepareCreatedRow(self: *@This(), allocator: std.mem.Allocator, parent_scope_id: u64, site_ordinal: u64, key_hash: u64, key: HostValue, item: HostValue) std.mem.Allocator.Error!u64 {
+            pub fn prepareCreatedRow(self: *@This(), allocator: std.mem.Allocator, parent_scope_id: u64, site_ordinal: u64, input_index: usize, key_hash: u64, key: HostValue, item: HostValue) std.mem.Allocator.Error!u64 {
                 _ = allocator;
-                return self.scopes.prepareRow(
+                const scope_id = try self.scopes.prepareRow(
                     &self.base.engine.scopes,
                     self.base.ctx,
                     self.base.roc_host,
@@ -790,6 +791,8 @@ pub fn Engine(comptime Ctx: type) type {
                     self.base.ops.key_capability,
                     self.base.ops.item_capability,
                 );
+                if (self.inputs) |inputs| inputs.transferEntry(input_index);
+                return scope_id;
             }
 
             /// Reserves engine retirement journals; populated by the enclosing transaction.
@@ -849,6 +852,134 @@ pub fn Engine(comptime Ctx: type) type {
 
             fn deinit(self: *@This()) void {
                 self.scopes.deinit();
+            }
+        };
+
+        pub const PreparedEachInputs = struct {
+            allocator: std.mem.Allocator,
+            ctx: Ctx.Handle,
+            roc_host: *abi.RocHost,
+            item_cap: HostValueCapability,
+            key_cap: HostValueCapability,
+            keys: []HostValue = &.{},
+            items: []HostValue = &.{},
+            owns_keys: []bool = &.{},
+            owns_items: []bool = &.{},
+            transferred: bool = false,
+
+            /// Extracts and retains keyed-row inputs while all compiler-owned capabilities are active.
+            pub fn prepare(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, each: HostNodeEachDesc) CollectionError!@This() {
+                return prepareWithAllocator(engine, ctx, roc_host, each, Ctx.allocator(ctx));
+            }
+
+            /// Test seam that faults host-side extraction storage without injecting into Roc callbacks.
+            pub fn prepareWithAllocator(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, each: HostNodeEachDesc, allocator: std.mem.Allocator) CollectionError!@This() {
+                const items_value = engine.cloneCachedSignalValue(ctx, &each.cached_value);
+                const items_cap = engine.hostSignalBindingCapability(ctx, &each.items);
+                assertHostValueCapabilitiesMatch(each.ops.items_capability, items_cap, "each items extension capability did not match its signal value");
+                defer callHostValueToUnitWithCapability(ctx, roc_host, items_cap, hv.hostValueCapabilityDrop(items_cap), items_value);
+                const active_caps = [_]HostValueCapability{ items_cap, each.ops.items_capability, each.ops.item_capability, each.ops.key_capability };
+                Ctx.pushHostValueCapabilities(ctx, &active_caps);
+                defer Ctx.popHostValueCapabilities(ctx);
+                const list = callHostValueToHostValueListWithCapability(ctx, roc_host, each.ops.items_capability, each.ops.items_to_values, items_value);
+                defer list.decref(roc_host);
+                const produced_items = list.items();
+                var items_adopted = false;
+                defer if (!items_adopted) for (produced_items) |item| {
+                    callHostValueToUnitWithCapability(ctx, roc_host, each.ops.item_capability, hv.hostValueCapabilityDrop(each.ops.item_capability), item);
+                };
+                var prepared: @This() = .{ .allocator = allocator, .ctx = ctx, .roc_host = roc_host, .item_cap = each.ops.item_capability, .key_cap = each.ops.key_capability };
+                errdefer prepared.deinit();
+                prepared.keys = allocator.alloc(HostValue, produced_items.len) catch return error.OutOfMemory;
+                prepared.items = allocator.alloc(HostValue, produced_items.len) catch return error.OutOfMemory;
+                prepared.owns_keys = allocator.alloc(bool, produced_items.len) catch return error.OutOfMemory;
+                @memset(prepared.owns_keys, false);
+                prepared.owns_items = allocator.alloc(bool, produced_items.len) catch return error.OutOfMemory;
+                @memset(prepared.owns_items, true);
+                for (produced_items, 0..) |produced, index| {
+                    prepared.items[index] = produced;
+                }
+                items_adopted = true;
+                for (produced_items, 0..) |produced, index| {
+                    prepared.keys[index] = callHostValueToHostValueWithCapability(ctx, roc_host, each.ops.item_capability, each.ops.key_of, produced);
+                    prepared.owns_keys[index] = true;
+                }
+                return prepared;
+            }
+
+            fn transferEntry(self: *@This(), index: usize) void {
+                if (index >= self.keys.len or !self.owns_keys[index] or !self.owns_items[index]) @panic("prepared each input transferred twice");
+                self.owns_keys[index] = false;
+                self.owns_items[index] = false;
+            }
+
+            /// Transfers every remaining input value into a committed row reconciliation.
+            pub fn transfer(self: *@This()) void {
+                if (self.transferred) @panic("prepared each inputs transferred twice");
+                self.transferred = true;
+                @memset(self.owns_keys, false);
+                @memset(self.owns_items, false);
+            }
+
+            /// Releases all input values not already transferred to provisional rows.
+            pub fn deinit(self: *@This()) void {
+                for (self.owns_keys, 0..) |owned, index| if (owned) callHostValueToUnitWithCapability(self.ctx, self.roc_host, self.key_cap, hv.hostValueCapabilityDrop(self.key_cap), self.keys[index]);
+                for (self.owns_items, 0..) |owned, index| if (owned) callHostValueToUnitWithCapability(self.ctx, self.roc_host, self.item_cap, hv.hostValueCapabilityDrop(self.item_cap), self.items[index]);
+                self.allocator.free(self.keys);
+                self.allocator.free(self.items);
+                self.allocator.free(self.owns_keys);
+                self.allocator.free(self.owns_items);
+                self.* = undefined;
+            }
+        };
+
+        /// Heap-stable ownership bridge from compiler-produced each inputs into keyed-row reconciliation.
+        pub const PreparedActiveEachRows = struct {
+            allocator: std.mem.Allocator,
+            engine: *Self,
+            inputs: PreparedEachInputs,
+            hooks: PreparedEachRowSyncHooks,
+            rows: each_runtime.PreparedRowSync,
+            committed: bool = false,
+
+            /// Extracts owned inputs and prepares row matching without persistent mutation.
+            pub fn prepare(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, site: HostNodeScopeSiteDesc, each: HostNodeEachDesc, allocator: std.mem.Allocator) CollectionError!*@This() {
+                const plan = allocator.create(@This()) catch return error.OutOfMemory;
+                errdefer allocator.destroy(plan);
+                var inputs = try PreparedEachInputs.prepareWithAllocator(engine, ctx, roc_host, each, allocator);
+                errdefer inputs.deinit();
+                var hooks = PreparedEachRowSyncHooks.init(engine, ctx, roc_host, each.ops);
+                errdefer hooks.deinit();
+                hooks.inputs = &inputs;
+                const site_index = engine.activeEachRowSiteIndex(site.scope_id, site.ordinal) orelse @panic("active each descriptor had no row site");
+                var rows = each_runtime.PreparedRowSync.prepare(allocator, &engine.each_row_sites, &engine.each_row_memberships_by_scope_id, site_index, site.scope_id, site.ordinal, inputs.keys, inputs.items, &hooks) catch return error.OutOfMemory;
+                errdefer {
+                    rows.abort(&hooks);
+                    rows.deinit();
+                }
+                plan.* = .{ .allocator = allocator, .engine = engine, .inputs = inputs, .hooks = hooks, .rows = rows };
+                plan.hooks.inputs = &plan.inputs;
+                return plan;
+            }
+
+            /// Publishes row ownership/order without allocation and returns the structural diff.
+            pub fn commit(self: *@This()) HostKeyedRowDiffResult {
+                if (self.committed) @panic("prepared active each rows committed twice");
+                const result = self.rows.commit(&self.engine.each_row_sites, &self.engine.each_row_memberships_by_scope_id, self.inputs.keys, self.inputs.items, &self.hooks);
+                self.inputs.transfer();
+                self.hooks.base.recordRows(result.rows_reused, result.rows_created, result.rows_removed);
+                self.committed = true;
+                return result;
+            }
+
+            /// Aborts provisional cells or releases committed-plan storage.
+            pub fn deinit(self: *@This()) void {
+                if (!self.committed) self.rows.abort(&self.hooks);
+                self.rows.deinit();
+                self.inputs.deinit();
+                self.hooks.deinit();
+                const allocator = self.allocator;
+                allocator.destroy(self);
             }
         };
 

@@ -408,7 +408,7 @@ pub const PreparedExistingRows = struct {
                 next_scope_ids[next_index] = scope_id;
                 changed[next_index] = !hooks.rowItemEquals(scope_id, item);
             } else {
-                const scope_id = try hooks.prepareCreatedRow(allocator, parent_scope_id, site_ordinal, hash, key, item);
+                const scope_id = try hooks.prepareCreatedRow(allocator, parent_scope_id, site_ordinal, next_index, hash, key, item);
                 next_scope_ids[next_index] = scope_id;
                 changed[next_index] = true;
                 created[next_index] = true;
@@ -777,7 +777,8 @@ const TestSyncHooks = struct {
     }
 
     /// Owns a provisional created row without publishing key/item tables.
-    pub fn prepareCreatedRow(self: *@This(), allocator: std.mem.Allocator, parent_scope_id: u64, site_ordinal: u64, hash: u64, key: u64, item: u64) std.mem.Allocator.Error!u64 {
+    pub fn prepareCreatedRow(self: *@This(), allocator: std.mem.Allocator, parent_scope_id: u64, site_ordinal: u64, input_index: usize, hash: u64, key: u64, item: u64) std.mem.Allocator.Error!u64 {
+        _ = input_index;
         if (parent_scope_id != 1 or site_ordinal != 2) @panic("test row was prepared for the wrong site");
         self.expectHash(hash, key);
         const scope_id = self.next_scope_id + self.prepared_created.items.len;

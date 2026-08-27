@@ -5843,6 +5843,72 @@ test "signals host dirty each append patches only changed row" {
     try std.testing.expect(activeTextElementId(&host, "row-25-25") != null);
 }
 
+test "prepared dirty each inputs retain inside capability frame and sweep host OOM" {
+    test_erased_callable_drop_count = 0;
+
+    var host = HostEnv.init();
+    var roc_host = makeSignalsRocHost(&host);
+    host.engine.roc_host = &roc_host;
+    defer {
+        host.deinit();
+        _ = host.gpa.deinit();
+    }
+
+    const state_token = newTestBinderToken(&roc_host);
+    const state_cap = testHostValueCapability(&roc_host);
+    const each = testNodeEachWithSignalCapabilityAndRow(&roc_host, testNodeRefExpr(state_token), state_cap, &testStatefulRowElemCallable);
+    const children = [_]abi.Elem{each};
+    const section = testElementWith(&roc_host, "section", &.{}, &children);
+    const initial_items = [_]HostValue{ testHostValueI64(1), testHostValueI64(2), testHostValueI64(3) };
+    const root = testNodeStateWithTokenAndInitialCapability(&roc_host, state_token, testHostValueI64List(&roc_host, &initial_items), section, state_cap);
+    defer root.decref(&roc_host);
+
+    var initial_stream: HostNodeDescriptorStream = .{};
+    host.collectActiveElemRootDescriptors(&roc_host, &initial_stream, root, &.{});
+    _ = applyNodeDescriptorStream(&host, &roc_host, &initial_stream);
+    host.engine.active_stream = initial_stream;
+
+    const each_desc = host.engine.active_stream.eaches.items[0];
+    const site = host.engine.active_stream.scope_sites.items[1];
+    const row_scopes = try host.engine.activeEachRowScopes(host.hostAllocator(), site.scope_id, site.ordinal);
+    defer host.hostAllocator().free(row_scopes);
+    var baseline_fault = FaultAllocator.init(host.hostAllocator());
+    var baseline = try HostEngine.PreparedActiveEachRows.prepare(&host.engine, &host, &roc_host, site, each_desc, baseline_fault.allocator());
+    const attempts = baseline_fault.attempts;
+    try std.testing.expect(attempts >= 4);
+    try std.testing.expectEqual(@as(usize, 3), baseline.inputs.items.len);
+    for (baseline.inputs.items, row_scopes) |item, scope_id| {
+        try std.testing.expect(host.engine.eachRowScopeItemEquals(&host, &roc_host, scope_id, item, each_desc.ops.item_capability));
+    }
+    baseline.deinit();
+    const before = host.roc_allocations.snapshot();
+
+    for (1..attempts + 1) |failure_number| {
+        var fault = FaultAllocator.init(host.hostAllocator());
+        fault.configure(failure_number);
+        try std.testing.expectError(error.OutOfMemory, HostEngine.PreparedActiveEachRows.prepare(&host.engine, &host, &roc_host, site, each_desc, fault.allocator()));
+        try std.testing.expectEqual(@as(usize, 1), fault.induced_failures);
+        try std.testing.expectEqual(@as(usize, 0), host.roc_allocations.liveCountSince(before));
+
+        fault.configure(null);
+        var retry = try HostEngine.PreparedActiveEachRows.prepare(&host.engine, &host, &roc_host, site, each_desc, fault.allocator());
+        for (retry.inputs.items, row_scopes) |item, scope_id| {
+            try std.testing.expect(host.engine.eachRowScopeItemEquals(&host, &roc_host, scope_id, item, each_desc.ops.item_capability));
+        }
+        retry.deinit();
+        try std.testing.expectEqual(@as(usize, 0), host.roc_allocations.liveCountSince(before));
+    }
+
+    var committed = try HostEngine.PreparedActiveEachRows.prepare(&host.engine, &host, &roc_host, site, each_desc, host.hostAllocator());
+    var diff = committed.commit();
+    try std.testing.expectEqual(@as(u64, 3), diff.rows_reused);
+    try std.testing.expectEqual(@as(u64, 3), diff.row_items_unchanged);
+    try std.testing.expectEqual(@as(u64, 0), diff.row_items_updated);
+    diff.deinit(host.hostAllocator());
+    committed.deinit();
+    try std.testing.expectEqual(@as(usize, 0), host.roc_allocations.liveCountSince(before));
+}
+
 test "signals host dirty each reorder moves rows without recollecting bodies" {
     test_erased_callable_drop_count = 0;
     test_row_elem_call_count = 0;
