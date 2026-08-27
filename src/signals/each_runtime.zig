@@ -346,6 +346,146 @@ pub fn replaceSiteRows(allocator: std.mem.Allocator, sites: *std.ArrayListUnmana
     }
 }
 
+/// Prepared reconciliation for an each site whose next keys all reuse existing rows.
+/// Incoming key/item ownership remains provisional until `commit`.
+pub const PreparedExistingRows = struct {
+    allocator: std.mem.Allocator,
+    site_index: usize,
+    next_scope_ids: []u64,
+    row_items_changed: []bool,
+    scope_created: []bool,
+    removed_scope_ids: []u64,
+    committed: bool = false,
+
+    /// Computes matching and reserves every site/index destination without mutation.
+    pub fn prepare(allocator: std.mem.Allocator, sites: *std.ArrayListUnmanaged(Site), memberships: *std.ArrayListUnmanaged(?Membership), site_index: usize, parent_scope_id: u64, site_ordinal: u64, keys: anytype, items: anytype, hooks: anytype) (std.mem.Allocator.Error || error{RequiresCreate})!PreparedExistingRows {
+        if (keys.len != items.len or site_index >= sites.items.len) @panic("invalid prepared each reconciliation input");
+        const site = &sites.items[site_index];
+        const existing_len = site.scope_ids.items.len;
+        const key_hashes = try allocator.alloc(u64, keys.len);
+        defer allocator.free(key_hashes);
+        for (keys, 0..) |key, index| key_hashes[index] = hooks.hashKey(key);
+        var next_hash_heads: std.AutoHashMapUnmanaged(u64, usize) = .empty;
+        defer next_hash_heads.deinit(allocator);
+        const next_hash_links = try allocator.alloc(usize, keys.len);
+        defer allocator.free(next_hash_links);
+        if (try indexNextKeys(allocator, &next_hash_heads, next_hash_links, key_hashes, keys, hooks)) |duplicate| {
+            hooks.failDuplicateEachKey(parent_scope_id, site_ordinal, duplicate.first_index, duplicate.second_index, keys[duplicate.second_index]);
+        }
+        const matched = try allocator.alloc(bool, existing_len);
+        defer allocator.free(matched);
+        @memset(matched, false);
+        const next_scope_ids = try allocator.alloc(u64, keys.len);
+        errdefer allocator.free(next_scope_ids);
+        const changed = try allocator.alloc(bool, keys.len);
+        errdefer allocator.free(changed);
+        const created = try allocator.alloc(bool, keys.len);
+        errdefer allocator.free(created);
+        @memset(created, false);
+
+        for (key_hashes, keys, items, 0..) |hash, key, item, next_index| {
+            var found: ?u64 = null;
+            if (site.hash_heads.get(hash)) |head| {
+                var existing_index = head;
+                while (existing_index != missing_row_index) {
+                    if (existing_index < existing_len and !matched[existing_index]) {
+                        const scope_id = site.scope_ids.items[existing_index];
+                        if (hooks.existingKeyEquals(scope_id, key)) {
+                            matched[existing_index] = true;
+                            found = scope_id;
+                            break;
+                        }
+                    }
+                    existing_index = site.hash_links.items[existing_index];
+                }
+            }
+            const scope_id = found orelse return error.RequiresCreate;
+            next_scope_ids[next_index] = scope_id;
+            changed[next_index] = !hooks.rowItemEquals(scope_id, item);
+        }
+
+        var removed_count: usize = 0;
+        for (matched) |is_matched| if (!is_matched) {
+            removed_count += 1;
+        };
+        const removed = try allocator.alloc(u64, removed_count);
+        errdefer allocator.free(removed);
+        var removed_index: usize = 0;
+        for (site.scope_ids.items, matched) |scope_id, is_matched| if (!is_matched) {
+            removed[removed_index] = scope_id;
+            removed_index += 1;
+        };
+
+        try site.scope_ids.ensureTotalCapacity(allocator, keys.len);
+        try site.hash_links.ensureTotalCapacity(allocator, keys.len);
+        try site.hash_heads.ensureTotalCapacity(allocator, std.math.cast(u32, keys.len) orelse return error.OutOfMemory);
+        for (next_scope_ids) |scope_id| if (scope_id >= memberships.items.len) @panic("existing each row lacked membership capacity");
+        try hooks.prepareExistingRowsCommit(allocator, removed.len);
+        return .{
+            .allocator = allocator,
+            .site_index = site_index,
+            .next_scope_ids = next_scope_ids,
+            .row_items_changed = changed,
+            .scope_created = created,
+            .removed_scope_ids = removed,
+        };
+    }
+
+    /// Transfers provisional row values and publishes the prepared order without allocation.
+    pub fn commit(self: *PreparedExistingRows, sites: *std.ArrayListUnmanaged(Site), memberships: *std.ArrayListUnmanaged(?Membership), keys: anytype, items: anytype, hooks: anytype) DiffResult {
+        if (self.committed) @panic("prepared each rows committed twice");
+        const site = &sites.items[self.site_index];
+        for (self.next_scope_ids, self.row_items_changed, keys, items) |scope_id, changed, key, item| {
+            if (changed) {
+                hooks.replaceRowKey(scope_id, hooks.hashKey(key), key);
+                hooks.replaceRowItem(scope_id, item);
+            } else {
+                hooks.dropIncomingKey(key);
+                hooks.dropIncomingItem(item);
+            }
+        }
+        for (self.removed_scope_ids) |scope_id| hooks.disposeScope(scope_id);
+        for (site.scope_ids.items) |scope_id| memberships.items[@intCast(scope_id)] = null;
+        site.scope_ids.clearRetainingCapacity();
+        site.scope_ids.appendSliceAssumeCapacity(self.next_scope_ids);
+        site.hash_links.items.len = self.next_scope_ids.len;
+        @memset(site.hash_links.items, missing_row_index);
+        site.hash_heads.clearRetainingCapacity();
+        for (self.next_scope_ids, 0..) |scope_id, row_index| {
+            const entry = site.hash_heads.getOrPutAssumeCapacity(hooks.rowKeyHash(scope_id));
+            if (entry.found_existing) site.hash_links.items[row_index] = entry.value_ptr.*;
+            entry.value_ptr.* = row_index;
+            memberships.items[@intCast(scope_id)] = .{ .site_index = self.site_index, .row_index = row_index };
+        }
+        self.committed = true;
+        const result = DiffResult{
+            .scope_ids = self.next_scope_ids,
+            .row_items_changed = self.row_items_changed,
+            .scope_created = self.scope_created,
+            .removed_scope_ids = self.removed_scope_ids,
+            .rows_reused = self.next_scope_ids.len,
+            .rows_created = 0,
+            .rows_removed = @intCast(self.removed_scope_ids.len),
+            .row_items_unchanged = 0,
+            .row_items_updated = 0,
+        };
+        self.next_scope_ids = &.{};
+        self.row_items_changed = &.{};
+        self.scope_created = &.{};
+        self.removed_scope_ids = &.{};
+        return result;
+    }
+
+    /// Releases preparation storage without touching active rows or incoming values.
+    pub fn deinit(self: *PreparedExistingRows) void {
+        self.allocator.free(self.next_scope_ids);
+        self.allocator.free(self.row_items_changed);
+        self.allocator.free(self.scope_created);
+        self.allocator.free(self.removed_scope_ids);
+        self.* = undefined;
+    }
+};
+
 /// Reconciles one keyed each site by exact key identity, preserving surviving row scopes and disposing removed rows.
 pub fn syncRows(
     allocator: std.mem.Allocator,
@@ -595,6 +735,11 @@ const TestSyncHooks = struct {
         self.disposed_scopes.deinit(allocator);
     }
 
+    /// Reserves disposal journal capacity before prepared row publication.
+    pub fn prepareExistingRowsCommit(self: *@This(), allocator: std.mem.Allocator, removed_count: usize) std.mem.Allocator.Error!void {
+        try self.disposed_scopes.ensureUnusedCapacity(allocator, removed_count);
+    }
+
     /// Records each sync in the metrics or lifecycle state owned by this operation.
     pub fn recordEachSync(self: *@This(), next_len: usize, existing_len: usize) void {
         self.sync_next_len = next_len;
@@ -823,6 +968,74 @@ test "each sync characterization detects allocation attempts after mutation begi
     defer diff.deinit(allocator);
     const first_mutation = hooks.first_mutation_attempt orelse return error.TestUnexpectedResult;
     try std.testing.expect(first_mutation < fault.attempts);
+}
+
+test "prepared existing each rows sweep failures and commit without allocation" {
+    const PreparedFaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    const Runner = struct {
+        fn run(failure_number: ?usize) !usize {
+            var fault = PreparedFaultAllocator.init(std.testing.allocator);
+            const allocator = fault.allocator();
+            var sites: std.ArrayListUnmanaged(Site) = .empty;
+            var indexes: SiteIndexMap = .empty;
+            var memberships: std.ArrayListUnmanaged(?Membership) = .empty;
+            defer {
+                fault.configure(null);
+                clearSites(allocator, &sites, &indexes, &memberships);
+            }
+            const site_index = ensureSiteIndex(allocator, &sites, &indexes, 1, 2);
+            appendRowToSiteIndex(allocator, &sites, &memberships, site_index, 10, 1);
+            appendRowToSiteIndex(allocator, &sites, &memberships, site_index, 11, 2);
+            var keys_by_scope = [_]u64{0} ** 16;
+            var items_by_scope = [_]u64{0} ** 16;
+            keys_by_scope[10] = 1;
+            items_by_scope[10] = 100;
+            keys_by_scope[11] = 2;
+            items_by_scope[11] = 200;
+            var hooks = TestSyncHooks{ .keys_by_scope = &keys_by_scope, .items_by_scope = &items_by_scope, .next_scope_id = 12 };
+            defer hooks.deinit(allocator);
+            const keys = [_]u64{2};
+            const items = [_]u64{201};
+            const old_scope_ids = [_]u64{ 10, 11 };
+
+            fault.configure(failure_number);
+            var prepared = PreparedExistingRows.prepare(allocator, &sites, &memberships, site_index, 1, 2, &keys, &items, &hooks) catch |err| {
+                try std.testing.expectEqual(error.OutOfMemory, err);
+                try std.testing.expectEqualSlices(u64, &old_scope_ids, sites.items[site_index].scope_ids.items);
+                try std.testing.expectEqual(@as(u64, 200), items_by_scope[11]);
+                try std.testing.expectEqual(@as(usize, 0), hooks.disposed_scopes.items.len);
+                const attempts = fault.attempts;
+                fault.configure(null);
+                var retry = try PreparedExistingRows.prepare(allocator, &sites, &memberships, site_index, 1, 2, &keys, &items, &hooks);
+                defer retry.deinit();
+                fault.configure(1);
+                var diff = retry.commit(&sites, &memberships, &keys, &items, &hooks);
+                defer diff.deinit(allocator);
+                try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+                try verify(site_index, &sites, &memberships, &hooks, &items_by_scope);
+                return attempts;
+            };
+            defer prepared.deinit();
+            const attempts = fault.attempts;
+            fault.configure(1);
+            var diff = prepared.commit(&sites, &memberships, &keys, &items, &hooks);
+            defer diff.deinit(allocator);
+            try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+            try verify(site_index, &sites, &memberships, &hooks, &items_by_scope);
+            return attempts;
+        }
+
+        fn verify(site_index: usize, sites: *std.ArrayListUnmanaged(Site), memberships: *std.ArrayListUnmanaged(?Membership), hooks: *TestSyncHooks, items_by_scope: []const u64) !void {
+            try std.testing.expectEqualSlices(u64, &.{11}, sites.items[site_index].scope_ids.items);
+            try std.testing.expectEqual(@as(u64, 201), items_by_scope[11]);
+            try std.testing.expectEqualSlices(u64, &.{10}, hooks.disposed_scopes.items);
+            try std.testing.expect(memberships.items[10] == null);
+            try std.testing.expectEqual(Membership{ .site_index = site_index, .row_index = 0 }, memberships.items[11].?);
+        }
+    };
+    const attempts = try Runner.run(null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
 test "each runtime sync resolves hash collisions with typed equality" {
