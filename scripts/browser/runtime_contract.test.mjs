@@ -139,8 +139,9 @@ class MockHost {
     storageDeclarations = [],
     debugAllocations = null,
     failAllocationNumber = null,
+    maximumMemoryPages = undefined,
   } = {}) {
-    this.memory = new WebAssembly.Memory({ initial: 1 });
+    this.memory = new WebAssembly.Memory({ initial: 1, ...(maximumMemoryPages === undefined ? {} : { maximum: maximumMemoryPages }) });
     this.cmdLen = 0;
     this.strLen = 0;
     this.dynamicLen = 0;
@@ -321,7 +322,12 @@ class MockHost {
     const ptr = this.allocPtr;
     const end = ptr + len;
     if (end > this.memory.buffer.byteLength) {
-      this.memory.grow(Math.ceil((end - this.memory.buffer.byteLength) / PAGE));
+      try {
+        this.memory.grow(Math.ceil((end - this.memory.buffer.byteLength) / PAGE));
+      } catch (err) {
+        if (err instanceof RangeError) return 0;
+        throw err;
+      }
     }
     this.allocPtr = end;
     return ptr;
@@ -633,6 +639,7 @@ function mountWith(mountScript, options = {}) {
     localStorage,
     sessionStorage,
     storage,
+    limits,
     ...hostOptions
   } = options;
   const host = new MockHost(hostOptions);
@@ -653,6 +660,7 @@ function mountWith(mountScript, options = {}) {
     localStorage,
     sessionStorage,
     storage,
+    limits,
   });
   runtime.mount();
   return { host, root, runtime };
@@ -2342,6 +2350,45 @@ test("mount payload preflight sweeps every allocation failure and remains retrya
     assert.equal(runtime.mounted, true);
     runtime.unmount();
   }
+});
+
+test("bounded Wasm memory growth failure is recoverable before event mutation", () => {
+  const { host, runtime } = mountWith(
+    [{ op: Op.bindInput, a: 0, b: 124 }],
+    { maximumMemoryPages: 1 },
+  );
+  const oversized = "x".repeat(PAGE);
+
+  assert.throws(
+    () => runtime.dispatchString(124, oversized),
+    (err) => err.code === "out_of_memory",
+  );
+  assert.equal(runtime.failedError, null);
+  assert.deepEqual(host.dispatches, []);
+
+  runtime.dispatchString(124, "retry");
+  assert.deepEqual(host.dispatches, [{ eventId: 124, kind: PayloadKind.str, payload: "retry" }]);
+  runtime.unmount();
+});
+
+test("configured payload limit rejects before allocator or host mutation", () => {
+  const { host, runtime } = mountWith(
+    [{ op: Op.bindInput, a: 0, b: 123 }],
+    { limits: { maxPayloadBytes: 64 } },
+  );
+  const attemptsBefore = host.allocationAttempts;
+
+  assert.throws(
+    () => runtime.dispatchString(123, "x".repeat(65)),
+    (err) => err.code === "resource_limit",
+  );
+  assert.equal(host.allocationAttempts, attemptsBefore);
+  assert.deepEqual(host.dispatches, []);
+  assert.equal(runtime.failedError, null);
+
+  runtime.dispatchString(123, "within limit");
+  assert.equal(host.dispatches.length, 1);
+  runtime.unmount();
 });
 
 test("fatal wasm trap poisons runtime detaches resources and rejects re-entry", () => {

@@ -731,6 +731,10 @@ export class SignalsRuntime {
     this.storageBatch = null;
     this.failedError = null;
     this.hasErrorReporter = typeof options.onError === "function";
+    this.maxPayloadBytes = options.limits?.maxPayloadBytes ?? 0xffff_ffff;
+    if (!Number.isSafeInteger(this.maxPayloadBytes) || this.maxPayloadBytes < 0 || this.maxPayloadBytes > 0xffff_ffff) {
+      throw new RangeError("Signals maxPayloadBytes must be an integer between 0 and 4294967295");
+    }
     this.onError = options.onError ?? ((err) => {
       setTimeout(() => {
         throw err;
@@ -1289,6 +1293,11 @@ export class SignalsRuntime {
 
   allocatePayload(length) {
     this.assertUsable();
+    if (!Number.isSafeInteger(length) || length < 0 || length > this.maxPayloadBytes) {
+      const err = new Error(`Signals payload length ${length} exceeds configured limit ${this.maxPayloadBytes}`);
+      err.code = "resource_limit";
+      throw err;
+    }
     let result;
     try {
       result = this.views.callHost(this.exports.roc_alloc, length, 1).result;
