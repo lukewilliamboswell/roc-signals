@@ -3246,6 +3246,7 @@ pub fn Engine(comptime Ctx: type) type {
             target_scopes: []bool = &.{},
             removal: ?structural_splice.PreparedRemoval = null,
             publication: ?structural_splice.PreparedPublicationDeltas = null,
+            scope_retirement: ?scope_runtime.PreparedSubtreeRetirement = null,
             retired_state_cells: std.ArrayListUnmanaged(HostState) = .empty,
             state_cell_indexes: []usize = &.{},
 
@@ -3291,6 +3292,8 @@ pub fn Engine(comptime Ctx: type) type {
                 for (engine_ptr.scopes.items, 0..) |scope, index| {
                     plan.target_scopes[index] = engine_ptr.scopeIsInReplacementTarget(scope.scope_id, .{ .scope = retired_scope_id });
                 }
+                plan.scope_retirement = scope_runtime.prepareSubtreeRetirement(HostEachRowScopeStep, allocator, engine_ptr.scopes.items, retired_scope_id) catch return error.OutOfMemory;
+                errdefer if (plan.scope_retirement) |*retirement| retirement.deinit(allocator);
                 const render_start = engine_ptr.renderStartForReplacementTargetSet(site.render_insert_index, plan.target_scopes);
                 plan.removal = structural_splice.prepareRemoval(HostNodeDescriptorStream, allocator, &engine_ptr.active_stream, render_start, plan.target_scopes) catch return error.OutOfMemory;
                 errdefer if (plan.removal) |*removal| removal.deinit(allocator);
@@ -3353,6 +3356,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const allocator = Ctx.allocator(self.host_ctx);
                 if (self.publication) |*publication| publication.deinit(allocator);
                 if (self.removal) |*removal| removal.deinit(allocator);
+                if (self.scope_retirement) |*retirement| retirement.deinit(allocator);
                 allocator.free(self.state_cell_indexes);
                 for (self.retired_state_cells.items) |*state| state.cell.deinit(self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
                 self.retired_state_cells.deinit(allocator);
@@ -8266,6 +8270,8 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 try std.testing.expectEqualStrings("no", plan.replacement_stream.text_nodes.items[0].value);
                 try std.testing.expectEqual(engine.scopes.items[1].scope_id, plan.retired_scope_id);
                 try std.testing.expect(plan.target_scopes[@intCast(plan.retired_scope_id)]);
+                try std.testing.expectEqualSlices(u64, &.{plan.retired_scope_id}, plan.scope_retirement.?.scope_ids);
+                try std.testing.expect(engine.scopes.items[@intCast(plan.retired_scope_id)].active);
                 try std.testing.expectEqualSlices(u64, &.{ 1, 2, 3 }, plan.removal.?.scan.removed_elem_ids);
                 try std.testing.expectEqualSlices(usize, &.{0}, plan.removal.?.descriptor_indexes.element_indexes.items);
                 try std.testing.expectEqualSlices(usize, &.{0}, plan.removal.?.descriptor_indexes.text_node_indexes.items);
