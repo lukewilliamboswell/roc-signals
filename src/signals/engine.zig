@@ -10897,6 +10897,7 @@ pub fn Engine(comptime Ctx: type) type {
             render_splice: ?render_cache_mod.PreparedRenderSplice(Ctx) = null,
             structural_changes: []HostDirtyStructuralSignal = &.{},
             structural_downstream: ?*PreparedStructuralDownstream = null,
+            composite_structural: ?*PreparedCompositeStructural = null,
             composite_rows: ?*PreparedCompositeRows = null,
             each_rows: ?*PreparedActiveEachRows = null,
             each_replacement: ?*PreparedEachRowReplacementCollection = null,
@@ -11065,7 +11066,19 @@ pub fn Engine(comptime Ctx: type) type {
                         .when => when_count += 1,
                         .each => each_count += 1,
                     };
-                    if (each_count != 0 and when_count != 0) return error.ResourceLimit;
+                    if (each_count != 0 and when_count != 0) {
+                        plan.composite_structural = try PreparedCompositeStructural.prepare(engine, ctx, roc_host, structural_changes, &plan.caches, .{}, state_node_ids);
+                        errdefer plan.composite_structural.?.deinit();
+                        const downstream = plan.composite_structural.?.downstream;
+                        try downstream.adoptScalarRenderSplice(&plan.render_splice.?);
+                        plan.render_splice.?.deinit();
+                        plan.render_splice = null;
+                        if (state_update) |update| {
+                            plan.caches.clearProvisionalValues();
+                            plan.state_update = update.*;
+                        }
+                        return plan;
+                    }
                     if (each_count > 1) {
                         plan.composite_rows = try PreparedCompositeRows.prepare(engine, ctx, roc_host, structural_changes, &plan.caches);
                         errdefer plan.composite_rows.?.deinit();
@@ -11128,6 +11141,16 @@ pub fn Engine(comptime Ctx: type) type {
 
             fn commit(self: *@This()) render.Counts {
                 const allocator = Ctx.allocator(self.host_ctx);
+                if (self.composite_structural) |composite| {
+                    const downstream = composite.downstream;
+                    var total = if (downstream.render_splice) |*splice| splice.wire.counts() else render.Counts{};
+                    downstream.commitAssumeCapacityWithEarlyAndLate(self, commitSourceCaches, composite, PreparedCompositeStructural.commitLate);
+                    total.addAll(self.engine.runActiveOnChangeInitialCommandIndices(self.host_ctx, self.roc_host, downstream.publication.?.replacement_on_change_indices));
+                    total.addAll(self.engine.runActiveMountCommandIndices(self.host_ctx, self.roc_host, downstream.publication.?.replacement_mount_indices));
+                    total.addAll(self.runPostCommitCommands());
+                    if (comptime enable_runtime_metrics) self.engine.render_metrics.addCommandCounts(total);
+                    return total;
+                }
                 if (self.composite_rows) |composite| {
                     const downstream = composite.downstream.?;
                     const counts = downstream.render_splice.?.wire.counts();
@@ -11219,6 +11242,7 @@ pub fn Engine(comptime Ctx: type) type {
                 if (self.batch_preflighted and !self.batch_published) self.batch_target.abort();
                 if (comptime @hasDecl(Ctx, "RenderPublication")) if (self.host_publication) |*publication| publication.deinit();
                 if (self.structural_downstream) |downstream| downstream.deinit();
+                if (self.composite_structural) |composite| composite.deinit();
                 if (self.composite_rows) |rows| rows.deinit();
                 if (self.each_layout) |*layout| layout.deinit();
                 if (self.each_replacement) |replacement| replacement.deinit();
