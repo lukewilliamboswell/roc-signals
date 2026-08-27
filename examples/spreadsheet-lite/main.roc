@@ -77,10 +77,10 @@ GridInput : {
 }
 
 out_at : List(Sheet.CellOut), U64 -> Sheet.CellOut
-out_at = |outs, index| outs.get(index).ok_or({ text: "", kind: Empty })
+out_at = |outs, index| outs.get(index) ?? { text: "", kind: Empty }
 
 source_at : List(Str), U64 -> Str
-source_at = |sources, index| sources.get(index).ok_or("")
+source_at = |sources, index| sources.get(index) ?? ""
 
 cell_view : GridInput, U64 -> CellView
 cell_view = |input, index| {
@@ -206,14 +206,14 @@ column_header = {
 }
 
 set_source : List(Str), U64, Str -> List(Str)
-set_source = |sources, index, text| sources.set(index, text).ok_or(sources)
+set_source = |sources, index, text| sources.set(index, text) ?? sources
 
 ## A cell is a labelled text input. Its index is known statically from the row
 ## key, so its reducer can write straight into the sheet without the sheet state
 ## needing to know where the caret is.
 render_cell : Ui.State(List(Str)), Ui.State(Cursor), Str, Signal.Signal(CellView) -> Elem
 render_cell = |sheet, cursor, key, cell| {
-	index = Cells.index_of(key).ok_or(0)
+	index = Cells.index_of(key) ?? 0
 
 	Html.text_input_attrs(
 		key,
@@ -577,20 +577,37 @@ main = || {
 	)
 }
 
-# The tone is read off the `kind` tag, never off the rendered text, so an error
-# cell and the formula bar showing it always agree.
+## An error cell is tinted from its `kind` tag, never from its rendered text.
 expect tone_class({ key: "B9", ref: "B9", value: "#DIV/0!", kind: Error, selected: False }).contains("bg-red-50")
+
+## Numbers are right-aligned so the columns line up on the decimal point.
 expect tone_class({ key: "B2", ref: "B2", value: "1200", kind: Number, selected: False }).contains("text-right")
+
+## Text is left-aligned, the opposite of the number alignment.
 expect tone_class({ key: "A2", ref: "A2", value: "Rent", kind: Text, selected: False }).contains("text-left")
+
+## The selected cell gains a focus ring on top of whatever tone its kind gives it.
 expect tone_class({ key: "A2", ref: "A2", value: "Rent", kind: Text, selected: True }).contains("ring-emerald-500")
 
+## The formula bar's value takes the same error tone as the cell it is showing.
 expect value_tone_class({ ref: "B9", editing: False, source: "=1/0", value: "#DIV/0!", kind: Error, depends: "none" })
 	== "text-sm font-semibold tabular-nums text-red-700"
+
+## A non-error value in the bar uses the plain readout styling.
 expect value_tone_class({ ref: "B2", editing: False, source: "1200", value: "1200", kind: Number, depends: "none" })
 	== "value break-words tabular-nums"
 
+## The starting workbook contains exactly four error cells for the summary tile.
 expect count_errors(Sheet.evaluate_out(Sheet.initial_cells)) == 4
+
+## Row 11 of the starting workbook has no sources, so it is hideable.
 expect row_is_empty(Sheet.initial_cells, 10)
+
+## The header row has sources, so it survives the "hide empty rows" filter.
 expect !row_is_empty(Sheet.initial_cells, 0)
+
+## With hiding off, every row of the sheet is counted.
 expect visible_row_text(Sheet.initial_cells, False) == "12"
+
+## With hiding on, the one empty row drops out of the count.
 expect visible_row_text(Sheet.initial_cells, True) == "11"

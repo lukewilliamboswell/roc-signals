@@ -281,16 +281,38 @@ Recipes := [].{
 
 	# The draft box is deliberately strict: only 1-3 ASCII digits, and only up
 	# to the 96-serving ceiling the hint promises.
+
+	## A bare run of digits is the ordinary accepted draft.
 	expect parse_servings("4") == Ok(4)
+
+	## Surrounding whitespace is trimmed away before the digits are read.
 	expect parse_servings(" 12 ") == Ok(12)
+
+	## Leading zeros are padding, not a different number.
 	expect parse_servings("007") == Ok(7)
+
+	## Zero servings is a valid request, not a parse failure.
 	expect parse_servings("0") == Ok(0)
+
+	## The 96-serving ceiling the hint promises is itself accepted.
 	expect parse_servings("96") == Ok(96)
+
+	## One serving past the ceiling is rejected rather than clamped.
 	expect parse_servings("97") == Err(Invalid)
+
+	## An empty draft is not a serving count.
 	expect parse_servings("") == Err(Invalid)
+
+	## A word is rejected outright instead of reading as zero.
 	expect parse_servings("two") == Err(Invalid)
+
+	## A single trailing non-digit rejects the whole draft.
 	expect parse_servings("1x") == Err(Invalid)
+
+	## Three digits still fail once the value is past the ceiling.
 	expect parse_servings("999") == Err(Invalid)
+
+	## Four digits are rejected on length before the value is even read.
 	expect parse_servings("1000") == Err(Invalid)
 
 	## Target scale in milli-servings.
@@ -308,7 +330,7 @@ Recipes := [].{
 				Ok(area) => base * area / recipe.base_area
 				Err(OwnTin) => base
 			}
-			ByServings => Try.ok_or(parse_servings(draft).map_ok(|servings| servings * 1000), base)
+			ByServings => parse_servings(draft).map_ok(|servings| servings * 1000) ?? base
 		}
 	}
 
@@ -354,10 +376,19 @@ Recipes := [].{
 		}
 	}
 
+	## A whole amount renders with no decimal point at all.
 	expect format_amount(200_000) == "200"
+
+	## A trailing zero in the hundredths is dropped rather than printed.
 	expect format_amount(37_500) == "37.5"
+
+	## A repeating fraction is rounded to hundredths, not truncated.
 	expect format_amount(666_666) == "666.67"
+
+	## Zero renders bare, so an empty scale reads as "0" and not "0.00".
 	expect format_amount(0) == "0"
+
+	## A hundredths value below ten keeps its leading zero.
 	expect format_amount(1_050) == "1.05"
 
 	## The full display string for one ingredient line.
@@ -383,11 +414,22 @@ Recipes := [].{
 			Err(_) => acc.append(line)
 		}
 
+	## At the recipe's own servings a metric line reproduces the printed amount.
 	expect quantity_text(50_000_000, Grams, 4000, Metric) == "200 g"
+
+	## The same line in imperial converts grams to ounces and relabels it.
 	expect quantity_text(50_000_000, Grams, 4000, Imperial) == "7.05 oz"
+
+	## Teaspoons are shared by both systems, so imperial leaves them alone.
 	expect quantity_text(500_000, Teaspoons, 4000, Imperial) == "2 tsp"
+
+	## Pan scaling is an area ratio, so it can land between whole servings.
 	expect scale_milli(pancakes, ByPan, "20", Tray30) == 5309
+
+	## The recipe's own tin is the identity ratio, not an area of its own.
 	expect scale_milli(pancakes, ByPan, "20", OwnTin) == 4000
+
+	## An unparseable servings draft falls back to the recipe's base servings.
 	expect scale_milli(pancakes, ByServings, "two", OwnTin) == 4000
 
 	## Aggregate the ingredients of every selected recipe. Lines are keyed by

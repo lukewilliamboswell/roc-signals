@@ -335,8 +335,8 @@ Markdown := {}.{
 
 	parse_paired : Markdown.InlineState, Str, Str, Markdown.Style -> Try(Markdown.InlineState, [NoOpen, Unclosed])
 	parse_paired = |state, text, delimiter, style| {
-		open = Try.map_err(text.split_first(delimiter), |_| NoOpen)?
-		close = Try.map_err(open.after.split_first(delimiter), |_| Unclosed)?
+		open = text.split_first(delimiter) ? |_| NoOpen
+		close = open.after.split_first(delimiter) ? |_| Unclosed
 		before = parse_inline(state, open.before)
 		marked = append_segment(before, style, close.before, "")
 		Ok(parse_inline(marked, close.after))
@@ -363,9 +363,9 @@ Markdown := {}.{
 	## element at all.
 	parse_bracketed : Markdown.InlineState, Str, Str, Markdown.Style -> Try(Markdown.InlineState, [NotBracketed])
 	parse_bracketed = |state, text, opener, style| {
-		open = Try.map_err(text.split_first(opener), |_| NotBracketed)?
-		label_split = Try.map_err(open.after.split_first("]("), |_| NotBracketed)?
-		target_split = Try.map_err(label_split.after.split_first(")"), |_| NotBracketed)?
+		open = text.split_first(opener) ? |_| NotBracketed
+		label_split = open.after.split_first("](") ? |_| NotBracketed
+		target_split = label_split.after.split_first(")") ? |_| NotBracketed
 		before = parse_inline(state, open.before)
 		marked = if safe_href(target_split.before) {
 			append_segment(before, style, label_split.before, target_split.before)
@@ -510,19 +510,46 @@ Markdown := {}.{
 		)
 }
 
+## An ATX heading needs a space after its hashes to count as a heading.
 expect Markdown.heading_level("### Editor Notes") == 3
+
+## Hashes with no following space are ordinary paragraph text, not a heading.
 expect Markdown.heading_level("###Not a heading") == 0
+
+## A heading block key carries its level so the level survives the round trip.
 expect Markdown.block_key(4, Markdown.Kind.Heading(2)) == "b:4:heading2"
+
+## A levelless kind spells its own name in the key.
 expect Markdown.block_key(4, Markdown.Kind.CodeBlock) == "b:4:codeblock"
-# The key is the only wire form of a `Kind`, so encode and decode must agree.
+
+## The key is the only wire form of a `Kind`, so decoding a heading key
+## recovers the same level that was encoded.
 expect Markdown.kind_from_key(Markdown.block_key(0, Markdown.Kind.Heading(5))) == Markdown.Kind.Heading(5)
+
+## Decoding round-trips a levelless kind as well.
 expect Markdown.kind_from_key(Markdown.block_key(0, Markdown.Kind.ListBlock)) == Markdown.Kind.ListBlock
+
+## Paragraph is the fallback kind, and it round-trips like the rest.
 expect Markdown.kind_from_key(Markdown.block_key(0, Markdown.Kind.Paragraph)) == Markdown.Kind.Paragraph
+
+## Segment keys round-trip an inline style, so a link stays a link on redraw.
 expect Markdown.style_from_key(Markdown.segment_key(2, Markdown.Style.Link)) == Markdown.Style.Link
+
+## Plain is the fallback style, and it round-trips too.
 expect Markdown.style_from_key(Markdown.segment_key(2, Markdown.Style.Plain)) == Markdown.Style.Plain
-# Inline markers are stripped, and text that only looks like markup survives.
+
+## Strong and code markers are stripped, leaving the words the outline shows.
 expect Markdown.plain_text("Use **map2** for fan-in and `combine`") == "Use map2 for fan-in and combine"
+
+## Text that only looks like markup survives byte for byte: a lone `*` is not
+## emphasis and an unclosed `[` never opens a link.
 expect Markdown.plain_text("2 * 3 = 6 and [not a link( either") == "2 * 3 = 6 and [not a link( either"
+
+## A real link keeps its label and drops the target from the plain rendering.
 expect Markdown.plain_text("see [the guide](https://example.test/guide)") == "see the guide"
-# A javascript: target degrades to the plain label rather than becoming a link.
+
+## Pins surprising existing behaviour. `javascript:` fails the scheme
+## allowlist, so no link element is emitted -- but the label is re-parsed as
+## plain text and the plain rendering keeps only "click". The unsafe target is
+## dropped entirely rather than surfacing anywhere in the output.
 expect Markdown.plain_text("[click](javascript:bad)") == "click"

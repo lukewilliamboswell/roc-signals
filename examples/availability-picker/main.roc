@@ -195,7 +195,7 @@ zones = [
 ]
 
 zone_by_id : Str -> Zone
-zone_by_id = |id| zones.find_first(|zone| zone.id == id).ok_or({ id: "utc", label: "UTC+00:00", shift: offset_base })
+zone_by_id = |id| zones.find_first(|zone| zone.id == id) ?? { id: "utc", label: "UTC+00:00", shift: offset_base }
 
 ## The seven day columns, in order, so the header strip can be rendered by
 ## walking the days themselves rather than by index arithmetic over names.
@@ -206,7 +206,7 @@ days = [Day.Mon, Day.Tue, Day.Wed, Day.Thu, Day.Fri, Day.Sat, Day.Sun]
 ## happen once a minute has been reduced modulo the week, but the fallback is
 ## kept so the renderer is total.
 day_label : U64 -> Str
-day_label = |index| Try.map_ok(Day.from_index(index), Day.to_str).ok_or("???")
+day_label = |index| Try.map_ok(Day.from_index(index), Day.to_str) ?? "???"
 
 pad2 : U64 -> Str
 pad2 = |value| if value < 10 { "0${value.to_str()}" } else { value.to_str() }
@@ -319,7 +319,7 @@ row_views = |slots, zone, conflicts|
 				id: slot.id,
 				title: slot.title,
 				when: span_text(slot, zone),
-				day: Day.from_index(local // 1440).ok_or(Day.Mon),
+				day: Day.from_index(local // 1440) ?? Day.Mon,
 				status: slot.status,
 				conflict: conflict_of(slots, conflicts, slot),
 			}
@@ -420,11 +420,11 @@ empty_slot : Slot
 empty_slot = { id: "", title: "", abs_start: 0, duration: 0, status: Status.Unmarked }
 
 slot_at : List(Slot), U64 -> Slot
-slot_at = |slots, index| slots.get(index).ok_or(empty_slot)
+slot_at = |slots, index| slots.get(index) ?? empty_slot
 
 index_of_id : List(Slot), Str -> U64
 index_of_id = |slots, id|
-	Try.map_ok(slots.map_with_index(|slot, index| { id: slot.id, index }).find_first(|entry| entry.id == id), |entry| entry.index).ok_or(0)
+	Try.map_ok(slots.map_with_index(|slot, index| { id: slot.id, index }).find_first(|entry| entry.id == id), |entry| entry.index) ?? 0
 
 ## Swap a slot with the one before it. Reordering keeps every row key, so the
 ## reconciler moves rows rather than rebuilding them.
@@ -471,8 +471,8 @@ parse_clock = |text| {
 	if parts.len() != 2 {
 		Err(BadClock)
 	} else {
-		hours = Try.map_err(digits_only(parts.get(0).ok_or("")), |_| BadClock)?
-		minutes = Try.map_err(digits_only(parts.get(1).ok_or("")), |_| BadClock)?
+		hours = digits_only(parts.get(0) ?? "") ? |_| BadClock
+		minutes = digits_only(parts.get(1) ?? "") ? |_| BadClock
 		if hours < 24 and minutes < 60 {
 			Ok(hours * 60 + minutes)
 		} else {
@@ -483,7 +483,7 @@ parse_clock = |text| {
 
 parse_duration : Str -> Try(U64, [BadDuration])
 parse_duration = |text| {
-	minutes = Try.map_err(digits_only(text), |_| BadDuration)?
+	minutes = digits_only(text) ? |_| BadDuration
 	if minutes > 0 and minutes <= 720 {
 		Ok(minutes)
 	} else {
@@ -503,8 +503,8 @@ plan_of = |draft, zone|
 	if draft.title.is_empty() {
 		Err(DraftError.MissingTitle)
 	} else {
-		local_minute = Try.map_err(parse_clock(draft.start_text), |_| DraftError.BadStart)?
-		duration = Try.map_err(parse_duration(draft.duration), |_| DraftError.BadLength)?
+		local_minute = parse_clock(draft.start_text) ? |_| DraftError.BadStart
+		duration = parse_duration(draft.duration) ? |_| DraftError.BadLength
 		local = Day.index(draft.day) * 1440 + local_minute
 		# Inverse of `local_of`: go from the displayed local instant back to UTC.
 		Ok({ abs_start: (local + week_minutes + offset_base - zone.shift) % week_minutes, duration })
@@ -800,7 +800,7 @@ zone_panel = |zone, zone_signal|
 	)
 
 metric_at : List(U64), U64 -> U64
-metric_at = |values, index| values.get(index).ok_or(0)
+metric_at = |values, index| values.get(index) ?? 0
 
 main : () -> Elem
 main = ||
@@ -868,37 +868,63 @@ main = ||
 			),
 	)
 
+## A known day wire value round-trips through the tag back to its own label.
 expect Day.from_str("Fri").ok_or(Day.Mon) |> Day.to_str() == "Fri"
+
+## An unrecognised day wire value falls back to Monday rather than failing.
 expect Day.from_str("Nope").ok_or(Day.Mon) |> Day.to_str() == "Mon"
+
+## A day's column index maps back to the same day.
 expect Day.from_index(Day.index(Day.Sun)).ok_or(Day.Mon) |> Day.is_eq(Day.Sun)
 
-# The four strings the draft-validation spec asserts, byte for byte.
+## A well-formed 24-hour time parses to minutes from midnight.
 expect parse_clock("08:30") == Ok(510)
+
+## An hour of 25 is out of range and is rejected, not wrapped.
 expect parse_clock("25:00") == Err(BadClock)
+
+## A time with no colon is rejected rather than read as a bare number.
 expect parse_clock("0830") == Err(BadClock)
+
+## A minute of 60 is out of range and is rejected.
 expect parse_clock("08:60") == Err(BadClock)
+
+## A plain minute count inside the allowed range parses.
 expect parse_duration("45") == Ok(45)
+
+## A zero-length slot is rejected.
 expect parse_duration("0") == Err(BadDuration)
+
+## Non-digit text is rejected rather than silently read as zero.
 expect parse_duration("abc") == Err(BadDuration)
+
+## A length above the 720-minute ceiling is rejected.
 expect parse_duration("721") == Err(BadDuration)
 
-# A typed local time is stored as the UTC instant it names, and reads back as
-# the same wall clock in the zone it was typed in.
+## A fully filled draft reports itself ready and names the slot being added.
 expect {
 	draft = reprice({ ..empty_draft, title: "Client call", day: Day.Fri, start_text: "08:30", duration: "45" }, zone_by_id("nyc"))
 	draft_status(draft) == "Ready to add Client call"
 }
+
+## A local time typed in New York reads back as the same wall clock in New York.
 expect {
 	nyc = zone_by_id("nyc")
 	draft = reprice({ ..empty_draft, title: "Client call", day: Day.Fri, start_text: "08:30", duration: "45" }, nyc)
 	slot = slot_at(add_slot([], draft), 0)
 	span_text(slot, nyc) == "Fri 08:30-09:15"
 }
+
+## A missing title is reported before any complaint about the other fields.
 expect draft_status({ ..empty_draft, start_text: "25:00" }) == "Enter a name for the new slot"
+
+## An out-of-range start time is reported as a start-time problem.
 expect draft_status(reprice({ ..empty_draft, title: "X", start_text: "25:00" }, zone_by_id("utc"))) == "Start time must be HH:MM"
+
+## An out-of-range length is reported as a length problem.
 expect draft_status(reprice({ ..empty_draft, title: "X", duration: "0" }, zone_by_id("utc"))) == "Length must be 1-720 minutes"
 
-# Two busy slots that overlap name each other; the same pair unmarked does not.
+## A block in a clash names the commitment it overlaps, not a bare "Conflict".
 expect {
 	slots = [
 		{ id: "a", title: "Standup", abs_start: 540, duration: 30, status: Status.Busy },
@@ -906,9 +932,23 @@ expect {
 	]
 	ids = conflict_ids(slots)
 	Clash.to_str(conflict_of(slots, ids, slot_at(slots, 0))) == "Clashes with Design review"
-	and Banner.to_str(conflict_banner(slots, ids)) == "2 overlapping commitments: Standup, Design review"
 }
+
+## The banner counts and lists every commitment currently in a clash.
+expect {
+	slots = [
+		{ id: "a", title: "Standup", abs_start: 540, duration: 30, status: Status.Busy },
+		{ id: "b", title: "Design review", abs_start: 555, duration: 60, status: Status.Busy },
+	]
+	ids = conflict_ids(slots)
+	Banner.to_str(conflict_banner(slots, ids)) == "2 overlapping commitments: Standup, Design review"
+}
+
+## Overlapping slots that are not both busy raise no banner at all.
 expect conflict_banner(initial_slots, conflict_ids(initial_slots)) |> Banner.is_eq(Banner.Settled)
 
+## Moving a slot earlier swaps it with the one before it.
 expect move_earlier(initial_slots, "review").map(|slot| slot.id) == ["sunrise", "review", "standup", "midnight", "focus"]
+
+## Moving the first slot earlier leaves the order untouched.
 expect move_earlier(initial_slots, "sunrise").map(|slot| slot.id) == ["sunrise", "standup", "review", "midnight", "focus"]

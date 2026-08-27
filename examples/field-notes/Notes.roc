@@ -71,8 +71,13 @@ Notes := {}.{
 			Failed => "Failed"
 		}
 
+	## The wire token for a note nobody has queued yet is `draft`.
 	expect status_code(Draft) == "draft"
+
+	## A lane that settled with a failure reports the `failed` token.
 	expect status_code(Failed) == "failed"
+
+	## The badge caption is the human spelling of the same tag.
 	expect status_title(Syncing) == "Syncing"
 
 	## A note counts against the outbox until it has settled successfully; a
@@ -132,14 +137,14 @@ Notes := {}.{
 
 	## --- small helpers ---
 	part_at : List(Str), U64 -> Str
-	part_at = |parts, index| Try.ok_or(parts.get(index), "")
+	part_at = |parts, index| parts.get(index) ?? ""
 
 	## Remove the two characters the storage format reserves as separators.
 	sanitize : Str -> Str
 	sanitize = |text| Str.join_with(Str.join_with(text.split_on("|"), " ").split_on(";"), " ")
 
 	view_at : List(TaskView), U64 -> TaskView
-	view_at = |views, slot| Try.ok_or(views.get(slot), TaskIdle)
+	view_at = |views, slot| views.get(slot) ?? TaskIdle
 
 	## --- storage codec ---
 	encode_note : Note -> Str
@@ -196,7 +201,10 @@ Notes := {}.{
 		decode_note(encode_note(note)) == [note]
 	}
 
+	## An empty storage value restores an empty board rather than a phantom note.
 	expect decode_notes("") == []
+
+	## A single stored record restores as one note keeping the id it was written with.
 	expect decode_notes("n0|0|1|r7|Generator hours").map(|note| note.id) == ["n0"]
 
 	## A slot outside the outbox is not a note this app can hold, so it is dropped.
@@ -308,10 +316,19 @@ Notes := {}.{
 		"${id}:${(bumps + 1).to_str()}"
 	}
 
+	## The first note captured in a session is numbered from one.
 	expect next_id([]) == "s1"
+
+	## Only adds advance the id counter, so queueing a note does not consume one.
 	expect next_id([OpAdd("s1", "one"), OpQueue("s1")]) == "s2"
+
+	## A note that has never been edited is at its first revision.
 	expect next_rev([], "n0") == "n0:1"
+
+	## Each edit in the log mints the next revision for that note.
 	expect next_rev([OpEdit("n0", "one", "n0:1")], "n0") == "n0:2"
+
+	## Revisions are counted per note, so another note's edits do not bump this one.
 	expect next_rev([OpEdit("n1", "one", "n1:1")], "n0") == "n0:1"
 
 	## Re-applying a log over notes that already contain its effect is a no-op.
@@ -427,14 +444,21 @@ Notes := {}.{
 			}
 		}
 
-	## Only the lane holding the head of the outbox is asked to send; every other
-	## lane, and every lane while offline or paused, stays idle.
+	## The lane holding the head of the outbox is asked to send that note's token.
 	expect {
 		notes = [{ id: "n0", slot: 0, body: "one", queued: True, rev: "r7" }]
 		board = { notes: notes, online: True, auto: True, views: [] }
-		request_at(board, 0) == Send("n0#r7") and request_at(board, 1) == Idle
+		request_at(board, 0) == Send("n0#r7")
 	}
 
+	## Every lane that does not hold the head stays idle, so only one send is ever in flight.
+	expect {
+		notes = [{ id: "n0", slot: 0, body: "one", queued: True, rev: "r7" }]
+		board = { notes: notes, online: True, auto: True, views: [] }
+		request_at(board, 1) == Idle
+	}
+
+	## While offline no lane sends, however many notes are queued.
 	expect {
 		notes = [{ id: "n0", slot: 0, body: "one", queued: True, rev: "r7" }]
 		request_at({ notes: notes, online: False, auto: True, views: [] }, 0) == Idle
@@ -450,7 +474,10 @@ Notes := {}.{
 		}
 	}
 
+	## A single waiting note is counted in the singular.
 	expect outbox_text([{ id: "a", body: "", status: Queued, detail: "", queue_disabled: True, retry_disabled: True }]) == "1 note waiting to sync"
+
+	## An empty outbox still reads as a plural count rather than a special sentence.
 	expect outbox_text([]) == "0 notes waiting to sync"
 
 	count_status : List(Row), Notes.Status -> U64

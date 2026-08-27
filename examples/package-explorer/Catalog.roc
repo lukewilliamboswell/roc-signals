@@ -315,18 +315,33 @@ Catalog := {}.{
 	all_settled = |phases| phases.keep_if(Catalog.is_loading).len() == 0
 }
 
+## Search rows split on ";" between records and "|" between id and summary.
 expect Catalog.package_rows("roc-json|JSON codec;roc-http|HTTP client") == [{ id: "roc-json", summary: "JSON codec" }, { id: "roc-http", summary: "HTTP client" }]
+## An empty payload means no matches, not a parse failure.
 expect Catalog.package_rows("") == []
+## The detail payload fills all four fields in order, the last taking the tail.
 expect Catalog.detail_data("roc-json|JSON codec|Apache-2.0|18422") == { id: "roc-json", summary: "JSON codec", license: "Apache-2.0", downloads: "18422" }
+## A loading search reports progress rather than a count.
 expect Catalog.search_status_text(Catalog.search_loading) == "Search status: searching"
+## A failed search carries the failure message into the status line.
 expect Catalog.search_status_text(Catalog.search_failed("offline")) == "Search status: failed - offline"
+## A ready search with no rows says so instead of reporting "0 packages".
 expect Catalog.search_status_text(Catalog.search_ready("")) == "Search status: no packages match"
+## A single match is worded in the singular.
 expect Catalog.search_status_text(Catalog.search_ready("roc-json|JSON codec")) == "Search status: 1 package"
+## More than one match is worded in the plural with the count.
 expect Catalog.search_status_text(Catalog.search_ready("roc-json|a;roc-http|b")) == "Search status: 2 packages"
+## The versions panel counts released versions once its payload arrives.
 expect Catalog.versions_status_text(Catalog.versions_ready("1.0.0|2026-01-01")) == "Versions: 1 released"
+## A package with no dependencies is a ready answer, not an empty count.
 expect Catalog.deps_status_text(Catalog.deps_ready("")) == "Dependencies: none"
+## The overview panel surfaces its own failure message independently.
 expect Catalog.detail_status_text(Catalog.detail_failed("gone")) == "Overview: failed - gone"
+## The fan-in readout tallies each phase across the panels that reported.
 expect Catalog.panel_summary([Catalog.Phase.Ready, Catalog.Phase.Loading, Catalog.Phase.Failed("gone")]) == "Panels: 1 ready, 1 loading, 1 failed"
+## A failed panel counts as settled: only loading panels keep the app waiting.
 expect Catalog.all_settled([Catalog.Phase.Ready, Catalog.Phase.Failed("gone")])
+## One panel still loading leaves the whole set unsettled.
 expect !Catalog.all_settled([Catalog.Phase.Ready, Catalog.Phase.Loading])
+## Reversing the order rearranges the same rows rather than rebuilding them.
 expect Catalog.order_rows([{ id: "a", summary: "" }, { id: "b", summary: "" }], True) == [{ id: "b", summary: "" }, { id: "a", summary: "" }]

@@ -84,12 +84,21 @@ Route := [Search, Package(Str), Unknown].{
 		}
 }
 
+## The root path is the search route.
 expect Route.from_location({ path: "/", query: "", hash: "" }) == Search
+## A single segment after /packages/ becomes the package id.
 expect Route.from_location({ path: "/packages/roc-json", query: "", hash: "" }) == Package("roc-json")
+## An empty package id is not a package route.
 expect Route.from_location({ path: "/packages/", query: "", hash: "" }) == Unknown
+## A deeper path under /packages/ is not a package route; ids never contain a slash.
 expect Route.from_location({ path: "/packages/roc-json/versions", query: "", hash: "" }) == Unknown
+## An unrecognised path falls through to the not-found sink.
 expect Route.from_location({ path: "/nope", query: "", hash: "" }) == Unknown
+## A package route renders back to the path a link would carry.
 expect Route.to_location(Package("roc-http")).path == "/packages/roc-http"
+## Rendering a package route and parsing it again round-trips to the same route.
 expect Route.from_location(Route.to_location(Package("roc-http"))) == Package("roc-http")
+## Two package routes with different ids are distinct, so navigation invalidates.
 expect Package("roc-json") != Package("roc-http")
+## The document title names the package ahead of the app name.
 expect Route.title(Package("roc-json")) == "roc-json - Package Explorer"

@@ -364,17 +364,15 @@ Api := {}.{
 	parse_errors : Str -> List(Str)
 	parse_errors = |body| {
 		shielded = shield_escapes(body)
-		Try.ok_or(
-			shielded.split_first("\"errors\"").map_ok(|split| collect_errors(split.after, [])),
-			["The request was rejected."],
-		)
+		shielded.split_first("\"errors\"").map_ok(|split| collect_errors(split.after, []))
+		?? ["The request was rejected."]
 	}
 
 	## Each step of the scan may run out of input; `?` short-circuits to the
 	## entries collected so far, which is exactly the old nested-match
 	## behaviour without the staircase.
 	collect_errors : Str, List(Str) -> List(Str)
-	collect_errors = |rest, acc| Try.ok_or(collect_one_error(rest, acc), acc)
+	collect_errors = |rest, acc| collect_one_error(rest, acc) ?? acc
 
 	collect_one_error : Str, List(Str) -> Try(List(Str), _)
 	collect_one_error = |rest, acc| {
@@ -385,14 +383,14 @@ Api := {}.{
 		entry = restore_text("${key_close.before} ${message_close.before}")
 		next = acc.append(entry)
 		Ok(
-			Try.ok_or(
-				message_close.after.split_first("]").map_ok(|list_close| collect_errors(list_close.after, next)),
-				next,
-			),
+			message_close.after.split_first("]").map_ok(|list_close| collect_errors(list_close.after, next))
+			?? next,
 		)
 	}
 }
 
+## A 422 envelope becomes one "field message" sentence per field, in envelope order.
 expect Api.parse_errors("{\"errors\":{\"email\":[\"can't be blank\"],\"password\":[\"is too short\"]}}") == ["email can't be blank", "password is too short"]
 
+## A body with no "errors" key falls back to a single generic rejection sentence.
 expect Api.parse_errors("{\"message\":\"nope\"}") == ["The request was rejected."]

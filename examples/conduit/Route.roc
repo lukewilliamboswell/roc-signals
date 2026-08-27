@@ -199,10 +199,8 @@ Route := [
 		if hash.is_empty() {
 			{ path: "/", query: "" }
 		} else {
-			Try.ok_or(
-				hash.split_first("?").map_ok(|split| { path: split.before, query: split.after }),
-				{ path: hash, query: "" },
-			)
+			hash.split_first("?").map_ok(|split| { path: split.before, query: split.after })
+			?? { path: hash, query: "" }
 		}
 
 	title : Route -> Str
@@ -295,7 +293,7 @@ Route := [
 				if pair.starts_with("page=") {
 					# 0 stands in for "unparseable", and is rejected by the same
 					# guard that rejects an explicit page=0.
-					page = Try.ok_or(U64.from_str(pair.drop_prefix("page=")), 0)
+					page = U64.from_str(pair.drop_prefix("page=")) ?? 0
 					if page >= 1 {
 						{ ..feed, page: page }
 					} else {
@@ -338,28 +336,29 @@ Route := [
 	}
 }
 
-expect {
-	# Deep links survive the hash round trip, slugs and all.
-	route = Route.from_location(Route.article_location("how-to-train-your-dragon"))
-	route.is_eq(Article("how-to-train-your-dragon"))
-}
+## An article deep link survives the hash round trip with its slug intact.
+expect Route.from_location(Route.article_location("how-to-train-your-dragon")).is_eq(Article("how-to-train-your-dragon"))
 
+## Page, tag, and source all round trip through the feed query string together.
 expect {
-	# Feed parameters round trip through the query string.
 	feed = { page: 3, tag: Tagged("dragons"), source: Global }
 	Route.from_location(Route.feed_location(feed)).is_eq(Home(feed))
 }
 
+## The authenticated feed is spelled by source alone; page 1 and no tag stay off the query.
 expect Route.feed_query({ page: 1, tag: AllTags, source: Yours }) == "feed=yours"
 
+## A non-default page and a tag are both emitted, page first.
 expect Route.feed_query({ page: 2, tag: Tagged("roc"), source: Global }) == "page=2&tag=roc"
 
-expect {
-	# `is_eq` must separate routes that share a kind, and routes that share a
-	# location: NotFound and Home both point at the demo base path.
-	!Route.is_eq(Profile("alice"), Profile("bob")) and !Route.is_eq(NotFound, Route.home)
-}
+## `is_eq` separates two routes of the same kind by their payload.
+expect !Route.is_eq(Profile("alice"), Profile("bob"))
 
+## ...and separates NotFound from Home, which share the demo base path.
+expect !Route.is_eq(NotFound, Route.home)
+
+## The favorites tab is a distinct route from the profile it hangs off.
 expect Route.from_location({ path: "/", query: "", hash: "/profile/alice/favorites" }).is_eq(ProfileFavorites("alice"))
 
+## An unrecognised trailing profile segment is NotFound, not a silent profile match.
 expect Route.from_location({ path: "/", query: "", hash: "/profile/alice/extra" }).is_eq(NotFound)

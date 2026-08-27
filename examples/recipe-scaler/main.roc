@@ -103,32 +103,71 @@ scale_note_class = |note|
 
 # Message and class are two projections of one tag, so these pairs cannot drift
 # apart the way a `starts_with` on the rendered sentence could.
+
+## An unparseable servings box names the range it wanted and the servings it fell back to.
 expect {
 	note = scale_note({ mode: Recipes.mode_from_str("servings"), draft: "two", pan: Recipes.pan_from_str("recipe"), recipe: Recipes.find("pancakes") }, 4000)
-	scale_note_text(note) == "Servings must be a whole number from 0 to 96. Showing the recipe's own 4 servings." and scale_note_class(note) == "notice notice-error"
+	scale_note_text(note) == "Servings must be a whole number from 0 to 96. Showing the recipe's own 4 servings."
 }
 
+## An unparseable servings box tones the banner as an error.
+expect {
+	note = scale_note({ mode: Recipes.mode_from_str("servings"), draft: "two", pan: Recipes.pan_from_str("recipe"), recipe: Recipes.find("pancakes") }, 4000)
+	scale_note_class(note) == "notice notice-error"
+}
+
+## Zero servings is spelled out rather than left as a page of zeros.
 expect {
 	note = scale_note({ mode: Recipes.mode_from_str("servings"), draft: "0", pan: Recipes.pan_from_str("recipe"), recipe: Recipes.find("pancakes") }, 0)
-	scale_note_text(note) == "Nothing to make at 0 servings: every quantity is 0." and scale_note_class(note) == "notice notice-warn"
+	scale_note_text(note) == "Nothing to make at 0 servings: every quantity is 0."
 }
 
+## Zero servings is a warning tone, not an error: the draft itself parsed.
+expect {
+	note = scale_note({ mode: Recipes.mode_from_str("servings"), draft: "0", pan: Recipes.pan_from_str("recipe"), recipe: Recipes.find("pancakes") }, 0)
+	scale_note_class(note) == "notice notice-warn"
+}
+
+## Asking for the recipe's own servings says so instead of claiming a scale.
 expect {
 	note = scale_note({ mode: Recipes.mode_from_str("servings"), draft: "4", pan: Recipes.pan_from_str("recipe"), recipe: Recipes.find("pancakes") }, 4000)
-	scale_note_text(note) == "Unscaled: this is the recipe as printed." and scale_note_class(note) == "notice notice-info"
+	scale_note_text(note) == "Unscaled: this is the recipe as printed."
 }
 
+## An unscaled page keeps the neutral informational tone.
+expect {
+	note = scale_note({ mode: Recipes.mode_from_str("servings"), draft: "4", pan: Recipes.pan_from_str("recipe"), recipe: Recipes.find("pancakes") }, 4000)
+	scale_note_class(note) == "notice notice-info"
+}
+
+## A scaled page names the printed serving count it was scaled from.
 expect {
 	note = scale_note({ mode: Recipes.mode_from_str("servings"), draft: "8", pan: Recipes.pan_from_str("recipe"), recipe: Recipes.find("pancakes") }, 8000)
-	scale_note_text(note) == "Scaled from the recipe's 4 servings." and scale_note_class(note) == "notice notice-info"
+	scale_note_text(note) == "Scaled from the recipe's 4 servings."
 }
 
+## A servings-scaled page keeps the neutral informational tone.
+expect {
+	note = scale_note({ mode: Recipes.mode_from_str("servings"), draft: "8", pan: Recipes.pan_from_str("recipe"), recipe: Recipes.find("pancakes") }, 8000)
+	scale_note_class(note) == "notice notice-info"
+}
+
+## Pan mode names the chosen tin and says the servings box no longer applies.
 expect {
 	note = scale_note({ mode: Recipes.mode_from_str("pan"), draft: "20", pan: Recipes.pan_from_str("tray30"), recipe: Recipes.find("pancakes") }, 5309)
-	scale_note_text(note) == "Pan scaling: a 30x20 cm tray. The servings box is ignored." and scale_note_class(note) == "notice notice-info"
+	scale_note_text(note) == "Pan scaling: a 30x20 cm tray. The servings box is ignored."
 }
 
+## A pan-scaled page keeps the neutral informational tone.
+expect {
+	note = scale_note({ mode: Recipes.mode_from_str("pan"), draft: "20", pan: Recipes.pan_from_str("tray30"), recipe: Recipes.find("pancakes") }, 5309)
+	scale_note_class(note) == "notice notice-info"
+}
+
+## The metric radio value renders as its display caption.
 expect unit_text(Recipes.system_from_str("metric")) == "Metric"
+
+## The imperial radio value renders as its display caption.
 expect unit_text(Recipes.system_from_str("imperial")) == "Imperial"
 
 effective_text : U64 -> Str

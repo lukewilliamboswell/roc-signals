@@ -39,7 +39,7 @@ poll_period_ms : U64
 poll_period_ms = 4000
 
 count_at : List(U64), U64 -> U64
-count_at = |values, index| values.get(index).ok_or(0)
+count_at = |values, index| values.get(index) ?? 0
 
 ## What the sync endpoint currently holds. The badge tone and the badge text
 ## are both derived from this tag, so the tone is never read back out of the
@@ -79,8 +79,11 @@ Sync := [Syncing, UpToDate, Failed(Str)].{
 		}
 }
 
+## A failed sync spells out the reason it failed in the status sentence.
 expect Sync.to_str(Sync.Failed("gateway timeout")) == "Failed — gateway timeout"
+## The badge tone for a failure comes from the tag, not from its sentence.
 expect Sync.badge_class(Sync.Failed("gateway timeout")) == "badge badge-danger"
+## A poll in flight is not an error, so it stays neutrally tinted.
 expect Sync.badge_class(Sync.Syncing) == "badge badge-neutral"
 
 # --- inbox summary -----------------------------------------------------------
@@ -105,7 +108,9 @@ filter_label = |filter|
 		Mine => "Assigned to me"
 	}
 
+## The owner filter reads as a phrase, not as its wire value "mine".
 expect filter_label(Inbox.Filter.Mine) == "Assigned to me"
+## The default filter is captioned "All".
 expect filter_label(Inbox.Filter.All) == "All"
 
 poll_state_text : Bool -> Str
@@ -275,7 +280,9 @@ send_state_label = |state|
 		Idle => "Ready"
 	}
 
+## A message the poll has caught up with reads as delivered, not merely sent.
 expect send_state_label(Inbox.PendingState.Synced) == "Delivered"
+## With nothing in flight the composer reports itself ready.
 expect send_state_label(Inbox.PendingState.Idle) == "Ready"
 
 send_state_text : Inbox.ViewInput -> Str

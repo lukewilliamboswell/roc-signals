@@ -124,8 +124,13 @@ Level := [Debug, Info, Warn, Error].{
 		}
 }
 
+## Line numbers cycle through the four levels, so line 41 lands on info.
 expect Level.to_str(Level.from_index(41)) == "info"
+
+## The console tag is the upper-case spelling of the same level value.
 expect Level.tag(Level.from_index(3)) == "ERROR"
+
+## The cycle restarts at Debug once the line number passes a multiple of four.
 expect Level.is_eq(Level.from_index(4), Level.Debug)
 
 LogLine : { id : Str, index : U64, level : Level, text : Str }
@@ -182,7 +187,10 @@ contains_text = |haystack, needle|
 		haystack.split_on(needle).len() > 1
 	}
 
+## A query matches a line when it appears anywhere in the rendered text.
 expect contains_text("[3] error upstream timeout", "upstream")
+
+## An empty query matches nothing, so an idle search box highlights no rows.
 expect !contains_text("[3] error upstream timeout", "")
 
 ## `levels` is the set of levels currently switched on, so there is no parallel
@@ -191,7 +199,10 @@ level_enabled : List(Level), Level -> Bool
 level_enabled = |levels, level|
 	Try.is_ok(List.find_first(levels, |candidate| Level.is_eq(candidate, level)))
 
+## A level in the enabled set is on.
 expect level_enabled([Level.Info, Level.Error], Level.Error)
+
+## A level absent from the enabled set is off, so its lines are filtered out.
 expect !level_enabled([Level.Info, Level.Error], Level.Warn)
 
 select_lines : List(LogLine), List(Level), Str -> List(VisibleLine)
@@ -250,16 +261,21 @@ reverse_lines = |lines| reverse_from(lines, lines.len(), [])
 
 ## Row keys look like `line-12`, so the line number has to be picked back out
 ## of the key. The digits are filtered out first because `U64.from_str` would
-## reject the `line-` prefix; `Try.ok_or` covers a key carrying no digits at
-## all, which answers 0.
+## reject the `line-` prefix; the `??` fallbacks cover a key carrying no digits
+## at all, which answers 0.
 key_index : Str -> U64
 key_index = |key| {
 	digits = key.to_utf8().keep_if(|byte| byte >= 48 and byte <= 57)
-	Str.from_utf8(digits).map_ok(U64.from_str).ok_or(Ok(0)).ok_or(0)
+	Str.from_utf8(digits).map_ok(|text| U64.from_str(text) ?? 0) ?? 0
 }
 
+## The line number is recovered from a row key despite the `line-` prefix.
 expect key_index("line-12") == 12
+
+## Line zero round-trips rather than being mistaken for a missing number.
 expect key_index("line-0") == 0
+
+## A key carrying no digits at all answers 0 instead of failing.
 expect key_index("line-") == 0
 
 pad2 : U64 -> Str

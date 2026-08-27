@@ -283,12 +283,25 @@ Step := [AccountStep, OrgStep, InvitesStep, ReviewStep].{
 		}
 }
 
+## A plan survives the round trip through its wire form unchanged.
 expect Plan.to_str(Plan.from_str("enterprise")) == "enterprise"
+
+## An unrecognised plan falls back to Starter rather than failing the parse.
 expect Plan.is_eq(Plan.from_str("nonsense"), Plan.Starter)
+
+## The unset region is spelled as the empty wire value, so a blank draft round trips.
 expect Region.to_str(Region.from_str("")) == ""
+
+## The human-facing region label is a separate projection from the wire value.
 expect Region.label(Region.from_str("eu")) == "European Union"
+
+## A role survives the round trip through its wire form unchanged.
 expect Role.to_str(Role.from_str("billing")) == "billing"
+
+## A step survives the round trip through the slug used in saved drafts.
 expect Step.slug(Step.from_slug("review")) == "review"
+
+## Stepping back from the last step lands on the third step, one before it.
 expect Step.index(Step.previous(Step.ReviewStep)) == 2
 
 Account : { email : Str, full_name : Str }
@@ -326,9 +339,16 @@ invite_list = |raw|
 bad_invites : Str -> List(Str)
 bad_invites = |raw| invite_list(raw).keep_if(|part| !valid_email(part))
 
+## An ordinary address with a dotted domain is accepted.
 expect valid_email("ana@example.com")
+
+## An address with nothing after the `@` is rejected.
 expect !valid_email("ana@")
+
+## A domain that ends in a dot is rejected.
 expect !valid_email("ana@example.")
+
+## The invite line tolerates surrounding spaces and empty slots between commas.
 expect invite_list(" a@b.co , , c@d.co ") == ["a@b.co", "c@d.co"]
 
 account_ok : Account -> Bool
@@ -350,10 +370,19 @@ plan_includes = |plan, role|
 		Billing => Plan.is_eq(plan, Plan.Enterprise)
 	}
 
+## Every plan offers the plain member role, including the cheapest one.
 expect plan_includes(Plan.Starter, Role.Member)
+
+## Starter is the single-role plan, so admin is not on offer there.
 expect !plan_includes(Plan.Starter, Role.Admin)
+
+## Growth adds the admin role on top of member.
 expect plan_includes(Plan.Growth, Role.Admin)
+
+## Billing admin stays out of reach on Growth.
 expect !plan_includes(Plan.Growth, Role.Billing)
+
+## Only Enterprise offers the billing admin role.
 expect plan_includes(Plan.Enterprise, Role.Billing)
 
 ## The submit request crosses the host boundary as text, so the attempt number
@@ -362,6 +391,7 @@ expect plan_includes(Plan.Enterprise, Role.Billing)
 submit_request_text : U64 -> Str
 submit_request_text = |attempt| "submit-${attempt.to_str()}"
 
+## The attempt number is carried in the request text, so a retry is a new request.
 expect submit_request_text(2) == "submit-2"
 
 # --- draft serialization -----------------------------------------------------
@@ -439,8 +469,10 @@ read_draft = |stored|
 		StorageUnavailable(_) => Err(BadDraft)
 	}
 
-## A round trip proves the wire form survives the tag types on both sides.
+## An empty draft round trips, so the blank form is saved and restored unchanged.
 expect serialize_draft(draft_or_empty(parse_draft(blank_draft))) == blank_draft
+
+## A fully populated draft round trips, so the wire form survives the tag types on both sides.
 expect serialize_draft(draft_or_empty(parse_draft("a@b.co|Ana|Northwind|growth|eu|c@d.co|admin|invites"))) == "a@b.co|Ana|Northwind|growth|eu|c@d.co|admin|invites"
 
 ## A role the plan does not include is dropped back to the default.
@@ -542,7 +574,10 @@ review_summary_of = |ready| {
 summary_line : StepSummary -> Str
 summary_line = |value| "${Step.title(value.step)}: ${value.detail} (${if value.done { "complete" } else { "incomplete" }})"
 
+## A ready review row reads as complete and says the workspace can be created.
 expect summary_line(review_summary_of(True)) == "Review: Ready to create the workspace (complete)"
+
+## The invites row counts the addresses and names the role they will be invited as.
 expect summary_line(invites_summary_of("a@b.co, c@d.co", Role.Billing)) == "Team invites: 2 invite(s) as Billing admin (complete)"
 
 complete_count : List(StepSummary) -> U64
@@ -1199,8 +1234,9 @@ review_row = |label, line, id|
 ## spelled out rather than left to a crash.
 summary_at : List(StepSummary), U64 -> Str
 summary_at = |rows, index|
-	Try.ok_or(rows.get(index).map_ok(summary_line), "Missing: no data (incomplete)")
+	rows.get(index).map_ok(summary_line) ?? "Missing: no data (incomplete)"
 
+## An index past the end of the rows renders the placeholder instead of crashing.
 expect summary_at([], 0) == "Missing: no data (incomplete)"
 
 ## Radios are bare inputs, so the visible caption is drawn next to them here.

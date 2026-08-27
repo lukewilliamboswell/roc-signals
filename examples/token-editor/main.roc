@@ -147,9 +147,16 @@ grade_class = |grade|
 		Fail => "badge badge-danger"
 	}
 
+## A pair that could not be measured grades as invalid rather than failing.
 expect grade_label(grade_of(Err(NotAHexColour))) == "Invalid"
+
+## One hundredth below the AA threshold is a fail, not a rounded-up pass.
 expect grade_label(grade_of(Ok(449))) == "Fail"
+
+## The AA threshold itself passes AA but not AAA.
 expect grade_label(grade_of(Ok(454))) == "AA"
+
+## The AAA threshold is inclusive, so exactly 7.00:1 grades AAA.
 expect grade_label(grade_of(Ok(700))) == "AAA"
 
 pair_line : Str, Str, Signal.Signal(Tokens.Contrast) -> Elem
@@ -227,7 +234,7 @@ colour_field = |label, state, css_name, parsed| {
 ## font size cannot blow out the column.
 size_bar_style : Tokens.SizeToken -> Str
 size_bar_style = |size| {
-	width = Try.ok_or(Try.map_ok(size, |px| if px > 32 { 32 } else { px }), 0)
+	width = Try.map_ok(size, |px| if px > 32 { 32 } else { px }) ?? 0
 	"width: ${width.to_str()}px; height: 8px"
 }
 
@@ -296,7 +303,10 @@ aa_summary_class = |flags|
 		"badge badge-warn"
 	}
 
+## The rollup counts the passing pairs rather than reporting a bare boolean.
 expect aa_summary({ text: True, button: False }) == "1 of 2 pairs pass AA"
+
+## The tone is only the ok badge when both pairs pass.
 expect aa_summary_class({ text: True, button: True }) == "badge badge-ok"
 
 ## Which of the six tokens currently fail to parse. The notice renders from this
@@ -336,7 +346,10 @@ validity_class = |validity|
 		SomeInvalid(_) => "notice notice-error"
 	}
 
+## With nothing broken the notice states the full token count.
 expect validity_text(AllValid) == "All 6 tokens valid"
+
+## Otherwise it names every offending token, in declaration order.
 expect validity_text(SomeInvalid(["color-bg", "font-md"])) == "Invalid tokens: color-bg, font-md"
 
 ## The six draft text boxes. Six positional `Ui.State(Str)` parameters are

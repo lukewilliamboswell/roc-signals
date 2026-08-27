@@ -408,10 +408,11 @@ Markdown := {}.{
 	}
 }
 
-expect {
-	# The kind has to survive the round trip through the row key.
-	Markdown.block_kind_of_key(Markdown.block_key(7, CodeBlock)) == CodeBlock
-		and Markdown.segment_kind_of_key(Markdown.segment_key(2, Link)) == Link
-}
+## A block kind survives the round trip through its keyed-row key.
+expect Markdown.block_kind_of_key(Markdown.block_key(7, CodeBlock)) == CodeBlock
 
+## ...and so does a segment kind, through the separate segment key encoding.
+expect Markdown.segment_kind_of_key(Markdown.segment_key(2, Link)) == Link
+
+## A blank line separates blocks, and a leading `#` marks the first as a heading.
 expect Markdown.parse("# Title\n\nbody").map(|block| block.kind) == [Heading, Paragraph]

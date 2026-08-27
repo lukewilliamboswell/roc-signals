@@ -83,11 +83,17 @@ Column := [Backlog, InProgress, Review, Done].{
 all_columns : List(Column)
 all_columns = [Backlog, InProgress, Review, Done]
 
+## The two-word column reads as a phrase with a space, not as its slug.
 expect Column.to_str(InProgress) == "In Progress"
+## A column's spec-facing id fragment is a short single word, independent of its heading.
 expect Column.slug(InProgress) == "progress"
+## Rightward from the leftmost column lands on the next column in board order.
 expect Column.right(Backlog) == Ok(InProgress)
+## The rightmost column has no column to its right, so the board edge is reported.
 expect Column.right(Done) == Err(AtEdge)
+## The leftmost column has no column to its left, so the board edge is reported.
 expect Column.left(Backlog) == Err(AtEdge)
+## The board lists its four columns once, in left-to-right order.
 expect all_columns.map(Column.slug) == ["backlog", "progress", "review", "done"]
 
 ## A board card. The title is the durable identity used as the keyed-list key,
@@ -154,7 +160,9 @@ insert_at = |cards, position, card| {
 drop_card : List(Card), Str -> List(Card)
 drop_card = |cards, title| cards.keep_if(|card| card.title != title)
 
+## The starting board is already grouped by column, so regrouping leaves it untouched.
 expect canonical(initial_board.cards).map(|card| card.title) == initial_board.cards.map(|card| card.title)
+## Regrouping sorts cards into board order regardless of their position in the flat list.
 expect canonical([{ title: "b", column: Done, flags: 0 }, { title: "a", column: Backlog, flags: 0 }]).map(|card| card.title) == ["a", "b"]
 
 ## Move a card to the neighbouring column, landing at the end of that column.
@@ -208,11 +216,15 @@ move_within = |board, title, direction|
 		Err(_) => board
 	}
 
+## Moving a card rightward lands it at the end of the neighbouring column.
 expect move_across(initial_board, "Draft onboarding copy", Rightward).cards.map(|card| card.column) == [Backlog, InProgress, InProgress, Review, Done]
-# A card at the left edge of the board does not move.
+## A card in the leftmost column cannot move further left, so the board is unchanged.
 expect move_across(initial_board, "Draft onboarding copy", Leftward) == initial_board
+## A card in the rightmost column cannot move further right, so the board is unchanged.
 expect move_across(initial_board, "Rotate API keys", Rightward) == initial_board
+## Moving a card up swaps it past the card above it inside its own column.
 expect move_within(initial_board, "Design login screen", Upward).cards.map(|card| card.title).first() == Ok("Design login screen")
+## The first card in a column cannot rise any further, so the board is unchanged.
 expect move_within(initial_board, "Draft onboarding copy", Upward) == initial_board
 
 flag_card : Board, Str -> Board
@@ -297,9 +309,13 @@ add_card = |board|
 		board
 	}
 
+## An empty draft asks for a title rather than reporting a problem.
 expect AddStatus.to_str(add_status(initial_board)) == "Enter a title"
+## A draft matching an existing card title is reported as a duplicate.
 expect AddStatus.to_str(add_status({ ..initial_board, draft: "Rotate API keys" })) == "Duplicate title"
+## Surrounding whitespace is trimmed before the draft is judged, so a padded title is addable.
 expect can_add({ ..initial_board, draft: "  Write release notes  " })
+## Adding an accepted draft grows the board by exactly one card.
 expect add_card({ ..initial_board, draft: " Write release notes " }).cards.len() == 6
 
 ## Build the per-column presentation records, including boundary facts.
@@ -412,20 +428,30 @@ WipState := [Unlimited, Within(U64, U64), Over(U64, U64)].{
 		}
 }
 
-# Empty, non-numeric and zero input all mean "no limit"; the old hand-rolled
-# digit fold behaved the same way, so the badge text is unchanged.
+## An empty limit box means the column is uncapped rather than capped at nothing.
 expect Limit.from_str("") == NoLimit
+## Non-numeric text in the limit box is leniently read as no cap at all.
 expect Limit.from_str("abc") == NoLimit
+## A partly numeric entry is rejected whole, not truncated to its leading digits.
 expect Limit.from_str("12x3") == NoLimit
+## A cap of zero is spelled as the absence of a limit, never as `AtMost(0)`.
 expect Limit.from_str("0") == NoLimit
+## A padded number still parses to a cap at that many cards.
 expect Limit.from_str(" 3 ") == AtMost(3)
 
+## An uncapped column says so instead of printing a count against a cap.
 expect WipState.to_str(WipState.of(2, NoLimit)) == "No WIP limit"
+## A column exactly at its cap is still within the limit, not over it.
 expect WipState.to_str(WipState.of(2, AtMost(2))) == "WIP 2/2"
+## A column past its cap changes the caption wording, not just the number.
 expect WipState.to_str(WipState.of(2, AtMost(1))) == "Over 2/1"
+## An over-limit column exposes the "over" marker the specs read.
 expect WipState.attr(WipState.of(2, AtMost(1))) == "over"
+## A column at exactly its cap still exposes the calm marker.
 expect WipState.attr(WipState.of(2, AtMost(2))) == "ok"
+## An uncapped column is marked as unlimited rather than as merely acceptable.
 expect WipState.attr(WipState.of(2, NoLimit)) == "unlimited"
+## No card count can put an uncapped column over its limit.
 expect !WipState.is_over(WipState.of(9, NoLimit))
 
 matches_filter : CardView, Str -> Bool

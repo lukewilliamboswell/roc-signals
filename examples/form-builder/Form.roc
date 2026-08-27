@@ -225,11 +225,11 @@ Form := {}.{
 
 	answer_text : List(Form.Answer), Str -> Str
 	answer_text = |answers, id|
-		Form.find_answer(answers, id).map_ok(|answer| answer.text).ok_or("")
+		Form.find_answer(answers, id).map_ok(|answer| answer.text) ?? ""
 
 	answer_flag : List(Form.Answer), Str -> Bool
 	answer_flag = |answers, id|
-		Form.find_answer(answers, id).map_ok(|answer| answer.flag).ok_or(False)
+		Form.find_answer(answers, id).map_ok(|answer| answer.flag) ?? False
 
 	set_answer_text : List(Form.Answer), Str, Str -> List(Form.Answer)
 	set_answer_text = |answers, id, value|

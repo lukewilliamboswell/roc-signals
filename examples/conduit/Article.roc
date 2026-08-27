@@ -472,7 +472,7 @@ Article := {}.{
 	}
 
 	comment_id_from_key : Str -> U64
-	comment_id_from_key = |key| Try.ok_or(U64.from_str(key), 0)
+	comment_id_from_key = |key| U64.from_str(key) ?? 0
 
 	can_delete_article : Api.Remote(Api.Article), Session -> Bool
 	can_delete_article = |remote, session|

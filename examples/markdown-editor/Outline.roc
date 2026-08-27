@@ -128,15 +128,31 @@ Outline := {}.{
 		}
 }
 
+## Slugs are lowercased and spaces become single dashes.
 expect Outline.slugify("Roc Signals Field Guide") == "roc-signals-field-guide"
+
+## Punctuation is dropped, and a trailing dash never survives.
 expect Outline.slugify("Deep Dive!") == "deep-dive"
+
+## A title with no slug-able bytes still gets a usable key.
 expect Outline.slugify("***") == "section"
+
+## The outline reads the heading spine out of the parsed document, keeping
+## each heading's level and its stripped text.
 expect Outline.headings(Markdown.parse("# Alpha\n\ntext\n\n## Beta")) == [
 	{ level: 1, text: "Alpha", slug: "alpha" },
 	{ level: 2, text: "Beta", slug: "beta" },
 ]
-# Duplicate titles keep distinct, stable row keys.
+
+## Duplicate titles are disambiguated with a counter so row keys stay distinct
+## and stable across redraws.
 expect Outline.headings(Markdown.parse("# Alpha\n\n# Alpha")).map(|heading| heading.slug) == ["alpha", "alpha-2"]
+
+## Numbering on prefixes each row label with its position.
 expect Outline.rows([{ level: 3, text: "Beta", slug: "beta" }], True).map(|row| row.label) == ["1. Beta"]
+
+## Numbering off leaves the heading text as the whole label.
 expect Outline.rows([{ level: 3, text: "Beta", slug: "beta" }], False).map(|row| row.label) == ["Beta"]
+
+## Indentation comes from the heading level, not from the numbering toggle.
 expect Outline.rows([{ level: 3, text: "Beta", slug: "beta" }], False).map(|row| row.indent) == ["pl-6"]

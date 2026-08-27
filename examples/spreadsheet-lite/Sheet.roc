@@ -45,10 +45,10 @@ Sheet := [].{
 	CellOut : { text : Str, kind : CellKind }
 
 	source_at : List(Str), U64 -> Str
-	source_at = |sources, index| sources.get(index).ok_or("")
+	source_at = |sources, index| sources.get(index) ?? ""
 
 	put_slot : List(Formula.Slot), U64, Formula.Slot -> List(Formula.Slot)
-	put_slot = |slots, index, slot| slots.set(index, slot).ok_or(slots)
+	put_slot = |slots, index, slot| slots.set(index, slot) ?? slots
 
 	## Resolve one cell, walking its dependency edges first. A dependency that is
 	## still `Busy` means this cell is part of a reference cycle.
@@ -69,7 +69,7 @@ Sheet := [].{
 					var $dep = 0
 
 					while $dep < deps.len() {
-						cell = deps.get($dep).ok_or(0)
+						cell = deps.get($dep) ?? 0
 
 						match $slots.get(cell) {
 							Ok(Busy) => {
@@ -167,20 +167,41 @@ Sheet := [].{
 	]
 }
 
+## The empty kind encodes as the `data-kind` value the specs read.
 expect Sheet.CellKind.to_str(Empty) == "empty"
+
+## The number kind encodes as the `data-kind` value the specs read.
 expect Sheet.CellKind.to_str(Number) == "number"
+
+## The text kind encodes as the `data-kind` value the specs read.
 expect Sheet.CellKind.to_str(Text) == "text"
+
+## The error kind encodes as the `data-kind` value the specs read.
 expect Sheet.CellKind.to_str(Error) == "error"
 
-# The starting workbook, checked at the cells the specs read: a one-hop sum, a
-# rectangular SUM, a three-hop chain, a divide-by-zero that propagates, a
-# reference cycle, and a formula reading an empty cell as zero.
+## A one-hop sum of two literal cells computes as a number.
 expect Sheet.evaluate_out(Sheet.initial_cells).get(11) == Ok({ text: "2500", kind: Number })
+
+## A non-numeric literal stays text, so it is neither summed nor right-aligned.
 expect Sheet.evaluate_out(Sheet.initial_cells).get(8) == Ok({ text: "Rent", kind: Text })
+
+## A rectangular SUM adds every member of the range.
 expect Sheet.evaluate_out(Sheet.initial_cells).get(37) == Ok({ text: "4100", kind: Number })
+
+## A three-hop chain resolves in dependency order, not sheet order.
 expect Sheet.evaluate_out(Sheet.initial_cells).get(59) == Ok({ text: "1127.5", kind: Number })
+
+## A divide by zero reports the error at the cell that performed it.
 expect Sheet.evaluate_out(Sheet.initial_cells).get(65) == Ok({ text: "#DIV/0!", kind: Error })
+
+## An error propagates to the cells that read it, rather than being read as zero.
 expect Sheet.evaluate_out(Sheet.initial_cells).get(66) == Ok({ text: "#DIV/0!", kind: Error })
+
+## Two cells that reference each other are reported as a cycle, not left pending.
 expect Sheet.evaluate_out(Sheet.initial_cells).get(73) == Ok({ text: "#CYCLE!", kind: Error })
+
+## A formula reading an empty cell treats it as zero.
 expect Sheet.evaluate_out(Sheet.initial_cells).get(89) == Ok({ text: "5", kind: Number })
+
+## A cell with no source evaluates to the empty kind, not to text.
 expect Sheet.evaluate_out(Sheet.initial_cells).get(80) == Ok({ text: "", kind: Empty })

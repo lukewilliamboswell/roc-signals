@@ -61,7 +61,7 @@ Edit := {}.{
 	## end. Callers have already checked the count, so out of range is not an
 	## error worth propagating.
 	at : Edit.Sections, U64 -> List(Str)
-	at = |sections, wanted| Try.ok_or(sections.get(wanted), [])
+	at = |sections, wanted| sections.get(wanted) ?? []
 
 	append_word : Str -> Str
 	append_word = |source|
@@ -174,12 +174,27 @@ Edit := {}.{
 	}
 }
 
+## Appending to an empty document does not leave a leading space.
 expect Edit.append_word("") == "extra"
+
+## Otherwise the new word is separated from the existing text.
 expect Edit.append_word("hello") == "hello extra"
+
+## A new section in an empty document is just the heading.
 expect Edit.append_section("") == "## New Section"
+
+## Demotion adds one hash to the last heading and leaves earlier ones alone.
 expect Edit.demote_last_heading("# Alpha\n\n## Beta") == "# Alpha\n\n### Beta"
-# Level six is the floor; a further demotion is a no-op.
+
+## Level six is the floor, so a further demotion is a no-op.
 expect Edit.demote_last_heading("###### Beta") == "###### Beta"
+
+## Removing the last section takes its heading and body together, leaving the
+## preceding section terminated by a newline.
 expect Edit.remove_last_section("# Alpha\n\nbody\n\n## Beta") == "# Alpha\n\nbody\n"
-# Sections carry their own trailing blank line, so the swap moves it too.
+
+## Pins surprising existing behaviour. A section owns the blank line that
+## follows it, so swapping the last two sections carries that blank line along:
+## "# Alpha" arrives after "## Beta" with the blank line now trailing the
+## document instead of separating the two headings.
 expect Edit.move_last_section_up("# Alpha\n\n## Beta") == "## Beta\n# Alpha\n"

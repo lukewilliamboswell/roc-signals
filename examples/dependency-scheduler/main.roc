@@ -67,7 +67,7 @@ task_options : List(Elem)
 task_options = Plan.initial_tasks.map(|t| Html.option(t.id, t.name))
 
 name_of : Str -> Str
-name_of = |id| Plan.initial_tasks.find_first(|t| t.id == id).map_ok(|found| found.name).ok_or(id)
+name_of = |id| Plan.initial_tasks.find_first(|t| t.id == id).map_ok(|found| found.name) ?? id
 
 # ---------------------------------------------------------------------------
 # Display text. No domain logic and no classes live here.
@@ -261,11 +261,22 @@ detail_text = |schedule, focus|
 ## launch; the parallel UI branch holds a day of slack and the docs branch more.
 initial_schedule = Plan.compute(Plan.initial_tasks)
 
+## A single day is written in the singular.
 expect days(1) == "1 day"
+
+## Zero days keeps the plural, so the count reads naturally at the boundary.
 expect days(0) == "0 days"
+
+## The shipped plan spans ten days end to end.
 expect span_text(initial_schedule) == "10 days"
+
+## The critical path names the zero-slack chain in topological order.
 expect path_text(initial_schedule) == "Write spec → Build API → Integrate → QA pass → Launch"
+
+## Two tasks in the shipped plan still have room to move.
 expect slack_count_text(initial_schedule) == "2"
+
+## The focus readout reports earliest and latest start, slack and applied lag.
 expect detail_text(initial_schedule, "ui") == "Earliest day 2 · latest day 3 · slack 1 day · moved 0 days"
 
 ## Delaying the head of the critical path pushes the whole project out a day.
@@ -274,9 +285,16 @@ expect span_text(Plan.compute(Plan.delay(Plan.initial_tasks, "spec"))) == "11 da
 ## A cycle is reported rather than hung on, and every row reads as `Blocked`.
 cyclic_schedule = Plan.compute(Plan.add_dep(Plan.initial_tasks, "spec", "launch"))
 
+## A cyclic plan has no computable span.
 expect span_text(cyclic_schedule) == "Unknown"
+
+## A cyclic plan reports no critical path rather than a partial one.
 expect path_text(cyclic_schedule) == "None"
+
+## The chart axis has no end day to label while the plan is cyclic.
 expect axis_end_text(cyclic_schedule) == "—"
+
+## A cycle leaves every task unscheduled, not just the ones inside it.
 expect cyclic_schedule.rows.keep_if(|r| Plan.Status.is_eq(r.status, Blocked)).len() == 7
 
 RowFilter : { rows : List(Plan.Row), only_critical : Bool, by_slack : Bool }
@@ -301,7 +319,7 @@ empty_class = |view| if visible_of(view).is_empty() {
 }
 
 nth : List(Str), U64 -> Str
-nth = |lines, index| lines.get(index).ok_or("")
+nth = |lines, index| lines.get(index) ?? ""
 
 visible_of : RowFilter -> List(Plan.Row)
 visible_of = |view| {

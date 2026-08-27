@@ -68,7 +68,7 @@ grid_header =
 render_row : Ui.State(List(U64)), Ui.State(List(GridData.Note)), Str, Signal(GridData.ViewRow) -> Elem
 render_row = |selected, notes, key, row| {
 	# `key` is the row id `Ui.each_str` was handed, so it is always digits.
-	row_id = U64.from_str(key).ok_or(0)
+	row_id = U64.from_str(key) ?? 0
 	name = "Node-${GridData.pad4(row_id)}"
 
 	Html.div_c(
@@ -159,41 +159,67 @@ by_id = { key: ById, desc: False }
 by_score : GridData.Sort
 by_score = { key: ByScore, desc: False }
 
+## A single-digit row id is padded to the full four columns of the name.
 expect GridData.pad4(7) == "0007"
+
+## A two-digit row id keeps two leading zeros, so names stay the same width.
 expect GridData.pad4(42) == "0042"
+
+## A four-digit row id is already full width and gains no padding.
 expect GridData.pad4(1199) == "1199"
 
+## Team names order alphabetically by their first differing byte.
 expect GridData.str_compare("Atlas", "Borealis") == LT
+
+## Two identical row names compare equal, which is what lets the id break the tie.
 expect GridData.str_compare("Node-0009", "Node-0009") == EQ
+
+## Zero padding makes the byte order agree with the numeric order of the ids.
 expect GridData.str_compare("Node-0010", "Node-0009") == GT
-# A prefix sorts before the string that extends it.
+
+## A prefix sorts before the string that extends it.
 expect GridData.str_compare("Node", "Node-0000") == LT
 
+## The caption names the column and spells an unset descending flag "ascending".
 expect GridData.sort_caption(by_id) == "Sorted by id ascending"
+
+## The caption names the column and spells a set descending flag "descending".
 expect GridData.sort_caption({ key: ByTeam, desc: True }) == "Sorted by team descending"
 
-# Clicking the active column reverses it; clicking another column starts fresh.
+## Clicking the column already sorted by reverses its direction.
 expect GridData.apply_sort_click(by_score, ByScore) == { key: ByScore, desc: True }
+
+## Clicking a different column starts that column ascending, dropping the old flag.
 expect GridData.apply_sort_click({ key: ByScore, desc: True }, ByName) == { key: ByName, desc: False }
 
-# The first page of a score-ascending sort, as the sorting spec asserts it.
+## The first page of a score-ascending sort, as the sorting spec asserts it.
 expect {
 	page = GridData.window_of(GridData.sort_rows(GridData.filter_rows(""), by_score), 0)
 	page.map(|row| row.id) == [0, 621, 296, 1133, 52, 837, 79, 647, 782, 1108]
 }
 
-# Descending reverses the id tiebreak too, so 702 leads 592 on a shared 999.
+## Descending reverses the id tiebreak too, so 702 leads 592 on a shared 999.
 expect {
 	page = GridData.window_of(GridData.sort_rows(GridData.filter_rows(""), { key: ByScore, desc: True }), 0)
 	page.take_first(2).map(|row| row.id) == [702, 592]
 }
 
+## An empty result set still has a page zero to show the empty state on.
 expect GridData.last_page_of(0) == 0
+
+## The full dataset fills 120 pages, numbered from zero.
 expect GridData.last_page_of(1200) == 119
+
+## A count of exactly one page worth of rows does not spill onto a second page.
 expect GridData.last_page_of(10) == 0
 
+## A stored note is found by the row id it was filed under.
 expect GridData.note_for([{ id: 3, note: "check" }], 3) == "check"
+
+## A row with no stored note reads as empty rather than borrowing another row's.
 expect GridData.note_for([{ id: 3, note: "check" }], 4) == ""
+
+## Writing a note for a row makes it readable back for that row.
 expect GridData.note_for(GridData.set_note([], 9, "later"), 9) == "later"
 
 main : () -> Elem

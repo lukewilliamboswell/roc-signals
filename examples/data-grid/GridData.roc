@@ -71,7 +71,7 @@ GridData :: [].{
 	Row : { id : U64, name : Str, team : Team, score : U64 }
 
 	team_of : U64 -> Team
-	team_of = |id| teams.get((id * 7 + 3) % 4).ok_or(Atlas)
+	team_of = |id| teams.get((id * 7 + 3) % 4) ?? Atlas
 
 	pad4 : U64 -> Str
 	pad4 = |value| {
@@ -307,7 +307,7 @@ GridData :: [].{
 
 	note_for : List(Note), U64 -> Str
 	note_for = |notes, id|
-		notes.find_first(|entry| entry.id == id).map_ok(|entry| entry.note).ok_or("")
+		notes.find_first(|entry| entry.id == id).map_ok(|entry| entry.note) ?? ""
 
 	set_note : List(Note), U64, Str -> List(Note)
 	set_note = |notes, id, note| notes.keep_if(|entry| entry.id != id).append({ id, note })

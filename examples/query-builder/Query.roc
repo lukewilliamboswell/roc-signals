@@ -268,14 +268,29 @@ Query :: [].{
 	key_id : Str -> Str
 	key_id = |key| suffix_after(key, ":")
 
+	## A group's list key round-trips back to the branch kind.
 	expect {
 		key = node_key(QNode.Group({ id: "n7", mode: Or, negated: True, children: [] }))
-		key_kind(key) == Branch and key_id(key) == "n7"
+		key_kind(key) == Branch
 	}
 
+	## A group's list key carries its node id unchanged.
+	expect {
+		key = node_key(QNode.Group({ id: "n7", mode: Or, negated: True, children: [] }))
+		key_id(key) == "n7"
+	}
+
+	## A condition's list key round-trips back to the leaf kind.
 	expect {
 		key = node_key(QNode.Cond({ id: "n7", field: Name, op: Eq, value: "" }))
-		key_kind(key) == Leaf and key_id(key) == "n7"
+		key_kind(key) == Leaf
+	}
+
+	## A condition's list key carries its node id unchanged, even though a leaf
+	## and a group can share the same id text.
+	expect {
+		key = node_key(QNode.Cond({ id: "n7", field: Name, op: Eq, value: "" }))
+		key_id(key) == "n7"
 	}
 
 	## The node id on its own.
@@ -327,8 +342,10 @@ Query :: [].{
 			"${c.field.to_str()} ${c.op.symbol()} '${c.value}'"
 		}
 
-	## Every option value the page can send back decodes to the tag it came from.
+	## Every field option value the page can send back decodes to the tag it came from.
 	expect all_fields.all(|field| Field.from_str(field.to_str()).is_eq(field))
+
+	## Every operator option value the page can send back decodes to the tag it came from.
 	expect all_ops.all(|op| Op.from_str(op.to_str()).is_eq(op))
 
 	## The generated query string for a whole subtree.
@@ -351,8 +368,13 @@ Query :: [].{
 			}
 		}
 
+	## The starting tree renders as a single parenthesised condition.
 	expect query_text(initial_tree) == "(dept = 'Platform')"
+
+	## A negated empty group renders as `NOT (ALL)`, since it constrains nothing.
 	expect query_text(QNode.Group({ id: "n1", mode: And, negated: True, children: [] })) == "NOT (ALL)"
+
+	## A condition with no value typed in renders as `ANY` rather than a comparison.
 	expect query_text(QNode.Cond({ id: "n2", field: Level, op: Gt, value: "" })) == "ANY"
 
 	field_text : Row, Field -> Str
@@ -422,9 +444,13 @@ Query :: [].{
 			}
 		}
 
-	## `>` and `<` are numeric, and only on `level`.
+	## `>` compares `level` numerically, so level 5 satisfies `level > 3`.
 	expect cond_matches({ id: "n2", field: Level, op: Gt, value: "3" }, { name: "Ada", dept: "Platform", level: 5 })
+
+	## A numeric operator on a text field never matches, rather than comparing text.
 	expect !cond_matches({ id: "n2", field: Name, op: Gt, value: "3" }, { name: "Ada", dept: "Platform", level: 5 })
+
+	## A numeric operator with an unparseable value never matches.
 	expect !cond_matches({ id: "n2", field: Level, op: Lt, value: "three" }, { name: "Bo", dept: "Platform", level: 2 })
 
 	## Rows from `rows` that satisfy the tree.
@@ -519,7 +545,7 @@ Query :: [].{
 		)
 
 	id_number : Str -> U64
-	id_number = |id| Try.ok_or(U64.from_str(suffix_after(id, "n")), 0)
+	id_number = |id| U64.from_str(suffix_after(id, "n")) ?? 0
 
 	## Prefix of `text` before the first occurrence of `sep`.
 	prefix_before : Str, Str -> Str
@@ -557,6 +583,8 @@ Query :: [].{
 			},
 		)
 
+	## The highest id in the starting tree is the one on its single condition,
+	## which is what a freshly added node numbers itself from.
 	expect highest_id(initial_tree) == 2
 
 	## Append a fresh `name contains ""` condition to one group. The new id is

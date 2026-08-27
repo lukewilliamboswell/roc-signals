@@ -91,10 +91,19 @@ Tokens :: [].{
 		}
 	}
 
+	## A `#rrggbb` draft parses into the three integer channels it names.
 	expect parse_colour("#2563eb") == Ok({ r: 37, g: 99, b: 235 })
+
+	## Uppercase hex digits are accepted and produce the same channels.
 	expect parse_colour("#2563EB") == Ok({ r: 37, g: 99, b: 235 })
+
+	## A non-hex digit anywhere in the six is rejected, not silently zeroed.
 	expect parse_colour("#77zz77") == Err(NotAHexColour)
+
+	## Three-digit shorthand is not supported; only full `#rrggbb` parses.
 	expect parse_colour("#777") == Err(NotAHexColour)
+
+	## A colour name has no `#` prefix, so it is not a hex colour.
 	expect parse_colour("white") == Err(NotAHexColour)
 
 	## Parse a decimal pixel size. Empty text and non-digits are invalid; zero is
@@ -108,15 +117,26 @@ Tokens :: [].{
 		if bytes.len() == 0 or bytes.len() > 4 or !bytes.all(|byte| byte >= 48 and byte <= 57) {
 			Err(NotADecimalSize)
 		} else {
-			Try.map_err(U64.from_str(text), |_| NotADecimalSize)
+			Ok(U64.from_str(text) ? |_| NotADecimalSize)
 		}
 	}
 
+	## Zero is a real spacing value, so it parses rather than failing as empty.
 	expect parse_size("0") == Ok(0)
+
+	## An ordinary pixel count parses to that number.
 	expect parse_size("16") == Ok(16)
+
+	## An empty box is invalid input, not an implied zero.
 	expect parse_size("") == Err(NotADecimalSize)
+
+	## A leading minus is rejected: sizes are non-negative.
 	expect parse_size("-2") == Err(NotADecimalSize)
+
+	## Letters are rejected by the digit filter before any conversion runs.
 	expect parse_size("abc") == Err(NotADecimalSize)
+
+	## Five digits exceeds the length bound that keeps the conversion in range.
 	expect parse_size("12345") == Err(NotADecimalSize)
 
 	## sRGB linearisation table, scaled by 100000. `linear_table.get(c)` is the
@@ -205,7 +225,10 @@ Tokens :: [].{
 			Err(_) => "n/a"
 		}
 
+	## The WCAG grey-on-white reference pair measures 4.54:1 in hundredths.
 	expect format_ratio(contrast(luminance(parse_colour("#767676")), luminance(parse_colour("#ffffff")))) == "4.54:1"
+
+	## One unparseable colour makes the whole pair unmeasurable, not zero.
 	expect format_ratio(contrast(luminance(parse_colour("#77zz77")), luminance(parse_colour("#ffffff")))) == "n/a"
 
 	hex_alphabet : List(Str)
@@ -229,7 +252,10 @@ Tokens :: [].{
 			Err(_) => "/* invalid */"
 		}
 
+	## CSS output is canonical lowercase, whatever case the draft was typed in.
 	expect colour_css(parse_colour("#2563EB")) == "#2563eb"
+
+	## An unparseable colour emits a CSS comment instead of a bogus value.
 	expect colour_css(parse_colour("nope")) == "/* invalid */"
 
 	size_css : SizeToken -> Str
@@ -239,7 +265,10 @@ Tokens :: [].{
 			Err(_) => "/* invalid */"
 		}
 
+	## A zero size still carries its `px` unit rather than becoming bare `0`.
 	expect size_css(parse_size("0")) == "0px"
+
+	## An unparseable size emits a CSS comment instead of a bogus length.
 	expect size_css(parse_size("")) == "/* invalid */"
 
 	css_declaration : Str, Str -> Str

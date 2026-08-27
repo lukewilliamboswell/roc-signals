@@ -380,6 +380,8 @@ Editor := {}.{
 		}
 }
 
+## Tag input is trimmed per entry and empty entries between commas are dropped.
 expect Editor.parse_tags(" roc , signals ,, ") == ["roc", "signals"]
 
+## An empty tag box yields no tags rather than one empty tag.
 expect Editor.parse_tags("") == []

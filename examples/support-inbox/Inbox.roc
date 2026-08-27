@@ -311,7 +311,7 @@ Inbox :: [].{
 	initial_session = { selected: "", draft: "", seq: 0, last_cid: "", pending: [], dead: [] }
 
 	field : List(Str), U64, Str -> Str
-	field = |parts, index, fallback| parts.get(index).ok_or(fallback)
+	field = |parts, index, fallback| parts.get(index) ?? fallback
 
 	## `id|subject|customer|owner`
 	parse_conversation : Str -> Inbox.Conversation
@@ -535,19 +535,27 @@ Inbox :: [].{
 		}
 }
 
+## Known author names parse to their own tag.
 expect Inbox.Author.from_str("you").is_eq(Inbox.Author.You)
+## An author this build has never heard of is carried through verbatim.
 expect Inbox.Author.from_str("bot").is_eq(Inbox.Author.Other("bot"))
 
 ## Every filter round-trips through the radio group's string values.
 expect Inbox.Filter.from_str(Inbox.Filter.to_str(Inbox.Filter.Mine)).is_eq(Inbox.Filter.Mine)
+## Unrecognised filter text falls back to showing every conversation.
 expect Inbox.Filter.from_str("nonsense").is_eq(Inbox.Filter.All)
 
+## A read request carries the conversation id in its wire line.
 expect Inbox.Request.to_str(Inbox.Request.Read("c1")) == "read:c1"
 
+## A settled server row shows the delivered badge, not a sending one.
 expect Inbox.MsgState.to_str(Inbox.MsgState.Delivered) == "delivered"
 
+## The author field of a message line is parsed into a tag at the edge.
 expect Inbox.parse_message("m9|c1|agent|Refund issued|read|p1").author.is_eq(Inbox.Author.Agent)
+## The echoed client id survives parsing, which is what makes the merge safe.
 expect Inbox.parse_message("m9|c1|agent|Refund issued|read|p1").cid == "p1"
+## Only the literal "new" read flag marks a parsed message unread.
 expect Inbox.parse_message("m3|c2|customer|Login loop|new|-").unread
 
 ## A send result naming a *different* client id must not settle this one.

@@ -167,7 +167,7 @@ Loan :: [].{
 		var $index = 0
 
 		while $index < bytes.len() {
-			byte = Try.ok_or(bytes.get($index), 0)
+			byte = bytes.get($index) ?? 0
 			is_dot = byte == 46
 			is_digit = (byte >= 48) and (byte <= 57)
 			digit = if is_digit { U8.to_u64(byte) - 48 } else { 0 }
@@ -200,10 +200,10 @@ Loan :: [].{
 		term_result = Loan.parse_fixed(draft.term, 0)
 		extra_result = Loan.parse_fixed(draft.extra, 2)
 
-		principal = Try.ok_or(principal_result, 0)
-		rate_bp = Try.ok_or(rate_result, 0)
-		raw_term = Try.ok_or(term_result, 0)
-		extra = Try.ok_or(extra_result, 0)
+		principal = principal_result ?? 0
+		rate_bp = rate_result ?? 0
+		raw_term = term_result ?? 0
+		extra = extra_result ?? 0
 
 		term_ok = term_result.is_ok() and (raw_term >= 1) and (raw_term <= Loan.max_term)
 
@@ -221,22 +221,33 @@ Loan :: [].{
 		{ params: { principal, rate_bp, term, extra }, validation }
 	}
 
+	## A whole-number amount scales up to minor units with no fractional part.
 	expect Loan.parse_fixed("2400", 2) == Ok(240000)
+	## A single fractional digit is padded out to the full scale, not left short.
 	expect Loan.parse_fixed("6.5", 2) == Ok(650)
+	## Surrounding whitespace is trimmed and extra fractional digits truncate rather than round.
 	expect Loan.parse_fixed(" 6.567 ", 2) == Ok(656)
+	## A scale of zero places keeps a whole number exactly as written.
 	expect Loan.parse_fixed("12", 0) == Ok(12)
+	## Non-digit text is rejected instead of parsing as zero.
 	expect Loan.parse_fixed("abc", 2) == Err(InvalidNumber)
+	## Empty text is rejected, so a blank box is never read as $0.00.
 	expect Loan.parse_fixed("", 2) == Err(InvalidNumber)
+	## A second decimal point is rejected rather than silently ignored.
 	expect Loan.parse_fixed("1.2.3", 2) == Err(InvalidNumber)
 
 	## The badge text the UI shows, straight off the verdict tag.
 	expect Loan.Validation.to_str(Valid) == "inputs ok"
+	## A single bad field is named in the badge sentence.
 	expect Loan.Validation.to_str(Invalid([Rate])) == "check rate"
+	## Several bad fields are listed together in draft order, comma separated.
 	expect Loan.Validation.to_str(Invalid([Rate, Term])) == "check rate, term"
 
+	## A draft whose every box parses reports no failing fields.
 	expect Loan.parse_draft({ principal: "2400", rate: "6", term: "12", extra: "0" }).validation.is_eq(Valid)
+	## Only the boxes that actually failed are named, and in field order.
 	expect Loan.parse_draft({ principal: "2400", rate: "abc", term: "zz", extra: "0" }).validation.is_eq(Invalid([Rate, Term]))
-	## An out-of-range term is a bad `term`, and the params still clamp.
+	## An out-of-range term still clamps into a usable params value.
 	expect Loan.parse_draft({ principal: "2400", rate: "6", term: "0", extra: "0" }).params.term == 1
 
 	## Interest accrued on `balance` for one month, floored to whole cents.
@@ -332,7 +343,7 @@ Loan :: [].{
 		if month == 0 {
 			0
 		} else {
-			Try.ok_or(sched.rows.get(month - 1).map_ok(|row| row.interest + row.principal_paid), 0)
+			sched.rows.get(month - 1).map_ok(|row| row.interest + row.principal_paid) ?? 0
 		}
 
 	## True when the running totals have swapped places: they were ordered one
@@ -379,8 +390,11 @@ Loan :: [].{
 		$found
 	}
 
+	## An initial ordering is not itself a crossing: there was nothing to swap from.
 	expect Loan.crossed(EQ, GT) == False
+	## Running totals that were behind and are now ahead have crossed over.
 	expect Loan.crossed(LT, GT) == True
+	## Holding the same ordering another month is not a fresh crossing.
 	expect Loan.crossed(GT, GT) == False
 
 	## "$1234.56" style formatting from integer cents.
@@ -409,10 +423,16 @@ Loan :: [].{
 			"${months.to_str()} months"
 		}
 
+	## Zero cents still renders both decimal places.
 	expect Loan.money(0) == "$0.00"
+	## Cents are split off the dollars rather than shown as a raw integer.
 	expect Loan.money(247862) == "$2478.62"
+	## Basis points render as a two-decimal percentage.
 	expect Loan.percent(650) == "6.50%"
+	## A whole-percent rate still shows its trailing zeroes.
 	expect Loan.percent(1200) == "12.00%"
+	## A one-month payoff is singular.
 	expect Loan.months_text(1) == "1 month"
+	## Any other payoff length is plural.
 	expect Loan.months_text(12) == "12 months"
 }

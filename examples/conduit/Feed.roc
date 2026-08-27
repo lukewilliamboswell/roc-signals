@@ -298,25 +298,23 @@ Feed := {}.{
 		}
 
 	page_label : Str -> Str
-	page_label = |key| Try.ok_or(key.split_first("|").map_ok(|split| split.before), key)
+	page_label = |key| key.split_first("|").map_ok(|split| split.before) ?? key
 
 	key_location : Str -> Browser.Location
 	key_location = |key|
-		Try.ok_or(
-			key.split_first("|").map_ok(
-				|split| {
-					page = Try.ok_or(U64.from_str(split.before), 1)
-					tag =
-						if split.after.is_empty() {
-							AllTags
-						} else {
-							Tagged(split.after)
-						}
-					Route.feed_location({ page: page, tag: tag, source: Global })
-				},
-			),
-			Route.home_location,
+		key.split_first("|").map_ok(
+			|split| {
+				page = U64.from_str(split.before) ?? 1
+				tag =
+					if split.after.is_empty() {
+						AllTags
+					} else {
+						Tagged(split.after)
+					}
+				Route.feed_location({ page: page, tag: tag, source: Global })
+			},
 		)
+		?? Route.home_location
 
 	number_range : U64, U64 -> List(U64)
 	number_range = |from, to|
@@ -329,11 +327,12 @@ Feed := {}.{
 
 }
 
-expect {
-	# Pagination row keys are the only channel a keyed row has back to its
-	# target, so the encode/decode pair has to agree exactly.
-	key = Feed.page_key(3, Tagged("roc"))
-	Feed.page_label(key) == "3" and Feed.key_location(key) == Route.feed_location({ page: 3, tag: Tagged("roc"), source: Global })
-}
+## A pagination row key renders the bare page number as its button label.
+expect Feed.page_label(Feed.page_key(3, Tagged("roc"))) == "3"
 
+## ...and decodes back to the exact location that page and tag came from, which
+## is the only channel a keyed row has to its navigation target.
+expect Feed.key_location(Feed.page_key(3, Tagged("roc"))) == Route.feed_location({ page: 3, tag: Tagged("roc"), source: Global })
+
+## Page one with no tag decodes to the bare home location, not a query string.
 expect Feed.key_location(Feed.page_key(1, AllTags)) == Route.home_location

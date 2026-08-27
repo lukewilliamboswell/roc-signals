@@ -29,11 +29,11 @@ Formula := [].{
 	## Parse `SUM(A1:B3)` into a token holding the range members.
 	parse_sum : List(U8) -> Try({ token : Tok, rest : List(U8) }, [NotASum])
 	parse_sum = |bytes| {
-		from = Cells.parse_ref(bytes.drop_first(4)).map_err(|_| NotASum)?
+		from = Cells.parse_ref(bytes.drop_first(4)) ? |_| NotASum
 		if Cells.byte_at(from.rest, 0) != ':' {
 			Err(NotASum)
 		} else {
-			to = Cells.parse_ref(from.rest.drop_first(1)).map_err(|_| NotASum)?
+			to = Cells.parse_ref(from.rest.drop_first(1)) ? |_| NotASum
 			if Cells.byte_at(to.rest, 0) != ')' {
 				Err(NotASum)
 			} else {
@@ -161,7 +161,7 @@ Formula := [].{
 		var $index = 0
 
 		while $index < tokens.len() {
-			token = tokens.get($index).ok_or(TBad)
+			token = tokens.get($index) ?? TBad
 
 			match token {
 				TBad => {
@@ -257,7 +257,7 @@ Formula := [].{
 				var $index = 0
 
 				while $index < rpn.len() {
-					token = rpn.get($index).ok_or(TBad)
+					token = rpn.get($index) ?? TBad
 
 					match $error {
 						NoError => match token {
@@ -294,7 +294,7 @@ Formula := [].{
 								var $member = 0
 
 								while $member < cells.len() {
-									cell = cells.get($member).ok_or(0)
+									cell = cells.get($member) ?? 0
 
 									match Formula.slot_value(slots, cell) {
 										Empty => {}
@@ -316,8 +316,8 @@ Formula := [].{
 								if $stack.len() < 2 {
 									$error = Failed("#ERROR!")
 								} else {
-									right = $stack.get($stack.len() - 1).ok_or(0)
-									left = $stack.get($stack.len() - 2).ok_or(0)
+									right = $stack.get($stack.len() - 1) ?? 0
+									left = $stack.get($stack.len() - 2) ?? 0
 									$stack = $stack.drop_last(2)
 									if op == '+' {
 										$stack = $stack.append(left + right)
@@ -401,24 +401,53 @@ Formula := [].{
 	}
 }
 
+## A literal cell reads no other cells.
 expect Formula.depends_on("1200") == "none"
+
+## A formula built only from numbers has no dependency edges.
 expect Formula.depends_on("=2+3*4") == "none"
+
+## Each reference in a formula becomes a dependency edge, in the order read.
 expect Formula.depends_on("=B2+C2") == "B2, C2"
+
+## A SUM range contributes every member of the range as its own edge.
 expect Formula.depends_on("=SUM(B2:B4)") == "B2, B3, B4"
 
+## An empty source is an empty cell, not empty text.
 expect Formula.literal_value("") == Empty
+
+## A bare integer literal becomes a fixed-point number.
 expect Formula.literal_value("1200") == Number(1200 * Cells.scale)
+
+## A leading minus is part of the literal, not an operator.
 expect Formula.literal_value("-2.5") == Number(0 - 25000)
+
+## Anything that is not a number stays text.
 expect Formula.literal_value("oops") == Text("oops")
+
+## A number with trailing junk is text, not a partially parsed number.
 expect Formula.literal_value("12x3") == Text("12x3")
 
-# A formula with no references evaluates against empty slots, so these pin down
-# precedence, parentheses, unary minus, and the error text for a bad formula.
+## Multiplication and division bind tighter than addition and subtraction.
 expect Formula.eval_tokens(Formula.tokenize("2+3*4-6/3"), []) == Number(12 * Cells.scale)
+
+## A minus at the start of a formula is unary, not a missing left operand.
 expect Formula.eval_tokens(Formula.tokenize("-3+10"), []) == Number(7 * Cells.scale)
+
+## Parentheses override precedence.
 expect Formula.eval_tokens(Formula.tokenize("(1+2)*(3+4)"), []) == Number(21 * Cells.scale)
+
+## Division truncates at four decimal places rather than rounding.
 expect Formula.eval_tokens(Formula.tokenize("10/3"), []) == Number(33333)
+
+## A zero divisor surfaces as the spreadsheet's divide-by-zero text.
 expect Formula.eval_tokens(Formula.tokenize("1/0"), []) == Bad("#DIV/0!")
+
+## An operator with no right operand is a formula error.
 expect Formula.eval_tokens(Formula.tokenize("1+"), []) == Bad("#ERROR!")
+
+## An unclosed parenthesis is a formula error.
 expect Formula.eval_tokens(Formula.tokenize("(1+2"), []) == Bad("#ERROR!")
+
+## A reference outside the sheet tokenizes as bad input and fails the formula.
 expect Formula.eval_tokens(Formula.tokenize("Z9+1"), []) == Bad("#ERROR!")

@@ -155,11 +155,22 @@ parse_uptime = |text|
 whole_number : Str -> U64
 whole_number = |text| U64.from_str(text).ok_or(0)
 
+## A recognised wire word parses to the matching health tag.
 expect Health.is_eq(Health.from_str("degraded"), Health.Degraded)
+
+## An unrecognised payload becomes Unknown rather than claiming health.
 expect Health.is_eq(Health.from_str("who knows"), Health.Unknown)
+
+## A check payload takes its health from the part before the separator.
 expect Health.is_eq(parse_check("degraded|97.40").health, Health.Degraded)
+
+## A check payload's uptime is read as basis points, so 97.40 is 9740.
 expect parse_check("degraded|97.40").uptime_bps == 9740
+
+## A payload with no uptime field reports no uptime rather than guessing one.
 expect parse_check("operational").uptime_bps == 0
+
+## Uptime digits that are not a number contribute zero instead of failing.
 expect whole_number("not a number") == 0
 
 format_uptime : U64 -> Str
@@ -169,8 +180,13 @@ format_uptime = |bps| {
 	"${(bps / 100).to_str()}.${pad}${rest.to_str()}%"
 }
 
+## Basis points render as a two-decimal percentage.
 expect format_uptime(9740) == "97.40%"
+
+## A remainder below ten keeps its leading zero, so 9905 is not "99.5%".
 expect format_uptime(9905) == "99.05%"
+
+## Full uptime renders as "100.00%", not a truncated "100%".
 expect format_uptime(10000) == "100.00%"
 
 ## The badge caption for a service. `CheckFailed` keeps its own wording: a
@@ -253,11 +269,20 @@ rollup_text = |tally|
 		Healthy => "All systems operational"
 	}
 
+## Before any service has reported, the banner says so instead of claiming health.
 expect rollup_text(empty_tally) == "Checking services"
+
+## A single operational service is enough to headline as all systems operational.
 expect rollup_text(add_tally(tally_of({ health: Health.Operational, uptime_bps: 10000 }), empty_tally)) == "All systems operational"
+
+## One degraded service downgrades the headline to degraded performance.
 expect rollup_text(add_tally(tally_of({ health: Health.Degraded, uptime_bps: 9000 }), empty_tally)) == "Degraded performance"
+
+## Any observed outage escalates the headline to a major outage.
 expect rollup_text(add_tally(tally_of({ health: Health.Outage, uptime_bps: 0 }), empty_tally)) == "Major outage"
-# A refresh that never came back counts as degraded and contributes no sample.
+
+## A refresh that never came back contributes no uptime sample, so one broken
+## check cannot drag the reported uptime down.
 expect tally_of({ health: Health.CheckFailed("timeout"), uptime_bps: 9999 }).uptime_bps == 0
 
 banner_class : Tally -> Str
@@ -299,8 +324,13 @@ severity_badge_class = |severity| {
 	"badge ${tone} shrink-0"
 }
 
+## The wire word "major" reaches the badge as the Major caption.
 expect Severity.label(Severity.from_str("major")) == "Major"
+
+## The wire word "minor" reaches the badge as the Minor caption.
 expect Severity.label(Severity.from_str("minor")) == "Minor"
+
+## An empty severity field is treated as routine maintenance, not as an incident.
 expect Severity.label(Severity.from_str("")) == "Maintenance"
 
 ## A check that never came back contributes no uptime sample, so the average is
@@ -334,7 +364,7 @@ parse_incident = |raw| {
 }
 
 field_at : List(Str), U64, Str -> Str
-field_at = |parts, index, fallback| parts.get(index).ok_or(fallback)
+field_at = |parts, index, fallback| parts.get(index) ?? fallback
 
 ## Updates arrive oldest first and keep that order; each row carries the
 ## 1-based sequence number it was published with.
@@ -379,20 +409,46 @@ latest_body : List(Update) -> Str
 latest_body = |updates|
 	updates.fold("no updates yet", |_, update| update_summary({ time: update.time, body: update.body }))
 
+## An empty payload is an empty timeline, not one blank incident.
 expect parse_feed("") == []
+
+## An incident takes its severity from the second field of the payload.
+expect Severity.is_eq(parse_incident("inc-42~major~Elevated errors~10:02@Investigating^10:20@Identified").severity, Severity.Major)
+
+## The headline of an incident is its most recently published update.
+expect parse_incident("inc-42~major~Elevated errors~10:02@Investigating^10:20@Identified").latest == "10:20 - Identified"
+
+## Every published update is kept, so the timeline shows the full history.
+expect parse_incident("inc-42~major~Elevated errors~10:02@Investigating^10:20@Identified").updates.len() == 2
+
+## An update's list key pairs the incident id with the 1-based sequence number.
 expect {
-	incident = parse_incident("inc-42~major~Elevated errors~10:02@Investigating^10:20@Identified")
-	Severity.is_eq(incident.severity, Severity.Major) and incident.latest == "10:20 - Identified" and incident.updates.len() == 2
+	update = parse_incident("inc-42~major~Elevated errors~10:02@Investigating").updates.get(0)?
+	update.key == "inc-42#1"
 }
+
+## The timestamp column holds only the part before the "@" separator.
 expect {
-	updates = parse_incident("inc-42~major~Elevated errors~10:02@Investigating").updates
-	match updates.get(0) {
-		Ok(update) => update.key == "inc-42#1" and update.time == "10:02" and update.body == "Investigating" and update.text == "inc-42 update 1 - 10:02 - Investigating"
-		Err(_) => Bool.False
-	}
+	update = parse_incident("inc-42~major~Elevated errors~10:02@Investigating").updates.get(0)?
+	update.time == "10:02"
 }
-# A field the feed left out falls back rather than dropping the incident.
+
+## The body column holds only the part after the "@" separator.
+expect {
+	update = parse_incident("inc-42~major~Elevated errors~10:02@Investigating").updates.get(0)?
+	update.body == "Investigating"
+}
+
+## The announcement text joins the sequence number back onto the one-line summary.
+expect {
+	update = parse_incident("inc-42~major~Elevated errors~10:02@Investigating").updates.get(0)?
+	update.text == "inc-42 update 1 - 10:02 - Investigating"
+}
+
+## A field the feed left out falls back rather than dropping the incident.
 expect parse_incident("inc-7").title == "Untitled incident"
+
+## An incident with no updates yet says so instead of showing an empty line.
 expect latest_body([]) == "no updates yet"
 
 loading_feed : Feed

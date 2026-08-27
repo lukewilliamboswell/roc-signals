@@ -106,7 +106,7 @@ Bill := {}.{
 		if text.starts_with("-") or text.starts_with("+") {
 			Err(BadAmount)
 		} else {
-			value = Try.map_err(I64.from_str(text), |_| BadAmount)?
+			value = I64.from_str(text) ? |_| BadAmount
 			if value < 0 { Err(BadAmount) } else { Ok(value * 100) }
 		}
 
@@ -116,7 +116,7 @@ Bill := {}.{
 			Err(BadAmount)
 		} else {
 			digits = Bill.count(text.to_utf8())
-			value = Try.map_err(I64.from_str(text), |_| BadAmount)?
+			value = I64.from_str(text) ? |_| BadAmount
 			if value < 0 {
 				Err(BadAmount)
 			} else if digits == 1 {
@@ -130,24 +130,48 @@ Bill := {}.{
 
 	## Cents for an expense, treating unparseable text as zero.
 	amount_cents : Bill.Expense -> I64
-	amount_cents = |expense| Try.ok_or(Bill.parse_cents(expense.amount_text), 0)
+	amount_cents = |expense| Bill.parse_cents(expense.amount_text) ?? 0
 
+	## Cents render as a currency figure with both decimal places.
 	expect Bill.money(2084) == "$20.84"
+
+	## A negative balance carries its sign before the currency symbol.
 	expect Bill.money(-500) == "-$5.00"
+
+	## Amounts under ten cents keep a leading zero in the decimal part.
 	expect Bill.money(7) == "$0.07"
 
-	# Accepted: whole amounts, one or two decimal places, surrounding whitespace.
+	## A whole-dollar amount parses to exact cents.
 	expect Bill.parse_cents("12") == Ok(1200)
+
+	## One decimal place means tenths of a dollar, not cents.
 	expect Bill.parse_cents("12.5") == Ok(1250)
+
+	## Surrounding whitespace is trimmed before parsing.
 	expect Bill.parse_cents(" 12.50 ") == Ok(1250)
+
+	## A leading decimal point is allowed and means zero dollars.
 	expect Bill.parse_cents(".5") == Ok(50)
+
+	## Zero is a valid amount, not an absent one.
 	expect Bill.parse_cents("0") == Ok(0)
-	# Rejected: empty text, signs, three decimal places, two points, non-digits.
+
+	## Empty text is not an amount.
 	expect Bill.parse_cents("") == Err(BadAmount)
+
+	## Negative amounts are rejected: an expense cannot be owed backwards.
 	expect Bill.parse_cents("-5") == Err(BadAmount)
+
+	## An explicit plus sign is rejected too, so signs never reach the parser.
 	expect Bill.parse_cents("+5") == Err(BadAmount)
+
+	## More than two decimal places is rejected rather than rounded.
 	expect Bill.parse_cents("12.345") == Err(BadAmount)
+
+	## A second decimal point is rejected.
 	expect Bill.parse_cents("1.2.3") == Err(BadAmount)
+
+	## Stray non-digit characters are rejected, not skipped.
 	expect Bill.parse_cents("12x3") == Err(BadAmount)
 
 	## The people actually sharing an expense, in trip order.
@@ -190,8 +214,8 @@ Bill := {}.{
 				.out
 		}
 
-	# 10 cents across 3 people: the leftover cent goes to the first participant,
-	# and the shares still add back up to the exact amount.
+	## A split that does not divide evenly gives the leftover cent to the first
+	## participant in trip order, so the shares add back to the exact amount.
 	expect
 		Bill.shares(
 			{ description: "Dinner", amount_text: "0.10", payer: "Ben", excluded: [] },
@@ -199,7 +223,7 @@ Bill := {}.{
 		)
 		== [{ name: "Ana", cents: 4 }, { name: "Ben", cents: 3 }, { name: "Chloe", cents: 3 }]
 
-	# An expense whose payer has left the trip is not split at all.
+	## An expense whose payer has left the trip is not split at all.
 	expect
 		Bill.shares(
 			{ description: "Taxi", amount_text: "24.00", payer: "Dev", excluded: [] },
@@ -253,11 +277,11 @@ Bill := {}.{
 	Account : { name : Str, net : I64 }
 
 	account_at : List(Bill.Account), U64 -> Bill.Account
-	account_at = |accounts, index| Try.ok_or(accounts.get(index), { name: "", net: 0 })
+	account_at = |accounts, index| accounts.get(index) ?? { name: "", net: 0 }
 
 	adjust : List(Bill.Account), U64, I64 -> List(Bill.Account)
 	adjust = |accounts, index, delta|
-		Try.ok_or(accounts.update(index, |account| { ..account, net: account.net + delta }), accounts)
+		accounts.update(index, |account| { ..account, net: account.net + delta }) ?? accounts
 
 	## Index of the largest creditor (`Creditor`) or largest debtor (`Debtor`).
 	## Ties keep the earlier person, so the plan is deterministic.
@@ -377,16 +401,24 @@ Bill := {}.{
 			Counted(_) => Ok
 		}
 
+	## An unparseable amount says so and names the zero it is counted as.
 	expect Bill.status_text(Unrecognised) == "Amount not recognised, counted as $0.00"
+
+	## A departed payer is named in the caption, so the row says who to re-assign.
 	expect Bill.status_text(PayerGone("Dev")) == "Dev is no longer on the trip"
+
+	## An expense nobody shares reports that rather than a split.
 	expect Bill.status_text(NobodySharing) == "Nobody is sharing this"
+
+	## A counted expense reads as amount, payer, and how many ways it splits.
 	expect
 		Bill.status_text(Counted({ cents: 6250, payer: "Ben", ways: 3 }))
 		== "$62.50 paid by Ben, split 3 ways"
+
+	## A single participant is phrased "1 way", not "1 ways".
 	expect Bill.status_text(Counted({ cents: 100, payer: "Ana", ways: 1 })) == "$1.00 paid by Ana, split 1 way"
 
-	# The balances of a trip always sum to zero, and the settlement plan moves
-	# exactly that much money.
+	## Every balance of a trip sums back to zero.
 	expect
 		Bill.net_check(
 			Bill.balances(
@@ -396,6 +428,7 @@ Bill := {}.{
 		)
 		== 0
 
+	## One person paying for everyone settles as one transfer per debtor, to them.
 	expect
 		Bill.settle(
 			Bill.balances(

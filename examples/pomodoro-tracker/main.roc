@@ -95,7 +95,10 @@ project_name = |id|
 		Err(_) => "none"
 	}
 
+## A catalogue id resolves to the display name shown in the row title.
 expect project_name("docs") == "Docs pass"
+
+## An unattached timer, whose project id is empty, reads as "none".
 expect project_name("") == "none"
 
 # --- storage codec -----------------------------------------------------------
@@ -113,20 +116,25 @@ stored_text = |stored|
 parse_u64 : Str -> U64
 parse_u64 = |text| {
 	digits = Str.from_utf8_lossy(text.to_utf8().keep_if(|byte| byte >= 48 and byte <= 57))
-	U64.from_str(digits).ok_or(0)
+	U64.from_str(digits) ?? 0
 }
 
+## A plain digit field parses to its number.
 expect parse_u64("2") == 2
+
+## A field with no digits at all reads as zero rather than failing.
 expect parse_u64("") == 0
+
+## Non-digit bytes are dropped, so a corrupted field still yields a count.
 expect parse_u64("1x2") == 12
 
 second_field : List(Str) -> Str
-second_field = |parts| parts.get(1).ok_or("")
+second_field = |parts| parts.get(1) ?? ""
 
 ## `docs=2` is this project's entry when the key before the `=` matches; the
 ## junk the specs feed us (`bogus`) simply never matches.
 is_pair_for : Str, Str -> Bool
-is_pair_for = |pair, id| pair.split_on("=").first().ok_or("") == id
+is_pair_for = |pair, id| (pair.split_on("=").first() ?? "") == id
 
 blocks_for : List(Str), Str -> U64
 blocks_for = |pairs, id|
@@ -135,7 +143,10 @@ blocks_for = |pairs, id|
 		Err(_) => 0
 	}
 
+## A saved ledger yields the block count stored against the matching id.
 expect blocks_for(["docs=2", "bogus", "gone=9", "triage=1"], "docs") == 2
+
+## A project absent from the saved ledger starts the day at zero blocks.
 expect blocks_for(["docs=2", "bogus", "gone=9", "triage=1"], "api") == 0
 
 decode_ledger : Str -> List(Project)
@@ -227,9 +238,16 @@ phase_of = |ticks|
 phase_text : U64 -> Str
 phase_text = |ticks| Phase.to_str(phase_of(ticks))
 
+## A fresh clock shows no focus minutes spent yet.
 expect phase_text(0) == "Focus 0/5 min"
+
+## The last tick of the focus block still reads as focus, not break.
 expect phase_text(4) == "Focus 4/5 min"
+
+## The tick that fills the focus block rolls the face over to the break.
 expect phase_text(5) == "Break 0/2 min"
+
+## Once focus and break are both spent the cycle reports itself complete.
 expect phase_text(7) == "Cycle complete"
 
 ## Minutes the current cycle has contributed so far, capped at one focus block.

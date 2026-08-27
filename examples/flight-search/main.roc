@@ -163,12 +163,19 @@ Outcome := [Loading, Ready(List(Flight)), Failed(Str)].{
 digits_to_u64 : Str -> U64
 digits_to_u64 = |text| {
 	digits = Str.from_utf8_lossy(text.to_utf8().keep_if(|byte| byte >= 48 and byte <= 57))
-	U64.from_str(digits).ok_or(0)
+	U64.from_str(digits) ?? 0
 }
 
+## A field that is already bare digits parses to exactly that number.
 expect digits_to_u64("930") == 930
+
+## Dropping the colon is what turns a departure clock into a sortable key.
 expect digits_to_u64("09:30") == 930
+
+## Stray letters between digits are discarded rather than rejecting the field.
 expect digits_to_u64("12x3") == 123
+
+## A field with no digits at all reads as zero instead of failing.
 expect digits_to_u64("") == 0
 
 field_at : List(Str), U64 -> Str
@@ -332,11 +339,22 @@ airline_filter_text = |filter|
 		Only(name) => name
 	}
 
+## The absence of a stops cap reads as "any", not as an unbounded number.
 expect stops_filter_text(Limit.from_str("any")) == "Any stops"
+
+## A zero cap is phrased as nonstop rather than "Max 0 stop".
 expect stops_filter_text(Limit.from_str("0")) == "Nonstop only"
+
+## A one-stop cap names the cap it enforces.
 expect stops_filter_text(Limit.from_str("1")) == "Max 1 stop"
+
+## A price cap is shown as the fare ceiling a traveller can spend under.
 expect price_filter_text(Limit.from_str("300")) == "Under $300"
+
+## The unfiltered airline wire value reads as every carrier.
 expect airline_filter_text(AirlineFilter.from_str("any")) == "All airlines"
+
+## A named carrier is echoed back as itself.
 expect airline_filter_text(AirlineFilter.from_str("Qantas")) == "Qantas"
 
 ## The whole request in one readable line, the way a booking site echoes the
@@ -353,9 +371,16 @@ sort_text = |key|
 		Price => "Sorted by: price"
 	}
 
+## The duration sort wire value survives the round trip through the tag.
 expect sort_text(SortKey.from_str("duration")) == "Sorted by: duration"
+
+## The departure sort is captioned by time, not by the raw wire value.
 expect sort_text(SortKey.from_str("departure")) == "Sorted by: departure time"
+
+## The price sort wire value survives the round trip through the tag.
 expect sort_text(SortKey.from_str("price")) == "Sorted by: price"
+
+## An unrecognised sort value falls back to price rather than failing.
 expect sort_text(SortKey.from_str("")) == "Sorted by: price"
 
 status_text : Outcome -> Str

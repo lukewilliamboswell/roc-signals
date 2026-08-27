@@ -178,7 +178,9 @@ input_badge_class = |validation|
 		"badge badge-danger"
 	}
 
+## A draft whose boxes all parse gets the affirmative badge tone.
 expect input_badge_class(Valid) == "badge badge-ok"
+## Any failing field flips the badge to the danger tone.
 expect input_badge_class(Invalid([Rate])) == "badge badge-danger"
 
 ## The scenario with the lowest `field`. An empty list has no winner, which is
@@ -191,7 +193,7 @@ best_by = |summaries, field|
 		.map_err(|_| NotFound)
 
 is_best : List(Loan.Summary), (Loan.Summary -> U64), Str -> Bool
-is_best = |summaries, field, id| Try.ok_or(best_by(summaries, field).map_ok(|best| best.id == id), False)
+is_best = |summaries, field, id| best_by(summaries, field).map_ok(|best| best.id == id) ?? False
 
 ## One scenario column. `id` and `name` are both `Str` and sat side by side in
 ## the old positional signature; naming the fields makes transposing them, or
@@ -289,34 +291,28 @@ scenario_panel = |scenario| {
 
 cheapest_text : List(Loan.Summary) -> Str
 cheapest_text = |summaries|
-	Try.ok_or(
-		best_by(summaries, |item| item.total_interest)
-			.map_ok(|best| "${best.name} (${Loan.money(best.total_interest)})"),
-		"None",
-	)
+	best_by(summaries, |item| item.total_interest)
+		.map_ok(|best| "${best.name} (${Loan.money(best.total_interest)})") ?? "None"
 
 spread_text : List(Loan.Summary) -> Str
 spread_text = |summaries|
-	Try.ok_or(
-		summaries
-			.first()
-			.map_ok(
-				|head| {
-					low =
-						summaries.fold(
-							head.total_interest,
-							|current, item| if item.total_interest < current { item.total_interest } else { current },
-						)
-					high =
-						summaries.fold(
-							head.total_interest,
-							|current, item| if item.total_interest > current { item.total_interest } else { current },
-						)
-					Loan.money(high - low)
-				},
-			),
-		"None",
-	)
+	summaries
+		.first()
+		.map_ok(
+			|head| {
+				low =
+					summaries.fold(
+						head.total_interest,
+						|current, item| if item.total_interest < current { item.total_interest } else { current },
+					)
+				high =
+					summaries.fold(
+						head.total_interest,
+						|current, item| if item.total_interest > current { item.total_interest } else { current },
+					)
+				Loan.money(high - low)
+			},
+		) ?? "None"
 
 ## Which two scenarios the break-even figure compares. The `<select>` hands us
 ## its wire value as text, so it is parsed once here and matched on everywhere
@@ -368,17 +364,20 @@ Pair := [AvsB, AvsC, BvsC].{
 		}
 }
 
-## The `<option>` values and the parse of them are one another's inverse.
+## The `<option>` value for A vs B parses back to the same pair.
 expect Pair.from_str(Pair.to_str(AvsB)).is_eq(AvsB)
+## The `<option>` value for A vs C parses back to the same pair.
 expect Pair.from_str(Pair.to_str(AvsC)).is_eq(AvsC)
+## The `<option>` value for B vs C parses back to the same pair.
 expect Pair.from_str(Pair.to_str(BvsC)).is_eq(BvsC)
+## A pair names its two scenario columns by their position in the schedule list.
 expect Pair.indexes(AvsC) == { left: 0, right: 2 }
 
 empty_schedule : Loan.Schedule
 empty_schedule = { payment: 0, rows: [], total_interest: 0, total_paid: 0, months: 0, final_balance: 0 }
 
 pick : List(Loan.Schedule), U64 -> Loan.Schedule
-pick = |schedules, index| Try.ok_or(schedules.get(index), empty_schedule)
+pick = |schedules, index| schedules.get(index) ?? empty_schedule
 
 ## The pair being compared is named by the select beside this figure, so the
 ## value is just the month the two cross over.

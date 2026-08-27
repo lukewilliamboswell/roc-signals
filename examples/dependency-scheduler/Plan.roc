@@ -140,7 +140,7 @@ Plan :: [].{
 		for t in order {
 			var $earliest = 0
 			for d in t.deps {
-				finish = $acc.find_first(|r| r.id == d).map_ok(|found| found.finish).ok_or(0)
+				finish = $acc.find_first(|r| r.id == d).map_ok(|found| found.finish) ?? 0
 				$earliest = if finish > $earliest {
 					finish
 				} else {
@@ -175,8 +175,7 @@ Plan :: [].{
 					bound =
 						$acc
 							.find_first(|r| r.id == s.id)
-							.map_ok(|found| Plan.sat_sub(found.latest_start, s.lag))
-							.ok_or(project_end)
+							.map_ok(|found| Plan.sat_sub(found.latest_start, s.lag)) ?? project_end
 					$latest_finish = if bound < $latest_finish {
 						bound
 					} else {
@@ -226,9 +225,9 @@ Plan :: [].{
 			late = Plan.backward(sorted.order, $end)
 			solve =
 				|t| {
-					e = early.find_first(|r| r.id == t.id).ok_or({ id: t.id, start: 0, finish: 0 })
+					e = early.find_first(|r| r.id == t.id) ?? { id: t.id, start: 0, finish: 0 }
 					latest_start =
-						late.find_first(|r| r.id == t.id).map_ok(|found| found.latest_start).ok_or(0)
+						late.find_first(|r| r.id == t.id).map_ok(|found| found.latest_start) ?? 0
 					slack = Plan.sat_sub(latest_start, e.start)
 					{
 						id: t.id,
@@ -256,7 +255,7 @@ Plan :: [].{
 	## True when `task_id` already lists `dep_id` as a prerequisite.
 	has_dep : List(Task), Str, Str -> Bool
 	has_dep = |tasks, task_id, dep_id|
-		tasks.find_first(|t| t.id == task_id).map_ok(|found| found.deps.contains(dep_id)).ok_or(False)
+		tasks.find_first(|t| t.id == task_id).map_ok(|found| found.deps.contains(dep_id)) ?? False
 
 	## Add a prerequisite edge. Self-edges and duplicates are ignored; a cycle is
 	## deliberately allowed through so the app can detect and report it.

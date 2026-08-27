@@ -24,7 +24,7 @@ Cells := [].{
 	ref_of = |index| {
 		col = index % col_count
 		row = index // col_count
-		letter = col_letters.get(col).ok_or("?")
+		letter = col_letters.get(col) ?? "?"
 		"${letter}${(row + 1).to_str()}"
 	}
 
@@ -40,7 +40,7 @@ Cells := [].{
 	}
 
 	byte_at : List(U8), U64 -> U8
-	byte_at = |bytes, index| bytes.get(index).ok_or(0)
+	byte_at = |bytes, index| bytes.get(index) ?? 0
 
 	is_digit : U8 -> Bool
 	is_digit = |byte| byte >= '0' and byte <= '9'
@@ -226,26 +226,61 @@ Cells := [].{
 	}
 }
 
+## Index 0 is the top-left cell.
 expect Cells.ref_of(0) == "A1"
+
+## Indices run across the row first, so index 9 is the second column of row 2.
 expect Cells.ref_of(9) == "B2"
+
+## The last index of the 8 by 12 sheet is the bottom-right cell.
 expect Cells.ref_of(95) == "H12"
+
+## A well-formed reference parses back to the index `ref_of` would render it from.
 expect Cells.index_of("B2") == Ok(9)
+
+## Two-digit row numbers parse, up to the last row.
 expect Cells.index_of("H12") == Ok(95)
+
+## A column past H is outside the sheet, so it is not a reference.
 expect Cells.index_of("Z9") == Err(NotARef)
+
+## A row past 12 is outside the sheet, so it is not a reference.
 expect Cells.index_of("B13") == Err(NotARef)
+
+## Trailing text after a valid reference rejects the whole string, rather than
+## silently parsing the prefix.
 expect Cells.index_of("B2x") == Err(NotARef)
 
-# Fixed point round-trips through the display format without trailing zeros.
+## Zero formats without a decimal point.
 expect Cells.format_number(0) == "0"
+
+## A whole number keeps no fractional digits.
 expect Cells.format_number(2500 * Cells.scale) == "2500"
+
+## Trailing zeros of the four-decimal representation are dropped.
 expect Cells.format_number(11275000) == "1127.5"
+
+## All four decimal places survive when they are significant.
 expect Cells.format_number(33333) == "3.3333"
+
+## A negative value keeps its sign in front of the whole part.
 expect Cells.format_number(0 - 25000) == "-2.5"
 
+## A decimal literal scales into fixed point and consumes all of its input.
 expect Cells.take_number("2.5".to_utf8()) == Ok({ value: 25000, rest: [] })
+
+## A bare decimal point has no digits on either side, so it is not a number.
 expect Cells.take_number(".".to_utf8()) == Err(NotANumber)
+
+## More than four decimal places would lose precision, so it is rejected rather
+## than rounded.
 expect Cells.take_number("1.23456".to_utf8()) == Err(NotANumber)
 
+## A single-column range expands down the column, one index per row.
 expect Cells.expand_range(9, 25) == [9, 17, 25]
+
+## A rectangular range expands row by row, left to right within each row.
 expect Cells.expand_range(9, 26) == [9, 10, 17, 18, 25, 26]
+
+## Division reports a zero divisor rather than trapping.
 expect Cells.divide(10 * Cells.scale, 0) == Err(DivideByZero)
