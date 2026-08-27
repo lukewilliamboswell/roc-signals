@@ -3246,6 +3246,12 @@ pub fn Engine(comptime Ctx: type) type {
             target_scopes: []bool = &.{},
             removal: ?structural_splice.PreparedRemoval = null,
             publication: ?structural_splice.PreparedPublicationDeltas = null,
+            retired_state_cells: std.ArrayListUnmanaged(HostState) = .empty,
+            state_cell_indexes: []usize = &.{},
+
+            fn stateIndexDescending(_: void, left: usize, right: usize) bool {
+                return left > right;
+            }
 
             fn prepare(engine_ptr: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, site: HostNodeScopeSiteDesc, when: HostNodeWhenDesc, selected_branch: HostScopeBranch, limits: collection_budget.Limits, dirty_source_node_ids: []const u64) CollectionError!*@This() {
                 if (site.kind != .when or site.node_id != when.node_id) return error.ResourceLimit;
@@ -3288,6 +3294,16 @@ pub fn Engine(comptime Ctx: type) type {
                 const render_start = engine_ptr.renderStartForReplacementTargetSet(site.render_insert_index, plan.target_scopes);
                 plan.removal = structural_splice.prepareRemoval(HostNodeDescriptorStream, allocator, &engine_ptr.active_stream, render_start, plan.target_scopes) catch return error.OutOfMemory;
                 errdefer if (plan.removal) |*removal| removal.deinit(allocator);
+                plan.state_cell_indexes = allocator.alloc(usize, plan.removal.?.node_indexes.state_indexes.items.len) catch return error.OutOfMemory;
+                errdefer allocator.free(plan.state_cell_indexes);
+                for (plan.removal.?.node_indexes.state_indexes.items, 0..) |descriptor_index, offset| {
+                    const node_id = engine_ptr.active_stream.states.items[descriptor_index].node_id;
+                    if (node_id >= engine_ptr.state_indexes_by_node_id.items.len) return error.ResourceLimit;
+                    plan.state_cell_indexes[offset] = engine_ptr.state_indexes_by_node_id.items[@intCast(node_id)] orelse return error.ResourceLimit;
+                }
+                std.mem.sort(usize, plan.state_cell_indexes, {}, stateIndexDescending);
+                plan.retired_state_cells.ensureUnusedCapacity(allocator, plan.state_cell_indexes.len) catch return error.OutOfMemory;
+                errdefer plan.retired_state_cells.deinit(allocator);
                 const removal_indexes = &plan.removal.?.descriptor_indexes;
                 plan.retired_stream.reserveRetiredStaticPublication(
                     allocator,
@@ -3318,10 +3334,26 @@ pub fn Engine(comptime Ctx: type) type {
                 return plan;
             }
 
+            fn commitStateCellsAssumeCapacity(self: *@This()) void {
+                for (self.state_cell_indexes) |index| {
+                    const removed = self.engine.states.swapRemove(index);
+                    self.engine.clearStateCellIndex(removed.state_id, index);
+                    self.retired_state_cells.appendAssumeCapacity(removed);
+                    if (index < self.engine.states.items.len) {
+                        const moved = self.engine.states.items[index];
+                        self.engine.state_indexes_by_node_id.items[@intCast(moved.state_id)] = index;
+                    }
+                }
+                self.collection.commit();
+            }
+
             fn deinit(self: *@This()) void {
                 const allocator = Ctx.allocator(self.host_ctx);
                 if (self.publication) |*publication| publication.deinit(allocator);
                 if (self.removal) |*removal| removal.deinit(allocator);
+                allocator.free(self.state_cell_indexes);
+                for (self.retired_state_cells.items) |*state| state.cell.deinit(self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
+                self.retired_state_cells.deinit(allocator);
                 allocator.free(self.target_scopes);
                 self.collection.deinit();
                 self.retired_stream.deinit(allocator, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
@@ -7705,6 +7737,32 @@ fn ownedVerifyStaticRoot(roc_host: *abi.RocHost, attrs: []const abi.NodeAttr, ch
     };
 }
 
+fn boxOwnedVerifyElem(roc_host: *abi.RocHost, elem: abi.Elem) *abi.Elem {
+    const raw = abi.allocateBox(@sizeOf(abi.Elem), @alignOf(abi.Elem), true, roc_host);
+    const boxed: *abi.Elem = @ptrCast(@alignCast(raw));
+    boxed.* = elem;
+    return boxed;
+}
+
+fn boxOwnedVerifySignalExpr(roc_host: *abi.RocHost, expr: abi.NodeSignalExpr) *abi.NodeSignalExpr {
+    expr.incref(1);
+    const raw = abi.allocateBox(@sizeOf(abi.NodeSignalExpr), @alignOf(abi.NodeSignalExpr), true, roc_host);
+    const boxed: *abi.NodeSignalExpr = @ptrCast(@alignCast(raw));
+    boxed.* = expr;
+    return boxed;
+}
+
+fn ownedVerifyStateRoot(roc_host: *abi.RocHost, binder: abi.RocErasedCallable, capability_callable: abi.RocErasedCallable, child: abi.Elem) abi.Elem {
+    abi.increfErasedCallable(binder, 2);
+    abi.increfErasedCallable(capability_callable, 3);
+    return .{ .payload = .{ .state = .{
+        .binder = binder,
+        .cap = .{ .clone = capability_callable, .drop = capability_callable, .eq = capability_callable },
+        .child = boxOwnedVerifyElem(roc_host, child),
+        .initial = binder,
+    } }, .tag = .State };
+}
+
 fn verifyStaticText() abi.Elem {
     return .{ .payload = .{ .text = abi.RocStr.fromSlice("hello", undefined) }, .tag = .Text };
 }
@@ -8135,34 +8193,40 @@ test "branch replacement preparation leaves the active branch unpublished" {
     defer abi.decrefErasedCallable(value_callable, &roc_host);
     const bool_callable = abi.rocErasedCallableAllocate(&roc_host, verifyBoolCallable, null, 0).?;
     defer abi.decrefErasedCallable(bool_callable, &roc_host);
+    const state_callable = abi.rocErasedCallableAllocate(&roc_host, verifyStateCallable, null, 0).?;
+    defer abi.decrefErasedCallable(state_callable, &roc_host);
+    const state_capability_callable = abi.rocErasedCallableAllocate(&roc_host, verifyErasedCallable, null, 0).?;
+    defer abi.decrefErasedCallable(state_capability_callable, &roc_host);
     const capability = HostValueCapability{ .clone = value_callable, .drop = value_callable, .eq = value_callable };
     var condition = abi.NodeSignalExpr{ .payload = .{ .const_value = .{
         ._0 = value_callable,
         ._1 = value_callable,
         ._2 = capability,
     } }, .tag = .ConstValue };
+    const false_signal_expr = boxOwnedVerifySignalExpr(&roc_host, condition);
+    const true_signal_expr = boxOwnedVerifySignalExpr(&roc_host, condition);
     const false_attrs = [_]abi.NodeAttr{
         .{ .payload = .{ .static_text = .{ .field = .{ .id = @intFromEnum(RenderTextField.label) }, .name = abi.RocStr.empty(), .value = abi.RocStr.fromSlice("off", undefined) } }, .tag = .StaticText },
         .{ .payload = .{ .static_bool = .{ .field = .{ .id = @intFromEnum(RenderBoolField.disabled) }, .name = abi.RocStr.empty(), .value = true } }, .tag = .StaticBool },
-        .{ .payload = .{ .signal_bool = .{ .field = .{ .id = @intFromEnum(RenderBoolField.checked) }, .name = abi.RocStr.empty(), .read = std.mem.zeroes(HostBoolRead), .signal = &condition } }, .tag = .SignalBool },
-        .{ .payload = .{ .signal_text = .{ .field = .{ .id = @intFromEnum(RenderTextField.role) }, .name = abi.RocStr.empty(), .read = std.mem.zeroes(HostTextRead), .signal = &condition } }, .tag = .SignalText },
+        .{ .payload = .{ .signal_bool = .{ .field = .{ .id = @intFromEnum(RenderBoolField.checked) }, .name = abi.RocStr.empty(), .read = std.mem.zeroes(HostBoolRead), .signal = false_signal_expr } }, .tag = .SignalBool },
+        .{ .payload = .{ .signal_text = .{ .field = .{ .id = @intFromEnum(RenderTextField.role) }, .name = abi.RocStr.empty(), .read = std.mem.zeroes(HostTextRead), .signal = false_signal_expr } }, .tag = .SignalText },
     };
     const true_attrs = [_]abi.NodeAttr{
         .{ .payload = .{ .static_text = .{ .field = .{ .id = @intFromEnum(RenderTextField.label) }, .name = abi.RocStr.empty(), .value = abi.RocStr.fromSlice("on", undefined) } }, .tag = .StaticText },
         .{ .payload = .{ .static_bool = .{ .field = .{ .id = @intFromEnum(RenderBoolField.disabled) }, .name = abi.RocStr.empty(), .value = false } }, .tag = .StaticBool },
-        .{ .payload = .{ .signal_bool = .{ .field = .{ .id = @intFromEnum(RenderBoolField.checked) }, .name = abi.RocStr.empty(), .read = std.mem.zeroes(HostBoolRead), .signal = &condition } }, .tag = .SignalBool },
-        .{ .payload = .{ .signal_text = .{ .field = .{ .id = @intFromEnum(RenderTextField.role) }, .name = abi.RocStr.empty(), .read = std.mem.zeroes(HostTextRead), .signal = &condition } }, .tag = .SignalText },
+        .{ .payload = .{ .signal_bool = .{ .field = .{ .id = @intFromEnum(RenderBoolField.checked) }, .name = abi.RocStr.empty(), .read = std.mem.zeroes(HostBoolRead), .signal = true_signal_expr } }, .tag = .SignalBool },
+        .{ .payload = .{ .signal_text = .{ .field = .{ .id = @intFromEnum(RenderTextField.role) }, .name = abi.RocStr.empty(), .read = std.mem.zeroes(HostTextRead), .signal = true_signal_expr } }, .tag = .SignalText },
     };
     var false_text = verifyStaticText();
     false_text.payload.text = abi.RocStr.fromSlice("no", undefined);
     var true_text = verifyStaticText();
     true_text.payload.text = abi.RocStr.fromSlice("yes", undefined);
-    const false_signal_text = abi.Elem{ .payload = .{ .text_signal = .{ .read = std.mem.zeroes(HostTextRead), .signal = &condition } }, .tag = .TextSignal };
-    const true_signal_text = abi.Elem{ .payload = .{ .text_signal = .{ .read = std.mem.zeroes(HostTextRead), .signal = &condition } }, .tag = .TextSignal };
-    var when_false = ownedVerifyStaticRoot(&roc_host, &false_attrs, &.{ false_text, false_signal_text });
-    defer when_false.decref(&roc_host);
-    var when_true = ownedVerifyStaticRoot(&roc_host, &true_attrs, &.{ true_text, true_signal_text });
-    defer when_true.decref(&roc_host);
+    const false_signal_text = abi.Elem{ .payload = .{ .text_signal = .{ .read = std.mem.zeroes(HostTextRead), .signal = false_signal_expr } }, .tag = .TextSignal };
+    const true_signal_text = abi.Elem{ .payload = .{ .text_signal = .{ .read = std.mem.zeroes(HostTextRead), .signal = true_signal_expr } }, .tag = .TextSignal };
+    const false_element = ownedVerifyStaticRoot(&roc_host, &false_attrs, &.{ false_text, false_signal_text });
+    var when_false = ownedVerifyStateRoot(&roc_host, state_callable, state_capability_callable, false_element);
+    const true_element = ownedVerifyStaticRoot(&roc_host, &true_attrs, &.{ true_text, true_signal_text });
+    var when_true = ownedVerifyStateRoot(&roc_host, state_callable, state_capability_callable, true_element);
     const root = abi.Elem{ .payload = .{ .when = .{
         .condition = &condition,
         .read = .{ .capability = capability, .read = bool_callable },
@@ -8209,6 +8273,9 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 try std.testing.expectEqualSlices(usize, &.{0}, plan.removal.?.descriptor_indexes.signal_text_attr_indexes.items);
                 try std.testing.expectEqualSlices(usize, &.{0}, plan.removal.?.descriptor_indexes.signal_text_node_indexes.items);
                 try std.testing.expectEqualSlices(u64, &.{ 4, 5, 6 }, plan.publication.?.replacement_elem_ids);
+                try std.testing.expectEqual(@as(usize, 1), plan.state_cell_indexes.len);
+                const old_state_id = engine.states.items[plan.state_cell_indexes[0]].state_id;
+                const replacement_state_id = plan.replacement_stream.states.items[0].node_id;
                 fault.configure(1);
                 const indexes = &plan.removal.?.descriptor_indexes;
                 engine.active_stream.commitStaticDescriptorReplacementAssumeCapacity(
@@ -8225,7 +8292,13 @@ test "branch replacement preparation leaves the active branch unpublished" {
                     plan.removal.?.node_indexes.scope_site_indexes.items,
                     plan.removal.?.node_indexes.state_indexes.items,
                 );
+                plan.commitStateCellsAssumeCapacity();
                 try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+                try std.testing.expectEqual(@as(usize, 1), plan.retired_state_cells.items.len);
+                try std.testing.expectEqual(old_state_id, plan.retired_state_cells.items[0].state_id);
+                try std.testing.expectEqual(replacement_state_id, engine.states.items[0].state_id);
+                try std.testing.expectEqual(@as(?usize, 0), engine.state_indexes_by_node_id.items[@intCast(replacement_state_id)]);
+                try std.testing.expectEqual(@as(?usize, null), engine.state_indexes_by_node_id.items[@intCast(old_state_id)]);
                 try std.testing.expectEqualStrings("no", engine.active_stream.text_nodes.items[0].value);
                 try std.testing.expectEqualStrings("yes", plan.retired_stream.text_nodes.items[0].value);
                 try std.testing.expectEqualStrings("off", engine.active_stream.static_text_attrs.items[0].value);
@@ -8267,6 +8340,10 @@ test "branch replacement preparation leaves the active branch unpublished" {
     const attempts = try Runner.run(root, &roc_host, null);
     try std.testing.expect(attempts != 0);
     for (1..attempts + 1) |failure_number| _ = try Runner.run(root, &roc_host, failure_number);
+    try std.testing.expect(abi.isUniqueBox(@ptrCast(when_false.payload_state().child)));
+    try std.testing.expect(abi.isUniqueBox(@ptrCast(when_true.payload_state().child)));
+    when_false.decref(&roc_host);
+    when_true.decref(&roc_host);
 }
 
 test "transactional static engine root sweeps every allocation and retries cleanly" {
