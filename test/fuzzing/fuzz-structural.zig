@@ -45,9 +45,9 @@
 //! generated row count - or **shared**, reading the root state cell through a
 //! `Signal.map` copy of its list. Every shared site therefore re-diffs its rows
 //! inside the single transaction one state dispatch opens, so one edit can splice
-//! several sites under several parents at once. At most one shared site sits
-//! under any one parent, and a program holds at most `max_shared_sites` of them;
-//! "Not yet covered" says which engine bug each of those bounds is avoiding.
+//! several sites under several parents at once. A program holds at most
+//! `max_shared_sites` of them, and any number of those may share one parent;
+//! that bound is a generator budget rather than an engine limit.
 //!
 //! Every site has a row kind that decides what a row renders: plain text, a
 //! state cell, a `when` branch, or a nested constant `each` site with its own
@@ -166,33 +166,6 @@
 //!    `collectInitialEach` used the provisional variant two lines earlier.
 //!    Delete `eachOverStateListRowAndCapture`'s map once collection resolves
 //!    that capability provisionally.
-//!  - **Two or more sites re-diffed by one dispatch.**
-//!    `structural_splice.prepareMultiRemoval` rejects the removal intervals of a
-//!    transaction that retires rows from two `each` sites, even when the two sit
-//!    under distinct render parents, and `prepareDownstream` reports that as
-//!    `ResourceLimit`. `max_shared_sites` is therefore held at one, which is
-//!    clean over a full AFL++ session; two crashes within ninety seconds.
-//!
-//!    This is the bound that matters most, and it is worth being blunt about
-//!    what it costs: one shared site cannot reach the multi-parent composite
-//!    splice, so the live multi-site edit this extension was built to cover is
-//!    *not* covered until `prepareMultiRemoval` is fixed. Raising this constant
-//!    back to two is the first thing to do afterwards, and the reproduction
-//!    below is the test to try first. The bound keeps the target usable for
-//!    finding new bugs; it does not make the recorded one any less real.
-//!
-//!    Smallest generated failure: a root state cell holding the one-element list
-//!    `[101]`, and a `div` whose children are a wrapper `div` holding one shared
-//!    site and a second shared site directly, both with `stateful` rows.
-//!    Dispatching `[102]` retires one row from each site - a single interval per
-//!    site, under two different parents - and is refused. So the interval
-//!    comparison is not per-parent: the second site's interval collides with the
-//!    first's even though they address different render parents.
-//!
-//!    Separately, mapping `OverlappingIntervals` to `ResourceLimit` is a
-//!    mislabel: an internal interval conflict is not a configured resource
-//!    bound, so a caller cannot distinguish "your program was too big" from
-//!    "staging contradicted itself".
 //!  - **A live-edited row that owns a nested `each`.** A shared site's row kind is
 //!    demoted away from `nested_each`, because retiring such a row leaves its
 //!    nested site behind in `each_row_sites` and the site count drifts above the
@@ -246,7 +219,7 @@ const max_edits = 3;
 /// reaches the multi-parent composite splice this target exists to cover, and
 /// it is also the count at which the open `prepareMultiRemoval` interval bug
 /// starts firing; see "Not yet covered".
-const max_shared_sites = 1;
+const max_shared_sites = 4;
 /// Keys a shared site's rows start from. Constant sites key from zero, so a label
 /// always says which list produced it and an "absent" assertion about a retired
 /// shared key cannot be satisfied by an unrelated constant row.
@@ -452,7 +425,6 @@ fn generateChildren(reader: *FuzzReader, arena: std.mem.Allocator, wrapper_depth
     const limit: u8 = if (wrapper_depth == 0) max_children else 4;
     const child_count = reader.intRangeAtMost(u8, 0, limit);
     const children = try arena.alloc(Child, child_count);
-    var shared_taken = false;
     for (children) |*child| {
         const choice = reader.intRangeAtMost(u8, 0, 5);
         child.* = if (choice == 0)
@@ -460,10 +432,9 @@ fn generateChildren(reader: *FuzzReader, arena: std.mem.Allocator, wrapper_depth
         else if (choice == 1 and wrapper_depth + 1 < max_wrapper_depth)
             .{ .wrapper = try generateChildren(reader, arena, wrapper_depth + 1, shared_budget) }
         else
-            .{ .site = try generateSite(reader, arena, 0, !shared_taken and shared_budget.* != 0) };
+            .{ .site = try generateSite(reader, arena, 0, shared_budget.* != 0) };
         switch (child.*) {
             .site => |spec| if (spec.shared) {
-                shared_taken = true;
                 shared_budget.* -= 1;
             },
             else => {},

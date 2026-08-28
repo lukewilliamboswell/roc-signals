@@ -1376,11 +1376,18 @@ pub fn Engine(comptime Ctx: type) type {
                 defer remove_starts.deinit(self.allocator);
                 var parents: std.ArrayListUnmanaged(u64) = .empty;
                 defer parents.deinit(self.allocator);
+                var scan_scopes: std.ArrayListUnmanaged([]const bool) = .empty;
+                defer scan_scopes.deinit(self.allocator);
                 for (self.rows[0..self.prepared_len], self.replacements[0..self.prepared_len], self.layouts, sites) |rows, replacement, *layout, site| {
                     for (rows.rows.removed_scope_ids) |scope_id| descriptor_roots.append(self.allocator, scope_id.raw()) catch return error.OutOfMemory;
                     for (rows.rows.removed_scope_ids) |scope_id| retired_roots.append(self.allocator, scope_id.raw()) catch return error.OutOfMemory;
                     for (replacement.replacement_rows) |row| if (!rows.rows.scope_created[row.row_index]) descriptor_roots.append(self.allocator, row.scope_id.raw()) catch return error.OutOfMemory;
                     remove_starts.appendSlice(self.allocator, layout.remove_starts) catch return error.OutOfMemory;
+                    // Each site's intervals must be scanned against that site's
+                    // own target scopes. Scanning against the union lets a
+                    // site's walk continue straight into an adjacent site's
+                    // rows, which then collides with that site's interval.
+                    for (layout.remove_starts) |_| scan_scopes.append(self.allocator, layout.targets.descriptor_target_scopes) catch return error.OutOfMemory;
                     var seen_parent = false;
                     for (parents.items) |parent| if (parent == site.parent_elem_id.raw()) {
                         seen_parent = true;
@@ -1396,6 +1403,7 @@ pub fn Engine(comptime Ctx: type) type {
                     descriptor_roots.items,
                     retired_roots.items,
                     remove_starts.items,
+                    scan_scopes.items,
                     parents.items,
                     self.cache_overlay,
                 );
@@ -1912,7 +1920,7 @@ pub fn Engine(comptime Ctx: type) type {
                     if (targeted and !inside_target) removal_starts.append(allocator, index) catch return error.OutOfMemory;
                     inside_target = targeted;
                 }
-                const downstream = try PreparedStructuralDownstream.prepareExternal(engine, ctx, roc_host, replacement_owner, descriptor_roots, retired_roots, removal_starts.items, &.{}, overlay);
+                const downstream = try PreparedStructuralDownstream.prepareExternal(engine, ctx, roc_host, replacement_owner, descriptor_roots, retired_roots, removal_starts.items, null, &.{}, overlay);
                 errdefer downstream.deinit();
                 const when_retired_roots_list = allocator.alloc(u64, selections.len) catch return error.OutOfMemory;
                 defer allocator.free(when_retired_roots_list);
@@ -5624,7 +5632,7 @@ pub fn Engine(comptime Ctx: type) type {
                 }
                 const remove_starts = remove_starts_list.toOwnedSlice(allocator) catch return error.OutOfMemory;
                 errdefer allocator.free(remove_starts);
-                const removal = structural_splice.prepareMultiRemoval(HostNodeDescriptorStream, allocator, &engine.active_stream, remove_starts, target_scopes) catch |err| switch (err) {
+                const removal = structural_splice.prepareMultiRemoval(HostNodeDescriptorStream, allocator, &engine.active_stream, remove_starts, target_scopes, null) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.OverlappingIntervals => return error.ResourceLimit,
                 };
@@ -6144,7 +6152,7 @@ pub fn Engine(comptime Ctx: type) type {
                         break :blk selection.render_insert_index;
                     };
                 }
-                try plan.prepareDownstream(allocator, retired_scope_ids, retired_scope_ids, render_insert_indexes, false, cache_overlay);
+                try plan.prepareDownstream(allocator, retired_scope_ids, retired_scope_ids, render_insert_indexes, null, false, cache_overlay);
                 plan_owns_cleanup = true;
                 errdefer plan.deinit();
                 const placements = allocator.alloc(PreparedFinalRenderTopology.Placement, selections.len) catch return error.OutOfMemory;
@@ -6166,13 +6174,13 @@ pub fn Engine(comptime Ctx: type) type {
                 return plan;
             }
 
-            fn prepareExternal(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, replacement: *PreparedReplacementOwner, descriptor_root_scope_ids: []const u64, retired_root_scope_ids: []const u64, render_insert_indexes: []const usize, suppressed_render_parent_ids: []const u64, cache_overlay: ?*signal_records.PreparedCacheUpdates) CollectionError!*@This() {
+            fn prepareExternal(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, replacement: *PreparedReplacementOwner, descriptor_root_scope_ids: []const u64, retired_root_scope_ids: []const u64, render_insert_indexes: []const usize, scan_scopes: ?[]const []const bool, suppressed_render_parent_ids: []const u64, cache_overlay: ?*signal_records.PreparedCacheUpdates) CollectionError!*@This() {
                 const allocator = Ctx.allocator(ctx);
                 const plan = allocator.create(@This()) catch return error.OutOfMemory;
                 errdefer allocator.destroy(plan);
                 plan.* = .{ .engine = engine, .host_ctx = ctx, .roc_host = roc_host, .replacement = replacement, .owns_replacement = false, .suppressed_render_parent_ids = suppressed_render_parent_ids };
                 errdefer plan.retired_stream.deinit(allocator, ctx, roc_host, &engine.pending_roc_metrics);
-                try plan.prepareDownstream(allocator, descriptor_root_scope_ids, retired_root_scope_ids, render_insert_indexes, true, cache_overlay);
+                try plan.prepareDownstream(allocator, descriptor_root_scope_ids, retired_root_scope_ids, render_insert_indexes, scan_scopes, true, cache_overlay);
                 return plan;
             }
 
@@ -6183,7 +6191,7 @@ pub fn Engine(comptime Ctx: type) type {
                 errdefer allocator.destroy(plan);
                 plan.* = .{ .engine = engine, .host_ctx = ctx, .roc_host = roc_host, .replacement = replacement, .owns_replacement = false, .initial_root = true };
                 errdefer plan.retired_stream.deinit(allocator, ctx, roc_host, &engine.pending_roc_metrics);
-                try plan.prepareDownstream(allocator, &.{}, &.{}, &.{}, true, null);
+                try plan.prepareDownstream(allocator, &.{}, &.{}, &.{}, null, true, null);
                 return plan;
             }
 
@@ -6279,18 +6287,18 @@ pub fn Engine(comptime Ctx: type) type {
                 descriptor_roots.ensureTotalCapacity(allocator, std.math.add(usize, rows.removed_scope_ids.len, replacement.replacement_rows.len) catch return error.ResourceLimit) catch return error.OutOfMemory;
                 for (rows.removed_scope_ids) |scope_id| descriptor_roots.appendAssumeCapacity(scope_id.raw());
                 for (replacement.replacement_rows) |row| if (!rows.scope_created[row.row_index]) descriptor_roots.appendAssumeCapacity(row.scope_id.raw());
-                const downstream = try prepareExternal(engine, ctx, roc_host, replacement.replacement, descriptor_roots.items, @ptrCast(rows.removed_scope_ids), layout.remove_starts, &suppressed_parents, cache_overlay);
+                const downstream = try prepareExternal(engine, ctx, roc_host, replacement.replacement, descriptor_roots.items, @ptrCast(rows.removed_scope_ids), layout.remove_starts, null, &suppressed_parents, cache_overlay);
                 errdefer downstream.deinit();
                 try downstream.prepareEachRenderTopology(replacement, layout);
                 return downstream;
             }
 
-            fn prepareDownstream(self: *@This(), allocator: std.mem.Allocator, descriptor_root_scope_ids: []const u64, retired_root_scope_ids: []const u64, render_insert_indexes: []const usize, external_row_sync: bool, cache_overlay: ?*signal_records.PreparedCacheUpdates) CollectionError!void {
+            fn prepareDownstream(self: *@This(), allocator: std.mem.Allocator, descriptor_root_scope_ids: []const u64, retired_root_scope_ids: []const u64, render_insert_indexes: []const usize, scan_scopes: ?[]const []const bool, external_row_sync: bool, cache_overlay: ?*signal_records.PreparedCacheUpdates) CollectionError!void {
                 self.targets = try PreparedStructuralTargets.prepare(self.engine, allocator, descriptor_root_scope_ids, retired_root_scope_ids);
                 errdefer if (self.targets) |*targets| targets.deinit(allocator);
                 const target_scopes = self.targets.?.descriptor_target_scopes;
                 const retirement_scope_ids = self.targets.?.scope_retirement.?.scope_ids;
-                self.removal = structural_splice.prepareMultiRemoval(HostNodeDescriptorStream, allocator, &self.engine.active_stream, render_insert_indexes, target_scopes) catch |err| switch (err) {
+                self.removal = structural_splice.prepareMultiRemoval(HostNodeDescriptorStream, allocator, &self.engine.active_stream, render_insert_indexes, target_scopes, scan_scopes) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.OverlappingIntervals => return error.ResourceLimit,
                 };

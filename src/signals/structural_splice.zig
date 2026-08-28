@@ -487,7 +487,18 @@ fn intervalDescending(_: void, lhs: RenderRemovalInterval, rhs: RenderRemovalInt
 }
 
 /// Prepares disjoint render intervals and one authoritative union descriptor journal.
-pub fn prepareMultiRemoval(comptime Stream: type, allocator: std.mem.Allocator, stream: *const Stream, render_insert_indexes: []const usize, target_scopes: []const bool) (std.mem.Allocator.Error || error{OverlappingIntervals})!PreparedMultiRemoval {
+///
+/// `target_scopes` is the union over every site in the transaction and decides
+/// which descriptors the journal claims. `scan_scopes`, when supplied, gives the
+/// scope set that bounds each interval's own forward scan, one entry per entry
+/// of `render_insert_indexes`. The two differ whenever one transaction splices
+/// several sites: scanning a site's interval against the union lets the walk run
+/// straight out of that site's rows and into an adjacent site's, which then
+/// collides with that site's own interval and looks like overlapping input.
+/// Passing null scans every interval against the union, which is correct only
+/// when the transaction has a single site.
+pub fn prepareMultiRemoval(comptime Stream: type, allocator: std.mem.Allocator, stream: *const Stream, render_insert_indexes: []const usize, target_scopes: []const bool, scan_scopes: ?[]const []const bool) (std.mem.Allocator.Error || error{OverlappingIntervals})!PreparedMultiRemoval {
+    if (scan_scopes) |scopes| if (scopes.len != render_insert_indexes.len) return error.OverlappingIntervals;
     var elem_ids = std.ArrayListUnmanaged(u64).empty;
     errdefer elem_ids.deinit(allocator);
     var parent_ids = std.ArrayListUnmanaged(u64).empty;
@@ -500,8 +511,8 @@ pub fn prepareMultiRemoval(comptime Stream: type, allocator: std.mem.Allocator, 
     defer parent_set.deinit(allocator);
     var target_scan_count: usize = 0;
 
-    for (render_insert_indexes) |start| {
-        const scan = try prepareRenderRemovalScan(Stream, allocator, stream, start, target_scopes);
+    for (render_insert_indexes, 0..) |start, start_index| {
+        const scan = try prepareRenderRemovalScan(Stream, allocator, stream, start, if (scan_scopes) |scopes| scopes[start_index] else target_scopes);
         defer scan.deinit(allocator);
         const end = std.math.add(usize, start, scan.removed_render_count) catch return error.OutOfMemory;
         for (intervals.items) |prior| {
@@ -975,7 +986,7 @@ test "multi interval removal prepares one union journal and rejects overlaps" {
     const target_scopes = &.{ false, true, false, true };
 
     var counter = FaultAllocator.init(std.testing.allocator);
-    var successful = try prepareMultiRemoval(TestStream, counter.allocator(), &stream, &.{ 0, 3 }, target_scopes);
+    var successful = try prepareMultiRemoval(TestStream, counter.allocator(), &stream, &.{ 0, 3 }, target_scopes, null);
     const attempts = counter.attempts;
     try std.testing.expect(attempts != 0);
     try std.testing.expectEqualDeep(&[_]RenderRemovalInterval{ .{ .start = 3, .len = 2 }, .{ .start = 0, .len = 2 } }, successful.intervals_descending);
@@ -987,14 +998,14 @@ test "multi interval removal prepares one union journal and rejects overlaps" {
     for (1..attempts + 1) |failure_number| {
         var fault = FaultAllocator.init(std.testing.allocator);
         fault.configure(failure_number);
-        try std.testing.expectError(error.OutOfMemory, prepareMultiRemoval(TestStream, fault.allocator(), &stream, &.{ 0, 3 }, target_scopes));
+        try std.testing.expectError(error.OutOfMemory, prepareMultiRemoval(TestStream, fault.allocator(), &stream, &.{ 0, 3 }, target_scopes, null));
         try std.testing.expectEqualSlices(TestStream.RenderNode, original_nodes, stream.render_nodes.items);
         fault.configure(null);
-        var retry = try prepareMultiRemoval(TestStream, fault.allocator(), &stream, &.{ 0, 3 }, target_scopes);
+        var retry = try prepareMultiRemoval(TestStream, fault.allocator(), &stream, &.{ 0, 3 }, target_scopes, null);
         retry.deinit(fault.allocator());
     }
 
-    try std.testing.expectError(error.OverlappingIntervals, prepareMultiRemoval(TestStream, std.testing.allocator, &stream, &.{ 0, 1 }, target_scopes));
+    try std.testing.expectError(error.OverlappingIntervals, prepareMultiRemoval(TestStream, std.testing.allocator, &stream, &.{ 0, 1 }, target_scopes, null));
 }
 
 test "structural splice removes rendered descendants of target nodes across scope boundaries" {
