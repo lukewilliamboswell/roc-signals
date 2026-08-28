@@ -50,6 +50,46 @@ class Example:
         return f"signals-{self.slug}"
 
 
+@dataclass(frozen=True)
+class BenchmarkCase:
+    id: str
+    spec: Path
+    warmup_iterations: int
+    native_iterations: int
+    native_samples: int
+
+
+def load_benchmark_cases(example: Example, source_root: Path) -> tuple[BenchmarkCase, ...] | None:
+    """Load an optional per-fixture benchmark contract."""
+    manifest_path = source_root / example.source.parent / "benchmarks.toml"
+    if not manifest_path.is_file():
+        return None
+    with manifest_path.open("rb") as f:
+        manifest = tomllib.load(f)
+    if manifest.get("schema_version") != 1:
+        raise SystemExit(f"unsupported benchmark manifest schema: {manifest_path}")
+
+    cases: list[BenchmarkCase] = []
+    seen: set[str] = set()
+    for raw in manifest.get("operations", []):
+        case_id = str(raw["id"])
+        if case_id in seen:
+            raise SystemExit(f"duplicate benchmark operation {case_id!r} in {manifest_path}")
+        seen.add(case_id)
+        warmup = int(raw["warmup_iterations"])
+        iterations = int(raw["native_iterations"])
+        samples = int(raw["native_samples"])
+        if warmup < 0 or iterations <= 0 or samples <= 0:
+            raise SystemExit(f"invalid benchmark counts for {case_id!r} in {manifest_path}")
+        spec = example.source.parent / Path(str(raw["spec"]))
+        if not (source_root / spec).is_file():
+            raise SystemExit(f"benchmark operation {case_id!r} references missing spec {spec}")
+        cases.append(BenchmarkCase(case_id, spec, warmup, iterations, samples))
+    if not cases:
+        raise SystemExit(f"benchmark manifest has no operations: {manifest_path}")
+    return tuple(cases)
+
+
 def load_examples() -> tuple[Example, ...]:
     with EXAMPLES_MANIFEST.open("rb") as f:
         manifest = tomllib.load(f)
@@ -218,7 +258,13 @@ def build_hosts() -> None:
 
 def run_zig_suite() -> None:
     run(["zig", "build", "test"])
-    run([sys.executable, "-m", "unittest", "scripts/test_spec_driver.py"])
+    run([
+        sys.executable,
+        "-m",
+        "unittest",
+        "scripts/test_spec_driver.py",
+        "scripts/test_benchmark_manifest.py",
+    ])
 
 
 def run_browser_suite() -> None:
@@ -423,18 +469,25 @@ def run_benchmarks(roc_bin: str, examples: tuple[Example, ...], *, source_root: 
         specs = source_root / example.specs
         exe = native_exe_path(bin_dir, f"{example.exe_name}-bench")
         run([roc_bin, "build", f"--target={target}", "--opt=speed", *native_cache_args(target), f"--output={exe}", source])
-        for case in spec_driver.discover_specs(specs):
+        manifest_cases = load_benchmark_cases(example, source_root)
+        cases = manifest_cases or tuple(
+            BenchmarkCase(case.id, example.specs / case.id, 0, 20, 1)
+            for case in spec_driver.discover_specs(specs)
+        )
+        for case in cases:
             run(
                 [
                     exe,
                     "--bench-app",
                     "--bench-name",
                     f"{example.exe_name}/{case.id}",
+                    "--bench-warmup",
+                    str(case.warmup_iterations),
                     "--bench-iterations",
-                    "20",
+                    str(case.native_iterations),
                     "--bench-samples",
-                    "1",
-                    case.path,
+                    str(case.native_samples),
+                    source_root / case.spec,
                 ]
             )
 

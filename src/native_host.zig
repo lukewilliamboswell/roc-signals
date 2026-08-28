@@ -362,7 +362,7 @@ fn writeStderr(bytes: []const u8) void {
 }
 
 fn writeUsage() void {
-    writeStderr("Usage: ./app [--verbose] [--trace-allocations] [--run-spec-json] <case.scm>\n       ./app --bench-app [--bench-name NAME] [--bench-iterations N] [--bench-samples N] <case.scm>\n");
+    writeStderr("Usage: ./app [--verbose] [--trace-allocations] [--run-spec-json] <case.scm>\n       ./app --bench-app [--bench-name NAME] [--bench-warmup N] [--bench-iterations N] [--bench-samples N] <case.scm>\n");
 }
 
 const SpecJsonFailure = struct {
@@ -3135,6 +3135,7 @@ fn main(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
     var result_json = false;
     var bench_app = false;
     var bench_name: []const u8 = "app_dispatch";
+    var bench_warmup: usize = 0;
     var bench_iterations: usize = 100;
     var bench_samples: usize = 3;
     var spec_file: ?[]const u8 = null;
@@ -3172,6 +3173,16 @@ fn main(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
                 writeStderr("Error: --bench-iterations must be greater than zero\n");
                 return 1;
             }
+        } else if (std.mem.eql(u8, arg, "--bench-warmup")) {
+            i += 1;
+            if (i >= arg_count) {
+                writeStderr("Error: --bench-warmup requires a value\n");
+                return 1;
+            }
+            bench_warmup = std.fmt.parseInt(usize, std.mem.span(argv[i]), 10) catch {
+                writeStderr("Error: Invalid --bench-warmup value\n");
+                return 1;
+            };
         } else if (std.mem.eql(u8, arg, "--bench-samples")) {
             i += 1;
             if (i >= arg_count) {
@@ -3204,7 +3215,7 @@ fn main(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
             writeStderr("Error: --bench-app requires a ReleaseFast host; run `zig build build-test-hosts -Doptimize=ReleaseFast` before building the Roc app\n");
             return 1;
         }
-        return runAppBenchmarks(spec_file.?, bench_name, bench_iterations, bench_samples, verbose) catch |err| {
+        return runAppBenchmarks(spec_file.?, bench_name, bench_warmup, bench_iterations, bench_samples, verbose) catch |err| {
             writeStderr("HOST ERROR: ");
             writeStderr(@errorName(err));
             writeStderr("\n");

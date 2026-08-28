@@ -24,6 +24,43 @@ Run every registered benchmark with:
 python3 scripts/test.py bench --roc-bin /path/to/roc
 ```
 
+The keyed-table fixture has a machine-readable coverage contract at
+`examples/_fixtures/js-framework-benchmark/benchmarks.toml`. The benchmark
+driver consumes its sample counts and warmup policy. Warmup runs replay the
+complete spec in a fresh mounted host and discard all measurements; they do not
+mutate the measured sample or get mixed into its allocation counters. This pins
+the js-framework-benchmark convention: five warmups for replace, partial
+update, select, swap, and remove, and no warmup for create 1,000, create 10,000,
+append to 10,000, or clear 10,000.
+
+The manifest is also the requirement-to-evidence map for the eventual browser
+submission:
+
+| Requirement | Evidence available now | Browser evidence still required |
+| --- | --- | --- |
+| Nine table operations | One semantic spec and one native optimized benchmark case per operation, including warmup metadata | End-to-end duration around the corresponding real DOM action |
+| Ready/run/update/replace/repeated-clear memory | Exact action sequences are validated in the manifest | Browser-process memory after stabilization and collection, using the official runner's metric |
+| Startup time | Metric and provider are required by the manifest | Navigation-to-first-render measurement in the built browser artifact |
+| Consistently interactive, script bootup, main-thread work | Lighthouse metric entries are required by the manifest | Lighthouse results from the official browser environment |
+| Total byte weight | Lighthouse metric entry is required by the manifest | Post-compression transferred bytes for every loaded resource |
+
+The Node/Wasm-controlled measurement path, production-host instrumentation,
+and repeatable Node workflow are tracked in
+[issue #19](https://github.com/lukewilliamboswell/roc-signals/issues/19). That
+issue explicitly excludes real-browser layout, paint, cross-browser memory,
+and Lighthouse. The manifest records those later submission requirements but
+does not implement or attribute them to issue #19. This avoids duplicating the
+Node/Wasm harness while keeping the future browser adapter's completeness
+contract explicit.
+
+The manifest contract deliberately does not manufacture browser numbers from
+the native host. Native results isolate Roc reducer time, engine application,
+work counters, and allocation behavior. DOM layout/paint, JavaScript and Wasm
+startup, browser heap accounting, compression, and Lighthouse metrics require a
+real production browser build. Contract tests fail if any required operation,
+warmup, memory scenario, or audit metric disappears while that adapter is being
+built.
+
 For quick iteration on the keyed table fixture on x86-64 Linux:
 
 ```sh
@@ -38,6 +75,7 @@ roc build \
 .test-out/profile/js-framework-benchmark \
   --bench-app \
   --bench-name replace_1k \
+  --bench-warmup 5 \
   --bench-iterations 1 \
   --bench-samples 7 \
   examples/_fixtures/js-framework-benchmark/specs/replace_1k.scm
