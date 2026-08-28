@@ -610,9 +610,16 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             return &cache.nodes.items[index];
         }
 
-        /// Reserves one additional final child-list replacement before journal mutation.
-        pub fn reserveAdditionalChildren(self: *Self, child_links: usize) (std.mem.Allocator.Error || error{ResourceLimit})!void {
-            try self.children.ensureUnusedCapacity(self.allocator, 1);
+        /// Reserves capacity for `parents` further final child-list
+        /// replacements, together with `child_links` parent intents and wire
+        /// commands, before any journal mutation.
+        ///
+        /// One `addChildren` call consumes exactly one child-list slot, so a
+        /// caller that registers several parents on one splice must reserve a
+        /// slot for each: `addChildren` publishes through `appendAssumeCapacity`
+        /// and cannot grow at that point.
+        pub fn reserveAdditionalChildren(self: *Self, parents: usize, child_links: usize) (std.mem.Allocator.Error || error{ResourceLimit})!void {
+            try self.children.ensureUnusedCapacity(self.allocator, parents);
             const link_count = std.math.cast(u32, child_links) orelse return error.ResourceLimit;
             try self.parent_intent_indexes.ensureUnusedCapacity(self.allocator, link_count);
             try self.parent_intents.ensureUnusedCapacity(self.allocator, child_links);

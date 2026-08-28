@@ -964,6 +964,7 @@ fn renderActiveRoot(dirty_source_node_ids: []const u64) void {
             error.OutOfMemory => failHostWith("out of memory preparing initial root transaction"),
             error.ResourceLimit => failHostWith("initial root exceeded configured runtime limits"),
             error.InvalidRenderTopology => failHostWith("initial root staged a render topology that conflicts with the committed tree"),
+            error.InvalidSignalGraphAppend => failHostWith("initial root staged a signal graph append that does not match the committed graph"),
         };
         const prepared = SharedEngine.PreparedRootDownstream.prepare(collection) catch |err| switch (err) {
             error.OutOfMemory => {
@@ -977,6 +978,10 @@ fn renderActiveRoot(dirty_source_node_ids: []const u64) void {
             error.InvalidRenderTopology => {
                 collection.deinit();
                 failHostWith("initial root publication staged a conflicting render topology");
+            },
+            error.InvalidSignalGraphAppend => {
+                collection.deinit();
+                failHostWith("initial root publication staged a mismatched signal graph append");
             },
         };
         defer prepared.deinit();

@@ -2394,7 +2394,7 @@ fn applyDirtyWhenStructuralSignals(host: *HostEnv, roc_host: *abi.RocHost, dirty
     return host.engine.applyDirtyWhenStructuralSignals(host, roc_host, dirty_source_node_ids, dirty_generation, changes);
 }
 
-fn tryRenderInitialRoot(host: *HostEnv, roc_host: *abi.RocHost, root: abi.Elem, dirty_source_node_ids: []const u64) error{ OutOfMemory, ResourceLimit, InvalidRenderTopology }!CommandCounts {
+fn tryRenderInitialRoot(host: *HostEnv, roc_host: *abi.RocHost, root: abi.Elem, dirty_source_node_ids: []const u64) error{ OutOfMemory, ResourceLimit, InvalidRenderTopology, InvalidSignalGraphAppend }!CommandCounts {
     const collection = try HostEngine.PreparedRootCollection.prepare(&host.engine, host, roc_host, root, .{}, dirty_source_node_ids);
     errdefer collection.deinit();
     const prepared = try HostEngine.PreparedRootDownstream.prepare(collection);
@@ -2410,7 +2410,7 @@ fn tryRenderInitialRoot(host: *HostEnv, roc_host: *abi.RocHost, root: abi.Elem, 
 /// keeps `fault`'s configured failure number, so a sweep over preparation
 /// attempts still refuses at the requested point; publication itself must
 /// never allocate, which is what the armed phases prove.
-fn tryRenderInitialRootWithArmedPublication(host: *HostEnv, roc_host: *abi.RocHost, root: abi.Elem, fault: *FaultAllocator) error{ OutOfMemory, ResourceLimit, InvalidRenderTopology }!CommandCounts {
+fn tryRenderInitialRootWithArmedPublication(host: *HostEnv, roc_host: *abi.RocHost, root: abi.Elem, fault: *FaultAllocator) error{ OutOfMemory, ResourceLimit, InvalidRenderTopology, InvalidSignalGraphAppend }!CommandCounts {
     const collection = try HostEngine.PreparedRootCollection.prepare(&host.engine, host, roc_host, root, .{}, &.{});
     errdefer collection.deinit();
     const prepared = try HostEngine.PreparedRootDownstream.prepare(collection);
@@ -2440,6 +2440,7 @@ fn renderActiveRootWithStats(host: *HostEnv, roc_host: *abi.RocHost, dirty_sourc
             error.OutOfMemory => failHost("out of memory preparing initial root transaction"),
             error.ResourceLimit => failHost("initial root exceeded configured runtime limits"),
             error.InvalidRenderTopology => failHost("initial root staged a render topology that conflicts with the committed tree"),
+            error.InvalidSignalGraphAppend => failHost("initial root staged a signal graph append that does not match the committed graph"),
         };
         const elapsed = benchmark.nowNs() - start_ns;
         if (apply_ns) |ns| ns.* += elapsed;

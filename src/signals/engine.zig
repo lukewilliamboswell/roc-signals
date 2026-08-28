@@ -3572,7 +3572,7 @@ pub fn Engine(comptime Ctx: type) type {
             self.collectActiveEachRowElemDescriptors(ctx, roc_host, stream, each, row_elem, row_scope_id, site.parent_elem_id, &ordinal, &dom_ordinal, binder_stack, row_created, dirty_source_node_ids);
         }
 
-        const CollectionError = error{ OutOfMemory, ResourceLimit, InvalidRenderTopology };
+        const CollectionError = error{ OutOfMemory, ResourceLimit, InvalidRenderTopology, InvalidSignalGraphAppend };
         const WhenCollection = struct { scope: scope_tree.InternResult, branch: HostScopeBranch };
 
         fn collectActiveEachRowElemDescriptorsWith(self: *Self, comptime Collection: type, collection: Collection, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, each: HostNodeEachDesc, row_elem: abi.Elem, row_scope_id: ids.ScopeId, parent_elem_id: ids.ElemId, ordinal: *ids.SiteOrdinal, dom_ordinal: *ids.SiteOrdinal, binder_stack: *std.ArrayListUnmanaged(HostBinderBinding), row_created: bool, dirty_source_node_ids: []const u64) CollectionError!void {
@@ -6214,7 +6214,7 @@ pub fn Engine(comptime Ctx: type) type {
                         child_id = (self.final_render_topology.?.metadata.get(id.raw()) orelse return error.ResourceLimit).next_sibling;
                     }
                 }
-                try splice.reserveAdditionalChildren(child_capacity);
+                try splice.reserveAdditionalChildren(parent_elem_ids.len, child_capacity);
                 for (parent_elem_ids, 0..) |parent_elem_id, parent_offset| {
                     for (parent_elem_ids[0..parent_offset]) |previous| if (previous == parent_elem_id) return error.ResourceLimit;
                     var children: std.ArrayListUnmanaged(ids.ElemId) = .empty;
@@ -6341,7 +6341,10 @@ pub fn Engine(comptime Ctx: type) type {
                     var replacement_roots: std.ArrayListUnmanaged(*HostSignalRecord) = .empty;
                     defer replacement_roots.deinit(allocator);
                     try collectReplacementGraphRootsForStream(allocator, &self.replacement.stream, &replacement_roots);
-                    self.graph_append = active_graph.prepareGraphAppend(HostSignalRecord, allocator, self.engine.active_signal_graph.items, self.graph_release.?.final_record_ids, replacement_roots.items) catch return error.OutOfMemory;
+                    self.graph_append = active_graph.prepareGraphAppend(HostSignalRecord, allocator, self.engine.active_signal_graph.items, self.graph_release.?.final_record_ids, replacement_roots.items) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        error.InvalidAppend => return error.InvalidSignalGraphAppend,
+                    };
                     errdefer if (self.graph_append) |*append| append.deinit(allocator);
                     try self.prepareGraphRoutes(allocator);
                 }
@@ -6901,7 +6904,10 @@ pub fn Engine(comptime Ctx: type) type {
                     var replacement_roots: std.ArrayListUnmanaged(*HostSignalRecord) = .empty;
                     defer replacement_roots.deinit(allocator);
                     try self.collectReplacementGraphRoots(allocator, &replacement_roots);
-                    self.graph_append = active_graph.prepareGraphAppend(HostSignalRecord, allocator, self.engine.active_signal_graph.items, self.graph_release.?.final_record_ids, replacement_roots.items) catch return error.OutOfMemory;
+                    self.graph_append = active_graph.prepareGraphAppend(HostSignalRecord, allocator, self.engine.active_signal_graph.items, self.graph_release.?.final_record_ids, replacement_roots.items) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        error.InvalidAppend => return error.InvalidSignalGraphAppend,
+                    };
                     try self.prepareGraphRoutes(allocator);
                 }
                 if (self.engine.render_cache.hasRoot()) {
@@ -11682,6 +11688,7 @@ pub fn Engine(comptime Ctx: type) type {
                 error.OutOfMemory => @panic("host out of memory while preparing atomic state transaction"),
                 error.ResourceLimit => @panic("configured resource limit rejected atomic state transaction"),
                 error.InvalidRenderTopology => @panic("staged render topology conflicted with the committed render tree"),
+                error.InvalidSignalGraphAppend => @panic("staged signal graph append did not match the committed graph"),
             };
         }
 
@@ -11952,6 +11959,7 @@ pub fn Engine(comptime Ctx: type) type {
                             error.OutOfMemory => return error.OutOfMemory,
                             error.ResourceLimit => if (all_eaches_subsumed) null else return error.ResourceLimit,
                             error.InvalidRenderTopology => return error.InvalidRenderTopology,
+                            error.InvalidSignalGraphAppend => return error.InvalidSignalGraphAppend,
                         };
                         if (all_eaches_subsumed) {
                             plan.structural_downstream = try prepareWhenDownstream(engine, ctx, roc_host, structural_changes, state_update, &plan.caches);
