@@ -963,6 +963,7 @@ fn renderActiveRoot(dirty_source_node_ids: []const u64) void {
         const collection = SharedEngine.PreparedRootCollection.prepare(&shared_engine, ctx, &roc_host, root, .{}, dirty_source_node_ids) catch |err| switch (err) {
             error.OutOfMemory => failHostWith("out of memory preparing initial root transaction"),
             error.ResourceLimit => failHostWith("initial root exceeded configured runtime limits"),
+            error.InvalidRenderTopology => failHostWith("initial root staged a render topology that conflicts with the committed tree"),
         };
         const prepared = SharedEngine.PreparedRootDownstream.prepare(collection) catch |err| switch (err) {
             error.OutOfMemory => {
@@ -972,6 +973,10 @@ fn renderActiveRoot(dirty_source_node_ids: []const u64) void {
             error.ResourceLimit => {
                 collection.deinit();
                 failHostWith("initial root publication exceeded configured runtime limits");
+            },
+            error.InvalidRenderTopology => {
+                collection.deinit();
+                failHostWith("initial root publication staged a conflicting render topology");
             },
         };
         defer prepared.deinit();

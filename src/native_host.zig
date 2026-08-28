@@ -2394,7 +2394,7 @@ fn applyDirtyWhenStructuralSignals(host: *HostEnv, roc_host: *abi.RocHost, dirty
     return host.engine.applyDirtyWhenStructuralSignals(host, roc_host, dirty_source_node_ids, dirty_generation, changes);
 }
 
-fn tryRenderInitialRoot(host: *HostEnv, roc_host: *abi.RocHost, root: abi.Elem, dirty_source_node_ids: []const u64) error{ OutOfMemory, ResourceLimit }!CommandCounts {
+fn tryRenderInitialRoot(host: *HostEnv, roc_host: *abi.RocHost, root: abi.Elem, dirty_source_node_ids: []const u64) error{ OutOfMemory, ResourceLimit, InvalidRenderTopology }!CommandCounts {
     const collection = try HostEngine.PreparedRootCollection.prepare(&host.engine, host, roc_host, root, .{}, dirty_source_node_ids);
     errdefer collection.deinit();
     const prepared = try HostEngine.PreparedRootDownstream.prepare(collection);
@@ -2410,7 +2410,7 @@ fn tryRenderInitialRoot(host: *HostEnv, roc_host: *abi.RocHost, root: abi.Elem, 
 /// keeps `fault`'s configured failure number, so a sweep over preparation
 /// attempts still refuses at the requested point; publication itself must
 /// never allocate, which is what the armed phases prove.
-fn tryRenderInitialRootWithArmedPublication(host: *HostEnv, roc_host: *abi.RocHost, root: abi.Elem, fault: *FaultAllocator) error{ OutOfMemory, ResourceLimit }!CommandCounts {
+fn tryRenderInitialRootWithArmedPublication(host: *HostEnv, roc_host: *abi.RocHost, root: abi.Elem, fault: *FaultAllocator) error{ OutOfMemory, ResourceLimit, InvalidRenderTopology }!CommandCounts {
     const collection = try HostEngine.PreparedRootCollection.prepare(&host.engine, host, roc_host, root, .{}, &.{});
     errdefer collection.deinit();
     const prepared = try HostEngine.PreparedRootDownstream.prepare(collection);
@@ -2439,6 +2439,7 @@ fn renderActiveRootWithStats(host: *HostEnv, roc_host: *abi.RocHost, dirty_sourc
         const counts = tryRenderInitialRoot(host, roc_host, root, dirty_source_node_ids) catch |err| switch (err) {
             error.OutOfMemory => failHost("out of memory preparing initial root transaction"),
             error.ResourceLimit => failHost("initial root exceeded configured runtime limits"),
+            error.InvalidRenderTopology => failHost("initial root staged a render topology that conflicts with the committed tree"),
         };
         const elapsed = benchmark.nowNs() - start_ns;
         if (apply_ns) |ns| ns.* += elapsed;
@@ -6064,6 +6065,122 @@ test "one state transaction updates two each sites atomically through production
             try std.testing.expectEqual(@as(u64, 2), host.engine.pending_roc_metrics.rows_reused - rows_reused_before);
             try std.testing.expectEqual(@as(u64, 2), host.engine.pending_roc_metrics.rows_created - rows_created_before);
             try std.testing.expectEqual(@as(u64, 2), host.engine.pending_roc_metrics.rows_removed - rows_removed_before);
+            return attempts;
+        }
+    };
+
+    const attempts = try Runner.run(null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
+}
+
+test "one state transaction updates two each sites under distinct parents through production" {
+    // Two live each sites under *different* render parents make the composite
+    // downstream suppress more than one parent. Suppressing only a lone parent
+    // let the structural pass and `prepareFinalRenderTopology` both register
+    // the same parent on one splice, which is a duplicate parent intent rather
+    // than a resource limit.
+    const Runner = struct {
+        fn run(failure_number: ?usize) !usize {
+            test_erased_callable_drop_count = 0;
+            test_row_elem_call_count = 0;
+            var host = HostEnv.init();
+            var roc_host = makeSignalsRocHost(&host);
+            host.engine.roc_host = &roc_host;
+            defer {
+                host.deinit();
+                _ = host.gpa.deinit();
+            }
+
+            const state_token = newTestBinderToken(&roc_host);
+            const state_cap = testHostValueCapability(&roc_host);
+            const first_each = testNodeEachWithSignalCapabilityAndRow(&roc_host, testNodeRefExpr(state_token), state_cap, &testStatefulRowElemCallable);
+            const second_each = testNodeEachWithSignalCapabilityAndRow(&roc_host, testNodeRefExpr(state_token), state_cap, &testStatefulRowElemCallable);
+            const first_column = testElementWith(&roc_host, "div", &.{}, &.{first_each});
+            const second_column = testElementWith(&roc_host, "div", &.{}, &.{second_each});
+            const section = testElementWith(&roc_host, "section", &.{}, &.{ first_column, testNodeText(&roc_host, "between-columns"), second_column });
+            const initial_items = [_]HostValue{ testHostValueI64(1), testHostValueI64(2) };
+            const root = testNodeStateWithTokenAndInitialCapability(&roc_host, state_token, testHostValueI64List(&roc_host, &initial_items), section, state_cap);
+            defer root.decref(&roc_host);
+            var stream: HostNodeDescriptorStream = .{};
+            host.collectActiveElemRootDescriptors(&roc_host, &stream, root, &.{});
+            _ = applyNodeDescriptorStream(&host, &roc_host, &stream);
+            host.engine.active_stream = stream;
+
+            const state_id = host.engine.active_stream.scope_sites.items[0].node_id;
+            const state_index = host.engine.stateIndexByNodeId(state_id.raw()).?;
+            var each_sites: [2]engine.HostNodeScopeSiteDesc = undefined;
+            var each_write: usize = 0;
+            for (host.engine.active_stream.scope_sites.items) |site| if (site.kind == .each) {
+                each_sites[each_write] = site;
+                each_write += 1;
+            };
+            try std.testing.expectEqual(@as(usize, 2), each_write);
+            // The two sites must sit under distinct parents for this to cover
+            // the multi-parent suppression path at all.
+            try std.testing.expect(each_sites[0].parent_elem_id != each_sites[1].parent_elem_id);
+
+            const first_rows_before = try host.engine.activeEachRowScopes(std.testing.allocator, each_sites[0].scope_id, each_sites[0].ordinal);
+            defer std.testing.allocator.free(first_rows_before);
+            const second_rows_before = try host.engine.activeEachRowScopes(std.testing.allocator, each_sites[1].scope_id, each_sites[1].ordinal);
+            defer std.testing.allocator.free(second_rows_before);
+            const generation_before = host.engine.dirty_signal_generation;
+            const graph_len_before = host.engine.active_signal_graph.items.len;
+            const scope_len_before = host.engine.scopes.items.len;
+            const render_len_before = host.engine.active_stream.render_nodes.items.len;
+            const dom_len_before = host.dom_elements.items.len;
+            const state_value_before = host.engine.states.items[state_index].activePayloadConst().cell.value;
+            const first_parent_children_before = try std.testing.allocator.dupe(ids.ElemId, host.engine.render_cache.nodes.items[each_sites[0].parent_elem_id.index()].children.items);
+            defer std.testing.allocator.free(first_parent_children_before);
+            const second_parent_children_before = try std.testing.allocator.dupe(ids.ElemId, host.engine.render_cache.nodes.items[each_sites[1].parent_elem_id.index()].children.items);
+            defer std.testing.allocator.free(second_parent_children_before);
+            const allocations_before = host.roc_allocations.snapshot();
+
+            const next_items = [_]HostValue{ testHostValueI64(2), testHostValueI64(3) };
+            var fault = FaultAllocator.init(host.gpa.allocator());
+            fault.configure(failure_number);
+            host.engine_allocator_override = fault.allocator();
+            const result = host.engine.tryDispatchStateValue(&host, &roc_host, state_id.raw(), testHostValueI64List(&roc_host, &next_items), state_cap);
+            const attempts = fault.attempts;
+            if (failure_number != null) {
+                try std.testing.expectError(error.OutOfMemory, result);
+                try std.testing.expectEqual(generation_before, host.engine.dirty_signal_generation);
+                try std.testing.expectEqual(graph_len_before, host.engine.active_signal_graph.items.len);
+                try std.testing.expectEqual(scope_len_before, host.engine.scopes.items.len);
+                try std.testing.expectEqual(render_len_before, host.engine.active_stream.render_nodes.items.len);
+                try std.testing.expectEqual(dom_len_before, host.dom_elements.items.len);
+                try std.testing.expectEqual(state_value_before, host.engine.states.items[state_index].activePayloadConst().cell.value);
+                try std.testing.expectEqualSlices(ids.ElemId, first_parent_children_before, host.engine.render_cache.nodes.items[each_sites[0].parent_elem_id.index()].children.items);
+                try std.testing.expectEqualSlices(ids.ElemId, second_parent_children_before, host.engine.render_cache.nodes.items[each_sites[1].parent_elem_id.index()].children.items);
+                const first_after = try host.engine.activeEachRowScopes(std.testing.allocator, each_sites[0].scope_id, each_sites[0].ordinal);
+                defer std.testing.allocator.free(first_after);
+                const second_after = try host.engine.activeEachRowScopes(std.testing.allocator, each_sites[1].scope_id, each_sites[1].ordinal);
+                defer std.testing.allocator.free(second_after);
+                try std.testing.expectEqualSlices(ids.ScopeId, first_rows_before, first_after);
+                try std.testing.expectEqualSlices(ids.ScopeId, second_rows_before, second_after);
+                try std.testing.expectEqual(@as(usize, 0), host.roc_allocations.liveCountSince(allocations_before));
+                fault.configure(null);
+                const retry_items = [_]HostValue{ testHostValueI64(2), testHostValueI64(3) };
+                _ = try host.engine.tryDispatchStateValue(&host, &roc_host, state_id.raw(), testHostValueI64List(&roc_host, &retry_items), state_cap);
+            } else _ = try result;
+
+            const first_rows = try host.engine.activeEachRowScopes(std.testing.allocator, each_sites[0].scope_id, each_sites[0].ordinal);
+            defer std.testing.allocator.free(first_rows);
+            const second_rows = try host.engine.activeEachRowScopes(std.testing.allocator, each_sites[1].scope_id, each_sites[1].ordinal);
+            defer std.testing.allocator.free(second_rows);
+            try std.testing.expectEqual(@as(usize, 2), first_rows.len);
+            try std.testing.expectEqual(@as(usize, 2), second_rows.len);
+            try std.testing.expect(first_rows[0] != second_rows[0]);
+            try std.testing.expect(activeTextElementId(&host, "row-1-1") == null);
+            try std.testing.expect(activeTextElementId(&host, "row-2-2") != null);
+            try std.testing.expect(activeTextElementId(&host, "row-3-3") != null);
+            // Each column publishes exactly its own two rows: a parent whose
+            // children were registered twice ends up with duplicates here.
+            for (each_sites) |site| {
+                const children = host.engine.render_cache.nodes.items[site.parent_elem_id.index()].children.items;
+                try std.testing.expectEqual(@as(usize, 2), children.len);
+                try std.testing.expect(children[0] != children[1]);
+            }
             return attempts;
         }
     };

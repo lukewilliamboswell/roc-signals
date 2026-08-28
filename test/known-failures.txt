@@ -5,12 +5,12 @@
 # that starts failing is a regression that fails the run. Adding a line is a
 # deliberate, reviewed decision and needs a comment saying why.
 #
-# Recorded 2026-08-28 against nightly-2026-08-25-cc03aa8 after the multi-site
-# initial-mount fix (issue #22). Dominant causes, so the next fixes are
-# recognisable: live composite-row render topology reports
-# DuplicateChild/ConflictingParent as ResourceLimit; "duplicate descriptor
-# index" in the descriptor stream; host-owned allocation leaks at shutdown;
-# patch-count performance budgets.
+# Recorded 2026-08-28 against nightly-2026-08-25-cc03aa8, last trimmed after
+# the multi-parent composite-row suppression fix. Dominant remaining causes, so
+# the next fixes are recognisable: "duplicate descriptor index" in the
+# descriptor stream; host out of memory preparing a state transaction with no
+# memory pressure; host-owned allocation leaks at shutdown; patch-count
+# performance budgets.
 native availability-picker/marking-one-slot-available-leaves-its-siblings-alone.scm
 native availability-picker/the-headline-one-timezone-change-reprojects-every-rendered-slot.scm
 native conduit/article-writes-editor-create-edit-comments-and-delete.scm
@@ -71,23 +71,13 @@ native form-builder/reordering.scm
 native form-builder/the-empty-form.scm
 native form-builder/the-key-cross-level-assertion.scm
 native kanban-board/adding-cards-empty-duplicate-valid.scm
-native kanban-board/cross-column-move.scm
 native kanban-board/delete-the-card-that-currently-matches-the-filter.scm
 native kanban-board/empty-a-whole-column.scm
 native kanban-board/filter-fans-in-with-column-membership.scm
 native kanban-board/move-the-only-card-out-of-a-column-leaving-it-empty.scm
 native kanban-board/per-row-edit-does-not-disturb-siblings.scm
-native kanban-board/reorder-inside-a-column.scm
 native kanban-board/wip-limit-crosses-and-un-crosses.scm
-native loan-comparator/a-principal-of-zero-an-empty-schedule-that-still-clears.scm
-native loan-comparator/a-rate-of-zero.scm
-native loan-comparator/a-term-of-one-month.scm
-native loan-comparator/an-extra-payment-large-enough-to-shorten-the-schedule.scm
-native loan-comparator/back-to-the-baseline-scenario-a.scm
 native loan-comparator/editing-scenario-a-s-rate-derived-figures-follow-siblings-do-n.scm
-native loan-comparator/editing-scenario-c-does-not-disturb-a-or-b.scm
-native loan-comparator/invalid-input.scm
-native loan-comparator/zero-extra-payment-restores-the-full-term.scm
 native log-viewer/appending-line-41-to-a-40-line-buffer-must-reuse-every-existing.scm
 native log-viewer/clearing-while-a-level-filter-and-a-query-are-active-keeps-the-c.scm
 native log-viewer/hiding-a-level-removes-only-that-level-s-rows-from-a-42-line-buf.scm
@@ -124,24 +114,17 @@ native query-builder/and-or-on-a-group.scm
 native query-builder/back-to-a-single-condition.scm
 native query-builder/deleting-a-leaf-sibling.scm
 native query-builder/deleting-a-nested-group.scm
-native query-builder/edge-case-empty-leaf-value.scm
 native query-builder/editing-a-leaf-three-levels-deep-does-not-recreate-its-siblings.scm
 native query-builder/empty-root-group.scm
-native query-builder/every-operator.scm
 native query-builder/negating-the-root.scm
 native query-builder/nesting-a-group-inside-a-group.scm
-native query-builder/second-independent-source-fan-in.scm
 native query-builder/three-levels-of-nesting.scm
 native recipe-scaler/removing-recipes-from-the-shopping-list.scm
 native split-the-bill/adding-a-person-re-splits-every-expense.scm
 native split-the-bill/adding-an-expense.scm
-native split-the-bill/changing-who-shares-an-expense.scm
 native split-the-bill/editing-one-expense-reuses-every-row.scm
-native split-the-bill/invalid-amounts.scm
 native split-the-bill/one-person-then-none.scm
-native split-the-bill/removing-a-person.scm
 native split-the-bill/removing-expenses.scm
-native split-the-bill/rounding-that-does-not-divide-evenly.scm
 native spreadsheet-lite/b2-d2-d5-d6-d7-d8-and-b2-b5-f5-d5-already-covered.scm
 native spreadsheet-lite/editing-a-cell-nothing-depends-on.scm
 native spreadsheet-lite/editing-survives-every-reorder.scm

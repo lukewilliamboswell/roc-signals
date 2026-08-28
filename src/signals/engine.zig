@@ -1396,7 +1396,7 @@ pub fn Engine(comptime Ctx: type) type {
                     descriptor_roots.items,
                     retired_roots.items,
                     remove_starts.items,
-                    if (parents.items.len == 1) parents.items[0] else null,
+                    parents.items,
                     self.cache_overlay,
                 );
                 errdefer downstream.deinit();
@@ -1912,7 +1912,7 @@ pub fn Engine(comptime Ctx: type) type {
                     if (targeted and !inside_target) removal_starts.append(allocator, index) catch return error.OutOfMemory;
                     inside_target = targeted;
                 }
-                const downstream = try PreparedStructuralDownstream.prepareExternal(engine, ctx, roc_host, replacement_owner, descriptor_roots, retired_roots, removal_starts.items, null, overlay);
+                const downstream = try PreparedStructuralDownstream.prepareExternal(engine, ctx, roc_host, replacement_owner, descriptor_roots, retired_roots, removal_starts.items, &.{}, overlay);
                 errdefer downstream.deinit();
                 const when_retired_roots_list = allocator.alloc(u64, selections.len) catch return error.OutOfMemory;
                 defer allocator.free(when_retired_roots_list);
@@ -3552,7 +3552,7 @@ pub fn Engine(comptime Ctx: type) type {
             self.collectActiveEachRowElemDescriptors(ctx, roc_host, stream, each, row_elem, row_scope_id, site.parent_elem_id, &ordinal, &dom_ordinal, binder_stack, row_created, dirty_source_node_ids);
         }
 
-        const CollectionError = error{ OutOfMemory, ResourceLimit };
+        const CollectionError = error{ OutOfMemory, ResourceLimit, InvalidRenderTopology };
         const WhenCollection = struct { scope: scope_tree.InternResult, branch: HostScopeBranch };
 
         fn collectActiveEachRowElemDescriptorsWith(self: *Self, comptime Collection: type, collection: Collection, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, each: HostNodeEachDesc, row_elem: abi.Elem, row_scope_id: ids.ScopeId, parent_elem_id: ids.ElemId, ordinal: *ids.SiteOrdinal, dom_ordinal: *ids.SiteOrdinal, binder_stack: *std.ArrayListUnmanaged(HostBinderBinding), row_created: bool, dirty_source_node_ids: []const u64) CollectionError!void {
@@ -6056,7 +6056,11 @@ pub fn Engine(comptime Ctx: type) type {
             publication_phase: PublicationPhase = .unprepared,
             host_render_publication: ?HostRenderPublication = null,
             retired_scope_steps: std.ArrayListUnmanaged(HostScopeStep) = .empty,
-            suppressed_render_parent_id: ?u64 = null,
+            /// Render parents whose final child order this plan publishes itself
+            /// through `prepareFinalRenderTopology`, so the structural pass must
+            /// not also register them. Borrowed from the caller for the duration
+            /// of preparation only.
+            suppressed_render_parent_ids: []const u64 = &.{},
             retired_active_events: std.ArrayListUnmanaged(ActiveEventDesc) = .empty,
             initial_root: bool = false,
 
@@ -6135,11 +6139,11 @@ pub fn Engine(comptime Ctx: type) type {
                 return plan;
             }
 
-            fn prepareExternal(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, replacement: *PreparedReplacementOwner, descriptor_root_scope_ids: []const u64, retired_root_scope_ids: []const u64, render_insert_indexes: []const usize, suppressed_render_parent_id: ?u64, cache_overlay: ?*signal_records.PreparedCacheUpdates) CollectionError!*@This() {
+            fn prepareExternal(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, replacement: *PreparedReplacementOwner, descriptor_root_scope_ids: []const u64, retired_root_scope_ids: []const u64, render_insert_indexes: []const usize, suppressed_render_parent_ids: []const u64, cache_overlay: ?*signal_records.PreparedCacheUpdates) CollectionError!*@This() {
                 const allocator = Ctx.allocator(ctx);
                 const plan = allocator.create(@This()) catch return error.OutOfMemory;
                 errdefer allocator.destroy(plan);
-                plan.* = .{ .engine = engine, .host_ctx = ctx, .roc_host = roc_host, .replacement = replacement, .owns_replacement = false, .suppressed_render_parent_id = suppressed_render_parent_id };
+                plan.* = .{ .engine = engine, .host_ctx = ctx, .roc_host = roc_host, .replacement = replacement, .owns_replacement = false, .suppressed_render_parent_ids = suppressed_render_parent_ids };
                 errdefer plan.retired_stream.deinit(allocator, ctx, roc_host, &engine.pending_roc_metrics);
                 try plan.prepareDownstream(allocator, descriptor_root_scope_ids, retired_root_scope_ids, render_insert_indexes, true, cache_overlay);
                 return plan;
@@ -6195,7 +6199,8 @@ pub fn Engine(comptime Ctx: type) type {
                     }
                     splice.addChildren(&self.engine.render_cache, ids.ElemId.fromRaw(parent_elem_id), children.items) catch |err| switch (err) {
                         error.OutOfMemory => return error.OutOfMemory,
-                        else => return error.ResourceLimit,
+                        error.ResourceLimit => return error.ResourceLimit,
+                        error.ConflictingParent, error.DuplicateChild, error.MissingNode => return error.InvalidRenderTopology,
                     };
                 }
                 splice.wire.preflight(self.render_batch_target.?, allocator) catch |err| switch (err) {
@@ -6241,12 +6246,13 @@ pub fn Engine(comptime Ctx: type) type {
 
             fn prepareExternalEach(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, rows: *const each_runtime.PreparedRowSync, replacement: *PreparedEachRowReplacementCollection, layout: *const PreparedEachRowRenderLayout, cache_overlay: ?*signal_records.PreparedCacheUpdates) CollectionError!*@This() {
                 const allocator = Ctx.allocator(ctx);
+                const suppressed_parents = [_]u64{layout.parent_elem_id.raw()};
                 var descriptor_roots: std.ArrayListUnmanaged(u64) = .empty;
                 defer descriptor_roots.deinit(allocator);
                 descriptor_roots.ensureTotalCapacity(allocator, std.math.add(usize, rows.removed_scope_ids.len, replacement.replacement_rows.len) catch return error.ResourceLimit) catch return error.OutOfMemory;
                 for (rows.removed_scope_ids) |scope_id| descriptor_roots.appendAssumeCapacity(scope_id.raw());
                 for (replacement.replacement_rows) |row| if (!rows.scope_created[row.row_index]) descriptor_roots.appendAssumeCapacity(row.scope_id.raw());
-                const downstream = try prepareExternal(engine, ctx, roc_host, replacement.replacement, descriptor_roots.items, @ptrCast(rows.removed_scope_ids), layout.remove_starts, layout.parent_elem_id.raw(), cache_overlay);
+                const downstream = try prepareExternal(engine, ctx, roc_host, replacement.replacement, descriptor_roots.items, @ptrCast(rows.removed_scope_ids), layout.remove_starts, &suppressed_parents, cache_overlay);
                 errdefer downstream.deinit();
                 try downstream.prepareEachRenderTopology(replacement, layout);
                 return downstream;
@@ -6333,7 +6339,7 @@ pub fn Engine(comptime Ctx: type) type {
                     .replacement_stream = self.replacement.stream,
                     .collection = self.replacement.collection,
                     .removal = self.removal.?.removal,
-                    .suppressed_render_parent_id = self.suppressed_render_parent_id,
+                    .suppressed_render_parent_ids = self.suppressed_render_parent_ids,
                     .initial_root = self.initial_root,
                 };
                 self.render_splice = try facade.prepareRenderTopology(allocator);
@@ -6754,8 +6760,19 @@ pub fn Engine(comptime Ctx: type) type {
             render_batch_target: ?*render.TransactionalBatch = null,
             publication_phase: PublicationPhase = .unprepared,
             host_render_publication: ?HostRenderPublication = null,
-            suppressed_render_parent_id: ?u64 = null,
+            /// Render parents the owning plan registers itself; see
+            /// `PreparedStructuralDownstream.suppressed_render_parent_ids`.
+            suppressed_render_parent_ids: []const u64 = &.{},
             initial_root: bool = false,
+
+            /// Reports whether the owning plan publishes this render parent's
+            /// final child order itself. Such a parent must be left out of the
+            /// structural pass: registering the same parent twice on one splice
+            /// records a duplicate parent intent rather than a second edit.
+            fn isSuppressedRenderParent(self: *const @This(), parent_id: u64) bool {
+                for (self.suppressed_render_parent_ids) |suppressed| if (suppressed == parent_id) return true;
+                return false;
+            }
 
             fn stateIndexDescending(_: void, left: usize, right: usize) bool {
                 return left > right;
@@ -6897,14 +6914,14 @@ pub fn Engine(comptime Ctx: type) type {
                 const touched_bound = std.math.add(usize, self.removal.?.scan.touched_parent_ids.len, self.replacement_stream.render_nodes.items.len) catch return error.ResourceLimit;
                 touched.ensureUnusedCapacity(allocator, std.math.cast(u32, touched_bound) orelse return error.ResourceLimit) catch return error.OutOfMemory;
                 for (self.removal.?.scan.touched_parent_ids) |parent_id| {
-                    if (self.suppressed_render_parent_id == parent_id) continue;
+                    if (self.isSuppressedRenderParent(parent_id)) continue;
                     if (!retired.contains(parent_id) or replacements.contains(parent_id)) touched.putAssumeCapacity(parent_id, {});
                 }
                 var max_elem_id: u64 = 0;
                 for (self.replacement_stream.render_nodes.items) |node| {
                     max_elem_id = @max(max_elem_id, node.elem_id.raw());
                     const parent_id = descriptor_stream.renderNodeParentElemId(HostNodeDescriptorStream, &self.replacement_stream, node);
-                    if (self.suppressed_render_parent_id != parent_id.raw()) touched.putAssumeCapacity(parent_id.raw(), {});
+                    if (!self.isSuppressedRenderParent(parent_id.raw())) touched.putAssumeCapacity(parent_id.raw(), {});
                 }
 
                 const active_event_count = self.engine.active_stream.events.items.len;
@@ -7045,7 +7062,8 @@ pub fn Engine(comptime Ctx: type) type {
                     if (!inserted) try self.appendReplacementChildren(allocator, &children, parent_id.*);
                     splice.addChildren(&self.engine.render_cache, ids.ElemId.fromRaw(parent_id.*), children.items) catch |err| switch (err) {
                         error.OutOfMemory => return error.OutOfMemory,
-                        else => return error.ResourceLimit,
+                        error.ResourceLimit => return error.ResourceLimit,
+                        error.ConflictingParent, error.DuplicateChild, error.MissingNode => return error.InvalidRenderTopology,
                     };
                 }
                 for (self.replacement_stream.text_nodes.items) |desc| splice.addTextField(&self.engine.render_cache, desc.elem_id, .text, desc.value) catch |err| switch (err) {
@@ -11636,6 +11654,7 @@ pub fn Engine(comptime Ctx: type) type {
             return self.tryDispatchStateValue(ctx, roc_host, node_id, value, cap) catch |err| switch (err) {
                 error.OutOfMemory => @panic("host out of memory while preparing atomic state transaction"),
                 error.ResourceLimit => @panic("configured resource limit rejected atomic state transaction"),
+                error.InvalidRenderTopology => @panic("staged render topology conflicted with the committed render tree"),
             };
         }
 
@@ -11905,6 +11924,7 @@ pub fn Engine(comptime Ctx: type) type {
                         plan.composite_structural = PreparedCompositeStructural.prepareWithSubsumedFlag(engine, ctx, roc_host, structural_changes, &plan.caches, .{}, state_node_ids, &all_eaches_subsumed) catch |err| switch (err) {
                             error.OutOfMemory => return error.OutOfMemory,
                             error.ResourceLimit => if (all_eaches_subsumed) null else return error.ResourceLimit,
+                            error.InvalidRenderTopology => return error.InvalidRenderTopology,
                         };
                         if (all_eaches_subsumed) {
                             plan.structural_downstream = try prepareWhenDownstream(engine, ctx, roc_host, structural_changes, state_update, &plan.caches);
