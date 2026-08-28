@@ -6910,6 +6910,102 @@ test "signals host removal reinsert churn plateaus dense tables" {
     try std.testing.expect(activeTextElementId(&host, "row-4-4") == null);
 }
 
+test "live row churn never recycles a node id the descriptor stream still holds" {
+    // Node ids index the descriptor stream's per-node slots, one descriptor per
+    // slot, so a node id is unusable while any of its slots is occupied.
+    // Identity reservation used to recycle purely on identity lifecycle, so a
+    // construction site instantiated in a second scope could be handed a node
+    // id another scope's live site still occupied, publishing two descriptors
+    // into one slot at the allocation-free commit boundary ("descriptor stream
+    // recorded duplicate descriptor index").
+    //
+    // This guards the invariant rather than replaying that trigger: the
+    // shortest shape that reproduces it in an example needs render-layout
+    // arithmetic that is still broken for multi-site growth, so this covers
+    // live churn across sibling sites at a fixed row count instead.
+    const Check = struct {
+        fn expectDistinctNodeIds(host: *const HostEnv) !void {
+            const sites = host.engine.active_stream.scope_sites.items;
+            for (sites, 0..) |site, index| {
+                for (sites[0..index]) |earlier| {
+                    if (earlier.node_id.raw() == site.node_id.raw() and earlier.kind == site.kind) {
+                        std.debug.print(
+                            "node id {d} carries two live {t} scope sites (scopes {d} and {d})\n",
+                            .{ site.node_id.raw(), site.kind, earlier.scope_id.raw(), site.scope_id.raw() },
+                        );
+                        return error.DuplicateLiveNodeId;
+                    }
+                }
+            }
+        }
+    };
+
+    test_erased_callable_drop_count = 0;
+    test_row_elem_call_count = 0;
+
+    var host = HostEnv.init();
+    var roc_host = makeSignalsRocHost(&host);
+    host.engine.roc_host = &roc_host;
+    defer {
+        host.deinit();
+        _ = host.gpa.deinit();
+    }
+
+    const condition_token = newTestBinderToken(&roc_host);
+    const condition_cap = testHostValueCapability(&roc_host);
+    const items_token = newTestBinderToken(&roc_host);
+    const items_cap = testHostValueCapability(&roc_host);
+    // Two sibling sites under distinct parents: each row scope owns a `when`
+    // construction site, so churning the list retires and re-reserves node
+    // identities while the other site's rows stay live.
+    const first_each = testNodeEachSignalWithNestedWhenRows(&roc_host, testNodeRefExpr(items_token), items_cap, condition_token, condition_cap);
+    const second_each = testNodeEachSignalWithNestedWhenRows(&roc_host, testNodeRefExpr(items_token), items_cap, condition_token, condition_cap);
+    const first_column = testElementWith(&roc_host, "div", &.{}, &.{first_each});
+    const second_column = testElementWith(&roc_host, "div", &.{}, &.{second_each});
+    const section = testElementWith(&roc_host, "section", &.{}, &.{ first_column, second_column });
+    const initial_items = [_]HostValue{ testHostValueI64(1), testHostValueI64(2), testHostValueI64(3) };
+    const items_state = testNodeStateWithTokenAndInitialCapability(&roc_host, items_token, testHostValueI64List(&roc_host, &initial_items), section, items_cap);
+    const root = testNodeStateWithTokenAndInitialCapability(&roc_host, condition_token, testHostValueBool(true), items_state, condition_cap);
+    defer root.decref(&roc_host);
+
+    var stream: HostNodeDescriptorStream = .{};
+    host.collectActiveElemRootDescriptors(&roc_host, &stream, root, &.{});
+    _ = applyNodeDescriptorStream(&host, &roc_host, &stream);
+    host.engine.active_stream = stream;
+    try Check.expectDistinctNodeIds(&host);
+
+    var state_ids: [2]u64 = undefined;
+    var state_count: usize = 0;
+    for (host.engine.active_stream.scope_sites.items) |site| {
+        if (site.kind != .state) continue;
+        if (state_count < state_ids.len) state_ids[state_count] = site.node_id.raw();
+        state_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), state_count);
+    const items_state_id = state_ids[1];
+
+    // Every edit replaces all three keys, so each dispatch retires both sites'
+    // row scopes -- and their nested `when` node identities -- and reserves
+    // fresh ones in the same transaction. Keeping the row count fixed keeps
+    // this focused on identity reuse rather than on render-layout arithmetic.
+    const edits = [_][3]i64{
+        .{ 4, 5, 6 },
+        .{ 7, 8, 9 },
+        .{ 10, 11, 12 },
+        .{ 13, 14, 15 },
+    };
+    for (edits) |edit| {
+        var items: [3]HostValue = undefined;
+        for (edit, 0..) |value, index| items[index] = testHostValueI64(value);
+        _ = try host.engine.tryDispatchStateValue(&host, &roc_host, items_state_id, testHostValueI64List(&roc_host, &items), items_cap);
+        try Check.expectDistinctNodeIds(&host);
+    }
+
+    // The last edit is the one on screen, in both columns.
+    try std.testing.expect(activeTextElementId(&host, "row-15-15-true") != null);
+    try std.testing.expect(activeTextElementId(&host, "row-1-1-true") == null);
+}
+
 test "signals host nested removal reinsert churn plateaus branch scopes" {
     test_erased_callable_drop_count = 0;
     test_row_elem_call_count = 0;

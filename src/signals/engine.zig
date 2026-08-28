@@ -2229,6 +2229,26 @@ pub fn Engine(comptime Ctx: type) type {
             return self.render_cache.hasActiveNode(elem_id);
         }
 
+        /// Reports whether the committed descriptor stream still holds any
+        /// descriptor for this node id.
+        ///
+        /// The stream indexes state, `when`, `each`, and scope-site
+        /// descriptors by node id, one descriptor per slot, so a node id is
+        /// unusable for a new construction site while any of those slots is
+        /// occupied. Identity reservation consults this before recycling a
+        /// node id whose identity metadata has been retired: a construction
+        /// site instantiated in a second scope can outlive the identity record
+        /// of the first, and handing its id to a new site would publish two
+        /// descriptors into one slot at the allocation-free commit boundary.
+        pub fn activeStreamHoldsNode(self: *const Self, node_id: u64) bool {
+            const index = std.math.cast(usize, node_id) orelse return false;
+            if (index >= self.active_stream.descriptor_indexes_by_node_id.items.len) return false;
+            const entry = &self.active_stream.descriptor_indexes_by_node_id.items[index];
+            if (entry.state != .none or entry.when != .none or entry.each != .none) return true;
+            const sites = &entry.scope_sites;
+            return sites.component != .none or sites.state != .none or sites.when != .none or sites.each != .none;
+        }
+
         /// Performs reset render tree inside the shared engine while preserving transaction and changed-set invariants.
         pub fn resetRenderTree(self: *Self, ctx: Ctx.Handle) void {
             self.render_cache.reset(ctx);
@@ -4115,12 +4135,19 @@ pub fn Engine(comptime Ctx: type) type {
                 for (self.engine.node_identities.items) |identity| {
                     if (identity.lifecycle.blocksReuse(ids.Generation.fromRaw(self.engine.identity_reuse_barrier))) continue;
                     if (self.node_identities.reserved_ids.contains(identity.node_id.raw())) continue;
+                    // The committed descriptor stream is the publication
+                    // authority for node ids, exactly as the render cache is
+                    // for element ids. Identity metadata for a construction
+                    // site can be retired while another scope's live site
+                    // still occupies that node's descriptor slots, and the
+                    // per-node slots hold one descriptor each.
+                    if (self.engine.activeStreamHoldsNode(identity.node_id.raw())) continue;
                     candidates[candidate_count] = identity.node_id.raw();
                     candidate_count += 1;
                     break;
                 }
                 var fresh_id: u64 = @intCast(self.engine.node_identities.items.len);
-                while (self.node_identities.reserved_ids.contains(fresh_id)) fresh_id = std.math.add(u64, fresh_id, 1) catch return error.ResourceLimit;
+                while (self.node_identities.reserved_ids.contains(fresh_id) or self.engine.activeStreamHoldsNode(fresh_id)) fresh_id = std.math.add(u64, fresh_id, 1) catch return error.ResourceLimit;
                 candidates[candidate_count] = fresh_id;
                 candidate_count += 1;
                 const node_id = self.node_identities.reserve(key, active_id, candidates[0..candidate_count]) catch |err| return switch (err) {
