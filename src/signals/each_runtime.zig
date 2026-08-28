@@ -53,6 +53,7 @@ pub const PreparedRowRemovals = struct {
         while (index != 0) {
             index -= 1;
             if (sites.items[index].scope_ids.items.len != 0) continue;
+            if (row_keys.siteRemainsActive(sites.items[index].key)) continue;
             const removed = sites.swapRemove(index);
             if (!site_indexes.remove(removed.key)) @panic("empty each site was missing its maintained index");
             var retired = removed;
@@ -760,6 +761,11 @@ const TestRowKeys = struct {
         if (scope_id >= self.hashes.len) @panic("test scope id exceeded row key table");
         return self.hashes[@intCast(scope_id)];
     }
+
+    /// Test fixtures using this lookup model no live descriptor ownership.
+    pub fn siteRemainsActive(_: *const TestRowKeys, _: SiteKey) bool {
+        return false;
+    }
 };
 
 const TestSyncHooks = struct {
@@ -1240,6 +1246,38 @@ test "prepared row removals retire empty site and maintained index" {
     prepared.apply(std.testing.allocator, &sites, &indexes, &memberships, &row_keys);
     try std.testing.expectEqual(@as(usize, 0), sites.items.len);
     try std.testing.expectEqual(@as(?usize, null), indexes.get(.{ .parent_scope_id = 1, .site_ordinal = 2 }));
+    try std.testing.expectEqual(@as(?Membership, null), memberships.items[10]);
+}
+
+test "prepared row removals retain empty site for an active descriptor without allocation" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var sites: std.ArrayListUnmanaged(Site) = .empty;
+    var indexes: SiteIndexMap = .empty;
+    var memberships: std.ArrayListUnmanaged(?Membership) = .empty;
+    defer clearSites(std.testing.allocator, &sites, &indexes, &memberships);
+    const site_index = ensureSiteIndex(std.testing.allocator, &sites, &indexes, 1, 2);
+    appendRowToSiteIndex(std.testing.allocator, &sites, &memberships, site_index, 10, 5);
+    const ActiveRowKeys = struct {
+        /// Returns the retained test row's stable key hash.
+        pub fn rowKeyHash(_: *@This(), scope_id: u64) u64 {
+            std.debug.assert(scope_id == 10);
+            return 5;
+        }
+        /// Models an active descriptor owning the otherwise-empty test site.
+        pub fn siteRemainsActive(_: *@This(), key: SiteKey) bool {
+            return key.parent_scope_id == 1 and key.site_ordinal == 2;
+        }
+    };
+    var row_keys = ActiveRowKeys{};
+    var fault = FaultAllocator.init(std.testing.allocator);
+    var prepared = try prepareRowRemovals(fault.allocator(), sites.items, memberships.items, &.{.{ .scope_id = 10, .key_hash = 5 }});
+    defer prepared.deinit(fault.allocator());
+    fault.configure(1);
+    prepared.apply(std.testing.allocator, &sites, &indexes, &memberships, &row_keys);
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqual(@as(usize, 1), sites.items.len);
+    try std.testing.expectEqual(@as(usize, 0), sites.items[0].scope_ids.items.len);
+    try std.testing.expectEqual(@as(?usize, 0), indexes.get(.{ .parent_scope_id = 1, .site_ordinal = 2 }));
     try std.testing.expectEqual(@as(?Membership, null), memberships.items[10]);
 }
 

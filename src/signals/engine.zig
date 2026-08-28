@@ -658,6 +658,15 @@ pub fn Engine(comptime Ctx: type) type {
             pub fn rowKeyHash(self: *@This(), scope_id: u64) u64 {
                 return self.engine.eachRowScopeKeyHash(scope_id);
             }
+
+            /// Keeps an empty keyed-row site while its descriptor remains live,
+            /// allowing a later update to repopulate it without inventing a
+            /// second lifecycle path.
+            pub fn siteRemainsActive(self: *@This(), key: each_runtime.SiteKey) bool {
+                const node_id = self.engine.active_node_identity_ids.get(identityKey(key.parent_scope_id, key.site_ordinal)) orelse return false;
+                const site = self.engine.activeScopeSiteByNodeId(node_id, .each) orelse return false;
+                return site.scope_id == key.parent_scope_id and site.ordinal == key.site_ordinal and self.engine.activeEachIndexByNodeId(node_id) != null;
+            }
         };
 
         const EachRowSync = struct {
@@ -1196,7 +1205,7 @@ pub fn Engine(comptime Ctx: type) type {
                     for (layout.final_starts) |start| site_final_end = @max(site_final_end, start);
                     for (layout.survivor_moves) |move| {
                         const final_start = std.math.cast(usize, std.math.add(isize, std.math.cast(isize, move.new_start) orelse return error.ResourceLimit, cumulative_delta) catch return error.ResourceLimit) orelse return error.ResourceLimit;
-                        placements[write] = .{ .source = .active, .source_start = move.old_start, .final_start = final_start, .len = move.len };
+                        placements[write] = PreparedFinalRenderTopology.Placement.active(.{ .value = move.old_start }, .{ .value = final_start }, move.len);
                         write += 1;
                         site_final_end = @max(site_final_end, std.math.add(usize, move.new_start, move.len) catch return error.ResourceLimit);
                     }
@@ -1204,7 +1213,7 @@ pub fn Engine(comptime Ctx: type) type {
                     for (replacement.replacement_rows) |row| {
                         const base = layout.final_starts[row.row_index];
                         const final_start = std.math.cast(usize, std.math.add(isize, std.math.cast(isize, base) orelse return error.ResourceLimit, cumulative_delta) catch return error.ResourceLimit) orelse return error.ResourceLimit;
-                        placements[write] = .{ .source = .replacement, .source_start = row.start, .final_start = final_start, .len = row.len };
+                        placements[write] = PreparedFinalRenderTopology.Placement.replacement(.{ .value = row.start }, .{ .value = final_start }, row.len);
                         write += 1;
                         replacement_len = std.math.add(usize, replacement_len, row.len) catch return error.ResourceLimit;
                         site_final_end = @max(site_final_end, std.math.add(usize, base, row.len) catch return error.ResourceLimit);
@@ -1423,7 +1432,21 @@ pub fn Engine(comptime Ctx: type) type {
                 const SortEach = struct {
                     engine: *Self,
                     changes: []const HostDirtyStructuralSignal,
+                    fn ownershipDepth(sort: @This(), change_index: usize) usize {
+                        const change = sort.changes[change_index];
+                        var depth: usize = 0;
+                        for (sort.changes, 0..) |candidate, candidate_index| {
+                            if (candidate_index == change_index or candidate.kind != .each) continue;
+                            const site = sort.engine.activeScopeSiteByNodeId(candidate.node_id, .each) orelse continue;
+                            const each_site = HostEachSite{ .parent_scope_id = site.scope_id, .site_ordinal = site.ordinal };
+                            if ((sort.engine.eachSiteRowAncestorScopeId(change.scope_id, each_site) catch null) != null) depth += 1;
+                        }
+                        return depth;
+                    }
                     fn lessThan(sort: @This(), left: usize, right: usize) bool {
+                        const left_ownership_depth = sort.ownershipDepth(left);
+                        const right_ownership_depth = sort.ownershipDepth(right);
+                        if (left_ownership_depth != right_ownership_depth) return left_ownership_depth < right_ownership_depth;
                         const left_depth = sort.engine.scopeDepth(sort.changes[left].scope_id);
                         const right_depth = sort.engine.scopeDepth(sort.changes[right].scope_id);
                         if (left_depth != right_depth) return left_depth < right_depth;
@@ -1597,42 +1620,97 @@ pub fn Engine(comptime Ctx: type) type {
                     if (targets.descriptor_target_scopes[@intCast(scope_id)]) removed_render_count = std.math.add(usize, removed_render_count, 1) catch return error.ResourceLimit;
                 }
 
-                var placement_count = branch_ranges.len;
+                var placement_capacity = std.math.add(usize, branch_ranges.len, engine.active_stream.render_nodes.items.len) catch return error.ResourceLimit;
                 for (layouts, rows.replacements[0..rows.prepared_len]) |layout, replacement| {
-                    placement_count = std.math.add(usize, placement_count, layout.survivor_moves.len) catch return error.ResourceLimit;
-                    placement_count = std.math.add(usize, placement_count, replacement.replacement_rows.len) catch return error.ResourceLimit;
+                    _ = layout;
+                    placement_capacity = std.math.add(usize, placement_capacity, replacement.replacement_rows.len) catch return error.ResourceLimit;
                 }
-                const placements = allocator.alloc(PreparedFinalRenderTopology.Placement, placement_count) catch return error.OutOfMemory;
+                const placements = allocator.alloc(PreparedFinalRenderTopology.Placement, placement_capacity) catch return error.OutOfMemory;
                 defer allocator.free(placements);
+                const Anchor = union(enum) {
+                    global: usize,
+                    row_relative: struct { each_index: usize, row_final_start: usize, retained_offset: usize },
+                };
                 const SiteKind = union(enum) { branch: usize, each: usize };
-                const SitePlacement = struct { anchor: usize, node_id: u64, kind: SiteKind };
+                const SitePlacement = struct { old_anchor: usize, anchor: Anchor, node_id: u64, kind: SiteKind };
                 const site_count = std.math.add(usize, selections.len, sites.len) catch return error.ResourceLimit;
                 const ordered_sites = allocator.alloc(SitePlacement, site_count) catch return error.OutOfMemory;
                 defer allocator.free(ordered_sites);
                 var site_write: usize = 0;
                 for (selections, 0..) |selection, index| {
-                    ordered_sites[site_write] = .{ .anchor = selection.render_insert_index, .node_id = changes[normalized.selected_indexes[index]].node_id, .kind = .{ .branch = index } };
+                    var active_anchor: ?usize = null;
+                    for (engine.active_stream.render_nodes.items, 0..) |node, render_index| {
+                        const scope_id = renderNodeScopeId(&engine.active_stream, node);
+                        if (engine.scopeIsDescendantOrSelf(scope_id, selection.retired_scope_id) catch return error.ResourceLimit) {
+                            active_anchor = render_index;
+                            break;
+                        }
+                    }
+                    const old_anchor = active_anchor orelse return error.ResourceLimit;
+                    var anchor: Anchor = .{ .global = old_anchor };
+                    var owner_depth: ?usize = null;
+                    for (sites, layouts, 0..) |each_site_desc, layout, each_index| {
+                        const each_site = HostEachSite{ .parent_scope_id = each_site_desc.scope_id, .site_ordinal = each_site_desc.ordinal };
+                        const row_scope_id = (engine.eachSiteRowAncestorScopeId(selection.parent_scope_id, each_site) catch return error.ResourceLimit) orelse
+                            (engine.eachSiteRowAncestorScopeId(selection.retired_scope_id, each_site) catch return error.ResourceLimit) orelse continue;
+                        const depth = engine.scopeDepth(row_scope_id);
+                        if (owner_depth != null and depth <= owner_depth.?) continue;
+                        for (layout.survivor_moves) |move| if (move.scope_id == row_scope_id) {
+                            if (old_anchor < move.old_start or old_anchor > move.old_start + move.len) return error.ResourceLimit;
+                            var retained_offset: usize = 0;
+                            for (engine.active_stream.render_nodes.items[move.old_start..old_anchor]) |node| {
+                                const scope_id = renderNodeScopeId(&engine.active_stream, node);
+                                if (scope_id >= targets.descriptor_target_scopes.len) return error.ResourceLimit;
+                                if (!targets.descriptor_target_scopes[@intCast(scope_id)]) retained_offset += 1;
+                            }
+                            anchor = .{ .row_relative = .{ .each_index = each_index, .row_final_start = move.new_start, .retained_offset = retained_offset } };
+                            owner_depth = depth;
+                            break;
+                        };
+                    }
+                    ordered_sites[site_write] = .{ .old_anchor = old_anchor, .anchor = anchor, .node_id = changes[normalized.selected_indexes[index]].node_id, .kind = .{ .branch = index } };
                     site_write += 1;
                 }
                 for (sites, each_change_indexes, 0..) |site, change_index, index| {
-                    ordered_sites[site_write] = .{ .anchor = site.render_insert_index, .node_id = changes[change_index].node_id, .kind = .{ .each = index } };
+                    ordered_sites[site_write] = .{ .old_anchor = site.render_insert_index, .anchor = .{ .global = site.render_insert_index }, .node_id = changes[change_index].node_id, .kind = .{ .each = index } };
                     site_write += 1;
                 }
                 const SortSites = struct {
                     fn lessThan(_: void, left: SitePlacement, right: SitePlacement) bool {
-                        if (left.anchor != right.anchor) return left.anchor < right.anchor;
+                        if (left.old_anchor != right.old_anchor) return left.old_anchor < right.old_anchor;
+                        if (std.meta.activeTag(left.kind) != std.meta.activeTag(right.kind)) return left.kind == .each;
                         return left.node_id < right.node_id;
                     }
                 };
                 std.mem.sort(SitePlacement, ordered_sites, {}, SortSites.lessThan);
+                const each_deltas = allocator.alloc(?isize, layouts.len) catch return error.OutOfMemory;
+                defer allocator.free(each_deltas);
+                @memset(each_deltas, null);
                 var placement_write: usize = 0;
                 var cumulative_delta: isize = 0;
+                var inserted_before: usize = 0;
                 for (ordered_sites) |site_entry| switch (site_entry.kind) {
                     .branch => |index| {
                         const range = branch_ranges[index];
-                        const final_start = std.math.cast(usize, std.math.add(isize, std.math.cast(isize, site_entry.anchor) orelse return error.ResourceLimit, cumulative_delta) catch return error.ResourceLimit) orelse return error.ResourceLimit;
-                        placements[placement_write] = .{ .source = .replacement, .source_start = range.start, .final_start = final_start, .len = range.len };
+                        const final_start = switch (site_entry.anchor) {
+                            .global => |old_anchor| blk: {
+                                var retained_before: usize = 0;
+                                for (engine.active_stream.render_nodes.items[0..old_anchor]) |node| {
+                                    const scope_id = renderNodeScopeId(&engine.active_stream, node);
+                                    if (scope_id >= targets.descriptor_target_scopes.len) return error.ResourceLimit;
+                                    if (!targets.descriptor_target_scopes[@intCast(scope_id)]) retained_before += 1;
+                                }
+                                break :blk std.math.add(usize, retained_before, inserted_before) catch return error.ResourceLimit;
+                            },
+                            .row_relative => |relative| blk: {
+                                const row_delta = each_deltas[relative.each_index] orelse return error.ResourceLimit;
+                                const local = std.math.add(usize, relative.row_final_start, relative.retained_offset) catch return error.ResourceLimit;
+                                break :blk std.math.cast(usize, std.math.add(isize, std.math.cast(isize, local) orelse return error.ResourceLimit, row_delta) catch return error.ResourceLimit) orelse return error.ResourceLimit;
+                            },
+                        };
+                        placements[placement_write] = PreparedFinalRenderTopology.Placement.replacement(.{ .value = range.start }, .{ .value = final_start }, range.len);
                         placement_write += 1;
+                        inserted_before = std.math.add(usize, inserted_before, range.len) catch return error.ResourceLimit;
                         var removed: usize = 0;
                         const retired_scope_id = selections[index].retired_scope_id;
                         for (engine.active_stream.render_nodes.items) |node| {
@@ -1645,25 +1723,47 @@ pub fn Engine(comptime Ctx: type) type {
                     .each => |index| {
                         const layout = layouts[index];
                         const replacement = rows.replacements[index];
+                        each_deltas[index] = cumulative_delta;
                         for (layout.survivor_moves) |move| {
-                            const final_start = std.math.cast(usize, std.math.add(isize, std.math.cast(isize, move.new_start) orelse return error.ResourceLimit, cumulative_delta) catch return error.ResourceLimit) orelse return error.ResourceLimit;
-                            placements[placement_write] = .{ .source = .active, .source_start = move.old_start, .final_start = final_start, .len = move.len };
-                            placement_write += 1;
+                            var fragment_start: ?usize = null;
+                            var retained_offset: usize = 0;
+                            for (engine.active_stream.render_nodes.items[move.old_start..][0..move.len], move.old_start..) |node, old_index| {
+                                const scope_id = renderNodeScopeId(&engine.active_stream, node);
+                                if (scope_id >= targets.descriptor_target_scopes.len) return error.ResourceLimit;
+                                if (targets.descriptor_target_scopes[@intCast(scope_id)]) {
+                                    if (fragment_start) |start| {
+                                        const len = old_index - start;
+                                        const base = std.math.add(usize, move.new_start, retained_offset) catch return error.ResourceLimit;
+                                        const final_start = std.math.cast(usize, std.math.add(isize, std.math.cast(isize, base) orelse return error.ResourceLimit, cumulative_delta) catch return error.ResourceLimit) orelse return error.ResourceLimit;
+                                        placements[placement_write] = PreparedFinalRenderTopology.Placement.active(.{ .value = start }, .{ .value = final_start }, len);
+                                        placement_write += 1;
+                                        retained_offset += len;
+                                        fragment_start = null;
+                                    }
+                                } else if (fragment_start == null) fragment_start = old_index;
+                            }
+                            if (fragment_start) |start| {
+                                const len = move.old_start + move.len - start;
+                                const base = std.math.add(usize, move.new_start, retained_offset) catch return error.ResourceLimit;
+                                const final_start = std.math.cast(usize, std.math.add(isize, std.math.cast(isize, base) orelse return error.ResourceLimit, cumulative_delta) catch return error.ResourceLimit) orelse return error.ResourceLimit;
+                                placements[placement_write] = PreparedFinalRenderTopology.Placement.active(.{ .value = start }, .{ .value = final_start }, len);
+                                placement_write += 1;
+                            }
                         }
                         var replacement_len: usize = 0;
                         for (replacement.replacement_rows) |range| {
                             if (range.row_index >= layout.final_starts.len) return error.ResourceLimit;
                             const final_start = std.math.cast(usize, std.math.add(isize, std.math.cast(isize, layout.final_starts[range.row_index]) orelse return error.ResourceLimit, cumulative_delta) catch return error.ResourceLimit) orelse return error.ResourceLimit;
-                            placements[placement_write] = .{ .source = .replacement, .source_start = range.start, .final_start = final_start, .len = range.len };
+                            placements[placement_write] = PreparedFinalRenderTopology.Placement.replacement(.{ .value = range.start }, .{ .value = final_start }, range.len);
                             placement_write += 1;
                             replacement_len = std.math.add(usize, replacement_len, range.len) catch return error.ResourceLimit;
                         }
                         cumulative_delta = std.math.add(isize, cumulative_delta, std.math.cast(isize, replacement_len) orelse return error.ResourceLimit) catch return error.ResourceLimit;
                         cumulative_delta = std.math.sub(isize, cumulative_delta, std.math.cast(isize, layout.removal.removal.scan.removed_render_count) orelse return error.ResourceLimit) catch return error.ResourceLimit;
+                        inserted_before = std.math.add(usize, inserted_before, replacement_len) catch return error.ResourceLimit;
                     },
                 };
-                if (placement_write != placements.len) return error.ResourceLimit;
-                var final_render_topology = try PreparedFinalRenderTopology.preparePlaced(engine, allocator, replacement_owner, targets.descriptor_target_scopes, removed_render_count, placements);
+                var final_render_topology = try PreparedFinalRenderTopology.preparePlaced(engine, allocator, replacement_owner, targets.descriptor_target_scopes, removed_render_count, placements[0..placement_write]);
                 var final_topology_owned = true;
                 errdefer if (final_topology_owned) final_render_topology.deinit();
 
@@ -5266,12 +5366,18 @@ pub fn Engine(comptime Ctx: type) type {
         };
 
         const PreparedEachRowRenderLayout = struct {
+            const SurvivorMove = struct {
+                scope_id: u64,
+                old_start: usize,
+                new_start: usize,
+                len: usize,
+            };
             allocator: std.mem.Allocator,
             parent_elem_id: u64,
             targets: PreparedStructuralTargets,
             remove_starts: []usize,
             final_starts: []usize,
-            survivor_moves: []HostEachRowRenderMove,
+            survivor_moves: []SurvivorMove,
             removal: structural_splice.PreparedMultiRemoval,
 
             fn prepare(engine: *Self, allocator: std.mem.Allocator, site: HostNodeScopeSiteDesc, rows: *const each_runtime.PreparedRowSync, replacements: []const PreparedEachRowReplacementCollection.ReplacementRow) CollectionError!@This() {
@@ -5343,7 +5449,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const final_starts = allocator.alloc(usize, rows.next_scope_ids.len) catch return error.OutOfMemory;
                 errdefer allocator.free(final_starts);
                 const survivor_count = std.math.sub(usize, rows.next_scope_ids.len, replacements.len) catch return error.ResourceLimit;
-                const survivor_moves = allocator.alloc(HostEachRowRenderMove, survivor_count) catch return error.OutOfMemory;
+                const survivor_moves = allocator.alloc(SurvivorMove, survivor_count) catch return error.OutOfMemory;
                 errdefer allocator.free(survivor_moves);
                 var next_start = site.render_insert_index;
                 var move_write: usize = 0;
@@ -5359,7 +5465,7 @@ pub fn Engine(comptime Ctx: type) type {
                     } else {
                         const segment_index = by_scope.get(scope_id) orelse return error.ResourceLimit;
                         const segment = segments.items[segment_index];
-                        survivor_moves[move_write] = .{ .old_start = segment.start, .new_start = next_start, .len = segment.len };
+                        survivor_moves[move_write] = .{ .scope_id = scope_id, .old_start = segment.start, .new_start = next_start, .len = segment.len };
                         move_write += 1;
                         next_start = std.math.add(usize, next_start, segment.len) catch return error.ResourceLimit;
                     }
@@ -5379,12 +5485,26 @@ pub fn Engine(comptime Ctx: type) type {
         };
 
         const PreparedFinalRenderTopology = struct {
-            const PlacementSource = enum { active, replacement };
+            const ActiveStreamPosition = struct { value: usize };
+            const ReplacementStreamPosition = struct { value: usize };
+            const FinalTopologyPosition = struct { value: usize };
+            const PlacementSource = union(enum) {
+                active: ActiveStreamPosition,
+                replacement: ReplacementStreamPosition,
+            };
+            const MetadataSource = enum { active, replacement };
             const Placement = struct {
                 source: PlacementSource,
-                source_start: usize,
-                final_start: usize,
+                final_start: FinalTopologyPosition,
                 len: usize,
+
+                fn active(source_start: ActiveStreamPosition, final_start: FinalTopologyPosition, len: usize) @This() {
+                    return .{ .source = .{ .active = source_start }, .final_start = final_start, .len = len };
+                }
+
+                fn replacement(source_start: ReplacementStreamPosition, final_start: FinalTopologyPosition, len: usize) @This() {
+                    return .{ .source = .{ .replacement = source_start }, .final_start = final_start, .len = len };
+                }
             };
             allocator: std.mem.Allocator,
             render_nodes: std.ArrayListUnmanaged(HostRenderNode) = .empty,
@@ -5396,12 +5516,12 @@ pub fn Engine(comptime Ctx: type) type {
                 defer allocator.free(placements);
                 var write: usize = 0;
                 for (layout.survivor_moves) |move| {
-                    placements[write] = .{ .source = .active, .source_start = move.old_start, .final_start = move.new_start, .len = move.len };
+                    placements[write] = Placement.active(.{ .value = move.old_start }, .{ .value = move.new_start }, move.len);
                     write += 1;
                 }
                 for (replacement.replacement_rows) |row| {
                     if (row.row_index >= layout.final_starts.len) return error.ResourceLimit;
-                    placements[write] = .{ .source = .replacement, .source_start = row.start, .final_start = layout.final_starts[row.row_index], .len = row.len };
+                    placements[write] = Placement.replacement(.{ .value = row.start }, .{ .value = layout.final_starts[row.row_index] }, row.len);
                     write += 1;
                 }
                 return preparePlaced(engine, allocator, replacement.replacement, layout.targets.descriptor_target_scopes, layout.removal.removal.scan.removed_render_count, placements);
@@ -5416,25 +5536,30 @@ pub fn Engine(comptime Ctx: type) type {
                 const filled = allocator.alloc(bool, final_len) catch return error.OutOfMemory;
                 defer allocator.free(filled);
                 @memset(filled, false);
-                const sources = allocator.alloc(PlacementSource, final_len) catch return error.OutOfMemory;
+                const sources = allocator.alloc(MetadataSource, final_len) catch return error.OutOfMemory;
                 defer allocator.free(sources);
                 const old_used = allocator.alloc(bool, engine.active_stream.render_nodes.items.len) catch return error.OutOfMemory;
                 defer allocator.free(old_used);
                 @memset(old_used, false);
                 for (placements) |placement| {
-                    const source_nodes = switch (placement.source) {
-                        .active => engine.active_stream.render_nodes.items,
-                        .replacement => replacement.stream.render_nodes.items,
+                    const source_nodes, const source_start = switch (placement.source) {
+                        .active => |position| .{ engine.active_stream.render_nodes.items, position.value },
+                        .replacement => |position| .{ replacement.stream.render_nodes.items, position.value },
                     };
-                    if (placement.source_start > source_nodes.len or placement.len > source_nodes.len - placement.source_start) return error.ResourceLimit;
-                    if (placement.final_start > final_len or placement.len > final_len - placement.final_start) return error.ResourceLimit;
-                    for (filled[placement.final_start..][0..placement.len]) |is_filled| if (is_filled) return error.ResourceLimit;
-                    @memcpy(prepared.render_nodes.items[placement.final_start..][0..placement.len], source_nodes[placement.source_start..][0..placement.len]);
-                    @memset(filled[placement.final_start..][0..placement.len], true);
-                    @memset(sources[placement.final_start..][0..placement.len], placement.source);
-                    if (placement.source == .active) {
-                        for (old_used[placement.source_start..][0..placement.len]) |is_used| if (is_used) return error.ResourceLimit;
-                        @memset(old_used[placement.source_start..][0..placement.len], true);
+                    const final_start = placement.final_start.value;
+                    if (source_start > source_nodes.len or placement.len > source_nodes.len - source_start) return error.ResourceLimit;
+                    if (final_start > final_len or placement.len > final_len - final_start) return error.ResourceLimit;
+                    for (filled[final_start..][0..placement.len]) |is_filled| if (is_filled) return error.ResourceLimit;
+                    @memcpy(prepared.render_nodes.items[final_start..][0..placement.len], source_nodes[source_start..][0..placement.len]);
+                    @memset(filled[final_start..][0..placement.len], true);
+                    const source_kind: MetadataSource = switch (placement.source) {
+                        .active => .active,
+                        .replacement => .replacement,
+                    };
+                    @memset(sources[final_start..][0..placement.len], source_kind);
+                    if (source_kind == .active) {
+                        for (old_used[source_start..][0..placement.len]) |is_used| if (is_used) return error.ResourceLimit;
+                        @memset(old_used[source_start..][0..placement.len], true);
                     }
                 }
                 var final_cursor: usize = 0;
@@ -5848,7 +5973,7 @@ pub fn Engine(comptime Ctx: type) type {
                         delta = std.math.sub(isize, delta, std.math.cast(isize, interval.len) orelse return error.ResourceLimit) catch return error.ResourceLimit;
                     }
                     const final_start = std.math.cast(usize, std.math.add(isize, std.math.cast(isize, render_insert_indexes[index]) orelse return error.ResourceLimit, delta) catch return error.ResourceLimit) orelse return error.ResourceLimit;
-                    placements[index] = .{ .source = .replacement, .source_start = replacement_ranges[index].start, .final_start = final_start, .len = replacement_ranges[index].len };
+                    placements[index] = PreparedFinalRenderTopology.Placement.replacement(.{ .value = replacement_ranges[index].start }, .{ .value = final_start }, replacement_ranges[index].len);
                 }
                 plan.final_render_topology = try PreparedFinalRenderTopology.preparePlaced(plan.engine, allocator, plan.replacement, plan.targets.?.descriptor_target_scopes, plan.removal.?.removal.scan.removed_render_count, placements);
                 return plan;
@@ -12741,8 +12866,8 @@ test "final render placements preserve two disjoint intervals under one parent" 
             const targets = [_]bool{ false, true, true, false, false };
             const Placement = Engine(VerifyCtx).PreparedFinalRenderTopology.Placement;
             const placements = [_]Placement{
-                .{ .source = .replacement, .source_start = 0, .final_start = 1, .len = 1 },
-                .{ .source = .replacement, .source_start = 1, .final_start = 3, .len = 1 },
+                Engine(VerifyCtx).PreparedFinalRenderTopology.Placement.replacement(.{ .value = 0 }, .{ .value = 1 }, 1),
+                Engine(VerifyCtx).PreparedFinalRenderTopology.Placement.replacement(.{ .value = 1 }, .{ .value = 3 }, 1),
             };
             fault.configure(fail_at);
             var topology = Engine(VerifyCtx).PreparedFinalRenderTopology.preparePlaced(&engine, ctx.allocator, replacement, &targets, 2, &placements) catch |err| {
