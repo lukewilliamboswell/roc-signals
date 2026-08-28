@@ -20,8 +20,18 @@
 //!  3. Targeted corruptions of that valid tree - truncate, extend, and flip a
 //!     byte - which must be rejected rather than accepted as something else.
 //!
+//! # Scope
+//!
+//! This target covers the Zig-side schema and extraction-plan parsers only. The
+//! command-buffer wire format is decoded in JavaScript, not here, so it is not
+//! reachable from a Zig fuzz target and is covered instead by the browser
+//! contract tests under `scripts/browser/`. The Zig side of that protocol is a
+//! producer: `render_commands.zig` writes records and preflights capacity, and
+//! its failure modes are transaction-shaped rather than parse-shaped, which puts
+//! them in the `structural` target.
+//!
 //! To replay a crash:
-//!   zig build run-repro-boundary -- --verbose <crash-file>
+//!   python3 scripts/fuzz.py repro boundary <crash-file> --verbose
 
 const std = @import("std");
 const signals = @import("signals");
