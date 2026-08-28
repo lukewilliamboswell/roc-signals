@@ -656,6 +656,18 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             try self.wire.addString(.{ .op = if (std.mem.eql(u8, prepared.tag, "text")) .create_text else .create_element, .elem_id = wire_elem_id, .bytes = if (std.mem.eql(u8, prepared.tag, "text")) "" else prepared.tag });
         }
 
+        /// Adds the engine-only render root for an initial surface. The host
+        /// observes a reset command rather than a synthetic DOM creation for
+        /// id zero, while cache and native-shadow publication still receive
+        /// the same prepared root ownership.
+        pub fn addHostRoot(self: *Self, cache: *Cache(Ctx)) (std.mem.Allocator.Error || error{ ActiveNode, DuplicateNode, ResourceLimit })!void {
+            if (cache.hasRoot()) return error.ActiveNode;
+            if (self.provisional_nodes.contains(0)) return error.DuplicateNode;
+            const prepared = try PreparedNodeCreation.prepare(Ctx, self.allocator, cache, &self.tags, 0, "root");
+            self.provisional_nodes.putAssumeCapacity(0, {});
+            self.creations.appendAssumeCapacity(prepared);
+        }
+
         fn setParentIntent(self: *Self, cache: *const Cache(Ctx), child_id: u64, next: ?u64) error{ ConflictingParent, DuplicateChild, MissingNode, ResourceLimit }!void {
             if (!self.nodeExists(cache, child_id)) return error.MissingNode;
             if (self.parent_intent_indexes.get(child_id)) |intent_index| {

@@ -5292,6 +5292,7 @@ pub fn Engine(comptime Ctx: type) type {
             retired_scope_steps: std.ArrayListUnmanaged(HostScopeStep) = .empty,
             suppressed_render_parent_id: ?u64 = null,
             retired_active_events: std.ArrayListUnmanaged(ActiveEventDesc) = .empty,
+            initial_root: bool = false,
 
             fn addCounts(total: *StaticRootCounts, next: StaticRootCounts) CollectionError!void {
                 try PreparedReplacementOwner.addRootCounts(total, next);
@@ -5336,6 +5337,17 @@ pub fn Engine(comptime Ctx: type) type {
                 plan.* = .{ .engine = engine, .host_ctx = ctx, .roc_host = roc_host, .replacement = replacement, .owns_replacement = false, .suppressed_render_parent_id = suppressed_render_parent_id };
                 errdefer plan.retired_stream.deinit(allocator, ctx, roc_host, &engine.pending_roc_metrics);
                 try plan.prepareDownstream(allocator, descriptor_root_scope_ids, retired_root_scope_ids, render_insert_indexes, true);
+                return plan;
+            }
+
+            fn prepareInitialRoot(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, replacement: *PreparedReplacementOwner) CollectionError!*@This() {
+                if (engine.active_stream.render_nodes.items.len != 0 or engine.active_signal_graph.items.len != 0 or engine.render_cache.hasRoot()) return error.ResourceLimit;
+                const allocator = Ctx.allocator(ctx);
+                const plan = allocator.create(@This()) catch return error.OutOfMemory;
+                errdefer allocator.destroy(plan);
+                plan.* = .{ .engine = engine, .host_ctx = ctx, .roc_host = roc_host, .replacement = replacement, .owns_replacement = false, .initial_root = true };
+                errdefer plan.retired_stream.deinit(allocator, ctx, roc_host, &engine.pending_roc_metrics);
+                try plan.prepareDownstream(allocator, &.{}, &.{}, &.{}, true);
                 return plan;
             }
 
@@ -5479,7 +5491,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             fn prepareGraphRenderAndPublication(self: *@This(), allocator: std.mem.Allocator) CollectionError!void {
-                if (self.engine.active_signal_graph.items.len != 0) {
+                if (self.engine.active_signal_graph.items.len != 0 or self.replacement.stream.signal_records_by_token.count() != 0) {
                     self.sink_edits = try self.prepareSinkEdits(allocator);
                     errdefer if (self.sink_edits) |*edits| edits.deinit(allocator);
                     var retired_roots: std.ArrayListUnmanaged(*HostSignalRecord) = .empty;
@@ -5498,7 +5510,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             fn prepareRender(self: *@This(), allocator: std.mem.Allocator) CollectionError!void {
-                if (!self.engine.render_cache.hasRoot()) return;
+                if (!self.initial_root and !self.engine.render_cache.hasRoot()) return;
                 errdefer {
                     self.deinitGraphRoutes(allocator);
                     if (self.graph_append) |*append| append.deinit(allocator);
@@ -5516,6 +5528,7 @@ pub fn Engine(comptime Ctx: type) type {
                     .collection = self.replacement.collection,
                     .removal = self.removal.?.removal,
                     .suppressed_render_parent_id = self.suppressed_render_parent_id,
+                    .initial_root = self.initial_root,
                 };
                 self.render_splice = try facade.prepareRenderTopology(allocator);
                 errdefer if (self.render_splice) |*splice| splice.deinit();
@@ -5653,7 +5666,10 @@ pub fn Engine(comptime Ctx: type) type {
                     removal.node_indexes.mount_indexes.items,
                     removal.node_indexes.cleanup_indexes.items,
                 );
-                if (self.final_render_topology) |*topology| topology.apply(&self.engine.active_stream);
+                if (self.initial_root) {
+                    std.mem.swap(std.ArrayListUnmanaged(HostRenderNode), &self.engine.active_stream.render_nodes, &self.replacement.stream.render_nodes);
+                    std.mem.swap(std.AutoHashMapUnmanaged(u64, HostRenderElemIndex), &self.engine.active_stream.render_metadata_by_elem_id, &self.replacement.stream.render_metadata_by_elem_id);
+                } else if (self.final_render_topology) |*topology| topology.apply(&self.engine.active_stream);
 
                 self.state_retirement.?.apply(self.engine, &self.retired_state_cells);
                 commit_late(late);
@@ -5831,6 +5847,65 @@ pub fn Engine(comptime Ctx: type) type {
             }
         };
 
+        /// Owns every fallible downstream artifact for publishing a prepared
+        /// root into an empty engine. The plan preflights graph/routes, active
+        /// events, render cache, command storage, and any host shadow before an
+        /// allocation-free commit makes one generation visible.
+        pub const PreparedRootDownstream = struct {
+            root: *PreparedRootCollection,
+            downstream: *PreparedStructuralDownstream,
+            committed: bool = false,
+
+            /// Completes initial-root preparation without changing logical
+            /// engine, render-cache, command, or host-visible DOM state.
+            pub fn prepare(root: *PreparedRootCollection) CollectionError!*@This() {
+                const owner = root.owner;
+                const allocator = Ctx.allocator(owner.host_ctx);
+                const plan = allocator.create(@This()) catch return error.OutOfMemory;
+                errdefer allocator.destroy(plan);
+                const downstream = try PreparedStructuralDownstream.prepareInitialRoot(owner.engine, owner.host_ctx, owner.roc_host, owner);
+                errdefer downstream.deinit();
+                plan.* = .{ .root = root, .downstream = downstream };
+                return plan;
+            }
+
+            /// Publishes all prepared engine and host state without allocating.
+            /// Lifecycle callbacks are deliberately separate because their Roc
+            /// call frame is a fatal allocator boundary.
+            pub fn commit(self: *@This()) void {
+                if (self.committed) @panic("prepared root downstream committed twice");
+                self.downstream.commitAssumeCapacity();
+                self.committed = true;
+            }
+
+            /// Runs initial-aware and mount lifecycle callbacks only after the
+            /// root generation is fully committed. Allocation failure inside
+            /// either callback is contained by the platform allocator.
+            pub fn runLifecycle(self: *@This()) render.Counts {
+                if (!self.committed) @panic("prepared root lifecycle ran before publication");
+                var counts = self.downstream.engine.runActiveOnChangeInitialCommandIndices(
+                    self.downstream.host_ctx,
+                    self.downstream.roc_host,
+                    self.downstream.publication.?.replacement_on_change_indices,
+                );
+                counts.addAll(self.downstream.engine.runActiveMountCommandIndices(
+                    self.downstream.host_ctx,
+                    self.downstream.roc_host,
+                    self.downstream.publication.?.replacement_mount_indices,
+                ));
+                return counts;
+            }
+
+            /// Releases provisional ownership after abort or retired plan
+            /// storage after commit.
+            pub fn deinit(self: *@This()) void {
+                const allocator = Ctx.allocator(self.root.owner.host_ctx);
+                self.downstream.deinit();
+                self.root.deinit();
+                allocator.destroy(self);
+            }
+        };
+
         const AggregateBranchCollection = PreparedStructuralDownstream;
 
         const BranchReplacementPlan = struct {
@@ -5871,6 +5946,7 @@ pub fn Engine(comptime Ctx: type) type {
             host_render_publication: ?HostRenderPublication = null,
             host_render_published: bool = false,
             suppressed_render_parent_id: ?u64 = null,
+            initial_root: bool = false,
 
             fn stateIndexDescending(_: void, left: usize, right: usize) bool {
                 return left > right;
@@ -6066,6 +6142,7 @@ pub fn Engine(comptime Ctx: type) type {
                     }
                 }
                 var wire_commands = std.math.add(usize, self.removal.?.scan.removed_elem_ids.len, self.replacement_stream.render_nodes.items.len) catch return error.ResourceLimit;
+                wire_commands = std.math.add(usize, wire_commands, @intFromBool(self.initial_root)) catch return error.ResourceLimit;
                 wire_commands = std.math.add(usize, wire_commands, final_child_count) catch return error.ResourceLimit;
                 wire_commands = std.math.add(usize, wire_commands, self.replacement_stream.text_nodes.items.len) catch return error.ResourceLimit;
                 wire_commands = std.math.add(usize, wire_commands, self.replacement_stream.static_text_attrs.items.len) catch return error.ResourceLimit;
@@ -6102,9 +6179,9 @@ pub fn Engine(comptime Ctx: type) type {
                 child_links = std.math.add(usize, child_links, self.removal.?.scan.removed_elem_ids.len) catch return error.ResourceLimit;
                 var splice = render_cache_mod.PreparedRenderSplice(Ctx).init(allocator, &self.engine.render_cache, .{
                     .node_capacity = std.math.add(usize, std.math.cast(usize, max_elem_id) orelse return error.ResourceLimit, 1) catch return error.ResourceLimit,
-                    .new_tags = self.replacement_stream.render_nodes.items.len,
+                    .new_tags = std.math.add(usize, self.replacement_stream.render_nodes.items.len, @intFromBool(self.initial_root)) catch return error.ResourceLimit,
                     .removals = self.removal.?.scan.removed_elem_ids.len,
-                    .creations = self.replacement_stream.render_nodes.items.len,
+                    .creations = std.math.add(usize, self.replacement_stream.render_nodes.items.len, @intFromBool(self.initial_root)) catch return error.ResourceLimit,
                     .children = touched.count(),
                     .child_links = child_links,
                     .text_fields = std.math.add(usize, std.math.add(usize, self.replacement_stream.text_nodes.items.len, self.replacement_stream.static_text_attrs.items.len) catch return error.ResourceLimit, std.math.add(usize, self.replacement_stream.signal_text_nodes.items.len, self.replacement_stream.signal_text_attrs.items.len) catch return error.ResourceLimit) catch return error.ResourceLimit,
@@ -6118,6 +6195,13 @@ pub fn Engine(comptime Ctx: type) type {
                     error.ResourceLimit => return error.ResourceLimit,
                 };
                 errdefer splice.deinit();
+                if (self.initial_root) {
+                    splice.wire.addFixed(.{ .op = .reset_dom }) catch return error.ResourceLimit;
+                    splice.addHostRoot(&self.engine.render_cache) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        else => return error.ResourceLimit,
+                    };
+                }
                 for (self.removal.?.scan.removed_elem_ids) |elem_id| if (!replacements.contains(elem_id)) splice.addRemoval(&self.engine.render_cache, elem_id) catch return error.ResourceLimit;
                 for (self.replacement_stream.render_nodes.items) |node| {
                     const tag = descriptor_stream.renderNodeTag(HostNodeDescriptorStream, &self.replacement_stream, node);
@@ -13790,6 +13874,138 @@ test "prepared root collection aborts every allocation point and retries on the 
         try std.testing.expectEqual(@as(HostValue, 42), engine.states.items[0].cell.value);
         try std.testing.expectEqual(@as(usize, 1), committed_stream.events.items.len);
     }
+}
+
+test "prepared initial root downstream sweeps failures and commits allocation free" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var roc_env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&roc_env);
+    const callable = abi.rocErasedCallableAllocate(&roc_host, verifyStateCallable, null, 0).?;
+    defer abi.decrefErasedCallable(callable, &roc_host);
+    const text_callable = abi.rocErasedCallableAllocate(&roc_host, verifyTextCallable, null, 0).?;
+    defer abi.decrefErasedCallable(text_callable, &roc_host);
+    const capability = HostValueCapability{ .clone = callable, .drop = callable, .eq = callable };
+    var signal_expr = abi.NodeSignalExpr{ .payload = .{ .const_value = .{
+        ._0 = callable,
+        ._1 = callable,
+        ._2 = capability,
+    } }, .tag = .ConstValue };
+    const extraction_bytes = EventExtractionPlanKind.none.bytes();
+    const event = abi.NodeAttr{ .payload = .{ .on = .{
+        .kind = .{ .id = 0 },
+        .msg = .{
+            .binder = callable,
+            .read_binder = callable,
+            .event_extraction_plan = .{ .bytes = .{ .elements_ptr = @constCast(extraction_bytes.ptr), .length = extraction_bytes.len, .capacity_or_alloc_ptr = extraction_bytes.len << 1 } },
+            .payload_reducer = std.mem.zeroes(HostEventReducer),
+        },
+        .name = abi.RocStr.fromSlice("keydown", undefined),
+        .delivery = .{ .native = false },
+        .policy = std.mem.zeroes(abi.NodeEventBindingPolicy),
+    } }, .tag = .On };
+    const signal_attr = abi.NodeAttr{ .payload = .{ .signal_text = .{
+        .field = .{ .id = @intFromEnum(RenderTextField.value) },
+        .name = abi.RocStr.empty(),
+        .read = .{ .capability = capability, .read = text_callable },
+        .signal = &signal_expr,
+    } }, .tag = .SignalText };
+    var child = verifyStaticRoot(&.{ event, signal_attr }, &.{verifyStaticText()});
+    var state = abi.Elem{ .payload = .{ .state = .{
+        .binder = callable,
+        .cap = capability,
+        .child = &child,
+        .initial = callable,
+    } }, .tag = .State };
+    const root = abi.Elem{ .payload = .{ .component = .{ .child = &state } }, .tag = .Component };
+
+    const Runner = struct {
+        fn prepare(engine: *Engine(VerifyCtx), ctx: *VerifyCtxHost, host: *abi.RocHost, elem: abi.Elem) !*Engine(VerifyCtx).PreparedRootDownstream {
+            const collection = try Engine(VerifyCtx).PreparedRootCollection.prepare(engine, ctx, host, elem, .{}, &.{});
+            errdefer collection.deinit();
+            return Engine(VerifyCtx).PreparedRootDownstream.prepare(collection);
+        }
+
+        fn deinitEngine(engine: *Engine(VerifyCtx), ctx: *VerifyCtxHost, host: *abi.RocHost) void {
+            if (engine.active_signal_graph.items.len != 0) {
+                engine.clearActiveSignalRoutes(ctx);
+                engine.clearActiveSignalGraph(ctx);
+            }
+            engine.active_stream.deinit(ctx.allocator, ctx, host, &engine.pending_roc_metrics);
+            engine.active_events.deinit(ctx.allocator);
+            engine.active_signal_graph.deinit(ctx.allocator);
+            engine.active_source_signal_routes.deinit(ctx.allocator);
+            engine.active_text_signal_routes.deinit(ctx.allocator);
+            engine.active_bool_signal_routes.deinit(ctx.allocator);
+            engine.active_change_signal_routes.deinit(ctx.allocator);
+            engine.active_structural_signal_routes.deinit(ctx.allocator);
+            ctx.render_batch.deinit(ctx.allocator);
+            engine.deinitRenderCache(ctx);
+            deinitVerifyStateEngine(engine, ctx, host);
+        }
+
+        fn run(host: *abi.RocHost, elem: abi.Elem, fail_at: ?usize) !usize {
+            var fault = FaultAllocator.init(std.testing.allocator);
+            fault.configure(fail_at);
+            var ctx = VerifyCtxHost{ .allocator = fault.allocator() };
+            var engine = Engine(VerifyCtx).init();
+            engine.roc_host = host;
+            defer deinitEngine(&engine, &ctx, host);
+
+            const prepared = prepare(&engine, &ctx, host, elem) catch |err| {
+                try std.testing.expect(fail_at != null);
+                try std.testing.expectEqual(error.OutOfMemory, err);
+                try std.testing.expectEqual(@as(usize, 0), engine.scopes.items.len);
+                try std.testing.expectEqual(@as(usize, 0), engine.node_identities.items.len);
+                try std.testing.expectEqual(@as(usize, 0), engine.dom_identities.items.len);
+                try std.testing.expectEqual(@as(usize, 0), engine.states.items.len);
+                try std.testing.expectEqual(@as(usize, 0), engine.active_stream.render_nodes.items.len);
+                try std.testing.expectEqual(@as(usize, 0), engine.active_events.items.len);
+                try std.testing.expectEqual(@as(usize, 0), engine.active_signal_graph.items.len);
+                try std.testing.expect(!engine.render_cache.hasRoot());
+                try std.testing.expectEqual(@as(usize, 0), ctx.render_batch.staged.commands.len());
+                try std.testing.expectEqual(@as(usize, 0), ctx.render_batch.published.commands.len());
+                try std.testing.expectEqual(engine.pending_roc_metrics.closure_retains, engine.pending_roc_metrics.closure_releases);
+                const attempts = fault.attempts;
+
+                fault.configure(null);
+                const retry = try prepare(&engine, &ctx, host, elem);
+                try std.testing.expectEqual(@as(usize, 0), engine.active_stream.render_nodes.items.len);
+                try std.testing.expect(!engine.render_cache.hasRoot());
+                fault.configure(1);
+                retry.commit();
+                try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+                try std.testing.expect(engine.render_cache.hasRoot());
+                try std.testing.expectEqual(@as(usize, 2), engine.active_stream.render_nodes.items.len);
+                try std.testing.expectEqual(@as(usize, 1), engine.active_events.items.len);
+                try std.testing.expect(engine.active_signal_graph.items.len != 0);
+                try std.testing.expectEqual(@as(usize, 3), engine.render_cache.nodes.items.len);
+                try std.testing.expectEqual(@as(usize, 0), ctx.render_batch.staged.commands.len());
+                try std.testing.expect(ctx.render_batch.published.commands.len() != 0);
+                try std.testing.expectEqual(@intFromEnum(render.Op.reset_dom), ctx.render_batch.published.commands.records.items[0].op);
+                retry.deinit();
+                return attempts;
+            };
+            try std.testing.expect(fail_at == null);
+            const attempts = fault.attempts;
+            try std.testing.expectEqual(@as(usize, 0), engine.active_stream.render_nodes.items.len);
+            try std.testing.expect(!engine.render_cache.hasRoot());
+            fault.configure(1);
+            prepared.commit();
+            try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+            try std.testing.expect(engine.render_cache.hasRoot());
+            try std.testing.expectEqual(@as(usize, 2), engine.active_stream.render_nodes.items.len);
+            try std.testing.expectEqual(@as(usize, 1), engine.active_events.items.len);
+            try std.testing.expect(engine.active_signal_graph.items.len != 0);
+            try std.testing.expectEqual(@as(usize, 3), engine.render_cache.nodes.items.len);
+            try std.testing.expectEqual(@intFromEnum(render.Op.reset_dom), ctx.render_batch.published.commands.records.items[0].op);
+            prepared.deinit();
+            return attempts;
+        }
+    };
+
+    const attempts = try Runner.run(&roc_host, root, null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |fail_at| _ = try Runner.run(&roc_host, root, fail_at);
 }
 
 test "transactional initial when root sweeps failures and evaluates once" {
