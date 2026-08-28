@@ -98,3 +98,38 @@ test("linked Wasm initial mount OOM publishes nothing, diagnoses poison, and ret
     retry.roc_ui_unmount();
   }
 });
+
+test("populated linked Wasm unmount is allocation-free and idempotent", async () => {
+  const host = await instantiateHostFixture();
+  host.roc_ui_debug_mount_fixture();
+  assert.ok(host.roc_ui_command_buffer_len() > 0);
+
+  host.roc_ui_debug_fail_allocation(1);
+  host.roc_ui_unmount();
+  assert.equal(host.roc_ui_debug_allocation_attempts(), 0);
+  assert.equal(host.roc_ui_live_host_values(), 0);
+  assert.equal(host.roc_ui_is_poisoned(), 0);
+
+  host.roc_ui_unmount();
+  assert.equal(host.roc_ui_debug_allocation_attempts(), 0);
+  assert.equal(host.roc_ui_live_host_values(), 0);
+  assert.equal(host.roc_ui_is_poisoned(), 0);
+});
+
+test("bounded linked Wasm memory.grow exhaustion enters fatal containment", async () => {
+  const bytes = await readFile(".test-out/oom/host-fixture-bounded.wasm");
+  const { instance } = await WebAssembly.instantiate(bytes, { env: { roc_ui_init: () => 0 } });
+  const host = instance.exports;
+  const initialBytes = host.memory.buffer.byteLength;
+
+  assert.equal(initialBytes, 18 * 64 * 1024);
+  assert.throws(() => host.roc_alloc(initialBytes, 8), WebAssembly.RuntimeError);
+  assert.equal(host.memory.buffer.byteLength, initialBytes);
+  assert.equal(host.roc_ui_is_poisoned(), 1);
+  assert.equal(hostDiagnostic(host), "Roc allocation failed");
+  assert.equal(host.roc_ui_command_buffer_len(), 0);
+  assert.equal(host.roc_ui_string_buffer_len(), 0);
+  assert.equal(host.roc_ui_dynamic_buffer_len(), 0);
+  assert.throws(() => host.roc_alloc(8, 8), WebAssembly.RuntimeError);
+  host.roc_ui_unmount();
+});

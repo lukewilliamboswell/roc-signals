@@ -118,7 +118,17 @@ pub fn build(b: *std.Build) void {
         "-rdynamic", "-fallow-shlib-undefined",  "-femit-bin=.test-out/oom/host-fixture.wasm",
     });
     link_wasm_fixture.step.dependOn(&copy_wasm_fixture.step);
+    const link_bounded_wasm_fixture = b.addSystemCommand(&.{
+        "zig",                                                "build-exe",
+        ".test-out/oom/host.o",                               "-target",
+        "wasm32-freestanding-none",                           "-fno-entry",
+        "-rdynamic",                                          "-fallow-shlib-undefined",
+        "--initial-memory=1179648",                           "--max-memory=1179648",
+        "-femit-bin=.test-out/oom/host-fixture-bounded.wasm",
+    });
+    link_bounded_wasm_fixture.step.dependOn(&copy_wasm_fixture.step);
     browser_tests.step.dependOn(&link_wasm_fixture.step);
+    browser_tests.step.dependOn(&link_bounded_wasm_fixture.step);
     run_test_browser_step.dependOn(&browser_tests.step);
 
     const fmt_paths = [_][]const u8{ "build.zig", "src", "scripts" };
