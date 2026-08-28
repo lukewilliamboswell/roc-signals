@@ -983,18 +983,11 @@ fn renderActiveRoot(dirty_source_node_ids: []const u64) void {
         return;
     }
 
-    var next_stream: HostNodeDescriptorStream = .{};
-    shared_engine.collectActiveElemRootDescriptors(ctx, &roc_host, &next_stream, root, dirty_source_node_ids);
-
-    _ = shared_engine.applyStructuralNodeDescriptorStream(ctx, &roc_host, &next_stream);
-
-    shared_engine.rebuildActiveEventsFromStream(ctx, &next_stream);
-    shared_engine.active_stream.deinit(allocator(), ctx, &roc_host, &shared_engine.pending_roc_metrics);
-    shared_engine.active_stream = next_stream;
-    const on_change_initial_counts = shared_engine.runActiveOnChangeInitialCommands(ctx, &roc_host);
-    const mount_counts = shared_engine.runActiveMountCommands(ctx, &roc_host);
-    shared_engine.render_metrics.addCommandCounts(on_change_initial_counts);
-    shared_engine.render_metrics.addCommandCounts(mount_counts);
+    // Every update after the initial mount is a prepared transaction driven
+    // by dispatch; there is deliberately no full re-render path to fall back
+    // to, so that a transition the transactional engine cannot stage fails
+    // loudly instead of being quietly recollected.
+    failHostWith("render root already published; live updates must go through prepared transactions");
 }
 
 fn hostEventById(event_id: u32) HostActiveEventDesc {

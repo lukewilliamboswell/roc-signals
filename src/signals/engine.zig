@@ -7588,6 +7588,7 @@ pub fn Engine(comptime Ctx: type) type {
 
         /// Collects active elem root descriptors from the explicitly affected graph or scope set.
         pub fn collectActiveElemRootDescriptors(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, root: abi.Elem, dirty_source_node_ids: []const u64) void {
+            if (!builtin.is_test) @compileError("collectActiveElemRootDescriptors is a pre-transactional engine path kept only for tests; production goes through prepared transactions");
             const collection = ImmediateCollectionCtx{ .engine = self, .host_ctx = ctx, .stream = stream };
             self.collectActiveElemRootDescriptorsWith(ImmediateCollectionCtx, collection, ctx, roc_host, stream, root, dirty_source_node_ids) catch @panic("immediate root descriptor collection failed");
         }
@@ -9341,6 +9342,7 @@ pub fn Engine(comptime Ctx: type) type {
         /// Returns a borrowed slice backed by engine scratch. Callers must not free
         /// it, and it stays valid only until the next dirty propagation.
         pub fn propagateDirtyActiveSignals(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, allocator: std.mem.Allocator, dirty_source_node_ids: []const u64, dirty_generation: u64) []const u64 {
+            if (!builtin.is_test) @compileError("propagateDirtyActiveSignals is a pre-transactional engine path kept only for tests; production goes through prepared transactions");
             self.identity_reuse_barrier = dirty_generation;
             _ = allocator;
             const dirty_record_ids = self.scratchDirtyActiveSignalRecordIdsForSources(ctx, dirty_source_node_ids);
@@ -11115,6 +11117,7 @@ pub fn Engine(comptime Ctx: type) type {
 
         /// Applies structural node descriptor stream after preparation has fixed semantics and reserved fallible growth.
         pub fn applyStructuralNodeDescriptorStream(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream) render.Counts {
+            if (!builtin.is_test) @compileError("applyStructuralNodeDescriptorStream is a pre-transactional engine path kept only for tests; production goes through prepared transactions");
             if (!self.hasRenderRoot()) @panic("structural DOM patch requested before initial DOM root creation");
 
             const allocator = Ctx.allocator(ctx);
@@ -11256,6 +11259,7 @@ pub fn Engine(comptime Ctx: type) type {
 
         /// Applies dirty structural signals locally after preparation has fixed semantics and reserved fallible growth.
         pub fn applyDirtyStructuralSignalsLocally(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, dirty_source_node_ids: []const u64, dirty_generation: u64, changes: []HostDirtyStructuralSignal) render.Counts {
+            if (!builtin.is_test) @compileError("applyDirtyStructuralSignalsLocally is a pre-transactional engine path kept only for tests; production goes through prepared transactions");
             _ = dirty_generation;
             var all_when = changes.len != 0;
             for (changes) |change| all_when = all_when and change.kind == .when;
@@ -11408,6 +11412,7 @@ pub fn Engine(comptime Ctx: type) type {
 
         /// Applies dirty when structural signals after preparation has fixed semantics and reserved fallible growth.
         pub fn applyDirtyWhenStructuralSignals(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, dirty_source_node_ids: []const u64, dirty_generation: u64, changes: []HostDirtyStructuralSignal) render.Counts {
+            if (!builtin.is_test) @compileError("applyDirtyWhenStructuralSignals is a pre-transactional engine path kept only for tests; production goes through prepared transactions");
             for (changes) |change| {
                 if (change.kind != .when) @panic("non-when structural change reached when-only test helper");
             }
@@ -11433,7 +11438,8 @@ pub fn Engine(comptime Ctx: type) type {
                 const branch = change.branch orelse return error.ResourceLimit;
                 const retired_scope_id = (self.activeWhenBranchScopeId(site.scope_id, site.ordinal, branch.opposite()) catch return error.ResourceLimit) orelse return null;
                 // Reusing a previously active branch requires a different ownership
-                // transfer plan; retain the legacy path until that case is staged.
+                // transfer plan that is not staged yet. Declining here makes the
+                // caller fail loudly; there is no fallback path.
                 if ((self.activeWhenBranchScopeId(site.scope_id, site.ordinal, branch) catch return error.ResourceLimit) != null) return null;
                 selections[selection_index] = .{
                     .parent_scope_id = site.scope_id,
@@ -11494,6 +11500,7 @@ pub fn Engine(comptime Ctx: type) type {
 
         /// Performs rebuild active events from stream inside the shared engine while preserving transaction and changed-set invariants.
         pub fn rebuildActiveEventsFromStream(self: *Self, ctx: Ctx.Handle, stream: *HostNodeDescriptorStream) void {
+            if (!builtin.is_test) @compileError("rebuildActiveEventsFromStream is a pre-transactional engine path kept only for tests; production goes through prepared transactions");
             const allocator = Ctx.allocator(ctx);
             self.clearActiveEvents() catch @panic("active event table cannot release retained payloads without a Roc host");
 
@@ -11540,6 +11547,7 @@ pub fn Engine(comptime Ctx: type) type {
 
         /// Applies dirty signal batch after preparation has fixed semantics and reserved fallible growth.
         pub fn applyDirtySignalBatch(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, dirty_source_node_ids: []const u64, changed_record_ids: []const u64, dirty_generation: u64) render.Counts {
+            if (!builtin.is_test) @compileError("applyDirtySignalBatch is a pre-transactional engine path kept only for tests; production goes through prepared transactions");
             const allocator = Ctx.allocator(ctx);
             const stable_changed_record_ids = allocator.dupe(u64, changed_record_ids) catch @panic("out of memory");
             defer allocator.free(stable_changed_record_ids);

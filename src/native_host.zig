@@ -2431,6 +2431,7 @@ fn tryRenderInitialRootWithArmedPublication(host: *HostEnv, roc_host: *abi.RocHo
 }
 
 fn renderActiveRootWithStats(host: *HostEnv, roc_host: *abi.RocHost, dirty_source_node_ids: []const u64, apply_ns: ?*u64, command_counts: ?*CommandCounts) void {
+    // Only the initial mount renders from the root Elem.
     const root = host.engine.root_elem orelse failHost("host render requested before Roc root Elem was initialized");
 
     if (!host.engine.hasRenderRoot()) {
@@ -2447,26 +2448,11 @@ fn renderActiveRootWithStats(host: *HostEnv, roc_host: *abi.RocHost, dirty_sourc
         return;
     }
 
-    var next_stream: HostNodeDescriptorStream = .{};
-    errdefer next_stream.deinit(host.hostAllocator(), host, roc_host, &host.engine.pending_roc_metrics);
-    host.collectActiveElemRootDescriptors(roc_host, &next_stream, root, dirty_source_node_ids);
-
-    const start_ns = benchmark.nowNs();
-    const counts = applyStructuralNodeDescriptorStream(host, roc_host, &next_stream);
-    const elapsed = benchmark.nowNs() - start_ns;
-    if (apply_ns) |ns| ns.* += elapsed;
-    if (command_counts) |total| total.addAll(counts);
-
-    host.rebuildActiveEventsFromStream(&next_stream);
-    host.engine.active_stream.deinit(host.hostAllocator(), host, roc_host, &host.engine.pending_roc_metrics);
-    host.engine.active_stream = next_stream;
-    const on_change_initial_counts = host.engine.runActiveOnChangeInitialCommands(host, roc_host);
-    const mount_counts = host.engine.runActiveMountCommands(host, roc_host);
-    if (comptime enable_runtime_metrics) host.engine.render_metrics.addCommandCounts(on_change_initial_counts);
-    if (comptime enable_runtime_metrics) host.engine.render_metrics.addCommandCounts(mount_counts);
-    if (command_counts) |total| total.addAll(on_change_initial_counts);
-    if (command_counts) |total| total.addAll(mount_counts);
-    finishHostMetrics(host);
+    // Every update after the initial mount is a prepared transaction driven
+    // by dispatch; there is deliberately no full re-render path to fall back
+    // to, so that a transition the transactional engine cannot stage fails
+    // loudly instead of being quietly recollected.
+    failHost("render root already published; live updates must go through prepared transactions");
 }
 
 fn acceptInitElemWithStats(host: *HostEnv, roc_host: *abi.RocHost, root_box: ElemBox, apply_ns: ?*u64, command_counts: ?*CommandCounts) void {
