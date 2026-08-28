@@ -3650,6 +3650,12 @@ test "native Roc ABI allocation failures terminate in a subprocess" {
             const payload = testHostValueI64(1);
             host.configureAllocationFailure(1);
             _ = callHostValueToHostValueWithCapability(&host, &roc_host, cap, transform, payload);
+        } else if (std.mem.eql(u8, mode, "duplicate_each_key")) {
+            const cap = testHostValueCapability(&roc_host);
+            const keys = [_]HostValue{ testHostValueI64(42), testHostValueI64(42) };
+            const items = [_]HostValue{ testHostValueI64(1), testHostValueI64(2) };
+            _ = host.engine.internRootScope(host.hostAllocator()) catch unreachable;
+            _ = syncTestEachRowScopes(&host, &roc_host, 0, 3, &keys, &items, cap, cap);
         } else unreachable;
         unreachable;
     }
@@ -3659,6 +3665,7 @@ test "native Roc ABI allocation failures terminate in a subprocess" {
         .{ .mode = "realloc", .diagnostic = "HOST ERROR: Roc reallocation failed\n" },
         .{ .mode = "event_callback", .diagnostic = "HOST ERROR: Roc allocation failed\n" },
         .{ .mode = "task_callback", .diagnostic = "HOST ERROR: Roc allocation failed\n" },
+        .{ .mode = "duplicate_each_key", .diagnostic = "Ui.each_str duplicate key \"42\": rows 1 and 2 share this key (each site: parent scope 0, ordinal 3); keys must be unique per list\n" },
     }) |case| {
         var environment = try std.testing.environ.createMap(std.testing.allocator);
         defer environment.deinit();
@@ -3672,10 +3679,20 @@ test "native Roc ABI allocation failures terminate in a subprocess" {
         defer std.testing.allocator.free(result.stdout);
         defer std.testing.allocator.free(result.stderr);
         switch (result.term) {
-            .exited => |status| try std.testing.expectEqual(@as(u8, 1), status),
+            .exited => |status| {
+                try std.testing.expectEqual(@as(u8, 1), status);
+            },
+            .signal => |signal| {
+                try std.testing.expectEqualStrings("duplicate_each_key", case.mode);
+                try std.testing.expectEqual(std.posix.SIG.ABRT, signal);
+            },
             else => return error.TestUnexpectedResult,
         }
-        try std.testing.expect(std.mem.endsWith(u8, result.stderr, case.diagnostic));
+        if (std.mem.eql(u8, case.mode, "duplicate_each_key")) {
+            try std.testing.expect(std.mem.indexOf(u8, result.stderr, case.diagnostic) != null);
+        } else {
+            try std.testing.expect(std.mem.endsWith(u8, result.stderr, case.diagnostic));
+        }
     }
 }
 
