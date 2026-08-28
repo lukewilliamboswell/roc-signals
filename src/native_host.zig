@@ -4580,6 +4580,25 @@ fn testI64ListContainsOneCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*
     writeTestErasedResult(HostValue, ret, result);
 }
 
+fn testI64ListCopyCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
+    const host = hostFromRocHost(roc_host);
+    const capture = testCapturePtrAs(TestCapabilityCapture, capture_ptr);
+    const call_args = testErasedArgsAs(ErasedHostValueUnaryArgs, args);
+    const source = testReadHostValueI64List(roc_host, call_args.arg0);
+    const source_items = source.items();
+    const values = I64List.allocate(source_items.len, roc_host);
+    if (source_items.len > 0) {
+        const dest = values.elements_ptr orelse unreachable;
+        for (source_items, 0..) |item, index| dest[index] = item;
+    }
+    const payload: *I64List = @ptrCast(@alignCast(abi.allocateBox(@sizeOf(I64List), @alignOf(I64List), true, roc_host)));
+    payload.* = values;
+    const result = host.storeHostValue(@ptrCast(payload));
+    host.setTestHostValueKind(result, .i64_list);
+    host.setHostValueCapability(result, capture.cap);
+    writeTestErasedResult(HostValue, ret, result);
+}
+
 fn testI64ListToHostValuesCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
     _ = capture_ptr;
     const host = hostFromRocHost(roc_host);
@@ -8499,6 +8518,35 @@ fn testNodeEachWithSignalCapabilityRowAndCapture(comptime Capture: type, roc_hos
     };
 }
 
+fn testNodeI64ListCopyMapExpr(roc_host: *abi.RocHost, input: abi.NodeSignalExpr) abi.NodeSignalExpr {
+    const cap = testHostValueCapability(roc_host);
+    const transform = writeTestErasedCallable(
+        TestCapabilityCapture,
+        roc_host,
+        &testI64ListCopyCallable,
+        &testCapabilityCaptureOnDrop,
+        .{ .cap = hv.retainHostValueCapability(cap) },
+    );
+    abi.increfErasedCallable(transform, 1);
+    return .{
+        .payload = .{
+            .map = .{
+                ._0 = transform,
+                ._1 = boxTestNodeSignalExpr(roc_host, input),
+                ._2 = transform,
+                ._3 = cap,
+            },
+        },
+        .tag = .Map,
+    };
+}
+
+fn testNodeEachOverStateListRowAndCapture(comptime Capture: type, roc_host: *abi.RocHost, binder_token: HostBinderToken, row_fn: abi.RocErasedCallableFn, capture: Capture) abi.Elem {
+    const signal = testNodeI64ListCopyMapExpr(roc_host, testNodeRefExpr(binder_token));
+    const items_cap = testNodeSignalExprCapabilityOrPanic(signal);
+    return testNodeEachWithSignalCapabilityRowAndCapture(Capture, roc_host, signal, items_cap, row_fn, capture);
+}
+
 fn testNodeEachWithItemsAndRow(roc_host: *abi.RocHost, items: []const HostValue, row_fn: abi.RocErasedCallableFn) abi.Elem {
     return testNodeEachWithSignalAndRow(roc_host, testNodeConstExpr(roc_host, testHostValueI64List(roc_host, items)), row_fn);
 }
@@ -9558,16 +9606,77 @@ pub const fuzz_fixtures = struct {
         return host.gpa.deinit() == .leak;
     }
 
+    pub const ValueCapability = HostValueCapability;
+    pub const BinderToken = HostBinderToken;
+
     pub const renderInitialRoot = tryRenderInitialRoot;
     pub const renderInitialRootWithArmedPublication = tryRenderInitialRootWithArmedPublication;
     pub const findActiveText = activeTextElementId;
 
+    /// Publishes `value` into the live state cell identified by `node_id` as one
+    /// atomic host transaction, exactly as a browser event would.
+    ///
+    /// This is the seam a fuzz target uses to drive a *live* structural edit:
+    /// every `each` site reading the cell re-diffs its rows inside the single
+    /// transaction, so one call can splice several sibling sites at once. The
+    /// call takes ownership of `value` on both success and refusal; a refusal
+    /// leaves the previously committed topology, render cache, and simulated
+    /// DOM untouched and the same host ready to retry the identical edit.
+    pub fn dispatchStateValue(
+        host: *HostEnv,
+        roc_host: *abi.RocHost,
+        node_id: u64,
+        value: HostValue,
+        cap: HostValueCapability,
+    ) error{ OutOfMemory, ResourceLimit, InvalidRenderTopology, InvalidSignalGraphAppend }!CommandCounts {
+        return host.engine.tryDispatchStateValue(host, roc_host, node_id, value, cap);
+    }
+
+    /// Returns the committed value of the state cell behind `node_id`, or null
+    /// when no such cell is live.
+    ///
+    /// A refused transaction must leave the cell holding precisely what it held
+    /// before, so a fuzz oracle snapshots this around an injected failure. The
+    /// result is the raw erased handle rather than a decoded payload: the host
+    /// may not inspect a retained Roc value's layout, and comparing handles is
+    /// enough to prove the cell was not replaced.
+    pub fn stateValue(host: *const HostEnv, node_id: u64) ?HostValue {
+        const engine_ptr: *HostEngine = @constCast(&host.engine);
+        const index = engine_ptr.stateIndexByNodeId(node_id) orelse return null;
+        return engine_ptr.states.items[index].activePayloadConst().cell.value;
+    }
+
+    /// Lists the render-cache children of `parent`, in committed render order.
+    ///
+    /// The multi-parent splice bugs this surface exists to catch are visible
+    /// here and almost nowhere else: a parent whose children were registered by
+    /// two different staging passes ends up holding the same child twice, which
+    /// no count-based oracle notices.
+    pub fn renderChildren(host: *const HostEnv, parent: ids.ElemId) []const ids.ElemId {
+        return host.engine.render_cache.nodes.items[parent.index()].children.items;
+    }
+
     pub const element = testElement;
+    pub const elementWith = testElementWith;
     pub const text = testNodeText;
     pub const state = testNodeState;
+    pub const stateWithTokenInitialAndCapability = testNodeStateWithTokenAndInitialCapability;
+    pub const newBinderToken = newTestBinderToken;
+    pub const valueCapability = testHostValueCapability;
     pub const when = testNodeWhen;
     pub const i64Value = testHostValueI64;
+    pub const i64ListValue = testHostValueI64List;
     pub const eachWithItemsRowAndCapture = testNodeEachWithItemsRowAndCapture;
+    /// Builds an `each` whose rows come from the list held by the state cell
+    /// `binder_token` names, as a copy taken through `Signal.map`.
+    ///
+    /// The copy is not decoration. A bare `Ref` hands the `each` the state's own
+    /// capability, and the staged initial mount cannot resolve that while it is
+    /// still creating the cell, so it terminates the host. Mapping the list
+    /// through gives the site a capability of its own while keeping the real
+    /// dependency, so one dispatch into the cell still re-diffs every site
+    /// reading it.
+    pub const eachOverStateListRowAndCapture = testNodeEachOverStateListRowAndCapture;
 
     pub const captureAs = testCapturePtrAs;
     pub const argsAs = testErasedArgsAs;
