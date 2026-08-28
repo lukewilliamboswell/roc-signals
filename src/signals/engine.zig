@@ -3499,6 +3499,62 @@ pub fn Engine(comptime Ctx: type) type {
                 self.dom_identities.deinit(allocator);
             }
 
+            fn reserveAdditionalCounts(self: *@This(), counts: StaticRootCounts, external_scopes: usize) CollectionError!void {
+                const allocator = Ctx.allocator(self.host_ctx);
+                const state_component_sites = std.math.add(usize, counts.state_sites, counts.component_sites) catch return error.ResourceLimit;
+                const scope_sites = std.math.add(usize, state_component_sites, counts.when_sites) catch return error.ResourceLimit;
+                const child_scopes = std.math.add(usize, counts.component_sites, counts.when_sites) catch return error.ResourceLimit;
+                const scope_intents = std.math.add(usize, external_scopes, child_scopes) catch return error.ResourceLimit;
+                const attr_lifecycle = std.math.add(usize, counts.attrs, counts.lifecycle) catch return error.ResourceLimit;
+                const signal_roots = @max(attr_lifecycle, counts.signal_records);
+                const signal_descriptors = std.math.add(usize, counts.attrs, counts.nodes) catch return error.ResourceLimit;
+
+                self.scopes.prepare(allocator, scope_intents) catch return error.OutOfMemory;
+                self.node_identities.prepare(allocator, scope_sites) catch return error.OutOfMemory;
+                self.dom_identities.prepare(allocator, counts.nodes) catch return error.OutOfMemory;
+                self.prepared_nodes.ensureUnusedCapacity(allocator, counts.nodes) catch return error.OutOfMemory;
+                self.prepared_render_order.ensureUnusedCapacity(allocator, counts.nodes) catch return error.OutOfMemory;
+                self.prepared_attrs.ensureUnusedCapacity(allocator, counts.attrs) catch return error.OutOfMemory;
+                self.prepared_signal_attrs.ensureUnusedCapacity(allocator, signal_descriptors) catch return error.OutOfMemory;
+                self.prepared_events.ensureUnusedCapacity(allocator, counts.attrs) catch return error.OutOfMemory;
+                self.prepared_lifecycle.ensureUnusedCapacity(allocator, counts.lifecycle) catch return error.OutOfMemory;
+                self.prepared_state_sites.ensureUnusedCapacity(allocator, scope_sites) catch return error.OutOfMemory;
+                self.prepared_states.ensureUnusedCapacity(allocator, counts.state_sites) catch return error.OutOfMemory;
+                self.prepared_state_cells.ensureUnusedCapacity(allocator, counts.state_sites) catch return error.OutOfMemory;
+                self.prepared_whens.ensureUnusedCapacity(allocator, counts.when_sites) catch return error.OutOfMemory;
+                self.prepared_named_event_groups.ensureUnusedCapacity(allocator, counts.attrs) catch return error.OutOfMemory;
+                self.prepared_named_event_group_by_elem.ensureUnusedCapacity(allocator, std.math.cast(u32, counts.attrs) orelse return error.ResourceLimit) catch return error.OutOfMemory;
+                self.signal_records.prepare(allocator, counts.signal_records, signal_roots) catch return error.OutOfMemory;
+                self.signal_bindings.ensureUnusedCapacity(allocator, signal_roots) catch return error.OutOfMemory;
+                self.signal_token_capacity = std.math.add(usize, self.signal_token_capacity, counts.signal_records) catch return error.ResourceLimit;
+                self.signal_root_capacity = std.math.add(usize, self.signal_root_capacity, signal_roots) catch return error.ResourceLimit;
+
+                self.engine.scopes.ensureUnusedCapacity(allocator, scope_intents) catch return error.OutOfMemory;
+                self.engine.node_identities.ensureUnusedCapacity(allocator, scope_sites) catch return error.OutOfMemory;
+                self.engine.active_node_identity_ids.ensureUnusedCapacity(allocator, std.math.cast(u32, scope_sites) orelse return error.ResourceLimit) catch return error.OutOfMemory;
+                self.engine.states.ensureUnusedCapacity(allocator, counts.state_sites) catch return error.OutOfMemory;
+                const additional_node_ids = std.math.add(usize, self.node_identities.intents.items.len, scope_sites) catch return error.ResourceLimit;
+                const state_index_len = std.math.add(usize, self.engine.node_identities.items.len, additional_node_ids) catch return error.ResourceLimit;
+                self.engine.state_indexes_by_node_id.ensureTotalCapacity(allocator, state_index_len) catch return error.OutOfMemory;
+                self.engine.dom_identities.ensureUnusedCapacity(allocator, counts.nodes) catch return error.OutOfMemory;
+                self.engine.active_dom_identity_ids.ensureUnusedCapacity(allocator, std.math.cast(u32, counts.nodes) orelse return error.ResourceLimit) catch return error.OutOfMemory;
+                const additional_dom_ids = std.math.add(usize, self.dom_identities.intents.items.len, counts.nodes) catch return error.ResourceLimit;
+                const highest_elem_id = std.math.add(u64, @intCast(self.engine.dom_identities.items.len), @as(u64, @intCast(additional_dom_ids))) catch return error.ResourceLimit;
+                self.stream.reservePreparedStaticNodes(allocator, counts.nodes, highest_elem_id) catch return error.OutOfMemory;
+                self.stream.reservePreparedStaticAttrs(allocator, counts.attrs) catch return error.OutOfMemory;
+                self.stream.reservePreparedSignalAttrs(allocator, counts.attrs, highest_elem_id) catch return error.OutOfMemory;
+                self.stream.reservePreparedSignalTextNodes(allocator, counts.nodes, highest_elem_id) catch return error.OutOfMemory;
+                self.stream.reservePreparedSignalRecordPublication(allocator, counts.signal_records) catch return error.OutOfMemory;
+                self.stream.reservePreparedEvents(allocator, counts.attrs, highest_elem_id) catch return error.OutOfMemory;
+                self.stream.reservePreparedCustomAttrIndex(allocator, counts.attrs) catch return error.OutOfMemory;
+                self.stream.reservePreparedLifecycle(allocator, counts.lifecycle) catch return error.OutOfMemory;
+                if (scope_sites != 0) {
+                    const highest_node_id = std.math.sub(usize, state_index_len, 1) catch return error.ResourceLimit;
+                    self.stream.reservePreparedStateSites(allocator, scope_sites, @intCast(highest_node_id)) catch return error.OutOfMemory;
+                    self.stream.reservePreparedWhens(allocator, counts.when_sites, @intCast(highest_node_id)) catch return error.OutOfMemory;
+                }
+            }
+
             fn rootScope(self: *@This()) CollectionError!scope_tree.InternResult {
                 const key: collection_plan.ScopeKey = .{ .parent_id = 0, .ordinal = 0, .kind = .root };
                 const active_id: ?u64 = if (self.engine.scopes.items.len != 0) 0 else null;
@@ -4406,6 +4462,88 @@ pub fn Engine(comptime Ctx: type) type {
                 else => error.ResourceLimit,
             };
         }
+
+        const PreparedInitialEach = struct {
+            const Row = struct {
+                elem: abi.Elem,
+                counts: StaticRootCounts,
+                key_hash: u64,
+            };
+
+            allocator: std.mem.Allocator,
+            engine: *Self,
+            host_ctx: Ctx.Handle,
+            roc_host: *abi.RocHost,
+            ops: HostEachOps,
+            inputs: PreparedEachInputs,
+            rows: []Row,
+            total_counts: StaticRootCounts = .{},
+            committed: bool = false,
+
+            fn prepare(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, each: *const HostNodeEachDesc, allocator: std.mem.Allocator) CollectionError!*@This() {
+                const plan = allocator.create(@This()) catch return error.OutOfMemory;
+                errdefer allocator.destroy(plan);
+                var inputs = try PreparedEachInputs.prepareWithAllocator(engine, ctx, roc_host, each.*, allocator);
+                errdefer inputs.deinit();
+                const rows = allocator.alloc(Row, inputs.items.len) catch return error.OutOfMemory;
+                errdefer allocator.free(rows);
+                var evaluated: usize = 0;
+                errdefer for (rows[0..evaluated]) |row| row.elem.decref(roc_host);
+
+                var hash_heads: std.AutoHashMapUnmanaged(u64, usize) = .empty;
+                defer hash_heads.deinit(allocator);
+                const hash_links = allocator.alloc(usize, inputs.keys.len) catch return error.OutOfMemory;
+                defer allocator.free(hash_links);
+                @memset(hash_links, each_runtime.missing_row_index);
+                var hooks = EachRowSync{ .engine = engine, .ctx = ctx, .roc_host = roc_host, .ops = each.ops };
+                var total: StaticRootCounts = .{};
+                for (inputs.keys, inputs.items, 0..) |key, item, index| {
+                    const key_hash = hooks.hashKey(key);
+                    if (hash_heads.get(key_hash)) |head| {
+                        var previous = head;
+                        while (previous != each_runtime.missing_row_index) {
+                            if (hooks.nextKeysEqual(inputs.keys[previous], key)) {
+                                hooks.failDuplicateEachKey(0, 0, previous, index, key);
+                            }
+                            previous = hash_links[previous];
+                        }
+                    }
+                    const entry = hash_heads.getOrPut(allocator, key_hash) catch return error.OutOfMemory;
+                    if (entry.found_existing) hash_links[index] = entry.value_ptr.*;
+                    entry.value_ptr.* = index;
+
+                    const elem = callHostValueHostValueToElemWithCapabilities(ctx, roc_host, each.ops.key_capability, each.ops.item_capability, each.ops.row, key, item);
+                    rows[index] = .{ .elem = elem, .counts = .{}, .key_hash = key_hash };
+                    evaluated += 1;
+                    rows[index].counts = try countStaticRootNodes(elem);
+                    try PreparedReplacementOwner.addRootCounts(&total, rows[index].counts);
+                }
+                plan.* = .{
+                    .allocator = allocator,
+                    .engine = engine,
+                    .host_ctx = ctx,
+                    .roc_host = roc_host,
+                    .ops = each.ops,
+                    .inputs = inputs,
+                    .rows = rows,
+                    .total_counts = total,
+                };
+                return plan;
+            }
+
+            fn reserveForCollection(self: *const @This(), collection: *StagedCollectionCtx) CollectionError!void {
+                try collection.reserveAdditionalCounts(self.total_counts, self.rows.len);
+                collection.prepared_each_row_scopes.ensureUnusedCapacity(Ctx.allocator(collection.host_ctx), self.rows.len) catch return error.OutOfMemory;
+            }
+
+            fn deinit(self: *@This()) void {
+                if (!self.committed) for (self.rows) |row| row.elem.decref(self.roc_host);
+                self.allocator.free(self.rows);
+                self.inputs.deinit();
+                const allocator = self.allocator;
+                allocator.destroy(self);
+            }
+        };
 
         const AggregateBranchSelection = struct {
             parent_scope_id: u64,
@@ -13951,6 +14089,99 @@ test "staged root rows share scope ids with provisional structural children and 
     const attempts = try Runner.run(&roc_host, root, capability, null);
     try std.testing.expect(attempts != 0);
     for (1..attempts + 1) |fail_at| _ = try Runner.run(&roc_host, root, capability, fail_at);
+}
+
+test "prepared initial each owns evaluated row inputs and descriptors across host OOM" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&env);
+    const noop = abi.rocErasedCallableAllocate(&roc_host, verifyErasedCallable, null, 0).?;
+    defer abi.decrefErasedCallable(noop, &roc_host);
+    const eq = abi.rocErasedCallableAllocate(&roc_host, verifyEachValueEqCallable, null, 0).?;
+    defer abi.decrefErasedCallable(eq, &roc_host);
+    const items = abi.rocErasedCallableAllocate(&roc_host, verifyEachItemsCallable, null, 0).?;
+    defer abi.decrefErasedCallable(items, &roc_host);
+    const identity = abi.rocErasedCallableAllocate(&roc_host, verifyEachIdentityCallable, null, 0).?;
+    defer abi.decrefErasedCallable(identity, &roc_host);
+    const key_text = abi.rocErasedCallableAllocate(&roc_host, verifyEachKeyTextCallable, null, 0).?;
+    defer abi.decrefErasedCallable(key_text, &roc_host);
+    const row = abi.rocErasedCallableAllocate(&roc_host, verifyEachRowElemCallable, null, 0).?;
+    defer abi.decrefErasedCallable(row, &roc_host);
+    const capability = HostValueCapability{ .clone = noop, .drop = noop, .eq = eq };
+    const ops = std.mem.zeroInit(HostEachOps, .{
+        .item_capability = capability,
+        .items_capability = capability,
+        .items_to_values = items,
+        .key_capability = capability,
+        .key_of = identity,
+        .key_text = key_text,
+        .row = row,
+    });
+
+    const Runner = struct {
+        fn run(host: *abi.RocHost, cap: HostValueCapability, each_ops: HostEachOps, fail_at: ?usize) !usize {
+            var fault = FaultAllocator.init(std.testing.allocator);
+            fault.configure(fail_at);
+            var ctx = VerifyCtxHost{ .allocator = fault.allocator() };
+            var engine = Engine(VerifyCtx).init();
+            engine.roc_host = host;
+            defer deinitVerifyStateEngine(&engine, &ctx, host);
+            var record = HostSignalRecord{ .ref_count = 1, .payload = .{ .const_value = .{ .init = null, .cap = cap } } };
+            var each = HostNodeEachDesc{
+                .node_id = 0,
+                .items = .{ .record = &record, .source_node_ids = &.{} },
+                .ops = each_ops,
+                .cached_value = .{ .present = HostValueCell.initRetained(1, cap, &engine.pending_roc_metrics) },
+            };
+            defer each.cached_value.deinit(&ctx, host, &engine.pending_roc_metrics);
+
+            const prepared = Engine(VerifyCtx).PreparedInitialEach.prepare(&engine, &ctx, host, &each, fault.allocator()) catch |err| {
+                try std.testing.expect(fail_at != null);
+                try std.testing.expectEqual(error.OutOfMemory, err);
+                const attempts = fault.attempts;
+                fault.configure(null);
+                const retry = try Engine(VerifyCtx).PreparedInitialEach.prepare(&engine, &ctx, host, &each, fault.allocator());
+                try std.testing.expectEqual(@as(usize, 1), retry.rows.len);
+                try std.testing.expectEqual(@as(usize, 1), retry.total_counts.nodes);
+                retry.deinit();
+                return attempts;
+            };
+            const root = verifyStaticRoot(&.{}, &.{verifyStaticText()});
+            const root_plan = Engine(VerifyCtx).PreparedRootCollection.prepare(&engine, &ctx, host, root, .{}, &.{}) catch |err| {
+                try std.testing.expect(fail_at != null);
+                try std.testing.expectEqual(error.OutOfMemory, err);
+                const attempts = fault.attempts;
+                fault.configure(null);
+                const retry_root = try Engine(VerifyCtx).PreparedRootCollection.prepare(&engine, &ctx, host, root, .{}, &.{});
+                try prepared.reserveForCollection(&retry_root.owner.collection);
+                retry_root.deinit();
+                prepared.deinit();
+                return attempts;
+            };
+            prepared.reserveForCollection(&root_plan.owner.collection) catch |err| {
+                try std.testing.expect(fail_at != null);
+                try std.testing.expectEqual(error.OutOfMemory, err);
+                const attempts = fault.attempts;
+                fault.configure(null);
+                try prepared.reserveForCollection(&root_plan.owner.collection);
+                root_plan.deinit();
+                prepared.deinit();
+                return attempts;
+            };
+            const attempts = fault.attempts;
+            try std.testing.expect(fail_at == null);
+            try std.testing.expectEqual(@as(usize, 1), prepared.rows.len);
+            try std.testing.expectEqual(@as(usize, 1), prepared.inputs.keys.len);
+            try std.testing.expectEqual(@as(usize, 1), prepared.total_counts.nodes);
+            root_plan.deinit();
+            prepared.deinit();
+            return attempts;
+        }
+    };
+
+    const attempts = try Runner.run(&roc_host, capability, ops, null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |fail_at| _ = try Runner.run(&roc_host, capability, ops, fail_at);
 }
 
 test "branch replacement preparation leaves the active branch unpublished" {
