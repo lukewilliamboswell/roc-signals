@@ -185,13 +185,43 @@ pub const PreparedCacheUpdates = struct {
         self.provisional_values.clearRetainingCapacity();
     }
 
+    /// Rebinds journal entries whose live cache is embedded in a descriptor
+    /// vector that moved during structural-publication preflight. The old
+    /// address is used only as an identity; its storage is never dereferenced.
+    pub fn rebaseDescriptorCacheSlotsAssumeCapacity(
+        self: *PreparedCacheUpdates,
+        comptime Descriptor: type,
+        old_base: usize,
+        old_len: usize,
+        new_items: []Descriptor,
+    ) void {
+        if (self.committed) @panic("cannot rebase a committed cache overlay");
+        if (old_len == 0 or old_base == @intFromPtr(new_items.ptr)) return;
+        const field_offset = @offsetOf(Descriptor, "cached_value");
+        const stride = @sizeOf(Descriptor);
+        const first_slot = std.math.add(usize, old_base, field_offset) catch @panic("descriptor cache address overflow");
+        for (self.updates.items) |*update| {
+            const address = @intFromPtr(update.live);
+            if (address < first_slot) continue;
+            const delta = address - first_slot;
+            if (delta % stride != 0) continue;
+            const index = delta / stride;
+            if (index >= old_len) continue;
+            update.live = &new_items[index].cached_value;
+        }
+        self.indexes.clearRetainingCapacity();
+        for (self.updates.items, 0..) |*update, index| {
+            if (self.indexes.contains(update.live)) @panic("rebased cache overlay contains duplicate live slots");
+            self.indexes.putAssumeCapacity(update.live, index);
+        }
+    }
+
     /// Publishes every staged cache replacement without allocation.
     pub fn commit(self: *PreparedCacheUpdates) void {
         if (self.committed) @panic("prepared cache overlay committed twice");
         for (self.updates.items) |*update| update.commit();
         self.committed = true;
     }
-
     /// Releases provisional or displaced values and all overlay storage.
     pub fn deinit(self: *PreparedCacheUpdates, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
         for (self.updates.items) |*update| update.deinit(ctx, roc_host, metrics);

@@ -1123,6 +1123,13 @@ pub const Stream = struct {
         signal_records.walkTree(Context, .{ .stream = self }, record, Context.visit);
     }
 
+    /// Publishes every token and descriptor-use edge in a prepared signal tree
+    /// using capacity reserved before commit. This also covers descriptors that
+    /// reuse persistent records rather than constructing transaction-local ones.
+    pub fn rememberPreparedSignalRecordTreeAssumeCapacity(self: *Stream, record: *SignalRecord) void {
+        self.rememberSignalRecordTreeAssumeCapacity(record);
+    }
+
     /// Commits the minimal one-text replacement using only pre-reserved
     /// storage. The replacement stream receives the displaced descriptor and
     /// therefore owns its string after the swap.
@@ -2254,6 +2261,9 @@ pub const Stream = struct {
     }
 
     fn recordPreparedCustomAttrIndex(self: *Stream, elem_id: u64, name: []const u8, index: CustomAttrDescriptorIndex) void {
+        // Reservations are fallible preparation; the maintained index only
+        // becomes authoritative when an entry is published allocation-free.
+        self.custom_attr_index_active = true;
         self.custom_attr_keys.putAssumeCapacity(.{ .elem_id = elem_id, .name = name }, index);
         self.custom_attr_indices_by_elem_id.items[@intCast(elem_id)].appendAssumeCapacity(index);
     }
@@ -4284,6 +4294,46 @@ test "prepared signal attr reservation leaves logical stream empty" {
     try std.testing.expect(stream.elemDescriptorIndex(7) == null);
 }
 
+test "prepared custom attribute reservation activates the maintained per-element index" {
+    const allocator = std.testing.allocator;
+    var stream: Stream = .{};
+
+    try stream.static_custom_text_attrs.ensureUnusedCapacity(allocator, 1);
+    try stream.custom_attr_keys.ensureUnusedCapacity(allocator, 1);
+    try stream.reservePreparedCustomAttrElem(allocator, 35, 1);
+    const name = try allocator.dupe(u8, "data-state");
+    const value = try allocator.dupe(u8, "ready");
+    stream.static_custom_text_attrs.appendAssumeCapacity(.{ .elem_id = 35, .name = name, .value = value });
+    stream.recordPreparedCustomAttrIndex(35, name, .{ .kind = .static_text, .index = 0 });
+    defer {
+        allocator.free(name);
+        allocator.free(value);
+        stream.static_custom_text_attrs.deinit(allocator);
+        stream.custom_attr_keys.deinit(allocator);
+        for (stream.custom_attr_indices_by_elem_id.items) |*indexes| indexes.deinit(allocator);
+        stream.custom_attr_indices_by_elem_id.deinit(allocator);
+    }
+
+    try std.testing.expect(stream.custom_attr_index_active);
+    try std.testing.expectEqual(@as(usize, 1), stream.customAttrIndices(35).len);
+    try std.testing.expectEqual(CustomAttrKind.static_text, stream.customAttrIndices(35)[0].kind);
+}
+
+test "failed prepared custom attribute reservation does not activate an incomplete index" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var fault = FaultAllocator.init(std.testing.allocator);
+    var stream: Stream = .{};
+    defer {
+        for (stream.custom_attr_indices_by_elem_id.items) |*indexes| indexes.deinit(fault.allocator());
+        stream.custom_attr_indices_by_elem_id.deinit(fault.allocator());
+    }
+
+    fault.configure(1);
+    try std.testing.expectError(error.OutOfMemory, stream.reservePreparedCustomAttrElem(fault.allocator(), 35, 1));
+    try std.testing.expect(!stream.custom_attr_index_active);
+    try std.testing.expectEqual(@as(usize, 0), stream.customAttrIndices(35).len);
+}
+
 test "prepared signal attr publication is allocation free" {
     const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
     const TestCtx = struct {
@@ -4330,7 +4380,7 @@ test "prepared signal attr publication is allocation free" {
     try std.testing.expectEqual(@as(u64, 2), stream.signal_bool_attrs.items[0].elem_id);
 }
 
-test "prepared signal record tree publication is allocation free" {
+test "prepared persistent signal record tree publishes balanced token ownership without allocation" {
     const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
     const TestCtx = struct {
         /// Opens a checked capability frame for an app-compiled erased call.
@@ -4363,9 +4413,7 @@ test "prepared signal record tree publication is allocation free" {
 
     try stream.reservePreparedSignalRecordPublication(allocator, 2);
     fault.configure(1);
-    stream.rememberSignalRecordAssumeCapacity(child_token, &child);
-    stream.rememberSignalRecordAssumeCapacity(root_token, &root);
-    stream.incrementSignalRecordDescriptorTreeAssumeCapacity(&root);
+    stream.rememberPreparedSignalRecordTreeAssumeCapacity(&root);
 
     try std.testing.expectEqual(@as(usize, 0), fault.attempts);
     try std.testing.expectEqual(@as(usize, 2), stream.signal_records_by_token.count());
@@ -4373,6 +4421,10 @@ test "prepared signal record tree publication is allocation free" {
     try std.testing.expect(stream.signalRecordByToken(root_token) == &root);
     try std.testing.expectEqual(@as(?usize, 1), stream.signal_record_descriptor_uses_by_token.get(child_token));
     try std.testing.expectEqual(@as(?usize, 1), stream.signal_record_descriptor_uses_by_token.get(root_token));
+
+    stream.forgetSignalRecordTree(&root);
+    try std.testing.expectEqual(@as(usize, 0), stream.signal_records_by_token.count());
+    try std.testing.expectEqual(@as(usize, 0), stream.signal_record_descriptor_uses_by_token.count());
 }
 
 test "fixed event descriptors preserve Roc supplied payload descriptors" {

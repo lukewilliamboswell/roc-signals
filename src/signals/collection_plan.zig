@@ -32,9 +32,10 @@ pub const IdentityOverlay = struct {
     /// Preflights fallible growth so the later commit phase can remain allocation-free.
     pub fn prepare(self: *IdentityOverlay, allocator: std.mem.Allocator, additional: usize) std.mem.Allocator.Error!void {
         const next_remaining = std.math.add(usize, self.prepared_remaining, additional) catch return error.OutOfMemory;
-        try self.provisional_by_key.ensureUnusedCapacity(allocator, @intCast(additional));
-        try self.reserved_ids.ensureUnusedCapacity(allocator, @intCast(additional));
-        try self.intents.ensureUnusedCapacity(allocator, additional);
+        const outstanding = std.math.cast(u32, next_remaining) orelse return error.OutOfMemory;
+        try self.provisional_by_key.ensureUnusedCapacity(allocator, outstanding);
+        try self.reserved_ids.ensureUnusedCapacity(allocator, outstanding);
+        try self.intents.ensureUnusedCapacity(allocator, next_remaining);
         self.prepared_remaining = next_remaining;
     }
 
@@ -113,9 +114,10 @@ pub const ScopeOverlay = struct {
     /// Preflights fallible growth so the later commit phase can remain allocation-free.
     pub fn prepare(self: *ScopeOverlay, allocator: std.mem.Allocator, additional: usize) std.mem.Allocator.Error!void {
         const next_remaining = std.math.add(usize, self.prepared_remaining, additional) catch return error.OutOfMemory;
-        try self.provisional_by_key.ensureUnusedCapacity(allocator, @intCast(additional));
-        try self.reserved_ids.ensureUnusedCapacity(allocator, @intCast(additional));
-        try self.intents.ensureUnusedCapacity(allocator, additional);
+        const outstanding = std.math.cast(u32, next_remaining) orelse return error.OutOfMemory;
+        try self.provisional_by_key.ensureUnusedCapacity(allocator, outstanding);
+        try self.reserved_ids.ensureUnusedCapacity(allocator, outstanding);
+        try self.intents.ensureUnusedCapacity(allocator, next_remaining);
         self.prepared_remaining = next_remaining;
     }
 
@@ -628,6 +630,54 @@ test "identity overlay publishes only during allocation-free commit" {
     try std.testing.expectEqual(@as(u64, 5), persistent.get(21).?);
 }
 
+test "identity overlay repeated preflight reserves the full outstanding budget" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    const Publisher = struct {
+        published: *usize,
+        fn publishIdentity(self: @This(), _: IdentityKey, _: u64) void {
+            self.published.* += 1;
+        }
+    };
+    var fault = FaultAllocator.init(std.testing.allocator);
+    var overlay: IdentityOverlay = .{};
+    defer overlay.deinit(fault.allocator());
+    try overlay.prepare(fault.allocator(), 2);
+    try overlay.prepare(fault.allocator(), 3);
+
+    fault.configure(1);
+    for (0..5) |index| try std.testing.expectEqual(@as(u64, @intCast(index + 1)), try overlay.reserve(index + 10, null, &.{@intCast(index + 1)}));
+    var published: usize = 0;
+    overlay.commit(Publisher{ .published = &published });
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqual(@as(usize, 5), published);
+}
+
+test "identity overlay repeated preflight sweeps allocation failure atomically" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var counter = FaultAllocator.init(std.testing.allocator);
+    var counted: IdentityOverlay = .{};
+    try counted.prepare(counter.allocator(), 2);
+    try counted.prepare(counter.allocator(), 3);
+    const attempts = counter.attempts;
+    counted.deinit(counter.allocator());
+
+    for (1..attempts + 1) |failure_number| {
+        var fault = FaultAllocator.init(std.testing.allocator);
+        fault.configure(failure_number);
+        var overlay: IdentityOverlay = .{};
+        defer overlay.deinit(fault.allocator());
+        var failed = false;
+        overlay.prepare(fault.allocator(), 2) catch |err| switch (err) {
+            error.OutOfMemory => failed = true,
+        };
+        if (!failed) overlay.prepare(fault.allocator(), 3) catch |err| switch (err) {
+            error.OutOfMemory => failed = true,
+        };
+        try std.testing.expect(failed);
+        try std.testing.expect(overlay.prepared_remaining == 0 or overlay.prepared_remaining == 2);
+    }
+}
+
 test "scope overlay uniquely reserves inactive slots for provisional hierarchy" {
     var overlay: ScopeOverlay = .{};
     defer overlay.deinit(std.testing.allocator);
@@ -669,6 +719,58 @@ test "scope overlay reserves external ids without publishing intents" {
     try std.testing.expect(overlay.reserved_ids.contains(7));
     try std.testing.expectEqual(@as(usize, 1), overlay.intents.items.len);
     try std.testing.expectError(error.DuplicateScope, overlay.reserveExternal(7));
+}
+
+test "scope overlay repeated preflight covers external and published reservations" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    const Publisher = struct {
+        published: *usize,
+        fn publishScope(self: @This(), _: ScopeKey, _: u64) void {
+            self.published.* += 1;
+        }
+    };
+    var fault = FaultAllocator.init(std.testing.allocator);
+    var overlay: ScopeOverlay = .{};
+    defer overlay.deinit(fault.allocator());
+    try overlay.prepare(fault.allocator(), 2);
+    try overlay.prepare(fault.allocator(), 3);
+
+    fault.configure(1);
+    try overlay.reserveExternal(4);
+    for (0..4) |index| {
+        const key: ScopeKey = .{ .parent_id = 4, .ordinal = index, .kind = .component };
+        try std.testing.expectEqual(@as(u64, @intCast(index + 5)), try overlay.reserve(key, null, &.{@intCast(index + 5)}));
+    }
+    var published: usize = 0;
+    overlay.commit(Publisher{ .published = &published });
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqual(@as(usize, 4), published);
+}
+
+test "scope overlay repeated preflight sweeps allocation failure atomically" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var counter = FaultAllocator.init(std.testing.allocator);
+    var counted: ScopeOverlay = .{};
+    try counted.prepare(counter.allocator(), 2);
+    try counted.prepare(counter.allocator(), 3);
+    const attempts = counter.attempts;
+    counted.deinit(counter.allocator());
+
+    for (1..attempts + 1) |failure_number| {
+        var fault = FaultAllocator.init(std.testing.allocator);
+        fault.configure(failure_number);
+        var overlay: ScopeOverlay = .{};
+        defer overlay.deinit(fault.allocator());
+        var failed = false;
+        overlay.prepare(fault.allocator(), 2) catch |err| switch (err) {
+            error.OutOfMemory => failed = true,
+        };
+        if (!failed) overlay.prepare(fault.allocator(), 3) catch |err| switch (err) {
+            error.OutOfMemory => failed = true,
+        };
+        try std.testing.expect(failed);
+        try std.testing.expect(overlay.prepared_remaining == 0 or overlay.prepared_remaining == 2);
+    }
 }
 
 test "provisional value initializer runs once and abort releases ownership" {

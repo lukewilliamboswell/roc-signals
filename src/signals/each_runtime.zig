@@ -47,8 +47,26 @@ pub const PreparedRowRemovals = struct {
     }
 
     /// Removes every prepared row and repairs moved dense/hash indexes without allocation.
-    pub fn apply(self: *const @This(), sites: *std.ArrayListUnmanaged(Site), memberships: *std.ArrayListUnmanaged(?Membership), row_keys: anytype) void {
+    pub fn apply(self: *const @This(), allocator: std.mem.Allocator, sites: *std.ArrayListUnmanaged(Site), site_indexes: *SiteIndexMap, memberships: *std.ArrayListUnmanaged(?Membership), row_keys: anytype) void {
         for (self.rows) |row| removeRowFromSiteIndex(sites, memberships, row.scope_id, row.key_hash, row_keys);
+        var index = sites.items.len;
+        while (index != 0) {
+            index -= 1;
+            if (sites.items[index].scope_ids.items.len != 0) continue;
+            const removed = sites.swapRemove(index);
+            if (!site_indexes.remove(removed.key)) @panic("empty each site was missing its maintained index");
+            var retired = removed;
+            retired.deinit(allocator);
+            if (index < sites.items.len) {
+                const moved = &sites.items[index];
+                const mapped = site_indexes.getPtr(moved.key) orelse @panic("moved each site was missing its maintained index");
+                mapped.* = index;
+                for (moved.scope_ids.items) |scope_id| {
+                    const membership = &memberships.items[@intCast(scope_id)];
+                    if (membership.*) |*entry| entry.site_index = index else @panic("moved each site row was missing membership");
+                }
+            }
+        }
     }
 };
 
@@ -1201,11 +1219,28 @@ test "prepared row removals fail without mutation and apply without allocation" 
     var prepared = try prepareRowRemovals(fault.allocator(), sites.items, memberships.items, &.{.{ .scope_id = 10, .key_hash = 5 }});
     defer prepared.deinit(fault.allocator());
     fault.configure(1);
-    prepared.apply(&sites, &memberships, &row_keys);
+    prepared.apply(std.testing.allocator, &sites, &indexes, &memberships, &row_keys);
     try std.testing.expectEqual(@as(usize, 0), fault.attempts);
     try std.testing.expectEqualSlices(u64, &.{ 12, 11 }, sites.items[site_index].scope_ids.items);
     try std.testing.expectEqual(@as(?Membership, null), memberships.items[10]);
     try std.testing.expectEqual(Membership{ .site_index = site_index, .row_index = 0 }, memberships.items[12].?);
+}
+
+test "prepared row removals retire empty site and maintained index" {
+    var sites: std.ArrayListUnmanaged(Site) = .empty;
+    var indexes: SiteIndexMap = .empty;
+    var memberships: std.ArrayListUnmanaged(?Membership) = .empty;
+    defer clearSites(std.testing.allocator, &sites, &indexes, &memberships);
+    const site_index = ensureSiteIndex(std.testing.allocator, &sites, &indexes, 1, 2);
+    appendRowToSiteIndex(std.testing.allocator, &sites, &memberships, site_index, 10, 5);
+    const hashes = [_]u64{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5 };
+    const row_keys = TestRowKeys{ .hashes = &hashes };
+    var prepared = try prepareRowRemovals(std.testing.allocator, sites.items, memberships.items, &.{.{ .scope_id = 10, .key_hash = 5 }});
+    defer prepared.deinit(std.testing.allocator);
+    prepared.apply(std.testing.allocator, &sites, &indexes, &memberships, &row_keys);
+    try std.testing.expectEqual(@as(usize, 0), sites.items.len);
+    try std.testing.expectEqual(@as(?usize, null), indexes.get(.{ .parent_scope_id = 1, .site_ordinal = 2 }));
+    try std.testing.expectEqual(@as(?Membership, null), memberships.items[10]);
 }
 
 test "each runtime replaces row order and rebuilds indexes" {

@@ -6027,7 +6027,7 @@ test "one state transaction updates two each sites atomically through production
     for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
-test "one state transaction updates sibling when and each atomically through production" {
+test "one state transaction retires nested each with when atomically through production" {
     const Runner = struct {
         fn run(failure_number: ?usize) !usize {
             var host = HostEnv.init();
@@ -6040,9 +6040,9 @@ test "one state transaction updates sibling when and each atomically through pro
 
             const state_token = newTestBinderToken(&roc_host);
             const state_cap = testHostValueCapability(&roc_host);
-            const when = testNodeWhenWithSignal(&roc_host, testNodeListContainsOneExpr(&roc_host, testNodeRefExpr(state_token)), testNodeText(&roc_host, "mixed-true"), testNodeText(&roc_host, "mixed-false"));
             const each = testNodeEachWithSignalCapabilityAndRow(&roc_host, testNodeRefExpr(state_token), state_cap, &testStatefulRowElemCallable);
-            const section = testElementWith(&roc_host, "section", &.{}, &.{ when, testNodeText(&roc_host, "mixed-between"), each });
+            const when = testNodeWhenWithSignal(&roc_host, testNodeListContainsOneExpr(&roc_host, testNodeRefExpr(state_token)), each, testNodeText(&roc_host, "mixed-false"));
+            const section = testElementWith(&roc_host, "section", &.{}, &.{ when, testNodeText(&roc_host, "mixed-after") });
             const initial_items = [_]HostValue{ testHostValueI64(1), testHostValueI64(2) };
             const root = testNodeStateWithTokenAndInitialCapability(&roc_host, state_token, testHostValueI64ListWithCapability(&roc_host, &initial_items, state_cap), section, state_cap);
             defer root.decref(&roc_host);
@@ -6089,20 +6089,21 @@ test "one state transaction updates sibling when and each atomically through pro
                 defer std.testing.allocator.free(rows_after_failure);
                 try std.testing.expectEqualSlices(u64, rows_before, rows_after_failure);
                 try std.testing.expectEqual(@as(usize, 0), host.roc_allocations.liveCountSince(allocations_before));
-                try std.testing.expect(activeTextElementId(&host, "mixed-true") != null);
                 try std.testing.expect(activeTextElementId(&host, "mixed-false") == null);
+                try std.testing.expect(activeTextElementId(&host, "mixed-after") != null);
+                try std.testing.expect(activeTextElementId(&host, "row-1-1") != null);
+                try std.testing.expect(activeTextElementId(&host, "row-2-2") != null);
                 fault.configure(null);
                 const retry_items = [_]HostValue{ testHostValueI64(2), testHostValueI64(3) };
                 _ = try host.engine.tryDispatchStateValue(&host, &roc_host, state_id, testHostValueI64ListWithCapability(&roc_host, &retry_items, state_cap), state_cap);
             } else _ = try result;
 
             try std.testing.expectEqual(batches_before + 1, host.engine.dispatch_metrics.recompute_batches);
-            try std.testing.expect(activeTextElementId(&host, "mixed-true") == null);
             try std.testing.expect(activeTextElementId(&host, "mixed-false") != null);
-            try std.testing.expect(activeTextElementId(&host, "mixed-between") != null);
+            try std.testing.expect(activeTextElementId(&host, "mixed-after") != null);
             try std.testing.expect(activeTextElementId(&host, "row-1-1") == null);
-            try std.testing.expect(activeTextElementId(&host, "row-2-2") != null);
-            try std.testing.expect(activeTextElementId(&host, "row-3-3") != null);
+            try std.testing.expect(activeTextElementId(&host, "row-2-2") == null);
+            try std.testing.expect(activeTextElementId(&host, "row-3-3") == null);
             return attempts;
         }
     };

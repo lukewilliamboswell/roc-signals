@@ -597,19 +597,22 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             try self.wire.reserveAdditional(self.allocator, child_links);
         }
 
-        /// Transfers scalar field journals and their wire commands from a
-        /// separately prepared splice. The donor must contain no topology,
-        /// event, or custom-attribute edits; this keeps structural and scalar
-        /// preparation independent while preserving one atomic publication.
+        /// Transfers scalar field and custom-attribute journals with their wire
+        /// commands from a separately prepared splice. The donor must contain
+        /// no topology or event edits; structural and scalar preparation remain
+        /// independent while publishing through one atomic batch.
         pub fn adoptScalarUpdates(self: *Self, donor: *Self) (std.mem.Allocator.Error || error{ResourceLimit})!void {
-            if (donor.removals.items.len != 0 or donor.creations.items.len != 0 or donor.children.items.len != 0 or donor.fixed_events.items.len != 0 or donor.custom_attrs.items.len != 0 or donor.named_events.items.len != 0 or donor.provisional_nodes.count() != 0 or donor.parent_intents.items.len != 0) return error.ResourceLimit;
+            if (donor.removals.items.len != 0 or donor.creations.items.len != 0 or donor.children.items.len != 0 or donor.fixed_events.items.len != 0 or donor.named_events.items.len != 0 or donor.provisional_nodes.count() != 0 or donor.parent_intents.items.len != 0) return error.ResourceLimit;
             try self.text_fields.ensureUnusedCapacity(self.allocator, donor.text_fields.items.len);
             try self.bool_fields.ensureUnusedCapacity(self.allocator, donor.bool_fields.items.len);
+            try self.custom_attrs.ensureUnusedCapacity(self.allocator, donor.custom_attrs.items.len);
             try self.wire.appendPrepared(self.allocator, &donor.wire);
             self.text_fields.appendSliceAssumeCapacity(donor.text_fields.items);
             self.bool_fields.appendSliceAssumeCapacity(donor.bool_fields.items);
+            self.custom_attrs.appendSliceAssumeCapacity(donor.custom_attrs.items);
             donor.text_fields.clearRetainingCapacity();
             donor.bool_fields.clearRetainingCapacity();
+            donor.custom_attrs.clearRetainingCapacity();
         }
 
         /// Adds one active node retirement and its corresponding host removal.

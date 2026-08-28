@@ -322,10 +322,10 @@ pub const PreparedSinkRouteEdits = struct {
 
 /// Copies and validates sink edits before route mutation begins.
 pub fn prepareSinkRouteEdits(allocator: std.mem.Allocator, text_routes: *const RouteTable(TextSink), bool_routes: *const RouteTable(BoolSink), change_routes: *const RouteTable(ChangeSink), structural_routes: *const RouteTable(StructuralSink), text: []const TextSinkEdit, bools: []const BoolSinkEdit, changes: []const ChangeSinkEdit, structural: []const StructuralSinkEdit) std.mem.Allocator.Error!PreparedSinkRouteEdits {
-    for (text) |edit| if (!containsTextSink(text_routes, edit)) return error.OutOfMemory;
-    for (bools) |edit| if (!containsBoolSink(bool_routes, edit)) return error.OutOfMemory;
-    for (changes) |edit| if (!containsChangeSink(change_routes, edit)) return error.OutOfMemory;
-    for (structural) |edit| if (!containsStructuralSink(structural_routes, edit)) return error.OutOfMemory;
+    for (text, 0..) |edit, index| if (!containsTextSinkAfter(text_routes, text[0..index], edit)) return error.OutOfMemory;
+    for (bools, 0..) |edit, index| if (!containsBoolSinkAfter(bool_routes, bools[0..index], edit)) return error.OutOfMemory;
+    for (changes, 0..) |edit, index| if (!containsChangeSinkAfter(change_routes, changes[0..index], edit)) return error.OutOfMemory;
+    for (structural, 0..) |edit, index| if (!containsStructuralSinkAfter(structural_routes, structural[0..index], edit)) return error.OutOfMemory;
     const owned_text = try allocator.dupe(TextSinkEdit, text);
     errdefer allocator.free(owned_text);
     const owned_bools = try allocator.dupe(BoolSinkEdit, bools);
@@ -338,6 +338,52 @@ pub fn prepareSinkRouteEdits(allocator: std.mem.Allocator, text_routes: *const R
         .changes = owned_changes,
         .structural = try allocator.dupe(StructuralSinkEdit, structural),
     };
+}
+
+fn editedSinkIndex(comptime Edit: type, record_id: u64, kind: anytype, initial: usize, prior: []const Edit) ?usize {
+    var current = initial;
+    for (prior) |edit| {
+        if (edit.record_id != record_id) continue;
+        if (@hasField(Edit, "kind") and edit.kind != kind) continue;
+        if (edit.old_index != current) continue;
+        current = edit.new_index orelse return null;
+    }
+    return current;
+}
+
+fn containsTextSinkAfter(routes: *const RouteTable(TextSink), prior: []const TextSinkEdit, edit: TextSinkEdit) bool {
+    if (edit.record_id >= routes.items.len) return false;
+    for (routes.items[@intCast(edit.record_id)].items) |sink| {
+        if (sink.kind != edit.kind) continue;
+        if (editedSinkIndex(TextSinkEdit, edit.record_id, edit.kind, sink.index, prior) == edit.old_index) return true;
+    }
+    return false;
+}
+
+fn containsBoolSinkAfter(routes: *const RouteTable(BoolSink), prior: []const BoolSinkEdit, edit: BoolSinkEdit) bool {
+    if (edit.record_id >= routes.items.len) return false;
+    for (routes.items[@intCast(edit.record_id)].items) |sink| {
+        if (sink.kind != edit.kind) continue;
+        if (editedSinkIndex(BoolSinkEdit, edit.record_id, edit.kind, sink.index, prior) == edit.old_index) return true;
+    }
+    return false;
+}
+
+fn containsChangeSinkAfter(routes: *const RouteTable(ChangeSink), prior: []const ChangeSinkEdit, edit: ChangeSinkEdit) bool {
+    if (edit.record_id >= routes.items.len) return false;
+    for (routes.items[@intCast(edit.record_id)].items) |sink| {
+        if (editedSinkIndex(ChangeSinkEdit, edit.record_id, {}, sink.index, prior) == edit.old_index) return true;
+    }
+    return false;
+}
+
+fn containsStructuralSinkAfter(routes: *const RouteTable(StructuralSink), prior: []const StructuralSinkEdit, edit: StructuralSinkEdit) bool {
+    if (edit.record_id >= routes.items.len) return false;
+    for (routes.items[@intCast(edit.record_id)].items) |sink| {
+        if (sink.kind != edit.kind) continue;
+        if (editedSinkIndex(StructuralSinkEdit, edit.record_id, edit.kind, sink.index, prior) == edit.old_index) return true;
+    }
+    return false;
 }
 
 fn containsTextSink(routes: *const RouteTable(TextSink), edit: TextSinkEdit) bool {
@@ -1192,6 +1238,10 @@ pub fn PreparedReleaseClosure(comptime Record: type) type {
                 retireRouteSlot(StructuralSink, structural_routes, self.retired_structural_routes, removal_index, last_index, step_index);
                 live_len = last_index;
             }
+            text_routes.items.len = @min(text_routes.items.len, live_len);
+            bool_routes.items.len = @min(bool_routes.items.len, live_len);
+            change_routes.items.len = @min(change_routes.items.len, live_len);
+            structural_routes.items.len = @min(structural_routes.items.len, live_len);
             self.dense_committed = true;
         }
 
@@ -2212,6 +2262,12 @@ test "prepared release closure preserves shared diamond and computes dense remap
         nodes.deinit(std.testing.allocator);
     }
     _ = retainRecord(LifecycleTestRecord, std.testing.allocator, &nodes, &source_routes, 1, &root, &hooks);
+    for (0..nodes.items.len) |_| {
+        try text_routes.append(std.testing.allocator, .empty);
+        try bool_routes.append(std.testing.allocator, .empty);
+        try change_routes.append(std.testing.allocator, .empty);
+        try structural_routes.append(std.testing.allocator, .empty);
+    }
     try std.testing.expectEqual(@as(usize, 2), source.active_use_count);
     try std.testing.expectEqualSlices(u64, &.{0}, source_routes.items[0].items);
 
@@ -2248,6 +2304,10 @@ test "prepared release closure preserves shared diamond and computes dense remap
     try std.testing.expectEqualSlices(u64, &.{}, nodes.items[2].dependents);
     baseline.applyDense(&nodes, &source_routes, &text_routes, &bool_routes, &change_routes, &structural_routes);
     try std.testing.expectEqual(@as(usize, 0), nodes.items.len);
+    try std.testing.expectEqual(@as(usize, 0), text_routes.items.len);
+    try std.testing.expectEqual(@as(usize, 0), bool_routes.items.len);
+    try std.testing.expectEqual(@as(usize, 0), change_routes.items.len);
+    try std.testing.expectEqual(@as(usize, 0), structural_routes.items.len);
     try std.testing.expectEqualSlices(u64, &.{}, source_routes.items[0].items);
     try std.testing.expectEqual(@as(usize, 0), counter.attempts);
     baseline.releaseRetired(counter.allocator(), &hooks);
