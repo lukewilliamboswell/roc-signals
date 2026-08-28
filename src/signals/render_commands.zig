@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const boundary = @import("boundary.zig");
+const ids = @import("ids.zig");
 
 pub const protocol_version: u32 = 11;
 pub const protocol_feature_dynamic_attrs: u32 = 1 << 0;
@@ -176,7 +177,7 @@ pub const Record = extern struct {
     pub const word_count = @divExact(@sizeOf(Record), @sizeOf(u32));
 
     /// Creates an initialized value with the ownership and capacity invariants required by this module.
-    pub fn init(op: Op, a: u32, b: u32, c: u32, d: u32, e: u32) Record {
+    fn initRaw(op: Op, a: u32, b: u32, c: u32, d: u32, e: u32) Record {
         return .{
             .op = @intFromEnum(op),
             .a = a,
@@ -187,6 +188,14 @@ pub const Record = extern struct {
         };
     }
 };
+
+comptime {
+    if (@sizeOf(Record) != 6 * @sizeOf(u32)) @compileError("wire command record must remain six u32 words");
+    if (@alignOf(Record) != @alignOf(u32)) @compileError("wire command record alignment changed");
+    for (.{ "op", "a", "b", "c", "d", "e" }, 0..) |field_name, word_index| {
+        if (@offsetOf(Record, field_name) != word_index * @sizeOf(u32)) @compileError("wire command record field layout changed");
+    }
+}
 
 pub const Buffer = struct {
     records: std.ArrayListUnmanaged(Record) = .empty,
@@ -214,8 +223,8 @@ pub const Buffer = struct {
     }
 
     /// Appends  using capacity that must already satisfy the caller's transaction contract.
-    pub fn append(self: *Buffer, allocator: std.mem.Allocator, op: Op, a: u32, b: u32, c: u32, d: u32, e: u32) std.mem.Allocator.Error!void {
-        try self.records.append(allocator, Record.init(op, a, b, c, d, e));
+    pub fn appendRaw(self: *Buffer, allocator: std.mem.Allocator, op: Op, a: u32, b: u32, c: u32, d: u32, e: u32) std.mem.Allocator.Error!void {
+        try self.records.append(allocator, Record.initRaw(op, a, b, c, d, e));
     }
 
     /// Ensures total capacity capacity or state before publication can begin.
@@ -224,9 +233,59 @@ pub const Buffer = struct {
     }
 };
 
+/// Byte offset into one protocol-owned side buffer.
+pub const WireOffset = enum(u32) {
+    _,
+
+    /// Exposes the offset only while constructing the final raw wire record.
+    pub fn raw(self: WireOffset) u32 {
+        return @intFromEnum(self);
+    }
+};
+
+/// Byte length in one protocol-owned side buffer.
+pub const WireLength = enum(u32) {
+    _,
+
+    /// Exposes the length only while constructing the final raw wire record.
+    pub fn raw(self: WireLength) u32 {
+        return @intFromEnum(self);
+    }
+};
+
+/// Narrow browser-wire representation of an engine element identity.
+pub const WireElemId = enum(u32) {
+    _,
+
+    /// Narrows an engine element identity at the versioned browser boundary.
+    pub fn fromEngine(value: ids.ElemId) error{ResourceLimit}!WireElemId {
+        return @enumFromInt(std.math.cast(u32, value.raw()) orelse return error.ResourceLimit);
+    }
+
+    /// Exposes the identity only while constructing the final raw wire record.
+    pub fn raw(self: WireElemId) u32 {
+        return @intFromEnum(self);
+    }
+};
+
+/// Narrow browser-wire representation of an engine event identity.
+pub const WireEventId = enum(u32) {
+    _,
+
+    /// Narrows an engine event identity at the versioned browser boundary.
+    pub fn fromEngine(value: ids.EventId) error{ResourceLimit}!WireEventId {
+        return @enumFromInt(std.math.cast(u32, value.raw()) orelse return error.ResourceLimit);
+    }
+
+    /// Exposes the identity only while constructing the final raw wire record.
+    pub fn raw(self: WireEventId) u32 {
+        return @intFromEnum(self);
+    }
+};
+
 pub const DynamicSlice = struct {
-    offset: u32,
-    len: u32,
+    offset: WireOffset,
+    len: WireLength,
 };
 
 pub const DynamicBuffer = struct {
@@ -260,12 +319,12 @@ pub const DynamicBuffer = struct {
     }
 
     /// Appends set attr text using capacity that must already satisfy the caller's transaction contract.
-    pub fn appendSetAttrText(self: *DynamicBuffer, allocator: std.mem.Allocator, elem_id: u32, name: []const u8, value: []const u8) PreflightError!DynamicSlice {
+    pub fn appendSetAttrText(self: *DynamicBuffer, allocator: std.mem.Allocator, elem_id: WireElemId, name: []const u8, value: []const u8) PreflightError!DynamicSlice {
         var payload_len = std.math.add(usize, 3 * @sizeOf(u32), name.len) catch return error.ResourceLimit;
         payload_len = std.math.add(usize, payload_len, value.len) catch return error.ResourceLimit;
         const record = try self.appendRecord(allocator, .set_attr_text, payload_len);
         var cursor = record.payload_start;
-        writeU32(self.bytes.items, &cursor, elem_id);
+        writeU32(self.bytes.items, &cursor, elem_id.raw());
         writeU32(self.bytes.items, &cursor, @intCast(name.len));
         writeBytes(self.bytes.items, &cursor, name);
         writeU32(self.bytes.items, &cursor, @intCast(value.len));
@@ -274,11 +333,11 @@ pub const DynamicBuffer = struct {
     }
 
     /// Appends remove attr using capacity that must already satisfy the caller's transaction contract.
-    pub fn appendRemoveAttr(self: *DynamicBuffer, allocator: std.mem.Allocator, elem_id: u32, name: []const u8) PreflightError!DynamicSlice {
+    pub fn appendRemoveAttr(self: *DynamicBuffer, allocator: std.mem.Allocator, elem_id: WireElemId, name: []const u8) PreflightError!DynamicSlice {
         const payload_len = std.math.add(usize, 2 * @sizeOf(u32), name.len) catch return error.ResourceLimit;
         const record = try self.appendRecord(allocator, .remove_attr, payload_len);
         var cursor = record.payload_start;
-        writeU32(self.bytes.items, &cursor, elem_id);
+        writeU32(self.bytes.items, &cursor, elem_id.raw());
         writeU32(self.bytes.items, &cursor, @intCast(name.len));
         writeBytes(self.bytes.items, &cursor, name);
         return record.slice;
@@ -288,8 +347,8 @@ pub const DynamicBuffer = struct {
     pub fn appendBindEvent(
         self: *DynamicBuffer,
         allocator: std.mem.Allocator,
-        elem_id: u32,
-        event_id: u32,
+        elem_id: WireElemId,
+        event_id: WireEventId,
         event_name: []const u8,
         options: u32,
         delivery: EventDeliveryWire,
@@ -300,8 +359,8 @@ pub const DynamicBuffer = struct {
         payload_len = std.math.add(usize, payload_len, event_extraction_plan.len) catch return error.ResourceLimit;
         const record = try self.appendRecord(allocator, .bind_event, payload_len);
         var cursor = record.payload_start;
-        writeU32(self.bytes.items, &cursor, elem_id);
-        writeU32(self.bytes.items, &cursor, event_id);
+        writeU32(self.bytes.items, &cursor, elem_id.raw());
+        writeU32(self.bytes.items, &cursor, event_id.raw());
         writeU32(self.bytes.items, &cursor, @intCast(event_name.len));
         writeBytes(self.bytes.items, &cursor, event_name);
         writeU32(self.bytes.items, &cursor, options);
@@ -314,11 +373,11 @@ pub const DynamicBuffer = struct {
     }
 
     /// Appends clear event using capacity that must already satisfy the caller's transaction contract.
-    pub fn appendClearEvent(self: *DynamicBuffer, allocator: std.mem.Allocator, elem_id: u32, event_name: []const u8) PreflightError!DynamicSlice {
+    pub fn appendClearEvent(self: *DynamicBuffer, allocator: std.mem.Allocator, elem_id: WireElemId, event_name: []const u8) PreflightError!DynamicSlice {
         const payload_len = std.math.add(usize, 2 * @sizeOf(u32), event_name.len) catch return error.ResourceLimit;
         const record = try self.appendRecord(allocator, .clear_event, payload_len);
         var cursor = record.payload_start;
-        writeU32(self.bytes.items, &cursor, elem_id);
+        writeU32(self.bytes.items, &cursor, elem_id.raw());
         writeU32(self.bytes.items, &cursor, @intCast(event_name.len));
         writeBytes(self.bytes.items, &cursor, event_name);
         return record.slice;
@@ -346,8 +405,8 @@ pub const DynamicBuffer = struct {
 
         return .{
             .slice = .{
-                .offset = @intCast(offset),
-                .len = @intCast(total_len),
+                .offset = @enumFromInt(@as(u32, @intCast(offset))),
+                .len = @enumFromInt(@as(u32, @intCast(total_len))),
             },
             .payload_start = cursor,
         };
@@ -528,20 +587,44 @@ pub const TransactionalBatch = struct {
     }
 };
 
-/// One borrowed wire command whose backing values remain owned by its render plan.
-pub const PreparedFixedCommand = struct { op: Op, a: u32 = 0, b: u32 = 0, c: u32 = 0, d: u32 = 0, e: u32 = 0 };
-/// One command whose payload is copied into the string side buffer.
-pub const PreparedStringCommand = struct { op: Op, elem_id: u32, bytes: []const u8 };
 /// One canonical dynamic event binding prepared for wire encoding.
-pub const PreparedBindEventCommand = struct { elem_id: u32, event_id: u32, name: []const u8, options: u32, delivery: EventDeliveryWire, payload_descriptor: boundary.BoundaryPayloadDescriptor };
+pub const PreparedBindEventCommand = struct { elem_id: WireElemId, event_id: WireEventId, name: []const u8, policy: EventPolicy, delivery: EventDeliveryWire, payload_descriptor: boundary.BoundaryPayloadDescriptor };
+const PreparedTextCommand = struct { elem_id: WireElemId, bytes: []const u8 };
+const PreparedBoolCommand = struct { elem_id: WireElemId, value: bool };
 
-pub const PreparedCommand = union(enum) {
-    fixed: PreparedFixedCommand,
-    string: PreparedStringCommand,
-    set_attr_text: struct { elem_id: u32, name: []const u8, value: []const u8 },
-    remove_attr: struct { elem_id: u32, name: []const u8 },
+/// Semantic fixed-record command whose variant determines every wire operand.
+pub const PreparedSemanticCommand = union(enum) {
+    reset_dom,
+    create_element: struct { elem_id: WireElemId, tag: []const u8 },
+    create_text: WireElemId,
+    append_child: struct { parent: WireElemId, child: WireElemId },
+    remove_node: WireElemId,
+    move_before: struct { parent: WireElemId, child: WireElemId, before: ?WireElemId },
+    set_text: PreparedTextCommand,
+    set_value: PreparedTextCommand,
+    set_checked: PreparedBoolCommand,
+    set_disabled: PreparedBoolCommand,
+    bind_fixed: struct { elem_id: WireElemId, event_id: WireEventId, kind: EventKind },
+    clear_fixed: struct { elem_id: WireElemId, kind: EventKind },
+};
+
+const PreparedCommand = union(enum) {
+    reset_dom,
+    create_element: struct { elem_id: WireElemId, tag: []const u8 },
+    create_text: WireElemId,
+    append_child: struct { parent: WireElemId, child: WireElemId },
+    remove_node: WireElemId,
+    move_before: struct { parent: WireElemId, child: WireElemId, before: ?WireElemId },
+    set_text: PreparedTextCommand,
+    set_value: PreparedTextCommand,
+    set_checked: PreparedBoolCommand,
+    set_disabled: PreparedBoolCommand,
+    bind_fixed: struct { elem_id: WireElemId, event_id: WireEventId, kind: EventKind },
+    clear_fixed: struct { elem_id: WireElemId, kind: EventKind },
+    set_attr_text: struct { elem_id: WireElemId, name: []const u8, value: []const u8 },
+    remove_attr: struct { elem_id: WireElemId, name: []const u8 },
     bind_event: PreparedBindEventCommand,
-    clear_event: struct { elem_id: u32, name: []const u8 },
+    clear_event: struct { elem_id: WireElemId, name: []const u8 },
 };
 
 /// Collects exact command capacity and stages it before atomic publication.
@@ -592,8 +675,17 @@ pub const PreparedBatch = struct {
     pub fn counts(self: *const PreparedBatch) Counts {
         var result: Counts = .{};
         for (self.commands.items) |command| switch (command) {
-            .fixed => |value| result.addOp(value.op),
-            .string => |value| result.addOp(value.op),
+            .reset_dom => result.addOp(.reset_dom),
+            .create_element, .create_text => result.addOp(.create_element),
+            .append_child => result.addOp(.append_child),
+            .remove_node => result.addOp(.remove_node),
+            .move_before => result.addOp(.move_before),
+            .set_text => result.addOp(.set_text),
+            .set_value => result.addOp(.set_value),
+            .set_checked => result.addOp(.set_checked),
+            .set_disabled => result.addOp(.set_disabled),
+            .bind_fixed => result.addOp(.bind_click),
+            .clear_fixed => result.addOp(.clear_event),
             .set_attr_text, .remove_attr => result.addOp(.extended),
             .bind_event => result.addOp(.bind_click),
             .clear_event => result.addOp(.clear_event),
@@ -601,29 +693,45 @@ pub const PreparedBatch = struct {
         return result;
     }
 
-    /// Adds one fixed-width command.
-    pub fn addFixed(self: *PreparedBatch, command: PreparedFixedCommand) error{ResourceLimit}!void {
+    fn addCommand(self: *PreparedBatch, command: PreparedCommand, string_bytes: usize) error{ResourceLimit}!void {
         try self.ensureJournalSlot();
-        try self.capacity.addFixed(0);
-        self.commands.appendAssumeCapacity(.{ .fixed = command });
+        try self.capacity.addFixed(string_bytes);
+        self.commands.appendAssumeCapacity(command);
     }
 
-    /// Adds one command with bytes in the string side buffer.
-    pub fn addString(self: *PreparedBatch, command: PreparedStringCommand) error{ResourceLimit}!void {
-        try self.ensureJournalSlot();
-        try self.capacity.addFixed(command.bytes.len);
-        self.commands.appendAssumeCapacity(.{ .string = command });
+    /// Adds a semantic fixed or string-backed command whose operands cannot be transposed.
+    pub fn addSemantic(self: *PreparedBatch, command: PreparedSemanticCommand) error{ResourceLimit}!void {
+        const string_bytes: usize = switch (command) {
+            .create_element => |value| value.tag.len,
+            .set_text, .set_value => |value| value.bytes.len,
+            .reset_dom, .create_text, .append_child, .remove_node, .move_before, .set_checked, .set_disabled, .bind_fixed, .clear_fixed => 0,
+        };
+        const prepared: PreparedCommand = switch (command) {
+            .reset_dom => .reset_dom,
+            .create_element => |value| .{ .create_element = .{ .elem_id = value.elem_id, .tag = value.tag } },
+            .create_text => |value| .{ .create_text = value },
+            .append_child => |value| .{ .append_child = .{ .parent = value.parent, .child = value.child } },
+            .remove_node => |value| .{ .remove_node = value },
+            .move_before => |value| .{ .move_before = .{ .parent = value.parent, .child = value.child, .before = value.before } },
+            .set_text => |value| .{ .set_text = value },
+            .set_value => |value| .{ .set_value = value },
+            .set_checked => |value| .{ .set_checked = value },
+            .set_disabled => |value| .{ .set_disabled = value },
+            .bind_fixed => |value| .{ .bind_fixed = .{ .elem_id = value.elem_id, .event_id = value.event_id, .kind = value.kind } },
+            .clear_fixed => |value| .{ .clear_fixed = .{ .elem_id = value.elem_id, .kind = value.kind } },
+        };
+        try self.addCommand(prepared, string_bytes);
     }
 
     /// Adds one dynamic custom-attribute set.
-    pub fn addSetAttrText(self: *PreparedBatch, elem_id: u32, name: []const u8, value: []const u8) error{ResourceLimit}!void {
+    pub fn addSetAttrText(self: *PreparedBatch, elem_id: WireElemId, name: []const u8, value: []const u8) error{ResourceLimit}!void {
         try self.ensureJournalSlot();
         try self.capacity.addSetAttrText(name.len, value.len);
         self.commands.appendAssumeCapacity(.{ .set_attr_text = .{ .elem_id = elem_id, .name = name, .value = value } });
     }
 
     /// Adds one dynamic custom-attribute removal.
-    pub fn addRemoveAttr(self: *PreparedBatch, elem_id: u32, name: []const u8) error{ResourceLimit}!void {
+    pub fn addRemoveAttr(self: *PreparedBatch, elem_id: WireElemId, name: []const u8) error{ResourceLimit}!void {
         try self.ensureJournalSlot();
         try self.capacity.addRemoveAttr(name.len);
         self.commands.appendAssumeCapacity(.{ .remove_attr = .{ .elem_id = elem_id, .name = name } });
@@ -637,7 +745,7 @@ pub const PreparedBatch = struct {
     }
 
     /// Adds one dynamic event clear.
-    pub fn addClearEvent(self: *PreparedBatch, elem_id: u32, name: []const u8) error{ResourceLimit}!void {
+    pub fn addClearEvent(self: *PreparedBatch, elem_id: WireElemId, name: []const u8) error{ResourceLimit}!void {
         try self.ensureJournalSlot();
         try self.capacity.addClearEvent(name.len);
         self.commands.appendAssumeCapacity(.{ .clear_event = .{ .elem_id = elem_id, .name = name } });
@@ -654,28 +762,41 @@ pub const PreparedBatch = struct {
     /// Encodes all commands using pre-reserved capacity and no allocation.
     pub fn stageAssumeCapacity(self: *const PreparedBatch, batch: *TransactionalBatch, allocator: std.mem.Allocator) PreflightError!void {
         for (self.commands.items) |command| switch (command) {
-            .fixed => |value| try batch.staged.commands.append(allocator, value.op, value.a, value.b, value.c, value.d, value.e),
-            .string => |value| {
+            .reset_dom => try batch.staged.commands.appendRaw(allocator, .reset_dom, 0, 0, 0, 0, 0),
+            .create_element => |value| {
+                const offset = std.math.cast(u32, batch.staged.strings.items.len) orelse return error.ResourceLimit;
+                const len = std.math.cast(u32, value.tag.len) orelse return error.ResourceLimit;
+                try batch.staged.strings.appendSlice(allocator, value.tag);
+                try batch.staged.commands.appendRaw(allocator, .create_element, value.elem_id.raw(), offset, len, 0, 0);
+            },
+            .create_text => |elem_id| try batch.staged.commands.appendRaw(allocator, .create_text, elem_id.raw(), 0, 0, 0, 0),
+            .append_child => |value| try batch.staged.commands.appendRaw(allocator, .append_child, value.parent.raw(), value.child.raw(), 0, 0, 0),
+            .remove_node => |elem_id| try batch.staged.commands.appendRaw(allocator, .remove_node, elem_id.raw(), 0, 0, 0, 0),
+            .move_before => |value| try batch.staged.commands.appendRaw(allocator, .move_before, value.parent.raw(), value.child.raw(), if (value.before) |before| before.raw() else 0, 0, 0),
+            .set_text, .set_value => |value| {
                 const offset = std.math.cast(u32, batch.staged.strings.items.len) orelse return error.ResourceLimit;
                 const len = std.math.cast(u32, value.bytes.len) orelse return error.ResourceLimit;
                 try batch.staged.strings.appendSlice(allocator, value.bytes);
-                try batch.staged.commands.append(allocator, value.op, value.elem_id, offset, len, 0, 0);
+                try batch.staged.commands.appendRaw(allocator, if (command == .set_text) .set_text else .set_value, value.elem_id.raw(), offset, len, 0, 0);
             },
+            .set_checked, .set_disabled => |value| try batch.staged.commands.appendRaw(allocator, if (command == .set_checked) .set_checked else .set_disabled, value.elem_id.raw(), @intFromBool(value.value), 0, 0, 0),
+            .bind_fixed => |value| try batch.staged.commands.appendRaw(allocator, value.kind.bindOp(), value.elem_id.raw(), value.event_id.raw(), 0, 0, 0),
+            .clear_fixed => |value| try batch.staged.commands.appendRaw(allocator, .clear_event, value.elem_id.raw(), @intCast(@intFromEnum(value.kind)), 0, 0, 0),
             .set_attr_text => |value| {
                 const slice = try batch.staged.dynamic.appendSetAttrText(allocator, value.elem_id, value.name, value.value);
-                try batch.staged.commands.append(allocator, .extended, slice.offset, slice.len, 0, 0, 0);
+                try batch.staged.commands.appendRaw(allocator, .extended, slice.offset.raw(), slice.len.raw(), 0, 0, 0);
             },
             .remove_attr => |value| {
                 const slice = try batch.staged.dynamic.appendRemoveAttr(allocator, value.elem_id, value.name);
-                try batch.staged.commands.append(allocator, .extended, slice.offset, slice.len, 0, 0, 0);
+                try batch.staged.commands.appendRaw(allocator, .extended, slice.offset.raw(), slice.len.raw(), 0, 0, 0);
             },
             .bind_event => |value| {
-                const slice = try batch.staged.dynamic.appendBindEvent(allocator, value.elem_id, value.event_id, value.name, value.options, value.delivery, value.payload_descriptor);
-                try batch.staged.commands.append(allocator, .extended, slice.offset, slice.len, 0, 0, 0);
+                const slice = try batch.staged.dynamic.appendBindEvent(allocator, value.elem_id, value.event_id, value.name, value.policy.toWireBits(), value.delivery, value.payload_descriptor);
+                try batch.staged.commands.appendRaw(allocator, .extended, slice.offset.raw(), slice.len.raw(), 0, 0, 0);
             },
             .clear_event => |value| {
                 const slice = try batch.staged.dynamic.appendClearEvent(allocator, value.elem_id, value.name);
-                try batch.staged.commands.append(allocator, .extended, slice.offset, slice.len, 0, 0, 0);
+                try batch.staged.commands.appendRaw(allocator, .extended, slice.offset.raw(), slice.len.raw(), 0, 0, 0);
             },
         };
     }
@@ -712,7 +833,7 @@ fn exerciseTransactionalBatch(backing_allocator: std.mem.Allocator, preflight_al
     defer batch.deinit(backing_allocator);
 
     // Model a previous successful call whose commands have not been drained.
-    try batch.published.commands.append(backing_allocator, .set_text, 99, 0, 0, 0, 0);
+    try batch.published.commands.appendRaw(backing_allocator, .set_text, 99, 0, 0, 0, 0);
 
     batch.begin();
     batch.preflight(preflight_allocator, .{ .commands = 9, .strings = 257, .dynamic = 513 }) catch |err| {
@@ -726,7 +847,7 @@ fn exerciseTransactionalBatch(backing_allocator: std.mem.Allocator, preflight_al
         // complete retry and publishes only the retry's commands.
         batch.begin();
         try batch.preflight(backing_allocator, .{ .commands = 9, .strings = 257, .dynamic = 513 });
-        try batch.staged.commands.append(backing_allocator, .set_text, 1, 0, 0, 0, 0);
+        try batch.staged.commands.appendRaw(backing_allocator, .set_text, 1, 0, 0, 0, 0);
         try batch.staged.strings.appendSlice(backing_allocator, "retry");
         batch.commit();
         try std.testing.expectEqual(@as(usize, 1), batch.published.commands.len());
@@ -734,9 +855,9 @@ fn exerciseTransactionalBatch(backing_allocator: std.mem.Allocator, preflight_al
         return error.OutOfMemory;
     };
 
-    try batch.staged.commands.append(backing_allocator, .set_text, 1, 0, 0, 0, 0);
+    try batch.staged.commands.appendRaw(backing_allocator, .set_text, 1, 0, 0, 0, 0);
     try batch.staged.strings.appendSlice(backing_allocator, "committed");
-    _ = try batch.staged.dynamic.appendRemoveAttr(backing_allocator, 1, "title");
+    _ = try batch.staged.dynamic.appendRemoveAttr(backing_allocator, @enumFromInt(1), "title");
     batch.commit();
 
     try std.testing.expectEqual(@as(usize, 1), batch.published.commands.len());
@@ -807,19 +928,19 @@ test "command capacity estimation permits armed allocation-free staging" {
     try batch.preflight(allocator, capacity);
     fault.configure(1);
     try batch.staged.strings.appendSlice(allocator, "button");
-    try batch.staged.commands.append(allocator, .create_element, 1, 0, 0, 0, 0);
-    const set_attr = try batch.staged.dynamic.appendSetAttrText(allocator, 1, "data-x", "ready");
-    try batch.staged.commands.append(allocator, .extended, set_attr.offset, set_attr.len, 0, 0, 0);
-    const remove_attr = try batch.staged.dynamic.appendRemoveAttr(allocator, 1, "title");
-    try batch.staged.commands.append(allocator, .extended, remove_attr.offset, remove_attr.len, 0, 0, 0);
-    const bind = try batch.staged.dynamic.appendBindEvent(allocator, 1, 7, "focus", 0, .{
+    try batch.staged.commands.appendRaw(allocator, .create_element, 1, 0, 0, 0, 0);
+    const set_attr = try batch.staged.dynamic.appendSetAttrText(allocator, @enumFromInt(1), "data-x", "ready");
+    try batch.staged.commands.appendRaw(allocator, .extended, set_attr.offset.raw(), set_attr.len.raw(), 0, 0, 0);
+    const remove_attr = try batch.staged.dynamic.appendRemoveAttr(allocator, @enumFromInt(1), "title");
+    try batch.staged.commands.appendRaw(allocator, .extended, remove_attr.offset.raw(), remove_attr.len.raw(), 0, 0, 0);
+    const bind = try batch.staged.dynamic.appendBindEvent(allocator, @enumFromInt(1), @enumFromInt(7), "focus", 0, .{
         .requested = .auto,
         .effective = .native,
         .reason = .native_runtime_default,
     }, descriptor);
-    try batch.staged.commands.append(allocator, .extended, bind.offset, bind.len, 0, 0, 0);
-    const clear = try batch.staged.dynamic.appendClearEvent(allocator, 1, "blur");
-    try batch.staged.commands.append(allocator, .extended, clear.offset, clear.len, 0, 0, 0);
+    try batch.staged.commands.appendRaw(allocator, .extended, bind.offset.raw(), bind.len.raw(), 0, 0, 0);
+    const clear = try batch.staged.dynamic.appendClearEvent(allocator, @enumFromInt(1), "blur");
+    try batch.staged.commands.appendRaw(allocator, .extended, clear.offset.raw(), clear.len.raw(), 0, 0, 0);
     try std.testing.expectEqual(@as(usize, 0), fault.attempts);
     try std.testing.expectEqual(capacity.commands, batch.staged.commands.len());
     try std.testing.expectEqual(capacity.strings, batch.staged.strings.items.len);
@@ -834,19 +955,19 @@ test "prepared command batch sweeps preflight and stages allocation free" {
     const descriptor = boundary.BoundaryPayloadDescriptor.init(.str, .target_value);
     var prepared = try PreparedBatch.init(std.testing.allocator, 6);
     defer prepared.deinit(std.testing.allocator);
-    try prepared.addFixed(.{ .op = .set_checked, .a = 1, .b = 1 });
-    try prepared.addString(.{ .op = .create_element, .elem_id = 2, .bytes = "button" });
-    try prepared.addSetAttrText(2, "data-x", "ready");
-    try prepared.addRemoveAttr(2, "title");
+    try prepared.addSemantic(.{ .set_checked = .{ .elem_id = @enumFromInt(1), .value = true } });
+    try prepared.addSemantic(.{ .create_element = .{ .elem_id = @enumFromInt(2), .tag = "button" } });
+    try prepared.addSetAttrText(@enumFromInt(2), "data-x", "ready");
+    try prepared.addRemoveAttr(@enumFromInt(2), "title");
     try prepared.addBindEvent(.{
-        .elem_id = 2,
-        .event_id = 7,
+        .elem_id = @enumFromInt(2),
+        .event_id = @enumFromInt(7),
         .name = "focus",
-        .options = 0,
+        .policy = .none,
         .delivery = .{ .requested = .auto, .effective = .native, .reason = .native_runtime_default },
         .payload_descriptor = descriptor,
     });
-    try prepared.addClearEvent(2, "blur");
+    try prepared.addClearEvent(@enumFromInt(2), "blur");
     const command_counts = prepared.counts();
     try std.testing.expectEqual(@as(u64, 6), command_counts.total);
     try std.testing.expectEqual(@as(u64, 1), command_counts.create_element);
@@ -883,8 +1004,8 @@ test "prepared batch preserves undrained publication and reuses drained capacity
     const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
     var prepared = try PreparedBatch.init(std.testing.allocator, 2);
     defer prepared.deinit(std.testing.allocator);
-    try prepared.addString(.{ .op = .create_element, .elem_id = 1, .bytes = "section" });
-    try prepared.addSetAttrText(1, "data-state", "ready");
+    try prepared.addSemantic(.{ .create_element = .{ .elem_id = @enumFromInt(1), .tag = "section" } });
+    try prepared.addSetAttrText(@enumFromInt(1), "data-state", "ready");
 
     var fault = FaultAllocator.init(std.testing.allocator);
     var batch: TransactionalBatch = .{};
@@ -922,11 +1043,46 @@ test "prepared batch preserves undrained publication and reuses drained capacity
 test "prepared command journal rejects an underestimated command count" {
     var prepared = try PreparedBatch.init(std.testing.allocator, 1);
     defer prepared.deinit(std.testing.allocator);
-    try prepared.addFixed(.{ .op = .set_checked });
+    try prepared.addSemantic(.{ .set_checked = .{ .elem_id = @enumFromInt(1), .value = false } });
     const before = prepared.capacity;
-    try std.testing.expectError(error.ResourceLimit, prepared.addFixed(.{ .op = .set_disabled }));
+    try std.testing.expectError(error.ResourceLimit, prepared.addSemantic(.{ .set_disabled = .{ .elem_id = @enumFromInt(1), .value = false } }));
     try std.testing.expectEqual(@as(usize, 1), prepared.commands.items.len);
     try std.testing.expectEqualDeep(before, prepared.capacity);
+}
+
+test "semantic commands lower typed operands into the stable wire layout" {
+    var prepared = try PreparedBatch.init(std.testing.allocator, 4);
+    defer prepared.deinit(std.testing.allocator);
+    const parent = try WireElemId.fromEngine(ids.ElemId.fromRaw(11));
+    const child = try WireElemId.fromEngine(ids.ElemId.fromRaw(12));
+    const event_id = try WireEventId.fromEngine(ids.EventId.fromRaw(31));
+    try prepared.addSemantic(.{ .append_child = .{ .parent = parent, .child = child } });
+    try prepared.addSemantic(.{ .set_checked = .{ .elem_id = child, .value = true } });
+    try prepared.addSemantic(.{ .bind_fixed = .{ .elem_id = child, .event_id = event_id, .kind = .click } });
+    try prepared.addSemantic(.{ .move_before = .{ .parent = parent, .child = child, .before = null } });
+
+    var batch: TransactionalBatch = .{};
+    defer batch.deinit(std.testing.allocator);
+    try prepared.preflight(&batch, std.testing.allocator);
+    try prepared.stageAssumeCapacity(&batch, std.testing.allocator);
+    const records = batch.staged.commands.records.items;
+    try std.testing.expectEqual(@intFromEnum(Op.append_child), records[0].op);
+    try std.testing.expectEqual(@as(u32, 11), records[0].a);
+    try std.testing.expectEqual(@as(u32, 12), records[0].b);
+    try std.testing.expectEqual(@intFromEnum(Op.set_checked), records[1].op);
+    try std.testing.expectEqual(@as(u32, 1), records[1].b);
+    try std.testing.expectEqual(@intFromEnum(Op.bind_click), records[2].op);
+    try std.testing.expectEqual(@as(u32, 31), records[2].b);
+    try std.testing.expectEqual(@intFromEnum(Op.move_before), records[3].op);
+    try std.testing.expectEqual(@as(u32, 0), records[3].c);
+}
+
+test "wire identities narrow only at the checked protocol boundary" {
+    try std.testing.expect(WireElemId != WireEventId);
+    try std.testing.expect(WireOffset != WireLength);
+    try std.testing.expectEqual(@sizeOf(u32), @sizeOf(WireElemId));
+    try std.testing.expectError(error.ResourceLimit, WireElemId.fromEngine(ids.ElemId.fromRaw(@as(u64, std.math.maxInt(u32)) + 1)));
+    try std.testing.expectError(error.ResourceLimit, WireEventId.fromEngine(ids.EventId.fromRaw(@as(u64, std.math.maxInt(u32)) + 1)));
 }
 
 test "command capacity estimation rejects overflow before allocation" {
@@ -1253,8 +1409,8 @@ test "render command buffer stores fixed-width records" {
     try std.testing.expectEqual(@as(usize, 0), buffer.len());
     try std.testing.expectEqual(@as(usize, 0), buffer.ptrAddress());
 
-    try buffer.append(std.testing.allocator, .create_element, 7, 2, 0, 0, 0);
-    try buffer.append(std.testing.allocator, .set_text, 7, 1024, 12, 0, 0);
+    try buffer.appendRaw(std.testing.allocator, .create_element, 7, 2, 0, 0, 0);
+    try buffer.appendRaw(std.testing.allocator, .set_text, 7, 1024, 12, 0, 0);
 
     try std.testing.expectEqual(@as(usize, 2), buffer.len());
     try std.testing.expect(buffer.ptrAddress() != 0);
@@ -1275,13 +1431,13 @@ test "dynamic command buffer stores aligned attribute records" {
     var buffer: DynamicBuffer = .{};
     defer buffer.deinit(std.testing.allocator);
 
-    const set_attr = try buffer.appendSetAttrText(std.testing.allocator, 42, "aria-label", "Save");
-    const remove_attr = try buffer.appendRemoveAttr(std.testing.allocator, 42, "aria-label");
+    const set_attr = try buffer.appendSetAttrText(std.testing.allocator, @enumFromInt(42), "aria-label", "Save");
+    const remove_attr = try buffer.appendRemoveAttr(std.testing.allocator, @enumFromInt(42), "aria-label");
 
-    try std.testing.expectEqual(@as(u32, 0), set_attr.offset);
-    try std.testing.expectEqual(@as(u32, 36), set_attr.len);
-    try std.testing.expectEqual(@as(u32, 36), remove_attr.offset);
-    try std.testing.expectEqual(@as(u32, 28), remove_attr.len);
+    try std.testing.expectEqual(@as(u32, 0), set_attr.offset.raw());
+    try std.testing.expectEqual(@as(u32, 36), set_attr.len.raw());
+    try std.testing.expectEqual(@as(u32, 36), remove_attr.offset.raw());
+    try std.testing.expectEqual(@as(u32, 28), remove_attr.len.raw());
     try std.testing.expectEqual(@as(usize, 64), buffer.len());
     try std.testing.expect(buffer.ptrAddress() != 0);
 
@@ -1306,8 +1462,8 @@ test "dynamic command buffer stores event extraction plan" {
     const descriptor = boundary.BoundaryPayloadDescriptor.init(.bytes, .record_key_shift);
     const bind_event = try buffer.appendBindEvent(
         std.testing.allocator,
-        42,
-        99,
+        @enumFromInt(42),
+        @enumFromInt(99),
         "keydown",
         listener_option_prevent_default | listener_option_stop_propagation,
         .{
@@ -1318,8 +1474,8 @@ test "dynamic command buffer stores event extraction plan" {
         descriptor,
     );
 
-    try std.testing.expectEqual(@as(u32, 0), bind_event.offset);
-    try std.testing.expectEqual(@as(u32, 72), bind_event.len);
+    try std.testing.expectEqual(@as(u32, 0), bind_event.offset.raw());
+    try std.testing.expectEqual(@as(u32, 72), bind_event.len.raw());
     try std.testing.expectEqual(@as(usize, 72), buffer.len());
     try std.testing.expectEqual(@as(u16, @intFromEnum(DynamicOp.bind_event)), std.mem.readInt(u16, buffer.bytes.items[0..2], .little));
     try std.testing.expectEqual(@as(u16, 0), std.mem.readInt(u16, buffer.bytes.items[2..4], .little));

@@ -4,8 +4,9 @@ const std = @import("std");
 const abi = @import("roc_platform_abi.zig");
 const erased_calls = @import("erased_calls.zig");
 const hv = @import("host_values.zig");
+const callable_roles = @import("callable_roles.zig");
 
-pub const HostValue = u64;
+pub const HostValue = hv.HostValue;
 pub const HostValueCapability = hv.HostValueCapabilityHandle;
 pub const HostTextRead = abi.HostValueTextReadHandle;
 pub const HostBoolRead = abi.HostValueBoolReadHandle;
@@ -15,6 +16,16 @@ pub const HostEachOps = abi.ElemEachOps;
 /// Non-null erased-callable pointer used as signal graph identity.
 pub const HostSignalToken = [*]u8;
 pub const HostValueList = abi.RocListWith(HostValue, false);
+
+/// Semantic roles for independently routed retained callables. Reader,
+/// reducer, and row-operation roles use their distinct generated
+/// capability-bearing handle types above instead.
+pub const InitializerCallable = callable_roles.Initializer;
+pub const TransformCallable = callable_roles.Transform;
+pub const CommandBuilderCallable = callable_roles.CommandBuilder;
+pub const CapabilityCloneCallable = callable_roles.CapabilityClone;
+pub const CapabilityEqCallable = callable_roles.CapabilityEq;
+pub const CapabilityDropCallable = callable_roles.CapabilityDrop;
 
 /// A retained Roc value plus the capability that owns its equality/drop
 /// operations. Holds exactly one refcount on the capability while live.
@@ -41,7 +52,7 @@ pub const HostValueCell = struct {
         const caps = [_]HostValueCapability{self.cap};
         ctx.pushHostValueCapabilities(&caps);
         defer ctx.popHostValueCapabilities();
-        erased_calls.callErasedHostValueToUnit(roc_host, hv.hostValueCapabilityDrop(self.cap), self.value);
+        callCapabilityDrop(roc_host, hv.hostValueCapabilityDropCallable(self.cap), self.value);
         releaseHostValueCapability(self.cap, roc_host, metrics);
         self.* = undefined;
     }
@@ -51,7 +62,7 @@ pub const HostValueCell = struct {
         const caps = [_]HostValueCapability{self.cap};
         ctx.pushHostValueCapabilities(&caps);
         defer ctx.popHostValueCapabilities();
-        return erased_calls.callErasedHostValueHostValueToBool(roc_host, hv.hostValueCapabilityEq(self.cap), self.value, value);
+        return callCapabilityEq(roc_host, hv.hostValueCapabilityEqCallable(self.cap), self.value, value);
     }
 
     /// Compares the retained value through its capability for equality pruning.
@@ -59,7 +70,7 @@ pub const HostValueCell = struct {
         const caps = [_]HostValueCapability{ self.cap, incoming_cap };
         ctx.pushHostValueCapabilities(&caps);
         defer ctx.popHostValueCapabilities();
-        return erased_calls.callErasedHostValueHostValueToBool(roc_host, hv.hostValueCapabilityEq(self.cap), self.value, value);
+        return callCapabilityEq(roc_host, hv.hostValueCapabilityEqCallable(self.cap), self.value, value);
     }
 
     /// Drops an uncommitted incoming value through the capability that produced it.
@@ -67,7 +78,7 @@ pub const HostValueCell = struct {
         const caps = [_]HostValueCapability{self.cap};
         ctx.pushHostValueCapabilities(&caps);
         defer ctx.popHostValueCapabilities();
-        erased_calls.callErasedHostValueToUnit(roc_host, hv.hostValueCapabilityDrop(self.cap), value);
+        callCapabilityDrop(roc_host, hv.hostValueCapabilityDropCallable(self.cap), value);
     }
 
     /// Atomically replaces the retained cell and releases the displaced value.
@@ -75,7 +86,7 @@ pub const HostValueCell = struct {
         const caps = [_]HostValueCapability{self.cap};
         ctx.pushHostValueCapabilities(&caps);
         defer ctx.popHostValueCapabilities();
-        erased_calls.callErasedHostValueToUnit(roc_host, hv.hostValueCapabilityDrop(self.cap), self.value);
+        callCapabilityDrop(roc_host, hv.hostValueCapabilityDropCallable(self.cap), self.value);
         self.value = value;
     }
 
@@ -86,15 +97,25 @@ pub const HostValueCell = struct {
         const caps = [_]HostValueCapability{old_cap};
         ctx.pushHostValueCapabilities(&caps);
         defer ctx.popHostValueCapabilities();
-        erased_calls.callErasedHostValueToUnit(roc_host, hv.hostValueCapabilityDrop(old_cap), self.value);
+        callCapabilityDrop(roc_host, hv.hostValueCapabilityDropCallable(old_cap), self.value);
         releaseHostValueCapability(old_cap, roc_host, metrics);
         self.* = .{ .value = value, .cap = cap };
     }
 };
 
+/// Invokes only a capability's drop operation; other callable roles are not accepted.
+pub fn callCapabilityDrop(roc_host: *abi.RocHost, callable: CapabilityDropCallable, value: HostValue) void {
+    erased_calls.callErasedHostValueToUnit(roc_host, callable.toAbi(), value);
+}
+
+/// Invokes only a capability's equality operation; other callable roles are not accepted.
+pub fn callCapabilityEq(roc_host: *abi.RocHost, callable: CapabilityEqCallable, left: HostValue, right: HostValue) bool {
+    return erased_calls.callErasedHostValueHostValueToBool(roc_host, callable.toAbi(), left, right);
+}
+
 /// Retain one refcount on a Roc thunk the host is about to store.
-pub fn retainHostCallable(callable: abi.RocErasedCallable, metrics: anytype) abi.RocErasedCallable {
-    abi.increfErasedCallable(callable, 1);
+pub fn retainHostCallable(callable: anytype, metrics: anytype) @TypeOf(callable) {
+    abi.increfErasedCallable(callable.toAbi(), 1);
     metrics.bump(.closure_retains, 1);
     return callable;
 }

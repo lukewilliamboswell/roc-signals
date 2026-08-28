@@ -40,24 +40,31 @@ pub fn removeDependent(comptime Record: type, allocator: std.mem.Allocator, node
 /// Owns replacement adjacency until an allocation-free edge-removal commit.
 pub const PreparedDependentRemoval = struct {
     input_id: u64,
-    replacement: []u64,
-    committed: bool = false,
+    ownership: union(enum) {
+        prepared: []u64,
+        committed,
+    },
 
     /// Releases provisional replacement storage on abort.
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
-        allocator.free(self.replacement);
+        switch (self.ownership) {
+            .prepared => |replacement| allocator.free(replacement),
+            .committed => {},
+        }
         self.* = undefined;
     }
 
     /// Swaps prepared adjacency into the live node and returns displaced ownership.
     pub fn apply(self: *@This(), comptime Record: type, nodes: []Node(Record)) []u64 {
-        if (self.committed) @panic("dependent removal was already committed");
+        const replacement = switch (self.ownership) {
+            .prepared => |value| value,
+            .committed => @panic("dependent removal was already committed"),
+        };
         const index: usize = @intCast(self.input_id);
         if (index >= nodes.len) @panic("prepared dependent removal referenced an unknown node");
         const retired = nodes[index].dependents;
-        nodes[index].dependents = self.replacement;
-        self.replacement = &.{};
-        self.committed = true;
+        nodes[index].dependents = replacement;
+        self.ownership = .committed;
         return retired;
     }
 };
@@ -80,7 +87,7 @@ pub fn prepareDependentRemoval(comptime Record: type, allocator: std.mem.Allocat
         replacement[write_index] = id;
         write_index += 1;
     }
-    return .{ .input_id = input_id, .replacement = replacement };
+    return .{ .input_id = input_id, .ownership = .{ .prepared = replacement } };
 }
 
 /// Replaces dependent while releasing displaced ownership exactly once.

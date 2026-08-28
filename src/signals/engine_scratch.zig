@@ -4,6 +4,7 @@ const std = @import("std");
 const active_signal_graph = @import("active_signal_graph.zig");
 const descriptor_stream = @import("descriptor_stream.zig");
 const each_runtime = @import("each_runtime.zig");
+const ids = @import("ids.zig");
 const retained_values = @import("retained_values.zig");
 const structural_splice = @import("structural_splice.zig");
 
@@ -17,7 +18,7 @@ pub const Scratch = struct {
     each_next_hash_heads: std.AutoHashMapUnmanaged(u64, usize) = .empty,
     each_next_hash_links: std.ArrayListUnmanaged(usize) = .empty,
     each_matched_existing: std.ArrayListUnmanaged(bool) = .empty,
-    each_row_ranges: std.AutoHashMapUnmanaged(u64, each_runtime.RenderSegment) = .empty,
+    each_row_ranges: std.AutoHashMapUnmanaged(ids.ScopeId, each_runtime.RenderSegment) = .empty,
     each_removed_elem_ids: std.ArrayListUnmanaged(u64) = .empty,
     each_touched_parent_ids: std.ArrayListUnmanaged(u64) = .empty,
     each_replacement_elem_ids: std.ArrayListUnmanaged(u64) = .empty,
@@ -62,12 +63,12 @@ test "engine scratch deinit resets retained scratch storage" {
     try scratch.debug_seen_render_nodes.append(allocator, true);
     try scratch.debug_expected_children.append(allocator, 42);
     try scratch.stream_direct_children.append(allocator, 43);
-    try scratch.each_keys.append(allocator, 7);
+    try scratch.each_keys.append(allocator, retained_values.HostValue.fromRaw(7));
     try scratch.each_key_hashes.append(allocator, 99);
     try scratch.each_next_hash_heads.put(allocator, 5, 0);
     try scratch.each_next_hash_links.append(allocator, 1);
     try scratch.each_matched_existing.append(allocator, false);
-    try scratch.each_row_ranges.put(allocator, 7, .{ .scope_id = 7, .start = 0, .len = 1 });
+    try scratch.each_row_ranges.put(allocator, ids.ScopeId.fromRaw(7), .{ .scope_id = ids.ScopeId.fromRaw(7), .start = 0, .len = 1 });
     try scratch.each_removed_elem_ids.append(allocator, 11);
     try scratch.each_touched_parent_ids.append(allocator, 12);
     try scratch.each_replacement_elem_ids.append(allocator, 13);

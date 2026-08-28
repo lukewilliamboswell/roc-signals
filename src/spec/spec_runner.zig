@@ -5,6 +5,7 @@ const std = @import("std");
 const signals = @import("signals");
 const boundary = signals.boundary;
 const engine = signals.engine;
+const ids = signals.ids;
 const render = signals.render;
 const runtime_limits = signals.runtime_limits;
 const spec_parser = @import("spec_parser.zig");
@@ -1119,7 +1120,7 @@ pub fn Runner(comptime Ctx: type) type {
             return bytes;
         }
 
-        fn pointerEventIdForCommand(elem: anytype, cmd_type: SpecCommandType) ?u64 {
+        fn pointerEventIdForCommand(elem: anytype, cmd_type: SpecCommandType) ?ids.EventId {
             return switch (cmd_type) {
                 .pointer_down => Ctx.fixedEventId(elem, .pointer_down),
                 .pointer_up => Ctx.fixedEventId(elem, .pointer_up),

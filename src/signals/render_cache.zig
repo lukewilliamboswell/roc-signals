@@ -5,6 +5,7 @@ const builtin = @import("builtin");
 const boundary = @import("boundary.zig");
 const render = @import("render_commands.zig");
 const render_sink = @import("render_sink.zig");
+const ids = @import("ids.zig");
 
 pub const TextField = render.TextField;
 pub const BoolField = render.BoolField;
@@ -56,10 +57,12 @@ pub const NamedEvent = struct {
 };
 
 pub const ScalarNode = struct {
-    active: bool = false,
-    tag: ?[]const u8 = null,
-    parent_id: ?u64 = null,
-    children: std.ArrayListUnmanaged(u64) = .empty,
+    lifecycle: union(enum) {
+        vacant,
+        active: []const u8,
+    } = .vacant,
+    parent_id: ?ids.ElemId = null,
+    children: std.ArrayListUnmanaged(ids.ElemId) = .empty,
     event_bindings: EventBindings = .{},
     text: ?[]const u8 = null,
     role: ?[]const u8 = null,
@@ -92,9 +95,19 @@ pub const ScalarNode = struct {
     }
 
     fn initActive(tag: []const u8) ScalarNode {
-        return .{
-            .active = true,
-            .tag = tag,
+        return .{ .lifecycle = .{ .active = tag } };
+    }
+
+    /// Reports whether this dense cache slot currently owns a render node.
+    pub fn isActive(self: *const ScalarNode) bool {
+        return self.lifecycle == .active;
+    }
+
+    /// Returns the tag carried by an active node, or null for a vacant slot.
+    pub fn activeTag(self: *const ScalarNode) ?[]const u8 {
+        return switch (self.lifecycle) {
+            .vacant => null,
+            .active => |tag| tag,
         };
     }
 
@@ -146,11 +159,11 @@ pub const ScalarNode = struct {
             .pointer_enter => self.event_bindings.pointer_enter,
             .pointer_leave => self.event_bindings.pointer_leave,
         } orelse return null;
-        return binding.event_id;
+        return binding.event_id.raw();
     }
 };
 
-fn u64SliceIndex(items: []const u64, target: u64) ?usize {
+fn elemSliceIndex(items: []const ids.ElemId, target: ids.ElemId) ?usize {
     for (items, 0..) |item, index| {
         if (item == target) return index;
     }
@@ -176,28 +189,37 @@ fn stableSubsequenceLength(indexes: []const usize, scratch: []usize) usize {
     return len;
 }
 
+const JournalPhase = enum {
+    prepared,
+    applied,
+
+    fn isApplied(self: JournalPhase) bool {
+        return self == .applied;
+    }
+};
+
 /// Owns one parent-child replacement until an allocation-free cache commit.
 pub const PreparedChildrenReplacement = struct {
-    parent_elem_id: u64,
-    next: []u64,
-    retired: std.ArrayListUnmanaged(u64) = .empty,
-    committed: bool = false,
+    parent_elem_id: ids.ElemId,
+    next: []ids.ElemId,
+    retired: std.ArrayListUnmanaged(ids.ElemId) = .empty,
+    phase: JournalPhase = .prepared,
 
     /// Copies the next child order without mutating the active cache.
-    pub fn prepare(comptime Ctx: type, allocator: std.mem.Allocator, cache: *const Cache(Ctx), parent_elem_id: u64, next: []const u64) (std.mem.Allocator.Error || error{MissingParent})!PreparedChildrenReplacement {
-        const index = std.math.cast(usize, parent_elem_id) orelse return error.MissingParent;
-        if (index >= cache.nodes.items.len or !cache.nodes.items[index].active) return error.MissingParent;
-        return .{ .parent_elem_id = parent_elem_id, .next = try allocator.dupe(u64, next) };
+    pub fn prepare(comptime Ctx: type, allocator: std.mem.Allocator, cache: *const Cache(Ctx), parent_elem_id: ids.ElemId, next: []const ids.ElemId) (std.mem.Allocator.Error || error{MissingParent})!PreparedChildrenReplacement {
+        const index = parent_elem_id.index();
+        if (index >= cache.nodes.items.len or !cache.nodes.items[index].isActive()) return error.MissingParent;
+        return .{ .parent_elem_id = parent_elem_id, .next = try allocator.dupe(ids.ElemId, next) };
     }
 
     /// Swaps the prepared order into the cache without allocating.
     pub fn apply(self: *PreparedChildrenReplacement, comptime Ctx: type, cache: *Cache(Ctx)) void {
-        if (self.committed) @panic("prepared child replacement committed twice");
-        const node = &cache.nodes.items[@intCast(self.parent_elem_id)];
+        if (self.phase.isApplied()) @panic("prepared child replacement committed twice");
+        const node = &cache.nodes.items[self.parent_elem_id.index()];
         self.retired = node.children;
         node.children = .{ .items = self.next, .capacity = self.next.len };
         self.next = &.{};
-        self.committed = true;
+        self.phase = .applied;
     }
 
     /// Releases provisional or retired child storage after abort or commit.
@@ -210,29 +232,29 @@ pub const PreparedChildrenReplacement = struct {
 
 /// Defers ownership transfer for one cache-node removal until commit.
 pub const PreparedNodeRemoval = struct {
-    elem_id: u64,
+    elem_id: ids.ElemId,
     retired: ScalarNode = .{},
-    committed: bool = false,
+    phase: JournalPhase = .prepared,
 
     /// Validates an active non-root cache node without mutating it.
-    pub fn prepare(comptime Ctx: type, cache: *const Cache(Ctx), elem_id: u64) error{MissingNode}!PreparedNodeRemoval {
-        const index = std.math.cast(usize, elem_id) orelse return error.MissingNode;
-        if (elem_id == 0 or index >= cache.nodes.items.len or !cache.nodes.items[index].active) return error.MissingNode;
+    pub fn prepare(comptime Ctx: type, cache: *const Cache(Ctx), elem_id: ids.ElemId) error{MissingNode}!PreparedNodeRemoval {
+        const index = elem_id.index();
+        if (elem_id == ids.root_elem or index >= cache.nodes.items.len or !cache.nodes.items[index].isActive()) return error.MissingNode;
         return .{ .elem_id = elem_id };
     }
 
     /// Transfers the active node into retired ownership without allocating.
     pub fn apply(self: *PreparedNodeRemoval, comptime Ctx: type, cache: *Cache(Ctx)) void {
-        if (self.committed) @panic("prepared render node removal committed twice");
-        const node = &cache.nodes.items[@intCast(self.elem_id)];
+        if (self.phase.isApplied()) @panic("prepared render node removal committed twice");
+        const node = &cache.nodes.items[self.elem_id.index()];
         self.retired = node.*;
         node.* = .{};
-        self.committed = true;
+        self.phase = .applied;
     }
 
     /// Releases a committed retired node; abort before commit owns nothing.
     pub fn deinit(self: *PreparedNodeRemoval, allocator: std.mem.Allocator) void {
-        if (self.committed) self.retired.deinit(allocator);
+        if (self.phase.isApplied()) self.retired.deinit(allocator);
         self.* = undefined;
     }
 };
@@ -240,7 +262,7 @@ pub const PreparedNodeRemoval = struct {
 /// Owns and deduplicates tags missing from the active cache until publication.
 pub const PreparedTagOverlay = struct {
     entries: std.StringHashMapUnmanaged([]const u8) = .empty,
-    committed: bool = false,
+    phase: JournalPhase = .prepared,
 
     /// Reserves provisional and persistent tag tables for the whole batch.
     pub fn init(comptime Ctx: type, allocator: std.mem.Allocator, cache: *Cache(Ctx), expected_new_tags: usize) (std.mem.Allocator.Error || error{ResourceLimit})!PreparedTagOverlay {
@@ -263,15 +285,15 @@ pub const PreparedTagOverlay = struct {
 
     /// Publishes every missing tag into pre-reserved persistent storage.
     pub fn apply(self: *PreparedTagOverlay, comptime Ctx: type, cache: *Cache(Ctx)) void {
-        if (self.committed) @panic("prepared tag overlay committed twice");
+        if (self.phase.isApplied()) @panic("prepared tag overlay committed twice");
         var iterator = self.entries.iterator();
         while (iterator.next()) |entry| cache.interned_tags.putAssumeCapacity(entry.key_ptr.*, entry.value_ptr.*);
-        self.committed = true;
+        self.phase = .applied;
     }
 
     /// Releases unpublished tags or only the overlay table after commit.
     pub fn deinit(self: *PreparedTagOverlay, allocator: std.mem.Allocator) void {
-        if (!self.committed) {
+        if (!self.phase.isApplied()) {
             var values = self.entries.valueIterator();
             while (values.next()) |value| allocator.free(value.*);
         }
@@ -282,36 +304,36 @@ pub const PreparedTagOverlay = struct {
 
 /// Owns a cache node until publication; its tag belongs to a tag overlay.
 pub const PreparedNodeCreation = struct {
-    elem_id: u64,
+    elem_id: ids.ElemId,
     tag: []const u8,
-    committed: bool = false,
+    phase: JournalPhase = .prepared,
 
     /// Resolves a provisional tag without changing cache indexes.
-    pub fn prepare(comptime Ctx: type, allocator: std.mem.Allocator, cache: *Cache(Ctx), tags: *PreparedTagOverlay, elem_id: u64, tag: []const u8) (std.mem.Allocator.Error || error{ ActiveNode, ResourceLimit })!PreparedNodeCreation {
+    pub fn prepare(comptime Ctx: type, allocator: std.mem.Allocator, cache: *Cache(Ctx), tags: *PreparedTagOverlay, elem_id: ids.ElemId, tag: []const u8) (std.mem.Allocator.Error || error{ ActiveNode, ResourceLimit })!PreparedNodeCreation {
         return prepareImpl(Ctx, allocator, cache, tags, elem_id, tag, false);
     }
 
     /// Resolves a provisional tag for a slot retired by the same render plan.
-    pub fn prepareReplacing(comptime Ctx: type, allocator: std.mem.Allocator, cache: *Cache(Ctx), tags: *PreparedTagOverlay, elem_id: u64, tag: []const u8) (std.mem.Allocator.Error || error{ResourceLimit})!PreparedNodeCreation {
+    pub fn prepareReplacing(comptime Ctx: type, allocator: std.mem.Allocator, cache: *Cache(Ctx), tags: *PreparedTagOverlay, elem_id: ids.ElemId, tag: []const u8) (std.mem.Allocator.Error || error{ResourceLimit})!PreparedNodeCreation {
         return prepareImpl(Ctx, allocator, cache, tags, elem_id, tag, true) catch |err| switch (err) {
             error.ActiveNode => unreachable,
             else => |other| other,
         };
     }
 
-    fn prepareImpl(comptime Ctx: type, allocator: std.mem.Allocator, cache: *Cache(Ctx), tags: *PreparedTagOverlay, elem_id: u64, tag: []const u8, replaces_active: bool) (std.mem.Allocator.Error || error{ ActiveNode, ResourceLimit })!PreparedNodeCreation {
-        const index = std.math.cast(usize, elem_id) orelse return error.ResourceLimit;
-        if (!replaces_active and index < cache.nodes.items.len and cache.nodes.items[index].active) return error.ActiveNode;
+    fn prepareImpl(comptime Ctx: type, allocator: std.mem.Allocator, cache: *Cache(Ctx), tags: *PreparedTagOverlay, elem_id: ids.ElemId, tag: []const u8, replaces_active: bool) (std.mem.Allocator.Error || error{ ActiveNode, ResourceLimit })!PreparedNodeCreation {
+        const index = elem_id.index();
+        if (!replaces_active and index < cache.nodes.items.len and cache.nodes.items[index].isActive()) return error.ActiveNode;
         return .{ .elem_id = elem_id, .tag = try tags.resolve(Ctx, allocator, cache, tag) };
     }
 
     /// Publishes the node using only pre-reserved storage after tag publication.
     pub fn apply(self: *PreparedNodeCreation, comptime Ctx: type, cache: *Cache(Ctx)) void {
-        if (self.committed) @panic("prepared render node creation committed twice");
-        const index: usize = @intCast(self.elem_id);
+        if (self.phase.isApplied()) @panic("prepared render node creation committed twice");
+        const index = self.elem_id.index();
         while (cache.nodes.items.len <= index) cache.nodes.appendAssumeCapacity(.{});
         cache.nodes.items[index] = ScalarNode.initActive(self.tag);
-        self.committed = true;
+        self.phase = .applied;
     }
 
     /// Clears the non-owning prepared node state.
@@ -322,31 +344,31 @@ pub const PreparedNodeCreation = struct {
 
 /// Owns one text-field value until an allocation-free cache update.
 pub const PreparedTextFieldUpdate = struct {
-    elem_id: u64,
+    elem_id: ids.ElemId,
     field: TextField,
     next: ?[]u8,
     retired: ?[]const u8 = null,
-    committed: bool = false,
+    phase: JournalPhase = .prepared,
 
     /// Copies an optional next value without changing the active node.
-    pub fn prepare(comptime Ctx: type, allocator: std.mem.Allocator, cache: *const Cache(Ctx), elem_id: u64, field: TextField, value: ?[]const u8) (std.mem.Allocator.Error || error{MissingNode})!PreparedTextFieldUpdate {
-        const index = std.math.cast(usize, elem_id) orelse return error.MissingNode;
-        if (index >= cache.nodes.items.len or !cache.nodes.items[index].active) return error.MissingNode;
+    pub fn prepare(comptime Ctx: type, allocator: std.mem.Allocator, cache: *const Cache(Ctx), elem_id: ids.ElemId, field: TextField, value: ?[]const u8) (std.mem.Allocator.Error || error{MissingNode})!PreparedTextFieldUpdate {
+        const index = elem_id.index();
+        if (index >= cache.nodes.items.len or !cache.nodes.items[index].isActive()) return error.MissingNode;
         return prepareKnownNode(allocator, elem_id, field, value);
     }
 
-    fn prepareKnownNode(allocator: std.mem.Allocator, elem_id: u64, field: TextField, value: ?[]const u8) std.mem.Allocator.Error!PreparedTextFieldUpdate {
+    fn prepareKnownNode(allocator: std.mem.Allocator, elem_id: ids.ElemId, field: TextField, value: ?[]const u8) std.mem.Allocator.Error!PreparedTextFieldUpdate {
         return .{ .elem_id = elem_id, .field = field, .next = if (value) |bytes| try allocator.dupe(u8, bytes) else null };
     }
 
     /// Swaps the prepared value into the active cache without allocating.
     pub fn apply(self: *PreparedTextFieldUpdate, comptime Ctx: type, cache: *Cache(Ctx)) void {
-        if (self.committed) @panic("prepared text field update committed twice");
-        const slot = cache.nodes.items[@intCast(self.elem_id)].textSlot(self.field);
+        if (self.phase.isApplied()) @panic("prepared text field update committed twice");
+        const slot = cache.nodes.items[self.elem_id.index()].textSlot(self.field);
         self.retired = slot.*;
         slot.* = self.next;
         self.next = null;
-        self.committed = true;
+        self.phase = .applied;
     }
 
     /// Releases the provisional value on abort or the retired value after commit.
@@ -359,69 +381,69 @@ pub const PreparedTextFieldUpdate = struct {
 
 /// Stores one allocation-free boolean cache update.
 pub const PreparedBoolFieldUpdate = struct {
-    elem_id: u64,
+    elem_id: ids.ElemId,
     field: BoolField,
     next: ?bool,
     retired: ?bool = null,
-    committed: bool = false,
+    phase: JournalPhase = .prepared,
 
     /// Validates the active node without changing it.
-    pub fn prepare(comptime Ctx: type, cache: *const Cache(Ctx), elem_id: u64, field: BoolField, value: ?bool) error{MissingNode}!PreparedBoolFieldUpdate {
-        const index = std.math.cast(usize, elem_id) orelse return error.MissingNode;
-        if (index >= cache.nodes.items.len or !cache.nodes.items[index].active) return error.MissingNode;
+    pub fn prepare(comptime Ctx: type, cache: *const Cache(Ctx), elem_id: ids.ElemId, field: BoolField, value: ?bool) error{MissingNode}!PreparedBoolFieldUpdate {
+        const index = elem_id.index();
+        if (index >= cache.nodes.items.len or !cache.nodes.items[index].isActive()) return error.MissingNode;
         return .{ .elem_id = elem_id, .field = field, .next = value };
     }
 
     /// Swaps the prepared value into the active cache without allocating.
     pub fn apply(self: *PreparedBoolFieldUpdate, comptime Ctx: type, cache: *Cache(Ctx)) void {
-        if (self.committed) @panic("prepared boolean field update committed twice");
-        const slot = cache.nodes.items[@intCast(self.elem_id)].boolSlot(self.field);
+        if (self.phase.isApplied()) @panic("prepared boolean field update committed twice");
+        const slot = cache.nodes.items[self.elem_id.index()].boolSlot(self.field);
         self.retired = slot.*;
         slot.* = self.next;
-        self.committed = true;
+        self.phase = .applied;
     }
 };
 
 /// Stores one allocation-free fixed-event binding update.
 pub const PreparedFixedEventUpdate = struct {
-    elem_id: u64,
+    elem_id: ids.ElemId,
     kind: EventKind,
     next: ?EventBinding,
     retired: ?EventBinding = null,
-    committed: bool = false,
+    phase: JournalPhase = .prepared,
 
     /// Canonicalizes delivery metadata and validates the active node.
-    pub fn prepare(comptime Ctx: type, cache: *const Cache(Ctx), elem_id: u64, kind: EventKind, binding: ?EventBinding) error{MissingNode}!PreparedFixedEventUpdate {
-        const index = std.math.cast(usize, elem_id) orelse return error.MissingNode;
-        if (index >= cache.nodes.items.len or !cache.nodes.items[index].active) return error.MissingNode;
+    pub fn prepare(comptime Ctx: type, cache: *const Cache(Ctx), elem_id: ids.ElemId, kind: EventKind, binding: ?EventBinding) error{MissingNode}!PreparedFixedEventUpdate {
+        const index = elem_id.index();
+        if (index >= cache.nodes.items.len or !cache.nodes.items[index].isActive()) return error.MissingNode;
         return .{ .elem_id = elem_id, .kind = kind, .next = if (binding) |value| value.withDeliveryFor(.{ .fixed = kind }) else null };
     }
 
     /// Swaps the prepared binding into the active cache without allocation.
     pub fn apply(self: *PreparedFixedEventUpdate, comptime Ctx: type, cache: *Cache(Ctx)) void {
-        if (self.committed) @panic("prepared fixed event update committed twice");
-        const slot = cache.nodes.items[@intCast(self.elem_id)].fixedEventBindingSlot(self.kind);
+        if (self.phase.isApplied()) @panic("prepared fixed event update committed twice");
+        const slot = cache.nodes.items[self.elem_id.index()].fixedEventBindingSlot(self.kind);
         self.retired = slot.*;
         slot.* = self.next;
-        self.committed = true;
+        self.phase = .applied;
     }
 };
 
 /// Owns the complete custom-text attribute set for one touched node.
 pub const PreparedCustomTextAttrsReplacement = struct {
-    elem_id: u64,
+    elem_id: ids.ElemId,
     next: []CustomTextAttr,
     retired: std.ArrayListUnmanaged(CustomTextAttr) = .empty,
-    committed: bool = false,
+    phase: JournalPhase = .prepared,
 
     /// Copies final names and values without changing the active cache.
-    pub fn prepare(comptime Ctx: type, allocator: std.mem.Allocator, cache: *const Cache(Ctx), elem_id: u64, attrs: []const CustomTextAttr) (std.mem.Allocator.Error || error{MissingNode})!PreparedCustomTextAttrsReplacement {
-        const index = std.math.cast(usize, elem_id) orelse return error.MissingNode;
-        if (index >= cache.nodes.items.len or !cache.nodes.items[index].active) return error.MissingNode;
+    pub fn prepare(comptime Ctx: type, allocator: std.mem.Allocator, cache: *const Cache(Ctx), elem_id: ids.ElemId, attrs: []const CustomTextAttr) (std.mem.Allocator.Error || error{MissingNode})!PreparedCustomTextAttrsReplacement {
+        const index = elem_id.index();
+        if (index >= cache.nodes.items.len or !cache.nodes.items[index].isActive()) return error.MissingNode;
         return prepareKnownNode(allocator, elem_id, attrs);
     }
 
-    fn prepareKnownNode(allocator: std.mem.Allocator, elem_id: u64, attrs: []const CustomTextAttr) std.mem.Allocator.Error!PreparedCustomTextAttrsReplacement {
+    fn prepareKnownNode(allocator: std.mem.Allocator, elem_id: ids.ElemId, attrs: []const CustomTextAttr) std.mem.Allocator.Error!PreparedCustomTextAttrsReplacement {
         const next = try allocator.alloc(CustomTextAttr, attrs.len);
         errdefer allocator.free(next);
         var initialized: usize = 0;
@@ -438,12 +460,12 @@ pub const PreparedCustomTextAttrsReplacement = struct {
 
     /// Swaps final attributes into the active cache without allocating.
     pub fn apply(self: *PreparedCustomTextAttrsReplacement, comptime Ctx: type, cache: *Cache(Ctx)) void {
-        if (self.committed) @panic("prepared custom attribute replacement committed twice");
-        const node = &cache.nodes.items[@intCast(self.elem_id)];
+        if (self.phase.isApplied()) @panic("prepared custom attribute replacement committed twice");
+        const node = &cache.nodes.items[self.elem_id.index()];
         self.retired = node.custom_text_attrs;
         node.custom_text_attrs = .{ .items = self.next, .capacity = self.next.len };
         self.next = &.{};
-        self.committed = true;
+        self.phase = .applied;
     }
 
     /// Releases provisional attributes on abort or retired attributes after commit.
@@ -458,19 +480,19 @@ pub const PreparedCustomTextAttrsReplacement = struct {
 
 /// Owns the complete named-event set for one touched node.
 pub const PreparedNamedEventsReplacement = struct {
-    elem_id: u64,
+    elem_id: ids.ElemId,
     next: []NamedEvent,
     retired: std.ArrayListUnmanaged(NamedEvent) = .empty,
-    committed: bool = false,
+    phase: JournalPhase = .prepared,
 
     /// Copies final event names and canonicalizes bindings without cache mutation.
-    pub fn prepare(comptime Ctx: type, allocator: std.mem.Allocator, cache: *const Cache(Ctx), elem_id: u64, events: []const NamedEvent) (std.mem.Allocator.Error || error{MissingNode})!PreparedNamedEventsReplacement {
-        const index = std.math.cast(usize, elem_id) orelse return error.MissingNode;
-        if (index >= cache.nodes.items.len or !cache.nodes.items[index].active) return error.MissingNode;
+    pub fn prepare(comptime Ctx: type, allocator: std.mem.Allocator, cache: *const Cache(Ctx), elem_id: ids.ElemId, events: []const NamedEvent) (std.mem.Allocator.Error || error{MissingNode})!PreparedNamedEventsReplacement {
+        const index = elem_id.index();
+        if (index >= cache.nodes.items.len or !cache.nodes.items[index].isActive()) return error.MissingNode;
         return prepareKnownNode(allocator, elem_id, events);
     }
 
-    fn prepareKnownNode(allocator: std.mem.Allocator, elem_id: u64, events: []const NamedEvent) std.mem.Allocator.Error!PreparedNamedEventsReplacement {
+    fn prepareKnownNode(allocator: std.mem.Allocator, elem_id: ids.ElemId, events: []const NamedEvent) std.mem.Allocator.Error!PreparedNamedEventsReplacement {
         const next = try allocator.alloc(NamedEvent, events.len);
         errdefer allocator.free(next);
         var initialized: usize = 0;
@@ -488,12 +510,12 @@ pub const PreparedNamedEventsReplacement = struct {
 
     /// Swaps final named events into the active cache without allocating.
     pub fn apply(self: *PreparedNamedEventsReplacement, comptime Ctx: type, cache: *Cache(Ctx)) void {
-        if (self.committed) @panic("prepared named event replacement committed twice");
-        const node = &cache.nodes.items[@intCast(self.elem_id)];
+        if (self.phase.isApplied()) @panic("prepared named event replacement committed twice");
+        const node = &cache.nodes.items[self.elem_id.index()];
         self.retired = node.named_events;
         node.named_events = .{ .items = self.next, .capacity = self.next.len };
         self.next = &.{};
-        self.committed = true;
+        self.phase = .applied;
     }
 
     /// Releases provisional events on abort or retired events after commit.
@@ -541,9 +563,9 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
         parent_intent_indexes: std.AutoHashMapUnmanaged(u64, usize) = .empty,
         parent_intents: std.ArrayListUnmanaged(ParentIntent) = .empty,
         wire: render.PreparedBatch,
-        committed: bool = false,
+        phase: JournalPhase = .prepared,
 
-        const ParentIntent = struct { child_id: u64, next: ?u64, retired: ?u64 };
+        const ParentIntent = struct { child_id: ids.ElemId, next: ?ids.ElemId, retired: ?ids.ElemId };
 
         /// Reserves every plan-local journal and persistent tag slot before collection.
         pub fn init(allocator: std.mem.Allocator, cache: *Cache(Ctx), counts: PreparedRenderCounts) (std.mem.Allocator.Error || error{ResourceLimit})!Self {
@@ -575,16 +597,16 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             return self;
         }
 
-        fn nodeExists(self: *const Self, cache: *const Cache(Ctx), elem_id: u64) bool {
-            const index = std.math.cast(usize, elem_id) orelse return false;
-            return self.provisional_nodes.contains(elem_id) or
-                (index < cache.nodes.items.len and cache.nodes.items[index].active);
+        fn nodeExists(self: *const Self, cache: *const Cache(Ctx), elem_id: ids.ElemId) bool {
+            const index = elem_id.index();
+            return self.provisional_nodes.contains(elem_id.raw()) or
+                (index < cache.nodes.items.len and cache.nodes.items[index].isActive());
         }
 
-        fn activeNode(self: *const Self, cache: *const Cache(Ctx), elem_id: u64) ?*const ScalarNode {
-            if (self.provisional_nodes.contains(elem_id)) return null;
-            const index = std.math.cast(usize, elem_id) orelse return null;
-            if (index >= cache.nodes.items.len or !cache.nodes.items[index].active) return null;
+        fn activeNode(self: *const Self, cache: *const Cache(Ctx), elem_id: ids.ElemId) ?*const ScalarNode {
+            if (self.provisional_nodes.contains(elem_id.raw())) return null;
+            const index = elem_id.index();
+            if (index >= cache.nodes.items.len or !cache.nodes.items[index].isActive()) return null;
             return &cache.nodes.items[index];
         }
 
@@ -616,47 +638,47 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
         }
 
         /// Adds one active node retirement and its corresponding host removal.
-        pub fn addRemoval(self: *Self, cache: *const Cache(Ctx), elem_id: u64) error{ MissingNode, ResourceLimit }!void {
+        pub fn addRemoval(self: *Self, cache: *const Cache(Ctx), elem_id: ids.ElemId) error{ MissingNode, ResourceLimit }!void {
             self.removals.appendAssumeCapacity(try PreparedNodeRemoval.prepare(Ctx, cache, elem_id));
-            self.setParentIntent(cache, elem_id, null) catch |err| switch (err) {
+            self.setParentIntent(cache, elem_id.raw(), null) catch |err| switch (err) {
                 error.ConflictingParent, error.DuplicateChild => unreachable,
                 else => |value| return value,
             };
-            try self.wire.addFixed(.{
-                .op = .remove_node,
-                .a = std.math.cast(u32, elem_id) orelse return error.ResourceLimit,
-            });
+            try self.wire.addSemantic(.{ .remove_node = try render.WireElemId.fromEngine(elem_id) });
         }
 
         /// Journals one same-id remove/recreate operation against the active cache.
-        pub fn addNodeReplacement(self: *Self, cache: *Cache(Ctx), elem_id: u64, tag: []const u8) (std.mem.Allocator.Error || error{ DuplicateNode, MissingNode, ResourceLimit })!void {
+        pub fn addNodeReplacement(self: *Self, cache: *Cache(Ctx), elem_id: ids.ElemId, tag: []const u8) (std.mem.Allocator.Error || error{ DuplicateNode, MissingNode, ResourceLimit })!void {
             try self.addRemoval(cache, elem_id);
             try self.addReplacementCreation(cache, elem_id, tag);
         }
 
         /// Adds one provisional node and its prepared tag to the journal.
-        pub fn addCreation(self: *Self, cache: *Cache(Ctx), elem_id: u64, tag: []const u8) (std.mem.Allocator.Error || error{ ActiveNode, DuplicateNode, ResourceLimit })!void {
+        pub fn addCreation(self: *Self, cache: *Cache(Ctx), elem_id: ids.ElemId, tag: []const u8) (std.mem.Allocator.Error || error{ ActiveNode, DuplicateNode, ResourceLimit })!void {
             return self.addCreationOptions(cache, elem_id, tag, false);
         }
 
         /// Adds a provisional node whose active slot is retired by this plan.
-        fn addReplacementCreation(self: *Self, cache: *Cache(Ctx), elem_id: u64, tag: []const u8) (std.mem.Allocator.Error || error{ DuplicateNode, ResourceLimit })!void {
+        fn addReplacementCreation(self: *Self, cache: *Cache(Ctx), elem_id: ids.ElemId, tag: []const u8) (std.mem.Allocator.Error || error{ DuplicateNode, ResourceLimit })!void {
             self.addCreationOptions(cache, elem_id, tag, true) catch |err| switch (err) {
                 error.ActiveNode => unreachable,
                 else => |value| return value,
             };
         }
 
-        fn addCreationOptions(self: *Self, cache: *Cache(Ctx), elem_id: u64, tag: []const u8, replaces_active: bool) (std.mem.Allocator.Error || error{ ActiveNode, DuplicateNode, ResourceLimit })!void {
-            if (self.provisional_nodes.contains(elem_id)) return error.DuplicateNode;
+        fn addCreationOptions(self: *Self, cache: *Cache(Ctx), elem_id: ids.ElemId, tag: []const u8, replaces_active: bool) (std.mem.Allocator.Error || error{ ActiveNode, DuplicateNode, ResourceLimit })!void {
+            if (self.provisional_nodes.contains(elem_id.raw())) return error.DuplicateNode;
             const prepared = if (replaces_active)
                 try PreparedNodeCreation.prepareReplacing(Ctx, self.allocator, cache, &self.tags, elem_id, tag)
             else
                 try PreparedNodeCreation.prepare(Ctx, self.allocator, cache, &self.tags, elem_id, tag);
-            self.provisional_nodes.putAssumeCapacity(elem_id, {});
+            self.provisional_nodes.putAssumeCapacity(elem_id.raw(), {});
             self.creations.appendAssumeCapacity(prepared);
-            const wire_elem_id = std.math.cast(u32, elem_id) orelse return error.ResourceLimit;
-            try self.wire.addString(.{ .op = if (std.mem.eql(u8, prepared.tag, "text")) .create_text else .create_element, .elem_id = wire_elem_id, .bytes = if (std.mem.eql(u8, prepared.tag, "text")) "" else prepared.tag });
+            const wire_elem_id = try render.WireElemId.fromEngine(elem_id);
+            if (std.mem.eql(u8, prepared.tag, "text"))
+                try self.wire.addSemantic(.{ .create_text = wire_elem_id })
+            else
+                try self.wire.addSemantic(.{ .create_element = .{ .elem_id = wire_elem_id, .tag = prepared.tag } });
         }
 
         /// Adds the engine-only render root for an initial surface. The host
@@ -666,49 +688,51 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
         pub fn addHostRoot(self: *Self, cache: *Cache(Ctx)) (std.mem.Allocator.Error || error{ ActiveNode, DuplicateNode, ResourceLimit })!void {
             if (cache.hasRoot()) return error.ActiveNode;
             if (self.provisional_nodes.contains(0)) return error.DuplicateNode;
-            const prepared = try PreparedNodeCreation.prepare(Ctx, self.allocator, cache, &self.tags, 0, "root");
+            const prepared = try PreparedNodeCreation.prepare(Ctx, self.allocator, cache, &self.tags, ids.ElemId.fromRaw(0), "root");
             self.provisional_nodes.putAssumeCapacity(0, {});
             self.creations.appendAssumeCapacity(prepared);
         }
 
         fn setParentIntent(self: *Self, cache: *const Cache(Ctx), child_id: u64, next: ?u64) error{ ConflictingParent, DuplicateChild, MissingNode, ResourceLimit }!void {
-            if (!self.nodeExists(cache, child_id)) return error.MissingNode;
+            if (!self.nodeExists(cache, ids.ElemId.fromRaw(child_id))) return error.MissingNode;
+            const semantic_child_id = ids.ElemId.fromRaw(child_id);
+            const semantic_next = ids.optionalElemFromRaw(next);
             if (self.parent_intent_indexes.get(child_id)) |intent_index| {
                 const intent = &self.parent_intents.items[intent_index];
-                if (next != null and intent.next != null) {
-                    if (intent.next.? == next.?) return error.DuplicateChild;
+                if (semantic_next != null and intent.next != null) {
+                    if (intent.next.? == semantic_next.?) return error.DuplicateChild;
                     return error.ConflictingParent;
                 }
-                if (next != null) intent.next = next;
+                if (semantic_next != null) intent.next = semantic_next;
                 return;
             }
             const index = std.math.cast(usize, child_id) orelse return error.ResourceLimit;
-            const retired = if (index < cache.nodes.items.len and cache.nodes.items[index].active) cache.nodes.items[index].parent_id else null;
+            const retired = if (index < cache.nodes.items.len and cache.nodes.items[index].isActive()) cache.nodes.items[index].parent_id else null;
             const intent_index = self.parent_intents.items.len;
-            self.parent_intents.appendAssumeCapacity(.{ .child_id = child_id, .next = next, .retired = retired });
+            self.parent_intents.appendAssumeCapacity(.{ .child_id = semantic_child_id, .next = semantic_next, .retired = retired });
             self.parent_intent_indexes.putAssumeCapacity(child_id, intent_index);
         }
 
         /// Adds one complete parent-child replacement and final parent intents.
-        pub fn addChildren(self: *Self, cache: *const Cache(Ctx), parent_elem_id: u64, next: []const u64) (std.mem.Allocator.Error || error{ ConflictingParent, DuplicateChild, MissingNode, ResourceLimit })!void {
+        pub fn addChildren(self: *Self, cache: *const Cache(Ctx), parent_elem_id: ids.ElemId, next: []const ids.ElemId) (std.mem.Allocator.Error || error{ ConflictingParent, DuplicateChild, MissingNode, ResourceLimit })!void {
             if (!self.nodeExists(cache, parent_elem_id)) return error.MissingNode;
-            const parent_index = std.math.cast(usize, parent_elem_id) orelse return error.ResourceLimit;
-            const old_children: []const u64 = if (parent_index < cache.nodes.items.len and cache.nodes.items[parent_index].active)
+            const parent_index = parent_elem_id.index();
+            const old_children: []const ids.ElemId = if (parent_index < cache.nodes.items.len and cache.nodes.items[parent_index].isActive())
                 cache.nodes.items[parent_index].children.items
             else
                 &.{};
-            if (parent_index < cache.nodes.items.len and cache.nodes.items[parent_index].active) {
-                for (old_children) |child_id| try self.setParentIntent(cache, child_id, null);
+            if (parent_index < cache.nodes.items.len and cache.nodes.items[parent_index].isActive()) {
+                for (old_children) |child_id| try self.setParentIntent(cache, child_id.raw(), null);
             }
-            for (next) |child_id| try self.setParentIntent(cache, child_id, parent_elem_id);
-            const copied = try self.allocator.dupe(u64, next);
+            for (next) |child_id| try self.setParentIntent(cache, child_id.raw(), parent_elem_id.raw());
+            const copied = try self.allocator.dupe(ids.ElemId, next);
             self.children.appendAssumeCapacity(.{ .parent_elem_id = parent_elem_id, .next = copied });
-            const parent_id = std.math.cast(u32, parent_elem_id) orelse return error.ResourceLimit;
+            const parent_id = try render.WireElemId.fromEngine(parent_elem_id);
             var old_indexes = std.AutoHashMapUnmanaged(u64, usize).empty;
             defer old_indexes.deinit(self.allocator);
             try old_indexes.ensureTotalCapacity(self.allocator, std.math.cast(u32, old_children.len) orelse return error.ResourceLimit);
             for (old_children, 0..) |child_id, index| {
-                const entry = old_indexes.getOrPutAssumeCapacity(child_id);
+                const entry = old_indexes.getOrPutAssumeCapacity(child_id.raw());
                 if (entry.found_existing) return error.DuplicateChild;
                 entry.value_ptr.* = index;
             }
@@ -723,13 +747,13 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             @memset(retained, false);
             @memset(stable, false);
             var tails_len: usize = 0;
-            for (next, 0..) |child_id, index| if (old_indexes.get(child_id)) |old_index| {
+            for (next, 0..) |child_id, index| if (old_indexes.get(child_id.raw())) |old_index| {
                 retained[index] = true;
                 var low: usize = 0;
                 var high = tails_len;
                 while (low < high) {
                     const middle = low + (high - low) / 2;
-                    const middle_old = old_indexes.get(next[tails[middle]]) orelse unreachable;
+                    const middle_old = old_indexes.get(next[tails[middle]].raw()) orelse unreachable;
                     if (middle_old < old_index) low = middle + 1 else high = middle;
                 }
                 previous[index] = if (low == 0) null else tails[low - 1];
@@ -741,26 +765,24 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
                 stable[index] = true;
                 stable_index = previous[index];
             }
-            for (next, retained) |child_id, is_retained| if (!is_retained) try self.wire.addFixed(.{
-                .op = .append_child,
-                .a = parent_id,
-                .b = std.math.cast(u32, child_id) orelse return error.ResourceLimit,
-            });
+            for (next, retained) |child_id, is_retained| if (!is_retained) try self.wire.addSemantic(.{ .append_child = .{
+                .parent = parent_id,
+                .child = try render.WireElemId.fromEngine(child_id),
+            } });
             var index = next.len;
             while (index != 0) {
                 index -= 1;
                 if (!retained[index] or stable[index]) continue;
-                try self.wire.addFixed(.{
-                    .op = .move_before,
-                    .a = parent_id,
-                    .b = std.math.cast(u32, next[index]) orelse return error.ResourceLimit,
-                    .c = if (index + 1 == next.len) 0 else std.math.cast(u32, next[index + 1]) orelse return error.ResourceLimit,
-                });
+                try self.wire.addSemantic(.{ .move_before = .{
+                    .parent = parent_id,
+                    .child = try render.WireElemId.fromEngine(next[index]),
+                    .before = if (index + 1 == next.len) null else try render.WireElemId.fromEngine(next[index + 1]),
+                } });
             }
         }
 
         /// Adds a text field for an active or provisional node.
-        pub fn addTextField(self: *Self, cache: *const Cache(Ctx), elem_id: u64, field: TextField, value: ?[]const u8) (std.mem.Allocator.Error || error{ MissingNode, ResourceLimit })!void {
+        pub fn addTextField(self: *Self, cache: *const Cache(Ctx), elem_id: ids.ElemId, field: TextField, value: ?[]const u8) (std.mem.Allocator.Error || error{ MissingNode, ResourceLimit })!void {
             if (!self.nodeExists(cache, elem_id)) return error.MissingNode;
             if (self.activeNode(cache, elem_id)) |node| {
                 const old = @constCast(node).textSlot(field).*;
@@ -768,7 +790,7 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             }
             const prepared = try PreparedTextFieldUpdate.prepareKnownNode(self.allocator, elem_id, field, value);
             self.text_fields.appendAssumeCapacity(prepared);
-            const wire_elem_id = std.math.cast(u32, elem_id) orelse return error.ResourceLimit;
+            const wire_elem_id = try render.WireElemId.fromEngine(elem_id);
             if (prepared.next) |bytes| {
                 const attr_name: ?[]const u8 = switch (field) {
                     .role => "role",
@@ -777,7 +799,13 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
                     .class => "class",
                     .text, .value => null,
                 };
-                if (attr_name) |name| try self.wire.addSetAttrText(wire_elem_id, name, bytes) else try self.wire.addString(.{ .op = field.setOp(), .elem_id = wire_elem_id, .bytes = bytes });
+                if (attr_name) |name| try self.wire.addSetAttrText(wire_elem_id, name, bytes) else {
+                    switch (field) {
+                        .text => try self.wire.addSemantic(.{ .set_text = .{ .elem_id = wire_elem_id, .bytes = bytes } }),
+                        .value => try self.wire.addSemantic(.{ .set_value = .{ .elem_id = wire_elem_id, .bytes = bytes } }),
+                        else => unreachable,
+                    }
+                }
             } else {
                 const attr_name: ?[]const u8 = switch (field) {
                     .role => "role",
@@ -786,21 +814,30 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
                     .class => "class",
                     .text, .value => null,
                 };
-                if (attr_name) |name| try self.wire.addRemoveAttr(wire_elem_id, name) else try self.wire.addString(.{ .op = field.setOp(), .elem_id = wire_elem_id, .bytes = "" });
+                if (attr_name) |name| try self.wire.addRemoveAttr(wire_elem_id, name) else {
+                    switch (field) {
+                        .text => try self.wire.addSemantic(.{ .set_text = .{ .elem_id = wire_elem_id, .bytes = "" } }),
+                        .value => try self.wire.addSemantic(.{ .set_value = .{ .elem_id = wire_elem_id, .bytes = "" } }),
+                        else => unreachable,
+                    }
+                }
             }
         }
 
         /// Adds a boolean field for an active or provisional node.
-        pub fn addBoolField(self: *Self, cache: *const Cache(Ctx), elem_id: u64, field: BoolField, value: ?bool) error{ MissingNode, ResourceLimit }!void {
+        pub fn addBoolField(self: *Self, cache: *const Cache(Ctx), elem_id: ids.ElemId, field: BoolField, value: ?bool) error{ MissingNode, ResourceLimit }!void {
             if (!self.nodeExists(cache, elem_id)) return error.MissingNode;
             if (self.activeNode(cache, elem_id)) |node| if (@constCast(node).boolSlot(field).* == value) return;
             self.bool_fields.appendAssumeCapacity(.{ .elem_id = elem_id, .field = field, .next = value });
-            const wire_elem_id = std.math.cast(u32, elem_id) orelse return error.ResourceLimit;
-            try self.wire.addFixed(.{ .op = field.setOp(), .a = wire_elem_id, .b = @intFromBool(value orelse false) });
+            const wire_elem_id = try render.WireElemId.fromEngine(elem_id);
+            switch (field) {
+                .checked => try self.wire.addSemantic(.{ .set_checked = .{ .elem_id = wire_elem_id, .value = value orelse false } }),
+                .disabled => try self.wire.addSemantic(.{ .set_disabled = .{ .elem_id = wire_elem_id, .value = value orelse false } }),
+            }
         }
 
         /// Adds a fixed event for an active or provisional node.
-        pub fn addFixedEvent(self: *Self, cache: *const Cache(Ctx), elem_id: u64, kind: EventKind, binding: ?EventBinding) error{ MissingNode, ResourceLimit }!void {
+        pub fn addFixedEvent(self: *Self, cache: *const Cache(Ctx), elem_id: ids.ElemId, kind: EventKind, binding: ?EventBinding) error{ MissingNode, ResourceLimit }!void {
             if (!self.nodeExists(cache, elem_id)) return error.MissingNode;
             const next = if (binding) |value| value.withDeliveryFor(.{ .fixed = kind }) else null;
             if (self.activeNode(cache, elem_id)) |node| {
@@ -808,23 +845,23 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
                 if ((old == null and next == null) or (old != null and next != null and old.?.eql(next.?))) return;
             }
             self.fixed_events.appendAssumeCapacity(.{ .elem_id = elem_id, .kind = kind, .next = next });
-            const wire_elem_id = std.math.cast(u32, elem_id) orelse return error.ResourceLimit;
+            const wire_elem_id = try render.WireElemId.fromEngine(elem_id);
             if (next) |value| {
-                if (value.canUseFixedOpcode(kind)) try self.wire.addFixed(.{ .op = kind.bindOp(), .a = wire_elem_id, .b = std.math.cast(u32, value.event_id) orelse return error.ResourceLimit }) else try self.wire.addBindEvent(.{
+                if (value.canUseFixedOpcode(kind)) try self.wire.addSemantic(.{ .bind_fixed = .{ .elem_id = wire_elem_id, .event_id = try render.WireEventId.fromEngine(value.event_id), .kind = kind } }) else try self.wire.addBindEvent(.{
                     .elem_id = wire_elem_id,
-                    .event_id = std.math.cast(u32, value.event_id) orelse return error.ResourceLimit,
+                    .event_id = try render.WireEventId.fromEngine(value.event_id),
                     .name = kind.domEventName(),
-                    .options = value.policy.toWireBits(),
+                    .policy = value.policy,
                     .delivery = value.delivery.toWire(),
                     .payload_descriptor = value.payload_descriptor,
                 });
-            } else try self.wire.addFixed(.{ .op = .clear_event, .a = wire_elem_id, .b = std.math.cast(u32, @intFromEnum(kind)) orelse return error.ResourceLimit });
+            } else try self.wire.addSemantic(.{ .clear_fixed = .{ .elem_id = wire_elem_id, .kind = kind } });
         }
 
         /// Adds final custom attributes for an active or provisional node.
-        pub fn addCustomAttrs(self: *Self, cache: *const Cache(Ctx), elem_id: u64, attrs: []const CustomTextAttr) (std.mem.Allocator.Error || error{ MissingNode, ResourceLimit })!void {
+        pub fn addCustomAttrs(self: *Self, cache: *const Cache(Ctx), elem_id: ids.ElemId, attrs: []const CustomTextAttr) (std.mem.Allocator.Error || error{ MissingNode, ResourceLimit })!void {
             if (!self.nodeExists(cache, elem_id)) return error.MissingNode;
-            const wire_elem_id = std.math.cast(u32, elem_id) orelse return error.ResourceLimit;
+            const wire_elem_id = try render.WireElemId.fromEngine(elem_id);
             if (self.activeNode(cache, elem_id)) |node| {
                 if (node.custom_text_attrs.items.len == attrs.len) {
                     var equal = true;
@@ -839,8 +876,8 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             }
             var prepared = try PreparedCustomTextAttrsReplacement.prepareKnownNode(self.allocator, elem_id, attrs);
             errdefer prepared.deinit(self.allocator);
-            const cache_index = std.math.cast(usize, elem_id) orelse return error.ResourceLimit;
-            if (cache_index < cache.nodes.items.len and cache.nodes.items[cache_index].active) {
+            const cache_index = elem_id.index();
+            if (cache_index < cache.nodes.items.len and cache.nodes.items[cache_index].isActive()) {
                 for (cache.nodes.items[cache_index].custom_text_attrs.items) |old| {
                     var found = false;
                     for (prepared.next) |next| if (std.mem.eql(u8, old.name, next.name)) {
@@ -852,7 +889,7 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             }
             for (prepared.next) |next| {
                 var unchanged = false;
-                if (cache_index < cache.nodes.items.len and cache.nodes.items[cache_index].active) {
+                if (cache_index < cache.nodes.items.len and cache.nodes.items[cache_index].isActive()) {
                     if (cache.nodes.items[cache_index].customTextAttrIndex(next.name)) |old_index| {
                         unchanged = std.mem.eql(u8, cache.nodes.items[cache_index].custom_text_attrs.items[old_index].value, next.value);
                     }
@@ -863,9 +900,9 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
         }
 
         /// Adds final named events for an active or provisional node.
-        pub fn addNamedEvents(self: *Self, cache: *const Cache(Ctx), elem_id: u64, events: []const NamedEvent) (std.mem.Allocator.Error || error{ MissingNode, ResourceLimit })!void {
+        pub fn addNamedEvents(self: *Self, cache: *const Cache(Ctx), elem_id: ids.ElemId, events: []const NamedEvent) (std.mem.Allocator.Error || error{ MissingNode, ResourceLimit })!void {
             if (!self.nodeExists(cache, elem_id)) return error.MissingNode;
-            const wire_elem_id = std.math.cast(u32, elem_id) orelse return error.ResourceLimit;
+            const wire_elem_id = try render.WireElemId.fromEngine(elem_id);
             if (self.activeNode(cache, elem_id)) |node| {
                 if (node.named_events.items.len == events.len) {
                     var equal = true;
@@ -880,8 +917,8 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             }
             var prepared = try PreparedNamedEventsReplacement.prepareKnownNode(self.allocator, elem_id, events);
             errdefer prepared.deinit(self.allocator);
-            const cache_index = std.math.cast(usize, elem_id) orelse return error.ResourceLimit;
-            if (cache_index < cache.nodes.items.len and cache.nodes.items[cache_index].active) {
+            const cache_index = elem_id.index();
+            if (cache_index < cache.nodes.items.len and cache.nodes.items[cache_index].isActive()) {
                 for (cache.nodes.items[cache_index].named_events.items) |old| {
                     var found = false;
                     for (prepared.next) |next| if (std.mem.eql(u8, old.name, next.name)) {
@@ -893,14 +930,14 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             }
             for (prepared.next) |next| {
                 var unchanged = false;
-                if (cache_index < cache.nodes.items.len and cache.nodes.items[cache_index].active) {
+                if (cache_index < cache.nodes.items.len and cache.nodes.items[cache_index].isActive()) {
                     if (cache.nodes.items[cache_index].namedEventIndex(next.name)) |old_index| unchanged = cache.nodes.items[cache_index].named_events.items[old_index].binding.eql(next.binding);
                 }
                 if (!unchanged) try self.wire.addBindEvent(.{
                     .elem_id = wire_elem_id,
-                    .event_id = std.math.cast(u32, next.binding.event_id) orelse return error.ResourceLimit,
+                    .event_id = try render.WireEventId.fromEngine(next.binding.event_id),
                     .name = next.name,
-                    .options = next.binding.policy.toWireBits(),
+                    .policy = next.binding.policy,
                     .delivery = next.binding.delivery.toWire(),
                     .payload_descriptor = next.binding.payload_descriptor,
                 });
@@ -910,18 +947,18 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
 
         /// Publishes every prepared cache delta without allocation.
         pub fn apply(self: *Self, cache: *Cache(Ctx)) void {
-            if (self.committed) @panic("prepared render splice committed twice");
+            if (self.phase.isApplied()) @panic("prepared render splice committed twice");
             self.tags.apply(Ctx, cache);
             for (self.removals.items) |*value| value.apply(Ctx, cache);
             for (self.creations.items) |*value| value.apply(Ctx, cache);
             for (self.children.items) |*value| value.apply(Ctx, cache);
-            for (self.parent_intents.items) |intent| cache.nodes.items[@intCast(intent.child_id)].parent_id = intent.next;
+            for (self.parent_intents.items) |intent| cache.nodes.items[intent.child_id.index()].parent_id = intent.next;
             for (self.text_fields.items) |*value| value.apply(Ctx, cache);
             for (self.bool_fields.items) |*value| value.apply(Ctx, cache);
             for (self.fixed_events.items) |*value| value.apply(Ctx, cache);
             for (self.custom_attrs.items) |*value| value.apply(Ctx, cache);
             for (self.named_events.items) |*value| value.apply(Ctx, cache);
-            self.committed = true;
+            self.phase = .applied;
         }
 
         /// Releases provisional deltas on abort or retired cache ownership after commit.
@@ -1003,7 +1040,7 @@ pub fn Cache(comptime Ctx: type) type {
 
         /// Reports whether root is present in maintained state.
         pub fn hasRoot(self: *const Self) bool {
-            return self.nodes.items.len != 0 and self.nodes.items[0].active;
+            return self.nodes.items.len != 0 and self.nodes.items[0].isActive();
         }
 
         /// Reserves the node table without changing its logical contents.
@@ -1012,9 +1049,9 @@ pub fn Cache(comptime Ctx: type) type {
         }
 
         /// Reserves one active parent's final child-list capacity without changing its contents.
-        pub fn preflightChildCapacity(self: *Self, allocator: std.mem.Allocator, parent_elem_id: u64, capacity: usize) (std.mem.Allocator.Error || error{MissingParent})!void {
-            const index = std.math.cast(usize, parent_elem_id) orelse return error.MissingParent;
-            if (index >= self.nodes.items.len or !self.nodes.items[index].active) return error.MissingParent;
+        pub fn preflightChildCapacity(self: *Self, allocator: std.mem.Allocator, parent_elem_id: ids.ElemId, capacity: usize) (std.mem.Allocator.Error || error{MissingParent})!void {
+            const index = parent_elem_id.index();
+            if (index >= self.nodes.items.len or !self.nodes.items[index].isActive()) return error.MissingParent;
             try self.nodes.items[index].children.ensureTotalCapacity(allocator, capacity);
         }
 
@@ -1024,18 +1061,18 @@ pub fn Cache(comptime Ctx: type) type {
         }
 
         /// Reports whether active node is present in maintained state.
-        pub fn hasActiveNode(self: *const Self, elem_id: u64) bool {
-            const index: usize = @intCast(elem_id);
-            return index < self.nodes.items.len and self.nodes.items[index].active;
+        pub fn hasActiveNode(self: *const Self, elem_id: ids.ElemId) bool {
+            const index = elem_id.index();
+            return index < self.nodes.items.len and self.nodes.items[index].isActive();
         }
 
         /// Returns active node tag differs from the maintained active-runtime indexes.
-        pub fn activeNodeTagDiffers(self: *const Self, elem_id: u64, tag: []const u8) bool {
-            const index: usize = @intCast(elem_id);
+        pub fn activeNodeTagDiffers(self: *const Self, elem_id: ids.ElemId, tag: []const u8) bool {
+            const index = elem_id.index();
             if (index >= self.nodes.items.len) return false;
             const node = &self.nodes.items[index];
-            if (!node.active) return false;
-            return node.tag == null or !std.mem.eql(u8, node.tag.?, tag);
+            const active_tag = node.activeTag() orelse return false;
+            return !std.mem.eql(u8, active_tag, tag);
         }
 
         /// Stages a complete render-surface reset in the host command sink.
@@ -1059,9 +1096,9 @@ pub fn Cache(comptime Ctx: type) type {
             return owned;
         }
 
-        fn ensureCacheNode(self: *Self, ctx: Ctx.Handle, elem_id: u64, tag: []const u8) bool {
+        fn ensureCacheNode(self: *Self, ctx: Ctx.Handle, elem_id: ids.ElemId, tag: []const u8) bool {
             const allocator = Ctx.allocator(ctx);
-            const index: usize = @intCast(elem_id);
+            const index = elem_id.index();
             while (index > self.nodes.items.len) {
                 self.nodes.append(allocator, .{}) catch @panic("out of memory");
             }
@@ -1070,16 +1107,17 @@ pub fn Cache(comptime Ctx: type) type {
                 return true;
             }
             const node = &self.nodes.items[index];
-            if (!node.active) {
+            if (!node.isActive()) {
                 node.* = ScalarNode.initActive(self.internTag(allocator, tag));
                 return true;
             }
-            if (node.tag == null or !std.mem.eql(u8, node.tag.?, tag)) {
+            const active_tag = node.activeTag().?;
+            if (!std.mem.eql(u8, active_tag, tag)) {
                 var message: [160]u8 = undefined;
                 const rendered = std.fmt.bufPrint(
                     &message,
                     "render descriptor changed tag for elem {d}: cache '{s}', stream '{s}'",
-                    .{ elem_id, node.tag orelse "<null>", tag },
+                    .{ elem_id, active_tag, tag },
                 ) catch "render descriptor changed the tag for an existing render cache identity";
                 @panic(rendered);
             }
@@ -1087,7 +1125,7 @@ pub fn Cache(comptime Ctx: type) type {
         }
 
         /// Emits the already-decided command that attaches a newly created render node.
-        pub fn appendNode(self: *Self, ctx: Ctx.Handle, elem_id: u64, parent_elem_id: u64, tag: []const u8) void {
+        pub fn appendNode(self: *Self, ctx: Ctx.Handle, elem_id: ids.ElemId, parent_elem_id: ids.ElemId, tag: []const u8) void {
             const created = self.ensureCacheNode(ctx, elem_id, tag);
             if (!created) @panic("initial render append reused an existing render cache identity");
             const parent = self.activeNode(parent_elem_id);
@@ -1098,26 +1136,26 @@ pub fn Cache(comptime Ctx: type) type {
         }
 
         /// Ensures the host render surface contains the engine-selected node and tag.
-        pub fn ensureNode(self: *Self, ctx: Ctx.Handle, elem_id: u64, tag: []const u8, counts: *render.Counts) void {
+        pub fn ensureNode(self: *Self, ctx: Ctx.Handle, elem_id: ids.ElemId, tag: []const u8, counts: *render.Counts) void {
             if (!self.ensureCacheNode(ctx, elem_id, tag)) return;
             Ctx.sink(ctx).ensureNode(elem_id, tag);
             counts.addCreateElement();
         }
 
         /// Emits removal of a node whose owning scope has already been disposed by the engine.
-        pub fn removeNode(self: *Self, ctx: Ctx.Handle, elem_id: u64, counts: *render.Counts) void {
+        pub fn removeNode(self: *Self, ctx: Ctx.Handle, elem_id: ids.ElemId, counts: *render.Counts) void {
             const allocator = Ctx.allocator(ctx);
-            const index: usize = @intCast(elem_id);
-            if (index >= self.nodes.items.len or !self.nodes.items[index].active) {
+            const index = elem_id.index();
+            if (index >= self.nodes.items.len or !self.nodes.items[index].isActive()) {
                 @panic("render cache removed a missing element");
             }
-            if (elem_id == 0) @panic("render cache attempted to remove the host DOM root");
+            if (elem_id == ids.root_elem) @panic("render cache attempted to remove the host DOM root");
 
             if (self.nodes.items[index].parent_id) |parent_id| {
-                const parent_index: usize = @intCast(parent_id);
-                if (parent_index < self.nodes.items.len and self.nodes.items[parent_index].active) {
+                const parent_index = parent_id.index();
+                if (parent_index < self.nodes.items.len and self.nodes.items[parent_index].isActive()) {
                     const parent = &self.nodes.items[parent_index];
-                    if (u64SliceIndex(parent.children.items, elem_id)) |child_index| {
+                    if (elemSliceIndex(parent.children.items, elem_id)) |child_index| {
                         _ = parent.children.orderedRemove(child_index);
                     }
                 }
@@ -1127,11 +1165,11 @@ pub fn Cache(comptime Ctx: type) type {
             counts.addRemoveNode();
         }
 
-        fn deactivateSubtree(self: *Self, allocator: std.mem.Allocator, elem_id: u64) void {
-            const index: usize = @intCast(elem_id);
-            if (index >= self.nodes.items.len or !self.nodes.items[index].active) return;
+        fn deactivateSubtree(self: *Self, allocator: std.mem.Allocator, elem_id: ids.ElemId) void {
+            const index = elem_id.index();
+            if (index >= self.nodes.items.len or !self.nodes.items[index].isActive()) return;
 
-            const child_ids = allocator.dupe(u64, self.nodes.items[index].children.items) catch @panic("out of memory");
+            const child_ids = allocator.dupe(ids.ElemId, self.nodes.items[index].children.items) catch @panic("out of memory");
             defer allocator.free(child_ids);
             for (child_ids) |child_id| {
                 self.deactivateSubtree(allocator, child_id);
@@ -1140,44 +1178,46 @@ pub fn Cache(comptime Ctx: type) type {
         }
 
         /// Returns active node from the maintained active-runtime indexes.
-        pub fn activeNode(self: *Self, elem_id: u64) *ScalarNode {
-            const index: usize = @intCast(elem_id);
-            if (index >= self.nodes.items.len or !self.nodes.items[index].active) {
+        pub fn activeNode(self: *Self, elem_id: ids.ElemId) *ScalarNode {
+            const index = elem_id.index();
+            if (index >= self.nodes.items.len or !self.nodes.items[index].isActive()) {
                 @panic("render command referenced missing element cache");
             }
             return &self.nodes.items[index];
         }
 
         /// Returns the owned name for an indexed named-event cache entry.
-        pub fn namedEventNameAt(self: *Self, elem_id: u64, index: usize) ?[]const u8 {
+        pub fn namedEventNameAt(self: *Self, elem_id: ids.ElemId, index: usize) ?[]const u8 {
             const events = self.activeNode(elem_id).named_events.items;
             if (index >= events.len) return null;
             return events[index].name;
         }
 
         /// Returns the owned name for an indexed custom-attribute cache entry.
-        pub fn customTextAttrNameAt(self: *Self, elem_id: u64, index: usize) ?[]const u8 {
+        pub fn customTextAttrNameAt(self: *Self, elem_id: ids.ElemId, index: usize) ?[]const u8 {
             const attrs = self.activeNode(elem_id).custom_text_attrs.items;
             if (index >= attrs.len) return null;
             return attrs[index].name;
         }
 
         /// Publishes the engine-selected child order for one parent.
-        pub fn replaceChildren(self: *Self, ctx: Ctx.Handle, parent_elem_id: u64, next_child_ids: []const u64, counts: *render.Counts) void {
+        pub fn replaceChildren(self: *Self, ctx: Ctx.Handle, parent_elem_id: ids.ElemId, next_child_ids: []const ids.ElemId, counts: *render.Counts) void {
             const allocator = Ctx.allocator(ctx);
             const parent = self.activeNode(parent_elem_id);
 
             for (next_child_ids, 0..) |child_id, new_index| {
                 const child = self.activeNode(child_id);
                 const old_parent_id = child.parent_id;
-                const old_child_index = if (old_parent_id) |id| u64SliceIndex(self.activeNode(id).children.items, child_id) else null;
+                const semantic_child_id = child_id;
+                const semantic_parent_id = parent_elem_id;
+                const old_child_index = if (old_parent_id) |id| elemSliceIndex(self.activeNode(id).children.items, semantic_child_id) else null;
 
-                if (old_parent_id == null or old_parent_id.? != parent_elem_id or old_child_index == null) {
+                if (old_parent_id == null or old_parent_id.? != semantic_parent_id or old_child_index == null) {
                     counts.addAppendChild();
                 } else if (old_child_index.? != new_index) {
                     counts.addMoveBefore();
                 }
-                child.parent_id = parent_elem_id;
+                child.parent_id = semantic_parent_id;
             }
 
             parent.children.deinit(allocator);
@@ -1187,7 +1227,7 @@ pub fn Cache(comptime Ctx: type) type {
         }
 
         /// Publishes a moves-only child reorder without rebuilding surviving row structure.
-        pub fn replaceChildrenForMoves(self: *Self, ctx: Ctx.Handle, parent_elem_id: u64, next_child_ids: []const u64, counts: *render.Counts) void {
+        pub fn replaceChildrenForMoves(self: *Self, ctx: Ctx.Handle, parent_elem_id: ids.ElemId, next_child_ids: []const ids.ElemId, counts: *render.Counts) void {
             const allocator = Ctx.allocator(ctx);
             const parent = self.activeNode(parent_elem_id);
             if (parent.children.items.len != next_child_ids.len) @panic("pure structural move changed child count");
@@ -1196,7 +1236,7 @@ pub fn Cache(comptime Ctx: type) type {
             old_child_indexes.clearRetainingCapacity();
             defer old_child_indexes.clearRetainingCapacity();
             for (parent.children.items, 0..) |child_id, index| {
-                const entry = old_child_indexes.getOrPut(allocator, child_id) catch @panic("out of memory");
+                const entry = old_child_indexes.getOrPut(allocator, child_id.raw()) catch @panic("out of memory");
                 if (entry.found_existing) @panic("parent child list contained duplicate element ids");
                 entry.value_ptr.* = index;
             }
@@ -1207,7 +1247,7 @@ pub fn Cache(comptime Ctx: type) type {
             for (next_child_ids, 0..) |child_id, index| {
                 const child = self.activeNode(child_id);
                 if (child.parent_id == null or child.parent_id.? != parent_elem_id) @panic("pure structural move crossed parent boundary");
-                old_indexes_in_next_order[index] = old_child_indexes.get(child_id) orelse @panic("pure structural move inserted a child");
+                old_indexes_in_next_order[index] = old_child_indexes.get(child_id.raw()) orelse @panic("pure structural move inserted a child");
             }
 
             self.move_stable_subsequence.resize(allocator, next_child_ids.len) catch @panic("out of memory");
@@ -1230,7 +1270,7 @@ pub fn Cache(comptime Ctx: type) type {
         }
 
         /// Applies event binding after preparation has fixed semantics and reserved fallible growth.
-        pub fn applyEventBinding(self: *Self, ctx: Ctx.Handle, elem_id: u64, kind: EventKind, binding: ?EventBinding, counts: *render.Counts) void {
+        pub fn applyEventBinding(self: *Self, ctx: Ctx.Handle, elem_id: ids.ElemId, kind: EventKind, binding: ?EventBinding, counts: *render.Counts) void {
             const node = self.activeNode(elem_id);
             const slot = node.fixedEventBindingSlot(kind);
             if (binding) |raw_next| {
@@ -1253,7 +1293,7 @@ pub fn Cache(comptime Ctx: type) type {
         }
 
         /// Applies named event binding after preparation has fixed semantics and reserved fallible growth.
-        pub fn applyNamedEventBinding(self: *Self, ctx: Ctx.Handle, elem_id: u64, name: []const u8, binding: ?EventBinding, counts: *render.Counts) void {
+        pub fn applyNamedEventBinding(self: *Self, ctx: Ctx.Handle, elem_id: ids.ElemId, name: []const u8, binding: ?EventBinding, counts: *render.Counts) void {
             const allocator = Ctx.allocator(ctx);
             const node = self.activeNode(elem_id);
             const existing_index = node.namedEventIndex(name);
@@ -1294,24 +1334,24 @@ pub fn Cache(comptime Ctx: type) type {
 
             for (self.nodes.items, 0..) |cached, index| {
                 Ctx.sink(ctx).debugAssertNode(
-                    @intCast(index),
-                    cached.active,
-                    cached.tag,
+                    ids.ElemId.fromIndex(index),
+                    cached.isActive(),
+                    cached.activeTag(),
                     cached.parent_id,
                     cached.children.items,
-                    cached.fixedEventId(.click),
-                    cached.fixedEventId(.input),
-                    cached.fixedEventId(.check),
-                    cached.fixedEventId(.pointer_down),
-                    cached.fixedEventId(.pointer_up),
-                    cached.fixedEventId(.pointer_enter),
-                    cached.fixedEventId(.pointer_leave),
+                    ids.optionalEventFromRaw(cached.fixedEventId(.click)),
+                    ids.optionalEventFromRaw(cached.fixedEventId(.input)),
+                    ids.optionalEventFromRaw(cached.fixedEventId(.check)),
+                    ids.optionalEventFromRaw(cached.fixedEventId(.pointer_down)),
+                    ids.optionalEventFromRaw(cached.fixedEventId(.pointer_up)),
+                    ids.optionalEventFromRaw(cached.fixedEventId(.pointer_enter)),
+                    ids.optionalEventFromRaw(cached.fixedEventId(.pointer_leave)),
                 );
             }
         }
 
         /// Applies an engine-decided text field value to one render node.
-        pub fn applyTextField(self: *Self, ctx: Ctx.Handle, elem_id: u64, field: TextField, value: []const u8) bool {
+        pub fn applyTextField(self: *Self, ctx: Ctx.Handle, elem_id: ids.ElemId, field: TextField, value: []const u8) bool {
             const allocator = Ctx.allocator(ctx);
             const slot = self.activeNode(elem_id).textSlot(field);
             if (slot.*) |existing| {
@@ -1326,7 +1366,7 @@ pub fn Cache(comptime Ctx: type) type {
         }
 
         /// Applies an engine-decided custom text attribute to one render node.
-        pub fn applyTextAttr(self: *Self, ctx: Ctx.Handle, elem_id: u64, name: []const u8, value: []const u8) bool {
+        pub fn applyTextAttr(self: *Self, ctx: Ctx.Handle, elem_id: ids.ElemId, name: []const u8, value: []const u8) bool {
             const allocator = Ctx.allocator(ctx);
             const node = self.activeNode(elem_id);
             if (node.customTextAttrIndex(name)) |index| {
@@ -1358,7 +1398,7 @@ pub fn Cache(comptime Ctx: type) type {
         }
 
         /// Applies an engine-decided boolean field value to one render node.
-        pub fn applyBoolField(self: *Self, ctx: Ctx.Handle, elem_id: u64, field: BoolField, value: bool) bool {
+        pub fn applyBoolField(self: *Self, ctx: Ctx.Handle, elem_id: ids.ElemId, field: BoolField, value: bool) bool {
             const slot = self.activeNode(elem_id).boolSlot(field);
             if (slot.*) |existing| {
                 if (existing == value) return false;
@@ -1370,7 +1410,7 @@ pub fn Cache(comptime Ctx: type) type {
         }
 
         /// Clears an engine-decided text field from one render node.
-        pub fn clearTextField(self: *Self, ctx: Ctx.Handle, elem_id: u64, field: TextField) bool {
+        pub fn clearTextField(self: *Self, ctx: Ctx.Handle, elem_id: ids.ElemId, field: TextField) bool {
             const allocator = Ctx.allocator(ctx);
             const slot = self.activeNode(elem_id).textSlot(field);
             const existing = slot.* orelse return false;
@@ -1381,7 +1421,7 @@ pub fn Cache(comptime Ctx: type) type {
         }
 
         /// Clears an engine-decided custom text attribute from one render node.
-        pub fn clearTextAttr(self: *Self, ctx: Ctx.Handle, elem_id: u64, name: []const u8) bool {
+        pub fn clearTextAttr(self: *Self, ctx: Ctx.Handle, elem_id: ids.ElemId, name: []const u8) bool {
             const allocator = Ctx.allocator(ctx);
             const node = self.activeNode(elem_id);
             const index = node.customTextAttrIndex(name) orelse return false;
@@ -1392,7 +1432,7 @@ pub fn Cache(comptime Ctx: type) type {
         }
 
         /// Clears an engine-decided boolean field from one render node.
-        pub fn clearBoolField(self: *Self, ctx: Ctx.Handle, elem_id: u64, field: BoolField) bool {
+        pub fn clearBoolField(self: *Self, ctx: Ctx.Handle, elem_id: ids.ElemId, field: BoolField) bool {
             const slot = self.activeNode(elem_id).boolSlot(field);
             const existing = slot.* orelse return false;
             slot.* = null;
@@ -1435,35 +1475,35 @@ const TestSink = struct {
     /// Stages a complete render-surface reset in the host command sink.
     pub fn reset(_: TestSink) void {}
     /// Emits the already-decided command that attaches a newly created render node.
-    pub fn appendNode(_: TestSink, _: u64, _: u64, _: []const u8) void {}
+    pub fn appendNode(_: TestSink, _: ids.ElemId, _: ids.ElemId, _: []const u8) void {}
     /// Ensures the host render surface contains the engine-selected node and tag.
-    pub fn ensureNode(_: TestSink, _: u64, _: []const u8) void {}
+    pub fn ensureNode(_: TestSink, _: ids.ElemId, _: []const u8) void {}
     /// Emits removal of a node whose owning scope has already been disposed by the engine.
-    pub fn removeNode(_: TestSink, _: u64) void {}
+    pub fn removeNode(_: TestSink, _: ids.ElemId) void {}
     /// Publishes the engine-selected child order for one parent.
-    pub fn replaceChildren(_: TestSink, _: u64, _: []const u64) void {}
+    pub fn replaceChildren(_: TestSink, _: ids.ElemId, _: []const ids.ElemId) void {}
     /// Publishes a moves-only child reorder without rebuilding surviving row structure.
-    pub fn replaceChildrenForMoves(_: TestSink, _: u64, _: []const u64) void {}
+    pub fn replaceChildrenForMoves(_: TestSink, _: ids.ElemId, _: []const ids.ElemId) void {}
     /// Applies an engine-decided text field value to one render node.
-    pub fn applyTextField(self: TestSink, _: u64, _: TextField, _: []const u8) void {
+    pub fn applyTextField(self: TestSink, _: ids.ElemId, _: TextField, _: []const u8) void {
         self.host.apply_text_field_count += 1;
     }
     /// Applies an engine-decided custom text attribute to one render node.
-    pub fn applyTextAttr(self: TestSink, _: u64, _: []const u8, _: []const u8) void {
+    pub fn applyTextAttr(self: TestSink, _: ids.ElemId, _: []const u8, _: []const u8) void {
         self.host.apply_text_attr_count += 1;
     }
     /// Applies an engine-decided boolean field value to one render node.
-    pub fn applyBoolField(_: TestSink, _: u64, _: BoolField, _: bool) void {}
+    pub fn applyBoolField(_: TestSink, _: ids.ElemId, _: BoolField, _: bool) void {}
     /// Clears an engine-decided text field from one render node.
-    pub fn clearTextField(_: TestSink, _: u64, _: TextField) void {}
+    pub fn clearTextField(_: TestSink, _: ids.ElemId, _: TextField) void {}
     /// Clears an engine-decided custom text attribute from one render node.
-    pub fn clearTextAttr(self: TestSink, _: u64, _: []const u8) void {
+    pub fn clearTextAttr(self: TestSink, _: ids.ElemId, _: []const u8) void {
         self.host.clear_text_attr_count += 1;
     }
     /// Clears an engine-decided boolean field from one render node.
-    pub fn clearBoolField(_: TestSink, _: u64, _: BoolField) void {}
+    pub fn clearBoolField(_: TestSink, _: ids.ElemId, _: BoolField) void {}
     /// Publishes a validated canonical event binding selected by the engine.
-    pub fn bindEvent(self: TestSink, _: u64, key: EventBindingKey, binding: EventBinding) void {
+    pub fn bindEvent(self: TestSink, _: ids.ElemId, key: EventBindingKey, binding: EventBinding) void {
         self.host.last_event_binding = binding;
         switch (key) {
             .fixed => self.host.bind_event_count += 1,
@@ -1471,14 +1511,14 @@ const TestSink = struct {
         }
     }
     /// Removes a host event registration whose engine-owned binding is no longer active.
-    pub fn clearEvent(self: TestSink, _: u64, key: EventBindingKey) void {
+    pub fn clearEvent(self: TestSink, _: ids.ElemId, key: EventBindingKey) void {
         switch (key) {
             .fixed => self.host.clear_event_count += 1,
             .named => self.host.clear_named_event_count += 1,
         }
     }
     /// Checks that the host render surface matches the engine's committed node metadata.
-    pub fn debugAssertNode(_: TestSink, _: u64, _: bool, _: ?[]const u8, _: ?u64, _: []const u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64) void {}
+    pub fn debugAssertNode(_: TestSink, _: ids.ElemId, _: bool, _: ?[]const u8, _: ?ids.ElemId, _: []const ids.ElemId, _: ?ids.EventId, _: ?ids.EventId, _: ?ids.EventId, _: ?ids.EventId, _: ?ids.EventId, _: ?ids.EventId, _: ?ids.EventId) void {}
 };
 
 test "applying unchanged text field emits no duplicate command" {
@@ -1488,10 +1528,10 @@ test "applying unchanged text field emits no duplicate command" {
 
     cache.reset(&host);
     var counts: render.Counts = .{};
-    cache.ensureNode(&host, 1, "div", &counts);
+    cache.ensureNode(&host, ids.ElemId.fromRaw(1), "div", &counts);
 
-    try std.testing.expect(cache.applyTextField(&host, 1, .text, "hello"));
-    try std.testing.expect(!cache.applyTextField(&host, 1, .text, "hello"));
+    try std.testing.expect(cache.applyTextField(&host, ids.ElemId.fromRaw(1), .text, "hello"));
+    try std.testing.expect(!cache.applyTextField(&host, ids.ElemId.fromRaw(1), .text, "hello"));
     try std.testing.expectEqual(@as(u64, 1), host.apply_text_field_count);
 }
 
@@ -1514,16 +1554,16 @@ test "render cache capacity preflight is recoverable and logically inert" {
     fault.configure(null);
     try cache.preflightNodeCapacity(allocator, 32);
     fault.configure(1);
-    try std.testing.expectError(error.OutOfMemory, cache.preflightChildCapacity(allocator, 0, 16));
+    try std.testing.expectError(error.OutOfMemory, cache.preflightChildCapacity(allocator, ids.ElemId.fromRaw(0), 16));
     try std.testing.expectEqual(@as(usize, 1), cache.nodes.items.len);
     try std.testing.expectEqual(@as(usize, 0), cache.nodes.items[0].children.items.len);
 
     fault.configure(null);
-    try cache.preflightChildCapacity(allocator, 0, 16);
+    try cache.preflightChildCapacity(allocator, ids.root_elem, 16);
     fault.configure(1);
-    cache.nodes.items[0].children.appendAssumeCapacity(7);
+    cache.nodes.items[0].children.appendAssumeCapacity(ids.ElemId.fromRaw(7));
     try std.testing.expectEqual(@as(usize, 0), fault.attempts);
-    try std.testing.expectEqualSlices(u64, &.{7}, cache.nodes.items[0].children.items);
+    try std.testing.expectEqualSlices(ids.ElemId, &.{ids.ElemId.fromRaw(7)}, cache.nodes.items[0].children.items);
     fault.configure(null);
 }
 
@@ -1537,23 +1577,23 @@ test "prepared child replacement aborts cleanly and commits allocation free" {
         cache.nodes.deinit(allocator);
     }
     try cache.nodes.append(allocator, ScalarNode.initActive("root"));
-    try cache.nodes.items[0].children.appendSlice(allocator, &.{ 1, 2 });
+    try cache.nodes.items[0].children.appendSlice(allocator, &.{ ids.ElemId.fromRaw(1), ids.ElemId.fromRaw(2) });
 
     fault.configure(1);
-    try std.testing.expectError(error.OutOfMemory, PreparedChildrenReplacement.prepare(TestCtx, allocator, &cache, 0, &.{ 2, 3 }));
-    try std.testing.expectEqualSlices(u64, &.{ 1, 2 }, cache.nodes.items[0].children.items);
+    try std.testing.expectError(error.OutOfMemory, PreparedChildrenReplacement.prepare(TestCtx, allocator, &cache, ids.ElemId.fromRaw(0), &.{ ids.ElemId.fromRaw(2), ids.ElemId.fromRaw(3) }));
+    try std.testing.expectEqualSlices(ids.ElemId, &.{ ids.ElemId.fromRaw(1), ids.ElemId.fromRaw(2) }, cache.nodes.items[0].children.items);
 
     fault.configure(null);
-    var aborted = try PreparedChildrenReplacement.prepare(TestCtx, allocator, &cache, 0, &.{ 2, 3 });
+    var aborted = try PreparedChildrenReplacement.prepare(TestCtx, allocator, &cache, ids.root_elem, &.{ ids.ElemId.fromRaw(2), ids.ElemId.fromRaw(3) });
     aborted.deinit(allocator);
-    try std.testing.expectEqualSlices(u64, &.{ 1, 2 }, cache.nodes.items[0].children.items);
+    try std.testing.expectEqualSlices(ids.ElemId, &.{ ids.ElemId.fromRaw(1), ids.ElemId.fromRaw(2) }, cache.nodes.items[0].children.items);
 
-    var committed = try PreparedChildrenReplacement.prepare(TestCtx, allocator, &cache, 0, &.{ 2, 3 });
+    var committed = try PreparedChildrenReplacement.prepare(TestCtx, allocator, &cache, ids.root_elem, &.{ ids.ElemId.fromRaw(2), ids.ElemId.fromRaw(3) });
     fault.configure(1);
     committed.apply(TestCtx, &cache);
     try std.testing.expectEqual(@as(usize, 0), fault.attempts);
-    try std.testing.expectEqualSlices(u64, &.{ 2, 3 }, cache.nodes.items[0].children.items);
-    try std.testing.expectEqualSlices(u64, &.{ 1, 2 }, committed.retired.items);
+    try std.testing.expectEqualSlices(ids.ElemId, &.{ ids.ElemId.fromRaw(2), ids.ElemId.fromRaw(3) }, cache.nodes.items[0].children.items);
+    try std.testing.expectEqualSlices(ids.ElemId, &.{ ids.ElemId.fromRaw(1), ids.ElemId.fromRaw(2) }, committed.retired.items);
     fault.configure(null);
     committed.deinit(allocator);
 }
@@ -1569,20 +1609,20 @@ test "prepared render node removal defers ownership and applies allocation free"
     }
     try cache.nodes.append(allocator, ScalarNode.initActive("root"));
     var child = ScalarNode.initActive("div");
-    child.parent_id = 0;
+    child.parent_id = ids.ElemId.fromRaw(0);
     child.text = try allocator.dupe(u8, "owned");
     try cache.nodes.append(allocator, child);
 
-    var aborted = try PreparedNodeRemoval.prepare(TestCtx, &cache, 1);
+    var aborted = try PreparedNodeRemoval.prepare(TestCtx, &cache, ids.ElemId.fromRaw(1));
     aborted.deinit(allocator);
-    try std.testing.expect(cache.nodes.items[1].active);
+    try std.testing.expect(cache.nodes.items[1].isActive());
     try std.testing.expectEqualStrings("owned", cache.nodes.items[1].text.?);
 
-    var committed = try PreparedNodeRemoval.prepare(TestCtx, &cache, 1);
+    var committed = try PreparedNodeRemoval.prepare(TestCtx, &cache, ids.ElemId.fromRaw(1));
     fault.configure(1);
     committed.apply(TestCtx, &cache);
     try std.testing.expectEqual(@as(usize, 0), fault.attempts);
-    try std.testing.expect(!cache.nodes.items[1].active);
+    try std.testing.expect(!cache.nodes.items[1].isActive());
     try std.testing.expectEqualStrings("owned", committed.retired.text.?);
     fault.configure(null);
     committed.deinit(allocator);
@@ -1611,9 +1651,9 @@ test "prepared render node creation sweeps allocation failures and retries" {
             if (reserved) |_| {
                 overlay = PreparedTagOverlay.init(TestCtx, allocator, &cache, 2) catch null;
                 if (overlay) |*tags| {
-                    const first = PreparedNodeCreation.prepare(TestCtx, allocator, &cache, tags, 2, "section") catch null;
-                    const second = if (first != null) PreparedNodeCreation.prepare(TestCtx, allocator, &cache, tags, 3, "article") catch null else null;
-                    const duplicate = if (second != null) PreparedNodeCreation.prepare(TestCtx, allocator, &cache, tags, 4, "section") catch null else null;
+                    const first = PreparedNodeCreation.prepare(TestCtx, allocator, &cache, tags, ids.ElemId.fromRaw(2), "section") catch null;
+                    const second = if (first != null) PreparedNodeCreation.prepare(TestCtx, allocator, &cache, tags, ids.ElemId.fromRaw(3), "article") catch null else null;
+                    const duplicate = if (second != null) PreparedNodeCreation.prepare(TestCtx, allocator, &cache, tags, ids.ElemId.fromRaw(4), "section") catch null else null;
                     if (first != null and second != null and duplicate != null) {
                         if (failure_number != null) return error.TestUnexpectedResult;
                         var nodes = [_]PreparedNodeCreation{ first.?, second.?, duplicate.? };
@@ -1623,7 +1663,7 @@ test "prepared render node creation sweeps allocation failures and retries" {
                         for (&nodes) |*node| node.apply(TestCtx, &cache);
                         try std.testing.expectEqual(@as(usize, 0), fault.attempts);
                         try std.testing.expectEqual(@as(usize, 2), cache.interned_tags.count());
-                        try std.testing.expect(cache.nodes.items[2].tag.?.ptr == cache.nodes.items[4].tag.?.ptr);
+                        try std.testing.expect(cache.nodes.items[2].activeTag().?.ptr == cache.nodes.items[4].activeTag().?.ptr);
                         fault.configure(null);
                         for (&nodes) |*node| node.deinit();
                         return attempts;
@@ -1638,11 +1678,11 @@ test "prepared render node creation sweeps allocation failures and retries" {
             if (overlay) |*tags| tags.deinit(allocator);
             overlay = try PreparedTagOverlay.init(TestCtx, allocator, &cache, 2);
             try cache.preflightNodeCapacity(allocator, 5);
-            var retry = try PreparedNodeCreation.prepare(TestCtx, allocator, &cache, &overlay.?, 3, "section");
+            var retry = try PreparedNodeCreation.prepare(TestCtx, allocator, &cache, &overlay.?, ids.ElemId.fromRaw(3), "section");
             overlay.?.apply(TestCtx, &cache);
             retry.apply(TestCtx, &cache);
             retry.deinit();
-            try std.testing.expect(cache.nodes.items[3].active);
+            try std.testing.expect(cache.nodes.items[3].isActive());
             return 0;
         }
     };
@@ -1667,21 +1707,21 @@ test "prepared scalar fields abort cleanly and publish allocation free" {
     try cache.nodes.append(allocator, node);
 
     fault.configure(1);
-    try std.testing.expectError(error.OutOfMemory, PreparedTextFieldUpdate.prepare(TestCtx, allocator, &cache, 0, .value, "new"));
+    try std.testing.expectError(error.OutOfMemory, PreparedTextFieldUpdate.prepare(TestCtx, allocator, &cache, ids.ElemId.fromRaw(0), .value, "new"));
     try std.testing.expectEqualStrings("old", cache.nodes.items[0].value.?);
     try std.testing.expectEqual(false, cache.nodes.items[0].checked.?);
 
     fault.configure(null);
-    var aborted = try PreparedTextFieldUpdate.prepare(TestCtx, allocator, &cache, 0, .value, "new");
+    var aborted = try PreparedTextFieldUpdate.prepare(TestCtx, allocator, &cache, ids.root_elem, .value, "new");
     aborted.deinit(allocator);
     try std.testing.expectEqualStrings("old", cache.nodes.items[0].value.?);
 
-    var text = try PreparedTextFieldUpdate.prepare(TestCtx, allocator, &cache, 0, .value, "new");
-    var boolean = try PreparedBoolFieldUpdate.prepare(TestCtx, &cache, 0, .checked, true);
-    const old_binding = EventBinding{ .event_id = 1, .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) };
+    var text = try PreparedTextFieldUpdate.prepare(TestCtx, allocator, &cache, ids.root_elem, .value, "new");
+    var boolean = try PreparedBoolFieldUpdate.prepare(TestCtx, &cache, ids.root_elem, .checked, true);
+    const old_binding = EventBinding{ .event_id = ids.EventId.fromRaw(1), .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) };
     cache.nodes.items[0].event_bindings.click = old_binding;
-    const next_binding = EventBinding{ .event_id = 2, .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) };
-    var event = try PreparedFixedEventUpdate.prepare(TestCtx, &cache, 0, .click, next_binding);
+    const next_binding = EventBinding{ .event_id = ids.EventId.fromRaw(2), .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) };
+    var event = try PreparedFixedEventUpdate.prepare(TestCtx, &cache, ids.root_elem, .click, next_binding);
     fault.configure(1);
     text.apply(TestCtx, &cache);
     boolean.apply(TestCtx, &cache);
@@ -1689,8 +1729,8 @@ test "prepared scalar fields abort cleanly and publish allocation free" {
     try std.testing.expectEqual(@as(usize, 0), fault.attempts);
     try std.testing.expectEqualStrings("new", cache.nodes.items[0].value.?);
     try std.testing.expect(cache.nodes.items[0].checked.?);
-    try std.testing.expectEqual(@as(u64, 2), cache.nodes.items[0].event_bindings.click.?.event_id);
-    try std.testing.expectEqual(@as(u64, 1), event.retired.?.event_id);
+    try std.testing.expectEqual(ids.EventId.fromRaw(2), cache.nodes.items[0].event_bindings.click.?.event_id);
+    try std.testing.expectEqual(ids.EventId.fromRaw(1), event.retired.?.event_id);
     try std.testing.expectEqualStrings("old", text.retired.?);
     fault.configure(null);
     text.deinit(allocator);
@@ -1717,20 +1757,20 @@ test "prepared custom attributes sweep failures and publish allocation free" {
     };
 
     fault.configure(null);
-    var counted = try PreparedCustomTextAttrsReplacement.prepare(TestCtx, allocator, &cache, 0, &desired);
+    var counted = try PreparedCustomTextAttrsReplacement.prepare(TestCtx, allocator, &cache, ids.ElemId.fromRaw(0), &desired);
     const attempts = fault.attempts;
     counted.deinit(allocator);
     try std.testing.expect(attempts != 0);
     for (1..attempts + 1) |failure_number| {
         fault.configure(failure_number);
-        try std.testing.expectError(error.OutOfMemory, PreparedCustomTextAttrsReplacement.prepare(TestCtx, allocator, &cache, 0, &desired));
+        try std.testing.expectError(error.OutOfMemory, PreparedCustomTextAttrsReplacement.prepare(TestCtx, allocator, &cache, ids.root_elem, &desired));
         try std.testing.expectEqualStrings("data-old", cache.nodes.items[0].custom_text_attrs.items[0].name);
         fault.configure(null);
-        var retry = try PreparedCustomTextAttrsReplacement.prepare(TestCtx, allocator, &cache, 0, &desired);
+        var retry = try PreparedCustomTextAttrsReplacement.prepare(TestCtx, allocator, &cache, ids.root_elem, &desired);
         retry.deinit(allocator);
     }
 
-    var committed = try PreparedCustomTextAttrsReplacement.prepare(TestCtx, allocator, &cache, 0, &desired);
+    var committed = try PreparedCustomTextAttrsReplacement.prepare(TestCtx, allocator, &cache, ids.root_elem, &desired);
     fault.configure(1);
     committed.apply(TestCtx, &cache);
     try std.testing.expectEqual(@as(usize, 0), fault.attempts);
@@ -1752,28 +1792,28 @@ test "prepared named events sweep failures and publish allocation free" {
     var node = ScalarNode.initActive("div");
     try node.named_events.append(allocator, .{
         .name = try allocator.dupe(u8, "old"),
-        .binding = .{ .event_id = 1, .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) },
+        .binding = .{ .event_id = ids.EventId.fromRaw(1), .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) },
     });
     try cache.nodes.append(allocator, node);
     const desired = [_]NamedEvent{
-        .{ .name = "focus", .binding = .{ .event_id = 2, .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) } },
-        .{ .name = "blur", .binding = .{ .event_id = 3, .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) } },
+        .{ .name = "focus", .binding = .{ .event_id = ids.EventId.fromRaw(2), .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) } },
+        .{ .name = "blur", .binding = .{ .event_id = ids.EventId.fromRaw(3), .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) } },
     };
 
     fault.configure(null);
-    var counted = try PreparedNamedEventsReplacement.prepare(TestCtx, allocator, &cache, 0, &desired);
+    var counted = try PreparedNamedEventsReplacement.prepare(TestCtx, allocator, &cache, ids.ElemId.fromRaw(0), &desired);
     const attempts = fault.attempts;
     counted.deinit(allocator);
     for (1..attempts + 1) |failure_number| {
         fault.configure(failure_number);
-        try std.testing.expectError(error.OutOfMemory, PreparedNamedEventsReplacement.prepare(TestCtx, allocator, &cache, 0, &desired));
+        try std.testing.expectError(error.OutOfMemory, PreparedNamedEventsReplacement.prepare(TestCtx, allocator, &cache, ids.root_elem, &desired));
         try std.testing.expectEqualStrings("old", cache.nodes.items[0].named_events.items[0].name);
         fault.configure(null);
-        var retry = try PreparedNamedEventsReplacement.prepare(TestCtx, allocator, &cache, 0, &desired);
+        var retry = try PreparedNamedEventsReplacement.prepare(TestCtx, allocator, &cache, ids.root_elem, &desired);
         retry.deinit(allocator);
     }
 
-    var committed = try PreparedNamedEventsReplacement.prepare(TestCtx, allocator, &cache, 0, &desired);
+    var committed = try PreparedNamedEventsReplacement.prepare(TestCtx, allocator, &cache, ids.root_elem, &desired);
     fault.configure(1);
     committed.apply(TestCtx, &cache);
     try std.testing.expectEqual(@as(usize, 0), fault.attempts);
@@ -1799,10 +1839,10 @@ test "prepared render splice composes mixed cache deltas allocation free" {
     try cache.nodes.append(allocator, ScalarNode.initActive("left"));
     try cache.nodes.append(allocator, ScalarNode.initActive("right"));
     var child = ScalarNode.initActive("old");
-    child.parent_id = 1;
+    child.parent_id = ids.ElemId.fromRaw(1);
     try cache.nodes.append(allocator, child);
-    try cache.nodes.items[0].children.appendSlice(allocator, &.{ 1, 2 });
-    try cache.nodes.items[1].children.append(allocator, 3);
+    try cache.nodes.items[0].children.appendSlice(allocator, &.{ ids.ElemId.fromRaw(1), ids.ElemId.fromRaw(2) });
+    try cache.nodes.items[1].children.append(allocator, ids.ElemId.fromRaw(3));
 
     const counts = PreparedRenderCounts{
         .node_capacity = 8,
@@ -1818,32 +1858,32 @@ test "prepared render splice composes mixed cache deltas allocation free" {
         .wire_commands = 8,
     };
     const custom = [_]CustomTextAttr{.{ .name = "data-new", .value = "yes" }};
-    const named = [_]NamedEvent{.{ .name = "focus", .binding = .{ .event_id = 10, .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) } }};
+    const named = [_]NamedEvent{.{ .name = "focus", .binding = .{ .event_id = ids.EventId.fromRaw(10), .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) } }};
 
     var aborted = try PreparedRenderSplice(TestCtx).init(allocator, &cache, counts);
-    try aborted.addCreation(&cache, 7, "button");
-    try aborted.addChildren(&cache, 1, &.{7});
-    try aborted.addChildren(&cache, 2, &.{3});
-    try aborted.addTextField(&cache, 7, .label, "next");
-    try aborted.addBoolField(&cache, 7, .disabled, true);
-    try aborted.addFixedEvent(&cache, 7, .click, .{ .event_id = 9, .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) });
-    try aborted.addCustomAttrs(&cache, 7, &custom);
-    try aborted.addNamedEvents(&cache, 7, &named);
+    try aborted.addCreation(&cache, ids.ElemId.fromRaw(7), "button");
+    try aborted.addChildren(&cache, ids.ElemId.fromRaw(1), &.{ids.ElemId.fromRaw(7)});
+    try aborted.addChildren(&cache, ids.ElemId.fromRaw(2), &.{ids.ElemId.fromRaw(3)});
+    try aborted.addTextField(&cache, ids.ElemId.fromRaw(7), .label, "next");
+    try aborted.addBoolField(&cache, ids.ElemId.fromRaw(7), .disabled, true);
+    try aborted.addFixedEvent(&cache, ids.ElemId.fromRaw(7), .click, .{ .event_id = ids.EventId.fromRaw(9), .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) });
+    try aborted.addCustomAttrs(&cache, ids.ElemId.fromRaw(7), &custom);
+    try aborted.addNamedEvents(&cache, ids.ElemId.fromRaw(7), &named);
     aborted.deinit();
-    try std.testing.expectEqualSlices(u64, &.{3}, cache.nodes.items[1].children.items);
-    try std.testing.expectEqual(@as(?u64, 1), cache.nodes.items[3].parent_id);
+    try std.testing.expectEqualSlices(ids.ElemId, &.{ids.ElemId.fromRaw(3)}, cache.nodes.items[1].children.items);
+    try std.testing.expectEqual(@as(?ids.ElemId, ids.ElemId.fromRaw(1)), cache.nodes.items[3].parent_id);
     try std.testing.expectEqual(@as(usize, 4), cache.nodes.items.len);
 
     var plan = try PreparedRenderSplice(TestCtx).init(allocator, &cache, counts);
     defer plan.deinit();
-    try plan.addCreation(&cache, 7, "button");
-    try plan.addChildren(&cache, 1, &.{7});
-    try plan.addChildren(&cache, 2, &.{3});
-    try plan.addTextField(&cache, 7, .label, "next");
-    try plan.addBoolField(&cache, 7, .disabled, true);
-    try plan.addFixedEvent(&cache, 7, .click, .{ .event_id = 9, .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) });
-    try plan.addCustomAttrs(&cache, 7, &custom);
-    try plan.addNamedEvents(&cache, 7, &named);
+    try plan.addCreation(&cache, ids.ElemId.fromRaw(7), "button");
+    try plan.addChildren(&cache, ids.ElemId.fromRaw(1), &.{ids.ElemId.fromRaw(7)});
+    try plan.addChildren(&cache, ids.ElemId.fromRaw(2), &.{ids.ElemId.fromRaw(3)});
+    try plan.addTextField(&cache, ids.ElemId.fromRaw(7), .label, "next");
+    try plan.addBoolField(&cache, ids.ElemId.fromRaw(7), .disabled, true);
+    try plan.addFixedEvent(&cache, ids.ElemId.fromRaw(7), .click, .{ .event_id = ids.EventId.fromRaw(9), .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) });
+    try plan.addCustomAttrs(&cache, ids.ElemId.fromRaw(7), &custom);
+    try plan.addNamedEvents(&cache, ids.ElemId.fromRaw(7), &named);
 
     var batch: render.TransactionalBatch = .{};
     defer batch.deinit(allocator);
@@ -1856,16 +1896,16 @@ test "prepared render splice composes mixed cache deltas allocation free" {
     try std.testing.expectEqual(@as(usize, 0), fault.attempts);
     try std.testing.expectEqual(@as(usize, 8), batch.staged.commands.len());
     try std.testing.expectEqual(@as(usize, 0), batch.published.commands.len());
-    try std.testing.expectEqualStrings("button", cache.nodes.items[7].tag.?);
+    try std.testing.expectEqualStrings("button", cache.nodes.items[7].activeTag().?);
     try std.testing.expectEqualStrings("next", cache.nodes.items[7].label.?);
     try std.testing.expect(cache.nodes.items[7].disabled.?);
-    try std.testing.expectEqual(@as(u64, 9), cache.nodes.items[7].event_bindings.click.?.event_id);
+    try std.testing.expectEqual(ids.EventId.fromRaw(9), cache.nodes.items[7].event_bindings.click.?.event_id);
     try std.testing.expectEqualStrings("data-new", cache.nodes.items[7].custom_text_attrs.items[0].name);
     try std.testing.expectEqualStrings("focus", cache.nodes.items[7].named_events.items[0].name);
-    try std.testing.expectEqualSlices(u64, &.{7}, cache.nodes.items[1].children.items);
-    try std.testing.expectEqualSlices(u64, &.{3}, cache.nodes.items[2].children.items);
-    try std.testing.expectEqual(@as(?u64, 1), cache.nodes.items[7].parent_id);
-    try std.testing.expectEqual(@as(?u64, 2), cache.nodes.items[3].parent_id);
+    try std.testing.expectEqualSlices(ids.ElemId, &.{ids.ElemId.fromRaw(7)}, cache.nodes.items[1].children.items);
+    try std.testing.expectEqualSlices(ids.ElemId, &.{ids.ElemId.fromRaw(3)}, cache.nodes.items[2].children.items);
+    try std.testing.expectEqual(@as(?ids.ElemId, ids.ElemId.fromRaw(1)), cache.nodes.items[7].parent_id);
+    try std.testing.expectEqual(@as(?ids.ElemId, ids.ElemId.fromRaw(2)), cache.nodes.items[3].parent_id);
     batch.commit();
     try std.testing.expectEqual(@as(usize, 8), batch.published.commands.len());
     const expected_ops = [_]render.Op{
@@ -1902,11 +1942,11 @@ test "prepared render splice leaves unchanged retained values allocation free" {
     });
     defer plan.deinit();
     fault.configure(1);
-    try plan.addTextField(&cache, 0, .text, null);
-    try plan.addBoolField(&cache, 0, .checked, null);
-    try plan.addFixedEvent(&cache, 0, .click, null);
-    try plan.addCustomAttrs(&cache, 0, &.{});
-    try plan.addNamedEvents(&cache, 0, &.{});
+    try plan.addTextField(&cache, ids.ElemId.fromRaw(0), .text, null);
+    try plan.addBoolField(&cache, ids.root_elem, .checked, null);
+    try plan.addFixedEvent(&cache, ids.root_elem, .click, null);
+    try plan.addCustomAttrs(&cache, ids.root_elem, &.{});
+    try plan.addNamedEvents(&cache, ids.root_elem, &.{});
     try std.testing.expectEqual(@as(usize, 0), fault.attempts);
     try std.testing.expectEqual(@as(usize, 0), plan.text_fields.items.len);
     try std.testing.expectEqual(@as(usize, 0), plan.bool_fields.items.len);
@@ -1932,8 +1972,8 @@ test "prepared render wire commands own borrowed preparation inputs" {
         .wire_commands = 2,
     });
     defer plan.deinit();
-    try plan.addCreation(&cache, 1, tag);
-    try plan.addTextField(&cache, 1, .label, label);
+    try plan.addCreation(&cache, ids.ElemId.fromRaw(1), tag);
+    try plan.addTextField(&cache, ids.ElemId.fromRaw(1), .label, label);
     std.testing.allocator.free(tag);
     std.testing.allocator.free(label);
     tag = undefined;
@@ -1953,20 +1993,20 @@ test "prepared render wire derives retirement and keyed replacement diffs" {
     defer cache.deinit(&host);
     try cache.nodes.append(std.testing.allocator, ScalarNode.initActive("root"));
     var child = ScalarNode.initActive("button");
-    child.parent_id = 0;
+    child.parent_id = ids.ElemId.fromRaw(0);
     try child.custom_text_attrs.append(std.testing.allocator, .{
         .name = try std.testing.allocator.dupe(u8, "old"),
         .value = try std.testing.allocator.dupe(u8, "value"),
     });
     try child.named_events.append(std.testing.allocator, .{
         .name = try std.testing.allocator.dupe(u8, "blur"),
-        .binding = .{ .event_id = 1, .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) },
+        .binding = .{ .event_id = ids.EventId.fromRaw(1), .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) },
     });
     try cache.nodes.append(std.testing.allocator, child);
-    try cache.nodes.items[0].children.append(std.testing.allocator, 1);
+    try cache.nodes.items[0].children.append(std.testing.allocator, ids.ElemId.fromRaw(1));
 
     const attrs = [_]CustomTextAttr{.{ .name = "new", .value = "next" }};
-    const events = [_]NamedEvent{.{ .name = "focus", .binding = .{ .event_id = 2, .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) } }};
+    const events = [_]NamedEvent{.{ .name = "focus", .binding = .{ .event_id = ids.EventId.fromRaw(2), .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) } }};
     var plan = try PreparedRenderSplice(TestCtx).init(std.testing.allocator, &cache, .{
         .node_capacity = 2,
         .removals = 1,
@@ -1977,13 +2017,16 @@ test "prepared render wire derives retirement and keyed replacement diffs" {
         .wire_commands = 5,
     });
     defer plan.deinit();
-    try plan.addCustomAttrs(&cache, 1, &attrs);
-    try plan.addNamedEvents(&cache, 1, &events);
-    try plan.addRemoval(&cache, 1);
-    try plan.addChildren(&cache, 0, &.{});
+    try plan.addCustomAttrs(&cache, ids.ElemId.fromRaw(1), &attrs);
+    try plan.addNamedEvents(&cache, ids.ElemId.fromRaw(1), &events);
+    try plan.addRemoval(&cache, ids.ElemId.fromRaw(1));
+    try plan.addChildren(&cache, ids.root_elem, &.{});
     try std.testing.expectEqual(@as(usize, 5), plan.wire.commands.items.len);
-    const expected = [_]std.meta.Tag(render.PreparedCommand){ .remove_attr, .set_attr_text, .clear_event, .bind_event, .fixed };
-    for (plan.wire.commands.items, expected) |command, tag| try std.testing.expectEqual(tag, std.meta.activeTag(command));
+    const counts = plan.wire.counts();
+    try std.testing.expectEqual(@as(u64, 5), counts.total);
+    try std.testing.expectEqual(@as(u64, 1), counts.remove_node);
+    try std.testing.expectEqual(@as(u64, 2), counts.set_metadata);
+    try std.testing.expectEqual(@as(u64, 2), counts.bind_event);
 }
 
 test "prepared render splice recreates one active slot transactionally" {
@@ -2004,9 +2047,9 @@ test "prepared render splice recreates one active slot transactionally" {
         .wire_commands = 2,
     });
     fault.configure(1);
-    try std.testing.expectError(error.OutOfMemory, aborted.addNodeReplacement(&cache, 1, "new"));
-    try std.testing.expectEqualStrings("old", cache.nodes.items[1].tag.?);
-    try std.testing.expectEqual(@as(?u64, null), cache.nodes.items[1].parent_id);
+    try std.testing.expectError(error.OutOfMemory, aborted.addNodeReplacement(&cache, ids.ElemId.fromRaw(1), "new"));
+    try std.testing.expectEqualStrings("old", cache.nodes.items[1].activeTag().?);
+    try std.testing.expectEqual(@as(?ids.ElemId, null), cache.nodes.items[1].parent_id);
     fault.configure(null);
     aborted.deinit();
     var plan = try PreparedRenderSplice(TestCtx).init(allocator, &cache, .{
@@ -2018,12 +2061,12 @@ test "prepared render splice recreates one active slot transactionally" {
         .wire_commands = 2,
     });
     defer plan.deinit();
-    try plan.addNodeReplacement(&cache, 1, "new");
-    try std.testing.expectEqualStrings("old", cache.nodes.items[1].tag.?);
+    try plan.addNodeReplacement(&cache, ids.ElemId.fromRaw(1), "new");
+    try std.testing.expectEqualStrings("old", cache.nodes.items[1].activeTag().?);
     fault.configure(1);
     plan.apply(&cache);
     try std.testing.expectEqual(@as(usize, 0), fault.attempts);
-    try std.testing.expectEqualStrings("new", cache.nodes.items[1].tag.?);
+    try std.testing.expectEqualStrings("new", cache.nodes.items[1].activeTag().?);
     try std.testing.expectEqual(@as(usize, 2), plan.wire.commands.items.len);
     fault.configure(null);
 }
@@ -2046,18 +2089,18 @@ test "prepared render splice sweeps every allocation and retries" {
             .wire_commands = 7,
         };
         const custom = [_]CustomTextAttr{.{ .name = "data-new", .value = "yes" }};
-        const named = [_]NamedEvent{.{ .name = "focus", .binding = .{ .event_id = 10, .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) } }};
+        const named = [_]NamedEvent{.{ .name = "focus", .binding = .{ .event_id = ids.EventId.fromRaw(10), .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) } }};
 
         fn prepare(allocator: std.mem.Allocator, cache: *Cache(TestCtx), batch: *render.TransactionalBatch) !Plan {
             var plan = try Plan.init(allocator, cache, counts);
             errdefer plan.deinit();
-            try plan.addCreation(cache, 7, "button");
-            try plan.addChildren(cache, 0, &.{7});
-            try plan.addTextField(cache, 7, .label, "next");
-            try plan.addBoolField(cache, 7, .disabled, true);
-            try plan.addFixedEvent(cache, 7, .click, .{ .event_id = 9, .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) });
-            try plan.addCustomAttrs(cache, 7, &custom);
-            try plan.addNamedEvents(cache, 7, &named);
+            try plan.addCreation(cache, ids.ElemId.fromRaw(7), "button");
+            try plan.addChildren(cache, ids.root_elem, &.{ids.ElemId.fromRaw(7)});
+            try plan.addTextField(cache, ids.ElemId.fromRaw(7), .label, "next");
+            try plan.addBoolField(cache, ids.ElemId.fromRaw(7), .disabled, true);
+            try plan.addFixedEvent(cache, ids.ElemId.fromRaw(7), .click, .{ .event_id = ids.EventId.fromRaw(9), .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) });
+            try plan.addCustomAttrs(cache, ids.ElemId.fromRaw(7), &custom);
+            try plan.addNamedEvents(cache, ids.ElemId.fromRaw(7), &named);
             try plan.wire.preflight(batch, allocator);
             return plan;
         }
@@ -2110,8 +2153,8 @@ test "prepared render splice sweeps every allocation and retries" {
     try cache.nodes.append(std.testing.allocator, ScalarNode.initActive("root"));
     var duplicate = try Plan.init(std.testing.allocator, &cache, .{ .node_capacity = 8, .new_tags = 1, .creations = 1, .children = 1, .child_links = 1, .wire_commands = 1 });
     defer duplicate.deinit();
-    try duplicate.addCreation(&cache, 7, "button");
-    try std.testing.expectError(error.DuplicateChild, duplicate.addChildren(&cache, 0, &.{ 7, 7 }));
+    try duplicate.addCreation(&cache, ids.ElemId.fromRaw(7), "button");
+    try std.testing.expectError(error.DuplicateChild, duplicate.addChildren(&cache, ids.root_elem, &.{ ids.ElemId.fromRaw(7), ids.ElemId.fromRaw(7) }));
     try std.testing.expectEqual(@as(usize, 0), cache.nodes.items[0].children.items.len);
 }
 
@@ -2122,12 +2165,12 @@ test "render cache reset accepts sparse element ids" {
 
     cache.reset(&host);
     var counts: render.Counts = .{};
-    cache.ensureNode(&host, 3, "div", &counts);
+    cache.ensureNode(&host, ids.ElemId.fromRaw(3), "div", &counts);
 
     try std.testing.expectEqual(@as(usize, 4), cache.nodes.items.len);
-    try std.testing.expect(!cache.nodes.items[1].active);
-    try std.testing.expect(!cache.nodes.items[2].active);
-    try std.testing.expect(cache.nodes.items[3].active);
+    try std.testing.expect(!cache.nodes.items[1].isActive());
+    try std.testing.expect(!cache.nodes.items[2].isActive());
+    try std.testing.expect(cache.nodes.items[3].isActive());
     try std.testing.expectEqual(@as(u64, 1), counts.create_element);
 }
 
@@ -2138,17 +2181,17 @@ test "removed cache slot can be recreated with a different tag" {
 
     cache.reset(&host);
     var counts: render.Counts = .{};
-    cache.ensureNode(&host, 1, "text", &counts);
-    try std.testing.expect(!cache.activeNodeTagDiffers(1, "text"));
-    try std.testing.expect(cache.activeNodeTagDiffers(1, "div"));
-    try std.testing.expect(cache.applyTextField(&host, 1, .text, "stale"));
+    cache.ensureNode(&host, ids.ElemId.fromRaw(1), "text", &counts);
+    try std.testing.expect(!cache.activeNodeTagDiffers(ids.ElemId.fromRaw(1), "text"));
+    try std.testing.expect(cache.activeNodeTagDiffers(ids.ElemId.fromRaw(1), "div"));
+    try std.testing.expect(cache.applyTextField(&host, ids.ElemId.fromRaw(1), .text, "stale"));
 
-    cache.removeNode(&host, 1, &counts);
-    try std.testing.expect(!cache.activeNodeTagDiffers(1, "div"));
+    cache.removeNode(&host, ids.ElemId.fromRaw(1), &counts);
+    try std.testing.expect(!cache.activeNodeTagDiffers(ids.ElemId.fromRaw(1), "div"));
 
-    cache.ensureNode(&host, 1, "div", &counts);
-    const node = cache.activeNode(1);
-    try std.testing.expectEqualStrings("div", node.tag.?);
+    cache.ensureNode(&host, ids.ElemId.fromRaw(1), "div", &counts);
+    const node = cache.activeNode(ids.ElemId.fromRaw(1));
+    try std.testing.expectEqualStrings("div", node.activeTag().?);
     try std.testing.expectEqual(@as(?[]const u8, null), node.text);
     try std.testing.expectEqual(@as(u64, 2), counts.create_element);
     try std.testing.expectEqual(@as(u64, 1), counts.remove_node);
@@ -2162,13 +2205,13 @@ test "reordering children counts only displaced moves" {
 
     cache.reset(&host);
     var counts: render.Counts = .{};
-    cache.ensureNode(&host, 1, "div", &counts);
-    cache.ensureNode(&host, 2, "div", &counts);
-    cache.ensureNode(&host, 3, "div", &counts);
-    cache.replaceChildren(&host, 0, &.{ 1, 2, 3 }, &counts);
+    cache.ensureNode(&host, ids.ElemId.fromRaw(1), "div", &counts);
+    cache.ensureNode(&host, ids.ElemId.fromRaw(2), "div", &counts);
+    cache.ensureNode(&host, ids.ElemId.fromRaw(3), "div", &counts);
+    cache.replaceChildren(&host, ids.root_elem, &.{ ids.ElemId.fromRaw(1), ids.ElemId.fromRaw(2), ids.ElemId.fromRaw(3) }, &counts);
 
     counts = .{};
-    cache.replaceChildrenForMoves(&host, 0, &.{ 2, 1, 3 }, &counts);
+    cache.replaceChildrenForMoves(&host, ids.root_elem, &.{ ids.ElemId.fromRaw(2), ids.ElemId.fromRaw(1), ids.ElemId.fromRaw(3) }, &counts);
 
     try std.testing.expectEqual(@as(u64, 1), counts.move_before);
     try std.testing.expectEqual(@as(u64, 1), counts.total);
@@ -2181,25 +2224,25 @@ test "unchanged event binding emits no duplicate command" {
 
     cache.reset(&host);
     var counts: render.Counts = .{};
-    cache.ensureNode(&host, 1, "button", &counts);
+    cache.ensureNode(&host, ids.ElemId.fromRaw(1), "button", &counts);
 
-    const binding = EventBinding{ .event_id = 1, .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) };
-    cache.applyEventBinding(&host, 1, .click, binding, &counts);
-    cache.applyEventBinding(&host, 1, .click, binding, &counts);
+    const binding = EventBinding{ .event_id = ids.EventId.fromRaw(1), .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) };
+    cache.applyEventBinding(&host, ids.ElemId.fromRaw(1), .click, binding, &counts);
+    cache.applyEventBinding(&host, ids.ElemId.fromRaw(1), .click, binding, &counts);
     try std.testing.expectEqual(@as(u64, 1), counts.bind_event);
     try std.testing.expectEqual(@as(u64, 1), host.bind_event_count);
 
-    cache.applyEventBinding(&host, 1, .click, null, &counts);
-    cache.applyEventBinding(&host, 1, .click, null, &counts);
+    cache.applyEventBinding(&host, ids.ElemId.fromRaw(1), .click, null, &counts);
+    cache.applyEventBinding(&host, ids.ElemId.fromRaw(1), .click, null, &counts);
     try std.testing.expectEqual(@as(u64, 2), counts.bind_event);
     try std.testing.expectEqual(@as(u64, 1), host.clear_event_count);
 }
 
 test "event binding slots are keyed by event kind" {
     var bindings = EventBindings{};
-    const click = EventBinding{ .event_id = 1, .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) };
-    const input = EventBinding{ .event_id = 2, .payload_descriptor = BoundaryPayloadDescriptor.init(.str, .target_value) };
-    const pointer_down = EventBinding{ .event_id = 3, .payload_descriptor = BoundaryPayloadDescriptor.init(.bool, .target_checked) };
+    const click = EventBinding{ .event_id = ids.EventId.fromRaw(1), .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) };
+    const input = EventBinding{ .event_id = ids.EventId.fromRaw(2), .payload_descriptor = BoundaryPayloadDescriptor.init(.str, .target_value) };
+    const pointer_down = EventBinding{ .event_id = ids.EventId.fromRaw(3), .payload_descriptor = BoundaryPayloadDescriptor.init(.bool, .target_checked) };
 
     eventBindingSlot(&bindings, .click).* = click;
     eventBindingSlot(&bindings, .input).* = input;
@@ -2221,27 +2264,27 @@ test "event bindings derive delivery before cache storage and sink commands" {
 
     cache.reset(&host);
     var counts: render.Counts = .{};
-    cache.ensureNode(&host, 1, "button", &counts);
-    cache.ensureNode(&host, 2, "form", &counts);
+    cache.ensureNode(&host, ids.ElemId.fromRaw(1), "button", &counts);
+    cache.ensureNode(&host, ids.ElemId.fromRaw(2), "form", &counts);
 
     const fixed = EventBinding{
-        .event_id = 1,
+        .event_id = ids.EventId.fromRaw(1),
         .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none),
     };
-    cache.applyEventBinding(&host, 1, .pointer_down, fixed, &counts);
-    const fixed_delivery = cache.activeNode(1).event_bindings.pointer_down.?.delivery;
+    cache.applyEventBinding(&host, ids.ElemId.fromRaw(1), .pointer_down, fixed, &counts);
+    const fixed_delivery = cache.activeNode(ids.ElemId.fromRaw(1)).event_bindings.pointer_down.?.delivery;
     try std.testing.expectEqual(render_sink.EventDeliveryRequest.auto, fixed_delivery.requested);
     try std.testing.expectEqual(render_sink.EventDeliveryEffective.native, fixed_delivery.effective);
     try std.testing.expectEqual(render_sink.EventDeliveryReason.pointer_drag, fixed_delivery.reason);
     try std.testing.expectEqual(render_sink.EventDeliveryReason.pointer_drag, host.last_event_binding.?.delivery.reason);
 
     const named = EventBinding{
-        .event_id = 2,
+        .event_id = ids.EventId.fromRaw(2),
         .policy = render.EventPolicy.fromBits(render.listener_option_capture),
         .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none),
     };
-    cache.applyNamedEventBinding(&host, 2, "focus", named, &counts);
-    const named_delivery = cache.activeNode(2).named_events.items[0].binding.delivery;
+    cache.applyNamedEventBinding(&host, ids.ElemId.fromRaw(2), "focus", named, &counts);
+    const named_delivery = cache.activeNode(ids.ElemId.fromRaw(2)).named_events.items[0].binding.delivery;
     try std.testing.expectEqual(render_sink.EventDeliveryRequest.auto, named_delivery.requested);
     try std.testing.expectEqual(render_sink.EventDeliveryEffective.native, named_delivery.effective);
     try std.testing.expectEqual(render_sink.EventDeliveryReason.capture_policy, named_delivery.reason);
@@ -2255,16 +2298,16 @@ test "custom text attr application and clear are idempotent" {
 
     cache.reset(&host);
     var counts: render.Counts = .{};
-    cache.ensureNode(&host, 1, "div", &counts);
+    cache.ensureNode(&host, ids.ElemId.fromRaw(1), "div", &counts);
 
-    try std.testing.expect(cache.applyTextAttr(&host, 1, "data-x", "a"));
-    try std.testing.expect(!cache.applyTextAttr(&host, 1, "data-x", "a"));
-    try std.testing.expect(cache.applyTextAttr(&host, 1, "data-x", "b"));
+    try std.testing.expect(cache.applyTextAttr(&host, ids.ElemId.fromRaw(1), "data-x", "a"));
+    try std.testing.expect(!cache.applyTextAttr(&host, ids.ElemId.fromRaw(1), "data-x", "a"));
+    try std.testing.expect(cache.applyTextAttr(&host, ids.ElemId.fromRaw(1), "data-x", "b"));
     try std.testing.expectEqual(@as(u64, 2), host.apply_text_attr_count);
 
-    try std.testing.expect(!cache.clearTextAttr(&host, 1, "data-missing"));
-    try std.testing.expect(cache.clearTextAttr(&host, 1, "data-x"));
-    try std.testing.expect(!cache.clearTextAttr(&host, 1, "data-x"));
+    try std.testing.expect(!cache.clearTextAttr(&host, ids.ElemId.fromRaw(1), "data-missing"));
+    try std.testing.expect(cache.clearTextAttr(&host, ids.ElemId.fromRaw(1), "data-x"));
+    try std.testing.expect(!cache.clearTextAttr(&host, ids.ElemId.fromRaw(1), "data-x"));
     try std.testing.expectEqual(@as(u64, 1), host.clear_text_attr_count);
 }
 
@@ -2275,28 +2318,28 @@ test "named event replacement and clear are idempotent" {
 
     cache.reset(&host);
     var counts: render.Counts = .{};
-    cache.ensureNode(&host, 1, "form", &counts);
+    cache.ensureNode(&host, ids.ElemId.fromRaw(1), "form", &counts);
 
     const first = EventBinding{
-        .event_id = 1,
+        .event_id = ids.EventId.fromRaw(1),
         .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none),
     };
     const second = EventBinding{
-        .event_id = 2,
+        .event_id = ids.EventId.fromRaw(2),
         .policy = render.EventPolicy.fromBits(render.listener_option_prevent_default),
         .payload_descriptor = BoundaryPayloadDescriptor.init(.str, .target_value),
     };
 
-    cache.applyNamedEventBinding(&host, 1, "submit", first, &counts);
-    cache.applyNamedEventBinding(&host, 1, "submit", first, &counts);
-    try std.testing.expectEqualStrings("submit", cache.namedEventNameAt(1, 0).?);
+    cache.applyNamedEventBinding(&host, ids.ElemId.fromRaw(1), "submit", first, &counts);
+    cache.applyNamedEventBinding(&host, ids.ElemId.fromRaw(1), "submit", first, &counts);
+    try std.testing.expectEqualStrings("submit", cache.namedEventNameAt(ids.ElemId.fromRaw(1), 0).?);
 
-    cache.applyNamedEventBinding(&host, 1, "submit", second, &counts);
+    cache.applyNamedEventBinding(&host, ids.ElemId.fromRaw(1), "submit", second, &counts);
     try std.testing.expectEqual(@as(u64, 2), host.bind_named_event_count);
     try std.testing.expectEqual(@as(u64, 2), counts.bind_event);
 
-    cache.applyNamedEventBinding(&host, 1, "submit", null, &counts);
-    cache.applyNamedEventBinding(&host, 1, "submit", null, &counts);
+    cache.applyNamedEventBinding(&host, ids.ElemId.fromRaw(1), "submit", null, &counts);
+    cache.applyNamedEventBinding(&host, ids.ElemId.fromRaw(1), "submit", null, &counts);
     try std.testing.expectEqual(@as(u64, 1), host.clear_named_event_count);
     try std.testing.expectEqual(@as(u64, 3), counts.bind_event);
 }

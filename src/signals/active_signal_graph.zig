@@ -5,6 +5,7 @@ const scope_tree = @import("scope_tree.zig");
 const signal_records = @import("signal_records.zig");
 const signal_graph = @import("signal_graph.zig");
 const boundary = @import("boundary.zig");
+const ids = @import("ids.zig");
 
 /// Defines the dense active-graph node view used by dependency-ordered propagation.
 pub fn Node(comptime Record: type) type {
@@ -23,26 +24,26 @@ pub const SignalKind = enum(u64) {
 };
 
 pub const EventRoute = struct {
-    event_id: u64,
-    signal_ids: []u64,
+    event_id: ids.EventId,
+    signal_ids: []ids.NodeId,
 };
 
 pub const EventDescriptor = struct {
-    event_id: u64,
+    event_id: ids.EventId,
     payload_descriptor: boundary.BoundaryPayloadDescriptor,
 };
 
 pub const Descriptor = struct {
     signal_id: u64,
     kind: SignalKind,
-    source_state_ids: []u64,
-    source_event_ids: []u64,
+    source_state_ids: []ids.NodeId,
+    source_event_ids: []ids.EventId,
     input_signal_ids: []u64,
     rank: u64,
 };
 
 pub const StateRoute = struct {
-    state_id: u64,
+    state_id: ids.NodeId,
     signal_ids: []u64,
 };
 
@@ -409,18 +410,18 @@ fn containsStructuralSink(routes: *const RouteTable(StructuralSink), edit: Struc
 
 pub const DirtyStructuralSignal = struct {
     kind: StructuralKind,
-    node_id: u64,
-    scope_id: u64,
-    ordinal: u64,
+    node_id: ids.NodeId,
+    scope_id: ids.ScopeId,
+    ordinal: ids.SiteOrdinal,
     record: *signal_records.Record,
     branch: ?scope_tree.Branch = null,
 };
 
 /// Returns dense source ids for the validated event route without rediscovering dependencies.
-pub fn sourceSignalIdsForEvent(routes: []const EventRoute, event_id: u64) EventLookupError![]const u64 {
-    if (event_id == 0) return EventLookupError.EventIdZero;
+pub fn sourceSignalIdsForEvent(routes: []const EventRoute, event_id: ids.EventId) EventLookupError![]const ids.NodeId {
+    if (event_id.raw() == 0) return EventLookupError.EventIdZero;
 
-    const route_index = event_id - 1;
+    const route_index = event_id.raw() - 1;
     if (route_index >= routes.len) return EventLookupError.MissingSignalEventRoute;
 
     const route = routes[@intCast(route_index)];
@@ -429,10 +430,10 @@ pub fn sourceSignalIdsForEvent(routes: []const EventRoute, event_id: u64) EventL
 }
 
 /// Returns the validated payload schema attached to an active event route.
-pub fn eventPayloadDescriptor(descriptors: []const EventDescriptor, event_id: u64) EventLookupError!boundary.BoundaryPayloadDescriptor {
-    if (event_id == 0) return EventLookupError.EventIdZero;
+pub fn eventPayloadDescriptor(descriptors: []const EventDescriptor, event_id: ids.EventId) EventLookupError!boundary.BoundaryPayloadDescriptor {
+    if (event_id.raw() == 0) return EventLookupError.EventIdZero;
 
-    const event_index = event_id - 1;
+    const event_index = event_id.raw() - 1;
     if (event_index >= descriptors.len) return EventLookupError.MissingEventDescriptor;
 
     const descriptor = descriptors[@intCast(event_index)];
@@ -441,10 +442,10 @@ pub fn eventPayloadDescriptor(descriptors: []const EventDescriptor, event_id: u6
 }
 
 /// Returns dense signal ids associated with for state from maintained indexes.
-pub fn signalIdsForState(routes: []const StateRoute, state_id: u64) SignalLookupError![]const u64 {
-    if (state_id >= routes.len) return SignalLookupError.MissingSignalRoute;
+pub fn signalIdsForState(routes: []const StateRoute, state_id: ids.NodeId) SignalLookupError![]const u64 {
+    if (state_id.raw() >= routes.len) return SignalLookupError.MissingSignalRoute;
 
-    const route = routes[@intCast(state_id)];
+    const route = routes[@intCast(state_id.raw())];
     if (route.state_id != state_id) return SignalLookupError.SignalRouteIndexMismatch;
     return route.signal_ids;
 }
@@ -479,28 +480,31 @@ pub fn dependentIds(comptime Record: type, nodes: []const Node(Record), record_i
 
 test "active graph route lookup helpers validate indexed ids" {
     const event_payload = boundary.BoundaryPayloadDescriptor.init(.str, .target_value);
-    var route_signal_ids = [_]u64{ 3, 5 };
+    var route_signal_ids = [_]ids.NodeId{ ids.NodeId.fromRaw(3), ids.NodeId.fromRaw(5) };
+    var source_event_ids = [_]ids.EventId{ ids.EventId.fromRaw(3), ids.EventId.fromRaw(5) };
     var state_signal_ids = [_]u64{7};
+    var source_state_ids = [_]ids.NodeId{ids.NodeId.fromRaw(7)};
     var dependent_signal_ids = [_]u64{ 11, 13 };
-    var empty_signal_ids = [_]u64{};
+    var empty_node_ids = [_]ids.NodeId{};
+    var empty_event_ids = [_]ids.EventId{};
 
     const event_routes = [_]EventRoute{
-        .{ .event_id = 1, .signal_ids = &route_signal_ids },
+        .{ .event_id = ids.EventId.fromRaw(1), .signal_ids = &route_signal_ids },
     };
     const mismatched_event_routes = [_]EventRoute{
-        .{ .event_id = 2, .signal_ids = &route_signal_ids },
+        .{ .event_id = ids.EventId.fromRaw(2), .signal_ids = &route_signal_ids },
     };
     const event_descriptors = [_]EventDescriptor{
-        .{ .event_id = 1, .payload_descriptor = event_payload },
+        .{ .event_id = ids.EventId.fromRaw(1), .payload_descriptor = event_payload },
     };
     const mismatched_event_descriptors = [_]EventDescriptor{
-        .{ .event_id = 2, .payload_descriptor = event_payload },
+        .{ .event_id = ids.EventId.fromRaw(2), .payload_descriptor = event_payload },
     };
     const state_routes = [_]StateRoute{
-        .{ .state_id = 0, .signal_ids = &state_signal_ids },
+        .{ .state_id = ids.NodeId.fromRaw(0), .signal_ids = &state_signal_ids },
     };
     const mismatched_state_routes = [_]StateRoute{
-        .{ .state_id = 1, .signal_ids = &state_signal_ids },
+        .{ .state_id = ids.NodeId.fromRaw(1), .signal_ids = &state_signal_ids },
     };
     const dependent_routes = [_]DependentsRoute{
         .{ .signal_id = 0, .signal_ids = &dependent_signal_ids },
@@ -512,8 +516,8 @@ test "active graph route lookup helpers validate indexed ids" {
         .{
             .signal_id = 0,
             .kind = .map,
-            .source_state_ids = &state_signal_ids,
-            .source_event_ids = &route_signal_ids,
+            .source_state_ids = &source_state_ids,
+            .source_event_ids = &source_event_ids,
             .input_signal_ids = &dependent_signal_ids,
             .rank = 9,
         },
@@ -522,29 +526,29 @@ test "active graph route lookup helpers validate indexed ids" {
         .{
             .signal_id = 1,
             .kind = .source,
-            .source_state_ids = &empty_signal_ids,
-            .source_event_ids = &empty_signal_ids,
-            .input_signal_ids = &empty_signal_ids,
+            .source_state_ids = &empty_node_ids,
+            .source_event_ids = &empty_event_ids,
+            .input_signal_ids = &.{},
             .rank = 0,
         },
     };
 
-    try std.testing.expectEqualSlices(u64, &route_signal_ids, try sourceSignalIdsForEvent(&event_routes, 1));
-    try std.testing.expectEqual(event_payload, try eventPayloadDescriptor(&event_descriptors, 1));
-    try std.testing.expectEqualSlices(u64, &state_signal_ids, try signalIdsForState(&state_routes, 0));
+    try std.testing.expectEqualSlices(ids.NodeId, &route_signal_ids, try sourceSignalIdsForEvent(&event_routes, ids.EventId.fromRaw(1)));
+    try std.testing.expectEqual(event_payload, try eventPayloadDescriptor(&event_descriptors, ids.EventId.fromRaw(1)));
+    try std.testing.expectEqualSlices(u64, &state_signal_ids, try signalIdsForState(&state_routes, ids.NodeId.fromRaw(0)));
     try std.testing.expectEqualSlices(u64, &dependent_signal_ids, try dependentSignalIdsForSignal(&dependent_routes, 0));
     try std.testing.expectEqual(@as(u64, 9), try signalRank(&descriptors, 0));
 
-    try std.testing.expectError(EventLookupError.EventIdZero, sourceSignalIdsForEvent(&event_routes, 0));
-    try std.testing.expectError(EventLookupError.MissingSignalEventRoute, sourceSignalIdsForEvent(&event_routes, 2));
-    try std.testing.expectError(EventLookupError.SignalEventRouteIndexMismatch, sourceSignalIdsForEvent(&mismatched_event_routes, 1));
+    try std.testing.expectError(EventLookupError.EventIdZero, sourceSignalIdsForEvent(&event_routes, ids.EventId.fromRaw(0)));
+    try std.testing.expectError(EventLookupError.MissingSignalEventRoute, sourceSignalIdsForEvent(&event_routes, ids.EventId.fromRaw(2)));
+    try std.testing.expectError(EventLookupError.SignalEventRouteIndexMismatch, sourceSignalIdsForEvent(&mismatched_event_routes, ids.EventId.fromRaw(1)));
 
-    try std.testing.expectError(EventLookupError.EventIdZero, eventPayloadDescriptor(&event_descriptors, 0));
-    try std.testing.expectError(EventLookupError.MissingEventDescriptor, eventPayloadDescriptor(&event_descriptors, 2));
-    try std.testing.expectError(EventLookupError.EventDescriptorIndexMismatch, eventPayloadDescriptor(&mismatched_event_descriptors, 1));
+    try std.testing.expectError(EventLookupError.EventIdZero, eventPayloadDescriptor(&event_descriptors, ids.EventId.fromRaw(0)));
+    try std.testing.expectError(EventLookupError.MissingEventDescriptor, eventPayloadDescriptor(&event_descriptors, ids.EventId.fromRaw(2)));
+    try std.testing.expectError(EventLookupError.EventDescriptorIndexMismatch, eventPayloadDescriptor(&mismatched_event_descriptors, ids.EventId.fromRaw(1)));
 
-    try std.testing.expectError(SignalLookupError.MissingSignalRoute, signalIdsForState(&state_routes, 1));
-    try std.testing.expectError(SignalLookupError.SignalRouteIndexMismatch, signalIdsForState(&mismatched_state_routes, 0));
+    try std.testing.expectError(SignalLookupError.MissingSignalRoute, signalIdsForState(&state_routes, ids.NodeId.fromRaw(1)));
+    try std.testing.expectError(SignalLookupError.SignalRouteIndexMismatch, signalIdsForState(&mismatched_state_routes, ids.NodeId.fromRaw(0)));
 
     try std.testing.expectError(SignalLookupError.MissingSignalDependentRoute, dependentSignalIdsForSignal(&dependent_routes, 1));
     try std.testing.expectError(SignalLookupError.SignalDependentRouteIndexMismatch, dependentSignalIdsForSignal(&mismatched_dependent_routes, 0));
@@ -1162,33 +1166,37 @@ pub const PreparedAdjacencyReplacement = struct {
 /// Owns a read-only simulation of recursive active-record release and dense remaps.
 pub fn PreparedReleaseClosure(comptime Record: type) type {
     return struct {
+        const Phase = enum {
+            prepared,
+            adjacency_committed,
+            dense_committed,
+            retired_released,
+        };
+
         records: []*Record,
         steps: []PreparedReleaseStep,
         final_record_ids: []?u64,
         adjacency: []PreparedAdjacencyReplacement,
         retired_adjacency: [][]u64,
-        adjacency_committed: bool = false,
         retired_nodes: []Node(Record),
         retired_text_routes: []std.ArrayListUnmanaged(TextSink),
         retired_bool_routes: []std.ArrayListUnmanaged(BoolSink),
         retired_change_routes: []std.ArrayListUnmanaged(ChangeSink),
         retired_structural_routes: []std.ArrayListUnmanaged(StructuralSink),
-        dense_committed: bool = false,
-        retired_released: bool = false,
+        phase: Phase = .prepared,
 
         /// Releases preparation storage without changing graph state.
         pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
             allocator.free(self.records);
             allocator.free(self.steps);
             allocator.free(self.final_record_ids);
-            if (self.adjacency_committed) {
-                for (self.retired_adjacency) |items| allocator.free(items);
-            } else {
-                for (self.adjacency) |replacement| allocator.free(replacement.dependents);
+            switch (self.phase) {
+                .prepared => for (self.adjacency) |replacement| allocator.free(replacement.dependents),
+                .adjacency_committed, .dense_committed, .retired_released => for (self.retired_adjacency) |items| allocator.free(items),
             }
             allocator.free(self.adjacency);
             allocator.free(self.retired_adjacency);
-            if (self.dense_committed and !self.retired_released) @panic("committed graph retirement was not finalized");
+            if (self.phase == .dense_committed) @panic("committed graph retirement was not finalized");
             allocator.free(self.retired_nodes);
             allocator.free(self.retired_text_routes);
             allocator.free(self.retired_bool_routes);
@@ -1199,7 +1207,7 @@ pub fn PreparedReleaseClosure(comptime Record: type) type {
 
         /// Swaps every prepared survivor/remap adjacency slice without allocation.
         pub fn applyAdjacency(self: *@This(), nodes: []Node(Record)) void {
-            if (self.adjacency_committed) @panic("release closure adjacency was already committed");
+            if (self.phase != .prepared) @panic("release closure adjacency was already committed");
             for (self.adjacency, self.retired_adjacency) |*replacement, *retired| {
                 const index: usize = @intCast(replacement.record_id);
                 if (index >= nodes.len) @panic("prepared adjacency referenced an unknown record");
@@ -1207,13 +1215,13 @@ pub fn PreparedReleaseClosure(comptime Record: type) type {
                 nodes[index].dependents = replacement.dependents;
                 replacement.dependents = &.{};
             }
-            self.adjacency_committed = true;
+            self.phase = .adjacency_committed;
         }
 
         /// Removes prepared dense nodes and parallel route slots without allocation.
         /// Descriptor sink routes must already have been removed from retiring records.
         pub fn applyDense(self: *@This(), nodes: *std.ArrayListUnmanaged(Node(Record)), source_routes: *RouteTable(u64), text_routes: *RouteTable(TextSink), bool_routes: *RouteTable(BoolSink), change_routes: *RouteTable(ChangeSink), structural_routes: *RouteTable(StructuralSink)) void {
-            if (!self.adjacency_committed or self.dense_committed) @panic("dense graph retirement commit order was invalid");
+            if (self.phase != .adjacency_committed) @panic("dense graph retirement commit order was invalid");
             for (source_routes.items) |*route| {
                 var write: usize = 0;
                 for (route.items) |old_id| {
@@ -1242,7 +1250,7 @@ pub fn PreparedReleaseClosure(comptime Record: type) type {
             bool_routes.items.len = @min(bool_routes.items.len, live_len);
             change_routes.items.len = @min(change_routes.items.len, live_len);
             structural_routes.items.len = @min(structural_routes.items.len, live_len);
-            self.dense_committed = true;
+            self.phase = .dense_committed;
         }
 
         fn retireRouteSlot(comptime Route: type, routes: *RouteTable(Route), retired: []std.ArrayListUnmanaged(Route), removal_index: usize, last_index: usize, step_index: usize) void {
@@ -1257,7 +1265,7 @@ pub fn PreparedReleaseClosure(comptime Record: type) type {
 
         /// Releases displaced graph buffers and record lifecycle ownership after publication.
         pub fn releaseRetired(self: *@This(), allocator: std.mem.Allocator, hooks: anytype) void {
-            if (!self.dense_committed or self.retired_released) @panic("retired graph ownership release order was invalid");
+            if (self.phase != .dense_committed) @panic("retired graph ownership release order was invalid");
             for (self.retired_nodes) |node| {
                 allocator.free(node.dependents);
                 switch (node.record.payload) {
@@ -1270,7 +1278,7 @@ pub fn PreparedReleaseClosure(comptime Record: type) type {
             for (self.retired_bool_routes) |*route| route.deinit(allocator);
             for (self.retired_change_routes) |*route| route.deinit(allocator);
             for (self.retired_structural_routes) |*route| route.deinit(allocator);
-            self.retired_released = true;
+            self.phase = .retired_released;
         }
     };
 }
@@ -1285,6 +1293,8 @@ pub const SurvivorAdjacencyAppend = struct {
 /// Owns read-only topology and use-count decisions for replacement records.
 pub fn PreparedGraphAppend(comptime Record: type) type {
     return struct {
+        const Phase = enum { prepared, committed };
+
         records: []*Record,
         record_ids: []u64,
         ranks: []u64,
@@ -1295,7 +1305,7 @@ pub fn PreparedGraphAppend(comptime Record: type) type {
         retired_adjacency: [][]u64,
         final_existing_record_ids: []?u64,
         survivor_count: usize,
-        committed: bool = false,
+        phase: Phase = .prepared,
 
         /// Reserves the dense node destination before any graph mutation.
         pub fn reservePublication(self: *const @This(), allocator: std.mem.Allocator, nodes: *std.ArrayListUnmanaged(Node(Record))) (std.mem.Allocator.Error || error{InvalidAppend})!void {
@@ -1353,7 +1363,7 @@ pub fn PreparedGraphAppend(comptime Record: type) type {
 
         /// Publishes prepared nodes, edges, ids, and use counts without allocating.
         pub fn commitNodes(self: *@This(), nodes: *std.ArrayListUnmanaged(Node(Record))) void {
-            if (self.committed or nodes.items.len != self.survivor_count) @panic("replacement graph publication violated its prepared snapshot");
+            if (self.phase != .prepared or nodes.items.len != self.survivor_count) @panic("replacement graph publication violated its prepared snapshot");
             for (self.existing_use_increments) |increment| {
                 const record = nodes.items[@intCast(increment.record_id)].record;
                 record.active_use_count += increment.count;
@@ -1371,7 +1381,7 @@ pub fn PreparedGraphAppend(comptime Record: type) type {
                 nodes.appendAssumeCapacity(node.*);
                 node.dependents = &.{};
             }
-            self.committed = true;
+            self.phase = .committed;
         }
 
         /// Releases preparation storage without changing the active graph.

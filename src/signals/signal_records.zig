@@ -4,6 +4,7 @@ const std = @import("std");
 const abi = @import("roc_platform_abi.zig");
 const boundary = @import("boundary.zig");
 const retained = @import("retained_values.zig");
+const roles = @import("callable_roles.zig");
 
 pub const HostValue = retained.HostValue;
 pub const HostValueCell = retained.HostValueCell;
@@ -64,38 +65,72 @@ pub const CacheSlot = union(enum) {
 /// the displaced live cell until publication has completed.
 pub const PreparedCacheUpdate = struct {
     live: *CacheSlot,
-    next: CacheSlot,
-    displaced: CacheSlot = .absent,
-    committed: bool = false,
+    ownership: Ownership,
+
+    const Ownership = union(enum) {
+        prepared: CacheSlot,
+        committed: CacheSlot,
+    };
 
     /// Adopts an incoming value and retains the capability needed to own it.
     pub fn init(live: *CacheSlot, value: HostValue, cap: HostValueCapability, metrics: anytype) PreparedCacheUpdate {
         return .{
             .live = live,
-            .next = .{ .present = HostValueCell.initRetained(value, cap, metrics) },
+            .ownership = .{ .prepared = .{ .present = HostValueCell.initRetained(value, cap, metrics) } },
         };
     }
 
     /// Adopts an already-retained cell without adding another capability edge.
     pub fn initOwned(live: *CacheSlot, cell: HostValueCell) PreparedCacheUpdate {
-        return .{ .live = live, .next = .{ .present = cell } };
+        return .{ .live = live, .ownership = .{ .prepared = .{ .present = cell } } };
     }
 
     /// Swaps the prepared value into the live cache without allocating.
     pub fn commit(self: *PreparedCacheUpdate) void {
-        if (self.committed) @panic("prepared cache update committed twice");
-        self.displaced = self.live.*;
-        self.live.* = self.next;
-        self.next = .absent;
-        self.committed = true;
+        const incoming = switch (self.ownership) {
+            .prepared => |slot| slot,
+            .committed => @panic("prepared cache update committed twice"),
+        };
+        const displaced = self.live.*;
+        self.live.* = incoming;
+        self.ownership = .{ .committed = displaced };
     }
 
     /// Releases either the uncommitted incoming value or the displaced live
     /// value after the enclosing transaction has published.
     pub fn deinit(self: *PreparedCacheUpdate, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
-        self.next.deinit(ctx, roc_host, metrics);
-        self.displaced.deinit(ctx, roc_host, metrics);
+        switch (self.ownership) {
+            inline else => |*owned| owned.deinit(ctx, roc_host, metrics),
+        }
         self.* = undefined;
+    }
+
+    /// Returns the transaction-private incoming slot before publication.
+    pub fn preparedSlot(self: *const PreparedCacheUpdate) *const CacheSlot {
+        return switch (self.ownership) {
+            .prepared => |*slot| slot,
+            .committed => @panic("committed cache update has no provisional slot"),
+        };
+    }
+};
+
+/// Nominal transaction-local identity for one signal record evaluation.
+///
+/// The pointer representation is deliberately hidden behind a constructor
+/// accepting only `HostSignalRecord`, so cache slots, state cells, and unrelated
+/// pointers cannot be used as memoization keys accidentally.
+pub const EvaluationKey = enum(usize) {
+    _,
+
+    /// Derives the stable identity of a record that outlives the overlay.
+    pub fn fromRecord(signal_record: anytype) EvaluationKey {
+        if (@TypeOf(signal_record) != *Record) @compileError("evaluation keys can only identify signal records");
+        return @enumFromInt(@intFromPtr(signal_record));
+    }
+
+    /// Returns the record identified by this transaction-local key.
+    pub fn record(self: EvaluationKey) *Record {
+        return @ptrFromInt(@intFromEnum(self));
     }
 };
 
@@ -103,8 +138,9 @@ pub const PreparedCacheUpdate = struct {
 /// source transaction. Lookup is O(1), staging performs no allocation after
 /// `init`, and commit only swaps ownership into persistent cache slots.
 pub const PreparedCacheUpdates = struct {
+    const Phase = enum { preparing, committed };
     pub const Result = struct {
-        key: *anyopaque,
+        key: EvaluationKey,
         dirty_generation: u64,
         changed: bool,
     };
@@ -113,11 +149,11 @@ pub const PreparedCacheUpdates = struct {
     updates: std.ArrayListUnmanaged(PreparedCacheUpdate) = .empty,
     indexes: std.AutoHashMapUnmanaged(*CacheSlot, usize) = .empty,
     results: std.ArrayListUnmanaged(Result) = .empty,
-    result_indexes: std.AutoHashMapUnmanaged(*anyopaque, usize) = .empty,
-    provisional_values: std.AutoHashMapUnmanaged(*anyopaque, *const HostValueCell) = .empty,
+    result_indexes: std.AutoHashMapUnmanaged(EvaluationKey, usize) = .empty,
+    provisional_values: std.AutoHashMapUnmanaged(EvaluationKey, *const HostValueCell) = .empty,
     derived_calls: u64 = 0,
     propagation_prunes: u64 = 0,
-    committed: bool = false,
+    phase: Phase = .preparing,
 
     /// Reserves the exact upper bound before any callback result is adopted.
     pub fn init(allocator: std.mem.Allocator, expected: usize) std.mem.Allocator.Error!PreparedCacheUpdates {
@@ -133,7 +169,7 @@ pub const PreparedCacheUpdates = struct {
 
     /// Adopts one unique incoming value using already-reserved storage.
     pub fn stageAssumeCapacity(self: *PreparedCacheUpdates, live: *CacheSlot, value: HostValue, cap: HostValueCapability, metrics: anytype) void {
-        if (self.committed or self.indexes.contains(live)) @panic("duplicate or late prepared cache update");
+        if (self.phase == .committed or self.indexes.contains(live)) @panic("duplicate or late prepared cache update");
         const index = self.updates.items.len;
         self.updates.appendAssumeCapacity(PreparedCacheUpdate.init(live, value, cap, metrics));
         self.indexes.putAssumeCapacity(live, index);
@@ -141,7 +177,7 @@ pub const PreparedCacheUpdates = struct {
 
     /// Adopts an already-retained source cell using pre-reserved overlay storage.
     pub fn stageOwnedAssumeCapacity(self: *PreparedCacheUpdates, live: *CacheSlot, cell: HostValueCell) void {
-        if (self.committed or self.indexes.contains(live)) @panic("duplicate or late prepared cache update");
+        if (self.phase == .committed or self.indexes.contains(live)) @panic("duplicate or late prepared cache update");
         const index = self.updates.items.len;
         self.updates.appendAssumeCapacity(PreparedCacheUpdate.initOwned(live, cell));
         self.indexes.putAssumeCapacity(live, index);
@@ -150,11 +186,11 @@ pub const PreparedCacheUpdates = struct {
     /// Returns the provisional slot when staged, otherwise the persistent slot.
     pub fn readSlot(self: *const PreparedCacheUpdates, live: *CacheSlot) *const CacheSlot {
         const index = self.indexes.get(live) orelse return live;
-        return &self.updates.items[index].next;
+        return self.updates.items[index].preparedSlot();
     }
 
     /// Memoizes one evaluated record without touching its persistent dirty-generation fields.
-    pub fn rememberResultAssumeCapacity(self: *PreparedCacheUpdates, key: *anyopaque, dirty_generation: u64, changed: bool) void {
+    pub fn rememberResultAssumeCapacity(self: *PreparedCacheUpdates, key: EvaluationKey, dirty_generation: u64, changed: bool) void {
         if (self.result_indexes.contains(key)) @panic("prepared signal result memoized twice");
         const index = self.results.items.len;
         self.results.appendAssumeCapacity(.{ .key = key, .dirty_generation = dirty_generation, .changed = changed });
@@ -162,20 +198,20 @@ pub const PreparedCacheUpdates = struct {
     }
 
     /// Returns a previously memoized provisional dirty result.
-    pub fn rememberedResult(self: *const PreparedCacheUpdates, key: *anyopaque) ?bool {
+    pub fn rememberedResult(self: *const PreparedCacheUpdates, key: EvaluationKey) ?bool {
         const index = self.result_indexes.get(key) orelse return null;
         return self.results.items[index].changed;
     }
 
     /// Associates a memoized record without a persistent cache slot, such as
     /// a state reference, with its transaction-private value.
-    pub fn bindProvisionalValueAssumeCapacity(self: *PreparedCacheUpdates, key: *anyopaque, cell: *const HostValueCell) void {
+    pub fn bindProvisionalValueAssumeCapacity(self: *PreparedCacheUpdates, key: EvaluationKey, cell: *const HostValueCell) void {
         if (self.provisional_values.contains(key)) @panic("prepared provisional value bound twice");
         self.provisional_values.putAssumeCapacity(key, cell);
     }
 
     /// Returns the transaction-private value for a slotless memoized record.
-    pub fn provisionalValue(self: *const PreparedCacheUpdates, key: *anyopaque) ?*const HostValueCell {
+    pub fn provisionalValue(self: *const PreparedCacheUpdates, key: EvaluationKey) ?*const HostValueCell {
         return self.provisional_values.get(key);
     }
 
@@ -195,7 +231,7 @@ pub const PreparedCacheUpdates = struct {
         old_len: usize,
         new_items: []Descriptor,
     ) void {
-        if (self.committed) @panic("cannot rebase a committed cache overlay");
+        if (self.phase == .committed) @panic("cannot rebase a committed cache overlay");
         if (old_len == 0 or old_base == @intFromPtr(new_items.ptr)) return;
         const field_offset = @offsetOf(Descriptor, "cached_value");
         const stride = @sizeOf(Descriptor);
@@ -218,9 +254,9 @@ pub const PreparedCacheUpdates = struct {
 
     /// Publishes every staged cache replacement without allocation.
     pub fn commit(self: *PreparedCacheUpdates) void {
-        if (self.committed) @panic("prepared cache overlay committed twice");
+        if (self.phase == .committed) @panic("prepared cache overlay committed twice");
         for (self.updates.items) |*update| update.commit();
-        self.committed = true;
+        self.phase = .committed;
     }
     /// Releases provisional or displaced values and all overlay storage.
     pub fn deinit(self: *PreparedCacheUpdates, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
@@ -307,14 +343,14 @@ pub const EvalResult = struct {
 };
 
 pub const ConstRecord = struct {
-    init: abi.RocErasedCallable,
+    init: roles.Initializer,
     cap: HostValueCapability,
     cached_value: CacheSlot = .absent,
 };
 
 pub const MapRecord = struct {
     input: *Record,
-    transform: abi.RocErasedCallable,
+    transform: roles.Transform,
     cap: HostValueCapability,
     cached_value: CacheSlot = .absent,
 };
@@ -322,14 +358,14 @@ pub const MapRecord = struct {
 pub const Map2Record = struct {
     left: *Record,
     right: *Record,
-    transform: abi.RocErasedCallable,
+    transform: roles.Transform,
     cap: HostValueCapability,
     cached_value: CacheSlot = .absent,
 };
 
 pub const CombineRecord = struct {
     children: []*Record,
-    transform: abi.RocErasedCallable,
+    transform: roles.Transform,
     cap: HostValueCapability,
     cached_value: CacheSlot = .absent,
 };
@@ -337,9 +373,9 @@ pub const CombineRecord = struct {
 pub const TaskSourceRecord = struct {
     name: []const u8,
     payload_cap: HostValueCapability,
-    initial: abi.RocErasedCallable,
-    done: abi.RocErasedCallable,
-    failed: abi.RocErasedCallable,
+    initial: roles.Initializer,
+    done: roles.Transform,
+    failed: roles.Transform,
     cap: HostValueCapability,
     reset_on_start: bool,
     cached_value: CacheSlot = .absent,
@@ -347,29 +383,29 @@ pub const TaskSourceRecord = struct {
 
 pub const IntervalSourceRecord = struct {
     period_ms: u64,
-    initial: abi.RocErasedCallable,
-    tick: abi.RocErasedCallable,
+    initial: roles.Initializer,
+    tick: roles.Transform,
     cap: HostValueCapability,
     cached_value: CacheSlot = .absent,
 };
 
 pub const LocationSourceRecord = struct {
     payload_cap: HostValueCapability,
-    from_payload: abi.RocErasedCallable,
+    from_payload: roles.Transform,
     cap: HostValueCapability,
     cached_value: CacheSlot = .absent,
 };
 
 pub const VisibilitySourceRecord = struct {
     payload_cap: HostValueCapability,
-    from_payload: abi.RocErasedCallable,
+    from_payload: roles.Transform,
     cap: HostValueCapability,
     cached_value: CacheSlot = .absent,
 };
 
 pub const OnlineSourceRecord = struct {
     payload_cap: HostValueCapability,
-    from_payload: abi.RocErasedCallable,
+    from_payload: roles.Transform,
     cap: HostValueCapability,
     cached_value: CacheSlot = .absent,
 };
@@ -378,7 +414,7 @@ pub const StorageSourceRecord = struct {
     area: boundary.StorageArea,
     key: []const u8,
     payload_cap: HostValueCapability,
-    from_payload: abi.RocErasedCallable,
+    from_payload: roles.Transform,
     cap: HostValueCapability,
     cached_value: CacheSlot = .absent,
 };
@@ -437,7 +473,7 @@ pub fn deinitOwnedPayload(allocator: std.mem.Allocator, ctx: anytype, roc_host: 
         .const_value => |payload| {
             var cached = payload.cached_value;
             cached.deinit(ctx, roc_host, metrics);
-            abi.decrefErasedCallable(payload.init, roc_host);
+            abi.decrefErasedCallable(payload.init.toAbi(), roc_host);
             releaseHostValueCapability(payload.cap, roc_host, metrics);
             metrics.bump(.closure_releases, 1);
         },
@@ -445,7 +481,7 @@ pub fn deinitOwnedPayload(allocator: std.mem.Allocator, ctx: anytype, roc_host: 
             payload.input.release(allocator, ctx, roc_host, metrics);
             var cached = payload.cached_value;
             cached.deinit(ctx, roc_host, metrics);
-            abi.decrefErasedCallable(payload.transform, roc_host);
+            abi.decrefErasedCallable(payload.transform.toAbi(), roc_host);
             releaseHostValueCapability(payload.cap, roc_host, metrics);
             metrics.bump(.closure_releases, 1);
         },
@@ -454,7 +490,7 @@ pub fn deinitOwnedPayload(allocator: std.mem.Allocator, ctx: anytype, roc_host: 
             payload.right.release(allocator, ctx, roc_host, metrics);
             var cached = payload.cached_value;
             cached.deinit(ctx, roc_host, metrics);
-            abi.decrefErasedCallable(payload.transform, roc_host);
+            abi.decrefErasedCallable(payload.transform.toAbi(), roc_host);
             releaseHostValueCapability(payload.cap, roc_host, metrics);
             metrics.bump(.closure_releases, 1);
         },
@@ -463,7 +499,7 @@ pub fn deinitOwnedPayload(allocator: std.mem.Allocator, ctx: anytype, roc_host: 
             allocator.free(payload.children);
             var cached = payload.cached_value;
             cached.deinit(ctx, roc_host, metrics);
-            abi.decrefErasedCallable(payload.transform, roc_host);
+            abi.decrefErasedCallable(payload.transform.toAbi(), roc_host);
             releaseHostValueCapability(payload.cap, roc_host, metrics);
             metrics.bump(.closure_releases, 1);
         },
@@ -472,17 +508,17 @@ pub fn deinitOwnedPayload(allocator: std.mem.Allocator, ctx: anytype, roc_host: 
             cached.deinit(ctx, roc_host, metrics);
             allocator.free(payload.name);
             releaseHostValueCapability(payload.payload_cap, roc_host, metrics);
-            abi.decrefErasedCallable(payload.initial, roc_host);
-            abi.decrefErasedCallable(payload.done, roc_host);
-            abi.decrefErasedCallable(payload.failed, roc_host);
+            abi.decrefErasedCallable(payload.initial.toAbi(), roc_host);
+            abi.decrefErasedCallable(payload.done.toAbi(), roc_host);
+            abi.decrefErasedCallable(payload.failed.toAbi(), roc_host);
             releaseHostValueCapability(payload.cap, roc_host, metrics);
             metrics.bump(.closure_releases, 3);
         },
         .interval_source => |payload| {
             var cached = payload.cached_value;
             cached.deinit(ctx, roc_host, metrics);
-            abi.decrefErasedCallable(payload.initial, roc_host);
-            abi.decrefErasedCallable(payload.tick, roc_host);
+            abi.decrefErasedCallable(payload.initial.toAbi(), roc_host);
+            abi.decrefErasedCallable(payload.tick.toAbi(), roc_host);
             releaseHostValueCapability(payload.cap, roc_host, metrics);
             metrics.bump(.closure_releases, 2);
         },
@@ -490,7 +526,7 @@ pub fn deinitOwnedPayload(allocator: std.mem.Allocator, ctx: anytype, roc_host: 
             var cached = payload.cached_value;
             cached.deinit(ctx, roc_host, metrics);
             releaseHostValueCapability(payload.payload_cap, roc_host, metrics);
-            abi.decrefErasedCallable(payload.from_payload, roc_host);
+            abi.decrefErasedCallable(payload.from_payload.toAbi(), roc_host);
             releaseHostValueCapability(payload.cap, roc_host, metrics);
             metrics.bump(.closure_releases, 1);
         },
@@ -498,7 +534,7 @@ pub fn deinitOwnedPayload(allocator: std.mem.Allocator, ctx: anytype, roc_host: 
             var cached = payload.cached_value;
             cached.deinit(ctx, roc_host, metrics);
             releaseHostValueCapability(payload.payload_cap, roc_host, metrics);
-            abi.decrefErasedCallable(payload.from_payload, roc_host);
+            abi.decrefErasedCallable(payload.from_payload.toAbi(), roc_host);
             releaseHostValueCapability(payload.cap, roc_host, metrics);
             metrics.bump(.closure_releases, 1);
         },
@@ -506,7 +542,7 @@ pub fn deinitOwnedPayload(allocator: std.mem.Allocator, ctx: anytype, roc_host: 
             var cached = payload.cached_value;
             cached.deinit(ctx, roc_host, metrics);
             releaseHostValueCapability(payload.payload_cap, roc_host, metrics);
-            abi.decrefErasedCallable(payload.from_payload, roc_host);
+            abi.decrefErasedCallable(payload.from_payload.toAbi(), roc_host);
             releaseHostValueCapability(payload.cap, roc_host, metrics);
             metrics.bump(.closure_releases, 1);
         },
@@ -515,7 +551,7 @@ pub fn deinitOwnedPayload(allocator: std.mem.Allocator, ctx: anytype, roc_host: 
             cached.deinit(ctx, roc_host, metrics);
             allocator.free(payload.key);
             releaseHostValueCapability(payload.payload_cap, roc_host, metrics);
-            abi.decrefErasedCallable(payload.from_payload, roc_host);
+            abi.decrefErasedCallable(payload.from_payload.toAbi(), roc_host);
             releaseHostValueCapability(payload.cap, roc_host, metrics);
             metrics.bump(.closure_releases, 1);
         },
@@ -563,16 +599,16 @@ pub const Record = struct {
     pub fn token(self: *const Record) ?HostSignalToken {
         return switch (self.payload) {
             .ref => null,
-            .const_value => |payload| retained.hostSignalTokenFromCallable(payload.init),
-            .map => |payload| retained.hostSignalTokenFromCallable(payload.transform),
-            .map2 => |payload| retained.hostSignalTokenFromCallable(payload.transform),
-            .combine => |payload| retained.hostSignalTokenFromCallable(payload.transform),
-            .task_source => |payload| retained.hostSignalTokenFromCallable(payload.initial),
-            .interval_source => |payload| retained.hostSignalTokenFromCallable(payload.initial),
-            .location_source => |payload| retained.hostSignalTokenFromCallable(payload.from_payload),
-            .online_source => |payload| retained.hostSignalTokenFromCallable(payload.from_payload),
-            .visibility_source => |payload| retained.hostSignalTokenFromCallable(payload.from_payload),
-            .storage_source => |payload| retained.hostSignalTokenFromCallable(payload.from_payload),
+            .const_value => |payload| retained.hostSignalTokenFromCallable(payload.init.toAbi()),
+            .map => |payload| retained.hostSignalTokenFromCallable(payload.transform.toAbi()),
+            .map2 => |payload| retained.hostSignalTokenFromCallable(payload.transform.toAbi()),
+            .combine => |payload| retained.hostSignalTokenFromCallable(payload.transform.toAbi()),
+            .task_source => |payload| retained.hostSignalTokenFromCallable(payload.initial.toAbi()),
+            .interval_source => |payload| retained.hostSignalTokenFromCallable(payload.initial.toAbi()),
+            .location_source => |payload| retained.hostSignalTokenFromCallable(payload.from_payload.toAbi()),
+            .online_source => |payload| retained.hostSignalTokenFromCallable(payload.from_payload.toAbi()),
+            .visibility_source => |payload| retained.hostSignalTokenFromCallable(payload.from_payload.toAbi()),
+            .storage_source => |payload| retained.hostSignalTokenFromCallable(payload.from_payload.toAbi()),
         };
     }
 
@@ -801,6 +837,9 @@ test "fallible signal record construction preserves payload ownership on OOM" {
 
     const record = try Record.tryInit(std.testing.allocator, .{ .ref = 7 });
     try std.testing.expectEqual(@as(Payload, .{ .ref = 7 }), record.payload);
+    const evaluation_key = EvaluationKey.fromRecord(record);
+    try std.testing.expectEqual(record, evaluation_key.record());
+    try std.testing.expect(EvaluationKey != *Record);
     std.testing.allocator.destroy(record);
 }
 
@@ -836,7 +875,7 @@ test "owned combine payload releases nested children and capabilities on record 
     const empty_capability = HostValueCapability{ .clone = null, .drop = null, .eq = null };
     try std.testing.expectError(error.OutOfMemory, Record.tryInitOwned(fault.allocator(), &ctx, &roc_host, &metrics, .{ .combine = .{
         .children = children,
-        .transform = null,
+        .transform = .fromAbi(null),
         .cap = empty_capability,
     } }));
     try std.testing.expectEqual(@as(u64, 4), metrics.closure_releases);
@@ -948,7 +987,7 @@ test "owned source updates release every partial adoption and remain ref neutral
         var updates = try OwnedSourceUpdates.init(fault.allocator(), records.len);
         fault.configure(1);
         for (records[0..constructed], 0..) |*record, index| {
-            try updates.adoptAssumeCapacity(record, @intCast(index + 10), cap, &metrics);
+            try updates.adoptAssumeCapacity(record, HostValue.fromRaw(@intCast(index + 10)), cap, &metrics);
         }
         try std.testing.expectEqual(@as(usize, 0), fault.attempts);
         updates.deinit(&ctx, &roc_host, &metrics);
@@ -970,15 +1009,15 @@ test "owned source updates reject duplicates before ownership mutation" {
     var metrics = OwnedSourceTestMetrics{};
     var updates = try OwnedSourceUpdates.init(std.testing.allocator, 2);
 
-    try updates.adoptAssumeCapacity(&record, 10, cap, &metrics);
+    try updates.adoptAssumeCapacity(&record, HostValue.fromRaw(10), cap, &metrics);
     const retains_before = metrics.closure_retains;
-    try std.testing.expectError(error.DuplicateSource, updates.adoptAssumeCapacity(&record, 20, cap, &metrics));
+    try std.testing.expectError(error.DuplicateSource, updates.adoptAssumeCapacity(&record, HostValue.fromRaw(20), cap, &metrics));
     try std.testing.expectEqual(@as(usize, 1), updates.entries.items.len);
     try std.testing.expectEqual(retains_before, metrics.closure_retains);
     var second = Record{ .ref_count = 1, .payload = .{ .ref = 2 } };
-    try updates.adoptAssumeCapacity(&second, 30, cap, &metrics);
+    try updates.adoptAssumeCapacity(&second, HostValue.fromRaw(30), cap, &metrics);
     var third = Record{ .ref_count = 1, .payload = .{ .ref = 3 } };
-    try std.testing.expectError(error.TooManySources, updates.adoptAssumeCapacity(&third, 40, cap, &metrics));
+    try std.testing.expectError(error.TooManySources, updates.adoptAssumeCapacity(&third, HostValue.fromRaw(40), cap, &metrics));
     try std.testing.expectEqual(@as(usize, 2), updates.entries.items.len);
     try std.testing.expectEqual(retains_before + 3, metrics.closure_retains);
 

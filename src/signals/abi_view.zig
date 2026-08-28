@@ -7,6 +7,7 @@ const boundary = @import("boundary.zig");
 const render = @import("render_commands.zig");
 const render_sink = @import("render_sink.zig");
 const retained = @import("retained_values.zig");
+const roles = @import("callable_roles.zig");
 
 pub const HostValueCapability = retained.HostValueCapability;
 pub const HostTextRead = retained.HostTextRead;
@@ -70,14 +71,14 @@ pub const SignalRef = struct {
 
 pub const ConstValueSignal = struct {
     token: SignalToken,
-    init: abi.RocErasedCallable,
+    init: roles.Initializer,
     capability: HostValueCapability,
 };
 
 pub const MapSignal = struct {
     token: SignalToken,
     input: *const abi.NodeSignalExpr,
-    transform: abi.RocErasedCallable,
+    transform: roles.Transform,
     capability: HostValueCapability,
 };
 
@@ -85,14 +86,14 @@ pub const Map2Signal = struct {
     token: SignalToken,
     left: *const abi.NodeSignalExpr,
     right: *const abi.NodeSignalExpr,
-    transform: abi.RocErasedCallable,
+    transform: roles.Transform,
     capability: HostValueCapability,
 };
 
 pub const CombineSignal = struct {
     token: SignalToken,
     children: []const abi.NodeSignalExpr,
-    transform: abi.RocErasedCallable,
+    transform: roles.Transform,
     capability: HostValueCapability,
 };
 
@@ -100,9 +101,9 @@ pub const TaskSourceSignal = struct {
     token: SignalToken,
     name: RocStrView,
     payload_capability: HostValueCapability,
-    initial: abi.RocErasedCallable,
-    done: abi.RocErasedCallable,
-    failed: abi.RocErasedCallable,
+    initial: roles.Initializer,
+    done: roles.Transform,
+    failed: roles.Transform,
     capability: HostValueCapability,
     reset_on_start: bool,
 };
@@ -110,28 +111,28 @@ pub const TaskSourceSignal = struct {
 pub const IntervalSourceSignal = struct {
     token: SignalToken,
     period_ms: u64,
-    initial: abi.RocErasedCallable,
-    tick: abi.RocErasedCallable,
+    initial: roles.Initializer,
+    tick: roles.Transform,
     capability: HostValueCapability,
 };
 
 pub const LocationSourceSignal = struct {
     token: SignalToken,
-    from_payload: abi.RocErasedCallable,
+    from_payload: roles.Transform,
     capability: HostValueCapability,
     payload_capability: HostValueCapability,
 };
 
 pub const VisibilitySourceSignal = struct {
     token: SignalToken,
-    from_payload: abi.RocErasedCallable,
+    from_payload: roles.Transform,
     capability: HostValueCapability,
     payload_capability: HostValueCapability,
 };
 
 pub const OnlineSourceSignal = struct {
     token: SignalToken,
-    from_payload: abi.RocErasedCallable,
+    from_payload: roles.Transform,
     capability: HostValueCapability,
     payload_capability: HostValueCapability,
 };
@@ -140,7 +141,7 @@ pub const StorageSourceSignal = struct {
     token: SignalToken,
     area: boundary.StorageArea,
     key: RocStrView,
-    from_payload: abi.RocErasedCallable,
+    from_payload: roles.Transform,
     capability: HostValueCapability,
     payload_capability: HostValueCapability,
 };
@@ -170,7 +171,7 @@ pub const SignalExpr = union(enum) {
                 validateIdentityCallable(token, payload._1);
                 break :blk .{ .const_value = .{
                     .token = token,
-                    .init = payload._1,
+                    .init = .fromAbi(payload._1),
                     .capability = payload._2,
                 } };
             },
@@ -181,7 +182,7 @@ pub const SignalExpr = union(enum) {
                 break :blk .{ .map = .{
                     .token = token,
                     .input = payload._1,
-                    .transform = payload._2,
+                    .transform = .fromAbi(payload._2),
                     .capability = payload._3,
                 } };
             },
@@ -193,7 +194,7 @@ pub const SignalExpr = union(enum) {
                     .token = token,
                     .left = payload._1,
                     .right = payload._2,
-                    .transform = payload._3,
+                    .transform = .fromAbi(payload._3),
                     .capability = payload._4,
                 } };
             },
@@ -204,7 +205,7 @@ pub const SignalExpr = union(enum) {
                 break :blk .{ .combine = .{
                     .token = token,
                     .children = payload._1.items(),
-                    .transform = payload._2,
+                    .transform = .fromAbi(payload._2),
                     .capability = payload._3,
                 } };
             },
@@ -216,9 +217,9 @@ pub const SignalExpr = union(enum) {
                     .token = token,
                     .name = RocStrView.fromAbi(payload.name),
                     .payload_capability = payload.payload_cap,
-                    .initial = payload.initial,
-                    .done = payload.done,
-                    .failed = payload.failed,
+                    .initial = .fromAbi(payload.initial),
+                    .done = .fromAbi(payload.done),
+                    .failed = .fromAbi(payload.failed),
                     .capability = payload.cap,
                     .reset_on_start = payload.reset_on_start,
                 } };
@@ -230,8 +231,8 @@ pub const SignalExpr = union(enum) {
                 break :blk .{ .interval_source = .{
                     .token = token,
                     .period_ms = payload.period_ms,
-                    .initial = payload.initial,
-                    .tick = payload.tick,
+                    .initial = .fromAbi(payload.initial),
+                    .tick = .fromAbi(payload.tick),
                     .capability = payload.cap,
                 } };
             },
@@ -241,7 +242,7 @@ pub const SignalExpr = union(enum) {
                 validateIdentityCallable(token, payload._1);
                 break :blk .{ .location_source = .{
                     .token = token,
-                    .from_payload = payload._1,
+                    .from_payload = .fromAbi(payload._1),
                     .capability = payload._2,
                     .payload_capability = payload._3,
                 } };
@@ -252,7 +253,7 @@ pub const SignalExpr = union(enum) {
                 validateIdentityCallable(token, payload._1);
                 break :blk .{ .visibility_source = .{
                     .token = token,
-                    .from_payload = payload._1,
+                    .from_payload = .fromAbi(payload._1),
                     .capability = payload._2,
                     .payload_capability = payload._3,
                 } };
@@ -263,7 +264,7 @@ pub const SignalExpr = union(enum) {
                 validateIdentityCallable(token, payload._1);
                 break :blk .{ .online_source = .{
                     .token = token,
-                    .from_payload = payload._1,
+                    .from_payload = .fromAbi(payload._1),
                     .capability = payload._2,
                     .payload_capability = payload._3,
                 } };
@@ -277,7 +278,7 @@ pub const SignalExpr = union(enum) {
                     .token = token,
                     .area = area,
                     .key = RocStrView.fromAbi(payload._2),
-                    .from_payload = payload._3,
+                    .from_payload = .fromAbi(payload._3),
                     .capability = payload._4,
                     .payload_capability = payload._5,
                 } };
@@ -502,16 +503,16 @@ pub const CleanupElem = struct {
 pub const OnChangeElem = struct {
     run_initial: bool,
     signal: *const abi.NodeSignalExpr,
-    to_cmd: abi.RocErasedCallable,
+    to_cmd: roles.CommandBuilder,
 };
 
 pub const OnMountElem = struct {
-    to_cmd: abi.RocErasedCallable,
+    to_cmd: roles.CommandBuilder,
 };
 
 pub const StateElem = struct {
     binder: StateBinderToken,
-    initial: abi.RocErasedCallable,
+    initial: roles.Initializer,
     capability: HostValueCapability,
     child: *const abi.Elem,
 };
@@ -576,7 +577,7 @@ pub const Elem = union(enum) {
                 break :blk .{ .on_change = .{
                     .run_initial = false,
                     .signal = payload.signal,
-                    .to_cmd = payload.to_cmd,
+                    .to_cmd = .fromAbi(payload.to_cmd),
                 } };
             },
             .OnChangeInitial => blk: {
@@ -584,13 +585,13 @@ pub const Elem = union(enum) {
                 break :blk .{ .on_change = .{
                     .run_initial = true,
                     .signal = payload.signal,
-                    .to_cmd = payload.to_cmd,
+                    .to_cmd = .fromAbi(payload.to_cmd),
                 } };
             },
             .OnMount => blk: {
                 const payload = elem.payload_on_mount();
                 break :blk .{ .on_mount = .{
-                    .to_cmd = payload.to_cmd,
+                    .to_cmd = .fromAbi(payload.to_cmd),
                 } };
             },
             .State => blk: {
@@ -601,7 +602,7 @@ pub const Elem = union(enum) {
                 }
                 break :blk .{ .state = .{
                     .binder = binder,
-                    .initial = payload.initial,
+                    .initial = .fromAbi(payload.initial),
                     .capability = payload.cap,
                     .child = payload.child,
                 } };
@@ -699,7 +700,7 @@ test "SignalExpr.fromAbi decodes ref and const value expressions" {
     switch (SignalExpr.fromAbi(const_expr)) {
         .const_value => |payload| {
             try std.testing.expectEqual(signal_token, payload.token.callable);
-            try std.testing.expectEqual(@as(abi.RocErasedCallable, signal_token), payload.init);
+            try std.testing.expectEqual(@as(abi.RocErasedCallable, signal_token), payload.init.toAbi());
             try std.testing.expectEqual(capability, payload.capability);
         },
         else => return error.TestUnexpectedResult,
@@ -843,7 +844,7 @@ test "SignalExpr.fromAbi decodes effect source expressions" {
     switch (SignalExpr.fromAbi(location_expr)) {
         .location_source => |payload| {
             try std.testing.expectEqual(location_token, payload.token.callable);
-            try std.testing.expectEqual(@as(abi.RocErasedCallable, location_token), payload.from_payload);
+            try std.testing.expectEqual(@as(abi.RocErasedCallable, location_token), payload.from_payload.toAbi());
             try std.testing.expectEqual(capability, payload.capability);
             try std.testing.expectEqual(capability, payload.payload_capability);
         },
@@ -863,7 +864,7 @@ test "SignalExpr.fromAbi decodes effect source expressions" {
     switch (SignalExpr.fromAbi(visibility_expr)) {
         .visibility_source => |payload| {
             try std.testing.expectEqual(visibility_token, payload.token.callable);
-            try std.testing.expectEqual(@as(abi.RocErasedCallable, visibility_token), payload.from_payload);
+            try std.testing.expectEqual(@as(abi.RocErasedCallable, visibility_token), payload.from_payload.toAbi());
             try std.testing.expectEqual(capability, payload.capability);
             try std.testing.expectEqual(capability, payload.payload_capability);
         },
@@ -883,7 +884,7 @@ test "SignalExpr.fromAbi decodes effect source expressions" {
     switch (SignalExpr.fromAbi(online_expr)) {
         .online_source => |payload| {
             try std.testing.expectEqual(online_token, payload.token.callable);
-            try std.testing.expectEqual(@as(abi.RocErasedCallable, online_token), payload.from_payload);
+            try std.testing.expectEqual(@as(abi.RocErasedCallable, online_token), payload.from_payload.toAbi());
             try std.testing.expectEqual(capability, payload.capability);
             try std.testing.expectEqual(capability, payload.payload_capability);
         },
@@ -907,7 +908,7 @@ test "SignalExpr.fromAbi decodes effect source expressions" {
             try std.testing.expectEqual(storage_token, payload.token.callable);
             try std.testing.expectEqual(boundary.StorageArea.local, payload.area);
             try std.testing.expectEqualStrings("checkout:draft", payload.key.asSlice());
-            try std.testing.expectEqual(@as(abi.RocErasedCallable, storage_token), payload.from_payload);
+            try std.testing.expectEqual(@as(abi.RocErasedCallable, storage_token), payload.from_payload.toAbi());
             try std.testing.expectEqual(capability, payload.capability);
             try std.testing.expectEqual(capability, payload.payload_capability);
         },
@@ -1171,7 +1172,7 @@ test "Elem.fromAbi decodes lifecycle and state payloads" {
         .on_change => |payload| {
             try std.testing.expect(!payload.run_initial);
             try std.testing.expectEqual(&signal, payload.signal);
-            try std.testing.expectEqual(on_change_cmd, payload.to_cmd);
+            try std.testing.expectEqual(on_change_cmd, payload.to_cmd.toAbi());
         },
         else => return error.TestUnexpectedResult,
     }
@@ -1187,7 +1188,7 @@ test "Elem.fromAbi decodes lifecycle and state payloads" {
         .on_change => |payload| {
             try std.testing.expect(payload.run_initial);
             try std.testing.expectEqual(&signal, payload.signal);
-            try std.testing.expectEqual(on_change_cmd, payload.to_cmd);
+            try std.testing.expectEqual(on_change_cmd, payload.to_cmd.toAbi());
         },
         else => return error.TestUnexpectedResult,
     }
@@ -1200,7 +1201,7 @@ test "Elem.fromAbi decodes lifecycle and state payloads" {
         .tag = .OnMount,
     };
     switch (Elem.fromAbi(on_mount)) {
-        .on_mount => |payload| try std.testing.expectEqual(on_mount_cmd, payload.to_cmd),
+        .on_mount => |payload| try std.testing.expectEqual(on_mount_cmd, payload.to_cmd.toAbi()),
         else => return error.TestUnexpectedResult,
     }
 
@@ -1222,7 +1223,7 @@ test "Elem.fromAbi decodes lifecycle and state payloads" {
     switch (Elem.fromAbi(state)) {
         .state => |payload| {
             try std.testing.expectEqual(retained.hostSignalTokenFromCallable(initial), payload.binder.callable);
-            try std.testing.expectEqual(initial, payload.initial);
+            try std.testing.expectEqual(initial, payload.initial.toAbi());
             try std.testing.expectEqual(capability, payload.capability);
             try std.testing.expectEqual(&child, payload.child);
         },

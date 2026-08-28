@@ -5,6 +5,7 @@
 //! storage and action-specific capacity must be prepared before it begins.
 
 const std = @import("std");
+const ids = @import("ids.zig");
 const scope_tree = @import("scope_tree.zig");
 
 pub const IdentityKey = u128;
@@ -14,12 +15,17 @@ pub const IdentityIntent = struct {
     id: u64,
 };
 
+const TransactionPhase = enum {
+    preparing,
+    committed,
+};
+
 pub const IdentityOverlay = struct {
     provisional_by_key: std.AutoHashMapUnmanaged(IdentityKey, u64) = .{},
     reserved_ids: std.AutoHashMapUnmanaged(u64, void) = .{},
     intents: std.ArrayListUnmanaged(IdentityIntent) = .empty,
     prepared_remaining: usize = 0,
-    committed: bool = false,
+    phase: TransactionPhase = .preparing,
 
     /// Releases every resource owned by this value and leaves no retained host or Roc ownership behind.
     pub fn deinit(self: *IdentityOverlay, allocator: std.mem.Allocator) void {
@@ -48,7 +54,7 @@ pub const IdentityOverlay = struct {
     /// transaction. Candidate enumeration is supplied by the persistent table;
     /// overlay lookup and reservation membership remain O(1).
     pub fn reserve(self: *IdentityOverlay, key: IdentityKey, active_id: ?u64, candidates: []const u64) error{ NoCapacity, NoAvailableIdentity }!u64 {
-        if (self.committed) @panic("identity overlay cannot reserve after commit");
+        if (self.phase == .committed) @panic("identity overlay cannot reserve after commit");
         if (self.lookup(key, active_id)) |id| return id;
         if (self.prepared_remaining == 0) return error.NoCapacity;
         for (candidates) |id| {
@@ -64,7 +70,7 @@ pub const IdentityOverlay = struct {
 
     /// Drops provisional resources and restores the plan to an unpublished state.
     pub fn abort(self: *IdentityOverlay) void {
-        if (self.committed) @panic("committed identity overlay cannot abort");
+        if (self.phase == .committed) @panic("committed identity overlay cannot abort");
         self.provisional_by_key.clearRetainingCapacity();
         self.reserved_ids.clearRetainingCapacity();
         self.intents.clearRetainingCapacity();
@@ -73,15 +79,22 @@ pub const IdentityOverlay = struct {
 
     /// Publishes all prepared changes atomically and transfers their provisional ownership.
     pub fn commit(self: *IdentityOverlay, publisher: anytype) void {
-        if (self.committed) @panic("identity overlay committed twice");
+        if (self.phase == .committed) @panic("identity overlay committed twice");
         for (self.intents.items) |intent| publisher.publishIdentity(intent.key, intent.id);
-        self.committed = true;
+        self.phase = .committed;
+    }
+
+    /// Completes the ownership transition after a coordinator has published
+    /// these intents directly as part of a larger allocation-free commit.
+    pub fn finishExternalCommit(self: *IdentityOverlay) void {
+        if (self.phase == .committed) @panic("identity overlay committed twice");
+        self.phase = .committed;
     }
 };
 
 pub const ScopeKey = struct {
-    parent_id: u64,
-    ordinal: u64,
+    parent_id: ids.ScopeId,
+    ordinal: ids.SiteOrdinal,
     kind: Kind,
 
     pub const Kind = union(enum) {
@@ -93,15 +106,15 @@ pub const ScopeKey = struct {
 
 pub const ScopeIntent = struct {
     key: ScopeKey,
-    id: u64,
+    id: ids.ScopeId,
 };
 
 pub const ScopeOverlay = struct {
-    provisional_by_key: std.AutoHashMapUnmanaged(ScopeKey, u64) = .{},
-    reserved_ids: std.AutoHashMapUnmanaged(u64, void) = .{},
+    provisional_by_key: std.AutoHashMapUnmanaged(ScopeKey, ids.ScopeId) = .{},
+    reserved_ids: std.AutoHashMapUnmanaged(ids.ScopeId, void) = .{},
     intents: std.ArrayListUnmanaged(ScopeIntent) = .empty,
     prepared_remaining: usize = 0,
-    committed: bool = false,
+    phase: TransactionPhase = .preparing,
 
     /// Releases every resource owned by this value and leaves no retained host or Roc ownership behind.
     pub fn deinit(self: *ScopeOverlay, allocator: std.mem.Allocator) void {
@@ -122,13 +135,13 @@ pub const ScopeOverlay = struct {
     }
 
     /// Resolves the requested identity from the transaction overlay before consulting committed state.
-    pub fn lookup(self: *const ScopeOverlay, key: ScopeKey, active_id: ?u64) ?u64 {
+    pub fn lookup(self: *const ScopeOverlay, key: ScopeKey, active_id: ?ids.ScopeId) ?ids.ScopeId {
         return self.provisional_by_key.get(key) orelse active_id;
     }
 
     /// Claims transaction-local identity and capacity without publishing it to the live runtime.
-    pub fn reserve(self: *ScopeOverlay, key: ScopeKey, active_id: ?u64, candidates: []const u64) error{ NoCapacity, NoAvailableScope }!u64 {
-        if (self.committed) @panic("scope overlay cannot reserve after commit");
+    pub fn reserve(self: *ScopeOverlay, key: ScopeKey, active_id: ?ids.ScopeId, candidates: []const ids.ScopeId) error{ NoCapacity, NoAvailableScope }!ids.ScopeId {
+        if (self.phase == .committed) @panic("scope overlay cannot reserve after commit");
         if (self.lookup(key, active_id)) |id| return id;
         if (self.prepared_remaining == 0) return error.NoCapacity;
         for (candidates) |id| {
@@ -144,8 +157,8 @@ pub const ScopeOverlay = struct {
 
     /// Claims an externally owned provisional scope id for validation and
     /// collision avoidance without publishing a structural scope intent.
-    pub fn reserveExternal(self: *ScopeOverlay, id: u64) error{ NoCapacity, DuplicateScope }!void {
-        if (self.committed) @panic("scope overlay cannot reserve after commit");
+    pub fn reserveExternal(self: *ScopeOverlay, id: ids.ScopeId) error{ NoCapacity, DuplicateScope }!void {
+        if (self.phase == .committed) @panic("scope overlay cannot reserve after commit");
         if (self.reserved_ids.contains(id)) return error.DuplicateScope;
         if (self.prepared_remaining == 0) return error.NoCapacity;
         self.reserved_ids.putAssumeCapacity(id, {});
@@ -154,7 +167,7 @@ pub const ScopeOverlay = struct {
 
     /// Drops provisional resources and restores the plan to an unpublished state.
     pub fn abort(self: *ScopeOverlay) void {
-        if (self.committed) @panic("committed scope overlay cannot abort");
+        if (self.phase == .committed) @panic("committed scope overlay cannot abort");
         self.provisional_by_key.clearRetainingCapacity();
         self.reserved_ids.clearRetainingCapacity();
         self.intents.clearRetainingCapacity();
@@ -163,9 +176,16 @@ pub const ScopeOverlay = struct {
 
     /// Publishes all prepared changes atomically and transfers their provisional ownership.
     pub fn commit(self: *ScopeOverlay, publisher: anytype) void {
-        if (self.committed) @panic("scope overlay committed twice");
+        if (self.phase == .committed) @panic("scope overlay committed twice");
         for (self.intents.items) |intent| publisher.publishScope(intent.key, intent.id);
-        self.committed = true;
+        self.phase = .committed;
+    }
+
+    /// Completes the ownership transition after a coordinator has published
+    /// these intents directly as part of a larger allocation-free commit.
+    pub fn finishExternalCommit(self: *ScopeOverlay) void {
+        if (self.phase == .committed) @panic("scope overlay committed twice");
+        self.phase = .committed;
     }
 };
 
@@ -174,11 +194,11 @@ pub fn OwnedValues(comptime Value: type) type {
     return struct {
         const Self = @This();
         values: std.ArrayListUnmanaged(Value) = .empty,
-        committed: bool = false,
+        phase: TransactionPhase = .preparing,
 
         /// Releases every resource owned by this value and leaves no retained host or Roc ownership behind.
         pub fn deinit(self: *Self, allocator: std.mem.Allocator, dropper: anytype) void {
-            if (!self.committed) self.abort(dropper);
+            if (self.phase == .preparing) self.abort(dropper);
             self.values.deinit(allocator);
             self.* = .{};
         }
@@ -190,13 +210,13 @@ pub fn OwnedValues(comptime Value: type) type {
 
         /// Appends assume capacity using capacity that must already satisfy the caller's transaction contract.
         pub fn appendAssumeCapacity(self: *Self, value: Value) void {
-            if (self.committed) @panic("owned values cannot append after commit");
+            if (self.phase == .committed) @panic("owned values cannot append after commit");
             self.values.appendAssumeCapacity(value);
         }
 
         /// Drops provisional resources and restores the plan to an unpublished state.
         pub fn abort(self: *Self, dropper: anytype) void {
-            if (self.committed) @panic("committed values cannot abort");
+            if (self.phase == .committed) @panic("committed values cannot abort");
             var index = self.values.items.len;
             while (index != 0) {
                 index -= 1;
@@ -207,9 +227,14 @@ pub fn OwnedValues(comptime Value: type) type {
 
         /// Publishes all prepared changes atomically and transfers their provisional ownership.
         pub fn commit(self: *Self, publisher: anytype) void {
-            if (self.committed) @panic("owned values committed twice");
+            if (self.phase == .committed) @panic("owned values committed twice");
             for (self.values.items) |value| publisher.publishValue(value);
-            self.committed = true;
+            self.phase = .committed;
+        }
+
+        /// Reports whether publication has transferred all provisional ownership.
+        pub fn isCommitted(self: *const Self) bool {
+            return self.phase == .committed;
         }
     };
 }
@@ -222,7 +247,7 @@ pub fn RecordOverlay(comptime Token: type, comptime Record: type) type {
         const Self = @This();
         provisional_by_token: std.AutoHashMapUnmanaged(Token, *Record) = .{},
         owned: std.ArrayListUnmanaged(*Record) = .empty,
-        committed: bool = false,
+        phase: TransactionPhase = .preparing,
 
         /// Preflights fallible growth so the later commit phase can remain allocation-free.
         pub fn prepare(self: *Self, allocator: std.mem.Allocator, additional: usize) std.mem.Allocator.Error!void {
@@ -237,14 +262,14 @@ pub fn RecordOverlay(comptime Token: type, comptime Record: type) type {
 
         /// Transfers ownership of assume capacity into the current preparation plan.
         pub fn ownAssumeCapacity(self: *Self, token: Token, record: *Record) void {
-            if (self.committed) @panic("record overlay cannot own after commit");
+            if (self.phase == .committed) @panic("record overlay cannot own after commit");
             self.provisional_by_token.putAssumeCapacity(token, record);
             self.owned.appendAssumeCapacity(record);
         }
 
         /// Drops provisional resources and restores the plan to an unpublished state.
         pub fn abort(self: *Self, releaser: anytype) void {
-            if (self.committed) @panic("committed record overlay cannot abort");
+            if (self.phase == .committed) @panic("committed record overlay cannot abort");
             var index = self.owned.items.len;
             while (index != 0) {
                 index -= 1;
@@ -256,14 +281,14 @@ pub fn RecordOverlay(comptime Token: type, comptime Record: type) type {
 
         /// Publishes all prepared changes atomically and transfers their provisional ownership.
         pub fn commit(self: *Self, publisher: anytype) void {
-            if (self.committed) @panic("record overlay committed twice");
+            if (self.phase == .committed) @panic("record overlay committed twice");
             for (self.owned.items) |record| publisher.publishRecord(record);
-            self.committed = true;
+            self.phase = .committed;
         }
 
         /// Releases every resource owned by this value and leaves no retained host or Roc ownership behind.
         pub fn deinit(self: *Self, allocator: std.mem.Allocator, releaser: anytype) void {
-            if (!self.committed) self.abort(releaser);
+            if (self.phase == .preparing) self.abort(releaser);
             self.provisional_by_token.deinit(allocator);
             self.owned.deinit(allocator);
             self.* = .{};
@@ -277,10 +302,20 @@ pub fn RecordOverlay(comptime Token: type, comptime Record: type) type {
 pub fn SignalRecordPlan(comptime Token: type, comptime Record: type) type {
     return struct {
         const Self = @This();
+        const DescriptorRoot = union(enum) {
+            owned: *Record,
+            transferred: *Record,
+
+            fn record(self: @This()) *Record {
+                return switch (self) {
+                    inline else => |value| value,
+                };
+            }
+        };
         by_token: std.AutoHashMapUnmanaged(Token, *Record) = .{},
         token_intents: std.ArrayListUnmanaged(struct { token: Token, record: *Record }) = .empty,
-        descriptor_roots: std.ArrayListUnmanaged(struct { record: *Record, owned: bool }) = .empty,
-        committed: bool = false,
+        descriptor_roots: std.ArrayListUnmanaged(DescriptorRoot) = .empty,
+        phase: TransactionPhase = .preparing,
 
         /// Preflights fallible growth so the later commit phase can remain allocation-free.
         pub fn prepare(self: *Self, allocator: std.mem.Allocator, tokens: usize, roots: usize) std.mem.Allocator.Error!void {
@@ -296,7 +331,7 @@ pub fn SignalRecordPlan(comptime Token: type, comptime Record: type) type {
 
         /// Records a token-to-record association after preparation has guaranteed insertion capacity.
         pub fn rememberTokenAssumeCapacity(self: *Self, token: Token, record: *Record) void {
-            if (self.committed) @panic("signal record plan cannot remember after commit");
+            if (self.phase == .committed) @panic("signal record plan cannot remember after commit");
             if (self.by_token.contains(token)) return;
             self.by_token.putAssumeCapacity(token, record);
             self.token_intents.appendAssumeCapacity(.{ .token = token, .record = record });
@@ -304,28 +339,36 @@ pub fn SignalRecordPlan(comptime Token: type, comptime Record: type) type {
 
         /// Transfers ownership of descriptor root assume capacity into the current preparation plan.
         pub fn ownDescriptorRootAssumeCapacity(self: *Self, record: *Record) void {
-            if (self.committed) @panic("signal record plan cannot own after commit");
-            self.descriptor_roots.appendAssumeCapacity(.{ .record = record, .owned = true });
+            if (self.phase == .committed) @panic("signal record plan cannot own after commit");
+            self.descriptor_roots.appendAssumeCapacity(.{ .owned = record });
         }
 
         /// Transfers the most recently staged descriptor root to its prepared
         /// descriptor while retaining the non-owning publication intent.
         pub fn transferDescriptorRoot(self: *Self, record: *Record) void {
-            if (self.committed) @panic("signal record plan cannot transfer after commit");
+            if (self.phase == .committed) @panic("signal record plan cannot transfer after commit");
             if (self.descriptor_roots.items.len == 0) @panic("signal record plan transferred a missing descriptor root");
             const root = &self.descriptor_roots.items[self.descriptor_roots.items.len - 1];
-            if (root.record != record or !root.owned) @panic("signal record plan transferred an unexpected descriptor root");
-            root.owned = false;
+            switch (root.*) {
+                .owned => |owned| {
+                    if (owned != record) @panic("signal record plan transferred an unexpected descriptor root");
+                    root.* = .{ .transferred = owned };
+                },
+                .transferred => @panic("signal record plan transferred an unexpected descriptor root"),
+            }
         }
 
         /// Drops provisional resources and restores the plan to an unpublished state.
         pub fn abort(self: *Self, releaser: anytype) void {
-            if (self.committed) @panic("committed signal record plan cannot abort");
+            if (self.phase == .committed) @panic("committed signal record plan cannot abort");
             var index = self.descriptor_roots.items.len;
             while (index != 0) {
                 index -= 1;
                 const root = self.descriptor_roots.items[index];
-                if (root.owned) releaser.releaseRecord(root.record);
+                switch (root) {
+                    .owned => |record| releaser.releaseRecord(record),
+                    .transferred => {},
+                }
             }
             self.by_token.clearRetainingCapacity();
             self.token_intents.clearRetainingCapacity();
@@ -334,15 +377,20 @@ pub fn SignalRecordPlan(comptime Token: type, comptime Record: type) type {
 
         /// Publishes all prepared changes atomically and transfers their provisional ownership.
         pub fn commit(self: *Self, publisher: anytype) void {
-            if (self.committed) @panic("signal record plan committed twice");
+            if (self.phase == .committed) @panic("signal record plan committed twice");
             for (self.token_intents.items) |intent| publisher.publishToken(intent.token, intent.record);
-            for (self.descriptor_roots.items) |root| publisher.publishDescriptorRoot(root.record);
-            self.committed = true;
+            for (self.descriptor_roots.items) |root| publisher.publishDescriptorRoot(root.record());
+            self.phase = .committed;
+        }
+
+        /// Reports whether publication has transferred all provisional ownership.
+        pub fn isCommitted(self: *const Self) bool {
+            return self.phase == .committed;
         }
 
         /// Releases every resource owned by this value and leaves no retained host or Roc ownership behind.
         pub fn deinit(self: *Self, allocator: std.mem.Allocator, releaser: anytype) void {
-            if (!self.committed) self.abort(releaser);
+            if (self.phase == .preparing) self.abort(releaser);
             self.by_token.deinit(allocator);
             self.token_intents.deinit(allocator);
             self.descriptor_roots.deinit(allocator);
@@ -487,11 +535,11 @@ pub fn Plan(comptime Action: type) type {
         const Self = @This();
 
         actions: std.ArrayListUnmanaged(Action) = .empty,
-        committed: bool = false,
+        phase: TransactionPhase = .preparing,
 
         /// Releases every resource owned by this value and leaves no retained host or Roc ownership behind.
         pub fn deinit(self: *Self, allocator: std.mem.Allocator, ctx: anytype) void {
-            if (!self.committed) self.abort(ctx);
+            if (self.phase == .preparing) self.abort(ctx);
             self.actions.deinit(allocator);
             self.* = .{};
         }
@@ -503,7 +551,7 @@ pub fn Plan(comptime Action: type) type {
 
         /// Appends assume capacity using capacity that must already satisfy the caller's transaction contract.
         pub fn appendAssumeCapacity(self: *Self, action: Action) void {
-            if (self.committed) @panic("collection plan cannot append after commit");
+            if (self.phase == .committed) @panic("collection plan cannot append after commit");
             self.actions.appendAssumeCapacity(action);
         }
 
@@ -511,14 +559,14 @@ pub fn Plan(comptime Action: type) type {
         /// cannot fail or allocate; reaching it is the transaction's mutation
         /// boundary.
         pub fn commit(self: *Self, ctx: anytype) void {
-            if (self.committed) @panic("collection plan committed twice");
+            if (self.phase == .committed) @panic("collection plan committed twice");
             for (self.actions.items) |*action| action.apply(ctx);
-            self.committed = true;
+            self.phase = .committed;
         }
 
         /// Drops provisional resources and restores the plan to an unpublished state.
         pub fn abort(self: *Self, ctx: anytype) void {
-            if (self.committed) @panic("committed collection plan cannot abort");
+            if (self.phase == .committed) @panic("committed collection plan cannot abort");
             var index = self.actions.items.len;
             while (index != 0) {
                 index -= 1;
@@ -682,50 +730,51 @@ test "scope overlay uniquely reserves inactive slots for provisional hierarchy" 
     var overlay: ScopeOverlay = .{};
     defer overlay.deinit(std.testing.allocator);
     try overlay.prepare(std.testing.allocator, 3);
-    const root_key: ScopeKey = .{ .parent_id = 0, .ordinal = 0, .kind = .root };
-    const root_id = try overlay.reserve(root_key, null, &.{ 4, 5, 6 });
-    const child_a: ScopeKey = .{ .parent_id = root_id, .ordinal = 0, .kind = .component };
-    const child_b: ScopeKey = .{ .parent_id = root_id, .ordinal = 1, .kind = .component };
-    const child_a_id = try overlay.reserve(child_a, null, &.{ 4, 5, 6 });
-    const child_b_id = try overlay.reserve(child_b, null, &.{ 4, 5, 6 });
-    try std.testing.expectEqual(@as(u64, 4), root_id);
-    try std.testing.expectEqual(@as(u64, 5), child_a_id);
-    try std.testing.expectEqual(@as(u64, 6), child_b_id);
+    const root_key: ScopeKey = .{ .parent_id = ids.root_scope, .ordinal = ids.SiteOrdinal.fromRaw(0), .kind = .root };
+    const candidates = [_]ids.ScopeId{ ids.ScopeId.fromRaw(4), ids.ScopeId.fromRaw(5), ids.ScopeId.fromRaw(6) };
+    const root_id = try overlay.reserve(root_key, null, &candidates);
+    const child_a: ScopeKey = .{ .parent_id = root_id, .ordinal = ids.SiteOrdinal.fromRaw(0), .kind = .component };
+    const child_b: ScopeKey = .{ .parent_id = root_id, .ordinal = ids.SiteOrdinal.fromRaw(1), .kind = .component };
+    const child_a_id = try overlay.reserve(child_a, null, &candidates);
+    const child_b_id = try overlay.reserve(child_b, null, &candidates);
+    try std.testing.expectEqual(@as(u64, 4), root_id.raw());
+    try std.testing.expectEqual(@as(u64, 5), child_a_id.raw());
+    try std.testing.expectEqual(@as(u64, 6), child_b_id.raw());
     try std.testing.expectEqual(child_a_id, overlay.lookup(child_a, null).?);
 }
 
 test "scope overlay abort leaves persistent scopes unchanged and permits retry" {
-    var persistent: std.AutoHashMapUnmanaged(ScopeKey, u64) = .{};
+    var persistent: std.AutoHashMapUnmanaged(ScopeKey, ids.ScopeId) = .{};
     defer persistent.deinit(std.testing.allocator);
-    const key: ScopeKey = .{ .parent_id = 1, .ordinal = 2, .kind = .{ .when_branch = .true_branch } };
+    const key: ScopeKey = .{ .parent_id = ids.ScopeId.fromRaw(1), .ordinal = ids.SiteOrdinal.fromRaw(2), .kind = .{ .when_branch = .true_branch } };
     var overlay: ScopeOverlay = .{};
     defer overlay.deinit(std.testing.allocator);
     try overlay.prepare(std.testing.allocator, 1);
-    _ = try overlay.reserve(key, persistent.get(key), &.{9});
+    _ = try overlay.reserve(key, persistent.get(key), &.{ids.ScopeId.fromRaw(9)});
     try std.testing.expectEqual(@as(usize, 0), persistent.count());
     overlay.abort();
     try overlay.prepare(std.testing.allocator, 1);
-    try std.testing.expectEqual(@as(u64, 9), try overlay.reserve(key, persistent.get(key), &.{9}));
+    try std.testing.expectEqual(ids.ScopeId.fromRaw(9), try overlay.reserve(key, persistent.get(key), &.{ids.ScopeId.fromRaw(9)}));
 }
 
 test "scope overlay reserves external ids without publishing intents" {
     var overlay: ScopeOverlay = .{};
     defer overlay.deinit(std.testing.allocator);
     try overlay.prepare(std.testing.allocator, 2);
-    try overlay.reserveExternal(7);
-    const key: ScopeKey = .{ .parent_id = 7, .ordinal = 1, .kind = .component };
-    const child = try overlay.reserve(key, null, &.{ 7, 8 });
-    try std.testing.expectEqual(@as(u64, 8), child);
-    try std.testing.expect(overlay.reserved_ids.contains(7));
+    try overlay.reserveExternal(ids.ScopeId.fromRaw(7));
+    const key: ScopeKey = .{ .parent_id = ids.ScopeId.fromRaw(7), .ordinal = ids.SiteOrdinal.fromRaw(1), .kind = .component };
+    const child = try overlay.reserve(key, null, &.{ ids.ScopeId.fromRaw(7), ids.ScopeId.fromRaw(8) });
+    try std.testing.expectEqual(ids.ScopeId.fromRaw(8), child);
+    try std.testing.expect(overlay.reserved_ids.contains(ids.ScopeId.fromRaw(7)));
     try std.testing.expectEqual(@as(usize, 1), overlay.intents.items.len);
-    try std.testing.expectError(error.DuplicateScope, overlay.reserveExternal(7));
+    try std.testing.expectError(error.DuplicateScope, overlay.reserveExternal(ids.ScopeId.fromRaw(7)));
 }
 
 test "scope overlay repeated preflight covers external and published reservations" {
     const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
     const Publisher = struct {
         published: *usize,
-        fn publishScope(self: @This(), _: ScopeKey, _: u64) void {
+        fn publishScope(self: @This(), _: ScopeKey, _: ids.ScopeId) void {
             self.published.* += 1;
         }
     };
@@ -736,10 +785,11 @@ test "scope overlay repeated preflight covers external and published reservation
     try overlay.prepare(fault.allocator(), 3);
 
     fault.configure(1);
-    try overlay.reserveExternal(4);
+    try overlay.reserveExternal(ids.ScopeId.fromRaw(4));
     for (0..4) |index| {
-        const key: ScopeKey = .{ .parent_id = 4, .ordinal = index, .kind = .component };
-        try std.testing.expectEqual(@as(u64, @intCast(index + 5)), try overlay.reserve(key, null, &.{@intCast(index + 5)}));
+        const key: ScopeKey = .{ .parent_id = ids.ScopeId.fromRaw(4), .ordinal = ids.SiteOrdinal.fromIndex(index), .kind = .component };
+        const candidate = ids.ScopeId.fromIndex(index + 5);
+        try std.testing.expectEqual(candidate, try overlay.reserve(key, null, &.{candidate}));
     }
     var published: usize = 0;
     overlay.commit(Publisher{ .published = &published });

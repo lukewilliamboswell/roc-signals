@@ -1,20 +1,23 @@
 //! Keyed-list reconciliation storage and diff helpers for `Ui.each_str`.
 
 const std = @import("std");
+const ids = @import("ids.zig");
 
 pub const missing_row_index = std.math.maxInt(usize);
 
 pub const SiteKey = struct {
-    parent_scope_id: u64,
-    site_ordinal: u64,
+    parent_scope_id: ids.ScopeId,
+    site_ordinal: ids.SiteOrdinal,
 };
 
 pub const SiteKeyContext = struct {
     /// Reports whether h is present in maintained state.
     pub fn hash(_: @This(), key: SiteKey) u64 {
         var hasher = std.hash.Wyhash.init(0);
-        hasher.update(std.mem.asBytes(&key.parent_scope_id));
-        hasher.update(std.mem.asBytes(&key.site_ordinal));
+        const parent_scope_id = key.parent_scope_id.raw();
+        const site_ordinal = key.site_ordinal.raw();
+        hasher.update(std.mem.asBytes(&parent_scope_id));
+        hasher.update(std.mem.asBytes(&site_ordinal));
         return hasher.final();
     }
 
@@ -32,7 +35,7 @@ pub const Membership = struct {
 };
 
 pub const RowRemoval = struct {
-    scope_id: u64,
+    scope_id: ids.ScopeId,
     key_hash: u64,
 };
 
@@ -63,7 +66,7 @@ pub const PreparedRowRemovals = struct {
                 const mapped = site_indexes.getPtr(moved.key) orelse @panic("moved each site was missing its maintained index");
                 mapped.* = index;
                 for (moved.scope_ids.items) |scope_id| {
-                    const membership = &memberships.items[@intCast(scope_id)];
+                    const membership = &memberships.items[scope_id.index()];
                     if (membership.*) |*entry| entry.site_index = index else @panic("moved each site row was missing membership");
                 }
             }
@@ -76,8 +79,8 @@ pub fn prepareRowRemovals(allocator: std.mem.Allocator, sites: []const Site, mem
     const owned = try allocator.dupe(RowRemoval, rows);
     errdefer allocator.free(owned);
     for (owned) |row| {
-        if (row.scope_id >= memberships.len) return error.OutOfMemory;
-        const membership = memberships[@intCast(row.scope_id)] orelse return error.OutOfMemory;
+        if (row.scope_id.index() >= memberships.len) return error.OutOfMemory;
+        const membership = memberships[row.scope_id.index()] orelse return error.OutOfMemory;
         if (membership.site_index >= sites.len or membership.row_index >= sites[membership.site_index].scope_ids.items.len) return error.OutOfMemory;
         if (sites[membership.site_index].scope_ids.items[membership.row_index] != row.scope_id) return error.OutOfMemory;
     }
@@ -86,7 +89,7 @@ pub fn prepareRowRemovals(allocator: std.mem.Allocator, sites: []const Site, mem
 
 pub const Site = struct {
     key: SiteKey,
-    scope_ids: std.ArrayListUnmanaged(u64) = .empty,
+    scope_ids: std.ArrayListUnmanaged(ids.ScopeId) = .empty,
     hash_heads: std.AutoHashMapUnmanaged(u64, usize) = .empty,
     hash_links: std.ArrayListUnmanaged(usize) = .empty,
 
@@ -100,10 +103,10 @@ pub const Site = struct {
 };
 
 pub const DiffResult = struct {
-    scope_ids: []u64,
+    scope_ids: []ids.ScopeId,
     row_items_changed: []bool,
     scope_created: []bool,
-    removed_scope_ids: []u64,
+    removed_scope_ids: []ids.ScopeId,
     rows_reused: u64,
     rows_created: u64,
     rows_removed: u64,
@@ -120,7 +123,7 @@ pub const DiffResult = struct {
 };
 
 pub const RenderSegment = struct {
-    scope_id: u64,
+    scope_id: ids.ScopeId,
     start: usize,
     len: usize,
 };
@@ -154,8 +157,8 @@ pub fn clearSites(allocator: std.mem.Allocator, sites: *std.ArrayListUnmanaged(S
 }
 
 /// Ensures membership slot capacity or state before publication can begin.
-pub fn ensureMembershipSlot(allocator: std.mem.Allocator, memberships: *std.ArrayListUnmanaged(?Membership), scope_id: u64) *?Membership {
-    const index: usize = @intCast(scope_id);
+pub fn ensureMembershipSlot(allocator: std.mem.Allocator, memberships: *std.ArrayListUnmanaged(?Membership), scope_id: ids.ScopeId) *?Membership {
+    const index = scope_id.index();
     while (memberships.items.len <= index) {
         memberships.append(allocator, null) catch @panic("out of memory");
     }
@@ -163,7 +166,7 @@ pub fn ensureMembershipSlot(allocator: std.mem.Allocator, memberships: *std.Arra
 }
 
 /// Ensures site index capacity or state before publication can begin.
-pub fn ensureSiteIndex(allocator: std.mem.Allocator, sites: *std.ArrayListUnmanaged(Site), site_indexes: *SiteIndexMap, parent_scope_id: u64, site_ordinal: u64) usize {
+pub fn ensureSiteIndex(allocator: std.mem.Allocator, sites: *std.ArrayListUnmanaged(Site), site_indexes: *SiteIndexMap, parent_scope_id: ids.ScopeId, site_ordinal: ids.SiteOrdinal) usize {
     const key: SiteKey = .{
         .parent_scope_id = parent_scope_id,
         .site_ordinal = site_ordinal,
@@ -178,14 +181,14 @@ pub fn ensureSiteIndex(allocator: std.mem.Allocator, sites: *std.ArrayListUnmana
 }
 
 /// Returns active site index from the maintained active-runtime indexes.
-pub fn activeSiteIndex(site_indexes: *const SiteIndexMap, parent_scope_id: u64, site_ordinal: u64) ?usize {
+pub fn activeSiteIndex(site_indexes: *const SiteIndexMap, parent_scope_id: ids.ScopeId, site_ordinal: ids.SiteOrdinal) ?usize {
     return site_indexes.get(.{
         .parent_scope_id = parent_scope_id,
         .site_ordinal = site_ordinal,
     });
 }
 
-fn u64SliceContains(items: []const u64, target: u64) bool {
+fn scopeSliceContains(items: []const ids.ScopeId, target: ids.ScopeId) bool {
     for (items) |item| {
         if (item == target) return true;
     }
@@ -193,11 +196,11 @@ fn u64SliceContains(items: []const u64, target: u64) bool {
 }
 
 /// Reports whether keyed survivors already appear in the requested render order.
-pub fn diffPreservesSurvivorRenderOrder(old_render_rows: []const u64, next_scope_ids: []const u64) bool {
+pub fn diffPreservesSurvivorRenderOrder(old_render_rows: []const ids.ScopeId, next_scope_ids: []const ids.ScopeId) bool {
     var old_index: usize = 0;
     for (next_scope_ids) |next_scope_id| {
-        if (!u64SliceContains(old_render_rows, next_scope_id)) continue;
-        while (old_index < old_render_rows.len and !u64SliceContains(next_scope_ids, old_render_rows[old_index])) {
+        if (!scopeSliceContains(old_render_rows, next_scope_id)) continue;
+        while (old_index < old_render_rows.len and !scopeSliceContains(next_scope_ids, old_render_rows[old_index])) {
             old_index += 1;
         }
         if (old_index >= old_render_rows.len) return false;
@@ -208,16 +211,16 @@ pub fn diffPreservesSurvivorRenderOrder(old_render_rows: []const u64, next_scope
 }
 
 /// Returns scope ids for the local render segment owned by an each site.
-pub fn renderSegmentScopeIds(allocator: std.mem.Allocator, segments: []const RenderSegment) []u64 {
-    const ids = allocator.alloc(u64, segments.len) catch @panic("out of memory");
-    for (segments, ids) |segment, *id| {
+pub fn renderSegmentScopeIds(allocator: std.mem.Allocator, segments: []const RenderSegment) []ids.ScopeId {
+    const scope_ids = allocator.alloc(ids.ScopeId, segments.len) catch @panic("out of memory");
+    for (segments, scope_ids) |segment, *id| {
         id.* = segment.scope_id;
     }
-    return ids;
+    return scope_ids;
 }
 
 /// Computes the local insertion point from maintained keyed-row render ranges.
-pub fn renderInsertIndexForRowRanges(site_render_insert_index: usize, row_ranges: *const std.AutoHashMapUnmanaged(u64, RenderSegment), next_scope_ids: []const u64, row_index: usize) usize {
+pub fn renderInsertIndexForRowRanges(site_render_insert_index: usize, row_ranges: *const std.AutoHashMapUnmanaged(ids.ScopeId, RenderSegment), next_scope_ids: []const ids.ScopeId, row_index: usize) usize {
     if (row_index >= next_scope_ids.len) @panic("each row insertion index was requested outside the next row order");
 
     if (row_ranges.get(next_scope_ids[row_index])) |existing| {
@@ -253,7 +256,7 @@ fn adjustedRenderInsertIndex(old_index: usize, replace_index: usize, removed_cou
 }
 
 /// Shifts only row render ranges affected by an insertion or removal.
-pub fn adjustRenderRanges(row_ranges: *std.AutoHashMapUnmanaged(u64, RenderSegment), replace_index: usize, removed_count: usize, replacement_count: usize) void {
+pub fn adjustRenderRanges(row_ranges: *std.AutoHashMapUnmanaged(ids.ScopeId, RenderSegment), replace_index: usize, removed_count: usize, replacement_count: usize) void {
     var range_iterator = row_ranges.iterator();
     while (range_iterator.next()) |entry| {
         entry.value_ptr.start = adjustedRenderInsertIndex(entry.value_ptr.start, replace_index, removed_count, replacement_count);
@@ -261,7 +264,7 @@ pub fn adjustRenderRanges(row_ranges: *std.AutoHashMapUnmanaged(u64, RenderSegme
 }
 
 /// Updates one surviving row's render range after local reconciliation.
-pub fn updateRenderRange(row_ranges: *std.AutoHashMapUnmanaged(u64, RenderSegment), allocator: std.mem.Allocator, scope_id: u64, render_insert_index: usize, removed_count: usize, replacement_count: usize) void {
+pub fn updateRenderRange(row_ranges: *std.AutoHashMapUnmanaged(ids.ScopeId, RenderSegment), allocator: std.mem.Allocator, scope_id: ids.ScopeId, render_insert_index: usize, removed_count: usize, replacement_count: usize) void {
     const removed_range = row_ranges.fetchRemove(scope_id);
     const old_len = if (removed_range) |entry| entry.value.len else 0;
     if (old_len != removed_count) @panic("each row render range length did not match splice removal count");
@@ -276,7 +279,7 @@ pub fn updateRenderRange(row_ranges: *std.AutoHashMapUnmanaged(u64, RenderSegmen
 }
 
 /// Appends row to site index using capacity that must already satisfy the caller's transaction contract.
-pub fn appendRowToSiteIndex(allocator: std.mem.Allocator, sites: *std.ArrayListUnmanaged(Site), memberships: *std.ArrayListUnmanaged(?Membership), site_index: usize, scope_id: u64, key_hash: u64) void {
+pub fn appendRowToSiteIndex(allocator: std.mem.Allocator, sites: *std.ArrayListUnmanaged(Site), memberships: *std.ArrayListUnmanaged(?Membership), site_index: usize, scope_id: ids.ScopeId, key_hash: u64) void {
     if (site_index >= sites.items.len) @panic("each row site index exceeded site table");
     const site = &sites.items[site_index];
     const row_index = site.scope_ids.items.len;
@@ -298,9 +301,9 @@ pub fn appendRowToSiteIndex(allocator: std.mem.Allocator, sites: *std.ArrayListU
 }
 
 /// Removes row from site index and releases the ownership attached to that live entry.
-pub fn removeRowFromSiteIndex(sites: *std.ArrayListUnmanaged(Site), memberships: *std.ArrayListUnmanaged(?Membership), scope_id: u64, key_hash: u64, row_keys: anytype) void {
-    if (scope_id >= memberships.items.len) @panic("each row scope was missing its row index");
-    const membership = memberships.items[@intCast(scope_id)] orelse @panic("each row scope was missing its row index");
+pub fn removeRowFromSiteIndex(sites: *std.ArrayListUnmanaged(Site), memberships: *std.ArrayListUnmanaged(?Membership), scope_id: ids.ScopeId, key_hash: u64, row_keys: anytype) void {
+    if (scope_id.index() >= memberships.items.len) @panic("each row scope was missing its row index");
+    const membership = memberships.items[scope_id.index()] orelse @panic("each row scope was missing its row index");
     if (membership.site_index >= sites.items.len) @panic("each row membership pointed past site table");
     const site = &sites.items[membership.site_index];
     if (membership.row_index >= site.scope_ids.items.len) @panic("each row membership pointed past row table");
@@ -310,7 +313,7 @@ pub fn removeRowFromSiteIndex(sites: *std.ArrayListUnmanaged(Site), memberships:
     const moved_scope_id = site.scope_ids.items[last_index];
     unlinkHashIndex(site, key_hash, membership.row_index);
 
-    memberships.items[@intCast(scope_id)] = null;
+    memberships.items[scope_id.index()] = null;
 
     if (membership.row_index != last_index) {
         const moved_hash = rowKeysHash(row_keys, moved_scope_id);
@@ -318,7 +321,7 @@ pub fn removeRowFromSiteIndex(sites: *std.ArrayListUnmanaged(Site), memberships:
         site.scope_ids.items[membership.row_index] = moved_scope_id;
         site.hash_links.items[membership.row_index] = site.hash_links.items[last_index];
 
-        const moved_membership = &memberships.items[@intCast(moved_scope_id)];
+        const moved_membership = &memberships.items[moved_scope_id.index()];
         if (moved_membership.*) |*entry| {
             entry.row_index = membership.row_index;
         } else {
@@ -331,13 +334,13 @@ pub fn removeRowFromSiteIndex(sites: *std.ArrayListUnmanaged(Site), memberships:
 }
 
 /// Replaces site rows while releasing displaced ownership exactly once.
-pub fn replaceSiteRows(allocator: std.mem.Allocator, sites: *std.ArrayListUnmanaged(Site), memberships: *std.ArrayListUnmanaged(?Membership), site_index: usize, scope_ids: []const u64, row_keys: anytype) void {
+pub fn replaceSiteRows(allocator: std.mem.Allocator, sites: *std.ArrayListUnmanaged(Site), memberships: *std.ArrayListUnmanaged(?Membership), site_index: usize, scope_ids: []const ids.ScopeId, row_keys: anytype) void {
     if (site_index >= sites.items.len) @panic("each row site index exceeded site table");
     const site = &sites.items[site_index];
 
     for (site.scope_ids.items) |scope_id| {
-        if (scope_id < memberships.items.len) {
-            memberships.items[@intCast(scope_id)] = null;
+        if (scope_id.index() < memberships.items.len) {
+            memberships.items[scope_id.index()] = null;
         }
     }
 
@@ -368,18 +371,37 @@ pub fn replaceSiteRows(allocator: std.mem.Allocator, sites: *std.ArrayListUnmana
 /// Prepared reconciliation for an each site whose next keys all reuse existing rows.
 /// Incoming key/item ownership remains provisional until `commit`.
 pub const PreparedExistingRows = struct {
+    const Phase = enum {
+        prepared,
+        committed,
+
+        fn isCommitted(self: Phase) bool {
+            return switch (self) {
+                .prepared => false,
+                .committed => true,
+            };
+        }
+
+        fn markCommitted(self: *Phase) void {
+            switch (self.*) {
+                .prepared => self.* = .committed,
+                .committed => @panic("prepared each rows committed twice"),
+            }
+        }
+    };
+
     allocator: std.mem.Allocator,
     site_index: usize,
-    next_scope_ids: []u64,
+    next_scope_ids: []ids.ScopeId,
     row_items_changed: []bool,
     scope_created: []bool,
-    removed_scope_ids: []u64,
+    removed_scope_ids: []ids.ScopeId,
     created_count: usize = 0,
-    highest_scope_id: u64 = 0,
-    committed: bool = false,
+    highest_scope_id: ids.ScopeId = ids.root_scope,
+    phase: Phase = .prepared,
 
     /// Computes matching and reserves every site/index destination without mutation.
-    pub fn prepare(allocator: std.mem.Allocator, sites: *std.ArrayListUnmanaged(Site), memberships: *std.ArrayListUnmanaged(?Membership), site_index: usize, parent_scope_id: u64, site_ordinal: u64, keys: anytype, items: anytype, hooks: anytype) std.mem.Allocator.Error!PreparedExistingRows {
+    pub fn prepare(allocator: std.mem.Allocator, sites: *std.ArrayListUnmanaged(Site), memberships: *std.ArrayListUnmanaged(?Membership), site_index: usize, parent_scope_id: ids.ScopeId, site_ordinal: ids.SiteOrdinal, keys: anytype, items: anytype, hooks: anytype) std.mem.Allocator.Error!PreparedExistingRows {
         if (keys.len != items.len or site_index >= sites.items.len) @panic("invalid prepared each reconciliation input");
         const site = &sites.items[site_index];
         const existing_len = site.scope_ids.items.len;
@@ -396,7 +418,7 @@ pub const PreparedExistingRows = struct {
         const matched = try allocator.alloc(bool, existing_len);
         defer allocator.free(matched);
         @memset(matched, false);
-        const next_scope_ids = try allocator.alloc(u64, keys.len);
+        const next_scope_ids = try allocator.alloc(ids.ScopeId, keys.len);
         errdefer allocator.free(next_scope_ids);
         const changed = try allocator.alloc(bool, keys.len);
         errdefer allocator.free(changed);
@@ -405,10 +427,10 @@ pub const PreparedExistingRows = struct {
         @memset(created, false);
 
         var created_count: usize = 0;
-        var highest_scope_id: u64 = 0;
+        var highest_scope_id = ids.root_scope;
         errdefer hooks.abortPreparedRows();
         for (key_hashes, keys, items, 0..) |hash, key, item, next_index| {
-            var found: ?u64 = null;
+            var found: ?ids.ScopeId = null;
             if (site.hash_heads.get(hash)) |head| {
                 var existing_index = head;
                 while (existing_index != missing_row_index) {
@@ -433,14 +455,14 @@ pub const PreparedExistingRows = struct {
                 created[next_index] = true;
                 created_count += 1;
             }
-            highest_scope_id = @max(highest_scope_id, next_scope_ids[next_index]);
+            if (next_scope_ids[next_index].raw() > highest_scope_id.raw()) highest_scope_id = next_scope_ids[next_index];
         }
 
         var removed_count: usize = 0;
         for (matched) |is_matched| if (!is_matched) {
             removed_count += 1;
         };
-        const removed = try allocator.alloc(u64, removed_count);
+        const removed = try allocator.alloc(ids.ScopeId, removed_count);
         errdefer allocator.free(removed);
         var removed_index: usize = 0;
         for (site.scope_ids.items, matched) |scope_id, is_matched| if (!is_matched) {
@@ -451,7 +473,7 @@ pub const PreparedExistingRows = struct {
         try site.scope_ids.ensureTotalCapacity(allocator, keys.len);
         try site.hash_links.ensureTotalCapacity(allocator, keys.len);
         try site.hash_heads.ensureTotalCapacity(allocator, std.math.cast(u32, keys.len) orelse return error.OutOfMemory);
-        if (next_scope_ids.len != 0) try memberships.ensureTotalCapacity(allocator, std.math.add(usize, @intCast(highest_scope_id), 1) catch return error.OutOfMemory);
+        if (next_scope_ids.len != 0) try memberships.ensureTotalCapacity(allocator, std.math.add(usize, highest_scope_id.index(), 1) catch return error.OutOfMemory);
         try hooks.prepareExistingRowsCommit(allocator, removed.len);
         return .{
             .allocator = allocator,
@@ -467,7 +489,7 @@ pub const PreparedExistingRows = struct {
 
     /// Transfers provisional row values and publishes the prepared order without allocation.
     pub fn commit(self: *PreparedExistingRows, sites: *std.ArrayListUnmanaged(Site), memberships: *std.ArrayListUnmanaged(?Membership), keys: anytype, items: anytype, hooks: anytype) DiffResult {
-        if (self.committed) @panic("prepared each rows committed twice");
+        if (self.phase.isCommitted()) @panic("prepared each rows committed twice");
         const site = &sites.items[self.site_index];
         var unchanged_count: u64 = 0;
         var updated_count: u64 = 0;
@@ -488,8 +510,8 @@ pub const PreparedExistingRows = struct {
         }
         for (self.removed_scope_ids) |scope_id| hooks.disposeScope(scope_id);
         hooks.finishPreparedRowsCommit();
-        while (memberships.items.len <= self.highest_scope_id) memberships.appendAssumeCapacity(null);
-        for (site.scope_ids.items) |scope_id| memberships.items[@intCast(scope_id)] = null;
+        while (memberships.items.len <= self.highest_scope_id.index()) memberships.appendAssumeCapacity(null);
+        for (site.scope_ids.items) |scope_id| memberships.items[scope_id.index()] = null;
         site.scope_ids.clearRetainingCapacity();
         site.scope_ids.appendSliceAssumeCapacity(self.next_scope_ids);
         site.hash_links.items.len = self.next_scope_ids.len;
@@ -499,9 +521,9 @@ pub const PreparedExistingRows = struct {
             const entry = site.hash_heads.getOrPutAssumeCapacity(hooks.rowKeyHash(scope_id));
             if (entry.found_existing) site.hash_links.items[row_index] = entry.value_ptr.*;
             entry.value_ptr.* = row_index;
-            memberships.items[@intCast(scope_id)] = .{ .site_index = self.site_index, .row_index = row_index };
+            memberships.items[scope_id.index()] = .{ .site_index = self.site_index, .row_index = row_index };
         }
-        self.committed = true;
+        self.phase.markCommitted();
         const result = DiffResult{
             .scope_ids = self.next_scope_ids,
             .row_items_changed = self.row_items_changed,
@@ -531,7 +553,7 @@ pub const PreparedExistingRows = struct {
 
     /// Releases provisional created rows while leaving persistent row state unchanged.
     pub fn abort(self: *PreparedExistingRows, hooks: anytype) void {
-        if (!self.committed) hooks.abortPreparedRows();
+        if (!self.phase.isCommitted()) hooks.abortPreparedRows();
     }
 };
 
@@ -544,8 +566,8 @@ pub fn syncRows(
     sites: *std.ArrayListUnmanaged(Site),
     memberships: *std.ArrayListUnmanaged(?Membership),
     site_index: usize,
-    parent_scope_id: u64,
-    site_ordinal: u64,
+    parent_scope_id: ids.ScopeId,
+    site_ordinal: ids.SiteOrdinal,
     keys: anytype,
     items: anytype,
     hooks: anytype,
@@ -578,13 +600,13 @@ pub fn syncRows(
     defer allocator.free(matched_existing);
     @memset(matched_existing, false);
 
-    var next_scope_ids = allocator.alloc(u64, keys.len) catch @panic("out of memory");
+    var next_scope_ids = allocator.alloc(ids.ScopeId, keys.len) catch @panic("out of memory");
     errdefer allocator.free(next_scope_ids);
     var row_items_changed = allocator.alloc(bool, keys.len) catch @panic("out of memory");
     errdefer allocator.free(row_items_changed);
     var scope_created = allocator.alloc(bool, keys.len) catch @panic("out of memory");
     errdefer allocator.free(scope_created);
-    var removed_scope_ids: std.ArrayListUnmanaged(u64) = .empty;
+    var removed_scope_ids: std.ArrayListUnmanaged(ids.ScopeId) = .empty;
     errdefer removed_scope_ids.deinit(allocator);
 
     var rows_reused: u64 = 0;
@@ -593,7 +615,7 @@ pub fn syncRows(
     var row_items_updated: u64 = 0;
 
     for (key_hashes, keys, items, 0..) |hash, key, item, key_index| {
-        var matched_scope_id: ?u64 = null;
+        var matched_scope_id: ?ids.ScopeId = null;
         const site = &sites.items[site_index];
         if (site.hash_heads.get(hash)) |head| {
             var existing_index = head;
@@ -628,7 +650,7 @@ pub fn syncRows(
                 row_items_updated += 1;
             }
         } else {
-            next_scope_ids[key_index] = std.math.maxInt(u64);
+            next_scope_ids[key_index] = ids.ScopeId.fromRaw(std.math.maxInt(u64));
             row_items_changed[key_index] = true;
             scope_created[key_index] = true;
             rows_created += 1;
@@ -704,7 +726,7 @@ fn indexNextKeys(
     return null;
 }
 
-fn rowKeysHash(row_keys: anytype, scope_id: u64) u64 {
+fn rowKeysHash(row_keys: anytype, scope_id: ids.ScopeId) u64 {
     return row_keys.rowKeyHash(scope_id);
 }
 
@@ -757,9 +779,9 @@ const TestRowKeys = struct {
     hashes: []const u64,
 
     /// Performs row key hash through the keyed-row capabilities that own key and item values.
-    pub fn rowKeyHash(self: *const TestRowKeys, scope_id: u64) u64 {
-        if (scope_id >= self.hashes.len) @panic("test scope id exceeded row key table");
-        return self.hashes[@intCast(scope_id)];
+    pub fn rowKeyHash(self: *const TestRowKeys, scope_id: ids.ScopeId) u64 {
+        if (scope_id.index() >= self.hashes.len) @panic("test scope id exceeded row key table");
+        return self.hashes[scope_id.index()];
     }
 
     /// Test fixtures using this lookup model no live descriptor ownership.
@@ -768,13 +790,19 @@ const TestRowKeys = struct {
     }
 };
 
+const test_parent_scope = ids.ScopeId.fromRaw(1);
+const test_site_ordinal = ids.SiteOrdinal.fromRaw(2);
+fn testScope(raw: u64) ids.ScopeId {
+    return ids.ScopeId.fromRaw(raw);
+}
+
 const TestSyncHooks = struct {
-    const PreparedCreated = struct { scope_id: u64, key: u64, item: u64 };
+    const PreparedCreated = struct { scope_id: ids.ScopeId, key: u64, item: u64 };
     keys_by_scope: []u64,
     items_by_scope: []u64,
-    next_scope_id: u64,
+    next_scope_id: ids.ScopeId,
     forced_hash: ?u64 = null,
-    disposed_scopes: std.ArrayListUnmanaged(u64) = .empty,
+    disposed_scopes: std.ArrayListUnmanaged(ids.ScopeId) = .empty,
     sync_next_len: usize = 0,
     sync_existing_len: usize = 0,
     rows_reused: u64 = 0,
@@ -801,21 +829,21 @@ const TestSyncHooks = struct {
     }
 
     /// Owns a provisional created row without publishing key/item tables.
-    pub fn prepareCreatedRow(self: *@This(), allocator: std.mem.Allocator, parent_scope_id: u64, site_ordinal: u64, input_index: usize, hash: u64, key: u64, item: u64) std.mem.Allocator.Error!u64 {
+    pub fn prepareCreatedRow(self: *@This(), allocator: std.mem.Allocator, parent_scope_id: ids.ScopeId, site_ordinal: ids.SiteOrdinal, input_index: usize, hash: u64, key: u64, item: u64) std.mem.Allocator.Error!ids.ScopeId {
         _ = input_index;
-        if (parent_scope_id != 1 or site_ordinal != 2) @panic("test row was prepared for the wrong site");
+        if (parent_scope_id.raw() != 1 or site_ordinal.raw() != 2) @panic("test row was prepared for the wrong site");
         self.expectHash(hash, key);
-        const scope_id = self.next_scope_id + self.prepared_created.items.len;
+        const scope_id = ids.ScopeId.fromIndex(self.next_scope_id.index() + self.prepared_created.items.len);
         try self.prepared_created.append(allocator, .{ .scope_id = scope_id, .key = key, .item = item });
         return scope_id;
     }
 
     /// Publishes one previously prepared created row without allocation.
-    pub fn commitCreatedRow(self: *@This(), scope_id: u64) void {
+    pub fn commitCreatedRow(self: *@This(), scope_id: ids.ScopeId) void {
         for (self.prepared_created.items) |prepared| if (prepared.scope_id == scope_id) {
-            self.keys_by_scope[@intCast(scope_id)] = prepared.key;
-            self.items_by_scope[@intCast(scope_id)] = prepared.item;
-            self.next_scope_id = @max(self.next_scope_id, scope_id + 1);
+            self.keys_by_scope[scope_id.index()] = prepared.key;
+            self.items_by_scope[scope_id.index()] = prepared.item;
+            if (scope_id.index() >= self.next_scope_id.index()) self.next_scope_id = ids.ScopeId.fromIndex(scope_id.index() + 1);
             return;
         };
         @panic("prepared created row was missing");
@@ -856,26 +884,26 @@ const TestSyncHooks = struct {
     }
 
     /// Confirms an indexed key match through the key capability to handle hash collisions exactly.
-    pub fn existingKeyEquals(self: *@This(), scope_id: u64, key: u64) bool {
-        return self.keys_by_scope[@intCast(scope_id)] == key;
+    pub fn existingKeyEquals(self: *@This(), scope_id: ids.ScopeId, key: u64) bool {
+        return self.keys_by_scope[scope_id.index()] == key;
     }
 
     /// Performs row item equals through the keyed-row capabilities that own key and item values.
-    pub fn rowItemEquals(self: *@This(), scope_id: u64, item: u64) bool {
-        return self.items_by_scope[@intCast(scope_id)] == item;
+    pub fn rowItemEquals(self: *@This(), scope_id: ids.ScopeId, item: u64) bool {
+        return self.items_by_scope[scope_id.index()] == item;
     }
 
     /// Replaces row key while releasing displaced ownership exactly once.
-    pub fn replaceRowKey(self: *@This(), scope_id: u64, hash: u64, key: u64) void {
+    pub fn replaceRowKey(self: *@This(), scope_id: ids.ScopeId, hash: u64, key: u64) void {
         self.recordMutation();
         self.expectHash(hash, key);
-        self.keys_by_scope[@intCast(scope_id)] = key;
+        self.keys_by_scope[scope_id.index()] = key;
     }
 
     /// Replaces row item while releasing displaced ownership exactly once.
-    pub fn replaceRowItem(self: *@This(), scope_id: u64, item: u64) void {
+    pub fn replaceRowItem(self: *@This(), scope_id: ids.ScopeId, item: u64) void {
         self.recordMutation();
-        self.items_by_scope[@intCast(scope_id)] = item;
+        self.items_by_scope[scope_id.index()] = item;
     }
 
     /// Drops the provisional incoming key through its owning capability.
@@ -889,26 +917,26 @@ const TestSyncHooks = struct {
     }
 
     /// Creates a new keyed row scope and transfers the incoming key and item into its ownership.
-    pub fn createRow(self: *@This(), parent_scope_id: u64, site_ordinal: u64, hash: u64, key: u64, item: u64) u64 {
+    pub fn createRow(self: *@This(), parent_scope_id: ids.ScopeId, site_ordinal: ids.SiteOrdinal, hash: u64, key: u64, item: u64) ids.ScopeId {
         self.recordMutation();
-        if (parent_scope_id != 1 or site_ordinal != 2) @panic("test row was created for the wrong site");
+        if (parent_scope_id.raw() != 1 or site_ordinal.raw() != 2) @panic("test row was created for the wrong site");
         self.expectHash(hash, key);
         const scope_id = self.next_scope_id;
-        self.next_scope_id += 1;
-        self.keys_by_scope[@intCast(scope_id)] = key;
-        self.items_by_scope[@intCast(scope_id)] = item;
+        self.next_scope_id = ids.ScopeId.fromIndex(scope_id.index() + 1);
+        self.keys_by_scope[scope_id.index()] = key;
+        self.items_by_scope[scope_id.index()] = item;
         return scope_id;
     }
 
     /// Disposes a removed row scope and every render, effect, callable, and value it owns.
-    pub fn disposeScope(self: *@This(), scope_id: u64) void {
+    pub fn disposeScope(self: *@This(), scope_id: ids.ScopeId) void {
         self.recordMutation();
         self.disposed_scopes.append(std.testing.allocator, scope_id) catch @panic("out of memory");
     }
 
     /// Performs row key hash through the keyed-row capabilities that own key and item values.
-    pub fn rowKeyHash(self: *@This(), scope_id: u64) u64 {
-        return self.hashForKey(self.keys_by_scope[@intCast(scope_id)]);
+    pub fn rowKeyHash(self: *@This(), scope_id: ids.ScopeId) u64 {
+        return self.hashForKey(self.keys_by_scope[scope_id.index()]);
     }
 
     /// Records rows in the metrics or lifecycle state owned by this operation.
@@ -919,7 +947,7 @@ const TestSyncHooks = struct {
     }
 
     /// Rejects a duplicate keyed row at the narrow reconciliation boundary with a bounded diagnostic.
-    pub fn failDuplicateEachKey(_: *@This(), parent_scope_id: u64, site_ordinal: u64, first_index: usize, second_index: usize, key: u64) noreturn {
+    pub fn failDuplicateEachKey(_: *@This(), parent_scope_id: ids.ScopeId, site_ordinal: ids.SiteOrdinal, first_index: usize, second_index: usize, key: u64) noreturn {
         _ = parent_scope_id;
         _ = site_ordinal;
         _ = first_index;
@@ -942,7 +970,7 @@ test "each runtime detects duplicate next keys through typed equality" {
     var hooks = TestSyncHooks{
         .keys_by_scope = &keys_by_scope,
         .items_by_scope = &items_by_scope,
-        .next_scope_id = 0,
+        .next_scope_id = ids.root_scope,
         .forced_hash = 7,
     };
     defer hooks.deinit(std.testing.allocator);
@@ -960,13 +988,13 @@ test "each runtime appends rows and tracks memberships" {
     var memberships: std.ArrayListUnmanaged(?Membership) = .empty;
     defer clearSites(std.testing.allocator, &sites, &indexes, &memberships);
 
-    const site_index = ensureSiteIndex(std.testing.allocator, &sites, &indexes, 1, 2);
-    try std.testing.expectEqual(site_index, activeSiteIndex(&indexes, 1, 2).?);
+    const site_index = ensureSiteIndex(std.testing.allocator, &sites, &indexes, test_parent_scope, test_site_ordinal);
+    try std.testing.expectEqual(site_index, activeSiteIndex(&indexes, test_parent_scope, test_site_ordinal).?);
 
-    appendRowToSiteIndex(std.testing.allocator, &sites, &memberships, site_index, 10, 5);
-    appendRowToSiteIndex(std.testing.allocator, &sites, &memberships, site_index, 11, 5);
+    appendRowToSiteIndex(std.testing.allocator, &sites, &memberships, site_index, testScope(10), 5);
+    appendRowToSiteIndex(std.testing.allocator, &sites, &memberships, site_index, testScope(11), 5);
 
-    try std.testing.expectEqualSlices(u64, &.{ 10, 11 }, sites.items[site_index].scope_ids.items);
+    try std.testing.expectEqualSlices(ids.ScopeId, &.{ testScope(10), testScope(11) }, sites.items[site_index].scope_ids.items);
     try std.testing.expectEqual(Membership{ .site_index = site_index, .row_index = 0 }, memberships.items[10].?);
     try std.testing.expectEqual(Membership{ .site_index = site_index, .row_index = 1 }, memberships.items[11].?);
     try std.testing.expectEqual(@as(usize, 1), sites.items[site_index].hash_heads.get(5).?);
@@ -979,9 +1007,9 @@ test "each runtime sync reuses creates removes and rebuilds rows" {
     var memberships: std.ArrayListUnmanaged(?Membership) = .empty;
     defer clearSites(std.testing.allocator, &sites, &indexes, &memberships);
 
-    const site_index = ensureSiteIndex(std.testing.allocator, &sites, &indexes, 1, 2);
-    appendRowToSiteIndex(std.testing.allocator, &sites, &memberships, site_index, 10, 1);
-    appendRowToSiteIndex(std.testing.allocator, &sites, &memberships, site_index, 11, 2);
+    const site_index = ensureSiteIndex(std.testing.allocator, &sites, &indexes, test_parent_scope, test_site_ordinal);
+    appendRowToSiteIndex(std.testing.allocator, &sites, &memberships, site_index, testScope(10), 1);
+    appendRowToSiteIndex(std.testing.allocator, &sites, &memberships, site_index, testScope(11), 2);
 
     var keys_by_scope = [_]u64{0} ** 16;
     var items_by_scope = [_]u64{0} ** 16;
@@ -993,20 +1021,20 @@ test "each runtime sync reuses creates removes and rebuilds rows" {
     var hooks = TestSyncHooks{
         .keys_by_scope = &keys_by_scope,
         .items_by_scope = &items_by_scope,
-        .next_scope_id = 12,
+        .next_scope_id = testScope(12),
     };
     defer hooks.deinit(std.testing.allocator);
 
     const keys = [_]u64{ 2, 3 };
     const items = [_]u64{ 200, 300 };
-    const diff = syncRows(std.testing.allocator, &sites, &memberships, site_index, 1, 2, &keys, &items, &hooks);
+    const diff = syncRows(std.testing.allocator, &sites, &memberships, site_index, test_parent_scope, test_site_ordinal, &keys, &items, &hooks);
     defer diff.deinit(std.testing.allocator);
 
-    try std.testing.expectEqualSlices(u64, &.{ 11, 12 }, diff.scope_ids);
+    try std.testing.expectEqualSlices(ids.ScopeId, &.{ testScope(11), testScope(12) }, diff.scope_ids);
     try std.testing.expectEqualSlices(bool, &.{ false, true }, diff.row_items_changed);
     try std.testing.expectEqualSlices(bool, &.{ false, true }, diff.scope_created);
-    try std.testing.expectEqualSlices(u64, &.{10}, diff.removed_scope_ids);
-    try std.testing.expectEqualSlices(u64, &.{10}, hooks.disposed_scopes.items);
+    try std.testing.expectEqualSlices(ids.ScopeId, &.{testScope(10)}, diff.removed_scope_ids);
+    try std.testing.expectEqualSlices(ids.ScopeId, &.{testScope(10)}, hooks.disposed_scopes.items);
     try std.testing.expectEqual(@as(u64, 1), diff.rows_reused);
     try std.testing.expectEqual(@as(u64, 1), diff.rows_created);
     try std.testing.expectEqual(@as(u64, 1), diff.rows_removed);
@@ -1014,7 +1042,7 @@ test "each runtime sync reuses creates removes and rebuilds rows" {
     try std.testing.expectEqual(@as(u64, 0), diff.row_items_updated);
     try std.testing.expectEqual(@as(usize, 2), hooks.sync_next_len);
     try std.testing.expectEqual(@as(usize, 2), hooks.sync_existing_len);
-    try std.testing.expectEqualSlices(u64, &.{ 11, 12 }, sites.items[site_index].scope_ids.items);
+    try std.testing.expectEqualSlices(ids.ScopeId, &.{ testScope(11), testScope(12) }, sites.items[site_index].scope_ids.items);
     try std.testing.expectEqual(Membership{ .site_index = site_index, .row_index = 0 }, memberships.items[11].?);
     try std.testing.expectEqual(Membership{ .site_index = site_index, .row_index = 1 }, memberships.items[12].?);
     try std.testing.expectEqual(@as(?Membership, null), memberships.items[10]);
@@ -1035,9 +1063,9 @@ test "each sync characterization detects allocation attempts after mutation begi
         clearSites(allocator, &sites, &indexes, &memberships);
     }
 
-    const site_index = ensureSiteIndex(allocator, &sites, &indexes, 1, 2);
-    appendRowToSiteIndex(allocator, &sites, &memberships, site_index, 10, 1);
-    appendRowToSiteIndex(allocator, &sites, &memberships, site_index, 11, 2);
+    const site_index = ensureSiteIndex(allocator, &sites, &indexes, test_parent_scope, test_site_ordinal);
+    appendRowToSiteIndex(allocator, &sites, &memberships, site_index, testScope(10), 1);
+    appendRowToSiteIndex(allocator, &sites, &memberships, site_index, testScope(11), 2);
     var keys_by_scope = [_]u64{0} ** 16;
     var items_by_scope = [_]u64{0} ** 16;
     keys_by_scope[10] = 1;
@@ -1047,7 +1075,7 @@ test "each sync characterization detects allocation attempts after mutation begi
     var hooks = TestSyncHooks{
         .keys_by_scope = &keys_by_scope,
         .items_by_scope = &items_by_scope,
-        .next_scope_id = 12,
+        .next_scope_id = testScope(12),
         .fault_attempts = &fault.attempts,
     };
     defer hooks.deinit(std.testing.allocator);
@@ -1055,7 +1083,7 @@ test "each sync characterization detects allocation attempts after mutation begi
     fault.configure(null);
     const keys = [_]u64{2};
     const items = [_]u64{201};
-    const diff = syncRows(allocator, &sites, &memberships, site_index, 1, 2, &keys, &items, &hooks);
+    const diff = syncRows(allocator, &sites, &memberships, site_index, test_parent_scope, test_site_ordinal, &keys, &items, &hooks);
     defer diff.deinit(allocator);
     const first_mutation = hooks.first_mutation_attempt orelse return error.TestUnexpectedResult;
     try std.testing.expect(first_mutation < fault.attempts);
@@ -1074,30 +1102,30 @@ test "prepared existing each rows sweep failures and commit without allocation" 
                 fault.configure(null);
                 clearSites(allocator, &sites, &indexes, &memberships);
             }
-            const site_index = ensureSiteIndex(allocator, &sites, &indexes, 1, 2);
-            appendRowToSiteIndex(allocator, &sites, &memberships, site_index, 10, 1);
-            appendRowToSiteIndex(allocator, &sites, &memberships, site_index, 11, 2);
+            const site_index = ensureSiteIndex(allocator, &sites, &indexes, test_parent_scope, test_site_ordinal);
+            appendRowToSiteIndex(allocator, &sites, &memberships, site_index, testScope(10), 1);
+            appendRowToSiteIndex(allocator, &sites, &memberships, site_index, testScope(11), 2);
             var keys_by_scope = [_]u64{0} ** 16;
             var items_by_scope = [_]u64{0} ** 16;
             keys_by_scope[10] = 1;
             items_by_scope[10] = 100;
             keys_by_scope[11] = 2;
             items_by_scope[11] = 200;
-            var hooks = TestSyncHooks{ .keys_by_scope = &keys_by_scope, .items_by_scope = &items_by_scope, .next_scope_id = 12 };
+            var hooks = TestSyncHooks{ .keys_by_scope = &keys_by_scope, .items_by_scope = &items_by_scope, .next_scope_id = testScope(12) };
             defer hooks.deinit(allocator);
             const keys = [_]u64{ 2, 3 };
             const items = [_]u64{ 201, 300 };
-            const old_scope_ids = [_]u64{ 10, 11 };
+            const old_scope_ids = [_]ids.ScopeId{ testScope(10), testScope(11) };
 
             fault.configure(failure_number);
-            var prepared = PreparedExistingRows.prepare(allocator, &sites, &memberships, site_index, 1, 2, &keys, &items, &hooks) catch |err| {
+            var prepared = PreparedExistingRows.prepare(allocator, &sites, &memberships, site_index, test_parent_scope, test_site_ordinal, &keys, &items, &hooks) catch |err| {
                 try std.testing.expectEqual(error.OutOfMemory, err);
-                try std.testing.expectEqualSlices(u64, &old_scope_ids, sites.items[site_index].scope_ids.items);
+                try std.testing.expectEqualSlices(ids.ScopeId, &old_scope_ids, sites.items[site_index].scope_ids.items);
                 try std.testing.expectEqual(@as(u64, 200), items_by_scope[11]);
                 try std.testing.expectEqual(@as(usize, 0), hooks.disposed_scopes.items.len);
                 const attempts = fault.attempts;
                 fault.configure(null);
-                var retry = try PreparedExistingRows.prepare(allocator, &sites, &memberships, site_index, 1, 2, &keys, &items, &hooks);
+                var retry = try PreparedExistingRows.prepare(allocator, &sites, &memberships, site_index, test_parent_scope, test_site_ordinal, &keys, &items, &hooks);
                 defer retry.deinit();
                 fault.configure(1);
                 var diff = retry.commit(&sites, &memberships, &keys, &items, &hooks);
@@ -1121,11 +1149,11 @@ test "prepared existing each rows sweep failures and commit without allocation" 
         }
 
         fn verify(site_index: usize, sites: *std.ArrayListUnmanaged(Site), memberships: *std.ArrayListUnmanaged(?Membership), hooks: *TestSyncHooks, items_by_scope: []const u64) !void {
-            try std.testing.expectEqualSlices(u64, &.{ 11, 12 }, sites.items[site_index].scope_ids.items);
+            try std.testing.expectEqualSlices(ids.ScopeId, &.{ testScope(11), testScope(12) }, sites.items[site_index].scope_ids.items);
             try std.testing.expectEqual(@as(u64, 201), items_by_scope[11]);
             try std.testing.expectEqual(@as(u64, 3), hooks.keys_by_scope[12]);
             try std.testing.expectEqual(@as(u64, 300), items_by_scope[12]);
-            try std.testing.expectEqualSlices(u64, &.{10}, hooks.disposed_scopes.items);
+            try std.testing.expectEqualSlices(ids.ScopeId, &.{testScope(10)}, hooks.disposed_scopes.items);
             try std.testing.expect(memberships.items[10] == null);
             try std.testing.expectEqual(Membership{ .site_index = site_index, .row_index = 0 }, memberships.items[11].?);
             try std.testing.expectEqual(Membership{ .site_index = site_index, .row_index = 1 }, memberships.items[12].?);
@@ -1142,9 +1170,9 @@ test "each runtime sync resolves hash collisions with typed equality" {
     var memberships: std.ArrayListUnmanaged(?Membership) = .empty;
     defer clearSites(std.testing.allocator, &sites, &indexes, &memberships);
 
-    const site_index = ensureSiteIndex(std.testing.allocator, &sites, &indexes, 1, 2);
-    appendRowToSiteIndex(std.testing.allocator, &sites, &memberships, site_index, 10, 0);
-    appendRowToSiteIndex(std.testing.allocator, &sites, &memberships, site_index, 11, 0);
+    const site_index = ensureSiteIndex(std.testing.allocator, &sites, &indexes, test_parent_scope, test_site_ordinal);
+    appendRowToSiteIndex(std.testing.allocator, &sites, &memberships, site_index, testScope(10), 0);
+    appendRowToSiteIndex(std.testing.allocator, &sites, &memberships, site_index, testScope(11), 0);
 
     var keys_by_scope = [_]u64{0} ** 16;
     var items_by_scope = [_]u64{0} ** 16;
@@ -1156,24 +1184,24 @@ test "each runtime sync resolves hash collisions with typed equality" {
     var hooks = TestSyncHooks{
         .keys_by_scope = &keys_by_scope,
         .items_by_scope = &items_by_scope,
-        .next_scope_id = 12,
+        .next_scope_id = testScope(12),
         .forced_hash = 0,
     };
     defer hooks.deinit(std.testing.allocator);
 
     const keys = [_]u64{ 2, 1 };
     const items = [_]u64{ 200, 100 };
-    const diff = syncRows(std.testing.allocator, &sites, &memberships, site_index, 1, 2, &keys, &items, &hooks);
+    const diff = syncRows(std.testing.allocator, &sites, &memberships, site_index, test_parent_scope, test_site_ordinal, &keys, &items, &hooks);
     defer diff.deinit(std.testing.allocator);
 
-    try std.testing.expectEqualSlices(u64, &.{ 11, 10 }, diff.scope_ids);
+    try std.testing.expectEqualSlices(ids.ScopeId, &.{ testScope(11), testScope(10) }, diff.scope_ids);
     try std.testing.expectEqualSlices(bool, &.{ false, false }, diff.row_items_changed);
     try std.testing.expectEqualSlices(bool, &.{ false, false }, diff.scope_created);
-    try std.testing.expectEqualSlices(u64, &.{}, diff.removed_scope_ids);
+    try std.testing.expectEqualSlices(ids.ScopeId, &.{}, diff.removed_scope_ids);
     try std.testing.expectEqual(@as(u64, 2), diff.rows_reused);
     try std.testing.expectEqual(@as(u64, 0), diff.rows_created);
     try std.testing.expectEqual(@as(u64, 0), diff.rows_removed);
-    try std.testing.expectEqualSlices(u64, &.{ 11, 10 }, sites.items[site_index].scope_ids.items);
+    try std.testing.expectEqualSlices(ids.ScopeId, &.{ testScope(11), testScope(10) }, sites.items[site_index].scope_ids.items);
     try std.testing.expectEqual(Membership{ .site_index = site_index, .row_index = 0 }, memberships.items[11].?);
     try std.testing.expectEqual(Membership{ .site_index = site_index, .row_index = 1 }, memberships.items[10].?);
     try std.testing.expectEqual(@as(usize, 1), sites.items[site_index].hash_heads.get(0).?);
@@ -1186,16 +1214,16 @@ test "each runtime removes rows and rewrites moved memberships" {
     var memberships: std.ArrayListUnmanaged(?Membership) = .empty;
     defer clearSites(std.testing.allocator, &sites, &indexes, &memberships);
 
-    const site_index = ensureSiteIndex(std.testing.allocator, &sites, &indexes, 1, 2);
-    appendRowToSiteIndex(std.testing.allocator, &sites, &memberships, site_index, 10, 5);
-    appendRowToSiteIndex(std.testing.allocator, &sites, &memberships, site_index, 11, 6);
-    appendRowToSiteIndex(std.testing.allocator, &sites, &memberships, site_index, 12, 7);
+    const site_index = ensureSiteIndex(std.testing.allocator, &sites, &indexes, test_parent_scope, test_site_ordinal);
+    appendRowToSiteIndex(std.testing.allocator, &sites, &memberships, site_index, testScope(10), 5);
+    appendRowToSiteIndex(std.testing.allocator, &sites, &memberships, site_index, testScope(11), 6);
+    appendRowToSiteIndex(std.testing.allocator, &sites, &memberships, site_index, testScope(12), 7);
 
     const hashes = [_]u64{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 6, 7 };
     const row_keys = TestRowKeys{ .hashes = &hashes };
-    removeRowFromSiteIndex(&sites, &memberships, 10, 5, &row_keys);
+    removeRowFromSiteIndex(&sites, &memberships, testScope(10), 5, &row_keys);
 
-    try std.testing.expectEqualSlices(u64, &.{ 12, 11 }, sites.items[site_index].scope_ids.items);
+    try std.testing.expectEqualSlices(ids.ScopeId, &.{ testScope(12), testScope(11) }, sites.items[site_index].scope_ids.items);
     try std.testing.expectEqual(@as(?Membership, null), memberships.items[10]);
     try std.testing.expectEqual(Membership{ .site_index = site_index, .row_index = 0 }, memberships.items[12].?);
     try std.testing.expectEqual(@as(usize, 0), sites.items[site_index].hash_heads.get(7).?);
@@ -1208,26 +1236,26 @@ test "prepared row removals fail without mutation and apply without allocation" 
     var indexes: SiteIndexMap = .empty;
     var memberships: std.ArrayListUnmanaged(?Membership) = .empty;
     defer clearSites(std.testing.allocator, &sites, &indexes, &memberships);
-    const site_index = ensureSiteIndex(std.testing.allocator, &sites, &indexes, 1, 2);
-    appendRowToSiteIndex(std.testing.allocator, &sites, &memberships, site_index, 10, 5);
-    appendRowToSiteIndex(std.testing.allocator, &sites, &memberships, site_index, 11, 6);
-    appendRowToSiteIndex(std.testing.allocator, &sites, &memberships, site_index, 12, 7);
+    const site_index = ensureSiteIndex(std.testing.allocator, &sites, &indexes, test_parent_scope, test_site_ordinal);
+    appendRowToSiteIndex(std.testing.allocator, &sites, &memberships, site_index, testScope(10), 5);
+    appendRowToSiteIndex(std.testing.allocator, &sites, &memberships, site_index, testScope(11), 6);
+    appendRowToSiteIndex(std.testing.allocator, &sites, &memberships, site_index, testScope(12), 7);
     const hashes = [_]u64{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 6, 7 };
     const row_keys = TestRowKeys{ .hashes = &hashes };
 
     var failing = FaultAllocator.init(std.testing.allocator);
     failing.configure(1);
-    try std.testing.expectError(error.OutOfMemory, prepareRowRemovals(failing.allocator(), sites.items, memberships.items, &.{.{ .scope_id = 10, .key_hash = 5 }}));
-    try std.testing.expectEqualSlices(u64, &.{ 10, 11, 12 }, sites.items[site_index].scope_ids.items);
+    try std.testing.expectError(error.OutOfMemory, prepareRowRemovals(failing.allocator(), sites.items, memberships.items, &.{.{ .scope_id = testScope(10), .key_hash = 5 }}));
+    try std.testing.expectEqualSlices(ids.ScopeId, &.{ testScope(10), testScope(11), testScope(12) }, sites.items[site_index].scope_ids.items);
     try std.testing.expectEqual(Membership{ .site_index = site_index, .row_index = 0 }, memberships.items[10].?);
 
     var fault = FaultAllocator.init(std.testing.allocator);
-    var prepared = try prepareRowRemovals(fault.allocator(), sites.items, memberships.items, &.{.{ .scope_id = 10, .key_hash = 5 }});
+    var prepared = try prepareRowRemovals(fault.allocator(), sites.items, memberships.items, &.{.{ .scope_id = testScope(10), .key_hash = 5 }});
     defer prepared.deinit(fault.allocator());
     fault.configure(1);
     prepared.apply(std.testing.allocator, &sites, &indexes, &memberships, &row_keys);
     try std.testing.expectEqual(@as(usize, 0), fault.attempts);
-    try std.testing.expectEqualSlices(u64, &.{ 12, 11 }, sites.items[site_index].scope_ids.items);
+    try std.testing.expectEqualSlices(ids.ScopeId, &.{ testScope(12), testScope(11) }, sites.items[site_index].scope_ids.items);
     try std.testing.expectEqual(@as(?Membership, null), memberships.items[10]);
     try std.testing.expectEqual(Membership{ .site_index = site_index, .row_index = 0 }, memberships.items[12].?);
 }
@@ -1237,15 +1265,15 @@ test "prepared row removals retire empty site and maintained index" {
     var indexes: SiteIndexMap = .empty;
     var memberships: std.ArrayListUnmanaged(?Membership) = .empty;
     defer clearSites(std.testing.allocator, &sites, &indexes, &memberships);
-    const site_index = ensureSiteIndex(std.testing.allocator, &sites, &indexes, 1, 2);
-    appendRowToSiteIndex(std.testing.allocator, &sites, &memberships, site_index, 10, 5);
+    const site_index = ensureSiteIndex(std.testing.allocator, &sites, &indexes, test_parent_scope, test_site_ordinal);
+    appendRowToSiteIndex(std.testing.allocator, &sites, &memberships, site_index, testScope(10), 5);
     const hashes = [_]u64{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5 };
     const row_keys = TestRowKeys{ .hashes = &hashes };
-    var prepared = try prepareRowRemovals(std.testing.allocator, sites.items, memberships.items, &.{.{ .scope_id = 10, .key_hash = 5 }});
+    var prepared = try prepareRowRemovals(std.testing.allocator, sites.items, memberships.items, &.{.{ .scope_id = testScope(10), .key_hash = 5 }});
     defer prepared.deinit(std.testing.allocator);
     prepared.apply(std.testing.allocator, &sites, &indexes, &memberships, &row_keys);
     try std.testing.expectEqual(@as(usize, 0), sites.items.len);
-    try std.testing.expectEqual(@as(?usize, null), indexes.get(.{ .parent_scope_id = 1, .site_ordinal = 2 }));
+    try std.testing.expectEqual(@as(?usize, null), indexes.get(.{ .parent_scope_id = test_parent_scope, .site_ordinal = test_site_ordinal }));
     try std.testing.expectEqual(@as(?Membership, null), memberships.items[10]);
 }
 
@@ -1255,29 +1283,29 @@ test "prepared row removals retain empty site for an active descriptor without a
     var indexes: SiteIndexMap = .empty;
     var memberships: std.ArrayListUnmanaged(?Membership) = .empty;
     defer clearSites(std.testing.allocator, &sites, &indexes, &memberships);
-    const site_index = ensureSiteIndex(std.testing.allocator, &sites, &indexes, 1, 2);
-    appendRowToSiteIndex(std.testing.allocator, &sites, &memberships, site_index, 10, 5);
+    const site_index = ensureSiteIndex(std.testing.allocator, &sites, &indexes, test_parent_scope, test_site_ordinal);
+    appendRowToSiteIndex(std.testing.allocator, &sites, &memberships, site_index, testScope(10), 5);
     const ActiveRowKeys = struct {
         /// Returns the retained test row's stable key hash.
-        pub fn rowKeyHash(_: *@This(), scope_id: u64) u64 {
-            std.debug.assert(scope_id == 10);
+        pub fn rowKeyHash(_: *@This(), scope_id: ids.ScopeId) u64 {
+            std.debug.assert(scope_id == testScope(10));
             return 5;
         }
         /// Models an active descriptor owning the otherwise-empty test site.
         pub fn siteRemainsActive(_: *@This(), key: SiteKey) bool {
-            return key.parent_scope_id == 1 and key.site_ordinal == 2;
+            return key.parent_scope_id == test_parent_scope and key.site_ordinal == test_site_ordinal;
         }
     };
     var row_keys = ActiveRowKeys{};
     var fault = FaultAllocator.init(std.testing.allocator);
-    var prepared = try prepareRowRemovals(fault.allocator(), sites.items, memberships.items, &.{.{ .scope_id = 10, .key_hash = 5 }});
+    var prepared = try prepareRowRemovals(fault.allocator(), sites.items, memberships.items, &.{.{ .scope_id = testScope(10), .key_hash = 5 }});
     defer prepared.deinit(fault.allocator());
     fault.configure(1);
     prepared.apply(std.testing.allocator, &sites, &indexes, &memberships, &row_keys);
     try std.testing.expectEqual(@as(usize, 0), fault.attempts);
     try std.testing.expectEqual(@as(usize, 1), sites.items.len);
     try std.testing.expectEqual(@as(usize, 0), sites.items[0].scope_ids.items.len);
-    try std.testing.expectEqual(@as(?usize, 0), indexes.get(.{ .parent_scope_id = 1, .site_ordinal = 2 }));
+    try std.testing.expectEqual(@as(?usize, 0), indexes.get(.{ .parent_scope_id = test_parent_scope, .site_ordinal = test_site_ordinal }));
     try std.testing.expectEqual(@as(?Membership, null), memberships.items[10]);
 }
 
@@ -1287,15 +1315,15 @@ test "each runtime replaces row order and rebuilds indexes" {
     var memberships: std.ArrayListUnmanaged(?Membership) = .empty;
     defer clearSites(std.testing.allocator, &sites, &indexes, &memberships);
 
-    const site_index = ensureSiteIndex(std.testing.allocator, &sites, &indexes, 1, 2);
-    appendRowToSiteIndex(std.testing.allocator, &sites, &memberships, site_index, 10, 5);
-    appendRowToSiteIndex(std.testing.allocator, &sites, &memberships, site_index, 11, 6);
+    const site_index = ensureSiteIndex(std.testing.allocator, &sites, &indexes, test_parent_scope, test_site_ordinal);
+    appendRowToSiteIndex(std.testing.allocator, &sites, &memberships, site_index, testScope(10), 5);
+    appendRowToSiteIndex(std.testing.allocator, &sites, &memberships, site_index, testScope(11), 6);
 
     const hashes = [_]u64{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 6, 5 };
     const row_keys = TestRowKeys{ .hashes = &hashes };
-    replaceSiteRows(std.testing.allocator, &sites, &memberships, site_index, &.{ 12, 10 }, &row_keys);
+    replaceSiteRows(std.testing.allocator, &sites, &memberships, site_index, &.{ testScope(12), testScope(10) }, &row_keys);
 
-    try std.testing.expectEqualSlices(u64, &.{ 12, 10 }, sites.items[site_index].scope_ids.items);
+    try std.testing.expectEqualSlices(ids.ScopeId, &.{ testScope(12), testScope(10) }, sites.items[site_index].scope_ids.items);
     try std.testing.expectEqual(@as(?Membership, null), memberships.items[11]);
     try std.testing.expectEqual(Membership{ .site_index = site_index, .row_index = 0 }, memberships.items[12].?);
     try std.testing.expectEqual(Membership{ .site_index = site_index, .row_index = 1 }, memberships.items[10].?);
@@ -1305,35 +1333,35 @@ test "each runtime replaces row order and rebuilds indexes" {
 
 test "each runtime render segments expose scope order" {
     const segments = [_]RenderSegment{
-        .{ .scope_id = 10, .start = 2, .len = 3 },
-        .{ .scope_id = 11, .start = 5, .len = 1 },
+        .{ .scope_id = testScope(10), .start = 2, .len = 3 },
+        .{ .scope_id = testScope(11), .start = 5, .len = 1 },
     };
     const scope_ids = renderSegmentScopeIds(std.testing.allocator, &segments);
     defer std.testing.allocator.free(scope_ids);
 
-    try std.testing.expectEqualSlices(u64, &.{ 10, 11 }, scope_ids);
-    try std.testing.expect(diffPreservesSurvivorRenderOrder(&.{ 10, 11, 12 }, &.{ 10, 12 }));
-    try std.testing.expect(!diffPreservesSurvivorRenderOrder(&.{ 10, 11, 12 }, &.{ 12, 10 }));
+    try std.testing.expectEqualSlices(ids.ScopeId, &.{ testScope(10), testScope(11) }, scope_ids);
+    try std.testing.expect(diffPreservesSurvivorRenderOrder(&.{ testScope(10), testScope(11), testScope(12) }, &.{ testScope(10), testScope(12) }));
+    try std.testing.expect(!diffPreservesSurvivorRenderOrder(&.{ testScope(10), testScope(11), testScope(12) }, &.{ testScope(12), testScope(10) }));
 }
 
 test "each runtime render range helpers choose insertion points and adjust ranges" {
-    var ranges: std.AutoHashMapUnmanaged(u64, RenderSegment) = .{};
+    var ranges: std.AutoHashMapUnmanaged(ids.ScopeId, RenderSegment) = .{};
     defer ranges.deinit(std.testing.allocator);
 
-    ranges.put(std.testing.allocator, 10, .{ .scope_id = 10, .start = 4, .len = 2 }) catch @panic("out of memory");
-    ranges.put(std.testing.allocator, 12, .{ .scope_id = 12, .start = 9, .len = 1 }) catch @panic("out of memory");
+    ranges.put(std.testing.allocator, testScope(10), .{ .scope_id = testScope(10), .start = 4, .len = 2 }) catch @panic("out of memory");
+    ranges.put(std.testing.allocator, testScope(12), .{ .scope_id = testScope(12), .start = 9, .len = 1 }) catch @panic("out of memory");
 
-    try std.testing.expectEqual(@as(usize, 4), renderInsertIndexForRowRanges(3, &ranges, &.{ 10, 11, 12 }, 0));
-    try std.testing.expectEqual(@as(usize, 9), renderInsertIndexForRowRanges(3, &ranges, &.{ 10, 11, 12 }, 1));
-    try std.testing.expectEqual(@as(usize, 10), renderInsertIndexForRowRanges(3, &ranges, &.{ 10, 12, 11 }, 2));
-    try std.testing.expectEqual(@as(usize, 4), renderInsertIndexForRowRanges(3, &ranges, &.{ 11, 10, 12 }, 0));
-    try std.testing.expectEqual(@as(usize, 3), renderInsertIndexForRowRanges(3, &ranges, &.{11}, 0));
+    try std.testing.expectEqual(@as(usize, 4), renderInsertIndexForRowRanges(3, &ranges, &.{ testScope(10), testScope(11), testScope(12) }, 0));
+    try std.testing.expectEqual(@as(usize, 9), renderInsertIndexForRowRanges(3, &ranges, &.{ testScope(10), testScope(11), testScope(12) }, 1));
+    try std.testing.expectEqual(@as(usize, 10), renderInsertIndexForRowRanges(3, &ranges, &.{ testScope(10), testScope(12), testScope(11) }, 2));
+    try std.testing.expectEqual(@as(usize, 4), renderInsertIndexForRowRanges(3, &ranges, &.{ testScope(11), testScope(10), testScope(12) }, 0));
+    try std.testing.expectEqual(@as(usize, 3), renderInsertIndexForRowRanges(3, &ranges, &.{testScope(11)}, 0));
 
-    updateRenderRange(&ranges, std.testing.allocator, 10, 4, 2, 3);
-    try std.testing.expectEqual(RenderSegment{ .scope_id = 10, .start = 4, .len = 3 }, ranges.get(10).?);
-    try std.testing.expectEqual(RenderSegment{ .scope_id = 12, .start = 10, .len = 1 }, ranges.get(12).?);
+    updateRenderRange(&ranges, std.testing.allocator, testScope(10), 4, 2, 3);
+    try std.testing.expectEqual(RenderSegment{ .scope_id = testScope(10), .start = 4, .len = 3 }, ranges.get(testScope(10)).?);
+    try std.testing.expectEqual(RenderSegment{ .scope_id = testScope(12), .start = 10, .len = 1 }, ranges.get(testScope(12)).?);
 
-    updateRenderRange(&ranges, std.testing.allocator, 10, 4, 3, 0);
-    try std.testing.expectEqual(@as(?RenderSegment, null), ranges.get(10));
-    try std.testing.expectEqual(RenderSegment{ .scope_id = 12, .start = 7, .len = 1 }, ranges.get(12).?);
+    updateRenderRange(&ranges, std.testing.allocator, testScope(10), 4, 3, 0);
+    try std.testing.expectEqual(@as(?RenderSegment, null), ranges.get(testScope(10)));
+    try std.testing.expectEqual(RenderSegment{ .scope_id = testScope(12), .start = 7, .len = 1 }, ranges.get(testScope(12)).?);
 }

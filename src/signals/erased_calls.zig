@@ -7,8 +7,10 @@
 //! both hosts alias it. See `design.md` (one engine, two thin hosts).
 
 const abi = @import("roc_platform_abi.zig");
+const host_values = @import("host_values.zig");
 
-pub const HostValue = u64;
+pub const HostValue = host_values.HostValue;
+const RawHostValue = u64;
 pub const HostValueList = abi.RocListWith(HostValue, false);
 pub const Cmd = abi.NodeCmd;
 pub const StartTaskCmd = @FieldType(abi.NodeCmdPayload, "start_task");
@@ -21,18 +23,18 @@ pub const RocBoxPair = extern struct {
 pub const ErasedUnitArgs = extern struct {};
 
 pub const ErasedHostValueUnaryArgs = extern struct {
-    arg0: HostValue,
+    arg0: RawHostValue,
 };
 
 pub const ErasedHostValueBinaryArgs = extern struct {
-    arg0: HostValue,
-    arg1: HostValue,
+    arg0: RawHostValue,
+    arg1: RawHostValue,
 };
 
 pub const ErasedHostValueTernaryArgs = extern struct {
-    arg0: HostValue,
-    arg1: HostValue,
-    arg2: HostValue,
+    arg0: RawHostValue,
+    arg1: RawHostValue,
+    arg2: RawHostValue,
 };
 
 pub const ErasedHostValueListUnaryArgs = extern struct {
@@ -71,7 +73,7 @@ pub fn callValueInitThunk(roc_host: *abi.RocHost, callable: abi.RocErasedCallabl
 /// Invokes the retained app-compiled callable using its exact ABI signature and ownership convention.
 pub fn callErasedHostValueToHostValue(roc_host: *abi.RocHost, callable: abi.RocErasedCallable, arg0: HostValue) HostValue {
     const payload = erasedCallablePayload(callable);
-    var call_args = ErasedHostValueUnaryArgs{ .arg0 = arg0 };
+    var call_args = ErasedHostValueUnaryArgs{ .arg0 = arg0.toRaw() };
     var result: HostValue = undefined;
     callErasedCallable(
         payload,
@@ -86,7 +88,7 @@ pub fn callErasedHostValueToHostValue(roc_host: *abi.RocHost, callable: abi.RocE
 /// Invokes the retained app-compiled callable using its exact ABI signature and ownership convention.
 pub fn callErasedHostValueToCmd(roc_host: *abi.RocHost, callable: abi.RocErasedCallable, arg0: HostValue) Cmd {
     const payload = erasedCallablePayload(callable);
-    var call_args = ErasedHostValueUnaryArgs{ .arg0 = arg0 };
+    var call_args = ErasedHostValueUnaryArgs{ .arg0 = arg0.toRaw() };
     var result: Cmd = undefined;
     callErasedCallable(
         payload,
@@ -115,7 +117,7 @@ pub fn callUnitToCmd(roc_host: *abi.RocHost, callable: abi.RocErasedCallable) Cm
 /// Invokes the retained app-compiled callable using its exact ABI signature and ownership convention.
 pub fn callErasedHostValueHostValueToHostValue(roc_host: *abi.RocHost, callable: abi.RocErasedCallable, arg0: HostValue, arg1: HostValue) HostValue {
     const payload = erasedCallablePayload(callable);
-    var call_args = ErasedHostValueBinaryArgs{ .arg0 = arg0, .arg1 = arg1 };
+    var call_args = ErasedHostValueBinaryArgs{ .arg0 = arg0.toRaw(), .arg1 = arg1.toRaw() };
     var result: HostValue = undefined;
     callErasedCallable(
         payload,
@@ -131,7 +133,7 @@ pub fn callErasedHostValueHostValueToHostValue(roc_host: *abi.RocHost, callable:
 pub fn callErasedHostValueHostValueHostValueToHostValue(roc_host: *abi.RocHost, callable: abi.RocErasedCallable, arg0: HostValue, arg1: HostValue, arg2: HostValue) HostValue {
     const payload = erasedCallablePayload(callable);
     var result: HostValue = undefined;
-    var call_args = ErasedHostValueTernaryArgs{ .arg0 = arg0, .arg1 = arg1, .arg2 = arg2 };
+    var call_args = ErasedHostValueTernaryArgs{ .arg0 = arg0.toRaw(), .arg1 = arg1.toRaw(), .arg2 = arg2.toRaw() };
     callErasedCallable(
         payload,
         roc_host,
@@ -145,7 +147,7 @@ pub fn callErasedHostValueHostValueHostValueToHostValue(roc_host: *abi.RocHost, 
 /// Invokes the retained app-compiled callable using its exact ABI signature and ownership convention.
 pub fn callErasedHostValueHostValueToElem(roc_host: *abi.RocHost, callable: abi.RocErasedCallable, arg0: HostValue, arg1: HostValue) abi.Elem {
     const payload = erasedCallablePayload(callable);
-    var call_args = ErasedHostValueBinaryArgs{ .arg0 = arg0, .arg1 = arg1 };
+    var call_args = ErasedHostValueBinaryArgs{ .arg0 = arg0.toRaw(), .arg1 = arg1.toRaw() };
     var result: abi.Elem = undefined;
     callErasedCallable(
         payload,
@@ -160,7 +162,7 @@ pub fn callErasedHostValueHostValueToElem(roc_host: *abi.RocHost, callable: abi.
 /// Invokes the retained app-compiled callable using its exact ABI signature and ownership convention.
 pub fn callErasedHostValueHostValueToBool(roc_host: *abi.RocHost, callable: abi.RocErasedCallable, arg0: HostValue, arg1: HostValue) bool {
     const payload = erasedCallablePayload(callable);
-    var call_args = ErasedHostValueBinaryArgs{ .arg0 = arg0, .arg1 = arg1 };
+    var call_args = ErasedHostValueBinaryArgs{ .arg0 = arg0.toRaw(), .arg1 = arg1.toRaw() };
     var result: usize = 0;
     callErasedCallable(
         payload,
@@ -175,7 +177,7 @@ pub fn callErasedHostValueHostValueToBool(roc_host: *abi.RocHost, callable: abi.
 /// Invokes the retained app-compiled callable using its exact ABI signature and ownership convention.
 pub fn callErasedHostValueToUnit(roc_host: *abi.RocHost, callable: abi.RocErasedCallable, arg0: HostValue) void {
     const payload = erasedCallablePayload(callable);
-    var call_args = ErasedHostValueUnaryArgs{ .arg0 = arg0 };
+    var call_args = ErasedHostValueUnaryArgs{ .arg0 = arg0.toRaw() };
     var result: usize = 0;
     callErasedCallable(
         payload,
@@ -189,7 +191,7 @@ pub fn callErasedHostValueToUnit(roc_host: *abi.RocHost, callable: abi.RocErased
 /// Invokes the retained app-compiled callable using its exact ABI signature and ownership convention.
 pub fn callErasedHostValueToStr(roc_host: *abi.RocHost, callable: abi.RocErasedCallable, arg0: HostValue) abi.RocStr {
     const payload = erasedCallablePayload(callable);
-    var call_args = ErasedHostValueUnaryArgs{ .arg0 = arg0 };
+    var call_args = ErasedHostValueUnaryArgs{ .arg0 = arg0.toRaw() };
     var result: abi.RocStr = undefined;
     callErasedCallable(
         payload,
@@ -204,7 +206,7 @@ pub fn callErasedHostValueToStr(roc_host: *abi.RocHost, callable: abi.RocErasedC
 /// Invokes the retained app-compiled callable using its exact ABI signature and ownership convention.
 pub fn callErasedHostValueToBool(roc_host: *abi.RocHost, callable: abi.RocErasedCallable, arg0: HostValue) bool {
     const payload = erasedCallablePayload(callable);
-    var call_args = ErasedHostValueUnaryArgs{ .arg0 = arg0 };
+    var call_args = ErasedHostValueUnaryArgs{ .arg0 = arg0.toRaw() };
     var result: usize = 0;
     callErasedCallable(
         payload,
@@ -219,7 +221,7 @@ pub fn callErasedHostValueToBool(roc_host: *abi.RocHost, callable: abi.RocErased
 /// Invokes the retained app-compiled callable using its exact ABI signature and ownership convention.
 pub fn callErasedHostValueToU64(roc_host: *abi.RocHost, callable: abi.RocErasedCallable, arg0: HostValue) u64 {
     const payload = erasedCallablePayload(callable);
-    var call_args = ErasedHostValueUnaryArgs{ .arg0 = arg0 };
+    var call_args = ErasedHostValueUnaryArgs{ .arg0 = arg0.toRaw() };
     var result: u64 = undefined;
     callErasedCallable(
         payload,
@@ -234,7 +236,7 @@ pub fn callErasedHostValueToU64(roc_host: *abi.RocHost, callable: abi.RocErasedC
 /// Invokes the retained app-compiled callable using its exact ABI signature and ownership convention.
 pub fn callErasedHostValueToHostValueList(roc_host: *abi.RocHost, callable: abi.RocErasedCallable, arg0: HostValue) HostValueList {
     const payload = erasedCallablePayload(callable);
-    var call_args = ErasedHostValueUnaryArgs{ .arg0 = arg0 };
+    var call_args = ErasedHostValueUnaryArgs{ .arg0 = arg0.toRaw() };
     var result: HostValueList = undefined;
     callErasedCallable(
         payload,

@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const descriptor_stream = @import("descriptor_stream.zig");
+const ids = @import("ids.zig");
 const scope_runtime = @import("scope_runtime.zig");
 
 pub const EachSite = scope_runtime.EachSite;
@@ -236,9 +237,9 @@ pub const ElemOwnedRemovalScratch = struct {
 };
 
 /// Evaluates scope is in target set using explicit scope ownership rather than DOM position or content.
-pub fn scopeIsInTargetSet(target_scopes: []const bool, scope_id: u64) bool {
-    if (scope_id >= target_scopes.len) @panic("descriptor referenced scope outside replacement target set");
-    return target_scopes[@intCast(scope_id)];
+pub fn scopeIsInTargetSet(target_scopes: []const bool, scope_id: ids.ScopeId) bool {
+    if (scope_id.index() >= target_scopes.len) @panic("descriptor referenced scope outside replacement target set");
+    return target_scopes[scope_id.index()];
 }
 
 fn removalIndexDesc(_: void, lhs: usize, rhs: usize) bool {
@@ -348,13 +349,13 @@ pub fn prepareRenderRemovalScan(comptime Stream: type, allocator: std.mem.Alloca
         const parent_elem_id = descriptor_stream.renderNodeParentElemId(Stream, stream, node);
         target_scan_count += 1;
         const scope_in_target = scopeIsInTargetSet(target_scopes, descriptor_stream.renderNodeScopeId(Stream, stream, node));
-        const parent_removed = removed_elem_set.contains(parent_elem_id);
+        const parent_removed = removed_elem_set.contains(parent_elem_id.raw());
         if (!scope_in_target and !parent_removed) break;
         removed_render_count += 1;
-        try removed_elem_ids.append(allocator, node.elem_id);
-        try removed_elem_set.put(allocator, node.elem_id, {});
-        const touched_entry = try touched_parent_set.getOrPut(allocator, parent_elem_id);
-        if (!touched_entry.found_existing) try touched_parent_ids.append(allocator, parent_elem_id);
+        try removed_elem_ids.append(allocator, node.elem_id.raw());
+        try removed_elem_set.put(allocator, node.elem_id.raw(), {});
+        const touched_entry = try touched_parent_set.getOrPut(allocator, parent_elem_id.raw());
+        if (!touched_entry.found_existing) try touched_parent_ids.append(allocator, parent_elem_id.raw());
     }
 
     var touched_parent_write_index: usize = 0;
@@ -393,8 +394,8 @@ fn prepareRemovalFromScan(comptime Stream: type, allocator: std.mem.Allocator, s
     var named_event_count: usize = 0;
     var custom_counts = [_]usize{0} ** 5;
     for (prepared.scan.removed_elem_ids) |elem_id| {
-        named_event_count = std.math.add(usize, named_event_count, stream.namedEventIndices(elem_id).len) catch return error.OutOfMemory;
-        for (stream.customAttrIndices(elem_id)) |custom| {
+        named_event_count = std.math.add(usize, named_event_count, stream.namedEventIndices(ids.ElemId.fromRaw(elem_id)).len) catch return error.OutOfMemory;
+        for (stream.customAttrIndices(ids.ElemId.fromRaw(elem_id))) |custom| {
             const offset: usize = switch (custom.kind) {
                 .static_text => 0,
                 .signal_text => 1,
@@ -412,9 +413,9 @@ fn prepareRemovalFromScan(comptime Stream: type, allocator: std.mem.Allocator, s
     try prepared.descriptor_indexes.static_custom_bool_attr_indexes.ensureUnusedCapacity(allocator, custom_counts[3]);
     try prepared.descriptor_indexes.signal_custom_bool_attr_indexes.ensureUnusedCapacity(allocator, custom_counts[4]);
     for (prepared.scan.removed_elem_ids) |elem_id| {
-        if (stream.elemDescriptorIndex(elem_id)) |descriptor_index| prepared.descriptor_indexes.appendDescriptorIndexesAssumeCapacity(descriptor_index);
-        prepared.descriptor_indexes.event_indexes.appendSliceAssumeCapacity(stream.namedEventIndices(elem_id));
-        for (stream.customAttrIndices(elem_id)) |custom| switch (custom.kind) {
+        if (stream.elemDescriptorIndex(ids.ElemId.fromRaw(elem_id))) |descriptor_index| prepared.descriptor_indexes.appendDescriptorIndexesAssumeCapacity(descriptor_index);
+        prepared.descriptor_indexes.event_indexes.appendSliceAssumeCapacity(stream.namedEventIndices(ids.ElemId.fromRaw(elem_id)));
+        for (stream.customAttrIndices(ids.ElemId.fromRaw(elem_id))) |custom| switch (custom.kind) {
             .static_text => prepared.descriptor_indexes.static_custom_text_attr_indexes.appendAssumeCapacity(custom.index),
             .signal_text => prepared.descriptor_indexes.signal_custom_text_attr_indexes.appendAssumeCapacity(custom.index),
             .signal_text_optional => prepared.descriptor_indexes.signal_optional_custom_text_attr_indexes.appendAssumeCapacity(custom.index),
@@ -428,7 +429,7 @@ fn prepareRemovalFromScan(comptime Stream: type, allocator: std.mem.Allocator, s
     try prepared.node_indexes.when_indexes.ensureUnusedCapacity(allocator, stream.whens.items.len);
     try prepared.node_indexes.each_indexes.ensureUnusedCapacity(allocator, stream.eaches.items.len);
     var lifecycle_counts = [_]usize{0} ** 3;
-    for (target_scopes, 0..) |targeted, scope_id| if (targeted) for (stream.lifecycleIndices(scope_id)) |lifecycle| {
+    for (target_scopes, 0..) |targeted, scope_index| if (targeted) for (stream.lifecycleIndices(ids.ScopeId.fromIndex(scope_index))) |lifecycle| {
         const offset: usize = switch (lifecycle.kind) {
             .on_change => 0,
             .mount => 1,
@@ -439,7 +440,7 @@ fn prepareRemovalFromScan(comptime Stream: type, allocator: std.mem.Allocator, s
     try prepared.node_indexes.on_change_indexes.ensureUnusedCapacity(allocator, lifecycle_counts[0]);
     try prepared.node_indexes.mount_indexes.ensureUnusedCapacity(allocator, lifecycle_counts[1]);
     try prepared.node_indexes.cleanup_indexes.ensureUnusedCapacity(allocator, lifecycle_counts[2]);
-    for (target_scopes, 0..) |targeted, scope_id| if (targeted) for (stream.lifecycleIndices(scope_id)) |lifecycle| switch (lifecycle.kind) {
+    for (target_scopes, 0..) |targeted, scope_index| if (targeted) for (stream.lifecycleIndices(ids.ScopeId.fromIndex(scope_index))) |lifecycle| switch (lifecycle.kind) {
         .on_change => prepared.node_indexes.on_change_indexes.appendAssumeCapacity(lifecycle.index),
         .mount => prepared.node_indexes.mount_indexes.appendAssumeCapacity(lifecycle.index),
         .cleanup => prepared.node_indexes.cleanup_indexes.appendAssumeCapacity(lifecycle.index),
@@ -549,7 +550,7 @@ pub fn prepareMultiRemoval(comptime Stream: type, allocator: std.mem.Allocator, 
 pub fn prepareRenderElemIds(allocator: std.mem.Allocator, render_nodes: anytype) std.mem.Allocator.Error![]u64 {
     const elem_ids = try allocator.alloc(u64, render_nodes.len);
     for (render_nodes, 0..) |node, index| {
-        elem_ids[index] = node.elem_id;
+        elem_ids[index] = if (@TypeOf(node.elem_id) == u64) node.elem_id else node.elem_id.raw();
     }
     return elem_ids;
 }
@@ -730,7 +731,7 @@ test "structural splice collects removal indexes" {
     sortRemovalIndexesDescending(indexes.items);
 
     try std.testing.expectEqualSlices(usize, &.{ 7, 3, 1 }, indexes.items);
-    try std.testing.expect(scopeIsInTargetSet(&.{ false, true, false }, 1));
+    try std.testing.expect(scopeIsInTargetSet(&.{ false, true, false }, ids.ScopeId.fromRaw(1)));
 }
 
 test "structural splice scratch collects descriptor indexes" {
@@ -846,7 +847,7 @@ const TestStream = struct {
     }
 
     /// Resolves an element id through the maintained descriptor index.
-    pub fn elemDescriptorIndex(self: *const @This(), elem_id: u64) ?descriptor_stream.ElemDescriptorIndex {
+    pub fn elemDescriptorIndex(self: *const @This(), elem_id: ids.ElemId) ?descriptor_stream.ElemDescriptorIndex {
         for (self.elements.items, 0..) |desc, index| {
             if (desc.elem_id == elem_id) return .{ .element = descriptor_stream.DescriptorIndex.init(index) };
         }
@@ -860,22 +861,22 @@ const TestStream = struct {
     }
 
     /// This minimal stream fixture has no named-event descriptors.
-    pub fn namedEventIndices(_: *const @This(), _: u64) []const usize {
+    pub fn namedEventIndices(_: *const @This(), _: ids.ElemId) []const usize {
         return &.{};
     }
 
     /// This minimal stream fixture has no custom attribute descriptors.
-    pub fn customAttrIndices(_: *const @This(), _: u64) []const descriptor_stream.CustomAttrDescriptorIndex {
+    pub fn customAttrIndices(_: *const @This(), _: ids.ElemId) []const descriptor_stream.CustomAttrDescriptorIndex {
         return &.{};
     }
 
     /// This minimal stream fixture has no lifecycle descriptors.
-    pub fn lifecycleIndices(_: *const @This(), _: u64) []const descriptor_stream.LifecycleDescriptorIndex {
+    pub fn lifecycleIndices(_: *const @This(), _: ids.ScopeId) []const descriptor_stream.LifecycleDescriptorIndex {
         return &.{};
     }
 
     /// This minimal stream fixture has no node-owned structural descriptors.
-    pub fn nodeDescriptorIndex(_: *const @This(), _: u64) ?descriptor_stream.NodeDescriptorIndex {
+    pub fn nodeDescriptorIndex(_: *const @This(), _: ids.NodeId) ?descriptor_stream.NodeDescriptorIndex {
         return null;
     }
 };
@@ -886,18 +887,18 @@ test "structural splice scans removed render range" {
     defer stream.deinit(allocator);
 
     stream.render_nodes.appendSlice(allocator, &.{
-        .{ .elem_id = 1, .kind = .element },
-        .{ .elem_id = 2, .kind = .text },
-        .{ .elem_id = 3, .kind = .text },
-        .{ .elem_id = 4, .kind = .element },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(1), .kind = .element },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(2), .kind = .text },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(3), .kind = .text },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(4), .kind = .element },
     }) catch @panic("out of memory");
     stream.elements.appendSlice(allocator, &.{
-        .{ .elem_id = 1, .parent_elem_id = 0, .scope_id = 10, .tag = "div" },
-        .{ .elem_id = 4, .parent_elem_id = 0, .scope_id = 20, .tag = "aside" },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(1), .parent_elem_id = descriptor_stream.ElemId.fromRaw(0), .scope_id = descriptor_stream.ScopeId.fromRaw(10), .tag = "div" },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(4), .parent_elem_id = descriptor_stream.ElemId.fromRaw(0), .scope_id = descriptor_stream.ScopeId.fromRaw(20), .tag = "aside" },
     }) catch @panic("out of memory");
     stream.text_nodes.appendSlice(allocator, &.{
-        .{ .elem_id = 2, .parent_elem_id = 1, .scope_id = 10, .value = "a" },
-        .{ .elem_id = 3, .parent_elem_id = 1, .scope_id = 10, .value = "b" },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(2), .parent_elem_id = descriptor_stream.ElemId.fromRaw(1), .scope_id = descriptor_stream.ScopeId.fromRaw(10), .value = "a" },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(3), .parent_elem_id = descriptor_stream.ElemId.fromRaw(1), .scope_id = descriptor_stream.ScopeId.fromRaw(10), .value = "b" },
     }) catch @panic("out of memory");
 
     var target_scopes = [_]bool{false} ** 21;
@@ -916,14 +917,14 @@ test "render removal preparation sweeps allocation failures without source mutat
     var stream = TestStream{};
     defer stream.deinit(std.testing.allocator);
     try stream.render_nodes.appendSlice(std.testing.allocator, &.{
-        .{ .elem_id = 1, .kind = .element },
-        .{ .elem_id = 2, .kind = .text },
-        .{ .elem_id = 3, .kind = .text },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(1), .kind = .element },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(2), .kind = .text },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(3), .kind = .text },
     });
-    try stream.elements.append(std.testing.allocator, .{ .elem_id = 1, .parent_elem_id = 0, .scope_id = 1, .tag = "div" });
+    try stream.elements.append(std.testing.allocator, .{ .elem_id = descriptor_stream.ElemId.fromRaw(1), .parent_elem_id = descriptor_stream.ElemId.fromRaw(0), .scope_id = descriptor_stream.ScopeId.fromRaw(1), .tag = "div" });
     try stream.text_nodes.appendSlice(std.testing.allocator, &.{
-        .{ .elem_id = 2, .parent_elem_id = 1, .scope_id = 1, .value = "a" },
-        .{ .elem_id = 3, .parent_elem_id = 1, .scope_id = 1, .value = "b" },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(2), .parent_elem_id = descriptor_stream.ElemId.fromRaw(1), .scope_id = descriptor_stream.ScopeId.fromRaw(1), .value = "a" },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(3), .parent_elem_id = descriptor_stream.ElemId.fromRaw(1), .scope_id = descriptor_stream.ScopeId.fromRaw(1), .value = "b" },
     });
     const original_nodes = try std.testing.allocator.dupe(TestStream.RenderNode, stream.render_nodes.items);
     defer std.testing.allocator.free(original_nodes);
@@ -954,20 +955,20 @@ test "multi interval removal prepares one union journal and rejects overlaps" {
     var stream = TestStream{};
     defer stream.deinit(std.testing.allocator);
     try stream.render_nodes.appendSlice(std.testing.allocator, &.{
-        .{ .elem_id = 1, .kind = .element },
-        .{ .elem_id = 2, .kind = .text },
-        .{ .elem_id = 3, .kind = .element },
-        .{ .elem_id = 4, .kind = .element },
-        .{ .elem_id = 5, .kind = .text },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(1), .kind = .element },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(2), .kind = .text },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(3), .kind = .element },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(4), .kind = .element },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(5), .kind = .text },
     });
     try stream.elements.appendSlice(std.testing.allocator, &.{
-        .{ .elem_id = 1, .parent_elem_id = 0, .scope_id = 1, .tag = "div" },
-        .{ .elem_id = 3, .parent_elem_id = 0, .scope_id = 2, .tag = "hr" },
-        .{ .elem_id = 4, .parent_elem_id = 0, .scope_id = 3, .tag = "aside" },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(1), .parent_elem_id = descriptor_stream.ElemId.fromRaw(0), .scope_id = descriptor_stream.ScopeId.fromRaw(1), .tag = "div" },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(3), .parent_elem_id = descriptor_stream.ElemId.fromRaw(0), .scope_id = descriptor_stream.ScopeId.fromRaw(2), .tag = "hr" },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(4), .parent_elem_id = descriptor_stream.ElemId.fromRaw(0), .scope_id = descriptor_stream.ScopeId.fromRaw(3), .tag = "aside" },
     });
     try stream.text_nodes.appendSlice(std.testing.allocator, &.{
-        .{ .elem_id = 2, .parent_elem_id = 1, .scope_id = 1, .value = "a" },
-        .{ .elem_id = 5, .parent_elem_id = 4, .scope_id = 3, .value = "b" },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(2), .parent_elem_id = descriptor_stream.ElemId.fromRaw(1), .scope_id = descriptor_stream.ScopeId.fromRaw(1), .value = "a" },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(5), .parent_elem_id = descriptor_stream.ElemId.fromRaw(4), .scope_id = descriptor_stream.ScopeId.fromRaw(3), .value = "b" },
     });
     const original_nodes = try std.testing.allocator.dupe(TestStream.RenderNode, stream.render_nodes.items);
     defer std.testing.allocator.free(original_nodes);
@@ -1002,18 +1003,18 @@ test "structural splice removes rendered descendants of target nodes across scop
     defer stream.deinit(allocator);
 
     stream.render_nodes.appendSlice(allocator, &.{
-        .{ .elem_id = 1, .kind = .element },
-        .{ .elem_id = 2, .kind = .element },
-        .{ .elem_id = 3, .kind = .text },
-        .{ .elem_id = 4, .kind = .element },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(1), .kind = .element },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(2), .kind = .element },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(3), .kind = .text },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(4), .kind = .element },
     }) catch @panic("out of memory");
     stream.elements.appendSlice(allocator, &.{
-        .{ .elem_id = 1, .parent_elem_id = 0, .scope_id = 10, .tag = "section" },
-        .{ .elem_id = 2, .parent_elem_id = 1, .scope_id = 20, .tag = "div" },
-        .{ .elem_id = 4, .parent_elem_id = 0, .scope_id = 30, .tag = "aside" },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(1), .parent_elem_id = descriptor_stream.ElemId.fromRaw(0), .scope_id = descriptor_stream.ScopeId.fromRaw(10), .tag = "section" },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(2), .parent_elem_id = descriptor_stream.ElemId.fromRaw(1), .scope_id = descriptor_stream.ScopeId.fromRaw(20), .tag = "div" },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(4), .parent_elem_id = descriptor_stream.ElemId.fromRaw(0), .scope_id = descriptor_stream.ScopeId.fromRaw(30), .tag = "aside" },
     }) catch @panic("out of memory");
     stream.text_nodes.appendSlice(allocator, &.{
-        .{ .elem_id = 3, .parent_elem_id = 2, .scope_id = 30, .value = "nested" },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(3), .parent_elem_id = descriptor_stream.ElemId.fromRaw(2), .scope_id = descriptor_stream.ScopeId.fromRaw(30), .value = "nested" },
     }) catch @panic("out of memory");
 
     var target_scopes = [_]bool{false} ** 31;

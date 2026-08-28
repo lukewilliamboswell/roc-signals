@@ -21,13 +21,15 @@ const render = signals.render;
 const render_sink = signals.render_sink;
 const host_value_registry = signals.host_value_registry;
 const erased_calls = signals.erased_calls;
+const CapabilitySplit = signals.callable_roles.CapabilitySplit;
 const hv = signals.host_values;
 const engine = signals.engine;
 const debug_phase = signals.debug_phase;
 const DebugPhase = debug_phase.Phase;
 const runtime_limits = signals.runtime_limits;
+const ids = signals.ids;
 
-const HostValue = u64;
+const HostValue = hv.HostValue;
 const HostValueCapability = hv.HostValueCapabilityHandle;
 const ElemBox = @typeInfo(@TypeOf(abi.roc_ui_init)).@"fn".return_type.?;
 const RenderTextField = render.TextField;
@@ -73,7 +75,7 @@ const WasmCtx = struct {
 
     /// Resolves a state cell by dense node id without scanning the signal graph.
     pub fn stateValueByNodeId(_: Handle, node_id: u64) HostValue {
-        return currentStateValue(node_id);
+        return currentStateValue(ids.NodeId.fromRaw(node_id));
     }
 
     /// Returns the exact app-compiled capability that owns the requested state cell.
@@ -83,7 +85,7 @@ const WasmCtx = struct {
 
     /// Replaces a state source value and enters the ordinary dirty-propagation path.
     pub fn updateStateValue(_: Handle, _: *abi.RocHost, node_id: u64, value: HostValue) bool {
-        return updateStateCell(node_id, value);
+        return updateStateCell(ids.NodeId.fromRaw(node_id), value);
     }
 
     /// Materializes the mount-time browser location through the source's owning capability.
@@ -144,27 +146,27 @@ const WasmSink = struct {
     }
 
     /// Emits the already-decided command that attaches a newly created render node.
-    pub fn appendNode(_: WasmSink, elem_id: u64, parent_elem_id: u64, tag: []const u8) void {
+    pub fn appendNode(_: WasmSink, elem_id: ids.ElemId, parent_elem_id: ids.ElemId, tag: []const u8) void {
         if (std.mem.eql(u8, tag, "text")) {
-            appendStringCommand(.create_text, toU32(elem_id), "");
+            appendStringCommand(.create_text, toU32(elem_id.raw()), "");
         } else {
-            appendStringCommand(.create_element, toU32(elem_id), tag);
+            appendStringCommand(.create_element, toU32(elem_id.raw()), tag);
         }
-        appendCommand(.append_child, toU32(parent_elem_id), toU32(elem_id), 0, 0, 0);
+        appendCommand(.append_child, toU32(parent_elem_id.raw()), toU32(elem_id.raw()), 0, 0, 0);
     }
 
     /// Ensures the host render surface contains the engine-selected node and tag.
-    pub fn ensureNode(_: WasmSink, elem_id: u64, tag: []const u8) void {
+    pub fn ensureNode(_: WasmSink, elem_id: ids.ElemId, tag: []const u8) void {
         if (std.mem.eql(u8, tag, "text")) {
-            appendStringCommand(.create_text, toU32(elem_id), "");
+            appendStringCommand(.create_text, toU32(elem_id.raw()), "");
         } else {
-            appendStringCommand(.create_element, toU32(elem_id), tag);
+            appendStringCommand(.create_element, toU32(elem_id.raw()), tag);
         }
     }
 
     /// Emits removal of a node whose owning scope has already been disposed by the engine.
-    pub fn removeNode(_: WasmSink, elem_id: u64) void {
-        appendCommand(.remove_node, toU32(elem_id), 0, 0, 0, 0);
+    pub fn removeNode(_: WasmSink, elem_id: ids.ElemId) void {
+        appendCommand(.remove_node, toU32(elem_id.raw()), 0, 0, 0, 0);
     }
 
     // The engine hands the sink the final child order; achieving it in the real
@@ -173,83 +175,83 @@ const WasmSink = struct {
     // engine still computes the minimal-move count for its telemetry; this thin
     // executor just realises the order it was given.
     /// Publishes the engine-selected child order for one parent.
-    pub fn replaceChildren(_: WasmSink, parent_elem_id: u64, next_child_ids: []const u64) void {
+    pub fn replaceChildren(_: WasmSink, parent_elem_id: ids.ElemId, next_child_ids: []const ids.ElemId) void {
         emitAppendChildren(parent_elem_id, next_child_ids);
     }
 
     /// Publishes a moves-only child reorder without rebuilding surviving row structure.
-    pub fn replaceChildrenForMoves(_: WasmSink, parent_elem_id: u64, next_child_ids: []const u64) void {
+    pub fn replaceChildrenForMoves(_: WasmSink, parent_elem_id: ids.ElemId, next_child_ids: []const ids.ElemId) void {
         emitAppendChildren(parent_elem_id, next_child_ids);
     }
 
     /// Applies an engine-decided text field value to one render node.
-    pub fn applyTextField(_: WasmSink, elem_id: u64, field: RenderTextField, value: []const u8) void {
+    pub fn applyTextField(_: WasmSink, elem_id: ids.ElemId, field: RenderTextField, value: []const u8) void {
         if (textAttrNameForField(field)) |name| {
-            appendDynamicSetAttrText(toU32(elem_id), name, value);
+            appendDynamicSetAttrText(toU32(elem_id.raw()), name, value);
         } else {
-            appendStringCommand(field.setOp(), toU32(elem_id), value);
+            appendStringCommand(field.setOp(), toU32(elem_id.raw()), value);
         }
     }
 
     /// Applies an engine-decided custom text attribute to one render node.
-    pub fn applyTextAttr(_: WasmSink, elem_id: u64, name: []const u8, value: []const u8) void {
-        appendDynamicSetAttrText(toU32(elem_id), name, value);
+    pub fn applyTextAttr(_: WasmSink, elem_id: ids.ElemId, name: []const u8, value: []const u8) void {
+        appendDynamicSetAttrText(toU32(elem_id.raw()), name, value);
     }
 
     /// Applies an engine-decided boolean field value to one render node.
-    pub fn applyBoolField(_: WasmSink, elem_id: u64, field: RenderBoolField, value: bool) void {
-        appendBoolFieldCommand(field, toU32(elem_id), value);
+    pub fn applyBoolField(_: WasmSink, elem_id: ids.ElemId, field: RenderBoolField, value: bool) void {
+        appendBoolFieldCommand(field, toU32(elem_id.raw()), value);
     }
 
     /// Clears an engine-decided text field from one render node.
-    pub fn clearTextField(_: WasmSink, elem_id: u64, field: RenderTextField) void {
+    pub fn clearTextField(_: WasmSink, elem_id: ids.ElemId, field: RenderTextField) void {
         if (textAttrNameForField(field)) |name| {
-            appendDynamicRemoveAttr(toU32(elem_id), name);
+            appendDynamicRemoveAttr(toU32(elem_id.raw()), name);
         } else {
-            appendStringCommand(field.setOp(), toU32(elem_id), "");
+            appendStringCommand(field.setOp(), toU32(elem_id.raw()), "");
         }
     }
 
     /// Clears an engine-decided custom text attribute from one render node.
-    pub fn clearTextAttr(_: WasmSink, elem_id: u64, name: []const u8) void {
-        appendDynamicRemoveAttr(toU32(elem_id), name);
+    pub fn clearTextAttr(_: WasmSink, elem_id: ids.ElemId, name: []const u8) void {
+        appendDynamicRemoveAttr(toU32(elem_id.raw()), name);
     }
 
     /// Clears an engine-decided boolean field from one render node.
-    pub fn clearBoolField(_: WasmSink, elem_id: u64, field: RenderBoolField) void {
-        appendBoolFieldCommand(field, toU32(elem_id), false);
+    pub fn clearBoolField(_: WasmSink, elem_id: ids.ElemId, field: RenderBoolField) void {
+        appendBoolFieldCommand(field, toU32(elem_id.raw()), false);
     }
 
     /// Publishes a validated canonical event binding selected by the engine.
-    pub fn bindEvent(_: WasmSink, elem_id: u64, key: EventBindingKey, binding: EventBinding) void {
+    pub fn bindEvent(_: WasmSink, elem_id: ids.ElemId, key: EventBindingKey, binding: EventBinding) void {
         appendEventBindCommand(.{ .elem_id = elem_id, .key = key, .binding = binding });
     }
 
     /// Removes a host event registration whose engine-owned binding is no longer active.
-    pub fn clearEvent(_: WasmSink, elem_id: u64, key: EventBindingKey) void {
+    pub fn clearEvent(_: WasmSink, elem_id: ids.ElemId, key: EventBindingKey) void {
         appendEventClearCommand(.{ .elem_id = elem_id, .key = key });
     }
 
     /// Starts the bounded host registration for an engine-owned interval source.
-    pub fn startInterval(_: WasmSink, token: u64, period_ms: u64) void {
-        appendCommand(.start_interval, toU32(token), toU32(period_ms), 0, 0, 0);
+    pub fn startInterval(_: WasmSink, token: ids.IntervalToken, period_ms: u64) void {
+        appendCommand(.start_interval, toU32(token.raw()), toU32(period_ms), 0, 0, 0);
     }
 
     /// Cancels the host registration for an interval whose owning scope is no longer active.
-    pub fn cancelInterval(_: WasmSink, token: u64) void {
-        appendCommand(.cancel_interval, toU32(token), 0, 0, 0, 0);
+    pub fn cancelInterval(_: WasmSink, token: ids.IntervalToken) void {
+        appendCommand(.cancel_interval, toU32(token.raw()), 0, 0, 0, 0);
     }
 
     /// Starts bounded asynchronous host work for an engine-issued task request.
-    pub fn startTask(_: WasmSink, request_id: u64, task_name: []const u8, request: []const u8) void {
+    pub fn startTask(_: WasmSink, request_id: ids.TaskRequestId, task_name: []const u8, request: []const u8) void {
         const name_offset = storeBytes(task_name);
         const request_offset = storeBytes(request);
-        appendCommand(.start_task, toU32(request_id), name_offset, toU32(task_name.len), request_offset, toU32(request.len));
+        appendCommand(.start_task, toU32(request_id.raw()), name_offset, toU32(task_name.len), request_offset, toU32(request.len));
     }
 
     /// Cancels host work for a task request retired by engine lifecycle policy.
-    pub fn cancelTask(_: WasmSink, request_id: u64) void {
-        appendCommand(.cancel_task, toU32(request_id), 0, 0, 0, 0);
+    pub fn cancelTask(_: WasmSink, request_id: ids.TaskRequestId) void {
+        appendCommand(.cancel_task, toU32(request_id.raw()), 0, 0, 0, 0);
     }
 
     /// Applies an engine-issued browser-history command without deriving routing semantics.
@@ -277,12 +279,12 @@ const WasmSink = struct {
     }
 
     /// Checks that the host render surface matches the engine's committed node metadata.
-    pub fn debugAssertNode(_: WasmSink, _: u64, _: bool, _: ?[]const u8, _: ?u64, _: []const u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64) void {}
+    pub fn debugAssertNode(_: WasmSink, _: ids.ElemId, _: bool, _: ?[]const u8, _: ?ids.ElemId, _: []const ids.ElemId, _: ?ids.EventId, _: ?ids.EventId, _: ?ids.EventId, _: ?ids.EventId, _: ?ids.EventId, _: ?ids.EventId, _: ?ids.EventId) void {}
 };
 
-fn emitAppendChildren(parent_elem_id: u64, next_child_ids: []const u64) void {
+fn emitAppendChildren(parent_elem_id: ids.ElemId, next_child_ids: []const ids.ElemId) void {
     for (next_child_ids) |child_id| {
-        appendCommand(.append_child, toU32(parent_elem_id), toU32(child_id), 0, 0, 0);
+        appendCommand(.append_child, toU32(parent_elem_id.raw()), toU32(child_id.raw()), 0, 0, 0);
     }
 }
 
@@ -423,7 +425,7 @@ fn checkedWireAlign4(len: usize) usize {
 
 fn appendCommand(op: render.Op, a: u32, b: u32, c: u32, d: u32, e: u32) void {
     preflightCommandStorage(.{ .commands = 1 });
-    command_batch.staged.commands.append(allocator(), op, a, b, c, d, e) catch failHostWith("out of memory while staging render commands");
+    command_batch.staged.commands.appendRaw(allocator(), op, a, b, c, d, e) catch failHostWith("out of memory while staging render commands");
 }
 
 fn clearCommandBuffers() void {
@@ -462,12 +464,12 @@ fn storeLocationHref(location: boundary.LocationSnapshot) render.DynamicSlice {
         command_batch.staged.strings.append(allocator(), '#') catch failHostWith("out of memory while staging location command");
         command_batch.staged.strings.appendSlice(allocator(), location.hash) catch failHostWith("out of memory while staging location command");
     }
-    return .{ .offset = offset, .len = toU32(command_batch.staged.strings.items.len - offset) };
+    return .{ .offset = @enumFromInt(offset), .len = @enumFromInt(toU32(command_batch.staged.strings.items.len - offset)) };
 }
 
 fn appendLocationCommand(op: render.Op, location: boundary.LocationSnapshot) void {
     const href = storeLocationHref(location);
-    appendCommand(op, href.offset, href.len, 0, 0, 0);
+    appendCommand(op, href.offset.raw(), href.len.raw(), 0, 0, 0);
 }
 
 fn appendDocumentTitleCommand(title: []const u8) void {
@@ -498,19 +500,19 @@ fn textAttrNameForField(field: RenderTextField) ?[]const u8 {
 fn appendDynamicSetAttrText(elem_id: u32, name: []const u8, value: []const u8) void {
     const payload_len = checkedWireSize(&.{ 3 * @sizeOf(u32), name.len, value.len });
     preflightCommandStorage(.{ .commands = 1, .dynamic = checkedWireSize(&.{ 2 * @sizeOf(u16), @sizeOf(u32), checkedWireAlign4(payload_len) }) });
-    const slice = command_batch.staged.dynamic.appendSetAttrText(allocator(), elem_id, name, value) catch failHostWith("out of memory while staging dynamic render command");
-    appendCommand(.extended, slice.offset, slice.len, 0, 0, 0);
+    const slice = command_batch.staged.dynamic.appendSetAttrText(allocator(), @enumFromInt(elem_id), name, value) catch failHostWith("out of memory while staging dynamic render command");
+    appendCommand(.extended, slice.offset.raw(), slice.len.raw(), 0, 0, 0);
 }
 
 fn appendDynamicRemoveAttr(elem_id: u32, name: []const u8) void {
     const payload_len = checkedWireSize(&.{ 2 * @sizeOf(u32), name.len });
     preflightCommandStorage(.{ .commands = 1, .dynamic = checkedWireSize(&.{ 2 * @sizeOf(u16), @sizeOf(u32), checkedWireAlign4(payload_len) }) });
-    const slice = command_batch.staged.dynamic.appendRemoveAttr(allocator(), elem_id, name) catch failHostWith("out of memory while staging dynamic render command");
-    appendCommand(.extended, slice.offset, slice.len, 0, 0, 0);
+    const slice = command_batch.staged.dynamic.appendRemoveAttr(allocator(), @enumFromInt(elem_id), name) catch failHostWith("out of memory while staging dynamic render command");
+    appendCommand(.extended, slice.offset.raw(), slice.len.raw(), 0, 0, 0);
 }
 
 fn appendEventBindCommand(command: EventBindCommand) void {
-    const elem_id = toU32(command.elem_id);
+    const elem_id = toU32(command.elem_id.raw());
     const binding = command.binding;
     if (binding.delivery.effective != .native) {
         @panic("browser event command wire only supports native delivery");
@@ -518,17 +520,17 @@ fn appendEventBindCommand(command: EventBindCommand) void {
     switch (command.key) {
         .fixed => |kind| {
             if (binding.canUseFixedOpcode(kind)) {
-                appendCommand(kind.bindOp(), elem_id, toU32(binding.event_id), 0, 0, 0);
+                appendCommand(kind.bindOp(), elem_id, toU32(binding.event_id.raw()), 0, 0, 0);
             } else {
-                appendDynamicBindEvent(elem_id, kind.domEventName(), toU32(binding.event_id), binding.policy.toWireBits(), binding.delivery.toWire(), binding.payload_descriptor);
+                appendDynamicBindEvent(elem_id, kind.domEventName(), toU32(binding.event_id.raw()), binding.policy.toWireBits(), binding.delivery.toWire(), binding.payload_descriptor);
             }
         },
-        .named => |name| appendDynamicBindEvent(elem_id, name, toU32(binding.event_id), binding.policy.toWireBits(), binding.delivery.toWire(), binding.payload_descriptor),
+        .named => |name| appendDynamicBindEvent(elem_id, name, toU32(binding.event_id.raw()), binding.policy.toWireBits(), binding.delivery.toWire(), binding.payload_descriptor),
     }
 }
 
 fn appendEventClearCommand(command: EventClearCommand) void {
-    const elem_id = toU32(command.elem_id);
+    const elem_id = toU32(command.elem_id.raw());
     switch (command.key) {
         .fixed => |kind| appendCommand(.clear_event, elem_id, toU32(@intFromEnum(kind)), 0, 0, 0),
         .named => |name| appendDynamicClearEvent(elem_id, name),
@@ -538,15 +540,15 @@ fn appendEventClearCommand(command: EventClearCommand) void {
 fn appendDynamicBindEvent(elem_id: u32, name: []const u8, event_id: u32, options: u32, delivery: render.EventDeliveryWire, payload_descriptor: BoundaryPayloadDescriptor) void {
     const payload_len = checkedWireSize(&.{ 8 * @sizeOf(u32), name.len, payload_descriptor.extractionBytes().len });
     preflightCommandStorage(.{ .commands = 1, .dynamic = checkedWireSize(&.{ 2 * @sizeOf(u16), @sizeOf(u32), checkedWireAlign4(payload_len) }) });
-    const slice = command_batch.staged.dynamic.appendBindEvent(allocator(), elem_id, event_id, name, options, delivery, payload_descriptor) catch failHostWith("out of memory while staging dynamic event command");
-    appendCommand(.extended, slice.offset, slice.len, 0, 0, 0);
+    const slice = command_batch.staged.dynamic.appendBindEvent(allocator(), @enumFromInt(elem_id), @enumFromInt(event_id), name, options, delivery, payload_descriptor) catch failHostWith("out of memory while staging dynamic event command");
+    appendCommand(.extended, slice.offset.raw(), slice.len.raw(), 0, 0, 0);
 }
 
 fn appendDynamicClearEvent(elem_id: u32, name: []const u8) void {
     const payload_len = checkedWireSize(&.{ 2 * @sizeOf(u32), name.len });
     preflightCommandStorage(.{ .commands = 1, .dynamic = checkedWireSize(&.{ 2 * @sizeOf(u16), @sizeOf(u32), checkedWireAlign4(payload_len) }) });
-    const slice = command_batch.staged.dynamic.appendClearEvent(allocator(), elem_id, name) catch failHostWith("out of memory while staging dynamic event command");
-    appendCommand(.extended, slice.offset, slice.len, 0, 0, 0);
+    const slice = command_batch.staged.dynamic.appendClearEvent(allocator(), @enumFromInt(elem_id), name) catch failHostWith("out of memory while staging dynamic event command");
+    appendCommand(.extended, slice.offset.raw(), slice.len.raw(), 0, 0, 0);
 }
 
 fn appendBoolFieldCommand(field: RenderBoolField, elem_id: u32, value: bool) void {
@@ -908,21 +910,22 @@ fn clearInitialOnlinePayload() void {
 
 // --- State access (routed through the engine's state table) ---
 
-fn currentStateValue(node_id: u64) HostValue {
-    const state_index = shared_engine.stateIndexByNodeId(node_id) orelse failHost();
-    return cloneHostValue(shared_engine.states.items[state_index].cell.value);
+fn currentStateValue(node_id: ids.NodeId) HostValue {
+    const state_index = shared_engine.stateIndexByNodeId(node_id.raw()) orelse failHost();
+    return cloneHostValue(shared_engine.states.items[state_index].activePayloadConst().cell.value);
 }
 
-fn updateStateCell(node_id: u64, value: HostValue) bool {
-    const state_index = shared_engine.stateIndexByNodeId(node_id) orelse failHost();
+fn updateStateCell(node_id: ids.NodeId, value: HostValue) bool {
+    const state_index = shared_engine.stateIndexByNodeId(node_id.raw()) orelse failHost();
     const state = &shared_engine.states.items[state_index];
     const ctx = WasmCtx{};
-    if (state.cell.valueEquals(ctx, &roc_host, value)) {
-        state.cell.dropIncoming(ctx, &roc_host, value);
+    const payload = state.activePayload();
+    if (payload.cell.valueEquals(ctx, &roc_host, value)) {
+        payload.cell.dropIncoming(ctx, &roc_host, value);
         return false;
     }
-    state.cell.replaceValue(ctx, &roc_host, value);
-    state.version += 1;
+    payload.cell.replaceValue(ctx, &roc_host, value);
+    payload.version += 1;
     return true;
 }
 
@@ -1009,16 +1012,16 @@ fn dispatchEvent(desc: HostActiveEventDesc, payload: HostValue) void {
     defer callHostValueToUnitWithCapability(payload_cap, hv.hostValueCapabilityDrop(payload_cap), payload);
 
     const current = currentStateValue(desc.target_node_id);
-    const state_cap = shared_engine.stateCapability(desc.target_node_id) catch failHost();
+    const state_cap = shared_engine.stateCapability(desc.target_node_id.raw()) catch failHost();
     defer callHostValueToUnitWithCapability(state_cap, hv.hostValueCapabilityDrop(state_cap), current);
     const read = currentStateValue(desc.read_node_id);
-    const read_cap = shared_engine.stateCapability(desc.read_node_id) catch failHost();
+    const read_cap = shared_engine.stateCapability(desc.read_node_id.raw()) catch failHost();
     defer callHostValueToUnitWithCapability(read_cap, hv.hostValueCapabilityDrop(read_cap), read);
     const next = callHostValueHostValueHostValueToHostValueWithCapabilities(state_cap, read_cap, payload_cap, desc.payload_reducer.transform, current, read, payload);
-    _ = shared_engine.dispatchStateValue(ctx, &roc_host, desc.target_node_id, next, state_cap);
+    _ = shared_engine.dispatchStateValue(ctx, &roc_host, desc.target_node_id.raw(), next, state_cap);
 }
 
-fn resolveTask(request_id: u64, payload_text: []const u8, failed: bool) void {
+fn resolveTask(request_id: ids.TaskRequestId, payload_text: []const u8, failed: bool) void {
     const previous_phase = roc_allocation_phase;
     defer roc_allocation_phase = previous_phase;
     const ctx = WasmCtx{};
@@ -1046,17 +1049,17 @@ fn resolveTask(request_id: u64, payload_text: []const u8, failed: bool) void {
 
     roc_allocation_phase = .task_transform;
     const next = if (failed)
-        callHostValueToHostValueWithCapability(task_payload.payload_cap, task_payload.failed, payload)
+        callHostValueToHostValueWithCapability(task_payload.payload_cap, task_payload.failed.toAbi(), payload)
     else
-        callHostValueToHostValueWithCapability(task_payload.payload_cap, task_payload.done, payload);
+        callHostValueToHostValueWithCapability(task_payload.payload_cap, task_payload.done.toAbi(), payload);
     assertHostValueTakenAfter(payload, payload_take_epoch);
     roc_allocation_phase = .task_dispatch;
     _ = shared_engine.dispatchTaskSourceValue(ctx, &roc_host, pending.request_id, record, next);
 }
 
-fn tickInterval(token: u64) void {
+fn tickInterval(token: ids.IntervalToken) void {
     const ctx = WasmCtx{};
-    _ = shared_engine.tickIntervalSourceByRuntimeToken(ctx, &roc_host, token);
+    _ = shared_engine.tickIntervalSourceByRuntimeToken(ctx, &roc_host, token.raw());
 }
 
 fn dispatchLocationChange(payload: []const u8) void {
@@ -1639,7 +1642,7 @@ export fn roc_ui_event(event_id: u32, payload_kind: u32, payload_ptr: usize, pay
 export fn roc_ui_timer(token: u32) callconv(.c) void {
     beginHostCall();
     beginCommandTransaction();
-    tickInterval(token);
+    tickInterval(ids.IntervalToken.fromRaw(token));
     commitCommandTransaction();
 }
 
@@ -1647,7 +1650,7 @@ export fn roc_ui_resolve(request_id: u32, payload_ptr: usize, payload_len: usize
     beginHostCall();
     beginCommandTransaction();
     resolveTask(
-        request_id,
+        ids.TaskRequestId.fromRaw(request_id),
         (@as([*]const u8, @ptrFromInt(payload_ptr)))[0..payload_len],
         failed != 0,
     );
@@ -1701,69 +1704,69 @@ fn rocCrashedForAbi(_: *abi.RocHost, bytes: [*]const u8, len: usize) callconv(.c
     roc_crashed(bytes, len);
 }
 
-export fn roc_host_value_clone(value: HostValue) callconv(.c) HostValue {
+export fn roc_host_value_clone(value: u64) callconv(.c) u64 {
     const previous_phase = roc_allocation_phase;
     roc_allocation_phase = .host_value_clone;
     defer roc_allocation_phase = previous_phase;
-    return shared_engine.host_values.clone(allocator(), value, registryOps()) catch |err| {
+    return (shared_engine.host_values.clone(allocator(), HostValue.fromRaw(value), registryOps()) catch |err| {
         failHostValueRegistryError(err);
-    };
+    }).toRaw();
 }
 
-export fn roc_host_value_get_with_capability(value: HostValue, cap: HostValueCapability) callconv(.c) abi.RocBox {
+export fn roc_host_value_get_with_capability(value: u64, cap: HostValueCapability) callconv(.c) abi.RocBox {
     const previous_phase = roc_allocation_phase;
     roc_allocation_phase = .host_value_get;
     defer roc_allocation_phase = previous_phase;
     defer hv.releaseHostValueCapability(cap, &roc_host);
-    return shared_engine.host_values.getWithCapability(allocator(), value, cap, registryOps()) catch |err| {
+    return shared_engine.host_values.getWithCapability(allocator(), HostValue.fromRaw(value), cap, registryOps()) catch |err| {
         failHostValueRegistryError(err);
     };
 }
 
-export fn roc_host_value_get_with_split(value: HostValue, split: abi.RocErasedCallable) callconv(.c) abi.RocBox {
+export fn roc_host_value_get_with_split(value: u64, split: abi.RocErasedCallable) callconv(.c) abi.RocBox {
     const previous_phase = roc_allocation_phase;
     roc_allocation_phase = .host_value_get_with_split;
     defer roc_allocation_phase = previous_phase;
     defer abi.decrefErasedCallable(split, &roc_host);
-    return shared_engine.host_values.getWithSplit(value, split, registryOps()) catch |err| {
+    return shared_engine.host_values.getWithSplit(HostValue.fromRaw(value), CapabilitySplit.fromAbi(split), registryOps()) catch |err| {
         failHostValueRegistryError(err);
     };
 }
 
-export fn roc_host_value_store_with_capability(box: abi.RocBox, cap: HostValueCapability) callconv(.c) HostValue {
+export fn roc_host_value_store_with_capability(box: abi.RocBox, cap: HostValueCapability) callconv(.c) u64 {
     const previous_phase = roc_allocation_phase;
     roc_allocation_phase = .host_value_store;
     defer roc_allocation_phase = previous_phase;
-    return shared_engine.host_values.storeOwnedCapability(allocator(), box, cap, registryOps()) catch |err| {
+    return (shared_engine.host_values.storeOwnedCapability(allocator(), box, cap, registryOps()) catch |err| {
         failHostValueRegistryError(err);
-    };
+    }).toRaw();
 }
 
-export fn roc_host_value_store_with_existing_capability(box: abi.RocBox, source_value: HostValue) callconv(.c) HostValue {
+export fn roc_host_value_store_with_existing_capability(box: abi.RocBox, source_value: u64) callconv(.c) u64 {
     const previous_phase = roc_allocation_phase;
     roc_allocation_phase = .host_value_store;
     defer roc_allocation_phase = previous_phase;
-    return shared_engine.host_values.storeRetainedExistingCapability(allocator(), box, source_value, registryOps()) catch |err| {
+    return (shared_engine.host_values.storeRetainedExistingCapability(allocator(), box, HostValue.fromRaw(source_value), registryOps()) catch |err| {
         failHostValueRegistryError(err);
-    };
+    }).toRaw();
 }
 
-export fn roc_host_value_take_with_capability(value: HostValue, cap: HostValueCapability) callconv(.c) abi.RocBox {
+export fn roc_host_value_take_with_capability(value: u64, cap: HostValueCapability) callconv(.c) abi.RocBox {
     const previous_phase = roc_allocation_phase;
     roc_allocation_phase = .host_value_take;
     defer roc_allocation_phase = previous_phase;
     defer hv.releaseHostValueCapability(cap, &roc_host);
-    return shared_engine.host_values.takeWithCapability(value, cap, registryOps()) catch |err| {
+    return shared_engine.host_values.takeWithCapability(HostValue.fromRaw(value), cap, registryOps()) catch |err| {
         failHostValueRegistryError(err);
     };
 }
 
-export fn roc_host_value_take_with_split(value: HostValue, split: abi.RocErasedCallable) callconv(.c) abi.RocBox {
+export fn roc_host_value_take_with_split(value: u64, split: abi.RocErasedCallable) callconv(.c) abi.RocBox {
     const previous_phase = roc_allocation_phase;
     roc_allocation_phase = .host_value_take_with_split;
     defer roc_allocation_phase = previous_phase;
     defer abi.decrefErasedCallable(split, &roc_host);
-    return shared_engine.host_values.takeWithSplit(value, split, registryOps()) catch |err| {
+    return shared_engine.host_values.takeWithSplit(HostValue.fromRaw(value), CapabilitySplit.fromAbi(split), registryOps()) catch |err| {
         failHostValueRegistryError(err);
     };
 }

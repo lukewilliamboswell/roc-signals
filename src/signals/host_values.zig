@@ -9,8 +9,45 @@
 const std = @import("std");
 const DebugPhase = @import("debug_phase.zig").Phase;
 const abi = @import("roc_platform_abi.zig");
+const callable_roles = @import("callable_roles.zig");
 
-pub const HostValue = u64;
+/// Nominal handle for an opaque Roc value retained by the host registry.
+///
+/// The backing integer is part of the Roc ABI, but runtime code must not be
+/// able to interchange a value handle with node ids, epochs, or counters.
+pub const HostValue = enum(u64) {
+    invalid = 0,
+    _,
+
+    /// Converts the raw Roc ABI representation at a boundary entry point.
+    pub fn fromRaw(raw: u64) HostValue {
+        return @enumFromInt(raw);
+    }
+
+    /// Converts to the raw Roc ABI representation at a boundary exit point.
+    pub fn toRaw(self: HostValue) u64 {
+        return @intFromEnum(self);
+    }
+
+    /// Returns the dense registry slot encoded in the low half of the ABI handle.
+    pub fn registryIndex(self: HostValue) usize {
+        const one_based = self.toRaw() & std.math.maxInt(u32);
+        std.debug.assert(one_based != 0);
+        return @intCast(one_based - 1);
+    }
+};
+
+comptime {
+    if (@sizeOf(HostValue) != @sizeOf(u64)) @compileError("HostValue must preserve its u64 ABI size");
+    if (@alignOf(HostValue) != @alignOf(u64)) @compileError("HostValue must preserve its u64 ABI alignment");
+}
+
+test "HostValue is nominal while preserving the Roc ABI representation" {
+    try std.testing.expect(HostValue != u64);
+    try std.testing.expectEqual(@as(usize, @sizeOf(u64)), @sizeOf(HostValue));
+    try std.testing.expectEqual(@as(usize, @alignOf(u64)), @alignOf(HostValue));
+    try std.testing.expectEqual(@as(u64, 42), HostValue.fromRaw(42).toRaw());
+}
 pub const HostValueCapabilityHandle = abi.HostValueCapabilityHandle;
 pub const U8List = abi.RocListWith(u8, false);
 
@@ -83,35 +120,50 @@ pub fn hostValueCapabilityId(capability: HostValueCapabilityHandle) usize {
 }
 
 /// Materializes capability clone as a capability-owned host value for boundary delivery.
-pub fn hostValueCapabilityClone(capability: HostValueCapabilityHandle) abi.RocErasedCallable {
-    return capability.clone;
+pub fn hostValueCapabilityCloneCallable(capability: HostValueCapabilityHandle) callable_roles.CapabilityClone {
+    return .fromAbi(capability.clone);
 }
 
 /// Materializes capability eq as a capability-owned host value for boundary delivery.
-pub fn hostValueCapabilityEq(capability: HostValueCapabilityHandle) abi.RocErasedCallable {
-    return capability.eq;
+pub fn hostValueCapabilityEqCallable(capability: HostValueCapabilityHandle) callable_roles.CapabilityEq {
+    return .fromAbi(capability.eq);
 }
 
 /// Materializes capability drop as a capability-owned host value for boundary delivery.
+pub fn hostValueCapabilityDropCallable(capability: HostValueCapabilityHandle) callable_roles.CapabilityDrop {
+    return .fromAbi(capability.drop);
+}
+
+/// Lowers the clone operation for generic engine paths whose capability argument establishes the role.
+pub fn hostValueCapabilityClone(capability: HostValueCapabilityHandle) abi.RocErasedCallable {
+    return hostValueCapabilityCloneCallable(capability).toAbi();
+}
+
+/// Lowers the equality operation for generic engine paths whose capability argument establishes the role.
+pub fn hostValueCapabilityEq(capability: HostValueCapabilityHandle) abi.RocErasedCallable {
+    return hostValueCapabilityEqCallable(capability).toAbi();
+}
+
+/// Lowers the drop operation for generic engine paths whose capability argument establishes the role.
 pub fn hostValueCapabilityDrop(capability: HostValueCapabilityHandle) abi.RocErasedCallable {
-    return capability.drop;
+    return hostValueCapabilityDropCallable(capability).toAbi();
 }
 
 /// Materializes capability eq fn as a capability-owned host value for boundary delivery.
 pub fn hostValueCapabilityEqFn(capability: HostValueCapabilityHandle) ?abi.RocErasedCallableFn {
-    const eq = hostValueCapabilityEq(capability) orelse return null;
+    const eq = capability.eq orelse return null;
     return abi.rocErasedCallablePayloadPtr(eq).callable_fn_ptr;
 }
 
 /// Materializes capability clone fn as a capability-owned host value for boundary delivery.
 pub fn hostValueCapabilityCloneFn(capability: HostValueCapabilityHandle) ?abi.RocErasedCallableFn {
-    const clone = hostValueCapabilityClone(capability) orelse return null;
+    const clone = capability.clone orelse return null;
     return abi.rocErasedCallablePayloadPtr(clone).callable_fn_ptr;
 }
 
 /// Materializes capability drop fn as a capability-owned host value for boundary delivery.
 pub fn hostValueCapabilityDropFn(capability: HostValueCapabilityHandle) ?abi.RocErasedCallableFn {
-    const drop = hostValueCapabilityDrop(capability) orelse return null;
+    const drop = capability.drop orelse return null;
     return abi.rocErasedCallablePayloadPtr(drop).callable_fn_ptr;
 }
 
@@ -150,20 +202,20 @@ pub fn RegistryOps() type {
 
         /// Clones an opaque value only after validating its owning capability.
         pub fn cloneValueWithCapability(self: @This(), value: HostValue, capability: HostValueCapabilityHandle) HostValue {
-            return self.callHostValueToHostValueWithCapability(capability, hostValueCapabilityClone(capability), value);
+            return self.callHostValueToHostValueWithCapability(capability, hostValueCapabilityCloneCallable(capability), value);
         }
 
         /// Invokes the retained app-compiled callable using its exact ABI signature and ownership convention.
-        pub fn callHostValueToHostValueWithCapability(self: @This(), capability: HostValueCapabilityHandle, callable: abi.RocErasedCallable, value: HostValue) HostValue {
+        pub fn callHostValueToHostValueWithCapability(self: @This(), capability: HostValueCapabilityHandle, callable: callable_roles.CapabilityClone, value: HostValue) HostValue {
             const caps = [_]HostValueCapabilityHandle{capability};
             self.active_capabilities.push(&caps);
             defer self.active_capabilities.pop();
-            return @import("erased_calls.zig").callErasedHostValueToHostValue(self.roc_host, callable, value);
+            return @import("erased_calls.zig").callErasedHostValueToHostValue(self.roc_host, callable.toAbi(), value);
         }
 
         /// Uses the app-compiled split callable to create independent keep and output ownership.
-        pub fn splitBoxWithSplit(self: @This(), box: abi.RocBox, split: abi.RocErasedCallable) @import("erased_calls.zig").RocBoxPair {
-            return @import("erased_calls.zig").callErasedRocBoxToRocBoxPair(self.roc_host, split, box);
+        pub fn splitBoxWithSplit(self: @This(), box: abi.RocBox, split: callable_roles.CapabilitySplit) @import("erased_calls.zig").RocBoxPair {
+            return @import("erased_calls.zig").callErasedRocBoxToRocBoxPair(self.roc_host, split.toAbi(), box);
         }
     };
 }

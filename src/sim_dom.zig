@@ -6,6 +6,7 @@ const signals = @import("signals");
 const boundary = signals.boundary;
 const render = signals.render;
 const render_sink = signals.render_sink;
+const ids = signals.ids;
 const spec_parser = @import("spec/spec_parser.zig");
 
 pub const EventBinding = render_sink.EventBinding;
@@ -547,7 +548,7 @@ pub fn fixedEventBinding(elem: *const Element, kind: render.EventKind) ?EventBin
 /// Returns the dense id of the selected fixed event binding for spec dispatch.
 pub fn fixedEventId(elem: *const Element, kind: render.EventKind) ?u64 {
     const binding = fixedEventBinding(elem, kind) orelse return null;
-    return binding.event_id;
+    return binding.event_id.raw();
 }
 
 /// Installs a canonical event binding in the simulated DOM without owning dispatch semantics.
@@ -580,7 +581,7 @@ pub fn clearEvent(allocator: std.mem.Allocator, elem: *Element, key: render_sink
 /// Installs a canonical event binding in the simulated DOM without owning dispatch semantics.
 pub fn bindEventName(allocator: std.mem.Allocator, elem: *Element, name: []const u8, event_id: u64, policy: render.EventPolicy, payload_descriptor: boundary.BoundaryPayloadDescriptor) void {
     var binding: EventBinding = .{
-        .event_id = event_id,
+        .event_id = ids.EventId.fromRaw(event_id),
         .policy = policy,
         .payload_descriptor = payload_descriptor,
     };
@@ -826,7 +827,7 @@ test "simulated DOM element indexes attrs and named events" {
     try elem.named_events.append(allocator, .{
         .name = try allocator.dupe(u8, "submit"),
         .binding = .{
-            .event_id = 42,
+            .event_id = ids.EventId.fromRaw(42),
             .payload_descriptor = boundary.BoundaryPayloadDescriptor.init(.unit, .none),
         },
     });
@@ -1041,7 +1042,7 @@ test "simulated DOM binds and clears events" {
     defer elem.deinit(allocator);
 
     bindEventKind(&elem, .click, .{
-        .event_id = 11,
+        .event_id = ids.EventId.fromRaw(11),
         .payload_descriptor = boundary.BoundaryPayloadDescriptor.init(.unit, .none),
     });
     try std.testing.expectEqual(@as(?u64, 11), fixedEventId(&elem, .click));
@@ -1049,10 +1050,10 @@ test "simulated DOM binds and clears events" {
     try std.testing.expectEqual(@as(?u64, null), fixedEventId(&elem, .click));
 
     bindEventName(allocator, &elem, "submit", 21, render.EventPolicy.fromBits(7), boundary.BoundaryPayloadDescriptor.init(.unit, .none));
-    try std.testing.expectEqual(@as(u64, 21), namedEvent(&elem, "submit").?.binding.event_id);
+    try std.testing.expectEqual(@as(u64, 21), namedEvent(&elem, "submit").?.binding.event_id.raw());
     bindEventName(allocator, &elem, "submit", 22, render.EventPolicy.fromBits(9), boundary.BoundaryPayloadDescriptor.init(.bytes, .record_key_shift));
     const updated = namedEvent(&elem, "submit").?;
-    try std.testing.expectEqual(@as(u64, 22), updated.binding.event_id);
+    try std.testing.expectEqual(@as(u64, 22), updated.binding.event_id.raw());
     try std.testing.expect(updated.binding.policy.eql(render.EventPolicy.fromBits(9)));
     try std.testing.expectEqual(boundary.BoundaryPayloadDescriptor.init(.bytes, .record_key_shift), updated.binding.payload_descriptor);
     clearEventName(allocator, &elem, "submit");
@@ -1078,7 +1079,7 @@ test "simulated DOM binds all fixed event variants through generic helpers" {
     for (kinds, 0..) |kind, index| {
         const event_id: u64 = @intCast(index + 30);
         bindEvent(allocator, &elem, .{ .fixed = kind }, .{
-            .event_id = event_id,
+            .event_id = ids.EventId.fromRaw(event_id),
             .payload_descriptor = payload,
         });
         try std.testing.expectEqual(@as(?u64, event_id), fixedEventId(&elem, kind));
@@ -1090,10 +1091,10 @@ test "simulated DOM binds all fixed event variants through generic helpers" {
     }
 
     bindEvent(allocator, &elem, .{ .named = "custom-submit" }, .{
-        .event_id = 99,
+        .event_id = ids.EventId.fromRaw(99),
         .payload_descriptor = payload,
     });
-    try std.testing.expectEqual(@as(u64, 99), namedEvent(&elem, "custom-submit").?.binding.event_id);
+    try std.testing.expectEqual(@as(u64, 99), namedEvent(&elem, "custom-submit").?.binding.event_id.raw());
     clearEvent(allocator, &elem, .{ .named = "custom-submit" });
     try std.testing.expect(namedEvent(&elem, "custom-submit") == null);
 }
