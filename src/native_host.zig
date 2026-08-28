@@ -29,7 +29,11 @@ const sim_dom = @import("sim_dom.zig");
 const roc_alloc_ledger = @import("roc_alloc_ledger.zig");
 const crash_handlers = @import("crash_handlers.zig");
 
-const enable_runtime_metrics = builtin.is_test or build_options.metrics;
+const enable_runtime_metrics = host_fixtures or build_options.metrics;
+/// Test-only host machinery (value-kind tracking, the current-host binding,
+/// fixture builders) is also compiled into fuzz targets, which are ordinary
+/// builds that opt in through `-Dfuzz`'s options module.
+const host_fixtures = builtin.is_test or build_options.fuzz_fixtures;
 
 const ElemBox = @typeInfo(@TypeOf(abi.roc_ui_init)).@"fn".return_type.?;
 const RocStr = abi.RocStr;
@@ -938,7 +942,7 @@ const HostEnv = struct {
 
     /// Records the debug-only value kind used to detect erased-value routing mistakes.
     pub fn recordKind(self: *HostEnv, value: HostValue, kind: hv.ValueKind) void {
-        if (builtin.is_test) self.setTestHostValueKind(value, switch (kind) {
+        if (host_fixtures) self.setTestHostValueKind(value, switch (kind) {
             .unit => .unit,
             .str => .str,
             .bool => .bool,
@@ -948,7 +952,7 @@ const HostEnv = struct {
     }
 
     fn resetTestHostValueKind(self: *HostEnv, value: HostValue) void {
-        if (builtin.is_test) {
+        if (host_fixtures) {
             const allocator = self.hostAllocator();
             const index = value.registryIndex();
             if (index >= self.test_host_value_kinds.items.len) {
@@ -989,7 +993,7 @@ const HostEnv = struct {
             failHostValueRegistryError(err);
         };
         self.resetTestHostValueKind(value);
-        if (builtin.is_test) {
+        if (host_fixtures) {
             self.setTestHostValueKind(value, self.testHostValueKind(source_value));
         }
         return value;
@@ -1005,14 +1009,14 @@ const HostEnv = struct {
     }
 
     fn setTestHostValueKind(self: *HostEnv, value: HostValue, kind: TestHostValueKind) void {
-        if (!builtin.is_test) @compileError("setTestHostValueKind is test-only");
+        if (!host_fixtures) @compileError("setTestHostValueKind is test-only");
         const index = value.registryIndex();
         if (index >= self.test_host_value_kinds.items.len) failHost("test HostValue kind referenced an unknown value");
         self.test_host_value_kinds.items[@intCast(index)] = kind;
     }
 
     fn testHostValueKind(self: *HostEnv, value: HostValue) TestHostValueKind {
-        if (!builtin.is_test) @compileError("testHostValueKind is test-only");
+        if (!host_fixtures) @compileError("testHostValueKind is test-only");
         const index = value.registryIndex();
         if (index >= self.test_host_value_kinds.items.len) failHost("test HostValue kind referenced an unknown value");
         return self.test_host_value_kinds.items[@intCast(index)] orelse @panic("test HostValue kind was not recorded");
@@ -1057,7 +1061,7 @@ const HostEnv = struct {
         const box = self.engine.host_values.take(value, self.hostValueRegistryOps()) catch |err| {
             failHostValueRegistryError(err);
         };
-        if (builtin.is_test) self.test_host_value_kinds.items[value.registryIndex()] = null;
+        if (host_fixtures) self.test_host_value_kinds.items[value.registryIndex()] = null;
         return box;
     }
 
@@ -1079,7 +1083,7 @@ const HostEnv = struct {
         const box = self.engine.host_values.takeWithSplit(value, owned_split, self.hostValueRegistryOps()) catch |err| {
             failHostValueRegistryError(err);
         };
-        if (builtin.is_test) self.test_host_value_kinds.items[value.registryIndex()] = null;
+        if (host_fixtures) self.test_host_value_kinds.items[value.registryIndex()] = null;
         return box;
     }
 
@@ -1269,7 +1273,7 @@ const HostEnv = struct {
             failHostValueRegistryError(err);
         };
         self.resetTestHostValueKind(cloned);
-        if (builtin.is_test) {
+        if (host_fixtures) {
             self.setTestHostValueKind(cloned, self.testHostValueKind(value));
         }
         return cloned;
@@ -2401,6 +2405,31 @@ fn tryRenderInitialRoot(host: *HostEnv, roc_host: *abi.RocHost, root: abi.Elem, 
     return counts;
 }
 
+/// Renders an initial root like `tryRenderInitialRoot`, but arms `fault` so
+/// that commit and teardown fail on their first allocation attempt. Preparation
+/// keeps `fault`'s configured failure number, so a sweep over preparation
+/// attempts still refuses at the requested point; publication itself must
+/// never allocate, which is what the armed phases prove.
+fn tryRenderInitialRootWithArmedPublication(host: *HostEnv, roc_host: *abi.RocHost, root: abi.Elem, fault: *FaultAllocator) error{ OutOfMemory, ResourceLimit }!CommandCounts {
+    const collection = try HostEngine.PreparedRootCollection.prepare(&host.engine, host, roc_host, root, .{}, &.{});
+    errdefer collection.deinit();
+    const prepared = try HostEngine.PreparedRootDownstream.prepare(collection);
+    var counts = prepared.downstream.render_splice.?.wire.counts();
+    const preparation_attempts = fault.attempts;
+
+    fault.configure(1);
+    prepared.commit();
+    if (fault.attempts != 0) @panic("initial root commit attempted an allocation");
+    fault.configure(null);
+    counts.addAll(prepared.runLifecycle());
+    fault.configure(1);
+    prepared.deinit();
+    if (fault.attempts != 0) @panic("initial root teardown attempted an allocation");
+    fault.configure(null);
+    fault.attempts = preparation_attempts;
+    return counts;
+}
+
 fn renderActiveRootWithStats(host: *HostEnv, roc_host: *abi.RocHost, dirty_source_node_ids: []const u64, apply_ns: ?*u64, command_counts: ?*CommandCounts) void {
     const root = host.engine.root_elem orelse failHost("host render requested before Roc root Elem was initialized");
 
@@ -2541,7 +2570,7 @@ fn dispatchResetWithStats(host: *HostEnv, roc_host: *abi.RocHost, elem: *const D
 }
 
 fn makeSignalsRocHost(host: *HostEnv) abi.RocHost {
-    if (builtin.is_test) current_host = host;
+    if (host_fixtures) current_host = host;
     return .{
         .env = @ptrCast(host),
         .roc_alloc = &rocAllocFn,
@@ -3111,7 +3140,7 @@ const SpecRunnerCtx = struct {
 const SpecRunner = spec_runner.Runner(SpecRunnerCtx);
 
 comptime {
-    if (!builtin.is_test) {
+    if (!host_fixtures) {
         @export(&hostAlloc, .{ .name = "roc_alloc", .visibility = .hidden });
         @export(&hostDealloc, .{ .name = "roc_dealloc", .visibility = .hidden });
         @export(&hostRealloc, .{ .name = "roc_realloc", .visibility = .hidden });
@@ -3348,7 +3377,7 @@ fn platform_main(spec_file: []const u8, verbose: bool, trace_allocations: bool, 
 }
 
 fn deinitTestHostGraph(host: *HostEnv) void {
-    if (!builtin.is_test) @compileError("deinitTestHostGraph is test-only");
+    if (!host_fixtures) @compileError("deinitTestHostGraph is test-only");
 
     const allocator = host.hostAllocator();
     host.clearActiveSignalRoutes();
@@ -3378,7 +3407,7 @@ fn deinitTestHostGraph(host: *HostEnv) void {
 }
 
 fn deinitTestHostIdentity(host: *HostEnv) void {
-    if (!builtin.is_test) @compileError("deinitTestHostIdentity is test-only");
+    if (!host_fixtures) @compileError("deinitTestHostIdentity is test-only");
 
     const allocator = host.hostAllocator();
     host.clearScopes();
@@ -4338,6 +4367,20 @@ fn testInitialEachNestedRowElemCallable(roc_host: *abi.RocHost, ret: ?[*]u8, arg
     writeTestErasedResult(abi.Elem, ret, row);
 }
 
+/// Renders one outer row as a label plus a nested keyed list of stateful rows,
+/// so an initial mount stages each sites at two depths inside one transaction.
+fn testNestedEachRowElemCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
+    _ = capture_ptr;
+    test_row_elem_call_count += 1;
+    const call_args = testErasedArgsAs(ErasedHostValueBinaryArgs, args);
+    const key = testReadHostValueI64(roc_host, call_args.arg0);
+    const inner_items = [_]HostValue{ testHostValueI64(key * 10 + 1), testHostValueI64(key * 10 + 2) };
+    var text_buffer: [64]u8 = undefined;
+    const text = std.fmt.bufPrint(&text_buffer, "outer-{d}", .{key}) catch @panic("test nested each row Elem callable could not format text");
+    const children = [_]abi.Elem{ testNodeText(roc_host, text), testNodeEachWithItems(roc_host, &inner_items) };
+    writeTestErasedResult(abi.Elem, ret, testElement(roc_host, &children));
+}
+
 fn testHostValueEqErasedCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
     _ = capture_ptr;
     const call_args = testErasedArgsAs(ErasedHostValueBinaryArgs, args);
@@ -4460,7 +4503,7 @@ fn testConsumeTaskPayloadStrCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: 
     const call_args = testErasedArgsAs(ErasedHostValueUnaryArgs, args);
     const box = host.takeHostValueWithCapability(HostValue.fromRaw(call_args.arg0), hv.retainHostValueCapability(capture.payload_cap));
     const value = host.storeHostValueWithRetainedCapability(box, capture.payload_cap);
-    if (builtin.is_test) host.setTestHostValueKind(value, .str);
+    if (host_fixtures) host.setTestHostValueKind(value, .str);
     writeTestErasedResult(HostValue, ret, value);
 }
 
@@ -8207,6 +8250,18 @@ fn testNodeEachWithSignalAndRow(roc_host: *abi.RocHost, signal: abi.NodeSignalEx
 }
 
 fn testNodeEachWithSignalCapabilityAndRow(roc_host: *abi.RocHost, signal: abi.NodeSignalExpr, items_cap: HostValueCapability, row_fn: abi.RocErasedCallableFn) abi.Elem {
+    return testNodeEachWithSignalCapabilityRowAndCapture(TestErasedI64Capture, roc_host, signal, items_cap, row_fn, .{ .amount = 0 });
+}
+
+/// Builds a keyed-list fixture whose row callable carries an arbitrary capture,
+/// so a generated program can describe what every row should render.
+fn testNodeEachWithItemsRowAndCapture(comptime Capture: type, roc_host: *abi.RocHost, items: []const HostValue, row_fn: abi.RocErasedCallableFn, capture: Capture) abi.Elem {
+    const signal = testNodeConstExpr(roc_host, testHostValueI64List(roc_host, items));
+    const items_cap = testNodeSignalExprCapabilityOrPanic(signal);
+    return testNodeEachWithSignalCapabilityRowAndCapture(Capture, roc_host, signal, items_cap, row_fn, capture);
+}
+
+fn testNodeEachWithSignalCapabilityRowAndCapture(comptime Capture: type, roc_host: *abi.RocHost, signal: abi.NodeSignalExpr, items_cap: HostValueCapability, row_fn: abi.RocErasedCallableFn, capture: Capture) abi.Elem {
     const key_cap = testHostValueCapability(roc_host);
     const key_of = writeTestErasedCallable(
         TestErasedI64Capture,
@@ -8219,11 +8274,11 @@ fn testNodeEachWithSignalCapabilityAndRow(roc_host: *abi.RocHost, signal: abi.No
     const item_cap = testHostValueCapability(roc_host);
     const items_to_values = testItemsToValuesCallable(roc_host);
     const row = writeTestErasedCallable(
-        TestErasedI64Capture,
+        Capture,
         roc_host,
         row_fn,
         &testErasedCallableOnDrop,
-        .{ .amount = 0 },
+        capture,
     );
     return .{
         .payload = .{
@@ -9086,6 +9141,105 @@ test "native initial root publication sweeps host OOM and retries on the same en
     for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
+test "native initial root with sibling and nested each sites sweeps host OOM and publishes allocation free" {
+    // Twelve sibling sites is past the slack an `ensureUnusedCapacity(1)`
+    // leaves in an empty engine vector, which is where under-reserving the
+    // cumulative staged-site total used to trap at commit (issue #22). Site
+    // kinds rotate so rows carry state, nested when branches, and nested each
+    // sites within the same transaction.
+    const Runner = struct {
+        const site_count = 12;
+        const rows_per_site = 2;
+        const nested_sites = (site_count / 3) * rows_per_site;
+        const expected_sites = site_count + nested_sites;
+        const expected_rows = (site_count + nested_sites) * rows_per_site;
+        const expected_states = (site_count - site_count / 3) * rows_per_site + nested_sites * rows_per_site;
+
+        fn buildRoot(roc_host: *abi.RocHost) abi.Elem {
+            var sites: [site_count]abi.Elem = undefined;
+            for (&sites, 0..) |*site, index| {
+                const base: i64 = @intCast(index * rows_per_site);
+                const items = [_]HostValue{ testHostValueI64(base + 1), testHostValueI64(base + 2) };
+                site.* = switch (index % 3) {
+                    0 => testNodeEachWithItems(roc_host, &items),
+                    1 => testNodeEachWithItemsAndRow(roc_host, &items, &testInitialEachNestedRowElemCallable),
+                    else => testNodeEachWithItemsAndRow(roc_host, &items, &testNestedEachRowElemCallable),
+                };
+            }
+            return testElement(roc_host, &sites);
+        }
+
+        fn expectUnpublished(host: *const HostEnv) !void {
+            try std.testing.expectEqual(@as(usize, 0), host.engine.scopes.items.len);
+            try std.testing.expectEqual(@as(usize, 0), host.engine.node_identities.items.len);
+            try std.testing.expectEqual(@as(usize, 0), host.engine.dom_identities.items.len);
+            try std.testing.expectEqual(@as(usize, 0), host.engine.states.items.len);
+            try std.testing.expectEqual(@as(usize, 0), host.engine.each_row_sites.items.len);
+            try std.testing.expectEqual(@as(usize, 0), host.engine.each_row_site_indexes.count());
+            try std.testing.expectEqual(@as(usize, 0), host.engine.active_stream.render_nodes.items.len);
+            try std.testing.expectEqual(@as(usize, 0), host.engine.active_stream.eaches.items.len);
+            try std.testing.expectEqual(@as(usize, 0), host.engine.active_stream.whens.items.len);
+            try std.testing.expectEqual(@as(usize, 0), host.engine.active_events.items.len);
+            try std.testing.expectEqual(@as(usize, 0), host.engine.active_signal_graph.items.len);
+            try std.testing.expect(!host.engine.render_cache.hasRoot());
+            try std.testing.expectEqual(@as(usize, 0), host.dom_elements.items.len);
+        }
+
+        fn expectPublished(host: *const HostEnv) !void {
+            try std.testing.expect(host.engine.render_cache.hasRoot());
+            try std.testing.expectEqual(@as(usize, expected_sites), host.engine.each_row_sites.items.len);
+            try std.testing.expectEqual(@as(usize, expected_sites), host.engine.each_row_site_indexes.count());
+            try std.testing.expectEqual(@as(usize, expected_sites), host.engine.active_stream.eaches.items.len);
+            var rows: usize = 0;
+            for (host.engine.each_row_sites.items) |site| rows += site.scope_ids.items.len;
+            try std.testing.expectEqual(@as(usize, expected_rows), rows);
+            try std.testing.expectEqual(@as(usize, expected_states), host.engine.states.items.len);
+            try std.testing.expect(activeTextElementId(host, "row-1-1") != null);
+            try std.testing.expect(activeTextElementId(host, "row-true") != null);
+            try std.testing.expect(activeTextElementId(host, "outer-23") != null);
+            try std.testing.expect(activeTextElementId(host, "row-232-232") != null);
+        }
+
+        fn run(failure_number: ?usize) !usize {
+            var host = HostEnv.init();
+            var roc_host = makeSignalsRocHost(&host);
+            host.engine.roc_host = &roc_host;
+            defer {
+                host.deinit();
+                _ = host.gpa.deinit();
+            }
+
+            const root = buildRoot(&roc_host);
+            defer root.decref(&roc_host);
+            const refs_before = host.roc_allocations.snapshot();
+
+            var fault = FaultAllocator.init(host.gpa.allocator());
+            fault.configure(failure_number);
+            host.engine_allocator_override = fault.allocator();
+            const result = tryRenderInitialRootWithArmedPublication(&host, &roc_host, root, &fault);
+            const attempts = fault.attempts;
+            if (failure_number != null) {
+                try std.testing.expectError(error.OutOfMemory, result);
+                try expectUnpublished(&host);
+                try std.testing.expectEqual(host.engine.pending_roc_metrics.closure_retains, host.engine.pending_roc_metrics.closure_releases);
+                try std.testing.expectEqual(refs_before.live_bytes, host.roc_allocations.snapshot().live_bytes);
+                try std.testing.expectEqual(@as(usize, 0), host.roc_allocations.liveCountSince(refs_before));
+
+                fault.configure(null);
+                _ = try tryRenderInitialRootWithArmedPublication(&host, &roc_host, root, &fault);
+            } else {
+                _ = try result;
+            }
+            try expectPublished(&host);
+            return attempts;
+        }
+    };
+
+    const attempts = try Runner.run(null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
+}
+
 test "native initial each nested rows sweep host OOM and commit exact topology" {
     const Runner = struct {
         fn run(failure_number: ?usize) !usize {
@@ -9174,3 +9328,49 @@ test "native initial each nested rows sweep host OOM and commit exact topology" 
     try std.testing.expect(host.engine.active_signal_graph.items.len != 0);
     try std.testing.expect(host.engine.render_cache.hasRoot());
 }
+
+/// Fixture surface for the model-based fuzz targets under `test/fuzzing`.
+///
+/// Fuzz objects are ordinary (non-test) ReleaseSafe builds, so nothing here
+/// may depend on `std.testing`, and `bindHost` registers the current host
+/// explicitly because `makeSignalsRocHost` only does so under test.
+pub const fuzz_fixtures = struct {
+    pub const Host = HostEnv;
+    pub const NativeEngine = HostEngine;
+    pub const BinaryArgs = ErasedHostValueBinaryArgs;
+    pub const RenderCounts = CommandCounts;
+
+    /// Creates a host whose allocator is a safety-checked debug allocator.
+    pub fn createHost() HostEnv {
+        return HostEnv.init();
+    }
+
+    /// Registers `host` as the current host and returns its Roc host table.
+    pub fn bindHost(host: *HostEnv) abi.RocHost {
+        current_host = host;
+        return makeSignalsRocHost(host);
+    }
+
+    /// Tears the host down and reports whether its allocator saw a leak.
+    pub fn destroyHost(host: *HostEnv) bool {
+        host.deinit();
+        current_host = null;
+        return host.gpa.deinit() == .leak;
+    }
+
+    pub const renderInitialRoot = tryRenderInitialRoot;
+    pub const renderInitialRootWithArmedPublication = tryRenderInitialRootWithArmedPublication;
+    pub const findActiveText = activeTextElementId;
+
+    pub const element = testElement;
+    pub const text = testNodeText;
+    pub const state = testNodeState;
+    pub const when = testNodeWhen;
+    pub const i64Value = testHostValueI64;
+    pub const eachWithItemsRowAndCapture = testNodeEachWithItemsRowAndCapture;
+
+    pub const captureAs = testCapturePtrAs;
+    pub const argsAs = testErasedArgsAs;
+    pub const readI64 = testReadHostValueI64;
+    pub const writeResult = writeTestErasedResult;
+};

@@ -3697,6 +3697,10 @@ pub fn Engine(comptime Ctx: type) type {
             reserved_attrs: usize = 0,
             reserved_lifecycle: usize = 0,
             reserved_scope_sites: usize = 0,
+            reserved_state_sites: usize = 0,
+            reserved_when_sites: usize = 0,
+            reserved_each_sites: usize = 0,
+            reserved_each_rows: usize = 0,
             reserved_signal_records: usize = 0,
             collect_initial_eaches: bool = false,
             phase: CollectionPhase = .collecting,
@@ -3749,6 +3753,9 @@ pub fn Engine(comptime Ctx: type) type {
                 self.reserved_attrs = expected_attrs;
                 self.reserved_lifecycle = expected_lifecycle;
                 self.reserved_scope_sites = expected_scope_sites;
+                self.reserved_state_sites = expected_state_sites;
+                self.reserved_when_sites = expected_when_sites;
+                self.reserved_each_sites = expected_each_sites;
                 self.reserved_signal_records = expected_signal_records;
                 self.engine.scopes.ensureUnusedCapacity(allocator, expected_scope_intents) catch return error.OutOfMemory;
                 const expected_scope_len = std.math.add(usize, self.engine.scopes.items.len, expected_scope_intents) catch return error.ResourceLimit;
@@ -3901,6 +3908,9 @@ pub fn Engine(comptime Ctx: type) type {
                 const total_attrs = std.math.add(usize, self.reserved_attrs, counts.attrs) catch return error.ResourceLimit;
                 const total_lifecycle = std.math.add(usize, self.reserved_lifecycle, counts.lifecycle) catch return error.ResourceLimit;
                 const total_scope_sites = std.math.add(usize, self.reserved_scope_sites, scope_sites) catch return error.ResourceLimit;
+                const total_state_sites = std.math.add(usize, self.reserved_state_sites, counts.state_sites) catch return error.ResourceLimit;
+                const total_when_sites = std.math.add(usize, self.reserved_when_sites, counts.when_sites) catch return error.ResourceLimit;
+                const total_each_sites = std.math.add(usize, self.reserved_each_sites, counts.each_sites) catch return error.ResourceLimit;
                 const total_signal_records = std.math.add(usize, self.reserved_signal_records, counts.signal_records) catch return error.ResourceLimit;
                 const total_signal_roots = std.math.add(usize, self.signal_root_capacity, signal_roots) catch return error.ResourceLimit;
 
@@ -3924,7 +3934,11 @@ pub fn Engine(comptime Ctx: type) type {
                 self.prepared_eaches.ensureUnusedCapacity(allocator, total_scope_sites) catch return error.OutOfMemory;
                 self.prepared_named_event_groups.ensureUnusedCapacity(allocator, total_attrs) catch return error.OutOfMemory;
                 self.prepared_named_event_group_by_elem.ensureUnusedCapacity(allocator, std.math.cast(u32, total_attrs) orelse return error.ResourceLimit) catch return error.OutOfMemory;
-                self.signal_records.prepare(allocator, counts.signal_records, signal_roots) catch return error.OutOfMemory;
+                // Token and root capacity is relative to the plan's *current*
+                // size, and rows reserved by an outer site may still be pending
+                // when a nested site reserves; cumulative totals keep every
+                // outstanding reservation covered regardless of interleaving.
+                self.signal_records.prepare(allocator, total_signal_records, total_signal_roots) catch return error.OutOfMemory;
                 self.signal_bindings.ensureUnusedCapacity(allocator, total_signal_roots) catch return error.OutOfMemory;
                 self.signal_token_capacity = std.math.add(usize, self.signal_token_capacity, counts.signal_records) catch return error.ResourceLimit;
                 self.signal_root_capacity = std.math.add(usize, self.signal_root_capacity, signal_roots) catch return error.ResourceLimit;
@@ -3932,7 +3946,7 @@ pub fn Engine(comptime Ctx: type) type {
                 self.engine.scopes.ensureUnusedCapacity(allocator, scope_intents) catch return error.OutOfMemory;
                 self.engine.node_identities.ensureUnusedCapacity(allocator, total_scope_sites) catch return error.OutOfMemory;
                 self.engine.active_node_identity_ids.ensureUnusedCapacity(allocator, std.math.cast(u32, total_scope_sites) orelse return error.ResourceLimit) catch return error.OutOfMemory;
-                self.engine.states.ensureUnusedCapacity(allocator, counts.state_sites) catch return error.OutOfMemory;
+                self.engine.states.ensureUnusedCapacity(allocator, total_state_sites) catch return error.OutOfMemory;
                 const additional_node_ids = std.math.add(usize, self.node_identities.intents.items.len, scope_sites) catch return error.ResourceLimit;
                 const state_index_len = std.math.add(usize, self.engine.node_identities.items.len, additional_node_ids) catch return error.ResourceLimit;
                 self.engine.state_indexes_by_node_id.ensureTotalCapacity(allocator, state_index_len) catch return error.OutOfMemory;
@@ -3950,13 +3964,16 @@ pub fn Engine(comptime Ctx: type) type {
                 if (scope_sites != 0) {
                     const highest_node_id = std.math.sub(usize, state_index_len, 1) catch return error.ResourceLimit;
                     self.stream.reservePreparedStateSites(allocator, total_scope_sites, @intCast(highest_node_id)) catch return error.OutOfMemory;
-                    self.stream.reservePreparedWhens(allocator, counts.when_sites, @intCast(highest_node_id)) catch return error.OutOfMemory;
-                    self.stream.reservePreparedEaches(allocator, counts.each_sites, @intCast(highest_node_id)) catch return error.OutOfMemory;
+                    self.stream.reservePreparedWhens(allocator, total_when_sites, @intCast(highest_node_id)) catch return error.OutOfMemory;
+                    self.stream.reservePreparedEaches(allocator, total_each_sites, @intCast(highest_node_id)) catch return error.OutOfMemory;
                 }
                 self.reserved_nodes = total_nodes;
                 self.reserved_attrs = total_attrs;
                 self.reserved_lifecycle = total_lifecycle;
                 self.reserved_scope_sites = total_scope_sites;
+                self.reserved_state_sites = total_state_sites;
+                self.reserved_when_sites = total_when_sites;
+                self.reserved_each_sites = total_each_sites;
                 self.reserved_signal_records = total_signal_records;
             }
 
@@ -5029,11 +5046,20 @@ pub fn Engine(comptime Ctx: type) type {
             fn reserveForCollection(self: *const @This(), collection: *StagedCollectionCtx) CollectionError!void {
                 const allocator = Ctx.allocator(collection.host_ctx);
                 try collection.reserveAdditionalCounts(self.total_counts, self.rows.len);
-                collection.prepared_each_row_scopes.ensureUnusedCapacity(allocator, self.rows.len) catch return error.OutOfMemory;
-                collection.prepared_eaches.ensureUnusedCapacity(allocator, 1) catch return error.OutOfMemory;
-                collection.prepared_each_sites.ensureUnusedCapacity(allocator, 1) catch return error.OutOfMemory;
-                collection.engine.each_row_sites.ensureUnusedCapacity(allocator, 1) catch return error.OutOfMemory;
-                collection.engine.each_row_site_indexes.ensureUnusedCapacity(allocator, 1) catch return error.OutOfMemory;
+                // Every reservation below is cumulative over the whole staged
+                // transaction rather than relative to what has been appended so
+                // far. A nested site reserves while its outer site's rows are
+                // still pending, so "current length plus one" under-counts the
+                // outer site's remaining appends; the engine-owned site vectors
+                // additionally do not grow at all until commit.
+                const total_rows = std.math.add(usize, collection.reserved_each_rows, self.rows.len) catch return error.ResourceLimit;
+                const total_sites = std.math.add(usize, collection.reserved_each_sites, 1) catch return error.ResourceLimit;
+                collection.prepared_each_row_scopes.ensureUnusedCapacity(allocator, total_rows) catch return error.OutOfMemory;
+                collection.prepared_eaches.ensureUnusedCapacity(allocator, total_sites) catch return error.OutOfMemory;
+                collection.prepared_each_sites.ensureUnusedCapacity(allocator, total_sites) catch return error.OutOfMemory;
+                collection.engine.each_row_sites.ensureUnusedCapacity(allocator, total_sites) catch return error.OutOfMemory;
+                collection.engine.each_row_site_indexes.ensureUnusedCapacity(allocator, std.math.cast(u32, total_sites) orelse return error.ResourceLimit) catch return error.OutOfMemory;
+                collection.reserved_each_rows = total_rows;
                 const highest_node_id = std.math.add(u64, @intCast(collection.engine.node_identities.items.len), @as(u64, @intCast(collection.node_identities.intents.items.len + 1))) catch return error.ResourceLimit;
                 collection.stream.reservePreparedEaches(allocator, 1, highest_node_id) catch return error.OutOfMemory;
             }

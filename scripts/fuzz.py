@@ -220,6 +220,13 @@ def run_one(target: Target, seconds: int | None, jobs: int, resume: bool) -> Non
             process.wait()
             log.close()
 
+    # An instance that could not start (no shared memory, a rejected binary)
+    # exits non-zero before fuzzing anything; reporting "no crashes" for it
+    # would turn a broken setup into a clean bill of health.
+    failed = [index for index, (process, _) in enumerate(processes) if process.returncode != 0]
+    if failed:
+        die(f"afl-fuzz instance(s) {failed} exited with an error; see {target.work_dir.relative_to(ROOT)}/afl-*.log")
+
 
 def command_run(args: argparse.Namespace) -> int:
     targets = resolve_targets(args.targets)

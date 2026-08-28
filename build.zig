@@ -50,7 +50,14 @@ pub fn build(b: *std.Build) void {
 
     const build_options = b.addOptions();
     build_options.addOption(bool, "metrics", metrics);
+    build_options.addOption(bool, "fuzz_fixtures", false);
     const build_options_module = build_options.createModule();
+    // Fuzz targets drive the native host through its test fixture surface and
+    // assert on runtime metrics, so they get their own options module.
+    const fuzz_build_options = b.addOptions();
+    fuzz_build_options.addOption(bool, "metrics", true);
+    fuzz_build_options.addOption(bool, "fuzz_fixtures", true);
+    const fuzz_build_options_module = fuzz_build_options.createModule();
 
     const build_hosts_step = b.step("build-test-hosts", "Build platform host artifacts");
     const build_wasm_host_step = b.step("build-wasm-host", "Build the wasm32 browser host artifact");
@@ -191,7 +198,7 @@ pub fn build(b: *std.Build) void {
             .name = name,
             .target = native_target,
             .optimize = optimize,
-            .build_options = build_options_module,
+            .build_options = fuzz_build_options_module,
             .fuzz = fuzz,
             .use_system_afl = use_system_afl,
             .build_fuzz_step = build_fuzz_step,
@@ -299,6 +306,9 @@ const FuzzTargetOptions = struct {
 /// runtime. Sharing the object keeps the two in lockstep: a crash found by the
 /// fuzzer replays through exactly the code that produced it.
 fn addFuzzTarget(b: *std.Build, options: FuzzTargetOptions) void {
+    // The native host module must see the same `signals` module instance as
+    // the target, or the engine types it hands back would not unify.
+    const signals_module = createSignalsModule(b, options.target, .ReleaseSafe, options.build_options);
     const fuzz_obj = b.addObject(.{
         .name = b.fmt("fuzz_{s}_obj", .{options.name}),
         .root_module = b.createModule(.{
@@ -307,7 +317,8 @@ fn addFuzzTarget(b: *std.Build, options: FuzzTargetOptions) void {
             .optimize = .ReleaseSafe,
             .link_libc = true,
             .imports = &.{
-                .{ .name = "signals", .module = createSignalsModule(b, options.target, .ReleaseSafe, options.build_options) },
+                .{ .name = "signals", .module = signals_module },
+                .{ .name = "native_host", .module = createNativeHostModuleWith(b, options.target, .ReleaseSafe, options.build_options, signals_module) },
             },
         }),
     });
@@ -416,6 +427,16 @@ fn createNativeHostModule(
     optimize: OptimizeMode,
     build_options: *std.Build.Module,
 ) *std.Build.Module {
+    return createNativeHostModuleWith(b, target, optimize, build_options, createSignalsModule(b, target, optimize, build_options));
+}
+
+fn createNativeHostModuleWith(
+    b: *std.Build,
+    target: ResolvedTarget,
+    optimize: OptimizeMode,
+    build_options: *std.Build.Module,
+    signals_module: *std.Build.Module,
+) *std.Build.Module {
     const is_musl = target.result.os.tag == .linux and target.result.abi == .musl;
     return b.createModule(.{
         .root_source_file = b.path("src/native_host.zig"),
@@ -423,7 +444,7 @@ fn createNativeHostModule(
         .optimize = optimize,
         .link_libc = !is_musl,
         .imports = &.{
-            .{ .name = "signals", .module = createSignalsModule(b, target, optimize, build_options) },
+            .{ .name = "signals", .module = signals_module },
             .{ .name = "build_options", .module = build_options },
         },
     });

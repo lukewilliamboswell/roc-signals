@@ -165,9 +165,14 @@ rejected at the boundary long before reaching the behavior worth testing.
 | --- | --- | --- |
 | `propagation` | generated DAG plus update sequence | dependency order, glitch freedom, equality cutoffs, diamond deduplication, one evaluation per node per generation |
 | `keyed-scopes` | generated row edits and branch flips | key identity across insert/remove/reorder, scope retirement, reuse barriers, complete disposal |
-| `structural` | generated structure with injected allocation failure | collect/prepare/commit atomicity, unchanged committed state after refusal |
+| `structural` | generated initial root of sibling and nested `each` sites, mounted through the native host with allocation failure injected at a chosen or every preparation attempt | published topology matches the model, nothing published after a refusal, retry on the same engine succeeds, commit and teardown never allocate |
 | `ownership` | generated capability and value routing | retained-value and callable ownership balance, rejection of mismatched routing |
 | `boundary` | raw bytes | schema and extraction-plan parsing: truncation, trailing bytes, invalid UTF-8, duplicate fields |
+
+The engine-driving targets reach the engine through `native_host.fuzz_fixtures`,
+the same fixture kit the native host tests use. The fuzz build compiles the
+native host with the `fuzz_fixtures` build option so that test-only machinery
+is available outside `zig test`.
 
 `python3 scripts/fuzz.py` drives all of this. It owns the target list, the
 corpus layout, the AFL++ environment variables, and crash triage, so none of
