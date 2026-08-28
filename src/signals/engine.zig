@@ -3348,6 +3348,7 @@ pub fn Engine(comptime Ctx: type) type {
             reserved_lifecycle: usize = 0,
             reserved_scope_sites: usize = 0,
             reserved_signal_records: usize = 0,
+            collect_initial_eaches: bool = false,
             stream_materialized: bool = false,
             committed: bool = false,
 
@@ -4437,6 +4438,12 @@ pub fn Engine(comptime Ctx: type) type {
                     try self.collectActiveElemDescriptorsWith(Collection, collection, ctx, roc_host, stream, branch_elem, branch_scope_id, parent_elem_id, &branch_ordinal, &branch_dom_ordinal, binder_stack, selected.scope.created, dirty_source_node_ids);
                 },
                 .each => |each_payload| {
+                    if (comptime Collection == *StagedCollectionCtx) {
+                        if (collection.collect_initial_eaches) {
+                            try collection.collectInitialEach(roc_host, scope_id, parent_elem_id, ordinal, binder_stack, each_payload, dirty_source_node_ids);
+                            return;
+                        }
+                    }
                     const site_ordinal = ordinal.*;
                     const node_id = self.internNodeIdentity(Ctx.allocator(ctx), scope_id, site_ordinal) catch @panic("scope id has no host scope descriptor");
                     ordinal.* += 1;
@@ -5554,6 +5561,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const counts = try countStaticRootNodes(root);
                 const owner = try PreparedReplacementOwner.create(engine, ctx, roc_host, limits, counts, 1);
                 errdefer owner.deinit();
+                owner.collection.collect_initial_eaches = true;
                 try engine.collectActiveElemRootDescriptorsWith(*StagedCollectionCtx, &owner.collection, ctx, roc_host, &owner.stream, root, dirty_source_node_ids);
                 owner.materialize();
                 plan.* = .{ .owner = owner };
