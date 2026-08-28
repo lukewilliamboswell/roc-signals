@@ -147,6 +147,89 @@ runtime behavior. The coverage job is intentionally separate from
 `python3 scripts/test.py` because kcov is slower and mainly useful when
 investigating test gaps.
 
+## Fuzzing
+
+Fuzz targets live in `test/fuzzing/`, one file per target, and are built through
+[zig-afl-kit](https://github.com/bhansconnect/zig-afl-kit) against a system
+AFL++.
+
+Most of them are not byte fuzzers. The engine is a deterministic state machine
+whose interesting failures come from *sequences* of individually reasonable
+operations, so those targets decode the fuzzer's bytes into a valid program - a
+signal graph, a run of source updates, a list of keyed-row edits - and then check
+the engine against a deliberately slow reference model that recomputes
+everything from scratch. Random bytes fed directly to the engine would be
+rejected at the boundary long before reaching the behavior worth testing.
+
+| Target | Shape | What it checks |
+| --- | --- | --- |
+| `propagation` | generated DAG plus update sequence | dependency order, glitch freedom, equality cutoffs, diamond deduplication, one evaluation per node per generation |
+| `keyed-scopes` | generated row edits and branch flips | key identity across insert/remove/reorder, scope retirement, reuse barriers, complete disposal |
+| `structural` | generated structure with injected allocation failure | collect/prepare/commit atomicity, unchanged committed state after refusal |
+| `ownership` | generated capability and value routing | retained-value and callable ownership balance, rejection of mismatched routing |
+| `boundary` | raw bytes | schema and extraction-plan parsing: truncation, trailing bytes, invalid UTF-8, duplicate fields |
+
+`python3 scripts/fuzz.py` drives all of this. It owns the target list, the
+corpus layout, the AFL++ environment variables, and crash triage, so none of
+that has to be remembered or retyped:
+
+```sh
+python3 scripts/fuzz.py list
+python3 scripts/fuzz.py run propagation --time 10m
+python3 scripts/fuzz.py run all --time 5m -j 4
+python3 scripts/fuzz.py status
+```
+
+`run` rebuilds first, seeds an empty corpus, fuzzes, and then prints throughput,
+edge count, stability, and any saved crash inputs. It exits non-zero when a crash
+was saved. Corpora persist under `.fuzz-out/<target>/corpus`, because inputs
+AFL++ found interesting last time are the cheapest way back into deep engine
+states; `--resume` continues a previous session, and `clean` discards both.
+
+Watch `stability`, which should sit near 100%. A lower number means the target is
+not deterministic for a fixed input, which breaks the reference-model comparison
+and must be fixed before any crash it reports can be trusted.
+
+### Prerequisites
+
+Fuzzing needs AFL++ on `PATH`:
+
+```sh
+sudo apt install afl++   # or: brew install afl++
+```
+
+Without it, the build still succeeds and produces the repro executables only, so
+a crash found on a fuzzing machine stays reproducible everywhere:
+
+```sh
+python3 scripts/fuzz.py build --no-afl
+```
+
+The underlying build steps are `zig build build-fuzz` for the repro executables
+and `zig build build-fuzz -Dfuzz` to also link the AFL++ persistent-mode
+executables.
+
+### Reproducing a crash
+
+`status` lists saved crash inputs and the command to replay each one. The repro
+executables need no AFL++ and print the generated program and the operation
+sequence that led to the failure:
+
+```sh
+python3 scripts/fuzz.py repro propagation .fuzz-out/propagation/out/primary/crashes/<file> --verbose
+```
+
+Shrink a large input first:
+
+```sh
+python3 scripts/fuzz.py minimize propagation <crash-file>
+```
+
+Then turn the minimized case into a focused Zig test beside the seam it broke,
+or a native semantic spec if the failure is application-visible, and fix the
+engine. The crash file itself is not the regression test; a fuzzer finding is
+only finished once the invariant it violated is asserted somewhere permanent.
+
 ## Bundles
 
 Build host artifacts first, then create a platform bundle:

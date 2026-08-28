@@ -45,6 +45,8 @@ pub fn build(b: *std.Build) void {
     const metrics = b.option(bool, "metrics", "Enable runtime telemetry counters") orelse true;
     const profile = b.option(bool, "profile", "Preserve native host symbols for profiling") orelse false;
     const test_filters = b.option([]const []const u8, "test-filter", "Skip Zig unit tests that do not match any filter") orelse &.{};
+    const fuzz = b.option(bool, "fuzz", "Build AFL++ fuzz executables alongside the repro executables") orelse false;
+    const use_system_afl = b.option(bool, "system-afl", "Link fuzz executables with the system AFL++ instead of the vendored one") orelse true;
 
     const build_options = b.addOptions();
     build_options.addOption(bool, "metrics", metrics);
@@ -63,6 +65,7 @@ pub fn build(b: *std.Build) void {
     const build_coverage_tests_step = b.step("build-coverage-tests", "Build native host coverage test binaries");
     const run_coverage_native_host_step = b.step("run-coverage-native-host", "Run native host and signals tests with kcov coverage");
     const test_step = b.step("test", "Run Zig-only checks and tests");
+    const build_fuzz_step = b.step("build-fuzz", "Build every fuzz target and its repro executable");
 
     const install_step = b.getInstallStep();
     install_step.dependOn(build_hosts_step);
@@ -131,7 +134,7 @@ pub fn build(b: *std.Build) void {
     browser_tests.step.dependOn(&link_bounded_wasm_fixture.step);
     run_test_browser_step.dependOn(&browser_tests.step);
 
-    const fmt_paths = [_][]const u8{ "build.zig", "src", "scripts" };
+    const fmt_paths = [_][]const u8{ "build.zig", "src", "scripts", "test" };
     const fmt = b.addFmt(.{ .paths = &fmt_paths });
     run_fmt_zig_step.dependOn(&fmt.step);
 
@@ -182,6 +185,18 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(run_check_git_lints_step);
     test_step.dependOn(run_check_test_wiring_step);
     test_step.dependOn(run_test_zig_step);
+
+    for (fuzz_targets) |name| {
+        addFuzzTarget(b, .{
+            .name = name,
+            .target = native_target,
+            .optimize = optimize,
+            .build_options = build_options_module,
+            .fuzz = fuzz,
+            .use_system_afl = use_system_afl,
+            .build_fuzz_step = build_fuzz_step,
+        });
+    }
 
     const is_linux_x86_64 = native_target.result.os.tag == .linux and native_target.result.cpu.arch == .x86_64;
     const is_coverage_supported = (native_target.result.os.tag == .linux or native_target.result.os.tag == .macos) and !is_linux_x86_64;
@@ -249,6 +264,134 @@ pub fn build(b: *std.Build) void {
         const unsupported = CoverageUnsupportedStep.create(b);
         run_coverage_native_host_step.dependOn(&unsupported.step);
     }
+}
+
+/// Fuzz targets, one per `test/fuzzing/fuzz-<name>.zig`.
+///
+/// The first four drive the engine as a state machine: they decode fuzzer bytes
+/// into a valid program and check it against a slow reference model. `boundary`
+/// is a conventional byte-oriented parser target.
+const fuzz_targets = [_][]const u8{
+    "propagation",
+    "keyed-scopes",
+    "structural",
+    "ownership",
+    "boundary",
+};
+
+const FuzzTargetOptions = struct {
+    name: []const u8,
+    target: ResolvedTarget,
+    optimize: OptimizeMode,
+    build_options: *std.Build.Module,
+    fuzz: bool,
+    use_system_afl: bool,
+    build_fuzz_step: *Step,
+};
+
+/// Wires one fuzz target into the build graph.
+///
+/// Each target produces two artifacts from a single object file. `repro-<name>`
+/// is always built: it is a plain executable that replays one input from a file,
+/// argument, or stdin, so it needs no AFL++ and works on every platform. The
+/// AFL++ persistent-mode executable `fuzz-<name>` is built only under `-Dfuzz`,
+/// because it needs `afl-cc` to link the instrumented object against AFL's
+/// runtime. Sharing the object keeps the two in lockstep: a crash found by the
+/// fuzzer replays through exactly the code that produced it.
+fn addFuzzTarget(b: *std.Build, options: FuzzTargetOptions) void {
+    const fuzz_obj = b.addObject(.{
+        .name = b.fmt("fuzz_{s}_obj", .{options.name}),
+        .root_module = b.createModule(.{
+            .root_source_file = b.path(b.fmt("test/fuzzing/fuzz-{s}.zig", .{options.name})),
+            .target = options.target,
+            .optimize = .ReleaseSafe,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "signals", .module = createSignalsModule(b, options.target, .ReleaseSafe, options.build_options) },
+            },
+        }),
+    });
+    // AFL++ traps stack-probe faults itself, and the guards would otherwise be
+    // attributed to the target as spurious crashes.
+    fuzz_obj.root_module.stack_check = false;
+
+    const build_afl = options.fuzz and canBuildAfl(options.target);
+    if (build_afl) {
+        fuzz_obj.sanitize_coverage_trace_pc_guard = true;
+    }
+
+    const repro_exe = b.addExecutable(.{
+        .name = b.fmt("repro-{s}", .{options.name}),
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/fuzzing/fuzz-repro.zig"),
+            .target = options.target,
+            .optimize = options.optimize,
+            .link_libc = true,
+        }),
+    });
+    repro_exe.root_module.addImport("fuzz_test", fuzz_obj.root_module);
+
+    const install_repro = b.addInstallArtifact(repro_exe, .{});
+    options.build_fuzz_step.dependOn(&install_repro.step);
+
+    const run_repro = b.addRunArtifact(repro_exe);
+    if (b.args) |args| run_repro.addArgs(args);
+    const run_repro_step = b.step(
+        b.fmt("run-repro-{s}", .{options.name}),
+        b.fmt("Replay one fuzz input through the {s} target", .{options.name}),
+    );
+    run_repro_step.dependOn(&run_repro.step);
+
+    if (!build_afl) return;
+
+    if (addAflFuzzExe(b, options, fuzz_obj)) |fuzz_exe| {
+        const install_fuzz = b.addInstallBinFile(fuzz_exe, b.fmt("fuzz-{s}", .{options.name}));
+        options.build_fuzz_step.dependOn(&install_fuzz.step);
+    }
+}
+
+/// Reports whether AFL++ fuzz executables can be linked for `target`.
+///
+/// AFL++ persistent mode needs to inject its own runtime and fork server, which
+/// rules out cross compilation and Windows entirely. On unsupported hosts the
+/// build still produces the repro executables, which is what makes a saved crash
+/// file portable between a fuzzing machine and a developer's.
+fn canBuildAfl(target: ResolvedTarget) bool {
+    if (target.result.os.tag == .windows) return false;
+    return target.query.isNative();
+}
+
+fn addAflFuzzExe(b: *std.Build, options: FuzzTargetOptions, fuzz_obj: *Step.Compile) ?std.Build.LazyPath {
+    const afl_kit = b.lazyDependency("afl_kit", .{}) orelse return null;
+
+    const afl_cc = if (options.use_system_afl)
+        b.findProgram(&.{"afl-cc"}, &.{}) catch {
+            std.log.warn("-Dfuzz needs 'afl-cc' on PATH (install AFL++, or pass -Dsystem-afl=false); building repro executables only", .{});
+            return null;
+        }
+    else blk: {
+        const afl = afl_kit.builder.lazyDependency("AFLplusplus", .{
+            .target = options.target,
+            .optimize = options.optimize,
+            .@"llvm-config-path" = &[_][]const u8{},
+        }) orelse return null;
+        break :blk b.pathJoin(&.{ afl.builder.exe_dir, "afl-cc" });
+    };
+
+    const run_afl_cc = b.addSystemCommand(&.{ afl_cc, "-O3" });
+
+    // Requesting the object output makes Zig materialize the LLVM bitcode that
+    // afl-cc consumes below; without it the bitcode path is never produced.
+    _ = fuzz_obj.getEmittedBin();
+
+    run_afl_cc.addArg("-o");
+    const fuzz_exe = run_afl_cc.addOutputFileArg(fuzz_obj.name);
+    run_afl_cc.addFileArg(afl_kit.path("afl.c"));
+    run_afl_cc.addFileArg(fuzz_obj.getEmittedLlvmBc());
+    // ELF linkers resolve left to right, so math libraries must follow the bitcode.
+    run_afl_cc.addArg("-lm");
+
+    return fuzz_exe;
 }
 
 fn createSignalsModule(
