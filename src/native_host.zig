@@ -4290,6 +4290,27 @@ fn testNestedWhenRowElemCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]
     writeTestErasedResult(abi.Elem, ret, row);
 }
 
+fn testInitialEachNestedRowElemCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
+    _ = args;
+    _ = capture_ptr;
+    const state_token = newTestBinderToken(roc_host);
+    const state_cap = testHostValueCapability(roc_host);
+    var event = testNodeUnitIncrementEventAttr(roc_host, .click, state_token);
+    event.payload.on.kind.id = 0;
+    event.payload.on.name = RocStr.fromSlice("keydown", roc_host);
+    const signal_attr = abi.NodeAttr{ .payload = .{ .signal_text = .{
+        .field = .{ .id = @intFromEnum(RenderTextField.value) },
+        .name = RocStr.fromSlice("", roc_host),
+        .read = testI64TextReadHandle(roc_host, state_cap),
+        .signal = boxTestNodeSignalExpr(roc_host, testNodeRefExpr(state_token)),
+    } }, .tag = .SignalText };
+    const attrs = [_]abi.NodeAttr{ event, signal_attr };
+    const nested_when = testNodeWhen(roc_host, testNodeText(roc_host, "row-true"), testNodeText(roc_host, "row-false"));
+    const child = testElementWith(roc_host, "div", &attrs, &.{nested_when});
+    const row = testNodeStateWithTokenAndInitialCapability(roc_host, state_token, testHostValueI64(7), child, state_cap);
+    writeTestErasedResult(abi.Elem, ret, row);
+}
+
 fn testHostValueEqErasedCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
     _ = capture_ptr;
     const call_args = testErasedArgsAs(ErasedHostValueBinaryArgs, args);
@@ -5834,7 +5855,9 @@ test "list source each transaction sweeps host OOM and retries without publicati
             host.engine.active_stream = stream;
 
             const record = host.engine.activeIntervalRecordByPeriod(100).?;
-            const each_site = host.engine.active_stream.scope_sites.items[0];
+            const each_site = for (host.engine.active_stream.scope_sites.items) |site| {
+                if (site.kind == .each) break site;
+            } else return error.TestUnexpectedResult;
             const each_cache_before = host.engine.active_stream.eaches.items[0].cached_value.present.value;
             const source_cache_before = record.requireIntervalSource().cached_value.present.value;
             const generation_before = host.engine.dirty_signal_generation;
@@ -9032,4 +9055,93 @@ test "native initial root publication sweeps host OOM and retries on the same en
     const attempts = try Runner.run(null);
     try std.testing.expect(attempts != 0);
     for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
+}
+
+test "native initial each nested rows sweep host OOM and commit exact topology" {
+    const Runner = struct {
+        fn run(failure_number: ?usize) !usize {
+            var host = HostEnv.init();
+            var roc_host = makeSignalsRocHost(&host);
+            host.engine.roc_host = &roc_host;
+            defer {
+                host.deinit();
+                _ = host.gpa.deinit();
+            }
+
+            const items = [_]HostValue{ testHostValueI64(1), testHostValueI64(2) };
+            const each = testNodeEachWithItemsAndRow(&roc_host, &items, &testInitialEachNestedRowElemCallable);
+            const root = testElement(&roc_host, &.{each});
+            defer root.decref(&roc_host);
+            const refs_before = host.roc_allocations.snapshot();
+
+            var fault = FaultAllocator.init(host.gpa.allocator());
+            fault.configure(failure_number);
+            host.engine_allocator_override = fault.allocator();
+            const result = tryRenderInitialRoot(&host, &roc_host, root, &.{});
+            const attempts = fault.attempts;
+            if (failure_number != null) {
+                try std.testing.expectError(error.OutOfMemory, result);
+                try std.testing.expectEqual(@as(usize, 0), host.engine.scopes.items.len);
+                try std.testing.expectEqual(@as(usize, 0), host.engine.node_identities.items.len);
+                try std.testing.expectEqual(@as(usize, 0), host.engine.dom_identities.items.len);
+                try std.testing.expectEqual(@as(usize, 0), host.engine.states.items.len);
+                try std.testing.expectEqual(@as(usize, 0), host.engine.each_row_sites.items.len);
+                try std.testing.expectEqual(@as(usize, 0), host.engine.active_stream.render_nodes.items.len);
+                try std.testing.expectEqual(@as(usize, 0), host.engine.active_events.items.len);
+                try std.testing.expectEqual(@as(usize, 0), host.engine.active_signal_graph.items.len);
+                try std.testing.expect(!host.engine.render_cache.hasRoot());
+                try std.testing.expectEqual(@as(usize, 0), host.dom_elements.items.len);
+                try std.testing.expectEqual(refs_before.live_bytes, host.roc_allocations.snapshot().live_bytes);
+
+                fault.configure(null);
+                _ = try tryRenderInitialRoot(&host, &roc_host, root, &.{});
+            } else {
+                _ = try result;
+            }
+
+            try std.testing.expect(host.engine.render_cache.hasRoot());
+            try std.testing.expectEqual(@as(usize, 2), host.engine.states.items.len);
+            try std.testing.expectEqual(@as(usize, 2), host.engine.active_events.items.len);
+            try std.testing.expect(host.engine.active_signal_graph.items.len != 0);
+            try std.testing.expectEqual(@as(usize, 1), host.engine.each_row_sites.items.len);
+            const each_site = host.engine.active_stream.scope_sites.items[host.engine.active_stream.scope_sites.items.len - 1];
+            const segments = host.engine.activeEachRowRenderSegmentsInRenderOrder(std.testing.allocator, .{ .parent_scope_id = each_site.scope_id, .site_ordinal = each_site.ordinal });
+            defer std.testing.allocator.free(segments);
+            try std.testing.expectEqual(@as(usize, 2), segments.len);
+            try std.testing.expectEqual(@as(usize, 2), segments[0].len);
+            try std.testing.expectEqual(@as(usize, 2), segments[1].len);
+            try std.testing.expectEqual(segments[0].start + segments[0].len, segments[1].start);
+            try std.testing.expect(activeTextElementId(&host, "row-true") != null);
+            return attempts;
+        }
+    };
+
+    const attempts = try Runner.run(null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
+
+    var host = HostEnv.init();
+    var roc_host = makeSignalsRocHost(&host);
+    host.engine.roc_host = &roc_host;
+    defer {
+        host.deinit();
+        _ = host.gpa.deinit();
+    }
+    const items = [_]HostValue{ testHostValueI64(1), testHostValueI64(2) };
+    const root = testElement(&roc_host, &.{testNodeEachWithItemsAndRow(&roc_host, &items, &testInitialEachNestedRowElemCallable)});
+    defer root.decref(&roc_host);
+    var fault = FaultAllocator.init(host.gpa.allocator());
+    host.engine_allocator_override = fault.allocator();
+    const collection = try HostEngine.PreparedRootCollection.prepare(&host.engine, &host, &roc_host, root, .{}, &.{});
+    errdefer collection.deinit();
+    const prepared = try HostEngine.PreparedRootDownstream.prepare(collection);
+    defer prepared.deinit();
+    fault.configure(1);
+    prepared.commit();
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqual(@as(usize, 2), host.engine.states.items.len);
+    try std.testing.expectEqual(@as(usize, 2), host.engine.active_events.items.len);
+    try std.testing.expectEqual(@as(usize, 1), host.engine.each_row_sites.items.len);
+    try std.testing.expect(host.engine.active_signal_graph.items.len != 0);
+    try std.testing.expect(host.engine.render_cache.hasRoot());
 }
