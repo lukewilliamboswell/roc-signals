@@ -12,6 +12,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import spec_driver  # noqa: E402
+import test as test_driver  # noqa: E402
 
 
 class SpecDriverTests(unittest.TestCase):
@@ -75,6 +76,21 @@ class SpecDriverTests(unittest.TestCase):
             )
             self.assertEqual("protocol_error", invalid.status)
             self.assertEqual("invalid_json", invalid.failure["kind"])
+
+    def test_native_driver_skips_examples_without_filter_matches(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            first = root / "first"
+            second = root / "second"
+            first.mkdir()
+            second.mkdir()
+            (first / "unrelated.scm").write_text("(test \"first\" (steps (mark-metrics)))\n", encoding="utf-8")
+            (second / "target.scm").write_text("(test \"second\" (steps (mark-metrics)))\n", encoding="utf-8")
+
+            first_selected = test_driver.select_native_specs(first, patterns=("*target.scm",))
+            second_selected = test_driver.select_native_specs(second, patterns=("*target.scm",))
+            self.assertEqual((), first_selected)
+            self.assertEqual(["target.scm"], [case.id for case in second_selected])
 
 
 if __name__ == "__main__":

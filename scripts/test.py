@@ -398,6 +398,16 @@ def should_skip_native_example(target: str, example: Example) -> str | None:
     return MUSL_NATIVE_SKIPS.get(example.slug)
 
 
+def select_native_specs(
+    spec_directory: Path,
+    *,
+    patterns: tuple[str, ...] = (),
+    shard: tuple[int, int] | None = None,
+) -> tuple[spec_driver.SpecCase, ...]:
+    """Select one example's cases before paying its native build cost."""
+    return spec_driver.select_specs(spec_driver.discover_specs(spec_directory), patterns=patterns, shard=shard)
+
+
 def run_native_specs(
     roc_bin: str,
     examples: tuple[Example, ...],
@@ -418,6 +428,7 @@ def run_native_specs(
     )
     bin_dir.mkdir(parents=True, exist_ok=True)
     target = roc_native_target()
+    matched_specs = 0
     for example in examples:
         if not example.native:
             continue
@@ -428,6 +439,10 @@ def run_native_specs(
             raise SystemExit(f"{example.slug} is native but has no specs directory")
         source = source_root / example.source
         specs = source_root / example.specs
+        selected = select_native_specs(specs, patterns=spec_filters, shard=shard)
+        if not selected:
+            continue
+        matched_specs += len(selected)
         exe = native_exe_path(bin_dir, example.exe_name)
         run([roc_bin, "build", f"--target={target}", "--opt=dev", *native_cache_args(target), f"--output={exe}", source])
         print(f"\n==> {exe} {specs}", flush=True)
@@ -446,6 +461,8 @@ def run_native_specs(
         spec_driver.print_summary(results)
         if not all(result.passed for result in results):
             raise SystemExit(f"native specs failed for {example.slug}")
+    if matched_specs == 0:
+        raise SystemExit("no native specs matched the requested filters and shard")
 
 
 def run_benchmarks(roc_bin: str, examples: tuple[Example, ...], *, source_root: Path = ROOT) -> None:
