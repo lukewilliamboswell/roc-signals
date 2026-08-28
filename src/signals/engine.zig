@@ -3317,6 +3317,7 @@ pub fn Engine(comptime Ctx: type) type {
             prepared_state_sites: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedScopeSite) = .empty,
             prepared_states: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedState) = .empty,
             prepared_state_cells: std.ArrayListUnmanaged(HostState) = .empty,
+            prepared_each_row_scopes: std.ArrayListUnmanaged(HostScope) = .empty,
             prepared_whens: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedWhen) = .empty,
             prepared_named_event_groups: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedNamedEventIndexGroup) = .empty,
             prepared_named_event_group_by_elem: std.AutoHashMapUnmanaged(u64, usize) = .empty,
@@ -3424,6 +3425,11 @@ pub fn Engine(comptime Ctx: type) type {
                         index -= 1;
                         self.prepared_state_cells.items[index].cell.deinit(self.host_ctx, self.signal_roc_host orelse @panic("staged state lacked Roc host"), &self.engine.pending_roc_metrics);
                     }
+                    index = self.prepared_each_row_scopes.items.len;
+                    while (index != 0) {
+                        index -= 1;
+                        deinitHostScopeStep(&self.prepared_each_row_scopes.items[index].step, self.host_ctx, self.signal_roc_host orelse @panic("staged each row lacked Roc host"), &self.engine.pending_roc_metrics);
+                    }
                     if (!self.stream_materialized) {
                         index = self.prepared_states.items.len;
                         while (index != 0) {
@@ -3472,6 +3478,7 @@ pub fn Engine(comptime Ctx: type) type {
                 self.prepared_state_sites.deinit(allocator);
                 self.prepared_states.deinit(allocator);
                 self.prepared_state_cells.deinit(allocator);
+                self.prepared_each_row_scopes.deinit(allocator);
                 self.prepared_whens.deinit(allocator);
                 self.signal_bindings.deinit(allocator);
                 const SignalReleaser = struct {
@@ -3544,6 +3551,51 @@ pub fn Engine(comptime Ctx: type) type {
                 const active_id = if (persistent_parent and !self.scopes.reserved_ids.contains(parent_scope_id)) self.engine.activeWhenBranchScopeId(parent_scope_id, site_ordinal, branch) catch return error.ResourceLimit else null;
                 const branch_scope_id = try self.reserveScopeIdentity(key, active_id);
                 return .{ .scope_id = branch_scope_id, .created = active_id == null };
+            }
+
+            fn reserveEachRowScope(self: *@This(), roc_host: *abi.RocHost, parent_scope_id: u64, site_ordinal: u64, key_hash: u64, key: HostValue, item: HostValue, key_cap: HostValueCapability, item_cap: HostValueCapability) CollectionError!u64 {
+                try self.validateScope(parent_scope_id);
+                const allocator = Ctx.allocator(self.host_ctx);
+                try self.scopes.prepare(allocator, 1);
+                self.prepared_each_row_scopes.ensureUnusedCapacity(allocator, 1) catch return error.OutOfMemory;
+
+                var scope_id: ?u64 = null;
+                for (self.engine.scopes.items) |scope| {
+                    if (scope.active or (scope.retired_at != 0 and scope.retired_at == self.engine.identity_reuse_barrier)) continue;
+                    if (self.scopes.reserved_ids.contains(scope.scope_id)) continue;
+                    scope_id = scope.scope_id;
+                    break;
+                }
+                if (scope_id == null) {
+                    var fresh: u64 = @intCast(self.engine.scopes.items.len);
+                    while (self.scopes.reserved_ids.contains(fresh)) fresh = std.math.add(u64, fresh, 1) catch return error.ResourceLimit;
+                    scope_id = fresh;
+                }
+                const claimed = scope_id.?;
+                self.scopes.reserveExternal(claimed) catch |err| switch (err) {
+                    error.NoCapacity => return error.OutOfMemory,
+                    error.DuplicateScope => return error.ResourceLimit,
+                };
+                const required_len = std.math.add(usize, @as(usize, @intCast(claimed)), 1) catch return error.ResourceLimit;
+                self.engine.scopes.ensureTotalCapacity(allocator, required_len) catch return error.OutOfMemory;
+
+                self.signal_roc_host = roc_host;
+                var key_cell = HostValueCell.initRetained(key, key_cap, &self.engine.pending_roc_metrics);
+                errdefer key_cell.deinit(self.host_ctx, roc_host, &self.engine.pending_roc_metrics);
+                var item_cell = HostValueCell.initRetained(item, item_cap, &self.engine.pending_roc_metrics);
+                errdefer item_cell.deinit(self.host_ctx, roc_host, &self.engine.pending_roc_metrics);
+                self.prepared_each_row_scopes.appendAssumeCapacity(.{
+                    .scope_id = claimed,
+                    .parent_scope_id = parent_scope_id,
+                    .step = .{ .each_row = .{
+                        .site_ordinal = site_ordinal,
+                        .key_hash = key_hash,
+                        .key = key_cell,
+                        .item = item_cell,
+                    } },
+                    .active = true,
+                });
+                return claimed;
             }
 
             fn reserveDomIdentity(self: *@This(), scope_id: u64, ordinal: u64) CollectionError!u64 {
@@ -4083,6 +4135,13 @@ pub fn Engine(comptime Ctx: type) type {
             fn commit(self: *@This()) void {
                 if (self.committed) @panic("staged collection committed twice");
                 if (!self.stream_materialized) self.materializeStream();
+                const original_scope_len = self.engine.scopes.items.len;
+                var final_scope_len = original_scope_len;
+                var reserved_scope_iterator = self.scopes.reserved_ids.keyIterator();
+                while (reserved_scope_iterator.next()) |scope_id| {
+                    final_scope_len = @max(final_scope_len, std.math.add(usize, @as(usize, @intCast(scope_id.*)), 1) catch @panic("prepared scope id overflow"));
+                }
+                self.engine.scopes.items.len = final_scope_len;
                 for (self.scopes.intents.items) |intent| {
                     const scope: HostScope = switch (intent.key.kind) {
                         .root => .{ .scope_id = intent.id, .parent_scope_id = null, .step = .root, .active = true },
@@ -4090,15 +4149,21 @@ pub fn Engine(comptime Ctx: type) type {
                         .when_branch => |branch| .{ .scope_id = intent.id, .parent_scope_id = intent.key.parent_id, .step = .{ .when_branch = .{ .site_ordinal = intent.key.ordinal, .branch = branch } }, .active = true },
                     };
                     const scope_index: usize = @intCast(intent.id);
-                    if (scope_index < self.engine.scopes.items.len) {
+                    if (scope_index < original_scope_len) {
                         if (self.engine.scopes.items[scope_index].active) @panic("staged scope reused an active slot");
                         self.engine.scopes.items[scope_index] = scope;
                     } else {
-                        if (scope_index != self.engine.scopes.items.len) @panic("staged scope suffix was not contiguous");
-                        self.engine.scopes.appendAssumeCapacity(scope);
+                        self.engine.scopes.items[scope_index] = scope;
                     }
                     self.engine.recordScopeCreated();
                 }
+                for (self.prepared_each_row_scopes.items) |scope| {
+                    const scope_index: usize = @intCast(scope.scope_id);
+                    if (scope_index < original_scope_len and self.engine.scopes.items[scope_index].active) @panic("staged each-row scope reused an active slot");
+                    self.engine.scopes.items[scope_index] = scope;
+                    self.engine.recordScopeCreated();
+                }
+                self.prepared_each_row_scopes.clearRetainingCapacity();
                 for (self.dom_identities.intents.items) |intent| {
                     const scope_id: u64 = @truncate(intent.key >> 64);
                     const ordinal: u64 = @truncate(intent.key);
@@ -13802,6 +13867,90 @@ test "transactional initial when root sweeps failures and evaluates once" {
         try std.testing.expectEqual(@as(usize, 1), stream.whens.items.len);
         try std.testing.expectEqualStrings("yes", stream.text_nodes.items[0].value);
     }
+}
+
+test "staged root rows share scope ids with provisional structural children and sweep OOM" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var roc_env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&roc_env);
+    const callable = abi.rocErasedCallableAllocate(&roc_host, verifyStateCallable, null, 0).?;
+    defer abi.decrefErasedCallable(callable, &roc_host);
+    const capability = HostValueCapability{ .clone = callable, .drop = callable, .eq = callable };
+    const root = verifyStaticRoot(&.{}, &.{verifyStaticText()});
+
+    const Runner = struct {
+        fn run(host: *abi.RocHost, elem: abi.Elem, cap: HostValueCapability, fail_at: ?usize) !usize {
+            var fault = FaultAllocator.init(std.testing.allocator);
+            fault.configure(fail_at);
+            var ctx = VerifyCtxHost{ .allocator = fault.allocator() };
+            var engine = Engine(VerifyCtx).init();
+            engine.roc_host = host;
+            defer deinitVerifyStateEngine(&engine, &ctx, host);
+
+            const prepared = Engine(VerifyCtx).PreparedRootCollection.prepare(&engine, &ctx, host, elem, .{}, &.{}) catch |err| {
+                try std.testing.expect(fail_at != null);
+                try std.testing.expectEqual(error.OutOfMemory, err);
+                return fault.attempts;
+            };
+            errdefer prepared.deinit();
+            const collection = &prepared.owner.collection;
+            const first_row = collection.reserveEachRowScope(host, 0, 7, 11, 101, 201, cap, cap) catch |err| {
+                try std.testing.expect(fail_at != null);
+                try std.testing.expectEqual(error.OutOfMemory, err);
+                prepared.deinit();
+                try std.testing.expectEqual(@as(usize, 0), engine.scopes.items.len);
+                return fault.attempts;
+            };
+            const second_row = collection.reserveEachRowScope(host, 0, 7, 22, 102, 202, cap, cap) catch |err| {
+                try std.testing.expect(fail_at != null);
+                try std.testing.expectEqual(error.OutOfMemory, err);
+                prepared.deinit();
+                try std.testing.expectEqual(@as(usize, 0), engine.scopes.items.len);
+                return fault.attempts;
+            };
+            collection.scopes.prepare(ctx.allocator, 1) catch {
+                try std.testing.expect(fail_at != null);
+                prepared.deinit();
+                return fault.attempts;
+            };
+            engine.scopes.ensureTotalCapacity(ctx.allocator, 4) catch {
+                try std.testing.expect(fail_at != null);
+                prepared.deinit();
+                return fault.attempts;
+            };
+            const nested = collection.reserveWhenBranchScope(first_row, 3, .true_branch) catch |err| {
+                try std.testing.expect(fail_at != null);
+                try std.testing.expectEqual(error.OutOfMemory, err);
+                prepared.deinit();
+                return fault.attempts;
+            };
+            try std.testing.expectEqual(@as(u64, 1), first_row);
+            try std.testing.expectEqual(@as(u64, 2), second_row);
+            try std.testing.expectEqual(@as(u64, 3), nested.scope_id);
+
+            const attempts = fault.attempts;
+            if (fail_at != null) {
+                prepared.deinit();
+                try std.testing.expectEqual(@as(usize, 0), engine.scopes.items.len);
+                return attempts;
+            }
+            fault.configure(1);
+            var stream = prepared.commit();
+            try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+            try std.testing.expectEqual(@as(usize, 4), engine.scopes.items.len);
+            try std.testing.expectEqual(@as(?u64, 0), engine.scopes.items[1].parent_scope_id);
+            try std.testing.expectEqual(@as(?u64, 0), engine.scopes.items[2].parent_scope_id);
+            try std.testing.expectEqual(@as(?u64, 1), engine.scopes.items[3].parent_scope_id);
+            try std.testing.expectEqual(@as(u64, 101), scope_runtime.eachRowValues(engine.scopes.items, 1).key);
+            try std.testing.expectEqual(@as(u64, 202), scope_runtime.eachRowValues(engine.scopes.items, 2).item);
+            stream.deinit(ctx.allocator, &ctx, host, &engine.pending_roc_metrics);
+            return attempts;
+        }
+    };
+
+    const attempts = try Runner.run(&roc_host, root, capability, null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |fail_at| _ = try Runner.run(&roc_host, root, capability, fail_at);
 }
 
 test "branch replacement preparation leaves the active branch unpublished" {
