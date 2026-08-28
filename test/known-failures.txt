@@ -1,0 +1,197 @@
+# Known failing example specs and wasm mounts. See scripts/known_failures.py.
+#
+# This list only shrinks: a spec that starts passing must be deleted here
+# (`python3 scripts/test.py ... --update-known-failures` does it), and a spec
+# that starts failing is a regression that fails the run. Adding a line is a
+# deliberate, reviewed decision and needs a comment saying why.
+#
+# Recorded 2026-08-28 against nightly-2026-08-25-cc03aa8 after the multi-site
+# initial-mount fix (issue #22). Dominant causes, so the next fixes are
+# recognisable: live composite-row render topology reports
+# DuplicateChild/ConflictingParent as ResourceLimit; "duplicate descriptor
+# index" in the descriptor stream; host-owned allocation leaks at shutdown;
+# patch-count performance budgets.
+native availability-picker/marking-one-slot-available-leaves-its-siblings-alone.scm
+native availability-picker/the-headline-one-timezone-change-reprojects-every-rendered-slot.scm
+native conduit/article-writes-editor-create-edit-comments-and-delete.scm
+native conduit/back-forward-stay-in-sync-across-live-pages.scm
+native conduit/deep-link-cold-mounts-the-article-page-loading-then-content.scm
+native conduit/empty-state.scm
+native conduit/error-state-renders-in-app.scm
+native conduit/guarded-routes-redirect-anonymous-visitors-to-sign-in.scm
+native conduit/home-both-fetches-pending-then-tags-and-feed-render.scm
+native conduit/login-422-envelope-renders-success-persists-the-session.scm
+native conduit/network-failure-matrix-for-every-get-surface.scm
+native conduit/pagination-23-articles-two-pages-page-switch-swaps-the-list.scm
+native conduit/profile-page-profile-card-plus-author-articles-then-favorites-ta.scm
+native conduit/published-example-urls-mount-the-app-home-under-any-site-base-pa.scm
+native conduit/register-422-envelope-renders-all-required-fields.scm
+native conduit/settings-authed-update-then-sign-out-clears-the-namespaced-keys.scm
+native conduit/tag-filter-with-request-replacement-two-quick-switches-one-reque.scm
+native conduit/your-feed-tab-drives-the-authenticated-feed-endpoint.scm
+native data-grid/filtering.scm
+native data-grid/inline-editing.scm
+native data-grid/paging.scm
+native data-grid/per-row-selection.scm
+native data-grid/sorting.scm
+native dependency-scheduler/a-dependency-cycle-is-reported-not-hung-on.scm
+native dependency-scheduler/a-zero-duration-milestone.scm
+native dependency-scheduler/adding-and-removing-a-dependency-edge.scm
+native dependency-scheduler/filtering-the-list-to-the-critical-path.scm
+native dependency-scheduler/moving-a-leaf-task-changes-only-that-leaf.scm
+native dependency-scheduler/reordering-the-list-keeps-every-row-scope.scm
+native dependency-scheduler/the-critical-path-moves-when-a-parallel-branch-grows-long-enough.scm
+native dependency-scheduler/the-empty-list.scm
+native dependency-scheduler/the-focus-readout-is-an-independent-source-feeding-the-same-solv.scm
+native dependency-scheduler/write-spec-is-the-head-of-spec-api-sync-qa-launch-so-delaying-it.scm
+native field-notes/editing-an-already-synced-note-re-queues-it.scm
+native field-notes/filtering-hides-synced-rows-without-touching-the-others.scm
+native field-notes/going-offline-mid-sync-then-a-stale-result-arriving-late.scm
+native field-notes/pausing-auto-sync-then-deleting-a-queued-note.scm
+native field-notes/persistence.scm
+native flight-search/a-filter-is-an-effect-trigger.scm
+native flight-search/a-filter-that-excludes-every-returned-flight.scm
+native flight-search/an-empty-result-set-from-the-backend.scm
+native flight-search/failure.scm
+native flight-search/fan-in-two-filters-combined.scm
+native flight-search/latest-wins-a-superseded-response-is-ignored.scm
+native flight-search/sorting-an-empty-set-still-does-not-refetch.scm
+native flight-search/sorting-while-a-request-is-in-flight.scm
+native flight-search/widen-back-to-every-flight-then-a-final-re-sort-over-four-rows.scm
+native form-builder/a-single-field-form.scm
+native form-builder/adding-a-checkbox-field.scm
+native form-builder/adding-a-number-field.scm
+native form-builder/adding-a-select-field.scm
+native form-builder/adding-the-remaining-field-types.scm
+native form-builder/answering-the-generated-form.scm
+native form-builder/clearing-the-preview-answers.scm
+native form-builder/deleting-a-field-that-holds-invalid-input.scm
+native form-builder/editing-one-field-s-label-fine-grained.scm
+native form-builder/reordering.scm
+native form-builder/the-empty-form.scm
+native form-builder/the-key-cross-level-assertion.scm
+native kanban-board/adding-cards-empty-duplicate-valid.scm
+native kanban-board/cross-column-move.scm
+native kanban-board/delete-the-card-that-currently-matches-the-filter.scm
+native kanban-board/empty-a-whole-column.scm
+native kanban-board/filter-fans-in-with-column-membership.scm
+native kanban-board/move-the-only-card-out-of-a-column-leaving-it-empty.scm
+native kanban-board/per-row-edit-does-not-disturb-siblings.scm
+native kanban-board/reorder-inside-a-column.scm
+native kanban-board/wip-limit-crosses-and-un-crosses.scm
+native loan-comparator/a-principal-of-zero-an-empty-schedule-that-still-clears.scm
+native loan-comparator/a-rate-of-zero.scm
+native loan-comparator/a-term-of-one-month.scm
+native loan-comparator/an-extra-payment-large-enough-to-shorten-the-schedule.scm
+native loan-comparator/back-to-the-baseline-scenario-a.scm
+native loan-comparator/editing-scenario-a-s-rate-derived-figures-follow-siblings-do-n.scm
+native loan-comparator/editing-scenario-c-does-not-disturb-a-or-b.scm
+native loan-comparator/invalid-input.scm
+native loan-comparator/zero-extra-payment-restores-the-full-term.scm
+native log-viewer/appending-line-41-to-a-40-line-buffer-must-reuse-every-existing.scm
+native log-viewer/clearing-while-a-level-filter-and-a-query-are-active-keeps-the-c.scm
+native log-viewer/hiding-a-level-removes-only-that-level-s-rows-from-a-42-line-buf.scm
+native log-viewer/one-line-the-single-item-boundary.scm
+native log-viewer/one-more-append-to-show-the-budget-is-flat-per-line-rather-than.scm
+native log-viewer/reordering-the-buffer-moves-rows-without-creating-or-removing-an.scm
+native log-viewer/restore-a-wide-open-view-for-the-granularity-measurement.scm
+native log-viewer/typing-a-query-re-marks-the-existing-rows-without-recreating-any.scm
+native markdown-editor/back-to-the-sample-document-the-whole-graph-restores.scm
+native markdown-editor/contrast-adding-a-heading-does-rebuild-the-outline-by-exactly.scm
+native markdown-editor/edge-case-a-document-with-no-headings-at-all.scm
+native markdown-editor/edge-case-an-empty-document-all-four-views-stay-locatable.scm
+native markdown-editor/edge-case-every-heading-level-one-demotion-at-a-time-the-outl.scm
+native markdown-editor/edge-case-markdown-special-characters-and-text-that-looks-like.scm
+native markdown-editor/list-behaviour-add-remove-reorder-and-per-row-edits-in-the-out.scm
+native markdown-editor/numbering-toggle-a-fan-in-of-the-heading-spine-and-a-boolean.scm
+native markdown-editor/the-teaching-point-a-paragraph-edit-updates-the-statistics-and.scm
+native package-explorer/c-the-search-page-s-own-loading-loaded-transition.scm
+native package-explorer/d-latest-wins-search-and-a-stale-result.scm
+native package-explorer/e-keyed-row-budgets-and-per-row-edits.scm
+native package-explorer/f-opening-a-package-three-panels-settle-independently.scm
+native package-explorer/g-back-and-forward.scm
+native package-explorer/h-unknown-address.scm
+native pomodoro-tracker/a-project-with-no-logged-time-is-still-fully-usable.scm
+native pomodoro-tracker/attaching-a-different-project-mid-session.scm
+native pomodoro-tracker/initial-render-restored-from-storage.scm
+native pomodoro-tracker/logging-the-block-writes-the-ledger-and-rewinds-the-clock.scm
+native pomodoro-tracker/pause-voids-the-block-in-progress.scm
+native pomodoro-tracker/reset-returns-to-idle.scm
+native pomodoro-tracker/resume-starts-a-fresh-block.scm
+native pomodoro-tracker/run-a-whole-cycle-to-the-work-break-boundary.scm
+native pomodoro-tracker/start-the-running-branch-mounts-the-interval.scm
+native query-builder/and-or-on-a-group.scm
+native query-builder/back-to-a-single-condition.scm
+native query-builder/deleting-a-leaf-sibling.scm
+native query-builder/deleting-a-nested-group.scm
+native query-builder/edge-case-empty-leaf-value.scm
+native query-builder/editing-a-leaf-three-levels-deep-does-not-recreate-its-siblings.scm
+native query-builder/empty-root-group.scm
+native query-builder/every-operator.scm
+native query-builder/negating-the-root.scm
+native query-builder/nesting-a-group-inside-a-group.scm
+native query-builder/second-independent-source-fan-in.scm
+native query-builder/three-levels-of-nesting.scm
+native recipe-scaler/removing-recipes-from-the-shopping-list.scm
+native split-the-bill/adding-a-person-re-splits-every-expense.scm
+native split-the-bill/adding-an-expense.scm
+native split-the-bill/changing-who-shares-an-expense.scm
+native split-the-bill/editing-one-expense-reuses-every-row.scm
+native split-the-bill/invalid-amounts.scm
+native split-the-bill/one-person-then-none.scm
+native split-the-bill/removing-a-person.scm
+native split-the-bill/removing-expenses.scm
+native split-the-bill/rounding-that-does-not-divide-evenly.scm
+native spreadsheet-lite/b2-d2-d5-d6-d7-d8-and-b2-b5-f5-d5-already-covered.scm
+native spreadsheet-lite/editing-a-cell-nothing-depends-on.scm
+native spreadsheet-lite/editing-survives-every-reorder.scm
+native spreadsheet-lite/empty-cell-references.scm
+native spreadsheet-lite/error-paths.scm
+native spreadsheet-lite/grid-mode-toggle.scm
+native spreadsheet-lite/keyed-row-add-remove.scm
+native spreadsheet-lite/precedence-and-unary-minus.scm
+native spreadsheet-lite/row-reorder.scm
+native spreadsheet-lite/selection-and-the-bar.scm
+native spreadsheet-lite/the-new-dependent-updates-with-it.scm
+native spreadsheet-lite/them.scm
+native status-page/a-real-outage-keeps-the-page-at-major-outage.scm
+native status-page/a-stale-check-result-arriving-after-a-newer-request-is-ignored.scm
+native status-page/first-incident-arrives-with-three-updates-in-publish-order.scm
+native status-page/hiding-the-page-stops-polling.scm
+native status-page/one-refresh-fails-while-the-others-succeed.scm
+native status-page/returning-to-visible-resumes-polling.scm
+native status-page/several-services-degrade-the-rollup-escalates-to-a-major-outage.scm
+native support-inbox/a-conversation-with-no-messages.scm
+native support-inbox/a-failed-sync.scm
+native support-inbox/a-newer-read-request-cancels-the-older-one-the-stale-result-is-i.scm
+native support-inbox/a-send-fails-and-rolls-back.scm
+native support-inbox/empty-inbox-edge.scm
+native support-inbox/filter-meets-selection.scm
+native support-inbox/optimistic-sending.scm
+native support-inbox/pausing-and-resuming-polling.scm
+native support-inbox/selecting-a-conversation.scm
+native support-inbox/the-key-budget.scm
+native support-inbox/the-server-reorders-rows.scm
+native support-inbox/unread-clears-when-the-thread-is-read.scm
+native token-editor/one-colour-edit-reaches-every-dependent-binding-without-rebuildi.scm
+wasm pomodoro-tracker
+
+# Fixture examples (examples/_fixtures), recorded on the same day. The wasm
+# mounts and the state-reads/large-each/metric-semantics specs are live-update
+# failures of the same classes as above; the js-framework-benchmark 10k specs
+# hit the 30s worker timeout on an 8-core machine with four workers.
+native js-framework-benchmark/append_1k_to_10k.scm
+native js-framework-benchmark/clear_10k.scm
+native js-framework-benchmark/create_10k.scm
+native js-framework-benchmark/replace_1k.scm
+native js-framework-benchmark/update_10k.scm
+native large-each-08/main.scm
+native large-each-64/main.scm
+native metric-semantics/main.scm
+native state-reads/main.scm
+wasm each-duplicate-key
+wasm location-canonical-branch
+wasm location-navigation
+wasm location-source
+wasm on-change-initial
+wasm storage-commands

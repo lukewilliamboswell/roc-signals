@@ -147,6 +147,23 @@ runtime behavior. The coverage job is intentionally separate from
 `python3 scripts/test.py` because kcov is slower and mainly useful when
 investigating test gaps.
 
+## Known-failure ratchet
+
+The example spec suites run to completion - every wasm mount and every native
+spec, each in its own process - and the run is judged at the end against
+`test/known-failures.txt`, the list of specs currently expected to fail:
+
+- a failure that is not listed is a regression and fails the run;
+- a listed spec that now passes also fails the run, until its line is removed;
+- `python3 scripts/test.py ... --update-known-failures` removes the lines that
+  passed. It never adds one.
+
+So the list only shrinks by fixing things. Accepting a new failure means adding
+its line by hand with a comment saying why, where a reviewer will see it. Keys
+are `native <example>/<spec>.scm` and `wasm <example>`; filters and shards only
+judge the specs that actually ran. `--fail-fast` still stops at the first
+failing example when you want a quick signal.
+
 ## Fuzzing
 
 Fuzz targets live in `test/fuzzing/`, one file per target, and are built through

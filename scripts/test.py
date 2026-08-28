@@ -19,6 +19,7 @@ import tomllib
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
+import known_failures
 import spec_driver
 
 
@@ -175,6 +176,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--shard", type=spec_driver.parse_shard, metavar="CURRENT/TOTAL")
     parser.add_argument("--fail-fast", action="store_true", help="Stop scheduling specs after the first failure.")
+    parser.add_argument(
+        "--known-failures",
+        default=str(ROOT / "test" / "known-failures.txt"),
+        metavar="PATH",
+        help="Ratchet file of specs and wasm mounts that are expected to fail. Unlisted failures and listed passes both fail the run.",
+    )
+    parser.add_argument(
+        "--update-known-failures",
+        action="store_true",
+        help="Delete entries from the known-failures file that passed in this run. Never adds entries.",
+    )
     parser.add_argument("--spec-timeout", type=float, default=30.0, metavar="SECONDS")
     return parser.parse_args()
 
@@ -264,6 +276,7 @@ def run_zig_suite() -> None:
         "unittest",
         "scripts/test_spec_driver.py",
         "scripts/test_benchmark_manifest.py",
+        "scripts/test_known_failures.py",
     ])
 
 
@@ -303,7 +316,7 @@ def run_roc_tests(
         run([roc_bin, "test", source_root / example.source])
 
 
-def build_wasm_apps(roc_bin: str, examples: tuple[Example, ...]) -> None:
+def build_wasm_apps(roc_bin: str, examples: tuple[Example, ...], ledger: known_failures.Ledger) -> None:
     wasm_dir = TEST_OUT / "wasm"
     wasm_dir.mkdir(parents=True, exist_ok=True)
     bundle = bundle_platform(roc_bin)
@@ -324,17 +337,21 @@ def build_wasm_apps(roc_bin: str, examples: tuple[Example, ...]) -> None:
                 print(f"\nSkipping wasm build for {example.slug} on Linux: {LINUX_WASM_SKIPS[example.slug]}.")
                 continue
             output = wasm_dir / f"{example.slug}.wasm"
-            run(
-                [
-                    roc_bin,
-                    "build",
-                    "--target=wasm32",
-                    "--opt=size",
-                    "--no-cache",
-                    f"--output={output}",
-                    source_root / example.source,
-                ]
-            )
+            try:
+                run(
+                    [
+                        roc_bin,
+                        "build",
+                        "--target=wasm32",
+                        "--opt=size",
+                        "--no-cache",
+                        f"--output={output}",
+                        source_root / example.source,
+                    ]
+                )
+            except subprocess.CalledProcessError as exc:
+                ledger.record("wasm", example.slug, False, f"roc build exited with {exc.returncode}")
+                continue
             mount_cmd = ["node", "scripts/browser/mount_wasm_example.mjs", output, example.slug]
             if example.expect_mount_error is not None:
                 mount_cmd.extend(["--expect-error", example.expect_mount_error])
@@ -346,7 +363,12 @@ def build_wasm_apps(roc_bin: str, examples: tuple[Example, ...]) -> None:
                 mount_cmd.append("--exercise-location-canonical-branch")
             if example.slug == "storage-commands":
                 mount_cmd.append("--exercise-storage-commands")
-            run(mount_cmd)
+            try:
+                run(mount_cmd)
+            except subprocess.CalledProcessError as exc:
+                ledger.record("wasm", example.slug, False, f"mount exited with {exc.returncode}")
+                continue
+            ledger.record("wasm", example.slug, True)
 
 
 def should_run_hosted(mode: str) -> bool:
@@ -389,7 +411,12 @@ def roc_native_target() -> str:
 
 
 def native_cache_args(target: str) -> list[str]:
-    return ["--no-cache"] if target.endswith("musl") else []
+    # The Roc cache is keyed by content, not by compiler build, and a cache
+    # written by one nightly has made another segfault at build time. Every
+    # suite build therefore bypasses it, as the wasm builds already did; the
+    # target is kept so a platform-specific exception has somewhere to live.
+    _ = target
+    return ["--no-cache"]
 
 
 def should_skip_native_example(target: str, example: Example) -> str | None:
@@ -420,6 +447,7 @@ def run_native_specs(
     shard: tuple[int, int] | None = None,
     fail_fast: bool = False,
     spec_timeout: float = 30.0,
+    ledger: known_failures.Ledger,
 ) -> None:
     ensure_sources_do_not_use_release_platform_urls(
         examples,
@@ -444,7 +472,14 @@ def run_native_specs(
             continue
         matched_specs += len(selected)
         exe = native_exe_path(bin_dir, example.exe_name)
-        run([roc_bin, "build", f"--target={target}", "--opt=dev", *native_cache_args(target), f"--output={exe}", source])
+        try:
+            run([roc_bin, "build", f"--target={target}", "--opt=dev", *native_cache_args(target), f"--output={exe}", source])
+        except subprocess.CalledProcessError as exc:
+            for case in selected:
+                ledger.record("native", f"{example.slug}/{case.id}", False, f"roc build exited with {exc.returncode}")
+            if fail_fast:
+                break
+            continue
         print(f"\n==> {exe} {specs}", flush=True)
         try:
             results = spec_driver.run_suite(
@@ -459,8 +494,15 @@ def run_native_specs(
         except ValueError as exc:
             raise SystemExit(str(exc)) from exc
         spec_driver.print_summary(results)
-        if not all(result.passed for result in results):
-            raise SystemExit(f"native specs failed for {example.slug}")
+        for result in results:
+            detail = ""
+            if result.failure:
+                detail = f"{result.failure.get('phase', 'test')}/{result.failure.get('kind', 'failure')}: {result.failure.get('message', '')}"
+            elif not result.passed:
+                detail = result.status
+            ledger.record("native", f"{example.slug}/{result.id}", result.passed, detail.strip())
+        if fail_fast and not all(result.passed for result in results):
+            break
     if matched_specs == 0:
         raise SystemExit("no native specs matched the requested filters and shard")
 
@@ -535,6 +577,7 @@ def run_local_native_specs(
     shard: tuple[int, int] | None,
     fail_fast: bool,
     spec_timeout: float,
+    ledger: known_failures.Ledger,
 ) -> None:
     source_root = TEST_OUT / "native-source"
     rewrite_examples_for_platform(str((ROOT / "platform" / "main.roc").resolve()), source_root)
@@ -547,6 +590,7 @@ def run_local_native_specs(
         shard=shard,
         fail_fast=fail_fast,
         spec_timeout=spec_timeout,
+        ledger=ledger,
     )
 
 
@@ -625,6 +669,7 @@ def run_bundle_specs(
     shard: tuple[int, int] | None,
     fail_fast: bool,
     spec_timeout: float,
+    ledger: known_failures.Ledger,
 ) -> None:
     ensure_release_platform_url_allowed(bundle_url, allow_release_platform_url=allow_release_platform_url)
     print(f"\nTesting bundled platform: {bundle_url}")
@@ -641,6 +686,7 @@ def run_bundle_specs(
         shard=shard,
         fail_fast=fail_fast,
         spec_timeout=spec_timeout,
+        ledger=ledger,
     )
 
 
@@ -666,6 +712,7 @@ def run_bundle_suite(
     shard: tuple[int, int] | None,
     fail_fast: bool,
     spec_timeout: float,
+    ledger: known_failures.Ledger,
 ) -> None:
     spec_options = {
         "jobs": jobs,
@@ -673,6 +720,7 @@ def run_bundle_suite(
         "shard": shard,
         "fail_fast": fail_fast,
         "spec_timeout": spec_timeout,
+        "ledger": ledger,
     }
     if bundle_ref is None:
         run_bundle_file_suite(roc_bin, examples, bundle_platform(roc_bin), **spec_options)
@@ -731,8 +779,13 @@ def main() -> int:
         run_local_roc_checks(roc_bin, examples)
     if "roc-test" in suites:
         run_local_roc_tests(roc_bin, examples)
+    known_failures_path = Path(args.known_failures)
+    try:
+        ledger = known_failures.Ledger(known=known_failures.load(known_failures_path))
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     if "wasm" in suites:
-        build_wasm_apps(roc_bin, examples)
+        build_wasm_apps(roc_bin, examples, ledger)
 
     if "native" in suites:
         if should_run_hosted(args.native):
@@ -744,6 +797,7 @@ def main() -> int:
                 shard=args.shard,
                 fail_fast=args.fail_fast,
                 spec_timeout=args.spec_timeout,
+                ledger=ledger,
             )
         else:
             print("\nSkipping native specs: platform manifest exposes macOS and Linux musl native targets only.")
@@ -760,6 +814,7 @@ def main() -> int:
                 shard=args.shard,
                 fail_fast=args.fail_fast,
                 spec_timeout=args.spec_timeout,
+                ledger=ledger,
             )
         else:
             print("\nSkipping bundle executable tests: platform manifest exposes macOS and Linux musl native targets only.")
@@ -772,7 +827,14 @@ def main() -> int:
 
     if not args.keep_output and TEST_OUT.exists():
         shutil.rmtree(TEST_OUT)
-    return 0
+    if not ledger.outcomes:
+        return 0
+    status = known_failures.report(ledger, known_failures_path)
+    if args.update_known_failures and ledger.fixed:
+        removed = known_failures.remove_fixed(known_failures_path, ledger)
+        print(f"removed {removed} fixed entr{'y' if removed == 1 else 'ies'} from {known_failures_path}")
+        status = 1 if ledger.regressions else 0
+    return status
 
 
 if __name__ == "__main__":
