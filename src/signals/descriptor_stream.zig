@@ -1945,6 +1945,41 @@ pub const Stream = struct {
         }
     };
 
+    pub const PreparedEach = struct {
+        desc: EachDesc,
+
+        /// Drops provisional keyed-list descriptor ownership before publication.
+        pub fn abort(self: *@This(), allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
+            self.desc.deinit(allocator, ctx, roc_host, metrics);
+        }
+    };
+
+    /// Reserves keyed-list descriptor and node-index storage for allocation-free publication.
+    pub fn reservePreparedEaches(self: *Stream, allocator: std.mem.Allocator, additional: usize, highest_node_id: u64) std.mem.Allocator.Error!void {
+        try self.eaches.ensureUnusedCapacity(allocator, additional);
+        const highest_index = std.math.cast(usize, highest_node_id) orelse return error.OutOfMemory;
+        const descriptor_len = std.math.add(usize, highest_index, 1) catch return error.OutOfMemory;
+        if (descriptor_len > self.descriptor_indexes_by_node_id.items.len) try self.descriptor_indexes_by_node_id.ensureTotalCapacity(allocator, descriptor_len);
+    }
+
+    /// Retains one keyed-list descriptor in preparation-owned storage.
+    pub fn prepareEach(_: *const Stream, node_id: u64, items: HostSignalBinding, ops: HostEachOps, metrics: anytype) PreparedEach {
+        return .{ .desc = .{
+            .node_id = node_id,
+            .items = items,
+            .ops = retainHostEachOps(ops, metrics),
+        } };
+    }
+
+    /// Publishes one fully prepared keyed-list descriptor without allocation.
+    pub fn appendPreparedEach(self: *Stream, prepared: PreparedEach) void {
+        const node_id = prepared.desc.node_id;
+        while (self.descriptor_indexes_by_node_id.items.len <= node_id) self.descriptor_indexes_by_node_id.appendAssumeCapacity(.{});
+        const each_index = self.eaches.items.len;
+        self.eaches.appendAssumeCapacity(prepared.desc);
+        setFreshIndex(&self.descriptor_indexes_by_node_id.items[@intCast(node_id)].each, each_index);
+    }
+
     /// Maintains reserve prepared whens within the indexed descriptor stream used by both hosts.
     pub fn reservePreparedWhens(self: *Stream, allocator: std.mem.Allocator, additional: usize, highest_node_id: u64) std.mem.Allocator.Error!void {
         try self.whens.ensureUnusedCapacity(allocator, additional);
