@@ -2476,6 +2476,21 @@ pub fn Engine(comptime Ctx: type) type {
             return self.hostSignalRecordCapability(ctx, signal.record);
         }
 
+        fn hostSignalRecordCapabilityWithProvisionalStates(self: *Self, ctx: Ctx.Handle, record: *const HostSignalRecord, provisional_states: []const HostState) HostValueCapability {
+            switch (record.payload) {
+                .ref => |node_id| {
+                    for (provisional_states) |state| if (state.state_id == node_id) return state.cell.cap;
+                },
+                else => {},
+            }
+            return self.hostSignalRecordCapability(ctx, record);
+        }
+
+        fn dropHostSignalRecordValueWithProvisionalStates(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, record: *const HostSignalRecord, value: HostValue, provisional_states: []const HostState) void {
+            const cap = self.hostSignalRecordCapabilityWithProvisionalStates(ctx, record, provisional_states);
+            callHostValueToUnitWithCapability(ctx, roc_host, cap, hv.hostValueCapabilityDrop(cap), value);
+        }
+
         /// Performs drop host signal record value inside the shared engine while preserving transaction and changed-set invariants.
         pub fn dropHostSignalRecordValue(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, record: *const HostSignalRecord, value: HostValue) void {
             const cap = self.hostSignalRecordCapability(ctx, record);
@@ -3328,6 +3343,11 @@ pub fn Engine(comptime Ctx: type) type {
             signal_roc_host: ?*abi.RocHost = null,
             signal_token_capacity: usize = 0,
             signal_root_capacity: usize = 0,
+            reserved_nodes: usize = 0,
+            reserved_attrs: usize = 0,
+            reserved_lifecycle: usize = 0,
+            reserved_scope_sites: usize = 0,
+            reserved_signal_records: usize = 0,
             stream_materialized: bool = false,
             committed: bool = false,
 
@@ -3375,6 +3395,11 @@ pub fn Engine(comptime Ctx: type) type {
                 self.signal_bindings.ensureTotalCapacity(allocator, expected_signal_roots) catch return error.OutOfMemory;
                 self.signal_token_capacity = expected_signal_records;
                 self.signal_root_capacity = expected_signal_roots;
+                self.reserved_nodes = expected_nodes;
+                self.reserved_attrs = expected_attrs;
+                self.reserved_lifecycle = expected_lifecycle;
+                self.reserved_scope_sites = expected_scope_sites;
+                self.reserved_signal_records = expected_signal_records;
                 self.engine.scopes.ensureUnusedCapacity(allocator, expected_scope_intents) catch return error.OutOfMemory;
                 self.engine.node_identities.ensureUnusedCapacity(allocator, expected_scope_sites) catch return error.OutOfMemory;
                 self.engine.active_node_identity_ids.ensureUnusedCapacity(allocator, std.math.cast(u32, expected_scope_sites) orelse return error.ResourceLimit) catch return error.OutOfMemory;
@@ -3522,6 +3547,11 @@ pub fn Engine(comptime Ctx: type) type {
                 const attr_lifecycle = std.math.add(usize, counts.attrs, counts.lifecycle) catch return error.ResourceLimit;
                 const signal_roots = @max(attr_lifecycle, counts.signal_records);
                 const signal_descriptors = std.math.add(usize, counts.attrs, counts.nodes) catch return error.ResourceLimit;
+                const total_nodes = std.math.add(usize, self.reserved_nodes, counts.nodes) catch return error.ResourceLimit;
+                const total_attrs = std.math.add(usize, self.reserved_attrs, counts.attrs) catch return error.ResourceLimit;
+                const total_lifecycle = std.math.add(usize, self.reserved_lifecycle, counts.lifecycle) catch return error.ResourceLimit;
+                const total_scope_sites = std.math.add(usize, self.reserved_scope_sites, scope_sites) catch return error.ResourceLimit;
+                const total_signal_records = std.math.add(usize, self.reserved_signal_records, counts.signal_records) catch return error.ResourceLimit;
 
                 self.scopes.prepare(allocator, scope_intents) catch return error.OutOfMemory;
                 self.node_identities.prepare(allocator, scope_sites) catch return error.OutOfMemory;
@@ -3545,30 +3575,35 @@ pub fn Engine(comptime Ctx: type) type {
                 self.signal_root_capacity = std.math.add(usize, self.signal_root_capacity, signal_roots) catch return error.ResourceLimit;
 
                 self.engine.scopes.ensureUnusedCapacity(allocator, scope_intents) catch return error.OutOfMemory;
-                self.engine.node_identities.ensureUnusedCapacity(allocator, scope_sites) catch return error.OutOfMemory;
-                self.engine.active_node_identity_ids.ensureUnusedCapacity(allocator, std.math.cast(u32, scope_sites) orelse return error.ResourceLimit) catch return error.OutOfMemory;
+                self.engine.node_identities.ensureUnusedCapacity(allocator, total_scope_sites) catch return error.OutOfMemory;
+                self.engine.active_node_identity_ids.ensureUnusedCapacity(allocator, std.math.cast(u32, total_scope_sites) orelse return error.ResourceLimit) catch return error.OutOfMemory;
                 self.engine.states.ensureUnusedCapacity(allocator, counts.state_sites) catch return error.OutOfMemory;
                 const additional_node_ids = std.math.add(usize, self.node_identities.intents.items.len, scope_sites) catch return error.ResourceLimit;
                 const state_index_len = std.math.add(usize, self.engine.node_identities.items.len, additional_node_ids) catch return error.ResourceLimit;
                 self.engine.state_indexes_by_node_id.ensureTotalCapacity(allocator, state_index_len) catch return error.OutOfMemory;
-                self.engine.dom_identities.ensureUnusedCapacity(allocator, counts.nodes) catch return error.OutOfMemory;
-                self.engine.active_dom_identity_ids.ensureUnusedCapacity(allocator, std.math.cast(u32, counts.nodes) orelse return error.ResourceLimit) catch return error.OutOfMemory;
+                self.engine.dom_identities.ensureUnusedCapacity(allocator, total_nodes) catch return error.OutOfMemory;
+                self.engine.active_dom_identity_ids.ensureUnusedCapacity(allocator, std.math.cast(u32, total_nodes) orelse return error.ResourceLimit) catch return error.OutOfMemory;
                 const additional_dom_ids = std.math.add(usize, self.dom_identities.intents.items.len, counts.nodes) catch return error.ResourceLimit;
                 const highest_elem_id = std.math.add(u64, @intCast(self.engine.dom_identities.items.len), @as(u64, @intCast(additional_dom_ids))) catch return error.ResourceLimit;
-                self.stream.reservePreparedStaticNodes(allocator, counts.nodes, highest_elem_id) catch return error.OutOfMemory;
-                self.stream.reservePreparedStaticAttrs(allocator, counts.attrs) catch return error.OutOfMemory;
-                self.stream.reservePreparedSignalAttrs(allocator, counts.attrs, highest_elem_id) catch return error.OutOfMemory;
-                self.stream.reservePreparedSignalTextNodes(allocator, counts.nodes, highest_elem_id) catch return error.OutOfMemory;
-                self.stream.reservePreparedSignalRecordPublication(allocator, counts.signal_records) catch return error.OutOfMemory;
-                self.stream.reservePreparedEvents(allocator, counts.attrs, highest_elem_id) catch return error.OutOfMemory;
-                self.stream.reservePreparedCustomAttrIndex(allocator, counts.attrs) catch return error.OutOfMemory;
-                self.stream.reservePreparedLifecycle(allocator, counts.lifecycle) catch return error.OutOfMemory;
+                self.stream.reservePreparedStaticNodes(allocator, total_nodes, highest_elem_id) catch return error.OutOfMemory;
+                self.stream.reservePreparedStaticAttrs(allocator, total_attrs) catch return error.OutOfMemory;
+                self.stream.reservePreparedSignalAttrs(allocator, total_attrs, highest_elem_id) catch return error.OutOfMemory;
+                self.stream.reservePreparedSignalTextNodes(allocator, total_nodes, highest_elem_id) catch return error.OutOfMemory;
+                self.stream.reservePreparedSignalRecordPublication(allocator, total_signal_records) catch return error.OutOfMemory;
+                self.stream.reservePreparedEvents(allocator, total_attrs, highest_elem_id) catch return error.OutOfMemory;
+                self.stream.reservePreparedCustomAttrIndex(allocator, total_attrs) catch return error.OutOfMemory;
+                self.stream.reservePreparedLifecycle(allocator, total_lifecycle) catch return error.OutOfMemory;
                 if (scope_sites != 0) {
                     const highest_node_id = std.math.sub(usize, state_index_len, 1) catch return error.ResourceLimit;
-                    self.stream.reservePreparedStateSites(allocator, scope_sites, @intCast(highest_node_id)) catch return error.OutOfMemory;
+                    self.stream.reservePreparedStateSites(allocator, total_scope_sites, @intCast(highest_node_id)) catch return error.OutOfMemory;
                     self.stream.reservePreparedWhens(allocator, counts.when_sites, @intCast(highest_node_id)) catch return error.OutOfMemory;
                     self.stream.reservePreparedEaches(allocator, counts.each_sites, @intCast(highest_node_id)) catch return error.OutOfMemory;
                 }
+                self.reserved_nodes = total_nodes;
+                self.reserved_attrs = total_attrs;
+                self.reserved_lifecycle = total_lifecycle;
+                self.reserved_scope_sites = total_scope_sites;
+                self.reserved_signal_records = total_signal_records;
             }
 
             fn rootScope(self: *@This()) CollectionError!scope_tree.InternResult {
@@ -3781,8 +3816,8 @@ pub fn Engine(comptime Ctx: type) type {
                 self.signal_records.transferDescriptorRoot(condition.record);
                 const journaled = self.signal_bindings.pop() orelse @panic("staged when binding journal underflow");
                 if (journaled.record != condition.record or journaled.source_node_ids.ptr != condition.source_node_ids.ptr) @panic("staged when binding journal transfer mismatch");
-                const value = self.engine.evalHostSignalBinding(self.host_ctx, roc_host, &prepared.desc.condition);
-                const cap = self.engine.hostSignalBindingCapability(self.host_ctx, &prepared.desc.condition);
+                const value = self.engine.evalHostSignalBindingWithProvisionalStates(self.host_ctx, roc_host, &prepared.desc.condition, self.prepared_state_cells.items);
+                const cap = self.engine.hostSignalRecordCapabilityWithProvisionalStates(self.host_ctx, prepared.desc.condition.record, self.prepared_state_cells.items);
                 assertHostValueCapabilitiesMatch(prepared.desc.read.capability, cap, "when read extension capability did not match its signal value");
                 const branch: HostScopeBranch = if (callHostValueToBoolWithCapability(self.host_ctx, roc_host, prepared.desc.read.capability, prepared.desc.read.read, value)) .true_branch else .false_branch;
                 prepared.desc.cached_value = .{ .present = HostValueCell.initRetained(value, cap, &self.engine.pending_roc_metrics) };
@@ -3808,8 +3843,8 @@ pub fn Engine(comptime Ctx: type) type {
                 self.signal_records.transferDescriptorRoot(items.record);
                 const journaled = self.signal_bindings.pop() orelse @panic("staged each binding journal underflow");
                 if (journaled.record != items.record or journaled.source_node_ids.ptr != items.source_node_ids.ptr) @panic("staged each binding journal transfer mismatch");
-                const items_value = self.engine.evalHostSignalBinding(self.host_ctx, roc_host, &prepared_each.desc.items);
-                const items_cap = self.engine.hostSignalBindingCapability(self.host_ctx, &prepared_each.desc.items);
+                const items_value = self.engine.evalHostSignalBindingWithProvisionalStates(self.host_ctx, roc_host, &prepared_each.desc.items, self.prepared_state_cells.items);
+                const items_cap = self.engine.hostSignalRecordCapabilityWithProvisionalStates(self.host_ctx, prepared_each.desc.items.record, self.prepared_state_cells.items);
                 assertHostValueCapabilitiesMatch(prepared_each.desc.ops.items_capability, items_cap, "each items extension capability did not match its signal value");
                 prepared_each.desc.cached_value = .{ .present = HostValueCell.initRetained(items_value, items_cap, &self.engine.pending_roc_metrics) };
 
@@ -8302,28 +8337,35 @@ pub fn Engine(comptime Ctx: type) type {
 
         /// Performs eval host signal record inside the shared engine while preserving transaction and changed-set invariants.
         pub fn evalHostSignalRecord(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, record: *HostSignalRecord) HostValue {
+            return self.evalHostSignalRecordWithProvisionalStates(ctx, roc_host, record, &.{});
+        }
+
+        fn evalHostSignalRecordWithProvisionalStates(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, record: *HostSignalRecord, provisional_states: []const HostState) HostValue {
             switch (record.payload) {
-                .ref => |node_id| return Ctx.stateValueByNodeId(ctx, node_id),
+                .ref => |node_id| {
+                    for (provisional_states) |state| if (state.state_id == node_id) return Ctx.cloneHostValue(ctx, state.cell.value);
+                    return Ctx.stateValueByNodeId(ctx, node_id);
+                },
                 .const_value => |*payload| {
                     const value = erased_calls.callValueInitThunk(roc_host, payload.init);
                     return self.replaceSignalExprCacheAndClone(ctx, &payload.cached_value, roc_host, value, payload.cap);
                 },
                 .map => |*payload| {
-                    const input = self.evalHostSignalRecord(ctx, roc_host, payload.input);
-                    defer self.dropHostSignalRecordValue(ctx, roc_host, payload.input, input);
+                    const input = self.evalHostSignalRecordWithProvisionalStates(ctx, roc_host, payload.input, provisional_states);
+                    defer self.dropHostSignalRecordValueWithProvisionalStates(ctx, roc_host, payload.input, input, provisional_states);
                     self.recordDerivedCall();
-                    const input_cap = self.hostSignalRecordCapability(ctx, payload.input);
+                    const input_cap = self.hostSignalRecordCapabilityWithProvisionalStates(ctx, payload.input, provisional_states);
                     const value = callHostValueToHostValueWithCapability(ctx, roc_host, input_cap, payload.transform, input);
                     return self.replaceSignalExprCacheAndClone(ctx, &payload.cached_value, roc_host, value, payload.cap);
                 },
                 .map2 => |*payload| {
-                    const left = self.evalHostSignalRecord(ctx, roc_host, payload.left);
-                    defer self.dropHostSignalRecordValue(ctx, roc_host, payload.left, left);
-                    const right = self.evalHostSignalRecord(ctx, roc_host, payload.right);
-                    defer self.dropHostSignalRecordValue(ctx, roc_host, payload.right, right);
+                    const left = self.evalHostSignalRecordWithProvisionalStates(ctx, roc_host, payload.left, provisional_states);
+                    defer self.dropHostSignalRecordValueWithProvisionalStates(ctx, roc_host, payload.left, left, provisional_states);
+                    const right = self.evalHostSignalRecordWithProvisionalStates(ctx, roc_host, payload.right, provisional_states);
+                    defer self.dropHostSignalRecordValueWithProvisionalStates(ctx, roc_host, payload.right, right, provisional_states);
                     self.recordDerivedCall();
-                    const left_cap = self.hostSignalRecordCapability(ctx, payload.left);
-                    const right_cap = self.hostSignalRecordCapability(ctx, payload.right);
+                    const left_cap = self.hostSignalRecordCapabilityWithProvisionalStates(ctx, payload.left, provisional_states);
+                    const right_cap = self.hostSignalRecordCapabilityWithProvisionalStates(ctx, payload.right, provisional_states);
                     const value = callHostValueHostValueToHostValueWithCapabilities(ctx, roc_host, left_cap, right_cap, payload.transform, left, right);
                     return self.replaceSignalExprCacheAndClone(ctx, &payload.cached_value, roc_host, value, payload.cap);
                 },
@@ -8337,15 +8379,15 @@ pub fn Engine(comptime Ctx: type) type {
                         values.deinit(allocator);
                     }
                     for (payload.children) |child| {
-                        values.append(allocator, self.evalHostSignalRecord(ctx, roc_host, child)) catch @panic("out of memory");
+                        values.append(allocator, self.evalHostSignalRecordWithProvisionalStates(ctx, roc_host, child, provisional_states)) catch @panic("out of memory");
                     }
                     const list = HostValueList.fromSlice(values.items, roc_host);
                     defer list.decref(roc_host);
                     self.recordDerivedCall();
-                    const input_cap = if (payload.children.len == 0) payload.cap else self.hostSignalRecordCapability(ctx, payload.children[0]);
+                    const input_cap = if (payload.children.len == 0) payload.cap else self.hostSignalRecordCapabilityWithProvisionalStates(ctx, payload.children[0], provisional_states);
                     const value = callHostValueListToHostValueWithCapability(ctx, roc_host, input_cap, payload.transform, list);
                     for (payload.children, values.items) |child, child_value| {
-                        self.dropHostSignalRecordValue(ctx, roc_host, child, child_value);
+                        self.dropHostSignalRecordValueWithProvisionalStates(ctx, roc_host, child, child_value, provisional_states);
                     }
                     values.deinit(allocator);
                     return self.replaceSignalExprCacheAndClone(ctx, &payload.cached_value, roc_host, value, payload.cap);
@@ -8374,6 +8416,10 @@ pub fn Engine(comptime Ctx: type) type {
         /// Performs eval host signal binding inside the shared engine while preserving transaction and changed-set invariants.
         pub fn evalHostSignalBinding(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, signal: *HostSignalBinding) HostValue {
             return self.evalHostSignalRecord(ctx, roc_host, signal.record);
+        }
+
+        fn evalHostSignalBindingWithProvisionalStates(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, signal: *HostSignalBinding, provisional_states: []const HostState) HostValue {
+            return self.evalHostSignalRecordWithProvisionalStates(ctx, roc_host, signal.record, provisional_states);
         }
 
         /// Performs eval signal text field inside the shared engine while preserving transaction and changed-set invariants.
