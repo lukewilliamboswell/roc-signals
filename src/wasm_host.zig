@@ -956,14 +956,34 @@ fn renderActiveRoot(dirty_source_node_ids: []const u64) void {
     const ctx = WasmCtx{};
     const root = shared_engine.root_elem orelse failHost();
 
+    if (!shared_engine.hasRenderRoot()) {
+        const collection = SharedEngine.PreparedRootCollection.prepare(&shared_engine, ctx, &roc_host, root, .{}, dirty_source_node_ids) catch |err| switch (err) {
+            error.OutOfMemory => failHostWith("out of memory preparing initial root transaction"),
+            error.ResourceLimit => failHostWith("initial root exceeded configured runtime limits"),
+        };
+        const prepared = SharedEngine.PreparedRootDownstream.prepare(collection) catch |err| switch (err) {
+            error.OutOfMemory => {
+                collection.deinit();
+                failHostWith("out of memory preparing initial root publication");
+            },
+            error.ResourceLimit => {
+                collection.deinit();
+                failHostWith("initial root publication exceeded configured runtime limits");
+            },
+        };
+        defer prepared.deinit();
+        const render_counts = prepared.downstream.render_splice.?.wire.counts();
+        prepared.commit();
+        const lifecycle_counts = prepared.runLifecycle();
+        shared_engine.render_metrics.addCommandCounts(render_counts);
+        shared_engine.render_metrics.addCommandCounts(lifecycle_counts);
+        return;
+    }
+
     var next_stream: HostNodeDescriptorStream = .{};
     shared_engine.collectActiveElemRootDescriptors(ctx, &roc_host, &next_stream, root, dirty_source_node_ids);
 
-    if (!shared_engine.hasRenderRoot()) {
-        _ = shared_engine.applyNodeDescriptorStream(ctx, &roc_host, &next_stream);
-    } else {
-        _ = shared_engine.applyStructuralNodeDescriptorStream(ctx, &roc_host, &next_stream);
-    }
+    _ = shared_engine.applyStructuralNodeDescriptorStream(ctx, &roc_host, &next_stream);
 
     shared_engine.rebuildActiveEventsFromStream(ctx, &next_stream);
     shared_engine.active_stream.deinit(allocator(), ctx, &roc_host, &shared_engine.pending_roc_metrics);
@@ -1358,6 +1378,23 @@ export fn roc_ui_debug_allocation_attempts() callconv(.c) usize {
     return wasm_fault_allocator.attempts;
 }
 
+/// Mounts a static root without a linked Roc application so browser contract
+/// tests can sweep host-side initial-publication allocation failures.
+export fn roc_ui_debug_mount_fixture() callconv(.c) void {
+    beginHostCall();
+    beginCommandTransaction();
+    clearActiveRuntime();
+    var root = abi.Elem{ .payload = undefined, .tag = .Element };
+    const payload: *abi.ElemElement = @ptrCast(@alignCast(&root.payload));
+    payload.* = .{
+        .attrs = abi.RocList(abi.NodeAttr).empty(),
+        .children = abi.RocList(abi.Elem).empty(),
+        .tag = abi.RocStr.fromSlice("div", undefined),
+    };
+    shared_engine.root_elem = root;
+    renderActiveRoot(&.{});
+}
+
 /// Exercises the root panic containment path in a linked-Wasm integration test.
 export fn roc_ui_debug_panic() callconv(.c) void {
     @panic("debug panic injection");
@@ -1527,9 +1564,10 @@ export fn roc_ui_mount() callconv(.c) void {
         mount_prepared = false;
     }
 
+    const initial_root = !shared_engine.hasRenderRoot();
     renderActiveRoot(&.{});
     clearStorageDeclarations();
-    commitCommandTransaction();
+    if (!initial_root) commitCommandTransaction();
 }
 
 export fn roc_ui_set_location(payload_ptr: usize, payload_len: usize) callconv(.c) void {

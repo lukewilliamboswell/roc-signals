@@ -70,3 +70,31 @@ test("Wasm roc_realloc OOM preserves the old ledger entry then poisons", async (
   assert.throws(() => host.roc_realloc(original, 96, 8), WebAssembly.RuntimeError);
   assert.throws(() => host.roc_ui_mount(), WebAssembly.RuntimeError);
 });
+
+test("linked Wasm initial mount OOM publishes nothing, diagnoses poison, and retries in a fresh host", async () => {
+  const baseline = await instantiateHostFixture();
+  baseline.roc_ui_debug_mount_fixture();
+  const attempts = baseline.roc_ui_debug_allocation_attempts();
+  assert.ok(attempts > 0);
+  assert.ok(baseline.roc_ui_command_buffer_len() > 0);
+  assert.equal(baseline.roc_ui_is_poisoned(), 0);
+  baseline.roc_ui_unmount();
+
+  for (let failureNumber = 1; failureNumber <= attempts; failureNumber += 1) {
+    const failed = await instantiateHostFixture();
+    failed.roc_ui_debug_fail_allocation(failureNumber);
+    assert.throws(() => failed.roc_ui_debug_mount_fixture(), WebAssembly.RuntimeError);
+    assert.equal(failed.roc_ui_is_poisoned(), 1);
+    assert.match(hostDiagnostic(failed), /out of memory preparing initial root/);
+    assert.equal(failed.roc_ui_command_buffer_len(), 0);
+    assert.equal(failed.roc_ui_string_buffer_len(), 0);
+    assert.equal(failed.roc_ui_dynamic_buffer_len(), 0);
+    assert.throws(() => failed.roc_ui_debug_mount_fixture(), WebAssembly.RuntimeError);
+
+    const retry = await instantiateHostFixture();
+    retry.roc_ui_debug_mount_fixture();
+    assert.equal(retry.roc_ui_is_poisoned(), 0);
+    assert.ok(retry.roc_ui_command_buffer_len() > 0);
+    retry.roc_ui_unmount();
+  }
+});

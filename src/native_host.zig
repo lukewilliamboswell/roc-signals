@@ -2385,18 +2385,40 @@ fn applyDirtyWhenStructuralSignals(host: *HostEnv, roc_host: *abi.RocHost, dirty
     return host.engine.applyDirtyWhenStructuralSignals(host, roc_host, dirty_source_node_ids, dirty_generation, changes);
 }
 
+fn tryRenderInitialRoot(host: *HostEnv, roc_host: *abi.RocHost, root: abi.Elem, dirty_source_node_ids: []const u64) error{ OutOfMemory, ResourceLimit }!CommandCounts {
+    const collection = try HostEngine.PreparedRootCollection.prepare(&host.engine, host, roc_host, root, .{}, dirty_source_node_ids);
+    errdefer collection.deinit();
+    const prepared = try HostEngine.PreparedRootDownstream.prepare(collection);
+    defer prepared.deinit();
+    var counts = prepared.downstream.render_splice.?.wire.counts();
+    prepared.commit();
+    counts.addAll(prepared.runLifecycle());
+    return counts;
+}
+
 fn renderActiveRootWithStats(host: *HostEnv, roc_host: *abi.RocHost, dirty_source_node_ids: []const u64, apply_ns: ?*u64, command_counts: ?*CommandCounts) void {
     const root = host.engine.root_elem orelse failHost("host render requested before Roc root Elem was initialized");
+
+    if (!host.engine.hasRenderRoot()) {
+        const start_ns = benchmark.nowNs();
+        const counts = tryRenderInitialRoot(host, roc_host, root, dirty_source_node_ids) catch |err| switch (err) {
+            error.OutOfMemory => failHost("out of memory preparing initial root transaction"),
+            error.ResourceLimit => failHost("initial root exceeded configured runtime limits"),
+        };
+        const elapsed = benchmark.nowNs() - start_ns;
+        if (apply_ns) |ns| ns.* += elapsed;
+        if (command_counts) |total| total.addAll(counts);
+        if (comptime enable_runtime_metrics) host.engine.render_metrics.addCommandCounts(counts);
+        finishHostMetrics(host);
+        return;
+    }
 
     var next_stream: HostNodeDescriptorStream = .{};
     errdefer next_stream.deinit(host.hostAllocator(), host, roc_host, &host.engine.pending_roc_metrics);
     host.collectActiveElemRootDescriptors(roc_host, &next_stream, root, dirty_source_node_ids);
 
     const start_ns = benchmark.nowNs();
-    const counts = if (!host.engine.hasRenderRoot())
-        applyNodeDescriptorStream(host, roc_host, &next_stream)
-    else
-        applyStructuralNodeDescriptorStream(host, roc_host, &next_stream);
+    const counts = applyStructuralNodeDescriptorStream(host, roc_host, &next_stream);
     const elapsed = benchmark.nowNs() - start_ns;
     if (apply_ns) |ns| ns.* += elapsed;
     if (command_counts) |total| total.addAll(counts);
@@ -8940,4 +8962,57 @@ test "native host teardown is allocation-free with populated real host state" {
     host.deinit();
     try std.testing.expectEqual(@as(usize, 0), host.allocation_fault.?.attempts);
     try std.testing.expectEqual(std.heap.Check.ok, host.gpa.deinit());
+}
+
+test "native initial root publication sweeps host OOM and retries on the same engine" {
+    const Runner = struct {
+        fn run(failure_number: ?usize) !usize {
+            var host = HostEnv.init();
+            var roc_host = makeSignalsRocHost(&host);
+            host.engine.roc_host = &roc_host;
+            defer {
+                host.deinit();
+                _ = host.gpa.deinit();
+            }
+
+            const state_token = newTestBinderToken(&roc_host);
+            const attrs = [_]abi.NodeAttr{testNodeUnitIncrementEventAttr(&roc_host, .click, state_token)};
+            const button = testElementWith(&roc_host, "button", &attrs, &.{testNodeText(&roc_host, "ready")});
+            const root = testNodeStateWithTokenAndInitial(&roc_host, state_token, testHostValueI64(0), button);
+            defer root.decref(&roc_host);
+
+            var fault = FaultAllocator.init(host.gpa.allocator());
+            fault.configure(failure_number);
+            host.engine_allocator_override = fault.allocator();
+            const result = tryRenderInitialRoot(&host, &roc_host, root, &.{});
+            const attempts = fault.attempts;
+            if (failure_number) |_| {
+                try std.testing.expectError(error.OutOfMemory, result);
+                try std.testing.expectEqual(@as(usize, 0), host.engine.scopes.items.len);
+                try std.testing.expectEqual(@as(usize, 0), host.engine.node_identities.items.len);
+                try std.testing.expectEqual(@as(usize, 0), host.engine.dom_identities.items.len);
+                try std.testing.expectEqual(@as(usize, 0), host.engine.states.items.len);
+                try std.testing.expectEqual(@as(usize, 0), host.engine.active_stream.render_nodes.items.len);
+                try std.testing.expectEqual(@as(usize, 0), host.engine.active_events.items.len);
+                try std.testing.expectEqual(@as(usize, 0), host.engine.active_signal_graph.items.len);
+                try std.testing.expect(!host.engine.render_cache.hasRoot());
+                try std.testing.expectEqual(@as(usize, 0), host.dom_elements.items.len);
+
+                fault.configure(null);
+                _ = try tryRenderInitialRoot(&host, &roc_host, root, &.{});
+            } else {
+                _ = try result;
+            }
+            try std.testing.expect(host.engine.render_cache.hasRoot());
+            try std.testing.expectEqual(@as(usize, 1), host.engine.active_events.items.len);
+            try std.testing.expectEqual(@as(usize, 0), host.engine.active_signal_graph.items.len);
+            try std.testing.expectEqual(@as(usize, 3), host.dom_elements.items.len);
+            try std.testing.expect(activeTextElementId(&host, "ready") != null);
+            return attempts;
+        }
+    };
+
+    const attempts = try Runner.run(null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
