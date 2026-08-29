@@ -15391,6 +15391,104 @@ test "prepared initial root downstream sweeps failures and commits allocation fr
     for (1..attempts + 1) |fail_at| _ = try Runner.run(&roc_host, root, fail_at);
 }
 
+test "staged collection refuses unknown and duplicate scopes as InvalidScope" {
+    var ctx = VerifyCtxHost{ .allocator = std.testing.allocator };
+    var engine = Engine(VerifyCtx).init();
+    defer {
+        engine.node_identities.deinit(ctx.allocator);
+        engine.active_node_identity_ids.deinit(ctx.allocator);
+        engine.state_indexes_by_node_id.deinit(ctx.allocator);
+        deinitVerifyStaticEngine(&engine, &ctx);
+    }
+    _ = try engine.internRootScope(std.testing.allocator);
+    var stream: HostNodeDescriptorStream = .{};
+    defer stream.deinit(std.testing.allocator, &ctx, undefined, &engine.pending_roc_metrics);
+
+    var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&engine, &ctx, &stream, .{}, 0, 0, 0, 0, 0, 0, 1, 0, 2);
+    defer collection.deinit();
+    // A scope id the committed tree has never interned is unknown, not a budget.
+    try std.testing.expectError(error.InvalidScope, collection.validateScope(ids.ScopeId.fromRaw(7)));
+    try collection.attachExternalScopeIds(&.{1});
+    try collection.validateScope(ids.ScopeId.fromRaw(1));
+    // Claiming the same external scope twice in one transaction is a duplicate.
+    try std.testing.expectError(error.InvalidScope, collection.attachExternalScopeIds(&.{1}));
+    try std.testing.expectEqual(@as(usize, 1), engine.scopes.items.len);
+}
+
+test "structural targets refuse nested retirement roots as OverlappingRemoval" {
+    var engine = Engine(VerifyCtx).init();
+    defer engine.scopes.deinit(std.testing.allocator);
+    const root = try engine.internRootScope(std.testing.allocator);
+    const child = try engine.internWhenBranchScope(std.testing.allocator, root.scope_id, ids.SiteOrdinal.fromRaw(10), .false_branch);
+    const grandchild = try engine.internWhenBranchScope(std.testing.allocator, child.scope_id, ids.SiteOrdinal.fromRaw(11), .false_branch);
+
+    var disjoint = try Engine(VerifyCtx).PreparedStructuralTargets.prepare(&engine, std.testing.allocator, &.{root.scope_id.raw()}, &.{child.scope_id.raw()});
+    disjoint.deinit(std.testing.allocator);
+    // Retiring a subtree and one of its own descendants claims the descendant twice.
+    try std.testing.expectError(error.OverlappingRemoval, Engine(VerifyCtx).PreparedStructuralTargets.prepare(&engine, std.testing.allocator, &.{root.scope_id.raw()}, &.{ child.scope_id.raw(), grandchild.scope_id.raw() }));
+    try std.testing.expectEqual(@as(usize, 3), engine.scopes.items.len);
+    try std.testing.expect(engine.scopes.items[grandchild.scope_id.index()].lifecycle.isActive());
+}
+
+test "initial root downstream refuses a stale graph binding as InvalidSignalGraphRelease" {
+    var roc_env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&roc_env);
+    const callable = abi.rocErasedCallableAllocate(&roc_host, verifyStateCallable, null, 0).?;
+    defer abi.decrefErasedCallable(callable, &roc_host);
+    const text_callable = abi.rocErasedCallableAllocate(&roc_host, verifyTextCallable, null, 0).?;
+    defer abi.decrefErasedCallable(text_callable, &roc_host);
+    const capability = HostValueCapability{ .clone = callable, .drop = callable, .eq = callable };
+    var signal_expr = abi.NodeSignalExpr{ .payload = .{ .const_value = .{
+        ._0 = callable,
+        ._1 = callable,
+        ._2 = capability,
+    } }, .tag = .ConstValue };
+    const signal_attr = abi.NodeAttr{ .payload = .{ .signal_text = .{
+        .field = .{ .id = @intFromEnum(RenderTextField.value) },
+        .name = abi.RocStr.empty(),
+        .read = .{ .capability = capability, .read = text_callable },
+        .signal = &signal_expr,
+    } }, .tag = .SignalText };
+    var child = verifyStaticRoot(&.{signal_attr}, &.{verifyStaticText()});
+    var state = abi.Elem{ .payload = .{ .state = .{
+        .binder = callable,
+        .cap = capability,
+        .child = &child,
+        .initial = callable,
+    } }, .tag = .State };
+    const root = abi.Elem{ .payload = .{ .component = .{ .child = &state } }, .tag = .Component };
+
+    var ctx = VerifyCtxHost{ .allocator = std.testing.allocator };
+    var engine = Engine(VerifyCtx).init();
+    engine.roc_host = &roc_host;
+    defer {
+        engine.active_stream.deinit(ctx.allocator, &ctx, &roc_host, &engine.pending_roc_metrics);
+        engine.active_events.deinit(ctx.allocator);
+        engine.active_signal_graph.deinit(ctx.allocator);
+        engine.active_source_signal_routes.deinit(ctx.allocator);
+        engine.active_text_signal_routes.deinit(ctx.allocator);
+        engine.active_bool_signal_routes.deinit(ctx.allocator);
+        engine.active_change_signal_routes.deinit(ctx.allocator);
+        engine.active_structural_signal_routes.deinit(ctx.allocator);
+        ctx.render_batch.deinit(ctx.allocator);
+        engine.deinitRenderCache(&ctx);
+        deinitVerifyStateEngine(&engine, &ctx, &roc_host);
+    }
+
+    const collection = try Engine(VerifyCtx).PreparedRootCollection.prepare(&engine, &ctx, &roc_host, root, .{}, &.{});
+    defer collection.deinit();
+    // The staged binding claims membership of a committed graph node the
+    // (empty) active graph does not hold, so the release closure that must
+    // retain it cannot be matched against the committed graph. Before this
+    // variant existed the same rejection was reported as `OutOfMemory`.
+    const record = collection.owner.stream.signal_text_attrs.items[0].signal.record;
+    record.active_graph_id = 3;
+    defer record.active_graph_id = null;
+    try std.testing.expectError(error.InvalidSignalGraphRelease, Engine(VerifyCtx).PreparedRootDownstream.prepare(collection));
+    try std.testing.expectEqual(@as(usize, 0), engine.active_signal_graph.items.len);
+    try std.testing.expect(!engine.render_cache.hasRoot());
+}
+
 test "transactional initial when root sweeps failures and evaluates once" {
     const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
     var roc_env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };

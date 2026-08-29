@@ -123,12 +123,17 @@
 //!  - **Refusals are `OutOfMemory` only.** No other `CollectionError` is an
 //!    acceptable answer to an injected allocation failure, and each one names a
 //!    different contract the generator did not break: `ResourceLimit` means a
-//!    configured bound rejected a transaction built inside its limits,
-//!    `InvalidRenderTopology` means the staged render topology disagreed with
-//!    the committed tree, and `InvalidSignalGraphAppend` means a staged
-//!    `prepareGraphAppend` disagreed with the committed signal graph. All are
-//!    oracle failures, and `expectRefusal` rejects them generically so a newly
-//!    added variant is caught rather than silently accepted.
+//!    configured budget or arithmetic bound rejected a transaction built inside
+//!    its limits, `InvalidScope` means a scope or identity was unknown,
+//!    inactive, or already claimed, `InvalidDescriptor` means staging assumed a
+//!    descriptor, node, state cell, or site the committed stream does not hold,
+//!    `OverlappingRemoval` means two removals claimed the same interval or
+//!    subtree, `InvalidRenderTopology` means the staged render topology
+//!    disagreed with the committed tree, and `InvalidSignalGraphAppend` /
+//!    `InvalidSignalGraphRelease` mean a staged graph edit disagreed with the
+//!    committed signal graph. All are oracle failures, and `expectRefusal`
+//!    rejects them generically so a newly added variant is caught rather than
+//!    silently accepted.
 //!
 //! # Fault placement
 //!
