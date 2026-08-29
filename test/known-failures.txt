@@ -12,10 +12,6 @@
 # host-owned allocation leaks at shutdown; "active state has no capability";
 # task settlement panics; patch-count performance budgets.
 native availability-picker/the-headline-one-timezone-change-reprojects-every-rendered-slot.scm
-native conduit/pagination-23-articles-two-pages-page-switch-swaps-the-list.scm
-native data-grid/filtering.scm
-native data-grid/paging.scm
-native data-grid/sorting.scm
 native dependency-scheduler/filtering-the-list-to-the-critical-path.scm
 native dependency-scheduler/the-empty-list.scm
 native form-builder/editing-one-field-s-label-fine-grained.scm
