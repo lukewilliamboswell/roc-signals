@@ -22,14 +22,19 @@
     ; org_summary and the combined list; the account row keeps its scope, its row
     ; is reused, and its text sink never fires.
 
-    ; Initial publication is the only update: navigating back to this step
-    ; preserves the keyed account row and its unchanged text sink.
-    (expect-updates (test-id "summary-account") 1)
+    ; Two updates, both from the mount host call: the initial publication
+    ; renders the account row before the draft is restored, and the
+    ; on_change_initial restore is a second sealed transaction that recomputes
+    ; the row's text from the restored draft. Navigating back to this step
+    ; preserves the keyed account row and its unchanged text sink. (An earlier
+    ; engine recreated the row's element on the restore, which reset the
+    ; per-element count to 1 and hid the second update.)
+    (expect-updates (test-id "summary-account") 2)
     (mark-metrics)
     (fill (label "Organisation name") "Northwind Labs")
     (expect-text (test-id "summary-organisation") "Organisation: Northwind Labs on Growth in not chosen (incomplete)")
     (expect-text (test-id "summary-account") "Account: ana@example.com / Ana Diaz (complete)")
-    (expect-updates (test-id "summary-account") 1)
+    (expect-updates (test-id "summary-account") 2)
     (expect-metric-delta rows_created 0)
     (expect-metric-delta rows_removed 0)
     (expect-metric-delta rows_reused 4)
