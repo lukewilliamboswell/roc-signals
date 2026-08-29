@@ -1374,7 +1374,7 @@ pub fn Engine(comptime Ctx: type) type {
                         try rebase.addReplacementRange(.{ .site_start = row.site_start, .site_len = row.site_len, .render_start = row.start, .render_len = row.len, .final_start = final_start });
                     }
                     site_new_len = std.math.add(usize, site_new_len, replacement_len) catch return error.ResourceLimit;
-                    try rebase.addRegion(.{ .node_id = site.node_id.raw(), .kind = .each, .owner_scope_id = site.scope_id.raw(), .old_start = site.render_insert_index, .old_end = layout.old_end, .final_start = site_final_start, .new_len = site_new_len });
+                    try rebase.addRegion(.{ .node_id = site.node_id.raw(), .kind = .each, .owner = SitePosition.ofSite(site), .old_start = site.render_insert_index, .old_end = layout.old_end, .final_start = site_final_start, .new_len = site_new_len });
                     previous_end = layout.old_end;
                     const removed = layout.removal.removal.scan.removed_render_count;
                     cumulative_delta = std.math.add(isize, cumulative_delta, std.math.cast(isize, replacement_len) orelse return error.ResourceLimit) catch return error.ResourceLimit;
@@ -1895,7 +1895,7 @@ pub fn Engine(comptime Ctx: type) type {
                             if (engine.scopeIsDescendantOrSelf(scope_id, retired_scope_id.raw()) catch |err| return scopeError(err)) removed = std.math.add(usize, removed, 1) catch return error.ResourceLimit;
                         }
                         try rebase.addReplacementRange(.{ .site_start = range.site_start, .site_len = range.site_len, .render_start = range.start, .render_len = range.len, .final_start = final_start });
-                        try rebase.addRegion(.{ .node_id = site_entry.node_id, .kind = .when, .owner_scope_id = selections[index].parent_scope_id.raw(), .old_start = site_entry.old_anchor, .old_end = std.math.add(usize, site_entry.old_anchor, removed) catch return error.ResourceLimit, .final_start = final_start, .new_len = range.len });
+                        try rebase.addRegion(.{ .node_id = site_entry.node_id, .kind = .when, .owner = .{ .scope_id = selections[index].parent_scope_id.raw(), .ordinal = selections[index].site_ordinal }, .old_start = site_entry.old_anchor, .old_end = std.math.add(usize, site_entry.old_anchor, removed) catch return error.ResourceLimit, .final_start = final_start, .new_len = range.len });
                         cumulative_delta = std.math.add(isize, cumulative_delta, std.math.cast(isize, range.len) orelse return error.ResourceLimit) catch return error.ResourceLimit;
                         cumulative_delta = std.math.sub(isize, cumulative_delta, std.math.cast(isize, removed) orelse return error.ResourceLimit) catch return error.ResourceLimit;
                     },
@@ -1945,7 +1945,7 @@ pub fn Engine(comptime Ctx: type) type {
                             try rebase.addReplacementRange(.{ .site_start = range.site_start, .site_len = range.site_len, .render_start = range.start, .render_len = range.len, .final_start = final_start });
                         }
                         site_new_len = std.math.add(usize, site_new_len, replacement_len) catch return error.ResourceLimit;
-                        try rebase.addRegion(.{ .node_id = site_entry.node_id, .kind = .each, .owner_scope_id = sites[index].scope_id.raw(), .old_start = site_entry.old_anchor, .old_end = layout.old_end, .final_start = site_final_start, .new_len = site_new_len });
+                        try rebase.addRegion(.{ .node_id = site_entry.node_id, .kind = .each, .owner = SitePosition.ofSite(sites[index]), .old_start = site_entry.old_anchor, .old_end = layout.old_end, .final_start = site_final_start, .new_len = site_new_len });
                         cumulative_delta = std.math.add(isize, cumulative_delta, std.math.cast(isize, replacement_len) orelse return error.ResourceLimit) catch return error.ResourceLimit;
                         cumulative_delta = std.math.sub(isize, cumulative_delta, std.math.cast(isize, layout.removal.removal.scan.removed_render_count) orelse return error.ResourceLimit) catch return error.ResourceLimit;
                         inserted_before = std.math.add(usize, inserted_before, replacement_len) catch return error.ResourceLimit;
@@ -5773,6 +5773,7 @@ pub fn Engine(comptime Ctx: type) type {
             parent_elem_id: ids.ElemId,
             site_node_id: ids.NodeId,
             site_scope_id: ids.ScopeId,
+            site_ordinal: ids.SiteOrdinal,
             site_insert_index: usize,
             targets: PreparedStructuralTargets,
             remove_starts: []usize,
@@ -5880,7 +5881,7 @@ pub fn Engine(comptime Ctx: type) type {
                     }
                 }
                 if (move_write != survivor_moves.len) return error.ResourceLimit;
-                return .{ .allocator = allocator, .parent_elem_id = site.parent_elem_id, .site_node_id = site.node_id, .site_scope_id = site.scope_id, .site_insert_index = site.render_insert_index, .targets = targets, .remove_starts = remove_starts, .final_starts = final_starts, .survivor_moves = survivor_moves, .removal = removal, .old_end = old_end };
+                return .{ .allocator = allocator, .parent_elem_id = site.parent_elem_id, .site_node_id = site.node_id, .site_scope_id = site.scope_id, .site_ordinal = site.ordinal, .site_insert_index = site.render_insert_index, .targets = targets, .remove_starts = remove_starts, .final_starts = final_starts, .survivor_moves = survivor_moves, .removal = removal, .old_end = old_end };
             }
 
             fn deinit(self: *@This()) void {
@@ -6301,23 +6302,26 @@ pub fn Engine(comptime Ctx: type) type {
         ///
         /// `finish` resolves each active site once. An edited site lands on its
         /// region's final start. A site living inside a surviving row follows
-        /// the row's move. Otherwise the index names the render node the site's
-        /// content precedes: if that node survives, the site lands where the
-        /// node does - after anything a region inserted in front of it - and if
-        /// the node is removed or the index is the stream's end, the index is
-        /// shifted by the net size change of every region committed before it.
-        /// A retained site found strictly inside a region, or a replacement site
-        /// no row claims, means the staged topology disagrees with the committed
-        /// tree and is refused as `InvalidRenderTopology`. `apply` then
-        /// publishes the resolved indexes without allocating.
+        /// the row's move. Otherwise the index is shifted by the net size
+        /// change of every region that stands before the site in document
+        /// order (`compareSitePositions`: scope ancestry, site ordinals, and
+        /// committed row order - never render positions, so sites that render
+        /// nothing at one index still have exactly one order). A region inside
+        /// the site's own content leaves it alone. A region whose old span
+        /// disagrees with that order, a retained site inside a region that no
+        /// surviving row carries, or a replacement site no row claims, means
+        /// the staged topology disagrees with the committed tree and is refused
+        /// as `InvalidRenderTopology`. `apply` then publishes the resolved
+        /// indexes without allocating.
         const PreparedScopeSiteRebase = struct {
             const unmapped = std.math.maxInt(usize);
             const Region = struct {
                 node_id: u64,
                 kind: HostNodeScopeSiteKind,
-                /// Scope the edited site lives in, so a region nested inside
-                /// another site's content can be told apart from one in front of it.
-                owner_scope_id: u64,
+                /// Where the edited site stands in the document, so a retained
+                /// site can be ordered against the region without consulting
+                /// render positions.
+                owner: SitePosition,
                 old_start: usize,
                 old_end: usize,
                 final_start: usize,
@@ -6364,29 +6368,6 @@ pub fn Engine(comptime Ctx: type) type {
                 self.ranges.append(self.allocator, range) catch return error.OutOfMemory;
             }
 
-            /// Reports whether `scope_id` or one of its ancestors was created by
-            /// `site`: a branch, component, or row scope whose step names the
-            /// site's ordinal directly under the site's parent scope.
-            fn scopeCreatedBySite(engine: *Self, scope_id: u64, site: HostNodeScopeSiteDesc) CollectionError!bool {
-                var current: ?u64 = scope_id;
-                while (current) |id| {
-                    if (id >= engine.scopes.items.len) return error.InvalidRenderTopology;
-                    const scope = engine.scopes.items[@intCast(id)];
-                    const parent = scope.parent_scope_id orelse return false;
-                    if (parent == site.scope_id) {
-                        const ordinal: ?ids.SiteOrdinal = switch (scope.step) {
-                            .root => null,
-                            .component => |step| step.site_ordinal,
-                            .when_branch => |step| step.site_ordinal,
-                            .each_row => |row| row.site_ordinal,
-                        };
-                        if (ordinal != null and ordinal.? == site.ordinal) return true;
-                    }
-                    current = parent.raw();
-                }
-                return false;
-            }
-
             /// Maps a site living in a surviving row to its final position by
             /// the row fragment its index falls in. A fragment's end is admitted
             /// because an empty site at the end of its row legitimately sits
@@ -6429,25 +6410,26 @@ pub fn Engine(comptime Ctx: type) type {
                         new.* = final_start;
                         continue;
                     }
-                    // Otherwise the index names the render node the site's
-                    // content precedes, and is shifted by every region committed
-                    // in front of it. A surviving node at the index keeps the
-                    // site behind anything inserted there; a removed node or
-                    // the stream's end leaves an empty region at the index in
-                    // front only when it orders before the site.
-                    const anchored_node = old_index < old_nodes.len and !target_scopes[@intCast(renderNodeScopeId(&engine.active_stream, old_nodes[old_index]))];
+                    // Otherwise the site keeps its index shifted by the net size
+                    // change of every region that stands before it in document
+                    // order. A region inside the site's own content - an each in
+                    // a when's live branch, say - moves nothing in front of it,
+                    // and a region after the site never does. The old span of
+                    // each region has to agree with that order; a site whose
+                    // index sits inside content the order puts elsewhere is a
+                    // stale index, refused rather than shifted.
                     var shifted = std.math.cast(isize, old_index) orelse return error.ResourceLimit;
                     for (self.regions.items) |region| {
-                        // A region inside this site's own content - an each in a
-                        // when's live branch, say - moves nothing in front of it.
-                        if (try scopeCreatedBySite(engine, region.owner_scope_id, site)) continue;
-                        if (region.old_start < old_index and old_index < region.old_end) return error.InvalidRenderTopology;
+                        switch (try engine.compareSitePositions(region.owner, SitePosition.ofSite(site))) {
+                            .before => if (region.old_end > old_index) return error.InvalidRenderTopology,
+                            .after => {
+                                if (region.old_start < old_index) return error.InvalidRenderTopology;
+                                continue;
+                            },
+                            .contained => continue,
+                            .same, .contains => return error.InvalidRenderTopology,
+                        }
                         const region_len = region.old_end - region.old_start;
-                        const before = if (anchored_node)
-                            region.old_end <= old_index
-                        else
-                            region.old_end < old_index or (region.old_end == old_index and (region_len != 0 or region.node_id < site.node_id.raw()));
-                        if (!before) continue;
                         shifted = std.math.add(isize, shifted, std.math.cast(isize, region.new_len) orelse return error.ResourceLimit) catch return error.ResourceLimit;
                         shifted = std.math.sub(isize, shifted, std.math.cast(isize, region_len) orelse return error.ResourceLimit) catch return error.ResourceLimit;
                     }
@@ -6616,7 +6598,7 @@ pub fn Engine(comptime Ctx: type) type {
                     } else return error.ResourceLimit;
                     const site_node_id = selection.node_id.raw();
                     try rebase.addReplacementRange(.{ .site_start = replacement_ranges[index].site_start, .site_len = replacement_ranges[index].site_len, .render_start = replacement_ranges[index].start, .render_len = replacement_ranges[index].len, .final_start = final_start });
-                    try rebase.addRegion(.{ .node_id = site_node_id, .kind = .when, .owner_scope_id = selection.parent_scope_id.raw(), .old_start = render_insert_indexes[index], .old_end = std.math.add(usize, render_insert_indexes[index], own_interval.len) catch return error.ResourceLimit, .final_start = final_start, .new_len = replacement_ranges[index].len });
+                    try rebase.addRegion(.{ .node_id = site_node_id, .kind = .when, .owner = .{ .scope_id = selection.parent_scope_id.raw(), .ordinal = selection.site_ordinal }, .old_start = render_insert_indexes[index], .old_end = std.math.add(usize, render_insert_indexes[index], own_interval.len) catch return error.ResourceLimit, .final_start = final_start, .new_len = replacement_ranges[index].len });
                 }
                 plan.final_render_topology = try PreparedFinalRenderTopology.preparePlaced(plan.engine, allocator, plan.replacement, plan.targets.?.descriptor_target_scopes, plan.removal.?.removal.scan.removed_render_count, placements);
                 rebase_owned = false;
@@ -6661,7 +6643,7 @@ pub fn Engine(comptime Ctx: type) type {
                     try rebase.addReplacementRange(.{ .site_start = row.site_start, .site_len = row.site_len, .render_start = row.start, .render_len = row.len, .final_start = layout.final_starts[row.row_index] });
                     new_len = std.math.add(usize, new_len, row.len) catch return error.ResourceLimit;
                 }
-                try rebase.addRegion(.{ .node_id = layout.site_node_id.raw(), .kind = .each, .owner_scope_id = layout.site_scope_id.raw(), .old_start = layout.site_insert_index, .old_end = layout.old_end, .final_start = layout.site_insert_index, .new_len = new_len });
+                try rebase.addRegion(.{ .node_id = layout.site_node_id.raw(), .kind = .each, .owner = .{ .scope_id = layout.site_scope_id.raw(), .ordinal = layout.site_ordinal }, .old_start = layout.site_insert_index, .old_end = layout.old_end, .final_start = layout.site_insert_index, .new_len = new_len });
                 rebase_owned = false;
                 try self.adoptScopeSiteRebase(rebase);
                 try self.prepareFinalRenderTopology(&.{layout.parent_elem_id.raw()});
@@ -10574,6 +10556,103 @@ pub fn Engine(comptime Ctx: type) type {
                 if (current != null) depth += 1;
             }
             return depth;
+        }
+
+        /// A scope site's place in the document: the scope it was collected in
+        /// and its ordinal there. Collection hands ordinals out in document
+        /// order per scope, and every scope a site creates - a branch, a
+        /// component, an each row - carries that site's ordinal as its step, so
+        /// the scope tree plus the ordinals is a total order over sites.
+        pub const SitePosition = struct {
+            scope_id: u64,
+            ordinal: ids.SiteOrdinal,
+
+            /// The position of a collected scope site.
+            pub fn ofSite(site: HostNodeScopeSiteDesc) SitePosition {
+                return .{ .scope_id = site.scope_id.raw(), .ordinal = site.ordinal };
+            }
+        };
+
+        /// How one scope site stands to another in document order. `contains`
+        /// means the second site lives inside content the first site created.
+        pub const SiteOrder = enum { before, after, same, contains, contained };
+
+        fn parentScopeIdOf(self: *Self, scope_id: u64) CollectionError!u64 {
+            if (scope_id >= self.scopes.items.len) return error.InvalidScope;
+            const parent = self.scopes.items[@intCast(scope_id)].parent_scope_id orelse return error.InvalidScope;
+            return parent.raw();
+        }
+
+        /// The ordinal of the site that created `scope_id` in its parent scope.
+        fn scopeStepOrdinal(self: *Self, scope_id: u64) CollectionError!ids.SiteOrdinal {
+            if (scope_id >= self.scopes.items.len) return error.InvalidScope;
+            return switch (self.scopes.items[@intCast(scope_id)].step) {
+                .root => error.InvalidScope,
+                .component => |step| step.site_ordinal,
+                .when_branch => |step| step.site_ordinal,
+                .each_row => |row| row.site_ordinal,
+            };
+        }
+
+        /// Orders two rows of one each site by their committed row order.
+        fn compareEachRowScopes(self: *Self, parent_scope_id: u64, site_ordinal: ids.SiteOrdinal, row_a: u64, row_b: u64) CollectionError!SiteOrder {
+            const site_index = self.each_row_site_indexes.get(.{ .parent_scope_id = ids.ScopeId.fromRaw(parent_scope_id), .site_ordinal = site_ordinal }) orelse return error.InvalidScope;
+            var rank_a: ?usize = null;
+            var rank_b: ?usize = null;
+            for (self.each_row_sites.items[site_index].scope_ids.items, 0..) |scope_id, rank| {
+                if (scope_id.raw() == row_a) rank_a = rank;
+                if (scope_id.raw() == row_b) rank_b = rank;
+            }
+            const a = rank_a orelse return error.InvalidScope;
+            const b = rank_b orelse return error.InvalidScope;
+            return if (a < b) .before else .after;
+        }
+
+        /// Document order over scope sites, in old-stream terms: the position
+        /// of every committed scope and site as the active stream has them.
+        ///
+        /// Two sites of one scope order by ordinal. Otherwise both are followed
+        /// up to their common ancestor scope and compared there: a site
+        /// compares by its own ordinal, a subtree by the ordinal of the site
+        /// that created its top scope. Equal ordinals at the common scope name
+        /// one site, so either one position *is* that site and contains the
+        /// other, or both are rows of that each site and their committed row
+        /// order decides. Nothing here consults render positions, so two
+        /// sites that render nothing at one index still have exactly one order.
+        pub fn compareSitePositions(self: *Self, a: SitePosition, b: SitePosition) CollectionError!SiteOrder {
+            if (a.scope_id == b.scope_id) {
+                if (a.ordinal.raw() < b.ordinal.raw()) return .before;
+                if (a.ordinal.raw() > b.ordinal.raw()) return .after;
+                return .same;
+            }
+            var scope_a = a.scope_id;
+            var scope_b = b.scope_id;
+            var child_a: ?u64 = null;
+            var child_b: ?u64 = null;
+            var depth_a = self.scopeDepth(scope_a);
+            var depth_b = self.scopeDepth(scope_b);
+            if (depth_a == std.math.maxInt(usize) or depth_b == std.math.maxInt(usize)) return error.InvalidScope;
+            while (depth_a > depth_b) : (depth_a -= 1) {
+                child_a = scope_a;
+                scope_a = try self.parentScopeIdOf(scope_a);
+            }
+            while (depth_b > depth_a) : (depth_b -= 1) {
+                child_b = scope_b;
+                scope_b = try self.parentScopeIdOf(scope_b);
+            }
+            while (scope_a != scope_b) {
+                child_a = scope_a;
+                scope_a = try self.parentScopeIdOf(scope_a);
+                child_b = scope_b;
+                scope_b = try self.parentScopeIdOf(scope_b);
+            }
+            const ordinal_a = if (child_a) |child| try self.scopeStepOrdinal(child) else a.ordinal;
+            const ordinal_b = if (child_b) |child| try self.scopeStepOrdinal(child) else b.ordinal;
+            if (ordinal_a.raw() < ordinal_b.raw()) return .before;
+            if (ordinal_a.raw() > ordinal_b.raw()) return .after;
+            if (child_a == null) return .contains;
+            if (child_b == null) return .contained;
+            return self.compareEachRowScopes(scope_a, ordinal_a, child_a.?, child_b.?);
         }
 
         fn resolveStateCommandTarget(self: *Self, owner_scope_id: ids.ScopeId, binder_token: HostBinderToken) ids.NodeId {

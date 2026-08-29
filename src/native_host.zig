@@ -6356,6 +6356,14 @@ fn childOrderOfText(host: *HostEnv, parent_elem_id: ids.ElemId, text: []const u8
     return null;
 }
 
+/// Position of the text element rendering `text` in the committed render
+/// stream, which is the order every later structural transaction lays out from.
+fn streamOrderOfText(host: *HostEnv, text: []const u8) ?usize {
+    const elem_id = activeTextElementId(host, text) orelse return null;
+    for (host.engine.active_stream.render_nodes.items, 0..) |node, index| if (node.elem_id.raw() == elem_id) return index;
+    return null;
+}
+
 /// Node ids of the active scope sites of one kind, in collection order.
 fn activeScopeSiteNodeIdsOfKind(host: *HostEnv, kind: HostNodeScopeSiteKind, buffer: []ids.NodeId) []ids.NodeId {
     var write: usize = 0;
@@ -6612,6 +6620,144 @@ test "an empty each growing at the node a when site owns shifts the when site" {
             try expectScopeSiteInsertIndex(&host, when_id, .when, 4);
             try std.testing.expectEqual(@as(?usize, 3), childOrderOfText(&host, section_id, "when-off"));
             try std.testing.expectEqual(@as(?usize, 4), childOrderOfText(&host, section_id, "after"));
+            return attempts;
+        }
+    };
+
+    const attempts = try Runner.run(null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
+}
+
+test "an empty when before another empty when at one index stays in front when the later one grows" {
+    // Two `when` sites rendering nothing share an index in front of a text
+    // node. Growing the *second* inserts after the first's position, so the
+    // first must keep its index; when it grows afterwards its content has to
+    // land in front of the second's. Ordering by the node at the index would
+    // push the first site behind content that follows it in the document.
+    const Runner = struct {
+        fn run(failure_number: ?usize) !usize {
+            test_erased_callable_drop_count = 0;
+            test_row_elem_call_count = 0;
+            var host = HostEnv.init();
+            var roc_host = makeSignalsRocHost(&host);
+            host.engine.roc_host = &roc_host;
+            defer {
+                host.deinit();
+                _ = host.gpa.deinit();
+            }
+
+            const first_token = newTestBinderToken(&roc_host);
+            const first_cap = testHostValueCapability(&roc_host);
+            const second_token = newTestBinderToken(&roc_host);
+            const second_cap = testHostValueCapability(&roc_host);
+            const first_when = testNodeWhenReadingState(&roc_host, first_token, first_cap, testNodeText(&roc_host, "first-on"), testNodeEmptyConstantEach(&roc_host));
+            const second_when = testNodeWhenReadingState(&roc_host, second_token, second_cap, testNodeText(&roc_host, "second-on"), testNodeEmptyConstantEach(&roc_host));
+            const section = testElementWith(&roc_host, "section", &.{}, &.{ first_when, second_when, testNodeText(&roc_host, "tail") });
+            const second_state = testNodeStateWithTokenAndInitialCapability(&roc_host, second_token, testHostValueBool(false), section, second_cap);
+            const root = testNodeStateWithTokenAndInitialCapability(&roc_host, first_token, testHostValueBool(false), second_state, first_cap);
+            defer root.decref(&roc_host);
+            var stream: HostNodeDescriptorStream = .{};
+            host.collectActiveElemRootDescriptors(&roc_host, &stream, root, &.{});
+            _ = applyNodeDescriptorStream(&host, &roc_host, &stream);
+            host.engine.active_stream = stream;
+
+            var state_buffer: [4]ids.NodeId = undefined;
+            const states = activeScopeSiteNodeIdsOfKind(&host, .state, &state_buffer);
+            const first_state_id = states[0];
+            const second_state_id = states[1];
+            var when_buffer: [2]ids.NodeId = undefined;
+            const whens = activeScopeSiteNodeIdsOfKind(&host, .when, &when_buffer);
+            try expectScopeSiteInsertIndex(&host, whens[0], .when, 1);
+            try expectScopeSiteInsertIndex(&host, whens[1], .when, 1);
+
+            _ = try host.engine.tryDispatchStateValue(&host, &roc_host, second_state_id.raw(), testHostValueBool(true), second_cap);
+            try expectScopeSiteInsertIndex(&host, whens[0], .when, 1);
+            try expectScopeSiteInsertIndex(&host, whens[1], .when, 1);
+            try std.testing.expectEqual(@as(?usize, 1), streamOrderOfText(&host, "second-on"));
+
+            const attempts = try dispatchStateValueSweeping(&host, &roc_host, first_state_id, testHostValueBool(true), testHostValueBool(true), first_cap, failure_number);
+            try expectScopeSiteInsertIndex(&host, whens[0], .when, 1);
+            try expectScopeSiteInsertIndex(&host, whens[1], .when, 2);
+            try std.testing.expectEqual(@as(?usize, 1), streamOrderOfText(&host, "first-on"));
+            try std.testing.expectEqual(@as(?usize, 2), streamOrderOfText(&host, "second-on"));
+            try std.testing.expectEqual(@as(?usize, 3), streamOrderOfText(&host, "tail"));
+            return attempts;
+        }
+    };
+
+    const attempts = try Runner.run(null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
+}
+
+test "a when site collected later inside an earlier branch still orders before the empty site after it" {
+    // A branch mounted after the initial collection carries a `when` whose
+    // node id is larger than the sibling site after the branch. Node ids say
+    // nothing about document order: when that nested when grows at the end
+    // of the stream, the sibling behind it must shift, so its own content
+    // lands after the nested when's.
+    const Runner = struct {
+        fn run(failure_number: ?usize) !usize {
+            test_erased_callable_drop_count = 0;
+            test_row_elem_call_count = 0;
+            var host = HostEnv.init();
+            var roc_host = makeSignalsRocHost(&host);
+            host.engine.roc_host = &roc_host;
+            defer {
+                host.deinit();
+                _ = host.gpa.deinit();
+            }
+
+            const outer_token = newTestBinderToken(&roc_host);
+            const outer_cap = testHostValueCapability(&roc_host);
+            const nested_token = newTestBinderToken(&roc_host);
+            const nested_cap = testHostValueCapability(&roc_host);
+            const sibling_token = newTestBinderToken(&roc_host);
+            const sibling_cap = testHostValueCapability(&roc_host);
+            const nested_when = testNodeWhenReadingState(&roc_host, nested_token, nested_cap, testNodeText(&roc_host, "nested-on"), testNodeEmptyConstantEach(&roc_host));
+            const outer_when = testNodeWhenReadingState(&roc_host, outer_token, outer_cap, nested_when, testNodeEmptyConstantEach(&roc_host));
+            const sibling_when = testNodeWhenReadingState(&roc_host, sibling_token, sibling_cap, testNodeText(&roc_host, "sibling-on"), testNodeEmptyConstantEach(&roc_host));
+            const section = testElementWith(&roc_host, "section", &.{}, &.{ outer_when, sibling_when });
+            const sibling_state = testNodeStateWithTokenAndInitialCapability(&roc_host, sibling_token, testHostValueBool(false), section, sibling_cap);
+            const nested_state = testNodeStateWithTokenAndInitialCapability(&roc_host, nested_token, testHostValueBool(false), sibling_state, nested_cap);
+            const root = testNodeStateWithTokenAndInitialCapability(&roc_host, outer_token, testHostValueBool(false), nested_state, outer_cap);
+            defer root.decref(&roc_host);
+            var stream: HostNodeDescriptorStream = .{};
+            host.collectActiveElemRootDescriptors(&roc_host, &stream, root, &.{});
+            _ = applyNodeDescriptorStream(&host, &roc_host, &stream);
+            host.engine.active_stream = stream;
+
+            var state_buffer: [4]ids.NodeId = undefined;
+            const states = activeScopeSiteNodeIdsOfKind(&host, .state, &state_buffer);
+            const outer_state_id = states[0];
+            const nested_state_id = states[1];
+            const sibling_state_id = states[2];
+            var when_buffer: [3]ids.NodeId = undefined;
+            const initial_whens = activeScopeSiteNodeIdsOfKind(&host, .when, &when_buffer);
+            try std.testing.expectEqual(@as(usize, 2), initial_whens.len);
+            const outer_when_id = initial_whens[0];
+            const sibling_when_id = initial_whens[1];
+
+            _ = try host.engine.tryDispatchStateValue(&host, &roc_host, outer_state_id.raw(), testHostValueBool(true), outer_cap);
+            const whens = activeScopeSiteNodeIdsOfKind(&host, .when, &when_buffer);
+            try std.testing.expectEqual(@as(usize, 3), whens.len);
+            const nested_when_id = for (whens) |node_id| {
+                if (node_id != outer_when_id and node_id != sibling_when_id) break node_id;
+            } else return error.TestUnexpectedResult;
+            try std.testing.expect(nested_when_id.raw() > sibling_when_id.raw());
+            try expectScopeSiteInsertIndex(&host, nested_when_id, .when, 1);
+            try expectScopeSiteInsertIndex(&host, sibling_when_id, .when, 1);
+
+            _ = try host.engine.tryDispatchStateValue(&host, &roc_host, nested_state_id.raw(), testHostValueBool(true), nested_cap);
+            try expectScopeSiteInsertIndex(&host, outer_when_id, .when, 1);
+            try expectScopeSiteInsertIndex(&host, nested_when_id, .when, 1);
+            try expectScopeSiteInsertIndex(&host, sibling_when_id, .when, 2);
+
+            const attempts = try dispatchStateValueSweeping(&host, &roc_host, sibling_state_id, testHostValueBool(true), testHostValueBool(true), sibling_cap, failure_number);
+            try expectScopeSiteInsertIndex(&host, sibling_when_id, .when, 2);
+            try std.testing.expectEqual(@as(?usize, 1), streamOrderOfText(&host, "nested-on"));
+            try std.testing.expectEqual(@as(?usize, 2), streamOrderOfText(&host, "sibling-on"));
             return attempts;
         }
     };
