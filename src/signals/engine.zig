@@ -4003,8 +4003,12 @@ pub fn Engine(comptime Ctx: type) type {
                 self.engine.node_identities.ensureUnusedCapacity(allocator, total_scope_sites) catch return error.OutOfMemory;
                 self.engine.active_node_identity_ids.ensureUnusedCapacity(allocator, std.math.cast(u32, total_scope_sites) orelse return error.ResourceLimit) catch return error.OutOfMemory;
                 self.engine.states.ensureUnusedCapacity(allocator, total_state_sites) catch return error.OutOfMemory;
-                const additional_node_ids = std.math.add(usize, self.node_identities.intents.items.len, scope_sites) catch return error.ResourceLimit;
-                const state_index_len = std.math.add(usize, self.engine.node_identities.items.len, additional_node_ids) catch return error.ResourceLimit;
+                // Every fresh node id is at most the committed count plus the
+                // sites reserved over the whole transaction, so the state index
+                // table must cover the cumulative total rather than the intents
+                // issued so far plus this reservation: an outer reservation's
+                // outstanding sites are claimed after a nested one prepares.
+                const state_index_len = std.math.add(usize, self.engine.node_identities.items.len, total_scope_sites) catch return error.ResourceLimit;
                 self.engine.state_indexes_by_node_id.ensureTotalCapacity(allocator, state_index_len) catch return error.OutOfMemory;
                 self.engine.active_dom_identity_ids.ensureUnusedCapacity(allocator, std.math.cast(u32, total_nodes) orelse return error.ResourceLimit) catch return error.OutOfMemory;
                 const additional_dom_ids = std.math.add(usize, self.dom_identities.intents.items.len, counts.nodes) catch return error.ResourceLimit;

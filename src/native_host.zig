@@ -4369,6 +4369,21 @@ fn testNestedEachRowElemCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]
     writeTestErasedResult(abi.Elem, ret, testElement(roc_host, &children));
 }
 
+/// Renders one outer row as a label plus a nested keyed list whose rows each
+/// own a state cell, so a live edit that grows the outer list claims node
+/// identities at two depths inside one staged transaction.
+fn testNestedStatefulEachRowElemCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
+    _ = capture_ptr;
+    test_row_elem_call_count += 1;
+    const call_args = testErasedArgsAs(ErasedHostValueBinaryArgs, args);
+    const key = testReadHostValueI64(roc_host, call_args.arg0);
+    const inner_items = [_]HostValue{ testHostValueI64(key * 10 + 1), testHostValueI64(key * 10 + 2), testHostValueI64(key * 10 + 3) };
+    var text_buffer: [64]u8 = undefined;
+    const text = std.fmt.bufPrint(&text_buffer, "outer-{d}", .{key}) catch @panic("test nested stateful each row Elem callable could not format text");
+    const children = [_]abi.Elem{ testNodeText(roc_host, text), testNodeEachWithItemsAndRow(roc_host, &inner_items, &testStatefulRowElemCallable) };
+    writeTestErasedResult(abi.Elem, ret, testElement(roc_host, &children));
+}
+
 fn testHostValueEqErasedCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
     _ = capture_ptr;
     const call_args = testErasedArgsAs(ErasedHostValueBinaryArgs, args);
@@ -6371,6 +6386,80 @@ test "retiring an each row disposes the nested each site it owned" {
             }
             try std.testing.expect(activeTextElementId(&host, "outer-1") == null);
             try std.testing.expect(activeTextElementId(&host, "outer-2") != null);
+            return attempts;
+        }
+    };
+
+    const attempts = try Runner.run(null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
+}
+
+test "growing an empty each whose rows nest stateful each rows reserves every state index" {
+    // Each nested reservation used to size the state index table to the
+    // committed identities plus the intents issued so far plus its own sites,
+    // while the outer reservation's sites were still outstanding. A sibling
+    // site whose stateful rows are collected after the nested ones claims
+    // those outstanding identities, so its state cells landed past the
+    // reserved capacity and publication - which must not allocate - tripped
+    // the capacity assertion instead.
+    const Runner = struct {
+        fn run(failure_number: ?usize) !usize {
+            test_erased_callable_drop_count = 0;
+            test_row_elem_call_count = 0;
+            var host = HostEnv.init();
+            var roc_host = makeSignalsRocHost(&host);
+            host.engine.roc_host = &roc_host;
+            defer {
+                host.deinit();
+                _ = host.gpa.deinit();
+            }
+
+            const state_token = newTestBinderToken(&roc_host);
+            const state_cap = testHostValueCapability(&roc_host);
+            const outer = testNodeEachWithSignalCapabilityAndRow(&roc_host, testNodeRefExpr(state_token), state_cap, &testNestedStatefulEachRowElemCallable);
+            const sibling = testNodeEachWithSignalCapabilityAndRow(&roc_host, testNodeRefExpr(state_token), state_cap, &testStatefulRowElemCallable);
+            const section = testElementWith(&roc_host, "section", &.{}, &.{ outer, sibling });
+            const root = testNodeStateWithTokenAndInitialCapability(&roc_host, state_token, testHostValueI64List(&roc_host, &.{}), section, state_cap);
+            defer root.decref(&roc_host);
+            var stream: HostNodeDescriptorStream = .{};
+            host.collectActiveElemRootDescriptors(&roc_host, &stream, root, &.{});
+            _ = applyNodeDescriptorStream(&host, &roc_host, &stream);
+            host.engine.active_stream = stream;
+
+            const state_id = host.engine.active_stream.scope_sites.items[0].node_id;
+            try std.testing.expectEqual(@as(usize, 2), host.engine.each_row_sites.items.len);
+            try std.testing.expectEqual(@as(usize, 1), host.engine.states.items.len);
+
+            const scope_len_before = host.engine.scopes.items.len;
+            const render_len_before = host.engine.active_stream.render_nodes.items.len;
+            const allocations_before = host.roc_allocations.snapshot();
+            const grown_items = [_]HostValue{ testHostValueI64(1), testHostValueI64(2), testHostValueI64(3), testHostValueI64(4), testHostValueI64(5), testHostValueI64(6) };
+            var fault = FaultAllocator.init(host.gpa.allocator());
+            fault.configure(failure_number);
+            host.engine_allocator_override = fault.allocator();
+            const result = host.engine.tryDispatchStateValue(&host, &roc_host, state_id.raw(), testHostValueI64List(&roc_host, &grown_items), state_cap);
+            const attempts = fault.attempts;
+            if (failure_number != null) {
+                try std.testing.expectError(error.OutOfMemory, result);
+                try std.testing.expectEqual(scope_len_before, host.engine.scopes.items.len);
+                try std.testing.expectEqual(render_len_before, host.engine.active_stream.render_nodes.items.len);
+                try std.testing.expectEqual(@as(usize, 1), host.engine.states.items.len);
+                try std.testing.expectEqual(@as(usize, 0), host.roc_allocations.liveCountSince(allocations_before));
+                fault.configure(null);
+                const retry_items = [_]HostValue{ testHostValueI64(1), testHostValueI64(2), testHostValueI64(3), testHostValueI64(4), testHostValueI64(5), testHostValueI64(6) };
+                _ = try host.engine.tryDispatchStateValue(&host, &roc_host, state_id.raw(), testHostValueI64List(&roc_host, &retry_items), state_cap);
+            } else _ = try result;
+
+            // The root cell, one cell per nested row (six rows of three), and
+            // one per sibling row.
+            try std.testing.expectEqual(@as(usize, 1 + 6 * 3 + 6), host.engine.states.items.len);
+            try std.testing.expectEqual(@as(usize, 2 + 6), host.engine.each_row_sites.items.len);
+            for (host.engine.states.items, 0..) |state, index| {
+                try std.testing.expectEqual(@as(?usize, index), host.engine.stateIndexByNodeId(state.state_id));
+            }
+            try std.testing.expect(activeTextElementId(&host, "outer-6") != null);
+            try std.testing.expect(activeTextElementId(&host, "row-6-6") != null);
             return attempts;
         }
     };
