@@ -30,6 +30,14 @@
 //! parent on one splice and `PreparedRenderSplice.addChildren` rejected the
 //! duplicate. Both shapes are ordinary points in this generator's space.
 //!
+//! Generating `when` flips found three more on its first runs, all in the
+//! staging paths only hand-written tests had covered: content collected by a
+//! flip or a re-diff read the list the transaction was retiring rather than
+//! the one it published, two adjacent when rows flipping together scanned
+//! their retired branches as one interval, and two reordered surviving rows
+//! that both held a flipping when were each handed the other's region by the
+//! render layout.
+//!
 //! # What is generated
 //!
 //! A program is a root state cell holding a list of `i64` items, wrapping a tree
@@ -37,9 +45,21 @@
 //! cell after the mount.
 //!
 //! The element tree is a `div` whose children are a mix of static text, `each`
-//! sites, and nested wrapper elements holding more of the same. Wrappers matter:
-//! they are what puts sibling sites under *distinct render parents*, which is
-//! the shape the multi-parent suppression bug needed.
+//! sites, `when` sites, and nested wrapper elements holding more of the same.
+//! Wrappers matter: they are what puts sibling sites under *distinct render
+//! parents*, which is the shape the multi-parent suppression bug needed.
+//!
+//! A `when` site's condition is a predicate over the list in the root state
+//! cell - `length >= N` or `contains K` - so the edits that re-diff the each
+//! sites flip its branch in the same transaction. Each branch is either
+//! **empty**, an `each` over a frozen empty list that renders no DOM node yet
+//! still registers a scope site at the branch's index, or a wrapper holding
+//! more generated children, sites included. That gives every combination the
+//! staging paths distinguish: a flip alone, a flip beside each growth, shrink,
+//! or reorder under the same or another parent, an empty branch replaced by
+//! content and content replaced by nothing, a when nested in a flipping
+//! branch (subsumed by the outer flip), and a shared each inside a branch
+//! that is disposed or instantiated by the flip that also re-diffs it.
 //!
 //! An `each` site is either **constant** - its own frozen item list, with its own
 //! generated row count - or **shared**, reading the root state cell directly
@@ -51,12 +71,17 @@
 //!
 //! Every site has a row kind that decides what a row renders: plain text, a
 //! state cell, a `when` branch, or a nested constant `each` site with its own
-//! generated shape. Nesting is bounded at two levels, wrappers at two levels.
-//! Keys are the row's item value, and generated lists are strictly increasing
-//! before an optional rotation, so no site ever carries a duplicate key: that is
-//! a Roc-side diagnostic and terminates the host, not something to fuzz here.
-//! Constant sites key rows from a low range and shared sites from a high one, so
-//! a label says which list it came from.
+//! generated shape. A `when` row's condition is a list predicate like a
+//! top-level when's, read through the same root cell from inside the row
+//! scope, so one edit flips a when in every row of every site at once -
+//! surviving rows of a re-diffed shared site included. Nesting is bounded at
+//! two levels, wrappers at two levels. Keys are the row's item value, and
+//! generated lists are strictly increasing before an optional rotation, so no
+//! site ever carries a duplicate key: that is a Roc-side diagnostic and
+//! terminates the host, not something to fuzz here. Constant sites key rows
+//! from a low range and shared sites from a high one, and every site carries
+//! a generator-assigned id in its labels, so a label names exactly one row of
+//! one site.
 //!
 //! The row callable receives its `SiteSpec` through the erased-callable capture,
 //! which is how the engine ends up asking the generated program what to render
@@ -70,13 +95,15 @@
 //! # Reference model
 //!
 //! `Expected.of(program, items)` walks the generated element tree against one
-//! item list and derives the committed topology from scratch: how many each sites
-//! the engine must own (including nested ones instantiated once per outer row, so
-//! a shared outer site's site count moves with the list), how many row scopes
-//! they hold in total, and how many state cells exist - one for the root cell
-//! plus one per stateful row. The visible label set is derived the same way, and
-//! every key the program ever mentions but the current list omits is modelled as
-//! *absent* from the DOM.
+//! item list and derives the committed topology from scratch: which branch
+//! every when shows, how many each sites the engine must own (including nested
+//! ones instantiated once per outer row, so a shared outer site's site count
+//! moves with the list, and the empty each an empty branch registers), how
+//! many when sites, how many row scopes they hold in total, and how many state
+//! cells exist - one for the root cell plus one per stateful row. The visible
+//! label set is derived the same way, every label a site could show but the
+//! current list or branch selection omits is modelled as *absent* from the
+//! DOM, and the whole document's text nodes are derived in document order.
 //!
 //! The model is a pure function of the shape and the current list, so one oracle
 //! judges the mount, every committed edit, and the state left behind by a refused
@@ -86,12 +113,21 @@
 //!
 //!  - **Published topology matches the model, at the mount and after every
 //!    edit.** Site count, total row count, state count, and the descriptor
-//!    stream's `eaches` all equal the derived totals; every modelled row label is
-//!    an active DOM text node; every retired key's label is gone.
-//!  - **No render parent holds a child twice.** Every live `each` site's parent
-//!    is read out of the render cache and checked for duplicate children, which
-//!    is where a splice that registered one parent through two staging passes
-//!    shows up and where no count-based oracle would notice.
+//!    stream's `eaches` and `whens` all equal the derived totals; every
+//!    modelled row label is an active DOM text node; every label the model
+//!    hides - a retired key, a when row whose predicate fails, a site in the
+//!    branch a when no longer shows - is gone.
+//!  - **The render tree reads in document order.** The committed render cache
+//!    is walked from its root and the text it holds must equal the model's
+//!    text sequence exactly, so a branch or row spliced under the right parent
+//!    at the wrong index is caught even though every count and label agrees.
+//!    That is the shape a when flipping from an empty branch used to produce:
+//!    the structural pass anchored new children where the retired branch's
+//!    children stood, and a branch with none was appended after its siblings.
+//!  - **No render parent holds a child twice.** Every parent the walk visits is
+//!    checked for duplicate children, which is where a splice that registered
+//!    one parent through two staging passes shows up and where no count-based
+//!    oracle would notice.
 //!  - **Every scope site's insertion index is current.** After the mount and
 //!    every edit, each `each` site's `render_insert_index` must be the render
 //!    index of its first row and each `when` site's that of its live branch.
@@ -169,10 +205,10 @@
 //! `Signal.map` copy because a bare `Ref` items signal terminated the staged
 //! initial mount; that is fixed and the bare `Ref` is now what is generated.
 //!
-//!  - **Live `when` branch flips.** Generated `when` conditions are constant, so a
-//!    branch is chosen at collection and never switches. Driving the condition
-//!    from a shared bool signal would put branch disposal and re-instantiation
-//!    inside the same transaction as the row splices.
+//!  - **`when` conditions on anything but the root list.** Every generated when
+//!    reads the one shared cell, so a flip is always caused by the edit that
+//!    also re-diffs the shared sites. A when driven by a row's own state cell
+//!    would flip without any each re-diffing in the same transaction.
 //!  - **`ResourceLimit` rejection through `collection_budget` bounds.** The
 //!    generator stays inside every configured bound, so the limit-before-
 //!    allocation path is asserted never to fire rather than exercised. Reaching
@@ -213,6 +249,10 @@ const shared_key_base: i64 = 100;
 /// Full sweeps are quadratic in the attempt count, so past this bound one attempt
 /// per input keeps the fuzzer fast and lets coverage pick the position.
 const max_full_sweep_attempts = 40;
+/// Largest key `generateList` can produce: `max_rows` steps of at most three
+/// above `shared_key_base`. A `contains` operand is drawn from this range so it
+/// is sometimes present and sometimes not.
+const shared_key_limit: i64 = shared_key_base + 3 * max_rows;
 
 const RowKind = enum(u8) {
     text,
@@ -221,7 +261,19 @@ const RowKind = enum(u8) {
     nested_each,
 };
 
+/// A predicate over the root list that a generated `when` condition asks.
+const WhenCondition = struct {
+    predicate: fixtures.ListPredicate,
+    operand: i64,
+
+    fn holds(self: WhenCondition, items: []const i64) bool {
+        return self.predicate.holds(items, self.operand);
+    }
+};
+
 const SiteSpec = struct {
+    /// Generator-assigned identity, part of every row label this site renders.
+    id: u16,
     /// Row count for a constant site. Shared sites take their count from the item
     /// list the root state cell currently holds.
     row_count: u8,
@@ -230,8 +282,28 @@ const SiteSpec = struct {
     /// Rows come from the root state signal rather than a frozen list, so this
     /// site re-diffs inside every live edit.
     shared: bool,
+    /// The condition every row's `when` asks when `row_kind` is `when`.
+    condition: WhenCondition,
     /// The site every row instantiates when `row_kind` is `nested_each`.
     inner: ?*const SiteSpec,
+};
+
+/// What one side of a generated `when` renders.
+const Branch = union(enum) {
+    /// An `each` over a frozen empty list: a scope site with no DOM node.
+    empty,
+    /// A wrapper element holding more generated children.
+    children: []const Child,
+};
+
+const WhenSpec = struct {
+    condition: WhenCondition,
+    when_true: Branch,
+    when_false: Branch,
+
+    fn selected(self: *const WhenSpec, items: []const i64) Branch {
+        return if (self.condition.holds(items)) self.when_true else self.when_false;
+    }
 };
 
 const Child = union(enum) {
@@ -240,6 +312,8 @@ const Child = union(enum) {
     /// A generated wrapper element, which gives the sites beneath it a render
     /// parent of their own.
     wrapper: []const Child,
+    /// A `when` whose branch follows the root list.
+    when: *const WhenSpec,
 };
 
 const Program = struct {
@@ -247,6 +321,9 @@ const Program = struct {
     /// Item lists the root state cell holds over time. Index zero is the mount;
     /// each later entry is one live edit.
     lists: []const []const i64,
+    /// Every site the program can instantiate, in generation order, so an
+    /// oracle can ask about a site whichever branch or row it lives in.
+    sites: []const *const SiteSpec,
 };
 
 /// The shared state cell a `Ref`-driven site binds to.
@@ -255,13 +332,17 @@ const SharedSource = struct {
     cap: ValueCapability,
 };
 
-/// Capture handed to every generated row callable.
+/// Capture handed to every generated row callable. The shared source is what
+/// lets a row's own `when` read the root cell from inside the row scope; it
+/// outlives every callable because `run` owns it for the whole host.
 const RowCapture = extern struct {
     spec: *const SiteSpec,
+    shared: *const SharedSource,
 };
 
 const Expected = struct {
     sites: usize = 0,
+    whens: usize = 0,
     rows: usize = 0,
     /// The root state cell always exists, so the model starts at one.
     states: usize = 1,
@@ -277,6 +358,13 @@ const Expected = struct {
             .text => {},
             .site => |spec| self.addSite(spec, items),
             .wrapper => |nested| self.addChildren(nested, items),
+            .when => |when| {
+                self.whens += 1;
+                switch (when.selected(items)) {
+                    .empty => self.sites += 1,
+                    .children => |nested| self.addChildren(nested, items),
+                }
+            },
         };
     }
 
@@ -285,7 +373,8 @@ const Expected = struct {
         self.sites += 1;
         self.rows += rows;
         switch (spec.row_kind) {
-            .text, .when => {},
+            .text => {},
+            .when => self.whens += rows,
             .stateful => self.states += rows,
             .nested_each => {
                 for (0..rows) |_| self.addSite(spec.inner.?, items);
@@ -297,6 +386,43 @@ const Expected = struct {
 fn rowCount(spec: *const SiteSpec, items: []const i64) usize {
     return if (spec.shared) items.len else spec.row_count;
 }
+
+/// The key of row `index` of `spec` under `items`: shared sites render the
+/// list in its order, constant sites count from zero.
+fn rowKey(spec: *const SiteSpec, items: []const i64, index: usize) i64 {
+    return if (spec.shared) items[index] else @intCast(index);
+}
+
+/// Appends the text every DOM text node under `children` shows, in document
+/// order, as the render tree must read after publication.
+fn modelTexts(out: *std.ArrayListUnmanaged([]const u8), arena: std.mem.Allocator, children: []const Child, items: []const i64) error{OutOfMemory}!void {
+    for (children) |child| switch (child) {
+        .text => try out.append(arena, separator_text),
+        .site => |spec| try modelSiteTexts(out, arena, spec, items),
+        .wrapper => |nested| try modelTexts(out, arena, nested, items),
+        .when => |when| switch (when.selected(items)) {
+            .empty => {},
+            .children => |nested| try modelTexts(out, arena, nested, items),
+        },
+    };
+}
+
+fn modelSiteTexts(out: *std.ArrayListUnmanaged([]const u8), arena: std.mem.Allocator, spec: *const SiteSpec, items: []const i64) error{OutOfMemory}!void {
+    for (0..rowCount(spec, items)) |index| {
+        const label = try ownedRowLabel(arena, spec, rowKey(spec, items, index));
+        switch (spec.row_kind) {
+            .text, .stateful => try out.append(arena, label),
+            .when => try out.append(arena, if (spec.condition.holds(items)) label else hidden_text),
+            .nested_each => {
+                try out.append(arena, label);
+                try modelSiteTexts(out, arena, spec.inner.?, items);
+            },
+        }
+    }
+}
+
+const separator_text = "separator";
+const hidden_text = "hidden";
 
 /// AFL++ persistent-mode initialization hook.
 pub export fn zig_fuzz_init() void {}
@@ -361,14 +487,22 @@ fn chooseFullSweep(reader: *FuzzReader, attempts: usize) bool {
     return attempts <= max_full_sweep_attempts and reader.boolean();
 }
 
+/// Generator state threaded through the element tree.
+const Generator = struct {
+    reader: *FuzzReader,
+    arena: std.mem.Allocator,
+    shared_budget: usize = max_shared_sites,
+    sites: std.ArrayListUnmanaged(*const SiteSpec) = .empty,
+};
+
 fn generate(reader: *FuzzReader, arena: std.mem.Allocator) !Program {
-    var shared_budget: usize = max_shared_sites;
-    const children = try generateChildren(reader, arena, 0, &shared_budget);
+    var generator = Generator{ .reader = reader, .arena = arena };
+    const children = try generateChildren(&generator, 0);
 
     const list_count = 1 + @as(usize, reader.intRangeAtMost(u8, 0, max_edits));
     const lists = try arena.alloc([]const i64, list_count);
     for (lists) |*list| list.* = try generateList(reader, arena, reader.intRangeAtMost(usize, 0, max_rows));
-    return .{ .children = children, .lists = lists };
+    return .{ .children = children, .lists = lists, .sites = generator.sites.items };
 }
 
 /// Builds one strictly increasing key list, then rotates it.
@@ -391,29 +525,28 @@ fn generateList(reader: *FuzzReader, arena: std.mem.Allocator, length: usize) ![
     return items;
 }
 
-/// Generates the children of one element.
-///
-/// At most one of them reads the shared cell. Sibling shared sites under a
-/// *single* render parent are not generated because the engine cannot yet splice
-/// them: two sites removing rows from the same parent in one transaction reach
-/// `structural_splice.prepareMultiRemoval` with overlapping intervals. Wrappers
-/// are how a program gets several shared sites anyway - one per parent - which is
-/// also the shape the multi-parent suppression bug needed.
-fn generateChildren(reader: *FuzzReader, arena: std.mem.Allocator, wrapper_depth: u8, shared_budget: *usize) error{OutOfMemory}![]const Child {
+/// Generates the children of one element: text, each sites, wrapper elements
+/// and whens, the last two nesting more of the same one level down. Shared
+/// sites are drawn wherever they fall until the program's budget is spent, so
+/// they land under one parent, under several, and inside when branches.
+fn generateChildren(generator: *Generator, wrapper_depth: u8) error{OutOfMemory}![]const Child {
+    const reader = generator.reader;
     const limit: u8 = if (wrapper_depth == 0) max_children else 4;
     const child_count = reader.intRangeAtMost(u8, 0, limit);
-    const children = try arena.alloc(Child, child_count);
+    const children = try generator.arena.alloc(Child, child_count);
     for (children) |*child| {
-        const choice = reader.intRangeAtMost(u8, 0, 5);
+        const choice = reader.intRangeAtMost(u8, 0, 6);
         child.* = if (choice == 0)
             .text
         else if (choice == 1 and wrapper_depth + 1 < max_wrapper_depth)
-            .{ .wrapper = try generateChildren(reader, arena, wrapper_depth + 1, shared_budget) }
+            .{ .wrapper = try generateChildren(generator, wrapper_depth + 1) }
+        else if (choice == 2 and wrapper_depth + 1 < max_wrapper_depth)
+            .{ .when = try generateWhen(generator, wrapper_depth + 1) }
         else
-            .{ .site = try generateSite(reader, arena, 0, shared_budget.* != 0) };
+            .{ .site = try generateSite(generator, 0, generator.shared_budget != 0) };
         switch (child.*) {
             .site => |spec| if (spec.shared) {
-                shared_budget.* -= 1;
+                generator.shared_budget -= 1;
             },
             else => {},
         }
@@ -421,8 +554,35 @@ fn generateChildren(reader: *FuzzReader, arena: std.mem.Allocator, wrapper_depth
     return children;
 }
 
-fn generateSite(reader: *FuzzReader, arena: std.mem.Allocator, depth: u8, allow_shared: bool) error{OutOfMemory}!*const SiteSpec {
-    const spec = try arena.create(SiteSpec);
+/// Generates a `when` whose branches sit at `wrapper_depth`: a branch with
+/// content is a wrapper element, so it counts as one wrapper level.
+fn generateWhen(generator: *Generator, wrapper_depth: u8) error{OutOfMemory}!*const WhenSpec {
+    const spec = try generator.arena.create(WhenSpec);
+    spec.* = .{
+        .condition = generateCondition(generator.reader),
+        .when_true = try generateBranch(generator, wrapper_depth),
+        .when_false = try generateBranch(generator, wrapper_depth),
+    };
+    return spec;
+}
+
+fn generateBranch(generator: *Generator, wrapper_depth: u8) error{OutOfMemory}!Branch {
+    if (generator.reader.intRangeAtMost(u8, 0, 2) == 0) return .empty;
+    return .{ .children = try generateChildren(generator, wrapper_depth) };
+}
+
+/// Draws a predicate whose truth moves with the generated lists: a length bound
+/// inside the list-length range, or a key inside the shared key range.
+fn generateCondition(reader: *FuzzReader) WhenCondition {
+    return if (reader.boolean())
+        .{ .predicate = .length_at_least, .operand = reader.intRangeAtMost(i64, 0, max_rows + 1) }
+    else
+        .{ .predicate = .contains, .operand = reader.intRangeAtMost(i64, shared_key_base + 1, shared_key_limit) };
+}
+
+fn generateSite(generator: *Generator, depth: u8, allow_shared: bool) error{OutOfMemory}!*const SiteSpec {
+    const reader = generator.reader;
+    const spec = try generator.arena.create(SiteSpec);
     var kind: RowKind = @enumFromInt(reader.intRangeAtMost(u8, 0, 3));
     if (kind == .nested_each and depth + 1 >= max_depth) kind = .stateful;
     // Only top-level sites read the shared cell: a nested site is instantiated
@@ -430,34 +590,41 @@ fn generateSite(reader: *FuzzReader, arena: std.mem.Allocator, depth: u8, allow_
     // would multiply row counts rather than add coverage.
     const shared = depth == 0 and allow_shared and reader.boolean();
     spec.* = .{
+        .id = std.math.cast(u16, generator.sites.items.len) orelse return error.OutOfMemory,
         .row_count = reader.intRangeAtMost(u8, 0, max_rows),
         .row_kind = kind,
         .depth = depth,
         .shared = shared,
-        .inner = if (kind == .nested_each) try generateSite(reader, arena, depth + 1, false) else null,
+        .condition = generateCondition(reader),
+        .inner = null,
     };
+    try generator.sites.append(generator.arena, spec);
+    if (kind == .nested_each) spec.inner = try generateSite(generator, depth + 1, false);
     return spec;
 }
 
-fn countSharedSites(children: []const Child) usize {
+fn countSharedSites(program: Program) usize {
     var count: usize = 0;
-    for (children) |child| switch (child) {
-        .text => {},
-        .site => |spec| count += @intFromBool(spec.shared),
-        .wrapper => |nested| count += countSharedSites(nested),
-    };
+    for (program.sites) |spec| count += @intFromBool(spec.shared);
     return count;
 }
 
 fn printProgram(program: Program) void {
-    std.debug.print("program: {d} top-level children, {d} shared sites\n", .{ program.children.len, countSharedSites(program.children) });
+    std.debug.print("program: {d} top-level children, {d} sites, {d} shared\n", .{ program.children.len, program.sites.len, countSharedSites(program) });
     for (program.lists, 0..) |list, index| {
         std.debug.print("  list[{d}] len={d}:", .{ index, list.len });
         for (list) |item| std.debug.print(" {d}", .{item});
         const expected = Expected.of(program, list);
-        std.debug.print(" -> sites={d} rows={d} states={d}\n", .{ expected.sites, expected.rows, expected.states });
+        std.debug.print(" -> sites={d} whens={d} rows={d} states={d}\n", .{ expected.sites, expected.whens, expected.rows, expected.states });
     }
     printChildren(program.children, 1);
+}
+
+fn printCondition(condition: WhenCondition) void {
+    switch (condition.predicate) {
+        .length_at_least => std.debug.print("length>={d}", .{condition.operand}),
+        .contains => std.debug.print("contains {d}", .{condition.operand}),
+    }
 }
 
 fn printChildren(children: []const Child, indent: usize) void {
@@ -469,14 +636,37 @@ fn printChildren(children: []const Child, indent: usize) void {
                 std.debug.print("[{d}] wrapper\n", .{index});
                 printChildren(nested, indent + 1);
             },
+            .when => |when| {
+                std.debug.print("[{d}] when ", .{index});
+                printCondition(when.condition);
+                std.debug.print("\n", .{});
+                printBranch("true", when.when_true, indent + 1);
+                printBranch("false", when.when_false, indent + 1);
+            },
             .site => |spec| {
-                std.debug.print("[{d}] each shared={} rows={d} kind={t}\n", .{ index, spec.shared, spec.row_count, spec.row_kind });
+                std.debug.print("[{d}] each#{d} shared={} rows={d} kind={t}", .{ index, spec.id, spec.shared, spec.row_count, spec.row_kind });
+                if (spec.row_kind == .when) {
+                    std.debug.print(" ", .{});
+                    printCondition(spec.condition);
+                }
+                std.debug.print("\n", .{});
                 if (spec.inner) |inner| {
                     for (0..indent + 1) |_| std.debug.print("  ", .{});
-                    std.debug.print("inner each rows={d} kind={t}\n", .{ inner.row_count, inner.row_kind });
+                    std.debug.print("inner each#{d} rows={d} kind={t}\n", .{ inner.id, inner.row_count, inner.row_kind });
                 }
             },
         }
+    }
+}
+
+fn printBranch(name: []const u8, branch: Branch, indent: usize) void {
+    for (0..indent) |_| std.debug.print("  ", .{});
+    switch (branch) {
+        .empty => std.debug.print("{s}: empty\n", .{name}),
+        .children => |nested| {
+            std.debug.print("{s}: wrapper\n", .{name});
+            printChildren(nested, indent + 1);
+        },
     }
 }
 
@@ -504,7 +694,7 @@ fn run(program: Program, plan: Plan) usize {
         .token = fixtures.newBinderToken(&roc_host),
         .cap = fixtures.valueCapability(&roc_host),
     };
-    const root = buildRoot(program, &roc_host, shared);
+    const root = buildRoot(program, &roc_host, &shared);
     defer root.decref(&roc_host);
     const refs_before = host.roc_allocations.snapshot();
 
@@ -512,6 +702,7 @@ fn run(program: Program, plan: Plan) usize {
     host.engine_allocator_override = fault.allocator();
 
     fault.configure(plan.mount_failure);
+    phase = if (plan.mount_failure != null) "faulted mount" else "unfaulted mount";
     const result = fixtures.renderInitialRootWithArmedPublication(&host, &roc_host, root, &fault);
     const attempts = fault.attempts;
 
@@ -526,6 +717,7 @@ fn run(program: Program, plan: Plan) usize {
         }
 
         fault.configure(null);
+        phase = "mount retried after a refusal";
         _ = fixtures.renderInitialRootWithArmedPublication(&host, &roc_host, root, &fault) catch |err| {
             fail("retry after refusal at attempt {d} failed: {t}", .{ number, err });
         };
@@ -555,6 +747,7 @@ fn runEdits(host: *Host, roc_host: *abi.RocHost, program: Program, plan: Plan, f
         const value_before = fixtures.stateValue(host, state_node_id);
 
         fault.configure(if (faulted) plan.edit_failure else null);
+        phase = if (faulted) "faulted edit" else "unfaulted edit";
         const dispatch = fixtures.dispatchStateValue(host, roc_host, state_node_id, listValue(roc_host, next_list), cap);
         if (plan.edit_attempts) |slots| slots[edit_index] = fault.attempts;
 
@@ -577,6 +770,7 @@ fn runEdits(host: *Host, roc_host: *abi.RocHost, program: Program, plan: Plan, f
             }
 
             fault.configure(null);
+            phase = "edit retried after a refusal";
             _ = fixtures.dispatchStateValue(host, roc_host, state_node_id, listValue(roc_host, next_list), cap) catch |err| {
                 fail("retry of edit {d} after refusal at attempt {d} failed: {t}", .{ edit_index, number, err });
             };
@@ -622,33 +816,39 @@ fn listValue(roc_host: *abi.RocHost, items: []const i64) HostValue {
     return fixtures.i64ListValue(roc_host, values[0..items.len]);
 }
 
-fn buildRoot(program: Program, roc_host: *abi.RocHost, shared: SharedSource) abi.Elem {
+fn buildRoot(program: Program, roc_host: *abi.RocHost, shared: *const SharedSource) abi.Elem {
     const body = buildChildren(program.children, roc_host, shared);
     return fixtures.stateWithTokenInitialAndCapability(roc_host, shared.token, listValue(roc_host, program.lists[0]), body, shared.cap);
 }
 
-fn buildChildren(children: []const Child, roc_host: *abi.RocHost, shared: ?SharedSource) abi.Elem {
+fn buildChildren(children: []const Child, roc_host: *abi.RocHost, shared: *const SharedSource) abi.Elem {
     var built: [max_children]abi.Elem = undefined;
     for (children, 0..) |child, index| {
         built[index] = switch (child) {
-            .text => fixtures.text(roc_host, "separator"),
+            .text => fixtures.text(roc_host, separator_text),
             .site => |spec| buildSite(spec, roc_host, shared),
             .wrapper => |nested| buildChildren(nested, roc_host, shared),
+            .when => |when| fixtures.whenOnListPredicate(roc_host, shared.token, when.condition.predicate, when.condition.operand, buildBranch(when.when_true, roc_host, shared), buildBranch(when.when_false, roc_host, shared)),
         };
     }
     return fixtures.element(roc_host, built[0..children.len]);
 }
 
-/// Builds one `each` fixture for `spec`.
-///
-/// `shared` is absent inside a row callable, which is why only top-level sites
-/// may bind the state cell: by the time a nested site is built the harness is
-/// already inside an erased call and has no token to hand it.
-fn buildSite(spec: *const SiteSpec, roc_host: *abi.RocHost, shared: ?SharedSource) abi.Elem {
-    const capture = RowCapture{ .spec = spec };
+fn buildBranch(branch: Branch, roc_host: *abi.RocHost, shared: *const SharedSource) abi.Elem {
+    return switch (branch) {
+        .empty => fixtures.emptyEach(roc_host),
+        .children => |nested| buildChildren(nested, roc_host, shared),
+    };
+}
+
+/// Builds one `each` fixture for `spec`. Only a top-level site reads the
+/// shared cell as its items; every site's rows still carry the source so a
+/// `when` row can bind its condition to it from inside the row scope.
+fn buildSite(spec: *const SiteSpec, roc_host: *abi.RocHost, shared: *const SharedSource) abi.Elem {
+    const capture = RowCapture{ .spec = spec, .shared = shared };
     if (spec.shared) {
-        const source = shared orelse fail("a nested each site was generated as shared", .{});
-        return fixtures.eachOverStateListRowAndCapture(RowCapture, roc_host, source.token, source.cap, &rowCallable, capture);
+        if (spec.depth != 0) fail("a nested each site was generated as shared", .{});
+        return fixtures.eachOverStateListRowAndCapture(RowCapture, roc_host, shared.token, shared.cap, &rowCallable, capture);
     }
     var items: [max_rows]HostValue = undefined;
     for (items[0..spec.row_count], 0..) |*item, index| item.* = fixtures.i64Value(@intCast(index));
@@ -656,25 +856,30 @@ fn buildSite(spec: *const SiteSpec, roc_host: *abi.RocHost, shared: ?SharedSourc
 }
 
 fn rowCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
-    const spec = fixtures.captureAs(RowCapture, capture_ptr).spec;
+    const capture = fixtures.captureAs(RowCapture, capture_ptr);
+    const spec = capture.spec;
     const call_args = fixtures.argsAs(fixtures.BinaryArgs, args);
     const key = fixtures.readI64(roc_host, call_args.arg0);
     var buffer: [32]u8 = undefined;
-    const label = rowLabel(&buffer, spec.depth, key);
+    const label = rowLabel(&buffer, spec, key);
     const elem = switch (spec.row_kind) {
         .text => fixtures.text(roc_host, label),
         .stateful => fixtures.state(roc_host, fixtures.text(roc_host, label)),
-        .when => fixtures.when(roc_host, fixtures.text(roc_host, label), fixtures.text(roc_host, "hidden")),
+        .when => fixtures.whenOnListPredicate(roc_host, capture.shared.token, spec.condition.predicate, spec.condition.operand, fixtures.text(roc_host, label), fixtures.text(roc_host, hidden_text)),
         .nested_each => blk: {
-            const children = [_]abi.Elem{ fixtures.text(roc_host, label), buildSite(spec.inner.?, roc_host, null) };
+            const children = [_]abi.Elem{ fixtures.text(roc_host, label), buildSite(spec.inner.?, roc_host, capture.shared) };
             break :blk fixtures.element(roc_host, &children);
         },
     };
     fixtures.writeResult(abi.Elem, ret, elem);
 }
 
-fn rowLabel(buffer: []u8, depth: u8, key: i64) []const u8 {
-    return std.fmt.bufPrint(buffer, "row-{d}-{d}", .{ depth, key }) catch unreachable;
+fn rowLabel(buffer: []u8, spec: *const SiteSpec, key: i64) []const u8 {
+    return std.fmt.bufPrint(buffer, "row-{d}-{d}", .{ spec.id, key }) catch unreachable;
+}
+
+fn ownedRowLabel(arena: std.mem.Allocator, spec: *const SiteSpec, key: i64) error{OutOfMemory}![]const u8 {
+    return std.fmt.allocPrint(arena, "row-{d}-{d}", .{ spec.id, key });
 }
 
 fn expectUnpublished(host: *const Host, failure_number: usize) void {
@@ -712,81 +917,92 @@ fn expectPublished(host: *const Host, program: Program, items: []const i64) void
     if (engine.active_stream.eaches.items.len != expected.sites) {
         fail("active stream holds {d} each descriptors, model expects {d}", .{ engine.active_stream.eaches.items.len, expected.sites });
     }
+    if (engine.active_stream.whens.items.len != expected.whens) {
+        fail("active stream holds {d} when descriptors, model expects {d}", .{ engine.active_stream.whens.items.len, expected.whens });
+    }
     var rows: usize = 0;
     for (engine.each_row_sites.items) |site| rows += site.scope_ids.items.len;
     if (rows != expected.rows) fail("engine owns {d} each rows, model expects {d}", .{ rows, expected.rows });
     if (engine.states.items.len != expected.states) {
         fail("engine owns {d} states, model expects {d}", .{ engine.states.items.len, expected.states });
     }
-    expectChildText(host, program.children, items);
-    expectRetiredKeysGone(host, program, items);
-    expectNoDuplicateRenderChildren(host);
+    expectLabels(host, program, items);
+    expectDocumentOrder(host, program, items);
     host.engine.validateActiveScopeSiteInsertIndexes();
 }
 
-fn expectChildText(host: *const Host, children: []const Child, items: []const i64) void {
-    for (children) |child| switch (child) {
-        .text => {},
-        .site => |spec| expectSiteText(host, spec, items),
-        .wrapper => |nested| expectChildText(host, nested, items),
-    };
-}
-
-fn expectSiteText(host: *const Host, spec: *const SiteSpec, items: []const i64) void {
-    var buffer: [32]u8 = undefined;
-    if (spec.shared) {
-        for (items) |item| {
-            const label = rowLabel(&buffer, spec.depth, item);
-            if (fixtures.findActiveText(host, label) == null) fail("shared row label '{s}' is not an active DOM text node", .{label});
-        }
-    } else {
-        for (0..spec.row_count) |row| {
-            const label = rowLabel(&buffer, spec.depth, @intCast(row));
-            if (fixtures.findActiveText(host, label) == null) fail("row label '{s}' is not an active DOM text node", .{label});
-        }
-    }
-    if (spec.row_kind == .nested_each and rowCount(spec, items) != 0) expectSiteText(host, spec.inner.?, items);
-}
-
-/// Asserts every key the program ever publishes but the current list omits has
-/// left the DOM.
+/// Asserts every label the model shows is an active DOM text node and every
+/// label the program could ever show but the model hides is gone.
 ///
-/// A row splice that creates without retiring leaves the old label behind, and a
-/// count-based oracle cannot see that once the counts happen to agree again. Keys
-/// come from a range no constant site uses, so a surviving label can only have
-/// come from a shared row that should have been disposed.
-fn expectRetiredKeysGone(host: *const Host, program: Program, items: []const i64) void {
-    if (countSharedSites(program.children) == 0) return;
+/// A row splice that creates without retiring leaves the old label behind, and
+/// a branch flip that disposes nothing leaves the old branch's rows, and a
+/// count-based oracle cannot see either once the counts happen to agree again.
+/// Labels carry the site id, so a surviving label can only have come from the
+/// one row that should have been disposed or hidden.
+fn expectLabels(host: *const Host, program: Program, items: []const i64) void {
+    var arena_state = std.heap.ArenaAllocator.init(std.heap.c_allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var shown: std.ArrayListUnmanaged([]const u8) = .empty;
+    modelTexts(&shown, arena, program.children, items) catch fail("oracle arena exhausted", .{});
+    for (shown.items) |label| {
+        if (fixtures.findActiveText(host, label) == null) fail("modelled text '{s}' is not an active DOM text node", .{label});
+    }
     var buffer: [32]u8 = undefined;
-    for (program.lists) |list| {
-        for (list) |key| {
-            if (std.mem.indexOfScalar(i64, items, key) != null) continue;
-            const label = rowLabel(&buffer, 0, key);
-            if (fixtures.findActiveText(host, label) != null) fail("retired row label '{s}' is still an active DOM text node", .{label});
-        }
+    for (program.sites) |spec| {
+        for (0..max_rows) |row| expectLabelHidden(host, shown.items, rowLabel(&buffer, spec, @intCast(row)));
+        for (program.lists) |list| for (list) |key| expectLabelHidden(host, shown.items, rowLabel(&buffer, spec, key));
     }
 }
 
-/// Asserts no live `each` site's render parent holds the same child twice.
+fn expectLabelHidden(host: *const Host, shown: []const []const u8, label: []const u8) void {
+    for (shown) |visible| if (std.mem.eql(u8, visible, label)) return;
+    if (fixtures.findActiveText(host, label) != null) fail("hidden row label '{s}' is still an active DOM text node", .{label});
+}
+
+/// Asserts the committed render tree reads exactly as the model does: walking
+/// the render cache from its root visits the modelled text nodes in document
+/// order, and no parent on the way holds a child twice.
 ///
-/// This is the shape a splice produces when one parent is registered through two
-/// staging passes in the same transaction: the counts stay plausible and the
-/// labels are all present, but the committed render tree is corrupt.
-fn expectNoDuplicateRenderChildren(host: *const Host) void {
-    for (host.engine.active_stream.scope_sites.items) |site| {
-        if (site.kind != .each) continue;
-        const children = fixtures.renderChildren(host, site.parent_elem_id);
-        for (children, 0..) |child, index| {
-            for (children[index + 1 ..]) |other| {
-                if (child.raw() == other.raw()) {
-                    fail("render parent {d} holds child {d} more than once", .{ site.parent_elem_id.raw(), child.raw() });
-                }
-            }
+/// Counts and labels cannot tell a branch spliced under the right parent at
+/// the wrong index from a correct one; the order can. The duplicate check is
+/// the shape a splice produces when one parent is registered through two
+/// staging passes in the same transaction.
+fn expectDocumentOrder(host: *const Host, program: Program, items: []const i64) void {
+    var arena_state = std.heap.ArenaAllocator.init(std.heap.c_allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var expected: std.ArrayListUnmanaged([]const u8) = .empty;
+    modelTexts(&expected, arena, program.children, items) catch fail("oracle arena exhausted", .{});
+    var actual: std.ArrayListUnmanaged([]const u8) = .empty;
+    collectRenderTexts(host, arena, &actual, fixtures.render_root) catch fail("oracle arena exhausted", .{});
+    const mismatch = for (0..@min(expected.items.len, actual.items.len)) |index| {
+        if (!std.mem.eql(u8, expected.items[index], actual.items[index])) break index;
+    } else if (expected.items.len != actual.items.len) @min(expected.items.len, actual.items.len) else return;
+    std.debug.print("expected document text order:", .{});
+    for (expected.items) |text| std.debug.print(" {s}", .{text});
+    std.debug.print("\nactual document text order:  ", .{});
+    for (actual.items) |text| std.debug.print(" {s}", .{text});
+    std.debug.print("\n", .{});
+    fail("render tree text order diverges from the model at text {d}", .{mismatch});
+}
+
+fn collectRenderTexts(host: *const Host, arena: std.mem.Allocator, out: *std.ArrayListUnmanaged([]const u8), parent: signals.ids.ElemId) error{OutOfMemory}!void {
+    const children = fixtures.renderChildren(host, parent);
+    for (children, 0..) |child, index| {
+        for (children[index + 1 ..]) |other| {
+            if (child.raw() == other.raw()) fail("render parent {d} holds child {d} more than once", .{ parent.raw(), child.raw() });
         }
+        if (fixtures.renderText(host, child)) |text| try out.append(arena, text);
+        try collectRenderTexts(host, arena, out, child);
     }
 }
+
+/// Which transaction of the current run the oracles are judging, named in
+/// every failure so a replay says where the model and engine parted.
+var phase: []const u8 = "before the mount";
 
 fn fail(comptime fmt: []const u8, args: anytype) noreturn {
-    std.debug.print("structural fuzz oracle failed: " ++ fmt ++ "\n", args);
+    std.debug.print("structural fuzz oracle failed ({s}): " ++ fmt ++ "\n", .{phase} ++ args);
     @panic("structural fuzz oracle failed");
 }

@@ -4642,7 +4642,8 @@ const TestListPredicate = enum(u8) {
     /// The list holds the key `operand`.
     contains,
 
-    fn holds(self: TestListPredicate, items: []const i64, operand: i64) bool {
+    /// Evaluates the predicate against `items`; also the fuzz model's oracle.
+    pub fn holds(self: TestListPredicate, items: []const i64, operand: i64) bool {
         return switch (self) {
             .length_at_least => items.len >= operand,
             .contains => std.mem.indexOfScalar(i64, items, operand) != null,
@@ -11246,6 +11247,17 @@ pub const fuzz_fixtures = struct {
         return host.engine.render_cache.nodes.items[parent.index()].children.items;
     }
 
+    /// The committed render root, node 0 of the render cache.
+    pub const render_root: ids.ElemId = ids.ElemId.fromRaw(0);
+
+    /// Text an active simulated DOM node shows, or null for an element.
+    pub fn renderText(host: *const HostEnv, elem_id: ids.ElemId) ?[]const u8 {
+        for (host.dom_elements.items) |elem| {
+            if (elem.active and elem.id == elem_id.raw()) return elem.text;
+        }
+        return null;
+    }
+
     pub const element = testElement;
     pub const elementWith = testElementWith;
     pub const text = testNodeText;
@@ -11254,6 +11266,13 @@ pub const fuzz_fixtures = struct {
     pub const newBinderToken = newTestBinderToken;
     pub const valueCapability = testHostValueCapability;
     pub const when = testNodeWhen;
+    pub const ListPredicate = TestListPredicate;
+    /// A `when` whose branch follows a predicate over the list in a state
+    /// cell, so dispatching into the cell flips it.
+    pub const whenOnListPredicate = testNodeWhenOnListPredicate;
+    /// A branch or site that renders no DOM node at all: an `each` over a
+    /// frozen empty list, which still registers a scope site at its index.
+    pub const emptyEach = testNodeEmptyConstantEach;
     pub const i64Value = testHostValueI64;
     pub const i64ListValue = testHostValueI64List;
     pub const eachWithItemsRowAndCapture = testNodeEachWithItemsRowAndCapture;
