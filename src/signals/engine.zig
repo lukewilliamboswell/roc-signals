@@ -1806,7 +1806,7 @@ pub fn Engine(comptime Ctx: type) type {
                     row_relative: struct { each_index: usize, row_final_start: usize, retained_offset: usize },
                 };
                 const SiteKind = union(enum) { branch: usize, each: usize };
-                const SitePlacement = struct { old_anchor: usize, anchor: Anchor, node_id: u64, kind: SiteKind };
+                const SitePlacement = struct { old_anchor: usize, anchor: Anchor, node_id: u64, kind: SiteKind, position: SitePosition };
                 const site_count = std.math.add(usize, selections.len, sites.len) catch return error.ResourceLimit;
                 const ordered_sites = allocator.alloc(SitePlacement, site_count) catch return error.OutOfMemory;
                 defer allocator.free(ordered_sites);
@@ -1820,7 +1820,10 @@ pub fn Engine(comptime Ctx: type) type {
                             break;
                         }
                     }
-                    const old_anchor = active_anchor orelse return error.InvalidRenderTopology;
+                    // A retired branch that renders nothing has no node to
+                    // anchor at; its content sits at the site's own index, as
+                    // the when-only path already assumes.
+                    const old_anchor = active_anchor orelse selection.render_insert_index;
                     var anchor: Anchor = .{ .global = old_anchor };
                     var owner_depth: ?usize = null;
                     for (sites, layouts, 0..) |each_site_desc, layout, each_index| {
@@ -1842,21 +1845,31 @@ pub fn Engine(comptime Ctx: type) type {
                             break;
                         };
                     }
-                    ordered_sites[site_write] = .{ .old_anchor = old_anchor, .anchor = anchor, .node_id = changes[normalized.selected_indexes[index]].node_id.raw(), .kind = .{ .branch = index } };
+                    ordered_sites[site_write] = .{ .old_anchor = old_anchor, .anchor = anchor, .node_id = changes[normalized.selected_indexes[index]].node_id.raw(), .kind = .{ .branch = index }, .position = .{ .scope_id = selection.parent_scope_id.raw(), .ordinal = selection.site_ordinal } };
                     site_write += 1;
                 }
                 for (sites, each_change_indexes, 0..) |site, change_index, index| {
-                    ordered_sites[site_write] = .{ .old_anchor = site.render_insert_index, .anchor = .{ .global = site.render_insert_index }, .node_id = changes[change_index].node_id.raw(), .kind = .{ .each = index } };
+                    ordered_sites[site_write] = .{ .old_anchor = site.render_insert_index, .anchor = .{ .global = site.render_insert_index }, .node_id = changes[change_index].node_id.raw(), .kind = .{ .each = index }, .position = SitePosition.ofSite(site) };
                     site_write += 1;
                 }
-                const SortSites = struct {
-                    fn lessThan(_: void, left: SitePlacement, right: SitePlacement) bool {
-                        if (left.old_anchor != right.old_anchor) return left.old_anchor < right.old_anchor;
-                        if (std.meta.activeTag(left.kind) != std.meta.activeTag(right.kind)) return left.kind == .each;
-                        return left.node_id < right.node_id;
+                // Sites are laid out in document order, so the running delta
+                // describes exactly the content in front of each one. Two sites
+                // at one anchor - a branch and the each right after it, say -
+                // are ordered by the scope tree, never by kind or node id.
+                // Insertion sort, because the comparator can fail.
+                {
+                    var index: usize = 1;
+                    while (index < ordered_sites.len) : (index += 1) {
+                        var position = index;
+                        while (position > 0) : (position -= 1) {
+                            switch (try engine.compareSitePositions(ordered_sites[position - 1].position, ordered_sites[position].position)) {
+                                .before, .contains => break,
+                                .after, .contained => std.mem.swap(SitePlacement, &ordered_sites[position - 1], &ordered_sites[position]),
+                                .same => return error.InvalidRenderTopology,
+                            }
+                        }
                     }
-                };
-                std.mem.sort(SitePlacement, ordered_sites, {}, SortSites.lessThan);
+                }
                 const each_deltas = allocator.alloc(?isize, layouts.len) catch return error.OutOfMemory;
                 defer allocator.free(each_deltas);
                 @memset(each_deltas, null);

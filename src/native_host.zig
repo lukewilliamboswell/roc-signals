@@ -6767,6 +6767,75 @@ test "a when site collected later inside an earlier branch still orders before t
     for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
+test "a when branch and an each under one parent grow in one transaction and re-base the sites after them" {
+    // One list state feeds a `when` condition and an `each` under the same
+    // parent, so a single dispatch stages the mixed when+each transaction:
+    // the branch mounts one node in front of the each while the each grows.
+    const Runner = struct {
+        fn run(failure_number: ?usize) !usize {
+            test_erased_callable_drop_count = 0;
+            test_row_elem_call_count = 0;
+            var host = HostEnv.init();
+            var roc_host = makeSignalsRocHost(&host);
+            host.engine.roc_host = &roc_host;
+            defer {
+                host.deinit();
+                _ = host.gpa.deinit();
+            }
+
+            const list_token = newTestBinderToken(&roc_host);
+            const cap = testHostValueCapability(&roc_host);
+            const when = testNodeWhenWithSignal(&roc_host, testNodeListContainsOneExpr(&roc_host, testNodeRefExpr(list_token)), testNodeText(&roc_host, "has-one"), testNodeEmptyConstantEach(&roc_host));
+            const each = testNodeEachWithSignalCapabilityAndRow(&roc_host, testNodeRefExpr(list_token), cap, &testStatefulRowElemCallable);
+            const section = testElementWith(&roc_host, "section", &.{}, &.{ when, each, testNodeEmptyConstantEach(&roc_host), testNodeText(&roc_host, "tail") });
+            const initial = [_]HostValue{ testHostValueI64(2), testHostValueI64(3) };
+            const root = testNodeStateWithTokenAndInitialCapability(&roc_host, list_token, testHostValueI64List(&roc_host, &initial), section, cap);
+            defer root.decref(&roc_host);
+            var stream: HostNodeDescriptorStream = .{};
+            host.collectActiveElemRootDescriptors(&roc_host, &stream, root, &.{});
+            _ = applyNodeDescriptorStream(&host, &roc_host, &stream);
+            host.engine.active_stream = stream;
+
+            const list_state_id = host.engine.active_stream.scope_sites.items[0].node_id;
+            var when_buffer: [1]ids.NodeId = undefined;
+            const when_id = activeScopeSiteNodeIdsOfKind(&host, .when, &when_buffer)[0];
+            var each_buffer: [3]ids.NodeId = undefined;
+            const eaches = activeScopeSiteNodeIdsOfKind(&host, .each, &each_buffer);
+            try std.testing.expectEqual(@as(usize, 3), eaches.len);
+            const shared_each_id = eaches[1];
+            const trailing_each_id = eaches[2];
+            try expectScopeSiteInsertIndex(&host, when_id, .when, 1);
+            try expectScopeSiteInsertIndex(&host, shared_each_id, .each, 1);
+            try expectScopeSiteInsertIndex(&host, trailing_each_id, .each, 3);
+
+            const grown = [_]HostValue{ testHostValueI64(1), testHostValueI64(2), testHostValueI64(3), testHostValueI64(4) };
+            const retry = [_]HostValue{ testHostValueI64(1), testHostValueI64(2), testHostValueI64(3), testHostValueI64(4) };
+            const attempts = try dispatchStateValueSweeping(&host, &roc_host, list_state_id, testHostValueI64List(&roc_host, &grown), testHostValueI64List(&roc_host, &retry), cap, failure_number);
+            try expectScopeSiteInsertIndex(&host, when_id, .when, 1);
+            try expectScopeSiteInsertIndex(&host, shared_each_id, .each, 2);
+            try expectScopeSiteInsertIndex(&host, trailing_each_id, .each, 6);
+            try std.testing.expectEqual(@as(?usize, 1), streamOrderOfText(&host, "has-one"));
+            try std.testing.expectEqual(@as(?usize, 2), streamOrderOfText(&host, "row-1-1"));
+            try std.testing.expectEqual(@as(?usize, 5), streamOrderOfText(&host, "row-4-4"));
+            try std.testing.expectEqual(@as(?usize, 6), streamOrderOfText(&host, "tail"));
+
+            // Shrinking flips the branch back and drops rows in one transaction.
+            const shrunk = [_]HostValue{testHostValueI64(3)};
+            _ = try host.engine.tryDispatchStateValue(&host, &roc_host, list_state_id.raw(), testHostValueI64List(&roc_host, &shrunk), cap);
+            try expectScopeSiteInsertIndex(&host, when_id, .when, 1);
+            try expectScopeSiteInsertIndex(&host, shared_each_id, .each, 1);
+            try expectScopeSiteInsertIndex(&host, trailing_each_id, .each, 2);
+            try std.testing.expectEqual(@as(?usize, 1), streamOrderOfText(&host, "row-3-3"));
+            try std.testing.expectEqual(@as(?usize, 2), streamOrderOfText(&host, "tail"));
+            try std.testing.expect(activeTextElementId(&host, "has-one") == null);
+            return attempts;
+        }
+    };
+
+    const attempts = try Runner.run(null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
+}
 test "an each reading a root state list through a bare ref mounts in one staged transaction and survives a live edit" {
     // A bare `Ref` record carries no signal token. The initial mount's graph
     // publication used to decide whether anything needed publishing from the
