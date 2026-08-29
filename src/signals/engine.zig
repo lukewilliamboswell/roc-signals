@@ -12793,6 +12793,7 @@ pub fn Engine(comptime Ctx: type) type {
                 }
                 var counts = self.render_splice.?.wire.counts();
                 counts.addAll(self.runPostCommitCommands());
+                if (comptime enable_runtime_metrics) self.engine.render_metrics.addCommandCounts(counts);
                 return counts;
             }
 

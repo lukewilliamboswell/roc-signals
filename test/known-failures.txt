@@ -49,4 +49,3 @@ native js-framework-benchmark/replace_1k.scm
 native js-framework-benchmark/update_10k.scm
 native large-each-08/main.scm
 native large-each-64/main.scm
-native metric-semantics/main.scm

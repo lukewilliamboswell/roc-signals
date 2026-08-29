@@ -7777,6 +7777,39 @@ test "event state transaction sweeps host OOM and retries without mutation" {
     for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
+test "a scalar state transaction folds its commands into the render metrics" {
+    // PreparedSourceTransaction.commit records published command counts in
+    // `render_metrics` on every structural branch, but the scalar branch (a
+    // dirty text sink and nothing structural) published its set_text without
+    // recording it, so `patches_emitted` stayed flat while the DOM changed.
+    var host = HostEnv.init();
+    var roc_host = makeSignalsRocHost(&host);
+    host.engine.roc_host = &roc_host;
+    defer {
+        host.deinit();
+        _ = host.gpa.deinit();
+    }
+    const token = newTestBinderToken(&roc_host);
+    const state_cap = testHostValueCapability(&roc_host);
+    const child = abi.Elem{ .payload = .{ .text_signal = .{
+        .read = testI64TextReadHandle(&roc_host, state_cap),
+        .signal = boxTestNodeSignalExpr(&roc_host, testNodeRefExpr(token)),
+    } }, .tag = .TextSignal };
+    const root = testNodeStateWithTokenAndInitialCapability(&roc_host, token, testHostValueI64(1), child, state_cap);
+    defer root.decref(&roc_host);
+    _ = try tryRenderInitialRoot(&host, &roc_host, root, &.{});
+    const state_id = host.engine.active_stream.scope_sites.items[0].node_id;
+    const metrics_before = host.engine.render_metrics;
+
+    const counts = try host.engine.tryDispatchStateValue(&host, &roc_host, state_id.raw(), testHostValueI64(2), state_cap);
+
+    try std.testing.expectEqualStrings("2", host.dom_elements.items[1].text.?);
+    try std.testing.expectEqual(@as(u64, 1), counts.set_text);
+    try std.testing.expectEqual(@as(u64, 1), counts.total);
+    try std.testing.expectEqual(metrics_before.patches_emitted + 1, host.engine.render_metrics.patches_emitted);
+    try std.testing.expectEqual(metrics_before.set_text + 1, host.engine.render_metrics.set_text);
+}
+
 test "signals host reuses active signal records while collecting dirty when branch" {
     test_erased_callable_drop_count = 0;
 
