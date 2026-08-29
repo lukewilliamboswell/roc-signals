@@ -170,3 +170,190 @@ way, and the js-framework benchmark's timeouts did the same earlier, hiding five
 Continuing and reporting all failures at the end would make a red run diagnosable
 in one pass. `--fail-fast` already exists, so the current behaviour could become
 opt-in.
+
+## 10. Composition and reuse have no story
+
+`Ui.component : (() -> Elem)` takes no inputs, no children, and there is no
+context/provider mechanism. Reuse today means a plain Roc function returning
+`Elem`, which works for leaves but gives a component no owned scope for its
+inputs and no way to accept `List(Elem)` children as a slot. The maintained
+apps show the cost: `main.roc` files run 500–800 lines (`split-the-bill` 820,
+`status-page` 747, `support-inbox` 719) and there is no packageable UI unit an
+app could import from another repo.
+
+Design gap, not a bug: `design.md` says nothing about composition beyond the
+`Ui.component` signature. Needs a decision on (a) component inputs — static
+values vs `Signal(a)` vs both, (b) children as a slot, (c) whether a package can
+export components without leaking `Signal.to_expr`/`from_expr` plumbing. Traces
+to the author-facing product goals in `design.md`.
+
+## 11. Coarse `Model` state defeats the scaling claim in practice
+
+The engine is O(changed nodes), but the API steers authors toward one
+`Ui.state(Model)` and `model.signal().map(...)` fan-out, so the changed set is
+every derived node that reads the model. `examples/_fixtures/js-framework-benchmark/main.roc`
+`render_row` derives each row's `classes` from the whole model, so selecting
+one row runs 1,000 map closures and 1,000 `is_eq` calls; only propagation
+*downstream* of them is pruned.
+
+`design.md` names eager declared edges as "the tradeoff we accept" and stops.
+Two candidate answers, not exclusive:
+
+- a selector primitive (Solid's `createSelector` shape): a `Signal(key)` plus a
+  per-row `Signal(Bool)` that the engine updates for exactly the two rows whose
+  membership changed, O(2) closures per selection change;
+- a documented state-partitioning idiom (row-local `Ui.state`, one signal per
+  independent concern) with the tradeoffs stated.
+
+Whichever lands, pin it with an `expect_metric_delta` on `derived_calls_into_roc`
+in the benchmark fixture and the `large-each-*` fixtures so the property cannot
+regress silently. Until then the js-framework-benchmark "select row" op is O(N)
+and the design's headline claim is only true of the engine, not of apps.
+
+## 12. Failure UX for contract violations is undefined
+
+Duplicate keys, capability mismatches, malformed payloads, resource limits and
+poisoned instances are all "host errors" in `design.md`, but nothing specifies
+what the *author* sees. In the browser today a violation surfaces as whatever
+`roc_ui_last_error_*` holds plus a trap; there is no construction-site
+attribution, no element/scope path, and no guidance text. The native host is
+better only because `lldb` is available.
+
+Target: every contract error reaches the author as one readable message that
+names the site (each site key/branch, element tag, attr or event name) and the
+rule it broke, identically on both hosts, and native specs can assert on it.
+Bounded diagnostic storage already exists (see "Memory management and
+allocation failure"), so this is about *content* and attribution, not a new
+channel. Add a fixture per error class so the message text is under test.
+
+## 13. No JS interop door
+
+`Sub` and app-specific interop are deferred by design, and `Html.behavior`
+exists as an attach hook with no shipped semantics for passing data in or
+getting events back. Any real app eventually needs a chart, map, editor or
+third-party widget. Without a bounded door, authors will reach around the
+runtime, which breaks the "JS is a thin executor" invariant worse than a
+designed door would.
+
+Needs a decision on the minimum viable shape: probably `behavior` as a named,
+scope-owned attachment that receives a declared text/bool/record payload via
+the existing boundary schema and can dispatch a custom event back through
+`Html.on_custom`. Must reuse the boundary payload vocabulary and scope
+lifecycle rules in `design.md`; must not add a second payload format or a
+public id table. Traces to the interop product goal.
+
+## 14. SSR / hydration / prerender — explicit non-goal, potential future
+
+Not mentioned anywhere in `design.md`, docs, or examples. Recording it as a
+deliberate non-goal so it stops being an omission: the client-side story must
+be proven first (benchmark submission, Conduit in a real browser).
+
+If it is ever picked up, the constraints already implied by the architecture:
+the server would run the same engine natively and emit the command stream as
+HTML; hydration must bind event ids and node ids to existing DOM without a
+second reactive mechanism or a JS-side diff; `Browser.*` sources need a
+server-side seeding path. The native host's simulated DOM is most of a
+renderer already, which is why this is cheap to defer and plausible to add.
+
+## 15. No payload, startup, or real-browser performance budgets
+
+`app.wasm` is 1.18 MB (239 KB gzipped) and `www/static/signals.mjs` is 3.7k
+lines (22 KB gzipped); neither is tracked, and there is no startup or
+time-to-interactive measurement. All performance evidence is native-host
+counters. `docs/profiling.md` maps the js-framework-benchmark submission
+requirements and the browser column is entirely unfulfilled; `scripts/browser/`
+drives a DOM double, not a browser.
+
+Make these CI floors like the coverage floors: gzipped wasm and runtime size
+per example, and a real-browser (Playwright) run for Conduit and the keyed
+benchmark fixture. These are the Tier 3 success criteria in `design.md`; they
+are the only proofs visible from outside the repo.
+
+## 16. Workaround-site count is not zero (Product Goal 1 shortfall)
+
+The measurable specifics behind Product Goal 1, tracked here rather than in
+`design.md`: four apps encode a discriminant into an `Ui.each_str` key to get
+recursion out of `Ui.when` (issue 5); ~22 `Signal.combine` sites read back by
+position (issue 3); 56 hand-written `is_eq` bodies the derive could produce
+(issue 2). Add a repository check that counts these so the number is visible
+in CI and the zero target in Success Criteria Tier 2 is enforced, not hoped.
+
+## 17. No newcomer timing or Conduit line-count baseline
+
+Success Criteria Tier 2 ("Approachable") asks for a recorded time-to-deployed-
+counter from a developer new to the repo, and Conduit's application line count
+against the Elm and Solid RealWorld implementations. Neither has ever been
+measured. Do one timed walkthrough of `getting-started.md` with a fresh person
+and record the result; count non-blank, non-comment lines for the three Conduit
+implementations and record the ratio, so the ~1.3× target has a baseline.
+
+## 18. `Ui.component` has no inputs, children, or package story
+
+`design.md` now specifies a component as an ordinary function whose arguments
+are its inputs (`Signal`s, static values, `Msg`s, `List(Elem)` children) with
+`Ui.component` minting the scope. Today `Ui.component : (() -> Elem) -> Elem`
+is a named scope only and `Signal.to_expr`/`from_expr`/`clone_expr` are public
+plumbing a package would need. Supersedes the design-side half of issue 10.
+
+## 19. `Ui.switch` does not exist; `Ui.when` forces both branches
+
+`design.md` specifies `Ui.when`/`Ui.switch` as retained branch builders run
+only when selected, with recursive structure expressible. `platform/Ui.roc`
+forces both `when` thunks at construction and there is no `switch`. Issue 5
+has the ABI shape of the fix.
+
+## 20. `Signal.select` and the selector node do not exist
+
+`design.md` specifies a host-owned selector node kind, a complexity-budget row
+(O(1) members dirtied, 0 Roc calls per key change), and a
+`selector_members_dirtied` metric. None exists; selection in the keyed
+benchmark fixture is O(N) map closures (issue 11).
+
+## 21. Effects route by task-name string, not a typed registry
+
+`http:send:` prefix routing and the task-name field are the dispatch path in
+`effects_runtime.zig` and `signals.mjs`. `design.md` specifies dense
+effect-registry ids built at ingestion, with the name kept for diagnostics
+only.
+
+## 22. `Sub(a)`, `Ui.subscribe`, and the widget surface are unimplemented
+
+`design.md` specifies `Sub(a)`/`Ui.subscribe` as the inbound model that
+timers and `Browser.*` sources are instances of, plus `Ui.widget`,
+`Ui.widget_input_s`, `Ui.widget_event` and a mount-time widget registry.
+Today the browser sources are bespoke host paths, `Html.behavior : Str -> Attr`
+is an attach hook with no data channel, and no widget registry exists.
+Supersedes issue 13.
+
+## 23. Diagnostics carry no error class or construction-site path
+
+`design.md` specifies a structured diagnostic (class enum, rule string,
+scope-chain → element → edge path) printed identically by both hosts.
+`roc_ui_last_error_*` holds free text with no site attribution, and the native
+runner has no per-error-class fixtures. Supersedes issue 12.
+
+## 24. Event delivery: `delegated` is on the wire but never chosen
+
+The wire enum has `delegated`; the host always derives `native`. `design.md`
+now states delegated is the effective delivery for policy-free bindings when
+the host chooses it — decide whether the host ever should, or drop the enum
+value.
+
+## 25. Protocol version pinned by number in `signals.mjs`
+
+`Protocol.version` is `11` in `www/static/signals.mjs`; the design describes
+the negotiation rule without the number. Keep the number only in code and
+contributing docs.
+
+## 26. Input/form descriptors that have no engine descriptor yet
+
+Focused masking/validation, selection-preserving normalization, file inputs,
+multi-select, constraint validation, date/time controls, focus commands.
+`design.md` rules that each is added as an explicit descriptor executed by both
+hosts, never an executor heuristic; none is designed yet.
+
+## 27. Storage write failures are not observable by apps
+
+They are host diagnostics; `design.md` says an app that must know declares the
+matching storage read source. Verify the read source is actually refreshed
+after a failed write so that rule holds.

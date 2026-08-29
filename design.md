@@ -6,9 +6,171 @@ of it must hold. It is forward-looking and enduring: it describes the system as
 it is meant to be, not the current state of a work queue. Live work tracking
 belongs in issues and pull requests.
 
+## Thesis
+
+Roc Signals exists so that a Roc developer can build an interactive browser UI
+in pure Roc and trust it the way they trust the rest of their Roc code: values
+in, values out, no hidden mutable runtime in the app, and every behaviour
+checkable before it reaches a browser. The app describes its UI as data — a
+descriptor tree whose dependency edges are already explicit in the structure
+of each `map`/`map2`/record-builder call — and hands that description to a
+host-owned engine once. From then on, the engine re-runs only the closures
+whose inputs changed, in dependency order, and emits only the DOM commands
+those changes imply. There is no virtual DOM and no per-event re-render; work
+is proportional to what changed, and that claim is enforced by counters a spec
+can assert, not by benchmarks a reviewer has to trust.
+
+The one-sentence wedge: **pure Roc, no VDOM, O(changed) updates, and every
+behaviour provable in a fast native test before it ever touches a browser.**
+
+It is for Roc developers building interactive browser applications — dashboards,
+editors, forms, routed multi-page apps such as Conduit. It is not a general
+replacement for the JavaScript ecosystem, not a UI toolkit for other languages,
+and not a server-rendering platform.
+
+## Product Goals (author-facing)
+
+These are the requirements, and they are principles rather than tasks: each is
+a property the platform must hold for its whole life, from which every
+mechanism, spec, and maintained app derives. Gaps between this document and
+the implementation are tracked in issues, never here. The *Success Criteria* below say how each
+principle is observed; this section says what it is.
+
+1. **The idiomatic way is the correct way.** The simplest thing an author can
+   write must be the thing the platform is designed for. If the natural
+   expression of a UI shape needs an encoding trick, a positional convention, or
+   hand-written boilerplate the compiler could derive, the platform is wrong,
+   not the author. Workarounds are defects of the platform's API.
+
+2. **Composition is first-class.** UI is built from typed, reusable units that
+   take inputs and children, own their local state and effects, and can be
+   published and imported as ordinary Roc packages. An application decomposes
+   by feature into modules; nothing in the platform forces structure into one
+   place.
+
+3. **The scaling promise holds for apps, not just the engine.** Work
+   proportional to the changed set is a property authors get by writing
+   idiomatic code, not one they must engineer around the engine. Where a
+   natural idiom would defeat it, the platform provides the primitive or the
+   documented pattern that restores it, and the property is pinned by
+   observable work counters.
+
+4. **Failure is legible.** Every contract violation — in a descriptor, a key, a
+   capability, a payload, a budget — is reported to the author as a readable
+   diagnostic naming the construction site and the rule broken, identically
+   under the native runner and in the browser. A bare trap, an integer code, or
+   a silent no-op is never an acceptable way to fail.
+
+5. **There is exactly one door to the outside.** Everything that crosses to
+   JavaScript — events, tasks, browser sources, and third-party integration —
+   travels through the same declared, scope-owned, typed boundary vocabulary.
+   No globals, no second payload format, no runtime edits per app.
+
+6. **Cost is visible and bounded.** Payload size, startup, and per-event work
+   are measured, budgeted, and enforced continuously, so an author can reason
+   about what an app costs before shipping it and a regression cannot land
+   silently.
+
+7. **Provable before it reaches a browser.** Any behaviour an author cares
+   about — semantics, ordering, work done, cleanup — can be asserted in a
+   fast, deterministic native test in user-facing terms. The browser is where
+   the app runs, never where its correctness is first discovered.
+
+8. **Approachable and honest.** A developer who knows Roc can learn the model
+   from the documentation alone, and what the documentation says is what the
+   platform does. Real applications are not more verbose than their
+   equivalents on mature frameworks.
+
+## Success Criteria
+
+Success is judged in three tiers. Tier 1 is necessary and is where most of the
+engine investment lands, but **Tier 1 alone cannot declare success**: an engine
+that satisfies every invariant while no one can write an app against it has
+failed. Tiers 2 and 3 are the externally visible outcomes the engine exists
+to deliver.
+
+**Tier 1 — Engine invariants.** The properties listed under *Measures of
+Effectiveness* below (one engine, two thin hosts; same apps in both
+environments; semantics proven on the native host; work scales with change;
+deterministic reclamation with no leaks; determinism; confined erasure cannot
+crash), plus the known-failure ratchet reaching zero entries and staying there.
+*Evidence:* native specs with `expect_metric_delta`, host tests, fault
+placement, fuzz targets, the ratchet file.
+
+**Tier 2 — Author outcomes.** Each product goal has a standing measurement:
+
+- *Idiomatic is correct:* the count of workaround sites in the maintained
+  suite (encodings through keys, positional readbacks, derivable boilerplate)
+  is zero.
+- *Composition:* a maintained app factors a repeated fragment into a typed,
+  packaged unit; a fixture proves inputs, children, and scoped state.
+- *Scaling for apps:* a one-row change in the large keyed fixtures runs O(1)
+  Roc closures, pinned by `expect_metric_delta` on `derived_calls_into_roc` and
+  `nodes_recomputed`.
+- *Legible failure:* one fixture per contract-error class asserts the
+  diagnostic text and site attribution on both hosts.
+- *One door:* an interop canary integrates a third-party widget through the
+  declared boundary only.
+- *Bounded cost:* gzipped Wasm and runtime sizes and time-to-interactive for
+  the counter fixture and Conduit are CI floors, ratcheted like coverage.
+- *Provable first:* every maintained app's behaviour spec runs natively; JS
+  tests cover only the boundary contract.
+- *Approachable:* a developer new to the repository reaches a deployed counter
+  from the getting-started docs in a bounded, recorded time; Conduit is within
+  roughly 1.3× the application line count of the Elm and Solid RealWorld
+  implementations.
+
+**Tier 3 — External evidence.** Proof that is legible to people who have not
+read this document:
+
+- A keyed `js-framework-benchmark` submission with stated targets — no worse
+  than 1.5× vanilla JavaScript on the nine table operations, and startup and
+  memory within the range of the compiled-language entries.
+- Conduit passing a real-browser end-to-end run (Playwright) against the
+  RealWorld specification, not only the native spec suite and the DOM double.
+- Gzipped Wasm and runtime size budgets enforced as CI floors.
+
+## Non-Goals
+
+Stating what is out of scope is part of the design. Each item below is a scope
+decision with the condition under which it would be reconsidered; none is an
+omission.
+
+- **Server-side rendering, hydration, prerendering, and SEO.** The platform is
+  a client-side runtime. Reconsidered only once Tier 3 evidence exists for the
+  client story. Any server path must keep the command stream as the only
+  render output and must not introduce a second reactive mechanism: hydration
+  would be the engine adopting existing DOM ids, never JS reconstructing
+  meaning.
+- **Multiple roots per Wasm instance.** One mount owns one instance; roots are
+  isolated by instance, not by handle. Reconsidered only if many-widget
+  embedding measurements show per-instance memory or startup cost is
+  unacceptable (see *Open Questions*).
+- **Out-of-memory recoverability beyond trap-and-remount.** The engine keeps
+  preparation fallible and publication allocation-free so a failed transaction
+  never exposes a partial generation, and *Memory management and allocation
+  failure* is authoritative for that containment. Resuming a poisoned instance
+  or making every callback boundary recoverable is not a goal: the browser's
+  own answer to exhaustion is to reload, and the platform's answer is a fresh
+  instance. Reconsidered only if the Roc callback ABI gains explicit failure
+  and ownership-unwind semantics.
+- **A general-purpose JavaScript FFI.** Apps do not call arbitrary JavaScript.
+  Integration goes through the single declared door (see *One door to
+  JavaScript*). Reconsidered never; a use the door cannot express is a reason
+  to extend the door's typed vocabulary, not to bypass it.
+
+### Traceability
+
+Every later section of this document, every spec, and every maintained app
+must be able to say which product goal or Tier 1 invariant it serves. A
+proposed design change that serves no goal is out of scope, however elegant;
+a goal with no section, spec, or app serving it is a gap to close, not a
+sentence to delete.
+
 ## Purpose and Dual-Host Architecture
 
-The product is a **host-agnostic reactive engine**: a mutable node table,
+The thesis and product goals above are the requirements; the engine described
+from here on is the means. The product is built on a **host-agnostic reactive engine**: a mutable node table,
 topological-rank scheduler, dirty set, `is_eq` value pruning, scope forest,
 keyed-row diff, identity tables, and structural splice/collect/apply. The engine
 owns all reactive and structural logic. It is the single source of truth for how
@@ -146,6 +308,14 @@ value-dependent set of inputs) is the same scope mechanism that powers `Ui.each_
 (see Identity and Dynamic Structure): a sub-graph that is rebuilt when its shape
 changes, not a static edge that is always live. Dynamic-cardinality reactivity
 and dynamic list structure must therefore share one mechanism, never two.
+The same eagerness has an app-level consequence: a single coarse `Model` state
+with many `map` projections wakes every projection on every change, so the
+idiomatic state shape can defeat the scaling claim even when the engine honours
+it. Product Goal 3 (the scaling promise holds for apps) owns the answer, and
+the design supplies both halves: `Signal.select` for keyed membership, and the
+partitioning rule that independent concerns are independent signals (row-local
+`Ui.state`, one signal per field that changes on its own) rather than
+projections of one coarse record.
 
 ## Core Concepts
 
@@ -169,19 +339,30 @@ and dynamic list structure must therefore share one mechanism, never two.
   dynamic text/attrs and references reducers for event handlers. Element nodes
   carry a tag string, attrs, and children; user-controlled copy stays in text
   nodes (`Html.text` / `Html.text_s`), not raw HTML.
-- **Cmd** — typed effect requests produced by lifecycle or signal-change sinks.
-  Shipped commands start tasks, navigate browser history, set the browser
-  document title, and write/remove browser storage. Timers and browser
-  environment values are effect sources. Task results and source updates
-  re-enter the graph through the same propagation queue as a click. General
-  `Sub` descriptors are deliberately deferred until a maintained app or focused
-  canary needs broader inbound host messages.
-- **Future Sub** — a deferred long-lived source descriptor, not shipped public
-  API. When promoted, subscriptions must be declared by structure, owned by
-  scopes, diffed by stable descriptor identity, and started/stopped by host
-  lifecycle. Inbound payloads must reuse the shared boundary schema vocabulary,
-  and any retained source value or callback must use the same capability-owned
-  `HostValue` model as events and tasks.
+- **Selector** — a host-owned keyed node derived from a `Signal(key)`. Each
+  member `Signal.select(keys, k)` is a `Signal(Bool)` that is true while the
+  key signal equals `k`. When the key changes the host dirties exactly the two
+  members whose membership changed; no member closure runs for the rest. This
+  is how "which row is selected" stays O(1) per change at any list size.
+- **Component** — a typed, reusable unit of UI with inputs, children, and its
+  own scope for local state, effects, and cleanup. A component is an ordinary
+  Roc function that returns `Elem`; `Ui.component` gives it the scope.
+  Components are published from ordinary Roc packages.
+- **Cmd** — typed, outbound effect requests produced by lifecycle or
+  signal-change sinks: start a task, navigate history, set the document title,
+  write or remove storage, send a message to an attached widget. Task results
+  re-enter the graph through the same propagation queue as a click.
+- **Sub(a)** — a typed, inbound, long-lived source declared by structure and
+  owned by the scope that declares it: timers, browser environment values
+  (location, visibility, online, storage), and widget events. Subscriptions
+  are diffed by stable descriptor identity, started when their scope is
+  created, and stopped when it is disposed. Inbound payloads use the shared
+  boundary schema vocabulary, and any retained source value or callback uses
+  the same capability-owned `HostValue` model as events and tasks.
+- **Effect registry** — the typed table, built at ingestion from the
+  descriptor tree, that maps each declared `Cmd` kind and `Sub` kind to its
+  host route and to the capability that decodes its result. Routing is by
+  dense registry id, never by a string convention.
 
 ## Identity: Construction-Site Within Explicit Scopes
 
@@ -191,9 +372,8 @@ host during graph ingestion; keyed rows use app-provided stable key material.
 Signal alias identity is the address of the boxed callable the signal already
 needs for evaluation: initializers identify constants, state, tasks, and
 intervals; transforms identify derived signals; browser sources use their
-`from_payload` transforms. The descriptor ABI currently carries this pointer in
-both an explicit identity field and its evaluator field, and ingestion asserts
-that they match. Cloned signal descriptors therefore share a record, while two
+`from_payload` transforms. The descriptor carries this pointer as both the
+record's identity and its evaluator, and ingestion asserts that they agree. Cloned signal descriptors therefore share a record, while two
 separately constructed signals get distinct callable allocations even when they
 use the same specialization. Callable addresses are lookup keys only; the host
 still owns separate dense node, active-graph, task-request, interval, and DOM ids.
@@ -201,9 +381,9 @@ still owns separate dense node, active-graph, task-request, interval, and DOM id
 - Within a scope, node identity is **construction order** (the order the app
   built the nodes). The app build is pure and deterministic, so this order is
   stable across rebuilds of the same scope.
-- **Scopes contain positional shifting.** Because conditional branches and list
-  rows are first-class scopes, adding or removing UI inside one scope does not
-  shift identities in sibling scopes. This is the new failure mode we design
+- **Scopes contain positional shifting.** Because components, conditional
+  branches, switch cases, and list rows are first-class scopes, adding or
+  removing UI inside one scope does not shift identities in sibling scopes. This is the new failure mode we design
   around: "where you built it is your identity," so the seams that can shift
   (branches, lists) are explicit scope boundaries.
 - **Dynamic lists use stable key material, not position.** `Ui.each_str` takes a
@@ -214,6 +394,20 @@ still owns separate dense node, active-graph, task-request, interval, and DOM id
   row identity, changed row value" without guessing from bytes. A row's identity
   is its key, so per-row local state survives reorder/insert/delete. Duplicate
   keys are reported as a host error, never silently aliased.
+
+- **Branches are built when selected, not at construction.** `Ui.when` and
+  `Ui.switch` retain their branch builders as structure closures; the host
+  invokes the builder for a branch when that branch becomes live and disposes
+  the branch scope when it stops being live. Because an unselected branch is
+  never built, a structure may refer to itself through a branch and terminate:
+  recursive UI (a tree of query groups, nested markdown blocks) is expressed
+  directly, never encoded into a list key.
+- **A component is a scope.** `Ui.component` mints a scope for the component
+  body, so the body's `Ui.state`, subscriptions, and cleanup are owned by the
+  component and construction order inside it is independent of the caller.
+  Two uses of the same component at different sites are different scopes with
+  different identities; identity still comes from the construction site, not
+  from the component's name.
 
 This replaces string-collision/rename hazards with explicit, typed structure.
 
@@ -362,9 +556,9 @@ task/effect helpers, and a small set of polymorphic functions. It never sees
 host ids, host-private key hashes, `NodeValue`, or lifecycle tokens. The API is
 identical regardless of which host runs the app — apps are written once and run
 under both the native spec runner and the browser.
-General `Sub(a)` and app-specific JS interop are future surfaces, not shipped
-API. They must extend the source/effect boundary above; they must not introduce
-a second payload format, a public id route table, or a separate browser-only
+Everything that crosses to JavaScript — `Cmd` out, `Sub(a)` in, and widget
+attachments — is one declared boundary (see *One door to JavaScript*). There
+is no second payload format, no public id route table, and no browser-only
 state channel.
 
 ### Module surface
@@ -394,6 +588,8 @@ Signal.map2 : Signal(a), Signal(b), (a, b -> c) -> Signal(c)
     where [c.is_eq : c, c -> Bool]
 Signal.combine : List(Signal(a)) -> Signal(List(a))
     where [a.is_eq : a, a -> Bool]
+Signal.select : Signal(key), key -> Signal(Bool)   # O(1) members dirtied per key change
+    where [key.is_eq : key, key -> Bool]
 # Named multi-signal composition should use Roc record-builder syntax:
 # { first: first_signal, last: last_signal, active: active_signal }.Signal
 
@@ -452,7 +648,6 @@ Html.aria_label : Str -> Attr
 Html.aria_describedby : Str -> Attr
 Html.aria_invalid_s : Signal(Bool) -> Attr
 Html.aria_activedescendant_s : Signal([None, Some(Str)]) -> Attr
-Html.behavior : Str -> Attr
 Html.EventPolicy : Node.EventPolicy
 Html.EventDelivery : Node.EventDelivery
 Html.event_policy_none : EventPolicy
@@ -544,15 +739,49 @@ State.on_bool : State(a), (a, Bool -> a) -> Msg
 State.on_detail : State(a), (a, Str -> a) -> Msg
 Ui.KeyPayload : { key : Str, shift_key : Bool }
 State.on_key : State(a), (a, Ui.KeyPayload -> a) -> Msg
-Ui.when : Signal(Bool), (() -> Elem), (() -> Elem) -> Elem
+Ui.when : Signal(Bool), (() -> Elem), (() -> Elem) -> Elem   # builders retained, run when selected
+Ui.switch : Signal(case), (case -> Elem) -> Elem            # one scope per live case value
+    where [case.is_eq : case, case -> Bool]
 Ui.each_str : Signal(List(item)), (item -> Str), (Str, Signal(item) -> Elem) -> Elem
     where [
         item.is_eq : item, item -> Bool,
     ]
 
-# Components (named scopes for local state)
+# Components (a scope with inputs and children)
 Ui.component : (() -> Elem) -> Elem
+
+# Subscriptions (inbound, scope-owned) and widgets (the JavaScript door)
+Sub(a)                                       # opaque declared source descriptor
+Ui.subscribe : Sub(a), a -> Signal(a)        # declare it in this scope; initial value until first message
+Ui.widget : Str, List(Html.Attr), List(Elem) -> Elem   # attach a registered widget to this element
+Ui.widget_input_s : Str, Signal(a) -> Html.Attr        # typed message to the widget on change
+    where [a.to_boundary : a -> Node.BoundaryValue]
+Ui.widget_event : Str, Msg -> Html.Attr                # typed event from the widget into a reducer
 ```
+
+`Ui.component` is a scope, not a syntax. A component is an ordinary Roc
+function whose arguments are its inputs — static values, `Signal(a)` values,
+`Msg` callbacks the parent supplies, and `List(Elem)` children — and whose body
+is wrapped in `Ui.component`. The wrapper mints the scope that owns the body's
+`Ui.state`, subscriptions, and cleanup, so a component's local state is
+construction-site-stable within the component and invisible to its caller.
+Children are ordinary `Elem` values built in the parent's scope and placed by
+the component, so their identity belongs to the parent. Because a component is
+a function over public types only, any Roc package can export one; the
+platform's descriptor plumbing is not part of a component's interface.
+
+`Ui.when` and `Ui.switch` are the same mechanism at two arities: a scope
+selected by a value, whose builder is retained and run only when its case is
+live. `Ui.when` is the `Bool` special case; `Ui.switch` selects by any
+`is_eq` value, rebuilding the scope when the case value changes and reusing it
+while the value is unchanged. Choosing structure by a tag, an enum, or a route
+therefore never goes through a `Str` key.
+
+`Ui.each_str` hands the row builder the row's key and a `Signal(item)`, and
+deliberately not the item's value: a value would be a snapshot that goes stale
+the moment the row updates, while the signal is the row's only truthful view.
+Structure inside a row that depends on the item is chosen with `Ui.switch` or
+`Ui.when` over a projection of that signal.
 
 The form helpers above are sugar over the same text/bool fields and event
 payload descriptors: text input, number input, textarea, and single-value select
@@ -570,27 +799,22 @@ app/package code unless repeated maintained apps prove a smaller shared helper
 is needed.
 
 HTTP helpers are wrappers over the pinned `roc-lang/http` request/response
-values plus Signals-owned transport errors. The text helpers exist for examples
-and decode successful response bodies as UTF-8. The current JSON/body-codec
-spike closed without new Signals surface: apps use builtin `Json` plus
-app-local mappers, and the remaining service dashboard split parse is a Roc
-wide-record derivation workaround rather than an HTTP surface gap. Browser
-fetch-policy validation closed without new surface: the browser host uses
-`fetch` defaults unless a future maintained app or focused canary proves the
-current package-aligned request path is insufficient.
+values plus Signals-owned transport errors. The text helpers decode successful
+response bodies as UTF-8. Body codecs are not platform surface: apps use the
+builtin `Json` plus app-local mappers. Request policy beyond the fields the
+request envelope carries is the browser's `fetch` default; the platform does
+not grow a policy surface it cannot also honour on the native host.
 
-`Signal.task_source` exists as low-level platform/helper plumbing for
-`Signal.fake_task` and `Http`; ordinary apps should use those wrappers. Do not
-widen `task_source` into a generic public effect registry. Future typed effect
-capabilities should replace task-name conventions only with a promoted
-subscriptions/app-interop slice that proves the shared task/subscription routing
-model.
+`Signal.task_source` is platform-internal plumbing beneath `Signal.fake_task`
+and `Http`. Task and subscription kinds are registered in the typed effect
+registry at ingestion; there is no string-named task convention and no generic
+public effect registry for apps to reach into.
 
-`Signal.clone_expr`, `Signal.to_expr`, and `Signal.from_expr` are also exposed
-platform plumbing because `Html` and `Ui` need to share typed signal descriptors
-without package-private helpers. They are not an app-facing descriptor API, and
-future shrink work should avoid treating that leak as a reason to add public
-signal ids, descriptor inspection, or host-owned construction helpers.
+`Signal.clone_expr`, `Signal.to_expr`, and `Signal.from_expr` are
+platform-private descriptor plumbing shared by `Html` and `Ui`. They are not
+app-facing; an app or package composes signals and components through the
+public functions only, and no public signal ids, descriptor inspection, or
+host-owned construction helpers exist.
 
 `Msg` here is the unit of host-to-Roc dispatch: a bound reducer plus an optional
 payload. `Html.text_input("Name", name_signal, name_state.on_str(update_name))`
@@ -625,8 +849,8 @@ payloads dispatch as unit/text/bool containers; record payloads dispatch as
 bytes, and app-compiled Roc decoders such as `State.on_key` construct the typed
 record. Hosts never decode Roc records or infer a payload from DOM shape.
 
-The current ABI uses compact Roc-side `EventExtractionPlan` byte values for the
-supported plans: unit, target value, target checked, event detail, and the
+`EventExtractionPlan` is a compact Roc-side byte value naming one supported
+plan: unit, target value, target checked, event detail, or the
 `{ key, shift_key }` keyboard record. The host expands those into
 `BoundaryPayloadDescriptor` data for render-cache comparison and, on the browser
 wire, emits the extraction descriptor bytes so JS can validate and execute the
@@ -646,12 +870,12 @@ EventBinding := {
 ```
 
 `EventDelivery` is derived by the host before render-cache storage. The public
-request is `auto` or `native`; the current effective delivery is native, with a
-reason such as `requested-native`, `capture-policy`, `stop-propagation-policy`,
-`prevent-default-policy`, `once-policy`, `passive-policy`, `self-filter`,
-`pointer-drag`, or `native-runtime-default`. The wire already has an effective
-`delegated` enum value, but delegated event delivery is not a shipped semantic
-path.
+request is `auto` or `native`. The effective delivery is `native` whenever the
+policy requires a per-element listener (capture, stop-propagation,
+prevent-default, once, passive, self filter, pointer drag) or the app requested
+it, and the wire carries the reason; `delegated` is the effective delivery only
+when the host has chosen it for a policy-free binding. Delivery is a host
+decision carried on the wire, never a JS-side inference.
 
 Fixed event opcodes are compression for canonical fixed bindings only: a fixed
 binding may use the compact opcode when policy is empty and its payload
@@ -660,12 +884,38 @@ events lower through the dynamic `BindEvent` record carrying the same canonical
 binding data. The browser decodes fixed and dynamic event records into the same
 listener shape.
 
-Native specs model only default actions required by maintained apps or focused
-canaries. `real_click` dispatches through propagation before applying supported
+Native specs model the browser default actions the platform specifies.
+`real_click` dispatches through propagation before applying supported
 defaults: app-managed submit for submit buttons, app-managed reset for reset
 buttons, checkbox checked changes, and radio target-value changes. `key_down`
 models Enter submit from text-like inputs. App-managed submit/reset bindings
 must be unit payloads with static prevent-default policy.
+
+### One door to JavaScript
+
+Three surfaces, one boundary. Each is declared by structure, owned by a scope,
+typed through the boundary schema vocabulary, and routed by a dense id from the
+effect registry:
+
+- **`Cmd` (outbound).** A typed request the host serializes into the command
+  stream. Tasks carry a request id for settlement and cancellation; widget
+  messages carry the target element id and a boundary value.
+- **`Sub(a)` (inbound).** A typed long-lived source. `Ui.subscribe(sub, initial)`
+  declares it in the current scope and yields a `Signal(a)`; the host starts
+  the bridge when the scope is created and stops it when the scope is
+  disposed. Timers and the `Browser.*` sources are `Sub` instances.
+- **Widgets (third-party integration).** `Ui.widget(name, attrs, children)`
+  attaches a widget registered under `name` in the JS runtime to an element.
+  The widget receives typed input via `Ui.widget_input_s` (each change lowers
+  to a command carrying a boundary value) and raises events through
+  `Ui.widget_event`, which is an ordinary event binding: same event id table,
+  same extraction plan, same reducer dispatch. The widget's DOM subtree is
+  opaque to the engine; the engine owns the host element and detaches the
+  widget when the scope is disposed.
+
+The registry of widget names is JS-side configuration supplied at mount, and
+an unknown name is a mount-time contract error, not a runtime fallback. No
+surface exposes a global, a raw DOM node, or a second payload format.
 
 ### Example: counter
 
@@ -748,6 +998,42 @@ todo_list = |todos|
 
 `editing` is a per-row source inside the row scope. It survives reorder/filter
 because the row scope is keyed by the typed `key`, not by the index.
+
+### Example: a component with inputs, children, and local state
+
+```roc
+# In any package: a disclosure panel whose open/closed state is its own.
+panel : Signal(Str), Msg, List(Elem) -> Elem
+panel = |title, on_close, children|
+    Ui.component(|| {
+        Ui.state(Bool.true, |open_state| {
+            open = open_state.signal()
+            Html.section("panel", [], [
+                Html.action_button(title, Signal.const(Bool.true), open_state.on_unit(|o| !o)),
+                Html.button("Close", on_close),
+                Ui.when(open, || Html.div([], children), || Html.text("")),
+            ])
+        })
+    })
+```
+
+`open` belongs to the panel's scope; `title`, `on_close`, and `children` belong
+to the caller. Two `panel` uses at two sites are two scopes.
+
+### Example: selection in a large list
+
+```roc
+row_view : Signal(Str), Str, Signal(Item) -> Elem
+row_view = |selected, key, item| {
+    is_selected = Signal.select(selected, key)
+    Html.div([Html.class_attr_s(is_selected.map(|s| if s { "row selected" } else { "row" }))], [
+        Html.text_s(item.map(|i| i.label)),
+    ])
+}
+```
+
+Changing `selected` dirties two `is_selected` members and runs zero row
+closures, whatever the list length.
 
 ## The Roc Platform Layer
 
@@ -832,10 +1118,10 @@ roc_ui_init : () -> Box(Elem)
   Roc "which builder?" when it already knows. `Ui.each_str` patch locality is
   host-side: the host splices returned row sub-trees into affected scopes and
   preserves surviving row scopes instead of re-entering the root descriptor.
-- **Why a single entrypoint, not the batched protocol.** An earlier design
-  sketched four entrypoints (`ui_init` / `ui_event` / `ui_recompute` / `ui_drop`)
-  with a batched recompute round-trip to amortize FFI cost. The in-process model
-  supersedes it: there is no per-event entrypoint crossing to amortize, so the
+- **Why a single entrypoint, not a batched protocol.** A multi-entrypoint
+  design (`init` / `event` / `recompute` / `drop`) with a batched recompute
+  round-trip would exist only to amortize FFI cost. The in-process model makes
+  that cost zero: there is no per-event entrypoint crossing to amortize, so
   batching machinery is unnecessary. The retained-closure-cost risk is answered
   by *not making the call a boundary crossing at all*, which is strictly cheaper.
   The hosted `roc_host_value_*` functions exist purely so Roc can mint/read/drop
@@ -863,9 +1149,10 @@ neither needs an entrypoint:
 
 - **Value closures** — reducers (`Msg`), `map`/`map2`/`combine` transforms, `eq`,
   `read`, `key_of`. Take values, return a value. Run on every relevant event.
-- **Structure closures** — `Ui.each_str` row builders and `Ui.when` branch bodies.
-  Take values (a key/item, or unit), return an `Elem` sub-tree. Run when a new
-  row or branch must be materialized at runtime.
+- **Structure closures** — `Ui.each_str` row builders, `Ui.when` and
+  `Ui.switch` branch builders, and `Ui.component` bodies. Take values (a
+  key/item, a case value, or unit), return an `Elem` sub-tree. Run when a new
+  row, branch, or component instance must be materialized at runtime.
 
 The only difference between the two is the *return type* (a value vs. a piece of
 UI). Both are pre-compiled Roc functions the host points at directly. This is the
@@ -983,7 +1270,7 @@ and the command batch describe the same complete generation.
 ### Node table and graph
 
 Per node id the host stores:
-- kind (source / map / map2 / combine / sink),
+- kind (source / map / map2 / combine / selector / sink),
 - forward adjacency (source id -> list of dependent ids) built from the desc,
 - a topological **rank** (height) computed once at ingestion (the desc is a DAG;
   cycles are a host error),
@@ -991,6 +1278,12 @@ Per node id the host stores:
 - the retained transform thunk (for derived nodes) or reducer thunk (for
   sources),
 - the owning scope id.
+
+A **selector** node owns a key→member hash index and a cached current key.
+On a key change it looks up the previous and next members (O(1) each) and
+enqueues only those two; members are ordinary `Bool` nodes whose transform is
+host-owned and never calls into Roc, so `derived_calls_into_roc` for a
+selection change is independent of member count.
 
 Adjacency, ranks, and the dirty set are dense integer-indexed structures. The
 callable address is used only to preserve signal aliasing while descriptors are
@@ -1016,6 +1309,7 @@ change; L = rows at the affected `Ui.each_str` site):
 | record/elem identity → id lookup | O(1) | linear pointer scan over the node table |
 | descriptor lookup by `elem_id` | O(1) | linear scan over the descriptor arrays |
 | non-structural event propagation | O(C + fanout) | O(N); O(fanout²) dedup/sort |
+| selector key change (M members) | O(1) members dirtied, 0 Roc calls | O(M) member recompute or `is_eq` scan |
 | `Ui.when` branch flip | O(changed subtree) | O(N) field/route/graph rebuild |
 | `Ui.each_str` keyed diff | O(L) via key hash index | O(L²) `is_eq` scan |
 | `Ui.each_str` append/remove/filter | O(K) | O(N) per touched row |
@@ -1083,8 +1377,9 @@ reducer thunk directly. No scan, no string lookup.
 
 ### Scopes and lifecycle
 
-The host owns a forest of scopes. On a `Ui.when` flip or a `Ui.each_str` key-set
-change:
+The host owns a forest of scopes: the root, each `Ui.component` body, each
+live `Ui.when`/`Ui.switch` branch, and each `Ui.each_str` row. On a branch
+change or a key-set change:
 - diff the new structure against the old (key-set diff for lists, branch flip for
   conditionals),
 - mint a scope for new branches/keys (run that scope's `build` once, ingesting
@@ -1177,6 +1472,10 @@ spec can assert a hard bound:
   which a spec can pin.
 - **`allocs_this_event` / `deallocs_this_event`** — per-event allocation deltas,
   so "allocations per event are flat" is an assertion rather than an assumption.
+- **`selector_members_dirtied`** — member nodes enqueued by selector key
+  changes this event. A spec asserting `expect_metric_delta
+  selector_members_dirtied 2` alongside `derived_calls_into_roc 0` on a
+  selection change in a large list is the canary for Product Goal 3.
 
 Telemetry placement is deliberate:
 
@@ -1206,14 +1505,12 @@ of Effectiveness); per-iteration deltas cannot establish it.
   authority.
 - **Async / cancellation:** `Cmd` requests carry a host-assigned request id tied
   to the owning scope and source node; that request id is the lifecycle and
-  cancellation authority. The current task descriptor also carries a task name
-  for routing, diagnostics, and native spec control. HTTP uses the `http:send:`
-  task-name prefix today; a typed effect capability registry should replace that
-  string convention only when the subscriptions/app-interop work proves the
-  shared task/subscription routing model. Disposing the scope cancels the
-  request. Future `Sub` descriptors must follow the same structural ownership
-  rule: declared by structure, diffed by the host against the live set, and
-  started/stopped by scope lifecycle.
+  cancellation authority. Routing is by the request's dense effect-registry
+  id; a human-readable kind label travels only for diagnostics and native spec
+  control, never for dispatch. Disposing the scope cancels the request. `Sub`
+  descriptors follow the same structural ownership rule: declared by
+  structure, diffed by the host against the live set, and started/stopped by
+  scope lifecycle.
 - **Errors:** `Signal.from_task` yields `[Loading, Done(a), Failed(err)]`, so error
   states are ordinary signal values the app folds and renders. There is no
   effect-inside-signal-evaluation; effects are sources.
@@ -1273,7 +1570,7 @@ holds no reactive state, runs no diff, and never reconstructs meaning.
 ```
 roc_ui_mount() -> void          // host runs roc_ui_init, ingests, emits initial patch stream
 roc_ui_event(event_id, payload_kind, payload_ptr, payload_len, bool_value) -> u32
-                                // DOM-response bits; current static handlers return zero
+                                // DOM-response bits; static-policy handlers return zero
 roc_ui_timer(token) -> void                 // drive interval/timer source
 roc_ui_resolve(request_id, ptr, len, failed) -> void   // async result
 roc_ui_unmount() -> void        // dispose all scopes, drop descriptor, free retained closures
@@ -1300,17 +1597,17 @@ host, routes the event id to its source node, calls the retained reducer thunk
 via `RocErasedCallable` in-process, and returns synchronous DOM-response bits to
 JS before the command drain. JS accepts only the response controls that can still
 affect the active browser event (`preventDefault`, `stopPropagation`, and
-`stopImmediatePropagation`) and fails closed on any other returned bit. Current
-static-policy handlers return zero; the return value exists for the future
-explicit dynamic-response path. There is no per-event Roc entrypoint crossing —
+`stopImmediatePropagation`) and fails closed on any other returned bit.
+Static-policy handlers return zero; a handler whose policy is decided by the
+reducer returns the bits it chose, and that is the only dynamic-response path. There is no per-event Roc entrypoint crossing —
 this is the reason the boundary is cheap.
 
 ### Command-buffer wire format
 
 The browser wire is versioned. JS reads `roc_ui_protocol_version()` and
-`roc_ui_protocol_features()` before mounting and requires the current
-`Protocol.version` (`11` in `www/static/signals.mjs`) plus the `dynamic_attrs`
-and `dynamic_events` feature bits. A version or feature mismatch is a boundary
+`roc_ui_protocol_features()` before mounting and requires the exact protocol
+version it was built against plus the feature bits it depends on (such as
+`dynamic_attrs` and `dynamic_events`). A version or feature mismatch is a boundary
 error, not a compatibility shim.
 
 The host appends fixed-width records to `roc_ui_command_buffer_*`: six little
@@ -1333,7 +1630,7 @@ Each dynamic record is self-framed:
 
 ```text
 u16 dynamic_op
-u16 flags       # currently 0
+u16 flags       # reserved; must be zero
 u32 payload_len
 payload bytes
 zero padding to 4-byte alignment
@@ -1379,7 +1676,7 @@ UTF-8 before touching the DOM. Unknown dynamic ops and malformed records are
 reported as contract errors. This keeps JS a decoder/executor for explicit data
 the host emitted; it does not reconstruct missing render intent.
 
-Current wasm-host emission uses dynamic records for metadata text attributes
+The wasm host emits dynamic records for metadata text attributes
 (`role`, `aria-label`, `data-testid`, and `class`) and for app-authored custom
 text attributes from `Html.attr`, `Html.attr_s`, and `Html.attr_maybe_s`. The
 Roc descriptor makes the custom path explicit with `Node.field_custom` plus a
@@ -1396,15 +1693,15 @@ extraction plan.
 Wire-size optimizations are command-stream concerns, not value-model concerns.
 The runtime telemetry records fixed-record bytes, fixed-string bytes, dynamic
 buffer bytes, and apply-path decode counts/bytes for fixed strings, dynamic
-records, dynamic strings, and dynamic byte arrays. A future string-dedupe slice
-must be justified by representative action telemetry, not mount snapshots alone,
-and must lower total command/decode bytes without globally interning Roc
+records, dynamic strings, and dynamic byte arrays. Any string-dedupe
+optimization must be justified by representative action telemetry, not mount
+snapshots alone, and must lower total command/decode bytes without globally interning Roc
 strings, `HostValue`s, keys, or capability-owned data.
 
 Dynamic event payload descriptors are independent of Roc value layout. They are
 small byte descriptors that name only event/target/currentTarget leaves JS may
-read. The current descriptor vocabulary supports unit payloads, scalar
-text/bool payloads, and explicit records. The current record descriptor used by
+read. The descriptor vocabulary supports unit payloads, scalar text/bool
+payloads, and explicit records. The record descriptor used by
 `Html.on_key_down` asks JS to read `event.key` and `event.shiftKey`; JS encodes
 `{ key, shift_key }` as:
 
@@ -1479,7 +1776,7 @@ instance, but still clears staged publication and leaves the last committed DOM
 as the only observable state. The platform allocator handles this failure
 itself: `roc_alloc` and `roc_realloc` must enter bounded fatal containment and
 must not return a null or failed allocation result to compiled Roc code. A
-future callback ABI may make such failures recoverable only by defining explicit
+callback ABI could make such failures recoverable only by defining explicit
 failure and ownership-unwind semantics; host policy must not infer them from
 callback purity alone.
 
@@ -1526,6 +1823,26 @@ proves the real `memory.grow` exhaustion path; overflow and configured-limit
 tests prove rejection occurs before allocation. This method makes a newly added
 allocation a newly exercised failure point rather than an implicit assumption.
 
+### Diagnostics contract (legible failure)
+
+Every contract error the host raises — duplicate key, capability mismatch,
+malformed descriptor or payload, cycle, resource limit, poisoned instance —
+is one structured diagnostic with three parts:
+
+- an **error class** from a closed enum shared by both hosts;
+- the **rule** broken, as a short fixed string that names the invariant in
+  this document's terms;
+- the **construction-site path**: the scope chain from the root (component
+  name, `when`/`switch` case, each-row key), then the element tag, then the
+  attribute, event, or signal edge that owns the fault.
+
+The native runner prints it and lets specs assert on it; the browser runtime
+reads it from the reserved diagnostic storage after a trap and prints the same
+text to the console. Storage is reserved at instance creation and formatting is
+bounded, so a diagnostic is available even when the failure was allocation.
+An integer code alone, a bare trap, or a silent no-op is a contract violation
+of the host itself.
+
 ### Controlled inputs
 
 `SetValue` is a guarded op, not a blind assignment. Equal values are no-ops;
@@ -1539,13 +1856,16 @@ browser-owned form model: single-value select uses the text `value` field and
 target-value change payload, radio derives `checked` from a string-valued
 selected signal and dispatches the option value, and checkbox uses the bool
 `checked` field plus target-checked payload. Submit and reset are app-managed
-form events with static prevent-default policy where the native runner models
-only the default actions required by maintained apps and focused canaries.
+form events with static prevent-default policy, and the native runner models
+the same default actions the browser executor honours.
 
-Focused masking/validation, selection-preserving normalization, file inputs,
-multi-select, browser constraint validation, date/time helpers, and app-visible
-focus commands are future input/form concerns (see Open Questions), kept out of
-the thin executor until a maintained app or focused canary proves the gap.
+Every further input capability — focused masking and validation,
+selection-preserving normalization, file inputs, multi-select, browser
+constraint validation, date/time controls, app-visible focus commands — is
+added as an explicit field, event, or command descriptor decided in the
+engine and executed identically by both hosts. None is added as an executor
+heuristic. Which of these earn a descriptor is a product question answered by
+maintained apps; the design rule is only that the executor stays thin.
 
 ### Refcount ownership split
 
@@ -1572,26 +1892,24 @@ this model by instantiating a fresh Wasm module for each root.
 Multiple independent roots on one page are supported by creating multiple Wasm
 instances and one `SignalsRuntime` per root. A single `WebAssembly.Instance`
 must not be shared across simultaneous roots unless the host grows explicit
-mount handles on every export and command buffer. That handle-based model is not
-part of the current design; it should only be promoted if many-widget embedding
-measurements show that per-instance memory/startup cost is unacceptable.
+mount handles on every export and command buffer. That handle-based model is
+adopted only if many-widget embedding measurements show that per-instance
+memory/startup cost is unacceptable (see *Non-Goals* and *Open Questions*).
 
 ### Async in the browser
 
 Effects are sources. Timers/`Signal.interval` are ingested at init; JS runs the
 real `setInterval(period_ms)` keyed by `token` and calls `roc_ui_timer(token)`
-each tick. Tasks declare a request with a task name and request payload; the host
-assigns a `request_id`, JS routes the request by the current task name
-convention, and on settle calls `roc_ui_resolve(request_id, ptr, len, ok)`,
+each tick. Tasks declare a request with a registry kind id and request payload;
+the host assigns a `request_id`, JS routes the request by its kind id to the
+matching bridge, and on settle calls `roc_ui_resolve(request_id, ptr, len, ok)`,
 which the host folds into `[Loading, Done, Failed]`. Browser HTTP tasks are the
-shipped task-name route that performs `fetch`; they use the `http:send:` prefix
-until a promoted subscription/app-interop slice proves the shared
-task/subscription routing model.
+registered kind whose bridge performs `fetch`.
 Disposing a scope cancels in-flight requests (host-emitted cancel → JS
 `AbortController` / `clearInterval`) and runs `Ui.on_cleanup`. All of it enters
 the one propagation queue; JS scheduling stays a single synchronous path.
 
-HTTP request policy currently comes from browser `fetch` defaults except for the
+HTTP request policy comes from browser `fetch` defaults except for the
 fields the Roc request envelope carries. The runtime passes method, headers,
 body, timeout, and an abort signal; it does not set `credentials`, `redirect`,
 `mode`, `cache`, or referrer policy. Therefore credentials default to
@@ -1620,13 +1938,14 @@ the first mounted value matters, or `Ui.on_change` when only later changes
 should touch the title. The browser runtime writes `document.title`, and the
 native spec host records the title for assertions.
 
-Browser visibility and online/offline state are the other shipped focused
-browser sources. `Browser.visibility()` is seeded from `document.visibilityState`
+Browser visibility and online/offline state are the other focused browser
+sources. `Browser.visibility()` is seeded from `document.visibilityState`
 and refreshed from `visibilitychange`; `Browser.online()` is seeded from
 `navigator.onLine` and refreshed from `online` / `offline`. Both reuse the same
 host-backed source path as location: mount-scoped ids/generations, shared
 boundary payload bytes, stale-message diagnostics, and listener cleanup on
-unmount. They do not expose a generic public `Sub` API.
+unmount. Each is an instance of the `Sub` model: declared by structure, owned by
+its scope, routed by registry id.
 
 Browser storage reads are declared sources, not whole-store snapshots.
 `Browser.local_storage_text(key)` and `Browser.session_storage_text(key)` add
@@ -1634,8 +1953,9 @@ specific key/area declarations to the prepared mount; the JS runtime reads
 those keys synchronously before first render and passes `StorageMissing`,
 `StorageValue`, or `StorageUnavailable` payloads to Roc. Storage writes and
 removals are command-buffer operations, coalesced by area/key before touching
-the browser store. Storage write/remove failures are host/runtime errors today,
-not app-visible command results. Stored values are text; JSON, validation, and
+the browser store. Storage write/remove failures are host diagnostics, not
+app-visible command results; an app that must know whether a write landed
+declares the matching storage read source and observes it. Stored values are text; JSON, validation, and
 key namespacing remain app/package responsibilities.
 
 ### What is worth testing on the JS side
@@ -1766,8 +2086,10 @@ safety, controlled input reconciliation, textarea, number, select, radio,
 checkbox, submit/reset default actions, optional text attrs, validation
 patterns, callable-allocation signal identity, keyboard events, custom DOM
 events, cross-capability `Signal.combine`, asynchronous state writes,
-cross-state reducer reads, metric semantics, and generated large-`Ui.each_str`
-scaling.
+cross-state reducer reads, metric semantics, generated large-`Ui.each_str`
+scaling, `Signal.select` membership under large N, recursive `Ui.switch`
+structure, component inputs/children/scope, subscription start/stop by scope,
+widget attach/message/event/detach, and per-error-class diagnostic text.
 
 Host tests cover topological rank ordering, diamond deduplication, confined
 erasure through carrier tags, retained closure lifecycle accounting, dirty cache
@@ -1805,21 +2127,23 @@ than passing silently:
 These are genuine unknowns that require inspecting compiler behavior, generated
 ABI, layout rules, or browser constraints.
 
-- **Controlled inputs / focus / IME / selection.** The guarded `SetValue` rule
-  (equal = no-op, differing deferred while focused/composing) is enough for apps
-  without focused text editing, but full focused masking, validation, and
-  selection-preserving normalization may require a first-class
-  input-reconciliation primitive rather than an executor rule. File inputs,
-  multi-select, browser constraint validation, and focus commands should stay
-  canary-gated rather than becoming catalog-style helpers.
+- **Controlled inputs / focus / IME / selection.** Whether the guarded
+  `SetValue` rule plus explicit descriptors is sufficient for focused masking
+  and selection-preserving normalization, or whether a first-class
+  input-reconciliation descriptor is required, is a browser-behaviour question
+  answered by measurement against real IME and selection APIs.
 - **Animation / high-frequency continuous values.** A push graph driven by
   discrete updates may need a dedicated `interval`-driven path for smooth
   animation; whether a rAF-coalescing layer buys anything is a measurement.
-- **Many-widget embedding cost.** The current browser model is one Wasm instance
-  per active mount. Whether many small widgets need an explicit same-instance
+- **Many-widget embedding cost.** The browser model is one Wasm instance per
+  active mount. Whether many small widgets need an explicit same-instance
   mount-handle model is a measurement, not a default design assumption.
-- **Recompute granularity.** Whether any future batching of in-host recompute
-  buys anything is a measurement, not a fixed decision.
+- **Recompute granularity.** Whether batching of in-host recompute buys
+  anything is a measurement, not a fixed decision.
+- **Widget payload breadth.** Whether the scalar/record boundary vocabulary is
+  enough for real third-party widgets (charts, editors) or whether a
+  byte-array boundary value earns its place is answered by the interop canary,
+  not decided in advance.
 - **Native vs. browser render-surface parity.** Whether the native spec runner
   should consume the same command-buffer wire format the browser does, to keep a
   single render surface rather than two emit paths behind one command enum.
