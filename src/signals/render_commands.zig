@@ -661,6 +661,60 @@ pub const PreparedBatch = struct {
         other.command_limit = 0;
     }
 
+    /// Appends the donor commands that still address a node of the final
+    /// tree. A scalar journal is prepared against the committed cache before
+    /// the structural part of the same transaction decides which nodes it
+    /// retires, so its commands for those nodes describe a node the batch has
+    /// already removed; the browser would reject them as unknown ids. Commands
+    /// whose target is in `retired_elem_ids` are dropped here, every kept
+    /// command is charged exactly as when it was first journaled, and the
+    /// donor is emptied only after every reservation succeeded.
+    pub fn appendPreparedSurviving(self: *PreparedBatch, allocator: std.mem.Allocator, other: *PreparedBatch, retired_elem_ids: *const std.AutoHashMapUnmanaged(u64, void)) (std.mem.Allocator.Error || error{ResourceLimit})!void {
+        var kept: BatchCapacity = .{};
+        var kept_count: usize = 0;
+        for (other.commands.items) |command| {
+            if (commandTargetsRetiredNode(command, retired_elem_ids)) continue;
+            try chargeCommand(&kept, command);
+            kept_count += 1;
+        }
+        try self.reserveAdditional(allocator, kept_count);
+        try self.capacity.add(kept);
+        for (other.commands.items) |command| {
+            if (commandTargetsRetiredNode(command, retired_elem_ids)) continue;
+            self.commands.appendAssumeCapacity(command);
+        }
+        other.commands.clearRetainingCapacity();
+        other.capacity = .{};
+        other.command_limit = 0;
+    }
+
+    fn commandTargetsRetiredNode(command: PreparedCommand, retired_elem_ids: *const std.AutoHashMapUnmanaged(u64, void)) bool {
+        const elem_id: WireElemId = switch (command) {
+            .reset_dom, .create_element, .create_text, .append_child, .remove_node, .move_before => return false,
+            .set_text, .set_value => |value| value.elem_id,
+            .set_checked, .set_disabled => |value| value.elem_id,
+            .bind_fixed => |value| value.elem_id,
+            .clear_fixed => |value| value.elem_id,
+            .set_attr_text => |value| value.elem_id,
+            .remove_attr => |value| value.elem_id,
+            .bind_event => |value| value.elem_id,
+            .clear_event => |value| value.elem_id,
+        };
+        return retired_elem_ids.contains(elem_id.raw());
+    }
+
+    fn chargeCommand(capacity: *BatchCapacity, command: PreparedCommand) error{ResourceLimit}!void {
+        switch (command) {
+            .reset_dom, .create_text, .append_child, .remove_node, .move_before, .set_checked, .set_disabled, .bind_fixed, .clear_fixed => try capacity.addFixed(0),
+            .create_element => |value| try capacity.addFixed(value.tag.len),
+            .set_text, .set_value => |value| try capacity.addFixed(value.bytes.len),
+            .set_attr_text => |value| try capacity.addSetAttrText(value.name.len, value.value.len),
+            .remove_attr => |value| try capacity.addRemoveAttr(value.name.len),
+            .bind_event => |value| try capacity.addBindEvent(value.name.len, value.payload_descriptor.extractionBytes().len),
+            .clear_event => |value| try capacity.addClearEvent(value.name.len),
+        }
+    }
+
     fn ensureJournalSlot(self: *const PreparedBatch) error{ResourceLimit}!void {
         if (self.commands.items.len >= self.command_limit) return error.ResourceLimit;
     }
