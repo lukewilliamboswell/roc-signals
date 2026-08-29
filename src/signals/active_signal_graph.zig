@@ -1176,6 +1176,9 @@ pub fn PreparedReleaseClosure(comptime Record: type) type {
         records: []*Record,
         steps: []PreparedReleaseStep,
         final_record_ids: []?u64,
+        /// Use-count decrements owed to survivors whose count drops but never
+        /// reaches zero once the same transaction's retains are netted in.
+        survivor_use_decrements: []ExistingUseIncrement,
         adjacency: []PreparedAdjacencyReplacement,
         retired_adjacency: [][]u64,
         retired_nodes: []Node(Record),
@@ -1190,6 +1193,7 @@ pub fn PreparedReleaseClosure(comptime Record: type) type {
             allocator.free(self.records);
             allocator.free(self.steps);
             allocator.free(self.final_record_ids);
+            allocator.free(self.survivor_use_decrements);
             switch (self.phase) {
                 .prepared => for (self.adjacency) |replacement| allocator.free(replacement.dependents),
                 .adjacency_committed, .dense_committed, .retired_released => for (self.retired_adjacency) |items| allocator.free(items),
@@ -1222,6 +1226,14 @@ pub fn PreparedReleaseClosure(comptime Record: type) type {
         /// Descriptor sink routes must already have been removed from retiring records.
         pub fn applyDense(self: *@This(), nodes: *std.ArrayListUnmanaged(Node(Record)), source_routes: *RouteTable(u64), text_routes: *RouteTable(TextSink), bool_routes: *RouteTable(BoolSink), change_routes: *RouteTable(ChangeSink), structural_routes: *RouteTable(StructuralSink)) void {
             if (self.phase != .adjacency_committed) @panic("dense graph retirement commit order was invalid");
+            for (self.survivor_use_decrements) |decrement| {
+                const record = nodes.items[@intCast(decrement.record_id)].record;
+                // A survivor kept alive only by this transaction's retains
+                // may touch zero here; the graph append publishing in the
+                // same commit restores its count before anything observes it.
+                if (record.active_use_count < decrement.count) @panic("prepared survivor use decrement underflowed a live record");
+                record.active_use_count -= decrement.count;
+            }
             for (source_routes.items) |*route| {
                 var write: usize = 0;
                 for (route.items) |old_id| {
@@ -1570,17 +1582,62 @@ pub fn prepareGraphAppend(comptime Record: type, allocator: std.mem.Allocator, n
     };
 }
 
+/// Counts, per committed graph record, how many times the given roots retain
+/// it: an existing record contributes one use per referencing edge and is not
+/// entered, while a record outside the graph is walked once through its inputs.
+/// This is the same walk `prepareGraphAppend` performs, so a release closure
+/// prepared with the replacement roots nets the retains the append will add.
+fn countExistingRetains(comptime Record: type, allocator: std.mem.Allocator, nodes: []const Node(Record), roots: []const *Record, existing: []usize) (std.mem.Allocator.Error || error{InvalidRelease})!void {
+    var visited: std.ArrayListUnmanaged(*Record) = .empty;
+    defer visited.deinit(allocator);
+    const Walker = struct {
+        fn walk(record: *Record, walk_allocator: std.mem.Allocator, graph_nodes: []const Node(Record), counts: []usize, seen: *std.ArrayListUnmanaged(*Record)) (std.mem.Allocator.Error || error{InvalidRelease})!void {
+            if (record.active_graph_id) |original_id| {
+                const index: usize = @intCast(original_id);
+                if (index >= graph_nodes.len or graph_nodes[index].record != record) return error.InvalidRelease;
+                counts[index] = std.math.add(usize, counts[index], 1) catch return error.InvalidRelease;
+                return;
+            }
+            if (recordSliceContains(Record, seen.items, record)) return;
+            try seen.append(walk_allocator, record);
+            switch (record.payload) {
+                .map => |payload| try walk(payload.input, walk_allocator, graph_nodes, counts, seen),
+                .map2 => |payload| {
+                    try walk(payload.left, walk_allocator, graph_nodes, counts, seen);
+                    if (payload.right != payload.left) try walk(payload.right, walk_allocator, graph_nodes, counts, seen);
+                },
+                .combine => |payload| for (payload.children, 0..) |child, child_index| {
+                    if (recordSliceContains(Record, payload.children[0..child_index], child)) continue;
+                    try walk(child, walk_allocator, graph_nodes, counts, seen);
+                },
+                .ref, .const_value, .task_source, .interval_source, .location_source, .online_source, .visibility_source, .storage_source => {},
+            }
+        }
+    };
+    for (roots) |root| try Walker.walk(root, allocator, nodes, existing, &visited);
+}
+
 /// Simulates descriptor-root releases, recursive zero-use inputs, and dense
 /// swap-remaps without mutating graph records or route state.
-pub fn prepareReleaseClosure(comptime Record: type, allocator: std.mem.Allocator, nodes: []const Node(Record), roots: []const *Record) (std.mem.Allocator.Error || error{InvalidRelease})!PreparedReleaseClosure(Record) {
+///
+/// `retained_roots` are the records the same transaction will retain through
+/// `prepareGraphAppend`. Their retains are netted against the releases first,
+/// so a committed record that one descriptor drops while another picks it up
+/// survives with its dense id instead of being retired and re-appended. Every
+/// survivor whose count still falls is recorded and decremented at `applyDense`.
+pub fn prepareReleaseClosure(comptime Record: type, allocator: std.mem.Allocator, nodes: []const Node(Record), roots: []const *Record, retained_roots: []const *Record) (std.mem.Allocator.Error || error{InvalidRelease})!PreparedReleaseClosure(Record) {
     const counts = try allocator.alloc(usize, nodes.len);
     defer allocator.free(counts);
     const scheduled = try allocator.alloc(bool, nodes.len);
     defer allocator.free(scheduled);
     @memset(scheduled, false);
-    for (nodes, 0..) |node, index| {
+    const retained = try allocator.alloc(usize, nodes.len);
+    defer allocator.free(retained);
+    @memset(retained, 0);
+    try countExistingRetains(Record, allocator, nodes, retained_roots, retained);
+    for (nodes, retained, 0..) |node, retains, index| {
         if (node.record.active_graph_id != @as(u64, @intCast(index))) return error.InvalidRelease;
-        counts[index] = node.record.active_use_count;
+        counts[index] = std.math.add(usize, node.record.active_use_count, retains) catch return error.InvalidRelease;
     }
 
     var records: std.ArrayListUnmanaged(*Record) = .empty;
@@ -1613,6 +1670,19 @@ pub fn prepareReleaseClosure(comptime Record: type, allocator: std.mem.Allocator
         }
     };
     for (roots) |root| try Simulator.decrement(root, nodes, counts, scheduled, &records);
+
+    var decrement_count: usize = 0;
+    for (nodes, retained, counts) |node, retains, remaining| {
+        if (remaining != 0 and node.record.active_use_count + retains != remaining) decrement_count += 1;
+    }
+    const survivor_use_decrements = try allocator.alloc(ExistingUseIncrement, decrement_count);
+    errdefer allocator.free(survivor_use_decrements);
+    var decrement_write: usize = 0;
+    for (nodes, retained, counts, 0..) |node, retains, remaining, index| {
+        if (remaining == 0 or node.record.active_use_count + retains == remaining) continue;
+        survivor_use_decrements[decrement_write] = .{ .record_id = @intCast(index), .count = node.record.active_use_count + retains - remaining };
+        decrement_write += 1;
+    }
 
     const slots = try allocator.alloc(u64, nodes.len);
     defer allocator.free(slots);
@@ -1706,6 +1776,7 @@ pub fn prepareReleaseClosure(comptime Record: type, allocator: std.mem.Allocator
         .records = try records.toOwnedSlice(allocator),
         .steps = steps,
         .final_record_ids = final_record_ids,
+        .survivor_use_decrements = survivor_use_decrements,
         .adjacency = adjacency,
         .retired_adjacency = retired_adjacency,
         .retired_nodes = retired_nodes,
@@ -2248,6 +2319,101 @@ test "prepared graph append enumerates missing topology without mutating survivo
     try std.testing.expectEqual(@as(usize, 2), root.ref_count);
 }
 
+test "prepared release closure nets replacement retains so a handed-over record survives" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    // `source` is used only by the retiring `old_root`; `shared` is used by the
+    // retiring root and by a surviving `keeper`. The replacement `new_root`
+    // picks `source` up again in the same transaction.
+    var source = LifecycleTestRecord{ .id = 1, .payload = .{ .ref = 0 } };
+    var shared = LifecycleTestRecord{ .id = 2, .payload = .{ .ref = 1 } };
+    var old_root = LifecycleTestRecord{ .id = 3, .payload = .{ .map2 = .{ .left = &source, .right = &shared } } };
+    var keeper = LifecycleTestRecord{ .id = 4, .payload = .{ .map = .{ .input = &shared } } };
+    var new_root = LifecycleTestRecord{ .id = 5, .payload = .{ .map = .{ .input = &source } } };
+    var nodes: std.ArrayListUnmanaged(Node(LifecycleTestRecord)) = .empty;
+    var source_routes: RouteTable(u64) = .empty;
+    var text_routes: RouteTable(TextSink) = .empty;
+    var bool_routes: RouteTable(BoolSink) = .empty;
+    var change_routes: RouteTable(ChangeSink) = .empty;
+    var structural_routes: RouteTable(StructuralSink) = .empty;
+    var hooks: LifecycleTestHooks = .{};
+    defer {
+        clearSourceRoutes(std.testing.allocator, &source_routes);
+        source_routes.deinit(std.testing.allocator);
+        clearSinkRoutes(std.testing.allocator, &text_routes, &bool_routes, &change_routes, &structural_routes);
+        text_routes.deinit(std.testing.allocator);
+        bool_routes.deinit(std.testing.allocator);
+        change_routes.deinit(std.testing.allocator);
+        structural_routes.deinit(std.testing.allocator);
+        clear(LifecycleTestRecord, std.testing.allocator, &nodes, &hooks);
+        nodes.deinit(std.testing.allocator);
+    }
+    _ = retainRecord(LifecycleTestRecord, std.testing.allocator, &nodes, &source_routes, 2, &old_root, &hooks);
+    _ = retainRecord(LifecycleTestRecord, std.testing.allocator, &nodes, &source_routes, 2, &keeper, &hooks);
+    for (0..nodes.items.len) |_| {
+        try text_routes.append(std.testing.allocator, .empty);
+        try bool_routes.append(std.testing.allocator, .empty);
+        try change_routes.append(std.testing.allocator, .empty);
+        try structural_routes.append(std.testing.allocator, .empty);
+    }
+    try std.testing.expectEqual(@as(usize, 4), nodes.items.len);
+    try std.testing.expectEqual(@as(?u64, 0), source.active_graph_id);
+    try std.testing.expectEqual(@as(usize, 1), source.active_use_count);
+    try std.testing.expectEqual(@as(usize, 2), shared.active_use_count);
+    const retired_roots = [_]*LifecycleTestRecord{&old_root};
+    const replacement_roots = [_]*LifecycleTestRecord{&new_root};
+
+    var counter = FaultAllocator.init(std.testing.allocator);
+    var release = try prepareReleaseClosure(LifecycleTestRecord, counter.allocator(), nodes.items, &retired_roots, &replacement_roots);
+    defer release.deinit(counter.allocator());
+    const release_attempts = counter.attempts;
+    try std.testing.expect(release_attempts != 0);
+    try std.testing.expectEqualSlices(*LifecycleTestRecord, &.{&old_root}, release.records);
+    try std.testing.expectEqualSlices(?u64, &.{ 0, 1, null, 2 }, release.final_record_ids);
+    try std.testing.expectEqualSlices(ExistingUseIncrement, &.{ .{ .record_id = 0, .count = 1 }, .{ .record_id = 1, .count = 1 } }, release.survivor_use_decrements);
+    for (1..release_attempts + 1) |failure_number| {
+        var fault = FaultAllocator.init(std.testing.allocator);
+        fault.configure(failure_number);
+        try std.testing.expectError(error.OutOfMemory, prepareReleaseClosure(LifecycleTestRecord, fault.allocator(), nodes.items, &retired_roots, &replacement_roots));
+        try std.testing.expectEqual(@as(usize, 1), source.active_use_count);
+        try std.testing.expectEqual(@as(usize, 2), shared.active_use_count);
+        for (nodes.items, 0..) |node, index| try std.testing.expectEqual(@as(?u64, @intCast(index)), node.record.active_graph_id);
+    }
+
+    var append = try prepareGraphAppend(LifecycleTestRecord, counter.allocator(), nodes.items, release.final_record_ids, &replacement_roots);
+    defer append.deinit(counter.allocator());
+    try std.testing.expectEqualSlices(*LifecycleTestRecord, &.{&new_root}, append.records);
+    try std.testing.expectEqualSlices(u64, &.{3}, append.record_ids);
+    try std.testing.expectEqualSlices(ExistingUseIncrement, &.{.{ .record_id = 0, .count = 1 }}, append.existing_use_increments);
+    try std.testing.expectEqual(@as(?u64, 0), append.plannedRecordId(nodes.items, &source));
+
+    try append.reservePublication(counter.allocator(), &nodes);
+    try append.reserveParallelRoutes(counter.allocator(), &text_routes, &bool_routes, &change_routes, &structural_routes);
+    counter.configure(1);
+    release.applyAdjacency(nodes.items);
+    release.applyDense(&nodes, &source_routes, &text_routes, &bool_routes, &change_routes, &structural_routes);
+    append.commitNodes(&nodes);
+    append.commitParallelRoutes(&text_routes, &bool_routes, &change_routes, &structural_routes);
+    release.releaseRetired(counter.allocator(), &hooks);
+    try std.testing.expectEqual(@as(usize, 0), counter.attempts);
+    try std.testing.expectEqual(@as(usize, 4), nodes.items.len);
+    try std.testing.expectEqual(@as(?u64, 0), source.active_graph_id);
+    try std.testing.expectEqual(@as(usize, 1), source.active_use_count);
+    try std.testing.expectEqual(@as(?u64, 1), shared.active_graph_id);
+    try std.testing.expectEqual(@as(usize, 1), shared.active_use_count);
+    try std.testing.expectEqual(@as(?u64, null), old_root.active_graph_id);
+    try std.testing.expectEqual(@as(usize, 0), old_root.active_use_count);
+    try std.testing.expectEqual(@as(?u64, 2), keeper.active_graph_id);
+    try std.testing.expectEqual(@as(?u64, 3), new_root.active_graph_id);
+    try std.testing.expectEqual(@as(usize, 1), new_root.active_use_count);
+    try std.testing.expectEqualSlices(u64, &.{3}, nodes.items[0].dependents);
+    try std.testing.expectEqualSlices(u64, &.{2}, nodes.items[1].dependents);
+    try std.testing.expectEqualSlices(u64, &.{0}, source_routes.items[0].items);
+    try std.testing.expectEqualSlices(u64, &.{1}, source_routes.items[1].items);
+    try std.testing.expectEqual(@as(u64, 1), hooks.record_releases);
+    try std.testing.expectEqual(@as(usize, 1), old_root.ref_count);
+    try std.testing.expectEqual(@as(usize, 2), new_root.ref_count);
+}
+
 test "prepared release closure preserves shared diamond and computes dense remaps" {
     const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
     var source = LifecycleTestRecord{ .id = 1, .payload = .{ .ref = 0 } };
@@ -2282,7 +2448,7 @@ test "prepared release closure preserves shared diamond and computes dense remap
     try std.testing.expectEqualSlices(u64, &.{0}, source_routes.items[0].items);
 
     var counter = FaultAllocator.init(std.testing.allocator);
-    var baseline = try prepareReleaseClosure(LifecycleTestRecord, counter.allocator(), nodes.items, &.{&root});
+    var baseline = try prepareReleaseClosure(LifecycleTestRecord, counter.allocator(), nodes.items, &.{&root}, &.{});
     const attempts = counter.attempts;
     try std.testing.expectEqualSlices(*LifecycleTestRecord, &.{ &root, &left, &right, &source }, baseline.records);
     try std.testing.expectEqualDeep(PreparedReleaseStep{ .record_id = 3, .removal_index = 3, .moved_record_id = null }, baseline.steps[0]);
@@ -2296,7 +2462,7 @@ test "prepared release closure preserves shared diamond and computes dense remap
     for (1..attempts + 1) |failure_number| {
         var fault = FaultAllocator.init(std.testing.allocator);
         fault.configure(failure_number);
-        try std.testing.expectError(error.OutOfMemory, prepareReleaseClosure(LifecycleTestRecord, fault.allocator(), nodes.items, &.{&root}));
+        try std.testing.expectError(error.OutOfMemory, prepareReleaseClosure(LifecycleTestRecord, fault.allocator(), nodes.items, &.{&root}, &.{}));
         try std.testing.expectEqual(@as(usize, 1), root.active_use_count);
         try std.testing.expectEqual(@as(usize, 1), left.active_use_count);
         try std.testing.expectEqual(@as(usize, 1), right.active_use_count);

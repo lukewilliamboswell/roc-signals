@@ -6734,7 +6734,7 @@ pub fn Engine(comptime Ctx: type) type {
                     var retired_roots: std.ArrayListUnmanaged(*HostSignalRecord) = .empty;
                     defer retired_roots.deinit(allocator);
                     try collectRetiredGraphRootsForRemoval(self.engine, allocator, &self.removal.?.removal, &retired_roots);
-                    self.graph_release = active_graph.prepareReleaseClosure(HostSignalRecord, allocator, self.engine.active_signal_graph.items, retired_roots.items) catch return error.OutOfMemory;
+                    self.graph_release = active_graph.prepareReleaseClosure(HostSignalRecord, allocator, self.engine.active_signal_graph.items, retired_roots.items, replacement_roots.items) catch return error.OutOfMemory;
                     errdefer if (self.graph_release) |*release| release.deinit(allocator);
                     self.graph_append = active_graph.prepareGraphAppend(HostSignalRecord, allocator, self.engine.active_signal_graph.items, self.graph_release.?.final_record_ids, replacement_roots.items) catch |err| switch (err) {
                         error.OutOfMemory => return error.OutOfMemory,
@@ -7305,10 +7305,10 @@ pub fn Engine(comptime Ctx: type) type {
                     var retired_roots: std.ArrayListUnmanaged(*HostSignalRecord) = .empty;
                     defer retired_roots.deinit(allocator);
                     try self.collectRetiredGraphRoots(allocator, &retired_roots);
-                    self.graph_release = active_graph.prepareReleaseClosure(HostSignalRecord, allocator, self.engine.active_signal_graph.items, retired_roots.items) catch return error.OutOfMemory;
                     var replacement_roots: std.ArrayListUnmanaged(*HostSignalRecord) = .empty;
                     defer replacement_roots.deinit(allocator);
                     try self.collectReplacementGraphRoots(allocator, &replacement_roots);
+                    self.graph_release = active_graph.prepareReleaseClosure(HostSignalRecord, allocator, self.engine.active_signal_graph.items, retired_roots.items, replacement_roots.items) catch return error.OutOfMemory;
                     self.graph_append = active_graph.prepareGraphAppend(HostSignalRecord, allocator, self.engine.active_signal_graph.items, self.graph_release.?.final_record_ids, replacement_roots.items) catch |err| switch (err) {
                         error.OutOfMemory => return error.OutOfMemory,
                         error.InvalidAppend => return error.InvalidSignalGraphAppend,

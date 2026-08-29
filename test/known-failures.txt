@@ -35,12 +35,10 @@ native data-grid/paging.scm
 native data-grid/per-row-selection.scm
 native data-grid/sorting.scm
 native dependency-scheduler/a-dependency-cycle-is-reported-not-hung-on.scm
-native dependency-scheduler/a-zero-duration-milestone.scm
 native dependency-scheduler/adding-and-removing-a-dependency-edge.scm
 native dependency-scheduler/filtering-the-list-to-the-critical-path.scm
 native dependency-scheduler/moving-a-leaf-task-changes-only-that-leaf.scm
 native dependency-scheduler/reordering-the-list-keeps-every-row-scope.scm
-native dependency-scheduler/the-critical-path-moves-when-a-parallel-branch-grows-long-enough.scm
 native dependency-scheduler/the-empty-list.scm
 native dependency-scheduler/the-focus-readout-is-an-independent-source-feeding-the-same-solv.scm
 native dependency-scheduler/write-spec-is-the-head-of-spec-api-sync-qa-launch-so-delaying-it.scm
