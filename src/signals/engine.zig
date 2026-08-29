@@ -6755,6 +6755,16 @@ pub fn Engine(comptime Ctx: type) type {
                 try self.prepareRender(allocator);
             }
 
+            /// Counts the host commands graph publication emits through the sink
+            /// inside this transaction (interval starts for appended sources and
+            /// cancellations for retired ones), so the wire reserves their records.
+            fn commitSinkCommandCount(self: *const @This()) usize {
+                var count: usize = 0;
+                if (self.graph_append) |*append| count += append.appendedIntervalSourceCount();
+                if (self.graph_release) |*release| count += release.retiredIntervalSourceCount();
+                return count;
+            }
+
             fn prepareRender(self: *@This(), allocator: std.mem.Allocator) CollectionError!void {
                 if (!self.initial_root and !self.engine.render_cache.hasRoot()) return;
                 errdefer {
@@ -6778,6 +6788,7 @@ pub fn Engine(comptime Ctx: type) type {
                 };
                 self.render_splice = try facade.prepareRenderTopology(allocator);
                 errdefer if (self.render_splice) |*splice| splice.deinit();
+                self.render_splice.?.wire.reserveSinkCommands(self.commitSinkCommandCount()) catch return error.ResourceLimit;
                 self.render_batch_target = if (comptime @hasDecl(Ctx, "renderCommandBatch")) Ctx.renderCommandBatch(self.host_ctx) else &self.render_batch;
                 errdefer if (self.render_batch_target == &self.render_batch) self.render_batch.deinit(allocator);
                 self.render_splice.?.wire.preflight(self.render_batch_target.?, allocator) catch |err| switch (err) {
@@ -7340,6 +7351,10 @@ pub fn Engine(comptime Ctx: type) type {
                 }
                 if (self.engine.render_cache.hasRoot()) {
                     self.render_splice = try self.prepareRenderTopology(allocator);
+                    var sink_commands: usize = 0;
+                    if (self.graph_append) |*append| sink_commands += append.appendedIntervalSourceCount();
+                    if (self.graph_release) |*release| sink_commands += release.retiredIntervalSourceCount();
+                    self.render_splice.?.wire.reserveSinkCommands(sink_commands) catch return error.ResourceLimit;
                     self.render_batch_target = if (comptime @hasDecl(Ctx, "renderCommandBatch")) Ctx.renderCommandBatch(self.host_ctx) else &self.render_batch;
                     self.render_splice.?.wire.preflight(self.render_batch_target.?, allocator) catch |err| switch (err) {
                         error.OutOfMemory => return error.OutOfMemory,

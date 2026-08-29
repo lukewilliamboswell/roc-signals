@@ -406,11 +406,15 @@ fn alignmentFromBytes(alignment: usize) std.mem.Alignment {
     return @enumFromInt(std.math.log2_int(usize, alignment));
 }
 
-/// Reserves storage for one host-sink command. Sink commands are effects the
-/// engine emits after a transaction sealed (lifecycle commands, cancellations),
-/// so they append past the sealed batch and seal themselves; a sink command
-/// inside a transaction that is still staging is a programming error.
+/// Reserves storage for one host-initiated sink command: an effect emitted
+/// after the engine's transaction sealed (lifecycle storage, navigation, task
+/// and title commands), which appends past the sealed batch and seals itself.
+/// Engine-initiated fixed records inside an open transaction take the
+/// `stageSinkCommandAssumeCapacity` path in `appendCommand` instead; a
+/// string- or dynamic-bearing sink command inside an open transaction has no
+/// reservation and is a programming error.
 fn preflightCommandStorage(additional: render.BatchCapacity) void {
+    if (command_batch.isTransactionOpen()) failHostWith("render sink emitted an unreserved command inside an open engine transaction");
     if (command_batch.hasUnsealedStaging()) failHostWith("render sink emitted a command while an engine transaction was still staging");
     command_batch.preflight(allocator(), additional) catch |err| switch (err) {
         error.OutOfMemory => failHostWith("out of memory while reserving render command storage"),
@@ -434,6 +438,14 @@ fn checkedWireAlign4(len: usize) usize {
 }
 
 fn appendCommand(op: render.Op, a: u32, b: u32, c: u32, d: u32, e: u32) void {
+    if (command_batch.isTransactionOpen()) {
+        // The engine registered an effect while publishing its transaction
+        // (interval start or cancellation at graph commit); the transaction
+        // reserved this record, so it is staged with the transaction and
+        // sealed by its commit.
+        command_batch.stageSinkCommandAssumeCapacity(op, a, b, c, d, e);
+        return;
+    }
     preflightCommandStorage(.{ .commands = 1 });
     command_batch.staged.commands.appendRaw(allocator(), op, a, b, c, d, e) catch failHostWith("out of memory while staging render commands");
     sealCommandStorage();

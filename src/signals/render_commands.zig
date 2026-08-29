@@ -536,6 +536,10 @@ pub const TransactionalBatch = struct {
     staged: BatchBuffers = .{},
     sealed: SealedLengths = .{},
     limits: BatchLimits = .{},
+    /// True from a transaction's `preflight` until its `commit` or `abort`.
+    /// While open, effect commands the engine emits through the host sink at
+    /// publication belong to the transaction and use its reserved capacity.
+    transaction_open: bool = false,
 
     /// Sets limits at the narrow host or engine boundary that owns the mutation.
     pub fn setLimits(self: *TransactionalBatch, limits: BatchLimits) error{ResourceLimit}!void {
@@ -556,6 +560,7 @@ pub const TransactionalBatch = struct {
         self.published.clearRetainingCapacity();
         self.staged.clearRetainingCapacity();
         self.sealed = .{};
+        self.transaction_open = false;
     }
 
     /// Reserves `additional` records and bytes on top of the sealed batch so a
@@ -576,6 +581,24 @@ pub const TransactionalBatch = struct {
             return error.ResourceLimit;
         }
         try self.staged.ensureTotalCapacity(allocator, capacity);
+        self.transaction_open = true;
+    }
+
+    /// Returns whether a transaction has preflighted and not yet sealed or
+    /// aborted, so a sink command arriving now is that transaction's own.
+    pub fn isTransactionOpen(self: *const TransactionalBatch) bool {
+        return self.transaction_open;
+    }
+
+    /// Stages one fixed record the engine emits through the host sink while
+    /// the transaction is open, using capacity the transaction reserved with
+    /// `PreparedBatch.reserveSinkCommands`. Never allocates: exceeding the
+    /// reservation is a programming error in the transaction's preflight.
+    pub fn stageSinkCommandAssumeCapacity(self: *TransactionalBatch, op: Op, a: u32, b: u32, c: u32, d: u32, e: u32) void {
+        if (!self.transaction_open) @panic("engine sink command staged outside an open transaction");
+        const records = &self.staged.commands.records;
+        if (records.items.len >= records.capacity) @panic("engine sink command exceeded the transaction's reserved command capacity");
+        records.appendAssumeCapacity(Record.initRaw(op, a, b, c, d, e));
     }
 
     /// Seals the staged transaction onto the host-call batch without allocating.
@@ -583,6 +606,7 @@ pub const TransactionalBatch = struct {
     /// not yet visible to the consumer.
     pub fn commit(self: *TransactionalBatch) void {
         self.sealed = self.stagedLengths();
+        self.transaction_open = false;
     }
 
     /// Drops the staged transaction back to the last seal without allocating,
@@ -591,6 +615,7 @@ pub const TransactionalBatch = struct {
         self.staged.commands.records.items.len = self.sealed.commands;
         self.staged.strings.items.len = self.sealed.strings;
         self.staged.dynamic.bytes.items.len = self.sealed.dynamic;
+        self.transaction_open = false;
     }
 
     /// Ends a host call by making the whole sealed batch visible atomically and
@@ -601,6 +626,7 @@ pub const TransactionalBatch = struct {
         std.mem.swap(BatchBuffers, &self.published, &self.staged);
         self.staged.clearRetainingCapacity();
         self.sealed = .{};
+        self.transaction_open = false;
     }
 
     /// Drops everything, published and staged, so a failed host call exposes
@@ -609,6 +635,7 @@ pub const TransactionalBatch = struct {
         self.published.clearRetainingCapacity();
         self.staged.clearRetainingCapacity();
         self.sealed = .{};
+        self.transaction_open = false;
     }
 
     /// Clears published while retaining bounded storage where the type promises reuse.
@@ -856,6 +883,15 @@ pub const PreparedBatch = struct {
         try self.ensureJournalSlot();
         try self.capacity.addClearEvent(name.len);
         self.commands.appendAssumeCapacity(.{ .clear_event = .{ .elem_id = elem_id, .name = name } });
+    }
+
+    /// Reserves wire room for `count` fixed records the engine will emit through
+    /// the host sink while this batch's transaction publishes (interval starts
+    /// and cancellations registered at graph commit). They are not journaled
+    /// here because the sink, not the wire, encodes them; the reservation only
+    /// guarantees the host can stage them without allocating.
+    pub fn reserveSinkCommands(self: *PreparedBatch, count: usize) error{ResourceLimit}!void {
+        try self.capacity.add(.{ .commands = count });
     }
 
     /// Reserves the unpublished destination batch without staging any bytes.
@@ -1252,6 +1288,66 @@ test "host call batch seals successive transactions and publishes them together"
     try std.testing.expectEqual(batch.published.dynamic.len(), @as(usize, records[3].b));
     try std.testing.expectEqual(@as(usize, 0), batch.staged.commands.len());
     try std.testing.expect(!batch.hasUnsealedStaging());
+}
+
+test "an open transaction stages the sink commands it reserved and seals them with its own" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var fixture = try HostCallBatchFixture.init(std.testing.allocator);
+    defer fixture.deinit(std.testing.allocator);
+    // The transaction registers one interval at graph commit and cancels a
+    // retired one: two fixed records the sink emits while it publishes.
+    try fixture.second.reserveSinkCommands(2);
+
+    var fault = FaultAllocator.init(std.testing.allocator);
+    const allocator = fault.allocator();
+    var batch: TransactionalBatch = .{};
+    defer batch.deinit(allocator);
+
+    batch.begin();
+    try std.testing.expect(!batch.isTransactionOpen());
+    try fixture.first.preflight(&batch, allocator);
+    try std.testing.expect(batch.isTransactionOpen());
+    try fixture.first.stageAssumeCapacity(&batch, allocator);
+    batch.commit();
+    try std.testing.expect(!batch.isTransactionOpen());
+
+    try fixture.second.preflight(&batch, allocator);
+    fault.configure(1);
+    try fixture.second.stageAssumeCapacity(&batch, allocator);
+    // Graph commit runs after render staging and emits through the sink
+    // while the transaction is still open; nothing here may allocate.
+    batch.stageSinkCommandAssumeCapacity(.cancel_interval, 3, 0, 0, 0, 0);
+    batch.stageSinkCommandAssumeCapacity(.start_interval, 4, 1000, 0, 0, 0);
+    try std.testing.expect(batch.hasUnsealedStaging());
+    batch.commit();
+    try std.testing.expect(!batch.isTransactionOpen());
+    try std.testing.expect(!batch.hasUnsealedStaging());
+    batch.publish();
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    fault.configure(null);
+
+    const records = batch.published.commands.records.items;
+    try std.testing.expectEqual(@as(usize, 6), records.len);
+    try std.testing.expectEqual(@intFromEnum(Op.set_text), records[2].op);
+    try std.testing.expectEqual(@intFromEnum(Op.extended), records[3].op);
+    try std.testing.expectEqual(@intFromEnum(Op.cancel_interval), records[4].op);
+    try std.testing.expectEqual(@as(u32, 3), records[4].a);
+    try std.testing.expectEqual(@intFromEnum(Op.start_interval), records[5].op);
+    try std.testing.expectEqual(@as(u32, 1000), records[5].b);
+
+    // Aborting an open transaction drops its sink commands with it and closes
+    // the transaction, so a following host-initiated command seals on its own.
+    batch.begin();
+    try fixture.second.preflight(&batch, allocator);
+    try fixture.second.stageAssumeCapacity(&batch, allocator);
+    batch.stageSinkCommandAssumeCapacity(.start_interval, 5, 500, 0, 0, 0);
+    batch.abort();
+    try std.testing.expect(!batch.isTransactionOpen());
+    try std.testing.expectEqual(@as(usize, 0), batch.staged.commands.len());
+    try HostCallBatchFixture.appendSinkCommand(&batch, allocator);
+    batch.publish();
+    try std.testing.expectEqual(@as(usize, 1), batch.published.commands.len());
+    try std.testing.expectEqual(@intFromEnum(Op.set_document_title), batch.published.commands.records.items[0].op);
 }
 
 test "aborting a staged transaction keeps the earlier sealed transactions of the host call" {

@@ -1276,6 +1276,23 @@ pub fn PreparedReleaseClosure(comptime Record: type) type {
         }
 
         /// Releases displaced graph buffers and record lifecycle ownership after publication.
+        /// Counts the retired records that declare an interval source, so the
+        /// owning transaction can reserve the host commands their cancellation
+        /// emits at publication.
+        pub fn retiredIntervalSourceCount(self: *const @This()) usize {
+            var count: usize = 0;
+            for (self.records) |record| {
+                switch (record.payload) {
+                    .interval_source => count += 1,
+                    else => {},
+                }
+            }
+            return count;
+        }
+
+        /// Releases every retired record after the dense graph committed:
+        /// frees its adjacency, removes its interval registration through
+        /// `hooks`, and hands the record itself to `hooks.releaseRecord`.
         pub fn releaseRetired(self: *@This(), allocator: std.mem.Allocator, hooks: anytype) void {
             if (self.phase != .dense_committed) @panic("retired graph ownership release order was invalid");
             for (self.retired_nodes) |node| {
