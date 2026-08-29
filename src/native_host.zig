@@ -4393,6 +4393,21 @@ fn testNestedStatefulEachRowElemCallable(roc_host: *abi.RocHost, ret: ?[*]u8, ar
     writeTestErasedResult(abi.Elem, ret, testElement(roc_host, &children));
 }
 
+/// Renders one outer row as a label plus a nested keyed list whose rows nest
+/// a further keyed list of stateful rows, so one transaction stages each
+/// sites at three depths under every outer row.
+fn testDoublyNestedEachRowElemCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
+    _ = capture_ptr;
+    test_row_elem_call_count += 1;
+    const call_args = testErasedArgsAs(ErasedHostValueBinaryArgs, args);
+    const key = testReadHostValueI64(roc_host, call_args.arg0);
+    const inner_items = [_]HostValue{ testHostValueI64(key * 10 + 1), testHostValueI64(key * 10 + 2) };
+    var text_buffer: [64]u8 = undefined;
+    const text = std.fmt.bufPrint(&text_buffer, "deep-{d}", .{key}) catch @panic("test doubly nested each row Elem callable could not format text");
+    const children = [_]abi.Elem{ testNodeText(roc_host, text), testNodeEachWithItemsAndRow(roc_host, &inner_items, &testNestedEachRowElemCallable) };
+    writeTestErasedResult(abi.Elem, ret, testElement(roc_host, &children));
+}
+
 fn testHostValueEqErasedCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
     _ = capture_ptr;
     const call_args = testErasedArgsAs(ErasedHostValueBinaryArgs, args);
@@ -9895,6 +9910,100 @@ test "native initial root claims elem ids past a nested reservation for the stat
             try std.testing.expect(activeTextElementId(host, "outer-8") != null);
             try std.testing.expect(activeTextElementId(host, "row-83-83") != null);
             try std.testing.expectEqual(@as(usize, tail_texts), host.engine.active_stream.signal_text_nodes.items.len);
+        }
+
+        fn run(failure_number: ?usize) !usize {
+            var host = HostEnv.init();
+            var roc_host = makeSignalsRocHost(&host);
+            host.engine.roc_host = &roc_host;
+            defer {
+                host.deinit();
+                _ = host.gpa.deinit();
+            }
+
+            const root = buildRoot(&roc_host);
+            defer root.decref(&roc_host);
+            const refs_before = host.roc_allocations.snapshot();
+
+            var fault = FaultAllocator.init(host.gpa.allocator());
+            fault.configure(failure_number);
+            host.engine_allocator_override = fault.allocator();
+            const result = tryRenderInitialRootWithArmedPublication(&host, &roc_host, root, &fault);
+            const attempts = fault.attempts;
+            if (failure_number != null) {
+                try std.testing.expectError(error.OutOfMemory, result);
+                try expectUnpublished(&host);
+                try std.testing.expectEqual(host.engine.pending_roc_metrics.closure_retains, host.engine.pending_roc_metrics.closure_releases);
+                try std.testing.expectEqual(refs_before.live_bytes, host.roc_allocations.snapshot().live_bytes);
+                try std.testing.expectEqual(@as(usize, 0), host.roc_allocations.liveCountSince(refs_before));
+
+                fault.configure(null);
+                _ = try tryRenderInitialRootWithArmedPublication(&host, &roc_host, root, &fault);
+            } else {
+                _ = try result;
+            }
+            try expectPublished(&host);
+            return attempts;
+        }
+    };
+
+    const attempts = try Runner.run(null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
+}
+
+test "native initial root with sibling sites nesting each sites three deep sweeps host OOM and publishes allocation free" {
+    // Every each site a staged transaction mounts is reserved against the
+    // transaction's cumulative site total, never against the sites appended
+    // so far: four sibling sites whose rows nest sites two further deep put
+    // 28 sites and 56 rows into one collection, past the slack an
+    // `ensureUnusedCapacity` growth leaves for a per-site reservation that
+    // forgot to accumulate. Publication must not allocate at any depth.
+    const Runner = struct {
+        const site_count = 4;
+        const rows_per_site = 2;
+        const outer_rows = site_count * rows_per_site;
+        const middle_sites = outer_rows;
+        const middle_rows = middle_sites * rows_per_site;
+        const inner_sites = middle_rows;
+        const inner_rows = inner_sites * rows_per_site;
+        const expected_sites = site_count + middle_sites + inner_sites;
+        const expected_rows = outer_rows + middle_rows + inner_rows;
+        const expected_states = inner_rows;
+
+        fn buildRoot(roc_host: *abi.RocHost) abi.Elem {
+            var sites: [site_count]abi.Elem = undefined;
+            for (&sites, 0..) |*site, index| {
+                const base: i64 = @intCast(index * rows_per_site);
+                const items = [_]HostValue{ testHostValueI64(base + 1), testHostValueI64(base + 2) };
+                site.* = testNodeEachWithItemsAndRow(roc_host, &items, &testDoublyNestedEachRowElemCallable);
+            }
+            return testElement(roc_host, &sites);
+        }
+
+        fn expectUnpublished(host: *const HostEnv) !void {
+            try std.testing.expectEqual(@as(usize, 0), host.engine.scopes.items.len);
+            try std.testing.expectEqual(@as(usize, 0), host.engine.node_identities.items.len);
+            try std.testing.expectEqual(@as(usize, 0), host.engine.states.items.len);
+            try std.testing.expectEqual(@as(usize, 0), host.engine.each_row_sites.items.len);
+            try std.testing.expectEqual(@as(usize, 0), host.engine.each_row_site_indexes.count());
+            try std.testing.expectEqual(@as(usize, 0), host.engine.active_stream.eaches.items.len);
+            try std.testing.expect(!host.engine.render_cache.hasRoot());
+        }
+
+        fn expectPublished(host: *const HostEnv) !void {
+            try std.testing.expect(host.engine.render_cache.hasRoot());
+            try std.testing.expectEqual(@as(usize, expected_sites), host.engine.each_row_sites.items.len);
+            try std.testing.expectEqual(@as(usize, expected_sites), host.engine.each_row_site_indexes.count());
+            try std.testing.expectEqual(@as(usize, expected_sites), host.engine.active_stream.eaches.items.len);
+            var rows: usize = 0;
+            for (host.engine.each_row_sites.items) |site| rows += site.scope_ids.items.len;
+            try std.testing.expectEqual(@as(usize, expected_rows), rows);
+            try std.testing.expectEqual(@as(usize, expected_states), host.engine.states.items.len);
+            try std.testing.expect(activeTextElementId(host, "deep-1") != null);
+            try std.testing.expect(activeTextElementId(host, "deep-8") != null);
+            try std.testing.expect(activeTextElementId(host, "outer-82") != null);
+            try std.testing.expect(activeTextElementId(host, "row-822-822") != null);
         }
 
         fn run(failure_number: ?usize) !usize {

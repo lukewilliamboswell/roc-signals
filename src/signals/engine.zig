@@ -3811,21 +3811,244 @@ pub fn Engine(comptime Ctx: type) type {
             signal_records: collection_plan.SignalRecordPlan(HostSignalToken, HostSignalRecord) = .{},
             signal_bindings: std.ArrayListUnmanaged(HostSignalBinding) = .empty,
             signal_roc_host: ?*abi.RocHost = null,
-            signal_token_capacity: usize = 0,
-            signal_root_capacity: usize = 0,
-            reserved_nodes: usize = 0,
-            reserved_attrs: usize = 0,
-            reserved_lifecycle: usize = 0,
-            reserved_scope_sites: usize = 0,
-            reserved_state_sites: usize = 0,
-            reserved_when_sites: usize = 0,
-            reserved_each_sites: usize = 0,
-            reserved_each_rows: usize = 0,
-            reserved_signal_records: usize = 0,
+            plan: CapacityPlan = .{},
             collect_initial_eaches: bool = false,
             phase: CollectionPhase = .collecting,
 
-            fn init(engine_ptr: *Self, host_ctx: Ctx.Handle, stream: *HostNodeDescriptorStream, limits: collection_budget.Limits, expected_nodes: usize, expected_attrs: usize, expected_lifecycle: usize, expected_signal_records: usize, expected_state_sites: usize, expected_component_sites: usize, expected_when_sites: usize, expected_each_sites: usize, expected_external_scopes: usize) CollectionError!@This() {
+            /// Cumulative capacity totals of one staged collection transaction.
+            ///
+            /// Every reservation the collection makes, at init and again when
+            /// a nested each site adds its evaluated rows, adds its counts
+            /// here and then reserves every engine, stream, and
+            /// preparation-owned container against the cumulative totals.
+            /// Materialization and publication assume capacity against these
+            /// totals and must not allocate, so a reservation relative to what
+            /// has been appended so far is not expressible: a nested site
+            /// reserves while its outer site's siblings and rows are still
+            /// pending, and those claim ids and slots after the nested
+            /// reservation ran. Engine-owned tables do not grow at all until
+            /// commit, so their unused capacity must cover the whole plan.
+            const CapacityPlan = struct {
+                /// One reservation's contribution to the plan.
+                const Counts = struct {
+                    roots: StaticRootCounts = .{},
+                    /// Scopes the transaction claims beyond the component and
+                    /// when-branch scopes its roots declare: externally
+                    /// attached scope ids and one scope per each row.
+                    external_scopes: usize = 0,
+                    each_rows: usize = 0,
+                    /// State cells staged for an external state update; they
+                    /// are retired at commit rather than published.
+                    external_states: usize = 0,
+
+                    fn scopeSites(self: Counts) CollectionError!usize {
+                        const state_component = try total(self.roots.state_sites, self.roots.component_sites);
+                        const without_each = try total(state_component, self.roots.when_sites);
+                        return total(without_each, self.roots.each_sites);
+                    }
+
+                    fn scopeIntents(self: Counts) CollectionError!usize {
+                        const child_scopes = try total(self.roots.component_sites, self.roots.when_sites);
+                        return total(self.external_scopes, child_scopes);
+                    }
+
+                    /// Every descriptor root contains at least one signal
+                    /// record, so the record count also bounds roots that are
+                    /// neither attributes nor lifecycle entries, such as when
+                    /// conditions and signal-backed text nodes.
+                    fn signalRoots(self: Counts) CollectionError!usize {
+                        const attr_lifecycle = try total(self.roots.attrs, self.roots.lifecycle);
+                        return @max(attr_lifecycle, self.roots.signal_records);
+                    }
+                };
+
+                nodes: usize = 0,
+                attrs: usize = 0,
+                lifecycle: usize = 0,
+                signal_records: usize = 0,
+                signal_roots: usize = 0,
+                state_sites: usize = 0,
+                when_sites: usize = 0,
+                each_sites: usize = 0,
+                scope_sites: usize = 0,
+                scope_intents: usize = 0,
+                each_rows: usize = 0,
+                external_states: usize = 0,
+                /// Committed table lengths the latest reservation was made
+                /// against; fresh ids are claimed contiguously above them.
+                /// Other steps of a composite transaction may append to the
+                /// engine tables before this collection commits, so the
+                /// coverage checks compare against these bases, not the
+                /// lengths at commit.
+                scope_base: usize = 0,
+                node_base: usize = 0,
+                dom_base: usize = 0,
+
+                fn total(left: usize, right: usize) CollectionError!usize {
+                    return std.math.add(usize, left, right) catch error.ResourceLimit;
+                }
+
+                /// Returns the totals after `counts` joins the plan; the plan
+                /// itself only changes once every reservation has succeeded.
+                fn add(self: CapacityPlan, counts: Counts) CollectionError!CapacityPlan {
+                    return .{
+                        .nodes = try total(self.nodes, counts.roots.nodes),
+                        .attrs = try total(self.attrs, counts.roots.attrs),
+                        .lifecycle = try total(self.lifecycle, counts.roots.lifecycle),
+                        .signal_records = try total(self.signal_records, counts.roots.signal_records),
+                        .signal_roots = try total(self.signal_roots, try counts.signalRoots()),
+                        .state_sites = try total(self.state_sites, counts.roots.state_sites),
+                        .when_sites = try total(self.when_sites, counts.roots.when_sites),
+                        .each_sites = try total(self.each_sites, counts.roots.each_sites),
+                        .scope_sites = try total(self.scope_sites, try counts.scopeSites()),
+                        .scope_intents = try total(self.scope_intents, try counts.scopeIntents()),
+                        .each_rows = try total(self.each_rows, counts.each_rows),
+                        .external_states = try total(self.external_states, counts.external_states),
+                        .scope_base = self.scope_base,
+                        .node_base = self.node_base,
+                        .dom_base = self.dom_base,
+                    };
+                }
+
+                /// Reserves every container the collection publishes into
+                /// against these cumulative totals. Only the identity and
+                /// scope overlays take this reservation's own `added` counts:
+                /// they track their outstanding reservations themselves.
+                fn reserve(self: *CapacityPlan, collection: *StagedCollectionCtx, added: Counts) CollectionError!void {
+                    const allocator = Ctx.allocator(collection.host_ctx);
+                    const engine_ptr = collection.engine;
+                    self.scope_base = engine_ptr.scopes.items.len;
+                    self.node_base = engine_ptr.node_identities.items.len;
+                    self.dom_base = engine_ptr.dom_identities.items.len;
+                    collection.scopes.prepare(allocator, try added.scopeIntents()) catch return error.OutOfMemory;
+                    collection.node_identities.prepare(allocator, try added.scopeSites()) catch return error.OutOfMemory;
+                    collection.dom_identities.prepare(allocator, added.roots.nodes) catch return error.OutOfMemory;
+
+                    const signal_descriptors = try total(self.attrs, self.nodes);
+                    const attrs_u32 = std.math.cast(u32, self.attrs) orelse return error.ResourceLimit;
+                    const state_cells = try total(self.state_sites, self.external_states);
+                    collection.prepared_nodes.ensureUnusedCapacity(allocator, self.nodes) catch return error.OutOfMemory;
+                    collection.prepared_render_order.ensureUnusedCapacity(allocator, self.nodes) catch return error.OutOfMemory;
+                    collection.prepared_attrs.ensureUnusedCapacity(allocator, self.attrs) catch return error.OutOfMemory;
+                    collection.prepared_signal_attrs.ensureUnusedCapacity(allocator, signal_descriptors) catch return error.OutOfMemory;
+                    collection.prepared_events.ensureUnusedCapacity(allocator, self.attrs) catch return error.OutOfMemory;
+                    collection.prepared_lifecycle.ensureUnusedCapacity(allocator, self.lifecycle) catch return error.OutOfMemory;
+                    collection.prepared_state_sites.ensureUnusedCapacity(allocator, self.scope_sites) catch return error.OutOfMemory;
+                    collection.prepared_states.ensureUnusedCapacity(allocator, self.state_sites) catch return error.OutOfMemory;
+                    collection.prepared_state_cells.ensureUnusedCapacity(allocator, state_cells) catch return error.OutOfMemory;
+                    collection.prepared_whens.ensureUnusedCapacity(allocator, self.when_sites) catch return error.OutOfMemory;
+                    collection.prepared_eaches.ensureUnusedCapacity(allocator, self.each_sites) catch return error.OutOfMemory;
+                    collection.prepared_each_sites.ensureUnusedCapacity(allocator, self.each_sites) catch return error.OutOfMemory;
+                    collection.prepared_each_row_scopes.ensureUnusedCapacity(allocator, self.each_rows) catch return error.OutOfMemory;
+                    collection.prepared_named_event_groups.ensureUnusedCapacity(allocator, self.attrs) catch return error.OutOfMemory;
+                    collection.prepared_named_event_group_by_elem.ensureUnusedCapacity(allocator, attrs_u32) catch return error.OutOfMemory;
+                    collection.signal_records.prepare(allocator, self.signal_records, self.signal_roots) catch return error.OutOfMemory;
+                    collection.signal_bindings.ensureUnusedCapacity(allocator, self.signal_roots) catch return error.OutOfMemory;
+
+                    // Fresh scope, node, and elem ids are claimed contiguously
+                    // above the committed tables, skipping only ids this
+                    // transaction already holds, so the committed length plus
+                    // the cumulative total bounds every id the plan can claim.
+                    const scope_len = try total(self.scope_base, self.scope_intents);
+                    const state_index_len = try total(self.node_base, self.scope_sites);
+                    engine_ptr.scopes.ensureTotalCapacity(allocator, scope_len) catch return error.OutOfMemory;
+                    engine_ptr.each_row_memberships_by_scope_id.ensureTotalCapacity(allocator, scope_len) catch return error.OutOfMemory;
+                    engine_ptr.node_identities.ensureUnusedCapacity(allocator, self.scope_sites) catch return error.OutOfMemory;
+                    engine_ptr.active_node_identity_ids.ensureUnusedCapacity(allocator, std.math.cast(u32, self.scope_sites) orelse return error.ResourceLimit) catch return error.OutOfMemory;
+                    engine_ptr.states.ensureUnusedCapacity(allocator, self.state_sites) catch return error.OutOfMemory;
+                    engine_ptr.state_indexes_by_node_id.ensureTotalCapacity(allocator, state_index_len) catch return error.OutOfMemory;
+                    // `engine.dom_identities` grows to the exact elem id when
+                    // `reserveDomIdentity` claims it during preparation: a
+                    // transaction that reuses retired ids appends nothing, and
+                    // reserving `nodes` fresh slots regardless would grow the
+                    // committed table on every such transaction, breaking its
+                    // plateau. The plan still bounds every claim.
+                    engine_ptr.active_dom_identity_ids.ensureUnusedCapacity(allocator, std.math.cast(u32, self.nodes) orelse return error.ResourceLimit) catch return error.OutOfMemory;
+                    engine_ptr.each_row_sites.ensureUnusedCapacity(allocator, self.each_sites) catch return error.OutOfMemory;
+                    engine_ptr.each_row_site_indexes.ensureUnusedCapacity(allocator, std.math.cast(u32, self.each_sites) orelse return error.ResourceLimit) catch return error.OutOfMemory;
+
+                    const highest_elem_id: u64 = @intCast(try total(self.dom_base, self.nodes));
+                    try collection.stream.reservePreparedStaticNodes(allocator, self.nodes, highest_elem_id);
+                    try collection.stream.reservePreparedStaticAttrs(allocator, self.attrs);
+                    try collection.stream.reservePreparedSignalAttrs(allocator, self.attrs, highest_elem_id);
+                    try collection.stream.reservePreparedSignalTextNodes(allocator, self.nodes, highest_elem_id);
+                    try collection.stream.reservePreparedSignalRecordPublication(allocator, self.signal_records);
+                    try collection.stream.reservePreparedEvents(allocator, self.attrs, highest_elem_id);
+                    try collection.stream.reservePreparedCustomAttrIndex(allocator, self.attrs);
+                    try collection.stream.reservePreparedLifecycle(allocator, self.lifecycle);
+                    if (self.scope_sites != 0) {
+                        const highest_node_id: u64 = @intCast(state_index_len - 1);
+                        try collection.stream.reservePreparedStateSites(allocator, self.scope_sites, highest_node_id);
+                        try collection.stream.reservePreparedWhens(allocator, self.when_sites, highest_node_id);
+                        try collection.stream.reservePreparedEaches(allocator, self.each_sites, highest_node_id);
+                    }
+                }
+
+                /// Checks, in safe builds only, that the preparation-owned
+                /// vectors and the prepared stream can absorb the plan before
+                /// materialization drains them into the stream.
+                fn assertStreamCovered(self: *const CapacityPlan, collection: *const StagedCollectionCtx) void {
+                    if (!std.debug.runtime_safety) return;
+                    const stream = collection.stream;
+                    std.debug.assert(collection.prepared_nodes.capacity >= self.nodes);
+                    std.debug.assert(collection.prepared_render_order.capacity >= self.nodes);
+                    std.debug.assert(collection.prepared_attrs.capacity >= self.attrs);
+                    std.debug.assert(collection.prepared_signal_attrs.capacity >= self.attrs +| self.nodes);
+                    std.debug.assert(collection.prepared_events.capacity >= self.attrs);
+                    std.debug.assert(collection.prepared_lifecycle.capacity >= self.lifecycle);
+                    std.debug.assert(collection.prepared_state_sites.capacity >= self.scope_sites);
+                    std.debug.assert(collection.prepared_states.capacity >= self.state_sites);
+                    std.debug.assert(collection.prepared_state_cells.capacity >= self.state_sites +| self.external_states);
+                    std.debug.assert(collection.prepared_whens.capacity >= self.when_sites);
+                    std.debug.assert(collection.prepared_eaches.capacity >= self.each_sites);
+                    std.debug.assert(collection.prepared_each_sites.capacity >= self.each_sites);
+                    std.debug.assert(collection.prepared_each_row_scopes.capacity >= self.each_rows);
+                    std.debug.assert(collection.prepared_named_event_groups.capacity >= self.attrs);
+                    std.debug.assert(collection.signal_bindings.capacity >= self.signal_roots);
+                    std.debug.assert(collection.signal_records.token_intents.capacity >= self.signal_records);
+                    std.debug.assert(collection.signal_records.descriptor_roots.capacity >= self.signal_roots);
+                    std.debug.assert(stream.render_nodes.capacity - stream.render_nodes.items.len >= self.nodes);
+                    std.debug.assert(stream.elements.capacity - stream.elements.items.len >= self.nodes);
+                    std.debug.assert(stream.text_nodes.capacity - stream.text_nodes.items.len >= self.nodes);
+                    std.debug.assert(stream.signal_text_nodes.capacity - stream.signal_text_nodes.items.len >= self.nodes);
+                    std.debug.assert(stream.static_text_attrs.capacity - stream.static_text_attrs.items.len >= self.attrs);
+                    std.debug.assert(stream.static_bool_attrs.capacity - stream.static_bool_attrs.items.len >= self.attrs);
+                    std.debug.assert(stream.static_custom_text_attrs.capacity - stream.static_custom_text_attrs.items.len >= self.attrs);
+                    std.debug.assert(stream.static_custom_bool_attrs.capacity - stream.static_custom_bool_attrs.items.len >= self.attrs);
+                    std.debug.assert(stream.signal_text_attrs.capacity - stream.signal_text_attrs.items.len >= self.attrs);
+                    std.debug.assert(stream.signal_bool_attrs.capacity - stream.signal_bool_attrs.items.len >= self.attrs);
+                    std.debug.assert(stream.signal_custom_text_attrs.capacity - stream.signal_custom_text_attrs.items.len >= self.attrs);
+                    std.debug.assert(stream.signal_optional_custom_text_attrs.capacity - stream.signal_optional_custom_text_attrs.items.len >= self.attrs);
+                    std.debug.assert(stream.signal_custom_bool_attrs.capacity - stream.signal_custom_bool_attrs.items.len >= self.attrs);
+                    std.debug.assert(stream.events.capacity - stream.events.items.len >= self.attrs);
+                    std.debug.assert(stream.on_changes.capacity - stream.on_changes.items.len >= self.lifecycle);
+                    std.debug.assert(stream.mounts.capacity - stream.mounts.items.len >= self.lifecycle);
+                    std.debug.assert(stream.cleanups.capacity - stream.cleanups.items.len >= self.lifecycle);
+                    std.debug.assert(stream.scope_sites.capacity - stream.scope_sites.items.len >= self.scope_sites);
+                    std.debug.assert(stream.states.capacity - stream.states.items.len >= self.scope_sites);
+                    std.debug.assert(stream.whens.capacity - stream.whens.items.len >= self.when_sites);
+                    std.debug.assert(stream.eaches.capacity - stream.eaches.items.len >= self.each_sites);
+                    std.debug.assert(stream.descriptor_indexes_by_elem_id.capacity >= self.dom_base +| self.nodes +| 1);
+                    if (self.scope_sites != 0) std.debug.assert(stream.descriptor_indexes_by_node_id.capacity >= self.node_base +| self.scope_sites);
+                }
+
+                /// Checks, in safe builds only, that the engine-owned tables
+                /// publication appends into can absorb the plan. Hash maps
+                /// track their own availability and are not checked here.
+                fn assertEngineCovered(self: *const CapacityPlan, collection: *const StagedCollectionCtx) void {
+                    if (!std.debug.runtime_safety) return;
+                    const engine_ptr = collection.engine;
+                    std.debug.assert(engine_ptr.scopes.capacity >= self.scope_base +| self.scope_intents);
+                    std.debug.assert(engine_ptr.each_row_memberships_by_scope_id.capacity >= self.scope_base +| self.scope_intents);
+                    std.debug.assert(engine_ptr.node_identities.capacity >= self.node_base +| self.scope_sites);
+                    std.debug.assert(engine_ptr.state_indexes_by_node_id.capacity >= self.node_base +| self.scope_sites);
+                    std.debug.assert(engine_ptr.states.capacity - engine_ptr.states.items.len >= self.state_sites);
+                    for (collection.dom_identities.intents.items) |intent| std.debug.assert(engine_ptr.dom_identities.capacity >= intent.id);
+                    std.debug.assert(engine_ptr.each_row_sites.capacity - engine_ptr.each_row_sites.items.len >= self.each_sites);
+                }
+            };
+
+            fn init(engine_ptr: *Self, host_ctx: Ctx.Handle, stream: *HostNodeDescriptorStream, limits: collection_budget.Limits, counts: StaticRootCounts, expected_external_scopes: usize) CollectionError!@This() {
                 var self = @This(){
                     .engine = engine_ptr,
                     .host_ctx = host_ctx,
@@ -3833,73 +4056,8 @@ pub fn Engine(comptime Ctx: type) type {
                     .budget = collection_budget.StreamBudget.init(limits) catch return error.ResourceLimit,
                 };
                 errdefer self.deinit();
-                const allocator = Ctx.allocator(host_ctx);
-                const expected_state_component_sites = std.math.add(usize, expected_state_sites, expected_component_sites) catch return error.ResourceLimit;
-                const attr_lifecycle_roots = std.math.add(usize, expected_attrs, expected_lifecycle) catch return error.ResourceLimit;
-                // Every descriptor root contains at least one signal record.
-                // The record count therefore also bounds roots that are not
-                // attributes or lifecycle entries, such as when conditions
-                // and signal-backed text nodes.
-                const expected_signal_roots = @max(attr_lifecycle_roots, expected_signal_records);
-                const expected_scope_sites_without_each = std.math.add(usize, expected_state_component_sites, expected_when_sites) catch return error.ResourceLimit;
-                const expected_scope_sites = std.math.add(usize, expected_scope_sites_without_each, expected_each_sites) catch return error.ResourceLimit;
-                const expected_child_scopes = std.math.add(usize, expected_component_sites, expected_when_sites) catch return error.ResourceLimit;
-                const expected_scope_intents = std.math.add(usize, expected_external_scopes, expected_child_scopes) catch return error.ResourceLimit;
-                self.scopes.prepare(allocator, expected_scope_intents) catch return error.OutOfMemory;
-                self.node_identities.prepare(allocator, expected_scope_sites) catch return error.OutOfMemory;
-                if (expected_nodes > limits.nodes) return error.ResourceLimit;
-                self.dom_identities.prepare(allocator, expected_nodes) catch return error.OutOfMemory;
-                self.prepared_nodes.ensureTotalCapacity(allocator, expected_nodes) catch return error.OutOfMemory;
-                self.prepared_render_order.ensureTotalCapacity(allocator, expected_nodes) catch return error.OutOfMemory;
-                self.prepared_attrs.ensureTotalCapacity(allocator, expected_attrs) catch return error.OutOfMemory;
-                const expected_signal_descriptors = std.math.add(usize, expected_attrs, expected_nodes) catch return error.ResourceLimit;
-                self.prepared_signal_attrs.ensureTotalCapacity(allocator, expected_signal_descriptors) catch return error.OutOfMemory;
-                self.prepared_events.ensureTotalCapacity(allocator, expected_attrs) catch return error.OutOfMemory;
-                self.prepared_lifecycle.ensureTotalCapacity(allocator, expected_lifecycle) catch return error.OutOfMemory;
-                try self.stream.reservePreparedLifecycle(allocator, expected_lifecycle);
-                self.prepared_state_sites.ensureTotalCapacity(allocator, expected_scope_sites) catch return error.OutOfMemory;
-                self.prepared_states.ensureTotalCapacity(allocator, expected_state_sites) catch return error.OutOfMemory;
-                self.prepared_state_cells.ensureTotalCapacity(allocator, expected_state_sites) catch return error.OutOfMemory;
-                self.prepared_whens.ensureTotalCapacity(allocator, expected_when_sites) catch return error.OutOfMemory;
-                self.prepared_eaches.ensureTotalCapacity(allocator, expected_each_sites) catch return error.OutOfMemory;
-                self.prepared_named_event_groups.ensureTotalCapacity(allocator, expected_attrs) catch return error.OutOfMemory;
-                const expected_event_groups = std.math.cast(u32, expected_attrs) orelse return error.ResourceLimit;
-                self.prepared_named_event_group_by_elem.ensureTotalCapacity(allocator, expected_event_groups) catch return error.OutOfMemory;
-                self.signal_records.prepare(allocator, expected_signal_records, expected_signal_roots) catch return error.OutOfMemory;
-                self.signal_bindings.ensureTotalCapacity(allocator, expected_signal_roots) catch return error.OutOfMemory;
-                self.signal_token_capacity = expected_signal_records;
-                self.signal_root_capacity = expected_signal_roots;
-                self.reserved_nodes = expected_nodes;
-                self.reserved_attrs = expected_attrs;
-                self.reserved_lifecycle = expected_lifecycle;
-                self.reserved_scope_sites = expected_scope_sites;
-                self.reserved_state_sites = expected_state_sites;
-                self.reserved_when_sites = expected_when_sites;
-                self.reserved_each_sites = expected_each_sites;
-                self.reserved_signal_records = expected_signal_records;
-                self.engine.scopes.ensureUnusedCapacity(allocator, expected_scope_intents) catch return error.OutOfMemory;
-                const expected_scope_len = std.math.add(usize, self.engine.scopes.items.len, expected_scope_intents) catch return error.ResourceLimit;
-                self.engine.each_row_memberships_by_scope_id.ensureTotalCapacity(allocator, expected_scope_len) catch return error.OutOfMemory;
-                self.engine.node_identities.ensureUnusedCapacity(allocator, expected_scope_sites) catch return error.OutOfMemory;
-                self.engine.active_node_identity_ids.ensureUnusedCapacity(allocator, std.math.cast(u32, expected_scope_sites) orelse return error.ResourceLimit) catch return error.OutOfMemory;
-                self.engine.states.ensureUnusedCapacity(allocator, expected_state_sites) catch return error.OutOfMemory;
-                const state_index_len = std.math.add(usize, self.engine.node_identities.items.len, expected_scope_sites) catch return error.ResourceLimit;
-                self.engine.state_indexes_by_node_id.ensureTotalCapacity(allocator, state_index_len) catch return error.OutOfMemory;
-                self.engine.active_dom_identity_ids.ensureUnusedCapacity(allocator, @intCast(expected_nodes)) catch return error.OutOfMemory;
-                const highest_elem_id = std.math.add(u64, @intCast(self.engine.dom_identities.items.len), @as(u64, @intCast(expected_nodes))) catch return error.ResourceLimit;
-                try self.stream.reservePreparedStaticNodes(allocator, expected_nodes, highest_elem_id);
-                try self.stream.reservePreparedStaticAttrs(allocator, expected_attrs);
-                try self.stream.reservePreparedSignalAttrs(allocator, expected_attrs, highest_elem_id);
-                try self.stream.reservePreparedSignalTextNodes(allocator, expected_nodes, highest_elem_id);
-                try self.stream.reservePreparedSignalRecordPublication(allocator, expected_signal_records);
-                try self.stream.reservePreparedEvents(allocator, expected_attrs, highest_elem_id);
-                try self.stream.reservePreparedCustomAttrIndex(allocator, expected_attrs);
-                if (expected_scope_sites != 0) {
-                    const highest_node_id = std.math.sub(usize, state_index_len, 1) catch return error.ResourceLimit;
-                    try self.stream.reservePreparedStateSites(allocator, expected_scope_sites, @intCast(highest_node_id));
-                    try self.stream.reservePreparedWhens(allocator, expected_when_sites, @intCast(highest_node_id));
-                    try self.stream.reservePreparedEaches(allocator, expected_each_sites, @intCast(highest_node_id));
-                }
+                if (counts.nodes > limits.nodes) return error.ResourceLimit;
+                try self.reserveCounts(.{ .roots = counts, .external_scopes = expected_external_scopes });
                 return self;
             }
 
@@ -4015,97 +4173,14 @@ pub fn Engine(comptime Ctx: type) type {
                 self.dom_identities.deinit(allocator);
             }
 
-            fn reserveAdditionalCounts(self: *@This(), counts: StaticRootCounts, external_scopes: usize) CollectionError!void {
-                const allocator = Ctx.allocator(self.host_ctx);
-                const state_component_sites = std.math.add(usize, counts.state_sites, counts.component_sites) catch return error.ResourceLimit;
-                const scope_sites_without_each = std.math.add(usize, state_component_sites, counts.when_sites) catch return error.ResourceLimit;
-                const scope_sites = std.math.add(usize, scope_sites_without_each, counts.each_sites) catch return error.ResourceLimit;
-                const child_scopes = std.math.add(usize, counts.component_sites, counts.when_sites) catch return error.ResourceLimit;
-                const scope_intents = std.math.add(usize, external_scopes, child_scopes) catch return error.ResourceLimit;
-                const attr_lifecycle = std.math.add(usize, counts.attrs, counts.lifecycle) catch return error.ResourceLimit;
-                const signal_roots = @max(attr_lifecycle, counts.signal_records);
-                const total_nodes = std.math.add(usize, self.reserved_nodes, counts.nodes) catch return error.ResourceLimit;
-                const total_attrs = std.math.add(usize, self.reserved_attrs, counts.attrs) catch return error.ResourceLimit;
-                const total_lifecycle = std.math.add(usize, self.reserved_lifecycle, counts.lifecycle) catch return error.ResourceLimit;
-                const total_scope_sites = std.math.add(usize, self.reserved_scope_sites, scope_sites) catch return error.ResourceLimit;
-                const total_state_sites = std.math.add(usize, self.reserved_state_sites, counts.state_sites) catch return error.ResourceLimit;
-                const total_when_sites = std.math.add(usize, self.reserved_when_sites, counts.when_sites) catch return error.ResourceLimit;
-                const total_each_sites = std.math.add(usize, self.reserved_each_sites, counts.each_sites) catch return error.ResourceLimit;
-                const total_signal_records = std.math.add(usize, self.reserved_signal_records, counts.signal_records) catch return error.ResourceLimit;
-                const total_signal_roots = std.math.add(usize, self.signal_root_capacity, signal_roots) catch return error.ResourceLimit;
-
-                self.scopes.prepare(allocator, scope_intents) catch return error.OutOfMemory;
-                const reserved_scope_budget = std.math.add(usize, self.scopes.reserved_ids.count(), self.scopes.prepared_remaining) catch return error.ResourceLimit;
-                const final_scope_bound = std.math.add(usize, self.engine.scopes.items.len, reserved_scope_budget) catch return error.ResourceLimit;
-                self.engine.scopes.ensureTotalCapacity(allocator, final_scope_bound) catch return error.OutOfMemory;
-                self.engine.each_row_memberships_by_scope_id.ensureTotalCapacity(allocator, final_scope_bound) catch return error.OutOfMemory;
-                self.node_identities.prepare(allocator, scope_sites) catch return error.OutOfMemory;
-                self.dom_identities.prepare(allocator, counts.nodes) catch return error.OutOfMemory;
-                self.prepared_nodes.ensureUnusedCapacity(allocator, total_nodes) catch return error.OutOfMemory;
-                self.prepared_render_order.ensureUnusedCapacity(allocator, total_nodes) catch return error.OutOfMemory;
-                self.prepared_attrs.ensureUnusedCapacity(allocator, total_attrs) catch return error.OutOfMemory;
-                self.prepared_signal_attrs.ensureUnusedCapacity(allocator, std.math.add(usize, total_attrs, total_nodes) catch return error.ResourceLimit) catch return error.OutOfMemory;
-                self.prepared_events.ensureUnusedCapacity(allocator, total_attrs) catch return error.OutOfMemory;
-                self.prepared_lifecycle.ensureUnusedCapacity(allocator, total_lifecycle) catch return error.OutOfMemory;
-                self.prepared_state_sites.ensureUnusedCapacity(allocator, total_scope_sites) catch return error.OutOfMemory;
-                self.prepared_states.ensureUnusedCapacity(allocator, total_scope_sites) catch return error.OutOfMemory;
-                self.prepared_state_cells.ensureUnusedCapacity(allocator, total_scope_sites) catch return error.OutOfMemory;
-                self.prepared_whens.ensureUnusedCapacity(allocator, total_scope_sites) catch return error.OutOfMemory;
-                self.prepared_eaches.ensureUnusedCapacity(allocator, total_scope_sites) catch return error.OutOfMemory;
-                self.prepared_named_event_groups.ensureUnusedCapacity(allocator, total_attrs) catch return error.OutOfMemory;
-                self.prepared_named_event_group_by_elem.ensureUnusedCapacity(allocator, std.math.cast(u32, total_attrs) orelse return error.ResourceLimit) catch return error.OutOfMemory;
-                // Token and root capacity is relative to the plan's *current*
-                // size, and rows reserved by an outer site may still be pending
-                // when a nested site reserves; cumulative totals keep every
-                // outstanding reservation covered regardless of interleaving.
-                self.signal_records.prepare(allocator, total_signal_records, total_signal_roots) catch return error.OutOfMemory;
-                self.signal_bindings.ensureUnusedCapacity(allocator, total_signal_roots) catch return error.OutOfMemory;
-                self.signal_token_capacity = std.math.add(usize, self.signal_token_capacity, counts.signal_records) catch return error.ResourceLimit;
-                self.signal_root_capacity = std.math.add(usize, self.signal_root_capacity, signal_roots) catch return error.ResourceLimit;
-
-                self.engine.scopes.ensureUnusedCapacity(allocator, scope_intents) catch return error.OutOfMemory;
-                self.engine.node_identities.ensureUnusedCapacity(allocator, total_scope_sites) catch return error.OutOfMemory;
-                self.engine.active_node_identity_ids.ensureUnusedCapacity(allocator, std.math.cast(u32, total_scope_sites) orelse return error.ResourceLimit) catch return error.OutOfMemory;
-                self.engine.states.ensureUnusedCapacity(allocator, total_state_sites) catch return error.OutOfMemory;
-                // Every fresh node id is at most the committed count plus the
-                // sites reserved over the whole transaction, so the state index
-                // table must cover the cumulative total rather than the intents
-                // issued so far plus this reservation: an outer reservation's
-                // outstanding sites are claimed after a nested one prepares.
-                const state_index_len = std.math.add(usize, self.engine.node_identities.items.len, total_scope_sites) catch return error.ResourceLimit;
-                self.engine.state_indexes_by_node_id.ensureTotalCapacity(allocator, state_index_len) catch return error.OutOfMemory;
-                self.engine.active_dom_identity_ids.ensureUnusedCapacity(allocator, std.math.cast(u32, total_nodes) orelse return error.ResourceLimit) catch return error.OutOfMemory;
-                // Fresh elem ids are claimed in collection order from the
-                // committed count, so the static siblings that follow a nested
-                // site take ids above every id its rows claimed. The highest id
-                // is therefore bounded by the committed ids plus the cumulative
-                // node total, not by the ids interned so far plus this site's
-                // nodes: that bound is short by the outer site's outstanding
-                // siblings, and signal descriptors take their per-elem index
-                // slot at materialization, which must not allocate.
-                const highest_elem_id = std.math.add(u64, @intCast(self.engine.dom_identities.items.len), @as(u64, @intCast(total_nodes))) catch return error.ResourceLimit;
-                try self.stream.reservePreparedStaticNodes(allocator, total_nodes, highest_elem_id);
-                try self.stream.reservePreparedStaticAttrs(allocator, total_attrs);
-                try self.stream.reservePreparedSignalAttrs(allocator, total_attrs, highest_elem_id);
-                try self.stream.reservePreparedSignalTextNodes(allocator, total_nodes, highest_elem_id);
-                try self.stream.reservePreparedSignalRecordPublication(allocator, total_signal_records);
-                try self.stream.reservePreparedEvents(allocator, total_attrs, highest_elem_id);
-                try self.stream.reservePreparedCustomAttrIndex(allocator, total_attrs);
-                try self.stream.reservePreparedLifecycle(allocator, total_lifecycle);
-                if (scope_sites != 0) {
-                    const highest_node_id = std.math.sub(usize, state_index_len, 1) catch return error.ResourceLimit;
-                    try self.stream.reservePreparedStateSites(allocator, total_scope_sites, @intCast(highest_node_id));
-                    try self.stream.reservePreparedWhens(allocator, total_when_sites, @intCast(highest_node_id));
-                    try self.stream.reservePreparedEaches(allocator, total_each_sites, @intCast(highest_node_id));
-                }
-                self.reserved_nodes = total_nodes;
-                self.reserved_attrs = total_attrs;
-                self.reserved_lifecycle = total_lifecycle;
-                self.reserved_scope_sites = total_scope_sites;
-                self.reserved_state_sites = total_state_sites;
-                self.reserved_when_sites = total_when_sites;
-                self.reserved_each_sites = total_each_sites;
-                self.reserved_signal_records = total_signal_records;
+            /// Adds `counts` to the transaction's capacity plan and reserves
+            /// every container against the new cumulative totals. The plan
+            /// only advances once every reservation succeeded, so a refused
+            /// reservation leaves the previous totals intact for retry.
+            fn reserveCounts(self: *@This(), counts: CapacityPlan.Counts) CollectionError!void {
+                var next = try self.plan.add(counts);
+                try next.reserve(self, counts);
+                self.plan = next;
             }
 
             fn rootScope(self: *@This()) CollectionError!scope_tree.InternResult {
@@ -4165,9 +4240,6 @@ pub fn Engine(comptime Ctx: type) type {
 
             fn reserveEachRowScope(self: *@This(), roc_host: *abi.RocHost, parent_scope_id: ids.ScopeId, site_ordinal: ids.SiteOrdinal, key_hash: u64, key: HostValue, item: HostValue, key_cap: HostValueCapability, item_cap: HostValueCapability) CollectionError!ids.ScopeId {
                 try self.validateScope(parent_scope_id);
-                const allocator = Ctx.allocator(self.host_ctx);
-                try self.scopes.prepare(allocator, 1);
-                self.prepared_each_row_scopes.ensureUnusedCapacity(allocator, 1) catch return error.OutOfMemory;
 
                 var scope_id: ?u64 = null;
                 for (self.engine.scopes.items) |scope| {
@@ -4186,9 +4258,11 @@ pub fn Engine(comptime Ctx: type) type {
                     error.NoCapacity => return error.ResourceLimit,
                     error.DuplicateScope => return error.InvalidScope,
                 };
-                const required_len = std.math.add(usize, @as(usize, @intCast(claimed)), 1) catch return error.ResourceLimit;
-                self.engine.scopes.ensureTotalCapacity(allocator, required_len) catch return error.OutOfMemory;
-                self.engine.each_row_memberships_by_scope_id.ensureTotalCapacity(allocator, required_len) catch return error.OutOfMemory;
+                // The row's scope and record were reserved by the site's
+                // `reserveForCollection`, which counts one scope per row into
+                // the cumulative plan; a fresh id can only lie below the
+                // committed length plus that plan.
+                if (std.debug.runtime_safety) std.debug.assert(claimed < self.plan.scope_base + self.plan.scope_intents);
 
                 self.signal_roc_host = roc_host;
                 var key_cell = HostValueCell.initRetained(key, key_cap, &self.engine.pending_roc_metrics);
@@ -4233,6 +4307,11 @@ pub fn Engine(comptime Ctx: type) type {
                     error.NoCapacity => error.ResourceLimit,
                     error.NoAvailableIdentity => error.InvalidScope,
                 };
+                // Elem ids are one-based and claimed contiguously above the
+                // committed table, so the plan's cumulative node total bounds
+                // every id this transaction can hold; the table grows to the
+                // exact id here, while preparation may still allocate.
+                if (std.debug.runtime_safety) std.debug.assert(elem_id <= self.plan.dom_base + self.plan.nodes);
                 const required_len = std.math.cast(usize, elem_id) orelse return error.ResourceLimit;
                 self.engine.dom_identities.ensureTotalCapacity(Ctx.allocator(self.host_ctx), required_len) catch return error.OutOfMemory;
                 return ids.ElemId.fromRaw(elem_id);
@@ -4273,6 +4352,9 @@ pub fn Engine(comptime Ctx: type) type {
                 const binder_bytes = std.math.mul(usize, binder_stack.items.len, @sizeOf(HostBinderBinding)) catch return error.ResourceLimit;
                 const descriptor_bytes = std.math.add(usize, @sizeOf(HostNodeScopeSiteDesc) + @sizeOf(HostNodeStateDesc), binder_bytes) catch return error.ResourceLimit;
                 try self.budget.charge(0, descriptor_bytes);
+                // The binder stack is caller-owned preparation scratch that is
+                // pushed and popped while descriptors are collected; nothing
+                // appends to it at publication, so it stays outside the plan.
                 binder_stack.ensureUnusedCapacity(allocator, 1) catch return error.OutOfMemory;
                 const site_ordinal = ordinal.*;
                 const node_id = try self.reserveNodeIdentity(scope_id, site_ordinal);
@@ -4371,6 +4453,9 @@ pub fn Engine(comptime Ctx: type) type {
                 defer evaluated.deinit();
                 try evaluated.reserveForCollection(self);
 
+                // The site's own row tables are sized to exactly its rows and
+                // filled below during preparation; publication moves the whole
+                // site into `engine.each_row_sites`, whose slot the plan holds.
                 var prepared_site = HostEachRowSite{ .key = .{ .parent_scope_id = scope_id, .site_ordinal = site_ordinal } };
                 errdefer prepared_site.deinit(allocator);
                 prepared_site.scope_ids.ensureTotalCapacity(allocator, evaluated.rows.len) catch return error.OutOfMemory;
@@ -4463,7 +4548,7 @@ pub fn Engine(comptime Ctx: type) type {
                             const bytes = std.math.add(usize, @sizeOf(HostNodeSignalCustomTextAttrDesc), name_slice.len) catch return error.ResourceLimit;
                             try self.budget.charge(0, bytes);
                             const allocator = Ctx.allocator(self.host_ctx);
-                            try self.stream.reservePreparedCustomAttrElem(allocator, elem_id.raw(), self.signal_root_capacity);
+                            try self.stream.reservePreparedCustomAttrElem(allocator, elem_id.raw(), self.plan.signal_roots);
                             const name_copy = allocator.dupe(u8, name_slice) catch return error.OutOfMemory;
                             errdefer allocator.free(name_copy);
                             const signal = try self.bindSignalRoot(roc_host, payload.signal.*, binder_stack);
@@ -4490,7 +4575,7 @@ pub fn Engine(comptime Ctx: type) type {
                             const bytes = std.math.add(usize, @sizeOf(HostNodeSignalOptionalCustomTextAttrDesc), name_slice.len) catch return error.ResourceLimit;
                             try self.budget.charge(0, bytes);
                             const allocator = Ctx.allocator(self.host_ctx);
-                            try self.stream.reservePreparedCustomAttrElem(allocator, elem_id.raw(), self.signal_root_capacity);
+                            try self.stream.reservePreparedCustomAttrElem(allocator, elem_id.raw(), self.plan.signal_roots);
                             const name_copy = allocator.dupe(u8, name_slice) catch return error.OutOfMemory;
                             errdefer allocator.free(name_copy);
                             const signal = try self.bindSignalRoot(roc_host, payload.signal.*, binder_stack);
@@ -4533,7 +4618,7 @@ pub fn Engine(comptime Ctx: type) type {
                             const bytes = std.math.add(usize, @sizeOf(HostNodeSignalCustomBoolAttrDesc), name_slice.len) catch return error.ResourceLimit;
                             try self.budget.charge(0, bytes);
                             const allocator = Ctx.allocator(self.host_ctx);
-                            try self.stream.reservePreparedCustomAttrElem(allocator, elem_id.raw(), self.signal_root_capacity);
+                            try self.stream.reservePreparedCustomAttrElem(allocator, elem_id.raw(), self.plan.signal_roots);
                             const name_copy = allocator.dupe(u8, name_slice) catch return error.OutOfMemory;
                             errdefer allocator.free(name_copy);
                             const signal = try self.bindSignalRoot(roc_host, payload.signal.*, binder_stack);
@@ -4612,7 +4697,7 @@ pub fn Engine(comptime Ctx: type) type {
                             const total = std.math.add(usize, bytes, payload.value.asSlice().len) catch return error.ResourceLimit;
                             try self.budget.charge(0, total);
                             const allocator = Ctx.allocator(self.host_ctx);
-                            try self.stream.reservePreparedCustomAttrElem(allocator, elem_id.raw(), self.signal_root_capacity);
+                            try self.stream.reservePreparedCustomAttrElem(allocator, elem_id.raw(), self.plan.signal_roots);
                             break :blk self.stream.prepareStaticCustomTextAttr(allocator, elem_id, name_slice, payload.value.asSlice()) catch return error.OutOfMemory;
                         },
                     },
@@ -4627,7 +4712,7 @@ pub fn Engine(comptime Ctx: type) type {
                             const bytes = std.math.add(usize, @sizeOf(HostNodeStaticCustomBoolAttrDesc), name_slice.len) catch return error.ResourceLimit;
                             try self.budget.charge(0, bytes);
                             const allocator = Ctx.allocator(self.host_ctx);
-                            try self.stream.reservePreparedCustomAttrElem(allocator, elem_id.raw(), self.signal_root_capacity);
+                            try self.stream.reservePreparedCustomAttrElem(allocator, elem_id.raw(), self.plan.signal_roots);
                             break :blk self.stream.prepareStaticCustomBoolAttr(allocator, elem_id, name_slice, payload.value) catch return error.OutOfMemory;
                         },
                     },
@@ -4680,6 +4765,11 @@ pub fn Engine(comptime Ctx: type) type {
                 return false;
             }
 
+            /// A group's ordinals are appended during preparation, one per
+            /// named event as it is collected, and only read when the group
+            /// publishes; the per-event growth here is therefore additive
+            /// preparation work rather than a publication reservation, and the
+            /// group slot itself comes from the plan's attribute total.
             fn prepareNamedEventGroup(self: *@This(), elem_id: ids.ElemId) CollectionError!usize {
                 const allocator = Ctx.allocator(self.host_ctx);
                 if (self.prepared_named_event_group_by_elem.get(elem_id.raw())) |index| {
@@ -4710,7 +4800,7 @@ pub fn Engine(comptime Ctx: type) type {
                     const record = self.collection.signal_records.lookup(token, persistent) orelse return null;
                     validateExistingSignalRecord(record, expected_tag);
                     if (!self.collection.signal_records.by_token.contains(token)) {
-                        if (self.collection.signal_records.token_intents.items.len >= self.collection.signal_token_capacity) return error.OutOfMemory;
+                        if (self.collection.signal_records.token_intents.items.len >= self.collection.plan.signal_records) return error.OutOfMemory;
                         self.collection.signal_records.rememberTokenAssumeCapacity(token, record);
                     }
                     return record.retain();
@@ -4729,13 +4819,13 @@ pub fn Engine(comptime Ctx: type) type {
                 fn remember(self: @This(), record: *HostSignalRecord) error{OutOfMemory}!void {
                     const token = record.token() orelse return;
                     if (self.collection.signal_records.by_token.contains(token)) return;
-                    if (self.collection.signal_records.token_intents.items.len >= self.collection.signal_token_capacity) return error.OutOfMemory;
+                    if (self.collection.signal_records.token_intents.items.len >= self.collection.plan.signal_records) return error.OutOfMemory;
                     self.collection.signal_records.rememberTokenAssumeCapacity(token, record);
                 }
             };
 
             fn bindSignalRoot(self: *@This(), roc_host: *abi.RocHost, expr: abi.NodeSignalExpr, binder_stack: []const HostBinderBinding) CollectionError!HostSignalBinding {
-                if (self.signal_records.descriptor_roots.items.len >= self.signal_root_capacity) return error.OutOfMemory;
+                if (self.signal_records.descriptor_roots.items.len >= self.plan.signal_roots) return error.OutOfMemory;
                 self.signal_roc_host = roc_host;
                 const binding = StagedSignalRecordCtx{ .collection = self, .allocator = Ctx.allocator(self.host_ctx) };
                 const record = self.engine.bindSignalExprViewWith(StagedSignalRecordCtx, binding, abi_view.SignalExpr.fromAbi(expr), binder_stack) catch return error.OutOfMemory;
@@ -4774,6 +4864,7 @@ pub fn Engine(comptime Ctx: type) type {
             /// stream without publishing persistent engine identities/scopes.
             fn materializeStream(self: *@This()) void {
                 if (self.phase.isMaterialized()) @panic("staged collection stream materialized twice");
+                self.plan.assertStreamCovered(self);
                 for (self.prepared_render_order.items) |entry| switch (entry) {
                     .static => |index| self.stream.appendPreparedStaticNode(self.prepared_nodes.items[index]),
                     .signal => |index| self.stream.appendPreparedSignalDescriptor(self.prepared_signal_attrs.items[index]),
@@ -4811,6 +4902,7 @@ pub fn Engine(comptime Ctx: type) type {
             fn commit(self: *@This()) void {
                 if (self.phase.isCommitted()) @panic("staged collection committed twice");
                 if (!self.phase.isMaterialized()) self.materializeStream();
+                self.plan.assertEngineCovered(self);
                 const original_scope_len = self.engine.scopes.items.len;
                 var final_scope_len = original_scope_len;
                 var reserved_scope_iterator = self.scopes.reserved_ids.keyIterator();
@@ -5198,25 +5290,13 @@ pub fn Engine(comptime Ctx: type) type {
                 return plan;
             }
 
+            /// Joins the rows' subtrees, one scope per row, and the row scope
+            /// records to the collection's cumulative plan. The site itself
+            /// was counted by whichever reservation covered its enclosing
+            /// subtree, so nothing here is relative to the sites or rows
+            /// appended so far.
             fn reserveForCollection(self: *const @This(), collection: *StagedCollectionCtx) CollectionError!void {
-                const allocator = Ctx.allocator(collection.host_ctx);
-                try collection.reserveAdditionalCounts(self.total_counts, self.rows.len);
-                // Every reservation below is cumulative over the whole staged
-                // transaction rather than relative to what has been appended so
-                // far. A nested site reserves while its outer site's rows are
-                // still pending, so "current length plus one" under-counts the
-                // outer site's remaining appends; the engine-owned site vectors
-                // additionally do not grow at all until commit.
-                const total_rows = std.math.add(usize, collection.reserved_each_rows, self.rows.len) catch return error.ResourceLimit;
-                const total_sites = std.math.add(usize, collection.reserved_each_sites, 1) catch return error.ResourceLimit;
-                collection.prepared_each_row_scopes.ensureUnusedCapacity(allocator, total_rows) catch return error.OutOfMemory;
-                collection.prepared_eaches.ensureUnusedCapacity(allocator, total_sites) catch return error.OutOfMemory;
-                collection.prepared_each_sites.ensureUnusedCapacity(allocator, total_sites) catch return error.OutOfMemory;
-                collection.engine.each_row_sites.ensureUnusedCapacity(allocator, total_sites) catch return error.OutOfMemory;
-                collection.engine.each_row_site_indexes.ensureUnusedCapacity(allocator, std.math.cast(u32, total_sites) orelse return error.ResourceLimit) catch return error.OutOfMemory;
-                collection.reserved_each_rows = total_rows;
-                const highest_node_id = std.math.add(u64, @intCast(collection.engine.node_identities.items.len), @as(u64, @intCast(collection.node_identities.intents.items.len + 1))) catch return error.ResourceLimit;
-                try collection.stream.reservePreparedEaches(allocator, 1, highest_node_id);
+                try collection.reserveCounts(.{ .roots = self.total_counts, .external_scopes = self.rows.len, .each_rows = self.rows.len });
             }
 
             fn deinit(self: *@This()) void {
@@ -6072,7 +6152,7 @@ pub fn Engine(comptime Ctx: type) type {
                 errdefer allocator.destroy(owner);
                 owner.* = .{ .engine = engine, .host_ctx = ctx, .roc_host = roc_host };
                 errdefer owner.stream.deinit(allocator, ctx, roc_host, &engine.pending_roc_metrics);
-                owner.collection = try StagedCollectionCtx.init(engine, ctx, &owner.stream, limits, counts.nodes, counts.attrs, counts.lifecycle, counts.signal_records, counts.state_sites, counts.component_sites, counts.when_sites, counts.each_sites, expected_roots);
+                owner.collection = try StagedCollectionCtx.init(engine, ctx, &owner.stream, limits, counts, expected_roots);
                 owner.collection.collect_initial_eaches = true;
                 return owner;
             }
@@ -6481,7 +6561,7 @@ pub fn Engine(comptime Ctx: type) type {
                 plan.replacement.collection.cache_overlay = cache_overlay;
                 if (state_update) |update| {
                     plan.replacement.collection.signal_roc_host = roc_host;
-                    plan.replacement.collection.prepared_state_cells.ensureUnusedCapacity(allocator, 1) catch return error.OutOfMemory;
+                    try plan.replacement.collection.reserveCounts(.{ .external_states = 1 });
                     const cloned = Ctx.cloneHostValue(ctx, update.value);
                     plan.replacement.collection.prepared_state_cells.appendAssumeCapacity(HostState.initActive(update.state_id, HostValueCell.initRetained(cloned, update.cap, &engine.pending_roc_metrics), 0));
                     plan.replacement.collection.external_state_count = 1;
@@ -7299,7 +7379,7 @@ pub fn Engine(comptime Ctx: type) type {
                 plan.* = .{ .engine = engine_ptr, .host_ctx = ctx, .roc_host = roc_host, .retired_scope_id = retired_scope_id.raw() };
                 errdefer plan.replacement_stream.deinit(allocator, ctx, roc_host, &engine_ptr.pending_roc_metrics);
                 errdefer plan.retired_stream.deinit(allocator, ctx, roc_host, &engine_ptr.pending_roc_metrics);
-                plan.collection = try StagedCollectionCtx.init(engine_ptr, ctx, &plan.replacement_stream, limits, expected.nodes, expected.attrs, expected.lifecycle, expected.signal_records, expected.state_sites, expected.component_sites, expected.when_sites, expected.each_sites, 1);
+                plan.collection = try StagedCollectionCtx.init(engine_ptr, ctx, &plan.replacement_stream, limits, expected, 1);
                 errdefer plan.collection.deinit();
 
                 const branch_scope = try plan.collection.reserveWhenBranchScope(site.scope_id, site.ordinal, selected_branch);
@@ -14173,7 +14253,7 @@ test "staged collection accepts external provisional row scopes without id colli
     _ = try engine.internRootScope(ctx.allocator);
     var stream: HostNodeDescriptorStream = .{};
     defer stream.deinit(ctx.allocator, &ctx, undefined, &engine.pending_roc_metrics);
-    var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&engine, &ctx, &stream, .{}, 0, 0, 0, 0, 0, 0, 1, 0, 2);
+    var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&engine, &ctx, &stream, .{}, .{ .when_sites = 1 }, 2);
     defer collection.deinit();
     fault.configure(1);
     try collection.attachExternalScopeIds(&.{ 1, 2 });
@@ -14962,10 +15042,10 @@ test "staged collection preflights signal records separately from descriptor roo
     var roc_host: abi.RocHost = undefined;
     defer stream.deinit(std.testing.allocator, &ctx, &roc_host, &engine.pending_roc_metrics);
 
-    var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&engine, &ctx, &stream, .{}, 1, 2, 0, 5, 0, 0, 0, 0, 1);
+    var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&engine, &ctx, &stream, .{}, .{ .nodes = 1, .attrs = 2, .signal_records = 5 }, 1);
     defer collection.deinit();
-    try std.testing.expectEqual(@as(usize, 5), collection.signal_token_capacity);
-    try std.testing.expectEqual(@as(usize, 5), collection.signal_root_capacity);
+    try std.testing.expectEqual(@as(usize, 5), collection.plan.signal_records);
+    try std.testing.expectEqual(@as(usize, 5), collection.plan.signal_roots);
     try std.testing.expect(collection.signal_records.token_intents.capacity >= 5);
     try std.testing.expect(collection.signal_records.descriptor_roots.capacity >= 5);
     try std.testing.expect(collection.signal_bindings.capacity >= 5);
@@ -14981,7 +15061,7 @@ test "staged signal record publication is allocation free" {
     var roc_host: abi.RocHost = undefined;
     defer stream.deinit(ctx.allocator, &ctx, &roc_host, &engine.pending_roc_metrics);
 
-    var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&engine, &ctx, &stream, .{}, 0, 1, 0, 2, 0, 0, 0, 0, 1);
+    var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&engine, &ctx, &stream, .{}, .{ .attrs = 1, .signal_records = 2 }, 1);
     defer collection.deinit();
     const capability = std.mem.zeroes(HostValueCapability);
     const child_token: HostSignalToken = @ptrFromInt(0x6000);
@@ -15023,7 +15103,7 @@ test "staged fixed event publication is allocation free" {
     var roc_env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
     var roc_host = abi.makeRocHost(&roc_env);
     defer stream.deinit(ctx.allocator, &ctx, &roc_host, &engine.pending_roc_metrics);
-    var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&engine, &ctx, &stream, .{}, 1, 1, 0, 0, 0, 0, 0, 0, 1);
+    var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&engine, &ctx, &stream, .{}, .{ .nodes = 1, .attrs = 1 }, 1);
     defer collection.deinit();
 
     const binder: HostBinderToken = @ptrFromInt(0x8000);
@@ -15073,7 +15153,7 @@ test "staged named event sweeps allocation failures and retries without visibili
     var roc_env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
     var roc_host = abi.makeRocHost(&roc_env);
     {
-        var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&counter_engine, &counter_ctx, &counter_stream, .{}, 1, 1, 0, 0, 0, 0, 0, 0, 1);
+        var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&counter_engine, &counter_ctx, &counter_stream, .{}, .{ .nodes = 1, .attrs = 1 }, 1);
         defer collection.deinit();
         counter.configure(null);
         try collection.appendAttr(&roc_host, ids.ElemId.fromRaw(1), attr, &.{.{ .token = binder, .node_id = ids.NodeId.fromRaw(9) }});
@@ -15092,7 +15172,7 @@ test "staged named event sweeps allocation failures and retries without visibili
             stream.deinit(ctx.allocator, &ctx, &roc_host, &engine.pending_roc_metrics);
             deinitVerifyStaticEngine(&engine, &ctx);
         }
-        var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&engine, &ctx, &stream, .{}, 1, 1, 0, 0, 0, 0, 0, 0, 1);
+        var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&engine, &ctx, &stream, .{}, .{ .nodes = 1, .attrs = 1 }, 1);
         defer collection.deinit();
 
         fault.configure(failure_number);
@@ -15415,7 +15495,7 @@ test "staged collection refuses unknown and duplicate scopes as InvalidScope" {
     var stream: HostNodeDescriptorStream = .{};
     defer stream.deinit(std.testing.allocator, &ctx, undefined, &engine.pending_roc_metrics);
 
-    var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&engine, &ctx, &stream, .{}, 0, 0, 0, 0, 0, 0, 1, 0, 2);
+    var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&engine, &ctx, &stream, .{}, .{ .when_sites = 1 }, 2);
     defer collection.deinit();
     // A scope id the committed tree has never interned is unknown, not a budget.
     try std.testing.expectError(error.InvalidScope, collection.validateScope(ids.ScopeId.fromRaw(7)));
@@ -15589,6 +15669,14 @@ test "staged root rows share scope ids with provisional structural children and 
             };
             errdefer prepared.deinit();
             const collection = &prepared.owner.collection;
+            // Row scopes are reserved through the capacity plan by the site
+            // that evaluated them; this seam test stands in for that site.
+            collection.reserveCounts(.{ .external_scopes = 2, .each_rows = 2 }) catch |err| {
+                try std.testing.expect(fail_at != null);
+                try std.testing.expectEqual(error.OutOfMemory, err);
+                prepared.deinit();
+                return fault.attempts;
+            };
             const first_row = collection.reserveEachRowScope(host, ids.ScopeId.fromRaw(0), ids.SiteOrdinal.fromRaw(7), 11, HostValue.fromRaw(101), HostValue.fromRaw(201), cap, cap) catch |err| {
                 try std.testing.expect(fail_at != null);
                 try std.testing.expectEqual(error.OutOfMemory, err);
@@ -15603,13 +15691,9 @@ test "staged root rows share scope ids with provisional structural children and 
                 try std.testing.expectEqual(@as(usize, 0), engine.scopes.items.len);
                 return fault.attempts;
             };
-            collection.scopes.prepare(ctx.allocator, 1) catch {
+            collection.reserveCounts(.{ .roots = .{ .when_sites = 1 } }) catch |err| {
                 try std.testing.expect(fail_at != null);
-                prepared.deinit();
-                return fault.attempts;
-            };
-            engine.scopes.ensureTotalCapacity(ctx.allocator, 4) catch {
-                try std.testing.expect(fail_at != null);
+                try std.testing.expectEqual(error.OutOfMemory, err);
                 prepared.deinit();
                 return fault.attempts;
             };
@@ -16359,7 +16443,7 @@ test "staged collection reserves multiple external branch scopes atomically" {
     var stream: HostNodeDescriptorStream = .{};
     defer stream.deinit(std.testing.allocator, &ctx, &roc_host, &engine.pending_roc_metrics);
 
-    var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&engine, &ctx, &stream, .{}, 0, 0, 0, 0, 0, 0, 0, 0, 2);
+    var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&engine, &ctx, &stream, .{}, .{}, 2);
     defer collection.deinit();
     const first = try collection.reserveWhenBranchScope(ids.ScopeId.fromRaw(0), ids.SiteOrdinal.fromRaw(1), .true_branch);
     const second = try collection.reserveWhenBranchScope(ids.ScopeId.fromRaw(0), ids.SiteOrdinal.fromRaw(2), .false_branch);
