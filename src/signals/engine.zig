@@ -12459,6 +12459,12 @@ pub fn Engine(comptime Ctx: type) type {
                     } else {
                         plan.structural_downstream = try prepareWhenDownstream(engine, ctx, roc_host, structural_changes, state_update, &plan.caches);
                     }
+                    // The each-row errdefers above end with their block; the
+                    // adoption below can still fail, and the plan is only
+                    // handed to `deinit` once it is returned.
+                    errdefer if (plan.each_rows) |rows| rows.deinit();
+                    errdefer if (plan.each_replacement) |replacement| replacement.deinit();
+                    errdefer if (plan.each_layout) |*layout| layout.deinit();
                     errdefer plan.structural_downstream.?.deinit();
                     try plan.structural_downstream.?.adoptScalarRenderSplice(&plan.render_splice.?);
                     plan.render_splice.?.deinit();
