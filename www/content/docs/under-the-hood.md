@@ -95,6 +95,10 @@ node scripts/browser/mount_wasm_example.mjs app.wasm my-app --telemetry-summary
 Commands cover creating, moving, and removing nodes; setting text, value, class,
 and attributes; setting `checked` and `disabled`; binding and clearing events;
 starting and cancelling tasks and intervals; and applying dynamic attributes.
+Removal is per subtree: the engine publishes one `remove_node` for the root of
+each retired subtree, and the runtime releases every node id, listener,
+controlled input, and behaviour under that root with it, so retiring a branch
+or a row costs one command rather than one per descendant.
 
 **JavaScript never reconstructs meaning.** It does not diff, does not hold
 reactive state, and does not decide what to patch. It executes an already-decided

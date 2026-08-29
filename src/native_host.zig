@@ -3765,7 +3765,7 @@ test "native prepared render publication keeps DOM unchanged until armed apply" 
         .wire_commands = 10,
     });
     defer splice.deinit();
-    try splice.addNodeReplacement(&host.engine.render_cache, ids.ElemId.fromRaw(1), "section");
+    try splice.addNodeReplacement(&host.engine.render_cache, ids.ElemId.fromRaw(1), "section", .subtree_root);
     try splice.addCreation(&host.engine.render_cache, ids.ElemId.fromRaw(3), "text");
     try splice.addChildren(&host.engine.render_cache, ids.ElemId.fromRaw(0), &.{ids.ElemId.fromRaw(1)});
     try splice.addChildren(&host.engine.render_cache, ids.ElemId.fromRaw(1), &.{ids.ElemId.fromRaw(3)});
@@ -6162,6 +6162,86 @@ test "location-driven when source transaction sweeps host OOM and retries withou
             }
             try std.testing.expect(activeTextElementId(&host, "detail branch") == null);
             try std.testing.expect(activeTextElementId(&host, "overview branch") != null);
+            return attempts;
+        }
+    };
+
+    const attempts = try Runner.run(null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
+}
+
+test "retiring a nested when branch publishes one remove_node for its root and sweeps host OOM" {
+    const Runner = struct {
+        fn run(failure_number: ?usize) !usize {
+            test_erased_callable_drop_count = 0;
+            var host = HostEnv.init();
+            var roc_host = makeSignalsRocHost(&host);
+            host.engine.roc_host = &roc_host;
+            defer {
+                host.deinit();
+                _ = host.gpa.deinit();
+            }
+            host.setCurrentLocation(.{ .path = "/detail", .query = "", .hash = "" });
+            const condition = testNodeLocationPathEqualsSourceExpr(&roc_host, "/detail");
+            const condition_cap = testNodeSignalExprCapabilityOrPanic(condition);
+            // The live branch is a three-deep subtree: section > div > [text, span > text].
+            const detail = testElementWith(&roc_host, "section", &.{}, &.{testElementWith(&roc_host, "div", &.{}, &.{
+                testNodeText(&roc_host, "detail branch"),
+                testElementWith(&roc_host, "span", &.{}, &.{testNodeText(&roc_host, "detail leaf")}),
+            })});
+            const root = abi.Elem{ .payload = .{ .when = .{
+                .condition = boxTestNodeSignalExpr(&roc_host, condition),
+                .read = testBoolReadHandle(&roc_host, condition_cap),
+                .when_false = boxTestElem(&roc_host, testNodeText(&roc_host, "overview branch")),
+                .when_true = boxTestElem(&roc_host, detail),
+            } }, .tag = .When };
+            defer root.decref(&roc_host);
+            var stream: HostNodeDescriptorStream = .{};
+            host.collectActiveElemRootDescriptors(&roc_host, &stream, root, &.{});
+            _ = applyNodeDescriptorStream(&host, &roc_host, &stream);
+            host.engine.active_stream = stream;
+            host.pushCurrentLocation(.{ .path = "/", .query = "", .hash = "" });
+
+            const leaf_text_id = activeTextElementId(&host, "detail leaf") orelse return error.TestUnexpectedResult;
+            const branch_text_id = activeTextElementId(&host, "detail branch") orelse return error.TestUnexpectedResult;
+            const span_id = host.dom_elements.items[@intCast(leaf_text_id)].parent_id orelse return error.TestUnexpectedResult;
+            const div_id = host.dom_elements.items[@intCast(span_id)].parent_id orelse return error.TestUnexpectedResult;
+            const section_id = host.dom_elements.items[@intCast(div_id)].parent_id orelse return error.TestUnexpectedResult;
+            const retired_ids = [_]u64{ section_id, div_id, branch_text_id, span_id, leaf_text_id };
+            const dom_len_before = host.dom_elements.items.len;
+            const remove_before = host.engine.render_metrics.remove_node;
+            const patches_before = host.engine.render_metrics.patches_emitted;
+
+            var fault = FaultAllocator.init(host.gpa.allocator());
+            fault.configure(failure_number);
+            host.engine_allocator_override = fault.allocator();
+            const result = host.engine.tryDispatchCurrentLocationSources(&host, &roc_host);
+            const attempts = fault.attempts;
+            if (failure_number != null) {
+                try std.testing.expectError(error.OutOfMemory, result);
+                try std.testing.expectEqual(@as(usize, 1), fault.induced_failures);
+                try std.testing.expectEqual(dom_len_before, host.dom_elements.items.len);
+                try std.testing.expectEqual(remove_before, host.engine.render_metrics.remove_node);
+                for (retired_ids) |id| try std.testing.expect(host.dom_elements.items[@intCast(id)].active);
+                try std.testing.expect(activeTextElementId(&host, "overview branch") == null);
+
+                fault.configure(null);
+                _ = try host.engine.tryDispatchCurrentLocationSources(&host, &roc_host);
+            } else {
+                _ = try result;
+            }
+            // One wire removal for the subtree root; every node under it is
+            // released from the host shadow by that one journal entry.
+            try std.testing.expectEqual(remove_before + 1, host.engine.render_metrics.remove_node);
+            // remove_node + create_element + set_text + append_child.
+            try std.testing.expectEqual(patches_before + 4, host.engine.render_metrics.patches_emitted);
+            for (retired_ids) |id| {
+                try std.testing.expect(!host.dom_elements.items[@intCast(id)].active);
+                try std.testing.expect(!host.engine.render_cache.nodes.items[@intCast(id)].isActive());
+            }
+            const overview_id = activeTextElementId(&host, "overview branch") orelse return error.TestUnexpectedResult;
+            try std.testing.expectEqualSlices(u64, &.{overview_id}, host.dom_elements.items[0].children.items);
             return attempts;
         }
     };

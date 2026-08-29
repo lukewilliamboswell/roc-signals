@@ -528,6 +528,12 @@ pub const PreparedNamedEventsReplacement = struct {
     }
 };
 
+/// How one retired node reaches the host. The wire protocol removes whole
+/// subtrees: `remove_node` on a root releases every descendant's host
+/// registration, so only a retired node whose active parent survives in the
+/// host publishes a command.
+pub const RemovalPublication = enum { subtree_root, under_removed_root };
+
 /// Upper bounds used to reserve one render splice journal before preparation.
 pub const PreparedRenderCounts = struct {
     node_capacity: usize = 0,
@@ -708,19 +714,29 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             donor.custom_attrs.clearRetainingCapacity();
         }
 
-        /// Adds one active node retirement and its corresponding host removal.
-        pub fn addRemoval(self: *Self, cache: *const Cache(Ctx), elem_id: ids.ElemId) error{ MissingNode, ResourceLimit }!void {
+        /// Adds one active node retirement. The cache journals every retired
+        /// node so its slot, parent link, and scalar state are released at
+        /// commit, but the wire carries one `remove_node` per retired subtree
+        /// root: the host releases the root's whole subtree on that command,
+        /// so a node whose active ancestor is also removed publishes nothing.
+        pub fn addRemoval(self: *Self, cache: *const Cache(Ctx), elem_id: ids.ElemId, publication: RemovalPublication) error{ MissingNode, ResourceLimit }!void {
             self.removals.appendAssumeCapacity(try PreparedNodeRemoval.prepare(Ctx, cache, elem_id));
             self.setParentIntent(cache, elem_id.raw(), null) catch |err| switch (err) {
                 error.ConflictingParent, error.DuplicateChild => unreachable,
                 else => |value| return value,
             };
-            try self.wire.addSemantic(.{ .remove_node = try render.WireElemId.fromEngine(elem_id) });
+            switch (publication) {
+                .subtree_root => try self.wire.addSemantic(.{ .remove_node = try render.WireElemId.fromEngine(elem_id) }),
+                .under_removed_root => {},
+            }
         }
 
-        /// Journals one same-id remove/recreate operation against the active cache.
-        pub fn addNodeReplacement(self: *Self, cache: *Cache(Ctx), elem_id: ids.ElemId, tag: []const u8) (std.mem.Allocator.Error || error{ DuplicateNode, MissingNode, ResourceLimit })!void {
-            try self.addRemoval(cache, elem_id);
+        /// Journals one same-id remove/recreate operation against the active
+        /// cache. `publication` says whether the host still holds the old node
+        /// (its parent survives, so the wire removes it before recreating it)
+        /// or an ancestor's `remove_node` already released it.
+        pub fn addNodeReplacement(self: *Self, cache: *Cache(Ctx), elem_id: ids.ElemId, tag: []const u8, publication: RemovalPublication) (std.mem.Allocator.Error || error{ DuplicateNode, MissingNode, ResourceLimit })!void {
+            try self.addRemoval(cache, elem_id, publication);
             try self.addReplacementCreation(cache, elem_id, tag);
         }
 
@@ -2130,7 +2146,7 @@ test "prepared render wire derives retirement and keyed replacement diffs" {
     defer plan.deinit();
     try plan.addCustomAttrs(&cache, ids.ElemId.fromRaw(1), &attrs);
     try plan.addNamedEvents(&cache, ids.ElemId.fromRaw(1), &events);
-    try plan.addRemoval(&cache, ids.ElemId.fromRaw(1));
+    try plan.addRemoval(&cache, ids.ElemId.fromRaw(1), .subtree_root);
     try plan.addChildren(&cache, ids.root_elem, &.{});
     try std.testing.expectEqual(@as(usize, 5), plan.wire.commands.items.len);
     const counts = plan.wire.counts();
@@ -2213,7 +2229,7 @@ test "prepared render splice recreates one active slot transactionally" {
         .wire_commands = 2,
     });
     fault.configure(1);
-    try std.testing.expectError(error.OutOfMemory, aborted.addNodeReplacement(&cache, ids.ElemId.fromRaw(1), "new"));
+    try std.testing.expectError(error.OutOfMemory, aborted.addNodeReplacement(&cache, ids.ElemId.fromRaw(1), "new", .subtree_root));
     try std.testing.expectEqualStrings("old", cache.nodes.items[1].activeTag().?);
     try std.testing.expectEqual(@as(?ids.ElemId, null), cache.nodes.items[1].parent_id);
     fault.configure(null);
@@ -2227,7 +2243,7 @@ test "prepared render splice recreates one active slot transactionally" {
         .wire_commands = 2,
     });
     defer plan.deinit();
-    try plan.addNodeReplacement(&cache, ids.ElemId.fromRaw(1), "new");
+    try plan.addNodeReplacement(&cache, ids.ElemId.fromRaw(1), "new", .subtree_root);
     try std.testing.expectEqualStrings("old", cache.nodes.items[1].activeTag().?);
     fault.configure(1);
     plan.apply(&cache);
@@ -2270,7 +2286,7 @@ test "prepared render splice adoption releases scalar updates for nodes it retir
             try std.testing.expectEqual(@as(usize, 5), scalar.wire.commands.items.len);
             var structural = try Plan.init(allocator, cache, .{ .node_capacity = 3, .removals = 1, .child_links = 1, .wire_commands = 1 });
             errdefer structural.deinit();
-            try structural.addRemoval(cache, ids.ElemId.fromRaw(1));
+            try structural.addRemoval(cache, ids.ElemId.fromRaw(1), .subtree_root);
             try structural.adoptScalarUpdates(&scalar);
             try structural.wire.preflight(batch, allocator);
             return structural;

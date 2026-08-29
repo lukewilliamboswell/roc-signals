@@ -7440,20 +7440,64 @@ pub fn Engine(comptime Ctx: type) type {
                 }
             }
 
+            /// Decides which retired render nodes the host keeps. The wire
+            /// removes whole subtrees, so a retired node survives in the host
+            /// only when a replacement claims its id under its active tag
+            /// (reuse in place) and its active parent survives too; a node
+            /// re-collected under a destroyed parent is created afresh.
+            const HostSurvival = struct {
+                cache: *const render_cache_mod.Cache(Ctx),
+                retired: *const std.AutoHashMapUnmanaged(u64, void),
+                replacements: *const std.AutoHashMapUnmanaged(u64, []const u8),
+                memo: std.AutoHashMapUnmanaged(u64, bool) = .empty,
+
+                fn activeNode(self: *const @This(), elem_id: u64) ?*const render_cache_mod.ScalarNode {
+                    const index = std.math.cast(usize, elem_id) orelse return null;
+                    if (index >= self.cache.nodes.items.len or !self.cache.nodes.items[index].isActive()) return null;
+                    return &self.cache.nodes.items[index];
+                }
+
+                /// True when the host still holds this node after the splice.
+                fn survives(self: *@This(), elem_id: u64) bool {
+                    if (!self.retired.contains(elem_id)) return true;
+                    if (self.memo.get(elem_id)) |known| return known;
+                    var kept = false;
+                    if (self.replacements.get(elem_id)) |tag| if (self.activeNode(elem_id)) |node| if (std.mem.eql(u8, node.activeTag().?, tag)) {
+                        kept = if (node.parent_id) |parent| self.survives(parent.raw()) else true;
+                    };
+                    self.memo.putAssumeCapacity(elem_id, kept);
+                    return kept;
+                }
+
+                /// Retired node whose parent survives is a host removal root;
+                /// one under another destroyed node is released with it.
+                fn removalPublication(self: *@This(), elem_id: u64) render_cache_mod.RemovalPublication {
+                    if (self.survives(elem_id)) return .under_removed_root;
+                    const node = self.activeNode(elem_id) orelse return .subtree_root;
+                    const parent = node.parent_id orelse return .subtree_root;
+                    return if (self.survives(parent.raw())) .subtree_root else .under_removed_root;
+                }
+            };
+
             fn prepareRenderTopology(self: *@This(), allocator: std.mem.Allocator) CollectionError!render_cache_mod.PreparedRenderSplice(Ctx) {
                 var retired: std.AutoHashMapUnmanaged(u64, void) = .empty;
                 defer retired.deinit(allocator);
                 const retired_count = std.math.cast(u32, self.removal.?.scan.removed_elem_ids.len) orelse return error.ResourceLimit;
                 retired.ensureUnusedCapacity(allocator, retired_count) catch return error.OutOfMemory;
                 for (self.removal.?.scan.removed_elem_ids) |elem_id| retired.putAssumeCapacity(elem_id, {});
-                var replacements: std.AutoHashMapUnmanaged(u64, void) = .empty;
+                var replacements: std.AutoHashMapUnmanaged(u64, []const u8) = .empty;
                 defer replacements.deinit(allocator);
                 replacements.ensureUnusedCapacity(allocator, std.math.cast(u32, self.replacement_stream.render_nodes.items.len) orelse return error.ResourceLimit) catch return error.OutOfMemory;
                 for (self.replacement_stream.render_nodes.items) |node| {
                     const result = replacements.getOrPutAssumeCapacity(node.elem_id.raw());
                     if (result.found_existing) return error.ResourceLimit;
-                    result.value_ptr.* = {};
+                    result.value_ptr.* = descriptor_stream.renderNodeTag(HostNodeDescriptorStream, &self.replacement_stream, node);
                 }
+                var survival = HostSurvival{ .cache = &self.engine.render_cache, .retired = &retired, .replacements = &replacements };
+                defer survival.memo.deinit(allocator);
+                survival.memo.ensureUnusedCapacity(allocator, retired_count) catch return error.OutOfMemory;
+                var host_removal_count: usize = 0;
+                for (self.removal.?.scan.removed_elem_ids) |elem_id| host_removal_count += @intFromBool(survival.removalPublication(elem_id) == .subtree_root);
 
                 var touched: std.AutoHashMapUnmanaged(u64, void) = .empty;
                 defer touched.deinit(allocator);
@@ -7522,11 +7566,10 @@ pub fn Engine(comptime Ctx: type) type {
                     const index = node.elem_id.index();
                     if (index >= self.engine.render_cache.nodes.items.len or !self.engine.render_cache.nodes.items[index].isActive()) continue;
                     if (!retired.contains(node.elem_id.raw())) return error.InvalidRenderTopology;
-                    const tag = descriptor_stream.renderNodeTag(HostNodeDescriptorStream, &self.replacement_stream, node);
-                    if (std.mem.eql(u8, self.engine.render_cache.nodes.items[index].activeTag().?, tag)) reuse_count = std.math.add(usize, reuse_count, 1) catch return error.ResourceLimit;
+                    if (survival.survives(node.elem_id.raw())) reuse_count = std.math.add(usize, reuse_count, 1) catch return error.ResourceLimit;
                 }
                 const reuse_clears = std.math.mul(usize, reuse_count, render_cache_mod.reused_node_max_clears) catch return error.ResourceLimit;
-                var wire_commands = std.math.add(usize, self.removal.?.scan.removed_elem_ids.len, self.replacement_stream.render_nodes.items.len) catch return error.ResourceLimit;
+                var wire_commands = std.math.add(usize, host_removal_count, self.replacement_stream.render_nodes.items.len) catch return error.ResourceLimit;
                 wire_commands = std.math.add(usize, wire_commands, @intFromBool(self.initial_root)) catch return error.ResourceLimit;
                 wire_commands = std.math.add(usize, wire_commands, reuse_clears) catch return error.ResourceLimit;
                 wire_commands = std.math.add(usize, wire_commands, final_child_count) catch return error.ResourceLimit;
@@ -7586,16 +7629,16 @@ pub fn Engine(comptime Ctx: type) type {
                     splice.wire.addSemantic(.reset_dom) catch return error.ResourceLimit;
                     splice.addHostRoot(&self.engine.render_cache) catch |err| return renderSpliceError(err);
                 }
-                for (self.removal.?.scan.removed_elem_ids) |elem_id| if (!replacements.contains(elem_id)) splice.addRemoval(&self.engine.render_cache, ids.ElemId.fromRaw(elem_id)) catch |err| return renderSpliceError(err);
+                for (self.removal.?.scan.removed_elem_ids) |elem_id| if (!replacements.contains(elem_id)) splice.addRemoval(&self.engine.render_cache, ids.ElemId.fromRaw(elem_id), survival.removalPublication(elem_id)) catch |err| return renderSpliceError(err);
                 for (self.replacement_stream.render_nodes.items) |node| {
                     const tag = descriptor_stream.renderNodeTag(HostNodeDescriptorStream, &self.replacement_stream, node);
                     const index = node.elem_id.index();
                     if (index < self.engine.render_cache.nodes.items.len and self.engine.render_cache.nodes.items[index].isActive()) {
                         if (!retired.contains(node.elem_id.raw())) return error.InvalidRenderTopology;
-                        if (std.mem.eql(u8, self.engine.render_cache.nodes.items[index].activeTag().?, tag))
+                        if (survival.survives(node.elem_id.raw()))
                             splice.addNodeReuse(&self.engine.render_cache, node.elem_id, tag) catch |err| return renderSpliceError(err)
                         else
-                            splice.addNodeReplacement(&self.engine.render_cache, node.elem_id, tag) catch |err| return renderSpliceError(err);
+                            splice.addNodeReplacement(&self.engine.render_cache, node.elem_id, tag, survival.removalPublication(node.elem_id.raw())) catch |err| return renderSpliceError(err);
                     } else splice.addCreation(&self.engine.render_cache, node.elem_id, tag) catch |err| return renderSpliceError(err);
                 }
                 iterator = touched.keyIterator();

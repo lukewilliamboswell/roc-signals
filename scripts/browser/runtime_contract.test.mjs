@@ -2707,6 +2707,64 @@ test("memory growth during byte payload allocation keeps response commands reada
   assert.equal(input.getAttribute("data-last-key"), "Enter");
 });
 
+test("remove_node on a subtree root releases every descendant registration exactly once", () => {
+  const { host, root, runtime } = mountWith([
+    { op: Op.resetDom },
+    { op: Op.createElement, a: 1, s: "section" },
+    { op: Op.createElement, a: 2, s: "div" },
+    { op: Op.createElement, a: 3, s: "input" },
+    { op: Op.setValue, a: 3, s: "draft" },
+    { op: Op.bindInput, a: 3, b: 31 },
+    { op: Op.createElement, a: 4, s: "button" },
+    { op: Op.setText, a: 4, s: "inner" },
+    { op: Op.bindClick, a: 4, b: 41 },
+    { op: Op.createText, a: 5, s: "leaf" },
+    { op: Op.createElement, a: 6, s: "button" },
+    { op: Op.setText, a: 6, s: "outer" },
+    { op: Op.bindClick, a: 6, b: 61 },
+    { op: Op.appendChild, a: 0, b: 1 },
+    { op: Op.appendChild, a: 1, b: 2 },
+    { op: Op.appendChild, a: 2, b: 3 },
+    { op: Op.appendChild, a: 2, b: 4 },
+    { op: Op.appendChild, a: 2, b: 5 },
+    { op: Op.appendChild, a: 0, b: 6 },
+  ]);
+  const inner = findByText(root, "button", "inner");
+  const outer = findByText(root, "button", "outer");
+  const input = findNode(root, (node) => node.tagName === "INPUT");
+  assert.equal(runtime.nodes.size, 7);
+  assert.equal(runtime.eventCleanups.size, 3);
+  assert.equal(runtime.controlledInputs.has(3), true);
+
+  host.writeCommands([{ op: Op.removeNode, a: 1 }]);
+  runtime.applyPendingCommands("remove-subtree");
+
+  assert.deepEqual([...runtime.nodes.keys()].sort(), [0, 6]);
+  assert.deepEqual([...runtime.eventCleanups.keys()], ["6:click"]);
+  assert.equal(runtime.controlledInputs.size, 0);
+  assert.equal(runtime.pendingSelectValues.size, 0);
+  assert.equal(inner.listeners.get("click")?.length ?? 0, 0);
+  assert.equal(input.listeners.get("input")?.length ?? 0, 0);
+  assert.equal(root.childNodes.length, 1);
+  fireEvent(inner, "click");
+  fireEvent(input, "input");
+  assert.deepEqual(host.dispatches, []);
+  fireEvent(outer, "click");
+  assert.equal(host.dispatches.length, 1);
+
+  host.writeCommands([
+    { op: Op.createElement, a: 3, s: "input" },
+    { op: Op.setValue, a: 3, s: "fresh" },
+    { op: Op.appendChild, a: 0, b: 3 },
+    { op: Op.removeNode, a: 6 },
+  ]);
+  runtime.applyPendingCommands("reuse-ids");
+  assert.deepEqual([...runtime.nodes.keys()].sort(), [0, 3]);
+  assert.equal(runtime.eventCleanups.size, 0);
+  assert.equal(runtime.controlledInputs.has(3), true);
+  assert.equal(findNode(root, (node) => node.tagName === "INPUT").value, "fresh");
+});
+
 test("clear_event and remove_node release DOM listeners", () => {
   const { host, root, runtime } = mountWith([
     { op: Op.resetDom },
