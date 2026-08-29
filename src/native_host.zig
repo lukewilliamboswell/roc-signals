@@ -6308,6 +6308,78 @@ test "sibling each sites keep their insertion indexes after an earlier site grow
     for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
+test "retiring an each row disposes the nested each site it owned" {
+    // The row sync removes an outer row's own membership, but the row may own a
+    // nested each site with rows of its own in `each_row_sites`. Those used to
+    // survive the row: the nested site's descriptor was gone, yet the site and
+    // its rows stayed registered, so the engine's site count drifted above the
+    // structure it rendered on every removal.
+    const Runner = struct {
+        fn run(failure_number: ?usize) !usize {
+            test_erased_callable_drop_count = 0;
+            test_row_elem_call_count = 0;
+            var host = HostEnv.init();
+            var roc_host = makeSignalsRocHost(&host);
+            host.engine.roc_host = &roc_host;
+            defer {
+                host.deinit();
+                _ = host.gpa.deinit();
+            }
+
+            const state_token = newTestBinderToken(&roc_host);
+            const state_cap = testHostValueCapability(&roc_host);
+            const outer = testNodeEachWithSignalCapabilityAndRow(&roc_host, testNodeRefExpr(state_token), state_cap, &testNestedEachRowElemCallable);
+            const section = testElementWith(&roc_host, "section", &.{}, &.{outer});
+            const initial_items = [_]HostValue{ testHostValueI64(1), testHostValueI64(2) };
+            const root = testNodeStateWithTokenAndInitialCapability(&roc_host, state_token, testHostValueI64List(&roc_host, &initial_items), section, state_cap);
+            defer root.decref(&roc_host);
+            var stream: HostNodeDescriptorStream = .{};
+            host.collectActiveElemRootDescriptors(&roc_host, &stream, root, &.{});
+            _ = applyNodeDescriptorStream(&host, &roc_host, &stream);
+            host.engine.active_stream = stream;
+
+            const state_id = host.engine.active_stream.scope_sites.items[0].node_id;
+            // The outer site plus one nested site per outer row.
+            try std.testing.expectEqual(@as(usize, 3), host.engine.each_row_sites.items.len);
+            try std.testing.expect(activeTextElementId(&host, "outer-1") != null);
+            try std.testing.expect(activeTextElementId(&host, "outer-2") != null);
+
+            const scope_len_before = host.engine.scopes.items.len;
+            const render_len_before = host.engine.active_stream.render_nodes.items.len;
+            const allocations_before = host.roc_allocations.snapshot();
+            const next_items = [_]HostValue{testHostValueI64(2)};
+            var fault = FaultAllocator.init(host.gpa.allocator());
+            fault.configure(failure_number);
+            host.engine_allocator_override = fault.allocator();
+            const result = host.engine.tryDispatchStateValue(&host, &roc_host, state_id.raw(), testHostValueI64List(&roc_host, &next_items), state_cap);
+            const attempts = fault.attempts;
+            if (failure_number != null) {
+                try std.testing.expectError(error.OutOfMemory, result);
+                try std.testing.expectEqual(scope_len_before, host.engine.scopes.items.len);
+                try std.testing.expectEqual(render_len_before, host.engine.active_stream.render_nodes.items.len);
+                try std.testing.expectEqual(@as(usize, 3), host.engine.each_row_sites.items.len);
+                try std.testing.expectEqual(@as(usize, 0), host.roc_allocations.liveCountSince(allocations_before));
+                fault.configure(null);
+                const retry_items = [_]HostValue{testHostValueI64(2)};
+                _ = try host.engine.tryDispatchStateValue(&host, &roc_host, state_id.raw(), testHostValueI64List(&roc_host, &retry_items), state_cap);
+            } else _ = try result;
+
+            // The retired row's nested site is gone with it: outer plus one.
+            try std.testing.expectEqual(@as(usize, 2), host.engine.each_row_sites.items.len);
+            for (host.engine.each_row_sites.items) |site| {
+                try std.testing.expect(host.engine.scopes.items[site.key.parent_scope_id.index()].lifecycle.isActive());
+            }
+            try std.testing.expect(activeTextElementId(&host, "outer-1") == null);
+            try std.testing.expect(activeTextElementId(&host, "outer-2") != null);
+            return attempts;
+        }
+    };
+
+    const attempts = try Runner.run(null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
+}
+
 test "one state transaction retires nested each with when atomically through production" {
     const Runner = struct {
         fn run(failure_number: ?usize) !usize {

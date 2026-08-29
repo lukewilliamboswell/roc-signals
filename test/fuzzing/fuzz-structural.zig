@@ -159,9 +159,9 @@
 //!
 //! # Not yet covered
 //!
-//! Several shapes are deliberately withheld because the engine cannot yet
-//! survive them. Each one is a real open bug rather than a property of the
-//! generator, and each note says which guard to delete once it is fixed.
+//! One shape is deliberately withheld because the engine cannot yet survive
+//! it. It is a real open bug rather than a property of the generator, and the
+//! note says which guard to delete once it is fixed.
 //!
 //!  - **A bare `Ref` as an `each`'s items signal.** Shared sites read the state
 //!    cell through a `Signal.map` copy instead. The staged initial mount reaches
@@ -172,11 +172,6 @@
 //!    `collectInitialEach` used the provisional variant two lines earlier.
 //!    Delete `eachOverStateListRowAndCapture`'s map once collection resolves
 //!    that capability provisionally.
-//!  - **A live-edited row that owns a nested `each`.** A shared site's row kind is
-//!    demoted away from `nested_each`, because retiring such a row leaves its
-//!    nested site behind in `each_row_sites` and the site count drifts above the
-//!    model. Delete that demotion in `generateSite` once row retirement disposes
-//!    the nested site.
 //!
 //! Three further gaps are simply unwritten rather than blocked:
 //!
@@ -442,9 +437,6 @@ fn generateSite(reader: *FuzzReader, arena: std.mem.Allocator, depth: u8, allow_
     // once per outer row, and pointing every one of them at the same signal
     // would multiply row counts rather than add coverage.
     const shared = depth == 0 and allow_shared and reader.boolean();
-    // A live-edited row that owns a nested each site is not generated: retiring
-    // such a row currently leaves its nested site behind in `each_row_sites`.
-    if (shared and kind == .nested_each) kind = .stateful;
     spec.* = .{
         .row_count = reader.intRangeAtMost(u8, 0, max_rows),
         .row_kind = kind,

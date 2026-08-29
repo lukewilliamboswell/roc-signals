@@ -1954,12 +1954,6 @@ pub fn Engine(comptime Ctx: type) type {
                 }
                 const downstream = try PreparedStructuralDownstream.prepareExternal(engine, ctx, roc_host, replacement_owner, descriptor_roots, retired_roots, removal_starts.items, null, &.{}, overlay);
                 errdefer downstream.deinit();
-                const when_retired_roots_list = allocator.alloc(u64, selections.len) catch return error.OutOfMemory;
-                defer allocator.free(when_retired_roots_list);
-                for (selections, 0..) |selection, index| when_retired_roots_list[index] = selection.retired_scope_id.raw();
-                const when_retired_roots = try normalizedScopeRoots(engine, allocator, when_retired_roots_list);
-                defer allocator.free(when_retired_roots);
-                downstream.row_retirement = try prepareRowRetirementForScopes(engine, allocator, when_retired_roots);
                 downstream.final_render_topology = final_render_topology;
                 final_topology_owned = false;
                 rebase_owned = false;
@@ -4775,9 +4769,22 @@ pub fn Engine(comptime Ctx: type) type {
                     const membership_len = self.engine.scopes.items.len;
                     while (self.engine.each_row_memberships_by_scope_id.items.len < membership_len) self.engine.each_row_memberships_by_scope_id.appendAssumeCapacity(null);
                     for (self.prepared_each_sites.items) |site| {
-                        const site_index = self.engine.each_row_sites.items.len;
-                        self.engine.each_row_site_indexes.putAssumeCapacity(site.key, site_index);
-                        self.engine.each_row_sites.appendAssumeCapacity(site);
+                        // A row re-collected in place brings its nested each site
+                        // back under the same key. The retirement journal has
+                        // already emptied the old site, so the new one takes over
+                        // its slot; appending would orphan the old site.
+                        const site_index = if (self.engine.each_row_site_indexes.get(site.key)) |existing| blk: {
+                            const old = &self.engine.each_row_sites.items[existing];
+                            if (old.scope_ids.items.len != 0) @panic("re-collected each site replaced a site that still owned rows");
+                            old.deinit(Ctx.allocator(self.host_ctx));
+                            old.* = site;
+                            break :blk existing;
+                        } else blk: {
+                            const index = self.engine.each_row_sites.items.len;
+                            self.engine.each_row_site_indexes.putAssumeCapacity(site.key, index);
+                            self.engine.each_row_sites.appendAssumeCapacity(site);
+                            break :blk index;
+                        };
                         for (site.scope_ids.items, 0..) |scope_id, row_index| {
                             const membership = &self.engine.each_row_memberships_by_scope_id.items[scope_id.index()];
                             if (membership.* != null) @panic("prepared initial each row had duplicate membership");
@@ -6611,7 +6618,32 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             fn prepareDownstream(self: *@This(), allocator: std.mem.Allocator, descriptor_root_scope_ids: []const u64, retired_root_scope_ids: []const u64, render_insert_indexes: []const usize, scan_scopes: ?[]const []const bool, external_row_sync: bool, cache_overlay: ?*signal_records.PreparedCacheUpdates) CollectionError!void {
-                self.targets = try PreparedStructuralTargets.prepare(self.engine, allocator, descriptor_root_scope_ids, retired_root_scope_ids);
+                // A row re-collected in place keeps its scope and reuses its
+                // branch and component scopes, but its nested each rows are
+                // reserved afresh, so the old row subtrees under it retire with
+                // the replacement. Only the top-most old rows are roots; their
+                // descendants retire with them.
+                var effective_retired_roots: std.ArrayListUnmanaged(u64) = .empty;
+                defer effective_retired_roots.deinit(allocator);
+                effective_retired_roots.appendSlice(allocator, retired_root_scope_ids) catch return error.OutOfMemory;
+                if (external_row_sync) for (descriptor_root_scope_ids) |root| {
+                    const retired = for (retired_root_scope_ids) |candidate| {
+                        if (candidate == root) break true;
+                    } else false;
+                    if (retired) continue;
+                    for (self.engine.scopes.items) |scope| {
+                        if (!scope.lifecycle.isActive() or scope.scope_id.raw() == root or scope.step != .each_row) continue;
+                        if (!(self.engine.scopeIsDescendantOrSelf(scope.scope_id.raw(), root) catch return error.ResourceLimit)) continue;
+                        var ancestor = scope.parent_scope_id;
+                        const top_most = while (ancestor) |id| {
+                            if (id.raw() == root) break true;
+                            if (self.engine.scopes.items[id.index()].step == .each_row) break false;
+                            ancestor = self.engine.scopes.items[id.index()].parent_scope_id;
+                        } else false;
+                        if (top_most) effective_retired_roots.append(allocator, scope.scope_id.raw()) catch return error.OutOfMemory;
+                    }
+                };
+                self.targets = try PreparedStructuralTargets.prepare(self.engine, allocator, descriptor_root_scope_ids, effective_retired_roots.items);
                 errdefer if (self.targets) |*targets| targets.deinit(allocator);
                 const target_scopes = self.targets.?.descriptor_target_scopes;
                 const retirement_scope_ids = self.targets.?.scope_retirement.?.scope_ids;
@@ -6628,6 +6660,23 @@ pub fn Engine(comptime Ctx: type) type {
                 errdefer self.retired_state_cells.deinit(allocator);
                 if (!external_row_sync) {
                     self.row_retirement = try prepareRowRetirementForScopes(self.engine, allocator, retirement_scope_ids);
+                } else {
+                    // The row sync removes the retired rows themselves, but a
+                    // retired row can own nested each sites whose rows live in
+                    // `each_row_sites` too. Retire those with the subtree, and
+                    // journal even when there are none: applying the journal is
+                    // what drops an emptied site whose descriptor is gone, and a
+                    // nested site with no rows is exactly such a site.
+                    var nested: std.ArrayListUnmanaged(ids.ScopeId) = .empty;
+                    defer nested.deinit(allocator);
+                    nested.ensureTotalCapacity(allocator, retirement_scope_ids.len) catch return error.OutOfMemory;
+                    for (retirement_scope_ids) |scope_id| {
+                        const is_root = for (retired_root_scope_ids) |root| {
+                            if (root == scope_id.raw()) break true;
+                        } else false;
+                        if (!is_root) nested.appendAssumeCapacity(scope_id);
+                    }
+                    self.row_retirement = try prepareRowRetirementForScopes(self.engine, allocator, nested.items);
                 }
                 errdefer if (self.row_retirement) |*retirement| retirement.deinit(allocator);
                 const retired_scopes = allocator.alloc(bool, self.engine.scopes.items.len) catch return error.OutOfMemory;
@@ -6851,11 +6900,14 @@ pub fn Engine(comptime Ctx: type) type {
                 // retiring structure; applying retirement afterward would mark the
                 // newly published identity inactive.
                 self.identity_retirements.?.apply(self.engine);
-                self.replacement.collection.commit();
+                // Retire journaled rows before the collection publishes its
+                // sites: a re-collected nested site takes over the slot its
+                // predecessor held, which must be empty by then.
                 if (self.row_retirement) |*row_retirement| {
                     var row_keys = EachRowScopeKeyLookup{ .engine = self.engine };
                     row_retirement.apply(Ctx.allocator(self.host_ctx), &self.engine.each_row_sites, &self.engine.each_row_site_indexes, &self.engine.each_row_memberships_by_scope_id, &row_keys);
                 }
+                self.replacement.collection.commit();
                 const scope_retirement = &self.targets.?.scope_retirement.?;
                 for (scope_retirement.scope_ids) |scope_id| {
                     const scope = &self.engine.scopes.items[scope_id.index()];
