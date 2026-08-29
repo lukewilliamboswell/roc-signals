@@ -6151,6 +6151,9 @@ pub fn Engine(comptime Ctx: type) type {
             rows: std.ArrayListUnmanaged(SurvivingRow) = .empty,
             ranges: std.ArrayListUnmanaged(ReplacementRange) = .empty,
             placements: std.ArrayListUnmanaged(PreparedFinalRenderTopology.Placement) = .empty,
+            /// Per region: laid out already, either at the top level or as a
+            /// region nested in a surviving row.
+            consumed: []bool = &.{},
             removed_render_count: usize = 0,
             active_new: []usize = &.{},
             replacement_new: []usize = &.{},
@@ -6232,30 +6235,35 @@ pub fn Engine(comptime Ctx: type) type {
                 return std.math.add(usize, final_start, len) catch return error.ResourceLimit;
             }
 
-            /// Lays a surviving row out at `final_start`: the regions nested in
-            /// it (those whose owner lives under the row scope, next in document
-            /// order) split it into moved fragments. Returns the final cursor
-            /// after the row.
-            fn layoutSurvivor(self: *@This(), engine: *Self, target_scopes: []const bool, scope_id: u64, old_start: usize, old_end: usize, final_start: usize, next: *usize) CollectionError!usize {
+            /// Lays a surviving row out at `final_start`. The regions nested
+            /// in it are found by scope, not by walking on from the last
+            /// region laid out: survivors are placed in their *next* order,
+            /// and two reordered rows that both hold a flipping region would
+            /// otherwise each be handed the other's. Within one row the
+            /// regions still come in document order, which is old-span order.
+            /// Returns the final cursor after the row.
+            fn layoutSurvivor(self: *@This(), engine: *Self, target_scopes: []const bool, scope_id: u64, old_start: usize, old_end: usize, final_start: usize) CollectionError!usize {
                 self.rows.append(self.allocator, .{ .scope_id = scope_id, .old_start = old_start, .old_end = old_end, .final_start = final_start }) catch return error.OutOfMemory;
                 var old = old_start;
                 var final = final_start;
-                while (next.* < self.regions.items.len) {
-                    const nested = self.regions.items[next.*];
-                    if (!(engine.scopeIsDescendantOrSelf(nested.owner.scope_id, scope_id) catch |err| return scopeError(err))) break;
+                for (self.regions.items, 0..) |nested, nested_index| {
+                    if (self.consumed[nested_index]) continue;
+                    if (!(engine.scopeIsDescendantOrSelf(nested.owner.scope_id, scope_id) catch |err| return scopeError(err))) continue;
                     if (nested.old_start < old or nested.old_end > old_end) return error.InvalidRenderTopology;
                     final = try self.placeSurvivorFragment(engine, target_scopes, old, nested.old_start, final);
-                    next.* += 1;
-                    final = try self.layoutRegion(engine, target_scopes, next.* - 1, final, next);
+                    final = try self.layoutRegion(engine, target_scopes, nested_index, final);
                     old = nested.old_end;
                 }
                 return self.placeSurvivorFragment(engine, target_scopes, old, old_end, final);
             }
 
             /// Lays a region out at `final_start` and returns the final cursor
-            /// after it. `next` walks the regions in document order, so the
-            /// regions nested in this one are consumed by its surviving pieces.
-            fn layoutRegion(self: *@This(), engine: *Self, target_scopes: []const bool, region_index: usize, final_start: usize, next: *usize) CollectionError!usize {
+            /// after it. The regions nested in it are consumed by its surviving
+            /// pieces; any left over sits in content this transaction removes
+            /// and should have been subsumed before staging.
+            fn layoutRegion(self: *@This(), engine: *Self, target_scopes: []const bool, region_index: usize, final_start: usize) CollectionError!usize {
+                if (self.consumed[region_index]) return error.InvalidRenderTopology;
+                self.consumed[region_index] = true;
                 var final = final_start;
                 for (self.regions.items[region_index].pieces) |piece| switch (piece) {
                     .replacement => |range| {
@@ -6265,15 +6273,13 @@ pub fn Engine(comptime Ctx: type) type {
                     },
                     .survivor => |row| {
                         const row_end = std.math.add(usize, row.old_start, row.len) catch return error.ResourceLimit;
-                        final = try self.layoutSurvivor(engine, target_scopes, row.scope_id, row.old_start, row_end, final, next);
+                        final = try self.layoutSurvivor(engine, target_scopes, row.scope_id, row.old_start, row_end, final);
                     },
                 };
                 const region = &self.regions.items[region_index];
-                // A region nested in this one that no surviving piece carried
-                // sits in content this transaction removes; it should have been
-                // subsumed before staging.
-                if (next.* < self.regions.items.len) {
-                    switch (try engine.compareSitePositions(region.owner, self.regions.items[next.*].owner)) {
+                for (self.regions.items, self.consumed) |other, is_consumed| {
+                    if (is_consumed) continue;
+                    switch (try engine.compareSitePositions(region.owner, other.owner)) {
                         .contains => return error.InvalidRenderTopology,
                         else => {},
                     }
@@ -6297,16 +6303,16 @@ pub fn Engine(comptime Ctx: type) type {
                     if (target_scopes[@intCast(scope_id)]) removed += 1;
                 }
                 self.removed_render_count = removed;
+                self.consumed = self.allocator.alloc(bool, self.regions.items.len) catch return error.OutOfMemory;
+                @memset(self.consumed, false);
                 var old: usize = 0;
                 var final: usize = 0;
-                var next: usize = 0;
-                while (next < self.regions.items.len) {
-                    const region = self.regions.items[next];
+                for (self.regions.items, 0..) |region, region_index| {
+                    if (self.consumed[region_index]) continue;
                     if (region.old_start < old or region.old_end < region.old_start or region.old_end > old_nodes.len) return error.InvalidRenderTopology;
                     try requireRetained(engine, target_scopes, old, region.old_start);
                     final = std.math.add(usize, final, region.old_start - old) catch return error.ResourceLimit;
-                    next += 1;
-                    final = try self.layoutRegion(engine, target_scopes, next - 1, final, &next);
+                    final = try self.layoutRegion(engine, target_scopes, region_index, final);
                     old = region.old_end;
                 }
                 try requireRetained(engine, target_scopes, old, old_nodes.len);
@@ -6421,6 +6427,7 @@ pub fn Engine(comptime Ctx: type) type {
             fn deinit(self: *@This()) void {
                 self.allocator.free(self.replacement_new);
                 self.allocator.free(self.active_new);
+                self.allocator.free(self.consumed);
                 self.placements.deinit(self.allocator);
                 self.ranges.deinit(self.allocator);
                 self.rows.deinit(self.allocator);

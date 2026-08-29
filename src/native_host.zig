@@ -7097,6 +7097,47 @@ test "adjacent when rows flipping together retire their own branches, not each o
     host.engine.validateActiveScopeSiteInsertIndexes();
 }
 
+test "reordered surviving rows each carry their own flipping when" {
+    // Two rows of a shared each survive an edit that swaps them and, through
+    // the same list, flips the when inside each. The layout lays survivors
+    // out in their next order, so the when nested in a row has to be found by
+    // the row's scope; taking regions in old document order handed each row
+    // the other's when and the edit was refused as `InvalidRenderTopology`.
+    var host = HostEnv.init();
+    var roc_host = makeSignalsRocHost(&host);
+    host.engine.roc_host = &roc_host;
+    defer {
+        host.deinit();
+        _ = host.gpa.deinit();
+    }
+
+    const list_token = newTestBinderToken(&roc_host);
+    const cap = testHostValueCapability(&roc_host);
+    const each = testNodeEachWithSignalCapabilityRowAndCapture(TestListWhenRowCapture, &roc_host, testNodeRefExpr(list_token), cap, &testListWhenRowElemCallable, .{ .token = &list_token, .min_length = 3 });
+    const section = testElementWith(&roc_host, "section", &.{}, &.{ each, testNodeText(&roc_host, "tail") });
+    const initial = [_]HostValue{ testHostValueI64(1), testHostValueI64(2) };
+    const root = testNodeStateWithTokenAndInitialCapability(&roc_host, list_token, testHostValueI64List(&roc_host, &initial), section, cap);
+    defer root.decref(&roc_host);
+    var stream: HostNodeDescriptorStream = .{};
+    host.collectActiveElemRootDescriptors(&roc_host, &stream, root, &.{});
+    _ = applyNodeDescriptorStream(&host, &roc_host, &stream);
+    host.engine.active_stream = stream;
+    const section_id = host.engine.active_stream.elements.items[0].elem_id;
+    try std.testing.expectEqual(@as(?usize, 0), childOrderOfText(&host, section_id, "row-1-off"));
+    try std.testing.expectEqual(@as(?usize, 1), childOrderOfText(&host, section_id, "row-2-off"));
+
+    const list_state_id = host.engine.active_stream.scope_sites.items[0].node_id;
+    const swapped = [_]HostValue{ testHostValueI64(2), testHostValueI64(1), testHostValueI64(3) };
+    _ = try host.engine.tryDispatchStateValue(&host, &roc_host, list_state_id.raw(), testHostValueI64List(&roc_host, &swapped), cap);
+    try std.testing.expectEqual(@as(?usize, 0), childOrderOfText(&host, section_id, "row-2-on"));
+    try std.testing.expectEqual(@as(?usize, 1), childOrderOfText(&host, section_id, "row-1-on"));
+    try std.testing.expectEqual(@as(?usize, 2), childOrderOfText(&host, section_id, "row-3-on"));
+    try std.testing.expectEqual(@as(?usize, 3), childOrderOfText(&host, section_id, "tail"));
+    try std.testing.expect(activeTextElementId(&host, "row-1-off") == null);
+    try std.testing.expect(activeTextElementId(&host, "row-2-off") == null);
+    host.engine.validateActiveScopeSiteInsertIndexes();
+}
+
 test "a when site collected later inside an earlier branch still orders before the empty site after it" {
     // A branch mounted after the initial collection carries a `when` whose
     // node id is larger than the sibling site after the branch. Node ids say
