@@ -6513,9 +6513,25 @@ pub fn Engine(comptime Ctx: type) type {
                 defer allocator.free(retired_scope_ids);
                 const render_insert_indexes = allocator.alloc(usize, selections.len) catch return error.OutOfMemory;
                 defer allocator.free(render_insert_indexes);
+                // Each branch's removal scan runs against that branch's own
+                // scopes: scanned against the union, a walk from one retired
+                // branch continues straight into the adjacent one, and the
+                // second branch's interval then overlaps the first.
+                const scan_scopes = allocator.alloc([]const bool, selections.len) catch return error.OutOfMemory;
+                var scan_scopes_prepared: usize = 0;
+                defer {
+                    for (scan_scopes[0..scan_scopes_prepared]) |scopes| allocator.free(scopes);
+                    allocator.free(scan_scopes);
+                }
                 for (selections, replacement_ranges, 0..) |selection, range, index| {
                     retired_scope_ids[index] = selection.retired_scope_id.raw();
                     render_insert_indexes[index] = try layout_plan.describeBranch(engine, selection, range);
+                    const scopes = allocator.alloc(bool, engine.scopes.items.len) catch return error.OutOfMemory;
+                    scan_scopes[index] = scopes;
+                    scan_scopes_prepared += 1;
+                    for (engine.scopes.items, scopes) |scope, *targeted| {
+                        targeted.* = scope.lifecycle.isActive() and (engine.scopeIsDescendantOrSelf(scope.scope_id.raw(), selection.retired_scope_id.raw()) catch |err| return scopeError(err));
+                    }
                 }
                 // Each site's parent publishes its final child order from the
                 // resolved topology below. The structural pass anchors a branch
@@ -6526,7 +6542,7 @@ pub fn Engine(comptime Ctx: type) type {
                 defer parents.deinit(allocator);
                 for (selections) |selection| try appendUniqueParentElemId(allocator, &parents, selection.parent_elem_id.raw());
                 plan.suppressed_render_parent_ids = parents.items;
-                try plan.prepareDownstream(allocator, retired_scope_ids, retired_scope_ids, render_insert_indexes, null, false, cache_overlay);
+                try plan.prepareDownstream(allocator, retired_scope_ids, retired_scope_ids, render_insert_indexes, scan_scopes, false, cache_overlay);
                 plan.suppressed_render_parent_ids = &.{};
                 plan_owns_cleanup = true;
                 errdefer plan.deinit();

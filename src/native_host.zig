@@ -7057,6 +7057,46 @@ test "a row mounted by a re-diff reads the list the edit published, not the reti
     try Runner.run(2);
 }
 
+test "adjacent when rows flipping together retire their own branches, not each other's" {
+    // Two rows of one constant each are whens on the list, side by side under
+    // one parent. When both flip in one transaction, the removal scan for the
+    // first branch must stop at its own nodes: scanned against every retired
+    // scope at once it swallows the second branch, whose own interval then
+    // overlaps it and the edit is refused as `OverlappingRemoval`.
+    var host = HostEnv.init();
+    var roc_host = makeSignalsRocHost(&host);
+    host.engine.roc_host = &roc_host;
+    defer {
+        host.deinit();
+        _ = host.gpa.deinit();
+    }
+
+    const list_token = newTestBinderToken(&roc_host);
+    const cap = testHostValueCapability(&roc_host);
+    const rows = [_]HostValue{ testHostValueI64(0), testHostValueI64(1) };
+    const each = testNodeEachWithItemsRowAndCapture(TestListWhenRowCapture, &roc_host, &rows, &testListWhenRowElemCallable, .{ .token = &list_token });
+    const section = testElementWith(&roc_host, "section", &.{}, &.{ each, testNodeText(&roc_host, "tail") });
+    const initial = [_]HostValue{testHostValueI64(5)};
+    const root = testNodeStateWithTokenAndInitialCapability(&roc_host, list_token, testHostValueI64List(&roc_host, &initial), section, cap);
+    defer root.decref(&roc_host);
+    var stream: HostNodeDescriptorStream = .{};
+    host.collectActiveElemRootDescriptors(&roc_host, &stream, root, &.{});
+    _ = applyNodeDescriptorStream(&host, &roc_host, &stream);
+    host.engine.active_stream = stream;
+    const section_id = host.engine.active_stream.elements.items[0].elem_id;
+    try std.testing.expectEqual(@as(?usize, 0), childOrderOfText(&host, section_id, "row-0-on"));
+    try std.testing.expectEqual(@as(?usize, 1), childOrderOfText(&host, section_id, "row-1-on"));
+
+    const list_state_id = host.engine.active_stream.scope_sites.items[0].node_id;
+    _ = try host.engine.tryDispatchStateValue(&host, &roc_host, list_state_id.raw(), testHostValueI64List(&roc_host, &.{}), cap);
+    try std.testing.expectEqual(@as(?usize, 0), childOrderOfText(&host, section_id, "row-0-off"));
+    try std.testing.expectEqual(@as(?usize, 1), childOrderOfText(&host, section_id, "row-1-off"));
+    try std.testing.expectEqual(@as(?usize, 2), childOrderOfText(&host, section_id, "tail"));
+    try std.testing.expect(activeTextElementId(&host, "row-0-on") == null);
+    try std.testing.expect(activeTextElementId(&host, "row-1-on") == null);
+    host.engine.validateActiveScopeSiteInsertIndexes();
+}
+
 test "a when site collected later inside an earlier branch still orders before the empty site after it" {
     // A branch mounted after the initial collection carries a `when` whose
     // node id is larger than the sibling site after the branch. Node ids say
