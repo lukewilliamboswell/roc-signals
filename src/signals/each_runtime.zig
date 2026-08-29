@@ -393,6 +393,11 @@ pub const PreparedExistingRows = struct {
     allocator: std.mem.Allocator,
     site_index: usize,
     next_scope_ids: []ids.ScopeId,
+    /// One hash per incoming key, computed once during preparation. Commit
+    /// republishes a changed row's key under this hash instead of hashing
+    /// again, because hashing calls the Roc key function and publication
+    /// never calls Roc.
+    key_hashes: []u64,
     row_items_changed: []bool,
     scope_created: []bool,
     removed_scope_ids: []ids.ScopeId,
@@ -406,7 +411,7 @@ pub const PreparedExistingRows = struct {
         const site = &sites.items[site_index];
         const existing_len = site.scope_ids.items.len;
         const key_hashes = try allocator.alloc(u64, keys.len);
-        defer allocator.free(key_hashes);
+        errdefer allocator.free(key_hashes);
         for (keys, 0..) |key, index| key_hashes[index] = hooks.hashKey(key);
         var next_hash_heads: std.AutoHashMapUnmanaged(u64, usize) = .empty;
         defer next_hash_heads.deinit(allocator);
@@ -479,6 +484,7 @@ pub const PreparedExistingRows = struct {
             .allocator = allocator,
             .site_index = site_index,
             .next_scope_ids = next_scope_ids,
+            .key_hashes = key_hashes,
             .row_items_changed = changed,
             .scope_created = created,
             .removed_scope_ids = removed,
@@ -493,13 +499,13 @@ pub const PreparedExistingRows = struct {
         const site = &sites.items[self.site_index];
         var unchanged_count: u64 = 0;
         var updated_count: u64 = 0;
-        for (self.next_scope_ids, self.row_items_changed, self.scope_created, keys, items) |scope_id, changed, created, key, item| {
+        for (self.next_scope_ids, self.key_hashes, self.row_items_changed, self.scope_created, keys, items) |scope_id, key_hash, changed, created, key, item| {
             if (created) {
                 hooks.commitCreatedRow(scope_id);
                 continue;
             }
             if (changed) {
-                hooks.replaceRowKey(scope_id, hooks.hashKey(key), key);
+                hooks.replaceRowKey(scope_id, key_hash, key);
                 hooks.replaceRowItem(scope_id, item);
                 updated_count += 1;
             } else {
@@ -545,6 +551,7 @@ pub const PreparedExistingRows = struct {
     /// Releases preparation storage without touching active rows or incoming values.
     pub fn deinit(self: *PreparedExistingRows) void {
         self.allocator.free(self.next_scope_ids);
+        self.allocator.free(self.key_hashes);
         self.allocator.free(self.row_items_changed);
         self.allocator.free(self.scope_created);
         self.allocator.free(self.removed_scope_ids);
@@ -811,6 +818,7 @@ const TestSyncHooks = struct {
     fault_attempts: ?*const usize = null,
     first_mutation_attempt: ?usize = null,
     prepared_created: std.ArrayListUnmanaged(PreparedCreated) = .empty,
+    hash_calls: usize = 0,
 
     fn recordMutation(self: *@This()) void {
         if (self.first_mutation_attempt == null) {
@@ -875,6 +883,7 @@ const TestSyncHooks = struct {
 
     /// Reports whether h key is present in maintained state.
     pub fn hashKey(self: *@This(), key: u64) u64 {
+        self.hash_calls += 1;
         return self.hashForKey(key);
     }
 
@@ -1162,6 +1171,40 @@ test "prepared existing each rows sweep failures and commit without allocation" 
     const attempts = try Runner.run(null);
     try std.testing.expect(attempts != 0);
     for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
+}
+
+test "prepared existing each rows hash every key once, during preparation" {
+    // Commit republished a changed row's key under `hooks.hashKey(key)`,
+    // hashing it a second time. Hashing calls the Roc key function, which
+    // publication must never do, and it inflated each_key_hashes by one per
+    // updated row (large-each `Update middle row`: 9 hashes for 8 keys).
+    var sites: std.ArrayListUnmanaged(Site) = .empty;
+    var indexes: SiteIndexMap = .empty;
+    var memberships: std.ArrayListUnmanaged(?Membership) = .empty;
+    defer clearSites(std.testing.allocator, &sites, &indexes, &memberships);
+    const site_index = ensureSiteIndex(std.testing.allocator, &sites, &indexes, test_parent_scope, test_site_ordinal);
+    appendRowToSiteIndex(std.testing.allocator, &sites, &memberships, site_index, testScope(10), 1);
+    appendRowToSiteIndex(std.testing.allocator, &sites, &memberships, site_index, testScope(11), 2);
+    var keys_by_scope = [_]u64{0} ** 16;
+    var items_by_scope = [_]u64{0} ** 16;
+    keys_by_scope[10] = 1;
+    items_by_scope[10] = 100;
+    keys_by_scope[11] = 2;
+    items_by_scope[11] = 200;
+    var hooks = TestSyncHooks{ .keys_by_scope = &keys_by_scope, .items_by_scope = &items_by_scope, .next_scope_id = testScope(12) };
+    defer hooks.deinit(std.testing.allocator);
+    const keys = [_]u64{ 1, 2 };
+    const items = [_]u64{ 100, 201 };
+
+    var prepared = try PreparedExistingRows.prepare(std.testing.allocator, &sites, &memberships, site_index, test_parent_scope, test_site_ordinal, &keys, &items, &hooks);
+    defer prepared.deinit();
+    try std.testing.expectEqual(@as(usize, 2), hooks.hash_calls);
+    var diff = prepared.commit(&sites, &memberships, &keys, &items, &hooks);
+    defer diff.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 2), hooks.hash_calls);
+    try std.testing.expectEqual(@as(u64, 1), diff.row_items_updated);
+    try std.testing.expectEqual(@as(u64, 201), items_by_scope[11]);
+    try std.testing.expectEqual(@as(usize, 1), sites.items[site_index].hash_heads.get(2).?);
 }
 
 test "each runtime sync resolves hash collisions with typed equality" {

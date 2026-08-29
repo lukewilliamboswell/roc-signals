@@ -47,5 +47,3 @@ native js-framework-benchmark/clear_10k.scm
 native js-framework-benchmark/create_10k.scm
 native js-framework-benchmark/replace_1k.scm
 native js-framework-benchmark/update_10k.scm
-native large-each-08/main.scm
-native large-each-64/main.scm
