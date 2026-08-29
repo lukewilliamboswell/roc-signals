@@ -27,23 +27,12 @@ native dependency-scheduler/write-spec-is-the-head-of-spec-api-sync-qa-launch-so
 native form-builder/editing-one-field-s-label-fine-grained.scm
 native loan-comparator/editing-scenario-a-s-rate-derived-figures-follow-siblings-do-n.scm
 native log-viewer/appending-line-41-to-a-40-line-buffer-must-reuse-every-existing.scm
-native log-viewer/clearing-while-a-level-filter-and-a-query-are-active-keeps-the-c.scm
-native log-viewer/hiding-a-level-removes-only-that-level-s-rows-from-a-42-line-buf.scm
-native log-viewer/one-more-append-to-show-the-budget-is-flat-per-line-rather-than.scm
-native log-viewer/reordering-the-buffer-moves-rows-without-creating-or-removing-an.scm
-native log-viewer/restore-a-wide-open-view-for-the-granularity-measurement.scm
-native log-viewer/typing-a-query-re-marks-the-existing-rows-without-recreating-any.scm
 native markdown-editor/contrast-adding-a-heading-does-rebuild-the-outline-by-exactly.scm
 native markdown-editor/edge-case-every-heading-level-one-demotion-at-a-time-the-outl.scm
 native markdown-editor/numbering-toggle-a-fan-in-of-the-heading-spine-and-a-boolean.scm
 native markdown-editor/the-teaching-point-a-paragraph-edit-updates-the-statistics-and.scm
 native package-explorer/f-opening-a-package-three-panels-settle-independently.scm
-native pomodoro-tracker/a-project-with-no-logged-time-is-still-fully-usable.scm
 native pomodoro-tracker/logging-the-block-writes-the-ledger-and-rewinds-the-clock.scm
-native pomodoro-tracker/pause-voids-the-block-in-progress.scm
-native pomodoro-tracker/reset-returns-to-idle.scm
-native pomodoro-tracker/resume-starts-a-fresh-block.scm
-native pomodoro-tracker/run-a-whole-cycle-to-the-work-break-boundary.scm
 native query-builder/deleting-a-nested-group.scm
 native query-builder/editing-a-leaf-three-levels-deep-does-not-recreate-its-siblings.scm
 native split-the-bill/adding-a-person-re-splits-every-expense.scm
@@ -54,12 +43,7 @@ native spreadsheet-lite/error-paths.scm
 native spreadsheet-lite/keyed-row-add-remove.scm
 native spreadsheet-lite/the-new-dependent-updates-with-it.scm
 native status-page/a-real-outage-keeps-the-page-at-major-outage.scm
-native status-page/hiding-the-page-stops-polling.scm
-native status-page/returning-to-visible-resumes-polling.scm
 native status-page/several-services-degrade-the-rollup-escalates-to-a-major-outage.scm
-native support-inbox/a-failed-sync.scm
-native support-inbox/empty-inbox-edge.scm
-native support-inbox/pausing-and-resuming-polling.scm
 native support-inbox/the-key-budget.scm
 native token-editor/one-colour-edit-reaches-every-dependent-binding-without-rebuildi.scm
 

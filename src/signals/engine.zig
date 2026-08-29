@@ -776,6 +776,12 @@ pub fn Engine(comptime Ctx: type) type {
                 self.engine.ensureActiveInterval(self.ctx, source_token, period_ms);
             }
 
+            /// Registers an interval appended by a prepared transaction using
+            /// registry capacity the transaction reserved during preparation.
+            pub fn registerInterval(self: *@This(), source_token: HostSignalToken, period_ms: u64) void {
+                self.engine.registerActiveIntervalAssumeCapacity(self.ctx, source_token, period_ms);
+            }
+
             /// Removes interval and releases the ownership attached to that live entry.
             pub fn removeInterval(self: *@This(), source_token: HostSignalToken) void {
                 self.engine.removeActiveIntervalBySourceToken(self.ctx, source_token);
@@ -6743,6 +6749,7 @@ pub fn Engine(comptime Ctx: type) type {
                         error.InvalidAppend => return error.InvalidSignalGraphAppend,
                     };
                     errdefer if (self.graph_append) |*append| append.deinit(allocator);
+                    try self.engine.reserveActiveIntervals(self.host_ctx, self.graph_append.?.appendedIntervalSourceCount());
                     try self.prepareGraphRoutes(allocator);
                 }
                 try self.prepareRender(allocator);
@@ -6825,6 +6832,7 @@ pub fn Engine(comptime Ctx: type) type {
                 self.structural_route_appends.?.apply(&self.engine.active_structural_signal_routes, graph_count);
                 var lifecycle = ActiveSignalGraphLifecycle{ .engine = self.engine, .ctx = self.host_ctx };
                 release.releaseRetired(Ctx.allocator(self.host_ctx), &lifecycle);
+                append.registerAppendedEffects(&lifecycle);
             }
 
             fn commitRenderAssumeCapacity(self: *@This()) void {
@@ -7327,6 +7335,7 @@ pub fn Engine(comptime Ctx: type) type {
                         error.OutOfMemory => return error.OutOfMemory,
                         error.InvalidAppend => return error.InvalidSignalGraphAppend,
                     };
+                    try self.engine.reserveActiveIntervals(self.host_ctx, self.graph_append.?.appendedIntervalSourceCount());
                     try self.prepareGraphRoutes(allocator);
                 }
                 if (self.engine.render_cache.hasRoot()) {
@@ -7774,6 +7783,7 @@ pub fn Engine(comptime Ctx: type) type {
                 self.structural_route_appends.?.apply(&self.engine.active_structural_signal_routes, graph_count);
                 var lifecycle = ActiveSignalGraphLifecycle{ .engine = self.engine, .ctx = self.host_ctx };
                 release.releaseRetired(Ctx.allocator(self.host_ctx), &lifecycle);
+                append.registerAppendedEffects(&lifecycle);
             }
 
             fn commitRenderCacheAssumeCapacity(self: *@This()) void {
@@ -8058,6 +8068,14 @@ pub fn Engine(comptime Ctx: type) type {
 
         fn ensureActiveInterval(self: *Self, ctx: Ctx.Handle, source_token: HostSignalToken, period_ms: u64) void {
             effects_runtime.ensureActiveInterval(Ctx, ctx, Ctx.allocator(ctx), &self.active_intervals, &self.next_interval_token, self.roc_host.?, source_token, period_ms);
+        }
+
+        fn reserveActiveIntervals(self: *Self, ctx: Ctx.Handle, additional: usize) error{OutOfMemory}!void {
+            try effects_runtime.reserveActiveIntervals(Ctx.allocator(ctx), &self.active_intervals, additional);
+        }
+
+        fn registerActiveIntervalAssumeCapacity(self: *Self, ctx: Ctx.Handle, source_token: HostSignalToken, period_ms: u64) void {
+            effects_runtime.ensureActiveIntervalAssumeCapacity(Ctx, ctx, &self.active_intervals, &self.next_interval_token, source_token, period_ms);
         }
 
         fn removeActiveIntervalBySourceToken(self: *Self, ctx: Ctx.Handle, source_token: HostSignalToken) void {

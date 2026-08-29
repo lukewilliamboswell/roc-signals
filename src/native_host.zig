@@ -4408,6 +4408,22 @@ fn testDoublyNestedEachRowElemCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args
     writeTestErasedResult(abi.Elem, ret, testElement(roc_host, &children));
 }
 
+/// Renders one row as a state cell whose constant-true branch owns an
+/// interval source, so replacing the row retires an interval two scopes
+/// below the row scope.
+fn testIntervalBranchRowElemCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
+    _ = capture_ptr;
+    test_row_elem_call_count += 1;
+    const call_args = testErasedArgsAs(ErasedHostValueBinaryArgs, args);
+    const key = testReadHostValueI64(roc_host, call_args.arg0);
+    var text_buffer: [64]u8 = undefined;
+    const text = std.fmt.bufPrint(&text_buffer, "row-{d}", .{key}) catch @panic("test interval branch row Elem callable could not format text");
+    const clock = testNodeI64TextSignal(roc_host, testNodeIntervalSourceExpr(roc_host, 100, key));
+    const when = testNodeWhen(roc_host, clock, testNodeText(roc_host, "clock-off"));
+    const children = [_]abi.Elem{ testNodeText(roc_host, text), when };
+    writeTestErasedResult(abi.Elem, ret, testNodeState(roc_host, testElement(roc_host, &children)));
+}
+
 fn testHostValueEqErasedCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
     _ = capture_ptr;
     const call_args = testErasedArgsAs(ErasedHostValueBinaryArgs, args);
@@ -5076,6 +5092,168 @@ test "signals host interval sources tick by period and runtime token" {
     const runtime_counts = host.engine.tickIntervalSourceByRuntimeToken(&host, &roc_host, runtime_token.raw());
     try std.testing.expectEqual(@as(u64, 1), runtime_counts.set_text);
     try std.testing.expectEqualStrings("3", host.dom_elements.items[1].text.?);
+}
+
+test "state transaction mounting an interval branch registers the interval it later retires" {
+    // A prepared structural transaction appends new signal records through
+    // PreparedGraphAppend and retires old ones through PreparedReleaseClosure.
+    // Retirement removed interval sources from the active interval registry,
+    // but appending never registered them: the registry only ever learned of
+    // intervals through the pre-transactional rebuild path. Mounting a when
+    // branch that owns Signal.interval therefore left the registry empty, and
+    // swapping the branch back panicked with "active interval removal missed
+    // its source token".
+    const Runner = struct {
+        fn run(failure_number: ?usize) !usize {
+            var host = HostEnv.init();
+            var roc_host = makeSignalsRocHost(&host);
+            host.engine.roc_host = &roc_host;
+            defer {
+                host.deinit();
+                _ = host.gpa.deinit();
+            }
+
+            const state_token = newTestBinderToken(&roc_host);
+            const state_cap = testHostValueCapability(&roc_host);
+            const clock = testNodeI64TextSignal(&roc_host, testNodeIntervalSourceExpr(&roc_host, 100, 1));
+            const when: abi.Elem = .{
+                .payload = .{
+                    .when = .{
+                        .condition = boxTestNodeSignalExpr(&roc_host, testNodeRefExpr(state_token)),
+                        .read = testBoolReadHandle(&roc_host, state_cap),
+                        .when_false = boxTestElem(&roc_host, testNodeText(&roc_host, "clock-off")),
+                        .when_true = boxTestElem(&roc_host, clock),
+                    },
+                },
+                .tag = .When,
+            };
+            // A tokened sibling record seeds the active graph the way every
+            // application root does; a root made only of state refs never
+            // prepares graph work at all (see the guard in
+            // PreparedStructuralDownstream.prepareGraphRenderAndPublication).
+            const label = testNodeI64TextSignal(&roc_host, testNodeConstExpr(&roc_host, testHostValueI64(0)));
+            const section = testElementWith(&roc_host, "section", &.{}, &.{ when, label });
+            const root = testNodeStateWithTokenAndInitialCapability(&roc_host, state_token, testHostValueBool(false), section, state_cap);
+            defer root.decref(&roc_host);
+            _ = try tryRenderInitialRoot(&host, &roc_host, root, &.{});
+            try std.testing.expectEqual(@as(usize, 0), host.engine.active_intervals.items.len);
+            const state_id = host.engine.active_stream.scope_sites.items[0].node_id;
+            const allocations_before = host.roc_allocations.snapshot();
+
+            var fault = FaultAllocator.init(host.gpa.allocator());
+            fault.configure(failure_number);
+            host.engine_allocator_override = fault.allocator();
+            const result = host.engine.tryDispatchStateValue(&host, &roc_host, state_id.raw(), testHostValueBool(true), state_cap);
+            const attempts = fault.attempts;
+            if (failure_number != null) {
+                try std.testing.expectError(error.OutOfMemory, result);
+                try std.testing.expectEqual(@as(usize, 0), host.engine.active_intervals.items.len);
+                try std.testing.expect(activeTextElementId(&host, "clock-off") != null);
+                try std.testing.expectEqual(@as(usize, 0), host.roc_allocations.liveCountSince(allocations_before));
+                fault.configure(null);
+                _ = try host.engine.tryDispatchStateValue(&host, &roc_host, state_id.raw(), testHostValueBool(true), state_cap);
+            } else _ = try result;
+
+            try std.testing.expectEqual(@as(usize, 1), host.engine.active_intervals.items.len);
+            try std.testing.expectEqual(@as(u64, 100), host.engine.active_intervals.items[0].period_ms);
+            try std.testing.expect(activeTextElementId(&host, "clock-off") == null);
+            const record = host.engine.activeIntervalRecordByPeriod(100).?;
+            try std.testing.expectEqual(record.token().?, host.engine.active_intervals.items[0].source_token);
+            const runtime_token = host.engine.active_intervals.items[0].token;
+            _ = host.engine.tickIntervalSourceByRuntimeToken(&host, &roc_host, runtime_token.raw());
+
+            _ = try host.engine.tryDispatchStateValue(&host, &roc_host, state_id.raw(), testHostValueBool(false), state_cap);
+            try std.testing.expectEqual(@as(usize, 0), host.engine.active_intervals.items.len);
+            try std.testing.expect(activeTextElementId(&host, "clock-off") != null);
+            try std.testing.expect(host.engine.activeIntervalRecordByPeriod(100) == null);
+            return attempts;
+        }
+    };
+
+    const attempts = try Runner.run(null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
+}
+
+test "initial root reserves elem ids for siblings collected after an each site" {
+    // The staged collection bounded the highest elem id a nested each could
+    // reach by the ids interned so far plus the rows' own nodes. Siblings the
+    // enclosing tree had counted but not yet collected (a text node after the
+    // each site) were left out, so a signal text node inside the rows landed
+    // past the per-elem descriptor index reservation and publication tripped
+    // the capacity assertion. The rows nest an interval two scopes down, which
+    // also exercises retiring that interval when the row is replaced.
+    const Runner = struct {
+        fn intervalRecordCount(host: *const HostEnv) usize {
+            var count: usize = 0;
+            for (host.engine.active_signal_graph.items) |node| {
+                if (node.record.payload == .interval_source) count += 1;
+            }
+            return count;
+        }
+
+        fn run(failure_number: ?usize) !usize {
+            test_row_elem_call_count = 0;
+            var host = HostEnv.init();
+            var roc_host = makeSignalsRocHost(&host);
+            host.engine.roc_host = &roc_host;
+            defer {
+                host.deinit();
+                _ = host.gpa.deinit();
+            }
+
+            const state_token = newTestBinderToken(&roc_host);
+            const state_cap = testHostValueCapability(&roc_host);
+            const each = testNodeEachWithSignalCapabilityAndRow(&roc_host, testNodeRefExpr(state_token), state_cap, &testIntervalBranchRowElemCallable);
+            const label = testNodeI64TextSignal(&roc_host, testNodeConstExpr(&roc_host, testHostValueI64(0)));
+            const section = testElementWith(&roc_host, "section", &.{}, &.{ each, label });
+            const initial_items = [_]HostValue{testHostValueI64(1)};
+            const root = testNodeStateWithTokenAndInitialCapability(&roc_host, state_token, testHostValueI64ListWithCapability(&roc_host, &initial_items, state_cap), section, state_cap);
+            defer root.decref(&roc_host);
+            _ = try tryRenderInitialRoot(&host, &roc_host, root, &.{});
+            const state_id = host.engine.active_stream.scope_sites.items[0].node_id;
+            try std.testing.expectEqual(@as(usize, 1), intervalRecordCount(&host));
+            try std.testing.expectEqual(@as(usize, 1), host.engine.active_intervals.items.len);
+            try std.testing.expect(activeTextElementId(&host, "row-1") != null);
+            const allocations_before = host.roc_allocations.snapshot();
+
+            var fault = FaultAllocator.init(host.gpa.allocator());
+            fault.configure(failure_number);
+            host.engine_allocator_override = fault.allocator();
+            const next_items = [_]HostValue{testHostValueI64(2)};
+            const result = host.engine.tryDispatchStateValue(&host, &roc_host, state_id.raw(), testHostValueI64ListWithCapability(&roc_host, &next_items, state_cap), state_cap);
+            const attempts = fault.attempts;
+            if (failure_number != null) {
+                try std.testing.expectError(error.OutOfMemory, result);
+                try std.testing.expectEqual(@as(usize, 1), intervalRecordCount(&host));
+                try std.testing.expectEqual(@as(usize, 1), host.engine.active_intervals.items.len);
+                try std.testing.expect(activeTextElementId(&host, "row-1") != null);
+                try std.testing.expectEqual(@as(usize, 0), host.roc_allocations.liveCountSince(allocations_before));
+                fault.configure(null);
+                const retry_items = [_]HostValue{testHostValueI64(2)};
+                _ = try host.engine.tryDispatchStateValue(&host, &roc_host, state_id.raw(), testHostValueI64ListWithCapability(&roc_host, &retry_items, state_cap), state_cap);
+            } else _ = try result;
+
+            // The retired row's interval leaves the graph and the registry;
+            // the replacement row's interval is the only one left, so a tick
+            // by period resolves to exactly one source.
+            try std.testing.expect(activeTextElementId(&host, "row-1") == null);
+            try std.testing.expect(activeTextElementId(&host, "row-2") != null);
+            try std.testing.expectEqual(@as(usize, 1), intervalRecordCount(&host));
+            try std.testing.expectEqual(@as(usize, 1), host.engine.active_intervals.items.len);
+            _ = tickIntervalSource(&host, &roc_host, 100);
+            try std.testing.expect(activeTextElementId(&host, "3") != null);
+
+            _ = try host.engine.tryDispatchStateValue(&host, &roc_host, state_id.raw(), testHostValueI64ListWithCapability(&roc_host, &.{}, state_cap), state_cap);
+            try std.testing.expectEqual(@as(usize, 0), intervalRecordCount(&host));
+            try std.testing.expectEqual(@as(usize, 0), host.engine.active_intervals.items.len);
+            return attempts;
+        }
+    };
+
+    const attempts = try Runner.run(null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
 test "signals host prepared interval transaction sweeps host OOM and retries" {

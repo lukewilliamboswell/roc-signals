@@ -1319,6 +1319,36 @@ pub fn PreparedGraphAppend(comptime Record: type) type {
         survivor_count: usize,
         phase: Phase = .prepared,
 
+        /// Counts the appended records that declare an interval source, so the
+        /// owning transaction can reserve interval-registry capacity before
+        /// publication.
+        pub fn appendedIntervalSourceCount(self: *const @This()) usize {
+            var count: usize = 0;
+            for (self.new_nodes) |node| {
+                switch (node.record.payload) {
+                    .interval_source => count += 1,
+                    else => {},
+                }
+            }
+            return count;
+        }
+
+        /// Registers the effect sources the committed append introduced. This
+        /// is the publication-side counterpart of `PreparedReleaseClosure.releaseRetired`
+        /// removing retired sources: every interval record that enters the
+        /// active graph through a prepared transaction must enter the interval
+        /// registry here, or its later retirement has nothing to remove.
+        /// Must run after `commitNodes`; the hooks must not allocate.
+        pub fn registerAppendedEffects(self: *const @This(), hooks: anytype) void {
+            if (self.phase != .committed) @panic("appended effect registration ran before graph publication");
+            for (self.new_nodes) |node| {
+                switch (node.record.payload) {
+                    .interval_source => |payload| hooks.registerInterval(node.record.token().?, payload.period_ms),
+                    else => {},
+                }
+            }
+        }
+
         /// Reserves the dense node destination before any graph mutation.
         pub fn reservePublication(self: *const @This(), allocator: std.mem.Allocator, nodes: *std.ArrayListUnmanaged(Node(Record))) (std.mem.Allocator.Error || error{InvalidAppend})!void {
             const final_count = std.math.add(usize, self.survivor_count, self.new_nodes.len) catch return error.InvalidAppend;
@@ -2136,6 +2166,11 @@ const LifecycleTestHooks = struct {
         if (token == 0) @panic("test interval token must be explicit");
         if (period_ms == 0) @panic("test interval period must be explicit");
         self.interval_ensures += 1;
+    }
+
+    /// Registers an appended interval during publication without allocating.
+    pub fn registerInterval(self: *@This(), token: u64, period_ms: u64) void {
+        self.ensureInterval(token, period_ms);
     }
 
     /// Removes interval and releases the ownership attached to that live entry.
