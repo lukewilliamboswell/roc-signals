@@ -71,7 +71,6 @@ native pomodoro-tracker/resume-starts-a-fresh-block.scm
 native pomodoro-tracker/run-a-whole-cycle-to-the-work-break-boundary.scm
 native query-builder/deleting-a-nested-group.scm
 native query-builder/editing-a-leaf-three-levels-deep-does-not-recreate-its-siblings.scm
-native recipe-scaler/removing-recipes-from-the-shopping-list.scm
 native split-the-bill/adding-a-person-re-splits-every-expense.scm
 native split-the-bill/editing-one-expense-reuses-every-row.scm
 native split-the-bill/one-person-then-none.scm
@@ -83,7 +82,6 @@ native spreadsheet-lite/the-new-dependent-updates-with-it.scm
 native status-page/a-real-outage-keeps-the-page-at-major-outage.scm
 native status-page/first-incident-arrives-with-three-updates-in-publish-order.scm
 native status-page/hiding-the-page-stops-polling.scm
-native status-page/one-refresh-fails-while-the-others-succeed.scm
 native status-page/returning-to-visible-resumes-polling.scm
 native status-page/several-services-degrade-the-rollup-escalates-to-a-major-outage.scm
 native support-inbox/a-failed-sync.scm

@@ -2206,6 +2206,26 @@ pub fn Engine(comptime Ctx: type) type {
             self.pending_roc_metrics = metrics;
         }
 
+        /// Retires prepared scope subtrees at publication. Each scope's step
+        /// moves into `retired_steps` for the deferred, host-calling release,
+        /// the scopes become inactive, and the disposals are recorded in the
+        /// same `scopes_disposed` counter the immediate disposal path reports
+        /// through `recordScopeDisposed`: the metric describes what the
+        /// reconciler did, not which publication path did it. Allocation free;
+        /// `retired_steps` must already hold capacity for every scope.
+        fn commitPreparedScopeRetirement(self: *Self, retirement: *const scope_runtime.PreparedSubtreeRetirement, retired_steps: *std.ArrayListUnmanaged(HostScopeStep)) void {
+            for (retirement.scope_ids) |scope_id| {
+                const scope = &self.scopes.items[scope_id.index()];
+                retired_steps.appendAssumeCapacity(scope.step);
+                scope.step = .root;
+            }
+            retirement.applyMetadata(HostEachRowScopeStep, self.scopes.items, ids.Generation.fromRaw(self.identity_reuse_barrier));
+            self.has_inactive_scopes = retirement.scope_ids.len != 0 or self.has_inactive_scopes;
+            var metrics = self.pending_roc_metrics;
+            metrics.bump(.scopes_disposed, @intCast(retirement.scope_ids.len));
+            self.pending_roc_metrics = metrics;
+        }
+
         /// Records each key compare in the metrics or lifecycle state owned by this operation.
         pub fn recordEachKeyCompare(self: *Self) void {
             var metrics = self.pending_roc_metrics;
@@ -5474,14 +5494,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             fn applyAfterRowCommit(self: *@This(), engine: *Self) void {
-                const scope_retirement = &self.targets.?.scope_retirement.?;
-                for (scope_retirement.scope_ids) |scope_id| {
-                    const scope = &engine.scopes.items[scope_id.index()];
-                    self.retired_steps.appendAssumeCapacity(scope.step);
-                    scope.step = .root;
-                }
-                scope_retirement.applyMetadata(HostEachRowScopeStep, engine.scopes.items, ids.Generation.fromRaw(engine.identity_reuse_barrier));
-                engine.has_inactive_scopes = scope_retirement.scope_ids.len != 0 or engine.has_inactive_scopes;
+                engine.commitPreparedScopeRetirement(&self.targets.?.scope_retirement.?, &self.retired_steps);
             }
 
             fn applyEffectsAfterPublication(self: *@This(), engine: *Self, ctx: Ctx.Handle) void {
@@ -6929,14 +6942,7 @@ pub fn Engine(comptime Ctx: type) type {
                     row_retirement.apply(Ctx.allocator(self.host_ctx), &self.engine.each_row_sites, &self.engine.each_row_site_indexes, &self.engine.each_row_memberships_by_scope_id, &row_keys);
                 }
                 self.replacement.collection.commit();
-                const scope_retirement = &self.targets.?.scope_retirement.?;
-                for (scope_retirement.scope_ids) |scope_id| {
-                    const scope = &self.engine.scopes.items[scope_id.index()];
-                    self.retired_scope_steps.appendAssumeCapacity(scope.step);
-                    scope.step = .root;
-                }
-                scope_retirement.applyMetadata(HostEachRowScopeStep, self.engine.scopes.items, ids.Generation.fromRaw(self.engine.identity_reuse_barrier));
-                self.engine.has_inactive_scopes = scope_retirement.scope_ids.len != 0 or self.engine.has_inactive_scopes;
+                self.engine.commitPreparedScopeRetirement(&self.targets.?.scope_retirement.?, &self.retired_scope_steps);
                 self.engine.validateActiveScopeSiteInsertIndexes();
 
                 self.publishRenderLast();
@@ -7944,13 +7950,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             fn commitScopeRetirementLast(self: *@This()) void {
-                for (self.scope_retirement.?.scope_ids) |scope_id| {
-                    const scope = &self.engine.scopes.items[scope_id.index()];
-                    self.retired_scope_steps.appendAssumeCapacity(scope.step);
-                    scope.step = .root;
-                }
-                self.scope_retirement.?.applyMetadata(HostEachRowScopeStep, self.engine.scopes.items, ids.Generation.fromRaw(self.engine.identity_reuse_barrier));
-                self.engine.has_inactive_scopes = self.scope_retirement.?.scope_ids.len != 0 or self.engine.has_inactive_scopes;
+                self.engine.commitPreparedScopeRetirement(&self.scope_retirement.?, &self.retired_scope_steps);
             }
 
             fn commitAssumeCapacity(self: *@This()) void {
@@ -14152,6 +14152,7 @@ test "prepared each-row subtree retirement is atomic and allocation free" {
                 retry.applyAfterRowCommit(&engine);
                 retry.applyEffectsAfterPublication(&engine, &ctx);
                 try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+                try std.testing.expectEqual(@as(u64, 1), engine.pending_roc_metrics.scopes_disposed);
                 fault.configure(null);
                 retry.deinit(&engine, ctx.allocator, &ctx, host);
                 return attempts;
@@ -14163,6 +14164,9 @@ test "prepared each-row subtree retirement is atomic and allocation free" {
             prepared.applyEffectsAfterPublication(&engine, &ctx);
             try std.testing.expectEqual(@as(usize, 0), fault.attempts);
             try std.testing.expect(!engine.scopes.items[@intCast(row_scope_id.raw())].lifecycle.isActive());
+            // The prepared retirement reports the disposal through the same
+            // semantic counter as immediate disposal.
+            try std.testing.expectEqual(@as(u64, 1), engine.pending_roc_metrics.scopes_disposed);
             try std.testing.expectEqual(@as(?usize, null), engine.activeEachRowSiteIndex(ids.ScopeId.fromRaw(0), ids.SiteOrdinal.fromRaw(7)));
             fault.configure(null);
             prepared.deinit(&engine, ctx.allocator, &ctx, host);
