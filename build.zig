@@ -115,6 +115,7 @@ pub fn build(b: *std.Build) void {
         "scripts/browser/http_task_router.test.mjs",
         "scripts/browser/runtime_contract.test.mjs",
         "scripts/browser/service_ops_charts.test.mjs",
+        "scripts/browser/wasm_host_call_batch.test.mjs",
         "scripts/browser/wasm_memory_views.test.mjs",
         "scripts/browser/wasm_panic_fixture.test.mjs",
     });

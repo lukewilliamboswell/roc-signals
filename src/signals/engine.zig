@@ -13761,6 +13761,7 @@ test "composite rows share provisional scope claims across two sites and sweep O
             try std.testing.expectEqualSlices(ids.ScopeId, &.{ids.ScopeId.fromRaw(1)}, engine.each_row_sites.items[first_site_index].scope_ids.items);
             try std.testing.expectEqualSlices(ids.ScopeId, &.{ids.ScopeId.fromRaw(2)}, engine.each_row_sites.items[second_site_index].scope_ids.items);
             try std.testing.expectEqual(@as(usize, 3), engine.active_stream.render_nodes.items.len);
+            ctx.render_batch.publish();
             try std.testing.expect(ctx.render_batch.published.commands.len() != 0);
             try std.testing.expectEqual(@as(usize, 0), ctx.render_batch.staged.commands.len());
             return attempts;
@@ -13939,6 +13940,7 @@ test "mixed when and each collection shares one owner and sweeps OOM" {
             fault.configure(1);
             _ = mixed.commitAssumeCapacity();
             try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+            ctx.render_batch.publish();
             try std.testing.expectEqual(@as(usize, 0), ctx.render_batch.staged.commands.len());
             try std.testing.expect(ctx.render_batch.published.commands.len() != 0);
             try std.testing.expect(!engine.scopes.items[old_when_scope.scope_id.index()].lifecycle.isActive());
@@ -15362,6 +15364,7 @@ test "prepared initial root downstream sweeps failures and commits allocation fr
                 try std.testing.expectEqual(@as(usize, 1), engine.active_events.items.len);
                 try std.testing.expect(engine.active_signal_graph.items.len != 0);
                 try std.testing.expectEqual(@as(usize, 3), engine.render_cache.nodes.items.len);
+                ctx.render_batch.publish();
                 try std.testing.expectEqual(@as(usize, 0), ctx.render_batch.staged.commands.len());
                 try std.testing.expect(ctx.render_batch.published.commands.len() != 0);
                 try std.testing.expectEqual(@intFromEnum(render.Op.reset_dom), ctx.render_batch.published.commands.records.items[0].op);
@@ -15380,6 +15383,7 @@ test "prepared initial root downstream sweeps failures and commits allocation fr
             try std.testing.expectEqual(@as(usize, 1), engine.active_events.items.len);
             try std.testing.expect(engine.active_signal_graph.items.len != 0);
             try std.testing.expectEqual(@as(usize, 3), engine.render_cache.nodes.items.len);
+            ctx.render_batch.publish();
             try std.testing.expectEqual(@intFromEnum(render.Op.reset_dom), ctx.render_batch.published.commands.records.items[0].op);
             prepared.deinit();
             return attempts;
@@ -15973,6 +15977,7 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 fault.configure(1);
                 plan.commitAssumeCapacity();
                 try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+                ctx.render_batch.publish();
                 try std.testing.expectEqual(@as(usize, 0), ctx.render_batch.staged.commands.len());
                 try std.testing.expect(ctx.render_batch.published.commands.len() != 0);
                 try std.testing.expectEqualStrings("div", engine.render_cache.nodes.items[4].activeTag().?);
@@ -16527,6 +16532,7 @@ test "aggregate branch collection sweeps allocation failures without publication
             fault.configure(1);
             prepared.commitAssumeCapacity();
             try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+            ctx.render_batch.publish();
             try std.testing.expectEqual(@as(usize, 0), ctx.render_batch.staged.commands.len());
             try std.testing.expect(ctx.render_batch.published.commands.len() != 0);
             try std.testing.expect(!engine.scopes.items[first_old.index()].lifecycle.isActive());
@@ -16675,6 +16681,7 @@ test "nested live when transaction subsumes inner change atomically" {
             try std.testing.expect(next_record.active_use_count != 0);
             try std.testing.expectEqual(@as(usize, 0), engine.pending_tasks.items.len);
             try std.testing.expectEqual(@as(usize, 1), ctx.cancelled_tasks);
+            ctx.render_batch.publish();
             try std.testing.expect(ctx.render_batch.published.commands.len() != 0);
             var found_outer_result = false;
             for (engine.active_stream.text_nodes.items) |text_node| found_outer_result = found_outer_result or std.mem.eql(u8, text_node.value, "first-new");

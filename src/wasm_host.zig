@@ -366,7 +366,7 @@ fn beginHostCall() void {
 }
 
 fn poisonAndTrap(message: []const u8) noreturn {
-    command_batch.abort();
+    command_batch.discard();
     host_poisoned = true;
     const len = @min(message.len, last_host_error_buf.len);
     @memcpy(last_host_error_buf[0..len], message[0..len]);
@@ -374,8 +374,8 @@ fn poisonAndTrap(message: []const u8) noreturn {
     @trap();
 }
 
-fn wasmPanic(_: []const u8, _: ?usize) noreturn {
-    poisonAndTrap("Signals wasm host panicked after entering a transaction");
+fn wasmPanic(message: []const u8, _: ?usize) noreturn {
+    failHostWithFmt("Signals wasm host panicked after entering a transaction: {s}", .{message});
 }
 
 fn failHostWith(message: []const u8) noreturn {
@@ -383,7 +383,7 @@ fn failHostWith(message: []const u8) noreturn {
 }
 
 fn failHostWithFmt(comptime fmt: []const u8, args: anytype) noreturn {
-    command_batch.abort();
+    command_batch.discard();
     host_poisoned = true;
     last_host_error = std.fmt.bufPrint(&last_host_error_buf, fmt, args) catch "Signals wasm host invariant failed while formatting diagnostic";
     @trap();
@@ -406,11 +406,21 @@ fn alignmentFromBytes(alignment: usize) std.mem.Alignment {
     return @enumFromInt(std.math.log2_int(usize, alignment));
 }
 
+/// Reserves storage for one host-sink command. Sink commands are effects the
+/// engine emits after a transaction sealed (lifecycle commands, cancellations),
+/// so they append past the sealed batch and seal themselves; a sink command
+/// inside a transaction that is still staging is a programming error.
 fn preflightCommandStorage(additional: render.BatchCapacity) void {
-    command_batch.preflightAdditional(allocator(), additional) catch |err| switch (err) {
+    if (command_batch.hasUnsealedStaging()) failHostWith("render sink emitted a command while an engine transaction was still staging");
+    command_batch.preflight(allocator(), additional) catch |err| switch (err) {
         error.OutOfMemory => failHostWith("out of memory while reserving render command storage"),
         error.ResourceLimit => failHostWith("render command exceeded Wasm wire resource limit"),
     };
+}
+
+/// Seals the sink command just appended so it is part of the host call's batch.
+fn sealCommandStorage() void {
+    command_batch.commit();
 }
 
 fn checkedWireSize(parts: []const usize) usize {
@@ -426,24 +436,30 @@ fn checkedWireAlign4(len: usize) usize {
 fn appendCommand(op: render.Op, a: u32, b: u32, c: u32, d: u32, e: u32) void {
     preflightCommandStorage(.{ .commands = 1 });
     command_batch.staged.commands.appendRaw(allocator(), op, a, b, c, d, e) catch failHostWith("out of memory while staging render commands");
+    sealCommandStorage();
 }
 
 fn clearCommandBuffers() void {
     command_batch.clearPublished();
 }
 
+/// Starts the command batch of one host call. Every export that may run the
+/// engine begins a batch and ends it with `publishCommandTransaction`; the
+/// engine transactions and sink commands in between seal into that one batch.
 fn beginCommandTransaction() void {
     command_batch.begin();
 }
 
-fn commitCommandTransaction() void {
-    command_batch.commit();
+/// Makes the complete batch of the finishing host call visible to JavaScript.
+fn publishCommandTransaction() void {
+    command_batch.publish();
 }
 
 fn storeBytes(bytes: []const u8) u32 {
     preflightCommandStorage(.{ .strings = bytes.len });
     const offset = toU32(command_batch.staged.strings.items.len);
     command_batch.staged.strings.appendSlice(allocator(), bytes) catch failHostWith("out of memory while staging render strings");
+    sealCommandStorage();
     return offset;
 }
 
@@ -454,6 +470,7 @@ fn appendStringCommand(op: render.Op, elem_id: u32, bytes: []const u8) void {
 
 fn storeLocationHref(location: boundary.LocationSnapshot) render.DynamicSlice {
     if (location.path.len == 0 or location.path[0] != '/') failHostWith("location path must start with /");
+    preflightCommandStorage(.{ .strings = checkedWireSize(&.{ location.path.len, @intFromBool(location.query.len != 0), location.query.len, @intFromBool(location.hash.len != 0), location.hash.len }) });
     const offset = toU32(command_batch.staged.strings.items.len);
     command_batch.staged.strings.appendSlice(allocator(), location.path) catch failHostWith("out of memory while staging location command");
     if (location.query.len != 0) {
@@ -464,6 +481,7 @@ fn storeLocationHref(location: boundary.LocationSnapshot) render.DynamicSlice {
         command_batch.staged.strings.append(allocator(), '#') catch failHostWith("out of memory while staging location command");
         command_batch.staged.strings.appendSlice(allocator(), location.hash) catch failHostWith("out of memory while staging location command");
     }
+    sealCommandStorage();
     return .{ .offset = @enumFromInt(offset), .len = @enumFromInt(toU32(command_batch.staged.strings.items.len - offset)) };
 }
 
@@ -501,6 +519,7 @@ fn appendDynamicSetAttrText(elem_id: u32, name: []const u8, value: []const u8) v
     const payload_len = checkedWireSize(&.{ 3 * @sizeOf(u32), name.len, value.len });
     preflightCommandStorage(.{ .commands = 1, .dynamic = checkedWireSize(&.{ 2 * @sizeOf(u16), @sizeOf(u32), checkedWireAlign4(payload_len) }) });
     const slice = command_batch.staged.dynamic.appendSetAttrText(allocator(), @enumFromInt(elem_id), name, value) catch failHostWith("out of memory while staging dynamic render command");
+    sealCommandStorage();
     appendCommand(.extended, slice.offset.raw(), slice.len.raw(), 0, 0, 0);
 }
 
@@ -508,6 +527,7 @@ fn appendDynamicRemoveAttr(elem_id: u32, name: []const u8) void {
     const payload_len = checkedWireSize(&.{ 2 * @sizeOf(u32), name.len });
     preflightCommandStorage(.{ .commands = 1, .dynamic = checkedWireSize(&.{ 2 * @sizeOf(u16), @sizeOf(u32), checkedWireAlign4(payload_len) }) });
     const slice = command_batch.staged.dynamic.appendRemoveAttr(allocator(), @enumFromInt(elem_id), name) catch failHostWith("out of memory while staging dynamic render command");
+    sealCommandStorage();
     appendCommand(.extended, slice.offset.raw(), slice.len.raw(), 0, 0, 0);
 }
 
@@ -541,6 +561,7 @@ fn appendDynamicBindEvent(elem_id: u32, name: []const u8, event_id: u32, options
     const payload_len = checkedWireSize(&.{ 8 * @sizeOf(u32), name.len, payload_descriptor.extractionBytes().len });
     preflightCommandStorage(.{ .commands = 1, .dynamic = checkedWireSize(&.{ 2 * @sizeOf(u16), @sizeOf(u32), checkedWireAlign4(payload_len) }) });
     const slice = command_batch.staged.dynamic.appendBindEvent(allocator(), @enumFromInt(elem_id), @enumFromInt(event_id), name, options, delivery, payload_descriptor) catch failHostWith("out of memory while staging dynamic event command");
+    sealCommandStorage();
     appendCommand(.extended, slice.offset.raw(), slice.len.raw(), 0, 0, 0);
 }
 
@@ -548,6 +569,7 @@ fn appendDynamicClearEvent(elem_id: u32, name: []const u8) void {
     const payload_len = checkedWireSize(&.{ 2 * @sizeOf(u32), name.len });
     preflightCommandStorage(.{ .commands = 1, .dynamic = checkedWireSize(&.{ 2 * @sizeOf(u16), @sizeOf(u32), checkedWireAlign4(payload_len) }) });
     const slice = command_batch.staged.dynamic.appendClearEvent(allocator(), @enumFromInt(elem_id), name) catch failHostWith("out of memory while staging dynamic event command");
+    sealCommandStorage();
     appendCommand(.extended, slice.offset.raw(), slice.len.raw(), 0, 0, 0);
 }
 
@@ -1419,6 +1441,10 @@ export fn roc_ui_debug_mount_fixture() callconv(.c) void {
     };
     shared_engine.root_elem = root;
     renderActiveRoot(&.{});
+    // Model a lifecycle command that runs after the root's own transaction
+    // sealed: it must publish in the same mount batch as the root.
+    WasmSink.setDocumentTitle(.{}, "mount fixture");
+    publishCommandTransaction();
 }
 
 /// Exercises the root panic containment path in a linked-Wasm integration test.
@@ -1590,10 +1616,9 @@ export fn roc_ui_mount() callconv(.c) void {
         mount_prepared = false;
     }
 
-    const initial_root = !shared_engine.hasRenderRoot();
     renderActiveRoot(&.{});
     clearStorageDeclarations();
-    if (!initial_root) commitCommandTransaction();
+    publishCommandTransaction();
 }
 
 export fn roc_ui_set_location(payload_ptr: usize, payload_len: usize) callconv(.c) void {
@@ -1605,7 +1630,7 @@ export fn roc_ui_update_location(payload_ptr: usize, payload_len: usize) callcon
     beginHostCall();
     beginCommandTransaction();
     dispatchLocationChange((@as([*]const u8, @ptrFromInt(payload_ptr)))[0..payload_len]);
-    commitCommandTransaction();
+    publishCommandTransaction();
 }
 
 export fn roc_ui_set_visibility(payload_ptr: usize, payload_len: usize) callconv(.c) void {
@@ -1617,7 +1642,7 @@ export fn roc_ui_update_visibility(payload_ptr: usize, payload_len: usize) callc
     beginHostCall();
     beginCommandTransaction();
     dispatchVisibilityChange((@as([*]const u8, @ptrFromInt(payload_ptr)))[0..payload_len]);
-    commitCommandTransaction();
+    publishCommandTransaction();
 }
 
 export fn roc_ui_set_online(payload_ptr: usize, payload_len: usize) callconv(.c) void {
@@ -1629,7 +1654,7 @@ export fn roc_ui_update_online(payload_ptr: usize, payload_len: usize) callconv(
     beginHostCall();
     beginCommandTransaction();
     dispatchOnlineChange((@as([*]const u8, @ptrFromInt(payload_ptr)))[0..payload_len]);
-    commitCommandTransaction();
+    publishCommandTransaction();
 }
 
 fn payloadKindFromWire(payload_kind: u32) BoundaryPayloadKind {
@@ -1658,7 +1683,7 @@ export fn roc_ui_event(event_id: u32, payload_kind: u32, payload_ptr: usize, pay
         .bytes => hostValueU8List((@as([*]const u8, @ptrFromInt(payload_ptr)))[0..payload_len]),
     };
     dispatchEvent(desc, payload);
-    commitCommandTransaction();
+    publishCommandTransaction();
     return 0;
 }
 
@@ -1666,7 +1691,7 @@ export fn roc_ui_timer(token: u32) callconv(.c) void {
     beginHostCall();
     beginCommandTransaction();
     tickInterval(ids.IntervalToken.fromRaw(token));
-    commitCommandTransaction();
+    publishCommandTransaction();
 }
 
 export fn roc_ui_resolve(request_id: u32, payload_ptr: usize, payload_len: usize, failed: u32) callconv(.c) void {
@@ -1677,12 +1702,12 @@ export fn roc_ui_resolve(request_id: u32, payload_ptr: usize, payload_len: usize
         (@as([*]const u8, @ptrFromInt(payload_ptr)))[0..payload_len],
         failed != 0,
     );
-    commitCommandTransaction();
+    publishCommandTransaction();
 }
 
 export fn roc_ui_unmount() callconv(.c) void {
     if (host_poisoned) {
-        command_batch.abort();
+        command_batch.discard();
         return;
     }
     beginHostCall();
@@ -1692,7 +1717,7 @@ export fn roc_ui_unmount() callconv(.c) void {
     clearInitialVisibilityPayload();
     clearInitialOnlinePayload();
     clearStorageEnvironment();
-    commitCommandTransaction();
+    publishCommandTransaction();
 }
 
 export fn roc_dbg(_: [*]const u8, _: usize) callconv(.c) void {}

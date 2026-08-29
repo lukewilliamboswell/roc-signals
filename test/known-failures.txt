@@ -63,10 +63,10 @@ native support-inbox/pausing-and-resuming-polling.scm
 native support-inbox/the-key-budget.scm
 native token-editor/one-colour-edit-reaches-every-dependent-binding-without-rebuildi.scm
 
-# Fixture examples (examples/_fixtures), recorded on the same day. The wasm
-# mounts and the state-reads/large-each/metric-semantics specs are live-update
-# failures of the same classes as above; the js-framework-benchmark 10k specs
-# hit the 30s worker timeout on an 8-core machine with four workers.
+# Fixture examples (examples/_fixtures), recorded on the same day. The
+# state-reads/large-each/metric-semantics specs are live-update failures of
+# the same classes as above; the js-framework-benchmark 10k specs hit the 30s
+# worker timeout on an 8-core machine with four workers.
 native js-framework-benchmark/append_1k_to_10k.scm
 native js-framework-benchmark/clear_10k.scm
 native js-framework-benchmark/create_10k.scm
@@ -75,8 +75,3 @@ native js-framework-benchmark/update_10k.scm
 native large-each-08/main.scm
 native large-each-64/main.scm
 native metric-semantics/main.scm
-wasm location-canonical-branch
-wasm location-navigation
-wasm location-source
-wasm on-change-initial
-wasm storage-commands

@@ -1758,6 +1758,17 @@ before it, commands are private scratch; after it, the complete immutable batch
 is visible. The browser applies only a successful published batch and never
 observes or executes a prefix from a failed transaction.
 
+One host transaction may run several engine transactions in sequence: the
+lifecycle callbacks of a mount or structural change dispatch state, issue
+storage or navigation commands, and those commands refresh browser sources,
+each as its own prepare-then-commit step. The engine commits each step by
+sealing its commands onto the host call's staged batch without allocating; a
+step that fails preparation aborts back to the previous seal, leaving the
+earlier steps intact. Effect commands a sink emits after a step sealed append
+and seal the same way. Only the host publishes, once, when its call ends, so
+the browser sees the whole host transaction as one batch and never a partial
+sequence of steps.
+
 An allocation failure during preparation is **recoverable when the allocating
 call has an error-and-unwind channel**. Host-owned allocation, copying, and
 preflight use that channel: they return `out_of_memory`, publish no commands,

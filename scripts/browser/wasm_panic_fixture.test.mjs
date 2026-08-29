@@ -85,7 +85,7 @@ test("linked Wasm initial mount OOM publishes nothing, diagnoses poison, and ret
     failed.roc_ui_debug_fail_allocation(failureNumber);
     assert.throws(() => failed.roc_ui_debug_mount_fixture(), WebAssembly.RuntimeError);
     assert.equal(failed.roc_ui_is_poisoned(), 1);
-    assert.match(hostDiagnostic(failed), /out of memory preparing initial root/);
+    assert.match(hostDiagnostic(failed), /out of memory (preparing initial root|while reserving render command storage)/);
     assert.equal(failed.roc_ui_command_buffer_len(), 0);
     assert.equal(failed.roc_ui_string_buffer_len(), 0);
     assert.equal(failed.roc_ui_dynamic_buffer_len(), 0);

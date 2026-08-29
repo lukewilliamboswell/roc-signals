@@ -1941,6 +1941,7 @@ test "prepared render splice composes mixed cache deltas allocation free" {
     try std.testing.expectEqual(@as(?ids.ElemId, ids.ElemId.fromRaw(1)), cache.nodes.items[7].parent_id);
     try std.testing.expectEqual(@as(?ids.ElemId, ids.ElemId.fromRaw(2)), cache.nodes.items[3].parent_id);
     batch.commit();
+    batch.publish();
     try std.testing.expectEqual(@as(usize, 8), batch.published.commands.len());
     const expected_ops = [_]render.Op{
         .create_element,
@@ -2181,6 +2182,7 @@ test "prepared render splice adoption releases scalar updates for nodes it retir
                 try plan.wire.stageAssumeCapacity(&batch, allocator);
                 plan.apply(&cache);
                 batch.commit();
+                batch.publish();
                 try std.testing.expectEqual(@as(usize, 0), fault.attempts);
                 fault.configure(null);
                 plan.deinit();
@@ -2265,6 +2267,7 @@ test "prepared render splice sweeps every allocation and retries" {
                 try std.testing.expectEqual(@as(usize, 0), fault.attempts);
                 try std.testing.expectEqual(@as(usize, 0), batch.published.commands.len());
                 batch.commit();
+                batch.publish();
                 try std.testing.expectEqual(@as(usize, 7), batch.published.commands.len());
                 fault.configure(null);
                 plan.deinit();
