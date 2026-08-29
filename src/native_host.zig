@@ -4225,6 +4225,16 @@ fn testUnaryHostValueCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]con
     writeTestErasedResult(HostValue, ret, capabilityTestHostValue(host, roc_host, hostValueI64(host, roc_host, input + capture.amount)));
 }
 
+/// A `key_of` that buckets items by integer division, so two different item
+/// values can share one row key and an edit can change a row's item in place.
+fn testBucketKeyHostValueCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
+    const capture = testCapturePtrAs(TestErasedI64Capture, capture_ptr);
+    const call_args = testErasedArgsAs(ErasedHostValueUnaryArgs, args);
+    const input = testReadHostValueI64(roc_host, call_args.arg0);
+    const host = hostFromRocHost(roc_host);
+    writeTestErasedResult(HostValue, ret, capabilityTestHostValue(host, roc_host, hostValueI64(host, roc_host, @divTrunc(input, capture.amount))));
+}
+
 fn testHostValueKeyTextErasedCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
     _ = capture_ptr;
     const call_args = testErasedArgsAs(ErasedHostValueUnaryArgs, args);
@@ -7390,6 +7400,88 @@ test "an each reading a root state list through a bare ref mounts in one staged 
     for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
+test "changing a row item keeps its rendered nodes and diffs their fields" {
+    // A row whose key survives but whose item changed is re-collected by the
+    // row builder, and the re-collected subtree claims the same element ids
+    // under the same tags. The render splice used to journal that as a
+    // remove/recreate pair per node, so the host rebuilt the row's DOM (and
+    // dropped focus, pending input, and listeners) for what is a scalar
+    // change. The nodes must stay in place and only changed fields may emit.
+    const Runner = struct {
+        fn run(failure_number: ?usize) !usize {
+            test_erased_callable_drop_count = 0;
+            test_row_elem_call_count = 0;
+            var host = HostEnv.init();
+            var roc_host = makeSignalsRocHost(&host);
+            host.engine.roc_host = &roc_host;
+            defer {
+                host.deinit();
+                _ = host.gpa.deinit();
+            }
+
+            const state_token = newTestBinderToken(&roc_host);
+            const state_cap = testHostValueCapability(&roc_host);
+            // Keys are item / 100, so 202 and 250 are the same row.
+            const each = testNodeEachWithSignalCapabilityKeyOfRowAndCapture(TestErasedI64Capture, &roc_host, testNodeRefExpr(state_token), state_cap, &testBucketKeyHostValueCallable, .{ .amount = 100 }, &testStatefulRowElemCallable, .{ .amount = 0 });
+            const section = testElementWith(&roc_host, "section", &.{}, &.{each});
+            const initial_items = [_]HostValue{ testHostValueI64(101), testHostValueI64(202), testHostValueI64(303) };
+            const root = testNodeStateWithTokenAndInitialCapability(&roc_host, state_token, testHostValueI64List(&roc_host, &initial_items), section, state_cap);
+            defer root.decref(&roc_host);
+            var stream: HostNodeDescriptorStream = .{};
+            host.collectActiveElemRootDescriptors(&roc_host, &stream, root, &.{});
+            _ = applyNodeDescriptorStream(&host, &roc_host, &stream);
+            host.engine.active_stream = stream;
+
+            const state_id = host.engine.active_stream.scope_sites.items[0].node_id;
+            const row_2_id = activeTextElementId(&host, "row-2-202") orelse return error.TestUnexpectedResult;
+            const text_updates_before = host.dom_elements.items[@intCast(row_2_id)].text_update_count;
+            const render_before = host.engine.render_metrics;
+            const rows_before = host.engine.pending_roc_metrics;
+            var row_calls_before = test_row_elem_call_count;
+            const scope_len_before = host.engine.scopes.items.len;
+            const allocations_before = host.roc_allocations.snapshot();
+
+            const next_items = [_]HostValue{ testHostValueI64(101), testHostValueI64(250), testHostValueI64(303) };
+            var fault = FaultAllocator.init(host.gpa.allocator());
+            fault.configure(failure_number);
+            host.engine_allocator_override = fault.allocator();
+            const result = host.engine.tryDispatchStateValue(&host, &roc_host, state_id.raw(), testHostValueI64List(&roc_host, &next_items), state_cap);
+            const attempts = fault.attempts;
+            if (failure_number != null) {
+                try std.testing.expectError(error.OutOfMemory, result);
+                try std.testing.expectEqual(scope_len_before, host.engine.scopes.items.len);
+                try std.testing.expectEqual(row_2_id, activeTextElementId(&host, "row-2-202") orelse return error.TestUnexpectedResult);
+                try std.testing.expectEqual(@as(usize, 0), host.roc_allocations.liveCountSince(allocations_before));
+                fault.configure(null);
+                row_calls_before = test_row_elem_call_count;
+                const retry_items = [_]HostValue{ testHostValueI64(101), testHostValueI64(250), testHostValueI64(303) };
+                _ = try host.engine.tryDispatchStateValue(&host, &roc_host, state_id.raw(), testHostValueI64List(&roc_host, &retry_items), state_cap);
+            } else _ = try result;
+
+            // The row builder ran once, for the changed row only.
+            try std.testing.expectEqual(row_calls_before + 1, test_row_elem_call_count);
+            try std.testing.expectEqual(@as(u64, 3), host.engine.pending_roc_metrics.rows_reused - rows_before.rows_reused);
+            try std.testing.expectEqual(@as(u64, 0), host.engine.pending_roc_metrics.rows_created - rows_before.rows_created);
+            try std.testing.expectEqual(@as(u64, 0), host.engine.pending_roc_metrics.rows_removed - rows_before.rows_removed);
+            // Same text node, one text update, nothing created or removed.
+            try std.testing.expectEqual(row_2_id, activeTextElementId(&host, "row-2-250") orelse return error.TestUnexpectedResult);
+            try std.testing.expectEqual(text_updates_before + 1, host.dom_elements.items[@intCast(row_2_id)].text_update_count);
+            try std.testing.expectEqual(@as(u64, 0), host.engine.render_metrics.create_element - render_before.create_element);
+            try std.testing.expectEqual(@as(u64, 0), host.engine.render_metrics.remove_node - render_before.remove_node);
+            try std.testing.expectEqual(@as(u64, 0), host.engine.render_metrics.move_before - render_before.move_before);
+            try std.testing.expectEqual(@as(u64, 1), host.engine.render_metrics.set_text - render_before.set_text);
+            try std.testing.expectEqual(@as(u64, 1), host.engine.render_metrics.patches_emitted - render_before.patches_emitted);
+            try std.testing.expect(activeTextElementId(&host, "row-1-101") != null);
+            try std.testing.expect(activeTextElementId(&host, "row-3-303") != null);
+            return attempts;
+        }
+    };
+
+    const attempts = try Runner.run(null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
+}
+
 test "retiring an each row disposes the nested each site it owned" {
     // The row sync removes an outer row's own membership, but the row may own a
     // nested each site with rows of its own in `each_row_sites`. Those used to
@@ -9826,13 +9918,19 @@ fn testNodeEachWithItemsRowAndCapture(comptime Capture: type, roc_host: *abi.Roc
 }
 
 fn testNodeEachWithSignalCapabilityRowAndCapture(comptime Capture: type, roc_host: *abi.RocHost, signal: abi.NodeSignalExpr, items_cap: HostValueCapability, row_fn: abi.RocErasedCallableFn, capture: Capture) abi.Elem {
+    return testNodeEachWithSignalCapabilityKeyOfRowAndCapture(Capture, roc_host, signal, items_cap, &testUnaryHostValueCallable, .{ .amount = 0 }, row_fn, capture);
+}
+
+/// Builds a keyed-list fixture whose `key_of` is chosen by the caller, so a
+/// test can give different item values the same row key.
+fn testNodeEachWithSignalCapabilityKeyOfRowAndCapture(comptime Capture: type, roc_host: *abi.RocHost, signal: abi.NodeSignalExpr, items_cap: HostValueCapability, key_of_fn: abi.RocErasedCallableFn, key_of_capture: TestErasedI64Capture, row_fn: abi.RocErasedCallableFn, capture: Capture) abi.Elem {
     const key_cap = testHostValueCapability(roc_host);
     const key_of = writeTestErasedCallable(
         TestErasedI64Capture,
         roc_host,
-        &testUnaryHostValueCallable,
+        key_of_fn,
         &testErasedCallableOnDrop,
-        .{ .amount = 0 },
+        key_of_capture,
     );
     const key_text = testHostValueKeyTextCallable(roc_host);
     const item_cap = testHostValueCapability(roc_host);

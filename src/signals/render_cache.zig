@@ -542,7 +542,35 @@ pub const PreparedRenderCounts = struct {
     named_events: usize = 0,
     child_links: usize = 0,
     wire_commands: usize = 0,
+    /// Active nodes this splice keeps in place while their subtree is
+    /// re-collected under the same id and tag; see `addNodeReuse`.
+    reuses: usize = 0,
 };
+
+/// Which scalar fields a re-collected descriptor set on a reused node, so
+/// `clearUnsetReusedFields` can retire every field the old subtree carried
+/// and the new one no longer declares.
+const ReusedNodeFields = struct {
+    text: u8 = 0,
+    bools: u8 = 0,
+    events: u8 = 0,
+
+    fn textBit(field: TextField) u8 {
+        return @as(u8, 1) << @intCast(@intFromEnum(field));
+    }
+
+    fn boolBit(field: BoolField) u8 {
+        return @as(u8, 1) << @intCast(@intFromEnum(field));
+    }
+
+    fn eventBit(kind: EventKind) u8 {
+        return @as(u8, 1) << @intCast(@intFromEnum(kind));
+    }
+};
+
+/// Number of scalar clears one reused node can need at most: every text
+/// field, bool field, and fixed event kind the old subtree may have set.
+pub const reused_node_max_clears: usize = std.enums.values(TextField).len + std.enums.values(BoolField).len + std.enums.values(EventKind).len;
 
 /// Owns every cache delta for one render splice until atomic publication.
 pub fn PreparedRenderSplice(comptime Ctx: type) type {
@@ -560,6 +588,7 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
         custom_attrs: std.ArrayListUnmanaged(PreparedCustomTextAttrsReplacement) = .empty,
         named_events: std.ArrayListUnmanaged(PreparedNamedEventsReplacement) = .empty,
         provisional_nodes: std.AutoHashMapUnmanaged(u64, void) = .empty,
+        reused_nodes: std.AutoHashMapUnmanaged(u64, ReusedNodeFields) = .empty,
         parent_intent_indexes: std.AutoHashMapUnmanaged(u64, usize) = .empty,
         parent_intents: std.ArrayListUnmanaged(ParentIntent) = .empty,
         wire: render.PreparedBatch,
@@ -592,6 +621,8 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             const creation_count = std.math.cast(u32, counts.creations) orelse return error.ResourceLimit;
             const child_link_count = std.math.cast(u32, counts.child_links) orelse return error.ResourceLimit;
             try self.provisional_nodes.ensureUnusedCapacity(allocator, creation_count);
+            const reuse_count = std.math.cast(u32, counts.reuses) orelse return error.ResourceLimit;
+            try self.reused_nodes.ensureUnusedCapacity(allocator, reuse_count);
             try self.parent_intent_indexes.ensureUnusedCapacity(allocator, child_link_count);
             try self.parent_intents.ensureTotalCapacity(allocator, counts.child_links);
             return self;
@@ -637,16 +668,22 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
         /// id). Those updates have no node to land on: applying them after the
         /// removal would plant owned copies in a vacant slot that the next
         /// creation overwrites, and their wire commands would address a node
-        /// the batch already removed. Ownership of every donor entry therefore
-        /// resolves here: entries for surviving nodes move to this splice,
-        /// entries for retired nodes are released, and on failure the donor
-        /// still owns everything it prepared.
+        /// the batch already removed. A node reused in place (`addNodeReuse`)
+        /// is treated the same way: its re-collected descriptors already
+        /// decided every field, and the donor evaluated the retired ones.
+        /// Ownership of every donor entry therefore resolves here: entries for
+        /// surviving nodes move to this splice, entries for retired or reused
+        /// nodes are released, and on failure the donor still owns everything
+        /// it prepared.
         pub fn adoptScalarUpdates(self: *Self, donor: *Self) (std.mem.Allocator.Error || error{ResourceLimit})!void {
             if (donor.removals.items.len != 0 or donor.creations.items.len != 0 or donor.children.items.len != 0 or donor.fixed_events.items.len != 0 or donor.named_events.items.len != 0 or donor.provisional_nodes.count() != 0 or donor.parent_intents.items.len != 0) return error.ResourceLimit;
             var retired: std.AutoHashMapUnmanaged(u64, void) = .empty;
             defer retired.deinit(self.allocator);
-            try retired.ensureUnusedCapacity(self.allocator, std.math.cast(u32, self.removals.items.len) orelse return error.ResourceLimit);
+            const retired_bound = std.math.add(usize, self.removals.items.len, self.reused_nodes.count()) catch return error.ResourceLimit;
+            try retired.ensureUnusedCapacity(self.allocator, std.math.cast(u32, retired_bound) orelse return error.ResourceLimit);
             for (self.removals.items) |removal| retired.putAssumeCapacity(removal.elem_id.raw(), {});
+            var reused_iterator = self.reused_nodes.keyIterator();
+            while (reused_iterator.next()) |elem_id| retired.putAssumeCapacity(elem_id.*, {});
             var kept_text: usize = 0;
             for (donor.text_fields.items) |entry| kept_text += @intFromBool(!retired.contains(entry.elem_id.raw()));
             var kept_bool: usize = 0;
@@ -685,6 +722,41 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
         pub fn addNodeReplacement(self: *Self, cache: *Cache(Ctx), elem_id: ids.ElemId, tag: []const u8) (std.mem.Allocator.Error || error{ DuplicateNode, MissingNode, ResourceLimit })!void {
             try self.addRemoval(cache, elem_id);
             try self.addReplacementCreation(cache, elem_id, tag);
+        }
+
+        /// Keeps an active node in place while a re-collected subtree claims
+        /// its id under the same tag. The host sees no removal or creation;
+        /// every scalar field the new descriptors set is diffed against the
+        /// node's committed state like any live update, and
+        /// `clearUnsetReusedFields` retires the fields they no longer declare.
+        /// The caller replaces the node's child list through `addChildren`.
+        pub fn addNodeReuse(self: *Self, cache: *const Cache(Ctx), elem_id: ids.ElemId, tag: []const u8) error{ DuplicateNode, MissingNode, TagMismatch, ResourceLimit }!void {
+            const node = self.activeNode(cache, elem_id) orelse return error.MissingNode;
+            if (!std.mem.eql(u8, node.activeTag().?, tag)) return error.TagMismatch;
+            if (self.reused_nodes.contains(elem_id.raw())) return error.DuplicateNode;
+            if (self.reused_nodes.available == 0) return error.ResourceLimit;
+            self.reused_nodes.putAssumeCapacity(elem_id.raw(), .{});
+        }
+
+        /// Clears, on every reused node, each text field, bool field, and fixed
+        /// event kind that no descriptor set since `addNodeReuse`. Call once
+        /// after all field journaling for the splice; a field already absent
+        /// on the committed node emits nothing.
+        pub fn clearUnsetReusedFields(self: *Self, cache: *const Cache(Ctx)) (std.mem.Allocator.Error || error{ MissingNode, ResourceLimit })!void {
+            var iterator = self.reused_nodes.iterator();
+            while (iterator.next()) |entry| {
+                const elem_id = ids.ElemId.fromRaw(entry.key_ptr.*);
+                const fields = entry.value_ptr.*;
+                inline for (std.enums.values(TextField)) |field| if (fields.text & ReusedNodeFields.textBit(field) == 0) {
+                    try self.addTextField(cache, elem_id, field, null);
+                };
+                inline for (std.enums.values(BoolField)) |field| if (fields.bools & ReusedNodeFields.boolBit(field) == 0) {
+                    try self.addBoolField(cache, elem_id, field, null);
+                };
+                inline for (std.enums.values(EventKind)) |kind| if (fields.events & ReusedNodeFields.eventBit(kind) == 0) {
+                    try self.addFixedEvent(cache, elem_id, kind, null);
+                };
+            }
         }
 
         /// Adds one provisional node and its prepared tag to the journal.
@@ -818,6 +890,7 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
         /// Adds a text field for an active or provisional node.
         pub fn addTextField(self: *Self, cache: *const Cache(Ctx), elem_id: ids.ElemId, field: TextField, value: ?[]const u8) (std.mem.Allocator.Error || error{ MissingNode, ResourceLimit })!void {
             if (!self.nodeExists(cache, elem_id)) return error.MissingNode;
+            if (self.reused_nodes.getPtr(elem_id.raw())) |fields| fields.text |= ReusedNodeFields.textBit(field);
             if (self.activeNode(cache, elem_id)) |node| {
                 const old = @constCast(node).textSlot(field).*;
                 if ((old == null and value == null) or (old != null and value != null and std.mem.eql(u8, old.?, value.?))) return;
@@ -861,6 +934,7 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
         /// Adds a boolean field for an active or provisional node.
         pub fn addBoolField(self: *Self, cache: *const Cache(Ctx), elem_id: ids.ElemId, field: BoolField, value: ?bool) error{ MissingNode, ResourceLimit }!void {
             if (!self.nodeExists(cache, elem_id)) return error.MissingNode;
+            if (self.reused_nodes.getPtr(elem_id.raw())) |fields| fields.bools |= ReusedNodeFields.boolBit(field);
             if (self.activeNode(cache, elem_id)) |node| if (@constCast(node).boolSlot(field).* == value) return;
             self.bool_fields.appendAssumeCapacity(.{ .elem_id = elem_id, .field = field, .next = value });
             const wire_elem_id = try render.WireElemId.fromEngine(elem_id);
@@ -873,6 +947,7 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
         /// Adds a fixed event for an active or provisional node.
         pub fn addFixedEvent(self: *Self, cache: *const Cache(Ctx), elem_id: ids.ElemId, kind: EventKind, binding: ?EventBinding) error{ MissingNode, ResourceLimit }!void {
             if (!self.nodeExists(cache, elem_id)) return error.MissingNode;
+            if (self.reused_nodes.getPtr(elem_id.raw())) |fields| fields.events |= ReusedNodeFields.eventBit(kind);
             const next = if (binding) |value| value.withDeliveryFor(.{ .fixed = kind }) else null;
             if (self.activeNode(cache, elem_id)) |node| {
                 const old = eventBindingSlot(@constCast(&node.event_bindings), kind).*;
@@ -1038,6 +1113,7 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             self.parent_intents.deinit(self.allocator);
             self.parent_intent_indexes.deinit(self.allocator);
             self.provisional_nodes.deinit(self.allocator);
+            self.reused_nodes.deinit(self.allocator);
             self.tags.deinit(self.allocator);
             self.wire.deinit(self.allocator);
             self.* = undefined;
@@ -2062,6 +2138,61 @@ test "prepared render wire derives retirement and keyed replacement diffs" {
     try std.testing.expectEqual(@as(u64, 1), counts.remove_node);
     try std.testing.expectEqual(@as(u64, 2), counts.set_metadata);
     try std.testing.expectEqual(@as(u64, 2), counts.bind_event);
+}
+
+test "prepared render splice reuses a same-tag slot and clears the fields its new descriptor dropped" {
+    const allocator = std.testing.allocator;
+    var cache: Cache(TestCtx) = .{};
+    var host = TestHost{};
+    defer cache.deinit(&host);
+    try cache.nodes.append(allocator, ScalarNode.initActive("root"));
+    var node = ScalarNode.initActive("input");
+    node.parent_id = ids.root_elem;
+    node.label = try allocator.dupe(u8, "old label");
+    node.value = try allocator.dupe(u8, "same");
+    node.checked = true;
+    node.event_bindings.click = .{ .event_id = ids.EventId.fromRaw(3), .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) };
+    try cache.nodes.append(allocator, node);
+    try cache.nodes.items[0].children.append(allocator, ids.ElemId.fromRaw(1));
+
+    var plan = try PreparedRenderSplice(TestCtx).init(allocator, &cache, .{
+        .node_capacity = 2,
+        .reuses = 1,
+        .text_fields = 1 + reused_node_max_clears,
+        .bool_fields = reused_node_max_clears,
+        .fixed_events = reused_node_max_clears,
+        .wire_commands = 1 + reused_node_max_clears,
+    });
+    defer plan.deinit();
+    try std.testing.expectError(error.TagMismatch, plan.addNodeReuse(&cache, ids.ElemId.fromRaw(1), "section"));
+    try std.testing.expectError(error.MissingNode, plan.addNodeReuse(&cache, ids.ElemId.fromRaw(2), "input"));
+    try plan.addNodeReuse(&cache, ids.ElemId.fromRaw(1), "input");
+    try std.testing.expectError(error.DuplicateNode, plan.addNodeReuse(&cache, ids.ElemId.fromRaw(1), "input"));
+    // The re-collected descriptor keeps the value, adds text, and no longer
+    // declares the label, the checked flag, or the click binding.
+    try plan.addTextField(&cache, ids.ElemId.fromRaw(1), .value, "same");
+    try plan.addTextField(&cache, ids.ElemId.fromRaw(1), .text, "typed");
+    try plan.clearUnsetReusedFields(&cache);
+
+    try std.testing.expectEqual(@as(usize, 0), plan.removals.items.len);
+    try std.testing.expectEqual(@as(usize, 0), plan.creations.items.len);
+    const counts = plan.wire.counts();
+    try std.testing.expectEqual(@as(u64, 4), counts.total);
+    try std.testing.expectEqual(@as(u64, 1), counts.set_text);
+    try std.testing.expectEqual(@as(u64, 0), counts.set_value);
+    try std.testing.expectEqual(@as(u64, 1), counts.set_metadata);
+    try std.testing.expectEqual(@as(u64, 1), counts.set_checked);
+    try std.testing.expectEqual(@as(u64, 1), counts.bind_event);
+
+    plan.apply(&cache);
+    const applied = &cache.nodes.items[1];
+    try std.testing.expectEqualStrings("input", applied.activeTag().?);
+    try std.testing.expectEqualStrings("typed", applied.text.?);
+    try std.testing.expectEqualStrings("same", applied.value.?);
+    try std.testing.expectEqual(@as(?[]const u8, null), applied.label);
+    try std.testing.expectEqual(@as(?bool, null), applied.checked);
+    try std.testing.expect(applied.event_bindings.click == null);
+    try std.testing.expectEqualSlices(ids.ElemId, &.{ids.ElemId.fromRaw(1)}, cache.nodes.items[0].children.items);
 }
 
 test "prepared render splice recreates one active slot transactionally" {

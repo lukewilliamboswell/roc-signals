@@ -11,25 +11,17 @@
 # with no memory pressure (a mismatched graph append, honestly named now);
 # host-owned allocation leaks at shutdown; "active state has no capability";
 # task settlement panics; patch-count performance budgets.
-native availability-picker/marking-one-slot-available-leaves-its-siblings-alone.scm
 native availability-picker/the-headline-one-timezone-change-reprojects-every-rendered-slot.scm
 native conduit/pagination-23-articles-two-pages-page-switch-swaps-the-list.scm
 native data-grid/filtering.scm
-native data-grid/inline-editing.scm
 native data-grid/paging.scm
-native data-grid/per-row-selection.scm
 native data-grid/sorting.scm
-native dependency-scheduler/adding-and-removing-a-dependency-edge.scm
 native dependency-scheduler/filtering-the-list-to-the-critical-path.scm
-native dependency-scheduler/moving-a-leaf-task-changes-only-that-leaf.scm
 native dependency-scheduler/the-empty-list.scm
-native dependency-scheduler/write-spec-is-the-head-of-spec-api-sync-qa-launch-so-delaying-it.scm
 native form-builder/editing-one-field-s-label-fine-grained.scm
-native loan-comparator/editing-scenario-a-s-rate-derived-figures-follow-siblings-do-n.scm
 native log-viewer/appending-line-41-to-a-40-line-buffer-must-reuse-every-existing.scm
 native markdown-editor/contrast-adding-a-heading-does-rebuild-the-outline-by-exactly.scm
 native markdown-editor/edge-case-every-heading-level-one-demotion-at-a-time-the-outl.scm
-native markdown-editor/numbering-toggle-a-fan-in-of-the-heading-spine-and-a-boolean.scm
 native markdown-editor/the-teaching-point-a-paragraph-edit-updates-the-statistics-and.scm
 native package-explorer/f-opening-a-package-three-panels-settle-independently.scm
 native pomodoro-tracker/logging-the-block-writes-the-ledger-and-rewinds-the-clock.scm
@@ -45,7 +37,6 @@ native spreadsheet-lite/the-new-dependent-updates-with-it.scm
 native status-page/a-real-outage-keeps-the-page-at-major-outage.scm
 native status-page/several-services-degrade-the-rollup-escalates-to-a-major-outage.scm
 native support-inbox/the-key-budget.scm
-native token-editor/one-colour-edit-reaches-every-dependent-binding-without-rebuildi.scm
 
 # Fixture examples (examples/_fixtures), recorded on the same day. The
 # state-reads/large-each/metric-semantics specs are live-update failures of

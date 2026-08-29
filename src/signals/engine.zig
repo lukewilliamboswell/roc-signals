@@ -3469,14 +3469,14 @@ pub fn Engine(comptime Ctx: type) type {
             };
         }
 
-        const RenderSpliceError = std.mem.Allocator.Error || error{ ResourceLimit, MissingNode, MissingParent, ActiveNode, DuplicateNode, ConflictingParent, DuplicateChild };
+        const RenderSpliceError = std.mem.Allocator.Error || error{ ResourceLimit, MissingNode, MissingParent, ActiveNode, DuplicateNode, ConflictingParent, DuplicateChild, TagMismatch };
 
         /// Maps a render-cache splice rejection onto the collection contract it violated.
         fn renderSpliceError(err: RenderSpliceError) CollectionError {
             return switch (err) {
                 error.OutOfMemory => error.OutOfMemory,
                 error.ResourceLimit => error.ResourceLimit,
-                error.MissingNode, error.MissingParent, error.ActiveNode, error.DuplicateNode, error.ConflictingParent, error.DuplicateChild => error.InvalidRenderTopology,
+                error.MissingNode, error.MissingParent, error.ActiveNode, error.DuplicateNode, error.ConflictingParent, error.DuplicateChild, error.TagMismatch => error.InvalidRenderTopology,
             };
         }
         const WhenCollection = struct { scope: scope_tree.InternResult, branch: HostScopeBranch };
@@ -7513,8 +7513,22 @@ pub fn Engine(comptime Ctx: type) type {
                         }
                     }
                 }
+                // A replacement node that claims an active id under the same
+                // tag stays in place: the host sees scalar diffs instead of a
+                // remove/recreate pair. Reserve the clears such a node may
+                // need for fields its old subtree set and the new one dropped.
+                var reuse_count: usize = 0;
+                for (self.replacement_stream.render_nodes.items) |node| {
+                    const index = node.elem_id.index();
+                    if (index >= self.engine.render_cache.nodes.items.len or !self.engine.render_cache.nodes.items[index].isActive()) continue;
+                    if (!retired.contains(node.elem_id.raw())) return error.InvalidRenderTopology;
+                    const tag = descriptor_stream.renderNodeTag(HostNodeDescriptorStream, &self.replacement_stream, node);
+                    if (std.mem.eql(u8, self.engine.render_cache.nodes.items[index].activeTag().?, tag)) reuse_count = std.math.add(usize, reuse_count, 1) catch return error.ResourceLimit;
+                }
+                const reuse_clears = std.math.mul(usize, reuse_count, render_cache_mod.reused_node_max_clears) catch return error.ResourceLimit;
                 var wire_commands = std.math.add(usize, self.removal.?.scan.removed_elem_ids.len, self.replacement_stream.render_nodes.items.len) catch return error.ResourceLimit;
                 wire_commands = std.math.add(usize, wire_commands, @intFromBool(self.initial_root)) catch return error.ResourceLimit;
+                wire_commands = std.math.add(usize, wire_commands, reuse_clears) catch return error.ResourceLimit;
                 wire_commands = std.math.add(usize, wire_commands, final_child_count) catch return error.ResourceLimit;
                 wire_commands = std.math.add(usize, wire_commands, self.replacement_stream.text_nodes.items.len) catch return error.ResourceLimit;
                 wire_commands = std.math.add(usize, wire_commands, self.replacement_stream.static_text_attrs.items.len) catch return error.ResourceLimit;
@@ -7556,12 +7570,13 @@ pub fn Engine(comptime Ctx: type) type {
                     .creations = std.math.add(usize, self.replacement_stream.render_nodes.items.len, @intFromBool(self.initial_root)) catch return error.ResourceLimit,
                     .children = touched.count(),
                     .child_links = child_links,
-                    .text_fields = std.math.add(usize, std.math.add(usize, self.replacement_stream.text_nodes.items.len, self.replacement_stream.static_text_attrs.items.len) catch return error.ResourceLimit, std.math.add(usize, self.replacement_stream.signal_text_nodes.items.len, self.replacement_stream.signal_text_attrs.items.len) catch return error.ResourceLimit) catch return error.ResourceLimit,
-                    .bool_fields = std.math.add(usize, self.replacement_stream.static_bool_attrs.items.len, self.replacement_stream.signal_bool_attrs.items.len) catch return error.ResourceLimit,
+                    .text_fields = std.math.add(usize, std.math.add(usize, std.math.add(usize, self.replacement_stream.text_nodes.items.len, self.replacement_stream.static_text_attrs.items.len) catch return error.ResourceLimit, std.math.add(usize, self.replacement_stream.signal_text_nodes.items.len, self.replacement_stream.signal_text_attrs.items.len) catch return error.ResourceLimit) catch return error.ResourceLimit, std.math.mul(usize, reuse_count, std.enums.values(render_cache_mod.TextField).len) catch return error.ResourceLimit) catch return error.ResourceLimit,
+                    .bool_fields = std.math.add(usize, std.math.add(usize, self.replacement_stream.static_bool_attrs.items.len, self.replacement_stream.signal_bool_attrs.items.len) catch return error.ResourceLimit, std.math.mul(usize, reuse_count, std.enums.values(render_cache_mod.BoolField).len) catch return error.ResourceLimit) catch return error.ResourceLimit,
                     .custom_attrs = element_count,
-                    .fixed_events = fixed_event_count,
+                    .fixed_events = std.math.add(usize, fixed_event_count, std.math.mul(usize, reuse_count, std.enums.values(render_cache_mod.EventKind).len) catch return error.ResourceLimit) catch return error.ResourceLimit,
                     .named_events = std.math.add(usize, element_count, moved_named_elem_ids.count()) catch return error.ResourceLimit,
                     .wire_commands = wire_commands,
+                    .reuses = reuse_count,
                 }) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.ResourceLimit => return error.ResourceLimit,
@@ -7576,8 +7591,11 @@ pub fn Engine(comptime Ctx: type) type {
                     const tag = descriptor_stream.renderNodeTag(HostNodeDescriptorStream, &self.replacement_stream, node);
                     const index = node.elem_id.index();
                     if (index < self.engine.render_cache.nodes.items.len and self.engine.render_cache.nodes.items[index].isActive()) {
-                        if (!retired.contains(node.elem_id.raw())) return error.ResourceLimit;
-                        splice.addNodeReplacement(&self.engine.render_cache, node.elem_id, tag) catch |err| return renderSpliceError(err);
+                        if (!retired.contains(node.elem_id.raw())) return error.InvalidRenderTopology;
+                        if (std.mem.eql(u8, self.engine.render_cache.nodes.items[index].activeTag().?, tag))
+                            splice.addNodeReuse(&self.engine.render_cache, node.elem_id, tag) catch |err| return renderSpliceError(err)
+                        else
+                            splice.addNodeReplacement(&self.engine.render_cache, node.elem_id, tag) catch |err| return renderSpliceError(err);
                     } else splice.addCreation(&self.engine.render_cache, node.elem_id, tag) catch |err| return renderSpliceError(err);
                 }
                 iterator = touched.keyIterator();
@@ -7700,6 +7718,7 @@ pub fn Engine(comptime Ctx: type) type {
                     }
                     splice.addNamedEvents(&self.engine.render_cache, ids.ElemId.fromRaw(elem_id.*), named.items) catch |err| return renderSpliceError(err);
                 }
+                splice.clearUnsetReusedFields(&self.engine.render_cache) catch |err| return renderSpliceError(err);
                 for (self.replacement_stream.on_changes.items) |*desc| {
                     if (desc.cached_value != .absent) continue;
                     const evaluated = self.evalPreparedSignalBinding(&desc.signal);
