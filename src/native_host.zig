@@ -6853,6 +6853,8 @@ test "an empty when before another empty when at one index stays in front when t
             try expectScopeSiteInsertIndex(&host, whens[0], .when, 1);
             try expectScopeSiteInsertIndex(&host, whens[1], .when, 1);
             try std.testing.expectEqual(@as(?usize, 1), streamOrderOfText(&host, "second-on"));
+            try std.testing.expectEqual(@as(?usize, 0), childOrderOfText(&host, host.engine.active_stream.elements.items[0].elem_id, "second-on"));
+            try std.testing.expectEqual(@as(?usize, 1), childOrderOfText(&host, host.engine.active_stream.elements.items[0].elem_id, "tail"));
 
             const attempts = try dispatchStateValueSweeping(&host, &roc_host, first_state_id, testHostValueBool(true), testHostValueBool(true), first_cap, failure_number);
             try expectScopeSiteInsertIndex(&host, whens[0], .when, 1);
@@ -6860,6 +6862,66 @@ test "an empty when before another empty when at one index stays in front when t
             try std.testing.expectEqual(@as(?usize, 1), streamOrderOfText(&host, "first-on"));
             try std.testing.expectEqual(@as(?usize, 2), streamOrderOfText(&host, "second-on"));
             try std.testing.expectEqual(@as(?usize, 3), streamOrderOfText(&host, "tail"));
+            const section_id = host.engine.active_stream.elements.items[0].elem_id;
+            try std.testing.expectEqual(@as(?usize, 0), childOrderOfText(&host, section_id, "first-on"));
+            try std.testing.expectEqual(@as(?usize, 1), childOrderOfText(&host, section_id, "second-on"));
+            try std.testing.expectEqual(@as(?usize, 2), childOrderOfText(&host, section_id, "tail"));
+            try std.testing.expectEqual(@as(usize, 3), host.engine.render_cache.nodes.items[section_id.index()].children.items.len);
+            return attempts;
+        }
+    };
+
+    const attempts = try Runner.run(null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
+}
+
+test "a when flipping from an empty branch anchors its DOM node at its site, not after its siblings" {
+    // The retired branch rendered nothing, so the render cache holds no
+    // retired child to mark the insertion point. The DOM child order has to
+    // come from the final render topology like the each paths, not from
+    // "insert where the retired child was, else append".
+    const Runner = struct {
+        fn run(failure_number: ?usize) !usize {
+            test_erased_callable_drop_count = 0;
+            test_row_elem_call_count = 0;
+            var host = HostEnv.init();
+            var roc_host = makeSignalsRocHost(&host);
+            host.engine.roc_host = &roc_host;
+            defer {
+                host.deinit();
+                _ = host.gpa.deinit();
+            }
+
+            const token = newTestBinderToken(&roc_host);
+            const cap = testHostValueCapability(&roc_host);
+            const when = testNodeWhenReadingState(&roc_host, token, cap, testNodeText(&roc_host, "on"), testNodeEmptyConstantEach(&roc_host));
+            const section = testElementWith(&roc_host, "section", &.{}, &.{ when, testNodeText(&roc_host, "tail") });
+            const root = testNodeStateWithTokenAndInitialCapability(&roc_host, token, testHostValueBool(false), section, cap);
+            defer root.decref(&roc_host);
+            var stream: HostNodeDescriptorStream = .{};
+            host.collectActiveElemRootDescriptors(&roc_host, &stream, root, &.{});
+            _ = applyNodeDescriptorStream(&host, &roc_host, &stream);
+            host.engine.active_stream = stream;
+
+            const state_id = host.engine.active_stream.scope_sites.items[0].node_id;
+            const section_id = host.engine.active_stream.elements.items[0].elem_id;
+            try std.testing.expectEqual(@as(?usize, 0), childOrderOfText(&host, section_id, "tail"));
+
+            const attempts = try dispatchStateValueSweeping(&host, &roc_host, state_id, testHostValueBool(true), testHostValueBool(true), cap, failure_number);
+            try std.testing.expectEqual(@as(?usize, 1), streamOrderOfText(&host, "on"));
+            try std.testing.expectEqual(@as(?usize, 2), streamOrderOfText(&host, "tail"));
+            try std.testing.expectEqual(@as(?usize, 0), childOrderOfText(&host, section_id, "on"));
+            try std.testing.expectEqual(@as(?usize, 1), childOrderOfText(&host, section_id, "tail"));
+            try std.testing.expectEqual(@as(usize, 2), host.engine.render_cache.nodes.items[section_id.index()].children.items.len);
+
+            // Flipping back removes the node; flipping again anchors it again.
+            _ = try host.engine.tryDispatchStateValue(&host, &roc_host, state_id.raw(), testHostValueBool(false), cap);
+            try std.testing.expectEqual(@as(?usize, 0), childOrderOfText(&host, section_id, "tail"));
+            try std.testing.expectEqual(@as(usize, 1), host.engine.render_cache.nodes.items[section_id.index()].children.items.len);
+            _ = try host.engine.tryDispatchStateValue(&host, &roc_host, state_id.raw(), testHostValueBool(true), cap);
+            try std.testing.expectEqual(@as(?usize, 0), childOrderOfText(&host, section_id, "on"));
+            try std.testing.expectEqual(@as(?usize, 1), childOrderOfText(&host, section_id, "tail"));
             return attempts;
         }
     };
@@ -6936,6 +6998,10 @@ test "a when site collected later inside an earlier branch still orders before t
             try expectScopeSiteInsertIndex(&host, sibling_when_id, .when, 2);
             try std.testing.expectEqual(@as(?usize, 1), streamOrderOfText(&host, "nested-on"));
             try std.testing.expectEqual(@as(?usize, 2), streamOrderOfText(&host, "sibling-on"));
+            const section_id = host.engine.active_stream.elements.items[0].elem_id;
+            try std.testing.expectEqual(@as(?usize, 0), childOrderOfText(&host, section_id, "nested-on"));
+            try std.testing.expectEqual(@as(?usize, 1), childOrderOfText(&host, section_id, "sibling-on"));
+            try std.testing.expectEqual(@as(usize, 2), host.engine.render_cache.nodes.items[section_id.index()].children.items.len);
             return attempts;
         }
     };
@@ -6996,6 +7062,12 @@ test "a when branch and an each under one parent grow in one transaction and re-
             try std.testing.expectEqual(@as(?usize, 2), streamOrderOfText(&host, "row-1-1"));
             try std.testing.expectEqual(@as(?usize, 5), streamOrderOfText(&host, "row-4-4"));
             try std.testing.expectEqual(@as(?usize, 6), streamOrderOfText(&host, "tail"));
+            const section_id = host.engine.active_stream.elements.items[0].elem_id;
+            try std.testing.expectEqual(@as(?usize, 0), childOrderOfText(&host, section_id, "has-one"));
+            try std.testing.expectEqual(@as(?usize, 1), childOrderOfText(&host, section_id, "row-1-1"));
+            try std.testing.expectEqual(@as(?usize, 4), childOrderOfText(&host, section_id, "row-4-4"));
+            try std.testing.expectEqual(@as(?usize, 5), childOrderOfText(&host, section_id, "tail"));
+            try std.testing.expectEqual(@as(usize, 6), host.engine.render_cache.nodes.items[section_id.index()].children.items.len);
 
             // Shrinking flips the branch back and drops rows in one transaction.
             const shrunk = [_]HostValue{testHostValueI64(3)};
@@ -7006,6 +7078,9 @@ test "a when branch and an each under one parent grow in one transaction and re-
             try std.testing.expectEqual(@as(?usize, 1), streamOrderOfText(&host, "row-3-3"));
             try std.testing.expectEqual(@as(?usize, 2), streamOrderOfText(&host, "tail"));
             try std.testing.expect(activeTextElementId(&host, "has-one") == null);
+            try std.testing.expectEqual(@as(?usize, 0), childOrderOfText(&host, section_id, "row-3-3"));
+            try std.testing.expectEqual(@as(?usize, 1), childOrderOfText(&host, section_id, "tail"));
+            try std.testing.expectEqual(@as(usize, 2), host.engine.render_cache.nodes.items[section_id.index()].children.items.len);
             return attempts;
         }
     };

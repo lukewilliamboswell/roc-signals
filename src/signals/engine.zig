@@ -1757,12 +1757,21 @@ pub fn Engine(comptime Ctx: type) type {
                     if (targeted and !inside_target) removal_starts.append(allocator, index) catch return error.OutOfMemory;
                     inside_target = targeted;
                 }
-                const downstream = try PreparedStructuralDownstream.prepareExternal(engine, ctx, roc_host, replacement_owner, descriptor_roots, retired_roots, removal_starts.items, null, &.{}, overlay);
+                // Every edited site's parent takes its final child order from
+                // the resolved topology, as the pure each path does; see
+                // `AggregateBranchCollection.prepareWithState`.
+                var parents: std.ArrayListUnmanaged(u64) = .empty;
+                defer parents.deinit(allocator);
+                for (selections) |selection| try PreparedStructuralDownstream.appendUniqueParentElemId(allocator, &parents, selection.parent_elem_id.raw());
+                for (sites) |site| try PreparedStructuralDownstream.appendUniqueParentElemId(allocator, &parents, site.parent_elem_id.raw());
+                const downstream = try PreparedStructuralDownstream.prepareExternal(engine, ctx, roc_host, replacement_owner, descriptor_roots, retired_roots, removal_starts.items, null, parents.items, overlay);
                 errdefer downstream.deinit();
                 downstream.final_render_topology = final_render_topology;
                 final_topology_owned = false;
                 layout_plan_owned = false;
                 try downstream.adoptRenderLayoutPlan(layout_plan);
+                try downstream.prepareFinalRenderTopology(parents.items);
+                downstream.suppressed_render_parent_ids = &.{};
                 targets.deinit(allocator);
                 targets_owned = false;
 
@@ -6489,14 +6498,32 @@ pub fn Engine(comptime Ctx: type) type {
                     retired_scope_ids[index] = selection.retired_scope_id.raw();
                     render_insert_indexes[index] = try layout_plan.describeBranch(engine, selection, range);
                 }
+                // Each site's parent publishes its final child order from the
+                // resolved topology below. The structural pass anchors a branch
+                // where the retired branch's children stood, which a branch
+                // that rendered nothing never had, so it must not register
+                // these parents itself.
+                var parents: std.ArrayListUnmanaged(u64) = .empty;
+                defer parents.deinit(allocator);
+                for (selections) |selection| try appendUniqueParentElemId(allocator, &parents, selection.parent_elem_id.raw());
+                plan.suppressed_render_parent_ids = parents.items;
                 try plan.prepareDownstream(allocator, retired_scope_ids, retired_scope_ids, render_insert_indexes, null, false, cache_overlay);
+                plan.suppressed_render_parent_ids = &.{};
                 plan_owns_cleanup = true;
                 errdefer plan.deinit();
                 try layout_plan.resolve(engine, plan.targets.?.descriptor_target_scopes);
                 plan.final_render_topology = try PreparedFinalRenderTopology.preparePlaced(plan.engine, allocator, plan.replacement, plan.targets.?.descriptor_target_scopes, layout_plan.removed_render_count, layout_plan.placements.items);
                 layout_plan_owned = false;
                 try plan.adoptRenderLayoutPlan(layout_plan);
+                try plan.prepareFinalRenderTopology(parents.items);
                 return plan;
+            }
+
+            /// Records a render parent once for `prepareFinalRenderTopology`,
+            /// which refuses a parent listed twice.
+            fn appendUniqueParentElemId(allocator: std.mem.Allocator, parents: *std.ArrayListUnmanaged(u64), parent_elem_id: u64) CollectionError!void {
+                for (parents.items) |existing| if (existing == parent_elem_id) return;
+                parents.append(allocator, parent_elem_id) catch return error.OutOfMemory;
             }
 
             fn prepareExternal(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, replacement: *PreparedReplacementOwner, descriptor_root_scope_ids: []const u64, retired_root_scope_ids: []const u64, render_insert_indexes: []const usize, scan_scopes: ?[]const []const bool, suppressed_render_parent_ids: []const u64, cache_overlay: ?*signal_records.PreparedCacheUpdates) CollectionError!*@This() {
