@@ -1198,7 +1198,7 @@ pub fn Engine(comptime Ctx: type) type {
             descriptor_target_scopes: []bool = &.{},
             retired_scope_ids: []u64 = &.{},
             final_render_topology: ?PreparedFinalRenderTopology = null,
-            scope_site_rebase: ?PreparedScopeSiteRebase = null,
+            render_layout_plan: ?PreparedRenderLayoutPlan = null,
             downstream: ?*PreparedStructuralDownstream = null,
             cache_overlay: ?*signal_records.PreparedCacheUpdates = null,
             prepared_len: usize = 0,
@@ -1302,27 +1302,6 @@ pub fn Engine(comptime Ctx: type) type {
                     prepared_len += 1;
                 }
 
-                const order = self.allocator.alloc(usize, self.prepared_len) catch return error.OutOfMemory;
-                defer self.allocator.free(order);
-                for (order, 0..) |*index, i| index.* = i;
-                const Sort = struct {
-                    sites: []const HostNodeScopeSiteDesc,
-                    fn lessThan(sort: @This(), left: usize, right: usize) bool {
-                        if (sort.sites[left].render_insert_index != sort.sites[right].render_insert_index) return sort.sites[left].render_insert_index < sort.sites[right].render_insert_index;
-                        return sort.sites[left].node_id.raw() < sort.sites[right].node_id.raw();
-                    }
-                };
-                std.mem.sort(usize, order, Sort{ .sites = sites }, Sort.lessThan);
-
-                var placement_count: usize = 0;
-                var removed_render_count: usize = 0;
-                for (layouts) |*layout| {
-                    placement_count = std.math.add(usize, placement_count, layout.survivor_moves.len) catch return error.ResourceLimit;
-                    removed_render_count = std.math.add(usize, removed_render_count, layout.removal.removal.scan.removed_render_count) catch return error.ResourceLimit;
-                }
-                for (self.replacements[0..self.prepared_len]) |replacement| placement_count = std.math.add(usize, placement_count, replacement.replacement_rows.len) catch return error.ResourceLimit;
-                const placements = self.allocator.alloc(PreparedFinalRenderTopology.Placement, placement_count) catch return error.OutOfMemory;
-                defer self.allocator.free(placements);
                 const targets = self.allocator.alloc(bool, self.engine.scopes.items.len) catch return error.OutOfMemory;
                 errdefer self.allocator.free(targets);
                 @memset(targets, false);
@@ -1341,48 +1320,12 @@ pub fn Engine(comptime Ctx: type) type {
                     retired_write += 1;
                 };
 
-                var rebase = PreparedScopeSiteRebase.init(self.allocator);
-                errdefer rebase.deinit();
-                var write: usize = 0;
-                var cumulative_delta: isize = 0;
-                var previous_end: usize = 0;
-                for (order) |site_index| {
-                    const site = sites[site_index];
-                    const layout = &layouts[site_index];
-                    const replacement = self.replacements[site_index];
-                    const site_final_start = std.math.cast(usize, std.math.add(isize, std.math.cast(isize, site.render_insert_index) orelse return error.ResourceLimit, cumulative_delta) catch return error.ResourceLimit) orelse return error.ResourceLimit;
-                    var site_new_len: usize = 0;
-                    // Sites must be disjoint and ordered in the active stream for
-                    // the running delta to describe how earlier sites move this one;
-                    // compare old coordinates with old coordinates, since a site's
-                    // repacked rows already include this transaction's growth.
-                    if (site.render_insert_index < previous_end) return error.InvalidRenderTopology;
-                    for (layout.survivor_moves) |move| {
-                        const final_start = std.math.cast(usize, std.math.add(isize, std.math.cast(isize, move.new_start) orelse return error.ResourceLimit, cumulative_delta) catch return error.ResourceLimit) orelse return error.ResourceLimit;
-                        placements[write] = PreparedFinalRenderTopology.Placement.active(.{ .value = move.old_start }, .{ .value = final_start }, move.len);
-                        write += 1;
-                        try rebase.addMove(.{ .scope_id = move.scope_id.raw(), .old_start = move.old_start, .len = move.len, .final_start = final_start });
-                        site_new_len = std.math.add(usize, site_new_len, move.len) catch return error.ResourceLimit;
-                    }
-                    var replacement_len: usize = 0;
-                    for (replacement.replacement_rows) |row| {
-                        const base = layout.final_starts[row.row_index];
-                        const final_start = std.math.cast(usize, std.math.add(isize, std.math.cast(isize, base) orelse return error.ResourceLimit, cumulative_delta) catch return error.ResourceLimit) orelse return error.ResourceLimit;
-                        placements[write] = PreparedFinalRenderTopology.Placement.replacement(.{ .value = row.start }, .{ .value = final_start }, row.len);
-                        write += 1;
-                        replacement_len = std.math.add(usize, replacement_len, row.len) catch return error.ResourceLimit;
-                        try rebase.addReplacementRange(.{ .site_start = row.site_start, .site_len = row.site_len, .render_start = row.start, .render_len = row.len, .final_start = final_start });
-                    }
-                    site_new_len = std.math.add(usize, site_new_len, replacement_len) catch return error.ResourceLimit;
-                    try rebase.addRegion(.{ .node_id = site.node_id.raw(), .kind = .each, .owner = SitePosition.ofSite(site), .old_start = site.render_insert_index, .old_end = layout.old_end, .final_start = site_final_start, .new_len = site_new_len });
-                    previous_end = layout.old_end;
-                    const removed = layout.removal.removal.scan.removed_render_count;
-                    cumulative_delta = std.math.add(isize, cumulative_delta, std.math.cast(isize, replacement_len) orelse return error.ResourceLimit) catch return error.ResourceLimit;
-                    cumulative_delta = std.math.sub(isize, cumulative_delta, std.math.cast(isize, removed) orelse return error.ResourceLimit) catch return error.ResourceLimit;
-                }
-                if (write != placements.len) return error.ResourceLimit;
-                self.final_render_topology = try PreparedFinalRenderTopology.preparePlaced(self.engine, self.allocator, self.replacement_owner.?, targets, removed_render_count, placements);
-                self.scope_site_rebase = rebase;
+                var plan = PreparedRenderLayoutPlan.init(self.allocator);
+                errdefer plan.deinit();
+                for (layouts) |*layout| try plan.describeEachSite(layout);
+                try plan.resolve(self.engine, targets);
+                self.final_render_topology = try PreparedFinalRenderTopology.preparePlaced(self.engine, self.allocator, self.replacement_owner.?, targets, plan.removed_render_count, plan.placements.items);
+                self.render_layout_plan = plan;
                 self.descriptor_target_scopes = targets;
                 self.retired_scope_ids = retired_scope_ids;
                 self.layouts = layouts;
@@ -1432,9 +1375,9 @@ pub fn Engine(comptime Ctx: type) type {
                 errdefer downstream.deinit();
                 downstream.final_render_topology = self.final_render_topology;
                 self.final_render_topology = null;
-                const rebase = self.scope_site_rebase orelse return error.ResourceLimit;
-                self.scope_site_rebase = null;
-                try downstream.adoptScopeSiteRebase(rebase);
+                const plan = self.render_layout_plan orelse return error.ResourceLimit;
+                self.render_layout_plan = null;
+                try downstream.adoptRenderLayoutPlan(plan);
                 try downstream.prepareFinalRenderTopology(parents.items);
                 self.downstream = downstream;
             }
@@ -1461,7 +1404,7 @@ pub fn Engine(comptime Ctx: type) type {
             fn deinit(self: *@This()) void {
                 if (self.downstream) |downstream| downstream.deinit();
                 if (self.final_render_topology) |*topology| topology.deinit();
-                if (self.scope_site_rebase) |*rebase| rebase.deinit();
+                if (self.render_layout_plan) |*plan| plan.deinit();
                 self.allocator.free(self.retired_scope_ids);
                 self.allocator.free(self.descriptor_target_scopes);
                 for (self.layouts) |*layout| layout.deinit();
@@ -1787,184 +1730,15 @@ pub fn Engine(comptime Ctx: type) type {
                 var targets = try PreparedStructuralTargets.prepare(engine, allocator, descriptor_roots, retired_roots);
                 var targets_owned = true;
                 errdefer if (targets_owned) targets.deinit(allocator);
-                var removed_render_count: usize = 0;
-                for (engine.active_stream.render_nodes.items) |node| {
-                    const scope_id = renderNodeScopeId(&engine.active_stream, node);
-                    if (scope_id >= targets.descriptor_target_scopes.len) return error.ResourceLimit;
-                    if (targets.descriptor_target_scopes[@intCast(scope_id)]) removed_render_count = std.math.add(usize, removed_render_count, 1) catch return error.ResourceLimit;
+                var layout_plan = PreparedRenderLayoutPlan.init(allocator);
+                var layout_plan_owned = true;
+                errdefer if (layout_plan_owned) layout_plan.deinit();
+                for (selections, branch_ranges) |selection, range| {
+                    _ = try layout_plan.describeBranch(engine, selection, .{ .scope_id = range.scope_id, .start = range.start, .len = range.len, .site_start = range.site_start, .site_len = range.site_len });
                 }
-
-                var placement_capacity = std.math.add(usize, branch_ranges.len, engine.active_stream.render_nodes.items.len) catch return error.ResourceLimit;
-                for (layouts, rows.replacements[0..rows.prepared_len]) |layout, replacement| {
-                    _ = layout;
-                    placement_capacity = std.math.add(usize, placement_capacity, replacement.replacement_rows.len) catch return error.ResourceLimit;
-                }
-                const placements = allocator.alloc(PreparedFinalRenderTopology.Placement, placement_capacity) catch return error.OutOfMemory;
-                defer allocator.free(placements);
-                const Anchor = union(enum) {
-                    global: usize,
-                    row_relative: struct { each_index: usize, row_final_start: usize, retained_offset: usize },
-                };
-                const SiteKind = union(enum) { branch: usize, each: usize };
-                const SitePlacement = struct { old_anchor: usize, anchor: Anchor, node_id: u64, kind: SiteKind, position: SitePosition };
-                const site_count = std.math.add(usize, selections.len, sites.len) catch return error.ResourceLimit;
-                const ordered_sites = allocator.alloc(SitePlacement, site_count) catch return error.OutOfMemory;
-                defer allocator.free(ordered_sites);
-                var site_write: usize = 0;
-                for (selections, 0..) |selection, index| {
-                    var active_anchor: ?usize = null;
-                    for (engine.active_stream.render_nodes.items, 0..) |node, render_index| {
-                        const scope_id = renderNodeScopeId(&engine.active_stream, node);
-                        if (engine.scopeIsDescendantOrSelf(scope_id, selection.retired_scope_id.raw()) catch |err| return scopeError(err)) {
-                            active_anchor = render_index;
-                            break;
-                        }
-                    }
-                    // A retired branch that renders nothing has no node to
-                    // anchor at; its content sits at the site's own index, as
-                    // the when-only path already assumes.
-                    const old_anchor = active_anchor orelse selection.render_insert_index;
-                    var anchor: Anchor = .{ .global = old_anchor };
-                    var owner_depth: ?usize = null;
-                    for (sites, layouts, 0..) |each_site_desc, layout, each_index| {
-                        const each_site = HostEachSite{ .parent_scope_id = each_site_desc.scope_id, .site_ordinal = each_site_desc.ordinal };
-                        const row_scope_id = (engine.eachSiteRowAncestorScopeId(selection.parent_scope_id.raw(), each_site) catch |err| return scopeError(err)) orelse
-                            (engine.eachSiteRowAncestorScopeId(selection.retired_scope_id.raw(), each_site) catch |err| return scopeError(err)) orelse continue;
-                        const depth = engine.scopeDepth(row_scope_id);
-                        if (owner_depth != null and depth <= owner_depth.?) continue;
-                        for (layout.survivor_moves) |move| if (move.scope_id.raw() == row_scope_id) {
-                            if (old_anchor < move.old_start or old_anchor > move.old_start + move.len) return error.ResourceLimit;
-                            var retained_offset: usize = 0;
-                            for (engine.active_stream.render_nodes.items[move.old_start..old_anchor]) |node| {
-                                const scope_id = renderNodeScopeId(&engine.active_stream, node);
-                                if (scope_id >= targets.descriptor_target_scopes.len) return error.ResourceLimit;
-                                if (!targets.descriptor_target_scopes[@intCast(scope_id)]) retained_offset += 1;
-                            }
-                            anchor = .{ .row_relative = .{ .each_index = each_index, .row_final_start = move.new_start, .retained_offset = retained_offset } };
-                            owner_depth = depth;
-                            break;
-                        };
-                    }
-                    ordered_sites[site_write] = .{ .old_anchor = old_anchor, .anchor = anchor, .node_id = changes[normalized.selected_indexes[index]].node_id.raw(), .kind = .{ .branch = index }, .position = .{ .scope_id = selection.parent_scope_id.raw(), .ordinal = selection.site_ordinal } };
-                    site_write += 1;
-                }
-                for (sites, each_change_indexes, 0..) |site, change_index, index| {
-                    ordered_sites[site_write] = .{ .old_anchor = site.render_insert_index, .anchor = .{ .global = site.render_insert_index }, .node_id = changes[change_index].node_id.raw(), .kind = .{ .each = index }, .position = SitePosition.ofSite(site) };
-                    site_write += 1;
-                }
-                // Sites are laid out in document order, so the running delta
-                // describes exactly the content in front of each one. Two sites
-                // at one anchor - a branch and the each right after it, say -
-                // are ordered by the scope tree, never by kind or node id.
-                // Insertion sort, because the comparator can fail.
-                {
-                    var index: usize = 1;
-                    while (index < ordered_sites.len) : (index += 1) {
-                        var position = index;
-                        while (position > 0) : (position -= 1) {
-                            switch (try engine.compareSitePositions(ordered_sites[position - 1].position, ordered_sites[position].position)) {
-                                .before, .contains => break,
-                                .after, .contained => std.mem.swap(SitePlacement, &ordered_sites[position - 1], &ordered_sites[position]),
-                                .same => return error.InvalidRenderTopology,
-                            }
-                        }
-                    }
-                }
-                const each_deltas = allocator.alloc(?isize, layouts.len) catch return error.OutOfMemory;
-                defer allocator.free(each_deltas);
-                @memset(each_deltas, null);
-                var rebase = PreparedScopeSiteRebase.init(allocator);
-                var rebase_owned = true;
-                errdefer if (rebase_owned) rebase.deinit();
-                var placement_write: usize = 0;
-                var cumulative_delta: isize = 0;
-                var inserted_before: usize = 0;
-                for (ordered_sites) |site_entry| switch (site_entry.kind) {
-                    .branch => |index| {
-                        const range = branch_ranges[index];
-                        const final_start = switch (site_entry.anchor) {
-                            .global => |old_anchor| blk: {
-                                var retained_before: usize = 0;
-                                for (engine.active_stream.render_nodes.items[0..old_anchor]) |node| {
-                                    const scope_id = renderNodeScopeId(&engine.active_stream, node);
-                                    if (scope_id >= targets.descriptor_target_scopes.len) return error.ResourceLimit;
-                                    if (!targets.descriptor_target_scopes[@intCast(scope_id)]) retained_before += 1;
-                                }
-                                break :blk std.math.add(usize, retained_before, inserted_before) catch return error.ResourceLimit;
-                            },
-                            .row_relative => |relative| blk: {
-                                const row_delta = each_deltas[relative.each_index] orelse return error.InvalidRenderTopology;
-                                const local = std.math.add(usize, relative.row_final_start, relative.retained_offset) catch return error.ResourceLimit;
-                                break :blk std.math.cast(usize, std.math.add(isize, std.math.cast(isize, local) orelse return error.ResourceLimit, row_delta) catch return error.ResourceLimit) orelse return error.ResourceLimit;
-                            },
-                        };
-                        placements[placement_write] = PreparedFinalRenderTopology.Placement.replacement(.{ .value = range.start }, .{ .value = final_start }, range.len);
-                        placement_write += 1;
-                        inserted_before = std.math.add(usize, inserted_before, range.len) catch return error.ResourceLimit;
-                        var removed: usize = 0;
-                        const retired_scope_id = selections[index].retired_scope_id;
-                        for (engine.active_stream.render_nodes.items) |node| {
-                            const scope_id = renderNodeScopeId(&engine.active_stream, node);
-                            if (engine.scopeIsDescendantOrSelf(scope_id, retired_scope_id.raw()) catch |err| return scopeError(err)) removed = std.math.add(usize, removed, 1) catch return error.ResourceLimit;
-                        }
-                        try rebase.addReplacementRange(.{ .site_start = range.site_start, .site_len = range.site_len, .render_start = range.start, .render_len = range.len, .final_start = final_start });
-                        try rebase.addRegion(.{ .node_id = site_entry.node_id, .kind = .when, .owner = .{ .scope_id = selections[index].parent_scope_id.raw(), .ordinal = selections[index].site_ordinal }, .old_start = site_entry.old_anchor, .old_end = std.math.add(usize, site_entry.old_anchor, removed) catch return error.ResourceLimit, .final_start = final_start, .new_len = range.len });
-                        cumulative_delta = std.math.add(isize, cumulative_delta, std.math.cast(isize, range.len) orelse return error.ResourceLimit) catch return error.ResourceLimit;
-                        cumulative_delta = std.math.sub(isize, cumulative_delta, std.math.cast(isize, removed) orelse return error.ResourceLimit) catch return error.ResourceLimit;
-                    },
-                    .each => |index| {
-                        const layout = layouts[index];
-                        const replacement = rows.replacements[index];
-                        each_deltas[index] = cumulative_delta;
-                        const site_final_start = std.math.cast(usize, std.math.add(isize, std.math.cast(isize, site_entry.old_anchor) orelse return error.ResourceLimit, cumulative_delta) catch return error.ResourceLimit) orelse return error.ResourceLimit;
-                        var site_new_len: usize = 0;
-                        for (layout.survivor_moves) |move| {
-                            var fragment_start: ?usize = null;
-                            var retained_offset: usize = 0;
-                            for (engine.active_stream.render_nodes.items[move.old_start..][0..move.len], move.old_start..) |node, old_index| {
-                                const scope_id = renderNodeScopeId(&engine.active_stream, node);
-                                if (scope_id >= targets.descriptor_target_scopes.len) return error.ResourceLimit;
-                                if (targets.descriptor_target_scopes[@intCast(scope_id)]) {
-                                    if (fragment_start) |start| {
-                                        const len = old_index - start;
-                                        const base = std.math.add(usize, move.new_start, retained_offset) catch return error.ResourceLimit;
-                                        const final_start = std.math.cast(usize, std.math.add(isize, std.math.cast(isize, base) orelse return error.ResourceLimit, cumulative_delta) catch return error.ResourceLimit) orelse return error.ResourceLimit;
-                                        placements[placement_write] = PreparedFinalRenderTopology.Placement.active(.{ .value = start }, .{ .value = final_start }, len);
-                                        placement_write += 1;
-                                        try rebase.addMove(.{ .scope_id = move.scope_id.raw(), .old_start = start, .len = len, .final_start = final_start });
-                                        site_new_len = std.math.add(usize, site_new_len, len) catch return error.ResourceLimit;
-                                        retained_offset += len;
-                                        fragment_start = null;
-                                    }
-                                } else if (fragment_start == null) fragment_start = old_index;
-                            }
-                            if (fragment_start) |start| {
-                                const len = move.old_start + move.len - start;
-                                const base = std.math.add(usize, move.new_start, retained_offset) catch return error.ResourceLimit;
-                                const final_start = std.math.cast(usize, std.math.add(isize, std.math.cast(isize, base) orelse return error.ResourceLimit, cumulative_delta) catch return error.ResourceLimit) orelse return error.ResourceLimit;
-                                placements[placement_write] = PreparedFinalRenderTopology.Placement.active(.{ .value = start }, .{ .value = final_start }, len);
-                                placement_write += 1;
-                                try rebase.addMove(.{ .scope_id = move.scope_id.raw(), .old_start = start, .len = len, .final_start = final_start });
-                                site_new_len = std.math.add(usize, site_new_len, len) catch return error.ResourceLimit;
-                            }
-                        }
-                        var replacement_len: usize = 0;
-                        for (replacement.replacement_rows) |range| {
-                            if (range.row_index >= layout.final_starts.len) return error.ResourceLimit;
-                            const final_start = std.math.cast(usize, std.math.add(isize, std.math.cast(isize, layout.final_starts[range.row_index]) orelse return error.ResourceLimit, cumulative_delta) catch return error.ResourceLimit) orelse return error.ResourceLimit;
-                            placements[placement_write] = PreparedFinalRenderTopology.Placement.replacement(.{ .value = range.start }, .{ .value = final_start }, range.len);
-                            placement_write += 1;
-                            replacement_len = std.math.add(usize, replacement_len, range.len) catch return error.ResourceLimit;
-                            try rebase.addReplacementRange(.{ .site_start = range.site_start, .site_len = range.site_len, .render_start = range.start, .render_len = range.len, .final_start = final_start });
-                        }
-                        site_new_len = std.math.add(usize, site_new_len, replacement_len) catch return error.ResourceLimit;
-                        try rebase.addRegion(.{ .node_id = site_entry.node_id, .kind = .each, .owner = SitePosition.ofSite(sites[index]), .old_start = site_entry.old_anchor, .old_end = layout.old_end, .final_start = site_final_start, .new_len = site_new_len });
-                        cumulative_delta = std.math.add(isize, cumulative_delta, std.math.cast(isize, replacement_len) orelse return error.ResourceLimit) catch return error.ResourceLimit;
-                        cumulative_delta = std.math.sub(isize, cumulative_delta, std.math.cast(isize, layout.removal.removal.scan.removed_render_count) orelse return error.ResourceLimit) catch return error.ResourceLimit;
-                        inserted_before = std.math.add(usize, inserted_before, replacement_len) catch return error.ResourceLimit;
-                    },
-                };
-                var final_render_topology = try PreparedFinalRenderTopology.preparePlaced(engine, allocator, replacement_owner, targets.descriptor_target_scopes, removed_render_count, placements[0..placement_write]);
+                for (layouts) |*layout| try layout_plan.describeEachSite(layout);
+                try layout_plan.resolve(engine, targets.descriptor_target_scopes);
+                var final_render_topology = try PreparedFinalRenderTopology.preparePlaced(engine, allocator, replacement_owner, targets.descriptor_target_scopes, layout_plan.removed_render_count, layout_plan.placements.items);
                 var final_topology_owned = true;
                 errdefer if (final_topology_owned) final_render_topology.deinit();
 
@@ -1981,8 +1755,8 @@ pub fn Engine(comptime Ctx: type) type {
                 errdefer downstream.deinit();
                 downstream.final_render_topology = final_render_topology;
                 final_topology_owned = false;
-                rebase_owned = false;
-                try downstream.adoptScopeSiteRebase(rebase);
+                layout_plan_owned = false;
+                try downstream.adoptRenderLayoutPlan(layout_plan);
                 targets.deinit(allocator);
                 targets_owned = false;
 
@@ -5775,23 +5549,17 @@ pub fn Engine(comptime Ctx: type) type {
             }
         };
 
+        /// One edited each site described in old coordinates: the rows it
+        /// currently renders, the retirement the edit needs, and its rows in
+        /// their next order as the pieces a `PreparedRenderLayoutPlan` lays out.
         const PreparedEachRowRenderLayout = struct {
-            const SurvivorMove = struct {
-                scope_id: ids.ScopeId,
-                old_start: usize,
-                new_start: usize,
-                len: usize,
-            };
             allocator: std.mem.Allocator,
-            parent_elem_id: ids.ElemId,
-            site_node_id: ids.NodeId,
-            site_scope_id: ids.ScopeId,
-            site_ordinal: ids.SiteOrdinal,
-            site_insert_index: usize,
+            site: HostNodeScopeSiteDesc,
             targets: PreparedStructuralTargets,
             remove_starts: []usize,
-            final_starts: []usize,
-            survivor_moves: []SurvivorMove,
+            /// The site's next rows in order: a surviving row with its old
+            /// span, or a collected row with its replacement-stream span.
+            pieces: []PreparedRenderLayoutPlan.Piece,
             removal: structural_splice.PreparedMultiRemoval,
             /// One past the last active-stream render node any current row of
             /// this site owns, or the site's insertion point when it has no
@@ -5869,38 +5637,26 @@ pub fn Engine(comptime Ctx: type) type {
                     mutable.deinit(allocator);
                 }
 
-                const final_starts = allocator.alloc(usize, rows.next_scope_ids.len) catch return error.OutOfMemory;
-                errdefer allocator.free(final_starts);
-                const survivor_count = std.math.sub(usize, rows.next_scope_ids.len, replacements.len) catch return error.ResourceLimit;
-                const survivor_moves = allocator.alloc(SurvivorMove, survivor_count) catch return error.OutOfMemory;
-                errdefer allocator.free(survivor_moves);
-                var next_start = site.render_insert_index;
-                var move_write: usize = 0;
-                for (rows.next_scope_ids, 0..) |scope_id, row_index| {
-                    final_starts[row_index] = next_start;
-                    var replacement_len: ?usize = null;
-                    for (replacements) |replacement| if (replacement.row_index == row_index) {
-                        replacement_len = replacement.len;
-                        break;
-                    };
-                    if (replacement_len) |len| {
-                        next_start = std.math.add(usize, next_start, len) catch return error.ResourceLimit;
+                const pieces = allocator.alloc(PreparedRenderLayoutPlan.Piece, rows.next_scope_ids.len) catch return error.OutOfMemory;
+                errdefer allocator.free(pieces);
+                for (rows.next_scope_ids, pieces, 0..) |scope_id, *piece, row_index| {
+                    const replacement: ?PreparedEachRowReplacementCollection.ReplacementRow = for (replacements) |candidate| {
+                        if (candidate.row_index == row_index) break candidate;
+                    } else null;
+                    if (replacement) |row| {
+                        piece.* = .{ .replacement = .{ .render_start = row.start, .render_len = row.len, .site_start = row.site_start, .site_len = row.site_len } };
                     } else {
                         const segment_index = by_scope.get(scope_id.raw()) orelse return error.InvalidScope;
                         const segment = segments.items[segment_index];
-                        survivor_moves[move_write] = .{ .scope_id = scope_id, .old_start = segment.start, .new_start = next_start, .len = segment.len };
-                        move_write += 1;
-                        next_start = std.math.add(usize, next_start, segment.len) catch return error.ResourceLimit;
+                        piece.* = .{ .survivor = .{ .scope_id = scope_id.raw(), .old_start = segment.start, .len = segment.len } };
                     }
                 }
-                if (move_write != survivor_moves.len) return error.ResourceLimit;
-                return .{ .allocator = allocator, .parent_elem_id = site.parent_elem_id, .site_node_id = site.node_id, .site_scope_id = site.scope_id, .site_ordinal = site.ordinal, .site_insert_index = site.render_insert_index, .targets = targets, .remove_starts = remove_starts, .final_starts = final_starts, .survivor_moves = survivor_moves, .removal = removal, .old_end = old_end };
+                return .{ .allocator = allocator, .site = site, .targets = targets, .remove_starts = remove_starts, .pieces = pieces, .removal = removal, .old_end = old_end };
             }
 
             fn deinit(self: *@This()) void {
                 self.removal.deinit(self.allocator);
-                self.allocator.free(self.survivor_moves);
-                self.allocator.free(self.final_starts);
+                self.allocator.free(self.pieces);
                 self.allocator.free(self.remove_starts);
                 self.targets.deinit(self.allocator);
                 self.* = undefined;
@@ -5932,23 +5688,6 @@ pub fn Engine(comptime Ctx: type) type {
             allocator: std.mem.Allocator,
             render_nodes: std.ArrayListUnmanaged(HostRenderNode) = .empty,
             metadata: std.AutoHashMapUnmanaged(u64, HostRenderElemIndex) = .empty,
-
-            fn prepare(engine: *Self, allocator: std.mem.Allocator, replacement: *const PreparedEachRowReplacementCollection, layout: *const PreparedEachRowRenderLayout) CollectionError!@This() {
-                const placement_count = std.math.add(usize, layout.survivor_moves.len, replacement.replacement_rows.len) catch return error.ResourceLimit;
-                const placements = allocator.alloc(Placement, placement_count) catch return error.OutOfMemory;
-                defer allocator.free(placements);
-                var write: usize = 0;
-                for (layout.survivor_moves) |move| {
-                    placements[write] = Placement.active(.{ .value = move.old_start }, .{ .value = move.new_start }, move.len);
-                    write += 1;
-                }
-                for (replacement.replacement_rows) |row| {
-                    if (row.row_index >= layout.final_starts.len) return error.ResourceLimit;
-                    placements[write] = Placement.replacement(.{ .value = row.start }, .{ .value = layout.final_starts[row.row_index] }, row.len);
-                    write += 1;
-                }
-                return preparePlaced(engine, allocator, replacement.replacement, layout.targets.descriptor_target_scopes, layout.removal.removal.scan.removed_render_count, placements);
-            }
 
             fn preparePlaced(engine: *Self, allocator: std.mem.Allocator, replacement: *const PreparedReplacementOwner, target_scopes: []const bool, removed_render_count: usize, placements: []const Placement) CollectionError!@This() {
                 var prepared: @This() = .{ .allocator = allocator };
@@ -6292,58 +6031,70 @@ pub fn Engine(comptime Ctx: type) type {
             }
         };
 
-        /// Re-bases every scope site's `render_insert_index` for one staged
-        /// structural transaction.
+        /// The render layout of one staged structural transaction: described
+        /// by the staging path in old coordinates, resolved here into final
+        /// ones, and applied to every scope site's insertion index at commit.
         ///
-        /// A scope site's insertion index is the active render index where the
-        /// structure it owns begins - an `each` site's first row, a `when` site's
-        /// live branch - or, for a site owning nothing rendered, the point its
-        /// future content is inserted before. Every later structural
-        /// transaction lays rows out from that index, so a splice that moves,
-        /// removes, or inserts render nodes must re-base every site the move
-        /// passes over, not only the sites it edits. The replacement stream's
-        /// own sites are staged in replacement-stream coordinates and need the
-        /// same translation into the final topology.
+        /// Coordinates: everything a path *describes* is an index into the
+        /// committed active render stream (`active_stream.render_nodes`) or, for
+        /// collected content, into the replacement stream. Everything the plan
+        /// *derives* - a region's `final_start`, every placement, every resolved
+        /// site index - is an index into the final render stream this
+        /// transaction publishes.
         ///
-        /// The staging paths describe the transaction in three vocabularies:
-        ///  - a **region** per edited site: the old span its rows occupied, where
-        ///    its content starts in the final topology, and the new length;
-        ///  - a **move** per surviving row fragment copied from the active
-        ///    stream, with the row scope that owns it;
-        ///  - a **replacement range** per collected row or branch, with the index
-        ///    range of the scope sites that row created.
+        /// A path describes one **region** per edited site: the old span the
+        /// site's content occupied and, in final order, the **pieces** that
+        /// replace it - a surviving row copied from the active stream or a
+        /// collected row or branch copied from the replacement stream. A
+        /// region may nest inside a surviving piece of another region (a when
+        /// inside a surviving row of an edited each); nesting is decided by
+        /// scope ancestry, never by positions.
+        ///
+        /// `resolve` walks the old stream once in document order
+        /// (`compareSitePositions`), keeping a single final cursor: retained
+        /// nodes between regions keep their relative order, a region lands on
+        /// the cursor and lays its pieces out from there, and a surviving piece
+        /// is walked recursively so regions nested in it split it into moved
+        /// fragments. That one walk yields every region's final start, the
+        /// `PreparedFinalRenderTopology.Placement` list, and the surviving rows and
+        /// replacement ranges site resolution needs. Old spans must agree with
+        /// the document order - overlapping or out-of-order regions, or a
+        /// region inside removed content - are refused as
+        /// `InvalidRenderTopology`.
         ///
         /// `finish` resolves each active site once. An edited site lands on its
         /// region's final start. A site living inside a surviving row follows
-        /// the row's move. Otherwise the index is shifted by the net size
+        /// the row's fragment. Otherwise the index is shifted by the net size
         /// change of every region that stands before the site in document
-        /// order (`compareSitePositions`: scope ancestry, site ordinals, and
-        /// committed row order - never render positions, so sites that render
-        /// nothing at one index still have exactly one order). A region inside
-        /// the site's own content leaves it alone. A region whose old span
-        /// disagrees with that order, a retained site inside a region that no
-        /// surviving row carries, or a replacement site no row claims, means
-        /// the staged topology disagrees with the committed tree and is refused
-        /// as `InvalidRenderTopology`. `apply` then publishes the resolved
-        /// indexes without allocating.
-        const PreparedScopeSiteRebase = struct {
+        /// order; a region inside the site's own content leaves it alone. The
+        /// replacement stream's own sites are translated through the range of
+        /// the row or branch that collected them. `apply` then publishes the
+        /// resolved indexes without allocating.
+        const PreparedRenderLayoutPlan = struct {
             const unmapped = std.math.maxInt(usize);
+            const Piece = union(enum) {
+                /// A surviving row: its scope and old span.
+                survivor: struct { scope_id: u64, old_start: usize, len: usize },
+                /// A collected row or branch: its render span in the
+                /// replacement stream and the scope sites it created.
+                replacement: struct { render_start: usize, render_len: usize, site_start: usize, site_len: usize },
+            };
             const Region = struct {
                 node_id: u64,
                 kind: HostNodeScopeSiteKind,
-                /// Where the edited site stands in the document, so a retained
-                /// site can be ordered against the region without consulting
-                /// render positions.
                 owner: SitePosition,
                 old_start: usize,
                 old_end: usize,
-                final_start: usize,
-                new_len: usize,
+                pieces: []Piece,
+                final_start: usize = unmapped,
+                new_len: usize = 0,
             };
-            const Move = struct {
+            /// A surviving row and where it landed, so a site living inside
+            /// it can be resolved from the row's final start.
+            const SurvivingRow = struct {
                 scope_id: u64,
                 old_start: usize,
-                len: usize,
+                old_end: usize,
                 final_start: usize,
             };
             const ReplacementRange = struct {
@@ -6353,53 +6104,193 @@ pub fn Engine(comptime Ctx: type) type {
                 render_len: usize,
                 final_start: usize,
             };
+            const Phase = enum { describing, resolved, finished };
 
             allocator: std.mem.Allocator,
             regions: std.ArrayListUnmanaged(Region) = .empty,
-            moves: std.ArrayListUnmanaged(Move) = .empty,
+            rows: std.ArrayListUnmanaged(SurvivingRow) = .empty,
             ranges: std.ArrayListUnmanaged(ReplacementRange) = .empty,
+            placements: std.ArrayListUnmanaged(PreparedFinalRenderTopology.Placement) = .empty,
+            removed_render_count: usize = 0,
             active_new: []usize = &.{},
             replacement_new: []usize = &.{},
-            finished: bool = false,
+            phase: Phase = .describing,
 
             fn init(allocator: std.mem.Allocator) @This() {
                 return .{ .allocator = allocator };
             }
 
-            fn addRegion(self: *@This(), region: Region) CollectionError!void {
-                if (self.finished or region.old_end < region.old_start) return error.ResourceLimit;
-                self.regions.append(self.allocator, region) catch return error.OutOfMemory;
+            /// Describes an edited each site from its layout: the old span its
+            /// rows occupy and its rows in their next order.
+            fn describeEachSite(self: *@This(), layout: *const PreparedEachRowRenderLayout) CollectionError!void {
+                if (self.phase != .describing) return error.ResourceLimit;
+                const pieces = self.allocator.dupe(Piece, layout.pieces) catch return error.OutOfMemory;
+                errdefer self.allocator.free(pieces);
+                const site = layout.site;
+                self.regions.append(self.allocator, .{ .node_id = site.node_id.raw(), .kind = .each, .owner = SitePosition.ofSite(site), .old_start = site.render_insert_index, .old_end = layout.old_end, .pieces = pieces }) catch return error.OutOfMemory;
             }
 
-            fn addMove(self: *@This(), move: Move) CollectionError!void {
-                if (self.finished) return error.ResourceLimit;
-                self.moves.append(self.allocator, move) catch return error.OutOfMemory;
-            }
-
-            fn addReplacementRange(self: *@This(), range: ReplacementRange) CollectionError!void {
-                if (self.finished) return error.ResourceLimit;
-                self.ranges.append(self.allocator, range) catch return error.OutOfMemory;
-            }
-
-            /// Maps a site living in a surviving row to its final position by
-            /// the row fragment its index falls in. A fragment's end is admitted
-            /// because an empty site at the end of its row legitimately sits
-            /// there; a site whose scope belongs to a moved row but whose index
-            /// lies in none of its fragments is a topology disagreement.
-            fn resolveInsideMove(self: *const @This(), engine: *Self, scope_id: u64, old_index: usize) CollectionError!?usize {
-                var inside_moved_row = false;
-                for (self.moves.items) |move| {
-                    if (!(engine.scopeIsDescendantOrSelf(scope_id, move.scope_id) catch return error.InvalidRenderTopology)) continue;
-                    inside_moved_row = true;
-                    const end = move.old_start + move.len;
-                    if (old_index >= move.old_start and old_index <= end) return move.final_start + (old_index - move.old_start);
+            /// Describes a when branch selection: the retired branch's old
+            /// span, found from the render nodes its scope owns, replaced by
+            /// the collected branch. A retired branch that renders nothing
+            /// sits at the site's index. Returns the old start, which is also
+            /// where the retirement scan for this branch begins.
+            fn describeBranch(self: *@This(), engine: *Self, selection: AggregateBranchSelection, collected: PreparedReplacementOwner.CollectedWhenSelection) CollectionError!usize {
+                if (self.phase != .describing) return error.ResourceLimit;
+                var old_start: ?usize = null;
+                var old_end: usize = 0;
+                for (engine.active_stream.render_nodes.items, 0..) |node, render_index| {
+                    const scope_id = renderNodeScopeId(&engine.active_stream, node);
+                    const retired = engine.scopeIsDescendantOrSelf(scope_id, selection.retired_scope_id.raw()) catch |err| return scopeError(err);
+                    if (!retired) continue;
+                    if (old_start == null) {
+                        old_start = render_index;
+                    } else if (render_index != old_end) return error.InvalidRenderTopology;
+                    old_end = render_index + 1;
                 }
-                if (inside_moved_row) return error.InvalidRenderTopology;
-                return null;
+                const start = old_start orelse blk: {
+                    old_end = selection.render_insert_index;
+                    break :blk selection.render_insert_index;
+                };
+                const pieces = self.allocator.alloc(Piece, 1) catch return error.OutOfMemory;
+                errdefer self.allocator.free(pieces);
+                pieces[0] = .{ .replacement = .{ .render_start = collected.start, .render_len = collected.len, .site_start = collected.site_start, .site_len = collected.site_len } };
+                self.regions.append(self.allocator, .{ .node_id = selection.node_id.raw(), .kind = .when, .owner = .{ .scope_id = selection.parent_scope_id.raw(), .ordinal = selection.site_ordinal }, .old_start = start, .old_end = old_end, .pieces = pieces }) catch return error.OutOfMemory;
+                return start;
+            }
+
+            fn regionsInDocumentOrder(self: *@This(), engine: *Self) CollectionError!void {
+                const regions = self.regions.items;
+                // Insertion sort: region counts are small and the comparator
+                // can fail, which `std.mem.sort` cannot report.
+                var index: usize = 1;
+                while (index < regions.len) : (index += 1) {
+                    var position = index;
+                    while (position > 0) : (position -= 1) {
+                        switch (try engine.compareSitePositions(regions[position - 1].owner, regions[position].owner)) {
+                            .before, .contains => break,
+                            .after, .contained => std.mem.swap(Region, &regions[position - 1], &regions[position]),
+                            .same => return error.InvalidRenderTopology,
+                        }
+                    }
+                }
+            }
+
+            fn requireRetained(engine: *Self, target_scopes: []const bool, old_start: usize, old_end: usize) CollectionError!void {
+                for (engine.active_stream.render_nodes.items[old_start..old_end]) |node| {
+                    const scope_id = renderNodeScopeId(&engine.active_stream, node);
+                    if (scope_id >= target_scopes.len) return error.InvalidRenderTopology;
+                    if (target_scopes[@intCast(scope_id)]) return error.InvalidRenderTopology;
+                }
+            }
+
+            fn placeSurvivorFragment(self: *@This(), engine: *Self, target_scopes: []const bool, old_start: usize, old_end: usize, final_start: usize) CollectionError!usize {
+                const len = old_end - old_start;
+                if (len == 0) return final_start;
+                try requireRetained(engine, target_scopes, old_start, old_end);
+                self.placements.append(self.allocator, PreparedFinalRenderTopology.Placement.active(.{ .value = old_start }, .{ .value = final_start }, len)) catch return error.OutOfMemory;
+                return std.math.add(usize, final_start, len) catch return error.ResourceLimit;
+            }
+
+            /// Lays a surviving row out at `final_start`: the regions nested in
+            /// it (those whose owner lives under the row scope, next in document
+            /// order) split it into moved fragments. Returns the final cursor
+            /// after the row.
+            fn layoutSurvivor(self: *@This(), engine: *Self, target_scopes: []const bool, scope_id: u64, old_start: usize, old_end: usize, final_start: usize, next: *usize) CollectionError!usize {
+                self.rows.append(self.allocator, .{ .scope_id = scope_id, .old_start = old_start, .old_end = old_end, .final_start = final_start }) catch return error.OutOfMemory;
+                var old = old_start;
+                var final = final_start;
+                while (next.* < self.regions.items.len) {
+                    const nested = self.regions.items[next.*];
+                    if (!(engine.scopeIsDescendantOrSelf(nested.owner.scope_id, scope_id) catch |err| return scopeError(err))) break;
+                    if (nested.old_start < old or nested.old_end > old_end) return error.InvalidRenderTopology;
+                    final = try self.placeSurvivorFragment(engine, target_scopes, old, nested.old_start, final);
+                    next.* += 1;
+                    final = try self.layoutRegion(engine, target_scopes, next.* - 1, final, next);
+                    old = nested.old_end;
+                }
+                return self.placeSurvivorFragment(engine, target_scopes, old, old_end, final);
+            }
+
+            /// Lays a region out at `final_start` and returns the final cursor
+            /// after it. `next` walks the regions in document order, so the
+            /// regions nested in this one are consumed by its surviving pieces.
+            fn layoutRegion(self: *@This(), engine: *Self, target_scopes: []const bool, region_index: usize, final_start: usize, next: *usize) CollectionError!usize {
+                var final = final_start;
+                for (self.regions.items[region_index].pieces) |piece| switch (piece) {
+                    .replacement => |range| {
+                        self.placements.append(self.allocator, PreparedFinalRenderTopology.Placement.replacement(.{ .value = range.render_start }, .{ .value = final }, range.render_len)) catch return error.OutOfMemory;
+                        self.ranges.append(self.allocator, .{ .site_start = range.site_start, .site_len = range.site_len, .render_start = range.render_start, .render_len = range.render_len, .final_start = final }) catch return error.OutOfMemory;
+                        final = std.math.add(usize, final, range.render_len) catch return error.ResourceLimit;
+                    },
+                    .survivor => |row| {
+                        const row_end = std.math.add(usize, row.old_start, row.len) catch return error.ResourceLimit;
+                        final = try self.layoutSurvivor(engine, target_scopes, row.scope_id, row.old_start, row_end, final, next);
+                    },
+                };
+                const region = &self.regions.items[region_index];
+                // A region nested in this one that no surviving piece carried
+                // sits in content this transaction removes; it should have been
+                // subsumed before staging.
+                if (next.* < self.regions.items.len) {
+                    switch (try engine.compareSitePositions(region.owner, self.regions.items[next.*].owner)) {
+                        .contains => return error.InvalidRenderTopology,
+                        else => {},
+                    }
+                }
+                region.final_start = final_start;
+                region.new_len = std.math.sub(usize, final, final_start) catch return error.ResourceLimit;
+                return final;
+            }
+
+            /// Derives every final coordinate from the described regions. The
+            /// retained nodes outside every region keep their order and are
+            /// left for `PreparedFinalRenderTopology.preparePlaced` to fill in.
+            fn resolve(self: *@This(), engine: *Self, target_scopes: []const bool) CollectionError!void {
+                if (self.phase != .describing) return error.ResourceLimit;
+                try self.regionsInDocumentOrder(engine);
+                const old_nodes = engine.active_stream.render_nodes.items;
+                var removed: usize = 0;
+                for (old_nodes) |node| {
+                    const scope_id = renderNodeScopeId(&engine.active_stream, node);
+                    if (scope_id >= target_scopes.len) return error.InvalidRenderTopology;
+                    if (target_scopes[@intCast(scope_id)]) removed += 1;
+                }
+                self.removed_render_count = removed;
+                var old: usize = 0;
+                var final: usize = 0;
+                var next: usize = 0;
+                while (next < self.regions.items.len) {
+                    const region = self.regions.items[next];
+                    if (region.old_start < old or region.old_end < region.old_start or region.old_end > old_nodes.len) return error.InvalidRenderTopology;
+                    try requireRetained(engine, target_scopes, old, region.old_start);
+                    final = std.math.add(usize, final, region.old_start - old) catch return error.ResourceLimit;
+                    next += 1;
+                    final = try self.layoutRegion(engine, target_scopes, next - 1, final, &next);
+                    old = region.old_end;
+                }
+                try requireRetained(engine, target_scopes, old, old_nodes.len);
+                self.phase = .resolved;
+            }
+
+            /// The innermost surviving row whose scope contains `scope_id`, if
+            /// the site lives inside content a region keeps.
+            fn innermostSurvivingRow(self: *const @This(), engine: *Self, scope_id: u64) CollectionError!?SurvivingRow {
+                var found: ?SurvivingRow = null;
+                var found_depth: usize = 0;
+                for (self.rows.items) |row| {
+                    if (!(engine.scopeIsDescendantOrSelf(scope_id, row.scope_id) catch |err| return scopeError(err))) continue;
+                    const depth = engine.scopeDepth(row.scope_id);
+                    if (found == null or depth > found_depth) {
+                        found = row;
+                        found_depth = depth;
+                    }
+                }
+                return found;
             }
 
             fn finish(self: *@This(), engine: *Self, replacement_stream: *const HostNodeDescriptorStream, target_scopes: []const bool, final_len: usize) CollectionError!void {
-                if (self.finished) return error.ResourceLimit;
+                if (self.phase != .resolved) return error.ResourceLimit;
                 const old_nodes = engine.active_stream.render_nodes.items;
                 const active_sites = engine.active_stream.scope_sites.items;
                 const active_new = self.allocator.alloc(usize, active_sites.len) catch return error.OutOfMemory;
@@ -6418,22 +6309,29 @@ pub fn Engine(comptime Ctx: type) type {
                         new.* = final_start;
                         continue;
                     }
-                    // A site living inside a surviving row follows the row.
-                    if (try self.resolveInsideMove(engine, site.scope_id.raw(), old_index)) |final_start| {
-                        new.* = final_start;
-                        continue;
+                    // A site inside a surviving row starts from where the row
+                    // landed, at the same offset into it; any other site starts
+                    // from its own index. Either way the regions that stand
+                    // before the site in document order - and, inside a row,
+                    // only those nested in that row - shift it by their net size
+                    // change. A region inside the site's own content leaves it
+                    // alone, and every region's old span has to agree with the
+                    // order; a site whose index sits inside content the order
+                    // puts elsewhere is stale and refused rather than shifted.
+                    const position = SitePosition.ofSite(site);
+                    const row = try self.innermostSurvivingRow(engine, site.scope_id.raw());
+                    var shifted: isize = undefined;
+                    if (row) |surviving| {
+                        if (old_index < surviving.old_start or old_index > surviving.old_end) return error.InvalidRenderTopology;
+                        shifted = std.math.cast(isize, surviving.final_start + (old_index - surviving.old_start)) orelse return error.ResourceLimit;
+                    } else {
+                        shifted = std.math.cast(isize, old_index) orelse return error.ResourceLimit;
                     }
-                    // Otherwise the site keeps its index shifted by the net size
-                    // change of every region that stands before it in document
-                    // order. A region inside the site's own content - an each in
-                    // a when's live branch, say - moves nothing in front of it,
-                    // and a region after the site never does. The old span of
-                    // each region has to agree with that order; a site whose
-                    // index sits inside content the order puts elsewhere is a
-                    // stale index, refused rather than shifted.
-                    var shifted = std.math.cast(isize, old_index) orelse return error.ResourceLimit;
                     for (self.regions.items) |region| {
-                        switch (try engine.compareSitePositions(region.owner, SitePosition.ofSite(site))) {
+                        if (row) |surviving| {
+                            if (!(engine.scopeIsDescendantOrSelf(region.owner.scope_id, surviving.scope_id) catch |err| return scopeError(err))) continue;
+                        }
+                        switch (try engine.compareSitePositions(region.owner, position)) {
                             .before => if (region.old_end > old_index) return error.InvalidRenderTopology,
                             .after => {
                                 if (region.old_start < old_index) return error.InvalidRenderTopology;
@@ -6465,15 +6363,15 @@ pub fn Engine(comptime Ctx: type) type {
                 }
                 self.active_new = active_new;
                 self.replacement_new = replacement_new;
-                self.finished = true;
+                self.phase = .finished;
             }
 
             /// Publishes the resolved indexes. Runs before the descriptor splice
             /// retires and appends scope sites, so both streams still have the
             /// exact site lists `finish` resolved against.
             fn apply(self: *const @This(), active_stream: *HostNodeDescriptorStream, replacement_stream: *HostNodeDescriptorStream) void {
-                if (!self.finished) @panic("scope site rebase applied before it was finished");
-                if (active_stream.scope_sites.items.len != self.active_new.len or replacement_stream.scope_sites.items.len != self.replacement_new.len) @panic("scope site rebase was prepared against different descriptor streams");
+                if (self.phase != .finished) @panic("render layout plan applied before it was finished");
+                if (active_stream.scope_sites.items.len != self.active_new.len or replacement_stream.scope_sites.items.len != self.replacement_new.len) @panic("render layout plan was prepared against different descriptor streams");
                 for (active_stream.scope_sites.items, self.active_new) |*site, final_index| if (final_index != unmapped) {
                     site.render_insert_index = final_index;
                 };
@@ -6483,8 +6381,10 @@ pub fn Engine(comptime Ctx: type) type {
             fn deinit(self: *@This()) void {
                 self.allocator.free(self.replacement_new);
                 self.allocator.free(self.active_new);
+                self.placements.deinit(self.allocator);
                 self.ranges.deinit(self.allocator);
-                self.moves.deinit(self.allocator);
+                self.rows.deinit(self.allocator);
+                for (self.regions.items) |region| self.allocator.free(region.pieces);
                 self.regions.deinit(self.allocator);
                 self.* = undefined;
             }
@@ -6508,7 +6408,7 @@ pub fn Engine(comptime Ctx: type) type {
             retired_stream: HostNodeDescriptorStream = .{},
             publication: ?structural_splice.PreparedPublicationDeltas = null,
             final_render_topology: ?PreparedFinalRenderTopology = null,
-            scope_site_rebase: ?PreparedScopeSiteRebase = null,
+            render_layout_plan: ?PreparedRenderLayoutPlan = null,
             graph_release: ?active_graph.PreparedReleaseClosure(HostSignalRecord) = null,
             graph_append: ?active_graph.PreparedGraphAppend(HostSignalRecord) = null,
             sink_edits: ?active_graph.PreparedSinkRouteEdits = null,
@@ -6572,50 +6472,24 @@ pub fn Engine(comptime Ctx: type) type {
                 }
                 plan.replacement.materialize();
 
+                var layout_plan = PreparedRenderLayoutPlan.init(allocator);
+                var layout_plan_owned = true;
+                errdefer if (layout_plan_owned) layout_plan.deinit();
                 const retired_scope_ids = allocator.alloc(u64, selections.len) catch return error.OutOfMemory;
                 defer allocator.free(retired_scope_ids);
                 const render_insert_indexes = allocator.alloc(usize, selections.len) catch return error.OutOfMemory;
                 defer allocator.free(render_insert_indexes);
-                for (selections, 0..) |selection, index| {
+                for (selections, replacement_ranges, 0..) |selection, range, index| {
                     retired_scope_ids[index] = selection.retired_scope_id.raw();
-                    render_insert_indexes[index] = blk: {
-                        for (engine.active_stream.render_nodes.items, 0..) |node, render_index| {
-                            const scope_id = renderNodeScopeId(&engine.active_stream, node);
-                            if (engine.scopeIsDescendantOrSelf(scope_id, selection.retired_scope_id.raw()) catch |err| return scopeError(err)) break :blk render_index;
-                        }
-                        break :blk selection.render_insert_index;
-                    };
+                    render_insert_indexes[index] = try layout_plan.describeBranch(engine, selection, range);
                 }
                 try plan.prepareDownstream(allocator, retired_scope_ids, retired_scope_ids, render_insert_indexes, null, false, cache_overlay);
                 plan_owns_cleanup = true;
                 errdefer plan.deinit();
-                const placements = allocator.alloc(PreparedFinalRenderTopology.Placement, selections.len) catch return error.OutOfMemory;
-                defer allocator.free(placements);
-                var rebase = PreparedScopeSiteRebase.init(allocator);
-                var rebase_owned = true;
-                errdefer if (rebase_owned) rebase.deinit();
-                for (selections, 0..) |selection, index| {
-                    var delta: isize = 0;
-                    for (selections, replacement_ranges, 0..) |_, prior_range, prior_index| {
-                        if (render_insert_indexes[prior_index] >= render_insert_indexes[index]) continue;
-                        const interval = for (plan.removal.?.intervals_descending) |candidate| {
-                            if (candidate.start == render_insert_indexes[prior_index]) break candidate;
-                        } else return error.ResourceLimit;
-                        delta = std.math.add(isize, delta, std.math.cast(isize, prior_range.len) orelse return error.ResourceLimit) catch return error.ResourceLimit;
-                        delta = std.math.sub(isize, delta, std.math.cast(isize, interval.len) orelse return error.ResourceLimit) catch return error.ResourceLimit;
-                    }
-                    const final_start = std.math.cast(usize, std.math.add(isize, std.math.cast(isize, render_insert_indexes[index]) orelse return error.ResourceLimit, delta) catch return error.ResourceLimit) orelse return error.ResourceLimit;
-                    placements[index] = PreparedFinalRenderTopology.Placement.replacement(.{ .value = replacement_ranges[index].start }, .{ .value = final_start }, replacement_ranges[index].len);
-                    const own_interval = for (plan.removal.?.intervals_descending) |candidate| {
-                        if (candidate.start == render_insert_indexes[index]) break candidate;
-                    } else return error.ResourceLimit;
-                    const site_node_id = selection.node_id.raw();
-                    try rebase.addReplacementRange(.{ .site_start = replacement_ranges[index].site_start, .site_len = replacement_ranges[index].site_len, .render_start = replacement_ranges[index].start, .render_len = replacement_ranges[index].len, .final_start = final_start });
-                    try rebase.addRegion(.{ .node_id = site_node_id, .kind = .when, .owner = .{ .scope_id = selection.parent_scope_id.raw(), .ordinal = selection.site_ordinal }, .old_start = render_insert_indexes[index], .old_end = std.math.add(usize, render_insert_indexes[index], own_interval.len) catch return error.ResourceLimit, .final_start = final_start, .new_len = replacement_ranges[index].len });
-                }
-                plan.final_render_topology = try PreparedFinalRenderTopology.preparePlaced(plan.engine, allocator, plan.replacement, plan.targets.?.descriptor_target_scopes, plan.removal.?.removal.scan.removed_render_count, placements);
-                rebase_owned = false;
-                try plan.adoptScopeSiteRebase(rebase);
+                try layout_plan.resolve(engine, plan.targets.?.descriptor_target_scopes);
+                plan.final_render_topology = try PreparedFinalRenderTopology.preparePlaced(plan.engine, allocator, plan.replacement, plan.targets.?.descriptor_target_scopes, layout_plan.removed_render_count, layout_plan.placements.items);
+                layout_plan_owned = false;
+                try plan.adoptRenderLayoutPlan(layout_plan);
                 return plan;
             }
 
@@ -6642,37 +6516,29 @@ pub fn Engine(comptime Ctx: type) type {
 
             fn prepareEachRenderTopology(self: *@This(), rows: *const PreparedEachRowReplacementCollection, layout: *const PreparedEachRowRenderLayout) CollectionError!void {
                 const allocator = Ctx.allocator(self.host_ctx);
-                self.final_render_topology = try PreparedFinalRenderTopology.prepare(self.engine, allocator, rows, layout);
-                var rebase = PreparedScopeSiteRebase.init(allocator);
-                var rebase_owned = true;
-                errdefer if (rebase_owned) rebase.deinit();
-                var new_len: usize = 0;
-                for (layout.survivor_moves) |move| {
-                    try rebase.addMove(.{ .scope_id = move.scope_id.raw(), .old_start = move.old_start, .len = move.len, .final_start = move.new_start });
-                    new_len = std.math.add(usize, new_len, move.len) catch return error.ResourceLimit;
-                }
-                for (rows.replacement_rows) |row| {
-                    if (row.row_index >= layout.final_starts.len) return error.ResourceLimit;
-                    try rebase.addReplacementRange(.{ .site_start = row.site_start, .site_len = row.site_len, .render_start = row.start, .render_len = row.len, .final_start = layout.final_starts[row.row_index] });
-                    new_len = std.math.add(usize, new_len, row.len) catch return error.ResourceLimit;
-                }
-                try rebase.addRegion(.{ .node_id = layout.site_node_id.raw(), .kind = .each, .owner = .{ .scope_id = layout.site_scope_id.raw(), .ordinal = layout.site_ordinal }, .old_start = layout.site_insert_index, .old_end = layout.old_end, .final_start = layout.site_insert_index, .new_len = new_len });
-                rebase_owned = false;
-                try self.adoptScopeSiteRebase(rebase);
-                try self.prepareFinalRenderTopology(&.{layout.parent_elem_id.raw()});
+                var plan = PreparedRenderLayoutPlan.init(allocator);
+                var plan_owned = true;
+                errdefer if (plan_owned) plan.deinit();
+                try plan.describeEachSite(layout);
+                try plan.resolve(self.engine, layout.targets.descriptor_target_scopes);
+                self.final_render_topology = try PreparedFinalRenderTopology.preparePlaced(self.engine, allocator, rows.replacement, layout.targets.descriptor_target_scopes, plan.removed_render_count, plan.placements.items);
+                plan_owned = false;
+                try self.adoptRenderLayoutPlan(plan);
+                try self.prepareFinalRenderTopology(&.{layout.site.parent_elem_id.raw()});
             }
 
-            /// Takes ownership of a staged rebase and resolves it against this
-            /// downstream's retirement targets and final topology. The rebase is
-            /// released here on failure, so a caller hands it over exactly once.
-            fn adoptScopeSiteRebase(self: *@This(), staged: PreparedScopeSiteRebase) CollectionError!void {
-                var rebase = staged;
-                errdefer rebase.deinit();
-                if (self.scope_site_rebase != null) return error.ResourceLimit;
+            /// Takes ownership of a resolved layout plan and resolves every
+            /// scope site's index against this downstream's retirement targets
+            /// and final topology. The plan is released here on failure, so a
+            /// caller hands it over exactly once.
+            fn adoptRenderLayoutPlan(self: *@This(), staged: PreparedRenderLayoutPlan) CollectionError!void {
+                var plan = staged;
+                errdefer plan.deinit();
+                if (self.render_layout_plan != null) return error.ResourceLimit;
                 const topology = &(self.final_render_topology orelse return error.ResourceLimit);
                 const targets = self.targets orelse return error.ResourceLimit;
-                try rebase.finish(self.engine, &self.replacement.stream, targets.descriptor_target_scopes, topology.render_nodes.items.len);
-                self.scope_site_rebase = rebase;
+                try plan.finish(self.engine, &self.replacement.stream, targets.descriptor_target_scopes, topology.render_nodes.items.len);
+                self.render_layout_plan = plan;
             }
 
             fn prepareFinalRenderTopology(self: *@This(), parent_elem_ids: []const u64) CollectionError!void {
@@ -6754,7 +6620,7 @@ pub fn Engine(comptime Ctx: type) type {
 
             fn prepareExternalEach(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, rows: *const each_runtime.PreparedRowSync, replacement: *PreparedEachRowReplacementCollection, layout: *const PreparedEachRowRenderLayout, cache_overlay: ?*signal_records.PreparedCacheUpdates) CollectionError!*@This() {
                 const allocator = Ctx.allocator(ctx);
-                const suppressed_parents = [_]u64{layout.parent_elem_id.raw()};
+                const suppressed_parents = [_]u64{layout.site.parent_elem_id.raw()};
                 var descriptor_roots: std.ArrayListUnmanaged(u64) = .empty;
                 defer descriptor_roots.deinit(allocator);
                 descriptor_roots.ensureTotalCapacity(allocator, std.math.add(usize, rows.removed_scope_ids.len, replacement.replacement_rows.len) catch return error.ResourceLimit) catch return error.OutOfMemory;
@@ -7008,8 +6874,8 @@ pub fn Engine(comptime Ctx: type) type {
                     });
                     desc.owns_payload_reducer = false;
                 }
-                if (self.scope_site_rebase) |*rebase| {
-                    rebase.apply(&self.engine.active_stream, &self.replacement.stream);
+                if (self.render_layout_plan) |*plan| {
+                    plan.apply(&self.engine.active_stream, &self.replacement.stream);
                 } else if (!self.initial_root and self.final_render_topology != null) {
                     @panic("structural downstream committed a render topology without re-basing its scope sites");
                 }
@@ -7092,7 +6958,7 @@ pub fn Engine(comptime Ctx: type) type {
                 self.retired_active_events.deinit(allocator);
                 if (self.publication) |*publication| publication.deinit(allocator);
                 if (self.final_render_topology) |*topology| topology.deinit();
-                if (self.scope_site_rebase) |*rebase| rebase.deinit();
+                if (self.render_layout_plan) |*plan| plan.deinit();
                 if (self.graph_append) |*append| append.deinit(allocator);
                 if (self.graph_release) |*release| release.deinit(allocator);
                 if (self.sink_edits) |*edits| edits.deinit(allocator);
@@ -14533,7 +14399,8 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
             try retirement.refineDescriptorOwnedRetirement(engine, ctx.allocator, &layout.removal.removal);
             const downstream = try prepareDownstream(engine, ctx, host, &rows, replacement, &layout);
             try std.testing.expectEqualSlices(usize, &.{0}, layout.remove_starts);
-            try std.testing.expectEqualSlices(usize, &.{ 0, 1, 2 }, layout.final_starts);
+            try std.testing.expectEqual(@as(usize, 3), layout.pieces.len);
+            try std.testing.expect(layout.pieces[0] == .replacement and layout.pieces[1] == .survivor and layout.pieces[2] == .replacement);
             try std.testing.expect(layout.targets.descriptor_target_scopes[1]);
             try std.testing.expect(layout.targets.descriptor_target_scopes[2]);
             try std.testing.expectEqualSlices(ids.ScopeId, &.{ids.ScopeId.fromRaw(1)}, layout.targets.scope_retirement.?.scope_ids);
@@ -14692,8 +14559,8 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
                 return failed_attempts;
             };
             try std.testing.expectEqualSlices(usize, &.{0}, layout.remove_starts);
-            try std.testing.expectEqualSlices(usize, &.{ 0, 1, 2 }, layout.final_starts);
-            try std.testing.expectEqual(@as(usize, 1), layout.survivor_moves.len);
+            try std.testing.expectEqual(@as(usize, 3), layout.pieces.len);
+            try std.testing.expect(layout.pieces[0] == .replacement and layout.pieces[1] == .survivor and layout.pieces[2] == .replacement);
             try std.testing.expect(layout.targets.descriptor_target_scopes[@intCast(removed_scope_id.raw())]);
             try std.testing.expect(layout.targets.descriptor_target_scopes[2]);
             try std.testing.expect(!layout.targets.descriptor_target_scopes[3]);
