@@ -4635,6 +4635,39 @@ fn testI64ListContainsOneCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*
     writeTestErasedResult(HostValue, ret, result);
 }
 
+/// Which fact about the shared `List I64` a generated `when` condition asks.
+const TestListPredicate = enum(u8) {
+    /// The list holds at least `operand` items.
+    length_at_least,
+    /// The list holds the key `operand`.
+    contains,
+
+    fn holds(self: TestListPredicate, items: []const i64, operand: i64) bool {
+        return switch (self) {
+            .length_at_least => items.len >= operand,
+            .contains => std.mem.indexOfScalar(i64, items, operand) != null,
+        };
+    }
+};
+
+const TestListPredicateCapture = extern struct { cap: HostValueCapability, operand: i64, predicate: u8 };
+
+fn testListPredicateCaptureOnDrop(capture_ptr: ?[*]u8, roc_host: *abi.RocHost) callconv(.c) void {
+    hv.releaseHostValueCapability(testCapturePtrAs(TestListPredicateCapture, capture_ptr).cap, roc_host);
+}
+
+fn testI64ListPredicateCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
+    const host = hostFromRocHost(roc_host);
+    const capture = testCapturePtrAs(TestListPredicateCapture, capture_ptr);
+    const call_args = testErasedArgsAs(ErasedHostValueUnaryArgs, args);
+    const values = testReadHostValueI64List(roc_host, call_args.arg0);
+    const predicate: TestListPredicate = @enumFromInt(capture.predicate);
+    const result = hostValueBool(host, roc_host, predicate.holds(values.items(), capture.operand));
+    host.setTestHostValueKind(result, .bool);
+    host.setHostValueCapability(result, capture.cap);
+    writeTestErasedResult(HostValue, ret, result);
+}
+
 fn testI64ListCopyCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
     const host = hostFromRocHost(roc_host);
     const capture = testCapturePtrAs(TestCapabilityCapture, capture_ptr);
@@ -6931,6 +6964,99 @@ test "a when flipping from an empty branch anchors its DOM node at its site, not
     for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
+/// Row callable whose row is a `when` asking `length >= min_length` of the
+/// list in the captured state cell, rendering `row-<key>-on` or `row-<key>-off`.
+const TestListWhenRowCapture = extern struct { token: *const HostBinderToken, min_length: i64 = 1 };
+
+fn testListWhenRowElemCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
+    const capture = testCapturePtrAs(TestListWhenRowCapture, capture_ptr);
+    const call_args = testErasedArgsAs(ErasedHostValueBinaryArgs, args);
+    const key = testReadHostValueI64(roc_host, call_args.arg0);
+    var on_buffer: [32]u8 = undefined;
+    var off_buffer: [32]u8 = undefined;
+    const on = std.fmt.bufPrint(&on_buffer, "row-{d}-on", .{key}) catch unreachable;
+    const off = std.fmt.bufPrint(&off_buffer, "row-{d}-off", .{key}) catch unreachable;
+    writeTestErasedResult(abi.Elem, ret, testNodeWhenOnListPredicate(roc_host, capture.token.*, .length_at_least, capture.min_length, testNodeText(roc_host, on), testNodeText(roc_host, off)));
+}
+
+test "a branch mounted by a flip reads the list the flip published, not the retired one" {
+    // The outer when flips when the list empties. Its new branch holds a
+    // constant each whose row carries a when on the same list, so the row
+    // has to be collected against the value the transaction publishes.
+    var host = HostEnv.init();
+    var roc_host = makeSignalsRocHost(&host);
+    host.engine.roc_host = &roc_host;
+    defer {
+        host.deinit();
+        _ = host.gpa.deinit();
+    }
+
+    const list_token = newTestBinderToken(&roc_host);
+    const cap = testHostValueCapability(&roc_host);
+    const row_each = testNodeEachWithItemsRowAndCapture(TestListWhenRowCapture, &roc_host, &.{testHostValueI64(0)}, &testListWhenRowElemCallable, .{ .token = &list_token });
+    const false_branch = testElementWith(&roc_host, "div", &.{}, &.{row_each});
+    const outer_when = testNodeWhenOnListPredicate(&roc_host, list_token, .length_at_least, 2, testNodeText(&roc_host, "outer-on"), false_branch);
+    const shared_each = testNodeEachWithSignalCapabilityAndRow(&roc_host, testNodeRefExpr(list_token), cap, &testStatefulRowElemCallable);
+    const section = testElementWith(&roc_host, "section", &.{}, &.{ shared_each, outer_when });
+    const initial = [_]HostValue{ testHostValueI64(1), testHostValueI64(2) };
+    const root = testNodeStateWithTokenAndInitialCapability(&roc_host, list_token, testHostValueI64List(&roc_host, &initial), section, cap);
+    defer root.decref(&roc_host);
+    var stream: HostNodeDescriptorStream = .{};
+    host.collectActiveElemRootDescriptors(&roc_host, &stream, root, &.{});
+    _ = applyNodeDescriptorStream(&host, &roc_host, &stream);
+    host.engine.active_stream = stream;
+    try std.testing.expect(activeTextElementId(&host, "outer-on") != null);
+
+    const list_state_id = host.engine.active_stream.scope_sites.items[0].node_id;
+    _ = try host.engine.tryDispatchStateValue(&host, &roc_host, list_state_id.raw(), testHostValueI64List(&roc_host, &.{}), cap);
+    try std.testing.expect(activeTextElementId(&host, "outer-on") == null);
+    try std.testing.expect(activeTextElementId(&host, "row-0-on") == null);
+    try std.testing.expect(activeTextElementId(&host, "row-0-off") != null);
+}
+
+test "a row mounted by a re-diff reads the list the edit published, not the retired one" {
+    // Growing the list mounts rows whose own `when` reads that list. The row
+    // records are collected fresh, so the cache overlay holds nothing for
+    // them; only the staged state value can answer with the published list.
+    // One shared site takes the single-each path, two take the composite.
+    const Runner = struct {
+        fn run(shared_sites: usize) !void {
+            var host = HostEnv.init();
+            var roc_host = makeSignalsRocHost(&host);
+            host.engine.roc_host = &roc_host;
+            defer {
+                host.deinit();
+                _ = host.gpa.deinit();
+            }
+
+            const list_token = newTestBinderToken(&roc_host);
+            const cap = testHostValueCapability(&roc_host);
+            var children: [2]abi.Elem = undefined;
+            for (children[0..shared_sites]) |*child| {
+                child.* = testNodeEachWithSignalCapabilityRowAndCapture(TestListWhenRowCapture, &roc_host, testNodeRefExpr(list_token), cap, &testListWhenRowElemCallable, .{ .token = &list_token });
+            }
+            const section = testElementWith(&roc_host, "section", &.{}, children[0..shared_sites]);
+            const root = testNodeStateWithTokenAndInitialCapability(&roc_host, list_token, testHostValueI64List(&roc_host, &.{}), section, cap);
+            defer root.decref(&roc_host);
+            var stream: HostNodeDescriptorStream = .{};
+            host.collectActiveElemRootDescriptors(&roc_host, &stream, root, &.{});
+            _ = applyNodeDescriptorStream(&host, &roc_host, &stream);
+            host.engine.active_stream = stream;
+            try std.testing.expect(activeTextElementId(&host, "row-7-on") == null);
+
+            // The row when asks `length >= 1`, which the retired empty list
+            // fails and the published one-item list satisfies.
+            const list_state_id = host.engine.active_stream.scope_sites.items[0].node_id;
+            const grown = [_]HostValue{testHostValueI64(7)};
+            _ = try host.engine.tryDispatchStateValue(&host, &roc_host, list_state_id.raw(), testHostValueI64List(&roc_host, &grown), cap);
+            try std.testing.expect(activeTextElementId(&host, "row-7-on") != null);
+            try std.testing.expect(activeTextElementId(&host, "row-7-off") == null);
+        }
+    };
+    try Runner.run(1);
+    try Runner.run(2);
+}
+
 test "a when site collected later inside an earlier branch still orders before the empty site after it" {
     // A branch mounted after the initial collection carries a `when` whose
     // node id is larger than the sibling site after the branch. Node ids say
@@ -8816,6 +8942,25 @@ fn testNodeListContainsOneExpr(roc_host: *abi.RocHost, input: abi.NodeSignalExpr
         ._2 = transform,
         ._3 = cap,
     } }, .tag = .Map };
+}
+
+/// A bool signal mapping the `List I64` in `input` through `predicate`.
+fn testNodeListPredicateExpr(roc_host: *abi.RocHost, input: abi.NodeSignalExpr, predicate: TestListPredicate, operand: i64) abi.NodeSignalExpr {
+    const cap = testHostValueCapability(roc_host);
+    const transform = writeTestErasedCallable(TestListPredicateCapture, roc_host, &testI64ListPredicateCallable, &testListPredicateCaptureOnDrop, .{ .cap = hv.retainHostValueCapability(cap), .operand = operand, .predicate = @intFromEnum(predicate) });
+    abi.increfErasedCallable(transform, 1);
+    return .{ .payload = .{ .map = .{
+        ._0 = transform,
+        ._1 = boxTestNodeSignalExpr(roc_host, input),
+        ._2 = transform,
+        ._3 = cap,
+    } }, .tag = .Map };
+}
+
+/// A `when` whose condition asks `predicate` of the list the state cell
+/// `list_token` holds, so a dispatch into that cell can flip the branch.
+fn testNodeWhenOnListPredicate(roc_host: *abi.RocHost, list_token: HostBinderToken, predicate: TestListPredicate, operand: i64, when_true: abi.Elem, when_false: abi.Elem) abi.Elem {
+    return testNodeWhenWithSignal(roc_host, testNodeListPredicateExpr(roc_host, testNodeRefExpr(list_token), predicate, operand), when_true, when_false);
 }
 
 fn testNodeWhenWithSignal(roc_host: *abi.RocHost, condition: abi.NodeSignalExpr, when_true: abi.Elem, when_false: abi.Elem) abi.Elem {

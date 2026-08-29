@@ -1207,14 +1207,19 @@ pub fn Engine(comptime Ctx: type) type {
             render_layout_plan: ?PreparedRenderLayoutPlan = null,
             downstream: ?*PreparedStructuralDownstream = null,
             cache_overlay: ?*signal_records.PreparedCacheUpdates = null,
+            /// The state value this transaction publishes, staged into the
+            /// replacement collection so new rows read it; see
+            /// `StagedCollectionCtx.stageExternalState`.
+            external_state: ?PreparedExternalState = null,
             prepared_len: usize = 0,
             phase: CommitPhase = .prepared,
 
-            fn prepare(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, changes: []const HostDirtyStructuralSignal, overlay: *signal_records.PreparedCacheUpdates) CollectionError!*@This() {
+            fn prepare(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, changes: []const HostDirtyStructuralSignal, overlay: *signal_records.PreparedCacheUpdates, state_update: ?PreparedExternalState) CollectionError!*@This() {
                 if (changes.len < 2) return error.ResourceLimit;
                 const owner = try create(engine, ctx, roc_host, changes.len);
                 errdefer owner.deinit();
                 owner.cache_overlay = overlay;
+                owner.external_state = state_update;
                 const allocator = Ctx.allocator(ctx);
                 for (changes) |change| {
                     if (change.kind != .each) return error.ResourceLimit;
@@ -1284,6 +1289,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const owner = try PreparedReplacementOwner.create(self.engine, self.host_ctx, self.roc_host, limits, total, root_count);
                 errdefer owner.deinit();
                 owner.collection.cache_overlay = self.cache_overlay;
+                if (self.external_state) |update| try owner.collection.stageExternalState(self.roc_host, update);
                 for (self.replacements[0..self.prepared_len], self.rows[0..self.prepared_len]) |replacement, rows| {
                     try replacement.attachScopeIds(&rows.rows, owner);
                 }
@@ -1491,12 +1497,12 @@ pub fn Engine(comptime Ctx: type) type {
                 return normalized;
             }
 
-            fn prepare(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, changes: []HostDirtyStructuralSignal, overlay: *signal_records.PreparedCacheUpdates, limits: collection_budget.Limits, dirty_source_node_ids: []const u64) CollectionError!*@This() {
+            fn prepare(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, changes: []HostDirtyStructuralSignal, overlay: *signal_records.PreparedCacheUpdates, limits: collection_budget.Limits, dirty_source_node_ids: []const u64, state_update: ?PreparedExternalState) CollectionError!*@This() {
                 var all_eaches_subsumed = false;
-                return prepareWithSubsumedFlag(engine, ctx, roc_host, changes, overlay, limits, dirty_source_node_ids, &all_eaches_subsumed);
+                return prepareWithSubsumedFlag(engine, ctx, roc_host, changes, overlay, limits, dirty_source_node_ids, state_update, &all_eaches_subsumed);
             }
 
-            fn prepareWithSubsumedFlag(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, changes: []HostDirtyStructuralSignal, overlay: *signal_records.PreparedCacheUpdates, limits: collection_budget.Limits, dirty_source_node_ids: []const u64, all_eaches_subsumed: *bool) CollectionError!*@This() {
+            fn prepareWithSubsumedFlag(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, changes: []HostDirtyStructuralSignal, overlay: *signal_records.PreparedCacheUpdates, limits: collection_budget.Limits, dirty_source_node_ids: []const u64, state_update: ?PreparedExternalState, all_eaches_subsumed: *bool) CollectionError!*@This() {
                 all_eaches_subsumed.* = false;
                 const allocator = Ctx.allocator(ctx);
                 var when_count: usize = 0;
@@ -1679,6 +1685,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const replacement_owner = try PreparedReplacementOwner.create(engine, ctx, roc_host, limits, total, root_count);
                 errdefer replacement_owner.deinit();
                 replacement_owner.collection.cache_overlay = overlay;
+                if (state_update) |update| try replacement_owner.collection.stageExternalState(roc_host, update);
                 const branch_ranges = allocator.alloc(GlobalRange, normalized.selected_indexes.len) catch return error.OutOfMemory;
                 errdefer allocator.free(branch_ranges);
                 const row_ranges = allocator.alloc(GlobalRange, row_root_count) catch return error.OutOfMemory;
@@ -3985,6 +3992,23 @@ pub fn Engine(comptime Ctx: type) type {
                 self.plan = next;
             }
 
+            /// Stages the state value a transaction publishes so every signal
+            /// a freshly collected branch or row reads through a bare `Ref`
+            /// sees it rather than the committed cell. The cache overlay only
+            /// covers records the active graph already holds; a record
+            /// collected in this transaction has no slot there and would read
+            /// the retired value. The clone is transaction-owned: `deinit`
+            /// and `commit` both retire it, since the state update itself is
+            /// published by the plan that owns the transaction.
+            fn stageExternalState(self: *@This(), roc_host: *abi.RocHost, update: PreparedExternalState) CollectionError!void {
+                if (self.external_state_count != 0) return error.ResourceLimit;
+                self.signal_roc_host = roc_host;
+                try self.reserveCounts(.{ .external_states = 1 });
+                const cloned = Ctx.cloneHostValue(self.host_ctx, update.value);
+                self.prepared_state_cells.appendAssumeCapacity(HostState.initActive(update.state_id, HostValueCell.initRetained(cloned, update.cap, &self.engine.pending_roc_metrics), 0));
+                self.external_state_count = 1;
+            }
+
             fn rootScope(self: *@This()) CollectionError!scope_tree.InternResult {
                 const key: collection_plan.ScopeKey = .{ .parent_id = ids.root_scope, .ordinal = ids.SiteOrdinal.fromRaw(0), .kind = .root };
                 const active_id: ?ids.ScopeId = if (self.engine.scopes.items.len != 0) ids.root_scope else null;
@@ -5467,12 +5491,13 @@ pub fn Engine(comptime Ctx: type) type {
             counts: StaticRootCounts = .{},
             phase: CommitPhase = .prepared,
 
-            fn prepare(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, site: HostNodeScopeSiteDesc, each: HostNodeEachDesc, rows: *const each_runtime.PreparedRowSync, keys: []const HostValue, items: []const HostValue, limits: collection_budget.Limits, dirty_source_node_ids: []const u64, cache_overlay: ?*const signal_records.PreparedCacheUpdates) CollectionError!*@This() {
+            fn prepare(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, site: HostNodeScopeSiteDesc, each: HostNodeEachDesc, rows: *const each_runtime.PreparedRowSync, keys: []const HostValue, items: []const HostValue, limits: collection_budget.Limits, dirty_source_node_ids: []const u64, cache_overlay: ?*const signal_records.PreparedCacheUpdates, state_update: ?PreparedExternalState) CollectionError!*@This() {
                 const plan = try prepareEvaluated(engine, ctx, roc_host, each, rows, keys, items);
                 errdefer plan.deinit();
                 plan.replacement = try PreparedReplacementOwner.create(engine, ctx, roc_host, limits, plan.counts, plan.row_elems.len);
                 plan.owns_replacement = true;
                 plan.replacement.collection.cache_overlay = cache_overlay;
+                if (state_update) |update| try plan.replacement.collection.stageExternalState(roc_host, update);
                 try plan.collectInto(site, each, rows, plan.replacement, dirty_source_node_ids);
                 plan.replacement.materialize();
                 plan.releaseEvaluatedRows();
@@ -6469,13 +6494,7 @@ pub fn Engine(comptime Ctx: type) type {
                 plan.replacement = try PreparedReplacementOwner.create(engine, ctx, roc_host, limits, total, selections.len);
                 errdefer if (!plan_owns_cleanup) plan.replacement.deinit();
                 plan.replacement.collection.cache_overlay = cache_overlay;
-                if (state_update) |update| {
-                    plan.replacement.collection.signal_roc_host = roc_host;
-                    try plan.replacement.collection.reserveCounts(.{ .external_states = 1 });
-                    const cloned = Ctx.cloneHostValue(ctx, update.value);
-                    plan.replacement.collection.prepared_state_cells.appendAssumeCapacity(HostState.initActive(update.state_id, HostValueCell.initRetained(cloned, update.cap, &engine.pending_roc_metrics), 0));
-                    plan.replacement.collection.external_state_count = 1;
-                }
+                if (state_update) |update| try plan.replacement.collection.stageExternalState(roc_host, update);
                 plan.replacement_scope_ids = allocator.alloc(u64, selections.len) catch return error.OutOfMemory;
                 errdefer if (!plan_owns_cleanup) allocator.free(plan.replacement_scope_ids);
                 const replacement_ranges = allocator.alloc(PreparedReplacementOwner.CollectedWhenSelection, selections.len) catch return error.OutOfMemory;
@@ -11946,7 +11965,7 @@ pub fn Engine(comptime Ctx: type) type {
             const allocator = Ctx.allocator(ctx);
             const rows = try PreparedActiveEachRows.prepare(self, ctx, roc_host, site, each_desc, allocator);
             defer rows.deinit();
-            const replacement = try PreparedEachRowReplacementCollection.prepare(self, ctx, roc_host, site, each_desc, &rows.rows, rows.inputs.keys, rows.inputs.items, .{}, dirty_source_node_ids, null);
+            const replacement = try PreparedEachRowReplacementCollection.prepare(self, ctx, roc_host, site, each_desc, &rows.rows, rows.inputs.keys, rows.inputs.items, .{}, dirty_source_node_ids, null, null);
             defer replacement.deinit();
             var layout = try PreparedEachRowRenderLayout.prepare(self, allocator, site, &rows.rows, replacement.replacement_rows);
             defer layout.deinit();
@@ -12449,8 +12468,14 @@ pub fn Engine(comptime Ctx: type) type {
                         },
                     };
                 }
-                const external_state: ?PreparedExternalState = if (state_update) |update| .{ .state_id = update.state_id, .value = update.provisionalCellConst().value, .cap = update.provisionalCellConst().cap } else null;
-                return AggregateBranchCollection.prepareWithState(engine, ctx, roc_host, selections, .{}, &.{}, external_state, cache_overlay);
+                return AggregateBranchCollection.prepareWithState(engine, ctx, roc_host, selections, .{}, &.{}, externalStateOf(state_update), cache_overlay);
+            }
+
+            /// The value a state dispatch publishes, as the collection seams
+            /// stage it; null for transactions that publish no state.
+            fn externalStateOf(state_update: ?*const PreparedStateUpdate) ?PreparedExternalState {
+                const update = state_update orelse return null;
+                return .{ .state_id = update.state_id, .value = update.provisionalCellConst().value, .cap = update.provisionalCellConst().cap };
             }
 
             fn prepareMany(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, owned: *signal_records.OwnedSourceUpdates) CollectionError!?*@This() {
@@ -12564,9 +12589,10 @@ pub fn Engine(comptime Ctx: type) type {
                         .when => when_count += 1,
                         .each => each_count += 1,
                     };
+                    const external_state = externalStateOf(state_update);
                     if (each_count != 0 and when_count != 0) {
                         var all_eaches_subsumed = false;
-                        plan.composite_structural = PreparedCompositeStructural.prepareWithSubsumedFlag(engine, ctx, roc_host, structural_changes, &plan.caches, .{}, state_node_ids, &all_eaches_subsumed) catch |err| switch (err) {
+                        plan.composite_structural = PreparedCompositeStructural.prepareWithSubsumedFlag(engine, ctx, roc_host, structural_changes, &plan.caches, .{}, state_node_ids, external_state, &all_eaches_subsumed) catch |err| switch (err) {
                             error.OutOfMemory => return error.OutOfMemory,
                             error.ResourceLimit => if (all_eaches_subsumed) null else return error.ResourceLimit,
                             else => |other| return other,
@@ -12595,7 +12621,7 @@ pub fn Engine(comptime Ctx: type) type {
                         return plan;
                     }
                     if (each_count > 1) {
-                        plan.composite_rows = try PreparedCompositeRows.prepare(engine, ctx, roc_host, structural_changes, &plan.caches);
+                        plan.composite_rows = try PreparedCompositeRows.prepare(engine, ctx, roc_host, structural_changes, &plan.caches, external_state);
                         errdefer plan.composite_rows.?.deinit();
                         const downstream = plan.composite_rows.?.downstream.?;
                         try downstream.adoptScalarRenderSplice(&plan.render_splice.?);
@@ -12615,7 +12641,7 @@ pub fn Engine(comptime Ctx: type) type {
                         if (each_desc.items.record != change.record) return error.InvalidDescriptor;
                         plan.each_rows = try PreparedActiveEachRows.prepareWithOverlay(engine, ctx, roc_host, site, each_desc, allocator, &plan.caches);
                         errdefer plan.each_rows.?.deinit();
-                        plan.each_replacement = try PreparedEachRowReplacementCollection.prepare(engine, ctx, roc_host, site, each_desc.*, &plan.each_rows.?.rows, plan.each_rows.?.inputs.keys, plan.each_rows.?.inputs.items, .{}, &.{}, &plan.caches);
+                        plan.each_replacement = try PreparedEachRowReplacementCollection.prepare(engine, ctx, roc_host, site, each_desc.*, &plan.each_rows.?.rows, plan.each_rows.?.inputs.keys, plan.each_rows.?.inputs.items, .{}, &.{}, &plan.caches, external_state);
                         errdefer plan.each_replacement.?.deinit();
                         plan.each_layout = try PreparedEachRowRenderLayout.prepare(engine, allocator, site, &plan.each_rows.?.rows, plan.each_replacement.?.replacement_rows);
                         errdefer plan.each_layout.?.deinit();
@@ -13909,7 +13935,7 @@ test "mixed when and each collection shares one owner and sweeps OOM" {
 
     const Runner = struct {
         fn prepareMixed(engine: *Engine(VerifyCtx), ctx: *VerifyCtxHost, host: *abi.RocHost, overlay: *signal_records.PreparedCacheUpdates, changes: []HostDirtyStructuralSignal) !*Engine(VerifyCtx).PreparedCompositeStructural {
-            return Engine(VerifyCtx).PreparedCompositeStructural.prepare(engine, ctx, host, changes, overlay, .{}, &.{});
+            return Engine(VerifyCtx).PreparedCompositeStructural.prepare(engine, ctx, host, changes, overlay, .{}, &.{}, null);
         }
 
         fn run(host: *abi.RocHost, cap: HostValueCapability, read: HostBoolRead, ops: HostEachOps, fail_at: ?usize) !usize {
@@ -14428,7 +14454,7 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
         fn prepareReplacement(engine: *Engine(VerifyCtx), ctx: *VerifyCtxHost, host: *abi.RocHost, each_ops: HostEachOps, rows: *const each_runtime.PreparedRowSync, keys: []const HostValue, items: []const HostValue) !*Engine(VerifyCtx).PreparedEachRowReplacementCollection {
             const site = HostNodeScopeSiteDesc{ .node_id = ids.NodeId.fromRaw(0), .scope_id = ids.ScopeId.fromRaw(0), .ordinal = ids.SiteOrdinal.fromRaw(44), .parent_elem_id = ids.ElemId.fromRaw(0), .render_insert_index = 0, .kind = .each, .binder_bindings = &.{} };
             const each = HostNodeEachDesc{ .node_id = ids.NodeId.fromRaw(0), .items = undefined, .ops = each_ops };
-            return Engine(VerifyCtx).PreparedEachRowReplacementCollection.prepare(engine, ctx, host, site, each, rows, keys, items, .{}, &.{}, null);
+            return Engine(VerifyCtx).PreparedEachRowReplacementCollection.prepare(engine, ctx, host, site, each, rows, keys, items, .{}, &.{}, null, null);
         }
 
         fn prepareLayout(engine: *Engine(VerifyCtx), allocator: std.mem.Allocator, rows: *const each_runtime.PreparedRowSync, replacement: *const Engine(VerifyCtx).PreparedEachRowReplacementCollection) !Engine(VerifyCtx).PreparedEachRowRenderLayout {
