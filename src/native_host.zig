@@ -9849,6 +9849,94 @@ test "native initial root with sibling and nested each sites sweeps host OOM and
     for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
+test "native initial root claims elem ids past a nested reservation for the static siblings after it" {
+    // Element ids are claimed in collection order, so the static siblings
+    // that follow an each site take ids above every id the site's rows
+    // claimed. A nested reservation that bounds the highest elem id by the
+    // ids interned so far plus its own nodes leaves those siblings past the
+    // stream's per-elem index reservation: eight outer rows nesting stateful
+    // lists put 40 ids under the site while thirty signal text nodes follow
+    // it, so the final id exceeds the slack any earlier growth left. Signal
+    // descriptors take their index slot at materialization, which must not
+    // allocate.
+    const Runner = struct {
+        const outer_rows = 8;
+        const inner_rows = 3;
+        const tail_texts = 30;
+        const expected_sites = 1 + outer_rows;
+        const expected_rows = outer_rows + outer_rows * inner_rows;
+        const expected_states = outer_rows * inner_rows;
+
+        fn buildRoot(roc_host: *abi.RocHost) abi.Elem {
+            var items: [outer_rows]HostValue = undefined;
+            for (&items, 1..) |*item, key| item.* = testHostValueI64(@intCast(key));
+            var children: [1 + tail_texts]abi.Elem = undefined;
+            children[0] = testNodeEachWithItemsAndRow(roc_host, &items, &testNestedStatefulEachRowElemCallable);
+            for (children[1..], 1..) |*child, index| child.* = testNodeI64TextSignal(roc_host, testNodeConstExpr(roc_host, testHostValueI64(@intCast(index))));
+            return testElement(roc_host, &children);
+        }
+
+        fn expectUnpublished(host: *const HostEnv) !void {
+            try std.testing.expectEqual(@as(usize, 0), host.engine.scopes.items.len);
+            try std.testing.expectEqual(@as(usize, 0), host.engine.dom_identities.items.len);
+            try std.testing.expectEqual(@as(usize, 0), host.engine.states.items.len);
+            try std.testing.expectEqual(@as(usize, 0), host.engine.each_row_sites.items.len);
+            try std.testing.expectEqual(@as(usize, 0), host.engine.active_stream.render_nodes.items.len);
+            try std.testing.expect(!host.engine.render_cache.hasRoot());
+        }
+
+        fn expectPublished(host: *const HostEnv) !void {
+            try std.testing.expect(host.engine.render_cache.hasRoot());
+            try std.testing.expectEqual(@as(usize, expected_sites), host.engine.each_row_sites.items.len);
+            var rows: usize = 0;
+            for (host.engine.each_row_sites.items) |site| rows += site.scope_ids.items.len;
+            try std.testing.expectEqual(@as(usize, expected_rows), rows);
+            try std.testing.expectEqual(@as(usize, expected_states), host.engine.states.items.len);
+            try std.testing.expect(activeTextElementId(host, "outer-8") != null);
+            try std.testing.expect(activeTextElementId(host, "row-83-83") != null);
+            try std.testing.expectEqual(@as(usize, tail_texts), host.engine.active_stream.signal_text_nodes.items.len);
+        }
+
+        fn run(failure_number: ?usize) !usize {
+            var host = HostEnv.init();
+            var roc_host = makeSignalsRocHost(&host);
+            host.engine.roc_host = &roc_host;
+            defer {
+                host.deinit();
+                _ = host.gpa.deinit();
+            }
+
+            const root = buildRoot(&roc_host);
+            defer root.decref(&roc_host);
+            const refs_before = host.roc_allocations.snapshot();
+
+            var fault = FaultAllocator.init(host.gpa.allocator());
+            fault.configure(failure_number);
+            host.engine_allocator_override = fault.allocator();
+            const result = tryRenderInitialRootWithArmedPublication(&host, &roc_host, root, &fault);
+            const attempts = fault.attempts;
+            if (failure_number != null) {
+                try std.testing.expectError(error.OutOfMemory, result);
+                try expectUnpublished(&host);
+                try std.testing.expectEqual(host.engine.pending_roc_metrics.closure_retains, host.engine.pending_roc_metrics.closure_releases);
+                try std.testing.expectEqual(refs_before.live_bytes, host.roc_allocations.snapshot().live_bytes);
+                try std.testing.expectEqual(@as(usize, 0), host.roc_allocations.liveCountSince(refs_before));
+
+                fault.configure(null);
+                _ = try tryRenderInitialRootWithArmedPublication(&host, &roc_host, root, &fault);
+            } else {
+                _ = try result;
+            }
+            try expectPublished(&host);
+            return attempts;
+        }
+    };
+
+    const attempts = try Runner.run(null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
+}
+
 test "native initial each reading a staged state list resolves its items capability" {
     // The staged collection keeps every state cell it has declared in this
     // transaction as a provisional cell until publication, so an each whose

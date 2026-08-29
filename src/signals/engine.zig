@@ -4075,8 +4075,15 @@ pub fn Engine(comptime Ctx: type) type {
                 const state_index_len = std.math.add(usize, self.engine.node_identities.items.len, total_scope_sites) catch return error.ResourceLimit;
                 self.engine.state_indexes_by_node_id.ensureTotalCapacity(allocator, state_index_len) catch return error.OutOfMemory;
                 self.engine.active_dom_identity_ids.ensureUnusedCapacity(allocator, std.math.cast(u32, total_nodes) orelse return error.ResourceLimit) catch return error.OutOfMemory;
-                const additional_dom_ids = std.math.add(usize, self.dom_identities.intents.items.len, counts.nodes) catch return error.ResourceLimit;
-                const highest_elem_id = std.math.add(u64, @intCast(self.engine.dom_identities.items.len), @as(u64, @intCast(additional_dom_ids))) catch return error.ResourceLimit;
+                // Fresh elem ids are claimed in collection order from the
+                // committed count, so the static siblings that follow a nested
+                // site take ids above every id its rows claimed. The highest id
+                // is therefore bounded by the committed ids plus the cumulative
+                // node total, not by the ids interned so far plus this site's
+                // nodes: that bound is short by the outer site's outstanding
+                // siblings, and signal descriptors take their per-elem index
+                // slot at materialization, which must not allocate.
+                const highest_elem_id = std.math.add(u64, @intCast(self.engine.dom_identities.items.len), @as(u64, @intCast(total_nodes))) catch return error.ResourceLimit;
                 try self.stream.reservePreparedStaticNodes(allocator, total_nodes, highest_elem_id);
                 try self.stream.reservePreparedStaticAttrs(allocator, total_attrs);
                 try self.stream.reservePreparedSignalAttrs(allocator, total_attrs, highest_elem_id);
