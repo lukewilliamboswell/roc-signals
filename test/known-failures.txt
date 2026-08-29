@@ -108,7 +108,6 @@ native support-inbox/empty-inbox-edge.scm
 native support-inbox/pausing-and-resuming-polling.scm
 native support-inbox/the-key-budget.scm
 native token-editor/one-colour-edit-reaches-every-dependent-binding-without-rebuildi.scm
-wasm pomodoro-tracker
 
 # Fixture examples (examples/_fixtures), recorded on the same day. The wasm
 # mounts and the state-reads/large-each/metric-semantics specs are live-update
@@ -122,8 +121,6 @@ native js-framework-benchmark/update_10k.scm
 native large-each-08/main.scm
 native large-each-64/main.scm
 native metric-semantics/main.scm
-native state-reads/main.scm
-wasm each-duplicate-key
 wasm location-canonical-branch
 wasm location-navigation
 wasm location-source

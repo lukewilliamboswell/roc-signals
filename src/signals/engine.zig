@@ -6722,7 +6722,13 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             fn prepareGraphRenderAndPublication(self: *@This(), allocator: std.mem.Allocator) CollectionError!void {
-                if (self.engine.active_signal_graph.items.len != 0 or self.replacement.stream.signal_records_by_token.count() != 0) {
+                // A bare `Ref` record carries no token, so the token index
+                // cannot stand in for "the replacement binds a signal": the
+                // graph roots the replacement stream binds are the honest test.
+                var replacement_roots: std.ArrayListUnmanaged(*HostSignalRecord) = .empty;
+                defer replacement_roots.deinit(allocator);
+                try collectReplacementGraphRootsForStream(allocator, &self.replacement.stream, &replacement_roots);
+                if (self.engine.active_signal_graph.items.len != 0 or replacement_roots.items.len != 0) {
                     self.sink_edits = try self.prepareSinkEdits(allocator);
                     errdefer if (self.sink_edits) |*edits| edits.deinit(allocator);
                     var retired_roots: std.ArrayListUnmanaged(*HostSignalRecord) = .empty;
@@ -6730,9 +6736,6 @@ pub fn Engine(comptime Ctx: type) type {
                     try collectRetiredGraphRootsForRemoval(self.engine, allocator, &self.removal.?.removal, &retired_roots);
                     self.graph_release = active_graph.prepareReleaseClosure(HostSignalRecord, allocator, self.engine.active_signal_graph.items, retired_roots.items) catch return error.OutOfMemory;
                     errdefer if (self.graph_release) |*release| release.deinit(allocator);
-                    var replacement_roots: std.ArrayListUnmanaged(*HostSignalRecord) = .empty;
-                    defer replacement_roots.deinit(allocator);
-                    try collectReplacementGraphRootsForStream(allocator, &self.replacement.stream, &replacement_roots);
                     self.graph_append = active_graph.prepareGraphAppend(HostSignalRecord, allocator, self.engine.active_signal_graph.items, self.graph_release.?.final_record_ids, replacement_roots.items) catch |err| switch (err) {
                         error.OutOfMemory => return error.OutOfMemory,
                         error.InvalidAppend => return error.InvalidSignalGraphAppend,

@@ -6323,6 +6323,99 @@ test "sibling each sites keep their insertion indexes after an earlier site grow
     for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
+test "an each reading a root state list through a bare ref mounts in one staged transaction and survives a live edit" {
+    // A bare `Ref` record carries no signal token. The initial mount's graph
+    // publication used to decide whether anything needed publishing from the
+    // active graph (empty on a first mount) and the replacement stream's token
+    // index, so a mount whose only signal was a bare `Ref` published no graph
+    // node and no source route at all; the mount rendered, but the next state
+    // dispatch found nothing dirty and the each never re-diffed. The edit is
+    // the assertion, and every allocation attempt across mount and edit is
+    // swept.
+    const Runner = struct {
+        fn run(failure_number: ?usize) !usize {
+            test_erased_callable_drop_count = 0;
+            test_row_elem_call_count = 0;
+            var host = HostEnv.init();
+            var roc_host = makeSignalsRocHost(&host);
+            host.engine.roc_host = &roc_host;
+            defer {
+                host.deinit();
+                _ = host.gpa.deinit();
+            }
+
+            const state_token = newTestBinderToken(&roc_host);
+            const state_cap = testHostValueCapability(&roc_host);
+            const each = testNodeEachWithSignalCapabilityAndRow(&roc_host, testNodeRefExpr(state_token), state_cap, &testStatefulRowElemCallable);
+            const initial_items = [_]HostValue{ testHostValueI64(1), testHostValueI64(2) };
+            const root = testNodeStateWithTokenAndInitialCapability(&roc_host, state_token, testHostValueI64List(&roc_host, &initial_items), testElement(&roc_host, &.{each}), state_cap);
+            defer root.decref(&roc_host);
+            const refs_before = host.roc_allocations.snapshot();
+
+            var fault = FaultAllocator.init(host.gpa.allocator());
+            fault.configure(failure_number);
+            host.engine_allocator_override = fault.allocator();
+            const mount = tryRenderInitialRootWithArmedPublication(&host, &roc_host, root, &fault);
+            const mount_attempts = fault.attempts;
+            if (failure_number != null and failure_number.? <= mount_attempts) {
+                try std.testing.expectError(error.OutOfMemory, mount);
+                try std.testing.expect(!host.engine.render_cache.hasRoot());
+                try std.testing.expectEqual(@as(usize, 0), host.engine.states.items.len);
+                try std.testing.expectEqual(@as(usize, 0), host.engine.each_row_sites.items.len);
+                try std.testing.expectEqual(@as(usize, 0), host.roc_allocations.liveCountSince(refs_before));
+                fault.configure(null);
+                _ = try tryRenderInitialRootWithArmedPublication(&host, &roc_host, root, &fault);
+            } else _ = try mount;
+            // The root cell plus one state cell per stateful row.
+            try std.testing.expectEqual(@as(usize, 3), host.engine.states.items.len);
+            try std.testing.expectEqual(@as(usize, 1), host.engine.each_row_sites.items.len);
+            try std.testing.expect(activeTextElementId(&host, "row-1-1") != null);
+            try std.testing.expect(activeTextElementId(&host, "row-2-2") != null);
+
+            const state_id = host.engine.active_stream.scope_sites.items[0].node_id;
+            const site_node_id = for (host.engine.active_stream.scope_sites.items) |site| {
+                if (site.kind == .each) break site.node_id;
+            } else return error.TestUnexpectedResult;
+
+            // The edit continues the sweep where the mount stopped counting; a
+            // failure number inside the mount's range was already spent there.
+            const edit_failure: ?usize = if (failure_number) |number| (if (number > mount_attempts) number - mount_attempts else null) else null;
+            fault.configure(edit_failure);
+            const scope_len_before = host.engine.scopes.items.len;
+            const render_len_before = host.engine.active_stream.render_nodes.items.len;
+            const allocations_before = host.roc_allocations.snapshot();
+            const edited_items = [_]HostValue{ testHostValueI64(2), testHostValueI64(3), testHostValueI64(1) };
+            const result = host.engine.tryDispatchStateValue(&host, &roc_host, state_id.raw(), testHostValueI64List(&roc_host, &edited_items), state_cap);
+            const edit_attempts = fault.attempts;
+            if (edit_failure != null) {
+                try std.testing.expectError(error.OutOfMemory, result);
+                try std.testing.expectEqual(scope_len_before, host.engine.scopes.items.len);
+                try std.testing.expectEqual(render_len_before, host.engine.active_stream.render_nodes.items.len);
+                try std.testing.expectEqual(@as(usize, 0), host.roc_allocations.liveCountSince(allocations_before));
+                fault.configure(null);
+                const retry_items = [_]HostValue{ testHostValueI64(2), testHostValueI64(3), testHostValueI64(1) };
+                _ = try host.engine.tryDispatchStateValue(&host, &roc_host, state_id.raw(), testHostValueI64List(&roc_host, &retry_items), state_cap);
+            } else _ = try result;
+
+            const site = host.engine.activeScopeSiteByNodeId(site_node_id.raw(), .each).?;
+            const rows = try host.engine.activeEachRowScopes(std.testing.allocator, site.scope_id, site.ordinal);
+            defer std.testing.allocator.free(rows);
+            try std.testing.expectEqual(@as(usize, 3), rows.len);
+            const children = host.engine.render_cache.nodes.items[site.parent_elem_id.index()].children.items;
+            try std.testing.expectEqual(@as(usize, 3), children.len);
+            try std.testing.expectEqual(@as(usize, 4), host.engine.states.items.len);
+            try std.testing.expect(activeTextElementId(&host, "row-1-1") != null);
+            try std.testing.expect(activeTextElementId(&host, "row-2-2") != null);
+            try std.testing.expect(activeTextElementId(&host, "row-3-3") != null);
+            return mount_attempts + edit_attempts;
+        }
+    };
+
+    const attempts = try Runner.run(null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
+}
+
 test "retiring an each row disposes the nested each site it owned" {
     // The row sync removes an outer row's own membership, but the row may own a
     // nested each site with rows of its own in `each_row_sites`. Those used to
@@ -8800,10 +8893,10 @@ fn testNodeI64ListCopyMapExpr(roc_host: *abi.RocHost, input: abi.NodeSignalExpr)
     };
 }
 
-fn testNodeEachOverStateListRowAndCapture(comptime Capture: type, roc_host: *abi.RocHost, binder_token: HostBinderToken, row_fn: abi.RocErasedCallableFn, capture: Capture) abi.Elem {
-    const signal = testNodeI64ListCopyMapExpr(roc_host, testNodeRefExpr(binder_token));
-    const items_cap = testNodeSignalExprCapabilityOrPanic(signal);
-    return testNodeEachWithSignalCapabilityRowAndCapture(Capture, roc_host, signal, items_cap, row_fn, capture);
+/// An `each` whose items signal is a bare `Ref` to the state cell `binder_token`
+/// binds; `state_cap` is that cell's value capability.
+fn testNodeEachOverStateListRowAndCapture(comptime Capture: type, roc_host: *abi.RocHost, binder_token: HostBinderToken, state_cap: HostValueCapability, row_fn: abi.RocErasedCallableFn, capture: Capture) abi.Elem {
+    return testNodeEachWithSignalCapabilityRowAndCapture(Capture, roc_host, testNodeRefExpr(binder_token), state_cap, row_fn, capture);
 }
 
 fn testNodeEachWithItemsAndRow(roc_host: *abi.RocHost, items: []const HostValue, row_fn: abi.RocErasedCallableFn) abi.Elem {

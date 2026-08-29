@@ -42,10 +42,10 @@
 //! the shape the multi-parent suppression bug needed.
 //!
 //! An `each` site is either **constant** - its own frozen item list, with its own
-//! generated row count - or **shared**, reading the root state cell through a
-//! `Signal.map` copy of its list. Every shared site therefore re-diffs its rows
-//! inside the single transaction one state dispatch opens, so one edit can splice
-//! several sites under several parents at once. A program holds at most
+//! generated row count - or **shared**, reading the root state cell directly
+//! through a bare `Ref` as its items signal. Every shared site therefore
+//! re-diffs its rows inside the single transaction one state dispatch opens, so
+//! one edit can splice several sites under several parents at once. A program holds at most
 //! `max_shared_sites` of them, and any number of those may share one parent;
 //! that bound is a generator budget rather than an engine limit.
 //!
@@ -159,21 +159,10 @@
 //!
 //! # Not yet covered
 //!
-//! One shape is deliberately withheld because the engine cannot yet survive
-//! it. It is a real open bug rather than a property of the generator, and the
-//! note says which guard to delete once it is fixed.
-//!
-//!  - **A bare `Ref` as an `each`'s items signal.** Shared sites read the state
-//!    cell through a `Signal.map` copy instead. The staged initial mount reaches
-//!    `PreparedEachInputs.prepareWithOverlay`, which resolves the items
-//!    capability with `hostSignalBindingCapability` - no provisional-state
-//!    overlay - so a `Ref` to the cell the same transaction is creating finds no
-//!    active state and terminates the host, even though the enclosing
-//!    `collectInitialEach` used the provisional variant two lines earlier.
-//!    Delete `eachOverStateListRowAndCapture`'s map once collection resolves
-//!    that capability provisionally.
-//!
-//! Three further gaps are simply unwritten rather than blocked:
+//! No shape is withheld because the engine cannot survive it; every gap below
+//! is simply unwritten. Shared sites used to read the state cell through a
+//! `Signal.map` copy because a bare `Ref` items signal terminated the staged
+//! initial mount; that is fixed and the bare `Ref` is now what is generated.
 //!
 //!  - **Live `when` branch flips.** Generated `when` conditions are constant, so a
 //!    branch is chosen at collection and never switches. Driving the condition
@@ -210,9 +199,7 @@ const max_depth = 2;
 const max_wrapper_depth = 2;
 const max_edits = 3;
 /// Sibling sites one dispatch may re-diff. Two is the smallest count that
-/// reaches the multi-parent composite splice this target exists to cover, and
-/// it is also the count at which the open `prepareMultiRemoval` interval bug
-/// starts firing; see "Not yet covered".
+/// reaches the multi-parent composite splice this target exists to cover.
 const max_shared_sites = 4;
 /// Keys a shared site's rows start from. Constant sites key from zero, so a label
 /// always says which list produced it and an "absent" assertion about a retired
@@ -656,7 +643,7 @@ fn buildSite(spec: *const SiteSpec, roc_host: *abi.RocHost, shared: ?SharedSourc
     const capture = RowCapture{ .spec = spec };
     if (spec.shared) {
         const source = shared orelse fail("a nested each site was generated as shared", .{});
-        return fixtures.eachOverStateListRowAndCapture(RowCapture, roc_host, source.token, &rowCallable, capture);
+        return fixtures.eachOverStateListRowAndCapture(RowCapture, roc_host, source.token, source.cap, &rowCallable, capture);
     }
     var items: [max_rows]HostValue = undefined;
     for (items[0..spec.row_count], 0..) |*item, index| item.* = fixtures.i64Value(@intCast(index));
