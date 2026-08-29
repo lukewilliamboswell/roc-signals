@@ -12,26 +12,8 @@
 # host-owned allocation leaks at shutdown; "active state has no capability";
 # task settlement panics; patch-count performance budgets.
 native availability-picker/the-headline-one-timezone-change-reprojects-every-rendered-slot.scm
-native dependency-scheduler/filtering-the-list-to-the-critical-path.scm
-native dependency-scheduler/the-empty-list.scm
-native form-builder/editing-one-field-s-label-fine-grained.scm
-native log-viewer/appending-line-41-to-a-40-line-buffer-must-reuse-every-existing.scm
-native markdown-editor/contrast-adding-a-heading-does-rebuild-the-outline-by-exactly.scm
-native markdown-editor/edge-case-every-heading-level-one-demotion-at-a-time-the-outl.scm
-native markdown-editor/the-teaching-point-a-paragraph-edit-updates-the-statistics-and.scm
-native package-explorer/f-opening-a-package-three-panels-settle-independently.scm
-native pomodoro-tracker/logging-the-block-writes-the-ledger-and-rewinds-the-clock.scm
-native query-builder/deleting-a-nested-group.scm
 native query-builder/editing-a-leaf-three-levels-deep-does-not-recreate-its-siblings.scm
-native split-the-bill/adding-a-person-re-splits-every-expense.scm
-native split-the-bill/editing-one-expense-reuses-every-row.scm
 native spreadsheet-lite/b2-d2-d5-d6-d7-d8-and-b2-b5-f5-d5-already-covered.scm
-native spreadsheet-lite/editing-a-cell-nothing-depends-on.scm
-native spreadsheet-lite/error-paths.scm
-native spreadsheet-lite/the-new-dependent-updates-with-it.scm
-native status-page/a-real-outage-keeps-the-page-at-major-outage.scm
-native status-page/several-services-degrade-the-rollup-escalates-to-a-major-outage.scm
-native support-inbox/the-key-budget.scm
 
 # Fixture examples (examples/_fixtures), recorded on the same day. The
 # state-reads/large-each/metric-semantics specs are live-update failures of

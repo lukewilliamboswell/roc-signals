@@ -4388,6 +4388,104 @@ fn testNestedEachRowElemCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]
     writeTestErasedResult(abi.Elem, ret, testElement(roc_host, &children));
 }
 
+/// How `testNestedRowsByItemElemCallable` derives an outer row's nested keyed
+/// list from the row's key and item.
+const TestNestedRowsCapture = extern struct {
+    /// 0: two nested rows keyed from the outer key alone, so an item edit
+    ///    re-collects the outer row and leaves every nested key in place.
+    /// 1: the same two rows, in reverse order when the item is odd.
+    /// 2: one nested row per unit of `item % 100`, keyed from the outer key.
+    /// 3: two nested rows keyed from the outer key, rendered by
+    ///    `testMiddleRowByItemElemCallable`; the first carries `item % 100`
+    ///    into its own item, so an outer edit re-collects it in place around
+    ///    an innermost list sized by that value.
+    mode: i64,
+};
+
+/// Renders one middle row as a label naming its key and item, plus an
+/// innermost keyed list with `item % 100` stateful rows keyed from the middle
+/// key, so a middle row re-collected under a re-collected outer row carries
+/// a third level of live nested rows.
+fn testMiddleRowByItemElemCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
+    _ = capture_ptr;
+    test_row_elem_call_count += 1;
+    const call_args = testErasedArgsAs(ErasedHostValueBinaryArgs, args);
+    const key = testReadHostValueI64(roc_host, call_args.arg0);
+    const item = testReadHostValueI64(roc_host, call_args.arg1);
+    const count: usize = @intCast(@mod(item, 100));
+    var inner_items: [8]HostValue = undefined;
+    if (count > inner_items.len) @panic("test middle row by item callable was asked for more rows than it can hold");
+    for (0..count) |index| inner_items[index] = testHostValueI64(key * 10 + @as(i64, @intCast(index)) + 1);
+    var text_buffer: [64]u8 = undefined;
+    const text = std.fmt.bufPrint(&text_buffer, "mid-{d}-{d}", .{ key, item }) catch @panic("test middle row by item callable could not format text");
+    const children = [_]abi.Elem{ testNodeText(roc_host, text), testNodeEachWithItems(roc_host, inner_items[0..count]) };
+    writeTestErasedResult(abi.Elem, ret, testElement(roc_host, &children));
+}
+
+/// Renders one outer row as a label naming its key and item, plus a nested
+/// keyed list of stateful rows derived from them as `TestNestedRowsCapture`
+/// says, so an edit that changes only the outer item re-collects the row
+/// around nested rows whose keys survive, reorder, grow, or shrink.
+fn testNestedRowsByItemElemCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
+    test_row_elem_call_count += 1;
+    const capture = testCapturePtrAs(TestNestedRowsCapture, capture_ptr);
+    const call_args = testErasedArgsAs(ErasedHostValueBinaryArgs, args);
+    const key = testReadHostValueI64(roc_host, call_args.arg0);
+    const item = testReadHostValueI64(roc_host, call_args.arg1);
+    var inner_items: [8]HostValue = undefined;
+    var inner_len: usize = 0;
+    switch (capture.mode) {
+        0 => {
+            inner_items[0] = testHostValueI64(key * 10 + 1);
+            inner_items[1] = testHostValueI64(key * 10 + 2);
+            inner_len = 2;
+        },
+        1 => {
+            const reversed = @mod(item, 2) == 1;
+            inner_items[0] = testHostValueI64(key * 10 + @as(i64, if (reversed) 2 else 1));
+            inner_items[1] = testHostValueI64(key * 10 + @as(i64, if (reversed) 1 else 2));
+            inner_len = 2;
+        },
+        2 => {
+            const count: usize = @intCast(@mod(item, 100));
+            if (count > inner_items.len) @panic("test nested rows by item callable was asked for more rows than it can hold");
+            for (0..count) |index| inner_items[index] = testHostValueI64(key * 10 + @as(i64, @intCast(index)) + 1);
+            inner_len = count;
+        },
+        3 => {
+            inner_items[0] = testHostValueI64((key * 10 + 1) * 100 + @mod(item, 100));
+            inner_items[1] = testHostValueI64((key * 10 + 2) * 100);
+            inner_len = 2;
+        },
+        else => @panic("test nested rows by item callable received an unknown mode"),
+    }
+    var text_buffer: [64]u8 = undefined;
+    const text = std.fmt.bufPrint(&text_buffer, "outer-{d}-{d}", .{ key, item }) catch @panic("test nested rows by item callable could not format text");
+    const nested = if (capture.mode == 3) blk: {
+        const signal = testNodeConstExpr(roc_host, testHostValueI64List(roc_host, inner_items[0..inner_len]));
+        break :blk testNodeEachWithSignalCapabilityKeyOfRowAndCapture(TestErasedI64Capture, roc_host, signal, testNodeSignalExprCapabilityOrPanic(signal), &testBucketKeyHostValueCallable, .{ .amount = 100 }, &testMiddleRowByItemElemCallable, .{ .amount = 0 });
+    } else testNodeEachWithItems(roc_host, inner_items[0..inner_len]);
+    const children = [_]abi.Elem{ testNodeText(roc_host, text), nested };
+    writeTestErasedResult(abi.Elem, ret, testElement(roc_host, &children));
+}
+
+/// Renders one outer row as a label naming its key and item beside a `when`
+/// with a constant condition, so re-collecting the row re-collects a branch
+/// whose committed scope must be kept rather than shadowed by a fresh one.
+fn testWhenRowByItemElemCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
+    _ = capture_ptr;
+    test_row_elem_call_count += 1;
+    const call_args = testErasedArgsAs(ErasedHostValueBinaryArgs, args);
+    const key = testReadHostValueI64(roc_host, call_args.arg0);
+    const item = testReadHostValueI64(roc_host, call_args.arg1);
+    var text_buffer: [64]u8 = undefined;
+    const text = std.fmt.bufPrint(&text_buffer, "outer-{d}-{d}", .{ key, item }) catch @panic("test when row by item callable could not format text");
+    var branch_buffer: [64]u8 = undefined;
+    const branch_text = std.fmt.bufPrint(&branch_buffer, "branch-{d}", .{key}) catch @panic("test when row by item callable could not format text");
+    const children = [_]abi.Elem{ testNodeText(roc_host, text), testNodeWhen(roc_host, testNodeText(roc_host, branch_text), testNodeText(roc_host, "off")) };
+    writeTestErasedResult(abi.Elem, ret, testElement(roc_host, &children));
+}
+
 /// Renders one outer row as a label plus a nested keyed list whose rows each
 /// own a state cell, so a live edit that grows the outer list claims node
 /// identities at two depths inside one staged transaction.
@@ -7600,6 +7698,461 @@ test "a created outer row counts its nested each rows and scopes as created" {
     try std.testing.expectEqual(@as(u64, 1), host.engine.pending_roc_metrics.rows_reused - before.rows_reused);
     try std.testing.expectEqual(@as(u64, 0), host.engine.pending_roc_metrics.rows_removed - before.rows_removed);
     try std.testing.expect(activeTextElementId(&host, "outer-2") != null);
+}
+
+/// The committed render parent of the text element rendering `text`.
+fn parentOfText(host: *HostEnv, text: []const u8) ?ids.ElemId {
+    const elem_id = activeTextElementId(host, text) orelse return null;
+    return host.engine.render_cache.nodes.items[@intCast(elem_id)].parent_id;
+}
+
+/// Mounts one outer keyed list over the state cell `state_token` binds, keyed
+/// by `item / 100`, whose rows render a nested keyed list as
+/// `TestNestedRowsCapture` mode `mode` says. Returns the state node id.
+fn mountNestedRowsByItem(host: *HostEnv, roc_host: *abi.RocHost, state_token: HostBinderToken, state_cap: HostValueCapability, mode: i64, items: []const HostValue) ids.NodeId {
+    return mountNestedRowsByItemWithTrailingSite(host, roc_host, state_token, state_cap, mode, items, false);
+}
+
+/// `mountNestedRowsByItem`, optionally followed by a constant one-row keyed
+/// list in the same section, so a site after the outer list must be shifted
+/// by exactly the outer list's net size change.
+fn mountNestedRowsByItemWithTrailingSite(host: *HostEnv, roc_host: *abi.RocHost, state_token: HostBinderToken, state_cap: HostValueCapability, mode: i64, items: []const HostValue, trailing_site: bool) ids.NodeId {
+    const outer = testNodeEachWithSignalCapabilityKeyOfRowAndCapture(TestNestedRowsCapture, roc_host, testNodeRefExpr(state_token), state_cap, &testBucketKeyHostValueCallable, .{ .amount = 100 }, &testNestedRowsByItemElemCallable, .{ .mode = mode });
+    const section = if (trailing_site) testElementWith(roc_host, "section", &.{}, &.{ outer, testNodeEachWithItems(roc_host, &.{testHostValueI64(9)}) }) else testElementWith(roc_host, "section", &.{}, &.{outer});
+    const root = testNodeStateWithTokenAndInitialCapability(roc_host, state_token, testHostValueI64List(roc_host, items), section, state_cap);
+    defer root.decref(roc_host);
+    var stream: HostNodeDescriptorStream = .{};
+    host.collectActiveElemRootDescriptors(roc_host, &stream, root, &.{});
+    _ = applyNodeDescriptorStream(host, roc_host, &stream);
+    host.engine.active_stream = stream;
+    return host.engine.active_stream.scope_sites.items[0].node_id;
+}
+
+test "re-collecting an outer row reconciles its nested rows by key" {
+    // Row 2's item changes under the same key, so the row builder runs again
+    // and the row is re-collected in place. Its nested keyed list produces the
+    // same two keys, which used to be mounted afresh under fresh scopes while
+    // the old nested rows retired: every nested row of an edited row was
+    // created and removed, its state cell and DOM node with it. The nested
+    // site must be reconciled by key like any other live site, so both rows
+    // survive untouched and only the outer label changes.
+    const Runner = struct {
+        fn run(failure_number: ?usize) !usize {
+            test_erased_callable_drop_count = 0;
+            test_row_elem_call_count = 0;
+            var host = HostEnv.init();
+            var roc_host = makeSignalsRocHost(&host);
+            host.engine.roc_host = &roc_host;
+            defer {
+                host.deinit();
+                _ = host.gpa.deinit();
+            }
+
+            const state_token = newTestBinderToken(&roc_host);
+            const state_cap = testHostValueCapability(&roc_host);
+            const initial_items = [_]HostValue{ testHostValueI64(101), testHostValueI64(202), testHostValueI64(303) };
+            const state_id = mountNestedRowsByItem(&host, &roc_host, state_token, state_cap, 0, &initial_items);
+            const row_21_id = activeTextElementId(&host, "row-21-21") orelse return error.TestUnexpectedResult;
+            const row_22_id = activeTextElementId(&host, "row-22-22") orelse return error.TestUnexpectedResult;
+            const parent_id = parentOfText(&host, "outer-2-202") orelse return error.TestUnexpectedResult;
+            try std.testing.expectEqual(@as(usize, 4), host.engine.each_row_sites.items.len);
+            // The root cell plus one per nested row.
+            try std.testing.expectEqual(@as(usize, 7), host.engine.states.items.len);
+            const metrics_before = host.engine.pending_roc_metrics;
+            const row_calls_before = test_row_elem_call_count;
+
+            const attempts = try dispatchStateValueSweeping(&host, &roc_host, state_id, testHostValueI64List(&roc_host, &.{ testHostValueI64(101), testHostValueI64(250), testHostValueI64(303) }), testHostValueI64List(&roc_host, &.{ testHostValueI64(101), testHostValueI64(250), testHostValueI64(303) }), state_cap, failure_number);
+
+            // Only the outer row builder ran; no nested row was re-collected.
+            // A refused attempt may already have run it once before refusing.
+            if (failure_number == null) try std.testing.expectEqual(row_calls_before + 1, test_row_elem_call_count);
+            try std.testing.expectEqual(@as(u64, 5), host.engine.pending_roc_metrics.rows_reused - metrics_before.rows_reused);
+            try std.testing.expectEqual(@as(u64, 0), host.engine.pending_roc_metrics.rows_created - metrics_before.rows_created);
+            try std.testing.expectEqual(@as(u64, 0), host.engine.pending_roc_metrics.rows_removed - metrics_before.rows_removed);
+            try std.testing.expectEqual(@as(u64, 0), host.engine.pending_roc_metrics.scopes_created - metrics_before.scopes_created);
+            try std.testing.expectEqual(@as(u64, 0), host.engine.pending_roc_metrics.scopes_disposed - metrics_before.scopes_disposed);
+            try std.testing.expect(activeTextElementId(&host, "outer-2-202") == null);
+            try std.testing.expectEqual(parent_id, parentOfText(&host, "outer-2-250") orelse return error.TestUnexpectedResult);
+            // The nested rows kept their nodes, their state cells, and their place.
+            try std.testing.expectEqual(row_21_id, activeTextElementId(&host, "row-21-21") orelse return error.TestUnexpectedResult);
+            try std.testing.expectEqual(row_22_id, activeTextElementId(&host, "row-22-22") orelse return error.TestUnexpectedResult);
+            try std.testing.expectEqual(@as(?usize, 0), childOrderOfText(&host, parent_id, "outer-2-250"));
+            try std.testing.expectEqual(@as(?usize, 1), childOrderOfText(&host, parent_id, "row-21-21"));
+            try std.testing.expectEqual(@as(?usize, 2), childOrderOfText(&host, parent_id, "row-22-22"));
+            try std.testing.expectEqual(@as(usize, 4), host.engine.each_row_sites.items.len);
+            try std.testing.expectEqual(@as(usize, 7), host.engine.states.items.len);
+            try std.testing.expect(activeTextElementId(&host, "row-11-11") != null);
+            try std.testing.expect(activeTextElementId(&host, "row-32-32") != null);
+            return attempts;
+        }
+    };
+
+    const attempts = try Runner.run(null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
+}
+
+test "reordering nested rows under a re-collected row moves them without creating any" {
+    // The same two nested keys come back in the other order when the outer
+    // item turns odd. A pure reorder must move the surviving rows and report
+    // no created or removed row, at either depth.
+    const Runner = struct {
+        fn run(failure_number: ?usize) !usize {
+            test_erased_callable_drop_count = 0;
+            test_row_elem_call_count = 0;
+            var host = HostEnv.init();
+            var roc_host = makeSignalsRocHost(&host);
+            host.engine.roc_host = &roc_host;
+            defer {
+                host.deinit();
+                _ = host.gpa.deinit();
+            }
+
+            const state_token = newTestBinderToken(&roc_host);
+            const state_cap = testHostValueCapability(&roc_host);
+            const initial_items = [_]HostValue{ testHostValueI64(101), testHostValueI64(202), testHostValueI64(303) };
+            const state_id = mountNestedRowsByItem(&host, &roc_host, state_token, state_cap, 1, &initial_items);
+            const row_21_id = activeTextElementId(&host, "row-21-21") orelse return error.TestUnexpectedResult;
+            const row_22_id = activeTextElementId(&host, "row-22-22") orelse return error.TestUnexpectedResult;
+            const parent_id = parentOfText(&host, "outer-2-202") orelse return error.TestUnexpectedResult;
+            try std.testing.expectEqual(@as(?usize, 1), childOrderOfText(&host, parent_id, "row-21-21"));
+            try std.testing.expectEqual(@as(?usize, 2), childOrderOfText(&host, parent_id, "row-22-22"));
+            const metrics_before = host.engine.pending_roc_metrics;
+            const row_calls_before = test_row_elem_call_count;
+
+            const attempts = try dispatchStateValueSweeping(&host, &roc_host, state_id, testHostValueI64List(&roc_host, &.{ testHostValueI64(101), testHostValueI64(203), testHostValueI64(303) }), testHostValueI64List(&roc_host, &.{ testHostValueI64(101), testHostValueI64(203), testHostValueI64(303) }), state_cap, failure_number);
+
+            if (failure_number == null) try std.testing.expectEqual(row_calls_before + 1, test_row_elem_call_count);
+            try std.testing.expectEqual(@as(u64, 5), host.engine.pending_roc_metrics.rows_reused - metrics_before.rows_reused);
+            try std.testing.expectEqual(@as(u64, 0), host.engine.pending_roc_metrics.rows_created - metrics_before.rows_created);
+            try std.testing.expectEqual(@as(u64, 0), host.engine.pending_roc_metrics.rows_removed - metrics_before.rows_removed);
+            try std.testing.expectEqual(@as(u64, 0), host.engine.pending_roc_metrics.scopes_created - metrics_before.scopes_created);
+            try std.testing.expectEqual(@as(u64, 0), host.engine.pending_roc_metrics.scopes_disposed - metrics_before.scopes_disposed);
+            try std.testing.expectEqual(row_21_id, activeTextElementId(&host, "row-21-21") orelse return error.TestUnexpectedResult);
+            try std.testing.expectEqual(row_22_id, activeTextElementId(&host, "row-22-22") orelse return error.TestUnexpectedResult);
+            try std.testing.expectEqual(@as(?usize, 0), childOrderOfText(&host, parent_id, "outer-2-203"));
+            try std.testing.expectEqual(@as(?usize, 1), childOrderOfText(&host, parent_id, "row-22-22"));
+            try std.testing.expectEqual(@as(?usize, 2), childOrderOfText(&host, parent_id, "row-21-21"));
+            try std.testing.expect((streamOrderOfText(&host, "row-22-22") orelse return error.TestUnexpectedResult) < (streamOrderOfText(&host, "row-21-21") orelse return error.TestUnexpectedResult));
+            try std.testing.expectEqual(@as(usize, 4), host.engine.each_row_sites.items.len);
+            return attempts;
+        }
+    };
+
+    const attempts = try Runner.run(null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
+}
+
+test "a nested row added under a re-collected row is the only row created" {
+    // Row 2's nested list grows from two rows to three when its item changes.
+    // The two surviving nested rows stay, the new one mounts, and the
+    // transaction reports exactly that.
+    const Runner = struct {
+        fn run(failure_number: ?usize) !usize {
+            test_erased_callable_drop_count = 0;
+            test_row_elem_call_count = 0;
+            var host = HostEnv.init();
+            var roc_host = makeSignalsRocHost(&host);
+            host.engine.roc_host = &roc_host;
+            defer {
+                host.deinit();
+                _ = host.gpa.deinit();
+            }
+
+            const state_token = newTestBinderToken(&roc_host);
+            const state_cap = testHostValueCapability(&roc_host);
+            const initial_items = [_]HostValue{ testHostValueI64(101), testHostValueI64(202), testHostValueI64(303) };
+            const state_id = mountNestedRowsByItem(&host, &roc_host, state_token, state_cap, 2, &initial_items);
+            const row_21_id = activeTextElementId(&host, "row-21-21") orelse return error.TestUnexpectedResult;
+            const row_22_id = activeTextElementId(&host, "row-22-22") orelse return error.TestUnexpectedResult;
+            const parent_id = parentOfText(&host, "outer-2-202") orelse return error.TestUnexpectedResult;
+            try std.testing.expectEqual(@as(usize, 7), host.engine.states.items.len);
+            const metrics_before = host.engine.pending_roc_metrics;
+            const row_calls_before = test_row_elem_call_count;
+
+            const attempts = try dispatchStateValueSweeping(&host, &roc_host, state_id, testHostValueI64List(&roc_host, &.{ testHostValueI64(101), testHostValueI64(203), testHostValueI64(303) }), testHostValueI64List(&roc_host, &.{ testHostValueI64(101), testHostValueI64(203), testHostValueI64(303) }), state_cap, failure_number);
+
+            // The outer row builder and the created nested row's builder.
+            if (failure_number == null) try std.testing.expectEqual(row_calls_before + 2, test_row_elem_call_count);
+            try std.testing.expectEqual(@as(u64, 5), host.engine.pending_roc_metrics.rows_reused - metrics_before.rows_reused);
+            try std.testing.expectEqual(@as(u64, 1), host.engine.pending_roc_metrics.rows_created - metrics_before.rows_created);
+            try std.testing.expectEqual(@as(u64, 0), host.engine.pending_roc_metrics.rows_removed - metrics_before.rows_removed);
+            try std.testing.expectEqual(@as(u64, 1), host.engine.pending_roc_metrics.scopes_created - metrics_before.scopes_created);
+            try std.testing.expectEqual(@as(u64, 0), host.engine.pending_roc_metrics.scopes_disposed - metrics_before.scopes_disposed);
+            try std.testing.expectEqual(row_21_id, activeTextElementId(&host, "row-21-21") orelse return error.TestUnexpectedResult);
+            try std.testing.expectEqual(row_22_id, activeTextElementId(&host, "row-22-22") orelse return error.TestUnexpectedResult);
+            try std.testing.expectEqual(@as(?usize, 1), childOrderOfText(&host, parent_id, "row-21-21"));
+            try std.testing.expectEqual(@as(?usize, 2), childOrderOfText(&host, parent_id, "row-22-22"));
+            try std.testing.expectEqual(@as(?usize, 3), childOrderOfText(&host, parent_id, "row-23-23"));
+            try std.testing.expectEqual(@as(usize, 8), host.engine.states.items.len);
+            try std.testing.expectEqual(@as(usize, 4), host.engine.each_row_sites.items.len);
+            return attempts;
+        }
+    };
+
+    const attempts = try Runner.run(null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
+}
+
+test "a row re-collected under a re-collected row lays its own live nested site out inside it" {
+    // Three keyed levels. Editing the outer item re-collects outer row 2 in
+    // place; its middle row 21 survives with a changed item and is
+    // re-collected in place too, while middle row 22 is untouched. Row 21's
+    // innermost list grows from no row to one, so the innermost site is a
+    // live nested site collected inside a replacement that is itself
+    // collected inside the outer row's replacement. The render layout used
+    // to hand the innermost region to the outer row's replacement, whose
+    // scope-site span contains both, because the innermost site's
+    // descriptor precedes the middle site's, and then refused the middle
+    // region as InvalidRenderTopology. A site after the outer list is then
+    // shifted by the innermost region's growth on top of the outer region's,
+    // which already carries it, so it landed past the end of the render
+    // stream.
+    const Runner = struct {
+        fn run(failure_number: ?usize) !usize {
+            test_erased_callable_drop_count = 0;
+            test_row_elem_call_count = 0;
+            var host = HostEnv.init();
+            var roc_host = makeSignalsRocHost(&host);
+            host.engine.roc_host = &roc_host;
+            defer {
+                host.deinit();
+                _ = host.gpa.deinit();
+            }
+
+            const state_token = newTestBinderToken(&roc_host);
+            const state_cap = testHostValueCapability(&roc_host);
+            const initial_items = [_]HostValue{ testHostValueI64(100), testHostValueI64(200) };
+            const state_id = mountNestedRowsByItemWithTrailingSite(&host, &roc_host, state_token, state_cap, 3, &initial_items, true);
+            const trailing_index = streamOrderOfText(&host, "row-9-9") orelse return error.TestUnexpectedResult;
+            const mid_21_parent = parentOfText(&host, "mid-21-2100") orelse return error.TestUnexpectedResult;
+            const mid_22_id = activeTextElementId(&host, "mid-22-2200") orelse return error.TestUnexpectedResult;
+            const parent_id = parentOfText(&host, "outer-2-200") orelse return error.TestUnexpectedResult;
+            // The root cell and the trailing row's: no innermost row exists yet.
+            try std.testing.expectEqual(@as(usize, 2), host.engine.states.items.len);
+            try std.testing.expect(activeTextElementId(&host, "row-211-211") == null);
+            const metrics_before = host.engine.pending_roc_metrics;
+            const row_calls_before = test_row_elem_call_count;
+
+            const attempts = try dispatchStateValueSweeping(&host, &roc_host, state_id, testHostValueI64List(&roc_host, &.{ testHostValueI64(100), testHostValueI64(201) }), testHostValueI64List(&roc_host, &.{ testHostValueI64(100), testHostValueI64(201) }), state_cap, failure_number);
+
+            // The outer row, middle row 21, and the created innermost row.
+            if (failure_number == null) try std.testing.expectEqual(row_calls_before + 3, test_row_elem_call_count);
+            // Outer rows 1 and 2, middle rows 21 and 22.
+            try std.testing.expectEqual(@as(u64, 4), host.engine.pending_roc_metrics.rows_reused - metrics_before.rows_reused);
+            try std.testing.expectEqual(@as(u64, 1), host.engine.pending_roc_metrics.rows_created - metrics_before.rows_created);
+            try std.testing.expectEqual(@as(u64, 0), host.engine.pending_roc_metrics.rows_removed - metrics_before.rows_removed);
+            try std.testing.expectEqual(@as(u64, 1), host.engine.pending_roc_metrics.scopes_created - metrics_before.scopes_created);
+            try std.testing.expectEqual(@as(u64, 0), host.engine.pending_roc_metrics.scopes_disposed - metrics_before.scopes_disposed);
+            try std.testing.expectEqual(@as(?usize, 0), childOrderOfText(&host, parent_id, "outer-2-201"));
+            const mid_21_parent_after = parentOfText(&host, "mid-21-2101") orelse return error.TestUnexpectedResult;
+            try std.testing.expectEqual(mid_21_parent, mid_21_parent_after);
+            try std.testing.expectEqual(@as(?usize, 0), childOrderOfText(&host, mid_21_parent_after, "mid-21-2101"));
+            try std.testing.expectEqual(@as(?usize, 1), childOrderOfText(&host, mid_21_parent_after, "row-211-211"));
+            try std.testing.expectEqual(mid_22_id, activeTextElementId(&host, "mid-22-2200") orelse return error.TestUnexpectedResult);
+            // The middle row elements keep their order under the outer row.
+            const outer_children = host.engine.render_cache.nodes.items[parent_id.index()].children.items;
+            try std.testing.expectEqual(@as(usize, 3), outer_children.len);
+            try std.testing.expectEqual(mid_21_parent_after, outer_children[1]);
+            try std.testing.expectEqual(parentOfText(&host, "mid-22-2200") orelse return error.TestUnexpectedResult, outer_children[2]);
+            try std.testing.expectEqual(@as(usize, 3), host.engine.states.items.len);
+            try std.testing.expect(activeTextElementId(&host, "mid-11-1100") != null);
+            // The trailing site moved by the one innermost row, once.
+            try std.testing.expectEqual(trailing_index + 1, streamOrderOfText(&host, "row-9-9") orelse return error.TestUnexpectedResult);
+            // The trailing site is the root scope's last each site.
+            const root_scope_id = host.engine.active_stream.scope_sites.items[0].scope_id;
+            var trailing_site: ?engine.HostNodeScopeSiteDesc = null;
+            for (host.engine.active_stream.scope_sites.items) |site| {
+                if (site.kind != .each or site.scope_id != root_scope_id) continue;
+                if (trailing_site == null or site.ordinal.raw() > trailing_site.?.ordinal.raw()) trailing_site = site;
+            }
+            try std.testing.expectEqual(trailing_index + 1, (trailing_site orelse return error.TestUnexpectedResult).render_insert_index);
+            return attempts;
+        }
+    };
+
+    const attempts = try Runner.run(null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
+}
+
+test "nested rows removed under a re-collected row retire with their cells" {
+    // Row 2's nested list shrinks from two rows to one when its item changes.
+    // The survivor stays, the other row retires with its state cell, and the
+    // transaction reports one reused row per depth and one removal.
+    const Runner = struct {
+        fn run(failure_number: ?usize) !usize {
+            test_erased_callable_drop_count = 0;
+            test_row_elem_call_count = 0;
+            var host = HostEnv.init();
+            var roc_host = makeSignalsRocHost(&host);
+            host.engine.roc_host = &roc_host;
+            defer {
+                host.deinit();
+                _ = host.gpa.deinit();
+            }
+
+            const state_token = newTestBinderToken(&roc_host);
+            const state_cap = testHostValueCapability(&roc_host);
+            const initial_items = [_]HostValue{ testHostValueI64(101), testHostValueI64(202), testHostValueI64(303) };
+            const state_id = mountNestedRowsByItem(&host, &roc_host, state_token, state_cap, 2, &initial_items);
+            const row_21_id = activeTextElementId(&host, "row-21-21") orelse return error.TestUnexpectedResult;
+            const parent_id = parentOfText(&host, "outer-2-202") orelse return error.TestUnexpectedResult;
+            try std.testing.expectEqual(@as(usize, 7), host.engine.states.items.len);
+            const scope_len_before = host.engine.scopes.items.len;
+            const metrics_before = host.engine.pending_roc_metrics;
+            const row_calls_before = test_row_elem_call_count;
+
+            const attempts = try dispatchStateValueSweeping(&host, &roc_host, state_id, testHostValueI64List(&roc_host, &.{ testHostValueI64(101), testHostValueI64(201), testHostValueI64(303) }), testHostValueI64List(&roc_host, &.{ testHostValueI64(101), testHostValueI64(201), testHostValueI64(303) }), state_cap, failure_number);
+
+            if (failure_number == null) try std.testing.expectEqual(row_calls_before + 1, test_row_elem_call_count);
+            try std.testing.expectEqual(@as(u64, 4), host.engine.pending_roc_metrics.rows_reused - metrics_before.rows_reused);
+            try std.testing.expectEqual(@as(u64, 0), host.engine.pending_roc_metrics.rows_created - metrics_before.rows_created);
+            try std.testing.expectEqual(@as(u64, 1), host.engine.pending_roc_metrics.rows_removed - metrics_before.rows_removed);
+            try std.testing.expectEqual(@as(u64, 0), host.engine.pending_roc_metrics.scopes_created - metrics_before.scopes_created);
+            try std.testing.expectEqual(@as(u64, 1), host.engine.pending_roc_metrics.scopes_disposed - metrics_before.scopes_disposed);
+            try std.testing.expectEqual(row_21_id, activeTextElementId(&host, "row-21-21") orelse return error.TestUnexpectedResult);
+            try std.testing.expect(activeTextElementId(&host, "row-22-22") == null);
+            try std.testing.expectEqual(@as(?usize, 0), childOrderOfText(&host, parent_id, "outer-2-201"));
+            try std.testing.expectEqual(@as(?usize, 1), childOrderOfText(&host, parent_id, "row-21-21"));
+            try std.testing.expectEqual(@as(usize, 2), host.engine.render_cache.nodes.items[parent_id.index()].children.items.len);
+            try std.testing.expectEqual(@as(usize, 6), host.engine.states.items.len);
+            try std.testing.expectEqual(scope_len_before, host.engine.scopes.items.len);
+            try std.testing.expectEqual(@as(usize, 4), host.engine.each_row_sites.items.len);
+            return attempts;
+        }
+    };
+
+    const attempts = try Runner.run(null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
+}
+
+test "re-collecting a stateful row twice keeps its identities and state cell" {
+    // A row whose key survives with a changed item is re-collected in place
+    // under its committed scope, so its construction sites resolve to the
+    // same node and element identities. Those identities used to be reserved
+    // by lookup alone: the transaction retired the committed generation with
+    // the descriptors it replaced, but published nothing in their place, so
+    // the site's state cell went with the retirement and the next
+    // re-collection claimed fresh identities and rebuilt the row's DOM.
+    const Runner = struct {
+        fn run(failure_number: ?usize) !usize {
+            test_erased_callable_drop_count = 0;
+            test_row_elem_call_count = 0;
+            var host = HostEnv.init();
+            var roc_host = makeSignalsRocHost(&host);
+            host.engine.roc_host = &roc_host;
+            defer {
+                host.deinit();
+                _ = host.gpa.deinit();
+            }
+
+            const state_token = newTestBinderToken(&roc_host);
+            const state_cap = testHostValueCapability(&roc_host);
+            const each = testNodeEachWithSignalCapabilityKeyOfRowAndCapture(TestErasedI64Capture, &roc_host, testNodeRefExpr(state_token), state_cap, &testBucketKeyHostValueCallable, .{ .amount = 100 }, &testStatefulRowElemCallable, .{ .amount = 0 });
+            const section = testElementWith(&roc_host, "section", &.{}, &.{each});
+            const initial_items = [_]HostValue{ testHostValueI64(101), testHostValueI64(202), testHostValueI64(303) };
+            const root = testNodeStateWithTokenAndInitialCapability(&roc_host, state_token, testHostValueI64List(&roc_host, &initial_items), section, state_cap);
+            defer root.decref(&roc_host);
+            var stream: HostNodeDescriptorStream = .{};
+            host.collectActiveElemRootDescriptors(&roc_host, &stream, root, &.{});
+            _ = applyNodeDescriptorStream(&host, &roc_host, &stream);
+            host.engine.active_stream = stream;
+
+            const state_id = host.engine.active_stream.scope_sites.items[0].node_id;
+            const row_2_id = activeTextElementId(&host, "row-2-202") orelse return error.TestUnexpectedResult;
+            // The root cell plus one per row.
+            try std.testing.expectEqual(@as(usize, 4), host.engine.states.items.len);
+            var row_state_buffer: [4]ids.NodeId = undefined;
+            const row_states = activeScopeSiteNodeIdsOfKind(&host, .state, &row_state_buffer);
+            try std.testing.expectEqual(@as(usize, 4), row_states.len);
+            const row_2_state = row_states[2];
+            const row_2_cell = host.engine.stateIndexByNodeId(row_2_state.raw()) orelse return error.TestUnexpectedResult;
+            const node_identity_len = host.engine.node_identities.items.len;
+            const dom_identity_len = host.engine.dom_identities.items.len;
+
+            const attempts = try dispatchStateValueSweeping(&host, &roc_host, state_id, testHostValueI64List(&roc_host, &.{ testHostValueI64(101), testHostValueI64(250), testHostValueI64(303) }), testHostValueI64List(&roc_host, &.{ testHostValueI64(101), testHostValueI64(250), testHostValueI64(303) }), state_cap, failure_number);
+            try std.testing.expectEqual(row_2_id, activeTextElementId(&host, "row-2-250") orelse return error.TestUnexpectedResult);
+            try std.testing.expectEqual(@as(usize, 4), host.engine.states.items.len);
+            try std.testing.expectEqual(@as(?usize, row_2_cell), host.engine.stateIndexByNodeId(row_2_state.raw()));
+            try std.testing.expect(host.engine.node_identities.items[row_2_state.index()].lifecycle.isActive());
+            try std.testing.expect(host.engine.dom_identities.items[@intCast(row_2_id - 1)].lifecycle.isActive());
+
+            // The second re-collection resolves the same identities again.
+            _ = try host.engine.tryDispatchStateValue(&host, &roc_host, state_id.raw(), testHostValueI64List(&roc_host, &.{ testHostValueI64(101), testHostValueI64(275), testHostValueI64(303) }), state_cap);
+            try std.testing.expectEqual(row_2_id, activeTextElementId(&host, "row-2-275") orelse return error.TestUnexpectedResult);
+            try std.testing.expectEqual(@as(usize, 4), host.engine.states.items.len);
+            try std.testing.expectEqual(@as(?usize, row_2_cell), host.engine.stateIndexByNodeId(row_2_state.raw()));
+            try std.testing.expectEqual(node_identity_len, host.engine.node_identities.items.len);
+            try std.testing.expectEqual(dom_identity_len, host.engine.dom_identities.items.len);
+            try std.testing.expect(activeTextElementId(&host, "row-1-101") != null);
+            try std.testing.expect(activeTextElementId(&host, "row-3-303") != null);
+            return attempts;
+        }
+    };
+
+    const attempts = try Runner.run(null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
+}
+
+test "re-collecting a row keeps the branch scope of the when it holds" {
+    // A `when` inside a re-collected row is collected again under the row's
+    // committed scope. Its branch scope used to be reserved afresh every time
+    // while the committed one stayed active: two scopes claimed the same
+    // branch, the old one never retired, and the next transaction that
+    // looked the branch up found both.
+    const Runner = struct {
+        fn run(failure_number: ?usize) !usize {
+            test_erased_callable_drop_count = 0;
+            test_row_elem_call_count = 0;
+            var host = HostEnv.init();
+            var roc_host = makeSignalsRocHost(&host);
+            host.engine.roc_host = &roc_host;
+            defer {
+                host.deinit();
+                _ = host.gpa.deinit();
+            }
+
+            const state_token = newTestBinderToken(&roc_host);
+            const state_cap = testHostValueCapability(&roc_host);
+            const each = testNodeEachWithSignalCapabilityKeyOfRowAndCapture(TestErasedI64Capture, &roc_host, testNodeRefExpr(state_token), state_cap, &testBucketKeyHostValueCallable, .{ .amount = 100 }, &testWhenRowByItemElemCallable, .{ .amount = 0 });
+            const section = testElementWith(&roc_host, "section", &.{}, &.{each});
+            const initial_items = [_]HostValue{ testHostValueI64(101), testHostValueI64(202) };
+            const root = testNodeStateWithTokenAndInitialCapability(&roc_host, state_token, testHostValueI64List(&roc_host, &initial_items), section, state_cap);
+            defer root.decref(&roc_host);
+            var stream: HostNodeDescriptorStream = .{};
+            host.collectActiveElemRootDescriptors(&roc_host, &stream, root, &.{});
+            _ = applyNodeDescriptorStream(&host, &roc_host, &stream);
+            host.engine.active_stream = stream;
+
+            const state_id = host.engine.active_stream.scope_sites.items[0].node_id;
+            const branch_id = activeTextElementId(&host, "branch-2") orelse return error.TestUnexpectedResult;
+            // The root, two rows, and one branch scope per row.
+            try std.testing.expectEqual(@as(usize, 5), host.engine.scopes.items.len);
+            const metrics_before = host.engine.pending_roc_metrics;
+
+            const attempts = try dispatchStateValueSweeping(&host, &roc_host, state_id, testHostValueI64List(&roc_host, &.{ testHostValueI64(101), testHostValueI64(250) }), testHostValueI64List(&roc_host, &.{ testHostValueI64(101), testHostValueI64(250) }), state_cap, failure_number);
+            _ = try host.engine.tryDispatchStateValue(&host, &roc_host, state_id.raw(), testHostValueI64List(&roc_host, &.{ testHostValueI64(101), testHostValueI64(275) }), state_cap);
+
+            try std.testing.expectEqual(@as(usize, 5), host.engine.scopes.items.len);
+            var active: usize = 0;
+            for (host.engine.scopes.items) |scope| active += @intFromBool(scope.lifecycle.isActive());
+            try std.testing.expectEqual(@as(usize, 5), active);
+            try std.testing.expectEqual(@as(u64, 0), host.engine.pending_roc_metrics.scopes_created - metrics_before.scopes_created);
+            try std.testing.expectEqual(@as(u64, 0), host.engine.pending_roc_metrics.scopes_disposed - metrics_before.scopes_disposed);
+            try std.testing.expectEqual(branch_id, activeTextElementId(&host, "branch-2") orelse return error.TestUnexpectedResult);
+            try std.testing.expect(activeTextElementId(&host, "outer-2-275") != null);
+            return attempts;
+        }
+    };
+
+    const attempts = try Runner.run(null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
 test "retiring an each row disposes the nested each site it owned" {
@@ -11537,6 +12090,16 @@ pub const fuzz_fixtures = struct {
     /// dependency, so one dispatch into the cell still re-diffs every site
     /// reading it.
     pub const eachOverStateListRowAndCapture = testNodeEachOverStateListRowAndCapture;
+    pub const I64Capture = TestErasedI64Capture;
+    /// `key_of` that buckets an item by `amount`, so items in one bucket share
+    /// a row key and an edit inside the bucket re-collects the row in place.
+    pub const bucketKeyCallable = testBucketKeyHostValueCallable;
+
+    /// An `each` over the state cell `binder_token` binds whose `key_of` is
+    /// chosen by the caller.
+    pub fn eachOverStateListKeyOfRowAndCapture(comptime Capture: type, roc_host: *abi.RocHost, binder_token: HostBinderToken, state_cap: HostValueCapability, key_of_fn: abi.RocErasedCallableFn, key_of_capture: TestErasedI64Capture, row_fn: abi.RocErasedCallableFn, capture: Capture) abi.Elem {
+        return testNodeEachWithSignalCapabilityKeyOfRowAndCapture(Capture, roc_host, testNodeRefExpr(binder_token), state_cap, key_of_fn, key_of_capture, row_fn, capture);
+    }
 
     pub const captureAs = testCapturePtrAs;
     pub const argsAs = testErasedArgsAs;

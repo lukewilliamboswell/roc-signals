@@ -795,6 +795,10 @@ pub fn Engine(comptime Ctx: type) type {
 
         const EachRowScopeKeyLookup = struct {
             engine: *Self,
+            /// Live nested sites the committing collection reconciles; their
+            /// identities are republished only after the journal runs, so an
+            /// emptied one stays for the reconciliation to refill.
+            reconciled_sites: []const PreparedNestedRowSync = &.{},
 
             /// Performs row key hash through the keyed-row capabilities that own key and item values.
             pub fn rowKeyHash(self: *@This(), scope_id: ids.ScopeId) u64 {
@@ -805,6 +809,7 @@ pub fn Engine(comptime Ctx: type) type {
             /// allowing a later update to repopulate it without inventing a
             /// second lifecycle path.
             pub fn siteRemainsActive(self: *@This(), key: each_runtime.SiteKey) bool {
+                for (self.reconciled_sites) |*sync| if (sync.parent_scope_id == key.parent_scope_id and sync.site_ordinal == key.site_ordinal) return true;
                 const node_id = self.engine.active_node_identity_ids.get(identityKey(key.parent_scope_id.raw(), key.site_ordinal.raw())) orelse return false;
                 const site = self.engine.activeScopeSiteByNodeId(node_id, .each) orelse return false;
                 return site.scope_id == key.parent_scope_id and site.ordinal == key.site_ordinal and self.engine.activeEachIndexByNodeId(node_id) != null;
@@ -1313,7 +1318,7 @@ pub fn Engine(comptime Ctx: type) type {
                     self.allocator.free(layouts);
                 }
                 for (layouts, sites, self.rows[0..self.prepared_len], self.replacements[0..self.prepared_len]) |*layout, site, rows, replacement| {
-                    layout.* = try PreparedEachRowRenderLayout.prepare(self.engine, self.allocator, site, &rows.rows, replacement.replacement_rows);
+                    layout.* = try PreparedEachRowRenderLayout.prepare(self.engine, self.allocator, site, &rows.rows, replacement.replacement_rows, &self.replacement_owner.?.collection);
                     prepared_len += 1;
                 }
 
@@ -1338,6 +1343,7 @@ pub fn Engine(comptime Ctx: type) type {
                 var plan = PreparedRenderLayoutPlan.init(self.allocator);
                 errdefer plan.deinit();
                 for (layouts) |*layout| try plan.describeEachSite(layout);
+                try plan.describeNestedSites(self.replacement_owner.?.collection.nested_row_syncs.items);
                 try plan.resolve(self.engine, targets);
                 self.final_render_topology = try PreparedFinalRenderTopology.preparePlaced(self.engine, self.allocator, self.replacement_owner.?, targets, plan.removed_render_count, plan.placements.items);
                 self.render_layout_plan = plan;
@@ -1375,6 +1381,7 @@ pub fn Engine(comptime Ctx: type) type {
                     };
                     if (!seen_parent) parents.append(self.allocator, site.parent_elem_id.raw()) catch return error.OutOfMemory;
                 }
+                try self.replacement_owner.?.collection.appendNestedSiteRenderParents(self.allocator, &parents);
                 const downstream = try PreparedStructuralDownstream.prepareExternal(
                     self.engine,
                     self.host_ctx,
@@ -1720,7 +1727,7 @@ pub fn Engine(comptime Ctx: type) type {
                     allocator.free(layouts);
                 }
                 for (layouts, sites, rows.rows[0..rows.prepared_len], rows.replacements[0..rows.prepared_len]) |*layout, site, prepared_rows, replacement| {
-                    layout.* = try PreparedEachRowRenderLayout.prepare(engine, allocator, site, &prepared_rows.rows, replacement.replacement_rows);
+                    layout.* = try PreparedEachRowRenderLayout.prepare(engine, allocator, site, &prepared_rows.rows, replacement.replacement_rows, &replacement_owner.collection);
                     layouts_prepared += 1;
                 }
 
@@ -1743,7 +1750,7 @@ pub fn Engine(comptime Ctx: type) type {
                 defer allocator.free(descriptor_roots);
                 const retired_roots = try normalizedScopeRoots(engine, allocator, retired_roots_list.items);
                 defer allocator.free(retired_roots);
-                var targets = try PreparedStructuralTargets.prepare(engine, allocator, descriptor_roots, retired_roots);
+                var targets = try PreparedStructuralTargets.prepare(engine, allocator, descriptor_roots, retired_roots, &replacement_owner.collection);
                 var targets_owned = true;
                 errdefer if (targets_owned) targets.deinit(allocator);
                 var layout_plan = PreparedRenderLayoutPlan.init(allocator);
@@ -1753,6 +1760,7 @@ pub fn Engine(comptime Ctx: type) type {
                     _ = try layout_plan.describeBranch(engine, selection, .{ .scope_id = range.scope_id, .start = range.start, .len = range.len, .site_start = range.site_start, .site_len = range.site_len });
                 }
                 for (layouts) |*layout| try layout_plan.describeEachSite(layout);
+                try layout_plan.describeNestedSites(replacement_owner.collection.nested_row_syncs.items);
                 try layout_plan.resolve(engine, targets.descriptor_target_scopes);
                 var final_render_topology = try PreparedFinalRenderTopology.preparePlaced(engine, allocator, replacement_owner, targets.descriptor_target_scopes, layout_plan.removed_render_count, layout_plan.placements.items);
                 var final_topology_owned = true;
@@ -1769,11 +1777,14 @@ pub fn Engine(comptime Ctx: type) type {
                 }
                 // Every edited site's parent takes its final child order from
                 // the resolved topology, as the pure each path does; see
-                // `AggregateBranchCollection.prepareWithState`.
+                // `AggregateBranchCollection.prepareWithState`. The render
+                // parents of the live nested sites join them, since surviving
+                // rows and collected ones interleave under those.
                 var parents: std.ArrayListUnmanaged(u64) = .empty;
                 defer parents.deinit(allocator);
                 for (selections) |selection| try PreparedStructuralDownstream.appendUniqueParentElemId(allocator, &parents, selection.parent_elem_id.raw());
                 for (sites) |site| try PreparedStructuralDownstream.appendUniqueParentElemId(allocator, &parents, site.parent_elem_id.raw());
+                try replacement_owner.collection.appendNestedSiteRenderParents(allocator, &parents);
                 const downstream = try PreparedStructuralDownstream.prepareExternal(engine, ctx, roc_host, replacement_owner, descriptor_roots, retired_roots, removal_starts.items, null, parents.items, overlay);
                 errdefer downstream.deinit();
                 downstream.final_render_topology = final_render_topology;
@@ -3634,6 +3645,11 @@ pub fn Engine(comptime Ctx: type) type {
             prepared_whens: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedWhen) = .empty,
             prepared_eaches: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedEach) = .empty,
             prepared_each_sites: std.ArrayListUnmanaged(HostEachRowSite) = .empty,
+            /// Each sites a re-collected row brought back under a live site
+            /// key, reconciled by key against the committed rows rather than
+            /// mounted afresh. Preparation-owned; publication commits each
+            /// reconciliation into the site it prepared against.
+            nested_row_syncs: std.ArrayListUnmanaged(PreparedNestedRowSync) = .empty,
             prepared_named_event_groups: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedNamedEventIndexGroup) = .empty,
             prepared_named_event_group_by_elem: std.AutoHashMapUnmanaged(u64, usize) = .empty,
             signal_records: collection_plan.SignalRecordPlan(HostSignalToken, HostSignalRecord) = .{},
@@ -3982,6 +3998,8 @@ pub fn Engine(comptime Ctx: type) type {
                 self.prepared_eaches.deinit(allocator);
                 for (self.prepared_each_sites.items) |*site| site.deinit(allocator);
                 self.prepared_each_sites.deinit(allocator);
+                for (self.nested_row_syncs.items) |*sync| sync.deinit();
+                self.nested_row_syncs.deinit(allocator);
                 self.signal_bindings.deinit(allocator);
                 const SignalReleaser = struct {
                     collection: *Collection,
@@ -4075,11 +4093,31 @@ pub fn Engine(comptime Ctx: type) type {
                 return reserved.raw();
             }
 
+            /// Whether `scope_id` is a committed, active scope: one this
+            /// collection re-collects when it collects under it, since a
+            /// scope the collection creates can only occupy an inactive slot.
+            fn committedScopeIsActive(self: *const @This(), scope_id: ids.ScopeId) bool {
+                return scope_id.index() < self.engine.scopes.items.len and self.engine.scopes.items[scope_id.index()].lifecycle.isActive();
+            }
+
+            /// A committed child scope re-collected under its committed parent
+            /// keeps its identity: it is claimed like the parent was, so the
+            /// scope stays active through publication while its descriptors
+            /// are replaced, and the retirement derived from the collection
+            /// knows it is kept.
+            fn keepCommittedChildScope(self: *@This(), scope_id: ids.ScopeId) CollectionError!void {
+                if (self.scopes.reserved_ids.contains(scope_id)) return;
+                self.scopes.reserveExternal(scope_id) catch |err| switch (err) {
+                    error.NoCapacity => return error.ResourceLimit,
+                    error.DuplicateScope => return error.InvalidScope,
+                };
+            }
+
             fn reserveWhenBranchScope(self: *@This(), parent_scope_id: ids.ScopeId, site_ordinal: ids.SiteOrdinal, branch: HostScopeBranch) CollectionError!scope_tree.InternResult {
-                const persistent_parent = parent_scope_id.raw() < self.engine.scopes.items.len;
                 const key: collection_plan.ScopeKey = .{ .parent_id = parent_scope_id, .ordinal = site_ordinal, .kind = .{ .when_branch = branch } };
-                const active_id = if (persistent_parent and !self.scopes.reserved_ids.contains(parent_scope_id)) self.engine.activeWhenBranchScopeId(parent_scope_id, site_ordinal, branch) catch |err| return scopeError(err) else null;
+                const active_id = if (self.committedScopeIsActive(parent_scope_id)) self.engine.activeWhenBranchScopeId(parent_scope_id, site_ordinal, branch) catch |err| return scopeError(err) else null;
                 const branch_scope_id = try self.reserveScopeIdentity(key, if (active_id) |value| value.raw() else null);
+                if (active_id) |value| try self.keepCommittedChildScope(value);
                 return .{ .scope_id = ids.ScopeId.fromRaw(branch_scope_id), .created = active_id == null };
             }
 
@@ -4231,7 +4269,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const key: collection_plan.ScopeKey = .{ .parent_id = scope_id, .ordinal = site_ordinal, .kind = .component };
                 var active_id: ?u64 = null;
                 for (self.engine.scopes.items) |scope| {
-                    if (self.scopes.reserved_ids.contains(scope_id)) break;
+                    if (!self.committedScopeIsActive(scope_id)) break;
                     if (!scope.lifecycle.isActive() or scope.parent_scope_id == null or scope.parent_scope_id.? != scope_id) continue;
                     switch (scope.step) {
                         .component => |step| if (step.site_ordinal == site_ordinal) {
@@ -4242,6 +4280,7 @@ pub fn Engine(comptime Ctx: type) type {
                     }
                 }
                 const component_scope_id = try self.reserveScopeIdentity(key, active_id);
+                if (active_id) |value| try self.keepCommittedChildScope(ids.ScopeId.fromRaw(value));
                 self.prepared_state_sites.appendAssumeCapacity(prepared);
                 ordinal.* = ids.SiteOrdinal.fromRaw(ordinal.*.raw() + 1);
                 return .{ .scope_id = ids.ScopeId.fromRaw(component_scope_id), .created = active_id == null };
@@ -4267,8 +4306,11 @@ pub fn Engine(comptime Ctx: type) type {
                 assertHostValueCapabilitiesMatch(prepared.desc.read.capability, cap, "when read extension capability did not match its signal value");
                 const branch: HostScopeBranch = if (callHostValueToBoolWithCapability(self.host_ctx, roc_host, prepared.desc.read.capability, prepared.desc.read.read, value)) .true_branch else .false_branch;
                 prepared.desc.cached_value = .{ .present = HostValueCell.initRetained(value, cap, &self.engine.pending_roc_metrics) };
-                const persistent_parent = scope_id.index() < self.engine.scopes.items.len;
-                if (persistent_parent and !self.scopes.reserved_ids.contains(scope_id) and (self.engine.activeWhenBranchScopeId(scope_id, site_ordinal, branch.opposite()) catch |err| return scopeError(err)) != null) return error.InvalidScope;
+                // Under a scope re-collected here the opposite branch may
+                // still be active: it retires with the re-collection. Under
+                // any other committed scope it is a live branch this
+                // collection would duplicate.
+                if (self.committedScopeIsActive(scope_id) and !self.scopes.reserved_ids.contains(scope_id) and (self.engine.activeWhenBranchScopeId(scope_id, site_ordinal, branch.opposite()) catch |err| return scopeError(err)) != null) return error.InvalidScope;
                 const branch_scope = try self.reserveWhenBranchScope(scope_id, site_ordinal, branch);
                 self.prepared_state_sites.appendAssumeCapacity(site);
                 self.prepared_whens.appendAssumeCapacity(prepared);
@@ -4293,6 +4335,20 @@ pub fn Engine(comptime Ctx: type) type {
                 const items_cap = self.engine.hostSignalRecordCapabilityWithProvisionalStates(self.host_ctx, prepared_each.desc.items.record, self.prepared_state_cells.items);
                 assertHostValueCapabilitiesMatch(prepared_each.desc.ops.items_capability, items_cap, "each items extension capability did not match its signal value");
                 prepared_each.desc.cached_value = .{ .present = HostValueCell.initRetained(items_value, items_cap, &self.engine.pending_roc_metrics) };
+
+                // A live site key names a committed each site whose rows this
+                // collection reconciles by key: the parent scope is a
+                // committed row re-collected in place, and its nested rows
+                // keep their scopes, descriptors, and render nodes when their
+                // keys survive. Only a scope no committed site names mounts
+                // its rows afresh.
+                if (self.liveEachSiteIndex(scope_id, site_ordinal)) |site_index| {
+                    try self.collectNestedRowSync(roc_host, scope_id, parent_elem_id, site_ordinal, site_index, &prepared_each.desc, binder_stack, dirty_source_node_ids);
+                    self.prepared_state_sites.appendAssumeCapacity(site);
+                    self.prepared_eaches.appendAssumeCapacity(prepared_each);
+                    ordinal.* = ids.SiteOrdinal.fromRaw(ordinal.*.raw() + 1);
+                    return;
+                }
 
                 const evaluated = try PreparedInitialEach.prepare(self.engine, self.host_ctx, roc_host, &prepared_each.desc, scope_id, site_ordinal, allocator, self.prepared_state_cells.items);
                 defer evaluated.deinit();
@@ -4325,6 +4381,148 @@ pub fn Engine(comptime Ctx: type) type {
                 self.prepared_eaches.appendAssumeCapacity(prepared_each);
                 self.prepared_each_sites.appendAssumeCapacity(prepared_site);
                 ordinal.* = ids.SiteOrdinal.fromRaw(ordinal.*.raw() + 1);
+            }
+
+            /// Appends the render parent of every live nested site this
+            /// collection reconciled, once each and skipping parents already
+            /// listed: surviving rows and collected ones interleave under
+            /// such a parent, so its final child order must come from the
+            /// render topology rather than the structural pass.
+            fn appendNestedSiteRenderParents(self: *const @This(), allocator: std.mem.Allocator, parents: *std.ArrayListUnmanaged(u64)) CollectionError!void {
+                for (self.nested_row_syncs.items) |*sync| {
+                    const parent_id = sync.parent_elem_id.raw();
+                    const listed = for (parents.items) |existing| {
+                        if (existing == parent_id) break true;
+                    } else false;
+                    if (!listed) parents.append(allocator, parent_id) catch return error.OutOfMemory;
+                }
+            }
+
+            /// The committed each site `scope_id` and `site_ordinal` name,
+            /// when `scope_id` is a committed scope this collection
+            /// re-collects rather than one it creates. A scope this
+            /// transaction claims can only occupy an inactive slot, so an
+            /// active slot under the collected id is the committed scope.
+            fn liveEachSiteIndex(self: *const @This(), scope_id: ids.ScopeId, site_ordinal: ids.SiteOrdinal) ?usize {
+                if (scope_id.index() >= self.engine.scopes.items.len) return null;
+                if (!self.engine.scopes.items[scope_id.index()].lifecycle.isActive()) return null;
+                return self.engine.activeEachRowSiteIndex(scope_id, site_ordinal);
+            }
+
+            /// Reconciles the committed rows of the live site `site_index`
+            /// against the items its re-collected parent row now produces.
+            /// A survivor keeps its scope; one whose item changed, or whose
+            /// subtree reads a dirty source, is re-collected in place exactly
+            /// as its parent row was, and is otherwise left untouched. A
+            /// created row claims a scope from the plan and mounts here; a
+            /// removed row retires with the enclosing subtree journal. The
+            /// site's next order is recorded as layout pieces so the render
+            /// layout plan keeps surviving render nodes where they stand.
+            fn collectNestedRowSync(self: *@This(), roc_host: *abi.RocHost, scope_id: ids.ScopeId, parent_elem_id: ids.ElemId, site_ordinal: ids.SiteOrdinal, site_index: usize, each: *const HostNodeEachDesc, binder_stack: *std.ArrayListUnmanaged(HostBinderBinding), dirty_source_node_ids: []const u64) CollectionError!void {
+                const allocator = Ctx.allocator(self.host_ctx);
+                const engine_ptr = self.engine;
+                self.signal_roc_host = roc_host;
+                self.nested_row_syncs.ensureUnusedCapacity(allocator, 1) catch return error.OutOfMemory;
+                const old_site = engine_ptr.activeScopeSiteByNodeId(each.node_id.raw(), .each) orelse return error.InvalidDescriptor;
+                if (old_site.scope_id != scope_id or old_site.ordinal != site_ordinal) return error.InvalidDescriptor;
+
+                var inputs = try PreparedEachInputs.prepareWithProvisionalStates(engine_ptr, self.host_ctx, roc_host, each, allocator, self.prepared_state_cells.items);
+                errdefer inputs.deinit();
+                // Which rows the reconciliation creates is its own decision,
+                // so the plan takes the row count as the bound on the scopes
+                // it may claim: every next row is either created here or a
+                // committed survivor this collection may attach.
+                try self.reserveCounts(.{ .external_scopes = inputs.keys.len, .each_rows = inputs.keys.len });
+                var hooks = StagedEachRowSyncHooks.init(self, roc_host, each.ops, &inputs);
+                engine_ptr.recordEachSync(inputs.keys.len, engine_ptr.each_row_sites.items[site_index].scope_ids.items.len);
+                var rows = each_runtime.PreparedRowSync.prepare(allocator, &engine_ptr.each_row_sites, &engine_ptr.each_row_memberships_by_scope_id, site_index, scope_id, site_ordinal, inputs.keys, inputs.items, &hooks) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.ResourceLimit => return error.ResourceLimit,
+                };
+                errdefer rows.deinit();
+
+                const row_count = rows.next_scope_ids.len;
+                const recollected = allocator.alloc(bool, row_count) catch return error.OutOfMemory;
+                errdefer allocator.free(recollected);
+                const row_elems = allocator.alloc(?abi.Elem, row_count) catch return error.OutOfMemory;
+                defer allocator.free(row_elems);
+                @memset(row_elems, null);
+                defer for (row_elems) |maybe_elem| if (maybe_elem) |elem| elem.decref(roc_host);
+                var total: StaticRootCounts = .{};
+                for (rows.next_scope_ids, rows.scope_created, rows.row_items_changed, 0..) |row_scope_id, created, changed, index| {
+                    recollected[index] = !created and (changed or engine_ptr.scopeSubtreeHasDirtyStructuralSource(&engine_ptr.active_stream, row_scope_id.raw(), dirty_source_node_ids));
+                    if (!created and !recollected[index]) continue;
+                    const elem = callHostValueHostValueToElemWithCapabilities(self.host_ctx, roc_host, each.ops.key_capability, each.ops.item_capability, each.ops.row, inputs.keys[index], inputs.items[index]);
+                    row_elems[index] = elem;
+                    try PreparedReplacementOwner.addRootCounts(&total, try countStaticRootNodes(elem));
+                }
+                try self.reserveCounts(.{ .roots = total });
+
+                var segments: std.ArrayListUnmanaged(HostEachRowRenderSegment) = .empty;
+                defer segments.deinit(allocator);
+                const old_end = try engine_ptr.appendEachSiteRenderSegments(allocator, .{ .parent_scope_id = scope_id, .site_ordinal = site_ordinal }, old_site.render_insert_index, &segments);
+                const old_start = if (segments.items.len != 0) segments.items[0].start else old_site.render_insert_index;
+
+                const pieces = allocator.alloc(PreparedRenderLayoutPlan.Piece, row_count) catch return error.OutOfMemory;
+                errdefer allocator.free(pieces);
+                const local_render_start = self.prepared_render_order.items.len;
+                const local_site_start = self.prepared_state_sites.items.len;
+                // A surviving row that renders nothing has no span of its
+                // own; it sits after the previous survivor, or at the site.
+                var survivor_cursor = old_start;
+                for (rows.next_scope_ids, rows.scope_created, 0..) |row_scope_id, created, index| {
+                    if (row_elems[index]) |elem| {
+                        if (!created) self.scopes.reserveExternal(row_scope_id) catch |err| switch (err) {
+                            error.NoCapacity => return error.ResourceLimit,
+                            error.DuplicateScope => return error.InvalidScope,
+                        };
+                        const render_start = self.prepared_render_order.items.len;
+                        const site_start = self.prepared_state_sites.items.len;
+                        var row_ordinal = ids.SiteOrdinal.fromRaw(0);
+                        var row_dom_ordinal = ids.SiteOrdinal.fromRaw(0);
+                        try engine_ptr.collectActiveEachRowElemDescriptorsWith(*Collection, self, self.host_ctx, roc_host, self.stream, each.*, elem, row_scope_id, parent_elem_id, &row_ordinal, &row_dom_ordinal, binder_stack, created, dirty_source_node_ids);
+                        pieces[index] = .{ .replacement = .{
+                            .render_start = render_start,
+                            .render_len = self.prepared_render_order.items.len - render_start,
+                            .site_start = site_start,
+                            .site_len = self.prepared_state_sites.items.len - site_start,
+                        } };
+                        continue;
+                    }
+                    const segment = for (segments.items) |segment| {
+                        if (segment.scope_id == row_scope_id) break segment;
+                    } else null;
+                    if (segment) |span| {
+                        pieces[index] = .{ .survivor = .{ .scope_id = row_scope_id.raw(), .old_start = span.start, .len = span.len } };
+                        survivor_cursor = span.start + span.len;
+                    } else {
+                        pieces[index] = .{ .survivor = .{ .scope_id = row_scope_id.raw(), .old_start = survivor_cursor, .len = 0 } };
+                    }
+                }
+
+                // The caller appends the site's own descriptor next, so it
+                // closes the span of scope sites this reconciliation created.
+                const local_site_index = self.prepared_state_sites.items.len;
+                self.nested_row_syncs.appendAssumeCapacity(.{
+                    .allocator = allocator,
+                    .node_id = each.node_id,
+                    .parent_scope_id = scope_id,
+                    .site_ordinal = site_ordinal,
+                    .parent_elem_id = parent_elem_id,
+                    .site_index = site_index,
+                    .local_render_start = local_render_start,
+                    .local_render_len = self.prepared_render_order.items.len - local_render_start,
+                    .local_site_start = local_site_start,
+                    .local_site_len = local_site_index + 1 - local_site_start,
+                    .local_site_index = local_site_index,
+                    .old_start = old_start,
+                    .old_end = old_end,
+                    .inputs = inputs,
+                    .ops = each.ops,
+                    .rows = rows,
+                    .recollected = recollected,
+                    .pieces = pieces,
+                });
             }
 
             fn appendElement(self: *@This(), scope_id: ids.ScopeId, parent_elem_id: ids.ElemId, dom_ordinal: *ids.SiteOrdinal, tag: []const u8) CollectionError!ids.ElemId {
@@ -4781,26 +4979,23 @@ pub fn Engine(comptime Ctx: type) type {
                 // counting a new outer row expects its nested rows with it.
                 self.engine.recordRowsCreated(@intCast(self.prepared_each_row_scopes.items.len));
                 self.prepared_each_row_scopes.clearRetainingCapacity();
+                // A re-collected row's live each sites publish their keyed
+                // reconciliation into the committed site: the created row
+                // scopes are active as of the loop above, the surviving ones
+                // never left, and the removed ones retire with the subtree
+                // journal after this collection.
+                for (self.nested_row_syncs.items) |*sync| sync.commit(self);
                 if (self.prepared_each_sites.items.len != 0) {
                     const membership_len = self.engine.scopes.items.len;
                     while (self.engine.each_row_memberships_by_scope_id.items.len < membership_len) self.engine.each_row_memberships_by_scope_id.appendAssumeCapacity(null);
                     for (self.prepared_each_sites.items) |site| {
-                        // A row re-collected in place brings its nested each site
-                        // back under the same key. The retirement journal has
-                        // already emptied the old site, so the new one takes over
-                        // its slot; appending would orphan the old site.
-                        const site_index = if (self.engine.each_row_site_indexes.get(site.key)) |existing| blk: {
-                            const old = &self.engine.each_row_sites.items[existing];
-                            if (old.scope_ids.items.len != 0) @panic("re-collected each site replaced a site that still owned rows");
-                            old.deinit(Ctx.allocator(self.host_ctx));
-                            old.* = site;
-                            break :blk existing;
-                        } else blk: {
-                            const index = self.engine.each_row_sites.items.len;
-                            self.engine.each_row_site_indexes.putAssumeCapacity(site.key, index);
-                            self.engine.each_row_sites.appendAssumeCapacity(site);
-                            break :blk index;
-                        };
+                        // A site mounted afresh is one no live site key names:
+                        // a live key under a re-collected row is reconciled
+                        // through `nested_row_syncs` instead.
+                        if (self.engine.each_row_site_indexes.contains(site.key)) @panic("staged each site collided with a live site under the same key");
+                        const site_index = self.engine.each_row_sites.items.len;
+                        self.engine.each_row_site_indexes.putAssumeCapacity(site.key, site_index);
+                        self.engine.each_row_sites.appendAssumeCapacity(site);
                         for (site.scope_ids.items, 0..) |scope_id, row_index| {
                             const membership = &self.engine.each_row_memberships_by_scope_id.items[scope_id.index()];
                             if (membership.* != null) @panic("prepared initial each row had duplicate membership");
@@ -4820,7 +5015,13 @@ pub fn Engine(comptime Ctx: type) type {
                     };
                     const identity_index: usize = @intCast(intent.id - 1);
                     if (identity_index < self.engine.dom_identities.items.len) {
-                        if (self.engine.dom_identities.items[identity_index].lifecycle.isActive()) @panic("staged DOM identity reused an active slot");
+                        // A re-collected site publishes its committed
+                        // identity again; the slot is inactive when the
+                        // transaction retired that generation with the
+                        // descriptor it replaces, and still the same
+                        // identity when it did not.
+                        const slot = self.engine.dom_identities.items[identity_index];
+                        if (slot.lifecycle.isActive() and (slot.scope_id != identity.scope_id or slot.ordinal != identity.ordinal)) @panic("staged DOM identity reused an active slot");
                         self.engine.dom_identities.items[identity_index] = identity;
                     } else {
                         if (identity_index != self.engine.dom_identities.items.len) @panic("staged DOM identity suffix was not contiguous");
@@ -4839,7 +5040,8 @@ pub fn Engine(comptime Ctx: type) type {
                     };
                     const identity_index: usize = @intCast(intent.id);
                     if (identity_index < self.engine.node_identities.items.len) {
-                        if (self.engine.node_identities.items[identity_index].lifecycle.isActive()) @panic("staged node identity reused an active slot");
+                        const slot = self.engine.node_identities.items[identity_index];
+                        if (slot.lifecycle.isActive() and (slot.scope_id != identity.scope_id or slot.ordinal != identity.ordinal)) @panic("staged node identity reused an active slot");
                         self.engine.node_identities.items[identity_index] = identity;
                     } else {
                         if (identity_index != self.engine.node_identities.items.len) @panic("staged node identity suffix was not contiguous");
@@ -5066,6 +5268,205 @@ pub fn Engine(comptime Ctx: type) type {
                 .each => |payload| .{ .signal_records = try countSignalExprRecords(payload.items.*), .each_sites = 1 },
             };
         }
+
+        /// Row-sync hooks for a live each site reconciled inside a staged
+        /// collection. Created rows claim their scopes from the collection's
+        /// capacity plan and are published with every other row scope the
+        /// collection prepared; removed rows are left to the enclosing subtree
+        /// retirement, which the transaction derives from the reconciliation.
+        const StagedEachRowSyncHooks = struct {
+            base: EachRowSync,
+            collection: *StagedCollectionCtx,
+            inputs: ?*PreparedEachInputs,
+
+            fn init(collection: *StagedCollectionCtx, roc_host: *abi.RocHost, ops: HostEachOps, inputs: ?*PreparedEachInputs) @This() {
+                return .{
+                    .base = .{ .engine = collection.engine, .ctx = collection.host_ctx, .roc_host = roc_host, .ops = ops },
+                    .collection = collection,
+                    .inputs = inputs,
+                };
+            }
+
+            /// Hashes an incoming key through the each descriptor capability.
+            pub fn hashKey(self: *@This(), key: HostValue) u64 {
+                return self.base.hashKey(key);
+            }
+
+            /// Compares two incoming keys before persistent publication.
+            pub fn nextKeysEqual(self: *@This(), left: HostValue, right: HostValue) bool {
+                return self.base.nextKeysEqual(left, right);
+            }
+
+            /// Compares an incoming key with one persistent row key.
+            pub fn existingKeyEquals(self: *@This(), scope_id: ids.ScopeId, key: HostValue) bool {
+                return self.base.existingKeyEquals(scope_id, key);
+            }
+
+            /// Compares an incoming item with one persistent row item.
+            pub fn rowItemEquals(self: *@This(), scope_id: ids.ScopeId, item: HostValue) bool {
+                return self.base.rowItemEquals(scope_id, item);
+            }
+
+            /// Claims a provisional row scope from the collection's plan and
+            /// moves the incoming key and item into it.
+            pub fn prepareCreatedRow(self: *@This(), allocator: std.mem.Allocator, parent_scope_id: ids.ScopeId, site_ordinal: ids.SiteOrdinal, input_index: usize, key_hash: u64, key: HostValue, item: HostValue) (std.mem.Allocator.Error || error{ResourceLimit})!ids.ScopeId {
+                _ = allocator;
+                const scope_id = self.collection.reserveEachRowScope(self.base.roc_host, parent_scope_id, site_ordinal, key_hash, key, item, self.base.ops.key_capability, self.base.ops.item_capability) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.ResourceLimit => return error.ResourceLimit,
+                    // The parent row was validated when its own collection
+                    // began, and a claimed scope id is never offered twice.
+                    error.InvalidScope, error.InvalidDescriptor, error.OverlappingRemoval, error.InvalidRenderTopology, error.InvalidSignalGraphAppend, error.InvalidSignalGraphRelease => @panic("staged nested row could not claim a scope under its validated parent row"),
+                };
+                if (self.inputs) |inputs| inputs.transferEntry(input_index);
+                return scope_id;
+            }
+
+            /// The enclosing transaction derives the retirement journal from
+            /// the reconciliation; nothing to reserve here.
+            pub fn prepareExistingRowsCommit(_: *@This(), _: std.mem.Allocator, _: usize) std.mem.Allocator.Error!void {}
+
+            /// Validates that reconciliation references a published row scope.
+            pub fn commitCreatedRow(self: *@This(), scope_id: ids.ScopeId) void {
+                if (scope_id.index() >= self.base.engine.scopes.items.len or !self.base.engine.scopes.items[scope_id.index()].lifecycle.isActive()) @panic("unknown committed nested each-row scope");
+                switch (self.base.engine.scopes.items[scope_id.index()].step) {
+                    .each_row => {},
+                    else => @panic("prepared nested each row claimed a non-row scope"),
+                }
+            }
+
+            /// Provisional row scopes are published by the collection.
+            pub fn finishPreparedRowsCommit(_: *@This()) void {}
+
+            /// Provisional row scopes are released by the collection.
+            pub fn abortPreparedRows(_: *@This()) void {}
+
+            /// Replaces a surviving row key at the allocation-free commit boundary.
+            pub fn replaceRowKey(self: *@This(), scope_id: ids.ScopeId, key_hash: u64, key: HostValue) void {
+                self.base.replaceRowKey(scope_id, key_hash, key);
+            }
+
+            /// Replaces a surviving row item at the allocation-free commit boundary.
+            pub fn replaceRowItem(self: *@This(), scope_id: ids.ScopeId, item: HostValue) void {
+                self.base.replaceRowItem(scope_id, item);
+            }
+
+            /// Releases an unchanged incoming key after publication succeeds.
+            pub fn dropIncomingKey(self: *@This(), key: HostValue) void {
+                self.base.dropIncomingKey(key);
+            }
+
+            /// Releases an unchanged incoming item after publication succeeds.
+            pub fn dropIncomingItem(self: *@This(), item: HostValue) void {
+                self.base.dropIncomingItem(item);
+            }
+
+            /// A removed row retires with the enclosing subtree journal.
+            pub fn disposeScope(_: *@This(), _: ids.ScopeId) void {}
+
+            /// Reads a committed row hash while rebuilding the site index.
+            pub fn rowKeyHash(self: *@This(), scope_id: ids.ScopeId) u64 {
+                return self.base.rowKeyHash(scope_id);
+            }
+
+            /// Reports duplicate incoming keys through the bounded host diagnostic.
+            pub fn failDuplicateEachKey(self: *@This(), parent_scope_id: ids.ScopeId, site_ordinal: ids.SiteOrdinal, first_index: usize, second_index: usize, key: HostValue) noreturn {
+                self.base.failDuplicateEachKey(parent_scope_id, site_ordinal, first_index, second_index, key);
+            }
+        };
+
+        /// One live each site a re-collected row brought back: the keyed
+        /// reconciliation of its committed rows against the items the row now
+        /// produces, and the site's next order as the pieces a
+        /// `PreparedRenderLayoutPlan` lays out inside the row's replacement.
+        ///
+        /// A next row is exactly one of: created here (a provisional scope in
+        /// the collection's plan), a survivor re-collected in place (its scope
+        /// kept, its old descriptors retired with the row's), or an untouched
+        /// survivor (scope, descriptors, and render nodes all kept). A
+        /// committed row the next order omits is removed and retires with the
+        /// enclosing subtree journal.
+        const PreparedNestedRowSync = struct {
+            allocator: std.mem.Allocator,
+            node_id: ids.NodeId,
+            parent_scope_id: ids.ScopeId,
+            site_ordinal: ids.SiteOrdinal,
+            parent_elem_id: ids.ElemId,
+            /// The committed site in `engine.each_row_sites`.
+            site_index: usize,
+            /// The render span the collected rows occupy in the replacement
+            /// stream, starting where the site's descriptor points.
+            local_render_start: usize,
+            local_render_len: usize,
+            /// The scope sites the collected rows created in the replacement
+            /// stream, closed by the site's own descriptor at
+            /// `local_site_index`.
+            local_site_start: usize,
+            local_site_len: usize,
+            local_site_index: usize,
+            /// The span the committed rows occupy in the active stream, or
+            /// the committed site's insertion point when none renders.
+            old_start: usize,
+            old_end: usize,
+            inputs: PreparedEachInputs,
+            ops: HostEachOps,
+            rows: each_runtime.PreparedRowSync,
+            /// Per next row: a survivor re-collected in place.
+            recollected: []bool,
+            pieces: []PreparedRenderLayoutPlan.Piece,
+            phase: CommitPhase = .prepared,
+
+            /// Whether `scope_id` is a committed row the next order keeps,
+            /// re-collected or not.
+            fn keepsRow(self: *const @This(), scope_id: u64) bool {
+                for (self.rows.next_scope_ids, self.rows.scope_created) |row_scope_id, created| {
+                    if (!created and row_scope_id.raw() == scope_id) return true;
+                }
+                return false;
+            }
+
+            /// Whether `scope_id` is a survivor this collection re-collects
+            /// in place: its old descriptors retire, its scope stays.
+            fn recollectsRow(self: *const @This(), scope_id: u64) bool {
+                for (self.rows.next_scope_ids, self.rows.scope_created, self.recollected) |row_scope_id, created, recollected| {
+                    if (!created and recollected and row_scope_id.raw() == scope_id) return true;
+                }
+                return false;
+            }
+
+            /// Whether `scope_id` is a committed row the next order omits.
+            fn removesRow(self: *const @This(), scope_id: u64) bool {
+                for (self.rows.removed_scope_ids) |row_scope_id| if (row_scope_id.raw() == scope_id) return true;
+                return false;
+            }
+
+            /// Publishes the reconciliation into the committed site without
+            /// allocating. Created rows are counted with every row scope the
+            /// collection publishes, so only reuse and removal are recorded
+            /// here.
+            fn commit(self: *@This(), collection: *StagedCollectionCtx) void {
+                if (self.phase.isCommitted()) @panic("nested row sync committed twice");
+                const engine_ptr = collection.engine;
+                // The subtree journal applied before this collection may
+                // have swapped sites around while dropping emptied ones; the
+                // site is found by its key again, not by the index it held.
+                self.rows.site_index = engine_ptr.each_row_site_indexes.get(.{ .parent_scope_id = self.parent_scope_id, .site_ordinal = self.site_ordinal }) orelse @panic("nested row sync lost its committed site before publication");
+                var hooks = StagedEachRowSyncHooks.init(collection, collection.signal_roc_host orelse @panic("staged nested row sync lacked Roc host"), self.ops, null);
+                var diff = self.rows.commit(&engine_ptr.each_row_sites, &engine_ptr.each_row_memberships_by_scope_id, self.inputs.keys, self.inputs.items, &hooks);
+                self.inputs.transfer();
+                hooks.base.recordRows(diff.rows_reused, 0, diff.rows_removed);
+                diff.deinit(self.allocator);
+                self.phase.markCommitted();
+            }
+
+            fn deinit(self: *@This()) void {
+                self.rows.deinit();
+                self.inputs.deinit();
+                self.allocator.free(self.recollected);
+                self.allocator.free(self.pieces);
+                self.* = undefined;
+            }
+        };
 
         const PreparedInitialEach = struct {
             const Row = struct {
@@ -5408,7 +5809,7 @@ pub fn Engine(comptime Ctx: type) type {
             fn prepareWithTargets(engine: *Self, allocator: std.mem.Allocator, descriptor_root_scope_ids: []const u64, removed_root_scope_ids: []const u64) CollectionError!@This() {
                 var self: @This() = .{};
                 errdefer self.deinit(engine, allocator, null, null);
-                self.targets = try PreparedStructuralTargets.prepare(engine, allocator, descriptor_root_scope_ids, removed_root_scope_ids);
+                self.targets = try PreparedStructuralTargets.prepare(engine, allocator, descriptor_root_scope_ids, removed_root_scope_ids, null);
                 const target_scopes = self.targets.?.descriptor_target_scopes;
                 const retirement_scope_ids = self.targets.?.scope_retirement.?.scope_ids;
                 self.identities = try PreparedIdentityRetirements.prepare(engine, allocator, target_scopes);
@@ -5612,6 +6013,31 @@ pub fn Engine(comptime Ctx: type) type {
             }
         };
 
+        /// Appends the render span of every committed row of `each_site`, in
+        /// render order, one segment per row. Returns one past the last node
+        /// any row owns, or `site_insert_index` when no row renders.
+        fn appendEachSiteRenderSegments(self: *Self, allocator: std.mem.Allocator, each_site: HostEachSite, site_insert_index: usize, segments: *std.ArrayListUnmanaged(HostEachRowRenderSegment)) CollectionError!usize {
+            var render_index: usize = 0;
+            var old_end: usize = site_insert_index;
+            while (render_index < self.active_stream.render_nodes.items.len) {
+                const scope_id = renderNodeScopeId(&self.active_stream, self.active_stream.render_nodes.items[render_index]);
+                const row_scope_id = (self.eachSiteRowAncestorScopeId(scope_id, each_site) catch |err| return scopeError(err)) orelse {
+                    render_index += 1;
+                    continue;
+                };
+                const start = render_index;
+                render_index += 1;
+                while (render_index < self.active_stream.render_nodes.items.len) : (render_index += 1) {
+                    const next_scope = renderNodeScopeId(&self.active_stream, self.active_stream.render_nodes.items[render_index]);
+                    const next_row = self.eachSiteRowAncestorScopeId(next_scope, each_site) catch |err| return scopeError(err);
+                    if (next_row == null or next_row.? != row_scope_id) break;
+                }
+                segments.append(allocator, .{ .scope_id = ids.ScopeId.fromRaw(row_scope_id), .start = start, .len = render_index - start }) catch return error.OutOfMemory;
+                old_end = @max(old_end, render_index);
+            }
+            return old_end;
+        }
+
         /// One edited each site described in old coordinates: the rows it
         /// currently renders, the retirement the edit needs, and its rows in
         /// their next order as the pieces a `PreparedRenderLayoutPlan` lays out.
@@ -5630,32 +6056,16 @@ pub fn Engine(comptime Ctx: type) type {
             /// overlap before any of them grows or shrinks.
             old_end: usize,
 
-            fn prepare(engine: *Self, allocator: std.mem.Allocator, site: HostNodeScopeSiteDesc, rows: *const each_runtime.PreparedRowSync, replacements: []const PreparedEachRowReplacementCollection.ReplacementRow) CollectionError!@This() {
+            fn prepare(engine: *Self, allocator: std.mem.Allocator, site: HostNodeScopeSiteDesc, rows: *const each_runtime.PreparedRowSync, replacements: []const PreparedEachRowReplacementCollection.ReplacementRow, collection: ?*const StagedCollectionCtx) CollectionError!@This() {
                 var segments: std.ArrayListUnmanaged(HostEachRowRenderSegment) = .empty;
                 defer segments.deinit(allocator);
                 var by_scope: std.AutoHashMapUnmanaged(u64, usize) = .empty;
                 defer by_scope.deinit(allocator);
-                var render_index: usize = 0;
-                var old_end: usize = site.render_insert_index;
                 const each_site = HostEachSite{ .parent_scope_id = site.scope_id, .site_ordinal = site.ordinal };
-                while (render_index < engine.active_stream.render_nodes.items.len) {
-                    const scope_id = renderNodeScopeId(&engine.active_stream, engine.active_stream.render_nodes.items[render_index]);
-                    const row_scope_id = (engine.eachSiteRowAncestorScopeId(scope_id, each_site) catch |err| return scopeError(err)) orelse {
-                        render_index += 1;
-                        continue;
-                    };
-                    const start = render_index;
-                    render_index += 1;
-                    while (render_index < engine.active_stream.render_nodes.items.len) : (render_index += 1) {
-                        const next_scope = renderNodeScopeId(&engine.active_stream, engine.active_stream.render_nodes.items[render_index]);
-                        const next_row = engine.eachSiteRowAncestorScopeId(next_scope, each_site) catch |err| return scopeError(err);
-                        if (next_row == null or next_row.? != row_scope_id) break;
-                    }
-                    const index = segments.items.len;
-                    segments.append(allocator, .{ .scope_id = ids.ScopeId.fromRaw(row_scope_id), .start = start, .len = render_index - start }) catch return error.OutOfMemory;
-                    old_end = @max(old_end, render_index);
-                    const entry = by_scope.getOrPut(allocator, row_scope_id) catch return error.OutOfMemory;
-                    if (entry.found_existing) return error.ResourceLimit;
+                const old_end = try engine.appendEachSiteRenderSegments(allocator, each_site, site.render_insert_index, &segments);
+                for (segments.items, 0..) |segment, index| {
+                    const entry = by_scope.getOrPut(allocator, segment.scope_id.raw()) catch return error.OutOfMemory;
+                    if (entry.found_existing) return error.InvalidRenderTopology;
                     entry.value_ptr.* = index;
                 }
 
@@ -5675,7 +6085,7 @@ pub fn Engine(comptime Ctx: type) type {
                     remove_starts_list.appendAssumeCapacity(segments.items[segment_index].start);
                     descriptor_roots.appendAssumeCapacity(replacement.scope_id.raw());
                 };
-                var targets = try PreparedStructuralTargets.prepare(engine, allocator, descriptor_roots.items, @ptrCast(rows.removed_scope_ids));
+                var targets = try PreparedStructuralTargets.prepare(engine, allocator, descriptor_roots.items, @ptrCast(rows.removed_scope_ids), collection);
                 errdefer targets.deinit(allocator);
                 const target_scopes = targets.descriptor_target_scopes;
                 remove_starts_list.clearRetainingCapacity();
@@ -5905,28 +6315,114 @@ pub fn Engine(comptime Ctx: type) type {
             descriptor_target_scopes: []bool = &.{},
             scope_retirement: ?scope_runtime.PreparedSubtreeRetirement = null,
 
-            fn prepare(engine: *Self, allocator: std.mem.Allocator, descriptor_root_scope_ids: []const u64, retired_root_scope_ids: []const u64) CollectionError!@This() {
+            /// Whether `scope_id` is a committed row some live site under a
+            /// descriptor root keeps, untouched or re-collected in place.
+            fn keptByNestedSync(nested_syncs: []const PreparedNestedRowSync, scope_id: u64) bool {
+                for (nested_syncs) |*sync| if (sync.keepsRow(scope_id)) return true;
+                return false;
+            }
+
+            /// Derives the descriptor targets and the retired subtrees of one
+            /// structural transaction.
+            ///
+            /// `descriptor_root_scope_ids` are the scopes whose committed
+            /// descriptors the transaction replaces: retired subtrees and rows
+            /// re-collected in place. Every scope under one is a target, except
+            /// the subtree of an untouched survivor a live nested site keeps
+            /// (`nested_syncs`), whose descriptors and render nodes stay.
+            ///
+            /// `retired_root_scope_ids` are the subtrees the transaction's own
+            /// row syncs and branch selections retire. A row re-collected in
+            /// place retires more than that: its nested rows are re-created
+            /// under fresh scopes unless a live nested site reconciles them, so
+            /// every committed each-row scope whose nearest enclosing row or
+            /// descriptor root is a non-retired descriptor root - the
+            /// re-collected row itself, or one of its re-collected nested rows -
+            /// retires too, unless that nested site keeps it.
+            fn prepare(engine: *Self, allocator: std.mem.Allocator, descriptor_root_scope_ids: []const u64, retired_root_scope_ids: []const u64, collection: ?*const StagedCollectionCtx) CollectionError!@This() {
+                const nested_syncs: []const PreparedNestedRowSync = if (collection) |staged| staged.nested_row_syncs.items else &.{};
                 var prepared: @This() = .{};
                 errdefer prepared.deinit(allocator);
                 prepared.descriptor_target_scopes = allocator.alloc(bool, engine.scopes.items.len) catch return error.OutOfMemory;
                 @memset(prepared.descriptor_target_scopes, false);
+                const is_descriptor_root = allocator.alloc(bool, engine.scopes.items.len) catch return error.OutOfMemory;
+                defer allocator.free(is_descriptor_root);
+                @memset(is_descriptor_root, false);
+                const is_retired_root = allocator.alloc(bool, engine.scopes.items.len) catch return error.OutOfMemory;
+                defer allocator.free(is_retired_root);
+                @memset(is_retired_root, false);
                 for (descriptor_root_scope_ids) |root_scope_id| {
-                    if (root_scope_id >= engine.scopes.items.len) return error.ResourceLimit;
+                    if (root_scope_id >= engine.scopes.items.len) return error.InvalidScope;
+                    is_descriptor_root[@intCast(root_scope_id)] = true;
                     for (engine.scopes.items) |scope| {
                         if (engine.scopeIsDescendantOrSelf(scope.scope_id.raw(), root_scope_id) catch |err| return scopeError(err)) {
                             prepared.descriptor_target_scopes[scope.scope_id.index()] = true;
                         }
                     }
                 }
-                const nominal_retired_roots = allocator.alloc(ids.ScopeId, retired_root_scope_ids.len) catch return error.OutOfMemory;
-                defer allocator.free(nominal_retired_roots);
-                for (retired_root_scope_ids, nominal_retired_roots) |scope_id, *nominal| nominal.* = ids.ScopeId.fromRaw(scope_id);
-                prepared.scope_retirement = scope_runtime.prepareSubtreesRetirement(HostEachRowScopeStep, allocator, engine.scopes.items, nominal_retired_roots) catch |err| switch (err) {
+                for (retired_root_scope_ids) |root_scope_id| {
+                    if (root_scope_id >= engine.scopes.items.len) return error.InvalidScope;
+                    is_retired_root[@intCast(root_scope_id)] = true;
+                }
+                // A live nested site only concerns this transaction when its
+                // parent row is re-collected here; the rows it keeps leave
+                // the targets, and the survivors it re-collects join the
+                // descriptor roots exactly as their parent did.
+                for (nested_syncs) |*sync| {
+                    if (sync.parent_scope_id.index() >= prepared.descriptor_target_scopes.len) return error.InvalidScope;
+                    if (!prepared.descriptor_target_scopes[sync.parent_scope_id.index()]) continue;
+                    for (sync.rows.next_scope_ids, sync.rows.scope_created, sync.recollected) |row_scope_id, created, recollected| {
+                        if (created) continue;
+                        if (row_scope_id.index() >= engine.scopes.items.len) return error.InvalidScope;
+                        if (recollected) {
+                            is_descriptor_root[row_scope_id.index()] = true;
+                            continue;
+                        }
+                        for (engine.scopes.items) |scope| {
+                            if (engine.scopeIsDescendantOrSelf(scope.scope_id.raw(), row_scope_id.raw()) catch |err| return scopeError(err)) {
+                                prepared.descriptor_target_scopes[scope.scope_id.index()] = false;
+                            }
+                        }
+                    }
+                }
+
+                // A committed branch or component scope the collection claimed
+                // again under its re-collected parent is re-collected like the
+                // parent: its descriptors are replaced under the same scope.
+                for (engine.scopes.items) |scope| {
+                    if (!scope.lifecycle.isActive()) continue;
+                    if (scope.step != .when_branch and scope.step != .component) continue;
+                    if (!prepared.descriptor_target_scopes[scope.scope_id.index()]) continue;
+                    const staged = collection orelse continue;
+                    if (staged.scopes.reserved_ids.contains(scope.scope_id)) is_descriptor_root[scope.scope_id.index()] = true;
+                }
+
+                var retired_roots: std.ArrayListUnmanaged(ids.ScopeId) = .empty;
+                defer retired_roots.deinit(allocator);
+                retired_roots.ensureTotalCapacity(allocator, retired_root_scope_ids.len) catch return error.OutOfMemory;
+                for (retired_root_scope_ids) |scope_id| retired_roots.appendAssumeCapacity(ids.ScopeId.fromRaw(scope_id));
+                // Every other committed row, branch, or component scope whose
+                // nearest enclosing scope of those kinds is a re-collected
+                // descriptor root is content that root no longer declares.
+                for (engine.scopes.items) |scope| {
+                    if (!scope.lifecycle.isActive() or scope.step == .root) continue;
+                    if (!prepared.descriptor_target_scopes[scope.scope_id.index()]) continue;
+                    if (is_retired_root[scope.scope_id.index()] or is_descriptor_root[scope.scope_id.index()]) continue;
+                    if (keptByNestedSync(nested_syncs, scope.scope_id.raw())) continue;
+                    var ancestor = scope.parent_scope_id;
+                    const retires = while (ancestor) |id| {
+                        if (is_descriptor_root[id.index()]) break !is_retired_root[id.index()];
+                        if (engine.scopes.items[id.index()].step != .root) break false;
+                        ancestor = engine.scopes.items[id.index()].parent_scope_id;
+                    } else false;
+                    if (retires) retired_roots.append(allocator, scope.scope_id) catch return error.OutOfMemory;
+                }
+                prepared.scope_retirement = scope_runtime.prepareSubtreesRetirement(HostEachRowScopeStep, allocator, engine.scopes.items, retired_roots.items) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.OverlappingSubtrees => return error.OverlappingRemoval,
                 };
                 for (prepared.scope_retirement.?.scope_ids) |scope_id| {
-                    if (scope_id.index() >= prepared.descriptor_target_scopes.len or !prepared.descriptor_target_scopes[scope_id.index()]) return error.ResourceLimit;
+                    if (scope_id.index() >= prepared.descriptor_target_scopes.len or !prepared.descriptor_target_scopes[scope_id.index()]) return error.InvalidScope;
                 }
                 return prepared;
             }
@@ -6142,6 +6638,17 @@ pub fn Engine(comptime Ctx: type) type {
                 /// replacement stream and the scope sites it created.
                 replacement: struct { render_start: usize, render_len: usize, site_start: usize, site_len: usize },
             };
+            /// Where a region collected inside a row's replacement sits in
+            /// the replacement stream: the render span its own collected rows
+            /// occupy, the scope sites they created, and the index of the
+            /// region's site descriptor, which closes that site span.
+            const LocalSpan = struct {
+                render_start: usize,
+                render_len: usize,
+                site_start: usize,
+                site_len: usize,
+                site_index: usize,
+            };
             const Region = struct {
                 node_id: u64,
                 kind: HostNodeScopeSiteKind,
@@ -6149,6 +6656,13 @@ pub fn Engine(comptime Ctx: type) type {
                 old_start: usize,
                 old_end: usize,
                 pieces: []Piece,
+                /// Present for a region nested in a collected row: a live
+                /// each site the row brought back and reconciled by key.
+                local: ?LocalSpan = null,
+                /// The region whose piece carries this one, set as the
+                /// layout consumes it. A carried region's size change is
+                /// part of its parent's.
+                parent: ?usize = null,
                 final_start: usize = unmapped,
                 new_len: usize = 0,
             };
@@ -6225,6 +6739,33 @@ pub fn Engine(comptime Ctx: type) type {
                 return start;
             }
 
+            /// Describes every live each site a re-collected row brought back:
+            /// its committed rows' old span and its rows in their next order,
+            /// laid out inside the row's replacement where the site's
+            /// descriptor was collected.
+            fn describeNestedSites(self: *@This(), nested_syncs: []const PreparedNestedRowSync) CollectionError!void {
+                if (self.phase != .describing) return error.ResourceLimit;
+                for (nested_syncs) |*sync| {
+                    const pieces = self.allocator.dupe(Piece, sync.pieces) catch return error.OutOfMemory;
+                    errdefer self.allocator.free(pieces);
+                    self.regions.append(self.allocator, .{
+                        .node_id = sync.node_id.raw(),
+                        .kind = .each,
+                        .owner = .{ .scope_id = sync.parent_scope_id.raw(), .ordinal = sync.site_ordinal },
+                        .old_start = sync.old_start,
+                        .old_end = sync.old_end,
+                        .pieces = pieces,
+                        .local = .{
+                            .render_start = sync.local_render_start,
+                            .render_len = sync.local_render_len,
+                            .site_start = sync.local_site_start,
+                            .site_len = sync.local_site_len,
+                            .site_index = sync.local_site_index,
+                        },
+                    }) catch return error.OutOfMemory;
+                }
+            }
+
             fn regionsInDocumentOrder(self: *@This(), engine: *Self) CollectionError!void {
                 const regions = self.regions.items;
                 // Insertion sort: region counts are small and the comparator
@@ -6258,6 +6799,32 @@ pub fn Engine(comptime Ctx: type) type {
                 return std.math.add(usize, final_start, len) catch return error.ResourceLimit;
             }
 
+            /// The next live nested site a collected row's replacement
+            /// carries: the outermost region, not yet laid out, whose site
+            /// descriptor lies inside `range`'s scope-site span. Regions
+            /// nest - a site collected inside a re-collected nested row sits
+            /// within that row's site's span, and its descriptor precedes the
+            /// enclosing site's, which closes its own span - so the earliest
+            /// span start wins and, between spans starting together, the
+            /// longer one: the inner region is laid out by the replacement
+            /// of the row that collected it.
+            fn nextNestedSiteIn(self: *const @This(), range: anytype) ?usize {
+                var found: ?usize = null;
+                var found_start: usize = 0;
+                var found_len: usize = 0;
+                for (self.regions.items, 0..) |region, index| {
+                    if (self.consumed[index]) continue;
+                    const local = region.local orelse continue;
+                    if (local.site_index < range.site_start or local.site_index - range.site_start >= range.site_len) continue;
+                    if (found == null or local.site_start < found_start or (local.site_start == found_start and local.site_len > found_len)) {
+                        found = index;
+                        found_start = local.site_start;
+                        found_len = local.site_len;
+                    }
+                }
+                return found;
+            }
+
             /// Lays a surviving row out at `final_start`. The regions nested
             /// in it are found by scope, not by walking on from the last
             /// region laid out: survivors are placed in their *next* order,
@@ -6265,19 +6832,56 @@ pub fn Engine(comptime Ctx: type) type {
             /// otherwise each be handed the other's. Within one row the
             /// regions still come in document order, which is old-span order.
             /// Returns the final cursor after the row.
-            fn layoutSurvivor(self: *@This(), engine: *Self, target_scopes: []const bool, scope_id: u64, old_start: usize, old_end: usize, final_start: usize) CollectionError!usize {
+            fn layoutSurvivor(self: *@This(), engine: *Self, target_scopes: []const bool, region_index: usize, scope_id: u64, old_start: usize, old_end: usize, final_start: usize) CollectionError!usize {
                 self.rows.append(self.allocator, .{ .scope_id = scope_id, .old_start = old_start, .old_end = old_end, .final_start = final_start }) catch return error.OutOfMemory;
                 var old = old_start;
                 var final = final_start;
                 for (self.regions.items, 0..) |nested, nested_index| {
                     if (self.consumed[nested_index]) continue;
                     if (!(engine.scopeIsDescendantOrSelf(nested.owner.scope_id, scope_id) catch |err| return scopeError(err))) continue;
+                    // Nothing is collected under an untouched survivor, so no
+                    // live nested site can be laid out inside it.
+                    if (nested.local != null) return error.InvalidRenderTopology;
                     if (nested.old_start < old or nested.old_end > old_end) return error.InvalidRenderTopology;
                     final = try self.placeSurvivorFragment(engine, target_scopes, old, nested.old_start, final);
+                    self.regions.items[nested_index].parent = region_index;
                     final = try self.layoutRegion(engine, target_scopes, nested_index, final);
                     old = nested.old_end;
                 }
                 return self.placeSurvivorFragment(engine, target_scopes, old, old_end, final);
+            }
+
+            fn placeReplacementFragment(self: *@This(), render_start: usize, render_len: usize, site_start: usize, site_len: usize, final_start: usize) CollectionError!usize {
+                if (render_len == 0 and site_len == 0) return final_start;
+                if (render_len != 0) self.placements.append(self.allocator, PreparedFinalRenderTopology.Placement.replacement(.{ .value = render_start }, .{ .value = final_start }, render_len)) catch return error.OutOfMemory;
+                self.ranges.append(self.allocator, .{ .site_start = site_start, .site_len = site_len, .render_start = render_start, .render_len = render_len, .final_start = final_start }) catch return error.OutOfMemory;
+                return std.math.add(usize, final_start, render_len) catch return error.ResourceLimit;
+            }
+
+            /// Lays a collected row or branch out at `final_start`: the live
+            /// nested sites collected inside it (the regions whose site
+            /// descriptor the piece created, next in document order) split
+            /// it into fragments around the rows they keep. Returns the final
+            /// cursor after the piece.
+            fn layoutReplacement(self: *@This(), engine: *Self, target_scopes: []const bool, region_index: usize, range: anytype, final_start: usize) CollectionError!usize {
+                const render_end = std.math.add(usize, range.render_start, range.render_len) catch return error.ResourceLimit;
+                const site_end = std.math.add(usize, range.site_start, range.site_len) catch return error.ResourceLimit;
+                var render_cursor = range.render_start;
+                var site_cursor = range.site_start;
+                var final = final_start;
+                while (self.nextNestedSiteIn(range)) |nested_index| {
+                    const local = self.regions.items[nested_index].local.?;
+                    if (local.render_start < render_cursor or local.site_start < site_cursor) return error.InvalidRenderTopology;
+                    const local_render_end = std.math.add(usize, local.render_start, local.render_len) catch return error.ResourceLimit;
+                    const local_site_end = std.math.add(usize, local.site_start, local.site_len) catch return error.ResourceLimit;
+                    if (local_render_end > render_end or local_site_end > site_end or local.site_index >= local_site_end) return error.InvalidRenderTopology;
+                    final = try self.placeReplacementFragment(render_cursor, local.render_start - render_cursor, site_cursor, local.site_start - site_cursor, final);
+                    self.regions.items[nested_index].parent = region_index;
+                    final = try self.layoutRegion(engine, target_scopes, nested_index, final);
+                    render_cursor = local_render_end;
+                    site_cursor = local_site_end;
+                }
+                return self.placeReplacementFragment(render_cursor, render_end - render_cursor, site_cursor, site_end - site_cursor, final);
             }
 
             /// Lays a region out at `final_start` and returns the final cursor
@@ -6290,13 +6894,11 @@ pub fn Engine(comptime Ctx: type) type {
                 var final = final_start;
                 for (self.regions.items[region_index].pieces) |piece| switch (piece) {
                     .replacement => |range| {
-                        self.placements.append(self.allocator, PreparedFinalRenderTopology.Placement.replacement(.{ .value = range.render_start }, .{ .value = final }, range.render_len)) catch return error.OutOfMemory;
-                        self.ranges.append(self.allocator, .{ .site_start = range.site_start, .site_len = range.site_len, .render_start = range.render_start, .render_len = range.render_len, .final_start = final }) catch return error.OutOfMemory;
-                        final = std.math.add(usize, final, range.render_len) catch return error.ResourceLimit;
+                        final = try self.layoutReplacement(engine, target_scopes, region_index, range, final);
                     },
                     .survivor => |row| {
                         const row_end = std.math.add(usize, row.old_start, row.len) catch return error.ResourceLimit;
-                        final = try self.layoutSurvivor(engine, target_scopes, row.scope_id, row.old_start, row_end, final);
+                        final = try self.layoutSurvivor(engine, target_scopes, region_index, row.scope_id, row.old_start, row_end, final);
                     },
                 };
                 const region = &self.regions.items[region_index];
@@ -6332,6 +6934,10 @@ pub fn Engine(comptime Ctx: type) type {
                 var final: usize = 0;
                 for (self.regions.items, 0..) |region, region_index| {
                     if (self.consumed[region_index]) continue;
+                    // A live nested site is laid out by the collected row
+                    // that brought it back; one reaching the top level has
+                    // no such row before it in document order.
+                    if (region.local != null) return error.InvalidRenderTopology;
                     if (region.old_start < old or region.old_end < region.old_start or region.old_end > old_nodes.len) return error.InvalidRenderTopology;
                     try requireRetained(engine, target_scopes, old, region.old_start);
                     final = std.math.add(usize, final, region.old_start - old) catch return error.ResourceLimit;
@@ -6340,6 +6946,27 @@ pub fn Engine(comptime Ctx: type) type {
                 }
                 try requireRetained(engine, target_scopes, old, old_nodes.len);
                 self.phase = .resolved;
+            }
+
+            /// Whether `region_index` shifts the sites `finish` resolves in
+            /// the context `row`: outside any surviving row, every region
+            /// whose size change is not already part of a carrying
+            /// ancestor's; inside a surviving row, only the regions nested in
+            /// that row, again net of an ancestor counted by the same rule.
+            /// Regions carry regions to any depth, so every ancestor is
+            /// asked, not only the nearest: a region three levels down is
+            /// part of the top-level region's change even though the middle
+            /// region, being carried, shifts nothing itself.
+            fn regionShiftsSitesIn(self: *const @This(), engine: *Self, region_index: usize, row: ?SurvivingRow) CollectionError!bool {
+                const region = self.regions.items[region_index];
+                if (row) |surviving| {
+                    if (!(engine.scopeIsDescendantOrSelf(region.owner.scope_id, surviving.scope_id) catch |err| return scopeError(err))) return false;
+                }
+                var ancestor = region.parent;
+                while (ancestor) |parent| : (ancestor = self.regions.items[parent].parent) {
+                    if (try self.regionShiftsSitesIn(engine, parent, row)) return false;
+                }
+                return true;
             }
 
             /// The innermost surviving row whose scope contains `scope_id`, if
@@ -6396,10 +7023,8 @@ pub fn Engine(comptime Ctx: type) type {
                     } else {
                         shifted = std.math.cast(isize, old_index) orelse return error.ResourceLimit;
                     }
-                    for (self.regions.items) |region| {
-                        if (row) |surviving| {
-                            if (!(engine.scopeIsDescendantOrSelf(region.owner.scope_id, surviving.scope_id) catch |err| return scopeError(err))) continue;
-                        }
+                    for (self.regions.items, 0..) |region, region_index| {
+                        if (!(try self.regionShiftsSitesIn(engine, region_index, row))) continue;
                         switch (try engine.compareSitePositions(region.owner, position)) {
                             .before => if (region.old_end > old_index) return error.InvalidRenderTopology,
                             .after => {
@@ -6421,6 +7046,17 @@ pub fn Engine(comptime Ctx: type) type {
                 const replacement_new = self.allocator.alloc(usize, replacement_sites.len) catch return error.OutOfMemory;
                 errdefer self.allocator.free(replacement_new);
                 for (replacement_sites, replacement_new, 0..) |site, *new, site_index| {
+                    // A live nested site's own descriptor starts where its
+                    // region landed, like an edited active site does.
+                    const owned: ?usize = for (self.regions.items) |region| {
+                        const local = region.local orelse continue;
+                        if (local.site_index == site_index) break region.final_start;
+                    } else null;
+                    if (owned) |final_start| {
+                        if (final_start > final_len) return error.InvalidRenderTopology;
+                        new.* = final_start;
+                        continue;
+                    }
                     const range = for (self.ranges.items) |range| {
                         if (site_index >= range.site_start and site_index - range.site_start < range.site_len) break range;
                     } else return error.InvalidRenderTopology;
@@ -6612,17 +7248,18 @@ pub fn Engine(comptime Ctx: type) type {
                 return plan;
             }
 
-            fn prepareEachRenderTopology(self: *@This(), rows: *const PreparedEachRowReplacementCollection, layout: *const PreparedEachRowRenderLayout) CollectionError!void {
+            fn prepareEachRenderTopology(self: *@This(), rows: *const PreparedEachRowReplacementCollection, layout: *const PreparedEachRowRenderLayout, render_parent_ids: []const u64) CollectionError!void {
                 const allocator = Ctx.allocator(self.host_ctx);
                 var plan = PreparedRenderLayoutPlan.init(allocator);
                 var plan_owned = true;
                 errdefer if (plan_owned) plan.deinit();
                 try plan.describeEachSite(layout);
+                try plan.describeNestedSites(rows.replacement.collection.nested_row_syncs.items);
                 try plan.resolve(self.engine, layout.targets.descriptor_target_scopes);
                 self.final_render_topology = try PreparedFinalRenderTopology.preparePlaced(self.engine, allocator, rows.replacement, layout.targets.descriptor_target_scopes, plan.removed_render_count, plan.placements.items);
                 plan_owned = false;
                 try self.adoptRenderLayoutPlan(plan);
-                try self.prepareFinalRenderTopology(&.{layout.site.parent_elem_id.raw()});
+                try self.prepareFinalRenderTopology(render_parent_ids);
             }
 
             /// Takes ownership of a resolved layout plan and resolves every
@@ -6718,45 +7355,26 @@ pub fn Engine(comptime Ctx: type) type {
 
             fn prepareExternalEach(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, rows: *const each_runtime.PreparedRowSync, replacement: *PreparedEachRowReplacementCollection, layout: *const PreparedEachRowRenderLayout, cache_overlay: ?*signal_records.PreparedCacheUpdates) CollectionError!*@This() {
                 const allocator = Ctx.allocator(ctx);
-                const suppressed_parents = [_]u64{layout.site.parent_elem_id.raw()};
+                // The site's parent and the parents of every live nested
+                // site take their final child order from the topology.
+                var render_parents: std.ArrayListUnmanaged(u64) = .empty;
+                defer render_parents.deinit(allocator);
+                render_parents.append(allocator, layout.site.parent_elem_id.raw()) catch return error.OutOfMemory;
+                try replacement.replacement.collection.appendNestedSiteRenderParents(allocator, &render_parents);
                 var descriptor_roots: std.ArrayListUnmanaged(u64) = .empty;
                 defer descriptor_roots.deinit(allocator);
                 descriptor_roots.ensureTotalCapacity(allocator, std.math.add(usize, rows.removed_scope_ids.len, replacement.replacement_rows.len) catch return error.ResourceLimit) catch return error.OutOfMemory;
                 for (rows.removed_scope_ids) |scope_id| descriptor_roots.appendAssumeCapacity(scope_id.raw());
                 for (replacement.replacement_rows) |row| if (!rows.scope_created[row.row_index]) descriptor_roots.appendAssumeCapacity(row.scope_id.raw());
-                const downstream = try prepareExternal(engine, ctx, roc_host, replacement.replacement, descriptor_roots.items, @ptrCast(rows.removed_scope_ids), layout.remove_starts, null, &suppressed_parents, cache_overlay);
+                const downstream = try prepareExternal(engine, ctx, roc_host, replacement.replacement, descriptor_roots.items, @ptrCast(rows.removed_scope_ids), layout.remove_starts, null, render_parents.items, cache_overlay);
                 errdefer downstream.deinit();
-                try downstream.prepareEachRenderTopology(replacement, layout);
+                try downstream.prepareEachRenderTopology(replacement, layout, render_parents.items);
                 return downstream;
             }
 
             fn prepareDownstream(self: *@This(), allocator: std.mem.Allocator, descriptor_root_scope_ids: []const u64, retired_root_scope_ids: []const u64, render_insert_indexes: []const usize, scan_scopes: ?[]const []const bool, external_row_sync: bool, cache_overlay: ?*signal_records.PreparedCacheUpdates) CollectionError!void {
-                // A row re-collected in place keeps its scope and reuses its
-                // branch and component scopes, but its nested each rows are
-                // reserved afresh, so the old row subtrees under it retire with
-                // the replacement. Only the top-most old rows are roots; their
-                // descendants retire with them.
-                var effective_retired_roots: std.ArrayListUnmanaged(u64) = .empty;
-                defer effective_retired_roots.deinit(allocator);
-                effective_retired_roots.appendSlice(allocator, retired_root_scope_ids) catch return error.OutOfMemory;
-                if (external_row_sync) for (descriptor_root_scope_ids) |root| {
-                    const retired = for (retired_root_scope_ids) |candidate| {
-                        if (candidate == root) break true;
-                    } else false;
-                    if (retired) continue;
-                    for (self.engine.scopes.items) |scope| {
-                        if (!scope.lifecycle.isActive() or scope.scope_id.raw() == root or scope.step != .each_row) continue;
-                        if (!(self.engine.scopeIsDescendantOrSelf(scope.scope_id.raw(), root) catch |err| return scopeError(err))) continue;
-                        var ancestor = scope.parent_scope_id;
-                        const top_most = while (ancestor) |id| {
-                            if (id.raw() == root) break true;
-                            if (self.engine.scopes.items[id.index()].step == .each_row) break false;
-                            ancestor = self.engine.scopes.items[id.index()].parent_scope_id;
-                        } else false;
-                        if (top_most) effective_retired_roots.append(allocator, scope.scope_id.raw()) catch return error.OutOfMemory;
-                    }
-                };
-                self.targets = try PreparedStructuralTargets.prepare(self.engine, allocator, descriptor_root_scope_ids, effective_retired_roots.items);
+                const nested_syncs = self.replacement.collection.nested_row_syncs.items;
+                self.targets = try PreparedStructuralTargets.prepare(self.engine, allocator, descriptor_root_scope_ids, retired_root_scope_ids, &self.replacement.collection);
                 errdefer if (self.targets) |*targets| targets.deinit(allocator);
                 const target_scopes = self.targets.?.descriptor_target_scopes;
                 const retirement_scope_ids = self.targets.?.scope_retirement.?.scope_ids;
@@ -6769,15 +7387,32 @@ pub fn Engine(comptime Ctx: type) type {
                 errdefer if (self.removal) |*removal| removal.deinit(allocator);
                 self.identity_retirements = try PreparedIdentityRetirements.prepareExactRemoval(self.engine, allocator, retirement_scope_ids, &self.removal.?.removal);
                 errdefer if (self.identity_retirements) |*retirements| retirements.deinit(allocator);
-                self.state_retirement = try PreparedStateRetirementIndexes.prepare(self.engine, allocator, self.removal.?.removal.node_indexes.state_indexes.items);
+                // A state site the replacement declares again under its
+                // committed node id keeps its cell: the descriptor is
+                // replaced, the value the site holds is not. Only the cells
+                // of sites the replacement does not re-declare retire.
+                var retired_state_indexes: std.ArrayListUnmanaged(usize) = .empty;
+                defer retired_state_indexes.deinit(allocator);
+                retired_state_indexes.ensureTotalCapacity(allocator, self.removal.?.removal.node_indexes.state_indexes.items.len) catch return error.OutOfMemory;
+                for (self.removal.?.removal.node_indexes.state_indexes.items) |state_index| {
+                    if (state_index >= self.engine.active_stream.states.items.len) return error.InvalidDescriptor;
+                    const node_id = self.engine.active_stream.states.items[state_index].node_id;
+                    const redeclared = for (self.replacement.stream.states.items) |state| {
+                        if (state.node_id == node_id) break true;
+                    } else false;
+                    if (!redeclared) retired_state_indexes.appendAssumeCapacity(state_index);
+                }
+                self.state_retirement = try PreparedStateRetirementIndexes.prepare(self.engine, allocator, retired_state_indexes.items);
                 errdefer if (self.state_retirement) |*retirement| retirement.deinit(allocator);
                 try self.state_retirement.?.reserveRetired(allocator, &self.retired_state_cells);
                 errdefer self.retired_state_cells.deinit(allocator);
                 if (!external_row_sync) {
                     self.row_retirement = try prepareRowRetirementForScopes(self.engine, allocator, retirement_scope_ids);
                 } else {
-                    // The row sync removes the retired rows themselves, but a
-                    // retired row can own nested each sites whose rows live in
+                    // A row sync removes the retired rows from its own site
+                    // itself - the transaction's syncs and the live nested
+                    // sites re-collected rows reconcile alike - but a retired
+                    // row can own nested each sites whose rows live in
                     // `each_row_sites` too. Retire those with the subtree, and
                     // journal even when there are none: applying the journal is
                     // what drops an emptied site whose descriptor is gone, and a
@@ -6786,10 +7421,12 @@ pub fn Engine(comptime Ctx: type) type {
                     defer nested.deinit(allocator);
                     nested.ensureTotalCapacity(allocator, retirement_scope_ids.len) catch return error.OutOfMemory;
                     for (retirement_scope_ids) |scope_id| {
-                        const is_root = for (retired_root_scope_ids) |root| {
+                        const synced = for (retired_root_scope_ids) |root| {
                             if (root == scope_id.raw()) break true;
+                        } else for (nested_syncs) |*sync| {
+                            if (sync.removesRow(scope_id.raw())) break true;
                         } else false;
-                        if (!is_root) nested.appendAssumeCapacity(scope_id);
+                        if (!synced) nested.appendAssumeCapacity(scope_id);
                     }
                     self.row_retirement = try prepareRowRetirementForScopes(self.engine, allocator, nested.items);
                 }
@@ -7039,7 +7676,7 @@ pub fn Engine(comptime Ctx: type) type {
                 // sites: a re-collected nested site takes over the slot its
                 // predecessor held, which must be empty by then.
                 if (self.row_retirement) |*row_retirement| {
-                    var row_keys = EachRowScopeKeyLookup{ .engine = self.engine };
+                    var row_keys = EachRowScopeKeyLookup{ .engine = self.engine, .reconciled_sites = self.replacement.collection.nested_row_syncs.items };
                     row_retirement.apply(Ctx.allocator(self.host_ctx), &self.engine.each_row_sites, &self.engine.each_row_site_indexes, &self.engine.each_row_memberships_by_scope_id, &row_keys);
                 }
                 self.replacement.collection.commit();
@@ -12075,7 +12712,7 @@ pub fn Engine(comptime Ctx: type) type {
             defer rows.deinit();
             const replacement = try PreparedEachRowReplacementCollection.prepare(self, ctx, roc_host, site, each_desc, &rows.rows, rows.inputs.keys, rows.inputs.items, .{}, dirty_source_node_ids, null, null);
             defer replacement.deinit();
-            var layout = try PreparedEachRowRenderLayout.prepare(self, allocator, site, &rows.rows, replacement.replacement_rows);
+            var layout = try PreparedEachRowRenderLayout.prepare(self, allocator, site, &rows.rows, replacement.replacement_rows, &replacement.replacement.collection);
             defer layout.deinit();
             const downstream = try PreparedStructuralDownstream.prepareExternalEach(self, ctx, roc_host, &rows.rows, replacement, &layout, null);
             defer downstream.deinit();
@@ -12751,7 +13388,7 @@ pub fn Engine(comptime Ctx: type) type {
                         errdefer plan.each_rows.?.deinit();
                         plan.each_replacement = try PreparedEachRowReplacementCollection.prepare(engine, ctx, roc_host, site, each_desc.*, &plan.each_rows.?.rows, plan.each_rows.?.inputs.keys, plan.each_rows.?.inputs.items, .{}, &.{}, &plan.caches, external_state);
                         errdefer plan.each_replacement.?.deinit();
-                        plan.each_layout = try PreparedEachRowRenderLayout.prepare(engine, allocator, site, &plan.each_rows.?.rows, plan.each_replacement.?.replacement_rows);
+                        plan.each_layout = try PreparedEachRowRenderLayout.prepare(engine, allocator, site, &plan.each_rows.?.rows, plan.each_replacement.?.replacement_rows, &plan.each_replacement.?.replacement.collection);
                         errdefer plan.each_layout.?.deinit();
                         plan.structural_downstream = try PreparedStructuralDownstream.prepareExternalEach(engine, ctx, roc_host, &plan.each_rows.?.rows, plan.each_replacement.?, &plan.each_layout.?, &plan.caches);
                     } else {
@@ -14568,7 +15205,7 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
 
         fn prepareLayout(engine: *Engine(VerifyCtx), allocator: std.mem.Allocator, rows: *const each_runtime.PreparedRowSync, replacement: *const Engine(VerifyCtx).PreparedEachRowReplacementCollection) !Engine(VerifyCtx).PreparedEachRowRenderLayout {
             const site = HostNodeScopeSiteDesc{ .node_id = ids.NodeId.fromRaw(0), .scope_id = ids.ScopeId.fromRaw(0), .ordinal = ids.SiteOrdinal.fromRaw(44), .parent_elem_id = ids.ElemId.fromRaw(0), .render_insert_index = 0, .kind = .each, .binder_bindings = &.{} };
-            return Engine(VerifyCtx).PreparedEachRowRenderLayout.prepare(engine, allocator, site, rows, replacement.replacement_rows);
+            return Engine(VerifyCtx).PreparedEachRowRenderLayout.prepare(engine, allocator, site, rows, replacement.replacement_rows, &replacement.replacement.collection);
         }
 
         fn prepareDownstream(engine: *Engine(VerifyCtx), ctx: *VerifyCtxHost, host: *abi.RocHost, rows: *const each_runtime.PreparedRowSync, replacement: *Engine(VerifyCtx).PreparedEachRowReplacementCollection, layout: *const Engine(VerifyCtx).PreparedEachRowRenderLayout) !*Engine(VerifyCtx).PreparedStructuralDownstream {
@@ -15667,10 +16304,10 @@ test "structural targets refuse nested retirement roots as OverlappingRemoval" {
     const child = try engine.internWhenBranchScope(std.testing.allocator, root.scope_id, ids.SiteOrdinal.fromRaw(10), .false_branch);
     const grandchild = try engine.internWhenBranchScope(std.testing.allocator, child.scope_id, ids.SiteOrdinal.fromRaw(11), .false_branch);
 
-    var disjoint = try Engine(VerifyCtx).PreparedStructuralTargets.prepare(&engine, std.testing.allocator, &.{root.scope_id.raw()}, &.{child.scope_id.raw()});
+    var disjoint = try Engine(VerifyCtx).PreparedStructuralTargets.prepare(&engine, std.testing.allocator, &.{root.scope_id.raw()}, &.{child.scope_id.raw()}, null);
     disjoint.deinit(std.testing.allocator);
     // Retiring a subtree and one of its own descendants claims the descendant twice.
-    try std.testing.expectError(error.OverlappingRemoval, Engine(VerifyCtx).PreparedStructuralTargets.prepare(&engine, std.testing.allocator, &.{root.scope_id.raw()}, &.{ child.scope_id.raw(), grandchild.scope_id.raw() }));
+    try std.testing.expectError(error.OverlappingRemoval, Engine(VerifyCtx).PreparedStructuralTargets.prepare(&engine, std.testing.allocator, &.{root.scope_id.raw()}, &.{ child.scope_id.raw(), grandchild.scope_id.raw() }, null));
     try std.testing.expectEqual(@as(usize, 3), engine.scopes.items.len);
     try std.testing.expect(engine.scopes.items[grandchild.scope_id.index()].lifecycle.isActive());
 }

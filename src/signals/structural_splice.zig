@@ -348,13 +348,15 @@ pub fn prepareRenderRemovalScan(comptime Stream: type, allocator: std.mem.Alloca
     var removed_render_count: usize = 0;
     var target_scan_count: usize = 0;
     var render_index = render_insert_index;
+    // Scope ownership alone decides what the interval removes. A node under a
+    // removed element is not thereby removed: a re-collected row's element is
+    // retired and re-created under its id, while the nested rows that survive
+    // the re-collection keep their nodes beneath it and end the interval.
     while (render_index < stream.render_nodes.items.len) : (render_index += 1) {
         const node = stream.render_nodes.items[render_index];
         const parent_elem_id = descriptor_stream.renderNodeParentElemId(Stream, stream, node);
         target_scan_count += 1;
-        const scope_in_target = scopeIsInTargetSet(target_scopes, descriptor_stream.renderNodeScopeId(Stream, stream, node));
-        const parent_removed = removed_elem_set.contains(parent_elem_id.raw());
-        if (!scope_in_target and !parent_removed) break;
+        if (!scopeIsInTargetSet(target_scopes, descriptor_stream.renderNodeScopeId(Stream, stream, node))) break;
         removed_render_count += 1;
         try removed_elem_ids.append(allocator, node.elem_id.raw());
         try removed_elem_set.put(allocator, node.elem_id.raw(), {});
@@ -1015,7 +1017,11 @@ test "multi interval removal prepares one union journal and rejects overlaps" {
     try std.testing.expectError(error.OverlappingIntervals, prepareMultiRemoval(TestStream, std.testing.allocator, &stream, &.{ 0, 1 }, target_scopes, null));
 }
 
-test "structural splice removes rendered descendants of target nodes across scope boundaries" {
+test "structural splice removal scan follows scope ownership, not element nesting" {
+    // A section in the target scope holds a div of another scope, which holds
+    // a text of a third. Only the section is removed: the div is a row that
+    // survives its parent's re-collection and keeps its nodes beneath the
+    // re-created element, so it ends the interval rather than going with it.
     const allocator = std.testing.allocator;
     var stream = TestStream{};
     defer stream.deinit(allocator);
@@ -1040,8 +1046,8 @@ test "structural splice removes rendered descendants of target nodes across scop
     const scan = collectRenderRemovalScan(TestStream, allocator, &stream, 0, target_scopes[0..]);
     defer scan.deinit(allocator);
 
-    try std.testing.expectEqual(@as(usize, 3), scan.removed_render_count);
-    try std.testing.expectEqual(@as(usize, 4), scan.target_scan_count);
-    try std.testing.expectEqualSlices(u64, &.{ 1, 2, 3 }, scan.removed_elem_ids);
+    try std.testing.expectEqual(@as(usize, 1), scan.removed_render_count);
+    try std.testing.expectEqual(@as(usize, 2), scan.target_scan_count);
+    try std.testing.expectEqualSlices(u64, &.{1}, scan.removed_elem_ids);
     try std.testing.expectEqualSlices(u64, &.{0}, scan.touched_parent_ids);
 }

@@ -75,22 +75,30 @@
 //! top-level when's, read through the same root cell from inside the row
 //! scope, so one edit flips a when in every row of every site at once -
 //! surviving rows of a re-diffed shared site included. Nesting is bounded at
-//! two levels, wrappers at two levels. Keys are the row's item value, and
-//! generated lists are strictly increasing before an optional rotation, so no
-//! site ever carries a duplicate key: that is a Roc-side diagnostic and
+//! two levels, wrappers at two levels.
+//!
+//! A shared item is `key * key_stride + version`: the row's key is the item's
+//! bucket and the version is the part an edit may change under the same key.
+//! Generated key lists are strictly increasing before an optional rotation, so
+//! no site ever carries a duplicate key: that is a Roc-side diagnostic and
 //! terminates the host, not something to fuzz here. Constant sites key rows
 //! from a low range and shared sites from a high one, and every site carries
 //! a generator-assigned id in its labels, so a label names exactly one row of
-//! one site.
+//! one site. A surviving key whose version changed is a row the engine
+//! re-collects in place, and a `nested_each` row renders its inner site from
+//! that version - one row more when it is odd, rotated by it - so such a
+//! re-collection carries nested rows that survive, reorder, grow, or shrink
+//! under it, which the engine must reconcile by key rather than re-mount.
 //!
 //! The row callable receives its `SiteSpec` through the erased-callable capture,
 //! which is how the engine ends up asking the generated program what to render
 //! for each row without the harness knowing when it will be asked.
 //!
-//! Edits are drawn as fresh strictly-increasing lists of independently chosen
-//! length with an optional rotation, so successive lists exercise reorder,
-//! replacement, growth, and shrink - across every shared site at once, since
-//! they all read the same cell.
+//! Edits are drawn as fresh strictly-increasing key lists of independently
+//! chosen length, each key with a fresh version, with an optional rotation, so
+//! successive lists exercise reorder, replacement, growth, shrink, and in-place
+//! re-collection - across every shared site at once, since they all read the
+//! same cell.
 //!
 //! # Reference model
 //!
@@ -253,6 +261,10 @@ const max_full_sweep_attempts = 40;
 /// above `shared_key_base`. A `contains` operand is drawn from this range so it
 /// is sometimes present and sometimes not.
 const shared_key_limit: i64 = shared_key_base + 3 * max_rows;
+/// Versions one shared key can carry: a shared item is `key * key_stride +
+/// version`, and shared sites key rows by that bucket, so an edit that keeps a
+/// key but changes its version re-collects the row in place.
+const key_stride: i64 = 4;
 
 const RowKind = enum(u8) {
     text,
@@ -369,15 +381,26 @@ const Expected = struct {
     }
 
     fn addSite(self: *Expected, spec: *const SiteSpec, items: []const i64) void {
-        const rows = rowCount(spec, items);
         self.sites += 1;
-        self.rows += rows;
+        if (spec.shared) {
+            for (items) |item| self.addRow(spec, rowVersion(spec, item));
+        } else {
+            for (0..spec.row_count) |_| self.addRow(spec, 0);
+        }
+    }
+
+    /// Adds one row of `spec` rendered at `version`, and whatever the row
+    /// instantiates: a constant inner site sized and ordered by the version.
+    fn addRow(self: *Expected, spec: *const SiteSpec, version: i64) void {
+        self.rows += 1;
         switch (spec.row_kind) {
             .text => {},
-            .when => self.whens += rows,
-            .stateful => self.states += rows,
+            .when => self.whens += 1,
+            .stateful => self.states += 1,
             .nested_each => {
-                for (0..rows) |_| self.addSite(spec.inner.?, items);
+                const inner = spec.inner.?;
+                self.sites += 1;
+                for (0..innerRowCount(inner, version)) |_| self.addRow(inner, 0);
             },
         }
     }
@@ -388,9 +411,33 @@ fn rowCount(spec: *const SiteSpec, items: []const i64) usize {
 }
 
 /// The key of row `index` of `spec` under `items`: shared sites render the
-/// list in its order, constant sites count from zero.
+/// list's key buckets in its order, constant sites count from zero.
 fn rowKey(spec: *const SiteSpec, items: []const i64, index: usize) i64 {
-    return if (spec.shared) items[index] else @intCast(index);
+    return if (spec.shared) @divTrunc(items[index], key_stride) else @intCast(index);
+}
+
+/// The version a shared item carries; a constant site's rows have none.
+fn rowVersion(spec: *const SiteSpec, item: i64) i64 {
+    return if (spec.shared) @mod(item, key_stride) else 0;
+}
+
+/// Rows the constant inner site `inner` renders under an outer row at
+/// `version`: its own count, plus one when the version is odd.
+fn innerRowCount(inner: *const SiteSpec, version: i64) usize {
+    const grown: usize = inner.row_count + @as(usize, @intCast(@mod(version, 2)));
+    return @min(grown, max_rows);
+}
+
+/// The keys of the constant inner site `inner` under an outer row at
+/// `version`, in render order: `0..count`, rotated by the version.
+fn innerRowKeys(inner: *const SiteSpec, version: i64, buffer: *[max_rows]i64) []const i64 {
+    const count = innerRowCount(inner, version);
+    for (buffer[0..count], 0..) |*key, index| key.* = @intCast(index);
+    if (count > 1) {
+        const rotation: usize = @intCast(@mod(version, @as(i64, @intCast(count))));
+        if (rotation != 0) std.mem.rotate(i64, buffer[0..count], rotation);
+    }
+    return buffer[0..count];
 }
 
 /// Appends the text every DOM text node under `children` shows, in document
@@ -415,7 +462,13 @@ fn modelSiteTexts(out: *std.ArrayListUnmanaged([]const u8), arena: std.mem.Alloc
             .when => try out.append(arena, if (spec.condition.holds(items)) label else hidden_text),
             .nested_each => {
                 try out.append(arena, label);
-                try modelSiteTexts(out, arena, spec.inner.?, items);
+                const inner = spec.inner.?;
+                var keys: [max_rows]i64 = undefined;
+                const version = if (spec.shared) rowVersion(spec, items[index]) else 0;
+                for (innerRowKeys(inner, version, &keys)) |key| {
+                    const inner_label = try ownedRowLabel(arena, inner, key);
+                    try out.append(arena, if (inner.row_kind == .when and !inner.condition.holds(items)) hidden_text else inner_label);
+                }
             },
         }
     }
@@ -505,18 +558,20 @@ fn generate(reader: *FuzzReader, arena: std.mem.Allocator) !Program {
     return .{ .children = children, .lists = lists, .sites = generator.sites.items };
 }
 
-/// Builds one strictly increasing key list, then rotates it.
+/// Builds one strictly increasing key list, gives every key a version, then
+/// rotates it.
 ///
-/// Increasing values keep every key in a list distinct, which is a hard contract
+/// Increasing keys keep every key in a list distinct, which is a hard contract
 /// rather than a fuzzing dimension: duplicate keys are a Roc-side diagnostic that
 /// terminates the host. The rotation is what turns an otherwise monotonically
-/// ordered list into a genuine reorder for the row differ.
+/// ordered list into a genuine reorder for the row differ, and a version drawn
+/// afresh per list is what makes a surviving key an in-place re-collection.
 fn generateList(reader: *FuzzReader, arena: std.mem.Allocator, length: usize) ![]const i64 {
     const items = try arena.alloc(i64, length);
     var next: i64 = shared_key_base;
     for (items) |*item| {
         next += 1 + reader.intRangeAtMost(i64, 0, 2);
-        item.* = next;
+        item.* = next * key_stride + reader.intRangeAtMost(i64, 0, key_stride - 1);
     }
     if (length > 1) {
         const rotation = reader.intRangeAtMost(usize, 0, length - 1);
@@ -577,7 +632,7 @@ fn generateCondition(reader: *FuzzReader) WhenCondition {
     return if (reader.boolean())
         .{ .predicate = .length_at_least, .operand = reader.intRangeAtMost(i64, 0, max_rows + 1) }
     else
-        .{ .predicate = .contains, .operand = reader.intRangeAtMost(i64, shared_key_base + 1, shared_key_limit) };
+        .{ .predicate = .contains, .operand = reader.intRangeAtMost(i64, shared_key_base + 1, shared_key_limit) * key_stride + reader.intRangeAtMost(i64, 0, key_stride - 1) };
 }
 
 fn generateSite(generator: *Generator, depth: u8, allow_shared: bool) error{OutOfMemory}!*const SiteSpec {
@@ -613,7 +668,7 @@ fn printProgram(program: Program) void {
     std.debug.print("program: {d} top-level children, {d} sites, {d} shared\n", .{ program.children.len, program.sites.len, countSharedSites(program) });
     for (program.lists, 0..) |list, index| {
         std.debug.print("  list[{d}] len={d}:", .{ index, list.len });
-        for (list) |item| std.debug.print(" {d}", .{item});
+        for (list) |item| std.debug.print(" {d}v{d}", .{ @divTrunc(item, key_stride), @mod(item, key_stride) });
         const expected = Expected.of(program, list);
         std.debug.print(" -> sites={d} whens={d} rows={d} states={d}\n", .{ expected.sites, expected.whens, expected.rows, expected.states });
     }
@@ -826,7 +881,7 @@ fn buildChildren(children: []const Child, roc_host: *abi.RocHost, shared: *const
     for (children, 0..) |child, index| {
         built[index] = switch (child) {
             .text => fixtures.text(roc_host, separator_text),
-            .site => |spec| buildSite(spec, roc_host, shared),
+            .site => |spec| buildSite(spec, roc_host, shared, 0),
             .wrapper => |nested| buildChildren(nested, roc_host, shared),
             .when => |when| fixtures.whenOnListPredicate(roc_host, shared.token, when.condition.predicate, when.condition.operand, buildBranch(when.when_true, roc_host, shared), buildBranch(when.when_false, roc_host, shared)),
         };
@@ -844,15 +899,20 @@ fn buildBranch(branch: Branch, roc_host: *abi.RocHost, shared: *const SharedSour
 /// Builds one `each` fixture for `spec`. Only a top-level site reads the
 /// shared cell as its items; every site's rows still carry the source so a
 /// `when` row can bind its condition to it from inside the row scope.
-fn buildSite(spec: *const SiteSpec, roc_host: *abi.RocHost, shared: *const SharedSource) abi.Elem {
+/// Builds one `each` fixture for `spec`. A shared site keys its rows by item
+/// bucket; a constant one, mounted for an outer row at `version`, holds
+/// `innerRowKeys` in that order.
+fn buildSite(spec: *const SiteSpec, roc_host: *abi.RocHost, shared: *const SharedSource, version: i64) abi.Elem {
     const capture = RowCapture{ .spec = spec, .shared = shared };
     if (spec.shared) {
         if (spec.depth != 0) fail("a nested each site was generated as shared", .{});
-        return fixtures.eachOverStateListRowAndCapture(RowCapture, roc_host, shared.token, shared.cap, &rowCallable, capture);
+        return fixtures.eachOverStateListKeyOfRowAndCapture(RowCapture, roc_host, shared.token, shared.cap, &fixtures.bucketKeyCallable, .{ .amount = key_stride }, &rowCallable, capture);
     }
+    var keys: [max_rows]i64 = undefined;
+    const inner_keys = innerRowKeys(spec, version, &keys);
     var items: [max_rows]HostValue = undefined;
-    for (items[0..spec.row_count], 0..) |*item, index| item.* = fixtures.i64Value(@intCast(index));
-    return fixtures.eachWithItemsRowAndCapture(RowCapture, roc_host, items[0..spec.row_count], &rowCallable, capture);
+    for (items[0..inner_keys.len], inner_keys) |*item, key| item.* = fixtures.i64Value(key);
+    return fixtures.eachWithItemsRowAndCapture(RowCapture, roc_host, items[0..inner_keys.len], &rowCallable, capture);
 }
 
 fn rowCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
@@ -860,6 +920,7 @@ fn rowCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_
     const spec = capture.spec;
     const call_args = fixtures.argsAs(fixtures.BinaryArgs, args);
     const key = fixtures.readI64(roc_host, call_args.arg0);
+    const item = fixtures.readI64(roc_host, call_args.arg1);
     var buffer: [32]u8 = undefined;
     const label = rowLabel(&buffer, spec, key);
     const elem = switch (spec.row_kind) {
@@ -867,7 +928,7 @@ fn rowCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_
         .stateful => fixtures.state(roc_host, fixtures.text(roc_host, label)),
         .when => fixtures.whenOnListPredicate(roc_host, capture.shared.token, spec.condition.predicate, spec.condition.operand, fixtures.text(roc_host, label), fixtures.text(roc_host, hidden_text)),
         .nested_each => blk: {
-            const children = [_]abi.Elem{ fixtures.text(roc_host, label), buildSite(spec.inner.?, roc_host, capture.shared) };
+            const children = [_]abi.Elem{ fixtures.text(roc_host, label), buildSite(spec.inner.?, roc_host, capture.shared, rowVersion(spec, item)) };
             break :blk fixtures.element(roc_host, &children);
         },
     };
@@ -951,7 +1012,7 @@ fn expectLabels(host: *const Host, program: Program, items: []const i64) void {
     var buffer: [32]u8 = undefined;
     for (program.sites) |spec| {
         for (0..max_rows) |row| expectLabelHidden(host, shown.items, rowLabel(&buffer, spec, @intCast(row)));
-        for (program.lists) |list| for (list) |key| expectLabelHidden(host, shown.items, rowLabel(&buffer, spec, key));
+        for (program.lists) |list| for (list) |item| expectLabelHidden(host, shown.items, rowLabel(&buffer, spec, @divTrunc(item, key_stride)));
     }
 }
 

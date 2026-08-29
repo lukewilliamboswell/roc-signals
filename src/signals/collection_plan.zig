@@ -53,10 +53,23 @@ pub const IdentityOverlay = struct {
     /// Stages `key` using the first candidate not already reserved by this
     /// transaction. Candidate enumeration is supplied by the persistent table;
     /// overlay lookup and reservation membership remain O(1).
+    ///
+    /// A key the committed table already maps keeps its identity, and that
+    /// identity is staged as an intent like a fresh one: the transaction
+    /// re-collecting the site retires the committed generation of every
+    /// identity whose descriptor it replaces, so publication must activate
+    /// the reused identity again with the replacement.
     pub fn reserve(self: *IdentityOverlay, key: IdentityKey, active_id: ?u64, candidates: []const u64) error{ NoCapacity, NoAvailableIdentity }!u64 {
         if (self.phase == .committed) @panic("identity overlay cannot reserve after commit");
-        if (self.lookup(key, active_id)) |id| return id;
+        if (self.provisional_by_key.get(key)) |id| return id;
         if (self.prepared_remaining == 0) return error.NoCapacity;
+        if (active_id) |id| {
+            self.provisional_by_key.putAssumeCapacity(key, id);
+            self.reserved_ids.putAssumeCapacity(id, {});
+            self.intents.appendAssumeCapacity(.{ .key = key, .id = id });
+            self.prepared_remaining -= 1;
+            return id;
+        }
         for (candidates) |id| {
             if (self.reserved_ids.contains(id)) continue;
             self.provisional_by_key.putAssumeCapacity(key, id);
@@ -633,13 +646,20 @@ test "identity overlay reserves distinct ids without persistent mutation" {
 
     var overlay: IdentityOverlay = .{};
     defer overlay.deinit(std.testing.allocator);
-    try overlay.prepare(std.testing.allocator, 2);
+    try overlay.prepare(std.testing.allocator, 3);
     try std.testing.expectEqual(@as(u64, 7), try overlay.reserve(10, persistent.get(10), &.{ 7, 8 }));
     try std.testing.expectEqual(@as(u64, 8), try overlay.reserve(11, persistent.get(11), &.{ 8, 9 }));
     try std.testing.expectEqual(@as(u64, 9), try overlay.reserve(12, persistent.get(12), &.{ 8, 9 }));
     try std.testing.expectEqual(@as(usize, 1), persistent.count());
     try std.testing.expect(persistent.get(11) == null);
     try std.testing.expectEqual(@as(u64, 8), overlay.lookup(11, null).?);
+    // The committed identity is staged again under its own key, so the
+    // publication that follows the retirement of its old generation
+    // reactivates it; reserving the key twice stages it once.
+    try std.testing.expectEqual(@as(u64, 7), try overlay.reserve(10, persistent.get(10), &.{ 7, 8 }));
+    try std.testing.expectEqual(@as(usize, 3), overlay.intents.items.len);
+    try std.testing.expectEqual(IdentityIntent{ .key = 10, .id = 7 }, overlay.intents.items[0]);
+    try std.testing.expectError(error.NoCapacity, overlay.reserve(13, null, &.{10}));
 }
 
 test "identity overlay abort permits clean retry" {
