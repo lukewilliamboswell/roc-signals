@@ -6210,6 +6210,104 @@ test "one state transaction updates two each sites under distinct parents throug
     for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
+test "sibling each sites keep their insertion indexes after an earlier site grows" {
+    // Every structural transaction lays a site's rows out from its committed
+    // `render_insert_index`. Growing the first site shifts every render node
+    // after it, so the sibling's index must be re-based at commit; leaving it
+    // stale makes the *next* transaction stage rows over the wrong span and
+    // refuse with a topology error. The second edit is the assertion.
+    const Runner = struct {
+        fn run(failure_number: ?usize) !usize {
+            test_erased_callable_drop_count = 0;
+            test_row_elem_call_count = 0;
+            var host = HostEnv.init();
+            var roc_host = makeSignalsRocHost(&host);
+            host.engine.roc_host = &roc_host;
+            defer {
+                host.deinit();
+                _ = host.gpa.deinit();
+            }
+
+            const state_token = newTestBinderToken(&roc_host);
+            const state_cap = testHostValueCapability(&roc_host);
+            const first_each = testNodeEachWithSignalCapabilityAndRow(&roc_host, testNodeRefExpr(state_token), state_cap, &testStatefulRowElemCallable);
+            const second_each = testNodeEachWithSignalCapabilityAndRow(&roc_host, testNodeRefExpr(state_token), state_cap, &testStatefulRowElemCallable);
+            const first_column = testElementWith(&roc_host, "div", &.{}, &.{first_each});
+            const second_column = testElementWith(&roc_host, "div", &.{}, &.{second_each});
+            const section = testElementWith(&roc_host, "section", &.{}, &.{ first_column, testNodeText(&roc_host, "between-columns"), second_column });
+            const initial_items = [_]HostValue{ testHostValueI64(1), testHostValueI64(2) };
+            const root = testNodeStateWithTokenAndInitialCapability(&roc_host, state_token, testHostValueI64List(&roc_host, &initial_items), section, state_cap);
+            defer root.decref(&roc_host);
+            var stream: HostNodeDescriptorStream = .{};
+            host.collectActiveElemRootDescriptors(&roc_host, &stream, root, &.{});
+            _ = applyNodeDescriptorStream(&host, &roc_host, &stream);
+            host.engine.active_stream = stream;
+
+            const state_id = host.engine.active_stream.scope_sites.items[0].node_id;
+            var each_node_ids: [2]ids.NodeId = undefined;
+            var each_write: usize = 0;
+            for (host.engine.active_stream.scope_sites.items) |site| if (site.kind == .each) {
+                each_node_ids[each_write] = site.node_id;
+                each_write += 1;
+            };
+            try std.testing.expectEqual(@as(usize, 2), each_write);
+
+            // Grow both sites from two rows to four. The first site's growth
+            // pushes the second site's rows two render nodes further along.
+            const grown_items = [_]HostValue{ testHostValueI64(1), testHostValueI64(2), testHostValueI64(3), testHostValueI64(4) };
+            _ = try host.engine.tryDispatchStateValue(&host, &roc_host, state_id.raw(), testHostValueI64List(&roc_host, &grown_items), state_cap);
+            for (each_node_ids) |node_id| {
+                const site = host.engine.activeScopeSiteByNodeId(node_id.raw(), .each).?;
+                const rows = try host.engine.activeEachRowScopes(std.testing.allocator, site.scope_id, site.ordinal);
+                defer std.testing.allocator.free(rows);
+                try std.testing.expectEqual(@as(usize, 4), rows.len);
+                const first_row_index = for (host.engine.active_stream.render_nodes.items, 0..) |node, index| {
+                    if (engine.renderNodeScopeId(&host.engine.active_stream, node) == rows[0].raw()) break index;
+                } else return error.TestUnexpectedResult;
+                try std.testing.expectEqual(first_row_index, site.render_insert_index);
+            }
+
+            // The next transaction is staged from the re-based indexes; a
+            // stale one overlaps the first site's span and is refused.
+            const scope_len_before = host.engine.scopes.items.len;
+            const render_len_before = host.engine.active_stream.render_nodes.items.len;
+            const allocations_before = host.roc_allocations.snapshot();
+            const shrunk_items = [_]HostValue{ testHostValueI64(4), testHostValueI64(2), testHostValueI64(5) };
+            var fault = FaultAllocator.init(host.gpa.allocator());
+            fault.configure(failure_number);
+            host.engine_allocator_override = fault.allocator();
+            const result = host.engine.tryDispatchStateValue(&host, &roc_host, state_id.raw(), testHostValueI64List(&roc_host, &shrunk_items), state_cap);
+            const attempts = fault.attempts;
+            if (failure_number != null) {
+                try std.testing.expectError(error.OutOfMemory, result);
+                try std.testing.expectEqual(scope_len_before, host.engine.scopes.items.len);
+                try std.testing.expectEqual(render_len_before, host.engine.active_stream.render_nodes.items.len);
+                try std.testing.expectEqual(@as(usize, 0), host.roc_allocations.liveCountSince(allocations_before));
+                fault.configure(null);
+                const retry_items = [_]HostValue{ testHostValueI64(4), testHostValueI64(2), testHostValueI64(5) };
+                _ = try host.engine.tryDispatchStateValue(&host, &roc_host, state_id.raw(), testHostValueI64List(&roc_host, &retry_items), state_cap);
+            } else _ = try result;
+
+            for (each_node_ids) |node_id| {
+                const site = host.engine.activeScopeSiteByNodeId(node_id.raw(), .each).?;
+                const rows = try host.engine.activeEachRowScopes(std.testing.allocator, site.scope_id, site.ordinal);
+                defer std.testing.allocator.free(rows);
+                try std.testing.expectEqual(@as(usize, 3), rows.len);
+                const children = host.engine.render_cache.nodes.items[site.parent_elem_id.index()].children.items;
+                try std.testing.expectEqual(@as(usize, 3), children.len);
+            }
+            try std.testing.expect(activeTextElementId(&host, "row-1-1") == null);
+            try std.testing.expect(activeTextElementId(&host, "row-3-3") == null);
+            try std.testing.expect(activeTextElementId(&host, "row-5-5") != null);
+            return attempts;
+        }
+    };
+
+    const attempts = try Runner.run(null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
+}
+
 test "one state transaction retires nested each with when atomically through production" {
     const Runner = struct {
         fn run(failure_number: ?usize) !usize {

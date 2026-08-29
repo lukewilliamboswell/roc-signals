@@ -6,11 +6,11 @@
 # deliberate, reviewed decision and needs a comment saying why.
 #
 # Recorded 2026-08-28 against nightly-2026-08-25-cc03aa8, last trimmed after
-# the multi-parent composite-row suppression fix. Dominant remaining causes, so
-# the next fixes are recognisable: "duplicate descriptor index" in the
-# descriptor stream; host out of memory preparing a state transaction with no
-# memory pressure; host-owned allocation leaks at shutdown; patch-count
-# performance budgets.
+# the scope-site insertion-index rebase fix. Dominant remaining causes, so the
+# next fixes are recognisable: host out of memory preparing a state transaction
+# with no memory pressure (a mismatched graph append, honestly named now);
+# host-owned allocation leaks at shutdown; "active state has no capability";
+# task settlement panics; patch-count performance budgets.
 native availability-picker/marking-one-slot-available-leaves-its-siblings-alone.scm
 native availability-picker/the-headline-one-timezone-change-reprojects-every-rendered-slot.scm
 native conduit/article-writes-editor-create-edit-comments-and-delete.scm
@@ -58,22 +58,7 @@ native flight-search/latest-wins-a-superseded-response-is-ignored.scm
 native flight-search/sorting-an-empty-set-still-does-not-refetch.scm
 native flight-search/sorting-while-a-request-is-in-flight.scm
 native flight-search/widen-back-to-every-flight-then-a-final-re-sort-over-four-rows.scm
-native form-builder/a-single-field-form.scm
-native form-builder/adding-a-checkbox-field.scm
-native form-builder/adding-a-number-field.scm
-native form-builder/adding-a-select-field.scm
-native form-builder/adding-the-remaining-field-types.scm
-native form-builder/clearing-the-preview-answers.scm
-native form-builder/deleting-a-field-that-holds-invalid-input.scm
 native form-builder/editing-one-field-s-label-fine-grained.scm
-native form-builder/reordering.scm
-native form-builder/the-empty-form.scm
-native kanban-board/adding-cards-empty-duplicate-valid.scm
-native kanban-board/delete-the-card-that-currently-matches-the-filter.scm
-native kanban-board/empty-a-whole-column.scm
-native kanban-board/filter-fans-in-with-column-membership.scm
-native kanban-board/move-the-only-card-out-of-a-column-leaving-it-empty.scm
-native kanban-board/wip-limit-crosses-and-un-crosses.scm
 native loan-comparator/editing-scenario-a-s-rate-derived-figures-follow-siblings-do-n.scm
 native log-viewer/appending-line-41-to-a-40-line-buffer-must-reuse-every-existing.scm
 native log-viewer/clearing-while-a-level-filter-and-a-query-are-active-keeps-the-c.scm
@@ -107,21 +92,12 @@ native pomodoro-tracker/reset-returns-to-idle.scm
 native pomodoro-tracker/resume-starts-a-fresh-block.scm
 native pomodoro-tracker/run-a-whole-cycle-to-the-work-break-boundary.scm
 native pomodoro-tracker/start-the-running-branch-mounts-the-interval.scm
-native query-builder/and-or-on-a-group.scm
-native query-builder/back-to-a-single-condition.scm
-native query-builder/deleting-a-leaf-sibling.scm
 native query-builder/deleting-a-nested-group.scm
 native query-builder/editing-a-leaf-three-levels-deep-does-not-recreate-its-siblings.scm
-native query-builder/empty-root-group.scm
-native query-builder/negating-the-root.scm
-native query-builder/nesting-a-group-inside-a-group.scm
-native query-builder/three-levels-of-nesting.scm
 native recipe-scaler/removing-recipes-from-the-shopping-list.scm
 native split-the-bill/adding-a-person-re-splits-every-expense.scm
-native split-the-bill/adding-an-expense.scm
 native split-the-bill/editing-one-expense-reuses-every-row.scm
 native split-the-bill/one-person-then-none.scm
-native split-the-bill/removing-expenses.scm
 native spreadsheet-lite/b2-d2-d5-d6-d7-d8-and-b2-b5-f5-d5-already-covered.scm
 native spreadsheet-lite/editing-a-cell-nothing-depends-on.scm
 native spreadsheet-lite/editing-survives-every-reorder.scm
@@ -135,18 +111,10 @@ native status-page/hiding-the-page-stops-polling.scm
 native status-page/one-refresh-fails-while-the-others-succeed.scm
 native status-page/returning-to-visible-resumes-polling.scm
 native status-page/several-services-degrade-the-rollup-escalates-to-a-major-outage.scm
-native support-inbox/a-conversation-with-no-messages.scm
 native support-inbox/a-failed-sync.scm
-native support-inbox/a-newer-read-request-cancels-the-older-one-the-stale-result-is-i.scm
-native support-inbox/a-send-fails-and-rolls-back.scm
 native support-inbox/empty-inbox-edge.scm
-native support-inbox/filter-meets-selection.scm
-native support-inbox/optimistic-sending.scm
 native support-inbox/pausing-and-resuming-polling.scm
-native support-inbox/selecting-a-conversation.scm
 native support-inbox/the-key-budget.scm
-native support-inbox/the-server-reorders-rows.scm
-native support-inbox/unread-clears-when-the-thread-is-read.scm
 native token-editor/one-colour-edit-reaches-every-dependent-binding-without-rebuildi.scm
 wasm pomodoro-tracker
 

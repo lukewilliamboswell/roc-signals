@@ -62,10 +62,10 @@
 //! which is how the engine ends up asking the generated program what to render
 //! for each row without the harness knowing when it will be asked.
 //!
-//! Edits are drawn as fresh strictly-increasing lists with an optional rotation,
-//! so successive lists exercise reorder, replacement, and - when the shape allows
-//! it - growth and shrink. See "Not yet covered" for why length changes are
-//! withheld from multi-site programs.
+//! Edits are drawn as fresh strictly-increasing lists of independently chosen
+//! length with an optional rotation, so successive lists exercise reorder,
+//! replacement, growth, and shrink - across every shared site at once, since
+//! they all read the same cell.
 //!
 //! # Reference model
 //!
@@ -92,6 +92,12 @@
 //!    is read out of the render cache and checked for duplicate children, which
 //!    is where a splice that registered one parent through two staging passes
 //!    shows up and where no count-based oracle would notice.
+//!  - **Every scope site's insertion index is current.** After the mount and
+//!    every edit, each `each` site's `render_insert_index` must be the render
+//!    index of its first row and each `when` site's that of its live branch.
+//!    The engine checks this itself at every structural commit; the oracle
+//!    repeats it because a stale index is invisible to every other check until
+//!    the *next* transaction lays rows out from it and is refused.
 //!  - **A refused mount publishes nothing.** After an injected preparation
 //!    failure the engine's scopes, identities, states, row sites, active stream,
 //!    event table, signal graph, render cache, and simulated DOM are all empty,
@@ -171,13 +177,6 @@
 //!    nested site behind in `each_row_sites` and the site count drifts above the
 //!    model. Delete that demotion in `generateSite` once row retirement disposes
 //!    the nested site.
-//!  - **Multi-site growth and shrink in one transaction.** With more than one
-//!    shared site the item count is held fixed and only order and values vary,
-//!    because `prepareRenderLayouts` double-shifts each site's `final_starts` by a
-//!    running `cumulative_delta` and `preparePlaced` refuses with
-//!    `ResourceLimit`. Single-shared-site programs do vary their length, so growth
-//!    and shrink are covered for one site today; delete the `varies_length` guard
-//!    in `generate` once the double-shift is fixed.
 //!
 //! Three further gaps are simply unwritten rather than blocked:
 //!
@@ -378,18 +377,10 @@ fn chooseFullSweep(reader: *FuzzReader, attempts: usize) bool {
 fn generate(reader: *FuzzReader, arena: std.mem.Allocator) !Program {
     var shared_budget: usize = max_shared_sites;
     const children = try generateChildren(reader, arena, 0, &shared_budget);
-    // Length changes are withheld from multi-site programs; see the module doc
-    // comment's "Not yet covered" section for the open engine bug behind that.
-    const varies_length = countSharedSites(children) <= 1;
 
-    const initial_len = reader.intRangeAtMost(usize, 0, max_rows);
     const list_count = 1 + @as(usize, reader.intRangeAtMost(u8, 0, max_edits));
     const lists = try arena.alloc([]const i64, list_count);
-    lists[0] = try generateList(reader, arena, initial_len);
-    for (lists[1..]) |*list| {
-        const length = if (varies_length) reader.intRangeAtMost(usize, 0, max_rows) else initial_len;
-        list.* = try generateList(reader, arena, length);
-    }
+    for (lists) |*list| list.* = try generateList(reader, arena, reader.intRangeAtMost(usize, 0, max_rows));
     return .{ .children = children, .lists = lists };
 }
 
@@ -746,6 +737,7 @@ fn expectPublished(host: *const Host, program: Program, items: []const i64) void
     expectChildText(host, program.children, items);
     expectRetiredKeysGone(host, program, items);
     expectNoDuplicateRenderChildren(host);
+    host.engine.validateActiveScopeSiteInsertIndexes();
 }
 
 fn expectChildText(host: *const Host, children: []const Child, items: []const i64) void {
