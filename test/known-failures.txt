@@ -81,14 +81,11 @@ native package-explorer/f-opening-a-package-three-panels-settle-independently.sc
 native package-explorer/g-back-and-forward.scm
 native package-explorer/h-unknown-address.scm
 native pomodoro-tracker/a-project-with-no-logged-time-is-still-fully-usable.scm
-native pomodoro-tracker/attaching-a-different-project-mid-session.scm
-native pomodoro-tracker/initial-render-restored-from-storage.scm
 native pomodoro-tracker/logging-the-block-writes-the-ledger-and-rewinds-the-clock.scm
 native pomodoro-tracker/pause-voids-the-block-in-progress.scm
 native pomodoro-tracker/reset-returns-to-idle.scm
 native pomodoro-tracker/resume-starts-a-fresh-block.scm
 native pomodoro-tracker/run-a-whole-cycle-to-the-work-break-boundary.scm
-native pomodoro-tracker/start-the-running-branch-mounts-the-interval.scm
 native query-builder/deleting-a-nested-group.scm
 native query-builder/editing-a-leaf-three-levels-deep-does-not-recreate-its-siblings.scm
 native recipe-scaler/removing-recipes-from-the-shopping-list.scm

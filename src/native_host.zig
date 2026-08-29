@@ -9747,6 +9747,70 @@ test "native initial root with sibling and nested each sites sweeps host OOM and
     for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
+test "native initial each reading a staged state list resolves its items capability" {
+    // The staged collection keeps every state cell it has declared in this
+    // transaction as a provisional cell until publication, so an each whose
+    // items signal is that state's ref must resolve its capability from the
+    // provisional cells rather than the committed state table. The initial
+    // each input extraction used the committed-only lookup, which failed with
+    // "active state has no capability" for any keyed list mounted inside the
+    // same transaction as the state it reads.
+    const Runner = struct {
+        fn run(failure_number: ?usize) !usize {
+            test_row_elem_call_count = 0;
+            var host = HostEnv.init();
+            var roc_host = makeSignalsRocHost(&host);
+            host.engine.roc_host = &roc_host;
+            defer {
+                host.deinit();
+                _ = host.gpa.deinit();
+            }
+
+            const state_token = newTestBinderToken(&roc_host);
+            const state_cap = testHostValueCapability(&roc_host);
+            const items = [_]HostValue{ testHostValueI64(1), testHostValueI64(2) };
+            const each = testNodeEachWithSignalCapabilityAndRow(&roc_host, testNodeRefExpr(state_token), state_cap, &testStatefulRowElemCallable);
+            const section = testElementWith(&roc_host, "section", &.{}, &.{each});
+            const root = testNodeStateWithTokenAndInitialCapability(&roc_host, state_token, testHostValueI64List(&roc_host, &items), section, state_cap);
+            defer root.decref(&roc_host);
+            const refs_before = host.roc_allocations.snapshot();
+
+            var fault = FaultAllocator.init(host.gpa.allocator());
+            fault.configure(failure_number);
+            host.engine_allocator_override = fault.allocator();
+            const result = tryRenderInitialRoot(&host, &roc_host, root, &.{});
+            const attempts = fault.attempts;
+            if (failure_number != null) {
+                try std.testing.expectError(error.OutOfMemory, result);
+                try std.testing.expectEqual(@as(usize, 0), host.engine.scopes.items.len);
+                try std.testing.expectEqual(@as(usize, 0), host.engine.states.items.len);
+                try std.testing.expectEqual(@as(usize, 0), host.engine.each_row_sites.items.len);
+                try std.testing.expectEqual(@as(usize, 0), host.engine.active_stream.render_nodes.items.len);
+                try std.testing.expect(!host.engine.render_cache.hasRoot());
+                try std.testing.expectEqual(refs_before.live_bytes, host.roc_allocations.snapshot().live_bytes);
+                fault.configure(null);
+                _ = try tryRenderInitialRoot(&host, &roc_host, root, &.{});
+            } else {
+                _ = try result;
+            }
+
+            // The list state plus one cell per row.
+            try std.testing.expectEqual(@as(usize, 3), host.engine.states.items.len);
+            try std.testing.expectEqual(@as(usize, 1), host.engine.each_row_sites.items.len);
+            for (host.engine.states.items, 0..) |state, index| {
+                try std.testing.expectEqual(@as(?usize, index), host.engine.stateIndexByNodeId(state.state_id));
+            }
+            try std.testing.expect(activeTextElementId(&host, "row-1-1") != null);
+            try std.testing.expect(activeTextElementId(&host, "row-2-2") != null);
+            return attempts;
+        }
+    };
+
+    const attempts = try Runner.run(null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
+}
+
 test "native initial each nested rows sweep host OOM and commit exact topology" {
     const Runner = struct {
         fn run(failure_number: ?usize) !usize {

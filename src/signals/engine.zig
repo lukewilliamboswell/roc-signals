@@ -1034,13 +1034,23 @@ pub fn Engine(comptime Ctx: type) type {
 
             /// Test seam that faults host-side extraction storage without injecting into Roc callbacks.
             pub fn prepareWithAllocator(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, each: HostNodeEachDesc, allocator: std.mem.Allocator) CollectionError!@This() {
-                return prepareWithOverlay(engine, ctx, roc_host, &each, allocator, null);
+                return prepareWithOverlay(engine, ctx, roc_host, &each, allocator, null, &.{});
             }
 
-            fn prepareWithOverlay(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, each: *const HostNodeEachDesc, allocator: std.mem.Allocator, overlay: ?*const signal_records.PreparedCacheUpdates) CollectionError!@This() {
+            /// Extracts keyed-row inputs for an each staged in the same
+            /// transaction as the state cells its items signal may read.
+            /// `provisional_states` are the staged collection's not-yet-published
+            /// cells: an items signal that is a `ref` to one of them has no entry
+            /// in the committed state table yet, so its capability must come
+            /// from the provisional cell.
+            pub fn prepareWithProvisionalStates(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, each: *const HostNodeEachDesc, allocator: std.mem.Allocator, provisional_states: []const HostState) CollectionError!@This() {
+                return prepareWithOverlay(engine, ctx, roc_host, each, allocator, null, provisional_states);
+            }
+
+            fn prepareWithOverlay(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, each: *const HostNodeEachDesc, allocator: std.mem.Allocator, overlay: ?*const signal_records.PreparedCacheUpdates, provisional_states: []const HostState) CollectionError!@This() {
                 const items_slot = if (overlay) |prepared| prepared.readSlot(@constCast(&each.cached_value)) else &each.cached_value;
                 const items_value = engine.cloneCachedSignalValue(ctx, items_slot);
-                const items_cap = engine.hostSignalBindingCapability(ctx, &each.items);
+                const items_cap = engine.hostSignalRecordCapabilityWithProvisionalStates(ctx, each.items.record, provisional_states);
                 assertHostValueCapabilitiesMatch(each.ops.items_capability, items_cap, "each items extension capability did not match its signal value");
                 defer callHostValueToUnitWithCapability(ctx, roc_host, items_cap, hv.hostValueCapabilityDrop(items_cap), items_value);
                 const active_caps = [_]HostValueCapability{ items_cap, each.ops.items_capability, each.ops.item_capability, each.ops.key_capability };
@@ -1128,7 +1138,7 @@ pub fn Engine(comptime Ctx: type) type {
                     plan.scope_claims.abort(ctx, roc_host, &engine.pending_roc_metrics);
                     plan.scope_claims.deinit();
                 };
-                var inputs = try PreparedEachInputs.prepareWithOverlay(engine, ctx, roc_host, each, allocator, overlay);
+                var inputs = try PreparedEachInputs.prepareWithOverlay(engine, ctx, roc_host, each, allocator, overlay, &.{});
                 errdefer inputs.deinit();
                 var hooks = PreparedEachRowSyncHooks.initWithScopeClaims(engine, ctx, roc_host, each.ops, plan.scope_claims);
                 errdefer hooks.deinit();
@@ -4296,7 +4306,7 @@ pub fn Engine(comptime Ctx: type) type {
                 assertHostValueCapabilitiesMatch(prepared_each.desc.ops.items_capability, items_cap, "each items extension capability did not match its signal value");
                 prepared_each.desc.cached_value = .{ .present = HostValueCell.initRetained(items_value, items_cap, &self.engine.pending_roc_metrics) };
 
-                const evaluated = try PreparedInitialEach.prepare(self.engine, self.host_ctx, roc_host, &prepared_each.desc, scope_id, site_ordinal, allocator);
+                const evaluated = try PreparedInitialEach.prepare(self.engine, self.host_ctx, roc_host, &prepared_each.desc, scope_id, site_ordinal, allocator, self.prepared_state_cells.items);
                 defer evaluated.deinit();
                 try evaluated.reserveForCollection(self);
 
@@ -5072,10 +5082,14 @@ pub fn Engine(comptime Ctx: type) type {
             total_counts: StaticRootCounts = .{},
             phase: CommitPhase = .prepared,
 
-            fn prepare(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, each: *const HostNodeEachDesc, parent_scope_id: ids.ScopeId, site_ordinal: ids.SiteOrdinal, allocator: std.mem.Allocator) CollectionError!*@This() {
+            /// Evaluates every row of an each mounted by a staged collection.
+            /// `provisional_states` are that collection's not-yet-published state
+            /// cells, which the items signal may reference before the state
+            /// table holds them.
+            fn prepare(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, each: *const HostNodeEachDesc, parent_scope_id: ids.ScopeId, site_ordinal: ids.SiteOrdinal, allocator: std.mem.Allocator, provisional_states: []const HostState) CollectionError!*@This() {
                 const plan = allocator.create(@This()) catch return error.OutOfMemory;
                 errdefer allocator.destroy(plan);
-                var inputs = try PreparedEachInputs.prepareWithAllocator(engine, ctx, roc_host, each.*, allocator);
+                var inputs = try PreparedEachInputs.prepareWithProvisionalStates(engine, ctx, roc_host, each, allocator, provisional_states);
                 errdefer inputs.deinit();
                 const rows = allocator.alloc(Row, inputs.items.len) catch return error.OutOfMemory;
                 errdefer allocator.free(rows);
@@ -15445,12 +15459,12 @@ test "prepared initial each owns evaluated row inputs and descriptors across hos
             };
             defer each.cached_value.deinit(&ctx, host, &engine.pending_roc_metrics);
 
-            const prepared = Engine(VerifyCtx).PreparedInitialEach.prepare(&engine, &ctx, host, &each, ids.ScopeId.fromRaw(0), ids.SiteOrdinal.fromRaw(7), fault.allocator()) catch |err| {
+            const prepared = Engine(VerifyCtx).PreparedInitialEach.prepare(&engine, &ctx, host, &each, ids.ScopeId.fromRaw(0), ids.SiteOrdinal.fromRaw(7), fault.allocator(), &.{}) catch |err| {
                 try std.testing.expect(fail_at != null);
                 try std.testing.expectEqual(error.OutOfMemory, err);
                 const attempts = fault.attempts;
                 fault.configure(null);
-                const retry = try Engine(VerifyCtx).PreparedInitialEach.prepare(&engine, &ctx, host, &each, ids.ScopeId.fromRaw(0), ids.SiteOrdinal.fromRaw(7), fault.allocator());
+                const retry = try Engine(VerifyCtx).PreparedInitialEach.prepare(&engine, &ctx, host, &each, ids.ScopeId.fromRaw(0), ids.SiteOrdinal.fromRaw(7), fault.allocator(), &.{});
                 try std.testing.expectEqual(@as(usize, 1), retry.rows.len);
                 try std.testing.expectEqual(@as(usize, 1), retry.total_counts.nodes);
                 retry.deinit();
