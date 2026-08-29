@@ -1277,6 +1277,7 @@ pub fn Engine(comptime Ctx: type) type {
                 }
                 const owner = try PreparedReplacementOwner.create(self.engine, self.host_ctx, self.roc_host, limits, total, root_count);
                 errdefer owner.deinit();
+                owner.collection.cache_overlay = self.cache_overlay;
                 for (self.replacements[0..self.prepared_len], self.rows[0..self.prepared_len]) |replacement, rows| {
                     try replacement.attachScopeIds(&rows.rows, owner);
                 }
@@ -1728,6 +1729,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const root_count = std.math.add(usize, normalized.selected_indexes.len, row_root_count) catch return error.ResourceLimit;
                 const replacement_owner = try PreparedReplacementOwner.create(engine, ctx, roc_host, limits, total, root_count);
                 errdefer replacement_owner.deinit();
+                replacement_owner.collection.cache_overlay = overlay;
                 const branch_ranges = allocator.alloc(GlobalRange, normalized.selected_indexes.len) catch return error.OutOfMemory;
                 errdefer allocator.free(branch_ranges);
                 const row_ranges = allocator.alloc(GlobalRange, row_root_count) catch return error.OutOfMemory;
@@ -3768,6 +3770,9 @@ pub fn Engine(comptime Ctx: type) type {
             prepared_states: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedState) = .empty,
             prepared_state_cells: std.ArrayListUnmanaged(HostState) = .empty,
             external_state_count: usize = 0,
+            /// The enclosing source transaction's prepared cache updates, when
+            /// this collection mounts inside one; staged records read through it.
+            cache_overlay: ?*const signal_records.PreparedCacheUpdates = null,
             prepared_each_row_scopes: std.ArrayListUnmanaged(HostScope) = .empty,
             prepared_whens: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedWhen) = .empty,
             prepared_eaches: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedEach) = .empty,
@@ -4294,7 +4299,7 @@ pub fn Engine(comptime Ctx: type) type {
                 self.signal_records.transferDescriptorRoot(condition.record);
                 const journaled = self.signal_bindings.pop() orelse @panic("staged when binding journal underflow");
                 if (journaled.record != condition.record or journaled.source_node_ids.ptr != condition.source_node_ids.ptr) @panic("staged when binding journal transfer mismatch");
-                const value = self.engine.evalHostSignalBindingWithProvisionalStates(self.host_ctx, roc_host, &prepared.desc.condition, self.prepared_state_cells.items);
+                const value = self.engine.evalHostSignalBindingStaged(self.host_ctx, roc_host, &prepared.desc.condition, self.prepared_state_cells.items, self.cache_overlay);
                 const cap = self.engine.hostSignalRecordCapabilityWithProvisionalStates(self.host_ctx, prepared.desc.condition.record, self.prepared_state_cells.items);
                 assertHostValueCapabilitiesMatch(prepared.desc.read.capability, cap, "when read extension capability did not match its signal value");
                 const branch: HostScopeBranch = if (callHostValueToBoolWithCapability(self.host_ctx, roc_host, prepared.desc.read.capability, prepared.desc.read.read, value)) .true_branch else .false_branch;
@@ -4321,7 +4326,7 @@ pub fn Engine(comptime Ctx: type) type {
                 self.signal_records.transferDescriptorRoot(items.record);
                 const journaled = self.signal_bindings.pop() orelse @panic("staged each binding journal underflow");
                 if (journaled.record != items.record or journaled.source_node_ids.ptr != items.source_node_ids.ptr) @panic("staged each binding journal transfer mismatch");
-                const items_value = self.engine.evalHostSignalBindingWithProvisionalStates(self.host_ctx, roc_host, &prepared_each.desc.items, self.prepared_state_cells.items);
+                const items_value = self.engine.evalHostSignalBindingStaged(self.host_ctx, roc_host, &prepared_each.desc.items, self.prepared_state_cells.items, self.cache_overlay);
                 const items_cap = self.engine.hostSignalRecordCapabilityWithProvisionalStates(self.host_ctx, prepared_each.desc.items.record, self.prepared_state_cells.items);
                 assertHostValueCapabilitiesMatch(prepared_each.desc.ops.items_capability, items_cap, "each items extension capability did not match its signal value");
                 prepared_each.desc.cached_value = .{ .present = HostValueCell.initRetained(items_value, items_cap, &self.engine.pending_roc_metrics) };
@@ -5544,11 +5549,12 @@ pub fn Engine(comptime Ctx: type) type {
             counts: StaticRootCounts = .{},
             phase: CommitPhase = .prepared,
 
-            fn prepare(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, site: HostNodeScopeSiteDesc, each: HostNodeEachDesc, rows: *const each_runtime.PreparedRowSync, keys: []const HostValue, items: []const HostValue, limits: collection_budget.Limits, dirty_source_node_ids: []const u64) CollectionError!*@This() {
+            fn prepare(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, site: HostNodeScopeSiteDesc, each: HostNodeEachDesc, rows: *const each_runtime.PreparedRowSync, keys: []const HostValue, items: []const HostValue, limits: collection_budget.Limits, dirty_source_node_ids: []const u64, cache_overlay: ?*const signal_records.PreparedCacheUpdates) CollectionError!*@This() {
                 const plan = try prepareEvaluated(engine, ctx, roc_host, each, rows, keys, items);
                 errdefer plan.deinit();
                 plan.replacement = try PreparedReplacementOwner.create(engine, ctx, roc_host, limits, plan.counts, plan.row_elems.len);
                 plan.owns_replacement = true;
+                plan.replacement.collection.cache_overlay = cache_overlay;
                 try plan.collectInto(site, each, rows, plan.replacement, dirty_source_node_ids);
                 plan.replacement.materialize();
                 plan.releaseEvaluatedRows();
@@ -6434,6 +6440,7 @@ pub fn Engine(comptime Ctx: type) type {
                 errdefer if (!plan_owns_cleanup) plan.retired_stream.deinit(allocator, ctx, roc_host, &engine.pending_roc_metrics);
                 plan.replacement = try PreparedReplacementOwner.create(engine, ctx, roc_host, limits, total, selections.len);
                 errdefer if (!plan_owns_cleanup) plan.replacement.deinit();
+                plan.replacement.collection.cache_overlay = cache_overlay;
                 if (state_update) |update| {
                     plan.replacement.collection.signal_roc_host = roc_host;
                     plan.replacement.collection.prepared_state_cells.ensureUnusedCapacity(allocator, 1) catch return error.OutOfMemory;
@@ -7662,7 +7669,7 @@ pub fn Engine(comptime Ctx: type) type {
 
             fn evalPreparedSignalBinding(self: *@This(), signal: *HostSignalBinding) struct { value: HostValue, cap: HostValueCapability } {
                 return .{
-                    .value = self.engine.evalHostSignalBindingWithProvisionalStates(self.host_ctx, self.roc_host, signal, self.collection.prepared_state_cells.items),
+                    .value = self.engine.evalHostSignalBindingStaged(self.host_ctx, self.roc_host, signal, self.collection.prepared_state_cells.items, self.collection.cache_overlay),
                     .cap = self.engine.hostSignalRecordCapabilityWithProvisionalStates(self.host_ctx, signal.record, self.collection.prepared_state_cells.items),
                 };
             }
@@ -9338,6 +9345,22 @@ pub fn Engine(comptime Ctx: type) type {
         }
 
         fn evalHostSignalRecordWithProvisionalStates(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, record: *HostSignalRecord, provisional_states: []const HostState) HostValue {
+            return self.evalHostSignalRecordStaged(ctx, roc_host, record, provisional_states, null);
+        }
+
+        /// Evaluates a record inside a staged transaction. `provisional_states`
+        /// are the collection's not-yet-published state cells and `overlay` is
+        /// the transaction's prepared cache updates: a record whose cache slot
+        /// the overlay has staged (a settled task, an interval tick, a storage
+        /// read, or a derived record already re-evaluated for this transaction)
+        /// reads that staged value, never the committed one, so a branch
+        /// mounted by the transaction observes the same values as the scalar
+        /// updates published beside it.
+        fn evalHostSignalRecordStaged(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, record: *HostSignalRecord, provisional_states: []const HostState, overlay: ?*const signal_records.PreparedCacheUpdates) HostValue {
+            if (overlay) |prepared| if (record.cachedSlot()) |slot| {
+                const staged = prepared.readSlot(slot);
+                if (staged != slot and staged.* == .present) return self.cloneCachedSignalValue(ctx, staged);
+            };
             switch (record.payload) {
                 .ref => |node_id| {
                     for (provisional_states) |state| if (state.state_id == node_id) return Ctx.cloneHostValue(ctx, state.activePayloadConst().cell.value);
@@ -9348,7 +9371,7 @@ pub fn Engine(comptime Ctx: type) type {
                     return self.replaceSignalExprCacheAndClone(ctx, &payload.cached_value, roc_host, value, payload.cap);
                 },
                 .map => |*payload| {
-                    const input = self.evalHostSignalRecordWithProvisionalStates(ctx, roc_host, payload.input, provisional_states);
+                    const input = self.evalHostSignalRecordStaged(ctx, roc_host, payload.input, provisional_states, overlay);
                     defer self.dropHostSignalRecordValueWithProvisionalStates(ctx, roc_host, payload.input, input, provisional_states);
                     self.recordDerivedCall();
                     const input_cap = self.hostSignalRecordCapabilityWithProvisionalStates(ctx, payload.input, provisional_states);
@@ -9356,9 +9379,9 @@ pub fn Engine(comptime Ctx: type) type {
                     return self.replaceSignalExprCacheAndClone(ctx, &payload.cached_value, roc_host, value, payload.cap);
                 },
                 .map2 => |*payload| {
-                    const left = self.evalHostSignalRecordWithProvisionalStates(ctx, roc_host, payload.left, provisional_states);
+                    const left = self.evalHostSignalRecordStaged(ctx, roc_host, payload.left, provisional_states, overlay);
                     defer self.dropHostSignalRecordValueWithProvisionalStates(ctx, roc_host, payload.left, left, provisional_states);
-                    const right = self.evalHostSignalRecordWithProvisionalStates(ctx, roc_host, payload.right, provisional_states);
+                    const right = self.evalHostSignalRecordStaged(ctx, roc_host, payload.right, provisional_states, overlay);
                     defer self.dropHostSignalRecordValueWithProvisionalStates(ctx, roc_host, payload.right, right, provisional_states);
                     self.recordDerivedCall();
                     const left_cap = self.hostSignalRecordCapabilityWithProvisionalStates(ctx, payload.left, provisional_states);
@@ -9376,7 +9399,7 @@ pub fn Engine(comptime Ctx: type) type {
                         values.deinit(allocator);
                     }
                     for (payload.children) |child| {
-                        values.append(allocator, self.evalHostSignalRecordWithProvisionalStates(ctx, roc_host, child, provisional_states)) catch @panic("out of memory");
+                        values.append(allocator, self.evalHostSignalRecordStaged(ctx, roc_host, child, provisional_states, overlay)) catch @panic("out of memory");
                     }
                     const list = HostValueList.fromSlice(values.items, roc_host);
                     defer list.decref(roc_host);
@@ -9417,6 +9440,10 @@ pub fn Engine(comptime Ctx: type) type {
 
         fn evalHostSignalBindingWithProvisionalStates(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, signal: *HostSignalBinding, provisional_states: []const HostState) HostValue {
             return self.evalHostSignalRecordWithProvisionalStates(ctx, roc_host, signal.record, provisional_states);
+        }
+
+        fn evalHostSignalBindingStaged(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, signal: *HostSignalBinding, provisional_states: []const HostState, overlay: ?*const signal_records.PreparedCacheUpdates) HostValue {
+            return self.evalHostSignalRecordStaged(ctx, roc_host, signal.record, provisional_states, overlay);
         }
 
         /// Performs eval signal text field inside the shared engine while preserving transaction and changed-set invariants.
@@ -11785,7 +11812,7 @@ pub fn Engine(comptime Ctx: type) type {
             const allocator = Ctx.allocator(ctx);
             const rows = try PreparedActiveEachRows.prepare(self, ctx, roc_host, site, each_desc, allocator);
             defer rows.deinit();
-            const replacement = try PreparedEachRowReplacementCollection.prepare(self, ctx, roc_host, site, each_desc, &rows.rows, rows.inputs.keys, rows.inputs.items, .{}, dirty_source_node_ids);
+            const replacement = try PreparedEachRowReplacementCollection.prepare(self, ctx, roc_host, site, each_desc, &rows.rows, rows.inputs.keys, rows.inputs.items, .{}, dirty_source_node_ids, null);
             defer replacement.deinit();
             var layout = try PreparedEachRowRenderLayout.prepare(self, allocator, site, &rows.rows, replacement.replacement_rows);
             defer layout.deinit();
@@ -12451,7 +12478,7 @@ pub fn Engine(comptime Ctx: type) type {
                         if (each_desc.items.record != change.record) return error.ResourceLimit;
                         plan.each_rows = try PreparedActiveEachRows.prepareWithOverlay(engine, ctx, roc_host, site, each_desc, allocator, &plan.caches);
                         errdefer plan.each_rows.?.deinit();
-                        plan.each_replacement = try PreparedEachRowReplacementCollection.prepare(engine, ctx, roc_host, site, each_desc.*, &plan.each_rows.?.rows, plan.each_rows.?.inputs.keys, plan.each_rows.?.inputs.items, .{}, &.{});
+                        plan.each_replacement = try PreparedEachRowReplacementCollection.prepare(engine, ctx, roc_host, site, each_desc.*, &plan.each_rows.?.rows, plan.each_rows.?.inputs.keys, plan.each_rows.?.inputs.items, .{}, &.{}, &plan.caches);
                         errdefer plan.each_replacement.?.deinit();
                         plan.each_layout = try PreparedEachRowRenderLayout.prepare(engine, allocator, site, &plan.each_rows.?.rows, plan.each_replacement.?.replacement_rows);
                         errdefer plan.each_layout.?.deinit();
@@ -14261,7 +14288,7 @@ test "engine prepared each sync atomically removes reuses changes and creates ro
         fn prepareReplacement(engine: *Engine(VerifyCtx), ctx: *VerifyCtxHost, host: *abi.RocHost, each_ops: HostEachOps, rows: *const each_runtime.PreparedRowSync, keys: []const HostValue, items: []const HostValue) !*Engine(VerifyCtx).PreparedEachRowReplacementCollection {
             const site = HostNodeScopeSiteDesc{ .node_id = ids.NodeId.fromRaw(0), .scope_id = ids.ScopeId.fromRaw(0), .ordinal = ids.SiteOrdinal.fromRaw(44), .parent_elem_id = ids.ElemId.fromRaw(0), .render_insert_index = 0, .kind = .each, .binder_bindings = &.{} };
             const each = HostNodeEachDesc{ .node_id = ids.NodeId.fromRaw(0), .items = undefined, .ops = each_ops };
-            return Engine(VerifyCtx).PreparedEachRowReplacementCollection.prepare(engine, ctx, host, site, each, rows, keys, items, .{}, &.{});
+            return Engine(VerifyCtx).PreparedEachRowReplacementCollection.prepare(engine, ctx, host, site, each, rows, keys, items, .{}, &.{}, null);
         }
 
         fn prepareLayout(engine: *Engine(VerifyCtx), allocator: std.mem.Allocator, rows: *const each_runtime.PreparedRowSync, replacement: *const Engine(VerifyCtx).PreparedEachRowReplacementCollection) !Engine(VerifyCtx).PreparedEachRowRenderLayout {
@@ -14797,6 +14824,57 @@ test "prepared dirty evaluator reads provisional source through derived map" {
     try std.testing.expectEqualStrings("signal", engine.render_cache.activeNode(ids.ElemId.fromRaw(1)).label.?);
     try std.testing.expectEqual(@as(u64, 8), mapped.last_dirty_generation);
     try std.testing.expect(mapped.last_dirty_changed);
+}
+
+test "staged evaluation reads a source settled by the enclosing transaction" {
+    var env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&env);
+    const callable = abi.rocErasedCallableAllocate(&roc_host, verifyStateCallable, null, 0).?;
+    defer abi.decrefErasedCallable(callable, &roc_host);
+    const eq_callable = abi.rocErasedCallableAllocate(&roc_host, verifyHostValueEqCallable, null, 0).?;
+    defer abi.decrefErasedCallable(eq_callable, &roc_host);
+    const cap = HostValueCapability{ .clone = callable, .drop = callable, .eq = eq_callable };
+    var ctx = VerifyCtxHost{ .allocator = std.testing.allocator };
+    var engine = Engine(VerifyCtx).init();
+    var source = HostSignalRecord{ .ref_count = 1, .payload = .{ .task_source = .{
+        .name = "search",
+        .payload_cap = cap,
+        .initial = .fromAbi(callable),
+        .done = .fromAbi(callable),
+        .failed = .fromAbi(callable),
+        .cap = cap,
+        .reset_on_start = false,
+        .cached_value = .{ .present = HostValueCell.initRetained(HostValue.fromRaw(1), cap, &engine.pending_roc_metrics) },
+    } } };
+    defer source.payload.task_source.cached_value.deinit(&ctx, &roc_host, &engine.pending_roc_metrics);
+    var mapped = HostSignalRecord{ .ref_count = 1, .payload = .{ .map = .{
+        .input = &source,
+        .transform = .fromAbi(callable),
+        .cap = cap,
+        .cached_value = .{ .present = HostValueCell.initRetained(HostValue.fromRaw(10), cap, &engine.pending_roc_metrics) },
+    } } };
+    defer mapped.payload.map.cached_value.deinit(&ctx, &roc_host, &engine.pending_roc_metrics);
+
+    // The transaction settled the task: its value is staged in the overlay
+    // while the committed slot still holds the previous value.
+    var overlay = try signal_records.PreparedCacheUpdates.init(ctx.allocator, 2);
+    defer overlay.deinit(&ctx, &roc_host, &engine.pending_roc_metrics);
+    overlay.stageAssumeCapacity(&source.payload.task_source.cached_value, HostValue.fromRaw(2), cap, &engine.pending_roc_metrics);
+
+    // A branch mounted outside any transaction still reads the committed value.
+    try std.testing.expectEqual(HostValue.fromRaw(1), engine.evalHostSignalRecordStaged(&ctx, &roc_host, &source, &.{}, null));
+    // Inside the transaction the staged value is the only honest one.
+    try std.testing.expectEqual(HostValue.fromRaw(2), engine.evalHostSignalRecordStaged(&ctx, &roc_host, &source, &.{}, &overlay));
+    // A derived record the transaction has not re-evaluated is recomputed
+    // from the staged input; one it has re-evaluated reads its staged result
+    // instead of calling Roc again.
+    const derived_calls_before = engine.pending_roc_metrics.derived_calls_into_roc;
+    try std.testing.expectEqual(HostValue.fromRaw(42), engine.evalHostSignalRecordStaged(&ctx, &roc_host, &mapped, &.{}, &overlay));
+    try std.testing.expectEqual(derived_calls_before + 1, engine.pending_roc_metrics.derived_calls_into_roc);
+    overlay.stageAssumeCapacity(&mapped.payload.map.cached_value, HostValue.fromRaw(7), cap, &engine.pending_roc_metrics);
+    try std.testing.expectEqual(HostValue.fromRaw(7), engine.evalHostSignalRecordStaged(&ctx, &roc_host, &mapped, &.{}, &overlay));
+    try std.testing.expectEqual(derived_calls_before + 1, engine.pending_roc_metrics.derived_calls_into_roc);
+    try std.testing.expectEqual(HostValue.fromRaw(1), source.payload.task_source.cached_value.present.value);
 }
 
 test "static root counts nested signal attribute records" {
