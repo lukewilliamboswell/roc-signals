@@ -1172,6 +1172,9 @@ pub fn Engine(comptime Ctx: type) type {
                 const result = self.rows.commit(&self.engine.each_row_sites, &self.engine.each_row_memberships_by_scope_id, self.inputs.keys, self.inputs.items, &self.hooks);
                 self.inputs.transfer();
                 self.hooks.base.recordRows(result.rows_reused, result.rows_created, result.rows_removed);
+                // Each created row is a scope this commit published; the
+                // scope-claim overlay does not count scopes on its own.
+                self.engine.recordScopesCreated(result.rows_created);
                 self.phase.markCommitted();
                 return result;
             }
@@ -2014,6 +2017,22 @@ pub fn Engine(comptime Ctx: type) type {
         pub fn recordScopeCreated(self: *Self) void {
             var metrics = self.pending_roc_metrics;
             metrics.bump(.scopes_created, 1);
+            self.pending_roc_metrics = metrics;
+        }
+
+        /// Counts `count` scopes published at once, such as the row scopes a
+        /// keyed reconciliation created.
+        pub fn recordScopesCreated(self: *Self, count: u64) void {
+            var metrics = self.pending_roc_metrics;
+            metrics.bump(.scopes_created, count);
+            self.pending_roc_metrics = metrics;
+        }
+
+        /// Counts `count` keyed rows created by a staged mount, together with
+        /// the row scopes they occupy, in the pending transaction metrics.
+        pub fn recordRowsCreated(self: *Self, count: u64) void {
+            var metrics = self.pending_roc_metrics;
+            metrics.bump(.rows_created, count);
             self.pending_roc_metrics = metrics;
         }
 
@@ -4757,6 +4776,10 @@ pub fn Engine(comptime Ctx: type) type {
                     self.engine.scopes.items[scope_index] = scope;
                     self.engine.recordScopeCreated();
                 }
+                // Rows an each mounted inside this collection are created rows
+                // just like the rows a keyed reconciliation creates; a spec
+                // counting a new outer row expects its nested rows with it.
+                self.engine.recordRowsCreated(@intCast(self.prepared_each_row_scopes.items.len));
                 self.prepared_each_row_scopes.clearRetainingCapacity();
                 if (self.prepared_each_sites.items.len != 0) {
                     const membership_len = self.engine.scopes.items.len;

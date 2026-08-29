@@ -7562,6 +7562,46 @@ test "changing a row item keeps its rendered nodes and diffs their fields" {
     for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
+test "a created outer row counts its nested each rows and scopes as created" {
+    // Rows an each mounts inside a staged collection are created rows, and a
+    // row a keyed reconciliation creates is a created scope. Neither used to
+    // be counted, so a spec watching one new outer row with eight cells saw
+    // one created row and eight created scopes.
+    test_erased_callable_drop_count = 0;
+    test_row_elem_call_count = 0;
+    var host = HostEnv.init();
+    var roc_host = makeSignalsRocHost(&host);
+    host.engine.roc_host = &roc_host;
+    defer {
+        host.deinit();
+        _ = host.gpa.deinit();
+    }
+
+    const state_token = newTestBinderToken(&roc_host);
+    const state_cap = testHostValueCapability(&roc_host);
+    const outer = testNodeEachWithSignalCapabilityAndRow(&roc_host, testNodeRefExpr(state_token), state_cap, &testNestedEachRowElemCallable);
+    const section = testElementWith(&roc_host, "section", &.{}, &.{outer});
+    const initial_items = [_]HostValue{testHostValueI64(1)};
+    const root = testNodeStateWithTokenAndInitialCapability(&roc_host, state_token, testHostValueI64List(&roc_host, &initial_items), section, state_cap);
+    defer root.decref(&roc_host);
+    var stream: HostNodeDescriptorStream = .{};
+    host.collectActiveElemRootDescriptors(&roc_host, &stream, root, &.{});
+    _ = applyNodeDescriptorStream(&host, &roc_host, &stream);
+    host.engine.active_stream = stream;
+
+    const state_id = host.engine.active_stream.scope_sites.items[0].node_id;
+    const before = host.engine.pending_roc_metrics;
+    const next_items = [_]HostValue{ testHostValueI64(1), testHostValueI64(2) };
+    _ = try host.engine.tryDispatchStateValue(&host, &roc_host, state_id.raw(), testHostValueI64List(&roc_host, &next_items), state_cap);
+
+    // One outer row plus its two nested rows.
+    try std.testing.expectEqual(@as(u64, 3), host.engine.pending_roc_metrics.rows_created - before.rows_created);
+    try std.testing.expectEqual(@as(u64, 3), host.engine.pending_roc_metrics.scopes_created - before.scopes_created);
+    try std.testing.expectEqual(@as(u64, 1), host.engine.pending_roc_metrics.rows_reused - before.rows_reused);
+    try std.testing.expectEqual(@as(u64, 0), host.engine.pending_roc_metrics.rows_removed - before.rows_removed);
+    try std.testing.expect(activeTextElementId(&host, "outer-2") != null);
+}
+
 test "retiring an each row disposes the nested each site it owned" {
     // The row sync removes an outer row's own membership, but the row may own a
     // nested each site with rows of its own in `each_row_sites`. Those used to
