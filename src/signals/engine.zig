@@ -933,7 +933,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             /// Retains a new row in the plan-local scope overlay.
-            pub fn prepareCreatedRow(self: *@This(), allocator: std.mem.Allocator, parent_scope_id: ids.ScopeId, site_ordinal: ids.SiteOrdinal, input_index: usize, key_hash: u64, key: HostValue, item: HostValue) std.mem.Allocator.Error!ids.ScopeId {
+            pub fn prepareCreatedRow(self: *@This(), allocator: std.mem.Allocator, parent_scope_id: ids.ScopeId, site_ordinal: ids.SiteOrdinal, input_index: usize, key_hash: u64, key: HostValue, item: HostValue) (std.mem.Allocator.Error || error{ResourceLimit})!ids.ScopeId {
                 _ = allocator;
                 const scope_id = try self.scopes.prepareRow(
                     &self.base.engine.scopes,
@@ -1144,7 +1144,7 @@ pub fn Engine(comptime Ctx: type) type {
                 errdefer hooks.deinit();
                 hooks.inputs = &inputs;
                 const site_index = engine.activeEachRowSiteIndex(site.scope_id, site.ordinal) orelse @panic("active each descriptor had no row site");
-                var rows = each_runtime.PreparedRowSync.prepare(allocator, &engine.each_row_sites, &engine.each_row_memberships_by_scope_id, site_index, site.scope_id, site.ordinal, inputs.keys, inputs.items, &hooks) catch return error.OutOfMemory;
+                var rows = try each_runtime.PreparedRowSync.prepare(allocator, &engine.each_row_sites, &engine.each_row_memberships_by_scope_id, site_index, site.scope_id, site.ordinal, inputs.keys, inputs.items, &hooks);
                 errdefer {
                     rows.abort(&hooks);
                     rows.deinit();
@@ -1212,11 +1212,11 @@ pub fn Engine(comptime Ctx: type) type {
                 const allocator = Ctx.allocator(ctx);
                 for (changes) |change| {
                     if (change.kind != .each) return error.ResourceLimit;
-                    const site = engine.activeScopeSiteByNodeId(change.node_id.raw(), .each) orelse return error.ResourceLimit;
-                    if (site.scope_id != change.scope_id or site.ordinal != change.ordinal) return error.ResourceLimit;
-                    const each_index = engine.activeEachIndexByNodeId(change.node_id.raw()) orelse return error.ResourceLimit;
+                    const site = engine.activeScopeSiteByNodeId(change.node_id.raw(), .each) orelse return error.InvalidDescriptor;
+                    if (site.scope_id != change.scope_id or site.ordinal != change.ordinal) return error.InvalidDescriptor;
+                    const each_index = engine.activeEachIndexByNodeId(change.node_id.raw()) orelse return error.InvalidDescriptor;
                     const each = &engine.active_stream.eaches.items[each_index];
-                    if (each.items.record != change.record) return error.ResourceLimit;
+                    if (each.items.record != change.record) return error.InvalidDescriptor;
                     try owner.prepareOne(site, each, overlay);
                 }
                 const sites = allocator.alloc(HostNodeScopeSiteDesc, changes.len) catch return error.OutOfMemory;
@@ -1224,8 +1224,8 @@ pub fn Engine(comptime Ctx: type) type {
                 const eaches = allocator.alloc(*const HostNodeEachDesc, changes.len) catch return error.OutOfMemory;
                 defer allocator.free(eaches);
                 for (changes, 0..) |change, index| {
-                    sites[index] = engine.activeScopeSiteByNodeId(change.node_id.raw(), .each) orelse return error.ResourceLimit;
-                    const each_index = engine.activeEachIndexByNodeId(change.node_id.raw()) orelse return error.ResourceLimit;
+                    sites[index] = engine.activeScopeSiteByNodeId(change.node_id.raw(), .each) orelse return error.InvalidDescriptor;
+                    const each_index = engine.activeEachIndexByNodeId(change.node_id.raw()) orelse return error.InvalidDescriptor;
                     eaches[index] = &engine.active_stream.eaches.items[each_index];
                 }
                 try owner.prepareReplacement(sites, eaches, .{}, &.{});
@@ -1507,7 +1507,7 @@ pub fn Engine(comptime Ctx: type) type {
             phase: CommitPhase = .prepared,
 
             fn scopeCoveredByRetiredBranch(engine: *Self, scope_id: u64, selections: []const AggregateBranchSelection) CollectionError!bool {
-                for (selections) |selection| if (engine.scopeIsDescendantOrSelf(scope_id, selection.retired_scope_id.raw()) catch return error.ResourceLimit) return true;
+                for (selections) |selection| if (engine.scopeIsDescendantOrSelf(scope_id, selection.retired_scope_id.raw()) catch |err| return scopeError(err)) return true;
                 return false;
             }
 
@@ -1527,7 +1527,7 @@ pub fn Engine(comptime Ctx: type) type {
                 var write: usize = 0;
                 for (order) |candidate| {
                     var covered = false;
-                    for (order[0..write]) |root| if (engine.scopeIsDescendantOrSelf(candidate, root) catch return error.ResourceLimit) {
+                    for (order[0..write]) |root| if (engine.scopeIsDescendantOrSelf(candidate, root) catch |err| return scopeError(err)) {
                         covered = true;
                         break;
                     };
@@ -1568,14 +1568,14 @@ pub fn Engine(comptime Ctx: type) type {
                 var selections = selections_storage;
                 for (normalized.selected_indexes, 0..) |change_index, selection_index| {
                     const change = changes[change_index];
-                    const site = engine.activeScopeSiteByNodeId(change.node_id.raw(), .when) orelse return error.ResourceLimit;
-                    if (site.scope_id != change.scope_id or site.ordinal != change.ordinal) return error.ResourceLimit;
-                    const when_index = engine.activeWhenIndexByNodeId(change.node_id.raw()) orelse return error.ResourceLimit;
+                    const site = engine.activeScopeSiteByNodeId(change.node_id.raw(), .when) orelse return error.InvalidDescriptor;
+                    if (site.scope_id != change.scope_id or site.ordinal != change.ordinal) return error.InvalidDescriptor;
+                    const when_index = engine.activeWhenIndexByNodeId(change.node_id.raw()) orelse return error.InvalidDescriptor;
                     const when_desc = engine.active_stream.whens.items[when_index];
-                    if (when_desc.condition.record != change.record) return error.ResourceLimit;
-                    const branch = change.branch orelse return error.ResourceLimit;
-                    const retired_scope_id = (engine.activeWhenBranchScopeId(site.scope_id, site.ordinal, branch.opposite()) catch return error.ResourceLimit) orelse return error.ResourceLimit;
-                    if ((engine.activeWhenBranchScopeId(site.scope_id, site.ordinal, branch) catch return error.ResourceLimit) != null) return error.ResourceLimit;
+                    if (when_desc.condition.record != change.record) return error.InvalidDescriptor;
+                    const branch = change.branch orelse return error.InvalidDescriptor;
+                    const retired_scope_id = (engine.activeWhenBranchScopeId(site.scope_id, site.ordinal, branch.opposite()) catch |err| return scopeError(err)) orelse return error.InvalidScope;
+                    if ((engine.activeWhenBranchScopeId(site.scope_id, site.ordinal, branch) catch |err| return scopeError(err)) != null) return error.InvalidScope;
                     selections[selection_index] = .{
                         .node_id = change.node_id,
                         .parent_scope_id = site.scope_id,
@@ -1644,7 +1644,7 @@ pub fn Engine(comptime Ctx: type) type {
                     const change = changes[change_index];
                     var covered = try scopeCoveredByRetiredBranch(engine, change.scope_id.raw(), selections);
                     if (!covered) for (removed_row_scopes.items) |removed_scope_id| {
-                        if (engine.scopeIsDescendantOrSelf(change.scope_id.raw(), removed_scope_id) catch return error.ResourceLimit) {
+                        if (engine.scopeIsDescendantOrSelf(change.scope_id.raw(), removed_scope_id) catch |err| return scopeError(err)) {
                             covered = true;
                             break;
                         }
@@ -1653,11 +1653,11 @@ pub fn Engine(comptime Ctx: type) type {
                         subsumed_each.appendAssumeCapacity(change_index);
                         continue;
                     }
-                    const site = engine.activeScopeSiteByNodeId(change.node_id.raw(), .each) orelse return error.ResourceLimit;
-                    if (site.scope_id != change.scope_id or site.ordinal != change.ordinal) return error.ResourceLimit;
-                    const each_index = engine.activeEachIndexByNodeId(change.node_id.raw()) orelse return error.ResourceLimit;
+                    const site = engine.activeScopeSiteByNodeId(change.node_id.raw(), .each) orelse return error.InvalidDescriptor;
+                    if (site.scope_id != change.scope_id or site.ordinal != change.ordinal) return error.InvalidDescriptor;
+                    const each_index = engine.activeEachIndexByNodeId(change.node_id.raw()) orelse return error.InvalidDescriptor;
                     const each = &engine.active_stream.eaches.items[each_index];
-                    if (each.items.record != change.record) return error.ResourceLimit;
+                    if (each.items.record != change.record) return error.InvalidDescriptor;
                     sites_storage[each_write] = site;
                     eaches_storage[each_write] = each;
                     each_change_indexes_storage[each_write] = change_index;
@@ -1694,7 +1694,7 @@ pub fn Engine(comptime Ctx: type) type {
                 for (selections, normalized.selected_indexes) |selection, change_index| {
                     var covered = false;
                     for (removed_row_scopes.items) |removed_scope_id| {
-                        if (engine.scopeIsDescendantOrSelf(selection.parent_scope_id.raw(), removed_scope_id) catch return error.ResourceLimit) {
+                        if (engine.scopeIsDescendantOrSelf(selection.parent_scope_id.raw(), removed_scope_id) catch |err| return scopeError(err)) {
                             covered = true;
                             break;
                         }
@@ -1815,18 +1815,18 @@ pub fn Engine(comptime Ctx: type) type {
                     var active_anchor: ?usize = null;
                     for (engine.active_stream.render_nodes.items, 0..) |node, render_index| {
                         const scope_id = renderNodeScopeId(&engine.active_stream, node);
-                        if (engine.scopeIsDescendantOrSelf(scope_id, selection.retired_scope_id.raw()) catch return error.ResourceLimit) {
+                        if (engine.scopeIsDescendantOrSelf(scope_id, selection.retired_scope_id.raw()) catch |err| return scopeError(err)) {
                             active_anchor = render_index;
                             break;
                         }
                     }
-                    const old_anchor = active_anchor orelse return error.ResourceLimit;
+                    const old_anchor = active_anchor orelse return error.InvalidRenderTopology;
                     var anchor: Anchor = .{ .global = old_anchor };
                     var owner_depth: ?usize = null;
                     for (sites, layouts, 0..) |each_site_desc, layout, each_index| {
                         const each_site = HostEachSite{ .parent_scope_id = each_site_desc.scope_id, .site_ordinal = each_site_desc.ordinal };
-                        const row_scope_id = (engine.eachSiteRowAncestorScopeId(selection.parent_scope_id.raw(), each_site) catch return error.ResourceLimit) orelse
-                            (engine.eachSiteRowAncestorScopeId(selection.retired_scope_id.raw(), each_site) catch return error.ResourceLimit) orelse continue;
+                        const row_scope_id = (engine.eachSiteRowAncestorScopeId(selection.parent_scope_id.raw(), each_site) catch |err| return scopeError(err)) orelse
+                            (engine.eachSiteRowAncestorScopeId(selection.retired_scope_id.raw(), each_site) catch |err| return scopeError(err)) orelse continue;
                         const depth = engine.scopeDepth(row_scope_id);
                         if (owner_depth != null and depth <= owner_depth.?) continue;
                         for (layout.survivor_moves) |move| if (move.scope_id.raw() == row_scope_id) {
@@ -1880,7 +1880,7 @@ pub fn Engine(comptime Ctx: type) type {
                                 break :blk std.math.add(usize, retained_before, inserted_before) catch return error.ResourceLimit;
                             },
                             .row_relative => |relative| blk: {
-                                const row_delta = each_deltas[relative.each_index] orelse return error.ResourceLimit;
+                                const row_delta = each_deltas[relative.each_index] orelse return error.InvalidRenderTopology;
                                 const local = std.math.add(usize, relative.row_final_start, relative.retained_offset) catch return error.ResourceLimit;
                                 break :blk std.math.cast(usize, std.math.add(isize, std.math.cast(isize, local) orelse return error.ResourceLimit, row_delta) catch return error.ResourceLimit) orelse return error.ResourceLimit;
                             },
@@ -1892,7 +1892,7 @@ pub fn Engine(comptime Ctx: type) type {
                         const retired_scope_id = selections[index].retired_scope_id;
                         for (engine.active_stream.render_nodes.items) |node| {
                             const scope_id = renderNodeScopeId(&engine.active_stream, node);
-                            if (engine.scopeIsDescendantOrSelf(scope_id, retired_scope_id.raw()) catch return error.ResourceLimit) removed = std.math.add(usize, removed, 1) catch return error.ResourceLimit;
+                            if (engine.scopeIsDescendantOrSelf(scope_id, retired_scope_id.raw()) catch |err| return scopeError(err)) removed = std.math.add(usize, removed, 1) catch return error.ResourceLimit;
                         }
                         try rebase.addReplacementRange(.{ .site_start = range.site_start, .site_len = range.site_len, .render_start = range.start, .render_len = range.len, .final_start = final_start });
                         try rebase.addRegion(.{ .node_id = site_entry.node_id, .kind = .when, .owner_scope_id = selections[index].parent_scope_id.raw(), .old_start = site_entry.old_anchor, .old_end = std.math.add(usize, site_entry.old_anchor, removed) catch return error.ResourceLimit, .final_start = final_start, .new_len = range.len });
@@ -3640,7 +3640,36 @@ pub fn Engine(comptime Ctx: type) type {
             self.collectActiveEachRowElemDescriptors(ctx, roc_host, stream, each, row_elem, row_scope_id, site.parent_elem_id, &ordinal, &dom_ordinal, binder_stack, row_created, dirty_source_node_ids);
         }
 
-        const CollectionError = error{ OutOfMemory, ResourceLimit, InvalidRenderTopology, InvalidSignalGraphAppend };
+        /// Every way a staged collection or publication can refuse, grouped by the
+        /// contract the transaction violated:
+        /// - `OutOfMemory`: the host allocator refused a preparation allocation.
+        /// - `ResourceLimit`: a configured budget, reservation, or arithmetic bound was exceeded.
+        /// - `InvalidScope`: a scope or identity the transaction named is unknown, inactive, duplicated, or unavailable.
+        /// - `InvalidDescriptor`: a descriptor, node, state cell, site, or attribute the transaction assumed does not exist or is semantically rejected.
+        /// - `OverlappingRemoval`: two removals in one transaction claim the same render interval or scope subtree.
+        /// - `InvalidRenderTopology`: the staged render tree contradicts the committed one.
+        /// - `InvalidSignalGraphAppend`: a staged signal graph append does not match the committed graph.
+        /// - `InvalidSignalGraphRelease`: a staged signal graph release names records the committed graph does not hold.
+        pub const CollectionError = error{ OutOfMemory, ResourceLimit, InvalidScope, InvalidDescriptor, OverlappingRemoval, InvalidRenderTopology, InvalidSignalGraphAppend, InvalidSignalGraphRelease };
+
+        /// Maps a scope-tree rejection onto the collection contract it violated.
+        fn scopeError(err: scope_tree.Error) CollectionError {
+            return switch (err) {
+                error.OutOfMemory => error.OutOfMemory,
+                error.UnknownScope, error.InactiveScope, error.InvalidRoot => error.InvalidScope,
+            };
+        }
+
+        const RenderSpliceError = std.mem.Allocator.Error || error{ ResourceLimit, MissingNode, MissingParent, ActiveNode, DuplicateNode, ConflictingParent, DuplicateChild };
+
+        /// Maps a render-cache splice rejection onto the collection contract it violated.
+        fn renderSpliceError(err: RenderSpliceError) CollectionError {
+            return switch (err) {
+                error.OutOfMemory => error.OutOfMemory,
+                error.ResourceLimit => error.ResourceLimit,
+                error.MissingNode, error.MissingParent, error.ActiveNode, error.DuplicateNode, error.ConflictingParent, error.DuplicateChild => error.InvalidRenderTopology,
+            };
+        }
         const WhenCollection = struct { scope: scope_tree.InternResult, branch: HostScopeBranch };
 
         fn collectActiveEachRowElemDescriptorsWith(self: *Self, comptime Collection: type, collection: Collection, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, each: HostNodeEachDesc, row_elem: abi.Elem, row_scope_id: ids.ScopeId, parent_elem_id: ids.ElemId, ordinal: *ids.SiteOrdinal, dom_ordinal: *ids.SiteOrdinal, binder_stack: *std.ArrayListUnmanaged(HostBinderBinding), row_created: bool, dirty_source_node_ids: []const u64) CollectionError!void {
@@ -3827,7 +3856,7 @@ pub fn Engine(comptime Ctx: type) type {
                 self.prepared_signal_attrs.ensureTotalCapacity(allocator, expected_signal_descriptors) catch return error.OutOfMemory;
                 self.prepared_events.ensureTotalCapacity(allocator, expected_attrs) catch return error.OutOfMemory;
                 self.prepared_lifecycle.ensureTotalCapacity(allocator, expected_lifecycle) catch return error.OutOfMemory;
-                self.stream.reservePreparedLifecycle(allocator, expected_lifecycle) catch return error.OutOfMemory;
+                try self.stream.reservePreparedLifecycle(allocator, expected_lifecycle);
                 self.prepared_state_sites.ensureTotalCapacity(allocator, expected_scope_sites) catch return error.OutOfMemory;
                 self.prepared_states.ensureTotalCapacity(allocator, expected_state_sites) catch return error.OutOfMemory;
                 self.prepared_state_cells.ensureTotalCapacity(allocator, expected_state_sites) catch return error.OutOfMemory;
@@ -3858,18 +3887,18 @@ pub fn Engine(comptime Ctx: type) type {
                 self.engine.state_indexes_by_node_id.ensureTotalCapacity(allocator, state_index_len) catch return error.OutOfMemory;
                 self.engine.active_dom_identity_ids.ensureUnusedCapacity(allocator, @intCast(expected_nodes)) catch return error.OutOfMemory;
                 const highest_elem_id = std.math.add(u64, @intCast(self.engine.dom_identities.items.len), @as(u64, @intCast(expected_nodes))) catch return error.ResourceLimit;
-                self.stream.reservePreparedStaticNodes(allocator, expected_nodes, highest_elem_id) catch return error.OutOfMemory;
-                self.stream.reservePreparedStaticAttrs(allocator, expected_attrs) catch return error.OutOfMemory;
-                self.stream.reservePreparedSignalAttrs(allocator, expected_attrs, highest_elem_id) catch return error.OutOfMemory;
-                self.stream.reservePreparedSignalTextNodes(allocator, expected_nodes, highest_elem_id) catch return error.OutOfMemory;
-                self.stream.reservePreparedSignalRecordPublication(allocator, expected_signal_records) catch return error.OutOfMemory;
-                self.stream.reservePreparedEvents(allocator, expected_attrs, highest_elem_id) catch return error.OutOfMemory;
-                self.stream.reservePreparedCustomAttrIndex(allocator, expected_attrs) catch return error.OutOfMemory;
+                try self.stream.reservePreparedStaticNodes(allocator, expected_nodes, highest_elem_id);
+                try self.stream.reservePreparedStaticAttrs(allocator, expected_attrs);
+                try self.stream.reservePreparedSignalAttrs(allocator, expected_attrs, highest_elem_id);
+                try self.stream.reservePreparedSignalTextNodes(allocator, expected_nodes, highest_elem_id);
+                try self.stream.reservePreparedSignalRecordPublication(allocator, expected_signal_records);
+                try self.stream.reservePreparedEvents(allocator, expected_attrs, highest_elem_id);
+                try self.stream.reservePreparedCustomAttrIndex(allocator, expected_attrs);
                 if (expected_scope_sites != 0) {
                     const highest_node_id = std.math.sub(usize, state_index_len, 1) catch return error.ResourceLimit;
-                    self.stream.reservePreparedStateSites(allocator, expected_scope_sites, @intCast(highest_node_id)) catch return error.OutOfMemory;
-                    self.stream.reservePreparedWhens(allocator, expected_when_sites, @intCast(highest_node_id)) catch return error.OutOfMemory;
-                    self.stream.reservePreparedEaches(allocator, expected_each_sites, @intCast(highest_node_id)) catch return error.OutOfMemory;
+                    try self.stream.reservePreparedStateSites(allocator, expected_scope_sites, @intCast(highest_node_id));
+                    try self.stream.reservePreparedWhens(allocator, expected_when_sites, @intCast(highest_node_id));
+                    try self.stream.reservePreparedEaches(allocator, expected_each_sites, @intCast(highest_node_id));
                 }
                 return self;
             }
@@ -4048,19 +4077,19 @@ pub fn Engine(comptime Ctx: type) type {
                 self.engine.active_dom_identity_ids.ensureUnusedCapacity(allocator, std.math.cast(u32, total_nodes) orelse return error.ResourceLimit) catch return error.OutOfMemory;
                 const additional_dom_ids = std.math.add(usize, self.dom_identities.intents.items.len, counts.nodes) catch return error.ResourceLimit;
                 const highest_elem_id = std.math.add(u64, @intCast(self.engine.dom_identities.items.len), @as(u64, @intCast(additional_dom_ids))) catch return error.ResourceLimit;
-                self.stream.reservePreparedStaticNodes(allocator, total_nodes, highest_elem_id) catch return error.OutOfMemory;
-                self.stream.reservePreparedStaticAttrs(allocator, total_attrs) catch return error.OutOfMemory;
-                self.stream.reservePreparedSignalAttrs(allocator, total_attrs, highest_elem_id) catch return error.OutOfMemory;
-                self.stream.reservePreparedSignalTextNodes(allocator, total_nodes, highest_elem_id) catch return error.OutOfMemory;
-                self.stream.reservePreparedSignalRecordPublication(allocator, total_signal_records) catch return error.OutOfMemory;
-                self.stream.reservePreparedEvents(allocator, total_attrs, highest_elem_id) catch return error.OutOfMemory;
-                self.stream.reservePreparedCustomAttrIndex(allocator, total_attrs) catch return error.OutOfMemory;
-                self.stream.reservePreparedLifecycle(allocator, total_lifecycle) catch return error.OutOfMemory;
+                try self.stream.reservePreparedStaticNodes(allocator, total_nodes, highest_elem_id);
+                try self.stream.reservePreparedStaticAttrs(allocator, total_attrs);
+                try self.stream.reservePreparedSignalAttrs(allocator, total_attrs, highest_elem_id);
+                try self.stream.reservePreparedSignalTextNodes(allocator, total_nodes, highest_elem_id);
+                try self.stream.reservePreparedSignalRecordPublication(allocator, total_signal_records);
+                try self.stream.reservePreparedEvents(allocator, total_attrs, highest_elem_id);
+                try self.stream.reservePreparedCustomAttrIndex(allocator, total_attrs);
+                try self.stream.reservePreparedLifecycle(allocator, total_lifecycle);
                 if (scope_sites != 0) {
                     const highest_node_id = std.math.sub(usize, state_index_len, 1) catch return error.ResourceLimit;
-                    self.stream.reservePreparedStateSites(allocator, total_scope_sites, @intCast(highest_node_id)) catch return error.OutOfMemory;
-                    self.stream.reservePreparedWhens(allocator, total_when_sites, @intCast(highest_node_id)) catch return error.OutOfMemory;
-                    self.stream.reservePreparedEaches(allocator, total_each_sites, @intCast(highest_node_id)) catch return error.OutOfMemory;
+                    try self.stream.reservePreparedStateSites(allocator, total_scope_sites, @intCast(highest_node_id));
+                    try self.stream.reservePreparedWhens(allocator, total_when_sites, @intCast(highest_node_id));
+                    try self.stream.reservePreparedEaches(allocator, total_each_sites, @intCast(highest_node_id));
                 }
                 self.reserved_nodes = total_nodes;
                 self.reserved_attrs = total_attrs;
@@ -4076,8 +4105,8 @@ pub fn Engine(comptime Ctx: type) type {
                 const key: collection_plan.ScopeKey = .{ .parent_id = ids.root_scope, .ordinal = ids.SiteOrdinal.fromRaw(0), .kind = .root };
                 const active_id: ?ids.ScopeId = if (self.engine.scopes.items.len != 0) ids.root_scope else null;
                 const scope_id = self.scopes.reserve(key, active_id, &.{ids.root_scope}) catch |err| switch (err) {
-                    error.NoCapacity => return error.OutOfMemory,
-                    error.NoAvailableScope => return error.ResourceLimit,
+                    error.NoCapacity => return error.ResourceLimit,
+                    error.NoAvailableScope => return error.InvalidScope,
                 };
                 return .{ .scope_id = scope_id, .created = active_id == null };
             }
@@ -4086,14 +4115,14 @@ pub fn Engine(comptime Ctx: type) type {
                 const root_key: collection_plan.ScopeKey = .{ .parent_id = ids.root_scope, .ordinal = ids.SiteOrdinal.fromRaw(0), .kind = .root };
                 if (self.scopes.lookup(root_key, null) == scope_id) return;
                 if (self.scopes.reserved_ids.contains(scope_id)) return;
-                self.engine.validateScopeId(scope_id) catch return error.ResourceLimit;
+                self.engine.validateScopeId(scope_id) catch |err| return scopeError(err);
             }
 
             fn attachExternalScopeIds(self: *@This(), scope_ids: []const u64) CollectionError!void {
                 for (scope_ids) |scope_id| {
                     self.scopes.reserveExternal(ids.ScopeId.fromRaw(scope_id)) catch |err| switch (err) {
-                        error.NoCapacity => return error.OutOfMemory,
-                        error.DuplicateScope => return error.ResourceLimit,
+                        error.NoCapacity => return error.ResourceLimit,
+                        error.DuplicateScope => return error.InvalidScope,
                     };
                 }
             }
@@ -4113,8 +4142,8 @@ pub fn Engine(comptime Ctx: type) type {
                 candidates[candidate_count] = ids.ScopeId.fromRaw(fresh_id);
                 candidate_count += 1;
                 const reserved = self.scopes.reserve(key, if (active_id) |id| ids.ScopeId.fromRaw(id) else null, candidates[0..candidate_count]) catch |err| switch (err) {
-                    error.NoCapacity => return error.OutOfMemory,
-                    error.NoAvailableScope => return error.ResourceLimit,
+                    error.NoCapacity => return error.ResourceLimit,
+                    error.NoAvailableScope => return error.InvalidScope,
                 };
                 return reserved.raw();
             }
@@ -4122,7 +4151,7 @@ pub fn Engine(comptime Ctx: type) type {
             fn reserveWhenBranchScope(self: *@This(), parent_scope_id: ids.ScopeId, site_ordinal: ids.SiteOrdinal, branch: HostScopeBranch) CollectionError!scope_tree.InternResult {
                 const persistent_parent = parent_scope_id.raw() < self.engine.scopes.items.len;
                 const key: collection_plan.ScopeKey = .{ .parent_id = parent_scope_id, .ordinal = site_ordinal, .kind = .{ .when_branch = branch } };
-                const active_id = if (persistent_parent and !self.scopes.reserved_ids.contains(parent_scope_id)) self.engine.activeWhenBranchScopeId(parent_scope_id, site_ordinal, branch) catch return error.ResourceLimit else null;
+                const active_id = if (persistent_parent and !self.scopes.reserved_ids.contains(parent_scope_id)) self.engine.activeWhenBranchScopeId(parent_scope_id, site_ordinal, branch) catch |err| return scopeError(err) else null;
                 const branch_scope_id = try self.reserveScopeIdentity(key, if (active_id) |value| value.raw() else null);
                 return .{ .scope_id = ids.ScopeId.fromRaw(branch_scope_id), .created = active_id == null };
             }
@@ -4147,8 +4176,8 @@ pub fn Engine(comptime Ctx: type) type {
                 }
                 const claimed = scope_id.?;
                 self.scopes.reserveExternal(ids.ScopeId.fromRaw(claimed)) catch |err| switch (err) {
-                    error.NoCapacity => return error.OutOfMemory,
-                    error.DuplicateScope => return error.ResourceLimit,
+                    error.NoCapacity => return error.ResourceLimit,
+                    error.DuplicateScope => return error.InvalidScope,
                 };
                 const required_len = std.math.add(usize, @as(usize, @intCast(claimed)), 1) catch return error.ResourceLimit;
                 self.engine.scopes.ensureTotalCapacity(allocator, required_len) catch return error.OutOfMemory;
@@ -4194,8 +4223,8 @@ pub fn Engine(comptime Ctx: type) type {
                 candidates[candidate_count] = fresh_id;
                 candidate_count += 1;
                 const elem_id = self.dom_identities.reserve(key, active_id, candidates[0..candidate_count]) catch |err| return switch (err) {
-                    error.NoCapacity => error.OutOfMemory,
-                    error.NoAvailableIdentity => error.ResourceLimit,
+                    error.NoCapacity => error.ResourceLimit,
+                    error.NoAvailableIdentity => error.InvalidScope,
                 };
                 const required_len = std.math.cast(usize, elem_id) orelse return error.ResourceLimit;
                 self.engine.dom_identities.ensureTotalCapacity(Ctx.allocator(self.host_ctx), required_len) catch return error.OutOfMemory;
@@ -4226,8 +4255,8 @@ pub fn Engine(comptime Ctx: type) type {
                 candidates[candidate_count] = fresh_id;
                 candidate_count += 1;
                 const node_id = self.node_identities.reserve(key, active_id, candidates[0..candidate_count]) catch |err| return switch (err) {
-                    error.NoCapacity => error.OutOfMemory,
-                    error.NoAvailableIdentity => error.ResourceLimit,
+                    error.NoCapacity => error.ResourceLimit,
+                    error.NoAvailableIdentity => error.InvalidScope,
                 };
                 return ids.NodeId.fromRaw(node_id);
             }
@@ -4305,7 +4334,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const branch: HostScopeBranch = if (callHostValueToBoolWithCapability(self.host_ctx, roc_host, prepared.desc.read.capability, prepared.desc.read.read, value)) .true_branch else .false_branch;
                 prepared.desc.cached_value = .{ .present = HostValueCell.initRetained(value, cap, &self.engine.pending_roc_metrics) };
                 const persistent_parent = scope_id.index() < self.engine.scopes.items.len;
-                if (persistent_parent and !self.scopes.reserved_ids.contains(scope_id) and (self.engine.activeWhenBranchScopeId(scope_id, site_ordinal, branch.opposite()) catch return error.ResourceLimit) != null) return error.ResourceLimit;
+                if (persistent_parent and !self.scopes.reserved_ids.contains(scope_id) and (self.engine.activeWhenBranchScopeId(scope_id, site_ordinal, branch.opposite()) catch |err| return scopeError(err)) != null) return error.InvalidScope;
                 const branch_scope = try self.reserveWhenBranchScope(scope_id, site_ordinal, branch);
                 self.prepared_state_sites.appendAssumeCapacity(site);
                 self.prepared_whens.appendAssumeCapacity(prepared);
@@ -4365,7 +4394,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const descriptor_bytes = std.math.add(usize, @sizeOf(HostElementDesc), tag.len) catch return error.ResourceLimit;
                 try self.budget.charge(1, descriptor_bytes);
                 const elem_id = try self.reserveDomIdentity(scope_id, dom_ordinal.*);
-                const prepared = self.stream.prepareElement(Ctx.allocator(self.host_ctx), elem_id, parent_elem_id, scope_id, tag) catch return error.OutOfMemory;
+                const prepared = try self.stream.prepareElement(Ctx.allocator(self.host_ctx), elem_id, parent_elem_id, scope_id, tag);
                 self.prepared_nodes.appendAssumeCapacity(prepared);
                 self.prepared_render_order.appendAssumeCapacity(.{ .static = self.prepared_nodes.items.len - 1 });
                 dom_ordinal.* = ids.SiteOrdinal.fromRaw(dom_ordinal.*.raw() + 1);
@@ -4376,7 +4405,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const descriptor_bytes = std.math.add(usize, @sizeOf(HostNodeTextNodeDesc), value.len) catch return error.ResourceLimit;
                 try self.budget.charge(1, descriptor_bytes);
                 const elem_id = try self.reserveDomIdentity(scope_id, dom_ordinal.*);
-                const prepared = self.stream.prepareTextNode(Ctx.allocator(self.host_ctx), elem_id, parent_elem_id, scope_id, value) catch return error.OutOfMemory;
+                const prepared = try self.stream.prepareTextNode(Ctx.allocator(self.host_ctx), elem_id, parent_elem_id, scope_id, value);
                 self.prepared_nodes.appendAssumeCapacity(prepared);
                 self.prepared_render_order.appendAssumeCapacity(.{ .static = self.prepared_nodes.items.len - 1 });
                 dom_ordinal.* = ids.SiteOrdinal.fromRaw(dom_ordinal.*.raw() + 1);
@@ -4423,11 +4452,11 @@ pub fn Engine(comptime Ctx: type) type {
                         },
                         .custom => |name| {
                             const name_slice = name.asSlice();
-                            if (name_slice.len == 0 or self.customAttrExists(elem_id, name_slice)) return error.ResourceLimit;
+                            if (name_slice.len == 0 or self.customAttrExists(elem_id, name_slice)) return error.InvalidDescriptor;
                             const bytes = std.math.add(usize, @sizeOf(HostNodeSignalCustomTextAttrDesc), name_slice.len) catch return error.ResourceLimit;
                             try self.budget.charge(0, bytes);
                             const allocator = Ctx.allocator(self.host_ctx);
-                            self.stream.reservePreparedCustomAttrElem(allocator, elem_id.raw(), self.signal_root_capacity) catch return error.OutOfMemory;
+                            try self.stream.reservePreparedCustomAttrElem(allocator, elem_id.raw(), self.signal_root_capacity);
                             const name_copy = allocator.dupe(u8, name_slice) catch return error.OutOfMemory;
                             errdefer allocator.free(name_copy);
                             const signal = try self.bindSignalRoot(roc_host, payload.signal.*, binder_stack);
@@ -4447,14 +4476,14 @@ pub fn Engine(comptime Ctx: type) type {
                         },
                     },
                     .signal_optional_text => |payload| switch (payload.target) {
-                        .fixed => return error.ResourceLimit,
+                        .fixed => return error.InvalidDescriptor,
                         .custom => |name| {
                             const name_slice = name.asSlice();
-                            if (name_slice.len == 0 or self.customAttrExists(elem_id, name_slice)) return error.ResourceLimit;
+                            if (name_slice.len == 0 or self.customAttrExists(elem_id, name_slice)) return error.InvalidDescriptor;
                             const bytes = std.math.add(usize, @sizeOf(HostNodeSignalOptionalCustomTextAttrDesc), name_slice.len) catch return error.ResourceLimit;
                             try self.budget.charge(0, bytes);
                             const allocator = Ctx.allocator(self.host_ctx);
-                            self.stream.reservePreparedCustomAttrElem(allocator, elem_id.raw(), self.signal_root_capacity) catch return error.OutOfMemory;
+                            try self.stream.reservePreparedCustomAttrElem(allocator, elem_id.raw(), self.signal_root_capacity);
                             const name_copy = allocator.dupe(u8, name_slice) catch return error.OutOfMemory;
                             errdefer allocator.free(name_copy);
                             const signal = try self.bindSignalRoot(roc_host, payload.signal.*, binder_stack);
@@ -4493,11 +4522,11 @@ pub fn Engine(comptime Ctx: type) type {
                         },
                         .custom => |name| {
                             const name_slice = name.asSlice();
-                            if (name_slice.len == 0 or self.customAttrExists(elem_id, name_slice)) return error.ResourceLimit;
+                            if (name_slice.len == 0 or self.customAttrExists(elem_id, name_slice)) return error.InvalidDescriptor;
                             const bytes = std.math.add(usize, @sizeOf(HostNodeSignalCustomBoolAttrDesc), name_slice.len) catch return error.ResourceLimit;
                             try self.budget.charge(0, bytes);
                             const allocator = Ctx.allocator(self.host_ctx);
-                            self.stream.reservePreparedCustomAttrElem(allocator, elem_id.raw(), self.signal_root_capacity) catch return error.OutOfMemory;
+                            try self.stream.reservePreparedCustomAttrElem(allocator, elem_id.raw(), self.signal_root_capacity);
                             const name_copy = allocator.dupe(u8, name_slice) catch return error.OutOfMemory;
                             errdefer allocator.free(name_copy);
                             const signal = try self.bindSignalRoot(roc_host, payload.signal.*, binder_stack);
@@ -4534,7 +4563,7 @@ pub fn Engine(comptime Ctx: type) type {
                     },
                     .named_event => |payload| {
                         const name = payload.name.asSlice();
-                        if (name.len == 0 or self.namedEventExists(elem_id, name)) return error.ResourceLimit;
+                        if (name.len == 0 or self.namedEventExists(elem_id, name)) return error.InvalidDescriptor;
                         const bytes = std.math.add(usize, @sizeOf(HostNodeEventDesc), name.len) catch return error.ResourceLimit;
                         try self.budget.charge(0, bytes);
                         const group_index = try self.prepareNamedEventGroup(elem_id);
@@ -4571,12 +4600,12 @@ pub fn Engine(comptime Ctx: type) type {
                         },
                         .custom => |name| blk: {
                             const name_slice = name.asSlice();
-                            if (name_slice.len == 0 or self.customAttrExists(elem_id, name_slice)) return error.ResourceLimit;
+                            if (name_slice.len == 0 or self.customAttrExists(elem_id, name_slice)) return error.InvalidDescriptor;
                             const bytes = std.math.add(usize, @sizeOf(HostNodeStaticCustomTextAttrDesc), name_slice.len) catch return error.ResourceLimit;
                             const total = std.math.add(usize, bytes, payload.value.asSlice().len) catch return error.ResourceLimit;
                             try self.budget.charge(0, total);
                             const allocator = Ctx.allocator(self.host_ctx);
-                            self.stream.reservePreparedCustomAttrElem(allocator, elem_id.raw(), self.signal_root_capacity) catch return error.OutOfMemory;
+                            try self.stream.reservePreparedCustomAttrElem(allocator, elem_id.raw(), self.signal_root_capacity);
                             break :blk self.stream.prepareStaticCustomTextAttr(allocator, elem_id, name_slice, payload.value.asSlice()) catch return error.OutOfMemory;
                         },
                     },
@@ -4587,11 +4616,11 @@ pub fn Engine(comptime Ctx: type) type {
                         },
                         .custom => |name| blk: {
                             const name_slice = name.asSlice();
-                            if (name_slice.len == 0 or self.customAttrExists(elem_id, name_slice)) return error.ResourceLimit;
+                            if (name_slice.len == 0 or self.customAttrExists(elem_id, name_slice)) return error.InvalidDescriptor;
                             const bytes = std.math.add(usize, @sizeOf(HostNodeStaticCustomBoolAttrDesc), name_slice.len) catch return error.ResourceLimit;
                             try self.budget.charge(0, bytes);
                             const allocator = Ctx.allocator(self.host_ctx);
-                            self.stream.reservePreparedCustomAttrElem(allocator, elem_id.raw(), self.signal_root_capacity) catch return error.OutOfMemory;
+                            try self.stream.reservePreparedCustomAttrElem(allocator, elem_id.raw(), self.signal_root_capacity);
                             break :blk self.stream.prepareStaticCustomBoolAttr(allocator, elem_id, name_slice, payload.value) catch return error.OutOfMemory;
                         },
                     },
@@ -4602,7 +4631,7 @@ pub fn Engine(comptime Ctx: type) type {
             fn appendCleanup(self: *@This(), roc_host: *abi.RocHost, scope_id: ids.ScopeId, name: []const u8) CollectionError!void {
                 self.signal_roc_host = roc_host;
                 const allocator = Ctx.allocator(self.host_ctx);
-                self.stream.reserveLifecycleScope(allocator, scope_id, self.prepared_lifecycle.capacity) catch return error.OutOfMemory;
+                try self.stream.reserveLifecycleScope(allocator, scope_id, self.prepared_lifecycle.capacity);
                 const prepared = self.stream.prepareCleanup(allocator, scope_id, name) catch return error.OutOfMemory;
                 self.prepared_lifecycle.appendAssumeCapacity(prepared);
             }
@@ -4610,13 +4639,13 @@ pub fn Engine(comptime Ctx: type) type {
             fn appendMount(self: *@This(), roc_host: *abi.RocHost, scope_id: ids.ScopeId, to_cmd: CommandBuilderCallable, run_on_mount: bool) CollectionError!void {
                 self.signal_roc_host = roc_host;
                 const allocator = Ctx.allocator(self.host_ctx);
-                self.stream.reserveLifecycleScope(allocator, scope_id, self.prepared_lifecycle.capacity) catch return error.OutOfMemory;
+                try self.stream.reserveLifecycleScope(allocator, scope_id, self.prepared_lifecycle.capacity);
                 self.prepared_lifecycle.appendAssumeCapacity(self.stream.prepareMount(to_cmd, scope_id, run_on_mount, &self.engine.pending_roc_metrics));
             }
 
             fn appendOnChange(self: *@This(), roc_host: *abi.RocHost, scope_id: ids.ScopeId, payload: abi_view.OnChangeElem, binder_stack: []const HostBinderBinding, scope_created: bool) CollectionError!void {
                 const allocator = Ctx.allocator(self.host_ctx);
-                self.stream.reserveLifecycleScope(allocator, scope_id, self.prepared_lifecycle.capacity) catch return error.OutOfMemory;
+                try self.stream.reserveLifecycleScope(allocator, scope_id, self.prepared_lifecycle.capacity);
                 const signal = try self.bindSignalRoot(roc_host, payload.signal.*, binder_stack);
                 self.prepared_lifecycle.appendAssumeCapacity(self.stream.prepareOnChange(signal, payload.to_cmd, scope_id, payload.run_initial, payload.run_initial and scope_created, &self.engine.pending_roc_metrics));
                 self.signal_records.transferDescriptorRoot(signal.record);
@@ -4649,7 +4678,7 @@ pub fn Engine(comptime Ctx: type) type {
                 if (self.prepared_named_event_group_by_elem.get(elem_id.raw())) |index| {
                     const group = &self.prepared_named_event_groups.items[index];
                     group.event_ordinals.ensureUnusedCapacity(allocator, 1) catch return error.OutOfMemory;
-                    if (group.existed) self.stream.reserveExistingNamedEventIndexes(allocator, elem_id.raw(), group.event_ordinals.items.len + 1) catch return error.OutOfMemory;
+                    if (group.existed) try self.stream.reserveExistingNamedEventIndexes(allocator, elem_id.raw(), group.event_ordinals.items.len + 1);
                     return index;
                 }
                 var group = HostNodeDescriptorStream.PreparedNamedEventIndexGroup{
@@ -4658,7 +4687,7 @@ pub fn Engine(comptime Ctx: type) type {
                 };
                 errdefer group.abort(allocator);
                 group.event_ordinals.ensureTotalCapacity(allocator, 1) catch return error.OutOfMemory;
-                if (group.existed) self.stream.reserveExistingNamedEventIndexes(allocator, elem_id.raw(), 1) catch return error.OutOfMemory;
+                if (group.existed) try self.stream.reserveExistingNamedEventIndexes(allocator, elem_id.raw(), 1);
                 const index = self.prepared_named_event_groups.items.len;
                 self.prepared_named_event_groups.appendAssumeCapacity(group);
                 self.prepared_named_event_group_by_elem.putAssumeCapacity(elem_id.raw(), index);
@@ -5180,7 +5209,7 @@ pub fn Engine(comptime Ctx: type) type {
                 collection.engine.each_row_site_indexes.ensureUnusedCapacity(allocator, std.math.cast(u32, total_sites) orelse return error.ResourceLimit) catch return error.OutOfMemory;
                 collection.reserved_each_rows = total_rows;
                 const highest_node_id = std.math.add(u64, @intCast(collection.engine.node_identities.items.len), @as(u64, @intCast(collection.node_identities.intents.items.len + 1))) catch return error.ResourceLimit;
-                collection.stream.reservePreparedEaches(allocator, 1, highest_node_id) catch return error.OutOfMemory;
+                try collection.stream.reservePreparedEaches(allocator, 1, highest_node_id);
             }
 
             fn deinit(self: *@This()) void {
@@ -5249,7 +5278,7 @@ pub fn Engine(comptime Ctx: type) type {
                 defer allocator.free(node_members);
                 @memset(node_members, false);
                 for (removal.node_indexes.scope_site_indexes.items) |site_index| {
-                    if (site_index >= engine.active_stream.scope_sites.items.len) return error.ResourceLimit;
+                    if (site_index >= engine.active_stream.scope_sites.items.len) return error.InvalidDescriptor;
                     const node_id = engine.active_stream.scope_sites.items[site_index].node_id;
                     if (node_id.index() >= node_members.len) return error.ResourceLimit;
                     node_members[node_id.index()] = true;
@@ -5322,10 +5351,10 @@ pub fn Engine(comptime Ctx: type) type {
                 const indexes = allocator.alloc(usize, descriptor_indexes.len) catch return error.OutOfMemory;
                 errdefer allocator.free(indexes);
                 for (descriptor_indexes, 0..) |descriptor_index, offset| {
-                    if (descriptor_index >= engine.active_stream.states.items.len) return error.ResourceLimit;
+                    if (descriptor_index >= engine.active_stream.states.items.len) return error.InvalidDescriptor;
                     const node_id = engine.active_stream.states.items[descriptor_index].node_id;
-                    if (node_id.index() >= engine.state_indexes_by_node_id.items.len) return error.ResourceLimit;
-                    indexes[offset] = engine.state_indexes_by_node_id.items[node_id.index()] orelse return error.ResourceLimit;
+                    if (node_id.index() >= engine.state_indexes_by_node_id.items.len) return error.InvalidDescriptor;
+                    indexes[offset] = engine.state_indexes_by_node_id.items[node_id.index()] orelse return error.InvalidDescriptor;
                 }
                 std.mem.sort(usize, indexes, {}, descending);
                 if (indexes.len > 1) for (indexes[1..], indexes[0 .. indexes.len - 1]) |current, previous| {
@@ -5369,7 +5398,7 @@ pub fn Engine(comptime Ctx: type) type {
                     .root, .component, .when_branch => {},
                 }
             }
-            return each_runtime.prepareRowRemovals(allocator, engine.each_row_sites.items, engine.each_row_memberships_by_scope_id.items, removals.items) catch return error.OutOfMemory;
+            return try each_runtime.prepareRowRemovals(allocator, engine.each_row_sites.items, engine.each_row_memberships_by_scope_id.items, removals.items);
         }
 
         const PreparedEffectRetirements = struct {
@@ -5452,9 +5481,9 @@ pub fn Engine(comptime Ctx: type) type {
                 defer state_indexes.deinit(allocator);
                 state_indexes.ensureTotalCapacity(allocator, engine.active_stream.states.items.len) catch return error.OutOfMemory;
                 for (engine.active_stream.states.items, 0..) |state, state_index| {
-                    const node_index = engine.active_stream.nodeDescriptorIndex(state.node_id) orelse return error.ResourceLimit;
-                    const site_index = node_index.scope_sites.get(.state) orelse return error.ResourceLimit;
-                    if (site_index >= engine.active_stream.scope_sites.items.len) return error.ResourceLimit;
+                    const node_index = engine.active_stream.nodeDescriptorIndex(state.node_id) orelse return error.InvalidDescriptor;
+                    const site_index = node_index.scope_sites.get(.state) orelse return error.InvalidDescriptor;
+                    if (site_index >= engine.active_stream.scope_sites.items.len) return error.InvalidDescriptor;
                     const owner = engine.active_stream.scope_sites.items[site_index].scope_id;
                     if (owner.index() >= target_scopes.len) return error.ResourceLimit;
                     if (target_scopes[owner.index()]) state_indexes.appendAssumeCapacity(state_index);
@@ -5679,7 +5708,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const each_site = HostEachSite{ .parent_scope_id = site.scope_id, .site_ordinal = site.ordinal };
                 while (render_index < engine.active_stream.render_nodes.items.len) {
                     const scope_id = renderNodeScopeId(&engine.active_stream, engine.active_stream.render_nodes.items[render_index]);
-                    const row_scope_id = (engine.eachSiteRowAncestorScopeId(scope_id, each_site) catch return error.ResourceLimit) orelse {
+                    const row_scope_id = (engine.eachSiteRowAncestorScopeId(scope_id, each_site) catch |err| return scopeError(err)) orelse {
                         render_index += 1;
                         continue;
                     };
@@ -5687,7 +5716,7 @@ pub fn Engine(comptime Ctx: type) type {
                     render_index += 1;
                     while (render_index < engine.active_stream.render_nodes.items.len) : (render_index += 1) {
                         const next_scope = renderNodeScopeId(&engine.active_stream, engine.active_stream.render_nodes.items[render_index]);
-                        const next_row = engine.eachSiteRowAncestorScopeId(next_scope, each_site) catch return error.ResourceLimit;
+                        const next_row = engine.eachSiteRowAncestorScopeId(next_scope, each_site) catch |err| return scopeError(err);
                         if (next_row == null or next_row.? != row_scope_id) break;
                     }
                     const index = segments.items.len;
@@ -5706,11 +5735,11 @@ pub fn Engine(comptime Ctx: type) type {
                 defer remove_starts_list.deinit(allocator);
                 remove_starts_list.ensureTotalCapacity(allocator, std.math.add(usize, rows.removed_scope_ids.len, replacements.len) catch return error.ResourceLimit) catch return error.OutOfMemory;
                 for (rows.removed_scope_ids) |scope_id| {
-                    const segment_index = by_scope.get(scope_id.raw()) orelse return error.ResourceLimit;
+                    const segment_index = by_scope.get(scope_id.raw()) orelse return error.InvalidScope;
                     remove_starts_list.appendAssumeCapacity(segments.items[segment_index].start);
                 }
                 for (replacements) |replacement| if (!rows.scope_created[replacement.row_index]) {
-                    const segment_index = by_scope.get(replacement.scope_id.raw()) orelse return error.ResourceLimit;
+                    const segment_index = by_scope.get(replacement.scope_id.raw()) orelse return error.InvalidScope;
                     remove_starts_list.appendAssumeCapacity(segments.items[segment_index].start);
                     descriptor_roots.appendAssumeCapacity(replacement.scope_id.raw());
                 };
@@ -5730,7 +5759,9 @@ pub fn Engine(comptime Ctx: type) type {
                 errdefer allocator.free(remove_starts);
                 const removal = structural_splice.prepareMultiRemoval(HostNodeDescriptorStream, allocator, &engine.active_stream, remove_starts, target_scopes, null) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
-                    error.OverlappingIntervals => return error.ResourceLimit,
+                    error.ResourceLimit => return error.ResourceLimit,
+                    error.InvalidDescriptor => return error.InvalidDescriptor,
+                    error.OverlappingIntervals => return error.OverlappingRemoval,
                 };
                 errdefer {
                     var mutable = removal;
@@ -5754,7 +5785,7 @@ pub fn Engine(comptime Ctx: type) type {
                     if (replacement_len) |len| {
                         next_start = std.math.add(usize, next_start, len) catch return error.ResourceLimit;
                     } else {
-                        const segment_index = by_scope.get(scope_id.raw()) orelse return error.ResourceLimit;
+                        const segment_index = by_scope.get(scope_id.raw()) orelse return error.InvalidScope;
                         const segment = segments.items[segment_index];
                         survivor_moves[move_write] = .{ .scope_id = scope_id, .old_start = segment.start, .new_start = next_start, .len = segment.len };
                         move_write += 1;
@@ -5881,7 +5912,7 @@ pub fn Engine(comptime Ctx: type) type {
                         const parent_entry = prepared.metadata.getOrPutAssumeCapacity(parent_elem_id);
                         if (!parent_entry.found_existing) parent_entry.value_ptr.* = .{};
                         if (parent_entry.value_ptr.last_child) |previous_id| {
-                            const previous = prepared.metadata.getPtr(previous_id.raw()) orelse return error.ResourceLimit;
+                            const previous = prepared.metadata.getPtr(previous_id.raw()) orelse return error.InvalidRenderTopology;
                             previous.next_sibling = node.elem_id;
                         } else parent_entry.value_ptr.first_child = node.elem_id;
                         parent_entry.value_ptr.last_child = node.elem_id;
@@ -5904,7 +5935,7 @@ pub fn Engine(comptime Ctx: type) type {
 
         fn prepareRetiredStreamCapacity(engine: *Self, allocator: std.mem.Allocator, retired: *HostNodeDescriptorStream, removal: *const structural_splice.PreparedRemoval, retired_scope_ids: anytype) CollectionError!void {
             const indexes = &removal.descriptor_indexes;
-            retired.reserveRetiredStaticPublication(
+            try retired.reserveRetiredStaticPublication(
                 allocator,
                 indexes.element_indexes.items.len,
                 indexes.text_node_indexes.items.len,
@@ -5921,8 +5952,8 @@ pub fn Engine(comptime Ctx: type) type {
                 removal.node_indexes.state_indexes.items.len,
                 removal.node_indexes.when_indexes.items.len,
                 removal.node_indexes.each_indexes.items.len,
-            ) catch return error.OutOfMemory;
-            retired.reserveRetiredCustomPublication(
+            );
+            try retired.reserveRetiredCustomPublication(
                 allocator,
                 &engine.active_stream,
                 removal.scan.removed_elem_ids,
@@ -5931,7 +5962,7 @@ pub fn Engine(comptime Ctx: type) type {
                 indexes.signal_optional_custom_text_attr_indexes.items.len,
                 indexes.static_custom_bool_attr_indexes.items.len,
                 indexes.signal_custom_bool_attr_indexes.items.len,
-            ) catch return error.OutOfMemory;
+            );
             retired.reserveRetiredLifecyclePublication(
                 allocator,
                 &engine.active_stream,
@@ -5979,7 +6010,7 @@ pub fn Engine(comptime Ctx: type) type {
                 for (descriptor_root_scope_ids) |root_scope_id| {
                     if (root_scope_id >= engine.scopes.items.len) return error.ResourceLimit;
                     for (engine.scopes.items) |scope| {
-                        if (engine.scopeIsDescendantOrSelf(scope.scope_id.raw(), root_scope_id) catch return error.ResourceLimit) {
+                        if (engine.scopeIsDescendantOrSelf(scope.scope_id.raw(), root_scope_id) catch |err| return scopeError(err)) {
                             prepared.descriptor_target_scopes[scope.scope_id.index()] = true;
                         }
                     }
@@ -5989,7 +6020,7 @@ pub fn Engine(comptime Ctx: type) type {
                 for (retired_root_scope_ids, nominal_retired_roots) |scope_id, *nominal| nominal.* = ids.ScopeId.fromRaw(scope_id);
                 prepared.scope_retirement = scope_runtime.prepareSubtreesRetirement(HostEachRowScopeStep, allocator, engine.scopes.items, nominal_retired_roots) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
-                    error.OverlappingSubtrees => return error.ResourceLimit,
+                    error.OverlappingSubtrees => return error.OverlappingRemoval,
                 };
                 for (prepared.scope_retirement.?.scope_ids) |scope_id| {
                     if (scope_id.index() >= prepared.descriptor_target_scopes.len or !prepared.descriptor_target_scopes[scope_id.index()]) return error.ResourceLimit;
@@ -6468,7 +6499,7 @@ pub fn Engine(comptime Ctx: type) type {
                     render_insert_indexes[index] = blk: {
                         for (engine.active_stream.render_nodes.items, 0..) |node, render_index| {
                             const scope_id = renderNodeScopeId(&engine.active_stream, node);
-                            if (engine.scopeIsDescendantOrSelf(scope_id, selection.retired_scope_id.raw()) catch return error.ResourceLimit) break :blk render_index;
+                            if (engine.scopeIsDescendantOrSelf(scope_id, selection.retired_scope_id.raw()) catch |err| return scopeError(err)) break :blk render_index;
                         }
                         break :blk selection.render_insert_index;
                     };
@@ -6517,7 +6548,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             fn prepareInitialRoot(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, replacement: *PreparedReplacementOwner) CollectionError!*@This() {
-                if (engine.active_stream.render_nodes.items.len != 0 or engine.active_signal_graph.items.len != 0 or engine.render_cache.hasRoot()) return error.ResourceLimit;
+                if (engine.active_stream.render_nodes.items.len != 0 or engine.active_signal_graph.items.len != 0 or engine.render_cache.hasRoot()) return error.InvalidRenderTopology;
                 const allocator = Ctx.allocator(ctx);
                 const plan = allocator.create(@This()) catch return error.OutOfMemory;
                 errdefer allocator.destroy(plan);
@@ -6581,7 +6612,7 @@ pub fn Engine(comptime Ctx: type) type {
                     var child_id = if (self.final_render_topology.?.metadata.get(parent_elem_id)) |entry| entry.first_child else null;
                     while (child_id) |id| {
                         child_capacity = std.math.add(usize, child_capacity, 1) catch return error.ResourceLimit;
-                        child_id = (self.final_render_topology.?.metadata.get(id.raw()) orelse return error.ResourceLimit).next_sibling;
+                        child_id = (self.final_render_topology.?.metadata.get(id.raw()) orelse return error.InvalidRenderTopology).next_sibling;
                     }
                 }
                 try splice.reserveAdditionalChildren(parent_elem_ids.len, child_capacity);
@@ -6592,13 +6623,9 @@ pub fn Engine(comptime Ctx: type) type {
                     var child_id = if (self.final_render_topology.?.metadata.get(parent_elem_id)) |entry| entry.first_child else null;
                     while (child_id) |id| {
                         children.append(allocator, id) catch return error.OutOfMemory;
-                        child_id = (self.final_render_topology.?.metadata.get(id.raw()) orelse return error.ResourceLimit).next_sibling;
+                        child_id = (self.final_render_topology.?.metadata.get(id.raw()) orelse return error.InvalidRenderTopology).next_sibling;
                     }
-                    splice.addChildren(&self.engine.render_cache, ids.ElemId.fromRaw(parent_elem_id), children.items) catch |err| switch (err) {
-                        error.OutOfMemory => return error.OutOfMemory,
-                        error.ResourceLimit => return error.ResourceLimit,
-                        error.ConflictingParent, error.DuplicateChild, error.MissingNode => return error.InvalidRenderTopology,
-                    };
+                    splice.addChildren(&self.engine.render_cache, ids.ElemId.fromRaw(parent_elem_id), children.items) catch |err| return renderSpliceError(err);
                 }
                 splice.wire.preflight(self.render_batch_target.?, allocator) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
@@ -6609,6 +6636,7 @@ pub fn Engine(comptime Ctx: type) type {
                     self.host_render_publication = Ctx.prepareRenderPublication(self.host_ctx, splice) catch |err| switch (err) {
                         error.OutOfMemory => return error.OutOfMemory,
                         error.ResourceLimit => return error.ResourceLimit,
+                        error.InvalidRenderTopology => return error.InvalidRenderTopology,
                     };
                 }
             }
@@ -6637,6 +6665,7 @@ pub fn Engine(comptime Ctx: type) type {
                     self.host_render_publication = Ctx.prepareRenderPublication(self.host_ctx, splice) catch |err| switch (err) {
                         error.OutOfMemory => return error.OutOfMemory,
                         error.ResourceLimit => return error.ResourceLimit,
+                        error.InvalidRenderTopology => return error.InvalidRenderTopology,
                     };
                 }
             }
@@ -6671,7 +6700,7 @@ pub fn Engine(comptime Ctx: type) type {
                     if (retired) continue;
                     for (self.engine.scopes.items) |scope| {
                         if (!scope.lifecycle.isActive() or scope.scope_id.raw() == root or scope.step != .each_row) continue;
-                        if (!(self.engine.scopeIsDescendantOrSelf(scope.scope_id.raw(), root) catch return error.ResourceLimit)) continue;
+                        if (!(self.engine.scopeIsDescendantOrSelf(scope.scope_id.raw(), root) catch |err| return scopeError(err))) continue;
                         var ancestor = scope.parent_scope_id;
                         const top_most = while (ancestor) |id| {
                             if (id.raw() == root) break true;
@@ -6687,7 +6716,9 @@ pub fn Engine(comptime Ctx: type) type {
                 const retirement_scope_ids = self.targets.?.scope_retirement.?.scope_ids;
                 self.removal = structural_splice.prepareMultiRemoval(HostNodeDescriptorStream, allocator, &self.engine.active_stream, render_insert_indexes, target_scopes, scan_scopes) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
-                    error.OverlappingIntervals => return error.ResourceLimit,
+                    error.ResourceLimit => return error.ResourceLimit,
+                    error.InvalidDescriptor => return error.InvalidDescriptor,
+                    error.OverlappingIntervals => return error.OverlappingRemoval,
                 };
                 errdefer if (self.removal) |*removal| removal.deinit(allocator);
                 self.identity_retirements = try PreparedIdentityRetirements.prepareExactRemoval(self.engine, allocator, retirement_scope_ids, &self.removal.?.removal);
@@ -6732,7 +6763,7 @@ pub fn Engine(comptime Ctx: type) type {
                 self.retired_active_events.ensureTotalCapacity(allocator, removed_event_count) catch return error.OutOfMemory;
                 errdefer self.retired_active_events.deinit(allocator);
                 if (cache_overlay) |overlay| try self.engine.reserveCacheBearingDescriptorPublication(allocator, &self.replacement.stream, overlay);
-                self.engine.active_stream.reserveMovedStreamPublication(allocator, &self.replacement.stream) catch return error.OutOfMemory;
+                try self.engine.active_stream.reserveMovedStreamPublication(allocator, &self.replacement.stream);
                 try prepareRetiredStreamCapacity(self.engine, allocator, &self.retired_stream, &self.removal.?.removal, retirement_scope_ids);
                 const on_change_base = std.math.sub(usize, self.engine.active_stream.on_changes.items.len, self.removal.?.removal.node_indexes.on_change_indexes.items.len) catch return error.ResourceLimit;
                 const mount_base = std.math.sub(usize, self.engine.active_stream.mounts.items.len, self.removal.?.removal.node_indexes.mount_indexes.items.len) catch return error.ResourceLimit;
@@ -6754,7 +6785,10 @@ pub fn Engine(comptime Ctx: type) type {
                     var retired_roots: std.ArrayListUnmanaged(*HostSignalRecord) = .empty;
                     defer retired_roots.deinit(allocator);
                     try collectRetiredGraphRootsForRemoval(self.engine, allocator, &self.removal.?.removal, &retired_roots);
-                    self.graph_release = active_graph.prepareReleaseClosure(HostSignalRecord, allocator, self.engine.active_signal_graph.items, retired_roots.items, replacement_roots.items) catch return error.OutOfMemory;
+                    self.graph_release = active_graph.prepareReleaseClosure(HostSignalRecord, allocator, self.engine.active_signal_graph.items, retired_roots.items, replacement_roots.items) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        error.InvalidRelease => return error.InvalidSignalGraphRelease,
+                    };
                     errdefer if (self.graph_release) |*release| release.deinit(allocator);
                     self.graph_append = active_graph.prepareGraphAppend(HostSignalRecord, allocator, self.engine.active_signal_graph.items, self.graph_release.?.final_record_ids, replacement_roots.items) catch |err| switch (err) {
                         error.OutOfMemory => return error.OutOfMemory,
@@ -6801,6 +6835,7 @@ pub fn Engine(comptime Ctx: type) type {
                     self.host_render_publication = Ctx.prepareRenderPublication(self.host_ctx, &self.render_splice.?) catch |err| switch (err) {
                         error.OutOfMemory => return error.OutOfMemory,
                         error.ResourceLimit => return error.ResourceLimit,
+                        error.InvalidRenderTopology => return error.InvalidRenderTopology,
                     };
                 }
             }
@@ -7072,30 +7107,45 @@ pub fn Engine(comptime Ctx: type) type {
                 var source_count = self.engine.active_source_signal_routes.items.len;
                 for (source.items) |entry| source_count = @max(source_count, std.math.add(usize, @intCast(entry.route_index), 1) catch return error.ResourceLimit);
                 self.graph_source_route_count = source_count;
-                self.source_route_appends = active_graph.prepareSourceRouteAppendsAfterRelease(allocator, &self.engine.active_source_signal_routes, self.graph_release.?.final_record_ids, source_count, source.items) catch return error.OutOfMemory;
-                self.text_route_appends = active_graph.prepareRouteAppendsAfterRelease(active_graph.TextSink, allocator, &self.engine.active_text_signal_routes, self.graph_release.?.final_record_ids, graph_count, text.items) catch return error.OutOfMemory;
-                self.bool_route_appends = active_graph.prepareRouteAppendsAfterRelease(active_graph.BoolSink, allocator, &self.engine.active_bool_signal_routes, self.graph_release.?.final_record_ids, graph_count, bools.items) catch return error.OutOfMemory;
-                self.change_route_appends = active_graph.prepareRouteAppendsAfterRelease(active_graph.ChangeSink, allocator, &self.engine.active_change_signal_routes, self.graph_release.?.final_record_ids, graph_count, changes.items) catch return error.OutOfMemory;
-                self.structural_route_appends = active_graph.prepareRouteAppendsAfterRelease(active_graph.StructuralSink, allocator, &self.engine.active_structural_signal_routes, self.graph_release.?.final_record_ids, graph_count, structural.items) catch return error.OutOfMemory;
+                self.source_route_appends = active_graph.prepareSourceRouteAppendsAfterRelease(allocator, &self.engine.active_source_signal_routes, self.graph_release.?.final_record_ids, source_count, source.items) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.InvalidAppend => return error.InvalidSignalGraphAppend,
+                };
+                self.text_route_appends = active_graph.prepareRouteAppendsAfterRelease(active_graph.TextSink, allocator, &self.engine.active_text_signal_routes, self.graph_release.?.final_record_ids, graph_count, text.items) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.InvalidAppend => return error.InvalidSignalGraphAppend,
+                };
+                self.bool_route_appends = active_graph.prepareRouteAppendsAfterRelease(active_graph.BoolSink, allocator, &self.engine.active_bool_signal_routes, self.graph_release.?.final_record_ids, graph_count, bools.items) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.InvalidAppend => return error.InvalidSignalGraphAppend,
+                };
+                self.change_route_appends = active_graph.prepareRouteAppendsAfterRelease(active_graph.ChangeSink, allocator, &self.engine.active_change_signal_routes, self.graph_release.?.final_record_ids, graph_count, changes.items) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.InvalidAppend => return error.InvalidSignalGraphAppend,
+                };
+                self.structural_route_appends = active_graph.prepareRouteAppendsAfterRelease(active_graph.StructuralSink, allocator, &self.engine.active_structural_signal_routes, self.graph_release.?.final_record_ids, graph_count, structural.items) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.InvalidAppend => return error.InvalidSignalGraphAppend,
+                };
                 graph_plan.reservePublication(allocator, &self.engine.active_signal_graph) catch return error.OutOfMemory;
                 graph_plan.reserveParallelRoutes(allocator, &self.engine.active_text_signal_routes, &self.engine.active_bool_signal_routes, &self.engine.active_change_signal_routes, &self.engine.active_structural_signal_routes) catch return error.OutOfMemory;
                 try self.source_route_appends.?.reserveOuter(allocator, &self.engine.active_source_signal_routes, source_count);
             }
 
             fn appendTextRoute(self: *@This(), allocator: std.mem.Allocator, routes: *std.ArrayListUnmanaged(active_graph.RouteAppend(active_graph.TextSink)), record: *HostSignalRecord, sink: active_graph.TextSink) CollectionError!void {
-                const id = self.graph_append.?.plannedRecordId(self.engine.active_signal_graph.items, record) orelse return error.ResourceLimit;
+                const id = self.graph_append.?.plannedRecordId(self.engine.active_signal_graph.items, record) orelse return error.InvalidSignalGraphAppend;
                 routes.append(allocator, .{ .route_index = id, .value = sink }) catch return error.OutOfMemory;
             }
             fn appendBoolRoute(self: *@This(), allocator: std.mem.Allocator, routes: *std.ArrayListUnmanaged(active_graph.RouteAppend(active_graph.BoolSink)), record: *HostSignalRecord, sink: active_graph.BoolSink) CollectionError!void {
-                const id = self.graph_append.?.plannedRecordId(self.engine.active_signal_graph.items, record) orelse return error.ResourceLimit;
+                const id = self.graph_append.?.plannedRecordId(self.engine.active_signal_graph.items, record) orelse return error.InvalidSignalGraphAppend;
                 routes.append(allocator, .{ .route_index = id, .value = sink }) catch return error.OutOfMemory;
             }
             fn appendChangeRoute(self: *@This(), allocator: std.mem.Allocator, routes: *std.ArrayListUnmanaged(active_graph.RouteAppend(active_graph.ChangeSink)), record: *HostSignalRecord, sink: active_graph.ChangeSink) CollectionError!void {
-                const id = self.graph_append.?.plannedRecordId(self.engine.active_signal_graph.items, record) orelse return error.ResourceLimit;
+                const id = self.graph_append.?.plannedRecordId(self.engine.active_signal_graph.items, record) orelse return error.InvalidSignalGraphAppend;
                 routes.append(allocator, .{ .route_index = id, .value = sink }) catch return error.OutOfMemory;
             }
             fn appendStructuralRoute(self: *@This(), allocator: std.mem.Allocator, routes: *std.ArrayListUnmanaged(active_graph.RouteAppend(active_graph.StructuralSink)), record: *HostSignalRecord, sink: active_graph.StructuralSink) CollectionError!void {
-                const id = self.graph_append.?.plannedRecordId(self.engine.active_signal_graph.items, record) orelse return error.ResourceLimit;
+                const id = self.graph_append.?.plannedRecordId(self.engine.active_signal_graph.items, record) orelse return error.InvalidSignalGraphAppend;
                 routes.append(allocator, .{ .route_index = id, .value = sink }) catch return error.OutOfMemory;
             }
             fn deinitGraphRoutes(self: *@This(), allocator: std.mem.Allocator) void {
@@ -7227,9 +7277,9 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             fn prepare(engine_ptr: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, site: HostNodeScopeSiteDesc, when: HostNodeWhenDesc, selected_branch: HostScopeBranch, limits: collection_budget.Limits, dirty_source_node_ids: []const u64) CollectionError!*@This() {
-                if (site.kind != .when or site.node_id != when.node_id) return error.ResourceLimit;
-                const retired_scope_id = (engine_ptr.activeWhenBranchScopeId(site.scope_id, site.ordinal, selected_branch.opposite()) catch return error.ResourceLimit) orelse return error.ResourceLimit;
-                if ((engine_ptr.activeWhenBranchScopeId(site.scope_id, site.ordinal, selected_branch) catch return error.ResourceLimit) != null) return error.ResourceLimit;
+                if (site.kind != .when or site.node_id != when.node_id) return error.InvalidDescriptor;
+                const retired_scope_id = (engine_ptr.activeWhenBranchScopeId(site.scope_id, site.ordinal, selected_branch.opposite()) catch |err| return scopeError(err)) orelse return error.InvalidScope;
+                if ((engine_ptr.activeWhenBranchScopeId(site.scope_id, site.ordinal, selected_branch) catch |err| return scopeError(err)) != null) return error.InvalidScope;
 
                 const selected_elem = switch (selected_branch) {
                     .true_branch => when.when_true,
@@ -7257,7 +7307,7 @@ pub fn Engine(comptime Ctx: type) type {
                 var dom_ordinal = ids.SiteOrdinal.fromRaw(0);
                 try engine_ptr.collectActiveElemDescriptorsWith(*StagedCollectionCtx, &plan.collection, ctx, roc_host, &plan.replacement_stream, selected_elem, branch_scope.scope_id, site.parent_elem_id, &ordinal, &dom_ordinal, &binder_stack, true, dirty_source_node_ids);
                 plan.collection.materializeStream();
-                engine_ptr.active_stream.reserveMovedStreamPublication(allocator, &plan.replacement_stream) catch return error.OutOfMemory;
+                try engine_ptr.active_stream.reserveMovedStreamPublication(allocator, &plan.replacement_stream);
 
                 plan.target_scopes = allocator.alloc(bool, engine_ptr.scopes.items.len) catch return error.OutOfMemory;
                 errdefer allocator.free(plan.target_scopes);
@@ -7276,7 +7326,7 @@ pub fn Engine(comptime Ctx: type) type {
                 plan.retired_scope_steps.ensureUnusedCapacity(allocator, plan.scope_retirement.?.scope_ids.len) catch return error.OutOfMemory;
                 errdefer plan.retired_scope_steps.deinit(allocator);
                 const render_start = engine_ptr.renderStartForReplacementTargetSet(site.render_insert_index, plan.target_scopes);
-                plan.removal = structural_splice.prepareRemoval(HostNodeDescriptorStream, allocator, &engine_ptr.active_stream, render_start, plan.target_scopes) catch return error.OutOfMemory;
+                plan.removal = try structural_splice.prepareRemoval(HostNodeDescriptorStream, allocator, &engine_ptr.active_stream, render_start, plan.target_scopes);
                 errdefer if (plan.removal) |*removal| removal.deinit(allocator);
                 plan.effects_retirement = try PreparedEffectRetirements.prepare(engine_ptr, allocator, plan.target_scopes, plan.removal.?.node_indexes.cleanup_indexes.items);
                 errdefer if (plan.effects_retirement) |*effects| effects.deinit(allocator, null);
@@ -7321,7 +7371,10 @@ pub fn Engine(comptime Ctx: type) type {
                     var replacement_roots: std.ArrayListUnmanaged(*HostSignalRecord) = .empty;
                     defer replacement_roots.deinit(allocator);
                     try self.collectReplacementGraphRoots(allocator, &replacement_roots);
-                    self.graph_release = active_graph.prepareReleaseClosure(HostSignalRecord, allocator, self.engine.active_signal_graph.items, retired_roots.items, replacement_roots.items) catch return error.OutOfMemory;
+                    self.graph_release = active_graph.prepareReleaseClosure(HostSignalRecord, allocator, self.engine.active_signal_graph.items, retired_roots.items, replacement_roots.items) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        error.InvalidRelease => return error.InvalidSignalGraphRelease,
+                    };
                     self.graph_append = active_graph.prepareGraphAppend(HostSignalRecord, allocator, self.engine.active_signal_graph.items, self.graph_release.?.final_record_ids, replacement_roots.items) catch |err| switch (err) {
                         error.OutOfMemory => return error.OutOfMemory,
                         error.InvalidAppend => return error.InvalidSignalGraphAppend,
@@ -7340,6 +7393,7 @@ pub fn Engine(comptime Ctx: type) type {
                         self.host_render_publication = Ctx.prepareRenderPublication(self.host_ctx, &self.render_splice.?) catch |err| switch (err) {
                             error.OutOfMemory => return error.OutOfMemory,
                             error.ResourceLimit => return error.ResourceLimit,
+                            error.InvalidRenderTopology => return error.InvalidRenderTopology,
                         };
                     }
                 }
@@ -7474,25 +7528,16 @@ pub fn Engine(comptime Ctx: type) type {
                 errdefer splice.deinit();
                 if (self.initial_root) {
                     splice.wire.addSemantic(.reset_dom) catch return error.ResourceLimit;
-                    splice.addHostRoot(&self.engine.render_cache) catch |err| switch (err) {
-                        error.OutOfMemory => return error.OutOfMemory,
-                        else => return error.ResourceLimit,
-                    };
+                    splice.addHostRoot(&self.engine.render_cache) catch |err| return renderSpliceError(err);
                 }
-                for (self.removal.?.scan.removed_elem_ids) |elem_id| if (!replacements.contains(elem_id)) splice.addRemoval(&self.engine.render_cache, ids.ElemId.fromRaw(elem_id)) catch return error.ResourceLimit;
+                for (self.removal.?.scan.removed_elem_ids) |elem_id| if (!replacements.contains(elem_id)) splice.addRemoval(&self.engine.render_cache, ids.ElemId.fromRaw(elem_id)) catch |err| return renderSpliceError(err);
                 for (self.replacement_stream.render_nodes.items) |node| {
                     const tag = descriptor_stream.renderNodeTag(HostNodeDescriptorStream, &self.replacement_stream, node);
                     const index = node.elem_id.index();
                     if (index < self.engine.render_cache.nodes.items.len and self.engine.render_cache.nodes.items[index].isActive()) {
                         if (!retired.contains(node.elem_id.raw())) return error.ResourceLimit;
-                        splice.addNodeReplacement(&self.engine.render_cache, node.elem_id, tag) catch |err| switch (err) {
-                            error.OutOfMemory => return error.OutOfMemory,
-                            else => return error.ResourceLimit,
-                        };
-                    } else splice.addCreation(&self.engine.render_cache, node.elem_id, tag) catch |err| switch (err) {
-                        error.OutOfMemory => return error.OutOfMemory,
-                        else => return error.ResourceLimit,
-                    };
+                        splice.addNodeReplacement(&self.engine.render_cache, node.elem_id, tag) catch |err| return renderSpliceError(err);
+                    } else splice.addCreation(&self.engine.render_cache, node.elem_id, tag) catch |err| return renderSpliceError(err);
                 }
                 iterator = touched.keyIterator();
                 while (iterator.next()) |parent_id| {
@@ -7511,38 +7556,22 @@ pub fn Engine(comptime Ctx: type) type {
                         }
                     }
                     if (!inserted) try self.appendReplacementChildren(allocator, &children, parent_id.*);
-                    splice.addChildren(&self.engine.render_cache, ids.ElemId.fromRaw(parent_id.*), children.items) catch |err| switch (err) {
-                        error.OutOfMemory => return error.OutOfMemory,
-                        error.ResourceLimit => return error.ResourceLimit,
-                        error.ConflictingParent, error.DuplicateChild, error.MissingNode => return error.InvalidRenderTopology,
-                    };
+                    splice.addChildren(&self.engine.render_cache, ids.ElemId.fromRaw(parent_id.*), children.items) catch |err| return renderSpliceError(err);
                 }
-                for (self.replacement_stream.text_nodes.items) |desc| splice.addTextField(&self.engine.render_cache, desc.elem_id, .text, desc.value) catch |err| switch (err) {
-                    error.OutOfMemory => return error.OutOfMemory,
-                    else => return error.ResourceLimit,
-                };
-                for (self.replacement_stream.static_text_attrs.items) |desc| splice.addTextField(&self.engine.render_cache, desc.elem_id, desc.field, desc.value) catch |err| switch (err) {
-                    error.OutOfMemory => return error.OutOfMemory,
-                    else => return error.ResourceLimit,
-                };
-                for (self.replacement_stream.static_bool_attrs.items) |desc| splice.addBoolField(&self.engine.render_cache, desc.elem_id, desc.field, desc.value) catch return error.ResourceLimit;
+                for (self.replacement_stream.text_nodes.items) |desc| splice.addTextField(&self.engine.render_cache, desc.elem_id, .text, desc.value) catch |err| return renderSpliceError(err);
+                for (self.replacement_stream.static_text_attrs.items) |desc| splice.addTextField(&self.engine.render_cache, desc.elem_id, desc.field, desc.value) catch |err| return renderSpliceError(err);
+                for (self.replacement_stream.static_bool_attrs.items) |desc| splice.addBoolField(&self.engine.render_cache, desc.elem_id, desc.field, desc.value) catch |err| return renderSpliceError(err);
                 for (self.replacement_stream.signal_text_nodes.items) |*desc| {
                     const text = self.evalPreparedSignalText(&desc.signal, desc.read, &desc.cached_value);
                     defer text.decref(self.roc_host);
-                    splice.addTextField(&self.engine.render_cache, desc.elem_id, .text, text.asSlice()) catch |err| switch (err) {
-                        error.OutOfMemory => return error.OutOfMemory,
-                        else => return error.ResourceLimit,
-                    };
+                    splice.addTextField(&self.engine.render_cache, desc.elem_id, .text, text.asSlice()) catch |err| return renderSpliceError(err);
                 }
                 for (self.replacement_stream.signal_text_attrs.items) |*desc| {
                     const text = self.evalPreparedSignalText(&desc.signal, desc.read, &desc.cached_value);
                     defer text.decref(self.roc_host);
-                    splice.addTextField(&self.engine.render_cache, desc.elem_id, desc.field, text.asSlice()) catch |err| switch (err) {
-                        error.OutOfMemory => return error.OutOfMemory,
-                        else => return error.ResourceLimit,
-                    };
+                    splice.addTextField(&self.engine.render_cache, desc.elem_id, desc.field, text.asSlice()) catch |err| return renderSpliceError(err);
                 }
-                for (self.replacement_stream.signal_bool_attrs.items) |*desc| splice.addBoolField(&self.engine.render_cache, desc.elem_id, desc.field, self.evalPreparedSignalBool(&desc.signal, desc.read, &desc.cached_value)) catch return error.ResourceLimit;
+                for (self.replacement_stream.signal_bool_attrs.items) |*desc| splice.addBoolField(&self.engine.render_cache, desc.elem_id, desc.field, self.evalPreparedSignalBool(&desc.signal, desc.read, &desc.cached_value)) catch |err| return renderSpliceError(err);
                 for (self.replacement_stream.render_nodes.items) |node| {
                     if (node.kind != .element) continue;
                     var attrs: std.ArrayListUnmanaged(render_cache_mod.CustomTextAttr) = .empty;
@@ -7579,16 +7608,13 @@ pub fn Engine(comptime Ctx: type) type {
                     };
                     for (self.replacement_stream.static_custom_bool_attrs.items) |desc| if (desc.elem_id == node.elem_id and desc.value) attrs.appendAssumeCapacity(.{ .name = desc.name, .value = "" });
                     for (self.replacement_stream.signal_custom_bool_attrs.items) |*desc| if (desc.elem_id == node.elem_id and self.evalPreparedSignalBool(&desc.signal, desc.read, &desc.cached_value)) attrs.appendAssumeCapacity(.{ .name = desc.name, .value = "" });
-                    splice.addCustomAttrs(&self.engine.render_cache, node.elem_id, attrs.items) catch |err| switch (err) {
-                        error.OutOfMemory => return error.OutOfMemory,
-                        else => return error.ResourceLimit,
-                    };
+                    splice.addCustomAttrs(&self.engine.render_cache, node.elem_id, attrs.items) catch |err| return renderSpliceError(err);
                     var named: std.ArrayListUnmanaged(render_cache_mod.NamedEvent) = .empty;
                     defer named.deinit(allocator);
                     named.ensureTotalCapacity(allocator, self.replacement_stream.namedEventIndices(node.elem_id).len) catch return error.OutOfMemory;
                     for (self.replacement_stream.namedEventIndices(node.elem_id)) |event_index| {
                         const desc = self.replacement_stream.events.items[event_index];
-                        const binding = desc.named() orelse return error.ResourceLimit;
+                        const binding = desc.named() orelse return error.InvalidDescriptor;
                         const final_index = std.math.add(usize, event_base, event_index) catch return error.ResourceLimit;
                         named.appendAssumeCapacity(.{ .name = binding.name, .binding = .{
                             .event_id = ids.EventId.fromRaw(std.math.add(u64, std.math.cast(u64, final_index) orelse return error.ResourceLimit, 1) catch return error.ResourceLimit),
@@ -7597,10 +7623,7 @@ pub fn Engine(comptime Ctx: type) type {
                             .payload_descriptor = desc.payload_descriptor,
                         } });
                     }
-                    splice.addNamedEvents(&self.engine.render_cache, node.elem_id, named.items) catch |err| switch (err) {
-                        error.OutOfMemory => return error.OutOfMemory,
-                        else => return error.ResourceLimit,
-                    };
+                    splice.addNamedEvents(&self.engine.render_cache, node.elem_id, named.items) catch |err| return renderSpliceError(err);
                 }
                 for (self.replacement_stream.events.items, 0..) |desc, event_index| if (desc.fixedKind()) |kind| {
                     const final_index = std.math.add(usize, event_base, event_index) catch return error.ResourceLimit;
@@ -7608,7 +7631,7 @@ pub fn Engine(comptime Ctx: type) type {
                         .event_id = ids.EventId.fromRaw(std.math.add(u64, std.math.cast(u64, final_index) orelse return error.ResourceLimit, 1) catch return error.ResourceLimit),
                         .delivery = .{ .requested = desc.delivery_request },
                         .payload_descriptor = desc.payload_descriptor,
-                    }) catch return error.ResourceLimit;
+                    }) catch |err| return renderSpliceError(err);
                 };
                 for (self.engine.active_stream.events.items, 0..) |desc, original_index| {
                     const final_index = final_event_indexes[original_index] orelse continue;
@@ -7617,7 +7640,7 @@ pub fn Engine(comptime Ctx: type) type {
                         .event_id = ids.EventId.fromRaw(std.math.add(u64, std.math.cast(u64, final_index) orelse return error.ResourceLimit, 1) catch return error.ResourceLimit),
                         .delivery = .{ .requested = desc.delivery_request },
                         .payload_descriptor = desc.payload_descriptor,
-                    }) catch return error.ResourceLimit;
+                    }) catch |err| return renderSpliceError(err);
                 }
                 var moved_named_iterator = moved_named_elem_ids.keyIterator();
                 while (moved_named_iterator.next()) |elem_id| {
@@ -7634,10 +7657,7 @@ pub fn Engine(comptime Ctx: type) type {
                             .payload_descriptor = desc.payload_descriptor,
                         } }) catch return error.OutOfMemory;
                     }
-                    splice.addNamedEvents(&self.engine.render_cache, ids.ElemId.fromRaw(elem_id.*), named.items) catch |err| switch (err) {
-                        error.OutOfMemory => return error.OutOfMemory,
-                        else => return error.ResourceLimit,
-                    };
+                    splice.addNamedEvents(&self.engine.render_cache, ids.ElemId.fromRaw(elem_id.*), named.items) catch |err| return renderSpliceError(err);
                 }
                 for (self.replacement_stream.on_changes.items) |*desc| {
                     if (desc.cached_value != .absent) continue;
@@ -7718,36 +7738,51 @@ pub fn Engine(comptime Ctx: type) type {
                 var source_count = self.engine.active_source_signal_routes.items.len;
                 for (source.items) |entry| source_count = @max(source_count, std.math.add(usize, @intCast(entry.route_index), 1) catch return error.ResourceLimit);
                 self.graph_source_route_count = source_count;
-                self.source_route_appends = active_graph.prepareSourceRouteAppendsAfterRelease(allocator, &self.engine.active_source_signal_routes, self.graph_release.?.final_record_ids, source_count, source.items) catch return error.OutOfMemory;
-                self.text_route_appends = active_graph.prepareRouteAppends(active_graph.TextSink, allocator, &self.engine.active_text_signal_routes, graph_count, text.items) catch return error.OutOfMemory;
-                self.bool_route_appends = active_graph.prepareRouteAppends(active_graph.BoolSink, allocator, &self.engine.active_bool_signal_routes, graph_count, bools.items) catch return error.OutOfMemory;
-                self.change_route_appends = active_graph.prepareRouteAppends(active_graph.ChangeSink, allocator, &self.engine.active_change_signal_routes, graph_count, changes.items) catch return error.OutOfMemory;
-                self.structural_route_appends = active_graph.prepareRouteAppends(active_graph.StructuralSink, allocator, &self.engine.active_structural_signal_routes, graph_count, structural.items) catch return error.OutOfMemory;
+                self.source_route_appends = active_graph.prepareSourceRouteAppendsAfterRelease(allocator, &self.engine.active_source_signal_routes, self.graph_release.?.final_record_ids, source_count, source.items) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.InvalidAppend => return error.InvalidSignalGraphAppend,
+                };
+                self.text_route_appends = active_graph.prepareRouteAppends(active_graph.TextSink, allocator, &self.engine.active_text_signal_routes, graph_count, text.items) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.InvalidAppend => return error.InvalidSignalGraphAppend,
+                };
+                self.bool_route_appends = active_graph.prepareRouteAppends(active_graph.BoolSink, allocator, &self.engine.active_bool_signal_routes, graph_count, bools.items) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.InvalidAppend => return error.InvalidSignalGraphAppend,
+                };
+                self.change_route_appends = active_graph.prepareRouteAppends(active_graph.ChangeSink, allocator, &self.engine.active_change_signal_routes, graph_count, changes.items) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.InvalidAppend => return error.InvalidSignalGraphAppend,
+                };
+                self.structural_route_appends = active_graph.prepareRouteAppends(active_graph.StructuralSink, allocator, &self.engine.active_structural_signal_routes, graph_count, structural.items) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.InvalidAppend => return error.InvalidSignalGraphAppend,
+                };
                 graph_plan.reservePublication(allocator, &self.engine.active_signal_graph) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
-                    error.InvalidAppend => return error.ResourceLimit,
+                    error.InvalidAppend => return error.InvalidSignalGraphAppend,
                 };
                 graph_plan.reserveParallelRoutes(allocator, &self.engine.active_text_signal_routes, &self.engine.active_bool_signal_routes, &self.engine.active_change_signal_routes, &self.engine.active_structural_signal_routes) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
-                    error.InvalidAppend => return error.ResourceLimit,
+                    error.InvalidAppend => return error.InvalidSignalGraphAppend,
                 };
                 try self.source_route_appends.?.reserveOuter(allocator, &self.engine.active_source_signal_routes, source_count);
             }
 
             fn appendTextRoute(self: *@This(), allocator: std.mem.Allocator, routes: *std.ArrayListUnmanaged(active_graph.RouteAppend(active_graph.TextSink)), graph_plan: *const active_graph.PreparedGraphAppend(HostSignalRecord), record: *HostSignalRecord, sink: active_graph.TextSink) CollectionError!void {
-                const id = graph_plan.plannedRecordId(self.engine.active_signal_graph.items, record) orelse return error.ResourceLimit;
+                const id = graph_plan.plannedRecordId(self.engine.active_signal_graph.items, record) orelse return error.InvalidSignalGraphAppend;
                 routes.append(allocator, .{ .route_index = id, .value = sink }) catch return error.OutOfMemory;
             }
             fn appendBoolRoute(self: *@This(), allocator: std.mem.Allocator, routes: *std.ArrayListUnmanaged(active_graph.RouteAppend(active_graph.BoolSink)), graph_plan: *const active_graph.PreparedGraphAppend(HostSignalRecord), record: *HostSignalRecord, sink: active_graph.BoolSink) CollectionError!void {
-                const id = graph_plan.plannedRecordId(self.engine.active_signal_graph.items, record) orelse return error.ResourceLimit;
+                const id = graph_plan.plannedRecordId(self.engine.active_signal_graph.items, record) orelse return error.InvalidSignalGraphAppend;
                 routes.append(allocator, .{ .route_index = id, .value = sink }) catch return error.OutOfMemory;
             }
             fn appendChangeRoute(self: *@This(), allocator: std.mem.Allocator, routes: *std.ArrayListUnmanaged(active_graph.RouteAppend(active_graph.ChangeSink)), graph_plan: *const active_graph.PreparedGraphAppend(HostSignalRecord), record: *HostSignalRecord, sink: active_graph.ChangeSink) CollectionError!void {
-                const id = graph_plan.plannedRecordId(self.engine.active_signal_graph.items, record) orelse return error.ResourceLimit;
+                const id = graph_plan.plannedRecordId(self.engine.active_signal_graph.items, record) orelse return error.InvalidSignalGraphAppend;
                 routes.append(allocator, .{ .route_index = id, .value = sink }) catch return error.OutOfMemory;
             }
             fn appendStructuralRoute(self: *@This(), allocator: std.mem.Allocator, routes: *std.ArrayListUnmanaged(active_graph.RouteAppend(active_graph.StructuralSink)), graph_plan: *const active_graph.PreparedGraphAppend(HostSignalRecord), record: *HostSignalRecord, sink: active_graph.StructuralSink) CollectionError!void {
-                const id = graph_plan.plannedRecordId(self.engine.active_signal_graph.items, record) orelse return error.ResourceLimit;
+                const id = graph_plan.plannedRecordId(self.engine.active_signal_graph.items, record) orelse return error.InvalidSignalGraphAppend;
                 routes.append(allocator, .{ .route_index = id, .value = sink }) catch return error.OutOfMemory;
             }
 
@@ -9925,14 +9960,14 @@ pub fn Engine(comptime Ctx: type) type {
             for (self.active_stream.static_custom_text_attrs.items) |desc| if (desc.elem_id.raw() == elem_id) attrs.appendAssumeCapacity(.{ .name = desc.name, .value = desc.value });
             for (self.active_stream.signal_custom_text_attrs.items) |*desc| if (desc.elem_id.raw() == elem_id) {
                 const slot = overlay.readSlot(&desc.cached_value);
-                if (slot.* != .present) return error.ResourceLimit;
+                if (slot.* != .present) return error.InvalidDescriptor;
                 const value = callHostValueToStrWithCapability(ctx, roc_host, desc.read.capability, desc.read.read, slot.present.value);
                 owned_text.appendAssumeCapacity(value);
                 attrs.appendAssumeCapacity(.{ .name = desc.name, .value = owned_text.items[owned_text.items.len - 1].asSlice() });
             };
             for (self.active_stream.signal_optional_custom_text_attrs.items) |*desc| if (desc.elem_id.raw() == elem_id) {
                 const slot = overlay.readSlot(&desc.cached_value);
-                if (slot.* != .present) return error.ResourceLimit;
+                if (slot.* != .present) return error.InvalidDescriptor;
                 if (!callHostValueToBoolWithCapability(ctx, roc_host, desc.present.capability, desc.present.read, slot.present.value)) continue;
                 const value = callHostValueToStrWithCapability(ctx, roc_host, desc.read.capability, desc.read.read, slot.present.value);
                 owned_text.appendAssumeCapacity(value);
@@ -9941,13 +9976,10 @@ pub fn Engine(comptime Ctx: type) type {
             for (self.active_stream.static_custom_bool_attrs.items) |desc| if (desc.elem_id.raw() == elem_id and desc.value) attrs.appendAssumeCapacity(.{ .name = desc.name, .value = "" });
             for (self.active_stream.signal_custom_bool_attrs.items) |*desc| if (desc.elem_id.raw() == elem_id) {
                 const slot = overlay.readSlot(&desc.cached_value);
-                if (slot.* != .present) return error.ResourceLimit;
+                if (slot.* != .present) return error.InvalidDescriptor;
                 if (callHostValueToBoolWithCapability(ctx, roc_host, desc.read.capability, desc.read.read, slot.present.value)) attrs.appendAssumeCapacity(.{ .name = desc.name, .value = "" });
             };
-            splice.addCustomAttrs(&self.render_cache, ids.ElemId.fromRaw(elem_id), attrs.items) catch |err| switch (err) {
-                error.OutOfMemory => return error.OutOfMemory,
-                else => return error.ResourceLimit,
-            };
+            splice.addCustomAttrs(&self.render_cache, ids.ElemId.fromRaw(elem_id), attrs.items) catch |err| return renderSpliceError(err);
         }
 
         fn prepareNonStructuralRenderSplice(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, overlay: *signal_records.PreparedCacheUpdates, changed_record_ids: []const u64, dirty_source_node_ids: []const u64, dirty_generation: u64) CollectionError!render_cache_mod.PreparedRenderSplice(Ctx) {
@@ -10041,13 +10073,10 @@ pub fn Engine(comptime Ctx: type) type {
                     self.dropHostSignalRecordValue(ctx, roc_host, binding.record, cache_result.value);
                     if (field) |text_field| {
                         const slot = overlay.readSlot(desc_cache);
-                        if (slot.* != .present) return error.ResourceLimit;
+                        if (slot.* != .present) return error.InvalidDescriptor;
                         const text = callHostValueToStrWithCapability(ctx, roc_host, read.capability, read.read, slot.present.value);
                         defer text.decref(roc_host);
-                        splice.addTextField(&self.render_cache, ids.ElemId.fromRaw(elem_id), text_field, text.asSlice()) catch |err| switch (err) {
-                            error.OutOfMemory => return error.OutOfMemory,
-                            else => return error.ResourceLimit,
-                        };
+                        splice.addTextField(&self.render_cache, ids.ElemId.fromRaw(elem_id), text_field, text.asSlice()) catch |err| return renderSpliceError(err);
                     }
                 };
                 if (index < self.active_bool_signal_routes.items.len) for (self.active_bool_signal_routes.items[index].items) |route| {
@@ -10075,9 +10104,9 @@ pub fn Engine(comptime Ctx: type) type {
                     self.dropHostSignalRecordValue(ctx, roc_host, binding.record, cache_result.value);
                     if (field) |bool_field| {
                         const slot = overlay.readSlot(desc_cache);
-                        if (slot.* != .present) return error.ResourceLimit;
+                        if (slot.* != .present) return error.InvalidDescriptor;
                         const value = callHostValueToBoolWithCapability(ctx, roc_host, read.capability, read.read, slot.present.value);
-                        splice.addBoolField(&self.render_cache, ids.ElemId.fromRaw(elem_id), bool_field, value) catch return error.ResourceLimit;
+                        splice.addBoolField(&self.render_cache, ids.ElemId.fromRaw(elem_id), bool_field, value) catch |err| return renderSpliceError(err);
                     }
                 };
             }
@@ -10101,7 +10130,7 @@ pub fn Engine(comptime Ctx: type) type {
                 for (self.active_structural_signal_routes.items[index].items) |route| switch (route.kind) {
                     .when => {
                         const desc = &self.active_stream.whens.items[route.index];
-                        const site = self.activeScopeSiteByNodeId(desc.node_id.raw(), .when) orelse return error.ResourceLimit;
+                        const site = self.activeScopeSiteByNodeId(desc.node_id.raw(), .when) orelse return error.InvalidDescriptor;
                         const result = try self.evalPreparedDirtyHostSignalRecord(ctx, roc_host, overlay, desc.condition.record, dirty_source_node_ids, dirty_generation);
                         const cap = self.hostSignalBindingCapability(ctx, &desc.condition);
                         assertHostValueCapabilitiesMatch(desc.read.capability, cap, "prepared when read extension capability did not match its signal value");
@@ -10124,7 +10153,7 @@ pub fn Engine(comptime Ctx: type) type {
                     },
                     .each => {
                         const desc = &self.active_stream.eaches.items[route.index];
-                        const site = self.activeScopeSiteByNodeId(desc.node_id.raw(), .each) orelse return error.ResourceLimit;
+                        const site = self.activeScopeSiteByNodeId(desc.node_id.raw(), .each) orelse return error.InvalidDescriptor;
                         const result = try self.evalPreparedDirtyHostSignalRecord(ctx, roc_host, overlay, desc.items.record, dirty_source_node_ids, dirty_generation);
                         const cap = self.hostSignalBindingCapability(ctx, &desc.items);
                         if (!result.changed) {
@@ -11906,8 +11935,8 @@ pub fn Engine(comptime Ctx: type) type {
                     }
 
                     selected.appendAssumeCapacity(index);
-                    const branch = change.branch orelse return error.ResourceLimit;
-                    const replacement_root = engine.activeWhenBranchScopeId(change.scope_id, change.ordinal, branch.opposite()) catch return error.ResourceLimit;
+                    const branch = change.branch orelse return error.InvalidDescriptor;
+                    const replacement_root = engine.activeWhenBranchScopeId(change.scope_id, change.ordinal, branch.opposite()) catch |err| return scopeError(err);
                     if (replacement_root) |scope_id| {
                         replacement_roots.putAssumeCapacity(scope_id.raw(), {});
                     } else {
@@ -11957,12 +11986,12 @@ pub fn Engine(comptime Ctx: type) type {
                 const when_index = self.activeWhenIndexByNodeId(change.node_id.raw()) orelse return null;
                 const when_desc = self.active_stream.whens.items[when_index];
                 if (when_desc.condition.record != change.record) return null;
-                const branch = change.branch orelse return error.ResourceLimit;
-                const retired_scope_id = (self.activeWhenBranchScopeId(site.scope_id, site.ordinal, branch.opposite()) catch return error.ResourceLimit) orelse return null;
+                const branch = change.branch orelse return error.InvalidDescriptor;
+                const retired_scope_id = (self.activeWhenBranchScopeId(site.scope_id, site.ordinal, branch.opposite()) catch |err| return scopeError(err)) orelse return null;
                 // Reusing a previously active branch requires a different ownership
                 // transfer plan that is not staged yet. Declining here makes the
                 // caller fail loudly; there is no fallback path.
-                if ((self.activeWhenBranchScopeId(site.scope_id, site.ordinal, branch) catch return error.ResourceLimit) != null) return null;
+                if ((self.activeWhenBranchScopeId(site.scope_id, site.ordinal, branch) catch |err| return scopeError(err)) != null) return null;
                 selections[selection_index] = .{
                     .node_id = change.node_id,
                     .parent_scope_id = site.scope_id,
@@ -12159,8 +12188,12 @@ pub fn Engine(comptime Ctx: type) type {
             return self.tryDispatchStateValue(ctx, roc_host, node_id, value, cap) catch |err| switch (err) {
                 error.OutOfMemory => @panic("host out of memory while preparing atomic state transaction"),
                 error.ResourceLimit => @panic("configured resource limit rejected atomic state transaction"),
+                error.InvalidScope => @panic("atomic state transaction named a scope or identity that is unknown, inactive, or already claimed"),
+                error.InvalidDescriptor => @panic("atomic state transaction staged a descriptor the committed stream does not hold"),
+                error.OverlappingRemoval => @panic("atomic state transaction staged overlapping removals"),
                 error.InvalidRenderTopology => @panic("staged render topology conflicted with the committed render tree"),
                 error.InvalidSignalGraphAppend => @panic("staged signal graph append did not match the committed graph"),
+                error.InvalidSignalGraphRelease => @panic("staged signal graph release did not match the committed graph"),
             };
         }
 
@@ -12170,11 +12203,11 @@ pub fn Engine(comptime Ctx: type) type {
             const cap = record.requireTaskSource().cap;
             const pending_index = self.pendingTaskIndexByRequestId(request_id) orelse {
                 callHostValueToUnitWithCapability(ctx, roc_host, cap, hv.hostValueCapabilityDrop(cap), value);
-                return error.ResourceLimit;
+                return error.InvalidDescriptor;
             };
             if (self.pending_tasks.items[pending_index].task_token != record.token().?) {
                 callHostValueToUnitWithCapability(ctx, roc_host, cap, hv.hostValueCapabilityDrop(cap), value);
-                return error.ResourceLimit;
+                return error.InvalidDescriptor;
             }
             const transaction = try PreparedSourceTransaction.prepare(self, ctx, roc_host, record, value) orelse {
                 var pending = self.removePendingTaskAt(pending_index);
@@ -12268,7 +12301,7 @@ pub fn Engine(comptime Ctx: type) type {
 
             fn prepare(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, record: *HostSignalRecord, incoming: HostValue) CollectionError!?*@This() {
                 const allocator = Ctx.allocator(ctx);
-                const source = record.effectSource() orelse return error.ResourceLimit;
+                const source = record.effectSource() orelse return error.InvalidDescriptor;
                 const cap = source.capability();
                 var incoming_owned = true;
                 errdefer if (incoming_owned) callHostValueToUnitWithCapability(ctx, roc_host, cap, hv.hostValueCapabilityDrop(cap), incoming);
@@ -12288,14 +12321,14 @@ pub fn Engine(comptime Ctx: type) type {
                 defer allocator.free(selections);
                 for (normalized.selected_indexes, 0..) |change_index, selection_index| {
                     const change = changes[change_index];
-                    const site = engine.activeScopeSiteByNodeId(change.node_id.raw(), .when) orelse return error.ResourceLimit;
-                    if (site.scope_id != change.scope_id or site.ordinal != change.ordinal) return error.ResourceLimit;
-                    const when_index = engine.activeWhenIndexByNodeId(change.node_id.raw()) orelse return error.ResourceLimit;
+                    const site = engine.activeScopeSiteByNodeId(change.node_id.raw(), .when) orelse return error.InvalidDescriptor;
+                    if (site.scope_id != change.scope_id or site.ordinal != change.ordinal) return error.InvalidDescriptor;
+                    const when_index = engine.activeWhenIndexByNodeId(change.node_id.raw()) orelse return error.InvalidDescriptor;
                     const when_desc = engine.active_stream.whens.items[when_index];
-                    if (when_desc.condition.record != change.record) return error.ResourceLimit;
-                    const branch = change.branch orelse return error.ResourceLimit;
-                    const retired_scope_id = (engine.activeWhenBranchScopeId(site.scope_id, site.ordinal, branch.opposite()) catch return error.ResourceLimit) orelse return error.ResourceLimit;
-                    if ((engine.activeWhenBranchScopeId(site.scope_id, site.ordinal, branch) catch return error.ResourceLimit) != null) return error.ResourceLimit;
+                    if (when_desc.condition.record != change.record) return error.InvalidDescriptor;
+                    const branch = change.branch orelse return error.InvalidDescriptor;
+                    const retired_scope_id = (engine.activeWhenBranchScopeId(site.scope_id, site.ordinal, branch.opposite()) catch |err| return scopeError(err)) orelse return error.InvalidScope;
+                    if ((engine.activeWhenBranchScopeId(site.scope_id, site.ordinal, branch) catch |err| return scopeError(err)) != null) return error.InvalidScope;
                     selections[selection_index] = .{
                         .node_id = change.node_id,
                         .parent_scope_id = site.scope_id,
@@ -12359,7 +12392,7 @@ pub fn Engine(comptime Ctx: type) type {
                 try root_record_ids.ensureTotalCapacityPrecise(allocator, owned.entries.items.len);
                 for (owned.entries.items, 0..) |*entry, index| {
                     const cell = &entry.cell.?;
-                    const source = entry.record.effectSource() orelse return error.ResourceLimit;
+                    const source = entry.record.effectSource() orelse return error.InvalidDescriptor;
                     assertHostValueCapabilitiesMatch(cell.cap, source.capability(), "browser source update used the wrong value capability");
                     const live_slot = source.cachedSlot();
                     if (live_slot.* == .present and live_slot.present.valueEqualsIncoming(ctx, roc_host, cell.value, cell.cap)) {
@@ -12376,7 +12409,7 @@ pub fn Engine(comptime Ctx: type) type {
                     allocator.destroy(plan);
                     return null;
                 }
-                engine.scratch.dirty_active_records.reserveForGraph(HostSignalRecord, allocator, engine.active_signal_graph.items) catch return error.OutOfMemory;
+                try engine.scratch.dirty_active_records.reserveForGraph(HostSignalRecord, allocator, engine.active_signal_graph.items);
                 const state_node_ids: []const u64 = if (state_update) |update| @as(*const [1]u64, @ptrCast(&update.state_id)) else &.{};
                 const dirty_ids = if (state_update != null)
                     engine.scratchDirtyActiveSignalRecordIdsForSources(ctx, state_node_ids)
@@ -12431,8 +12464,7 @@ pub fn Engine(comptime Ctx: type) type {
                         plan.composite_structural = PreparedCompositeStructural.prepareWithSubsumedFlag(engine, ctx, roc_host, structural_changes, &plan.caches, .{}, state_node_ids, &all_eaches_subsumed) catch |err| switch (err) {
                             error.OutOfMemory => return error.OutOfMemory,
                             error.ResourceLimit => if (all_eaches_subsumed) null else return error.ResourceLimit,
-                            error.InvalidRenderTopology => return error.InvalidRenderTopology,
-                            error.InvalidSignalGraphAppend => return error.InvalidSignalGraphAppend,
+                            else => |other| return other,
                         };
                         if (all_eaches_subsumed) {
                             plan.structural_downstream = try prepareWhenDownstream(engine, ctx, roc_host, structural_changes, state_update, &plan.caches);
@@ -12472,10 +12504,10 @@ pub fn Engine(comptime Ctx: type) type {
                     }
                     if (each_count == 1) {
                         const change = structural_changes[0];
-                        const site = engine.activeScopeSiteByNodeId(change.node_id.raw(), .each) orelse return error.ResourceLimit;
-                        const each_index = engine.activeEachIndexByNodeId(change.node_id.raw()) orelse return error.ResourceLimit;
+                        const site = engine.activeScopeSiteByNodeId(change.node_id.raw(), .each) orelse return error.InvalidDescriptor;
+                        const each_index = engine.activeEachIndexByNodeId(change.node_id.raw()) orelse return error.InvalidDescriptor;
                         const each_desc = &engine.active_stream.eaches.items[each_index];
-                        if (each_desc.items.record != change.record) return error.ResourceLimit;
+                        if (each_desc.items.record != change.record) return error.InvalidDescriptor;
                         plan.each_rows = try PreparedActiveEachRows.prepareWithOverlay(engine, ctx, roc_host, site, each_desc, allocator, &plan.caches);
                         errdefer plan.each_rows.?.deinit();
                         plan.each_replacement = try PreparedEachRowReplacementCollection.prepare(engine, ctx, roc_host, site, each_desc.*, &plan.each_rows.?.rows, plan.each_rows.?.inputs.keys, plan.each_rows.?.inputs.items, .{}, &.{}, &plan.caches);
@@ -12514,6 +12546,7 @@ pub fn Engine(comptime Ctx: type) type {
                     plan.host_publication = Ctx.prepareRenderPublication(ctx, &plan.render_splice.?) catch |err| switch (err) {
                         error.OutOfMemory => return error.OutOfMemory,
                         error.ResourceLimit => return error.ResourceLimit,
+                        error.InvalidRenderTopology => return error.InvalidRenderTopology,
                     };
                 }
                 if (state_update) |update| {

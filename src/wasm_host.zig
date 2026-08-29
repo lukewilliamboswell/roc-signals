@@ -963,8 +963,12 @@ fn renderActiveRoot(dirty_source_node_ids: []const u64) void {
         const collection = SharedEngine.PreparedRootCollection.prepare(&shared_engine, ctx, &roc_host, root, .{}, dirty_source_node_ids) catch |err| switch (err) {
             error.OutOfMemory => failHostWith("out of memory preparing initial root transaction"),
             error.ResourceLimit => failHostWith("initial root exceeded configured runtime limits"),
+            error.InvalidScope => failHostWith("initial root named a scope or identity that is unknown, inactive, or already claimed"),
+            error.InvalidDescriptor => failHostWith("initial root staged a descriptor the committed stream does not hold"),
+            error.OverlappingRemoval => failHostWith("initial root staged overlapping removals"),
             error.InvalidRenderTopology => failHostWith("initial root staged a render topology that conflicts with the committed tree"),
             error.InvalidSignalGraphAppend => failHostWith("initial root staged a signal graph append that does not match the committed graph"),
+            error.InvalidSignalGraphRelease => failHostWith("initial root staged a signal graph release that does not match the committed graph"),
         };
         const prepared = SharedEngine.PreparedRootDownstream.prepare(collection) catch |err| switch (err) {
             error.OutOfMemory => {
@@ -982,6 +986,22 @@ fn renderActiveRoot(dirty_source_node_ids: []const u64) void {
             error.InvalidSignalGraphAppend => {
                 collection.deinit();
                 failHostWith("initial root publication staged a mismatched signal graph append");
+            },
+            error.InvalidSignalGraphRelease => {
+                collection.deinit();
+                failHostWith("initial root publication staged a mismatched signal graph release");
+            },
+            error.InvalidScope => {
+                collection.deinit();
+                failHostWith("initial root publication named a scope or identity that is unknown, inactive, or already claimed");
+            },
+            error.InvalidDescriptor => {
+                collection.deinit();
+                failHostWith("initial root publication staged a descriptor the committed stream does not hold");
+            },
+            error.OverlappingRemoval => {
+                collection.deinit();
+                failHostWith("initial root publication staged overlapping removals");
             },
         };
         defer prepared.deinit();

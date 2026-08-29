@@ -52,6 +52,10 @@ const CommandCounts = render.Counts;
 const HostScopeBranch = scope_tree.Branch;
 
 const NativeRenderPublication = struct {
+    /// `OutOfMemory`: the host allocator refused; `ResourceLimit`: a count exceeded its arithmetic bound;
+    /// `InvalidRenderTopology`: the splice names a DOM node the simulated tree does not hold.
+    pub const PrepareError = std.mem.Allocator.Error || error{ ResourceLimit, InvalidRenderTopology };
+
     dom: sim_dom.PreparedPublication,
 
     fn prepareTextField(allocator: std.mem.Allocator, node: *sim_dom.Element, field: RenderTextField, next: ?[]const u8) std.mem.Allocator.Error!void {
@@ -94,7 +98,7 @@ const NativeRenderPublication = struct {
         }
     }
 
-    fn prepare(host: *HostEnv, splice: anytype) (std.mem.Allocator.Error || error{ResourceLimit})!NativeRenderPublication {
+    fn prepare(host: *HostEnv, splice: anytype) PrepareError!NativeRenderPublication {
         const allocator = host.hostAllocator();
         var touched: std.AutoHashMapUnmanaged(u64, void) = .empty;
         defer touched.deinit(allocator);
@@ -131,30 +135,31 @@ const NativeRenderPublication = struct {
         while (iterator.next()) |id| : (write += 1) touched_ids[write] = id.*;
         var dom = sim_dom.PreparedPublication.init(allocator, &host.dom_elements, touched_ids, max_elem_id) catch |err| return switch (err) {
             error.OutOfMemory => error.OutOfMemory,
-            else => error.ResourceLimit,
+            error.ResourceLimit => error.ResourceLimit,
+            error.DuplicateNode => error.InvalidRenderTopology,
         };
         errdefer dom.deinit();
-        for (splice.removals.items) |entry| sim_dom.deactivateRemovedNode(allocator, dom.node(entry.elem_id.raw()) orelse return error.ResourceLimit);
+        for (splice.removals.items) |entry| sim_dom.deactivateRemovedNode(allocator, dom.node(entry.elem_id.raw()) orelse return error.InvalidRenderTopology);
         for (splice.creations.items) |entry| {
-            const node = dom.node(entry.elem_id.raw()) orelse return error.ResourceLimit;
+            const node = dom.node(entry.elem_id.raw()) orelse return error.InvalidRenderTopology;
             const tag = try allocator.dupe(u8, entry.tag);
             node.deinit(allocator);
             node.* = sim_dom.Element.init(entry.elem_id.raw(), tag);
         }
         for (splice.children.items) |entry| {
-            const parent = dom.node(entry.parent_elem_id.raw()) orelse return error.ResourceLimit;
+            const parent = dom.node(entry.parent_elem_id.raw()) orelse return error.InvalidRenderTopology;
             parent.children.deinit(allocator);
             parent.children = .empty;
             try parent.children.ensureTotalCapacity(allocator, entry.next.len);
             for (entry.next) |child_id| parent.children.appendAssumeCapacity(child_id.raw());
         }
-        for (splice.parent_intents.items) |intent| (dom.node(intent.child_id.raw()) orelse return error.ResourceLimit).parent_id = if (intent.next) |parent_id| parent_id.raw() else null;
+        for (splice.parent_intents.items) |intent| (dom.node(intent.child_id.raw()) orelse return error.InvalidRenderTopology).parent_id = if (intent.next) |parent_id| parent_id.raw() else null;
         for (splice.text_fields.items) |entry| {
-            const node = dom.node(entry.elem_id.raw()) orelse return error.ResourceLimit;
+            const node = dom.node(entry.elem_id.raw()) orelse return error.InvalidRenderTopology;
             try prepareTextField(allocator, node, entry.field, entry.next);
         }
         for (splice.bool_fields.items) |entry| {
-            const node = dom.node(entry.elem_id.raw()) orelse return error.ResourceLimit;
+            const node = dom.node(entry.elem_id.raw()) orelse return error.InvalidRenderTopology;
             switch (entry.field) {
                 .checked => {
                     node.checked = entry.next orelse false;
@@ -167,7 +172,7 @@ const NativeRenderPublication = struct {
             }
         }
         for (splice.fixed_events.items) |entry| {
-            const node = dom.node(entry.elem_id.raw()) orelse return error.ResourceLimit;
+            const node = dom.node(entry.elem_id.raw()) orelse return error.InvalidRenderTopology;
             switch (entry.kind) {
                 .click => node.event_bindings.click = entry.next,
                 .input => node.event_bindings.input = entry.next,
@@ -179,7 +184,7 @@ const NativeRenderPublication = struct {
             }
         }
         for (splice.custom_attrs.items) |entry| {
-            const node = dom.node(entry.elem_id.raw()) orelse return error.ResourceLimit;
+            const node = dom.node(entry.elem_id.raw()) orelse return error.InvalidRenderTopology;
             for (node.attrs.items) |attr| attr.deinit(allocator);
             node.attrs.clearRetainingCapacity();
             try node.attrs.ensureTotalCapacity(allocator, entry.next.len);
@@ -191,7 +196,7 @@ const NativeRenderPublication = struct {
             }
         }
         for (splice.named_events.items) |entry| {
-            const node = dom.node(entry.elem_id.raw()) orelse return error.ResourceLimit;
+            const node = dom.node(entry.elem_id.raw()) orelse return error.InvalidRenderTopology;
             for (node.named_events.items) |event| event.deinit(allocator);
             node.named_events.clearRetainingCapacity();
             try node.named_events.ensureTotalCapacity(allocator, entry.next.len);
@@ -231,7 +236,7 @@ const NativeCtx = struct {
     }
 
     /// Prepares the native simulated-DOM shadow without mutating host-visible state.
-    pub fn prepareRenderPublication(ctx: Handle, splice: anytype) (std.mem.Allocator.Error || error{ResourceLimit})!RenderPublication {
+    pub fn prepareRenderPublication(ctx: Handle, splice: anytype) RenderPublication.PrepareError!RenderPublication {
         return RenderPublication.prepare(ctx, splice);
     }
 
@@ -2394,7 +2399,7 @@ fn applyDirtyWhenStructuralSignals(host: *HostEnv, roc_host: *abi.RocHost, dirty
     return host.engine.applyDirtyWhenStructuralSignals(host, roc_host, dirty_source_node_ids, dirty_generation, changes);
 }
 
-fn tryRenderInitialRoot(host: *HostEnv, roc_host: *abi.RocHost, root: abi.Elem, dirty_source_node_ids: []const u64) error{ OutOfMemory, ResourceLimit, InvalidRenderTopology, InvalidSignalGraphAppend }!CommandCounts {
+fn tryRenderInitialRoot(host: *HostEnv, roc_host: *abi.RocHost, root: abi.Elem, dirty_source_node_ids: []const u64) HostEngine.CollectionError!CommandCounts {
     const collection = try HostEngine.PreparedRootCollection.prepare(&host.engine, host, roc_host, root, .{}, dirty_source_node_ids);
     errdefer collection.deinit();
     const prepared = try HostEngine.PreparedRootDownstream.prepare(collection);
@@ -2410,7 +2415,7 @@ fn tryRenderInitialRoot(host: *HostEnv, roc_host: *abi.RocHost, root: abi.Elem, 
 /// keeps `fault`'s configured failure number, so a sweep over preparation
 /// attempts still refuses at the requested point; publication itself must
 /// never allocate, which is what the armed phases prove.
-fn tryRenderInitialRootWithArmedPublication(host: *HostEnv, roc_host: *abi.RocHost, root: abi.Elem, fault: *FaultAllocator) error{ OutOfMemory, ResourceLimit, InvalidRenderTopology, InvalidSignalGraphAppend }!CommandCounts {
+fn tryRenderInitialRootWithArmedPublication(host: *HostEnv, roc_host: *abi.RocHost, root: abi.Elem, fault: *FaultAllocator) HostEngine.CollectionError!CommandCounts {
     const collection = try HostEngine.PreparedRootCollection.prepare(&host.engine, host, roc_host, root, .{}, &.{});
     errdefer collection.deinit();
     const prepared = try HostEngine.PreparedRootDownstream.prepare(collection);
@@ -2439,8 +2444,12 @@ fn renderActiveRootWithStats(host: *HostEnv, roc_host: *abi.RocHost, dirty_sourc
         const counts = tryRenderInitialRoot(host, roc_host, root, dirty_source_node_ids) catch |err| switch (err) {
             error.OutOfMemory => failHost("out of memory preparing initial root transaction"),
             error.ResourceLimit => failHost("initial root exceeded configured runtime limits"),
+            error.InvalidScope => failHost("initial root named a scope or identity that is unknown, inactive, or already claimed"),
+            error.InvalidDescriptor => failHost("initial root staged a descriptor the committed stream does not hold"),
+            error.OverlappingRemoval => failHost("initial root staged overlapping removals"),
             error.InvalidRenderTopology => failHost("initial root staged a render topology that conflicts with the committed tree"),
             error.InvalidSignalGraphAppend => failHost("initial root staged a signal graph append that does not match the committed graph"),
+            error.InvalidSignalGraphRelease => failHost("initial root staged a signal graph release that does not match the committed graph"),
         };
         const elapsed = benchmark.nowNs() - start_ns;
         if (apply_ns) |ns| ns.* += elapsed;
@@ -4873,7 +4882,7 @@ test "task settlement sweeps host OOM without consuming pending ownership" {
             try std.testing.expectEqual(generation_after_change, host.engine.dirty_signal_generation);
             try std.testing.expectEqual(@as(usize, 0), host.engine.pending_tasks.items.len);
             try std.testing.expectEqual(engine.TaskResolutionClass.superseded, host.engine.classifyTaskResolution(equal_request_id));
-            try std.testing.expectError(error.ResourceLimit, host.engine.tryDispatchTaskSourceValue(&host, &roc_host, equal_request_id, record, hostValueStrWithCapability(&host, &roc_host, "duplicate", record.requireTaskSource().cap)));
+            try std.testing.expectError(error.InvalidDescriptor, host.engine.tryDispatchTaskSourceValue(&host, &roc_host, equal_request_id, record, hostValueStrWithCapability(&host, &roc_host, "duplicate", record.requireTaskSource().cap)));
             try std.testing.expectEqual(generation_after_change, host.engine.dirty_signal_generation);
             try std.testing.expectEqual(@as(usize, 0), host.engine.pending_tasks.items.len);
             try std.testing.expect(activeTextElementId(&host, "done") != null);
@@ -10044,7 +10053,7 @@ pub const fuzz_fixtures = struct {
         node_id: u64,
         value: HostValue,
         cap: HostValueCapability,
-    ) error{ OutOfMemory, ResourceLimit, InvalidRenderTopology, InvalidSignalGraphAppend }!CommandCounts {
+    ) HostEngine.CollectionError!CommandCounts {
         return host.engine.tryDispatchStateValue(host, roc_host, node_id, value, cap);
     }
 
