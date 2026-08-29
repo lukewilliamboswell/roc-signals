@@ -75,14 +75,14 @@ pub const PreparedRowRemovals = struct {
 };
 
 /// Copies and validates exact row removals without mutating maintained indexes.
-pub fn prepareRowRemovals(allocator: std.mem.Allocator, sites: []const Site, memberships: []const ?Membership, rows: []const RowRemoval) std.mem.Allocator.Error!PreparedRowRemovals {
+pub fn prepareRowRemovals(allocator: std.mem.Allocator, sites: []const Site, memberships: []const ?Membership, rows: []const RowRemoval) (std.mem.Allocator.Error || error{InvalidScope})!PreparedRowRemovals {
     const owned = try allocator.dupe(RowRemoval, rows);
     errdefer allocator.free(owned);
     for (owned) |row| {
-        if (row.scope_id.index() >= memberships.len) return error.OutOfMemory;
-        const membership = memberships[row.scope_id.index()] orelse return error.OutOfMemory;
-        if (membership.site_index >= sites.len or membership.row_index >= sites[membership.site_index].scope_ids.items.len) return error.OutOfMemory;
-        if (sites[membership.site_index].scope_ids.items[membership.row_index] != row.scope_id) return error.OutOfMemory;
+        if (row.scope_id.index() >= memberships.len) return error.InvalidScope;
+        const membership = memberships[row.scope_id.index()] orelse return error.InvalidScope;
+        if (membership.site_index >= sites.len or membership.row_index >= sites[membership.site_index].scope_ids.items.len) return error.InvalidScope;
+        if (sites[membership.site_index].scope_ids.items[membership.row_index] != row.scope_id) return error.InvalidScope;
     }
     return .{ .rows = owned };
 }
@@ -401,7 +401,7 @@ pub const PreparedExistingRows = struct {
     phase: Phase = .prepared,
 
     /// Computes matching and reserves every site/index destination without mutation.
-    pub fn prepare(allocator: std.mem.Allocator, sites: *std.ArrayListUnmanaged(Site), memberships: *std.ArrayListUnmanaged(?Membership), site_index: usize, parent_scope_id: ids.ScopeId, site_ordinal: ids.SiteOrdinal, keys: anytype, items: anytype, hooks: anytype) std.mem.Allocator.Error!PreparedExistingRows {
+    pub fn prepare(allocator: std.mem.Allocator, sites: *std.ArrayListUnmanaged(Site), memberships: *std.ArrayListUnmanaged(?Membership), site_index: usize, parent_scope_id: ids.ScopeId, site_ordinal: ids.SiteOrdinal, keys: anytype, items: anytype, hooks: anytype) (std.mem.Allocator.Error || error{ResourceLimit})!PreparedExistingRows {
         if (keys.len != items.len or site_index >= sites.items.len) @panic("invalid prepared each reconciliation input");
         const site = &sites.items[site_index];
         const existing_len = site.scope_ids.items.len;
@@ -472,8 +472,8 @@ pub const PreparedExistingRows = struct {
 
         try site.scope_ids.ensureTotalCapacity(allocator, keys.len);
         try site.hash_links.ensureTotalCapacity(allocator, keys.len);
-        try site.hash_heads.ensureTotalCapacity(allocator, std.math.cast(u32, keys.len) orelse return error.OutOfMemory);
-        if (next_scope_ids.len != 0) try memberships.ensureTotalCapacity(allocator, std.math.add(usize, highest_scope_id.index(), 1) catch return error.OutOfMemory);
+        try site.hash_heads.ensureTotalCapacity(allocator, std.math.cast(u32, keys.len) orelse return error.ResourceLimit);
+        if (next_scope_ids.len != 0) try memberships.ensureTotalCapacity(allocator, std.math.add(usize, highest_scope_id.index(), 1) catch return error.ResourceLimit);
         try hooks.prepareExistingRowsCommit(allocator, removed.len);
         return .{
             .allocator = allocator,

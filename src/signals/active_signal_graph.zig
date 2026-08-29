@@ -615,10 +615,10 @@ pub const DirtyRecordQueue = struct {
     /// Reserves every buffer needed to collect any dirty closure in `nodes`.
     /// Once this succeeds, `collectForRoots` and `collectForSources` perform no
     /// allocator calls until the graph grows or gains a larger rank.
-    pub fn reserveForGraph(self: *DirtyRecordQueue, comptime Record: type, allocator: std.mem.Allocator, nodes: []const Node(Record)) std.mem.Allocator.Error!void {
+    pub fn reserveForGraph(self: *DirtyRecordQueue, comptime Record: type, allocator: std.mem.Allocator, nodes: []const Node(Record)) (std.mem.Allocator.Error || error{ResourceLimit})!void {
         var max_rank: u64 = 0;
         for (nodes) |node| max_rank = @max(max_rank, node.rank);
-        const rank_len = std.math.add(usize, std.math.cast(usize, max_rank) orelse return error.OutOfMemory, 1) catch return error.OutOfMemory;
+        const rank_len = std.math.add(usize, std.math.cast(usize, max_rank) orelse return error.ResourceLimit, 1) catch return error.ResourceLimit;
         try self.seen_generations.ensureTotalCapacity(allocator, nodes.len);
         try self.pending_record_ids.ensureTotalCapacity(allocator, nodes.len);
         try self.ordered_record_ids.ensureTotalCapacity(allocator, nodes.len);

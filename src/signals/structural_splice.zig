@@ -7,6 +7,10 @@ const scope_runtime = @import("scope_runtime.zig");
 
 pub const EachSite = scope_runtime.EachSite;
 
+/// Errors a splice preparation can raise: the allocator refused (`OutOfMemory`) or an
+/// index/count computation exceeded its arithmetic bound (`ResourceLimit`).
+pub const PrepareError = std.mem.Allocator.Error || error{ResourceLimit};
+
 pub const ReplacementTarget = union(enum) {
     scope: u64,
     each_site: EachSite,
@@ -179,10 +183,10 @@ pub const ElemOwnedRemovalScratch = struct {
 
     /// Reserves the worst-case descriptor-index footprint for `additional`
     /// elements without changing any logical scratch length.
-    pub fn prepare(self: *@This(), allocator: std.mem.Allocator, additional: usize) std.mem.Allocator.Error!void {
-        const text_fields = std.math.mul(usize, additional, 6) catch return error.OutOfMemory;
-        const bool_fields = std.math.mul(usize, additional, 2) catch return error.OutOfMemory;
-        const events = std.math.mul(usize, additional, 7) catch return error.OutOfMemory;
+    pub fn prepare(self: *@This(), allocator: std.mem.Allocator, additional: usize) PrepareError!void {
+        const text_fields = std.math.mul(usize, additional, 6) catch return error.ResourceLimit;
+        const bool_fields = std.math.mul(usize, additional, 2) catch return error.ResourceLimit;
+        const events = std.math.mul(usize, additional, 7) catch return error.ResourceLimit;
         try self.element_indexes.ensureUnusedCapacity(allocator, additional);
         try self.text_node_indexes.ensureUnusedCapacity(allocator, additional);
         try self.signal_text_node_indexes.ensureUnusedCapacity(allocator, additional);
@@ -383,7 +387,7 @@ pub fn collectRenderRemovalScan(comptime Stream: type, allocator: std.mem.Alloca
 }
 
 /// Prepares the render scan and every descriptor-removal index before mutation.
-fn prepareRemovalFromScan(comptime Stream: type, allocator: std.mem.Allocator, stream: *const Stream, scan: RenderRemovalScan, target_scopes: []const bool) std.mem.Allocator.Error!PreparedRemoval {
+fn prepareRemovalFromScan(comptime Stream: type, allocator: std.mem.Allocator, stream: *const Stream, scan: RenderRemovalScan, target_scopes: []const bool) (PrepareError || error{InvalidDescriptor})!PreparedRemoval {
     var prepared = PreparedRemoval{
         .scan = scan,
         .descriptor_indexes = .{},
@@ -394,7 +398,7 @@ fn prepareRemovalFromScan(comptime Stream: type, allocator: std.mem.Allocator, s
     var named_event_count: usize = 0;
     var custom_counts = [_]usize{0} ** 5;
     for (prepared.scan.removed_elem_ids) |elem_id| {
-        named_event_count = std.math.add(usize, named_event_count, stream.namedEventIndices(ids.ElemId.fromRaw(elem_id)).len) catch return error.OutOfMemory;
+        named_event_count = std.math.add(usize, named_event_count, stream.namedEventIndices(ids.ElemId.fromRaw(elem_id)).len) catch return error.ResourceLimit;
         for (stream.customAttrIndices(ids.ElemId.fromRaw(elem_id))) |custom| {
             const offset: usize = switch (custom.kind) {
                 .static_text => 0,
@@ -403,7 +407,7 @@ fn prepareRemovalFromScan(comptime Stream: type, allocator: std.mem.Allocator, s
                 .static_bool => 3,
                 .signal_bool => 4,
             };
-            custom_counts[offset] = std.math.add(usize, custom_counts[offset], 1) catch return error.OutOfMemory;
+            custom_counts[offset] = std.math.add(usize, custom_counts[offset], 1) catch return error.ResourceLimit;
         }
     }
     try prepared.descriptor_indexes.event_indexes.ensureUnusedCapacity(allocator, named_event_count);
@@ -435,7 +439,7 @@ fn prepareRemovalFromScan(comptime Stream: type, allocator: std.mem.Allocator, s
             .mount => 1,
             .cleanup => 2,
         };
-        lifecycle_counts[offset] = std.math.add(usize, lifecycle_counts[offset], 1) catch return error.OutOfMemory;
+        lifecycle_counts[offset] = std.math.add(usize, lifecycle_counts[offset], 1) catch return error.ResourceLimit;
     };
     try prepared.node_indexes.on_change_indexes.ensureUnusedCapacity(allocator, lifecycle_counts[0]);
     try prepared.node_indexes.mount_indexes.ensureUnusedCapacity(allocator, lifecycle_counts[1]);
@@ -449,21 +453,21 @@ fn prepareRemovalFromScan(comptime Stream: type, allocator: std.mem.Allocator, s
         if (scopeIsInTargetSet(target_scopes, site.scope_id)) prepared.node_indexes.scope_site_indexes.appendAssumeCapacity(index);
     }
     for (stream.states.items, 0..) |state, index| {
-        const node_index = stream.nodeDescriptorIndex(state.node_id) orelse return error.OutOfMemory;
-        const site_index = node_index.scope_sites.get(.state) orelse return error.OutOfMemory;
-        if (site_index >= stream.scope_sites.items.len) return error.OutOfMemory;
+        const node_index = stream.nodeDescriptorIndex(state.node_id) orelse return error.InvalidDescriptor;
+        const site_index = node_index.scope_sites.get(.state) orelse return error.InvalidDescriptor;
+        if (site_index >= stream.scope_sites.items.len) return error.InvalidDescriptor;
         if (scopeIsInTargetSet(target_scopes, stream.scope_sites.items[site_index].scope_id)) prepared.node_indexes.state_indexes.appendAssumeCapacity(index);
     }
     for (stream.whens.items, 0..) |when, index| {
-        const node_index = stream.nodeDescriptorIndex(when.node_id) orelse return error.OutOfMemory;
-        const site_index = node_index.scope_sites.get(.when) orelse return error.OutOfMemory;
-        if (site_index >= stream.scope_sites.items.len) return error.OutOfMemory;
+        const node_index = stream.nodeDescriptorIndex(when.node_id) orelse return error.InvalidDescriptor;
+        const site_index = node_index.scope_sites.get(.when) orelse return error.InvalidDescriptor;
+        if (site_index >= stream.scope_sites.items.len) return error.InvalidDescriptor;
         if (scopeIsInTargetSet(target_scopes, stream.scope_sites.items[site_index].scope_id)) prepared.node_indexes.when_indexes.appendAssumeCapacity(index);
     }
     for (stream.eaches.items, 0..) |each, index| {
-        const node_index = stream.nodeDescriptorIndex(each.node_id) orelse return error.OutOfMemory;
-        const site_index = node_index.scope_sites.get(.each) orelse return error.OutOfMemory;
-        if (site_index >= stream.scope_sites.items.len) return error.OutOfMemory;
+        const node_index = stream.nodeDescriptorIndex(each.node_id) orelse return error.InvalidDescriptor;
+        const site_index = node_index.scope_sites.get(.each) orelse return error.InvalidDescriptor;
+        if (site_index >= stream.scope_sites.items.len) return error.InvalidDescriptor;
         if (scopeIsInTargetSet(target_scopes, stream.scope_sites.items[site_index].scope_id)) prepared.node_indexes.each_indexes.appendAssumeCapacity(index);
     }
     sortRemovalIndexesDescending(prepared.node_indexes.scope_site_indexes.items);
@@ -477,7 +481,7 @@ fn prepareRemovalFromScan(comptime Stream: type, allocator: std.mem.Allocator, s
 }
 
 /// Prepares one contiguous render interval and its union descriptor journals.
-pub fn prepareRemoval(comptime Stream: type, allocator: std.mem.Allocator, stream: *const Stream, render_insert_index: usize, target_scopes: []const bool) std.mem.Allocator.Error!PreparedRemoval {
+pub fn prepareRemoval(comptime Stream: type, allocator: std.mem.Allocator, stream: *const Stream, render_insert_index: usize, target_scopes: []const bool) (PrepareError || error{InvalidDescriptor})!PreparedRemoval {
     const scan = try prepareRenderRemovalScan(Stream, allocator, stream, render_insert_index, target_scopes);
     return prepareRemovalFromScan(Stream, allocator, stream, scan, target_scopes);
 }
@@ -497,7 +501,7 @@ fn intervalDescending(_: void, lhs: RenderRemovalInterval, rhs: RenderRemovalInt
 /// collides with that site's own interval and looks like overlapping input.
 /// Passing null scans every interval against the union, which is correct only
 /// when the transaction has a single site.
-pub fn prepareMultiRemoval(comptime Stream: type, allocator: std.mem.Allocator, stream: *const Stream, render_insert_indexes: []const usize, target_scopes: []const bool, scan_scopes: ?[]const []const bool) (std.mem.Allocator.Error || error{OverlappingIntervals})!PreparedMultiRemoval {
+pub fn prepareMultiRemoval(comptime Stream: type, allocator: std.mem.Allocator, stream: *const Stream, render_insert_indexes: []const usize, target_scopes: []const bool, scan_scopes: ?[]const []const bool) (PrepareError || error{ InvalidDescriptor, OverlappingIntervals })!PreparedMultiRemoval {
     if (scan_scopes) |scopes| if (scopes.len != render_insert_indexes.len) return error.OverlappingIntervals;
     var elem_ids = std.ArrayListUnmanaged(u64).empty;
     errdefer elem_ids.deinit(allocator);
@@ -514,13 +518,13 @@ pub fn prepareMultiRemoval(comptime Stream: type, allocator: std.mem.Allocator, 
     for (render_insert_indexes, 0..) |start, start_index| {
         const scan = try prepareRenderRemovalScan(Stream, allocator, stream, start, if (scan_scopes) |scopes| scopes[start_index] else target_scopes);
         defer scan.deinit(allocator);
-        const end = std.math.add(usize, start, scan.removed_render_count) catch return error.OutOfMemory;
+        const end = std.math.add(usize, start, scan.removed_render_count) catch return error.ResourceLimit;
         for (intervals.items) |prior| {
-            const prior_end = std.math.add(usize, prior.start, prior.len) catch return error.OutOfMemory;
+            const prior_end = std.math.add(usize, prior.start, prior.len) catch return error.ResourceLimit;
             if (start < prior_end and prior.start < end) return error.OverlappingIntervals;
         }
         try intervals.append(allocator, .{ .start = start, .len = scan.removed_render_count });
-        target_scan_count = std.math.add(usize, target_scan_count, scan.target_scan_count) catch return error.OutOfMemory;
+        target_scan_count = std.math.add(usize, target_scan_count, scan.target_scan_count) catch return error.ResourceLimit;
         for (scan.removed_elem_ids) |elem_id| {
             const entry = try elem_set.getOrPut(allocator, elem_id);
             if (entry.found_existing) return error.OverlappingIntervals;
@@ -572,8 +576,8 @@ pub fn renderElemIds(allocator: std.mem.Allocator, render_nodes: anytype) []u64 
 }
 
 /// Prepares a contiguous descriptor range affected by a splice.
-pub fn prepareIndexRange(allocator: std.mem.Allocator, start: usize, count: usize) std.mem.Allocator.Error![]usize {
-    _ = std.math.add(usize, start, count) catch return error.OutOfMemory;
+pub fn prepareIndexRange(allocator: std.mem.Allocator, start: usize, count: usize) PrepareError![]usize {
+    _ = std.math.add(usize, start, count) catch return error.ResourceLimit;
     const indexes = try allocator.alloc(usize, count);
     for (indexes, 0..) |*index, offset| {
         index.* = start + offset;
@@ -583,7 +587,10 @@ pub fn prepareIndexRange(allocator: std.mem.Allocator, start: usize, count: usiz
 
 /// Returns the contiguous descriptor range affected by this splice.
 pub fn indexRange(allocator: std.mem.Allocator, start: usize, count: usize) []usize {
-    return prepareIndexRange(allocator, start, count) catch @panic("out of memory");
+    return prepareIndexRange(allocator, start, count) catch |err| switch (err) {
+        error.OutOfMemory => @panic("out of memory"),
+        error.ResourceLimit => @panic("index range exceeded its bound"),
+    };
 }
 
 pub const PreparedPublicationDeltas = struct {
@@ -604,7 +611,7 @@ pub const PreparedPublicationDeltas = struct {
 
 /// Copies all metadata needed after a structural stream replacement so commit
 /// can publish it without allocating.
-pub fn preparePublicationDeltas(allocator: std.mem.Allocator, replacement_render_nodes: anytype, moved_event_elem_ids: []const u64, on_change_start: usize, on_change_count: usize, mount_start: usize, mount_count: usize) std.mem.Allocator.Error!PreparedPublicationDeltas {
+pub fn preparePublicationDeltas(allocator: std.mem.Allocator, replacement_render_nodes: anytype, moved_event_elem_ids: []const u64, on_change_start: usize, on_change_count: usize, mount_start: usize, mount_count: usize) PrepareError!PreparedPublicationDeltas {
     const replacement_elem_ids = try prepareRenderElemIds(allocator, replacement_render_nodes);
     errdefer allocator.free(replacement_elem_ids);
     const owned_moved_events = try allocator.dupe(u64, moved_event_elem_ids);
@@ -621,10 +628,10 @@ pub fn preparePublicationDeltas(allocator: std.mem.Allocator, replacement_render
 }
 
 /// Reserves the final backing capacity for an in-place render-range splice.
-pub fn prepareRenderRangeCapacity(allocator: std.mem.Allocator, render_nodes: anytype, removed_count: usize, replacement_count: usize) std.mem.Allocator.Error!void {
-    if (removed_count > render_nodes.items.len) return error.OutOfMemory;
+pub fn prepareRenderRangeCapacity(allocator: std.mem.Allocator, render_nodes: anytype, removed_count: usize, replacement_count: usize) PrepareError!void {
+    if (removed_count > render_nodes.items.len) return error.ResourceLimit;
     const retained = render_nodes.items.len - removed_count;
-    const final_len = std.math.add(usize, retained, replacement_count) catch return error.OutOfMemory;
+    const final_len = std.math.add(usize, retained, replacement_count) catch return error.ResourceLimit;
     try render_nodes.ensureTotalCapacity(allocator, final_len);
 }
 
@@ -722,7 +729,7 @@ test "prepared render range commit is allocation free" {
     try std.testing.expectEqual(@as(usize, 0), fault.attempts);
     try std.testing.expectEqualSlices(u64, &.{ 1, 8, 9, 10, 4 }, nodes.items);
     fault.configure(null);
-    try std.testing.expectError(error.OutOfMemory, prepareRenderRangeCapacity(allocator, &nodes, nodes.items.len + 1, 0));
+    try std.testing.expectError(error.ResourceLimit, prepareRenderRangeCapacity(allocator, &nodes, nodes.items.len + 1, 0));
 }
 
 test "structural splice collects removal indexes" {
