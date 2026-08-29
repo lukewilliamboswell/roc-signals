@@ -6347,6 +6347,280 @@ test "sibling each sites keep their insertion indexes after an earlier site grow
     for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
+/// Position of the text element rendering `text` among the committed children
+/// of `parent_elem_id`, so a test can assert document order after a splice.
+fn childOrderOfText(host: *HostEnv, parent_elem_id: ids.ElemId, text: []const u8) ?usize {
+    const elem_id = activeTextElementId(host, text) orelse return null;
+    const children = host.engine.render_cache.nodes.items[parent_elem_id.index()].children.items;
+    for (children, 0..) |child, index| if (child.raw() == elem_id) return index;
+    return null;
+}
+
+/// Node ids of the active scope sites of one kind, in collection order.
+fn activeScopeSiteNodeIdsOfKind(host: *HostEnv, kind: HostNodeScopeSiteKind, buffer: []ids.NodeId) []ids.NodeId {
+    var write: usize = 0;
+    for (host.engine.active_stream.scope_sites.items) |site| if (site.kind == kind) {
+        if (write == buffer.len) @panic("more scope sites of the requested kind than the test expected");
+        buffer[write] = site.node_id;
+        write += 1;
+    };
+    return buffer[0..write];
+}
+
+/// Asserts a committed scope site's `render_insert_index`. Indexes are
+/// positions in the active render stream, where the root element itself is
+/// node 0, so a root's first child sits at index 1.
+fn expectScopeSiteInsertIndex(host: *HostEnv, node_id: ids.NodeId, kind: HostNodeScopeSiteKind, expected: usize) !void {
+    const site = host.engine.activeScopeSiteByNodeId(node_id.raw(), kind) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(expected, site.render_insert_index);
+}
+
+/// A `when` whose condition reads a state cell directly through a bare `Ref`.
+fn testNodeWhenReadingState(roc_host: *abi.RocHost, condition_binder: HostBinderToken, condition_cap: HostValueCapability, when_true: abi.Elem, when_false: abi.Elem) abi.Elem {
+    return .{ .payload = .{ .when = .{
+        .condition = boxTestNodeSignalExpr(roc_host, testNodeRefExpr(condition_binder)),
+        .read = testBoolReadHandle(roc_host, condition_cap),
+        .when_false = boxTestElem(roc_host, when_false),
+        .when_true = boxTestElem(roc_host, when_true),
+    } }, .tag = .When };
+}
+
+/// A branch or site that renders nothing: an `each` over a frozen empty list.
+/// It still registers a scope site at the insertion point, which is exactly
+/// the empty-site shape the rebase has to order.
+fn testNodeEmptyConstantEach(roc_host: *abi.RocHost) abi.Elem {
+    return testNodeEachWithItemsRowAndCapture(TestErasedI64Capture, roc_host, &.{}, &testStatefulRowElemCallable, .{ .amount = 0 });
+}
+
+/// Dispatches `value` into `state_id`, sweeping host allocation failure at
+/// `failure_number` and retrying without the fault; returns the attempt count.
+fn dispatchStateValueSweeping(host: *HostEnv, roc_host: *abi.RocHost, state_id: ids.NodeId, value: HostValue, retry_value: HostValue, cap: HostValueCapability, failure_number: ?usize) !usize {
+    const scope_len_before = host.engine.scopes.items.len;
+    const render_len_before = host.engine.active_stream.render_nodes.items.len;
+    const allocations_before = host.roc_allocations.snapshot();
+    var fault = FaultAllocator.init(host.gpa.allocator());
+    fault.configure(failure_number);
+    host.engine_allocator_override = fault.allocator();
+    defer host.engine_allocator_override = null;
+    const result = host.engine.tryDispatchStateValue(host, roc_host, state_id.raw(), value, cap);
+    const attempts = fault.attempts;
+    if (failure_number != null) {
+        try std.testing.expectError(error.OutOfMemory, result);
+        try std.testing.expectEqual(scope_len_before, host.engine.scopes.items.len);
+        try std.testing.expectEqual(render_len_before, host.engine.active_stream.render_nodes.items.len);
+        try std.testing.expectEqual(@as(usize, 0), host.roc_allocations.liveCountSince(allocations_before));
+        fault.configure(null);
+        _ = try host.engine.tryDispatchStateValue(host, roc_host, state_id.raw(), retry_value, cap);
+    } else {
+        testDropHostValue(roc_host, retry_value);
+        _ = try result;
+    }
+    return attempts;
+}
+
+test "an each growing inside a when's live branch leaves the when site's insertion index alone" {
+    // The loan-comparator shape: a `when` whose live branch *is* an `each`.
+    // Both sites start at the same index. Growing the each is a region inside
+    // the when's own content, so it must not shift the when, while the sibling
+    // site after the branch must move by the growth.
+    const Runner = struct {
+        fn run(failure_number: ?usize) !usize {
+            test_erased_callable_drop_count = 0;
+            test_row_elem_call_count = 0;
+            var host = HostEnv.init();
+            var roc_host = makeSignalsRocHost(&host);
+            host.engine.roc_host = &roc_host;
+            defer {
+                host.deinit();
+                _ = host.gpa.deinit();
+            }
+
+            const list_token = newTestBinderToken(&roc_host);
+            const list_cap = testHostValueCapability(&roc_host);
+            const bool_token = newTestBinderToken(&roc_host);
+            const bool_cap = testHostValueCapability(&roc_host);
+            const inner_each = testNodeEachWithSignalCapabilityAndRow(&roc_host, testNodeRefExpr(list_token), list_cap, &testStatefulRowElemCallable);
+            const when = testNodeWhenReadingState(&roc_host, bool_token, bool_cap, inner_each, testNodeText(&roc_host, "when-off"));
+            const trailing_each = testNodeEachWithSignalCapabilityAndRow(&roc_host, testNodeRefExpr(list_token), list_cap, &testStatefulRowButtonElemCallable);
+            const section = testElementWith(&roc_host, "section", &.{}, &.{ testNodeText(&roc_host, "before"), when, trailing_each, testNodeText(&roc_host, "after") });
+            const bool_state = testNodeStateWithTokenAndInitialCapability(&roc_host, bool_token, testHostValueBool(true), section, bool_cap);
+            const initial = [_]HostValue{testHostValueI64(1)};
+            const root = testNodeStateWithTokenAndInitialCapability(&roc_host, list_token, testHostValueI64List(&roc_host, &initial), bool_state, list_cap);
+            defer root.decref(&roc_host);
+            var stream: HostNodeDescriptorStream = .{};
+            host.collectActiveElemRootDescriptors(&roc_host, &stream, root, &.{});
+            _ = applyNodeDescriptorStream(&host, &roc_host, &stream);
+            host.engine.active_stream = stream;
+
+            var state_buffer: [8]ids.NodeId = undefined;
+            const states = activeScopeSiteNodeIdsOfKind(&host, .state, &state_buffer);
+            const list_state_id = states[0];
+            const bool_state_id = states[1];
+            var when_buffer: [1]ids.NodeId = undefined;
+            const when_id = activeScopeSiteNodeIdsOfKind(&host, .when, &when_buffer)[0];
+            var each_buffer: [2]ids.NodeId = undefined;
+            const eaches = activeScopeSiteNodeIdsOfKind(&host, .each, &each_buffer);
+            try std.testing.expectEqual(@as(usize, 2), eaches.len);
+            const inner_each_id = eaches[0];
+            const trailing_each_id = eaches[1];
+            try expectScopeSiteInsertIndex(&host, when_id, .when, 2);
+            try expectScopeSiteInsertIndex(&host, inner_each_id, .each, 2);
+            try expectScopeSiteInsertIndex(&host, trailing_each_id, .each, 3);
+
+            const grown = [_]HostValue{ testHostValueI64(1), testHostValueI64(2) };
+            _ = try host.engine.tryDispatchStateValue(&host, &roc_host, list_state_id.raw(), testHostValueI64List(&roc_host, &grown), list_cap);
+            try expectScopeSiteInsertIndex(&host, when_id, .when, 2);
+            try expectScopeSiteInsertIndex(&host, inner_each_id, .each, 2);
+            try expectScopeSiteInsertIndex(&host, trailing_each_id, .each, 4);
+
+            // Retiring the branch removes the each's rows; the trailing site
+            // moves back behind the one-node false branch.
+            const attempts = try dispatchStateValueSweeping(&host, &roc_host, bool_state_id, testHostValueBool(false), testHostValueBool(false), bool_cap, failure_number);
+            try expectScopeSiteInsertIndex(&host, when_id, .when, 2);
+            const trailing_after = host.engine.activeScopeSiteByNodeId(trailing_each_id.raw(), .each) orelse return error.TestUnexpectedResult;
+            try std.testing.expectEqual(@as(usize, 3), trailing_after.render_insert_index);
+            const section_id = host.engine.active_stream.elements.items[0].elem_id;
+            try std.testing.expectEqual(@as(?usize, 0), childOrderOfText(&host, section_id, "before"));
+            try std.testing.expectEqual(@as(?usize, 1), childOrderOfText(&host, section_id, "when-off"));
+            try std.testing.expectEqual(@as(?usize, 2), childOrderOfText(&host, section_id, "row-action-1-1"));
+            try std.testing.expectEqual(@as(?usize, 4), childOrderOfText(&host, section_id, "after"));
+            try std.testing.expect(activeTextElementId(&host, "row-1-1") == null);
+            return attempts;
+        }
+    };
+
+    const attempts = try Runner.run(null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
+}
+
+test "an empty each before a reordered sibling each keeps its shared insertion index" {
+    // The shape from structural fuzz input in_108: a constant site with no
+    // rows sits at the same index as the shared site after it. Reordering the
+    // shared site's first row moves the node at that index, which must not
+    // drag the empty site with it; the empty site after both stays put too,
+    // then follows the shared site's growth.
+    const Runner = struct {
+        fn run(failure_number: ?usize) !usize {
+            test_erased_callable_drop_count = 0;
+            test_row_elem_call_count = 0;
+            var host = HostEnv.init();
+            var roc_host = makeSignalsRocHost(&host);
+            host.engine.roc_host = &roc_host;
+            defer {
+                host.deinit();
+                _ = host.gpa.deinit();
+            }
+
+            const list_token = newTestBinderToken(&roc_host);
+            const cap = testHostValueCapability(&roc_host);
+            const shared_each = testNodeEachWithSignalCapabilityAndRow(&roc_host, testNodeRefExpr(list_token), cap, &testStatefulRowElemCallable);
+            const section = testElementWith(&roc_host, "section", &.{}, &.{ testNodeEmptyConstantEach(&roc_host), shared_each, testNodeEmptyConstantEach(&roc_host), testNodeText(&roc_host, "after") });
+            const initial = [_]HostValue{ testHostValueI64(1), testHostValueI64(2), testHostValueI64(3) };
+            const root = testNodeStateWithTokenAndInitialCapability(&roc_host, list_token, testHostValueI64List(&roc_host, &initial), section, cap);
+            defer root.decref(&roc_host);
+            var stream: HostNodeDescriptorStream = .{};
+            host.collectActiveElemRootDescriptors(&roc_host, &stream, root, &.{});
+            _ = applyNodeDescriptorStream(&host, &roc_host, &stream);
+            host.engine.active_stream = stream;
+
+            const list_state_id = host.engine.active_stream.scope_sites.items[0].node_id;
+            var each_buffer: [3]ids.NodeId = undefined;
+            const eaches = activeScopeSiteNodeIdsOfKind(&host, .each, &each_buffer);
+            try std.testing.expectEqual(@as(usize, 3), eaches.len);
+            try expectScopeSiteInsertIndex(&host, eaches[0], .each, 1);
+            try expectScopeSiteInsertIndex(&host, eaches[1], .each, 1);
+            try expectScopeSiteInsertIndex(&host, eaches[2], .each, 4);
+
+            const reordered = [_]HostValue{ testHostValueI64(2), testHostValueI64(3), testHostValueI64(1) };
+            _ = try host.engine.tryDispatchStateValue(&host, &roc_host, list_state_id.raw(), testHostValueI64List(&roc_host, &reordered), cap);
+            try expectScopeSiteInsertIndex(&host, eaches[0], .each, 1);
+            try expectScopeSiteInsertIndex(&host, eaches[1], .each, 1);
+            try expectScopeSiteInsertIndex(&host, eaches[2], .each, 4);
+            const section_id = host.engine.active_stream.elements.items[0].elem_id;
+            try std.testing.expectEqual(@as(?usize, 0), childOrderOfText(&host, section_id, "row-2-2"));
+            try std.testing.expectEqual(@as(?usize, 2), childOrderOfText(&host, section_id, "row-1-1"));
+
+            const grown = [_]HostValue{ testHostValueI64(2), testHostValueI64(3), testHostValueI64(1), testHostValueI64(4) };
+            const retry = [_]HostValue{ testHostValueI64(2), testHostValueI64(3), testHostValueI64(1), testHostValueI64(4) };
+            const attempts = try dispatchStateValueSweeping(&host, &roc_host, list_state_id, testHostValueI64List(&roc_host, &grown), testHostValueI64List(&roc_host, &retry), cap, failure_number);
+            try expectScopeSiteInsertIndex(&host, eaches[0], .each, 1);
+            try expectScopeSiteInsertIndex(&host, eaches[1], .each, 1);
+            try expectScopeSiteInsertIndex(&host, eaches[2], .each, 5);
+            try std.testing.expectEqual(@as(?usize, 4), childOrderOfText(&host, section_id, "after"));
+            return attempts;
+        }
+    };
+
+    const attempts = try Runner.run(null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
+}
+
+test "an empty each growing at the node a when site owns shifts the when site" {
+    // The status-page shape: an `each` with no rows sits at the index of the
+    // next sibling's first node, a `when` branch. Growing the each inserts in
+    // front of that node, so the when site must move with its branch.
+    const Runner = struct {
+        fn run(failure_number: ?usize) !usize {
+            test_erased_callable_drop_count = 0;
+            test_row_elem_call_count = 0;
+            var host = HostEnv.init();
+            var roc_host = makeSignalsRocHost(&host);
+            host.engine.roc_host = &roc_host;
+            defer {
+                host.deinit();
+                _ = host.gpa.deinit();
+            }
+
+            const list_token = newTestBinderToken(&roc_host);
+            const list_cap = testHostValueCapability(&roc_host);
+            const bool_token = newTestBinderToken(&roc_host);
+            const bool_cap = testHostValueCapability(&roc_host);
+            const each = testNodeEachWithSignalCapabilityAndRow(&roc_host, testNodeRefExpr(list_token), list_cap, &testStatefulRowElemCallable);
+            const when = testNodeWhenReadingState(&roc_host, bool_token, bool_cap, testNodeText(&roc_host, "when-on"), testNodeText(&roc_host, "when-off"));
+            const section = testElementWith(&roc_host, "section", &.{}, &.{ testNodeText(&roc_host, "before"), each, when, testNodeText(&roc_host, "after") });
+            const bool_state = testNodeStateWithTokenAndInitialCapability(&roc_host, bool_token, testHostValueBool(true), section, bool_cap);
+            const root = testNodeStateWithTokenAndInitialCapability(&roc_host, list_token, testHostValueI64List(&roc_host, &.{}), bool_state, list_cap);
+            defer root.decref(&roc_host);
+            var stream: HostNodeDescriptorStream = .{};
+            host.collectActiveElemRootDescriptors(&roc_host, &stream, root, &.{});
+            _ = applyNodeDescriptorStream(&host, &roc_host, &stream);
+            host.engine.active_stream = stream;
+
+            var state_buffer: [8]ids.NodeId = undefined;
+            const states = activeScopeSiteNodeIdsOfKind(&host, .state, &state_buffer);
+            const list_state_id = states[0];
+            const bool_state_id = states[1];
+            var when_buffer: [1]ids.NodeId = undefined;
+            const when_id = activeScopeSiteNodeIdsOfKind(&host, .when, &when_buffer)[0];
+            var each_buffer: [1]ids.NodeId = undefined;
+            const each_id = activeScopeSiteNodeIdsOfKind(&host, .each, &each_buffer)[0];
+            try expectScopeSiteInsertIndex(&host, each_id, .each, 2);
+            try expectScopeSiteInsertIndex(&host, when_id, .when, 2);
+
+            const grown = [_]HostValue{ testHostValueI64(1), testHostValueI64(2) };
+            const retry = [_]HostValue{ testHostValueI64(1), testHostValueI64(2) };
+            const attempts = try dispatchStateValueSweeping(&host, &roc_host, list_state_id, testHostValueI64List(&roc_host, &grown), testHostValueI64List(&roc_host, &retry), list_cap, failure_number);
+            try expectScopeSiteInsertIndex(&host, each_id, .each, 2);
+            try expectScopeSiteInsertIndex(&host, when_id, .when, 4);
+            const section_id = host.engine.active_stream.elements.items[0].elem_id;
+            try std.testing.expectEqual(@as(?usize, 3), childOrderOfText(&host, section_id, "when-on"));
+
+            // The next branch flip is staged from the re-based index.
+            _ = try host.engine.tryDispatchStateValue(&host, &roc_host, bool_state_id.raw(), testHostValueBool(false), bool_cap);
+            try expectScopeSiteInsertIndex(&host, when_id, .when, 4);
+            try std.testing.expectEqual(@as(?usize, 3), childOrderOfText(&host, section_id, "when-off"));
+            try std.testing.expectEqual(@as(?usize, 4), childOrderOfText(&host, section_id, "after"));
+            return attempts;
+        }
+    };
+
+    const attempts = try Runner.run(null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
+}
+
 test "an each reading a root state list through a bare ref mounts in one staged transaction and survives a live edit" {
     // A bare `Ref` record carries no signal token. The initial mount's graph
     // publication used to decide whether anything needed publishing from the
