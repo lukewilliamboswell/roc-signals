@@ -1,0 +1,84 @@
+# Scheduled fuzzing campaigns.
+#
+# The pull-request job in ci.yml only replays the committed regression corpus,
+# which is fast but finds nothing new by construction. Finding new inputs needs
+# a campaign, and a campaign is too slow and too variable to gate a pull request
+# on, so it runs here on a schedule and reports what it found.
+name: Fuzz
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: "How long to fuzz each target, e.g. 10m, 1h"
+        default: "20m"
+      targets:
+        description: "Target names, or 'all'"
+        default: "all"
+  schedule:
+    # Nightly, well away from the hour so it does not queue behind everything
+    # else scheduled on the hour.
+    - cron: "37 4 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  campaign:
+    name: Fuzz ${{ github.event.inputs.targets || 'all' }}
+    runs-on: ubuntu-24.04
+    # Five targets at the default 20m each, plus builds, with room for the
+    # dispatch input to ask for longer without the job being killed mid-run.
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: 0.16.0
+          use-cache: false
+
+      - name: Install AFL++
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y afl++
+
+      # AFL++ refuses to start when the CPU governor looks wrong or a core-dump
+      # handler is installed, neither of which is under our control on a runner.
+      - name: Configure the system for AFL++
+        run: sudo afl-system-config || true
+
+      - name: Seed the corpora from the committed regression inputs
+        run: |
+          for dir in test/fuzzing/corpus/*/; do
+            name=$(basename "$dir")
+            mkdir -p ".fuzz-out/$name/corpus"
+            cp "$dir"* ".fuzz-out/$name/corpus/" 2>/dev/null || true
+            rm -f ".fuzz-out/$name/corpus/README.md"
+          done
+
+      - name: Fuzz
+        run: |
+          python3 scripts/fuzz.py run ${{ github.event.inputs.targets || 'all' }} \
+            --time "${{ github.event.inputs.duration || '20m' }}" \
+            -j 2
+
+      - name: Report
+        if: always()
+        run: python3 scripts/fuzz.py status
+
+      # The crashing inputs are the whole product of the run, and they are gone
+      # with the runner unless they are uploaded. Corpora go too: they are the
+      # cheapest way to give the next campaign a running start.
+      - name: Upload crashes and corpora
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-findings
+          path: |
+            .fuzz-out/*/out/*/crashes/
+            .fuzz-out/*/out/*/queue/
+            .fuzz-out/*/afl-*.log
+          if-no-files-found: ignore

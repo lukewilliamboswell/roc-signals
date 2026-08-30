@@ -26,6 +26,13 @@ ROOT = Path(__file__).resolve().parent.parent
 WORK_DIR = ROOT / ".fuzz-out"
 BIN_DIR = ROOT / "zig-out" / "bin"
 
+# Inputs committed to the repository, replayed by `check`. A fuzzer that finds a
+# crash is only worth the run it found it in unless the input outlives the run,
+# so a triaged crash is minimized and landed here, where CI replays it forever.
+# `.fuzz-out` corpora are scratch by comparison: they are large, machine-specific,
+# and deleted by `clean`.
+REGRESSION_DIR = ROOT / "test" / "fuzzing" / "corpus"
+
 # AFL++ refuses to start on many developer machines without these. Neither
 # weakens the fuzzing itself: the first only skips a CPU-governor check, and the
 # second only silences the warning about the system core-dump handler, which
@@ -65,6 +72,15 @@ class Target:
     @property
     def out_dir(self) -> Path:
         return self.work_dir / "out"
+
+    @property
+    def regression_dir(self) -> Path:
+        return REGRESSION_DIR / self.name
+
+    def regression_inputs(self) -> list[Path]:
+        if not self.regression_dir.exists():
+            return []
+        return sorted(path for path in self.regression_dir.iterdir() if path.is_file() and path.name != "README.md")
 
 
 TARGETS = (
@@ -293,6 +309,89 @@ def command_repro(args: argparse.Namespace) -> int:
     return subprocess.run(command, cwd=ROOT).returncode
 
 
+def replay(target: Target, path: Path, verbose: bool = False) -> tuple[bool, str]:
+    """Replays one input, returning whether it passed and any output it produced.
+
+    The repro executable is the same object file AFL++ fuzzes, so a pass here is
+    a pass of the code that produced the input, not of a lookalike build.
+    """
+    command = [str(target.repro_exe)]
+    if verbose:
+        command.append("--verbose")
+    command.append(str(path.resolve()))
+    result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
+    return result.returncode == 0, (result.stdout or "") + (result.stderr or "")
+
+
+def command_check(args: argparse.Namespace) -> int:
+    """Replays every committed regression input, and optionally the live corpora.
+
+    This is the part of fuzzing that belongs in CI. Fuzzing itself is unbounded
+    and machine-hungry, but replaying a fixed set of inputs is neither, and it is
+    what stops a fixed crash from coming back unnoticed.
+    """
+    targets = resolve_targets(args.targets)
+    ensure_built(targets, need_afl=False, skip_build=args.no_build)
+
+    total = 0
+    failures: list[tuple[Target, Path, str]] = []
+    for target in targets:
+        inputs = target.regression_inputs()
+        if args.corpus and target.corpus_dir.exists():
+            inputs += sorted(path for path in target.corpus_dir.iterdir() if path.is_file())
+
+        print(f"\n=== {target.name}: {len(inputs)} input(s) ===")
+        if not inputs:
+            print("  no regression inputs")
+            continue
+
+        for path in inputs:
+            total += 1
+            passed, output = replay(target, path)
+            if passed:
+                continue
+            failures.append((target, path, output))
+            print(f"  FAIL {path.relative_to(ROOT)}")
+
+        if not any(target is failed_target for failed_target, _, _ in failures):
+            print("  all passed")
+
+    print(f"\nreplayed {total} input(s); {len(failures)} failed")
+    for target, path, output in failures:
+        print(f"\n--- {target.name} {path.relative_to(ROOT)} ---")
+        print(output.strip() or "(no output)")
+        print(f"debug with: python3 scripts/fuzz.py repro {target.name} {path.relative_to(ROOT)} --verbose")
+    return 1 if failures else 0
+
+
+def command_add(args: argparse.Namespace) -> int:
+    """Copies an input into the committed regression corpus under a chosen name.
+
+    Naming is deliberate rather than content-hashed: the point of a regression
+    input is that whoever reads the directory later can tell what each one is for.
+    """
+    target = resolve_targets([args.target])[0]
+    source = Path(args.input)
+    if not source.is_file():
+        die(f"no such input: {source}")
+
+    target.regression_dir.mkdir(parents=True, exist_ok=True)
+    destination = target.regression_dir / args.name
+    if destination.exists() and not args.force:
+        die(f"{destination.relative_to(ROOT)} already exists; pass --force to replace it")
+    shutil.copyfile(source, destination)
+    print(f"added {destination.relative_to(ROOT)} ({destination.stat().st_size} bytes)")
+
+    ensure_built([target], need_afl=False, skip_build=args.no_build)
+    passed, output = replay(target, destination)
+    print(f"replay: {'passes' if passed else 'FAILS'}")
+    if not passed:
+        print(output.strip())
+        print("\nA failing regression input is only useful once the bug behind it is fixed;")
+        print("leave it here and it will keep CI red until then.")
+    return 0
+
+
 def command_minimize(args: argparse.Namespace) -> int:
     target = resolve_targets([args.target])[0]
     if shutil.which("afl-tmin") is None:
@@ -366,6 +465,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  python3 scripts/fuzz.py run propagation --time 10m\n"
             "  python3 scripts/fuzz.py run all --time 5m -j 4\n"
             "  python3 scripts/fuzz.py status\n"
+            "  python3 scripts/fuzz.py check\n"
             "  python3 scripts/fuzz.py repro propagation <crash-file> --verbose\n"
         ),
     )
@@ -406,6 +506,20 @@ def build_parser() -> argparse.ArgumentParser:
     minimize_parser.add_argument("-o", "--output", help="where to write the minimized input")
     add_no_build(minimize_parser)
     minimize_parser.set_defaults(func=command_minimize)
+
+    check_parser = subparsers.add_parser("check", help="replay the committed regression inputs (no AFL++ needed)")
+    check_parser.add_argument("targets", nargs="*", help="target names, or 'all' (the default)")
+    check_parser.add_argument("--corpus", action="store_true", help="also replay the live .fuzz-out corpora")
+    add_no_build(check_parser)
+    check_parser.set_defaults(func=command_check)
+
+    add_parser = subparsers.add_parser("add", help="copy an input into the committed regression corpus")
+    add_parser.add_argument("target")
+    add_parser.add_argument("input", help="path to the input, ideally minimized first")
+    add_parser.add_argument("name", help="descriptive file name, e.g. 'sibling-each-commit-trap'")
+    add_parser.add_argument("--force", action="store_true", help="replace an existing entry of that name")
+    add_no_build(add_parser)
+    add_parser.set_defaults(func=command_add)
 
     clean_parser = subparsers.add_parser("clean", help="remove corpora and fuzzer output")
     clean_parser.add_argument("targets", nargs="*", help="target names, or 'all' (the default)")
