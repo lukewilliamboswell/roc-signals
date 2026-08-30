@@ -537,7 +537,7 @@ handler. `submit` is for app-managed forms and requires a unit submit binding
 from `Html.on_submit_prevent_default`. `custom-event` sends its detail argument
 as `event.detail`, which reducers built with `State.on_detail` receive as text.
 
-Common metric names include `dirty_source_roots`, `patches_emitted`, `rows_reused`,
+Common metric names include `dirty_source_roots`, `rows_reused`,
 `rows_created`, `rows_removed`, `scopes_created`, `scopes_disposed`,
 `stream_nodes_scanned`, `stream_nodes_scanned_events`,
 `render_indexes_refreshed`, `active_intervals_synced`,

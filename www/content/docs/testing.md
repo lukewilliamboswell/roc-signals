@@ -226,8 +226,7 @@ Commonly useful metrics:
 
 | Metric | Meaning |
 | --- | --- |
-| `nodes_recomputed` | derived signal transforms that ran |
-| `patches_emitted` | DOM patches produced |
+| `derived_calls_into_roc` | derived signal transforms that ran |
 | `rows_created` / `rows_removed` / `rows_reused` | keyed-row churn |
 | `scopes_created` / `scopes_disposed` | scope lifecycle |
 | `events_processed` | events dispatched into the graph |

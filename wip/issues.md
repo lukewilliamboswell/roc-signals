@@ -361,3 +361,40 @@ alignment checks, already-freed diagnostics, failure atomicity, and swap-remove
 bookkeeping. Pin the result with a Wasm-host work counter or a scaling test that
 proves successful deallocation/reallocation does not inspect the live ledger;
 wall-clock thresholds alone are not sufficient.
+
+## 32. The counters that catch hidden quadratic work are barely asserted
+
+design.md is explicit about which counters matter and why. `patches_emitted` and
+`derived_calls_into_roc` "are necessary but not sufficient: they count *emitted*
+and *recomputed* work, so an O(N²) splice or a full graph rebuild can sit
+underneath a low patch count undetected". The counters that do expose those are
+named right there: `stream_nodes_scanned`, "the counter that exposes full-stream
+scans hiding behind a low `patches_emitted`", and `each_key_compares`, which
+"with a hash index tracks L; linear matching makes it track L², which a spec can
+pin".
+
+Across every example spec:
+
+```text
+stream_nodes_scanned          0 assertions
+each_key_compares             1
+active_graph_records_rebuilt  1
+derived_calls_into_roc        4
+rows_created / removed / reused   258
+```
+
+So the sufficient counters are asserted almost nowhere, while the insufficient
+ones carried the budgets. `patches_emitted` had thirty-three assertions and was
+removed in this branch precisely because its numbers had drifted out of meaning;
+the point is not that removing them lost coverage, but that the coverage
+design.md actually asks for was never there.
+
+The row counters are doing real work and should stay. What is missing is a
+handful of specs that pin `stream_nodes_scanned` and `each_key_compares` on the
+large keyed fixtures, where a regression from moves-only reconciliation to a
+whole-site re-collect, or from hash-indexed matching to linear matching, would
+otherwise show up only as a benchmark that got slower.
+
+The `large-each-*` fixtures are the natural place: they already carry
+`expect_metric_delta` blocks, and their whole purpose is scaling. Start there
+rather than adding a counter to every spec.

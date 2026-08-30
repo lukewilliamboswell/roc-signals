@@ -313,7 +313,7 @@ Forms inside `(setup ...)` apply **before** the first render.
 (expect-metric-delta-at-most <metric> <delta>)
 ```
 
-Common metrics: `nodes_recomputed`, `rows_created`,
+Common metrics: `derived_calls_into_roc`, `rows_created`,
 `rows_removed`, `rows_reused`, `scopes_created`, `scopes_disposed`,
 `events_processed`, `propagation_prunes`, `stale_task_results_ignored`,
 `active_intervals_synced`, `render_indexes_refreshed`,
