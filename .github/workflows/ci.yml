@@ -11,8 +11,87 @@ permissions:
   contents: read
 
 jobs:
-  linux-checks:
-    name: Linux checks
+  pull-request-checks:
+    name: PR normal and smoke tests
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: 0.16.0
+          use-cache: false
+
+      - name: Read pinned Roc version
+        run: printf 'ROC_NIGHTLY_TAG=%s\n' "$(sed -n '1p' .roc-version)" >> "$GITHUB_ENV"
+
+      - name: Install Roc
+        uses: roc-lang/setup-roc@cbe782d6f165b89c87d99f50a59ac4f5f73b4427
+        with:
+          version: nightly-new-compiler
+          nightly-tag: ${{ env.ROC_NIGHTLY_TAG }}
+
+      - name: Run normal and smoke tests
+        run: python3 scripts/test.py zig browser roc-check roc-test wasm --native never --bundle never
+
+  full:
+    name: Full tests and coverage
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: 0.16.0
+          use-cache: false
+
+      - name: Read pinned Roc version
+        run: printf 'ROC_NIGHTLY_TAG=%s\n' "$(sed -n '1p' .roc-version)" >> "$GITHUB_ENV"
+
+      - name: Install Roc
+        uses: roc-lang/setup-roc@cbe782d6f165b89c87d99f50a59ac4f5f73b4427
+        with:
+          version: nightly-new-compiler
+          nightly-tag: ${{ env.ROC_NIGHTLY_TAG }}
+
+      - name: Install coverage dependencies
+        run: brew install dwarfutils
+
+      - name: Run all tests
+        run: python3 scripts/test.py
+
+      - name: Run native host coverage
+        run: |
+          sudo env \
+            "PATH=$PATH" \
+            "ZIG_GLOBAL_CACHE_DIR=$GITHUB_WORKSPACE/.zig-cache" \
+            "ZIG_LOCAL_CACHE_DIR=$GITHUB_WORKSPACE/.zig-cache" \
+            python3 scripts/coverage.py \
+              --min 86.5 \
+              --min-file src/signals/engine.zig=71.0 \
+              --min-file src/signals/descriptor_stream.zig=76.0 \
+              --min-file src/native_host.zig=92.5 \
+              --min-file src/signals/roc_platform_abi.zig=72.0 \
+              --min-file src/spec/spec_parser.zig=90.0 \
+              --top 20
+
+      - name: Upload native host coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-host-coverage
+          path: kcov-output/native-host
+
+  site:
+    name: Build static site
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
@@ -42,10 +121,6 @@ jobs:
           chmod +x tailwindcss
           sudo mv tailwindcss /usr/local/bin/tailwindcss
 
-      - name: Run core and native fault suites
-        run: |
-          python3 scripts/test.py zig browser roc-check roc-test wasm fault --native auto --bundle never
-
       - name: Build static site
         run: |
           python3 scripts/serve.py --no-server --app-opt dev
@@ -58,82 +133,17 @@ jobs:
           path: dist
 
       - name: Upload GitHub Pages artifact
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        if: github.ref == 'refs/heads/main'
         uses: actions/upload-pages-artifact@v3
         with:
           path: dist
-
-  macos-full:
-    name: macOS full suite
-    runs-on: macos-15
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Zig
-        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
-        with:
-          version: 0.16.0
-          use-cache: false
-
-      - name: Read pinned Roc version
-        run: printf 'ROC_NIGHTLY_TAG=%s\n' "$(sed -n '1p' .roc-version)" >> "$GITHUB_ENV"
-
-      - name: Install Roc
-        uses: roc-lang/setup-roc@cbe782d6f165b89c87d99f50a59ac4f5f73b4427
-        with:
-          version: nightly-new-compiler
-          nightly-tag: ${{ env.ROC_NIGHTLY_TAG }}
-
-      - name: Run all tests
-        run: python3 scripts/test.py
-
-  macos-coverage:
-    name: macOS coverage
-    runs-on: macos-15
-    timeout-minutes: 15
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Zig
-        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
-        with:
-          version: 0.16.0
-          use-cache: false
-
-      - name: Install coverage dependencies
-        run: brew install dwarfutils
-
-      - name: Run native host coverage
-        run: |
-          sudo env \
-            "PATH=$PATH" \
-            "ZIG_GLOBAL_CACHE_DIR=$GITHUB_WORKSPACE/.zig-cache" \
-            "ZIG_LOCAL_CACHE_DIR=$GITHUB_WORKSPACE/.zig-cache" \
-            python3 scripts/coverage.py \
-              --min 86.5 \
-              --min-file src/signals/engine.zig=71.0 \
-              --min-file src/signals/descriptor_stream.zig=76.0 \
-              --min-file src/native_host.zig=92.5 \
-              --min-file src/signals/roc_platform_abi.zig=72.0 \
-              --min-file src/spec/spec_parser.zig=90.0 \
-              --top 20
-
-      - name: Upload native host coverage
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: native-host-coverage
-          path: kcov-output/native-host
 
   deploy-pages:
     name: Deploy GitHub Pages
     runs-on: ubuntu-24.04
     needs:
-      - linux-checks
-      - macos-full
-      - macos-coverage
+      - full
+      - site
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     permissions:
       contents: read

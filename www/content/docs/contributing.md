@@ -29,6 +29,12 @@ CI uses the official `roc-lang/setup-roc` GitHub Action. The repository does not
 build Roc itself. The site build uses standalone command-line tools only; there
 is no npm dependency or package manifest.
 
+Pull requests run the normal Zig, browser, and Roc checks plus a Wasm build and
+mount smoke pass on one Linux runner. Pushes to `main` (and manual runs) run the
+complete test suite and native-host coverage on one macOS runner. The static
+site is built separately on Linux for deployment; it does not duplicate the
+test suite.
+
 ## Test Driver
 
 Run the full suite from the repository root:
