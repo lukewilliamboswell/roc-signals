@@ -147,14 +147,12 @@ Signal(a) := { expr : Box(Node.SignalExpr), cap : Capability(a) }.{
 		request_init = || Capability.store(Box.box(request), request_cap)
 		request_read : HostValue -> Str
 		request_read = |value| Box.unbox(Capability.get(value, request_cap))
-		Node.Cmd.StartTask(
-			{
-				task_token: task.source.token,
-				task_name: task.source.name,
-				request_init: Box.box(request_init),
-				request_read: { capability: Capability.handle(request_cap), read: Box.box(request_read) },
-			},
-		)
+		Node.Cmd.StartTask({
+			task_token: task.source.token,
+			task_name: task.source.name,
+			request_init: Box.box(request_init),
+			request_read: { capability: Capability.handle(request_cap), read: Box.box(request_read) },
+		})
 	}
 
 	## Command that intentionally performs no host work.
@@ -189,15 +187,13 @@ Signal(a) := { expr : Box(Node.SignalExpr), cap : Capability(a) }.{
 
 			{
 				expr: Box.box(
-					Node.SignalExpr.IntervalSource(
-						{
-							token: initial_box,
-							period_ms,
-							cap: Capability.handle(cap),
-							initial: initial_box,
-							tick: Box.box(tick),
-						},
-					),
+					Node.SignalExpr.IntervalSource({
+						token: initial_box,
+						period_ms,
+						cap: Capability.handle(cap),
+						initial: initial_box,
+						tick: Box.box(tick),
+					}),
 				),
 				cap,
 			}
@@ -286,6 +282,38 @@ Signal(a) := { expr : Box(Node.SignalExpr), cap : Capability(a) }.{
 					left.expr,
 					right.expr,
 					transform_box,
+					Capability.handle(output_cap),
+				),
+			),
+			cap: output_cap,
+		}
+	}
+
+	## Test whether a selected string equals `key`. The host groups members by
+	## their shared input and dirties only the old and new keys when it changes.
+	select : Signal(Str), Str -> Signal(Bool)
+	select = |selected, key| {
+		output_cap = Capability.new()
+
+		read_selected : HostValue -> Str
+		read_selected = |input_hv| Box.unbox(Capability.get(input_hv, selected.cap))
+
+		init_false : () -> HostValue
+		init_false = || Capability.store(Box.box(False), output_cap)
+		false_box = Box.box(init_false)
+
+		init_true : () -> HostValue
+		init_true = || Capability.store(Box.box(True), output_cap)
+
+		{
+			expr: Box.box(
+				Node.SignalExpr.Select(
+					false_box,
+					selected.expr,
+					key,
+					{ capability: Capability.handle(selected.cap), read: Box.box(read_selected) },
+					false_box,
+					Box.box(init_true),
 					Capability.handle(output_cap),
 				),
 			),

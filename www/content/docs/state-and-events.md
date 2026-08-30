@@ -168,6 +168,17 @@ declared just as explicitly.
 Signal(List(a))` for a homogeneous list. In practice the record builder covers
 nearly everything.
 
+For keyed selection, use `Signal.select : Signal(Str), Str -> Signal(Bool)`:
+
+```roc
+is_selected = Signal.select(selected_key, row_key)
+```
+
+The host indexes members by their string key. Changing `selected_key` dirties
+only the members for the old and new keys, independent of the list size. The
+selector itself runs no Roc transform; any `map` you place downstream still
+counts as ordinary derived work for the members that changed.
+
 ## Form controls
 
 Every control is **controlled**: its displayed value comes from a signal, and

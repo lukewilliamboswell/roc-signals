@@ -1693,6 +1693,7 @@ const HostEnv = struct {
         self.engine.clearActiveIntervals(self);
         self.engine.active_intervals.deinit(allocator);
         self.clearActiveSignalGraph();
+        self.engine.deinitSelectors(self);
         self.engine.active_signal_graph.deinit(allocator);
         self.engine.active_stream.deinit(allocator, self, self.engine.roc_host.?, &self.engine.pending_roc_metrics);
         self.clearActiveEvents();
@@ -2268,7 +2269,7 @@ fn resolvePendingTask(host: *HostEnv, roc_host: *abi.RocHost, name: []const u8, 
     const record = host.engine.activeTaskRecordByToken(pending.task_token) orelse failHost("fake task result matched no active task source");
     const task_payload = switch (record.payload) {
         .task_source => |payload| payload,
-        .ref, .const_value, .map, .map2, .combine, .interval_source, .location_source, .online_source, .visibility_source, .storage_source => unreachable,
+        .ref, .const_value, .map, .map2, .select, .combine, .interval_source, .location_source, .online_source, .visibility_source, .storage_source => unreachable,
     };
     if (record.token().? != pending.task_token) {
         failHost("fake task result matched a pending request for a different task source");
@@ -3585,6 +3586,7 @@ fn deinitTestHostGraph(host: *HostEnv) void {
     host.engine.clearActiveIntervals(host);
     host.engine.active_intervals.deinit(allocator);
     host.clearActiveSignalGraph();
+    host.engine.deinitSelectors(host);
     host.engine.active_signal_graph.deinit(allocator);
     host.clearActiveEvents();
     host.engine.active_events.deinit(allocator);
@@ -9918,6 +9920,7 @@ fn testNodeSignalExprCapability(signal: abi.NodeSignalExpr) ?HostValueCapability
         .ConstValue => signal.payload_const_value()._2,
         .Map => signal.payload_map()._3,
         .Map2 => signal.payload_map2()._4,
+        .Select => signal.payload_select()._6,
         .Combine => signal.payload_combine()._3,
         .TaskSource => signal.payload_task_source().cap,
         .IntervalSource => signal.payload_interval_source().cap,
