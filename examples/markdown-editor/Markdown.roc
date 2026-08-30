@@ -53,24 +53,6 @@ Markdown := {}.{
 			}
 	}
 
-	## Blocks are addressed by a stable string key, because that is what the
-	## reconciler keys on. This is the one decode point that turns that key back
-	## into a `Kind`; nothing else pattern-matches on key text.
-	kind_from_key : Str -> Markdown.Kind
-	kind_from_key = |key|
-		match key.split_on(":").get(2) {
-			Ok("heading1") => Markdown.Kind.Heading(1)
-			Ok("heading2") => Markdown.Kind.Heading(2)
-			Ok("heading3") => Markdown.Kind.Heading(3)
-			Ok("heading4") => Markdown.Kind.Heading(4)
-			Ok("heading5") => Markdown.Kind.Heading(5)
-			Ok("heading6") => Markdown.Kind.Heading(6)
-			Ok("quote") => Markdown.Kind.Quote
-			Ok("codeblock") => Markdown.Kind.CodeBlock
-			Ok("list") => Markdown.Kind.ListBlock
-			_ => Markdown.Kind.Paragraph
-		}
-
 	Block : { key : Str, kind : Markdown.Kind, text : Str, items : List(Markdown.ListItem) }
 
 	## Inline markup carried by one run of text.
@@ -110,16 +92,6 @@ Markdown := {}.{
 				Link => "link"
 			}
 	}
-
-	style_from_key : Str -> Markdown.Style
-	style_from_key = |key|
-		match key.split_on(":").get(2) {
-			Ok("strong") => Markdown.Style.Strong
-			Ok("code") => Markdown.Style.Code
-			Ok("image") => Markdown.Style.Image
-			Ok("link") => Markdown.Style.Link
-			_ => Markdown.Style.Plain
-		}
 
 	Segment : { key : Str, kind : Markdown.Style, text : Str, href : Str }
 
@@ -161,10 +133,10 @@ Markdown := {}.{
 		fence_lines: [],
 	}
 
-	## Heading levels live in the key so a level change remounts the row with
-	## the correct `h1`-`h6` tag instead of patching text into the wrong tag.
+	## Row identity is independent of block shape; `Ui.switch` remounts the
+	## structural branch when the kind changes.
 	block_key : U64, Markdown.Kind -> Str
-	block_key = |index, kind| "b:${index.to_str()}:${Markdown.Kind.to_str(kind)}"
+	block_key = |index, _| "b:${index.to_str()}"
 
 	append_block : Markdown.ParseState, Markdown.Kind, Str, List(Markdown.ListItem) -> Markdown.ParseState
 	append_block = |state, kind, text, items| {
@@ -180,13 +152,11 @@ Markdown := {}.{
 		if state.item_active {
 			{
 				..state,
-				pending_items: state.pending_items.append(
-					{
-						key: "i:${state.item_index.to_str()}",
-						text: state.item_text,
-						children: state.item_children,
-					},
-				),
+				pending_items: state.pending_items.append({
+					key: "i:${state.item_index.to_str()}",
+					text: state.item_text,
+					children: state.item_children,
+				}),
 				item_index: state.item_index + 1,
 				item_active: False,
 				item_text: "",
@@ -295,7 +265,7 @@ Markdown := {}.{
 	}
 
 	segment_key : U64, Markdown.Style -> Str
-	segment_key = |index, style| "s:${index.to_str()}:${Markdown.Style.to_str(style)}"
+	segment_key = |index, _| "s:${index.to_str()}"
 
 	append_segment : Markdown.InlineState, Markdown.Style, Str, Str -> Markdown.InlineState
 	append_segment = |state, kind, text, href| {
@@ -396,16 +366,19 @@ Markdown := {}.{
 	}
 
 	render_segment : Str, Signal.Signal(Markdown.Segment) -> Elem
-	render_segment = |key, segment| {
+	render_segment = |_, segment| {
 		text = segment.map(|value| value.text)
 		href = segment.map(|value| value.href)
-		match style_from_key(key) {
-			Strong => Elem.Element({ tag: "strong", attrs: [], children: [Html.text_s(text)] })
-			Code => Elem.Element({ tag: "code", attrs: [], children: [Html.text_s(text)] })
-			Image => Elem.Element({ tag: "img", attrs: [Html.attr_s("src", href), Html.attr_s("alt", text), Html.class_attr("max-w-full rounded-md")], children: [] })
-			Link => Elem.Element({ tag: "a", attrs: [Html.attr_s("href", href), Html.class_attr("font-medium text-emerald-700 underline underline-offset-2")], children: [Html.text_s(text)] })
-			Plain => Html.text_s(text)
-		}
+		Ui.switch(
+			segment.map(|value| value.kind),
+			|kind| match kind {
+				Strong => Elem.Element({ tag: "strong", attrs: [], children: [Html.text_s(text)] })
+				Code => Elem.Element({ tag: "code", attrs: [], children: [Html.text_s(text)] })
+				Image => Elem.Element({ tag: "img", attrs: [Html.attr_s("src", href), Html.attr_s("alt", text), Html.class_attr("max-w-full rounded-md")], children: [] })
+				Link => Elem.Element({ tag: "a", attrs: [Html.attr_s("href", href), Html.class_attr("font-medium text-emerald-700 underline underline-offset-2")], children: [Html.text_s(text)] })
+				Plain => Html.text_s(text)
+			},
+		)
 	}
 
 	keyed_children : List(Str) -> List({ key : Str, text : Str })
@@ -435,20 +408,18 @@ Markdown := {}.{
 		empty_children : Signal.Signal(Bool)
 		empty_children = item.map(|value| value.children.is_empty())
 
-		Elem.Element(
-			{
-				tag: "li",
-				attrs: [],
-				children: [
-					inline_view(text),
-					Ui.when(
-						empty_children,
-						|| Html.text(""),
-						|| Elem.Element({ tag: "ul", attrs: [], children: [Ui.each_str(children_signal, |child| child.key, render_child)] }),
-					),
-				],
-			},
-		)
+		Elem.Element({
+			tag: "li",
+			attrs: [],
+			children: [
+				inline_view(text),
+				Ui.when(
+					empty_children,
+					|| Html.text(""),
+					|| Elem.Element({ tag: "ul", attrs: [], children: [Ui.each_str(children_signal, |child| child.key, render_child)] }),
+				),
+			],
+		})
 	}
 
 	heading_tag : U64 -> Str
@@ -473,30 +444,31 @@ Markdown := {}.{
 		}
 
 	render_block : Str, Signal.Signal(Markdown.Block) -> Elem
-	render_block = |key, block| {
+	render_block = |_, block| {
 		text : Signal.Signal(Str)
 		text = block.map(|value| value.text)
 
-		match kind_from_key(key) {
-			Heading(level) =>
-				Elem.Element({ tag: heading_tag(level), attrs: [Html.class_attr(heading_class(level))], children: [inline_view(text)] })
-			Quote => Elem.Element({ tag: "blockquote", attrs: [], children: [inline_view(text)] })
-			CodeBlock =>
-				Elem.Element(
-					{
+		Ui.switch(
+			block.map(|value| value.kind),
+			|kind| match kind {
+				Heading(level) =>
+					Elem.Element({ tag: heading_tag(level), attrs: [Html.class_attr(heading_class(level))], children: [inline_view(text)] })
+				Quote => Elem.Element({ tag: "blockquote", attrs: [], children: [inline_view(text)] })
+				CodeBlock =>
+					Elem.Element({
 						tag: "pre",
 						attrs: [],
 						children: [Elem.Element({ tag: "code", attrs: [], children: [Html.text_s(text)] })],
-					},
-				)
-			ListBlock => {
-				items : Signal.Signal(List(Markdown.ListItem))
-				items = block.map(|value| value.items)
+					})
+				ListBlock => {
+					items : Signal.Signal(List(Markdown.ListItem))
+					items = block.map(|value| value.items)
 
-				Elem.Element({ tag: "ul", attrs: [], children: [Ui.each_str(items, |item| item.key, render_item)] })
-			}
-			Paragraph => Elem.Element({ tag: "p", attrs: [], children: [inline_view(text)] })
-		}
+					Elem.Element({ tag: "ul", attrs: [], children: [Ui.each_str(items, |item| item.key, render_item)] })
+				}
+				Paragraph => Elem.Element({ tag: "p", attrs: [], children: [inline_view(text)] })
+			},
+		)
 	}
 
 	## Render already-parsed blocks. Taking `Signal(List(Block))` instead of
@@ -516,27 +488,11 @@ expect Markdown.heading_level("### Editor Notes") == 3
 ## Hashes with no following space are ordinary paragraph text, not a heading.
 expect Markdown.heading_level("###Not a heading") == 0
 
-## A heading block key carries its level so the level survives the round trip.
-expect Markdown.block_key(4, Markdown.Kind.Heading(2)) == "b:4:heading2"
-
-## A levelless kind spells its own name in the key.
-expect Markdown.block_key(4, Markdown.Kind.CodeBlock) == "b:4:codeblock"
-
-## The key is the only wire form of a `Kind`, so decoding a heading key
-## recovers the same level that was encoded.
-expect Markdown.kind_from_key(Markdown.block_key(0, Markdown.Kind.Heading(5))) == Markdown.Kind.Heading(5)
-
-## Decoding round-trips a levelless kind as well.
-expect Markdown.kind_from_key(Markdown.block_key(0, Markdown.Kind.ListBlock)) == Markdown.Kind.ListBlock
-
-## Paragraph is the fallback kind, and it round-trips like the rest.
-expect Markdown.kind_from_key(Markdown.block_key(0, Markdown.Kind.Paragraph)) == Markdown.Kind.Paragraph
-
-## Segment keys round-trip an inline style, so a link stays a link on redraw.
-expect Markdown.style_from_key(Markdown.segment_key(2, Markdown.Style.Link)) == Markdown.Style.Link
-
-## Plain is the fallback style, and it round-trips too.
-expect Markdown.style_from_key(Markdown.segment_key(2, Markdown.Style.Plain)) == Markdown.Style.Plain
+## Structural kinds no longer affect row identity.
+expect Markdown.block_key(4, Markdown.Kind.Heading(2)) == "b:4"
+expect Markdown.block_key(4, Markdown.Kind.CodeBlock) == "b:4"
+expect Markdown.segment_key(2, Markdown.Style.Link) == "s:2"
+expect Markdown.segment_key(2, Markdown.Style.Plain) == "s:2"
 
 ## Strong and code markers are stripped, leaving the words the outline shows.
 expect Markdown.plain_text("Use **map2** for fan-in and `combine`") == "Use map2 for fan-in and combine"

@@ -12,10 +12,8 @@ import pf.Ui
 Markdown := {}.{
 	ListItem : { key : Str, text : Str, children : List(Str) }
 
-	## Keyed rows only ever receive a `Str` key plus an item signal, so the
-	## block/segment kind has to survive the round trip through the key. The
-	## tag is the domain type; `block_kind_str` is the single encode point and
-	## `block_kind_of_key` the single decode point (same for segments).
+	## Keys identify rows; block and segment shape is selected lazily from the
+	## typed kind signal by `Ui.switch`.
 	BlockKind : [Heading, Quote, CodeBlock, ListBlock, Paragraph]
 
 	SegmentKind : [Strong, Code, Image, Link, Text]
@@ -68,32 +66,8 @@ Markdown := {}.{
 		fence_lines: [],
 	}
 
-	block_kind_str : Markdown.BlockKind -> Str
-	block_kind_str = |kind|
-		match kind {
-			Heading => "heading"
-			Quote => "quote"
-			CodeBlock => "codeblock"
-			ListBlock => "list"
-			Paragraph => "paragraph"
-		}
-
-	block_kind_of_key : Str -> Markdown.BlockKind
-	block_kind_of_key = |key|
-		if key.ends_with(":heading") {
-			Heading
-		} else if key.ends_with(":quote") {
-			Quote
-		} else if key.ends_with(":codeblock") {
-			CodeBlock
-		} else if key.ends_with(":list") {
-			ListBlock
-		} else {
-			Paragraph
-		}
-
 	block_key : U64, Markdown.BlockKind -> Str
-	block_key = |index, kind| "b:${index.to_str()}:${block_kind_str(kind)}"
+	block_key = |index, _| "b:${index.to_str()}"
 
 	append_block : Markdown.ParseState, Markdown.BlockKind, Str, List(Markdown.ListItem) -> Markdown.ParseState
 	append_block = |state, kind, text, items| {
@@ -109,13 +83,11 @@ Markdown := {}.{
 		if state.item_active {
 			{
 				..state,
-				pending_items: state.pending_items.append(
-					{
-						key: "i:${state.item_index.to_str()}",
-						text: state.item_text,
-						children: state.item_children,
-					},
-				),
+				pending_items: state.pending_items.append({
+					key: "i:${state.item_index.to_str()}",
+					text: state.item_text,
+					children: state.item_children,
+				}),
 				item_index: state.item_index + 1,
 				item_active: False,
 				item_text: "",
@@ -191,32 +163,8 @@ Markdown := {}.{
 						or href.starts_with("mailto:")
 	}
 
-	segment_kind_str : Markdown.SegmentKind -> Str
-	segment_kind_str = |kind|
-		match kind {
-			Strong => "strong"
-			Code => "code"
-			Image => "image"
-			Link => "link"
-			Text => "text"
-		}
-
-	segment_kind_of_key : Str -> Markdown.SegmentKind
-	segment_kind_of_key = |key|
-		if key.ends_with(":strong") {
-			Strong
-		} else if key.ends_with(":code") {
-			Code
-		} else if key.ends_with(":image") {
-			Image
-		} else if key.ends_with(":link") {
-			Link
-		} else {
-			Text
-		}
-
 	segment_key : U64, Markdown.SegmentKind -> Str
-	segment_key = |index, kind| "s:${index.to_str()}:${segment_kind_str(kind)}"
+	segment_key = |index, _| "s:${index.to_str()}"
 
 	append_segment : Markdown.InlineState, Markdown.SegmentKind, Str, Str -> Markdown.InlineState
 	append_segment = |state, kind, text, href| {
@@ -326,16 +274,19 @@ Markdown := {}.{
 	}
 
 	render_segment : Str, Signal.Signal(Markdown.Segment) -> Elem
-	render_segment = |key, segment| {
+	render_segment = |_, segment| {
 		text = segment.map(|value| value.text)
 		href = segment.map(|value| value.href)
-		match segment_kind_of_key(key) {
-			Strong => Elem.Element({ tag: "strong", attrs: [], children: [Html.text_s(text)] })
-			Code => Elem.Element({ tag: "code", attrs: [Html.class_attr("rounded bg-zinc-100 px-1 font-mono")], children: [Html.text_s(text)] })
-			Image => Elem.Element({ tag: "img", attrs: [Html.attr_s("src", href), Html.attr_s("alt", text)], children: [] })
-			Link => Elem.Element({ tag: "a", attrs: [Html.attr_s("href", href)], children: [Html.text_s(text)] })
-			Text => Html.text_s(text)
-		}
+		Ui.switch(
+			segment.map(|value| value.kind),
+			|kind| match kind {
+				Strong => Elem.Element({ tag: "strong", attrs: [], children: [Html.text_s(text)] })
+				Code => Elem.Element({ tag: "code", attrs: [Html.class_attr("rounded bg-zinc-100 px-1 font-mono")], children: [Html.text_s(text)] })
+				Image => Elem.Element({ tag: "img", attrs: [Html.attr_s("src", href), Html.attr_s("alt", text)], children: [] })
+				Link => Elem.Element({ tag: "a", attrs: [Html.attr_s("href", href)], children: [Html.text_s(text)] })
+				Text => Html.text_s(text)
+			},
+		)
 	}
 
 	keyed_children : List(Str) -> List({ key : Str, text : Str })
@@ -365,54 +316,51 @@ Markdown := {}.{
 		empty_children : Signal.Signal(Bool)
 		empty_children = item.map(|value| value.children.is_empty())
 
-		Elem.Element(
-			{
-				tag: "li",
-				attrs: [],
-				children: [
-					inline_view(text),
-					Ui.when(
-						empty_children,
-						|| Html.text(""),
-						|| Elem.Element({ tag: "ul", attrs: [], children: [Ui.each_str(children_signal, |child| child.key, render_child)] }),
-					),
-				],
-			},
-		)
+		Elem.Element({
+			tag: "li",
+			attrs: [],
+			children: [
+				inline_view(text),
+				Ui.when(
+					empty_children,
+					|| Html.text(""),
+					|| Elem.Element({ tag: "ul", attrs: [], children: [Ui.each_str(children_signal, |child| child.key, render_child)] }),
+				),
+			],
+		})
 	}
 
 	render_block : Str, Signal.Signal(Markdown.Block) -> Elem
-	render_block = |key, block| {
+	render_block = |_, block| {
 		text : Signal.Signal(Str)
 		text = block.map(|value| value.text)
 
-		match block_kind_of_key(key) {
-			Heading => Elem.Element({ tag: "h3", attrs: [], children: [Html.text_s(text)] })
-			Quote => Elem.Element({ tag: "blockquote", attrs: [], children: [inline_view(text)] })
-			CodeBlock =>
-				Elem.Element(
-					{
+		Ui.switch(
+			block.map(|value| value.kind),
+			|kind| match kind {
+				Heading => Elem.Element({ tag: "h3", attrs: [], children: [Html.text_s(text)] })
+				Quote => Elem.Element({ tag: "blockquote", attrs: [], children: [inline_view(text)] })
+				CodeBlock =>
+					Elem.Element({
 						tag: "pre",
 						attrs: [Html.class_attr("overflow-x-auto rounded-lg bg-zinc-900 p-4 font-mono text-sm text-zinc-100")],
 						children: [Elem.Element({ tag: "code", attrs: [], children: [Html.text_s(text)] })],
-					},
-				)
-			ListBlock => {
-				items : Signal.Signal(List(Markdown.ListItem))
-				items = block.map(|value| value.items)
+					})
+				ListBlock => {
+					items : Signal.Signal(List(Markdown.ListItem))
+					items = block.map(|value| value.items)
 
-				Elem.Element({ tag: "ul", attrs: [], children: [Ui.each_str(items, |item| item.key, render_item)] })
-			}
-			Paragraph => Elem.Element({ tag: "p", attrs: [], children: [inline_view(text)] })
-		}
+					Elem.Element({ tag: "ul", attrs: [], children: [Ui.each_str(items, |item| item.key, render_item)] })
+				}
+				Paragraph => Elem.Element({ tag: "p", attrs: [], children: [inline_view(text)] })
+			},
+		)
 	}
 }
 
-## A block kind survives the round trip through its keyed-row key.
-expect Markdown.block_kind_of_key(Markdown.block_key(7, CodeBlock)) == CodeBlock
-
-## ...and so does a segment kind, through the separate segment key encoding.
-expect Markdown.segment_kind_of_key(Markdown.segment_key(2, Link)) == Link
+## Structural kinds no longer affect keyed-row identity.
+expect Markdown.block_key(7, CodeBlock) == "b:7"
+expect Markdown.segment_key(2, Link) == "s:2"
 
 ## A blank line separates blocks, and a leading `#` marks the first as a heading.
 expect Markdown.parse("# Title\n\nbody").map(|block| block.kind) == [Heading, Paragraph]

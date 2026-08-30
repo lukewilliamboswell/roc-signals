@@ -155,16 +155,17 @@ That example only shows two of the categories. Here is the full picture:
 | Category | Where | How often it runs | What it does |
 | --- | --- | --- | --- |
 | **Construction (once)** | the outer body, and `Ui.state` bodies | exactly once, at startup | builds nodes and edges |
-| **Construction (repeated)** | `Ui.when` arms, `Ui.each_str` row renderers, `Ui.component` bodies | every time that scope mounts | builds nodes and edges *again*, for a new scope |
+| **Construction (repeated)** | `Ui.when` arms, `Ui.switch` builders, `Ui.each_str` row renderers, `Ui.component` bodies | every time that scope mounts | builds nodes and edges *again*, for a new scope |
 | **Runtime** | `.map` transforms, reducers (`on_unit`, `on_str`, …), `to_cmd` functions | on every relevant change | computes a value; builds no structure |
 
 The middle row is the one that catches people, and it is worth being precise
 about because it is the honest limit of "nothing re-renders".
 
-A `Ui.when` arm and a `Ui.each_str` row renderer are **construction code that
+A `Ui.when` arm, a `Ui.switch` builder, and a `Ui.each_str` row renderer are **construction code that
 runs more than once**. Their job is to build fresh nodes, mount fresh state, and
 wire fresh edges. Flip a conditional and the losing arm is disposed and the
-winning one is constructed. Add a row and that row's renderer runs, allocating
+winning one is constructed. Change a `Ui.switch` case and its old scope is
+disposed before the selected builder constructs a fresh one. Add a row and that row's renderer runs, allocating
 whatever `.map` nodes it declares.
 
 That is a rebuild — a real one. The difference from a re-render model is *when*

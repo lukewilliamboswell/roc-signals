@@ -66,30 +66,34 @@ grid_header =
 ## One row. The selection reducer writes only the `selected` handle now that it
 ## no longer has to carry the query along.
 render_row : Ui.State(List(U64)), Ui.State(List(GridData.Note)), Str, Signal(GridData.ViewRow) -> Elem
-render_row = |selected, notes, key, row| {
-	# `key` is the row id `Ui.each_str` was handed, so it is always digits.
-	row_id = U64.from_str(key) ?? 0
-	name = "Node-${GridData.pad4(row_id)}"
+render_row = |selected, notes, _, row| {
+	Ui.switch(
+		row.map(|current| current.id),
+		|row_id| {
+			key = row_id.to_str()
+			name = "Node-${GridData.pad4(row_id)}"
 
-	Html.div_c(
-		row_class,
-		[
-			Html.checkbox_c(
-				"Select ${name}",
-				row.map(|r| r.selected),
-				"checkbox",
-				selected.on_bool(|current, on| GridData.toggle_selected(current, row_id, on)),
-			),
-			Html.paragraph_s_attrs(row.map(|r| r.name), [Html.class_attr("${cell_class} font-medium numeric"), Html.test_id("row-name-${key}")]),
-			Html.paragraph_s_attrs(row.map(|r| r.team), [Html.class_attr(cell_class), Html.test_id("row-team-${key}")]),
-			Html.paragraph_s_attrs(row.map(|r| r.score.to_str()), [Html.class_attr(numeric_cell_class), Html.test_id("row-score-${key}")]),
-			Html.text_input_attrs(
-				"Note for ${name}",
-				row.map(|r| r.note),
-				[Html.class_attr(input_class), Html.attr("placeholder", "e.g. needs review")],
-				notes.on_str(|current, value| GridData.set_note(current, row_id, value)),
-			),
-		],
+			Html.div_c(
+				row_class,
+				[
+					Html.checkbox_c(
+						"Select ${name}",
+						row.map(|r| r.selected),
+						"checkbox",
+						selected.on_bool(|current, on| GridData.toggle_selected(current, row_id, on)),
+					),
+					Html.paragraph_s_attrs(row.map(|r| r.name), [Html.class_attr("${cell_class} font-medium numeric"), Html.test_id("row-name-${key}")]),
+					Html.paragraph_s_attrs(row.map(|r| r.team), [Html.class_attr(cell_class), Html.test_id("row-team-${key}")]),
+					Html.paragraph_s_attrs(row.map(|r| r.score.to_str()), [Html.class_attr(numeric_cell_class), Html.test_id("row-score-${key}")]),
+					Html.text_input_attrs(
+						"Note for ${name}",
+						row.map(|r| r.note),
+						[Html.class_attr(input_class), Html.attr("placeholder", "e.g. needs review")],
+						notes.on_str(|current, value| GridData.set_note(current, row_id, value)),
+					),
+				],
+			)
+		},
 	)
 }
 
@@ -452,11 +456,13 @@ main = || {
 																		Signal.const("Previous page"),
 																		prev_disabled,
 																		"button",
-																		page.on_unit(|current| if current == 0 {
-																			0
-																		} else {
-																			current - 1
-																		}),
+																		page.on_unit(
+																			|current| if current == 0 {
+																				0
+																			} else {
+																				current - 1
+																			},
+																		),
 																	),
 																	Html.action_button_c(
 																		Signal.const("Next page"),
@@ -471,7 +477,7 @@ main = || {
 												],
 											)
 										},
-										)
+									)
 								},
 							)
 						},

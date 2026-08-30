@@ -2575,61 +2575,95 @@ comptime {
     }
 }
 
-/// Element type for __AnonStruct_f20bff7631fef171
-pub const __AnonStruct_f20bff7631fef171 = if (@sizeOf(usize) == 4) extern struct {
+/// Element type for __AnonStruct_355e5277e4150238
+pub const __AnonStruct_355e5277e4150238 = if (@sizeOf(usize) == 4) extern struct {
     condition: *NodeSignalExpr,
-    read: HostValueBoolReadHandle,
-    when_false: *Elem,
-    when_true: *Elem,
+    ops: __AnonStruct_307321b22282236a,
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
         decrefBoxWith(@ptrCast(value.condition), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType35, roc_host);
-        value.read.decref(roc_host);
-        decrefBoxWith(@ptrCast(value.when_false), @alignOf(Elem), true, &decrefBoxPayloadType27, roc_host);
-        decrefBoxWith(@ptrCast(value.when_true), @alignOf(Elem), true, &decrefBoxPayloadType27, roc_host);
+        value.ops.decref(roc_host);
     }
 
     /// Increment Roc-owned fields.
     pub fn incref(self: @This(), amount: isize) void {
         const value = self;
         increfBox(@ptrCast(value.condition), amount);
-        value.read.incref(amount);
-        increfBox(@ptrCast(value.when_false), amount);
-        increfBox(@ptrCast(value.when_true), amount);
+        value.ops.incref(amount);
     }
 } else extern struct {
     condition: *NodeSignalExpr,
-    read: HostValueBoolReadHandle,
-    when_false: *Elem,
-    when_true: *Elem,
+    ops: __AnonStruct_307321b22282236a,
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
         decrefBoxWith(@ptrCast(value.condition), @alignOf(NodeSignalExpr), true, &decrefBoxPayloadType35, roc_host);
-        value.read.decref(roc_host);
-        decrefBoxWith(@ptrCast(value.when_false), @alignOf(Elem), true, &decrefBoxPayloadType27, roc_host);
-        decrefBoxWith(@ptrCast(value.when_true), @alignOf(Elem), true, &decrefBoxPayloadType27, roc_host);
+        value.ops.decref(roc_host);
     }
 
     /// Increment Roc-owned fields.
     pub fn incref(self: @This(), amount: isize) void {
         const value = self;
         increfBox(@ptrCast(value.condition), amount);
-        value.read.incref(amount);
-        increfBox(@ptrCast(value.when_false), amount);
-        increfBox(@ptrCast(value.when_true), amount);
+        value.ops.incref(amount);
     }
 };
 
 comptime {
     if (@sizeOf(usize) == 8) {
-        if (@sizeOf(__AnonStruct_f20bff7631fef171) != 56) @compileError("__AnonStruct_f20bff7631fef171 size mismatch");
-        if (@alignOf(__AnonStruct_f20bff7631fef171) != 8) @compileError("__AnonStruct_f20bff7631fef171 alignment mismatch");
+        if (@sizeOf(__AnonStruct_355e5277e4150238) != 40) @compileError("__AnonStruct_355e5277e4150238 size mismatch");
+        if (@alignOf(__AnonStruct_355e5277e4150238) != 8) @compileError("__AnonStruct_355e5277e4150238 alignment mismatch");
     }
     if (@sizeOf(usize) == 4) {
-        if (@sizeOf(__AnonStruct_f20bff7631fef171) != 28) @compileError("__AnonStruct_f20bff7631fef171 size mismatch");
-        if (@alignOf(__AnonStruct_f20bff7631fef171) != 4) @compileError("__AnonStruct_f20bff7631fef171 alignment mismatch");
+        if (@sizeOf(__AnonStruct_355e5277e4150238) != 20) @compileError("__AnonStruct_355e5277e4150238 size mismatch");
+        if (@alignOf(__AnonStruct_355e5277e4150238) != 4) @compileError("__AnonStruct_355e5277e4150238 alignment mismatch");
+    }
+}
+
+/// Element type for __AnonStruct_307321b22282236a
+pub const __AnonStruct_307321b22282236a = if (@sizeOf(usize) == 4) extern struct {
+    build: RocErasedCallable,
+    case_capability: HostValueCapabilityHandle,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        decrefErasedCallable(value.build, roc_host);
+        value.case_capability.decref(roc_host);
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        increfErasedCallable(value.build, amount);
+        value.case_capability.incref(amount);
+    }
+} else extern struct {
+    build: RocErasedCallable,
+    case_capability: HostValueCapabilityHandle,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        decrefErasedCallable(value.build, roc_host);
+        value.case_capability.decref(roc_host);
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        increfErasedCallable(value.build, amount);
+        value.case_capability.incref(amount);
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(__AnonStruct_307321b22282236a) != 32) @compileError("__AnonStruct_307321b22282236a size mismatch");
+        if (@alignOf(__AnonStruct_307321b22282236a) != 8) @compileError("__AnonStruct_307321b22282236a alignment mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(__AnonStruct_307321b22282236a) != 16) @compileError("__AnonStruct_307321b22282236a size mismatch");
+        if (@alignOf(__AnonStruct_307321b22282236a) != 4) @compileError("__AnonStruct_307321b22282236a alignment mismatch");
     }
 }
 
@@ -2660,7 +2694,7 @@ pub const ElemPayload = extern union {
     state: __AnonStruct_31ce7c44d4d70f76,
     text: RocStr,
     text_signal: __AnonStruct_e8f8b3c0e45c6fd1,
-    when: __AnonStruct_f20bff7631fef171,
+    when: __AnonStruct_355e5277e4150238,
 };
 
 /// Tag union: Elem
@@ -2707,8 +2741,8 @@ pub const Elem = if (@sizeOf(usize) == 4) extern struct {
         const ptr: *const __AnonStruct_e8f8b3c0e45c6fd1 = @ptrCast(@alignCast(&self.payload));
         return ptr.*;
     }
-    pub fn payload_when(self: *const @This()) __AnonStruct_f20bff7631fef171 {
-        const ptr: *const __AnonStruct_f20bff7631fef171 = @ptrCast(@alignCast(&self.payload));
+    pub fn payload_when(self: *const @This()) __AnonStruct_355e5277e4150238 {
+        const ptr: *const __AnonStruct_355e5277e4150238 = @ptrCast(@alignCast(&self.payload));
         return ptr.*;
     }
     /// Recursively decrement Roc-owned payloads.
@@ -2753,7 +2787,7 @@ pub const Elem = if (@sizeOf(usize) == 4) extern struct {
     pub fn payload_text_signal(self: *const @This()) __AnonStruct_e8f8b3c0e45c6fd1 {
         return self.payload.text_signal;
     }
-    pub fn payload_when(self: *const @This()) __AnonStruct_f20bff7631fef171 {
+    pub fn payload_when(self: *const @This()) __AnonStruct_355e5277e4150238 {
         return self.payload.when;
     }
     /// Recursively decrement Roc-owned payloads.
@@ -3446,7 +3480,7 @@ pub const Ui_initOnChangeInitial = __AnonStruct_e273a265345e3f00;
 pub const Ui_initOnMount = __AnonStruct_5c77869b771e6bdb;
 pub const Ui_initState = __AnonStruct_31ce7c44d4d70f76;
 pub const Ui_initTextSignal = __AnonStruct_e8f8b3c0e45c6fd1;
-pub const Ui_initWhen = __AnonStruct_f20bff7631fef171;
+pub const Ui_initWhen = __AnonStruct_355e5277e4150238;
 pub const ElemCleanup = __AnonStruct_e3ba6f75038959ff;
 pub const ElemComponent = __AnonStruct_180edd8bcea11b3f;
 pub const ElemEach = __AnonStruct_50eab5e140b9917c;
@@ -3456,7 +3490,7 @@ pub const ElemOnChangeInitial = __AnonStruct_e273a265345e3f00;
 pub const ElemOnMount = __AnonStruct_5c77869b771e6bdb;
 pub const ElemState = __AnonStruct_31ce7c44d4d70f76;
 pub const ElemTextSignal = __AnonStruct_e8f8b3c0e45c6fd1;
-pub const ElemWhen = __AnonStruct_f20bff7631fef171;
+pub const ElemWhen = __AnonStruct_355e5277e4150238;
 pub const ElemComponentChild = Elem;
 pub const ElemComponentChildPayload = ElemPayload;
 pub const ElemComponentChildTag = ElemTag;
@@ -3469,7 +3503,7 @@ pub const ElemComponentChildOnChangeInitial = __AnonStruct_e273a265345e3f00;
 pub const ElemComponentChildOnMount = __AnonStruct_5c77869b771e6bdb;
 pub const ElemComponentChildState = __AnonStruct_31ce7c44d4d70f76;
 pub const ElemComponentChildTextSignal = __AnonStruct_e8f8b3c0e45c6fd1;
-pub const ElemComponentChildWhen = __AnonStruct_f20bff7631fef171;
+pub const ElemComponentChildWhen = __AnonStruct_355e5277e4150238;
 pub const ElemEachItems = NodeSignalExpr;
 pub const ElemEachItemsPayload = NodeSignalExprPayload;
 pub const ElemEachItemsTag = NodeSignalExprTag;
@@ -3766,7 +3800,7 @@ pub const ElemElementChildrenOnChangeInitial = __AnonStruct_e273a265345e3f00;
 pub const ElemElementChildrenOnMount = __AnonStruct_5c77869b771e6bdb;
 pub const ElemElementChildrenState = __AnonStruct_31ce7c44d4d70f76;
 pub const ElemElementChildrenTextSignal = __AnonStruct_e8f8b3c0e45c6fd1;
-pub const ElemElementChildrenWhen = __AnonStruct_f20bff7631fef171;
+pub const ElemElementChildrenWhen = __AnonStruct_355e5277e4150238;
 pub const ElemOnChangeSignal = NodeSignalExpr;
 pub const ElemOnChangeSignalPayload = NodeSignalExprPayload;
 pub const ElemOnChangeSignalTag = NodeSignalExprTag;
@@ -3807,7 +3841,7 @@ pub const ElemStateChildOnChangeInitial = __AnonStruct_e273a265345e3f00;
 pub const ElemStateChildOnMount = __AnonStruct_5c77869b771e6bdb;
 pub const ElemStateChildState = __AnonStruct_31ce7c44d4d70f76;
 pub const ElemStateChildTextSignal = __AnonStruct_e8f8b3c0e45c6fd1;
-pub const ElemStateChildWhen = __AnonStruct_f20bff7631fef171;
+pub const ElemStateChildWhen = __AnonStruct_355e5277e4150238;
 pub const ElemTextSignalSignal = NodeSignalExpr;
 pub const ElemTextSignalSignalPayload = NodeSignalExprPayload;
 pub const ElemTextSignalSignalTag = NodeSignalExprTag;
@@ -3836,32 +3870,7 @@ pub const ElemWhenConditionSelect = HostValueTextReadHandle;
 pub const ElemWhenConditionStorageSource = HostValueCapabilityHandle;
 pub const ElemWhenConditionTaskSource = __AnonStruct_ecacf74f54997c48;
 pub const ElemWhenConditionVisibilitySource = HostValueCapabilityHandle;
-pub const ElemWhenWhenFalse = Elem;
-pub const ElemWhenWhenFalsePayload = ElemPayload;
-pub const ElemWhenWhenFalseTag = ElemTag;
-pub const ElemWhenWhenFalseCleanup = __AnonStruct_e3ba6f75038959ff;
-pub const ElemWhenWhenFalseComponent = __AnonStruct_180edd8bcea11b3f;
-pub const ElemWhenWhenFalseEach = __AnonStruct_50eab5e140b9917c;
-pub const ElemWhenWhenFalseElement = __AnonStruct_2516a61694df9d14;
-pub const ElemWhenWhenFalseOnChange = __AnonStruct_e273a265345e3f00;
-pub const ElemWhenWhenFalseOnChangeInitial = __AnonStruct_e273a265345e3f00;
-pub const ElemWhenWhenFalseOnMount = __AnonStruct_5c77869b771e6bdb;
-pub const ElemWhenWhenFalseState = __AnonStruct_31ce7c44d4d70f76;
-pub const ElemWhenWhenFalseTextSignal = __AnonStruct_e8f8b3c0e45c6fd1;
-pub const ElemWhenWhenFalseWhen = __AnonStruct_f20bff7631fef171;
-pub const ElemWhenWhenTrue = Elem;
-pub const ElemWhenWhenTruePayload = ElemPayload;
-pub const ElemWhenWhenTrueTag = ElemTag;
-pub const ElemWhenWhenTrueCleanup = __AnonStruct_e3ba6f75038959ff;
-pub const ElemWhenWhenTrueComponent = __AnonStruct_180edd8bcea11b3f;
-pub const ElemWhenWhenTrueEach = __AnonStruct_50eab5e140b9917c;
-pub const ElemWhenWhenTrueElement = __AnonStruct_2516a61694df9d14;
-pub const ElemWhenWhenTrueOnChange = __AnonStruct_e273a265345e3f00;
-pub const ElemWhenWhenTrueOnChangeInitial = __AnonStruct_e273a265345e3f00;
-pub const ElemWhenWhenTrueOnMount = __AnonStruct_5c77869b771e6bdb;
-pub const ElemWhenWhenTrueState = __AnonStruct_31ce7c44d4d70f76;
-pub const ElemWhenWhenTrueTextSignal = __AnonStruct_e8f8b3c0e45c6fd1;
-pub const ElemWhenWhenTrueWhen = __AnonStruct_f20bff7631fef171;
+pub const ElemWhenOps = __AnonStruct_307321b22282236a;
 
 // Generated Refcount Helpers
 
@@ -4449,8 +4458,14 @@ pub const __AnonStruct_e8f8b3c0e45c6fd1Release = struct {
     }
 };
 
-pub const __AnonStruct_f20bff7631fef171Release = struct {
-    pub fn release(value: __AnonStruct_f20bff7631fef171, roc_host: *RocHost) void {
+pub const __AnonStruct_355e5277e4150238Release = struct {
+    pub fn release(value: __AnonStruct_355e5277e4150238, roc_host: *RocHost) void {
+        value.decref(roc_host);
+    }
+};
+
+pub const __AnonStruct_307321b22282236aRelease = struct {
+    pub fn release(value: __AnonStruct_307321b22282236a, roc_host: *RocHost) void {
         value.decref(roc_host);
     }
 };
@@ -4539,7 +4554,8 @@ fn rocReleasePolicy(comptime T: type) type {
     if (T == __AnonStruct_5c77869b771e6bdb) return __AnonStruct_5c77869b771e6bdbRelease;
     if (T == __AnonStruct_31ce7c44d4d70f76) return __AnonStruct_31ce7c44d4d70f76Release;
     if (T == __AnonStruct_e8f8b3c0e45c6fd1) return __AnonStruct_e8f8b3c0e45c6fd1Release;
-    if (T == __AnonStruct_f20bff7631fef171) return __AnonStruct_f20bff7631fef171Release;
+    if (T == __AnonStruct_355e5277e4150238) return __AnonStruct_355e5277e4150238Release;
+    if (T == __AnonStruct_307321b22282236a) return __AnonStruct_307321b22282236aRelease;
     @compileError("generated glue has no recursive release policy for " ++ @typeName(T));
 }
 
