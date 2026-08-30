@@ -19,6 +19,18 @@
 //!     fields are far too structured to stumble into.
 //!  3. Targeted corruptions of that valid tree - truncate, extend, and flip a
 //!     byte - which must be rejected rather than accepted as something else.
+//!  4. A tree built to break exactly one rule, which must be rejected with
+//!     exactly that rule's error.
+//!
+//! The fourth angle exists because the first three cannot see a rejection rule
+//! being *deleted*. Angles 1 and 3 assert only that the parser stays total, and
+//! angle 2 builds trees that are valid by construction, so removing the
+//! duplicate-field-name, empty-record, or field-name UTF-8 check leaves every
+//! oracle satisfied - as mutation testing confirmed it did. Length errors were
+//! the exception, being the one violation truncation and extension produce on
+//! purpose. Naming the expected error rather than accepting any failure is what
+//! makes the angle worth having: a parser that rejects a duplicate field name as
+//! `Truncated` has lost the diagnostic even though it did refuse the input.
 //!
 //! # Scope
 //!
@@ -88,6 +100,7 @@ pub fn zig_fuzz_test_inner(buf: [*]u8, len: isize, debug: bool) void {
 
     checkGeneratedIsAccepted(grammar, schema.items, expected);
     checkCorruptionsAreRejected(gpa, &reader, grammar, schema.items, debug);
+    checkViolationsAreRejected(gpa, &reader, debug);
     checkCanonicalPlans();
 }
 
@@ -285,6 +298,164 @@ fn checkCorruptionsAreRejected(
     const flipped_result = parse(grammar, flipped);
     if (debug) std.debug.print("flipped byte {d}: {s}\n", .{ index, resultName(flipped_result) });
     if (flipped_result) |_| {} else |_| {}
+}
+
+/// A rule the parser is specified to enforce, and the error it must answer with.
+///
+/// Every variant is a tree that is well-formed in every respect but one, so a
+/// parser that answers with a different error is as much a regression as one
+/// that accepts the input: it means a different rule fired first, and the rule
+/// under test is no longer reachable.
+const Violation = enum {
+    empty_record,
+    empty_field_name,
+    duplicate_field_name,
+    invalid_field_name_utf8,
+    nested_record_field,
+    unknown_schema_tag,
+    truncated_field_name,
+    unknown_extraction_source,
+    incompatible_extraction_leaf,
+    incompatible_extraction_source,
+
+    fn expectedError(self: Violation) boundary.ParseError {
+        return switch (self) {
+            .empty_record => error.EmptyRecord,
+            .empty_field_name => error.EmptyRecordFieldName,
+            .duplicate_field_name => error.DuplicateRecordFieldName,
+            .invalid_field_name_utf8 => error.InvalidRecordFieldNameUtf8,
+            .nested_record_field => error.NestedRecordField,
+            .unknown_schema_tag => error.UnknownSchemaTag,
+            .truncated_field_name => error.Truncated,
+            .unknown_extraction_source => error.UnknownEventExtractionSource,
+            .incompatible_extraction_leaf => error.IncompatibleEventExtractionLeaf,
+            .incompatible_extraction_source => error.IncompatibleEventExtractionSource,
+        };
+    }
+
+    /// The extraction grammar is the only one carrying source and leaf bytes, so
+    /// the three violations about them are unreachable under the schema grammar.
+    fn appliesTo(self: Violation, grammar: Grammar) bool {
+        return switch (self) {
+            .unknown_extraction_source,
+            .incompatible_extraction_leaf,
+            .incompatible_extraction_source,
+            => grammar == .extraction,
+            else => true,
+        };
+    }
+};
+
+/// Builds one tree per violation and requires the matching error from each.
+fn checkViolationsAreRejected(gpa: std.mem.Allocator, reader: *FuzzReader, debug: bool) void {
+    // A scalar's byte width differs between the grammars, so each violation is
+    // built under both; the fuzzer's bytes only vary the incidental padding.
+    for (std.enums.values(Grammar)) |grammar| {
+        for (std.enums.values(Violation)) |violation| {
+            if (!violation.appliesTo(grammar)) continue;
+
+            var bytes: std.ArrayList(u8) = .empty;
+            defer bytes.deinit(gpa);
+            buildViolation(gpa, reader, grammar, violation, &bytes) catch @panic("OOM building violation");
+
+            const result = parse(grammar, bytes.items);
+            if (debug) std.debug.print("violation {s}/{s}: {s}\n", .{
+                @tagName(grammar), @tagName(violation), resultName(result),
+            });
+
+            if (result) |kind| std.debug.panic(
+                "{s} tree violating {s} parsed as {s} instead of being rejected",
+                .{ @tagName(grammar), @tagName(violation), @tagName(kind) },
+            ) else |err| if (err != violation.expectedError()) std.debug.panic(
+                "{s} tree violating {s} was rejected as {s}, expected {s}",
+                .{ @tagName(grammar), @tagName(violation), @errorName(err), @errorName(violation.expectedError()) },
+            );
+        }
+    }
+}
+
+/// Emits a tree that breaks exactly `violation` and nothing else.
+fn buildViolation(
+    gpa: std.mem.Allocator,
+    reader: *FuzzReader,
+    grammar: Grammar,
+    violation: Violation,
+    out: *std.ArrayList(u8),
+) std.mem.Allocator.Error!void {
+    switch (violation) {
+        .unknown_schema_tag => {
+            // Tags are a dense enum from zero, so the first value above the
+            // largest valid one is unknown without depending on their order.
+            try out.append(gpa, SchemaTag.record + 1);
+        },
+        .empty_record => {
+            try out.appendSlice(gpa, &.{ SchemaTag.record, 0 });
+        },
+        .empty_field_name => {
+            try out.appendSlice(gpa, &.{ SchemaTag.record, 1, 0 });
+        },
+        .truncated_field_name => {
+            // A name length that runs past the end of the input, which is the
+            // length-prefix overflow the parser must not read through.
+            const declared = reader.intRangeAtMost(u8, 2, 32);
+            try out.appendSlice(gpa, &.{ SchemaTag.record, 1, declared, 'a' });
+        },
+        .duplicate_field_name => {
+            try out.appendSlice(gpa, &.{ SchemaTag.record, 2 });
+            for (0..2) |_| {
+                try out.appendSlice(gpa, &.{ 1, 'a' });
+                try appendValidScalar(gpa, reader, grammar, out);
+            }
+        },
+        .invalid_field_name_utf8 => {
+            // A lone continuation byte is invalid UTF-8 under any prefix.
+            try out.appendSlice(gpa, &.{ SchemaTag.record, 1, 1, 0x80 });
+            try appendValidScalar(gpa, reader, grammar, out);
+        },
+        .nested_record_field => {
+            try out.appendSlice(gpa, &.{ SchemaTag.record, 1, 1, 'a' });
+            try out.appendSlice(gpa, &.{ SchemaTag.record, 1, 1, 'b' });
+            try appendValidScalar(gpa, reader, grammar, out);
+        },
+        .unknown_extraction_source => {
+            try out.append(gpa, SchemaTag.text);
+            try out.appendSlice(gpa, &.{ unknownExtractionSource(), Plan.leaf_key });
+        },
+        .incompatible_extraction_leaf => {
+            // `checked` is a boolean leaf, so pairing it with a text scalar is
+            // rejected for the leaf rather than for the source.
+            try out.append(gpa, SchemaTag.text);
+            try out.appendSlice(gpa, &.{ Plan.source_target, Plan.leaf_checked });
+        },
+        .incompatible_extraction_source => {
+            // `key` is a valid text leaf, but it reads from the event, so
+            // pairing it with a target source fails only the joint constraint.
+            try out.append(gpa, SchemaTag.text);
+            try out.appendSlice(gpa, &.{ Plan.source_target, Plan.leaf_key });
+        },
+    }
+}
+
+/// Appends a scalar that is valid in `grammar`, used as filler around a defect.
+fn appendValidScalar(
+    gpa: std.mem.Allocator,
+    reader: *FuzzReader,
+    grammar: Grammar,
+    out: *std.ArrayList(u8),
+) std.mem.Allocator.Error!void {
+    if (reader.boolean()) {
+        try out.append(gpa, SchemaTag.unit);
+        return;
+    }
+    try out.append(gpa, SchemaTag.text);
+    if (grammar == .extraction) try out.appendSlice(gpa, &.{ Plan.source_event, Plan.leaf_key });
+}
+
+/// Returns a source byte no `Source` variant claims.
+fn unknownExtractionSource() u8 {
+    var candidate: u8 = 0;
+    while (std.enums.fromInt(Plan.Source, candidate) != null) candidate += 1;
+    return candidate;
 }
 
 /// The five canonical plans must round-trip through both parsers.

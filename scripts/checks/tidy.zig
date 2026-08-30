@@ -131,6 +131,12 @@ fn shouldCheckFile(path: []const u8) bool {
     const repo_path = repoRelativePath(path);
     if (std.mem.startsWith(u8, repo_path, "platform/targets/")) return false;
 
+    // Fuzz regression inputs are arbitrary byte strings by definition: a corpus
+    // that held only text would be a corpus that stopped reaching the parsers'
+    // interesting states. The directory's README is prose and is still checked.
+    if (std.mem.startsWith(u8, repo_path, "test/fuzzing/corpus/") and
+        !std.mem.endsWith(u8, repo_path, ".md")) return false;
+
     const skipped_extensions = [_][]const u8{
         ".a",       ".lib", ".o",   ".obj", ".wasm", ".png", ".jpg", ".jpeg", ".gif", ".webp",
         ".tar.zst", ".gz",  ".zip", ".pyc",
