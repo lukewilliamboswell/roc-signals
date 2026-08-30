@@ -90,6 +90,11 @@ pub const ActiveCapabilityStack = struct {
         self.capability_len = frame.start;
     }
 
+    /// Reports whether execution is currently inside an app-compiled erased callback.
+    pub fn hasActiveFrame(self: *const ActiveCapabilityStack) bool {
+        return self.frame_len != 0;
+    }
+
     /// Checks whether a capability is authorized by any active erased-call frame.
     pub fn contains(self: *const ActiveCapabilityStack, capability: HostValueCapabilityHandle) bool {
         for (self.capabilities[0..self.capability_len]) |active| {

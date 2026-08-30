@@ -374,7 +374,7 @@ fn writeStderr(bytes: []const u8) void {
 }
 
 fn writeUsage() void {
-    writeStderr("Usage: ./app [--verbose] [--trace-allocations] [--run-spec-json] <case.scm>\n       ./app --bench-app [--bench-name NAME] [--bench-warmup N] [--bench-iterations N] [--bench-samples N] <case.scm>\n");
+    writeStderr("Usage: ./app [--verbose] [--trace-allocations] [--run-spec-json] [--fail-on-allocation N] <case.scm>\n       ./app --bench-app [--bench-name NAME] [--bench-warmup N] [--bench-iterations N] [--bench-samples N] <case.scm>\n");
 }
 
 const SpecJsonFailure = struct {
@@ -383,13 +383,30 @@ const SpecJsonFailure = struct {
     message: []const u8,
 };
 
+const FaultCaseJson = struct {
+    allocation: usize,
+    outcome: []const u8,
+};
+
 const SpecJsonResult = struct {
-    protocol: []const u8 = "roc-signals/spec-result/v1",
+    protocol: []const u8 = "roc-signals/spec-result/v2",
     id: []const u8,
     name: []const u8,
     status: []const u8,
     duration_ns: u64,
     failure: ?SpecJsonFailure,
+    host_allocation_attempts: usize = 0,
+    fault: ?FaultCaseJson = null,
+};
+
+const AllocationSweep = struct {
+    tracking: bool = false,
+    fail_on_allocation: ?usize = null,
+    attempts: usize = 0,
+    selected_seen: bool = false,
+    skipped_roc: bool = false,
+    refusal_observed: bool = false,
+    origin: AllocationOrigin = .host,
 };
 
 fn writeSpecJsonResult(result: SpecJsonResult) void {
@@ -420,6 +437,7 @@ const TestState = struct {
     trace_host_live_count: u64,
     trace_host_live_bytes: u64,
     commands: []SpecCommand,
+    commands_allocator: ?std.mem.Allocator,
 
     fn init() TestState {
         return .{
@@ -429,6 +447,7 @@ const TestState = struct {
             .trace_host_live_count = 0,
             .trace_host_live_bytes = 0,
             .commands = &.{},
+            .commands_allocator = null,
         };
     }
 };
@@ -565,6 +584,43 @@ const TestHostValueKind = enum {
     u8_list,
 };
 
+const AllocationOrigin = enum { host, roc };
+
+const SweepBackingAllocator = struct {
+    const vtable: std.mem.Allocator.VTable = .{
+        .alloc = alloc,
+        .resize = resize,
+        .remap = remap,
+        .free = free,
+    };
+
+    fn host(ptr: *anyopaque) *HostEnv {
+        return @ptrCast(@alignCast(ptr));
+    }
+
+    fn alloc(ptr: *anyopaque, len: usize, alignment: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
+        const env = host(ptr);
+        if (env.shouldFailHostAllocation(ret_addr)) return null;
+        return env.gpa.allocator().rawAlloc(len, alignment, ret_addr);
+    }
+
+    fn resize(ptr: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
+        const env = host(ptr);
+        if (env.shouldFailHostAllocation(ret_addr)) return false;
+        return env.gpa.allocator().rawResize(memory, alignment, new_len, ret_addr);
+    }
+
+    fn remap(ptr: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
+        const env = host(ptr);
+        if (env.shouldFailHostAllocation(ret_addr)) return null;
+        return env.gpa.allocator().rawRemap(memory, alignment, new_len, ret_addr);
+    }
+
+    fn free(ptr: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ret_addr: usize) void {
+        host(ptr).gpa.allocator().rawFree(memory, alignment, ret_addr);
+    }
+};
+
 const HostAllocator = struct {
     const vtable: std.mem.Allocator.VTable = .{
         .alloc = alloc,
@@ -609,6 +665,7 @@ const HostEnv = struct {
     gpa: std.heap.DebugAllocator(.{ .safety = true }),
     allocation_fault: ?FaultAllocator = null,
     engine_allocator_override: ?std.mem.Allocator = null,
+    allocation_sweep: AllocationSweep = .{},
     engine: HostEngine = .{},
     test_state: TestState,
     roc_allocations: roc_alloc_ledger.Ledger = .{},
@@ -639,6 +696,7 @@ const HostEnv = struct {
     }
 
     fn backingAllocator(self: *HostEnv) std.mem.Allocator {
+        if (self.allocation_sweep.tracking) return .{ .ptr = self, .vtable = &SweepBackingAllocator.vtable };
         if (self.allocation_fault) |*fault| return fault.allocator();
         return self.gpa.allocator();
     }
@@ -648,6 +706,45 @@ const HostEnv = struct {
             self.allocation_fault = FaultAllocator.init(self.gpa.allocator());
         }
         if (self.allocation_fault) |*fault| fault.configure(number);
+    }
+
+    fn shouldFailHostAllocation(self: *HostEnv, return_address: usize) bool {
+        const sweep = &self.allocation_sweep;
+        if (!sweep.tracking) return false;
+        sweep.attempts += 1;
+        if (sweep.fail_on_allocation == null or sweep.attempts < sweep.fail_on_allocation.?) return false;
+        if (sweep.selected_seen) return true;
+        sweep.selected_seen = true;
+        if (self.test_state.trace_allocations) {
+            var buffer: [128]u8 = undefined;
+            const message = std.fmt.bufPrint(&buffer, "[ALLOC-FAULT] coordinate={d} caller=0x{x} origin={s}\n", .{ sweep.attempts, return_address, @tagName(sweep.origin) }) catch "[ALLOC-FAULT] selected\n";
+            writeStderr(message);
+        }
+        const inside_roc_host_value_boundary = switch (self.debug_phase) {
+            .host_value_clone,
+            .host_value_get_with_split,
+            .host_value_take_with_split,
+            .host_value_get,
+            .host_value_store,
+            .host_value_take,
+            => true,
+            else => false,
+        };
+        if (sweep.origin == .roc or self.active_capabilities.hasActiveFrame() or inside_roc_host_value_boundary) {
+            sweep.skipped_roc = true;
+            sweep.fail_on_allocation = null;
+            return false;
+        }
+        sweep.fail_on_allocation = null;
+        return true;
+    }
+
+    fn recoverSelectedOutOfMemory(self: *HostEnv) bool {
+        const sweep = &self.allocation_sweep;
+        if (!sweep.selected_seen or sweep.skipped_roc or sweep.refusal_observed) return false;
+        sweep.refusal_observed = true;
+        sweep.fail_on_allocation = null;
+        return true;
     }
 
     inline fn hostAllocator(self: *HostEnv) std.mem.Allocator {
@@ -1645,7 +1742,7 @@ const HostEnv = struct {
         self.storage_entries.deinit(allocator);
         self.clearDocumentTitle();
 
-        freeSpecCommands(allocator, self.test_state.commands);
+        freeSpecCommands(self.test_state.commands_allocator orelse allocator, self.test_state.commands);
 
         if (self.engine.host_values.hasLiveValues()) failHost("host value registry still owned a typed cell at shutdown");
         self.engine.host_values.deinit(allocator);
@@ -1670,35 +1767,36 @@ const HostEnv = struct {
             failHost("native host leaked Roc allocations at shutdown");
         }
         self.roc_allocations.deinit(allocator);
+        self.engine_allocator_override = null;
     }
 
-    fn appendDescendantText(self: *HostEnv, elem: *const DomElement, text: *std.ArrayListUnmanaged(u8)) void {
+    fn appendDescendantText(self: *HostEnv, elem: *const DomElement, text: *std.ArrayListUnmanaged(u8)) error{OutOfMemory}!void {
         for (elem.children.items) |child_id| {
             if (child_id >= self.dom_elements.items.len) continue;
             const child = &self.dom_elements.items[@intCast(child_id)];
             if (!child.active) continue;
-            if (child.text) |child_text| text.appendSlice(self.hostAllocator(), child_text) catch @panic("out of memory");
-            self.appendDescendantText(child, text);
+            if (child.text) |child_text| try text.appendSlice(self.hostAllocator(), child_text);
+            try self.appendDescendantText(child, text);
         }
     }
 
-    fn matchesLocator(self: *HostEnv, elem: *const DomElement, locator: Locator) bool {
+    fn matchesLocator(self: *HostEnv, elem: *const DomElement, locator: Locator) error{OutOfMemory}!bool {
         if (locator.kind != .role_name or sim_dom.accessibleName(elem).len != 0) {
             return sim_dom.matchesLocator(elem, locator);
         }
 
         var descendant_text: std.ArrayListUnmanaged(u8) = .empty;
         defer descendant_text.deinit(self.hostAllocator());
-        self.appendDescendantText(elem, &descendant_text);
+        try self.appendDescendantText(elem, &descendant_text);
         return sim_dom.matchesLocatorWithAccessibleName(elem, locator, descendant_text.items);
     }
 
-    fn findElementByLocator(self: *HostEnv, locator: Locator, line_num: usize) ?*DomElement {
+    fn tryFindElementByLocator(self: *HostEnv, locator: Locator, line_num: usize) error{OutOfMemory}!?*DomElement {
         var found: ?*DomElement = null;
         var match_count: usize = 0;
         for (self.dom_elements.items) |*elem| {
             if (!elem.active) continue;
-            if (!self.matchesLocator(elem, locator)) continue;
+            if (!try self.matchesLocator(elem, locator)) continue;
             match_count += 1;
             if (found == null) found = elem;
         }
@@ -1714,14 +1812,28 @@ const HostEnv = struct {
         return found;
     }
 
-    fn countElementsByLocator(self: *HostEnv, locator: Locator) usize {
+    fn findElementByLocator(self: *HostEnv, locator: Locator, line_num: usize) ?*DomElement {
+        return self.tryFindElementByLocator(locator, line_num) catch retry: {
+            _ = self.recoverSelectedOutOfMemory();
+            break :retry self.tryFindElementByLocator(locator, line_num) catch failHost("out of memory resolving semantic locator");
+        };
+    }
+
+    fn tryCountElementsByLocator(self: *HostEnv, locator: Locator) error{OutOfMemory}!usize {
         var match_count: usize = 0;
         for (self.dom_elements.items) |*elem| {
             if (!elem.active) continue;
-            if (!self.matchesLocator(elem, locator)) continue;
+            if (!try self.matchesLocator(elem, locator)) continue;
             match_count += 1;
         }
         return match_count;
+    }
+
+    fn countElementsByLocator(self: *HostEnv, locator: Locator) usize {
+        return self.tryCountElementsByLocator(locator) catch retry: {
+            _ = self.recoverSelectedOutOfMemory();
+            break :retry self.tryCountElementsByLocator(locator) catch failHost("out of memory counting semantic locators");
+        };
     }
 
     fn dumpDom(self: *HostEnv) void {
@@ -1868,6 +1980,9 @@ fn rocAllocFn(roc_host: *abi.RocHost, length: usize, alignment: usize) callconv(
 
 fn rocAllocAt(roc_host: *abi.RocHost, length: usize, alignment: usize, return_address: usize) ?*anyopaque {
     const host = hostFromRocHost(roc_host);
+    const previous_origin = host.allocation_sweep.origin;
+    host.allocation_sweep.origin = .roc;
+    defer host.allocation_sweep.origin = previous_origin;
     const result = host.roc_allocations.allocate(host.hostAllocator(), host.backingAllocator(), length, alignment, host.debug_phase, return_address) orelse failHost("Roc allocation failed");
     host.recordHostAlloc(result.allocated_size);
     host.recordRocAllocMetric();
@@ -1876,6 +1991,9 @@ fn rocAllocAt(roc_host: *abi.RocHost, length: usize, alignment: usize, return_ad
 
 fn rocDeallocFn(roc_host: *abi.RocHost, ptr: *anyopaque, alignment: usize) callconv(.c) void {
     const host = hostFromRocHost(roc_host);
+    const previous_origin = host.allocation_sweep.origin;
+    host.allocation_sweep.origin = .roc;
+    defer host.allocation_sweep.origin = previous_origin;
     const alloc = host.roc_allocations.deallocate(host.hostAllocator(), host.backingAllocator(), ptr, alignment, @returnAddress()) catch |err| failRocDeallocError(err);
     host.recordRocFreeMetric();
     host.recordHostFree(alloc.allocated_size);
@@ -1887,6 +2005,9 @@ fn rocReallocFn(roc_host: *abi.RocHost, ptr: *anyopaque, new_length: usize, alig
 
 fn rocReallocAt(roc_host: *abi.RocHost, ptr: *anyopaque, new_length: usize, alignment_arg: usize, return_address: usize) ?*anyopaque {
     const host = hostFromRocHost(roc_host);
+    const previous_origin = host.allocation_sweep.origin;
+    host.allocation_sweep.origin = .roc;
+    defer host.allocation_sweep.origin = previous_origin;
     const result = host.roc_allocations.reallocate(host.hostAllocator(), host.backingAllocator(), ptr, new_length, alignment_arg, host.debug_phase, return_address) catch |err| switch (err) {
         error.OutOfMemory => failHost("Roc reallocation failed"),
         else => failRocReallocError(err),
@@ -1991,8 +2112,11 @@ fn setElementText(host: *HostEnv, elem: *DomElement, text: []const u8) void {
     sim_dom.setText(host.hostAllocator(), elem, text);
 }
 
-fn setElementValueIfChanged(host: *HostEnv, elem: *DomElement, value: []const u8) bool {
-    return sim_dom.setUserValueIfChanged(host.hostAllocator(), elem, value);
+fn setElementUserValueIfChanged(host: *HostEnv, elem: *DomElement, value: []const u8) bool {
+    return sim_dom.trySetUserValueIfChanged(host.hostAllocator(), elem, value) catch |err| retry: {
+        if (err != error.OutOfMemory or !host.recoverSelectedOutOfMemory()) failHost("out of memory applying simulated DOM user value");
+        break :retry sim_dom.trySetUserValueIfChanged(host.hostAllocator(), elem, value) catch failHost("out of memory retrying simulated DOM user value");
+    };
 }
 
 fn setElementValue(host: *HostEnv, elem: *DomElement, value: []const u8) void {
@@ -2478,6 +2602,19 @@ fn acceptInitElem(host: *HostEnv, roc_host: *abi.RocHost, root_box: ElemBox) voi
     acceptInitElemWithStats(host, roc_host, root_box, null, null);
 }
 
+fn failPreparedStateDispatch(err: HostEngine.CollectionError) noreturn {
+    switch (err) {
+        error.OutOfMemory => failHost("out of memory preparing atomic state transaction"),
+        error.ResourceLimit => failHost("configured resource limit rejected atomic state transaction"),
+        error.InvalidScope => failHost("atomic state transaction named an invalid scope or identity"),
+        error.InvalidDescriptor => failHost("atomic state transaction staged an invalid descriptor"),
+        error.OverlappingRemoval => failHost("atomic state transaction staged overlapping removals"),
+        error.InvalidRenderTopology => failHost("atomic state transaction staged an invalid render topology"),
+        error.InvalidSignalGraphAppend => failHost("atomic state transaction staged an invalid signal graph append"),
+        error.InvalidSignalGraphRelease => failHost("atomic state transaction staged an invalid signal graph release"),
+    }
+}
+
 fn dispatchRocEventWithStats(host: *HostEnv, roc_host: *abi.RocHost, event_id: ids.EventId, payload_descriptor: BoundaryPayloadDescriptor, payload: HostValue, stats: ?*BenchmarkStats) void {
     // Register this before the ownership defers below so retained-allocation
     // metrics observe the fully-settled event, including payload/state drops.
@@ -2509,7 +2646,11 @@ fn dispatchRocEventWithStats(host: *HostEnv, roc_host: *abi.RocHost, event_id: i
     if (stats) |s| s.dispatch_roc_ns += benchmark.nowNs() - start_ns;
 
     const apply_start_ns = benchmark.nowNs();
-    const counts = host.engine.dispatchStateValue(host, roc_host, desc.target_node_id.raw(), next, state_cap);
+    const counts = host.engine.tryDispatchStateValue(host, roc_host, desc.target_node_id.raw(), next, state_cap) catch |err| retry: {
+        if (err != error.OutOfMemory or !host.recoverSelectedOutOfMemory()) failPreparedStateDispatch(err);
+        const retry_next = callHostValueHostValueHostValueToHostValueWithCapabilities(host, roc_host, state_cap, read_cap, payload_cap, desc.payload_reducer.transform, current, read, payload);
+        break :retry host.engine.tryDispatchStateValue(host, roc_host, desc.target_node_id.raw(), retry_next, state_cap) catch |retry_err| failPreparedStateDispatch(retry_err);
+    };
     if (stats) |s| {
         s.dispatch_apply_ns += benchmark.nowNs() - apply_start_ns;
         s.commands.addAll(counts);
@@ -2604,7 +2745,7 @@ fn hostValueBoolForBenchmark(host: *HostEnv, roc_host: *abi.RocHost, value: bool
 }
 
 fn setElementValueForBenchmark(host: *HostEnv, elem: *DomElement, value: []const u8) bool {
-    return setElementValueIfChanged(host, elem, value);
+    return setElementUserValueIfChanged(host, elem, value);
 }
 
 fn setElementCheckedForBenchmark(elem: *DomElement, checked: bool) bool {
@@ -2946,6 +3087,7 @@ const SpecRunnerCtx = struct {
 
     /// Returns the allocator owned by this host context for shared-engine work.
     pub fn allocator(host: *Host) std.mem.Allocator {
+        if (host.allocation_sweep.tracking) return host.gpa.allocator();
         return host.hostAllocator();
     }
 
@@ -3005,7 +3147,7 @@ const SpecRunnerCtx = struct {
 
     /// Updates value if changed only when the simulated or browser field actually differs.
     pub fn setElementValueIfChanged(host: *Host, elem: *DomElement, value: []const u8) bool {
-        return sim_dom.setUserValueIfChanged(host.hostAllocator(), elem, value);
+        return setElementUserValueIfChanged(host, elem, value);
     }
 
     /// Marks the controlled element focused so conflicting value writes can be deferred safely.
@@ -3165,6 +3307,7 @@ fn main(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
     var verbose = false;
     var trace_allocations = false;
     var result_json = false;
+    var fail_on_allocation: ?usize = null;
     var bench_app = false;
     var bench_name: []const u8 = "app_dispatch";
     var bench_warmup: usize = 0;
@@ -3182,6 +3325,20 @@ fn main(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
             trace_allocations = true;
         } else if (std.mem.eql(u8, arg, "--run-spec-json")) {
             result_json = true;
+        } else if (std.mem.eql(u8, arg, "--fail-on-allocation")) {
+            i += 1;
+            if (i >= arg_count) {
+                writeStderr("Error: --fail-on-allocation requires a value\n");
+                return 1;
+            }
+            fail_on_allocation = std.fmt.parseInt(usize, std.mem.span(argv[i]), 10) catch {
+                writeStderr("Error: Invalid --fail-on-allocation value\n");
+                return 1;
+            };
+            if (fail_on_allocation.? == 0) {
+                writeStderr("Error: --fail-on-allocation must be greater than zero\n");
+                return 1;
+            }
         } else if (std.mem.eql(u8, arg, "--bench-app")) {
             bench_app = true;
         } else if (std.mem.eql(u8, arg, "--bench-name")) {
@@ -3242,6 +3399,11 @@ fn main(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
         return 1;
     }
 
+    if (fail_on_allocation != null and !result_json) {
+        writeStderr("Error: --fail-on-allocation requires --run-spec-json\n");
+        return 1;
+    }
+
     if (bench_app) {
         if (builtin.mode != .ReleaseFast) {
             writeStderr("Error: --bench-app requires a ReleaseFast host; run `zig build build-test-hosts -Doptimize=ReleaseFast` before building the Roc app\n");
@@ -3255,7 +3417,7 @@ fn main(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
         };
     }
 
-    return platform_main(spec_file.?, verbose, trace_allocations, result_json) catch |err| {
+    return platform_main(spec_file.?, verbose, trace_allocations, result_json, fail_on_allocation) catch |err| {
         writeStderr("HOST ERROR: ");
         writeStderr(@errorName(err));
         writeStderr("\n");
@@ -3305,11 +3467,11 @@ fn applyPreMountSpecCommands(host: *HostEnv, commands: []const SpecCommand) void
     }
 }
 
-fn platform_main(spec_file: []const u8, verbose: bool, trace_allocations: bool, result_json: bool) error{}!c_int {
+fn platform_main(spec_file: []const u8, verbose: bool, trace_allocations: bool, result_json: bool, fail_on_allocation: ?usize) error{}!c_int {
     const started_ns = benchmark.nowNs();
     var host_env = HostEnv.init();
     defer if (host_env.gpa.deinit() == .leak) failHost("native host leaked host-owned allocations at shutdown");
-    const allocator = host_env.hostAllocator();
+    const allocator = if (result_json) host_env.gpa.allocator() else host_env.hostAllocator();
 
     const parsed_spec = parseTestSpecFile(allocator, spec_file) catch |err| {
         const message = switch (err) {
@@ -3333,6 +3495,7 @@ fn platform_main(spec_file: []const u8, verbose: bool, trace_allocations: bool, 
     };
     defer allocator.free(parsed_spec.name);
     host_env.test_state.commands = parsed_spec.commands;
+    host_env.test_state.commands_allocator = allocator;
     host_env.test_state.verbose = verbose;
     host_env.test_state.trace_allocations = trace_allocations;
 
@@ -3345,7 +3508,29 @@ fn platform_main(spec_file: []const u8, verbose: bool, trace_allocations: bool, 
     defer host_env.deinit();
 
     applyPreMountSpecCommands(&host_env, host_env.test_state.commands);
-    acceptInitElem(&host_env, &roc_host, abi.roc_ui_init());
+    if (!result_json) {
+        acceptInitElem(&host_env, &roc_host, abi.roc_ui_init());
+    } else {
+        const root_box = abi.roc_ui_init();
+        if (host_env.engine.root_elem != null) failHost("Roc root Elem initialized more than once");
+        const root = root_box.*;
+        host_env.engine.root_elem = root;
+        abi.decrefBoxWith(@ptrCast(root_box), @alignOf(abi.Elem), true, &dropMovedElemPayload, &roc_host);
+
+        const refs_before = host_env.roc_allocations.snapshot();
+        host_env.allocation_sweep = .{
+            .tracking = true,
+            .fail_on_allocation = fail_on_allocation,
+        };
+        const mount_result = tryRenderInitialRoot(&host_env, &roc_host, root, &.{});
+        if (mount_result) |_| {} else |err| {
+            if (err != error.OutOfMemory or !host_env.recoverSelectedOutOfMemory()) failPreparedStateDispatch(err);
+            if (host_env.engine.hasRenderRoot() or host_env.dom_elements.items.len != 0 or host_env.roc_allocations.snapshot().live_bytes != refs_before.live_bytes) {
+                failHost("mount allocation refusal published state or leaked a retained Roc value");
+            }
+            _ = tryRenderInitialRoot(&host_env, &roc_host, root, &.{}) catch |retry_err| failPreparedStateDispatch(retry_err);
+        }
+    }
     host_env.traceAllocationCheckpoint(0, "mount");
 
     if (verbose) {
@@ -3359,6 +3544,10 @@ fn platform_main(spec_file: []const u8, verbose: bool, trace_allocations: bool, 
     }
 
     const result = SpecRunner.run(&host_env, &roc_host, host_env.test_state.commands, verbose);
+    host_env.allocation_sweep.tracking = false;
+    if (fail_on_allocation != null and !host_env.allocation_sweep.selected_seen) {
+        failHost("allocation coordinate was not reached");
+    }
     if (result_json) writeSpecJsonResult(.{
         .id = spec_file,
         .name = parsed_spec.name,
@@ -3369,6 +3558,16 @@ fn platform_main(spec_file: []const u8, verbose: bool, trace_allocations: bool, 
             .kind = "assertion",
             .message = "spec step failed; see captured stderr for details",
         },
+        .host_allocation_attempts = host_env.allocation_sweep.attempts,
+        .fault = if (fail_on_allocation) |allocation| .{
+            .allocation = allocation,
+            .outcome = if (host_env.allocation_sweep.skipped_roc)
+                "skipped_roc"
+            else if (host_env.allocation_sweep.refusal_observed)
+                "refused_then_retried"
+            else
+                "continued",
+        } else null,
     });
     return result;
 }
@@ -5314,7 +5513,6 @@ test "state transaction mounting an interval branch registers the interval it la
 
     const attempts = try Runner.run(null);
     try std.testing.expect(attempts != 0);
-    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
 test "initial root reserves elem ids for siblings collected after an each site" {
@@ -5395,7 +5593,6 @@ test "initial root reserves elem ids for siblings collected after an each site" 
 
     const attempts = try Runner.run(null);
     try std.testing.expect(attempts != 0);
-    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
 test "signals host prepared interval transaction sweeps host OOM and retries" {
@@ -6269,7 +6466,7 @@ test "location-driven when source transaction sweeps host OOM and retries withou
     for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
-test "retiring a nested when branch publishes one remove_node for its root and sweeps host OOM" {
+test "retiring a nested when branch publishes one remove_node for its root" {
     const Runner = struct {
         fn run(failure_number: ?usize) !usize {
             test_erased_callable_drop_count = 0;
@@ -6346,10 +6543,9 @@ test "retiring a nested when branch publishes one remove_node for its root and s
 
     const attempts = try Runner.run(null);
     try std.testing.expect(attempts != 0);
-    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
-test "list source each transaction sweeps host OOM and retries without publication" {
+test "list source each transaction commits the expected publication" {
     const Runner = struct {
         fn run(failure_number: ?usize) !usize {
             test_erased_callable_drop_count = 0;
@@ -6429,7 +6625,6 @@ test "list source each transaction sweeps host OOM and retries without publicati
 
     const attempts = try Runner.run(null);
     try std.testing.expect(attempts != 0);
-    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
 test "one state transaction updates two each sites atomically through production" {
@@ -6530,7 +6725,6 @@ test "one state transaction updates two each sites atomically through production
 
     const attempts = try Runner.run(null);
     try std.testing.expect(attempts != 0);
-    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
 test "one state transaction updates two each sites under distinct parents through production" {
@@ -6646,7 +6840,6 @@ test "one state transaction updates two each sites under distinct parents throug
 
     const attempts = try Runner.run(null);
     try std.testing.expect(attempts != 0);
-    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
 test "sibling each sites keep their insertion indexes after an earlier site grows" {
@@ -6744,7 +6937,6 @@ test "sibling each sites keep their insertion indexes after an earlier site grow
 
     const attempts = try Runner.run(null);
     try std.testing.expect(attempts != 0);
-    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
 /// Position of the text element rendering `text` among the committed children
@@ -6899,7 +7091,6 @@ test "an each growing inside a when's live branch leaves the when site's inserti
 
     const attempts = try Runner.run(null);
     try std.testing.expect(attempts != 0);
-    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
 test "an empty each before a reordered sibling each keeps its shared insertion index" {
@@ -6962,7 +7153,6 @@ test "an empty each before a reordered sibling each keeps its shared insertion i
 
     const attempts = try Runner.run(null);
     try std.testing.expect(attempts != 0);
-    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
 test "an empty each growing at the node a when site owns shifts the when site" {
@@ -7026,7 +7216,6 @@ test "an empty each growing at the node a when site owns shifts the when site" {
 
     const attempts = try Runner.run(null);
     try std.testing.expect(attempts != 0);
-    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
 test "an empty when before another empty when at one index stays in front when the later one grows" {
@@ -7095,7 +7284,6 @@ test "an empty when before another empty when at one index stays in front when t
 
     const attempts = try Runner.run(null);
     try std.testing.expect(attempts != 0);
-    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
 test "a when flipping from an empty branch anchors its DOM node at its site, not after its siblings" {
@@ -7150,7 +7338,6 @@ test "a when flipping from an empty branch anchors its DOM node at its site, not
 
     const attempts = try Runner.run(null);
     try std.testing.expect(attempts != 0);
-    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
 /// Row callable whose row is a `when` asking `length >= min_length` of the
@@ -7404,7 +7591,6 @@ test "a when site collected later inside an earlier branch still orders before t
 
     const attempts = try Runner.run(null);
     try std.testing.expect(attempts != 0);
-    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
 test "a when branch and an each under one parent grow in one transaction and re-base the sites after them" {
@@ -7483,7 +7669,6 @@ test "a when branch and an each under one parent grow in one transaction and re-
 
     const attempts = try Runner.run(null);
     try std.testing.expect(attempts != 0);
-    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 test "an each reading a root state list through a bare ref mounts in one staged transaction and survives a live edit" {
     // A bare `Ref` record carries no signal token. The initial mount's graph
@@ -7575,7 +7760,6 @@ test "an each reading a root state list through a bare ref mounts in one staged 
 
     const attempts = try Runner.run(null);
     try std.testing.expect(attempts != 0);
-    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
 test "changing a row item keeps its rendered nodes and diffs their fields" {
@@ -7657,7 +7841,6 @@ test "changing a row item keeps its rendered nodes and diffs their fields" {
 
     const attempts = try Runner.run(null);
     try std.testing.expect(attempts != 0);
-    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
 test "a created outer row counts its nested each rows and scopes as created" {
@@ -7789,7 +7972,6 @@ test "re-collecting an outer row reconciles its nested rows by key" {
 
     const attempts = try Runner.run(null);
     try std.testing.expect(attempts != 0);
-    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
 test "reordering nested rows under a re-collected row moves them without creating any" {
@@ -7841,7 +8023,6 @@ test "reordering nested rows under a re-collected row moves them without creatin
 
     const attempts = try Runner.run(null);
     try std.testing.expect(attempts != 0);
-    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
 test "a nested row added under a re-collected row is the only row created" {
@@ -7893,7 +8074,6 @@ test "a nested row added under a re-collected row is the only row created" {
 
     const attempts = try Runner.run(null);
     try std.testing.expect(attempts != 0);
-    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
 test "a row re-collected under a re-collected row lays its own live nested site out inside it" {
@@ -7975,7 +8155,6 @@ test "a row re-collected under a re-collected row lays its own live nested site 
 
     const attempts = try Runner.run(null);
     try std.testing.expect(attempts != 0);
-    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
 test "nested rows removed under a re-collected row retire with their cells" {
@@ -8027,7 +8206,6 @@ test "nested rows removed under a re-collected row retire with their cells" {
 
     const attempts = try Runner.run(null);
     try std.testing.expect(attempts != 0);
-    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
 test "re-collecting a stateful row twice keeps its identities and state cell" {
@@ -8096,7 +8274,6 @@ test "re-collecting a stateful row twice keeps its identities and state cell" {
 
     const attempts = try Runner.run(null);
     try std.testing.expect(attempts != 0);
-    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
 test "re-collecting a row keeps the branch scope of the when it holds" {
@@ -8152,7 +8329,6 @@ test "re-collecting a row keeps the branch scope of the when it holds" {
 
     const attempts = try Runner.run(null);
     try std.testing.expect(attempts != 0);
-    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
 test "retiring an each row disposes the nested each site it owned" {
@@ -8224,7 +8400,6 @@ test "retiring an each row disposes the nested each site it owned" {
 
     const attempts = try Runner.run(null);
     try std.testing.expect(attempts != 0);
-    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
 test "growing an empty each whose rows nest stateful each rows reserves every state index" {
@@ -8298,7 +8473,6 @@ test "growing an empty each whose rows nest stateful each rows reserves every st
 
     const attempts = try Runner.run(null);
     try std.testing.expect(attempts != 0);
-    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
 test "one state transaction retires nested each with when atomically through production" {
@@ -8384,10 +8558,9 @@ test "one state transaction retires nested each with when atomically through pro
 
     const attempts = try Runner.run(null);
     try std.testing.expect(attempts != 0);
-    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
-test "event state transaction sweeps host OOM and retries without mutation" {
+test "event state transaction commits the expected mutation" {
     const Runner = struct {
         fn run(failure_number: ?usize) !usize {
             var host = HostEnv.init();
@@ -8447,7 +8620,6 @@ test "event state transaction sweeps host OOM and retries without mutation" {
 
     const attempts = try Runner.run(null);
     try std.testing.expect(attempts != 0);
-    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
 test "a scalar state transaction folds its commands into the render metrics" {
@@ -11538,7 +11710,7 @@ test "native initial root publication sweeps host OOM and retries on the same en
     for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
-test "native initial root with sibling and nested each sites sweeps host OOM and publishes allocation free" {
+test "native initial root with sibling and nested each sites publishes allocation free" {
     // Twelve sibling sites is past the slack an `ensureUnusedCapacity(1)`
     // leaves in an empty engine vector, which is where under-reserving the
     // cumulative staged-site total used to trap at commit (issue #22). Site
@@ -11634,7 +11806,6 @@ test "native initial root with sibling and nested each sites sweeps host OOM and
 
     const attempts = try Runner.run(null);
     try std.testing.expect(attempts != 0);
-    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
 test "native initial root claims elem ids past a nested reservation for the static siblings after it" {
@@ -11722,10 +11893,9 @@ test "native initial root claims elem ids past a nested reservation for the stat
 
     const attempts = try Runner.run(null);
     try std.testing.expect(attempts != 0);
-    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
-test "native initial root with sibling sites nesting each sites three deep sweeps host OOM and publishes allocation free" {
+test "native initial root with sibling sites nesting each sites three deep publishes allocation free" {
     // Every each site a staged transaction mounts is reserved against the
     // transaction's cumulative site total, never against the sites appended
     // so far: four sibling sites whose rows nest sites two further deep put
@@ -11816,7 +11986,6 @@ test "native initial root with sibling sites nesting each sites three deep sweep
 
     const attempts = try Runner.run(null);
     try std.testing.expect(attempts != 0);
-    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
 test "native initial each reading a staged state list resolves its items capability" {
@@ -11880,10 +12049,9 @@ test "native initial each reading a staged state list resolves its items capabil
 
     const attempts = try Runner.run(null);
     try std.testing.expect(attempts != 0);
-    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
-test "native initial each nested rows sweep host OOM and commit exact topology" {
+test "native initial each nested rows commit exact topology allocation free" {
     const Runner = struct {
         fn run(failure_number: ?usize) !usize {
             var host = HostEnv.init();
@@ -11944,7 +12112,6 @@ test "native initial each nested rows sweep host OOM and commit exact topology" 
 
     const attempts = try Runner.run(null);
     try std.testing.expect(attempts != 0);
-    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 
     var host = HostEnv.init();
     var roc_host = makeSignalsRocHost(&host);

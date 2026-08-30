@@ -298,12 +298,13 @@ pub fn matchesLocatorWithAccessibleName(elem: *const Element, locator: spec_pars
     };
 }
 
-fn replaceOwnedString(allocator: std.mem.Allocator, field: *?[]const u8, value: []const u8) bool {
+fn tryReplaceOwnedString(allocator: std.mem.Allocator, field: *?[]const u8, value: []const u8) std.mem.Allocator.Error!bool {
     if (field.*) |existing| {
         if (std.mem.eql(u8, existing, value)) return false;
-        allocator.free(existing);
     }
-    field.* = allocator.dupe(u8, value) catch std.process.exit(1);
+    const replacement = try allocator.dupe(u8, value);
+    if (field.*) |existing| allocator.free(existing);
+    field.* = replacement;
     return true;
 }
 
@@ -331,11 +332,21 @@ pub fn setText(allocator: std.mem.Allocator, elem: *Element, text: []const u8) v
 
 /// Sets value if changed at the narrow host or engine boundary that owns the mutation.
 pub fn setValueIfChanged(allocator: std.mem.Allocator, elem: *Element, value: []const u8) bool {
-    if (replaceOwnedString(allocator, &elem.value, value)) {
+    if (tryReplaceOwnedString(allocator, &elem.value, value) catch std.process.exit(1)) {
         elem.value_update_count += 1;
         return true;
     }
     return false;
+}
+
+/// Attempts to apply a simulated user edit without changing the element when allocation fails.
+pub fn trySetUserValueIfChanged(allocator: std.mem.Allocator, elem: *Element, value: []const u8) std.mem.Allocator.Error!bool {
+    const changed = try tryReplaceOwnedString(allocator, &elem.value, value);
+    if (changed) elem.value_update_count += 1;
+    if (elem.pending_value) |pending| {
+        if (std.mem.eql(u8, pending, elem.value orelse "")) clearPendingValue(allocator, elem);
+    }
+    return changed;
 }
 
 /// Sets value at the narrow host or engine boundary that owns the mutation.
@@ -358,13 +369,7 @@ fn replacePendingValue(allocator: std.mem.Allocator, elem: *Element, value: []co
 
 /// Sets user value if changed at the narrow host or engine boundary that owns the mutation.
 pub fn setUserValueIfChanged(allocator: std.mem.Allocator, elem: *Element, value: []const u8) bool {
-    const changed = setValueIfChanged(allocator, elem, value);
-    if (elem.pending_value) |pending| {
-        if (std.mem.eql(u8, pending, elem.value orelse "")) {
-            clearPendingValue(allocator, elem);
-        }
-    }
-    return changed;
+    return trySetUserValueIfChanged(allocator, elem, value) catch std.process.exit(1);
 }
 
 /// Sets controlled value at the narrow host or engine boundary that owns the mutation.
@@ -947,6 +952,25 @@ test "simulated DOM mutation helpers update owned fields and counters" {
     try std.testing.expect(elem.value == null);
     try std.testing.expectEqual(@as(u64, 2), elem.text_update_count);
     try std.testing.expectEqual(@as(u64, 3), elem.value_update_count);
+}
+
+test "simulated DOM user value refuses OOM without publishing a partial edit" {
+    const FaultAllocator = signals.fault_allocator.FaultAllocator;
+    const allocator = std.testing.allocator;
+    var elem = Element.init(2, try allocator.dupe(u8, "input"));
+    defer elem.deinit(allocator);
+    elem.value = try allocator.dupe(u8, "before");
+
+    var fault = FaultAllocator.init(allocator);
+    fault.configure(1);
+    try std.testing.expectError(error.OutOfMemory, trySetUserValueIfChanged(fault.allocator(), &elem, "after"));
+    try std.testing.expectEqualStrings("before", elem.value.?);
+    try std.testing.expectEqual(@as(u64, 0), elem.value_update_count);
+
+    fault.configure(null);
+    try std.testing.expect(try trySetUserValueIfChanged(fault.allocator(), &elem, "after"));
+    try std.testing.expectEqualStrings("after", elem.value.?);
+    try std.testing.expectEqual(@as(u64, 1), elem.value_update_count);
 }
 
 test "simulated DOM controlled values defer while focused and flush on blur" {

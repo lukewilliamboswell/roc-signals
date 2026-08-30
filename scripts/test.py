@@ -32,6 +32,7 @@ URL_SCHEMES = {"http", "https"}
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 MUSL_NATIVE_SKIPS: dict[str, str] = {}
 LINUX_WASM_SKIPS: dict[str, str] = {}
+FAULT_CAMPAIGN_EXAMPLES = {"markdown-elem", "when-each-dispose"}
 
 
 @dataclass(frozen=True)
@@ -121,7 +122,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "suites",
         nargs="*",
-        choices=("all", "zig", "browser", "roc-check", "roc-test", "wasm", "native", "bundle", "bench"),
+        choices=("all", "zig", "browser", "roc-check", "roc-test", "wasm", "native", "fault", "bundle", "bench"),
         default=["all"],
         help="Suites to run. Defaults to all.",
     )
@@ -448,6 +449,7 @@ def run_native_specs(
     fail_fast: bool = False,
     spec_timeout: float = 30.0,
     ledger: known_failures.Ledger,
+    fault_campaign: bool = False,
 ) -> None:
     ensure_sources_do_not_use_release_platform_urls(
         examples,
@@ -459,6 +461,8 @@ def run_native_specs(
     matched_specs = 0
     for example in examples:
         if not example.native:
+            continue
+        if fault_campaign and example.slug not in FAULT_CAMPAIGN_EXAMPLES:
             continue
         if reason := should_skip_native_example(target, example):
             print(f"\nSkipping native spec for {example.slug} on {target}: {reason}.")
@@ -482,7 +486,8 @@ def run_native_specs(
             continue
         print(f"\n==> {exe} {specs}", flush=True)
         try:
-            results = spec_driver.run_suite(
+            suite_runner = spec_driver.run_fault_suite if fault_campaign else spec_driver.run_suite
+            results = suite_runner(
                 exe,
                 specs,
                 jobs=jobs,
@@ -578,6 +583,7 @@ def run_local_native_specs(
     fail_fast: bool,
     spec_timeout: float,
     ledger: known_failures.Ledger,
+    fault_campaign: bool = False,
 ) -> None:
     source_root = TEST_OUT / "native-source"
     rewrite_examples_for_platform(str((ROOT / "platform" / "main.roc").resolve()), source_root)
@@ -591,6 +597,7 @@ def run_local_native_specs(
         fail_fast=fail_fast,
         spec_timeout=spec_timeout,
         ledger=ledger,
+        fault_campaign=fault_campaign,
     )
 
 
@@ -763,7 +770,7 @@ def main() -> int:
     examples = load_examples()
     suites = set(args.suites)
     if "all" in suites:
-        suites = {"zig", "browser", "roc-check", "roc-test", "wasm", "native", "bundle", "bench"}
+        suites = {"zig", "browser", "roc-check", "roc-test", "wasm", "native", "fault", "bundle", "bench"}
 
     validate_args_before_build(args, suites)
     roc_bin = command_path(args.roc_bin)
@@ -801,6 +808,22 @@ def main() -> int:
             )
         else:
             print("\nSkipping native specs: platform manifest exposes macOS and Linux musl native targets only.")
+
+    if "fault" in suites:
+        if should_run_hosted(args.native):
+            run_local_native_specs(
+                roc_bin,
+                examples,
+                jobs=args.jobs,
+                spec_filters=tuple(args.spec_filter),
+                shard=args.shard,
+                fail_fast=args.fail_fast,
+                spec_timeout=args.spec_timeout,
+                ledger=ledger,
+                fault_campaign=True,
+            )
+        else:
+            print("\nSkipping host fault campaign: native execution is disabled.")
 
     if "bundle" in suites:
         if should_run_hosted(args.bundle):

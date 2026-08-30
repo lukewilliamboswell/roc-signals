@@ -92,6 +92,47 @@ class SpecDriverTests(unittest.TestCase):
             self.assertEqual((), first_selected)
             self.assertEqual(["target.scm"], [case.id for case in second_selected])
 
+    def test_fault_campaign_expands_clean_allocation_count_into_isolated_workers(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            specs = root / "specs"
+            specs.mkdir()
+            (specs / "case.scm").write_text('(test "case" (steps (mark-metrics)))\n', encoding="utf-8")
+            worker = root / "worker"
+            worker.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!/usr/bin/env python3
+                    import json
+                    import sys
+                    allocation = int(sys.argv[sys.argv.index("--fail-on-allocation") + 1]) if "--fail-on-allocation" in sys.argv else None
+                    print(json.dumps({{
+                        "protocol": {spec_driver.PROTOCOL!r},
+                        "id": "case.scm",
+                        "name": "case",
+                        "status": "passed",
+                        "duration_ns": 1,
+                        "failure": None,
+                        "host_allocation_attempts": 2,
+                        "fault": None if allocation is None else {{
+                            "allocation": allocation,
+                            "outcome": "refused_then_retried",
+                        }},
+                    }}))
+                    """
+                ),
+                encoding="utf-8",
+            )
+            worker.chmod(worker.stat().st_mode | stat.S_IXUSR)
+
+            results = spec_driver.run_fault_suite(worker, specs, jobs=2)
+            self.assertEqual(3, len(results))
+            self.assertTrue(all(result.passed for result in results))
+            self.assertEqual(
+                ["case.scm", "case.scm::allocation@1", "case.scm::allocation@2"],
+                [result.id for result in results],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
