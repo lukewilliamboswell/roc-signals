@@ -12,4 +12,3 @@
 # host-owned allocation leaks at shutdown; "active state has no capability";
 # task settlement panics; patch-count performance budgets.
 native query-builder/editing-a-leaf-three-levels-deep-does-not-recreate-its-siblings.scm
-native spreadsheet-lite/b2-d2-d5-d6-d7-d8-and-b2-b5-f5-d5-already-covered.scm

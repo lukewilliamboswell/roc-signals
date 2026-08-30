@@ -41,14 +41,14 @@
     ; D5, F5, D6, D7, D8) plus the formula bar. No other cell is written.
     (expect-metric-delta set_value 9)
     (expect-metric-delta set_metadata 0)
-    ; Event bindings are refreshed for the whole grid when this many rows change;
-    ; see the single-row and two-row edits below, which refresh none.
-    (expect-metric-delta bind_event 96)
+    ; Only the rows whose bindings actually changed are refreshed, not the whole
+    ; grid; restoring the old value below refreshes none at all.
+    (expect-metric-delta bind_event 30)
     (expect-metric-delta-at-most patches_emitted 107)
     ; Restoring the old value restores every dependent.
     (mark-metrics)
     (fill (label "B2") "1200")
-    (expect-metric-delta bind_event 96)
+    (expect-metric-delta bind_event 0)
     (expect-metric-delta rows_reused 52)
     (expect-value (label "D2") "2500")
     (expect-value (label "D8") "1127.5")
