@@ -51,9 +51,37 @@ python3 scripts/test.py roc-check
 python3 scripts/test.py roc-test
 python3 scripts/test.py wasm
 python3 scripts/test.py native --native always
+python3 scripts/test.py fault --native always
 python3 scripts/test.py bundle --bundle always
 python3 scripts/test.py bench --native always
 ```
+
+`fault` is the slower deterministic host-allocation campaign. It first runs
+the focused native SCM fixtures normally to record their runtime host allocation
+counts, then runs each allocation coordinate as an isolated process through the same
+`--jobs` worker pool used by native specs.
+
+Ordinary SCM execution and the `native` suite do not enable fault sweeping:
+fast semantic feedback is the default for application authors. The sweep is an
+explicit `fault` suite, while this repository's full `all` suite and CI include
+it for a deliberately small set of platform-owned fixtures. Application
+projects can opt selected cases into an explicit fault run when their graph or
+lifecycle shape warrants the additional coverage. Fault injection does not add
+syntax or behavior to the `.scm` case itself, and it is deliberately not part
+of `zig build test`.
+
+To replay a reported coordinate directly, copy the command printed after
+`replay:`. The worker interface is:
+
+```sh
+app --run-spec-json --fail-on-allocation 7 path/to/case.scm
+```
+
+Roc allocations and host allocations inside a Roc callback are reported as
+skipped because the current ABI cannot return OOM from that boundary. Other
+selected allocations must either be absorbed by the allocator, or refuse and
+retry successfully without partial publication. Roc-allocator and
+fatal-boundary campaigns are tracked separately.
 
 Use `--keep-output` when debugging generated artifacts under `.test-out/`.
 
@@ -146,6 +174,111 @@ the native spec runner, the simulated DOM, allocation diagnostics, or host
 runtime behavior. The coverage job is intentionally separate from
 `python3 scripts/test.py` because kcov is slower and mainly useful when
 investigating test gaps.
+
+## Known-failure ratchet
+
+The example spec suites run to completion - every wasm mount and every native
+spec, each in its own process - and the run is judged at the end against
+`test/known-failures.txt`, the list of specs currently expected to fail:
+
+- a failure that is not listed is a regression and fails the run;
+- a listed spec that now passes also fails the run, until its line is removed;
+- `python3 scripts/test.py ... --update-known-failures` removes the lines that
+  passed. It never adds one.
+
+So the list only shrinks by fixing things. Accepting a new failure means adding
+its line by hand with a comment saying why, where a reviewer will see it. Keys
+are `native <example>/<spec>.scm` and `wasm <example>`; filters and shards only
+judge the specs that actually ran. `--fail-fast` still stops at the first
+failing example when you want a quick signal.
+
+## Fuzzing
+
+Fuzz targets live in `test/fuzzing/`, one file per target, and are built through
+[zig-afl-kit](https://github.com/bhansconnect/zig-afl-kit) against a system
+AFL++.
+
+Most of them are not byte fuzzers. The engine is a deterministic state machine
+whose interesting failures come from *sequences* of individually reasonable
+operations, so those targets decode the fuzzer's bytes into a valid program - a
+signal graph, a run of source updates, a list of keyed-row edits - and then check
+the engine against a deliberately slow reference model that recomputes
+everything from scratch. Random bytes fed directly to the engine would be
+rejected at the boundary long before reaching the behavior worth testing.
+
+| Target | Shape | What it checks |
+| --- | --- | --- |
+| `propagation` | generated DAG plus update sequence | dependency order, glitch freedom, equality cutoffs, diamond deduplication, one evaluation per node per generation |
+| `keyed-scopes` | generated row edits and branch flips | key identity across insert/remove/reorder, scope retirement, reuse barriers, complete disposal |
+| `structural` | generated initial root of sibling and nested `each` sites, mounted through the native host with allocation failure injected at a chosen or every preparation attempt | published topology matches the model, nothing published after a refusal, retry on the same engine succeeds, commit and teardown never allocate |
+| `ownership` | generated capability and value routing | retained-value and callable ownership balance, rejection of mismatched routing |
+| `boundary` | raw bytes | schema and extraction-plan parsing: truncation, trailing bytes, invalid UTF-8, duplicate fields |
+
+The engine-driving targets reach the engine through `native_host.fuzz_fixtures`,
+the same fixture kit the native host tests use. The fuzz build compiles the
+native host with the `fuzz_fixtures` build option so that test-only machinery
+is available outside `zig test`.
+
+`python3 scripts/fuzz.py` drives all of this. It owns the target list, the
+corpus layout, the AFL++ environment variables, and crash triage, so none of
+that has to be remembered or retyped:
+
+```sh
+python3 scripts/fuzz.py list
+python3 scripts/fuzz.py run propagation --time 10m
+python3 scripts/fuzz.py run all --time 5m -j 4
+python3 scripts/fuzz.py status
+```
+
+`run` rebuilds first, seeds an empty corpus, fuzzes, and then prints throughput,
+edge count, stability, and any saved crash inputs. It exits non-zero when a crash
+was saved. Corpora persist under `.fuzz-out/<target>/corpus`, because inputs
+AFL++ found interesting last time are the cheapest way back into deep engine
+states; `--resume` continues a previous session, and `clean` discards both.
+
+Watch `stability`, which should sit near 100%. A lower number means the target is
+not deterministic for a fixed input, which breaks the reference-model comparison
+and must be fixed before any crash it reports can be trusted.
+
+### Prerequisites
+
+Fuzzing needs AFL++ on `PATH`:
+
+```sh
+sudo apt install afl++   # or: brew install afl++
+```
+
+Without it, the build still succeeds and produces the repro executables only, so
+a crash found on a fuzzing machine stays reproducible everywhere:
+
+```sh
+python3 scripts/fuzz.py build --no-afl
+```
+
+The underlying build steps are `zig build build-fuzz` for the repro executables
+and `zig build build-fuzz -Dfuzz` to also link the AFL++ persistent-mode
+executables.
+
+### Reproducing a crash
+
+`status` lists saved crash inputs and the command to replay each one. The repro
+executables need no AFL++ and print the generated program and the operation
+sequence that led to the failure:
+
+```sh
+python3 scripts/fuzz.py repro propagation .fuzz-out/propagation/out/primary/crashes/<file> --verbose
+```
+
+Shrink a large input first:
+
+```sh
+python3 scripts/fuzz.py minimize propagation <crash-file>
+```
+
+Then turn the minimized case into a focused Zig test beside the seam it broke,
+or a native semantic spec if the failure is application-visible, and fix the
+engine. The crash file itself is not the regression test; a fuzzer finding is
+only finished once the invariant it violated is asserted somewhere permanent.
 
 ## Bundles
 

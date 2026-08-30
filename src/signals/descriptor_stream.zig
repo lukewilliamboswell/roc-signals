@@ -15,6 +15,10 @@ pub const ElemId = ids.ElemId;
 pub const ScopeId = ids.ScopeId;
 pub const SiteOrdinal = ids.SiteOrdinal;
 
+/// Errors a stream reservation can raise: the allocator refused (`OutOfMemory`) or an
+/// index/count computation exceeded its arithmetic bound (`ResourceLimit`).
+pub const ReserveError = std.mem.Allocator.Error || error{ResourceLimit};
+
 pub const TextField = render.TextField;
 pub const BoolField = render.BoolField;
 pub const EventKind = render.EventKind;
@@ -637,7 +641,7 @@ pub const Stream = struct {
 
     /// Reserves every outer destination touched when moving a materialized
     /// replacement stream into this stream. Logical lengths remain unchanged.
-    pub fn reserveMovedStreamPublication(self: *Stream, allocator: std.mem.Allocator, replacement: *const Stream) std.mem.Allocator.Error!void {
+    pub fn reserveMovedStreamPublication(self: *Stream, allocator: std.mem.Allocator, replacement: *const Stream) ReserveError!void {
         try self.render_nodes.ensureUnusedCapacity(allocator, replacement.render_nodes.items.len);
         try self.elements.ensureUnusedCapacity(allocator, replacement.elements.items.len);
         try self.text_nodes.ensureUnusedCapacity(allocator, replacement.text_nodes.items.len);
@@ -661,10 +665,10 @@ pub const Stream = struct {
         try self.eaches.ensureUnusedCapacity(allocator, replacement.eaches.items.len);
         try self.signal_records_by_token.ensureUnusedCapacity(allocator, @intCast(replacement.signal_records_by_token.count()));
         try self.signal_record_descriptor_uses_by_token.ensureUnusedCapacity(allocator, @intCast(replacement.signal_record_descriptor_uses_by_token.count()));
-        var custom_attrs = std.math.add(usize, replacement.static_custom_text_attrs.items.len, replacement.signal_custom_text_attrs.items.len) catch return error.OutOfMemory;
-        custom_attrs = std.math.add(usize, custom_attrs, replacement.signal_optional_custom_text_attrs.items.len) catch return error.OutOfMemory;
-        custom_attrs = std.math.add(usize, custom_attrs, replacement.static_custom_bool_attrs.items.len) catch return error.OutOfMemory;
-        custom_attrs = std.math.add(usize, custom_attrs, replacement.signal_custom_bool_attrs.items.len) catch return error.OutOfMemory;
+        var custom_attrs = std.math.add(usize, replacement.static_custom_text_attrs.items.len, replacement.signal_custom_text_attrs.items.len) catch return error.ResourceLimit;
+        custom_attrs = std.math.add(usize, custom_attrs, replacement.signal_optional_custom_text_attrs.items.len) catch return error.ResourceLimit;
+        custom_attrs = std.math.add(usize, custom_attrs, replacement.static_custom_bool_attrs.items.len) catch return error.ResourceLimit;
+        custom_attrs = std.math.add(usize, custom_attrs, replacement.signal_custom_bool_attrs.items.len) catch return error.ResourceLimit;
         try self.custom_attr_keys.ensureUnusedCapacity(allocator, @intCast(custom_attrs));
         for (replacement.custom_attr_indices_by_elem_id.items, 0..) |indexes, elem_id| {
             if (indexes.items.len != 0) try self.reservePreparedCustomAttrElem(allocator, elem_id, indexes.items.len);
@@ -676,13 +680,13 @@ pub const Stream = struct {
 
         var highest_elem_id: usize = 0;
         for (replacement.render_nodes.items) |node| highest_elem_id = @max(highest_elem_id, node.elem_id.index());
-        const elem_index_len = std.math.add(usize, highest_elem_id, 1) catch return error.OutOfMemory;
+        const elem_index_len = std.math.add(usize, highest_elem_id, 1) catch return error.ResourceLimit;
         try self.descriptor_indexes_by_elem_id.ensureTotalCapacity(allocator, elem_index_len);
         try self.named_event_indices_by_elem_id.ensureTotalCapacity(allocator, elem_index_len);
 
         var highest_node_id: usize = 0;
         for (replacement.scope_sites.items) |site| highest_node_id = @max(highest_node_id, site.node_id.index());
-        const node_index_len = if (replacement.scope_sites.items.len == 0) self.descriptor_indexes_by_node_id.items.len else std.math.add(usize, highest_node_id, 1) catch return error.OutOfMemory;
+        const node_index_len = if (replacement.scope_sites.items.len == 0) self.descriptor_indexes_by_node_id.items.len else std.math.add(usize, highest_node_id, 1) catch return error.ResourceLimit;
         try self.descriptor_indexes_by_node_id.ensureTotalCapacity(allocator, node_index_len);
 
         for (replacement.named_event_indices_by_elem_id.items, 0..) |replacement_indexes, elem_id| {
@@ -712,7 +716,7 @@ pub const Stream = struct {
         state_count: usize,
         when_count: usize,
         each_count: usize,
-    ) std.mem.Allocator.Error!void {
+    ) ReserveError!void {
         try self.elements.ensureUnusedCapacity(allocator, element_count);
         try self.text_nodes.ensureUnusedCapacity(allocator, text_count);
         try self.static_text_attrs.ensureUnusedCapacity(allocator, static_text_count);
@@ -723,8 +727,8 @@ pub const Stream = struct {
         try self.reservePreparedSignalRecordPublication(allocator, signal_record_count);
         try self.events.ensureUnusedCapacity(allocator, event_count);
         var highest_elem_id: usize = 0;
-        for (removed_elem_ids) |elem_id| highest_elem_id = @max(highest_elem_id, std.math.cast(usize, elem_id) orelse return error.OutOfMemory);
-        const index_len = if (removed_elem_ids.len == 0) 0 else std.math.add(usize, highest_elem_id, 1) catch return error.OutOfMemory;
+        for (removed_elem_ids) |elem_id| highest_elem_id = @max(highest_elem_id, std.math.cast(usize, elem_id) orelse return error.ResourceLimit);
+        const index_len = if (removed_elem_ids.len == 0) 0 else std.math.add(usize, highest_elem_id, 1) catch return error.ResourceLimit;
         try self.descriptor_indexes_by_elem_id.ensureTotalCapacity(allocator, index_len);
         try self.named_event_indices_by_elem_id.ensureTotalCapacity(allocator, index_len);
         while (self.descriptor_indexes_by_elem_id.items.len < index_len) self.descriptor_indexes_by_elem_id.appendAssumeCapacity(.{});
@@ -738,7 +742,7 @@ pub const Stream = struct {
         try self.eaches.ensureUnusedCapacity(allocator, each_count);
         var highest_node_id: usize = 0;
         for (scope_site_indexes) |index| highest_node_id = @max(highest_node_id, source.scope_sites.items[index].node_id.index());
-        const node_index_len = if (scope_site_indexes.len == 0) 0 else std.math.add(usize, highest_node_id, 1) catch return error.OutOfMemory;
+        const node_index_len = if (scope_site_indexes.len == 0) 0 else std.math.add(usize, highest_node_id, 1) catch return error.ResourceLimit;
         try self.descriptor_indexes_by_node_id.ensureTotalCapacity(allocator, node_index_len);
         while (self.descriptor_indexes_by_node_id.items.len < node_index_len) self.descriptor_indexes_by_node_id.appendAssumeCapacity(.{});
     }
@@ -755,20 +759,20 @@ pub const Stream = struct {
         optional_text_count: usize,
         static_bool_count: usize,
         signal_bool_count: usize,
-    ) std.mem.Allocator.Error!void {
+    ) ReserveError!void {
         try self.static_custom_text_attrs.ensureUnusedCapacity(allocator, static_text_count);
         try self.signal_custom_text_attrs.ensureUnusedCapacity(allocator, signal_text_count);
         try self.signal_optional_custom_text_attrs.ensureUnusedCapacity(allocator, optional_text_count);
         try self.static_custom_bool_attrs.ensureUnusedCapacity(allocator, static_bool_count);
         try self.signal_custom_bool_attrs.ensureUnusedCapacity(allocator, signal_bool_count);
-        const signal_count = std.math.add(usize, signal_text_count, optional_text_count) catch return error.OutOfMemory;
-        const all_signal_count = std.math.add(usize, signal_count, signal_bool_count) catch return error.OutOfMemory;
+        const signal_count = std.math.add(usize, signal_text_count, optional_text_count) catch return error.ResourceLimit;
+        const all_signal_count = std.math.add(usize, signal_count, signal_bool_count) catch return error.ResourceLimit;
         try self.reservePreparedSignalRecordPublication(allocator, all_signal_count);
-        const total_text = std.math.add(usize, static_text_count, signal_text_count) catch return error.OutOfMemory;
-        const total_optional = std.math.add(usize, total_text, optional_text_count) catch return error.OutOfMemory;
-        const total_bool = std.math.add(usize, total_optional, static_bool_count) catch return error.OutOfMemory;
-        const total = std.math.add(usize, total_bool, signal_bool_count) catch return error.OutOfMemory;
-        try self.custom_attr_keys.ensureUnusedCapacity(allocator, std.math.cast(u32, total) orelse return error.OutOfMemory);
+        const total_text = std.math.add(usize, static_text_count, signal_text_count) catch return error.ResourceLimit;
+        const total_optional = std.math.add(usize, total_text, optional_text_count) catch return error.ResourceLimit;
+        const total_bool = std.math.add(usize, total_optional, static_bool_count) catch return error.ResourceLimit;
+        const total = std.math.add(usize, total_bool, signal_bool_count) catch return error.ResourceLimit;
+        try self.custom_attr_keys.ensureUnusedCapacity(allocator, std.math.cast(u32, total) orelse return error.ResourceLimit);
         for (removed_elem_ids) |elem_id| {
             try self.reservePreparedCustomAttrElem(allocator, elem_id, source.customAttrIndices(ElemId.fromRaw(elem_id)).len);
         }
@@ -831,7 +835,7 @@ pub const Stream = struct {
     }
 
     /// Reserves ownership for lifecycle descriptors retired by a structural transaction.
-    pub fn reserveRetiredLifecyclePublication(self: *Stream, allocator: std.mem.Allocator, source: *const Stream, target_scope_ids: []const ScopeId, on_change_count: usize, mount_count: usize, cleanup_count: usize) std.mem.Allocator.Error!void {
+    pub fn reserveRetiredLifecyclePublication(self: *Stream, allocator: std.mem.Allocator, source: *const Stream, target_scope_ids: []const ScopeId, on_change_count: usize, mount_count: usize, cleanup_count: usize) ReserveError!void {
         try self.on_changes.ensureUnusedCapacity(allocator, on_change_count);
         try self.mounts.ensureUnusedCapacity(allocator, mount_count);
         try self.cleanups.ensureUnusedCapacity(allocator, cleanup_count);
@@ -1848,16 +1852,16 @@ pub const Stream = struct {
     /// Reserves every container touched by a batch of prepared static nodes.
     /// Logical stream state is unchanged; callers may then prepare strings and
     /// publish the whole batch without allocating during publication.
-    pub fn reservePreparedStaticNodes(self: *Stream, allocator: std.mem.Allocator, additional: usize, highest_elem_id: u64) std.mem.Allocator.Error!void {
+    pub fn reservePreparedStaticNodes(self: *Stream, allocator: std.mem.Allocator, additional: usize, highest_elem_id: u64) ReserveError!void {
         try self.render_nodes.ensureUnusedCapacity(allocator, additional);
         try self.elements.ensureUnusedCapacity(allocator, additional);
         try self.text_nodes.ensureUnusedCapacity(allocator, additional);
-        const highest_index = std.math.cast(usize, highest_elem_id) orelse return error.OutOfMemory;
-        const descriptor_len = std.math.add(usize, highest_index, 1) catch return error.OutOfMemory;
+        const highest_index = std.math.cast(usize, highest_elem_id) orelse return error.ResourceLimit;
+        const descriptor_len = std.math.add(usize, highest_index, 1) catch return error.ResourceLimit;
         if (descriptor_len > self.descriptor_indexes_by_elem_id.items.len) {
             try self.descriptor_indexes_by_elem_id.ensureTotalCapacity(allocator, descriptor_len);
         }
-        const metadata_entries = std.math.mul(usize, additional, 2) catch return error.OutOfMemory;
+        const metadata_entries = std.math.mul(usize, additional, 2) catch return error.ResourceLimit;
         try self.render_metadata_by_elem_id.ensureUnusedCapacity(allocator, @intCast(metadata_entries));
     }
 
@@ -1980,10 +1984,10 @@ pub const Stream = struct {
     };
 
     /// Reserves keyed-list descriptor and node-index storage for allocation-free publication.
-    pub fn reservePreparedEaches(self: *Stream, allocator: std.mem.Allocator, additional: usize, highest_node_id: u64) std.mem.Allocator.Error!void {
+    pub fn reservePreparedEaches(self: *Stream, allocator: std.mem.Allocator, additional: usize, highest_node_id: u64) ReserveError!void {
         try self.eaches.ensureUnusedCapacity(allocator, additional);
-        const highest_index = std.math.cast(usize, highest_node_id) orelse return error.OutOfMemory;
-        const descriptor_len = std.math.add(usize, highest_index, 1) catch return error.OutOfMemory;
+        const highest_index = std.math.cast(usize, highest_node_id) orelse return error.ResourceLimit;
+        const descriptor_len = std.math.add(usize, highest_index, 1) catch return error.ResourceLimit;
         if (descriptor_len > self.descriptor_indexes_by_node_id.items.len) try self.descriptor_indexes_by_node_id.ensureTotalCapacity(allocator, descriptor_len);
     }
 
@@ -2006,10 +2010,10 @@ pub const Stream = struct {
     }
 
     /// Maintains reserve prepared whens within the indexed descriptor stream used by both hosts.
-    pub fn reservePreparedWhens(self: *Stream, allocator: std.mem.Allocator, additional: usize, highest_node_id: u64) std.mem.Allocator.Error!void {
+    pub fn reservePreparedWhens(self: *Stream, allocator: std.mem.Allocator, additional: usize, highest_node_id: u64) ReserveError!void {
         try self.whens.ensureUnusedCapacity(allocator, additional);
-        const highest_index = std.math.cast(usize, highest_node_id) orelse return error.OutOfMemory;
-        const descriptor_len = std.math.add(usize, highest_index, 1) catch return error.OutOfMemory;
+        const highest_index = std.math.cast(usize, highest_node_id) orelse return error.ResourceLimit;
+        const descriptor_len = std.math.add(usize, highest_index, 1) catch return error.ResourceLimit;
         if (descriptor_len > self.descriptor_indexes_by_node_id.items.len) try self.descriptor_indexes_by_node_id.ensureTotalCapacity(allocator, descriptor_len);
     }
 
@@ -2037,11 +2041,11 @@ pub const Stream = struct {
     }
 
     /// Maintains reserve prepared state sites within the indexed descriptor stream used by both hosts.
-    pub fn reservePreparedStateSites(self: *Stream, allocator: std.mem.Allocator, additional: usize, highest_node_id: u64) std.mem.Allocator.Error!void {
+    pub fn reservePreparedStateSites(self: *Stream, allocator: std.mem.Allocator, additional: usize, highest_node_id: u64) ReserveError!void {
         try self.scope_sites.ensureUnusedCapacity(allocator, additional);
         try self.states.ensureUnusedCapacity(allocator, additional);
-        const highest_index = std.math.cast(usize, highest_node_id) orelse return error.OutOfMemory;
-        const descriptor_len = std.math.add(usize, highest_index, 1) catch return error.OutOfMemory;
+        const highest_index = std.math.cast(usize, highest_node_id) orelse return error.ResourceLimit;
+        const descriptor_len = std.math.add(usize, highest_index, 1) catch return error.ResourceLimit;
         if (descriptor_len > self.descriptor_indexes_by_node_id.items.len) try self.descriptor_indexes_by_node_id.ensureTotalCapacity(allocator, descriptor_len);
     }
 
@@ -2092,10 +2096,10 @@ pub const Stream = struct {
     }
 
     /// Maintains reserve prepared events within the indexed descriptor stream used by both hosts.
-    pub fn reservePreparedEvents(self: *Stream, allocator: std.mem.Allocator, additional: usize, highest_elem_id: u64) std.mem.Allocator.Error!void {
+    pub fn reservePreparedEvents(self: *Stream, allocator: std.mem.Allocator, additional: usize, highest_elem_id: u64) ReserveError!void {
         try self.events.ensureUnusedCapacity(allocator, additional);
-        const highest_index = std.math.cast(usize, highest_elem_id) orelse return error.OutOfMemory;
-        const descriptor_len = std.math.add(usize, highest_index, 1) catch return error.OutOfMemory;
+        const highest_index = std.math.cast(usize, highest_elem_id) orelse return error.ResourceLimit;
+        const descriptor_len = std.math.add(usize, highest_index, 1) catch return error.ResourceLimit;
         if (descriptor_len > self.descriptor_indexes_by_elem_id.items.len) try self.descriptor_indexes_by_elem_id.ensureTotalCapacity(allocator, descriptor_len);
         if (descriptor_len > self.named_event_indices_by_elem_id.items.len) try self.named_event_indices_by_elem_id.ensureTotalCapacity(allocator, descriptor_len);
     }
@@ -2106,10 +2110,10 @@ pub const Stream = struct {
     }
 
     /// Maintains reserve existing named event indexes within the indexed descriptor stream used by both hosts.
-    pub fn reserveExistingNamedEventIndexes(self: *Stream, allocator: std.mem.Allocator, elem_id: u64, additional: usize) std.mem.Allocator.Error!void {
+    pub fn reserveExistingNamedEventIndexes(self: *Stream, allocator: std.mem.Allocator, elem_id: u64, additional: usize) ReserveError!void {
         if (!self.namedEventIndexSlotExists(elem_id)) return;
         const slot = &self.named_event_indices_by_elem_id.items[@intCast(elem_id)];
-        const total = std.math.add(usize, slot.items.len, additional) catch return error.OutOfMemory;
+        const total = std.math.add(usize, slot.items.len, additional) catch return error.ResourceLimit;
         try slot.ensureTotalCapacity(allocator, total);
     }
 
@@ -2140,24 +2144,24 @@ pub const Stream = struct {
     }
 
     /// Maintains reserve prepared signal text nodes within the indexed descriptor stream used by both hosts.
-    pub fn reservePreparedSignalTextNodes(self: *Stream, allocator: std.mem.Allocator, additional: usize, highest_elem_id: u64) std.mem.Allocator.Error!void {
+    pub fn reservePreparedSignalTextNodes(self: *Stream, allocator: std.mem.Allocator, additional: usize, highest_elem_id: u64) ReserveError!void {
         try self.render_nodes.ensureUnusedCapacity(allocator, additional);
         try self.signal_text_nodes.ensureUnusedCapacity(allocator, additional);
-        const highest_index = std.math.cast(usize, highest_elem_id) orelse return error.OutOfMemory;
-        const descriptor_len = std.math.add(usize, highest_index, 1) catch return error.OutOfMemory;
+        const highest_index = std.math.cast(usize, highest_elem_id) orelse return error.ResourceLimit;
+        const descriptor_len = std.math.add(usize, highest_index, 1) catch return error.ResourceLimit;
         if (descriptor_len > self.descriptor_indexes_by_elem_id.items.len) try self.descriptor_indexes_by_elem_id.ensureTotalCapacity(allocator, descriptor_len);
-        const metadata_entries = std.math.mul(usize, additional, 2) catch return error.OutOfMemory;
+        const metadata_entries = std.math.mul(usize, additional, 2) catch return error.ResourceLimit;
         try self.render_metadata_by_elem_id.ensureUnusedCapacity(allocator, @intCast(metadata_entries));
     }
 
     /// Maintains reserve prepared signal attrs within the indexed descriptor stream used by both hosts.
-    pub fn reservePreparedSignalAttrs(self: *Stream, allocator: std.mem.Allocator, additional: usize, highest_elem_id: u64) std.mem.Allocator.Error!void {
+    pub fn reservePreparedSignalAttrs(self: *Stream, allocator: std.mem.Allocator, additional: usize, highest_elem_id: u64) ReserveError!void {
         try self.signal_text_attrs.ensureUnusedCapacity(allocator, additional);
         try self.signal_bool_attrs.ensureUnusedCapacity(allocator, additional);
         try self.signal_custom_text_attrs.ensureUnusedCapacity(allocator, additional);
         try self.signal_optional_custom_text_attrs.ensureUnusedCapacity(allocator, additional);
         try self.signal_custom_bool_attrs.ensureUnusedCapacity(allocator, additional);
-        const descriptor_len = std.math.add(usize, @as(usize, @intCast(highest_elem_id)), 1) catch return error.OutOfMemory;
+        const descriptor_len = std.math.add(usize, @as(usize, @intCast(highest_elem_id)), 1) catch return error.ResourceLimit;
         if (descriptor_len > self.descriptor_indexes_by_elem_id.items.len) {
             try self.descriptor_indexes_by_elem_id.ensureTotalCapacity(allocator, descriptor_len);
         }
@@ -2254,7 +2258,7 @@ pub const Stream = struct {
     }
 
     /// Reserves authoritative custom descriptor index publication.
-    pub fn reservePreparedCustomAttrIndex(self: *Stream, allocator: std.mem.Allocator, additional: usize) std.mem.Allocator.Error!void {
+    pub fn reservePreparedCustomAttrIndex(self: *Stream, allocator: std.mem.Allocator, additional: usize) ReserveError!void {
         try tryActivateCustomAttrIndex(Stream, self, allocator);
         try self.custom_attr_keys.ensureUnusedCapacity(allocator, @intCast(additional));
     }
@@ -2262,10 +2266,10 @@ pub const Stream = struct {
     /// Reserves a conservative number of ownership entries for one element without changing
     /// the committed index if allocation fails. Callers may reserve the whole transaction's
     /// custom-attribute bound when its exact per-element distribution is not yet known.
-    pub fn reservePreparedCustomAttrElem(self: *Stream, allocator: std.mem.Allocator, elem_id: u64, additional: usize) std.mem.Allocator.Error!void {
+    pub fn reservePreparedCustomAttrElem(self: *Stream, allocator: std.mem.Allocator, elem_id: u64, additional: usize) ReserveError!void {
         if (additional == 0) return;
-        const elem_index = std.math.cast(usize, elem_id) orelse return error.OutOfMemory;
-        const required = std.math.add(usize, elem_index, 1) catch return error.OutOfMemory;
+        const elem_index = std.math.cast(usize, elem_id) orelse return error.ResourceLimit;
+        const required = std.math.add(usize, elem_index, 1) catch return error.ResourceLimit;
         if (elem_index < self.custom_attr_indices_by_elem_id.items.len) {
             try self.custom_attr_indices_by_elem_id.items[elem_index].ensureUnusedCapacity(allocator, additional);
             return;
@@ -2312,8 +2316,8 @@ pub const Stream = struct {
         }
     }
 
-    fn prepareStaticNode(self: *Stream, allocator: std.mem.Allocator, elem_id: ElemId, parent_elem_id: ElemId, scope_id: ScopeId, text: []const u8, kind: RenderNodeKind) std.mem.Allocator.Error!PreparedStaticNode {
-        _ = std.math.add(u64, self.next_elem_id, 1) catch return error.OutOfMemory;
+    fn prepareStaticNode(self: *Stream, allocator: std.mem.Allocator, elem_id: ElemId, parent_elem_id: ElemId, scope_id: ScopeId, text: []const u8, kind: RenderNodeKind) ReserveError!PreparedStaticNode {
+        _ = std.math.add(u64, self.next_elem_id, 1) catch return error.ResourceLimit;
         const copy = try allocator.dupe(u8, text);
         errdefer allocator.free(copy);
         try self.render_nodes.ensureUnusedCapacity(allocator, 1);
@@ -2322,7 +2326,7 @@ pub const Stream = struct {
             .text => try self.text_nodes.ensureUnusedCapacity(allocator, 1),
             .signal_text => unreachable,
         }
-        const descriptor_len = std.math.add(usize, elem_id.index(), 1) catch return error.OutOfMemory;
+        const descriptor_len = std.math.add(usize, elem_id.index(), 1) catch return error.ResourceLimit;
         if (descriptor_len > self.descriptor_indexes_by_elem_id.items.len) {
             try self.descriptor_indexes_by_elem_id.ensureTotalCapacity(allocator, descriptor_len);
         }
@@ -2335,12 +2339,12 @@ pub const Stream = struct {
     }
 
     /// Maintains prepare element within the indexed descriptor stream used by both hosts.
-    pub fn prepareElement(self: *Stream, allocator: std.mem.Allocator, elem_id: ElemId, parent_elem_id: ElemId, scope_id: ScopeId, tag: []const u8) std.mem.Allocator.Error!PreparedStaticNode {
+    pub fn prepareElement(self: *Stream, allocator: std.mem.Allocator, elem_id: ElemId, parent_elem_id: ElemId, scope_id: ScopeId, tag: []const u8) ReserveError!PreparedStaticNode {
         return self.prepareStaticNode(allocator, elem_id, parent_elem_id, scope_id, tag, .element);
     }
 
     /// Maintains prepare text node within the indexed descriptor stream used by both hosts.
-    pub fn prepareTextNode(self: *Stream, allocator: std.mem.Allocator, elem_id: ElemId, parent_elem_id: ElemId, scope_id: ScopeId, value: []const u8) std.mem.Allocator.Error!PreparedStaticNode {
+    pub fn prepareTextNode(self: *Stream, allocator: std.mem.Allocator, elem_id: ElemId, parent_elem_id: ElemId, scope_id: ScopeId, value: []const u8) ReserveError!PreparedStaticNode {
         return self.prepareStaticNode(allocator, elem_id, parent_elem_id, scope_id, value, .text);
     }
 
@@ -2671,14 +2675,14 @@ pub const Stream = struct {
     }
 
     /// Reserves lifecycle ownership entries for a scope without changing its logical index on failure.
-    pub fn reserveLifecycleScope(self: *Stream, allocator: std.mem.Allocator, scope_id: ScopeId, additional: usize) std.mem.Allocator.Error!void {
+    pub fn reserveLifecycleScope(self: *Stream, allocator: std.mem.Allocator, scope_id: ScopeId, additional: usize) ReserveError!void {
         if (additional == 0) return;
         const scope_index = scope_id.index();
         if (scope_index < self.lifecycle_indices_by_scope_id.items.len) {
             try self.lifecycle_indices_by_scope_id.items[scope_index].ensureUnusedCapacity(allocator, additional);
             return;
         }
-        const required = std.math.add(usize, scope_index, 1) catch return error.OutOfMemory;
+        const required = std.math.add(usize, scope_index, 1) catch return error.ResourceLimit;
         var prepared: std.ArrayListUnmanaged(LifecycleDescriptorIndex) = .empty;
         errdefer prepared.deinit(allocator);
         try prepared.ensureUnusedCapacity(allocator, additional);
@@ -2771,7 +2775,10 @@ pub const Stream = struct {
     /// Appends on change using capacity that must already satisfy the caller's transaction contract.
     pub fn appendOnChange(self: *Stream, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, scope_id: ScopeId, signal: HostSignalBinding, to_cmd: roles.CommandBuilder, run_initial: bool, run_initial_pending: bool) void {
         self.on_changes.ensureUnusedCapacity(allocator, 1) catch @panic("out of memory");
-        self.reserveLifecycleScope(allocator, scope_id, 1) catch @panic("out of memory");
+        self.reserveLifecycleScope(allocator, scope_id, 1) catch |err| switch (err) {
+            error.OutOfMemory => @panic("out of memory"),
+            error.ResourceLimit => @panic("lifecycle scope index exceeded its bound"),
+        };
         self.rememberSignalRecordTree(allocator, signal.record);
         abi.increfErasedCallable(to_cmd.toAbi(), 1);
         metrics.bump(.closure_retains, 1);
@@ -2791,7 +2798,10 @@ pub const Stream = struct {
     /// Appends mount using capacity that must already satisfy the caller's transaction contract.
     pub fn appendMount(self: *Stream, allocator: std.mem.Allocator, roc_host: *abi.RocHost, metrics: anytype, scope_id: ScopeId, to_cmd: roles.CommandBuilder, run_on_mount: bool) void {
         self.mounts.ensureUnusedCapacity(allocator, 1) catch @panic("out of memory");
-        self.reserveLifecycleScope(allocator, scope_id, 1) catch @panic("out of memory");
+        self.reserveLifecycleScope(allocator, scope_id, 1) catch |err| switch (err) {
+            error.OutOfMemory => @panic("out of memory"),
+            error.ResourceLimit => @panic("lifecycle scope index exceeded its bound"),
+        };
         abi.increfErasedCallable(to_cmd.toAbi(), 1);
         metrics.bump(.closure_retains, 1);
         const index = self.mounts.items.len;
@@ -3745,12 +3755,15 @@ pub fn customAttrDescriptorExists(comptime StreamType: type, stream: *const Stre
 
 fn customAttrDescriptorExistsForAppend(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, elem_id: u64, name: []const u8) bool {
     if (@hasField(StreamType, "custom_attr_keys")) {
-        tryActivateCustomAttrIndex(StreamType, stream, allocator) catch @panic("out of memory");
+        tryActivateCustomAttrIndex(StreamType, stream, allocator) catch |err| switch (err) {
+            error.OutOfMemory => @panic("out of memory"),
+            error.ResourceLimit => @panic("custom attr index exceeded its bound"),
+        };
     }
     return customAttrDescriptorExists(StreamType, stream, ElemId.fromRaw(elem_id), name);
 }
 
-fn tryActivateCustomAttrIndex(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator) std.mem.Allocator.Error!void {
+fn tryActivateCustomAttrIndex(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator) ReserveError!void {
     if (!@hasField(StreamType, "custom_attr_keys") or stream.custom_attr_index_active) return;
     const attr_count = stream.static_custom_text_attrs.items.len +
         stream.signal_custom_text_attrs.items.len +
@@ -3759,8 +3772,8 @@ fn tryActivateCustomAttrIndex(comptime StreamType: type, stream: *StreamType, al
         stream.signal_custom_bool_attrs.items.len;
     var keys: CustomAttrKeySet = .empty;
     errdefer keys.deinit(allocator);
-    const key_capacity = std.math.add(usize, attr_count, 1) catch return error.OutOfMemory;
-    try keys.ensureTotalCapacity(allocator, std.math.cast(u32, key_capacity) orelse return error.OutOfMemory);
+    const key_capacity = std.math.add(usize, attr_count, 1) catch return error.ResourceLimit;
+    try keys.ensureTotalCapacity(allocator, std.math.cast(u32, key_capacity) orelse return error.ResourceLimit);
     var by_elem: std.ArrayListUnmanaged(std.ArrayListUnmanaged(CustomAttrDescriptorIndex)) = .empty;
     errdefer {
         for (by_elem.items) |*indexes| indexes.deinit(allocator);
@@ -3769,7 +3782,7 @@ fn tryActivateCustomAttrIndex(comptime StreamType: type, stream: *StreamType, al
     var attrs = customAttrRefs(StreamType, stream);
     while (attrs.next()) |attr| {
         const elem_index = attr.elem_id.index();
-        const required = std.math.add(usize, elem_index, 1) catch return error.OutOfMemory;
+        const required = std.math.add(usize, elem_index, 1) catch return error.ResourceLimit;
         try by_elem.ensureTotalCapacity(allocator, required);
         while (by_elem.items.len < required) by_elem.appendAssumeCapacity(.empty);
         const descriptor_index = CustomAttrDescriptorIndex{ .kind = attr.kind, .index = attr.index };
@@ -3786,12 +3799,12 @@ fn tryActivateCustomAttrIndex(comptime StreamType: type, stream: *StreamType, al
     stream.custom_attr_index_active = true;
 }
 
-fn reserveCustomAttrIndexEntry(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, elem_id: u64) std.mem.Allocator.Error!void {
+fn reserveCustomAttrIndexEntry(comptime StreamType: type, stream: *StreamType, allocator: std.mem.Allocator, elem_id: u64) ReserveError!void {
     if (!@hasField(StreamType, "custom_attr_keys")) return;
     if (!stream.custom_attr_index_active) return;
     try stream.custom_attr_keys.ensureUnusedCapacity(allocator, 1);
-    const elem_index = std.math.cast(usize, elem_id) orelse return error.OutOfMemory;
-    const required = std.math.add(usize, elem_index, 1) catch return error.OutOfMemory;
+    const elem_index = std.math.cast(usize, elem_id) orelse return error.ResourceLimit;
+    const required = std.math.add(usize, elem_index, 1) catch return error.ResourceLimit;
     try stream.custom_attr_indices_by_elem_id.ensureTotalCapacity(allocator, required);
     while (stream.custom_attr_indices_by_elem_id.items.len < required) stream.custom_attr_indices_by_elem_id.appendAssumeCapacity(.empty);
     try stream.custom_attr_indices_by_elem_id.items[elem_index].ensureUnusedCapacity(allocator, 1);

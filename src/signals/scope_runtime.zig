@@ -59,7 +59,7 @@ pub const PreparedScopeClaims = struct {
     }
 
     /// Retains one provisional row and cumulatively reserves its final scope slot.
-    pub fn prepareRow(self: *PreparedEachRowScopes, scopes: *std.ArrayListUnmanaged(Scope), ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, parent_scope_id: semantic_ids.ScopeId, site_ordinal: semantic_ids.SiteOrdinal, key_hash: u64, key: HostValue, item: HostValue, key_cap: HostValueCapability, item_cap: HostValueCapability) std.mem.Allocator.Error!semantic_ids.ScopeId {
+    pub fn prepareRow(self: *PreparedEachRowScopes, scopes: *std.ArrayListUnmanaged(Scope), ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, parent_scope_id: semantic_ids.ScopeId, site_ordinal: semantic_ids.SiteOrdinal, key_hash: u64, key: HostValue, item: HostValue, key_cap: HostValueCapability, item_cap: HostValueCapability) (std.mem.Allocator.Error || error{ResourceLimit})!semantic_ids.ScopeId {
         if (self.phase.isCommitted() or scopes.items.len != self.original_scope_len) @panic("invalid provisional each-row scope state");
         scope_tree.validate(EachRowScopeStep, scopes.items, parent_scope_id) catch @panic("scope id has no host scope descriptor");
         if (!self.candidates_prepared) {
@@ -71,9 +71,9 @@ pub const PreparedScopeClaims = struct {
         const scope_id: semantic_ids.ScopeId = if (reuses_inactive)
             self.inactive_scope_ids.items[self.inactive_cursor]
         else
-            semantic_ids.ScopeId.fromIndex(std.math.add(usize, self.original_scope_len, self.new_scope_count) catch return error.OutOfMemory);
+            semantic_ids.ScopeId.fromIndex(std.math.add(usize, self.original_scope_len, self.new_scope_count) catch return error.ResourceLimit);
         if (!reuses_inactive) {
-            const next_len = std.math.add(usize, scope_id.index(), 1) catch return error.OutOfMemory;
+            const next_len = std.math.add(usize, scope_id.index(), 1) catch return error.ResourceLimit;
             try scopes.ensureTotalCapacity(self.allocator, next_len);
         }
         try self.rows.ensureUnusedCapacity(self.allocator, 1);

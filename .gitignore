@@ -26,6 +26,7 @@ __pycache__/
 
 .bundle-url-test/
 .test-out/
+.fuzz-out/
 plan.md
 *.mdtodo
 

@@ -43,9 +43,9 @@ jobs:
           chmod +x tailwindcss
           sudo mv tailwindcss /usr/local/bin/tailwindcss
 
-      - name: Run non-native suites
+      - name: Run core and native fault suites
         run: |
-          python3 scripts/test.py zig browser roc-check roc-test wasm --native never --bundle never
+          python3 scripts/test.py zig browser roc-check roc-test wasm fault --native auto --bundle never
 
       - name: Build static site
         run: |

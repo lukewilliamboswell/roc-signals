@@ -44,8 +44,11 @@ export const Op = Object.freeze({
   setDocumentTitle: 32,
 });
 
+// Version 12: `remove_node` releases the whole subtree under its target. The
+// engine publishes one removal per retired subtree root, and the runtime drops
+// every DOM id, listener, controlled input, and behaviour under that root.
 export const Protocol = Object.freeze({
-  version: 11,
+  version: 12,
 });
 
 export const ProtocolFeature = Object.freeze({
@@ -699,6 +702,7 @@ export class SignalsRuntime {
     this.checkProtocol();
     this.views = createMemoryViewCache(exports.memory);
     this.nodes = new Map([[0, root]]);
+    this.nodeIds = new WeakMap([[root, 0]]);
     this.eventCleanups = new Map();
     this.controlledInputs = new Map();
     this.pendingSelectValues = new Map();
@@ -1538,17 +1542,13 @@ export class SignalsRuntime {
         this.clearDom();
         return;
 
-      case Op.createElement: {
-        const elem = document.createElement(this.readString(record.b, record.c));
-        this.nodes.set(record.a, elem);
+      case Op.createElement:
+        this.registerNode(record.a, document.createElement(this.readString(record.b, record.c)));
         return;
-      }
 
-      case Op.createText: {
-        const node = document.createTextNode(this.readString(record.b, record.c));
-        this.nodes.set(record.a, node);
+      case Op.createText:
+        this.registerNode(record.a, document.createTextNode(this.readString(record.b, record.c)));
         return;
-      }
 
       case Op.appendChild:
         this.node(record.a).appendChild(this.node(record.b));
@@ -1558,9 +1558,7 @@ export class SignalsRuntime {
         const node = this.node(record.a);
         this.cleanupBehaviorSubtree(node);
         node.parentNode?.removeChild(node);
-        this.clearElemListeners(record.a);
-        this.clearControlledInput(record.a);
-        this.nodes.delete(record.a);
+        this.releaseSubtree(node);
         return;
       }
 
@@ -2247,16 +2245,6 @@ export class SignalsRuntime {
     });
   }
 
-  clearElemListeners(elemId) {
-    const prefix = `${elemId}:`;
-    for (const key of this.eventCleanups.keys()) {
-      if (key.startsWith(prefix)) {
-        this.eventCleanups.get(key)();
-        this.eventCleanups.delete(key);
-      }
-    }
-  }
-
   controlledInput(elemId) {
     const existing = this.controlledInputs.get(elemId);
     if (existing) {
@@ -2482,6 +2470,51 @@ export class SignalsRuntime {
     return node;
   }
 
+  registerNode(id, node) {
+    const previous = this.nodes.get(id);
+    if (previous) {
+      this.nodeIds.delete(previous);
+    }
+    this.nodes.set(id, node);
+    this.nodeIds.set(node, id);
+  }
+
+  // Releases every per-node registration under one removed root: the engine
+  // publishes a single `remove_node` for a retired subtree, so the ids,
+  // listeners, controlled inputs, and pending behaviour work of every
+  // descendant are released here, exactly once, with the root's.
+  releaseSubtree(root) {
+    const released = new Set();
+    const stack = [root];
+    while (stack.length !== 0) {
+      const node = stack.pop();
+      const elemId = this.nodeIds.get(node);
+      if (elemId !== undefined) {
+        released.add(elemId);
+        this.nodeIds.delete(node);
+        this.nodes.delete(elemId);
+        this.clearControlledInput(elemId);
+        this.pendingBehaviorAttaches.delete(elemId);
+        this.pendingBehaviorUpdates.delete(elemId);
+      }
+      const children = node.childNodes;
+      if (children) {
+        for (let index = children.length - 1; index >= 0; index -= 1) {
+          stack.push(children[index]);
+        }
+      }
+    }
+    if (released.size !== 0 && this.eventCleanups.size !== 0) {
+      for (const key of [...this.eventCleanups.keys()]) {
+        if (released.has(Number(key.slice(0, key.indexOf(":"))))) {
+          this.eventCleanups.get(key)();
+          this.eventCleanups.delete(key);
+        }
+      }
+    }
+    return released;
+  }
+
   clearDom() {
     this.emitTelemetry("clear_dom", {
       domNodes: this.nodes.size,
@@ -2498,6 +2531,7 @@ export class SignalsRuntime {
     this.clearControlledInputs();
     this.nodes.clear();
     this.nodes.set(0, this.root);
+    this.nodeIds = new WeakMap([[this.root, 0]]);
     this.root.replaceChildren();
   }
 

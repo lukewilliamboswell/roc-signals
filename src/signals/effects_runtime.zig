@@ -367,6 +367,37 @@ pub fn ensureActiveInterval(comptime Ctx: type, ctx: Ctx.Handle, allocator: std.
     Ctx.sink(ctx).startInterval(ids.IntervalToken.fromRaw(token), period_ms);
 }
 
+/// Reserves registry room for `additional` interval registrations before a
+/// transaction publishes, so `ensureActiveIntervalAssumeCapacity` never grows
+/// the registry on the commit path.
+pub fn reserveActiveIntervals(allocator: std.mem.Allocator, intervals: *std.ArrayListUnmanaged(ActiveInterval), additional: usize) error{OutOfMemory}!void {
+    intervals.ensureUnusedCapacity(allocator, additional) catch return error.OutOfMemory;
+}
+
+/// Registers an interval source during publication using capacity that
+/// `reserveActiveIntervals` already secured. A source token that is already
+/// registered is confirmed rather than duplicated, exactly as
+/// `ensureActiveInterval` does on the preparation path.
+pub fn ensureActiveIntervalAssumeCapacity(comptime Ctx: type, ctx: Ctx.Handle, intervals: *std.ArrayListUnmanaged(ActiveInterval), next_interval_token: *u64, source_token: HostSignalToken, period_ms: u64) void {
+    if (activeIntervalBySourceToken(intervals.items, source_token)) |interval| {
+        if (interval.period_ms != period_ms) @panic("interval source token changed period");
+        interval.reconciliation = .confirmed;
+        return;
+    }
+
+    if (next_interval_token.* == std.math.maxInt(u64)) @panic("host interval token overflowed");
+    if (intervals.items.len == intervals.capacity) @panic("interval registration exceeded its reserved capacity");
+    const token = next_interval_token.*;
+    next_interval_token.* += 1;
+    intervals.appendAssumeCapacity(.{
+        .token = ids.IntervalToken.fromRaw(token),
+        .source_token = retained_values.retainHostSignalToken(source_token),
+        .period_ms = period_ms,
+        .reconciliation = .confirmed,
+    });
+    Ctx.sink(ctx).startInterval(ids.IntervalToken.fromRaw(token), period_ms);
+}
+
 /// Removes active interval by source token and releases the ownership attached to that live entry.
 pub fn removeActiveIntervalBySourceToken(comptime Ctx: type, ctx: Ctx.Handle, intervals: *std.ArrayListUnmanaged(ActiveInterval), roc_host: *abi.RocHost, source_token: HostSignalToken) void {
     const index = activeIntervalIndexBySourceToken(intervals.items, source_token) orelse @panic("active interval removal missed its source token");
