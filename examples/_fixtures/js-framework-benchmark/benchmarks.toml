@@ -26,6 +26,8 @@ native_samples = 7
 
 [[operations]]
 id = "update_10k"
+serial_native_spec = true
+native_spec_timeout_seconds = 60
 official_name = "partial update"
 spec = "specs/update_10k.scm"
 rows = 10000
@@ -62,6 +64,8 @@ native_samples = 7
 
 [[operations]]
 id = "create_10k"
+serial_native_spec = true
+native_spec_timeout_seconds = 60
 official_name = "create many rows"
 spec = "specs/create_10k.scm"
 rows = 10000
@@ -71,6 +75,8 @@ native_samples = 1
 
 [[operations]]
 id = "append_1k_to_10k"
+serial_native_spec = true
+native_spec_timeout_seconds = 60
 official_name = "append rows to large table"
 spec = "specs/append_1k_to_10k.scm"
 rows = 11000
@@ -80,6 +86,8 @@ native_samples = 1
 
 [[operations]]
 id = "clear_10k"
+serial_native_spec = true
+native_spec_timeout_seconds = 60
 official_name = "clear rows"
 spec = "specs/clear_10k.scm"
 rows = 10000

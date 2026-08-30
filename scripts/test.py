@@ -59,6 +59,8 @@ class BenchmarkCase:
     warmup_iterations: int
     native_iterations: int
     native_samples: int
+    serial_native_spec: bool
+    native_spec_timeout_seconds: float | None
 
 
 def load_benchmark_cases(example: Example, source_root: Path) -> tuple[BenchmarkCase, ...] | None:
@@ -86,7 +88,10 @@ def load_benchmark_cases(example: Example, source_root: Path) -> tuple[Benchmark
         spec = example.source.parent / Path(str(raw["spec"]))
         if not (source_root / spec).is_file():
             raise SystemExit(f"benchmark operation {case_id!r} references missing spec {spec}")
-        cases.append(BenchmarkCase(case_id, spec, warmup, iterations, samples))
+        timeout = float(raw["native_spec_timeout_seconds"]) if "native_spec_timeout_seconds" in raw else None
+        if timeout is not None and timeout <= 0:
+            raise SystemExit(f"invalid native spec timeout for {case_id!r} in {manifest_path}")
+        cases.append(BenchmarkCase(case_id, spec, warmup, iterations, samples, bool(raw.get("serial_native_spec", False)), timeout))
     if not cases:
         raise SystemExit(f"benchmark manifest has no operations: {manifest_path}")
     return tuple(cases)
@@ -166,7 +171,7 @@ def parse_args() -> argparse.Namespace:
         type=spec_driver.parse_jobs,
         default=None,
         metavar="auto|N",
-        help="Concurrent native spec workers. Defaults to half the logical CPUs.",
+        help="Concurrent ordinary native spec workers. Designated large specs run serially.",
     )
     parser.add_argument(
         "--spec-filter",
@@ -487,6 +492,9 @@ def run_native_specs(
         print(f"\n==> {exe} {specs}", flush=True)
         try:
             suite_runner = spec_driver.run_fault_suite if fault_campaign else spec_driver.run_suite
+            benchmark_cases = load_benchmark_cases(example, source_root)
+            serial_patterns = tuple(case.spec.name for case in benchmark_cases or () if case.serial_native_spec)
+            timeout_overrides = {case.spec.name: case.native_spec_timeout_seconds for case in benchmark_cases or () if case.native_spec_timeout_seconds is not None}
             results = suite_runner(
                 exe,
                 specs,
@@ -495,6 +503,7 @@ def run_native_specs(
                 shard=shard,
                 fail_fast=fail_fast,
                 timeout_seconds=spec_timeout,
+                **({} if fault_campaign else {"serial_patterns": serial_patterns, "timeout_overrides": timeout_overrides}),
             )
         except ValueError as exc:
             raise SystemExit(str(exc)) from exc
@@ -535,7 +544,7 @@ def run_benchmarks(roc_bin: str, examples: tuple[Example, ...], *, source_root: 
         run([roc_bin, "build", f"--target={target}", "--opt=speed", *native_cache_args(target), f"--output={exe}", source])
         manifest_cases = load_benchmark_cases(example, source_root)
         cases = manifest_cases or tuple(
-            BenchmarkCase(case.id, example.specs / case.id, 0, 20, 1)
+            BenchmarkCase(case.id, example.specs / case.id, 0, 20, 1, False, None)
             for case in spec_driver.discover_specs(specs)
         )
         for case in cases:

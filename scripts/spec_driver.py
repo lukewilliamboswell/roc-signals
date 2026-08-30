@@ -243,6 +243,8 @@ def run_suite(
     verbose: bool = False,
     print_progress: bool = True,
     worker_args: tuple[str, ...] = (),
+    serial_patterns: tuple[str, ...] = (),
+    timeout_overrides: dict[str, float] | None = None,
 ) -> tuple[SpecResult, ...]:
     executable = executable.resolve()
     if not executable.is_file():
@@ -250,11 +252,18 @@ def run_suite(
     cases = select_specs(discover_specs(spec_directory), patterns=patterns, shard=shard)
     if not cases:
         raise ValueError("no specs matched the requested filters and shard")
+    parallel_cases = tuple(case for case in cases if not any(fnmatch.fnmatchcase(case.id, pattern) for pattern in serial_patterns))
+    serial_cases = tuple(case for case in cases if any(fnmatch.fnmatchcase(case.id, pattern) for pattern in serial_patterns))
+    timeout_overrides = timeout_overrides or {}
+
+    def timeout_for(case: SpecCase) -> float:
+        return timeout_overrides.get(case.id, timeout_seconds)
+
     worker_count = max(1, jobs if jobs is not None else default_jobs())
-    worker_count = min(worker_count, len(cases))
+    worker_count = min(worker_count, len(parallel_cases)) if parallel_cases else 1
 
     results: list[SpecResult] = []
-    pending_cases = iter(cases)
+    pending_cases = iter(parallel_cases)
     running: dict[Future[SpecResult], SpecCase] = {}
     stopped = False
     with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="native-spec") as pool:
@@ -262,7 +271,7 @@ def run_suite(
             case = next(pending_cases, None)
             if case is None:
                 break
-            running[pool.submit(run_case, executable, case, timeout_seconds=timeout_seconds, verbose=verbose, worker_args=worker_args)] = case
+            running[pool.submit(run_case, executable, case, timeout_seconds=timeout_for(case), verbose=verbose, worker_args=worker_args)] = case
 
         while running:
             completed_futures, _ = wait(running, return_when=FIRST_COMPLETED)
@@ -281,7 +290,20 @@ def run_suite(
                 if not stopped:
                     next_case = next(pending_cases, None)
                     if next_case is not None:
-                        running[pool.submit(run_case, executable, next_case, timeout_seconds=timeout_seconds, verbose=verbose, worker_args=worker_args)] = next_case
+                        running[pool.submit(run_case, executable, next_case, timeout_seconds=timeout_for(next_case), verbose=verbose, worker_args=worker_args)] = next_case
+
+    # Memory-heavy cases run without overlapping worker processes. Keeping this
+    # separate from worker-count policy preserves parallelism for ordinary specs
+    # while bounding the peak retained graph and simulated DOM memory.
+    if not stopped:
+        for case in serial_cases:
+            result = run_case(executable, case, timeout_seconds=timeout_for(case), verbose=verbose, worker_args=worker_args)
+            results.append(result)
+            if print_progress:
+                marker = "PASS" if result.passed else result.status.upper()
+                print(f"[{marker}] {result.id} ({result.duration_ns / 1_000_000:.1f} ms)", flush=True)
+            if fail_fast and not result.passed:
+                break
 
     results.sort(key=lambda result: result.id)
     return tuple(results)

@@ -46,6 +46,13 @@ class BenchmarkManifestTests(unittest.TestCase):
             self.assertTrue((MANIFEST.parent / operation["spec"]).is_file())
             self.assertGreater(operation["native_iterations"], 0)
             self.assertGreater(operation["native_samples"], 0)
+        self.assertEqual(
+            {"update_10k", "create_10k", "append_1k_to_10k", "clear_10k"},
+            {case["id"] for case in operations.values() if case.get("serial_native_spec", False)},
+        )
+        for case in operations.values():
+            if case.get("serial_native_spec", False):
+                self.assertEqual(60, case["native_spec_timeout_seconds"])
 
     def test_all_official_memory_scenarios_are_pinned(self) -> None:
         expected = {
