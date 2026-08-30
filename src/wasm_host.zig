@@ -852,8 +852,6 @@ fn discoverStorageElem(elem: abi.Elem) void {
         .component => |payload| discoverStorageElem(payload.child.*),
         .when => |payload| {
             discoverStorageSignalExpr(payload.condition.*);
-            discoverStorageElem(payload.when_false.*);
-            discoverStorageElem(payload.when_true.*);
         },
         .each => |payload| {
             discoverStorageSignalExpr(payload.items.*);

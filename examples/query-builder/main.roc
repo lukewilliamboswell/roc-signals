@@ -262,7 +262,16 @@ mode_segment = |tree, id, mode, value| {
 		[
 			Html.attr("type", "button"),
 			Html.aria_label("Set ${label} for ${id}"),
-			Html.attr_s("aria-pressed", mode.map(|current| if current.is_eq(value) { "true" } else { "false" })),
+			Html.attr_s(
+				"aria-pressed",
+				mode.map(
+					|current| if current.is_eq(value) {
+						"true"
+					} else {
+						"false"
+					},
+				),
+			),
 			Html.class_attr_s(mode.map(|current| segment_class(current.is_eq(value)))),
 		],
 		tree.on_unit(|current| Query.set_mode(current, id, value)),
@@ -333,7 +342,7 @@ render_group = |tree, group, node| {
 						[Html.test_id("summary-${id}"), Html.class_attr("${summary_class} grow")],
 					),
 				]
-				|> List.concat(trailing_controls),
+					|> List.concat(trailing_controls),
 			),
 			Html.paragraph_attrs(
 				"This group is empty, so it constrains nothing and matches every row.",
@@ -370,18 +379,24 @@ render_group = |tree, group, node| {
 	)
 }
 
-## Recursive dispatch. `Ui.each_str` hands the row renderer the key rather than
-## the node, so the kind is recovered from the key by `Query.key_kind` and
-## dispatched on as a tag. It has to be a `match` (or an `if`) rather than a
-## `Ui.when`, whose arms are both evaluated eagerly and would therefore never
-## terminate on a recursive structure.
+## Recursive dispatch. The stable row key remains only the node id; `Ui.switch`
+## retains this builder and invokes it for the selected node shape, so recursive
+## groups terminate without encoding a structural tag into the key.
 render_node : Ui.State(Query.QNode), U64, Str, Signal.Signal(Query.QNode) -> Elem
 render_node = |tree, depth, key, node| {
-	id = Query.key_id(key)
-	match Query.key_kind(key) {
-		Branch => render_group(tree, { id, depth, is_root: False }, node)
-		Leaf => render_cond(tree, id, node)
-	}
+	kind = node.map(
+		|current| match current {
+			Group(_) => Branch
+			Cond(_) => Leaf
+		},
+	)
+	Ui.switch(
+		kind,
+		|selected| match selected {
+			Branch => render_group(tree, { id: key, depth, is_root: False }, node)
+			Leaf => render_cond(tree, key, node)
+		},
+	)
 }
 
 main : () -> Elem
@@ -429,13 +444,11 @@ main = || {
 					# off the header instead of a slash-separated sentence.
 					shape_stats : Signal.Signal(List(U64))
 					shape_stats =
-						Signal.combine(
-							[
-								tree_signal.map(Query.count_conditions),
-								tree_signal.map(Query.count_groups),
-								tree_signal.map(Query.tree_depth),
-							],
-						)
+						Signal.combine([
+							tree_signal.map(Query.count_conditions),
+							tree_signal.map(Query.count_groups),
+							tree_signal.map(Query.tree_depth),
+						])
 
 					Html.div_c(
 						page_class,

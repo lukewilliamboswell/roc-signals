@@ -4175,6 +4175,11 @@ const TestLocationPathEqualsCapture = extern struct {
     path: RocStr,
 };
 
+const TestWhenElemCapture = extern struct {
+    when_false: abi.Elem,
+    when_true: abi.Elem,
+};
+
 var test_erased_callable_drop_count: u64 = 0;
 var test_row_elem_call_count: u64 = 0;
 
@@ -4544,9 +4549,7 @@ fn testNestedWhenRowElemCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]
         .payload = .{
             .when = .{
                 .condition = boxTestNodeSignalExpr(roc_host, testNodeRefExpr(capture.condition_binder)),
-                .read = testBoolReadHandle(roc_host, capture.condition_cap),
-                .when_false = boxTestElem(roc_host, testNodeText(roc_host, false_text)),
-                .when_true = boxTestElem(roc_host, testNodeText(roc_host, true_text)),
+                .ops = testWhenOps(roc_host, capture.condition_cap, testNodeText(roc_host, true_text), testNodeText(roc_host, false_text)),
             },
         },
         .tag = .When,
@@ -4827,6 +4830,30 @@ fn testCloneHostValueWithSplitCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args
 
 fn testErasedCallableOnDrop(_: ?[*]u8, _: *abi.RocHost) callconv(.c) void {
     test_erased_callable_drop_count += 1;
+}
+
+fn testWhenElemCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
+    const capture = testCapturePtrAs(TestWhenElemCapture, capture_ptr);
+    const call_args = testErasedArgsAs(ErasedHostValueUnaryArgs, args);
+    const case_value = testReadHostValueBool(roc_host, call_args.arg0);
+    const selected = if (case_value) capture.when_true else capture.when_false;
+    testDropHostValue(roc_host, call_args.arg0);
+    selected.incref(1);
+    writeTestErasedResult(abi.Elem, ret, selected);
+}
+
+fn testWhenElemOnDrop(capture_ptr: ?[*]u8, roc_host: *abi.RocHost) callconv(.c) void {
+    test_erased_callable_drop_count += 1;
+    const capture = testCapturePtrAs(TestWhenElemCapture, capture_ptr);
+    capture.when_false.decref(roc_host);
+    capture.when_true.decref(roc_host);
+}
+
+fn testWhenOps(roc_host: *abi.RocHost, case_capability: HostValueCapability, when_true: abi.Elem, when_false: abi.Elem) abi.ElemWhenOps {
+    return .{
+        .build = writeTestErasedCallable(TestWhenElemCapture, roc_host, &testWhenElemCallable, &testWhenElemOnDrop, .{ .when_false = when_false, .when_true = when_true }),
+        .case_capability = hv.retainHostValueCapability(case_capability),
+    };
 }
 
 fn testCapabilityCloneOnDrop(capture_ptr: ?[*]u8, roc_host: *abi.RocHost) callconv(.c) void {
@@ -5463,9 +5490,7 @@ test "state transaction mounting an interval branch registers the interval it la
                 .payload = .{
                     .when = .{
                         .condition = boxTestNodeSignalExpr(&roc_host, testNodeRefExpr(state_token)),
-                        .read = testBoolReadHandle(&roc_host, state_cap),
-                        .when_false = boxTestElem(&roc_host, testNodeText(&roc_host, "clock-off")),
-                        .when_true = boxTestElem(&roc_host, clock),
+                        .ops = testWhenOps(&roc_host, state_cap, clock, testNodeText(&roc_host, "clock-off")),
                     },
                 },
                 .tag = .When,
@@ -6263,9 +6288,7 @@ test "signals host marks dirty structural sources for structural patching" {
         .payload = .{
             .when = .{
                 .condition = boxTestNodeSignalExpr(&roc_host, testNodeRefExpr(state_token)),
-                .read = testBoolReadHandle(&roc_host, state_cap),
-                .when_false = boxTestElem(&roc_host, testNodeText(&roc_host, "false branch")),
-                .when_true = boxTestElem(&roc_host, testNodeText(&roc_host, "true branch")),
+                .ops = testWhenOps(&roc_host, state_cap, testNodeText(&roc_host, "true branch"), testNodeText(&roc_host, "false branch")),
             },
         },
         .tag = .When,
@@ -6363,9 +6386,7 @@ test "signals host applies the final structural branch after deferred location r
         .payload = .{
             .when = .{
                 .condition = boxTestNodeSignalExpr(&roc_host, is_detail),
-                .read = testBoolReadHandle(&roc_host, is_detail_cap),
-                .when_false = boxTestElem(&roc_host, testNodeText(&roc_host, "overview branch")),
-                .when_true = boxTestElem(&roc_host, testNodeText(&roc_host, "detail branch")),
+                .ops = testWhenOps(&roc_host, is_detail_cap, testNodeText(&roc_host, "detail branch"), testNodeText(&roc_host, "overview branch")),
             },
         },
         .tag = .When,
@@ -6409,9 +6430,7 @@ test "location-driven when source transaction sweeps host OOM and retries withou
             const condition_cap = testNodeSignalExprCapabilityOrPanic(condition);
             const root = abi.Elem{ .payload = .{ .when = .{
                 .condition = boxTestNodeSignalExpr(&roc_host, condition),
-                .read = testBoolReadHandle(&roc_host, condition_cap),
-                .when_false = boxTestElem(&roc_host, testNodeText(&roc_host, "overview branch")),
-                .when_true = boxTestElem(&roc_host, testNodeText(&roc_host, "detail branch")),
+                .ops = testWhenOps(&roc_host, condition_cap, testNodeText(&roc_host, "detail branch"), testNodeText(&roc_host, "overview branch")),
             } }, .tag = .When };
             defer root.decref(&roc_host);
             var stream: HostNodeDescriptorStream = .{};
@@ -6489,9 +6508,7 @@ test "retiring a nested when branch publishes one remove_node for its root" {
             })});
             const root = abi.Elem{ .payload = .{ .when = .{
                 .condition = boxTestNodeSignalExpr(&roc_host, condition),
-                .read = testBoolReadHandle(&roc_host, condition_cap),
-                .when_false = boxTestElem(&roc_host, testNodeText(&roc_host, "overview branch")),
-                .when_true = boxTestElem(&roc_host, detail),
+                .ops = testWhenOps(&roc_host, condition_cap, detail, testNodeText(&roc_host, "overview branch")),
             } }, .tag = .When };
             defer root.decref(&roc_host);
             var stream: HostNodeDescriptorStream = .{};
@@ -6981,9 +6998,7 @@ fn expectScopeSiteInsertIndex(host: *HostEnv, node_id: ids.NodeId, kind: HostNod
 fn testNodeWhenReadingState(roc_host: *abi.RocHost, condition_binder: HostBinderToken, condition_cap: HostValueCapability, when_true: abi.Elem, when_false: abi.Elem) abi.Elem {
     return .{ .payload = .{ .when = .{
         .condition = boxTestNodeSignalExpr(roc_host, testNodeRefExpr(condition_binder)),
-        .read = testBoolReadHandle(roc_host, condition_cap),
-        .when_false = boxTestElem(roc_host, when_false),
-        .when_true = boxTestElem(roc_host, when_true),
+        .ops = testWhenOps(roc_host, condition_cap, when_true, when_false),
     } }, .tag = .When };
 }
 
@@ -8677,9 +8692,7 @@ test "signals host reuses active signal records while collecting dirty when bran
         .payload = .{
             .when = .{
                 .condition = boxTestNodeSignalExpr(&roc_host, ready),
-                .read = testBoolReadHandle(&roc_host, ready_cap),
-                .when_false = boxTestElem(&roc_host, testNodeText(&roc_host, "loading")),
-                .when_true = boxTestElem(&roc_host, testNodeTextSignal(&roc_host, label)),
+                .ops = testWhenOps(&roc_host, ready_cap, testNodeTextSignal(&roc_host, label), testNodeText(&roc_host, "loading")),
             },
         },
         .tag = .When,
@@ -8734,9 +8747,7 @@ test "signals host prunes structural render when retained condition equality is 
         .payload = .{
             .when = .{
                 .condition = boxTestNodeSignalExpr(&roc_host, condition),
-                .read = testBoolReadHandle(&roc_host, condition_cap),
-                .when_false = boxTestElem(&roc_host, testNodeText(&roc_host, "false branch")),
-                .when_true = boxTestElem(&roc_host, testNodeText(&roc_host, "true branch")),
+                .ops = testWhenOps(&roc_host, condition_cap, testNodeText(&roc_host, "true branch"), testNodeText(&roc_host, "false branch")),
             },
         },
         .tag = .When,
@@ -10022,9 +10033,7 @@ fn testNodeWhenWithSignal(roc_host: *abi.RocHost, condition: abi.NodeSignalExpr,
     const condition_cap = testNodeSignalExprCapabilityOrPanic(condition);
     return .{ .payload = .{ .when = .{
         .condition = boxTestNodeSignalExpr(roc_host, condition),
-        .read = testBoolReadHandle(roc_host, condition_cap),
-        .when_false = boxTestElem(roc_host, when_false),
-        .when_true = boxTestElem(roc_host, when_true),
+        .ops = testWhenOps(roc_host, condition_cap, when_true, when_false),
     } }, .tag = .When };
 }
 
@@ -10737,9 +10746,7 @@ fn testNodeWhen(roc_host: *abi.RocHost, when_true: abi.Elem, when_false: abi.Ele
         .payload = .{
             .when = .{
                 .condition = boxTestNodeSignalExpr(roc_host, condition),
-                .read = testBoolReadHandle(roc_host, condition_cap),
-                .when_false = boxTestElem(roc_host, when_false),
-                .when_true = boxTestElem(roc_host, when_true),
+                .ops = testWhenOps(roc_host, condition_cap, when_true, when_false),
             },
         },
         .tag = .When,
@@ -11324,7 +11331,7 @@ test "signals host descriptors carry capability-owned extension records" {
 
     try std.testing.expectEqual(@as(usize, 1), stream.whens.items.len);
     const when = &stream.whens.items[0];
-    try std.testing.expect(hv.hostValueCapabilitiesMatch(when.read.capability, hostSignalBindingCapability(&host, &when.condition)));
+    try std.testing.expect(hv.hostValueCapabilitiesMatch(when.ops.case_capability, hostSignalBindingCapability(&host, &when.condition)));
 
     try std.testing.expectEqual(@as(usize, 1), stream.eaches.items.len);
     const each = &stream.eaches.items[0];

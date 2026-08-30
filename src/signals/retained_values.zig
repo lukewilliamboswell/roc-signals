@@ -13,6 +13,7 @@ pub const HostBoolRead = abi.HostValueBoolReadHandle;
 pub const HostEventReducer = abi.HostValueEventReducerHandle;
 pub const HostTaskRequestRead = abi.HostValueTaskRequestReadHandle;
 pub const HostEachOps = abi.ElemEachOps;
+pub const HostWhenOps = abi.ElemWhenOps;
 /// Non-null erased-callable pointer used as signal graph identity.
 pub const HostSignalToken = [*]u8;
 pub const HostValueList = abi.RocListWith(HostValue, false);
@@ -182,6 +183,14 @@ pub fn callHostValueToHostValueWithCapability(comptime Ctx: type, ctx: Ctx.Handl
     return erased_calls.callErasedHostValueToHostValue(roc_host, callable, value);
 }
 
+/// Invokes a retained lazy-structure builder inside its case capability frame.
+pub fn callHostValueToElemWithCapability(comptime Ctx: type, ctx: Ctx.Handle, roc_host: *abi.RocHost, cap: HostValueCapability, callable: abi.RocErasedCallable, value: HostValue) abi.Elem {
+    const caps = [_]HostValueCapability{cap};
+    pushCapabilities(Ctx, ctx, &caps);
+    defer popCapabilities(Ctx, ctx);
+    return erased_calls.callErasedHostValueToElem(roc_host, callable, value);
+}
+
 /// Invokes the app-compiled callable inside capability frames for every erased value argument.
 pub fn callHostValueToCmdWithCapability(comptime Ctx: type, ctx: Ctx.Handle, roc_host: *abi.RocHost, cap: HostValueCapability, callable: abi.RocErasedCallable, value: HostValue) erased_calls.Cmd {
     const caps = [_]HostValueCapability{cap};
@@ -324,4 +333,19 @@ pub fn releaseHostEachOps(ops: HostEachOps, roc_host: *abi.RocHost, metrics: any
     abi.decrefErasedCallable(ops.key_of, roc_host);
     abi.decrefErasedCallable(ops.row, roc_host);
     metrics.bump(.closure_releases, 4);
+}
+
+/// Retains the case capability and builder owned by a lazy branch site.
+pub fn retainHostWhenOps(ops: HostWhenOps, metrics: anytype) HostWhenOps {
+    _ = retainHostValueCapability(ops.case_capability, metrics);
+    abi.increfErasedCallable(ops.build, 1);
+    metrics.bump(.closure_retains, 1);
+    return ops;
+}
+
+/// Releases the case capability and builder owned by a lazy branch site.
+pub fn releaseHostWhenOps(ops: HostWhenOps, roc_host: *abi.RocHost, metrics: anytype) void {
+    releaseHostValueCapability(ops.case_capability, roc_host, metrics);
+    abi.decrefErasedCallable(ops.build, roc_host);
+    metrics.bump(.closure_releases, 1);
 }

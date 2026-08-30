@@ -369,7 +369,11 @@ Ui.when(
 `Ui.when` takes a `Signal(Bool)` and two zero-argument thunks. Each arm is its
 own scope: when the condition flips, the losing arm is disposed — its DOM
 removed, its state dropped, its timers and requests cancelled — and the winning
-arm is mounted.
+arm is mounted. Only the selected thunk runs.
+
+For more than two shapes, use `Ui.switch(signal, |case| ...)`. The builder
+receives the selected typed value and runs only when that value changes, so it
+can express recursive structure without constructing unselected branches.
 
 Note that `summary` counts `value.books` (all books) while the list renders
 `visible_books`. Deriving both from one source keeps them consistent for free.

@@ -49,31 +49,6 @@ wrong for a fixed set of differently-meaning signals read by index. A name like
 `combine_list` or `combine_all` would carry "these are interchangeable items" and
 stop it being reached for by default.
 
-## 5. `Ui.when` is not lazy
-
-`platform/Ui.roc` takes `(() -> Elem)` thunks and immediately forces both:
-
-```roc
-when_true: Box.box(when_true()),      # called, not stored
-when_false: Box.box(when_false()),
-```
-
-So a recursive structure never terminates. Four examples work around it by
-encoding a discriminant into an `Ui.each_str` row key and decoding it in the
-renderer (`query-builder`, `markdown-editor`, `conduit`, `data-grid`), which is a
-`to_str`/`from_str` pair per example existing only to smuggle a tag through a
-`Str`.
-
-Not a small fix: `WhenElem` crosses the ABI as two materialised `*const abi.Elem`
-and `wasm_host.zig` walks both for storage discovery. The precedent is next door
--- `EachElem` carries `HostEachOps`, boxed closures the host invokes -- so
-modelling `When` the same way is the shape of the fix. Touches `Elem.roc`,
-`Ui.roc`, `abi_view.zig`, `wasm_host.zig`, `native_host.zig`.
-
-A separate, smaller improvement in the same area: `each_str` hands the row
-renderer a `Str` key and a *deferred* `Signal(item)`, never the item's current
-value, which is the other half of why the discriminant goes through the key.
-
 ## 6. `Ui.select_of` prototype, not committed
 
 A typed `<select>` helper. State becomes `Ui.State(t)` rather than `State(Str)`,
@@ -237,9 +212,8 @@ are the only proofs visible from outside the repo.
 ## 16. Workaround-site count is not zero (Product Goal 1 shortfall)
 
 The measurable specifics behind Product Goal 1, tracked here rather than in
-`design.md`: four apps encode a discriminant into an `Ui.each_str` key to get
-recursion out of `Ui.when` (issue 5); ~22 `Signal.combine` sites read back by
-position (issue 3); 56 hand-written `is_eq` bodies the derive could produce
+`design.md`: ~22 `Signal.combine` sites read back by position (issue 3); 56
+hand-written `is_eq` bodies the derive could produce
 (issue 2). Add a repository check that counts these so the number is visible
 in CI and the zero target in Success Criteria Tier 2 is enforced, not hoped.
 
@@ -259,13 +233,6 @@ are its inputs (`Signal`s, static values, `Msg`s, `List(Elem)` children) with
 `Ui.component` minting the scope. Today `Ui.component : (() -> Elem) -> Elem`
 is a named scope only and `Signal.to_expr`/`from_expr`/`clone_expr` are public
 plumbing a package would need. Supersedes the design-side half of issue 10.
-
-## 19. `Ui.switch` does not exist; `Ui.when` forces both branches
-
-`design.md` specifies `Ui.when`/`Ui.switch` as retained branch builders run
-only when selected, with recursive structure expressible. `platform/Ui.roc`
-forces both `when` thunks at construction and there is no `switch`. Issue 5
-has the ABI shape of the fix.
 
 ## 21. Effects route by task-name string, not a typed registry
 

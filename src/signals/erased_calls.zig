@@ -85,6 +85,21 @@ pub fn callErasedHostValueToHostValue(roc_host: *abi.RocHost, callable: abi.RocE
     return result;
 }
 
+/// Invokes a retained lazy-structure builder with one opaque typed value.
+pub fn callErasedHostValueToElem(roc_host: *abi.RocHost, callable: abi.RocErasedCallable, arg0: HostValue) abi.Elem {
+    const payload = erasedCallablePayload(callable);
+    var call_args = ErasedHostValueUnaryArgs{ .arg0 = arg0.toRaw() };
+    var result: abi.Elem = undefined;
+    callErasedCallable(
+        payload,
+        roc_host,
+        @ptrCast(&result),
+        @ptrCast(&call_args),
+        abi.rocErasedCallableCapturePtr(callable),
+    );
+    return result;
+}
+
 /// Invokes the retained app-compiled callable using its exact ABI signature and ownership convention.
 pub fn callErasedHostValueToCmd(roc_host: *abi.RocHost, callable: abi.RocErasedCallable, arg0: HostValue) Cmd {
     const payload = erasedCallablePayload(callable);
