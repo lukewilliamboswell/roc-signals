@@ -12,42 +12,7 @@ export ROC_BIN=/path/to/roc_nightly-linux_x86_64-2026-08-25-cc03aa8/roc
 
 ---
 
-## 1. Host regression: `5fe35ad` breaks loan-comparator
-
-**Blocking.** `examples/loan-comparator/specs/editing-scenario-c-does-not-disturb-a-or-b.scm`
-fails on the current branch, and because the spec driver stops at the first
-failing example it also prevents ~159 later specs from running at all.
-
-```
-TEST FAILED at line 33:
-  Expected text: "Month 1 | interest $12.00 | principal $194.56 | balance $2205.44"
-  Got text:      "Month 1 | interest $12.00 | principal $2400.00 | balance $0.00"
-```
-
-Line 33 asserts on **scenario A**, inside the spec that checks *editing scenario
-C does not disturb A or B*, so an edit to C bleeds into A and A's first month
-clears the whole balance. That is keyed-row identity, which is what the commit
-changed: `engine.zig` (+192), `host_value_registry.zig`, `identity_table.zig`,
-`structural_splice.zig`.
-
-Bisect over `04f5c02..8ef18cf` with `python3 scripts/test.py native`:
-
-| commit | | |
-| --- | --- | --- |
-| `04f5c02` | tag-union batch 3 | 269 pass, 0 fail |
-| `ea3ff9b` | js-framework benchmark fixture | 269 pass, 0 fail |
-| `5fe35ad` | **Optimize bulk keyed structural updates** | **110 pass, 1 fail** |
-| `e0cfd71` … `8ef18cf` | later commits | 110 pass, 1 fail |
-
-Until it is fixed, gate example changes in a worktree at `ea3ff9b`, which already
-contains all three refactor batches:
-
-```sh
-git worktree add --detach /tmp/gate ea3ff9b
-# copy examples/ in, then run the suite there
-```
-
-## 2. Derive `is_eq` instead of hand-writing it
+## 1. Derive `is_eq` instead of hand-writing it
 
 56 hand-written `is_eq` implementations remain across the examples and 0 use the
 derive. `is_eq : _` synthesises structural equality and is verified working on
@@ -62,7 +27,7 @@ derive, so the code contradicts the guide.
 Not a blanket replacement: a few types want a genuinely custom body. Check each
 before converting.
 
-## 3. Roll out the record builder for multi-signal values
+## 2. Roll out the record builder for multi-signal values
 
 `style.md` line 88 makes `{ a: sig_a, b: sig_b }.Signal` the default, and it is
 already the majority (41 record `.Signal` against 22 `Signal.combine`). The
@@ -77,37 +42,12 @@ Keep the fan-in shape in `dependency-scheduler`, where it is the teaching point,
 and note that `combine` is genuinely right for a homogeneous list of the same
 kind of signal.
 
-## 4. Rename `Signal.combine`
+## 3. Rename `Signal.combine`
 
-Follows from issue 3. `combine` is correct for a dynamic, homogeneous fan-in and
+Follows from issue 2. `combine` is correct for a dynamic, homogeneous fan-in and
 wrong for a fixed set of differently-meaning signals read by index. A name like
 `combine_list` or `combine_all` would carry "these are interchangeable items" and
 stop it being reached for by default.
-
-## 5. `Ui.when` is not lazy
-
-`platform/Ui.roc` takes `(() -> Elem)` thunks and immediately forces both:
-
-```roc
-when_true: Box.box(when_true()),      # called, not stored
-when_false: Box.box(when_false()),
-```
-
-So a recursive structure never terminates. Four examples work around it by
-encoding a discriminant into an `Ui.each_str` row key and decoding it in the
-renderer (`query-builder`, `markdown-editor`, `conduit`, `data-grid`), which is a
-`to_str`/`from_str` pair per example existing only to smuggle a tag through a
-`Str`.
-
-Not a small fix: `WhenElem` crosses the ABI as two materialised `*const abi.Elem`
-and `wasm_host.zig` walks both for storage discovery. The precedent is next door
--- `EachElem` carries `HostEachOps`, boxed closures the host invokes -- so
-modelling `When` the same way is the shape of the fix. Touches `Elem.roc`,
-`Ui.roc`, `abi_view.zig`, `wasm_host.zig`, `native_host.zig`.
-
-A separate, smaller improvement in the same area: `each_str` hands the row
-renderer a `Str` key and a *deferred* `Signal(item)`, never the item's current
-value, which is the other half of why the discriminant goes through the key.
 
 ## 6. `Ui.select_of` prototype, not committed
 
@@ -272,9 +212,8 @@ are the only proofs visible from outside the repo.
 ## 16. Workaround-site count is not zero (Product Goal 1 shortfall)
 
 The measurable specifics behind Product Goal 1, tracked here rather than in
-`design.md`: four apps encode a discriminant into an `Ui.each_str` key to get
-recursion out of `Ui.when` (issue 5); ~22 `Signal.combine` sites read back by
-position (issue 3); 56 hand-written `is_eq` bodies the derive could produce
+`design.md`: ~22 `Signal.combine` sites read back by position (issue 3); 56
+hand-written `is_eq` bodies the derive could produce
 (issue 2). Add a repository check that counts these so the number is visible
 in CI and the zero target in Success Criteria Tier 2 is enforced, not hoped.
 
@@ -294,20 +233,6 @@ are its inputs (`Signal`s, static values, `Msg`s, `List(Elem)` children) with
 `Ui.component` minting the scope. Today `Ui.component : (() -> Elem) -> Elem`
 is a named scope only and `Signal.to_expr`/`from_expr`/`clone_expr` are public
 plumbing a package would need. Supersedes the design-side half of issue 10.
-
-## 19. `Ui.switch` does not exist; `Ui.when` forces both branches
-
-`design.md` specifies `Ui.when`/`Ui.switch` as retained branch builders run
-only when selected, with recursive structure expressible. `platform/Ui.roc`
-forces both `when` thunks at construction and there is no `switch`. Issue 5
-has the ABI shape of the fix.
-
-## 20. `Signal.select` and the selector node do not exist
-
-`design.md` specifies a host-owned selector node kind, a complexity-budget row
-(O(1) members dirtied, 0 Roc calls per key change), and a
-`selector_members_dirtied` metric. None exists; selection in the keyed
-benchmark fixture is O(N) map closures (issue 11).
 
 ## 21. Effects route by task-name string, not a typed registry
 

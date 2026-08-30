@@ -812,6 +812,7 @@ fn discoverStorageSignalExpr(expr: abi.NodeSignalExpr) void {
     switch (abi_view.SignalExpr.fromAbi(expr)) {
         .ref, .const_value, .task_source, .interval_source, .location_source, .online_source, .visibility_source => {},
         .map => |payload| discoverStorageSignalExpr(payload.input.*),
+        .select => |payload| discoverStorageSignalExpr(payload.input.*),
         .map2 => |payload| {
             discoverStorageSignalExpr(payload.left.*);
             discoverStorageSignalExpr(payload.right.*);
@@ -851,8 +852,6 @@ fn discoverStorageElem(elem: abi.Elem) void {
         .component => |payload| discoverStorageElem(payload.child.*),
         .when => |payload| {
             discoverStorageSignalExpr(payload.condition.*);
-            discoverStorageElem(payload.when_false.*);
-            discoverStorageElem(payload.when_true.*);
         },
         .each => |payload| {
             discoverStorageSignalExpr(payload.items.*);
@@ -1095,7 +1094,7 @@ fn resolveTask(request_id: ids.TaskRequestId, payload_text: []const u8, failed: 
     const record = shared_engine.activeTaskRecordByToken(pending.task_token) orelse failHostWith("task result matched no active task source");
     const task_payload = switch (record.payload) {
         .task_source => |payload| payload,
-        .ref, .const_value, .map, .map2, .combine, .interval_source, .location_source, .online_source, .visibility_source, .storage_source => unreachable,
+        .ref, .const_value, .map, .map2, .select, .combine, .interval_source, .location_source, .online_source, .visibility_source, .storage_source => unreachable,
     };
     if (record.token().? != pending.task_token) failHostWith("task result matched a pending request for a different task source");
 
@@ -1159,6 +1158,7 @@ fn clearActiveRuntime() void {
     shared_engine.active_structural_signal_routes = .empty;
 
     shared_engine.clearActiveSignalGraph(ctx);
+    shared_engine.deinitSelectors(ctx);
     shared_engine.active_signal_graph.deinit(a);
     shared_engine.active_signal_graph = .empty;
 

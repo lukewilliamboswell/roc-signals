@@ -52,6 +52,7 @@ pub const RuntimeMetrics = struct {
     rows_created: u64,
     rows_removed: u64,
     rows_reused: u64,
+    selector_members_dirtied: u64,
     scopes_created: u64,
     scopes_disposed: u64,
     set_checked: u64,

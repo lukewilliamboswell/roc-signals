@@ -1090,6 +1090,7 @@ pub fn Runner(comptime Ctx: type) type {
             if (std.mem.eql(u8, name, "scopes_created")) return u64MetricAsI64(metrics.scopes_created);
             if (std.mem.eql(u8, name, "scopes_disposed")) return u64MetricAsI64(metrics.scopes_disposed);
             if (std.mem.eql(u8, name, "rows_reused")) return u64MetricAsI64(metrics.rows_reused);
+            if (std.mem.eql(u8, name, "selector_members_dirtied")) return u64MetricAsI64(metrics.selector_members_dirtied);
             if (std.mem.eql(u8, name, "rows_created")) return u64MetricAsI64(metrics.rows_created);
             if (std.mem.eql(u8, name, "rows_removed")) return u64MetricAsI64(metrics.rows_removed);
             if (std.mem.eql(u8, name, "closure_retains")) return u64MetricAsI64(metrics.closure_retains);

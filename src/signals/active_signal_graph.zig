@@ -701,6 +701,12 @@ pub const DirtyRecordQueue = struct {
         while (pending_index < self.pending_record_ids.items.len) : (pending_index += 1) {
             const record_id = self.pending_record_ids.items[pending_index];
             for (dependentIds(Record, nodes, record_id)) |dependent_record_id| {
+                if (comptime Record == signal_records.Record) {
+                    switch (nodes[@intCast(dependent_record_id)].record.payload) {
+                        .select => continue,
+                        else => {},
+                    }
+                }
                 self.enqueueRecord(Record, allocator, nodes, dependent_record_id, &max_rank);
             }
         }
@@ -1065,6 +1071,7 @@ pub fn appendInputRecords(comptime Record: type, allocator: std.mem.Allocator, r
     switch (record.payload) {
         .ref, .const_value, .task_source, .interval_source, .location_source, .online_source, .visibility_source, .storage_source => {},
         .map => |payload| appendUniqueInputRecord(Record, allocator, records, payload.input),
+        .select => |payload| appendUniqueInputRecord(Record, allocator, records, payload.input),
         .map2 => |payload| {
             appendUniqueInputRecord(Record, allocator, records, payload.left);
             appendUniqueInputRecord(Record, allocator, records, payload.right);
@@ -1103,6 +1110,11 @@ pub fn retainRecord(
             const input_id = requireRecordId(Record, nodes.items, payload.input);
             node_rank = nodes.items[@intCast(input_id)].rank + 1;
         },
+        .select => |payload| {
+            records_rebuilt += retainRecord(Record, allocator, nodes, source_routes, source_node_count, payload.input, hooks);
+            const input_id = requireRecordId(Record, nodes.items, payload.input);
+            node_rank = nodes.items[@intCast(input_id)].rank + 1;
+        },
         .map2 => |payload| {
             records_rebuilt += retainRecord(Record, allocator, nodes, source_routes, source_node_count, payload.left, hooks);
             if (payload.right != payload.left) {
@@ -1135,6 +1147,10 @@ pub fn retainRecord(
         .const_value, .task_source, .location_source, .online_source, .visibility_source, .storage_source => {},
         .interval_source => |payload| hooks.ensureInterval(record.token().?, payload.period_ms),
         .map => |payload| appendDependentId(Record, allocator, nodes.items, requireRecordId(Record, nodes.items, payload.input), record_id),
+        .select => |payload| {
+            appendDependentId(Record, allocator, nodes.items, requireRecordId(Record, nodes.items, payload.input), record_id);
+            hooks.ensureSelector(payload.input, payload.key, record);
+        },
         .map2 => |payload| {
             appendDependentId(Record, allocator, nodes.items, requireRecordId(Record, nodes.items, payload.left), record_id);
             if (payload.right != payload.left) {
@@ -1361,6 +1377,7 @@ pub fn PreparedGraphAppend(comptime Record: type) type {
             for (self.new_nodes) |node| {
                 switch (node.record.payload) {
                     .interval_source => |payload| hooks.registerInterval(node.record.token().?, payload.period_ms),
+                    .select => |payload| hooks.registerSelector(payload.input, payload.key, node.record),
                     else => {},
                 }
             }
@@ -1498,6 +1515,7 @@ pub fn prepareGraphAppend(comptime Record: type, allocator: std.mem.Allocator, n
             var new_rank: u64 = 0;
             switch (record.payload) {
                 .map => |payload| new_rank = std.math.add(u64, (try retain(payload.input, prepare_allocator, graph_nodes, mapping, survivor_len, existing, new_records, new_ranks, new_uses)).rank, 1) catch return error.InvalidAppend,
+                .select => |payload| new_rank = std.math.add(u64, (try retain(payload.input, prepare_allocator, graph_nodes, mapping, survivor_len, existing, new_records, new_ranks, new_uses)).rank, 1) catch return error.InvalidAppend,
                 .map2 => |payload| {
                     const left = try retain(payload.left, prepare_allocator, graph_nodes, mapping, survivor_len, existing, new_records, new_ranks, new_uses);
                     const right = if (payload.right == payload.left) left else try retain(payload.right, prepare_allocator, graph_nodes, mapping, survivor_len, existing, new_records, new_ranks, new_uses);
@@ -1581,6 +1599,7 @@ pub fn prepareGraphAppend(comptime Record: type, allocator: std.mem.Allocator, n
     };
     for (owned_records, record_ids) |record, dependent_id| switch (record.payload) {
         .map => |payload| try EdgeBuilder.append(payload.input, dependent_id, allocator, nodes, final_record_ids, survivor_count, owned_records, record_ids, adjacency_lists, adjacency_touched),
+        .select => |payload| try EdgeBuilder.append(payload.input, dependent_id, allocator, nodes, final_record_ids, survivor_count, owned_records, record_ids, adjacency_lists, adjacency_touched),
         .map2 => |payload| {
             try EdgeBuilder.append(payload.left, dependent_id, allocator, nodes, final_record_ids, survivor_count, owned_records, record_ids, adjacency_lists, adjacency_touched);
             if (payload.right != payload.left) try EdgeBuilder.append(payload.right, dependent_id, allocator, nodes, final_record_ids, survivor_count, owned_records, record_ids, adjacency_lists, adjacency_touched);
@@ -1649,6 +1668,7 @@ fn countExistingRetains(comptime Record: type, allocator: std.mem.Allocator, nod
             try seen.append(walk_allocator, record);
             switch (record.payload) {
                 .map => |payload| try walk(payload.input, walk_allocator, graph_nodes, counts, seen),
+                .select => |payload| try walk(payload.input, walk_allocator, graph_nodes, counts, seen),
                 .map2 => |payload| {
                     try walk(payload.left, walk_allocator, graph_nodes, counts, seen);
                     if (payload.right != payload.left) try walk(payload.right, walk_allocator, graph_nodes, counts, seen);
@@ -1702,6 +1722,7 @@ pub fn prepareReleaseClosure(comptime Record: type, allocator: std.mem.Allocator
             output.appendAssumeCapacity(record);
             switch (record.payload) {
                 .map => |payload| try decrement(payload.input, graph_nodes, simulated_counts, is_scheduled, output),
+                .select => |payload| try decrement(payload.input, graph_nodes, simulated_counts, is_scheduled, output),
                 .map2 => |payload| {
                     try decrement(payload.left, graph_nodes, simulated_counts, is_scheduled, output);
                     if (payload.right != payload.left) try decrement(payload.right, graph_nodes, simulated_counts, is_scheduled, output);
@@ -1860,7 +1881,7 @@ pub fn releaseRecord(
         .ref => |source_node_id| removeSourceRoute(source_routes, source_node_id, record_id),
         .const_value, .task_source, .location_source, .online_source, .visibility_source, .storage_source => {},
         .interval_source => hooks.removeInterval(record.token().?),
-        .map, .map2, .combine => {},
+        .map, .map2, .select, .combine => {},
     }
 
     for (input_records.items) |input_record| {
@@ -2018,6 +2039,7 @@ fn updateMovedRecordEdges(comptime Record: type, nodes: []Node(Record), source_r
         .ref => |source_node_id| replaceSourceRouteId(source_routes, source_node_id, old_record_id, new_record_id),
         .const_value, .task_source, .interval_source, .location_source, .online_source, .visibility_source, .storage_source => {},
         .map => |payload| replaceDependentId(Record, nodes, requireRecordId(Record, nodes, payload.input), old_record_id, new_record_id),
+        .select => |payload| replaceDependentId(Record, nodes, requireRecordId(Record, nodes, payload.input), old_record_id, new_record_id),
         .map2 => |payload| {
             replaceDependentId(Record, nodes, requireRecordId(Record, nodes, payload.left), old_record_id, new_record_id);
             if (payload.right != payload.left) {
@@ -2136,6 +2158,11 @@ const LifecycleTestRecord = struct {
         right: *LifecycleTestRecord,
     };
 
+    const SelectPayload = struct {
+        input: *LifecycleTestRecord,
+        key: []const u8,
+    };
+
     const CombinePayload = struct {
         children: []*LifecycleTestRecord,
     };
@@ -2149,6 +2176,7 @@ const LifecycleTestRecord = struct {
         const_value,
         map: MapPayload,
         map2: Map2Payload,
+        select: SelectPayload,
         combine: CombinePayload,
         task_source,
         interval_source: IntervalPayload,
@@ -2168,7 +2196,7 @@ const LifecycleTestRecord = struct {
     pub fn token(self: *const LifecycleTestRecord) ?u64 {
         return switch (self.payload) {
             .ref => null,
-            .const_value, .map, .map2, .combine, .task_source, .interval_source, .location_source, .online_source, .visibility_source, .storage_source => self.id,
+            .const_value, .map, .map2, .select, .combine, .task_source, .interval_source, .location_source, .online_source, .visibility_source, .storage_source => self.id,
         };
     }
 };
@@ -2194,6 +2222,14 @@ const LifecycleTestHooks = struct {
     pub fn removeInterval(self: *@This(), token: u64) void {
         if (token == 0) @panic("test interval token must be explicit");
         self.interval_removes += 1;
+    }
+
+    /// Records selector registration in lifecycle tests without owning a runtime index.
+    pub fn ensureSelector(_: *@This(), _: *LifecycleTestRecord, _: []const u8, _: *LifecycleTestRecord) void {}
+
+    /// Records prepared selector registration in lifecycle tests.
+    pub fn registerSelector(self: *@This(), input: *LifecycleTestRecord, key: []const u8, member: *LifecycleTestRecord) void {
+        self.ensureSelector(input, key, member);
     }
 
     /// Releases the test or plan's owned signal record exactly once.

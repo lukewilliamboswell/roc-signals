@@ -1,4 +1,5 @@
 Query :: [].{
+
 	## A row in the sample dataset the query is evaluated against.
 	Row : { name : Str, dept : Str, level : U64 }
 
@@ -187,26 +188,26 @@ Query :: [].{
 				Cond(l) => match right {
 					Cond(r) =>
 						l.id == r.id
-						and l.field.is_eq(r.field)
-						and l.op.is_eq(r.op)
-						and l.value == r.value
+							and l.field.is_eq(r.field)
+								and l.op.is_eq(r.op)
+									and l.value == r.value
 					Group(_) => False
 				}
 				Group(l) => match right {
 					Cond(_) => False
 					Group(r) =>
 						l.id == r.id
-						and l.mode.is_eq(r.mode)
-						and l.negated == r.negated
-						and children_eq(l.children, r.children)
-				}
+							and l.mode.is_eq(r.mode)
+								and l.negated == r.negated
+									and children_eq(l.children, r.children)
+					}
 			}
 	}
 
 	children_eq : List(QNode), List(QNode) -> Bool
 	children_eq = |left, right|
 		left.len() == right.len()
-		and List.map2(left, right, |l, r| l.is_eq(r)).all(|same| same)
+			and List.map2(left, right, |l, r| l.is_eq(r)).all(|same| same)
 
 	## The five always-present sample rows.
 	base_rows : List(Row)
@@ -225,72 +226,34 @@ Query :: [].{
 	## Root group with a single `dept = "Platform"` condition.
 	initial_tree : QNode
 	initial_tree =
-		QNode.Group(
-			{
-				id: "n1",
-				mode: And,
-				negated: False,
-				children: [QNode.Cond({ id: "n2", field: Dept, op: Eq, value: "Platform" })],
-			},
-		)
+		QNode.Group({
+			id: "n1",
+			mode: And,
+			negated: False,
+			children: [QNode.Cond({ id: "n2", field: Dept, op: Eq, value: "Platform" })],
+		})
 
-	## Which of the two shapes a node has. `Ui.each_str` keys rows by text, so the
-	## kind has to survive a round trip through a `Str`; `node_key` is the only
-	## place one is written and `key_kind`/`key_id` are the only places one is
-	## read, which keeps the row renderer matching on a tag.
+	## Which of the two structural shapes a node has.
 	NodeKind : [Leaf, Branch]
 
-	kind_to_str : NodeKind -> Str
-	kind_to_str = |kind|
-		match kind {
-			Leaf => "cond"
-			Branch => "group"
-		}
-
-	## Stable list key that also encodes the node kind.
+	## Stable list key. Structure is selected independently by `Ui.switch`.
 	node_key : QNode -> Str
 	node_key = |node|
 		match node {
-			Cond(c) => "${kind_to_str(Leaf)}:${c.id}"
-			Group(g) => "${kind_to_str(Branch)}:${g.id}"
+			Cond(c) => c.id
+			Group(g) => g.id
 		}
-
-	## The kind a list key was built from.
-	key_kind : Str -> NodeKind
-	key_kind = |key|
-		if prefix_before(key, ":") == kind_to_str(Branch) {
-			Branch
-		} else {
-			Leaf
-		}
-
-	## The node id a list key was built from.
-	key_id : Str -> Str
-	key_id = |key| suffix_after(key, ":")
-
-	## A group's list key round-trips back to the branch kind.
-	expect {
-		key = node_key(QNode.Group({ id: "n7", mode: Or, negated: True, children: [] }))
-		key_kind(key) == Branch
-	}
 
 	## A group's list key carries its node id unchanged.
 	expect {
 		key = node_key(QNode.Group({ id: "n7", mode: Or, negated: True, children: [] }))
-		key_id(key) == "n7"
+		key == "n7"
 	}
 
-	## A condition's list key round-trips back to the leaf kind.
+	## A condition's list key carries its node id unchanged.
 	expect {
 		key = node_key(QNode.Cond({ id: "n7", field: Name, op: Eq, value: "" }))
-		key_kind(key) == Leaf
-	}
-
-	## A condition's list key carries its node id unchanged, even though a leaf
-	## and a group can share the same id text.
-	expect {
-		key = node_key(QNode.Cond({ id: "n7", field: Name, op: Eq, value: "" }))
-		key_id(key) == "n7"
+		key == "n7"
 	}
 
 	## The node id on its own.
@@ -608,15 +571,13 @@ Query :: [].{
 		match node {
 			Cond(_) => node
 			Group(g) =>
-				QNode.Group(
-					{
-						..g,
-						children: g.children
+				QNode.Group({
+					..g,
+					children: g.children
 						|> List.keep_if(|child| node_id(child) != target)
 						|> List.map(|child| delete_node(child, target)),
-					},
-				)
-		}
+				})
+			}
 
 	## The active dataset: the five base rows, plus the archived row when asked.
 	rows_for : Bool -> List(Row)

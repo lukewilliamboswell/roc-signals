@@ -339,9 +339,9 @@ projections of one coarse record.
   dynamic text/attrs and references reducers for event handlers. Element nodes
   carry a tag string, attrs, and children; user-controlled copy stays in text
   nodes (`Html.text` / `Html.text_s`), not raw HTML.
-- **Selector** — a host-owned keyed node derived from a `Signal(key)`. Each
+- **Selector** — a host-owned keyed node derived from a `Signal(Str)`. Each
   member `Signal.select(keys, k)` is a `Signal(Bool)` that is true while the
-  key signal equals `k`. When the key changes the host dirties exactly the two
+  selected string equals `k`. When the key changes the host dirties exactly the two
   members whose membership changed; no member closure runs for the rest. This
   is how "which row is selected" stays O(1) per change at any list size.
 - **Component** — a typed, reusable unit of UI with inputs, children, and its
@@ -588,8 +588,7 @@ Signal.map2 : Signal(a), Signal(b), (a, b -> c) -> Signal(c)
     where [c.is_eq : c, c -> Bool]
 Signal.combine : List(Signal(a)) -> Signal(List(a))
     where [a.is_eq : a, a -> Bool]
-Signal.select : Signal(key), key -> Signal(Bool)   # O(1) members dirtied per key change
-    where [key.is_eq : key, key -> Bool]
+Signal.select : Signal(Str), Str -> Signal(Bool)   # O(1) members dirtied per key change
 # Named multi-signal composition should use Roc record-builder syntax:
 # { first: first_signal, last: last_signal, active: active_signal }.Signal
 
@@ -1279,17 +1278,24 @@ Per node id the host stores:
   sources),
 - the owning scope id.
 
-A **selector** node owns a key→member hash index and a cached current key.
+A **selector** node owns a string-key→member hash index and a cached current key.
 On a key change it looks up the previous and next members (O(1) each) and
 enqueues only those two; members are ordinary `Bool` nodes whose transform is
-host-owned and never calls into Roc, so `derived_calls_into_roc` for a
+host-owned and never calls into Roc. The host uses the capability-owned string
+reader to expose the old and new opaque input values, so `derived_calls_into_roc` for a
 selection change is independent of member count.
+
+Selector keys are strings for the same boundary reason as `Ui.each_str` keys:
+the capability-owned reader exposes UTF-8 bytes without the host inspecting an
+opaque Roc value, after which the host hashes and compares those bytes itself. A
+generic key constrained only by `is_eq` cannot provide a host hash index and
+would force the forbidden O(M) member scan.
 
 Adjacency, ranks, and the dirty set are dense integer-indexed structures. The
 callable address is used only to preserve signal aliasing while descriptors are
 ingested; active graph/node/runtime identities remain host-owned dense integers.
-The app may provide text key material to `Ui.each_str`, but graph execution does
-not use string keys, scans to rediscover identity, or `Dict(Str, _)`.
+The app provides text key material to `Ui.each_str` and `Signal.select`; graph
+execution does not scan to rediscover identity or use Roc `Dict(Str, _)` values.
 
 ### Complexity Discipline (the foundation budget)
 
@@ -1309,7 +1315,7 @@ change; L = rows at the affected `Ui.each_str` site):
 | record/elem identity → id lookup | O(1) | linear pointer scan over the node table |
 | descriptor lookup by `elem_id` | O(1) | linear scan over the descriptor arrays |
 | non-structural event propagation | O(C + fanout) | O(N); O(fanout²) dedup/sort |
-| selector key change (M members) | O(1) members dirtied, 0 Roc calls | O(M) member recompute or `is_eq` scan |
+| selector key change (M members) | O(1) members dirtied, 0 derived Roc calls, O(1) capability reads | O(M) member recompute or `is_eq` scan |
 | `Ui.when` branch flip | O(changed subtree) | O(N) field/route/graph rebuild |
 | `Ui.each_str` keyed diff | O(L) via key hash index | O(L²) `is_eq` scan |
 | `Ui.each_str` append/remove/filter | O(K) | O(N) per touched row |

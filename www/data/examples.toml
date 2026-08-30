@@ -526,6 +526,17 @@ wasm = false
 native = true
 bench = false
 
+[[examples]]
+slug = "signal-select-128"
+title = "Signal Select 128"
+description = "Internal large-N selector membership fixture."
+source = "examples/_fixtures/signal-select-128/main.roc"
+specs = "examples/_fixtures/signal-select-128/specs"
+public = false
+wasm = false
+native = true
+bench = false
+
 
 [[examples]]
 slug = "metric-semantics"
@@ -546,6 +557,17 @@ source = "examples/_fixtures/when-each-dispose/main.roc"
 specs = "examples/_fixtures/when-each-dispose/specs"
 public = false
 wasm = false
+native = true
+bench = false
+
+[[examples]]
+slug = "recursive-switch"
+title = "Recursive Switch"
+description = "Internal fixture: retained Ui.switch builders support recursive structure."
+source = "examples/_fixtures/recursive-switch/main.roc"
+specs = "examples/_fixtures/recursive-switch/specs"
+public = false
+wasm = true
 native = true
 bench = false
 

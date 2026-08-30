@@ -36,6 +36,7 @@ pub const scope_runtime = @import("scope_runtime.zig");
 pub const scope_tree = @import("scope_tree.zig");
 pub const signal_graph = @import("signal_graph.zig");
 pub const signal_records = @import("signal_records.zig");
+pub const selector_runtime = @import("selector_runtime.zig");
 pub const structural_splice = @import("structural_splice.zig");
 
 test {

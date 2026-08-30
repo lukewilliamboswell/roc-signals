@@ -14,6 +14,7 @@ pub const HostTextRead = retained.HostTextRead;
 pub const HostBoolRead = retained.HostBoolRead;
 pub const HostEventReducer = retained.HostEventReducer;
 pub const HostEachOps = retained.HostEachOps;
+pub const HostWhenOps = retained.HostWhenOps;
 
 pub const node_text_field_custom: u64 = 7;
 pub const node_bool_field_custom: u64 = 3;
@@ -97,6 +98,16 @@ pub const CombineSignal = struct {
     capability: HostValueCapability,
 };
 
+pub const SelectSignal = struct {
+    token: SignalToken,
+    input: *const abi.NodeSignalExpr,
+    key: RocStrView,
+    input_read: HostTextRead,
+    false_init: roles.Initializer,
+    true_init: roles.Initializer,
+    capability: HostValueCapability,
+};
+
 pub const TaskSourceSignal = struct {
     token: SignalToken,
     name: RocStrView,
@@ -151,6 +162,7 @@ pub const SignalExpr = union(enum) {
     const_value: ConstValueSignal,
     map: MapSignal,
     map2: Map2Signal,
+    select: SelectSignal,
     combine: CombineSignal,
     task_source: TaskSourceSignal,
     interval_source: IntervalSourceSignal,
@@ -196,6 +208,20 @@ pub const SignalExpr = union(enum) {
                     .right = payload._2,
                     .transform = .fromAbi(payload._3),
                     .capability = payload._4,
+                } };
+            },
+            .Select => blk: {
+                const payload = expr.payload_select();
+                const token = SignalToken.fromAbi(payload._0);
+                validateIdentityCallable(token, payload._4);
+                break :blk .{ .select = .{
+                    .token = token,
+                    .input = payload._1,
+                    .key = RocStrView.fromAbi(payload._2),
+                    .input_read = payload._3,
+                    .false_init = .fromAbi(payload._4),
+                    .true_init = .fromAbi(payload._5),
+                    .capability = payload._6,
                 } };
             },
             .Combine => blk: {
@@ -523,9 +549,7 @@ pub const ComponentElem = struct {
 
 pub const WhenElem = struct {
     condition: *const abi.NodeSignalExpr,
-    read: HostBoolRead,
-    when_false: *const abi.Elem,
-    when_true: *const abi.Elem,
+    ops: HostWhenOps,
 };
 
 pub const EachElem = struct {
@@ -617,9 +641,7 @@ pub const Elem = union(enum) {
                 const payload = elem.payload_when();
                 break :blk .{ .when = .{
                     .condition = payload.condition,
-                    .read = payload.read,
-                    .when_false = payload.when_false,
-                    .when_true = payload.when_true,
+                    .ops = payload.ops,
                 } };
             },
             .Each => blk: {
@@ -707,7 +729,7 @@ test "SignalExpr.fromAbi decodes ref and const value expressions" {
     }
 }
 
-test "SignalExpr.fromAbi decodes map, map2, and combine expressions" {
+test "SignalExpr.fromAbi decodes map, map2, select, and combine expressions" {
     const input_token = testCallableToken(0x3000);
     var input = abi.NodeSignalExpr{
         .payload = .{ .ref = input_token },
@@ -755,6 +777,34 @@ test "SignalExpr.fromAbi decodes map, map2, and combine expressions" {
             try std.testing.expectEqual(map2_token, payload.token.callable);
             try std.testing.expectEqual(&input, payload.left);
             try std.testing.expectEqual(&right, payload.right);
+            try std.testing.expectEqual(capability, payload.capability);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+
+    const select_token = testCallableToken(0x6800);
+    const true_init = testCallableToken(0x6900);
+    const input_read = std.mem.zeroes(HostTextRead);
+    const select_expr = abi.NodeSignalExpr{
+        .payload = .{ .select = .{
+            ._0 = select_token,
+            ._1 = &input,
+            ._2 = borrowedRocStr("selected-row"),
+            ._3 = input_read,
+            ._4 = select_token,
+            ._5 = true_init,
+            ._6 = capability,
+        } },
+        .tag = .Select,
+    };
+    switch (SignalExpr.fromAbi(select_expr)) {
+        .select => |payload| {
+            try std.testing.expectEqual(select_token, payload.token.callable);
+            try std.testing.expectEqual(&input, payload.input);
+            try std.testing.expectEqualStrings("selected-row", payload.key.asSlice());
+            try std.testing.expectEqual(input_read, payload.input_read);
+            try std.testing.expectEqual(select_token, payload.false_init.toAbi());
+            try std.testing.expectEqual(true_init, payload.true_init.toAbi());
             try std.testing.expectEqual(capability, payload.capability);
         },
         else => return error.TestUnexpectedResult,
@@ -1252,30 +1302,18 @@ test "Elem.fromAbi decodes component when and each payloads" {
         .payload = .{ .ref = condition_token },
         .tag = .Ref,
     };
-    var when_false = abi.Elem{
-        .payload = .{ .text = borrowedRocStr("false") },
-        .tag = .Text,
-    };
-    var when_true = abi.Elem{
-        .payload = .{ .text = borrowedRocStr("true") },
-        .tag = .Text,
-    };
-    const bool_read = std.mem.zeroes(HostBoolRead);
+    const when_ops = std.mem.zeroes(HostWhenOps);
     const when = abi.Elem{
         .payload = .{ .when = .{
             .condition = &condition,
-            .read = bool_read,
-            .when_false = &when_false,
-            .when_true = &when_true,
+            .ops = when_ops,
         } },
         .tag = .When,
     };
     switch (Elem.fromAbi(when)) {
         .when => |payload| {
             try std.testing.expectEqual(&condition, payload.condition);
-            try std.testing.expectEqual(bool_read, payload.read);
-            try std.testing.expectEqual(&when_false, payload.when_false);
-            try std.testing.expectEqual(&when_true, payload.when_true);
+            try std.testing.expectEqual(when_ops, payload.ops);
         },
         else => return error.TestUnexpectedResult,
     }

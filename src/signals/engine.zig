@@ -30,6 +30,7 @@ const render_cache_mod = @import("render_cache.zig");
 const descriptor_stream = @import("descriptor_stream.zig");
 const retained_values = @import("retained_values.zig");
 const signal_records = @import("signal_records.zig");
+const selector_runtime = @import("selector_runtime.zig");
 const active_graph = @import("active_signal_graph.zig");
 const scope_runtime = @import("scope_runtime.zig");
 const each_runtime = @import("each_runtime.zig");
@@ -99,6 +100,7 @@ pub const HostBoolRead = retained_values.HostBoolRead;
 pub const HostEventReducer = retained_values.HostEventReducer;
 pub const HostTaskRequestRead = retained_values.HostTaskRequestRead;
 pub const HostEachOps = retained_values.HostEachOps;
+pub const HostWhenOps = retained_values.HostWhenOps;
 pub const HostSignalToken = retained_values.HostSignalToken;
 pub const HostValueCell = retained_values.HostValueCell;
 pub const InitializerCallable = retained_values.InitializerCallable;
@@ -118,6 +120,7 @@ const releaseHostEachOps = retained_values.releaseHostEachOps;
 pub const HostSignalCacheSlot = signal_records.CacheSlot;
 pub const HostSignalEvalResult = signal_records.EvalResult;
 pub const HostSignalConstRecord = signal_records.ConstRecord;
+pub const HostSignalSelectRecord = signal_records.SelectRecord;
 pub const HostSignalMapRecord = signal_records.MapRecord;
 pub const HostSignalMap2Record = signal_records.Map2Record;
 pub const HostSignalCombineRecord = signal_records.CombineRecord;
@@ -747,6 +750,7 @@ pub fn Engine(comptime Ctx: type) type {
         active_bool_signal_routes: active_graph.RouteTable(HostActiveBoolSignalSink) = .empty,
         active_change_signal_routes: active_graph.RouteTable(HostActiveChangeSignalSink) = .empty,
         active_structural_signal_routes: active_graph.RouteTable(HostActiveStructuralSignal) = .empty,
+        selectors: selector_runtime.Registry(HostSignalRecord) = .{},
         render_cache: render_cache_mod.Cache(Ctx) = .{},
         pending_tasks: std.ArrayListUnmanaged(HostPendingTask) = .empty,
         active_intervals: std.ArrayListUnmanaged(HostActiveInterval) = .empty,
@@ -787,8 +791,25 @@ pub fn Engine(comptime Ctx: type) type {
                 self.engine.removeActiveIntervalBySourceToken(self.ctx, source_token);
             }
 
+            /// Adds one live selector member to the shared keyed index.
+            pub fn ensureSelector(self: *@This(), input: *HostSignalRecord, key: []const u8, member: *HostSignalRecord) void {
+                self.engine.selectors.register(Ctx.allocator(self.ctx), input, key, member) catch @panic("out of memory");
+            }
+
+            /// Registers a selector member after prepared graph publication.
+            pub fn registerSelector(self: *@This(), input: *HostSignalRecord, key: []const u8, member: *HostSignalRecord) void {
+                _ = self;
+                _ = input;
+                _ = key;
+                _ = member;
+            }
+
             /// Performs release record inside the shared engine while preserving transaction and changed-set invariants.
             pub fn releaseRecord(self: *@This(), record: *HostSignalRecord) void {
+                switch (record.payload) {
+                    .select => |payload| self.engine.selectors.unregister(Ctx.allocator(self.ctx), payload.input, payload.key, record),
+                    else => {},
+                }
                 record.release(Ctx.allocator(self.ctx), self.ctx, self.engine.roc_host.?, &self.engine.pending_roc_metrics);
             }
         };
@@ -1530,17 +1551,24 @@ pub fn Engine(comptime Ctx: type) type {
 
                 const selections_storage = allocator.alloc(AggregateBranchSelection, normalized.selected_indexes.len) catch return error.OutOfMemory;
                 defer allocator.free(selections_storage);
+                var built_selection_count: usize = 0;
+                defer for (selections_storage[0..built_selection_count]) |selection| selection.elem.decref(roc_host);
                 var selections = selections_storage;
                 for (normalized.selected_indexes, 0..) |change_index, selection_index| {
                     const change = changes[change_index];
                     const site = engine.activeScopeSiteByNodeId(change.node_id.raw(), .when) orelse return error.InvalidDescriptor;
                     if (site.scope_id != change.scope_id or site.ordinal != change.ordinal) return error.InvalidDescriptor;
                     const when_index = engine.activeWhenIndexByNodeId(change.node_id.raw()) orelse return error.InvalidDescriptor;
-                    const when_desc = engine.active_stream.whens.items[when_index];
+                    const when_desc = &engine.active_stream.whens.items[when_index];
                     if (when_desc.condition.record != change.record) return error.InvalidDescriptor;
                     const branch = change.branch orelse return error.InvalidDescriptor;
                     const retired_scope_id = (engine.activeWhenBranchScopeId(site.scope_id, site.ordinal, branch.opposite()) catch |err| return scopeError(err)) orelse return error.InvalidScope;
                     if ((engine.activeWhenBranchScopeId(site.scope_id, site.ordinal, branch) catch |err| return scopeError(err)) != null) return error.InvalidScope;
+                    const value_cell = if (change.cache_staged_in_overlay) switch (overlay.readSlot(@constCast(&when_desc.cached_value)).*) {
+                        .absent => return error.InvalidDescriptor,
+                        .present => |cell| cell,
+                    } else change.pending_when_cache orelse return error.InvalidDescriptor;
+                    const branch_elem = engine.buildWhenElem(ctx, roc_host, when_desc.ops, value_cell.value, value_cell.cap);
                     selections[selection_index] = .{
                         .node_id = change.node_id,
                         .parent_scope_id = site.scope_id,
@@ -1550,11 +1578,9 @@ pub fn Engine(comptime Ctx: type) type {
                         .render_insert_index = site.render_insert_index,
                         .binder_bindings = site.binder_bindings,
                         .branch = branch,
-                        .elem = switch (branch) {
-                            .true_branch => when_desc.when_true,
-                            .false_branch => when_desc.when_false,
-                        },
+                        .elem = branch_elem,
                     };
+                    built_selection_count += 1;
                 }
 
                 var subsumed_each = std.ArrayListUnmanaged(usize).empty;
@@ -1950,12 +1976,47 @@ pub fn Engine(comptime Ctx: type) type {
             self.scratch.deinit(Ctx.allocator(ctx));
         }
 
+        /// Releases the empty selector registry's retained hash-table storage.
+        pub fn deinitSelectors(self: *Self, ctx: Ctx.Handle) void {
+            if (self.selectors.groups.count() != 0) @panic("selector registry deinitialized while members were active");
+            self.selectors.deinit(Ctx.allocator(ctx));
+        }
+
         fn scratchBinderStack(self: *Self, allocator: std.mem.Allocator, base: []const HostBinderBinding) *std.ArrayListUnmanaged(HostBinderBinding) {
             if (self.scratch.binder_stack.items.len != 0) {
                 @panic("engine binder scratch was already active");
             }
             self.scratch.binder_stack.appendSlice(allocator, base) catch @panic("out of memory");
             return &self.scratch.binder_stack;
+        }
+
+        fn prepareSelectorsForGraphChange(
+            self: *Self,
+            allocator: std.mem.Allocator,
+            release: *const active_graph.PreparedReleaseClosure(HostSignalRecord),
+            append: *const active_graph.PreparedGraphAppend(HostSignalRecord),
+        ) CollectionError!selector_runtime.Registry(HostSignalRecord) {
+            var prepared: selector_runtime.Registry(HostSignalRecord) = .{};
+            errdefer prepared.deinit(allocator);
+            for (self.active_signal_graph.items, release.final_record_ids) |node, final_id| {
+                if (final_id == null) continue;
+                switch (node.record.payload) {
+                    .select => |payload| prepared.register(allocator, payload.input, payload.key, node.record) catch return error.OutOfMemory,
+                    else => {},
+                }
+            }
+            for (append.new_nodes) |node| switch (node.record.payload) {
+                .select => |payload| prepared.register(allocator, payload.input, payload.key, node.record) catch return error.OutOfMemory,
+                else => {},
+            };
+            return prepared;
+        }
+
+        fn commitPreparedSelectors(self: *Self, allocator: std.mem.Allocator, prepared: *selector_runtime.Registry(HostSignalRecord)) void {
+            var retired = self.selectors;
+            self.selectors = prepared.*;
+            prepared.* = .{};
+            retired.deinit(allocator);
         }
 
         fn debugPhase(ctx: Ctx.Handle, phase: DebugPhase) void {
@@ -1970,6 +2031,10 @@ pub fn Engine(comptime Ctx: type) type {
 
         fn callHostValueToHostValueWithCapability(ctx: Ctx.Handle, roc_host: *abi.RocHost, cap: HostValueCapability, callable: abi.RocErasedCallable, value: HostValue) HostValue {
             return retained_values.callHostValueToHostValueWithCapability(Ctx, ctx, roc_host, cap, callable, value);
+        }
+
+        fn callHostValueToElemWithCapability(ctx: Ctx.Handle, roc_host: *abi.RocHost, cap: HostValueCapability, callable: abi.RocErasedCallable, value: HostValue) abi.Elem {
+            return retained_values.callHostValueToElemWithCapability(Ctx, ctx, roc_host, cap, callable, value);
         }
 
         fn callHostValueToCmdWithCapability(ctx: Ctx.Handle, roc_host: *abi.RocHost, cap: HostValueCapability, callable: abi.RocErasedCallable, value: HostValue) erased_calls.Cmd {
@@ -2685,6 +2750,7 @@ pub fn Engine(comptime Ctx: type) type {
             var metrics = self.pending_roc_metrics;
             metrics.bump(.derived_calls_into_roc, overlay.derived_calls);
             metrics.bump(.propagation_prunes, overlay.propagation_prunes);
+            metrics.bump(.selector_members_dirtied, overlay.selector_members_dirtied);
             self.pending_roc_metrics = metrics;
         }
 
@@ -2906,6 +2972,28 @@ pub fn Engine(comptime Ctx: type) type {
                         .left = left,
                         .right = right,
                         .transform = retainHostCallable(payload.transform, &self.pending_roc_metrics),
+                        .cap = retainHostValueCapability(payload.capability, &self.pending_roc_metrics),
+                    } });
+                    try binding.remember(record);
+                    break :blk record;
+                },
+                .select => |payload| blk: {
+                    const token = payload.token.callable;
+                    if (try binding.retainExisting(token, .select)) |record| {
+                        break :blk record;
+                    }
+
+                    const input = try self.bindSignalExprViewWith(Binding, binding, abi_view.SignalExpr.fromAbi(payload.input.*), binder_stack);
+                    var input_unbound = true;
+                    errdefer if (input_unbound) if (comptime @hasDecl(Binding, "release")) binding.release(input);
+                    const key = try allocator.dupe(u8, payload.key.asSlice());
+                    input_unbound = false;
+                    const record = try binding.init(.{ .select = .{
+                        .input = input,
+                        .key = key,
+                        .input_read = retainHostTextRead(payload.input_read, &self.pending_roc_metrics),
+                        .false_init = retainHostCallable(payload.false_init, &self.pending_roc_metrics),
+                        .true_init = retainHostCallable(payload.true_init, &self.pending_roc_metrics),
                         .cap = retainHostValueCapability(payload.capability, &self.pending_roc_metrics),
                     } });
                     try binding.remember(record);
@@ -3232,7 +3320,7 @@ pub fn Engine(comptime Ctx: type) type {
             for (previous.whens.items) |desc| {
                 if (!self.streamNodeIdInScopeSubtree(previous, desc.node_id, ids.ScopeId.fromRaw(root_scope_id))) continue;
                 const condition = desc.condition.cloneRetained(allocator, &self.pending_roc_metrics);
-                stream.appendWhen(allocator, ctx, roc_host, &self.pending_roc_metrics, desc.node_id, condition, desc.read, desc.when_false, desc.when_true);
+                stream.appendWhen(allocator, ctx, roc_host, &self.pending_roc_metrics, desc.node_id, condition, desc.ops);
                 stream.whens.items[stream.whens.items.len - 1].cached_value = self.cloneHostSignalCacheSlot(ctx, desc.cached_value, &self.pending_roc_metrics);
             }
             for (previous.eaches.items) |desc| {
@@ -3452,12 +3540,16 @@ pub fn Engine(comptime Ctx: type) type {
             const binder_stack = self.scratchBinderStack(allocator, site.binder_bindings);
             defer self.scratch.binder_stack.clearRetainingCapacity();
 
-            const branch_elem = switch (active_branch) {
-                .true_branch => when.when_true,
-                .false_branch => when.when_false,
+            const cached = switch (when.cached_value) {
+                .absent => @panic("active when branch had no cached case value"),
+                .present => |value| value,
             };
+            const branch_elem = self.buildWhenElem(ctx, roc_host, when.ops, cached.value, cached.cap);
+            defer branch_elem.decref(roc_host);
             var ordinal: u64 = 0;
             var dom_ordinal: u64 = 0;
+            Ctx.pushHostValueCapabilities(ctx, &.{when.ops.case_capability});
+            defer Ctx.popHostValueCapabilities(ctx);
             self.collectActiveElemDescriptors(ctx, roc_host, stream, branch_elem, branch_scope_id, site.parent_elem_id, &ordinal, &dom_ordinal, binder_stack, branch_scope.created, dirty_source_node_ids);
             return branch_scope_id;
         }
@@ -3537,7 +3629,36 @@ pub fn Engine(comptime Ctx: type) type {
                 error.MissingNode, error.MissingParent, error.ActiveNode, error.DuplicateNode, error.ConflictingParent, error.DuplicateChild, error.TagMismatch => error.InvalidRenderTopology,
             };
         }
-        const WhenCollection = struct { scope: scope_tree.InternResult, branch: HostScopeBranch };
+        const WhenCollection = struct {
+            scope: scope_tree.InternResult,
+            branch: HostScopeBranch,
+            elem: abi.Elem,
+            capability: HostValueCapability,
+        };
+
+        fn activeWhenBranch(self: *Self, parent_scope_id: ids.ScopeId, site_ordinal: ids.SiteOrdinal) CollectionError!?HostScopeBranch {
+            const true_scope = self.activeWhenBranchScopeId(parent_scope_id, site_ordinal, .true_branch) catch |err| return scopeError(err);
+            const false_scope = self.activeWhenBranchScopeId(parent_scope_id, site_ordinal, .false_branch) catch |err| return scopeError(err);
+            if (true_scope != null and false_scope != null) return error.InvalidScope;
+            if (true_scope != null) return .true_branch;
+            if (false_scope != null) return .false_branch;
+            return null;
+        }
+
+        fn buildWhenElem(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, ops: HostWhenOps, value: HostValue, cap: HostValueCapability) abi.Elem {
+            _ = self;
+            assertHostValueCapabilitiesMatch(ops.case_capability, cap, "when case capability did not match its signal value");
+            const builder_value = Ctx.cloneHostValue(ctx, value);
+            return callHostValueToElemWithCapability(ctx, roc_host, ops.case_capability, ops.build, builder_value);
+        }
+
+        fn collectActiveWhenElemDescriptorsWith(self: *Self, comptime Collection: type, collection: Collection, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, selected: WhenCollection, parent_elem_id: ids.ElemId, binder_stack: *std.ArrayListUnmanaged(HostBinderBinding), dirty_source_node_ids: []const u64) CollectionError!void {
+            Ctx.pushHostValueCapabilities(ctx, &.{selected.capability});
+            defer Ctx.popHostValueCapabilities(ctx);
+            var branch_ordinal = ids.SiteOrdinal.fromRaw(0);
+            var branch_dom_ordinal = ids.SiteOrdinal.fromRaw(0);
+            try self.collectActiveElemDescriptorsWith(Collection, collection, ctx, roc_host, stream, selected.elem, selected.scope.scope_id, parent_elem_id, &branch_ordinal, &branch_dom_ordinal, binder_stack, selected.scope.created, dirty_source_node_ids);
+        }
 
         fn collectActiveEachRowElemDescriptorsWith(self: *Self, comptime Collection: type, collection: Collection, ctx: Ctx.Handle, roc_host: *abi.RocHost, stream: *HostNodeDescriptorStream, each: HostNodeEachDesc, row_elem: abi.Elem, row_scope_id: ids.ScopeId, parent_elem_id: ids.ElemId, ordinal: *ids.SiteOrdinal, dom_ordinal: *ids.SiteOrdinal, binder_stack: *std.ArrayListUnmanaged(HostBinderBinding), row_created: bool, dirty_source_node_ids: []const u64) CollectionError!void {
             const caps = [_]HostValueCapability{ each.ops.key_capability, each.ops.item_capability };
@@ -3631,15 +3752,15 @@ pub fn Engine(comptime Ctx: type) type {
                 ordinal.* = ids.SiteOrdinal.fromRaw(ordinal.*.raw() + 1);
                 self.stream.appendScopeSite(allocator, node_id, scope_id, site_ordinal, parent_elem_id, .when, binder_stack);
                 const condition_binding = self.engine.bindNodeSignal(allocator, self.stream, payload.condition.*, binder_stack);
-                self.stream.appendWhen(allocator, self.host_ctx, roc_host, &self.engine.pending_roc_metrics, node_id, condition_binding, payload.read, payload.when_false.*, payload.when_true.*);
+                self.stream.appendWhen(allocator, self.host_ctx, roc_host, &self.engine.pending_roc_metrics, node_id, condition_binding, payload.ops);
                 const desc = &self.stream.whens.items[self.stream.whens.items.len - 1];
                 const condition = self.engine.evalHostSignalBinding(self.host_ctx, roc_host, &desc.condition);
                 const cap = self.engine.hostSignalBindingCapability(self.host_ctx, &desc.condition);
-                assertHostValueCapabilitiesMatch(desc.read.capability, cap, "when read extension capability did not match its signal value");
-                const branch: HostScopeBranch = if (callHostValueToBoolWithCapability(self.host_ctx, roc_host, desc.read.capability, desc.read.read, condition)) .true_branch else .false_branch;
+                const branch = (try self.engine.activeWhenBranch(scope_id, site_ordinal)) orelse .true_branch;
+                const branch_elem = self.engine.buildWhenElem(self.host_ctx, roc_host, desc.ops, condition, cap);
                 desc.cached_value.replace(self.host_ctx, roc_host, &self.engine.pending_roc_metrics, condition, cap);
                 if (self.engine.activeWhenBranchScopeId(scope_id, site_ordinal, branch.opposite()) catch @panic("scope id has no host scope descriptor")) |inactive| self.engine.disposeScopeSubtree(self.host_ctx, roc_host, inactive.raw());
-                return .{ .scope = self.engine.internWhenBranchScope(allocator, scope_id, site_ordinal, branch) catch @panic("scope id has no host scope descriptor"), .branch = branch };
+                return .{ .scope = self.engine.internWhenBranchScope(allocator, scope_id, site_ordinal, branch) catch @panic("scope id has no host scope descriptor"), .branch = branch, .elem = branch_elem, .capability = desc.ops.case_capability };
             }
         };
 
@@ -4357,15 +4478,20 @@ pub fn Engine(comptime Ctx: type) type {
                 site.desc.render_insert_index = self.prepared_render_order.items.len;
                 errdefer site.abort(allocator);
                 const condition = try self.bindSignalRoot(roc_host, payload.condition.*, binder_stack);
-                var prepared = self.stream.prepareWhen(node_id, condition, payload.read, payload.when_false.*, payload.when_true.*, &self.engine.pending_roc_metrics);
+                var prepared = self.stream.prepareWhen(node_id, condition, payload.ops, &self.engine.pending_roc_metrics);
                 errdefer prepared.abort(allocator, self.host_ctx, roc_host, &self.engine.pending_roc_metrics);
                 self.signal_records.transferDescriptorRoot(condition.record);
                 const journaled = self.signal_bindings.pop() orelse @panic("staged when binding journal underflow");
                 if (journaled.record != condition.record or journaled.source_node_ids.ptr != condition.source_node_ids.ptr) @panic("staged when binding journal transfer mismatch");
                 const value = self.engine.evalHostSignalBindingStaged(self.host_ctx, roc_host, &prepared.desc.condition, self.prepared_state_cells.items, self.cache_overlay);
                 const cap = self.engine.hostSignalRecordCapabilityWithProvisionalStates(self.host_ctx, prepared.desc.condition.record, self.prepared_state_cells.items);
-                assertHostValueCapabilitiesMatch(prepared.desc.read.capability, cap, "when read extension capability did not match its signal value");
-                const branch: HostScopeBranch = if (callHostValueToBoolWithCapability(self.host_ctx, roc_host, prepared.desc.read.capability, prepared.desc.read.read, value)) .true_branch else .false_branch;
+                const branch = if (self.committedScopeIsActive(scope_id))
+                    (try self.engine.activeWhenBranch(scope_id, site_ordinal)) orelse .true_branch
+                else
+                    .true_branch;
+                const branch_elem = self.engine.buildWhenElem(self.host_ctx, roc_host, prepared.desc.ops, value, cap);
+                errdefer branch_elem.decref(roc_host);
+                try self.reserveCounts(.{ .roots = try countStaticRootNodes(branch_elem) });
                 prepared.desc.cached_value = .{ .present = HostValueCell.initRetained(value, cap, &self.engine.pending_roc_metrics) };
                 // Under a scope re-collected here the opposite branch may
                 // still be active: it retires with the re-collection. Under
@@ -4376,7 +4502,7 @@ pub fn Engine(comptime Ctx: type) type {
                 self.prepared_state_sites.appendAssumeCapacity(site);
                 self.prepared_whens.appendAssumeCapacity(prepared);
                 ordinal.* = ids.SiteOrdinal.fromRaw(ordinal.*.raw() + 1);
-                return .{ .scope = branch_scope, .branch = branch };
+                return .{ .scope = branch_scope, .branch = branch, .elem = branch_elem, .capability = prepared.desc.ops.case_capability };
             }
 
             fn collectInitialEach(self: *@This(), roc_host: *abi.RocHost, scope_id: ids.ScopeId, parent_elem_id: ids.ElemId, ordinal: *ids.SiteOrdinal, binder_stack: *std.ArrayListUnmanaged(HostBinderBinding), payload: abi_view.EachElem, dirty_source_node_ids: []const u64) CollectionError!void {
@@ -5179,14 +5305,8 @@ pub fn Engine(comptime Ctx: type) type {
                 },
                 .when => |when_payload| {
                     const selected = try collection.beginWhen(roc_host, scope_id, parent_elem_id, ordinal, binder_stack.items, when_payload);
-                    const branch_scope_id = selected.scope.scope_id;
-                    var branch_ordinal = ids.SiteOrdinal.fromRaw(0);
-                    const branch_elem = switch (selected.branch) {
-                        .true_branch => when_payload.when_true.*,
-                        .false_branch => when_payload.when_false.*,
-                    };
-                    var branch_dom_ordinal = ids.SiteOrdinal.fromRaw(0);
-                    try self.collectActiveElemDescriptorsWith(Collection, collection, ctx, roc_host, stream, branch_elem, branch_scope_id, parent_elem_id, &branch_ordinal, &branch_dom_ordinal, binder_stack, selected.scope.created, dirty_source_node_ids);
+                    defer selected.elem.decref(roc_host);
+                    try self.collectActiveWhenElemDescriptorsWith(Collection, collection, ctx, roc_host, stream, selected, parent_elem_id, binder_stack, dirty_source_node_ids);
                 },
                 .each => |each_payload| {
                     if (comptime Collection == *StagedCollectionCtx) {
@@ -5264,6 +5384,7 @@ pub fn Engine(comptime Ctx: type) type {
             return switch (abi_view.SignalExpr.fromAbi(expr)) {
                 .ref, .const_value, .task_source, .interval_source, .location_source, .visibility_source, .online_source, .storage_source => 1,
                 .map => |payload| std.math.add(usize, 1, try countSignalExprRecords(payload.input.*)) catch return error.ResourceLimit,
+                .select => |payload| std.math.add(usize, 1, try countSignalExprRecords(payload.input.*)) catch return error.ResourceLimit,
                 .map2 => |payload| blk: {
                     const left = try countSignalExprRecords(payload.left.*);
                     const right = try countSignalExprRecords(payload.right.*);
@@ -5316,18 +5437,7 @@ pub fn Engine(comptime Ctx: type) type {
                     break :blk count;
                 },
                 .when => |payload| blk: {
-                    const when_false = try countStaticRootNodes(payload.when_false.*);
-                    const when_true = try countStaticRootNodes(payload.when_true.*);
-                    var count = StaticRootCounts{
-                        .nodes = @max(when_false.nodes, when_true.nodes),
-                        .attrs = @max(when_false.attrs, when_true.attrs),
-                        .lifecycle = @max(when_false.lifecycle, when_true.lifecycle),
-                        .signal_records = @max(when_false.signal_records, when_true.signal_records),
-                        .state_sites = @max(when_false.state_sites, when_true.state_sites),
-                        .component_sites = @max(when_false.component_sites, when_true.component_sites),
-                        .when_sites = @max(when_false.when_sites, when_true.when_sites),
-                        .each_sites = @max(when_false.each_sites, when_true.each_sites),
-                    };
+                    var count = StaticRootCounts{};
                     count.signal_records = std.math.add(usize, count.signal_records, try countSignalExprRecords(payload.condition.*)) catch return error.ResourceLimit;
                     count.when_sites = std.math.add(usize, count.when_sites, 1) catch return error.ResourceLimit;
                     count.attrs = std.math.add(usize, count.attrs, 1) catch return error.ResourceLimit;
@@ -7191,6 +7301,7 @@ pub fn Engine(comptime Ctx: type) type {
             render_layout_plan: ?PreparedRenderLayoutPlan = null,
             graph_release: ?active_graph.PreparedReleaseClosure(HostSignalRecord) = null,
             graph_append: ?active_graph.PreparedGraphAppend(HostSignalRecord) = null,
+            selector_registry: ?selector_runtime.Registry(HostSignalRecord) = null,
             sink_edits: ?active_graph.PreparedSinkRouteEdits = null,
             source_route_appends: ?active_graph.PreparedRouteAppends(u64) = null,
             text_route_appends: ?active_graph.PreparedRouteAppends(active_graph.TextSink) = null,
@@ -7552,6 +7663,8 @@ pub fn Engine(comptime Ctx: type) type {
                         error.InvalidAppend => return error.InvalidSignalGraphAppend,
                     };
                     errdefer if (self.graph_append) |*append| append.deinit(allocator);
+                    self.selector_registry = try self.engine.prepareSelectorsForGraphChange(allocator, &self.graph_release.?, &self.graph_append.?);
+                    errdefer if (self.selector_registry) |*registry| registry.deinit(allocator);
                     try self.engine.reserveActiveIntervals(self.host_ctx, self.graph_append.?.appendedIntervalSourceCount());
                     try self.prepareGraphRoutes(allocator);
                 }
@@ -7647,6 +7760,7 @@ pub fn Engine(comptime Ctx: type) type {
                 var lifecycle = ActiveSignalGraphLifecycle{ .engine = self.engine, .ctx = self.host_ctx };
                 release.releaseRetired(Ctx.allocator(self.host_ctx), &lifecycle);
                 append.registerAppendedEffects(&lifecycle);
+                self.engine.commitPreparedSelectors(Ctx.allocator(self.host_ctx), &self.selector_registry.?);
             }
 
             fn commitRenderAssumeCapacity(self: *@This()) void {
@@ -7783,6 +7897,7 @@ pub fn Engine(comptime Ctx: type) type {
                 if (self.render_layout_plan) |*plan| plan.deinit();
                 if (self.graph_append) |*append| append.deinit(allocator);
                 if (self.graph_release) |*release| release.deinit(allocator);
+                if (self.selector_registry) |*registry| registry.deinit(allocator);
                 if (self.sink_edits) |*edits| edits.deinit(allocator);
                 self.deinitGraphRoutes(allocator);
                 self.retired_stream.deinit(allocator, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
@@ -8017,6 +8132,7 @@ pub fn Engine(comptime Ctx: type) type {
             sink_edits: ?active_graph.PreparedSinkRouteEdits = null,
             graph_release: ?active_graph.PreparedReleaseClosure(HostSignalRecord) = null,
             graph_append: ?active_graph.PreparedGraphAppend(HostSignalRecord) = null,
+            selector_registry: ?selector_runtime.Registry(HostSignalRecord) = null,
             source_route_appends: ?active_graph.PreparedRouteAppends(u64) = null,
             text_route_appends: ?active_graph.PreparedRouteAppends(active_graph.TextSink) = null,
             bool_route_appends: ?active_graph.PreparedRouteAppends(active_graph.BoolSink) = null,
@@ -8051,10 +8167,12 @@ pub fn Engine(comptime Ctx: type) type {
                 const retired_scope_id = (engine_ptr.activeWhenBranchScopeId(site.scope_id, site.ordinal, selected_branch.opposite()) catch |err| return scopeError(err)) orelse return error.InvalidScope;
                 if ((engine_ptr.activeWhenBranchScopeId(site.scope_id, site.ordinal, selected_branch) catch |err| return scopeError(err)) != null) return error.InvalidScope;
 
-                const selected_elem = switch (selected_branch) {
-                    .true_branch => when.when_true,
-                    .false_branch => when.when_false,
+                const cached = switch (when.cached_value) {
+                    .absent => return error.InvalidDescriptor,
+                    .present => |cell| cell,
                 };
+                const selected_elem = engine_ptr.buildWhenElem(ctx, roc_host, when.ops, cached.value, cached.cap);
+                defer selected_elem.decref(roc_host);
                 const expected = try countStaticRootNodes(selected_elem);
                 const allocator = Ctx.allocator(ctx);
                 const plan = allocator.create(@This()) catch return error.OutOfMemory;
@@ -8131,6 +8249,7 @@ pub fn Engine(comptime Ctx: type) type {
                     self.deinitGraphRoutes(allocator);
                     if (self.graph_append) |*append| append.deinit(allocator);
                     if (self.graph_release) |*release| release.deinit(allocator);
+                    if (self.selector_registry) |*registry| registry.deinit(allocator);
                     if (self.sink_edits) |*edits| edits.deinit(allocator);
                 }
                 if (self.engine.active_signal_graph.items.len != 0) {
@@ -8149,6 +8268,7 @@ pub fn Engine(comptime Ctx: type) type {
                         error.OutOfMemory => return error.OutOfMemory,
                         error.InvalidAppend => return error.InvalidSignalGraphAppend,
                     };
+                    self.selector_registry = try self.engine.prepareSelectorsForGraphChange(allocator, &self.graph_release.?, &self.graph_append.?);
                     try self.engine.reserveActiveIntervals(self.host_ctx, self.graph_append.?.appendedIntervalSourceCount());
                     try self.prepareGraphRoutes(allocator);
                 }
@@ -8677,6 +8797,7 @@ pub fn Engine(comptime Ctx: type) type {
                 var lifecycle = ActiveSignalGraphLifecycle{ .engine = self.engine, .ctx = self.host_ctx };
                 release.releaseRetired(Ctx.allocator(self.host_ctx), &lifecycle);
                 append.registerAppendedEffects(&lifecycle);
+                self.engine.commitPreparedSelectors(Ctx.allocator(self.host_ctx), &self.selector_registry.?);
             }
 
             fn commitRenderCacheAssumeCapacity(self: *@This()) void {
@@ -8906,6 +9027,7 @@ pub fn Engine(comptime Ctx: type) type {
                 if (self.sink_edits) |*edits| edits.deinit(allocator);
                 if (self.graph_append) |*append| append.deinit(allocator);
                 if (self.graph_release) |*release| release.deinit(allocator);
+                if (self.selector_registry) |*registry| registry.deinit(allocator);
                 self.deinitGraphRoutes(allocator);
                 if (self.removal) |*removal| removal.deinit(allocator);
                 if (self.scope_retirement) |*retirement| retirement.deinit(allocator);
@@ -8952,6 +9074,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
             var lifecycle = ActiveSignalGraphLifecycle{ .engine = self, .ctx = ctx };
             active_graph.clear(HostSignalRecord, allocator, &self.active_signal_graph, &lifecycle);
+            if (self.selectors.groups.count() != 0) @panic("active selector index survived graph clear");
         }
 
         /// Clears active intervals while retaining bounded storage where the type promises reuse.
@@ -9714,9 +9837,7 @@ pub fn Engine(comptime Ctx: type) type {
                     self.releaseActiveSignalRecord(ctx, removed.condition.record);
                     removed.cached_value.deinit(ctx, roc_host, &self.pending_roc_metrics);
                     removed.condition.deinit(Ctx.allocator(ctx), ctx, roc_host, &self.pending_roc_metrics);
-                    releaseHostBoolRead(removed.read, roc_host, &self.pending_roc_metrics);
-                    removed.when_false.decref(roc_host);
-                    removed.when_true.decref(roc_host);
+                    retained_values.releaseHostWhenOps(removed.ops, roc_host, &self.pending_roc_metrics);
                     continue;
                 }
                 const record_id = self.requireActiveSignalRecordId(desc.condition.record);
@@ -10283,6 +10404,26 @@ pub fn Engine(comptime Ctx: type) type {
                     const value = callHostValueHostValueToHostValueWithCapabilities(ctx, roc_host, left_cap, right_cap, payload.transform.toAbi(), left, right);
                     return self.replaceSignalExprCacheAndClone(ctx, &payload.cached_value, roc_host, value, payload.cap);
                 },
+                .select => |*payload| {
+                    if (payload.false_value == .absent) {
+                        const value = erased_calls.callValueInitThunk(roc_host, payload.false_init.toAbi());
+                        payload.false_value.replace(ctx, roc_host, &self.pending_roc_metrics, value, payload.cap);
+                    }
+                    if (payload.true_value == .absent) {
+                        const value = erased_calls.callValueInitThunk(roc_host, payload.true_init.toAbi());
+                        payload.true_value.replace(ctx, roc_host, &self.pending_roc_metrics, value, payload.cap);
+                    }
+                    const input = self.evalHostSignalRecordStaged(ctx, roc_host, payload.input, provisional_states, overlay);
+                    defer self.dropHostSignalRecordValueWithProvisionalStates(ctx, roc_host, payload.input, input, provisional_states);
+                    const selected = callHostValueToStrWithCapability(ctx, roc_host, payload.input_read.capability, payload.input_read.read, input);
+                    defer selected.decref(roc_host);
+                    const desired = if (std.mem.eql(u8, selected.asSlice(), payload.key)) blk: {
+                        break :blk self.cloneCachedSignalValue(ctx, &payload.true_value);
+                    } else blk: {
+                        break :blk self.cloneCachedSignalValue(ctx, &payload.false_value);
+                    };
+                    return self.replaceSignalExprCacheAndClone(ctx, &payload.cached_value, roc_host, desired, payload.cap);
+                },
                 .combine => |*payload| {
                     const allocator = Ctx.allocator(ctx);
                     var values: std.ArrayListUnmanaged(HostValue) = .empty;
@@ -10580,6 +10721,20 @@ pub fn Engine(comptime Ctx: type) type {
                     debugPhase(ctx, .eval_dirty_map2_cache);
                     return self.rememberDirtySignalResult(record, dirty_generation, self.updateDirtySignalExprCache(ctx, roc_host, &payload.cached_value, value, payload.cap));
                 },
+                .select => |*payload| {
+                    const cache_was_absent = payload.cached_value == .absent;
+                    const input = self.evalDirtyHostSignalRecord(ctx, roc_host, payload.input, dirty_source_node_ids, dirty_generation);
+                    defer self.dropHostSignalRecordValue(ctx, roc_host, payload.input, input.value);
+                    if (!input.changed and !cache_was_absent) {
+                        return self.rememberDirtySignalResult(record, dirty_generation, .{ .value = self.cloneCachedSignalValue(ctx, &payload.cached_value), .changed = false });
+                    }
+                    if (payload.false_value == .absent or payload.true_value == .absent) @panic("active selector member was not initialized");
+                    const selected = callHostValueToStrWithCapability(ctx, roc_host, payload.input_read.capability, payload.input_read.read, input.value);
+                    defer selected.decref(roc_host);
+                    const desired_slot = if (std.mem.eql(u8, selected.asSlice(), payload.key)) &payload.true_value else &payload.false_value;
+                    const desired = self.cloneCachedSignalValue(ctx, desired_slot);
+                    return self.rememberDirtySignalResult(record, dirty_generation, self.updateDirtySignalExprCache(ctx, roc_host, &payload.cached_value, desired, payload.cap));
+                },
                 .combine => |*payload| {
                     const cache_was_absent = payload.cached_value == .absent;
                     const allocator = Ctx.allocator(ctx);
@@ -10711,6 +10866,18 @@ pub fn Engine(comptime Ctx: type) type {
                     const value = callHostValueHostValueToHostValueWithCapabilities(ctx, roc_host, self.hostSignalRecordCapability(ctx, payload.left), self.hostSignalRecordCapability(ctx, payload.right), payload.transform.toAbi(), left.value, right.value);
                     break :blk self.updatePreparedDirtySignalExprCache(ctx, roc_host, overlay, &payload.cached_value, value, payload.cap);
                 },
+                .select => |*payload| blk: {
+                    const input = try self.evalPreparedDirtyHostSignalRecord(ctx, roc_host, overlay, payload.input, dirty_source_node_ids, dirty_generation);
+                    defer self.dropHostSignalRecordValue(ctx, roc_host, payload.input, input.value);
+                    const slot = overlay.readSlot(&payload.cached_value);
+                    if (!input.changed and slot.* != .absent) break :blk .{ .value = self.cloneCachedSignalValue(ctx, slot), .changed = false };
+                    if (payload.false_value == .absent or payload.true_value == .absent) return error.InvalidDescriptor;
+                    const selected = callHostValueToStrWithCapability(ctx, roc_host, payload.input_read.capability, payload.input_read.read, input.value);
+                    defer selected.decref(roc_host);
+                    const desired_slot = if (std.mem.eql(u8, selected.asSlice(), payload.key)) &payload.true_value else &payload.false_value;
+                    const desired = self.cloneCachedSignalValue(ctx, desired_slot);
+                    break :blk self.updatePreparedDirtySignalExprCache(ctx, roc_host, overlay, &payload.cached_value, desired, payload.cap);
+                },
                 .combine => |*payload| blk: {
                     const allocator = Ctx.allocator(ctx);
                     var values = std.ArrayListUnmanaged(HostValue).empty;
@@ -10806,13 +10973,68 @@ pub fn Engine(comptime Ctx: type) type {
             const allocator = Ctx.allocator(ctx);
             var changed = std.ArrayListUnmanaged(u64).empty;
             errdefer changed.deinit(allocator);
-            changed.ensureTotalCapacity(allocator, dirty_record_ids.len) catch return error.OutOfMemory;
+            changed.ensureTotalCapacity(allocator, self.active_signal_graph.items.len) catch return error.OutOfMemory;
+            var changed_set = &self.scratch.dirty_changed_record_id_set;
+            changed_set.clearRetainingCapacity();
+            changed_set.ensureTotalCapacity(allocator, std.math.cast(u32, self.active_signal_graph.items.len) orelse return error.ResourceLimit) catch return error.OutOfMemory;
+            var selector_roots = &self.scratch.selector_dirty_roots;
+            selector_roots.clearRetainingCapacity();
+            selector_roots.ensureTotalCapacity(allocator, self.active_signal_graph.items.len) catch return error.OutOfMemory;
             for (dirty_record_ids) |record_id| {
                 if (record_id >= self.active_signal_graph.items.len) return error.ResourceLimit;
                 const record = self.active_signal_graph.items[@intCast(record_id)].record;
                 const result = try self.evalPreparedDirtyHostSignalRecord(ctx, roc_host, overlay, record, dirty_source_node_ids, dirty_generation);
-                if (result.changed) changed.appendAssumeCapacity(record_id);
+                if (result.changed) {
+                    changed.appendAssumeCapacity(record_id);
+                    changed_set.putAssumeCapacity(record_id, {});
+                }
                 self.dropHostSignalRecordValue(ctx, roc_host, record, result.value);
+            }
+
+            const ordinary_changed_len = changed.items.len;
+            for (changed.items[0..ordinary_changed_len]) |record_id| {
+                const input_record = self.active_signal_graph.items[@intCast(record_id)].record;
+                const member = self.selectors.anyMember(input_record) orelse continue;
+                const selector = switch (member.payload) {
+                    .select => |*payload| payload,
+                    else => return error.InvalidDescriptor,
+                };
+
+                const old_value = switch (input_record.payload) {
+                    .ref => |node_id| Ctx.stateValueByNodeId(ctx, node_id),
+                    else => self.cloneCachedSignalValue(ctx, input_record.cachedSlot() orelse return error.InvalidDescriptor),
+                };
+                defer self.dropHostSignalRecordValue(ctx, roc_host, input_record, old_value);
+                const next_result = try self.evalPreparedDirtyHostSignalRecord(ctx, roc_host, overlay, input_record, dirty_source_node_ids, dirty_generation);
+                defer self.dropHostSignalRecordValue(ctx, roc_host, input_record, next_result.value);
+                const old_key = callHostValueToStrWithCapability(ctx, roc_host, selector.input_read.capability, selector.input_read.read, old_value);
+                defer old_key.decref(roc_host);
+                const next_key = callHostValueToStrWithCapability(ctx, roc_host, selector.input_read.capability, selector.input_read.read, next_result.value);
+                defer next_key.decref(roc_host);
+                if (std.mem.eql(u8, old_key.asSlice(), next_key.asSlice())) continue;
+
+                const member_sets = [_][]const *HostSignalRecord{
+                    self.selectors.membersForKey(input_record, old_key.asSlice()),
+                    self.selectors.membersForKey(input_record, next_key.asSlice()),
+                };
+                for (member_sets) |members| for (members) |selector_member| {
+                    const member_id = selector_member.active_graph_id orelse return error.InvalidDescriptor;
+                    selector_roots.appendAssumeCapacity(member_id);
+                };
+            }
+
+            overlay.selector_members_dirtied = std.math.add(u64, overlay.selector_members_dirtied, std.math.cast(u64, selector_roots.items.len) orelse return error.ResourceLimit) catch return error.ResourceLimit;
+            if (selector_roots.items.len != 0) {
+                const selector_dirty_ids = self.scratchDirtyActiveSignalRecordIdsForRoots(ctx, selector_roots.items);
+                for (selector_dirty_ids) |record_id| {
+                    const record = self.active_signal_graph.items[@intCast(record_id)].record;
+                    const result = try self.evalPreparedDirtyHostSignalRecord(ctx, roc_host, overlay, record, dirty_source_node_ids, dirty_generation);
+                    if (result.changed) {
+                        const entry = changed_set.getOrPutAssumeCapacity(record_id);
+                        if (!entry.found_existing) changed.appendAssumeCapacity(record_id);
+                    }
+                    self.dropHostSignalRecordValue(ctx, roc_host, record, result.value);
+                }
             }
             return changed.toOwnedSlice(allocator) catch return error.OutOfMemory;
         }
@@ -11008,7 +11230,7 @@ pub fn Engine(comptime Ctx: type) type {
                         const site = self.activeScopeSiteByNodeId(desc.node_id.raw(), .when) orelse return error.InvalidDescriptor;
                         const result = try self.evalPreparedDirtyHostSignalRecord(ctx, roc_host, overlay, desc.condition.record, dirty_source_node_ids, dirty_generation);
                         const cap = self.hostSignalBindingCapability(ctx, &desc.condition);
-                        assertHostValueCapabilitiesMatch(desc.read.capability, cap, "prepared when read extension capability did not match its signal value");
+                        assertHostValueCapabilitiesMatch(desc.ops.case_capability, cap, "prepared when case capability did not match its signal value");
                         if (!result.changed) {
                             self.dropHostSignalRecordValue(ctx, roc_host, desc.condition.record, result.value);
                             continue;
@@ -11022,7 +11244,7 @@ pub fn Engine(comptime Ctx: type) type {
                             .scope_id = site.scope_id,
                             .ordinal = site.ordinal,
                             .record = desc.condition.record,
-                            .branch = if (callHostValueToBoolWithCapability(ctx, roc_host, desc.read.capability, desc.read.read, cached.value)) .true_branch else .false_branch,
+                            .branch = ((try self.activeWhenBranch(site.scope_id, site.ordinal)) orelse return error.InvalidScope).opposite(),
                             .cache_staged_in_overlay = true,
                         });
                     },
@@ -11101,12 +11323,12 @@ pub fn Engine(comptime Ctx: type) type {
                             const site = self.activeScopeSiteByNodeId(desc.node_id.raw(), .when) orelse @panic("active when descriptor had no scope site");
                             const result = self.evalDirtyHostSignalBinding(ctx, roc_host, &desc.condition, dirty_source_node_ids, dirty_generation);
                             const cap = self.hostSignalBindingCapability(ctx, &desc.condition);
-                            assertHostValueCapabilitiesMatch(desc.read.capability, cap, "dirty when read extension capability did not match its signal value");
+                            assertHostValueCapabilitiesMatch(desc.ops.case_capability, cap, "dirty when case capability did not match its signal value");
                             if (!result.changed) {
                                 callHostValueToUnitWithCapability(ctx, roc_host, cap, hv.hostValueCapabilityDrop(cap), result.value);
                                 continue;
                             }
-                            const active_branch: HostScopeBranch = if (callHostValueToBoolWithCapability(ctx, roc_host, desc.read.capability, desc.read.read, result.value)) .true_branch else .false_branch;
+                            const active_branch = (self.activeWhenBranch(site.scope_id, site.ordinal) catch @panic("active when scope was invalid") orelse @panic("active when had no live branch")).opposite();
                             const changed = switch (desc.cached_value) {
                                 .absent => true,
                                 .present => |cached| !cached.valueEquals(ctx, roc_host, result.value),
@@ -12951,12 +13173,14 @@ pub fn Engine(comptime Ctx: type) type {
 
             const selections = allocator.alloc(AggregateBranchSelection, normalized.selected_indexes.len) catch return error.OutOfMemory;
             defer allocator.free(selections);
+            var built_selection_count: usize = 0;
+            defer for (selections[0..built_selection_count]) |selection| selection.elem.decref(roc_host);
             for (normalized.selected_indexes, 0..) |change_index, selection_index| {
                 const change = changes[change_index];
                 const site = self.activeScopeSiteByNodeId(change.node_id.raw(), .when) orelse return null;
                 if (site.scope_id != change.scope_id or site.ordinal != change.ordinal) return null;
                 const when_index = self.activeWhenIndexByNodeId(change.node_id.raw()) orelse return null;
-                const when_desc = self.active_stream.whens.items[when_index];
+                const when_desc = &self.active_stream.whens.items[when_index];
                 if (when_desc.condition.record != change.record) return null;
                 const branch = change.branch orelse return error.InvalidDescriptor;
                 const retired_scope_id = (self.activeWhenBranchScopeId(site.scope_id, site.ordinal, branch.opposite()) catch |err| return scopeError(err)) orelse return null;
@@ -12964,6 +13188,8 @@ pub fn Engine(comptime Ctx: type) type {
                 // transfer plan that is not staged yet. Declining here makes the
                 // caller fail loudly; there is no fallback path.
                 if ((self.activeWhenBranchScopeId(site.scope_id, site.ordinal, branch) catch |err| return scopeError(err)) != null) return null;
+                const value_cell = change.pending_when_cache orelse return error.InvalidDescriptor;
+                const branch_elem = self.buildWhenElem(ctx, roc_host, when_desc.ops, value_cell.value, value_cell.cap);
                 selections[selection_index] = .{
                     .node_id = change.node_id,
                     .parent_scope_id = site.scope_id,
@@ -12973,11 +13199,9 @@ pub fn Engine(comptime Ctx: type) type {
                     .render_insert_index = site.render_insert_index,
                     .binder_bindings = site.binder_bindings,
                     .branch = branch,
-                    .elem = switch (branch) {
-                        .true_branch => when_desc.when_true,
-                        .false_branch => when_desc.when_false,
-                    },
+                    .elem = branch_elem,
                 };
+                built_selection_count += 1;
             }
 
             const plan = try AggregateBranchCollection.prepare(self, ctx, roc_host, selections, .{}, dirty_source_node_ids);
@@ -13291,16 +13515,23 @@ pub fn Engine(comptime Ctx: type) type {
                 if (normalized.selected_indexes.len == 0) return error.ResourceLimit;
                 const selections = allocator.alloc(AggregateBranchSelection, normalized.selected_indexes.len) catch return error.OutOfMemory;
                 defer allocator.free(selections);
+                var built_selection_count: usize = 0;
+                defer for (selections[0..built_selection_count]) |selection| selection.elem.decref(roc_host);
                 for (normalized.selected_indexes, 0..) |change_index, selection_index| {
                     const change = changes[change_index];
                     const site = engine.activeScopeSiteByNodeId(change.node_id.raw(), .when) orelse return error.InvalidDescriptor;
                     if (site.scope_id != change.scope_id or site.ordinal != change.ordinal) return error.InvalidDescriptor;
                     const when_index = engine.activeWhenIndexByNodeId(change.node_id.raw()) orelse return error.InvalidDescriptor;
-                    const when_desc = engine.active_stream.whens.items[when_index];
+                    const when_desc = &engine.active_stream.whens.items[when_index];
                     if (when_desc.condition.record != change.record) return error.InvalidDescriptor;
                     const branch = change.branch orelse return error.InvalidDescriptor;
                     const retired_scope_id = (engine.activeWhenBranchScopeId(site.scope_id, site.ordinal, branch.opposite()) catch |err| return scopeError(err)) orelse return error.InvalidScope;
                     if ((engine.activeWhenBranchScopeId(site.scope_id, site.ordinal, branch) catch |err| return scopeError(err)) != null) return error.InvalidScope;
+                    const value_cell = switch (cache_overlay.readSlot(@constCast(&when_desc.cached_value)).*) {
+                        .absent => return error.InvalidDescriptor,
+                        .present => |cell| cell,
+                    };
+                    const branch_elem = engine.buildWhenElem(ctx, roc_host, when_desc.ops, value_cell.value, value_cell.cap);
                     selections[selection_index] = .{
                         .node_id = change.node_id,
                         .parent_scope_id = site.scope_id,
@@ -13310,11 +13541,9 @@ pub fn Engine(comptime Ctx: type) type {
                         .render_insert_index = site.render_insert_index,
                         .binder_bindings = site.binder_bindings,
                         .branch = branch,
-                        .elem = switch (branch) {
-                            .true_branch => when_desc.when_true,
-                            .false_branch => when_desc.when_false,
-                        },
+                        .elem = branch_elem,
                     };
+                    built_selection_count += 1;
                 }
                 return AggregateBranchCollection.prepareWithState(engine, ctx, roc_host, selections, .{}, &.{}, externalStateOf(state_update), cache_overlay);
             }
@@ -14432,23 +14661,25 @@ const OwnedAggregateGraphRoot = struct {
         const condition_capability = HostValueCapability{ .clone = self.value_callable, .drop = self.value_callable, .eq = self.value_callable };
         const condition = abi.NodeSignalExpr{ .payload = .{ .const_value = .{ ._0 = self.value_callable, ._1 = self.value_callable, ._2 = condition_capability } }, .tag = .ConstValue };
         self.first_condition = boxOwnedVerifySignalExpr(roc_host, condition);
-        const bool_read = HostBoolRead{ .capability = condition_capability, .read = self.bool_callable };
         var nested_box: ?*abi.Elem = null;
         defer if (nested_box) |boxed| decrefOwnedVerifyElemBox(boxed, roc_host);
         const first_true = if (nested) blk: {
-            var inner_when = abi.Elem{ .payload = .{ .when = .{ .condition = self.first_condition, .read = bool_read, .when_false = self.second_false, .when_true = self.first_true } }, .tag = .When };
-            inner_when.incref(1);
+            abi.increfBox(@ptrCast(self.first_condition), 1);
+            const inner_when = abi.Elem{ .payload = .{ .when = .{ .condition = self.first_condition, .ops = borrowedVerifyWhenOps(roc_host, condition_capability, self.first_true.*, self.second_false.*) } }, .tag = .When };
             nested_box = boxOwnedVerifyElem(roc_host, inner_when);
             break :blk nested_box.?;
         } else self.first_true;
-        const first_when = abi.Elem{ .payload = .{ .when = .{ .condition = self.first_condition, .read = bool_read, .when_false = self.first_false, .when_true = first_true } }, .tag = .When };
-        const second_when = abi.Elem{ .payload = .{ .when = .{ .condition = self.first_condition, .read = bool_read, .when_false = self.second_false, .when_true = self.second_true } }, .tag = .When };
+        abi.increfBox(@ptrCast(self.first_condition), 2);
+        const first_when = abi.Elem{ .payload = .{ .when = .{ .condition = self.first_condition, .ops = borrowedVerifyWhenOps(roc_host, condition_capability, first_true.*, self.first_false.*) } }, .tag = .When };
+        const second_when = abi.Elem{ .payload = .{ .when = .{ .condition = self.first_condition, .ops = borrowedVerifyWhenOps(roc_host, condition_capability, self.second_true.*, self.second_false.*) } }, .tag = .When };
         var separator = verifyStaticText();
         separator.payload.text = abi.RocStr.fromSlice("separator", roc_host);
         self.root = if (nested)
             ownedVerifyStaticRoot(roc_host, &.{}, &.{first_when})
         else
             ownedVerifyStaticRoot(roc_host, &.{}, &.{ first_when, separator, second_when });
+        first_when.decref(roc_host);
+        second_when.decref(roc_host);
         decrefOwnedVerifySignalExprBox(self.first_condition, roc_host);
         decrefOwnedVerifyElemBox(self.first_false, roc_host);
         decrefOwnedVerifyElemBox(self.first_true, roc_host);
@@ -14841,7 +15072,9 @@ test "mixed when and each collection shares one owner and sweeps OOM" {
             const old_branch_elem_id = try engine.internDomIdentity(ctx.allocator, old_when_scope.scope_id, ids.SiteOrdinal.fromRaw(0));
             const sibling_elem_id = try engine.internDomIdentity(ctx.allocator, root.scope_id, ids.SiteOrdinal.fromRaw(0));
             engine.active_stream.appendScopeSiteAt(ctx.allocator, ids.NodeId.fromRaw(0), root.scope_id, ids.SiteOrdinal.fromRaw(10), ids.root_elem, 0, .when, &.{});
-            engine.active_stream.appendWhen(ctx.allocator, &ctx, host, &engine.pending_roc_metrics, ids.NodeId.fromRaw(0), .{ .record = when_record, .source_node_ids = when_sources }, read, old_branch, next_branch);
+            const when_ops = borrowedVerifyWhenOps(host, cap, old_branch, next_branch);
+            engine.active_stream.appendWhen(ctx.allocator, &ctx, host, &engine.pending_roc_metrics, ids.NodeId.fromRaw(0), .{ .record = when_record, .source_node_ids = when_sources }, when_ops);
+            retained_values.releaseHostWhenOps(when_ops, host, &engine.pending_roc_metrics);
             engine.active_stream.appendTextNode(ctx.allocator, old_branch_elem_id, ids.root_elem, old_when_scope.scope_id, "old mixed when branch");
             engine.active_stream.appendTextNode(ctx.allocator, sibling_elem_id, ids.root_elem, root.scope_id, "between mixed sites");
             engine.active_stream.appendScopeSiteAt(ctx.allocator, ids.NodeId.fromRaw(1), root.scope_id, ids.SiteOrdinal.fromRaw(20), ids.root_elem, 2, .each, &.{});
@@ -14860,8 +15093,9 @@ test "mixed when and each collection shares one owner and sweeps OOM" {
             var changes = [_]HostDirtyStructuralSignal{
                 .{ .kind = .each, .node_id = ids.NodeId.fromRaw(1), .scope_id = root.scope_id, .ordinal = ids.SiteOrdinal.fromRaw(20), .record = each_record },
                 .{ .kind = .each, .node_id = ids.NodeId.fromRaw(2), .scope_id = old_when_scope.scope_id, .ordinal = ids.SiteOrdinal.fromRaw(30), .record = each_record },
-                .{ .kind = .when, .node_id = ids.NodeId.fromRaw(0), .scope_id = root.scope_id, .ordinal = ids.SiteOrdinal.fromRaw(10), .record = when_record, .branch = .true_branch, .cache_staged_in_overlay = true },
+                .{ .kind = .when, .node_id = ids.NodeId.fromRaw(0), .scope_id = root.scope_id, .ordinal = ids.SiteOrdinal.fromRaw(10), .record = when_record, .branch = .true_branch, .pending_when_cache = HostValueCell.initRetained(.invalid, cap, &engine.pending_roc_metrics) },
             };
+            defer changes[2].abortPendingWhenCache(&ctx, host, &engine.pending_roc_metrics);
             const live_balance = engine.pending_roc_metrics.closure_retains - engine.pending_roc_metrics.closure_releases;
 
             fault.configure(fail_at);
@@ -14963,7 +15197,7 @@ test "owned aggregate graph root ingests two signal branches around a survivor" 
     }
 
     const expected = try Engine(VerifyCtx).countStaticRootNodes(fixture.root);
-    try std.testing.expectEqual(@as(usize, 6), expected.signal_records);
+    try std.testing.expectEqual(@as(usize, 2), expected.signal_records);
     try engine.collectStaticRootDescriptorsTransactional(&ctx, &roc_host, &stream, fixture.root, .{});
     try std.testing.expectEqual(@as(usize, 2), stream.whens.items.len);
     try std.testing.expectEqual(@as(usize, 2), stream.signal_text_nodes.items.len);
@@ -15037,6 +15271,37 @@ fn verifyStateCallable(_: *abi.RocHost, result: ?[*]u8, _: ?[*]const u8, _: ?[*]
 
 fn verifyBoolCallable(_: *abi.RocHost, result: ?[*]u8, _: ?[*]const u8, _: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
     if (result) |bytes| bytes[0] = 1;
+}
+
+const VerifyWhenCapture = extern struct { when_false: abi.Elem, when_true: abi.Elem };
+
+fn verifyWhenElemCallable(_: *abi.RocHost, result: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
+    const input: *align(1) const erased_calls.ErasedHostValueUnaryArgs = @ptrCast(args.?);
+    const capture: *VerifyWhenCapture = @ptrCast(@alignCast(capture_ptr.?));
+    const selected = if (input.arg0 == 42) capture.when_true else capture.when_false;
+    selected.incref(1);
+    const out: *align(1) abi.Elem = @ptrCast(result.?);
+    out.* = selected;
+}
+
+fn verifyWhenElemOnDrop(capture_ptr: ?[*]u8, roc_host: *abi.RocHost) callconv(.c) void {
+    const capture: *VerifyWhenCapture = @ptrCast(@alignCast(capture_ptr.?));
+    capture.when_false.decref(roc_host);
+    capture.when_true.decref(roc_host);
+}
+
+fn ownedVerifyWhenOps(roc_host: *abi.RocHost, capability: HostValueCapability, when_true: abi.Elem, when_false: abi.Elem) HostWhenOps {
+    const build = abi.rocErasedCallableAllocate(roc_host, verifyWhenElemCallable, verifyWhenElemOnDrop, @sizeOf(VerifyWhenCapture)) orelse @panic("out of memory");
+    const capture: *VerifyWhenCapture = @ptrCast(@alignCast(abi.rocErasedCallableCapturePtr(build)));
+    capture.* = .{ .when_false = when_false, .when_true = when_true };
+    var metrics = zeroRuntimeMetrics();
+    return .{ .build = build, .case_capability = retainHostValueCapability(capability, &metrics) };
+}
+
+fn borrowedVerifyWhenOps(roc_host: *abi.RocHost, capability: HostValueCapability, when_true: abi.Elem, when_false: abi.Elem) HostWhenOps {
+    when_true.incref(1);
+    when_false.incref(1);
+    return ownedVerifyWhenOps(roc_host, capability, when_true, when_false);
 }
 
 fn verifyHostValueEqCallable(_: *abi.RocHost, result: ?[*]u8, args: ?[*]const u8, _: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
@@ -15835,6 +16100,7 @@ test "prepared dirty evaluator reads provisional source through derived map" {
     var fault = FaultAllocator.init(std.testing.allocator);
     var ctx = VerifyCtxHost{ .allocator = fault.allocator() };
     var engine = Engine(VerifyCtx).init();
+    defer engine.deinitScratch(&ctx);
     var source = HostSignalRecord{ .ref_count = 1, .payload = .{ .interval_source = .{
         .period_ms = 10,
         .initial = .fromAbi(callable),
@@ -16578,11 +16844,14 @@ test "transactional initial when root sweeps failures and evaluates once" {
     when_false.payload.text = abi.RocStr.fromSlice("no", undefined);
     var when_true = verifyStaticText();
     when_true.payload.text = abi.RocStr.fromSlice("yes", undefined);
+    const when_ops = borrowedVerifyWhenOps(&roc_host, capability, when_true, when_false);
+    defer {
+        var metrics = zeroRuntimeMetrics();
+        retained_values.releaseHostWhenOps(when_ops, &roc_host, &metrics);
+    }
     const root = abi.Elem{ .payload = .{ .when = .{
         .condition = &condition,
-        .read = .{ .capability = capability, .read = bool_callable },
-        .when_false = &when_false,
-        .when_true = &when_true,
+        .ops = when_ops,
     } }, .tag = .When };
 
     var counter = FaultAllocator.init(std.testing.allocator);
@@ -16933,11 +17202,14 @@ test "branch replacement preparation leaves the active branch unpublished" {
     var when_false = ownedVerifyStateRoot(&roc_host, state_callable, state_capability_callable, false_element);
     const true_element = ownedVerifyStaticRoot(&roc_host, &true_attrs, &.{ true_text, true_signal_text, true_on_change, true_mount, true_cleanup });
     var when_true = ownedVerifyStateRoot(&roc_host, state_callable, state_capability_callable, true_element);
+    const when_ops = borrowedVerifyWhenOps(&roc_host, capability, when_true, when_false);
+    defer {
+        var metrics = zeroRuntimeMetrics();
+        retained_values.releaseHostWhenOps(when_ops, &roc_host, &metrics);
+    }
     const root = abi.Elem{ .payload = .{ .when = .{
         .condition = &condition,
-        .read = .{ .capability = capability, .read = bool_callable },
-        .when_false = &when_false,
-        .when_true = &when_true,
+        .ops = when_ops,
     } }, .tag = .When };
 
     const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
@@ -16979,6 +17251,7 @@ test "branch replacement preparation leaves the active branch unpublished" {
             const text_len = engine.active_stream.text_nodes.items.len;
             const retained_before = engine.pending_roc_metrics.closure_retains - engine.pending_roc_metrics.closure_releases;
             const text_reads_before = verifyTextReadCalls;
+            engine.active_stream.whens.items[0].cached_value.present.value = HostValue.fromRaw(0);
             fault.configure(failure_number);
             const prepared = Engine(VerifyCtx).BranchReplacementPlan.prepare(&engine, &ctx, host, engine.active_stream.scope_sites.items[0], engine.active_stream.whens.items[0], .false_branch, .{}, &.{});
             if (failure_number == null) {
@@ -17152,8 +17425,8 @@ test "branch replacement preparation leaves the active branch unpublished" {
     const attempts = try Runner.run(root, &roc_host, capability, null);
     try std.testing.expect(attempts != 0);
     for (1..attempts + 1) |failure_number| _ = try Runner.run(root, &roc_host, capability, failure_number);
-    try std.testing.expect(abi.isUniqueBox(@ptrCast(when_false.payload_state().child)));
-    try std.testing.expect(abi.isUniqueBox(@ptrCast(when_true.payload_state().child)));
+    try std.testing.expect(!abi.isUniqueBox(@ptrCast(when_false.payload_state().child)));
+    try std.testing.expect(!abi.isUniqueBox(@ptrCast(when_true.payload_state().child)));
     when_false.decref(&roc_host);
     when_true.decref(&roc_host);
 }
@@ -17510,13 +17783,17 @@ test "aggregate branch collection sweeps allocation failures without publication
             defer std.testing.allocator.free(old_root_children);
             try std.testing.expectEqual(@as(usize, 1), engine.active_text_signal_routes.items[@intCast(old_first_id)].items.len);
             try std.testing.expectEqual(@as(usize, 1), engine.active_text_signal_routes.items[@intCast(old_second_id)].items.len);
+            const cache_cap = HostValueCapability{ .clone = fixture.value_callable, .drop = fixture.value_callable, .eq = fixture.value_callable };
+            const first_next_elem = engine.buildWhenElem(&ctx, &roc_host, first_when.ops, .invalid, cache_cap);
+            defer first_next_elem.decref(&roc_host);
+            const second_next_elem = engine.buildWhenElem(&ctx, &roc_host, second_when.ops, .invalid, cache_cap);
+            defer second_next_elem.decref(&roc_host);
             const selections = [_]Engine(VerifyCtx).AggregateBranchSelection{
-                .{ .node_id = first_site.node_id, .parent_scope_id = first_site.scope_id, .site_ordinal = first_site.ordinal, .parent_elem_id = first_site.parent_elem_id, .retired_scope_id = first_old, .render_insert_index = first_site.render_insert_index, .binder_bindings = first_site.binder_bindings, .branch = .false_branch, .elem = first_when.when_false },
-                .{ .node_id = second_site.node_id, .parent_scope_id = second_site.scope_id, .site_ordinal = second_site.ordinal, .parent_elem_id = second_site.parent_elem_id, .retired_scope_id = second_old, .render_insert_index = second_site.render_insert_index, .binder_bindings = second_site.binder_bindings, .branch = .false_branch, .elem = second_when.when_false },
+                .{ .node_id = first_site.node_id, .parent_scope_id = first_site.scope_id, .site_ordinal = first_site.ordinal, .parent_elem_id = first_site.parent_elem_id, .retired_scope_id = first_old, .render_insert_index = first_site.render_insert_index, .binder_bindings = first_site.binder_bindings, .branch = .false_branch, .elem = first_next_elem },
+                .{ .node_id = second_site.node_id, .parent_scope_id = second_site.scope_id, .site_ordinal = second_site.ordinal, .parent_elem_id = second_site.parent_elem_id, .retired_scope_id = second_old, .render_insert_index = second_site.render_insert_index, .binder_bindings = second_site.binder_bindings, .branch = .false_branch, .elem = second_next_elem },
             };
 
             if (live_count != 0) {
-                const cache_cap = HostValueCapability{ .clone = fixture.value_callable, .drop = fixture.value_callable, .eq = fixture.value_callable };
                 var changes = [_]HostDirtyStructuralSignal{
                     .{ .kind = .when, .node_id = first_when.node_id, .scope_id = first_site.scope_id, .ordinal = first_site.ordinal, .record = first_when.condition.record, .branch = .false_branch, .pending_when_cache = HostValueCell.initRetained(.invalid, cache_cap, &engine.pending_roc_metrics) },
                     .{ .kind = .when, .node_id = second_when.node_id, .scope_id = second_site.scope_id, .ordinal = second_site.ordinal, .record = second_when.condition.record, .branch = .false_branch, .pending_when_cache = HostValueCell.initRetained(.invalid, cache_cap, &engine.pending_roc_metrics) },
