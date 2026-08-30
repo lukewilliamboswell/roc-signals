@@ -345,7 +345,7 @@ pub fn Runner(comptime Ctx: type) type {
                         .composition_end => Ctx.endComposition(host, elem),
                         else => unreachable,
                     }
-                    Ctx.dispatchRocEventMeasured(host, roc_host, event.binding.event_id, event.binding.payload_descriptor, Ctx.hostValueUnit(host, roc_host), stats);
+                    Ctx.dispatchRocEventMeasured(host, roc_host, event.binding.event_id.raw(), event.binding.payload_descriptor, Ctx.hostValueUnit(host, roc_host), stats);
                 },
 
                 .change => {
@@ -355,7 +355,7 @@ pub fn Runner(comptime Ctx: type) type {
                     const event = Ctx.namedEvent(elem, "change") orelse Ctx.fail("benchmark change target has no binding");
                     if (!event.binding.payload_descriptor.eql(engine.BoundaryPayloadDescriptor.init(.str, .target_value))) Ctx.fail("benchmark change binding does not request the target value payload descriptor");
                     _ = Ctx.setElementValueIfChanged(host, elem, value);
-                    Ctx.dispatchRocEventMeasured(host, roc_host, event.binding.event_id, event.binding.payload_descriptor, Ctx.hostValueStr(host, roc_host, value), stats);
+                    Ctx.dispatchRocEventMeasured(host, roc_host, event.binding.event_id.raw(), event.binding.payload_descriptor, Ctx.hostValueStr(host, roc_host, value), stats);
                 },
 
                 .custom_event => {
@@ -367,7 +367,7 @@ pub fn Runner(comptime Ctx: type) type {
                     if (!event.binding.payload_descriptor.eql(engine.BoundaryPayloadDescriptor.init(.str, .detail))) {
                         Ctx.fail("benchmark custom_event binding does not request the detail payload descriptor");
                     }
-                    Ctx.dispatchRocEventMeasured(host, roc_host, event.binding.event_id, event.binding.payload_descriptor, Ctx.hostValueStr(host, roc_host, detail), stats);
+                    Ctx.dispatchRocEventMeasured(host, roc_host, event.binding.event_id.raw(), event.binding.payload_descriptor, Ctx.hostValueStr(host, roc_host, detail), stats);
                 },
 
                 .select_option => {
@@ -535,7 +535,7 @@ pub fn Runner(comptime Ctx: type) type {
             if (!event.binding.payload_descriptor.eql(engine.BoundaryPayloadDescriptor.init(.unit, .none))) {
                 Ctx.fail("benchmark named click binding does not use a unit payload descriptor");
             }
-            return event.binding.event_id;
+            return event.binding.event_id.raw();
         }
 
         fn benchmarkIsResetButton(elem: anytype) bool {
@@ -581,7 +581,7 @@ pub fn Runner(comptime Ctx: type) type {
                 Ctx.fail("benchmark radio change binding does not request the target value payload descriptor");
             }
             const value = elem.value orelse Ctx.fail("benchmark radio default action target has no value");
-            Ctx.dispatchRocEventMeasured(host, roc_host, event.binding.event_id, event.binding.payload_descriptor, Ctx.hostValueStr(host, roc_host, value), stats);
+            Ctx.dispatchRocEventMeasured(host, roc_host, event.binding.event_id.raw(), event.binding.payload_descriptor, Ctx.hostValueStr(host, roc_host, value), stats);
         }
 
         fn benchmarkSelectHasOptionValue(host: *Host, elem: anytype, value: []const u8) bool {
@@ -602,7 +602,7 @@ pub fn Runner(comptime Ctx: type) type {
             if (!event.binding.payload_descriptor.eql(engine.BoundaryPayloadDescriptor.init(.str, .target_value))) {
                 Ctx.fail("benchmark select change binding does not request the target value payload descriptor");
             }
-            Ctx.dispatchRocEventMeasured(host, roc_host, event.binding.event_id, event.binding.payload_descriptor, Ctx.hostValueStr(host, roc_host, value), stats);
+            Ctx.dispatchRocEventMeasured(host, roc_host, event.binding.event_id.raw(), event.binding.payload_descriptor, Ctx.hostValueStr(host, roc_host, value), stats);
         }
 
         fn benchmarkIsTextLikeEnterSubmitControl(elem: anytype) bool {
@@ -705,7 +705,7 @@ pub fn Runner(comptime Ctx: type) type {
                 if (!event.binding.payload_descriptor.eql(unit_descriptor)) Ctx.fail("benchmark capturing event binding does not use a unit payload descriptor");
                 result.dispatched = true;
                 result.default_prevented = result.default_prevented or event.binding.policy.prevent_default;
-                Ctx.dispatchRocEventMeasured(host, roc_host, event.binding.event_id, event.binding.payload_descriptor, Ctx.hostValueUnit(host, roc_host), stats);
+                Ctx.dispatchRocEventMeasured(host, roc_host, event.binding.event_id.raw(), event.binding.payload_descriptor, Ctx.hostValueUnit(host, roc_host), stats);
                 if (event.binding.policy.stop_propagation or event.binding.policy.stop_immediate) return result;
             }
 
@@ -722,7 +722,7 @@ pub fn Runner(comptime Ctx: type) type {
                 if (!event.binding.payload_descriptor.eql(unit_descriptor)) Ctx.fail("benchmark bubbling event binding does not use a unit payload descriptor");
                 result.dispatched = true;
                 result.default_prevented = result.default_prevented or event.binding.policy.prevent_default;
-                Ctx.dispatchRocEventMeasured(host, roc_host, event.binding.event_id, event.binding.payload_descriptor, Ctx.hostValueUnit(host, roc_host), stats);
+                Ctx.dispatchRocEventMeasured(host, roc_host, event.binding.event_id.raw(), event.binding.payload_descriptor, Ctx.hostValueUnit(host, roc_host), stats);
                 if (event.binding.policy.stop_propagation or event.binding.policy.stop_immediate) break;
             }
 
