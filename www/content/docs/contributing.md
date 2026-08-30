@@ -29,6 +29,12 @@ CI uses the official `roc-lang/setup-roc` GitHub Action. The repository does not
 build Roc itself. The site build uses standalone command-line tools only; there
 is no npm dependency or package manifest.
 
+Pull requests run the normal Zig, browser, and Roc checks plus a Wasm build and
+mount smoke pass on one Linux runner. Pushes to `main` (and manual runs) run the
+complete test suite and native-host coverage on one macOS runner. The static
+site is built separately on Linux for deployment; it does not duplicate the
+test suite.
+
 ## Test Driver
 
 Run the full suite from the repository root:
@@ -59,7 +65,12 @@ python3 scripts/test.py bench --native always
 `fault` is the slower deterministic host-allocation campaign. It first runs
 the focused native SCM fixtures normally to record their runtime host allocation
 counts, then runs each allocation coordinate as an isolated process through the same
-`--jobs` worker pool used by native specs.
+`--jobs` worker pool used by native specs. Ordinary specs default to half the
+logical CPUs. Cases marked `serial_native_spec` in a benchmark manifest run
+alone, with no overlapping workers, so large structural fixtures stay within a
+predictable memory envelope without making the rest of the suite serial. Those
+entries may also set `native_spec_timeout_seconds` when their intentionally
+large workload needs more than the ordinary per-spec timeout.
 
 Ordinary SCM execution and the `native` suite do not enable fault sweeping:
 fast semantic feedback is the default for application authors. The sweep is an

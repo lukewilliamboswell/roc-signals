@@ -4110,13 +4110,13 @@ pub fn Engine(comptime Ctx: type) type {
                 }
                 var fresh_id = @max(self.fresh_scope_cursor, @as(u64, @intCast(self.engine.scopes.items.len)));
                 while (self.scopes.reserved_ids.contains(ids.ScopeId.fromRaw(fresh_id))) fresh_id = std.math.add(u64, fresh_id, 1) catch return error.ResourceLimit;
-                self.fresh_scope_cursor = std.math.add(u64, fresh_id, 1) catch return error.ResourceLimit;
                 candidates[candidate_count] = ids.ScopeId.fromRaw(fresh_id);
                 candidate_count += 1;
                 const reserved = self.scopes.reserve(key, if (active_id) |id| ids.ScopeId.fromRaw(id) else null, candidates[0..candidate_count]) catch |err| switch (err) {
                     error.NoCapacity => return error.ResourceLimit,
                     error.NoAvailableScope => return error.InvalidScope,
                 };
+                if (reserved.raw() == fresh_id) self.fresh_scope_cursor = std.math.add(u64, fresh_id, 1) catch return error.ResourceLimit;
                 return reserved.raw();
             }
 
@@ -6412,8 +6412,10 @@ pub fn Engine(comptime Ctx: type) type {
                 @memset(is_retired_root, false);
                 for (descriptor_root_scope_ids) |root_scope_id| {
                     if (root_scope_id >= engine.scopes.items.len) return error.InvalidScope;
+                    if (!engine.scopes.items[@intCast(root_scope_id)].lifecycle.isActive()) return error.InvalidScope;
                     is_descriptor_root[@intCast(root_scope_id)] = true;
                     for (engine.scopes.items) |scope| {
+                        if (!scope.lifecycle.isActive()) continue;
                         if (engine.scopeIsDescendantOrSelf(scope.scope_id.raw(), root_scope_id) catch |err| return scopeError(err)) {
                             prepared.descriptor_target_scopes[scope.scope_id.index()] = true;
                         }
@@ -6421,6 +6423,7 @@ pub fn Engine(comptime Ctx: type) type {
                 }
                 for (retired_root_scope_ids) |root_scope_id| {
                     if (root_scope_id >= engine.scopes.items.len) return error.InvalidScope;
+                    if (!engine.scopes.items[@intCast(root_scope_id)].lifecycle.isActive()) return error.InvalidScope;
                     is_retired_root[@intCast(root_scope_id)] = true;
                 }
                 // A live nested site only concerns this transaction when its
@@ -6438,6 +6441,7 @@ pub fn Engine(comptime Ctx: type) type {
                             continue;
                         }
                         for (engine.scopes.items) |scope| {
+                            if (!scope.lifecycle.isActive()) continue;
                             if (engine.scopeIsDescendantOrSelf(scope.scope_id.raw(), row_scope_id.raw()) catch |err| return scopeError(err)) {
                                 prepared.descriptor_target_scopes[scope.scope_id.index()] = false;
                             }
@@ -15135,6 +15139,78 @@ test "staged collection accepts external provisional row scopes without id colli
     try std.testing.expectEqual(@as(usize, 0), fault.attempts);
 }
 
+test "staged DOM identity reuse does not consume the fresh suffix" {
+    var ctx = VerifyCtxHost{ .allocator = std.testing.allocator };
+    var engine = Engine(VerifyCtx).init();
+    defer deinitVerifyStaticEngine(&engine, &ctx);
+    try engine.dom_identities.append(std.testing.allocator, .{ .elem_id = ids.ElemId.fromRaw(1), .scope_id = ids.root_scope, .ordinal = ids.SiteOrdinal.fromRaw(0), .lifecycle = .{ .retired = ids.Generation.fromRaw(0) } });
+    try engine.dom_identities.append(std.testing.allocator, .{ .elem_id = ids.ElemId.fromRaw(2), .scope_id = ids.root_scope, .ordinal = ids.SiteOrdinal.fromRaw(1), .lifecycle = .{ .retired = ids.Generation.fromRaw(0) } });
+    try engine.dom_identities.append(std.testing.allocator, .{ .elem_id = ids.ElemId.fromRaw(3), .scope_id = ids.root_scope, .ordinal = ids.SiteOrdinal.fromRaw(2) });
+    engine.identity_reuse_barrier = 1;
+
+    var stream: HostNodeDescriptorStream = .{};
+    defer stream.deinit(ctx.allocator, &ctx, undefined, &engine.pending_roc_metrics);
+    var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&engine, &ctx, &stream, .{}, .{ .nodes = 3 }, 0);
+    defer collection.deinit();
+
+    try std.testing.expectEqual(@as(u64, 1), (try collection.reserveDomIdentity(ids.ScopeId.fromRaw(1), ids.SiteOrdinal.fromRaw(0))).raw());
+    try std.testing.expectEqual(@as(u64, 2), (try collection.reserveDomIdentity(ids.ScopeId.fromRaw(2), ids.SiteOrdinal.fromRaw(0))).raw());
+    try std.testing.expectEqual(@as(u64, 4), (try collection.reserveDomIdentity(ids.ScopeId.fromRaw(3), ids.SiteOrdinal.fromRaw(0))).raw());
+}
+
+test "staged scope identity reuse does not consume the fresh suffix" {
+    var ctx = VerifyCtxHost{ .allocator = std.testing.allocator };
+    var engine = Engine(VerifyCtx).init();
+    defer {
+        engine.states.deinit(ctx.allocator);
+        engine.state_indexes_by_node_id.deinit(ctx.allocator);
+        engine.node_identities.deinit(ctx.allocator);
+        engine.active_node_identity_ids.deinit(ctx.allocator);
+        deinitVerifyStaticEngine(&engine, &ctx);
+    }
+    _ = try engine.internRootScope(std.testing.allocator);
+    const first = try engine.internWhenBranchScope(std.testing.allocator, ids.root_scope, ids.SiteOrdinal.fromRaw(1), .false_branch);
+    const second = try engine.internWhenBranchScope(std.testing.allocator, ids.root_scope, ids.SiteOrdinal.fromRaw(2), .false_branch);
+    _ = try engine.internWhenBranchScope(std.testing.allocator, ids.root_scope, ids.SiteOrdinal.fromRaw(3), .false_branch);
+    engine.scopes.items[first.scope_id.index()].lifecycle = .{ .retired = ids.Generation.fromRaw(0) };
+    engine.scopes.items[second.scope_id.index()].lifecycle = .{ .retired = ids.Generation.fromRaw(0) };
+    engine.identity_reuse_barrier = 1;
+
+    var stream: HostNodeDescriptorStream = .{};
+    defer stream.deinit(ctx.allocator, &ctx, undefined, &engine.pending_roc_metrics);
+    var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&engine, &ctx, &stream, .{}, .{ .when_sites = 3 }, 0);
+    defer collection.deinit();
+
+    try std.testing.expectEqual(@as(u64, 1), try collection.reserveScopeIdentity(.{ .parent_id = ids.root_scope, .ordinal = ids.SiteOrdinal.fromRaw(4), .kind = .component }, null));
+    try std.testing.expectEqual(@as(u64, 2), try collection.reserveScopeIdentity(.{ .parent_id = ids.root_scope, .ordinal = ids.SiteOrdinal.fromRaw(5), .kind = .component }, null));
+    try std.testing.expectEqual(@as(u64, 4), try collection.reserveScopeIdentity(.{ .parent_id = ids.root_scope, .ordinal = ids.SiteOrdinal.fromRaw(6), .kind = .component }, null));
+}
+
+test "staged node identity reuse does not consume the fresh suffix" {
+    var ctx = VerifyCtxHost{ .allocator = std.testing.allocator };
+    var engine = Engine(VerifyCtx).init();
+    defer {
+        engine.states.deinit(ctx.allocator);
+        engine.state_indexes_by_node_id.deinit(ctx.allocator);
+        engine.node_identities.deinit(ctx.allocator);
+        engine.active_node_identity_ids.deinit(ctx.allocator);
+        deinitVerifyStaticEngine(&engine, &ctx);
+    }
+    try engine.node_identities.append(std.testing.allocator, .{ .node_id = ids.NodeId.fromRaw(0), .scope_id = ids.root_scope, .ordinal = ids.SiteOrdinal.fromRaw(0), .lifecycle = .{ .retired = ids.Generation.fromRaw(0) } });
+    try engine.node_identities.append(std.testing.allocator, .{ .node_id = ids.NodeId.fromRaw(1), .scope_id = ids.root_scope, .ordinal = ids.SiteOrdinal.fromRaw(1), .lifecycle = .{ .retired = ids.Generation.fromRaw(0) } });
+    try engine.node_identities.append(std.testing.allocator, .{ .node_id = ids.NodeId.fromRaw(2), .scope_id = ids.root_scope, .ordinal = ids.SiteOrdinal.fromRaw(2) });
+    engine.identity_reuse_barrier = 1;
+
+    var stream: HostNodeDescriptorStream = .{};
+    defer stream.deinit(ctx.allocator, &ctx, undefined, &engine.pending_roc_metrics);
+    var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&engine, &ctx, &stream, .{}, .{ .state_sites = 3 }, 0);
+    defer collection.deinit();
+
+    try std.testing.expectEqual(@as(u64, 0), (try collection.reserveNodeIdentity(ids.ScopeId.fromRaw(1), ids.SiteOrdinal.fromRaw(0))).raw());
+    try std.testing.expectEqual(@as(u64, 1), (try collection.reserveNodeIdentity(ids.ScopeId.fromRaw(2), ids.SiteOrdinal.fromRaw(0))).raw());
+    try std.testing.expectEqual(@as(u64, 3), (try collection.reserveNodeIdentity(ids.ScopeId.fromRaw(3), ids.SiteOrdinal.fromRaw(0))).raw());
+}
+
 test "prepared each-row subtree retirement is atomic and allocation free" {
     const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
     var env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
@@ -16383,6 +16459,19 @@ test "structural targets refuse nested retirement roots as OverlappingRemoval" {
     try std.testing.expectError(error.OverlappingRemoval, Engine(VerifyCtx).PreparedStructuralTargets.prepare(&engine, std.testing.allocator, &.{root.scope_id.raw()}, &.{ child.scope_id.raw(), grandchild.scope_id.raw() }, null));
     try std.testing.expectEqual(@as(usize, 3), engine.scopes.items.len);
     try std.testing.expect(engine.scopes.items[grandchild.scope_id.index()].lifecycle.isActive());
+}
+
+test "structural targets ignore already retired scope slots" {
+    var engine = Engine(VerifyCtx).init();
+    defer engine.scopes.deinit(std.testing.allocator);
+    const root = try engine.internRootScope(std.testing.allocator);
+    const retired = try engine.internWhenBranchScope(std.testing.allocator, root.scope_id, ids.SiteOrdinal.fromRaw(10), .false_branch);
+    engine.scopes.items[retired.scope_id.index()].lifecycle = .{ .retired = ids.Generation.fromRaw(0) };
+
+    var targets = try Engine(VerifyCtx).PreparedStructuralTargets.prepare(&engine, std.testing.allocator, &.{root.scope_id.raw()}, &.{}, null);
+    defer targets.deinit(std.testing.allocator);
+    try std.testing.expect(targets.descriptor_target_scopes[root.scope_id.index()]);
+    try std.testing.expect(!targets.descriptor_target_scopes[retired.scope_id.index()]);
 }
 
 test "initial root downstream refuses a stale graph binding as InvalidSignalGraphRelease" {

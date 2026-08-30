@@ -4,10 +4,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest import mock
 import stat
 import sys
 import tempfile
 import textwrap
+import threading
+import time
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -16,6 +19,45 @@ import test as test_driver  # noqa: E402
 
 
 class SpecDriverTests(unittest.TestCase):
+    def test_designated_large_specs_run_alone_while_ordinary_specs_overlap(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            worker = root / "worker"
+            worker.write_text("", encoding="utf-8")
+            specs = root / "specs"
+            specs.mkdir()
+            for name in ("ordinary-a.scm", "ordinary-b.scm", "large.scm"):
+                (specs / name).write_text('(test "case" (steps (mark-metrics)))\n', encoding="utf-8")
+
+            lock = threading.Lock()
+            active = 0
+            ordinary_peak = 0
+
+            def fake_run_case(_executable, case, **_kwargs):
+                nonlocal active, ordinary_peak
+                with lock:
+                    active += 1
+                    if case.id == "large.scm":
+                        self.assertEqual(1, active)
+                    else:
+                        ordinary_peak = max(ordinary_peak, active)
+                time.sleep(0.03)
+                with lock:
+                    active -= 1
+                return spec_driver.SpecResult(case.id, case.id, "passed", 1, None, "", "")
+
+            with mock.patch.object(spec_driver, "run_case", side_effect=fake_run_case):
+                results = spec_driver.run_suite(
+                    worker,
+                    specs,
+                    jobs=2,
+                    serial_patterns=("large.scm",),
+                    print_progress=False,
+                )
+
+            self.assertEqual(2, ordinary_peak)
+            self.assertEqual(3, len(results))
+
     def test_discovery_filtering_and_sharding_are_stable(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -363,6 +363,10 @@ Loan :: [].{
 			EQ => False
 		}
 
+	u64_compare : U64, U64 -> [LT, EQ, GT]
+	u64_compare = |left, right|
+		if left < right { LT } else if left > right { GT } else { EQ }
+
 	## First month at which the running total paid of two scenarios crosses over.
 	## Returns 0 when the two never swap places.
 	break_even_month : Schedule, Schedule -> U64
@@ -377,7 +381,7 @@ Loan :: [].{
 		while ($month <= limit) and ($found == 0) {
 			$left_total = $left_total + Loan.month_paid(left, $month)
 			$right_total = $right_total + Loan.month_paid(right, $month)
-			step = U64.compare($left_total, $right_total)
+			step = Loan.u64_compare($left_total, $right_total)
 			$found = if Loan.crossed($sign, step) { $month } else { $found }
 			$sign =
 				match step {

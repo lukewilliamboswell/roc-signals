@@ -209,11 +209,15 @@ GridData :: [].{
 			EQ => EQ
 		}
 
+	u64_compare : U64, U64 -> [LT, EQ, GT]
+	u64_compare = |left, right|
+		if left < right { LT } else if left > right { GT } else { EQ }
+
 	## Ascending order for one column, with the row id as the tiebreak so the
 	## comparator is a strict total order and the sort is deterministic.
 	row_order : Row, Row, SortKey -> [LT, EQ, GT]
 	row_order = |a, b, key| {
-		by_id = U64.compare(a.id, b.id)
+		by_id = u64_compare(a.id, b.id)
 		match key {
 			ById => by_id
 			ByName =>
@@ -222,12 +226,12 @@ GridData :: [].{
 					other => other
 				}
 			ByTeam =>
-				match U64.compare(a.team.rank(), b.team.rank()) {
+				match u64_compare(a.team.rank(), b.team.rank()) {
 					EQ => by_id
 					other => other
 				}
 			ByScore =>
-				match U64.compare(a.score, b.score) {
+				match u64_compare(a.score, b.score) {
 					EQ => by_id
 					other => other
 				}

@@ -228,12 +228,16 @@ matches = |criteria, flight|
 
 # --- sorting (local, never refetches) ----------------------------------------
 
+u64_sort_order : U64, U64 -> [Before, Same, After]
+u64_sort_order = |left, right|
+	if left < right { Before } else if left > right { After } else { Same }
+
 sort_flights : List(Flight), SortKey -> List(Flight)
 sort_flights = |flights, key|
 	match key {
-		Duration => flights.sort_with(|left, right| U64.compare(left.minutes, right.minutes))
-		Departure => flights.sort_with(|left, right| U64.compare(left.depart_min, right.depart_min))
-		Price => flights.sort_with(|left, right| U64.compare(left.price, right.price))
+		Duration => flights.sort_with(|left, right| u64_sort_order(left.minutes, right.minutes))
+		Departure => flights.sort_with(|left, right| u64_sort_order(left.depart_min, right.depart_min))
+		Price => flights.sort_with(|left, right| u64_sort_order(left.price, right.price))
 	}
 
 # --- flight formatting -------------------------------------------------------
