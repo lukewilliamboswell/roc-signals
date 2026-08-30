@@ -51,9 +51,37 @@ python3 scripts/test.py roc-check
 python3 scripts/test.py roc-test
 python3 scripts/test.py wasm
 python3 scripts/test.py native --native always
+python3 scripts/test.py fault --native always
 python3 scripts/test.py bundle --bundle always
 python3 scripts/test.py bench --native always
 ```
+
+`fault` is the slower deterministic host-allocation campaign. It first runs
+the focused native SCM fixtures normally to record their runtime host allocation
+counts, then runs each allocation coordinate as an isolated process through the same
+`--jobs` worker pool used by native specs.
+
+Ordinary SCM execution and the `native` suite do not enable fault sweeping:
+fast semantic feedback is the default for application authors. The sweep is an
+explicit `fault` suite, while this repository's full `all` suite and CI include
+it for a deliberately small set of platform-owned fixtures. Application
+projects can opt selected cases into an explicit fault run when their graph or
+lifecycle shape warrants the additional coverage. Fault injection does not add
+syntax or behavior to the `.scm` case itself, and it is deliberately not part
+of `zig build test`.
+
+To replay a reported coordinate directly, copy the command printed after
+`replay:`. The worker interface is:
+
+```sh
+app --run-spec-json --fail-on-allocation 7 path/to/case.scm
+```
+
+Roc allocations and host allocations inside a Roc callback are reported as
+skipped because the current ABI cannot return OOM from that boundary. Other
+selected allocations must either be absorbed by the allocator, or refuse and
+retry successfully without partial publication. Roc-allocator and
+fatal-boundary campaigns are tracked separately.
 
 Use `--keep-output` when debugging generated artifacts under `.test-out/`.
 

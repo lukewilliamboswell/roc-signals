@@ -357,3 +357,25 @@ hosts, never an executor heuristic; none is designed yet.
 They are host diagnostics; `design.md` says an app that must know declares the
 matching storage read source. Verify the read source is actually refreshed
 after a failed write so that rule holds.
+
+## 28. Extend native fault injection beyond recoverable host OOM
+
+The native SCM fault suite currently covers recoverable host allocation failure
+for selected application-shaped structural fixtures. Roc allocations are
+reported and skipped because OOM cannot unwind safely across the Roc ABI.
+
+Follow up on
+[issue #20](https://github.com/lukewilliamboswell/roc-signals/issues/20) with
+separately designed coverage for transient faults, Roc allocation and growth,
+fatal-boundary containment, and task, timer, and resource providers. Preserve
+stable allocation diagnostics and cross-platform reporting, keep the platform
+CI fixture set deliberate, and do not add fault syntax to `.scm` scenarios.
+
+## 29. Keep the focused Zig test path fast
+
+Profile the shared-engine and native-host test binaries independently. Retain
+small allocation sweeps that directly prove a private ownership, atomicity, or
+allocation-free publication seam; move remaining application-shaped or
+multi-stage allocation campaigns into the parallel native SCM fault suite.
+Avoid removing exhaustive seam coverage merely because it uses a fault
+allocator.
