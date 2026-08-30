@@ -267,13 +267,6 @@ only when selected, with recursive structure expressible. `platform/Ui.roc`
 forces both `when` thunks at construction and there is no `switch`. Issue 5
 has the ABI shape of the fix.
 
-## 20. `Signal.select` and the selector node do not exist
-
-`design.md` specifies a host-owned selector node kind, a complexity-budget row
-(O(1) members dirtied, 0 Roc calls per key change), and a
-`selector_members_dirtied` metric. None exists; selection in the keyed
-benchmark fixture is O(N) map closures (issue 11).
-
 ## 21. Effects route by task-name string, not a typed registry
 
 `http:send:` prefix routing and the task-name field are the dispatch path in

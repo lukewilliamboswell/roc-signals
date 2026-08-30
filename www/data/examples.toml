@@ -526,6 +526,17 @@ wasm = false
 native = true
 bench = false
 
+[[examples]]
+slug = "signal-select-128"
+title = "Signal Select 128"
+description = "Internal large-N selector membership fixture."
+source = "examples/_fixtures/signal-select-128/main.roc"
+specs = "examples/_fixtures/signal-select-128/specs"
+public = false
+wasm = false
+native = true
+bench = false
+
 
 [[examples]]
 slug = "metric-semantics"
