@@ -15999,6 +15999,7 @@ test "prepared dirty evaluator reads provisional source through derived map" {
     var fault = FaultAllocator.init(std.testing.allocator);
     var ctx = VerifyCtxHost{ .allocator = fault.allocator() };
     var engine = Engine(VerifyCtx).init();
+    defer engine.deinitScratch(&ctx);
     var source = HostSignalRecord{ .ref_count = 1, .payload = .{ .interval_source = .{
         .period_ms = 10,
         .initial = .fromAbi(callable),
