@@ -56,11 +56,20 @@ python3 scripts/test.py browser
 python3 scripts/test.py roc-check
 python3 scripts/test.py roc-test
 python3 scripts/test.py wasm
+python3 scripts/test.py wasm-bench --roc-bin /path/to/roc
 python3 scripts/test.py native --native always
 python3 scripts/test.py fault --native always
 python3 scripts/test.py bundle --bundle always
 python3 scripts/test.py bench --native always
 ```
+
+`wasm-bench` is the manual Node/V8 performance workflow for the complete
+production-controlled path from a DOM-double event through Wasm and command
+execution. It builds paired ordinary and instrumented ReleaseFast hosts, but
+uses only the ordinary production artifact for timings; the instrumented
+companion supplies exact allocation and shared-engine diagnostics after parity
+checks. Wall time is deliberately non-gating. See `docs/profiling.md` for case
+selection, comparison, and profiler workflows.
 
 `fault` is the slower deterministic host-allocation campaign. It first runs
 the focused native SCM fixtures normally to record their runtime host allocation

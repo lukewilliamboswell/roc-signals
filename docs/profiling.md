@@ -97,6 +97,137 @@ Report the median and range from multiple samples. One sample is useful only
 for finding very large regressions. Avoid increasing `--bench-iterations` for
 large cases until one iteration is known to finish quickly.
 
+## Measure the production Wasm and JavaScript path
+
+Run every Node/Wasm boundary case with:
+
+```sh
+python3 scripts/test.py wasm-bench --roc-bin /path/to/roc > before.csv
+```
+
+This builds the ordinary Wasm host with Zig `ReleaseFast`, builds the Roc
+js-framework fixture with `--opt=size`, performs one complete warm-up pass, and
+runs seven samples of twenty fresh instances per case. Narrow an investigative
+run without changing the meaning of an iteration:
+
+```sh
+python3 scripts/test.py wasm-bench \
+  --roc-bin /path/to/roc \
+  --bench-case 'select_*' \
+  --bench-warmups 1 \
+  --bench-iterations 5 \
+  --bench-samples 3 \
+  --bench-app-opt size > select.csv
+```
+
+Build diagnostics go to stderr; stdout is CSV. Each measured iteration creates
+a fresh WebAssembly instance and `SignalsRuntime`, mounts it, performs untimed
+setup, resets the marked counters, fires one real event through the DOM double,
+validates the result, and unmounts outside timing. Warm-ups execute the complete
+production workload and are discarded.
+
+The harness deliberately uses a paired measurement design:
+
+- wall-time phases and deterministic JavaScript work come from the ordinary
+  production host—the artifact users receive;
+- exact Wasm allocator and shared-engine counters come from a same-source
+  instrumented companion build;
+- the harness rejects a pair unless final runtime state, command counts, opcode
+  counts, wire bytes, and decode work are identical.
+
+The companion is diagnostic evidence, not the timing subject. Instrumenting
+allocations and engine counters changes optimizer decisions and adds writes to
+hot paths, so its durations must not be presented as production timings. CSV
+rows record `measurement_design`, both Wasm SHA-256 identities, both build
+modes, and protocol/schema versions to keep that distinction reviewable.
+
+Timing columns are integer nanosecond totals across the sample:
+
+- `event_total_ns` brackets the complete synchronous DOM-double event;
+- `wasm_event_ns` brackets the real `roc_ui_event` export;
+- `command_read_ns` materializes fixed records;
+- `command_snapshot_ns` copies string and dynamic buffers for reentrancy;
+- `command_execute_ns` is the command-apply duration after subtracting its
+  nested read and snapshot phases;
+- `event_residual_js_ns` is the total minus those four mutually exclusive
+  phases.
+
+The runner rejects missing or duplicated required phases and rejects nested
+time greater than the event total. Compilation, instantiation, mounting, setup,
+validation, unmounting, CSV output, and profiler collection are outside the
+marked interval.
+
+Durations, action work, wire work, allocation traffic, retained deltas, and
+engine counters are summed across fresh iterations. Peak allocation fields are
+the maximum observed iteration. Live/before/after gauges and committed page
+counts must agree across the fresh diagnostic instances or the sample is
+rejected; they are reported once rather than added together.
+
+Interpret timings together with the work columns: fixed record/string/dynamic
+wire bytes, every opcode count, decode counts and bytes, copied buffers and
+bytes, materialized record objects, live runtime registries, committed Wasm
+pages, exact Roc/host allocator traffic and peaks, retained deltas, and shared
+engine counters. Linear-memory pages are committed capacity; allocator live
+bytes are requested live storage inside that capacity. They are different
+questions and should not be added together.
+
+For a before/after comparison, keep the machine, Node/V8, Roc compiler, host
+mode, app mode, fixture, case options, and run ordering fixed:
+
+```sh
+git switch baseline
+python3 scripts/test.py wasm-bench --roc-bin /path/to/roc > before.csv
+
+git switch candidate
+python3 scripts/test.py wasm-bench --roc-bin /path/to/roc > after.csv
+```
+
+Compare only rows whose recorded environment and build identity are compatible.
+Report every sample, then calculate median and range per action or command from
+the original integer totals. Alternate baseline/candidate runs when thermal or
+frequency drift is material. Do not claim a change smaller than the observed
+run-to-run spread, and reject a speedup whose work counters or final behavior
+changed unexpectedly.
+
+### V8 CPU and heap investigation
+
+Profilers are separate investigative modes and are never baseline samples:
+
+```sh
+node --cpu-prof scripts/browser/run_wasm_benchmarks.mjs \
+  --production .test-out/wasm-benchmark/js-framework-production.wasm \
+  --production-only \
+  --case update_10k --warmups 1 --iterations 5 --samples 1 > /dev/null
+
+node --heap-prof scripts/browser/run_wasm_benchmarks.mjs \
+  --production .test-out/wasm-benchmark/js-framework-production.wasm \
+  --production-only \
+  --case create_1k --warmups 1 --iterations 5 --samples 1 > /dev/null
+```
+
+Run the documented `python3 ... wasm-bench --keep-output` command once first so
+the two Wasm files exist. CPU/heap-profiler runs add substantial work and their
+wall times are not comparable with unprofiled CSV. `--production-only` keeps
+the diagnostic companion out of the profile and labels any emitted row as a
+profile run; it is not accepted for baseline evidence. Use the profiles to
+explain deterministic allocation/copy changes already visible in ordinary
+paired rows.
+
+For retained-growth investigation, repeat complete fresh-instance workloads and
+force collection only between checkpoints:
+
+```sh
+node --expose-gc scripts/browser/run_wasm_retained_growth.mjs \
+  .test-out/wasm-benchmark/js-framework-production.wasm \
+  update_10k 100 10 > retained.csv
+```
+
+The output records `heap_used`, `external`, `array_buffers`, and RSS after
+forced-GC checkpoints. Treat them as V8/process capacity gauges, not as
+allocations caused by one event. Exact Wasm live/peak and retained-delta
+counters remain the allocation authority; a process gauge is evidence only of
+a plateau or continuing trend.
+
 ## Separate setup from the measured operation
 
 Place `(mark-metrics)` immediately before the action being measured:
