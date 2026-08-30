@@ -582,17 +582,6 @@ const World = struct {
 
         self.internBranch();
         _ = each.ensureSiteIndex(self.allocator, &self.sites, &self.site_indexes, self.component, site_a_ordinal);
-
-        // Works around a live defect rather than hiding one. `PreparedExistingRows.commit`
-        // grows `memberships` up to `highest_scope_id` unconditionally, but `prepare`
-        // reserves that capacity only when the incoming row list is non-empty; with an
-        // empty list `highest_scope_id` stays at the root scope, so a site reconciled to
-        // nothing while the membership table has never held anything reaches
-        // `appendAssumeCapacity` with no capacity at all. Every generated program starts
-        // from an empty list, so leaving it unseeded would mask every other oracle behind
-        // that one crash. Seeding the root's slot is what the engine's own membership
-        // table looks like the moment any row has ever existed.
-        _ = each.ensureMembershipSlot(self.allocator, &self.memberships, self.root);
     }
 
     fn internBranch(self: *World) void {
