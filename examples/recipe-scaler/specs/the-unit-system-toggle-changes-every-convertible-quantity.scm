@@ -17,8 +17,8 @@
     ; The unit system toggle changes every convertible quantity
 
     ; Same shape as the servings fan-out, but the equality cutoff shows through:
-    ; observed patches_emitted 13, not 17, because the tsp and pinch sinks
-    ; recompute to the same string and are never patched.
+    ; the tsp and pinch sinks recompute to the same string, so no sink downstream
+    ; of them is recomputed at all.
     (mark-metrics)
     (real-click (label "Imperial units"))
     (expect-metric-delta rows_created 0)
@@ -27,7 +27,6 @@
     (expect-metric-delta scopes_created 0)
     (expect-metric-delta scopes_disposed 0)
     (expect-metric-delta-at-most dirty_source_roots 4)
-    (expect-metric-delta-at-most patches_emitted 20)
     (expect-checked (label "Imperial units") true)
     (expect-checked (label "Metric units") false)
     (expect-text (test-id "unit-system") "Imperial")

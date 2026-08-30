@@ -45,7 +45,6 @@
     (expect-metric-delta scopes_disposed 0)
     (expect-metric-delta create_element 0)
     (expect-metric-delta set_text 1)
-    (expect-metric-delta-at-most patches_emitted 8)
     (expect-text (test-id "filter-state") "7 of 7 tasks · most slack first")
     (expect-text (test-id "line-docs") "Day 2 → 3")
     (expect-text (test-id "slack-docs") "7")

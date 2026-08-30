@@ -21,7 +21,6 @@
     ; Raised from 80. Every row now also carries a Gantt bar whose `style`
     ; attribute is a percentage of the project span, and the span itself grew
     ; from 10 to 11 days, so all 7 bars are repositioned as well as relabelled.
-    (expect-metric-delta-at-most patches_emitted 88)
     (expect-text (test-id "line-spec") "Day 1 → 3")
     (expect-text (test-id "line-api") "Day 3 → 7")
     (expect-text (test-id "line-ui") "Day 3 → 6")

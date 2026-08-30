@@ -4485,6 +4485,13 @@ pub fn Engine(comptime Ctx: type) type {
                 if (journaled.record != condition.record or journaled.source_node_ids.ptr != condition.source_node_ids.ptr) @panic("staged when binding journal transfer mismatch");
                 const value = self.engine.evalHostSignalBindingStaged(self.host_ctx, roc_host, &prepared.desc.condition, self.prepared_state_cells.items, self.cache_overlay);
                 const cap = self.engine.hostSignalRecordCapabilityWithProvisionalStates(self.host_ctx, prepared.desc.condition.record, self.prepared_state_cells.items);
+                // Owned before anything fallible runs. The condition value comes
+                // back retained, and selecting a branch, building its elem, and
+                // reserving for it can all refuse; until the cell owns the value
+                // nothing would release it, so a refusal here leaked it. The
+                // errdefer above already aborts this descriptor, and aborting it
+                // releases the cell.
+                prepared.desc.cached_value = .{ .present = HostValueCell.initRetained(value, cap, &self.engine.pending_roc_metrics) };
                 const branch = if (self.committedScopeIsActive(scope_id))
                     (try self.engine.activeWhenBranch(scope_id, site_ordinal)) orelse .true_branch
                 else
@@ -4492,7 +4499,6 @@ pub fn Engine(comptime Ctx: type) type {
                 const branch_elem = self.engine.buildWhenElem(self.host_ctx, roc_host, prepared.desc.ops, value, cap);
                 errdefer branch_elem.decref(roc_host);
                 try self.reserveCounts(.{ .roots = try countStaticRootNodes(branch_elem) });
-                prepared.desc.cached_value = .{ .present = HostValueCell.initRetained(value, cap, &self.engine.pending_roc_metrics) };
                 // Under a scope re-collected here the opposite branch may
                 // still be active: it retires with the re-collection. Under
                 // any other committed scope it is a live branch this

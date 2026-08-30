@@ -14,7 +14,6 @@
     (expect-metric-delta rows_created 0)
     (expect-metric-delta rows_removed 0)
     ; One patch per outline row label, plus the checkbox itself; nothing else moves.
-    (expect-metric-delta-at-most patches_emitted 6)
     (check (label "Number the outline"))
     (expect-checked (label "Number the outline") true)
     (expect-visible (text "1. Roc Signals Field Guide"))

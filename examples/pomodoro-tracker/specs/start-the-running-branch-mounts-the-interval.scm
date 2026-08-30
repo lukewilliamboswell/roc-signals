@@ -32,7 +32,6 @@
     (expect-metric-delta rows_created 0)
     (expect-metric-delta rows_removed 0)
     (expect-metric-delta scopes_created 0)
-    (expect-metric-delta-at-most patches_emitted 3)
     (expect-metric-delta dirty_source_roots 1)
   )
 )

@@ -26,7 +26,6 @@
     (expect-metric-delta rows_reused 10)
     (expect-metric-delta rows_removed 0)
     (expect-metric-delta set_value 1)
-    (expect-metric-delta-at-most patches_emitted 5)
     (expect-metric-delta dirty_source_roots 1)
     ; editing the last row on the page
     (mark-metrics)

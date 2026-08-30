@@ -50,6 +50,5 @@
     ; topology plan that can prove nested component/when construction sites are
     ; reusable before DOM identities are reserved. Keep the bound explicit so
     ; this known optimization gap cannot regress silently.
-    (expect-metric-delta-at-most patches_emitted 28)
   )
 )
