@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import sys
+import tempfile
 import tomllib
 import unittest
 
@@ -21,7 +22,7 @@ class BenchmarkManifestTests(unittest.TestCase):
         with MANIFEST.open("rb") as f:
             self.manifest = tomllib.load(f)
 
-    def test_node_wasm_work_is_delegated_to_the_owned_harness_issue(self) -> None:
+    def test_node_wasm_work_is_owned_by_the_harness_issue(self) -> None:
         self.assertEqual(
             "https://github.com/lukewilliamboswell/roc-signals/issues/19",
             self.manifest["browser_harness_issue"],
@@ -89,6 +90,35 @@ class BenchmarkManifestTests(unittest.TestCase):
         cases = test_driver.load_benchmark_cases(example, ROOT)
         self.assertIsNotNone(cases)
         self.assertEqual(9, len(cases or ()))
+
+    def test_benchmark_platform_pair_differs_only_by_instrumentation_exports_and_host(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            host = root / "host.o"
+            host.write_bytes(b"benchmark host marker")
+            production = root / "production"
+            diagnostic = root / "diagnostic"
+            test_driver.prepare_wasm_benchmark_platform(production, host, instrumented=False)
+            test_driver.prepare_wasm_benchmark_platform(diagnostic, host, instrumented=True)
+
+            production_manifest = (production / "main.roc").read_text(encoding="utf-8")
+            diagnostic_manifest = (diagnostic / "main.roc").read_text(encoding="utf-8")
+            metric_exports = (
+                "roc_ui_benchmark_metrics_checkpoint",
+                "roc_ui_benchmark_metrics_len",
+                "roc_ui_benchmark_metrics_ptr",
+                "roc_ui_benchmark_metrics_reset",
+                "roc_ui_benchmark_metrics_schema_version",
+            )
+            for name in metric_exports:
+                self.assertNotIn(name, production_manifest)
+                self.assertEqual(1, diagnostic_manifest.count(name))
+            stripped = diagnostic_manifest
+            for name in metric_exports:
+                stripped = stripped.replace(f'\t\t\t\t"{name}",\n', "")
+            self.assertEqual(production_manifest, stripped)
+            self.assertEqual(host.read_bytes(), (production / "targets" / "wasm32" / "host.wasm").read_bytes())
+            self.assertEqual(host.read_bytes(), (diagnostic / "targets" / "wasm32" / "host.wasm").read_bytes())
 
 
 if __name__ == "__main__":
