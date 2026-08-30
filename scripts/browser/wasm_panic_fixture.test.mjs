@@ -38,12 +38,13 @@ function hostDiagnostic(host) {
 }
 
 test("Wasm roc_alloc OOM poisons and traps instead of returning null", async () => {
-  for (const failureNumber of [1, 2]) {
+  for (const failureNumber of [1, 2, 3]) {
     const host = await instantiateHostFixture();
     host.roc_ui_debug_fail_allocation(failureNumber);
     assert.throws(() => host.roc_alloc(32, 8), WebAssembly.RuntimeError);
     assert.equal(host.roc_ui_is_poisoned(), 1);
     assert.equal(hostDiagnostic(host), "Roc allocation failed");
+    assert.equal(host.roc_ui_debug_live_allocation_count(), 0);
     assert.equal(host.roc_ui_command_buffer_len(), 0);
     assert.equal(host.roc_ui_string_buffer_len(), 0);
     assert.equal(host.roc_ui_dynamic_buffer_len(), 0);
@@ -69,6 +70,19 @@ test("Wasm roc_realloc OOM preserves the old ledger entry then poisons", async (
   assert.equal(host.roc_ui_dynamic_buffer_len(), 0);
   assert.throws(() => host.roc_realloc(original, 96, 8), WebAssembly.RuntimeError);
   assert.throws(() => host.roc_ui_mount(), WebAssembly.RuntimeError);
+});
+
+test("successful Wasm Roc allocation lifecycle never scans the live ledger", async () => {
+  const host = await instantiateHostFixture();
+  const pointers = Array.from({ length: 1024 }, () => host.roc_alloc(8, 8));
+
+  for (let index = 0; index < pointers.length; index += 2) {
+    pointers[index] = host.roc_realloc(pointers[index], 16, 8);
+  }
+  for (const pointer of pointers) host.roc_dealloc(pointer, 8);
+
+  assert.equal(host.roc_ui_debug_live_allocation_count(), 0);
+  assert.equal(host.roc_ui_debug_allocation_diagnostic_scan_entries(), 0n);
 });
 
 test("linked Wasm initial mount OOM publishes nothing, diagnoses poison, and retries in a fresh host", async () => {
