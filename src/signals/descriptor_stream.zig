@@ -367,18 +367,14 @@ pub const StateDesc = struct {
 pub const WhenDesc = struct {
     node_id: NodeId,
     condition: HostSignalBinding,
-    read: HostBoolRead,
-    when_false: abi.Elem,
-    when_true: abi.Elem,
+    ops: retained.HostWhenOps,
     cached_value: HostSignalCacheSlot = .absent,
 
     /// Releases every resource owned by this value and leaves no retained host or Roc ownership behind.
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
         self.cached_value.deinit(ctx, roc_host, metrics);
         self.condition.deinit(allocator, ctx, roc_host, metrics);
-        releaseHostBoolRead(self.read, roc_host, metrics);
-        self.when_false.decref(roc_host);
-        self.when_true.decref(roc_host);
+        retained.releaseHostWhenOps(self.ops, roc_host, metrics);
     }
 };
 
@@ -2018,16 +2014,11 @@ pub const Stream = struct {
     }
 
     /// Maintains prepare when within the indexed descriptor stream used by both hosts.
-    pub fn prepareWhen(_: *const Stream, node_id: NodeId, condition: HostSignalBinding, read: HostBoolRead, when_false: abi.Elem, when_true: abi.Elem, metrics: anytype) PreparedWhen {
-        const retained_read = retainHostBoolRead(read, metrics);
-        when_false.incref(1);
-        when_true.incref(1);
+    pub fn prepareWhen(_: *const Stream, node_id: NodeId, condition: HostSignalBinding, ops: retained.HostWhenOps, metrics: anytype) PreparedWhen {
         return .{ .desc = .{
             .node_id = node_id,
             .condition = condition,
-            .read = retained_read,
-            .when_false = when_false,
-            .when_true = when_true,
+            .ops = retained.retainHostWhenOps(ops, metrics),
         } };
     }
 
@@ -2953,25 +2944,19 @@ pub const Stream = struct {
     }
 
     /// Appends when using capacity that must already satisfy the caller's transaction contract.
-    pub fn appendWhen(self: *Stream, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, node_id: NodeId, condition: HostSignalBinding, read: HostBoolRead, when_false: abi.Elem, when_true: abi.Elem) void {
+    pub fn appendWhen(self: *Stream, allocator: std.mem.Allocator, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, node_id: NodeId, condition: HostSignalBinding, ops: retained.HostWhenOps) void {
         self.rememberSignalRecordTree(allocator, condition.record);
-        const retained_read = retainHostBoolRead(read, metrics);
-        when_false.incref(1);
-        when_true.incref(1);
+        const retained_ops = retained.retainHostWhenOps(ops, metrics);
         const when_index = self.whens.items.len;
         self.whens.append(allocator, .{
             .node_id = node_id,
             .condition = condition,
-            .read = retained_read,
-            .when_false = when_false,
-            .when_true = when_true,
+            .ops = retained_ops,
         }) catch {
             var desc = WhenDesc{
                 .node_id = node_id,
                 .condition = condition,
-                .read = retained_read,
-                .when_false = when_false,
-                .when_true = when_true,
+                .ops = retained_ops,
             };
             desc.deinit(allocator, ctx, roc_host, metrics);
             @panic("out of memory");
@@ -4669,20 +4654,18 @@ test "when descriptor replacement transfers ownership without allocation" {
     defer replacement.deinit(allocator, &ctx, &roc_host, &metrics);
     defer retired.deinit(allocator, &ctx, &roc_host, &metrics);
 
-    const false_elem = abi.Elem{ .payload = .{ .text = abi.RocStr.fromSlice("false", undefined) }, .tag = .Text };
-    const true_elem = abi.Elem{ .payload = .{ .text = abi.RocStr.fromSlice("true", undefined) }, .tag = .Text };
     const active_record = try SignalRecord.tryInit(allocator, .{ .ref = 1 });
     const replacement_record = try SignalRecord.tryInit(allocator, .{ .ref = 2 });
     try active.reservePreparedWhens(allocator, 1, 4);
     try active.reservePreparedSignalRecordPublication(allocator, 1);
-    active.appendPreparedWhen(active.prepareWhen(NodeId.fromRaw(4), .{ .record = active_record, .source_node_ids = try allocator.dupe(u64, &.{1}) }, std.mem.zeroes(HostBoolRead), false_elem, true_elem, &metrics));
+    active.appendPreparedWhen(active.prepareWhen(NodeId.fromRaw(4), .{ .record = active_record, .source_node_ids = try allocator.dupe(u64, &.{1}) }, std.mem.zeroes(retained.HostWhenOps), &metrics));
     active.rememberSignalRecordTreeAssumeCapacity(active_record);
     try active.scope_sites.append(allocator, .{ .node_id = NodeId.fromRaw(4), .scope_id = ScopeId.fromRaw(1), .ordinal = SiteOrdinal.fromRaw(0), .parent_elem_id = ids.root_elem, .render_insert_index = 0, .kind = .when, .binder_bindings = try allocator.alloc(BinderBinding, 0) });
     setFreshIndex(active.descriptor_indexes_by_node_id.items[4].scope_sites.slot(.when), 0);
 
     try replacement.reservePreparedWhens(allocator, 1, 5);
     try replacement.reservePreparedSignalRecordPublication(allocator, 1);
-    replacement.appendPreparedWhen(replacement.prepareWhen(NodeId.fromRaw(5), .{ .record = replacement_record, .source_node_ids = try allocator.dupe(u64, &.{2}) }, std.mem.zeroes(HostBoolRead), false_elem, true_elem, &metrics));
+    replacement.appendPreparedWhen(replacement.prepareWhen(NodeId.fromRaw(5), .{ .record = replacement_record, .source_node_ids = try allocator.dupe(u64, &.{2}) }, std.mem.zeroes(retained.HostWhenOps), &metrics));
     replacement.rememberSignalRecordTreeAssumeCapacity(replacement_record);
     try replacement.scope_sites.append(allocator, .{ .node_id = NodeId.fromRaw(5), .scope_id = ScopeId.fromRaw(2), .ordinal = SiteOrdinal.fromRaw(0), .parent_elem_id = ids.root_elem, .render_insert_index = 0, .kind = .when, .binder_bindings = try allocator.alloc(BinderBinding, 0) });
     setFreshIndex(replacement.descriptor_indexes_by_node_id.items[5].scope_sites.slot(.when), 0);
@@ -4773,9 +4756,7 @@ test "prepared when publication is allocation free" {
     const record = try SignalRecord.tryInit(allocator, .{ .ref = 1 });
     const sources = try allocator.dupe(u64, &.{1});
     const condition = HostSignalBinding{ .record = record, .source_node_ids = sources };
-    const when_false = abi.Elem{ .payload = .{ .text = abi.RocStr.fromSlice("false", undefined) }, .tag = .Text };
-    const when_true = abi.Elem{ .payload = .{ .text = abi.RocStr.fromSlice("true", undefined) }, .tag = .Text };
-    const prepared = stream.prepareWhen(NodeId.fromRaw(6), condition, std.mem.zeroes(HostBoolRead), when_false, when_true, &metrics);
+    const prepared = stream.prepareWhen(NodeId.fromRaw(6), condition, std.mem.zeroes(retained.HostWhenOps), &metrics);
 
     fault.configure(1);
     stream.appendPreparedWhen(prepared);

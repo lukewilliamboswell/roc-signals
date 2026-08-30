@@ -561,7 +561,7 @@ import pf.Ui
 
 - `Signal.Signal(a)` is an opaque typed descriptor.
 - `Ui.state` introduces local state through a closure binder.
-- `Ui.when` and `Ui.each_str` introduce explicit dynamic scopes.
+- `Ui.when`, `Ui.switch`, and `Ui.each_str` introduce explicit dynamic scopes.
 - `Html` creates static markup, signal-backed text/attrs, and event bindings.
 
 Apps no longer define erased value encode/decode boilerplate for row fixtures.

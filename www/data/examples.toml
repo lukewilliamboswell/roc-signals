@@ -561,6 +561,17 @@ native = true
 bench = false
 
 [[examples]]
+slug = "recursive-switch"
+title = "Recursive Switch"
+description = "Internal fixture: retained Ui.switch builders support recursive structure."
+source = "examples/_fixtures/recursive-switch/main.roc"
+specs = "examples/_fixtures/recursive-switch/specs"
+public = false
+wasm = true
+native = true
+bench = false
+
+[[examples]]
 slug = "keyboard-events"
 title = "Keyboard Events"
 description = "Internal fixture: on_key_down and KeyPayload."

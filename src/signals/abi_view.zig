@@ -14,6 +14,7 @@ pub const HostTextRead = retained.HostTextRead;
 pub const HostBoolRead = retained.HostBoolRead;
 pub const HostEventReducer = retained.HostEventReducer;
 pub const HostEachOps = retained.HostEachOps;
+pub const HostWhenOps = retained.HostWhenOps;
 
 pub const node_text_field_custom: u64 = 7;
 pub const node_bool_field_custom: u64 = 3;
@@ -548,9 +549,7 @@ pub const ComponentElem = struct {
 
 pub const WhenElem = struct {
     condition: *const abi.NodeSignalExpr,
-    read: HostBoolRead,
-    when_false: *const abi.Elem,
-    when_true: *const abi.Elem,
+    ops: HostWhenOps,
 };
 
 pub const EachElem = struct {
@@ -642,9 +641,7 @@ pub const Elem = union(enum) {
                 const payload = elem.payload_when();
                 break :blk .{ .when = .{
                     .condition = payload.condition,
-                    .read = payload.read,
-                    .when_false = payload.when_false,
-                    .when_true = payload.when_true,
+                    .ops = payload.ops,
                 } };
             },
             .Each => blk: {
@@ -1305,30 +1302,18 @@ test "Elem.fromAbi decodes component when and each payloads" {
         .payload = .{ .ref = condition_token },
         .tag = .Ref,
     };
-    var when_false = abi.Elem{
-        .payload = .{ .text = borrowedRocStr("false") },
-        .tag = .Text,
-    };
-    var when_true = abi.Elem{
-        .payload = .{ .text = borrowedRocStr("true") },
-        .tag = .Text,
-    };
-    const bool_read = std.mem.zeroes(HostBoolRead);
+    const when_ops = std.mem.zeroes(HostWhenOps);
     const when = abi.Elem{
         .payload = .{ .when = .{
             .condition = &condition,
-            .read = bool_read,
-            .when_false = &when_false,
-            .when_true = &when_true,
+            .ops = when_ops,
         } },
         .tag = .When,
     };
     switch (Elem.fromAbi(when)) {
         .when => |payload| {
             try std.testing.expectEqual(&condition, payload.condition);
-            try std.testing.expectEqual(bool_read, payload.read);
-            try std.testing.expectEqual(&when_false, payload.when_false);
-            try std.testing.expectEqual(&when_true, payload.when_true);
+            try std.testing.expectEqual(when_ops, payload.ops);
         },
         else => return error.TestUnexpectedResult,
     }

@@ -105,6 +105,7 @@ Ui := [].{
 		on_unit : State(a), (a -> a) -> Node.Msg
 		on_unit = |st, f| {
 			current_cap = st.cap
+
 			## Keep the host's unit extraction payload inhabited across the erased ABI.
 			payload_cap : Capability({})
 			payload_cap = Capability.new()
@@ -296,12 +297,10 @@ Ui := [].{
 		## command-producing hooks.
 		set_cmd : State(a), a -> Node.Cmd
 		set_cmd = |st, next| {
-			Node.Cmd.UpdateState(
-				{
-					binder: st.ref,
-					update: { capability: Capability.handle(st.cap), value: Capability.store(Box.box(next), st.cap) },
-				},
-			)
+			Node.Cmd.UpdateState({
+				binder: st.ref,
+				update: { capability: Capability.handle(st.cap), value: Capability.store(Box.box(next), st.cap) },
+			})
 		}
 	}
 
@@ -320,14 +319,12 @@ Ui := [].{
 		handle : State(a)
 		handle = { ref: Node.BinderRef.BinderRef(initial_box), cap }
 		child = body(handle)
-		Elem.State(
-			{
-				binder: handle.ref,
-				initial: initial_box,
-				cap: Capability.handle(cap),
-				child: Box.box(child),
-			},
-		)
+		Elem.State({
+			binder: handle.ref,
+			initial: initial_box,
+			cap: Capability.handle(cap),
+			child: Box.box(child),
+		})
 	}
 
 	## Introduce a reusable local scope. State/when/each ordinals inside the body
@@ -370,21 +367,42 @@ Ui := [].{
 	on_cleanup : Node.Cleanup -> Elem
 	on_cleanup = |cleanup| Elem.Cleanup({ cleanup: cleanup })
 
-	## Conditional. Each arm is its own scope; flipping disposes the losing arm.
+	## Select one lazy branch from a signal value. The host retains `build`, runs it
+	## only for the live case, and replaces the owned branch scope when the case
+	## changes.
+	switch : Signal(case), (case -> Elem) -> Elem
+		where [
+			case.is_eq : case, case -> Bool,
+		]
+	switch = |condition, build| {
+		case_cap = condition.cap
+		build_hv : HostValue -> Elem
+		build_hv = |value| {
+			case_value : case
+			case_value = Box.unbox(Capability.take(value, case_cap))
+			build(case_value)
+		}
+		Elem.When({
+			condition: Signal.to_expr(condition),
+			ops: {
+				case_capability: Capability.handle(case_cap),
+				build: Box.box(build_hv),
+			},
+		})
+	}
+
+	## Boolean specialization of `Ui.switch`. Neither branch builder runs until
+	## the host selects it.
 	when : Signal(Bool), (() -> Elem), (() -> Elem) -> Elem
-	when = |condition, when_true, when_false| {
-		condition_cap = condition.cap
-		read_condition : HostValue -> Bool
-		read_condition = |value| Box.unbox(Capability.get(value, condition_cap))
-		Elem.When(
-			{
-				condition: Signal.to_expr(condition),
-				read: { capability: Capability.handle(condition_cap), read: Box.box(read_condition) },
-				when_true: Box.box(when_true()),
-				when_false: Box.box(when_false()),
+	when = |condition, when_true, when_false|
+		Ui.switch(
+			condition,
+			|selected| if selected {
+				when_true()
+			} else {
+				when_false()
 			},
 		)
-	}
 
 	## Keyed list with string identity material. `key_of` extracts a stable key per
 	## item; the host hashes the key text privately for its bucket index; `row`
@@ -436,19 +454,17 @@ Ui := [].{
 				),
 			)
 		}
-		Elem.Each(
-			{
-				items: Signal.to_expr(items),
-				ops: {
-					items_capability: Capability.handle(items_cap),
-					item_capability: Capability.handle(item_cap),
-					key_capability: Capability.handle(key_cap),
-					items_to_values: Box.box(items_to_values),
-					key_text: Box.box(key_text_hv),
-					key_of: Box.box(key_of_hv),
-					row: Box.box(row_hv),
-				},
+		Elem.Each({
+			items: Signal.to_expr(items),
+			ops: {
+				items_capability: Capability.handle(items_cap),
+				item_capability: Capability.handle(item_cap),
+				key_capability: Capability.handle(key_cap),
+				items_to_values: Box.box(items_to_values),
+				key_text: Box.box(key_text_hv),
+				key_of: Box.box(key_of_hv),
+				row: Box.box(row_hv),
 			},
-		)
+		})
 	}
 }
