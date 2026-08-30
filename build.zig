@@ -51,16 +51,19 @@ pub fn build(b: *std.Build) void {
     const build_options = b.addOptions();
     build_options.addOption(bool, "metrics", metrics);
     build_options.addOption(bool, "fuzz_fixtures", false);
+    build_options.addOption(bool, "wasm_benchmark", false);
     const build_options_module = build_options.createModule();
     // Fuzz targets drive the native host through its test fixture surface and
     // assert on runtime metrics, so they get their own options module.
     const fuzz_build_options = b.addOptions();
     fuzz_build_options.addOption(bool, "metrics", true);
     fuzz_build_options.addOption(bool, "fuzz_fixtures", true);
+    fuzz_build_options.addOption(bool, "wasm_benchmark", false);
     const fuzz_build_options_module = fuzz_build_options.createModule();
 
     const build_hosts_step = b.step("build-test-hosts", "Build platform host artifacts");
     const build_wasm_host_step = b.step("build-wasm-host", "Build the wasm32 browser host artifact");
+    const build_wasm_benchmark_host_step = b.step("build-wasm-benchmark-host", "Build the instrumented ReleaseFast wasm32 benchmark host artifact");
     const run_check_zig_format_step = b.step("run-check-zig-format", "Check Zig formatting");
     const run_check_zig_lints_step = b.step("run-check-zig-lints", "Run Zig lints");
     const run_check_tidy_step = b.step("run-check-tidy", "Run tidiness checks");
@@ -88,6 +91,25 @@ pub fn build(b: *std.Build) void {
     build_hosts_step.dependOn(wasm_host_step);
     build_wasm_host_step.dependOn(wasm_host_step);
 
+    const wasm_benchmark_options = b.addOptions();
+    wasm_benchmark_options.addOption(bool, "metrics", true);
+    wasm_benchmark_options.addOption(bool, "fuzz_fixtures", false);
+    wasm_benchmark_options.addOption(bool, "wasm_benchmark", true);
+    const wasm_benchmark_host = buildWasmHostObject(b, wasm_target, .ReleaseFast, wasm_benchmark_options.createModule());
+    const wasm_production_benchmark_host = buildWasmHostObject(b, wasm_target, .ReleaseFast, build_options_module);
+    const install_wasm_production_benchmark_host = b.addInstallFileWithDir(
+        wasm_production_benchmark_host.getEmittedBin(),
+        .prefix,
+        "wasm-benchmark/production-host.o",
+    );
+    const install_wasm_benchmark_host = b.addInstallFileWithDir(
+        wasm_benchmark_host.getEmittedBin(),
+        .prefix,
+        "wasm-benchmark/host.o",
+    );
+    build_wasm_benchmark_host_step.dependOn(&install_wasm_benchmark_host.step);
+    build_wasm_benchmark_host_step.dependOn(&install_wasm_production_benchmark_host.step);
+
     const shared_test = b.addTest(.{
         .name = "signals_shared",
         .root_module = createSignalsModule(b, native_target, optimize, build_options_module),
@@ -114,8 +136,12 @@ pub fn build(b: *std.Build) void {
         "scripts/browser/conduit_backend.test.mjs",
         "scripts/browser/http_task_router.test.mjs",
         "scripts/browser/runtime_contract.test.mjs",
+        "scripts/browser/run_wasm_benchmarks.test.mjs",
         "scripts/browser/service_ops_charts.test.mjs",
         "scripts/browser/wasm_host_call_batch.test.mjs",
+        "scripts/browser/wasm_benchmark_host.test.mjs",
+        "scripts/browser/wasm_benchmark_metrics.test.mjs",
+        "scripts/browser/wasm_benchmark_runtime.test.mjs",
         "scripts/browser/wasm_memory_views.test.mjs",
         "scripts/browser/wasm_panic_fixture.test.mjs",
     });
@@ -138,8 +164,19 @@ pub fn build(b: *std.Build) void {
         "-femit-bin=.test-out/oom/host-fixture-bounded.wasm",
     });
     link_bounded_wasm_fixture.step.dependOn(&copy_wasm_fixture.step);
+    const mkdir_wasm_benchmark_fixture = b.addSystemCommand(&.{ "mkdir", "-p", ".test-out/wasm-benchmark" });
+    const copy_wasm_benchmark_fixture = b.addSystemCommand(&.{ "cp", "zig-out/wasm-benchmark/host.o", ".test-out/wasm-benchmark/host.o" });
+    copy_wasm_benchmark_fixture.step.dependOn(&mkdir_wasm_benchmark_fixture.step);
+    copy_wasm_benchmark_fixture.step.dependOn(&install_wasm_benchmark_host.step);
+    const link_wasm_benchmark_fixture = b.addSystemCommand(&.{
+        "zig",       "build-exe",                ".test-out/wasm-benchmark/host.o",
+        "-target",   "wasm32-freestanding-none", "-fno-entry",
+        "-rdynamic", "-fallow-shlib-undefined",  "-femit-bin=.test-out/wasm-benchmark/host-fixture.wasm",
+    });
+    link_wasm_benchmark_fixture.step.dependOn(&copy_wasm_benchmark_fixture.step);
     browser_tests.step.dependOn(&link_wasm_fixture.step);
     browser_tests.step.dependOn(&link_bounded_wasm_fixture.step);
+    browser_tests.step.dependOn(&link_wasm_benchmark_fixture.step);
     run_test_browser_step.dependOn(&browser_tests.step);
 
     const fmt_paths = [_][]const u8{ "build.zig", "src", "scripts", "test" };
@@ -494,6 +531,19 @@ fn buildAndCopyWasmHostObject(
     optimize: OptimizeMode,
     build_options: *std.Build.Module,
 ) *Step {
+    const obj = buildWasmHostObject(b, target, optimize, build_options);
+
+    const copy = b.addUpdateSourceFiles();
+    copy.addCopyFileToSource(obj.getEmittedBin(), "platform/targets/wasm32/host.wasm");
+    return &copy.step;
+}
+
+fn buildWasmHostObject(
+    b: *std.Build,
+    target: ResolvedTarget,
+    optimize: OptimizeMode,
+    build_options: *std.Build.Module,
+) *Step.Compile {
     const obj = b.addObject(.{
         .name = "signals_host",
         .root_module = b.createModule(.{
@@ -504,15 +554,14 @@ fn buildAndCopyWasmHostObject(
             .pic = true,
             .imports = &.{
                 .{ .name = "signals", .module = createSignalsModule(b, target, optimize, build_options) },
+                .{ .name = "build_options", .module = build_options },
             },
         }),
     });
     obj.link_function_sections = true;
     obj.link_data_sections = true;
 
-    const copy = b.addUpdateSourceFiles();
-    copy.addCopyFileToSource(obj.getEmittedBin(), "platform/targets/wasm32/host.wasm");
-    return &copy.step;
+    return obj;
 }
 
 const CoverageUnsupportedStep = struct {

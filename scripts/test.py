@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import argparse
 import functools
+import hashlib
 import http.server
+import json
 import os
 from pathlib import Path
 import platform
@@ -127,7 +129,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "suites",
         nargs="*",
-        choices=("all", "zig", "browser", "roc-check", "roc-test", "wasm", "native", "fault", "bundle", "bench"),
+        choices=("all", "zig", "browser", "roc-check", "roc-test", "wasm", "wasm-bench", "native", "fault", "bundle", "bench"),
         default=["all"],
         help="Suites to run. Defaults to all.",
     )
@@ -194,6 +196,11 @@ def parse_args() -> argparse.Namespace:
         help="Delete entries from the known-failures file that passed in this run. Never adds entries.",
     )
     parser.add_argument("--spec-timeout", type=float, default=30.0, metavar="SECONDS")
+    parser.add_argument("--bench-case", action="append", default=[], metavar="GLOB", help="Select Wasm benchmark cases. Repeatable.")
+    parser.add_argument("--bench-warmups", type=int, default=1, metavar="N", help="Complete warm-up passes for wasm-bench.")
+    parser.add_argument("--bench-iterations", type=int, default=20, metavar="N", help="Fresh paired iterations per Wasm benchmark sample.")
+    parser.add_argument("--bench-samples", type=int, default=7, metavar="N", help="Wasm benchmark samples per case.")
+    parser.add_argument("--bench-app-opt", choices=("size", "speed"), default="size", help="Roc Wasm application optimization mode.")
     return parser.parse_args()
 
 
@@ -565,6 +572,97 @@ def run_benchmarks(roc_bin: str, examples: tuple[Example, ...], *, source_root: 
             )
 
 
+def benchmark_run(command: list[str | Path], *, cwd: Path = ROOT) -> None:
+    """Run benchmark setup without contaminating the runner's CSV stdout."""
+    printable = " ".join(str(part) for part in command)
+    print(f"\n==> {printable}", file=sys.stderr, flush=True)
+    subprocess.run([str(part) for part in command], cwd=cwd, check=True, stdout=sys.stderr)
+
+
+def prepare_wasm_benchmark_platform(destination: Path, host_object: Path, *, instrumented: bool) -> None:
+    shutil.copytree(ROOT / "platform", destination, dirs_exist_ok=True)
+    shutil.copy2(host_object, destination / "targets" / "wasm32" / "host.wasm")
+    if not instrumented:
+        return
+    manifest = destination / "main.roc"
+    source = manifest.read_text(encoding="utf-8")
+    marker = '\t\t\t\t"roc_ui_command_buffer_len",\n'
+    exports = (
+        '\t\t\t\t"roc_ui_benchmark_metrics_checkpoint",\n'
+        '\t\t\t\t"roc_ui_benchmark_metrics_len",\n'
+        '\t\t\t\t"roc_ui_benchmark_metrics_ptr",\n'
+        '\t\t\t\t"roc_ui_benchmark_metrics_reset",\n'
+        '\t\t\t\t"roc_ui_benchmark_metrics_schema_version",\n'
+    )
+    if source.count(marker) != 1:
+        raise SystemExit("benchmark platform could not locate the Wasm export list")
+    manifest.write_text(source.replace(marker, exports + marker), encoding="utf-8")
+
+
+def run_wasm_runtime_benchmarks(roc_bin: str, args: argparse.Namespace) -> None:
+    output = TEST_OUT / "wasm-benchmark"
+    output.mkdir(parents=True, exist_ok=True)
+    benchmark_run(["zig", "build", "build-wasm-benchmark-host"])
+
+    production_platform = output / "production-platform"
+    diagnostic_platform = output / "diagnostic-platform"
+    prepare_wasm_benchmark_platform(
+        production_platform,
+        ROOT / "zig-out" / "wasm-benchmark" / "production-host.o",
+        instrumented=False,
+    )
+    prepare_wasm_benchmark_platform(
+        diagnostic_platform,
+        ROOT / "zig-out" / "wasm-benchmark" / "host.o",
+        instrumented=True,
+    )
+
+    fixture = next(example for example in load_examples() if example.slug == "js-framework-benchmark")
+    source_dir = output / "source"
+    shutil.copytree(ROOT / fixture.source.parent, source_dir, dirs_exist_ok=True)
+    production_source = source_dir / "production.roc"
+    diagnostic_source = source_dir / "diagnostic.roc"
+    original = (ROOT / fixture.source).read_text(encoding="utf-8")
+    production_source.write_text(
+        PLATFORM_HEADER_RE.sub(f'platform "{(production_platform / "main.roc").resolve()}"', original, count=1),
+        encoding="utf-8",
+    )
+    diagnostic_source.write_text(
+        PLATFORM_HEADER_RE.sub(f'platform "{(diagnostic_platform / "main.roc").resolve()}"', original, count=1),
+        encoding="utf-8",
+    )
+    production_wasm = output / "js-framework-production.wasm"
+    diagnostic_wasm = output / "js-framework-diagnostic.wasm"
+    for source, wasm in ((production_source, production_wasm), (diagnostic_source, diagnostic_wasm)):
+        benchmark_run([roc_bin, "build", "--target=wasm32", f"--opt={args.bench_app_opt}", "--no-cache", f"--output={wasm}", source])
+
+    version = subprocess.run([roc_bin, "version"], check=True, capture_output=True, text=True).stdout.strip()
+    fixture_digest = hashlib.sha256(original.encode("utf-8")).hexdigest()
+    production_host = ROOT / "zig-out" / "wasm-benchmark" / "production-host.o"
+    diagnostic_host = ROOT / "zig-out" / "wasm-benchmark" / "host.o"
+    metadata = {
+        "roc_compiler": version,
+        "wasm_host_optimization": "ReleaseFast",
+        "roc_app_optimization": args.bench_app_opt,
+        "fixture": "js-framework-benchmark",
+        "fixture_sha256": fixture_digest,
+        "production_host_sha256": hashlib.sha256(production_host.read_bytes()).hexdigest(),
+        "diagnostic_host_sha256": hashlib.sha256(diagnostic_host.read_bytes()).hexdigest(),
+    }
+    command: list[str | Path] = [
+        "node", "scripts/browser/run_wasm_benchmarks.mjs",
+        "--production", production_wasm,
+        "--diagnostic", diagnostic_wasm,
+        "--warmups", str(args.bench_warmups),
+        "--iterations", str(args.bench_iterations),
+        "--samples", str(args.bench_samples),
+        "--metadata", json.dumps(metadata, separators=(",", ":")),
+    ]
+    for pattern in args.bench_case:
+        command.extend(("--case", pattern))
+    subprocess.run([str(part) for part in command], cwd=ROOT, check=True)
+
+
 def rewrite_platform_headers(root: Path, platform_ref: str) -> None:
     replacement = f'platform "{platform_ref}"'
     for source in sorted(root.rglob("*.roc")):
@@ -763,6 +861,8 @@ def run_bundle_suite(
 def validate_args_before_build(args: argparse.Namespace, suites: set[str]) -> None:
     if args.spec_timeout <= 0:
         raise SystemExit("--spec-timeout must be greater than zero")
+    if args.bench_warmups < 0 or args.bench_iterations <= 0 or args.bench_samples <= 0:
+        raise SystemExit("Wasm benchmark warmups must be non-negative and iterations/samples must be positive")
     if "bundle" not in suites:
         return
     if not should_run_hosted(args.bundle):
@@ -802,6 +902,9 @@ def main() -> int:
         raise SystemExit(str(exc)) from exc
     if "wasm" in suites:
         build_wasm_apps(roc_bin, examples, ledger)
+
+    if "wasm-bench" in suites:
+        run_wasm_runtime_benchmarks(roc_bin, args)
 
     if "native" in suites:
         if should_run_hosted(args.native):

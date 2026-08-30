@@ -12,6 +12,7 @@
 
 const std = @import("std");
 const signals = @import("signals");
+const build_options = @import("build_options");
 
 pub const panic = std.debug.FullPanic(wasmPanic);
 const abi = signals.abi;
@@ -48,12 +49,12 @@ const HostActiveEventDesc = SharedEngine.ActiveEventDesc;
 const WasmCtx = struct {
     pub const Handle = WasmCtx;
     pub const RegistryOps = hv.RegistryOps();
-    pub const Metrics = engine.NoMetrics;
+    pub const Metrics = if (build_options.wasm_benchmark) engine.RuntimeMetrics else engine.NoMetrics;
     pub const Sink = WasmSink;
 
     /// Creates the host's zeroed metric accumulator for a new engine operation.
     pub fn zeroMetrics() Metrics {
-        return .{};
+        return if (build_options.wasm_benchmark) engine.zeroRuntimeMetrics() else .{};
     }
 
     /// Returns the allocator owned by this host context for shared-engine work.
@@ -288,8 +289,119 @@ fn emitAppendChildren(parent_elem_id: ids.ElemId, next_child_ids: []const ids.El
     }
 }
 
+const AllocationCounters = struct {
+    alloc_calls: u64 = 0,
+    realloc_calls: u64 = 0,
+    dealloc_calls: u64 = 0,
+    allocated_bytes: u64 = 0,
+    deallocated_bytes: u64 = 0,
+    realloc_copied_bytes: u64 = 0,
+    live_count: u64 = 0,
+    live_bytes: u64 = 0,
+    peak_live_count: u64 = 0,
+    peak_live_bytes: u64 = 0,
+
+    fn notePeak(self: *AllocationCounters) void {
+        self.peak_live_count = @max(self.peak_live_count, self.live_count);
+        self.peak_live_bytes = @max(self.peak_live_bytes, self.live_bytes);
+    }
+};
+
+const BenchmarkAllocator = struct {
+    counters: AllocationCounters = .{},
+    count_enabled: bool = true,
+
+    const vtable: std.mem.Allocator.VTable = .{ .alloc = alloc, .resize = resize, .remap = remap, .free = free };
+
+    fn allocator(self: *BenchmarkAllocator) std.mem.Allocator {
+        return .{ .ptr = self, .vtable = &vtable };
+    }
+
+    fn fromPtr(ptr: *anyopaque) *BenchmarkAllocator {
+        return @ptrCast(@alignCast(ptr));
+    }
+
+    fn alloc(ptr: *anyopaque, len: usize, alignment: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
+        const result = std.heap.wasm_allocator.rawAlloc(len, alignment, ret_addr) orelse return null;
+        const self = fromPtr(ptr);
+        if (!self.count_enabled) return result;
+        self.counters.alloc_calls += 1;
+        self.counters.allocated_bytes += len;
+        self.counters.live_count += 1;
+        self.counters.live_bytes += len;
+        self.counters.notePeak();
+        return result;
+    }
+
+    fn resize(ptr: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
+        if (!std.heap.wasm_allocator.rawResize(memory, alignment, new_len, ret_addr)) return false;
+        const self = fromPtr(ptr);
+        if (!self.count_enabled) return true;
+        self.noteResize(memory.len, new_len);
+        return true;
+    }
+
+    fn remap(ptr: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
+        const result = std.heap.wasm_allocator.rawRemap(memory, alignment, new_len, ret_addr) orelse return null;
+        const self = fromPtr(ptr);
+        if (!self.count_enabled) return result;
+        self.noteResize(memory.len, new_len);
+        self.counters.realloc_copied_bytes += @min(memory.len, new_len);
+        return result;
+    }
+
+    fn noteResize(self: *BenchmarkAllocator, old_len: usize, new_len: usize) void {
+        self.counters.realloc_calls += 1;
+        if (new_len >= old_len) {
+            self.counters.allocated_bytes += new_len - old_len;
+            self.counters.live_bytes += new_len - old_len;
+        } else {
+            self.counters.deallocated_bytes += old_len - new_len;
+            self.counters.live_bytes -= old_len - new_len;
+        }
+        self.counters.notePeak();
+    }
+
+    fn free(ptr: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ret_addr: usize) void {
+        const self = fromPtr(ptr);
+        if (self.count_enabled) {
+            self.counters.dealloc_calls += 1;
+            self.counters.deallocated_bytes += memory.len;
+            self.counters.live_count -= 1;
+            self.counters.live_bytes -= memory.len;
+        }
+        std.heap.wasm_allocator.rawFree(memory, alignment, ret_addr);
+    }
+};
+
 var shared_engine: SharedEngine = .init();
-var wasm_fault_allocator = signals.fault_allocator.FaultAllocator.init(std.heap.wasm_allocator);
+var benchmark_allocator: BenchmarkAllocator = .{};
+var wasm_fault_allocator = signals.fault_allocator.FaultAllocator.init(if (build_options.wasm_benchmark) benchmark_allocator.allocator() else std.heap.wasm_allocator);
+var roc_benchmark_counters: AllocationCounters = .{};
+var benchmark_host_baseline: AllocationCounters = .{};
+var benchmark_roc_baseline_live_count: u64 = 0;
+var benchmark_roc_baseline_live_bytes: u64 = 0;
+const benchmark_metrics_schema_version: u32 = 2;
+const runtime_metric_count = std.meta.fields(engine.RuntimeMetrics).len;
+const BenchmarkMetricsBlock = extern struct {
+    roc: [10]u64,
+    host: [10]u64,
+    roc_retained_count_delta: i64,
+    roc_retained_bytes_delta: i64,
+    host_retained_count_delta: i64,
+    host_retained_bytes_delta: i64,
+    roc_live_count_before: u64,
+    roc_live_bytes_before: u64,
+    host_live_count_before: u64,
+    host_live_bytes_before: u64,
+    command_buffer_growth_bytes: u64,
+    wasm_pages_before: u64,
+    wasm_pages_after: u64,
+    runtime: [runtime_metric_count]u64,
+};
+var benchmark_metrics_block: BenchmarkMetricsBlock = std.mem.zeroes(BenchmarkMetricsBlock);
+var benchmark_command_capacity_bytes: u64 = 0;
+var benchmark_pages_before: u64 = 0;
 var command_batch: render.TransactionalBatch = .{};
 var initial_location_payload: ?[]u8 = null;
 var initial_visibility_payload: ?[]u8 = null;
@@ -465,6 +577,110 @@ fn beginCommandTransaction() void {
 /// Makes the complete batch of the finishing host call visible to JavaScript.
 fn publishCommandTransaction() void {
     command_batch.publish();
+    if (comptime build_options.wasm_benchmark) updateBenchmarkMetricsBlock();
+}
+
+fn commandBufferCapacityBytes() u64 {
+    const record_bytes = @sizeOf(render.Record) * (command_batch.published.commands.records.capacity + command_batch.staged.commands.records.capacity);
+    const string_bytes = command_batch.published.strings.capacity + command_batch.staged.strings.capacity;
+    const dynamic_bytes = command_batch.published.dynamic.bytes.capacity + command_batch.staged.dynamic.bytes.capacity;
+    return @intCast(record_bytes + string_bytes + dynamic_bytes);
+}
+
+fn finishWasmRuntimeMetrics() void {
+    if (comptime !build_options.wasm_benchmark) return;
+    var metrics = engine.addRuntimeMetrics(shared_engine.last_runtime_metrics, shared_engine.pending_roc_metrics);
+    metrics.patches_emitted = shared_engine.render_metrics.patches_emitted;
+    metrics.reset_dom = shared_engine.render_metrics.reset_dom;
+    metrics.create_element = shared_engine.render_metrics.create_element;
+    metrics.append_child = shared_engine.render_metrics.append_child;
+    metrics.remove_node = shared_engine.render_metrics.remove_node;
+    metrics.move_before = shared_engine.render_metrics.move_before;
+    metrics.set_text = shared_engine.render_metrics.set_text;
+    metrics.set_value = shared_engine.render_metrics.set_value;
+    metrics.set_checked = shared_engine.render_metrics.set_checked;
+    metrics.set_disabled = shared_engine.render_metrics.set_disabled;
+    metrics.set_metadata = shared_engine.render_metrics.set_metadata;
+    metrics.bind_event = shared_engine.render_metrics.bind_event;
+    metrics.events_processed = shared_engine.dispatch_metrics.events_processed;
+    metrics.recompute_batches = shared_engine.dispatch_metrics.recompute_batches;
+    shared_engine.last_runtime_metrics = metrics;
+    shared_engine.pending_roc_metrics = engine.zeroRuntimeMetrics();
+}
+
+fn allocationCounterWords(counters: AllocationCounters) [10]u64 {
+    return .{
+        counters.alloc_calls,
+        counters.realloc_calls,
+        counters.dealloc_calls,
+        counters.allocated_bytes,
+        counters.deallocated_bytes,
+        counters.realloc_copied_bytes,
+        counters.live_count,
+        counters.live_bytes,
+        counters.peak_live_count,
+        counters.peak_live_bytes,
+    };
+}
+
+fn signedDelta(current: u64, baseline: u64) i64 {
+    if (current >= baseline) return @intCast(current - baseline);
+    return -@as(i64, @intCast(baseline - current));
+}
+
+fn updateBenchmarkMetricsBlock() void {
+    finishWasmRuntimeMetrics();
+    benchmark_metrics_block.roc = allocationCounterWords(roc_benchmark_counters);
+    benchmark_metrics_block.host = allocationCounterWords(benchmark_allocator.counters);
+    benchmark_metrics_block.roc_retained_count_delta = signedDelta(roc_benchmark_counters.live_count, benchmark_roc_baseline_live_count);
+    benchmark_metrics_block.roc_retained_bytes_delta = signedDelta(roc_benchmark_counters.live_bytes, benchmark_roc_baseline_live_bytes);
+    benchmark_metrics_block.host_retained_count_delta = signedDelta(benchmark_allocator.counters.live_count, benchmark_host_baseline.live_count);
+    benchmark_metrics_block.host_retained_bytes_delta = signedDelta(benchmark_allocator.counters.live_bytes, benchmark_host_baseline.live_bytes);
+    benchmark_metrics_block.roc_live_count_before = benchmark_roc_baseline_live_count;
+    benchmark_metrics_block.roc_live_bytes_before = benchmark_roc_baseline_live_bytes;
+    benchmark_metrics_block.host_live_count_before = benchmark_host_baseline.live_count;
+    benchmark_metrics_block.host_live_bytes_before = benchmark_host_baseline.live_bytes;
+    benchmark_metrics_block.command_buffer_growth_bytes = commandBufferCapacityBytes() -| benchmark_command_capacity_bytes;
+    benchmark_metrics_block.wasm_pages_before = benchmark_pages_before;
+    benchmark_metrics_block.wasm_pages_after = @wasmMemorySize(0);
+    inline for (std.meta.fields(engine.RuntimeMetrics), 0..) |field, index| {
+        const value = @field(shared_engine.last_runtime_metrics, field.name);
+        benchmark_metrics_block.runtime[index] = switch (field.type) {
+            u64 => value,
+            i64 => @bitCast(value),
+            else => @compileError("benchmark runtime metrics must be integer counters"),
+        };
+    }
+}
+
+fn resetBenchmarkMetrics() void {
+    const host_live_count = benchmark_allocator.counters.live_count;
+    const host_live_bytes = benchmark_allocator.counters.live_bytes;
+    benchmark_allocator.counters = .{
+        .live_count = host_live_count,
+        .live_bytes = host_live_bytes,
+        .peak_live_count = host_live_count,
+        .peak_live_bytes = host_live_bytes,
+    };
+    const roc_live_count = roc_benchmark_counters.live_count;
+    const roc_live_bytes = roc_benchmark_counters.live_bytes;
+    roc_benchmark_counters = .{
+        .live_count = roc_live_count,
+        .live_bytes = roc_live_bytes,
+        .peak_live_count = roc_live_count,
+        .peak_live_bytes = roc_live_bytes,
+    };
+    benchmark_host_baseline = benchmark_allocator.counters;
+    benchmark_roc_baseline_live_count = roc_live_count;
+    benchmark_roc_baseline_live_bytes = roc_live_bytes;
+    benchmark_command_capacity_bytes = commandBufferCapacityBytes();
+    benchmark_pages_before = @wasmMemorySize(0);
+    shared_engine.last_runtime_metrics = engine.zeroRuntimeMetrics();
+    shared_engine.pending_roc_metrics = engine.zeroRuntimeMetrics();
+    shared_engine.render_metrics = .{};
+    shared_engine.dispatch_metrics = .{};
+    benchmark_metrics_block = std.mem.zeroes(BenchmarkMetricsBlock);
+    updateBenchmarkMetricsBlock();
 }
 
 fn storeBytes(bytes: []const u8) u32 {
@@ -1384,9 +1600,16 @@ fn allocRocMemory(length: usize, alignment_arg: usize) ?*anyopaque {
     const min_alignment = @max(alignment_arg, @sizeOf(usize));
     const alignment = alignmentFromBytes(min_alignment);
     const allocated_size = allocatedSizeForRocRequest(length);
-    const user_ptr = allocator().rawAlloc(allocated_size, alignment, @returnAddress()) orelse return null;
+    if (comptime build_options.wasm_benchmark) benchmark_allocator.count_enabled = false;
+    const user_ptr = allocator().rawAlloc(allocated_size, alignment, @returnAddress()) orelse {
+        if (comptime build_options.wasm_benchmark) benchmark_allocator.count_enabled = true;
+        return null;
+    };
+    if (comptime build_options.wasm_benchmark) benchmark_allocator.count_enabled = true;
     if (!recordRocAllocation(user_ptr, length, allocated_size, alignment)) {
+        if (comptime build_options.wasm_benchmark) benchmark_allocator.count_enabled = false;
         allocator().rawFree(user_ptr[0..allocated_size], alignment, @returnAddress());
+        if (comptime build_options.wasm_benchmark) benchmark_allocator.count_enabled = true;
         return null;
     }
     return @ptrCast(user_ptr);
@@ -1415,13 +1638,23 @@ fn freeRocAllocation(ptr: *anyopaque, alignment_arg: usize) RocAllocation {
     }
     const alloc = removeRocAllocationAt(index);
     recordFreedRocAllocation(alloc);
+    if (comptime build_options.wasm_benchmark) benchmark_allocator.count_enabled = false;
     allocator().rawFree(alloc.user_ptr[0..alloc.allocated_size], alloc.alignment, @returnAddress());
+    if (comptime build_options.wasm_benchmark) benchmark_allocator.count_enabled = true;
     return alloc;
 }
 
 export fn roc_alloc(length: usize, alignment: usize) callconv(.c) ?*anyopaque {
     if (host_poisoned) @trap();
-    return allocRocMemory(length, alignment) orelse failHostWith("Roc allocation failed");
+    const result = allocRocMemory(length, alignment) orelse failHostWith("Roc allocation failed");
+    if (comptime build_options.wasm_benchmark) {
+        roc_benchmark_counters.alloc_calls += 1;
+        roc_benchmark_counters.allocated_bytes += length;
+        roc_benchmark_counters.live_count += 1;
+        roc_benchmark_counters.live_bytes += length;
+        roc_benchmark_counters.notePeak();
+    }
+    return result;
 }
 
 export fn roc_ui_debug_live_allocation_count() callconv(.c) usize {
@@ -1483,7 +1716,13 @@ export fn roc_ui_debug_live_allocation_phase(index: usize) callconv(.c) u32 {
 }
 
 export fn roc_dealloc(ptr: *anyopaque, alignment: usize) callconv(.c) void {
-    _ = freeRocAllocation(ptr, alignment);
+    const freed = freeRocAllocation(ptr, alignment);
+    if (comptime build_options.wasm_benchmark) {
+        roc_benchmark_counters.dealloc_calls += 1;
+        roc_benchmark_counters.deallocated_bytes += freed.requested_size;
+        roc_benchmark_counters.live_count -= 1;
+        roc_benchmark_counters.live_bytes -= freed.requested_size;
+    }
 }
 
 export fn roc_realloc(ptr: *anyopaque, new_length: usize, alignment_arg: usize) callconv(.c) ?*anyopaque {
@@ -1518,11 +1757,51 @@ export fn roc_realloc(ptr: *anyopaque, new_length: usize, alignment_arg: usize) 
     @memcpy(new_allocation_user_ptr[0..copy_size], old_user_ptr[0..copy_size]);
     const freed = removeRocAllocationAt(old_index);
     recordFreedRocAllocation(freed);
+    if (comptime build_options.wasm_benchmark) benchmark_allocator.count_enabled = false;
     allocator().rawFree(freed.user_ptr[0..freed.allocated_size], freed.alignment, @returnAddress());
+    if (comptime build_options.wasm_benchmark) benchmark_allocator.count_enabled = true;
+    if (comptime build_options.wasm_benchmark) {
+        roc_benchmark_counters.realloc_calls += 1;
+        roc_benchmark_counters.allocated_bytes += new_length;
+        roc_benchmark_counters.deallocated_bytes += old_alloc.requested_size;
+        roc_benchmark_counters.realloc_copied_bytes += copy_size;
+        roc_benchmark_counters.live_bytes = roc_benchmark_counters.live_bytes - old_alloc.requested_size + new_length;
+        roc_benchmark_counters.notePeak();
+    }
     return @ptrCast(new_allocation_user_ptr);
 }
 
 // --- Command-buffer wire surface (drained by the JS executor) ---
+
+fn benchmarkMetricsSchemaVersion() callconv(.c) u32 {
+    return benchmark_metrics_schema_version;
+}
+
+fn benchmarkMetricsReset() callconv(.c) void {
+    resetBenchmarkMetrics();
+}
+
+fn benchmarkMetricsPtr() callconv(.c) usize {
+    return @intFromPtr(&benchmark_metrics_block);
+}
+
+fn benchmarkMetricsLen() callconv(.c) usize {
+    return @sizeOf(BenchmarkMetricsBlock);
+}
+
+fn benchmarkMetricsCheckpoint() callconv(.c) void {
+    updateBenchmarkMetricsBlock();
+}
+
+comptime {
+    if (build_options.wasm_benchmark) {
+        @export(&benchmarkMetricsSchemaVersion, .{ .name = "roc_ui_benchmark_metrics_schema_version" });
+        @export(&benchmarkMetricsReset, .{ .name = "roc_ui_benchmark_metrics_reset" });
+        @export(&benchmarkMetricsPtr, .{ .name = "roc_ui_benchmark_metrics_ptr" });
+        @export(&benchmarkMetricsLen, .{ .name = "roc_ui_benchmark_metrics_len" });
+        @export(&benchmarkMetricsCheckpoint, .{ .name = "roc_ui_benchmark_metrics_checkpoint" });
+    }
+}
 
 export fn roc_ui_protocol_version() callconv(.c) u32 {
     return render.protocol_version;
