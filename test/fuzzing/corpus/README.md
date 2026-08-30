@@ -23,6 +23,19 @@ is the opposite, and is deliberately small enough to read.
   a failure that would otherwise show up as a silent loss of fuzzing depth
   rather than as a test failure.
 
+## When an input is expected to fail
+
+`known-failures.txt` lists inputs that currently fail, so `check` can stay green
+on a bug that is understood and not yet fixed. It ratchets the same way
+`test/known-failures.txt` does: an unlisted failure is a regression, and a listed
+input that starts passing also fails the run, with an instruction to delete the
+line, so the list only ever shrinks.
+
+Listing an input is not a way to quiet a failure. The alternative is deleting the
+input, which throws away the reproduction; keeping it listed means the bug stays
+visible in every run and the fix is what removes it. Each entry needs a comment
+saying which bug it belongs to, and the bug belongs in `wip/issues.md`.
+
 ## Adding one
 
     python3 scripts/fuzz.py minimize structural .fuzz-out/structural/out/primary/crashes/id:000000,...

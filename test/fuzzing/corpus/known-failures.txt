@@ -1,0 +1,17 @@
+# Fuzz corpus inputs that are currently expected to fail. See scripts/fuzz.py.
+#
+# This list only shrinks: an input that starts passing must be deleted here, and
+# an input that starts failing without being listed is a regression that fails
+# the run. Adding a line is a deliberate, reviewed decision and needs a comment
+# saying why, so that a reviewer sees the bug being accepted rather than a
+# corpus quietly shrinking.
+#
+# Entries are one per line, `<target>/<input>`.
+#
+# Recorded 2026-08-30. Both entries are the same defect, described in
+# wip/issues.md: a structural transaction refused under allocation failure
+# leaks Roc allocations. Bisected to 51d8d40 ("Add retained lazy UI
+# switching"); its parent 70ea56f passes both inputs. The two inputs are kept
+# rather than deleted because they are the reproduction.
+structural/cmin-08
+structural/cmin-29

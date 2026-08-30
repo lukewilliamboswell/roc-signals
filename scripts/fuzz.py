@@ -32,6 +32,7 @@ BIN_DIR = ROOT / "zig-out" / "bin"
 # `.fuzz-out` corpora are scratch by comparison: they are large, machine-specific,
 # and deleted by `clean`.
 REGRESSION_DIR = ROOT / "test" / "fuzzing" / "corpus"
+KNOWN_FAILURES_PATH = REGRESSION_DIR / "known-failures.txt"
 
 # AFL++ refuses to start on many developer machines without these. Neither
 # weakens the fuzzing itself: the first only skips a CPU-governor check, and the
@@ -77,6 +78,9 @@ class Target:
     def regression_dir(self) -> Path:
         return REGRESSION_DIR / self.name
 
+    def regression_key(self, path: Path) -> str:
+        return f"{self.name}/{path.name}"
+
     def regression_inputs(self) -> list[Path]:
         if not self.regression_dir.exists():
             return []
@@ -92,6 +96,25 @@ TARGETS = (
 )
 
 TARGETS_BY_NAME = {target.name: target for target in TARGETS}
+
+
+def read_known_failures() -> set[str]:
+    """Reads the inputs currently expected to fail, as `<target>/<input>` keys.
+
+    The ratchet is the one in `scripts/known_failures.py`, applied to the fuzz
+    corpus: a listed input that now passes fails the run so the line gets
+    deleted, and an unlisted failure is a regression. Entries are only ever
+    added by hand, next to a comment saying which bug is being accepted.
+    """
+    if not KNOWN_FAILURES_PATH.exists():
+        return set()
+
+    known = set()
+    for line in KNOWN_FAILURES_PATH.read_text().splitlines():
+        entry = line.split("#", 1)[0].strip()
+        if entry:
+            known.add(entry)
+    return known
 
 
 def die(message: str) -> None:
@@ -332,9 +355,13 @@ def command_check(args: argparse.Namespace) -> int:
     """
     targets = resolve_targets(args.targets)
     ensure_built(targets, need_afl=False, skip_build=args.no_build)
+    known = read_known_failures()
 
     total = 0
-    failures: list[tuple[Target, Path, str]] = []
+    regressions: list[tuple[Target, Path, str]] = []
+    expected_failures: list[str] = []
+    fixed: list[str] = []
+
     for target in targets:
         inputs = target.regression_inputs()
         if args.corpus and target.corpus_dir.exists():
@@ -345,23 +372,47 @@ def command_check(args: argparse.Namespace) -> int:
             print("  no regression inputs")
             continue
 
+        target_regressions = 0
         for path in inputs:
             total += 1
+            key = target.regression_key(path)
             passed, output = replay(target, path)
+
             if passed:
+                if key in known:
+                    fixed.append(key)
+                    print(f"  FIXED {key} (delete it from known-failures.txt)")
                 continue
-            failures.append((target, path, output))
+
+            if key in known:
+                expected_failures.append(key)
+                continue
+
+            regressions.append((target, path, output))
+            target_regressions += 1
             print(f"  FAIL {path.relative_to(ROOT)}")
 
-        if not any(target is failed_target for failed_target, _, _ in failures):
-            print("  all passed")
+        if target_regressions == 0:
+            print("  all passed" if not expected_failures else "  no regressions")
 
-    print(f"\nreplayed {total} input(s); {len(failures)} failed")
-    for target, path, output in failures:
+    print(
+        f"\nreplayed {total} input(s); {len(regressions)} regressed, "
+        f"{len(expected_failures)} known failing, {len(fixed)} fixed"
+    )
+    for key in expected_failures:
+        print(f"  known failing: {key}")
+
+    for target, path, output in regressions:
         print(f"\n--- {target.name} {path.relative_to(ROOT)} ---")
         print(output.strip() or "(no output)")
         print(f"debug with: python3 scripts/fuzz.py repro {target.name} {path.relative_to(ROOT)} --verbose")
-    return 1 if failures else 0
+
+    if fixed:
+        print(
+            f"\n{len(fixed)} known-failing input(s) now pass. Delete them from\n"
+            f"{KNOWN_FAILURES_PATH.relative_to(ROOT)} so the list only shrinks."
+        )
+    return 1 if regressions or fixed else 0
 
 
 def command_add(args: argparse.Namespace) -> int:

@@ -304,3 +304,36 @@ allocation-free publication seam; move remaining application-shaped or
 multi-stage allocation campaigns into the parallel native SCM fault suite.
 Avoid removing exhaustive seam coverage merely because it uses a fault
 allocator.
+
+## 30. A refused structural transaction leaks Roc allocations
+
+The `structural` fuzz target holds two inputs that fail, ratcheted in
+`test/fuzzing/corpus/known-failures.txt`:
+
+```text
+structural/cmin-08   refusal at attempt 73 leaked Roc allocations (faulted mount)
+structural/cmin-29   edit 2 refused at attempt 152 leaked Roc allocations (faulted edit)
+```
+
+Both are the same defect on the same oracle. When an allocation failure refuses
+a structural transaction, the engine unwinds without releasing every Roc
+allocation it took, so the refusal is not the no-op it is specified to be. One
+input refuses during the initial mount and the other during a live edit, which
+says the leak is in a stage both paths share rather than in mount or edit
+handling.
+
+Bisected to `51d8d40` ("Add retained lazy UI switching"); its parent `70ea56f`
+passes both inputs. That change moved retained-value handling across
+`engine.zig`, `retained_values.zig`, `erased_calls.zig`, and
+`roc_platform_abi.zig`, so the retain that is not released most likely belongs
+to a retained value taken on the collect path before the failing reservation.
+
+Reproduce with:
+
+```sh
+python3 scripts/fuzz.py repro structural test/fuzzing/corpus/structural/cmin-08 --verbose
+```
+
+The fault position is deterministic for a given input, so the refusal can be
+stepped through directly. Delete the two lines from the known-failures list as
+part of the fix; `fuzz.py check` fails if they start passing while still listed.
