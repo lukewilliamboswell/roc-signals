@@ -85,6 +85,31 @@
 //!  - **Determinism.** A third engine replaying the whole input from scratch
 //!    must end with identical values and identical counters, which is what AFL++
 //!    stability depends on.
+//!  - **Both paths agree.** A fourth engine runs the same batches as prepared
+//!    transactions and is judged by every oracle above, then held to the direct
+//!    path's result: the same values, the same counters, and the same changed
+//!    ids in the same order. Order is compared exactly here rather than as a
+//!    set, because this engine was fed the identical batch in the identical
+//!    order and the prepared path builds its changed list in a loop of its own.
+//!  - **An abandoned transaction leaves no trace.** Every batch is prepared
+//!    twice: once as a rehearsal whose overlay is dropped unread, and once for
+//!    real. After the rehearsal every cache slot and every dirty stamp must be
+//!    identical to what it was before, and `dirty_signal_generation` must not
+//!    have moved. This is what makes preparation safe to abandon when a later
+//!    stage refuses, and it is invisible to any oracle that only looks at the
+//!    end state, because the second preparation would repair the damage.
+//!  - **The transaction is readable only through the overlay.** Between
+//!    preparation and commit, `PreparedCacheUpdates.readSlot` must hand back the
+//!    provisional value of every recomputed record while the slot that record
+//!    shares with the rest of the engine still holds the old one. An
+//!    implementation that read the committed slot would compute the same final
+//!    values and pass everything else.
+//!  - **Commit publishes exactly once.** After
+//!    `commitPreparedDirtySignalCaches` every cache holds exactly the value that
+//!    was read provisionally a moment earlier, and the dirty generation is
+//!    unchanged - advancing it belongs to the transaction, not to the cache
+//!    commit. Staged and live values are swapped rather than copied, so a commit
+//!    that ran twice would put every changed node back where it started.
 //!  - **Nothing leaks.** Every engine runs on its own safety-checked debug
 //!    allocator, which also backs the `RocEnv` the erased callables allocate
 //!    from, so an unbalanced retain on a value capability is a run failure.
@@ -100,6 +125,19 @@
 //! for the equality cutoff at the source, then `rememberDirtySignalResult` to
 //! stamp the generation - so a source handed the value it already holds is
 //! pruned and never becomes a root.
+//!
+//! The transactional path is driven from the same scheduler output through
+//! `prepareChangedActiveSignalRecordIds` and `commitPreparedDirtySignalCaches`,
+//! with the harness staging roots into a `PreparedCacheUpdates` overlay exactly
+//! as `prepareRoots` does. Only those two declarations had to become public;
+//! everything above them in the production path - `prepare`, `prepareMany`,
+//! `prepareRoots` - takes ABI-shaped source updates and drags in render and
+//! structural preflight, which is element-tree work this target has no graph
+//! for. A prune at the source reaches the metrics immediately rather than
+//! through the overlay, so the rehearsal deliberately does not count one; the
+//! overlay's own derived-call and prune counters reach the metrics only at
+//! commit, which is what lets the rehearsal be discarded without disturbing the
+//! counting oracles.
 //!
 //! Two traps for whoever maintains this. The slice returned by
 //! `propagateDirtyActiveSignalRecordIds` borrows engine scratch and is invalid
@@ -118,16 +156,14 @@
 //!
 //! # Not covered
 //!
-//! The production path is transactional: `PreparedSourceTransaction.prepare` /
-//! `prepareMany` -> `prepareRoots` -> `prepareChangedActiveSignalRecordIds`,
-//! then `commitPreparedDirtySignalCaches`. Every one of those declarations is
-//! file-private to `engine.zig`, so a fuzz target cannot reach them except by
-//! mounting a real element tree - which needs `Elem`-level signal-expression
-//! fixtures the native host does not expose. The overlay's abort-leaves-no-trace
-//! property therefore stays covered only by `engine.zig`'s own tests, and this
-//! target asserts the evaluator and scheduler that both paths share. Making
-//! `prepareChangedActiveSignalRecordIds` and `commitPreparedDirtySignalCaches`
-//! public would let the transactional half be driven here too.
+//! The transactional path is driven here, but only as far as the signal caches
+//! reach. `PreparedSourceTransaction` also prepares a render splice, structural
+//! changes, and `onChange` commands from the same overlay and commits them
+//! alongside it; those stages need a mounted element tree, so their share of the
+//! abort-leaves-no-trace property stays covered by `engine.zig`'s own tests.
+//! Preparation failure is likewise absent: this target abandons a transaction by
+//! choice rather than because an allocation or a preflight refused, so the
+//! error paths out of `prepareChangedActiveSignalRecordIds` are not exercised.
 //!
 //! State `ref` records are also absent: resolving one needs a live host state
 //! table, and the propagation properties above do not depend on where a source
@@ -575,6 +611,19 @@ fn allocateTransform(roc_host: *abi.RocHost, function: abi.RocErasedCallableFn, 
 /// means the outcome must not depend on it.
 const Order = enum { generated, reversed };
 
+/// Which of the engine's two propagation paths a harness drives. Both share the
+/// scheduler and the transform-and-cutoff logic; they differ in where a
+/// recomputed value lands, so an engine that only gets the transactional half
+/// right - or only the direct half - has to fail one of them.
+const Path = enum { direct, prepared };
+
+/// One record's durable dirty stamp, snapshotted so an abandoned transaction
+/// can be held to having left it alone.
+const Stamp = struct {
+    generation: u64,
+    changed: bool,
+};
+
 /// What one batch did to one engine, kept so two engines can be compared.
 const Outcome = struct {
     dirty: [max_nodes]u64 = @splat(0),
@@ -595,6 +644,7 @@ const Outcome = struct {
 const Harness = struct {
     program: Program,
     order: Order,
+    path: Path,
     gpa: std.heap.DebugAllocator(.{}),
     env: abi.RocEnv,
     roc_host: abi.RocHost,
@@ -610,9 +660,10 @@ const Harness = struct {
 
     /// Mounts `program` in a fresh engine with every cache holding its initial
     /// value, which is the state a real graph is in after collection.
-    fn init(self: *Harness, arena: std.mem.Allocator, program: Program, order: Order) void {
+    fn init(self: *Harness, arena: std.mem.Allocator, program: Program, order: Order, path: Path) void {
         self.program = program;
         self.order = order;
+        self.path = path;
         self.gpa = .{};
         self.generation = 0;
         const gpa = self.gpa.allocator();
@@ -705,11 +756,19 @@ const Harness = struct {
         if (self.gpa.deinit() == .leak) fail("engine allocator leaked", .{});
     }
 
+    /// Applies one batch through whichever propagation path this harness owns.
+    fn apply(self: *Harness, update: Batch) Outcome {
+        return switch (self.path) {
+            .direct => self.applyDirect(update),
+            .prepared => self.applyPrepared(update),
+        };
+    }
+
     /// Dirties `update`'s sources and propagates, exactly as
     /// `PreparedSourceTransaction.prepareRoots` does: a source handed the value
     /// it already holds is pruned at the source and never becomes a root, and a
     /// batch with no surviving root does not propagate at all.
-    fn apply(self: *Harness, update: Batch) Outcome {
+    fn applyDirect(self: *Harness, update: Batch) Outcome {
         const gpa = self.gpa.allocator();
         const derived_before = self.engine.pending_roc_metrics.derived_calls_into_roc;
         const prunes_before = self.engine.pending_roc_metrics.propagation_prunes;
@@ -754,6 +813,198 @@ const Harness = struct {
         return outcome;
     }
 
+    /// Stages `update`'s sources into `overlay` the way
+    /// `PreparedSourceTransaction.prepareRoots` stages them, and returns how
+    /// many roots survived the equality cutoff at the source.
+    ///
+    /// `count_prunes` is false for the aborted rehearsal below. A prune at the
+    /// source is published to the metrics immediately rather than through the
+    /// overlay, so a rehearsal that counted them would put the metric oracles
+    /// out by a batch's worth of source prunes for a reason that has nothing to
+    /// do with the engine.
+    fn stageRoots(self: *Harness, overlay: *signal_records.PreparedCacheUpdates, update: Batch, generation: u64, roots: *[max_sources]u64, count_prunes: bool) usize {
+        var root_len: usize = 0;
+        for (0..update.sources.len) |step| {
+            const position = switch (self.order) {
+                .generated => step,
+                .reversed => update.sources.len - 1 - step,
+            };
+            const source = update.sources[position];
+            const value = encode(update.values[position]);
+            const record = &self.records[source];
+            const slot = record.cachedSlot().?;
+            if (slot.* == .present and slot.present.valueEqualsIncoming(&self.host, &self.roc_host, value, self.cap)) {
+                if (count_prunes) self.engine.recordSignalPrune();
+                continue;
+            }
+            overlay.stageAssumeCapacity(slot, value, self.cap, &self.engine.pending_roc_metrics);
+            overlay.rememberResultAssumeCapacity(signal_records.EvaluationKey.fromRecord(record), generation, true);
+            roots[root_len] = source;
+            root_len += 1;
+        }
+        return root_len;
+    }
+
+    /// Collects the forward closure of `roots` into engine scratch. The slice
+    /// borrows that scratch and the next collection overwrites it.
+    fn collectDirty(self: *Harness, roots: []const u64) []const u64 {
+        const gpa = self.gpa.allocator();
+        self.engine.scratch.dirty_active_records.reserveForGraph(Record, gpa, self.engine.active_signal_graph.items) catch {
+            fail("reserving the dirty queue for a {d}-node graph failed", .{self.engine.active_signal_graph.items.len});
+        };
+        return self.engine.scratch.dirty_active_records.collectForRoots(Record, gpa, self.engine.active_signal_graph.items, roots);
+    }
+
+    /// Copies every live cache slot and dirty stamp, so the aborted transaction
+    /// below can be held to leaving all of them exactly as it found them.
+    fn snapshotCaches(self: *Harness, slots: *[max_nodes]signal_records.CacheSlot, stamps: *[max_nodes]Stamp) void {
+        for (self.records, 0..) |*record, index| {
+            slots[index] = record.cachedSlot().?.*;
+            stamps[index] = .{ .generation = record.last_dirty_generation, .changed = record.last_dirty_changed };
+        }
+    }
+
+    /// Applies one batch as a transaction, twice: once as a rehearsal that is
+    /// abandoned, and once for real.
+    ///
+    /// The rehearsal is the point of the whole path. A prepared transaction may
+    /// be abandoned at any point before commit - a later stage runs out of
+    /// memory, a structural preflight refuses - and the engine must then be
+    /// indistinguishable from one that was never asked. Preparing a batch and
+    /// dropping the overlay makes that an assertion: every cache slot and the
+    /// dirty generation have to survive byte for byte, and because the same
+    /// batch is then prepared again and committed, the oracles that follow also
+    /// prove the rehearsal left no work half-done behind it.
+    fn applyPrepared(self: *Harness, update: Batch) Outcome {
+        const gpa = self.gpa.allocator();
+        const derived_before = self.engine.pending_roc_metrics.derived_calls_into_roc;
+        const prunes_before = self.engine.pending_roc_metrics.propagation_prunes;
+        const generation = self.generation + 1;
+        // Every cache slot in the graph may be staged once, and every record
+        // memoized once, so the graph's size is the exact upper bound the
+        // overlay's allocation-free staging needs reserved up front.
+        const reservation = self.program.nodes.len;
+
+        var before: [max_nodes]signal_records.CacheSlot = undefined;
+        var stamps: [max_nodes]Stamp = undefined;
+        self.snapshotCaches(&before, &stamps);
+        const generation_before = self.engine.dirty_signal_generation;
+
+        var rehearsal = signal_records.PreparedCacheUpdates.init(gpa, reservation) catch fail("reserving a rehearsal overlay for {d} slots failed", .{reservation});
+        var roots: [max_sources]u64 = undefined;
+        const rehearsal_roots = self.stageRoots(&rehearsal, update, generation, &roots, false);
+        if (rehearsal_roots != 0) {
+            const dirty = self.collectDirty(roots[0..rehearsal_roots]);
+            const changed = self.engine.prepareChangedActiveSignalRecordIds(&self.host, &self.roc_host, &rehearsal, dirty, &.{}, generation) catch {
+                fail("preparing the rehearsal transaction failed", .{});
+            };
+            gpa.free(changed);
+        }
+        rehearsal.deinit(&self.host, &self.roc_host, &self.engine.pending_roc_metrics);
+        self.expectNoTrace(&before, &stamps, generation_before);
+
+        var outcome = Outcome{};
+        var overlay = signal_records.PreparedCacheUpdates.init(gpa, reservation) catch fail("reserving an overlay for {d} slots failed", .{reservation});
+        defer overlay.deinit(&self.host, &self.roc_host, &self.engine.pending_roc_metrics);
+        const root_len = self.stageRoots(&overlay, update, generation, &roots, true);
+        if (root_len != 0) {
+            // Both slices below borrow storage the next call invalidates - the
+            // first engine scratch, the second the overlay's own staging - so
+            // each is copied before anything else runs.
+            const dirty = self.collectDirty(roots[0..root_len]);
+            outcome.dirty_len = dirty.len;
+            @memcpy(outcome.dirty[0..dirty.len], dirty);
+            const changed = self.engine.prepareChangedActiveSignalRecordIds(&self.host, &self.roc_host, &overlay, outcome.dirty[0..outcome.dirty_len], &.{}, generation) catch {
+                fail("preparing the transaction failed", .{});
+            };
+            defer gpa.free(changed);
+            outcome.changed_len = changed.len;
+            @memcpy(outcome.changed[0..changed.len], changed);
+
+            var provisional: [max_nodes]u64 = @splat(0);
+            self.expectProvisionalReads(&overlay, &before, outcome, &provisional);
+            self.engine.commitPreparedDirtySignalCaches(&overlay);
+            self.expectPublishedOnce(&provisional, generation_before);
+            self.generation = generation;
+            self.engine.dirty_signal_generation = generation;
+        }
+
+        outcome.derived_calls = self.engine.pending_roc_metrics.derived_calls_into_roc - derived_before;
+        outcome.prunes = self.engine.pending_roc_metrics.propagation_prunes - prunes_before;
+        return outcome;
+    }
+
+    /// Asserts an abandoned transaction left the engine as it found it.
+    fn expectNoTrace(self: *Harness, before: *const [max_nodes]signal_records.CacheSlot, stamps: *const [max_nodes]Stamp, generation_before: u64) void {
+        if (self.engine.dirty_signal_generation != generation_before) {
+            fail("an abandoned transaction moved the dirty generation from {d} to {d}", .{ generation_before, self.engine.dirty_signal_generation });
+        }
+        for (self.records, 0..) |*record, index| {
+            if (!std.meta.eql(record.cachedSlot().?.*, before[index])) {
+                fail("an abandoned transaction left node {d} holding a different cache slot", .{index});
+            }
+            // The dirty stamps are durable state as much as the cache is: a
+            // transaction that stamped them while preparing would make the next
+            // generation memoize a result that was never published.
+            if (record.last_dirty_generation != stamps[index].generation or record.last_dirty_changed != stamps[index].changed) {
+                fail("an abandoned transaction restamped node {d} as generation {d} changed={}", .{ index, record.last_dirty_generation, record.last_dirty_changed });
+            }
+        }
+    }
+
+    /// Asserts the transaction is readable through the overlay and invisible
+    /// outside it, and records the provisional value of every node so the
+    /// commit can be held to publishing exactly that.
+    ///
+    /// This is the split the direct path cannot have: a record the transaction
+    /// recomputed must read back as its new value through `readSlot`, while the
+    /// slot that record shares with the rest of the engine still holds the old
+    /// one. An implementation that reads the committed slot instead would still
+    /// compute correct final values, and every other oracle here would pass.
+    fn expectProvisionalReads(self: *Harness, overlay: *const signal_records.PreparedCacheUpdates, before: *const [max_nodes]signal_records.CacheSlot, outcome: Outcome, provisional: *[max_nodes]u64) void {
+        for (self.records, 0..) |*record, index| {
+            const slot = record.cachedSlot().?;
+            provisional[index] = switch (overlay.readSlot(slot).*) {
+                .absent => fail("node {d} reads as absent through the overlay", .{index}),
+                .present => |cell| decode(cell.value),
+            };
+            if (!std.meta.eql(slot.*, before[index])) {
+                fail("node {d} was published before the transaction committed", .{index});
+            }
+        }
+        for (outcome.changed[0..outcome.changed_len]) |record_id| {
+            const index: usize = @intCast(record_id);
+            const committed = switch (before[index]) {
+                .absent => fail("node {d} had no cached value to change from", .{index}),
+                .present => |cell| decode(cell.value),
+            };
+            if (provisional[index] == committed) {
+                fail("node {d} was reported changed but reads as {d} both provisionally and committed", .{ index, committed });
+            }
+        }
+    }
+
+    /// Asserts the commit published every provisional value once and left the
+    /// dirty generation to its caller.
+    ///
+    /// Publishing twice is the failure this shape is aimed at: staged and live
+    /// values are swapped rather than copied, so a commit that ran the swap
+    /// again would put every changed node back to the value it started from.
+    fn expectPublishedOnce(self: *Harness, provisional: *const [max_nodes]u64, generation_before: u64) void {
+        for (self.records, 0..) |*record, index| {
+            const published = switch (record.cachedSlot().?.*) {
+                .absent => fail("node {d} lost its cached value at commit", .{index}),
+                .present => |cell| decode(cell.value),
+            };
+            if (published != provisional[index]) {
+                fail("node {d} committed {d}, but read as {d} inside the transaction", .{ index, published, provisional[index] });
+            }
+        }
+        if (self.engine.dirty_signal_generation != generation_before) {
+            fail("committing the cache overlay moved the dirty generation from {d} to {d}", .{ generation_before, self.engine.dirty_signal_generation });
+        }
+    }
+
     /// Returns the value the engine has cached for node `index`.
     fn cached(self: *Harness, index: usize) u64 {
         return switch (self.records[index].cachedSlot().?.*) {
@@ -769,7 +1020,10 @@ const Harness = struct {
 
 /// Judges one batch on one engine against the model.
 fn check(harness: *Harness, program: Program, batch_index: usize, outcome: Outcome, after: Values, expected: Expected) void {
-    phase = if (harness.order == .generated) "batch" else "reversed batch";
+    phase = switch (harness.path) {
+        .prepared => "prepared batch",
+        .direct => if (harness.order == .generated) "batch" else "reversed batch",
+    };
     batch_number = batch_index;
 
     for (0..program.nodes.len) |index| {
@@ -882,6 +1136,26 @@ fn expectAgreement(left: *Harness, right: *Harness, left_outcome: Outcome, right
     std.mem.sort(u64, right_changed[0..right_outcome.changed_len], {}, std.sort.asc(u64));
     for (left_changed[0..left_outcome.changed_len], right_changed[0..right_outcome.changed_len]) |left_id, right_id| {
         if (left_id != right_id) fail("{s}: changed sets differ at record {d} against {d}", .{ what, left_id, right_id });
+    }
+}
+
+/// Asserts the two propagation paths reported the changed set in the same
+/// order, not merely as the same set.
+///
+/// `expectAgreement` sorts before comparing because two engines fed the same
+/// batch in opposite orders are free to differ within a rank. These two were
+/// fed the identical batch in the identical order, so the sequences must match
+/// element for element: the prepared path builds its changed list in a separate
+/// loop from the direct one, and a reordering there would reach the render
+/// layer as a different splice.
+fn expectSameOrder(direct: Outcome, prepared: Outcome) void {
+    if (direct.changed_len != prepared.changed_len) {
+        fail("the direct path reported {d} changed records against the prepared path's {d}", .{ direct.changed_len, prepared.changed_len });
+    }
+    for (direct.changed[0..direct.changed_len], prepared.changed[0..prepared.changed_len], 0..) |direct_id, prepared_id, position| {
+        if (direct_id != prepared_id) {
+            fail("changed record {d} is {d} on the direct path and {d} on the prepared path", .{ position, direct_id, prepared_id });
+        }
     }
 }
 
@@ -1010,20 +1284,26 @@ pub fn zig_fuzz_test_inner(buf: [*]u8, len: isize, debug: bool) void {
     const program = generate(&reader, arena) catch fail("program arena exhausted", .{});
     if (debug) printProgram(program);
 
-    // Three engines run the same batches: the first as generated, the second
-    // with every batch's sources reversed, and the third a replay of the first
-    // from scratch. The second proves the schedule does not depend on the order
-    // sources were dirtied; the third proves the run is reproducible, which is
-    // what AFL++'s stability metric measures.
+    // Four engines run the same batches. The first three drive the direct
+    // path: as generated, with every batch's sources reversed, and as a replay
+    // of the first from scratch. The second proves the schedule does not depend
+    // on the order sources were dirtied; the third proves the run is
+    // reproducible, which is what AFL++'s stability metric measures. The fourth
+    // drives the same batches as prepared transactions, so every oracle below
+    // is asked of both halves of the engine and the two are then required to
+    // have agreed.
     var forward: Harness = undefined;
-    forward.init(arena, program, .generated);
+    forward.init(arena, program, .generated, .direct);
     defer forward.deinit();
     var reversed: Harness = undefined;
-    reversed.init(arena, program, .reversed);
+    reversed.init(arena, program, .reversed, .direct);
     defer reversed.deinit();
     var replay: Harness = undefined;
-    replay.init(arena, program, .generated);
+    replay.init(arena, program, .generated, .direct);
     defer replay.deinit();
+    var prepared: Harness = undefined;
+    prepared.init(arena, program, .generated, .prepared);
+    defer prepared.deinit();
 
     var sources: [max_sources]u64 = undefined;
     @memcpy(sources[0..program.source_count], program.initial[0..program.source_count]);
@@ -1039,12 +1319,18 @@ pub fn zig_fuzz_test_inner(buf: [*]u8, len: isize, debug: bool) void {
         const reversed_outcome = reversed.apply(entry);
         check(&reversed, program, index, reversed_outcome, after, expected);
         const replay_outcome = replay.apply(entry);
+        phase = "prepared batch";
+        const prepared_outcome = prepared.apply(entry);
+        check(&prepared, program, index, prepared_outcome, after, expected);
 
         phase = "order independence";
         batch_number = index;
         expectAgreement(&forward, &reversed, forward_outcome, reversed_outcome, "reversing the batch's dirty sources changed the result");
         phase = "determinism";
         expectAgreement(&forward, &replay, forward_outcome, replay_outcome, "replaying the same batches produced a different result");
+        phase = "path agreement";
+        expectAgreement(&forward, &prepared, forward_outcome, prepared_outcome, "preparing and committing the batch differed from propagating it directly");
+        expectSameOrder(forward_outcome, prepared_outcome);
     }
 
     if (debug) {
