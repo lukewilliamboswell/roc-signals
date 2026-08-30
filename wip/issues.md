@@ -337,3 +337,23 @@ python3 scripts/fuzz.py repro structural test/fuzzing/corpus/structural/cmin-08 
 The fault position is deterministic for a given input, so the refusal can be
 stepped through directly. Delete the two lines from the known-failures list as
 part of the fix; `fuzz.py check` fails if they start passing while still listed.
+
+The fuzz corpus is not the only thing seeing this. `ee5fa60` also fails twelve
+native specs that `70ea56f` passes, and eight of them are
+`when-each-dispose/main.scm::allocation@107` through `@114` — the fault campaign
+refusing at consecutive allocation attempts, which is the same refusal path the
+two fuzz inputs land on. The other four are
+`query-builder/deleting-a-nested-group.scm` and
+`markdown-editor/edge-case-every-heading-level-one-demotion-at-a-time-the-outl.scm`,
+each failing a step assertion once from the source tree and once from the
+bundled platform.
+
+These are not ratcheted, because they are `main`'s own regressions rather than
+anything a fuzzing change introduced, and the pull-request CI job does not run
+native specs (`--native never`), so only the full job on `main` shows them.
+Reproduce with:
+
+```sh
+python3 scripts/test.py fault --roc-bin /path/to/nightly-2026-08-29/roc
+python3 scripts/test.py native --spec-filter 'deleting-a-nested-group*'
+```
