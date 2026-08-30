@@ -361,3 +361,56 @@ alignment checks, already-freed diagnostics, failure atomicity, and swap-remove
 bookkeeping. Pin the result with a Wasm-host work counter or a scaling test that
 proves successful deallocation/reallocation does not inspect the live ledger;
 wall-clock thresholds alone are not sufficient.
+
+## 32. A refused structural transaction leaks Roc allocations
+
+The `structural` fuzz target holds two inputs that fail, ratcheted in
+`test/fuzzing/corpus/known-failures.txt`:
+
+```text
+structural/cmin-08   refusal at attempt 73 leaked Roc allocations (faulted mount)
+structural/cmin-29   edit 2 refused at attempt 152 leaked Roc allocations (faulted edit)
+```
+
+Both are the same defect on the same oracle. When an allocation failure refuses
+a structural transaction, the engine unwinds without releasing every Roc
+allocation it took, so the refusal is not the no-op it is specified to be. One
+input refuses during the initial mount and the other during a live edit, which
+says the leak is in a stage both paths share rather than in mount or edit
+handling.
+
+Bisected to `51d8d40` ("Add retained lazy UI switching"); its parent `70ea56f`
+passes both inputs. That change moved retained-value handling across
+`engine.zig`, `retained_values.zig`, `erased_calls.zig`, and
+`roc_platform_abi.zig`, so the retain that is not released most likely belongs
+to a retained value taken on the collect path before the failing reservation.
+
+Reproduce with:
+
+```sh
+python3 scripts/fuzz.py repro structural test/fuzzing/corpus/structural/cmin-08 --verbose
+```
+
+The fault position is deterministic for a given input, so the refusal can be
+stepped through directly. Delete the two lines from the known-failures list as
+part of the fix; `fuzz.py check` fails if they start passing while still listed.
+
+The fuzz corpus is not the only thing seeing this. `ee5fa60` also fails twelve
+native specs that `70ea56f` passes, and eight of them are
+`when-each-dispose/main.scm::allocation@107` through `@114` — the fault campaign
+refusing at consecutive allocation attempts, which is the same refusal path the
+two fuzz inputs land on. The other four are
+`query-builder/deleting-a-nested-group.scm` and
+`markdown-editor/edge-case-every-heading-level-one-demotion-at-a-time-the-outl.scm`,
+each failing a step assertion once from the source tree and once from the
+bundled platform.
+
+These are not ratcheted, because they are `main`'s own regressions rather than
+anything a fuzzing change introduced, and the pull-request CI job does not run
+native specs (`--native never`), so only the full job on `main` shows them.
+Reproduce with:
+
+```sh
+python3 scripts/test.py fault --roc-bin /path/to/nightly-2026-08-29/roc
+python3 scripts/test.py native --spec-filter 'deleting-a-nested-group*'
+```

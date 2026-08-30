@@ -37,6 +37,13 @@ jobs:
       - name: Run normal and smoke tests
         run: python3 scripts/test.py zig browser roc-check roc-test wasm --native never --bundle never
 
+      # Replaying the committed corpus needs no AFL++ and takes seconds, which is
+      # what makes it affordable on every pull request. It is the step that stops
+      # a fixed crash from returning unnoticed; the campaigns that find new ones
+      # run separately, in the scheduled fuzz workflow.
+      - name: Replay fuzz regression corpus
+        run: python3 scripts/fuzz.py check
+
   full:
     name: Full tests and coverage
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
