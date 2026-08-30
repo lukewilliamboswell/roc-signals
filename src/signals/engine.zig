@@ -4223,13 +4223,13 @@ pub fn Engine(comptime Ctx: type) type {
                 }
                 var fresh_id = @max(self.fresh_dom_cursor, std.math.add(u64, @intCast(self.engine.dom_identities.items.len), 1) catch return error.ResourceLimit);
                 while (self.dom_identities.reserved_ids.contains(fresh_id) or self.engine.render_cache.hasActiveNode(ids.ElemId.fromRaw(fresh_id))) fresh_id = std.math.add(u64, fresh_id, 1) catch return error.ResourceLimit;
-                self.fresh_dom_cursor = std.math.add(u64, fresh_id, 1) catch return error.ResourceLimit;
                 candidates[candidate_count] = fresh_id;
                 candidate_count += 1;
                 const elem_id = self.dom_identities.reserve(key, active_id, candidates[0..candidate_count]) catch |err| return switch (err) {
                     error.NoCapacity => error.ResourceLimit,
                     error.NoAvailableIdentity => error.InvalidScope,
                 };
+                if (elem_id == fresh_id) self.fresh_dom_cursor = std.math.add(u64, fresh_id, 1) catch return error.ResourceLimit;
                 // Elem ids are one-based and claimed contiguously above the
                 // committed table, so the plan's cumulative node total bounds
                 // every id this transaction can hold; the table grows to the
@@ -4270,13 +4270,13 @@ pub fn Engine(comptime Ctx: type) type {
                 }
                 var fresh_id = @max(self.fresh_node_cursor, @as(u64, @intCast(self.engine.node_identities.items.len)));
                 while (self.node_identities.reserved_ids.contains(fresh_id) or self.engine.activeStreamHoldsNode(fresh_id)) fresh_id = std.math.add(u64, fresh_id, 1) catch return error.ResourceLimit;
-                self.fresh_node_cursor = std.math.add(u64, fresh_id, 1) catch return error.ResourceLimit;
                 candidates[candidate_count] = fresh_id;
                 candidate_count += 1;
                 const node_id = self.node_identities.reserve(key, active_id, candidates[0..candidate_count]) catch |err| return switch (err) {
                     error.NoCapacity => error.ResourceLimit,
                     error.NoAvailableIdentity => error.InvalidScope,
                 };
+                if (node_id == fresh_id) self.fresh_node_cursor = std.math.add(u64, fresh_id, 1) catch return error.ResourceLimit;
                 return ids.NodeId.fromRaw(node_id);
             }
 
@@ -15133,6 +15133,50 @@ test "staged collection accepts external provisional row scopes without id colli
     try std.testing.expectEqual(@as(usize, 1), engine.scopes.items.len);
     try std.testing.expect(engine.each_row_memberships_by_scope_id.capacity >= 4);
     try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+}
+
+test "staged DOM identity reuse does not consume the fresh suffix" {
+    var ctx = VerifyCtxHost{ .allocator = std.testing.allocator };
+    var engine = Engine(VerifyCtx).init();
+    defer deinitVerifyStaticEngine(&engine, &ctx);
+    try engine.dom_identities.append(std.testing.allocator, .{ .elem_id = ids.ElemId.fromRaw(1), .scope_id = ids.root_scope, .ordinal = ids.SiteOrdinal.fromRaw(0), .lifecycle = .{ .retired = ids.Generation.fromRaw(0) } });
+    try engine.dom_identities.append(std.testing.allocator, .{ .elem_id = ids.ElemId.fromRaw(2), .scope_id = ids.root_scope, .ordinal = ids.SiteOrdinal.fromRaw(1), .lifecycle = .{ .retired = ids.Generation.fromRaw(0) } });
+    try engine.dom_identities.append(std.testing.allocator, .{ .elem_id = ids.ElemId.fromRaw(3), .scope_id = ids.root_scope, .ordinal = ids.SiteOrdinal.fromRaw(2) });
+    engine.identity_reuse_barrier = 1;
+
+    var stream: HostNodeDescriptorStream = .{};
+    defer stream.deinit(ctx.allocator, &ctx, undefined, &engine.pending_roc_metrics);
+    var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&engine, &ctx, &stream, .{}, .{ .nodes = 3 }, 0);
+    defer collection.deinit();
+
+    try std.testing.expectEqual(@as(u64, 1), (try collection.reserveDomIdentity(ids.ScopeId.fromRaw(1), ids.SiteOrdinal.fromRaw(0))).raw());
+    try std.testing.expectEqual(@as(u64, 2), (try collection.reserveDomIdentity(ids.ScopeId.fromRaw(2), ids.SiteOrdinal.fromRaw(0))).raw());
+    try std.testing.expectEqual(@as(u64, 4), (try collection.reserveDomIdentity(ids.ScopeId.fromRaw(3), ids.SiteOrdinal.fromRaw(0))).raw());
+}
+
+test "staged node identity reuse does not consume the fresh suffix" {
+    var ctx = VerifyCtxHost{ .allocator = std.testing.allocator };
+    var engine = Engine(VerifyCtx).init();
+    defer {
+        engine.states.deinit(ctx.allocator);
+        engine.state_indexes_by_node_id.deinit(ctx.allocator);
+        engine.node_identities.deinit(ctx.allocator);
+        engine.active_node_identity_ids.deinit(ctx.allocator);
+        deinitVerifyStaticEngine(&engine, &ctx);
+    }
+    try engine.node_identities.append(std.testing.allocator, .{ .node_id = ids.NodeId.fromRaw(0), .scope_id = ids.root_scope, .ordinal = ids.SiteOrdinal.fromRaw(0), .lifecycle = .{ .retired = ids.Generation.fromRaw(0) } });
+    try engine.node_identities.append(std.testing.allocator, .{ .node_id = ids.NodeId.fromRaw(1), .scope_id = ids.root_scope, .ordinal = ids.SiteOrdinal.fromRaw(1), .lifecycle = .{ .retired = ids.Generation.fromRaw(0) } });
+    try engine.node_identities.append(std.testing.allocator, .{ .node_id = ids.NodeId.fromRaw(2), .scope_id = ids.root_scope, .ordinal = ids.SiteOrdinal.fromRaw(2) });
+    engine.identity_reuse_barrier = 1;
+
+    var stream: HostNodeDescriptorStream = .{};
+    defer stream.deinit(ctx.allocator, &ctx, undefined, &engine.pending_roc_metrics);
+    var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(&engine, &ctx, &stream, .{}, .{ .state_sites = 3 }, 0);
+    defer collection.deinit();
+
+    try std.testing.expectEqual(@as(u64, 0), (try collection.reserveNodeIdentity(ids.ScopeId.fromRaw(1), ids.SiteOrdinal.fromRaw(0))).raw());
+    try std.testing.expectEqual(@as(u64, 1), (try collection.reserveNodeIdentity(ids.ScopeId.fromRaw(2), ids.SiteOrdinal.fromRaw(0))).raw());
+    try std.testing.expectEqual(@as(u64, 3), (try collection.reserveNodeIdentity(ids.ScopeId.fromRaw(3), ids.SiteOrdinal.fromRaw(0))).raw());
 }
 
 test "prepared each-row subtree retirement is atomic and allocation free" {
