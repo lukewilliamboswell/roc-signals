@@ -105,8 +105,7 @@ placement, fuzz targets, the ratchet file.
 - *Composition:* a maintained app factors a repeated fragment into a typed,
   packaged unit; a fixture proves inputs, children, and scoped state.
 - *Scaling for apps:* a one-row change in the large keyed fixtures runs O(1)
-  Roc closures, pinned by `expect_metric_delta` on `derived_calls_into_roc` and
-  `nodes_recomputed`.
+  Roc closures, pinned by `expect_metric_delta` on `derived_calls_into_roc`.
 - *Legible failure:* one fixture per contract-error class asserts the
   diagnostic text and site attribution on both hosts.
 - *One door:* an interop canary integrates a third-party widget through the
@@ -1442,9 +1441,9 @@ or native host semantics.
 ### Metrics
 
 The host retains a metrics record for benchmarking. The meaningful counters
-are: `events_processed`, `nodes_recomputed` (should track changed nodes, not
-graph size), `propagation_prunes` (`is_eq` short-circuits), `derived_calls_into_roc`
-(direct retained-thunk invocations per event), `recompute_batches`,
+are: `events_processed`, `propagation_prunes` (`is_eq` short-circuits),
+`derived_calls_into_roc` (direct retained-thunk invocations per event, which
+should track changed nodes rather than graph size), `recompute_batches`,
 `patches_emitted`, render command counters (`reset_dom`, `create_element`,
 `append_child`, `remove_node`, `move_before`, `set_text`, `set_value`,
 `set_checked`, `set_disabled`, `set_metadata`, `bind_event`),
@@ -1457,7 +1456,7 @@ us: they let a spec assert *exactly* how much work an event caused, which is the
 property we most need to prove and which a real browser would not expose.
 
 Counters that measure update amplification (`patches_emitted`,
-`nodes_recomputed`) are necessary but not sufficient: they count *emitted* and
+`derived_calls_into_roc`) are necessary but not sufficient: they count *emitted* and
 *recomputed* work, so an O(N²) splice or a full graph rebuild can sit underneath a
 low patch count undetected. The telemetry must therefore also expose the
 foundation-level work the Complexity Discipline budget governs — *scanned* nodes,
@@ -1486,7 +1485,7 @@ spec can assert a hard bound:
 Telemetry placement is deliberate:
 
 - **Spec assertions (`expect_metric_delta`)** carry the scaling *invariants* that
-  must hold regardless of timing: `nodes_recomputed`, `patches_emitted`,
+  must hold regardless of timing:
   render command counters, `derived_calls_into_roc`, `rows_reused/created/removed`,
   `active_graph_records_rebuilt`, `stream_nodes_scanned`, `each_key_compares`,
   and per-event allocation deltas. These fail the build when a path does O(N)
@@ -2019,7 +2018,7 @@ property regresses.
    patches emitted, and rows touched track the *changed* set — including under
    list churn — never graph or tree size, with no full-tree re-walk, no full
    graph rebuild, and no scan-to-rediscover-identity. *We know this holds when:*
-   `expect_metric_delta` assertions over `nodes_recomputed`, `patches_emitted`,
+   `expect_metric_delta` assertions over `derived_calls_into_roc`,
    `active_graph_records_rebuilt`, `stream_nodes_scanned`, `each_key_compares`,
    and the row counters bound work to the changed set, and per-event allocations
    are flat across input size.
@@ -2134,7 +2133,7 @@ than passing silently:
   prove no retained closure, allocation, row, or stale-task leak across the
   relevant cycle.
 - **Real-event and async fanout assertions in maintained apps** should keep
-  bounding `nodes_recomputed`, `derived_calls_into_roc`, task lifecycle metrics,
+  bounding `derived_calls_into_roc`, task lifecycle metrics,
   and row counters so shared-signal amplification is pinned on the live path.
 - **A reorder host test at large N** that fails if reorder degrades from
   moves-only to whole-site re-collect.

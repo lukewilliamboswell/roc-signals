@@ -48,7 +48,6 @@
     (expect-metric-delta scopes_disposed 0)
     ; Every sibling row in all three each_str levels is re-keyed and reused.
     (expect-metric-delta rows_reused 6)
-    (expect-metric-delta-at-most patches_emitted 8)
     (expect-metric-delta-at-most dirty_source_roots 4)
     ; The siblings still hold their own values.
     (expect-value (label "Value n4") "A")

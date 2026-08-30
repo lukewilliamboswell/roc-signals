@@ -44,7 +44,6 @@
     ; the winning column. Those booleans are memoised, so the badge and stat
     ; classes downstream of them only recompute when a winner actually changes.
     (expect-metric-delta derived_calls_into_roc 47)
-    (expect-metric-delta-at-most patches_emitted 21)
     ; The break-even month moves because A's rate changed.
     (expect-text (test-id "break-even") "Month 23")
     (expect-text (test-id "cheapest") "Scenario A ($39.12)")

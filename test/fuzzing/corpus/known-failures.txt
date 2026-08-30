@@ -8,10 +8,6 @@
 #
 # Entries are one per line, `<target>/<input>`.
 #
-# Recorded 2026-08-30. Both entries are the same defect, described in
-# wip/issues.md: a structural transaction refused under allocation failure
-# leaks Roc allocations. Bisected to 51d8d40 ("Add retained lazy UI
-# switching"); its parent 70ea56f passes both inputs. The two inputs are kept
-# rather than deleted because they are the reproduction.
-structural/cmin-08
-structural/cmin-29
+# Empty since 2026-08-31, when the refusal leak the two structural inputs
+# reproduced was fixed. They stay in the corpus as regression inputs; only their
+# expected-failure lines are gone.

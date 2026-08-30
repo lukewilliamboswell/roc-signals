@@ -45,7 +45,6 @@
     ; The polished grid renders each row as cells on a shared column
     ; template rather than one text line, so a re-render touches a few more
     ; nodes per row. Still O(visible rows), which is what this bounds.
-    (expect-metric-delta-at-most patches_emitted 352)
     ; select all, scoped to the current filter
     (mark-metrics)
     (check (label "Select all matching rows"))

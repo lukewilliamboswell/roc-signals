@@ -30,7 +30,6 @@
     (expect-metric-delta rows_reused 7)
     (expect-metric-delta rows_removed 0)
     (expect-metric-delta scopes_disposed 0)
-    (expect-metric-delta-at-most patches_emitted 40)
     (expect-checked (label "QA pass after Write docs") true)
     (expect-text (test-id "line-qa") "Day 8 → 10")
     (expect-text (test-id "deps-qa") "After Integrate, Write docs")

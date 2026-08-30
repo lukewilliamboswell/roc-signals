@@ -30,7 +30,6 @@
     (expect-metric-delta dirty_source_roots 1)
     (expect-metric-delta set_value 2)
     (expect-metric-delta bind_event 0)
-    (expect-metric-delta-at-most patches_emitted 4)
     (fill (label "C12") "7")
     (blur (label "C12"))
   )

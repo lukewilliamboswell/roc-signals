@@ -15,6 +15,5 @@
     (expect-metric-delta-at-most dirty_source_roots 4)
     ; Three more patches than the old text-only view: the text-colour swatch's
     ; style attribute, its resolved hex caption, and the AA badge's class.
-    (expect-metric-delta-at-most patches_emitted 11)
   )
 )

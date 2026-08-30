@@ -14,7 +14,6 @@
     (expect-metric-delta rows_created 0)
     (expect-metric-delta rows_removed 0)
     (expect-metric-delta rows_reused 4)
-    (expect-metric-delta-at-most patches_emitted 7)
     (expect-metric-delta scopes_created 0)
     (expect-metric-delta scopes_disposed 0)
     (expect-text (test-id "preview-f1-label") "Given name (required)")

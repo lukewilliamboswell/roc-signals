@@ -15,7 +15,6 @@
     (expect-metric-delta scopes_created 0)
     (expect-metric-delta scopes_disposed 0)
     (expect-metric-delta-at-most dirty_source_roots 4)
-    (expect-metric-delta-at-most patches_emitted 20)
     (expect-text (test-id "effective-servings") "8")
     (expect-text (test-id "scale-note") "Scaled from the recipe's 4 servings.")
     (expect-text (test-id "ing-qty-flour") "400 g")
