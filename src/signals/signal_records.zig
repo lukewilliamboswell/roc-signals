@@ -10,8 +10,10 @@ pub const HostValue = retained.HostValue;
 pub const HostValueCell = retained.HostValueCell;
 pub const HostValueCapability = retained.HostValueCapability;
 pub const HostSignalToken = retained.HostSignalToken;
+pub const HostTextRead = retained.HostTextRead;
 
 const releaseHostValueCapability = retained.releaseHostValueCapability;
+const releaseHostTextRead = retained.releaseHostTextRead;
 
 fn u64SliceContains(items: []const u64, target: u64) bool {
     for (items) |item| {
@@ -153,6 +155,7 @@ pub const PreparedCacheUpdates = struct {
     provisional_values: std.AutoHashMapUnmanaged(EvaluationKey, *const HostValueCell) = .empty,
     derived_calls: u64 = 0,
     propagation_prunes: u64 = 0,
+    selector_members_dirtied: u64 = 0,
     phase: Phase = .preparing,
 
     /// Reserves the exact upper bound before any callback result is adopted.
@@ -370,6 +373,18 @@ pub const CombineRecord = struct {
     cached_value: CacheSlot = .absent,
 };
 
+pub const SelectRecord = struct {
+    input: *Record,
+    key: []const u8,
+    input_read: HostTextRead,
+    false_init: roles.Initializer,
+    true_init: roles.Initializer,
+    cap: HostValueCapability,
+    false_value: CacheSlot = .absent,
+    true_value: CacheSlot = .absent,
+    cached_value: CacheSlot = .absent,
+};
+
 pub const TaskSourceRecord = struct {
     name: []const u8,
     payload_cap: HostValueCapability,
@@ -424,6 +439,7 @@ pub const Payload = union(enum) {
     const_value: ConstRecord,
     map: MapRecord,
     map2: Map2Record,
+    select: SelectRecord,
     combine: CombineRecord,
     task_source: TaskSourceRecord,
     interval_source: IntervalSourceRecord,
@@ -493,6 +509,21 @@ pub fn deinitOwnedPayload(allocator: std.mem.Allocator, ctx: anytype, roc_host: 
             abi.decrefErasedCallable(payload.transform.toAbi(), roc_host);
             releaseHostValueCapability(payload.cap, roc_host, metrics);
             metrics.bump(.closure_releases, 1);
+        },
+        .select => |payload| {
+            payload.input.release(allocator, ctx, roc_host, metrics);
+            allocator.free(payload.key);
+            var false_value = payload.false_value;
+            false_value.deinit(ctx, roc_host, metrics);
+            var true_value = payload.true_value;
+            true_value.deinit(ctx, roc_host, metrics);
+            var cached = payload.cached_value;
+            cached.deinit(ctx, roc_host, metrics);
+            releaseHostTextRead(payload.input_read, roc_host, metrics);
+            abi.decrefErasedCallable(payload.false_init.toAbi(), roc_host);
+            abi.decrefErasedCallable(payload.true_init.toAbi(), roc_host);
+            releaseHostValueCapability(payload.cap, roc_host, metrics);
+            metrics.bump(.closure_releases, 2);
         },
         .combine => |payload| {
             for (payload.children) |child| child.release(allocator, ctx, roc_host, metrics);
@@ -602,6 +633,7 @@ pub const Record = struct {
             .const_value => |payload| retained.hostSignalTokenFromCallable(payload.init.toAbi()),
             .map => |payload| retained.hostSignalTokenFromCallable(payload.transform.toAbi()),
             .map2 => |payload| retained.hostSignalTokenFromCallable(payload.transform.toAbi()),
+            .select => |payload| retained.hostSignalTokenFromCallable(payload.false_init.toAbi()),
             .combine => |payload| retained.hostSignalTokenFromCallable(payload.transform.toAbi()),
             .task_source => |payload| retained.hostSignalTokenFromCallable(payload.initial.toAbi()),
             .interval_source => |payload| retained.hostSignalTokenFromCallable(payload.initial.toAbi()),
@@ -619,6 +651,7 @@ pub const Record = struct {
             .const_value => |*payload| &payload.cached_value,
             .map => |*payload| &payload.cached_value,
             .map2 => |*payload| &payload.cached_value,
+            .select => |*payload| &payload.cached_value,
             .combine => |*payload| &payload.cached_value,
             .task_source => |*payload| &payload.cached_value,
             .interval_source => |*payload| &payload.cached_value,
@@ -636,6 +669,7 @@ pub const Record = struct {
             .const_value => |payload| payload.cap,
             .map => |payload| payload.cap,
             .map2 => |payload| payload.cap,
+            .select => |payload| payload.cap,
             .combine => |payload| payload.cap,
             .task_source => |payload| payload.cap,
             .interval_source => |payload| payload.cap,
@@ -650,7 +684,7 @@ pub const Record = struct {
     pub fn taskSource(self: *Record) ?*TaskSourceRecord {
         return switch (self.payload) {
             .task_source => |*payload| payload,
-            .ref, .const_value, .map, .map2, .combine, .interval_source, .location_source, .online_source, .visibility_source, .storage_source => null,
+            .ref, .const_value, .map, .map2, .select, .combine, .interval_source, .location_source, .online_source, .visibility_source, .storage_source => null,
         };
     }
 
@@ -663,7 +697,7 @@ pub const Record = struct {
     pub fn intervalSource(self: *Record) ?*IntervalSourceRecord {
         return switch (self.payload) {
             .interval_source => |*payload| payload,
-            .ref, .const_value, .map, .map2, .combine, .task_source, .location_source, .online_source, .visibility_source, .storage_source => null,
+            .ref, .const_value, .map, .map2, .select, .combine, .task_source, .location_source, .online_source, .visibility_source, .storage_source => null,
         };
     }
 
@@ -676,7 +710,7 @@ pub const Record = struct {
     pub fn locationSource(self: *Record) ?*LocationSourceRecord {
         return switch (self.payload) {
             .location_source => |*payload| payload,
-            .ref, .const_value, .map, .map2, .combine, .task_source, .interval_source, .online_source, .visibility_source, .storage_source => null,
+            .ref, .const_value, .map, .map2, .select, .combine, .task_source, .interval_source, .online_source, .visibility_source, .storage_source => null,
         };
     }
 
@@ -689,7 +723,7 @@ pub const Record = struct {
     pub fn onlineSource(self: *Record) ?*OnlineSourceRecord {
         return switch (self.payload) {
             .online_source => |*payload| payload,
-            .ref, .const_value, .map, .map2, .combine, .task_source, .interval_source, .location_source, .visibility_source, .storage_source => null,
+            .ref, .const_value, .map, .map2, .select, .combine, .task_source, .interval_source, .location_source, .visibility_source, .storage_source => null,
         };
     }
 
@@ -702,7 +736,7 @@ pub const Record = struct {
     pub fn visibilitySource(self: *Record) ?*VisibilitySourceRecord {
         return switch (self.payload) {
             .visibility_source => |*payload| payload,
-            .ref, .const_value, .map, .map2, .combine, .task_source, .interval_source, .location_source, .online_source, .storage_source => null,
+            .ref, .const_value, .map, .map2, .select, .combine, .task_source, .interval_source, .location_source, .online_source, .storage_source => null,
         };
     }
 
@@ -715,7 +749,7 @@ pub const Record = struct {
     pub fn storageSource(self: *Record) ?*StorageSourceRecord {
         return switch (self.payload) {
             .storage_source => |*payload| payload,
-            .ref, .const_value, .map, .map2, .combine, .task_source, .interval_source, .location_source, .online_source, .visibility_source => null,
+            .ref, .const_value, .map, .map2, .select, .combine, .task_source, .interval_source, .location_source, .online_source, .visibility_source => null,
         };
     }
 
@@ -733,7 +767,7 @@ pub const Record = struct {
             .online_source => |*payload| .{ .online = payload },
             .visibility_source => |*payload| .{ .visibility = payload },
             .storage_source => |*payload| .{ .storage = payload },
-            .ref, .const_value, .map, .map2, .combine => null,
+            .ref, .const_value, .map, .map2, .select, .combine => null,
         };
     }
 
@@ -783,6 +817,7 @@ pub fn walkTree(comptime Context: type, context: Context, record: *Record, compt
     switch (record.payload) {
         .ref, .const_value, .task_source, .interval_source, .location_source, .online_source, .visibility_source, .storage_source => {},
         .map => |payload| walkTree(Context, context, payload.input, visit),
+        .select => |payload| walkTree(Context, context, payload.input, visit),
         .map2 => |payload| {
             walkTree(Context, context, payload.left, visit);
             walkTree(Context, context, payload.right, visit);
@@ -817,6 +852,7 @@ pub fn appendSignalRecordSourceNodeIdsFallible(allocator: std.mem.Allocator, sou
         },
         .const_value => {},
         .map => |payload| try appendSignalRecordSourceNodeIdsFallible(allocator, source_node_ids, payload.input),
+        .select => |payload| try appendSignalRecordSourceNodeIdsFallible(allocator, source_node_ids, payload.input),
         .map2 => |payload| {
             try appendSignalRecordSourceNodeIdsFallible(allocator, source_node_ids, payload.left);
             try appendSignalRecordSourceNodeIdsFallible(allocator, source_node_ids, payload.right);

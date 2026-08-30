@@ -30,6 +30,7 @@ const render_cache_mod = @import("render_cache.zig");
 const descriptor_stream = @import("descriptor_stream.zig");
 const retained_values = @import("retained_values.zig");
 const signal_records = @import("signal_records.zig");
+const selector_runtime = @import("selector_runtime.zig");
 const active_graph = @import("active_signal_graph.zig");
 const scope_runtime = @import("scope_runtime.zig");
 const each_runtime = @import("each_runtime.zig");
@@ -118,6 +119,7 @@ const releaseHostEachOps = retained_values.releaseHostEachOps;
 pub const HostSignalCacheSlot = signal_records.CacheSlot;
 pub const HostSignalEvalResult = signal_records.EvalResult;
 pub const HostSignalConstRecord = signal_records.ConstRecord;
+pub const HostSignalSelectRecord = signal_records.SelectRecord;
 pub const HostSignalMapRecord = signal_records.MapRecord;
 pub const HostSignalMap2Record = signal_records.Map2Record;
 pub const HostSignalCombineRecord = signal_records.CombineRecord;
@@ -747,6 +749,7 @@ pub fn Engine(comptime Ctx: type) type {
         active_bool_signal_routes: active_graph.RouteTable(HostActiveBoolSignalSink) = .empty,
         active_change_signal_routes: active_graph.RouteTable(HostActiveChangeSignalSink) = .empty,
         active_structural_signal_routes: active_graph.RouteTable(HostActiveStructuralSignal) = .empty,
+        selectors: selector_runtime.Registry(HostSignalRecord) = .{},
         render_cache: render_cache_mod.Cache(Ctx) = .{},
         pending_tasks: std.ArrayListUnmanaged(HostPendingTask) = .empty,
         active_intervals: std.ArrayListUnmanaged(HostActiveInterval) = .empty,
@@ -787,8 +790,25 @@ pub fn Engine(comptime Ctx: type) type {
                 self.engine.removeActiveIntervalBySourceToken(self.ctx, source_token);
             }
 
+            /// Adds one live selector member to the shared keyed index.
+            pub fn ensureSelector(self: *@This(), input: *HostSignalRecord, key: []const u8, member: *HostSignalRecord) void {
+                self.engine.selectors.register(Ctx.allocator(self.ctx), input, key, member) catch @panic("out of memory");
+            }
+
+            /// Registers a selector member after prepared graph publication.
+            pub fn registerSelector(self: *@This(), input: *HostSignalRecord, key: []const u8, member: *HostSignalRecord) void {
+                _ = self;
+                _ = input;
+                _ = key;
+                _ = member;
+            }
+
             /// Performs release record inside the shared engine while preserving transaction and changed-set invariants.
             pub fn releaseRecord(self: *@This(), record: *HostSignalRecord) void {
+                switch (record.payload) {
+                    .select => |payload| self.engine.selectors.unregister(Ctx.allocator(self.ctx), payload.input, payload.key, record),
+                    else => {},
+                }
                 record.release(Ctx.allocator(self.ctx), self.ctx, self.engine.roc_host.?, &self.engine.pending_roc_metrics);
             }
         };
@@ -1950,12 +1970,47 @@ pub fn Engine(comptime Ctx: type) type {
             self.scratch.deinit(Ctx.allocator(ctx));
         }
 
+        /// Releases the empty selector registry's retained hash-table storage.
+        pub fn deinitSelectors(self: *Self, ctx: Ctx.Handle) void {
+            if (self.selectors.groups.count() != 0) @panic("selector registry deinitialized while members were active");
+            self.selectors.deinit(Ctx.allocator(ctx));
+        }
+
         fn scratchBinderStack(self: *Self, allocator: std.mem.Allocator, base: []const HostBinderBinding) *std.ArrayListUnmanaged(HostBinderBinding) {
             if (self.scratch.binder_stack.items.len != 0) {
                 @panic("engine binder scratch was already active");
             }
             self.scratch.binder_stack.appendSlice(allocator, base) catch @panic("out of memory");
             return &self.scratch.binder_stack;
+        }
+
+        fn prepareSelectorsForGraphChange(
+            self: *Self,
+            allocator: std.mem.Allocator,
+            release: *const active_graph.PreparedReleaseClosure(HostSignalRecord),
+            append: *const active_graph.PreparedGraphAppend(HostSignalRecord),
+        ) CollectionError!selector_runtime.Registry(HostSignalRecord) {
+            var prepared: selector_runtime.Registry(HostSignalRecord) = .{};
+            errdefer prepared.deinit(allocator);
+            for (self.active_signal_graph.items, release.final_record_ids) |node, final_id| {
+                if (final_id == null) continue;
+                switch (node.record.payload) {
+                    .select => |payload| prepared.register(allocator, payload.input, payload.key, node.record) catch return error.OutOfMemory,
+                    else => {},
+                }
+            }
+            for (append.new_nodes) |node| switch (node.record.payload) {
+                .select => |payload| prepared.register(allocator, payload.input, payload.key, node.record) catch return error.OutOfMemory,
+                else => {},
+            };
+            return prepared;
+        }
+
+        fn commitPreparedSelectors(self: *Self, allocator: std.mem.Allocator, prepared: *selector_runtime.Registry(HostSignalRecord)) void {
+            var retired = self.selectors;
+            self.selectors = prepared.*;
+            prepared.* = .{};
+            retired.deinit(allocator);
         }
 
         fn debugPhase(ctx: Ctx.Handle, phase: DebugPhase) void {
@@ -2674,6 +2729,7 @@ pub fn Engine(comptime Ctx: type) type {
             var metrics = self.pending_roc_metrics;
             metrics.bump(.derived_calls_into_roc, overlay.derived_calls);
             metrics.bump(.propagation_prunes, overlay.propagation_prunes);
+            metrics.bump(.selector_members_dirtied, overlay.selector_members_dirtied);
             self.pending_roc_metrics = metrics;
         }
 
@@ -2895,6 +2951,28 @@ pub fn Engine(comptime Ctx: type) type {
                         .left = left,
                         .right = right,
                         .transform = retainHostCallable(payload.transform, &self.pending_roc_metrics),
+                        .cap = retainHostValueCapability(payload.capability, &self.pending_roc_metrics),
+                    } });
+                    try binding.remember(record);
+                    break :blk record;
+                },
+                .select => |payload| blk: {
+                    const token = payload.token.callable;
+                    if (try binding.retainExisting(token, .select)) |record| {
+                        break :blk record;
+                    }
+
+                    const input = try self.bindSignalExprViewWith(Binding, binding, abi_view.SignalExpr.fromAbi(payload.input.*), binder_stack);
+                    var input_unbound = true;
+                    errdefer if (input_unbound) if (comptime @hasDecl(Binding, "release")) binding.release(input);
+                    const key = try allocator.dupe(u8, payload.key.asSlice());
+                    input_unbound = false;
+                    const record = try binding.init(.{ .select = .{
+                        .input = input,
+                        .key = key,
+                        .input_read = retainHostTextRead(payload.input_read, &self.pending_roc_metrics),
+                        .false_init = retainHostCallable(payload.false_init, &self.pending_roc_metrics),
+                        .true_init = retainHostCallable(payload.true_init, &self.pending_roc_metrics),
                         .cap = retainHostValueCapability(payload.capability, &self.pending_roc_metrics),
                     } });
                     try binding.remember(record);
@@ -5253,6 +5331,7 @@ pub fn Engine(comptime Ctx: type) type {
             return switch (abi_view.SignalExpr.fromAbi(expr)) {
                 .ref, .const_value, .task_source, .interval_source, .location_source, .visibility_source, .online_source, .storage_source => 1,
                 .map => |payload| std.math.add(usize, 1, try countSignalExprRecords(payload.input.*)) catch return error.ResourceLimit,
+                .select => |payload| std.math.add(usize, 1, try countSignalExprRecords(payload.input.*)) catch return error.ResourceLimit,
                 .map2 => |payload| blk: {
                     const left = try countSignalExprRecords(payload.left.*);
                     const right = try countSignalExprRecords(payload.right.*);
@@ -7180,6 +7259,7 @@ pub fn Engine(comptime Ctx: type) type {
             render_layout_plan: ?PreparedRenderLayoutPlan = null,
             graph_release: ?active_graph.PreparedReleaseClosure(HostSignalRecord) = null,
             graph_append: ?active_graph.PreparedGraphAppend(HostSignalRecord) = null,
+            selector_registry: ?selector_runtime.Registry(HostSignalRecord) = null,
             sink_edits: ?active_graph.PreparedSinkRouteEdits = null,
             source_route_appends: ?active_graph.PreparedRouteAppends(u64) = null,
             text_route_appends: ?active_graph.PreparedRouteAppends(active_graph.TextSink) = null,
@@ -7541,6 +7621,8 @@ pub fn Engine(comptime Ctx: type) type {
                         error.InvalidAppend => return error.InvalidSignalGraphAppend,
                     };
                     errdefer if (self.graph_append) |*append| append.deinit(allocator);
+                    self.selector_registry = try self.engine.prepareSelectorsForGraphChange(allocator, &self.graph_release.?, &self.graph_append.?);
+                    errdefer if (self.selector_registry) |*registry| registry.deinit(allocator);
                     try self.engine.reserveActiveIntervals(self.host_ctx, self.graph_append.?.appendedIntervalSourceCount());
                     try self.prepareGraphRoutes(allocator);
                 }
@@ -7636,6 +7718,7 @@ pub fn Engine(comptime Ctx: type) type {
                 var lifecycle = ActiveSignalGraphLifecycle{ .engine = self.engine, .ctx = self.host_ctx };
                 release.releaseRetired(Ctx.allocator(self.host_ctx), &lifecycle);
                 append.registerAppendedEffects(&lifecycle);
+                self.engine.commitPreparedSelectors(Ctx.allocator(self.host_ctx), &self.selector_registry.?);
             }
 
             fn commitRenderAssumeCapacity(self: *@This()) void {
@@ -7772,6 +7855,7 @@ pub fn Engine(comptime Ctx: type) type {
                 if (self.render_layout_plan) |*plan| plan.deinit();
                 if (self.graph_append) |*append| append.deinit(allocator);
                 if (self.graph_release) |*release| release.deinit(allocator);
+                if (self.selector_registry) |*registry| registry.deinit(allocator);
                 if (self.sink_edits) |*edits| edits.deinit(allocator);
                 self.deinitGraphRoutes(allocator);
                 self.retired_stream.deinit(allocator, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
@@ -8006,6 +8090,7 @@ pub fn Engine(comptime Ctx: type) type {
             sink_edits: ?active_graph.PreparedSinkRouteEdits = null,
             graph_release: ?active_graph.PreparedReleaseClosure(HostSignalRecord) = null,
             graph_append: ?active_graph.PreparedGraphAppend(HostSignalRecord) = null,
+            selector_registry: ?selector_runtime.Registry(HostSignalRecord) = null,
             source_route_appends: ?active_graph.PreparedRouteAppends(u64) = null,
             text_route_appends: ?active_graph.PreparedRouteAppends(active_graph.TextSink) = null,
             bool_route_appends: ?active_graph.PreparedRouteAppends(active_graph.BoolSink) = null,
@@ -8120,6 +8205,7 @@ pub fn Engine(comptime Ctx: type) type {
                     self.deinitGraphRoutes(allocator);
                     if (self.graph_append) |*append| append.deinit(allocator);
                     if (self.graph_release) |*release| release.deinit(allocator);
+                    if (self.selector_registry) |*registry| registry.deinit(allocator);
                     if (self.sink_edits) |*edits| edits.deinit(allocator);
                 }
                 if (self.engine.active_signal_graph.items.len != 0) {
@@ -8138,6 +8224,7 @@ pub fn Engine(comptime Ctx: type) type {
                         error.OutOfMemory => return error.OutOfMemory,
                         error.InvalidAppend => return error.InvalidSignalGraphAppend,
                     };
+                    self.selector_registry = try self.engine.prepareSelectorsForGraphChange(allocator, &self.graph_release.?, &self.graph_append.?);
                     try self.engine.reserveActiveIntervals(self.host_ctx, self.graph_append.?.appendedIntervalSourceCount());
                     try self.prepareGraphRoutes(allocator);
                 }
@@ -8666,6 +8753,7 @@ pub fn Engine(comptime Ctx: type) type {
                 var lifecycle = ActiveSignalGraphLifecycle{ .engine = self.engine, .ctx = self.host_ctx };
                 release.releaseRetired(Ctx.allocator(self.host_ctx), &lifecycle);
                 append.registerAppendedEffects(&lifecycle);
+                self.engine.commitPreparedSelectors(Ctx.allocator(self.host_ctx), &self.selector_registry.?);
             }
 
             fn commitRenderCacheAssumeCapacity(self: *@This()) void {
@@ -8895,6 +8983,7 @@ pub fn Engine(comptime Ctx: type) type {
                 if (self.sink_edits) |*edits| edits.deinit(allocator);
                 if (self.graph_append) |*append| append.deinit(allocator);
                 if (self.graph_release) |*release| release.deinit(allocator);
+                if (self.selector_registry) |*registry| registry.deinit(allocator);
                 self.deinitGraphRoutes(allocator);
                 if (self.removal) |*removal| removal.deinit(allocator);
                 if (self.scope_retirement) |*retirement| retirement.deinit(allocator);
@@ -8941,6 +9030,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
             var lifecycle = ActiveSignalGraphLifecycle{ .engine = self, .ctx = ctx };
             active_graph.clear(HostSignalRecord, allocator, &self.active_signal_graph, &lifecycle);
+            if (self.selectors.groups.count() != 0) @panic("active selector index survived graph clear");
         }
 
         /// Clears active intervals while retaining bounded storage where the type promises reuse.
@@ -10272,6 +10362,26 @@ pub fn Engine(comptime Ctx: type) type {
                     const value = callHostValueHostValueToHostValueWithCapabilities(ctx, roc_host, left_cap, right_cap, payload.transform.toAbi(), left, right);
                     return self.replaceSignalExprCacheAndClone(ctx, &payload.cached_value, roc_host, value, payload.cap);
                 },
+                .select => |*payload| {
+                    if (payload.false_value == .absent) {
+                        const value = erased_calls.callValueInitThunk(roc_host, payload.false_init.toAbi());
+                        payload.false_value.replace(ctx, roc_host, &self.pending_roc_metrics, value, payload.cap);
+                    }
+                    if (payload.true_value == .absent) {
+                        const value = erased_calls.callValueInitThunk(roc_host, payload.true_init.toAbi());
+                        payload.true_value.replace(ctx, roc_host, &self.pending_roc_metrics, value, payload.cap);
+                    }
+                    const input = self.evalHostSignalRecordStaged(ctx, roc_host, payload.input, provisional_states, overlay);
+                    defer self.dropHostSignalRecordValueWithProvisionalStates(ctx, roc_host, payload.input, input, provisional_states);
+                    const selected = callHostValueToStrWithCapability(ctx, roc_host, payload.input_read.capability, payload.input_read.read, input);
+                    defer selected.decref(roc_host);
+                    const desired = if (std.mem.eql(u8, selected.asSlice(), payload.key)) blk: {
+                        break :blk self.cloneCachedSignalValue(ctx, &payload.true_value);
+                    } else blk: {
+                        break :blk self.cloneCachedSignalValue(ctx, &payload.false_value);
+                    };
+                    return self.replaceSignalExprCacheAndClone(ctx, &payload.cached_value, roc_host, desired, payload.cap);
+                },
                 .combine => |*payload| {
                     const allocator = Ctx.allocator(ctx);
                     var values: std.ArrayListUnmanaged(HostValue) = .empty;
@@ -10569,6 +10679,20 @@ pub fn Engine(comptime Ctx: type) type {
                     debugPhase(ctx, .eval_dirty_map2_cache);
                     return self.rememberDirtySignalResult(record, dirty_generation, self.updateDirtySignalExprCache(ctx, roc_host, &payload.cached_value, value, payload.cap));
                 },
+                .select => |*payload| {
+                    const cache_was_absent = payload.cached_value == .absent;
+                    const input = self.evalDirtyHostSignalRecord(ctx, roc_host, payload.input, dirty_source_node_ids, dirty_generation);
+                    defer self.dropHostSignalRecordValue(ctx, roc_host, payload.input, input.value);
+                    if (!input.changed and !cache_was_absent) {
+                        return self.rememberDirtySignalResult(record, dirty_generation, .{ .value = self.cloneCachedSignalValue(ctx, &payload.cached_value), .changed = false });
+                    }
+                    if (payload.false_value == .absent or payload.true_value == .absent) @panic("active selector member was not initialized");
+                    const selected = callHostValueToStrWithCapability(ctx, roc_host, payload.input_read.capability, payload.input_read.read, input.value);
+                    defer selected.decref(roc_host);
+                    const desired_slot = if (std.mem.eql(u8, selected.asSlice(), payload.key)) &payload.true_value else &payload.false_value;
+                    const desired = self.cloneCachedSignalValue(ctx, desired_slot);
+                    return self.rememberDirtySignalResult(record, dirty_generation, self.updateDirtySignalExprCache(ctx, roc_host, &payload.cached_value, desired, payload.cap));
+                },
                 .combine => |*payload| {
                     const cache_was_absent = payload.cached_value == .absent;
                     const allocator = Ctx.allocator(ctx);
@@ -10700,6 +10824,18 @@ pub fn Engine(comptime Ctx: type) type {
                     const value = callHostValueHostValueToHostValueWithCapabilities(ctx, roc_host, self.hostSignalRecordCapability(ctx, payload.left), self.hostSignalRecordCapability(ctx, payload.right), payload.transform.toAbi(), left.value, right.value);
                     break :blk self.updatePreparedDirtySignalExprCache(ctx, roc_host, overlay, &payload.cached_value, value, payload.cap);
                 },
+                .select => |*payload| blk: {
+                    const input = try self.evalPreparedDirtyHostSignalRecord(ctx, roc_host, overlay, payload.input, dirty_source_node_ids, dirty_generation);
+                    defer self.dropHostSignalRecordValue(ctx, roc_host, payload.input, input.value);
+                    const slot = overlay.readSlot(&payload.cached_value);
+                    if (!input.changed and slot.* != .absent) break :blk .{ .value = self.cloneCachedSignalValue(ctx, slot), .changed = false };
+                    if (payload.false_value == .absent or payload.true_value == .absent) return error.InvalidDescriptor;
+                    const selected = callHostValueToStrWithCapability(ctx, roc_host, payload.input_read.capability, payload.input_read.read, input.value);
+                    defer selected.decref(roc_host);
+                    const desired_slot = if (std.mem.eql(u8, selected.asSlice(), payload.key)) &payload.true_value else &payload.false_value;
+                    const desired = self.cloneCachedSignalValue(ctx, desired_slot);
+                    break :blk self.updatePreparedDirtySignalExprCache(ctx, roc_host, overlay, &payload.cached_value, desired, payload.cap);
+                },
                 .combine => |*payload| blk: {
                     const allocator = Ctx.allocator(ctx);
                     var values = std.ArrayListUnmanaged(HostValue).empty;
@@ -10779,13 +10915,68 @@ pub fn Engine(comptime Ctx: type) type {
             const allocator = Ctx.allocator(ctx);
             var changed = std.ArrayListUnmanaged(u64).empty;
             errdefer changed.deinit(allocator);
-            changed.ensureTotalCapacity(allocator, dirty_record_ids.len) catch return error.OutOfMemory;
+            changed.ensureTotalCapacity(allocator, self.active_signal_graph.items.len) catch return error.OutOfMemory;
+            var changed_set = &self.scratch.dirty_changed_record_id_set;
+            changed_set.clearRetainingCapacity();
+            changed_set.ensureTotalCapacity(allocator, std.math.cast(u32, self.active_signal_graph.items.len) orelse return error.ResourceLimit) catch return error.OutOfMemory;
+            var selector_roots = &self.scratch.selector_dirty_roots;
+            selector_roots.clearRetainingCapacity();
+            selector_roots.ensureTotalCapacity(allocator, self.active_signal_graph.items.len) catch return error.OutOfMemory;
             for (dirty_record_ids) |record_id| {
                 if (record_id >= self.active_signal_graph.items.len) return error.ResourceLimit;
                 const record = self.active_signal_graph.items[@intCast(record_id)].record;
                 const result = try self.evalPreparedDirtyHostSignalRecord(ctx, roc_host, overlay, record, dirty_source_node_ids, dirty_generation);
-                if (result.changed) changed.appendAssumeCapacity(record_id);
+                if (result.changed) {
+                    changed.appendAssumeCapacity(record_id);
+                    changed_set.putAssumeCapacity(record_id, {});
+                }
                 self.dropHostSignalRecordValue(ctx, roc_host, record, result.value);
+            }
+
+            const ordinary_changed_len = changed.items.len;
+            for (changed.items[0..ordinary_changed_len]) |record_id| {
+                const input_record = self.active_signal_graph.items[@intCast(record_id)].record;
+                const member = self.selectors.anyMember(input_record) orelse continue;
+                const selector = switch (member.payload) {
+                    .select => |*payload| payload,
+                    else => return error.InvalidDescriptor,
+                };
+
+                const old_value = switch (input_record.payload) {
+                    .ref => |node_id| Ctx.stateValueByNodeId(ctx, node_id),
+                    else => self.cloneCachedSignalValue(ctx, input_record.cachedSlot() orelse return error.InvalidDescriptor),
+                };
+                defer self.dropHostSignalRecordValue(ctx, roc_host, input_record, old_value);
+                const next_result = try self.evalPreparedDirtyHostSignalRecord(ctx, roc_host, overlay, input_record, dirty_source_node_ids, dirty_generation);
+                defer self.dropHostSignalRecordValue(ctx, roc_host, input_record, next_result.value);
+                const old_key = callHostValueToStrWithCapability(ctx, roc_host, selector.input_read.capability, selector.input_read.read, old_value);
+                defer old_key.decref(roc_host);
+                const next_key = callHostValueToStrWithCapability(ctx, roc_host, selector.input_read.capability, selector.input_read.read, next_result.value);
+                defer next_key.decref(roc_host);
+                if (std.mem.eql(u8, old_key.asSlice(), next_key.asSlice())) continue;
+
+                const member_sets = [_][]const *HostSignalRecord{
+                    self.selectors.membersForKey(input_record, old_key.asSlice()),
+                    self.selectors.membersForKey(input_record, next_key.asSlice()),
+                };
+                for (member_sets) |members| for (members) |selector_member| {
+                    const member_id = selector_member.active_graph_id orelse return error.InvalidDescriptor;
+                    selector_roots.appendAssumeCapacity(member_id);
+                };
+            }
+
+            overlay.selector_members_dirtied = std.math.add(u64, overlay.selector_members_dirtied, std.math.cast(u64, selector_roots.items.len) orelse return error.ResourceLimit) catch return error.ResourceLimit;
+            if (selector_roots.items.len != 0) {
+                const selector_dirty_ids = self.scratchDirtyActiveSignalRecordIdsForRoots(ctx, selector_roots.items);
+                for (selector_dirty_ids) |record_id| {
+                    const record = self.active_signal_graph.items[@intCast(record_id)].record;
+                    const result = try self.evalPreparedDirtyHostSignalRecord(ctx, roc_host, overlay, record, dirty_source_node_ids, dirty_generation);
+                    if (result.changed) {
+                        const entry = changed_set.getOrPutAssumeCapacity(record_id);
+                        if (!entry.found_existing) changed.appendAssumeCapacity(record_id);
+                    }
+                    self.dropHostSignalRecordValue(ctx, roc_host, record, result.value);
+                }
             }
             return changed.toOwnedSlice(allocator) catch return error.OutOfMemory;
         }

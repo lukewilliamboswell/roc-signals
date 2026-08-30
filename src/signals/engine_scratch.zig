@@ -28,6 +28,8 @@ pub const Scratch = struct {
     replacement_target_scopes: std.ArrayListUnmanaged(bool) = .empty,
     dirty_active_records: active_signal_graph.DirtyRecordQueue = .{},
     dirty_changed_record_ids: std.ArrayListUnmanaged(u64) = .empty,
+    dirty_changed_record_id_set: std.AutoHashMapUnmanaged(u64, void) = .empty,
+    selector_dirty_roots: std.ArrayListUnmanaged(u64) = .empty,
     elem_owned_removal: structural_splice.ElemOwnedRemovalScratch = .{},
 
     /// Releases every resource owned by this value and leaves no retained host or Roc ownership behind.
@@ -51,6 +53,8 @@ pub const Scratch = struct {
         self.replacement_target_scopes.deinit(allocator);
         self.dirty_active_records.deinit(allocator);
         self.dirty_changed_record_ids.deinit(allocator);
+        self.dirty_changed_record_id_set.deinit(allocator);
+        self.selector_dirty_roots.deinit(allocator);
         self.elem_owned_removal.deinit(allocator);
         self.* = .{};
     }
@@ -77,6 +81,8 @@ test "engine scratch deinit resets retained scratch storage" {
     try scratch.each_replacement_mount_indices.append(allocator, 16);
     try scratch.replacement_target_scopes.append(allocator, true);
     try scratch.dirty_changed_record_ids.append(allocator, 17);
+    try scratch.dirty_changed_record_id_set.put(allocator, 17, {});
+    try scratch.selector_dirty_roots.append(allocator, 18);
 
     scratch.deinit(allocator);
 
@@ -98,4 +104,6 @@ test "engine scratch deinit resets retained scratch storage" {
     try std.testing.expectEqual(@as(usize, 0), scratch.replacement_target_scopes.items.len);
     try std.testing.expectEqual(@as(usize, 0), scratch.dirty_active_records.pending_record_ids.items.len);
     try std.testing.expectEqual(@as(usize, 0), scratch.dirty_changed_record_ids.items.len);
+    try std.testing.expectEqual(@as(usize, 0), scratch.dirty_changed_record_id_set.count());
+    try std.testing.expectEqual(@as(usize, 0), scratch.selector_dirty_roots.items.len);
 }

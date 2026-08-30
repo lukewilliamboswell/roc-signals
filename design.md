@@ -1281,13 +1281,15 @@ Per node id the host stores:
 A **selector** node owns a string-key→member hash index and a cached current key.
 On a key change it looks up the previous and next members (O(1) each) and
 enqueues only those two; members are ordinary `Bool` nodes whose transform is
-host-owned and never calls into Roc, so `derived_calls_into_roc` for a
+host-owned and never calls into Roc. The host uses the capability-owned string
+reader to expose the old and new opaque input values, so `derived_calls_into_roc` for a
 selection change is independent of member count.
 
 Selector keys are strings for the same boundary reason as `Ui.each_str` keys:
-the host can hash and compare their UTF-8 bytes without inspecting an opaque Roc
-value or calling an app closure. A generic key constrained only by `is_eq` cannot
-provide a host hash index and would force the forbidden O(M) member scan.
+the capability-owned reader exposes UTF-8 bytes without the host inspecting an
+opaque Roc value, after which the host hashes and compares those bytes itself. A
+generic key constrained only by `is_eq` cannot provide a host hash index and
+would force the forbidden O(M) member scan.
 
 Adjacency, ranks, and the dirty set are dense integer-indexed structures. The
 callable address is used only to preserve signal aliasing while descriptors are
@@ -1313,7 +1315,7 @@ change; L = rows at the affected `Ui.each_str` site):
 | record/elem identity → id lookup | O(1) | linear pointer scan over the node table |
 | descriptor lookup by `elem_id` | O(1) | linear scan over the descriptor arrays |
 | non-structural event propagation | O(C + fanout) | O(N); O(fanout²) dedup/sort |
-| selector key change (M members) | O(1) members dirtied, 0 Roc calls | O(M) member recompute or `is_eq` scan |
+| selector key change (M members) | O(1) members dirtied, 0 derived Roc calls, O(1) capability reads | O(M) member recompute or `is_eq` scan |
 | `Ui.when` branch flip | O(changed subtree) | O(N) field/route/graph rebuild |
 | `Ui.each_str` keyed diff | O(L) via key hash index | O(L²) `is_eq` scan |
 | `Ui.each_str` append/remove/filter | O(K) | O(N) per touched row |

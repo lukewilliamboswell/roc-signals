@@ -63,6 +63,7 @@ Node := [].{
 		VisibilitySource(Box((HostValue -> HostValue)), Box((HostValue -> HostValue)), HostValue.CapabilityHandle, HostValue.CapabilityHandle),
 		Map(Box((HostValue -> HostValue)), Box(SignalExpr), Box((HostValue -> HostValue)), HostValue.CapabilityHandle),
 		Map2(Box((HostValue, HostValue -> HostValue)), Box(SignalExpr), Box(SignalExpr), Box((HostValue, HostValue -> HostValue)), HostValue.CapabilityHandle),
+		Select(Box((() -> HostValue)), Box(SignalExpr), Str, HostValue.TextReadHandle, Box((() -> HostValue)), Box((() -> HostValue)), HostValue.CapabilityHandle),
 		OnlineSource(Box((HostValue -> HostValue)), Box((HostValue -> HostValue)), HostValue.CapabilityHandle, HostValue.CapabilityHandle),
 		Combine(Box((List(HostValue) -> HostValue)), List(SignalExpr), Box((List(HostValue) -> HostValue)), HostValue.CapabilityHandle),
 		TaskSource(TaskSource),
