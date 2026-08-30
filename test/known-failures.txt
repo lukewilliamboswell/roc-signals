@@ -14,13 +14,3 @@
 native availability-picker/the-headline-one-timezone-change-reprojects-every-rendered-slot.scm
 native query-builder/editing-a-leaf-three-levels-deep-does-not-recreate-its-siblings.scm
 native spreadsheet-lite/b2-d2-d5-d6-d7-d8-and-b2-b5-f5-d5-already-covered.scm
-
-# Fixture examples (examples/_fixtures), recorded on the same day. The
-# state-reads/large-each/metric-semantics specs are live-update failures of
-# the same classes as above; the js-framework-benchmark 10k specs hit the 30s
-# worker timeout on an 8-core machine with four workers.
-native js-framework-benchmark/append_1k_to_10k.scm
-native js-framework-benchmark/clear_10k.scm
-native js-framework-benchmark/create_10k.scm
-native js-framework-benchmark/replace_1k.scm
-native js-framework-benchmark/update_10k.scm

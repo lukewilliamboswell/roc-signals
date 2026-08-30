@@ -3628,6 +3628,12 @@ pub fn Engine(comptime Ctx: type) type {
             scopes: collection_plan.ScopeOverlay = .{},
             node_identities: collection_plan.IdentityOverlay = .{},
             dom_identities: collection_plan.IdentityOverlay = .{},
+            reusable_scope_cursor: usize = 0,
+            fresh_scope_cursor: u64 = 0,
+            reusable_node_cursor: usize = 0,
+            fresh_node_cursor: u64 = 0,
+            reusable_dom_cursor: usize = 0,
+            fresh_dom_cursor: u64 = 0,
             prepared_nodes: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedStaticNode) = .empty,
             prepared_render_order: std.ArrayListUnmanaged(PreparedRenderNode) = .empty,
             prepared_attrs: std.ArrayListUnmanaged(HostNodeDescriptorStream.PreparedStaticAttr) = .empty,
@@ -4073,17 +4079,21 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             fn reserveScopeIdentity(self: *@This(), key: collection_plan.ScopeKey, active_id: ?u64) CollectionError!u64 {
+                if (self.scopes.lookup(key, if (active_id) |id| ids.ScopeId.fromRaw(id) else null)) |id| return id.raw();
                 var candidates: [2]ids.ScopeId = undefined;
                 var candidate_count: usize = 0;
-                for (self.engine.scopes.items) |scope| {
+                while (self.reusable_scope_cursor < self.engine.scopes.items.len) : (self.reusable_scope_cursor += 1) {
+                    const scope = self.engine.scopes.items[self.reusable_scope_cursor];
                     if (scope.lifecycle.blocksReuse(ids.Generation.fromRaw(self.engine.identity_reuse_barrier))) continue;
                     if (self.scopes.reserved_ids.contains(scope.scope_id)) continue;
                     candidates[candidate_count] = scope.scope_id;
                     candidate_count += 1;
+                    self.reusable_scope_cursor += 1;
                     break;
                 }
-                var fresh_id: u64 = @intCast(self.engine.scopes.items.len);
+                var fresh_id = @max(self.fresh_scope_cursor, @as(u64, @intCast(self.engine.scopes.items.len)));
                 while (self.scopes.reserved_ids.contains(ids.ScopeId.fromRaw(fresh_id))) fresh_id = std.math.add(u64, fresh_id, 1) catch return error.ResourceLimit;
+                self.fresh_scope_cursor = std.math.add(u64, fresh_id, 1) catch return error.ResourceLimit;
                 candidates[candidate_count] = ids.ScopeId.fromRaw(fresh_id);
                 candidate_count += 1;
                 const reserved = self.scopes.reserve(key, if (active_id) |id| ids.ScopeId.fromRaw(id) else null, candidates[0..candidate_count]) catch |err| switch (err) {
@@ -4125,16 +4135,19 @@ pub fn Engine(comptime Ctx: type) type {
                 try self.validateScope(parent_scope_id);
 
                 var scope_id: ?u64 = null;
-                for (self.engine.scopes.items) |scope| {
+                while (self.reusable_scope_cursor < self.engine.scopes.items.len) : (self.reusable_scope_cursor += 1) {
+                    const scope = self.engine.scopes.items[self.reusable_scope_cursor];
                     if (scope.lifecycle.blocksReuse(ids.Generation.fromRaw(self.engine.identity_reuse_barrier))) continue;
                     if (self.scopes.reserved_ids.contains(scope.scope_id)) continue;
                     scope_id = scope.scope_id.raw();
+                    self.reusable_scope_cursor += 1;
                     break;
                 }
                 if (scope_id == null) {
-                    var fresh: u64 = @intCast(self.engine.scopes.items.len);
+                    var fresh = @max(self.fresh_scope_cursor, @as(u64, @intCast(self.engine.scopes.items.len)));
                     while (self.scopes.reserved_ids.contains(ids.ScopeId.fromRaw(fresh))) fresh = std.math.add(u64, fresh, 1) catch return error.ResourceLimit;
                     scope_id = fresh;
+                    self.fresh_scope_cursor = std.math.add(u64, fresh, 1) catch return error.ResourceLimit;
                 }
                 const claimed = scope_id.?;
                 self.scopes.reserveExternal(ids.ScopeId.fromRaw(claimed)) catch |err| switch (err) {
@@ -4169,9 +4182,17 @@ pub fn Engine(comptime Ctx: type) type {
             fn reserveDomIdentity(self: *@This(), scope_id: ids.ScopeId, ordinal: ids.SiteOrdinal) CollectionError!ids.ElemId {
                 const key = identityKey(scope_id.raw(), ordinal.raw());
                 const active_id = self.engine.active_dom_identity_ids.get(key);
+                if (active_id != null or self.dom_identities.provisional_by_key.contains(key)) {
+                    const elem_id = self.dom_identities.reserve(key, active_id, &.{}) catch |err| return switch (err) {
+                        error.NoCapacity => error.ResourceLimit,
+                        error.NoAvailableIdentity => error.InvalidScope,
+                    };
+                    return ids.ElemId.fromRaw(elem_id);
+                }
                 var candidates: [2]u64 = undefined;
                 var candidate_count: usize = 0;
-                for (self.engine.dom_identities.items) |identity| {
+                while (self.reusable_dom_cursor < self.engine.dom_identities.items.len) : (self.reusable_dom_cursor += 1) {
+                    const identity = self.engine.dom_identities.items[self.reusable_dom_cursor];
                     if (identity.lifecycle.blocksReuse(ids.Generation.fromRaw(self.engine.identity_reuse_barrier))) continue;
                     if (self.dom_identities.reserved_ids.contains(identity.elem_id.raw())) continue;
                     // The render cache is the publication authority. Never
@@ -4180,10 +4201,12 @@ pub fn Engine(comptime Ctx: type) type {
                     if (self.engine.render_cache.hasActiveNode(identity.elem_id)) continue;
                     candidates[candidate_count] = identity.elem_id.raw();
                     candidate_count += 1;
+                    self.reusable_dom_cursor += 1;
                     break;
                 }
-                var fresh_id = std.math.add(u64, @intCast(self.engine.dom_identities.items.len), 1) catch return error.ResourceLimit;
+                var fresh_id = @max(self.fresh_dom_cursor, std.math.add(u64, @intCast(self.engine.dom_identities.items.len), 1) catch return error.ResourceLimit);
                 while (self.dom_identities.reserved_ids.contains(fresh_id) or self.engine.render_cache.hasActiveNode(ids.ElemId.fromRaw(fresh_id))) fresh_id = std.math.add(u64, fresh_id, 1) catch return error.ResourceLimit;
+                self.fresh_dom_cursor = std.math.add(u64, fresh_id, 1) catch return error.ResourceLimit;
                 candidates[candidate_count] = fresh_id;
                 candidate_count += 1;
                 const elem_id = self.dom_identities.reserve(key, active_id, candidates[0..candidate_count]) catch |err| return switch (err) {
@@ -4203,9 +4226,17 @@ pub fn Engine(comptime Ctx: type) type {
             fn reserveNodeIdentity(self: *@This(), scope_id: ids.ScopeId, ordinal: ids.SiteOrdinal) CollectionError!ids.NodeId {
                 const key = identityKey(scope_id.raw(), ordinal.raw());
                 const active_id = self.engine.active_node_identity_ids.get(key);
+                if (active_id != null or self.node_identities.provisional_by_key.contains(key)) {
+                    const node_id = self.node_identities.reserve(key, active_id, &.{}) catch |err| return switch (err) {
+                        error.NoCapacity => error.ResourceLimit,
+                        error.NoAvailableIdentity => error.InvalidScope,
+                    };
+                    return ids.NodeId.fromRaw(node_id);
+                }
                 var candidates: [2]u64 = undefined;
                 var candidate_count: usize = 0;
-                for (self.engine.node_identities.items) |identity| {
+                while (self.reusable_node_cursor < self.engine.node_identities.items.len) : (self.reusable_node_cursor += 1) {
+                    const identity = self.engine.node_identities.items[self.reusable_node_cursor];
                     if (identity.lifecycle.blocksReuse(ids.Generation.fromRaw(self.engine.identity_reuse_barrier))) continue;
                     if (self.node_identities.reserved_ids.contains(identity.node_id.raw())) continue;
                     // The committed descriptor stream is the publication
@@ -4217,10 +4248,12 @@ pub fn Engine(comptime Ctx: type) type {
                     if (self.engine.activeStreamHoldsNode(identity.node_id.raw())) continue;
                     candidates[candidate_count] = identity.node_id.raw();
                     candidate_count += 1;
+                    self.reusable_node_cursor += 1;
                     break;
                 }
-                var fresh_id: u64 = @intCast(self.engine.node_identities.items.len);
+                var fresh_id = @max(self.fresh_node_cursor, @as(u64, @intCast(self.engine.node_identities.items.len)));
                 while (self.node_identities.reserved_ids.contains(fresh_id) or self.engine.activeStreamHoldsNode(fresh_id)) fresh_id = std.math.add(u64, fresh_id, 1) catch return error.ResourceLimit;
+                self.fresh_node_cursor = std.math.add(u64, fresh_id, 1) catch return error.ResourceLimit;
                 candidates[candidate_count] = fresh_id;
                 candidate_count += 1;
                 const node_id = self.node_identities.reserve(key, active_id, candidates[0..candidate_count]) catch |err| return switch (err) {
@@ -8211,10 +8244,10 @@ pub fn Engine(comptime Ctx: type) type {
                             final_child_count = std.math.add(usize, final_child_count, 1) catch return error.ResourceLimit;
                         };
                     }
-                    for (self.replacement_stream.render_nodes.items) |node| {
-                        if (descriptor_stream.renderNodeParentElemId(HostNodeDescriptorStream, &self.replacement_stream, node).raw() == parent_id.*) {
-                            final_child_count = std.math.add(usize, final_child_count, 1) catch return error.ResourceLimit;
-                        }
+                    var replacement_child = self.replacement_stream.firstRenderChild(ids.ElemId.fromRaw(parent_id.*));
+                    while (replacement_child) |child_id| {
+                        final_child_count = std.math.add(usize, final_child_count, 1) catch return error.ResourceLimit;
+                        replacement_child = self.replacement_stream.nextRenderSibling(child_id);
                     }
                 }
                 // A replacement node that claims an active id under the same
@@ -8338,10 +8371,8 @@ pub fn Engine(comptime Ctx: type) type {
                     if (node.kind != .element) continue;
                     var attrs: std.ArrayListUnmanaged(render_cache_mod.CustomTextAttr) = .empty;
                     defer attrs.deinit(allocator);
-                    var custom_count = std.math.add(usize, self.replacement_stream.static_custom_text_attrs.items.len, self.replacement_stream.signal_custom_text_attrs.items.len) catch return error.ResourceLimit;
-                    custom_count = std.math.add(usize, custom_count, self.replacement_stream.signal_optional_custom_text_attrs.items.len) catch return error.ResourceLimit;
-                    custom_count = std.math.add(usize, custom_count, self.replacement_stream.static_custom_bool_attrs.items.len) catch return error.ResourceLimit;
-                    custom_count = std.math.add(usize, custom_count, self.replacement_stream.signal_custom_bool_attrs.items.len) catch return error.ResourceLimit;
+                    const custom_indexes = self.replacement_stream.customAttrIndices(node.elem_id);
+                    const custom_count = custom_indexes.len;
                     attrs.ensureTotalCapacity(allocator, custom_count) catch return error.OutOfMemory;
                     var owned_custom_text = std.ArrayListUnmanaged(abi.RocStr).empty;
                     defer {
@@ -8349,27 +8380,40 @@ pub fn Engine(comptime Ctx: type) type {
                         owned_custom_text.deinit(allocator);
                     }
                     owned_custom_text.ensureTotalCapacity(allocator, custom_count) catch return error.OutOfMemory;
-                    for (self.replacement_stream.static_custom_text_attrs.items) |desc| if (desc.elem_id == node.elem_id) attrs.appendAssumeCapacity(.{ .name = desc.name, .value = desc.value });
-                    for (self.replacement_stream.signal_custom_text_attrs.items) |*desc| if (desc.elem_id == node.elem_id) {
-                        const text = self.evalPreparedSignalText(&desc.signal, desc.read, &desc.cached_value);
-                        owned_custom_text.appendAssumeCapacity(text);
-                        attrs.appendAssumeCapacity(.{ .name = desc.name, .value = owned_custom_text.items[owned_custom_text.items.len - 1].asSlice() });
-                    };
-                    for (self.replacement_stream.signal_optional_custom_text_attrs.items) |*desc| if (desc.elem_id == node.elem_id) {
-                        const evaluated = self.evalPreparedSignalBinding(&desc.signal);
-                        const value = evaluated.value;
-                        const cap = evaluated.cap;
-                        assertHostValueCapabilitiesMatch(desc.present.capability, cap, "prepared optional text presence capability did not match its signal value");
-                        assertHostValueCapabilitiesMatch(desc.read.capability, cap, "prepared optional text read capability did not match its signal value");
-                        if (callHostValueToBoolWithCapability(self.host_ctx, self.roc_host, desc.present.capability, desc.present.read, value)) {
-                            const text = callHostValueToStrWithCapability(self.host_ctx, self.roc_host, desc.read.capability, desc.read.read, value);
+                    for (custom_indexes) |custom_index| switch (custom_index.kind) {
+                        .static_text => {
+                            const desc = self.replacement_stream.static_custom_text_attrs.items[custom_index.index];
+                            attrs.appendAssumeCapacity(.{ .name = desc.name, .value = desc.value });
+                        },
+                        .signal_text => {
+                            const desc = &self.replacement_stream.signal_custom_text_attrs.items[custom_index.index];
+                            const text = self.evalPreparedSignalText(&desc.signal, desc.read, &desc.cached_value);
                             owned_custom_text.appendAssumeCapacity(text);
                             attrs.appendAssumeCapacity(.{ .name = desc.name, .value = owned_custom_text.items[owned_custom_text.items.len - 1].asSlice() });
-                        }
-                        desc.cached_value.replace(self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics, value, cap);
+                        },
+                        .signal_text_optional => {
+                            const desc = &self.replacement_stream.signal_optional_custom_text_attrs.items[custom_index.index];
+                            const evaluated = self.evalPreparedSignalBinding(&desc.signal);
+                            const value = evaluated.value;
+                            const cap = evaluated.cap;
+                            assertHostValueCapabilitiesMatch(desc.present.capability, cap, "prepared optional text presence capability did not match its signal value");
+                            assertHostValueCapabilitiesMatch(desc.read.capability, cap, "prepared optional text read capability did not match its signal value");
+                            if (callHostValueToBoolWithCapability(self.host_ctx, self.roc_host, desc.present.capability, desc.present.read, value)) {
+                                const text = callHostValueToStrWithCapability(self.host_ctx, self.roc_host, desc.read.capability, desc.read.read, value);
+                                owned_custom_text.appendAssumeCapacity(text);
+                                attrs.appendAssumeCapacity(.{ .name = desc.name, .value = owned_custom_text.items[owned_custom_text.items.len - 1].asSlice() });
+                            }
+                            desc.cached_value.replace(self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics, value, cap);
+                        },
+                        .static_bool => {
+                            const desc = self.replacement_stream.static_custom_bool_attrs.items[custom_index.index];
+                            if (desc.value) attrs.appendAssumeCapacity(.{ .name = desc.name, .value = "" });
+                        },
+                        .signal_bool => {
+                            const desc = &self.replacement_stream.signal_custom_bool_attrs.items[custom_index.index];
+                            if (self.evalPreparedSignalBool(&desc.signal, desc.read, &desc.cached_value)) attrs.appendAssumeCapacity(.{ .name = desc.name, .value = "" });
+                        },
                     };
-                    for (self.replacement_stream.static_custom_bool_attrs.items) |desc| if (desc.elem_id == node.elem_id and desc.value) attrs.appendAssumeCapacity(.{ .name = desc.name, .value = "" });
-                    for (self.replacement_stream.signal_custom_bool_attrs.items) |*desc| if (desc.elem_id == node.elem_id and self.evalPreparedSignalBool(&desc.signal, desc.read, &desc.cached_value)) attrs.appendAssumeCapacity(.{ .name = desc.name, .value = "" });
                     splice.addCustomAttrs(&self.engine.render_cache, node.elem_id, attrs.items) catch |err| return renderSpliceError(err);
                     var named: std.ArrayListUnmanaged(render_cache_mod.NamedEvent) = .empty;
                     defer named.deinit(allocator);
@@ -8458,8 +8502,10 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             fn appendReplacementChildren(self: *@This(), allocator: std.mem.Allocator, children: *std.ArrayListUnmanaged(ids.ElemId), parent_id: u64) CollectionError!void {
-                for (self.replacement_stream.render_nodes.items) |node| {
-                    if (descriptor_stream.renderNodeParentElemId(HostNodeDescriptorStream, &self.replacement_stream, node).raw() == parent_id) children.append(allocator, node.elem_id) catch return error.OutOfMemory;
+                var child = self.replacement_stream.firstRenderChild(ids.ElemId.fromRaw(parent_id));
+                while (child) |child_id| {
+                    children.append(allocator, child_id) catch return error.OutOfMemory;
+                    child = self.replacement_stream.nextRenderSibling(child_id);
                 }
             }
 
