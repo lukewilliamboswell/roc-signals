@@ -143,6 +143,59 @@
 //!    membership is null, every row value is released, the site table is empty,
 //!    and the run's allocator reports no leak.
 //!
+//! # Allocation failure
+//!
+//! design.md, "Memory management and allocation failure", states the
+//! verification principle as *exhaustive fault placement*, and
+//! `PreparedExistingRows.prepare` is the one fallible seam this target drives:
+//! it reserves every destination and may refuse, and `commit` afterwards cannot.
+//! Every input therefore replays its program a second time with a
+//! `FaultAllocator` armed across one operation's prepared reconciliations.
+//!
+//! The sweep lives inside the reconciliation it probes rather than replaying the
+//! program per fault position. `FaultAllocator` is *sticky* - attempt `N` and
+//! every later attempt fail - so arming `N` and finding that `prepare` still
+//! succeeded proves the transaction makes fewer than `N` attempts and the sweep
+//! is complete. An ascending loop therefore needs no attempt-counting pass and
+//! stops on its own. Every probe, refusals and successes alike, ends in
+//! `abort`, so the reconciliation that finally publishes is the retry.
+//!
+//! The oracles that axis adds:
+//!
+//!  - **A refusal publishes nothing.** Row order, scope ids, hash buckets and
+//!    links, memberships, lifecycle, row-owned values, and the ownership ledger
+//!    are deep-copied before each probe and compared afterwards. This is the
+//!    atomicity property: the caller's only recovery from `OutOfMemory` is to
+//!    present the same reconciliation again, so a partial mutation would survive
+//!    the retry as silent corruption rather than as a failed transaction. The
+//!    snapshot is a copy rather than a summary because the mutations worth
+//!    catching are single-row ones a summary would not distinguish.
+//!  - **`abortPreparedRows` balances.** It is reachable only under injected
+//!    failure. Every provisional row it drops must be retired, and every
+//!    incoming key and item `prepareCreatedRow` took must be released exactly
+//!    once - values it never took stay the caller's. The ledger counts takes and
+//!    releases separately, so a skipped release shows up as an outstanding value
+//!    and a doubled one as a release of a value the world does not own; neither
+//!    can cancel the other out.
+//!  - **Refusals are honest.** `OutOfMemory` is the only acceptable answer.
+//!    `ResourceLimit` would mean a configured bound rejected a list built well
+//!    inside every limit.
+//!  - **The retry succeeds and lands where it would have.** The unfaulted
+//!    reconciliation that follows the sweep is judged by every ordinary oracle
+//!    against the model, and survivors must still hold the scope ids they held
+//!    before the refused attempt.
+//!  - **The eager path is unaffected.** Both worlds run the same program with the
+//!    fault reaching only the prepared one, and the two are still compared by
+//!    scope *id* after every operation. That is a strong claim and a deliberate
+//!    one: an aborted preparation leaves no trace, so the retry must mint exactly
+//!    the ids the unfaulted run would have, and any slot a refusal burned would
+//!    show up here as the two worlds' ids drifting apart.
+//!
+//! One operation per input is faulted, and whether its positions are swept
+//! exhaustively or sampled at one position is drawn from the input, because a
+//! full sweep of every operation would multiply a program's cost by its length
+//! and its attempt count at once. Coverage feedback is what spreads the choice.
+//!
 //! Three probes run beside the program because the shapes they need are ones a
 //! well-formed program never reaches:
 //!
@@ -204,10 +257,12 @@
 //! discipline - it fails if someone later lets prepared retirement stand in for
 //! disposal - rather than a property of the engine that could regress.
 //!
-//! No allocation-failure sweep. `fuzz-structural.zig` owns fault placement, and
-//! the prepared paths here are driven only on their success path; `prepare`'s
-//! `abort` path is implemented in the hooks but never reached, because nothing
-//! injects a failure. A sweep belongs in this file eventually.
+//! Allocation failure is swept over `prepare` only. `commit` is allocation-free
+//! by construction, `applyMetadata` has nothing to allocate, and `syncRows`
+//! panics rather than refuses, so `prepare` is the one fallible seam this target
+//! drives and the only one a sweep could place a fault in. Failure inside the
+//! *eager* path is therefore not covered here and could not be: the eager
+//! reconciler's contract is that it never refuses.
 //!
 //! Nothing renders. Row render segments, move planning, and
 //! `diffPreservesSurvivorRenderOrder` are structural-splice concerns; this target
@@ -221,6 +276,7 @@ const signals = @import("signals");
 const FuzzReader = @import("FuzzReader.zig");
 
 const each = signals.each_runtime;
+const FaultAllocator = signals.fault_allocator.FaultAllocator;
 const ids = signals.ids;
 const scope_runtime = signals.scope_runtime;
 const scope_tree = signals.scope_tree;
@@ -234,6 +290,19 @@ const SiteOrdinal = ids.SiteOrdinal;
 /// retired, instead of always minting a key nobody has seen.
 const key_pool_size: u32 = 10;
 const max_ops = 24;
+
+/// Attempt count past which one reconciliation gets a single sampled fault
+/// position instead of an exhaustive sweep.
+///
+/// A sweep costs one extra `prepare` per attempt, and each of those prepares
+/// re-walks every incoming key, so leaving it unbounded would make a long list
+/// quadratic and tank execs/sec. `fuzz-structural.zig` draws the same line for
+/// the same reason.
+const max_full_sweep_attempts = 40;
+/// Highest attempt a sampled fault position may name. A prepared reconciliation
+/// of a short list makes fewer attempts than this, so a sample past the end
+/// simply succeeds, which is a legal outcome the sweep already handles.
+const max_sampled_fault_attempt = 12;
 
 const component_ordinal = SiteOrdinal.fromRaw(1);
 const when_ordinal = SiteOrdinal.fromRaw(2);
@@ -277,7 +346,8 @@ pub fn zig_fuzz_test_inner(buf: [*]u8, len: isize, debug: bool) void {
     var gpa_state = std.heap.DebugAllocator(.{}){};
     const gpa = gpa_state.allocator();
 
-    run(gpa, program, debug);
+    run(gpa, program, null, debug);
+    checkPreparedFaults(gpa, &reader, program, debug);
     checkDuplicates(gpa, program.hash_buckets, debug);
     checkRowRemovals(gpa, &reader, program.hash_buckets, debug);
     checkRowRemovals(gpa, &reader, 1, debug);
@@ -458,7 +528,99 @@ const IncomingItem = struct { version: u32, token: usize };
 /// which is the only legal state for a retired scope.
 const RowValues = struct { key: Key, version: u32, hash: u64 };
 
-const Provisional = struct { scope_id: ScopeId, values: RowValues };
+/// A row `prepare` created but `commit` has not published, together with the
+/// ownership tokens preparation took from the caller. A refusal has to hand both
+/// back through `abortPreparedRows`, which is what makes that hook assertable.
+const Provisional = struct {
+    scope_id: ScopeId,
+    values: RowValues,
+    key_token: usize,
+    item_token: usize,
+    /// What the slot held before preparation claimed it, so an abort can put it
+    /// back rather than leave a retirement behind.
+    previous_lifecycle: scope_tree.Lifecycle,
+    /// Whether the slot was appended rather than recycled, which decides whether
+    /// an abort pops it or restores it.
+    appended: bool,
+    /// Whether the id was still on the retired-ever list when preparation took
+    /// it off, so an abort can put it back there too.
+    was_retired: bool,
+};
+
+/// One freshly interned keyed row scope, with everything an abort needs in order
+/// to put the slot back exactly as preparation found it.
+const InternedRow = struct {
+    scope_id: ScopeId,
+    previous_lifecycle: scope_tree.Lifecycle,
+    appended: bool,
+    was_retired: bool,
+};
+
+/// Which fault positions one prepared reconciliation is probed at.
+const FaultPlan = struct {
+    /// Program operation whose prepared reconciliations are probed.
+    op: usize,
+    /// Whether every attempt position is swept or one sampled position is tried.
+    sweep: bool,
+    /// The sampled position, used only when `sweep` is false.
+    attempt: usize,
+};
+
+/// One hash bucket of a site's chained index, flattened so it can be compared
+/// against the live map after a faulted reconciliation.
+const HashHead = struct { hash: u64, row_index: usize };
+
+/// One site's published state at the moment a fault probe began.
+const SiteSnapshot = struct {
+    rows: []ScopeId,
+    links: []usize,
+    heads: []HashHead,
+};
+
+/// Everything a prepared reconciliation may not change before it commits.
+///
+/// This is a deep copy rather than a hash: an atomicity oracle that summarised
+/// the state would be satisfied by any partial mutation the summary happened not
+/// to distinguish, and the mutations worth catching here are single-row ones.
+const Snapshot = struct {
+    scope_count: usize,
+    live_scopes: usize,
+    lifecycles: []scope_tree.Lifecycle,
+    row_values: []?RowValues,
+    memberships: []?each.Membership,
+    ledger: []u8,
+    sites: []SiteSnapshot,
+
+    fn deinit(self: *Snapshot, allocator: std.mem.Allocator) void {
+        for (self.sites) |site| {
+            allocator.free(site.rows);
+            allocator.free(site.links);
+            allocator.free(site.heads);
+        }
+        allocator.free(self.sites);
+        allocator.free(self.lifecycles);
+        allocator.free(self.row_values);
+        allocator.free(self.memberships);
+        allocator.free(self.ledger);
+    }
+};
+
+fn dupe(allocator: std.mem.Allocator, comptime T: type, source: []const T) []T {
+    return allocator.dupe(T, source) catch fail("out of memory", .{});
+}
+
+fn checkSliceUnchanged(world: *const World, comptime T: type, now: []const T, was: []const T, comptime what: []const u8, site_index: usize, verb: []const u8, attempt: usize) void {
+    if (now.len != was.len) fail(
+        "{s} world holds {d} " ++ what ++ "s at site {d} after a {s} reconciliation faulted at attempt {d}; it held {d}",
+        .{ world.name(), now.len, site_index, verb, attempt, was.len },
+    );
+    for (now, was, 0..) |current, previous, index| {
+        if (!std.meta.eql(current, previous)) fail(
+            "{s} world changed " ++ what ++ " {d} at site {d} in a {s} reconciliation faulted at attempt {d}",
+            .{ world.name(), index, site_index, verb, attempt },
+        );
+    }
+}
 
 /// One instantiation of the identity machinery, and the hook surface every
 /// engine seam calls back into.
@@ -469,7 +631,14 @@ const Provisional = struct { scope_id: ScopeId, values: RowValues };
 /// nothing can be created, replaced, dropped, or disposed without passing
 /// through this struct, which is what makes "consumed exactly once" assertable.
 const World = struct {
+    /// The world's allocator, which is `fault`'s once `mount` has installed it.
+    /// Every table this world owns is allocated through it, so an armed fault
+    /// reaches the engine's own allocations and the harness's alike.
     allocator: std.mem.Allocator,
+    /// Injects allocation failures into whichever prepared reconciliation is
+    /// being probed. Disarmed everywhere else, so an unfaulted run behaves
+    /// exactly as it did before this axis existed.
+    fault: FaultAllocator,
     mode: Mode,
     hash_buckets: u32,
 
@@ -507,9 +676,21 @@ const World = struct {
     /// High-water mark of live scopes plus barrier-blocked ones, which is the
     /// exact bound the scope array is allowed to grow to.
     slot_high_water: usize = 0,
+    /// The fault plan the reconciliation in flight is probed under, or null when
+    /// this reconciliation runs on its success path only.
+    pending_fault: ?FaultPlan = null,
+    /// Prepared reconciliations probed under an injected allocation failure.
+    probes: usize = 0,
+    /// Probed reconciliations the injected failure actually refused.
+    refusals: usize = 0,
 
     fn init(allocator: std.mem.Allocator, mode: Mode, hash_buckets: u32) World {
-        return .{ .allocator = allocator, .mode = mode, .hash_buckets = hash_buckets };
+        return .{
+            .allocator = allocator,
+            .fault = FaultAllocator.init(allocator),
+            .mode = mode,
+            .hash_buckets = hash_buckets,
+        };
     }
 
     fn deinit(self: *World) void {
@@ -570,6 +751,12 @@ const World = struct {
 
     /// Builds the scope forest this target reconciles into.
     fn mount(self: *World) void {
+        // The fault allocator hands out a pointer to itself, so it can only be
+        // installed once the world has reached its final address. Every world is
+        // mounted before it is used, which makes this the one place that is both
+        // stable and unavoidable.
+        self.allocator = self.fault.allocator();
+
         const root = scope_tree.internRoot(Row, self.allocator, &self.scopes) catch fail("root intern failed", .{});
         self.root = root.scope_id;
         self.noteInterned(self.root, self.root, "the root");
@@ -635,6 +822,12 @@ const World = struct {
                 result.deinit(self.allocator);
             },
             .prepared => {
+                // Fault positions are probed first and always end in an abort,
+                // so the reconciliation that actually publishes below is the
+                // retry: reaching the model's state from here is the proof that
+                // a refusal left nothing behind.
+                if (self.pending_fault) |plan| self.sweepFaults(plan, site_index, parent, ordinal, incoming_keys, incoming_items);
+
                 var prepared = each.PreparedExistingRows.prepare(self.allocator, &self.sites, &self.memberships, site_index, parent, ordinal, incoming_keys, incoming_items, self) catch |err|
                     fail("{s} world could not prepare a reconciliation: {s}", .{ self.name(), @errorName(err) });
                 var result = prepared.commit(&self.sites, &self.memberships, incoming_keys, incoming_items, self);
@@ -651,6 +844,178 @@ const World = struct {
         }
         if (self.provisional.items.len != 0) {
             fail("{s} world left {d} prepared rows unpublished", .{ self.name(), self.provisional.items.len });
+        }
+    }
+
+    // --- allocation-failure probing ---------------------------------------
+
+    /// Probes fault positions in one prepared reconciliation without publishing any of them.
+    ///
+    /// `FaultAllocator` is sticky - attempt `N` and every later attempt fail - so
+    /// arming position `N` and finding that `prepare` still succeeded means the
+    /// transaction makes fewer than `N` attempts and every position has been
+    /// covered. An ascending sweep therefore needs no separate attempt-counting
+    /// run and terminates on its own, which is what lets the probe live inside
+    /// the reconciliation it is probing instead of replaying the program.
+    ///
+    /// Every probe ends in an abort, successes included, so the world is left on
+    /// exactly the state the unfaulted reconciliation below will start from.
+    fn sweepFaults(self: *World, plan: FaultPlan, site_index: usize, parent: ScopeId, ordinal: SiteOrdinal, keys: []const IncomingKey, items: []const IncomingItem) void {
+        if (!plan.sweep) {
+            _ = self.probeFault(plan.attempt, site_index, parent, ordinal, keys, items);
+            return;
+        }
+        var attempt: usize = 1;
+        while (attempt <= max_full_sweep_attempts) : (attempt += 1) {
+            if (!self.probeFault(attempt, site_index, parent, ordinal, keys, items)) break;
+        }
+    }
+
+    /// Runs one prepared reconciliation with the allocator failing from `attempt`
+    /// onwards, aborts whatever it produced, and asserts nothing was published.
+    ///
+    /// Returns whether the reconciliation refused.
+    fn probeFault(self: *World, attempt: usize, site_index: usize, parent: ScopeId, ordinal: SiteOrdinal, keys: []const IncomingKey, items: []const IncomingItem) bool {
+        self.probes += 1;
+        var before = self.snapshot();
+        defer before.deinit(self.allocator);
+        // The high-water mark is a peak over the program, and a probe that is
+        // about to be undone is not part of the program's demand.
+        const high_water = self.slot_high_water;
+
+        self.fault.configure(attempt);
+        const result = each.PreparedExistingRows.prepare(self.allocator, &self.sites, &self.memberships, site_index, parent, ordinal, keys, items, self);
+        self.fault.configure(null);
+
+        var refused = false;
+        if (result) |ok| {
+            var prepared = ok;
+            prepared.abort(self);
+            prepared.deinit();
+        } else |err| {
+            // `OutOfMemory` is the only honest answer to an injected allocation
+            // failure. `ResourceLimit` would mean a bound rejected a list the
+            // generator built well inside every limit, which is a bug in the
+            // reconciler rather than an acceptable refusal.
+            if (err != error.OutOfMemory) fail(
+                "{s} world refused a reconciliation faulted at attempt {d} as {s}, not an allocation failure",
+                .{ self.name(), attempt, @errorName(err) },
+            );
+            refused = true;
+            self.refusals += 1;
+        }
+
+        self.slot_high_water = high_water;
+        self.checkUnpublished(&before, attempt, refused);
+        return refused;
+    }
+
+    /// Captures everything a prepared reconciliation is forbidden to change until it commits.
+    fn snapshot(self: *World) Snapshot {
+        const allocator = self.allocator;
+        const taken = Snapshot{
+            .scope_count = self.scopes.items.len,
+            .live_scopes = self.live_scopes,
+            .lifecycles = allocator.alloc(scope_tree.Lifecycle, self.scopes.items.len) catch fail("out of memory", .{}),
+            .row_values = dupe(allocator, ?RowValues, self.row_values.items),
+            .memberships = dupe(allocator, ?each.Membership, self.memberships.items),
+            .ledger = dupe(allocator, u8, self.ledger.items),
+            .sites = allocator.alloc(SiteSnapshot, self.sites.items.len) catch fail("out of memory", .{}),
+        };
+        for (self.scopes.items, taken.lifecycles) |scope, *slot| slot.* = scope.lifecycle;
+        for (self.sites.items, taken.sites) |*site, *slot| {
+            slot.* = .{
+                .rows = dupe(allocator, ScopeId, site.scope_ids.items),
+                .links = dupe(allocator, usize, site.hash_links.items),
+                .heads = allocator.alloc(HashHead, site.hash_heads.count()) catch fail("out of memory", .{}),
+            };
+            var buckets = site.hash_heads.iterator();
+            var index: usize = 0;
+            while (buckets.next()) |bucket| : (index += 1) {
+                slot.heads[index] = .{ .hash = bucket.key_ptr.*, .row_index = bucket.value_ptr.* };
+            }
+        }
+        return taken;
+    }
+
+    /// Asserts a probed reconciliation published nothing.
+    ///
+    /// This is the atomicity property, and the reason the whole axis is worth
+    /// having: a `prepare` that refuses must leave row order, scope ids,
+    /// memberships, the hash index, lifecycle, and the ownership ledger exactly
+    /// as it found them, because the caller's only recovery is to present the
+    /// same reconciliation again. A partial mutation would survive that retry as
+    /// silent corruption rather than as a failed transaction.
+    ///
+    /// Scopes appended past the snapshot are the one legal difference. Aborting
+    /// retires them at the current generation, so the barrier keeps them blocked
+    /// and the retry appends fresh slots instead of reusing them; that is why a
+    /// faulted run's scope ids no longer match the eager world's, and why the
+    /// caller stops comparing the two by identity afterwards.
+    fn checkUnpublished(self: *World, before: *const Snapshot, attempt: usize, refused: bool) void {
+        const what = if (refused) "refused" else "aborted";
+
+        if (self.provisional.items.len != 0) fail(
+            "{s} world left {d} provisional rows after a {s} reconciliation faulted at attempt {d}",
+            .{ self.name(), self.provisional.items.len, what, attempt },
+        );
+        if (self.live_scopes != before.live_scopes) fail(
+            "{s} world holds {d} live scopes after a {s} reconciliation faulted at attempt {d}; it held {d}",
+            .{ self.name(), self.live_scopes, what, attempt, before.live_scopes },
+        );
+        for (self.ledger.items, before.ledger, 0..) |now, was, token| {
+            if (now != was) fail(
+                "{s} world holds incoming value {d} {d} times after a {s} reconciliation faulted at attempt {d}; it held it {d} times",
+                .{ self.name(), token, now, what, attempt, was },
+            );
+        }
+        for (self.scopes.items, 0..) |scope, index| {
+            if (index < before.scope_count) {
+                if (!std.meta.eql(scope.lifecycle, before.lifecycles[index])) fail(
+                    "{s} world changed the lifecycle of scope {d} in a {s} reconciliation faulted at attempt {d}",
+                    .{ self.name(), index, what, attempt },
+                );
+            } else if (scope.lifecycle.isActive()) fail(
+                "{s} world left scope {d} active after a {s} reconciliation faulted at attempt {d}",
+                .{ self.name(), index, what, attempt },
+            );
+        }
+        for (self.row_values.items, 0..) |values, index| {
+            const was = if (index < before.row_values.len) before.row_values[index] else null;
+            if (!std.meta.eql(values, was)) fail(
+                "{s} world changed the key or item owned by scope {d} in a {s} reconciliation faulted at attempt {d}",
+                .{ self.name(), index, what, attempt },
+            );
+        }
+        for (self.memberships.items, 0..) |membership, index| {
+            const was = if (index < before.memberships.len) before.memberships[index] else null;
+            if (!std.meta.eql(membership, was)) fail(
+                "{s} world changed the membership of scope {d} in a {s} reconciliation faulted at attempt {d}",
+                .{ self.name(), index, what, attempt },
+            );
+        }
+
+        if (self.sites.items.len != before.sites.len) fail(
+            "{s} world holds {d} sites after a {s} reconciliation faulted at attempt {d}; it held {d}",
+            .{ self.name(), self.sites.items.len, what, attempt, before.sites.len },
+        );
+        for (self.sites.items, before.sites, 0..) |*site, was, site_index| {
+            checkSliceUnchanged(self, ScopeId, site.scope_ids.items, was.rows, "row", site_index, what, attempt);
+            checkSliceUnchanged(self, usize, site.hash_links.items, was.links, "hash link", site_index, what, attempt);
+            if (site.hash_heads.count() != was.heads.len) fail(
+                "{s} world holds {d} hash buckets at site {d} after a {s} reconciliation faulted at attempt {d}; it held {d}",
+                .{ self.name(), site.hash_heads.count(), site_index, what, attempt, was.heads.len },
+            );
+            for (was.heads) |head| {
+                const now = site.hash_heads.get(head.hash) orelse fail(
+                    "{s} world dropped hash bucket {d} at site {d} in a {s} reconciliation faulted at attempt {d}",
+                    .{ self.name(), head.hash, site_index, what, attempt },
+                );
+                if (now != head.row_index) fail(
+                    "{s} world moved hash bucket {d} at site {d} to row {d} in a {s} reconciliation faulted at attempt {d}; it headed row {d}",
+                    .{ self.name(), head.hash, site_index, now, what, attempt, head.row_index },
+                );
+            }
         }
     }
 
@@ -771,6 +1136,30 @@ const World = struct {
         self.ledger.items[token] += 1;
     }
 
+    /// Records that preparation took ownership of an incoming value.
+    ///
+    /// Taking is spelled the same way as consuming because on the success path
+    /// they are the same event: a value preparation took is one commit will not
+    /// see again. What the separate name buys is the refusal path, where the
+    /// taken values are exactly the set `abortPreparedRows` must give back.
+    fn take(self: *World, token: usize) void {
+        self.consume(token);
+    }
+
+    /// Records that an aborted preparation gave an incoming value back.
+    ///
+    /// Releasing a value the world does not hold is a double release, and is
+    /// reported here rather than left to cancel out against a missing one
+    /// elsewhere.
+    fn release(self: *World, token: usize) void {
+        if (token >= self.ledger.items.len) fail("{s} world was handed an unknown ownership token {d}", .{ self.name(), token });
+        if (self.ledger.items[token] == 0) fail(
+            "{s} world released incoming value {d}, which it does not own",
+            .{ self.name(), token },
+        );
+        self.ledger.items[token] -= 1;
+    }
+
     /// Reports whether h key is present in maintained state.
     pub fn hashKey(self: *World, key: IncomingKey) u64 {
         return self.hashOf(key.key);
@@ -840,15 +1229,51 @@ const World = struct {
 
     // --- hooks: row lifecycle --------------------------------------------
 
-    fn appendRowScope(self: *World, parent_scope_id: ScopeId, site_ordinal: SiteOrdinal, hash: u64, key: Key) ScopeId {
+    /// Appends one keyed row scope, refusing rather than dying when memory runs out.
+    ///
+    /// Every table this world will need in order to *retire* the new scope again
+    /// is reserved before the scope exists. That ordering is what the engine's
+    /// own preflight discipline asks for, and here it is also what makes the
+    /// abort path assertable: a refusal after the scope was appended could
+    /// otherwise leave a live scope nothing owns, which would look like an engine
+    /// leak rather than a harness one.
+    fn prepareRowScope(self: *World, parent_scope_id: ScopeId, site_ordinal: SiteOrdinal, hash: u64, key: Key) std.mem.Allocator.Error!InternedRow {
+        try self.row_values.ensureTotalCapacity(self.allocator, self.scopes.items.len + 1);
+        try self.provisional.ensureUnusedCapacity(self.allocator, 1);
+        try self.retired_here.ensureUnusedCapacity(self.allocator, 1);
+        try self.retired_ever.ensureUnusedCapacity(self.allocator, 1);
+
+        const scope_count = self.scopes.items.len;
         const expected = self.expectedInternId();
+        // Read before the append, because a recycled slot is about to be
+        // overwritten and an abort has to be able to put back what was there.
+        const previous_lifecycle = if (expected.index() < scope_count) self.scopes.items[expected.index()].lifecycle else .active;
+        const was_retired = containsId(self.retired_ever.items, expected);
+
+        // Only exhaustion may be refused. The remaining errors describe an
+        // invalid parent, which is a harness mistake rather than a fault the
+        // engine's caller could retry.
         const result = scope_tree.appendEachRow(Row, self.allocator, &self.scopes, parent_scope_id, .{
             .site_ordinal = site_ordinal,
             .key = key,
             .key_hash = hash,
-        }, self.generation) catch |err| fail("{s} world could not append a row scope: {s}", .{ self.name(), @errorName(err) });
+        }, self.generation) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => fail("{s} world could not append a row scope: {s}", .{ self.name(), @errorName(err) }),
+        };
         self.noteInterned(expected, result.scope_id, "a keyed row");
-        return result.scope_id;
+        return .{
+            .scope_id = result.scope_id,
+            .previous_lifecycle = previous_lifecycle,
+            .appended = result.scope_id.index() >= scope_count,
+            .was_retired = was_retired,
+        };
+    }
+
+    fn appendRowScope(self: *World, parent_scope_id: ScopeId, site_ordinal: SiteOrdinal, hash: u64, key: Key) ScopeId {
+        const interned = self.prepareRowScope(parent_scope_id, site_ordinal, hash, key) catch |err|
+            fail("{s} world could not append a row scope: {s}", .{ self.name(), @errorName(err) });
+        return interned.scope_id;
     }
 
     /// Creates a new keyed row scope and transfers the incoming key and item into its ownership.
@@ -864,14 +1289,22 @@ const World = struct {
     pub fn prepareCreatedRow(self: *World, allocator: std.mem.Allocator, parent_scope_id: ScopeId, site_ordinal: SiteOrdinal, input_index: usize, hash: u64, key: IncomingKey, item: IncomingItem) std.mem.Allocator.Error!ScopeId {
         _ = allocator;
         _ = input_index;
-        self.consume(key.token);
-        self.consume(item.token);
-        const scope_id = self.appendRowScope(parent_scope_id, site_ordinal, hash, key.key);
-        try self.provisional.append(self.allocator, .{
-            .scope_id = scope_id,
+        // Ownership is taken only once the row exists, because a refusal here
+        // leaves the incoming key and item with the caller, who will present
+        // them again on the retry.
+        const interned = try self.prepareRowScope(parent_scope_id, site_ordinal, hash, key.key);
+        self.take(key.token);
+        self.take(item.token);
+        self.provisional.appendAssumeCapacity(.{
+            .scope_id = interned.scope_id,
             .values = .{ .key = key.key, .version = item.version, .hash = hash },
+            .key_token = key.token,
+            .item_token = item.token,
+            .previous_lifecycle = interned.previous_lifecycle,
+            .appended = interned.appended,
+            .was_retired = interned.was_retired,
         });
-        return scope_id;
+        return interned.scope_id;
     }
 
     /// Publishes one previously prepared created row without allocation.
@@ -891,10 +1324,34 @@ const World = struct {
     }
 
     /// Drops all provisional created rows without changing persistent key/item tables.
+    ///
+    /// This runs only when a prepared reconciliation refuses, so it is reachable
+    /// at all only under injected allocation failure. It must give back exactly
+    /// what `prepareCreatedRow` took - every claimed scope slot restored, every
+    /// taken key and item released once - because the caller is about to present
+    /// the same values again on the retry.
+    ///
+    /// Undoing the slot rather than retiring it is what models the engine, whose
+    /// prepared rows live in a plan-local scope overlay that an abort discards
+    /// wholesale. Retiring them instead would burn a slot per refusal and make
+    /// the retry mint ids the unfaulted run never would.
     pub fn abortPreparedRows(self: *World) void {
-        for (self.provisional.items) |entry| {
-            self.scopes.items[entry.scope_id.index()].lifecycle = .{ .retired = self.generation };
-            self.recordRetired(entry.scope_id);
+        // Rows are undone newest first, because the appended ones are the tail of
+        // the scope array in preparation order and popping them in reverse is
+        // what leaves the array exactly as preparation found it.
+        var remaining = self.provisional.items.len;
+        while (remaining > 0) {
+            remaining -= 1;
+            const entry = self.provisional.items[remaining];
+            self.release(entry.key_token);
+            self.release(entry.item_token);
+            self.live_scopes -= 1;
+            if (entry.was_retired) self.retired_ever.appendAssumeCapacity(entry.scope_id);
+            if (entry.appended) {
+                self.scopes.items.len -= 1;
+            } else {
+                self.scopes.items[entry.scope_id.index()].lifecycle = entry.previous_lifecycle;
+            }
         }
         self.provisional.clearRetainingCapacity();
     }
@@ -987,6 +1444,13 @@ const World = struct {
     pub fn recordScopeDisposed(_: *World) void {}
 };
 
+fn containsId(list: []const ScopeId, scope_id: ScopeId) bool {
+    for (list) |item| {
+        if (item == scope_id) return true;
+    }
+    return false;
+}
+
 fn removeId(list: *std.ArrayListUnmanaged(ScopeId), scope_id: ScopeId) void {
     var index: usize = 0;
     while (index < list.items.len) {
@@ -1012,7 +1476,17 @@ fn snapshotSurvivors(world: *const World, parent: ScopeId, ordinal: SiteOrdinal)
     return survivors;
 }
 
-fn run(gpa: std.mem.Allocator, program: Program, debug: bool) void {
+/// Runs one generated program through both worlds, optionally probing allocation
+/// failure in one operation's prepared reconciliations.
+///
+/// `plan` being null runs the program on its success path only. Under a plan the
+/// prepared world's reconciliations at one operation are probed at fault
+/// positions first, and each probe is undone before the reconciliation that
+/// actually publishes runs. Every oracle keeps its full strength either way,
+/// including the ones comparing scope ids across the two seams: an undone
+/// preparation leaves no trace, so the retry mints exactly the ids the unfaulted
+/// run would have. That is itself the sharpest form of the atomicity claim.
+fn run(gpa: std.mem.Allocator, program: Program, plan: ?FaultPlan, debug: bool) void {
     var model = Model{};
     defer model.deinit(gpa);
 
@@ -1027,6 +1501,14 @@ fn run(gpa: std.mem.Allocator, program: Program, debug: bool) void {
     checkWorlds(gpa, &model, &eager, &prepared);
 
     for (program.ops, 0..) |op, index| {
+        prepared.pending_fault = if (plan != null and plan.?.op == index) plan else null;
+        if (prepared.pending_fault != null and debug) {
+            if (plan.?.sweep) {
+                std.debug.print("sweeping every fault position of operation {d}\n", .{index});
+            } else {
+                std.debug.print("faulting operation {d} at attempt {d}\n", .{ index, plan.?.attempt });
+            }
+        }
         setPhase("after operation {d} ({s})", .{ index, @tagName(op) });
         if (debug) std.debug.print("running operation {d} ({s})\n", .{ index, @tagName(op) });
 
@@ -1065,10 +1547,39 @@ fn run(gpa: std.mem.Allocator, program: Program, debug: bool) void {
     }
 
     setPhase("at teardown", .{});
+    prepared.pending_fault = null;
     eager.teardown();
     prepared.teardown();
     checkDisposalOrder(&eager, &prepared);
     for ([_]*World{ &eager, &prepared }) |world| checkTeardown(world);
+
+    if (plan != null and debug) std.debug.print(
+        "probed {d} faulted preparations, of which {d} refused\n",
+        .{ prepared.probes, prepared.refusals },
+    );
+}
+
+/// Replays the program with allocation failure injected into one operation's
+/// prepared reconciliations.
+///
+/// The whole program is replayed rather than faulted in place because the
+/// unfaulted run above is where the identity oracles have their full strength,
+/// and an abort permanently offsets the scope ids it touched. One operation is
+/// faulted per input: which one, and whether its fault positions are swept
+/// exhaustively or sampled at one position, are both drawn from the input, so
+/// AFL++'s coverage feedback is what spreads the choice across runs. Sweeping
+/// every operation of every input would multiply the cost of a program by its
+/// length and its attempt count at once.
+fn checkPreparedFaults(gpa: std.mem.Allocator, reader: *FuzzReader, program: Program, debug: bool) void {
+    if (program.ops.len == 0) return;
+
+    const plan = FaultPlan{
+        .op = reader.intRangeLessThan(usize, 0, program.ops.len),
+        .sweep = reader.boolean(),
+        .attempt = 1 + reader.intRangeLessThan(usize, 0, max_sampled_fault_attempt),
+    };
+    setPhase("replaying with operation {d} faulted", .{plan.op});
+    run(gpa, program, plan, debug);
 }
 
 /// Asserts a key live before and after an operation kept its scope id.
