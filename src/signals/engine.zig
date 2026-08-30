@@ -4223,13 +4223,13 @@ pub fn Engine(comptime Ctx: type) type {
                 }
                 var fresh_id = @max(self.fresh_dom_cursor, std.math.add(u64, @intCast(self.engine.dom_identities.items.len), 1) catch return error.ResourceLimit);
                 while (self.dom_identities.reserved_ids.contains(fresh_id) or self.engine.render_cache.hasActiveNode(ids.ElemId.fromRaw(fresh_id))) fresh_id = std.math.add(u64, fresh_id, 1) catch return error.ResourceLimit;
-                self.fresh_dom_cursor = std.math.add(u64, fresh_id, 1) catch return error.ResourceLimit;
                 candidates[candidate_count] = fresh_id;
                 candidate_count += 1;
                 const elem_id = self.dom_identities.reserve(key, active_id, candidates[0..candidate_count]) catch |err| return switch (err) {
                     error.NoCapacity => error.ResourceLimit,
                     error.NoAvailableIdentity => error.InvalidScope,
                 };
+                if (elem_id == fresh_id) self.fresh_dom_cursor = std.math.add(u64, fresh_id, 1) catch return error.ResourceLimit;
                 // Elem ids are one-based and claimed contiguously above the
                 // committed table, so the plan's cumulative node total bounds
                 // every id this transaction can hold; the table grows to the
@@ -4270,13 +4270,13 @@ pub fn Engine(comptime Ctx: type) type {
                 }
                 var fresh_id = @max(self.fresh_node_cursor, @as(u64, @intCast(self.engine.node_identities.items.len)));
                 while (self.node_identities.reserved_ids.contains(fresh_id) or self.engine.activeStreamHoldsNode(fresh_id)) fresh_id = std.math.add(u64, fresh_id, 1) catch return error.ResourceLimit;
-                self.fresh_node_cursor = std.math.add(u64, fresh_id, 1) catch return error.ResourceLimit;
                 candidates[candidate_count] = fresh_id;
                 candidate_count += 1;
                 const node_id = self.node_identities.reserve(key, active_id, candidates[0..candidate_count]) catch |err| return switch (err) {
                     error.NoCapacity => error.ResourceLimit,
                     error.NoAvailableIdentity => error.InvalidScope,
                 };
+                if (node_id == fresh_id) self.fresh_node_cursor = std.math.add(u64, fresh_id, 1) catch return error.ResourceLimit;
                 return ids.NodeId.fromRaw(node_id);
             }
 
