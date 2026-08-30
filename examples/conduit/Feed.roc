@@ -2,8 +2,7 @@
 ## previews, and pagination links. Used by the home feeds and the profile
 ## tabs. Pagination rows encode page and tag in the row key because keyed
 ## rows only receive static keys plus item signals; the row parses its key
-## back into a target location (a construction-order identity workaround
-## recorded in the findings ledger).
+## back into a target location as a construction-order identity workaround.
 import Api
 import Format
 import Nav
@@ -30,10 +29,10 @@ Feed := {}.{
 	view : Signal.Signal(Api.Remote(Api.FeedPage)), Signal.Signal(Session), Ui.State(Nav.RouteIntent) -> Elem
 	view = |remote, session, intent| {
 		is_loading : Signal.Signal(Bool)
-		is_loading = remote.map(is_loading_state)
+		is_loading = remote.map(Api.is_loading)
 
 		is_failed : Signal.Signal(Bool)
-		is_failed = remote.map(is_failed_state)
+		is_failed = remote.map(Api.is_failed)
 
 		is_empty : Signal.Signal(Bool)
 		is_empty = remote.map(is_empty_state)
@@ -42,7 +41,7 @@ Feed := {}.{
 		articles = remote.map(articles_of)
 
 		message : Signal.Signal(Str)
-		message = remote.map(failure_message)
+		message = remote.map(Api.failure_message)
 
 		article_key : Api.ArticleSummary -> Str
 		article_key = |article| article.slug
@@ -72,12 +71,6 @@ Feed := {}.{
 		)
 	}
 
-	is_failed_state : Api.Remote(Api.FeedPage) -> Bool
-	is_failed_state = |remote|
-		match remote {
-			Failed(_) => True
-			_ => False
-		}
 
 	is_empty_state : Api.Remote(Api.FeedPage) -> Bool
 	is_empty_state = |remote|
@@ -93,12 +86,6 @@ Feed := {}.{
 			_ => []
 		}
 
-	failure_message : Api.Remote(Api.FeedPage) -> Str
-	failure_message = |remote|
-		match remote {
-			Failed(message) => message
-			_ => ""
-		}
 
 	preview_row : Str, Signal.Signal(Api.ArticleSummary), Signal.Signal(Session), Ui.State(Nav.RouteIntent) -> Elem
 	preview_row = |slug, article, session, intent| {
@@ -311,21 +298,13 @@ Feed := {}.{
 		}
 
 	page_label : Str -> Str
-	page_label = |key|
-		match key.split_first("|") {
-			Ok(split) => split.before
-			Err(_) => key
-		}
+	page_label = |key| key.split_first("|").map_ok(|split| split.before) ?? key
 
 	key_location : Str -> Browser.Location
 	key_location = |key|
-		match key.split_first("|") {
-			Ok(split) => {
-				page =
-					match U64.from_str(split.before) {
-						Ok(number) => number
-						Err(_) => 1
-					}
+		key.split_first("|").map_ok(
+			|split| {
+				page = U64.from_str(split.before) ?? 1
 				tag =
 					if split.after.is_empty() {
 						AllTags
@@ -333,9 +312,9 @@ Feed := {}.{
 						Tagged(split.after)
 					}
 				Route.feed_location({ page: page, tag: tag, source: Global })
-			}
-			Err(_) => Route.home_location
-		}
+			},
+		)
+		?? Route.home_location
 
 	number_range : U64, U64 -> List(U64)
 	number_range = |from, to|
@@ -345,11 +324,15 @@ Feed := {}.{
 			[from].concat(number_range(from + 1, to))
 		}
 
-	is_loading_state : Api.Remote(Api.FeedPage) -> Bool
-	is_loading_state = |remote|
-		match remote {
-			Loading => True
-			_ => False
-		}
 
 }
+
+## A pagination row key renders the bare page number as its button label.
+expect Feed.page_label(Feed.page_key(3, Tagged("roc"))) == "3"
+
+## ...and decodes back to the exact location that page and tag came from, which
+## is the only channel a keyed row has to its navigation target.
+expect Feed.key_location(Feed.page_key(3, Tagged("roc"))) == Route.feed_location({ page: 3, tag: Tagged("roc"), source: Global })
+
+## Page one with no tag decodes to the bare home location, not a query string.
+expect Feed.key_location(Feed.page_key(1, AllTags)) == Route.home_location

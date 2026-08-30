@@ -80,10 +80,12 @@ pub const RuntimeMetrics = struct {
     }
 };
 
+/// Performs zero runtime metrics inside the shared engine while preserving transaction and changed-set invariants.
 pub fn zeroRuntimeMetrics() RuntimeMetrics {
     return std.mem.zeroes(RuntimeMetrics);
 }
 
+/// Performs add runtime metrics inside the shared engine while preserving transaction and changed-set invariants.
 pub fn addRuntimeMetrics(left: RuntimeMetrics, right: RuntimeMetrics) RuntimeMetrics {
     var result: RuntimeMetrics = undefined;
     inline for (std.meta.fields(RuntimeMetrics)) |field| {

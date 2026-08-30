@@ -138,13 +138,18 @@ class MockHost {
     protocolFeatures = ProtocolFeature.dynamicAttrs | ProtocolFeature.dynamicEvents,
     storageDeclarations = [],
     debugAllocations = null,
+    failAllocationNumber = null,
+    maximumMemoryPages = undefined,
   } = {}) {
-    this.memory = new WebAssembly.Memory({ initial: 1 });
+    this.memory = new WebAssembly.Memory({ initial: 1, ...(maximumMemoryPages === undefined ? {} : { maximum: maximumMemoryPages }) });
     this.cmdLen = 0;
     this.strLen = 0;
     this.dynamicLen = 0;
     this.lastErrorLen = 0;
     this.allocPtr = allocBase;
+    this.allocationAttempts = 0;
+    this.failAllocationNumber = failAllocationNumber;
+    this.deallocCalls = [];
     this.protocolVersion = protocolVersion;
     this.protocolFeatures = protocolFeatures;
     this.dispatches = [];
@@ -192,7 +197,8 @@ class MockHost {
       roc_ui_last_error_len: () => this.lastErrorLen,
       roc_ui_live_host_values: () => 0,
       roc_alloc: (len) => this.alloc(len),
-      roc_dealloc: () => {
+      roc_dealloc: (ptr) => {
+        this.deallocCalls.push(ptr);
         if (this.deallocTrapMessage !== null) {
           this.writeLastError(this.deallocTrapMessage);
           throw new WebAssembly.RuntimeError("unreachable");
@@ -311,10 +317,17 @@ class MockHost {
   }
 
   alloc(len) {
+    this.allocationAttempts += 1;
+    if (this.allocationAttempts === this.failAllocationNumber) return 0;
     const ptr = this.allocPtr;
     const end = ptr + len;
     if (end > this.memory.buffer.byteLength) {
-      this.memory.grow(Math.ceil((end - this.memory.buffer.byteLength) / PAGE));
+      try {
+        this.memory.grow(Math.ceil((end - this.memory.buffer.byteLength) / PAGE));
+      } catch (err) {
+        if (err instanceof RangeError) return 0;
+        throw err;
+      }
     }
     this.allocPtr = end;
     return ptr;
@@ -626,6 +639,7 @@ function mountWith(mountScript, options = {}) {
     localStorage,
     sessionStorage,
     storage,
+    limits,
     ...hostOptions
   } = options;
   const host = new MockHost(hostOptions);
@@ -646,6 +660,7 @@ function mountWith(mountScript, options = {}) {
     localStorage,
     sessionStorage,
     storage,
+    limits,
   });
   runtime.mount();
   return { host, root, runtime };
@@ -2306,6 +2321,111 @@ test("event dispatch preserves diagnostics when payload dealloc also traps", () 
   assert.deepEqual(host.dispatches, []);
 });
 
+test("mount payload preflight sweeps every allocation failure and remains retryable", () => {
+  const baseline = mountWith([]);
+  const allocationCount = baseline.host.allocationAttempts;
+  baseline.runtime.unmount();
+  assert.ok(allocationCount >= 3);
+
+  for (let allocationNumber = 1; allocationNumber <= allocationCount; allocationNumber += 1) {
+    const host = new MockHost({ failAllocationNumber: allocationNumber });
+    const root = installDomDouble();
+    const runtime = new SignalsRuntime(host.exports, root);
+
+    assert.throws(
+      () => runtime.mount(),
+      (err) => err.code === "out_of_memory" && /payload allocation failed/.test(err.message),
+    );
+    assert.equal(runtime.failedError, null);
+    assert.equal(runtime.mounted, false);
+    assert.equal(root.childNodes.length, 0);
+    assert.equal(host.initialLocationPayload, null);
+    assert.equal(host.initialVisibilityPayload, null);
+    assert.equal(host.initialOnlinePayload, null);
+    assert.equal(host.prepareMounts, 0);
+    assert.equal(host.deallocCalls.length, allocationNumber - 1);
+
+    host.failAllocationNumber = null;
+    runtime.mount();
+    assert.equal(runtime.mounted, true);
+    runtime.unmount();
+  }
+});
+
+test("bounded Wasm memory growth failure is recoverable before event mutation", () => {
+  const { host, runtime } = mountWith(
+    [{ op: Op.bindInput, a: 0, b: 124 }],
+    { maximumMemoryPages: 1 },
+  );
+  const oversized = "x".repeat(PAGE);
+
+  assert.throws(
+    () => runtime.dispatchString(124, oversized),
+    (err) => err.code === "out_of_memory",
+  );
+  assert.equal(runtime.failedError, null);
+  assert.deepEqual(host.dispatches, []);
+
+  runtime.dispatchString(124, "retry");
+  assert.deepEqual(host.dispatches, [{ eventId: 124, kind: PayloadKind.str, payload: "retry" }]);
+  runtime.unmount();
+});
+
+test("configured payload limit rejects before allocator or host mutation", () => {
+  const { host, runtime } = mountWith(
+    [{ op: Op.bindInput, a: 0, b: 123 }],
+    { limits: { maxPayloadBytes: 64 } },
+  );
+  const attemptsBefore = host.allocationAttempts;
+
+  assert.throws(
+    () => runtime.dispatchString(123, "x".repeat(65)),
+    (err) => err.code === "resource_limit",
+  );
+  assert.equal(host.allocationAttempts, attemptsBefore);
+  assert.deepEqual(host.dispatches, []);
+  assert.equal(runtime.failedError, null);
+
+  runtime.dispatchString(123, "within limit");
+  assert.equal(host.dispatches.length, 1);
+  runtime.unmount();
+});
+
+test("fatal wasm trap poisons runtime detaches resources and rejects re-entry", () => {
+  const errors = [];
+  const { host, root, runtime } = mountWith(
+    [
+      { op: Op.resetDom },
+      { op: Op.createElement, a: 1, s: "input" },
+      { op: Op.bindInput, a: 1, b: 125 },
+      { op: Op.appendChild, a: 0, b: 1 },
+    ],
+    { onError: (err) => errors.push(err) },
+  );
+  host.eventTrapMessages.set(125, "out of memory while staging render strings");
+  const input = findNode(root, (node) => node.tagName === "INPUT");
+  input.value = "still visible";
+  const deallocsBefore = host.deallocCalls.length;
+
+  assert.throws(() => fireEvent(input, "input"), /out of memory while staging render strings/);
+  assert.equal(errors.length, 1);
+  assert.equal(runtime.mounted, false);
+  assert.equal(runtime.lastCommands.length, 0);
+  assert.equal(runtime.eventCleanups.size, 0);
+  assert.equal(runtime.intervals.size, 0);
+  assert.equal(runtime.tasks.size, 0);
+  assert.equal(host.deallocCalls.length, deallocsBefore + 1);
+  assert.equal(input.value, "still visible");
+
+  const dispatchCount = host.dispatches.length;
+  assert.throws(() => runtime.dispatchUnit(125), /out of memory while staging render strings/);
+  assert.equal(host.dispatches.length, dispatchCount);
+
+  const replacement = mountWith([]);
+  assert.equal(replacement.runtime.mounted, true);
+  replacement.runtime.unmount();
+});
+
 test("dynamic form named events dispatch unit and target value payloads", () => {
   const telemetry = [];
   const { host, root } = mountWith(
@@ -2585,6 +2705,64 @@ test("memory growth during byte payload allocation keeps response commands reada
   ]);
   assert.ok(findTextNode(root, "keyed"));
   assert.equal(input.getAttribute("data-last-key"), "Enter");
+});
+
+test("remove_node on a subtree root releases every descendant registration exactly once", () => {
+  const { host, root, runtime } = mountWith([
+    { op: Op.resetDom },
+    { op: Op.createElement, a: 1, s: "section" },
+    { op: Op.createElement, a: 2, s: "div" },
+    { op: Op.createElement, a: 3, s: "input" },
+    { op: Op.setValue, a: 3, s: "draft" },
+    { op: Op.bindInput, a: 3, b: 31 },
+    { op: Op.createElement, a: 4, s: "button" },
+    { op: Op.setText, a: 4, s: "inner" },
+    { op: Op.bindClick, a: 4, b: 41 },
+    { op: Op.createText, a: 5, s: "leaf" },
+    { op: Op.createElement, a: 6, s: "button" },
+    { op: Op.setText, a: 6, s: "outer" },
+    { op: Op.bindClick, a: 6, b: 61 },
+    { op: Op.appendChild, a: 0, b: 1 },
+    { op: Op.appendChild, a: 1, b: 2 },
+    { op: Op.appendChild, a: 2, b: 3 },
+    { op: Op.appendChild, a: 2, b: 4 },
+    { op: Op.appendChild, a: 2, b: 5 },
+    { op: Op.appendChild, a: 0, b: 6 },
+  ]);
+  const inner = findByText(root, "button", "inner");
+  const outer = findByText(root, "button", "outer");
+  const input = findNode(root, (node) => node.tagName === "INPUT");
+  assert.equal(runtime.nodes.size, 7);
+  assert.equal(runtime.eventCleanups.size, 3);
+  assert.equal(runtime.controlledInputs.has(3), true);
+
+  host.writeCommands([{ op: Op.removeNode, a: 1 }]);
+  runtime.applyPendingCommands("remove-subtree");
+
+  assert.deepEqual([...runtime.nodes.keys()].sort(), [0, 6]);
+  assert.deepEqual([...runtime.eventCleanups.keys()], ["6:click"]);
+  assert.equal(runtime.controlledInputs.size, 0);
+  assert.equal(runtime.pendingSelectValues.size, 0);
+  assert.equal(inner.listeners.get("click")?.length ?? 0, 0);
+  assert.equal(input.listeners.get("input")?.length ?? 0, 0);
+  assert.equal(root.childNodes.length, 1);
+  fireEvent(inner, "click");
+  fireEvent(input, "input");
+  assert.deepEqual(host.dispatches, []);
+  fireEvent(outer, "click");
+  assert.equal(host.dispatches.length, 1);
+
+  host.writeCommands([
+    { op: Op.createElement, a: 3, s: "input" },
+    { op: Op.setValue, a: 3, s: "fresh" },
+    { op: Op.appendChild, a: 0, b: 3 },
+    { op: Op.removeNode, a: 6 },
+  ]);
+  runtime.applyPendingCommands("reuse-ids");
+  assert.deepEqual([...runtime.nodes.keys()].sort(), [0, 3]);
+  assert.equal(runtime.eventCleanups.size, 0);
+  assert.equal(runtime.controlledInputs.has(3), true);
+  assert.equal(findNode(root, (node) => node.tagName === "INPUT").value, "fresh");
 });
 
 test("clear_event and remove_node release DOM listeners", () => {

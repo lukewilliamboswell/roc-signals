@@ -5,22 +5,50 @@ import Formula
 
 Sheet := [].{
 
+	## What kind of thing a cell computed to. Presentation is derived from this
+	## tag, never from the rendered text, so the red tint and the `#DIV/0!` it
+	## tints can never disagree. `to_str` is the single encode point for the
+	## `data-kind` attribute the specs assert on.
+	CellKind := [Empty, Number, Text, Error].{
+		is_eq : CellKind, CellKind -> Bool
+		is_eq = |left, right|
+			match left {
+				Empty => match right {
+					Empty => True
+					_ => False
+				}
+				Number => match right {
+					Number => True
+					_ => False
+				}
+				Text => match right {
+					Text => True
+					_ => False
+				}
+				Error => match right {
+					Error => True
+					_ => False
+				}
+			}
+
+		to_str : CellKind -> Str
+		to_str = |kind|
+			match kind {
+				Empty => "empty"
+				Number => "number"
+				Text => "text"
+				Error => "error"
+			}
+	}
+
 	## Display-ready cell output: the text to show and a coarse kind tag.
-	CellOut : { text : Str, kind : Str }
+	CellOut : { text : Str, kind : CellKind }
 
 	source_at : List(Str), U64 -> Str
-	source_at = |sources, index|
-		match sources.get(index) {
-			Ok(value) => value
-			Err(_) => ""
-		}
+	source_at = |sources, index| sources.get(index) ?? ""
 
 	put_slot : List(Formula.Slot), U64, Formula.Slot -> List(Formula.Slot)
-	put_slot = |slots, index, slot|
-		match slots.set(index, slot) {
-			Ok(updated) => updated
-			Err(_) => slots
-		}
+	put_slot = |slots, index, slot| slots.set(index, slot) ?? slots
 
 	## Resolve one cell, walking its dependency edges first. A dependency that is
 	## still `Busy` means this cell is part of a reference cycle.
@@ -37,19 +65,15 @@ Sheet := [].{
 					tokens = Formula.tokenize(source.drop_prefix("="))
 					deps = Formula.refs_of(tokens)
 					var $slots = Sheet.put_slot(slots, index, Busy)
-					var $cycle = Cells.no
+					var $cycle = False
 					var $dep = 0
 
 					while $dep < deps.len() {
-						cell =
-							match deps.get($dep) {
-								Ok(value) => value
-								Err(_) => 0
-							}
+						cell = deps.get($dep) ?? 0
 
 						match $slots.get(cell) {
 							Ok(Busy) => {
-								$cycle = Cells.yes
+								$cycle = True
 							}
 							Ok(Ready(_)) => {}
 							_ => {
@@ -102,10 +126,10 @@ Sheet := [].{
 	to_out : Formula.Value -> CellOut
 	to_out = |value|
 		match value {
-			Empty => { text: "", kind: "empty" }
-			Number(number) => { text: Cells.format_number(number), kind: "number" }
-			Text(text) => { text, kind: "text" }
-			Bad(message) => { text: message, kind: "error" }
+			Empty => { text: "", kind: Empty }
+			Number(number) => { text: Cells.format_number(number), kind: Number }
+			Text(text) => { text, kind: Text }
+			Bad(message) => { text: message, kind: Error }
 		}
 
 	## Evaluate a sheet straight to display-ready outputs.
@@ -142,3 +166,42 @@ Sheet := [].{
 		"Spare", "=E12+5", "7", "", "", "", "", "",
 	]
 }
+
+## The empty kind encodes as the `data-kind` value the specs read.
+expect Sheet.CellKind.to_str(Empty) == "empty"
+
+## The number kind encodes as the `data-kind` value the specs read.
+expect Sheet.CellKind.to_str(Number) == "number"
+
+## The text kind encodes as the `data-kind` value the specs read.
+expect Sheet.CellKind.to_str(Text) == "text"
+
+## The error kind encodes as the `data-kind` value the specs read.
+expect Sheet.CellKind.to_str(Error) == "error"
+
+## A one-hop sum of two literal cells computes as a number.
+expect Sheet.evaluate_out(Sheet.initial_cells).get(11) == Ok({ text: "2500", kind: Number })
+
+## A non-numeric literal stays text, so it is neither summed nor right-aligned.
+expect Sheet.evaluate_out(Sheet.initial_cells).get(8) == Ok({ text: "Rent", kind: Text })
+
+## A rectangular SUM adds every member of the range.
+expect Sheet.evaluate_out(Sheet.initial_cells).get(37) == Ok({ text: "4100", kind: Number })
+
+## A three-hop chain resolves in dependency order, not sheet order.
+expect Sheet.evaluate_out(Sheet.initial_cells).get(59) == Ok({ text: "1127.5", kind: Number })
+
+## A divide by zero reports the error at the cell that performed it.
+expect Sheet.evaluate_out(Sheet.initial_cells).get(65) == Ok({ text: "#DIV/0!", kind: Error })
+
+## An error propagates to the cells that read it, rather than being read as zero.
+expect Sheet.evaluate_out(Sheet.initial_cells).get(66) == Ok({ text: "#DIV/0!", kind: Error })
+
+## Two cells that reference each other are reported as a cycle, not left pending.
+expect Sheet.evaluate_out(Sheet.initial_cells).get(73) == Ok({ text: "#CYCLE!", kind: Error })
+
+## A formula reading an empty cell treats it as zero.
+expect Sheet.evaluate_out(Sheet.initial_cells).get(89) == Ok({ text: "5", kind: Number })
+
+## A cell with no source evaluates to the empty kind, not to text.
+expect Sheet.evaluate_out(Sheet.initial_cells).get(80) == Ok({ text: "", kind: Empty })

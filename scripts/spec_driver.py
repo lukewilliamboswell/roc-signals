@@ -16,7 +16,7 @@ import time
 from typing import Any, Iterable
 
 
-PROTOCOL = "roc-signals/spec-result/v1"
+PROTOCOL = "roc-signals/spec-result/v2"
 PASSING_STATUSES = {"passed"}
 NATIVE_STATUSES = {"passed", "failed", "error"}
 
@@ -36,6 +36,8 @@ class SpecResult:
     failure: dict[str, Any] | None
     stdout: str
     stderr: str
+    host_allocation_attempts: int = 0
+    fault: dict[str, Any] | None = None
 
     @property
     def passed(self) -> bool:
@@ -86,10 +88,12 @@ def run_case(
     *,
     timeout_seconds: float,
     verbose: bool,
+    worker_args: tuple[str, ...] = (),
 ) -> SpecResult:
     command = [str(executable), "--run-spec-json"]
     if verbose:
         command.append("--verbose")
+    command.extend(worker_args)
     command.append(str(case.path))
     started = time.monotonic_ns()
     try:
@@ -170,6 +174,18 @@ def run_case(
             stdout=completed.stdout,
             stderr=completed.stderr,
         )
+    host_allocation_attempts = payload.get("host_allocation_attempts", 0)
+    if not isinstance(host_allocation_attempts, int) or host_allocation_attempts < 0:
+        return synthetic_result(case, "protocol_error", started, "invalid_allocation_count", "worker host_allocation_attempts must be a non-negative integer", stdout=completed.stdout, stderr=completed.stderr)
+    fault = payload.get("fault")
+    if fault is not None and not isinstance(fault, dict):
+        return synthetic_result(case, "protocol_error", started, "invalid_fault", "worker fault must be an object or null", stdout=completed.stdout, stderr=completed.stderr)
+    if "--fail-on-allocation" in worker_args:
+        expected_allocation = int(worker_args[worker_args.index("--fail-on-allocation") + 1])
+        if fault is None or fault.get("allocation") != expected_allocation:
+            return synthetic_result(case, "protocol_error", started, "invalid_fault", "worker did not report the selected allocation coordinate", stdout=completed.stdout, stderr=completed.stderr)
+        if fault.get("outcome") not in {"continued", "refused_then_retried", "skipped_roc"}:
+            return synthetic_result(case, "protocol_error", started, "invalid_fault", "worker reported an unknown allocation outcome", stdout=completed.stdout, stderr=completed.stderr)
     expected_exit = 0 if status == "passed" else 1 if status == "failed" else 2
     if completed.returncode != expected_exit:
         return synthetic_result(
@@ -189,6 +205,8 @@ def run_case(
         failure=failure,
         stdout=completed.stdout,
         stderr=completed.stderr,
+        host_allocation_attempts=host_allocation_attempts,
+        fault=fault,
     )
 
 
@@ -224,6 +242,7 @@ def run_suite(
     timeout_seconds: float = 30.0,
     verbose: bool = False,
     print_progress: bool = True,
+    worker_args: tuple[str, ...] = (),
 ) -> tuple[SpecResult, ...]:
     executable = executable.resolve()
     if not executable.is_file():
@@ -243,7 +262,7 @@ def run_suite(
             case = next(pending_cases, None)
             if case is None:
                 break
-            running[pool.submit(run_case, executable, case, timeout_seconds=timeout_seconds, verbose=verbose)] = case
+            running[pool.submit(run_case, executable, case, timeout_seconds=timeout_seconds, verbose=verbose, worker_args=worker_args)] = case
 
         while running:
             completed_futures, _ = wait(running, return_when=FIRST_COMPLETED)
@@ -262,8 +281,81 @@ def run_suite(
                 if not stopped:
                     next_case = next(pending_cases, None)
                     if next_case is not None:
-                        running[pool.submit(run_case, executable, next_case, timeout_seconds=timeout_seconds, verbose=verbose)] = next_case
+                        running[pool.submit(run_case, executable, next_case, timeout_seconds=timeout_seconds, verbose=verbose, worker_args=worker_args)] = next_case
 
+    results.sort(key=lambda result: result.id)
+    return tuple(results)
+
+
+def run_fault_suite(
+    executable: Path,
+    spec_directory: Path,
+    *,
+    jobs: int | None = None,
+    patterns: tuple[str, ...] = (),
+    shard: tuple[int, int] | None = None,
+    fail_fast: bool = False,
+    timeout_seconds: float = 30.0,
+    verbose: bool = False,
+) -> tuple[SpecResult, ...]:
+    """Run clean specs, then replay every reported host allocation coordinate."""
+    probes = run_suite(
+        executable,
+        spec_directory,
+        jobs=jobs,
+        patterns=patterns,
+        shard=shard,
+        fail_fast=fail_fast,
+        timeout_seconds=timeout_seconds,
+        verbose=verbose,
+        print_progress=True,
+    )
+    if not all(result.passed for result in probes):
+        return probes
+
+    source_cases = {case.id: case for case in select_specs(discover_specs(spec_directory), patterns=patterns, shard=shard)}
+    jobs_to_run: list[tuple[SpecCase, tuple[str, ...], str]] = []
+    for probe in probes:
+        for allocation in range(1, probe.host_allocation_attempts + 1):
+            case = SpecCase(f"{probe.id}::allocation@{allocation}", source_cases[probe.id].path)
+            args = ("--fail-on-allocation", str(allocation))
+            replay = f"{executable} --run-spec-json {' '.join(args)} {case.path}"
+            jobs_to_run.append((case, args, replay))
+    if not jobs_to_run:
+        raise ValueError("clean specs reported no host allocation opportunities")
+
+    worker_count = min(max(1, jobs if jobs is not None else default_jobs()), len(jobs_to_run))
+    results: list[SpecResult] = list(probes)
+    pending = iter(jobs_to_run)
+    running: dict[Future[SpecResult], tuple[SpecCase, str]] = {}
+    stopped = False
+    with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="native-fault") as pool:
+        for _ in range(worker_count):
+            item = next(pending, None)
+            if item is None:
+                break
+            case, args, replay = item
+            running[pool.submit(run_case, executable, case, timeout_seconds=timeout_seconds, verbose=verbose, worker_args=args)] = (case, replay)
+        while running:
+            completed_futures, _ = wait(running, return_when=FIRST_COMPLETED)
+            for future in completed_futures:
+                case, replay = running.pop(future)
+                try:
+                    result = future.result()
+                except BaseException as exc:
+                    result = synthetic_result(case, "crashed", time.monotonic_ns(), "controller", repr(exc))
+                if not result.passed and result.failure is not None:
+                    result.failure["replay"] = replay
+                results.append(result)
+                if not result.passed:
+                    print(f"[{result.status.upper()}] {result.id} ({result.duration_ns / 1_000_000:.1f} ms)", flush=True)
+                if fail_fast and not result.passed:
+                    stopped = True
+                if not stopped:
+                    item = next(pending, None)
+                    if item is not None:
+                        next_case, args, next_replay = item
+                        running[pool.submit(run_case, executable, next_case, timeout_seconds=timeout_seconds, verbose=verbose, worker_args=args)] = (next_case, next_replay)
     results.sort(key=lambda result: result.id)
     return tuple(results)
 
@@ -274,6 +366,8 @@ def print_summary(results: tuple[SpecResult, ...]) -> None:
         print(f"\nFAIL: {result.id} — {result.name}")
         if result.failure:
             print(f"  {result.failure.get('phase', 'test')}/{result.failure.get('kind', 'failure')}: {result.failure.get('message', '')}")
+            if result.failure.get("replay"):
+                print(f"  replay: {result.failure['replay']}")
         if result.stderr.strip():
             print(result.stderr.rstrip())
         if result.status == "protocol_error" and result.stdout.strip():
@@ -325,6 +419,7 @@ def main() -> int:
     parser.add_argument("--fail-fast", action="store_true")
     parser.add_argument("--timeout-seconds", type=float, default=30.0)
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--sweep-allocations", action="store_true")
     parser.add_argument("--list", action="store_true")
     args = parser.parse_args()
 
@@ -334,7 +429,8 @@ def main() -> int:
             for case in cases:
                 print(case.id)
             return 0 if cases else 2
-        results = run_suite(
+        runner = run_fault_suite if args.sweep_allocations else run_suite
+        results = runner(
             args.executable,
             args.spec_directory,
             jobs=args.jobs,

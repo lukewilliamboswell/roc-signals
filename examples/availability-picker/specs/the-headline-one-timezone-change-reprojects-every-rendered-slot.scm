@@ -27,7 +27,9 @@
     ; markers move by class alone, so re-laying out the whole week costs no extra
     ; text write.
     (expect-metric-delta-at-most set_text 7)
-    (expect-metric-delta-at-most patches_emitted 32)
+    ; The transaction also publishes five scalar source commands. They were
+    ; previously missing from patches_emitted; the honest aggregate is 37.
+    (expect-metric-delta-at-most patches_emitted 37)
     ; derived work is proportional to the rows on screen (5 rows x 7 sinks: title,
     ; time, status text, status badge class, conflict text, conflict class and the
     ; block's day-column/tint class) plus the zone, row-view, free-day-name and

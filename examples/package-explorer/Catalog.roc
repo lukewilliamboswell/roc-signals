@@ -23,65 +23,77 @@ Catalog := {}.{
 
 	DetailData : { id : Str, summary : Str, license : Str, downloads : Str }
 
-	## Every panel folds its task into the same shape: a phase string, an error
-	## string, and the panel payload. Structural records give us `is_eq` for
-	## free, so each panel is its own independent cutoff point in the graph.
-	SearchView : { phase : Str, error : Str, rows : List(Catalog.PackageRow) }
+	## Where one panel's request has got to. The failure message rides on the
+	## `Failed` tag, so there is no "which fields are meaningful right now?"
+	## question to answer at every use site.
+	Phase := [Loading, Ready, Failed(Str)].{
+		is_eq : Catalog.Phase, Catalog.Phase -> Bool
+		is_eq = |left, right|
+			match left {
+				Loading => match right {
+					Loading => True
+					_ => False
+				}
+				Ready => match right {
+					Ready => True
+					_ => False
+				}
+				Failed(left_error) => match right {
+					Failed(right_error) => left_error == right_error
+					_ => False
+				}
+			}
+	}
 
-	DetailView : { phase : Str, error : Str, data : Catalog.DetailData }
+	## Every panel folds its task into the same shape: a phase and the panel
+	## payload. Structural records give us `is_eq` for free once `Phase` has
+	## one, so each panel is its own independent cutoff point in the graph.
+	SearchView : { phase : Catalog.Phase, rows : List(Catalog.PackageRow) }
 
-	VersionsView : { phase : Str, error : Str, rows : List(Catalog.VersionRow) }
+	DetailView : { phase : Catalog.Phase, data : Catalog.DetailData }
 
-	DepsView : { phase : Str, error : Str, rows : List(Catalog.DepRow) }
+	VersionsView : { phase : Catalog.Phase, rows : List(Catalog.VersionRow) }
+
+	DepsView : { phase : Catalog.Phase, rows : List(Catalog.DepRow) }
 
 	# --- payload parsing ------------------------------------------------------
 
 	records : Str -> List(Str)
-	records = |payload|
-		payload.split_on(";").fold(
-			[],
-			|acc, record|
-				if record.is_empty() {
-					acc
-				} else {
-					acc.append(record)
-				},
-		)
+	records = |payload| payload.split_on(";").keep_if(|record| !record.is_empty())
 
+	## One field split. A record with no separator is all `before` and no
+	## `after`, which is what the trailing-field cases below rely on.
 	field_pair : Str -> { before : Str, after : Str }
 	field_pair = |text|
 		match text.split_first("|") {
-			Ok(split) => { before: split.before, after: split.after }
+			Ok(split) => split
 			Err(_) => { before: text, after: "" }
 		}
 
 	package_rows : Str -> List(Catalog.PackageRow)
 	package_rows = |payload|
-		Catalog.records(payload).fold(
-			[],
-			|acc, record| {
+		Catalog.records(payload).map(
+			|record| {
 				parts = Catalog.field_pair(record)
-				acc.append({ id: parts.before, summary: parts.after })
+				{ id: parts.before, summary: parts.after }
 			},
 		)
 
 	version_rows : Str -> List(Catalog.VersionRow)
 	version_rows = |payload|
-		Catalog.records(payload).fold(
-			[],
-			|acc, record| {
+		Catalog.records(payload).map(
+			|record| {
 				parts = Catalog.field_pair(record)
-				acc.append({ version: parts.before, released: parts.after })
+				{ version: parts.before, released: parts.after }
 			},
 		)
 
 	dep_rows : Str -> List(Catalog.DepRow)
 	dep_rows = |payload|
-		Catalog.records(payload).fold(
-			[],
-			|acc, record| {
+		Catalog.records(payload).map(
+			|record| {
 				parts = Catalog.field_pair(record)
-				acc.append({ id: parts.before, requirement: parts.after })
+				{ id: parts.before, requirement: parts.after }
 			},
 		)
 
@@ -104,40 +116,40 @@ Catalog := {}.{
 	empty_detail = { id: "", summary: "", license: "", downloads: "" }
 
 	search_loading : Catalog.SearchView
-	search_loading = { phase: "loading", error: "", rows: [] }
+	search_loading = { phase: Catalog.Phase.Loading, rows: [] }
 
 	search_ready : Str -> Catalog.SearchView
-	search_ready = |payload| { phase: "ready", error: "", rows: Catalog.package_rows(payload) }
+	search_ready = |payload| { phase: Catalog.Phase.Ready, rows: Catalog.package_rows(payload) }
 
 	search_failed : Str -> Catalog.SearchView
-	search_failed = |message| { phase: "failed", error: message, rows: [] }
+	search_failed = |message| { phase: Catalog.Phase.Failed(message), rows: [] }
 
 	detail_loading : Catalog.DetailView
-	detail_loading = { phase: "loading", error: "", data: Catalog.empty_detail }
+	detail_loading = { phase: Catalog.Phase.Loading, data: Catalog.empty_detail }
 
 	detail_ready : Str -> Catalog.DetailView
-	detail_ready = |payload| { phase: "ready", error: "", data: Catalog.detail_data(payload) }
+	detail_ready = |payload| { phase: Catalog.Phase.Ready, data: Catalog.detail_data(payload) }
 
 	detail_failed : Str -> Catalog.DetailView
-	detail_failed = |message| { phase: "failed", error: message, data: Catalog.empty_detail }
+	detail_failed = |message| { phase: Catalog.Phase.Failed(message), data: Catalog.empty_detail }
 
 	versions_loading : Catalog.VersionsView
-	versions_loading = { phase: "loading", error: "", rows: [] }
+	versions_loading = { phase: Catalog.Phase.Loading, rows: [] }
 
 	versions_ready : Str -> Catalog.VersionsView
-	versions_ready = |payload| { phase: "ready", error: "", rows: Catalog.version_rows(payload) }
+	versions_ready = |payload| { phase: Catalog.Phase.Ready, rows: Catalog.version_rows(payload) }
 
 	versions_failed : Str -> Catalog.VersionsView
-	versions_failed = |message| { phase: "failed", error: message, rows: [] }
+	versions_failed = |message| { phase: Catalog.Phase.Failed(message), rows: [] }
 
 	deps_loading : Catalog.DepsView
-	deps_loading = { phase: "loading", error: "", rows: [] }
+	deps_loading = { phase: Catalog.Phase.Loading, rows: [] }
 
 	deps_ready : Str -> Catalog.DepsView
-	deps_ready = |payload| { phase: "ready", error: "", rows: Catalog.dep_rows(payload) }
+	deps_ready = |payload| { phase: Catalog.Phase.Ready, rows: Catalog.dep_rows(payload) }
 
 	deps_failed : Str -> Catalog.DepsView
-	deps_failed = |message| { phase: "failed", error: message, rows: [] }
+	deps_failed = |message| { phase: Catalog.Phase.Failed(message), rows: [] }
 
 	# --- status wording -------------------------------------------------------
 
@@ -146,16 +158,17 @@ Catalog := {}.{
 
 	search_status_text : Catalog.SearchView -> Str
 	search_status_text = |view|
-		if view.phase == "loading" {
-			"Search status: searching"
-		} else if view.phase == "failed" {
-			"Search status: failed - ${view.error}"
-		} else if view.rows.len() == 0 {
-			"Search status: no packages match"
-		} else if view.rows.len() == 1 {
-			"Search status: 1 package"
-		} else {
-			"Search status: ${Catalog.count_text(view.rows.len())} packages"
+		match view.phase {
+			Loading => "Search status: searching"
+			Failed(message) => "Search status: failed - ${message}"
+			Ready =>
+				if view.rows.len() == 0 {
+					"Search status: no packages match"
+				} else if view.rows.len() == 1 {
+					"Search status: 1 package"
+				} else {
+					"Search status: ${Catalog.count_text(view.rows.len())} packages"
+				}
 		}
 
 	## Placeholder wording for the empty branch of each list. The branch itself
@@ -163,50 +176,41 @@ Catalog := {}.{
 	## the copy is derived rather than hard-coded.
 	search_empty_text : Catalog.SearchView -> Str
 	search_empty_text = |view|
-		if view.phase == "loading" {
-			"Loading packages..."
-		} else if view.phase == "failed" {
-			"Search unavailable."
-		} else {
-			"No packages match this search."
+		match view.phase {
+			Loading => "Loading packages..."
+			Failed(_) => "Search unavailable."
+			Ready => "No packages match this search."
 		}
 
 	versions_empty_text : Catalog.VersionsView -> Str
 	versions_empty_text = |view|
-		if view.phase == "loading" {
-			"Version history pending."
-		} else if view.phase == "failed" {
-			"Version history unavailable."
-		} else {
-			"No versions published yet."
+		match view.phase {
+			Loading => "Version history pending."
+			Failed(_) => "Version history unavailable."
+			Ready => "No versions published yet."
 		}
 
 	deps_empty_text : Catalog.DepsView -> Str
 	deps_empty_text = |view|
-		if view.phase == "loading" {
-			"Dependency list pending."
-		} else if view.phase == "failed" {
-			"Dependency list unavailable."
-		} else {
-			"This package has no dependencies."
+		match view.phase {
+			Loading => "Dependency list pending."
+			Failed(_) => "Dependency list unavailable."
+			Ready => "This package has no dependencies."
 		}
 
 	detail_empty_text : Catalog.DetailView -> Str
 	detail_empty_text = |view|
-		if view.phase == "loading" {
-			"Overview details pending."
-		} else {
-			"Overview details unavailable."
+		match view.phase {
+			Loading => "Overview details pending."
+			_ => "Overview details unavailable."
 		}
 
 	detail_status_text : Catalog.DetailView -> Str
 	detail_status_text = |view|
-		if view.phase == "loading" {
-			"Overview: loading"
-		} else if view.phase == "failed" {
-			"Overview: failed - ${view.error}"
-		} else {
-			"Overview: ready"
+		match view.phase {
+			Loading => "Overview: loading"
+			Failed(message) => "Overview: failed - ${message}"
+			Ready => "Overview: ready"
 		}
 
 	detail_summary_text : Catalog.DetailView -> Str
@@ -220,26 +224,28 @@ Catalog := {}.{
 
 	versions_status_text : Catalog.VersionsView -> Str
 	versions_status_text = |view|
-		if view.phase == "loading" {
-			"Versions: loading"
-		} else if view.phase == "failed" {
-			"Versions: failed - ${view.error}"
-		} else if view.rows.len() == 0 {
-			"Versions: none published"
-		} else {
-			"Versions: ${Catalog.count_text(view.rows.len())} released"
+		match view.phase {
+			Loading => "Versions: loading"
+			Failed(message) => "Versions: failed - ${message}"
+			Ready =>
+				if view.rows.len() == 0 {
+					"Versions: none published"
+				} else {
+					"Versions: ${Catalog.count_text(view.rows.len())} released"
+				}
 		}
 
 	deps_status_text : Catalog.DepsView -> Str
 	deps_status_text = |view|
-		if view.phase == "loading" {
-			"Dependencies: loading"
-		} else if view.phase == "failed" {
-			"Dependencies: failed - ${view.error}"
-		} else if view.rows.len() == 0 {
-			"Dependencies: none"
-		} else {
-			"Dependencies: ${Catalog.count_text(view.rows.len())} required"
+		match view.phase {
+			Loading => "Dependencies: loading"
+			Failed(message) => "Dependencies: failed - ${message}"
+			Ready =>
+				if view.rows.len() == 0 {
+					"Dependencies: none"
+				} else {
+					"Dependencies: ${Catalog.count_text(view.rows.len())} required"
+				}
 		}
 
 	## Client-side ordering. The rows keep their identity; only their order
@@ -276,14 +282,66 @@ Catalog := {}.{
 
 	## Fan-in readout: the three panel phases arrive as one list from
 	## `Signal.combine`, so this is the only place that counts panels.
-	panel_summary : List(Str) -> Str
+	panel_summary : List(Catalog.Phase) -> Str
 	panel_summary = |phases| {
-		ready = phases.keep_if(|phase| phase == "ready").len()
-		loading = phases.keep_if(|phase| phase == "loading").len()
-		failed = phases.keep_if(|phase| phase == "failed").len()
+		ready = phases.keep_if(Catalog.is_ready).len()
+		loading = phases.keep_if(Catalog.is_loading).len()
+		failed = phases.keep_if(Catalog.is_failed).len()
 		"Panels: ${Catalog.count_text(ready)} ready, ${Catalog.count_text(loading)} loading, ${Catalog.count_text(failed)} failed"
 	}
 
-	all_settled : List(Str) -> Bool
-	all_settled = |phases| phases.keep_if(|phase| phase == "loading").len() == 0
+	is_loading : Catalog.Phase -> Bool
+	is_loading = |phase|
+		match phase {
+			Loading => True
+			_ => False
+		}
+
+	is_ready : Catalog.Phase -> Bool
+	is_ready = |phase|
+		match phase {
+			Ready => True
+			_ => False
+		}
+
+	is_failed : Catalog.Phase -> Bool
+	is_failed = |phase|
+		match phase {
+			Failed(_) => True
+			_ => False
+		}
+
+	all_settled : List(Catalog.Phase) -> Bool
+	all_settled = |phases| phases.keep_if(Catalog.is_loading).len() == 0
 }
+
+## Search rows split on ";" between records and "|" between id and summary.
+expect Catalog.package_rows("roc-json|JSON codec;roc-http|HTTP client") == [{ id: "roc-json", summary: "JSON codec" }, { id: "roc-http", summary: "HTTP client" }]
+## An empty payload means no matches, not a parse failure.
+expect Catalog.package_rows("") == []
+## The detail payload fills all four fields in order, the last taking the tail.
+expect Catalog.detail_data("roc-json|JSON codec|Apache-2.0|18422") == { id: "roc-json", summary: "JSON codec", license: "Apache-2.0", downloads: "18422" }
+## A loading search reports progress rather than a count.
+expect Catalog.search_status_text(Catalog.search_loading) == "Search status: searching"
+## A failed search carries the failure message into the status line.
+expect Catalog.search_status_text(Catalog.search_failed("offline")) == "Search status: failed - offline"
+## A ready search with no rows says so instead of reporting "0 packages".
+expect Catalog.search_status_text(Catalog.search_ready("")) == "Search status: no packages match"
+## A single match is worded in the singular.
+expect Catalog.search_status_text(Catalog.search_ready("roc-json|JSON codec")) == "Search status: 1 package"
+## More than one match is worded in the plural with the count.
+expect Catalog.search_status_text(Catalog.search_ready("roc-json|a;roc-http|b")) == "Search status: 2 packages"
+## The versions panel counts released versions once its payload arrives.
+expect Catalog.versions_status_text(Catalog.versions_ready("1.0.0|2026-01-01")) == "Versions: 1 released"
+## A package with no dependencies is a ready answer, not an empty count.
+expect Catalog.deps_status_text(Catalog.deps_ready("")) == "Dependencies: none"
+## The overview panel surfaces its own failure message independently.
+expect Catalog.detail_status_text(Catalog.detail_failed("gone")) == "Overview: failed - gone"
+## The fan-in readout tallies each phase across the panels that reported.
+expect Catalog.panel_summary([Catalog.Phase.Ready, Catalog.Phase.Loading, Catalog.Phase.Failed("gone")]) == "Panels: 1 ready, 1 loading, 1 failed"
+## A failed panel counts as settled: only loading panels keep the app waiting.
+expect Catalog.all_settled([Catalog.Phase.Ready, Catalog.Phase.Failed("gone")])
+## One panel still loading leaves the whole set unsettled.
+expect !Catalog.all_settled([Catalog.Phase.Ready, Catalog.Phase.Loading])
+## Reversing the order rearranges the same rows rather than rebuilding them.
+expect Catalog.order_rows([{ id: "a", summary: "" }, { id: "b", summary: "" }], True) == [{ id: "b", summary: "" }, { id: "a", summary: "" }]

@@ -3,8 +3,9 @@
 const std = @import("std");
 const abi = @import("roc_platform_abi.zig");
 const erased_calls = @import("erased_calls.zig");
+const CapabilitySplit = @import("callable_roles.zig").CapabilitySplit;
 
-pub const HostValue = u64;
+pub const HostValue = @import("host_values.zig").HostValue;
 
 pub const Error = error{
     OutOfMemory,
@@ -19,15 +20,23 @@ pub const Error = error{
     CloneReturnedSource,
 };
 
+/// Defines opaque host-value storage whose cells remain paired with app-compiled ownership capabilities.
 pub fn Registry(comptime Capability: type) type {
     const Cell = struct {
         box: abi.RocBox,
         capability: ?Capability,
         last_taken_epoch: u64,
+        generation: u32,
+    };
+
+    const Vacant = struct {
+        last_taken_epoch: u64,
+        generation: u32,
+        next: ?usize,
     };
 
     const Slot = union(enum) {
-        vacant: u64,
+        vacant: Vacant,
         occupied: Cell,
     };
 
@@ -35,12 +44,33 @@ pub fn Registry(comptime Capability: type) type {
         const Self = @This();
 
         slots: std.ArrayListUnmanaged(Slot) = .empty,
+        first_vacant: ?usize = null,
         take_epoch: u64 = 0,
 
+        const index_bits = 32;
+        const index_mask: u64 = (@as(u64, 1) << index_bits) - 1;
+
+        fn encodeHandle(index: usize, generation: u32) HostValue {
+            std.debug.assert(index < index_mask);
+            return HostValue.fromRaw((@as(u64, generation) << index_bits) | @as(u64, @intCast(index + 1)));
+        }
+
+        fn handleIndex(value: HostValue) Error!usize {
+            const one_based = value.toRaw() & index_mask;
+            if (one_based == 0) return Error.InvalidHandle;
+            return @intCast(one_based - 1);
+        }
+
+        fn handleGeneration(value: HostValue) u32 {
+            return @intCast(value.toRaw() >> index_bits);
+        }
+
+        /// Releases every resource owned by this value and leaves no retained host or Roc ownership behind.
         pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
             self.slots.deinit(allocator);
         }
 
+        /// Reports whether live values is present in maintained state.
         pub fn hasLiveValues(self: *const Self) bool {
             for (self.slots.items) |entry| {
                 switch (entry) {
@@ -51,6 +81,7 @@ pub fn Registry(comptime Capability: type) type {
             return false;
         }
 
+        /// Returns the number of registry cells that still own opaque Roc values.
         pub fn liveCount(self: *const Self) usize {
             var count: usize = 0;
             for (self.slots.items) |entry| {
@@ -62,15 +93,20 @@ pub fn Registry(comptime Capability: type) type {
             return count;
         }
 
-        fn cell(box: abi.RocBox, owned_capability: ?Capability, last_taken_epoch: u64) Cell {
-            return .{ .box = box, .capability = owned_capability, .last_taken_epoch = last_taken_epoch };
+        fn cell(box: abi.RocBox, owned_capability: ?Capability, last_taken_epoch: u64, generation: u32) Cell {
+            return .{ .box = box, .capability = owned_capability, .last_taken_epoch = last_taken_epoch, .generation = generation };
         }
 
         fn slot(self: *Self, value: HostValue) Error!*Slot {
-            if (value == 0) return Error.InvalidHandle;
-            const index = value - 1;
+            const index = try handleIndex(value);
             if (index >= self.slots.items.len) return Error.InvalidHandle;
-            return &self.slots.items[@intCast(index)];
+            const entry = &self.slots.items[index];
+            const generation = switch (entry.*) {
+                .vacant => |vacant| vacant.generation,
+                .occupied => |occupied| occupied.generation,
+            };
+            if (generation != handleGeneration(value)) return Error.ReleasedHandle;
+            return entry;
         }
 
         fn occupiedCell(self: *Self, value: HostValue) Error!Cell {
@@ -80,29 +116,37 @@ pub fn Registry(comptime Capability: type) type {
             };
         }
 
+        /// Returns the app-compiled capability that owns values crossing this edge.
         pub fn capability(self: *Self, value: HostValue) Error!?Capability {
             const occupied = try self.occupiedCell(value);
             return occupied.capability;
         }
 
+        /// Stores an owned value with explicit capability ownership, consuming the caller's reference on success.
         pub fn storeOwnedCapability(self: *Self, allocator: std.mem.Allocator, box: abi.RocBox, owned_capability: ?Capability, ops: anytype) Error!HostValue {
-            for (self.slots.items, 0..) |*entry, index| {
-                switch (entry.*) {
-                    .vacant => |last_taken_epoch| {
-                        entry.* = .{ .occupied = cell(box, owned_capability, last_taken_epoch) };
-                        return @intCast(index + 1);
-                    },
-                    .occupied => {},
-                }
+            if (self.first_vacant) |index| {
+                const vacant = switch (self.slots.items[index]) {
+                    .vacant => |value| value,
+                    .occupied => unreachable,
+                };
+                self.first_vacant = vacant.next;
+                const generation = vacant.generation + 1;
+                self.slots.items[index] = .{ .occupied = cell(box, owned_capability, vacant.last_taken_epoch, generation) };
+                return encodeHandle(index, generation);
             }
 
-            self.slots.append(allocator, .{ .occupied = cell(box, owned_capability, 0) }) catch {
+            if (self.slots.items.len >= index_mask) {
+                if (owned_capability) |capability_value| ops.releaseCapability(capability_value);
+                return Error.OutOfMemory;
+            }
+            self.slots.append(allocator, .{ .occupied = cell(box, owned_capability, 0, 0) }) catch {
                 if (owned_capability) |capability_value| ops.releaseCapability(capability_value);
                 return Error.OutOfMemory;
             };
-            return @intCast(self.slots.items.len);
+            return encodeHandle(self.slots.items.len - 1, 0);
         }
 
+        /// Stores an owned value with explicit capability ownership, consuming the caller's reference on success.
         pub fn storeRetainedCapability(self: *Self, allocator: std.mem.Allocator, box: abi.RocBox, borrowed_capability: ?Capability, ops: anytype) Error!HostValue {
             if (borrowed_capability) |capability_value| {
                 ops.retainCapability(capability_value);
@@ -111,23 +155,14 @@ pub fn Registry(comptime Capability: type) type {
             return try self.storeOwnedCapability(allocator, box, borrowed_capability, ops);
         }
 
+        /// Stores an owned value with explicit capability ownership, consuming the caller's reference on success.
         pub fn storeRetainedExistingCapability(self: *Self, allocator: std.mem.Allocator, box: abi.RocBox, source_value: HostValue, ops: anytype) Error!HostValue {
             const capability_value = try self.storedCapability(source_value);
             return try self.storeRetainedCapability(allocator, box, capability_value, ops);
         }
 
-        fn vacantSlotAvailable(self: *const Self) bool {
-            for (self.slots.items) |entry| {
-                switch (entry) {
-                    .vacant => return true,
-                    .occupied => {},
-                }
-            }
-            return false;
-        }
-
         fn ensureStoreCapacity(self: *Self, allocator: std.mem.Allocator) Error!void {
-            if (self.vacantSlotAvailable()) return;
+            if (self.first_vacant != null) return;
             self.slots.ensureUnusedCapacity(allocator, 1) catch return Error.OutOfMemory;
         }
 
@@ -135,26 +170,31 @@ pub fn Registry(comptime Capability: type) type {
             return (try self.capability(value)) orelse Error.MissingCapability;
         }
 
+        /// Rejects a value/capability mismatch before any app-compiled callable can inspect the payload.
         pub fn assertCapability(self: *Self, value: HostValue, expected_capability: Capability, ops: anytype) Error!void {
             const actual_capability = try self.storedCapability(value);
             if (!ops.capabilitiesMatch(actual_capability, expected_capability)) return Error.CapabilityMismatch;
         }
 
+        /// Rejects a value/capability mismatch before any app-compiled callable can inspect the payload.
         pub fn assertCapabilityActive(self: *Self, value: HostValue, ops: anytype) Error!void {
             const actual_capability = try self.storedCapability(value);
             if (!ops.capabilityIsActive(actual_capability)) return Error.InactiveCapability;
         }
 
+        /// Produces an independently owned value while leaving independent ownership in the registry cell.
         pub fn getWithCapability(self: *Self, allocator: std.mem.Allocator, value: HostValue, expected_capability: Capability, ops: anytype) Error!abi.RocBox {
             try self.assertCapability(value, expected_capability, ops);
             return try self.getWithStoredCapability(allocator, value, ops);
         }
 
+        /// Returns the stored value without changing its identity or ownership policy.
         pub fn get(self: *Self, allocator: std.mem.Allocator, value: HostValue, ops: anytype) Error!abi.RocBox {
             return try self.getWithStoredCapability(allocator, value, ops);
         }
 
-        pub fn getWithSplit(self: *Self, value: HostValue, split: abi.RocErasedCallable, ops: anytype) Error!abi.RocBox {
+        /// Produces an independently owned value while leaving independent ownership in the registry cell.
+        pub fn getWithSplit(self: *Self, value: HostValue, split: CapabilitySplit, ops: anytype) Error!abi.RocBox {
             try self.assertCapabilityActive(value, ops);
             return try self.getWithSplitUnchecked(value, split, ops);
         }
@@ -164,7 +204,7 @@ pub fn Registry(comptime Capability: type) type {
             return try self.take(cloned, ops);
         }
 
-        fn getWithSplitUnchecked(self: *Self, value: HostValue, split_callable: abi.RocErasedCallable, ops: anytype) Error!abi.RocBox {
+        fn getWithSplitUnchecked(self: *Self, value: HostValue, split_callable: CapabilitySplit, ops: anytype) Error!abi.RocBox {
             const entry = try self.slot(value);
             return switch (entry.*) {
                 .vacant => Error.ReleasedHandle,
@@ -176,29 +216,36 @@ pub fn Registry(comptime Capability: type) type {
             };
         }
 
+        /// Transfers registry ownership to the caller and marks the cell unavailable for reuse.
         pub fn take(self: *Self, value: HostValue, ops: anytype) Error!abi.RocBox {
             const entry = try self.slot(value);
             return switch (entry.*) {
                 .vacant => Error.ReleasedHandle,
                 .occupied => |occupied| blk: {
                     self.take_epoch +%= 1;
-                    entry.* = .{ .vacant = self.take_epoch };
+                    const index = try handleIndex(value);
+                    const reusable = occupied.generation != std.math.maxInt(u32);
+                    entry.* = .{ .vacant = .{ .last_taken_epoch = self.take_epoch, .generation = occupied.generation, .next = if (reusable) self.first_vacant else null } };
+                    if (reusable) self.first_vacant = index;
                     if (occupied.capability) |capability_value| ops.releaseCapability(capability_value);
                     break :blk occupied.box;
                 },
             };
         }
 
+        /// Transfers registry ownership to the caller and marks the cell unavailable for reuse.
         pub fn takeWithCapability(self: *Self, value: HostValue, expected_capability: Capability, ops: anytype) Error!abi.RocBox {
             try self.assertCapability(value, expected_capability, ops);
             return try self.take(value, ops);
         }
 
-        pub fn takeWithSplit(self: *Self, value: HostValue, _: abi.RocErasedCallable, ops: anytype) Error!abi.RocBox {
+        /// Transfers registry ownership to the caller and marks the cell unavailable for reuse.
+        pub fn takeWithSplit(self: *Self, value: HostValue, _: CapabilitySplit, ops: anytype) Error!abi.RocBox {
             try self.assertCapabilityActive(value, ops);
             return try self.take(value, ops);
         }
 
+        /// Asserts that the registry handle no longer owns a live value.
         pub fn assertReleased(self: *Self, value: HostValue) Error!void {
             const entry = try self.slot(value);
             return switch (entry.*) {
@@ -207,19 +254,28 @@ pub fn Registry(comptime Capability: type) type {
             };
         }
 
+        /// Transfers registry ownership to the caller and marks the cell unavailable for reuse.
         pub fn takeEpoch(self: *const Self) u64 {
             return self.take_epoch;
         }
 
+        /// Asserts that a consuming read transferred the cell after the recorded epoch.
         pub fn assertTakenAfter(self: *Self, value: HostValue, epoch: u64) Error!void {
-            const entry = try self.slot(value);
+            // This postcondition deliberately follows the physical slot even if
+            // the callback immediately reused it. The recorded take epoch, not
+            // current handle validity, proves that the incoming ownership was
+            // consumed during the call.
+            const index = try handleIndex(value);
+            if (index >= self.slots.items.len) return Error.InvalidHandle;
+            const entry = &self.slots.items[index];
             const last_taken_epoch = switch (entry.*) {
-                .vacant => |last| last,
+                .vacant => |vacant| vacant.last_taken_epoch,
                 .occupied => |occupied| occupied.last_taken_epoch,
             };
             if (last_taken_epoch <= epoch) return Error.UnconsumedHandle;
         }
 
+        /// Creates a new registry cell containing a capability-owned clone of the source value.
         pub fn clone(self: *Self, allocator: std.mem.Allocator, value: HostValue, ops: anytype) Error!HostValue {
             try self.ensureStoreCapacity(allocator);
             const capability_value = try self.storedCapability(value);
@@ -230,6 +286,7 @@ pub fn Registry(comptime Capability: type) type {
             return cloned;
         }
 
+        /// Sets capability at the narrow host or engine boundary that owns the mutation.
         pub fn setCapability(self: *Self, value: HostValue, borrowed_capability: Capability, ops: anytype) Error!void {
             const entry = try self.slot(value);
             switch (entry.*) {
@@ -264,23 +321,28 @@ const TestOps = struct {
     clone_uses_wrong_capability: bool = false,
     active_capability: ?TestCapability = null,
 
+    /// Retains every callable needed to clone, compare, and drop values on this edge.
     pub fn retainCapability(self: TestOps, _: TestCapability) void {
         self.retained_capabilities.* += 1;
     }
 
+    /// Releases the callable bundle owned by a retained edge.
     pub fn releaseCapability(self: TestOps, _: TestCapability) void {
         self.released_capabilities.* += 1;
     }
 
+    /// Checks capability identity so erased values cannot cross into the wrong typed edge.
     pub fn capabilitiesMatch(_: TestOps, actual: TestCapability, expected: TestCapability) bool {
         return actual.clone == expected.clone and actual.eq == expected.eq and actual.drop == expected.drop;
     }
 
+    /// Checks that the owning capability is present in the current app-call frame.
     pub fn capabilityIsActive(self: TestOps, actual: TestCapability) bool {
         const active = self.active_capability orelse return false;
         return self.capabilitiesMatch(actual, active);
     }
 
+    /// Clones an opaque value only after validating its owning capability.
     pub fn cloneValueWithCapability(self: TestOps, value: HostValue, capability: TestCapability) HostValue {
         self.split_boxes.* += 1;
         if (self.clone_returns_source) return value;
@@ -290,13 +352,14 @@ const TestOps = struct {
             capability;
         return self.registry.storeRetainedCapability(
             std.testing.allocator,
-            @ptrFromInt(0x4000 + value),
+            @ptrFromInt(0x4000 + value.toRaw()),
             stored_capability,
             self,
         ) catch unreachable;
     }
 
-    pub fn splitBoxWithSplit(self: TestOps, box: abi.RocBox, _: abi.RocErasedCallable) erased_calls.RocBoxPair {
+    /// Uses the app-compiled split callable to create independent keep and output ownership.
+    pub fn splitBoxWithSplit(self: TestOps, box: abi.RocBox, _: CapabilitySplit) erased_calls.RocBoxPair {
         self.split_boxes.* += 1;
         const addr = @intFromPtr(box orelse unreachable);
         return .{
@@ -315,7 +378,7 @@ fn testOps(registry: *TestRegistry, retained: *u64, released: *u64, splits: *u64
     };
 }
 
-test "host value registry uses one-based handles and reuses vacant slots" {
+test "host value registry generation-tags reused slots and rejects stale handles" {
     var registry: Registry(TestCapability) = .{};
     defer registry.deinit(std.testing.allocator);
 
@@ -327,16 +390,40 @@ test "host value registry uses one-based handles and reuses vacant slots" {
 
     const first = try registry.storeOwnedCapability(std.testing.allocator, @ptrFromInt(0x10), cap, ops);
     const second = try registry.storeOwnedCapability(std.testing.allocator, @ptrFromInt(0x20), null, ops);
-    try std.testing.expectEqual(@as(HostValue, 1), first);
-    try std.testing.expectEqual(@as(HostValue, 2), second);
+    try std.testing.expectEqual(HostValue.fromRaw(1), first);
+    try std.testing.expectEqual(HostValue.fromRaw(2), second);
 
     try std.testing.expectEqual(@as(usize, 2), registry.slots.items.len);
     try std.testing.expectEqual(@as(abi.RocBox, @ptrFromInt(0x10)), try registry.take(first, ops));
     try std.testing.expectEqual(@as(u64, 1), released);
 
     const reused = try registry.storeOwnedCapability(std.testing.allocator, @ptrFromInt(0x30), null, ops);
-    try std.testing.expectEqual(first, reused);
+    try std.testing.expect(first != reused);
+    try std.testing.expectEqual(@as(u64, (@as(u64, 1) << 32) | 1), reused.toRaw());
+    try std.testing.expectError(Error.ReleasedHandle, registry.capability(first));
+    try std.testing.expectEqual(@as(abi.RocBox, @ptrFromInt(0x30)), try registry.take(reused, ops));
     try std.testing.expectEqual(@as(usize, 2), registry.slots.items.len);
+}
+
+test "host value registry permanently retires generation-saturated slots" {
+    var registry: Registry(TestCapability) = .{};
+    defer registry.deinit(std.testing.allocator);
+
+    var retained: u64 = 0;
+    var released: u64 = 0;
+    var splits: u64 = 0;
+    const ops = testOps(&registry, &retained, &released, &splits);
+
+    _ = try registry.storeOwnedCapability(std.testing.allocator, @ptrFromInt(0x10), null, ops);
+    registry.slots.items[0].occupied.generation = std.math.maxInt(u32);
+    const saturated = TestRegistry.encodeHandle(0, std.math.maxInt(u32));
+    _ = try registry.take(saturated, ops);
+    try std.testing.expectEqual(@as(?usize, null), registry.first_vacant);
+
+    const next = try registry.storeOwnedCapability(std.testing.allocator, @ptrFromInt(0x20), null, ops);
+    try std.testing.expectEqual(HostValue.fromRaw(2), next);
+    try std.testing.expectEqual(@as(usize, 2), registry.slots.items.len);
+    try std.testing.expectError(Error.ReleasedHandle, registry.take(saturated, ops));
 }
 
 test "host value registry reports live count and reaches zero when drained" {
@@ -397,7 +484,7 @@ test "host value registry clones through capability clone operation" {
     try std.testing.expect(cloned != original);
     try std.testing.expectEqual(@as(u64, 1), splits);
     try std.testing.expectEqual(@as(u64, 1), retained);
-    try std.testing.expectEqual(@as(abi.RocBox, @ptrFromInt(0x4000 + cloned)), try registry.getWithCapability(std.testing.allocator, cloned, cap, ops));
+    try std.testing.expectEqual(@as(abi.RocBox, @ptrFromInt(0x4000 + cloned.toRaw())), try registry.getWithCapability(std.testing.allocator, cloned, cap, ops));
     try std.testing.expectEqual(@as(u64, 2), splits);
 }
 
@@ -417,7 +504,7 @@ test "host value registry enforces full capability identity" {
     try std.testing.expectError(Error.CapabilityMismatch, registry.assertCapability(value, cap_b, ops));
     try std.testing.expectError(Error.ConflictingCapability, registry.setCapability(value, cap_b, ops));
     try std.testing.expectError(Error.CapabilityMismatch, registry.getWithCapability(std.testing.allocator, value, cap_b, ops));
-    try std.testing.expectEqual(@as(abi.RocBox, @ptrFromInt(0x4000 + value)), try registry.getWithCapability(std.testing.allocator, value, cap_a, ops));
+    try std.testing.expectEqual(@as(abi.RocBox, @ptrFromInt(0x4000 + value.toRaw())), try registry.getWithCapability(std.testing.allocator, value, cap_a, ops));
 }
 
 test "host value registry permits active-capability split access for capability thunks" {
@@ -431,9 +518,9 @@ test "host value registry permits active-capability split access for capability 
     const cap = TestCapability{ .clone = 0x501, .eq = 0x502, .drop = 0x503 };
     const value = try registry.storeOwnedCapability(std.testing.allocator, @ptrFromInt(0x90), cap, ops);
 
-    try std.testing.expectError(Error.InactiveCapability, registry.getWithSplit(value, @ptrFromInt(0x510), ops));
+    try std.testing.expectError(Error.InactiveCapability, registry.getWithSplit(value, CapabilitySplit.fromAbi(@ptrFromInt(0x510)), ops));
     ops.active_capability = cap;
-    try std.testing.expectEqual(@as(abi.RocBox, @ptrFromInt(0x2090)), try registry.getWithSplit(value, @ptrFromInt(0x510), ops));
+    try std.testing.expectEqual(@as(abi.RocBox, @ptrFromInt(0x2090)), try registry.getWithSplit(value, CapabilitySplit.fromAbi(@ptrFromInt(0x510)), ops));
 }
 
 test "host value registry rejects malformed capability clone results" {
@@ -490,5 +577,5 @@ test "host value registry rejects reads before a capability is assigned" {
     try std.testing.expectError(Error.MissingCapability, registry.getWithCapability(std.testing.allocator, value, cap, ops));
     try registry.setCapability(value, cap, ops);
     try std.testing.expectEqual(@as(u64, 1), retained);
-    try std.testing.expectEqual(@as(abi.RocBox, @ptrFromInt(0x4000 + value)), try registry.getWithCapability(std.testing.allocator, value, cap, ops));
+    try std.testing.expectEqual(@as(abi.RocBox, @ptrFromInt(0x4000 + value.toRaw())), try registry.getWithCapability(std.testing.allocator, value, cap, ops));
 }

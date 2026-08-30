@@ -13,6 +13,7 @@ const TermColor = struct {
     const reset = "\x1b[0m";
 };
 
+/// Runs repository tidiness checks.
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     var gpa_impl = std.heap.DebugAllocator(.{}){};
@@ -117,6 +118,7 @@ fn shouldSkipName(name: []const u8) bool {
         std.mem.eql(u8, name, "zig-pkg") or
         std.mem.eql(u8, name, "kcov-output") or
         std.mem.eql(u8, name, ".bundle-url-test") or
+        std.mem.eql(u8, name, ".fuzz-out") or
         std.mem.eql(u8, name, "__pycache__") or
         std.mem.eql(u8, name, ".DS_Store");
 }

@@ -11,6 +11,10 @@ Small cleanup rules for Roc code.
 - For example `main!` annotations, prefer a named error union when the error cases are part of the example. Use `_` when the row is just low-level plumbing from effects like stdin/stdout/file IO.
 - Prefer named records over tuples when the fields have meaning. For example, headers should be `{ name : Str, value : Str }`, not `(Str, Str)`.
 - Destructure records in function arguments when the fields are few and the meaning stays obvious.
+- Model a closed set of values as a tag union, never as a `Str`, an integer code, or a combination of `Bool` fields. If a comment is needed to say what `2` means, or two `Bool`s exist that cannot both be true, it wants to be a tag.
+- Parse at the edge: one `from_str` where external text arrives, one `to_str` where it leaves, tags everywhere in between.
+- Derive each rendering of a value from the tag independently. Do not recover meaning by inspecting text that was just rendered, such as choosing a CSS class from the wording of a message.
+- Group parameters of the same type into a record so call sites name them. Several adjacent `Str` arguments, or a bare `Bool` argument, are transposition hazards.
 
 ```roc
 Header := { name : Str, value : Str }.{
@@ -19,10 +23,36 @@ Header := { name : Str, value : Str }.{
 }
 ```
 
+```roc
+Status := [Draft, Queued, Synced, Failed].{
+	is_eq : _
+
+	## The wire value, and the only place it is spelled.
+	to_str : Status -> Str
+	to_str = |status|
+		match status {
+			Draft => "draft"
+			Queued => "queued"
+			Synced => "synced"
+			Failed => "failed"
+		}
+
+	## Tone is a second projection of the tag, not a reading of `to_str`.
+	class : Status -> Str
+	class = |status|
+		match status {
+			Failed => "badge badge-danger"
+			Synced => "badge badge-ok"
+			_ => "badge"
+		}
+}
+```
+
 ## Function Shape
 
 - Prefer receiver/static-dispatch style when it reads naturally, such as `items.map(...)`, `items.keep_if(...)`, `items.len()`, and `items.fold(...)`.
 - When receiver-dispatching polymorphic signal helpers, add a local `Signal.Signal(...)` annotation if the same source signal maps to different output types. If that annotation would be noisier than the call, keep the explicit `Signal.map(...)` form.
+- If a method-position call is rejected with a type mismatch whose two printed types look identical, that is a known compiler bug, not a modelling problem. Use the call form and leave a comment. See `UPSTREAM_COMPILER_BUGS.md`.
 - Avoid extra braces around a function body when the body is just one `match`, `if`, record update, or expression.
 - Keep short pure helpers compact, but expand nested `if`/`match` branches when the inline version hurts scanning.
 - Prefer builder chains over numbered intermediate values.
@@ -47,7 +77,8 @@ request =
 - Use `to_inspect : T -> Str` for debug, logging, and test output through `Str.inspect(value)`.
 - Use `to_str : T -> Str` only when the type has one clear user-facing string representation.
 - Prefer explicitly named renderers when several string meanings exist, such as `to_debug_str`, `to_markdown`, `to_plain_text`, or `to_html`.
-- Use `is_eq : T, T -> Bool` when `==` and `!=` should work naturally for a nominal type.
+- Prefer `is_eq : _` to derive equality for a nominal type. Write `is_eq : T, T -> Bool` with a body only when equality should differ from the structural comparison.
+- Never implement `is_eq` by encoding both sides to a `Str` or an integer code and comparing those. It allocates on the equality path and conflates values that happen to encode alike.
 - If a type defines custom `is_eq` and will be used in hash-based APIs, also define `to_hash : T, Hasher -> Hasher` consistently. Equal values must hash the same way.
 - Use ordering hooks (`is_lt`, `is_lte`, `is_gt`, `is_gte`) only when the type has one obvious ordering.
 - Use arithmetic hooks (`plus`, `minus`, `times`, `div_by`, `div_trunc_by`, `rem_by`) only when the operation is obvious and unsurprising for the type.
@@ -171,6 +202,7 @@ main! = |args| {
 - Avoid long chained `and` expressions when checking several related facts.
 - For multi-signal behavior, build a labeled `actual` report string and compare it to a labeled multiline `expected` string.
 - Use `Str.inspect(...)` in report strings for booleans, tags, records, and nested values.
+- Multiline string lines start with `\\`. A `#` inside one is literal text, not a comment.
 - Include negative parse tests for important parser behavior.
 - CI should run `roc test` for every example so top-level expects in examples are exercised.
 
@@ -181,16 +213,16 @@ expect {
 	inline = Strong([Text("Roc")])
 
 	actual =
-		\inline inspect: ${Str.inspect(inline)}
-		\inline debug: ${Markdown.inline_to_debug_str(inline)}
-		\inline eq same: ${Str.inspect(inline == Strong([Text("Roc")]))}
-		\inline eq different: ${Str.inspect(inline == Emphasis([Text("Roc")]))}
+		\\inline inspect: ${Str.inspect(inline)}
+		\\inline debug: ${Markdown.inline_to_debug_str(inline)}
+		\\inline eq same: ${Str.inspect(inline == Strong([Text("Roc")]))}
+		\\inline eq different: ${Str.inspect(inline == Emphasis([Text("Roc")]))}
 
 	expected =
-		\inline inspect: Strong([Text("Roc")])
-		\inline debug: Strong([Text("Roc")])
-		\inline eq same: True
-		\inline eq different: False
+		\\inline inspect: Strong([Text("Roc")])
+		\\inline debug: Strong([Text("Roc")])
+		\\inline eq same: True
+		\\inline eq different: False
 
 	actual == expected
 }

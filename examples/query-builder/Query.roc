@@ -2,8 +2,170 @@ Query :: [].{
 	## A row in the sample dataset the query is evaluated against.
 	Row : { name : Str, dept : Str, level : U64 }
 
+	## Which row attribute a condition tests.
+	##
+	## The `<select>` on the page hands back a `Str`, so this type has exactly one
+	## encode point (`to_str`) and one decode point (`from_str`); everything
+	## between them works in tags.
+	Field := [Name, Dept, Level].{
+		is_eq : Field, Field -> Bool
+		is_eq = |left, right|
+			match left {
+				Name => match right {
+					Name => True
+					_ => False
+				}
+				Dept => match right {
+					Dept => True
+					_ => False
+				}
+				Level => match right {
+					Level => True
+					_ => False
+				}
+			}
+
+		## The option value, and the identifier the query text prints.
+		to_str : Field -> Str
+		to_str = |field|
+			match field {
+				Name => "name"
+				Dept => "dept"
+				Level => "level"
+			}
+
+		## Human label for the option list.
+		label : Field -> Str
+		label = |field|
+			match field {
+				Name => "Name"
+				Dept => "Department"
+				Level => "Level"
+			}
+
+		from_str : Str -> Field
+		from_str = |text|
+			if text == "dept" {
+				Dept
+			} else if text == "level" {
+				Level
+			} else {
+				Name
+			}
+	}
+
+	## How a leaf condition compares the field against the typed value. Same
+	## shape as `Field`: a `Str` on the select wire, a tag everywhere else.
+	Op := [Eq, Ne, Contains, Gt, Lt].{
+		is_eq : Op, Op -> Bool
+		is_eq = |left, right|
+			match left {
+				Eq => match right {
+					Eq => True
+					_ => False
+				}
+				Ne => match right {
+					Ne => True
+					_ => False
+				}
+				Contains => match right {
+					Contains => True
+					_ => False
+				}
+				Gt => match right {
+					Gt => True
+					_ => False
+				}
+				Lt => match right {
+					Lt => True
+					_ => False
+				}
+			}
+
+		to_str : Op -> Str
+		to_str = |op|
+			match op {
+				Eq => "eq"
+				Ne => "ne"
+				Contains => "contains"
+				Gt => "gt"
+				Lt => "lt"
+			}
+
+		label : Op -> Str
+		label = |op|
+			match op {
+				Eq => "equals"
+				Ne => "does not equal"
+				Contains => "contains"
+				Gt => "greater than"
+				Lt => "less than"
+			}
+
+		## The compact form the generated query prints.
+		symbol : Op -> Str
+		symbol = |op|
+			match op {
+				Eq => "="
+				Ne => "!="
+				Contains => "~"
+				Gt => ">"
+				Lt => "<"
+			}
+
+		from_str : Str -> Op
+		from_str = |text|
+			if text == "ne" {
+				Ne
+			} else if text == "contains" {
+				Contains
+			} else if text == "gt" {
+				Gt
+			} else if text == "lt" {
+				Lt
+			} else {
+				Eq
+			}
+	}
+
+	## How a group combines its children. Never crosses a wire — the segmented
+	## control is a pair of buttons, so this stays a tag end to end.
+	Mode := [And, Or].{
+		is_eq : Mode, Mode -> Bool
+		is_eq = |left, right|
+			match left {
+				And => match right {
+					And => True
+					_ => False
+				}
+				Or => match right {
+					Or => True
+					_ => False
+				}
+			}
+
+		to_str : Mode -> Str
+		to_str = |mode|
+			match mode {
+				And => "AND"
+				Or => "OR"
+			}
+	}
+
+	## Every field, in the order the option list shows them.
+	all_fields : List(Field)
+	all_fields = [Name, Dept, Level]
+
+	## Every operator, in the order the option list shows them.
+	all_ops : List(Op)
+	all_ops = [Eq, Ne, Contains, Gt, Lt]
+
+	## Both combinators, in the order the segmented control shows them.
+	all_modes : List(Mode)
+	all_modes = [And, Or]
+
 	## A single leaf condition: `field op value`.
-	Cond : { id : Str, field : Str, op : Str, value : Str }
+	Cond : { id : Str, field : Field, op : Op, value : Str }
 
 	## The recursive filter tree. A `Group` holds an ordered list of child nodes and
 	## combines them with `AND` or `OR`, optionally negated. A `Cond` is a leaf.
@@ -17,20 +179,24 @@ Query :: [].{
 	##   match nothing.
 	QNode := [
 		Cond(Cond),
-		Group({ id : Str, mode : Str, negated : Bool, children : List(QNode) }),
+		Group({ id : Str, mode : Mode, negated : Bool, children : List(QNode) }),
 	].{
 		is_eq : QNode, QNode -> Bool
 		is_eq = |left, right|
 			match left {
 				Cond(l) => match right {
-					Cond(r) => l.id == r.id and l.field == r.field and l.op == r.op and l.value == r.value
+					Cond(r) =>
+						l.id == r.id
+						and l.field.is_eq(r.field)
+						and l.op.is_eq(r.op)
+						and l.value == r.value
 					Group(_) => False
 				}
 				Group(l) => match right {
 					Cond(_) => False
 					Group(r) =>
 						l.id == r.id
-						and l.mode == r.mode
+						and l.mode.is_eq(r.mode)
 						and l.negated == r.negated
 						and children_eq(l.children, r.children)
 				}
@@ -38,35 +204,9 @@ Query :: [].{
 	}
 
 	children_eq : List(QNode), List(QNode) -> Bool
-	children_eq = |left, right| {
-		if left.len() != right.len() {
-			False
-		} else {
-			var $index = 0
-			var $same = True
-			while $index < left.len() {
-				l = list_at(left, $index)
-				r = list_at(right, $index)
-				if !l.is_eq(r) {
-					$same = False
-				} else {
-					$same = $same
-				}
-				$index = $index + 1
-			}
-			$same
-		}
-	}
-
-	placeholder_cond : QNode
-	placeholder_cond = QNode.Cond({ id: "", field: "name", op: "eq", value: "" })
-
-	list_at : List(QNode), U64 -> QNode
-	list_at = |items, index|
-		match items.get(index) {
-			Ok(item) => item
-			Err(_) => placeholder_cond
-		}
+	children_eq = |left, right|
+		left.len() == right.len()
+		and List.map2(left, right, |l, r| l.is_eq(r)).all(|same| same)
 
 	## The five always-present sample rows.
 	base_rows : List(Row)
@@ -88,20 +228,70 @@ Query :: [].{
 		QNode.Group(
 			{
 				id: "n1",
-				mode: "AND",
+				mode: And,
 				negated: False,
-				children: [QNode.Cond({ id: "n2", field: "dept", op: "eq", value: "Platform" })],
+				children: [QNode.Cond({ id: "n2", field: Dept, op: Eq, value: "Platform" })],
 			},
 		)
 
-	## Stable list key that also encodes the node kind, so a row renderer can choose
-	## its leaf or group shape without an eagerly-evaluated `Ui.when`.
+	## Which of the two shapes a node has. `Ui.each_str` keys rows by text, so the
+	## kind has to survive a round trip through a `Str`; `node_key` is the only
+	## place one is written and `key_kind`/`key_id` are the only places one is
+	## read, which keeps the row renderer matching on a tag.
+	NodeKind : [Leaf, Branch]
+
+	kind_to_str : NodeKind -> Str
+	kind_to_str = |kind|
+		match kind {
+			Leaf => "cond"
+			Branch => "group"
+		}
+
+	## Stable list key that also encodes the node kind.
 	node_key : QNode -> Str
 	node_key = |node|
 		match node {
-			Cond(c) => "cond:${c.id}"
-			Group(g) => "group:${g.id}"
+			Cond(c) => "${kind_to_str(Leaf)}:${c.id}"
+			Group(g) => "${kind_to_str(Branch)}:${g.id}"
 		}
+
+	## The kind a list key was built from.
+	key_kind : Str -> NodeKind
+	key_kind = |key|
+		if prefix_before(key, ":") == kind_to_str(Branch) {
+			Branch
+		} else {
+			Leaf
+		}
+
+	## The node id a list key was built from.
+	key_id : Str -> Str
+	key_id = |key| suffix_after(key, ":")
+
+	## A group's list key round-trips back to the branch kind.
+	expect {
+		key = node_key(QNode.Group({ id: "n7", mode: Or, negated: True, children: [] }))
+		key_kind(key) == Branch
+	}
+
+	## A group's list key carries its node id unchanged.
+	expect {
+		key = node_key(QNode.Group({ id: "n7", mode: Or, negated: True, children: [] }))
+		key_id(key) == "n7"
+	}
+
+	## A condition's list key round-trips back to the leaf kind.
+	expect {
+		key = node_key(QNode.Cond({ id: "n7", field: Name, op: Eq, value: "" }))
+		key_kind(key) == Leaf
+	}
+
+	## A condition's list key carries its node id unchanged, even though a leaf
+	## and a group can share the same id text.
+	expect {
+		key = node_key(QNode.Cond({ id: "n7", field: Name, op: Eq, value: "" }))
+		key_id(key) == "n7"
+	}
 
 	## The node id on its own.
 	node_id : QNode -> Str
@@ -119,11 +309,11 @@ Query :: [].{
 			Group(g) => g.children
 		}
 
-	## `AND` or `OR` for a group; `AND` for a leaf.
-	group_mode : QNode -> Str
+	## How a group combines its children; `AND` for a leaf.
+	group_mode : QNode -> Mode
 	group_mode = |node|
 		match node {
-			Cond(_) => "AND"
+			Cond(_) => Mode.And
 			Group(g) => g.mode
 		}
 
@@ -140,47 +330,7 @@ Query :: [].{
 	cond_of = |node|
 		match node {
 			Cond(c) => c
-			Group(g) => { id: g.id, field: "name", op: "eq", value: "" }
-		}
-
-	## Human label for a field id.
-	field_label : Str -> Str
-	field_label = |field|
-		if field == "name" {
-			"Name"
-		} else if field == "dept" {
-			"Department"
-		} else {
-			"Level"
-		}
-
-	## Human label for an operator id.
-	op_label : Str -> Str
-	op_label = |op|
-		if op == "eq" {
-			"equals"
-		} else if op == "ne" {
-			"does not equal"
-		} else if op == "contains" {
-			"contains"
-		} else if op == "gt" {
-			"greater than"
-		} else {
-			"less than"
-		}
-
-	op_symbol : Str -> Str
-	op_symbol = |op|
-		if op == "eq" {
-			"="
-		} else if op == "ne" {
-			"!="
-		} else if op == "contains" {
-			"~"
-		} else if op == "gt" {
-			">"
-		} else {
-			"<"
+			Group(g) => { id: g.id, field: Name, op: Eq, value: "" }
 		}
 
 	## One-line rendering of a single leaf condition.
@@ -189,8 +339,14 @@ Query :: [].{
 		if c.value.is_empty() {
 			"ANY"
 		} else {
-			"${c.field} ${op_symbol(c.op)} '${c.value}'"
+			"${c.field.to_str()} ${c.op.symbol()} '${c.value}'"
 		}
+
+	## Every field option value the page can send back decodes to the tag it came from.
+	expect all_fields.all(|field| Field.from_str(field.to_str()).is_eq(field))
+
+	## Every operator option value the page can send back decodes to the tag it came from.
+	expect all_ops.all(|op| Op.from_str(op.to_str()).is_eq(op))
 
 	## The generated query string for a whole subtree.
 	query_text : QNode -> Str
@@ -202,7 +358,7 @@ Query :: [].{
 					if g.children.is_empty() {
 						"ALL"
 					} else {
-						Str.join_with(g.children.map(query_text), " ${g.mode} ")
+						Str.join_with(g.children.map(query_text), " ${g.mode.to_str()} ")
 					}
 				if g.negated {
 					"NOT (${inner})"
@@ -212,14 +368,21 @@ Query :: [].{
 			}
 		}
 
-	field_text : Row, Str -> Str
+	## The starting tree renders as a single parenthesised condition.
+	expect query_text(initial_tree) == "(dept = 'Platform')"
+
+	## A negated empty group renders as `NOT (ALL)`, since it constrains nothing.
+	expect query_text(QNode.Group({ id: "n1", mode: And, negated: True, children: [] })) == "NOT (ALL)"
+
+	## A condition with no value typed in renders as `ANY` rather than a comparison.
+	expect query_text(QNode.Cond({ id: "n2", field: Level, op: Gt, value: "" })) == "ANY"
+
+	field_text : Row, Field -> Str
 	field_text = |row, field|
-		if field == "name" {
-			row.name
-		} else if field == "dept" {
-			row.dept
-		} else {
-			row.level.to_str()
+		match field {
+			Name => row.name
+			Dept => row.dept
+			Level => row.level.to_str()
 		}
 
 	str_contains : Str, Str -> Bool
@@ -230,65 +393,33 @@ Query :: [].{
 			haystack.split_on(needle).len() > 1
 		}
 
-	parse_u64 : Str -> [Number(U64), NotANumber]
-	parse_u64 = |text| {
-		bytes = text.to_utf8()
-		if bytes.is_empty() {
-			NotANumber
-		} else {
-			var $index = 0
-			var $total = 0
-			var $ok = True
-			while $index < bytes.len() {
-				byte =
-					match bytes.get($index) {
-						Ok(b) => b
-						Err(_) => 0
-					}
-				if byte >= 48 and byte <= 57 {
-					$total = $total * 10 + U8.to_u64(byte) - 48
-				} else {
-					$ok = False
+	## `>` and `<` apply only to the numeric `level` field, and only when the typed
+	## value parses as a number; anything else matches nothing.
+	level_compare : Cond, Row, (U64, U64 -> Bool) -> Bool
+	level_compare = |c, row, keep|
+		match c.field {
+			Level =>
+				match U64.from_str(c.value) {
+					Ok(target) => keep(row.level, target)
+					Err(_) => False
 				}
-				$index = $index + 1
-			}
-			if $ok {
-				Number($total)
-			} else {
-				NotANumber
-			}
+			_ => False
 		}
-	}
 
 	cond_matches : Cond, Row -> Bool
-	cond_matches = |c, row| {
+	cond_matches = |c, row|
 		if c.value.is_empty() {
 			True
 		} else {
 			text = field_text(row, c.field)
-			if c.op == "eq" {
-				text == c.value
-			} else if c.op == "ne" {
-				text != c.value
-			} else if c.op == "contains" {
-				str_contains(text, c.value)
-			} else {
-				if c.field != "level" {
-					False
-				} else {
-					match parse_u64(c.value) {
-						NotANumber => False
-						Number(target) =>
-							if c.op == "gt" {
-								row.level > target
-							} else {
-								row.level < target
-							}
-					}
-				}
+			match c.op {
+				Eq => text == c.value
+				Ne => text != c.value
+				Contains => str_contains(text, c.value)
+				Gt => level_compare(c, row, |level, target| level > target)
+				Lt => level_compare(c, row, |level, target| level < target)
 			}
 		}
-	}
 
 	node_matches : QNode, Row -> Bool
 	node_matches = |node, row|
@@ -300,10 +431,9 @@ Query :: [].{
 						True
 					} else {
 						hits = g.children.keep_if(|child| node_matches(child, row)).len()
-						if g.mode == "AND" {
-							hits == g.children.len()
-						} else {
-							hits > 0
+						match g.mode {
+							And => hits == g.children.len()
+							Or => hits > 0
 						}
 					}
 				if g.negated {
@@ -313,6 +443,15 @@ Query :: [].{
 				}
 			}
 		}
+
+	## `>` compares `level` numerically, so level 5 satisfies `level > 3`.
+	expect cond_matches({ id: "n2", field: Level, op: Gt, value: "3" }, { name: "Ada", dept: "Platform", level: 5 })
+
+	## A numeric operator on a text field never matches, rather than comparing text.
+	expect !cond_matches({ id: "n2", field: Name, op: Gt, value: "3" }, { name: "Ada", dept: "Platform", level: 5 })
+
+	## A numeric operator with an unparseable value never matches.
+	expect !cond_matches({ id: "n2", field: Level, op: Lt, value: "three" }, { name: "Bo", dept: "Platform", level: 2 })
 
 	## Rows from `rows` that satisfy the tree.
 	matching_rows : QNode, List(Row) -> List(Row)
@@ -343,20 +482,8 @@ Query :: [].{
 		}
 
 	max_depth : List(QNode) -> U64
-	max_depth = |children| {
-		var $best = 0
-		var $index = 0
-		while $index < children.len() {
-			depth = tree_depth(list_at(children, $index))
-			if depth > $best {
-				$best = depth
-			} else {
-				$best = $best
-			}
-			$index = $index + 1
-		}
-		$best
-	}
+	max_depth = |children|
+		children.map(tree_depth).fold(0, U64.max)
 
 	map_node : QNode, Str, (QNode -> QNode) -> QNode
 	map_node = |node, target, f|
@@ -380,20 +507,21 @@ Query :: [].{
 			},
 		)
 
-	## Change the field of one leaf condition.
+	## Change the field of one leaf condition. The value arrives from a `<select>`
+	## as text, so this is the decode point for `Field`.
 	set_field : QNode, Str, Str -> QNode
-	set_field = |tree, target, value| map_cond(tree, target, |c| { ..c, field: value })
+	set_field = |tree, target, value| map_cond(tree, target, |c| { ..c, field: Field.from_str(value) })
 
-	## Change the operator of one leaf condition.
+	## Change the operator of one leaf condition; the decode point for `Op`.
 	set_op : QNode, Str, Str -> QNode
-	set_op = |tree, target, value| map_cond(tree, target, |c| { ..c, op: value })
+	set_op = |tree, target, value| map_cond(tree, target, |c| { ..c, op: Op.from_str(value) })
 
 	## Change the compared value of one leaf condition.
 	set_value : QNode, Str, Str -> QNode
 	set_value = |tree, target, value| map_cond(tree, target, |c| { ..c, value: value })
 
 	## Switch one group between `AND` and `OR`.
-	set_mode : QNode, Str, Str -> QNode
+	set_mode : QNode, Str, Mode -> QNode
 	set_mode = |tree, target, value|
 		map_node(
 			tree,
@@ -417,10 +545,14 @@ Query :: [].{
 		)
 
 	id_number : Str -> U64
-	id_number = |id|
-		match parse_u64(suffix_after(id, "n")) {
-			Number(value) => value
-			NotANumber => 0
+	id_number = |id| U64.from_str(suffix_after(id, "n")) ?? 0
+
+	## Prefix of `text` before the first occurrence of `sep`.
+	prefix_before : Str, Str -> Str
+	prefix_before = |text, sep|
+		match text.split_on(sep).first() {
+			Ok(value) => value
+			Err(_) => text
 		}
 
 	## Suffix of `text` after the first occurrence of `sep`.
@@ -436,20 +568,7 @@ Query :: [].{
 		own = id_number(node_id(node))
 		match node {
 			Cond(_) => own
-			Group(g) => {
-				var $best = own
-				var $index = 0
-				while $index < g.children.len() {
-					child = highest_id(list_at(g.children, $index))
-					if child > $best {
-						$best = child
-					} else {
-						$best = $best
-					}
-					$index = $index + 1
-				}
-				$best
-			}
+			Group(g) => g.children.fold(own, |best, child| U64.max(best, highest_id(child)))
 		}
 	}
 
@@ -464,19 +583,23 @@ Query :: [].{
 			},
 		)
 
+	## The highest id in the starting tree is the one on its single condition,
+	## which is what a freshly added node numbers itself from.
+	expect highest_id(initial_tree) == 2
+
 	## Append a fresh `name contains ""` condition to one group. The new id is
 	## derived from the tree, so no separate id counter has to be kept in sync.
 	add_condition : QNode, Str -> QNode
 	add_condition = |tree, target| {
 		fresh = "n${(highest_id(tree) + 1).to_str()}"
-		append_child(tree, target, QNode.Cond({ id: fresh, field: "name", op: "contains", value: "" }))
+		append_child(tree, target, QNode.Cond({ id: fresh, field: Name, op: Contains, value: "" }))
 	}
 
 	## Append a fresh empty `AND` group to one group.
 	add_group : QNode, Str -> QNode
 	add_group = |tree, target| {
 		fresh = "n${(highest_id(tree) + 1).to_str()}"
-		append_child(tree, target, QNode.Group({ id: fresh, mode: "AND", negated: False, children: [] }))
+		append_child(tree, target, QNode.Group({ id: fresh, mode: And, negated: False, children: [] }))
 	}
 
 	## Remove one node by id. The root is never removed.

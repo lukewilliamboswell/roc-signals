@@ -55,6 +55,16 @@ RouteIntent : { serial : U64, path : Str, query : Str, hash : Str }
 initial_intent : RouteIntent
 initial_intent = { serial: 0, path: "/", query: "", hash: "" }
 
+## The four source-signal handles the page is built from. They are passed as
+## one record rather than four positional arguments: `query` and `watched` are
+## both `Ui.State(Str)`, so positionally they are indistinguishable.
+Handles : {
+	intent : Ui.State(RouteIntent),
+	query : Ui.State(Str),
+	reversed : Ui.State(Bool),
+	watched : Ui.State(Str),
+}
+
 intent_location : RouteIntent -> Browser.Location
 intent_location = |intent| { path: intent.path, query: intent.query, hash: intent.hash }
 
@@ -130,27 +140,27 @@ search_result_row = |key, row, intent, watched| {
 	)
 }
 
-search_page : Ui.State(Str), Signal.Signal(Catalog.SearchView), Signal.Signal(List(Catalog.PackageRow)), Ui.State(RouteIntent), Ui.State(Bool), Ui.State(Str) -> Elem
-search_page = |query, search_view, ordered_rows, intent, reversed, watched| {
+search_page : Handles, Signal.Signal(Catalog.SearchView), Signal.Signal(List(Catalog.PackageRow)) -> Elem
+search_page = |handles, search_view, ordered_rows| {
 	status_line = Signal.map(search_view, Catalog.search_status_text)
 	has_rows = Signal.map(ordered_rows, |rows| rows.len() > 0)
-	order_line = Signal.map(reversed.signal(), Catalog.order_label)
+	order_line = Signal.map(handles.reversed.signal(), Catalog.order_label)
 
 	Html.section_c(
 		"Package search",
 		panel_class,
 		[
 			Html.heading_c("Package search", "text-xl font-semibold text-zinc-950"),
-			Html.text_input_c("Search packages", query.signal(), input_class, query.on_str(|_, value| value)),
+			Html.text_input_c("Search packages", handles.query.signal(), input_class, handles.query.on_str(|_, value| value)),
 			line(status_line, status_class, "search-status"),
-			Html.checkbox("Reverse order", reversed.signal(), reversed.on_bool(|_current, value| value)),
+			Html.checkbox("Reverse order", handles.reversed.signal(), handles.reversed.on_bool(|_current, value| value)),
 			line(order_line, status_class, "order"),
 			Ui.when(
 				has_rows,
 				|| Html.section_c(
 					"Search results",
 					list_class,
-					[Ui.each_str(ordered_rows, |row| row.id, |key, row| search_result_row(key, row, intent, watched))],
+					[Ui.each_str(ordered_rows, |row| row.id, |key, row| search_result_row(key, row, handles.intent, handles.watched))],
 				),
 				|| Html.section_c(
 					"Search results",
@@ -166,7 +176,7 @@ search_page = |query, search_view, ordered_rows, intent, reversed, watched| {
 
 overview_panel : Signal.Signal(Catalog.DetailView) -> Elem
 overview_panel = |detail_view| {
-	is_ready = Signal.map(detail_view, |view| view.phase == "ready")
+	is_ready = Signal.map(detail_view, |view| Catalog.is_ready(view.phase))
 
 	Html.section_c(
 		"Overview",
@@ -320,14 +330,14 @@ main = ||
 						|reversed|
 							Ui.state(
 								"",
-								|watched| app_shell(intent, query, reversed, watched),
+								|watched| app_shell({ intent, query, reversed, watched }),
 							),
 					),
 			),
 	)
 
-app_shell : Ui.State(RouteIntent), Ui.State(Str), Ui.State(Bool), Ui.State(Str) -> Elem
-app_shell = |intent, query, reversed, watched| {
+app_shell : Handles -> Elem
+app_shell = |handles| {
 	location = Browser.location()
 	route = Signal.map(location, Route.from_location)
 	is_package = Signal.map(route, Route.is_package)
@@ -348,7 +358,7 @@ app_shell = |intent, query, reversed, watched| {
 
 	# Fan-in C: server rows and the client-side order toggle. Reordering here
 	# never touches the task, so keyed rows keep their scopes.
-	ordered_rows = Signal.map2(search_rows, reversed.signal(), Catalog.order_rows)
+	ordered_rows = Signal.map2(search_rows, handles.reversed.signal(), Catalog.order_rows)
 
 	# Fan-in B: the route source and the search result count are completely
 	# independent, and both feed this one line.
@@ -357,7 +367,7 @@ app_shell = |intent, query, reversed, watched| {
 	Html.div_c(
 		page_class,
 		[
-			Ui.on_change(intent.signal(), |value| Browser.push_state(intent_location(value))),
+			Ui.on_change(handles.intent.signal(), |value| Browser.push_state(intent_location(value))),
 			Ui.on_change_initial(
 				route,
 				|value|
@@ -367,12 +377,12 @@ app_shell = |intent, query, reversed, watched| {
 					},
 			),
 			Ui.on_change_initial(document_title, Browser.set_title),
-			Ui.on_change_initial(query.signal(), |value| Signal.start_str(search_task, value)),
+			Ui.on_change_initial(handles.query.signal(), |value| Signal.start_str(search_task, value)),
 			hero(context_line),
 			Ui.when(
 				is_package,
-				|| package_page(route, intent),
-				|| search_page(query, search_view, ordered_rows, intent, reversed, watched),
+				|| package_page(route, handles.intent),
+				|| search_page(handles, search_view, ordered_rows),
 			),
 		],
 	)

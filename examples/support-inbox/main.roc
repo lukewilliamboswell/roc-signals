@@ -11,7 +11,7 @@ app [main] { pf: platform "../../platform/main.roc" }
 #
 # State is deliberately small and split:
 #
-#   filter   : Ui.State(Str)             which rows the list shows
+#   filter   : Ui.State(Inbox.Filter)    which rows the list shows
 #   polling  : Ui.State(Bool)            whether the 4s poll scope is mounted
 #   session  : Ui.State(Inbox.Session)   selection + draft + optimistic outbox
 #
@@ -39,11 +39,52 @@ poll_period_ms : U64
 poll_period_ms = 4000
 
 count_at : List(U64), U64 -> U64
-count_at = |values, index|
-	match values.get(index) {
-		Ok(value) => value
-		Err(_) => 0
-	}
+count_at = |values, index| values.get(index) ?? 0
+
+## What the sync endpoint currently holds. The badge tone and the badge text
+## are both derived from this tag, so the tone is never read back out of the
+## sentence it tints.
+Sync := [Syncing, UpToDate, Failed(Str)].{
+	is_eq : Sync, Sync -> Bool
+	is_eq = |left, right|
+		match left {
+			Syncing => match right {
+				Syncing => True
+				_ => False
+			}
+			UpToDate => match right {
+				UpToDate => True
+				_ => False
+			}
+			Failed(left_err) => match right {
+				Failed(right_err) => left_err == right_err
+				_ => False
+			}
+		}
+
+	to_str : Sync -> Str
+	to_str = |status|
+		match status {
+			Syncing => "Syncing…"
+			UpToDate => "Up to date"
+			Failed(err) => "Failed — ${err}"
+		}
+
+	badge_class : Sync -> Str
+	badge_class = |status|
+		match status {
+			Syncing => "badge badge-neutral"
+			UpToDate => "badge badge-ok"
+			Failed(_) => "badge badge-danger"
+		}
+}
+
+## A failed sync spells out the reason it failed in the status sentence.
+expect Sync.to_str(Sync.Failed("gateway timeout")) == "Failed — gateway timeout"
+## The badge tone for a failure comes from the tag, not from its sentence.
+expect Sync.badge_class(Sync.Failed("gateway timeout")) == "badge badge-danger"
+## A poll in flight is not an error, so it stays neutrally tinted.
+expect Sync.badge_class(Sync.Syncing) == "badge badge-neutral"
 
 # --- inbox summary -----------------------------------------------------------
 
@@ -59,25 +100,18 @@ unread_text = |counts| count_at(counts, 1).to_str()
 sending_text : List(U64) -> Str
 sending_text = |counts| count_at(counts, 2).to_str()
 
-sync_badge_class : Str -> Str
-sync_badge_class = |text|
-	if text.starts_with("Failed") {
-		"badge badge-danger"
-	} else if text == "Up to date" {
-		"badge badge-ok"
-	} else {
-		"badge badge-neutral"
+filter_label : Inbox.Filter -> Str
+filter_label = |filter|
+	match filter {
+		All => "All"
+		Unread => "Unread"
+		Mine => "Assigned to me"
 	}
 
-filter_label : Str -> Str
-filter_label = |value|
-	if value == "unread" {
-		"Unread"
-	} else if value == "mine" {
-		"Assigned to me"
-	} else {
-		"All"
-	}
+## The owner filter reads as a phrase, not as its wire value "mine".
+expect filter_label(Inbox.Filter.Mine) == "Assigned to me"
+## The default filter is captioned "All".
+expect filter_label(Inbox.Filter.All) == "All"
 
 poll_state_text : Bool -> Str
 poll_state_text = |on|
@@ -190,19 +224,21 @@ thread_count_text = |rows| "${rows.len().to_str()} messages"
 
 ## Outbound is anything this workspace wrote: the optimistic rows the composer
 ## queued, and the agent replies the server has already accepted.
-outbound : Str -> Bool
-outbound = |author| author == "you" or author == "agent"
+outbound : Inbox.Author -> Bool
+outbound = |author|
+	match author {
+		You => True
+		Agent => True
+		_ => False
+	}
 
 author_label : Inbox.ThreadRow -> Str
 author_label = |row|
-	if row.author == "you" {
-		"You"
-	} else if row.author == "agent" {
-		"Agent"
-	} else if row.author == "customer" {
-		"Customer"
-	} else {
-		row.author
+	match row.author {
+		You => "You"
+		Agent => "Agent"
+		Customer => "Customer"
+		Other(name) => name
 	}
 
 bubble_row_class : Inbox.ThreadRow -> Str
@@ -223,52 +259,44 @@ bubble_class = |row|
 
 ## Per-message sync state is a badge, never body text, so a message still on
 ## its way is distinguishable from one the server has taken over.
-message_state_class : Str -> Str
+message_state_class : Inbox.MsgState -> Str
 message_state_class = |state|
-	if state == "sending" {
-		"badge badge-warn"
-	} else if state == "failed" {
-		"badge badge-danger"
-	} else if state == "unread" {
-		"badge badge-info"
-	} else {
-		"badge badge-neutral"
+	match state {
+		Sending => "badge badge-warn"
+		Unread => "badge badge-info"
+		_ => "badge badge-neutral"
 	}
 
 # --- composer ----------------------------------------------------------------
 
-send_state_label : Str -> Str
+send_state_label : Inbox.PendingState -> Str
 send_state_label = |state|
-	if state == "sending" {
-		"Sending…"
-	} else if state == "sent" {
-		"Sent"
-	} else if state == "synced" {
-		"Delivered"
-	} else if state == "failed" {
-		"Failed"
-	} else if state == "discarded" {
-		"Discarded"
-	} else {
-		"Ready"
+	match state {
+		Sending => "Sending…"
+		Sent => "Sent"
+		Synced => "Delivered"
+		Failed => "Failed"
+		Discarded => "Discarded"
+		Idle => "Ready"
 	}
+
+## A message the poll has caught up with reads as delivered, not merely sent.
+expect send_state_label(Inbox.PendingState.Synced) == "Delivered"
+## With nothing in flight the composer reports itself ready.
+expect send_state_label(Inbox.PendingState.Idle) == "Ready"
 
 send_state_text : Inbox.ViewInput -> Str
 send_state_text = |input| send_state_label(Inbox.pending_state(input, input.session.last_cid))
 
 send_state_class : Inbox.ViewInput -> Str
-send_state_class = |input| {
-	state = Inbox.pending_state(input, input.session.last_cid)
-	if state == "failed" {
-		"badge badge-danger"
-	} else if state == "sending" {
-		"badge badge-warn"
-	} else if state == "sent" or state == "synced" {
-		"badge badge-ok"
-	} else {
-		"badge badge-neutral"
+send_state_class = |input|
+	match Inbox.pending_state(input, input.session.last_cid) {
+		Failed => "badge badge-danger"
+		Sending => "badge badge-warn"
+		Sent => "badge badge-ok"
+		Synced => "badge badge-ok"
+		_ => "badge badge-neutral"
 	}
-}
 
 send_error_text : Inbox.ViewInput -> Str
 send_error_text = |input| {
@@ -292,11 +320,13 @@ send_error_class = |input|
 
 send_disabled_value : Inbox.ViewInput -> Bool
 send_disabled_value = |input| {
-	state = Inbox.pending_state(input, input.session.last_cid)
-	input.session.selected == ""
-	or input.session.draft.trim().is_empty()
-	or state == "sending"
-	or state == "failed"
+	locked =
+		match Inbox.pending_state(input, input.session.last_cid) {
+			Sending => True
+			Failed => True
+			_ => False
+		}
+	input.session.selected == "" or input.session.draft.trim().is_empty() or locked
 }
 
 # --- rows --------------------------------------------------------------------
@@ -350,7 +380,7 @@ message_row = |key, row|
 		[
 			Html.paragraph_s_attrs(row.map(author_label), [Html.class_attr("hint")]),
 			Html.paragraph_s_attrs(row.map(|item| item.body), [Html.test_id("body-${key}"), Html.class_attr_s(row.map(bubble_class))]),
-			Html.paragraph_s_attrs(row.map(|item| item.state), [Html.test_id("mstate-${key}"), Html.class_attr_s(row.map(|item| message_state_class(item.state)))]),
+			Html.paragraph_s_attrs(row.map(|item| Inbox.MsgState.to_str(item.state)), [Html.test_id("mstate-${key}"), Html.class_attr_s(row.map(|item| message_state_class(item.state)))]),
 		],
 	)
 
@@ -373,7 +403,7 @@ poller = |inbox_task| {
 				ticks.map(|n| "Polls issued: ${n.to_str()}"),
 				[Html.test_id("poll-count"), Html.class_attr("hint numeric")],
 			),
-			Ui.on_change(ticks, |_| Signal.start_str(inbox_task, "poll")),
+			Ui.on_change(ticks, |_| Signal.start_str(inbox_task, Inbox.Request.to_str(Inbox.Request.Poll))),
 			Ui.on_cleanup(Signal.cleanup("inbox polling cleanup")),
 		],
 	)
@@ -394,7 +424,7 @@ stat = |label, value, id|
 main : () -> Elem
 main = || {
 	Ui.state(
-		"all",
+		Inbox.Filter.All,
 		|filter| {
 			Ui.state(
 				True,
@@ -410,17 +440,20 @@ main = || {
 							# can tell which optimistic message settled. Starting a send
 							# publishes Loading while the optimistic row is inserted in
 							# the same flush; the spec below guards that structural update.
-							send_task = Signal.task_source("send", |value| "ok:${value}", |err| "fail:${err}", True)
+							send_task = Signal.task_source("send", |value| value, |err| err, True)
 
 							snapshot = Signal.fold_task(inbox_task, Inbox.empty_snapshot, |value| value, |_| Inbox.empty_snapshot)
 							sync_status =
 								Signal.fold_task(
 									inbox_task,
-									"Syncing…",
-									|_| "Up to date",
-									|err| "Failed — ${err}",
+									Sync.Syncing,
+									|_| Sync.UpToDate,
+									|err| Sync.Failed(err),
 								)
-							send_status = Signal.fold_task(send_task, "", |value| value, |err| err)
+							# The two outcomes stay distinguishable as *tags*: nothing
+							# flattens the client id into a prefixed string only to be
+							# re-read by prefix downstream.
+							send_status = Signal.fold_task(send_task, Inbox.SendResult.Idle, |cid| Inbox.SendResult.Sent(cid), |cid| Inbox.SendResult.Failed(cid))
 
 							# chain hop 1: snapshot -> its two projections
 							convs = snapshot.map(|value| value.convs)
@@ -429,8 +462,9 @@ main = || {
 							session_sig = session.signal()
 							selected_sig = session_sig.map(|value| value.selected)
 							draft_sig = session_sig.map(|value| value.draft)
-							send_req_sig = session_sig.map(Inbox.send_request)
+							send_req_sig = Signal.map(session_sig, Inbox.send_request)
 							filter_sig = filter.signal()
+							filter_value_sig = filter_sig.map(Inbox.Filter.to_str)
 
 							# fan-in: conversations x messages -> unread counts (hop 2)
 							counted = Signal.map2(convs, msgs, Inbox.count_rows)
@@ -498,7 +532,7 @@ main = || {
 																"flex flex-wrap items-center gap-2",
 																[
 																	Html.paragraph_c("Sync", "panel-title"),
-																	Html.paragraph_s_attrs(sync_status, [Html.test_id("sync-status"), Html.class_attr_s(sync_status.map(sync_badge_class))]),
+																	Html.paragraph_s_attrs(sync_status.map(Sync.to_str), [Html.test_id("sync-status"), Html.class_attr_s(sync_status.map(Sync.badge_class))]),
 																],
 															),
 															Html.div_c(
@@ -514,9 +548,9 @@ main = || {
 																	Html.div(
 																		[Html.class_attr("grid gap-1"), Html.attr("role", "radiogroup"), Html.attr("aria-label", "Inbox filter")],
 																		[
-																			check_row(Html.radio_c("All", "inbox-filter", "all", filter_sig, "checkbox", filter.on_str(|_, value| value)), "All"),
-																			check_row(Html.radio_c("Unread", "inbox-filter", "unread", filter_sig, "checkbox", filter.on_str(|_, value| value)), "Unread"),
-																			check_row(Html.radio_c("Assigned to me", "inbox-filter", "mine", filter_sig, "checkbox", filter.on_str(|_, value| value)), "Assigned to me"),
+																			check_row(Html.radio_c("All", "inbox-filter", "all", filter_value_sig, "checkbox", filter.on_str(|_, value| Inbox.Filter.from_str(value))), "All"),
+																			check_row(Html.radio_c("Unread", "inbox-filter", "unread", filter_value_sig, "checkbox", filter.on_str(|_, value| Inbox.Filter.from_str(value))), "Unread"),
+																			check_row(Html.radio_c("Assigned to me", "inbox-filter", "mine", filter_value_sig, "checkbox", filter.on_str(|_, value| Inbox.Filter.from_str(value))), "Assigned to me"),
 																		],
 																	),
 																],
@@ -655,23 +689,22 @@ main = || {
 									),
 									# Load once on mount, and re-read a conversation the
 									# moment it is opened so its unread flags clear.
-									Ui.on_mount(|| Signal.start_str(inbox_task, "poll")),
+									Ui.on_mount(|| Signal.start_str(inbox_task, Inbox.Request.to_str(Inbox.Request.Poll))),
 									Ui.on_change(
 										selected_sig,
 										|conv_id|
 											if conv_id == "" {
 												Signal.noop
 											} else {
-												Signal.start_str(inbox_task, "read:${conv_id}")
+												Signal.start_str(inbox_task, Inbox.Request.to_str(Inbox.Request.Read(conv_id)))
 											},
 									),
 									Ui.on_change(
 										send_req_sig,
 										|request|
-											if request == "" {
-												Signal.noop
-											} else {
-												Signal.start_str(send_task, request)
+											match request {
+												NoSend => Signal.noop
+												Send(line) => Signal.start_str(send_task, line)
 											},
 									),
 									Ui.on_cleanup(Signal.cleanup("support inbox cleanup")),

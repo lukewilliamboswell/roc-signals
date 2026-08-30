@@ -78,8 +78,19 @@ guard_target : Route, Session -> [Stay, Redirect(Browser.Location)]
 guard_target = |route, session| {
 	kind = Route.kind(route)
 	signed_in = Session.is_signed_in(session)
-	requires_auth = kind == "settings" or kind == "editor-new" or kind == "editor-edit"
-	anonymous_only = kind == "login" or kind == "register"
+	requires_auth =
+		match kind {
+			Settings => True
+			EditorNew => True
+			EditorEdit => True
+			_ => False
+		}
+	anonymous_only =
+		match kind {
+			Login => True
+			Register => True
+			_ => False
+		}
 	if requires_auth and !signed_in {
 		Redirect(Route.login_location)
 	} else if anonymous_only and signed_in {
@@ -101,21 +112,6 @@ footer_view = Elem.Element(
 	},
 )
 
-simple_page : Str, Str -> Elem
-simple_page = |heading, note| {
-	Ui.component(
-
-		|| Html.section(
-			heading,
-			[Html.class_attr(Styles.page)],
-			[
-				Html.heading_c(heading, Styles.heading),
-				Html.paragraph_c(note, "mt-3 leading-7 text-zinc-600"),
-			],
-		),
-	)
-}
-
 not_found_page : Ui.State(Nav.RouteIntent) -> Elem
 not_found_page = |intent| {
 	Ui.component(
@@ -134,8 +130,8 @@ not_found_page = |intent| {
 
 page_view : Signal.Signal(Route), Signal.Signal(Session), Ui.State(Nav.RouteIntent) -> Elem
 page_view = |route, session, intent| {
-	is_kind : Str -> Signal.Signal(Bool)
-	is_kind = |name| route.map(|value| Route.kind(value) == name)
+	is_kind : Route.Kind -> Signal.Signal(Bool)
+	is_kind = |kind| route.map(|value| Route.kind(value) == kind)
 
 	home_page : Elem
 	home_page = Home.page(route, session, intent)
@@ -169,62 +165,62 @@ page_view = |route, session, intent| {
 
 	profile_favorites_or_not_found : Elem
 	profile_favorites_or_not_found = Ui.when(
-		is_kind("profile-favorites"),
+		is_kind(ProfileFavorites),
 		|| profile_favorites_page,
 		|| not_found,
 	)
 
 	profile_or_rest : Elem
 	profile_or_rest = Ui.when(
-		is_kind("profile"),
+		is_kind(Profile),
 		|| profile_page,
 		|| profile_favorites_or_not_found,
 	)
 
 	article_or_rest : Elem
 	article_or_rest = Ui.when(
-		is_kind("article"),
+		is_kind(Article),
 		|| article_page,
 		|| profile_or_rest,
 	)
 
 	edit_article_or_rest : Elem
 	edit_article_or_rest = Ui.when(
-		is_kind("editor-edit"),
+		is_kind(EditorEdit),
 		|| edit_article_page,
 		|| article_or_rest,
 	)
 
 	new_article_or_rest : Elem
 	new_article_or_rest = Ui.when(
-		is_kind("editor-new"),
+		is_kind(EditorNew),
 		|| new_article_page,
 		|| edit_article_or_rest,
 	)
 
 	settings_or_rest : Elem
 	settings_or_rest = Ui.when(
-		is_kind("settings"),
+		is_kind(Settings),
 		|| settings_page,
 		|| new_article_or_rest,
 	)
 
 	register_or_rest : Elem
 	register_or_rest = Ui.when(
-		is_kind("register"),
+		is_kind(Register),
 		|| register_page,
 		|| settings_or_rest,
 	)
 
 	login_or_rest : Elem
 	login_or_rest = Ui.when(
-		is_kind("login"),
+		is_kind(Login),
 		|| login_page,
 		|| register_or_rest,
 	)
 
 	Ui.when(
-		is_kind("home"),
+		is_kind(Home),
 		|| home_page,
 		|| login_or_rest,
 	)

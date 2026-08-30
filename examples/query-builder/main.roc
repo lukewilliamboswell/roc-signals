@@ -110,40 +110,29 @@ stat_at = |values, index|
 		Err(_) => "0"
 	}
 
+## The option lists are derived from the tag unions, so an added `Field` or `Op`
+## cannot be forgotten here.
 field_options : List(Elem)
-field_options = [
-	Html.option("name", "Name"),
-	Html.option("dept", "Department"),
-	Html.option("level", "Level"),
-]
+field_options = Query.all_fields.map(|field| Html.option(field.to_str(), field.label()))
 
 op_options : List(Elem)
-op_options = [
-	Html.option("eq", "equals"),
-	Html.option("ne", "does not equal"),
-	Html.option("contains", "contains"),
-	Html.option("gt", "greater than"),
-	Html.option("lt", "less than"),
-]
+op_options = Query.all_ops.map(|op| Html.option(op.to_str(), op.label()))
 
 ## The value box is sized and hinted for whatever the chosen field holds, so a
 ## level comparison does not offer a wide free-text box.
-value_placeholder : Str -> Str
+value_placeholder : Query.Field -> Str
 value_placeholder = |field|
-	if field == "dept" {
-		"Platform"
-	} else if field == "level" {
-		"3"
-	} else {
-		"Ada"
+	match field {
+		Name => "Ada"
+		Dept => "Platform"
+		Level => "3"
 	}
 
-value_mode : Str -> Str
+value_mode : Query.Field -> Str
 value_mode = |field|
-	if field == "level" {
-		"numeric"
-	} else {
-		"text"
+	match field {
+		Level => "numeric"
+		_ => "text"
 	}
 
 ## One metric tile. Every number in the header is one of these, so none of them
@@ -188,7 +177,7 @@ render_cond = |tree, id, node| {
 	cond : Signal.Signal(Query.Cond)
 	cond = node.map(Query.cond_of)
 
-	field_signal : Signal.Signal(Str)
+	field_signal : Signal.Signal(Query.Field)
 	field_signal = cond.map(|c| c.field)
 
 	Html.section(
@@ -203,7 +192,7 @@ render_cond = |tree, id, node| {
 						"min-w-0",
 						Html.select_c(
 							"Field ${id}",
-							field_signal,
+							field_signal.map(|field| field.to_str()),
 							input_class,
 							field_options,
 							tree.on_str(|current, value| Query.set_field(current, id, value)),
@@ -214,7 +203,7 @@ render_cond = |tree, id, node| {
 						"min-w-0",
 						Html.select_c(
 							"Operator ${id}",
-							cond.map(|c| c.op),
+							cond.map(|c| c.op.to_str()),
 							input_class,
 							op_options,
 							tree.on_str(|current, value| Query.set_op(current, id, value)),
@@ -265,27 +254,31 @@ render_cond = |tree, id, node| {
 ## The AND/OR segmented control. Two buttons, not a select: the operator is the
 ## structure of the group and reads better as a visible pair with one of them
 ## obviously on. The accessible name carries the node id the specs address.
-mode_segment : Ui.State(Query.QNode), Str, Signal.Signal(Str), Str -> Elem
-mode_segment = |tree, id, mode, value|
+mode_segment : Ui.State(Query.QNode), Str, Signal.Signal(Query.Mode), Query.Mode -> Elem
+mode_segment = |tree, id, mode, value| {
+	label = value.to_str()
 	Html.button_attrs(
-		value,
+		label,
 		[
 			Html.attr("type", "button"),
-			Html.aria_label("Set ${value} for ${id}"),
-			Html.attr_s("aria-pressed", mode.map(|current| if current == value { "true" } else { "false" })),
-			Html.class_attr_s(mode.map(|current| segment_class(current == value))),
+			Html.aria_label("Set ${label} for ${id}"),
+			Html.attr_s("aria-pressed", mode.map(|current| if current.is_eq(value) { "true" } else { "false" })),
+			Html.class_attr_s(mode.map(|current| segment_class(current.is_eq(value)))),
 		],
 		tree.on_unit(|current| Query.set_mode(current, id, value)),
 	)
+}
 
 ## Group editor. The child list is a `Ui.each_str` whose row renderer is
 ## `render_node`, so the whole editor is one recursive component over the tree.
-render_group : Ui.State(Query.QNode), Str, U64, Bool, Signal.Signal(Query.QNode) -> Elem
-render_group = |tree, id, depth, is_root, node| {
+render_group : Ui.State(Query.QNode), { id : Str, depth : U64, is_root : Bool }, Signal.Signal(Query.QNode) -> Elem
+render_group = |tree, group, node| {
+	{ id, depth, is_root } = group
+
 	children : Signal.Signal(List(Query.QNode))
 	children = node.map(Query.group_children)
 
-	mode : Signal.Signal(Str)
+	mode : Signal.Signal(Query.Mode)
 	mode = node.map(Query.group_mode)
 
 	add_condition_class =
@@ -321,10 +314,7 @@ render_group = |tree, id, depth, is_root, node| {
 				[
 					Html.div(
 						[Html.class_attr(segment_group_class), Html.attr("role", "group"), Html.attr("aria-label", "Combine ${id} with")],
-						[
-							mode_segment(tree, id, mode, "AND"),
-							mode_segment(tree, id, mode, "OR"),
-						],
+						Query.all_modes.map(|value| mode_segment(tree, id, mode, value)),
 					),
 					Html.div_c(
 						"check-row",
@@ -380,17 +370,17 @@ render_group = |tree, id, depth, is_root, node| {
 	)
 }
 
-## Recursive dispatch. The list key carries the node kind, so this picks the
-## group or leaf shape with a plain Roc `if` at row-construction time rather
-## than a `Ui.when`, whose arms are both evaluated eagerly and would therefore
-## never terminate on a recursive structure.
+## Recursive dispatch. `Ui.each_str` hands the row renderer the key rather than
+## the node, so the kind is recovered from the key by `Query.key_kind` and
+## dispatched on as a tag. It has to be a `match` (or an `if`) rather than a
+## `Ui.when`, whose arms are both evaluated eagerly and would therefore never
+## terminate on a recursive structure.
 render_node : Ui.State(Query.QNode), U64, Str, Signal.Signal(Query.QNode) -> Elem
 render_node = |tree, depth, key, node| {
-	id = Query.suffix_after(key, ":")
-	if key.starts_with("group:") {
-		render_group(tree, id, depth, False, node)
-	} else {
-		render_cond(tree, id, node)
+	id = Query.key_id(key)
+	match Query.key_kind(key) {
+		Branch => render_group(tree, { id, depth, is_root: False }, node)
+		Leaf => render_cond(tree, id, node)
 	}
 }
 
@@ -513,7 +503,7 @@ main = || {
 											),
 											Html.div_c(
 												"panel-body",
-												[render_group(tree, "n1", 0, True, tree_signal)],
+												[render_group(tree, { id: "n1", depth: 0, is_root: True }, tree_signal)],
 											),
 										],
 									),

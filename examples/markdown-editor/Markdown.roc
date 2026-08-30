@@ -13,11 +13,115 @@ import pf.Ui
 Markdown := {}.{
 	ListItem : { key : Str, text : Str, children : List(Str) }
 
-	## `kind` is one of "heading", "paragraph", "quote", "codeblock", "list".
-	## `level` is the heading level (1-6) and is 0 for every other kind.
-	Block : { key : Str, kind : Str, level : U64, text : Str, items : List(Markdown.ListItem) }
+	## What a parsed block *is*. The heading level rides in the tag, so there is
+	## no "level is 0 for everything that is not a heading" sentinel to forget.
+	## `to_str` reproduces the wire form used inside the reconciler key.
+	Kind := [Heading(U64), Paragraph, Quote, CodeBlock, ListBlock].{
+		is_eq : Markdown.Kind, Markdown.Kind -> Bool
+		is_eq = |left, right|
+			match left {
+				Heading(left_level) => match right {
+					Heading(right_level) => left_level == right_level
+					_ => False
+				}
+				Paragraph => match right {
+					Paragraph => True
+					_ => False
+				}
+				Quote => match right {
+					Quote => True
+					_ => False
+				}
+				CodeBlock => match right {
+					CodeBlock => True
+					_ => False
+				}
+				ListBlock => match right {
+					ListBlock => True
+					_ => False
+				}
+			}
 
-	Segment : { key : Str, kind : Str, text : Str, href : Str }
+		to_str : Markdown.Kind -> Str
+		to_str = |kind|
+			match kind {
+				Heading(level) => "heading${level.to_str()}"
+				Paragraph => "paragraph"
+				Quote => "quote"
+				CodeBlock => "codeblock"
+				ListBlock => "list"
+			}
+	}
+
+	## Blocks are addressed by a stable string key, because that is what the
+	## reconciler keys on. This is the one decode point that turns that key back
+	## into a `Kind`; nothing else pattern-matches on key text.
+	kind_from_key : Str -> Markdown.Kind
+	kind_from_key = |key|
+		match key.split_on(":").get(2) {
+			Ok("heading1") => Markdown.Kind.Heading(1)
+			Ok("heading2") => Markdown.Kind.Heading(2)
+			Ok("heading3") => Markdown.Kind.Heading(3)
+			Ok("heading4") => Markdown.Kind.Heading(4)
+			Ok("heading5") => Markdown.Kind.Heading(5)
+			Ok("heading6") => Markdown.Kind.Heading(6)
+			Ok("quote") => Markdown.Kind.Quote
+			Ok("codeblock") => Markdown.Kind.CodeBlock
+			Ok("list") => Markdown.Kind.ListBlock
+			_ => Markdown.Kind.Paragraph
+		}
+
+	Block : { key : Str, kind : Markdown.Kind, text : Str, items : List(Markdown.ListItem) }
+
+	## Inline markup carried by one run of text.
+	Style := [Plain, Strong, Code, Image, Link].{
+		is_eq : Markdown.Style, Markdown.Style -> Bool
+		is_eq = |left, right|
+			match left {
+				Plain => match right {
+					Plain => True
+					_ => False
+				}
+				Strong => match right {
+					Strong => True
+					_ => False
+				}
+				Code => match right {
+					Code => True
+					_ => False
+				}
+				Image => match right {
+					Image => True
+					_ => False
+				}
+				Link => match right {
+					Link => True
+					_ => False
+				}
+			}
+
+		to_str : Markdown.Style -> Str
+		to_str = |style|
+			match style {
+				Plain => "text"
+				Strong => "strong"
+				Code => "code"
+				Image => "image"
+				Link => "link"
+			}
+	}
+
+	style_from_key : Str -> Markdown.Style
+	style_from_key = |key|
+		match key.split_on(":").get(2) {
+			Ok("strong") => Markdown.Style.Strong
+			Ok("code") => Markdown.Style.Code
+			Ok("image") => Markdown.Style.Image
+			Ok("link") => Markdown.Style.Link
+			_ => Markdown.Style.Plain
+		}
+
+	Segment : { key : Str, kind : Markdown.Style, text : Str, href : Str }
 
 	InlineState : { segments : List(Markdown.Segment), index : U64 }
 
@@ -59,19 +163,14 @@ Markdown := {}.{
 
 	## Heading levels live in the key so a level change remounts the row with
 	## the correct `h1`-`h6` tag instead of patching text into the wrong tag.
-	block_key : U64, Str, U64 -> Str
-	block_key = |index, kind, level|
-		if kind == "heading" {
-			"b:${index.to_str()}:heading${level.to_str()}"
-		} else {
-			"b:${index.to_str()}:${kind}"
-		}
+	block_key : U64, Markdown.Kind -> Str
+	block_key = |index, kind| "b:${index.to_str()}:${Markdown.Kind.to_str(kind)}"
 
-	append_block : Markdown.ParseState, Str, U64, Str, List(Markdown.ListItem) -> Markdown.ParseState
-	append_block = |state, kind, level, text, items| {
+	append_block : Markdown.ParseState, Markdown.Kind, Str, List(Markdown.ListItem) -> Markdown.ParseState
+	append_block = |state, kind, text, items| {
 		{
 			..state,
-			blocks: state.blocks.append({ key: block_key(state.index, kind, level), kind, level, text, items }),
+			blocks: state.blocks.append({ key: block_key(state.index, kind), kind, text, items }),
 			index: state.index + 1,
 		}
 	}
@@ -103,14 +202,14 @@ Markdown := {}.{
 		if flushed.pending_items.is_empty() {
 			flushed
 		} else {
-			appended = append_block(flushed, "list", 0, "", flushed.pending_items)
+			appended = append_block(flushed, Markdown.Kind.ListBlock, "", flushed.pending_items)
 			{ ..appended, pending_items: [], item_index: 0 }
 		}
 	}
 
 	flush_fence : Markdown.ParseState -> Markdown.ParseState
 	flush_fence = |state| {
-		appended = append_block(state, "codeblock", 0, Str.join_with(state.fence_lines, "\n"), [])
+		appended = append_block(state, Markdown.Kind.CodeBlock, Str.join_with(state.fence_lines, "\n"), [])
 		{ ..appended, in_fence: False, fence_lines: [] }
 	}
 
@@ -174,14 +273,14 @@ Markdown := {}.{
 		} else if trimmed.starts_with("- ") {
 			start_item(state, trimmed.drop_prefix("- "))
 		} else if trimmed.starts_with("> ") {
-			append_block(flush_list(state), "quote", 0, trimmed.drop_prefix("> "), [])
+			append_block(flush_list(state), Markdown.Kind.Quote, trimmed.drop_prefix("> "), [])
 		} else {
 			heading : Markdown.Heading
 			heading = heading_prefix(trimmed)
 			if heading.level == 0 {
-				append_block(flush_list(state), "paragraph", 0, trimmed, [])
+				append_block(flush_list(state), Markdown.Kind.Paragraph, trimmed, [])
 			} else {
-				append_block(flush_list(state), "heading", heading.level, heading.text, [])
+				append_block(flush_list(state), Markdown.Kind.Heading(heading.level), heading.text, [])
 			}
 		}
 	}
@@ -195,10 +294,10 @@ Markdown := {}.{
 						or href.starts_with("mailto:")
 	}
 
-	segment_key : U64, Str -> Str
-	segment_key = |index, kind| "s:${index.to_str()}:${kind}"
+	segment_key : U64, Markdown.Style -> Str
+	segment_key = |index, style| "s:${index.to_str()}:${Markdown.Style.to_str(style)}"
 
-	append_segment : Markdown.InlineState, Str, Str, Str -> Markdown.InlineState
+	append_segment : Markdown.InlineState, Markdown.Style, Str, Str -> Markdown.InlineState
 	append_segment = |state, kind, text, href| {
 		if text.is_empty() {
 			state
@@ -210,6 +309,9 @@ Markdown := {}.{
 		}
 	}
 
+	plain : Markdown.InlineState, Str -> Markdown.InlineState
+	plain = |state, text| append_segment(state, Markdown.Style.Plain, text, "")
+
 	inline_segments : Str -> List(Markdown.Segment)
 	inline_segments = |text| parse_inline({ segments: [], index: 0 }, text).segments
 
@@ -218,6 +320,11 @@ Markdown := {}.{
 	plain_text : Str -> Str
 	plain_text = |text| Str.join_with(inline_segments(text).map(|segment| segment.text), "")
 
+	## The inline parsers form a fallback chain: strong, then code, then image,
+	## then link, then plain text. Each one splits on its delimiters with `?`, so
+	## the happy path reads as a straight line and the tagged error says *why* it
+	## did not apply: `NoOpen` falls through to the next parser, `Unclosed` means
+	## the delimiter was never balanced and the run stays literal.
 	parse_inline : Markdown.InlineState, Str -> Markdown.InlineState
 	parse_inline = |state, text|
 		if text.is_empty() {
@@ -226,82 +333,60 @@ Markdown := {}.{
 			parse_strong(state, text)
 		}
 
+	parse_paired : Markdown.InlineState, Str, Str, Markdown.Style -> Try(Markdown.InlineState, [NoOpen, Unclosed])
+	parse_paired = |state, text, delimiter, style| {
+		open = text.split_first(delimiter) ? |_| NoOpen
+		close = open.after.split_first(delimiter) ? |_| Unclosed
+		before = parse_inline(state, open.before)
+		marked = append_segment(before, style, close.before, "")
+		Ok(parse_inline(marked, close.after))
+	}
+
 	parse_strong : Markdown.InlineState, Str -> Markdown.InlineState
 	parse_strong = |state, text|
-		match text.split_first("**") {
-			Ok(open) =>
-				match open.after.split_first("**") {
-					Ok(close) => {
-						before = parse_inline(state, open.before)
-						strong = append_segment(before, "strong", close.before, "")
-						parse_inline(strong, close.after)
-					}
-					Err(_) => append_segment(state, "text", text, "")
-				}
-			Err(_) => parse_code(state, text)
+		match parse_paired(state, text, "**", Markdown.Style.Strong) {
+			Ok(next) => next
+			Err(Unclosed) => plain(state, text)
+			Err(NoOpen) => parse_code(state, text)
 		}
 
 	parse_code : Markdown.InlineState, Str -> Markdown.InlineState
 	parse_code = |state, text|
-		match text.split_first("`") {
-			Ok(open) =>
-				match open.after.split_first("`") {
-					Ok(close) => {
-						before = parse_inline(state, open.before)
-						code = append_segment(before, "code", close.before, "")
-						parse_inline(code, close.after)
-					}
-					Err(_) => append_segment(state, "text", text, "")
-				}
-			Err(_) => parse_image(state, text)
+		match parse_paired(state, text, "`", Markdown.Style.Code) {
+			Ok(next) => next
+			Err(Unclosed) => plain(state, text)
+			Err(NoOpen) => parse_image(state, text)
 		}
+
+	## `![alt](src)` and `[label](href)` share a shape, so they share a parser.
+	## An unsafe scheme keeps the label as plain text rather than emitting the
+	## element at all.
+	parse_bracketed : Markdown.InlineState, Str, Str, Markdown.Style -> Try(Markdown.InlineState, [NotBracketed])
+	parse_bracketed = |state, text, opener, style| {
+		open = text.split_first(opener) ? |_| NotBracketed
+		label_split = open.after.split_first("](") ? |_| NotBracketed
+		target_split = label_split.after.split_first(")") ? |_| NotBracketed
+		before = parse_inline(state, open.before)
+		marked = if safe_href(target_split.before) {
+			append_segment(before, style, label_split.before, target_split.before)
+		} else {
+			plain(before, label_split.before)
+		}
+		Ok(parse_inline(marked, target_split.after))
+	}
 
 	parse_image : Markdown.InlineState, Str -> Markdown.InlineState
 	parse_image = |state, text|
-		match text.split_first("![") {
-			Ok(open) =>
-				match open.after.split_first("](") {
-					Ok(alt_split) =>
-						match alt_split.after.split_first(")") {
-							Ok(src_split) => {
-								before = parse_inline(state, open.before)
-								image =
-									if safe_href(src_split.before) {
-										append_segment(before, "image", alt_split.before, src_split.before)
-									} else {
-										append_segment(before, "text", alt_split.before, "")
-									}
-								parse_inline(image, src_split.after)
-							}
-							Err(_) => parse_link(state, text)
-						}
-					Err(_) => parse_link(state, text)
-				}
+		match parse_bracketed(state, text, "![", Markdown.Style.Image) {
+			Ok(next) => next
 			Err(_) => parse_link(state, text)
 		}
 
 	parse_link : Markdown.InlineState, Str -> Markdown.InlineState
 	parse_link = |state, text|
-		match text.split_first("[") {
-			Ok(open) =>
-				match open.after.split_first("](") {
-					Ok(label_split) =>
-						match label_split.after.split_first(")") {
-							Ok(href_split) => {
-								before = parse_inline(state, open.before)
-								link =
-									if safe_href(href_split.before) {
-										append_segment(before, "link", label_split.before, href_split.before)
-									} else {
-										append_segment(before, "text", label_split.before, "")
-									}
-								parse_inline(link, href_split.after)
-							}
-							Err(_) => append_segment(state, "text", text, "")
-						}
-					Err(_) => append_segment(state, "text", text, "")
-				}
-			Err(_) => append_segment(state, "text", text, "")
+		match parse_bracketed(state, text, "[", Markdown.Style.Link) {
+			Ok(next) => next
+			Err(_) => plain(state, text)
 		}
 
 	inline_view : Signal.Signal(Str) -> Elem
@@ -314,16 +399,12 @@ Markdown := {}.{
 	render_segment = |key, segment| {
 		text = segment.map(|value| value.text)
 		href = segment.map(|value| value.href)
-		if key.ends_with(":strong") {
-			Elem.Element({ tag: "strong", attrs: [], children: [Html.text_s(text)] })
-		} else if key.ends_with(":code") {
-			Elem.Element({ tag: "code", attrs: [], children: [Html.text_s(text)] })
-		} else if key.ends_with(":image") {
-			Elem.Element({ tag: "img", attrs: [Html.attr_s("src", href), Html.attr_s("alt", text), Html.class_attr("max-w-full rounded-md")], children: [] })
-		} else if key.ends_with(":link") {
-			Elem.Element({ tag: "a", attrs: [Html.attr_s("href", href), Html.class_attr("font-medium text-emerald-700 underline underline-offset-2")], children: [Html.text_s(text)] })
-		} else {
-			Html.text_s(text)
+		match style_from_key(key) {
+			Strong => Elem.Element({ tag: "strong", attrs: [], children: [Html.text_s(text)] })
+			Code => Elem.Element({ tag: "code", attrs: [], children: [Html.text_s(text)] })
+			Image => Elem.Element({ tag: "img", attrs: [Html.attr_s("src", href), Html.attr_s("alt", text), Html.class_attr("max-w-full rounded-md")], children: [] })
+			Link => Elem.Element({ tag: "a", attrs: [Html.attr_s("href", href), Html.class_attr("font-medium text-emerald-700 underline underline-offset-2")], children: [Html.text_s(text)] })
+			Plain => Html.text_s(text)
 		}
 	}
 
@@ -370,65 +451,51 @@ Markdown := {}.{
 		)
 	}
 
-	heading_tag : Str -> Str
-	heading_tag = |key|
-		if key.ends_with(":heading1") {
-			"h1"
-		} else if key.ends_with(":heading2") {
-			"h2"
-		} else if key.ends_with(":heading3") {
-			"h3"
-		} else if key.ends_with(":heading4") {
-			"h4"
-		} else if key.ends_with(":heading5") {
-			"h5"
-		} else {
-			"h6"
+	heading_tag : U64 -> Str
+	heading_tag = |level|
+		match level {
+			1 => "h1"
+			2 => "h2"
+			3 => "h3"
+			4 => "h4"
+			5 => "h5"
+			_ => "h6"
 		}
 
 	## `prose-signals` styles h1-h3; levels four to six are rarer and get an
 	## explicit, progressively quieter treatment so the hierarchy stays visible.
-	heading_class : Str -> Str
-	heading_class = |key|
-		if key.ends_with(":heading1") or key.ends_with(":heading2") or key.ends_with(":heading3") {
+	heading_class : U64 -> Str
+	heading_class = |level|
+		if level <= 3 {
 			""
 		} else {
 			"mt-6 text-base font-semibold text-zinc-950"
 		}
-
-	is_heading_key : Str -> Bool
-	is_heading_key = |key|
-		key.ends_with(":heading1")
-			or key.ends_with(":heading2")
-				or key.ends_with(":heading3")
-					or key.ends_with(":heading4")
-						or key.ends_with(":heading5")
-							or key.ends_with(":heading6")
 
 	render_block : Str, Signal.Signal(Markdown.Block) -> Elem
 	render_block = |key, block| {
 		text : Signal.Signal(Str)
 		text = block.map(|value| value.text)
 
-		if is_heading_key(key) {
-			Elem.Element({ tag: heading_tag(key), attrs: [Html.class_attr(heading_class(key))], children: [inline_view(text)] })
-		} else if key.ends_with(":quote") {
-			Elem.Element({ tag: "blockquote", attrs: [], children: [inline_view(text)] })
-		} else if key.ends_with(":codeblock") {
-			Elem.Element(
-				{
-					tag: "pre",
-					attrs: [],
-					children: [Elem.Element({ tag: "code", attrs: [], children: [Html.text_s(text)] })],
-				},
-			)
-		} else if key.ends_with(":list") {
-			items : Signal.Signal(List(Markdown.ListItem))
-			items = block.map(|value| value.items)
+		match kind_from_key(key) {
+			Heading(level) =>
+				Elem.Element({ tag: heading_tag(level), attrs: [Html.class_attr(heading_class(level))], children: [inline_view(text)] })
+			Quote => Elem.Element({ tag: "blockquote", attrs: [], children: [inline_view(text)] })
+			CodeBlock =>
+				Elem.Element(
+					{
+						tag: "pre",
+						attrs: [],
+						children: [Elem.Element({ tag: "code", attrs: [], children: [Html.text_s(text)] })],
+					},
+				)
+			ListBlock => {
+				items : Signal.Signal(List(Markdown.ListItem))
+				items = block.map(|value| value.items)
 
-			Elem.Element({ tag: "ul", attrs: [], children: [Ui.each_str(items, |item| item.key, render_item)] })
-		} else {
-			Elem.Element({ tag: "p", attrs: [], children: [inline_view(text)] })
+				Elem.Element({ tag: "ul", attrs: [], children: [Ui.each_str(items, |item| item.key, render_item)] })
+			}
+			Paragraph => Elem.Element({ tag: "p", attrs: [], children: [inline_view(text)] })
 		}
 	}
 
@@ -442,3 +509,47 @@ Markdown := {}.{
 			[Ui.each_str(blocks, |block| block.key, render_block)],
 		)
 }
+
+## An ATX heading needs a space after its hashes to count as a heading.
+expect Markdown.heading_level("### Editor Notes") == 3
+
+## Hashes with no following space are ordinary paragraph text, not a heading.
+expect Markdown.heading_level("###Not a heading") == 0
+
+## A heading block key carries its level so the level survives the round trip.
+expect Markdown.block_key(4, Markdown.Kind.Heading(2)) == "b:4:heading2"
+
+## A levelless kind spells its own name in the key.
+expect Markdown.block_key(4, Markdown.Kind.CodeBlock) == "b:4:codeblock"
+
+## The key is the only wire form of a `Kind`, so decoding a heading key
+## recovers the same level that was encoded.
+expect Markdown.kind_from_key(Markdown.block_key(0, Markdown.Kind.Heading(5))) == Markdown.Kind.Heading(5)
+
+## Decoding round-trips a levelless kind as well.
+expect Markdown.kind_from_key(Markdown.block_key(0, Markdown.Kind.ListBlock)) == Markdown.Kind.ListBlock
+
+## Paragraph is the fallback kind, and it round-trips like the rest.
+expect Markdown.kind_from_key(Markdown.block_key(0, Markdown.Kind.Paragraph)) == Markdown.Kind.Paragraph
+
+## Segment keys round-trip an inline style, so a link stays a link on redraw.
+expect Markdown.style_from_key(Markdown.segment_key(2, Markdown.Style.Link)) == Markdown.Style.Link
+
+## Plain is the fallback style, and it round-trips too.
+expect Markdown.style_from_key(Markdown.segment_key(2, Markdown.Style.Plain)) == Markdown.Style.Plain
+
+## Strong and code markers are stripped, leaving the words the outline shows.
+expect Markdown.plain_text("Use **map2** for fan-in and `combine`") == "Use map2 for fan-in and combine"
+
+## Text that only looks like markup survives byte for byte: a lone `*` is not
+## emphasis and an unclosed `[` never opens a link.
+expect Markdown.plain_text("2 * 3 = 6 and [not a link( either") == "2 * 3 = 6 and [not a link( either"
+
+## A real link keeps its label and drops the target from the plain rendering.
+expect Markdown.plain_text("see [the guide](https://example.test/guide)") == "see the guide"
+
+## Pins surprising existing behaviour. `javascript:` fails the scheme
+## allowlist, so no link element is emitted -- but the label is re-parsed as
+## plain text and the plain rendering keeps only "click". The unsafe target is
+## dropped entirely rather than surfacing anywhere in the output.
+expect Markdown.plain_text("[click](javascript:bad)") == "click"

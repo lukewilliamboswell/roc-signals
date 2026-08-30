@@ -9,9 +9,8 @@
 // require it, which keeps the app compatible with the weakest conformant
 // backend.
 //
-// Current surface: read endpoints, auth/settings, article create/delete, and
-// comments, favorites, and follow/unfollow. The remaining article mutations land alongside the app
-// phases that exercise them (wip/REALWORLD_DEMO_PLAN.md).
+// Current surface: read endpoints, auth/settings, article create/delete,
+// comments, favorites, and follow/unfollow.
 //
 // Everything is seeded and in-memory: no clock, no randomness, so native and
 // JS assertions can rely on exact values. Unknown URIs return null so the

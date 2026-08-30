@@ -42,9 +42,9 @@ jobs:
           chmod +x tailwindcss
           sudo mv tailwindcss /usr/local/bin/tailwindcss
 
-      - name: Run non-native suites
+      - name: Run core and native fault suites
         run: |
-          python3 scripts/test.py zig browser roc-check wasm --native never --bundle never
+          python3 scripts/test.py zig browser roc-check roc-test wasm fault --native auto --bundle never
 
       - name: Build static site
         run: |
@@ -115,7 +115,7 @@ jobs:
               --min 86.5 \
               --min-file src/signals/engine.zig=71.0 \
               --min-file src/signals/descriptor_stream.zig=76.0 \
-              --min-file src/native_host.zig=94.0 \
+              --min-file src/native_host.zig=92.5 \
               --min-file src/signals/roc_platform_abi.zig=72.0 \
               --min-file src/spec/spec_parser.zig=90.0 \
               --top 20

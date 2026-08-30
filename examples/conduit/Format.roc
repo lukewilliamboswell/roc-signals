@@ -43,3 +43,12 @@ Format := {}.{
 			_ => code
 		}
 }
+
+## Dates render as "Month D, YYYY" with no zero padding on the day.
+expect Format.display_date("2026-06-01T12:00:00.000Z") == "June 1, 2026"
+
+## A two-digit day and a second-precision timestamp render the same way.
+expect Format.display_date("2026-11-23T00:00:00Z") == "November 23, 2026"
+
+## A timestamp with no date separator is passed through untouched.
+expect Format.display_date("yesterday") == "yesterday"

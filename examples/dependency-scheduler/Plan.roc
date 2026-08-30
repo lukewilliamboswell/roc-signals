@@ -23,6 +23,32 @@ Plan :: [].{
 		deps : List(Str),
 	}
 
+	## Where a solved row sits in the plan. The three cases are exclusive, so
+	## they are one tag rather than a pair of booleans that could disagree:
+	## `Blocked` is only reachable while the plan is cyclic, and a schedulable
+	## row is `Critical` exactly when its slack is zero.
+	Status := [Blocked, Critical, HasSlack].{
+		is_eq : Status, Status -> Bool
+		is_eq = |left, right|
+			match left {
+				Blocked =>
+					match right {
+						Blocked => True
+						_ => False
+					}
+				Critical =>
+					match right {
+						Critical => True
+						_ => False
+					}
+				HasSlack =>
+					match right {
+						HasSlack => True
+						_ => False
+					}
+			}
+	}
+
 	## One fully scheduled task.
 	Row : {
 		id : Str,
@@ -33,8 +59,7 @@ Plan :: [].{
 		finish : U64,
 		latest_start : U64,
 		slack : U64,
-		critical : Bool,
-		scheduled : Bool,
+		status : Status,
 		deps : List(Str),
 		deps_text : Str,
 	}
@@ -115,11 +140,7 @@ Plan :: [].{
 		for t in order {
 			var $earliest = 0
 			for d in t.deps {
-				finish =
-					match $acc.find_first(|r| r.id == d) {
-						Ok(found) => found.finish
-						Err(_) => 0
-					}
+				finish = $acc.find_first(|r| r.id == d).map_ok(|found| found.finish) ?? 0
 				$earliest = if finish > $earliest {
 					finish
 				} else {
@@ -152,10 +173,9 @@ Plan :: [].{
 			for s in order {
 				if s.deps.contains(t.id) {
 					bound =
-						match $acc.find_first(|r| r.id == s.id) {
-							Ok(found) => Plan.sat_sub(found.latest_start, s.lag)
-							Err(_) => project_end
-						}
+						$acc
+							.find_first(|r| r.id == s.id)
+							.map_ok(|found| Plan.sat_sub(found.latest_start, s.lag)) ?? project_end
 					$latest_finish = if bound < $latest_finish {
 						bound
 					} else {
@@ -186,8 +206,7 @@ Plan :: [].{
 						finish: 0,
 						latest_start: 0,
 						slack: 0,
-						critical: False,
-						scheduled: False,
+						status: Blocked,
 						deps: t.deps,
 						deps_text: Plan.deps_label(t.deps),
 					},
@@ -206,16 +225,9 @@ Plan :: [].{
 			late = Plan.backward(sorted.order, $end)
 			solve =
 				|t| {
-					e =
-						match early.find_first(|r| r.id == t.id) {
-							Ok(found) => found
-							Err(_) => { id: t.id, start: 0, finish: 0 }
-						}
+					e = early.find_first(|r| r.id == t.id) ?? { id: t.id, start: 0, finish: 0 }
 					latest_start =
-						match late.find_first(|r| r.id == t.id) {
-							Ok(found) => found.latest_start
-							Err(_) => 0
-						}
+						late.find_first(|r| r.id == t.id).map_ok(|found| found.latest_start) ?? 0
 					slack = Plan.sat_sub(latest_start, e.start)
 					{
 						id: t.id,
@@ -226,13 +238,16 @@ Plan :: [].{
 						finish: e.finish,
 						latest_start,
 						slack,
-						critical: slack == 0,
-						scheduled: True,
+						status: if slack == 0 {
+							Critical
+						} else {
+							HasSlack
+						},
 						deps: t.deps,
 						deps_text: Plan.deps_label(t.deps),
 					}
 				}
-			path = sorted.order.map(solve).keep_if(|r| r.critical).map(|r| r.name)
+			path = sorted.order.map(solve).keep_if(|r| Status.is_eq(r.status, Critical)).map(|r| r.name)
 			{ rows: tasks.map(solve), path, project_end: $end, cycle: [] }
 		}
 	}
@@ -240,10 +255,7 @@ Plan :: [].{
 	## True when `task_id` already lists `dep_id` as a prerequisite.
 	has_dep : List(Task), Str, Str -> Bool
 	has_dep = |tasks, task_id, dep_id|
-		match tasks.find_first(|t| t.id == task_id) {
-			Ok(found) => found.deps.contains(dep_id)
-			Err(_) => False
-		}
+		tasks.find_first(|t| t.id == task_id).map_ok(|found| found.deps.contains(dep_id)) ?? False
 
 	## Add a prerequisite edge. Self-edges and duplicates are ignored; a cycle is
 	## deliberately allowed through so the app can detect and report it.

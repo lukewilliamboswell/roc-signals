@@ -19,6 +19,7 @@ import tomllib
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
+import known_failures
 import spec_driver
 
 
@@ -31,6 +32,7 @@ URL_SCHEMES = {"http", "https"}
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 MUSL_NATIVE_SKIPS: dict[str, str] = {}
 LINUX_WASM_SKIPS: dict[str, str] = {}
+FAULT_CAMPAIGN_EXAMPLES = {"markdown-elem", "when-each-dispose"}
 
 
 @dataclass(frozen=True)
@@ -48,6 +50,46 @@ class Example:
     @property
     def exe_name(self) -> str:
         return f"signals-{self.slug}"
+
+
+@dataclass(frozen=True)
+class BenchmarkCase:
+    id: str
+    spec: Path
+    warmup_iterations: int
+    native_iterations: int
+    native_samples: int
+
+
+def load_benchmark_cases(example: Example, source_root: Path) -> tuple[BenchmarkCase, ...] | None:
+    """Load an optional per-fixture benchmark contract."""
+    manifest_path = source_root / example.source.parent / "benchmarks.toml"
+    if not manifest_path.is_file():
+        return None
+    with manifest_path.open("rb") as f:
+        manifest = tomllib.load(f)
+    if manifest.get("schema_version") != 1:
+        raise SystemExit(f"unsupported benchmark manifest schema: {manifest_path}")
+
+    cases: list[BenchmarkCase] = []
+    seen: set[str] = set()
+    for raw in manifest.get("operations", []):
+        case_id = str(raw["id"])
+        if case_id in seen:
+            raise SystemExit(f"duplicate benchmark operation {case_id!r} in {manifest_path}")
+        seen.add(case_id)
+        warmup = int(raw["warmup_iterations"])
+        iterations = int(raw["native_iterations"])
+        samples = int(raw["native_samples"])
+        if warmup < 0 or iterations <= 0 or samples <= 0:
+            raise SystemExit(f"invalid benchmark counts for {case_id!r} in {manifest_path}")
+        spec = example.source.parent / Path(str(raw["spec"]))
+        if not (source_root / spec).is_file():
+            raise SystemExit(f"benchmark operation {case_id!r} references missing spec {spec}")
+        cases.append(BenchmarkCase(case_id, spec, warmup, iterations, samples))
+    if not cases:
+        raise SystemExit(f"benchmark manifest has no operations: {manifest_path}")
+    return tuple(cases)
 
 
 def load_examples() -> tuple[Example, ...]:
@@ -80,7 +122,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "suites",
         nargs="*",
-        choices=("all", "zig", "browser", "roc-check", "wasm", "native", "bundle", "bench"),
+        choices=("all", "zig", "browser", "roc-check", "roc-test", "wasm", "native", "fault", "bundle", "bench"),
         default=["all"],
         help="Suites to run. Defaults to all.",
     )
@@ -135,6 +177,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--shard", type=spec_driver.parse_shard, metavar="CURRENT/TOTAL")
     parser.add_argument("--fail-fast", action="store_true", help="Stop scheduling specs after the first failure.")
+    parser.add_argument(
+        "--known-failures",
+        default=str(ROOT / "test" / "known-failures.txt"),
+        metavar="PATH",
+        help="Ratchet file of specs and wasm mounts that are expected to fail. Unlisted failures and listed passes both fail the run.",
+    )
+    parser.add_argument(
+        "--update-known-failures",
+        action="store_true",
+        help="Delete entries from the known-failures file that passed in this run. Never adds entries.",
+    )
     parser.add_argument("--spec-timeout", type=float, default=30.0, metavar="SECONDS")
     return parser.parse_args()
 
@@ -218,7 +271,14 @@ def build_hosts() -> None:
 
 def run_zig_suite() -> None:
     run(["zig", "build", "test"])
-    run([sys.executable, "-m", "unittest", "scripts/test_spec_driver.py"])
+    run([
+        sys.executable,
+        "-m",
+        "unittest",
+        "scripts/test_spec_driver.py",
+        "scripts/test_benchmark_manifest.py",
+        "scripts/test_known_failures.py",
+    ])
 
 
 def run_browser_suite() -> None:
@@ -241,7 +301,23 @@ def run_roc_checks(
         run([roc_bin, "check", source_root / example.source])
 
 
-def build_wasm_apps(roc_bin: str, examples: tuple[Example, ...]) -> None:
+def run_roc_tests(
+    roc_bin: str,
+    examples: tuple[Example, ...],
+    *,
+    source_root: Path = ROOT,
+    allow_release_platform_url: bool = False,
+) -> None:
+    ensure_sources_do_not_use_release_platform_urls(
+        examples,
+        source_root,
+        allow_release_platform_url=allow_release_platform_url,
+    )
+    for example in examples:
+        run([roc_bin, "test", source_root / example.source])
+
+
+def build_wasm_apps(roc_bin: str, examples: tuple[Example, ...], ledger: known_failures.Ledger) -> None:
     wasm_dir = TEST_OUT / "wasm"
     wasm_dir.mkdir(parents=True, exist_ok=True)
     bundle = bundle_platform(roc_bin)
@@ -262,17 +338,21 @@ def build_wasm_apps(roc_bin: str, examples: tuple[Example, ...]) -> None:
                 print(f"\nSkipping wasm build for {example.slug} on Linux: {LINUX_WASM_SKIPS[example.slug]}.")
                 continue
             output = wasm_dir / f"{example.slug}.wasm"
-            run(
-                [
-                    roc_bin,
-                    "build",
-                    "--target=wasm32",
-                    "--opt=size",
-                    "--no-cache",
-                    f"--output={output}",
-                    source_root / example.source,
-                ]
-            )
+            try:
+                run(
+                    [
+                        roc_bin,
+                        "build",
+                        "--target=wasm32",
+                        "--opt=size",
+                        "--no-cache",
+                        f"--output={output}",
+                        source_root / example.source,
+                    ]
+                )
+            except subprocess.CalledProcessError as exc:
+                ledger.record("wasm", example.slug, False, f"roc build exited with {exc.returncode}")
+                continue
             mount_cmd = ["node", "scripts/browser/mount_wasm_example.mjs", output, example.slug]
             if example.expect_mount_error is not None:
                 mount_cmd.extend(["--expect-error", example.expect_mount_error])
@@ -284,7 +364,12 @@ def build_wasm_apps(roc_bin: str, examples: tuple[Example, ...]) -> None:
                 mount_cmd.append("--exercise-location-canonical-branch")
             if example.slug == "storage-commands":
                 mount_cmd.append("--exercise-storage-commands")
-            run(mount_cmd)
+            try:
+                run(mount_cmd)
+            except subprocess.CalledProcessError as exc:
+                ledger.record("wasm", example.slug, False, f"mount exited with {exc.returncode}")
+                continue
+            ledger.record("wasm", example.slug, True)
 
 
 def should_run_hosted(mode: str) -> bool:
@@ -327,13 +412,28 @@ def roc_native_target() -> str:
 
 
 def native_cache_args(target: str) -> list[str]:
-    return ["--no-cache"] if target.endswith("musl") else []
+    # The Roc cache is keyed by content, not by compiler build, and a cache
+    # written by one nightly has made another segfault at build time. Every
+    # suite build therefore bypasses it, as the wasm builds already did; the
+    # target is kept so a platform-specific exception has somewhere to live.
+    _ = target
+    return ["--no-cache"]
 
 
 def should_skip_native_example(target: str, example: Example) -> str | None:
     if not target.endswith("musl"):
         return None
     return MUSL_NATIVE_SKIPS.get(example.slug)
+
+
+def select_native_specs(
+    spec_directory: Path,
+    *,
+    patterns: tuple[str, ...] = (),
+    shard: tuple[int, int] | None = None,
+) -> tuple[spec_driver.SpecCase, ...]:
+    """Select one example's cases before paying its native build cost."""
+    return spec_driver.select_specs(spec_driver.discover_specs(spec_directory), patterns=patterns, shard=shard)
 
 
 def run_native_specs(
@@ -348,6 +448,8 @@ def run_native_specs(
     shard: tuple[int, int] | None = None,
     fail_fast: bool = False,
     spec_timeout: float = 30.0,
+    ledger: known_failures.Ledger,
+    fault_campaign: bool = False,
 ) -> None:
     ensure_sources_do_not_use_release_platform_urls(
         examples,
@@ -356,8 +458,11 @@ def run_native_specs(
     )
     bin_dir.mkdir(parents=True, exist_ok=True)
     target = roc_native_target()
+    matched_specs = 0
     for example in examples:
         if not example.native:
+            continue
+        if fault_campaign and example.slug not in FAULT_CAMPAIGN_EXAMPLES:
             continue
         if reason := should_skip_native_example(target, example):
             print(f"\nSkipping native spec for {example.slug} on {target}: {reason}.")
@@ -366,11 +471,23 @@ def run_native_specs(
             raise SystemExit(f"{example.slug} is native but has no specs directory")
         source = source_root / example.source
         specs = source_root / example.specs
+        selected = select_native_specs(specs, patterns=spec_filters, shard=shard)
+        if not selected:
+            continue
+        matched_specs += len(selected)
         exe = native_exe_path(bin_dir, example.exe_name)
-        run([roc_bin, "build", f"--target={target}", "--opt=dev", *native_cache_args(target), f"--output={exe}", source])
+        try:
+            run([roc_bin, "build", f"--target={target}", "--opt=dev", *native_cache_args(target), f"--output={exe}", source])
+        except subprocess.CalledProcessError as exc:
+            for case in selected:
+                ledger.record("native", f"{example.slug}/{case.id}", False, f"roc build exited with {exc.returncode}")
+            if fail_fast:
+                break
+            continue
         print(f"\n==> {exe} {specs}", flush=True)
         try:
-            results = spec_driver.run_suite(
+            suite_runner = spec_driver.run_fault_suite if fault_campaign else spec_driver.run_suite
+            results = suite_runner(
                 exe,
                 specs,
                 jobs=jobs,
@@ -382,8 +499,17 @@ def run_native_specs(
         except ValueError as exc:
             raise SystemExit(str(exc)) from exc
         spec_driver.print_summary(results)
-        if not all(result.passed for result in results):
-            raise SystemExit(f"native specs failed for {example.slug}")
+        for result in results:
+            detail = ""
+            if result.failure:
+                detail = f"{result.failure.get('phase', 'test')}/{result.failure.get('kind', 'failure')}: {result.failure.get('message', '')}"
+            elif not result.passed:
+                detail = result.status
+            ledger.record("native", f"{example.slug}/{result.id}", result.passed, detail.strip())
+        if fail_fast and not all(result.passed for result in results):
+            break
+    if matched_specs == 0:
+        raise SystemExit("no native specs matched the requested filters and shard")
 
 
 def run_benchmarks(roc_bin: str, examples: tuple[Example, ...], *, source_root: Path = ROOT) -> None:
@@ -407,18 +533,25 @@ def run_benchmarks(roc_bin: str, examples: tuple[Example, ...], *, source_root: 
         specs = source_root / example.specs
         exe = native_exe_path(bin_dir, f"{example.exe_name}-bench")
         run([roc_bin, "build", f"--target={target}", "--opt=speed", *native_cache_args(target), f"--output={exe}", source])
-        for case in spec_driver.discover_specs(specs):
+        manifest_cases = load_benchmark_cases(example, source_root)
+        cases = manifest_cases or tuple(
+            BenchmarkCase(case.id, example.specs / case.id, 0, 20, 1)
+            for case in spec_driver.discover_specs(specs)
+        )
+        for case in cases:
             run(
                 [
                     exe,
                     "--bench-app",
                     "--bench-name",
                     f"{example.exe_name}/{case.id}",
+                    "--bench-warmup",
+                    str(case.warmup_iterations),
                     "--bench-iterations",
-                    "20",
+                    str(case.native_iterations),
                     "--bench-samples",
-                    "1",
-                    case.path,
+                    str(case.native_samples),
+                    source_root / case.spec,
                 ]
             )
 
@@ -449,6 +582,8 @@ def run_local_native_specs(
     shard: tuple[int, int] | None,
     fail_fast: bool,
     spec_timeout: float,
+    ledger: known_failures.Ledger,
+    fault_campaign: bool = False,
 ) -> None:
     source_root = TEST_OUT / "native-source"
     rewrite_examples_for_platform(str((ROOT / "platform" / "main.roc").resolve()), source_root)
@@ -461,6 +596,8 @@ def run_local_native_specs(
         shard=shard,
         fail_fast=fail_fast,
         spec_timeout=spec_timeout,
+        ledger=ledger,
+        fault_campaign=fault_campaign,
     )
 
 
@@ -470,7 +607,17 @@ def run_local_roc_checks(roc_bin: str, examples: tuple[Example, ...]) -> None:
     run_roc_checks(roc_bin, examples, source_root=source_root)
 
 
+def run_local_roc_tests(roc_bin: str, examples: tuple[Example, ...]) -> None:
+    source_root = TEST_OUT / "roc-test-source"
+    rewrite_examples_for_platform(str((ROOT / "platform" / "main.roc").resolve()), source_root)
+    run_roc_tests(roc_bin, examples, source_root=source_root)
+
+
 def run_local_benchmarks(roc_bin: str, examples: tuple[Example, ...]) -> None:
+    # Roc links the prebuilt platform host into each app. Rebuild it explicitly:
+    # a Debug host enables quadratic render-cache assertions and makes large-list
+    # timings measure validation machinery rather than production behavior.
+    run(["zig", "build", "build-test-hosts", "-Doptimize=ReleaseFast"])
     source_root = TEST_OUT / "bench-source"
     rewrite_examples_for_platform(str((ROOT / "platform" / "main.roc").resolve()), source_root)
     run_benchmarks(roc_bin, examples, source_root=source_root)
@@ -529,6 +676,7 @@ def run_bundle_specs(
     shard: tuple[int, int] | None,
     fail_fast: bool,
     spec_timeout: float,
+    ledger: known_failures.Ledger,
 ) -> None:
     ensure_release_platform_url_allowed(bundle_url, allow_release_platform_url=allow_release_platform_url)
     print(f"\nTesting bundled platform: {bundle_url}")
@@ -545,6 +693,7 @@ def run_bundle_specs(
         shard=shard,
         fail_fast=fail_fast,
         spec_timeout=spec_timeout,
+        ledger=ledger,
     )
 
 
@@ -570,6 +719,7 @@ def run_bundle_suite(
     shard: tuple[int, int] | None,
     fail_fast: bool,
     spec_timeout: float,
+    ledger: known_failures.Ledger,
 ) -> None:
     spec_options = {
         "jobs": jobs,
@@ -577,6 +727,7 @@ def run_bundle_suite(
         "shard": shard,
         "fail_fast": fail_fast,
         "spec_timeout": spec_timeout,
+        "ledger": ledger,
     }
     if bundle_ref is None:
         run_bundle_file_suite(roc_bin, examples, bundle_platform(roc_bin), **spec_options)
@@ -619,7 +770,7 @@ def main() -> int:
     examples = load_examples()
     suites = set(args.suites)
     if "all" in suites:
-        suites = {"zig", "browser", "roc-check", "wasm", "native", "bundle", "bench"}
+        suites = {"zig", "browser", "roc-check", "roc-test", "wasm", "native", "fault", "bundle", "bench"}
 
     validate_args_before_build(args, suites)
     roc_bin = command_path(args.roc_bin)
@@ -633,8 +784,15 @@ def main() -> int:
         run_browser_suite()
     if "roc-check" in suites:
         run_local_roc_checks(roc_bin, examples)
+    if "roc-test" in suites:
+        run_local_roc_tests(roc_bin, examples)
+    known_failures_path = Path(args.known_failures)
+    try:
+        ledger = known_failures.Ledger(known=known_failures.load(known_failures_path))
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     if "wasm" in suites:
-        build_wasm_apps(roc_bin, examples)
+        build_wasm_apps(roc_bin, examples, ledger)
 
     if "native" in suites:
         if should_run_hosted(args.native):
@@ -646,9 +804,26 @@ def main() -> int:
                 shard=args.shard,
                 fail_fast=args.fail_fast,
                 spec_timeout=args.spec_timeout,
+                ledger=ledger,
             )
         else:
             print("\nSkipping native specs: platform manifest exposes macOS and Linux musl native targets only.")
+
+    if "fault" in suites:
+        if should_run_hosted(args.native):
+            run_local_native_specs(
+                roc_bin,
+                examples,
+                jobs=args.jobs,
+                spec_filters=tuple(args.spec_filter),
+                shard=args.shard,
+                fail_fast=args.fail_fast,
+                spec_timeout=args.spec_timeout,
+                ledger=ledger,
+                fault_campaign=True,
+            )
+        else:
+            print("\nSkipping host fault campaign: native execution is disabled.")
 
     if "bundle" in suites:
         if should_run_hosted(args.bundle):
@@ -662,6 +837,7 @@ def main() -> int:
                 shard=args.shard,
                 fail_fast=args.fail_fast,
                 spec_timeout=args.spec_timeout,
+                ledger=ledger,
             )
         else:
             print("\nSkipping bundle executable tests: platform manifest exposes macOS and Linux musl native targets only.")
@@ -674,7 +850,14 @@ def main() -> int:
 
     if not args.keep_output and TEST_OUT.exists():
         shutil.rmtree(TEST_OUT)
-    return 0
+    if not ledger.outcomes:
+        return 0
+    status = known_failures.report(ledger, known_failures_path)
+    if args.update_known_failures and ledger.fixed:
+        removed = known_failures.remove_fixed(known_failures_path, ledger)
+        print(f"removed {removed} fixed entr{'y' if removed == 1 else 'ies'} from {known_failures_path}")
+        status = 1 if ledger.regressions else 0
+    return status
 
 
 if __name__ == "__main__":

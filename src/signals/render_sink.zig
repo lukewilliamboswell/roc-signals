@@ -8,6 +8,12 @@
 const std = @import("std");
 const boundary = @import("boundary.zig");
 const render = @import("render_commands.zig");
+const ids = @import("ids.zig");
+
+pub const ElemId = ids.ElemId;
+pub const EventId = ids.EventId;
+pub const TaskRequestId = ids.TaskRequestId;
+pub const IntervalToken = ids.IntervalToken;
 
 pub const TextField = render.TextField;
 pub const BoolField = render.BoolField;
@@ -27,6 +33,7 @@ pub const EventBindingKey = union(enum) {
     fixed: EventKind,
     named: []const u8,
 
+    /// Derives effective event delivery and its reason from the canonical policy.
     pub fn deliveryFor(self: EventBindingKey, requested: EventDeliveryRequest, policy: EventPolicy) EventDelivery {
         return EventDelivery.derive(requested, policy, self.deliveryTraits());
     }
@@ -76,6 +83,7 @@ pub const EventDelivery = struct {
     effective: EventDeliveryEffective = .native,
     reason: EventDeliveryReason = .native_runtime_default,
 
+    /// Derives canonical event-delivery metadata before render-cache publication.
     pub fn derive(requested: EventDeliveryRequest, policy: EventPolicy, traits: EventDeliveryTraits) EventDelivery {
         if (requested == .native) {
             return .{ .requested = requested, .effective = .native, .reason = .requested_native };
@@ -99,12 +107,14 @@ pub const EventDelivery = struct {
         return .native_runtime_default;
     }
 
+    /// Compares values through their owning capability rather than inspecting erased bytes.
     pub fn eql(self: EventDelivery, other: EventDelivery) bool {
         return self.requested == other.requested and
             self.effective == other.effective and
             self.reason == other.reason;
     }
 
+    /// Encodes validated delivery metadata into the versioned browser wire representation.
     pub fn toWire(self: EventDelivery) render.EventDeliveryWire {
         return .{
             .requested = switch (self.requested) {
@@ -132,17 +142,19 @@ pub const EventDelivery = struct {
 };
 
 pub const EventBinding = struct {
-    event_id: u64,
+    event_id: EventId,
     policy: EventPolicy = EventPolicy.none,
     delivery: EventDelivery = .{},
     payload_descriptor: BoundaryPayloadDescriptor,
 
+    /// Returns the canonical binding with effective delivery derived from its policy.
     pub fn withDeliveryFor(self: EventBinding, key: EventBindingKey) EventBinding {
         var next = self;
         next.delivery = key.deliveryFor(next.delivery.requested, next.policy);
         return next;
     }
 
+    /// Compares values through their owning capability rather than inspecting erased bytes.
     pub fn eql(self: EventBinding, other: EventBinding) bool {
         return self.event_id == other.event_id and
             self.policy.eql(other.policy) and
@@ -150,115 +162,145 @@ pub const EventBinding = struct {
             self.payload_descriptor.eql(other.payload_descriptor);
     }
 
+    /// Reports whether this binding exactly matches the compact fixed-event wire contract.
     pub fn canUseFixedOpcode(self: EventBinding, kind: EventKind) bool {
         return self.policy.isNone() and self.payload_descriptor.eql(kind.payloadDescriptor());
     }
 };
 
 pub const EventBindCommand = struct {
-    elem_id: u64,
+    elem_id: ElemId,
     key: EventBindingKey,
     binding: EventBinding,
 };
 
 pub const EventClearCommand = struct {
-    elem_id: u64,
+    elem_id: ElemId,
     key: EventBindingKey,
 };
 
+/// Builds the thin DOM-command adapter consumed by the shared engine.
 pub fn DomSink(comptime Host: type) type {
     return struct {
         host: *Host,
 
+        /// Stages a complete render-surface reset in the host command sink.
         pub fn reset(self: @This()) void {
             self.host.sinkReset();
         }
 
-        pub fn appendNode(self: @This(), elem_id: u64, parent_elem_id: u64, tag: []const u8) void {
+        /// Preflights sink capacity for all nodes in the pending command transaction.
+        pub fn reserveNodes(self: @This(), capacity: usize) void {
+            self.host.sinkReserveNodes(capacity);
+        }
+
+        /// Emits the already-decided command that attaches a newly created render node.
+        pub fn appendNode(self: @This(), elem_id: ElemId, parent_elem_id: ElemId, tag: []const u8) void {
             self.host.sinkAppendNode(elem_id, parent_elem_id, tag);
         }
 
-        pub fn ensureNode(self: @This(), elem_id: u64, tag: []const u8) void {
+        /// Ensures the host render surface contains the engine-selected node and tag.
+        pub fn ensureNode(self: @This(), elem_id: ElemId, tag: []const u8) void {
             self.host.sinkEnsureNode(elem_id, tag);
         }
 
-        pub fn removeNode(self: @This(), elem_id: u64) void {
+        /// Emits removal of a node whose owning scope has already been disposed by the engine.
+        pub fn removeNode(self: @This(), elem_id: ElemId) void {
             self.host.sinkRemoveNode(elem_id);
         }
 
-        pub fn replaceChildren(self: @This(), parent_elem_id: u64, next_child_ids: []const u64) void {
+        /// Publishes the engine-selected child order for one parent.
+        pub fn replaceChildren(self: @This(), parent_elem_id: ElemId, next_child_ids: []const ElemId) void {
             self.host.sinkReplaceChildren(parent_elem_id, next_child_ids);
         }
 
-        pub fn replaceChildrenForMoves(self: @This(), parent_elem_id: u64, next_child_ids: []const u64) void {
+        /// Publishes a moves-only child reorder without rebuilding surviving row structure.
+        pub fn replaceChildrenForMoves(self: @This(), parent_elem_id: ElemId, next_child_ids: []const ElemId) void {
             self.host.sinkReplaceChildrenForMoves(parent_elem_id, next_child_ids);
         }
 
-        pub fn applyTextField(self: @This(), elem_id: u64, field: TextField, value: []const u8) void {
+        /// Applies an engine-decided text field value to one render node.
+        pub fn applyTextField(self: @This(), elem_id: ElemId, field: TextField, value: []const u8) void {
             self.host.sinkApplyTextField(elem_id, field, value);
         }
 
-        pub fn applyTextAttr(self: @This(), elem_id: u64, name: []const u8, value: []const u8) void {
+        /// Applies an engine-decided custom text attribute to one render node.
+        pub fn applyTextAttr(self: @This(), elem_id: ElemId, name: []const u8, value: []const u8) void {
             self.host.sinkApplyTextAttr(elem_id, name, value);
         }
 
-        pub fn applyBoolField(self: @This(), elem_id: u64, field: BoolField, value: bool) void {
+        /// Applies an engine-decided boolean field value to one render node.
+        pub fn applyBoolField(self: @This(), elem_id: ElemId, field: BoolField, value: bool) void {
             self.host.sinkApplyBoolField(elem_id, field, value);
         }
 
-        pub fn clearTextField(self: @This(), elem_id: u64, field: TextField) void {
+        /// Clears an engine-decided text field from one render node.
+        pub fn clearTextField(self: @This(), elem_id: ElemId, field: TextField) void {
             self.host.sinkClearTextField(elem_id, field);
         }
 
-        pub fn clearTextAttr(self: @This(), elem_id: u64, name: []const u8) void {
+        /// Clears an engine-decided custom text attribute from one render node.
+        pub fn clearTextAttr(self: @This(), elem_id: ElemId, name: []const u8) void {
             self.host.sinkClearTextAttr(elem_id, name);
         }
 
-        pub fn clearBoolField(self: @This(), elem_id: u64, field: BoolField) void {
+        /// Clears an engine-decided boolean field from one render node.
+        pub fn clearBoolField(self: @This(), elem_id: ElemId, field: BoolField) void {
             self.host.sinkClearBoolField(elem_id, field);
         }
 
-        pub fn bindEvent(self: @This(), elem_id: u64, key: EventBindingKey, binding: EventBinding) void {
+        /// Publishes a validated canonical event binding selected by the engine.
+        pub fn bindEvent(self: @This(), elem_id: ElemId, key: EventBindingKey, binding: EventBinding) void {
             self.host.sinkBindEvent(.{ .elem_id = elem_id, .key = key, .binding = binding });
         }
 
-        pub fn clearEvent(self: @This(), elem_id: u64, key: EventBindingKey) void {
+        /// Removes a host event registration whose engine-owned binding is no longer active.
+        pub fn clearEvent(self: @This(), elem_id: ElemId, key: EventBindingKey) void {
             self.host.sinkClearEvent(.{ .elem_id = elem_id, .key = key });
         }
 
-        pub fn startInterval(self: @This(), token: u64, period_ms: u64) void {
+        /// Starts the bounded host registration for an engine-owned interval source.
+        pub fn startInterval(self: @This(), token: IntervalToken, period_ms: u64) void {
             self.host.sinkStartInterval(token, period_ms);
         }
 
-        pub fn cancelInterval(self: @This(), token: u64) void {
+        /// Cancels the host registration for an interval whose owning scope is no longer active.
+        pub fn cancelInterval(self: @This(), token: IntervalToken) void {
             self.host.sinkCancelInterval(token);
         }
 
-        pub fn startTask(self: @This(), request_id: u64, task_name: []const u8, request: []const u8) void {
+        /// Starts bounded asynchronous host work for an engine-issued task request.
+        pub fn startTask(self: @This(), request_id: TaskRequestId, task_name: []const u8, request: []const u8) void {
             self.host.sinkStartTask(request_id, task_name, request);
         }
 
-        pub fn cancelTask(self: @This(), request_id: u64) void {
+        /// Cancels host work for a task request retired by engine lifecycle policy.
+        pub fn cancelTask(self: @This(), request_id: TaskRequestId) void {
             self.host.sinkCancelTask(request_id);
         }
 
+        /// Applies an engine-issued browser-history command without deriving routing semantics.
         pub fn navigate(self: @This(), kind: NavigationKind, location: LocationSnapshot) void {
             self.host.sinkNavigate(kind, location);
         }
 
+        /// Applies the document title already selected by graph propagation.
         pub fn setDocumentTitle(self: @This(), title: []const u8) void {
             self.host.sinkSetDocumentTitle(title);
         }
 
+        /// Writes one engine-issued text value to the selected browser storage area.
         pub fn setStorageText(self: @This(), area: StorageArea, key: []const u8, value: []const u8) void {
             self.host.sinkSetStorageText(area, key, value);
         }
 
+        /// Removes one engine-issued key from the selected browser storage area.
         pub fn removeStorage(self: @This(), area: StorageArea, key: []const u8) void {
             self.host.sinkRemoveStorage(area, key);
         }
 
-        pub fn debugAssertNode(self: @This(), elem_id: u64, active: bool, tag: ?[]const u8, parent_id: ?u64, children: []const u64, click_event: ?u64, input_event: ?u64, check_event: ?u64, pointer_down_event: ?u64, pointer_up_event: ?u64, pointer_enter_event: ?u64, pointer_leave_event: ?u64) void {
+        /// Checks that the host render surface matches the engine's committed node metadata.
+        pub fn debugAssertNode(self: @This(), elem_id: ElemId, active: bool, tag: ?[]const u8, parent_id: ?ElemId, children: []const ElemId, click_event: ?EventId, input_event: ?EventId, check_event: ?EventId, pointer_down_event: ?EventId, pointer_up_event: ?EventId, pointer_enter_event: ?EventId, pointer_leave_event: ?EventId) void {
             self.host.sinkDebugAssertNode(elem_id, active, tag, parent_id, children, click_event, input_event, check_event, pointer_down_event, pointer_up_event, pointer_enter_event, pointer_leave_event);
         }
     };
@@ -291,19 +333,19 @@ test "event delivery derives native reasons from policy and fixed event traits" 
 
 test "fixed event compact opcode requires empty policy and canonical descriptor" {
     const canonical = EventBinding{
-        .event_id = 1,
+        .event_id = EventId.fromRaw(1),
         .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none),
     };
     try std.testing.expect(canonical.canUseFixedOpcode(.pointer_down));
 
     const payload_override = EventBinding{
-        .event_id = 2,
+        .event_id = EventId.fromRaw(2),
         .payload_descriptor = BoundaryPayloadDescriptor.init(.str, .target_value),
     };
     try std.testing.expect(!payload_override.canUseFixedOpcode(.pointer_down));
 
     const policy_override = EventBinding{
-        .event_id = 3,
+        .event_id = EventId.fromRaw(3),
         .policy = EventPolicy.fromBits(render.listener_option_once),
         .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none),
     };
@@ -339,55 +381,68 @@ test "DomSink forwards every render seam method to the host" {
             self.seen |= @as(u32, 1) << bit;
         }
 
+        /// Adapts the shared engine's reset command to this host without re-deciding reactive meaning.
         pub fn sinkReset(self: *@This()) void {
             self.mark(0);
         }
 
-        pub fn sinkAppendNode(self: *@This(), _: u64, _: u64, _: []const u8) void {
+        /// Adapts the shared engine's append node command to this host without re-deciding reactive meaning.
+        pub fn sinkAppendNode(self: *@This(), _: ElemId, _: ElemId, _: []const u8) void {
             self.mark(1);
         }
 
-        pub fn sinkEnsureNode(self: *@This(), _: u64, _: []const u8) void {
+        /// Adapts the shared engine's ensure node command to this host without re-deciding reactive meaning.
+        pub fn sinkEnsureNode(self: *@This(), _: ElemId, _: []const u8) void {
             self.mark(2);
         }
 
-        pub fn sinkRemoveNode(self: *@This(), _: u64) void {
+        /// Adapts the shared engine's remove node command to this host without re-deciding reactive meaning.
+        pub fn sinkRemoveNode(self: *@This(), _: ElemId) void {
             self.mark(3);
         }
 
-        pub fn sinkReplaceChildren(self: *@This(), _: u64, children: []const u64) void {
+        /// Adapts the shared engine's replace children command to this host without re-deciding reactive meaning.
+        pub fn sinkReplaceChildren(self: *@This(), _: ElemId, children: []const ElemId) void {
             self.mark(4);
             self.last_children_len = children.len;
         }
 
-        pub fn sinkReplaceChildrenForMoves(self: *@This(), _: u64, _: []const u64) void {
+        /// Adapts the shared engine's replace children for moves command to this host without re-deciding reactive meaning.
+        pub fn sinkReplaceChildrenForMoves(self: *@This(), _: ElemId, _: []const ElemId) void {
             self.mark(5);
         }
 
-        pub fn sinkApplyTextField(self: *@This(), _: u64, _: TextField, _: []const u8) void {
+        /// Adapts the shared engine's apply text field command to this host without re-deciding reactive meaning.
+        pub fn sinkApplyTextField(self: *@This(), _: ElemId, _: TextField, _: []const u8) void {
             self.mark(6);
         }
 
-        pub fn sinkApplyTextAttr(self: *@This(), _: u64, _: []const u8, _: []const u8) void {
+        /// Adapts the shared engine's apply text attr command to this host without re-deciding reactive meaning.
+        pub fn sinkApplyTextAttr(self: *@This(), _: ElemId, _: []const u8, _: []const u8) void {
             self.mark(17);
         }
 
-        pub fn sinkApplyBoolField(self: *@This(), _: u64, _: BoolField, _: bool) void {
+        /// Adapts the shared engine's apply bool field command to this host without re-deciding reactive meaning.
+        pub fn sinkApplyBoolField(self: *@This(), _: ElemId, _: BoolField, _: bool) void {
             self.mark(7);
         }
 
-        pub fn sinkClearTextField(self: *@This(), _: u64, _: TextField) void {
+        /// Adapts the shared engine's clear text field command to this host without re-deciding reactive meaning.
+        pub fn sinkClearTextField(self: *@This(), _: ElemId, _: TextField) void {
             self.mark(8);
         }
 
-        pub fn sinkClearTextAttr(self: *@This(), _: u64, _: []const u8) void {
+        /// Adapts the shared engine's clear text attr command to this host without re-deciding reactive meaning.
+        pub fn sinkClearTextAttr(self: *@This(), _: ElemId, _: []const u8) void {
             self.mark(18);
         }
 
-        pub fn sinkClearBoolField(self: *@This(), _: u64, _: BoolField) void {
+        /// Adapts the shared engine's clear bool field command to this host without re-deciding reactive meaning.
+        pub fn sinkClearBoolField(self: *@This(), _: ElemId, _: BoolField) void {
             self.mark(9);
         }
 
+        /// Adapts the shared engine's bind event command to this host without re-deciding reactive meaning.
         pub fn sinkBindEvent(self: *@This(), command: EventBindCommand) void {
             self.mark(10);
             self.last_event_descriptor = command.binding.payload_descriptor;
@@ -397,6 +452,7 @@ test "DomSink forwards every render seam method to the host" {
             }
         }
 
+        /// Adapts the shared engine's clear event command to this host without re-deciding reactive meaning.
         pub fn sinkClearEvent(self: *@This(), command: EventClearCommand) void {
             self.mark(11);
             switch (command.key) {
@@ -405,24 +461,29 @@ test "DomSink forwards every render seam method to the host" {
             }
         }
 
-        pub fn sinkStartInterval(self: *@This(), _: u64, _: u64) void {
+        /// Adapts the shared engine's start interval command to this host without re-deciding reactive meaning.
+        pub fn sinkStartInterval(self: *@This(), _: IntervalToken, _: u64) void {
             self.mark(12);
         }
 
-        pub fn sinkCancelInterval(self: *@This(), _: u64) void {
+        /// Adapts the shared engine's cancel interval command to this host without re-deciding reactive meaning.
+        pub fn sinkCancelInterval(self: *@This(), _: IntervalToken) void {
             self.mark(13);
         }
 
-        pub fn sinkStartTask(self: *@This(), _: u64, task_name: []const u8, request: []const u8) void {
+        /// Adapts the shared engine's start task command to this host without re-deciding reactive meaning.
+        pub fn sinkStartTask(self: *@This(), _: TaskRequestId, task_name: []const u8, request: []const u8) void {
             self.mark(14);
             self.last_task_name = task_name;
             self.last_task_request = request;
         }
 
-        pub fn sinkCancelTask(self: *@This(), _: u64) void {
+        /// Adapts the shared engine's cancel task command to this host without re-deciding reactive meaning.
+        pub fn sinkCancelTask(self: *@This(), _: TaskRequestId) void {
             self.mark(15);
         }
 
+        /// Adapts the shared engine's navigate command to this host without re-deciding reactive meaning.
         pub fn sinkNavigate(self: *@This(), kind: NavigationKind, location: LocationSnapshot) void {
             self.mark(19);
             self.last_task_name = switch (kind) {
@@ -432,12 +493,14 @@ test "DomSink forwards every render seam method to the host" {
             self.last_task_request = location.path;
         }
 
+        /// Adapts the shared engine's set document title command to this host without re-deciding reactive meaning.
         pub fn sinkSetDocumentTitle(self: *@This(), title: []const u8) void {
             self.mark(22);
             self.last_task_name = "title";
             self.last_task_request = title;
         }
 
+        /// Adapts the shared engine's set storage text command to this host without re-deciding reactive meaning.
         pub fn sinkSetStorageText(self: *@This(), area: StorageArea, key: []const u8, value: []const u8) void {
             self.mark(20);
             self.last_task_name = switch (area) {
@@ -448,6 +511,7 @@ test "DomSink forwards every render seam method to the host" {
             self.last_dynamic_value = value;
         }
 
+        /// Adapts the shared engine's remove storage command to this host without re-deciding reactive meaning.
         pub fn sinkRemoveStorage(self: *@This(), area: StorageArea, key: []const u8) void {
             self.mark(21);
             self.last_task_name = switch (area) {
@@ -457,7 +521,8 @@ test "DomSink forwards every render seam method to the host" {
             self.last_task_request = key;
         }
 
-        pub fn sinkDebugAssertNode(self: *@This(), _: u64, _: bool, _: ?[]const u8, _: ?u64, children: []const u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64) void {
+        /// Adapts the shared engine's debug assert node command to this host without re-deciding reactive meaning.
+        pub fn sinkDebugAssertNode(self: *@This(), _: ElemId, _: bool, _: ?[]const u8, _: ?ElemId, children: []const ElemId, _: ?EventId, _: ?EventId, _: ?EventId, _: ?EventId, _: ?EventId, _: ?EventId, _: ?EventId) void {
             self.mark(16);
             self.last_debug_children_len = children.len;
         }
@@ -465,38 +530,39 @@ test "DomSink forwards every render seam method to the host" {
 
     var host: TestHost = .{};
     const sink: DomSink(TestHost) = .{ .host = &host };
-    const children = [_]u64{ 3, 4 };
+    const children = [_]ElemId{ ElemId.fromRaw(3), ElemId.fromRaw(4) };
+    const elem = ElemId.fromRaw(1);
 
     sink.reset();
-    sink.appendNode(1, 0, "div");
-    sink.ensureNode(1, "div");
-    sink.removeNode(9);
-    sink.replaceChildren(1, &children);
-    sink.replaceChildrenForMoves(1, &children);
-    sink.applyTextField(1, .text, "hello");
-    sink.applyTextAttr(1, "data-state", "ready");
-    sink.applyBoolField(1, .disabled, true);
-    sink.clearTextField(1, .label);
-    sink.clearTextAttr(1, "data-state");
-    sink.clearBoolField(1, .checked);
-    sink.bindEvent(1, .{ .fixed = .input }, .{
-        .event_id = 7,
+    sink.appendNode(elem, ids.root_elem, "div");
+    sink.ensureNode(elem, "div");
+    sink.removeNode(ElemId.fromRaw(9));
+    sink.replaceChildren(elem, &children);
+    sink.replaceChildrenForMoves(elem, &children);
+    sink.applyTextField(elem, .text, "hello");
+    sink.applyTextAttr(elem, "data-state", "ready");
+    sink.applyBoolField(elem, .disabled, true);
+    sink.clearTextField(elem, .label);
+    sink.clearTextAttr(elem, "data-state");
+    sink.clearBoolField(elem, .checked);
+    sink.bindEvent(elem, .{ .fixed = .input }, .{
+        .event_id = EventId.fromRaw(7),
         .payload_descriptor = BoundaryPayloadDescriptor.init(.str, .target_value),
     });
-    sink.clearEvent(1, .{ .fixed = .input });
-    sink.bindEvent(1, .{ .named = "keydown" }, .{
-        .event_id = 8,
+    sink.clearEvent(elem, .{ .fixed = .input });
+    sink.bindEvent(elem, .{ .named = "keydown" }, .{
+        .event_id = EventId.fromRaw(8),
         .payload_descriptor = BoundaryPayloadDescriptor.init(.bytes, .record_key_shift),
     });
-    sink.clearEvent(1, .{ .named = "keydown" });
-    sink.startInterval(8, 1000);
-    sink.cancelInterval(8);
-    sink.startTask(9, "lookup", "roc");
-    sink.cancelTask(9);
+    sink.clearEvent(elem, .{ .named = "keydown" });
+    sink.startInterval(IntervalToken.fromRaw(8), 1000);
+    sink.cancelInterval(IntervalToken.fromRaw(8));
+    sink.startTask(TaskRequestId.fromRaw(9), "lookup", "roc");
+    sink.cancelTask(TaskRequestId.fromRaw(9));
     sink.setStorageText(.local, "checkout:draft", "saved");
     sink.removeStorage(.session, "checkout:flash");
     sink.navigate(.replace, .{ .path = "/done", .query = "tab=1", .hash = "tail" });
-    sink.debugAssertNode(1, true, "div", 0, &children, 7, null, null, null, null, null, null);
+    sink.debugAssertNode(elem, true, "div", ids.root_elem, &children, EventId.fromRaw(7), null, null, null, null, null, null);
 
     try std.testing.expectEqual((@as(u32, 1) << 22) - 1, host.seen);
     try std.testing.expectEqual(@as(usize, 2), host.last_children_len);

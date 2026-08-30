@@ -36,18 +36,7 @@ Editor := {}.{
 	}
 
 	parse_tags : Str -> List(Str)
-	parse_tags = |raw|
-		raw.split_on(",").fold(
-			[],
-			|tags, part| {
-				tag = part.trim()
-				if tag.is_empty() {
-					tags
-				} else {
-					tags.append(tag)
-				}
-			},
-		)
+	parse_tags = |raw| raw.split_on(",").map(|part| part.trim()).keep_if(|tag| !tag.is_empty())
 
 	article_body : Str, Str, Str, List(Str) -> Str
 	article_body = |title, description, body, tags| {
@@ -210,13 +199,13 @@ Editor := {}.{
 						tag_input = form_signal.map(|value| value.tag_input)
 
 						is_loading : Signal.Signal(Bool)
-						is_loading = article_state.map(article_loading)
+						is_loading = article_state.map(Api.is_loading)
 
 						is_failed : Signal.Signal(Bool)
-						is_failed = article_state.map(article_failed)
+						is_failed = article_state.map(Api.is_failed)
 
 						load_message : Signal.Signal(Str)
-						load_message = article_state.map(article_message)
+						load_message = article_state.map(Api.failure_message)
 
 						current_title : Signal.Signal(Str)
 						current_title = article_state.map(current_title_text)
@@ -359,26 +348,8 @@ Editor := {}.{
 			_ => ""
 		}
 
-	article_loading : Api.Remote(Api.Article) -> Bool
-	article_loading = |remote|
-		match remote {
-			Loading => True
-			_ => False
-		}
 
-	article_failed : Api.Remote(Api.Article) -> Bool
-	article_failed = |remote|
-		match remote {
-			Failed(_) => True
-			_ => False
-		}
 
-	article_message : Api.Remote(Api.Article) -> Str
-	article_message = |remote|
-		match remote {
-			Failed(message) => message
-			_ => ""
-		}
 
 	current_title_text : Api.Remote(Api.Article) -> Str
 	current_title_text = |remote|
@@ -408,3 +379,9 @@ Editor := {}.{
 			_ => ""
 		}
 }
+
+## Tag input is trimmed per entry and empty entries between commas are dropped.
+expect Editor.parse_tags(" roc , signals ,, ") == ["roc", "signals"]
+
+## An empty tag box yields no tags rather than one empty tag.
+expect Editor.parse_tags("") == []

@@ -12,9 +12,17 @@ import pf.Ui
 Markdown := {}.{
 	ListItem : { key : Str, text : Str, children : List(Str) }
 
-	Block : { key : Str, kind : Str, text : Str, items : List(Markdown.ListItem) }
+	## Keyed rows only ever receive a `Str` key plus an item signal, so the
+	## block/segment kind has to survive the round trip through the key. The
+	## tag is the domain type; `block_kind_str` is the single encode point and
+	## `block_kind_of_key` the single decode point (same for segments).
+	BlockKind : [Heading, Quote, CodeBlock, ListBlock, Paragraph]
 
-	Segment : { key : Str, kind : Str, text : Str, href : Str }
+	SegmentKind : [Strong, Code, Image, Link, Text]
+
+	Block : { key : Str, kind : Markdown.BlockKind, text : Str, items : List(Markdown.ListItem) }
+
+	Segment : { key : Str, kind : Markdown.SegmentKind, text : Str, href : Str }
 
 	InlineState : { segments : List(Markdown.Segment), index : U64 }
 
@@ -60,10 +68,34 @@ Markdown := {}.{
 		fence_lines: [],
 	}
 
-	block_key : U64, Str -> Str
-	block_key = |index, kind| "b:${index.to_str()}:${kind}"
+	block_kind_str : Markdown.BlockKind -> Str
+	block_kind_str = |kind|
+		match kind {
+			Heading => "heading"
+			Quote => "quote"
+			CodeBlock => "codeblock"
+			ListBlock => "list"
+			Paragraph => "paragraph"
+		}
 
-	append_block : Markdown.ParseState, Str, Str, List(Markdown.ListItem) -> Markdown.ParseState
+	block_kind_of_key : Str -> Markdown.BlockKind
+	block_kind_of_key = |key|
+		if key.ends_with(":heading") {
+			Heading
+		} else if key.ends_with(":quote") {
+			Quote
+		} else if key.ends_with(":codeblock") {
+			CodeBlock
+		} else if key.ends_with(":list") {
+			ListBlock
+		} else {
+			Paragraph
+		}
+
+	block_key : U64, Markdown.BlockKind -> Str
+	block_key = |index, kind| "b:${index.to_str()}:${block_kind_str(kind)}"
+
+	append_block : Markdown.ParseState, Markdown.BlockKind, Str, List(Markdown.ListItem) -> Markdown.ParseState
 	append_block = |state, kind, text, items| {
 		{
 			..state,
@@ -99,14 +131,14 @@ Markdown := {}.{
 		if flushed.pending_items.is_empty() {
 			flushed
 		} else {
-			appended = append_block(flushed, "list", "", flushed.pending_items)
+			appended = append_block(flushed, ListBlock, "", flushed.pending_items)
 			{ ..appended, pending_items: [], item_index: 0 }
 		}
 	}
 
 	flush_fence : Markdown.ParseState -> Markdown.ParseState
 	flush_fence = |state| {
-		appended = append_block(state, "codeblock", Str.join_with(state.fence_lines, "\n"), [])
+		appended = append_block(state, CodeBlock, Str.join_with(state.fence_lines, "\n"), [])
 		{ ..appended, in_fence: False, fence_lines: [] }
 	}
 
@@ -140,13 +172,13 @@ Markdown := {}.{
 		} else if trimmed.starts_with("- ") {
 			start_item(state, trimmed.drop_prefix("- "))
 		} else if trimmed.starts_with("## ") {
-			append_block(flush_list(state), "heading", trimmed.drop_prefix("## "), [])
+			append_block(flush_list(state), Heading, trimmed.drop_prefix("## "), [])
 		} else if trimmed.starts_with("# ") {
-			append_block(flush_list(state), "heading", trimmed.drop_prefix("# "), [])
+			append_block(flush_list(state), Heading, trimmed.drop_prefix("# "), [])
 		} else if trimmed.starts_with("> ") {
-			append_block(flush_list(state), "quote", trimmed.drop_prefix("> "), [])
+			append_block(flush_list(state), Quote, trimmed.drop_prefix("> "), [])
 		} else {
-			append_block(flush_list(state), "paragraph", trimmed, [])
+			append_block(flush_list(state), Paragraph, trimmed, [])
 		}
 	}
 
@@ -159,10 +191,34 @@ Markdown := {}.{
 						or href.starts_with("mailto:")
 	}
 
-	segment_key : U64, Str -> Str
-	segment_key = |index, kind| "s:${index.to_str()}:${kind}"
+	segment_kind_str : Markdown.SegmentKind -> Str
+	segment_kind_str = |kind|
+		match kind {
+			Strong => "strong"
+			Code => "code"
+			Image => "image"
+			Link => "link"
+			Text => "text"
+		}
 
-	append_segment : Markdown.InlineState, Str, Str, Str -> Markdown.InlineState
+	segment_kind_of_key : Str -> Markdown.SegmentKind
+	segment_kind_of_key = |key|
+		if key.ends_with(":strong") {
+			Strong
+		} else if key.ends_with(":code") {
+			Code
+		} else if key.ends_with(":image") {
+			Image
+		} else if key.ends_with(":link") {
+			Link
+		} else {
+			Text
+		}
+
+	segment_key : U64, Markdown.SegmentKind -> Str
+	segment_key = |index, kind| "s:${index.to_str()}:${segment_kind_str(kind)}"
+
+	append_segment : Markdown.InlineState, Markdown.SegmentKind, Str, Str -> Markdown.InlineState
 	append_segment = |state, kind, text, href| {
 		if text.is_empty() {
 			state
@@ -192,10 +248,10 @@ Markdown := {}.{
 				match open.after.split_first("**") {
 					Ok(close) => {
 						before = parse_inline(state, open.before)
-						strong = append_segment(before, "strong", close.before, "")
+						strong = append_segment(before, Strong, close.before, "")
 						parse_inline(strong, close.after)
 					}
-					Err(_) => append_segment(state, "text", text, "")
+					Err(_) => append_segment(state, Text, text, "")
 				}
 			Err(_) => parse_code(state, text)
 		}
@@ -207,10 +263,10 @@ Markdown := {}.{
 				match open.after.split_first("`") {
 					Ok(close) => {
 						before = parse_inline(state, open.before)
-						code = append_segment(before, "code", close.before, "")
+						code = append_segment(before, Code, close.before, "")
 						parse_inline(code, close.after)
 					}
-					Err(_) => append_segment(state, "text", text, "")
+					Err(_) => append_segment(state, Text, text, "")
 				}
 			Err(_) => parse_image(state, text)
 		}
@@ -226,9 +282,9 @@ Markdown := {}.{
 								before = parse_inline(state, open.before)
 								image =
 									if safe_href(src_split.before) {
-										append_segment(before, "image", alt_split.before, src_split.before)
+										append_segment(before, Image, alt_split.before, src_split.before)
 									} else {
-										append_segment(before, "text", alt_split.before, "")
+										append_segment(before, Text, alt_split.before, "")
 									}
 								parse_inline(image, src_split.after)
 							}
@@ -250,17 +306,17 @@ Markdown := {}.{
 								before = parse_inline(state, open.before)
 								link =
 									if safe_href(href_split.before) {
-										append_segment(before, "link", label_split.before, href_split.before)
+										append_segment(before, Link, label_split.before, href_split.before)
 									} else {
-										append_segment(before, "text", label_split.before, "")
+										append_segment(before, Text, label_split.before, "")
 									}
 								parse_inline(link, href_split.after)
 							}
-							Err(_) => append_segment(state, "text", text, "")
+							Err(_) => append_segment(state, Text, text, "")
 						}
-					Err(_) => append_segment(state, "text", text, "")
+					Err(_) => append_segment(state, Text, text, "")
 				}
-			Err(_) => append_segment(state, "text", text, "")
+			Err(_) => append_segment(state, Text, text, "")
 		}
 
 	inline_view : Signal.Signal(Str) -> Elem
@@ -273,16 +329,12 @@ Markdown := {}.{
 	render_segment = |key, segment| {
 		text = segment.map(|value| value.text)
 		href = segment.map(|value| value.href)
-		if key.ends_with(":strong") {
-			Elem.Element({ tag: "strong", attrs: [], children: [Html.text_s(text)] })
-		} else if key.ends_with(":code") {
-			Elem.Element({ tag: "code", attrs: [Html.class_attr("rounded bg-zinc-100 px-1 font-mono")], children: [Html.text_s(text)] })
-		} else if key.ends_with(":image") {
-			Elem.Element({ tag: "img", attrs: [Html.attr_s("src", href), Html.attr_s("alt", text)], children: [] })
-		} else if key.ends_with(":link") {
-			Elem.Element({ tag: "a", attrs: [Html.attr_s("href", href)], children: [Html.text_s(text)] })
-		} else {
-			Html.text_s(text)
+		match segment_kind_of_key(key) {
+			Strong => Elem.Element({ tag: "strong", attrs: [], children: [Html.text_s(text)] })
+			Code => Elem.Element({ tag: "code", attrs: [Html.class_attr("rounded bg-zinc-100 px-1 font-mono")], children: [Html.text_s(text)] })
+			Image => Elem.Element({ tag: "img", attrs: [Html.attr_s("src", href), Html.attr_s("alt", text)], children: [] })
+			Link => Elem.Element({ tag: "a", attrs: [Html.attr_s("href", href)], children: [Html.text_s(text)] })
+			Text => Html.text_s(text)
 		}
 	}
 
@@ -334,25 +386,33 @@ Markdown := {}.{
 		text : Signal.Signal(Str)
 		text = block.map(|value| value.text)
 
-		if key.ends_with(":heading") {
-			Elem.Element({ tag: "h3", attrs: [], children: [Html.text_s(text)] })
-		} else if key.ends_with(":quote") {
-			Elem.Element({ tag: "blockquote", attrs: [], children: [inline_view(text)] })
-		} else if key.ends_with(":codeblock") {
-			Elem.Element(
-				{
-					tag: "pre",
-					attrs: [Html.class_attr("overflow-x-auto rounded-lg bg-zinc-900 p-4 font-mono text-sm text-zinc-100")],
-					children: [Elem.Element({ tag: "code", attrs: [], children: [Html.text_s(text)] })],
-				},
-			)
-		} else if key.ends_with(":list") {
-			items : Signal.Signal(List(Markdown.ListItem))
-			items = block.map(|value| value.items)
+		match block_kind_of_key(key) {
+			Heading => Elem.Element({ tag: "h3", attrs: [], children: [Html.text_s(text)] })
+			Quote => Elem.Element({ tag: "blockquote", attrs: [], children: [inline_view(text)] })
+			CodeBlock =>
+				Elem.Element(
+					{
+						tag: "pre",
+						attrs: [Html.class_attr("overflow-x-auto rounded-lg bg-zinc-900 p-4 font-mono text-sm text-zinc-100")],
+						children: [Elem.Element({ tag: "code", attrs: [], children: [Html.text_s(text)] })],
+					},
+				)
+			ListBlock => {
+				items : Signal.Signal(List(Markdown.ListItem))
+				items = block.map(|value| value.items)
 
-			Elem.Element({ tag: "ul", attrs: [], children: [Ui.each_str(items, |item| item.key, render_item)] })
-		} else {
-			Elem.Element({ tag: "p", attrs: [], children: [inline_view(text)] })
+				Elem.Element({ tag: "ul", attrs: [], children: [Ui.each_str(items, |item| item.key, render_item)] })
+			}
+			Paragraph => Elem.Element({ tag: "p", attrs: [], children: [inline_view(text)] })
 		}
 	}
 }
+
+## A block kind survives the round trip through its keyed-row key.
+expect Markdown.block_kind_of_key(Markdown.block_key(7, CodeBlock)) == CodeBlock
+
+## ...and so does a segment kind, through the separate segment key encoding.
+expect Markdown.segment_kind_of_key(Markdown.segment_key(2, Link)) == Link
+
+## A blank line separates blocks, and a leading `#` marks the first as a heading.
+expect Markdown.parse("# Title\n\nbody").map(|block| block.kind) == [Heading, Paragraph]

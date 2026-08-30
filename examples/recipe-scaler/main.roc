@@ -23,40 +23,152 @@ input_class = "input"
 ## The context every ingredient quantity is derived from: the target scale in
 ## milli-servings and the unit system. This is the single fan-in point that a
 ## servings edit flows through.
-DisplayCtx : { scale : U64, system : Str }
+DisplayCtx : { scale : U64, system : Recipes.UnitSystem }
 
 ## The inputs the target scale is computed from.
-ScaleInputs : { mode : Str, draft : Str, pan : Str, recipe : Recipes.Recipe }
+ScaleInputs : { mode : Recipes.ScaleMode, draft : Str, pan : Recipes.Pan, recipe : Recipes.Recipe }
 
-scale_note : ScaleInputs, U64 -> Str
-scale_note = |inputs, scale|
-	if inputs.mode == "pan" {
-		"Pan scaling: ${Recipes.pan_label(inputs.pan)}. The servings box is ignored."
-	} else {
-		match Recipes.parse_servings(inputs.draft) {
-			Err(_) => "Servings must be a whole number from 0 to 96. Showing the recipe's own ${inputs.recipe.base_servings.to_str()} servings."
-			Ok(servings) =>
-				if servings == 0 {
-					"Nothing to make at 0 servings: every quantity is 0."
-				} else if scale == inputs.recipe.base_servings * 1000 {
-					"Unscaled: this is the recipe as printed."
-				} else {
-					"Scaled from the recipe's ${inputs.recipe.base_servings.to_str()} servings."
-				}
+## What the scale summary has to say about the current inputs. This is the one
+## thing the banner is derived from: both the sentence and the tone come from
+## the same tag, so a red notice can never carry the "recipe as printed"
+## message and neither has to read the other back out of a string.
+ScaleNote := [
+	PanScaling(Recipes.Pan),
+	BadServings(U64),
+	NothingToMake,
+	Unscaled,
+	ScaledFrom(U64),
+].{
+	is_eq : ScaleNote, ScaleNote -> Bool
+	is_eq = |left, right|
+		match left {
+			PanScaling(left_pan) => match right {
+				PanScaling(right_pan) => left_pan.is_eq(right_pan)
+				_ => False
+			}
+			BadServings(left_base) => match right {
+				BadServings(right_base) => left_base == right_base
+				_ => False
+			}
+			NothingToMake => match right {
+				NothingToMake => True
+				_ => False
+			}
+			Unscaled => match right {
+				Unscaled => True
+				_ => False
+			}
+			ScaledFrom(left_base) => match right {
+				ScaledFrom(right_base) => left_base == right_base
+				_ => False
+			}
 		}
+}
+
+scale_note : ScaleInputs, U64 -> ScaleNote
+scale_note = |inputs, scale|
+	match inputs.mode {
+		ByPan => PanScaling(inputs.pan)
+		ByServings =>
+			match Recipes.parse_servings(inputs.draft) {
+				Err(_) => BadServings(inputs.recipe.base_servings)
+				Ok(servings) =>
+					if servings == 0 {
+						NothingToMake
+					} else if scale == inputs.recipe.base_servings * 1000 {
+						Unscaled
+					} else {
+						ScaledFrom(inputs.recipe.base_servings)
+					}
+			}
 	}
 
-## The banner tone is derived from the very sentence it tints, so a red notice
-## can never carry the "recipe as printed" message.
-scale_note_class : Str -> Str
-scale_note_class = |text|
-	if text.starts_with("Servings must") {
-		"notice notice-error"
-	} else if text.starts_with("Nothing to make") {
-		"notice notice-warn"
-	} else {
-		"notice notice-info"
+scale_note_text : ScaleNote -> Str
+scale_note_text = |note|
+	match note {
+		PanScaling(pan) => "Pan scaling: ${Recipes.pan_label(pan)}. The servings box is ignored."
+		BadServings(base) => "Servings must be a whole number from 0 to 96. Showing the recipe's own ${base.to_str()} servings."
+		NothingToMake => "Nothing to make at 0 servings: every quantity is 0."
+		Unscaled => "Unscaled: this is the recipe as printed."
+		ScaledFrom(base) => "Scaled from the recipe's ${base.to_str()} servings."
 	}
+
+scale_note_class : ScaleNote -> Str
+scale_note_class = |note|
+	match note {
+		BadServings(_) => "notice notice-error"
+		NothingToMake => "notice notice-warn"
+		_ => "notice notice-info"
+	}
+
+# Message and class are two projections of one tag, so these pairs cannot drift
+# apart the way a `starts_with` on the rendered sentence could.
+
+## An unparseable servings box names the range it wanted and the servings it fell back to.
+expect {
+	note = scale_note({ mode: Recipes.mode_from_str("servings"), draft: "two", pan: Recipes.pan_from_str("recipe"), recipe: Recipes.find("pancakes") }, 4000)
+	scale_note_text(note) == "Servings must be a whole number from 0 to 96. Showing the recipe's own 4 servings."
+}
+
+## An unparseable servings box tones the banner as an error.
+expect {
+	note = scale_note({ mode: Recipes.mode_from_str("servings"), draft: "two", pan: Recipes.pan_from_str("recipe"), recipe: Recipes.find("pancakes") }, 4000)
+	scale_note_class(note) == "notice notice-error"
+}
+
+## Zero servings is spelled out rather than left as a page of zeros.
+expect {
+	note = scale_note({ mode: Recipes.mode_from_str("servings"), draft: "0", pan: Recipes.pan_from_str("recipe"), recipe: Recipes.find("pancakes") }, 0)
+	scale_note_text(note) == "Nothing to make at 0 servings: every quantity is 0."
+}
+
+## Zero servings is a warning tone, not an error: the draft itself parsed.
+expect {
+	note = scale_note({ mode: Recipes.mode_from_str("servings"), draft: "0", pan: Recipes.pan_from_str("recipe"), recipe: Recipes.find("pancakes") }, 0)
+	scale_note_class(note) == "notice notice-warn"
+}
+
+## Asking for the recipe's own servings says so instead of claiming a scale.
+expect {
+	note = scale_note({ mode: Recipes.mode_from_str("servings"), draft: "4", pan: Recipes.pan_from_str("recipe"), recipe: Recipes.find("pancakes") }, 4000)
+	scale_note_text(note) == "Unscaled: this is the recipe as printed."
+}
+
+## An unscaled page keeps the neutral informational tone.
+expect {
+	note = scale_note({ mode: Recipes.mode_from_str("servings"), draft: "4", pan: Recipes.pan_from_str("recipe"), recipe: Recipes.find("pancakes") }, 4000)
+	scale_note_class(note) == "notice notice-info"
+}
+
+## A scaled page names the printed serving count it was scaled from.
+expect {
+	note = scale_note({ mode: Recipes.mode_from_str("servings"), draft: "8", pan: Recipes.pan_from_str("recipe"), recipe: Recipes.find("pancakes") }, 8000)
+	scale_note_text(note) == "Scaled from the recipe's 4 servings."
+}
+
+## A servings-scaled page keeps the neutral informational tone.
+expect {
+	note = scale_note({ mode: Recipes.mode_from_str("servings"), draft: "8", pan: Recipes.pan_from_str("recipe"), recipe: Recipes.find("pancakes") }, 8000)
+	scale_note_class(note) == "notice notice-info"
+}
+
+## Pan mode names the chosen tin and says the servings box no longer applies.
+expect {
+	note = scale_note({ mode: Recipes.mode_from_str("pan"), draft: "20", pan: Recipes.pan_from_str("tray30"), recipe: Recipes.find("pancakes") }, 5309)
+	scale_note_text(note) == "Pan scaling: a 30x20 cm tray. The servings box is ignored."
+}
+
+## A pan-scaled page keeps the neutral informational tone.
+expect {
+	note = scale_note({ mode: Recipes.mode_from_str("pan"), draft: "20", pan: Recipes.pan_from_str("tray30"), recipe: Recipes.find("pancakes") }, 5309)
+	scale_note_class(note) == "notice notice-info"
+}
+
+## The metric radio value renders as its display caption.
+expect unit_text(Recipes.system_from_str("metric")) == "Metric"
+
+## The imperial radio value renders as its display caption.
+expect unit_text(Recipes.system_from_str("imperial")) == "Imperial"
 
 effective_text : U64 -> Str
 effective_text = |scale| Recipes.format_amount(scale)
@@ -67,12 +179,11 @@ effective_text = |scale| Recipes.format_amount(scale)
 factor_text : U64, Recipes.Recipe -> Str
 factor_text = |scale, recipe| "×${Recipes.format_amount(scale / recipe.base_servings)}"
 
-unit_text : Str -> Str
+unit_text : Recipes.UnitSystem -> Str
 unit_text = |system|
-	if system == "imperial" {
-		"Imperial"
-	} else {
-		"Metric"
+	match system {
+		Imperial => "Imperial"
+		Metric => "Metric"
 	}
 
 shopping_summary : List(Str), List(Recipes.ShoppingLine) -> Str
@@ -108,7 +219,7 @@ ingredient_row = |key, item, ctx| {
 		Signal.map2(
 			item,
 			ctx,
-			|value, context| Recipes.quantity_text(value.per_serving, value.unit_code, context.scale, context.system),
+			|value, context| Recipes.quantity_text(value.per_serving, value.unit, context.scale, context.system),
 		)
 
 	Html.div_c(
@@ -135,7 +246,7 @@ shopping_row = |key, item, ctx| {
 		Signal.map2(
 			item,
 			ctx,
-			|value, context| Recipes.quantity_text(value.per_serving, value.unit_code, context.scale, context.system),
+			|value, context| Recipes.quantity_text(value.per_serving, value.unit, context.scale, context.system),
 		)
 
 	Html.div_c(
@@ -208,7 +319,7 @@ main = ||
 										|units|
 											Ui.state(
 												[],
-												|selected| page(recipe_id, servings_draft, scale_mode, pan, units, selected),
+												|selected| page({ recipe_id, servings_draft, scale_mode, pan, units, selected }),
 											),
 									),
 							),
@@ -216,17 +327,36 @@ main = ||
 			),
 	)
 
-page : Ui.State(Str), Ui.State(Str), Ui.State(Str), Ui.State(Str), Ui.State(Str), Ui.State(List(Str)) -> Elem
-page = |recipe_id, servings_draft, scale_mode, pan, units, selected| {
+## Every control handle the page reads, as one record: five of the six are
+## `Ui.State(Str)`, so naming them at the call site is the only thing that
+## stops two of them being swapped without a type error.
+Controls : {
+	recipe_id : Ui.State(Str),
+	servings_draft : Ui.State(Str),
+	scale_mode : Ui.State(Str),
+	pan : Ui.State(Str),
+	units : Ui.State(Str),
+	selected : Ui.State(List(Str)),
+}
+
+page : Controls -> Elem
+page = |controls| {
+	recipe_id = controls.recipe_id
+	servings_draft = controls.servings_draft
+	scale_mode = controls.scale_mode
+	pan = controls.pan
+	units = controls.units
+	selected = controls.selected
+
 	recipe_signal = recipe_id.signal().map(Recipes.find)
 
 	# Four independent sources fan in to the target scale.
 	scale_inputs : Signal.Signal(ScaleInputs)
 	scale_inputs =
 		{
-			mode: scale_mode.signal(),
+			mode: scale_mode.signal().map(Recipes.mode_from_str),
 			draft: servings_draft.signal(),
-			pan: pan.signal(),
+			pan: pan.signal().map(Recipes.pan_from_str),
 			recipe: recipe_signal,
 		}.Signal
 
@@ -234,9 +364,10 @@ page = |recipe_id, servings_draft, scale_mode, pan, units, selected| {
 
 	# The one node every ingredient quantity in the page depends on.
 	ctx : Signal.Signal(DisplayCtx)
-	ctx = { scale: scale_signal, system: units.signal() }.Signal
+	ctx = { scale: scale_signal, system: units.signal().map(Recipes.system_from_str) }.Signal
 
 	note_signal = Signal.map2(scale_inputs, scale_signal, scale_note)
+	text_signal = note_signal.map(scale_note_text)
 	# The headline badge and the ingredient quantities share `scale_signal`, so
 	# the factor on the badge is always the factor the list was scaled by.
 	factor_signal = Signal.map2(scale_signal, recipe_signal, factor_text)
@@ -372,10 +503,10 @@ page = |recipe_id, servings_draft, scale_mode, pan, units, selected| {
 						"stat-grid",
 						[
 							stat("Effective servings", scale_signal.map(effective_text), "effective-servings"),
-							stat("Units", units.signal().map(unit_text), "unit-system"),
+							stat("Units", units.signal().map(|value| unit_text(Recipes.system_from_str(value))), "unit-system"),
 						],
 					),
-					Html.paragraph_s_attrs(note_signal, [Html.test_id("scale-note"), Html.class_attr_s(note_signal.map(scale_note_class))]),
+					Html.paragraph_s_attrs(text_signal, [Html.test_id("scale-note"), Html.class_attr_s(note_signal.map(scale_note_class))]),
 					Html.paragraph_s_attrs(controls_signal, [Html.test_id("controls-summary"), Html.class_attr("hint font-mono")]),
 				],
 			),

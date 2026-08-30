@@ -2,7 +2,7 @@
 ## required) and sign out. Sign-out clears the namespaced session keys and
 ## navigates home. The form starts from the session's username rather than
 ## prefilling from GET /api/user — controlled inputs cannot seed state from
-## an async response (recorded in the findings ledger).
+## an async response.
 import Api
 import Auth
 import Nav

@@ -6,6 +6,7 @@ const signals = @import("signals");
 const boundary = signals.boundary;
 const engine = signals.engine;
 const render = signals.render;
+const runtime_limits = signals.runtime_limits;
 const spec_parser = @import("../spec/spec_parser.zig");
 
 pub const Stats = struct {
@@ -21,11 +22,13 @@ pub const Stats = struct {
     metrics: engine.RuntimeMetrics = engine.zeroRuntimeMetrics(),
 };
 
+/// Reads the monotonic clock used only for benchmark measurement.
 pub fn nowNs() u64 {
     const ns = std.Io.Clock.awake.now(std.Io.Threaded.global_single_threaded.io()).nanoseconds;
     return @intCast(@max(ns, 0));
 }
 
+/// Classifies whether a spec command mutates app state and therefore belongs in benchmark replay.
 pub fn commandIsAction(cmd: spec_parser.SpecCommand) bool {
     return switch (cmd.cmd_type) {
         .click, .real_click, .pointer_down, .pointer_up, .pointer_enter, .pointer_leave, .key_down, .focus, .blur, .change, .select_option, .custom_event, .composition_start, .composition_end, .submit, .fill, .check, .uncheck, .resolve_task, .reject_task, .tick_interval, .tick_interval_if_active, .navigate, .set_visibility, .set_online, .history_back, .history_forward => true,
@@ -87,17 +90,20 @@ fn printStdout(comptime fmt: []const u8, args: anytype) void {
     writeStdout(out);
 }
 
+/// Writes header in the stable benchmark-report format.
 pub fn printHeader() void {
-    writeStdout("case,sample,iterations,actions,init_roc_ns,init_apply_ns,dispatch_roc_ns,dispatch_apply_ns,total_ns,allocs,deallocs,retained_alloc_delta,commands,reset_dom,create_element,append_child,remove_node,move_before,set_text,set_value,set_checked,set_disabled,set_metadata,bind_event,active_graph_records_rebuilt,stream_nodes_scanned,stream_nodes_scanned_apply,stream_nodes_scanned_children,stream_nodes_scanned_dirty_scope,stream_nodes_scanned_events,stream_nodes_scanned_mounts,stream_nodes_scanned_remove_target,stream_nodes_scanned_render_scope,stream_nodes_scanned_splice,signal_record_table_rebuilt,active_intervals_synced,render_indexes_refreshed,each_key_compares,each_key_hashes,each_key_reuse_compares,each_key_duplicate_compares,each_item_compares,each_syncs,each_sync_keys,each_sync_existing_rows,allocs_this_event,deallocs_this_event,host_allocs_this_event,host_deallocs_this_event,host_alloc_bytes_this_event,host_dealloc_bytes_this_event,events_processed,dirty_source_roots,propagation_prunes,derived_calls_into_roc,recompute_batches,patches_emitted,scopes_created,scopes_disposed,rows_reused,rows_created,rows_removed,closure_retains,closure_releases,metrics_retained_alloc_delta,host_retained_alloc_delta,host_retained_bytes_delta\n");
+    writeStdout("case,sample,warmup_iterations,iterations,actions,init_roc_ns,init_apply_ns,dispatch_roc_ns,dispatch_apply_ns,total_ns,allocs,deallocs,retained_alloc_delta,commands,reset_dom,create_element,append_child,remove_node,move_before,set_text,set_value,set_checked,set_disabled,set_metadata,bind_event,active_graph_records_rebuilt,stream_nodes_scanned,stream_nodes_scanned_apply,stream_nodes_scanned_children,stream_nodes_scanned_dirty_scope,stream_nodes_scanned_events,stream_nodes_scanned_mounts,stream_nodes_scanned_remove_target,stream_nodes_scanned_render_scope,stream_nodes_scanned_splice,signal_record_table_rebuilt,active_intervals_synced,render_indexes_refreshed,each_key_compares,each_key_hashes,each_key_reuse_compares,each_key_duplicate_compares,each_item_compares,each_syncs,each_sync_keys,each_sync_existing_rows,allocs_this_event,deallocs_this_event,host_allocs_this_event,host_deallocs_this_event,host_alloc_bytes_this_event,host_dealloc_bytes_this_event,events_processed,dirty_source_roots,propagation_prunes,derived_calls_into_roc,recompute_batches,patches_emitted,scopes_created,scopes_disposed,rows_reused,rows_created,rows_removed,closure_retains,closure_releases,metrics_retained_alloc_delta,host_retained_alloc_delta,host_retained_bytes_delta\n");
 }
 
-pub fn printRow(case_name: []const u8, sample: usize, iterations: usize, stats: Stats) void {
+/// Writes row in the stable benchmark-report format.
+pub fn printRow(case_name: []const u8, sample: usize, warmup_iterations: usize, iterations: usize, stats: Stats) void {
     const total_ns = stats.init_roc_ns + stats.init_apply_ns + stats.dispatch_roc_ns + stats.dispatch_apply_ns;
     printStdout(
-        "{s},{d},{d},{d},{d},{d},{d},{d},{d},{d},{d},{d},",
+        "{s},{d},{d},{d},{d},{d},{d},{d},{d},{d},{d},{d},{d},",
         .{
             case_name,
             sample,
+            warmup_iterations,
             iterations,
             stats.actions,
             stats.init_roc_ns,
@@ -190,13 +196,15 @@ fn metricAsI64(comptime Ctx: type, value: u64) i64 {
     return std.math.cast(i64, value) orelse Ctx.fail("runtime metric exceeded signed assertion range");
 }
 
+/// Builds the benchmark runner adapter around a host context without changing engine semantics.
 pub fn Runner(comptime Ctx: type) type {
     return struct {
         const Host = Ctx.Host;
         const RocHost = Ctx.RocHost;
         const SpecCommand = spec_parser.SpecCommand;
 
-        pub fn runAppBenchmarks(spec_file: []const u8, case_name: []const u8, iterations: usize, samples: usize, verbose: bool) error{}!c_int {
+        /// Runs app benchmarks using the host semantics and measurement boundaries defined by this module.
+        pub fn runAppBenchmarks(spec_file: []const u8, case_name: []const u8, warmup_iterations: usize, iterations: usize, samples: usize, verbose: bool) error{}!c_int {
             var bench_gpa = std.heap.DebugAllocator(.{ .safety = true }){};
             defer _ = bench_gpa.deinit();
             const allocator = bench_gpa.allocator();
@@ -212,11 +220,15 @@ pub fn Runner(comptime Ctx: type) type {
 
             printHeader();
             for (0..samples) |sample| {
+                for (0..warmup_iterations) |_| {
+                    var warmup_stats: Stats = .{};
+                    runBenchmarkIteration(spec.commands, verbose, &warmup_stats);
+                }
                 var stats: Stats = .{};
                 for (0..iterations) |_| {
                     runBenchmarkIteration(spec.commands, verbose, &stats);
                 }
-                printRow(case_name, sample, iterations, stats);
+                printRow(case_name, sample, warmup_iterations, iterations, stats);
             }
 
             return 0;
@@ -239,9 +251,25 @@ pub fn Runner(comptime Ctx: type) type {
             stats.init_roc_ns += nowNs() - init_start_ns;
             Ctx.acceptInitElemMeasured(&host, &roc_host, init_result, &stats.init_apply_ns, &stats.commands);
 
+            var measurement_started = true;
             for (commands) |cmd| {
-                if (commandIsAction(cmd)) {
-                    runActionCommandMeasured(&host, &roc_host, cmd, stats);
+                if (cmd.cmd_type == .mark_metrics) {
+                    measurement_started = false;
+                    break;
+                }
+            }
+            for (commands) |cmd| {
+                if (cmd.cmd_type == .mark_metrics) {
+                    measurement_started = true;
+                } else if (commandIsAction(cmd)) {
+                    if (measurement_started) {
+                        runActionCommandMeasured(&host, &roc_host, cmd, stats);
+                    } else {
+                        // Setup actions before a mark establish the benchmark's
+                        // required table size without contaminating the timed operation.
+                        var setup_stats: Stats = .{};
+                        runActionCommandMeasured(&host, &roc_host, cmd, &setup_stats);
+                    }
                 }
             }
 
@@ -317,7 +345,7 @@ pub fn Runner(comptime Ctx: type) type {
                         .composition_end => Ctx.endComposition(host, elem),
                         else => unreachable,
                     }
-                    Ctx.dispatchRocEventMeasured(host, roc_host, event.binding.event_id, event.binding.payload_descriptor, Ctx.hostValueUnit(host, roc_host), stats);
+                    Ctx.dispatchRocEventMeasured(host, roc_host, event.binding.event_id.raw(), event.binding.payload_descriptor, Ctx.hostValueUnit(host, roc_host), stats);
                 },
 
                 .change => {
@@ -327,7 +355,7 @@ pub fn Runner(comptime Ctx: type) type {
                     const event = Ctx.namedEvent(elem, "change") orelse Ctx.fail("benchmark change target has no binding");
                     if (!event.binding.payload_descriptor.eql(engine.BoundaryPayloadDescriptor.init(.str, .target_value))) Ctx.fail("benchmark change binding does not request the target value payload descriptor");
                     _ = Ctx.setElementValueIfChanged(host, elem, value);
-                    Ctx.dispatchRocEventMeasured(host, roc_host, event.binding.event_id, event.binding.payload_descriptor, Ctx.hostValueStr(host, roc_host, value), stats);
+                    Ctx.dispatchRocEventMeasured(host, roc_host, event.binding.event_id.raw(), event.binding.payload_descriptor, Ctx.hostValueStr(host, roc_host, value), stats);
                 },
 
                 .custom_event => {
@@ -339,7 +367,7 @@ pub fn Runner(comptime Ctx: type) type {
                     if (!event.binding.payload_descriptor.eql(engine.BoundaryPayloadDescriptor.init(.str, .detail))) {
                         Ctx.fail("benchmark custom_event binding does not request the detail payload descriptor");
                     }
-                    Ctx.dispatchRocEventMeasured(host, roc_host, event.binding.event_id, event.binding.payload_descriptor, Ctx.hostValueStr(host, roc_host, detail), stats);
+                    Ctx.dispatchRocEventMeasured(host, roc_host, event.binding.event_id.raw(), event.binding.payload_descriptor, Ctx.hostValueStr(host, roc_host, detail), stats);
                 },
 
                 .select_option => {
@@ -507,7 +535,7 @@ pub fn Runner(comptime Ctx: type) type {
             if (!event.binding.payload_descriptor.eql(engine.BoundaryPayloadDescriptor.init(.unit, .none))) {
                 Ctx.fail("benchmark named click binding does not use a unit payload descriptor");
             }
-            return event.binding.event_id;
+            return event.binding.event_id.raw();
         }
 
         fn benchmarkIsResetButton(elem: anytype) bool {
@@ -553,7 +581,7 @@ pub fn Runner(comptime Ctx: type) type {
                 Ctx.fail("benchmark radio change binding does not request the target value payload descriptor");
             }
             const value = elem.value orelse Ctx.fail("benchmark radio default action target has no value");
-            Ctx.dispatchRocEventMeasured(host, roc_host, event.binding.event_id, event.binding.payload_descriptor, Ctx.hostValueStr(host, roc_host, value), stats);
+            Ctx.dispatchRocEventMeasured(host, roc_host, event.binding.event_id.raw(), event.binding.payload_descriptor, Ctx.hostValueStr(host, roc_host, value), stats);
         }
 
         fn benchmarkSelectHasOptionValue(host: *Host, elem: anytype, value: []const u8) bool {
@@ -574,7 +602,7 @@ pub fn Runner(comptime Ctx: type) type {
             if (!event.binding.payload_descriptor.eql(engine.BoundaryPayloadDescriptor.init(.str, .target_value))) {
                 Ctx.fail("benchmark select change binding does not request the target value payload descriptor");
             }
-            Ctx.dispatchRocEventMeasured(host, roc_host, event.binding.event_id, event.binding.payload_descriptor, Ctx.hostValueStr(host, roc_host, value), stats);
+            Ctx.dispatchRocEventMeasured(host, roc_host, event.binding.event_id.raw(), event.binding.payload_descriptor, Ctx.hostValueStr(host, roc_host, value), stats);
         }
 
         fn benchmarkIsTextLikeEnterSubmitControl(elem: anytype) bool {
@@ -652,7 +680,7 @@ pub fn Runner(comptime Ctx: type) type {
         }
 
         fn dispatchBubblingUnitEventMeasured(host: *Host, roc_host: *RocHost, target_id: u64, fixed_kind: render.EventKind, event_name: []const u8, stats: *Stats) UnitEventDispatchResult {
-            var path: [128]u64 = undefined;
+            var path: [runtime_limits.event_propagation_depth]u64 = undefined;
             var path_len: usize = 0;
             var next_id: ?u64 = target_id;
             while (next_id) |elem_id| {
@@ -677,7 +705,7 @@ pub fn Runner(comptime Ctx: type) type {
                 if (!event.binding.payload_descriptor.eql(unit_descriptor)) Ctx.fail("benchmark capturing event binding does not use a unit payload descriptor");
                 result.dispatched = true;
                 result.default_prevented = result.default_prevented or event.binding.policy.prevent_default;
-                Ctx.dispatchRocEventMeasured(host, roc_host, event.binding.event_id, event.binding.payload_descriptor, Ctx.hostValueUnit(host, roc_host), stats);
+                Ctx.dispatchRocEventMeasured(host, roc_host, event.binding.event_id.raw(), event.binding.payload_descriptor, Ctx.hostValueUnit(host, roc_host), stats);
                 if (event.binding.policy.stop_propagation or event.binding.policy.stop_immediate) return result;
             }
 
@@ -694,7 +722,7 @@ pub fn Runner(comptime Ctx: type) type {
                 if (!event.binding.payload_descriptor.eql(unit_descriptor)) Ctx.fail("benchmark bubbling event binding does not use a unit payload descriptor");
                 result.dispatched = true;
                 result.default_prevented = result.default_prevented or event.binding.policy.prevent_default;
-                Ctx.dispatchRocEventMeasured(host, roc_host, event.binding.event_id, event.binding.payload_descriptor, Ctx.hostValueUnit(host, roc_host), stats);
+                Ctx.dispatchRocEventMeasured(host, roc_host, event.binding.event_id.raw(), event.binding.payload_descriptor, Ctx.hostValueUnit(host, roc_host), stats);
                 if (event.binding.policy.stop_propagation or event.binding.policy.stop_immediate) break;
             }
 

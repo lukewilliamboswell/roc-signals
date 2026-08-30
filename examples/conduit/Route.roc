@@ -1,6 +1,6 @@
 ## Conduit route model: `Browser.Location` <-> `Route` parsing and formatting
-## plus per-route document titles. Routing stays app code by design
-## (wip/REALWORLD_DEMO_PLAN.md): no router DSL, no platform route table.
+## plus per-route document titles. Routing stays app code by design: no router
+## DSL and no platform route table.
 ## The published static demo keeps one real document URL and encodes logical
 ## routes in its hash, so every deep link survives a GitHub Pages refresh.
 import pf.Browser
@@ -19,16 +19,99 @@ Route := [
 ].{
 	Feed : { page : U64, tag : [AllTags, Tagged(Str)], source : [Global, Yours] }
 
+	## The page which a `Route` selects, with the slugs and feed parameters
+	## dropped. Signal branching (`Ui.when`) asks "am I on the article page?",
+	## not "which article?", so the branch predicates compare kinds.
+	Kind : [
+		Home,
+		Login,
+		Register,
+		Settings,
+		EditorNew,
+		EditorEdit,
+		Article,
+		Profile,
+		ProfileFavorites,
+		NotFound,
+	]
+
+	## Structural equality. Signals compare their previous and next values on
+	## every invalidation, so this stays on the hot path: it must not build
+	## the location strings just to throw them away.
 	is_eq : Route, Route -> Bool
-	is_eq = |left, right| {
-		left_kind = Route.kind(left)
-		right_kind = Route.kind(right)
-		if left_kind != right_kind {
-			False
-		} else {
-			Route.to_location(left) == Route.to_location(right)
+	is_eq = |left, right|
+		match left {
+			Home(left_feed) => match right {
+				Home(right_feed) => feed_is_eq(left_feed, right_feed)
+				_ => False
+			}
+			Login => match right {
+				Login => True
+				_ => False
+			}
+			Register => match right {
+				Register => True
+				_ => False
+			}
+			Settings => match right {
+				Settings => True
+				_ => False
+			}
+			EditorNew => match right {
+				EditorNew => True
+				_ => False
+			}
+			EditorEdit(left_slug) => match right {
+				EditorEdit(right_slug) => left_slug == right_slug
+				_ => False
+			}
+			Article(left_slug) => match right {
+				Article(right_slug) => left_slug == right_slug
+				_ => False
+			}
+			Profile(left_name) => match right {
+				Profile(right_name) => left_name == right_name
+				_ => False
+			}
+			ProfileFavorites(left_name) => match right {
+				ProfileFavorites(right_name) => left_name == right_name
+				_ => False
+			}
+			NotFound => match right {
+				NotFound => True
+				_ => False
+			}
 		}
-	}
+
+	feed_is_eq : Route.Feed, Route.Feed -> Bool
+	feed_is_eq = |left, right|
+		left.page == right.page and tag_is_eq(left.tag, right.tag) and source_is_eq(left.source, right.source)
+
+	tag_is_eq : [AllTags, Tagged(Str)], [AllTags, Tagged(Str)] -> Bool
+	tag_is_eq = |left, right|
+		match left {
+			AllTags => match right {
+				AllTags => True
+				Tagged(_) => False
+			}
+			Tagged(left_tag) => match right {
+				AllTags => False
+				Tagged(right_tag) => left_tag == right_tag
+			}
+		}
+
+	source_is_eq : [Global, Yours], [Global, Yours] -> Bool
+	source_is_eq = |left, right|
+		match left {
+			Global => match right {
+				Global => True
+				Yours => False
+			}
+			Yours => match right {
+				Global => False
+				Yours => True
+			}
+		}
 
 	default_feed : Route.Feed
 	default_feed = { page: 1, tag: AllTags, source: Global }
@@ -116,10 +199,8 @@ Route := [
 		if hash.is_empty() {
 			{ path: "/", query: "" }
 		} else {
-			match hash.split_first("?") {
-				Ok(split) => { path: split.before, query: split.after }
-				Err(_) => { path: hash, query: "" }
-			}
+			hash.split_first("?").map_ok(|split| { path: split.before, query: split.after })
+			?? { path: hash, query: "" }
 		}
 
 	title : Route -> Str
@@ -137,19 +218,19 @@ Route := [
 			NotFound => "Page not found - Conduit"
 		}
 
-	kind : Route -> Str
+	kind : Route -> Route.Kind
 	kind = |route|
 		match route {
-			Home(_) => "home"
-			Login => "login"
-			Register => "register"
-			Settings => "settings"
-			EditorNew => "editor-new"
-			EditorEdit(_) => "editor-edit"
-			Article(_) => "article"
-			Profile(_) => "profile"
-			ProfileFavorites(_) => "profile-favorites"
-			NotFound => "not-found"
+			Home(_) => Home
+			Login => Login
+			Register => Register
+			Settings => Settings
+			EditorNew => EditorNew
+			EditorEdit(_) => EditorEdit
+			Article(_) => Article
+			Profile(_) => Profile
+			ProfileFavorites(_) => ProfileFavorites
+			NotFound => NotFound
 		}
 
 	feed_of : Route -> Route.Feed
@@ -202,14 +283,7 @@ Route := [
 
 	valid_segment : Str -> Bool
 	valid_segment = |segment|
-		if segment.is_empty() {
-			False
-		} else {
-			match segment.split_first("/") {
-				Ok(_) => False
-				Err(_) => True
-			}
-		}
+		!segment.is_empty() and segment.split_first("/").is_err()
 
 	parse_feed : Str -> Route.Feed
 	parse_feed = |query|
@@ -217,14 +291,13 @@ Route := [
 			default_feed,
 			|feed, pair|
 				if pair.starts_with("page=") {
-					match U64.from_str(pair.drop_prefix("page=")) {
-						Ok(page) =>
-							if page >= 1 {
-								{ ..feed, page: page }
-							} else {
-								feed
-							}
-						Err(_) => feed
+					# 0 stands in for "unparseable", and is rejected by the same
+					# guard that rejects an explicit page=0.
+					page = U64.from_str(pair.drop_prefix("page=")) ?? 0
+					if page >= 1 {
+						{ ..feed, page: page }
+					} else {
+						feed
 					}
 				} else if pair == "feed=yours" {
 					{ ..feed, source: Yours }
@@ -258,15 +331,34 @@ Route := [
 				Tagged(tag) => "tag=${tag}"
 				AllTags => ""
 			}
-		parts = [source_part, page_part, tag_part].fold(
-			[],
-			|acc, part|
-				if part.is_empty() {
-					acc
-				} else {
-					acc.append(part)
-				},
-		)
+		parts = [source_part, page_part, tag_part].keep_if(|part| !part.is_empty())
 		Str.join_with(parts, "&")
 	}
 }
+
+## An article deep link survives the hash round trip with its slug intact.
+expect Route.from_location(Route.article_location("how-to-train-your-dragon")).is_eq(Article("how-to-train-your-dragon"))
+
+## Page, tag, and source all round trip through the feed query string together.
+expect {
+	feed = { page: 3, tag: Tagged("dragons"), source: Global }
+	Route.from_location(Route.feed_location(feed)).is_eq(Home(feed))
+}
+
+## The authenticated feed is spelled by source alone; page 1 and no tag stay off the query.
+expect Route.feed_query({ page: 1, tag: AllTags, source: Yours }) == "feed=yours"
+
+## A non-default page and a tag are both emitted, page first.
+expect Route.feed_query({ page: 2, tag: Tagged("roc"), source: Global }) == "page=2&tag=roc"
+
+## `is_eq` separates two routes of the same kind by their payload.
+expect !Route.is_eq(Profile("alice"), Profile("bob"))
+
+## ...and separates NotFound from Home, which share the demo base path.
+expect !Route.is_eq(NotFound, Route.home)
+
+## The favorites tab is a distinct route from the profile it hangs off.
+expect Route.from_location({ path: "/", query: "", hash: "/profile/alice/favorites" }).is_eq(ProfileFavorites("alice"))
+
+## An unrecognised trailing profile segment is NotFound, not a silent profile match.
+expect Route.from_location({ path: "/", query: "", hash: "/profile/alice/extra" }).is_eq(NotFound)

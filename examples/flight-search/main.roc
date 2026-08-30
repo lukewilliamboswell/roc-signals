@@ -16,15 +16,123 @@ Flight : {
 	minutes : U64,
 }
 
+## A "max" filter. The control offers a cap or "no cap at all", so the absence
+## of a limit is a tag rather than a magic maximum integer.
+Limit := [NoLimit, AtMost(U64)].{
+	is_eq : Limit, Limit -> Bool
+	is_eq = |left, right|
+		match left {
+			NoLimit => match right {
+				NoLimit => True
+				_ => False
+			}
+			AtMost(left_cap) => match right {
+				AtMost(right_cap) => left_cap == right_cap
+				_ => False
+			}
+		}
+
+	## Parse once, at the edge where the `<select>` hands us its wire value.
+	from_str : Str -> Limit
+	from_str = |value|
+		if value == "any" {
+			NoLimit
+		} else {
+			AtMost(digits_to_u64(value))
+		}
+
+	## The inverse of `from_str`, so the request key still reads `…|0|any|…`.
+	to_str : Limit -> Str
+	to_str = |limit|
+		match limit {
+			NoLimit => "any"
+			AtMost(cap) => cap.to_str()
+		}
+
+	allows : Limit, U64 -> Bool
+	allows = |limit, value|
+		match limit {
+			NoLimit => True
+			AtMost(cap) => value <= cap
+		}
+}
+
+## The airline filter: every carrier, or one named carrier.
+AirlineFilter := [AnyAirline, Only(Str)].{
+	is_eq : AirlineFilter, AirlineFilter -> Bool
+	is_eq = |left, right|
+		match left {
+			AnyAirline => match right {
+				AnyAirline => True
+				_ => False
+			}
+			Only(left_name) => match right {
+				Only(right_name) => left_name == right_name
+				_ => False
+			}
+		}
+
+	from_str : Str -> AirlineFilter
+	from_str = |value|
+		if value == "any" {
+			AnyAirline
+		} else {
+			Only(value)
+		}
+
+	to_str : AirlineFilter -> Str
+	to_str = |filter|
+		match filter {
+			AnyAirline => "any"
+			Only(name) => name
+		}
+
+	allows : AirlineFilter, Flight -> Bool
+	allows = |filter, flight|
+		match filter {
+			AnyAirline => True
+			Only(name) => name == flight.airline
+		}
+}
+
+## Which column the results are ordered by. Not part of `Criteria`, because
+## re-ordering rows we already hold must never refetch.
+SortKey := [Price, Duration, Departure].{
+	is_eq : SortKey, SortKey -> Bool
+	is_eq = |left, right|
+		match left {
+			Price => match right {
+				Price => True
+				_ => False
+			}
+			Duration => match right {
+				Duration => True
+				_ => False
+			}
+			Departure => match right {
+				Departure => True
+				_ => False
+			}
+		}
+
+	from_str : Str -> SortKey
+	from_str = |value|
+		match value {
+			"duration" => Duration
+			"departure" => Departure
+			_ => Price
+		}
+}
+
 ## The six values that make up a search *request*. Changing any of them must
 ## refetch. `sort_by` is deliberately NOT part of this record.
 Criteria : {
 	origin : Str,
 	destination : Str,
 	depart_date : Str,
-	max_stops : Str,
-	max_price : Str,
-	airline : Str,
+	max_stops : Limit,
+	max_price : Limit,
+	airline : AirlineFilter,
 }
 
 ## What the host-backed search task currently holds.
@@ -49,17 +157,26 @@ Outcome := [Loading, Ready(List(Flight)), Failed(Str)].{
 
 # --- parsing -----------------------------------------------------------------
 
+## Deliberately lenient: every non-digit byte is dropped before parsing, which
+## is what lets the departure clock `09:30` become the sortable key `930`. A
+## field with no digits at all reads as `0`.
 digits_to_u64 : Str -> U64
-digits_to_u64 = |text|
-	text.to_utf8().fold(
-		0,
-		|acc, byte|
-			if byte >= 48 and byte <= 57 {
-				acc * 10 + (U8.to_u64(byte) - 48)
-			} else {
-				acc
-			},
-	)
+digits_to_u64 = |text| {
+	digits = Str.from_utf8_lossy(text.to_utf8().keep_if(|byte| byte >= 48 and byte <= 57))
+	U64.from_str(digits) ?? 0
+}
+
+## A field that is already bare digits parses to exactly that number.
+expect digits_to_u64("930") == 930
+
+## Dropping the colon is what turns a departure clock into a sortable key.
+expect digits_to_u64("09:30") == 930
+
+## Stray letters between digits are discarded rather than rejecting the field.
+expect digits_to_u64("12x3") == 123
+
+## A field with no digits at all reads as zero instead of failing.
+expect digits_to_u64("") == 0
 
 field_at : List(Str), U64 -> Str
 field_at = |parts, index|
@@ -96,22 +213,14 @@ parse_flights = |payload|
 
 # --- filtering (local, applied to the result set already held) ---------------
 
-limit_of : Str -> U64
-limit_of = |value|
-	if value == "any" {
-		18446744073709551615
-	} else {
-		digits_to_u64(value)
-	}
-
 stops_ok : Criteria, Flight -> Bool
-stops_ok = |criteria, flight| flight.stops <= limit_of(criteria.max_stops)
+stops_ok = |criteria, flight| Limit.allows(criteria.max_stops, flight.stops)
 
 price_ok : Criteria, Flight -> Bool
-price_ok = |criteria, flight| flight.price <= limit_of(criteria.max_price)
+price_ok = |criteria, flight| Limit.allows(criteria.max_price, flight.price)
 
 airline_ok : Criteria, Flight -> Bool
-airline_ok = |criteria, flight| (criteria.airline == "any") or (criteria.airline == flight.airline)
+airline_ok = |criteria, flight| AirlineFilter.allows(criteria.airline, flight)
 
 matches : Criteria, Flight -> Bool
 matches = |criteria, flight|
@@ -119,24 +228,12 @@ matches = |criteria, flight|
 
 # --- sorting (local, never refetches) ----------------------------------------
 
-compare_u64 : U64, U64 -> [LT, EQ, GT]
-compare_u64 = |left, right|
-	if left < right {
-		LT
-	} else if left > right {
-		GT
-	} else {
-		EQ
-	}
-
-sort_flights : List(Flight), Str -> List(Flight)
+sort_flights : List(Flight), SortKey -> List(Flight)
 sort_flights = |flights, key|
-	if key == "duration" {
-		flights.sort_with(|left, right| compare_u64(left.minutes, right.minutes))
-	} else if key == "departure" {
-		flights.sort_with(|left, right| compare_u64(left.depart_min, right.depart_min))
-	} else {
-		flights.sort_with(|left, right| compare_u64(left.price, right.price))
+	match key {
+		Duration => flights.sort_with(|left, right| U64.compare(left.minutes, right.minutes))
+		Departure => flights.sort_with(|left, right| U64.compare(left.depart_min, right.depart_min))
+		Price => flights.sort_with(|left, right| U64.compare(left.price, right.price))
 	}
 
 # --- flight formatting -------------------------------------------------------
@@ -198,7 +295,21 @@ carrier_text = |flight| "${flight.airline} · ${flight.id} · ${duration_text(fl
 
 request_of : Criteria -> Str
 request_of = |criteria|
-	"${criteria.origin}-${criteria.destination}|${criteria.depart_date}|${criteria.max_stops}|${criteria.max_price}|${criteria.airline}"
+	"${criteria.origin}-${criteria.destination}|${criteria.depart_date}|${Limit.to_str(criteria.max_stops)}|${Limit.to_str(criteria.max_price)}|${AirlineFilter.to_str(criteria.airline)}"
+
+## The wire values the `<select>` controls emit have to survive the round trip
+## through the tags, because the request key is what decides a refetch.
+expect {
+	criteria = {
+		origin: "SYD",
+		destination: "ADL",
+		depart_date: "2026-09-01",
+		max_stops: Limit.from_str("0"),
+		max_price: Limit.from_str("any"),
+		airline: AirlineFilter.from_str("Qantas"),
+	}
+	request_of(criteria) == "SYD-ADL|2026-09-01|0|any|Qantas"
+}
 
 request_text : Criteria -> Str
 request_text = |criteria| "Request: ${request_of(criteria)}"
@@ -206,31 +317,45 @@ request_text = |criteria| "Request: ${request_of(criteria)}"
 route_text : Criteria -> Str
 route_text = |criteria| "${criteria.origin} → ${criteria.destination}"
 
-stops_filter_text : Str -> Str
-stops_filter_text = |value|
-	if value == "any" {
-		"Any stops"
-	} else if value == "0" {
-		"Nonstop only"
-	} else {
-		"Max ${value} stop"
+stops_filter_text : Limit -> Str
+stops_filter_text = |limit|
+	match limit {
+		NoLimit => "Any stops"
+		AtMost(0) => "Nonstop only"
+		AtMost(cap) => "Max ${cap.to_str()} stop"
 	}
 
-price_filter_text : Str -> Str
-price_filter_text = |value|
-	if value == "any" {
-		"Any price"
-	} else {
-		"Under $${value}"
+price_filter_text : Limit -> Str
+price_filter_text = |limit|
+	match limit {
+		NoLimit => "Any price"
+		AtMost(cap) => "Under $${cap.to_str()}"
 	}
 
-airline_filter_text : Str -> Str
-airline_filter_text = |value|
-	if value == "any" {
-		"All airlines"
-	} else {
-		value
+airline_filter_text : AirlineFilter -> Str
+airline_filter_text = |filter|
+	match filter {
+		AnyAirline => "All airlines"
+		Only(name) => name
 	}
+
+## The absence of a stops cap reads as "any", not as an unbounded number.
+expect stops_filter_text(Limit.from_str("any")) == "Any stops"
+
+## A zero cap is phrased as nonstop rather than "Max 0 stop".
+expect stops_filter_text(Limit.from_str("0")) == "Nonstop only"
+
+## A one-stop cap names the cap it enforces.
+expect stops_filter_text(Limit.from_str("1")) == "Max 1 stop"
+
+## A price cap is shown as the fare ceiling a traveller can spend under.
+expect price_filter_text(Limit.from_str("300")) == "Under $300"
+
+## The unfiltered airline wire value reads as every carrier.
+expect airline_filter_text(AirlineFilter.from_str("any")) == "All airlines"
+
+## A named carrier is echoed back as itself.
+expect airline_filter_text(AirlineFilter.from_str("Qantas")) == "Qantas"
 
 ## The whole request in one readable line, the way a booking site echoes the
 ## search back above the results.
@@ -238,15 +363,25 @@ filters_text : Criteria -> Str
 filters_text = |criteria|
 	"${route_text(criteria)} · ${criteria.depart_date} · ${stops_filter_text(criteria.max_stops)} · ${price_filter_text(criteria.max_price)} · ${airline_filter_text(criteria.airline)}"
 
-sort_text : Str -> Str
+sort_text : SortKey -> Str
 sort_text = |key|
-	if key == "duration" {
-		"Sorted by: duration"
-	} else if key == "departure" {
-		"Sorted by: departure time"
-	} else {
-		"Sorted by: price"
+	match key {
+		Duration => "Sorted by: duration"
+		Departure => "Sorted by: departure time"
+		Price => "Sorted by: price"
 	}
+
+## The duration sort wire value survives the round trip through the tag.
+expect sort_text(SortKey.from_str("duration")) == "Sorted by: duration"
+
+## The departure sort is captioned by time, not by the raw wire value.
+expect sort_text(SortKey.from_str("departure")) == "Sorted by: departure time"
+
+## The price sort wire value survives the round trip through the tag.
+expect sort_text(SortKey.from_str("price")) == "Sorted by: price"
+
+## An unrecognised sort value falls back to price rather than failing.
+expect sort_text(SortKey.from_str("")) == "Sorted by: price"
 
 status_text : Outcome -> Str
 status_text = |outcome|
@@ -491,10 +626,12 @@ search = |h| {
 			origin: h.origin.signal(),
 			destination: h.destination.signal(),
 			depart_date: h.depart_date.signal(),
-			max_stops: h.max_stops.signal(),
-			max_price: h.max_price.signal(),
-			airline: h.airline.signal(),
+			max_stops: h.max_stops.signal().map(Limit.from_str),
+			max_price: h.max_price.signal().map(Limit.from_str),
+			airline: h.airline.signal().map(AirlineFilter.from_str),
 		}.Signal
+
+	sort_key = h.sort_by.signal().map(SortKey.from_str)
 
 	request = criteria.map(request_of)
 
@@ -521,7 +658,7 @@ search = |h| {
 
 	# Fan-in 3: matching subset + sort key -> the rendered order.
 	# `sort_by` is not part of `criteria`, so this never refetches.
-	rows = Signal.map2(matched, h.sort_by.signal(), sort_flights)
+	rows = Signal.map2(matched, sort_key, sort_flights)
 
 	summary = Signal.map2(outcome, rows, summary_text)
 	empty_note = Signal.map2(outcome, criteria, empty_note_text)
@@ -629,7 +766,7 @@ search = |h| {
 										h.sort_by.on_str(|_, value| value),
 									),
 									Html.paragraph_s_attrs(
-										h.sort_by.signal().map(sort_text),
+										sort_key.map(sort_text),
 										[Html.class_attr("hint"), Html.test_id("sort-summary")],
 									),
 								],

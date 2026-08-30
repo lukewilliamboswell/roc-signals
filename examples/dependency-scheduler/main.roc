@@ -67,11 +67,7 @@ task_options : List(Elem)
 task_options = Plan.initial_tasks.map(|t| Html.option(t.id, t.name))
 
 name_of : Str -> Str
-name_of = |id|
-	match Plan.initial_tasks.find_first(|t| t.id == id) {
-		Ok(found) => found.name
-		Err(_) => id
-	}
+name_of = |id| Plan.initial_tasks.find_first(|t| t.id == id).map_ok(|found| found.name) ?? id
 
 # ---------------------------------------------------------------------------
 # Display text. No domain logic and no classes live here.
@@ -87,10 +83,9 @@ days = |n| if n == 1 {
 ## The scheduled window, the one figure that moves on every cascade.
 window_text : Plan.Row -> Str
 window_text = |row|
-	if !row.scheduled {
-		"Not scheduled"
-	} else {
-		"Day ${row.start.to_str()} → ${row.finish.to_str()}"
+	match row.status {
+		Blocked => "Not scheduled"
+		_ => "Day ${row.start.to_str()} → ${row.finish.to_str()}"
 	}
 
 ## The duration shown between the resize buttons.
@@ -103,11 +98,11 @@ duration_text = |row| if row.duration == 0 {
 
 ## Slack as a bare figure so it can sit in a `tabular-nums` cell.
 slack_text : Plan.Row -> Str
-slack_text = |row| if !row.scheduled {
-	"—"
-} else {
-	row.slack.to_str()
-}
+slack_text = |row|
+	match row.status {
+		Blocked => "—"
+		_ => row.slack.to_str()
+	}
 
 ## Prerequisites by name rather than by id, so a row explains why it moved.
 deps_text : Plan.Row -> Str
@@ -118,60 +113,54 @@ deps_text = |row|
 		"After ${Str.join_with(row.deps.map(name_of), ", ")}"
 	}
 
-## The status word. Derived from `row.critical`, which is `slack == 0`, so the
-## badge and the slack figure beside it are the same fact twice.
+## The status word. `Plan.Status` is `Critical` exactly when slack is zero, so
+## the badge and the slack figure beside it are the same fact twice.
 status_text : Plan.Row -> Str
 status_text = |row|
-	if !row.scheduled {
-		"Blocked"
-	} else if row.critical {
-		"Critical"
-	} else {
-		"Has slack"
+	match row.status {
+		Blocked => "Blocked"
+		Critical => "Critical"
+		HasSlack => "Has slack"
 	}
 
 row_tone : Plan.Row -> Str
 row_tone = |row|
-	if !row.scheduled {
-		"unscheduled"
-	} else if row.critical {
-		"critical"
-	} else {
-		"slack"
+	match row.status {
+		Blocked => "unscheduled"
+		Critical => "critical"
+		HasSlack => "slack"
 	}
 
 status_class : Plan.Row -> Str
 status_class = |row|
-	if !row.scheduled {
-		"badge badge-warn"
-	} else if row.critical {
-		"badge badge-danger"
-	} else {
-		"badge badge-neutral"
+	match row.status {
+		Blocked => "badge badge-warn"
+		Critical => "badge badge-danger"
+		HasSlack => "badge badge-neutral"
 	}
 
 ## Zero slack is the alarm colour, one day is a warning, anything looser is
 ## quiet. Same three-way split as the badge, one step finer.
 slack_class : Plan.Row -> Str
 slack_class = |row|
-	if !row.scheduled {
-		"value numeric text-zinc-400"
-	} else if row.slack == 0 {
-		"value numeric text-red-600"
-	} else if row.slack == 1 {
-		"value numeric text-amber-600"
-	} else {
-		"value numeric text-zinc-500"
+	match row.status {
+		Blocked => "value numeric text-zinc-400"
+		_ =>
+			if row.slack == 0 {
+				"value numeric text-red-600"
+			} else if row.slack == 1 {
+				"value numeric text-amber-600"
+			} else {
+				"value numeric text-zinc-500"
+			}
 	}
 
 bar_class : Plan.Row -> Str
 bar_class = |row|
-	if !row.scheduled {
-		"absolute inset-y-1 rounded-sm bg-zinc-300"
-	} else if row.critical {
-		"absolute inset-y-1 rounded-sm bg-red-500 ring-1 ring-red-600"
-	} else {
-		"absolute inset-y-1 rounded-sm bg-emerald-400"
+	match row.status {
+		Blocked => "absolute inset-y-1 rounded-sm bg-zinc-300"
+		Critical => "absolute inset-y-1 rounded-sm bg-red-500 ring-1 ring-red-600"
+		HasSlack => "absolute inset-y-1 rounded-sm bg-emerald-400"
 	}
 
 ## A row's bar needs its own window *and* the project span, so this is the one
@@ -183,35 +172,36 @@ BarGeometry : { row : Plan.Row, span : U64 }
 bar_style : BarGeometry -> Str
 bar_style = |geometry| {
 	row = geometry.row
-	if !row.scheduled {
-		"display: none"
-	} else {
-		total = if geometry.span == 0 {
-			1
-		} else {
-			geometry.span
+	match row.status {
+		Blocked => "display: none"
+		_ => {
+			total = if geometry.span == 0 {
+				1
+			} else {
+				geometry.span
+			}
+			raw_left = (row.start * 100) // total
+			left = if raw_left > 98 {
+				98
+			} else {
+				raw_left
+			}
+			raw_width = (row.duration * 100) // total
+			room = Plan.sat_sub(100, left)
+			capped = if raw_width > room {
+				room
+			} else {
+				raw_width
+			}
+			# A milestone has no duration at all, so it gets a minimum nub rather
+			# than a zero-width bar that would render as nothing.
+			width = if capped < 2 {
+				2
+			} else {
+				capped
+			}
+			"left: ${left.to_str()}%; width: ${width.to_str()}%"
 		}
-		raw_left = (row.start * 100) // total
-		left = if raw_left > 98 {
-			98
-		} else {
-			raw_left
-		}
-		raw_width = (row.duration * 100) // total
-		room = Plan.sat_sub(100, left)
-		capped = if raw_width > room {
-			room
-		} else {
-			raw_width
-		}
-		# A milestone has no duration at all, so it gets a minimum nub rather
-		# than a zero-width bar that would render as nothing.
-		width = if capped < 2 {
-			2
-		} else {
-			capped
-		}
-		"left: ${left.to_str()}%; width: ${width.to_str()}%"
 	}
 }
 
@@ -231,7 +221,7 @@ critical_count_text = |schedule| schedule.path.len().to_str()
 ## Tasks that still have room to move. The complement of the critical path, so
 ## the two figures always add up to the task count.
 slack_count_text : Plan.Schedule -> Str
-slack_count_text = |schedule| schedule.rows.keep_if(|r| r.scheduled and !r.critical).len().to_str()
+slack_count_text = |schedule| schedule.rows.keep_if(|r| Plan.Status.is_eq(r.status, HasSlack)).len().to_str()
 
 path_text : Plan.Schedule -> Str
 path_text = |schedule| if schedule.path.is_empty() {
@@ -260,13 +250,52 @@ detail_text : Plan.Schedule, Str -> Str
 detail_text = |schedule, focus|
 	match schedule.rows.find_first(|r| r.id == focus) {
 		Ok(row) =>
-			if row.scheduled {
-				"Earliest day ${row.start.to_str()} · latest day ${row.latest_start.to_str()} · slack ${days(row.slack)} · moved ${days(row.lag)}"
-			} else {
-				"Not scheduled while the plan is cyclic · moved ${days(row.lag)}"
+			match row.status {
+				Blocked => "Not scheduled while the plan is cyclic · moved ${days(row.lag)}"
+				_ => "Earliest day ${row.start.to_str()} · latest day ${row.latest_start.to_str()} · slack ${days(row.slack)} · moved ${days(row.lag)}"
 			}
 		Err(_) => "${name_of(focus)} is not in the plan"
 	}
+
+## The shipped plan solves to a ten-day project down spec → api → sync → qa →
+## launch; the parallel UI branch holds a day of slack and the docs branch more.
+initial_schedule = Plan.compute(Plan.initial_tasks)
+
+## A single day is written in the singular.
+expect days(1) == "1 day"
+
+## Zero days keeps the plural, so the count reads naturally at the boundary.
+expect days(0) == "0 days"
+
+## The shipped plan spans ten days end to end.
+expect span_text(initial_schedule) == "10 days"
+
+## The critical path names the zero-slack chain in topological order.
+expect path_text(initial_schedule) == "Write spec → Build API → Integrate → QA pass → Launch"
+
+## Two tasks in the shipped plan still have room to move.
+expect slack_count_text(initial_schedule) == "2"
+
+## The focus readout reports earliest and latest start, slack and applied lag.
+expect detail_text(initial_schedule, "ui") == "Earliest day 2 · latest day 3 · slack 1 day · moved 0 days"
+
+## Delaying the head of the critical path pushes the whole project out a day.
+expect span_text(Plan.compute(Plan.delay(Plan.initial_tasks, "spec"))) == "11 days"
+
+## A cycle is reported rather than hung on, and every row reads as `Blocked`.
+cyclic_schedule = Plan.compute(Plan.add_dep(Plan.initial_tasks, "spec", "launch"))
+
+## A cyclic plan has no computable span.
+expect span_text(cyclic_schedule) == "Unknown"
+
+## A cyclic plan reports no critical path rather than a partial one.
+expect path_text(cyclic_schedule) == "None"
+
+## The chart axis has no end day to label while the plan is cyclic.
+expect axis_end_text(cyclic_schedule) == "—"
+
+## A cycle leaves every task unscheduled, not just the ones inside it.
+expect cyclic_schedule.rows.keep_if(|r| Plan.Status.is_eq(r.status, Blocked)).len() == 7
 
 RowFilter : { rows : List(Plan.Row), only_critical : Bool, by_slack : Bool }
 
@@ -290,16 +319,12 @@ empty_class = |view| if visible_of(view).is_empty() {
 }
 
 nth : List(Str), U64 -> Str
-nth = |lines, index|
-	match lines.get(index) {
-		Ok(line) => line
-		Err(_) => ""
-	}
+nth = |lines, index| lines.get(index) ?? ""
 
 visible_of : RowFilter -> List(Plan.Row)
 visible_of = |view| {
 	kept = if view.only_critical {
-		view.rows.keep_if(|r| r.critical)
+		view.rows.keep_if(|r| Plan.Status.is_eq(r.status, Critical))
 	} else {
 		view.rows
 	}
@@ -355,22 +380,37 @@ dep_checkbox = |tasks, key, row, other|
 		],
 	)
 
+## What one stepper button does: the glyph it draws, the verb that names it and
+## the edit it applies. Three `Str` arguments in a row are interchangeable at a
+## call site, a record of them is not.
+StepAction : {
+	glyph : Str,
+	verb : Str,
+	apply : List(Plan.Task), Str -> List(Plan.Task),
+}
+
 ## A stepper button. The glyph is the visible label and `aria_label` carries the
 ## descriptive name, so the control stays compact without going unnamed.
-step_button : Ui.State(List(Plan.Task)), Str, Str, Str, (List(Plan.Task), Str -> List(Plan.Task)) -> Elem
-step_button = |tasks, key, glyph, name, apply|
+step_button : Ui.State(List(Plan.Task)), Str, StepAction -> Elem
+step_button = |tasks, key, action|
 	Html.button_attrs(
-		glyph,
-		[Html.class_attr(step_button_class), Html.aria_label("${name} ${name_of(key)}")],
-		tasks.on_unit(|list| apply(list, key)),
+		action.glyph,
+		[Html.class_attr(step_button_class), Html.aria_label("${action.verb} ${name_of(key)}")],
+		# The parentheses keep `apply` a stored function being called rather than a
+		# method lookup on the record.
+		tasks.on_unit(|list| (action.apply)(list, key)),
 	)
 
+## The three cells of one stepper, named so a caller cannot swap the buttons for
+## the readout they sit either side of.
+Stepper : { down : Elem, readout : Elem, up : Elem }
+
 ## A labelled numeric readout between a decrement and an increment button.
-stepper : Str, Elem, Elem, Elem -> Elem
-stepper = |label, down, readout, up|
+stepper : Str, Stepper -> Elem
+stepper = |label, cells|
 	Html.div_c(
 		stepper_class,
-		[Html.paragraph_c(label, "hint"), down, readout, up],
+		[Html.paragraph_c(label, "hint"), cells.down, cells.readout, cells.up],
 	)
 
 render_row : Ui.State(List(Plan.Task)), Signal.Signal(U64), Str, Signal.Signal(Plan.Row) -> Elem
@@ -443,21 +483,25 @@ render_row = |tasks, span, key, row| {
 				[
 					stepper(
 						"Start",
-						step_button(tasks, key, "◀", "Pull in", Plan.pull_in),
-						Html.paragraph_s_attrs(
-							row.map(|value| "+${value.lag.to_str()}d"),
-							[Html.test_id("lag-${key}"), Html.class_attr("value numeric w-10 text-center")],
-						),
-						step_button(tasks, key, "▶", "Delay", Plan.delay),
+						{
+							down: step_button(tasks, key, { glyph: "◀", verb: "Pull in", apply: Plan.pull_in }),
+							readout: Html.paragraph_s_attrs(
+								row.map(|value| "+${value.lag.to_str()}d"),
+								[Html.test_id("lag-${key}"), Html.class_attr("value numeric w-10 text-center")],
+							),
+							up: step_button(tasks, key, { glyph: "▶", verb: "Delay", apply: Plan.delay }),
+						},
 					),
 					stepper(
 						"Duration",
-						step_button(tasks, key, "−", "Shorten", Plan.shorten),
-						Html.paragraph_s_attrs(
-							row.map(duration_text),
-							[Html.test_id("duration-${key}"), Html.class_attr("value numeric w-20 text-center")],
-						),
-						step_button(tasks, key, "+", "Extend", Plan.extend),
+						{
+							down: step_button(tasks, key, { glyph: "−", verb: "Shorten", apply: Plan.shorten }),
+							readout: Html.paragraph_s_attrs(
+								row.map(duration_text),
+								[Html.test_id("duration-${key}"), Html.class_attr("value numeric w-20 text-center")],
+							),
+							up: step_button(tasks, key, { glyph: "+", verb: "Extend", apply: Plan.extend }),
+						},
 					),
 					Html.div_c(
 						deps_box_class,

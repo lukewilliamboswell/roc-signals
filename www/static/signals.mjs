@@ -44,8 +44,11 @@ export const Op = Object.freeze({
   setDocumentTitle: 32,
 });
 
+// Version 12: `remove_node` releases the whole subtree under its target. The
+// engine publishes one removal per retired subtree root, and the runtime drops
+// every DOM id, listener, controlled input, and behaviour under that root.
 export const Protocol = Object.freeze({
-  version: 11,
+  version: 12,
 });
 
 export const ProtocolFeature = Object.freeze({
@@ -699,6 +702,7 @@ export class SignalsRuntime {
     this.checkProtocol();
     this.views = createMemoryViewCache(exports.memory);
     this.nodes = new Map([[0, root]]);
+    this.nodeIds = new WeakMap([[root, 0]]);
     this.eventCleanups = new Map();
     this.controlledInputs = new Map();
     this.pendingSelectValues = new Map();
@@ -729,6 +733,12 @@ export class SignalsRuntime {
     this.pointerProbeCleanups = [];
     this.lastEventResponseBits = 0;
     this.storageBatch = null;
+    this.failedError = null;
+    this.hasErrorReporter = typeof options.onError === "function";
+    this.maxPayloadBytes = options.limits?.maxPayloadBytes ?? 0xffff_ffff;
+    if (!Number.isSafeInteger(this.maxPayloadBytes) || this.maxPayloadBytes < 0 || this.maxPayloadBytes > 0xffff_ffff) {
+      throw new RangeError("Signals maxPayloadBytes must be an integer between 0 and 4294967295");
+    }
     this.onError = options.onError ?? ((err) => {
       setTimeout(() => {
         throw err;
@@ -779,48 +789,71 @@ export class SignalsRuntime {
   }
 
   mount() {
-    this.mounted = true;
+    this.assertUsable();
+    const initialPayloads = this.prepareInitialEnvironmentPayloads();
+    try {
+      this.commitInitialEnvironmentPayloads(initialPayloads);
+    } finally {
+      this.freePreparedPayloads(initialPayloads);
+    }
     this.mountGeneration += 1;
-    this.setInitialLocationSnapshot();
-    this.setInitialVisibilitySnapshot();
-    this.setInitialOnlineSnapshot();
     this.prepareMountEnvironment();
     this.installLocationListener(this.mountGeneration);
     this.installVisibilityListener(this.mountGeneration);
     this.installOnlineListener(this.mountGeneration);
     this.emitTelemetry("host_call", { call: "mount" });
-    this.views.callHost(this.exports.roc_ui_mount);
+    try {
+      this.views.callHost(this.exports.roc_ui_mount);
+    } catch (err) {
+      throw this.poisonAfterHostFailure(err);
+    }
     this.applyPendingCommands("mount");
+    this.mounted = true;
   }
 
-  setInitialLocationSnapshot() {
-    if (typeof this.exports.roc_ui_set_location !== "function") {
-      return;
+  prepareInitialEnvironmentPayloads() {
+    const specs = [];
+    if (typeof this.exports.roc_ui_set_location === "function") {
+      const value = locationSnapshotFromLocation(this.location);
+      specs.push({ hostCall: this.exports.roc_ui_set_location, value, bytes: encodeBoundarySchemaPayloadBytes(LocationBoundarySchema, value), detail: { location: value } });
     }
-    const snapshot = locationSnapshotFromLocation(this.location);
-    this.writeLocationPayload("roc_ui_set_location", snapshot, "environment_snapshot", {
-      location: snapshot,
-    });
+    if (typeof this.exports.roc_ui_set_visibility === "function") {
+      const value = visibilitySnapshotFromDocument(this.visibilityDocument);
+      specs.push({ hostCall: this.exports.roc_ui_set_visibility, value, bytes: encodeBoundarySchemaPayloadBytes(VisibilityBoundarySchema, value), detail: { visibility: value } });
+    }
+    if (typeof this.exports.roc_ui_set_online === "function") {
+      const value = onlineSnapshotFromNavigator(this.navigator);
+      specs.push({ hostCall: this.exports.roc_ui_set_online, value, bytes: encodeBoundarySchemaPayloadBytes(OnlineBoundarySchema, value), detail: { online: value } });
+    }
+
+    const prepared = [];
+    try {
+      for (const spec of specs) {
+        prepared.push({ ...spec, ptr: this.allocatePayload(spec.bytes.length) });
+      }
+      return prepared;
+    } catch (err) {
+      this.freePreparedPayloads(prepared);
+      throw err;
+    }
   }
 
-  setInitialVisibilitySnapshot() {
-    if (typeof this.exports.roc_ui_set_visibility !== "function") {
-      return;
+  commitInitialEnvironmentPayloads(prepared) {
+    for (const entry of prepared) {
+      this.views.u8.set(entry.bytes, entry.ptr);
+      this.emitTelemetry("environment_snapshot", { ...entry.detail, payloadLen: entry.bytes.length });
+      try {
+        this.views.callHost(entry.hostCall, entry.ptr, entry.bytes.length);
+      } catch (err) {
+        throw this.poisonAfterHostFailure(err);
+      }
     }
-    const visible = visibilitySnapshotFromDocument(this.visibilityDocument);
-    this.writeVisibilityPayload("roc_ui_set_visibility", visible, "environment_snapshot", {
-      visibility: visible,
-    });
   }
 
-  setInitialOnlineSnapshot() {
-    if (typeof this.exports.roc_ui_set_online !== "function") {
-      return;
+  freePreparedPayloads(prepared) {
+    for (const entry of prepared) {
+      this.views.callHost(this.exports.roc_dealloc, entry.ptr, 1);
     }
-    const online = onlineSnapshotFromNavigator(this.navigator);
-    this.writeOnlinePayload("roc_ui_set_online", online, "environment_snapshot", {
-      online,
-    });
   }
 
   prepareMountEnvironment() {
@@ -832,7 +865,7 @@ export class SignalsRuntime {
       this.views.callHost(this.exports.roc_ui_prepare_mount);
       this.seedInitialStorageSnapshots();
     } catch (err) {
-      throw this.runtimeError(err);
+      throw this.poisonAfterHostFailure(err);
     }
   }
 
@@ -864,7 +897,7 @@ export class SignalsRuntime {
         key,
       );
       const bytes = encodeStoragePayloadBytes(snapshot);
-      const payloadPtr = this.views.callHost(this.exports.roc_alloc, bytes.length, 1).result;
+      const payloadPtr = this.allocatePayload(bytes.length);
       try {
         this.views.u8.set(bytes, payloadPtr);
         this.emitTelemetry("storage_snapshot", {
@@ -886,7 +919,7 @@ export class SignalsRuntime {
       return false;
     }
     const bytes = encodeBoundarySchemaPayloadBytes(LocationBoundarySchema, snapshot);
-    const ptr = this.views.callHost(this.exports.roc_alloc, bytes.length, 1).result;
+    const ptr = this.allocatePayload(bytes.length);
     try {
       this.views.u8.set(bytes, ptr);
       this.emitTelemetry(telemetryKind, {
@@ -896,7 +929,7 @@ export class SignalsRuntime {
       this.views.callHost(hostCall, ptr, bytes.length);
       return true;
     } catch (err) {
-      throw this.runtimeError(err);
+      throw this.poisonAfterHostFailure(err);
     } finally {
       this.views.callHost(this.exports.roc_dealloc, ptr, 1);
     }
@@ -908,7 +941,7 @@ export class SignalsRuntime {
       return false;
     }
     const bytes = encodeBoundarySchemaPayloadBytes(VisibilityBoundarySchema, visible);
-    const ptr = this.views.callHost(this.exports.roc_alloc, bytes.length, 1).result;
+    const ptr = this.allocatePayload(bytes.length);
     try {
       this.views.u8.set(bytes, ptr);
       this.emitTelemetry(telemetryKind, {
@@ -918,7 +951,7 @@ export class SignalsRuntime {
       this.views.callHost(hostCall, ptr, bytes.length);
       return true;
     } catch (err) {
-      throw this.runtimeError(err);
+      throw this.poisonAfterHostFailure(err);
     } finally {
       this.views.callHost(this.exports.roc_dealloc, ptr, 1);
     }
@@ -930,7 +963,7 @@ export class SignalsRuntime {
       return false;
     }
     const bytes = encodeBoundarySchemaPayloadBytes(OnlineBoundarySchema, online);
-    const ptr = this.views.callHost(this.exports.roc_alloc, bytes.length, 1).result;
+    const ptr = this.allocatePayload(bytes.length);
     try {
       this.views.u8.set(bytes, ptr);
       this.emitTelemetry(telemetryKind, {
@@ -940,7 +973,7 @@ export class SignalsRuntime {
       this.views.callHost(hostCall, ptr, bytes.length);
       return true;
     } catch (err) {
-      throw this.runtimeError(err);
+      throw this.poisonAfterHostFailure(err);
     } finally {
       this.views.callHost(this.exports.roc_dealloc, ptr, 1);
     }
@@ -1101,6 +1134,7 @@ export class SignalsRuntime {
   }
 
   unmount() {
+    if (this.failedError !== null) return;
     this.mounted = false;
     this.clearLocationListener();
     this.clearVisibilityListener();
@@ -1122,7 +1156,7 @@ export class SignalsRuntime {
 
   dispatchString(eventId, value, options = {}) {
     const bytes = textEncoder.encode(value);
-    const ptr = this.views.callHost(this.exports.roc_alloc, bytes.length, 1).result;
+    const ptr = this.allocatePayload(bytes.length);
     let primaryError;
     try {
       this.views.u8.set(bytes, ptr);
@@ -1136,7 +1170,7 @@ export class SignalsRuntime {
   }
 
   dispatchBytes(eventId, bytes, options = {}) {
-    const ptr = this.views.callHost(this.exports.roc_alloc, bytes.length, 1).result;
+    const ptr = this.allocatePayload(bytes.length);
     let primaryError;
     try {
       this.views.u8.set(bytes, ptr);
@@ -1161,6 +1195,7 @@ export class SignalsRuntime {
   }
 
   dispatch(eventId, payloadKind, payloadPtr, payloadLen, boolValue, options = {}) {
+    this.assertUsable();
     this.emitTelemetry("host_call", {
       call: "event",
       eventId,
@@ -1184,21 +1219,27 @@ export class SignalsRuntime {
       }
       return responseBits;
     } catch (err) {
-      throw this.runtimeError(err);
+      throw this.poisonAfterHostFailure(err);
     }
   }
 
   tickTimer(token) {
+    this.assertUsable();
     if (!this.intervals.has(token)) {
       this.emitTelemetry("ignored_timer_tick", { token });
       return;
     }
     this.emitTelemetry("host_call", { call: "timer", token });
-    this.views.callHost(this.exports.roc_ui_timer, token);
+    try {
+      this.views.callHost(this.exports.roc_ui_timer, token);
+    } catch (err) {
+      throw this.poisonAfterHostFailure(err);
+    }
     this.applyPendingCommands(`timer:${token}`);
   }
 
   resolveTask(requestId, value, failed = false) {
+    this.assertUsable();
     const task = this.tasks.get(requestId);
     const issuedTask = this.issuedTasks.get(requestId);
     if (!task && !issuedTask) {
@@ -1215,7 +1256,7 @@ export class SignalsRuntime {
       });
     }
     const bytes = textEncoder.encode(value);
-    const ptr = this.views.callHost(this.exports.roc_alloc, bytes.length, 1).result;
+    const ptr = this.allocatePayload(bytes.length);
     try {
       this.views.u8.set(bytes, ptr);
       if (task) {
@@ -1235,7 +1276,7 @@ export class SignalsRuntime {
       });
       this.views.callHost(this.exports.roc_ui_resolve, requestId, ptr, bytes.length, failed ? 1 : 0);
     } catch (err) {
-      throw this.runtimeError(err);
+      throw this.poisonAfterHostFailure(err);
     } finally {
       this.views.callHost(this.exports.roc_dealloc, ptr, 1);
     }
@@ -1254,6 +1295,57 @@ export class SignalsRuntime {
     return wrapped;
   }
 
+  allocatePayload(length) {
+    this.assertUsable();
+    if (!Number.isSafeInteger(length) || length < 0 || length > this.maxPayloadBytes) {
+      const err = new Error(`Signals payload length ${length} exceeds configured limit ${this.maxPayloadBytes}`);
+      err.code = "resource_limit";
+      throw err;
+    }
+    let result;
+    try {
+      result = this.views.callHost(this.exports.roc_alloc, length, 1).result;
+    } catch (err) {
+      throw this.poisonAfterHostFailure(err);
+    }
+    if ((result === 0 || result == null) && length !== 0) {
+      const err = new Error(`Signals Wasm payload allocation failed for ${length} bytes`);
+      err.code = "out_of_memory";
+      throw err;
+    }
+    return result ?? 0;
+  }
+
+  assertUsable() {
+    if (this.failedError !== null) {
+      throw this.failedError;
+    }
+  }
+
+  poisonAfterHostFailure(err) {
+    if (this.failedError !== null) return this.failedError;
+    const fatal = this.runtimeError(err);
+    this.failedError = fatal;
+    this.mounted = false;
+    this.mountGeneration += 1;
+    this.lastCommands = [];
+    this.commandBuffers = null;
+    this.clearLocationListener();
+    this.clearVisibilityListener();
+    this.clearOnlineListener();
+    this.clearPointerProbe();
+    this.clearAsyncResources();
+    for (const cleanup of this.eventCleanups.values()) cleanup();
+    this.eventCleanups.clear();
+    this.clearControlledInputs();
+    this.cleanupBehaviors();
+    if (this.hasErrorReporter) {
+      this.onError(fatal);
+      fatal.signalsReported = true;
+    }
+    return fatal;
+  }
+
   lastHostError() {
     const ptr = this.exports.roc_ui_last_error_ptr?.() ?? 0;
     const len = this.exports.roc_ui_last_error_len?.() ?? 0;
@@ -1265,6 +1357,7 @@ export class SignalsRuntime {
   }
 
   reportError(err) {
+    if (err?.signalsReported === true) return;
     this.onError(err);
   }
 
@@ -1449,17 +1542,13 @@ export class SignalsRuntime {
         this.clearDom();
         return;
 
-      case Op.createElement: {
-        const elem = document.createElement(this.readString(record.b, record.c));
-        this.nodes.set(record.a, elem);
+      case Op.createElement:
+        this.registerNode(record.a, document.createElement(this.readString(record.b, record.c)));
         return;
-      }
 
-      case Op.createText: {
-        const node = document.createTextNode(this.readString(record.b, record.c));
-        this.nodes.set(record.a, node);
+      case Op.createText:
+        this.registerNode(record.a, document.createTextNode(this.readString(record.b, record.c)));
         return;
-      }
 
       case Op.appendChild:
         this.node(record.a).appendChild(this.node(record.b));
@@ -1469,9 +1558,7 @@ export class SignalsRuntime {
         const node = this.node(record.a);
         this.cleanupBehaviorSubtree(node);
         node.parentNode?.removeChild(node);
-        this.clearElemListeners(record.a);
-        this.clearControlledInput(record.a);
-        this.nodes.delete(record.a);
+        this.releaseSubtree(node);
         return;
       }
 
@@ -2158,16 +2245,6 @@ export class SignalsRuntime {
     });
   }
 
-  clearElemListeners(elemId) {
-    const prefix = `${elemId}:`;
-    for (const key of this.eventCleanups.keys()) {
-      if (key.startsWith(prefix)) {
-        this.eventCleanups.get(key)();
-        this.eventCleanups.delete(key);
-      }
-    }
-  }
-
   controlledInput(elemId) {
     const existing = this.controlledInputs.get(elemId);
     if (existing) {
@@ -2393,6 +2470,51 @@ export class SignalsRuntime {
     return node;
   }
 
+  registerNode(id, node) {
+    const previous = this.nodes.get(id);
+    if (previous) {
+      this.nodeIds.delete(previous);
+    }
+    this.nodes.set(id, node);
+    this.nodeIds.set(node, id);
+  }
+
+  // Releases every per-node registration under one removed root: the engine
+  // publishes a single `remove_node` for a retired subtree, so the ids,
+  // listeners, controlled inputs, and pending behaviour work of every
+  // descendant are released here, exactly once, with the root's.
+  releaseSubtree(root) {
+    const released = new Set();
+    const stack = [root];
+    while (stack.length !== 0) {
+      const node = stack.pop();
+      const elemId = this.nodeIds.get(node);
+      if (elemId !== undefined) {
+        released.add(elemId);
+        this.nodeIds.delete(node);
+        this.nodes.delete(elemId);
+        this.clearControlledInput(elemId);
+        this.pendingBehaviorAttaches.delete(elemId);
+        this.pendingBehaviorUpdates.delete(elemId);
+      }
+      const children = node.childNodes;
+      if (children) {
+        for (let index = children.length - 1; index >= 0; index -= 1) {
+          stack.push(children[index]);
+        }
+      }
+    }
+    if (released.size !== 0 && this.eventCleanups.size !== 0) {
+      for (const key of [...this.eventCleanups.keys()]) {
+        if (released.has(Number(key.slice(0, key.indexOf(":"))))) {
+          this.eventCleanups.get(key)();
+          this.eventCleanups.delete(key);
+        }
+      }
+    }
+    return released;
+  }
+
   clearDom() {
     this.emitTelemetry("clear_dom", {
       domNodes: this.nodes.size,
@@ -2409,6 +2531,7 @@ export class SignalsRuntime {
     this.clearControlledInputs();
     this.nodes.clear();
     this.nodes.set(0, this.root);
+    this.nodeIds = new WeakMap([[this.root, 0]]);
     this.root.replaceChildren();
   }
 

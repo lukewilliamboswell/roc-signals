@@ -41,6 +41,16 @@ Bill := {}.{
 	## One row of an expense's participation checklist.
 	Member : { name : Str, included : Bool }
 
+	## Why an expense row is in the state it is in. The badge caption and the tone
+	## that badge is drawn in are both derived from this one value, so a row can
+	## never show an error word in the ok colour.
+	Status : [
+		Unrecognised,
+		PayerGone(Str),
+		NobodySharing,
+		Counted({ cents : I64, payer : Str, ways : I64 }),
+	]
+
 	## Display record for one expense row. It carries everything that row renders,
 	## including its own participation checklist, so nothing inside the row has to
 	## reach back out to the roster signal.
@@ -49,8 +59,7 @@ Bill := {}.{
 		amount_text : Str,
 		payer : Str,
 		members : List(Bill.Member),
-		status : Str,
-		status_tone : [Ok, Warn, Danger],
+		status : Bill.Status,
 		breakdown : Str,
 	}
 
@@ -85,14 +94,9 @@ Bill := {}.{
 					Err(BadAmount)
 				} else {
 					dollars_text = if parts.before.is_empty() { "0" } else { parts.before }
-					match Bill.whole_cents(dollars_text) {
-						Err(_) => Err(BadAmount)
-						Ok(dollars) =>
-							match Bill.fraction_cents(parts.after) {
-								Err(_) => Err(BadAmount)
-								Ok(cents) => Ok(dollars + cents)
-							}
-					}
+					dollars = Bill.whole_cents(dollars_text)?
+					cents = Bill.fraction_cents(parts.after)?
+					Ok(dollars + cents)
 				}
 		}
 	}
@@ -102,10 +106,8 @@ Bill := {}.{
 		if text.starts_with("-") or text.starts_with("+") {
 			Err(BadAmount)
 		} else {
-			match I64.from_str(text) {
-				Err(_) => Err(BadAmount)
-				Ok(value) => if value < 0 { Err(BadAmount) } else { Ok(value * 100) }
-			}
+			value = I64.from_str(text) ? |_| BadAmount
+			if value < 0 { Err(BadAmount) } else { Ok(value * 100) }
 		}
 
 	fraction_cents : Str -> Try(I64, [BadAmount])
@@ -114,28 +116,63 @@ Bill := {}.{
 			Err(BadAmount)
 		} else {
 			digits = Bill.count(text.to_utf8())
-			match I64.from_str(text) {
-				Err(_) => Err(BadAmount)
-				Ok(value) =>
-					if value < 0 {
-						Err(BadAmount)
-					} else if digits == 1 {
-						Ok(value * 10)
-					} else if digits == 2 {
-						Ok(value)
-					} else {
-						Err(BadAmount)
-					}
+			value = I64.from_str(text) ? |_| BadAmount
+			if value < 0 {
+				Err(BadAmount)
+			} else if digits == 1 {
+				Ok(value * 10)
+			} else if digits == 2 {
+				Ok(value)
+			} else {
+				Err(BadAmount)
 			}
 		}
 
 	## Cents for an expense, treating unparseable text as zero.
 	amount_cents : Bill.Expense -> I64
-	amount_cents = |expense|
-		match Bill.parse_cents(expense.amount_text) {
-			Ok(cents) => cents
-			Err(_) => 0
-		}
+	amount_cents = |expense| Bill.parse_cents(expense.amount_text) ?? 0
+
+	## Cents render as a currency figure with both decimal places.
+	expect Bill.money(2084) == "$20.84"
+
+	## A negative balance carries its sign before the currency symbol.
+	expect Bill.money(-500) == "-$5.00"
+
+	## Amounts under ten cents keep a leading zero in the decimal part.
+	expect Bill.money(7) == "$0.07"
+
+	## A whole-dollar amount parses to exact cents.
+	expect Bill.parse_cents("12") == Ok(1200)
+
+	## One decimal place means tenths of a dollar, not cents.
+	expect Bill.parse_cents("12.5") == Ok(1250)
+
+	## Surrounding whitespace is trimmed before parsing.
+	expect Bill.parse_cents(" 12.50 ") == Ok(1250)
+
+	## A leading decimal point is allowed and means zero dollars.
+	expect Bill.parse_cents(".5") == Ok(50)
+
+	## Zero is a valid amount, not an absent one.
+	expect Bill.parse_cents("0") == Ok(0)
+
+	## Empty text is not an amount.
+	expect Bill.parse_cents("") == Err(BadAmount)
+
+	## Negative amounts are rejected: an expense cannot be owed backwards.
+	expect Bill.parse_cents("-5") == Err(BadAmount)
+
+	## An explicit plus sign is rejected too, so signs never reach the parser.
+	expect Bill.parse_cents("+5") == Err(BadAmount)
+
+	## More than two decimal places is rejected rather than rounded.
+	expect Bill.parse_cents("12.345") == Err(BadAmount)
+
+	## A second decimal point is rejected.
+	expect Bill.parse_cents("1.2.3") == Err(BadAmount)
+
+	## Stray non-digit characters are rejected, not skipped.
+	expect Bill.parse_cents("12x3") == Err(BadAmount)
 
 	## The people actually sharing an expense, in trip order.
 	participants : Bill.Expense, List(Str) -> List(Str)
@@ -177,18 +214,29 @@ Bill := {}.{
 				.out
 		}
 
+	## A split that does not divide evenly gives the leftover cent to the first
+	## participant in trip order, so the shares add back to the exact amount.
+	expect
+		Bill.shares(
+			{ description: "Dinner", amount_text: "0.10", payer: "Ben", excluded: [] },
+			["Ana", "Ben", "Chloe"],
+		)
+		== [{ name: "Ana", cents: 4 }, { name: "Ben", cents: 3 }, { name: "Chloe", cents: 3 }]
+
+	## An expense whose payer has left the trip is not split at all.
+	expect
+		Bill.shares(
+			{ description: "Taxi", amount_text: "24.00", payer: "Dev", excluded: [] },
+			["Ana", "Ben"],
+		)
+		== []
+
 	## Total of every expense that counts.
 	total_cents : List(Bill.Expense), List(Str) -> I64
 	total_cents = |expenses, people|
-		expenses.fold(
-			0,
-			|total, expense|
-				if Bill.is_counted(expense, people) {
-					total + Bill.amount_cents(expense)
-				} else {
-					total
-				},
-		)
+		expenses
+			.keep_if(|expense| Bill.is_counted(expense, people))
+			.fold(0, |total, expense| total + Bill.amount_cents(expense))
 
 	## Per-person balances. This is the fan-in point of the app: it is the only
 	## thing that needs both source collections at once.
@@ -196,38 +244,29 @@ Bill := {}.{
 	balances = |people, expenses|
 		people.map(
 			|name| {
-				paid =
-					expenses.fold(
-						0,
-						|total, expense|
-							if (expense.payer == name) and Bill.is_counted(expense, people) {
-								total + Bill.amount_cents(expense)
-							} else {
-								total
-							},
+				# The expenses this person paid for and that count: both what they
+				# paid and whether they may leave the trip are read off this one list.
+				paid_for =
+					expenses.keep_if(
+						|expense| (expense.payer == name) and Bill.is_counted(expense, people),
 					)
+				paid = paid_for.fold(0, |total, expense| total + Bill.amount_cents(expense))
 				owed =
 					expenses.fold(
 						0,
 						|total, expense|
 							total
 							+ Bill.shares(expense, people)
-								.fold(
-									0,
-									|sum, share| if share.name == name { sum + share.cents } else { sum },
-								),
+								.keep_if(|share| share.name == name)
+								.fold(0, |sum, share| sum + share.cents),
 					)
-				payer_count =
-					expenses.fold(
-						0,
-						|total, expense|
-							if (expense.payer == name) and Bill.is_counted(expense, people) {
-								total + 1
-							} else {
-								total
-							},
-					)
-				{ name, paid_cents: paid, owed_cents: owed, net_cents: paid - owed, payer_count }
+				{
+					name,
+					paid_cents: paid,
+					owed_cents: owed,
+					net_cents: paid - owed,
+					payer_count: Bill.count(paid_for),
+				}
 			},
 		)
 
@@ -238,18 +277,11 @@ Bill := {}.{
 	Account : { name : Str, net : I64 }
 
 	account_at : List(Bill.Account), U64 -> Bill.Account
-	account_at = |accounts, index|
-		match accounts.get(index) {
-			Ok(account) => account
-			Err(_) => { name: "", net: 0 }
-		}
+	account_at = |accounts, index| accounts.get(index) ?? { name: "", net: 0 }
 
 	adjust : List(Bill.Account), U64, I64 -> List(Bill.Account)
 	adjust = |accounts, index, delta|
-		match accounts.update(index, |account| { ..account, net: account.net + delta }) {
-			Ok(next) => next
-			Err(_) => accounts
-		}
+		accounts.update(index, |account| { ..account, net: account.net + delta }) ?? accounts
 
 	## Index of the largest creditor (`Creditor`) or largest debtor (`Debtor`).
 	## Ties keep the earlier person, so the plan is deterministic.
@@ -328,31 +360,93 @@ Bill := {}.{
 	ways : I64 -> Str
 	ways = |n| if n == 1 { "1 way" } else { "${n.to_str()} ways" }
 
+	## Classify one expense. This is the single place the four states are decided;
+	## the caption and the tone below are both read back off the result, so they
+	## cannot drift apart.
+	status : Bill.Expense, List(Str) -> Bill.Status
+	status = |expense, people|
+		match Bill.parse_cents(expense.amount_text) {
+			Err(_) => Unrecognised
+			Ok(cents) =>
+				if !people.contains(expense.payer) {
+					PayerGone(expense.payer)
+				} else {
+					parts = Bill.shares(expense, people)
+					if parts.is_empty() {
+						NobodySharing
+					} else {
+						Counted({ cents, payer: expense.payer, ways: Bill.count(parts) })
+					}
+				}
+		}
+
+	## The badge caption for a status.
+	status_text : Bill.Status -> Str
+	status_text = |value|
+		match value {
+			Unrecognised => "Amount not recognised, counted as ${Bill.money(0)}"
+			PayerGone(payer) => "${payer} is no longer on the trip"
+			NobodySharing => "Nobody is sharing this"
+			Counted(counted) =>
+				"${Bill.money(counted.cents)} paid by ${counted.payer}, split ${Bill.ways(counted.ways)}"
+		}
+
+	## The tone that caption is drawn in.
+	status_tone : Bill.Status -> [Ok, Warn, Danger]
+	status_tone = |value|
+		match value {
+			Unrecognised => Warn
+			PayerGone(_) => Danger
+			NobodySharing => Warn
+			Counted(_) => Ok
+		}
+
+	## An unparseable amount says so and names the zero it is counted as.
+	expect Bill.status_text(Unrecognised) == "Amount not recognised, counted as $0.00"
+
+	## A departed payer is named in the caption, so the row says who to re-assign.
+	expect Bill.status_text(PayerGone("Dev")) == "Dev is no longer on the trip"
+
+	## An expense nobody shares reports that rather than a split.
+	expect Bill.status_text(NobodySharing) == "Nobody is sharing this"
+
+	## A counted expense reads as amount, payer, and how many ways it splits.
+	expect
+		Bill.status_text(Counted({ cents: 6250, payer: "Ben", ways: 3 }))
+		== "$62.50 paid by Ben, split 3 ways"
+
+	## A single participant is phrased "1 way", not "1 ways".
+	expect Bill.status_text(Counted({ cents: 100, payer: "Ana", ways: 1 })) == "$1.00 paid by Ana, split 1 way"
+
+	## Every balance of a trip sums back to zero.
+	expect
+		Bill.net_check(
+			Bill.balances(
+				["Ana", "Ben", "Chloe"],
+				[{ description: "Cabin", amount_text: "300.00", payer: "Ana", excluded: [] }],
+			),
+		)
+		== 0
+
+	## One person paying for everyone settles as one transfer per debtor, to them.
+	expect
+		Bill.settle(
+			Bill.balances(
+				["Ana", "Ben", "Chloe"],
+				[{ description: "Cabin", amount_text: "300.00", payer: "Ana", excluded: [] }],
+			),
+		)
+		== [
+			{ from_name: "Ben", to_name: "Ana", cents: 10000 },
+			{ from_name: "Chloe", to_name: "Ana", cents: 10000 },
+		]
+
 	## Display rows for the expense list.
 	views : List(Bill.Expense), List(Str) -> List(Bill.View)
 	views = |expenses, people|
 		expenses.map(
 			|expense| {
 				parts = Bill.shares(expense, people)
-				# The status is a badge caption plus the tone that badge is drawn in,
-				# derived together so a row can never show an error word in the ok
-				# colour.
-				status_pair =
-					match Bill.parse_cents(expense.amount_text) {
-						Err(_) =>
-							{ text: "Amount not recognised, counted as ${Bill.money(0)}", tone: Warn }
-						Ok(_) =>
-							if !people.contains(expense.payer) {
-								{ text: "${expense.payer} is no longer on the trip", tone: Danger }
-							} else if parts.is_empty() {
-								{ text: "Nobody is sharing this", tone: Warn }
-							} else {
-								{
-									text: "${Bill.money(Bill.amount_cents(expense))} paid by ${expense.payer}, split ${Bill.ways(Bill.count(parts))}",
-									tone: Ok,
-								}
-							}
-					}
 				breakdown =
 					if parts.is_empty() {
 						"No shares"
@@ -366,8 +460,7 @@ Bill := {}.{
 					amount_text: expense.amount_text,
 					payer: expense.payer,
 					members,
-					status: status_pair.text,
-					status_tone: status_pair.tone,
+					status: Bill.status(expense, people),
 					breakdown,
 				}
 			},

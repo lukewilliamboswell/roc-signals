@@ -89,7 +89,17 @@ catalogue = [
 ]
 
 project_name : Str -> Str
-project_name = |id| catalogue.fold("none", |acc, entry| if entry.id == id { entry.name } else { acc })
+project_name = |id|
+	match catalogue.find_first(|entry| entry.id == id) {
+		Ok(entry) => entry.name
+		Err(_) => "none"
+	}
+
+## A catalogue id resolves to the display name shown in the row title.
+expect project_name("docs") == "Docs pass"
+
+## An unattached timer, whose project id is empty, reads as "none".
+expect project_name("") == "none"
 
 # --- storage codec -----------------------------------------------------------
 
@@ -100,37 +110,44 @@ stored_text = |stored|
 		_ => ""
 	}
 
+## Deliberately lenient: every non-digit byte is dropped before parsing, so a
+## corrupt field still reads as a number and a field with no digits reads as `0`.
+## Saved ledgers are user-editable text, so this never fails.
 parse_u64 : Str -> U64
-parse_u64 = |text|
-	text.to_utf8().fold(
-		0,
-		|acc, byte|
-			if byte >= 48 and byte <= 57 {
-				acc * 10 + U8.to_u64(byte) - 48
-			} else {
-				acc
-			},
-	)
+parse_u64 = |text| {
+	digits = Str.from_utf8_lossy(text.to_utf8().keep_if(|byte| byte >= 48 and byte <= 57))
+	U64.from_str(digits) ?? 0
+}
+
+## A plain digit field parses to its number.
+expect parse_u64("2") == 2
+
+## A field with no digits at all reads as zero rather than failing.
+expect parse_u64("") == 0
+
+## Non-digit bytes are dropped, so a corrupted field still yields a count.
+expect parse_u64("1x2") == 12
 
 second_field : List(Str) -> Str
-second_field = |parts|
-	match parts.drop_first(1).first() {
-		Ok(value) => value
-		Err(_) => ""
-	}
+second_field = |parts| parts.get(1) ?? ""
+
+## `docs=2` is this project's entry when the key before the `=` matches; the
+## junk the specs feed us (`bogus`) simply never matches.
+is_pair_for : Str, Str -> Bool
+is_pair_for = |pair, id| (pair.split_on("=").first() ?? "") == id
 
 blocks_for : List(Str), Str -> U64
 blocks_for = |pairs, id|
-	pairs.fold(
-		0,
-		|acc, pair| {
-			parts = pair.split_on("=")
-			match parts.first() {
-				Ok(key) => if key == id { parse_u64(second_field(parts)) } else { acc }
-				Err(_) => acc
-			}
-		},
-	)
+	match pairs.find_first(|pair| is_pair_for(pair, id)) {
+		Ok(pair) => parse_u64(second_field(pair.split_on("=")))
+		Err(_) => 0
+	}
+
+## A saved ledger yields the block count stored against the matching id.
+expect blocks_for(["docs=2", "bogus", "gone=9", "triage=1"], "docs") == 2
+
+## A project absent from the saved ledger starts the day at zero blocks.
+expect blocks_for(["docs=2", "bogus", "gone=9", "triage=1"], "api") == 0
 
 decode_ledger : Str -> List(Project)
 decode_ledger = |text| {
@@ -140,6 +157,10 @@ decode_ledger = |text| {
 
 encode_ledger : List(Project) -> Str
 encode_ledger = |projects| Str.join_with(projects.map(|p| "${p.id}=${p.blocks.to_str()}"), ";")
+
+## The saved text the specs start from decodes to the catalogue in order, and
+## re-encodes to the canonical form the spec expects back in storage.
+expect encode_ledger(decode_ledger("docs=2;bogus;gone=9;triage=1")) == "api=0;docs=2;triage=1"
 
 # --- derived timer readings --------------------------------------------------
 
@@ -190,16 +211,44 @@ toggle_run = |run|
 		_ => RunState.Running
 	}
 
-## The whole clock face is one pure function of the tick count.
-phase_text : U64 -> Str
-phase_text = |ticks|
+## Where the cycle currently is. The tag carries the minutes already spent in
+## that phase, so the clock face needs no second look at the tick count.
+Phase := [Focus(U64), Break(U64), Complete].{
+	to_str : Phase -> Str
+	to_str = |phase|
+		match phase {
+			Focus(minutes) => "Focus ${minutes.to_str()}/${focus_len.to_str()} min"
+			Break(minutes) => "Break ${minutes.to_str()}/${break_len.to_str()} min"
+			Complete => "Cycle complete"
+		}
+}
+
+## The whole clock face is one pure function of the tick count: classify once,
+## then render the tag.
+phase_of : U64 -> Phase
+phase_of = |ticks|
 	if ticks < focus_len {
-		"Focus ${ticks.to_str()}/${focus_len.to_str()} min"
+		Phase.Focus(ticks)
 	} else if ticks < focus_len + break_len {
-		"Break ${(ticks - focus_len).to_str()}/${break_len.to_str()} min"
+		Phase.Break(ticks - focus_len)
 	} else {
-		"Cycle complete"
+		Phase.Complete
 	}
+
+phase_text : U64 -> Str
+phase_text = |ticks| Phase.to_str(phase_of(ticks))
+
+## A fresh clock shows no focus minutes spent yet.
+expect phase_text(0) == "Focus 0/5 min"
+
+## The last tick of the focus block still reads as focus, not break.
+expect phase_text(4) == "Focus 4/5 min"
+
+## The tick that fills the focus block rolls the face over to the break.
+expect phase_text(5) == "Break 0/2 min"
+
+## Once focus and break are both spent the cycle reports itself complete.
+expect phase_text(7) == "Cycle complete"
 
 ## Minutes the current cycle has contributed so far, capped at one focus block.
 live_minutes : Live -> U64
@@ -239,8 +288,13 @@ log_block = |projects, id| projects.map(|p| if p.id == id { { ..p, blocks: p.blo
 
 # --- views -------------------------------------------------------------------
 
-render_row : Ui.State(Str), Ui.State(List(Project)), Signal.Signal(Live), Str, Signal.Signal(Project) -> Elem
-render_row = |attach, ledger, live, key, item| {
+## The handles a row needs, named rather than positional: `attach` and `ledger`
+## are both writable state and would otherwise be a transposable pair.
+RowCtx : { attach : Ui.State(Str), ledger : Ui.State(List(Project)), live : Signal.Signal(Live) }
+
+render_row : RowCtx, Str, Signal.Signal(Project) -> Elem
+render_row = |ctx, key, item| {
+	{ attach, ledger, live } = ctx
 	name = project_name(key)
 	# Fan-in: this row's item signal and the shared clock signal.
 	view = Signal.map2(item, live, row_view)
@@ -286,8 +340,23 @@ stat_tile = |test_id, label, value|
 		],
 	)
 
-board : Ui.State(Str), Ui.State(RunState), Ui.State(List(Project)), Signal.Signal(Str), Signal.Signal(U64), List(Elem) -> Elem
-board = |attach, run, ledger, attached, ticks, extras| {
+## The three handles that live for the whole page. Grouping them keeps the
+## `Ui.State(Str)` and the `Signal.Signal(Str)` from being swapped at a call site.
+PageCtx : { attach : Ui.State(Str), run : Ui.State(RunState), attached : Signal.Signal(Str) }
+
+## Everything the board renders from: the page-wide handles, the ledger scope it
+## was mounted inside, and whichever clock the run branch chose.
+Board : { ctx : PageCtx, ledger : Ui.State(List(Project)), ticks : Signal.Signal(U64) }
+
+board : Board, List(Elem) -> Elem
+board = |b, extras| {
+	ledger = b.ledger
+	ticks = b.ticks
+	attach = b.ctx.attach
+	# Field access, not `{ attach, run, attached } = b.ctx`: destructuring the
+	# record breaks method dispatch downstream. See UPSTREAM_COMPILER_BUGS.md #7.
+	run = b.ctx.run
+	attached = b.ctx.attached
 	run_signal = run.signal()
 	projects = ledger.signal()
 
@@ -344,7 +413,7 @@ board = |attach, run, ledger, attached, ticks, extras| {
 					Ui.when(
 						projects.map(|list| list.is_empty()),
 						|| Html.paragraph_c("No projects in the ledger yet.", "empty-state"),
-						|| Ui.each_str(projects, |p| p.id, |key, item| render_row(attach, ledger, live, key, item)),
+						|| Ui.each_str(projects, |p| p.id, |key, item| render_row({ attach, ledger, live }, key, item)),
 					),
 				],
 			),
@@ -368,8 +437,8 @@ board = |attach, run, ledger, attached, ticks, extras| {
 
 ## The row body runs at row mount time, so the ledger state below can start from
 ## the saved text carried in the row key.
-tracker : Ui.State(Str), Ui.State(RunState), Signal.Signal(Str), Str -> Elem
-tracker = |attach, run, attached, saved|
+tracker : PageCtx, Str -> Elem
+tracker = |ctx, saved|
 	Ui.state(
 		decode_ledger(saved),
 		|ledger|
@@ -377,9 +446,9 @@ tracker = |attach, run, attached, saved|
 				stack_class,
 				[
 					Ui.when(
-						run.signal().map(is_running),
-						|| board(attach, run, ledger, attached, Signal.interval(1000), [Ui.on_cleanup(Signal.cleanup("pomodoro clock cleanup"))]),
-						|| board(attach, run, ledger, attached, Signal.const(0), []),
+						ctx.run.signal().map(is_running),
+						|| board({ ctx, ledger, ticks: Signal.interval(1000) }, [Ui.on_cleanup(Signal.cleanup("pomodoro clock cleanup"))]),
+						|| board({ ctx, ledger, ticks: Signal.const(0) }, []),
 					),
 					Ui.on_change(ledger.signal(), |projects| Browser.set_local_storage_text(ledger_key, encode_ledger(projects))),
 				],
@@ -417,7 +486,7 @@ main = ||
 									),
 								],
 							),
-							Ui.each_str(seed, |saved| saved, |saved, _item| tracker(attach, run, attached, saved)),
+							Ui.each_str(seed, |saved| saved, |saved, _item| tracker({ attach, run, attached }, saved)),
 							Ui.on_change(attached, |value| Browser.set_local_storage_text(project_key, value)),
 						],
 					)

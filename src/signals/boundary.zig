@@ -16,10 +16,17 @@ pub const PayloadKind = enum(u64) {
 /// that crosses a host boundary; individual producers such as DOM events add
 /// their own extraction data after scalar schema tags.
 pub const SchemaTag = struct {
-    pub const unit: u8 = 1;
-    pub const text: u8 = 2;
-    pub const bool_: u8 = 3;
-    pub const record: u8 = 4;
+    pub const Kind = enum(u8) {
+        unit = 1,
+        text = 2,
+        boolean = 3,
+        record = 4,
+    };
+
+    pub const unit: u8 = @intFromEnum(Kind.unit);
+    pub const text: u8 = @intFromEnum(Kind.text);
+    pub const bool_: u8 = @intFromEnum(Kind.boolean);
+    pub const record: u8 = @intFromEnum(Kind.record);
 
     pub const unit_schema = [_]u8{unit};
     pub const text_schema = [_]u8{text};
@@ -73,15 +80,29 @@ pub const SchemaTag = struct {
 /// by one source byte and one leaf byte telling JS what to read from the browser
 /// event before encoding the resulting boundary payload.
 pub const DomEventExtractionPlan = struct {
-    pub const source_event: u8 = 1;
-    pub const source_target: u8 = 2;
-    pub const source_current_target: u8 = 3;
+    pub const Source = enum(u8) {
+        event = 1,
+        target = 2,
+        current_target = 3,
+    };
 
-    pub const leaf_key: u8 = 1;
-    pub const leaf_value: u8 = 2;
-    pub const leaf_checked: u8 = 3;
-    pub const leaf_shift_key: u8 = 4;
-    pub const leaf_detail: u8 = 5;
+    pub const Leaf = enum(u8) {
+        key = 1,
+        value = 2,
+        checked = 3,
+        shift_key = 4,
+        detail = 5,
+    };
+
+    pub const source_event: u8 = @intFromEnum(Source.event);
+    pub const source_target: u8 = @intFromEnum(Source.target);
+    pub const source_current_target: u8 = @intFromEnum(Source.current_target);
+
+    pub const leaf_key: u8 = @intFromEnum(Leaf.key);
+    pub const leaf_value: u8 = @intFromEnum(Leaf.value);
+    pub const leaf_checked: u8 = @intFromEnum(Leaf.checked);
+    pub const leaf_shift_key: u8 = @intFromEnum(Leaf.shift_key);
+    pub const leaf_detail: u8 = @intFromEnum(Leaf.detail);
 
     pub const target_value = [_]u8{
         SchemaTag.text,
@@ -136,6 +157,7 @@ pub const EventExtractionPlanKind = enum(u64) {
     record_key_shift = 4,
     detail = 5,
 
+    /// Returns the discriminant that determines which typed payload view is valid.
     pub fn payloadKind(self: EventExtractionPlanKind) PayloadKind {
         return switch (self) {
             .none => .unit,
@@ -146,6 +168,7 @@ pub const EventExtractionPlanKind = enum(u64) {
         };
     }
 
+    /// Returns validated boundary bytes as a borrowed slice.
     pub fn bytes(self: EventExtractionPlanKind) []const u8 {
         return switch (self) {
             .none => &SchemaTag.unit_schema,
@@ -156,6 +179,7 @@ pub const EventExtractionPlanKind = enum(u64) {
         };
     }
 
+    /// Returns the validated boundary schema bytes without taking ownership of them.
     pub fn schemaBytes(self: EventExtractionPlanKind) []const u8 {
         return switch (self) {
             .none => &SchemaTag.unit_schema,
@@ -171,6 +195,7 @@ pub const BoundaryPayloadDescriptor = struct {
     payload_kind: PayloadKind,
     extraction_plan: EventExtractionPlanKind,
 
+    /// Creates an initialized value with the ownership and capacity invariants required by this module.
     pub fn init(payload_kind: PayloadKind, extraction_plan: EventExtractionPlanKind) BoundaryPayloadDescriptor {
         validateBoundaryPayloadDescriptor(payload_kind, extraction_plan);
         return .{
@@ -179,27 +204,33 @@ pub const BoundaryPayloadDescriptor = struct {
         };
     }
 
+    /// Returns the discriminant that determines which typed payload view is valid.
     pub fn payloadKind(self: BoundaryPayloadDescriptor) PayloadKind {
         return self.payload_kind;
     }
 
+    /// Returns the validated event extraction plan encoded by this payload descriptor.
     pub fn extractionPlan(self: BoundaryPayloadDescriptor) EventExtractionPlanKind {
         return self.extraction_plan;
     }
 
+    /// Returns the validated boundary schema bytes without taking ownership of them.
     pub fn schemaBytes(self: BoundaryPayloadDescriptor) []const u8 {
         return self.extraction_plan.schemaBytes();
     }
 
+    /// Returns borrowed schema bytes for the validated extraction plan.
     pub fn extractionBytes(self: BoundaryPayloadDescriptor) []const u8 {
         return self.extraction_plan.bytes();
     }
 
+    /// Compares values through their owning capability rather than inspecting erased bytes.
     pub fn eql(self: BoundaryPayloadDescriptor, other: BoundaryPayloadDescriptor) bool {
         return self.payload_kind == other.payload_kind and self.extraction_plan == other.extraction_plan;
     }
 };
 
+/// Compares canonical payload descriptors structurally, including nested extraction schemas.
 pub fn boundaryPayloadDescriptorEql(left: ?BoundaryPayloadDescriptor, right: ?BoundaryPayloadDescriptor) bool {
     if (left) |left_value| {
         const right_value = right orelse return false;
@@ -248,6 +279,7 @@ pub const StorageArea = enum(u64) {
     local = 1,
     session = 2,
 
+    /// Decodes a protocol id into a known storage area or rejects the value.
     pub fn fromId(id: u64) ?StorageArea {
         return switch (id) {
             1 => .local,
@@ -286,6 +318,7 @@ const Cursor = struct {
     }
 };
 
+/// Encodes location payload in the shared boundary schema used by both hosts.
 pub fn encodeLocationPayload(allocator: std.mem.Allocator, location: LocationSnapshot) EncodeError![]u8 {
     var total_len: usize = 0;
     total_len = try addBoundaryTextPayloadLen(total_len, location.path);
@@ -301,6 +334,7 @@ pub fn encodeLocationPayload(allocator: std.mem.Allocator, location: LocationSna
     return bytes;
 }
 
+/// Encodes visibility payload in the shared boundary schema used by both hosts.
 pub fn encodeVisibilityPayload(allocator: std.mem.Allocator, visibility: VisibilitySnapshot) EncodeError![]u8 {
     const bytes = try allocator.alloc(u8, 1);
     bytes[0] = switch (visibility) {
@@ -310,6 +344,7 @@ pub fn encodeVisibilityPayload(allocator: std.mem.Allocator, visibility: Visibil
     return bytes;
 }
 
+/// Encodes online payload in the shared boundary schema used by both hosts.
 pub fn encodeOnlinePayload(allocator: std.mem.Allocator, online: OnlineSnapshot) EncodeError![]u8 {
     const bytes = try allocator.alloc(u8, 1);
     bytes[0] = switch (online) {
@@ -319,6 +354,7 @@ pub fn encodeOnlinePayload(allocator: std.mem.Allocator, online: OnlineSnapshot)
     return bytes;
 }
 
+/// Encodes storage payload in the shared boundary schema used by both hosts.
 pub fn encodeStoragePayload(allocator: std.mem.Allocator, snapshot: StorageSnapshot) EncodeError![]u8 {
     var total_len: usize = 1;
     switch (snapshot) {
@@ -392,6 +428,7 @@ fn parseBoundaryRecord(cursor: *Cursor, comptime parseNode: fn (*Cursor) ParseEr
     return .bytes;
 }
 
+/// Parses event extraction payload kind and rejects malformed input without semantic recovery.
 pub fn parseEventExtractionPayloadKind(extraction_bytes: []const u8) ParseError!PayloadKind {
     var cursor = Cursor{ .bytes = extraction_bytes };
     const payload_kind = try parseEventExtractionNode(&cursor);
@@ -399,6 +436,7 @@ pub fn parseEventExtractionPayloadKind(extraction_bytes: []const u8) ParseError!
     return payload_kind;
 }
 
+/// Parses boundary schema payload kind and rejects malformed input without semantic recovery.
 pub fn parseBoundarySchemaPayloadKind(schema_bytes: []const u8) ParseError!PayloadKind {
     var cursor = Cursor{ .bytes = schema_bytes };
     const payload_kind = try parseBoundarySchemaNode(&cursor);
@@ -407,30 +445,28 @@ pub fn parseBoundarySchemaPayloadKind(schema_bytes: []const u8) ParseError!Paylo
 }
 
 fn parseBoundarySchemaNode(cursor: *Cursor) ParseError!PayloadKind {
-    const tag = try cursor.readByte();
+    const tag = std.enums.fromInt(SchemaTag.Kind, try cursor.readByte()) orelse return error.UnknownSchemaTag;
     return switch (tag) {
-        SchemaTag.unit => .unit,
-        SchemaTag.text => .str,
-        SchemaTag.bool_ => .bool,
-        SchemaTag.record => try parseBoundaryRecord(cursor, parseBoundarySchemaNode),
-        else => error.UnknownSchemaTag,
+        .unit => .unit,
+        .text => .str,
+        .boolean => .bool,
+        .record => try parseBoundaryRecord(cursor, parseBoundarySchemaNode),
     };
 }
 
 fn parseEventExtractionNode(cursor: *Cursor) ParseError!PayloadKind {
-    const tag = try cursor.readByte();
+    const tag = std.enums.fromInt(SchemaTag.Kind, try cursor.readByte()) orelse return error.UnknownSchemaTag;
     return switch (tag) {
-        SchemaTag.unit => .unit,
-        SchemaTag.text => blk: {
+        .unit => .unit,
+        .text => blk: {
             try parseEventScalarExtraction(cursor, .str);
             break :blk .str;
         },
-        SchemaTag.bool_ => blk: {
+        .boolean => blk: {
             try parseEventScalarExtraction(cursor, .bool);
             break :blk .bool;
         },
-        SchemaTag.record => try parseBoundaryRecord(cursor, parseEventExtractionNode),
-        else => error.UnknownSchemaTag,
+        .record => try parseBoundaryRecord(cursor, parseEventExtractionNode),
     };
 }
 
@@ -443,28 +479,18 @@ fn parseEventScalarExtraction(cursor: *Cursor, payload_kind: PayloadKind) ParseE
 }
 
 fn validateEventExtractionSource(source: u8) ParseError!void {
-    switch (source) {
-        DomEventExtractionPlan.source_event,
-        DomEventExtractionPlan.source_target,
-        DomEventExtractionPlan.source_current_target,
-        => return,
-        else => return error.UnknownEventExtractionSource,
-    }
+    _ = std.enums.fromInt(DomEventExtractionPlan.Source, source) orelse return error.UnknownEventExtractionSource;
 }
 
 fn validateEventExtractionLeaf(payload_kind: PayloadKind, leaf: u8) ParseError!void {
+    const typed_leaf = std.enums.fromInt(DomEventExtractionPlan.Leaf, leaf) orelse return error.IncompatibleEventExtractionLeaf;
     switch (payload_kind) {
-        .str => switch (leaf) {
-            DomEventExtractionPlan.leaf_key,
-            DomEventExtractionPlan.leaf_value,
-            DomEventExtractionPlan.leaf_detail,
-            => return,
+        .str => switch (typed_leaf) {
+            .key, .value, .detail => return,
             else => return error.IncompatibleEventExtractionLeaf,
         },
-        .bool => switch (leaf) {
-            DomEventExtractionPlan.leaf_checked,
-            DomEventExtractionPlan.leaf_shift_key,
-            => return,
+        .bool => switch (typed_leaf) {
+            .checked, .shift_key => return,
             else => return error.IncompatibleEventExtractionLeaf,
         },
         else => return error.IncompatibleEventExtractionLeaf,
@@ -472,19 +498,15 @@ fn validateEventExtractionLeaf(payload_kind: PayloadKind, leaf: u8) ParseError!v
 }
 
 fn validateEventExtractionSourceLeaf(source: u8, leaf: u8) ParseError!void {
-    switch (leaf) {
-        DomEventExtractionPlan.leaf_key,
-        DomEventExtractionPlan.leaf_shift_key,
-        DomEventExtractionPlan.leaf_detail,
-        => {
-            if (source == DomEventExtractionPlan.source_event) return;
+    const typed_source = std.enums.fromInt(DomEventExtractionPlan.Source, source) orelse return error.UnknownEventExtractionSource;
+    const typed_leaf = std.enums.fromInt(DomEventExtractionPlan.Leaf, leaf) orelse return error.IncompatibleEventExtractionLeaf;
+    switch (typed_leaf) {
+        .key, .shift_key, .detail => {
+            if (typed_source == .event) return;
         },
-        DomEventExtractionPlan.leaf_value,
-        DomEventExtractionPlan.leaf_checked,
-        => {
-            if (source == DomEventExtractionPlan.source_target or source == DomEventExtractionPlan.source_current_target) return;
+        .value, .checked => {
+            if (typed_source == .target or typed_source == .current_target) return;
         },
-        else => unreachable,
     }
     return error.IncompatibleEventExtractionSource;
 }
@@ -499,10 +521,12 @@ fn parseSupportedEventExtractionPlanKind(extraction_bytes: []const u8) ParseErro
     return error.UnsupportedEventExtractionPlan;
 }
 
+/// Reads and validates the extraction-plan discriminant from boundary bytes.
 pub fn eventExtractionPlanKindFromBytes(extraction_bytes: []const u8) ?EventExtractionPlanKind {
     return parseSupportedEventExtractionPlanKind(extraction_bytes) catch null;
 }
 
+/// Parses and validates the canonical payload descriptor without guessing malformed intent.
 pub fn boundaryPayloadDescriptorFromExtractionBytes(extraction_bytes: []const u8) BoundaryPayloadDescriptor {
     const extraction = parseSupportedEventExtractionPlanKind(extraction_bytes) catch |err| std.debug.panic(
         "Roc event extraction plan bytes were malformed or unsupported: {s} ({d} byte(s))",
@@ -511,6 +535,7 @@ pub fn boundaryPayloadDescriptorFromExtractionBytes(extraction_bytes: []const u8
     return BoundaryPayloadDescriptor.init(extraction.payloadKind(), extraction);
 }
 
+/// Parses and validates the canonical payload descriptor without guessing malformed intent.
 pub fn validateBoundaryPayloadDescriptor(schema: PayloadKind, extraction: EventExtractionPlanKind) void {
     if (boundaryPayloadDescriptorMatches(schema, extraction)) return;
     std.debug.panic(
@@ -519,6 +544,7 @@ pub fn validateBoundaryPayloadDescriptor(schema: PayloadKind, extraction: EventE
     );
 }
 
+/// Parses and validates the canonical payload descriptor without guessing malformed intent.
 pub fn boundaryPayloadDescriptorMatches(schema: PayloadKind, extraction: EventExtractionPlanKind) bool {
     return schema == extraction.payloadKind();
 }

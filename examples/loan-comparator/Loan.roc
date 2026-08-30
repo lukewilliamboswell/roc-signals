@@ -47,10 +47,94 @@ Loan :: [].{
 		extra : Str,
 	}
 
-	## A draft parsed into params plus a human-readable validation message.
+	## Which draft field failed to parse. The badge text is derived from these
+	## tags; nothing downstream inspects the sentence to work out what broke.
+	Field := [Principal, Rate, Term, Extra].{
+		is_eq : Loan.Field, Loan.Field -> Bool
+		is_eq = |left, right|
+			match left {
+				Principal => match right {
+					Principal => True
+					_ => False
+				}
+				Rate => match right {
+					Rate => True
+					_ => False
+				}
+				Term => match right {
+					Term => True
+					_ => False
+				}
+				Extra => match right {
+					Extra => True
+					_ => False
+				}
+			}
+
+		to_str : Loan.Field -> Str
+		to_str = |field|
+			match field {
+				Principal => "principal"
+				Rate => "rate"
+				Term => "term"
+				Extra => "extra"
+			}
+	}
+
+	## The verdict on a whole draft: either every field parsed, or these ones
+	## did not.
+	Validation := [Valid, Invalid(List(Loan.Field))].{
+		is_eq : Loan.Validation, Loan.Validation -> Bool
+		is_eq = |left, right|
+			match left {
+				Valid => match right {
+					Valid => True
+					_ => False
+				}
+				Invalid(left_fields) => match right {
+					Invalid(right_fields) => Loan.same_fields(left_fields, right_fields)
+					_ => False
+				}
+			}
+
+		## Renders the message the badge shows.
+		to_str : Loan.Validation -> Str
+		to_str = |validation|
+			match validation {
+				Valid => "inputs ok"
+				Invalid(fields) => "check ${Str.join_with(fields.map(Loan.Field.to_str), ", ")}"
+			}
+
+		is_valid : Loan.Validation -> Bool
+		is_valid = |validation|
+			match validation {
+				Valid => True
+				Invalid(_) => False
+			}
+	}
+
+	same_fields : List(Loan.Field), List(Loan.Field) -> Bool
+	same_fields = |left, right| {
+		var $index = 0
+		var $same = left.len() == right.len()
+
+		while $index < left.len() {
+			$same =
+				$same
+				and match (left.get($index), right.get($index)) {
+					(Ok(left_field), Ok(right_field)) => Loan.Field.is_eq(left_field, right_field)
+					_ => False
+				}
+			$index = $index + 1
+		}
+
+		$same
+	}
+
+	## A draft parsed into params plus the validation verdict.
 	Parsed : {
 		params : Params,
-		message : Str,
+		validation : Loan.Validation,
 	}
 
 	max_term : U64
@@ -69,13 +153,9 @@ Loan :: [].{
 
 	## Parse a decimal string such as "6.5" into fixed-point minor units with
 	## `places` fractional digits. Empty text and any non-digit character are
-	## rejected; extra fractional digits are truncated.
-	Parse : {
-		ok : Bool,
-		value : U64,
-	}
-
-	parse_fixed : Str, U64 -> Parse
+	## rejected; extra fractional digits are truncated. `U64.from_str` cannot
+	## stand in here: it takes no scale and rejects the decimal point.
+	parse_fixed : Str, U64 -> Try(U64, [InvalidNumber])
 	parse_fixed = |text, places| {
 		bytes = text.trim().to_utf8()
 		var $whole = 0
@@ -87,11 +167,7 @@ Loan :: [].{
 		var $index = 0
 
 		while $index < bytes.len() {
-			byte =
-				match bytes.get($index) {
-					Ok(value) => value
-					Err(_) => 0
-				}
+			byte = bytes.get($index) ?? 0
 			is_dot = byte == 46
 			is_digit = (byte >= 48) and (byte <= 57)
 			digit = if is_digit { U8.to_u64(byte) - 48 } else { 0 }
@@ -109,14 +185,14 @@ Loan :: [].{
 		value = $whole * Loan.pow10(places) + $frac * Loan.pow10(places - kept)
 
 		if $ok and ($digits > 0) {
-			{ ok: True, value }
+			Ok(value)
 		} else {
-			{ ok: False, value: 0 }
+			Err(InvalidNumber)
 		}
 	}
 
 	## Parse a whole scenario draft. Invalid fields fall back to a safe value and
-	## are reported in the message so the UI can show an error path.
+	## are named in the verdict so the UI can show an error path.
 	parse_draft : Draft -> Parsed
 	parse_draft = |draft| {
 		principal_result = Loan.parse_fixed(draft.principal, 2)
@@ -124,34 +200,55 @@ Loan :: [].{
 		term_result = Loan.parse_fixed(draft.term, 0)
 		extra_result = Loan.parse_fixed(draft.extra, 2)
 
-		principal = principal_result.value
-		rate_bp = rate_result.value
-		raw_term = term_result.value
-		extra = extra_result.value
+		principal = principal_result ?? 0
+		rate_bp = rate_result ?? 0
+		raw_term = term_result ?? 0
+		extra = extra_result ?? 0
 
-		principal_ok = principal_result.ok
-		rate_ok = rate_result.ok
-		extra_ok = extra_result.ok
-		term_ok = term_result.ok and (raw_term >= 1) and (raw_term <= Loan.max_term)
+		term_ok = term_result.is_ok() and (raw_term >= 1) and (raw_term <= Loan.max_term)
 
 		term = if raw_term < 1 { 1 } else if raw_term > Loan.max_term { Loan.max_term } else { raw_term }
 
 		bad =
 			[]
-				.concat(if principal_ok { [] } else { ["principal"] })
-				.concat(if rate_ok { [] } else { ["rate"] })
-				.concat(if term_ok { [] } else { ["term"] })
-				.concat(if extra_ok { [] } else { ["extra"] })
+				.concat(if principal_result.is_ok() { [] } else { [Principal] })
+				.concat(if rate_result.is_ok() { [] } else { [Rate] })
+				.concat(if term_ok { [] } else { [Term] })
+				.concat(if extra_result.is_ok() { [] } else { [Extra] })
 
-		message =
-			if bad.is_empty() {
-				"inputs ok"
-			} else {
-				"check ${Str.join_with(bad, ", ")}"
-			}
+		validation = if bad.is_empty() { Valid } else { Invalid(bad) }
 
-		{ params: { principal, rate_bp, term, extra }, message }
+		{ params: { principal, rate_bp, term, extra }, validation }
 	}
+
+	## A whole-number amount scales up to minor units with no fractional part.
+	expect Loan.parse_fixed("2400", 2) == Ok(240000)
+	## A single fractional digit is padded out to the full scale, not left short.
+	expect Loan.parse_fixed("6.5", 2) == Ok(650)
+	## Surrounding whitespace is trimmed and extra fractional digits truncate rather than round.
+	expect Loan.parse_fixed(" 6.567 ", 2) == Ok(656)
+	## A scale of zero places keeps a whole number exactly as written.
+	expect Loan.parse_fixed("12", 0) == Ok(12)
+	## Non-digit text is rejected instead of parsing as zero.
+	expect Loan.parse_fixed("abc", 2) == Err(InvalidNumber)
+	## Empty text is rejected, so a blank box is never read as $0.00.
+	expect Loan.parse_fixed("", 2) == Err(InvalidNumber)
+	## A second decimal point is rejected rather than silently ignored.
+	expect Loan.parse_fixed("1.2.3", 2) == Err(InvalidNumber)
+
+	## The badge text the UI shows, straight off the verdict tag.
+	expect Loan.Validation.to_str(Valid) == "inputs ok"
+	## A single bad field is named in the badge sentence.
+	expect Loan.Validation.to_str(Invalid([Rate])) == "check rate"
+	## Several bad fields are listed together in draft order, comma separated.
+	expect Loan.Validation.to_str(Invalid([Rate, Term])) == "check rate, term"
+
+	## A draft whose every box parses reports no failing fields.
+	expect Loan.parse_draft({ principal: "2400", rate: "6", term: "12", extra: "0" }).validation.is_eq(Valid)
+	## Only the boxes that actually failed are named, and in field order.
+	expect Loan.parse_draft({ principal: "2400", rate: "abc", term: "zz", extra: "0" }).validation.is_eq(Invalid([Rate, Term]))
+	## An out-of-range term still clamps into a usable params value.
+	expect Loan.parse_draft({ principal: "2400", rate: "6", term: "0", extra: "0" }).params.term == 1
 
 	## Interest accrued on `balance` for one month, floored to whole cents.
 	monthly_interest : U64, U64 -> U64
@@ -246,20 +343,24 @@ Loan :: [].{
 		if month == 0 {
 			0
 		} else {
-			match sched.rows.get(month - 1) {
-				Ok(row) => row.interest + row.principal_paid
-				Err(_) => 0
-			}
+			sched.rows.get(month - 1).map_ok(|row| row.interest + row.principal_paid) ?? 0
 		}
 
-	sign_of : U64, U64 -> I64
-	sign_of = |left, right|
-		if left > right {
-			1
-		} else if left < right {
-			-1
-		} else {
-			0
+	## True when the running totals have swapped places: they were ordered one
+	## way and this month they are ordered the other. `EQ` on either side is
+	## "no information yet", not a crossing.
+	crossed : [LT, EQ, GT], [LT, EQ, GT] -> Bool
+	crossed = |previous, step|
+		match previous {
+			LT => match step {
+				GT => True
+				_ => False
+			}
+			GT => match step {
+				LT => True
+				_ => False
+			}
+			EQ => False
 		}
 
 	## First month at which the running total paid of two scenarios crosses over.
@@ -270,20 +371,31 @@ Loan :: [].{
 		var $month = 1
 		var $left_total = 0
 		var $right_total = 0
-		var $sign = Loan.sign_of(0, 0)
+		var $sign = EQ
 		var $found = 0
 
 		while ($month <= limit) and ($found == 0) {
 			$left_total = $left_total + Loan.month_paid(left, $month)
 			$right_total = $right_total + Loan.month_paid(right, $month)
-			step = Loan.sign_of($left_total, $right_total)
-			$found = if ($sign != 0) and (step != 0) and (step != $sign) { $month } else { $found }
-			$sign = if step != 0 { step } else { $sign }
+			step = U64.compare($left_total, $right_total)
+			$found = if Loan.crossed($sign, step) { $month } else { $found }
+			$sign =
+				match step {
+					EQ => $sign
+					_ => step
+				}
 			$month = $month + 1
 		}
 
 		$found
 	}
+
+	## An initial ordering is not itself a crossing: there was nothing to swap from.
+	expect Loan.crossed(EQ, GT) == False
+	## Running totals that were behind and are now ahead have crossed over.
+	expect Loan.crossed(LT, GT) == True
+	## Holding the same ordering another month is not a fresh crossing.
+	expect Loan.crossed(GT, GT) == False
 
 	## "$1234.56" style formatting from integer cents.
 	money : U64 -> Str
@@ -310,4 +422,17 @@ Loan :: [].{
 		} else {
 			"${months.to_str()} months"
 		}
+
+	## Zero cents still renders both decimal places.
+	expect Loan.money(0) == "$0.00"
+	## Cents are split off the dollars rather than shown as a raw integer.
+	expect Loan.money(247862) == "$2478.62"
+	## Basis points render as a two-decimal percentage.
+	expect Loan.percent(650) == "6.50%"
+	## A whole-percent rate still shows its trailing zeroes.
+	expect Loan.percent(1200) == "12.00%"
+	## A one-month payoff is singular.
+	expect Loan.months_text(1) == "1 month"
+	## Any other payoff length is plural.
+	expect Loan.months_text(12) == "12 months"
 }

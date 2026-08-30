@@ -2,9 +2,14 @@
 
 const std = @import("std");
 const descriptor_stream = @import("descriptor_stream.zig");
+const ids = @import("ids.zig");
 const scope_runtime = @import("scope_runtime.zig");
 
 pub const EachSite = scope_runtime.EachSite;
+
+/// Errors a splice preparation can raise: the allocator refused (`OutOfMemory`) or an
+/// index/count computation exceeded its arithmetic bound (`ResourceLimit`).
+pub const PrepareError = std.mem.Allocator.Error || error{ResourceLimit};
 
 pub const ReplacementTarget = union(enum) {
     scope: u64,
@@ -24,6 +29,7 @@ pub const Splice = struct {
     replacement_on_change_indices: []usize,
     replacement_mount_indices: []usize,
 
+    /// Releases every resource owned by this value and leaves no retained host or Roc ownership behind.
     pub fn deinit(self: Splice, allocator: std.mem.Allocator) void {
         allocator.free(self.removed_elem_ids);
         allocator.free(self.touched_parent_ids);
@@ -45,9 +51,63 @@ pub const RenderRemovalScan = struct {
     removed_render_count: usize,
     target_scan_count: usize,
 
+    /// Releases every resource owned by this value and leaves no retained host or Roc ownership behind.
     pub fn deinit(self: RenderRemovalScan, allocator: std.mem.Allocator) void {
         allocator.free(self.removed_elem_ids);
         allocator.free(self.touched_parent_ids);
+    }
+};
+
+pub const PreparedRemoval = struct {
+    scan: RenderRemovalScan,
+    descriptor_indexes: ElemOwnedRemovalScratch,
+    node_indexes: NodeOwnedRemovalScratch,
+
+    /// Releases all provisional removal metadata without touching the source stream.
+    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+        self.descriptor_indexes.deinit(allocator);
+        self.node_indexes.deinit(allocator);
+        self.scan.deinit(allocator);
+        self.* = undefined;
+    }
+};
+
+pub const RenderRemovalInterval = struct {
+    start: usize,
+    len: usize,
+};
+
+pub const PreparedMultiRemoval = struct {
+    removal: PreparedRemoval,
+    intervals_descending: []RenderRemovalInterval,
+
+    /// Releases the union journal and every prepared interval without mutating the source stream.
+    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+        self.removal.deinit(allocator);
+        allocator.free(self.intervals_descending);
+        self.* = undefined;
+    }
+};
+
+pub const NodeOwnedRemovalScratch = struct {
+    scope_site_indexes: std.ArrayListUnmanaged(usize) = .empty,
+    state_indexes: std.ArrayListUnmanaged(usize) = .empty,
+    when_indexes: std.ArrayListUnmanaged(usize) = .empty,
+    each_indexes: std.ArrayListUnmanaged(usize) = .empty,
+    on_change_indexes: std.ArrayListUnmanaged(usize) = .empty,
+    mount_indexes: std.ArrayListUnmanaged(usize) = .empty,
+    cleanup_indexes: std.ArrayListUnmanaged(usize) = .empty,
+
+    /// Releases all prepared node-owned removal indexes.
+    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+        self.scope_site_indexes.deinit(allocator);
+        self.state_indexes.deinit(allocator);
+        self.when_indexes.deinit(allocator);
+        self.each_indexes.deinit(allocator);
+        self.on_change_indexes.deinit(allocator);
+        self.mount_indexes.deinit(allocator);
+        self.cleanup_indexes.deinit(allocator);
+        self.* = .{};
     }
 };
 
@@ -57,51 +117,104 @@ pub const ElemOwnedRemovalScratch = struct {
     signal_text_node_indexes: std.ArrayListUnmanaged(usize) = .empty,
     static_text_attr_indexes: std.ArrayListUnmanaged(usize) = .empty,
     signal_text_attr_indexes: std.ArrayListUnmanaged(usize) = .empty,
+    static_custom_text_attr_indexes: std.ArrayListUnmanaged(usize) = .empty,
+    signal_custom_text_attr_indexes: std.ArrayListUnmanaged(usize) = .empty,
+    signal_optional_custom_text_attr_indexes: std.ArrayListUnmanaged(usize) = .empty,
     static_bool_attr_indexes: std.ArrayListUnmanaged(usize) = .empty,
     signal_bool_attr_indexes: std.ArrayListUnmanaged(usize) = .empty,
+    static_custom_bool_attr_indexes: std.ArrayListUnmanaged(usize) = .empty,
+    signal_custom_bool_attr_indexes: std.ArrayListUnmanaged(usize) = .empty,
     event_indexes: std.ArrayListUnmanaged(usize) = .empty,
 
+    /// Releases every resource owned by this value and leaves no retained host or Roc ownership behind.
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
         self.element_indexes.deinit(allocator);
         self.text_node_indexes.deinit(allocator);
         self.signal_text_node_indexes.deinit(allocator);
         self.static_text_attr_indexes.deinit(allocator);
         self.signal_text_attr_indexes.deinit(allocator);
+        self.static_custom_text_attr_indexes.deinit(allocator);
+        self.signal_custom_text_attr_indexes.deinit(allocator);
+        self.signal_optional_custom_text_attr_indexes.deinit(allocator);
         self.static_bool_attr_indexes.deinit(allocator);
         self.signal_bool_attr_indexes.deinit(allocator);
+        self.static_custom_bool_attr_indexes.deinit(allocator);
+        self.signal_custom_bool_attr_indexes.deinit(allocator);
         self.event_indexes.deinit(allocator);
         self.* = .{};
     }
 
+    /// Asserts that a splice plan owns no pending actions or provisional resources.
     pub fn assertEmpty(self: *const @This()) void {
         if (self.element_indexes.items.len != 0 or
             self.text_node_indexes.items.len != 0 or
             self.signal_text_node_indexes.items.len != 0 or
             self.static_text_attr_indexes.items.len != 0 or
             self.signal_text_attr_indexes.items.len != 0 or
+            self.static_custom_text_attr_indexes.items.len != 0 or
+            self.signal_custom_text_attr_indexes.items.len != 0 or
+            self.signal_optional_custom_text_attr_indexes.items.len != 0 or
             self.static_bool_attr_indexes.items.len != 0 or
             self.signal_bool_attr_indexes.items.len != 0 or
+            self.static_custom_bool_attr_indexes.items.len != 0 or
+            self.signal_custom_bool_attr_indexes.items.len != 0 or
             self.event_indexes.items.len != 0)
         {
             @panic("elem-owned removal scratch was already active");
         }
     }
 
+    /// Drops live entries while retaining allocated capacity for bounded reuse.
     pub fn clearRetainingCapacity(self: *@This()) void {
         self.element_indexes.clearRetainingCapacity();
         self.text_node_indexes.clearRetainingCapacity();
         self.signal_text_node_indexes.clearRetainingCapacity();
         self.static_text_attr_indexes.clearRetainingCapacity();
         self.signal_text_attr_indexes.clearRetainingCapacity();
+        self.static_custom_text_attr_indexes.clearRetainingCapacity();
+        self.signal_custom_text_attr_indexes.clearRetainingCapacity();
+        self.signal_optional_custom_text_attr_indexes.clearRetainingCapacity();
         self.static_bool_attr_indexes.clearRetainingCapacity();
         self.signal_bool_attr_indexes.clearRetainingCapacity();
+        self.static_custom_bool_attr_indexes.clearRetainingCapacity();
+        self.signal_custom_bool_attr_indexes.clearRetainingCapacity();
         self.event_indexes.clearRetainingCapacity();
     }
 
+    /// Reserves the worst-case descriptor-index footprint for `additional`
+    /// elements without changing any logical scratch length.
+    pub fn prepare(self: *@This(), allocator: std.mem.Allocator, additional: usize) PrepareError!void {
+        const text_fields = std.math.mul(usize, additional, 6) catch return error.ResourceLimit;
+        const bool_fields = std.math.mul(usize, additional, 2) catch return error.ResourceLimit;
+        const events = std.math.mul(usize, additional, 7) catch return error.ResourceLimit;
+        try self.element_indexes.ensureUnusedCapacity(allocator, additional);
+        try self.text_node_indexes.ensureUnusedCapacity(allocator, additional);
+        try self.signal_text_node_indexes.ensureUnusedCapacity(allocator, additional);
+        try self.static_text_attr_indexes.ensureUnusedCapacity(allocator, text_fields);
+        try self.signal_text_attr_indexes.ensureUnusedCapacity(allocator, text_fields);
+        try self.static_bool_attr_indexes.ensureUnusedCapacity(allocator, bool_fields);
+        try self.signal_bool_attr_indexes.ensureUnusedCapacity(allocator, bool_fields);
+        try self.event_indexes.ensureUnusedCapacity(allocator, events);
+    }
+
+    /// Records descriptor indexes without allocating. `prepare` must have
+    /// reserved capacity for every element in the transaction first.
+    pub fn appendDescriptorIndexesAssumeCapacity(self: *@This(), descriptor_index: anytype) void {
+        appendRemovalIndexAssumeCapacity(&self.element_indexes, descriptorIndexValue(descriptor_index.element));
+        appendRemovalIndexAssumeCapacity(&self.text_node_indexes, descriptorIndexValue(descriptor_index.text_node));
+        appendRemovalIndexAssumeCapacity(&self.signal_text_node_indexes, descriptorIndexValue(descriptor_index.signal_text_node));
+        appendTextFieldRemovalIndexesAssumeCapacity(&self.static_text_attr_indexes, descriptor_index.static_text_attrs);
+        appendTextFieldRemovalIndexesAssumeCapacity(&self.signal_text_attr_indexes, descriptor_index.signal_text_attrs);
+        appendBoolFieldRemovalIndexesAssumeCapacity(&self.static_bool_attr_indexes, descriptor_index.static_bool_attrs);
+        appendBoolFieldRemovalIndexesAssumeCapacity(&self.signal_bool_attr_indexes, descriptor_index.signal_bool_attrs);
+        appendEventRemovalIndexesAssumeCapacity(&self.event_indexes, descriptor_index.events);
+    }
+
+    /// Appends descriptor indexes using capacity that must already satisfy the caller's transaction contract.
     pub fn appendDescriptorIndexes(self: *@This(), allocator: std.mem.Allocator, descriptor_index: anytype) void {
-        appendRemovalIndex(allocator, &self.element_indexes, descriptor_index.element);
-        appendRemovalIndex(allocator, &self.text_node_indexes, descriptor_index.text_node);
-        appendRemovalIndex(allocator, &self.signal_text_node_indexes, descriptor_index.signal_text_node);
+        appendRemovalIndex(allocator, &self.element_indexes, descriptorIndexValue(descriptor_index.element));
+        appendRemovalIndex(allocator, &self.text_node_indexes, descriptorIndexValue(descriptor_index.text_node));
+        appendRemovalIndex(allocator, &self.signal_text_node_indexes, descriptorIndexValue(descriptor_index.signal_text_node));
         appendTextFieldRemovalIndexes(allocator, &self.static_text_attr_indexes, descriptor_index.static_text_attrs);
         appendTextFieldRemovalIndexes(allocator, &self.signal_text_attr_indexes, descriptor_index.signal_text_attrs);
         appendBoolFieldRemovalIndexes(allocator, &self.static_bool_attr_indexes, descriptor_index.static_bool_attrs);
@@ -109,71 +222,105 @@ pub const ElemOwnedRemovalScratch = struct {
         appendEventRemovalIndexes(allocator, &self.event_indexes, descriptor_index.events);
     }
 
+    /// Orders removal indexes from highest to lowest so earlier positions remain valid during mutation.
     pub fn sortDescending(self: *@This()) void {
         sortRemovalIndexesDescending(self.element_indexes.items);
         sortRemovalIndexesDescending(self.text_node_indexes.items);
         sortRemovalIndexesDescending(self.signal_text_node_indexes.items);
         sortRemovalIndexesDescending(self.static_text_attr_indexes.items);
         sortRemovalIndexesDescending(self.signal_text_attr_indexes.items);
+        sortRemovalIndexesDescending(self.static_custom_text_attr_indexes.items);
+        sortRemovalIndexesDescending(self.signal_custom_text_attr_indexes.items);
+        sortRemovalIndexesDescending(self.signal_optional_custom_text_attr_indexes.items);
         sortRemovalIndexesDescending(self.static_bool_attr_indexes.items);
         sortRemovalIndexesDescending(self.signal_bool_attr_indexes.items);
+        sortRemovalIndexesDescending(self.static_custom_bool_attr_indexes.items);
+        sortRemovalIndexesDescending(self.signal_custom_bool_attr_indexes.items);
         sortRemovalIndexesDescending(self.event_indexes.items);
     }
 };
 
-fn u64SliceContains(items: []const u64, target: u64) bool {
-    for (items) |item| {
-        if (item == target) return true;
-    }
-    return false;
-}
-
-fn appendUniqueU64(allocator: std.mem.Allocator, values: *std.ArrayListUnmanaged(u64), value: u64) void {
-    if (u64SliceContains(values.items, value)) return;
-    values.append(allocator, value) catch @panic("out of memory");
-}
-
-pub fn scopeIsInTargetSet(target_scopes: []const bool, scope_id: u64) bool {
-    if (scope_id >= target_scopes.len) @panic("descriptor referenced scope outside replacement target set");
-    return target_scopes[@intCast(scope_id)];
+/// Evaluates scope is in target set using explicit scope ownership rather than DOM position or content.
+pub fn scopeIsInTargetSet(target_scopes: []const bool, scope_id: ids.ScopeId) bool {
+    if (scope_id.index() >= target_scopes.len) @panic("descriptor referenced scope outside replacement target set");
+    return target_scopes[scope_id.index()];
 }
 
 fn removalIndexDesc(_: void, lhs: usize, rhs: usize) bool {
     return lhs > rhs;
 }
 
+/// Orders removal indexes from highest to lowest so earlier positions remain valid during mutation.
 pub fn sortRemovalIndexesDescending(indexes: []usize) void {
     std.mem.sort(usize, indexes, {}, removalIndexDesc);
 }
 
+/// Appends removal index using capacity that must already satisfy the caller's transaction contract.
 pub fn appendRemovalIndex(allocator: std.mem.Allocator, indexes: *std.ArrayListUnmanaged(usize), index: ?usize) void {
     indexes.append(allocator, index orelse return) catch @panic("out of memory");
 }
 
+fn appendRemovalIndexAssumeCapacity(indexes: *std.ArrayListUnmanaged(usize), index: ?usize) void {
+    indexes.appendAssumeCapacity(index orelse return);
+}
+
+fn appendTextFieldRemovalIndexesAssumeCapacity(indexes: *std.ArrayListUnmanaged(usize), fields: anytype) void {
+    appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(fields.text));
+    appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(fields.role));
+    appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(fields.label));
+    appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(fields.test_id));
+    appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(fields.value));
+    appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(fields.class));
+}
+
+fn appendBoolFieldRemovalIndexesAssumeCapacity(indexes: *std.ArrayListUnmanaged(usize), fields: anytype) void {
+    appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(fields.checked));
+    appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(fields.disabled));
+}
+
+fn appendEventRemovalIndexesAssumeCapacity(indexes: *std.ArrayListUnmanaged(usize), events: anytype) void {
+    appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(events.click));
+    appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(events.input));
+    appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(events.check));
+    appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(events.pointer_down));
+    appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(events.pointer_up));
+    appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(events.pointer_enter));
+    appendRemovalIndexAssumeCapacity(indexes, descriptorIndexValue(events.pointer_leave));
+}
+
+fn descriptorIndexValue(index: anytype) ?usize {
+    if (@TypeOf(index) == descriptor_stream.DescriptorIndex) return index.get();
+    return index;
+}
+
+/// Appends text field removal indexes using capacity that must already satisfy the caller's transaction contract.
 pub fn appendTextFieldRemovalIndexes(allocator: std.mem.Allocator, indexes: *std.ArrayListUnmanaged(usize), fields: anytype) void {
-    appendRemovalIndex(allocator, indexes, fields.text);
-    appendRemovalIndex(allocator, indexes, fields.role);
-    appendRemovalIndex(allocator, indexes, fields.label);
-    appendRemovalIndex(allocator, indexes, fields.test_id);
-    appendRemovalIndex(allocator, indexes, fields.value);
-    appendRemovalIndex(allocator, indexes, fields.class);
+    appendRemovalIndex(allocator, indexes, descriptorIndexValue(fields.text));
+    appendRemovalIndex(allocator, indexes, descriptorIndexValue(fields.role));
+    appendRemovalIndex(allocator, indexes, descriptorIndexValue(fields.label));
+    appendRemovalIndex(allocator, indexes, descriptorIndexValue(fields.test_id));
+    appendRemovalIndex(allocator, indexes, descriptorIndexValue(fields.value));
+    appendRemovalIndex(allocator, indexes, descriptorIndexValue(fields.class));
 }
 
+/// Appends bool field removal indexes using capacity that must already satisfy the caller's transaction contract.
 pub fn appendBoolFieldRemovalIndexes(allocator: std.mem.Allocator, indexes: *std.ArrayListUnmanaged(usize), fields: anytype) void {
-    appendRemovalIndex(allocator, indexes, fields.checked);
-    appendRemovalIndex(allocator, indexes, fields.disabled);
+    appendRemovalIndex(allocator, indexes, descriptorIndexValue(fields.checked));
+    appendRemovalIndex(allocator, indexes, descriptorIndexValue(fields.disabled));
 }
 
+/// Appends event removal indexes using capacity that must already satisfy the caller's transaction contract.
 pub fn appendEventRemovalIndexes(allocator: std.mem.Allocator, indexes: *std.ArrayListUnmanaged(usize), events: anytype) void {
-    appendRemovalIndex(allocator, indexes, events.click);
-    appendRemovalIndex(allocator, indexes, events.input);
-    appendRemovalIndex(allocator, indexes, events.check);
-    appendRemovalIndex(allocator, indexes, events.pointer_down);
-    appendRemovalIndex(allocator, indexes, events.pointer_up);
-    appendRemovalIndex(allocator, indexes, events.pointer_enter);
-    appendRemovalIndex(allocator, indexes, events.pointer_leave);
+    appendRemovalIndex(allocator, indexes, descriptorIndexValue(events.click));
+    appendRemovalIndex(allocator, indexes, descriptorIndexValue(events.input));
+    appendRemovalIndex(allocator, indexes, descriptorIndexValue(events.check));
+    appendRemovalIndex(allocator, indexes, descriptorIndexValue(events.pointer_down));
+    appendRemovalIndex(allocator, indexes, descriptorIndexValue(events.pointer_up));
+    appendRemovalIndex(allocator, indexes, descriptorIndexValue(events.pointer_enter));
+    appendRemovalIndex(allocator, indexes, descriptorIndexValue(events.pointer_leave));
 }
 
+/// Builds target scope set from validated descriptors without introducing host-specific semantics.
 pub fn buildTargetScopeSet(comptime Scope: type, allocator: std.mem.Allocator, scratch: *std.ArrayListUnmanaged(bool), scopes: []const Scope, target: ReplacementTarget, lookup: anytype) []const bool {
     if (scratch.items.len != 0) @panic("replacement target scope scratch was already active");
     scratch.resize(allocator, scopes.len) catch @panic("out of memory");
@@ -185,61 +332,318 @@ pub fn buildTargetScopeSet(comptime Scope: type, allocator: std.mem.Allocator, s
     return target_scopes;
 }
 
-pub fn collectRenderRemovalScan(comptime Stream: type, allocator: std.mem.Allocator, stream: *const Stream, render_insert_index: usize, target_scopes: []const bool) RenderRemovalScan {
+/// Prepares a render-removal snapshot without mutating the source stream.
+pub fn prepareRenderRemovalScan(comptime Stream: type, allocator: std.mem.Allocator, stream: *const Stream, render_insert_index: usize, target_scopes: []const bool) std.mem.Allocator.Error!RenderRemovalScan {
     if (render_insert_index > stream.render_nodes.items.len) @panic("structural replacement render insertion point is outside the active stream");
 
     var removed_elem_ids: std.ArrayListUnmanaged(u64) = .empty;
     errdefer removed_elem_ids.deinit(allocator);
+    var removed_elem_set: std.AutoHashMapUnmanaged(u64, void) = .empty;
+    defer removed_elem_set.deinit(allocator);
     var touched_parent_ids: std.ArrayListUnmanaged(u64) = .empty;
     errdefer touched_parent_ids.deinit(allocator);
+    var touched_parent_set: std.AutoHashMapUnmanaged(u64, void) = .empty;
+    defer touched_parent_set.deinit(allocator);
 
     var removed_render_count: usize = 0;
     var target_scan_count: usize = 0;
     var render_index = render_insert_index;
+    // Scope ownership alone decides what the interval removes. A node under a
+    // removed element is not thereby removed: a re-collected row's element is
+    // retired and re-created under its id, while the nested rows that survive
+    // the re-collection keep their nodes beneath it and end the interval.
     while (render_index < stream.render_nodes.items.len) : (render_index += 1) {
         const node = stream.render_nodes.items[render_index];
         const parent_elem_id = descriptor_stream.renderNodeParentElemId(Stream, stream, node);
         target_scan_count += 1;
-        const scope_in_target = scopeIsInTargetSet(target_scopes, descriptor_stream.renderNodeScopeId(Stream, stream, node));
-        const parent_removed = u64SliceContains(removed_elem_ids.items, parent_elem_id);
-        if (!scope_in_target and !parent_removed) break;
+        if (!scopeIsInTargetSet(target_scopes, descriptor_stream.renderNodeScopeId(Stream, stream, node))) break;
         removed_render_count += 1;
-        removed_elem_ids.append(allocator, node.elem_id) catch @panic("out of memory");
-        appendUniqueU64(allocator, &touched_parent_ids, parent_elem_id);
+        try removed_elem_ids.append(allocator, node.elem_id.raw());
+        try removed_elem_set.put(allocator, node.elem_id.raw(), {});
+        const touched_entry = try touched_parent_set.getOrPut(allocator, parent_elem_id.raw());
+        if (!touched_entry.found_existing) try touched_parent_ids.append(allocator, parent_elem_id.raw());
     }
 
     var touched_parent_write_index: usize = 0;
     for (touched_parent_ids.items) |parent_elem_id| {
-        if (u64SliceContains(removed_elem_ids.items, parent_elem_id)) continue;
+        if (removed_elem_set.contains(parent_elem_id)) continue;
         touched_parent_ids.items[touched_parent_write_index] = parent_elem_id;
         touched_parent_write_index += 1;
     }
     touched_parent_ids.items.len = touched_parent_write_index;
 
+    const owned_removed = try removed_elem_ids.toOwnedSlice(allocator);
+    errdefer allocator.free(owned_removed);
+    const owned_parents = try touched_parent_ids.toOwnedSlice(allocator);
     return .{
-        .removed_elem_ids = removed_elem_ids.toOwnedSlice(allocator) catch @panic("out of memory"),
-        .touched_parent_ids = touched_parent_ids.toOwnedSlice(allocator) catch @panic("out of memory"),
+        .removed_elem_ids = owned_removed,
+        .touched_parent_ids = owned_parents,
         .removed_render_count = removed_render_count,
         .target_scan_count = target_scan_count,
     };
 }
 
-pub fn renderElemIds(allocator: std.mem.Allocator, render_nodes: anytype) []u64 {
-    const elem_ids = allocator.alloc(u64, render_nodes.len) catch @panic("out of memory");
+/// Collects render removal scan for legacy immediate callers.
+pub fn collectRenderRemovalScan(comptime Stream: type, allocator: std.mem.Allocator, stream: *const Stream, render_insert_index: usize, target_scopes: []const bool) RenderRemovalScan {
+    return prepareRenderRemovalScan(Stream, allocator, stream, render_insert_index, target_scopes) catch @panic("out of memory");
+}
+
+/// Prepares the render scan and every descriptor-removal index before mutation.
+fn prepareRemovalFromScan(comptime Stream: type, allocator: std.mem.Allocator, stream: *const Stream, scan: RenderRemovalScan, target_scopes: []const bool) (PrepareError || error{InvalidDescriptor})!PreparedRemoval {
+    var prepared = PreparedRemoval{
+        .scan = scan,
+        .descriptor_indexes = .{},
+        .node_indexes = .{},
+    };
+    errdefer prepared.deinit(allocator);
+    try prepared.descriptor_indexes.prepare(allocator, prepared.scan.removed_elem_ids.len);
+    var named_event_count: usize = 0;
+    var custom_counts = [_]usize{0} ** 5;
+    for (prepared.scan.removed_elem_ids) |elem_id| {
+        named_event_count = std.math.add(usize, named_event_count, stream.namedEventIndices(ids.ElemId.fromRaw(elem_id)).len) catch return error.ResourceLimit;
+        for (stream.customAttrIndices(ids.ElemId.fromRaw(elem_id))) |custom| {
+            const offset: usize = switch (custom.kind) {
+                .static_text => 0,
+                .signal_text => 1,
+                .signal_text_optional => 2,
+                .static_bool => 3,
+                .signal_bool => 4,
+            };
+            custom_counts[offset] = std.math.add(usize, custom_counts[offset], 1) catch return error.ResourceLimit;
+        }
+    }
+    try prepared.descriptor_indexes.event_indexes.ensureUnusedCapacity(allocator, named_event_count);
+    try prepared.descriptor_indexes.static_custom_text_attr_indexes.ensureUnusedCapacity(allocator, custom_counts[0]);
+    try prepared.descriptor_indexes.signal_custom_text_attr_indexes.ensureUnusedCapacity(allocator, custom_counts[1]);
+    try prepared.descriptor_indexes.signal_optional_custom_text_attr_indexes.ensureUnusedCapacity(allocator, custom_counts[2]);
+    try prepared.descriptor_indexes.static_custom_bool_attr_indexes.ensureUnusedCapacity(allocator, custom_counts[3]);
+    try prepared.descriptor_indexes.signal_custom_bool_attr_indexes.ensureUnusedCapacity(allocator, custom_counts[4]);
+    for (prepared.scan.removed_elem_ids) |elem_id| {
+        if (stream.elemDescriptorIndex(ids.ElemId.fromRaw(elem_id))) |descriptor_index| prepared.descriptor_indexes.appendDescriptorIndexesAssumeCapacity(descriptor_index);
+        prepared.descriptor_indexes.event_indexes.appendSliceAssumeCapacity(stream.namedEventIndices(ids.ElemId.fromRaw(elem_id)));
+        for (stream.customAttrIndices(ids.ElemId.fromRaw(elem_id))) |custom| switch (custom.kind) {
+            .static_text => prepared.descriptor_indexes.static_custom_text_attr_indexes.appendAssumeCapacity(custom.index),
+            .signal_text => prepared.descriptor_indexes.signal_custom_text_attr_indexes.appendAssumeCapacity(custom.index),
+            .signal_text_optional => prepared.descriptor_indexes.signal_optional_custom_text_attr_indexes.appendAssumeCapacity(custom.index),
+            .static_bool => prepared.descriptor_indexes.static_custom_bool_attr_indexes.appendAssumeCapacity(custom.index),
+            .signal_bool => prepared.descriptor_indexes.signal_custom_bool_attr_indexes.appendAssumeCapacity(custom.index),
+        };
+    }
+    prepared.descriptor_indexes.sortDescending();
+    try prepared.node_indexes.scope_site_indexes.ensureUnusedCapacity(allocator, stream.scope_sites.items.len);
+    try prepared.node_indexes.state_indexes.ensureUnusedCapacity(allocator, stream.states.items.len);
+    try prepared.node_indexes.when_indexes.ensureUnusedCapacity(allocator, stream.whens.items.len);
+    try prepared.node_indexes.each_indexes.ensureUnusedCapacity(allocator, stream.eaches.items.len);
+    var lifecycle_counts = [_]usize{0} ** 3;
+    for (target_scopes, 0..) |targeted, scope_index| if (targeted) for (stream.lifecycleIndices(ids.ScopeId.fromIndex(scope_index))) |lifecycle| {
+        const offset: usize = switch (lifecycle.kind) {
+            .on_change => 0,
+            .mount => 1,
+            .cleanup => 2,
+        };
+        lifecycle_counts[offset] = std.math.add(usize, lifecycle_counts[offset], 1) catch return error.ResourceLimit;
+    };
+    try prepared.node_indexes.on_change_indexes.ensureUnusedCapacity(allocator, lifecycle_counts[0]);
+    try prepared.node_indexes.mount_indexes.ensureUnusedCapacity(allocator, lifecycle_counts[1]);
+    try prepared.node_indexes.cleanup_indexes.ensureUnusedCapacity(allocator, lifecycle_counts[2]);
+    for (target_scopes, 0..) |targeted, scope_index| if (targeted) for (stream.lifecycleIndices(ids.ScopeId.fromIndex(scope_index))) |lifecycle| switch (lifecycle.kind) {
+        .on_change => prepared.node_indexes.on_change_indexes.appendAssumeCapacity(lifecycle.index),
+        .mount => prepared.node_indexes.mount_indexes.appendAssumeCapacity(lifecycle.index),
+        .cleanup => prepared.node_indexes.cleanup_indexes.appendAssumeCapacity(lifecycle.index),
+    };
+    for (stream.scope_sites.items, 0..) |site, index| {
+        if (scopeIsInTargetSet(target_scopes, site.scope_id)) prepared.node_indexes.scope_site_indexes.appendAssumeCapacity(index);
+    }
+    for (stream.states.items, 0..) |state, index| {
+        const node_index = stream.nodeDescriptorIndex(state.node_id) orelse return error.InvalidDescriptor;
+        const site_index = node_index.scope_sites.get(.state) orelse return error.InvalidDescriptor;
+        if (site_index >= stream.scope_sites.items.len) return error.InvalidDescriptor;
+        if (scopeIsInTargetSet(target_scopes, stream.scope_sites.items[site_index].scope_id)) prepared.node_indexes.state_indexes.appendAssumeCapacity(index);
+    }
+    for (stream.whens.items, 0..) |when, index| {
+        const node_index = stream.nodeDescriptorIndex(when.node_id) orelse return error.InvalidDescriptor;
+        const site_index = node_index.scope_sites.get(.when) orelse return error.InvalidDescriptor;
+        if (site_index >= stream.scope_sites.items.len) return error.InvalidDescriptor;
+        if (scopeIsInTargetSet(target_scopes, stream.scope_sites.items[site_index].scope_id)) prepared.node_indexes.when_indexes.appendAssumeCapacity(index);
+    }
+    for (stream.eaches.items, 0..) |each, index| {
+        const node_index = stream.nodeDescriptorIndex(each.node_id) orelse return error.InvalidDescriptor;
+        const site_index = node_index.scope_sites.get(.each) orelse return error.InvalidDescriptor;
+        if (site_index >= stream.scope_sites.items.len) return error.InvalidDescriptor;
+        if (scopeIsInTargetSet(target_scopes, stream.scope_sites.items[site_index].scope_id)) prepared.node_indexes.each_indexes.appendAssumeCapacity(index);
+    }
+    sortRemovalIndexesDescending(prepared.node_indexes.scope_site_indexes.items);
+    sortRemovalIndexesDescending(prepared.node_indexes.state_indexes.items);
+    sortRemovalIndexesDescending(prepared.node_indexes.when_indexes.items);
+    sortRemovalIndexesDescending(prepared.node_indexes.each_indexes.items);
+    sortRemovalIndexesDescending(prepared.node_indexes.on_change_indexes.items);
+    sortRemovalIndexesDescending(prepared.node_indexes.mount_indexes.items);
+    sortRemovalIndexesDescending(prepared.node_indexes.cleanup_indexes.items);
+    return prepared;
+}
+
+/// Prepares one contiguous render interval and its union descriptor journals.
+pub fn prepareRemoval(comptime Stream: type, allocator: std.mem.Allocator, stream: *const Stream, render_insert_index: usize, target_scopes: []const bool) (PrepareError || error{InvalidDescriptor})!PreparedRemoval {
+    const scan = try prepareRenderRemovalScan(Stream, allocator, stream, render_insert_index, target_scopes);
+    return prepareRemovalFromScan(Stream, allocator, stream, scan, target_scopes);
+}
+
+fn intervalDescending(_: void, lhs: RenderRemovalInterval, rhs: RenderRemovalInterval) bool {
+    return lhs.start > rhs.start;
+}
+
+/// Prepares disjoint render intervals and one authoritative union descriptor journal.
+///
+/// `target_scopes` is the union over every site in the transaction and decides
+/// which descriptors the journal claims. `scan_scopes`, when supplied, gives the
+/// scope set that bounds each interval's own forward scan, one entry per entry
+/// of `render_insert_indexes`. The two differ whenever one transaction splices
+/// several sites: scanning a site's interval against the union lets the walk run
+/// straight out of that site's rows and into an adjacent site's, which then
+/// collides with that site's own interval and looks like overlapping input.
+/// Passing null scans every interval against the union, which is correct only
+/// when the transaction has a single site.
+pub fn prepareMultiRemoval(comptime Stream: type, allocator: std.mem.Allocator, stream: *const Stream, render_insert_indexes: []const usize, target_scopes: []const bool, scan_scopes: ?[]const []const bool) (PrepareError || error{ InvalidDescriptor, OverlappingIntervals })!PreparedMultiRemoval {
+    if (scan_scopes) |scopes| if (scopes.len != render_insert_indexes.len) return error.OverlappingIntervals;
+    var elem_ids = std.ArrayListUnmanaged(u64).empty;
+    errdefer elem_ids.deinit(allocator);
+    var parent_ids = std.ArrayListUnmanaged(u64).empty;
+    errdefer parent_ids.deinit(allocator);
+    var intervals = std.ArrayListUnmanaged(RenderRemovalInterval).empty;
+    errdefer intervals.deinit(allocator);
+    var elem_set = std.AutoHashMapUnmanaged(u64, void).empty;
+    defer elem_set.deinit(allocator);
+    var parent_set = std.AutoHashMapUnmanaged(u64, void).empty;
+    defer parent_set.deinit(allocator);
+    var target_scan_count: usize = 0;
+
+    for (render_insert_indexes, 0..) |start, start_index| {
+        const scan = try prepareRenderRemovalScan(Stream, allocator, stream, start, if (scan_scopes) |scopes| scopes[start_index] else target_scopes);
+        defer scan.deinit(allocator);
+        const end = std.math.add(usize, start, scan.removed_render_count) catch return error.ResourceLimit;
+        for (intervals.items) |prior| {
+            const prior_end = std.math.add(usize, prior.start, prior.len) catch return error.ResourceLimit;
+            if (start < prior_end and prior.start < end) return error.OverlappingIntervals;
+        }
+        try intervals.append(allocator, .{ .start = start, .len = scan.removed_render_count });
+        target_scan_count = std.math.add(usize, target_scan_count, scan.target_scan_count) catch return error.ResourceLimit;
+        for (scan.removed_elem_ids) |elem_id| {
+            const entry = try elem_set.getOrPut(allocator, elem_id);
+            if (entry.found_existing) return error.OverlappingIntervals;
+            try elem_ids.append(allocator, elem_id);
+        }
+        for (scan.touched_parent_ids) |parent_id| {
+            const entry = try parent_set.getOrPut(allocator, parent_id);
+            if (!entry.found_existing) try parent_ids.append(allocator, parent_id);
+        }
+    }
+    var parent_write: usize = 0;
+    for (parent_ids.items) |parent_id| {
+        if (elem_set.contains(parent_id)) continue;
+        parent_ids.items[parent_write] = parent_id;
+        parent_write += 1;
+    }
+    parent_ids.items.len = parent_write;
+    std.mem.sort(RenderRemovalInterval, intervals.items, {}, intervalDescending);
+
+    const owned_elem_ids = try elem_ids.toOwnedSlice(allocator);
+    var scan_transferred = false;
+    errdefer if (!scan_transferred) allocator.free(owned_elem_ids);
+    const owned_parent_ids = try parent_ids.toOwnedSlice(allocator);
+    errdefer if (!scan_transferred) allocator.free(owned_parent_ids);
+    const owned_intervals = try intervals.toOwnedSlice(allocator);
+    errdefer allocator.free(owned_intervals);
+    scan_transferred = true;
+    const removal = try prepareRemovalFromScan(Stream, allocator, stream, .{
+        .removed_elem_ids = owned_elem_ids,
+        .touched_parent_ids = owned_parent_ids,
+        .removed_render_count = owned_elem_ids.len,
+        .target_scan_count = target_scan_count,
+    }, target_scopes);
+    return .{ .removal = removal, .intervals_descending = owned_intervals };
+}
+
+/// Prepares the render element ids selected by a local structural splice.
+pub fn prepareRenderElemIds(allocator: std.mem.Allocator, render_nodes: anytype) std.mem.Allocator.Error![]u64 {
+    const elem_ids = try allocator.alloc(u64, render_nodes.len);
     for (render_nodes, 0..) |node, index| {
-        elem_ids[index] = node.elem_id;
+        elem_ids[index] = if (@TypeOf(node.elem_id) == u64) node.elem_id else node.elem_id.raw();
     }
     return elem_ids;
 }
 
-pub fn indexRange(allocator: std.mem.Allocator, start: usize, count: usize) []usize {
-    const indexes = allocator.alloc(usize, count) catch @panic("out of memory");
+/// Returns the render element ids selected by this local structural splice.
+pub fn renderElemIds(allocator: std.mem.Allocator, render_nodes: anytype) []u64 {
+    return prepareRenderElemIds(allocator, render_nodes) catch @panic("out of memory");
+}
+
+/// Prepares a contiguous descriptor range affected by a splice.
+pub fn prepareIndexRange(allocator: std.mem.Allocator, start: usize, count: usize) PrepareError![]usize {
+    _ = std.math.add(usize, start, count) catch return error.ResourceLimit;
+    const indexes = try allocator.alloc(usize, count);
     for (indexes, 0..) |*index, offset| {
         index.* = start + offset;
     }
     return indexes;
 }
 
+/// Returns the contiguous descriptor range affected by this splice.
+pub fn indexRange(allocator: std.mem.Allocator, start: usize, count: usize) []usize {
+    return prepareIndexRange(allocator, start, count) catch |err| switch (err) {
+        error.OutOfMemory => @panic("out of memory"),
+        error.ResourceLimit => @panic("index range exceeded its bound"),
+    };
+}
+
+pub const PreparedPublicationDeltas = struct {
+    replacement_elem_ids: []u64,
+    moved_event_elem_ids: []u64,
+    replacement_on_change_indices: []usize,
+    replacement_mount_indices: []usize,
+
+    /// Releases provisional publication metadata without mutating active state.
+    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+        allocator.free(self.replacement_elem_ids);
+        allocator.free(self.moved_event_elem_ids);
+        allocator.free(self.replacement_on_change_indices);
+        allocator.free(self.replacement_mount_indices);
+        self.* = undefined;
+    }
+};
+
+/// Copies all metadata needed after a structural stream replacement so commit
+/// can publish it without allocating.
+pub fn preparePublicationDeltas(allocator: std.mem.Allocator, replacement_render_nodes: anytype, moved_event_elem_ids: []const u64, on_change_start: usize, on_change_count: usize, mount_start: usize, mount_count: usize) PrepareError!PreparedPublicationDeltas {
+    const replacement_elem_ids = try prepareRenderElemIds(allocator, replacement_render_nodes);
+    errdefer allocator.free(replacement_elem_ids);
+    const owned_moved_events = try allocator.dupe(u64, moved_event_elem_ids);
+    errdefer allocator.free(owned_moved_events);
+    const on_change_indices = try prepareIndexRange(allocator, on_change_start, on_change_count);
+    errdefer allocator.free(on_change_indices);
+    const mount_indices = try prepareIndexRange(allocator, mount_start, mount_count);
+    return .{
+        .replacement_elem_ids = replacement_elem_ids,
+        .moved_event_elem_ids = owned_moved_events,
+        .replacement_on_change_indices = on_change_indices,
+        .replacement_mount_indices = mount_indices,
+    };
+}
+
+/// Reserves the final backing capacity for an in-place render-range splice.
+pub fn prepareRenderRangeCapacity(allocator: std.mem.Allocator, render_nodes: anytype, removed_count: usize, replacement_count: usize) PrepareError!void {
+    if (removed_count > render_nodes.items.len) return error.ResourceLimit;
+    const retained = render_nodes.items.len - removed_count;
+    const final_len = std.math.add(usize, retained, replacement_count) catch return error.ResourceLimit;
+    try render_nodes.ensureTotalCapacity(allocator, final_len);
+}
+
+/// Replaces a render range using only capacity established during prepare.
+pub fn commitRenderRangeAssumeCapacity(render_nodes: anytype, start: usize, removed_count: usize, replacement: anytype) void {
+    if (start > render_nodes.items.len or removed_count > render_nodes.items.len - start) @panic("prepared render splice range is invalid");
+    render_nodes.replaceRangeAssumeCapacity(start, removed_count, replacement);
+}
+
+/// Adjusts only scope-site insertion indexes shifted by the committed local splice.
 pub fn adjustScopeSiteRenderInsertIndices(scope_sites: anytype, replace_index: usize, removed_render_count: usize, replacement_render_count: usize) void {
     for (scope_sites) |*desc| {
         desc.render_insert_index = descriptor_stream.adjustedRenderInsertIndex(desc.render_insert_index, replace_index, removed_render_count, replacement_render_count);
@@ -286,6 +690,50 @@ test "structural splice allocates replacement metadata snapshots" {
     try std.testing.expectEqual(@as(usize, 12), scope_sites[1].render_insert_index);
 }
 
+test "publication deltas sweep failures and retry without source mutation" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    const RenderNode = struct { elem_id: u64 };
+    const nodes = [_]RenderNode{ .{ .elem_id = 4 }, .{ .elem_id = 9 } };
+    const moved = [_]u64{ 3, 8 };
+
+    var counter = FaultAllocator.init(std.testing.allocator);
+    var successful = try preparePublicationDeltas(counter.allocator(), &nodes, &moved, 7, 2, 11, 1);
+    const attempts = counter.attempts;
+    successful.deinit(counter.allocator());
+    try std.testing.expect(attempts >= 4);
+
+    for (1..attempts + 1) |failure_number| {
+        var fault = FaultAllocator.init(std.testing.allocator);
+        fault.configure(failure_number);
+        try std.testing.expectError(error.OutOfMemory, preparePublicationDeltas(fault.allocator(), &nodes, &moved, 7, 2, 11, 1));
+        try std.testing.expectEqualSlices(u64, &.{ 4, 9 }, &.{ nodes[0].elem_id, nodes[1].elem_id });
+        try std.testing.expectEqualSlices(u64, &.{ 3, 8 }, &moved);
+        fault.configure(null);
+        var retry = try preparePublicationDeltas(fault.allocator(), &nodes, &moved, 7, 2, 11, 1);
+        try std.testing.expectEqualSlices(u64, &.{ 4, 9 }, retry.replacement_elem_ids);
+        try std.testing.expectEqualSlices(u64, &.{ 3, 8 }, retry.moved_event_elem_ids);
+        try std.testing.expectEqualSlices(usize, &.{ 7, 8 }, retry.replacement_on_change_indices);
+        try std.testing.expectEqualSlices(usize, &.{11}, retry.replacement_mount_indices);
+        retry.deinit(fault.allocator());
+    }
+}
+
+test "prepared render range commit is allocation free" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var fault = FaultAllocator.init(std.testing.allocator);
+    const allocator = fault.allocator();
+    var nodes: std.ArrayListUnmanaged(u64) = .empty;
+    defer nodes.deinit(allocator);
+    try nodes.appendSlice(allocator, &.{ 1, 2, 3, 4 });
+    try prepareRenderRangeCapacity(allocator, &nodes, 2, 3);
+    fault.configure(1);
+    commitRenderRangeAssumeCapacity(&nodes, 1, 2, &.{ 8, 9, 10 });
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqualSlices(u64, &.{ 1, 8, 9, 10, 4 }, nodes.items);
+    fault.configure(null);
+    try std.testing.expectError(error.ResourceLimit, prepareRenderRangeCapacity(allocator, &nodes, nodes.items.len + 1, 0));
+}
+
 test "structural splice collects removal indexes" {
     const TextFields = struct {
         text: ?usize = 1,
@@ -303,10 +751,11 @@ test "structural splice collects removal indexes" {
     sortRemovalIndexesDescending(indexes.items);
 
     try std.testing.expectEqualSlices(usize, &.{ 7, 3, 1 }, indexes.items);
-    try std.testing.expect(scopeIsInTargetSet(&.{ false, true, false }, 1));
+    try std.testing.expect(scopeIsInTargetSet(&.{ false, true, false }, ids.ScopeId.fromRaw(1)));
 }
 
 test "structural splice scratch collects descriptor indexes" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
     const DescriptorIndex = struct {
         element: ?usize = 3,
         text_node: ?usize = null,
@@ -346,11 +795,17 @@ test "structural splice scratch collects descriptor indexes" {
         } = .{},
     };
 
+    var fault = FaultAllocator.init(std.testing.allocator);
+    const allocator = fault.allocator();
     var scratch: ElemOwnedRemovalScratch = .{};
-    defer scratch.deinit(std.testing.allocator);
+    defer scratch.deinit(allocator);
 
     scratch.assertEmpty();
-    scratch.appendDescriptorIndexes(std.testing.allocator, DescriptorIndex{});
+    try scratch.prepare(allocator, 1);
+    fault.configure(1);
+    scratch.appendDescriptorIndexesAssumeCapacity(DescriptorIndex{});
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    fault.configure(null);
     scratch.sortDescending();
 
     try std.testing.expectEqualSlices(usize, &.{3}, scratch.element_indexes.items);
@@ -368,6 +823,7 @@ test "structural splice builds target scope set through explicit lookup" {
         scope_id: u64,
     };
     const Lookup = struct {
+        /// Evaluates scope is in target using explicit scope ownership rather than DOM position or content.
         pub fn scopeIsInTarget(_: @This(), scope_id: u64, target: ReplacementTarget) bool {
             return switch (target) {
                 .scope => |root_scope_id| scope_id >= root_scope_id,
@@ -394,24 +850,53 @@ const TestStream = struct {
     elements: std.ArrayListUnmanaged(ElementDesc) = .empty,
     text_nodes: std.ArrayListUnmanaged(TextNodeDesc) = .empty,
     signal_text_nodes: std.ArrayListUnmanaged(SignalTextNodeDesc) = .empty,
+    scope_sites: std.ArrayListUnmanaged(descriptor_stream.ScopeSiteDesc) = .empty,
+    states: std.ArrayListUnmanaged(descriptor_stream.StateDesc) = .empty,
+    whens: std.ArrayListUnmanaged(descriptor_stream.WhenDesc) = .empty,
+    eaches: std.ArrayListUnmanaged(descriptor_stream.EachDesc) = .empty,
 
     fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
         self.render_nodes.deinit(allocator);
         self.elements.deinit(allocator);
         self.text_nodes.deinit(allocator);
         self.signal_text_nodes.deinit(allocator);
+        self.scope_sites.deinit(allocator);
+        self.states.deinit(allocator);
+        self.whens.deinit(allocator);
+        self.eaches.deinit(allocator);
     }
 
-    pub fn elemDescriptorIndex(self: *const @This(), elem_id: u64) ?descriptor_stream.ElemDescriptorIndex {
+    /// Resolves an element id through the maintained descriptor index.
+    pub fn elemDescriptorIndex(self: *const @This(), elem_id: ids.ElemId) ?descriptor_stream.ElemDescriptorIndex {
         for (self.elements.items, 0..) |desc, index| {
-            if (desc.elem_id == elem_id) return .{ .element = index };
+            if (desc.elem_id == elem_id) return .{ .element = descriptor_stream.DescriptorIndex.init(index) };
         }
         for (self.text_nodes.items, 0..) |desc, index| {
-            if (desc.elem_id == elem_id) return .{ .text_node = index };
+            if (desc.elem_id == elem_id) return .{ .text_node = descriptor_stream.DescriptorIndex.init(index) };
         }
         for (self.signal_text_nodes.items, 0..) |desc, index| {
-            if (desc.elem_id == elem_id) return .{ .signal_text_node = index };
+            if (desc.elem_id == elem_id) return .{ .signal_text_node = descriptor_stream.DescriptorIndex.init(index) };
         }
+        return null;
+    }
+
+    /// This minimal stream fixture has no named-event descriptors.
+    pub fn namedEventIndices(_: *const @This(), _: ids.ElemId) []const usize {
+        return &.{};
+    }
+
+    /// This minimal stream fixture has no custom attribute descriptors.
+    pub fn customAttrIndices(_: *const @This(), _: ids.ElemId) []const descriptor_stream.CustomAttrDescriptorIndex {
+        return &.{};
+    }
+
+    /// This minimal stream fixture has no lifecycle descriptors.
+    pub fn lifecycleIndices(_: *const @This(), _: ids.ScopeId) []const descriptor_stream.LifecycleDescriptorIndex {
+        return &.{};
+    }
+
+    /// This minimal stream fixture has no node-owned structural descriptors.
+    pub fn nodeDescriptorIndex(_: *const @This(), _: ids.NodeId) ?descriptor_stream.NodeDescriptorIndex {
         return null;
     }
 };
@@ -422,18 +907,18 @@ test "structural splice scans removed render range" {
     defer stream.deinit(allocator);
 
     stream.render_nodes.appendSlice(allocator, &.{
-        .{ .elem_id = 1, .kind = .element },
-        .{ .elem_id = 2, .kind = .text },
-        .{ .elem_id = 3, .kind = .text },
-        .{ .elem_id = 4, .kind = .element },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(1), .kind = .element },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(2), .kind = .text },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(3), .kind = .text },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(4), .kind = .element },
     }) catch @panic("out of memory");
     stream.elements.appendSlice(allocator, &.{
-        .{ .elem_id = 1, .parent_elem_id = 0, .scope_id = 10, .tag = "div" },
-        .{ .elem_id = 4, .parent_elem_id = 0, .scope_id = 20, .tag = "aside" },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(1), .parent_elem_id = descriptor_stream.ElemId.fromRaw(0), .scope_id = descriptor_stream.ScopeId.fromRaw(10), .tag = "div" },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(4), .parent_elem_id = descriptor_stream.ElemId.fromRaw(0), .scope_id = descriptor_stream.ScopeId.fromRaw(20), .tag = "aside" },
     }) catch @panic("out of memory");
     stream.text_nodes.appendSlice(allocator, &.{
-        .{ .elem_id = 2, .parent_elem_id = 1, .scope_id = 10, .value = "a" },
-        .{ .elem_id = 3, .parent_elem_id = 1, .scope_id = 10, .value = "b" },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(2), .parent_elem_id = descriptor_stream.ElemId.fromRaw(1), .scope_id = descriptor_stream.ScopeId.fromRaw(10), .value = "a" },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(3), .parent_elem_id = descriptor_stream.ElemId.fromRaw(1), .scope_id = descriptor_stream.ScopeId.fromRaw(10), .value = "b" },
     }) catch @panic("out of memory");
 
     var target_scopes = [_]bool{false} ** 21;
@@ -447,24 +932,113 @@ test "structural splice scans removed render range" {
     try std.testing.expectEqualSlices(u64, &.{0}, scan.touched_parent_ids);
 }
 
-test "structural splice removes rendered descendants of target nodes across scope boundaries" {
+test "render removal preparation sweeps allocation failures without source mutation" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var stream = TestStream{};
+    defer stream.deinit(std.testing.allocator);
+    try stream.render_nodes.appendSlice(std.testing.allocator, &.{
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(1), .kind = .element },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(2), .kind = .text },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(3), .kind = .text },
+    });
+    try stream.elements.append(std.testing.allocator, .{ .elem_id = descriptor_stream.ElemId.fromRaw(1), .parent_elem_id = descriptor_stream.ElemId.fromRaw(0), .scope_id = descriptor_stream.ScopeId.fromRaw(1), .tag = "div" });
+    try stream.text_nodes.appendSlice(std.testing.allocator, &.{
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(2), .parent_elem_id = descriptor_stream.ElemId.fromRaw(1), .scope_id = descriptor_stream.ScopeId.fromRaw(1), .value = "a" },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(3), .parent_elem_id = descriptor_stream.ElemId.fromRaw(1), .scope_id = descriptor_stream.ScopeId.fromRaw(1), .value = "b" },
+    });
+    const original_nodes = try std.testing.allocator.dupe(TestStream.RenderNode, stream.render_nodes.items);
+    defer std.testing.allocator.free(original_nodes);
+    const target_scopes = &.{ false, true };
+
+    var counter = FaultAllocator.init(std.testing.allocator);
+    var successful = try prepareRemoval(TestStream, counter.allocator(), &stream, 0, target_scopes);
+    const attempts = counter.attempts;
+    successful.deinit(counter.allocator());
+    try std.testing.expect(attempts != 0);
+
+    for (1..attempts + 1) |failure_number| {
+        var fault = FaultAllocator.init(std.testing.allocator);
+        fault.configure(failure_number);
+        try std.testing.expectError(error.OutOfMemory, prepareRemoval(TestStream, fault.allocator(), &stream, 0, target_scopes));
+        try std.testing.expectEqualSlices(TestStream.RenderNode, original_nodes, stream.render_nodes.items);
+        fault.configure(null);
+        var retry = try prepareRemoval(TestStream, fault.allocator(), &stream, 0, target_scopes);
+        try std.testing.expectEqualSlices(u64, &.{ 1, 2, 3 }, retry.scan.removed_elem_ids);
+        try std.testing.expectEqualSlices(usize, &.{0}, retry.descriptor_indexes.element_indexes.items);
+        try std.testing.expectEqualSlices(usize, &.{ 1, 0 }, retry.descriptor_indexes.text_node_indexes.items);
+        retry.deinit(fault.allocator());
+    }
+}
+
+test "multi interval removal prepares one union journal and rejects overlaps" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var stream = TestStream{};
+    defer stream.deinit(std.testing.allocator);
+    try stream.render_nodes.appendSlice(std.testing.allocator, &.{
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(1), .kind = .element },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(2), .kind = .text },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(3), .kind = .element },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(4), .kind = .element },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(5), .kind = .text },
+    });
+    try stream.elements.appendSlice(std.testing.allocator, &.{
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(1), .parent_elem_id = descriptor_stream.ElemId.fromRaw(0), .scope_id = descriptor_stream.ScopeId.fromRaw(1), .tag = "div" },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(3), .parent_elem_id = descriptor_stream.ElemId.fromRaw(0), .scope_id = descriptor_stream.ScopeId.fromRaw(2), .tag = "hr" },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(4), .parent_elem_id = descriptor_stream.ElemId.fromRaw(0), .scope_id = descriptor_stream.ScopeId.fromRaw(3), .tag = "aside" },
+    });
+    try stream.text_nodes.appendSlice(std.testing.allocator, &.{
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(2), .parent_elem_id = descriptor_stream.ElemId.fromRaw(1), .scope_id = descriptor_stream.ScopeId.fromRaw(1), .value = "a" },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(5), .parent_elem_id = descriptor_stream.ElemId.fromRaw(4), .scope_id = descriptor_stream.ScopeId.fromRaw(3), .value = "b" },
+    });
+    const original_nodes = try std.testing.allocator.dupe(TestStream.RenderNode, stream.render_nodes.items);
+    defer std.testing.allocator.free(original_nodes);
+    const target_scopes = &.{ false, true, false, true };
+
+    var counter = FaultAllocator.init(std.testing.allocator);
+    var successful = try prepareMultiRemoval(TestStream, counter.allocator(), &stream, &.{ 0, 3 }, target_scopes, null);
+    const attempts = counter.attempts;
+    try std.testing.expect(attempts != 0);
+    try std.testing.expectEqualDeep(&[_]RenderRemovalInterval{ .{ .start = 3, .len = 2 }, .{ .start = 0, .len = 2 } }, successful.intervals_descending);
+    try std.testing.expectEqualSlices(u64, &.{ 1, 2, 4, 5 }, successful.removal.scan.removed_elem_ids);
+    try std.testing.expectEqualSlices(usize, &.{ 2, 0 }, successful.removal.descriptor_indexes.element_indexes.items);
+    try std.testing.expectEqualSlices(usize, &.{ 1, 0 }, successful.removal.descriptor_indexes.text_node_indexes.items);
+    successful.deinit(counter.allocator());
+
+    for (1..attempts + 1) |failure_number| {
+        var fault = FaultAllocator.init(std.testing.allocator);
+        fault.configure(failure_number);
+        try std.testing.expectError(error.OutOfMemory, prepareMultiRemoval(TestStream, fault.allocator(), &stream, &.{ 0, 3 }, target_scopes, null));
+        try std.testing.expectEqualSlices(TestStream.RenderNode, original_nodes, stream.render_nodes.items);
+        fault.configure(null);
+        var retry = try prepareMultiRemoval(TestStream, fault.allocator(), &stream, &.{ 0, 3 }, target_scopes, null);
+        retry.deinit(fault.allocator());
+    }
+
+    try std.testing.expectError(error.OverlappingIntervals, prepareMultiRemoval(TestStream, std.testing.allocator, &stream, &.{ 0, 1 }, target_scopes, null));
+}
+
+test "structural splice removal scan follows scope ownership, not element nesting" {
+    // A section in the target scope holds a div of another scope, which holds
+    // a text of a third. Only the section is removed: the div is a row that
+    // survives its parent's re-collection and keeps its nodes beneath the
+    // re-created element, so it ends the interval rather than going with it.
     const allocator = std.testing.allocator;
     var stream = TestStream{};
     defer stream.deinit(allocator);
 
     stream.render_nodes.appendSlice(allocator, &.{
-        .{ .elem_id = 1, .kind = .element },
-        .{ .elem_id = 2, .kind = .element },
-        .{ .elem_id = 3, .kind = .text },
-        .{ .elem_id = 4, .kind = .element },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(1), .kind = .element },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(2), .kind = .element },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(3), .kind = .text },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(4), .kind = .element },
     }) catch @panic("out of memory");
     stream.elements.appendSlice(allocator, &.{
-        .{ .elem_id = 1, .parent_elem_id = 0, .scope_id = 10, .tag = "section" },
-        .{ .elem_id = 2, .parent_elem_id = 1, .scope_id = 20, .tag = "div" },
-        .{ .elem_id = 4, .parent_elem_id = 0, .scope_id = 30, .tag = "aside" },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(1), .parent_elem_id = descriptor_stream.ElemId.fromRaw(0), .scope_id = descriptor_stream.ScopeId.fromRaw(10), .tag = "section" },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(2), .parent_elem_id = descriptor_stream.ElemId.fromRaw(1), .scope_id = descriptor_stream.ScopeId.fromRaw(20), .tag = "div" },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(4), .parent_elem_id = descriptor_stream.ElemId.fromRaw(0), .scope_id = descriptor_stream.ScopeId.fromRaw(30), .tag = "aside" },
     }) catch @panic("out of memory");
     stream.text_nodes.appendSlice(allocator, &.{
-        .{ .elem_id = 3, .parent_elem_id = 2, .scope_id = 30, .value = "nested" },
+        .{ .elem_id = descriptor_stream.ElemId.fromRaw(3), .parent_elem_id = descriptor_stream.ElemId.fromRaw(2), .scope_id = descriptor_stream.ScopeId.fromRaw(30), .value = "nested" },
     }) catch @panic("out of memory");
 
     var target_scopes = [_]bool{false} ** 31;
@@ -472,8 +1046,8 @@ test "structural splice removes rendered descendants of target nodes across scop
     const scan = collectRenderRemovalScan(TestStream, allocator, &stream, 0, target_scopes[0..]);
     defer scan.deinit(allocator);
 
-    try std.testing.expectEqual(@as(usize, 3), scan.removed_render_count);
-    try std.testing.expectEqual(@as(usize, 4), scan.target_scan_count);
-    try std.testing.expectEqualSlices(u64, &.{ 1, 2, 3 }, scan.removed_elem_ids);
+    try std.testing.expectEqual(@as(usize, 1), scan.removed_render_count);
+    try std.testing.expectEqual(@as(usize, 2), scan.target_scan_count);
+    try std.testing.expectEqualSlices(u64, &.{1}, scan.removed_elem_ids);
     try std.testing.expectEqualSlices(u64, &.{0}, scan.touched_parent_ids);
 }

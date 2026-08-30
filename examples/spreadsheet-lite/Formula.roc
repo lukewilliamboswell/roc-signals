@@ -28,36 +28,33 @@ Formula := [].{
 
 	## Parse `SUM(A1:B3)` into a token holding the range members.
 	parse_sum : List(U8) -> Try({ token : Tok, rest : List(U8) }, [NotASum])
-	parse_sum = |bytes|
-		match Cells.parse_ref(bytes.drop_first(4)) {
-			Ok(from) =>
-				if Cells.byte_at(from.rest, 0) != ':' {
-					Err(NotASum)
-				} else {
-					match Cells.parse_ref(from.rest.drop_first(1)) {
-						Ok(to) =>
-							if Cells.byte_at(to.rest, 0) != ')' {
-								Err(NotASum)
-							} else {
-								Ok(
-									{
-										token: TSum(Cells.expand_range(from.index, to.index)),
-										rest: to.rest.drop_first(1),
-									},
-								)
-							}
-						Err(_) => Err(NotASum)
-					}
-				}
-			Err(_) => Err(NotASum)
+	parse_sum = |bytes| {
+		from = Cells.parse_ref(bytes.drop_first(4)) ? |_| NotASum
+		if Cells.byte_at(from.rest, 0) != ':' {
+			Err(NotASum)
+		} else {
+			to = Cells.parse_ref(from.rest.drop_first(1)) ? |_| NotASum
+			if Cells.byte_at(to.rest, 0) != ')' {
+				Err(NotASum)
+			} else {
+				Ok(
+					{
+						token: TSum(Cells.expand_range(from.index, to.index)),
+						rest: to.rest.drop_first(1),
+					},
+				)
+			}
 		}
+	}
 
 	## Tokenize a formula body (the text after the leading `=`).
 	tokenize : Str -> List(Tok)
 	tokenize = |body| {
 		var $rest = body.to_utf8()
 		var $out = []
-		var $after_value = Cells.no
+		# True while the next `-` would be a unary minus: at the start of the
+		# formula and directly after an operator or an open paren.
+		var $unary_position = True
 
 		while !$rest.is_empty() {
 			byte = Cells.byte_at($rest, 0)
@@ -68,7 +65,7 @@ Formula := [].{
 					Ok(parsed) => {
 						$out = $out.append(TNum(parsed.value))
 						$rest = parsed.rest
-						$after_value = Cells.yes
+						$unary_position = False
 					}
 					Err(_) => {
 						$out = $out.append(TBad)
@@ -80,7 +77,7 @@ Formula := [].{
 					Ok(parsed) => {
 						$out = $out.append(parsed.token)
 						$rest = parsed.rest
-						$after_value = Cells.yes
+						$unary_position = False
 					}
 					Err(_) => {
 						$out = $out.append(TBad)
@@ -92,7 +89,7 @@ Formula := [].{
 					Ok(parsed) => {
 						$out = $out.append(TRef(parsed.index))
 						$rest = parsed.rest
-						$after_value = Cells.yes
+						$unary_position = False
 					}
 					Err(_) => {
 						$out = $out.append(TBad)
@@ -100,24 +97,24 @@ Formula := [].{
 					}
 				}
 			} else if byte == '-' {
-				if !$after_value {
+				if $unary_position {
 					$out = $out.append(TNum(0))
 				}
 				$out = $out.append(TOp('-'))
 				$rest = $rest.drop_first(1)
-				$after_value = Cells.no
+				$unary_position = True
 			} else if byte == '+' or byte == '*' or byte == '/' {
 				$out = $out.append(TOp(byte))
 				$rest = $rest.drop_first(1)
-				$after_value = Cells.no
+				$unary_position = True
 			} else if byte == '(' {
 				$out = $out.append(TOpen)
 				$rest = $rest.drop_first(1)
-				$after_value = Cells.no
+				$unary_position = True
 			} else if byte == ')' {
 				$out = $out.append(TClose)
 				$rest = $rest.drop_first(1)
-				$after_value = Cells.yes
+				$unary_position = False
 			} else {
 				$out = $out.append(TBad)
 				$rest = $rest.drop_first(1)
@@ -160,19 +157,15 @@ Formula := [].{
 	to_rpn = |tokens| {
 		var $out = []
 		var $ops = []
-		var $bad = Cells.no
+		var $bad = False
 		var $index = 0
 
 		while $index < tokens.len() {
-			token =
-				match tokens.get($index) {
-					Ok(value) => value
-					Err(_) => TBad
-				}
+			token = tokens.get($index) ?? TBad
 
 			match token {
 				TBad => {
-					$bad = Cells.yes
+					$bad = True
 				}
 				TNum(_) => {
 					$out = $out.append(token)
@@ -187,32 +180,32 @@ Formula := [].{
 					$ops = $ops.append('(')
 				}
 				TClose => {
-					var $closed = Cells.no
+					var $open = True
 
-					while !$closed and !$ops.is_empty() {
+					while $open and !$ops.is_empty() {
 						top = Cells.byte_at($ops, $ops.len() - 1)
 						$ops = $ops.drop_last(1)
 						if top == '(' {
-							$closed = Cells.yes
+							$open = False
 						} else {
 							$out = $out.append(TOp(top))
 						}
 					}
 
-					if !$closed {
-						$bad = Cells.yes
+					if $open {
+						$bad = True
 					}
 				}
 				TOp(op) => {
-					var $popping = Cells.yes
+					var $popping = True
 
 					while $popping {
 						if $ops.is_empty() {
-							$popping = Cells.no
+							$popping = False
 						} else {
 							top = Cells.byte_at($ops, $ops.len() - 1)
 							if top == '(' or Formula.precedence(top) < Formula.precedence(op) {
-								$popping = Cells.no
+								$popping = False
 							} else {
 								$ops = $ops.drop_last(1)
 								$out = $out.append(TOp(top))
@@ -231,7 +224,7 @@ Formula := [].{
 			top = Cells.byte_at($ops, $ops.len() - 1)
 			$ops = $ops.drop_last(1)
 			if top == '(' {
-				$bad = Cells.yes
+				$bad = True
 			} else {
 				$out = $out.append(TOp(top))
 			}
@@ -258,26 +251,24 @@ Formula := [].{
 			Err(_) => Bad("#ERROR!")
 			Ok(rpn) => {
 				var $stack = []
-				var $error = ""
+				# The first failure wins: once this is `Failed`, the remaining tokens
+				# are skipped and its message becomes the cell's displayed text.
+				var $error = NoError
 				var $index = 0
 
 				while $index < rpn.len() {
-					token =
-						match rpn.get($index) {
-							Ok(value) => value
-							Err(_) => TBad
-						}
+					token = rpn.get($index) ?? TBad
 
-					if $error == "" {
-						match token {
+					match $error {
+						NoError => match token {
 							TBad => {
-								$error = "#ERROR!"
+								$error = Failed("#ERROR!")
 							}
 							TOpen => {
-								$error = "#ERROR!"
+								$error = Failed("#ERROR!")
 							}
 							TClose => {
-								$error = "#ERROR!"
+								$error = Failed("#ERROR!")
 							}
 							TNum(value) => {
 								$stack = $stack.append(value)
@@ -291,10 +282,10 @@ Formula := [].{
 										$stack = $stack.append(value)
 									}
 									Text(_) => {
-										$error = "#VALUE!"
+										$error = Failed("#VALUE!")
 									}
 									Bad(message) => {
-										$error = message
+										$error = Failed(message)
 									}
 								}
 							}
@@ -303,11 +294,7 @@ Formula := [].{
 								var $member = 0
 
 								while $member < cells.len() {
-									cell =
-										match cells.get($member) {
-											Ok(value) => value
-											Err(_) => 0
-										}
+									cell = cells.get($member) ?? 0
 
 									match Formula.slot_value(slots, cell) {
 										Empty => {}
@@ -316,7 +303,7 @@ Formula := [].{
 										}
 										Text(_) => {}
 										Bad(message) => {
-											$error = message
+											$error = Failed(message)
 										}
 									}
 
@@ -327,18 +314,10 @@ Formula := [].{
 							}
 							TOp(op) => {
 								if $stack.len() < 2 {
-									$error = "#ERROR!"
+									$error = Failed("#ERROR!")
 								} else {
-									right =
-										match $stack.get($stack.len() - 1) {
-											Ok(value) => value
-											Err(_) => 0
-										}
-									left =
-										match $stack.get($stack.len() - 2) {
-											Ok(value) => value
-											Err(_) => 0
-										}
+									right = $stack.get($stack.len() - 1) ?? 0
+									left = $stack.get($stack.len() - 2) ?? 0
 									$stack = $stack.drop_last(2)
 									if op == '+' {
 										$stack = $stack.append(left + right)
@@ -350,7 +329,7 @@ Formula := [].{
 												$stack = $stack.append(value)
 											}
 											Err(_) => {
-												$error = "#NUM!"
+												$error = Failed("#NUM!")
 											}
 										}
 									} else {
@@ -359,30 +338,29 @@ Formula := [].{
 												$stack = $stack.append(value)
 											}
 											Err(DivideByZero) => {
-												$error = "#DIV/0!"
+												$error = Failed("#DIV/0!")
 											}
 											Err(_) => {
-												$error = "#NUM!"
+												$error = Failed("#NUM!")
 											}
 										}
 									}
 								}
 							}
 						}
+						Failed(_) => {}
 					}
 
 					$index = $index + 1
 				}
 
-				if $error != "" {
-					Bad($error)
-				} else if $stack.len() == 1 {
-					match $stack.first() {
-						Ok(value) => Number(value)
-						Err(_) => Bad("#ERROR!")
-					}
-				} else {
-					Bad("#ERROR!")
+				match $error {
+					Failed(message) => Bad(message)
+					NoError =>
+						match $stack.first() {
+							Ok(value) if $stack.len() == 1 => Number(value)
+							_ => Bad("#ERROR!")
+						}
 				}
 			}
 		}
@@ -396,17 +374,13 @@ Formula := [].{
 			negative = source.starts_with("-")
 			digits = if negative { source.drop_prefix("-") } else { source }
 			match Cells.take_number(digits.to_utf8()) {
-				Ok(parsed) =>
-					if parsed.rest.is_empty() {
-						if negative {
-							Number(0 - parsed.value)
-						} else {
-							Number(parsed.value)
-						}
+				Ok(parsed) if parsed.rest.is_empty() =>
+					if negative {
+						Number(0 - parsed.value)
 					} else {
-						Text(source)
+						Number(parsed.value)
 					}
-				Err(_) => Text(source)
+				_ => Text(source)
 			}
 		}
 
@@ -426,3 +400,54 @@ Formula := [].{
 		}
 	}
 }
+
+## A literal cell reads no other cells.
+expect Formula.depends_on("1200") == "none"
+
+## A formula built only from numbers has no dependency edges.
+expect Formula.depends_on("=2+3*4") == "none"
+
+## Each reference in a formula becomes a dependency edge, in the order read.
+expect Formula.depends_on("=B2+C2") == "B2, C2"
+
+## A SUM range contributes every member of the range as its own edge.
+expect Formula.depends_on("=SUM(B2:B4)") == "B2, B3, B4"
+
+## An empty source is an empty cell, not empty text.
+expect Formula.literal_value("") == Empty
+
+## A bare integer literal becomes a fixed-point number.
+expect Formula.literal_value("1200") == Number(1200 * Cells.scale)
+
+## A leading minus is part of the literal, not an operator.
+expect Formula.literal_value("-2.5") == Number(0 - 25000)
+
+## Anything that is not a number stays text.
+expect Formula.literal_value("oops") == Text("oops")
+
+## A number with trailing junk is text, not a partially parsed number.
+expect Formula.literal_value("12x3") == Text("12x3")
+
+## Multiplication and division bind tighter than addition and subtraction.
+expect Formula.eval_tokens(Formula.tokenize("2+3*4-6/3"), []) == Number(12 * Cells.scale)
+
+## A minus at the start of a formula is unary, not a missing left operand.
+expect Formula.eval_tokens(Formula.tokenize("-3+10"), []) == Number(7 * Cells.scale)
+
+## Parentheses override precedence.
+expect Formula.eval_tokens(Formula.tokenize("(1+2)*(3+4)"), []) == Number(21 * Cells.scale)
+
+## Division truncates at four decimal places rather than rounding.
+expect Formula.eval_tokens(Formula.tokenize("10/3"), []) == Number(33333)
+
+## A zero divisor surfaces as the spreadsheet's divide-by-zero text.
+expect Formula.eval_tokens(Formula.tokenize("1/0"), []) == Bad("#DIV/0!")
+
+## An operator with no right operand is a formula error.
+expect Formula.eval_tokens(Formula.tokenize("1+"), []) == Bad("#ERROR!")
+
+## An unclosed parenthesis is a formula error.
+expect Formula.eval_tokens(Formula.tokenize("(1+2"), []) == Bad("#ERROR!")
+
+## A reference outside the sheet tokenizes as bad input and fails the formula.
+expect Formula.eval_tokens(Formula.tokenize("Z9+1"), []) == Bad("#ERROR!")

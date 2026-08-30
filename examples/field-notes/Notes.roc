@@ -18,6 +18,96 @@ Notes := {}.{
 
 	TaskView : [TaskIdle, TaskDone(Str), TaskFailed(Str)]
 
+	## Where a note sits in the sync pipeline. This is derived per render from
+	## (note, lane settlement, online, auto-sync) — it is never stored — and it is
+	## the single source for the badge caption, the badge tone, and the
+	## `data-status` attribute, so the three can never disagree.
+	Status := [Draft, Queued, Syncing, Synced, Failed].{
+		is_eq : Notes.Status, Notes.Status -> Bool
+		is_eq = |left, right|
+			match left {
+				Draft => match right {
+					Draft => True
+					_ => False
+				}
+				Queued => match right {
+					Queued => True
+					_ => False
+				}
+				Syncing => match right {
+					Syncing => True
+					_ => False
+				}
+				Synced => match right {
+					Synced => True
+					_ => False
+				}
+				Failed => match right {
+					Failed => True
+					_ => False
+				}
+			}
+	}
+
+	## The machine-readable token, rendered into `data-status`.
+	status_code : Notes.Status -> Str
+	status_code = |status|
+		match status {
+			Draft => "draft"
+			Queued => "queued"
+			Syncing => "syncing"
+			Synced => "synced"
+			Failed => "failed"
+		}
+
+	## The status word a row shows in its badge.
+	status_title : Notes.Status -> Str
+	status_title = |status|
+		match status {
+			Draft => "Draft"
+			Queued => "Queued"
+			Syncing => "Syncing"
+			Synced => "Synced"
+			Failed => "Failed"
+		}
+
+	## The wire token for a note nobody has queued yet is `draft`.
+	expect status_code(Draft) == "draft"
+
+	## A lane that settled with a failure reports the `failed` token.
+	expect status_code(Failed) == "failed"
+
+	## The badge caption is the human spelling of the same tag.
+	expect status_title(Syncing) == "Syncing"
+
+	## A note counts against the outbox until it has settled successfully; a
+	## failure still occupies a lane, so it still counts.
+	in_outbox : Notes.Status -> Bool
+	in_outbox = |status|
+		match status {
+			Draft => False
+			Synced => False
+			_ => True
+		}
+
+	## What a lane should be doing right now. `Signal.start_str` puts a `Str` on
+	## the wire, so the token is encoded at exactly one point (`sync_lane`) rather
+	## than an empty string standing in for "nothing to send".
+	Request := [Idle, Send(Str)].{
+		is_eq : Notes.Request, Notes.Request -> Bool
+		is_eq = |left, right|
+			match left {
+				Idle => match right {
+					Idle => True
+					_ => False
+				}
+				Send(left_token) => match right {
+					Send(right_token) => left_token == right_token
+					_ => False
+				}
+			}
+	}
+
 	Op : [
 		OpAdd(Str, Str),
 		OpEdit(Str, Str, Str),
@@ -34,8 +124,7 @@ Notes := {}.{
 	Row : {
 		id : Str,
 		body : Str,
-		status : Str,
-		status_label : Str,
+		status : Notes.Status,
 		detail : Str,
 		queue_disabled : Bool,
 		retry_disabled : Bool,
@@ -48,60 +137,14 @@ Notes := {}.{
 
 	## --- small helpers ---
 	part_at : List(Str), U64 -> Str
-	part_at = |parts, index|
-		parts
-			.fold(
-				{ cursor: 0, found: "" },
-				|acc, part|
-					if acc.cursor == index {
-						{ cursor: acc.cursor + 1, found: part }
-					} else {
-						{ cursor: acc.cursor + 1, found: acc.found }
-					},
-			)
-			.found
-
-	digit_value : Str -> U64
-	digit_value = |text|
-		if text == "1" {
-			1
-		} else if text == "2" {
-			2
-		} else if text == "3" {
-			3
-		} else if text == "4" {
-			4
-		} else if text == "5" {
-			5
-		} else if text == "6" {
-			6
-		} else if text == "7" {
-			7
-		} else if text == "8" {
-			8
-		} else if text == "9" {
-			9
-		} else {
-			0
-		}
+	part_at = |parts, index| parts.get(index) ?? ""
 
 	## Remove the two characters the storage format reserves as separators.
 	sanitize : Str -> Str
 	sanitize = |text| Str.join_with(Str.join_with(text.split_on("|"), " ").split_on(";"), " ")
 
 	view_at : List(TaskView), U64 -> TaskView
-	view_at = |views, slot|
-		views
-			.fold(
-				{ cursor: 0, found: TaskIdle },
-				|acc, view|
-					if acc.cursor == slot {
-						{ cursor: acc.cursor + 1, found: view }
-					} else {
-						{ cursor: acc.cursor + 1, found: acc.found }
-					},
-			)
-			.found
+	view_at = |views, slot| views.get(slot) ?? TaskIdle
 
 	## --- storage codec ---
 	encode_note : Note -> Str
@@ -124,7 +167,9 @@ Notes := {}.{
 		if id == "" or slot_text == "" {
 			[]
 		} else {
-			slot = digit_value(slot_text)
+			## Storage may hold a value this app never wrote, so an unparseable
+			## slot falls back to 0 rather than rejecting the note.
+			slot = Try.ok_or(U64.from_str(slot_text), 0)
 			if slot >= slot_count {
 				[]
 			} else {
@@ -146,8 +191,24 @@ Notes := {}.{
 		if text.trim() == "" {
 			[]
 		} else {
-			text.split_on(";").fold([], |acc, chunk| List.concat(acc, decode_note(chunk)))
+			text.split_on(";").join_map(decode_note)
 		}
+
+	## Encoding a note and decoding it again reproduces it exactly, which is what
+	## lets the persisted value be replayed through the operation log.
+	expect {
+		note = { id: "n0", slot: 0, body: "Generator hours", queued: True, rev: "r7" }
+		decode_note(encode_note(note)) == [note]
+	}
+
+	## An empty storage value restores an empty board rather than a phantom note.
+	expect decode_notes("") == []
+
+	## A single stored record restores as one note keeping the id it was written with.
+	expect decode_notes("n0|0|1|r7|Generator hours").map(|note| note.id) == ["n0"]
+
+	## A slot outside the outbox is not a note this app can hold, so it is dropped.
+	expect decode_notes("n0|9|1|r7|Generator hours") == []
 
 	stored_notes : Browser.StorageText -> List(Note)
 	stored_notes = |stored|
@@ -168,7 +229,7 @@ Notes := {}.{
 	free_slot = |notes, candidate|
 		if candidate >= slot_count {
 			slot_count
-		} else if notes.fold(False, |taken, note| taken or note.slot == candidate) {
+		} else if !notes.keep_if(|note| note.slot == candidate).is_empty() {
 			free_slot(notes, candidate + 1)
 		} else {
 			candidate
@@ -176,16 +237,14 @@ Notes := {}.{
 
 	next_id : List(Op) -> Str
 	next_id = |ops| {
-		adds : U64
 		adds =
-			ops.fold(
-				0,
-				|count, op|
+			ops.keep_if(
+				|op|
 					match op {
-						OpAdd(_, _) => count + 1
-						_ => count
+						OpAdd(_, _) => True
+						_ => False
 					},
-			)
+			).len()
 		"s${(adds + 1).to_str()}"
 	}
 
@@ -197,7 +256,7 @@ Notes := {}.{
 	apply_op = |notes, op|
 		match op {
 			OpAdd(id, body) => {
-				if notes.fold(False, |seen, note| seen or note.id == id) {
+				if !notes.keep_if(|note| note.id == id).is_empty() {
 					notes
 				} else {
 					slot = free_slot(notes, 0)
@@ -217,7 +276,7 @@ Notes := {}.{
 							note
 						},
 				)
-			OpDelete(id) => notes.fold([], |acc, note| if note.id == id { acc } else { acc.append(note) })
+			OpDelete(id) => notes.keep_if(|note| note.id != id)
 			OpQueue(id) =>
 				notes.map(
 					|note|
@@ -237,9 +296,7 @@ Notes := {}.{
 						},
 				)
 			OpPromote(id) => {
-				promoted = notes.fold([], |acc, note| if note.id == id { acc.append(note) } else { acc })
-				rest = notes.fold([], |acc, note| if note.id == id { acc } else { acc.append(note) })
-				List.concat(promoted, rest)
+				List.concat(notes.keep_if(|note| note.id == id), notes.keep_if(|note| note.id != id))
 			}
 		}
 
@@ -247,18 +304,38 @@ Notes := {}.{
 	## reducer never has to read a signal.
 	next_rev : List(Op), Str -> Str
 	next_rev = |ops, id| {
-		bumps : U64
 		bumps =
-			ops.fold(
-				0,
-				|count, op|
+			ops.keep_if(
+				|op|
 					match op {
-						OpEdit(op_id, _, _) => if op_id == id { count + 1 } else { count }
-						OpRetry(op_id, _) => if op_id == id { count + 1 } else { count }
-						_ => count
+						OpEdit(op_id, _, _) => op_id == id
+						OpRetry(op_id, _) => op_id == id
+						_ => False
 					},
-			)
+			).len()
 		"${id}:${(bumps + 1).to_str()}"
+	}
+
+	## The first note captured in a session is numbered from one.
+	expect next_id([]) == "s1"
+
+	## Only adds advance the id counter, so queueing a note does not consume one.
+	expect next_id([OpAdd("s1", "one"), OpQueue("s1")]) == "s2"
+
+	## A note that has never been edited is at its first revision.
+	expect next_rev([], "n0") == "n0:1"
+
+	## Each edit in the log mints the next revision for that note.
+	expect next_rev([OpEdit("n0", "one", "n0:1")], "n0") == "n0:2"
+
+	## Revisions are counted per note, so another note's edits do not bump this one.
+	expect next_rev([OpEdit("n1", "one", "n1:1")], "n0") == "n0:1"
+
+	## Re-applying a log over notes that already contain its effect is a no-op.
+	expect {
+		once = [OpAdd("s1", "one")].fold([], apply_op)
+		twice = [OpAdd("s1", "one"), OpAdd("s1", "one")].fold([], apply_op)
+		once == twice
 	}
 
 	edit_note : Capture, Str, Str -> Capture
@@ -308,31 +385,24 @@ Notes := {}.{
 	## does not stall the notes behind it.
 	head_id : List(Note), List(TaskView) -> Str
 	head_id = |notes, views|
-		notes.fold(
-			"",
-			|found, note|
-				if found != "" {
-					found
-				} else if note.queued and is_outstanding(note, view_at(views, note.slot)) {
-					note.id
-				} else {
-					found
-				},
-		)
+		match notes.find_first(|note| note.queued and is_outstanding(note, view_at(views, note.slot))) {
+			Ok(note) => note.id
+			Err(_) => ""
+		}
 
-	row_status : Board, Str, Note -> Str
+	row_status : Board, Str, Note -> Notes.Status
 	row_status = |board, head, note| {
 		view = view_at(board.views, note.slot)
 		if !note.queued {
-			"draft"
+			Draft
 		} else if is_synced(note, view) {
-			"synced"
+			Synced
 		} else if is_failed(note, view) {
-			"failed"
+			Failed
 		} else if board.online and board.auto and head == note.id {
-			"syncing"
+			Syncing
 		} else {
-			"queued"
+			Queued
 		}
 	}
 
@@ -346,52 +416,53 @@ Notes := {}.{
 					id: note.id,
 					body: note.body,
 					status: status,
-					status_label: status_title(status),
 					detail: "Outbox slot ${(note.slot + 1).to_str()}, revision ${note.rev}",
 					queue_disabled: note.queued,
-					retry_disabled: status != "failed",
+					retry_disabled: match status {
+						Failed => False
+						_ => True
+					},
 				}
 			},
 		)
 	}
 
 	## Only one lane is ever in flight, so the whole outbox shares one task name.
-	request_at : Board, U64 -> Str
+	request_at : Board, U64 -> Notes.Request
 	request_at = |board, slot|
 		if !board.online or !board.auto {
-			""
+			Idle
 		} else {
 			head = head_id(board.notes, board.views)
 			if head == "" {
-				""
+				Idle
 			} else {
-				board.notes.fold(
-					"",
-					|found, note|
-						if note.slot == slot and note.id == head {
-							token(note)
-						} else {
-							found
-						},
-				)
+				match board.notes.find_first(|note| note.slot == slot and note.id == head) {
+					Ok(note) => Send(token(note))
+					Err(_) => Idle
+				}
 			}
 		}
 
-	## The status word a row shows in its badge. The badge class is derived from
-	## the same `status` field, so the colour can never disagree with the word.
-	status_title : Str -> Str
-	status_title = |status|
-		if status == "draft" {
-			"Draft"
-		} else if status == "queued" {
-			"Queued"
-		} else if status == "syncing" {
-			"Syncing"
-		} else if status == "synced" {
-			"Synced"
-		} else {
-			"Failed"
-		}
+	## The lane holding the head of the outbox is asked to send that note's token.
+	expect {
+		notes = [{ id: "n0", slot: 0, body: "one", queued: True, rev: "r7" }]
+		board = { notes: notes, online: True, auto: True, views: [] }
+		request_at(board, 0) == Send("n0#r7")
+	}
+
+	## Every lane that does not hold the head stays idle, so only one send is ever in flight.
+	expect {
+		notes = [{ id: "n0", slot: 0, body: "one", queued: True, rev: "r7" }]
+		board = { notes: notes, online: True, auto: True, views: [] }
+		request_at(board, 1) == Idle
+	}
+
+	## While offline no lane sends, however many notes are queued.
+	expect {
+		notes = [{ id: "n0", slot: 0, body: "one", queued: True, rev: "r7" }]
+		request_at({ notes: notes, online: False, auto: True, views: [] }, 0) == Idle
+	}
 
 	outbox_text : List(Row) -> Str
 	outbox_text = |rows| {
@@ -403,30 +474,24 @@ Notes := {}.{
 		}
 	}
 
-	count_status : List(Row), Str -> U64
-	count_status = |rows, status| rows.fold(0, |count, row| if row.status == status { count + 1 } else { count })
+	## A single waiting note is counted in the singular.
+	expect outbox_text([{ id: "a", body: "", status: Queued, detail: "", queue_disabled: True, retry_disabled: True }]) == "1 note waiting to sync"
+
+	## An empty outbox still reads as a plural count rather than a special sentence.
+	expect outbox_text([]) == "0 notes waiting to sync"
+
+	count_status : List(Row), Notes.Status -> U64
+	count_status = |rows, status| rows.keep_if(|row| row.status == status).len()
 
 	outbox_count : List(Row) -> U64
-	outbox_count = |rows|
-		rows.fold(
-			0,
-			|count, row|
-				if row.status == "queued" or row.status == "syncing" or row.status == "failed" {
-					count + 1
-				} else {
-					count
-				},
-		)
+	outbox_count = |rows| rows.keep_if(|row| in_outbox(row.status)).len()
 
 	syncing_text : List(Row) -> Str
-	syncing_text = |rows| {
-		found = rows.fold("", |acc, row| if acc != "" { acc } else if row.status == "syncing" { row.id } else { acc })
-		if found == "" {
-			"None"
-		} else {
-			found
+	syncing_text = |rows|
+		match rows.find_first(|row| row.status == Syncing) {
+			Ok(row) => row.id
+			Err(_) => "None"
 		}
-	}
 
 	network_text : Bool -> Str
 	network_text = |online|
@@ -445,11 +510,11 @@ Notes := {}.{
 		}
 
 	is_full : List(Row) -> Bool
-	is_full = |rows| rows.fold(0, |count, _row| count + 1) >= slot_count
+	is_full = |rows| rows.len() >= slot_count
 
 	capacity_text : List(Row) -> Str
 	capacity_text = |rows| {
-		used = rows.fold(0, |count, _row| count + 1)
+		used = rows.len()
 		if used >= slot_count {
 			"Full"
 		} else {

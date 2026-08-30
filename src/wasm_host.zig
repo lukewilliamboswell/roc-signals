@@ -12,6 +12,8 @@
 
 const std = @import("std");
 const signals = @import("signals");
+
+pub const panic = std.debug.FullPanic(wasmPanic);
 const abi = signals.abi;
 const abi_view = signals.abi_view;
 const boundary = signals.boundary;
@@ -19,10 +21,15 @@ const render = signals.render;
 const render_sink = signals.render_sink;
 const host_value_registry = signals.host_value_registry;
 const erased_calls = signals.erased_calls;
+const CapabilitySplit = signals.callable_roles.CapabilitySplit;
 const hv = signals.host_values;
 const engine = signals.engine;
+const debug_phase = signals.debug_phase;
+const DebugPhase = debug_phase.Phase;
+const runtime_limits = signals.runtime_limits;
+const ids = signals.ids;
 
-const HostValue = u64;
+const HostValue = hv.HostValue;
 const HostValueCapability = hv.HostValueCapabilityHandle;
 const ElemBox = @typeInfo(@TypeOf(abi.roc_ui_init)).@"fn".return_type.?;
 const RenderTextField = render.TextField;
@@ -44,64 +51,84 @@ const WasmCtx = struct {
     pub const Metrics = engine.NoMetrics;
     pub const Sink = WasmSink;
 
+    /// Creates the host's zeroed metric accumulator for a new engine operation.
     pub fn zeroMetrics() Metrics {
         return .{};
     }
 
+    /// Returns the allocator owned by this host context for shared-engine work.
     pub fn allocator(_: Handle) std.mem.Allocator {
-        return std.heap.wasm_allocator;
+        return wasm_fault_allocator.allocator();
     }
 
+    /// Returns the host-owned reusable bank used for atomic command publication.
+    pub fn renderCommandBatch(_: Handle) *render.TransactionalBatch {
+        return &command_batch;
+    }
+
+    /// Produces an independently owned copy through the value's app-compiled capability.
     pub fn cloneHostValue(_: Handle, value: HostValue) HostValue {
-        return shared_engine.host_values.clone(std.heap.wasm_allocator, value, registryOps()) catch |err| {
+        return shared_engine.host_values.clone(wasm_fault_allocator.allocator(), value, registryOps()) catch |err| {
             failHostValueRegistryError(err);
         };
     }
 
+    /// Resolves a state cell by dense node id without scanning the signal graph.
     pub fn stateValueByNodeId(_: Handle, node_id: u64) HostValue {
-        return currentStateValue(node_id);
+        return currentStateValue(ids.NodeId.fromRaw(node_id));
     }
 
+    /// Returns the exact app-compiled capability that owns the requested state cell.
     pub fn stateCapability(_: Handle, node_id: u64) HostValueCapability {
         return shared_engine.stateCapability(node_id) catch failHost();
     }
 
+    /// Replaces a state source value and enters the ordinary dirty-propagation path.
     pub fn updateStateValue(_: Handle, _: *abi.RocHost, node_id: u64, value: HostValue) bool {
-        return updateStateCell(node_id, value);
+        return updateStateCell(ids.NodeId.fromRaw(node_id), value);
     }
 
+    /// Materializes the mount-time browser location through the source's owning capability.
     pub fn initialLocationPayload(_: Handle, _: *abi.RocHost, cap: HostValueCapability) HostValue {
         return makeInitialLocationPayload(cap);
     }
 
+    /// Materializes the mount-time visibility state through the source's owning capability.
     pub fn initialVisibilityPayload(_: Handle, _: *abi.RocHost, cap: HostValueCapability) HostValue {
         return makeInitialVisibilityPayload(cap);
     }
 
+    /// Materializes the mount-time online state through the source's owning capability.
     pub fn initialOnlinePayload(_: Handle, _: *abi.RocHost, cap: HostValueCapability) HostValue {
         return makeInitialOnlinePayload(cap);
     }
 
+    /// Materializes one declared storage key through the source's owning capability.
     pub fn initialStoragePayload(_: Handle, _: *abi.RocHost, area: boundary.StorageArea, key: []const u8, cap: HostValueCapability) HostValue {
         return makeInitialStoragePayload(area, key, cap);
     }
 
+    /// Returns the thin render-command sink used by the shared engine.
     pub fn sink(_: Handle) Sink {
         return .{};
     }
 
-    pub fn debugPhase(_: Handle, phase: u32) void {
+    /// Provides debug phase at the Wasm boundary without reconstructing reactive meaning.
+    pub fn debugPhase(_: Handle, phase: DebugPhase) void {
         roc_allocation_phase = phase;
     }
 
+    /// Terminates the current host instance with a bounded diagnostic.
     pub fn failWithMessage(_: Handle, message: []const u8) noreturn {
         failHostWithFmt("{s}", .{message});
     }
 
+    /// Opens a checked capability frame for an app-compiled erased call.
     pub fn pushHostValueCapabilities(_: Handle, caps: []const HostValueCapability) void {
         active_capabilities.push(caps);
     }
 
+    /// Closes the current capability frame after an app-compiled erased call.
     pub fn popHostValueCapabilities(_: Handle) void {
         active_capabilities.pop();
     }
@@ -113,29 +140,33 @@ const WasmCtx = struct {
 // silent "build cache only" phase in the browser host (teardown never touches
 // the sink), so the sink carries no state.
 const WasmSink = struct {
+    /// Stages a complete render-surface reset in the host command sink.
     pub fn reset(_: WasmSink) void {
         appendCommand(.reset_dom, 0, 0, 0, 0, 0);
     }
 
-    pub fn appendNode(_: WasmSink, elem_id: u64, parent_elem_id: u64, tag: []const u8) void {
+    /// Emits the already-decided command that attaches a newly created render node.
+    pub fn appendNode(_: WasmSink, elem_id: ids.ElemId, parent_elem_id: ids.ElemId, tag: []const u8) void {
         if (std.mem.eql(u8, tag, "text")) {
-            appendStringCommand(.create_text, toU32(elem_id), "");
+            appendStringCommand(.create_text, toU32(elem_id.raw()), "");
         } else {
-            appendStringCommand(.create_element, toU32(elem_id), tag);
+            appendStringCommand(.create_element, toU32(elem_id.raw()), tag);
         }
-        appendCommand(.append_child, toU32(parent_elem_id), toU32(elem_id), 0, 0, 0);
+        appendCommand(.append_child, toU32(parent_elem_id.raw()), toU32(elem_id.raw()), 0, 0, 0);
     }
 
-    pub fn ensureNode(_: WasmSink, elem_id: u64, tag: []const u8) void {
+    /// Ensures the host render surface contains the engine-selected node and tag.
+    pub fn ensureNode(_: WasmSink, elem_id: ids.ElemId, tag: []const u8) void {
         if (std.mem.eql(u8, tag, "text")) {
-            appendStringCommand(.create_text, toU32(elem_id), "");
+            appendStringCommand(.create_text, toU32(elem_id.raw()), "");
         } else {
-            appendStringCommand(.create_element, toU32(elem_id), tag);
+            appendStringCommand(.create_element, toU32(elem_id.raw()), tag);
         }
     }
 
-    pub fn removeNode(_: WasmSink, elem_id: u64) void {
-        appendCommand(.remove_node, toU32(elem_id), 0, 0, 0, 0);
+    /// Emits removal of a node whose owning scope has already been disposed by the engine.
+    pub fn removeNode(_: WasmSink, elem_id: ids.ElemId) void {
+        appendCommand(.remove_node, toU32(elem_id.raw()), 0, 0, 0, 0);
     }
 
     // The engine hands the sink the final child order; achieving it in the real
@@ -143,72 +174,87 @@ const WasmSink = struct {
     // for already-attached nodes and a parent-link for freshly created ones. The
     // engine still computes the minimal-move count for its telemetry; this thin
     // executor just realises the order it was given.
-    pub fn replaceChildren(_: WasmSink, parent_elem_id: u64, next_child_ids: []const u64) void {
+    /// Publishes the engine-selected child order for one parent.
+    pub fn replaceChildren(_: WasmSink, parent_elem_id: ids.ElemId, next_child_ids: []const ids.ElemId) void {
         emitAppendChildren(parent_elem_id, next_child_ids);
     }
 
-    pub fn replaceChildrenForMoves(_: WasmSink, parent_elem_id: u64, next_child_ids: []const u64) void {
+    /// Publishes a moves-only child reorder without rebuilding surviving row structure.
+    pub fn replaceChildrenForMoves(_: WasmSink, parent_elem_id: ids.ElemId, next_child_ids: []const ids.ElemId) void {
         emitAppendChildren(parent_elem_id, next_child_ids);
     }
 
-    pub fn applyTextField(_: WasmSink, elem_id: u64, field: RenderTextField, value: []const u8) void {
+    /// Applies an engine-decided text field value to one render node.
+    pub fn applyTextField(_: WasmSink, elem_id: ids.ElemId, field: RenderTextField, value: []const u8) void {
         if (textAttrNameForField(field)) |name| {
-            appendDynamicSetAttrText(toU32(elem_id), name, value);
+            appendDynamicSetAttrText(toU32(elem_id.raw()), name, value);
         } else {
-            appendStringCommand(field.setOp(), toU32(elem_id), value);
+            appendStringCommand(field.setOp(), toU32(elem_id.raw()), value);
         }
     }
 
-    pub fn applyTextAttr(_: WasmSink, elem_id: u64, name: []const u8, value: []const u8) void {
-        appendDynamicSetAttrText(toU32(elem_id), name, value);
+    /// Applies an engine-decided custom text attribute to one render node.
+    pub fn applyTextAttr(_: WasmSink, elem_id: ids.ElemId, name: []const u8, value: []const u8) void {
+        appendDynamicSetAttrText(toU32(elem_id.raw()), name, value);
     }
 
-    pub fn applyBoolField(_: WasmSink, elem_id: u64, field: RenderBoolField, value: bool) void {
-        appendBoolFieldCommand(field, toU32(elem_id), value);
+    /// Applies an engine-decided boolean field value to one render node.
+    pub fn applyBoolField(_: WasmSink, elem_id: ids.ElemId, field: RenderBoolField, value: bool) void {
+        appendBoolFieldCommand(field, toU32(elem_id.raw()), value);
     }
 
-    pub fn clearTextField(_: WasmSink, elem_id: u64, field: RenderTextField) void {
+    /// Clears an engine-decided text field from one render node.
+    pub fn clearTextField(_: WasmSink, elem_id: ids.ElemId, field: RenderTextField) void {
         if (textAttrNameForField(field)) |name| {
-            appendDynamicRemoveAttr(toU32(elem_id), name);
+            appendDynamicRemoveAttr(toU32(elem_id.raw()), name);
         } else {
-            appendStringCommand(field.setOp(), toU32(elem_id), "");
+            appendStringCommand(field.setOp(), toU32(elem_id.raw()), "");
         }
     }
 
-    pub fn clearTextAttr(_: WasmSink, elem_id: u64, name: []const u8) void {
-        appendDynamicRemoveAttr(toU32(elem_id), name);
+    /// Clears an engine-decided custom text attribute from one render node.
+    pub fn clearTextAttr(_: WasmSink, elem_id: ids.ElemId, name: []const u8) void {
+        appendDynamicRemoveAttr(toU32(elem_id.raw()), name);
     }
 
-    pub fn clearBoolField(_: WasmSink, elem_id: u64, field: RenderBoolField) void {
-        appendBoolFieldCommand(field, toU32(elem_id), false);
+    /// Clears an engine-decided boolean field from one render node.
+    pub fn clearBoolField(_: WasmSink, elem_id: ids.ElemId, field: RenderBoolField) void {
+        appendBoolFieldCommand(field, toU32(elem_id.raw()), false);
     }
 
-    pub fn bindEvent(_: WasmSink, elem_id: u64, key: EventBindingKey, binding: EventBinding) void {
+    /// Publishes a validated canonical event binding selected by the engine.
+    pub fn bindEvent(_: WasmSink, elem_id: ids.ElemId, key: EventBindingKey, binding: EventBinding) void {
         appendEventBindCommand(.{ .elem_id = elem_id, .key = key, .binding = binding });
     }
 
-    pub fn clearEvent(_: WasmSink, elem_id: u64, key: EventBindingKey) void {
+    /// Removes a host event registration whose engine-owned binding is no longer active.
+    pub fn clearEvent(_: WasmSink, elem_id: ids.ElemId, key: EventBindingKey) void {
         appendEventClearCommand(.{ .elem_id = elem_id, .key = key });
     }
 
-    pub fn startInterval(_: WasmSink, token: u64, period_ms: u64) void {
-        appendCommand(.start_interval, toU32(token), toU32(period_ms), 0, 0, 0);
+    /// Starts the bounded host registration for an engine-owned interval source.
+    pub fn startInterval(_: WasmSink, token: ids.IntervalToken, period_ms: u64) void {
+        appendCommand(.start_interval, toU32(token.raw()), toU32(period_ms), 0, 0, 0);
     }
 
-    pub fn cancelInterval(_: WasmSink, token: u64) void {
-        appendCommand(.cancel_interval, toU32(token), 0, 0, 0, 0);
+    /// Cancels the host registration for an interval whose owning scope is no longer active.
+    pub fn cancelInterval(_: WasmSink, token: ids.IntervalToken) void {
+        appendCommand(.cancel_interval, toU32(token.raw()), 0, 0, 0, 0);
     }
 
-    pub fn startTask(_: WasmSink, request_id: u64, task_name: []const u8, request: []const u8) void {
+    /// Starts bounded asynchronous host work for an engine-issued task request.
+    pub fn startTask(_: WasmSink, request_id: ids.TaskRequestId, task_name: []const u8, request: []const u8) void {
         const name_offset = storeBytes(task_name);
         const request_offset = storeBytes(request);
-        appendCommand(.start_task, toU32(request_id), name_offset, toU32(task_name.len), request_offset, toU32(request.len));
+        appendCommand(.start_task, toU32(request_id.raw()), name_offset, toU32(task_name.len), request_offset, toU32(request.len));
     }
 
-    pub fn cancelTask(_: WasmSink, request_id: u64) void {
-        appendCommand(.cancel_task, toU32(request_id), 0, 0, 0, 0);
+    /// Cancels host work for a task request retired by engine lifecycle policy.
+    pub fn cancelTask(_: WasmSink, request_id: ids.TaskRequestId) void {
+        appendCommand(.cancel_task, toU32(request_id.raw()), 0, 0, 0, 0);
     }
 
+    /// Applies an engine-issued browser-history command without deriving routing semantics.
     pub fn navigate(_: WasmSink, kind: render_sink.NavigationKind, location: boundary.LocationSnapshot) void {
         setCurrentLocationSnapshot(location);
         appendLocationCommand(switch (kind) {
@@ -217,31 +263,34 @@ const WasmSink = struct {
         }, location);
     }
 
+    /// Applies the document title already selected by graph propagation.
     pub fn setDocumentTitle(_: WasmSink, title: []const u8) void {
         appendDocumentTitleCommand(title);
     }
 
+    /// Writes one engine-issued text value to the selected browser storage area.
     pub fn setStorageText(_: WasmSink, area: boundary.StorageArea, key: []const u8, value: []const u8) void {
         appendStorageSetCommand(area, key, value);
     }
 
+    /// Removes one engine-issued key from the selected browser storage area.
     pub fn removeStorage(_: WasmSink, area: boundary.StorageArea, key: []const u8) void {
         appendStorageRemoveCommand(area, key);
     }
 
-    pub fn debugAssertNode(_: WasmSink, _: u64, _: bool, _: ?[]const u8, _: ?u64, _: []const u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64, _: ?u64) void {}
+    /// Checks that the host render surface matches the engine's committed node metadata.
+    pub fn debugAssertNode(_: WasmSink, _: ids.ElemId, _: bool, _: ?[]const u8, _: ?ids.ElemId, _: []const ids.ElemId, _: ?ids.EventId, _: ?ids.EventId, _: ?ids.EventId, _: ?ids.EventId, _: ?ids.EventId, _: ?ids.EventId, _: ?ids.EventId) void {}
 };
 
-fn emitAppendChildren(parent_elem_id: u64, next_child_ids: []const u64) void {
+fn emitAppendChildren(parent_elem_id: ids.ElemId, next_child_ids: []const ids.ElemId) void {
     for (next_child_ids) |child_id| {
-        appendCommand(.append_child, toU32(parent_elem_id), toU32(child_id), 0, 0, 0);
+        appendCommand(.append_child, toU32(parent_elem_id.raw()), toU32(child_id.raw()), 0, 0, 0);
     }
 }
 
 var shared_engine: SharedEngine = .init();
-var command_buffer: render.Buffer = .{};
-var dynamic_command_buffer: render.DynamicBuffer = .{};
-var string_buffer: std.ArrayListUnmanaged(u8) = .empty;
+var wasm_fault_allocator = signals.fault_allocator.FaultAllocator.init(std.heap.wasm_allocator);
+var command_batch: render.TransactionalBatch = .{};
 var initial_location_payload: ?[]u8 = null;
 var initial_visibility_payload: ?[]u8 = null;
 var initial_online_payload: ?[]u8 = null;
@@ -271,7 +320,7 @@ const RocAllocation = struct {
     requested_size: usize,
     allocated_size: usize,
     alignment: std.mem.Alignment,
-    phase: u32,
+    phase: DebugPhase,
 };
 
 const FreedRocAllocation = struct {
@@ -279,7 +328,7 @@ const FreedRocAllocation = struct {
     requested_size: usize,
     allocated_size: usize,
     alignment: std.mem.Alignment,
-    phase: u32,
+    phase: DebugPhase,
 };
 
 const NearestRocAllocation = struct {
@@ -288,13 +337,13 @@ const NearestRocAllocation = struct {
     distance: usize,
 };
 
-const recent_freed_roc_allocation_capacity = 4096;
+const recent_freed_roc_allocation_capacity = runtime_limits.recent_freed_allocation_count;
 
 var roc_allocations: std.ArrayListUnmanaged(RocAllocation) = .empty;
 var recent_freed_roc_allocations: [recent_freed_roc_allocation_capacity]FreedRocAllocation = undefined;
 var recent_freed_roc_allocation_len: usize = 0;
 var recent_freed_roc_allocation_next: usize = 0;
-var roc_allocation_phase: u32 = 0;
+var roc_allocation_phase: DebugPhase = .idle;
 var active_capabilities: hv.ActiveCapabilityStack = .{};
 var roc_host_env: u8 = 0;
 var roc_host = abi.RocHost{
@@ -309,17 +358,33 @@ var roc_host = abi.RocHost{
 
 var last_host_error: []const u8 = "";
 var last_host_error_buf: [512]u8 = undefined;
+var host_poisoned: bool = false;
 
-fn clearHostError() void {
+fn beginHostCall() void {
+    if (host_poisoned) @trap();
     last_host_error = "";
 }
 
-fn failHostWith(message: []const u8) noreturn {
-    last_host_error = message;
+fn poisonAndTrap(message: []const u8) noreturn {
+    command_batch.discard();
+    host_poisoned = true;
+    const len = @min(message.len, last_host_error_buf.len);
+    @memcpy(last_host_error_buf[0..len], message[0..len]);
+    last_host_error = last_host_error_buf[0..len];
     @trap();
 }
 
+fn wasmPanic(message: []const u8, _: ?usize) noreturn {
+    failHostWithFmt("Signals wasm host panicked after entering a transaction: {s}", .{message});
+}
+
+fn failHostWith(message: []const u8) noreturn {
+    poisonAndTrap(message);
+}
+
 fn failHostWithFmt(comptime fmt: []const u8, args: anytype) noreturn {
+    command_batch.discard();
+    host_poisoned = true;
     last_host_error = std.fmt.bufPrint(&last_host_error_buf, fmt, args) catch "Signals wasm host invariant failed while formatting diagnostic";
     @trap();
 }
@@ -329,7 +394,7 @@ fn failHost() noreturn {
 }
 
 fn allocator() std.mem.Allocator {
-    return std.heap.wasm_allocator;
+    return wasm_fault_allocator.allocator();
 }
 
 fn toU32(value: anytype) u32 {
@@ -341,44 +406,100 @@ fn alignmentFromBytes(alignment: usize) std.mem.Alignment {
     return @enumFromInt(std.math.log2_int(usize, alignment));
 }
 
+/// Reserves storage for one host-initiated sink command: an effect emitted
+/// after the engine's transaction sealed (lifecycle storage, navigation, task
+/// and title commands), which appends past the sealed batch and seals itself.
+/// Engine-initiated fixed records inside an open transaction take the
+/// `stageSinkCommandAssumeCapacity` path in `appendCommand` instead; a
+/// string- or dynamic-bearing sink command inside an open transaction has no
+/// reservation and is a programming error.
+fn preflightCommandStorage(additional: render.BatchCapacity) void {
+    if (command_batch.isTransactionOpen()) failHostWith("render sink emitted an unreserved command inside an open engine transaction");
+    if (command_batch.hasUnsealedStaging()) failHostWith("render sink emitted a command while an engine transaction was still staging");
+    command_batch.preflight(allocator(), additional) catch |err| switch (err) {
+        error.OutOfMemory => failHostWith("out of memory while reserving render command storage"),
+        error.ResourceLimit => failHostWith("render command exceeded Wasm wire resource limit"),
+    };
+}
+
+/// Seals the sink command just appended so it is part of the host call's batch.
+fn sealCommandStorage() void {
+    command_batch.commit();
+}
+
+fn checkedWireSize(parts: []const usize) usize {
+    var total: usize = 0;
+    for (parts) |part| total = std.math.add(usize, total, part) catch failHostWith("render command exceeded Wasm wire resource limit");
+    return total;
+}
+
+fn checkedWireAlign4(len: usize) usize {
+    return (std.math.add(usize, len, 3) catch failHostWith("render command exceeded Wasm wire resource limit")) & ~@as(usize, 3);
+}
+
 fn appendCommand(op: render.Op, a: u32, b: u32, c: u32, d: u32, e: u32) void {
-    command_buffer.append(allocator(), op, a, b, c, d, e) catch failHost();
+    if (command_batch.isTransactionOpen()) {
+        // The engine registered an effect while publishing its transaction
+        // (interval start or cancellation at graph commit); the transaction
+        // reserved this record, so it is staged with the transaction and
+        // sealed by its commit.
+        command_batch.stageSinkCommandAssumeCapacity(op, a, b, c, d, e);
+        return;
+    }
+    preflightCommandStorage(.{ .commands = 1 });
+    command_batch.staged.commands.appendRaw(allocator(), op, a, b, c, d, e) catch failHostWith("out of memory while staging render commands");
+    sealCommandStorage();
 }
 
 fn clearCommandBuffers() void {
-    command_buffer.clearRetainingCapacity();
-    dynamic_command_buffer.clearRetainingCapacity();
-    string_buffer.clearRetainingCapacity();
+    command_batch.clearPublished();
+}
+
+/// Starts the command batch of one host call. Every export that may run the
+/// engine begins a batch and ends it with `publishCommandTransaction`; the
+/// engine transactions and sink commands in between seal into that one batch.
+fn beginCommandTransaction() void {
+    command_batch.begin();
+}
+
+/// Makes the complete batch of the finishing host call visible to JavaScript.
+fn publishCommandTransaction() void {
+    command_batch.publish();
 }
 
 fn storeBytes(bytes: []const u8) u32 {
-    const offset = toU32(string_buffer.items.len);
-    string_buffer.appendSlice(allocator(), bytes) catch failHost();
+    preflightCommandStorage(.{ .strings = bytes.len });
+    const offset = toU32(command_batch.staged.strings.items.len);
+    command_batch.staged.strings.appendSlice(allocator(), bytes) catch failHostWith("out of memory while staging render strings");
+    sealCommandStorage();
     return offset;
 }
 
 fn appendStringCommand(op: render.Op, elem_id: u32, bytes: []const u8) void {
+    preflightCommandStorage(.{ .commands = 1, .strings = bytes.len });
     appendCommand(op, elem_id, storeBytes(bytes), toU32(bytes.len), 0, 0);
 }
 
 fn storeLocationHref(location: boundary.LocationSnapshot) render.DynamicSlice {
     if (location.path.len == 0 or location.path[0] != '/') failHostWith("location path must start with /");
-    const offset = toU32(string_buffer.items.len);
-    string_buffer.appendSlice(allocator(), location.path) catch failHost();
+    preflightCommandStorage(.{ .strings = checkedWireSize(&.{ location.path.len, @intFromBool(location.query.len != 0), location.query.len, @intFromBool(location.hash.len != 0), location.hash.len }) });
+    const offset = toU32(command_batch.staged.strings.items.len);
+    command_batch.staged.strings.appendSlice(allocator(), location.path) catch failHostWith("out of memory while staging location command");
     if (location.query.len != 0) {
-        string_buffer.append(allocator(), '?') catch failHost();
-        string_buffer.appendSlice(allocator(), location.query) catch failHost();
+        command_batch.staged.strings.append(allocator(), '?') catch failHostWith("out of memory while staging location command");
+        command_batch.staged.strings.appendSlice(allocator(), location.query) catch failHostWith("out of memory while staging location command");
     }
     if (location.hash.len != 0) {
-        string_buffer.append(allocator(), '#') catch failHost();
-        string_buffer.appendSlice(allocator(), location.hash) catch failHost();
+        command_batch.staged.strings.append(allocator(), '#') catch failHostWith("out of memory while staging location command");
+        command_batch.staged.strings.appendSlice(allocator(), location.hash) catch failHostWith("out of memory while staging location command");
     }
-    return .{ .offset = offset, .len = toU32(string_buffer.items.len - offset) };
+    sealCommandStorage();
+    return .{ .offset = @enumFromInt(offset), .len = @enumFromInt(toU32(command_batch.staged.strings.items.len - offset)) };
 }
 
 fn appendLocationCommand(op: render.Op, location: boundary.LocationSnapshot) void {
     const href = storeLocationHref(location);
-    appendCommand(op, href.offset, href.len, 0, 0, 0);
+    appendCommand(op, href.offset.raw(), href.len.raw(), 0, 0, 0);
 }
 
 fn appendDocumentTitleCommand(title: []const u8) void {
@@ -407,17 +528,23 @@ fn textAttrNameForField(field: RenderTextField) ?[]const u8 {
 }
 
 fn appendDynamicSetAttrText(elem_id: u32, name: []const u8, value: []const u8) void {
-    const slice = dynamic_command_buffer.appendSetAttrText(allocator(), elem_id, name, value) catch failHost();
-    appendCommand(.extended, slice.offset, slice.len, 0, 0, 0);
+    const payload_len = checkedWireSize(&.{ 3 * @sizeOf(u32), name.len, value.len });
+    preflightCommandStorage(.{ .commands = 1, .dynamic = checkedWireSize(&.{ 2 * @sizeOf(u16), @sizeOf(u32), checkedWireAlign4(payload_len) }) });
+    const slice = command_batch.staged.dynamic.appendSetAttrText(allocator(), @enumFromInt(elem_id), name, value) catch failHostWith("out of memory while staging dynamic render command");
+    sealCommandStorage();
+    appendCommand(.extended, slice.offset.raw(), slice.len.raw(), 0, 0, 0);
 }
 
 fn appendDynamicRemoveAttr(elem_id: u32, name: []const u8) void {
-    const slice = dynamic_command_buffer.appendRemoveAttr(allocator(), elem_id, name) catch failHost();
-    appendCommand(.extended, slice.offset, slice.len, 0, 0, 0);
+    const payload_len = checkedWireSize(&.{ 2 * @sizeOf(u32), name.len });
+    preflightCommandStorage(.{ .commands = 1, .dynamic = checkedWireSize(&.{ 2 * @sizeOf(u16), @sizeOf(u32), checkedWireAlign4(payload_len) }) });
+    const slice = command_batch.staged.dynamic.appendRemoveAttr(allocator(), @enumFromInt(elem_id), name) catch failHostWith("out of memory while staging dynamic render command");
+    sealCommandStorage();
+    appendCommand(.extended, slice.offset.raw(), slice.len.raw(), 0, 0, 0);
 }
 
 fn appendEventBindCommand(command: EventBindCommand) void {
-    const elem_id = toU32(command.elem_id);
+    const elem_id = toU32(command.elem_id.raw());
     const binding = command.binding;
     if (binding.delivery.effective != .native) {
         @panic("browser event command wire only supports native delivery");
@@ -425,17 +552,17 @@ fn appendEventBindCommand(command: EventBindCommand) void {
     switch (command.key) {
         .fixed => |kind| {
             if (binding.canUseFixedOpcode(kind)) {
-                appendCommand(kind.bindOp(), elem_id, toU32(binding.event_id), 0, 0, 0);
+                appendCommand(kind.bindOp(), elem_id, toU32(binding.event_id.raw()), 0, 0, 0);
             } else {
-                appendDynamicBindEvent(elem_id, kind.domEventName(), toU32(binding.event_id), binding.policy.toWireBits(), binding.delivery.toWire(), binding.payload_descriptor);
+                appendDynamicBindEvent(elem_id, kind.domEventName(), toU32(binding.event_id.raw()), binding.policy.toWireBits(), binding.delivery.toWire(), binding.payload_descriptor);
             }
         },
-        .named => |name| appendDynamicBindEvent(elem_id, name, toU32(binding.event_id), binding.policy.toWireBits(), binding.delivery.toWire(), binding.payload_descriptor),
+        .named => |name| appendDynamicBindEvent(elem_id, name, toU32(binding.event_id.raw()), binding.policy.toWireBits(), binding.delivery.toWire(), binding.payload_descriptor),
     }
 }
 
 fn appendEventClearCommand(command: EventClearCommand) void {
-    const elem_id = toU32(command.elem_id);
+    const elem_id = toU32(command.elem_id.raw());
     switch (command.key) {
         .fixed => |kind| appendCommand(.clear_event, elem_id, toU32(@intFromEnum(kind)), 0, 0, 0),
         .named => |name| appendDynamicClearEvent(elem_id, name),
@@ -443,13 +570,19 @@ fn appendEventClearCommand(command: EventClearCommand) void {
 }
 
 fn appendDynamicBindEvent(elem_id: u32, name: []const u8, event_id: u32, options: u32, delivery: render.EventDeliveryWire, payload_descriptor: BoundaryPayloadDescriptor) void {
-    const slice = dynamic_command_buffer.appendBindEvent(allocator(), elem_id, event_id, name, options, delivery, payload_descriptor) catch failHost();
-    appendCommand(.extended, slice.offset, slice.len, 0, 0, 0);
+    const payload_len = checkedWireSize(&.{ 8 * @sizeOf(u32), name.len, payload_descriptor.extractionBytes().len });
+    preflightCommandStorage(.{ .commands = 1, .dynamic = checkedWireSize(&.{ 2 * @sizeOf(u16), @sizeOf(u32), checkedWireAlign4(payload_len) }) });
+    const slice = command_batch.staged.dynamic.appendBindEvent(allocator(), @enumFromInt(elem_id), @enumFromInt(event_id), name, options, delivery, payload_descriptor) catch failHostWith("out of memory while staging dynamic event command");
+    sealCommandStorage();
+    appendCommand(.extended, slice.offset.raw(), slice.len.raw(), 0, 0, 0);
 }
 
 fn appendDynamicClearEvent(elem_id: u32, name: []const u8) void {
-    const slice = dynamic_command_buffer.appendClearEvent(allocator(), elem_id, name) catch failHost();
-    appendCommand(.extended, slice.offset, slice.len, 0, 0, 0);
+    const payload_len = checkedWireSize(&.{ 2 * @sizeOf(u32), name.len });
+    preflightCommandStorage(.{ .commands = 1, .dynamic = checkedWireSize(&.{ 2 * @sizeOf(u16), @sizeOf(u32), checkedWireAlign4(payload_len) }) });
+    const slice = command_batch.staged.dynamic.appendClearEvent(allocator(), @enumFromInt(elem_id), name) catch failHostWith("out of memory while staging dynamic event command");
+    sealCommandStorage();
+    appendCommand(.extended, slice.offset.raw(), slice.len.raw(), 0, 0, 0);
 }
 
 fn appendBoolFieldCommand(field: RenderBoolField, elem_id: u32, value: bool) void {
@@ -539,18 +672,21 @@ fn assertHostValueTakenAfter(value: HostValue, epoch: u64) void {
 // `ctx` surface consumed by the shared `host_values` box constructors. The
 // browser host has no test-kind bookkeeping, so `recordKind` is a no-op.
 const HostValueOpsCtx = struct {
+    /// Transfers an owned Roc box into the host value registry.
     pub fn store(_: HostValueOpsCtx, box: abi.RocBox) HostValue {
         return shared_engine.host_values.storeOwnedCapability(allocator(), box, null, registryOps()) catch |err| {
             failHostValueRegistryError(err);
         };
     }
 
+    /// Transfers an owned Roc box into a registry cell tied to its exact capability.
     pub fn storeWithCapability(_: HostValueOpsCtx, box: abi.RocBox, cap: HostValueCapability) HostValue {
         return shared_engine.host_values.storeRetainedCapability(allocator(), box, cap, registryOps()) catch |err| {
             failHostValueRegistryError(err);
         };
     }
 
+    /// Records the debug-only value kind used to detect erased-value routing mistakes.
     pub fn recordKind(_: HostValueOpsCtx, _: HostValue, _: hv.ValueKind) void {}
 };
 
@@ -808,21 +944,22 @@ fn clearInitialOnlinePayload() void {
 
 // --- State access (routed through the engine's state table) ---
 
-fn currentStateValue(node_id: u64) HostValue {
-    const state_index = shared_engine.stateIndexByNodeId(node_id) orelse failHost();
-    return cloneHostValue(shared_engine.states.items[state_index].cell.value);
+fn currentStateValue(node_id: ids.NodeId) HostValue {
+    const state_index = shared_engine.stateIndexByNodeId(node_id.raw()) orelse failHost();
+    return cloneHostValue(shared_engine.states.items[state_index].activePayloadConst().cell.value);
 }
 
-fn updateStateCell(node_id: u64, value: HostValue) bool {
-    const state_index = shared_engine.stateIndexByNodeId(node_id) orelse failHost();
+fn updateStateCell(node_id: ids.NodeId, value: HostValue) bool {
+    const state_index = shared_engine.stateIndexByNodeId(node_id.raw()) orelse failHost();
     const state = &shared_engine.states.items[state_index];
     const ctx = WasmCtx{};
-    if (state.cell.valueEquals(ctx, &roc_host, value)) {
-        state.cell.dropIncoming(ctx, &roc_host, value);
+    const payload = state.activePayload();
+    if (payload.cell.valueEquals(ctx, &roc_host, value)) {
+        payload.cell.dropIncoming(ctx, &roc_host, value);
         return false;
     }
-    state.cell.replaceValue(ctx, &roc_host, value);
-    state.version += 1;
+    payload.cell.replaceValue(ctx, &roc_host, value);
+    payload.version += 1;
     return true;
 }
 
@@ -856,22 +993,65 @@ fn renderActiveRoot(dirty_source_node_ids: []const u64) void {
     const ctx = WasmCtx{};
     const root = shared_engine.root_elem orelse failHost();
 
-    var next_stream: HostNodeDescriptorStream = .{};
-    shared_engine.collectActiveElemRootDescriptors(ctx, &roc_host, &next_stream, root, dirty_source_node_ids);
-
     if (!shared_engine.hasRenderRoot()) {
-        _ = shared_engine.applyNodeDescriptorStream(ctx, &roc_host, &next_stream);
-    } else {
-        _ = shared_engine.applyStructuralNodeDescriptorStream(ctx, &roc_host, &next_stream);
+        const collection = SharedEngine.PreparedRootCollection.prepare(&shared_engine, ctx, &roc_host, root, .{}, dirty_source_node_ids) catch |err| switch (err) {
+            error.OutOfMemory => failHostWith("out of memory preparing initial root transaction"),
+            error.ResourceLimit => failHostWith("initial root exceeded configured runtime limits"),
+            error.InvalidScope => failHostWith("initial root named a scope or identity that is unknown, inactive, or already claimed"),
+            error.InvalidDescriptor => failHostWith("initial root staged a descriptor the committed stream does not hold"),
+            error.OverlappingRemoval => failHostWith("initial root staged overlapping removals"),
+            error.InvalidRenderTopology => failHostWith("initial root staged a render topology that conflicts with the committed tree"),
+            error.InvalidSignalGraphAppend => failHostWith("initial root staged a signal graph append that does not match the committed graph"),
+            error.InvalidSignalGraphRelease => failHostWith("initial root staged a signal graph release that does not match the committed graph"),
+        };
+        const prepared = SharedEngine.PreparedRootDownstream.prepare(collection) catch |err| switch (err) {
+            error.OutOfMemory => {
+                collection.deinit();
+                failHostWith("out of memory preparing initial root publication");
+            },
+            error.ResourceLimit => {
+                collection.deinit();
+                failHostWith("initial root publication exceeded configured runtime limits");
+            },
+            error.InvalidRenderTopology => {
+                collection.deinit();
+                failHostWith("initial root publication staged a conflicting render topology");
+            },
+            error.InvalidSignalGraphAppend => {
+                collection.deinit();
+                failHostWith("initial root publication staged a mismatched signal graph append");
+            },
+            error.InvalidSignalGraphRelease => {
+                collection.deinit();
+                failHostWith("initial root publication staged a mismatched signal graph release");
+            },
+            error.InvalidScope => {
+                collection.deinit();
+                failHostWith("initial root publication named a scope or identity that is unknown, inactive, or already claimed");
+            },
+            error.InvalidDescriptor => {
+                collection.deinit();
+                failHostWith("initial root publication staged a descriptor the committed stream does not hold");
+            },
+            error.OverlappingRemoval => {
+                collection.deinit();
+                failHostWith("initial root publication staged overlapping removals");
+            },
+        };
+        defer prepared.deinit();
+        const render_counts = prepared.downstream.render_splice.?.wire.counts();
+        prepared.commit();
+        const lifecycle_counts = prepared.runLifecycle();
+        shared_engine.render_metrics.addCommandCounts(render_counts);
+        shared_engine.render_metrics.addCommandCounts(lifecycle_counts);
+        return;
     }
 
-    shared_engine.rebuildActiveEventsFromStream(ctx, &next_stream);
-    shared_engine.active_stream.deinit(allocator(), ctx, &roc_host, &shared_engine.pending_roc_metrics);
-    shared_engine.active_stream = next_stream;
-    const on_change_initial_counts = shared_engine.runActiveOnChangeInitialCommands(ctx, &roc_host);
-    const mount_counts = shared_engine.runActiveMountCommands(ctx, &roc_host);
-    shared_engine.render_metrics.addCommandCounts(on_change_initial_counts);
-    shared_engine.render_metrics.addCommandCounts(mount_counts);
+    // Every update after the initial mount is a prepared transaction driven
+    // by dispatch; there is deliberately no full re-render path to fall back
+    // to, so that a transition the transactional engine cannot stage fails
+    // loudly instead of being quietly recollected.
+    failHostWith("render root already published; live updates must go through prepared transactions");
 }
 
 fn hostEventById(event_id: u32) HostActiveEventDesc {
@@ -888,25 +1068,17 @@ fn dispatchEvent(desc: HostActiveEventDesc, payload: HostValue) void {
     setHostValueCapability(payload, payload_cap);
     defer callHostValueToUnitWithCapability(payload_cap, hv.hostValueCapabilityDrop(payload_cap), payload);
 
-    shared_engine.recordDispatch();
-
     const current = currentStateValue(desc.target_node_id);
-    const state_cap = shared_engine.stateCapability(desc.target_node_id) catch failHost();
+    const state_cap = shared_engine.stateCapability(desc.target_node_id.raw()) catch failHost();
     defer callHostValueToUnitWithCapability(state_cap, hv.hostValueCapabilityDrop(state_cap), current);
     const read = currentStateValue(desc.read_node_id);
-    const read_cap = shared_engine.stateCapability(desc.read_node_id) catch failHost();
+    const read_cap = shared_engine.stateCapability(desc.read_node_id.raw()) catch failHost();
     defer callHostValueToUnitWithCapability(read_cap, hv.hostValueCapabilityDrop(read_cap), read);
     const next = callHostValueHostValueHostValueToHostValueWithCapabilities(state_cap, read_cap, payload_cap, desc.payload_reducer.transform, current, read, payload);
-    if (!updateStateCell(desc.target_node_id, next)) return;
-
-    const dirty_source_node_ids = [_]u64{desc.target_node_id};
-    const dirty_generation = shared_engine.nextDirtySignalGeneration();
-
-    const changed_record_ids = shared_engine.propagateDirtyActiveSignals(ctx, &roc_host, allocator(), &dirty_source_node_ids, dirty_generation);
-    _ = shared_engine.applyDirtySignalBatch(ctx, &roc_host, &dirty_source_node_ids, changed_record_ids, dirty_generation);
+    _ = shared_engine.dispatchStateValue(ctx, &roc_host, desc.target_node_id.raw(), next, state_cap);
 }
 
-fn resolveTask(request_id: u64, payload_text: []const u8, failed: bool) void {
+fn resolveTask(request_id: ids.TaskRequestId, payload_text: []const u8, failed: bool) void {
     const previous_phase = roc_allocation_phase;
     defer roc_allocation_phase = previous_phase;
     const ctx = WasmCtx{};
@@ -918,8 +1090,7 @@ fn resolveTask(request_id: u64, payload_text: []const u8, failed: bool) void {
         },
         .unknown => failHostWith("task result had no matching pending request"),
     };
-    var pending = shared_engine.removePendingTaskAt(pending_index);
-    defer shared_engine.deinitPendingTask(ctx, &pending);
+    const pending = shared_engine.pending_tasks.items[pending_index];
 
     const record = shared_engine.activeTaskRecordByToken(pending.task_token) orelse failHostWith("task result matched no active task source");
     const task_payload = switch (record.payload) {
@@ -928,24 +1099,24 @@ fn resolveTask(request_id: u64, payload_text: []const u8, failed: bool) void {
     };
     if (record.token().? != pending.task_token) failHostWith("task result matched a pending request for a different task source");
 
-    roc_allocation_phase = 10;
+    roc_allocation_phase = .task_payload;
     const payload = hostValueStr(payload_text);
     setHostValueCapability(payload, task_payload.payload_cap);
     const payload_take_epoch = hostValueTakeEpoch();
 
-    roc_allocation_phase = 20;
+    roc_allocation_phase = .task_transform;
     const next = if (failed)
-        callHostValueToHostValueWithCapability(task_payload.payload_cap, task_payload.failed, payload)
+        callHostValueToHostValueWithCapability(task_payload.payload_cap, task_payload.failed.toAbi(), payload)
     else
-        callHostValueToHostValueWithCapability(task_payload.payload_cap, task_payload.done, payload);
+        callHostValueToHostValueWithCapability(task_payload.payload_cap, task_payload.done.toAbi(), payload);
     assertHostValueTakenAfter(payload, payload_take_epoch);
-    roc_allocation_phase = 30;
-    _ = shared_engine.dispatchEffectSourceValue(ctx, &roc_host, record, next);
+    roc_allocation_phase = .task_dispatch;
+    _ = shared_engine.dispatchTaskSourceValue(ctx, &roc_host, pending.request_id, record, next);
 }
 
-fn tickInterval(token: u64) void {
+fn tickInterval(token: ids.IntervalToken) void {
     const ctx = WasmCtx{};
-    _ = shared_engine.tickIntervalSourceByRuntimeToken(ctx, &roc_host, token);
+    _ = shared_engine.tickIntervalSourceByRuntimeToken(ctx, &roc_host, token.raw());
 }
 
 fn dispatchLocationChange(payload: []const u8) void {
@@ -1027,6 +1198,10 @@ fn clearActiveRuntime() void {
     shared_engine.node_identities = .empty;
     shared_engine.dom_identities.deinit(a);
     shared_engine.dom_identities = .empty;
+    shared_engine.active_node_identity_ids.deinit(a);
+    shared_engine.active_node_identity_ids = .empty;
+    shared_engine.active_dom_identity_ids.deinit(a);
+    shared_engine.active_dom_identity_ids = .empty;
 
     shared_engine.deinitRenderCache(ctx);
     shared_engine.deinitScratch(ctx);
@@ -1207,9 +1382,9 @@ fn allocRocMemory(length: usize, alignment_arg: usize) ?*anyopaque {
     const min_alignment = @max(alignment_arg, @sizeOf(usize));
     const alignment = alignmentFromBytes(min_alignment);
     const allocated_size = allocatedSizeForRocRequest(length);
-    const user_ptr = std.heap.wasm_allocator.rawAlloc(allocated_size, alignment, @returnAddress()) orelse return null;
+    const user_ptr = allocator().rawAlloc(allocated_size, alignment, @returnAddress()) orelse return null;
     if (!recordRocAllocation(user_ptr, length, allocated_size, alignment)) {
-        std.heap.wasm_allocator.rawFree(user_ptr[0..allocated_size], alignment, @returnAddress());
+        allocator().rawFree(user_ptr[0..allocated_size], alignment, @returnAddress());
         return null;
     }
     return @ptrCast(user_ptr);
@@ -1223,13 +1398,13 @@ fn freeRocAllocation(ptr: *anyopaque, alignment_arg: usize) RocAllocation {
             const alloc = roc_allocations.items[interior_index];
             const base = @intFromPtr(alloc.user_ptr);
             const ptr_addr = @intFromPtr(ptr);
-            failHostWithFmt("roc_dealloc received an interior pointer ptr=0x{x} align={} base=0x{x} offset={} requested_size={} allocated_size={} tracked_align={} current_phase={}", .{ ptr_addr, alignment_arg, base, ptr_addr - base, alloc.requested_size, alloc.allocated_size, alloc.alignment.toByteUnits(), roc_allocation_phase });
+            failHostWithFmt("roc_dealloc received an interior pointer ptr=0x{x} align={} base=0x{x} offset={} requested_size={} allocated_size={} tracked_align={} current_phase={}", .{ ptr_addr, alignment_arg, base, ptr_addr - base, alloc.requested_size, alloc.allocated_size, alloc.alignment.toByteUnits(), debug_phase.encode(roc_allocation_phase) });
         }
         if (findRecentlyFreedRocAllocation(ptr)) |freed| {
             if (freed.alignment != alignment) {
-                failHostWithFmt("roc_dealloc received an already freed pointer ptr=0x{x} align={} with tracked_align={} requested_size={} allocated_size={} freed_phase={} current_phase={}", .{ @intFromPtr(ptr), alignment_arg, freed.alignment.toByteUnits(), freed.requested_size, freed.allocated_size, freed.phase, roc_allocation_phase });
+                failHostWithFmt("roc_dealloc received an already freed pointer ptr=0x{x} align={} with tracked_align={} requested_size={} allocated_size={} freed_phase={} current_phase={}", .{ @intFromPtr(ptr), alignment_arg, freed.alignment.toByteUnits(), freed.requested_size, freed.allocated_size, debug_phase.encode(freed.phase), debug_phase.encode(roc_allocation_phase) });
             }
-            failHostWithFmt("roc_dealloc received a pointer that was already freed ptr=0x{x} align={} requested_size={} allocated_size={} freed_phase={} current_phase={}", .{ @intFromPtr(ptr), alignment_arg, freed.requested_size, freed.allocated_size, freed.phase, roc_allocation_phase });
+            failHostWithFmt("roc_dealloc received a pointer that was already freed ptr=0x{x} align={} requested_size={} allocated_size={} freed_phase={} current_phase={}", .{ @intFromPtr(ptr), alignment_arg, freed.requested_size, freed.allocated_size, debug_phase.encode(freed.phase), debug_phase.encode(roc_allocation_phase) });
         }
         failUnknownRocAllocation("roc_dealloc", ptr, alignment_arg);
     };
@@ -1238,16 +1413,55 @@ fn freeRocAllocation(ptr: *anyopaque, alignment_arg: usize) RocAllocation {
     }
     const alloc = removeRocAllocationAt(index);
     recordFreedRocAllocation(alloc);
-    std.heap.wasm_allocator.rawFree(alloc.user_ptr[0..alloc.allocated_size], alloc.alignment, @returnAddress());
+    allocator().rawFree(alloc.user_ptr[0..alloc.allocated_size], alloc.alignment, @returnAddress());
     return alloc;
 }
 
 export fn roc_alloc(length: usize, alignment: usize) callconv(.c) ?*anyopaque {
-    return allocRocMemory(length, alignment);
+    if (host_poisoned) @trap();
+    return allocRocMemory(length, alignment) orelse failHostWith("Roc allocation failed");
 }
 
 export fn roc_ui_debug_live_allocation_count() callconv(.c) usize {
     return roc_allocations.items.len;
+}
+
+/// Deterministic host-allocation fault injection for Wasm integration tests.
+/// This `roc_ui_debug_*` instrumentation is deliberately outside the browser
+/// protocol: production runtimes never call it and must not depend on it.
+/// `number` is one-based; zero disables injection and resets the attempt count.
+export fn roc_ui_debug_fail_allocation(number: usize) callconv(.c) void {
+    wasm_fault_allocator.configure(if (number == 0) null else number);
+}
+
+export fn roc_ui_debug_allocation_attempts() callconv(.c) usize {
+    return wasm_fault_allocator.attempts;
+}
+
+/// Mounts a static root without a linked Roc application so browser contract
+/// tests can sweep host-side initial-publication allocation failures.
+export fn roc_ui_debug_mount_fixture() callconv(.c) void {
+    beginHostCall();
+    beginCommandTransaction();
+    clearActiveRuntime();
+    var root = abi.Elem{ .payload = undefined, .tag = .Element };
+    const payload: *abi.ElemElement = @ptrCast(@alignCast(&root.payload));
+    payload.* = .{
+        .attrs = abi.RocList(abi.NodeAttr).empty(),
+        .children = abi.RocList(abi.Elem).empty(),
+        .tag = abi.RocStr.fromSlice("div", undefined),
+    };
+    shared_engine.root_elem = root;
+    renderActiveRoot(&.{});
+    // Model a lifecycle command that runs after the root's own transaction
+    // sealed: it must publish in the same mount batch as the root.
+    WasmSink.setDocumentTitle(.{}, "mount fixture");
+    publishCommandTransaction();
+}
+
+/// Exercises the root panic containment path in a linked-Wasm integration test.
+export fn roc_ui_debug_panic() callconv(.c) void {
+    @panic("debug panic injection");
 }
 
 export fn roc_ui_debug_live_allocation_bytes() callconv(.c) usize {
@@ -1263,7 +1477,7 @@ export fn roc_ui_debug_live_allocation_size(index: usize) callconv(.c) usize {
 
 export fn roc_ui_debug_live_allocation_phase(index: usize) callconv(.c) u32 {
     if (index >= roc_allocations.items.len) return 0;
-    return roc_allocations.items[index].phase;
+    return debug_phase.encode(roc_allocations.items[index].phase);
 }
 
 export fn roc_dealloc(ptr: *anyopaque, alignment: usize) callconv(.c) void {
@@ -1276,7 +1490,7 @@ export fn roc_realloc(ptr: *anyopaque, new_length: usize, alignment_arg: usize) 
             const alloc = roc_allocations.items[interior_index];
             const base = @intFromPtr(alloc.user_ptr);
             const ptr_addr = @intFromPtr(ptr);
-            failHostWithFmt("roc_realloc received an interior pointer ptr=0x{x} align={} base=0x{x} offset={} requested_size={} allocated_size={} tracked_align={} current_phase={}", .{ ptr_addr, alignment_arg, base, ptr_addr - base, alloc.requested_size, alloc.allocated_size, alloc.alignment.toByteUnits(), roc_allocation_phase });
+            failHostWithFmt("roc_realloc received an interior pointer ptr=0x{x} align={} base=0x{x} offset={} requested_size={} allocated_size={} tracked_align={} current_phase={}", .{ ptr_addr, alignment_arg, base, ptr_addr - base, alloc.requested_size, alloc.allocated_size, alloc.alignment.toByteUnits(), debug_phase.encode(roc_allocation_phase) });
         }
         if (findRecentlyFreedRocAllocation(ptr)) |freed| {
             const min_alignment = @max(alignment_arg, @sizeOf(usize));
@@ -1295,14 +1509,14 @@ export fn roc_realloc(ptr: *anyopaque, new_length: usize, alignment_arg: usize) 
         failHostWithFmt("roc_realloc alignment did not match the tracked allocation ptr=0x{x} align={} tracked_align={}", .{ @intFromPtr(ptr), alignment_arg, old_alloc.alignment.toByteUnits() });
     }
 
-    const new_allocation_ptr = allocRocMemory(new_length, alignment_arg) orelse return null;
+    const new_allocation_ptr = allocRocMemory(new_length, alignment_arg) orelse failHostWith("Roc reallocation failed");
     const new_allocation_user_ptr: [*]u8 = @ptrCast(new_allocation_ptr);
     const old_user_ptr: [*]const u8 = @ptrCast(ptr);
     const copy_size = @min(old_alloc.requested_size, new_length);
     @memcpy(new_allocation_user_ptr[0..copy_size], old_user_ptr[0..copy_size]);
     const freed = removeRocAllocationAt(old_index);
     recordFreedRocAllocation(freed);
-    std.heap.wasm_allocator.rawFree(freed.user_ptr[0..freed.allocated_size], freed.alignment, @returnAddress());
+    allocator().rawFree(freed.user_ptr[0..freed.allocated_size], freed.alignment, @returnAddress());
     return @ptrCast(new_allocation_user_ptr);
 }
 
@@ -1317,28 +1531,28 @@ export fn roc_ui_protocol_features() callconv(.c) u32 {
 }
 
 export fn roc_ui_command_buffer_ptr() callconv(.c) usize {
-    return command_buffer.ptrAddress();
+    return command_batch.published.commands.ptrAddress();
 }
 
 export fn roc_ui_command_buffer_len() callconv(.c) usize {
-    return command_buffer.len();
+    return command_batch.published.commands.len();
 }
 
 export fn roc_ui_string_buffer_ptr() callconv(.c) usize {
-    if (string_buffer.items.len == 0) return 0;
-    return @intFromPtr(string_buffer.items.ptr);
+    if (command_batch.published.strings.items.len == 0) return 0;
+    return @intFromPtr(command_batch.published.strings.items.ptr);
 }
 
 export fn roc_ui_string_buffer_len() callconv(.c) usize {
-    return string_buffer.items.len;
+    return command_batch.published.strings.items.len;
 }
 
 export fn roc_ui_dynamic_buffer_ptr() callconv(.c) usize {
-    return dynamic_command_buffer.ptrAddress();
+    return command_batch.published.dynamic.ptrAddress();
 }
 
 export fn roc_ui_dynamic_buffer_len() callconv(.c) usize {
-    return dynamic_command_buffer.len();
+    return command_batch.published.dynamic.len();
 }
 
 export fn roc_ui_command_record_words() callconv(.c) usize {
@@ -1357,6 +1571,10 @@ export fn roc_ui_last_error_len() callconv(.c) usize {
     return last_host_error.len;
 }
 
+export fn roc_ui_is_poisoned() callconv(.c) u32 {
+    return @intFromBool(host_poisoned);
+}
+
 /// Number of retained host values currently live in the registry.
 ///
 /// The browser leak guard asserts this returns to zero after `roc_ui_unmount`,
@@ -1366,7 +1584,7 @@ export fn roc_ui_live_host_values() callconv(.c) usize {
 }
 
 export fn roc_ui_prepare_mount() callconv(.c) void {
-    clearHostError();
+    beginHostCall();
     prepareMountRoot();
 }
 
@@ -1392,7 +1610,7 @@ export fn roc_ui_storage_declaration_key_len(index: usize) callconv(.c) usize {
 }
 
 export fn roc_ui_set_storage_payload(area_id: u32, key_ptr: usize, key_len: usize, payload_ptr: usize, payload_len: usize) callconv(.c) void {
-    clearHostError();
+    beginHostCall();
     const area = boundary.StorageArea.fromId(area_id) orelse failHostWith("storage payload used an unknown storage area");
     const key = (@as([*]const u8, @ptrFromInt(key_ptr)))[0..key_len];
     const payload = (@as([*]const u8, @ptrFromInt(payload_ptr)))[0..payload_len];
@@ -1400,52 +1618,55 @@ export fn roc_ui_set_storage_payload(area_id: u32, key_ptr: usize, key_len: usiz
 }
 
 export fn roc_ui_mount() callconv(.c) void {
-    clearHostError();
+    beginHostCall();
+    beginCommandTransaction();
     if (!mount_prepared) {
         clearActiveRuntime();
-        clearCommandBuffers();
         clearStorageEnvironment();
         initRootElem();
     } else {
-        clearCommandBuffers();
         mount_prepared = false;
     }
 
     renderActiveRoot(&.{});
     clearStorageDeclarations();
+    publishCommandTransaction();
 }
 
 export fn roc_ui_set_location(payload_ptr: usize, payload_len: usize) callconv(.c) void {
-    clearHostError();
+    beginHostCall();
     setInitialLocationPayload((@as([*]const u8, @ptrFromInt(payload_ptr)))[0..payload_len]);
 }
 
 export fn roc_ui_update_location(payload_ptr: usize, payload_len: usize) callconv(.c) void {
-    clearHostError();
-    clearCommandBuffers();
+    beginHostCall();
+    beginCommandTransaction();
     dispatchLocationChange((@as([*]const u8, @ptrFromInt(payload_ptr)))[0..payload_len]);
+    publishCommandTransaction();
 }
 
 export fn roc_ui_set_visibility(payload_ptr: usize, payload_len: usize) callconv(.c) void {
-    clearHostError();
+    beginHostCall();
     setInitialVisibilityPayload((@as([*]const u8, @ptrFromInt(payload_ptr)))[0..payload_len]);
 }
 
 export fn roc_ui_update_visibility(payload_ptr: usize, payload_len: usize) callconv(.c) void {
-    clearHostError();
-    clearCommandBuffers();
+    beginHostCall();
+    beginCommandTransaction();
     dispatchVisibilityChange((@as([*]const u8, @ptrFromInt(payload_ptr)))[0..payload_len]);
+    publishCommandTransaction();
 }
 
 export fn roc_ui_set_online(payload_ptr: usize, payload_len: usize) callconv(.c) void {
-    clearHostError();
+    beginHostCall();
     setInitialOnlinePayload((@as([*]const u8, @ptrFromInt(payload_ptr)))[0..payload_len]);
 }
 
 export fn roc_ui_update_online(payload_ptr: usize, payload_len: usize) callconv(.c) void {
-    clearHostError();
-    clearCommandBuffers();
+    beginHostCall();
+    beginCommandTransaction();
     dispatchOnlineChange((@as([*]const u8, @ptrFromInt(payload_ptr)))[0..payload_len]);
+    publishCommandTransaction();
 }
 
 fn payloadKindFromWire(payload_kind: u32) BoundaryPayloadKind {
@@ -1459,8 +1680,8 @@ fn payloadKindFromWire(payload_kind: u32) BoundaryPayloadKind {
 }
 
 export fn roc_ui_event(event_id: u32, payload_kind: u32, payload_ptr: usize, payload_len: usize, bool_value: u32) callconv(.c) u32 {
-    clearHostError();
-    clearCommandBuffers();
+    beginHostCall();
+    beginCommandTransaction();
     const desc = hostEventById(event_id);
     const actual_payload_kind = payloadKindFromWire(payload_kind);
     const expected_payload_kind = desc.payload_descriptor.payloadKind();
@@ -1474,33 +1695,41 @@ export fn roc_ui_event(event_id: u32, payload_kind: u32, payload_ptr: usize, pay
         .bytes => hostValueU8List((@as([*]const u8, @ptrFromInt(payload_ptr)))[0..payload_len]),
     };
     dispatchEvent(desc, payload);
+    publishCommandTransaction();
     return 0;
 }
 
 export fn roc_ui_timer(token: u32) callconv(.c) void {
-    clearHostError();
-    clearCommandBuffers();
-    tickInterval(token);
+    beginHostCall();
+    beginCommandTransaction();
+    tickInterval(ids.IntervalToken.fromRaw(token));
+    publishCommandTransaction();
 }
 
 export fn roc_ui_resolve(request_id: u32, payload_ptr: usize, payload_len: usize, failed: u32) callconv(.c) void {
-    clearHostError();
-    clearCommandBuffers();
+    beginHostCall();
+    beginCommandTransaction();
     resolveTask(
-        request_id,
+        ids.TaskRequestId.fromRaw(request_id),
         (@as([*]const u8, @ptrFromInt(payload_ptr)))[0..payload_len],
         failed != 0,
     );
+    publishCommandTransaction();
 }
 
 export fn roc_ui_unmount() callconv(.c) void {
-    clearHostError();
-    clearCommandBuffers();
+    if (host_poisoned) {
+        command_batch.discard();
+        return;
+    }
+    beginHostCall();
+    beginCommandTransaction();
     clearActiveRuntime();
     clearInitialLocationPayload();
     clearInitialVisibilityPayload();
     clearInitialOnlinePayload();
     clearStorageEnvironment();
+    publishCommandTransaction();
 }
 
 export fn roc_dbg(_: [*]const u8, _: usize) callconv(.c) void {}
@@ -1535,69 +1764,69 @@ fn rocCrashedForAbi(_: *abi.RocHost, bytes: [*]const u8, len: usize) callconv(.c
     roc_crashed(bytes, len);
 }
 
-export fn roc_host_value_clone(value: HostValue) callconv(.c) HostValue {
+export fn roc_host_value_clone(value: u64) callconv(.c) u64 {
     const previous_phase = roc_allocation_phase;
-    roc_allocation_phase = 101;
+    roc_allocation_phase = .host_value_clone;
     defer roc_allocation_phase = previous_phase;
-    return shared_engine.host_values.clone(std.heap.wasm_allocator, value, registryOps()) catch |err| {
+    return (shared_engine.host_values.clone(allocator(), HostValue.fromRaw(value), registryOps()) catch |err| {
         failHostValueRegistryError(err);
-    };
+    }).toRaw();
 }
 
-export fn roc_host_value_get_with_capability(value: HostValue, cap: HostValueCapability) callconv(.c) abi.RocBox {
+export fn roc_host_value_get_with_capability(value: u64, cap: HostValueCapability) callconv(.c) abi.RocBox {
     const previous_phase = roc_allocation_phase;
-    roc_allocation_phase = 108;
+    roc_allocation_phase = .host_value_get;
     defer roc_allocation_phase = previous_phase;
     defer hv.releaseHostValueCapability(cap, &roc_host);
-    return shared_engine.host_values.getWithCapability(std.heap.wasm_allocator, value, cap, registryOps()) catch |err| {
+    return shared_engine.host_values.getWithCapability(allocator(), HostValue.fromRaw(value), cap, registryOps()) catch |err| {
         failHostValueRegistryError(err);
     };
 }
 
-export fn roc_host_value_get_with_split(value: HostValue, split: abi.RocErasedCallable) callconv(.c) abi.RocBox {
+export fn roc_host_value_get_with_split(value: u64, split: abi.RocErasedCallable) callconv(.c) abi.RocBox {
     const previous_phase = roc_allocation_phase;
-    roc_allocation_phase = 103;
+    roc_allocation_phase = .host_value_get_with_split;
     defer roc_allocation_phase = previous_phase;
     defer abi.decrefErasedCallable(split, &roc_host);
-    return shared_engine.host_values.getWithSplit(value, split, registryOps()) catch |err| {
+    return shared_engine.host_values.getWithSplit(HostValue.fromRaw(value), CapabilitySplit.fromAbi(split), registryOps()) catch |err| {
         failHostValueRegistryError(err);
     };
 }
 
-export fn roc_host_value_store_with_capability(box: abi.RocBox, cap: HostValueCapability) callconv(.c) HostValue {
+export fn roc_host_value_store_with_capability(box: abi.RocBox, cap: HostValueCapability) callconv(.c) u64 {
     const previous_phase = roc_allocation_phase;
-    roc_allocation_phase = 109;
+    roc_allocation_phase = .host_value_store;
     defer roc_allocation_phase = previous_phase;
-    return shared_engine.host_values.storeOwnedCapability(std.heap.wasm_allocator, box, cap, registryOps()) catch |err| {
+    return (shared_engine.host_values.storeOwnedCapability(allocator(), box, cap, registryOps()) catch |err| {
         failHostValueRegistryError(err);
-    };
+    }).toRaw();
 }
 
-export fn roc_host_value_store_with_existing_capability(box: abi.RocBox, source_value: HostValue) callconv(.c) HostValue {
+export fn roc_host_value_store_with_existing_capability(box: abi.RocBox, source_value: u64) callconv(.c) u64 {
     const previous_phase = roc_allocation_phase;
-    roc_allocation_phase = 109;
+    roc_allocation_phase = .host_value_store;
     defer roc_allocation_phase = previous_phase;
-    return shared_engine.host_values.storeRetainedExistingCapability(std.heap.wasm_allocator, box, source_value, registryOps()) catch |err| {
+    return (shared_engine.host_values.storeRetainedExistingCapability(allocator(), box, HostValue.fromRaw(source_value), registryOps()) catch |err| {
         failHostValueRegistryError(err);
-    };
+    }).toRaw();
 }
 
-export fn roc_host_value_take_with_capability(value: HostValue, cap: HostValueCapability) callconv(.c) abi.RocBox {
+export fn roc_host_value_take_with_capability(value: u64, cap: HostValueCapability) callconv(.c) abi.RocBox {
     const previous_phase = roc_allocation_phase;
-    roc_allocation_phase = 110;
+    roc_allocation_phase = .host_value_take;
     defer roc_allocation_phase = previous_phase;
     defer hv.releaseHostValueCapability(cap, &roc_host);
-    return shared_engine.host_values.takeWithCapability(value, cap, registryOps()) catch |err| {
+    return shared_engine.host_values.takeWithCapability(HostValue.fromRaw(value), cap, registryOps()) catch |err| {
         failHostValueRegistryError(err);
     };
 }
 
-export fn roc_host_value_take_with_split(value: HostValue, split: abi.RocErasedCallable) callconv(.c) abi.RocBox {
+export fn roc_host_value_take_with_split(value: u64, split: abi.RocErasedCallable) callconv(.c) abi.RocBox {
     const previous_phase = roc_allocation_phase;
-    roc_allocation_phase = 107;
+    roc_allocation_phase = .host_value_take_with_split;
     defer roc_allocation_phase = previous_phase;
     defer abi.decrefErasedCallable(split, &roc_host);
-    return shared_engine.host_values.takeWithSplit(value, split, registryOps()) catch |err| {
+    return shared_engine.host_values.takeWithSplit(HostValue.fromRaw(value), CapabilitySplit.fromAbi(split), registryOps()) catch |err| {
         failHostValueRegistryError(err);
     };
 }

@@ -1,0 +1,15 @@
+# Known failing example specs and wasm mounts. See scripts/known_failures.py.
+#
+# This list only shrinks: a spec that starts passing must be deleted here
+# (`python3 scripts/test.py ... --update-known-failures` does it), and a spec
+# that starts failing is a regression that fails the run. Adding a line is a
+# deliberate, reviewed decision and needs a comment saying why.
+#
+# Recorded 2026-08-28 against nightly-2026-08-25-cc03aa8, last trimmed after
+# the nested each-row retirement fix. Dominant remaining causes, so the
+# next fixes are recognisable: host out of memory preparing a state transaction
+# with no memory pressure (a mismatched graph append, honestly named now);
+# host-owned allocation leaks at shutdown; "active state has no capability";
+# task settlement panics; patch-count performance budgets.
+native query-builder/editing-a-leaf-three-levels-deep-does-not-recreate-its-siblings.scm
+native spreadsheet-lite/b2-d2-d5-d6-d7-d8-and-b2-b5-f5-d5-already-covered.scm

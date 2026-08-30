@@ -1,0 +1,162 @@
+schema_version = 1
+browser_harness_issue = "https://github.com/lukewilliamboswell/roc-signals/issues/19"
+
+# This manifest is the durable contract between the native performance runner and
+# the eventual js-framework-benchmark browser adapter. Specs prove the operation
+# and provide native engine measurements; browser_duration is the future
+# end-to-end DOM timing reported by the official harness.
+
+[[operations]]
+id = "create_1k"
+official_name = "create rows"
+spec = "specs/create_1k.scm"
+rows = 1000
+warmup_iterations = 0
+native_iterations = 1
+native_samples = 7
+
+[[operations]]
+id = "replace_1k"
+official_name = "replace all rows"
+spec = "specs/replace_1k.scm"
+rows = 1000
+warmup_iterations = 5
+native_iterations = 1
+native_samples = 7
+
+[[operations]]
+id = "update_10k"
+official_name = "partial update"
+spec = "specs/update_10k.scm"
+rows = 10000
+warmup_iterations = 5
+native_iterations = 1
+native_samples = 7
+
+[[operations]]
+id = "select_1k"
+official_name = "select row"
+spec = "specs/select_1k.scm"
+rows = 1000
+warmup_iterations = 5
+native_iterations = 1
+native_samples = 7
+
+[[operations]]
+id = "swap_1k"
+official_name = "swap rows"
+spec = "specs/swap_1k.scm"
+rows = 1000
+warmup_iterations = 5
+native_iterations = 1
+native_samples = 7
+
+[[operations]]
+id = "remove_1k"
+official_name = "remove row"
+spec = "specs/remove_1k.scm"
+rows = 1000
+warmup_iterations = 5
+native_iterations = 1
+native_samples = 7
+
+[[operations]]
+id = "create_10k"
+official_name = "create many rows"
+spec = "specs/create_10k.scm"
+rows = 10000
+warmup_iterations = 0
+native_iterations = 1
+native_samples = 1
+
+[[operations]]
+id = "append_1k_to_10k"
+official_name = "append rows to large table"
+spec = "specs/append_1k_to_10k.scm"
+rows = 11000
+warmup_iterations = 0
+native_iterations = 1
+native_samples = 1
+
+[[operations]]
+id = "clear_10k"
+official_name = "clear rows"
+spec = "specs/clear_10k.scm"
+rows = 10000
+warmup_iterations = 0
+native_iterations = 1
+native_samples = 1
+
+# Memory cases require the future real-browser submission adapter. Issue #19
+# owns only the Node/Wasm-controlled measurements that can inform that work.
+# `actions` names stable DOM ids so an adapter need not duplicate application meaning.
+
+[[memory_scenarios]]
+id = "ready_memory"
+official_name = "ready memory"
+provider = "browser_process_memory"
+availability = "deferred_issue_19"
+actions = []
+
+[[memory_scenarios]]
+id = "run_memory"
+official_name = "run memory"
+provider = "browser_process_memory"
+availability = "deferred_issue_19"
+actions = ["run"]
+
+[[memory_scenarios]]
+id = "update_memory"
+official_name = "update memory"
+provider = "browser_process_memory"
+availability = "deferred_issue_19"
+actions = ["run", "update", "update", "update", "update", "update"]
+
+[[memory_scenarios]]
+id = "replace_memory"
+official_name = "replace memory"
+provider = "browser_process_memory"
+availability = "deferred_issue_19"
+actions = ["run", "run", "run", "run", "run"]
+
+[[memory_scenarios]]
+id = "repeated_clear_memory"
+official_name = "repeated clear memory"
+provider = "browser_process_memory"
+availability = "deferred_issue_19"
+actions = ["run", "clear", "run", "clear", "run", "clear", "run", "clear", "run", "clear"]
+
+# These measurements require a future real-browser/Lighthouse adapter outside
+# issue #19. Keeping them in the same validated contract prevents that adapter
+# from silently omitting a result even though native and Node execution cannot
+# produce it.
+
+[[browser_metrics]]
+id = "startup_time"
+official_name = "startup time"
+provider = "browser_navigation"
+availability = "deferred_issue_19"
+
+[[browser_metrics]]
+id = "consistently_interactive"
+official_name = "consistently interactive"
+provider = "lighthouse"
+availability = "deferred_issue_19"
+
+[[browser_metrics]]
+id = "script_bootup_time"
+official_name = "script bootup time"
+provider = "lighthouse"
+availability = "deferred_issue_19"
+
+[[browser_metrics]]
+id = "main_thread_work_cost"
+official_name = "main thread work cost"
+provider = "lighthouse"
+availability = "deferred_issue_19"
+
+[[browser_metrics]]
+id = "total_byte_weight"
+official_name = "total byte weight"
+provider = "lighthouse"
+availability = "deferred_issue_19"

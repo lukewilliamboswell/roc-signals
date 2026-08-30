@@ -89,6 +89,12 @@ render apply, dirty propagation, task resolution, or interval ticks. Ratchet the
 nearest per-file threshold when the new test closes meaningful uncovered risk;
 do not chase panic-only, fatal handler, or OOM cleanup noise for its own sake.
 
+## Performance
+
+See [Profiling and Improving the Engine](docs/profiling.md) for the ReleaseFast
+benchmark workflow, `perf` commands, allocation and scaling analysis, data-layout
+guidance, and the validation expected for engine optimizations.
+
 ## Repository Layout
 
 - [platform/](platform/) contains the Roc platform package and target host
@@ -99,6 +105,3 @@ do not chase panic-only, fatal handler, or OOM cleanup noise for its own sake.
 - [www/](www/) contains the Zola site, static JavaScript runtime, user docs, and
   example-page metadata.
 - [scripts/](scripts/) contains the Python drivers and repository checks.
-- [wip/NEXT_STEPS.md](wip/NEXT_STEPS.md) is the active backlog. Other files under
-  [wip/](wip/) are focused design notes and research evidence that have not been
-  folded into the enduring design.

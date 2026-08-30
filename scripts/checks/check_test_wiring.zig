@@ -14,6 +14,7 @@ const TermColor = struct {
     const reset = "\x1b[0m";
 };
 
+/// Checks that every Zig test-bearing source file is wired into a test root.
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     var gpa_impl = std.heap.DebugAllocator(.{}){};

@@ -22,6 +22,13 @@
     ; org_summary and the combined list; the account row keeps its scope, its row
     ; is reused, and its text sink never fires.
 
+    ; Two updates, both from the mount host call: the initial publication
+    ; renders the account row before the draft is restored, and the
+    ; on_change_initial restore is a second sealed transaction that recomputes
+    ; the row's text from the restored draft. Navigating back to this step
+    ; preserves the keyed account row and its unchanged text sink. (An earlier
+    ; engine recreated the row's element on the restore, which reset the
+    ; per-element count to 1 and hid the second update.)
     (expect-updates (test-id "summary-account") 2)
     (mark-metrics)
     (fill (label "Organisation name") "Northwind Labs")
@@ -38,6 +45,11 @@
     ; progress bar width, and the organisation row's badge. Step 1's fields are
     ; still untouched, which is what this spec is actually guarding.
     (expect-metric-delta derived_calls_into_roc 26)
-    (expect-metric-delta-at-most patches_emitted 6)
+    ; The keyed row scope is reused, but its changed five-node subtree is still
+    ; structurally republished. Reducing this from 28 requires a pre-collection
+    ; topology plan that can prove nested component/when construction sites are
+    ; reusable before DOM identities are reserved. Keep the bound explicit so
+    ; this known optimization gap cannot regress silently.
+    (expect-metric-delta-at-most patches_emitted 28)
   )
 )

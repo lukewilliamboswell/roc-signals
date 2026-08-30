@@ -15,6 +15,11 @@ app [main] { pf: platform "https://github.com/lukewilliamboswell/roc-signals/rel
 ##     write retained state. Three uses here: restoring a saved draft on mount,
 ##     clamping the invite role when the plan changes underneath it, and
 ##     resetting every handle from one "Start over" click.
+##   * Nothing in the wizard is stringly typed. `Plan`, `Region`, `Role` and
+##     `Step` are nominal tag unions with an `is_eq` (so they can be signal
+##     state) and a `to_str`/`from_str` pair. The `Str` form exists only at the
+##     boundaries: the `<option>`/radio value, the saved draft, and the submit
+##     request. Everything in between matches on tags.
 ##
 ## The signal graph:
 ##
@@ -57,31 +62,270 @@ draft_key = "onboarding:draft"
 
 # --- domain -----------------------------------------------------------------
 
+## The plan chosen in step 2. It decides which invite roles step 3 offers, so
+## it is a closed set: the `<option>` text is a rendering of it, not the value.
+Plan := [Starter, Growth, Enterprise].{
+	is_eq : Plan, Plan -> Bool
+	is_eq = |left, right|
+		match left {
+			Starter => match right {
+				Starter => True
+				_ => False
+			}
+			Growth => match right {
+				Growth => True
+				_ => False
+			}
+			Enterprise => match right {
+				Enterprise => True
+				_ => False
+			}
+		}
+
+	## The wire form: the `<option>` value, and field 4 of a saved draft.
+	to_str : Plan -> Str
+	to_str = |plan|
+		match plan {
+			Starter => "starter"
+			Growth => "growth"
+			Enterprise => "enterprise"
+		}
+
+	## Anything unrecognised is the entry-level plan, so a corrupt draft can
+	## never grant a role the account has not paid for.
+	from_str : Str -> Plan
+	from_str = |text|
+		if text == "growth" {
+			Plan.Growth
+		} else if text == "enterprise" {
+			Plan.Enterprise
+		} else {
+			Plan.Starter
+		}
+
+	label : Plan -> Str
+	label = |plan|
+		match plan {
+			Starter => "Starter"
+			Growth => "Growth"
+			Enterprise => "Enterprise"
+		}
+}
+
+## Where the workspace's data lives. `Unset` is the un-chosen state, which is
+## what makes step 2 incomplete; it has no radio of its own.
+Region := [Unset, UnitedStates, EuropeanUnion].{
+	is_eq : Region, Region -> Bool
+	is_eq = |left, right|
+		match left {
+			Unset => match right {
+				Unset => True
+				_ => False
+			}
+			UnitedStates => match right {
+				UnitedStates => True
+				_ => False
+			}
+			EuropeanUnion => match right {
+				EuropeanUnion => True
+				_ => False
+			}
+		}
+
+	to_str : Region -> Str
+	to_str = |region|
+		match region {
+			Unset => ""
+			UnitedStates => "us"
+			EuropeanUnion => "eu"
+		}
+
+	from_str : Str -> Region
+	from_str = |text|
+		if text == "us" {
+			Region.UnitedStates
+		} else if text == "eu" {
+			Region.EuropeanUnion
+		} else {
+			Region.Unset
+		}
+
+	label : Region -> Str
+	label = |region|
+		match region {
+			Unset => "not chosen"
+			UnitedStates => "United States"
+			EuropeanUnion => "European Union"
+		}
+}
+
+## The role every invited teammate gets. Which ones are offered is the plan's
+## business (see `plan_includes`).
+Role := [Member, Admin, Billing].{
+	is_eq : Role, Role -> Bool
+	is_eq = |left, right|
+		match left {
+			Member => match right {
+				Member => True
+				_ => False
+			}
+			Admin => match right {
+				Admin => True
+				_ => False
+			}
+			Billing => match right {
+				Billing => True
+				_ => False
+			}
+		}
+
+	to_str : Role -> Str
+	to_str = |role|
+		match role {
+			Member => "member"
+			Admin => "admin"
+			Billing => "billing"
+		}
+
+	from_str : Str -> Role
+	from_str = |text|
+		if text == "admin" {
+			Role.Admin
+		} else if text == "billing" {
+			Role.Billing
+		} else {
+			Role.Member
+		}
+
+	label : Role -> Str
+	label = |role|
+		match role {
+			Member => "Member"
+			Admin => "Admin"
+			Billing => "Billing admin"
+		}
+}
+
+## The four steps, in order. `index` is the only place the ordering is written
+## down; the progress bar, the backwards-only jump and the validity lookup all
+## read it from here.
+Step := [AccountStep, OrgStep, InvitesStep, ReviewStep].{
+	is_eq : Step, Step -> Bool
+	is_eq = |left, right|
+		match left {
+			AccountStep => match right {
+				AccountStep => True
+				_ => False
+			}
+			OrgStep => match right {
+				OrgStep => True
+				_ => False
+			}
+			InvitesStep => match right {
+				InvitesStep => True
+				_ => False
+			}
+			ReviewStep => match right {
+				ReviewStep => True
+				_ => False
+			}
+		}
+
+	index : Step -> U64
+	index = |step|
+		match step {
+			AccountStep => 0
+			OrgStep => 1
+			InvitesStep => 2
+			ReviewStep => 3
+		}
+
+	## The wire form: field 8 of a saved draft, and the `each_str` row key.
+	slug : Step -> Str
+	slug = |step|
+		match step {
+			AccountStep => "account"
+			OrgStep => "organisation"
+			InvitesStep => "invites"
+			ReviewStep => "review"
+		}
+
+	from_slug : Str -> Step
+	from_slug = |text|
+		if text == "organisation" {
+			Step.OrgStep
+		} else if text == "invites" {
+			Step.InvitesStep
+		} else if text == "review" {
+			Step.ReviewStep
+		} else {
+			Step.AccountStep
+		}
+
+	title : Step -> Str
+	title = |step|
+		match step {
+			AccountStep => "Account"
+			OrgStep => "Organisation"
+			InvitesStep => "Team invites"
+			ReviewStep => "Review"
+		}
+
+	## The `Back` button. Step 1 is its own predecessor, which is why the
+	## button is disabled there rather than wrapping around.
+	previous : Step -> Step
+	previous = |step|
+		match step {
+			AccountStep => Step.AccountStep
+			OrgStep => Step.AccountStep
+			InvitesStep => Step.OrgStep
+			ReviewStep => Step.InvitesStep
+		}
+}
+
+## A plan survives the round trip through its wire form unchanged.
+expect Plan.to_str(Plan.from_str("enterprise")) == "enterprise"
+
+## An unrecognised plan falls back to Starter rather than failing the parse.
+expect Plan.is_eq(Plan.from_str("nonsense"), Plan.Starter)
+
+## The unset region is spelled as the empty wire value, so a blank draft round trips.
+expect Region.to_str(Region.from_str("")) == ""
+
+## The human-facing region label is a separate projection from the wire value.
+expect Region.label(Region.from_str("eu")) == "European Union"
+
+## A role survives the round trip through its wire form unchanged.
+expect Role.to_str(Role.from_str("billing")) == "billing"
+
+## A step survives the round trip through the slug used in saved drafts.
+expect Step.slug(Step.from_slug("review")) == "review"
+
+## Stepping back from the last step lands on the third step, one before it.
+expect Step.index(Step.previous(Step.ReviewStep)) == 2
+
 Account : { email : Str, full_name : Str }
-Org : { name : Str, plan : Str, region : Str }
-StepSummary : { key : Str, title : Str, detail : Str, done : Bool }
+Org : { name : Str, plan : Plan, region : Region }
+StepSummary : { step : Step, detail : Str, done : Bool }
 
 empty_account : Account
 empty_account = { email: "", full_name: "" }
 
 empty_org : Org
-empty_org = { name: "", plan: "starter", region: "" }
+empty_org = { name: "", plan: Plan.Starter, region: Region.Unset }
 
-default_role : Str
-default_role = "member"
+default_role : Role
+default_role = Role.Member
 
-first_step : U64
-first_step = 0
-
-contains_text : Str, Str -> Bool
-contains_text = |haystack, needle| haystack.split_on(needle).len() > 1
+first_step : Step
+first_step = Step.AccountStep
 
 valid_email : Str -> Bool
 valid_email = |raw| {
 	text = raw.trim()
 	parts = text.split_on("@")
 	match parts.get(1) {
-		Ok(domain) => (parts.len() == 2) and (!text.starts_with("@")) and contains_text(domain, ".") and (!domain.starts_with(".")) and (!domain.ends_with("."))
+		Ok(domain) => (parts.len() == 2) and (!text.starts_with("@")) and domain.contains(".") and (!domain.starts_with(".")) and (!domain.ends_with("."))
 		Err(_) => False
 	}
 }
@@ -95,98 +339,64 @@ invite_list = |raw|
 bad_invites : Str -> List(Str)
 bad_invites = |raw| invite_list(raw).keep_if(|part| !valid_email(part))
 
+## An ordinary address with a dotted domain is accepted.
+expect valid_email("ana@example.com")
+
+## An address with nothing after the `@` is rejected.
+expect !valid_email("ana@")
+
+## A domain that ends in a dot is rejected.
+expect !valid_email("ana@example.")
+
+## The invite line tolerates surrounding spaces and empty slots between commas.
+expect invite_list(" a@b.co , , c@d.co ") == ["a@b.co", "c@d.co"]
+
 account_ok : Account -> Bool
 account_ok = |value| valid_email(value.email) and (!value.full_name.trim().is_empty())
 
 org_ok : Org -> Bool
-org_ok = |value| (!value.name.trim().is_empty()) and (!value.region.is_empty())
+org_ok = |value| (!value.name.trim().is_empty()) and (!Region.is_eq(value.region, Region.Unset))
 
 invites_ok : Str -> Bool
 invites_ok = |raw| bad_invites(raw).is_empty()
 
 ## Which invite roles a plan includes. Starter is a single-role plan, which is
 ## what makes the cross-step dependency observable.
-role_allowed : Str, Str -> Bool
-role_allowed = |plan, role|
-	if role == "member" {
-		True
-	} else if role == "admin" {
-		plan != "starter"
-	} else if role == "billing" {
-		plan == "enterprise"
-	} else {
-		False
+plan_includes : Plan, Role -> Bool
+plan_includes = |plan, role|
+	match role {
+		Member => True
+		Admin => !Plan.is_eq(plan, Plan.Starter)
+		Billing => Plan.is_eq(plan, Plan.Enterprise)
 	}
 
-plan_label : Str -> Str
-plan_label = |plan|
-	if plan == "growth" {
-		"Growth"
-	} else if plan == "enterprise" {
-		"Enterprise"
-	} else {
-		"Starter"
-	}
+## Every plan offers the plain member role, including the cheapest one.
+expect plan_includes(Plan.Starter, Role.Member)
 
-region_label : Str -> Str
-region_label = |region|
-	if region == "us" {
-		"United States"
-	} else if region == "eu" {
-		"European Union"
-	} else {
-		"not chosen"
-	}
+## Starter is the single-role plan, so admin is not on offer there.
+expect !plan_includes(Plan.Starter, Role.Admin)
 
-role_label : Str -> Str
-role_label = |role|
-	if role == "admin" {
-		"Admin"
-	} else if role == "billing" {
-		"Billing admin"
-	} else {
-		"Member"
-	}
+## Growth adds the admin role on top of member.
+expect plan_includes(Plan.Growth, Role.Admin)
 
-step_slug : U64 -> Str
-step_slug = |index|
-	if index == 1 {
-		"organisation"
-	} else if index == 2 {
-		"invites"
-	} else if index == 3 {
-		"review"
-	} else {
-		"account"
-	}
+## Billing admin stays out of reach on Growth.
+expect !plan_includes(Plan.Growth, Role.Billing)
 
-step_index : Str -> U64
-step_index = |slug|
-	if slug == "organisation" {
-		1
-	} else if slug == "invites" {
-		2
-	} else if slug == "review" {
-		3
-	} else {
-		0
-	}
+## Only Enterprise offers the billing admin role.
+expect plan_includes(Plan.Enterprise, Role.Billing)
 
-step_title : U64 -> Str
-step_title = |index|
-	if index == 1 {
-		"Organisation"
-	} else if index == 2 {
-		"Team invites"
-	} else if index == 3 {
-		"Review"
-	} else {
-		"Account"
-	}
+## The submit request crosses the host boundary as text, so the attempt number
+## is encoded in exactly one place. Attempt 0 is "never submitted" and is not
+## sent at all.
+submit_request_text : U64 -> Str
+submit_request_text = |attempt| "submit-${attempt.to_str()}"
+
+## The attempt number is carried in the request text, so a retry is a new request.
+expect submit_request_text(2) == "submit-2"
 
 # --- draft serialization -----------------------------------------------------
 
-Draft : { account : Account, org : Org, emails : Str, role : Str, step : U64 }
+Draft : { account : Account, org : Org, emails : Str, role : Role, step : Step }
 
 ## `|` is the field separator, so it can never appear inside a field.
 safe_field : Str -> Str
@@ -199,64 +409,77 @@ serialize_draft = |value|
 			safe_field(value.account.email),
 			safe_field(value.account.full_name),
 			safe_field(value.org.name),
-			value.org.plan,
-			value.org.region,
+			Plan.to_str(value.org.plan),
+			Region.to_str(value.org.region),
 			safe_field(value.emails),
-			value.role,
-			step_slug(value.step),
+			Role.to_str(value.role),
+			Step.slug(value.step),
 		],
 		"|",
 	)
 
-field_at : List(Str), U64 -> Str
-field_at = |parts, index|
-	match parts.get(index) {
-		Ok(value) => value
-		Err(_) => ""
-	}
-
 blank_draft : Str
-blank_draft = serialize_draft({ account: empty_account, org: empty_org, emails: "", role: default_role, step: first_step })
+blank_draft = serialize_draft(empty_draft)
 
-## A draft with the wrong shape is ignored rather than half-applied.
-ParsedDraft : { ok : Bool, draft : Draft }
+## A draft with the wrong shape is ignored rather than half-applied, so the
+## parse result is a `Try` and the eight `?`s below are the shape check.
+ParsedDraft : Try(Draft, [BadDraft, OutOfBounds])
 
 empty_draft : Draft
 empty_draft = { account: empty_account, org: empty_org, emails: "", role: default_role, step: first_step }
 
 no_draft : ParsedDraft
-no_draft = { ok: False, draft: empty_draft }
+no_draft = Err(BadDraft)
+
+## The draft that was actually restored, or the empty form.
+draft_or_empty : ParsedDraft -> Draft
+draft_or_empty = |parsed|
+	match parsed {
+		Ok(draft) => draft
+		Err(_) => empty_draft
+	}
 
 parse_draft : Str -> ParsedDraft
 parse_draft = |text| {
 	parts = text.split_on("|")
 	if parts.len() != 8 {
-		{ ok: False, draft: empty_draft }
+		Err(BadDraft)
 	} else {
-		plan = field_at(parts, 3)
-		role = field_at(parts, 6)
-		{
-			ok: True,
-			draft: {
-				account: { email: field_at(parts, 0), full_name: field_at(parts, 1) },
-				org: { name: field_at(parts, 2), plan, region: field_at(parts, 4) },
-				emails: field_at(parts, 5),
-				role: if role_allowed(plan, role) { role } else { default_role },
-				step: step_index(field_at(parts, 7)),
+		plan = Plan.from_str(parts.get(3)?)
+		role = Role.from_str(parts.get(6)?)
+		Ok(
+			{
+				account: { email: parts.get(0)?, full_name: parts.get(1)? },
+				org: { name: parts.get(2)?, plan, region: Region.from_str(parts.get(4)?) },
+				emails: parts.get(5)?,
+				role: if plan_includes(plan, role) { role } else { default_role },
+				step: Step.from_slug(parts.get(7)?),
 			},
-		}
+		)
 	}
 }
 
-## A missing, unavailable, or corrupt value parses to `ok: False`, so the empty
+## A missing, unavailable, or corrupt value parses to an `Err`, so the empty
 ## form is left alone rather than half-populated.
 read_draft : Browser.StorageText -> ParsedDraft
 read_draft = |stored|
 	match stored {
 		StorageValue(text) => parse_draft(text)
-		StorageMissing => { ok: False, draft: empty_draft }
-		StorageUnavailable(_) => { ok: False, draft: empty_draft }
+		StorageMissing => Err(BadDraft)
+		StorageUnavailable(_) => Err(BadDraft)
 	}
+
+## An empty draft round trips, so the blank form is saved and restored unchanged.
+expect serialize_draft(draft_or_empty(parse_draft(blank_draft))) == blank_draft
+
+## A fully populated draft round trips, so the wire form survives the tag types on both sides.
+expect serialize_draft(draft_or_empty(parse_draft("a@b.co|Ana|Northwind|growth|eu|c@d.co|admin|invites"))) == "a@b.co|Ana|Northwind|growth|eu|c@d.co|admin|invites"
+
+## A role the plan does not include is dropped back to the default.
+expect draft_or_empty(parse_draft("a@b.co|Ana|Northwind|starter|eu||billing|invites")).role.is_eq(Role.Member)
+
+## Too few fields is not a half-draft.
+expect parse_draft("a@b.co|Ana") == Err(BadDraft)
 
 # --- validation messages (derived, never stored) ------------------------------
 
@@ -288,10 +511,10 @@ org_name_message = |value|
 
 region_message : Org -> Str
 region_message = |value|
-	if value.region.is_empty() {
+	if Region.is_eq(value.region, Region.Unset) {
 		"Choose a data region."
 	} else {
-		"Data stored in ${region_label(value.region)}."
+		"Data stored in ${Region.label(value.region)}."
 	}
 
 invite_message : Str -> Str
@@ -310,52 +533,52 @@ invite_message = |raw| {
 	}
 }
 
-role_message : Str, Str -> Str
+role_message : Plan, Role -> Str
 role_message = |plan, role|
-	if plan == "starter" {
-		"Starter plans have one role. Upgrade to invite admins."
-	} else if plan == "growth" {
-		"Growth plans include Member and Admin."
-	} else {
-		"Enterprise plans include Member, Admin and Billing admin. Current: ${role_label(role)}."
+	match plan {
+		Starter => "Starter plans have one role. Upgrade to invite admins."
+		Growth => "Growth plans include Member and Admin."
+		Enterprise => "Enterprise plans include Member, Admin and Billing admin. Current: ${Role.label(role)}."
 	}
 
 # --- summaries ---------------------------------------------------------------
 
 account_summary_of : Account -> StepSummary
 account_summary_of = |value| {
-	key: "account",
-	title: "Account",
+	step: Step.AccountStep,
 	detail: if value.email.trim().is_empty() { "No email yet" } else { "${value.email.trim()} / ${value.full_name.trim()}" },
 	done: account_ok(value),
 }
 
 org_summary_of : Org -> StepSummary
 org_summary_of = |value| {
-	key: "organisation",
-	title: "Organisation",
-	detail: if value.name.trim().is_empty() { "No organisation yet" } else { "${value.name.trim()} on ${plan_label(value.plan)} in ${region_label(value.region)}" },
+	step: Step.OrgStep,
+	detail: if value.name.trim().is_empty() { "No organisation yet" } else { "${value.name.trim()} on ${Plan.label(value.plan)} in ${Region.label(value.region)}" },
 	done: org_ok(value),
 }
 
-invites_summary_of : Str, Str -> StepSummary
+invites_summary_of : Str, Role -> StepSummary
 invites_summary_of = |raw, role| {
-	key: "invites",
-	title: "Team invites",
-	detail: "${invite_list(raw).len().to_str()} invite(s) as ${role_label(role)}",
+	step: Step.InvitesStep,
+	detail: "${invite_list(raw).len().to_str()} invite(s) as ${Role.label(role)}",
 	done: invites_ok(raw),
 }
 
 review_summary_of : Bool -> StepSummary
 review_summary_of = |ready| {
-	key: "review",
-	title: "Review",
+	step: Step.ReviewStep,
 	detail: if ready { "Ready to create the workspace" } else { "Finish the earlier steps first" },
 	done: ready,
 }
 
 summary_line : StepSummary -> Str
-summary_line = |value| "${value.title}: ${value.detail} (${if value.done { "complete" } else { "incomplete" }})"
+summary_line = |value| "${Step.title(value.step)}: ${value.detail} (${if value.done { "complete" } else { "incomplete" }})"
+
+## A ready review row reads as complete and says the workspace can be created.
+expect summary_line(review_summary_of(True)) == "Review: Ready to create the workspace (complete)"
+
+## The invites row counts the addresses and names the role they will be invited as.
+expect summary_line(invites_summary_of("a@b.co, c@d.co", Role.Billing)) == "Team invites: 2 invite(s) as Billing admin (complete)"
 
 complete_count : List(StepSummary) -> U64
 complete_count = |rows| rows.keep_if(|row| row.done).len()
@@ -387,12 +610,11 @@ step_title_class : Str
 step_title_class = "panel-title"
 
 ## A validation note reads as a neutral requirement until the field has been
-## touched, and only turns red once there is input that cannot be accepted.
-note_tone : Str, Bool -> Str
-note_tone = |text, touched|
-	if text == "" {
-		"hidden"
-	} else if touched {
+## touched. The tone is decided by whether the field has input, never by
+## reading the sentence it is about to tint.
+note_tone : Bool -> Str
+note_tone = |touched|
+	if touched {
 		"text-xs font-medium text-red-600"
 	} else {
 		hint_class
@@ -449,11 +671,11 @@ main = || {
 }
 
 Handles : {
-	step : Ui.State(U64),
+	step : Ui.State(Step),
 	account : Ui.State(Account),
 	org : Ui.State(Org),
 	emails : Ui.State(Str),
-	role : Ui.State(Str),
+	role : Ui.State(Role),
 	attempts : Ui.State(U64),
 	reset_token : Ui.State(U64),
 	inbox : Ui.State(ParsedDraft),
@@ -493,7 +715,7 @@ wizard = |h| {
 			],
 		)
 
-	progress_label = step_signal.map(|index| "Step ${(index + 1).to_str()} of 4 — ${step_title(index)}")
+	progress_label = step_signal.map(|current| "Step ${(Step.index(current) + 1).to_str()} of 4 — ${Step.title(current)}")
 	progress_complete = summaries.map(|rows| "${complete_count(rows).to_str()} of 4 steps complete")
 	progress_attr = summaries.map(|rows| complete_count(rows).to_str())
 
@@ -501,7 +723,7 @@ wizard = |h| {
 		Signal.map2(
 			step_signal,
 			Signal.combine([account_valid, org_valid, invites_valid, can_submit]),
-			|index, flags| match flags.get(index) {
+			|current, flags| match flags.get(Step.index(current)) {
 				Ok(flag) => flag
 				Err(_) => False
 			},
@@ -510,8 +732,8 @@ wizard = |h| {
 		Signal.map2(
 			step_signal,
 			step_valid,
-			|index, ok|
-				if index == 3 {
+			|current, ok|
+				if Step.is_eq(current, Step.ReviewStep) {
 					if ok { "Everything checks out. Create the workspace." } else { "Go back and finish the incomplete steps." }
 				} else if ok {
 					"Ready for the next step."
@@ -522,7 +744,7 @@ wizard = |h| {
 
 	# --- the plan clamps the invite role. Reset, not hide: the value the user
 	# --- sees is the value that is saved and submitted.
-	clamped_role = Signal.map2(role_signal, plan_signal, |current, plan| if role_allowed(plan, current) { current } else { default_role })
+	clamped_role = Signal.map2(role_signal, plan_signal, |current, plan| if plan_includes(plan, current) { current } else { default_role })
 
 	# --- draft persistence ---------------------------------------------------
 	whole : Signal.Signal(Draft)
@@ -537,7 +759,8 @@ wizard = |h| {
 	draft_text = whole.map(serialize_draft)
 
 	# --- submission ----------------------------------------------------------
-	submit_request = attempts_signal.map(|n| if n == 0 { "" } else { "submit-${n.to_str()}" })
+	# One attempt counter, one encode point: the counter is the request, and
+	# `submit_request_text` is the only place it becomes a `Str` for the wire.
 	task_status = Signal.from_task(submit_task)
 	submit_status =
 		Signal.map2(
@@ -572,16 +795,26 @@ wizard = |h| {
 					),
 				],
 			),
-			progress_panel(h.step, summaries, progress_label, progress_complete, progress_attr),
+			progress_panel({ step: h.step, summaries, label: progress_label, complete: progress_complete, attr: progress_attr }),
 			Ui.when(
-				step_signal.map(|index| index == 0),
+				step_signal.map(|current| Step.is_eq(current, Step.AccountStep)),
 				|| account_panel(h.step, h.account, account_signal),
 				|| Ui.when(
-					step_signal.map(|index| index == 1),
+					step_signal.map(|current| Step.is_eq(current, Step.OrgStep)),
 					|| org_panel(h.step, h.org, org_signal),
 					|| Ui.when(
-						step_signal.map(|index| index == 2),
-						|| invites_panel(h.step, h.emails, h.role, h.org, emails_signal, role_signal, plan_signal),
+						step_signal.map(|current| Step.is_eq(current, Step.InvitesStep)),
+						|| invites_panel(
+							{
+								step: h.step,
+								emails: h.emails,
+								role: h.role,
+								org: h.org,
+								emails_signal,
+								role_signal,
+								plan_signal,
+							},
+						),
 						|| review_panel(h.attempts, summaries, submit_status, submit_disabled),
 					),
 				),
@@ -595,9 +828,9 @@ wizard = |h| {
 						[
 							Html.action_button_attrs(
 								Signal.const("Back"),
-								step_signal.map(|index| index == 0),
+								step_signal.map(|current| Step.is_eq(current, Step.AccountStep)),
 								[Html.attr("type", "button"), Html.class_attr("button")],
-								h.step.on_unit(|index| if index == 0 { 0 } else { index - 1 }),
+								h.step.on_unit(Step.previous),
 							),
 							Html.button_attrs(
 								"Start over",
@@ -614,12 +847,18 @@ wizard = |h| {
 			# parsed draft lands in one inbox handle here and the per-step writes
 			# fan out from there on the next propagation, where several
 			# `Ui.on_change` commands do all run (see "Start over" below).
-			Ui.on_change_initial(restored, |value| if value.ok { h.inbox.set_cmd(value) } else { Signal.noop }),
-			Ui.on_change(inbox_signal.map(|value| value.draft.step), |value| h.step.set_cmd(value)),
-			Ui.on_change(inbox_signal.map(|value| value.draft.account), |value| h.account.set_cmd(value)),
-			Ui.on_change(inbox_signal.map(|value| value.draft.org), |value| h.org.set_cmd(value)),
-			Ui.on_change(inbox_signal.map(|value| value.draft.emails), |value| h.emails.set_cmd(value)),
-			Ui.on_change(inbox_signal.map(|value| value.draft.role), |value| h.role.set_cmd(value)),
+			Ui.on_change_initial(
+				restored,
+				|value| match value {
+					Ok(_) => h.inbox.set_cmd(value)
+					Err(_) => Signal.noop
+				},
+			),
+			Ui.on_change(inbox_signal.map(|value| draft_or_empty(value).step), |value| h.step.set_cmd(value)),
+			Ui.on_change(inbox_signal.map(|value| draft_or_empty(value).account), |value| h.account.set_cmd(value)),
+			Ui.on_change(inbox_signal.map(|value| draft_or_empty(value).org), |value| h.org.set_cmd(value)),
+			Ui.on_change(inbox_signal.map(|value| draft_or_empty(value).emails), |value| h.emails.set_cmd(value)),
+			Ui.on_change(inbox_signal.map(|value| draft_or_empty(value).role), |value| h.role.set_cmd(value)),
 			# Keep the saved draft in step with the form; an empty form saves nothing.
 			Ui.on_change(draft_text, |text| if text == blank_draft { Browser.remove_local_storage(draft_key) } else { Browser.set_local_storage_text(draft_key, text) }),
 			# The plan changed underneath the role: write the clamped value back.
@@ -631,33 +870,43 @@ wizard = |h| {
 			Ui.on_change(reset_signal, |_| h.role.set_cmd(default_role)),
 			Ui.on_change(reset_signal, |_| h.step.set_cmd(first_step)),
 			Ui.on_change(reset_signal, |_| h.attempts.set_cmd(0)),
-			Ui.on_change(submit_request, |request| if request == "" { Signal.noop } else { Signal.start_str(submit_task, request) }),
+			Ui.on_change(attempts_signal, |n| if n == 0 { Signal.noop } else { Signal.start_str(submit_task, submit_request_text(n)) }),
 		],
 	)
 }
 
 # --- progress ----------------------------------------------------------------
 
-progress_panel : Ui.State(U64), Signal.Signal(List(StepSummary)), Signal.Signal(Str), Signal.Signal(Str), Signal.Signal(Str) -> Elem
-progress_panel = |step, summaries, label, complete, attr|
+## Five arguments, four of them `Signal.Signal(Str)`: named fields, so no call
+## site can swap the label for the count.
+ProgressView : {
+	step : Ui.State(Step),
+	summaries : Signal.Signal(List(StepSummary)),
+	label : Signal.Signal(Str),
+	complete : Signal.Signal(Str),
+	attr : Signal.Signal(Str),
+}
+
+progress_panel : ProgressView -> Elem
+progress_panel = |view|
 	Html.section(
 		"Progress",
-		[Html.class_attr(panel_class), Html.attr_s("data-complete", attr)],
+		[Html.class_attr(panel_class), Html.attr_s("data-complete", view.attr)],
 		[
 			Html.div_c(
 				"flex flex-wrap items-baseline justify-between gap-2",
 				[
-					Html.paragraph_s_attrs(label, [Html.test_id("progress-label"), Html.class_attr("text-base font-semibold text-zinc-950")]),
-					Html.paragraph_s_attrs(complete, [Html.test_id("progress-complete"), Html.class_attr(hint_class)]),
+					Html.paragraph_s_attrs(view.label, [Html.test_id("progress-label"), Html.class_attr("text-base font-semibold text-zinc-950")]),
+					Html.paragraph_s_attrs(view.complete, [Html.test_id("progress-complete"), Html.class_attr(hint_class)]),
 				],
 			),
 			# The fill width is derived from the same summary fan-in that drives
 			# the text, so the bar can never disagree with the count beside it.
 			Html.div_c(
 				"h-1.5 w-full overflow-hidden rounded-full bg-zinc-200",
-				[Html.div_sc(summaries.map(progress_bar_class), [])],
+				[Html.div_sc(view.summaries.map(progress_bar_class), [])],
 			),
-			Ui.each_str(summaries, |row| row.key, |key, row| summary_row(step, key, row)),
+			Ui.each_str(view.summaries, |row| Step.slug(row.step), |key, row| summary_row(view.step, key, row)),
 		],
 	)
 
@@ -677,9 +926,9 @@ progress_bar_class = |rows| {
 
 ## One progress row. The jump button is backwards-only: `Next step` is the only
 ## way forward, because it is the only thing that validates.
-summary_row : Ui.State(U64), Str, Signal.Signal(StepSummary) -> Elem
+summary_row : Ui.State(Step), Str, Signal.Signal(StepSummary) -> Elem
 summary_row = |step, key, row| {
-	target = step_index(key)
+	target = Step.from_slug(key)
 	Html.div(
 		[Html.class_attr(row_class)],
 		[
@@ -691,9 +940,9 @@ summary_row = |step, key, row| {
 				],
 			),
 			Html.button_attrs(
-				"Go to ${step_title(target)}",
+				"Go to ${Step.title(target)}",
 				[Html.attr("type", "button"), Html.class_attr("button button-sm shrink-0")],
-				step.on_unit(|current| if target < current { target } else { current }),
+				step.on_unit(|current| if Step.index(target) < Step.index(current) { target } else { current }),
 			),
 		],
 	)
@@ -709,7 +958,7 @@ step_badge_class = |value| if value.done { "badge badge-ok shrink-0" } else { "b
 
 # --- step 1: account ----------------------------------------------------------
 
-account_panel : Ui.State(U64), Ui.State(Account), Signal.Signal(Account) -> Elem
+account_panel : Ui.State(Step), Ui.State(Account), Signal.Signal(Account) -> Elem
 account_panel = |step, account, account_signal|
 	Html.section_c(
 		"Account step",
@@ -717,51 +966,65 @@ account_panel = |step, account, account_signal|
 		[
 			Html.heading_c("Account", step_title_class),
 			field(
-				"Work email",
-				Html.text_input_attrs(
-					"Work email",
-					account_signal.map(|value| value.email),
-					[
-						Html.class_attr(input_class),
-						Html.attr("placeholder", "you@company.com"),
-						Html.aria_describedby("account-email-error"),
-						Html.aria_invalid_s(account_signal.map(|value| value.email != "" and !valid_email(value.email))),
-					],
-					account.on_str(|value, text| { ..value, email: text }),
-				),
-				account_signal.map(email_message),
-				account_signal.map(|value| note_tone(email_message(value), value.email != "")),
-				"account-email-error",
+				{
+					label: "Work email",
+					control: Html.text_input_attrs(
+						"Work email",
+						account_signal.map(|value| value.email),
+						[
+							Html.class_attr(input_class),
+							Html.attr("placeholder", "you@company.com"),
+							Html.aria_describedby("account-email-error"),
+							Html.aria_invalid_s(account_signal.map(|value| value.email != "" and !valid_email(value.email))),
+						],
+						account.on_str(|value, text| { ..value, email: text }),
+					),
+					message: account_signal.map(email_message),
+					tone: account_signal.map(|value| note_tone(value.email != "")),
+					error_id: "account-email-error",
+				},
 			),
 			field(
-				"Full name",
-				Html.text_input_attrs(
-					"Full name",
-					account_signal.map(|value| value.full_name),
-					[Html.class_attr(input_class), Html.attr("placeholder", "Ada Lovelace"), Html.aria_describedby("account-name-error")],
-					account.on_str(|value, text| { ..value, full_name: text }),
-				),
-				account_signal.map(full_name_message),
-				account_signal.map(|value| note_tone(full_name_message(value), value.full_name != "")),
-				"account-name-error",
+				{
+					label: "Full name",
+					control: Html.text_input_attrs(
+						"Full name",
+						account_signal.map(|value| value.full_name),
+						[Html.class_attr(input_class), Html.attr("placeholder", "Ada Lovelace"), Html.aria_describedby("account-name-error")],
+						account.on_str(|value, text| { ..value, full_name: text }),
+					),
+					message: account_signal.map(full_name_message),
+					tone: account_signal.map(|value| note_tone(value.full_name != "")),
+					error_id: "account-name-error",
+				},
 			),
 			# The guard lives in the reducer: it reads `account` while writing `step`.
-			next_button(step.on_unit_with(account, |current, value| if account_ok(value) { 1 } else { current })),
+			next_button(step.on_unit_with(account, |current, value| if account_ok(value) { Step.OrgStep } else { current })),
 		],
 	)
 
 ## A labelled control with the validation note that belongs to it. Grouping
-## these three here is what keeps every form in the wizard aligned the same way.
-field : Str, Elem, Signal.Signal(Str), Signal.Signal(Str), Str -> Elem
-field = |label, control, message, tone, error_id|
+## these in one record is what keeps every form in the wizard aligned the same
+## way, and it names the two `Signal.Signal(Str)`s that used to be adjacent
+## positional arguments.
+FieldView : {
+	label : Str,
+	control : Elem,
+	message : Signal.Signal(Str),
+	tone : Signal.Signal(Str),
+	error_id : Str,
+}
+
+field : FieldView -> Elem
+field = |view|
 	Html.div_c(
 		"field",
 		[
-			Html.paragraph_c(label, "field-label"),
-			control,
+			Html.paragraph_c(view.label, "field-label"),
+			view.control,
 			Html.paragraph_s_attrs(
-				message,
-				[Html.test_id(error_id), Html.attr("id", error_id), Html.class_attr_s(tone)],
+				view.message,
+				[Html.test_id(view.error_id), Html.attr("id", view.error_id), Html.class_attr_s(view.tone)],
 			),
 		],
 	)
@@ -778,9 +1041,12 @@ next_button = |msg|
 
 # --- step 2: organisation -----------------------------------------------------
 
-org_panel : Ui.State(U64), Ui.State(Org), Signal.Signal(Org) -> Elem
+org_panel : Ui.State(Step), Ui.State(Org), Signal.Signal(Org) -> Elem
 org_panel = |step, org, org_signal| {
-	region_signal = org_signal.map(|value| value.region)
+	# The radios are bound by their wire value, so the tag is encoded once here
+	# and decoded once in the reducer below.
+	region_signal = org_signal.map(|value| Region.to_str(value.region))
+	pick_region = org.on_str(|value, text| { ..value, region: Region.from_str(text) })
 
 	Html.section_c(
 		"Organisation step",
@@ -788,16 +1054,18 @@ org_panel = |step, org, org_signal| {
 		[
 			Html.heading_c("Organisation", step_title_class),
 			field(
-				"Organisation name",
-				Html.text_input_attrs(
-					"Organisation name",
-					org_signal.map(|value| value.name),
-					[Html.class_attr(input_class), Html.attr("placeholder", "Analytical Engines Ltd"), Html.aria_describedby("org-name-error")],
-					org.on_str(|value, text| { ..value, name: text }),
-				),
-				org_signal.map(org_name_message),
-				org_signal.map(|value| note_tone(org_name_message(value), value.name != "")),
-				"org-name-error",
+				{
+					label: "Organisation name",
+					control: Html.text_input_attrs(
+						"Organisation name",
+						org_signal.map(|value| value.name),
+						[Html.class_attr(input_class), Html.attr("placeholder", "Analytical Engines Ltd"), Html.aria_describedby("org-name-error")],
+						org.on_str(|value, text| { ..value, name: text }),
+					),
+					message: org_signal.map(org_name_message),
+					tone: org_signal.map(|value| note_tone(value.name != "")),
+					error_id: "org-name-error",
+				},
 			),
 			Html.div_c(
 				"field",
@@ -805,14 +1073,14 @@ org_panel = |step, org, org_signal| {
 					Html.paragraph_c("Plan", "field-label"),
 					Html.select_c(
 						"Plan",
-						org_signal.map(|value| value.plan),
+						org_signal.map(|value| Plan.to_str(value.plan)),
 						input_class,
 						[
-							Html.option("starter", "Starter"),
-							Html.option("growth", "Growth"),
-							Html.option("enterprise", "Enterprise"),
+							Html.option(Plan.to_str(Plan.Starter), Plan.label(Plan.Starter)),
+							Html.option(Plan.to_str(Plan.Growth), Plan.label(Plan.Growth)),
+							Html.option(Plan.to_str(Plan.Enterprise), Plan.label(Plan.Enterprise)),
 						],
-						org.on_str(|value, text| { ..value, plan: text }),
+						org.on_str(|value, text| { ..value, plan: Plan.from_str(text) }),
 					),
 					Html.paragraph_c("The plan decides which invite roles step 3 will offer.", hint_class),
 				],
@@ -824,31 +1092,52 @@ org_panel = |step, org, org_signal| {
 					Html.div(
 						[Html.class_attr("grid gap-2"), Html.attr("role", "radiogroup"), Html.attr("aria-label", "Data region")],
 						[
-							radio_row("United States", "region", "us", region_signal, org.on_str(|value, text| { ..value, region: text })),
-							radio_row("European Union", "region", "eu", region_signal, org.on_str(|value, text| { ..value, region: text })),
+							radio_row({ label: Region.label(Region.UnitedStates), group: "region", value: Region.to_str(Region.UnitedStates), selected: region_signal, msg: pick_region }),
+							radio_row({ label: Region.label(Region.EuropeanUnion), group: "region", value: Region.to_str(Region.EuropeanUnion), selected: region_signal, msg: pick_region }),
 						],
 					),
 					Html.paragraph_s_attrs(
 						org_signal.map(region_message),
 						[
 							Html.test_id("org-region-error"),
-							Html.class_attr_s(org_signal.map(|value| note_tone(region_message(value), value.region != ""))),
+							Html.class_attr_s(org_signal.map(|value| note_tone(!Region.is_eq(value.region, Region.Unset)))),
 						],
 					),
 				],
 			),
-			next_button(step.on_unit_with(org, |current, value| if org_ok(value) { 2 } else { current })),
+			next_button(step.on_unit_with(org, |current, value| if org_ok(value) { Step.InvitesStep } else { current })),
 		],
 	)
 }
 
 # --- step 3: team invites -----------------------------------------------------
 
-invites_panel : Ui.State(U64), Ui.State(Str), Ui.State(Str), Ui.State(Org), Signal.Signal(Str), Signal.Signal(Str), Signal.Signal(Str) -> Elem
-invites_panel = |step, emails, role, org, emails_signal, role_signal, plan_signal| {
+## Four handles and three signals: named fields, because `emails` and `role`
+## were two indistinguishable `Ui.State(Str)` parameters before.
+InvitesView : {
+	step : Ui.State(Step),
+	emails : Ui.State(Str),
+	role : Ui.State(Role),
+	org : Ui.State(Org),
+	emails_signal : Signal.Signal(Str),
+	role_signal : Signal.Signal(Role),
+	plan_signal : Signal.Signal(Plan),
+}
+
+invites_panel : InvitesView -> Elem
+invites_panel = |view| {
 	# `on_str_with` reads the organisation's plan while writing only the role, so
-	# a role the plan does not include can never be stored.
-	pick_role = role.on_str_with(org, |current, org_value, text| if role_allowed(org_value.plan, text) { text } else { current })
+	# a role the plan does not include can never be stored. The radio's wire
+	# value is decoded here, at the one place it arrives as text.
+	pick_role =
+		view.role.on_str_with(
+			view.org,
+			|current, org_value, text| {
+				picked = Role.from_str(text)
+				if plan_includes(org_value.plan, picked) { picked } else { current }
+			},
+		)
+	selected_role = view.role_signal.map(Role.to_str)
 
 	Html.section_c(
 		"Team invites step",
@@ -856,16 +1145,18 @@ invites_panel = |step, emails, role, org, emails_signal, role_signal, plan_signa
 		[
 			Html.heading_c("Team invites", step_title_class),
 			field(
-				"Invite emails",
-				Html.textarea_attrs(
-					"Invite emails",
-					emails_signal,
-					[Html.class_attr(textarea_class), Html.attr("placeholder", "One address per line"), Html.aria_describedby("invite-emails-error")],
-					emails.on_str(|_current, text| text),
-				),
-				emails_signal.map(invite_message),
-				emails_signal.map(|value| note_tone(invite_message(value), value != "")),
-				"invite-emails-error",
+				{
+					label: "Invite emails",
+					control: Html.textarea_attrs(
+						"Invite emails",
+						view.emails_signal,
+						[Html.class_attr(textarea_class), Html.attr("placeholder", "One address per line"), Html.aria_describedby("invite-emails-error")],
+						view.emails.on_str(|_current, text| text),
+					),
+					message: view.emails_signal.map(invite_message),
+					tone: view.emails_signal.map(|value| note_tone(value != "")),
+					error_id: "invite-emails-error",
+				},
 			),
 			Html.div_c(
 				"field",
@@ -874,25 +1165,25 @@ invites_panel = |step, emails, role, org, emails_signal, role_signal, plan_signa
 					Html.div(
 						[Html.class_attr("grid gap-2"), Html.attr("role", "radiogroup"), Html.attr("aria-label", "Default role")],
 						[
-							radio_row("Member", "invite-role", "member", role_signal, pick_role),
+							role_radio(Role.Member, selected_role, pick_role),
 							# The plan gates these two, so the option list itself is
 							# derived rather than merely disabled.
 							Ui.when(
-								plan_signal.map(|plan| role_allowed(plan, "admin")),
-								|| radio_row("Admin", "invite-role", "admin", role_signal, pick_role),
+								view.plan_signal.map(|plan| plan_includes(plan, Role.Admin)),
+								|| role_radio(Role.Admin, selected_role, pick_role),
 								|| Html.text(""),
 							),
 							Ui.when(
-								plan_signal.map(|plan| role_allowed(plan, "billing")),
-								|| radio_row("Billing admin", "invite-role", "billing", role_signal, pick_role),
+								view.plan_signal.map(|plan| plan_includes(plan, Role.Billing)),
+								|| role_radio(Role.Billing, selected_role, pick_role),
 								|| Html.text(""),
 							),
 						],
 					),
-					Html.paragraph_s_attrs(Signal.map2(plan_signal, role_signal, role_message), [Html.test_id("invite-role-note"), Html.class_attr(hint_class)]),
+					Html.paragraph_s_attrs(Signal.map2(view.plan_signal, view.role_signal, role_message), [Html.test_id("invite-role-note"), Html.class_attr(hint_class)]),
 				],
 			),
-			next_button(step.on_unit_with(emails, |current, value| if invites_ok(value) { 3 } else { current })),
+			next_button(view.step.on_unit_with(view.emails, |current, value| if invites_ok(value) { Step.ReviewStep } else { current })),
 		],
 	)
 }
@@ -909,9 +1200,9 @@ review_panel = |attempts, summaries, submit_status, submit_disabled|
 			Html.div_c(
 				"grid gap-2",
 				[
-					review_row("Account", summaries.map(|rows| summary_line(row_at(rows, 0))), "review-account"),
-					review_row("Organisation", summaries.map(|rows| summary_line(row_at(rows, 1))), "review-organisation"),
-					review_row("Team invites", summaries.map(|rows| summary_line(row_at(rows, 2))), "review-invites"),
+					review_row("Account", summaries.map(|rows| summary_at(rows, 0)), "review-account"),
+					review_row("Organisation", summaries.map(|rows| summary_at(rows, 1)), "review-organisation"),
+					review_row("Team invites", summaries.map(|rows| summary_at(rows, 2)), "review-invites"),
 				],
 			),
 			Html.div_c(
@@ -939,20 +1230,30 @@ review_row = |label, line, id|
 		],
 	)
 
-row_at : List(StepSummary), U64 -> StepSummary
-row_at = |rows, index|
-	match rows.get(index) {
-		Ok(row) => row
-		Err(_) => { key: "missing", title: "Missing", detail: "no data", done: False }
-	}
+## The fan-in always produces four rows, so the fallback is unreachable; it is
+## spelled out rather than left to a crash.
+summary_at : List(StepSummary), U64 -> Str
+summary_at = |rows, index|
+	rows.get(index).map_ok(summary_line) ?? "Missing: no data (incomplete)"
+
+## An index past the end of the rows renders the placeholder instead of crashing.
+expect summary_at([], 0) == "Missing: no data (incomplete)"
 
 ## Radios are bare inputs, so the visible caption is drawn next to them here.
-radio_row : Str, Str, Str, Signal.Signal(Str), _ -> Elem
-radio_row = |label, group, value, selected, msg|
+## The event-message type is platform-internal and has no public name, so the
+## `msg` field is spelled `_`.
+radio_row : { label : Str, group : Str, value : Str, selected : Signal.Signal(Str), msg : _ } -> Elem
+radio_row = |view|
 	Html.div_c(
 		"check-row",
 		[
-			Html.radio_c(label, group, value, selected, "checkbox", msg),
-			Html.text(label),
+			Html.radio_c(view.label, view.group, view.value, view.selected, "checkbox", view.msg),
+			Html.text(view.label),
 		],
 	)
+
+## One invite-role radio. The caption and the wire value both come off the tag,
+## so they cannot drift apart.
+role_radio : Role, Signal.Signal(Str), _ -> Elem
+role_radio = |role, selected, msg|
+	radio_row({ label: Role.label(role), group: "invite-role", value: Role.to_str(role), selected, msg })
