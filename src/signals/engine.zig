@@ -2729,7 +2729,18 @@ pub fn Engine(comptime Ctx: type) type {
             return result;
         }
 
-        fn commitPreparedDirtySignalCaches(self: *Self, overlay: *signal_records.PreparedCacheUpdates) void {
+        /// Publishes a prepared overlay: every staged cache replacement becomes
+        /// the live value, every memoized evaluation becomes a durable dirty
+        /// stamp, and the overlay's derived-call and prune counts reach the
+        /// metrics. Until this runs the transaction is invisible, so a caller
+        /// that abandons a transaction simply never calls this and destroys the
+        /// overlay instead. It may be called at most once for a given overlay,
+        /// and the overlay must still be destroyed afterwards so that the values
+        /// the commit displaced are released. Advancing
+        /// `dirty_signal_generation` is the caller's business, not this
+        /// function's, because a transaction publishes render and structural
+        /// work alongside these caches.
+        pub fn commitPreparedDirtySignalCaches(self: *Self, overlay: *signal_records.PreparedCacheUpdates) void {
             overlay.commit();
             for (overlay.results.items) |entry| {
                 const record = entry.key.record();
@@ -10948,7 +10959,23 @@ pub fn Engine(comptime Ctx: type) type {
             return changed_record_ids.items;
         }
 
-        fn prepareChangedActiveSignalRecordIds(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, overlay: *signal_records.PreparedCacheUpdates, dirty_record_ids: []const u64, dirty_source_node_ids: []const u64, dirty_generation: u64) CollectionError![]u64 {
+        /// Evaluates `dirty_record_ids` in the order given - which must already
+        /// be rank order - against `overlay`, and returns the ids whose value
+        /// moved, in that same order.
+        ///
+        /// Nothing observable happens here: recomputed values are staged in the
+        /// overlay and dirty stamps are memoized in it, so the engine still
+        /// holds its previous state until `commitPreparedDirtySignalCaches`
+        /// publishes that overlay. Destroying the overlay instead aborts the
+        /// transaction and leaves no trace of it. The overlay must therefore
+        /// outlive both this call and every later stage that reads through it,
+        /// and it must have been reserved for at least this graph's cache slots
+        /// because staging is allocation-free by construction.
+        ///
+        /// The returned slice is owned by the caller and allocated from
+        /// `Ctx.allocator(ctx)`; it must be freed whether the transaction
+        /// commits or aborts.
+        pub fn prepareChangedActiveSignalRecordIds(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, overlay: *signal_records.PreparedCacheUpdates, dirty_record_ids: []const u64, dirty_source_node_ids: []const u64, dirty_generation: u64) CollectionError![]u64 {
             const allocator = Ctx.allocator(ctx);
             var changed = std.ArrayListUnmanaged(u64).empty;
             errdefer changed.deinit(allocator);

@@ -1,0 +1,13 @@
+# Fuzz corpus inputs that are currently expected to fail. See scripts/fuzz.py.
+#
+# This list only shrinks: an input that starts passing must be deleted here, and
+# an input that starts failing without being listed is a regression that fails
+# the run. Adding a line is a deliberate, reviewed decision and needs a comment
+# saying why, so that a reviewer sees the bug being accepted rather than a
+# corpus quietly shrinking.
+#
+# Entries are one per line, `<target>/<input>`.
+#
+# Empty since 2026-08-31, when the refusal leak the two structural inputs
+# reproduced was fixed. They stay in the corpus as regression inputs; only their
+# expected-failure lines are gone.

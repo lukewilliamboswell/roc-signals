@@ -478,7 +478,13 @@ pub const PreparedExistingRows = struct {
         try site.scope_ids.ensureTotalCapacity(allocator, keys.len);
         try site.hash_links.ensureTotalCapacity(allocator, keys.len);
         try site.hash_heads.ensureTotalCapacity(allocator, std.math.cast(u32, keys.len) orelse return error.ResourceLimit);
-        if (next_scope_ids.len != 0) try memberships.ensureTotalCapacity(allocator, std.math.add(usize, highest_scope_id.index(), 1) catch return error.ResourceLimit);
+        // Reserved unconditionally, because `commit` grows `memberships` to cover
+        // `highest_scope_id` whatever the incoming list holds. Skipping the
+        // reservation for an empty list left `commit`'s `appendAssumeCapacity`
+        // running against zero capacity the first time a keyed site reconciled
+        // an empty list before any row had created a membership - a safety panic
+        // in a checked build and an out-of-bounds write in ReleaseFast.
+        try memberships.ensureTotalCapacity(allocator, std.math.add(usize, highest_scope_id.index(), 1) catch return error.ResourceLimit);
         try hooks.prepareExistingRowsCommit(allocator, removed.len);
         return .{
             .allocator = allocator,

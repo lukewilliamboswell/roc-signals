@@ -108,6 +108,17 @@
   focused Zig tests for engine seams and ownership, and JavaScript tests for the
   JS/Wasm contract. Keep semantic locators stable; assert structural work
   exactly and bound incidental engine work as described in the testing docs.
+- Reach for fuzzing where the bug class is a *sequence* rather than a case:
+  scheduling order, identity reuse across retirement, ownership balance over a
+  long history, fault position crossed with structure. The targets in
+  `test/fuzzing/` are generators — they decode arbitrary bytes into a valid
+  program and check it against a reference model, so their oracles, not their
+  inputs, are what carry the value. When a target catches a bug, minimize the
+  input and land it with `scripts/fuzz.py add`; CI replays that corpus on every
+  pull request, which is what keeps a fixed crash fixed.
+- Judge a fuzz target by whether it can fail. A target that has never rejected a
+  deliberately broken engine is not evidence of anything, so when adding or
+  changing oracles, mutate the code under test and confirm the target catches it.
 - For performance work, follow `docs/profiling.md`: measure optimized builds,
   test scaling before micro-optimizing, preserve allocator honesty, and validate
   semantics and work counters after the change. Do not trade correctness,
