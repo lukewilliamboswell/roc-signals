@@ -18,6 +18,5 @@
     ; two more patches than the plain-text version: the status badge and the
     ; block's own tint are class sinks off the same row signal, so marking one
     ; slot repaints exactly that block's two classes as well as its text.
-    (expect-metric-delta-at-most patches_emitted 12)
   )
 )

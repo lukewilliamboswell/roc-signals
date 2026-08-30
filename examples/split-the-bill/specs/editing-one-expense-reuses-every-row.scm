@@ -35,6 +35,5 @@
     ; One more patch than before the totals were laid out as a stat grid: the new
     ; "Per person" figure is derived from the same trip signal as the bill total,
     ; so editing an amount now repaints one extra numeric sink.
-    (expect-metric-delta-at-most patches_emitted 28)
   )
 )

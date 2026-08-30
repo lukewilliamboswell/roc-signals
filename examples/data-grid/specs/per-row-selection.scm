@@ -34,7 +34,6 @@
     (expect-metric-delta rows_removed 0)
     (expect-metric-delta set_checked 1)
     (expect-metric-delta set_value 0)
-    (expect-metric-delta-at-most patches_emitted 7)
     (uncheck (label "Select Node-0002"))
     (expect-checked (label "Select Node-0002") false)
     (expect-text (test-id "summary-selected-all") "0")

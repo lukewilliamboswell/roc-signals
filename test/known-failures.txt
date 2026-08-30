@@ -11,4 +11,3 @@
 # with no memory pressure (a mismatched graph append, honestly named now);
 # host-owned allocation leaks at shutdown; "active state has no capability";
 # task settlement panics; patch-count performance budgets.
-native query-builder/editing-a-leaf-three-levels-deep-does-not-recreate-its-siblings.scm

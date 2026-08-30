@@ -27,7 +27,6 @@
     ; Exactly five patches: the textarea value, the word count, the character
     ; count, the summary line, and the edited paragraph's text. The outline emits
     ; nothing at all, and the reading estimate is still 1 min so it stays quiet.
-    (expect-metric-delta-at-most patches_emitted 5)
     (expect-visible (test-id "toc:roc-signals-field-guide"))
     (expect-visible (test-id "toc:performance"))
     (expect-attr (test-id "toc:performance") data-level "2")

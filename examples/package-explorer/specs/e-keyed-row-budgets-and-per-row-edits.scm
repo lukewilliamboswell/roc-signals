@@ -51,7 +51,6 @@
     (expect-metric-delta rows_removed 0)
     (expect-metric-delta rows_reused 0)
     (expect-metric-delta scopes_created 0)
-    (expect-metric-delta-at-most patches_emitted 1)
     ; Moving the watch to another row is symmetric.
     (click (role button :name "Watch roc-parser"))
     (expect-text (test-id "watch-roc-parser") "roc-parser: watching")

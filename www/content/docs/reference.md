@@ -313,13 +313,17 @@ Forms inside `(setup ...)` apply **before** the first render.
 (expect-metric-delta-at-most <metric> <delta>)
 ```
 
-Common metrics: `nodes_recomputed`, `patches_emitted`, `rows_created`,
+Common metrics: `nodes_recomputed`, `rows_created`,
 `rows_removed`, `rows_reused`, `scopes_created`, `scopes_disposed`,
 `events_processed`, `propagation_prunes`, `stale_task_results_ignored`,
 `active_intervals_synced`, `render_indexes_refreshed`,
 `active_graph_records_rebuilt`, `signal_record_table_rebuilt`,
 `stream_nodes_scanned`, `stream_nodes_scanned_events`, `retained_alloc_delta`,
 `host_retained_alloc_delta`, `host_retained_bytes_delta`.
+
+`patches_emitted` is available but deliberately unused: see the testing notes in
+the contributing guide for why patch counts are watched through the benchmarks
+rather than pinned in a spec.
 
 The authoritative list is in `src/spec/spec_runner.zig`.
 

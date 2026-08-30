@@ -441,10 +441,18 @@ every interaction no matter how deep the graph. Use `derived_calls_into_roc`
 **Assert structural metrics exactly; bound engine-internal ones.** `rows_created`,
 `rows_reused`, `rows_removed`, `scopes_created` and `scopes_disposed` are
 semantic: they describe what the reconciler did, and an exact assertion is a
-real regression test. `patches_emitted` and `dirty_source_roots` count internal
-work whose exact value moves with unrelated engine changes — bound those with
+real regression test. `dirty_source_roots` counts internal work whose exact
+value moves with unrelated engine changes — bound that with
 `expect-metric-delta-at-most` so an unrelated improvement does not fail an
 unrelated spec.
+
+Do not assert `patches_emitted` in a spec. It aggregates every render command,
+so its value moves with any change to how work is emitted rather than to how
+much work is done, and the bounds drifted far enough from the real numbers to
+stop meaning anything: they were removed rather than re-fitted. Patch counts are
+still worth watching, but through the benchmark metrics, where a number that
+moves is compared against its own history instead of against a constant someone
+wrote down once.
 
 **To see what actually rendered**, assert a deliberately wrong value on the
 enclosing region. `expect-text` falls back to the concatenated descendant text

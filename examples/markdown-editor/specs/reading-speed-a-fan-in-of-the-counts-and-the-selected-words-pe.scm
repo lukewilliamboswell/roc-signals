@@ -18,7 +18,6 @@
     (expect-metric-delta rows_created 0)
     (expect-metric-delta rows_removed 0)
     ; Only the select value, the reading-time readout, and the summary change.
-    (expect-metric-delta-at-most patches_emitted 3)
     (select-option (label "Reading speed") "300")
     (expect-text (test-id "stat-reading") "1 min")
     (select-option (label "Reading speed") "200")

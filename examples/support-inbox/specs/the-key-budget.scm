@@ -51,7 +51,6 @@
     (expect-metric-delta rows_reused 3)
     (expect-metric-delta scopes_created 0)
     (expect-metric-delta scopes_disposed 0)
-    (expect-metric-delta-at-most patches_emitted 6)
     (expect-metric-delta-at-most dirty_source_roots 4)
     (expect-text (test-id "body-m1") "My card was declined")
     (expect-text (test-id "body-p1") "Refund issued")

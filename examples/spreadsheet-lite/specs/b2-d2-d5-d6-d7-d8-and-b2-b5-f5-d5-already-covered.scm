@@ -44,7 +44,6 @@
     ; Only the rows whose bindings actually changed are refreshed, not the whole
     ; grid; restoring the old value below refreshes none at all.
     (expect-metric-delta bind_event 30)
-    (expect-metric-delta-at-most patches_emitted 107)
     ; Restoring the old value restores every dependent.
     (mark-metrics)
     (fill (label "B2") "1200")

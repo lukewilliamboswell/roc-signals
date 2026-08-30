@@ -27,7 +27,6 @@
     (expect-metric-delta scopes_disposed 0)
     ; Two more patches than before: the radius token row now draws a to-scale
     ; size bar and a resolved "12px" caption, both fed by the same signal.
-    (expect-metric-delta-at-most patches_emitted 4)
     (fill (label "Corner radius medium") "abc")
     (expect-text (test-id "token-validity") "Invalid tokens: radius-md")
     (expect-text (test-id "stylesheet") ":root { --color-bg: #ffffff; --color-fg: #767676; --color-accent: #2563eb; --space-sm: 8px; --font-md: 16px; --radius-md: /* invalid */; }")

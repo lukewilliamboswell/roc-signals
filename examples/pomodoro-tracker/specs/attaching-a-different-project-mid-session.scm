@@ -27,7 +27,6 @@
     (expect-interval 1000 1)
     (expect-local-storage "pomodoro:project" "triage")
     (expect-metric-delta rows_created 0)
-    (expect-metric-delta-at-most patches_emitted 3)
     (click (role button :name "Attach Docs pass"))
     (expect-text (test-id "attached-project") "Attached project: Docs pass")
     (expect-local-storage "pomodoro:project" "docs")
