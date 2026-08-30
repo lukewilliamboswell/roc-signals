@@ -51,11 +51,11 @@
     (mark-metrics)
     (click (role button :name "Demote the last heading"))
     (expect-attr (test-id "toc:one") data-level "6")
-    ; The preview heading remounts because its tag changes from h5 to h6: the new
-    ; heading block row plus its inline-segment row. The outline row is only
-    ; patched, so its slug-keyed identity survives.
-    (expect-metric-delta rows_created 2)
-    (expect-metric-delta rows_removed 1)
+    ; Nothing remounts. The block key no longer carries the block kind, so the
+    ; row survives the h5-to-h6 change and `Ui.switch` swaps only the structural
+    ; branch inside it. The outline row is patched, as it always was.
+    (expect-metric-delta rows_created 0)
+    (expect-metric-delta rows_removed 0)
     ; Level six is the floor: another demotion is a no-op.
     (mark-metrics)
     (click (role button :name "Demote the last heading"))

@@ -51,9 +51,11 @@
     (expect-text (test-id "match-summary") "2 of 5")
     (expect-metric-delta rows_created 0)
     (expect-metric-delta rows_removed 1)
-    ; The group scope and its child condition scope are disposed; the surviving
-    ; sibling rows at both levels are reused.
-    (expect-metric-delta scopes_disposed 2)
+    ; Four scopes retire: the group row and its child condition row, plus the
+    ; `Ui.switch` branch scope each of those rows owns, since `render_node`
+    ; dispatches every node through one. The surviving sibling rows at both
+    ; levels are reused, so row identity is untouched.
+    (expect-metric-delta scopes_disposed 4)
     (expect-metric-delta rows_reused 4)
   )
 )
