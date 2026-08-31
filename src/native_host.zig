@@ -2542,7 +2542,7 @@ fn tryRenderInitialRoot(host: *HostEnv, roc_host: *abi.RocHost, root: abi.Elem, 
     errdefer collection.deinit();
     const prepared = try HostEngine.PreparedRootDownstream.prepare(collection);
     defer prepared.deinit();
-    var counts = prepared.downstream.render_splice.?.wire.counts();
+    var counts = prepared.downstream.render_splice.?.counts();
     prepared.commit();
     counts.addAll(prepared.runLifecycle());
     return counts;
@@ -2557,7 +2557,7 @@ fn tryRenderInitialRootWithArmedPublication(host: *HostEnv, roc_host: *abi.RocHo
     const collection = try HostEngine.PreparedRootCollection.prepare(&host.engine, host, roc_host, root, .{}, &.{});
     errdefer collection.deinit();
     const prepared = try HostEngine.PreparedRootDownstream.prepare(collection);
-    var counts = prepared.downstream.render_splice.?.wire.counts();
+    var counts = prepared.downstream.render_splice.?.counts();
     const preparation_attempts = fault.attempts;
 
     fault.configure(1);
@@ -3970,7 +3970,9 @@ test "native prepared render publication keeps DOM unchanged until armed apply" 
         .bool_fields = 1,
         .fixed_events = 1,
         .custom_attrs = 1,
+        .custom_attr_wire_edits = 1,
         .named_events = 1,
+        .named_event_wire_edits = 1,
         .wire_commands = 10,
     });
     defer splice.deinit();

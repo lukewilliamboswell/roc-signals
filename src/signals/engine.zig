@@ -2015,7 +2015,7 @@ pub fn Engine(comptime Ctx: type) type {
 
             fn commitAssumeCapacity(self: *@This()) render.Counts {
                 if (self.phase.isCommitted()) @panic("prepared mixed structural transaction committed twice");
-                var counts = if (self.downstream.render_splice) |*splice| splice.wire.counts() else render.Counts{};
+                var counts = if (self.downstream.render_splice) |*splice| splice.counts() else render.Counts{};
                 self.downstream.commitAssumeCapacityWithEarlyAndLate(self, commitEarly, self, commitLate);
                 counts.addAll(self.engine.runActiveOnChangeInitialCommandIndices(self.rows.host_ctx, self.rows.roc_host, self.downstream.publication.?.replacement_on_change_indices));
                 counts.addAll(self.engine.runActiveMountCommandIndices(self.rows.host_ctx, self.rows.roc_host, self.downstream.publication.?.replacement_mount_indices));
@@ -7697,7 +7697,7 @@ pub fn Engine(comptime Ctx: type) type {
                     }
                     splice.addChildren(&self.engine.render_cache, ids.ElemId.fromRaw(parent_elem_id), children.items) catch |err| return renderSpliceError(err);
                 }
-                splice.wire.preflight(self.render_batch_target.?, allocator) catch |err| switch (err) {
+                splice.preflight(self.render_batch_target.?, allocator) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.ResourceLimit => return error.ResourceLimit,
                 };
@@ -7726,7 +7726,7 @@ pub fn Engine(comptime Ctx: type) type {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.ResourceLimit => return error.ResourceLimit,
                 };
-                splice.wire.preflight(self.render_batch_target.?, allocator) catch |err| switch (err) {
+                splice.preflight(self.render_batch_target.?, allocator) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.ResourceLimit => return error.ResourceLimit,
                 };
@@ -7915,10 +7915,10 @@ pub fn Engine(comptime Ctx: type) type {
                 };
                 self.render_splice = try facade.prepareRenderTopology(allocator);
                 errdefer if (self.render_splice) |*splice| splice.deinit();
-                self.render_splice.?.wire.reserveSinkCommands(self.commitSinkCommandCount()) catch return error.ResourceLimit;
+                self.render_splice.?.reserveSinkCommands(self.commitSinkCommandCount()) catch return error.ResourceLimit;
                 self.render_batch_target = if (comptime @hasDecl(Ctx, "renderCommandBatch")) Ctx.renderCommandBatch(self.host_ctx) else &self.render_batch;
                 errdefer if (self.render_batch_target == &self.render_batch) self.render_batch.deinit(allocator);
-                self.render_splice.?.wire.preflight(self.render_batch_target.?, allocator) catch |err| switch (err) {
+                self.render_splice.?.preflight(self.render_batch_target.?, allocator) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.ResourceLimit => return error.ResourceLimit,
                 };
@@ -7976,7 +7976,7 @@ pub fn Engine(comptime Ctx: type) type {
 
             fn commitRenderAssumeCapacity(self: *@This()) void {
                 const splice = &(self.render_splice orelse return);
-                splice.wire.stageAssumeCapacity(self.render_batch_target.?, Ctx.allocator(self.host_ctx)) catch @panic("prepared aggregate render batch violated preflight");
+                splice.stageAssumeCapacity(self.render_batch_target.?, Ctx.allocator(self.host_ctx)) catch @panic("prepared aggregate render batch violated preflight");
                 splice.apply(&self.engine.render_cache);
                 if (comptime @hasDecl(Ctx, "applyRenderPublication")) Ctx.applyRenderPublication(self.host_ctx, &self.host_render_publication.?);
             }
@@ -8489,9 +8489,9 @@ pub fn Engine(comptime Ctx: type) type {
                     var sink_commands: usize = 0;
                     if (self.graph_append) |*append| sink_commands += append.appendedIntervalSourceCount();
                     if (self.graph_release) |*release| sink_commands += release.retiredIntervalSourceCount();
-                    self.render_splice.?.wire.reserveSinkCommands(sink_commands) catch return error.ResourceLimit;
+                    self.render_splice.?.reserveSinkCommands(sink_commands) catch return error.ResourceLimit;
                     self.render_batch_target = if (comptime @hasDecl(Ctx, "renderCommandBatch")) Ctx.renderCommandBatch(self.host_ctx) else &self.render_batch;
-                    self.render_splice.?.wire.preflight(self.render_batch_target.?, allocator) catch |err| switch (err) {
+                    self.render_splice.?.preflight(self.render_batch_target.?, allocator) catch |err| switch (err) {
                         error.OutOfMemory => return error.OutOfMemory,
                         error.ResourceLimit => return error.ResourceLimit,
                     };
@@ -8656,6 +8656,20 @@ pub fn Engine(comptime Ctx: type) type {
                         old_named_event_count = std.math.add(usize, old_named_event_count, self.engine.render_cache.nodes.items[index].named_events.items.len) catch return error.ResourceLimit;
                     }
                 };
+                var moved_old_named_event_count: usize = 0;
+                var moved_named_capacity_iterator = moved_named_elem_ids.keyIterator();
+                while (moved_named_capacity_iterator.next()) |elem_id| {
+                    if (replacements.contains(elem_id.*)) continue;
+                    const index = std.math.cast(usize, elem_id.*) orelse return error.ResourceLimit;
+                    if (index < self.engine.render_cache.nodes.items.len and self.engine.render_cache.nodes.items[index].isActive()) {
+                        moved_old_named_event_count = std.math.add(usize, moved_old_named_event_count, self.engine.render_cache.nodes.items[index].named_events.items.len) catch return error.ResourceLimit;
+                    }
+                }
+                const custom_attr_wire_edits = std.math.add(usize, old_custom_count, std.math.add(usize, std.math.add(usize, self.replacement_stream.static_custom_text_attrs.items.len, self.replacement_stream.static_custom_bool_attrs.items.len) catch return error.ResourceLimit, std.math.add(usize, self.replacement_stream.signal_custom_text_attrs.items.len, std.math.add(usize, self.replacement_stream.signal_optional_custom_text_attrs.items.len, self.replacement_stream.signal_custom_bool_attrs.items.len) catch return error.ResourceLimit) catch return error.ResourceLimit) catch return error.ResourceLimit) catch return error.ResourceLimit;
+                var next_named_event_count: usize = 0;
+                for (self.replacement_stream.events.items) |event| next_named_event_count = std.math.add(usize, next_named_event_count, @intFromBool(event.fixedKind() == null)) catch return error.ResourceLimit;
+                for (surviving_event_originals[0..surviving_event_len]) |original| next_named_event_count = std.math.add(usize, next_named_event_count, @intFromBool(self.engine.active_stream.events.items[original].fixedKind() == null)) catch return error.ResourceLimit;
+                const named_event_wire_edits = std.math.add(usize, std.math.add(usize, old_named_event_count, moved_old_named_event_count) catch return error.ResourceLimit, next_named_event_count) catch return error.ResourceLimit;
                 wire_commands = std.math.add(usize, wire_commands, old_custom_count) catch return error.ResourceLimit;
                 wire_commands = std.math.add(usize, wire_commands, self.replacement_stream.static_custom_text_attrs.items.len) catch return error.ResourceLimit;
                 wire_commands = std.math.add(usize, wire_commands, self.replacement_stream.static_custom_bool_attrs.items.len) catch return error.ResourceLimit;
@@ -8682,8 +8696,10 @@ pub fn Engine(comptime Ctx: type) type {
                     .text_fields = std.math.add(usize, std.math.add(usize, std.math.add(usize, self.replacement_stream.text_nodes.items.len, self.replacement_stream.static_text_attrs.items.len) catch return error.ResourceLimit, std.math.add(usize, self.replacement_stream.signal_text_nodes.items.len, self.replacement_stream.signal_text_attrs.items.len) catch return error.ResourceLimit) catch return error.ResourceLimit, std.math.mul(usize, reuse_count, std.enums.values(render_cache_mod.TextField).len) catch return error.ResourceLimit) catch return error.ResourceLimit,
                     .bool_fields = std.math.add(usize, std.math.add(usize, self.replacement_stream.static_bool_attrs.items.len, self.replacement_stream.signal_bool_attrs.items.len) catch return error.ResourceLimit, std.math.mul(usize, reuse_count, std.enums.values(render_cache_mod.BoolField).len) catch return error.ResourceLimit) catch return error.ResourceLimit,
                     .custom_attrs = element_count,
+                    .custom_attr_wire_edits = custom_attr_wire_edits,
                     .fixed_events = std.math.add(usize, fixed_event_count, std.math.mul(usize, reuse_count, std.enums.values(render_cache_mod.EventKind).len) catch return error.ResourceLimit) catch return error.ResourceLimit,
                     .named_events = std.math.add(usize, element_count, moved_named_elem_ids.count()) catch return error.ResourceLimit,
+                    .named_event_wire_edits = named_event_wire_edits,
                     .wire_commands = wire_commands,
                     .reuses = reuse_count,
                 }) catch |err| switch (err) {
@@ -8692,7 +8708,7 @@ pub fn Engine(comptime Ctx: type) type {
                 };
                 errdefer splice.deinit();
                 if (self.initial_root) {
-                    splice.wire.addSemantic(.reset_dom) catch return error.ResourceLimit;
+                    splice.reset_dom = true;
                     splice.addHostRoot(&self.engine.render_cache) catch |err| return renderSpliceError(err);
                 }
                 for (self.removal.?.scan.removed_elem_ids) |elem_id| if (!replacements.contains(elem_id)) splice.addRemoval(&self.engine.render_cache, ids.ElemId.fromRaw(elem_id), survival.removalPublication(elem_id)) catch |err| return renderSpliceError(err);
@@ -9022,7 +9038,7 @@ pub fn Engine(comptime Ctx: type) type {
 
             fn commitRenderCacheAssumeCapacity(self: *@This()) void {
                 const splice = &(self.render_splice orelse return);
-                splice.wire.stageAssumeCapacity(self.render_batch_target.?, Ctx.allocator(self.host_ctx)) catch @panic("prepared render batch violated its preflight contract");
+                splice.stageAssumeCapacity(self.render_batch_target.?, Ctx.allocator(self.host_ctx)) catch @panic("prepared render batch violated its preflight contract");
                 splice.apply(&self.engine.render_cache);
             }
 
@@ -11473,6 +11489,7 @@ pub fn Engine(comptime Ctx: type) type {
                 .text_fields = text_count,
                 .bool_fields = bool_count,
                 .custom_attrs = custom_elem_ids.items.len,
+                .custom_attr_wire_edits = wire_count - text_count - bool_count,
                 .wire_commands = wire_count,
             }) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
@@ -13215,7 +13232,7 @@ pub fn Engine(comptime Ctx: type) type {
                 }
             };
             var row_commit = RowCommit{ .plan = rows };
-            var counts = downstream.render_splice.?.wire.counts();
+            var counts = downstream.render_splice.?.counts();
             downstream.commitAssumeCapacityWith(&row_commit, RowCommit.apply);
             var diff = row_commit.diff orelse @panic("prepared each row commit was skipped");
             defer diff.deinit(allocator);
@@ -13370,7 +13387,7 @@ pub fn Engine(comptime Ctx: type) type {
 
             const plan = try AggregateBranchCollection.prepare(self, ctx, roc_host, selections, .{}, dirty_source_node_ids);
             defer plan.deinit();
-            var counts = plan.render_splice.?.wire.counts();
+            var counts = plan.render_splice.?.counts();
             plan.commitAssumeCapacity();
             for (normalized.selected_indexes) |change_index| {
                 const change = &changes[change_index];
@@ -14003,7 +14020,7 @@ pub fn Engine(comptime Ctx: type) type {
                 }
                 plan.batch_target = if (comptime @hasDecl(Ctx, "renderCommandBatch")) Ctx.renderCommandBatch(ctx) else &plan.fallback_batch;
                 errdefer plan.fallback_batch.deinit(allocator);
-                plan.render_splice.?.wire.preflight(plan.batch_target, allocator) catch |err| switch (err) {
+                plan.render_splice.?.preflight(plan.batch_target, allocator) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.ResourceLimit => return error.ResourceLimit,
                 };
@@ -14027,7 +14044,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const allocator = Ctx.allocator(self.host_ctx);
                 if (self.composite_structural) |composite| {
                     const downstream = composite.downstream;
-                    var total = if (downstream.render_splice) |*splice| splice.wire.counts() else render.Counts{};
+                    var total = if (downstream.render_splice) |*splice| splice.counts() else render.Counts{};
                     downstream.commitAssumeCapacityWithEarlyAndLate(self, commitSourceCaches, composite, PreparedCompositeStructural.commitLate);
                     total.addAll(self.engine.runActiveOnChangeInitialCommandIndices(self.host_ctx, self.roc_host, downstream.publication.?.replacement_on_change_indices));
                     total.addAll(self.engine.runActiveMountCommandIndices(self.host_ctx, self.roc_host, downstream.publication.?.replacement_mount_indices));
@@ -14037,7 +14054,7 @@ pub fn Engine(comptime Ctx: type) type {
                 }
                 if (self.composite_rows) |composite| {
                     const downstream = composite.downstream.?;
-                    const counts = downstream.render_splice.?.wire.counts();
+                    const counts = downstream.render_splice.?.counts();
                     downstream.commitAssumeCapacityWithEarlyAndLate(self, commitSourceCaches, composite, struct {
                         fn apply(rows: *PreparedCompositeRows) void {
                             rows.commit();
@@ -14051,7 +14068,7 @@ pub fn Engine(comptime Ctx: type) type {
                     return total;
                 }
                 if (self.structural_downstream) |downstream| {
-                    const counts = downstream.render_splice.?.wire.counts();
+                    const counts = downstream.render_splice.?.counts();
                     if (self.each_rows) |rows| {
                         const Late = struct {
                             rows: *PreparedActiveEachRows,
@@ -14076,7 +14093,7 @@ pub fn Engine(comptime Ctx: type) type {
                     if (comptime enable_runtime_metrics) self.engine.render_metrics.addCommandCounts(total);
                     return total;
                 }
-                self.render_splice.?.wire.stageAssumeCapacity(self.batch_target, allocator) catch @panic("prepared source batch violated preflight");
+                self.render_splice.?.stageAssumeCapacity(self.batch_target, allocator) catch @panic("prepared source batch violated preflight");
                 commitSourceCaches(self);
                 self.render_splice.?.apply(&self.engine.render_cache);
                 self.batch_target.commit();
@@ -14085,7 +14102,7 @@ pub fn Engine(comptime Ctx: type) type {
                     Ctx.publishRenderPublication(self.host_ctx, &self.host_publication.?);
                     self.publication_phase.markHostPublished();
                 }
-                var counts = self.render_splice.?.wire.counts();
+                var counts = self.render_splice.?.counts();
                 counts.addAll(self.runPostCommitCommands());
                 if (comptime enable_runtime_metrics) self.engine.render_metrics.addCommandCounts(counts);
                 return counts;
@@ -15784,9 +15801,9 @@ test "prepared dirty evaluator reads provisional source through derived map" {
     defer committed_render.deinit();
     var batch: render.TransactionalBatch = .{};
     defer batch.deinit(ctx.allocator);
-    try committed_render.wire.preflight(&batch, ctx.allocator);
+    try committed_render.preflight(&batch, ctx.allocator);
     fault.configure(1);
-    committed_render.wire.stageAssumeCapacity(&batch, ctx.allocator) catch unreachable;
+    committed_render.stageAssumeCapacity(&batch, ctx.allocator) catch unreachable;
     engine.commitPreparedDirtySignalCaches(&committed);
     committed_render.apply(&engine.render_cache);
     batch.commit();
@@ -17312,7 +17329,7 @@ test "aggregate branch collection sweeps allocation failures without publication
                 try std.testing.expect(retry.graph_release.?.steps.len != 0);
                 try std.testing.expectEqual(@as(usize, 4), retry.graph_append.?.records.len);
                 try std.testing.expect(retry.render_splice != null);
-                try std.testing.expect(retry.render_splice.?.wire.commands.items.len != 0);
+                try std.testing.expect(retry.render_splice.?.counts().total != 0);
                 return attempts;
             };
             const attempts = fault.attempts;
