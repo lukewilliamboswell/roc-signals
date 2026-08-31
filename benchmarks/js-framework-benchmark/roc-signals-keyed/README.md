@@ -14,9 +14,9 @@ ROC_BIN=/path/to/roc npm run build-prod
 npm run verify
 ```
 
-The build uses a `ReleaseSmall` host and Roc `--opt=size`, matching the public
-browser artifact. It writes `dist/app.wasm`, `dist/main.mjs`, and the production
-runtime modules. Serve the repository root, then open
+The build uses a `ReleaseFast` host and Roc `--opt=speed`, so CPU results measure
+the speed-optimized browser artifact. It writes `dist/app.wasm`, `dist/main.mjs`,
+and the production runtime modules. Serve the repository root, then open
 `/benchmarks/js-framework-benchmark/roc-signals-keyed/`.
 
 For an upstream comparison, copy this directory to

@@ -51,13 +51,13 @@ def main() -> None:
     resolve_executable("zig", "Zig compiler")
 
     OUTPUT.mkdir(parents=True, exist_ok=True)
-    run(["zig", "build", "build-test-hosts", "-Doptimize=ReleaseSmall"])
+    run(["zig", "build", "build-test-hosts", "-Doptimize=ReleaseFast"])
     run(
         [
             roc,
             "build",
             "--target=wasm32",
-            "--opt=size",
+            "--opt=speed",
             "--no-cache",
             f"--output={OUTPUT / 'app.wasm'}",
             FIXTURE,

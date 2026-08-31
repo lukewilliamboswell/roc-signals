@@ -573,7 +573,7 @@ ROC_BIN=/path/to/roc npm run build-prod
 npm run verify
 ```
 
-This produces the ordinary ReleaseSmall Wasm host, a Roc `--opt=size` app, and
+This produces a ReleaseFast Wasm host, a Roc `--opt=speed` app, and
 the matching shared runtime modules. The local verifier checks DOM structure
 and keyed identity semantics; comparative browser timings and memory numbers
 must come from the official js-framework-benchmark runner. See
