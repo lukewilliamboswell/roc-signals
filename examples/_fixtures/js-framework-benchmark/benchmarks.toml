@@ -2,9 +2,9 @@ schema_version = 1
 browser_harness_issue = "https://github.com/lukewilliamboswell/roc-signals/issues/19"
 
 # This manifest is the durable contract between the native performance runner and
-# the eventual js-framework-benchmark browser adapter. Specs prove the operation
-# and provide native engine measurements; browser_duration is the future
-# end-to-end DOM timing reported by the official harness.
+# the browser adapter under benchmarks/js-framework-benchmark/. Specs prove each
+# operation and provide native engine measurements; the official harness owns
+# end-to-end DOM, memory, startup, and transferred-size measurements.
 
 [[operations]]
 id = "create_1k"
@@ -95,76 +95,74 @@ warmup_iterations = 0
 native_iterations = 1
 native_samples = 1
 
-# Memory cases require the future real-browser submission adapter. Issue #19
-# owns only the Node/Wasm-controlled measurements that can inform that work.
-# `actions` names stable DOM ids so an adapter need not duplicate application meaning.
+# Memory cases run through the official browser adapter. `actions` names stable
+# DOM ids so the manifest and adapter do not duplicate application meaning.
 
 [[memory_scenarios]]
 id = "ready_memory"
 official_name = "ready memory"
 provider = "browser_process_memory"
-availability = "deferred_issue_19"
+availability = "official_browser_adapter"
 actions = []
 
 [[memory_scenarios]]
 id = "run_memory"
 official_name = "run memory"
 provider = "browser_process_memory"
-availability = "deferred_issue_19"
+availability = "official_browser_adapter"
 actions = ["run"]
 
 [[memory_scenarios]]
 id = "update_memory"
 official_name = "update memory"
 provider = "browser_process_memory"
-availability = "deferred_issue_19"
+availability = "official_browser_adapter"
 actions = ["run", "update", "update", "update", "update", "update"]
 
 [[memory_scenarios]]
 id = "replace_memory"
 official_name = "replace memory"
 provider = "browser_process_memory"
-availability = "deferred_issue_19"
+availability = "official_browser_adapter"
 actions = ["run", "run", "run", "run", "run"]
 
 [[memory_scenarios]]
 id = "repeated_clear_memory"
 official_name = "repeated clear memory"
 provider = "browser_process_memory"
-availability = "deferred_issue_19"
+availability = "official_browser_adapter"
 actions = ["run", "clear", "run", "clear", "run", "clear", "run", "clear", "run", "clear"]
 
-# These measurements require a future real-browser/Lighthouse adapter outside
-# issue #19. Keeping them in the same validated contract prevents that adapter
-# from silently omitting a result even though native and Node execution cannot
-# produce it.
+# These measurements are supplied by the official browser harness. Keeping them
+# in the same validated contract prevents a comparison from silently omitting
+# startup or payload evidence that native and Node execution cannot produce.
 
 [[browser_metrics]]
 id = "startup_time"
 official_name = "startup time"
 provider = "browser_navigation"
-availability = "deferred_issue_19"
+availability = "official_browser_adapter"
 
 [[browser_metrics]]
 id = "consistently_interactive"
 official_name = "consistently interactive"
 provider = "lighthouse"
-availability = "deferred_issue_19"
+availability = "official_browser_adapter"
 
 [[browser_metrics]]
 id = "script_bootup_time"
 official_name = "script bootup time"
 provider = "lighthouse"
-availability = "deferred_issue_19"
+availability = "official_browser_adapter"
 
 [[browser_metrics]]
 id = "main_thread_work_cost"
 official_name = "main thread work cost"
 provider = "lighthouse"
-availability = "deferred_issue_19"
+availability = "official_browser_adapter"
 
 [[browser_metrics]]
 id = "total_byte_weight"
 official_name = "total byte weight"
 provider = "lighthouse"
-availability = "deferred_issue_19"
+availability = "official_browser_adapter"

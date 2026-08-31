@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import sys
 import tempfile
 import tomllib
@@ -15,6 +16,7 @@ import test as test_driver  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / "examples/_fixtures/js-framework-benchmark/benchmarks.toml"
+ADAPTER = ROOT / "benchmarks/js-framework-benchmark/roc-signals-keyed"
 
 
 class BenchmarkManifestTests(unittest.TestCase):
@@ -67,7 +69,7 @@ class BenchmarkManifestTests(unittest.TestCase):
         self.assertEqual(expected, scenarios)
         for scenario in self.manifest["memory_scenarios"]:
             self.assertEqual("browser_process_memory", scenario["provider"])
-            self.assertEqual("deferred_issue_19", scenario["availability"])
+            self.assertEqual("official_browser_adapter", scenario["availability"])
         fixture_source = (MANIFEST.parent / "main.roc").read_text(encoding="utf-8")
         for action in {action for actions in expected.values() for action in actions}:
             self.assertIn(f'Html.attr("id", "{action}")', fixture_source)
@@ -83,7 +85,37 @@ class BenchmarkManifestTests(unittest.TestCase):
         metrics = {case["id"]: case["provider"] for case in self.manifest["browser_metrics"]}
         self.assertEqual(expected, metrics)
         for metric in self.manifest["browser_metrics"]:
-            self.assertEqual("deferred_issue_19", metric["availability"])
+            self.assertEqual("official_browser_adapter", metric["availability"])
+
+    def test_official_browser_adapter_has_build_and_metadata_contract(self) -> None:
+        package = json.loads((ADAPTER / "package.json").read_text(encoding="utf-8"))
+        self.assertEqual("python3 build.py", package["scripts"]["build-prod"])
+        self.assertEqual("WebAssembly", package["js-framework-benchmark"]["language"])
+        self.assertTrue((ADAPTER / "package-lock.json").is_file())
+        self.assertTrue((ADAPTER / "index.html").is_file())
+        self.assertTrue((ADAPTER / "src/main.mjs").is_file())
+        self.assertTrue((ADAPTER / "build.py").is_file())
+
+        index = (ADAPTER / "index.html").read_text(encoding="utf-8")
+        self.assertIn('id="main"', index)
+        self.assertIn('/css/currentStyle.css', index)
+        self.assertIn('./dist/main.mjs', index)
+
+    def test_fixture_carries_the_official_keyed_dom_contract(self) -> None:
+        source = (MANIFEST.parent / "main.roc").read_text(encoding="utf-8")
+        for expected in (
+            'Html.class_attr("container")',
+            'Html.class_attr("jumbotron")',
+            'Html.class_attr("col-sm-6 smallpad")',
+            'Html.class_attr("table table-hover table-striped test-data")',
+            'Html.class_attr("glyphicon glyphicon-remove")',
+            'Html.class_attr("preloadicon glyphicon glyphicon-remove")',
+            'Html.attr("aria-hidden", "true")',
+            'Html.attr("id", "tbody")',
+            'Signal.select(selected, key)',
+            'Ui.each_str(rows, |row| row.id.to_str()',
+        ):
+            self.assertIn(expected, source)
 
     def test_test_driver_consumes_the_manifest(self) -> None:
         example = next(item for item in test_driver.load_examples() if item.slug == "js-framework-benchmark")

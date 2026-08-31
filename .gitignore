@@ -5,6 +5,7 @@ zig-pkg/
 kcov-output/
 roc-cache/
 dist/
+benchmarks/js-framework-benchmark/roc-signals-keyed/dist/
 .site-out/
 
 *.a
