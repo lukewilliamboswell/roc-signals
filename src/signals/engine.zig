@@ -13768,6 +13768,38 @@ pub fn Engine(comptime Ctx: type) type {
                 var root_ids = std.ArrayListUnmanaged(u64).empty;
                 defer root_ids.deinit(allocator);
                 try root_ids.ensureTotalCapacityPrecise(allocator, owned.entries.items.len);
+                for (owned.entries.items) |entry| root_ids.appendAssumeCapacity(self.engine.requireActiveSignalRecordId(entry.record));
+                try self.engine.scratch.dirty_active_records.reserveForGraph(HostSignalRecord, allocator, self.engine.active_signal_graph.items);
+                const dirty_ids = self.engine.scratchDirtyActiveSignalRecordIdsForRoots(self.host_ctx, root_ids.items);
+                // The first wave may have read an unchanged row source while
+                // evaluating a derived record that also depends on the state
+                // root which changed the collection. Reconciliation is the
+                // first point where the row source can be promoted. Forget the
+                // complete downstream wave before staging it so every consumer
+                // observes the candidate generation rather than an interim
+                // memoized value.
+                for (dirty_ids) |record_id| {
+                    const record = self.engine.active_signal_graph.items[@intCast(record_id)].record;
+                    self.caches.forgetEvaluation(record, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
+                    const route_index: usize = @intCast(record_id);
+                    if (route_index < self.engine.active_text_signal_routes.items.len) for (self.engine.active_text_signal_routes.items[route_index].items) |route| switch (route.kind) {
+                        .text_node => self.caches.forgetCacheSlot(&self.engine.active_stream.signal_text_nodes.items[route.index].cached_value, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics),
+                        .text_attr => self.caches.forgetCacheSlot(&self.engine.active_stream.signal_text_attrs.items[route.index].cached_value, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics),
+                        .custom_text_attr => self.caches.forgetCacheSlot(&self.engine.active_stream.signal_custom_text_attrs.items[route.index].cached_value, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics),
+                        .custom_text_optional_attr => self.caches.forgetCacheSlot(&self.engine.active_stream.signal_optional_custom_text_attrs.items[route.index].cached_value, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics),
+                    };
+                    if (route_index < self.engine.active_bool_signal_routes.items.len) for (self.engine.active_bool_signal_routes.items[route_index].items) |route| switch (route.kind) {
+                        .bool_attr => self.caches.forgetCacheSlot(&self.engine.active_stream.signal_bool_attrs.items[route.index].cached_value, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics),
+                        .custom_bool_attr => self.caches.forgetCacheSlot(&self.engine.active_stream.signal_custom_bool_attrs.items[route.index].cached_value, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics),
+                    };
+                    if (route_index < self.engine.active_structural_signal_routes.items.len) for (self.engine.active_structural_signal_routes.items[route_index].items) |route| switch (route.kind) {
+                        .when => self.caches.forgetCacheSlot(&self.engine.active_stream.whens.items[route.index].cached_value, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics),
+                        .each => self.caches.forgetCacheSlot(&self.engine.active_stream.eaches.items[route.index].cached_value, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics),
+                    };
+                    if (route_index < self.engine.active_change_signal_routes.items.len) for (self.engine.active_change_signal_routes.items[route_index].items) |route| self.caches.forgetCacheSlot(&self.engine.active_stream.on_changes.items[route.index].cached_value, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
+                }
+                for (owned.entries.items) |entry| self.caches.forgetEvaluation(entry.record, self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
+                root_ids.clearRetainingCapacity();
                 for (owned.entries.items, 0..) |*entry, index| {
                     const cell = &entry.cell.?;
                     const source = entry.record.effectSource() orelse return error.InvalidDescriptor;
@@ -13783,9 +13815,8 @@ pub fn Engine(comptime Ctx: type) type {
                 }
                 if (root_ids.items.len == 0) return allocator.alloc(HostDirtyStructuralSignal, 0) catch return error.OutOfMemory;
                 self.root_count = std.math.add(u64, self.root_count, @intCast(root_ids.items.len)) catch return error.ResourceLimit;
-                try self.engine.scratch.dirty_active_records.reserveForGraph(HostSignalRecord, allocator, self.engine.active_signal_graph.items);
-                const dirty_ids = self.engine.scratchDirtyActiveSignalRecordIdsForRoots(self.host_ctx, root_ids.items);
-                const wave_changed = try self.engine.prepareChangedActiveSignalRecordIds(self.host_ctx, self.roc_host, &self.caches, dirty_ids, &.{}, self.generation);
+                const changed_dirty_ids = self.engine.scratchDirtyActiveSignalRecordIdsForRoots(self.host_ctx, root_ids.items);
+                const wave_changed = try self.engine.prepareChangedActiveSignalRecordIds(self.host_ctx, self.roc_host, &self.caches, changed_dirty_ids, &.{}, self.generation);
                 defer allocator.free(wave_changed);
                 if (wave_changed.len == 0) return allocator.alloc(HostDirtyStructuralSignal, 0) catch return error.OutOfMemory;
 
@@ -13911,6 +13942,13 @@ pub fn Engine(comptime Ctx: type) type {
                 // eaches discovered by earlier row waves), append those row
                 // roots to this same transaction, and only then choose the
                 // final structural planner from the complete change set.
+                // A lone each whose changed rows reveal no further structural
+                // roots can reuse this prepared reconciliation as its final
+                // plan. Discarding it and preparing the same site again would
+                // repeat every key hash, key comparison, and item comparison
+                // despite the candidate generation being unchanged.
+                var reusable_single_each_rows: ?*PreparedActiveEachRows = null;
+                defer if (reusable_single_each_rows) |rows| rows.deinit();
                 var structural_index: usize = 0;
                 while (structural_index < structural_changes.len) : (structural_index += 1) {
                     const change = structural_changes[structural_index];
@@ -13920,8 +13958,14 @@ pub fn Engine(comptime Ctx: type) type {
                     const each_desc = &engine.active_stream.eaches.items[each_index];
                     const row_structural = blk: {
                         const provisional_rows = try PreparedActiveEachRows.prepareWithOverlay(engine, ctx, roc_host, site, each_desc, allocator, &plan.caches);
-                        defer provisional_rows.deinit();
-                        break :blk try plan.appendChangedRowPropagation(provisional_rows);
+                        errdefer provisional_rows.deinit();
+                        const discovered = try plan.appendChangedRowPropagation(provisional_rows);
+                        if (discovered.len == 0 and structural_changes.len == 1 and structural_index == 0) {
+                            reusable_single_each_rows = provisional_rows;
+                        } else {
+                            provisional_rows.deinit();
+                        }
+                        break :blk discovered;
                     };
                     if (row_structural.len == 0) {
                         allocator.free(row_structural);
@@ -13992,7 +14036,10 @@ pub fn Engine(comptime Ctx: type) type {
                         const each_index = engine.activeEachIndexByNodeId(change.node_id.raw()) orelse return error.InvalidDescriptor;
                         const each_desc = &engine.active_stream.eaches.items[each_index];
                         if (each_desc.items.record != change.record) return error.InvalidDescriptor;
-                        plan.each_rows = try PreparedActiveEachRows.prepareWithOverlay(engine, ctx, roc_host, site, each_desc, allocator, &plan.caches);
+                        plan.each_rows = if (reusable_single_each_rows) |rows| blk: {
+                            reusable_single_each_rows = null;
+                            break :blk rows;
+                        } else try PreparedActiveEachRows.prepareWithOverlay(engine, ctx, roc_host, site, each_desc, allocator, &plan.caches);
                         errdefer plan.each_rows.?.deinit();
                         plan.each_replacement = try PreparedEachRowReplacementCollection.prepare(engine, ctx, roc_host, site, each_desc.*, &plan.each_rows.?.rows, &plan.each_rows.?.inputs, .{}, &.{}, &plan.caches, external_state);
                         errdefer plan.each_replacement.?.deinit();
