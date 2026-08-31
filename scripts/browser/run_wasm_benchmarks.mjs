@@ -81,7 +81,14 @@ function runtimeSignature(root, runtime) {
 async function runIteration(bytes, scenario, diagnostic) {
   const root = installDomDouble();
   const { instance } = await instantiateSignalsBytes(bytes);
-  const runtime = new BenchmarkSignalsRuntime(instance.exports, root, { onError: (error) => { throw error; } });
+  // Production and diagnostic instances must receive the same entropy so the
+  // paired benchmark compares identical application work. Each fresh instance
+  // deliberately starts from the same seed.
+  const crypto = { getRandomValues(values) { values[0] = 0x12345678; return values; } };
+  const runtime = new BenchmarkSignalsRuntime(instance.exports, root, {
+    crypto,
+    onError: (error) => { throw error; },
+  });
   runtime.mount();
   for (const action of scenario.setup ?? []) runAction(root, action);
   if (diagnostic) resetBenchmarkMetrics(instance.exports);
@@ -214,7 +221,10 @@ async function main() {
           throw new Error(`benchmark ${scenario.id} sample ${sample} iteration ${iteration + 1} failed`, { cause: error });
         }
         if (diagnostic !== null && parityFacts(production) !== parityFacts(diagnostic)) {
-          throw new Error(`production/instrumented parity failed for ${scenario.id} iteration ${iteration + 1}`);
+          throw new Error(
+            `production/instrumented parity failed for ${scenario.id} iteration ${iteration + 1}: ` +
+            `production=${parityFacts(production)} diagnostic=${parityFacts(diagnostic)}`,
+          );
         }
         addInto(row, production.measured);
         addInto(row, Object.fromEntries(Object.entries(production.measured.decode).map(([name, value]) => [`decode_${name}`, value])));

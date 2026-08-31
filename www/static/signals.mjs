@@ -1164,7 +1164,11 @@ export class SignalsRuntime {
     this.clearVisibilityListener();
     this.clearOnlineListener();
     this.emitTelemetry("host_call", { call: "unmount" });
-    this.views.callHost(this.exports.roc_ui_unmount);
+    try {
+      this.views.callHost(this.exports.roc_ui_unmount);
+    } catch (err) {
+      throw this.poisonAfterHostFailure(err);
+    }
     this.applyPendingCommands("unmount");
     this.clearPointerProbe();
     this.clearDom();

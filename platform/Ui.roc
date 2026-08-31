@@ -438,7 +438,7 @@ Ui := [].{
 		read_items : HostValue -> List(item)
 		read_items = |items_hv| {
 			typed_items : List(item)
-			typed_items = Box.unbox(Capability.get(items_hv, items_cap))
+			typed_items = Box.unbox(Capability.take(items_hv, items_cap))
 			typed_items
 		}
 		len_hv : HostValue -> U64
