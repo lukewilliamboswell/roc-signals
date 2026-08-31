@@ -2102,6 +2102,12 @@ export fn roc_each_bool_sink_push(token: u64, index: u64, value: bool) callconv(
     return shared_engine.pushEachBoolSink(WasmCtx{}, token, index, value) catch failHostWith("each bool sink rejected the active collection transaction");
 }
 
+export fn roc_rows_same_generation_callable(left: abi.RocErasedCallable, right: abi.RocErasedCallable) callconv(.c) bool {
+    defer abi.decrefErasedCallable(left, &roc_host);
+    defer abi.decrefErasedCallable(right, &roc_host);
+    return left != null and left == right;
+}
+
 export fn roc_host_value_get_with_capability(value: u64, cap: HostValueCapability) callconv(.c) abi.RocBox {
     const previous_phase = roc_allocation_phase;
     roc_allocation_phase = .host_value_get;

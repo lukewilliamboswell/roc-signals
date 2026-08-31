@@ -2,7 +2,7 @@ platform ""
 	requires {
 		main : () -> Elem
 	}
-	exposes [Elem, Signal, Html, Ui, Http, Browser]
+	exposes [Elem, Signal, Html, Ui, Http, Browser, Rows]
 	packages {
 		http: "https://github.com/roc-lang/http/releases/download/0.1/6LcdNq2r7xTBwj972ecYWUkMWobJr94yL2NyJpHRAXap.tar.zst",
 	}
@@ -17,6 +17,7 @@ platform ""
 		"roc_host_value_store_with_existing_capability": HostValue.store_with_existing_capability!,
 		"roc_host_value_take_with_capability": HostValue.take_with_capability!,
 		"roc_host_value_take_with_split": HostValue.take_with_split!,
+		"roc_rows_same_generation_callable": Rows.same_generation_callable!,
 	}
 	targets: {
 		inputs_dir: "targets/",
@@ -76,6 +77,7 @@ import Html
 import Ui
 import Http
 import Browser
+import Rows
 
 ui_init : () -> Box(Elem)
 ui_init = || {

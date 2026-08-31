@@ -2087,6 +2087,13 @@ fn eachBoolSinkPush(token: u64, index: u64, value: bool) callconv(.c) u64 {
     return host.engine.pushEachBoolSink(host, token, index, value) catch failHost("each bool sink rejected the active collection transaction");
 }
 
+fn rowsSameGenerationCallable(left: abi.RocErasedCallable, right: abi.RocErasedCallable) callconv(.c) bool {
+    const roc_host = current_roc_host orelse @panic("Rows generation comparison requires an active Roc host");
+    defer abi.decrefErasedCallable(left, roc_host);
+    defer abi.decrefErasedCallable(right, roc_host);
+    return left != null and left == right;
+}
+
 fn hostValueGetWithCapability(value: u64, cap: HostValueCapability) callconv(.c) abi.RocBox {
     return currentHost().getHostValueWithCapability(HostValue.fromRaw(value), cap);
 }
@@ -3302,6 +3309,7 @@ comptime {
         @export(&hostCrashed, .{ .name = "roc_crashed", .visibility = .hidden });
         @export(&eachKeySinkPush, .{ .name = "roc_each_key_sink_push", .visibility = .hidden });
         @export(&eachBoolSinkPush, .{ .name = "roc_each_bool_sink_push", .visibility = .hidden });
+        @export(&rowsSameGenerationCallable, .{ .name = "roc_rows_same_generation_callable", .visibility = .hidden });
         @export(&hostValueClone, .{ .name = "roc_host_value_clone", .visibility = .hidden });
         @export(&hostValueGetWithCapability, .{ .name = "roc_host_value_get_with_capability", .visibility = .hidden });
         @export(&hostValueGetWithSplit, .{ .name = "roc_host_value_get_with_split", .visibility = .hidden });

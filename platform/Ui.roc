@@ -4,6 +4,7 @@ import Capability exposing [Capability]
 import EventExtraction
 import EachSink
 import Node
+import Rows exposing [Rows]
 import Signal exposing [Signal]
 
 state_event_msg : Node.BinderRef, Node.BinderRef, Node.EventExtractionPlan, HostValue.EventReducerHandle -> Node.Msg
@@ -425,51 +426,51 @@ Ui := [].{
 			},
 		)
 
-	## Keyed list with exact UTF-8 identity. The app-compiled adapter retains each
-	## immutable list generation and writes keys/comparison results into reserved
-	## host sinks; the host never inspects `List(item)` or temporary Roc lists.
-	each : Signal(List(item)), (item -> Str), (Row(item) -> Elem) -> Elem
+	## Keyed rows with exact UTF-8 identity. `Rows` owns key projection and caches
+	## each generation's validated keys; this adapter writes those keys and selected
+	## item comparisons into reserved host sinks without exposing item layout.
+	each : Signal(Rows(item)), (Row(item) -> Elem) -> Elem
 		where [
 			item.is_eq : item, item -> Bool,
 		]
-	each = |items, key_of, row| {
-		items_cap = items.cap
+	each = |rows, row| {
+		rows_cap = rows.cap
 		item_cap = Capability.new()
-		read_items : HostValue -> List(item)
-		read_items = |items_hv| {
-			typed_items : List(item)
-			typed_items = Box.unbox(Capability.take(items_hv, items_cap))
-			typed_items
+		read_rows : HostValue -> Rows(item)
+		read_rows = |rows_hv| {
+			typed_rows : Rows(item)
+			typed_rows = Box.unbox(Capability.take(rows_hv, rows_cap))
+			typed_rows
 		}
 		len_hv : HostValue -> U64
-		len_hv = |owner| read_items(owner).len()
+		len_hv = |owner| read_rows(owner).len()
 		copy_keys_hv : HostValue, U64 -> U64
 		copy_keys_hv = |owner, initial_token| {
-			typed_items = read_items(owner)
+			typed_rows = read_rows(owner)
 			var $index = 0
 			var $token = initial_token
-			while $index < typed_items.len() {
-				item = typed_items.get($index) ?? crash "keyed collection index exceeded its generation"
-				$token = EachSink.push_key!($token, $index, key_of(item))
+			while $index < typed_rows.len() {
+				key = Rows.platform_key_at(typed_rows, $index) ?? crash "Rows key index exceeded its generation"
+				$token = EachSink.push_key!($token, $index, key)
 				$index = $index + 1
 			}
 			$token
 		}
 		compare_pairs_hv : HostValue, HostValue, List(U64), U64 -> U64
 		compare_pairs_hv = |old_owner, new_owner, pairs, initial_token| {
-			old_items = read_items(old_owner)
-			new_items = read_items(new_owner)
+			old_rows = read_rows(old_owner)
+			new_rows = read_rows(new_owner)
 			if pairs.len() % 2 != 0 {
-				crash "keyed collection comparison pairs must be interleaved"
+				crash "Rows comparison pairs must be interleaved"
 			}
 			var $pair_index = 0
 			var $result_index = 0
 			var $token = initial_token
 			while $pair_index < pairs.len() {
-				old_index = pairs.get($pair_index) ?? crash "missing old keyed collection index"
-				new_index = pairs.get($pair_index + 1) ?? crash "missing new keyed collection index"
-				old_item = old_items.get(old_index) ?? crash "old keyed collection index exceeded its generation"
-				new_item = new_items.get(new_index) ?? crash "new keyed collection index exceeded its generation"
+				old_index = pairs.get($pair_index) ?? crash "missing old Rows index"
+				new_index = pairs.get($pair_index + 1) ?? crash "missing new Rows index"
+				old_item = Rows.platform_item_at(old_rows, old_index) ?? crash "old Rows index exceeded its generation"
+				new_item = Rows.platform_item_at(new_rows, new_index) ?? crash "new Rows index exceeded its generation"
 				$token = EachSink.push_bool!($token, $result_index, old_item.is_eq(new_item))
 				$pair_index = $pair_index + 2
 				$result_index = $result_index + 1
@@ -478,7 +479,7 @@ Ui := [].{
 		}
 		clone_item_at_hv : HostValue, U64 -> HostValue
 		clone_item_at_hv = |owner, index| {
-			item = read_items(owner).get(index) ?? crash "keyed collection item index exceeded its generation"
+			item = Rows.platform_item_at(read_rows(owner), index) ?? crash "Rows item index exceeded its generation"
 			Capability.store(Box.box(item), item_cap)
 		}
 		row_hv : Str, U64 -> Elem
@@ -493,9 +494,9 @@ Ui := [].{
 			row({ key_value: key, source })
 		}
 		Elem.Each({
-			items: Signal.to_expr(items),
+			items: Signal.to_expr(rows),
 			ops: {
-				items_capability: Capability.handle(items_cap),
+				items_capability: Capability.handle(rows_cap),
 				item_capability: Capability.handle(item_cap),
 				len: Box.box(len_hv),
 				copy_keys: Box.box(copy_keys_hv),
