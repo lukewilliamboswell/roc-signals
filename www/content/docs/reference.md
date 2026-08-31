@@ -78,7 +78,7 @@ For three or more inputs use the record builder rather than nesting `map2`:
 | `state` | `a, (State(a) -> Elem) -> Elem` | introduce a source |
 | `component` | `(() -> Elem) -> Elem` | private identity scope |
 | `when` | `Signal(Bool), (() -> Elem), (() -> Elem) -> Elem` | conditional |
-| `each` | `Signal(List(item)), (item -> Str), (Ui.Row(item) -> Elem) -> Elem` | keyed list |
+| `each` | `Signal(Rows(item)), (Ui.Row(item) -> Elem) -> Elem` | keyed rows |
 | `on_mount` | `(() -> Cmd) -> Elem` | run on scope mount |
 | `on_change` | `Signal(a), (a -> Cmd) -> Elem` | run on value change |
 | `on_change_initial` | `Signal(a), (a -> Cmd) -> Elem` | first value **and** changes |
@@ -95,6 +95,21 @@ For three or more inputs use the record builder rather than nesting `map2`:
 Keys are compared as exact UTF-8 bytes without normalization or case folding.
 `Row.map` is ordinary graph `Signal.map`; it does not introduce a separate row
 observer or snapshot lifecycle.
+
+## Rows
+
+`Rows(item)` is an immutable keyed collection. It owns the key projection,
+caches exact keys, and carries generation lineage plus stable row slots. Create
+one with `Rows.from_list(items, key_of)` or `Rows.empty(key_of)`, then produce a
+new generation with `Rows.apply(rows, edits)` or
+`Rows.replace_all(rows, items)`. Construction and edits return `Try` so duplicate
+keys, missing keys, and invalid ranges are handled before rendering.
+
+Common edits include `Rows.Edit.Append`, `Rows.Edit.InsertAt`,
+`Rows.Edit.RemoveKey`, `Rows.Edit.RemoveRange`, `Rows.Edit.SetKey`,
+`Rows.Edit.SetAt`, `Rows.Edit.MoveKeyBefore`, `Rows.Edit.MoveRange`, and
+`Rows.Edit.Clear`. A batch is applied in order; removing and reinserting a key
+within one unpublished batch preserves that row's stable slot.
 
 ### `Ui.State(a)`
 

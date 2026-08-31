@@ -331,7 +331,7 @@ scope.
 | `useEffect` without the mount run | `Ui.on_change(signal, to_cmd)` |
 | `useEffect(fn, [])` | `Ui.on_mount(to_cmd)` |
 | cleanup function | `Ui.on_cleanup` — but **scope disposal only**, not before each re-run |
-| `key` on a list | the key function in `Ui.each` — required, not optional |
+| `key` on a list | the key function owned by `Rows` — required, not optional |
 | `React.memo` | not needed; no value change causes a re-render |
 | conditional rendering with `&&` | `Ui.when` |
 | controlled inputs | the same idea: value comes from a signal, events send reducers |
