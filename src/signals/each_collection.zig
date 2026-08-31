@@ -334,19 +334,27 @@ pub const ActiveSinks = struct {
 };
 
 const TestHost = struct {
+    const arena_alignment = 64;
+
     allocations: usize = 0,
     deallocations: usize = 0,
+    used: usize = 0,
+    storage: [64 * 1024]u8 align(arena_alignment) = undefined,
 
-    fn rocAlloc(raw: *abi.RocHost, size: usize, _: usize) callconv(.c) ?*anyopaque {
+    fn rocAlloc(raw: *abi.RocHost, size: usize, alignment: usize) callconv(.c) ?*anyopaque {
         const self: *TestHost = @ptrCast(@alignCast(raw.env));
+        if (alignment == 0 or !std.math.isPowerOfTwo(alignment) or alignment > arena_alignment) return null;
+        const start = std.mem.alignForward(usize, self.used, alignment);
+        const end = std.math.add(usize, start, size) catch return null;
+        if (end > self.storage.len) return null;
+        self.used = end;
         self.allocations += 1;
-        return std.c.malloc(size);
+        return @ptrCast(self.storage[start..].ptr);
     }
 
-    fn rocDealloc(raw: *abi.RocHost, ptr: *anyopaque, _: usize) callconv(.c) void {
+    fn rocDealloc(raw: *abi.RocHost, _: *anyopaque, _: usize) callconv(.c) void {
         const self: *TestHost = @ptrCast(@alignCast(raw.env));
         self.deallocations += 1;
-        std.c.free(ptr);
     }
 
     fn rocRealloc(_: *abi.RocHost, _: *anyopaque, _: usize, _: usize) callconv(.c) ?*anyopaque {
