@@ -9,12 +9,26 @@ Row : { id : Str, label : Str }
 
 Model : { rows : List(Row), next_id : U64, selected : Str }
 
+adjectives = ["pretty", "large", "big", "small", "tall", "short", "long", "handsome", "plain", "quaint", "clean", "elegant", "easy", "angry", "crazy", "helpful", "mushy", "odd", "unsightly", "adorable", "important", "inexpensive", "cheap", "expensive", "fancy"]
+
+colours = ["red", "yellow", "blue", "green", "pink", "brown", "purple", "brown", "white", "black", "orange"]
+
+nouns = ["table", "chair", "house", "bbq", "desk", "car", "pony", "cookie", "sandwich", "burger", "pizza", "mouse", "keyboard"]
+
+label_for : U64 -> Str
+label_for = |id| {
+	adjective = adjectives.get((id * 17 + 11) % 25) ?? "pretty"
+	colour = colours.get((id * 7 + 3) % 11) ?? "red"
+	noun = nouns.get((id * 13 + 5) % 13) ?? "table"
+	"${adjective} ${colour} ${noun}"
+}
+
 make_rows : U64, U64 -> List(Row)
 make_rows = |start, count|
 	List.repeat(0.U64, count).map_with_index(
 		|_, index| {
 			id: (start + index).to_str(),
-			label: "pretty red table ${(start + index).to_str()}",
+			label: label_for(start + index),
 		},
 	)
 
@@ -81,7 +95,11 @@ render_row = |model, selected, key, row| {
 				"td",
 				[Html.class_attr("col-md-1")],
 				[
-					element("a", [Html.on_event("click", Html.event_policy_none, model.on_unit(|value| remove_row(value, key))), Html.aria_label("Remove row ${key}")], [Html.text("remove")]),
+					element(
+						"a",
+						[Html.on_event("click", Html.event_policy_none, model.on_unit(|value| remove_row(value, key))), Html.aria_label("Remove row ${key}")],
+						[element("span", [Html.class_attr("glyphicon glyphicon-remove"), Html.attr("aria-hidden", "true")], [])],
+					),
 				],
 			),
 			element("td", [Html.class_attr("col-md-6")], []),
@@ -100,26 +118,45 @@ main = ||
 			Html.div(
 				[Html.class_attr("container")],
 				[
-					Html.heading("roc-signals keyed"),
-					Html.section(
-						"Benchmark controls",
-						[],
+					element(
+						"div",
+						[Html.class_attr("jumbotron")],
 						[
-							Html.button_attrs("Create 1,000 rows", [Html.attr("id", "run")], model.on_unit(|value| replace_with(value, 1000))),
-							Html.button_attrs("Create 10,000 rows", [Html.attr("id", "runlots")], model.on_unit(|value| replace_with(value, 10000))),
-							Html.button_attrs("Append 1,000 rows", [Html.attr("id", "add")], model.on_unit(|value| append_rows(value, 1000))),
-							Html.button_attrs("Update every 10th row", [Html.attr("id", "update")], model.on_unit(update_every_tenth)),
-							Html.button_attrs("Clear", [Html.attr("id", "clear")], model.on_unit(|value| { ..value, rows: [], selected: "" })),
-							Html.button_attrs("Swap Rows", [Html.attr("id", "swaprows")], model.on_unit(swap_rows)),
+							element(
+								"div",
+								[Html.class_attr("row")],
+								[
+									element("div", [Html.class_attr("col-md-6")], [element("h1", [], [Html.text("Roc Signals-keyed")])]),
+									element(
+										"div",
+										[Html.class_attr("col-md-6")],
+										[
+											element(
+												"div",
+												[Html.class_attr("row")],
+												[
+													element("div", [Html.class_attr("col-sm-6 smallpad")], [Html.button_attrs("Create 1,000 rows", [Html.attr("type", "button"), Html.class_attr("btn btn-primary btn-block"), Html.attr("id", "run")], model.on_unit(|value| replace_with(value, 1000)))]),
+													element("div", [Html.class_attr("col-sm-6 smallpad")], [Html.button_attrs("Create 10,000 rows", [Html.attr("type", "button"), Html.class_attr("btn btn-primary btn-block"), Html.attr("id", "runlots")], model.on_unit(|value| replace_with(value, 10000)))]),
+													element("div", [Html.class_attr("col-sm-6 smallpad")], [Html.button_attrs("Append 1,000 rows", [Html.attr("type", "button"), Html.class_attr("btn btn-primary btn-block"), Html.attr("id", "add")], model.on_unit(|value| append_rows(value, 1000)))]),
+													element("div", [Html.class_attr("col-sm-6 smallpad")], [Html.button_attrs("Update every 10th row", [Html.attr("type", "button"), Html.class_attr("btn btn-primary btn-block"), Html.attr("id", "update")], model.on_unit(update_every_tenth))]),
+													element("div", [Html.class_attr("col-sm-6 smallpad")], [Html.button_attrs("Clear", [Html.attr("type", "button"), Html.class_attr("btn btn-primary btn-block"), Html.attr("id", "clear")], model.on_unit(|value| { ..value, rows: [], selected: "" }))]),
+													element("div", [Html.class_attr("col-sm-6 smallpad")], [Html.button_attrs("Swap Rows", [Html.attr("type", "button"), Html.class_attr("btn btn-primary btn-block"), Html.attr("id", "swaprows")], model.on_unit(swap_rows))]),
+												],
+											),
+										],
+									),
+								],
+							),
 						],
 					),
 					element(
 						"table",
 						[Html.class_attr("table table-hover table-striped test-data")],
 						[
-							element("tbody", [], [Ui.each_str(rows, |row| row.id.to_str(), |key, row| render_row(model, selected, key, row))]),
+							element("tbody", [Html.attr("id", "tbody")], [Ui.each_str(rows, |row| row.id.to_str(), |key, row| render_row(model, selected, key, row))]),
 						],
 					),
+					element("span", [Html.class_attr("preloadicon glyphicon glyphicon-remove"), Html.attr("aria-hidden", "true")], []),
 				],
 			)
 		},
