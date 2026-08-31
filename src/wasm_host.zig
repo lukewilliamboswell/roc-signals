@@ -452,6 +452,8 @@ const NearestRocAllocation = struct {
 const recent_freed_roc_allocation_capacity = runtime_limits.recent_freed_allocation_count;
 
 var roc_allocations: std.ArrayListUnmanaged(RocAllocation) = .empty;
+var roc_allocation_indexes: std.AutoHashMapUnmanaged(usize, usize) = .empty;
+var roc_allocation_diagnostic_scan_entries: u64 = 0;
 var recent_freed_roc_allocations: [recent_freed_roc_allocation_capacity]FreedRocAllocation = undefined;
 var recent_freed_roc_allocation_len: usize = 0;
 var recent_freed_roc_allocation_next: usize = 0;
@@ -1479,6 +1481,7 @@ fn allocatedSizeForRocRequest(length: usize) usize {
 fn findRocAllocationIndex(ptr: *anyopaque) ?usize {
     const ptr_addr = @intFromPtr(ptr);
     for (roc_allocations.items, 0..) |alloc, index| {
+        roc_allocation_diagnostic_scan_entries += 1;
         const user_addr = @intFromPtr(alloc.user_ptr);
         const end_addr = user_addr + alloc.allocated_size;
         if (ptr_addr >= user_addr and ptr_addr < end_addr) return index;
@@ -1487,16 +1490,26 @@ fn findRocAllocationIndex(ptr: *anyopaque) ?usize {
 }
 
 fn findExactRocAllocationIndex(ptr: *anyopaque) ?usize {
-    const ptr_addr = @intFromPtr(ptr);
-    for (roc_allocations.items, 0..) |alloc, index| {
-        if (ptr_addr == @intFromPtr(alloc.user_ptr)) return index;
-    }
-    return null;
+    return roc_allocation_indexes.get(@intFromPtr(ptr));
 }
 
 fn removeRocAllocationAt(index: usize) RocAllocation {
     if (index >= roc_allocations.items.len) failHostWith("Roc allocation ledger index is out of bounds");
-    return roc_allocations.swapRemove(index);
+    const removed_key = @intFromPtr(roc_allocations.items[index].user_ptr);
+    const recorded_index = roc_allocation_indexes.get(removed_key) orelse
+        failHostWith("Roc allocation ledger exact index is missing the removed allocation");
+    if (recorded_index != index) failHostWith("Roc allocation ledger exact index points at the wrong allocation");
+    const moved = if (index + 1 < roc_allocations.items.len) roc_allocations.items[roc_allocations.items.len - 1] else null;
+    if (moved) |value| {
+        const moved_index = roc_allocation_indexes.get(@intFromPtr(value.user_ptr)) orelse
+            failHostWith("Roc allocation ledger exact index is missing the allocation selected for swap removal");
+        if (moved_index != roc_allocations.items.len - 1) failHostWith("Roc allocation ledger swap source points at the wrong allocation");
+    }
+    const removed = roc_allocations.swapRemove(index);
+    const removed_from_index = roc_allocation_indexes.remove(removed_key);
+    std.debug.assert(removed_from_index);
+    if (moved) |value| roc_allocation_indexes.getPtr(@intFromPtr(value.user_ptr)).?.* = index;
+    return removed;
 }
 
 fn recordFreedRocAllocation(alloc: RocAllocation) void {
@@ -1584,6 +1597,8 @@ fn failUnknownRocAllocation(comptime op: []const u8, ptr: *anyopaque, alignment_
 }
 
 fn recordRocAllocation(user_ptr: [*]u8, requested_size: usize, allocated_size: usize, alignment: std.mem.Alignment) bool {
+    if (roc_allocation_indexes.contains(@intFromPtr(user_ptr))) failHostWith("Roc allocation ledger recorded a duplicate live pointer");
+    const index = roc_allocations.items.len;
     roc_allocations.append(allocator(), .{
         .user_ptr = user_ptr,
         .requested_size = requested_size,
@@ -1591,6 +1606,15 @@ fn recordRocAllocation(user_ptr: [*]u8, requested_size: usize, allocated_size: u
         .alignment = alignment,
         .phase = roc_allocation_phase,
     }) catch return false;
+    const entry = roc_allocation_indexes.getOrPut(allocator(), @intFromPtr(user_ptr)) catch {
+        roc_allocations.items.len -= 1;
+        return false;
+    };
+    if (entry.found_existing) {
+        roc_allocations.items.len -= 1;
+        failHostWith("Roc allocation ledger exact index changed during insertion");
+    }
+    entry.value_ptr.* = index;
     return true;
 }
 
@@ -1657,6 +1681,13 @@ export fn roc_alloc(length: usize, alignment: usize) callconv(.c) ?*anyopaque {
 
 export fn roc_ui_debug_live_allocation_count() callconv(.c) usize {
     return roc_allocations.items.len;
+}
+
+/// Reports live-ledger entries inspected by cold invalid-pointer diagnostics.
+/// Successful exact deallocation and reallocation use the hash index and leave
+/// this counter unchanged regardless of the number of live Roc allocations.
+export fn roc_ui_debug_allocation_diagnostic_scan_entries() callconv(.c) u64 {
+    return roc_allocation_diagnostic_scan_entries;
 }
 
 /// Deterministic host-allocation fault injection for Wasm integration tests.

@@ -2273,6 +2273,14 @@ pub const Stream = struct {
         self.custom_attr_indices_by_elem_id.appendAssumeCapacity(prepared_indexes);
     }
 
+    /// Reserves exactly one element-local index slot for one custom attribute
+    /// descriptor being collected. Collection must use this narrow operation:
+    /// reserving a transaction-wide bound in every element's private list
+    /// makes preparation quadratic in the number of attributes.
+    pub fn reservePreparedCustomAttrEntry(self: *Stream, allocator: std.mem.Allocator, elem_id: u64) ReserveError!void {
+        try self.reservePreparedCustomAttrElem(allocator, elem_id, 1);
+    }
+
     fn recordPreparedCustomAttrIndex(self: *Stream, elem_id: ElemId, name: []const u8, index: CustomAttrDescriptorIndex) void {
         // Reservations are fallible preparation; the maintained index only
         // becomes authoritative when an entry is published allocation-free.
@@ -4333,6 +4341,22 @@ test "prepared custom attribute reservation activates the maintained per-element
     try std.testing.expect(stream.custom_attr_index_active);
     try std.testing.expectEqual(@as(usize, 1), stream.customAttrIndices(ElemId.fromRaw(35)).len);
     try std.testing.expectEqual(CustomAttrKind.static_text, stream.customAttrIndices(ElemId.fromRaw(35))[0].kind);
+}
+
+test "element-local custom attribute reservation scales with attribute count" {
+    const allocator = std.testing.allocator;
+    var stream: Stream = .{};
+    defer {
+        for (stream.custom_attr_indices_by_elem_id.items) |*indexes| indexes.deinit(allocator);
+        stream.custom_attr_indices_by_elem_id.deinit(allocator);
+    }
+
+    const element_count = 1024;
+    for (0..element_count) |index| try stream.reservePreparedCustomAttrEntry(allocator, index);
+
+    var reserved_entries: usize = 0;
+    for (stream.custom_attr_indices_by_elem_id.items) |indexes| reserved_entries += indexes.capacity;
+    try std.testing.expect(reserved_entries <= element_count * 16);
 }
 
 test "failed prepared custom attribute reservation does not activate an incomplete index" {
