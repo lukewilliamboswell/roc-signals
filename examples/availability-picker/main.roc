@@ -2,6 +2,7 @@ app [main] { pf: platform "../../platform/main.roc" }
 
 import pf.Elem exposing [Elem]
 import pf.Html
+import pf.Rows
 import pf.Signal
 import pf.Ui
 
@@ -616,7 +617,7 @@ week_panel = |slots, view|
 					# single keyed list placed by `col-start` would otherwise do.
 					Html.div_c(
 						"grid items-start gap-2 sm:grid-cols-7 sm:[grid-auto-flow:row_dense]",
-						[Ui.each(view.rows, |row| row.id, |each_row| render_row(slots, each_row.key(), each_row.signal()))],
+						[Ui.each(Signal.map(view.rows, |rows_items| Rows.from_list(rows_items, |row| row.id) ?? crash "duplicate row key"), |each_row| render_row(slots, each_row.key(), each_row.signal()))],
 					),
 					Ui.when(
 						view.empty,

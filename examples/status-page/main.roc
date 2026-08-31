@@ -24,6 +24,7 @@ app [main] { pf: platform "https://github.com/lukewilliamboswell/roc-signals/rel
 import pf.Elem exposing [Elem]
 import pf.Browser
 import pf.Html
+import pf.Rows
 import pf.Signal
 import pf.Ui
 
@@ -573,7 +574,7 @@ render_incident = |key, incident|
 				incident.map(|value| value.latest),
 				[Html.class_attr("muted"), Html.test_id("incident-${key}-latest")],
 			),
-			Ui.each(incident.map(|value| value.updates), |value| value.key, |each_row| render_update(each_row.key(), each_row.signal())),
+			Ui.each(Signal.map(incident.map(|value| value.updates), |rows_items| Rows.from_list(rows_items, |value| value.key) ?? crash "duplicate row key"), |each_row| render_update(each_row.key(), each_row.signal())),
 		],
 	)
 
@@ -649,7 +650,7 @@ incidents_panel = |feed| {
 			),
 			Ui.when(
 				has_items,
-				|| Html.section_c("Incident timeline", "grid gap-3", [Ui.each(items, |item| item.id, |each_row| render_incident(each_row.key(), each_row.signal()))]),
+				|| Html.section_c("Incident timeline", "grid gap-3", [Ui.each(Signal.map(items, |rows_items| Rows.from_list(rows_items, |item| item.id) ?? crash "duplicate row key"), |each_row| render_incident(each_row.key(), each_row.signal()))]),
 				|| Html.section_c("Incident timeline", "grid gap-3", [Html.paragraph_c("No incidents reported in the last 90 days.", "empty-state")]),
 			),
 		],

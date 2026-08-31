@@ -32,6 +32,7 @@ app [main] { pf: platform "../../platform/main.roc" }
 import Plan
 import pf.Elem exposing [Elem]
 import pf.Html
+import pf.Rows
 import pf.Signal
 import pf.Ui
 
@@ -695,7 +696,7 @@ main = || {
 															),
 															Html.div_c(
 																"grid gap-3",
-																[Ui.each(visible_rows, |row| row.id, |each_row| render_row(tasks, span, each_row.key(), each_row.signal()))],
+																[Ui.each(Signal.map(visible_rows, |rows_items| Rows.from_list(rows_items, |row| row.id) ?? crash "duplicate row key"), |each_row| render_row(tasks, span, each_row.key(), each_row.signal()))],
 															),
 															Html.div(
 																[

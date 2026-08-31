@@ -54,6 +54,7 @@ app [main] { pf: platform "https://github.com/lukewilliamboswell/roc-signals/rel
 import pf.Browser
 import pf.Elem exposing [Elem]
 import pf.Html
+import pf.Rows
 import pf.Signal
 import pf.Ui
 
@@ -906,7 +907,7 @@ progress_panel = |view|
 				"h-1.5 w-full overflow-hidden rounded-full bg-zinc-200",
 				[Html.div_sc(view.summaries.map(progress_bar_class), [])],
 			),
-			Ui.each(view.summaries, |row| Step.slug(row.step), |each_row| summary_row(view.step, each_row.key(), each_row.signal())),
+			Ui.each(view.summaries.map(|items| Rows.from_list(items, |row| Step.slug(row.step)) ?? crash "duplicate onboarding summary key"), |each_row| summary_row(view.step, each_row.key(), each_row.signal())),
 		],
 	)
 

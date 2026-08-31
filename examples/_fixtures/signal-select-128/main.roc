@@ -3,6 +3,7 @@ app [main] { pf: platform "../../../platform/main.roc" }
 
 import pf.Elem exposing [Elem]
 import pf.Html
+import pf.Rows
 import pf.Signal
 import pf.Ui
 
@@ -165,7 +166,7 @@ main = ||
 							Html.heading("Signal select 128"),
 							Html.button("Show one row", show_all.on_unit(|_| False)),
 							Html.button("Show all rows", show_all.on_unit(|_| True)),
-							Ui.each(items, |key| key, |each_row| render_row(each_row.key(), each_row.signal())),
+							Ui.each(Signal.map(items, |rows_items| Rows.from_list(rows_items, |key| key) ?? crash "duplicate row key"), |each_row| render_row(each_row.key(), each_row.signal())),
 						],
 					)
 				},

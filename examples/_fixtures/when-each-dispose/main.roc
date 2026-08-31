@@ -2,6 +2,7 @@ app [main] { pf: platform "../../../platform/main.roc" }
 
 import pf.Elem exposing [Elem]
 import pf.Html
+import pf.Rows
 import pf.Signal
 import pf.Ui
 
@@ -65,10 +66,7 @@ main = || {
 							Html.heading("When Each"),
 							Ui.when(
 								any,
-								|| Ui.each(
-									rows,
-									row_key,
-									|each_row| Html.div_c(
+								|| Ui.each(Signal.map(rows, |rows_items| Rows.from_list(rows_items, row_key) ?? crash "duplicate row key"), |each_row| Html.div_c(
 										"",
 										[
 											Html.paragraph_s_attrs(
@@ -81,8 +79,7 @@ main = || {
 												suffix.on_str(keep),
 											),
 										],
-									),
-								),
+									)),
 								|| Html.paragraph_s_attrs(Signal.const("No rows"), [Html.test_id("empty")]),
 							),
 							Html.button("Toggle", full.on_unit(toggle)),

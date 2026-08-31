@@ -12,6 +12,7 @@ import Styles
 import pf.Browser
 import pf.Elem exposing [Elem]
 import pf.Html
+import pf.Rows
 import pf.Http
 import pf.Signal
 import pf.Ui
@@ -62,7 +63,7 @@ Feed := {}.{
 							|| Ui.when(
 								is_empty,
 								|| Html.paragraph_c("No articles are here... yet.", "rounded-xl border border-dashed border-zinc-300 bg-white p-8 text-center text-zinc-500"),
-								|| Ui.each(articles, article_key, |each_row| article_row(each_row.key(), each_row.signal())),
+								|| Ui.each(Signal.map(articles, |rows_items| Rows.from_list(rows_items, article_key) ?? crash "duplicate row key"), |each_row| article_row(each_row.key(), each_row.signal())),
 							),
 						),
 					),
@@ -149,7 +150,7 @@ Feed := {}.{
 									Html.div_c(
 										"mb-3 flex flex-wrap items-center gap-2 text-sm text-zinc-500",
 										[
-											Ui.each(author_rows, |name| name, |each_row| Nav.link(each_row.key(), "font-medium text-emerald-600", Route.profile_location(each_row.key()), intent)),
+											Ui.each(Signal.map(author_rows, |rows_items| Rows.from_list(rows_items, |name| name) ?? crash "duplicate row key"), |each_row| Nav.link(each_row.key(), "font-medium text-emerald-600", Route.profile_location(each_row.key()), intent)),
 											Html.text_s(date_text),
 										],
 									),
@@ -180,7 +181,7 @@ Feed := {}.{
 											),
 											Html.div_c(
 												"flex gap-1",
-												[Ui.each(tags, |tag| tag, |each_row| tag_pill(each_row.key(), intent))],
+												[Ui.each(Signal.map(tags, |rows_items| Rows.from_list(rows_items, |tag| tag) ?? crash "duplicate row key"), |each_row| tag_pill(each_row.key(), intent))],
 											),
 										],
 									),
@@ -256,7 +257,7 @@ Feed := {}.{
 			{
 				tag: "nav",
 				attrs: [Html.attr("aria-label", "Pagination"), Html.class_attr("flex flex-wrap gap-2 py-6")],
-				children: [Ui.each(items, |item| item.key, |each_row| page_link_row(intent)(each_row.key(), each_row.signal()))],
+				children: [Ui.each(Signal.map(items, |rows_items| Rows.from_list(rows_items, |item| item.key) ?? crash "duplicate row key"), |each_row| page_link_row(intent)(each_row.key(), each_row.signal()))],
 			},
 		)
 	}

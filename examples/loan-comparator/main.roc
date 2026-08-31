@@ -3,6 +3,7 @@ app [main] { pf: platform "https://github.com/lukewilliamboswell/roc-signals/rel
 import Loan
 import pf.Elem exposing [Elem]
 import pf.Html
+import pf.Rows
 import pf.Signal
 import pf.Ui
 
@@ -84,7 +85,7 @@ render_rows = |id, name, sched| {
 					Ui.when(
 						sched.map(|value| value.rows.is_empty()),
 						|| Html.paragraph_c("Nothing to amortise — this scenario borrows $0.00.", "empty-state border-0 bg-transparent"),
-						|| Ui.each(rows, |row| row.key, |each_row| render_row(each_row.key(), each_row.signal())),
+						|| Ui.each(Signal.map(rows, |rows_items| Rows.from_list(rows_items, |row| row.key) ?? crash "duplicate row key"), |each_row| render_row(each_row.key(), each_row.signal())),
 					),
 				],
 			),
@@ -475,7 +476,7 @@ comparison_panel = |pair, summaries, schedules| {
 			Html.section_c(
 				"Scenario summaries",
 				"grid gap-2",
-				[Ui.each(summaries, |summary| summary.id, |each_row| render_summary(each_row.key(), each_row.signal()))],
+				[Ui.each(Signal.map(summaries, |rows_items| Rows.from_list(rows_items, |summary| summary.id) ?? crash "duplicate row key"), |each_row| render_summary(each_row.key(), each_row.signal()))],
 			),
 		],
 	)

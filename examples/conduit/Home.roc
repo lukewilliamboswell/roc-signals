@@ -9,6 +9,7 @@ import Route
 import Session
 import pf.Elem exposing [Elem]
 import pf.Html
+import pf.Rows
 import pf.Http
 import pf.Signal
 import pf.Ui
@@ -139,7 +140,7 @@ Home := {}.{
 
 							|| Html.div_c(
 								"flex flex-wrap gap-1",
-								[Ui.each(tags, |tag| tag, |each_row| sidebar_tag(each_row.key(), intent))],
+								[Ui.each(Signal.map(tags, |rows_items| Rows.from_list(rows_items, |tag| tag) ?? crash "duplicate row key"), |each_row| sidebar_tag(each_row.key(), intent))],
 							),
 						),
 					),

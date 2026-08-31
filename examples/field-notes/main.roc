@@ -4,6 +4,7 @@ import Notes
 import pf.Browser
 import pf.Elem exposing [Elem]
 import pf.Html
+import pf.Rows
 import pf.Signal
 import pf.Ui
 
@@ -298,7 +299,7 @@ main = || {
 											Ui.when(
 												notes_empty,
 												|| Html.paragraph_c("No notes captured yet. Write one above — it will save even while you are offline.", "empty-state"),
-												|| Html.div_c("grid gap-3", [Ui.each(visible_rows, |row| row.id, |each_row| render_note(capture, each_row.key(), each_row.signal()))]),
+												|| Html.div_c("grid gap-3", [Ui.each(Signal.map(visible_rows, |rows_items| Rows.from_list(rows_items, |row| row.id) ?? crash "duplicate row key"), |each_row| render_note(capture, each_row.key(), each_row.signal()))]),
 											),
 										],
 									),

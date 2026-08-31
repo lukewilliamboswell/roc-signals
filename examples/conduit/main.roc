@@ -13,6 +13,7 @@ import Styles
 import pf.Browser
 import pf.Elem exposing [Elem]
 import pf.Html
+import pf.Rows
 import pf.Signal
 import pf.Ui
 
@@ -54,7 +55,7 @@ header_view = |session, intent| {
 									[
 										Nav.link("New Article", "rounded-md px-3 py-2 text-zinc-600 no-underline hover:bg-zinc-100 hover:no-underline", { path: "/editor", query: "", hash: "" }, intent),
 										Nav.link("Settings", "rounded-md px-3 py-2 text-zinc-600 no-underline hover:bg-zinc-100 hover:no-underline", { path: "/settings", query: "", hash: "" }, intent),
-										Ui.each(username_rows, |name| name, |each_row| Nav.link(each_row.key(), "rounded-md px-3 py-2 text-emerald-700 no-underline hover:bg-emerald-50 hover:no-underline", Route.profile_location(each_row.key()), intent)),
+										Ui.each(Signal.map(username_rows, |rows_items| Rows.from_list(rows_items, |name| name) ?? crash "duplicate row key"), |each_row| Nav.link(each_row.key(), "rounded-md px-3 py-2 text-emerald-700 no-underline hover:bg-emerald-50 hover:no-underline", Route.profile_location(each_row.key()), intent)),
 									],
 								),
 

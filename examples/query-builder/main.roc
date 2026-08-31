@@ -3,6 +3,7 @@ app [main] { pf: platform "../../platform/main.roc" }
 import Query
 import pf.Elem exposing [Elem]
 import pf.Html
+import pf.Rows
 import pf.Signal
 import pf.Ui
 
@@ -350,7 +351,7 @@ render_group = |tree, group, node| {
 			),
 			Html.div_c(
 				rule_class(depth),
-				[Ui.each(children, Query.node_key, |each_row| render_node(tree, depth + 1, each_row.key(), each_row.signal()))],
+				[Ui.each(Signal.map(children, |rows_items| Rows.from_list(rows_items, Query.node_key) ?? crash "duplicate row key"), |each_row| render_node(tree, depth + 1, each_row.key(), each_row.signal()))],
 			),
 			Html.div_c(
 				"flex flex-wrap items-center gap-2",
@@ -557,7 +558,7 @@ main = || {
 													),
 													Html.div_c(
 														"grid gap-2",
-												[Ui.each(matched_names, |name| name, |each_row| render_match(each_row.key(), each_row.signal()))],
+												[Ui.each(Signal.map(matched_names, |rows_items| Rows.from_list(rows_items, |name| name) ?? crash "duplicate row key"), |each_row| render_match(each_row.key(), each_row.signal()))],
 													),
 												],
 											),

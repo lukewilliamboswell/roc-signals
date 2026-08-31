@@ -6,6 +6,7 @@ import Sheet
 
 import pf.Elem exposing [Elem]
 import pf.Html
+import pf.Rows
 import pf.Signal
 import pf.Ui
 
@@ -240,7 +241,7 @@ render_row = |sheet, cursor, key, row| {
 		row_class,
 		[
 			Html.div_c(gutter_class, [Html.text(key)]),
-			Ui.each(cells, |cell| cell.key, |each_row| render_cell(sheet, cursor, each_row.key(), each_row.signal())),
+			Ui.each(cells.map(|items| Rows.from_list(items, |cell| cell.key) ?? crash "duplicate spreadsheet cell key"), |each_row| render_cell(sheet, cursor, each_row.key(), each_row.signal())),
 		],
 	)
 }
@@ -555,8 +556,7 @@ main = || {
 																			[
 																				column_header,
 																						Ui.each(
-																							rows,
-																							|row| row.key,
+																							rows.map(|items| Rows.from_list(items, |row| row.key) ?? crash "duplicate spreadsheet row key"),
 																							|each_row| render_row(sheet, cursor, each_row.key(), each_row.signal()),
 																				),
 																			],

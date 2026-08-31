@@ -2,6 +2,7 @@ app [main] { pf: platform "https://github.com/lukewilliamboswell/roc-signals/rel
 
 import pf.Elem exposing [Elem]
 import pf.Html
+import pf.Rows
 import pf.Signal exposing [Signal]
 import pf.Ui
 
@@ -427,7 +428,7 @@ main = || {
 																				"min-w-[46rem]",
 																				[
 																					grid_header,
-																			Ui.each(view_rows, |row| row.id.to_str(), |each_row| render_row(selected_state, notes, each_row.key(), each_row.signal())),
+																			Ui.each(Signal.map(view_rows, |rows_items| Rows.from_list(rows_items, |row| row.id.to_str()) ?? crash "duplicate row key"), |each_row| render_row(selected_state, notes, each_row.key(), each_row.signal())),
 																				],
 																			),
 																		],

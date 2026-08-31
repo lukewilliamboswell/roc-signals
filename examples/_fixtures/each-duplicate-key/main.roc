@@ -2,6 +2,7 @@ app [main] { pf: platform "../../../platform/main.roc" }
 
 import pf.Elem exposing [Elem]
 import pf.Html
+import pf.Rows
 import pf.Signal
 import pf.Ui
 
@@ -37,7 +38,7 @@ main = || {
 				[],
 				[
 					Html.heading("Duplicate each key fixture"),
-					Ui.each(items.signal(), |item| item.id, |each_row| render_row(each_row.key(), each_row.signal())),
+					Ui.each(Signal.map(items.signal(), |rows_items| Rows.from_list(rows_items, |item| item.id) ?? crash "duplicate row key"), |each_row| render_row(each_row.key(), each_row.signal())),
 				],
 			)
 		},

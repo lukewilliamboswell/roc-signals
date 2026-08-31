@@ -6,13 +6,14 @@ app [main] {
 import pf.Browser
 import pf.Elem exposing [Elem]
 import pf.Html
+import pf.Rows exposing [Rows]
 import pf.Signal
 import pf.Ui
 import rand.Random
 
 Row : { id : Str, label : Str }
 
-Model : { rows : List(Row), next_id : U64, random : Random.State, selected : Str }
+Model : { rows : Rows(Row), next_id : U64, random : Random.State, selected : Str }
 
 adjectives = ["pretty", "large", "big", "small", "tall", "short", "long", "handsome", "plain", "quaint", "clean", "elegant", "easy", "angry", "crazy", "helpful", "mushy", "odd", "unsightly", "adorable", "important", "inexpensive", "cheap", "expensive", "fancy"]
 
@@ -45,37 +46,43 @@ make_rows = |random, start, count| {
 replace_with : Model, U64 -> Model
 replace_with = |model, count| {
 	generated = make_rows(model.random, model.next_id, count)
-	{ rows: generated.rows, next_id: model.next_id + count, random: generated.random, selected: "" }
+	rows = Rows.replace_all(model.rows, generated.rows) ?? crash "benchmark generated duplicate row keys"
+	{ rows, next_id: model.next_id + count, random: generated.random, selected: "" }
 }
 
 append_rows : Model, U64 -> Model
 append_rows = |model, count| {
 	generated = make_rows(model.random, model.next_id, count)
-	rows = List.concat(model.rows, generated.rows)
+	rows = Rows.apply(model.rows, [Append(generated.rows)]) ?? crash "benchmark generated duplicate row keys"
 	{ ..model, rows, next_id: model.next_id + count, random: generated.random }
 }
 
 update_every_tenth : Model -> Model
 update_every_tenth = |model| {
-	rows = model.rows.map_with_index(
-		|row, index|
-			if index % 10 == 0 {
-				{ ..row, label: "${row.label} !!!" }
-			} else {
-				row
-			},
-	)
+	var $edits = []
+	var $index = 0
+	while $index < model.rows.len() {
+		row = Rows.get(model.rows, $index) ?? crash "benchmark row index was invalid"
+		$edits = $edits.prepend(SetAt({ at: $index, item: { ..row, label: "${row.label} !!!" } }))
+		$index = $index + 10
+	}
+	rows = Rows.apply(model.rows, $edits) ?? crash "benchmark row update was invalid"
 	{ ..model, rows }
 }
 
 swap_rows : Model -> Model
 swap_rows = |model| {
-	rows = List.swap(model.rows, 1, 998) ?? model.rows
+	rows =
+		if model.rows.len() <= 998 {
+			model.rows
+		} else {
+			Rows.apply(model.rows, [MoveRange({ from: 998, count: 1, to: 1 }), MoveRange({ from: 2, count: 1, to: 998 })]) ?? crash "benchmark swap was invalid"
+		}
 	{ ..model, rows }
 }
 
 remove_row : Model, Str -> Model
-remove_row = |model, id| { ..model, rows: model.rows.keep_if(|row| row.id != id) }
+remove_row = |model, id| { ..model, rows: Rows.apply(model.rows, [RemoveKey(id)]) ?? model.rows }
 
 element : Str, List(Html.Attr), List(Elem) -> Elem
 element = |tag, attrs, children| Elem.Element({ tag, attrs, children })
@@ -122,7 +129,7 @@ main : () -> Elem
 main = || {
 	entropy_seed = Browser.entropy_seed()
 	Ui.state(
-		{ rows: [], next_id: 1.U64, random: Random.seed(0), selected: "" },
+		{ rows: Rows.empty(|row| row.id), next_id: 1.U64, random: Random.seed(0), selected: "" },
 		|model| {
 			model_signal = model.signal()
 			rows = Signal.map(model_signal, |value| value.rows)
@@ -130,7 +137,7 @@ main = || {
 			Html.div(
 				[Html.class_attr("container")],
 				[
-					Ui.on_change_initial(entropy_seed, |seed| model.set_cmd({ rows: [], next_id: 1.U64, random: Random.seed(seed), selected: "" })),
+					Ui.on_change_initial(entropy_seed, |seed| model.set_cmd({ rows: Rows.empty(|row| row.id), next_id: 1.U64, random: Random.seed(seed), selected: "" })),
 					element(
 						"div",
 						[Html.class_attr("jumbotron")],
@@ -152,7 +159,7 @@ main = || {
 													element("div", [Html.class_attr("col-sm-6 smallpad")], [Html.button_attrs("Create 10,000 rows", [Html.attr("type", "button"), Html.class_attr("btn btn-primary btn-block"), Html.attr("id", "runlots")], model.on_unit(|value| replace_with(value, 10000)))]),
 													element("div", [Html.class_attr("col-sm-6 smallpad")], [Html.button_attrs("Append 1,000 rows", [Html.attr("type", "button"), Html.class_attr("btn btn-primary btn-block"), Html.attr("id", "add")], model.on_unit(|value| append_rows(value, 1000)))]),
 													element("div", [Html.class_attr("col-sm-6 smallpad")], [Html.button_attrs("Update every 10th row", [Html.attr("type", "button"), Html.class_attr("btn btn-primary btn-block"), Html.attr("id", "update")], model.on_unit(update_every_tenth))]),
-													element("div", [Html.class_attr("col-sm-6 smallpad")], [Html.button_attrs("Clear", [Html.attr("type", "button"), Html.class_attr("btn btn-primary btn-block"), Html.attr("id", "clear")], model.on_unit(|value| { ..value, rows: [], selected: "" }))]),
+													element("div", [Html.class_attr("col-sm-6 smallpad")], [Html.button_attrs("Clear", [Html.attr("type", "button"), Html.class_attr("btn btn-primary btn-block"), Html.attr("id", "clear")], model.on_unit(|value| { ..value, rows: Rows.apply(value.rows, [Clear]) ?? value.rows, selected: "" }))]),
 													element("div", [Html.class_attr("col-sm-6 smallpad")], [Html.button_attrs("Swap Rows", [Html.attr("type", "button"), Html.class_attr("btn btn-primary btn-block"), Html.attr("id", "swaprows")], model.on_unit(swap_rows))]),
 												],
 											),
@@ -166,7 +173,7 @@ main = || {
 						"table",
 						[Html.class_attr("table table-hover table-striped test-data")],
 						[
-							element("tbody", [Html.attr("id", "tbody")], [Ui.each(rows, |row| row.id.to_str(), |each_row| render_row(model, selected, each_row.key(), each_row.signal()))]),
+							element("tbody", [Html.attr("id", "tbody")], [Ui.each(rows, |each_row| render_row(model, selected, each_row.key(), each_row.signal()))]),
 						],
 					),
 					element("span", [Html.class_attr("preloadicon glyphicon glyphicon-remove"), Html.attr("aria-hidden", "true")], []),

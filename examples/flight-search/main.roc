@@ -2,6 +2,7 @@ app [main] { pf: platform "https://github.com/lukewilliamboswell/roc-signals/rel
 
 import pf.Elem exposing [Elem]
 import pf.Html
+import pf.Rows
 import pf.Signal
 import pf.Ui
 
@@ -825,7 +826,7 @@ search = |h| {
 						|| Html.paragraph_s_c(empty_note, "empty-state"),
 						|| Html.text(""),
 					),
-					Html.div_c("grid gap-2", [Ui.each(rows, |flight| flight.id, |each_row| render_row(each_row.key(), each_row.signal()))]),
+					Html.div_c("grid gap-2", [Ui.each(Signal.map(rows, |rows_items| Rows.from_list(rows_items, |flight| flight.id) ?? crash "duplicate row key"), |each_row| render_row(each_row.key(), each_row.signal()))]),
 					# The request key and the derived order, kept visible because
 					# the point of the example is which of them refetches.
 					Html.div_c(

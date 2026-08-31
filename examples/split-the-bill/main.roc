@@ -30,6 +30,7 @@ app [main] { pf: platform "https://github.com/lukewilliamboswell/roc-signals/rel
 
 import pf.Elem exposing [Elem]
 import pf.Html
+import pf.Rows
 import pf.Signal
 import pf.Ui
 
@@ -456,11 +457,7 @@ settlement_panel = |settlement, has_transfers|
 				|| Html.div_c(
 					"grid gap-2",
 					[
-						Ui.each(
-							settlement,
-							Bill.transfer_key,
-							|each_row| transfer_row(each_row.key(), each_row.signal()),
-						),
+						Ui.each(Signal.map(settlement, |rows_items| Rows.from_list(rows_items, Bill.transfer_key) ?? crash "duplicate row key"), |each_row| transfer_row(each_row.key(), each_row.signal())),
 					],
 				),
 				|| Html.paragraph_c("Everyone is square. No transfers needed.", "empty-state"),
@@ -550,7 +547,7 @@ people_panel = |roster, person_rows, has_people| {
 				has_people,
 				|| Html.div_c(
 					"grid gap-2",
-					[Ui.each(person_rows, |row| row.name, |each_row| person_row(roster, each_row.key(), each_row.signal()))],
+					[Ui.each(Signal.map(person_rows, |rows_items| Rows.from_list(rows_items, |row| row.name) ?? crash "duplicate row key"), |each_row| person_row(roster, each_row.key(), each_row.signal()))],
 				),
 				|| Html.paragraph_c("Nobody on the trip yet. Add someone to start.", "empty-state"),
 			),
@@ -675,7 +672,7 @@ expenses_panel = |ledger, people, expense_views, has_expenses| {
 										"New expense payer",
 										ledger_signal.map(|value| value.payer),
 										input_class,
-										[Ui.each(people, |name| name, |each_row| Html.option(each_row.key(), each_row.key()))],
+										[Ui.each(Signal.map(people, |rows_items| Rows.from_list(rows_items, |name| name) ?? crash "duplicate row key"), |each_row| Html.option(each_row.key(), each_row.key()))],
 										ledger.on_str(set_expense_payer),
 									),
 								],
@@ -707,11 +704,7 @@ expenses_panel = |ledger, people, expense_views, has_expenses| {
 				|| Html.div_c(
 					"grid gap-2",
 					[
-						Ui.each(
-							expense_views,
-							|view| view.description,
-							|each_row| expense_row(ledger, each_row.key(), each_row.signal()),
-						),
+						Ui.each(Signal.map(expense_views, |rows_items| Rows.from_list(rows_items, |view| view.description) ?? crash "duplicate row key"), |each_row| expense_row(ledger, each_row.key(), each_row.signal())),
 					],
 				),
 				|| Html.paragraph_c("No expenses yet. Record what someone paid for.", "empty-state"),
@@ -784,11 +777,7 @@ expense_row = |ledger, description, view|
 					Html.div_c(
 						"flex flex-wrap gap-x-5 gap-y-2",
 						[
-							Ui.each(
-								view.map(|value| value.members),
-								|member| member.name,
-								|each_row| share_row(ledger, { expense: description, person: each_row.key() }, each_row.signal()),
-							),
+							Ui.each(Signal.map(view.map(|value| value.members), |rows_items| Rows.from_list(rows_items, |member| member.name) ?? crash "duplicate row key"), |each_row| share_row(ledger, { expense: description, person: each_row.key() }, each_row.signal())),
 						],
 					),
 				],

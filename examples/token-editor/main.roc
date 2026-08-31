@@ -3,6 +3,7 @@ app [main] { pf: platform "https://github.com/lukewilliamboswell/roc-signals/rel
 import Tokens
 import pf.Elem exposing [Elem]
 import pf.Html
+import pf.Rows
 import pf.Signal
 import pf.Ui
 
@@ -464,7 +465,7 @@ editor = |drafts| {
 								panel_class,
 								[
 									Html.heading_c("Preview", "panel-title"),
-									Ui.each(previews, |preview| preview.id, |each_row| render_preview(each_row.key(), each_row.signal())),
+									Ui.each(Signal.map(previews, |rows_items| Rows.from_list(rows_items, |preview| preview.id) ?? crash "duplicate row key"), |each_row| render_preview(each_row.key(), each_row.signal())),
 								],
 							),
 							Html.section_c(
