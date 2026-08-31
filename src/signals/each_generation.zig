@@ -195,14 +195,18 @@ pub const CandidateBindings = struct {
     pub fn commit(self: *CandidateBindings, committed: *BindingTable) void {
         if (self.phase != .preparing) @panic("each binding overlay committed twice");
         if (!self.commit_preflighted) @panic("each binding overlay committed before preflight");
-        var iterator = self.candidate.iterator();
-        while (iterator.next()) |entry| {
-            if (entry.value_ptr.*) |binding| {
-                committed.entries.putAssumeCapacity(entry.key_ptr.*, binding);
-            } else {
-                _ = committed.entries.remove(entry.key_ptr.*);
-            }
-        }
+        // Retire old handles before publishing replacements. Besides matching
+        // the generation transition, this keeps the allocation-free commit
+        // within the preflighted final binding bound when one batch removes
+        // and creates rows together.
+        var removals = self.candidate.iterator();
+        while (removals.next()) |entry| if (entry.value_ptr.* == null) {
+            _ = committed.entries.remove(entry.key_ptr.*);
+        };
+        var insertions = self.candidate.iterator();
+        while (insertions.next()) |entry| if (entry.value_ptr.*) |binding| {
+            committed.entries.putAssumeCapacity(entry.key_ptr.*, binding);
+        };
         self.phase = .committed;
     }
 

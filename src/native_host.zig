@@ -11400,6 +11400,7 @@ pub const fuzz_fixtures = struct {
 
     pub const captureAs = testCapturePtrAs;
     pub const argsAs = testErasedArgsAs;
+    pub const eachRowKeyI64 = testEachRowKeyI64;
     pub const readI64 = testReadHostValueI64;
     pub const writeResult = writeTestErasedResult;
 };

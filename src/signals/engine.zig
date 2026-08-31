@@ -1469,7 +1469,10 @@ pub fn Engine(comptime Ctx: type) type {
                     }
                     try replacement.collectRowsInto(site, each.*, &self.rows[index].rows, owner, dirty_source_node_ids);
                 }
-                var binding_edits = owner.collection.candidate_binding_edit_count;
+                // Cover the transaction-wide unique bindings plus every local
+                // overlay. The latter includes removals and nested edits whose
+                // commit order may temporarily exceed the final live count.
+                var binding_edits = std.math.add(usize, owner.collection.prepared_row_bindings.count(), owner.collection.candidate_binding_edit_count) catch return error.ResourceLimit;
                 for (self.rows[0..self.prepared_len]) |rows| binding_edits = std.math.add(usize, binding_edits, rows.inputs.candidate_bindings.candidate.count()) catch return error.ResourceLimit;
                 const binding_bound = std.math.add(usize, self.engine.committed_row_bindings.entries.count(), binding_edits) catch return error.ResourceLimit;
                 self.engine.committed_row_bindings.entries.ensureTotalCapacity(self.allocator, std.math.cast(u32, binding_bound) orelse return error.ResourceLimit) catch return error.OutOfMemory;
@@ -1892,6 +1895,10 @@ pub fn Engine(comptime Ctx: type) type {
                     }
                 }
                 if (row_write != row_ranges.len) return error.ResourceLimit;
+                var binding_edits = std.math.add(usize, replacement_owner.collection.prepared_row_bindings.count(), replacement_owner.collection.candidate_binding_edit_count) catch return error.ResourceLimit;
+                for (rows.rows[0..rows.prepared_len]) |prepared_rows| binding_edits = std.math.add(usize, binding_edits, prepared_rows.inputs.candidate_bindings.candidate.count()) catch return error.ResourceLimit;
+                const binding_bound = std.math.add(usize, engine.committed_row_bindings.entries.count(), binding_edits) catch return error.ResourceLimit;
+                engine.committed_row_bindings.entries.ensureTotalCapacity(allocator, std.math.cast(u32, binding_bound) orelse return error.ResourceLimit) catch return error.OutOfMemory;
                 replacement_owner.materialize();
                 for (rows.replacements[0..rows.prepared_len]) |replacement| replacement.releaseEvaluatedRows();
 
@@ -4643,7 +4650,7 @@ pub fn Engine(comptime Ctx: type) type {
                 };
                 self.candidate_generation_count = std.math.add(usize, self.candidate_generation_count, 1) catch return error.ResourceLimit;
                 self.engine.each_generations.ensureUnusedCapacity(allocator, std.math.cast(u32, self.candidate_generation_count) orelse return error.ResourceLimit) catch return error.OutOfMemory;
-                const site_slot_bound = std.math.add(usize, self.engine.each_row_sites.items.len, self.candidate_generation_count) catch return error.ResourceLimit;
+                const site_slot_bound = std.math.add(usize, self.engine.each_generation_ids_by_site_index.items.len, self.candidate_generation_count) catch return error.ResourceLimit;
                 self.engine.each_generation_ids_by_site_index.ensureTotalCapacity(allocator, site_slot_bound) catch return error.OutOfMemory;
                 try self.indexCandidateGeneration(&evaluated.inputs);
 
