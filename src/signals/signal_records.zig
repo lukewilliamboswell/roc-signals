@@ -207,6 +207,39 @@ pub const PreparedCacheUpdates = struct {
         return self.results.items[index].changed;
     }
 
+    /// Discards a provisional evaluation so a later source wave in the same
+    /// transaction can recompute that record from its newly staged inputs.
+    /// Any cache value produced by the superseded evaluation is released, and
+    /// the persistent cache remains untouched. The caller must invalidate the
+    /// complete downstream dirty set, never an isolated derived record.
+    pub fn forgetEvaluation(self: *PreparedCacheUpdates, record: *Record, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
+        if (self.phase == .committed) @panic("cannot forget a committed signal evaluation");
+        const key = EvaluationKey.fromRecord(record);
+        if (self.result_indexes.fetchRemove(key)) |removed| {
+            const removed_index = removed.value;
+            _ = self.results.swapRemove(removed_index);
+            if (removed_index < self.results.items.len) {
+                self.result_indexes.getPtr(self.results.items[removed_index].key).?.* = removed_index;
+            }
+        }
+        const slot = record.cachedSlot() orelse return;
+        self.forgetCacheSlot(slot, ctx, roc_host, metrics);
+    }
+
+    /// Releases one provisional sink-cache replacement so its owning route can
+    /// be recomputed after a later source wave invalidates the earlier value.
+    pub fn forgetCacheSlot(self: *PreparedCacheUpdates, slot: *CacheSlot, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
+        if (self.phase == .committed) @panic("cannot forget a committed cache update");
+        if (self.indexes.fetchRemove(slot)) |removed| {
+            const removed_index = removed.value;
+            self.updates.items[removed_index].deinit(ctx, roc_host, metrics);
+            _ = self.updates.swapRemove(removed_index);
+            if (removed_index < self.updates.items.len) {
+                self.indexes.getPtr(self.updates.items[removed_index].live).?.* = removed_index;
+            }
+        }
+    }
+
     /// Associates a memoized record without a persistent cache slot, such as
     /// a state reference, with its transaction-private value.
     pub fn bindProvisionalValueAssumeCapacity(self: *PreparedCacheUpdates, key: EvaluationKey, cell: *const HostValueCell) void {

@@ -1227,6 +1227,28 @@ test("command opcodes map to the expected DOM operations", () => {
   assert.equal(findTextNode(root, "before"), null);
 });
 
+test("empty fixed metadata commands remove their attributes", () => {
+  const { root } = mountWith([
+    { op: Op.resetDom },
+    { op: Op.createElement, a: 1, s: "div" },
+    { op: Op.setRole, a: 1, s: "button" },
+    { op: Op.setLabel, a: 1, s: "Run" },
+    { op: Op.setTestId, a: 1, s: "run" },
+    { op: Op.setClass, a: 1, s: "primary" },
+    { op: Op.setRole, a: 1, s: "" },
+    { op: Op.setLabel, a: 1, s: "" },
+    { op: Op.setTestId, a: 1, s: "" },
+    { op: Op.setClass, a: 1, s: "" },
+    { op: Op.appendChild, a: 0, b: 1 },
+  ]);
+
+  const element = findNode(root, (node) => node.tagName === "DIV");
+  assert.equal(element.getAttribute("role"), null);
+  assert.equal(element.getAttribute("aria-label"), null);
+  assert.equal(element.getAttribute("data-testid"), null);
+  assert.equal(element.getAttribute("class"), null);
+});
+
 test("navigation opcodes call browser history and emit telemetry", () => {
   const calls = [];
   const telemetry = [];

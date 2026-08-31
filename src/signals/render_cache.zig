@@ -200,8 +200,15 @@ const JournalPhase = enum {
 
 /// Owns one parent-child replacement until an allocation-free cache commit.
 pub const PreparedChildrenReplacement = struct {
+    pub const WireEdit = union(enum) {
+        append: ids.ElemId,
+        move_before: struct { child: ids.ElemId, before: ?ids.ElemId },
+    };
+
     parent_elem_id: ids.ElemId,
     next: []ids.ElemId,
+    wire_edit_offset: usize = 0,
+    wire_edit_len: usize = 0,
     retired: std.ArrayListUnmanaged(ids.ElemId) = .empty,
     phase: JournalPhase = .prepared,
 
@@ -233,14 +240,15 @@ pub const PreparedChildrenReplacement = struct {
 /// Defers ownership transfer for one cache-node removal until commit.
 pub const PreparedNodeRemoval = struct {
     elem_id: ids.ElemId,
+    publication: RemovalPublication,
     retired: ScalarNode = .{},
     phase: JournalPhase = .prepared,
 
     /// Validates an active non-root cache node without mutating it.
-    pub fn prepare(comptime Ctx: type, cache: *const Cache(Ctx), elem_id: ids.ElemId) error{MissingNode}!PreparedNodeRemoval {
+    pub fn prepare(comptime Ctx: type, cache: *const Cache(Ctx), elem_id: ids.ElemId, publication: RemovalPublication) error{MissingNode}!PreparedNodeRemoval {
         const index = elem_id.index();
         if (elem_id == ids.root_elem or index >= cache.nodes.items.len or !cache.nodes.items[index].isActive()) return error.MissingNode;
-        return .{ .elem_id = elem_id };
+        return .{ .elem_id = elem_id, .publication = publication };
     }
 
     /// Transfers the active node into retired ownership without allocating.
@@ -431,8 +439,11 @@ pub const PreparedFixedEventUpdate = struct {
 
 /// Owns the complete custom-text attribute set for one touched node.
 pub const PreparedCustomTextAttrsReplacement = struct {
+    pub const WireEdit = union(enum) { remove_old: usize, set_next: usize };
     elem_id: ids.ElemId,
     next: []CustomTextAttr,
+    wire_edit_offset: usize = 0,
+    wire_edit_len: usize = 0,
     retired: std.ArrayListUnmanaged(CustomTextAttr) = .empty,
     phase: JournalPhase = .prepared,
 
@@ -480,8 +491,11 @@ pub const PreparedCustomTextAttrsReplacement = struct {
 
 /// Owns the complete named-event set for one touched node.
 pub const PreparedNamedEventsReplacement = struct {
+    pub const WireEdit = union(enum) { clear_old: usize, bind_next: usize };
     elem_id: ids.ElemId,
     next: []NamedEvent,
+    wire_edit_offset: usize = 0,
+    wire_edit_len: usize = 0,
     retired: std.ArrayListUnmanaged(NamedEvent) = .empty,
     phase: JournalPhase = .prepared,
 
@@ -548,6 +562,8 @@ pub const PreparedRenderCounts = struct {
     named_events: usize = 0,
     child_links: usize = 0,
     wire_commands: usize = 0,
+    custom_attr_wire_edits: usize = 0,
+    named_event_wire_edits: usize = 0,
     /// Active nodes this splice keeps in place while their subtree is
     /// re-collected under the same id and tag; see `addNodeReuse`.
     reuses: usize = 0,
@@ -588,49 +604,53 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
         removals: std.ArrayListUnmanaged(PreparedNodeRemoval) = .empty,
         creations: std.ArrayListUnmanaged(PreparedNodeCreation) = .empty,
         children: std.ArrayListUnmanaged(PreparedChildrenReplacement) = .empty,
+        child_wire_edits: std.ArrayListUnmanaged(PreparedChildrenReplacement.WireEdit) = .empty,
         text_fields: std.ArrayListUnmanaged(PreparedTextFieldUpdate) = .empty,
         bool_fields: std.ArrayListUnmanaged(PreparedBoolFieldUpdate) = .empty,
         fixed_events: std.ArrayListUnmanaged(PreparedFixedEventUpdate) = .empty,
         custom_attrs: std.ArrayListUnmanaged(PreparedCustomTextAttrsReplacement) = .empty,
+        custom_attr_wire_edits: std.ArrayListUnmanaged(PreparedCustomTextAttrsReplacement.WireEdit) = .empty,
         named_events: std.ArrayListUnmanaged(PreparedNamedEventsReplacement) = .empty,
+        named_event_wire_edits: std.ArrayListUnmanaged(PreparedNamedEventsReplacement.WireEdit) = .empty,
         provisional_nodes: std.AutoHashMapUnmanaged(u64, void) = .empty,
         reused_nodes: std.AutoHashMapUnmanaged(u64, ReusedNodeFields) = .empty,
         parent_intent_indexes: std.AutoHashMapUnmanaged(u64, usize) = .empty,
         parent_intents: std.ArrayListUnmanaged(ParentIntent) = .empty,
-        wire: render.PreparedBatch,
+        cache: *const Cache(Ctx),
+        sink_command_count: usize = 0,
+        reset_dom: bool = false,
         phase: JournalPhase = .prepared,
 
         const ParentIntent = struct { child_id: ids.ElemId, next: ?ids.ElemId, retired: ?ids.ElemId };
 
         /// Reserves every plan-local journal and persistent tag slot before collection.
-        pub fn init(allocator: std.mem.Allocator, cache: *Cache(Ctx), counts: PreparedRenderCounts) (std.mem.Allocator.Error || error{ResourceLimit})!Self {
-            var tags = try PreparedTagOverlay.init(Ctx, allocator, cache, counts.new_tags);
-            const wire = render.PreparedBatch.init(allocator, counts.wire_commands) catch |err| {
-                tags.deinit(allocator);
-                return err;
-            };
+        pub fn init(allocator: std.mem.Allocator, cache: *Cache(Ctx), prepared_counts: PreparedRenderCounts) (std.mem.Allocator.Error || error{ResourceLimit})!Self {
+            const tags = try PreparedTagOverlay.init(Ctx, allocator, cache, prepared_counts.new_tags);
             var self = Self{
                 .allocator = allocator,
                 .tags = tags,
-                .wire = wire,
+                .cache = cache,
             };
             errdefer self.deinit();
-            try cache.preflightNodeCapacity(allocator, counts.node_capacity);
-            try self.removals.ensureTotalCapacity(allocator, counts.removals);
-            try self.creations.ensureTotalCapacity(allocator, counts.creations);
-            try self.children.ensureTotalCapacity(allocator, counts.children);
-            try self.text_fields.ensureTotalCapacity(allocator, counts.text_fields);
-            try self.bool_fields.ensureTotalCapacity(allocator, counts.bool_fields);
-            try self.fixed_events.ensureTotalCapacity(allocator, counts.fixed_events);
-            try self.custom_attrs.ensureTotalCapacity(allocator, counts.custom_attrs);
-            try self.named_events.ensureTotalCapacity(allocator, counts.named_events);
-            const creation_count = std.math.cast(u32, counts.creations) orelse return error.ResourceLimit;
-            const child_link_count = std.math.cast(u32, counts.child_links) orelse return error.ResourceLimit;
+            try cache.preflightNodeCapacity(allocator, prepared_counts.node_capacity);
+            try self.removals.ensureTotalCapacity(allocator, prepared_counts.removals);
+            try self.creations.ensureTotalCapacity(allocator, prepared_counts.creations);
+            try self.children.ensureTotalCapacity(allocator, prepared_counts.children);
+            try self.child_wire_edits.ensureTotalCapacity(allocator, prepared_counts.child_links);
+            try self.text_fields.ensureTotalCapacity(allocator, prepared_counts.text_fields);
+            try self.bool_fields.ensureTotalCapacity(allocator, prepared_counts.bool_fields);
+            try self.fixed_events.ensureTotalCapacity(allocator, prepared_counts.fixed_events);
+            try self.custom_attrs.ensureTotalCapacity(allocator, prepared_counts.custom_attrs);
+            try self.custom_attr_wire_edits.ensureTotalCapacity(allocator, prepared_counts.custom_attr_wire_edits);
+            try self.named_events.ensureTotalCapacity(allocator, prepared_counts.named_events);
+            try self.named_event_wire_edits.ensureTotalCapacity(allocator, prepared_counts.named_event_wire_edits);
+            const creation_count = std.math.cast(u32, prepared_counts.creations) orelse return error.ResourceLimit;
+            const child_link_count = std.math.cast(u32, prepared_counts.child_links) orelse return error.ResourceLimit;
             try self.provisional_nodes.ensureUnusedCapacity(allocator, creation_count);
-            const reuse_count = std.math.cast(u32, counts.reuses) orelse return error.ResourceLimit;
+            const reuse_count = std.math.cast(u32, prepared_counts.reuses) orelse return error.ResourceLimit;
             try self.reused_nodes.ensureUnusedCapacity(allocator, reuse_count);
             try self.parent_intent_indexes.ensureUnusedCapacity(allocator, child_link_count);
-            try self.parent_intents.ensureTotalCapacity(allocator, counts.child_links);
+            try self.parent_intents.ensureTotalCapacity(allocator, prepared_counts.child_links);
             return self;
         }
 
@@ -660,7 +680,7 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             const link_count = std.math.cast(u32, child_links) orelse return error.ResourceLimit;
             try self.parent_intent_indexes.ensureUnusedCapacity(self.allocator, link_count);
             try self.parent_intents.ensureUnusedCapacity(self.allocator, child_links);
-            try self.wire.reserveAdditional(self.allocator, child_links);
+            try self.child_wire_edits.ensureUnusedCapacity(self.allocator, child_links);
         }
 
         /// Transfers scalar field and custom-attribute journals with their wire
@@ -695,11 +715,15 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             var kept_bool: usize = 0;
             for (donor.bool_fields.items) |entry| kept_bool += @intFromBool(!retired.contains(entry.elem_id.raw()));
             var kept_custom: usize = 0;
-            for (donor.custom_attrs.items) |entry| kept_custom += @intFromBool(!retired.contains(entry.elem_id.raw()));
+            var kept_custom_wire_edits: usize = 0;
+            for (donor.custom_attrs.items) |entry| if (!retired.contains(entry.elem_id.raw())) {
+                kept_custom += 1;
+                kept_custom_wire_edits = std.math.add(usize, kept_custom_wire_edits, entry.wire_edit_len) catch return error.ResourceLimit;
+            };
             try self.text_fields.ensureUnusedCapacity(self.allocator, kept_text);
             try self.bool_fields.ensureUnusedCapacity(self.allocator, kept_bool);
             try self.custom_attrs.ensureUnusedCapacity(self.allocator, kept_custom);
-            try self.wire.appendPreparedSurviving(self.allocator, &donor.wire, &retired);
+            try self.custom_attr_wire_edits.ensureUnusedCapacity(self.allocator, kept_custom_wire_edits);
             for (donor.text_fields.items) |*entry| {
                 if (retired.contains(entry.elem_id.raw())) entry.deinit(donor.allocator) else self.text_fields.appendAssumeCapacity(entry.*);
             }
@@ -707,7 +731,14 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
                 if (!retired.contains(entry.elem_id.raw())) self.bool_fields.appendAssumeCapacity(entry);
             }
             for (donor.custom_attrs.items) |*entry| {
-                if (retired.contains(entry.elem_id.raw())) entry.deinit(donor.allocator) else self.custom_attrs.appendAssumeCapacity(entry.*);
+                if (retired.contains(entry.elem_id.raw())) {
+                    entry.deinit(donor.allocator);
+                } else {
+                    const edits = donor.customAttrWireEdits(entry.*);
+                    entry.wire_edit_offset = self.custom_attr_wire_edits.items.len;
+                    self.custom_attr_wire_edits.appendSliceAssumeCapacity(edits);
+                    self.custom_attrs.appendAssumeCapacity(entry.*);
+                }
             }
             donor.text_fields.clearRetainingCapacity();
             donor.bool_fields.clearRetainingCapacity();
@@ -720,15 +751,11 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
         /// root: the host releases the root's whole subtree on that command,
         /// so a node whose active ancestor is also removed publishes nothing.
         pub fn addRemoval(self: *Self, cache: *const Cache(Ctx), elem_id: ids.ElemId, publication: RemovalPublication) error{ MissingNode, ResourceLimit }!void {
-            self.removals.appendAssumeCapacity(try PreparedNodeRemoval.prepare(Ctx, cache, elem_id));
+            self.removals.appendAssumeCapacity(try PreparedNodeRemoval.prepare(Ctx, cache, elem_id, publication));
             self.setParentIntent(cache, elem_id.raw(), null) catch |err| switch (err) {
                 error.ConflictingParent, error.DuplicateChild => unreachable,
                 else => |value| return value,
             };
-            switch (publication) {
-                .subtree_root => try self.wire.addSemantic(.{ .remove_node = try render.WireElemId.fromEngine(elem_id) }),
-                .under_removed_root => {},
-            }
         }
 
         /// Journals one same-id remove/recreate operation against the active
@@ -796,11 +823,6 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
                 try PreparedNodeCreation.prepare(Ctx, self.allocator, cache, &self.tags, elem_id, tag);
             self.provisional_nodes.putAssumeCapacity(elem_id.raw(), {});
             self.creations.appendAssumeCapacity(prepared);
-            const wire_elem_id = try render.WireElemId.fromEngine(elem_id);
-            if (std.mem.eql(u8, prepared.tag, "text"))
-                try self.wire.addSemantic(.{ .create_text = wire_elem_id })
-            else
-                try self.wire.addSemantic(.{ .create_element = .{ .elem_id = wire_elem_id, .tag = prepared.tag } });
         }
 
         /// Adds the engine-only render root for an initial surface. The host
@@ -813,6 +835,7 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             const prepared = try PreparedNodeCreation.prepare(Ctx, self.allocator, cache, &self.tags, ids.ElemId.fromRaw(0), "root");
             self.provisional_nodes.putAssumeCapacity(0, {});
             self.creations.appendAssumeCapacity(prepared);
+            self.reset_dom = true;
         }
 
         fn setParentIntent(self: *Self, cache: *const Cache(Ctx), child_id: u64, next: ?u64) error{ ConflictingParent, DuplicateChild, MissingNode, ResourceLimit }!void {
@@ -848,13 +871,15 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             }
             for (next) |child_id| try self.setParentIntent(cache, child_id.raw(), parent_elem_id.raw());
             const copied = try self.allocator.dupe(ids.ElemId, next);
-            self.children.appendAssumeCapacity(.{ .parent_elem_id = parent_elem_id, .next = copied });
-            const parent_id = try render.WireElemId.fromEngine(parent_elem_id);
+            errdefer self.allocator.free(copied);
+            const wire_edit_offset = self.child_wire_edits.items.len;
+            var wire_edit_len: usize = 0;
             if (old_children.len == 0) {
-                for (next) |child_id| try self.wire.addSemantic(.{ .append_child = .{
-                    .parent = parent_id,
-                    .child = try render.WireElemId.fromEngine(child_id),
-                } });
+                for (next) |child_id| {
+                    self.child_wire_edits.appendAssumeCapacity(.{ .append = child_id });
+                    wire_edit_len += 1;
+                }
+                self.children.appendAssumeCapacity(.{ .parent_elem_id = parent_elem_id, .next = copied, .wire_edit_offset = wire_edit_offset, .wire_edit_len = wire_edit_len });
                 return;
             }
             var old_indexes = std.AutoHashMapUnmanaged(u64, usize).empty;
@@ -894,20 +919,33 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
                 stable[index] = true;
                 stable_index = previous[index];
             }
-            for (next, retained) |child_id, is_retained| if (!is_retained) try self.wire.addSemantic(.{ .append_child = .{
-                .parent = parent_id,
-                .child = try render.WireElemId.fromEngine(child_id),
-            } });
+            for (next, retained) |child_id, is_retained| if (!is_retained) {
+                self.child_wire_edits.appendAssumeCapacity(.{ .append = child_id });
+                wire_edit_len += 1;
+            };
             var index = next.len;
             while (index != 0) {
                 index -= 1;
                 if (!retained[index] or stable[index]) continue;
-                try self.wire.addSemantic(.{ .move_before = .{
-                    .parent = parent_id,
-                    .child = try render.WireElemId.fromEngine(next[index]),
-                    .before = if (index + 1 == next.len) null else try render.WireElemId.fromEngine(next[index + 1]),
+                self.child_wire_edits.appendAssumeCapacity(.{ .move_before = .{
+                    .child = next[index],
+                    .before = if (index + 1 == next.len) null else next[index + 1],
                 } });
+                wire_edit_len += 1;
             }
+            self.children.appendAssumeCapacity(.{ .parent_elem_id = parent_elem_id, .next = copied, .wire_edit_offset = wire_edit_offset, .wire_edit_len = wire_edit_len });
+        }
+
+        fn childWireEdits(self: *const Self, children: PreparedChildrenReplacement) []const PreparedChildrenReplacement.WireEdit {
+            return self.child_wire_edits.items[children.wire_edit_offset..][0..children.wire_edit_len];
+        }
+
+        fn customAttrWireEdits(self: *const Self, replacement: PreparedCustomTextAttrsReplacement) []const PreparedCustomTextAttrsReplacement.WireEdit {
+            return self.custom_attr_wire_edits.items[replacement.wire_edit_offset..][0..replacement.wire_edit_len];
+        }
+
+        fn namedEventWireEdits(self: *const Self, replacement: PreparedNamedEventsReplacement) []const PreparedNamedEventsReplacement.WireEdit {
+            return self.named_event_wire_edits.items[replacement.wire_edit_offset..][0..replacement.wire_edit_len];
         }
 
         /// Adds a text field for an active or provisional node.
@@ -920,38 +958,6 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             }
             const prepared = try PreparedTextFieldUpdate.prepareKnownNode(self.allocator, elem_id, field, value);
             self.text_fields.appendAssumeCapacity(prepared);
-            const wire_elem_id = try render.WireElemId.fromEngine(elem_id);
-            if (prepared.next) |bytes| {
-                const attr_name: ?[]const u8 = switch (field) {
-                    .role => "role",
-                    .label => "aria-label",
-                    .test_id => "data-testid",
-                    .class => "class",
-                    .text, .value => null,
-                };
-                if (attr_name) |name| try self.wire.addSetAttrText(wire_elem_id, name, bytes) else {
-                    switch (field) {
-                        .text => try self.wire.addSemantic(.{ .set_text = .{ .elem_id = wire_elem_id, .bytes = bytes } }),
-                        .value => try self.wire.addSemantic(.{ .set_value = .{ .elem_id = wire_elem_id, .bytes = bytes } }),
-                        else => unreachable,
-                    }
-                }
-            } else {
-                const attr_name: ?[]const u8 = switch (field) {
-                    .role => "role",
-                    .label => "aria-label",
-                    .test_id => "data-testid",
-                    .class => "class",
-                    .text, .value => null,
-                };
-                if (attr_name) |name| try self.wire.addRemoveAttr(wire_elem_id, name) else {
-                    switch (field) {
-                        .text => try self.wire.addSemantic(.{ .set_text = .{ .elem_id = wire_elem_id, .bytes = "" } }),
-                        .value => try self.wire.addSemantic(.{ .set_value = .{ .elem_id = wire_elem_id, .bytes = "" } }),
-                        else => unreachable,
-                    }
-                }
-            }
         }
 
         /// Adds a boolean field for an active or provisional node.
@@ -960,11 +966,6 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             if (self.reused_nodes.getPtr(elem_id.raw())) |fields| fields.bools |= ReusedNodeFields.boolBit(field);
             if (self.activeNode(cache, elem_id)) |node| if (@constCast(node).boolSlot(field).* == value) return;
             self.bool_fields.appendAssumeCapacity(.{ .elem_id = elem_id, .field = field, .next = value });
-            const wire_elem_id = try render.WireElemId.fromEngine(elem_id);
-            switch (field) {
-                .checked => try self.wire.addSemantic(.{ .set_checked = .{ .elem_id = wire_elem_id, .value = value orelse false } }),
-                .disabled => try self.wire.addSemantic(.{ .set_disabled = .{ .elem_id = wire_elem_id, .value = value orelse false } }),
-            }
         }
 
         /// Adds a fixed event for an active or provisional node.
@@ -977,23 +978,11 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
                 if ((old == null and next == null) or (old != null and next != null and old.?.eql(next.?))) return;
             }
             self.fixed_events.appendAssumeCapacity(.{ .elem_id = elem_id, .kind = kind, .next = next });
-            const wire_elem_id = try render.WireElemId.fromEngine(elem_id);
-            if (next) |value| {
-                if (value.canUseFixedOpcode(kind)) try self.wire.addSemantic(.{ .bind_fixed = .{ .elem_id = wire_elem_id, .event_id = try render.WireEventId.fromEngine(value.event_id), .kind = kind } }) else try self.wire.addBindEvent(.{
-                    .elem_id = wire_elem_id,
-                    .event_id = try render.WireEventId.fromEngine(value.event_id),
-                    .name = kind.domEventName(),
-                    .policy = value.policy,
-                    .delivery = value.delivery.toWire(),
-                    .payload_descriptor = value.payload_descriptor,
-                });
-            } else try self.wire.addSemantic(.{ .clear_fixed = .{ .elem_id = wire_elem_id, .kind = kind } });
         }
 
         /// Adds final custom attributes for an active or provisional node.
         pub fn addCustomAttrs(self: *Self, cache: *const Cache(Ctx), elem_id: ids.ElemId, attrs: []const CustomTextAttr) (std.mem.Allocator.Error || error{ MissingNode, ResourceLimit })!void {
             if (!self.nodeExists(cache, elem_id)) return error.MissingNode;
-            const wire_elem_id = try render.WireElemId.fromEngine(elem_id);
             if (self.activeNode(cache, elem_id)) |node| {
                 if (node.custom_text_attrs.items.len == attrs.len) {
                     var equal = true;
@@ -1009,24 +998,34 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             var prepared = try PreparedCustomTextAttrsReplacement.prepareKnownNode(self.allocator, elem_id, attrs);
             errdefer prepared.deinit(self.allocator);
             const cache_index = elem_id.index();
+            const old_attrs = if (cache_index < cache.nodes.items.len and cache.nodes.items[cache_index].isActive()) cache.nodes.items[cache_index].custom_text_attrs.items else &.{};
+            const wire_edit_capacity = std.math.add(usize, old_attrs.len, prepared.next.len) catch return error.ResourceLimit;
+            if (self.custom_attr_wire_edits.unusedCapacitySlice().len < wire_edit_capacity) return error.ResourceLimit;
+            prepared.wire_edit_offset = self.custom_attr_wire_edits.items.len;
             if (cache_index < cache.nodes.items.len and cache.nodes.items[cache_index].isActive()) {
-                for (cache.nodes.items[cache_index].custom_text_attrs.items) |old| {
+                for (cache.nodes.items[cache_index].custom_text_attrs.items, 0..) |old, old_index| {
                     var found = false;
                     for (prepared.next) |next| if (std.mem.eql(u8, old.name, next.name)) {
                         found = true;
                         break;
                     };
-                    if (!found) try self.wire.addRemoveAttr(wire_elem_id, old.name);
+                    if (!found) {
+                        self.custom_attr_wire_edits.appendAssumeCapacity(.{ .remove_old = old_index });
+                        prepared.wire_edit_len += 1;
+                    }
                 }
             }
-            for (prepared.next) |next| {
+            for (prepared.next, 0..) |next, next_index| {
                 var unchanged = false;
                 if (cache_index < cache.nodes.items.len and cache.nodes.items[cache_index].isActive()) {
                     if (cache.nodes.items[cache_index].customTextAttrIndex(next.name)) |old_index| {
                         unchanged = std.mem.eql(u8, cache.nodes.items[cache_index].custom_text_attrs.items[old_index].value, next.value);
                     }
                 }
-                if (!unchanged) try self.wire.addSetAttrText(wire_elem_id, next.name, next.value);
+                if (!unchanged) {
+                    self.custom_attr_wire_edits.appendAssumeCapacity(.{ .set_next = next_index });
+                    prepared.wire_edit_len += 1;
+                }
             }
             self.custom_attrs.appendAssumeCapacity(prepared);
         }
@@ -1034,7 +1033,6 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
         /// Adds final named events for an active or provisional node.
         pub fn addNamedEvents(self: *Self, cache: *const Cache(Ctx), elem_id: ids.ElemId, events: []const NamedEvent) (std.mem.Allocator.Error || error{ MissingNode, ResourceLimit })!void {
             if (!self.nodeExists(cache, elem_id)) return error.MissingNode;
-            const wire_elem_id = try render.WireElemId.fromEngine(elem_id);
             if (self.activeNode(cache, elem_id)) |node| {
                 if (node.named_events.items.len == events.len) {
                     var equal = true;
@@ -1050,31 +1048,173 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             var prepared = try PreparedNamedEventsReplacement.prepareKnownNode(self.allocator, elem_id, events);
             errdefer prepared.deinit(self.allocator);
             const cache_index = elem_id.index();
+            const old_events = if (cache_index < cache.nodes.items.len and cache.nodes.items[cache_index].isActive()) cache.nodes.items[cache_index].named_events.items else &.{};
+            const wire_edit_capacity = std.math.add(usize, old_events.len, prepared.next.len) catch return error.ResourceLimit;
+            if (self.named_event_wire_edits.unusedCapacitySlice().len < wire_edit_capacity) return error.ResourceLimit;
+            prepared.wire_edit_offset = self.named_event_wire_edits.items.len;
             if (cache_index < cache.nodes.items.len and cache.nodes.items[cache_index].isActive()) {
-                for (cache.nodes.items[cache_index].named_events.items) |old| {
+                for (cache.nodes.items[cache_index].named_events.items, 0..) |old, old_index| {
                     var found = false;
                     for (prepared.next) |next| if (std.mem.eql(u8, old.name, next.name)) {
                         found = true;
                         break;
                     };
-                    if (!found) try self.wire.addClearEvent(wire_elem_id, old.name);
+                    if (!found) {
+                        self.named_event_wire_edits.appendAssumeCapacity(.{ .clear_old = old_index });
+                        prepared.wire_edit_len += 1;
+                    }
                 }
             }
-            for (prepared.next) |next| {
+            for (prepared.next, 0..) |next, next_index| {
                 var unchanged = false;
                 if (cache_index < cache.nodes.items.len and cache.nodes.items[cache_index].isActive()) {
                     if (cache.nodes.items[cache_index].namedEventIndex(next.name)) |old_index| unchanged = cache.nodes.items[cache_index].named_events.items[old_index].binding.eql(next.binding);
                 }
-                if (!unchanged) try self.wire.addBindEvent(.{
-                    .elem_id = wire_elem_id,
-                    .event_id = try render.WireEventId.fromEngine(next.binding.event_id),
-                    .name = next.name,
-                    .policy = next.binding.policy,
-                    .delivery = next.binding.delivery.toWire(),
-                    .payload_descriptor = next.binding.payload_descriptor,
-                });
+                if (!unchanged) {
+                    self.named_event_wire_edits.appendAssumeCapacity(.{ .bind_next = next_index });
+                    prepared.wire_edit_len += 1;
+                }
             }
             self.named_events.appendAssumeCapacity(prepared);
+        }
+
+        fn oldNode(self: *const Self, elem_id: ids.ElemId) ?*const ScalarNode {
+            const index = elem_id.index();
+            if (index >= self.cache.nodes.items.len or !self.cache.nodes.items[index].isActive()) return null;
+            return &self.cache.nodes.items[index];
+        }
+
+        fn wireElem(elem_id: ids.ElemId) render.WireElemId {
+            return render.WireElemId.fromEngine(elem_id) catch unreachable;
+        }
+
+        fn capacity(self: *const Self) error{ResourceLimit}!render.BatchCapacity {
+            var result: render.BatchCapacity = .{ .commands = self.sink_command_count };
+            if (self.reset_dom) try result.addFixed(0);
+            for (self.removals.items) |removal| if (removal.publication == .subtree_root) try result.addFixed(0);
+            for (self.creations.items) |creation| {
+                if (creation.elem_id == ids.root_elem) continue;
+                try result.addFixed(if (std.mem.eql(u8, creation.tag, "text")) 0 else creation.tag.len);
+            }
+            for (self.children.items) |children| for (self.childWireEdits(children)) |_| try result.addFixed(0);
+            for (self.text_fields.items) |field| try result.addFixed(if (field.next) |bytes| bytes.len else 0);
+            for (self.bool_fields.items) |_| try result.addFixed(0);
+            for (self.fixed_events.items) |event| if (event.next) |binding| {
+                if (binding.canUseFixedOpcode(event.kind)) try result.addFixed(0) else try result.addBindEvent(event.kind.domEventName().len, binding.payload_descriptor.extractionBytes().len);
+            } else try result.addFixed(0);
+            for (self.custom_attrs.items) |replacement| {
+                const old = if (self.oldNode(replacement.elem_id)) |node| node.custom_text_attrs.items else &.{};
+                for (self.customAttrWireEdits(replacement)) |edit| switch (edit) {
+                    .remove_old => |index| try result.addRemoveAttr(old[index].name.len),
+                    .set_next => |index| try result.addSetAttrText(replacement.next[index].name.len, replacement.next[index].value.len),
+                };
+            }
+            for (self.named_events.items) |replacement| {
+                const old = if (self.oldNode(replacement.elem_id)) |node| node.named_events.items else &.{};
+                for (self.namedEventWireEdits(replacement)) |edit| switch (edit) {
+                    .clear_old => |index| try result.addClearEvent(old[index].name.len),
+                    .bind_next => |index| try result.addBindEvent(replacement.next[index].name.len, replacement.next[index].binding.payload_descriptor.extractionBytes().len),
+                };
+            }
+            return result;
+        }
+
+        /// Computes public render counters directly from the canonical journals.
+        pub fn counts(self: *const Self) render.Counts {
+            var result: render.Counts = .{};
+            if (self.reset_dom) result.addHostReset();
+            for (self.removals.items) |removal| if (removal.publication == .subtree_root) result.addRemoveNode();
+            for (self.creations.items) |creation| if (creation.elem_id != ids.root_elem) result.addCreateElement();
+            for (self.children.items) |children| for (self.childWireEdits(children)) |edit| switch (edit) {
+                .append => result.addAppendChild(),
+                .move_before => result.addMoveBefore(),
+            };
+            for (self.text_fields.items) |field| result.addTextField(field.field);
+            for (self.bool_fields.items) |field| result.addBoolField(field.field);
+            for (self.fixed_events.items) |event| if (event.next) |_| result.addEventBindingKind(event.kind) else result.addOp(.clear_event);
+            for (self.custom_attrs.items) |replacement| {
+                for (self.customAttrWireEdits(replacement)) |_| result.addTextAttr();
+            }
+            for (self.named_events.items) |replacement| {
+                for (self.namedEventWireEdits(replacement)) |_| result.addEventBinding();
+            }
+            return result;
+        }
+
+        /// Reserves wire records emitted by engine sinks during publication.
+        pub fn reserveSinkCommands(self: *Self, count: usize) error{ResourceLimit}!void {
+            self.sink_command_count = std.math.add(usize, self.sink_command_count, count) catch return error.ResourceLimit;
+        }
+
+        /// Reserves the unpublished destination batch from exact canonical requirements.
+        pub fn preflight(self: *const Self, batch: *render.TransactionalBatch, allocator: std.mem.Allocator) render.PreflightError!void {
+            if (!batch.isPublishedDrained()) return error.ResourceLimit;
+            errdefer batch.abort();
+            try batch.preflight(allocator, try self.capacity());
+        }
+
+        fn appendText(batch: *render.TransactionalBatch, allocator: std.mem.Allocator, op: render.Op, elem_id: ids.ElemId, bytes: []const u8) render.PreflightError!void {
+            const offset = std.math.cast(u32, batch.staged.strings.items.len) orelse return error.ResourceLimit;
+            const len = std.math.cast(u32, bytes.len) orelse return error.ResourceLimit;
+            try batch.staged.strings.appendSlice(allocator, bytes);
+            try batch.staged.commands.appendRaw(allocator, op, wireElem(elem_id).raw(), offset, len, 0, 0);
+        }
+
+        /// Encodes canonical journals into the already-reserved transaction buffers.
+        pub fn stageAssumeCapacity(self: *const Self, batch: *render.TransactionalBatch, allocator: std.mem.Allocator) render.PreflightError!void {
+            if (self.reset_dom) try batch.staged.commands.appendRaw(allocator, .reset_dom, 0, 0, 0, 0, 0);
+            for (self.removals.items) |removal| if (removal.publication == .subtree_root) try batch.staged.commands.appendRaw(allocator, .remove_node, wireElem(removal.elem_id).raw(), 0, 0, 0, 0);
+            for (self.creations.items) |creation| {
+                if (creation.elem_id == ids.root_elem) continue;
+                if (std.mem.eql(u8, creation.tag, "text")) try batch.staged.commands.appendRaw(allocator, .create_text, wireElem(creation.elem_id).raw(), 0, 0, 0, 0) else try appendText(batch, allocator, .create_element, creation.elem_id, creation.tag);
+            }
+            for (self.children.items) |children| for (self.childWireEdits(children)) |edit| switch (edit) {
+                .append => |child| try batch.staged.commands.appendRaw(allocator, .append_child, wireElem(children.parent_elem_id).raw(), wireElem(child).raw(), 0, 0, 0),
+                .move_before => |move| try batch.staged.commands.appendRaw(allocator, .move_before, wireElem(children.parent_elem_id).raw(), wireElem(move.child).raw(), if (move.before) |before| wireElem(before).raw() else 0, 0, 0),
+            };
+            for (self.text_fields.items) |field| try appendText(batch, allocator, field.field.setOp(), field.elem_id, field.next orelse "");
+            for (self.bool_fields.items) |field| try batch.staged.commands.appendRaw(allocator, field.field.setOp(), wireElem(field.elem_id).raw(), @intFromBool(field.next orelse false), 0, 0, 0);
+            for (self.fixed_events.items) |event| if (event.next) |binding| {
+                if (binding.canUseFixedOpcode(event.kind)) try batch.staged.commands.appendRaw(allocator, event.kind.bindOp(), wireElem(event.elem_id).raw(), (render.WireEventId.fromEngine(binding.event_id) catch unreachable).raw(), 0, 0, 0) else {
+                    const slice = try batch.staged.dynamic.appendBindEvent(allocator, wireElem(event.elem_id), render.WireEventId.fromEngine(binding.event_id) catch unreachable, event.kind.domEventName(), binding.policy.toWireBits(), binding.delivery.toWire(), binding.payload_descriptor);
+                    try batch.staged.commands.appendRaw(allocator, .extended, slice.offset.raw(), slice.len.raw(), 0, 0, 0);
+                }
+            } else try batch.staged.commands.appendRaw(allocator, .clear_event, wireElem(event.elem_id).raw(), @intCast(@intFromEnum(event.kind)), 0, 0, 0);
+            try self.stageDynamic(batch, allocator);
+        }
+
+        fn stageDynamic(self: *const Self, batch: *render.TransactionalBatch, allocator: std.mem.Allocator) render.PreflightError!void {
+            for (self.custom_attrs.items) |replacement| {
+                const old = if (self.oldNode(replacement.elem_id)) |node| node.custom_text_attrs.items else &.{};
+                for (self.customAttrWireEdits(replacement)) |edit| switch (edit) {
+                    .remove_old => |index| {
+                        const attr = old[index];
+                        const slice = try batch.staged.dynamic.appendRemoveAttr(allocator, wireElem(replacement.elem_id), attr.name);
+                        try batch.staged.commands.appendRaw(allocator, .extended, slice.offset.raw(), slice.len.raw(), 0, 0, 0);
+                    },
+                    .set_next => |index| {
+                        const next = replacement.next[index];
+                        const slice = try batch.staged.dynamic.appendSetAttrText(allocator, wireElem(replacement.elem_id), next.name, next.value);
+                        try batch.staged.commands.appendRaw(allocator, .extended, slice.offset.raw(), slice.len.raw(), 0, 0, 0);
+                    },
+                };
+            }
+            for (self.named_events.items) |replacement| {
+                const old = if (self.oldNode(replacement.elem_id)) |node| node.named_events.items else &.{};
+                for (self.namedEventWireEdits(replacement)) |edit| switch (edit) {
+                    .clear_old => |index| {
+                        const event = old[index];
+                        const slice = try batch.staged.dynamic.appendClearEvent(allocator, wireElem(replacement.elem_id), event.name);
+                        try batch.staged.commands.appendRaw(allocator, .extended, slice.offset.raw(), slice.len.raw(), 0, 0, 0);
+                    },
+                    .bind_next => |index| {
+                        const next = replacement.next[index];
+                        const binding = next.binding;
+                        const slice = try batch.staged.dynamic.appendBindEvent(allocator, wireElem(replacement.elem_id), render.WireEventId.fromEngine(binding.event_id) catch unreachable, next.name, binding.policy.toWireBits(), binding.delivery.toWire(), binding.payload_descriptor);
+                        try batch.staged.commands.appendRaw(allocator, .extended, slice.offset.raw(), slice.len.raw(), 0, 0, 0);
+                    },
+                };
+            }
         }
 
         /// Publishes every prepared cache delta without allocation.
@@ -1126,11 +1266,14 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
                 self.removals.items[index].deinit(self.allocator);
             }
             self.named_events.deinit(self.allocator);
+            self.named_event_wire_edits.deinit(self.allocator);
             self.custom_attrs.deinit(self.allocator);
+            self.custom_attr_wire_edits.deinit(self.allocator);
             self.fixed_events.deinit(self.allocator);
             self.bool_fields.deinit(self.allocator);
             self.text_fields.deinit(self.allocator);
             self.children.deinit(self.allocator);
+            self.child_wire_edits.deinit(self.allocator);
             self.creations.deinit(self.allocator);
             self.removals.deinit(self.allocator);
             self.parent_intents.deinit(self.allocator);
@@ -1138,7 +1281,6 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             self.provisional_nodes.deinit(self.allocator);
             self.reused_nodes.deinit(self.allocator);
             self.tags.deinit(self.allocator);
-            self.wire.deinit(self.allocator);
             self.* = undefined;
         }
     };
@@ -1746,12 +1888,12 @@ test "prepared render node removal defers ownership and applies allocation free"
     child.text = try allocator.dupe(u8, "owned");
     try cache.nodes.append(allocator, child);
 
-    var aborted = try PreparedNodeRemoval.prepare(TestCtx, &cache, ids.ElemId.fromRaw(1));
+    var aborted = try PreparedNodeRemoval.prepare(TestCtx, &cache, ids.ElemId.fromRaw(1), .subtree_root);
     aborted.deinit(allocator);
     try std.testing.expect(cache.nodes.items[1].isActive());
     try std.testing.expectEqualStrings("owned", cache.nodes.items[1].text.?);
 
-    var committed = try PreparedNodeRemoval.prepare(TestCtx, &cache, ids.ElemId.fromRaw(1));
+    var committed = try PreparedNodeRemoval.prepare(TestCtx, &cache, ids.ElemId.fromRaw(1), .subtree_root);
     fault.configure(1);
     committed.apply(TestCtx, &cache);
     try std.testing.expectEqual(@as(usize, 0), fault.attempts);
@@ -1987,7 +2129,9 @@ test "prepared render splice composes mixed cache deltas allocation free" {
         .bool_fields = 1,
         .fixed_events = 1,
         .custom_attrs = 1,
+        .custom_attr_wire_edits = 1,
         .named_events = 1,
+        .named_event_wire_edits = 1,
         .wire_commands = 8,
     };
     const custom = [_]CustomTextAttr{.{ .name = "data-new", .value = "yes" }};
@@ -2012,6 +2156,11 @@ test "prepared render splice composes mixed cache deltas allocation free" {
     try plan.addCreation(&cache, ids.ElemId.fromRaw(7), "button");
     try plan.addChildren(&cache, ids.ElemId.fromRaw(1), &.{ids.ElemId.fromRaw(7)});
     try plan.addChildren(&cache, ids.ElemId.fromRaw(2), &.{ids.ElemId.fromRaw(3)});
+    try std.testing.expectEqual(@as(usize, 2), plan.child_wire_edits.items.len);
+    try std.testing.expectEqual(@as(usize, 0), plan.children.items[0].wire_edit_offset);
+    try std.testing.expectEqual(@as(usize, 1), plan.children.items[0].wire_edit_len);
+    try std.testing.expectEqual(@as(usize, 1), plan.children.items[1].wire_edit_offset);
+    try std.testing.expectEqual(@as(usize, 1), plan.children.items[1].wire_edit_len);
     try plan.addTextField(&cache, ids.ElemId.fromRaw(7), .label, "next");
     try plan.addBoolField(&cache, ids.ElemId.fromRaw(7), .disabled, true);
     try plan.addFixedEvent(&cache, ids.ElemId.fromRaw(7), .click, .{ .event_id = ids.EventId.fromRaw(9), .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) });
@@ -2020,11 +2169,11 @@ test "prepared render splice composes mixed cache deltas allocation free" {
 
     var batch: render.TransactionalBatch = .{};
     defer batch.deinit(allocator);
-    try std.testing.expectEqual(@as(usize, 8), plan.wire.commands.items.len);
-    try plan.wire.preflight(&batch, allocator);
+    try std.testing.expectEqual(@as(u64, 8), plan.counts().total);
+    try plan.preflight(&batch, allocator);
     try std.testing.expectEqual(@as(usize, 0), batch.published.commands.len());
     fault.configure(1);
-    try plan.wire.stageAssumeCapacity(&batch, allocator);
+    try plan.stageAssumeCapacity(&batch, allocator);
     plan.apply(&cache);
     try std.testing.expectEqual(@as(usize, 0), fault.attempts);
     try std.testing.expectEqual(@as(usize, 8), batch.staged.commands.len());
@@ -2046,7 +2195,7 @@ test "prepared render splice composes mixed cache deltas allocation free" {
         .create_element,
         .append_child,
         .append_child,
-        .extended,
+        .set_label,
         .set_disabled,
         .bind_click,
         .extended,
@@ -2087,7 +2236,7 @@ test "prepared render splice leaves unchanged retained values allocation free" {
     try std.testing.expectEqual(@as(usize, 0), plan.fixed_events.items.len);
     try std.testing.expectEqual(@as(usize, 0), plan.custom_attrs.items.len);
     try std.testing.expectEqual(@as(usize, 0), plan.named_events.items.len);
-    try std.testing.expectEqual(@as(usize, 0), plan.wire.commands.items.len);
+    try std.testing.expectEqual(@as(u64, 0), plan.counts().total);
     fault.configure(null);
 }
 
@@ -2115,10 +2264,10 @@ test "prepared render wire commands own borrowed preparation inputs" {
 
     var batch: render.TransactionalBatch = .{};
     defer batch.deinit(std.testing.allocator);
-    try plan.wire.preflight(&batch, std.testing.allocator);
-    try plan.wire.stageAssumeCapacity(&batch, std.testing.allocator);
-    try std.testing.expectEqualStrings("article", batch.staged.strings.items);
-    try std.testing.expect(std.mem.indexOf(u8, batch.staged.dynamic.bytes.items, "owned label") != null);
+    try plan.preflight(&batch, std.testing.allocator);
+    try plan.stageAssumeCapacity(&batch, std.testing.allocator);
+    try std.testing.expectEqualStrings("articleowned label", batch.staged.strings.items);
+    try std.testing.expectEqual(@as(usize, 0), batch.staged.dynamic.bytes.items.len);
 }
 
 test "prepared render wire derives retirement and keyed replacement diffs" {
@@ -2147,7 +2296,9 @@ test "prepared render wire derives retirement and keyed replacement diffs" {
         .children = 1,
         .child_links = 1,
         .custom_attrs = 1,
+        .custom_attr_wire_edits = 2,
         .named_events = 1,
+        .named_event_wire_edits = 2,
         .wire_commands = 5,
     });
     defer plan.deinit();
@@ -2155,8 +2306,8 @@ test "prepared render wire derives retirement and keyed replacement diffs" {
     try plan.addNamedEvents(&cache, ids.ElemId.fromRaw(1), &events);
     try plan.addRemoval(&cache, ids.ElemId.fromRaw(1), .subtree_root);
     try plan.addChildren(&cache, ids.root_elem, &.{});
-    try std.testing.expectEqual(@as(usize, 5), plan.wire.commands.items.len);
-    const counts = plan.wire.counts();
+    try std.testing.expectEqual(@as(u64, 5), plan.counts().total);
+    const counts = plan.counts();
     try std.testing.expectEqual(@as(u64, 5), counts.total);
     try std.testing.expectEqual(@as(u64, 1), counts.remove_node);
     try std.testing.expectEqual(@as(u64, 2), counts.set_metadata);
@@ -2199,7 +2350,7 @@ test "prepared render splice reuses a same-tag slot and clears the fields its ne
 
     try std.testing.expectEqual(@as(usize, 0), plan.removals.items.len);
     try std.testing.expectEqual(@as(usize, 0), plan.creations.items.len);
-    const counts = plan.wire.counts();
+    const counts = plan.counts();
     try std.testing.expectEqual(@as(u64, 4), counts.total);
     try std.testing.expectEqual(@as(u64, 1), counts.set_text);
     try std.testing.expectEqual(@as(u64, 0), counts.set_value);
@@ -2256,7 +2407,7 @@ test "prepared render splice recreates one active slot transactionally" {
     plan.apply(&cache);
     try std.testing.expectEqual(@as(usize, 0), fault.attempts);
     try std.testing.expectEqualStrings("new", cache.nodes.items[1].activeTag().?);
-    try std.testing.expectEqual(@as(usize, 2), plan.wire.commands.items.len);
+    try std.testing.expectEqual(@as(u64, 2), plan.counts().total);
     fault.configure(null);
 }
 
@@ -2283,19 +2434,24 @@ test "prepared render splice adoption releases scalar updates for nodes it retir
         /// structural splice that retires node 1, and adopts the former into
         /// the latter the way `PreparedSourceTransaction.prepareRoots` does.
         fn prepare(allocator: std.mem.Allocator, cache: *Cache(TestCtx), batch: *render.TransactionalBatch) !Plan {
-            var scalar = try Plan.init(allocator, cache, .{ .node_capacity = 3, .text_fields = 2, .bool_fields = 1, .custom_attrs = 2, .wire_commands = 5 });
+            var scalar = try Plan.init(allocator, cache, .{ .node_capacity = 3, .text_fields = 2, .bool_fields = 1, .custom_attrs = 2, .custom_attr_wire_edits = 4, .wire_commands = 5 });
             defer scalar.deinit();
             try scalar.addTextField(cache, ids.ElemId.fromRaw(1), .text, "retired");
             try scalar.addBoolField(cache, ids.ElemId.fromRaw(1), .checked, true);
             try scalar.addCustomAttrs(cache, ids.ElemId.fromRaw(1), &retired_next);
             try scalar.addTextField(cache, ids.ElemId.fromRaw(2), .text, "survivor");
             try scalar.addCustomAttrs(cache, ids.ElemId.fromRaw(2), &survivor_next);
-            try std.testing.expectEqual(@as(usize, 5), scalar.wire.commands.items.len);
+            try std.testing.expectEqual(@as(usize, 2), scalar.custom_attr_wire_edits.items.len);
+            try std.testing.expectEqual(@as(usize, 0), scalar.custom_attrs.items[0].wire_edit_offset);
+            try std.testing.expectEqual(@as(usize, 1), scalar.custom_attrs.items[1].wire_edit_offset);
+            try std.testing.expectEqual(@as(u64, 5), scalar.counts().total);
             var structural = try Plan.init(allocator, cache, .{ .node_capacity = 3, .removals = 1, .child_links = 1, .wire_commands = 1 });
             errdefer structural.deinit();
             try structural.addRemoval(cache, ids.ElemId.fromRaw(1), .subtree_root);
             try structural.adoptScalarUpdates(&scalar);
-            try structural.wire.preflight(batch, allocator);
+            try std.testing.expectEqual(@as(usize, 1), structural.custom_attr_wire_edits.items.len);
+            try std.testing.expectEqual(@as(usize, 0), structural.custom_attrs.items[0].wire_edit_offset);
+            try structural.preflight(batch, allocator);
             return structural;
         }
 
@@ -2326,14 +2482,9 @@ test "prepared render splice adoption releases scalar updates for nodes it retir
                 try std.testing.expectEqual(@as(usize, 1), plan.text_fields.items.len);
                 try std.testing.expectEqual(@as(usize, 0), plan.bool_fields.items.len);
                 try std.testing.expectEqual(@as(usize, 1), plan.custom_attrs.items.len);
-                try std.testing.expectEqual(@as(usize, 3), plan.wire.commands.items.len);
-                for (plan.wire.commands.items[1..]) |command| switch (command) {
-                    .set_text => |value| try std.testing.expectEqual(@as(u32, 2), value.elem_id.raw()),
-                    .set_attr_text => |value| try std.testing.expectEqual(@as(u32, 2), value.elem_id.raw()),
-                    else => return error.TestUnexpectedResult,
-                };
+                try std.testing.expectEqual(@as(u64, 3), plan.counts().total);
                 fault.configure(1);
-                try plan.wire.stageAssumeCapacity(&batch, allocator);
+                try plan.stageAssumeCapacity(&batch, allocator);
                 plan.apply(&cache);
                 batch.commit();
                 batch.publish();
@@ -2382,7 +2533,9 @@ test "prepared render splice sweeps every allocation and retries" {
             .bool_fields = 1,
             .fixed_events = 1,
             .custom_attrs = 1,
+            .custom_attr_wire_edits = 1,
             .named_events = 1,
+            .named_event_wire_edits = 1,
             .wire_commands = 7,
         };
         const custom = [_]CustomTextAttr{.{ .name = "data-new", .value = "yes" }};
@@ -2398,7 +2551,7 @@ test "prepared render splice sweeps every allocation and retries" {
             try plan.addFixedEvent(cache, ids.ElemId.fromRaw(7), .click, .{ .event_id = ids.EventId.fromRaw(9), .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) });
             try plan.addCustomAttrs(cache, ids.ElemId.fromRaw(7), &custom);
             try plan.addNamedEvents(cache, ids.ElemId.fromRaw(7), &named);
-            try plan.wire.preflight(batch, allocator);
+            try plan.preflight(batch, allocator);
             return plan;
         }
 
@@ -2416,7 +2569,7 @@ test "prepared render splice sweeps every allocation and retries" {
                 var plan = try prepared;
                 const attempts = fault.attempts;
                 fault.configure(1);
-                try plan.wire.stageAssumeCapacity(&batch, fault.allocator());
+                try plan.stageAssumeCapacity(&batch, fault.allocator());
                 plan.apply(&cache);
                 try std.testing.expectEqual(@as(usize, 0), fault.attempts);
                 try std.testing.expectEqual(@as(usize, 0), batch.published.commands.len());

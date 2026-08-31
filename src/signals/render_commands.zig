@@ -593,9 +593,9 @@ pub const TransactionalBatch = struct {
     }
 
     /// Stages one fixed record the engine emits through the host sink while
-    /// the transaction is open, using capacity the transaction reserved with
-    /// `PreparedBatch.reserveSinkCommands`. Never allocates: exceeding the
-    /// reservation is a programming error in the transaction's preflight.
+    /// the transaction is open, using capacity reserved by the canonical
+    /// render splice. Never allocates: exceeding that reservation is a
+    /// programming error in transaction preflight.
     pub fn stageSinkCommandAssumeCapacity(self: *TransactionalBatch, op: Op, a: u32, b: u32, c: u32, d: u32, e: u32) void {
         if (!self.transaction_open) @panic("engine sink command staged outside an open transaction");
         const records = &self.staged.commands.records;
@@ -665,283 +665,6 @@ pub const TransactionalBatch = struct {
             .commands = self.staged.commands.len(),
             .strings = self.staged.strings.items.len,
             .dynamic = self.staged.dynamic.len(),
-        };
-    }
-};
-
-/// One canonical dynamic event binding prepared for wire encoding.
-pub const PreparedBindEventCommand = struct { elem_id: WireElemId, event_id: WireEventId, name: []const u8, policy: EventPolicy, delivery: EventDeliveryWire, payload_descriptor: boundary.BoundaryPayloadDescriptor };
-const PreparedTextCommand = struct { elem_id: WireElemId, bytes: []const u8 };
-const PreparedBoolCommand = struct { elem_id: WireElemId, value: bool };
-
-/// Semantic fixed-record command whose variant determines every wire operand.
-pub const PreparedSemanticCommand = union(enum) {
-    reset_dom,
-    create_element: struct { elem_id: WireElemId, tag: []const u8 },
-    create_text: WireElemId,
-    append_child: struct { parent: WireElemId, child: WireElemId },
-    remove_node: WireElemId,
-    move_before: struct { parent: WireElemId, child: WireElemId, before: ?WireElemId },
-    set_text: PreparedTextCommand,
-    set_value: PreparedTextCommand,
-    set_checked: PreparedBoolCommand,
-    set_disabled: PreparedBoolCommand,
-    bind_fixed: struct { elem_id: WireElemId, event_id: WireEventId, kind: EventKind },
-    clear_fixed: struct { elem_id: WireElemId, kind: EventKind },
-};
-
-const PreparedCommand = union(enum) {
-    reset_dom,
-    create_element: struct { elem_id: WireElemId, tag: []const u8 },
-    create_text: WireElemId,
-    append_child: struct { parent: WireElemId, child: WireElemId },
-    remove_node: WireElemId,
-    move_before: struct { parent: WireElemId, child: WireElemId, before: ?WireElemId },
-    set_text: PreparedTextCommand,
-    set_value: PreparedTextCommand,
-    set_checked: PreparedBoolCommand,
-    set_disabled: PreparedBoolCommand,
-    bind_fixed: struct { elem_id: WireElemId, event_id: WireEventId, kind: EventKind },
-    clear_fixed: struct { elem_id: WireElemId, kind: EventKind },
-    set_attr_text: struct { elem_id: WireElemId, name: []const u8, value: []const u8 },
-    remove_attr: struct { elem_id: WireElemId, name: []const u8 },
-    bind_event: PreparedBindEventCommand,
-    clear_event: struct { elem_id: WireElemId, name: []const u8 },
-};
-
-/// Collects exact command capacity and stages it before atomic publication.
-pub const PreparedBatch = struct {
-    commands: std.ArrayListUnmanaged(PreparedCommand) = .empty,
-    capacity: BatchCapacity = .{},
-    command_limit: usize = 0,
-
-    /// Reserves the plan-local command journal.
-    pub fn init(allocator: std.mem.Allocator, expected_commands: usize) std.mem.Allocator.Error!PreparedBatch {
-        var self: PreparedBatch = .{};
-        try self.commands.ensureTotalCapacity(allocator, expected_commands);
-        self.command_limit = expected_commands;
-        return self;
-    }
-
-    /// Cumulatively reserves additional semantic commands during recoverable preparation.
-    pub fn reserveAdditional(self: *PreparedBatch, allocator: std.mem.Allocator, additional: usize) (std.mem.Allocator.Error || error{ResourceLimit})!void {
-        const next_limit = std.math.add(usize, self.command_limit, additional) catch return error.ResourceLimit;
-        try self.commands.ensureTotalCapacity(allocator, next_limit);
-        self.command_limit = next_limit;
-    }
-
-    /// Appends another prepared journal after reserving its exact command and
-    /// byte requirements. Commands borrow payload storage owned by their
-    /// enclosing render splice, so the donor journal may be deinitialized
-    /// immediately after this transfer.
-    pub fn appendPrepared(self: *PreparedBatch, allocator: std.mem.Allocator, other: *PreparedBatch) (std.mem.Allocator.Error || error{ResourceLimit})!void {
-        try self.reserveAdditional(allocator, other.commands.items.len);
-        try self.capacity.add(other.capacity);
-        self.commands.appendSliceAssumeCapacity(other.commands.items);
-        other.commands.clearRetainingCapacity();
-        other.capacity = .{};
-        other.command_limit = 0;
-    }
-
-    /// Appends the donor commands that still address a node of the final
-    /// tree. A scalar journal is prepared against the committed cache before
-    /// the structural part of the same transaction decides which nodes it
-    /// retires, so its commands for those nodes describe a node the batch has
-    /// already removed; the browser would reject them as unknown ids. Commands
-    /// whose target is in `retired_elem_ids` are dropped here, every kept
-    /// command is charged exactly as when it was first journaled, and the
-    /// donor is emptied only after every reservation succeeded.
-    pub fn appendPreparedSurviving(self: *PreparedBatch, allocator: std.mem.Allocator, other: *PreparedBatch, retired_elem_ids: *const std.AutoHashMapUnmanaged(u64, void)) (std.mem.Allocator.Error || error{ResourceLimit})!void {
-        var kept: BatchCapacity = .{};
-        var kept_count: usize = 0;
-        for (other.commands.items) |command| {
-            if (commandTargetsRetiredNode(command, retired_elem_ids)) continue;
-            try chargeCommand(&kept, command);
-            kept_count += 1;
-        }
-        try self.reserveAdditional(allocator, kept_count);
-        try self.capacity.add(kept);
-        for (other.commands.items) |command| {
-            if (commandTargetsRetiredNode(command, retired_elem_ids)) continue;
-            self.commands.appendAssumeCapacity(command);
-        }
-        other.commands.clearRetainingCapacity();
-        other.capacity = .{};
-        other.command_limit = 0;
-    }
-
-    fn commandTargetsRetiredNode(command: PreparedCommand, retired_elem_ids: *const std.AutoHashMapUnmanaged(u64, void)) bool {
-        const elem_id: WireElemId = switch (command) {
-            .reset_dom, .create_element, .create_text, .append_child, .remove_node, .move_before => return false,
-            .set_text, .set_value => |value| value.elem_id,
-            .set_checked, .set_disabled => |value| value.elem_id,
-            .bind_fixed => |value| value.elem_id,
-            .clear_fixed => |value| value.elem_id,
-            .set_attr_text => |value| value.elem_id,
-            .remove_attr => |value| value.elem_id,
-            .bind_event => |value| value.elem_id,
-            .clear_event => |value| value.elem_id,
-        };
-        return retired_elem_ids.contains(elem_id.raw());
-    }
-
-    fn chargeCommand(capacity: *BatchCapacity, command: PreparedCommand) error{ResourceLimit}!void {
-        switch (command) {
-            .reset_dom, .create_text, .append_child, .remove_node, .move_before, .set_checked, .set_disabled, .bind_fixed, .clear_fixed => try capacity.addFixed(0),
-            .create_element => |value| try capacity.addFixed(value.tag.len),
-            .set_text, .set_value => |value| try capacity.addFixed(value.bytes.len),
-            .set_attr_text => |value| try capacity.addSetAttrText(value.name.len, value.value.len),
-            .remove_attr => |value| try capacity.addRemoveAttr(value.name.len),
-            .bind_event => |value| try capacity.addBindEvent(value.name.len, value.payload_descriptor.extractionBytes().len),
-            .clear_event => |value| try capacity.addClearEvent(value.name.len),
-        }
-    }
-
-    fn ensureJournalSlot(self: *const PreparedBatch) error{ResourceLimit}!void {
-        if (self.commands.items.len >= self.command_limit) return error.ResourceLimit;
-    }
-
-    /// Releases the borrowed command journal.
-    pub fn deinit(self: *PreparedBatch, allocator: std.mem.Allocator) void {
-        self.commands.deinit(allocator);
-        self.* = undefined;
-    }
-
-    /// Computes the public command counters from the prepared semantic journal.
-    pub fn counts(self: *const PreparedBatch) Counts {
-        var result: Counts = .{};
-        for (self.commands.items) |command| switch (command) {
-            .reset_dom => result.addOp(.reset_dom),
-            .create_element, .create_text => result.addOp(.create_element),
-            .append_child => result.addOp(.append_child),
-            .remove_node => result.addOp(.remove_node),
-            .move_before => result.addOp(.move_before),
-            .set_text => result.addOp(.set_text),
-            .set_value => result.addOp(.set_value),
-            .set_checked => result.addOp(.set_checked),
-            .set_disabled => result.addOp(.set_disabled),
-            .bind_fixed => result.addOp(.bind_click),
-            .clear_fixed => result.addOp(.clear_event),
-            .set_attr_text, .remove_attr => result.addOp(.extended),
-            .bind_event => result.addOp(.bind_click),
-            .clear_event => result.addOp(.clear_event),
-        };
-        return result;
-    }
-
-    fn addCommand(self: *PreparedBatch, command: PreparedCommand, string_bytes: usize) error{ResourceLimit}!void {
-        try self.ensureJournalSlot();
-        try self.capacity.addFixed(string_bytes);
-        self.commands.appendAssumeCapacity(command);
-    }
-
-    /// Adds a semantic fixed or string-backed command whose operands cannot be transposed.
-    pub fn addSemantic(self: *PreparedBatch, command: PreparedSemanticCommand) error{ResourceLimit}!void {
-        const string_bytes: usize = switch (command) {
-            .create_element => |value| value.tag.len,
-            .set_text, .set_value => |value| value.bytes.len,
-            .reset_dom, .create_text, .append_child, .remove_node, .move_before, .set_checked, .set_disabled, .bind_fixed, .clear_fixed => 0,
-        };
-        const prepared: PreparedCommand = switch (command) {
-            .reset_dom => .reset_dom,
-            .create_element => |value| .{ .create_element = .{ .elem_id = value.elem_id, .tag = value.tag } },
-            .create_text => |value| .{ .create_text = value },
-            .append_child => |value| .{ .append_child = .{ .parent = value.parent, .child = value.child } },
-            .remove_node => |value| .{ .remove_node = value },
-            .move_before => |value| .{ .move_before = .{ .parent = value.parent, .child = value.child, .before = value.before } },
-            .set_text => |value| .{ .set_text = value },
-            .set_value => |value| .{ .set_value = value },
-            .set_checked => |value| .{ .set_checked = value },
-            .set_disabled => |value| .{ .set_disabled = value },
-            .bind_fixed => |value| .{ .bind_fixed = .{ .elem_id = value.elem_id, .event_id = value.event_id, .kind = value.kind } },
-            .clear_fixed => |value| .{ .clear_fixed = .{ .elem_id = value.elem_id, .kind = value.kind } },
-        };
-        try self.addCommand(prepared, string_bytes);
-    }
-
-    /// Adds one dynamic custom-attribute set.
-    pub fn addSetAttrText(self: *PreparedBatch, elem_id: WireElemId, name: []const u8, value: []const u8) error{ResourceLimit}!void {
-        try self.ensureJournalSlot();
-        try self.capacity.addSetAttrText(name.len, value.len);
-        self.commands.appendAssumeCapacity(.{ .set_attr_text = .{ .elem_id = elem_id, .name = name, .value = value } });
-    }
-
-    /// Adds one dynamic custom-attribute removal.
-    pub fn addRemoveAttr(self: *PreparedBatch, elem_id: WireElemId, name: []const u8) error{ResourceLimit}!void {
-        try self.ensureJournalSlot();
-        try self.capacity.addRemoveAttr(name.len);
-        self.commands.appendAssumeCapacity(.{ .remove_attr = .{ .elem_id = elem_id, .name = name } });
-    }
-
-    /// Adds one dynamic event binding.
-    pub fn addBindEvent(self: *PreparedBatch, command: PreparedBindEventCommand) error{ResourceLimit}!void {
-        try self.ensureJournalSlot();
-        try self.capacity.addBindEvent(command.name.len, command.payload_descriptor.extractionBytes().len);
-        self.commands.appendAssumeCapacity(.{ .bind_event = command });
-    }
-
-    /// Adds one dynamic event clear.
-    pub fn addClearEvent(self: *PreparedBatch, elem_id: WireElemId, name: []const u8) error{ResourceLimit}!void {
-        try self.ensureJournalSlot();
-        try self.capacity.addClearEvent(name.len);
-        self.commands.appendAssumeCapacity(.{ .clear_event = .{ .elem_id = elem_id, .name = name } });
-    }
-
-    /// Reserves wire room for `count` fixed records the engine will emit through
-    /// the host sink while this batch's transaction publishes (interval starts
-    /// and cancellations registered at graph commit). They are not journaled
-    /// here because the sink, not the wire, encodes them; the reservation only
-    /// guarantees the host can stage them without allocating.
-    pub fn reserveSinkCommands(self: *PreparedBatch, count: usize) error{ResourceLimit}!void {
-        try self.capacity.add(.{ .commands = count });
-    }
-
-    /// Reserves the unpublished destination batch without staging any bytes.
-    pub fn preflight(self: *const PreparedBatch, batch: *TransactionalBatch, allocator: std.mem.Allocator) PreflightError!void {
-        if (!batch.isPublishedDrained()) return error.ResourceLimit;
-        errdefer batch.abort();
-        try batch.preflight(allocator, self.capacity);
-    }
-
-    /// Encodes all commands using pre-reserved capacity and no allocation.
-    pub fn stageAssumeCapacity(self: *const PreparedBatch, batch: *TransactionalBatch, allocator: std.mem.Allocator) PreflightError!void {
-        for (self.commands.items) |command| switch (command) {
-            .reset_dom => try batch.staged.commands.appendRaw(allocator, .reset_dom, 0, 0, 0, 0, 0),
-            .create_element => |value| {
-                const offset = std.math.cast(u32, batch.staged.strings.items.len) orelse return error.ResourceLimit;
-                const len = std.math.cast(u32, value.tag.len) orelse return error.ResourceLimit;
-                try batch.staged.strings.appendSlice(allocator, value.tag);
-                try batch.staged.commands.appendRaw(allocator, .create_element, value.elem_id.raw(), offset, len, 0, 0);
-            },
-            .create_text => |elem_id| try batch.staged.commands.appendRaw(allocator, .create_text, elem_id.raw(), 0, 0, 0, 0),
-            .append_child => |value| try batch.staged.commands.appendRaw(allocator, .append_child, value.parent.raw(), value.child.raw(), 0, 0, 0),
-            .remove_node => |elem_id| try batch.staged.commands.appendRaw(allocator, .remove_node, elem_id.raw(), 0, 0, 0, 0),
-            .move_before => |value| try batch.staged.commands.appendRaw(allocator, .move_before, value.parent.raw(), value.child.raw(), if (value.before) |before| before.raw() else 0, 0, 0),
-            .set_text, .set_value => |value| {
-                const offset = std.math.cast(u32, batch.staged.strings.items.len) orelse return error.ResourceLimit;
-                const len = std.math.cast(u32, value.bytes.len) orelse return error.ResourceLimit;
-                try batch.staged.strings.appendSlice(allocator, value.bytes);
-                try batch.staged.commands.appendRaw(allocator, if (command == .set_text) .set_text else .set_value, value.elem_id.raw(), offset, len, 0, 0);
-            },
-            .set_checked, .set_disabled => |value| try batch.staged.commands.appendRaw(allocator, if (command == .set_checked) .set_checked else .set_disabled, value.elem_id.raw(), @intFromBool(value.value), 0, 0, 0),
-            .bind_fixed => |value| try batch.staged.commands.appendRaw(allocator, value.kind.bindOp(), value.elem_id.raw(), value.event_id.raw(), 0, 0, 0),
-            .clear_fixed => |value| try batch.staged.commands.appendRaw(allocator, .clear_event, value.elem_id.raw(), @intCast(@intFromEnum(value.kind)), 0, 0, 0),
-            .set_attr_text => |value| {
-                const slice = try batch.staged.dynamic.appendSetAttrText(allocator, value.elem_id, value.name, value.value);
-                try batch.staged.commands.appendRaw(allocator, .extended, slice.offset.raw(), slice.len.raw(), 0, 0, 0);
-            },
-            .remove_attr => |value| {
-                const slice = try batch.staged.dynamic.appendRemoveAttr(allocator, value.elem_id, value.name);
-                try batch.staged.commands.appendRaw(allocator, .extended, slice.offset.raw(), slice.len.raw(), 0, 0, 0);
-            },
-            .bind_event => |value| {
-                const slice = try batch.staged.dynamic.appendBindEvent(allocator, value.elem_id, value.event_id, value.name, value.policy.toWireBits(), value.delivery, value.payload_descriptor);
-                try batch.staged.commands.appendRaw(allocator, .extended, slice.offset.raw(), slice.len.raw(), 0, 0, 0);
-            },
-            .clear_event => |value| {
-                const slice = try batch.staged.dynamic.appendClearEvent(allocator, value.elem_id, value.name);
-                try batch.staged.commands.appendRaw(allocator, .extended, slice.offset.raw(), slice.len.raw(), 0, 0, 0);
-            },
         };
     }
 };
@@ -1113,122 +836,28 @@ test "command capacity estimation permits armed allocation-free staging" {
     fault.configure(null);
 }
 
-test "prepared command batch sweeps preflight and stages allocation free" {
-    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
-    const descriptor = boundary.BoundaryPayloadDescriptor.init(.str, .target_value);
-    var prepared = try PreparedBatch.init(std.testing.allocator, 6);
-    defer prepared.deinit(std.testing.allocator);
-    try prepared.addSemantic(.{ .set_checked = .{ .elem_id = @enumFromInt(1), .value = true } });
-    try prepared.addSemantic(.{ .create_element = .{ .elem_id = @enumFromInt(2), .tag = "button" } });
-    try prepared.addSetAttrText(@enumFromInt(2), "data-x", "ready");
-    try prepared.addRemoveAttr(@enumFromInt(2), "title");
-    try prepared.addBindEvent(.{
-        .elem_id = @enumFromInt(2),
-        .event_id = @enumFromInt(7),
-        .name = "focus",
-        .policy = .none,
-        .delivery = .{ .requested = .auto, .effective = .native, .reason = .native_runtime_default },
-        .payload_descriptor = descriptor,
-    });
-    try prepared.addClearEvent(@enumFromInt(2), "blur");
-    const command_counts = prepared.counts();
-    try std.testing.expectEqual(@as(u64, 6), command_counts.total);
-    try std.testing.expectEqual(@as(u64, 1), command_counts.create_element);
-    try std.testing.expectEqual(@as(u64, 1), command_counts.set_checked);
-    try std.testing.expectEqual(@as(u64, 2), command_counts.set_metadata);
-    try std.testing.expectEqual(@as(u64, 2), command_counts.bind_event);
-
-    var counter = FaultAllocator.init(std.testing.allocator);
-    var counted: TransactionalBatch = .{};
-    defer counted.deinit(counter.allocator());
-    try prepared.preflight(&counted, counter.allocator());
-    const attempts = counter.attempts;
-    try std.testing.expect(attempts != 0);
-    for (1..attempts + 1) |failure_number| {
-        var fault = FaultAllocator.init(std.testing.allocator);
-        var batch: TransactionalBatch = .{};
-        defer batch.deinit(fault.allocator());
-        fault.configure(failure_number);
-        try std.testing.expectError(error.OutOfMemory, prepared.preflight(&batch, fault.allocator()));
-        try std.testing.expectEqual(@as(usize, 0), batch.published.commands.len());
-        try std.testing.expectEqual(@as(usize, 0), batch.staged.commands.len());
-        fault.configure(null);
-        try prepared.preflight(&batch, fault.allocator());
-        fault.configure(1);
-        try prepared.stageAssumeCapacity(&batch, fault.allocator());
-        try std.testing.expectEqual(@as(usize, 0), fault.attempts);
-        try std.testing.expectEqual(prepared.capacity.commands, batch.staged.commands.len());
-        batch.commit();
-        batch.publish();
-        try std.testing.expectEqual(@as(usize, 0), fault.attempts);
-        try std.testing.expectEqual(prepared.capacity.commands, batch.published.commands.len());
-    }
-}
-
-test "prepared batch preserves undrained publication and reuses drained capacity" {
-    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
-    var prepared = try PreparedBatch.init(std.testing.allocator, 2);
-    defer prepared.deinit(std.testing.allocator);
-    try prepared.addSemantic(.{ .create_element = .{ .elem_id = @enumFromInt(1), .tag = "section" } });
-    try prepared.addSetAttrText(@enumFromInt(1), "data-state", "ready");
-
-    var fault = FaultAllocator.init(std.testing.allocator);
-    var batch: TransactionalBatch = .{};
-    defer batch.deinit(fault.allocator());
-    try prepared.preflight(&batch, fault.allocator());
-    try prepared.stageAssumeCapacity(&batch, fault.allocator());
-    batch.commit();
-    batch.publish();
-    const first_commands_capacity = batch.published.commands.records.capacity;
-    const first_commands_ptr = batch.published.commands.records.items.ptr;
-    const first_strings_ptr = batch.published.strings.items.ptr;
-    const first_dynamic_capacity = batch.published.dynamic.bytes.capacity;
-    const first_dynamic_ptr = batch.published.dynamic.bytes.items.ptr;
-
-    try std.testing.expectError(error.ResourceLimit, prepared.preflight(&batch, fault.allocator()));
-    try std.testing.expectEqual(@as(usize, 2), batch.published.commands.len());
-    try std.testing.expectEqualStrings("section", batch.published.strings.items);
-
-    batch.clearPublished();
-    try prepared.preflight(&batch, fault.allocator());
-    try prepared.stageAssumeCapacity(&batch, fault.allocator());
-    batch.commit();
-    batch.publish();
-    batch.clearPublished();
-    fault.configure(1);
-    try prepared.preflight(&batch, fault.allocator());
-    try prepared.stageAssumeCapacity(&batch, fault.allocator());
-    batch.commit();
-    batch.publish();
-    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
-    try std.testing.expectEqual(first_commands_capacity, batch.published.commands.records.capacity);
-    try std.testing.expectEqual(first_commands_ptr, batch.published.commands.records.items.ptr);
-    try std.testing.expectEqual(first_strings_ptr, batch.published.strings.items.ptr);
-    try std.testing.expectEqual(first_dynamic_capacity, batch.published.dynamic.bytes.capacity);
-    try std.testing.expectEqual(first_dynamic_ptr, batch.published.dynamic.bytes.items.ptr);
-}
-
-/// Two prepared transactions plus one follow-on sink command, the shape of a
+/// Two render transactions plus one follow-on sink command, the shape of a
 /// mount whose lifecycle callbacks dispatch state and emit effect commands.
 const HostCallBatchFixture = struct {
-    first: PreparedBatch,
-    second: PreparedBatch,
-
-    fn init(allocator: std.mem.Allocator) !HostCallBatchFixture {
-        var first = try PreparedBatch.init(allocator, 2);
-        errdefer first.deinit(allocator);
-        try first.addSemantic(.reset_dom);
-        try first.addSemantic(.{ .create_element = .{ .elem_id = @enumFromInt(1), .tag = "section" } });
-        var second = try PreparedBatch.init(allocator, 2);
-        errdefer second.deinit(allocator);
-        try second.addSemantic(.{ .set_text = .{ .elem_id = @enumFromInt(2), .bytes = "updated" } });
-        try second.addSetAttrText(@enumFromInt(1), "data-state", "ready");
-        return .{ .first = first, .second = second };
+    fn stageFirst(batch: *TransactionalBatch, allocator: std.mem.Allocator) !void {
+        try batch.preflight(allocator, .{ .commands = 2, .strings = "section".len });
+        try batch.staged.commands.appendRaw(allocator, .reset_dom, 0, 0, 0, 0, 0);
+        const offset: u32 = @intCast(batch.staged.strings.items.len);
+        try batch.staged.strings.appendSlice(allocator, "section");
+        try batch.staged.commands.appendRaw(allocator, .create_element, 1, offset, "section".len, 0, 0);
     }
 
-    fn deinit(self: *HostCallBatchFixture, allocator: std.mem.Allocator) void {
-        self.first.deinit(allocator);
-        self.second.deinit(allocator);
+    fn stageSecond(batch: *TransactionalBatch, allocator: std.mem.Allocator, sink_commands: usize) !void {
+        var capacity: BatchCapacity = .{};
+        try capacity.addFixed("updated".len);
+        try capacity.addSetAttrText("data-state".len, "ready".len);
+        try capacity.add(.{ .commands = sink_commands });
+        try batch.preflight(allocator, capacity);
+        const offset: u32 = @intCast(batch.staged.strings.items.len);
+        try batch.staged.strings.appendSlice(allocator, "updated");
+        try batch.staged.commands.appendRaw(allocator, .set_text, 2, offset, "updated".len, 0, 0);
+        const attr = try batch.staged.dynamic.appendSetAttrText(allocator, @enumFromInt(1), "data-state", "ready");
+        try batch.staged.commands.appendRaw(allocator, .extended, attr.offset.raw(), attr.len.raw(), 0, 0, 0);
     }
 
     /// Appends the effect command a host sink emits after a transaction sealed:
@@ -1244,16 +873,13 @@ const HostCallBatchFixture = struct {
 
 test "host call batch seals successive transactions and publishes them together" {
     const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
-    var fixture = try HostCallBatchFixture.init(std.testing.allocator);
-    defer fixture.deinit(std.testing.allocator);
     var fault = FaultAllocator.init(std.testing.allocator);
     const allocator = fault.allocator();
     var batch: TransactionalBatch = .{};
     defer batch.deinit(allocator);
 
     batch.begin();
-    try fixture.first.preflight(&batch, allocator);
-    try fixture.first.stageAssumeCapacity(&batch, allocator);
+    try HostCallBatchFixture.stageFirst(&batch, allocator);
     try std.testing.expect(batch.hasUnsealedStaging());
     batch.commit();
     try std.testing.expect(!batch.hasUnsealedStaging());
@@ -1261,9 +887,8 @@ test "host call batch seals successive transactions and publishes them together"
 
     // The second transaction reserves on top of the sealed first one and
     // stages without allocating; the seal itself never allocates either.
-    try fixture.second.preflight(&batch, allocator);
+    try HostCallBatchFixture.stageSecond(&batch, allocator, 0);
     fault.configure(1);
-    try fixture.second.stageAssumeCapacity(&batch, allocator);
     batch.commit();
     fault.configure(null);
     try HostCallBatchFixture.appendSinkCommand(&batch, allocator);
@@ -1294,12 +919,6 @@ test "host call batch seals successive transactions and publishes them together"
 
 test "an open transaction stages the sink commands it reserved and seals them with its own" {
     const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
-    var fixture = try HostCallBatchFixture.init(std.testing.allocator);
-    defer fixture.deinit(std.testing.allocator);
-    // The transaction registers one interval at graph commit and cancels a
-    // retired one: two fixed records the sink emits while it publishes.
-    try fixture.second.reserveSinkCommands(2);
-
     var fault = FaultAllocator.init(std.testing.allocator);
     const allocator = fault.allocator();
     var batch: TransactionalBatch = .{};
@@ -1307,15 +926,13 @@ test "an open transaction stages the sink commands it reserved and seals them wi
 
     batch.begin();
     try std.testing.expect(!batch.isTransactionOpen());
-    try fixture.first.preflight(&batch, allocator);
+    try HostCallBatchFixture.stageFirst(&batch, allocator);
     try std.testing.expect(batch.isTransactionOpen());
-    try fixture.first.stageAssumeCapacity(&batch, allocator);
     batch.commit();
     try std.testing.expect(!batch.isTransactionOpen());
 
-    try fixture.second.preflight(&batch, allocator);
+    try HostCallBatchFixture.stageSecond(&batch, allocator, 2);
     fault.configure(1);
-    try fixture.second.stageAssumeCapacity(&batch, allocator);
     // Graph commit runs after render staging and emits through the sink
     // while the transaction is still open; nothing here may allocate.
     batch.stageSinkCommandAssumeCapacity(.cancel_interval, 3, 0, 0, 0, 0);
@@ -1340,8 +957,7 @@ test "an open transaction stages the sink commands it reserved and seals them wi
     // Aborting an open transaction drops its sink commands with it and closes
     // the transaction, so a following host-initiated command seals on its own.
     batch.begin();
-    try fixture.second.preflight(&batch, allocator);
-    try fixture.second.stageAssumeCapacity(&batch, allocator);
+    try HostCallBatchFixture.stageSecond(&batch, allocator, 1);
     batch.stageSinkCommandAssumeCapacity(.start_interval, 5, 500, 0, 0, 0);
     batch.abort();
     try std.testing.expect(!batch.isTransactionOpen());
@@ -1354,18 +970,14 @@ test "an open transaction stages the sink commands it reserved and seals them wi
 
 test "aborting a staged transaction keeps the earlier sealed transactions of the host call" {
     const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
-    var fixture = try HostCallBatchFixture.init(std.testing.allocator);
-    defer fixture.deinit(std.testing.allocator);
-
     var counter = FaultAllocator.init(std.testing.allocator);
     var counted: TransactionalBatch = .{};
     defer counted.deinit(counter.allocator());
     counted.begin();
-    try fixture.first.preflight(&counted, counter.allocator());
-    try fixture.first.stageAssumeCapacity(&counted, counter.allocator());
+    try HostCallBatchFixture.stageFirst(&counted, counter.allocator());
     counted.commit();
     const first_attempts = counter.attempts;
-    try fixture.second.preflight(&counted, counter.allocator());
+    try HostCallBatchFixture.stageSecond(&counted, counter.allocator(), 0);
     const second_attempts = counter.attempts - first_attempts;
     try std.testing.expect(second_attempts != 0);
 
@@ -1377,11 +989,10 @@ test "aborting a staged transaction keeps the earlier sealed transactions of the
         var batch: TransactionalBatch = .{};
         defer batch.deinit(allocator);
         batch.begin();
-        try fixture.first.preflight(&batch, allocator);
-        try fixture.first.stageAssumeCapacity(&batch, allocator);
+        try HostCallBatchFixture.stageFirst(&batch, allocator);
         batch.commit();
         fault.configure(failure_number);
-        try std.testing.expectError(error.OutOfMemory, fixture.second.preflight(&batch, allocator));
+        try std.testing.expectError(error.OutOfMemory, HostCallBatchFixture.stageSecond(&batch, allocator, 0));
         fault.configure(null);
         try std.testing.expect(!batch.hasUnsealedStaging());
         try std.testing.expectEqual(@as(usize, 2), batch.staged.commands.len());
@@ -1397,11 +1008,9 @@ test "aborting a staged transaction keeps the earlier sealed transactions of the
     var batch: TransactionalBatch = .{};
     defer batch.deinit(allocator);
     batch.begin();
-    try fixture.first.preflight(&batch, allocator);
-    try fixture.first.stageAssumeCapacity(&batch, allocator);
+    try HostCallBatchFixture.stageFirst(&batch, allocator);
     batch.commit();
-    try fixture.second.preflight(&batch, allocator);
-    try fixture.second.stageAssumeCapacity(&batch, allocator);
+    try HostCallBatchFixture.stageSecond(&batch, allocator, 0);
     try std.testing.expectEqual(@as(usize, 4), batch.staged.commands.len());
     fault.configure(1);
     batch.abort();
@@ -1417,50 +1026,12 @@ test "aborting a staged transaction keeps the earlier sealed transactions of the
 
     // Discarding after a host failure exposes nothing at all.
     batch.begin();
-    try fixture.first.preflight(&batch, allocator);
-    try fixture.first.stageAssumeCapacity(&batch, allocator);
+    try HostCallBatchFixture.stageFirst(&batch, allocator);
     batch.commit();
     batch.discard();
     try std.testing.expectEqual(@as(usize, 0), batch.published.commands.len());
     try std.testing.expectEqual(@as(usize, 0), batch.staged.commands.len());
     try std.testing.expect(!batch.hasUnsealedStaging());
-}
-
-test "prepared command journal rejects an underestimated command count" {
-    var prepared = try PreparedBatch.init(std.testing.allocator, 1);
-    defer prepared.deinit(std.testing.allocator);
-    try prepared.addSemantic(.{ .set_checked = .{ .elem_id = @enumFromInt(1), .value = false } });
-    const before = prepared.capacity;
-    try std.testing.expectError(error.ResourceLimit, prepared.addSemantic(.{ .set_disabled = .{ .elem_id = @enumFromInt(1), .value = false } }));
-    try std.testing.expectEqual(@as(usize, 1), prepared.commands.items.len);
-    try std.testing.expectEqualDeep(before, prepared.capacity);
-}
-
-test "semantic commands lower typed operands into the stable wire layout" {
-    var prepared = try PreparedBatch.init(std.testing.allocator, 4);
-    defer prepared.deinit(std.testing.allocator);
-    const parent = try WireElemId.fromEngine(ids.ElemId.fromRaw(11));
-    const child = try WireElemId.fromEngine(ids.ElemId.fromRaw(12));
-    const event_id = try WireEventId.fromEngine(ids.EventId.fromRaw(31));
-    try prepared.addSemantic(.{ .append_child = .{ .parent = parent, .child = child } });
-    try prepared.addSemantic(.{ .set_checked = .{ .elem_id = child, .value = true } });
-    try prepared.addSemantic(.{ .bind_fixed = .{ .elem_id = child, .event_id = event_id, .kind = .click } });
-    try prepared.addSemantic(.{ .move_before = .{ .parent = parent, .child = child, .before = null } });
-
-    var batch: TransactionalBatch = .{};
-    defer batch.deinit(std.testing.allocator);
-    try prepared.preflight(&batch, std.testing.allocator);
-    try prepared.stageAssumeCapacity(&batch, std.testing.allocator);
-    const records = batch.staged.commands.records.items;
-    try std.testing.expectEqual(@intFromEnum(Op.append_child), records[0].op);
-    try std.testing.expectEqual(@as(u32, 11), records[0].a);
-    try std.testing.expectEqual(@as(u32, 12), records[0].b);
-    try std.testing.expectEqual(@intFromEnum(Op.set_checked), records[1].op);
-    try std.testing.expectEqual(@as(u32, 1), records[1].b);
-    try std.testing.expectEqual(@intFromEnum(Op.bind_click), records[2].op);
-    try std.testing.expectEqual(@as(u32, 31), records[2].b);
-    try std.testing.expectEqual(@intFromEnum(Op.move_before), records[3].op);
-    try std.testing.expectEqual(@as(u32, 0), records[3].c);
 }
 
 test "wire identities narrow only at the checked protocol boundary" {

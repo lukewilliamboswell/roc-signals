@@ -192,11 +192,7 @@ const WasmSink = struct {
 
     /// Applies an engine-decided text field value to one render node.
     pub fn applyTextField(_: WasmSink, elem_id: ids.ElemId, field: RenderTextField, value: []const u8) void {
-        if (textAttrNameForField(field)) |name| {
-            appendDynamicSetAttrText(toU32(elem_id.raw()), name, value);
-        } else {
-            appendStringCommand(field.setOp(), toU32(elem_id.raw()), value);
-        }
+        appendStringCommand(field.setOp(), toU32(elem_id.raw()), value);
     }
 
     /// Applies an engine-decided custom text attribute to one render node.
@@ -211,11 +207,7 @@ const WasmSink = struct {
 
     /// Clears an engine-decided text field from one render node.
     pub fn clearTextField(_: WasmSink, elem_id: ids.ElemId, field: RenderTextField) void {
-        if (textAttrNameForField(field)) |name| {
-            appendDynamicRemoveAttr(toU32(elem_id.raw()), name);
-        } else {
-            appendStringCommand(field.setOp(), toU32(elem_id.raw()), "");
-        }
+        appendStringCommand(field.setOp(), toU32(elem_id.raw()), "");
     }
 
     /// Clears an engine-decided custom text attribute from one render node.
@@ -739,16 +731,6 @@ fn appendStorageSetCommand(area: boundary.StorageArea, key: []const u8, value: [
 fn appendStorageRemoveCommand(area: boundary.StorageArea, key: []const u8) void {
     const key_offset = storeBytes(key);
     appendCommand(.remove_storage, toU32(@intFromEnum(area)), key_offset, toU32(key.len), 0, 0);
-}
-
-fn textAttrNameForField(field: RenderTextField) ?[]const u8 {
-    return switch (field) {
-        .role => "role",
-        .label => "aria-label",
-        .test_id => "data-testid",
-        .class => "class",
-        .text, .value => null,
-    };
 }
 
 fn appendDynamicSetAttrText(elem_id: u32, name: []const u8, value: []const u8) void {
@@ -1278,7 +1260,7 @@ fn renderActiveRoot(dirty_source_node_ids: []const u64) void {
             },
         };
         defer prepared.deinit();
-        const render_counts = prepared.downstream.render_splice.?.wire.counts();
+        const render_counts = prepared.downstream.render_splice.?.counts();
         prepared.commit();
         const lifecycle_counts = prepared.runLifecycle();
         shared_engine.render_metrics.addCommandCounts(render_counts);

@@ -1619,11 +1619,11 @@ export class SignalsRuntime {
         return;
 
       case Op.setLabel:
-        this.node(record.a).setAttribute("aria-label", this.readString(record.b, record.c));
+        setOptionalAttribute(this.node(record.a), "aria-label", this.readString(record.b, record.c));
         return;
 
       case Op.setTestId:
-        this.node(record.a).setAttribute("data-testid", this.readString(record.b, record.c));
+        setOptionalAttribute(this.node(record.a), "data-testid", this.readString(record.b, record.c));
         return;
 
       case Op.setClass:
@@ -3677,9 +3677,17 @@ function compactText(value) {
 }
 
 function setRole(node, value) {
-  node.setAttribute("role", value);
+  setOptionalAttribute(node, "role", value);
   if (node.tagName === "INPUT" && value === "checkbox") {
     node.type = "checkbox";
+  }
+}
+
+function setOptionalAttribute(node, name, value) {
+  if (value === "") {
+    node.removeAttribute(name);
+  } else {
+    node.setAttribute(name, value);
   }
 }
 
