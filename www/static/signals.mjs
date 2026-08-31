@@ -48,7 +48,7 @@ export const Op = Object.freeze({
 // engine publishes one removal per retired subtree root, and the runtime drops
 // every DOM id, listener, controlled input, and behaviour under that root.
 export const Protocol = Object.freeze({
-  version: 12,
+  version: 13,
 });
 
 export const ProtocolFeature = Object.freeze({
@@ -247,6 +247,15 @@ export const VisibilityBoundarySchema = Object.freeze({
 export const OnlineBoundarySchema = Object.freeze({
   kind: "bool",
 });
+
+export function entropySeedFromCrypto(cryptoProvider) {
+  if (cryptoProvider == null || typeof cryptoProvider.getRandomValues !== "function") {
+    throw new Error("Signals entropy source requires crypto.getRandomValues");
+  }
+  const values = new Uint32Array(1);
+  cryptoProvider.getRandomValues(values);
+  return values[0] >>> 0;
+}
 
 export const StorageArea = Object.freeze({
   local: 1,
@@ -688,9 +697,9 @@ export async function instantiateSignalsWasm(url, options = {}) {
   return instance;
 }
 
-export async function mountSignalsApp({ wasmUrl, root, taskHandler, onError, telemetry, behaviors, localStorage, sessionStorage, storage, document, visibilityDocument, navigator, networkEventTarget }) {
+export async function mountSignalsApp({ wasmUrl, root, taskHandler, onError, telemetry, behaviors, localStorage, sessionStorage, storage, document, visibilityDocument, navigator, networkEventTarget, crypto }) {
   const instance = await instantiateSignalsWasm(wasmUrl, { telemetry, localStorage, sessionStorage, storage });
-  const runtime = new SignalsRuntime(instance.exports, root, { taskHandler, onError, telemetry, behaviors, localStorage, sessionStorage, storage, document, visibilityDocument, navigator, networkEventTarget });
+  const runtime = new SignalsRuntime(instance.exports, root, { taskHandler, onError, telemetry, behaviors, localStorage, sessionStorage, storage, document, visibilityDocument, navigator, networkEventTarget, crypto });
   runtime.mount();
   return runtime;
 }
@@ -718,6 +727,7 @@ export class SignalsRuntime {
     this.document = options.document ?? globalThis.document;
     this.visibilityDocument = options.visibilityDocument ?? this.document;
     this.navigator = options.navigator ?? globalThis.navigator;
+    this.crypto = options.crypto ?? globalThis.crypto;
     this.networkEventTarget = options.networkEventTarget ?? this.eventTarget;
     this.behaviors = normalizeBehaviors(options.behaviors);
     this.behaviorInstances = new Map();
@@ -813,6 +823,10 @@ export class SignalsRuntime {
 
   prepareInitialEnvironmentPayloads() {
     const specs = [];
+    if (typeof this.exports.roc_ui_set_entropy_seed === "function") {
+      const seed = entropySeedFromCrypto(this.crypto);
+      specs.push({ hostCall: this.exports.roc_ui_set_entropy_seed, scalar: seed, detail: { entropySeeded: true } });
+    }
     if (typeof this.exports.roc_ui_set_location === "function") {
       const value = locationSnapshotFromLocation(this.location);
       specs.push({ hostCall: this.exports.roc_ui_set_location, value, bytes: encodeBoundarySchemaPayloadBytes(LocationBoundarySchema, value), detail: { location: value } });
@@ -829,7 +843,7 @@ export class SignalsRuntime {
     const prepared = [];
     try {
       for (const spec of specs) {
-        prepared.push({ ...spec, ptr: this.allocatePayload(spec.bytes.length) });
+        prepared.push(spec.bytes == null ? spec : { ...spec, ptr: this.allocatePayload(spec.bytes.length) });
       }
       return prepared;
     } catch (err) {
@@ -840,6 +854,15 @@ export class SignalsRuntime {
 
   commitInitialEnvironmentPayloads(prepared) {
     for (const entry of prepared) {
+      if (entry.scalar != null) {
+        this.emitTelemetry("environment_snapshot", { ...entry.detail });
+        try {
+          this.views.callHost(entry.hostCall, entry.scalar);
+        } catch (err) {
+          throw this.poisonAfterHostFailure(err);
+        }
+        continue;
+      }
       this.views.u8.set(entry.bytes, entry.ptr);
       this.emitTelemetry("environment_snapshot", { ...entry.detail, payloadLen: entry.bytes.length });
       try {
@@ -852,6 +875,7 @@ export class SignalsRuntime {
 
   freePreparedPayloads(prepared) {
     for (const entry of prepared) {
+      if (entry.ptr == null) continue;
       this.views.callHost(this.exports.roc_dealloc, entry.ptr, 1);
     }
   }

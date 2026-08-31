@@ -134,6 +134,13 @@ pub const LocationSourceSignal = struct {
     payload_capability: HostValueCapability,
 };
 
+pub const EntropySeedSourceSignal = struct {
+    token: SignalToken,
+    from_payload: roles.Transform,
+    capability: HostValueCapability,
+    payload_capability: HostValueCapability,
+};
+
 pub const VisibilitySourceSignal = struct {
     token: SignalToken,
     from_payload: roles.Transform,
@@ -166,6 +173,7 @@ pub const SignalExpr = union(enum) {
     combine: CombineSignal,
     task_source: TaskSourceSignal,
     interval_source: IntervalSourceSignal,
+    entropy_seed_source: EntropySeedSourceSignal,
     location_source: LocationSourceSignal,
     online_source: OnlineSourceSignal,
     visibility_source: VisibilitySourceSignal,
@@ -260,6 +268,17 @@ pub const SignalExpr = union(enum) {
                     .initial = .fromAbi(payload.initial),
                     .tick = .fromAbi(payload.tick),
                     .capability = payload.cap,
+                } };
+            },
+            .EntropySeedSource => blk: {
+                const payload = expr.payload_entropy_seed_source();
+                const token = SignalToken.fromAbi(payload._0);
+                validateIdentityCallable(token, payload._1);
+                break :blk .{ .entropy_seed_source = .{
+                    .token = token,
+                    .from_payload = .fromAbi(payload._1),
+                    .capability = payload._2,
+                    .payload_capability = payload._3,
                 } };
             },
             .LocationSource => blk: {

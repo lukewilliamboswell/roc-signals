@@ -297,6 +297,11 @@ const NativeCtx = struct {
         ctx.noteTaskResolved(ids.TaskRequestId.fromRaw(request_id));
     }
 
+    /// Materializes the deterministic native entropy seed through the source's owning capability.
+    pub fn initialEntropySeedPayload(ctx: Handle, roc_host: *abi.RocHost, cap: HostValueCapability) HostValue {
+        return ctx.initialEntropySeedPayload(roc_host, cap);
+    }
+
     /// Materializes the mount-time browser location through the source's owning capability.
     pub fn initialLocationPayload(ctx: Handle, roc_host: *abi.RocHost, cap: HostValueCapability) HostValue {
         return ctx.initialLocationPayload(roc_host, cap);
@@ -683,6 +688,7 @@ const HostEnv = struct {
     canceled_tasks: std.ArrayListUnmanaged(NativeTaskRecord) = .empty,
     location_history: std.ArrayListUnmanaged(NativeLocation) = .empty,
     location_index: usize = 0,
+    entropy_seed: u32 = 0x726f6353,
     visibility: boundary.VisibilitySnapshot = .visible,
     online: boundary.OnlineSnapshot = .online,
     storage_entries: std.ArrayListUnmanaged(NativeStorageEntry) = .empty,
@@ -1262,6 +1268,12 @@ const HostEnv = struct {
         if (self.location_index + 1 >= self.location_history.items.len) return false;
         self.location_index += 1;
         return true;
+    }
+
+    fn initialEntropySeedPayload(self: *HostEnv, roc_host: *abi.RocHost, cap: HostValueCapability) HostValue {
+        var bytes: [4]u8 = undefined;
+        std.mem.writeInt(u32, &bytes, self.entropy_seed, .little);
+        return hv.makeU8ListWithCapability(self, roc_host, &bytes, cap);
     }
 
     fn initialLocationPayload(self: *HostEnv, roc_host: *abi.RocHost, cap: HostValueCapability) HostValue {
@@ -2269,7 +2281,7 @@ fn resolvePendingTask(host: *HostEnv, roc_host: *abi.RocHost, name: []const u8, 
     const record = host.engine.activeTaskRecordByToken(pending.task_token) orelse failHost("fake task result matched no active task source");
     const task_payload = switch (record.payload) {
         .task_source => |payload| payload,
-        .ref, .const_value, .map, .map2, .select, .combine, .interval_source, .location_source, .online_source, .visibility_source, .storage_source => unreachable,
+        .ref, .const_value, .map, .map2, .select, .combine, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source => unreachable,
     };
     if (record.token().? != pending.task_token) {
         failHost("fake task result matched a pending request for a different task source");
@@ -5872,6 +5884,23 @@ test "signals host browser environment sources and commands update native state"
         _ = host.engine.runCommand(&host, &roc_host, ids.ScopeId.fromRaw(0), cmd);
         try std.testing.expectEqualStrings("Ops steady", host.currentDocumentTitle());
     }
+}
+
+test "signals host supplies the deterministic native entropy seed as little endian bytes" {
+    var host = HostEnv.init();
+    var roc_host = makeSignalsRocHost(&host);
+    host.engine.roc_host = &roc_host;
+    defer {
+        host.deinit();
+        _ = host.gpa.deinit();
+    }
+
+    const cap = testHostValueCapability(&roc_host);
+    defer hv.releaseHostValueCapability(cap, &roc_host);
+    const value = host.initialEntropySeedPayload(&roc_host, cap);
+    defer testDropHostValue(&roc_host, value);
+    const payload = testReadHostValueU8List(&roc_host, value);
+    try std.testing.expectEqualSlices(u8, &.{ 0x53, 0x63, 0x6f, 0x72 }, payload.items());
 }
 
 test "signals host interns scopes and node identities from explicit paths" {
@@ -9935,6 +9964,7 @@ fn testNodeSignalExprCapability(signal: abi.NodeSignalExpr) ?HostValueCapability
         .Combine => signal.payload_combine()._3,
         .TaskSource => signal.payload_task_source().cap,
         .IntervalSource => signal.payload_interval_source().cap,
+        .EntropySeedSource => signal.payload_entropy_seed_source()._2,
         .LocationSource => signal.payload_location_source()._2,
         .OnlineSource => signal.payload_online_source()._2,
         .VisibilitySource => signal.payload_visibility_source()._2,

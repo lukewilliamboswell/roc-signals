@@ -286,11 +286,17 @@ renders the right route immediately, with no post-mount flash.
 
 | Source | Type |
 | --- | --- |
+| `Browser.entropy_seed()` | `Signal(U32)` — one seed per mount |
 | `Browser.location()` | `Signal(Location)` — `{ path, query, hash }` |
 | `Browser.visibility()` | `Signal([Visible, Hidden])` |
 | `Browser.online()` | `Signal(Bool)` |
 | `Browser.local_storage_text(key)` | `Signal(StorageText)` |
 | `Browser.session_storage_text(key)` | `Signal(StorageText)` |
+
+`entropy_seed()` is intended for initializing a pure PRNG. The browser samples
+it once with `crypto.getRandomValues`, while native specs receive a stable seed
+for reproducibility. The returned number is not itself suitable for secrets,
+tokens, or other security decisions.
 
 And the matching commands: `Browser.push_state`, `Browser.replace_state`,
 `Browser.set_title`, `Browser.set_local_storage_text`,

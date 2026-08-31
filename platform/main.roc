@@ -42,6 +42,7 @@ platform ""
 				"roc_ui_protocol_features",
 				"roc_ui_protocol_version",
 				"roc_ui_resolve",
+				"roc_ui_set_entropy_seed",
 				"roc_ui_set_location",
 				"roc_ui_set_online",
 				"roc_ui_set_storage_payload",

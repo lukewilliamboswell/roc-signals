@@ -563,6 +563,23 @@ batch, then replays commands classified as benchmark actions in
 Expectation and metric assertion commands remain the semantic correctness suite
 used by `python3 scripts/test.py native`.
 
+The keyed fixture also has a production browser adapter under
+`benchmarks/js-framework-benchmark/roc-signals-keyed/`. Build and verify it with:
+
+```sh
+cd benchmarks/js-framework-benchmark/roc-signals-keyed
+npm ci
+ROC_BIN=/path/to/roc npm run build-prod
+npm run verify
+```
+
+This produces a ReleaseFast Wasm host, a Roc `--opt=speed` app, and
+the matching shared runtime modules. The local verifier checks DOM structure
+and keyed identity semantics; comparative browser timings and memory numbers
+must come from the official js-framework-benchmark runner. See
+`docs/profiling.md` and the adapter README for the copied-directory workflow and
+known submission-policy gaps.
+
 ## Roc API Shape
 
 Apps import:

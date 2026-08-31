@@ -1,0 +1,18 @@
+{
+  "name": "js-framework-benchmark-roc-signals",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/main.mjs",
+  "js-framework-benchmark": {
+    "frameworkVersion": "0.1.0",
+    "frameworkHomeURL": "https://github.com/lukewilliamboswell/roc-signals",
+    "language": "WebAssembly"
+  },
+  "scripts": {
+    "dev": "npm run build-prod",
+    "build-prod": "python3 build.py",
+    "verify": "node ../../../scripts/browser/verify_js_framework_artifact.mjs ./dist/app.wasm"
+  },
+  "license": "UPL-1.0"
+}

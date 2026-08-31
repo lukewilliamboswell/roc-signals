@@ -1069,7 +1069,7 @@ pub fn recordSliceContains(comptime Record: type, records: []const *Record, reco
 /// Appends input records using capacity that must already satisfy the caller's transaction contract.
 pub fn appendInputRecords(comptime Record: type, allocator: std.mem.Allocator, records: *std.ArrayListUnmanaged(*Record), record: *Record) void {
     switch (record.payload) {
-        .ref, .const_value, .task_source, .interval_source, .location_source, .online_source, .visibility_source, .storage_source => {},
+        .ref, .const_value, .task_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source => {},
         .map => |payload| appendUniqueInputRecord(Record, allocator, records, payload.input),
         .select => |payload| appendUniqueInputRecord(Record, allocator, records, payload.input),
         .map2 => |payload| {
@@ -1104,7 +1104,7 @@ pub fn retainRecord(
     var records_rebuilt: u64 = 0;
 
     switch (record.payload) {
-        .ref, .const_value, .task_source, .interval_source, .location_source, .online_source, .visibility_source, .storage_source => {},
+        .ref, .const_value, .task_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source => {},
         .map => |payload| {
             records_rebuilt += retainRecord(Record, allocator, nodes, source_routes, source_node_count, payload.input, hooks);
             const input_id = requireRecordId(Record, nodes.items, payload.input);
@@ -1144,7 +1144,7 @@ pub fn retainRecord(
         // appendNode assigned a fresh active-graph id, so this route cannot
         // already contain it. Avoid a growing linear duplicate scan here.
         .ref => |source_node_id| appendFreshSourceRoute(allocator, source_routes, source_node_count, source_node_id, record_id),
-        .const_value, .task_source, .location_source, .online_source, .visibility_source, .storage_source => {},
+        .const_value, .task_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source => {},
         .interval_source => |payload| hooks.ensureInterval(record.token().?, payload.period_ms),
         .map => |payload| appendDependentId(Record, allocator, nodes.items, requireRecordId(Record, nodes.items, payload.input), record_id),
         .select => |payload| {
@@ -1526,7 +1526,7 @@ pub fn prepareGraphAppend(comptime Record: type, allocator: std.mem.Allocator, n
                     const child_rank = std.math.add(u64, (try retain(child, prepare_allocator, graph_nodes, mapping, survivor_len, existing, new_records, new_ranks, new_uses)).rank, 1) catch return error.InvalidAppend;
                     new_rank = @max(new_rank, child_rank);
                 },
-                .ref, .const_value, .task_source, .interval_source, .location_source, .online_source, .visibility_source, .storage_source => {},
+                .ref, .const_value, .task_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source => {},
             }
             const id: u64 = @intCast(std.math.add(usize, survivor_len, new_records.items.len) catch return error.InvalidAppend);
             try new_records.append(prepare_allocator, record);
@@ -1607,7 +1607,7 @@ pub fn prepareGraphAppend(comptime Record: type, allocator: std.mem.Allocator, n
         .combine => |payload| for (payload.children, 0..) |child, child_index| {
             if (!recordSliceContains(Record, payload.children[0..child_index], child)) try EdgeBuilder.append(child, dependent_id, allocator, nodes, final_record_ids, survivor_count, owned_records, record_ids, adjacency_lists, adjacency_touched);
         },
-        .ref, .const_value, .task_source, .interval_source, .location_source, .online_source, .visibility_source, .storage_source => {},
+        .ref, .const_value, .task_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source => {},
     };
     var survivor_replacement_count: usize = 0;
     for (adjacency_touched) |touched| if (touched) {
@@ -1677,7 +1677,7 @@ fn countExistingRetains(comptime Record: type, allocator: std.mem.Allocator, nod
                     if (recordSliceContains(Record, payload.children[0..child_index], child)) continue;
                     try walk(child, walk_allocator, graph_nodes, counts, seen);
                 },
-                .ref, .const_value, .task_source, .interval_source, .location_source, .online_source, .visibility_source, .storage_source => {},
+                .ref, .const_value, .task_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source => {},
             }
         }
     };
@@ -1733,7 +1733,7 @@ pub fn prepareReleaseClosure(comptime Record: type, allocator: std.mem.Allocator
                         try decrement(child, graph_nodes, simulated_counts, is_scheduled, output);
                     }
                 },
-                .ref, .const_value, .task_source, .interval_source, .location_source, .online_source, .visibility_source, .storage_source => {},
+                .ref, .const_value, .task_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source => {},
             }
         }
     };
@@ -1879,7 +1879,7 @@ pub fn releaseRecord(
 
     switch (record.payload) {
         .ref => |source_node_id| removeSourceRoute(source_routes, source_node_id, record_id),
-        .const_value, .task_source, .location_source, .online_source, .visibility_source, .storage_source => {},
+        .const_value, .task_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source => {},
         .interval_source => hooks.removeInterval(record.token().?),
         .map, .map2, .select, .combine => {},
     }
@@ -2037,7 +2037,7 @@ fn appendUniqueInputRecord(comptime Record: type, allocator: std.mem.Allocator, 
 fn updateMovedRecordEdges(comptime Record: type, nodes: []Node(Record), source_routes: *RouteTable(u64), moved_record: *Record, old_record_id: u64, new_record_id: u64) void {
     switch (moved_record.payload) {
         .ref => |source_node_id| replaceSourceRouteId(source_routes, source_node_id, old_record_id, new_record_id),
-        .const_value, .task_source, .interval_source, .location_source, .online_source, .visibility_source, .storage_source => {},
+        .const_value, .task_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source => {},
         .map => |payload| replaceDependentId(Record, nodes, requireRecordId(Record, nodes, payload.input), old_record_id, new_record_id),
         .select => |payload| replaceDependentId(Record, nodes, requireRecordId(Record, nodes, payload.input), old_record_id, new_record_id),
         .map2 => |payload| {
@@ -2180,6 +2180,7 @@ const LifecycleTestRecord = struct {
         combine: CombinePayload,
         task_source,
         interval_source: IntervalPayload,
+        entropy_seed_source,
         location_source,
         online_source,
         visibility_source,
@@ -2196,7 +2197,7 @@ const LifecycleTestRecord = struct {
     pub fn token(self: *const LifecycleTestRecord) ?u64 {
         return switch (self.payload) {
             .ref => null,
-            .const_value, .map, .map2, .select, .combine, .task_source, .interval_source, .location_source, .online_source, .visibility_source, .storage_source => self.id,
+            .const_value, .map, .map2, .select, .combine, .task_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source => self.id,
         };
     }
 };
