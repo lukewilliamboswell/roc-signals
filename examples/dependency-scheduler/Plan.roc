@@ -1,7 +1,7 @@
 ## Domain model for the dependency scheduler.
 ##
 ## The signal graph in `main.roc` is static: edges are declared once by
-## `Signal.map` / `Signal.map2` / `Signal.combine` / `Ui.each_str` and cannot be
+## `Signal.map` / `Signal.map2` / `Signal.combine` / `Ui.each` and cannot be
 ## built from runtime data. So the *task* dependency graph is not mapped onto
 ## the *signal* graph. Instead the whole schedule is recomputed in one pure pass
 ## here (topological order, forward pass, backward pass), and the keyed rows plus

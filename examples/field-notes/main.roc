@@ -298,7 +298,7 @@ main = || {
 											Ui.when(
 												notes_empty,
 												|| Html.paragraph_c("No notes captured yet. Write one above — it will save even while you are offline.", "empty-state"),
-												|| Html.div_c("grid gap-3", [Ui.each_str(visible_rows, |row| row.id, |key, row| render_note(capture, key, row))]),
+												|| Html.div_c("grid gap-3", [Ui.each(visible_rows, |row| row.id, |each_row| render_note(capture, each_row.key(), each_row.signal()))]),
 											),
 										],
 									),

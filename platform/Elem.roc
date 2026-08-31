@@ -9,9 +9,9 @@ import HostValue exposing [HostValue]
 ##   ordinal.
 ## - `When`: a value-selected lazy branch. Its retained builder materializes only
 ##   the live subtree, which owns a branch scope. Advances the scope ordinal.
-## - `Each`: a keyed list; each row is its own scope keyed by the typed key
-##   payload, with boxed key material and `is_eq` thunks. The row thunk receives
-##   the host-owned key and item value. Advances the scope ordinal.
+## - `Each`: a keyed list backed by an immutable collection capability. Each row
+##   is its own scope keyed by exact UTF-8 bytes. The row thunk receives the
+##   host-owned key and stable row handle. Advances the scope ordinal.
 ## - `Component`: introduces a reusable local scope for helper-owned state.
 ##   Advances the parent scope ordinal and collects the child under a component
 ##   scope whose internal ordinals are local to the component instance.
@@ -45,11 +45,11 @@ Elem := [
 			ops : {
 				items_capability : HostValue.CapabilityHandle,
 				item_capability : HostValue.CapabilityHandle,
-				key_capability : HostValue.CapabilityHandle,
-				items_to_values : Box((HostValue -> List(HostValue))),
-				key_text : Box((HostValue -> Str)),
-				key_of : Box((HostValue -> HostValue)),
-				row : Box((HostValue, HostValue -> Elem)),
+				len : Box((HostValue -> U64)),
+				copy_keys : Box((HostValue, U64 -> U64)),
+				compare_pairs : Box((HostValue, HostValue, List(U64), U64 -> U64)),
+				clone_item_at : Box((HostValue, U64 -> HostValue)),
+				row : Box((Str, U64 -> Elem)),
 			},
 		},
 	),

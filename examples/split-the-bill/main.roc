@@ -456,10 +456,10 @@ settlement_panel = |settlement, has_transfers|
 				|| Html.div_c(
 					"grid gap-2",
 					[
-						Ui.each_str(
+						Ui.each(
 							settlement,
 							Bill.transfer_key,
-							|key, transfer| transfer_row(key, transfer),
+							|each_row| transfer_row(each_row.key(), each_row.signal()),
 						),
 					],
 				),
@@ -550,7 +550,7 @@ people_panel = |roster, person_rows, has_people| {
 				has_people,
 				|| Html.div_c(
 					"grid gap-2",
-					[Ui.each_str(person_rows, |row| row.name, |name, row| person_row(roster, name, row))],
+					[Ui.each(person_rows, |row| row.name, |each_row| person_row(roster, each_row.key(), each_row.signal()))],
 				),
 				|| Html.paragraph_c("Nobody on the trip yet. Add someone to start.", "empty-state"),
 			),
@@ -675,7 +675,7 @@ expenses_panel = |ledger, people, expense_views, has_expenses| {
 										"New expense payer",
 										ledger_signal.map(|value| value.payer),
 										input_class,
-										[Ui.each_str(people, |name| name, |name, _person| Html.option(name, name))],
+										[Ui.each(people, |name| name, |each_row| Html.option(each_row.key(), each_row.key()))],
 										ledger.on_str(set_expense_payer),
 									),
 								],
@@ -707,10 +707,10 @@ expenses_panel = |ledger, people, expense_views, has_expenses| {
 				|| Html.div_c(
 					"grid gap-2",
 					[
-						Ui.each_str(
+						Ui.each(
 							expense_views,
 							|view| view.description,
-							|description, view| expense_row(ledger, description, view),
+							|each_row| expense_row(ledger, each_row.key(), each_row.signal()),
 						),
 					],
 				),
@@ -784,10 +784,10 @@ expense_row = |ledger, description, view|
 					Html.div_c(
 						"flex flex-wrap gap-x-5 gap-y-2",
 						[
-							Ui.each_str(
+							Ui.each(
 								view.map(|value| value.members),
 								|member| member.name,
-								|name, member| share_row(ledger, { expense: description, person: name }, member),
+								|each_row| share_row(ledger, { expense: description, person: each_row.key() }, each_row.signal()),
 							),
 						],
 					),

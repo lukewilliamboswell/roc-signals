@@ -16,9 +16,9 @@ import pf.Ui
 #   source (Ui.state Str)
 #     |
 #     +-- blocks = map(source, Markdown.parse)
-#     |     +-- (1) preview       : each_str over blocks
+#     |     +-- (1) preview       : Ui.each over blocks
 #     |     +-- headings = map(blocks, Outline.headings)
-#     |           +-- (2) outline : map2(headings, numbered) -> each_str
+#     |           +-- (2) outline : map2(headings, numbered) -> Ui.each
 #     |           +-- heading_count = map(headings, len)
 #     |
 #     +-- counts = map(source, Stats.counts)
@@ -203,7 +203,7 @@ outline_panel = |rows, numbered, numbered_signal| {
 							{
 								tag: "ul",
 								attrs: [Html.attr("data-panel", "outline-body"), Html.class_attr("grid gap-0.5")],
-								children: [Ui.each_str(rows, |row| row.key, render_outline_row)],
+								children: [Ui.each(rows, |row| row.key, |each_row| render_outline_row(each_row.key(), each_row.signal()))],
 							},
 						),
 					),

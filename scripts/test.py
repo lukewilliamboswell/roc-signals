@@ -129,7 +129,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "suites",
         nargs="*",
-        choices=("all", "zig", "browser", "roc-check", "roc-test", "wasm", "wasm-bench", "native", "fault", "bundle", "bench"),
+        choices=("all", "zig", "fuzz", "browser", "roc-check", "roc-test", "wasm", "wasm-bench", "native", "fault", "bundle", "bench"),
         default=["all"],
         help="Suites to run. Defaults to all.",
     )
@@ -291,6 +291,10 @@ def run_zig_suite() -> None:
         "scripts/test_benchmark_manifest.py",
         "scripts/test_known_failures.py",
     ])
+
+
+def run_fuzz_suite() -> None:
+    run([sys.executable, "scripts/fuzz.py", "check"])
 
 
 def run_browser_suite() -> None:
@@ -879,7 +883,7 @@ def main() -> int:
     examples = load_examples()
     suites = set(args.suites)
     if "all" in suites:
-        suites = {"zig", "browser", "roc-check", "roc-test", "wasm", "native", "fault", "bundle", "bench"}
+        suites = {"zig", "fuzz", "browser", "roc-check", "roc-test", "wasm", "native", "fault", "bundle", "bench"}
 
     validate_args_before_build(args, suites)
     roc_bin = command_path(args.roc_bin)
@@ -889,6 +893,8 @@ def main() -> int:
 
     if "zig" in suites:
         run_zig_suite()
+    if "fuzz" in suites:
+        run_fuzz_suite()
     if "browser" in suites:
         run_browser_suite()
     if "roc-check" in suites:

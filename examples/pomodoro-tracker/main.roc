@@ -16,7 +16,7 @@ app [main] { pf: platform "https://github.com/lukewilliamboswell/roc-signals/rel
 #    block in progress" is exactly what disposing the interval scope means.
 # 2. Retained state is seeded from localStorage through a keyed row. `Ui.state`
 #    takes a plain initial value, so it cannot await a host source. But an
-#    `Ui.each_str` row body runs when the row mounts, with the row key in hand -
+#    `Ui.each` row body runs when the row mounts, with the row key in hand -
 #    so keying a single row by the saved ledger text lets the state inside it
 #    start from saved data. The trade-off is visible in the spec: saving the
 #    ledger changes that key, so the ledger scope re-mounts from the saved text.
@@ -413,7 +413,7 @@ board = |b, extras| {
 					Ui.when(
 						projects.map(|list| list.is_empty()),
 						|| Html.paragraph_c("No projects in the ledger yet.", "empty-state"),
-						|| Ui.each_str(projects, |p| p.id, |key, item| render_row({ attach, ledger, live }, key, item)),
+						|| Ui.each(projects, |p| p.id, |each_row| render_row({ attach, ledger, live }, each_row.key(), each_row.signal())),
 					),
 				],
 			),
@@ -486,7 +486,7 @@ main = ||
 									),
 								],
 							),
-							Ui.each_str(seed, |saved| saved, |saved, _item| tracker({ attach, run, attached }, saved)),
+							Ui.each(seed, |saved| saved, |each_row| tracker({ attach, run, attached }, each_row.key())),
 							Ui.on_change(attached, |value| Browser.set_local_storage_text(project_key, value)),
 						],
 					)

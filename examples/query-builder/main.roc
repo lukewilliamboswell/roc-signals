@@ -278,7 +278,7 @@ mode_segment = |tree, id, mode, value| {
 	)
 }
 
-## Group editor. The child list is a `Ui.each_str` whose row renderer is
+## Group editor. The child list is a `Ui.each` whose row renderer is
 ## `render_node`, so the whole editor is one recursive component over the tree.
 render_group : Ui.State(Query.QNode), { id : Str, depth : U64, is_root : Bool }, Signal.Signal(Query.QNode) -> Elem
 render_group = |tree, group, node| {
@@ -350,7 +350,7 @@ render_group = |tree, group, node| {
 			),
 			Html.div_c(
 				rule_class(depth),
-				[Ui.each_str(children, Query.node_key, |key, child| render_node(tree, depth + 1, key, child))],
+				[Ui.each(children, Query.node_key, |each_row| render_node(tree, depth + 1, each_row.key(), each_row.signal()))],
 			),
 			Html.div_c(
 				"flex flex-wrap items-center gap-2",
@@ -557,7 +557,7 @@ main = || {
 													),
 													Html.div_c(
 														"grid gap-2",
-														[Ui.each_str(matched_names, |name| name, render_match)],
+												[Ui.each(matched_names, |name| name, |each_row| render_match(each_row.key(), each_row.signal()))],
 													),
 												],
 											),

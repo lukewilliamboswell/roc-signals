@@ -8,6 +8,8 @@ platform ""
 	}
 	provides { "roc_ui_init": ui_init }
 	hosted {
+		"roc_each_bool_sink_push": EachSink.push_bool!,
+		"roc_each_key_sink_push": EachSink.push_key!,
 		"roc_host_value_clone": HostValue.clone!,
 		"roc_host_value_get_with_capability": HostValue.get_with_capability!,
 		"roc_host_value_get_with_split": HostValue.get_with_split!,
@@ -67,6 +69,7 @@ platform ""
 	}
 
 import Elem exposing [Elem]
+import EachSink
 import HostValue
 import Signal
 import Html

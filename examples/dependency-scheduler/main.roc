@@ -12,7 +12,7 @@ app [main] { pf: platform "../../platform/main.roc" }
 # the bar, the number and the status word can never disagree.
 #
 # The platform's signal edges are static - they are declared once by
-# `Signal.map` / `map2` / `combine` / `Ui.each_str` - so the task dependency
+# `Signal.map` / `map2` / `combine` / `Ui.each` - so the task dependency
 # graph is deliberately NOT mapped onto the signal graph. `Plan.compute` solves
 # the whole schedule in one pure pass; the view is a small static signal graph
 # over that single derived value, and keyed rows with per-row equality cutoffs
@@ -695,7 +695,7 @@ main = || {
 															),
 															Html.div_c(
 																"grid gap-3",
-																[Ui.each_str(visible_rows, |row| row.id, |key, row| render_row(tasks, span, key, row))],
+																[Ui.each(visible_rows, |row| row.id, |each_row| render_row(tasks, span, each_row.key(), each_row.signal()))],
 															),
 															Html.div(
 																[

@@ -165,7 +165,7 @@ main = ||
 							Html.heading("Signal select 128"),
 							Html.button("Show one row", show_all.on_unit(|_| False)),
 							Html.button("Show all rows", show_all.on_unit(|_| True)),
-							Ui.each_str(items, |key| key, render_row),
+							Ui.each(items, |key| key, |each_row| render_row(each_row.key(), each_row.signal())),
 						],
 					)
 				},

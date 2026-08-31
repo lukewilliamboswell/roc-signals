@@ -84,7 +84,7 @@ render_rows = |id, name, sched| {
 					Ui.when(
 						sched.map(|value| value.rows.is_empty()),
 						|| Html.paragraph_c("Nothing to amortise — this scenario borrows $0.00.", "empty-state border-0 bg-transparent"),
-						|| Ui.each_str(rows, |row| row.key, render_row),
+						|| Ui.each(rows, |row| row.key, |each_row| render_row(each_row.key(), each_row.signal())),
 					),
 				],
 			),
@@ -475,7 +475,7 @@ comparison_panel = |pair, summaries, schedules| {
 			Html.section_c(
 				"Scenario summaries",
 				"grid gap-2",
-				[Ui.each_str(summaries, |summary| summary.id, render_summary)],
+				[Ui.each(summaries, |summary| summary.id, |each_row| render_summary(each_row.key(), each_row.signal()))],
 			),
 		],
 	)

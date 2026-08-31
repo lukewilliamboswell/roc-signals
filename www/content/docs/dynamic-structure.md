@@ -1,6 +1,6 @@
 +++
 title = "Lists, Conditionals, and Components"
-description = "Dynamic structure with Ui.when and Ui.each_str, keyed rows, row-local state, and where identity comes from."
+description = "Dynamic structure with Ui.when and Ui.each, keyed rows, row-local state, and where identity comes from."
 weight = 6
 template = "page.html"
 +++
@@ -81,26 +81,27 @@ a `match` on a route type would be.
 
 ## Keyed lists
 
-`Ui.each_str` renders a list:
+`Ui.each` renders a list:
 
 ```roc
-Ui.each_str(books, |book| book.id, book_row)
+Ui.each(books, |book| book.id, book_row)
 ```
 
 Three arguments:
 
 1. a `Signal(List(item))`,
 2. `item -> Str`, producing a **stable** key,
-3. `(Str, Signal(item)) -> Elem`, the row renderer.
+3. `Ui.Row(item) -> Elem`, the row renderer.
 
-The row renderer receives the key as a plain `Str` and the item as a
-`Signal(item)`. Rows are live: when one item changes, only that row's signals
+The row renderer receives an opaque row. `row.key()` returns its stable key,
+`row.signal()` exposes the live item signal, and `row.map(...)` derives directly
+from that source. Rows are live: when one item changes, only that row's signals
 recompute.
 
 ```roc
-book_row : Str, Signal.Signal(Book) -> Elem
-book_row = |_id, book| {
-    title = book.map(|value| value.title)
+book_row : Ui.Row(Book) -> Elem
+book_row = |row| {
+	title = row.map(|value| value.title)
     Html.div_c("flex gap-3", [Html.text_s(title)])
 }
 ```
@@ -117,10 +118,15 @@ lands on the wrong row.
 Keys must also be unique within one list. Duplicates are a hard error at mount
 (`duplicate key "..."`) rather than a subtle rendering bug.
 
-### Rows only get the key
+### Rows expose identity and a live source
 
-A row renderer receives the static key and the item signal — not other static
-context. Two consequences worth knowing before you hit them:
+A row renderer receives `Ui.Row(item)`, not an item snapshot. `row.key()` is
+the exact stable UTF-8 identity, `row.signal()` is the live item source, and
+`row.map(project)` builds an ordinary equality-pruned graph projection. The
+row source is generation-checked and remains stable while its keyed scope is
+live, including across reorder and replacement collection generations.
+
+Two consequences worth knowing before you hit them:
 
 **Accessible names repeat.** Every row's checkbox labelled `"Read"` means
 `label:"Read"` matches many elements and tests fail with *locator matched 2
@@ -130,11 +136,10 @@ elements*. Derive a unique test id from the key:
 Html.checkbox_attrs("Read", read, [Html.test_id("book-${id}")], msg)
 ```
 
-**Static per-row data must be encoded in the key.** If a row needs to build a
-link target from more than an id, encode what it needs in the key and parse it
-back. Conduit's pagination does exactly this, using keys like `"2|rust"` for
-page 2 of the `rust` tag. It works, and it is a real wart — noted in the
-Conduit example itself.
+**Do not encode presentation data into identity.** Derive links, labels, and
+other changing values from `row.signal()` or `row.map(...)`. The key should
+contain only durable identity; changing it retires the old row scope and creates
+a new one by design.
 
 ## Row-local state
 
@@ -183,7 +188,7 @@ and filtering. That is testable, not just claimed:
 After reversing the list the quantity is still 3, and the host created and
 destroyed zero rows — it moved the existing DOM nodes.
 
-State declared **outside** `Ui.each_str` belongs to the surrounding scope and is
+State declared **outside** `Ui.each` belongs to the surrounding scope and is
 shared by every row. Both are useful; choose deliberately. When a row needs to
 change the *list's* state — deleting an item, toggling a field on the shared
 model — define the row renderer inside the outer `Ui.state` body so it closes
@@ -221,7 +226,7 @@ Now `counter("Left")` and `counter("Right")` are independent. Without
 inserting one ahead of the other would shift identities underneath them.
 
 **Rule of thumb:** any reusable helper that declares `Ui.state`, `Ui.when`, or
-`Ui.each_str` internally should be wrapped in `Ui.component`. Purely
+`Ui.each` internally should be wrapped in `Ui.component`. Purely
 presentational helpers do not need it.
 
 Conduit wraps every page module this way, so navigating between routes gives
@@ -251,7 +256,7 @@ same one as last time?
 
 **Construction-order position within the enclosing scope.** When the host walks
 your descriptor tree it numbers each identity-bearing node — `Ui.state`,
-`Ui.when`, `Ui.each_str`, `Ui.component` — in the order it encounters them.
+`Ui.when`, `Ui.each`, `Ui.component` — in the order it encounters them.
 Scopes are created by the root, each `when` arm, each keyed row, and each
 component.
 
@@ -261,7 +266,7 @@ This is why the ordering rule matters:
 > value.** Doing so shifts the ordinals of everything after it.
 
 In practice you rarely trip on this, because varying structure is exactly what
-`Ui.when` and `Ui.each_str` are for — and both give the varying part its own
+`Ui.when` and `Ui.each` are for — and both give the varying part its own
 scope. The risk shows up when refactoring: moving a `Ui.state` across a scope
 boundary changes its identity, and it will silently reset. In a large app,
 consistent page-module conventions are the mitigation.
@@ -273,7 +278,7 @@ Most good performance falls out of picking the right primitive:
 - **Value changed, structure did not?** Use a signal-backed sink: `text_s`,
   `class_attr_s`, `attr_s`, `bool_attr_s`, a bound input value.
 - **Existence changed?** Use `Ui.when` around the smallest possible region.
-- **Collection changed?** Use `Ui.each_str` with keys from item identity.
+- **Collection changed?** Use `Ui.each` with keys from item identity.
 - **State belongs to a row?** Declare it inside the row renderer.
 - **Value can be computed?** Derive it; do not store it.
 - **Custom type used as a signal value?** Give it a meaningful `is_eq`; that is

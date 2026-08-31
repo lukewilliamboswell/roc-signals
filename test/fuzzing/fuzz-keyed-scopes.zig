@@ -282,6 +282,7 @@ const scope_runtime = signals.scope_runtime;
 const scope_tree = signals.scope_tree;
 
 const Generation = ids.Generation;
+const RowHandleId = signals.row_handles.RowHandleId;
 const ScopeId = ids.ScopeId;
 const SiteOrdinal = ids.SiteOrdinal;
 
@@ -321,6 +322,7 @@ const Row = struct {
     site_ordinal: SiteOrdinal,
     key: Key,
     key_hash: u64,
+    row_handle: RowHandleId,
 };
 
 const Scope = scope_tree.Scope(Row);
@@ -1257,6 +1259,7 @@ const World = struct {
             .site_ordinal = site_ordinal,
             .key = key,
             .key_hash = hash,
+            .row_handle = RowHandleId.fromRaw(((self.generation.raw() + 1) << 32) | (expected.raw() + 1)),
         }, self.generation) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => fail("{s} world could not append a row scope: {s}", .{ self.name(), @errorName(err) }),
@@ -1415,9 +1418,14 @@ const World = struct {
     /// row whose membership is already gone was unlinked by the reconciler that
     /// is rebuilding the whole row table, or by a prepared removal, and unlinking
     /// it twice would corrupt the index.
-    pub fn removeEachRow(self: *World, scope_id: ScopeId, key_hash: u64) void {
+    pub fn removeEachRow(self: *World, scope_id: ScopeId, key_hash: u64, row_handle: RowHandleId) void {
         if (scope_id.index() >= self.memberships.items.len) return;
         if (self.memberships.items[scope_id.index()] == null) return;
+        const stored_handle = switch (self.scopes.items[scope_id.index()].step) {
+            .each_row => |row| row.row_handle,
+            .root, .component, .when_branch => fail("{s} world was asked to remove a non-row scope", .{self.name()}),
+        };
+        if (stored_handle != row_handle) fail("{s} world received the wrong stable row handle during disposal", .{self.name()});
         each.removeRowFromSiteIndex(&self.sites, &self.memberships, scope_id, key_hash, self);
     }
 

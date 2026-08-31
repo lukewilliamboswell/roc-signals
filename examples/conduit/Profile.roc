@@ -166,7 +166,7 @@ Profile := {}.{
 										tag: "nav",
 								attrs: [Html.attr("aria-label", "Profile tabs"), Html.class_attr("flex border-b border-zinc-200")],
 										children: [
-											Ui.each_str(tab_rows, |name| name, |name, _| tab_links(name, favorites, intent)),
+											Ui.each(tab_rows, |name| name, |each_row| tab_links(each_row.key(), favorites, intent)),
 										],
 									},
 								),

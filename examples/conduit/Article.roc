@@ -271,7 +271,7 @@ Article := {}.{
 												Html.div_c(
 													"flex flex-wrap items-center gap-2 py-4 text-sm text-zinc-500",
 													[
-														Ui.each_str(author_rows, |name| name, |name, _| Nav.link(name, "font-medium text-emerald-600", Route.profile_location(name), intent)),
+														Ui.each(author_rows, |name| name, |each_row| Nav.link(each_row.key(), "font-medium text-emerald-600", Route.profile_location(each_row.key()), intent)),
 														Html.text_s(meta),
 													],
 												),
@@ -420,7 +420,7 @@ Article := {}.{
 						is_failed,
 						|| Html.paragraph_s_c(message, "text-red-700"),
 
-						|| Ui.each_str(comments, |comment| comment.id.to_str(), |key, comment| comment_row(key, comment, session, model)),
+						|| Ui.each(comments, |comment| comment.id.to_str(), |each_row| comment_row(each_row.key(), each_row.signal(), session, model)),
 					),
 				),
 			],

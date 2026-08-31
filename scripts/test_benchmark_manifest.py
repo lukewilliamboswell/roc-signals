@@ -113,7 +113,7 @@ class BenchmarkManifestTests(unittest.TestCase):
             'Html.attr("aria-hidden", "true")',
             'Html.attr("id", "tbody")',
             'Signal.select(selected, key)',
-            'Ui.each_str(rows, |row| row.id.to_str()',
+            'Ui.each(rows, |row| row.id.to_str()',
         ):
             self.assertIn(expected, source)
 

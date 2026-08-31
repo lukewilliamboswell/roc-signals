@@ -850,6 +850,13 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             const copied = try self.allocator.dupe(ids.ElemId, next);
             self.children.appendAssumeCapacity(.{ .parent_elem_id = parent_elem_id, .next = copied });
             const parent_id = try render.WireElemId.fromEngine(parent_elem_id);
+            if (old_children.len == 0) {
+                for (next) |child_id| try self.wire.addSemantic(.{ .append_child = .{
+                    .parent = parent_id,
+                    .child = try render.WireElemId.fromEngine(child_id),
+                } });
+                return;
+            }
             var old_indexes = std.AutoHashMapUnmanaged(u64, usize).empty;
             defer old_indexes.deinit(self.allocator);
             try old_indexes.ensureTotalCapacity(self.allocator, std.math.cast(u32, old_children.len) orelse return error.ResourceLimit);

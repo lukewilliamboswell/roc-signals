@@ -303,7 +303,7 @@ the *output* after the work is done. Solid would not wake the node at all. We
 accept this because the alternative — lazy, read-tracked edges — requires
 observing Roc's reads, which the no-compiler-changes rule forbids. The escape
 valve for genuinely dynamic dependency *structure* (a derivation over a
-value-dependent set of inputs) is the same scope mechanism that powers `Ui.each_str`
+value-dependent set of inputs) is the same scope mechanism that powers `Ui.each`
 (see Identity and Dynamic Structure): a sub-graph that is rebuilt when its shape
 changes, not a static edge that is always live. Dynamic-cardinality reactivity
 and dynamic list structure must therefore share one mechanism, never two.
@@ -385,14 +385,18 @@ still owns separate dense node, active-graph, task-request, interval, and DOM id
   removing UI inside one scope does not shift identities in sibling scopes. This is the new failure mode we design
   around: "where you built it is your identity," so the seams that can shift
   (branches, lists) are explicit scope boundaries.
-- **Dynamic lists use stable key material, not position.** `Ui.each_str` takes a
-  key function `item -> Str`. The host stores the typed key value, hashes the key
-  text privately for its row lookup table, and uses exact key equality for
-  collisions and duplicate-key checks. The item type also provides `is_eq`, so
-  the host can distinguish "same row identity, unchanged row value" from "same
-  row identity, changed row value" without guessing from bytes. A row's identity
-  is its key, so per-row local state survives reorder/insert/delete. Duplicate
-  keys are reported as a host error, never silently aliased.
+- **Dynamic lists use stable UTF-8 key material, not position.** `Ui.each` takes
+  a key function `item -> Str`. Identity is the exact UTF-8 byte sequence of
+  that string: no normalization, case folding, locale transform, lossy decode,
+  or hash-only equality is permitted. The host owns copied key bytes for the
+  committed generation and hashes them privately for its row lookup table;
+  collisions and duplicate-key checks compare the complete bytes. A row's
+  identity is that key, so per-row local state survives reorder/insert/delete.
+  Duplicate byte-identical keys are a contract error, never silently aliased.
+  Row handles, sink tokens, generations, and all host-minted dense identities
+  are nonzero and nonwrapping: an exhausted generation retires its slot instead
+  of aliasing an earlier lifetime, and an exhausted dense id space is a resource
+  error rather than permission to reuse a live or stale identity.
 
 - **Branches are built when selected, not at construction.** `Ui.when` and
   `Ui.switch` retain their branch builders as structure closures; the host
@@ -472,7 +476,7 @@ Two rules keep this invariant honest:
 A thunk that *reads* an erased value is not enough. The host does not only read
 these values — it **owns their lifecycle**. After `roc_ui_init` the host owns the
 mutable runtime graph: state cells, source caches, derived-signal caches, keyed
-row key/item cells, pending task payloads, and sink values. Those cells are
+collection generations, pending task payloads, and sink values. Those cells are
 replaced during propagation, pruned when unchanged, cloned for non-consuming
 reads, and destroyed when a scope is disposed or the app unmounts. At each of
 those moments the host is the only code that knows a particular value is now
@@ -513,16 +517,81 @@ CapabilityHandle := {
   of the universal trio. A signal-backed text edge owns a
   `{ capability, read : HostValue -> Str }` record; a `Ui.when` condition owns a
   `{ capability, read : HostValue -> Bool }` record; a task request read and an
-  event reducer carry their operation the same way; `Ui.each_str` owns one ops
-  record containing its item/key/items capabilities plus `items_to_values`,
-  `key_of`, `key_text`, and `row`. These records are carried by the edge that
-  needs them, never invented by the host.
+  event reducer carry their operation the same way; `Ui.each` owns one ops
+  record containing its collection/item capabilities plus `len`, `copy_keys`,
+  `compare_pairs`, `clone_item_at`, and `row`. These records are carried by the
+  edge that needs them, never invented by the host.
 - **The capability is app-compiled, not host-authored.** The prebuilt host sees
   only the platform ABI; `a` is made concrete by the *application* (`Signal(a)`,
   `Model`, a row item type). The capability's closures are emitted by
   monomorphization when the app is built and handed to the host as ordinary
   `RocErasedCallable` values. The host stores and invokes them; it never inspects
   the layout they encapsulate.
+
+### Immutable collection generations and preallocated sinks
+
+`Ui.each` does not materialize `List(HostValue)`, `List(Str)`, or a returned
+comparison batch. Its signal value is one capability-owned, immutable
+`List(item)` generation retained as an opaque `HostValue`. The app-compiled ops
+record is the only code allowed to interpret it:
+
+```text
+len            : HostValue -> U64
+copy_keys      : HostValue, U64 -> U64
+compare_pairs  : HostValue, HostValue, List(U64), U64 -> U64
+clone_item_at  : HostValue, U64 -> HostValue
+row            : Str, U64 -> Elem
+```
+
+Every callback receives an independently owned clone of each collection-owner
+argument. The generation's retained owner is never passed as an untracked
+borrow; consuming or rejecting a callback input cannot invalidate the retained
+generation. The callback consumes those owner clones exactly once.
+
+The host calls `len`, reserves exact bounded storage, then activates a
+transaction-scoped sink token before `copy_keys`. Roc writes each key directly
+into the reserved slot through the hosted sink operation. The sink consumes the
+owned `Str`, validates index/order/count, and copies the exact UTF-8 bytes into
+host-owned candidate storage. Tokens are unforgeable within the instance,
+nonzero, nonwrapping, valid only for their active callback, and invalidated on
+success or abort. A missing, stale, duplicate, out-of-range, or incomplete push
+is a contract error. The same protocol applies to `compare_pairs`: the host
+passes a primitive interleaved `List(U64)` of old/new indexes and Roc writes
+booleans into a preallocated result sink. The primitive pair list is an owned
+callback input and contains no retained Roc values; it is released exactly once
+after the call. No persistent returned Roc batch list exists.
+
+The old and candidate collection values remain independently retained for the
+whole comparison. Their item-container capabilities must match. The host clones
+an item through `clone_item_at` only when a new row must be materialized or a
+surviving row's ordinary graph source must receive a changed value; the result
+is owned by the adapter's item capability. Unchanged and removed rows do not
+cause every item to be boxed. A row builder runs only for a newly live key.
+`Ui.Row.map` is normal `Signal.map` over the stable row source, so row updates
+participate in dependency ordering and equality pruning instead of using a
+parallel row-observer mechanism.
+
+Reconciliation is a candidate overlay. Key bytes, duplicate detection, matched
+indexes, equality results, row-handle reservations, item clones, structural
+plans, and command reservations are provisional until all validation and
+fallible host allocation succeeds. Commit then swaps the collection generation,
+publishes row-source updates and structural splices, and exposes one complete
+command batch without allocation. Abort releases the candidate generation,
+provisional item values, keys, handles, and sink state and leaves the committed
+generation and DOM untouched. The old generation is released only after a
+successful commit; no row keeps a persistent typed key or item cell.
+
+Generation ownership is site-scoped. At most the committed generation plus a
+transaction's candidate generation are retained for one `Ui.each` site, apart
+from explicit independently owned item clones installed in live row-source
+nodes. Disposal releases the committed generation, adapter callables and
+capabilities, row sources, keys, handles, and subtrees deterministically.
+
+This design deliberately does not introduce a general `DescriptorOwner`, a
+global descriptor arena, or cross-site/global key, string, item, or callable
+pool. Those are separate optimizations requiring independent lifetime,
+saturation, and teardown evidence; the collection adapter must remain correct
+and bounded without them.
 
 **The split law.** `get`/`get_tagged` is *split-and-replace clone, never a
 borrow*. The capability's app-compiled clone operation uses its private typed
@@ -550,7 +619,7 @@ capability bridges the two.
 
 ## App-Facing API
 
-The app sees `Signal(a)`, durable text key material for `Ui.each_str`, `Elem`,
+The app sees `Signal(a)`, `Ui.Row(a)` with exact UTF-8 identity, `Elem`,
 task/effect helpers, and a small set of polymorphic functions. It never sees
 host ids, host-private key hashes, `NodeValue`, or lifecycle tokens. The API is
 identical regardless of which host runs the app — apps are written once and run
@@ -741,7 +810,12 @@ State.on_key : State(a), (a, Ui.KeyPayload -> a) -> Msg
 Ui.when : Signal(Bool), (() -> Elem), (() -> Elem) -> Elem   # builders retained, run when selected
 Ui.switch : Signal(case), (case -> Elem) -> Elem            # one scope per live case value
     where [case.is_eq : case, case -> Bool]
-Ui.each_str : Signal(List(item)), (item -> Str), (Str, Signal(item) -> Elem) -> Elem
+Ui.Row(a)
+Ui.Row.key : Ui.Row(a) -> Str
+Ui.Row.signal : Ui.Row(a) -> Signal(a)
+Ui.Row.map : Ui.Row(a), (a -> value) -> Signal(value)
+    where [value.is_eq : value, value -> Bool]
+Ui.each : Signal(List(item)), (item -> Str), (Ui.Row(item) -> Elem) -> Elem
     where [
         item.is_eq : item, item -> Bool,
     ]
@@ -776,11 +850,12 @@ live. `Ui.when` is the `Bool` special case; `Ui.switch` selects by any
 while the value is unchanged. Choosing structure by a tag, an enum, or a route
 therefore never goes through a `Str` key.
 
-`Ui.each_str` hands the row builder the row's key and a `Signal(item)`, and
-deliberately not the item's value: a value would be a snapshot that goes stale
-the moment the row updates, while the signal is the row's only truthful view.
-Structure inside a row that depends on the item is chosen with `Ui.switch` or
-`Ui.when` over a projection of that signal.
+`Ui.each` hands the builder an opaque `Ui.Row(item)`, deliberately not an item
+snapshot. `row.key()` returns the stable UTF-8 identity, `row.signal()` returns
+the one ordinary graph source for the current item, and `row.map(project)` is
+ordinary equality-pruned `Signal.map` over that source. It is not a second row
+reactivity mechanism. Structure inside a row that depends on the item is chosen
+with `Ui.switch` or `Ui.when` over a row projection.
 
 The form helpers above are sugar over the same text/bool fields and event
 payload descriptors: text input, number input, textarea, and single-value select
@@ -974,16 +1049,16 @@ todo_list = |todos|
     Html.div(
         [],
         [
-            Ui.each_str(
+            Ui.each(
                 todos,
                 |todo| todo.id,
-                |_key, row| {
+                |row| {
                     Ui.state(Bool.false, |editing_state| {
                         editing = editing_state.signal()
                         Html.div(
                             [],
                             [
-                                Html.text_s(Signal.map(row, |t| t.title)),
+                                Html.text_s(row.map(|t| t.title)),
                                 Html.button("Toggle edit", editing_state.on_unit(|e| !e)),
                                 Html.text_s(Signal.map(editing, |e| if e { "done" } else { "edit" })),
                             ],
@@ -996,7 +1071,8 @@ todo_list = |todos|
 ```
 
 `editing` is a per-row source inside the row scope. It survives reorder/filter
-because the row scope is keyed by the typed `key`, not by the index.
+because the row scope is keyed by the exact UTF-8 bytes returned by `row.key()`,
+not by the index.
 
 ### Example: a component with inputs, children, and local state
 
@@ -1065,7 +1141,8 @@ SignalExpr := [
 erasure). They are produced from `Signal.map`/`map2`/`Ui.state` at the call site,
 so their input and output types are pinned to the surrounding `Signal(a)`. A
 source's initial value, sink reads, event payloads, structural conditions, and
-keyed row key/item slots are all carried as opaque `HostValue` handles, each
+immutable keyed-collection generations are carried as opaque `HostValue`
+handles, each
 paired with the per-edge **capability** (clone/split, equality, drop) plus any
 capability-owned extension record for the edge-specific operation — see *The
 capability* under Confined Erasure. The conceptual `eq` fields above are the
@@ -1101,20 +1178,23 @@ roc_ui_init : () -> Box(Elem)
   rank order, invoking only the changed derived nodes' retained transform thunks.
   Every Roc call per event is a direct closure invocation, not an FFI entrypoint
   crossing.
-- **Dynamic structure (`Ui.each_str` rows, `Ui.when` branches) also needs no
+- **Dynamic structure (`Ui.each` rows, `Ui.when` branches) also needs no
   entrypoint.** When a new list key or branch appears at runtime, Roc must
   *produce new UI structure* that did not exist at init — but it does so through a
   **retained builder closure**, not a new entrypoint. The row builder you pass to
-  `Ui.each_str` (`|key, row| ...`) and each branch body of `Ui.when` are captured at
-  init as `RocErasedCallable` values (the host stores `row`, `when_true`,
-  `when_false`). When the host needs a new row, it calls the retained `row`
-  closure directly with the new key/item and receives a fresh `Elem` sub-tree —
+  `Ui.each` and each branch body of `Ui.when` are captured at
+  init as `RocErasedCallable` values. For `Ui.each`, the host first reconciles
+  immutable collection generations through the retained adapter operations;
+  only when a key has no surviving row does it call `row` with the host-owned
+  key text and a generation-checked `RowHandle`. The builder receives no item
+  snapshot. It constructs `Ui.Row(item)` around the ordinary graph row source
+  named by that handle and returns a fresh `Elem` sub-tree —
   the exact same kind of direct pointer call as a reducer, except it returns
   *structure* instead of a *value*. This is why no `roc_ui_each` or similar
   entrypoint is needed or wanted: the host already holds a direct pointer to the
   specific builder for that specific site. Adding an entrypoint would reintroduce
   the boundary crossing this model exists to remove, and force the host to ask
-  Roc "which builder?" when it already knows. `Ui.each_str` patch locality is
+  Roc "which builder?" when it already knows. `Ui.each` patch locality is
   host-side: the host splices returned row sub-trees into affected scopes and
   preserves surviving row scopes instead of re-entering the root descriptor.
 - **Why a single entrypoint, not a batched protocol.** A multi-entrypoint
@@ -1146,11 +1226,12 @@ already in the ABI (`callable_fn_ptr`, capture pointer, `on_drop`).
 There are two kinds, invoked **identically** (the same direct pointer call), so
 neither needs an entrypoint:
 
-- **Value closures** — reducers (`Msg`), `map`/`map2`/`combine` transforms, `eq`,
-  `read`, `key_of`. Take values, return a value. Run on every relevant event.
-- **Structure closures** — `Ui.each_str` row builders, `Ui.when` and
-  `Ui.switch` branch builders, and `Ui.component` bodies. Take values (a
-  key/item, a case value, or unit), return an `Elem` sub-tree. Run when a new
+- **Value closures** — reducers (`Msg`), `map`/`map2`/`combine` transforms,
+  capability operations, readers, and immutable-collection adapter operations.
+  Take values or primitive sink tokens and return a value or next token.
+- **Structure closures** — `Ui.each` row builders, `Ui.when` and
+  `Ui.switch` branch builders, and `Ui.component` bodies. Take a key/row handle,
+  a case value, or unit and return an `Elem` sub-tree. Run when a new
   row, branch, or component instance must be materialized at runtime.
 
 The only difference between the two is the *return type* (a value vs. a piece of
@@ -1181,7 +1262,7 @@ ingests declarations for nodes, attributes, signals, and events. A descriptor
 may be static (a fixed value) or dynamic (backed by a signal or retained event
 callable); in either case it describes behaviour attached to an already chosen
 tree shape. A **structural transaction** chooses or changes that shape: it
-creates or retires scopes, selects a `Ui.when` branch, reconciles `Ui.each_str`
+creates or retires scopes, selects a `Ui.when` branch, reconciles `Ui.each`
 rows, transfers state ownership, and splices the affected graph and render
 subtree. Structural work can therefore invalidate more indexes and ownership
 relationships than publishing a descriptor, but it obeys the same
@@ -1285,7 +1366,7 @@ host-owned and never calls into Roc. The host uses the capability-owned string
 reader to expose the old and new opaque input values, so `derived_calls_into_roc` for a
 selection change is independent of member count.
 
-Selector keys are strings for the same boundary reason as `Ui.each_str` keys:
+Selector keys are strings for the same boundary reason as `Ui.each` keys:
 the capability-owned reader exposes UTF-8 bytes without the host inspecting an
 opaque Roc value, after which the host hashes and compares those bytes itself. A
 generic key constrained only by `is_eq` cannot provide a host hash index and
@@ -1294,7 +1375,7 @@ would force the forbidden O(M) member scan.
 Adjacency, ranks, and the dirty set are dense integer-indexed structures. The
 callable address is used only to preserve signal aliasing while descriptors are
 ingested; active graph/node/runtime identities remain host-owned dense integers.
-The app provides text key material to `Ui.each_str` and `Signal.select`; graph
+The app provides text key material to `Ui.each` and `Signal.select`; graph
 execution does not scan to rediscover identity or use Roc `Dict(Str, _)` values.
 
 ### Complexity Discipline (the foundation budget)
@@ -1308,7 +1389,7 @@ lookup, or a full graph rebuild does not meet its budget.
 
 The budgets, by operation (N = total live signal records/render nodes in the
 active tree; C = changed set for this event; K = rows touched by a structural
-change; L = rows at the affected `Ui.each_str` site):
+change; L = rows at the affected `Ui.each` site):
 
 | Operation | Required budget | Forbidden |
 |---|---|---|
@@ -1317,9 +1398,9 @@ change; L = rows at the affected `Ui.each_str` site):
 | non-structural event propagation | O(C + fanout) | O(N); O(fanout²) dedup/sort |
 | selector key change (M members) | O(1) members dirtied, 0 derived Roc calls, O(1) capability reads | O(M) member recompute or `is_eq` scan |
 | `Ui.when` branch flip | O(changed subtree) | O(N) field/route/graph rebuild |
-| `Ui.each_str` keyed diff | O(L) via key hash index | O(L²) `is_eq` scan |
-| `Ui.each_str` append/remove/filter | O(K) | O(N) per touched row |
-| `Ui.each_str` reorder | O(K moved) DOM moves | O(L) whole-site re-collect + rebuild |
+| `Ui.each` keyed diff | O(L) via key hash index | O(L²) `is_eq` scan |
+| `Ui.each` append/remove/filter | O(K) | O(N) per touched row |
+| `Ui.each` reorder | O(K moved) DOM moves | O(L) whole-site re-collect + rebuild |
 | dependency-graph maintenance after a splice | O(affected scope) | full clear-and-rebuild of the active graph over N |
 | host allocation / free bookkeeping | O(1) per alloc/free | O(live allocations) scan per free |
 | spec/bench action target resolution | acceptable O(DOM) for the *harness*, but excluded from `dispatch_apply_ns` | folding harness lookup time into measured framework cost |
@@ -1336,9 +1417,9 @@ Non-negotiable structural rules that follow from the budget:
   edits only the records in the affected scope and patches their adjacency/rank
   in place. There is no clear-and-rebuild of the whole active signal graph on a
   structural change. Initial ingestion may be O(N); nothing after it may be.
-- **`Ui.each_str` carries a host-private key hash index.** The key text is
+- **`Ui.each` carries a host-private key hash index.** The key text is
   load-bearing, not decorative: the host hashes it into a `HashMap` for each
-  each site and uses typed key equality to resolve collisions and duplicate-key
+  each site and compares exact UTF-8 bytes to resolve collisions and duplicate-key
   checks. Linear equality-only matching is a budget violation. Dropping the hash
   index is a regression to fix, not a host workaround to absorb.
 - **Reorder moves, it does not rebuild.** A pure permutation of surviving rows
@@ -1384,7 +1465,7 @@ reducer thunk directly. No scan, no string lookup.
 ### Scopes and lifecycle
 
 The host owns a forest of scopes: the root, each `Ui.component` body, each
-live `Ui.when`/`Ui.switch` branch, and each `Ui.each_str` row. On a branch
+live `Ui.when`/`Ui.switch` branch, and each `Ui.each` row. On a branch
 change or a key-set change:
 - diff the new structure against the old (key-set diff for lists, branch flip for
   conditionals),
@@ -2110,7 +2191,7 @@ safety, controlled input reconciliation, textarea, number, select, radio,
 checkbox, submit/reset default actions, optional text attrs, validation
 patterns, callable-allocation signal identity, keyboard events, custom DOM
 events, cross-capability `Signal.combine`, asynchronous state writes,
-cross-state reducer reads, metric semantics, generated large-`Ui.each_str`
+cross-state reducer reads, metric semantics, generated large-`Ui.each`
 scaling, `Signal.select` membership under large N, recursive `Ui.switch`
 structure, component inputs/children/scope, subscription start/stop by scope,
 widget attach/message/event/detach, and per-error-class diagnostic text.
@@ -2128,7 +2209,7 @@ behavior.
 suite must also assert *work*, so a regression to O(N) work fails the build rather
 than passing silently:
 
-- A **generated large-N `Ui.each_str` app** (the scaling fixture). N is a build
+- A **generated large-N `Ui.each` app** (the scaling fixture). N is a build
   parameter; the rows are generated programmatically, not handwritten. It is the
   one place where large N is allowed, precisely because it is systematic rather
   than a catalog. Its specs assert the budget for single-row update, append,

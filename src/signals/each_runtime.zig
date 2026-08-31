@@ -1,4 +1,4 @@
-//! Keyed-list reconciliation storage and diff helpers for `Ui.each_str`.
+//! Keyed-list reconciliation storage and diff helpers for `Ui.each`.
 
 const std = @import("std");
 const ids = @import("ids.zig");
@@ -452,7 +452,6 @@ pub const PreparedExistingRows = struct {
             }
             if (found) |scope_id| {
                 next_scope_ids[next_index] = scope_id;
-                changed[next_index] = !hooks.rowItemEquals(scope_id, item);
             } else {
                 const scope_id = try hooks.prepareCreatedRow(allocator, parent_scope_id, site_ordinal, next_index, hash, key, item);
                 next_scope_ids[next_index] = scope_id;
@@ -461,6 +460,11 @@ pub const PreparedExistingRows = struct {
                 created_count += 1;
             }
             if (next_scope_ids[next_index].raw() > highest_scope_id.raw()) highest_scope_id = next_scope_ids[next_index];
+        }
+
+        try prepareItemComparisonsIfSupported(allocator, next_scope_ids, created, hooks);
+        for (next_scope_ids, created, items, changed) |scope_id, scope_was_created, item, *item_changed| {
+            if (!scope_was_created) item_changed.* = !hooks.rowItemEquals(scope_id, item);
         }
 
         var removed_count: usize = 0;
@@ -570,6 +574,24 @@ pub const PreparedExistingRows = struct {
     }
 };
 
+fn prepareItemComparisonsIfSupported(allocator: std.mem.Allocator, next_scope_ids: []const ids.ScopeId, scope_created: []const bool, hooks: anytype) (std.mem.Allocator.Error || error{ResourceLimit})!void {
+    const Hooks = @typeInfo(@TypeOf(hooks)).pointer.child;
+    if (@hasDecl(Hooks, "prepareItemComparisons")) {
+        try hooks.prepareItemComparisons(allocator, next_scope_ids, scope_created);
+    }
+}
+
+test "comparison preparation propagates resource saturation" {
+    const Hooks = struct {
+        /// Simulates a comparison batch refusing because its bounded sink saturated.
+        pub fn prepareItemComparisons(_: *@This(), _: std.mem.Allocator, _: []const ids.ScopeId, _: []const bool) error{ResourceLimit}!void {
+            return error.ResourceLimit;
+        }
+    };
+    var hooks = Hooks{};
+    try std.testing.expectError(error.ResourceLimit, prepareItemComparisonsIfSupported(std.testing.allocator, &.{}, &.{}, &hooks));
+}
+
 /// Full prepared keyed-row synchronization, including provisional created rows.
 pub const PreparedRowSync = PreparedExistingRows;
 
@@ -585,7 +607,7 @@ pub fn syncRows(
     items: anytype,
     hooks: anytype,
 ) DiffResult {
-    if (keys.len != items.len) @panic("Ui.each_str keyed scope received mismatched key and item lists");
+    if (keys.len != items.len) @panic("Ui.each keyed scope received mismatched key and item lists");
     if (site_index >= sites.items.len) @panic("each row site index exceeded site table");
 
     const existing_len = sites.items[site_index].scope_ids.items.len;
@@ -825,6 +847,10 @@ const TestSyncHooks = struct {
     first_mutation_attempt: ?usize = null,
     prepared_created: std.ArrayListUnmanaged(PreparedCreated) = .empty,
     hash_calls: usize = 0,
+    comparison_prepare_calls: usize = 0,
+    comparison_calls: usize = 0,
+    prepared_reused_count: usize = 0,
+    prepared_created_count: usize = 0,
 
     fn recordMutation(self: *@This()) void {
         if (self.first_mutation_attempt == null) {
@@ -840,6 +866,17 @@ const TestSyncHooks = struct {
     /// Reserves disposal journal capacity before prepared row publication.
     pub fn prepareExistingRowsCommit(self: *@This(), allocator: std.mem.Allocator, removed_count: usize) std.mem.Allocator.Error!void {
         try self.disposed_scopes.ensureUnusedCapacity(allocator, removed_count);
+    }
+
+    /// Records one batch-comparison preparation after reconciliation has fixed every row binding.
+    pub fn prepareItemComparisons(self: *@This(), _: std.mem.Allocator, next_scope_ids: []const ids.ScopeId, scope_created: []const bool) std.mem.Allocator.Error!void {
+        if (next_scope_ids.len != scope_created.len) @panic("test comparison preparation received mismatched row decisions");
+        self.comparison_prepare_calls += 1;
+        self.prepared_reused_count = 0;
+        self.prepared_created_count = 0;
+        for (scope_created) |created| {
+            if (created) self.prepared_created_count += 1 else self.prepared_reused_count += 1;
+        }
     }
 
     /// Owns a provisional created row without publishing key/item tables.
@@ -905,6 +942,7 @@ const TestSyncHooks = struct {
 
     /// Performs row item equals through the keyed-row capabilities that own key and item values.
     pub fn rowItemEquals(self: *@This(), scope_id: ids.ScopeId, item: u64) bool {
+        self.comparison_calls += 1;
         return self.items_by_scope[scope_id.index()] == item;
     }
 
@@ -1205,12 +1243,39 @@ test "prepared existing each rows hash every key once, during preparation" {
     var prepared = try PreparedExistingRows.prepare(std.testing.allocator, &sites, &memberships, site_index, test_parent_scope, test_site_ordinal, &keys, &items, &hooks);
     defer prepared.deinit();
     try std.testing.expectEqual(@as(usize, 2), hooks.hash_calls);
+    try std.testing.expectEqual(@as(usize, 1), hooks.comparison_prepare_calls);
+    try std.testing.expectEqual(@as(usize, 2), hooks.prepared_reused_count);
+    try std.testing.expectEqual(@as(usize, 0), hooks.prepared_created_count);
+    try std.testing.expectEqual(@as(usize, 2), hooks.comparison_calls);
     var diff = prepared.commit(&sites, &memberships, &keys, &items, &hooks);
     defer diff.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 2), hooks.hash_calls);
     try std.testing.expectEqual(@as(u64, 1), diff.row_items_updated);
     try std.testing.expectEqual(@as(u64, 201), items_by_scope[11]);
     try std.testing.expectEqual(@as(usize, 1), sites.items[site_index].hash_heads.get(2).?);
+}
+
+test "prepared created-only each rows batch once and perform zero item comparisons" {
+    var sites: std.ArrayListUnmanaged(Site) = .empty;
+    var indexes: SiteIndexMap = .empty;
+    var memberships: std.ArrayListUnmanaged(?Membership) = .empty;
+    defer clearSites(std.testing.allocator, &sites, &indexes, &memberships);
+    const site_index = ensureSiteIndex(std.testing.allocator, &sites, &indexes, test_parent_scope, test_site_ordinal);
+    var keys_by_scope = [_]u64{0} ** 16;
+    var items_by_scope = [_]u64{0} ** 16;
+    var hooks = TestSyncHooks{ .keys_by_scope = &keys_by_scope, .items_by_scope = &items_by_scope, .next_scope_id = testScope(10) };
+    defer hooks.deinit(std.testing.allocator);
+    const keys = [_]u64{ 1, 2, 3 };
+    const items = [_]u64{ 100, 200, 300 };
+
+    var prepared = try PreparedExistingRows.prepare(std.testing.allocator, &sites, &memberships, site_index, test_parent_scope, test_site_ordinal, &keys, &items, &hooks);
+    defer prepared.deinit();
+    defer prepared.abort(&hooks);
+    try std.testing.expectEqual(@as(usize, 1), hooks.comparison_prepare_calls);
+    try std.testing.expectEqual(@as(usize, 0), hooks.prepared_reused_count);
+    try std.testing.expectEqual(@as(usize, 3), hooks.prepared_created_count);
+    try std.testing.expectEqual(@as(usize, 0), hooks.comparison_calls);
+    try std.testing.expectEqualSlices(bool, &.{ true, true, true }, prepared.scope_created);
 }
 
 test "each runtime sync resolves hash collisions with typed equality" {

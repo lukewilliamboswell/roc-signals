@@ -97,11 +97,12 @@ To replay a reported coordinate directly, copy the command printed after
 app --run-spec-json --fail-on-allocation 7 path/to/case.scm
 ```
 
-Roc allocations and host allocations inside a Roc callback are reported as
-skipped because the current ABI cannot return OOM from that boundary. Other
-selected allocations must either be absorbed by the allocator, or refuse and
-retry successfully without partial publication. Roc-allocator and
-fatal-boundary campaigns are tracked separately.
+Fault placements inside a Roc callback are reported as skipped by the
+recoverable campaign because the erased callback ABI cannot return OOM or
+unwind ownership. Real allocation failure there is a fatal poison-and-trap
+boundary. Other selected host allocations must refuse and retry successfully
+without partial publication. Roc-allocator and fatal-boundary campaigns are
+tracked separately.
 
 Use `--keep-output` when debugging generated artifacts under `.test-out/`.
 
@@ -595,7 +596,7 @@ import pf.Ui
 
 - `Signal.Signal(a)` is an opaque typed descriptor.
 - `Ui.state` introduces local state through a closure binder.
-- `Ui.when`, `Ui.switch`, and `Ui.each_str` introduce explicit dynamic scopes.
+- `Ui.when`, `Ui.switch`, and `Ui.each` introduce explicit dynamic scopes.
 - `Html` creates static markup, signal-backed text/attrs, and event bindings.
 
 Apps no longer define erased value encode/decode boilerplate for row fixtures.
@@ -609,8 +610,16 @@ patches to the simulated DOM, and dispatches events through retained Roc
 reducers. Branch and keyed-row scopes are disposed by the host when they leave
 the active tree. Non-structural state changes patch only the dirty signal-backed
 leaf sinks recorded in the retained descriptor stream. Structural `when` and
-`each_str` changes are applied through local active-stream splices, row moves,
+`Ui.each` changes are applied through local active-stream splices, row moves,
 and affected event-binding refreshes rather than a full root rebuild.
+
+`Ui.each` retains each immutable `List(item)` generation behind its app-compiled
+capability. Its `len`, `copy_keys`, `compare_pairs`, and `clone_item_at`
+operations interpret that value in Roc; key and comparison results are pushed
+into bounded host buffers reserved before the callback. They are not returned
+as temporary Roc lists, and the host does not persist typed key/item cells per
+row. Candidate generations and row changes stay provisional until an
+allocation-free commit publishes the complete structural generation.
 
 ## Glue
 

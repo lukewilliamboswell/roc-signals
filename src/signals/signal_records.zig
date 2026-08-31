@@ -4,6 +4,7 @@ const std = @import("std");
 const abi = @import("roc_platform_abi.zig");
 const boundary = @import("boundary.zig");
 const retained = @import("retained_values.zig");
+const row_handles = @import("row_handles.zig");
 const roles = @import("callable_roles.zig");
 
 pub const HostValue = retained.HostValue;
@@ -436,6 +437,19 @@ pub const StorageSourceRecord = struct {
     cached_value: CacheSlot = .absent,
 };
 
+/// Stable keyed-row source resolved by the engine through its row handle.
+///
+/// The identity callable is never evaluated. It is the app-compiled allocation
+/// shared by repeated `Row.signal` descriptors, preserving the same aliasing
+/// rule as every other non-ref signal record. The cache owns an ordinary item
+/// value only after the engine resolves the row through an active generation.
+pub const RowSourceRecord = struct {
+    row_handle: row_handles.RowHandleId,
+    identity: roles.Initializer,
+    cap: HostValueCapability,
+    cached_value: CacheSlot = .absent,
+};
+
 pub const Payload = union(enum) {
     ref: u64,
     const_value: ConstRecord,
@@ -450,6 +464,7 @@ pub const Payload = union(enum) {
     online_source: OnlineSourceRecord,
     visibility_source: VisibilitySourceRecord,
     storage_source: StorageSourceRecord,
+    row_source: RowSourceRecord,
 };
 
 pub const EffectSourceRef = union(enum) {
@@ -460,6 +475,7 @@ pub const EffectSourceRef = union(enum) {
     online: *OnlineSourceRecord,
     visibility: *VisibilitySourceRecord,
     storage: *StorageSourceRecord,
+    row: *RowSourceRecord,
 
     /// Returns the retained cache slot owned by this signal record kind.
     pub fn cachedSlot(self: EffectSourceRef) *CacheSlot {
@@ -471,6 +487,7 @@ pub const EffectSourceRef = union(enum) {
             .online => |payload| &payload.cached_value,
             .visibility => |payload| &payload.cached_value,
             .storage => |payload| &payload.cached_value,
+            .row => |payload| &payload.cached_value,
         };
     }
 
@@ -484,6 +501,7 @@ pub const EffectSourceRef = union(enum) {
             .online => |payload| payload.cap,
             .visibility => |payload| payload.cap,
             .storage => |payload| payload.cap,
+            .row => |payload| payload.cap,
         };
     }
 };
@@ -600,6 +618,13 @@ pub fn deinitOwnedPayload(allocator: std.mem.Allocator, ctx: anytype, roc_host: 
             releaseHostValueCapability(payload.cap, roc_host, metrics);
             metrics.bump(.closure_releases, 1);
         },
+        .row_source => |payload| {
+            var cached = payload.cached_value;
+            cached.deinit(ctx, roc_host, metrics);
+            abi.decrefErasedCallable(payload.identity.toAbi(), roc_host);
+            releaseHostValueCapability(payload.cap, roc_host, metrics);
+            metrics.bump(.closure_releases, 1);
+        },
     }
 }
 
@@ -656,6 +681,7 @@ pub const Record = struct {
             .online_source => |payload| retained.hostSignalTokenFromCallable(payload.from_payload.toAbi()),
             .visibility_source => |payload| retained.hostSignalTokenFromCallable(payload.from_payload.toAbi()),
             .storage_source => |payload| retained.hostSignalTokenFromCallable(payload.from_payload.toAbi()),
+            .row_source => |payload| retained.hostSignalTokenFromCallable(payload.identity.toAbi()),
         };
     }
 
@@ -675,6 +701,7 @@ pub const Record = struct {
             .online_source => |*payload| &payload.cached_value,
             .visibility_source => |*payload| &payload.cached_value,
             .storage_source => |*payload| &payload.cached_value,
+            .row_source => |*payload| &payload.cached_value,
         };
     }
 
@@ -694,6 +721,7 @@ pub const Record = struct {
             .online_source => |payload| payload.cap,
             .visibility_source => |payload| payload.cap,
             .storage_source => |payload| payload.cap,
+            .row_source => |payload| payload.cap,
         };
     }
 
@@ -701,7 +729,7 @@ pub const Record = struct {
     pub fn taskSource(self: *Record) ?*TaskSourceRecord {
         return switch (self.payload) {
             .task_source => |*payload| payload,
-            .ref, .const_value, .map, .map2, .select, .combine, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source => null,
+            .ref, .const_value, .map, .map2, .select, .combine, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source, .row_source => null,
         };
     }
 
@@ -714,7 +742,7 @@ pub const Record = struct {
     pub fn intervalSource(self: *Record) ?*IntervalSourceRecord {
         return switch (self.payload) {
             .interval_source => |*payload| payload,
-            .ref, .const_value, .map, .map2, .select, .combine, .task_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source => null,
+            .ref, .const_value, .map, .map2, .select, .combine, .task_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source, .row_source => null,
         };
     }
 
@@ -727,7 +755,7 @@ pub const Record = struct {
     pub fn locationSource(self: *Record) ?*LocationSourceRecord {
         return switch (self.payload) {
             .location_source => |*payload| payload,
-            .ref, .const_value, .map, .map2, .select, .combine, .task_source, .interval_source, .entropy_seed_source, .online_source, .visibility_source, .storage_source => null,
+            .ref, .const_value, .map, .map2, .select, .combine, .task_source, .interval_source, .entropy_seed_source, .online_source, .visibility_source, .storage_source, .row_source => null,
         };
     }
 
@@ -740,7 +768,7 @@ pub const Record = struct {
     pub fn onlineSource(self: *Record) ?*OnlineSourceRecord {
         return switch (self.payload) {
             .online_source => |*payload| payload,
-            .ref, .const_value, .map, .map2, .select, .combine, .task_source, .interval_source, .entropy_seed_source, .location_source, .visibility_source, .storage_source => null,
+            .ref, .const_value, .map, .map2, .select, .combine, .task_source, .interval_source, .entropy_seed_source, .location_source, .visibility_source, .storage_source, .row_source => null,
         };
     }
 
@@ -753,7 +781,7 @@ pub const Record = struct {
     pub fn visibilitySource(self: *Record) ?*VisibilitySourceRecord {
         return switch (self.payload) {
             .visibility_source => |*payload| payload,
-            .ref, .const_value, .map, .map2, .select, .combine, .task_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .storage_source => null,
+            .ref, .const_value, .map, .map2, .select, .combine, .task_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .storage_source, .row_source => null,
         };
     }
 
@@ -766,7 +794,7 @@ pub const Record = struct {
     pub fn storageSource(self: *Record) ?*StorageSourceRecord {
         return switch (self.payload) {
             .storage_source => |*payload| payload,
-            .ref, .const_value, .map, .map2, .select, .combine, .task_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source => null,
+            .ref, .const_value, .map, .map2, .select, .combine, .task_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .row_source => null,
         };
     }
 
@@ -785,6 +813,7 @@ pub const Record = struct {
             .online_source => |*payload| .{ .online = payload },
             .visibility_source => |*payload| .{ .visibility = payload },
             .storage_source => |*payload| .{ .storage = payload },
+            .row_source => |*payload| .{ .row = payload },
             .ref, .const_value, .map, .map2, .select, .combine => null,
         };
     }
@@ -833,7 +862,7 @@ pub const Binding = struct {
 pub fn walkTree(comptime Context: type, context: Context, record: *Record, comptime visit: fn (Context, *Record) void) void {
     visit(context, record);
     switch (record.payload) {
-        .ref, .const_value, .task_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source => {},
+        .ref, .const_value, .task_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source, .row_source => {},
         .map => |payload| walkTree(Context, context, payload.input, visit),
         .select => |payload| walkTree(Context, context, payload.input, visit),
         .map2 => |payload| {
@@ -880,7 +909,7 @@ pub fn appendSignalRecordSourceNodeIdsFallible(allocator: std.mem.Allocator, sou
                 try appendSignalRecordSourceNodeIdsFallible(allocator, source_node_ids, child);
             }
         },
-        .task_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source => {},
+        .task_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source, .row_source => {},
     }
 }
 
@@ -895,6 +924,36 @@ test "fallible signal record construction preserves payload ownership on OOM" {
     try std.testing.expectEqual(record, evaluation_key.record());
     try std.testing.expect(EvaluationKey != *Record);
     std.testing.allocator.destroy(record);
+}
+
+test "row source records expose stable identity locator cache and capability" {
+    const CapabilityCtx = struct {
+        pub const Handle = void;
+        /// This fixture never resolves state capabilities.
+        pub fn stateCapability(_: Handle, _: u64) HostValueCapability {
+            unreachable;
+        }
+    };
+    var env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&env);
+    const identity = abi.rocErasedCallableAllocate(&roc_host, ownedSourceTestCallable, null, 0).?;
+    defer abi.decrefErasedCallable(identity, &roc_host);
+    const cap = HostValueCapability{ .clone = identity, .drop = identity, .eq = identity };
+    const handle = row_handles.RowHandleId.fromRaw(0x0000_0007_0000_0003);
+    var record = Record{
+        .ref_count = 1,
+        .payload = .{ .row_source = .{
+            .row_handle = handle,
+            .identity = .fromAbi(identity),
+            .cap = cap,
+        } },
+    };
+
+    try std.testing.expectEqual(identity, record.token().?);
+    try std.testing.expectEqual(handle, record.payload.row_source.row_handle);
+    try std.testing.expectEqual(cap, record.capability(CapabilityCtx, {}));
+    try std.testing.expect(record.cachedSlot().?.* == .absent);
+    try std.testing.expect(record.effectSource().? == .row);
 }
 
 test "owned combine payload releases nested children and capabilities on record OOM" {

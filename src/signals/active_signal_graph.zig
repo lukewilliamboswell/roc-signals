@@ -1069,7 +1069,7 @@ pub fn recordSliceContains(comptime Record: type, records: []const *Record, reco
 /// Appends input records using capacity that must already satisfy the caller's transaction contract.
 pub fn appendInputRecords(comptime Record: type, allocator: std.mem.Allocator, records: *std.ArrayListUnmanaged(*Record), record: *Record) void {
     switch (record.payload) {
-        .ref, .const_value, .task_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source => {},
+        .ref, .const_value, .task_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source, .row_source => {},
         .map => |payload| appendUniqueInputRecord(Record, allocator, records, payload.input),
         .select => |payload| appendUniqueInputRecord(Record, allocator, records, payload.input),
         .map2 => |payload| {
@@ -1104,7 +1104,7 @@ pub fn retainRecord(
     var records_rebuilt: u64 = 0;
 
     switch (record.payload) {
-        .ref, .const_value, .task_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source => {},
+        .ref, .const_value, .task_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source, .row_source => {},
         .map => |payload| {
             records_rebuilt += retainRecord(Record, allocator, nodes, source_routes, source_node_count, payload.input, hooks);
             const input_id = requireRecordId(Record, nodes.items, payload.input);
@@ -1145,6 +1145,7 @@ pub fn retainRecord(
         // already contain it. Avoid a growing linear duplicate scan here.
         .ref => |source_node_id| appendFreshSourceRoute(allocator, source_routes, source_node_count, source_node_id, record_id),
         .const_value, .task_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source => {},
+        .row_source => hooks.ensureRowSource(record),
         .interval_source => |payload| hooks.ensureInterval(record.token().?, payload.period_ms),
         .map => |payload| appendDependentId(Record, allocator, nodes.items, requireRecordId(Record, nodes.items, payload.input), record_id),
         .select => |payload| {
@@ -1366,6 +1367,17 @@ pub fn PreparedGraphAppend(comptime Record: type) type {
             return count;
         }
 
+        /// Counts newly appended keyed-row source records so the engine can
+        /// reserve its stable row-handle index before graph publication.
+        pub fn appendedRowSourceCount(self: *const @This()) usize {
+            var count: usize = 0;
+            for (self.new_nodes) |node| switch (node.record.payload) {
+                .row_source => count += 1,
+                else => {},
+            };
+            return count;
+        }
+
         /// Registers the effect sources the committed append introduced. This
         /// is the publication-side counterpart of `PreparedReleaseClosure.releaseRetired`
         /// removing retired sources: every interval record that enters the
@@ -1378,6 +1390,7 @@ pub fn PreparedGraphAppend(comptime Record: type) type {
                 switch (node.record.payload) {
                     .interval_source => |payload| hooks.registerInterval(node.record.token().?, payload.period_ms),
                     .select => |payload| hooks.registerSelector(payload.input, payload.key, node.record),
+                    .row_source => hooks.registerRowSource(node.record),
                     else => {},
                 }
             }
@@ -1526,7 +1539,7 @@ pub fn prepareGraphAppend(comptime Record: type, allocator: std.mem.Allocator, n
                     const child_rank = std.math.add(u64, (try retain(child, prepare_allocator, graph_nodes, mapping, survivor_len, existing, new_records, new_ranks, new_uses)).rank, 1) catch return error.InvalidAppend;
                     new_rank = @max(new_rank, child_rank);
                 },
-                .ref, .const_value, .task_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source => {},
+                .ref, .const_value, .task_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source, .row_source => {},
             }
             const id: u64 = @intCast(std.math.add(usize, survivor_len, new_records.items.len) catch return error.InvalidAppend);
             try new_records.append(prepare_allocator, record);
@@ -1607,7 +1620,7 @@ pub fn prepareGraphAppend(comptime Record: type, allocator: std.mem.Allocator, n
         .combine => |payload| for (payload.children, 0..) |child, child_index| {
             if (!recordSliceContains(Record, payload.children[0..child_index], child)) try EdgeBuilder.append(child, dependent_id, allocator, nodes, final_record_ids, survivor_count, owned_records, record_ids, adjacency_lists, adjacency_touched);
         },
-        .ref, .const_value, .task_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source => {},
+        .ref, .const_value, .task_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source, .row_source => {},
     };
     var survivor_replacement_count: usize = 0;
     for (adjacency_touched) |touched| if (touched) {
@@ -1677,7 +1690,7 @@ fn countExistingRetains(comptime Record: type, allocator: std.mem.Allocator, nod
                     if (recordSliceContains(Record, payload.children[0..child_index], child)) continue;
                     try walk(child, walk_allocator, graph_nodes, counts, seen);
                 },
-                .ref, .const_value, .task_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source => {},
+                .ref, .const_value, .task_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source, .row_source => {},
             }
         }
     };
@@ -1733,7 +1746,7 @@ pub fn prepareReleaseClosure(comptime Record: type, allocator: std.mem.Allocator
                         try decrement(child, graph_nodes, simulated_counts, is_scheduled, output);
                     }
                 },
-                .ref, .const_value, .task_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source => {},
+                .ref, .const_value, .task_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source, .row_source => {},
             }
         }
     };
@@ -1879,7 +1892,7 @@ pub fn releaseRecord(
 
     switch (record.payload) {
         .ref => |source_node_id| removeSourceRoute(source_routes, source_node_id, record_id),
-        .const_value, .task_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source => {},
+        .const_value, .task_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source, .row_source => {},
         .interval_source => hooks.removeInterval(record.token().?),
         .map, .map2, .select, .combine => {},
     }
@@ -2037,7 +2050,7 @@ fn appendUniqueInputRecord(comptime Record: type, allocator: std.mem.Allocator, 
 fn updateMovedRecordEdges(comptime Record: type, nodes: []Node(Record), source_routes: *RouteTable(u64), moved_record: *Record, old_record_id: u64, new_record_id: u64) void {
     switch (moved_record.payload) {
         .ref => |source_node_id| replaceSourceRouteId(source_routes, source_node_id, old_record_id, new_record_id),
-        .const_value, .task_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source => {},
+        .const_value, .task_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source, .row_source => {},
         .map => |payload| replaceDependentId(Record, nodes, requireRecordId(Record, nodes, payload.input), old_record_id, new_record_id),
         .select => |payload| replaceDependentId(Record, nodes, requireRecordId(Record, nodes, payload.input), old_record_id, new_record_id),
         .map2 => |payload| {
@@ -2185,6 +2198,7 @@ const LifecycleTestRecord = struct {
         online_source,
         visibility_source,
         storage_source,
+        row_source,
     };
 
     /// Acquires an independent retained reference that the caller must eventually release.
@@ -2197,7 +2211,7 @@ const LifecycleTestRecord = struct {
     pub fn token(self: *const LifecycleTestRecord) ?u64 {
         return switch (self.payload) {
             .ref => null,
-            .const_value, .map, .map2, .select, .combine, .task_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source => self.id,
+            .const_value, .map, .map2, .select, .combine, .task_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source, .row_source => self.id,
         };
     }
 };
@@ -2231,6 +2245,14 @@ const LifecycleTestHooks = struct {
     /// Records prepared selector registration in lifecycle tests.
     pub fn registerSelector(self: *@This(), input: *LifecycleTestRecord, key: []const u8, member: *LifecycleTestRecord) void {
         self.ensureSelector(input, key, member);
+    }
+
+    /// Records keyed-row source registration in lifecycle tests.
+    pub fn ensureRowSource(_: *@This(), _: *LifecycleTestRecord) void {}
+
+    /// Records prepared keyed-row source registration in lifecycle tests.
+    pub fn registerRowSource(self: *@This(), record: *LifecycleTestRecord) void {
+        self.ensureRowSource(record);
     }
 
     /// Releases the test or plan's owned signal record exactly once.
@@ -2871,6 +2893,48 @@ test "active graph retain and release update moved record ids and routes" {
     try std.testing.expectEqual(@as(usize, 1), source_b.ref_count);
     try std.testing.expectEqual(@as(usize, 1), mapped.ref_count);
     try std.testing.expectEqual(@as(u64, 3), hooks.record_releases);
+}
+
+test "row source is an ordinary rank zero root with normal dependents" {
+    var row_source = LifecycleTestRecord{ .id = 41, .payload = .row_source };
+    var mapped = LifecycleTestRecord{ .id = 42, .payload = .{ .map = .{ .input = &row_source } } };
+
+    var nodes: std.ArrayListUnmanaged(Node(LifecycleTestRecord)) = .empty;
+    defer nodes.deinit(std.testing.allocator);
+    var source_routes: RouteTable(u64) = .empty;
+    var text_routes: RouteTable(TextSink) = .empty;
+    var bool_routes: RouteTable(BoolSink) = .empty;
+    var change_routes: RouteTable(ChangeSink) = .empty;
+    var structural_routes: RouteTable(StructuralSink) = .empty;
+    defer source_routes.deinit(std.testing.allocator);
+    defer text_routes.deinit(std.testing.allocator);
+    defer bool_routes.deinit(std.testing.allocator);
+    defer change_routes.deinit(std.testing.allocator);
+    defer structural_routes.deinit(std.testing.allocator);
+    defer clearRoutes(std.testing.allocator, &source_routes, &text_routes, &bool_routes, &change_routes, &structural_routes);
+
+    var hooks = LifecycleTestHooks{};
+    try std.testing.expectEqual(@as(u64, 2), retainRecord(LifecycleTestRecord, std.testing.allocator, &nodes, &source_routes, 0, &mapped, &hooks));
+    try std.testing.expectEqual(@as(usize, 2), nodes.items.len);
+    try std.testing.expectEqual(@as(u64, 0), nodes.items[@intCast(row_source.active_graph_id.?)].rank);
+    try std.testing.expectEqual(@as(u64, 1), nodes.items[@intCast(mapped.active_graph_id.?)].rank);
+    try std.testing.expectEqualSlices(u64, &.{mapped.active_graph_id.?}, nodes.items[@intCast(row_source.active_graph_id.?)].dependents);
+    try std.testing.expectEqual(@as(usize, 0), source_routes.items.len);
+
+    releaseRecord(
+        LifecycleTestRecord,
+        std.testing.allocator,
+        &nodes,
+        &source_routes,
+        &text_routes,
+        &bool_routes,
+        &change_routes,
+        &structural_routes,
+        &mapped,
+        &hooks,
+    );
+    try std.testing.expectEqual(@as(usize, 0), nodes.items.len);
+    try std.testing.expectEqual(@as(u64, 2), hooks.record_releases);
 }
 
 test "active graph interval records use explicit lifecycle hooks" {

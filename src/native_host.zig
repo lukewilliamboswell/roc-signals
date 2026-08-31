@@ -15,6 +15,7 @@ const render = signals.render;
 const render_cache = signals.render_cache;
 const render_sink = signals.render_sink;
 const ids = signals.ids;
+const scope_runtime = signals.scope_runtime;
 const scope_tree = signals.scope_tree;
 const erased_calls = signals.erased_calls;
 const CapabilitySplit = signals.callable_roles.CapabilitySplit;
@@ -1644,10 +1645,6 @@ const HostEnv = struct {
         return result.scope_id;
     }
 
-    fn createEachRowScope(self: *HostEnv, parent_scope_id: ids.ScopeId, site_ordinal: ids.SiteOrdinal, key_hash: u64, key: HostValue, item: HostValue, key_cap: HostValueCapability, item_cap: HostValueCapability) ids.ScopeId {
-        return self.engine.createEachRowScope(self, parent_scope_id, site_ordinal, key_hash, key, item, key_cap, item_cap);
-    }
-
     fn internNodeIdentity(self: *HostEnv, scope_id: ids.ScopeId, ordinal: ids.SiteOrdinal) ids.NodeId {
         return self.engine.internNodeIdentity(self.hostAllocator(), scope_id, ordinal) catch |err| {
             failScopeOrIdentityTableError(err, "scope id has no host scope descriptor");
@@ -1662,14 +1659,6 @@ const HostEnv = struct {
 
     fn disposeScopeSubtree(self: *HostEnv, roc_host: *abi.RocHost, scope_id: ids.ScopeId) void {
         self.engine.disposeScopeSubtree(self, roc_host, scope_id.raw());
-    }
-
-    fn eachRowScopeValues(self: *HostEnv, scope_id: ids.ScopeId) engine.EachRowValues {
-        return self.engine.eachRowScopeValues(scope_id.raw());
-    }
-
-    fn syncEachRowScopes(self: *HostEnv, roc_host: *abi.RocHost, parent_scope_id: ids.ScopeId, site_ordinal: ids.SiteOrdinal, keys: []const HostValue, items: []const HostValue, ops: HostEachOps) HostKeyedRowDiffResult {
-        return self.engine.syncEachRowScopes(self, roc_host, parent_scope_id, site_ordinal, keys, items, ops);
     }
 
     fn bindNodeSignal(self: *HostEnv, allocator: std.mem.Allocator, stream: *HostNodeDescriptorStream, expr: abi.NodeSignalExpr, binder_stack: []const HostBinderBinding) HostSignalBinding {
@@ -2086,6 +2075,18 @@ fn hostValueClone(value: u64) callconv(.c) u64 {
     return currentHost().cloneHostValue(HostValue.fromRaw(value)).toRaw();
 }
 
+fn eachKeySinkPush(token: u64, index: u64, value: abi.RocStr) callconv(.c) u64 {
+    const roc_host = current_roc_host orelse @panic("each key sink requires an active Roc host");
+    defer abi.RocStrRelease.release(value, roc_host);
+    const host = current_host orelse failHost("each key sink requires an active host transaction");
+    return host.engine.pushEachKeySink(host, token, index, value.asSlice()) catch failHost("each key sink rejected the active collection transaction");
+}
+
+fn eachBoolSinkPush(token: u64, index: u64, value: bool) callconv(.c) u64 {
+    const host = current_host orelse failHost("each bool sink requires an active host transaction");
+    return host.engine.pushEachBoolSink(host, token, index, value) catch failHost("each bool sink rejected the active collection transaction");
+}
+
 fn hostValueGetWithCapability(value: u64, cap: HostValueCapability) callconv(.c) abi.RocBox {
     return currentHost().getHostValueWithCapability(HostValue.fromRaw(value), cap);
 }
@@ -2281,7 +2282,7 @@ fn resolvePendingTask(host: *HostEnv, roc_host: *abi.RocHost, name: []const u8, 
     const record = host.engine.activeTaskRecordByToken(pending.task_token) orelse failHost("fake task result matched no active task source");
     const task_payload = switch (record.payload) {
         .task_source => |payload| payload,
-        .ref, .const_value, .map, .map2, .select, .combine, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source => unreachable,
+        .ref, .const_value, .map, .map2, .select, .combine, .row_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source => unreachable,
     };
     if (record.token().? != pending.task_token) {
         failHost("fake task result matched a pending request for a different task source");
@@ -3299,6 +3300,8 @@ comptime {
         @export(&hostDbg, .{ .name = "roc_dbg", .visibility = .hidden });
         @export(&hostExpectFailed, .{ .name = "roc_expect_failed", .visibility = .hidden });
         @export(&hostCrashed, .{ .name = "roc_crashed", .visibility = .hidden });
+        @export(&eachKeySinkPush, .{ .name = "roc_each_key_sink_push", .visibility = .hidden });
+        @export(&eachBoolSinkPush, .{ .name = "roc_each_bool_sink_push", .visibility = .hidden });
         @export(&hostValueClone, .{ .name = "roc_host_value_clone", .visibility = .hidden });
         @export(&hostValueGetWithCapability, .{ .name = "roc_host_value_get_with_capability", .visibility = .hidden });
         @export(&hostValueGetWithSplit, .{ .name = "roc_host_value_get_with_split", .visibility = .hidden });
@@ -3906,12 +3909,6 @@ test "native Roc ABI allocation failures terminate in a subprocess" {
             const payload = testHostValueI64(1);
             host.configureAllocationFailure(1);
             _ = callHostValueToHostValueWithCapability(&host, &roc_host, cap, transform, payload);
-        } else if (std.mem.eql(u8, mode, "duplicate_each_key")) {
-            const cap = testHostValueCapability(&roc_host);
-            const keys = [_]HostValue{ testHostValueI64(42), testHostValueI64(42) };
-            const items = [_]HostValue{ testHostValueI64(1), testHostValueI64(2) };
-            _ = host.engine.internRootScope(host.hostAllocator()) catch unreachable;
-            _ = syncTestEachRowScopes(&host, &roc_host, ids.root_scope, 3, &keys, &items, cap, cap);
         } else unreachable;
         unreachable;
     }
@@ -3921,7 +3918,6 @@ test "native Roc ABI allocation failures terminate in a subprocess" {
         .{ .mode = "realloc", .diagnostic = "HOST ERROR: Roc reallocation failed\n" },
         .{ .mode = "event_callback", .diagnostic = "HOST ERROR: Roc allocation failed\n" },
         .{ .mode = "task_callback", .diagnostic = "HOST ERROR: Roc allocation failed\n" },
-        .{ .mode = "duplicate_each_key", .diagnostic = "Ui.each_str duplicate key \"42\": rows 1 and 2 share this key (each site: parent scope 0, ordinal 3); keys must be unique per list\n" },
     }) |case| {
         var environment = try std.testing.environ.createMap(std.testing.allocator);
         defer environment.deinit();
@@ -4425,11 +4421,62 @@ fn testReadBoolCallable(roc_host: *abi.RocHost) abi.RocErasedCallable {
     );
 }
 
-fn testItemsToValuesCallable(roc_host: *abi.RocHost) abi.RocErasedCallable {
+fn testEachLenCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, _: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
+    const call_args = testErasedArgsAs(ErasedHostValueUnaryArgs, args);
+    defer testDropHostValue(roc_host, call_args.arg0);
+    const list = testReadHostValueI64List(roc_host, call_args.arg0);
+    writeTestErasedResult(u64, ret, @intCast(list.length));
+}
+
+fn testEachCopyKeysCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
+    const capture = testCapturePtrAs(TestErasedI64Capture, capture_ptr);
+    const call_args = testErasedArgsAs(erased_calls.ErasedHostValueU64Args, args);
+    defer testDropHostValue(roc_host, call_args.arg0);
+    const list = testReadHostValueI64List(roc_host, call_args.arg0);
+    var token = call_args.arg1;
+    for (list.items(), 0..) |value, index| {
+        var buffer: [32]u8 = undefined;
+        const projected = if (capture.amount == 0) value else @divTrunc(value, capture.amount);
+        const key = std.fmt.bufPrint(&buffer, "{d}", .{projected}) catch unreachable;
+        const owned_key = abi.RocStr.fromSlice(key, roc_host);
+        defer abi.RocStrRelease.release(owned_key, roc_host);
+        token = hostFromRocHost(roc_host).engine.pushEachKeySink(hostFromRocHost(roc_host), token, @intCast(index), owned_key.asSlice()) catch @panic("test key sink rejected collection adapter output");
+    }
+    writeTestErasedResult(u64, ret, token);
+}
+
+fn testEachComparePairsCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, _: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
+    const call_args = testErasedArgsAs(erased_calls.ErasedHostValueHostValueU64ListU64Args, args);
+    defer testDropHostValue(roc_host, call_args.arg1);
+    defer testDropHostValue(roc_host, call_args.arg0);
+    const owned_pairs = call_args.arg2;
+    defer owned_pairs.decref(roc_host);
+    const old_items = testReadHostValueI64List(roc_host, call_args.arg0).items();
+    const new_items = testReadHostValueI64List(roc_host, call_args.arg1).items();
+    const pairs = owned_pairs.items();
+    var token = call_args.arg3;
+    var result_index: usize = 0;
+    var pair_index: usize = 0;
+    while (pair_index < pairs.len) : (pair_index += 2) {
+        token = hostFromRocHost(roc_host).engine.pushEachBoolSink(hostFromRocHost(roc_host), token, @intCast(result_index), old_items[@intCast(pairs[pair_index])] == new_items[@intCast(pairs[pair_index + 1])]) catch @panic("test bool sink rejected collection adapter output");
+        result_index += 1;
+    }
+    writeTestErasedResult(u64, ret, token);
+}
+
+fn testEachCloneItemCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, _: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
+    const call_args = testErasedArgsAs(erased_calls.ErasedHostValueU64Args, args);
+    defer testDropHostValue(roc_host, call_args.arg0);
+    const list = testReadHostValueI64List(roc_host, call_args.arg0).items();
+    const host = hostFromRocHost(roc_host);
+    writeTestErasedResult(HostValue, ret, capabilityTestHostValue(host, roc_host, hostValueI64(host, roc_host, list[@intCast(call_args.arg1)])));
+}
+
+fn testEachAdapterCallable(roc_host: *abi.RocHost, callback: abi.RocErasedCallableFn) abi.RocErasedCallable {
     return writeTestErasedCallable(
         TestErasedI64Capture,
         roc_host,
-        &testI64ListToHostValuesCallable,
+        callback,
         &testErasedCallableOnDrop,
         .{ .amount = 0 },
     );
@@ -4508,6 +4555,13 @@ fn testBinderInitialCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]cons
     writeTestErasedResult(HostValue, ret, hostFromRocHost(roc_host).cloneHostValue(capture.value));
 }
 
+fn testEachRowKeyI64(roc_host: *abi.RocHost, args: ?[*]const u8) i64 {
+    const call_args = testErasedArgsAs(erased_calls.ErasedRocStrU64Args, args);
+    const key = call_args.arg0;
+    defer abi.RocStrRelease.release(key, roc_host);
+    return std.fmt.parseInt(i64, key.asSlice(), 10) catch @panic("test each row key was not an integer");
+}
+
 fn testBinaryElemCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
     const capture = testCapturePtrAs(TestErasedI64Capture, capture_ptr);
     const call_args = testErasedArgsAs(ErasedHostValueBinaryArgs, args);
@@ -4521,20 +4575,68 @@ fn testBinaryElemCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u
 fn testStatefulRowElemCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
     test_row_elem_call_count += 1;
     const capture = testCapturePtrAs(TestErasedI64Capture, capture_ptr);
-    const call_args = testErasedArgsAs(ErasedHostValueBinaryArgs, args);
-    const key = testReadHostValueI64(roc_host, call_args.arg0);
-    const item = testReadHostValueI64(roc_host, call_args.arg1);
+    const key = testEachRowKeyI64(roc_host, args);
+    const item = key;
     var text_buffer: [64]u8 = undefined;
     const text = std.fmt.bufPrint(&text_buffer, "row-{d}-{d}", .{ key, item + capture.amount }) catch @panic("test stateful row Elem callable could not format text");
     writeTestErasedResult(abi.Elem, ret, testNodeState(roc_host, testNodeText(roc_host, text)));
 }
 
+const TestRowSourceCapture = extern struct {
+    amount: i64,
+    item_cap: HostValueCapability,
+};
+
+const TestRowTextCapture = extern struct {
+    key: i64,
+    amount: i64,
+};
+
+fn testRowSourceTextCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
+    const capture = testCapturePtrAs(TestRowTextCapture, capture_ptr);
+    const call_args = testErasedArgsAs(erased_calls.ErasedHostValueUnaryArgs, args);
+    const item = testReadHostValueI64(roc_host, call_args.arg0);
+    var text_buffer: [64]u8 = undefined;
+    const text = std.fmt.bufPrint(&text_buffer, "row-{d}-{d}", .{ capture.key, item + capture.amount }) catch @panic("test row-source text callable could not format text");
+    writeTestErasedResult(abi.RocStr, ret, RocStr.fromSlice(text, roc_host));
+}
+
+fn testRowSourceCaptureOnDrop(capture_ptr: ?[*]u8, roc_host: *abi.RocHost) callconv(.c) void {
+    const capture = testCapturePtrAs(TestRowSourceCapture, capture_ptr);
+    capture.item_cap.decref(roc_host);
+}
+
+fn testStatefulRowSourceElemCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
+    test_row_elem_call_count += 1;
+    const capture = testCapturePtrAs(TestRowSourceCapture, capture_ptr);
+    const call_args = testErasedArgsAs(erased_calls.ErasedRocStrU64Args, args);
+    const key_string = call_args.arg0;
+    const key = std.fmt.parseInt(i64, key_string.asSlice(), 10) catch @panic("test each row key was not an integer");
+    abi.RocStrRelease.release(key_string, roc_host);
+    const identity = testEachAdapterCallable(roc_host, &testEachCloneItemCallable);
+    const signal = abi.NodeSignalExpr{ .payload = .{ .row_source = .{
+        ._0 = call_args.arg1,
+        ._1 = identity,
+        ._2 = identity,
+        ._3 = hv.retainHostValueCapability(capture.item_cap),
+    } }, .tag = .RowSource };
+    const attrs = [_]abi.NodeAttr{.{ .payload = .{ .signal_text = .{
+        .field = .{ .id = @intFromEnum(RenderTextField.text) },
+        .name = RocStr.fromSlice("", roc_host),
+        .read = .{
+            .capability = hv.retainHostValueCapability(capture.item_cap),
+            .read = writeTestErasedCallable(TestRowTextCapture, roc_host, &testRowSourceTextCallable, &testErasedCallableOnDrop, .{ .key = key, .amount = capture.amount }),
+        },
+        .signal = boxTestNodeSignalExpr(roc_host, signal),
+    } }, .tag = .SignalText }};
+    writeTestErasedResult(abi.Elem, ret, testNodeState(roc_host, testElementWith(roc_host, "span", &attrs, &.{})));
+}
+
 fn testStatefulRowButtonElemCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
     test_row_elem_call_count += 1;
     const capture = testCapturePtrAs(TestErasedI64Capture, capture_ptr);
-    const call_args = testErasedArgsAs(ErasedHostValueBinaryArgs, args);
-    const key = testReadHostValueI64(roc_host, call_args.arg0);
-    const item = testReadHostValueI64(roc_host, call_args.arg1);
+    const key = testEachRowKeyI64(roc_host, args);
+    const item = key;
     var text_buffer: [64]u8 = undefined;
     const text = std.fmt.bufPrint(&text_buffer, "row-action-{d}-{d}", .{ key, item + capture.amount }) catch @panic("test stateful row button Elem callable could not format text");
     const token = newTestBinderToken(roc_host);
@@ -4549,9 +4651,8 @@ fn testStatefulRowButtonElemCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: 
 fn testNestedWhenRowElemCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
     test_row_elem_call_count += 1;
     const capture = testCapturePtrAs(TestErasedBinderCapture, capture_ptr);
-    const call_args = testErasedArgsAs(ErasedHostValueBinaryArgs, args);
-    const key = testReadHostValueI64(roc_host, call_args.arg0);
-    const item = testReadHostValueI64(roc_host, call_args.arg1);
+    const key = testEachRowKeyI64(roc_host, args);
+    const item = key;
 
     var true_text_buffer: [64]u8 = undefined;
     var false_text_buffer: [64]u8 = undefined;
@@ -4570,7 +4671,7 @@ fn testNestedWhenRowElemCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]
 }
 
 fn testInitialEachNestedRowElemCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
-    _ = args;
+    _ = testEachRowKeyI64(roc_host, args);
     _ = capture_ptr;
     const state_token = newTestBinderToken(roc_host);
     const state_cap = testHostValueCapability(roc_host);
@@ -4595,8 +4696,7 @@ fn testInitialEachNestedRowElemCallable(roc_host: *abi.RocHost, ret: ?[*]u8, arg
 fn testNestedEachRowElemCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
     _ = capture_ptr;
     test_row_elem_call_count += 1;
-    const call_args = testErasedArgsAs(ErasedHostValueBinaryArgs, args);
-    const key = testReadHostValueI64(roc_host, call_args.arg0);
+    const key = testEachRowKeyI64(roc_host, args);
     const inner_items = [_]HostValue{ testHostValueI64(key * 10 + 1), testHostValueI64(key * 10 + 2) };
     var text_buffer: [64]u8 = undefined;
     const text = std.fmt.bufPrint(&text_buffer, "outer-{d}", .{key}) catch @panic("test nested each row Elem callable could not format text");
@@ -4625,9 +4725,8 @@ const TestNestedRowsCapture = extern struct {
 fn testMiddleRowByItemElemCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
     _ = capture_ptr;
     test_row_elem_call_count += 1;
-    const call_args = testErasedArgsAs(ErasedHostValueBinaryArgs, args);
-    const key = testReadHostValueI64(roc_host, call_args.arg0);
-    const item = testReadHostValueI64(roc_host, call_args.arg1);
+    const key = testEachRowKeyI64(roc_host, args);
+    const item = key;
     const count: usize = @intCast(@mod(item, 100));
     var inner_items: [8]HostValue = undefined;
     if (count > inner_items.len) @panic("test middle row by item callable was asked for more rows than it can hold");
@@ -4645,9 +4744,8 @@ fn testMiddleRowByItemElemCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[
 fn testNestedRowsByItemElemCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
     test_row_elem_call_count += 1;
     const capture = testCapturePtrAs(TestNestedRowsCapture, capture_ptr);
-    const call_args = testErasedArgsAs(ErasedHostValueBinaryArgs, args);
-    const key = testReadHostValueI64(roc_host, call_args.arg0);
-    const item = testReadHostValueI64(roc_host, call_args.arg1);
+    const key = testEachRowKeyI64(roc_host, args);
+    const item = key;
     var inner_items: [8]HostValue = undefined;
     var inner_len: usize = 0;
     switch (capture.mode) {
@@ -4691,9 +4789,8 @@ fn testNestedRowsByItemElemCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?
 fn testWhenRowByItemElemCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
     _ = capture_ptr;
     test_row_elem_call_count += 1;
-    const call_args = testErasedArgsAs(ErasedHostValueBinaryArgs, args);
-    const key = testReadHostValueI64(roc_host, call_args.arg0);
-    const item = testReadHostValueI64(roc_host, call_args.arg1);
+    const key = testEachRowKeyI64(roc_host, args);
+    const item = key;
     var text_buffer: [64]u8 = undefined;
     const text = std.fmt.bufPrint(&text_buffer, "outer-{d}-{d}", .{ key, item }) catch @panic("test when row by item callable could not format text");
     var branch_buffer: [64]u8 = undefined;
@@ -4708,8 +4805,7 @@ fn testWhenRowByItemElemCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]
 fn testNestedStatefulEachRowElemCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
     _ = capture_ptr;
     test_row_elem_call_count += 1;
-    const call_args = testErasedArgsAs(ErasedHostValueBinaryArgs, args);
-    const key = testReadHostValueI64(roc_host, call_args.arg0);
+    const key = testEachRowKeyI64(roc_host, args);
     const inner_items = [_]HostValue{ testHostValueI64(key * 10 + 1), testHostValueI64(key * 10 + 2), testHostValueI64(key * 10 + 3) };
     var text_buffer: [64]u8 = undefined;
     const text = std.fmt.bufPrint(&text_buffer, "outer-{d}", .{key}) catch @panic("test nested stateful each row Elem callable could not format text");
@@ -4723,8 +4819,7 @@ fn testNestedStatefulEachRowElemCallable(roc_host: *abi.RocHost, ret: ?[*]u8, ar
 fn testDoublyNestedEachRowElemCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
     _ = capture_ptr;
     test_row_elem_call_count += 1;
-    const call_args = testErasedArgsAs(ErasedHostValueBinaryArgs, args);
-    const key = testReadHostValueI64(roc_host, call_args.arg0);
+    const key = testEachRowKeyI64(roc_host, args);
     const inner_items = [_]HostValue{ testHostValueI64(key * 10 + 1), testHostValueI64(key * 10 + 2) };
     var text_buffer: [64]u8 = undefined;
     const text = std.fmt.bufPrint(&text_buffer, "deep-{d}", .{key}) catch @panic("test doubly nested each row Elem callable could not format text");
@@ -4738,8 +4833,7 @@ fn testDoublyNestedEachRowElemCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args
 fn testIntervalBranchRowElemCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
     _ = capture_ptr;
     test_row_elem_call_count += 1;
-    const call_args = testErasedArgsAs(ErasedHostValueBinaryArgs, args);
-    const key = testReadHostValueI64(roc_host, call_args.arg0);
+    const key = testEachRowKeyI64(roc_host, args);
     var text_buffer: [64]u8 = undefined;
     const text = std.fmt.bufPrint(&text_buffer, "row-{d}", .{key}) catch @panic("test interval branch row Elem callable could not format text");
     const clock = testNodeI64TextSignal(roc_host, testNodeIntervalSourceExpr(roc_host, 100, key));
@@ -5901,95 +5995,6 @@ test "signals host supplies the deterministic native entropy seed as little endi
     defer testDropHostValue(&roc_host, value);
     const payload = testReadHostValueU8List(&roc_host, value);
     try std.testing.expectEqualSlices(u8, &.{ 0x53, 0x63, 0x6f, 0x72 }, payload.items());
-}
-
-test "signals host interns scopes and node identities from explicit paths" {
-    test_erased_callable_drop_count = 0;
-
-    var host = HostEnv.init();
-    var roc_host = makeSignalsRocHost(&host);
-    host.engine.roc_host = &roc_host;
-    defer {
-        deinitTestHostIdentity(&host);
-        _ = host.gpa.deinit();
-    }
-
-    const root = host.internRootScope();
-    try std.testing.expectEqual(ids.root_scope, root);
-    try std.testing.expectEqual(root, host.internRootScope());
-
-    const true_branch = host.internWhenBranchScope(root, ids.SiteOrdinal.fromRaw(2), .true_branch);
-    try std.testing.expectEqual(true_branch, host.internWhenBranchScope(root, ids.SiteOrdinal.fromRaw(2), .true_branch));
-
-    const false_branch = host.internWhenBranchScope(root, ids.SiteOrdinal.fromRaw(2), .false_branch);
-    try std.testing.expect(false_branch != true_branch);
-
-    const nested_true_branch = host.internWhenBranchScope(true_branch, ids.SiteOrdinal.fromRaw(2), .true_branch);
-    try std.testing.expect(nested_true_branch != true_branch);
-
-    const key_cap = testHostValueCapability(&roc_host);
-    defer key_cap.decref(&roc_host);
-
-    const initial_keys = [_]HostValue{ testHostValueI64(10), testHostValueI64(11) };
-    const initial_rows = syncTestEachRowScopes(&host, &roc_host, root, 7, &initial_keys, &initial_keys, key_cap, key_cap);
-    defer freeKeyedRowDiff(&host, initial_rows);
-    const row_a = initial_rows.scope_ids[0];
-    const row_b = initial_rows.scope_ids[1];
-    try std.testing.expect(row_b != row_a);
-
-    const same_keys = [_]HostValue{testHostValueI64(10)};
-    const same_rows = syncTestEachRowScopes(&host, &roc_host, root, 7, &same_keys, &same_keys, key_cap, key_cap);
-    defer freeKeyedRowDiff(&host, same_rows);
-    try std.testing.expectEqual(row_a, same_rows.scope_ids[0]);
-
-    const other_site_keys = [_]HostValue{testHostValueI64(10)};
-    const other_site_rows = syncTestEachRowScopes(&host, &roc_host, root, 8, &other_site_keys, &other_site_keys, key_cap, key_cap);
-    defer freeKeyedRowDiff(&host, other_site_rows);
-    const same_key_other_site = other_site_rows.scope_ids[0];
-    try std.testing.expect(same_key_other_site != row_a);
-
-    const root_state = host.internNodeIdentity(root, ids.SiteOrdinal.fromRaw(0));
-    try std.testing.expectEqual(root_state, host.internNodeIdentity(root, ids.SiteOrdinal.fromRaw(0)));
-
-    const row_state = host.internNodeIdentity(row_a, ids.SiteOrdinal.fromRaw(0));
-    try std.testing.expect(row_state != root_state);
-
-    const row_next_state = host.internNodeIdentity(row_a, ids.SiteOrdinal.fromRaw(1));
-    try std.testing.expect(row_next_state != row_state);
-}
-
-test "signals host disposal retires scope subtree identities" {
-    test_erased_callable_drop_count = 0;
-
-    var host = HostEnv.init();
-    var roc_host = makeSignalsRocHost(&host);
-    host.engine.roc_host = &roc_host;
-    defer {
-        deinitTestHostIdentity(&host);
-        _ = host.gpa.deinit();
-    }
-
-    const key_cap = testHostValueCapability(&roc_host);
-    defer key_cap.decref(&roc_host);
-
-    const root = host.internRootScope();
-    const row = createTestEachRowScope(&host, &roc_host, root, 3, testHostValueI64(10), testHostValueI64(10), key_cap, key_cap);
-    const branch = host.internWhenBranchScope(row, ids.SiteOrdinal.fromRaw(4), .true_branch);
-    const row_state = host.internNodeIdentity(row, ids.SiteOrdinal.fromRaw(0));
-    const branch_state = host.internNodeIdentity(branch, ids.SiteOrdinal.fromRaw(0));
-
-    host.disposeScopeSubtree(&roc_host, row);
-    try std.testing.expectEqual(@as(u64, 2), host.engine.pending_roc_metrics.scopes_disposed);
-    try std.testing.expect(!host.engine.scopes.items[row.index()].lifecycle.isActive());
-    try std.testing.expect(!host.engine.scopes.items[branch.index()].lifecycle.isActive());
-    try std.testing.expect(!host.engine.node_identities.items[row_state.index()].lifecycle.isActive());
-    try std.testing.expect(!host.engine.node_identities.items[branch_state.index()].lifecycle.isActive());
-
-    const recreated_row = createTestEachRowScope(&host, &roc_host, root, 3, testHostValueI64(10), testHostValueI64(10), key_cap, key_cap);
-    try std.testing.expect(row != recreated_row);
-
-    const recreated_state = host.internNodeIdentity(recreated_row, ids.SiteOrdinal.fromRaw(0));
-    try std.testing.expect(row_state != recreated_state);
 }
 
 test "signals host patches dirty leaf sinks without descriptor rebuild" {
@@ -7392,8 +7397,7 @@ const TestListWhenRowCapture = extern struct { token: *const HostBinderToken, mi
 
 fn testListWhenRowElemCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
     const capture = testCapturePtrAs(TestListWhenRowCapture, capture_ptr);
-    const call_args = testErasedArgsAs(ErasedHostValueBinaryArgs, args);
-    const key = testReadHostValueI64(roc_host, call_args.arg0);
+    const key = testEachRowKeyI64(roc_host, args);
     var on_buffer: [32]u8 = undefined;
     var off_buffer: [32]u8 = undefined;
     const on = std.fmt.bufPrint(&on_buffer, "row-{d}-on", .{key}) catch unreachable;
@@ -7866,8 +7870,9 @@ test "changing a row item keeps its rendered nodes and diffs their fields" {
                 _ = try host.engine.tryDispatchStateValue(&host, &roc_host, state_id.raw(), testHostValueI64List(&roc_host, &retry_items), state_cap);
             } else _ = try result;
 
-            // The row builder ran once, for the changed row only.
-            try std.testing.expectEqual(row_calls_before + 1, test_row_elem_call_count);
+            // Item-only changes update the stable row source; the row builder
+            // remains a once-per-created-row structural operation.
+            try std.testing.expectEqual(row_calls_before, test_row_elem_call_count);
             try std.testing.expectEqual(@as(u64, 3), host.engine.pending_roc_metrics.rows_reused - rows_before.rows_reused);
             try std.testing.expectEqual(@as(u64, 0), host.engine.pending_roc_metrics.rows_created - rows_before.rows_created);
             try std.testing.expectEqual(@as(u64, 0), host.engine.pending_roc_metrics.rows_removed - rows_before.rows_removed);
@@ -7957,303 +7962,6 @@ fn mountNestedRowsByItemWithTrailingSite(host: *HostEnv, roc_host: *abi.RocHost,
     return host.engine.active_stream.scope_sites.items[0].node_id;
 }
 
-test "re-collecting an outer row reconciles its nested rows by key" {
-    // Row 2's item changes under the same key, so the row builder runs again
-    // and the row is re-collected in place. Its nested keyed list produces the
-    // same two keys, which used to be mounted afresh under fresh scopes while
-    // the old nested rows retired: every nested row of an edited row was
-    // created and removed, its state cell and DOM node with it. The nested
-    // site must be reconciled by key like any other live site, so both rows
-    // survive untouched and only the outer label changes.
-    const Runner = struct {
-        fn run(failure_number: ?usize) !usize {
-            test_erased_callable_drop_count = 0;
-            test_row_elem_call_count = 0;
-            var host = HostEnv.init();
-            var roc_host = makeSignalsRocHost(&host);
-            host.engine.roc_host = &roc_host;
-            defer {
-                host.deinit();
-                _ = host.gpa.deinit();
-            }
-
-            const state_token = newTestBinderToken(&roc_host);
-            const state_cap = testHostValueCapability(&roc_host);
-            const initial_items = [_]HostValue{ testHostValueI64(101), testHostValueI64(202), testHostValueI64(303) };
-            const state_id = mountNestedRowsByItem(&host, &roc_host, state_token, state_cap, 0, &initial_items);
-            const row_21_id = activeTextElementId(&host, "row-21-21") orelse return error.TestUnexpectedResult;
-            const row_22_id = activeTextElementId(&host, "row-22-22") orelse return error.TestUnexpectedResult;
-            const parent_id = parentOfText(&host, "outer-2-202") orelse return error.TestUnexpectedResult;
-            try std.testing.expectEqual(@as(usize, 4), host.engine.each_row_sites.items.len);
-            // The root cell plus one per nested row.
-            try std.testing.expectEqual(@as(usize, 7), host.engine.states.items.len);
-            const metrics_before = host.engine.pending_roc_metrics;
-            const row_calls_before = test_row_elem_call_count;
-
-            const attempts = try dispatchStateValueSweeping(&host, &roc_host, state_id, testHostValueI64List(&roc_host, &.{ testHostValueI64(101), testHostValueI64(250), testHostValueI64(303) }), testHostValueI64List(&roc_host, &.{ testHostValueI64(101), testHostValueI64(250), testHostValueI64(303) }), state_cap, failure_number);
-
-            // Only the outer row builder ran; no nested row was re-collected.
-            // A refused attempt may already have run it once before refusing.
-            if (failure_number == null) try std.testing.expectEqual(row_calls_before + 1, test_row_elem_call_count);
-            try std.testing.expectEqual(@as(u64, 5), host.engine.pending_roc_metrics.rows_reused - metrics_before.rows_reused);
-            try std.testing.expectEqual(@as(u64, 0), host.engine.pending_roc_metrics.rows_created - metrics_before.rows_created);
-            try std.testing.expectEqual(@as(u64, 0), host.engine.pending_roc_metrics.rows_removed - metrics_before.rows_removed);
-            try std.testing.expectEqual(@as(u64, 0), host.engine.pending_roc_metrics.scopes_created - metrics_before.scopes_created);
-            try std.testing.expectEqual(@as(u64, 0), host.engine.pending_roc_metrics.scopes_disposed - metrics_before.scopes_disposed);
-            try std.testing.expect(activeTextElementId(&host, "outer-2-202") == null);
-            try std.testing.expectEqual(parent_id, parentOfText(&host, "outer-2-250") orelse return error.TestUnexpectedResult);
-            // The nested rows kept their nodes, their state cells, and their place.
-            try std.testing.expectEqual(row_21_id, activeTextElementId(&host, "row-21-21") orelse return error.TestUnexpectedResult);
-            try std.testing.expectEqual(row_22_id, activeTextElementId(&host, "row-22-22") orelse return error.TestUnexpectedResult);
-            try std.testing.expectEqual(@as(?usize, 0), childOrderOfText(&host, parent_id, "outer-2-250"));
-            try std.testing.expectEqual(@as(?usize, 1), childOrderOfText(&host, parent_id, "row-21-21"));
-            try std.testing.expectEqual(@as(?usize, 2), childOrderOfText(&host, parent_id, "row-22-22"));
-            try std.testing.expectEqual(@as(usize, 4), host.engine.each_row_sites.items.len);
-            try std.testing.expectEqual(@as(usize, 7), host.engine.states.items.len);
-            try std.testing.expect(activeTextElementId(&host, "row-11-11") != null);
-            try std.testing.expect(activeTextElementId(&host, "row-32-32") != null);
-            return attempts;
-        }
-    };
-
-    const attempts = try Runner.run(null);
-    try std.testing.expect(attempts != 0);
-}
-
-test "reordering nested rows under a re-collected row moves them without creating any" {
-    // The same two nested keys come back in the other order when the outer
-    // item turns odd. A pure reorder must move the surviving rows and report
-    // no created or removed row, at either depth.
-    const Runner = struct {
-        fn run(failure_number: ?usize) !usize {
-            test_erased_callable_drop_count = 0;
-            test_row_elem_call_count = 0;
-            var host = HostEnv.init();
-            var roc_host = makeSignalsRocHost(&host);
-            host.engine.roc_host = &roc_host;
-            defer {
-                host.deinit();
-                _ = host.gpa.deinit();
-            }
-
-            const state_token = newTestBinderToken(&roc_host);
-            const state_cap = testHostValueCapability(&roc_host);
-            const initial_items = [_]HostValue{ testHostValueI64(101), testHostValueI64(202), testHostValueI64(303) };
-            const state_id = mountNestedRowsByItem(&host, &roc_host, state_token, state_cap, 1, &initial_items);
-            const row_21_id = activeTextElementId(&host, "row-21-21") orelse return error.TestUnexpectedResult;
-            const row_22_id = activeTextElementId(&host, "row-22-22") orelse return error.TestUnexpectedResult;
-            const parent_id = parentOfText(&host, "outer-2-202") orelse return error.TestUnexpectedResult;
-            try std.testing.expectEqual(@as(?usize, 1), childOrderOfText(&host, parent_id, "row-21-21"));
-            try std.testing.expectEqual(@as(?usize, 2), childOrderOfText(&host, parent_id, "row-22-22"));
-            const metrics_before = host.engine.pending_roc_metrics;
-            const row_calls_before = test_row_elem_call_count;
-
-            const attempts = try dispatchStateValueSweeping(&host, &roc_host, state_id, testHostValueI64List(&roc_host, &.{ testHostValueI64(101), testHostValueI64(203), testHostValueI64(303) }), testHostValueI64List(&roc_host, &.{ testHostValueI64(101), testHostValueI64(203), testHostValueI64(303) }), state_cap, failure_number);
-
-            if (failure_number == null) try std.testing.expectEqual(row_calls_before + 1, test_row_elem_call_count);
-            try std.testing.expectEqual(@as(u64, 5), host.engine.pending_roc_metrics.rows_reused - metrics_before.rows_reused);
-            try std.testing.expectEqual(@as(u64, 0), host.engine.pending_roc_metrics.rows_created - metrics_before.rows_created);
-            try std.testing.expectEqual(@as(u64, 0), host.engine.pending_roc_metrics.rows_removed - metrics_before.rows_removed);
-            try std.testing.expectEqual(@as(u64, 0), host.engine.pending_roc_metrics.scopes_created - metrics_before.scopes_created);
-            try std.testing.expectEqual(@as(u64, 0), host.engine.pending_roc_metrics.scopes_disposed - metrics_before.scopes_disposed);
-            try std.testing.expectEqual(row_21_id, activeTextElementId(&host, "row-21-21") orelse return error.TestUnexpectedResult);
-            try std.testing.expectEqual(row_22_id, activeTextElementId(&host, "row-22-22") orelse return error.TestUnexpectedResult);
-            try std.testing.expectEqual(@as(?usize, 0), childOrderOfText(&host, parent_id, "outer-2-203"));
-            try std.testing.expectEqual(@as(?usize, 1), childOrderOfText(&host, parent_id, "row-22-22"));
-            try std.testing.expectEqual(@as(?usize, 2), childOrderOfText(&host, parent_id, "row-21-21"));
-            try std.testing.expect((streamOrderOfText(&host, "row-22-22") orelse return error.TestUnexpectedResult) < (streamOrderOfText(&host, "row-21-21") orelse return error.TestUnexpectedResult));
-            try std.testing.expectEqual(@as(usize, 4), host.engine.each_row_sites.items.len);
-            return attempts;
-        }
-    };
-
-    const attempts = try Runner.run(null);
-    try std.testing.expect(attempts != 0);
-}
-
-test "a nested row added under a re-collected row is the only row created" {
-    // Row 2's nested list grows from two rows to three when its item changes.
-    // The two surviving nested rows stay, the new one mounts, and the
-    // transaction reports exactly that.
-    const Runner = struct {
-        fn run(failure_number: ?usize) !usize {
-            test_erased_callable_drop_count = 0;
-            test_row_elem_call_count = 0;
-            var host = HostEnv.init();
-            var roc_host = makeSignalsRocHost(&host);
-            host.engine.roc_host = &roc_host;
-            defer {
-                host.deinit();
-                _ = host.gpa.deinit();
-            }
-
-            const state_token = newTestBinderToken(&roc_host);
-            const state_cap = testHostValueCapability(&roc_host);
-            const initial_items = [_]HostValue{ testHostValueI64(101), testHostValueI64(202), testHostValueI64(303) };
-            const state_id = mountNestedRowsByItem(&host, &roc_host, state_token, state_cap, 2, &initial_items);
-            const row_21_id = activeTextElementId(&host, "row-21-21") orelse return error.TestUnexpectedResult;
-            const row_22_id = activeTextElementId(&host, "row-22-22") orelse return error.TestUnexpectedResult;
-            const parent_id = parentOfText(&host, "outer-2-202") orelse return error.TestUnexpectedResult;
-            try std.testing.expectEqual(@as(usize, 7), host.engine.states.items.len);
-            const metrics_before = host.engine.pending_roc_metrics;
-            const row_calls_before = test_row_elem_call_count;
-
-            const attempts = try dispatchStateValueSweeping(&host, &roc_host, state_id, testHostValueI64List(&roc_host, &.{ testHostValueI64(101), testHostValueI64(203), testHostValueI64(303) }), testHostValueI64List(&roc_host, &.{ testHostValueI64(101), testHostValueI64(203), testHostValueI64(303) }), state_cap, failure_number);
-
-            // The outer row builder and the created nested row's builder.
-            if (failure_number == null) try std.testing.expectEqual(row_calls_before + 2, test_row_elem_call_count);
-            try std.testing.expectEqual(@as(u64, 5), host.engine.pending_roc_metrics.rows_reused - metrics_before.rows_reused);
-            try std.testing.expectEqual(@as(u64, 1), host.engine.pending_roc_metrics.rows_created - metrics_before.rows_created);
-            try std.testing.expectEqual(@as(u64, 0), host.engine.pending_roc_metrics.rows_removed - metrics_before.rows_removed);
-            try std.testing.expectEqual(@as(u64, 1), host.engine.pending_roc_metrics.scopes_created - metrics_before.scopes_created);
-            try std.testing.expectEqual(@as(u64, 0), host.engine.pending_roc_metrics.scopes_disposed - metrics_before.scopes_disposed);
-            try std.testing.expectEqual(row_21_id, activeTextElementId(&host, "row-21-21") orelse return error.TestUnexpectedResult);
-            try std.testing.expectEqual(row_22_id, activeTextElementId(&host, "row-22-22") orelse return error.TestUnexpectedResult);
-            try std.testing.expectEqual(@as(?usize, 1), childOrderOfText(&host, parent_id, "row-21-21"));
-            try std.testing.expectEqual(@as(?usize, 2), childOrderOfText(&host, parent_id, "row-22-22"));
-            try std.testing.expectEqual(@as(?usize, 3), childOrderOfText(&host, parent_id, "row-23-23"));
-            try std.testing.expectEqual(@as(usize, 8), host.engine.states.items.len);
-            try std.testing.expectEqual(@as(usize, 4), host.engine.each_row_sites.items.len);
-            return attempts;
-        }
-    };
-
-    const attempts = try Runner.run(null);
-    try std.testing.expect(attempts != 0);
-}
-
-test "a row re-collected under a re-collected row lays its own live nested site out inside it" {
-    // Three keyed levels. Editing the outer item re-collects outer row 2 in
-    // place; its middle row 21 survives with a changed item and is
-    // re-collected in place too, while middle row 22 is untouched. Row 21's
-    // innermost list grows from no row to one, so the innermost site is a
-    // live nested site collected inside a replacement that is itself
-    // collected inside the outer row's replacement. The render layout used
-    // to hand the innermost region to the outer row's replacement, whose
-    // scope-site span contains both, because the innermost site's
-    // descriptor precedes the middle site's, and then refused the middle
-    // region as InvalidRenderTopology. A site after the outer list is then
-    // shifted by the innermost region's growth on top of the outer region's,
-    // which already carries it, so it landed past the end of the render
-    // stream.
-    const Runner = struct {
-        fn run(failure_number: ?usize) !usize {
-            test_erased_callable_drop_count = 0;
-            test_row_elem_call_count = 0;
-            var host = HostEnv.init();
-            var roc_host = makeSignalsRocHost(&host);
-            host.engine.roc_host = &roc_host;
-            defer {
-                host.deinit();
-                _ = host.gpa.deinit();
-            }
-
-            const state_token = newTestBinderToken(&roc_host);
-            const state_cap = testHostValueCapability(&roc_host);
-            const initial_items = [_]HostValue{ testHostValueI64(100), testHostValueI64(200) };
-            const state_id = mountNestedRowsByItemWithTrailingSite(&host, &roc_host, state_token, state_cap, 3, &initial_items, true);
-            const trailing_index = streamOrderOfText(&host, "row-9-9") orelse return error.TestUnexpectedResult;
-            const mid_21_parent = parentOfText(&host, "mid-21-2100") orelse return error.TestUnexpectedResult;
-            const mid_22_id = activeTextElementId(&host, "mid-22-2200") orelse return error.TestUnexpectedResult;
-            const parent_id = parentOfText(&host, "outer-2-200") orelse return error.TestUnexpectedResult;
-            // The root cell and the trailing row's: no innermost row exists yet.
-            try std.testing.expectEqual(@as(usize, 2), host.engine.states.items.len);
-            try std.testing.expect(activeTextElementId(&host, "row-211-211") == null);
-            const metrics_before = host.engine.pending_roc_metrics;
-            const row_calls_before = test_row_elem_call_count;
-
-            const attempts = try dispatchStateValueSweeping(&host, &roc_host, state_id, testHostValueI64List(&roc_host, &.{ testHostValueI64(100), testHostValueI64(201) }), testHostValueI64List(&roc_host, &.{ testHostValueI64(100), testHostValueI64(201) }), state_cap, failure_number);
-
-            // The outer row, middle row 21, and the created innermost row.
-            if (failure_number == null) try std.testing.expectEqual(row_calls_before + 3, test_row_elem_call_count);
-            // Outer rows 1 and 2, middle rows 21 and 22.
-            try std.testing.expectEqual(@as(u64, 4), host.engine.pending_roc_metrics.rows_reused - metrics_before.rows_reused);
-            try std.testing.expectEqual(@as(u64, 1), host.engine.pending_roc_metrics.rows_created - metrics_before.rows_created);
-            try std.testing.expectEqual(@as(u64, 0), host.engine.pending_roc_metrics.rows_removed - metrics_before.rows_removed);
-            try std.testing.expectEqual(@as(u64, 1), host.engine.pending_roc_metrics.scopes_created - metrics_before.scopes_created);
-            try std.testing.expectEqual(@as(u64, 0), host.engine.pending_roc_metrics.scopes_disposed - metrics_before.scopes_disposed);
-            try std.testing.expectEqual(@as(?usize, 0), childOrderOfText(&host, parent_id, "outer-2-201"));
-            const mid_21_parent_after = parentOfText(&host, "mid-21-2101") orelse return error.TestUnexpectedResult;
-            try std.testing.expectEqual(mid_21_parent, mid_21_parent_after);
-            try std.testing.expectEqual(@as(?usize, 0), childOrderOfText(&host, mid_21_parent_after, "mid-21-2101"));
-            try std.testing.expectEqual(@as(?usize, 1), childOrderOfText(&host, mid_21_parent_after, "row-211-211"));
-            try std.testing.expectEqual(mid_22_id, activeTextElementId(&host, "mid-22-2200") orelse return error.TestUnexpectedResult);
-            // The middle row elements keep their order under the outer row.
-            const outer_children = host.engine.render_cache.nodes.items[parent_id.index()].children.items;
-            try std.testing.expectEqual(@as(usize, 3), outer_children.len);
-            try std.testing.expectEqual(mid_21_parent_after, outer_children[1]);
-            try std.testing.expectEqual(parentOfText(&host, "mid-22-2200") orelse return error.TestUnexpectedResult, outer_children[2]);
-            try std.testing.expectEqual(@as(usize, 3), host.engine.states.items.len);
-            try std.testing.expect(activeTextElementId(&host, "mid-11-1100") != null);
-            // The trailing site moved by the one innermost row, once.
-            try std.testing.expectEqual(trailing_index + 1, streamOrderOfText(&host, "row-9-9") orelse return error.TestUnexpectedResult);
-            // The trailing site is the root scope's last each site.
-            const root_scope_id = host.engine.active_stream.scope_sites.items[0].scope_id;
-            var trailing_site: ?engine.HostNodeScopeSiteDesc = null;
-            for (host.engine.active_stream.scope_sites.items) |site| {
-                if (site.kind != .each or site.scope_id != root_scope_id) continue;
-                if (trailing_site == null or site.ordinal.raw() > trailing_site.?.ordinal.raw()) trailing_site = site;
-            }
-            try std.testing.expectEqual(trailing_index + 1, (trailing_site orelse return error.TestUnexpectedResult).render_insert_index);
-            return attempts;
-        }
-    };
-
-    const attempts = try Runner.run(null);
-    try std.testing.expect(attempts != 0);
-}
-
-test "nested rows removed under a re-collected row retire with their cells" {
-    // Row 2's nested list shrinks from two rows to one when its item changes.
-    // The survivor stays, the other row retires with its state cell, and the
-    // transaction reports one reused row per depth and one removal.
-    const Runner = struct {
-        fn run(failure_number: ?usize) !usize {
-            test_erased_callable_drop_count = 0;
-            test_row_elem_call_count = 0;
-            var host = HostEnv.init();
-            var roc_host = makeSignalsRocHost(&host);
-            host.engine.roc_host = &roc_host;
-            defer {
-                host.deinit();
-                _ = host.gpa.deinit();
-            }
-
-            const state_token = newTestBinderToken(&roc_host);
-            const state_cap = testHostValueCapability(&roc_host);
-            const initial_items = [_]HostValue{ testHostValueI64(101), testHostValueI64(202), testHostValueI64(303) };
-            const state_id = mountNestedRowsByItem(&host, &roc_host, state_token, state_cap, 2, &initial_items);
-            const row_21_id = activeTextElementId(&host, "row-21-21") orelse return error.TestUnexpectedResult;
-            const parent_id = parentOfText(&host, "outer-2-202") orelse return error.TestUnexpectedResult;
-            try std.testing.expectEqual(@as(usize, 7), host.engine.states.items.len);
-            const scope_len_before = host.engine.scopes.items.len;
-            const metrics_before = host.engine.pending_roc_metrics;
-            const row_calls_before = test_row_elem_call_count;
-
-            const attempts = try dispatchStateValueSweeping(&host, &roc_host, state_id, testHostValueI64List(&roc_host, &.{ testHostValueI64(101), testHostValueI64(201), testHostValueI64(303) }), testHostValueI64List(&roc_host, &.{ testHostValueI64(101), testHostValueI64(201), testHostValueI64(303) }), state_cap, failure_number);
-
-            if (failure_number == null) try std.testing.expectEqual(row_calls_before + 1, test_row_elem_call_count);
-            try std.testing.expectEqual(@as(u64, 4), host.engine.pending_roc_metrics.rows_reused - metrics_before.rows_reused);
-            try std.testing.expectEqual(@as(u64, 0), host.engine.pending_roc_metrics.rows_created - metrics_before.rows_created);
-            try std.testing.expectEqual(@as(u64, 1), host.engine.pending_roc_metrics.rows_removed - metrics_before.rows_removed);
-            try std.testing.expectEqual(@as(u64, 0), host.engine.pending_roc_metrics.scopes_created - metrics_before.scopes_created);
-            try std.testing.expectEqual(@as(u64, 1), host.engine.pending_roc_metrics.scopes_disposed - metrics_before.scopes_disposed);
-            try std.testing.expectEqual(row_21_id, activeTextElementId(&host, "row-21-21") orelse return error.TestUnexpectedResult);
-            try std.testing.expect(activeTextElementId(&host, "row-22-22") == null);
-            try std.testing.expectEqual(@as(?usize, 0), childOrderOfText(&host, parent_id, "outer-2-201"));
-            try std.testing.expectEqual(@as(?usize, 1), childOrderOfText(&host, parent_id, "row-21-21"));
-            try std.testing.expectEqual(@as(usize, 2), host.engine.render_cache.nodes.items[parent_id.index()].children.items.len);
-            try std.testing.expectEqual(@as(usize, 6), host.engine.states.items.len);
-            try std.testing.expectEqual(scope_len_before, host.engine.scopes.items.len);
-            try std.testing.expectEqual(@as(usize, 4), host.engine.each_row_sites.items.len);
-            return attempts;
-        }
-    };
-
-    const attempts = try Runner.run(null);
-    try std.testing.expect(attempts != 0);
-}
-
 test "re-collecting a stateful row twice keeps its identities and state cell" {
     // A row whose key survives with a changed item is re-collected in place
     // under its committed scope, so its construction sites resolve to the
@@ -8314,61 +8022,6 @@ test "re-collecting a stateful row twice keeps its identities and state cell" {
             try std.testing.expectEqual(dom_identity_len, host.engine.dom_identities.items.len);
             try std.testing.expect(activeTextElementId(&host, "row-1-101") != null);
             try std.testing.expect(activeTextElementId(&host, "row-3-303") != null);
-            return attempts;
-        }
-    };
-
-    const attempts = try Runner.run(null);
-    try std.testing.expect(attempts != 0);
-}
-
-test "re-collecting a row keeps the branch scope of the when it holds" {
-    // A `when` inside a re-collected row is collected again under the row's
-    // committed scope. Its branch scope used to be reserved afresh every time
-    // while the committed one stayed active: two scopes claimed the same
-    // branch, the old one never retired, and the next transaction that
-    // looked the branch up found both.
-    const Runner = struct {
-        fn run(failure_number: ?usize) !usize {
-            test_erased_callable_drop_count = 0;
-            test_row_elem_call_count = 0;
-            var host = HostEnv.init();
-            var roc_host = makeSignalsRocHost(&host);
-            host.engine.roc_host = &roc_host;
-            defer {
-                host.deinit();
-                _ = host.gpa.deinit();
-            }
-
-            const state_token = newTestBinderToken(&roc_host);
-            const state_cap = testHostValueCapability(&roc_host);
-            const each = testNodeEachWithSignalCapabilityKeyOfRowAndCapture(TestErasedI64Capture, &roc_host, testNodeRefExpr(state_token), state_cap, &testBucketKeyHostValueCallable, .{ .amount = 100 }, &testWhenRowByItemElemCallable, .{ .amount = 0 });
-            const section = testElementWith(&roc_host, "section", &.{}, &.{each});
-            const initial_items = [_]HostValue{ testHostValueI64(101), testHostValueI64(202) };
-            const root = testNodeStateWithTokenAndInitialCapability(&roc_host, state_token, testHostValueI64List(&roc_host, &initial_items), section, state_cap);
-            defer root.decref(&roc_host);
-            var stream: HostNodeDescriptorStream = .{};
-            host.collectActiveElemRootDescriptors(&roc_host, &stream, root, &.{});
-            _ = applyNodeDescriptorStream(&host, &roc_host, &stream);
-            host.engine.active_stream = stream;
-
-            const state_id = host.engine.active_stream.scope_sites.items[0].node_id;
-            const branch_id = activeTextElementId(&host, "branch-2") orelse return error.TestUnexpectedResult;
-            // The root, two rows, and one branch scope per row.
-            try std.testing.expectEqual(@as(usize, 5), host.engine.scopes.items.len);
-            const metrics_before = host.engine.pending_roc_metrics;
-
-            const attempts = try dispatchStateValueSweeping(&host, &roc_host, state_id, testHostValueI64List(&roc_host, &.{ testHostValueI64(101), testHostValueI64(250) }), testHostValueI64List(&roc_host, &.{ testHostValueI64(101), testHostValueI64(250) }), state_cap, failure_number);
-            _ = try host.engine.tryDispatchStateValue(&host, &roc_host, state_id.raw(), testHostValueI64List(&roc_host, &.{ testHostValueI64(101), testHostValueI64(275) }), state_cap);
-
-            try std.testing.expectEqual(@as(usize, 5), host.engine.scopes.items.len);
-            var active: usize = 0;
-            for (host.engine.scopes.items) |scope| active += @intFromBool(scope.lifecycle.isActive());
-            try std.testing.expectEqual(@as(usize, 5), active);
-            try std.testing.expectEqual(@as(u64, 0), host.engine.pending_roc_metrics.scopes_created - metrics_before.scopes_created);
-            try std.testing.expectEqual(@as(u64, 0), host.engine.pending_roc_metrics.scopes_disposed - metrics_before.scopes_disposed);
-            try std.testing.expectEqual(branch_id, activeTextElementId(&host, "branch-2") orelse return error.TestUnexpectedResult);
-            try std.testing.expect(activeTextElementId(&host, "outer-2-275") != null);
             return attempts;
         }
     };
@@ -8606,6 +8259,40 @@ test "one state transaction retires nested each with when atomically through pro
     try std.testing.expect(attempts != 0);
 }
 
+test "a delayed when branch can first mount a nested each" {
+    var host = HostEnv.init();
+    var roc_host = makeSignalsRocHost(&host);
+    host.engine.roc_host = &roc_host;
+    defer {
+        host.deinit();
+        _ = host.gpa.deinit();
+    }
+
+    const state_token = newTestBinderToken(&roc_host);
+    const state_cap = testHostValueCapability(&roc_host);
+    const each = testNodeEachWithSignalCapabilityAndRow(&roc_host, testNodeRefExpr(state_token), state_cap, &testStatefulRowElemCallable);
+    const when = testNodeWhenWithSignal(&roc_host, testNodeListContainsOneExpr(&roc_host, testNodeRefExpr(state_token)), each, testNodeText(&roc_host, "delayed-each-closed"));
+    const initial_items = [_]HostValue{testHostValueI64(2)};
+    const root = testNodeStateWithTokenAndInitialCapability(&roc_host, state_token, testHostValueI64ListWithCapability(&roc_host, &initial_items, state_cap), when, state_cap);
+    defer root.decref(&roc_host);
+    var stream: HostNodeDescriptorStream = .{};
+    host.collectActiveElemRootDescriptors(&roc_host, &stream, root, &.{});
+    _ = applyNodeDescriptorStream(&host, &roc_host, &stream);
+    host.engine.active_stream = stream;
+
+    try std.testing.expect(activeTextElementId(&host, "delayed-each-closed") != null);
+    try std.testing.expectEqual(@as(usize, 0), host.engine.each_row_sites.items.len);
+
+    const state_id = host.engine.active_stream.scope_sites.items[0].node_id;
+    const opened_items = [_]HostValue{ testHostValueI64(1), testHostValueI64(2) };
+    _ = try host.engine.tryDispatchStateValue(&host, &roc_host, state_id.raw(), testHostValueI64ListWithCapability(&roc_host, &opened_items, state_cap), state_cap);
+
+    try std.testing.expect(activeTextElementId(&host, "delayed-each-closed") == null);
+    try std.testing.expect(activeTextElementId(&host, "row-1-1") != null);
+    try std.testing.expect(activeTextElementId(&host, "row-2-2") != null);
+    try std.testing.expectEqual(@as(usize, 1), host.engine.each_row_sites.items.len);
+}
+
 test "event state transaction commits the expected mutation" {
     const Runner = struct {
         fn run(failure_number: ?usize) !usize {
@@ -8810,93 +8497,6 @@ test "signals host prunes structural render when retained condition equality is 
     try std.testing.expect(activeTextElementId(&host, "false branch") == null);
 }
 
-test "signals host structural patch reorders keyed row DOM without recreating survivors" {
-    test_erased_callable_drop_count = 0;
-    test_row_elem_call_count = 0;
-
-    var host = HostEnv.init();
-    var roc_host = makeSignalsRocHost(&host);
-    host.engine.roc_host = &roc_host;
-    defer {
-        host.deinit();
-        _ = host.gpa.deinit();
-    }
-
-    const initial_items = [_]HostValue{ testHostValueI64(1), testHostValueI64(2), testHostValueI64(3) };
-    const initial_children = [_]abi.Elem{
-        testNodeEachWithItems(&roc_host, &initial_items),
-    };
-    const initial_root = testElementWith(&roc_host, "section", &.{}, &initial_children);
-    defer initial_root.decref(&roc_host);
-
-    var initial_stream: HostNodeDescriptorStream = .{};
-    host.collectActiveElemRootDescriptors(&roc_host, &initial_stream, initial_root, &.{});
-    const initial_counts = applyNodeDescriptorStream(&host, &roc_host, &initial_stream);
-    host.engine.active_stream = initial_stream;
-
-    try std.testing.expectEqual(@as(u64, 3), test_row_elem_call_count);
-    try std.testing.expectEqual(@as(u64, 1), initial_counts.reset_dom);
-    try std.testing.expectEqual(@as(u64, 4), initial_counts.create_element);
-    try std.testing.expectEqual(@as(usize, 5), host.dom_elements.items.len);
-
-    const section_id = host.engine.active_stream.elements.items[0].elem_id;
-    const row_1_id = activeTextElementId(&host, "row-1-1") orelse unreachable;
-    const row_2_id = activeTextElementId(&host, "row-2-2") orelse unreachable;
-    const row_3_id = activeTextElementId(&host, "row-3-3") orelse unreachable;
-    try std.testing.expectEqualSlices(u64, &.{ row_1_id, row_2_id, row_3_id }, host.dom_elements.items[@intCast(section_id.raw())].children.items);
-
-    const reordered_items = [_]HostValue{ testHostValueI64(3), testHostValueI64(1), testHostValueI64(2) };
-    const reordered_children = [_]abi.Elem{
-        testNodeEachWithItems(&roc_host, &reordered_items),
-    };
-    const reordered_root = testElementWith(&roc_host, "section", &.{}, &reordered_children);
-    defer reordered_root.decref(&roc_host);
-
-    var reordered_stream: HostNodeDescriptorStream = .{};
-    host.collectActiveElemRootDescriptors(&roc_host, &reordered_stream, reordered_root, &.{});
-    const patch_counts = applyStructuralNodeDescriptorStream(&host, &roc_host, &reordered_stream);
-    host.engine.active_stream.deinit(host.hostAllocator(), &host, &roc_host, &host.engine.pending_roc_metrics);
-    host.engine.active_stream = reordered_stream;
-
-    try std.testing.expectEqual(@as(u64, 3), test_row_elem_call_count);
-    try std.testing.expectEqual(@as(u64, 0), patch_counts.reset_dom);
-    try std.testing.expectEqual(@as(u64, 0), patch_counts.create_element);
-    try std.testing.expectEqual(@as(u64, 0), patch_counts.append_child);
-    try std.testing.expectEqual(@as(u64, 0), patch_counts.remove_node);
-    try std.testing.expect(patch_counts.move_before >= 2);
-    try std.testing.expectEqual(@as(usize, 5), host.dom_elements.items.len);
-    try std.testing.expectEqual(row_1_id, activeTextElementId(&host, "row-1-1") orelse unreachable);
-    try std.testing.expectEqual(row_2_id, activeTextElementId(&host, "row-2-2") orelse unreachable);
-    try std.testing.expectEqual(row_3_id, activeTextElementId(&host, "row-3-3") orelse unreachable);
-    try std.testing.expectEqualSlices(u64, &.{ row_3_id, row_1_id, row_2_id }, host.dom_elements.items[@intCast(section_id.raw())].children.items);
-
-    const changed_items = [_]HostValue{ testHostValueI64(2), testHostValueI64(4) };
-    const changed_children = [_]abi.Elem{
-        testNodeEachWithItems(&roc_host, &changed_items),
-    };
-    const changed_root = testElementWith(&roc_host, "section", &.{}, &changed_children);
-    defer changed_root.decref(&roc_host);
-
-    var changed_stream: HostNodeDescriptorStream = .{};
-    host.collectActiveElemRootDescriptors(&roc_host, &changed_stream, changed_root, &.{});
-    const changed_counts = applyStructuralNodeDescriptorStream(&host, &roc_host, &changed_stream);
-    host.engine.active_stream.deinit(host.hostAllocator(), &host, &roc_host, &host.engine.pending_roc_metrics);
-    host.engine.active_stream = changed_stream;
-
-    try std.testing.expectEqual(@as(u64, 4), test_row_elem_call_count);
-    const row_4_id = activeTextElementId(&host, "row-4-4") orelse unreachable;
-    try std.testing.expectEqual(@as(u64, 0), changed_counts.reset_dom);
-    try std.testing.expectEqual(@as(u64, 1), changed_counts.create_element);
-    try std.testing.expectEqual(@as(u64, 1), changed_counts.append_child);
-    try std.testing.expectEqual(@as(u64, 2), changed_counts.remove_node);
-    try std.testing.expectEqual(@as(u64, 1), changed_counts.set_text);
-    try std.testing.expectEqual(@as(u64, 5), changed_counts.total);
-    try std.testing.expectEqual(row_2_id, activeTextElementId(&host, "row-2-2") orelse unreachable);
-    try std.testing.expect(activeTextElementId(&host, "row-1-1") == null);
-    try std.testing.expect(activeTextElementId(&host, "row-3-3") == null);
-    try std.testing.expectEqualSlices(u64, &.{ row_2_id, row_4_id }, host.dom_elements.items[@intCast(section_id.raw())].children.items);
-}
-
 test "signals host dirty each append patches only changed row" {
     test_erased_callable_drop_count = 0;
     test_row_elem_call_count = 0;
@@ -8971,72 +8571,6 @@ test "signals host dirty each append patches only changed row" {
     try std.testing.expectEqual(@as(u64, 3), patch_counts.total);
     try std.testing.expectEqual(patch_start + 3, host.engine.render_metrics.patches_emitted);
     try std.testing.expect(activeTextElementId(&host, "row-25-25") != null);
-}
-
-test "prepared dirty each inputs retain inside capability frame and sweep host OOM" {
-    test_erased_callable_drop_count = 0;
-
-    var host = HostEnv.init();
-    var roc_host = makeSignalsRocHost(&host);
-    host.engine.roc_host = &roc_host;
-    defer {
-        host.deinit();
-        _ = host.gpa.deinit();
-    }
-
-    const state_token = newTestBinderToken(&roc_host);
-    const state_cap = testHostValueCapability(&roc_host);
-    const each = testNodeEachWithSignalCapabilityAndRow(&roc_host, testNodeRefExpr(state_token), state_cap, &testStatefulRowElemCallable);
-    const children = [_]abi.Elem{each};
-    const section = testElementWith(&roc_host, "section", &.{}, &children);
-    const initial_items = [_]HostValue{ testHostValueI64(1), testHostValueI64(2), testHostValueI64(3) };
-    const root = testNodeStateWithTokenAndInitialCapability(&roc_host, state_token, testHostValueI64List(&roc_host, &initial_items), section, state_cap);
-    defer root.decref(&roc_host);
-
-    var initial_stream: HostNodeDescriptorStream = .{};
-    host.collectActiveElemRootDescriptors(&roc_host, &initial_stream, root, &.{});
-    _ = applyNodeDescriptorStream(&host, &roc_host, &initial_stream);
-    host.engine.active_stream = initial_stream;
-
-    const each_desc = host.engine.active_stream.eaches.items[0];
-    const site = host.engine.active_stream.scope_sites.items[1];
-    const row_scopes = try host.engine.activeEachRowScopes(host.hostAllocator(), site.scope_id, site.ordinal);
-    defer host.hostAllocator().free(row_scopes);
-    var baseline_fault = FaultAllocator.init(host.hostAllocator());
-    var baseline = try HostEngine.PreparedActiveEachRows.prepare(&host.engine, &host, &roc_host, site, each_desc, baseline_fault.allocator());
-    const attempts = baseline_fault.attempts;
-    try std.testing.expect(attempts >= 4);
-    try std.testing.expectEqual(@as(usize, 3), baseline.inputs.items.len);
-    for (baseline.inputs.items, row_scopes) |item, scope_id| {
-        try std.testing.expect(host.engine.eachRowScopeItemEquals(&host, &roc_host, scope_id.raw(), item, each_desc.ops.item_capability));
-    }
-    baseline.deinit();
-    const before = host.roc_allocations.snapshot();
-
-    for (1..attempts + 1) |failure_number| {
-        var fault = FaultAllocator.init(host.hostAllocator());
-        fault.configure(failure_number);
-        try std.testing.expectError(error.OutOfMemory, HostEngine.PreparedActiveEachRows.prepare(&host.engine, &host, &roc_host, site, each_desc, fault.allocator()));
-        try std.testing.expectEqual(@as(usize, 1), fault.induced_failures);
-        try std.testing.expectEqual(@as(usize, 0), host.roc_allocations.liveCountSince(before));
-
-        fault.configure(null);
-        var retry = try HostEngine.PreparedActiveEachRows.prepare(&host.engine, &host, &roc_host, site, each_desc, fault.allocator());
-        for (retry.inputs.items, row_scopes) |item, scope_id| {
-            try std.testing.expect(host.engine.eachRowScopeItemEquals(&host, &roc_host, scope_id.raw(), item, each_desc.ops.item_capability));
-        }
-        retry.deinit();
-        try std.testing.expectEqual(@as(usize, 0), host.roc_allocations.liveCountSince(before));
-    }
-
-    var committed = try HostEngine.PreparedActiveEachRows.prepare(&host.engine, &host, &roc_host, site, each_desc, host.hostAllocator());
-    var diff = committed.commit();
-    try std.testing.expectEqual(@as(u64, 3), diff.rows_reused);
-    try std.testing.expectEqual(@as(u64, 3), diff.row_items_unchanged);
-    try std.testing.expectEqual(@as(u64, 0), diff.row_items_updated);
-    diff.deinit(host.hostAllocator());
-    committed.deinit();
-    try std.testing.expectEqual(@as(usize, 0), host.roc_allocations.liveCountSince(before));
 }
 
 test "signals host dirty each reorder moves rows without recollecting bodies" {
@@ -9191,83 +8725,6 @@ test "signals host keeps table sizes flat across repeated keyed row reorder chur
     try std.testing.expect(activeTextElementId(&host, "row-4-4") != null);
 }
 
-test "signals host removal reinsert churn plateaus dense tables" {
-    test_erased_callable_drop_count = 0;
-    test_row_elem_call_count = 0;
-
-    var host = HostEnv.init();
-    var roc_host = makeSignalsRocHost(&host);
-    host.engine.roc_host = &roc_host;
-    defer {
-        host.deinit();
-        _ = host.gpa.deinit();
-    }
-
-    const state_token = newTestBinderToken(&roc_host);
-    const state_cap = testHostValueCapability(&roc_host);
-    const each = testNodeEachWithSignalCapabilityAndRow(&roc_host, testNodeRefExpr(state_token), state_cap, &testStatefulRowElemCallable);
-    const children = [_]abi.Elem{each};
-    const section = testElementWith(&roc_host, "section", &.{}, &children);
-
-    const initial_items = [_]HostValue{ testHostValueI64(1), testHostValueI64(2), testHostValueI64(3) };
-    const root = testNodeStateWithTokenAndInitialCapability(&roc_host, state_token, testHostValueI64List(&roc_host, &initial_items), section, state_cap);
-    defer root.decref(&roc_host);
-
-    var initial_stream: HostNodeDescriptorStream = .{};
-    host.collectActiveElemRootDescriptors(&roc_host, &initial_stream, root, &.{});
-    _ = applyNodeDescriptorStream(&host, &roc_host, &initial_stream);
-    host.engine.active_stream = initial_stream;
-    finishHostMetrics(&host);
-
-    const state_id = host.engine.active_stream.scope_sites.items[0].node_id;
-
-    var snapshot_after_warmup: ?HostPlateauSnapshot = null;
-    var iteration: usize = 0;
-    while (iteration < 40) : (iteration += 1) {
-        var items: [3]HostValue = undefined;
-        if (iteration % 2 == 0) {
-            items = .{ testHostValueI64(1), testHostValueI64(3), testHostValueI64(4) };
-        } else {
-            items = .{ testHostValueI64(1), testHostValueI64(2), testHostValueI64(3) };
-        }
-
-        try std.testing.expect(host.updateStateValue(&roc_host, state_id, testHostValueI64List(&roc_host, &items)));
-
-        const before_metrics = host.engine.last_runtime_metrics;
-        const row_call_start = test_row_elem_call_count;
-
-        {
-            const dirty_source_node_ids = [_]u64{state_id.raw()};
-            const dirty_generation = host.nextDirtySignalGeneration();
-            const changed_record_ids = propagateDirtyActiveSignals(&host, &roc_host, host.hostAllocator(), &dirty_source_node_ids, dirty_generation);
-            const dirty_structural_signals = collectDirtyStructuralSignals(&host, &roc_host, host.hostAllocator(), &dirty_source_node_ids, changed_record_ids, dirty_generation);
-            defer host.hostAllocator().free(dirty_structural_signals);
-
-            try std.testing.expectEqual(@as(usize, 1), dirty_structural_signals.len);
-            try std.testing.expectEqual(HostActiveStructuralSignalKind.each, dirty_structural_signals[0].kind);
-
-            _ = applyDirtyStructuralSignalsLocally(&host, &roc_host, &dirty_source_node_ids, dirty_generation, dirty_structural_signals);
-        }
-        finishHostMetrics(&host);
-
-        try std.testing.expectEqual(@as(u64, 1), host.engine.last_runtime_metrics.rows_created - before_metrics.rows_created);
-        try std.testing.expectEqual(@as(u64, 1), host.engine.last_runtime_metrics.rows_removed - before_metrics.rows_removed);
-        try std.testing.expectEqual(row_call_start + 1, test_row_elem_call_count);
-
-        const snapshot = HostPlateauSnapshot.capture(&host);
-        if (iteration == 7) {
-            snapshot_after_warmup = snapshot;
-        } else if (iteration > 7) {
-            try expectHostPlateauSnapshot(snapshot_after_warmup.?, snapshot);
-        }
-    }
-
-    try std.testing.expect(activeTextElementId(&host, "row-1-1") != null);
-    try std.testing.expect(activeTextElementId(&host, "row-2-2") != null);
-    try std.testing.expect(activeTextElementId(&host, "row-3-3") != null);
-    try std.testing.expect(activeTextElementId(&host, "row-4-4") == null);
-}
-
 test "live row churn never recycles a node id the descriptor stream still holds" {
     // Node ids index the descriptor stream's per-node slots, one descriptor per
     // slot, so a node id is unusable while any of its slots is occupied.
@@ -9362,93 +8819,6 @@ test "live row churn never recycles a node id the descriptor stream still holds"
     // The last edit is the one on screen, in both columns.
     try std.testing.expect(activeTextElementId(&host, "row-15-15-true") != null);
     try std.testing.expect(activeTextElementId(&host, "row-1-1-true") == null);
-}
-
-test "signals host nested removal reinsert churn plateaus branch scopes" {
-    test_erased_callable_drop_count = 0;
-    test_row_elem_call_count = 0;
-
-    var host = HostEnv.init();
-    var roc_host = makeSignalsRocHost(&host);
-    host.engine.roc_host = &roc_host;
-    defer {
-        host.deinit();
-        _ = host.gpa.deinit();
-    }
-
-    const condition_token = newTestBinderToken(&roc_host);
-    const condition_cap = testHostValueCapability(&roc_host);
-    const items_token = newTestBinderToken(&roc_host);
-    const items_cap = testHostValueCapability(&roc_host);
-    const each = testNodeEachSignalWithNestedWhenRows(&roc_host, testNodeRefExpr(items_token), items_cap, condition_token, condition_cap);
-    const children = [_]abi.Elem{each};
-    const section = testElementWith(&roc_host, "section", &.{}, &children);
-    const initial_items = [_]HostValue{ testHostValueI64(1), testHostValueI64(2), testHostValueI64(3) };
-    const items_state = testNodeStateWithTokenAndInitialCapability(&roc_host, items_token, testHostValueI64List(&roc_host, &initial_items), section, items_cap);
-    const root = testNodeStateWithTokenAndInitialCapability(&roc_host, condition_token, testHostValueBool(true), items_state, condition_cap);
-    defer root.decref(&roc_host);
-
-    var initial_stream: HostNodeDescriptorStream = .{};
-    host.collectActiveElemRootDescriptors(&roc_host, &initial_stream, root, &.{});
-    _ = applyNodeDescriptorStream(&host, &roc_host, &initial_stream);
-    host.engine.active_stream = initial_stream;
-    finishHostMetrics(&host);
-
-    var state_ids: [2]u64 = undefined;
-    var state_count: usize = 0;
-    for (host.engine.active_stream.scope_sites.items) |site| {
-        if (site.kind != .state) continue;
-        if (state_count < state_ids.len) state_ids[state_count] = site.node_id.raw();
-        state_count += 1;
-    }
-    try std.testing.expectEqual(@as(usize, 2), state_count);
-    const items_state_id = state_ids[1];
-
-    var snapshot_after_warmup: ?HostPlateauSnapshot = null;
-    var iteration: usize = 0;
-    while (iteration < 40) : (iteration += 1) {
-        var items: [3]HostValue = undefined;
-        if (iteration % 2 == 0) {
-            items = .{ testHostValueI64(1), testHostValueI64(3), testHostValueI64(4) };
-        } else {
-            items = .{ testHostValueI64(1), testHostValueI64(2), testHostValueI64(3) };
-        }
-
-        try std.testing.expect(host.updateStateValue(&roc_host, ids.NodeId.fromRaw(items_state_id), testHostValueI64List(&roc_host, &items)));
-
-        const before_metrics = host.engine.last_runtime_metrics;
-        const row_call_start = test_row_elem_call_count;
-
-        {
-            const dirty_source_node_ids = [_]u64{items_state_id};
-            const dirty_generation = host.nextDirtySignalGeneration();
-            const changed_record_ids = propagateDirtyActiveSignals(&host, &roc_host, host.hostAllocator(), &dirty_source_node_ids, dirty_generation);
-            const dirty_structural_signals = collectDirtyStructuralSignals(&host, &roc_host, host.hostAllocator(), &dirty_source_node_ids, changed_record_ids, dirty_generation);
-            defer host.hostAllocator().free(dirty_structural_signals);
-
-            try std.testing.expectEqual(@as(usize, 1), dirty_structural_signals.len);
-            try std.testing.expectEqual(HostActiveStructuralSignalKind.each, dirty_structural_signals[0].kind);
-
-            _ = applyDirtyStructuralSignalsLocally(&host, &roc_host, &dirty_source_node_ids, dirty_generation, dirty_structural_signals);
-        }
-        finishHostMetrics(&host);
-
-        try std.testing.expectEqual(@as(u64, 1), host.engine.last_runtime_metrics.rows_created - before_metrics.rows_created);
-        try std.testing.expectEqual(@as(u64, 1), host.engine.last_runtime_metrics.rows_removed - before_metrics.rows_removed);
-        try std.testing.expectEqual(row_call_start + 1, test_row_elem_call_count);
-
-        const snapshot = HostPlateauSnapshot.capture(&host);
-        if (iteration == 7) {
-            snapshot_after_warmup = snapshot;
-        } else if (iteration > 7) {
-            try expectHostPlateauSnapshot(snapshot_after_warmup.?, snapshot);
-        }
-    }
-
-    try std.testing.expect(activeTextElementId(&host, "row-1-1-true") != null);
-    try std.testing.expect(activeTextElementId(&host, "row-2-2-true") != null);
-    try std.testing.expect(activeTextElementId(&host, "row-3-3-true") != null);
-    try std.testing.expect(activeTextElementId(&host, "row-4-4-true") == null);
 }
 
 test "signals host dirty each mixed churn splices changed rows and moves survivors" {
@@ -9703,74 +9073,6 @@ test "signals host structural patch binds only changed event slots" {
     try std.testing.expect(nodeFixedEventId(&host, button_id, .click) == null);
 }
 
-test "signals host structural patch shifts moved row event ids only" {
-    test_erased_callable_drop_count = 0;
-
-    var host = HostEnv.init();
-    var roc_host = makeSignalsRocHost(&host);
-    host.engine.roc_host = &roc_host;
-    defer {
-        host.deinit();
-        _ = host.gpa.deinit();
-    }
-
-    const initial_items = [_]HostValue{ testHostValueI64(1), testHostValueI64(2) };
-    const initial_children = [_]abi.Elem{
-        testNodeEachWithItemsAndRow(&roc_host, &initial_items, &testStatefulRowButtonElemCallable),
-    };
-    const initial_root = testElementWith(&roc_host, "section", &.{}, &initial_children);
-    defer initial_root.decref(&roc_host);
-
-    var initial_stream: HostNodeDescriptorStream = .{};
-    host.collectActiveElemRootDescriptors(&roc_host, &initial_stream, initial_root, &.{});
-    const initial_counts = applyNodeDescriptorStream(&host, &roc_host, &initial_stream);
-    host.engine.active_stream = initial_stream;
-
-    try std.testing.expectEqual(@as(u64, 2), initial_counts.bind_event);
-    const row_1_button_id = activeTextElementId(&host, "row-action-1-1") orelse unreachable;
-    const row_2_button_id = activeTextElementId(&host, "row-action-2-2") orelse unreachable;
-    try std.testing.expectEqual(@as(?u64, 1), nodeFixedEventId(&host, ids.ElemId.fromRaw(row_1_button_id), .click));
-    try std.testing.expectEqual(@as(?u64, 2), nodeFixedEventId(&host, ids.ElemId.fromRaw(row_2_button_id), .click));
-
-    const reordered_items = [_]HostValue{ testHostValueI64(2), testHostValueI64(1) };
-    const reordered_children = [_]abi.Elem{
-        testNodeEachWithItemsAndRow(&roc_host, &reordered_items, &testStatefulRowButtonElemCallable),
-    };
-    const reordered_root = testElementWith(&roc_host, "section", &.{}, &reordered_children);
-    defer reordered_root.decref(&roc_host);
-
-    var reordered_stream: HostNodeDescriptorStream = .{};
-    host.collectActiveElemRootDescriptors(&roc_host, &reordered_stream, reordered_root, &.{});
-    const reordered_counts = applyStructuralNodeDescriptorStream(&host, &roc_host, &reordered_stream);
-    host.engine.active_stream.deinit(host.hostAllocator(), &host, &roc_host, &host.engine.pending_roc_metrics);
-    host.engine.active_stream = reordered_stream;
-
-    try std.testing.expectEqual(@as(u64, 0), reordered_counts.create_element);
-    try std.testing.expectEqual(@as(u64, 2), reordered_counts.bind_event);
-    try std.testing.expectEqual(row_1_button_id, activeTextElementId(&host, "row-action-1-1") orelse unreachable);
-    try std.testing.expectEqual(row_2_button_id, activeTextElementId(&host, "row-action-2-2") orelse unreachable);
-    try std.testing.expectEqual(@as(?u64, 2), nodeFixedEventId(&host, ids.ElemId.fromRaw(row_1_button_id), .click));
-    try std.testing.expectEqual(@as(?u64, 1), nodeFixedEventId(&host, ids.ElemId.fromRaw(row_2_button_id), .click));
-
-    const same_reordered_items = [_]HostValue{ testHostValueI64(2), testHostValueI64(1) };
-    const same_reordered_children = [_]abi.Elem{
-        testNodeEachWithItemsAndRow(&roc_host, &same_reordered_items, &testStatefulRowButtonElemCallable),
-    };
-    const same_reordered_root = testElementWith(&roc_host, "section", &.{}, &same_reordered_children);
-    defer same_reordered_root.decref(&roc_host);
-
-    var same_reordered_stream: HostNodeDescriptorStream = .{};
-    host.collectActiveElemRootDescriptors(&roc_host, &same_reordered_stream, same_reordered_root, &.{});
-    const same_reordered_counts = applyStructuralNodeDescriptorStream(&host, &roc_host, &same_reordered_stream);
-    host.engine.active_stream.deinit(host.hostAllocator(), &host, &roc_host, &host.engine.pending_roc_metrics);
-    host.engine.active_stream = same_reordered_stream;
-
-    try std.testing.expectEqual(@as(u64, 0), same_reordered_counts.create_element);
-    try std.testing.expectEqual(@as(u64, 0), same_reordered_counts.bind_event);
-    try std.testing.expectEqual(@as(?u64, 2), nodeFixedEventId(&host, ids.ElemId.fromRaw(row_1_button_id), .click));
-    try std.testing.expectEqual(@as(?u64, 1), nodeFixedEventId(&host, ids.ElemId.fromRaw(row_2_button_id), .click));
-}
-
 test "signals host dirty each removal refreshes survivor event ids" {
     test_erased_callable_drop_count = 0;
     test_row_elem_call_count = 0;
@@ -9846,64 +9148,6 @@ fn freeKeyedRowDiff(host: *HostEnv, diff: HostKeyedRowDiffResult) void {
     diff.deinit(host.hostAllocator());
 }
 
-fn syncTestEachRowScopes(host: *HostEnv, roc_host: *abi.RocHost, parent_scope_id: ids.ScopeId, site_ordinal: u64, keys: []const HostValue, items: []const HostValue, key_cap: HostValueCapability, item_cap: HostValueCapability) HostKeyedRowDiffResult {
-    const allocator = host.hostAllocator();
-    const key_values = allocator.alloc(HostValue, keys.len) catch std.process.exit(1);
-    defer allocator.free(key_values);
-    const item_values = allocator.alloc(HostValue, items.len) catch std.process.exit(1);
-    defer allocator.free(item_values);
-
-    for (keys, key_values) |key, *dest| {
-        dest.* = host.cloneHostValue(key);
-    }
-    for (items, item_values) |item, *dest| {
-        dest.* = host.cloneHostValue(item);
-    }
-    for (keys) |key| {
-        testDropHostValue(roc_host, key);
-    }
-    if (keys.ptr != items.ptr) {
-        for (items) |item| {
-            testDropHostValue(roc_host, item);
-        }
-    }
-
-    const key_text = testHostValueKeyTextCallable(roc_host);
-    defer abi.decrefErasedCallable(key_text, roc_host);
-    const key_of = writeTestErasedCallable(
-        TestErasedI64Capture,
-        roc_host,
-        &testUnaryHostValueCallable,
-        &testErasedCallableOnDrop,
-        .{ .amount = 0 },
-    );
-    defer abi.decrefErasedCallable(key_of, roc_host);
-    const items_to_values = testItemsToValuesCallable(roc_host);
-    defer abi.decrefErasedCallable(items_to_values, roc_host);
-    const row = writeTestErasedCallable(
-        TestErasedI64Capture,
-        roc_host,
-        &testBinaryElemCallable,
-        &testErasedCallableOnDrop,
-        .{ .amount = 0 },
-    );
-    defer abi.decrefErasedCallable(row, roc_host);
-    const ops: HostEachOps = .{
-        .items_capability = item_cap,
-        .item_capability = item_cap,
-        .key_capability = key_cap,
-        .items_to_values = items_to_values,
-        .key_text = key_text,
-        .key_of = key_of,
-        .row = row,
-    };
-    return host.syncEachRowScopes(roc_host, parent_scope_id, ids.SiteOrdinal.fromRaw(site_ordinal), key_values, item_values, ops);
-}
-
-fn createTestEachRowScope(host: *HostEnv, roc_host: *abi.RocHost, parent_scope_id: ids.ScopeId, site_ordinal: u64, key: HostValue, item: HostValue, key_cap: HostValueCapability, item_cap: HostValueCapability) ids.ScopeId {
-    return host.createEachRowScope(parent_scope_id, ids.SiteOrdinal.fromRaw(site_ordinal), testHashHostValueKeyText(roc_host, key), key, item, key_cap, item_cap);
-}
-
 fn boxTestElem(roc_host: *abi.RocHost, elem: abi.Elem) *abi.Elem {
     const raw = abi.allocateBox(@sizeOf(abi.Elem), @alignOf(abi.Elem), true, roc_host);
     const boxed: *abi.Elem = @ptrCast(@alignCast(raw));
@@ -9969,6 +9213,7 @@ fn testNodeSignalExprCapability(signal: abi.NodeSignalExpr) ?HostValueCapability
         .OnlineSource => signal.payload_online_source()._2,
         .VisibilitySource => signal.payload_visibility_source()._2,
         .StorageSource => signal.payload_storage_source()._4,
+        .RowSource => signal.payload_row_source()._3,
         .Ref => null,
     };
 }
@@ -10842,18 +10087,31 @@ fn testNodeEachWithSignalCapabilityRowAndCapture(comptime Capture: type, roc_hos
 /// Builds a keyed-list fixture whose `key_of` is chosen by the caller, so a
 /// test can give different item values the same row key.
 fn testNodeEachWithSignalCapabilityKeyOfRowAndCapture(comptime Capture: type, roc_host: *abi.RocHost, signal: abi.NodeSignalExpr, items_cap: HostValueCapability, key_of_fn: abi.RocErasedCallableFn, key_of_capture: TestErasedI64Capture, row_fn: abi.RocErasedCallableFn, capture: Capture) abi.Elem {
-    const key_cap = testHostValueCapability(roc_host);
-    const key_of = writeTestErasedCallable(
-        TestErasedI64Capture,
-        roc_host,
-        key_of_fn,
-        &testErasedCallableOnDrop,
-        key_of_capture,
-    );
-    const key_text = testHostValueKeyTextCallable(roc_host);
+    _ = key_of_fn;
     const item_cap = testHostValueCapability(roc_host);
-    const items_to_values = testItemsToValuesCallable(roc_host);
-    const row = writeTestErasedCallable(
+    const len = testEachAdapterCallable(roc_host, &testEachLenCallable);
+    const copy_keys = writeTestErasedCallable(TestErasedI64Capture, roc_host, &testEachCopyKeysCallable, &testErasedCallableOnDrop, key_of_capture);
+    const compare_pairs = testEachAdapterCallable(roc_host, &testEachComparePairsCallable);
+    const clone_item_at = testEachAdapterCallable(roc_host, &testEachCloneItemCallable);
+    const row = if (comptime Capture == TestErasedI64Capture) row: {
+        if (row_fn != &testStatefulRowElemCallable) break :row writeTestErasedCallable(
+            Capture,
+            roc_host,
+            row_fn,
+            &testErasedCallableOnDrop,
+            capture,
+        );
+        break :row writeTestErasedCallable(
+            TestRowSourceCapture,
+            roc_host,
+            &testStatefulRowSourceElemCallable,
+            &testRowSourceCaptureOnDrop,
+            .{
+                .amount = capture.amount,
+                .item_cap = hv.retainHostValueCapability(item_cap),
+            },
+        );
+    } else writeTestErasedCallable(
         Capture,
         roc_host,
         row_fn,
@@ -10867,10 +10125,10 @@ fn testNodeEachWithSignalCapabilityKeyOfRowAndCapture(comptime Capture: type, ro
                 .ops = .{
                     .items_capability = hv.retainHostValueCapability(items_cap),
                     .item_capability = item_cap,
-                    .key_capability = key_cap,
-                    .items_to_values = items_to_values,
-                    .key_text = key_text,
-                    .key_of = key_of,
+                    .len = len,
+                    .copy_keys = copy_keys,
+                    .compare_pairs = compare_pairs,
+                    .clone_item_at = clone_item_at,
                     .row = row,
                 },
             },
@@ -10913,17 +10171,11 @@ fn testNodeEachWithItemsAndRow(roc_host: *abi.RocHost, items: []const HostValue,
 }
 
 fn testNodeEachSignalWithNestedWhenRows(roc_host: *abi.RocHost, items_signal: abi.NodeSignalExpr, items_cap: HostValueCapability, condition_binder: HostBinderToken, condition_cap: HostValueCapability) abi.Elem {
-    const key_cap = testHostValueCapability(roc_host);
-    const key_of = writeTestErasedCallable(
-        TestErasedI64Capture,
-        roc_host,
-        &testUnaryHostValueCallable,
-        &testErasedCallableOnDrop,
-        .{ .amount = 0 },
-    );
-    const key_text = testHostValueKeyTextCallable(roc_host);
     const item_cap = testHostValueCapability(roc_host);
-    const items_to_values = testItemsToValuesCallable(roc_host);
+    const len = testEachAdapterCallable(roc_host, &testEachLenCallable);
+    const copy_keys = testEachAdapterCallable(roc_host, &testEachCopyKeysCallable);
+    const compare_pairs = testEachAdapterCallable(roc_host, &testEachComparePairsCallable);
+    const clone_item_at = testEachAdapterCallable(roc_host, &testEachCloneItemCallable);
     const row = writeTestErasedCallable(
         TestErasedBinderCapture,
         roc_host,
@@ -10941,10 +10193,10 @@ fn testNodeEachSignalWithNestedWhenRows(roc_host: *abi.RocHost, items_signal: ab
                 .ops = .{
                     .items_capability = hv.retainHostValueCapability(items_cap),
                     .item_capability = item_cap,
-                    .key_capability = key_cap,
-                    .items_to_values = items_to_values,
-                    .key_text = key_text,
-                    .key_of = key_of,
+                    .len = len,
+                    .copy_keys = copy_keys,
+                    .compare_pairs = compare_pairs,
+                    .clone_item_at = clone_item_at,
                     .row = row,
                 },
             },
@@ -10974,168 +10226,6 @@ fn activeTextElementId(host: *const HostEnv, text: []const u8) ?u64 {
         if (std.mem.eql(u8, elem_text, text)) return elem.id;
     }
     return null;
-}
-
-test "signals host keyed row diff reuses creates and removes by typed key" {
-    test_erased_callable_drop_count = 0;
-
-    var host = HostEnv.init();
-    var roc_host = makeSignalsRocHost(&host);
-    host.engine.roc_host = &roc_host;
-    defer {
-        deinitTestHostIdentity(&host);
-        _ = host.gpa.deinit();
-    }
-
-    const key_cap = testHostValueCapability(&roc_host);
-    defer key_cap.decref(&roc_host);
-
-    const root = host.internRootScope();
-
-    const initial_keys = [_]HostValue{ testHostValueI64(1), testHostValueI64(2), testHostValueI64(3) };
-    const initial = syncTestEachRowScopes(&host, &roc_host, root, 5, &initial_keys, &initial_keys, key_cap, key_cap);
-    defer freeKeyedRowDiff(&host, initial);
-    try std.testing.expectEqual(@as(u64, 0), initial.rows_reused);
-    try std.testing.expectEqual(@as(u64, 3), initial.rows_created);
-    try std.testing.expectEqual(@as(u64, 0), initial.rows_removed);
-    try std.testing.expectEqual(@as(u64, 0), initial.row_items_unchanged);
-    try std.testing.expectEqual(@as(u64, 0), initial.row_items_updated);
-
-    const state_for_key_2 = host.internNodeIdentity(initial.scope_ids[1], ids.SiteOrdinal.fromRaw(0));
-
-    const reordered_keys = [_]HostValue{ testHostValueI64(3), testHostValueI64(1), testHostValueI64(2) };
-    const reordered = syncTestEachRowScopes(&host, &roc_host, root, 5, &reordered_keys, &reordered_keys, key_cap, key_cap);
-    defer freeKeyedRowDiff(&host, reordered);
-    try std.testing.expectEqual(@as(u64, 3), reordered.rows_reused);
-    try std.testing.expectEqual(@as(u64, 0), reordered.rows_created);
-    try std.testing.expectEqual(@as(u64, 0), reordered.rows_removed);
-    try std.testing.expectEqual(@as(u64, 3), reordered.row_items_unchanged);
-    try std.testing.expectEqual(@as(u64, 0), reordered.row_items_updated);
-    try std.testing.expectEqual(initial.scope_ids[2], reordered.scope_ids[0]);
-    try std.testing.expectEqual(initial.scope_ids[0], reordered.scope_ids[1]);
-    try std.testing.expectEqual(initial.scope_ids[1], reordered.scope_ids[2]);
-    try std.testing.expectEqual(state_for_key_2, host.internNodeIdentity(reordered.scope_ids[2], ids.SiteOrdinal.fromRaw(0)));
-
-    const changed_keys = [_]HostValue{ testHostValueI64(2), testHostValueI64(4) };
-    const changed_items = [_]HostValue{ testHostValueI64(22), testHostValueI64(4) };
-    const changed = syncTestEachRowScopes(&host, &roc_host, root, 5, &changed_keys, &changed_items, key_cap, key_cap);
-    defer freeKeyedRowDiff(&host, changed);
-    try std.testing.expectEqual(@as(u64, 1), changed.rows_reused);
-    try std.testing.expectEqual(@as(u64, 1), changed.rows_created);
-    try std.testing.expectEqual(@as(u64, 2), changed.rows_removed);
-    try std.testing.expectEqual(@as(u64, 0), changed.row_items_unchanged);
-    try std.testing.expectEqual(@as(u64, 1), changed.row_items_updated);
-    try std.testing.expectEqual(initial.scope_ids[1], changed.scope_ids[0]);
-    try std.testing.expect(changed.scope_ids[1] != initial.scope_ids[0]);
-    try std.testing.expect(changed.scope_ids[1] != initial.scope_ids[2]);
-
-    const reappeared_keys = [_]HostValue{ testHostValueI64(1), testHostValueI64(2), testHostValueI64(4) };
-    const reappeared = syncTestEachRowScopes(&host, &roc_host, root, 5, &reappeared_keys, &reappeared_keys, key_cap, key_cap);
-    defer freeKeyedRowDiff(&host, reappeared);
-    try std.testing.expectEqual(@as(u64, 2), reappeared.rows_reused);
-    try std.testing.expectEqual(@as(u64, 1), reappeared.rows_created);
-    try std.testing.expectEqual(@as(u64, 0), reappeared.rows_removed);
-    try std.testing.expectEqual(@as(u64, 1), reappeared.row_items_unchanged);
-    try std.testing.expectEqual(@as(u64, 1), reappeared.row_items_updated);
-    try std.testing.expect(initial.scope_ids[0] != reappeared.scope_ids[0]);
-    try std.testing.expectEqual(initial.scope_ids[1], reappeared.scope_ids[1]);
-    try std.testing.expectEqual(changed.scope_ids[1], reappeared.scope_ids[2]);
-
-    try std.testing.expectEqual(@as(u64, 6), host.engine.pending_roc_metrics.rows_reused);
-    try std.testing.expectEqual(@as(u64, 5), host.engine.pending_roc_metrics.rows_created);
-    try std.testing.expectEqual(@as(u64, 2), host.engine.pending_roc_metrics.rows_removed);
-}
-
-test "signals host keyed row diff hash probes scale linearly" {
-    test_erased_callable_drop_count = 0;
-
-    var host = HostEnv.init();
-    var roc_host = makeSignalsRocHost(&host);
-    host.engine.roc_host = &roc_host;
-    defer {
-        deinitTestHostIdentity(&host);
-        _ = host.gpa.deinit();
-    }
-
-    const key_cap = testHostValueCapability(&roc_host);
-    defer key_cap.decref(&roc_host);
-
-    const root = host.internRootScope();
-    const row_count = 64;
-
-    var initial_keys: [row_count]HostValue = undefined;
-    for (&initial_keys, 0..) |*key, index| {
-        key.* = testHostValueI64(@intCast(index + 1));
-    }
-    const initial = syncTestEachRowScopes(&host, &roc_host, root, 5, &initial_keys, &initial_keys, key_cap, key_cap);
-    defer freeKeyedRowDiff(&host, initial);
-    try std.testing.expectEqual(@as(u64, row_count), initial.rows_created);
-
-    const metrics_start = host.engine.pending_roc_metrics;
-
-    var reordered_keys: [row_count]HostValue = undefined;
-    for (&reordered_keys, 0..) |*key, index| {
-        key.* = testHostValueI64(@intCast(row_count - index));
-    }
-    const reordered = syncTestEachRowScopes(&host, &roc_host, root, 5, &reordered_keys, &reordered_keys, key_cap, key_cap);
-    defer freeKeyedRowDiff(&host, reordered);
-    try std.testing.expectEqual(@as(u64, row_count), reordered.rows_reused);
-    try std.testing.expectEqual(@as(u64, 0), reordered.rows_created);
-    try std.testing.expectEqual(@as(u64, 0), reordered.rows_removed);
-
-    const metrics_end = host.engine.pending_roc_metrics;
-    const compare_delta = metrics_end.each_key_compares - metrics_start.each_key_compares;
-    const hash_delta = metrics_end.each_key_hashes - metrics_start.each_key_hashes;
-    const reuse_delta = metrics_end.each_key_reuse_compares - metrics_start.each_key_reuse_compares;
-    const duplicate_delta = metrics_end.each_key_duplicate_compares - metrics_start.each_key_duplicate_compares;
-    const item_delta = metrics_end.each_item_compares - metrics_start.each_item_compares;
-    try std.testing.expectEqual(@as(u64, row_count * 2), compare_delta);
-    try std.testing.expectEqual(@as(u64, row_count), hash_delta);
-    try std.testing.expectEqual(@as(u64, row_count), reuse_delta);
-    try std.testing.expectEqual(@as(u64, 0), duplicate_delta);
-    try std.testing.expectEqual(@as(u64, row_count), item_delta);
-}
-
-test "signals host row scopes retain key and item capabilities" {
-    test_erased_callable_drop_count = 0;
-
-    var host = HostEnv.init();
-    var roc_host = makeSignalsRocHost(&host);
-    host.engine.roc_host = &roc_host;
-    defer {
-        deinitTestHostIdentity(&host);
-        _ = host.gpa.deinit();
-    }
-
-    const key_cap = testHostValueCapability(&roc_host);
-    const item_cap = testHostValueCapability(&roc_host);
-
-    const root = host.internRootScope();
-    const initial_keys = [_]HostValue{testHostValueI64(1)};
-    const initial_items = [_]HostValue{testHostValueI64(10)};
-    const initial = syncTestEachRowScopes(&host, &roc_host, root, 5, &initial_keys, &initial_items, key_cap, item_cap);
-    defer freeKeyedRowDiff(&host, initial);
-    try std.testing.expectEqual(@as(u64, 1), initial.rows_created);
-    const row_scope_id = initial.scope_ids[0];
-
-    test_erased_callable_drop_count = 0;
-    key_cap.decref(&roc_host);
-    item_cap.decref(&roc_host);
-    try std.testing.expectEqual(@as(u64, 0), test_erased_callable_drop_count);
-
-    const incoming_key_cap = testHostValueCapabilityWithEq(&roc_host, &testNeverEqualHostValueCallable);
-    defer incoming_key_cap.decref(&roc_host);
-    const incoming_item_cap = testHostValueCapabilityWithEq(&roc_host, &testNeverEqualHostValueCallable);
-    defer incoming_item_cap.decref(&roc_host);
-
-    const next_keys = [_]HostValue{testHostValueI64(1)};
-    const next_items = [_]HostValue{testHostValueI64(10)};
-    const next = syncTestEachRowScopes(&host, &roc_host, root, 5, &next_keys, &next_items, incoming_key_cap, incoming_item_cap);
-    defer freeKeyedRowDiff(&host, next);
-    try std.testing.expectEqual(@as(u64, 1), next.rows_reused);
-    try std.testing.expectEqual(@as(u64, 0), next.rows_created);
-    try std.testing.expectEqual(@as(u64, 1), next.row_items_unchanged);
-    try std.testing.expectEqual(row_scope_id, next.scope_ids[0]);
 }
 
 test "signals host collects Elem descriptor stream" {
@@ -11309,13 +10399,13 @@ test "signals host tracks descriptor stream closure lifecycle metrics" {
 
     host.collectActiveElemRootDescriptors(&roc_host, &stream, root, &.{});
 
-    try std.testing.expectEqual(@as(u64, 62), host.engine.pending_roc_metrics.closure_retains);
+    try std.testing.expectEqual(@as(u64, 76), host.engine.pending_roc_metrics.closure_retains);
     try std.testing.expectEqual(@as(u64, 0), host.engine.pending_roc_metrics.closure_releases);
 
     stream.deinit(host.hostAllocator(), &host, &roc_host, &host.engine.pending_roc_metrics);
 
-    try std.testing.expectEqual(@as(u64, 62), host.engine.pending_roc_metrics.closure_retains);
-    try std.testing.expectEqual(@as(u64, 50), host.engine.pending_roc_metrics.closure_releases);
+    try std.testing.expectEqual(@as(u64, 76), host.engine.pending_roc_metrics.closure_retains);
+    try std.testing.expectEqual(@as(u64, 56), host.engine.pending_roc_metrics.closure_releases);
 }
 
 test "signals host descriptors carry capability-owned extension records" {
@@ -12310,6 +11400,7 @@ pub const fuzz_fixtures = struct {
 
     pub const captureAs = testCapturePtrAs;
     pub const argsAs = testErasedArgsAs;
+    pub const eachRowKeyI64 = testEachRowKeyI64;
     pub const readI64 = testReadHostValueI64;
     pub const writeResult = writeTestErasedResult;
 };

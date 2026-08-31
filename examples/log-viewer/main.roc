@@ -8,7 +8,7 @@ app [main] { pf: platform "https://github.com/lukewilliamboswell/roc-signals/rel
 ##
 ## The signal graph:
 ##
-##     interval ──> all_lines ─┬─> visible ──> ordered ──> each_str (rows)
+##     interval ──> all_lines ─┬─> visible ──> ordered ──> Ui.each (rows)
 ##                             │      │
 ##     4 level toggles ──> levels ─────┤        └─> match_count / tail / stats
 ##     query ─────────────────────────┘
@@ -461,7 +461,7 @@ stream_panel = |{ levels, query, follow_tail, newest_first }| {
 					),
 					Ui.when(
 						has_lines,
-						|| Html.section_c("Log lines", stream_class, [Ui.each_str(ordered, |line| line.id, render_row)]),
+						|| Html.section_c("Log lines", stream_class, [Ui.each(ordered, |line| line.id, |each_row| render_row(each_row.key(), each_row.signal()))]),
 						|| Html.section_c("Log empty", "grid gap-2", [Html.paragraph_c("Log buffer is empty", "empty-state")]),
 					),
 					Ui.on_cleanup(Signal.cleanup("log stream cleanup")),

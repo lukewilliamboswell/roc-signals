@@ -355,7 +355,7 @@ render_preview_row = |answers, key, row| {
 						[Html.class_attr("input"), Html.aria_invalid_s(invalid)],
 						[
 							Html.option("", "Choose..."),
-							Ui.each_str(options, |option| option, |option, _signal| Html.option(option, option)),
+							Ui.each(options, |option| option, |each_row| Html.option(each_row.key(), each_row.key())),
 						],
 						write_text,
 					),
@@ -399,7 +399,7 @@ designer_panel = |schema, fields, has_fields|
 				[
 					Ui.when(
 						has_fields,
-						|| Ui.each_str(fields, |field| field.id, |key, field| render_builder_row(schema, key, field)),
+						|| Ui.each(fields, |field| field.id, |each_row| render_builder_row(schema, each_row.key(), each_row.signal())),
 						|| empty_state("No fields yet. Add a field to start designing."),
 					),
 				],
@@ -455,7 +455,7 @@ preview_panel = |answers, submits, view|
 						[
 							Ui.when(
 								view.has_fields,
-								|| Ui.each_str(view.rows, |row| row.id, |key, row| render_preview_row(answers, key, row)),
+								|| Ui.each(view.rows, |row| row.id, |each_row| render_preview_row(answers, each_row.key(), each_row.signal())),
 								|| empty_state("No fields yet. The generated form is empty."),
 							),
 							Html.div_c(

@@ -139,7 +139,7 @@ Home := {}.{
 
 							|| Html.div_c(
 								"flex flex-wrap gap-1",
-								[Ui.each_str(tags, |tag| tag, |tag, _| sidebar_tag(tag, intent))],
+								[Ui.each(tags, |tag| tag, |each_row| sidebar_tag(each_row.key(), intent))],
 							),
 						),
 					),

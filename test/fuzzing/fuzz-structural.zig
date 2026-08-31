@@ -416,9 +416,14 @@ fn rowKey(spec: *const SiteSpec, items: []const i64, index: usize) i64 {
     return if (spec.shared) @divTrunc(items[index], key_stride) else @intCast(index);
 }
 
-/// The version a shared item carries; a constant site's rows have none.
+/// Stable structural seed for a shared row.
+///
+/// A keyed row builder runs once for the row identity, so nested structure
+/// created directly by that builder may depend on the key but not on later
+/// item-only changes. Item-dependent structure belongs behind `Row.signal` in
+/// the ordinary reactive graph and is covered by the semantic row tests.
 fn rowVersion(spec: *const SiteSpec, item: i64) i64 {
-    return if (spec.shared) @mod(item, key_stride) else 0;
+    return if (spec.shared) @divTrunc(item, key_stride) else 0;
 }
 
 /// Rows the constant inner site `inner` renders under an outer row at
@@ -918,9 +923,8 @@ fn buildSite(spec: *const SiteSpec, roc_host: *abi.RocHost, shared: *const Share
 fn rowCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
     const capture = fixtures.captureAs(RowCapture, capture_ptr);
     const spec = capture.spec;
-    const call_args = fixtures.argsAs(fixtures.BinaryArgs, args);
-    const key = fixtures.readI64(roc_host, call_args.arg0);
-    const item = fixtures.readI64(roc_host, call_args.arg1);
+    const key = fixtures.eachRowKeyI64(roc_host, args);
+    const item = if (spec.shared) key * key_stride else key;
     var buffer: [32]u8 = undefined;
     const label = rowLabel(&buffer, spec, key);
     const elem = switch (spec.row_kind) {

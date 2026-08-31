@@ -43,7 +43,7 @@ Form := {}.{
 	}
 
 	## The designer's state: the field list plus the id counter used to mint
-	## stable, durable keys for `Ui.each_str`.
+	## stable, durable keys for `Ui.each`.
 	Schema : {
 		fields : List(Form.Field),
 		seq : U64,

@@ -155,6 +155,12 @@ pub const OnlineSourceSignal = struct {
     payload_capability: HostValueCapability,
 };
 
+pub const RowSourceSignal = struct {
+    row_handle: u64,
+    token: SignalToken,
+    capability: HostValueCapability,
+};
+
 pub const StorageSourceSignal = struct {
     token: SignalToken,
     area: boundary.StorageArea,
@@ -176,6 +182,7 @@ pub const SignalExpr = union(enum) {
     entropy_seed_source: EntropySeedSourceSignal,
     location_source: LocationSourceSignal,
     online_source: OnlineSourceSignal,
+    row_source: RowSourceSignal,
     visibility_source: VisibilitySourceSignal,
     storage_source: StorageSourceSignal,
 
@@ -312,6 +319,16 @@ pub const SignalExpr = union(enum) {
                     .from_payload = .fromAbi(payload._1),
                     .capability = payload._2,
                     .payload_capability = payload._3,
+                } };
+            },
+            .RowSource => blk: {
+                const payload = expr.payload_row_source();
+                const token = SignalToken.fromAbi(payload._1);
+                validateIdentityCallable(token, payload._2);
+                break :blk .{ .row_source = .{
+                    .row_handle = payload._0,
+                    .token = token,
+                    .capability = payload._3,
                 } };
             },
             .StorageSource => blk: {
@@ -742,6 +759,28 @@ test "SignalExpr.fromAbi decodes ref and const value expressions" {
         .const_value => |payload| {
             try std.testing.expectEqual(signal_token, payload.token.callable);
             try std.testing.expectEqual(@as(abi.RocErasedCallable, signal_token), payload.init.toAbi());
+            try std.testing.expectEqual(capability, payload.capability);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "SignalExpr.fromAbi decodes a row source with duplicate callable identity" {
+    const row_token = testCallableToken(0x2800);
+    const capability = std.mem.zeroes(HostValueCapability);
+    const row_expr = abi.NodeSignalExpr{
+        .payload = .{ .row_source = .{
+            ._0 = 0x0102030405060708,
+            ._1 = row_token,
+            ._2 = row_token,
+            ._3 = capability,
+        } },
+        .tag = .RowSource,
+    };
+    switch (SignalExpr.fromAbi(row_expr)) {
+        .row_source => |payload| {
+            try std.testing.expectEqual(@as(u64, 0x0102030405060708), payload.row_handle);
+            try std.testing.expectEqual(row_token, payload.token.callable);
             try std.testing.expectEqual(capability, payload.capability);
         },
         else => return error.TestUnexpectedResult,

@@ -158,6 +158,7 @@ class MockHost {
     this.timers = [];
     this.resolutions = [];
     this.resolveTrapMessage = null;
+    this.unmountTrapMessage = null;
     this.mountScript = [];
     this.eventResponses = new Map();
     this.eventResponseBits = new Map();
@@ -246,6 +247,10 @@ class MockHost {
         this.writeCommands(this.onlineUpdateScript);
       },
       roc_ui_unmount: () => {
+        if (this.unmountTrapMessage !== null) {
+          this.writeLastError(this.unmountTrapMessage);
+          throw new WebAssembly.RuntimeError("unreachable");
+        }
         this.cmdLen = 0;
         this.strLen = 0;
         this.dynamicLen = 0;
@@ -2319,6 +2324,18 @@ test("event dispatch wraps wasm host trap diagnostics", () => {
     /DOM event payload descriptor does not match Roc event descriptor: unreachable/,
   );
   assert.deepEqual(host.dispatches, []);
+});
+
+test("unmount wraps wasm host trap diagnostics", () => {
+  const { host, runtime } = mountWith([]);
+  host.unmountTrapMessage = "unmount retained live host values";
+
+  assert.throws(
+    () => runtime.unmount(),
+    /unmount retained live host values: unreachable/,
+  );
+  assert.match(runtime.failedError?.message ?? "", /unmount retained live host values/);
+  assert.equal(runtime.mounted, false);
 });
 
 test("event dispatch preserves diagnostics when payload dealloc also traps", () => {

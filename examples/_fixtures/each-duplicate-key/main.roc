@@ -37,7 +37,7 @@ main = || {
 				[],
 				[
 					Html.heading("Duplicate each key fixture"),
-					Ui.each_str(items.signal(), |item| item.id, render_row),
+					Ui.each(items.signal(), |item| item.id, |each_row| render_row(each_row.key(), each_row.signal())),
 				],
 			)
 		},

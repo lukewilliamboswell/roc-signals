@@ -35,7 +35,7 @@ folder requires a pinned Roc Signals release artifact and toolchain policy.
 
 The benchmark UI and rows are rendered by
 `examples/_fixtures/js-framework-benchmark/main.roc`. Its stable string keys
-back `Ui.each_str`, so replacement creates new row nodes, removal detaches the
+back `Ui.each`, so replacement creates new row nodes, removal detaches the
 identified node, and swaps move the existing keyed nodes.
 
 The current upstream structural checker accepts the fixture's accessibility and

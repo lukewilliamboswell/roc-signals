@@ -232,10 +232,10 @@ Auth := {}.{
 					tag: "ul",
 					attrs: [Html.class_attr(Styles.error_list)],
 					children: [
-						Ui.each_str(
+						Ui.each(
 							keyed,
 							|item| item.key,
-							|_, item| Elem.Element({ tag: "li", attrs: [], children: [Html.text_s(item.map(|value| value.text))] }),
+							|each_row| Elem.Element({ tag: "li", attrs: [], children: [Html.text_s(each_row.map(|value| value.text))] }),
 						),
 					],
 				},

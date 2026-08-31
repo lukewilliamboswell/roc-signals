@@ -166,7 +166,7 @@ main = || {
 						"table",
 						[Html.class_attr("table table-hover table-striped test-data")],
 						[
-							element("tbody", [Html.attr("id", "tbody")], [Ui.each_str(rows, |row| row.id.to_str(), |key, row| render_row(model, selected, key, row))]),
+							element("tbody", [Html.attr("id", "tbody")], [Ui.each(rows, |row| row.id.to_str(), |each_row| render_row(model, selected, each_row.key(), each_row.signal()))]),
 						],
 					),
 					element("span", [Html.class_attr("preloadicon glyphicon glyphicon-remove"), Html.attr("aria-hidden", "true")], []),

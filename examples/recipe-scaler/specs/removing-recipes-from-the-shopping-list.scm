@@ -49,7 +49,7 @@
     (expect-text (test-id "shop-qty-flour-g") "100 g")
     ; Back to an empty list. The Ui.when branch flips, so the whole rows subtree is
     ; disposed as scopes rather than as row removals: scopes_disposed 6 is the
-    ; each_str scope plus its five row scopes, and rows_removed stays 0.
+    ; each scope plus its five row scopes, and rows_removed stays 0.
     (mark-metrics)
     (uncheck (label "Include Buttermilk Pancakes"))
     (expect-metric-delta rows_created 0)

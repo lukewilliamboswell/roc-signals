@@ -17,7 +17,7 @@
 
     ; 4. editing step 2 does not re render step 1's fields
     ;
-    ; The progress list is one Ui.each_str over a Signal.combine of four
+    ; The progress list is one Ui.each over a Signal.combine of four
     ; per-step summary signals. Editing the organisation name recomputes only
     ; org_summary and the combined list; the account row keeps its scope, its row
     ; is reused, and its text sink never fires.

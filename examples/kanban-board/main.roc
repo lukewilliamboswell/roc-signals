@@ -612,7 +612,7 @@ render_column = |board, column, signals| {
 				"panel-body",
 				[
 					Html.paragraph_s_attrs(matching_text, [Html.class_attr("hint numeric"), Html.test_id("matching-${slug}")]),
-					Ui.each_str(signals.views, |item| item.title, |key, item| render_card(board, key, item)),
+					Ui.each(signals.views, |item| item.title, |each_row| render_card(board, each_row.key(), each_row.signal())),
 					# The dashed box exists only while there is nothing to show, so
 					# there is no hidden copy of it behind a populated column.
 					Ui.when(

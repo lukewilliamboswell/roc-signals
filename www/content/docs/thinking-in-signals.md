@@ -155,13 +155,13 @@ That example only shows two of the categories. Here is the full picture:
 | Category | Where | How often it runs | What it does |
 | --- | --- | --- | --- |
 | **Construction (once)** | the outer body, and `Ui.state` bodies | exactly once, at startup | builds nodes and edges |
-| **Construction (repeated)** | `Ui.when` arms, `Ui.switch` builders, `Ui.each_str` row renderers, `Ui.component` bodies | every time that scope mounts | builds nodes and edges *again*, for a new scope |
+| **Construction (repeated)** | `Ui.when` arms, `Ui.switch` builders, `Ui.each` row renderers, `Ui.component` bodies | every time that scope mounts | builds nodes and edges *again*, for a new scope |
 | **Runtime** | `.map` transforms, reducers (`on_unit`, `on_str`, …), `to_cmd` functions | on every relevant change | computes a value; builds no structure |
 
 The middle row is the one that catches people, and it is worth being precise
 about because it is the honest limit of "nothing re-renders".
 
-A `Ui.when` arm, a `Ui.switch` builder, and a `Ui.each_str` row renderer are **construction code that
+A `Ui.when` arm, a `Ui.switch` builder, and a `Ui.each` row renderer are **construction code that
 runs more than once**. Their job is to build fresh nodes, mount fresh state, and
 wire fresh edges. Flip a conditional and the losing arm is disposed and the
 winning one is constructed. Change a `Ui.switch` case and its old scope is
@@ -171,7 +171,7 @@ whatever `.map` nodes it declares.
 That is a rebuild — a real one. The difference from a re-render model is *when*
 and *how much*: it happens only when structure genuinely changes, never on a
 value change, and it is bounded to the scope that changed. A React app re-runs a
-component when any of its state changes; here, a `Ui.each_str` row renderer runs
+component when any of its state changes; here, a `Ui.each` row renderer runs
 when that row appears, and never again for the life of the row, no matter how
 many times its data changes.
 
@@ -259,7 +259,7 @@ work happens — but the transform ran. Solid would not have woken it at all.
 
 We accept this because the alternative requires observing reads, which purity
 forbids. When dependency *structure* genuinely needs to change, use a scope —
-`Ui.when` or `Ui.each_str` — which builds and tears down whole sub-graphs.
+`Ui.when` or `Ui.each` — which builds and tears down whole sub-graphs.
 That is the escape valve, and it is the same mechanism that powers dynamic
 lists. See [Lists, Conditionals, and Components](@/docs/dynamic-structure.md).
 
@@ -305,7 +305,7 @@ by:
 
 - the root,
 - each arm of a `Ui.when`,
-- each row of a `Ui.each_str` (keyed by *your* key, not position),
+- each row of a `Ui.each` (keyed by *your* key, not position),
 - each `Ui.component`.
 
 Two practical consequences:
@@ -331,7 +331,7 @@ scope.
 | `useEffect` without the mount run | `Ui.on_change(signal, to_cmd)` |
 | `useEffect(fn, [])` | `Ui.on_mount(to_cmd)` |
 | cleanup function | `Ui.on_cleanup` — but **scope disposal only**, not before each re-run |
-| `key` on a list | the key function in `Ui.each_str` — required, not optional |
+| `key` on a list | the key function in `Ui.each` — required, not optional |
 | `React.memo` | not needed; no value change causes a re-render |
 | conditional rendering with `&&` | `Ui.when` |
 | controlled inputs | the same idea: value comes from a signal, events send reducers |
@@ -344,7 +344,7 @@ Three of those rows deserve more than a table cell.
 identity from construction order, exactly as `useState` does, so the same
 "don't declare it conditionally" constraint holds. The difference is scoping:
 React has one ordinal space per component, while here every `Ui.when` arm,
-`Ui.each_str` row, and `Ui.component` opens a fresh one. Conditional state is
+`Ui.each` row, and `Ui.component` opens a fresh one. Conditional state is
 therefore fine as long as it sits inside its own scope. Be aware there is no
 `eslint-plugin-react-hooks` equivalent — nothing warns you.
 

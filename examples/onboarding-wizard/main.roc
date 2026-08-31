@@ -29,7 +29,7 @@ app [main] { pf: platform "https://github.com/lukewilliamboswell/roc-signals/rel
 ##                                         └─> progress_complete
 ##
 ##     account ──> account_summary ─┐
-##     org ──────> org_summary ─────┼─> Signal.combine ──> summaries ──> each_str
+##     org ──────> org_summary ─────┼─> Signal.combine ──> summaries ──> Ui.each
 ##     emails/role > invites_summary ┤
 ##     can_submit > review_summary ──┘
 ##
@@ -240,7 +240,7 @@ Step := [AccountStep, OrgStep, InvitesStep, ReviewStep].{
 			ReviewStep => 3
 		}
 
-	## The wire form: field 8 of a saved draft, and the `each_str` row key.
+	## The wire form: field 8 of a saved draft, and the `Ui.each` row key.
 	slug : Step -> Str
 	slug = |step|
 		match step {
@@ -906,7 +906,7 @@ progress_panel = |view|
 				"h-1.5 w-full overflow-hidden rounded-full bg-zinc-200",
 				[Html.div_sc(view.summaries.map(progress_bar_class), [])],
 			),
-			Ui.each_str(view.summaries, |row| Step.slug(row.step), |key, row| summary_row(view.step, key, row)),
+			Ui.each(view.summaries, |row| Step.slug(row.step), |each_row| summary_row(view.step, each_row.key(), each_row.signal())),
 		],
 	)
 
