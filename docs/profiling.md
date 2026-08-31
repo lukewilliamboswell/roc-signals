@@ -33,33 +33,49 @@ the js-framework-benchmark convention: five warmups for replace, partial
 update, select, swap, and remove, and no warmup for create 1,000, create 10,000,
 append to 10,000, or clear 10,000.
 
-The manifest is also the requirement-to-evidence map for the eventual browser
-submission:
+The manifest is also the requirement-to-evidence map for browser comparisons:
 
 | Requirement | Evidence available now | Browser evidence still required |
 | --- | --- | --- |
-| Nine table operations | One semantic spec and one native optimized benchmark case per operation, including warmup metadata | End-to-end duration around the corresponding real DOM action |
-| Ready/run/update/replace/repeated-clear memory | Exact action sequences are validated in the manifest | Browser-process memory after stabilization and collection, using the official runner's metric |
-| Startup time | Metric and provider are required by the manifest | Navigation-to-first-render measurement in the built browser artifact |
-| Consistently interactive, script bootup, main-thread work | Lighthouse metric entries are required by the manifest | Lighthouse results from the official browser environment |
-| Total byte weight | Lighthouse metric entry is required by the manifest | Post-compression transferred bytes for every loaded resource |
+| Nine table operations | Semantic/native cases plus a production adapter whose DOM and keyed identity behavior are checked | End-to-end duration from the official runner around each real DOM action |
+| Ready/run/update/replace/repeated-clear memory | Exact action sequences and an official-harness-compatible artifact | Browser-process memory after stabilization and collection from the official runner |
+| Startup time | Production `--opt=size` Wasm, runtime modules, and mount entry point | Navigation-to-first-render measurement from the official runner |
+| Consistently interactive, script bootup, main-thread work | Required metric entries and a real-browser-mounted artifact | Lighthouse results from the official browser environment |
+| Total byte weight | The complete production artifact is built in one directory | Post-compression transferred bytes reported by the official environment |
 
 The Node/Wasm-controlled measurement path, production-host instrumentation,
 and repeatable Node workflow are tracked in
 [issue #19](https://github.com/lukewilliamboswell/roc-signals/issues/19). That
 issue explicitly excludes real-browser layout, paint, cross-browser memory,
-and Lighthouse. The manifest records those later submission requirements but
-does not implement or attribute them to issue #19. This avoids duplicating the
-Node/Wasm harness while keeping the future browser adapter's completeness
-contract explicit.
+and Lighthouse. The adapter under
+`benchmarks/js-framework-benchmark/roc-signals-keyed/` now supplies the real
+production artifact and official DOM/build contract. The official runner still
+owns browser timings, process-memory collection, and Lighthouse evidence; do
+not attribute those measurements to the Node harness.
 
 The manifest contract deliberately does not manufacture browser numbers from
 the native host. Native results isolate Roc reducer time, engine application,
 work counters, and allocation behavior. DOM layout/paint, JavaScript and Wasm
 startup, browser heap accounting, compression, and Lighthouse metrics require a
 real production browser build. Contract tests fail if any required operation,
-warmup, memory scenario, or audit metric disappears while that adapter is being
-built.
+warmup, memory scenario, audit metric, or adapter contract disappears.
+
+Build the browser adapter from its directory:
+
+```sh
+cd benchmarks/js-framework-benchmark/roc-signals-keyed
+npm ci
+ROC_BIN=/path/to/roc npm run build-prod
+npm run verify
+```
+
+The verifier exercises the production Wasm and shared JavaScript runtime and
+asserts the official table structure plus keyed node movement, removal, and
+replacement. For comparative numbers, copy the adapter into an official
+`js-framework-benchmark` checkout as documented in its README and run Roc
+Signals and the comparison framework with the same driver, browser, machine,
+and checkout. A successful local verifier is not an official performance
+result.
 
 For quick iteration on the keyed table fixture on x86-64 Linux:
 
