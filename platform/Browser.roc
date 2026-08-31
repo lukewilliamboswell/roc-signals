@@ -123,6 +123,17 @@ Browser := [].{
 		}
 	}
 
+	decode_entropy_seed_payload : List(U8) -> U32
+	decode_entropy_seed_payload = |bytes| {
+		seed = read_u32_le(bytes)
+
+		if !seed.rest.is_empty() {
+			crash "malformed entropy seed payload: trailing bytes"
+		}
+
+		seed.value.to_u32_wrap()
+	}
+
 	decode_storage_payload : List(U8) -> StorageText
 	decode_storage_payload = |bytes| {
 		status = read_byte(bytes)
@@ -174,6 +185,35 @@ Browser := [].{
 				Capability.handle(payload_cap),
 			),
 			location_cap,
+		)
+	}
+
+	## One host-provided entropy seed per mount. Browser hosts use
+	## `crypto.getRandomValues`; deterministic hosts provide a stable seed so
+	## native specs remain reproducible. Apps thread a pure PRNG from this value.
+	## The result is a non-cryptographic seed for simulation and randomized UI;
+	## it must not be used directly for secrets, tokens, or security decisions.
+	entropy_seed : () -> Signal(U32)
+	entropy_seed = || {
+		seed_cap = Capability.new()
+		payload_cap = Capability.new()
+
+		from_payload : HostValue -> HostValue
+		from_payload = |payload_hv| {
+			payload_bytes : List(U8)
+			payload_bytes = Box.unbox(Capability.take(payload_hv, payload_cap))
+			Capability.store(Box.box(decode_entropy_seed_payload(payload_bytes)), seed_cap)
+		}
+		from_payload_box = Box.box(from_payload)
+
+		Signal.from_expr(
+			Node.SignalExpr.EntropySeedSource(
+				from_payload_box,
+				from_payload_box,
+				Capability.handle(seed_cap),
+				Capability.handle(payload_cap),
+			),
+			seed_cap,
 		)
 	}
 

@@ -6,7 +6,7 @@ const ids = @import("ids.zig");
 
 /// Version 12: `remove_node` releases the whole subtree under its target, so
 /// the engine publishes one removal per retired subtree root.
-pub const protocol_version: u32 = 12;
+pub const protocol_version: u32 = 13;
 pub const protocol_feature_dynamic_attrs: u32 = 1 << 0;
 pub const protocol_feature_dynamic_events: u32 = 1 << 1;
 pub const protocol_features: u32 = protocol_feature_dynamic_attrs | protocol_feature_dynamic_events;

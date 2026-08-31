@@ -127,6 +127,7 @@ pub const HostSignalCombineRecord = signal_records.CombineRecord;
 pub const HostSignalTaskSourceRecord = signal_records.TaskSourceRecord;
 pub const HostSignalIntervalSourceRecord = signal_records.IntervalSourceRecord;
 pub const HostSignalLocationSourceRecord = signal_records.LocationSourceRecord;
+pub const HostSignalEntropySeedSourceRecord = signal_records.EntropySeedSourceRecord;
 pub const HostSignalOnlineSourceRecord = signal_records.OnlineSourceRecord;
 pub const HostSignalVisibilitySourceRecord = signal_records.VisibilitySourceRecord;
 pub const HostSignalStorageSourceRecord = signal_records.StorageSourceRecord;
@@ -3058,6 +3059,20 @@ pub fn Engine(comptime Ctx: type) type {
                     try binding.remember(record);
                     break :blk record;
                 },
+                .entropy_seed_source => |payload| blk: {
+                    const token = payload.token.callable;
+                    if (try binding.retainExisting(token, .entropy_seed_source)) |record| {
+                        break :blk record;
+                    }
+
+                    const record = try binding.init(.{ .entropy_seed_source = .{
+                        .payload_cap = retainHostValueCapability(payload.payload_capability, &self.pending_roc_metrics),
+                        .from_payload = retainHostCallable(payload.from_payload, &self.pending_roc_metrics),
+                        .cap = retainHostValueCapability(payload.capability, &self.pending_roc_metrics),
+                    } });
+                    try binding.remember(record);
+                    break :blk record;
+                },
                 .location_source => |payload| blk: {
                     const token = payload.token.callable;
                     if (try binding.retainExisting(token, .location_source)) |record| {
@@ -5388,7 +5403,7 @@ pub fn Engine(comptime Ctx: type) type {
 
         fn countSignalExprRecords(expr: abi.NodeSignalExpr) CollectionError!usize {
             return switch (abi_view.SignalExpr.fromAbi(expr)) {
-                .ref, .const_value, .task_source, .interval_source, .location_source, .visibility_source, .online_source, .storage_source => 1,
+                .ref, .const_value, .task_source, .interval_source, .entropy_seed_source, .location_source, .visibility_source, .online_source, .storage_source => 1,
                 .map => |payload| std.math.add(usize, 1, try countSignalExprRecords(payload.input.*)) catch return error.ResourceLimit,
                 .select => |payload| std.math.add(usize, 1, try countSignalExprRecords(payload.input.*)) catch return error.ResourceLimit,
                 .map2 => |payload| blk: {
@@ -10324,6 +10339,18 @@ pub fn Engine(comptime Ctx: type) type {
             }
         }
 
+        /// Materializes the immutable mount entropy seed through its app-owned payload capability.
+        pub fn evalEntropySeedSourceInitial(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, payload: *HostSignalEntropySeedSourceRecord) HostValue {
+            switch (payload.cached_value) {
+                .present => return self.cloneCachedSignalValue(ctx, &payload.cached_value),
+                .absent => {
+                    const raw_payload = Ctx.initialEntropySeedPayload(ctx, roc_host, payload.payload_cap);
+                    const value = callHostValueToHostValueWithCapability(ctx, roc_host, payload.payload_cap, payload.from_payload.toAbi(), raw_payload);
+                    return self.replaceSignalExprCacheAndClone(ctx, &payload.cached_value, roc_host, value, payload.cap);
+                },
+            }
+        }
+
         /// Performs eval visibility source initial inside the shared engine while preserving transaction and changed-set invariants.
         pub fn evalVisibilitySourceInitial(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, payload: *HostSignalVisibilitySourceRecord) HostValue {
             switch (payload.cached_value) {
@@ -10461,6 +10488,9 @@ pub fn Engine(comptime Ctx: type) type {
                 },
                 .location_source => |*payload| {
                     return self.evalLocationSourceInitial(ctx, roc_host, payload);
+                },
+                .entropy_seed_source => |*payload| {
+                    return self.evalEntropySeedSourceInitial(ctx, roc_host, payload);
                 },
                 .visibility_source => |*payload| {
                     return self.evalVisibilitySourceInitial(ctx, roc_host, payload);
@@ -10796,6 +10826,12 @@ pub fn Engine(comptime Ctx: type) type {
                         .changed = record.last_dirty_generation == dirty_generation and record.last_dirty_changed,
                     });
                 },
+                .entropy_seed_source => |*payload| {
+                    return self.rememberDirtySignalResult(record, dirty_generation, .{
+                        .value = self.cloneCachedSignalValue(ctx, &payload.cached_value),
+                        .changed = false,
+                    });
+                },
                 .location_source => |*payload| {
                     debugPhase(ctx, .eval_dirty_location_source);
                     return self.rememberDirtySignalResult(record, dirty_generation, .{
@@ -10915,6 +10951,7 @@ pub fn Engine(comptime Ctx: type) type {
                 },
                 .task_source => |*payload| .{ .value = self.cloneCachedSignalValue(ctx, overlay.readSlot(&payload.cached_value)), .changed = false },
                 .interval_source => |*payload| .{ .value = self.cloneCachedSignalValue(ctx, overlay.readSlot(&payload.cached_value)), .changed = false },
+                .entropy_seed_source => |*payload| .{ .value = self.cloneCachedSignalValue(ctx, overlay.readSlot(&payload.cached_value)), .changed = false },
                 .location_source => |*payload| .{ .value = self.cloneCachedSignalValue(ctx, overlay.readSlot(&payload.cached_value)), .changed = false },
                 .visibility_source => |*payload| .{ .value = self.cloneCachedSignalValue(ctx, overlay.readSlot(&payload.cached_value)), .changed = false },
                 .online_source => |*payload| .{ .value = self.cloneCachedSignalValue(ctx, overlay.readSlot(&payload.cached_value)), .changed = false },
@@ -14470,6 +14507,11 @@ const VerifyCtx = struct {
     /// Returns the exact app-compiled capability that owns the requested state cell.
     pub fn stateCapability(ctx: Handle, _: u64) HostValueCapability {
         return ctx.state_capability;
+    }
+
+    /// Supplies a deterministic seed while verifying source materialization.
+    pub fn initialEntropySeedPayload(_: Handle, _: *abi.RocHost, _: HostValueCapability) HostValue {
+        return .invalid;
     }
 
     /// Materializes the mount-time browser location through the source's owning capability.

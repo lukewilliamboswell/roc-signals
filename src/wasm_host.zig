@@ -89,6 +89,11 @@ const WasmCtx = struct {
         return updateStateCell(ids.NodeId.fromRaw(node_id), value);
     }
 
+    /// Materializes the mount-time entropy seed through the source's owning capability.
+    pub fn initialEntropySeedPayload(_: Handle, _: *abi.RocHost, cap: HostValueCapability) HostValue {
+        return makeInitialEntropySeedPayload(cap);
+    }
+
     /// Materializes the mount-time browser location through the source's owning capability.
     pub fn initialLocationPayload(_: Handle, _: *abi.RocHost, cap: HostValueCapability) HostValue {
         return makeInitialLocationPayload(cap);
@@ -403,6 +408,7 @@ var benchmark_metrics_block: BenchmarkMetricsBlock = std.mem.zeroes(BenchmarkMet
 var benchmark_command_capacity_bytes: u64 = 0;
 var benchmark_pages_before: u64 = 0;
 var command_batch: render.TransactionalBatch = .{};
+var initial_entropy_seed: ?u32 = null;
 var initial_location_payload: ?[]u8 = null;
 var initial_visibility_payload: ?[]u8 = null;
 var initial_online_payload: ?[]u8 = null;
@@ -928,6 +934,13 @@ fn hostValueU8ListWithCapability(bytes: []const u8, cap: HostValueCapability) Ho
     return hv.makeU8ListWithCapability(HostValueOpsCtx{}, &roc_host, bytes, cap);
 }
 
+fn makeInitialEntropySeedPayload(cap: HostValueCapability) HostValue {
+    const seed = initial_entropy_seed orelse failHostWith("entropy seed was not provided before mount");
+    var bytes: [4]u8 = undefined;
+    std.mem.writeInt(u32, &bytes, seed, .little);
+    return hostValueU8ListWithCapability(&bytes, cap);
+}
+
 fn makeDefaultLocationPayload() []u8 {
     return boundary.encodeLocationPayload(allocator(), .{ .path = "/", .query = "", .hash = "" }) catch |err| switch (err) {
         error.OutOfMemory => failHostWith("location payload allocation failed"),
@@ -1028,7 +1041,7 @@ fn rememberStorageDeclaration(area: boundary.StorageArea, key: []const u8) void 
 
 fn discoverStorageSignalExpr(expr: abi.NodeSignalExpr) void {
     switch (abi_view.SignalExpr.fromAbi(expr)) {
-        .ref, .const_value, .task_source, .interval_source, .location_source, .online_source, .visibility_source => {},
+        .ref, .const_value, .task_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source => {},
         .map => |payload| discoverStorageSignalExpr(payload.input.*),
         .select => |payload| discoverStorageSignalExpr(payload.input.*),
         .map2 => |payload| {
@@ -1098,6 +1111,15 @@ fn setCurrentLocationPayload(bytes: []const u8) void {
         allocator().free(existing);
     }
     initial_location_payload = allocator().dupe(u8, bytes) catch failHost();
+}
+
+fn setInitialEntropySeed(seed: u32) void {
+    if (shared_engine.root_elem != null) failHostWith("entropy seed cannot be set after mount preparation");
+    initial_entropy_seed = seed;
+}
+
+fn clearInitialEntropySeed() void {
+    initial_entropy_seed = null;
 }
 
 fn setInitialLocationPayload(bytes: []const u8) void {
@@ -1312,7 +1334,7 @@ fn resolveTask(request_id: ids.TaskRequestId, payload_text: []const u8, failed: 
     const record = shared_engine.activeTaskRecordByToken(pending.task_token) orelse failHostWith("task result matched no active task source");
     const task_payload = switch (record.payload) {
         .task_source => |payload| payload,
-        .ref, .const_value, .map, .map2, .select, .combine, .interval_source, .location_source, .online_source, .visibility_source, .storage_source => unreachable,
+        .ref, .const_value, .map, .map2, .select, .combine, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source => unreachable,
     };
     if (record.token().? != pending.task_token) failHostWith("task result matched a pending request for a different task source");
 
@@ -1943,6 +1965,11 @@ export fn roc_ui_mount() callconv(.c) void {
     publishCommandTransaction();
 }
 
+export fn roc_ui_set_entropy_seed(seed: u32) callconv(.c) void {
+    beginHostCall();
+    setInitialEntropySeed(seed);
+}
+
 export fn roc_ui_set_location(payload_ptr: usize, payload_len: usize) callconv(.c) void {
     beginHostCall();
     setInitialLocationPayload((@as([*]const u8, @ptrFromInt(payload_ptr)))[0..payload_len]);
@@ -2035,6 +2062,7 @@ export fn roc_ui_unmount() callconv(.c) void {
     beginHostCall();
     beginCommandTransaction();
     clearActiveRuntime();
+    clearInitialEntropySeed();
     clearInitialLocationPayload();
     clearInitialVisibilityPayload();
     clearInitialOnlinePayload();

@@ -1,13 +1,18 @@
-app [main] { pf: platform "../../../platform/main.roc" }
+app [main] {
+	pf: platform "../../../platform/main.roc",
+	rand: "https://github.com/kili-ilo/roc-random/releases/download/0.9.2/2ZXLX8WRqrosGu1V3VL5aXqgtfTRvJmjFPx8a26ecVmc.tar.zst",
+}
 
+import pf.Browser
 import pf.Elem exposing [Elem]
 import pf.Html
 import pf.Signal
 import pf.Ui
+import rand.Random
 
 Row : { id : Str, label : Str }
 
-Model : { rows : List(Row), next_id : U64, selected : Str }
+Model : { rows : List(Row), next_id : U64, random : Random.State, selected : Str }
 
 adjectives = ["pretty", "large", "big", "small", "tall", "short", "long", "handsome", "plain", "quaint", "clean", "elegant", "easy", "angry", "crazy", "helpful", "mushy", "odd", "unsightly", "adorable", "important", "inexpensive", "cheap", "expensive", "fancy"]
 
@@ -15,33 +20,39 @@ colours = ["red", "yellow", "blue", "green", "pink", "brown", "purple", "brown",
 
 nouns = ["table", "chair", "house", "bbq", "desk", "car", "pony", "cookie", "sandwich", "burger", "pizza", "mouse", "keyboard"]
 
-label_for : U64 -> Str
-label_for = |id| {
-	adjective = adjectives.get((id * 17 + 11) % 25) ?? "pretty"
-	colour = colours.get((id * 7 + 3) % 11) ?? "red"
-	noun = nouns.get((id * 13 + 5) % 13) ?? "table"
-	"${adjective} ${colour} ${noun}"
-}
+adjective_generator = Random.choice("pretty", adjectives.drop_first(1))
 
-make_rows : U64, U64 -> List(Row)
-make_rows = |start, count|
-	List.repeat(0.U64, count).map_with_index(
-		|_, index| {
-			id: (start + index).to_str(),
-			label: label_for(start + index),
-		},
-	)
+colour_generator = Random.choice("red", colours.drop_first(1))
+
+noun_generator = Random.choice("table", nouns.drop_first(1))
+
+make_rows : Random.State, U64, U64 -> { random : Random.State, rows : List(Row) }
+make_rows = |random, start, count| {
+	var $random = random
+	var $rows = List.with_capacity(count)
+	var $index = 0.U64
+	while $index < count {
+		{ value: adjective, state: $random } = Random.step($random, adjective_generator)
+		{ value: colour, state: $random } = Random.step($random, colour_generator)
+		{ value: noun, state: $random } = Random.step($random, noun_generator)
+		id = start + $index
+		$rows = $rows.append({ id: id.to_str(), label: "${adjective} ${colour} ${noun}" })
+		$index = $index + 1
+	}
+	{ random: $random, rows: $rows }
+}
 
 replace_with : Model, U64 -> Model
 replace_with = |model, count| {
-	rows = make_rows(model.next_id, count)
-	{ rows, next_id: model.next_id + count, selected: "" }
+	generated = make_rows(model.random, model.next_id, count)
+	{ rows: generated.rows, next_id: model.next_id + count, random: generated.random, selected: "" }
 }
 
 append_rows : Model, U64 -> Model
 append_rows = |model, count| {
-	rows = List.concat(model.rows, make_rows(model.next_id, count))
-	{ ..model, rows, next_id: model.next_id + count }
+	generated = make_rows(model.random, model.next_id, count)
+	rows = List.concat(model.rows, generated.rows)
+	{ ..model, rows, next_id: model.next_id + count, random: generated.random }
 }
 
 update_every_tenth : Model -> Model
@@ -108,9 +119,10 @@ render_row = |model, selected, key, row| {
 }
 
 main : () -> Elem
-main = ||
+main = || {
+	entropy_seed = Browser.entropy_seed()
 	Ui.state(
-		{ rows: [], next_id: 1.U64, selected: "" },
+		{ rows: [], next_id: 1.U64, random: Random.seed(0), selected: "" },
 		|model| {
 			model_signal = model.signal()
 			rows = Signal.map(model_signal, |value| value.rows)
@@ -118,6 +130,7 @@ main = ||
 			Html.div(
 				[Html.class_attr("container")],
 				[
+					Ui.on_change_initial(entropy_seed, |seed| model.set_cmd({ rows: [], next_id: 1.U64, random: Random.seed(seed), selected: "" })),
 					element(
 						"div",
 						[Html.class_attr("jumbotron")],
@@ -161,3 +174,4 @@ main = ||
 			)
 		},
 	)
+}

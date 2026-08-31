@@ -2860,6 +2860,30 @@ comptime {
     }
 }
 
+/// Payload struct for EntropySeedSource variant.
+pub const NodeSignalExprEntropySeedSourcePayload = if (@sizeOf(usize) == 4) extern struct {
+    _0: RocErasedCallable,
+    _1: RocErasedCallable,
+    _2: HostValueCapabilityHandle,
+    _3: HostValueCapabilityHandle,
+} else extern struct {
+    _0: RocErasedCallable,
+    _1: RocErasedCallable,
+    _2: HostValueCapabilityHandle,
+    _3: HostValueCapabilityHandle,
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(NodeSignalExprEntropySeedSourcePayload) != 64) @compileError("NodeSignalExprEntropySeedSourcePayload size mismatch");
+        if (@alignOf(NodeSignalExprEntropySeedSourcePayload) != 8) @compileError("NodeSignalExprEntropySeedSourcePayload alignment mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(NodeSignalExprEntropySeedSourcePayload) != 32) @compileError("NodeSignalExprEntropySeedSourcePayload size mismatch");
+        if (@alignOf(NodeSignalExprEntropySeedSourcePayload) != 4) @compileError("NodeSignalExprEntropySeedSourcePayload alignment mismatch");
+    }
+}
+
 /// Payload struct for LocationSource variant.
 pub const NodeSignalExprLocationSourcePayload = if (@sizeOf(usize) == 4) extern struct {
     _0: RocErasedCallable,
@@ -3044,22 +3068,24 @@ comptime {
 pub const NodeSignalExprTag = enum(u8) {
     Combine = 0,
     ConstValue = 1,
-    IntervalSource = 2,
-    LocationSource = 3,
-    Map = 4,
-    Map2 = 5,
-    OnlineSource = 6,
-    Ref = 7,
-    Select = 8,
-    StorageSource = 9,
-    TaskSource = 10,
-    VisibilitySource = 11,
+    EntropySeedSource = 2,
+    IntervalSource = 3,
+    LocationSource = 4,
+    Map = 5,
+    Map2 = 6,
+    OnlineSource = 7,
+    Ref = 8,
+    Select = 9,
+    StorageSource = 10,
+    TaskSource = 11,
+    VisibilitySource = 12,
 };
 
 /// Payload union for Node.SignalExpr.
 pub const NodeSignalExprPayload = extern union {
     combine: NodeSignalExprCombinePayload,
     const_value: NodeSignalExprConstValuePayload,
+    entropy_seed_source: NodeSignalExprEntropySeedSourcePayload,
     interval_source: __AnonStruct_3343639b60ca5b0,
     location_source: NodeSignalExprLocationSourcePayload,
     map: NodeSignalExprMapPayload,
@@ -3082,6 +3108,10 @@ pub const NodeSignalExpr = if (@sizeOf(usize) == 4) extern struct {
     }
     pub fn payload_const_value(self: *const @This()) NodeSignalExprConstValuePayload {
         const ptr: *const NodeSignalExprConstValuePayload = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
+    pub fn payload_entropy_seed_source(self: *const @This()) NodeSignalExprEntropySeedSourcePayload {
+        const ptr: *const NodeSignalExprEntropySeedSourcePayload = @ptrCast(@alignCast(&self.payload));
         return ptr.*;
     }
     pub fn payload_interval_source(self: *const @This()) __AnonStruct_3343639b60ca5b0 {
@@ -3141,6 +3171,9 @@ pub const NodeSignalExpr = if (@sizeOf(usize) == 4) extern struct {
     }
     pub fn payload_const_value(self: *const @This()) NodeSignalExprConstValuePayload {
         return self.payload.const_value;
+    }
+    pub fn payload_entropy_seed_source(self: *const @This()) NodeSignalExprEntropySeedSourcePayload {
+        return self.payload.entropy_seed_source;
     }
     pub fn payload_interval_source(self: *const @This()) __AnonStruct_3343639b60ca5b0 {
         return self.payload.interval_source;
@@ -3509,6 +3542,7 @@ pub const ElemEachItemsPayload = NodeSignalExprPayload;
 pub const ElemEachItemsTag = NodeSignalExprTag;
 pub const ElemEachItemsCombine = HostValueCapabilityHandle;
 pub const ElemEachItemsConstValue = HostValueCapabilityHandle;
+pub const ElemEachItemsEntropySeedSource = HostValueCapabilityHandle;
 pub const ElemEachItemsIntervalSource = __AnonStruct_3343639b60ca5b0;
 pub const ElemEachItemsLocationSource = HostValueCapabilityHandle;
 pub const ElemEachItemsMap = HostValueCapabilityHandle;
@@ -3520,6 +3554,7 @@ pub const ElemEachItemsTaskSource = __AnonStruct_ecacf74f54997c48;
 pub const ElemEachItemsVisibilitySource = HostValueCapabilityHandle;
 pub const NodeSignalExprCombine = HostValueCapabilityHandle;
 pub const NodeSignalExprConstValue = HostValueCapabilityHandle;
+pub const NodeSignalExprEntropySeedSource = HostValueCapabilityHandle;
 pub const NodeSignalExprIntervalSource = __AnonStruct_3343639b60ca5b0;
 pub const NodeSignalExprLocationSource = HostValueCapabilityHandle;
 pub const NodeSignalExprMap = HostValueCapabilityHandle;
@@ -3531,6 +3566,7 @@ pub const NodeSignalExprTaskSource = __AnonStruct_ecacf74f54997c48;
 pub const NodeSignalExprVisibilitySource = HostValueCapabilityHandle;
 pub const NodeSignalExprCombineCombine = HostValueCapabilityHandle;
 pub const NodeSignalExprCombineConstValue = HostValueCapabilityHandle;
+pub const NodeSignalExprCombineEntropySeedSource = HostValueCapabilityHandle;
 pub const NodeSignalExprCombineIntervalSource = __AnonStruct_3343639b60ca5b0;
 pub const NodeSignalExprCombineLocationSource = HostValueCapabilityHandle;
 pub const NodeSignalExprCombineMap = HostValueCapabilityHandle;
@@ -3542,6 +3578,7 @@ pub const NodeSignalExprCombineTaskSource = __AnonStruct_ecacf74f54997c48;
 pub const NodeSignalExprCombineVisibilitySource = HostValueCapabilityHandle;
 pub const NodeSignalExprMapCombine = HostValueCapabilityHandle;
 pub const NodeSignalExprMapConstValue = HostValueCapabilityHandle;
+pub const NodeSignalExprMapEntropySeedSource = HostValueCapabilityHandle;
 pub const NodeSignalExprMapIntervalSource = __AnonStruct_3343639b60ca5b0;
 pub const NodeSignalExprMapLocationSource = HostValueCapabilityHandle;
 pub const NodeSignalExprMapMap = HostValueCapabilityHandle;
@@ -3553,6 +3590,7 @@ pub const NodeSignalExprMapTaskSource = __AnonStruct_ecacf74f54997c48;
 pub const NodeSignalExprMapVisibilitySource = HostValueCapabilityHandle;
 pub const NodeSignalExprMap2Combine = HostValueCapabilityHandle;
 pub const NodeSignalExprMap2ConstValue = HostValueCapabilityHandle;
+pub const NodeSignalExprMap2EntropySeedSource = HostValueCapabilityHandle;
 pub const NodeSignalExprMap2IntervalSource = __AnonStruct_3343639b60ca5b0;
 pub const NodeSignalExprMap2LocationSource = HostValueCapabilityHandle;
 pub const NodeSignalExprMap2Map = HostValueCapabilityHandle;
@@ -3564,6 +3602,7 @@ pub const NodeSignalExprMap2TaskSource = __AnonStruct_ecacf74f54997c48;
 pub const NodeSignalExprMap2VisibilitySource = HostValueCapabilityHandle;
 pub const NodeSignalExprSelectCombine = HostValueCapabilityHandle;
 pub const NodeSignalExprSelectConstValue = HostValueCapabilityHandle;
+pub const NodeSignalExprSelectEntropySeedSource = HostValueCapabilityHandle;
 pub const NodeSignalExprSelectIntervalSource = __AnonStruct_3343639b60ca5b0;
 pub const NodeSignalExprSelectLocationSource = HostValueCapabilityHandle;
 pub const NodeSignalExprSelectMap = HostValueCapabilityHandle;
@@ -3598,6 +3637,7 @@ pub const NodeAttrSignalBoolSignalCombinePayload = NodeSignalExprPayload;
 pub const NodeAttrSignalBoolSignalCombineTag = NodeSignalExprTag;
 pub const NodeAttrSignalBoolSignalCombineCombine = HostValueCapabilityHandle;
 pub const NodeAttrSignalBoolSignalCombineConstValue = HostValueCapabilityHandle;
+pub const NodeAttrSignalBoolSignalCombineEntropySeedSource = HostValueCapabilityHandle;
 pub const NodeAttrSignalBoolSignalCombineIntervalSource = __AnonStruct_3343639b60ca5b0;
 pub const NodeAttrSignalBoolSignalCombineLocationSource = HostValueCapabilityHandle;
 pub const NodeAttrSignalBoolSignalCombineMap = HostValueCapabilityHandle;
@@ -3608,6 +3648,7 @@ pub const NodeAttrSignalBoolSignalCombineStorageSource = HostValueCapabilityHand
 pub const NodeAttrSignalBoolSignalCombineTaskSource = __AnonStruct_ecacf74f54997c48;
 pub const NodeAttrSignalBoolSignalCombineVisibilitySource = HostValueCapabilityHandle;
 pub const NodeAttrSignalBoolSignalConstValue = HostValueCapabilityHandle;
+pub const NodeAttrSignalBoolSignalEntropySeedSource = HostValueCapabilityHandle;
 pub const NodeAttrSignalBoolSignalIntervalSource = __AnonStruct_3343639b60ca5b0;
 pub const NodeAttrSignalBoolSignalLocationSource = HostValueCapabilityHandle;
 pub const NodeAttrSignalBoolSignalMap = NodeSignalExpr;
@@ -3615,6 +3656,7 @@ pub const NodeAttrSignalBoolSignalMapPayload = NodeSignalExprPayload;
 pub const NodeAttrSignalBoolSignalMapTag = NodeSignalExprTag;
 pub const NodeAttrSignalBoolSignalMapCombine = HostValueCapabilityHandle;
 pub const NodeAttrSignalBoolSignalMapConstValue = HostValueCapabilityHandle;
+pub const NodeAttrSignalBoolSignalMapEntropySeedSource = HostValueCapabilityHandle;
 pub const NodeAttrSignalBoolSignalMapIntervalSource = __AnonStruct_3343639b60ca5b0;
 pub const NodeAttrSignalBoolSignalMapLocationSource = HostValueCapabilityHandle;
 pub const NodeAttrSignalBoolSignalMapMap = HostValueCapabilityHandle;
@@ -3629,6 +3671,7 @@ pub const NodeAttrSignalBoolSignalMap2Payload = NodeSignalExprPayload;
 pub const NodeAttrSignalBoolSignalMap2Tag = NodeSignalExprTag;
 pub const NodeAttrSignalBoolSignalMap2Combine = HostValueCapabilityHandle;
 pub const NodeAttrSignalBoolSignalMap2ConstValue = HostValueCapabilityHandle;
+pub const NodeAttrSignalBoolSignalMap2EntropySeedSource = HostValueCapabilityHandle;
 pub const NodeAttrSignalBoolSignalMap2IntervalSource = __AnonStruct_3343639b60ca5b0;
 pub const NodeAttrSignalBoolSignalMap2LocationSource = HostValueCapabilityHandle;
 pub const NodeAttrSignalBoolSignalMap2Map = HostValueCapabilityHandle;
@@ -3644,6 +3687,7 @@ pub const NodeAttrSignalBoolSignalSelectPayload = NodeSignalExprPayload;
 pub const NodeAttrSignalBoolSignalSelectTag = NodeSignalExprTag;
 pub const NodeAttrSignalBoolSignalSelectCombine = HostValueCapabilityHandle;
 pub const NodeAttrSignalBoolSignalSelectConstValue = HostValueCapabilityHandle;
+pub const NodeAttrSignalBoolSignalSelectEntropySeedSource = HostValueCapabilityHandle;
 pub const NodeAttrSignalBoolSignalSelectIntervalSource = __AnonStruct_3343639b60ca5b0;
 pub const NodeAttrSignalBoolSignalSelectLocationSource = HostValueCapabilityHandle;
 pub const NodeAttrSignalBoolSignalSelectMap = HostValueCapabilityHandle;
@@ -3664,6 +3708,7 @@ pub const NodeAttrSignalTextSignalCombinePayload = NodeSignalExprPayload;
 pub const NodeAttrSignalTextSignalCombineTag = NodeSignalExprTag;
 pub const NodeAttrSignalTextSignalCombineCombine = HostValueCapabilityHandle;
 pub const NodeAttrSignalTextSignalCombineConstValue = HostValueCapabilityHandle;
+pub const NodeAttrSignalTextSignalCombineEntropySeedSource = HostValueCapabilityHandle;
 pub const NodeAttrSignalTextSignalCombineIntervalSource = __AnonStruct_3343639b60ca5b0;
 pub const NodeAttrSignalTextSignalCombineLocationSource = HostValueCapabilityHandle;
 pub const NodeAttrSignalTextSignalCombineMap = HostValueCapabilityHandle;
@@ -3674,6 +3719,7 @@ pub const NodeAttrSignalTextSignalCombineStorageSource = HostValueCapabilityHand
 pub const NodeAttrSignalTextSignalCombineTaskSource = __AnonStruct_ecacf74f54997c48;
 pub const NodeAttrSignalTextSignalCombineVisibilitySource = HostValueCapabilityHandle;
 pub const NodeAttrSignalTextSignalConstValue = HostValueCapabilityHandle;
+pub const NodeAttrSignalTextSignalEntropySeedSource = HostValueCapabilityHandle;
 pub const NodeAttrSignalTextSignalIntervalSource = __AnonStruct_3343639b60ca5b0;
 pub const NodeAttrSignalTextSignalLocationSource = HostValueCapabilityHandle;
 pub const NodeAttrSignalTextSignalMap = NodeSignalExpr;
@@ -3681,6 +3727,7 @@ pub const NodeAttrSignalTextSignalMapPayload = NodeSignalExprPayload;
 pub const NodeAttrSignalTextSignalMapTag = NodeSignalExprTag;
 pub const NodeAttrSignalTextSignalMapCombine = HostValueCapabilityHandle;
 pub const NodeAttrSignalTextSignalMapConstValue = HostValueCapabilityHandle;
+pub const NodeAttrSignalTextSignalMapEntropySeedSource = HostValueCapabilityHandle;
 pub const NodeAttrSignalTextSignalMapIntervalSource = __AnonStruct_3343639b60ca5b0;
 pub const NodeAttrSignalTextSignalMapLocationSource = HostValueCapabilityHandle;
 pub const NodeAttrSignalTextSignalMapMap = HostValueCapabilityHandle;
@@ -3695,6 +3742,7 @@ pub const NodeAttrSignalTextSignalMap2Payload = NodeSignalExprPayload;
 pub const NodeAttrSignalTextSignalMap2Tag = NodeSignalExprTag;
 pub const NodeAttrSignalTextSignalMap2Combine = HostValueCapabilityHandle;
 pub const NodeAttrSignalTextSignalMap2ConstValue = HostValueCapabilityHandle;
+pub const NodeAttrSignalTextSignalMap2EntropySeedSource = HostValueCapabilityHandle;
 pub const NodeAttrSignalTextSignalMap2IntervalSource = __AnonStruct_3343639b60ca5b0;
 pub const NodeAttrSignalTextSignalMap2LocationSource = HostValueCapabilityHandle;
 pub const NodeAttrSignalTextSignalMap2Map = HostValueCapabilityHandle;
@@ -3710,6 +3758,7 @@ pub const NodeAttrSignalTextSignalSelectPayload = NodeSignalExprPayload;
 pub const NodeAttrSignalTextSignalSelectTag = NodeSignalExprTag;
 pub const NodeAttrSignalTextSignalSelectCombine = HostValueCapabilityHandle;
 pub const NodeAttrSignalTextSignalSelectConstValue = HostValueCapabilityHandle;
+pub const NodeAttrSignalTextSignalSelectEntropySeedSource = HostValueCapabilityHandle;
 pub const NodeAttrSignalTextSignalSelectIntervalSource = __AnonStruct_3343639b60ca5b0;
 pub const NodeAttrSignalTextSignalSelectLocationSource = HostValueCapabilityHandle;
 pub const NodeAttrSignalTextSignalSelectMap = HostValueCapabilityHandle;
@@ -3730,6 +3779,7 @@ pub const NodeAttrTextOptionalSignalSignalCombinePayload = NodeSignalExprPayload
 pub const NodeAttrTextOptionalSignalSignalCombineTag = NodeSignalExprTag;
 pub const NodeAttrTextOptionalSignalSignalCombineCombine = HostValueCapabilityHandle;
 pub const NodeAttrTextOptionalSignalSignalCombineConstValue = HostValueCapabilityHandle;
+pub const NodeAttrTextOptionalSignalSignalCombineEntropySeedSource = HostValueCapabilityHandle;
 pub const NodeAttrTextOptionalSignalSignalCombineIntervalSource = __AnonStruct_3343639b60ca5b0;
 pub const NodeAttrTextOptionalSignalSignalCombineLocationSource = HostValueCapabilityHandle;
 pub const NodeAttrTextOptionalSignalSignalCombineMap = HostValueCapabilityHandle;
@@ -3740,6 +3790,7 @@ pub const NodeAttrTextOptionalSignalSignalCombineStorageSource = HostValueCapabi
 pub const NodeAttrTextOptionalSignalSignalCombineTaskSource = __AnonStruct_ecacf74f54997c48;
 pub const NodeAttrTextOptionalSignalSignalCombineVisibilitySource = HostValueCapabilityHandle;
 pub const NodeAttrTextOptionalSignalSignalConstValue = HostValueCapabilityHandle;
+pub const NodeAttrTextOptionalSignalSignalEntropySeedSource = HostValueCapabilityHandle;
 pub const NodeAttrTextOptionalSignalSignalIntervalSource = __AnonStruct_3343639b60ca5b0;
 pub const NodeAttrTextOptionalSignalSignalLocationSource = HostValueCapabilityHandle;
 pub const NodeAttrTextOptionalSignalSignalMap = NodeSignalExpr;
@@ -3747,6 +3798,7 @@ pub const NodeAttrTextOptionalSignalSignalMapPayload = NodeSignalExprPayload;
 pub const NodeAttrTextOptionalSignalSignalMapTag = NodeSignalExprTag;
 pub const NodeAttrTextOptionalSignalSignalMapCombine = HostValueCapabilityHandle;
 pub const NodeAttrTextOptionalSignalSignalMapConstValue = HostValueCapabilityHandle;
+pub const NodeAttrTextOptionalSignalSignalMapEntropySeedSource = HostValueCapabilityHandle;
 pub const NodeAttrTextOptionalSignalSignalMapIntervalSource = __AnonStruct_3343639b60ca5b0;
 pub const NodeAttrTextOptionalSignalSignalMapLocationSource = HostValueCapabilityHandle;
 pub const NodeAttrTextOptionalSignalSignalMapMap = HostValueCapabilityHandle;
@@ -3761,6 +3813,7 @@ pub const NodeAttrTextOptionalSignalSignalMap2Payload = NodeSignalExprPayload;
 pub const NodeAttrTextOptionalSignalSignalMap2Tag = NodeSignalExprTag;
 pub const NodeAttrTextOptionalSignalSignalMap2Combine = HostValueCapabilityHandle;
 pub const NodeAttrTextOptionalSignalSignalMap2ConstValue = HostValueCapabilityHandle;
+pub const NodeAttrTextOptionalSignalSignalMap2EntropySeedSource = HostValueCapabilityHandle;
 pub const NodeAttrTextOptionalSignalSignalMap2IntervalSource = __AnonStruct_3343639b60ca5b0;
 pub const NodeAttrTextOptionalSignalSignalMap2LocationSource = HostValueCapabilityHandle;
 pub const NodeAttrTextOptionalSignalSignalMap2Map = HostValueCapabilityHandle;
@@ -3776,6 +3829,7 @@ pub const NodeAttrTextOptionalSignalSignalSelectPayload = NodeSignalExprPayload;
 pub const NodeAttrTextOptionalSignalSignalSelectTag = NodeSignalExprTag;
 pub const NodeAttrTextOptionalSignalSignalSelectCombine = HostValueCapabilityHandle;
 pub const NodeAttrTextOptionalSignalSignalSelectConstValue = HostValueCapabilityHandle;
+pub const NodeAttrTextOptionalSignalSignalSelectEntropySeedSource = HostValueCapabilityHandle;
 pub const NodeAttrTextOptionalSignalSignalSelectIntervalSource = __AnonStruct_3343639b60ca5b0;
 pub const NodeAttrTextOptionalSignalSignalSelectLocationSource = HostValueCapabilityHandle;
 pub const NodeAttrTextOptionalSignalSignalSelectMap = HostValueCapabilityHandle;
@@ -3806,6 +3860,7 @@ pub const ElemOnChangeSignalPayload = NodeSignalExprPayload;
 pub const ElemOnChangeSignalTag = NodeSignalExprTag;
 pub const ElemOnChangeSignalCombine = HostValueCapabilityHandle;
 pub const ElemOnChangeSignalConstValue = HostValueCapabilityHandle;
+pub const ElemOnChangeSignalEntropySeedSource = HostValueCapabilityHandle;
 pub const ElemOnChangeSignalIntervalSource = __AnonStruct_3343639b60ca5b0;
 pub const ElemOnChangeSignalLocationSource = HostValueCapabilityHandle;
 pub const ElemOnChangeSignalMap = HostValueCapabilityHandle;
@@ -3820,6 +3875,7 @@ pub const ElemOnChangeInitialSignalPayload = NodeSignalExprPayload;
 pub const ElemOnChangeInitialSignalTag = NodeSignalExprTag;
 pub const ElemOnChangeInitialSignalCombine = HostValueCapabilityHandle;
 pub const ElemOnChangeInitialSignalConstValue = HostValueCapabilityHandle;
+pub const ElemOnChangeInitialSignalEntropySeedSource = HostValueCapabilityHandle;
 pub const ElemOnChangeInitialSignalIntervalSource = __AnonStruct_3343639b60ca5b0;
 pub const ElemOnChangeInitialSignalLocationSource = HostValueCapabilityHandle;
 pub const ElemOnChangeInitialSignalMap = HostValueCapabilityHandle;
@@ -3847,6 +3903,7 @@ pub const ElemTextSignalSignalPayload = NodeSignalExprPayload;
 pub const ElemTextSignalSignalTag = NodeSignalExprTag;
 pub const ElemTextSignalSignalCombine = HostValueCapabilityHandle;
 pub const ElemTextSignalSignalConstValue = HostValueCapabilityHandle;
+pub const ElemTextSignalSignalEntropySeedSource = HostValueCapabilityHandle;
 pub const ElemTextSignalSignalIntervalSource = __AnonStruct_3343639b60ca5b0;
 pub const ElemTextSignalSignalLocationSource = HostValueCapabilityHandle;
 pub const ElemTextSignalSignalMap = HostValueCapabilityHandle;
@@ -3861,6 +3918,7 @@ pub const ElemWhenConditionPayload = NodeSignalExprPayload;
 pub const ElemWhenConditionTag = NodeSignalExprTag;
 pub const ElemWhenConditionCombine = HostValueCapabilityHandle;
 pub const ElemWhenConditionConstValue = HostValueCapabilityHandle;
+pub const ElemWhenConditionEntropySeedSource = HostValueCapabilityHandle;
 pub const ElemWhenConditionIntervalSource = __AnonStruct_3343639b60ca5b0;
 pub const ElemWhenConditionLocationSource = HostValueCapabilityHandle;
 pub const ElemWhenConditionMap = HostValueCapabilityHandle;
@@ -4001,6 +4059,13 @@ fn decrefNodeSignalExpr(value: NodeSignalExpr, roc_host: *RocHost) void {
             decrefErasedCallable(payload._1, roc_host);
             payload._2.decref(roc_host);
         },
+        .EntropySeedSource => {
+            const payload = value.payload_entropy_seed_source();
+            decrefErasedCallable(payload._0, roc_host);
+            decrefErasedCallable(payload._1, roc_host);
+            payload._2.decref(roc_host);
+            payload._3.decref(roc_host);
+        },
         .IntervalSource => {
             value.payload_interval_source().decref(roc_host);
         },
@@ -4081,6 +4146,13 @@ fn increfNodeSignalExpr(value: NodeSignalExpr, amount: isize) void {
             increfErasedCallable(payload._0, amount);
             increfErasedCallable(payload._1, amount);
             payload._2.incref(amount);
+        },
+        .EntropySeedSource => {
+            const payload = value.payload_entropy_seed_source();
+            increfErasedCallable(payload._0, amount);
+            increfErasedCallable(payload._1, amount);
+            payload._2.incref(amount);
+            payload._3.incref(amount);
         },
         .IntervalSource => {
             value.payload_interval_source().incref(amount);

@@ -19,6 +19,7 @@ import {
   encodeStoragePayloadBytes,
   encodeHttpRequestPayload,
   encodeHttpResponsePayload,
+  entropySeedFromCrypto,
   httpFetchTaskHandler,
   locationSnapshotFromHref,
   onlineSnapshotFromNavigator,
@@ -164,6 +165,7 @@ class MockHost {
     this.deallocTrapMessage = null;
     this.timerResponses = new Map();
     this.initialLocationPayload = null;
+    this.initialEntropySeed = null;
     this.initialVisibilityPayload = null;
     this.initialOnlinePayload = null;
     this.locationUpdatePayloads = [];
@@ -219,6 +221,9 @@ class MockHost {
         });
       },
       roc_ui_mount: () => this.writeCommands(this.mountScript),
+      roc_ui_set_entropy_seed: (seed) => {
+        this.initialEntropySeed = seed >>> 0;
+      },
       roc_ui_set_location: (ptr, len) => {
         this.initialLocationPayload = [...new Uint8Array(this.memory.buffer, ptr, len)];
       },
@@ -640,6 +645,7 @@ function mountWith(mountScript, options = {}) {
     sessionStorage,
     storage,
     limits,
+    crypto,
     ...hostOptions
   } = options;
   const host = new MockHost(hostOptions);
@@ -661,6 +667,7 @@ function mountWith(mountScript, options = {}) {
     sessionStorage,
     storage,
     limits,
+    crypto: crypto ?? { getRandomValues: (values) => { values[0] = 0x12345678; return values; } },
   });
   runtime.mount();
   return { host, root, runtime };
@@ -837,7 +844,20 @@ test("storage payload encoder surfaces missing value and unavailable snapshots",
   );
 });
 
-test("mount seeds wasm host with initial location visibility and online snapshots", () => {
+test("entropy seed uses one cryptographic U32 and rejects a missing provider", () => {
+  let calls = 0;
+  const crypto = { getRandomValues(values) { calls += 1; values[0] = 0xfedcba98; return values; } };
+  assert.equal(entropySeedFromCrypto(crypto), 0xfedcba98);
+  assert.equal(calls, 1);
+  assert.throws(() => entropySeedFromCrypto(null), /crypto\.getRandomValues/);
+});
+
+test("mount preserves a zero entropy seed", () => {
+  const { host } = mountWith([], { crypto: { getRandomValues(values) { values[0] = 0; return values; } } });
+  assert.equal(host.initialEntropySeed, 0);
+});
+
+test("mount seeds wasm host with entropy, location, visibility, and online snapshots", () => {
   const telemetry = [];
   const { host } = mountWith([], {
     location: { href: "https://ops.example.test/services/api?tab=logs#tail" },
@@ -846,6 +866,8 @@ test("mount seeds wasm host with initial location visibility and online snapshot
     telemetry: (entry) => telemetry.push(entry),
   });
 
+  assert.equal(host.initialEntropySeed, 0x12345678);
+  assert.ok(telemetry.some((entry) => entry.kind === "environment_snapshot" && entry.entropySeeded === true && entry.entropySeed === undefined));
   assert.deepEqual(host.initialLocationPayload, [
     ...stringBytes("/services/api"),
     ...stringBytes("tab=logs"),
@@ -857,7 +879,7 @@ test("mount seeds wasm host with initial location visibility and online snapshot
     telemetry.some(
       (entry) =>
         entry.kind === "environment_snapshot" &&
-        entry.location.path === "/services/api" &&
+        entry.location?.path === "/services/api" &&
         entry.location.query === "tab=logs" &&
         entry.location.hash === "tail",
     ),

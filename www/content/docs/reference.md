@@ -199,6 +199,7 @@ Non-2xx statuses resolve as **responses**, not errors. The runtime does not set
 
 | Sources | Type |
 | --- | --- |
+| `entropy_seed()` | `Signal(U32)` |
 | `location()` | `Signal(Location)` |
 | `visibility()` | `Signal(Visibility)` |
 | `online()` | `Signal(Bool)` |

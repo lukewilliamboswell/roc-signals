@@ -715,6 +715,7 @@ Browser.Location := { path : Str, query : Str, hash : Str }
 Browser.Visibility := [Visible, Hidden]
 Browser.StorageText := [StorageMissing, StorageValue(Str), StorageUnavailable(Str)]
 Browser.location : () -> Signal(Browser.Location)
+Browser.entropy_seed : () -> Signal(U32)
 Browser.visibility : () -> Signal(Browser.Visibility)
 Browser.online : () -> Signal(Bool)
 Browser.local_storage_text : Str -> Signal(Browser.StorageText)
@@ -1962,6 +1963,13 @@ host-backed source path as location: mount-scoped ids/generations, shared
 boundary payload bytes, stale-message diagnostics, and listener cleanup on
 unmount. Each is an instance of the `Sub` model: declared by structure, owned by
 its scope, routed by registry id.
+
+`Browser.entropy_seed()` is an immutable host-backed source sampled once per
+mount. The browser runtime obtains one `U32` from `crypto.getRandomValues`
+before mount preparation; native semantic specs use a fixed seed. Roc owns all
+subsequent deterministic PRNG state and selection, so row generation does not
+cross into JavaScript or create a second scheduling path. The value is a seed
+for pure randomized UI and simulation, not a token or secret API.
 
 Browser storage reads are declared sources, not whole-store snapshots.
 `Browser.local_storage_text(key)` and `Browser.session_storage_text(key)` add
