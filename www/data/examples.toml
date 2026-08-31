@@ -552,7 +552,7 @@ bench = false
 [[examples]]
 slug = "when-each-dispose"
 title = "When Each Dispose"
-description = "Internal fixture: Ui.when whose true arm is Ui.each_str must dispose its rows."
+description = "Internal fixture: Ui.when whose true arm is Ui.each must dispose its rows."
 source = "examples/_fixtures/when-each-dispose/main.roc"
 specs = "examples/_fixtures/when-each-dispose/specs"
 public = false

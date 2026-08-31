@@ -590,7 +590,7 @@ main = || {
 															Html.div_c(
 																"grid gap-2",
 																[
-																	Ui.each_str(visible, |row| row.id, |key, row| conversation_row(session, key, row)),
+																	Ui.each(visible, |row| row.id, |each_row| conversation_row(session, each_row.key(), each_row.signal())),
 																	Ui.when(
 																		has_rows,
 																		|| Html.div([Html.test_id("conv-nonempty")], []),
@@ -615,12 +615,12 @@ main = || {
 													),
 													# The keyed list is rendered unconditionally and the empty
 													# note lives in its own `Ui.when`: a `Ui.when` whose true arm
-													# is an `each_str` leaves its rows in the DOM when it flips
+											# is a `Ui.each` leaves its rows in the DOM when it flips
 													# false on this platform build.
 													Html.div_c(
 														"grid gap-3",
 														[
-															Ui.each_str(thread, |row| row.key, message_row),
+													Ui.each(thread, |row| row.key, |each_row| message_row(each_row.key(), each_row.signal())),
 															Ui.when(
 																has_thread,
 																|| Html.div([Html.test_id("thread-nonempty")], []),

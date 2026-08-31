@@ -78,11 +78,23 @@ For three or more inputs use the record builder rather than nesting `map2`:
 | `state` | `a, (State(a) -> Elem) -> Elem` | introduce a source |
 | `component` | `(() -> Elem) -> Elem` | private identity scope |
 | `when` | `Signal(Bool), (() -> Elem), (() -> Elem) -> Elem` | conditional |
-| `each_str` | `Signal(List(item)), (item -> Str), (Str, Signal(item) -> Elem) -> Elem` | keyed list |
+| `each` | `Signal(List(item)), (item -> Str), (Ui.Row(item) -> Elem) -> Elem` | keyed list |
 | `on_mount` | `(() -> Cmd) -> Elem` | run on scope mount |
 | `on_change` | `Signal(a), (a -> Cmd) -> Elem` | run on value change |
 | `on_change_initial` | `Signal(a), (a -> Cmd) -> Elem` | first value **and** changes |
 | `on_cleanup` | `Cleanup -> Elem` | run on scope disposal |
+
+### `Ui.Row(a)`
+
+| Method | Type | Purpose |
+| --- | --- | --- |
+| `key` | `Row(a) -> Str` | exact UTF-8 row identity |
+| `signal` | `Row(a) -> Signal(a)` | stable live item source |
+| `map` | `Row(a), (a -> value) -> Signal(value)` where `value.is_eq` | ordinary equality-pruned projection |
+
+Keys are compared as exact UTF-8 bytes without normalization or case folding.
+`Row.map` is ordinary graph `Signal.map`; it does not introduce a separate row
+observer or snapshot lifecycle.
 
 ### `Ui.State(a)`
 
@@ -371,7 +383,7 @@ page — check here before designing around one.
 | WebSocket / SSE / streaming | Realtime is polling only | `taskHandler`, or poll |
 | Raw HTML injection | By design — no `dangerouslySetInnerHTML` | Parse to `Elem` nodes ([Conduit's `Markdown.roc`](https://github.com/lukewilliamboswell/roc-signals/blob/main/examples/conduit/Markdown.roc)) |
 | Multi-way `match` on a route | Nine routes means nine nested `Ui.when` | Nested `Ui.when`, built inside-out |
-| List virtualization | `Ui.each_str` materializes every row | — |
+| List virtualization | `Ui.each` materializes every row | — |
 | Table/list element helpers | Use `Elem.Element({ tag: "table", ... })` directly | — |
 | Enter/exit animation hooks | No transition lifecycle | CSS transitions on signal-backed classes |
 | Generated unique ids | `aria-describedby` targets are hand-written, so repeated rows collide | Derive an id from the row key |

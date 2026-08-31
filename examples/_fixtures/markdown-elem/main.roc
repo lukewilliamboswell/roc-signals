@@ -316,7 +316,7 @@ keyed_children = |texts|
 inline_view : Signal.Signal(Str) -> Elem
 inline_view = |source| {
 	segments = source.map(inline_segments)
-	Elem.Element({ tag: "span", attrs: [], children: [Ui.each_str(segments, |segment| segment.key, render_inline_segment)] })
+	Elem.Element({ tag: "span", attrs: [], children: [Ui.each(segments, |segment| segment.key, |each_row| render_inline_segment(each_row.key(), each_row.signal()))] })
 }
 
 render_inline_segment : Str, Signal.Signal(InlineSegment) -> Elem
@@ -381,7 +381,7 @@ render_list_item = |_, item| {
 				Ui.when(
 					empty_children,
 					|| Html.text(""),
-					|| Elem.Element({ tag: "ul", attrs: [], children: [Ui.each_str(children_signal, |child| child.key, render_child_item)] }),
+					|| Elem.Element({ tag: "ul", attrs: [], children: [Ui.each(children_signal, |child| child.key, |each_row| render_child_item(each_row.key(), each_row.signal()))] }),
 				),
 			],
 		},
@@ -409,7 +409,7 @@ render_markdown_block = |key, block| {
 		items : Signal.Signal(List(MarkdownListItem))
 		items = block.map(|value| value.items)
 
-		Elem.Element({ tag: "ul", attrs: [], children: [Ui.each_str(items, |item| item.key, render_list_item)] })
+		Elem.Element({ tag: "ul", attrs: [], children: [Ui.each(items, |item| item.key, |each_row| render_list_item(each_row.key(), each_row.signal()))] })
 	} else {
 		Elem.Element({ tag: "p", attrs: [], children: [inline_view(text)] })
 	}
@@ -418,7 +418,7 @@ render_markdown_block = |key, block| {
 markdown_view : Signal.Signal(Str) -> Elem
 markdown_view = |source| {
 	blocks = source.map(parse_markdown)
-	Html.div([Html.attr("data-fixture", "markdown-preview")], [Ui.each_str(blocks, |block| block.key, render_markdown_block)])
+	Html.div([Html.attr("data-fixture", "markdown-preview")], [Ui.each(blocks, |block| block.key, |each_row| render_markdown_block(each_row.key(), each_row.signal()))])
 }
 
 render_static_segment : InlineSegment -> Elem

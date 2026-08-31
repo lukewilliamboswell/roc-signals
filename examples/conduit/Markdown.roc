@@ -39,7 +39,7 @@ Markdown := {}.{
 	view : Signal.Signal(Str) -> Elem
 	view = |source| {
 		blocks = source.map(parse)
-		Html.div([Html.attr("data-conduit", "markdown"), Html.class_attr("conduit-prose my-10")], [Ui.each_str(blocks, |block| block.key, render_block)])
+		Html.div([Html.attr("data-conduit", "markdown"), Html.class_attr("conduit-prose my-10")], [Ui.each(blocks, |block| block.key, |each_row| render_block(each_row.key(), each_row.signal()))])
 	}
 
 	parse : Str -> List(Markdown.Block)
@@ -270,7 +270,7 @@ Markdown := {}.{
 	inline_view : Signal.Signal(Str) -> Elem
 	inline_view = |source| {
 		segments = source.map(inline_segments)
-		Elem.Element({ tag: "span", attrs: [], children: [Ui.each_str(segments, |segment| segment.key, render_segment)] })
+		Elem.Element({ tag: "span", attrs: [], children: [Ui.each(segments, |segment| segment.key, |each_row| render_segment(each_row.key(), each_row.signal()))] })
 	}
 
 	render_segment : Str, Signal.Signal(Markdown.Segment) -> Elem
@@ -324,7 +324,7 @@ Markdown := {}.{
 				Ui.when(
 					empty_children,
 					|| Html.text(""),
-					|| Elem.Element({ tag: "ul", attrs: [], children: [Ui.each_str(children_signal, |child| child.key, render_child)] }),
+					|| Elem.Element({ tag: "ul", attrs: [], children: [Ui.each(children_signal, |child| child.key, |each_row| render_child(each_row.key(), each_row.signal()))] }),
 				),
 			],
 		})
@@ -350,7 +350,7 @@ Markdown := {}.{
 					items : Signal.Signal(List(Markdown.ListItem))
 					items = block.map(|value| value.items)
 
-					Elem.Element({ tag: "ul", attrs: [], children: [Ui.each_str(items, |item| item.key, render_item)] })
+					Elem.Element({ tag: "ul", attrs: [], children: [Ui.each(items, |item| item.key, |each_row| render_item(each_row.key(), each_row.signal()))] })
 				}
 				Paragraph => Elem.Element({ tag: "p", attrs: [], children: [inline_view(text)] })
 			},

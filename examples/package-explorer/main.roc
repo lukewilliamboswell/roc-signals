@@ -160,7 +160,7 @@ search_page = |handles, search_view, ordered_rows| {
 				|| Html.section_c(
 					"Search results",
 					list_class,
-					[Ui.each_str(ordered_rows, |row| row.id, |key, row| search_result_row(key, row, handles.intent, handles.watched))],
+					[Ui.each(ordered_rows, |row| row.id, |each_row| search_result_row(each_row.key(), each_row.signal(), handles.intent, handles.watched))],
 				),
 				|| Html.section_c(
 					"Search results",
@@ -217,7 +217,7 @@ versions_panel = |versions_view| {
 			line(Signal.map(versions_view, Catalog.versions_status_text), status_class, "versions-status"),
 			Ui.when(
 				has_rows,
-				|| Html.section_c("Version history", list_class, [Ui.each_str(rows, |row| row.version, version_row)]),
+				|| Html.section_c("Version history", list_class, [Ui.each(rows, |row| row.version, |each_row| version_row(each_row.key(), each_row.signal()))]),
 				|| Html.section_c("Version history", list_class, [line(Signal.map(versions_view, Catalog.versions_empty_text), note_class, "versions-empty")]),
 			),
 		],
@@ -241,7 +241,7 @@ deps_panel = |deps_view| {
 			line(Signal.map(deps_view, Catalog.deps_status_text), status_class, "deps-status"),
 			Ui.when(
 				has_rows,
-				|| Html.section_c("Dependency list", list_class, [Ui.each_str(rows, |row| row.id, dep_row)]),
+				|| Html.section_c("Dependency list", list_class, [Ui.each(rows, |row| row.id, |each_row| dep_row(each_row.key(), each_row.signal()))]),
 				|| Html.section_c("Dependency list", list_class, [line(Signal.map(deps_view, Catalog.deps_empty_text), note_class, "deps-empty")]),
 			),
 		],

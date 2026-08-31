@@ -31,7 +31,7 @@ There is no setter. You never assign to state; you attach a reducer to an event
 and the host applies it.
 
 State is scoped to where you declare it. Put it at the top of your app for
-app-wide state, inside a `Ui.each_str` row renderer for per-row state, or inside
+app-wide state, inside a `Ui.each` row renderer for per-row state, or inside
 a `Ui.component` for reusable widget state. See
 [Lists, Conditionals, and Components](@/docs/dynamic-structure.md).
 

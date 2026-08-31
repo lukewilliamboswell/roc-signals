@@ -134,7 +134,7 @@ main = || {
 						"Large each rows",
 						[],
 						[
-							Ui.each_str(items, |item| item.id, render_row),
+							Ui.each(items, |item| item.id, |each_row| render_row(each_row.key(), each_row.signal())),
 						],
 					),
 				],

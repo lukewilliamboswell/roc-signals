@@ -2,6 +2,7 @@ import Elem exposing [Elem]
 import HostValue exposing [HostValue]
 import Capability exposing [Capability]
 import EventExtraction
+import EachSink
 import Node
 import Signal exposing [Signal]
 
@@ -91,6 +92,26 @@ Ui := [].{
 
 	## Keyboard event payload for `State.on_key`.
 	KeyPayload : { key : Str, shift_key : Bool }
+
+	## Stable keyed-row handle. A captured row remains valid for the lifetime of
+	## its row scope, including when a delayed structural builder first reads it.
+	Row(a) := { key_value : Str, source : Signal(a) }.{
+
+		## Return the exact UTF-8 key supplied by the keyed collection.
+		key : Row(a) -> Str
+		key = |row| row.key_value
+
+		## Return the one stable item source shared by every read of this row.
+		signal : Row(a) -> Signal(a)
+		signal = |row| row.source
+
+		## Build an ordinary equality-pruned graph projection from the row source.
+		map : Row(a), (a -> value) -> Signal(value)
+			where [
+				value.is_eq : value, value -> Bool,
+			]
+		map = |row, project| row.source.map(project)
+	}
 
 	## A handle to a state binder, given to the `Ui.state` body. `signal` reads the
 	## current value; event methods build `Node.Msg` reducers for DOM payloads.
@@ -404,65 +425,82 @@ Ui := [].{
 			},
 		)
 
-	## Keyed list with string identity material. `key_of` extracts a stable key per
-	## item; the host hashes the key text privately for its bucket index; `row`
-	## renders a row given that key and a typed signal for the item. Row identity is
-	## the key, so per-row local state survives reorder/insert/delete.
-	each_str : Signal(List(item)), (item -> Str), (Str, Signal(item) -> Elem) -> Elem
+	## Keyed list with exact UTF-8 identity. The app-compiled adapter retains each
+	## immutable list generation and writes keys/comparison results into reserved
+	## host sinks; the host never inspects `List(item)` or temporary Roc lists.
+	each : Signal(List(item)), (item -> Str), (Row(item) -> Elem) -> Elem
 		where [
 			item.is_eq : item, item -> Bool,
 		]
-	each_str = |items, key_of, row| {
+	each = |items, key_of, row| {
 		items_cap = items.cap
 		item_cap = Capability.new()
-		key_cap = Capability.new()
-		items_to_values : HostValue -> List(HostValue)
-		items_to_values = |items_hv| {
+		read_items : HostValue -> List(item)
+		read_items = |items_hv| {
 			typed_items : List(item)
 			typed_items = Box.unbox(Capability.get(items_hv, items_cap))
-			typed_items.map(|item| Capability.store(Box.box(item), item_cap))
+			typed_items
 		}
-		key_of_hv : HostValue -> HostValue
-		key_of_hv = |item_hv| {
-			item : item
-			item = Box.unbox(Capability.get(item_hv, item_cap))
-			key = key_of(item)
-			Capability.store(Box.box(key), key_cap)
+		len_hv : HostValue -> U64
+		len_hv = |owner| read_items(owner).len()
+		copy_keys_hv : HostValue, U64 -> U64
+		copy_keys_hv = |owner, initial_token| {
+			typed_items = read_items(owner)
+			var $index = 0
+			var $token = initial_token
+			while $index < typed_items.len() {
+				item = typed_items.get($index) ?? crash "keyed collection index exceeded its generation"
+				$token = EachSink.push_key!($token, $index, key_of(item))
+				$index = $index + 1
+			}
+			$token
 		}
-		key_text_hv : HostValue -> Str
-		key_text_hv = |key_hv| {
-			key : Str
-			key = Box.unbox(Capability.get(key_hv, key_cap))
-			key
+		compare_pairs_hv : HostValue, HostValue, List(U64), U64 -> U64
+		compare_pairs_hv = |old_owner, new_owner, pairs, initial_token| {
+			old_items = read_items(old_owner)
+			new_items = read_items(new_owner)
+			if pairs.len() % 2 != 0 {
+				crash "keyed collection comparison pairs must be interleaved"
+			}
+			var $pair_index = 0
+			var $result_index = 0
+			var $token = initial_token
+			while $pair_index < pairs.len() {
+				old_index = pairs.get($pair_index) ?? crash "missing old keyed collection index"
+				new_index = pairs.get($pair_index + 1) ?? crash "missing new keyed collection index"
+				old_item = old_items.get(old_index) ?? crash "old keyed collection index exceeded its generation"
+				new_item = new_items.get(new_index) ?? crash "new keyed collection index exceeded its generation"
+				$token = EachSink.push_bool!($token, $result_index, old_item.is_eq(new_item))
+				$pair_index = $pair_index + 2
+				$result_index = $result_index + 1
+			}
+			$token
 		}
-		row_hv : HostValue, HostValue -> Elem
-		row_hv = |key_hv, item_hv| {
-			key : Str
-			key = Box.unbox(Capability.get(key_hv, key_cap))
-			row_item : () -> HostValue
-			row_item = || HostValue.clone!(item_hv)
-			row_item_box = Box.box(row_item)
-			row(
-				key,
+		clone_item_at_hv : HostValue, U64 -> HostValue
+		clone_item_at_hv = |owner, index| {
+			item = read_items(owner).get(index) ?? crash "keyed collection item index exceeded its generation"
+			Capability.store(Box.box(item), item_cap)
+		}
+		row_hv : Str, U64 -> Elem
+		row_hv = |key, row_handle| {
+			row_source = || crash "row source identity callable must never be evaluated"
+			row_source_box = Box.box(row_source)
+			source =
 				Signal.from_expr(
-					Node.SignalExpr.ConstValue(
-						row_item_box,
-						row_item_box,
-						Capability.handle(item_cap),
-					),
+					Node.SignalExpr.RowSource(row_handle, row_source_box, row_source_box, Capability.handle(item_cap)),
 					item_cap,
-				),
-			)
+				)
+			row({ key_value: key, source })
 		}
 		Elem.Each({
 			items: Signal.to_expr(items),
 			ops: {
 				items_capability: Capability.handle(items_cap),
 				item_capability: Capability.handle(item_cap),
-				key_capability: Capability.handle(key_cap),
-				items_to_values: Box.box(items_to_values),
-				key_text: Box.box(key_text_hv),
-				key_of: Box.box(key_of_hv),
+				len: Box.box(len_hv),
+				copy_keys: Box.box(copy_keys_hv),
+				compare_pairs: Box.box(compare_pairs_hv),
+				clone_item_at: Box.box(clone_item_at_hv),
 				row: Box.box(row_hv),
 			},
 		})

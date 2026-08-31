@@ -240,7 +240,7 @@ render_row = |sheet, cursor, key, row| {
 		row_class,
 		[
 			Html.div_c(gutter_class, [Html.text(key)]),
-			Ui.each_str(cells, |cell| cell.key, |cell_key, cell| render_cell(sheet, cursor, cell_key, cell)),
+			Ui.each(cells, |cell| cell.key, |each_row| render_cell(sheet, cursor, each_row.key(), each_row.signal())),
 		],
 	)
 }
@@ -554,10 +554,10 @@ main = || {
 																			grid_frame_class,
 																			[
 																				column_header,
-																				Ui.each_str(
-																					rows,
-																					|row| row.key,
-																					|key, row| render_row(sheet, cursor, key, row),
+																						Ui.each(
+																							rows,
+																							|row| row.key,
+																							|each_row| render_row(sheet, cursor, each_row.key(), each_row.signal()),
 																				),
 																			],
 																		),

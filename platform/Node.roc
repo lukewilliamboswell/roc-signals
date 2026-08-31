@@ -58,6 +58,7 @@ Node := [].{
 	SignalExpr := [
 		Ref(BinderRef),
 		ConstValue(Box((() -> HostValue)), Box((() -> HostValue)), HostValue.CapabilityHandle),
+		RowSource(U64, Box((() -> HostValue)), Box((() -> HostValue)), HostValue.CapabilityHandle),
 		EntropySeedSource(Box((HostValue -> HostValue)), Box((HostValue -> HostValue)), HostValue.CapabilityHandle, HostValue.CapabilityHandle),
 		LocationSource(Box((HostValue -> HostValue)), Box((HostValue -> HostValue)), HostValue.CapabilityHandle, HostValue.CapabilityHandle),
 		StorageSource(Box((HostValue -> HostValue)), U64, Str, Box((HostValue -> HostValue)), HostValue.CapabilityHandle, HostValue.CapabilityHandle),

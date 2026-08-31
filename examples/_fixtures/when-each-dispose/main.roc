@@ -51,7 +51,7 @@ main = || {
 			Ui.state(
 				"!",
 				|suffix| {
-					# chain A: source -> rows -> map2 with a second source -> each_str
+					# chain A: source -> rows -> map2 with a second source -> Ui.each
 					rows : Signal.Signal(List(Row))
 					rows = Signal.map2(Signal.map(full.signal(), rows_of), suffix.signal(), decorate)
 					# chain B: source -> count -> bool -> Ui.when condition
@@ -65,19 +65,19 @@ main = || {
 							Html.heading("When Each"),
 							Ui.when(
 								any,
-								|| Ui.each_str(
+								|| Ui.each(
 									rows,
 									row_key,
-									|key, row| Html.div_c(
+									|each_row| Html.div_c(
 										"",
 										[
 											Html.paragraph_s_attrs(
-												Signal.map(row, label_of),
-												[Html.test_id("row-${key}")],
+												each_row.map(label_of),
+												[Html.test_id("row-${each_row.key()}")],
 											),
 											Html.text_input(
-												"Note for ${key}",
-												Signal.map(row, label_of),
+												"Note for ${each_row.key()}",
+												each_row.map(label_of),
 												suffix.on_str(keep),
 											),
 										],

@@ -1,22 +1,17 @@
 //! Runtime-owned scope payloads for state binders and keyed rows.
 
 const std = @import("std");
-const abi = @import("roc_platform_abi.zig");
 const semantic_ids = @import("ids.zig");
-const retained_values = @import("retained_values.zig");
+const row_handles = @import("row_handles.zig");
 const scope_tree = @import("scope_tree.zig");
 
-pub const HostValue = retained_values.HostValue;
-pub const HostValueCapability = retained_values.HostValueCapability;
-pub const HostValueCell = retained_values.HostValueCell;
-
-/// Per-row payload carried in a `Ui.each_str` scope: the row's key and item
-/// cells, keyed by the construction-site ordinal.
+/// Per-row scope metadata. Item and key values belong to the site's immutable
+/// collection generation; the scope retains only the stable row handle needed
+/// to resolve that generation for its complete lifetime.
 pub const EachRowScopeStep = struct {
     site_ordinal: semantic_ids.SiteOrdinal,
     key_hash: u64,
-    key: HostValueCell,
-    item: HostValueCell,
+    row_handle: row_handles.RowHandleId,
 };
 
 pub const ScopeStep = scope_tree.Step(EachRowScopeStep);
@@ -25,11 +20,6 @@ pub const Scope = scope_tree.Scope(EachRowScopeStep);
 pub const EachSite = struct {
     parent_scope_id: semantic_ids.ScopeId,
     site_ordinal: semantic_ids.SiteOrdinal,
-};
-
-pub const EachRowValues = struct {
-    key: HostValue,
-    item: HostValue,
 };
 
 const ClaimsPhase = enum {
@@ -41,8 +31,8 @@ const ClaimsPhase = enum {
     }
 };
 
-/// Provisional each-row scopes whose retained key/item cells remain private
-/// until an enclosing row transaction publishes them.
+/// Provisional each-row scopes whose stable handles remain private until an
+/// enclosing structural transaction publishes them.
 pub const PreparedScopeClaims = struct {
     allocator: std.mem.Allocator,
     original_scope_len: usize,
@@ -58,8 +48,8 @@ pub const PreparedScopeClaims = struct {
         return .{ .allocator = allocator, .original_scope_len = scopes.len };
     }
 
-    /// Retains one provisional row and cumulatively reserves its final scope slot.
-    pub fn prepareRow(self: *PreparedEachRowScopes, scopes: *std.ArrayListUnmanaged(Scope), ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, parent_scope_id: semantic_ids.ScopeId, site_ordinal: semantic_ids.SiteOrdinal, key_hash: u64, key: HostValue, item: HostValue, key_cap: HostValueCapability, item_cap: HostValueCapability) (std.mem.Allocator.Error || error{ResourceLimit})!semantic_ids.ScopeId {
+    /// Claims one provisional row and cumulatively reserves its final scope slot.
+    pub fn prepareRow(self: *PreparedEachRowScopes, scopes: *std.ArrayListUnmanaged(Scope), parent_scope_id: semantic_ids.ScopeId, site_ordinal: semantic_ids.SiteOrdinal, key_hash: u64, row_handle: row_handles.RowHandleId) (std.mem.Allocator.Error || error{ResourceLimit})!semantic_ids.ScopeId {
         if (self.phase.isCommitted() or scopes.items.len != self.original_scope_len) @panic("invalid provisional each-row scope state");
         scope_tree.validate(EachRowScopeStep, scopes.items, parent_scope_id) catch @panic("scope id has no host scope descriptor");
         if (!self.candidates_prepared) {
@@ -78,18 +68,13 @@ pub const PreparedScopeClaims = struct {
         }
         try self.rows.ensureUnusedCapacity(self.allocator, 1);
 
-        var key_cell = HostValueCell.initRetained(key, key_cap, metrics);
-        errdefer key_cell.deinit(ctx, roc_host, metrics);
-        var item_cell = HostValueCell.initRetained(item, item_cap, metrics);
-        errdefer item_cell.deinit(ctx, roc_host, metrics);
         self.rows.appendAssumeCapacity(.{
             .scope_id = scope_id,
             .parent_scope_id = parent_scope_id,
             .step = .{ .each_row = .{
                 .site_ordinal = site_ordinal,
                 .key_hash = key_hash,
-                .key = key_cell,
-                .item = item_cell,
+                .row_handle = row_handle,
             } },
             .lifecycle = .active,
         });
@@ -97,7 +82,7 @@ pub const PreparedScopeClaims = struct {
         return scope_id;
     }
 
-    /// Publishes all provisional rows without allocation and transfers cell ownership.
+    /// Publishes all provisional rows without allocation.
     pub fn commit(self: *PreparedEachRowScopes, scopes: *std.ArrayListUnmanaged(Scope)) void {
         if (self.phase.isCommitted() or scopes.items.len != self.original_scope_len) @panic("invalid provisional each-row scope commit");
         for (self.rows.items) |scope| {
@@ -116,14 +101,10 @@ pub const PreparedScopeClaims = struct {
         self.phase = .committed;
     }
 
-    /// Releases provisional key/item cells in reverse construction order.
-    pub fn abort(self: *PreparedEachRowScopes, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
+    /// Abandons provisional scope claims without retiring their row handles.
+    /// The enclosing generation plan remains the handle owner until commit.
+    pub fn abort(self: *PreparedEachRowScopes) void {
         if (self.phase.isCommitted()) return;
-        var index = self.rows.items.len;
-        while (index != 0) {
-            index -= 1;
-            deinitScopeStep(&self.rows.items[index].step, ctx, roc_host, metrics);
-        }
         self.rows.clearRetainingCapacity();
         self.inactive_cursor = 0;
         self.new_scope_count = 0;
@@ -131,7 +112,7 @@ pub const PreparedScopeClaims = struct {
 
     /// Releases overlay storage; callers must abort or commit first.
     pub fn deinit(self: *PreparedEachRowScopes) void {
-        if (self.rows.items.len != 0) @panic("provisional each-row scopes still own values");
+        if (self.rows.items.len != 0) @panic("provisional each-row scope claims were not resolved");
         self.rows.deinit(self.allocator);
         self.inactive_scope_ids.deinit(self.allocator);
         self.* = undefined;
@@ -141,43 +122,31 @@ pub const PreparedScopeClaims = struct {
 /// Compatibility name for callers that only claim keyed-row scopes.
 pub const PreparedEachRowScopes = PreparedScopeClaims;
 
-/// Drop the retained cells owned by an each-row scope step (no-op for the
-/// structural scope kinds, which carry no Roc values).
-pub fn deinitScopeStep(step: *ScopeStep, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype) void {
-    switch (step.*) {
-        .each_row => |*row| {
-            row.key.deinit(ctx, roc_host, metrics);
-            row.item.deinit(ctx, roc_host, metrics);
-        },
-        .root, .component, .when_branch => {},
-    }
+/// Scope steps own no Roc values. Row-handle retirement belongs to the scope
+/// disposal hook so the generation and row-source registries update together.
+pub fn deinitScopeStep(step: *ScopeStep) void {
+    _ = step;
 }
 
 /// Appends each row using capacity that must already satisfy the caller's transaction contract.
-pub fn appendEachRow(allocator: std.mem.Allocator, scopes: *std.ArrayListUnmanaged(Scope), parent_scope_id: semantic_ids.ScopeId, site_ordinal: semantic_ids.SiteOrdinal, key_hash: u64, key: HostValue, item: HostValue, key_cap: HostValueCapability, item_cap: HostValueCapability, metrics: anytype, reuse_barrier: scope_tree.Generation) scope_tree.Error!scope_tree.InternResult {
+pub fn appendEachRow(allocator: std.mem.Allocator, scopes: *std.ArrayListUnmanaged(Scope), parent_scope_id: semantic_ids.ScopeId, site_ordinal: semantic_ids.SiteOrdinal, key_hash: u64, row_handle: row_handles.RowHandleId, reuse_barrier: scope_tree.Generation) scope_tree.Error!scope_tree.InternResult {
     try scope_tree.validate(EachRowScopeStep, scopes.items, parent_scope_id);
 
-    const key_cell = HostValueCell.initRetained(key, key_cap, metrics);
-    const item_cell = HostValueCell.initRetained(item, item_cap, metrics);
     return scope_tree.appendEachRow(EachRowScopeStep, allocator, scopes, parent_scope_id, .{
         .site_ordinal = site_ordinal,
         .key_hash = key_hash,
-        .key = key_cell,
-        .item = item_cell,
+        .row_handle = row_handle,
     }, reuse_barrier);
 }
 
 /// Appends fresh each row using capacity that must already satisfy the caller's transaction contract.
-pub fn appendFreshEachRow(allocator: std.mem.Allocator, scopes: *std.ArrayListUnmanaged(Scope), parent_scope_id: semantic_ids.ScopeId, site_ordinal: semantic_ids.SiteOrdinal, key_hash: u64, key: HostValue, item: HostValue, key_cap: HostValueCapability, item_cap: HostValueCapability, metrics: anytype) scope_tree.Error!scope_tree.InternResult {
+pub fn appendFreshEachRow(allocator: std.mem.Allocator, scopes: *std.ArrayListUnmanaged(Scope), parent_scope_id: semantic_ids.ScopeId, site_ordinal: semantic_ids.SiteOrdinal, key_hash: u64, row_handle: row_handles.RowHandleId) scope_tree.Error!scope_tree.InternResult {
     try scope_tree.validate(EachRowScopeStep, scopes.items, parent_scope_id);
 
-    const key_cell = HostValueCell.initRetained(key, key_cap, metrics);
-    const item_cell = HostValueCell.initRetained(item, item_cap, metrics);
     return scope_tree.appendFreshEachRow(EachRowScopeStep, allocator, scopes, parent_scope_id, .{
         .site_ordinal = site_ordinal,
         .key_hash = key_hash,
-        .key = key_cell,
-        .item = item_cell,
+        .row_handle = row_handle,
     });
 }
 
@@ -201,95 +170,50 @@ pub fn eachRowConst(scopes: []const Scope, scope_id: semantic_ids.ScopeId) *cons
     };
 }
 
-/// Returns key equals from the keyed row selected by dense scope identity.
-pub fn eachRowKeyEquals(scopes: []const Scope, ctx: anytype, roc_host: *abi.RocHost, scope_id: semantic_ids.ScopeId, key: HostValue, key_cap: HostValueCapability) bool {
-    return eachRowConst(scopes, scope_id).key.valueEqualsIncoming(ctx, roc_host, key, key_cap);
-}
-
-/// Returns item equals from the keyed row selected by dense scope identity.
-pub fn eachRowItemEquals(scopes: []const Scope, ctx: anytype, roc_host: *abi.RocHost, scope_id: semantic_ids.ScopeId, item: HostValue, item_cap: HostValueCapability) bool {
-    return eachRowConst(scopes, scope_id).item.valueEqualsIncoming(ctx, roc_host, item, item_cap);
-}
-
-/// Replaces each row key while releasing displaced ownership exactly once.
-pub fn replaceEachRowKey(scopes: []Scope, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, scope_id: semantic_ids.ScopeId, key_hash: u64, key: HostValue, key_cap: HostValueCapability) void {
-    const row = eachRow(scopes, scope_id);
-    row.key_hash = key_hash;
-    row.key.replaceRetained(ctx, roc_host, metrics, key, key_cap);
-}
-
-/// Replaces each row item while releasing displaced ownership exactly once.
-pub fn replaceEachRowItem(scopes: []Scope, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, scope_id: semantic_ids.ScopeId, item: HostValue, item_cap: HostValueCapability) void {
-    const row = eachRow(scopes, scope_id);
-    row.item.replaceRetained(ctx, roc_host, metrics, item, item_cap);
-}
-
-/// Returns values from the keyed row selected by dense scope identity.
-pub fn eachRowValues(scopes: []const Scope, scope_id: semantic_ids.ScopeId) EachRowValues {
-    const row = eachRowConst(scopes, scope_id);
-    return .{ .key = row.key.value, .item = row.item.value };
-}
-
-/// Returns key value from the keyed row selected by dense scope identity.
-pub fn eachRowKeyValue(scopes: []const Scope, scope_id: semantic_ids.ScopeId) HostValue {
-    return eachRowConst(scopes, scope_id).key.value;
-}
-
 /// Returns key hash from the keyed row selected by dense scope identity.
 pub fn eachRowKeyHash(scopes: []const Scope, scope_id: semantic_ids.ScopeId) u64 {
     return eachRowConst(scopes, scope_id).key_hash;
 }
 
-fn testPreparedScopeCallable(_: *abi.RocHost, _: ?[*]u8, _: ?[*]const u8, _: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {}
+/// Returns the stable handle retained for the keyed row scope lifetime.
+pub fn eachRowHandle(scopes: []const Scope, scope_id: semantic_ids.ScopeId) row_handles.RowHandleId {
+    return eachRowConst(scopes, scope_id).row_handle;
+}
 
 test "shared prepared scope claims assign distinct ids and retry after every OOM" {
     const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
-    const TestCtx = struct {
-        /// Returns the scalar test value unchanged.
-        pub fn cloneHostValue(_: *@This(), value: HostValue) HostValue {
-            return value;
-        }
-        /// Opens the no-op scalar test capability frame.
-        pub fn pushHostValueCapabilities(_: *@This(), _: []const HostValueCapability) void {}
-        /// Closes the no-op scalar test capability frame.
-        pub fn popHostValueCapabilities(_: *@This()) void {}
-    };
-    const TestMetrics = struct {
-        /// Accepts retained-edge metrics without affecting the fixture.
-        pub fn bump(_: *@This(), comptime _: anytype, _: u64) void {}
-    };
     const Runner = struct {
-        fn run(roc_host: *abi.RocHost, cap: HostValueCapability, failure_number: ?usize) !usize {
+        fn run(failure_number: ?usize) !usize {
             var fault = FaultAllocator.init(std.testing.allocator);
             var scopes: std.ArrayListUnmanaged(Scope) = .empty;
             defer scopes.deinit(std.testing.allocator);
             _ = try scope_tree.internRoot(EachRowScopeStep, std.testing.allocator, &scopes);
-            var ctx = TestCtx{};
-            var metrics = TestMetrics{};
             var claims = PreparedScopeClaims.init(fault.allocator(), scopes.items);
             defer {
-                claims.abort(&ctx, roc_host, &metrics);
+                claims.abort();
                 claims.deinit();
             }
 
             fault.configure(failure_number);
-            const first = claims.prepareRow(&scopes, &ctx, roc_host, &metrics, semantic_ids.root_scope, semantic_ids.SiteOrdinal.fromRaw(10), 101, HostValue.fromRaw(1), HostValue.fromRaw(11), cap, cap) catch |err| {
+            const first_handle = row_handles.RowHandleId.fromRaw(0x0000_0001_0000_0001);
+            const second_handle = row_handles.RowHandleId.fromRaw(0x0000_0001_0000_0002);
+            const first = claims.prepareRow(&scopes, semantic_ids.root_scope, semantic_ids.SiteOrdinal.fromRaw(10), 101, first_handle) catch |err| {
                 try std.testing.expectEqual(error.OutOfMemory, err);
-                claims.abort(&ctx, roc_host, &metrics);
+                claims.abort();
                 fault.configure(null);
-                const retry_first = try claims.prepareRow(&scopes, &ctx, roc_host, &metrics, semantic_ids.root_scope, semantic_ids.SiteOrdinal.fromRaw(10), 101, HostValue.fromRaw(1), HostValue.fromRaw(11), cap, cap);
-                const retry_second = try claims.prepareRow(&scopes, &ctx, roc_host, &metrics, semantic_ids.root_scope, semantic_ids.SiteOrdinal.fromRaw(20), 202, HostValue.fromRaw(2), HostValue.fromRaw(22), cap, cap);
+                const retry_first = try claims.prepareRow(&scopes, semantic_ids.root_scope, semantic_ids.SiteOrdinal.fromRaw(10), 101, first_handle);
+                const retry_second = try claims.prepareRow(&scopes, semantic_ids.root_scope, semantic_ids.SiteOrdinal.fromRaw(20), 202, second_handle);
                 try std.testing.expectEqual(semantic_ids.ScopeId.fromRaw(1), retry_first);
                 try std.testing.expectEqual(semantic_ids.ScopeId.fromRaw(2), retry_second);
                 try std.testing.expectEqual(@as(usize, 1), scopes.items.len);
                 return fault.attempts;
             };
-            const second = claims.prepareRow(&scopes, &ctx, roc_host, &metrics, semantic_ids.root_scope, semantic_ids.SiteOrdinal.fromRaw(20), 202, HostValue.fromRaw(2), HostValue.fromRaw(22), cap, cap) catch |err| {
+            const second = claims.prepareRow(&scopes, semantic_ids.root_scope, semantic_ids.SiteOrdinal.fromRaw(20), 202, second_handle) catch |err| {
                 try std.testing.expectEqual(error.OutOfMemory, err);
-                claims.abort(&ctx, roc_host, &metrics);
+                claims.abort();
                 fault.configure(null);
-                const retry_first = try claims.prepareRow(&scopes, &ctx, roc_host, &metrics, semantic_ids.root_scope, semantic_ids.SiteOrdinal.fromRaw(10), 101, HostValue.fromRaw(1), HostValue.fromRaw(11), cap, cap);
-                const retry_second = try claims.prepareRow(&scopes, &ctx, roc_host, &metrics, semantic_ids.root_scope, semantic_ids.SiteOrdinal.fromRaw(20), 202, HostValue.fromRaw(2), HostValue.fromRaw(22), cap, cap);
+                const retry_first = try claims.prepareRow(&scopes, semantic_ids.root_scope, semantic_ids.SiteOrdinal.fromRaw(10), 101, first_handle);
+                const retry_second = try claims.prepareRow(&scopes, semantic_ids.root_scope, semantic_ids.SiteOrdinal.fromRaw(20), 202, second_handle);
                 try std.testing.expectEqual(semantic_ids.ScopeId.fromRaw(1), retry_first);
                 try std.testing.expectEqual(semantic_ids.ScopeId.fromRaw(2), retry_second);
                 try std.testing.expectEqual(@as(usize, 1), scopes.items.len);
@@ -303,14 +227,9 @@ test "shared prepared scope claims assign distinct ids and retry after every OOM
         }
     };
 
-    var env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
-    var roc_host = abi.makeRocHost(&env);
-    const callable = abi.rocErasedCallableAllocate(&roc_host, testPreparedScopeCallable, null, 0).?;
-    defer abi.decrefErasedCallable(callable, &roc_host);
-    const cap = HostValueCapability{ .clone = callable, .drop = callable, .eq = callable };
-    const attempts = try Runner.run(&roc_host, cap, null);
+    const attempts = try Runner.run(null);
     try std.testing.expect(attempts != 0);
-    for (1..attempts + 1) |failure_number| _ = try Runner.run(&roc_host, cap, failure_number);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
 }
 
 /// Disposes a scope subtree in post-order, releasing all values, effects, identities, and render ownership.
@@ -334,7 +253,7 @@ pub fn disposeSubtree(comptime Row: type, scopes: []scope_tree.Scope(Row), scope
 
     const scope = &scopes[scope_id.index()];
     switch (scope.step) {
-        .each_row => |row| hooks.removeEachRow(scope.scope_id, row.key_hash),
+        .each_row => |row| hooks.removeEachRow(scope.scope_id, row.key_hash, row.row_handle),
         .root, .component, .when_branch => {},
     }
     hooks.deinitScopeStep(&scope.step);
@@ -408,6 +327,7 @@ fn appendSubtreePostOrder(comptime Row: type, scopes: []const scope_tree.Scope(R
 const TestRow = struct {
     site_ordinal: semantic_ids.SiteOrdinal,
     key_hash: u64,
+    row_handle: row_handles.RowHandleId,
 };
 
 const TestDisposeHooks = struct {
@@ -416,6 +336,7 @@ const TestDisposeHooks = struct {
     task_cancellations: std.ArrayListUnmanaged(semantic_ids.ScopeId) = .empty,
     dom_deactivations: std.ArrayListUnmanaged(semantic_ids.ScopeId) = .empty,
     removed_rows: std.ArrayListUnmanaged(u64) = .empty,
+    removed_handles: std.ArrayListUnmanaged(row_handles.RowHandleId) = .empty,
     deinit_steps: u64 = 0,
     disposed_scopes: u64 = 0,
 
@@ -425,6 +346,7 @@ const TestDisposeHooks = struct {
         self.task_cancellations.deinit(allocator);
         self.dom_deactivations.deinit(allocator);
         self.removed_rows.deinit(allocator);
+        self.removed_handles.deinit(allocator);
     }
 
     /// Retires node identities so disposed scope identity cannot be routed again.
@@ -448,9 +370,10 @@ const TestDisposeHooks = struct {
     }
 
     /// Removes each row and releases the ownership attached to that live entry.
-    pub fn removeEachRow(self: *@This(), scope_id: semantic_ids.ScopeId, key_hash: u64) void {
+    pub fn removeEachRow(self: *@This(), scope_id: semantic_ids.ScopeId, key_hash: u64, row_handle: row_handles.RowHandleId) void {
         _ = scope_id;
         self.removed_rows.append(std.testing.allocator, key_hash) catch @panic("out of memory");
+        self.removed_handles.append(std.testing.allocator, row_handle) catch @panic("out of memory");
     }
 
     /// Releases scope step and all host registrations or retained values it owns.
@@ -473,7 +396,8 @@ test "scope runtime disposes active subtrees through explicit hooks" {
 
     _ = try scope_tree.internRoot(TestRow, std.testing.allocator, &scopes);
     _ = try scope_tree.internComponent(TestRow, std.testing.allocator, &scopes, semantic_ids.root_scope, semantic_ids.SiteOrdinal.fromRaw(1), semantic_ids.initial_generation);
-    _ = try scope_tree.appendEachRow(TestRow, std.testing.allocator, &scopes, semantic_ids.ScopeId.fromRaw(1), .{ .site_ordinal = semantic_ids.SiteOrdinal.fromRaw(4), .key_hash = 40 }, semantic_ids.initial_generation);
+    const row_handle = row_handles.RowHandleId.fromRaw(0x0000_0001_0000_0001);
+    _ = try scope_tree.appendEachRow(TestRow, std.testing.allocator, &scopes, semantic_ids.ScopeId.fromRaw(1), .{ .site_ordinal = semantic_ids.SiteOrdinal.fromRaw(4), .key_hash = 40, .row_handle = row_handle }, semantic_ids.initial_generation);
     _ = try scope_tree.internComponent(TestRow, std.testing.allocator, &scopes, semantic_ids.ScopeId.fromRaw(2), semantic_ids.SiteOrdinal.fromRaw(1), semantic_ids.initial_generation);
     _ = try scope_tree.internComponent(TestRow, std.testing.allocator, &scopes, semantic_ids.root_scope, semantic_ids.SiteOrdinal.fromRaw(2), semantic_ids.initial_generation);
 
@@ -491,6 +415,7 @@ test "scope runtime disposes active subtrees through explicit hooks" {
     try std.testing.expectEqual(semantic_ids.Generation.fromRaw(5), scopes.items[3].lifecycle.retiredGeneration().?);
     try std.testing.expectEqualSlices(semantic_ids.ScopeId, &.{ semantic_ids.ScopeId.fromRaw(3), semantic_ids.ScopeId.fromRaw(2), semantic_ids.ScopeId.fromRaw(1) }, hooks.node_deactivations.items);
     try std.testing.expectEqualSlices(u64, &.{40}, hooks.removed_rows.items);
+    try std.testing.expectEqualSlices(row_handles.RowHandleId, &.{row_handle}, hooks.removed_handles.items);
     try std.testing.expectEqual(@as(u64, 3), hooks.deinit_steps);
     try std.testing.expectEqual(@as(u64, 3), hooks.disposed_scopes);
 }
@@ -501,7 +426,7 @@ test "prepared scope retirement sweeps allocation failures and applies without a
     defer scopes.deinit(std.testing.allocator);
     _ = try scope_tree.internRoot(TestRow, std.testing.allocator, &scopes);
     _ = try scope_tree.internComponent(TestRow, std.testing.allocator, &scopes, semantic_ids.root_scope, semantic_ids.SiteOrdinal.fromRaw(1), semantic_ids.initial_generation);
-    _ = try scope_tree.appendEachRow(TestRow, std.testing.allocator, &scopes, semantic_ids.ScopeId.fromRaw(1), .{ .site_ordinal = semantic_ids.SiteOrdinal.fromRaw(4), .key_hash = 40 }, semantic_ids.initial_generation);
+    _ = try scope_tree.appendEachRow(TestRow, std.testing.allocator, &scopes, semantic_ids.ScopeId.fromRaw(1), .{ .site_ordinal = semantic_ids.SiteOrdinal.fromRaw(4), .key_hash = 40, .row_handle = row_handles.RowHandleId.fromRaw(0x0000_0001_0000_0001) }, semantic_ids.initial_generation);
     _ = try scope_tree.internComponent(TestRow, std.testing.allocator, &scopes, semantic_ids.ScopeId.fromRaw(2), semantic_ids.SiteOrdinal.fromRaw(1), semantic_ids.initial_generation);
     _ = try scope_tree.internComponent(TestRow, std.testing.allocator, &scopes, semantic_ids.root_scope, semantic_ids.SiteOrdinal.fromRaw(2), semantic_ids.initial_generation);
 
@@ -537,7 +462,7 @@ test "prepared disjoint scope retirement unions roots and rejects overlap" {
     defer scopes.deinit(std.testing.allocator);
     _ = try scope_tree.internRoot(TestRow, std.testing.allocator, &scopes);
     _ = try scope_tree.internComponent(TestRow, std.testing.allocator, &scopes, semantic_ids.root_scope, semantic_ids.SiteOrdinal.fromRaw(1), semantic_ids.initial_generation);
-    _ = try scope_tree.appendEachRow(TestRow, std.testing.allocator, &scopes, semantic_ids.ScopeId.fromRaw(1), .{ .site_ordinal = semantic_ids.SiteOrdinal.fromRaw(4), .key_hash = 40 }, semantic_ids.initial_generation);
+    _ = try scope_tree.appendEachRow(TestRow, std.testing.allocator, &scopes, semantic_ids.ScopeId.fromRaw(1), .{ .site_ordinal = semantic_ids.SiteOrdinal.fromRaw(4), .key_hash = 40, .row_handle = row_handles.RowHandleId.fromRaw(0x0000_0001_0000_0001) }, semantic_ids.initial_generation);
     _ = try scope_tree.internComponent(TestRow, std.testing.allocator, &scopes, semantic_ids.ScopeId.fromRaw(2), semantic_ids.SiteOrdinal.fromRaw(1), semantic_ids.initial_generation);
     _ = try scope_tree.internComponent(TestRow, std.testing.allocator, &scopes, semantic_ids.root_scope, semantic_ids.SiteOrdinal.fromRaw(2), semantic_ids.initial_generation);
 
@@ -562,25 +487,16 @@ test "prepared disjoint scope retirement unions roots and rejects overlap" {
     for (scopes.items) |scope| try std.testing.expect(scope.lifecycle.isActive());
 }
 
-test "scope runtime owns each-row scope values and key hash" {
+test "scope runtime owns stable each-row handle and key hash" {
     var scopes: std.ArrayListUnmanaged(Scope) = .empty;
     defer scopes.deinit(std.testing.allocator);
 
     _ = try scope_tree.internRoot(EachRowScopeStep, std.testing.allocator, &scopes);
 
-    var metrics = struct {
-        /// Increments  for exact structural-work accounting.
-        pub fn bump(_: *@This(), comptime _: anytype, _: u64) void {}
-    }{};
-    const key_cap: HostValueCapability = std.mem.zeroes(HostValueCapability);
-    const item_cap: HostValueCapability = std.mem.zeroes(HostValueCapability);
-    const row = try appendEachRow(std.testing.allocator, &scopes, semantic_ids.root_scope, semantic_ids.SiteOrdinal.fromRaw(7), 42, HostValue.fromRaw(100), HostValue.fromRaw(200), key_cap, item_cap, &metrics, semantic_ids.initial_generation);
+    const handle = row_handles.RowHandleId.fromRaw(0x0000_0005_0000_0009);
+    const row = try appendEachRow(std.testing.allocator, &scopes, semantic_ids.root_scope, semantic_ids.SiteOrdinal.fromRaw(7), 42, handle, semantic_ids.initial_generation);
 
     try std.testing.expectEqual(semantic_ids.ScopeId.fromRaw(1), row.scope_id);
     try std.testing.expectEqual(@as(u64, 42), eachRowKeyHash(scopes.items, row.scope_id));
-    try std.testing.expectEqual(HostValue.fromRaw(100), eachRowKeyValue(scopes.items, row.scope_id));
-
-    const values = eachRowValues(scopes.items, row.scope_id);
-    try std.testing.expectEqual(HostValue.fromRaw(100), values.key);
-    try std.testing.expectEqual(HostValue.fromRaw(200), values.item);
+    try std.testing.expectEqual(handle, eachRowHandle(scopes.items, row.scope_id));
 }

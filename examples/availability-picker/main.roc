@@ -608,7 +608,7 @@ week_panel = |slots, view|
 				[
 					Html.paragraph_s_attrs(Signal.map(view.banner, Banner.to_str), [Html.test_id("conflict-banner"), Html.class_attr_s(Signal.map(view.banner, banner_class))]),
 					Html.div_c("hidden gap-2 sm:grid sm:grid-cols-7", days.map(|day| day_header(view.free, day))),
-					# One `each_str` over the whole week: the day columns are a CSS
+					# One `Ui.each` over the whole week: the day columns are a CSS
 					# placement of the same rows, so a timezone change moves a block
 					# between columns without the reconciler creating a new row.
 					# `grid-flow-dense` lets a block fill the first free cell in its
@@ -616,7 +616,7 @@ week_panel = |slots, view|
 					# single keyed list placed by `col-start` would otherwise do.
 					Html.div_c(
 						"grid items-start gap-2 sm:grid-cols-7 sm:[grid-auto-flow:row_dense]",
-						[Ui.each_str(view.rows, |row| row.id, |key, row| render_row(slots, key, row))],
+						[Ui.each(view.rows, |row| row.id, |each_row| render_row(slots, each_row.key(), each_row.signal()))],
 					),
 					Ui.when(
 						view.empty,

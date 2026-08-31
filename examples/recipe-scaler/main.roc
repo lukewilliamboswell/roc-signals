@@ -535,7 +535,7 @@ page = |controls| {
 							line_head("Ingredient"),
 							Html.div(
 								[Html.test_id("ingredient-rows"), Html.class_attr("grid")],
-								[Ui.each_str(ingredients_signal, |item| item.slug, |key, item| ingredient_row(key, item, ctx))],
+								[Ui.each(ingredients_signal, |item| item.slug, |each_row| ingredient_row(each_row.key(), each_row.signal(), ctx))],
 							),
 						],
 					),
@@ -570,7 +570,7 @@ page = |controls| {
 										line_head("Combined ingredient"),
 										Html.div(
 											[Html.test_id("shopping-rows"), Html.class_attr("grid")],
-											[Ui.each_str(lines_signal, |line| line.key, |key, item| shopping_row(key, item, ctx))],
+											[Ui.each(lines_signal, |line| line.key, |each_row| shopping_row(each_row.key(), each_row.signal(), ctx))],
 										),
 									],
 								),

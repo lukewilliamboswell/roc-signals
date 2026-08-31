@@ -1041,7 +1041,7 @@ fn rememberStorageDeclaration(area: boundary.StorageArea, key: []const u8) void 
 
 fn discoverStorageSignalExpr(expr: abi.NodeSignalExpr) void {
     switch (abi_view.SignalExpr.fromAbi(expr)) {
-        .ref, .const_value, .task_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source => {},
+        .ref, .const_value, .row_source, .task_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source => {},
         .map => |payload| discoverStorageSignalExpr(payload.input.*),
         .select => |payload| discoverStorageSignalExpr(payload.input.*),
         .map2 => |payload| {
@@ -1334,7 +1334,7 @@ fn resolveTask(request_id: ids.TaskRequestId, payload_text: []const u8, failed: 
     const record = shared_engine.activeTaskRecordByToken(pending.task_token) orelse failHostWith("task result matched no active task source");
     const task_payload = switch (record.payload) {
         .task_source => |payload| payload,
-        .ref, .const_value, .map, .map2, .select, .combine, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source => unreachable,
+        .ref, .const_value, .map, .map2, .select, .combine, .row_source, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source => unreachable,
     };
     if (record.token().? != pending.task_token) failHostWith("task result matched a pending request for a different task source");
 
@@ -1453,7 +1453,7 @@ fn clearActiveRuntime() void {
 
 // --- Compiler-rt shim ---
 
-// The Roc app's `key.hash` path (`Ui.each_str`) emits a 128-bit integer multiply.
+// The Roc app's `key.hash` path (`Ui.each`) emits a 128-bit integer multiply.
 // ReleaseSmall leaves it as an undefined `__multi3` symbol instead of bundling
 // compiler-rt, so the app object imports `env.__multi3`. The host is linked into
 // every app wasm, so defining it here resolves that reference at link time and
@@ -2109,6 +2109,15 @@ export fn roc_host_value_clone(value: u64) callconv(.c) u64 {
     return (shared_engine.host_values.clone(allocator(), HostValue.fromRaw(value), registryOps()) catch |err| {
         failHostValueRegistryError(err);
     }).toRaw();
+}
+
+export fn roc_each_key_sink_push(token: u64, index: u64, value: abi.RocStr) callconv(.c) u64 {
+    defer abi.RocStrRelease.release(value, &roc_host);
+    return shared_engine.pushEachKeySink(WasmCtx{}, token, index, value.asSlice()) catch failHostWith("each key sink rejected the active collection transaction");
+}
+
+export fn roc_each_bool_sink_push(token: u64, index: u64, value: bool) callconv(.c) u64 {
+    return shared_engine.pushEachBoolSink(WasmCtx{}, token, index, value) catch failHostWith("each bool sink rejected the active collection transaction");
 }
 
 export fn roc_host_value_get_with_capability(value: u64, cap: HostValueCapability) callconv(.c) abi.RocBox {

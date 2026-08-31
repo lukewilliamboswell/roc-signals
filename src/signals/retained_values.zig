@@ -17,6 +17,7 @@ pub const HostWhenOps = abi.ElemWhenOps;
 /// Non-null erased-callable pointer used as signal graph identity.
 pub const HostSignalToken = [*]u8;
 pub const HostValueList = abi.RocListWith(HostValue, false);
+pub const U64List = erased_calls.U64List;
 
 /// Semantic roles for independently routed retained callables. Reader,
 /// reducer, and row-operation roles use their distinct generated
@@ -263,6 +264,50 @@ pub fn callHostValueHostValueToElemWithCapabilities(comptime Ctx: type, ctx: Ctx
     return erased_calls.callErasedHostValueHostValueToElem(roc_host, callable, left, right);
 }
 
+/// Reads a collection length while authorizing access to its erased items value.
+pub fn callEachCollectionLen(comptime Ctx: type, ctx: Ctx.Handle, roc_host: *abi.RocHost, items_cap: HostValueCapability, callable: abi.RocErasedCallable, items: HostValue) u64 {
+    const caps = [_]HostValueCapability{items_cap};
+    pushCapabilities(Ctx, ctx, &caps);
+    defer popCapabilities(Ctx, ctx);
+    return erased_calls.callErasedHostValueToU64(roc_host, callable, Ctx.cloneHostValue(ctx, items));
+}
+
+/// Copies collection keys into the active sink while authorizing access to the
+/// erased items value. The returned token is the sink's next protocol token.
+pub fn callEachCollectionCopyKeys(comptime Ctx: type, ctx: Ctx.Handle, roc_host: *abi.RocHost, items_cap: HostValueCapability, callable: abi.RocErasedCallable, items: HostValue, sink_token: u64) u64 {
+    const caps = [_]HostValueCapability{items_cap};
+    pushCapabilities(Ctx, ctx, &caps);
+    defer popCapabilities(Ctx, ctx);
+    return erased_calls.callErasedHostValueU64ToU64(roc_host, callable, Ctx.cloneHostValue(ctx, items), sink_token);
+}
+
+/// Compares indexed old/new collection items inside both capability frames.
+/// Both collections must have the same erased item-container type because one
+/// app-compiled adapter interprets both values.
+pub fn callEachCollectionComparePairs(comptime Ctx: type, ctx: Ctx.Handle, roc_host: *abi.RocHost, old_items_cap: HostValueCapability, new_items_cap: HostValueCapability, callable: abi.RocErasedCallable, old_items: HostValue, new_items: HostValue, pairs: U64List, sink_token: u64) u64 {
+    assertHostValueCapabilitiesMatch(old_items_cap, new_items_cap, "each collection comparison received incompatible item-container capabilities");
+    const caps = [_]HostValueCapability{ old_items_cap, new_items_cap };
+    pushCapabilities(Ctx, ctx, &caps);
+    defer popCapabilities(Ctx, ctx);
+    return erased_calls.callErasedHostValueHostValueU64ListU64ToU64(roc_host, callable, Ctx.cloneHostValue(ctx, old_items), Ctx.cloneHostValue(ctx, new_items), pairs, sink_token);
+}
+
+/// Clones one item while authorizing the input collection capability and the
+/// capability that owns the independently returned item HostValue.
+pub fn callEachCollectionCloneItemAt(comptime Ctx: type, ctx: Ctx.Handle, roc_host: *abi.RocHost, items_cap: HostValueCapability, item_cap: HostValueCapability, callable: abi.RocErasedCallable, items: HostValue, index: u64) HostValue {
+    const caps = [_]HostValueCapability{ items_cap, item_cap };
+    pushCapabilities(Ctx, ctx, &caps);
+    defer popCapabilities(Ctx, ctx);
+    return erased_calls.callErasedHostValueU64ToHostValue(roc_host, callable, Ctx.cloneHostValue(ctx, items), index);
+}
+
+/// Builds one row without an erased HostValue capability frame. `key` transfers
+/// one owned RocStr reference into the Roc callable; the returned Elem is owned
+/// by the caller. `row_handle` is the generation-checked handle's raw ABI value.
+pub fn callEachRowBuilder(roc_host: *abi.RocHost, callable: abi.RocErasedCallable, key: abi.RocStr, row_handle: u64) abi.Elem {
+    return erased_calls.callErasedRocStrU64ToElem(roc_host, callable, key, row_handle);
+}
+
 /// Retains every callable and capability owned by text read.
 pub fn retainHostTextRead(read: HostTextRead, metrics: anytype) HostTextRead {
     _ = retainHostValueCapability(read.capability, metrics);
@@ -314,12 +359,12 @@ pub fn releaseHostEventReducer(reducer: HostEventReducer, roc_host: *abi.RocHost
 pub fn retainHostEachOps(ops: HostEachOps, metrics: anytype) HostEachOps {
     _ = retainHostValueCapability(ops.items_capability, metrics);
     _ = retainHostValueCapability(ops.item_capability, metrics);
-    _ = retainHostValueCapability(ops.key_capability, metrics);
-    abi.increfErasedCallable(ops.items_to_values, 1);
-    abi.increfErasedCallable(ops.key_text, 1);
-    abi.increfErasedCallable(ops.key_of, 1);
+    abi.increfErasedCallable(ops.len, 1);
+    abi.increfErasedCallable(ops.copy_keys, 1);
+    abi.increfErasedCallable(ops.compare_pairs, 1);
+    abi.increfErasedCallable(ops.clone_item_at, 1);
     abi.increfErasedCallable(ops.row, 1);
-    metrics.bump(.closure_retains, 4);
+    metrics.bump(.closure_retains, 5);
     return ops;
 }
 
@@ -327,12 +372,12 @@ pub fn retainHostEachOps(ops: HostEachOps, metrics: anytype) HostEachOps {
 pub fn releaseHostEachOps(ops: HostEachOps, roc_host: *abi.RocHost, metrics: anytype) void {
     releaseHostValueCapability(ops.items_capability, roc_host, metrics);
     releaseHostValueCapability(ops.item_capability, roc_host, metrics);
-    releaseHostValueCapability(ops.key_capability, roc_host, metrics);
-    abi.decrefErasedCallable(ops.items_to_values, roc_host);
-    abi.decrefErasedCallable(ops.key_text, roc_host);
-    abi.decrefErasedCallable(ops.key_of, roc_host);
+    abi.decrefErasedCallable(ops.len, roc_host);
+    abi.decrefErasedCallable(ops.copy_keys, roc_host);
+    abi.decrefErasedCallable(ops.compare_pairs, roc_host);
+    abi.decrefErasedCallable(ops.clone_item_at, roc_host);
     abi.decrefErasedCallable(ops.row, roc_host);
-    metrics.bump(.closure_releases, 4);
+    metrics.bump(.closure_releases, 5);
 }
 
 /// Retains the case capability and builder owned by a lazy branch site.

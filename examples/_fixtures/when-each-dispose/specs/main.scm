@@ -1,6 +1,6 @@
 (test "When each dispose"
   (steps
-    ; Ui.when whose true arm is Ui.each_str must remove its rows when it flips
+    ; Ui.when whose true arm is Ui.each must remove its rows when it flips
     ; false, including when the condition and the row list arrive by two separate
     ; derived chains recomputed in the same batch.
 

@@ -464,7 +464,7 @@ editor = |drafts| {
 								panel_class,
 								[
 									Html.heading_c("Preview", "panel-title"),
-									Ui.each_str(previews, |preview| preview.id, render_preview),
+									Ui.each(previews, |preview| preview.id, |each_row| render_preview(each_row.key(), each_row.signal())),
 								],
 							),
 							Html.section_c(

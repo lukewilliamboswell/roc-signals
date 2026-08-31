@@ -63,13 +63,34 @@ A click on a button bound with `count.on_unit(|n| n + 1)`:
    retained transform. Any node whose recomputed value is `is_eq` to its
    previous value **stops propagating** — its dependents are never woken.
 5. Sinks whose inputs changed emit patches.
-6. Structural changes (`Ui.when` flips, `Ui.each_str` diffs) splice the active
+6. Structural changes (`Ui.when` flips, `Ui.each` diffs) splice the active
    stream locally, disposing and mounting scopes, rather than rebuilding the
    tree.
 7. The command buffer is written and JavaScript applies it.
 
 There is no full-tree walk anywhere in that list. Work is a function of the
 dirty set.
+
+## How keyed collection generations cross the boundary
+
+The engine never asks Roc to return temporary lists of keys, items, or equality
+results. A `Ui.each` site retains the immutable `List(item)` generation as one
+opaque capability-owned value. App-compiled adapter closures report its length,
+push exact UTF-8 keys and pair-comparison booleans into preallocated host sinks,
+and clone an item only when a new or changed row source needs one.
+
+The old and candidate generations coexist only during reconciliation. All key
+bytes, matches, item clones, row handles, structural changes, and commands live
+in a candidate overlay until validation and host allocation succeed; commit is
+allocation-free and publishes them atomically. A failed host allocation discards
+the candidate and leaves the prior DOM generation intact. Allocation failure
+inside a Roc callback is different: the erased callback ABI cannot return OOM
+or unwind owned values, so the instance is diagnosed, poisoned, and trapped.
+
+Rows are materialized lazily. A surviving key keeps its row scope and stable,
+generation-checked row source; the row builder runs only for a newly live key.
+`Ui.Row.map` is ordinary graph `Signal.map`, with the same dependency ordering
+and equality pruning as any other derived signal.
 
 ## The wire protocol
 
@@ -183,7 +204,7 @@ The practical guidance that follows:
 - Derive fine-grained signals rather than one giant view-model, so unrelated
   panels stay quiet.
 - When dependency *structure* genuinely varies, use a scope (`Ui.when`,
-  `Ui.each_str`) rather than a wide always-live edge.
+  `Ui.each`) rather than a wide always-live edge.
 
 ## Debugging, honestly
 

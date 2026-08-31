@@ -427,7 +427,7 @@ main = || {
 																				"min-w-[46rem]",
 																				[
 																					grid_header,
-																					Ui.each_str(view_rows, |row| row.id.to_str(), |key, row| render_row(selected_state, notes, key, row)),
+																			Ui.each(view_rows, |row| row.id.to_str(), |each_row| render_row(selected_state, notes, each_row.key(), each_row.signal())),
 																				],
 																			),
 																		],

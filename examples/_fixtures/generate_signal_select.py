@@ -49,7 +49,7 @@ main = ||
 \t\t\t\t\t\t\tHtml.heading("Signal select {row_count}"),
 \t\t\t\t\t\t\tHtml.button("Show one row", show_all.on_unit(|_| False)),
 \t\t\t\t\t\t\tHtml.button("Show all rows", show_all.on_unit(|_| True)),
-\t\t\t\t\t\t\tUi.each_str(items, |key| key, render_row),
+\t\t\t\t\t\t\tUi.each(items, |key| key, render_row),
 \t\t\t\t\t\t],
 \t\t\t\t\t)
 \t\t\t\t}},

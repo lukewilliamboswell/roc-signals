@@ -135,9 +135,9 @@ initial = {
     next_id: 3,
 }
 
-book_row : Str, Signal.Signal(Book) -> Elem
-book_row = |_id, book| {
-    title = book.map(|value| value.title)
+book_row : Ui.Row(Book) -> Elem
+book_row = |row| {
+    title = row.map(|value| value.title)
     Html.div_c("flex gap-3", [Html.text_s(title)])
 }
 
@@ -156,25 +156,26 @@ main = ||
                 "grid gap-4",
                 [
                     Html.heading_c("Reading List", "text-2xl font-semibold"),
-                    Ui.each_str(books, |book| book.id, book_row),
+                    Ui.each(books, |book| book.id, book_row),
                 ],
             )
         },
     )
 ```
 
-**`Ui.each_str(books, key_of, row)`** renders a keyed list. It takes a
+**`Ui.each(books, key_of, row)`** renders a keyed list. It takes a
 `Signal(List(item))`, a function producing a stable string key, and a row
-renderer receiving `(key, Signal(item))`.
+renderer receiving an opaque `Ui.Row(item)`.
 
 The key must come from the item's identity — a database id, slug, or generated
 id — **never the list index**. Rows are matched across updates by key, so a
 correct key means reordering, inserting, and filtering reuse existing DOM nodes
 and preserve any state a row owns. An index key throws that away.
 
-Notice `book_row` receives a `Signal(Book)`, not a `Book`. Rows are live: when
-one book changes, that row's own signals update and nothing else in the list is
-touched.
+Notice `book_row` derives through `row.map(...)`, not a snapshot `Book`. Rows are
+live: when one book changes, that row's own signals update and nothing else in
+the list is touched. Use `row.key()` for the stable key or `row.signal()` when a
+combinator requires the complete item signal.
 
 ### The annotation that saves you an hour
 
@@ -211,7 +212,7 @@ add_book = |model|
 
 Wire it to a form. Add the `draft` binding next to `books` inside the `Ui.state`
 body, and put the `Html.form_label(...)` into `section_c`'s children list, above
-the `Ui.each_str`:
+the `Ui.each`:
 
 ```roc
 # inside the Ui.state body, with the other derived bindings
@@ -264,10 +265,11 @@ top level (where Step 3 put it) into the `Ui.state` body, so it closes over the
 definition:
 
 ```roc
-book_row : Str, Signal.Signal(Book) -> Elem
-book_row = |id, book| {
-    title = book.map(|value| value.title)
-    read = book.map(|value| value.read)
+book_row : Ui.Row(Book) -> Elem
+book_row = |row| {
+    id = row.key()
+    title = row.map(|value| value.title)
+    read = row.map(|value| value.read)
 
     Html.div_c(
         "flex items-center gap-3",
@@ -350,7 +352,7 @@ empty = books.map(|list| list.is_empty())
 ```
 
 Then in `section_c`'s children, add the checkbox and summary, and replace the
-bare `Ui.each_str(...)` with a conditional:
+bare `Ui.each(...)` with a conditional:
 
 ```roc
 Html.checkbox(
@@ -362,7 +364,7 @@ Html.text_s(summary),
 Ui.when(
     empty,
     || Html.paragraph("Nothing to show."),
-    || Ui.each_str(books, |book| book.id, book_row),
+    || Ui.each(books, |book| book.id, book_row),
 ),
 ```
 
@@ -459,10 +461,11 @@ main = ||
             summary = state.map(|value| "${unread_count(value.books).to_str()} unread")
             empty = books.map(|list| list.is_empty())
 
-            book_row : Str, Signal.Signal(Book) -> Elem
-            book_row = |id, book| {
-                title = book.map(|value| value.title)
-                read = book.map(|value| value.read)
+            book_row : Ui.Row(Book) -> Elem
+            book_row = |row| {
+                id = row.key()
+                title = row.map(|value| value.title)
+                read = row.map(|value| value.read)
 
                 Html.div_c(
                     "flex items-center gap-3",
@@ -500,7 +503,7 @@ main = ||
                     Ui.when(
                         empty,
                         || Html.paragraph("Nothing to show."),
-                        || Ui.each_str(books, |book| book.id, book_row),
+                        || Ui.each(books, |book| book.id, book_row),
                     ),
                 ],
             )
