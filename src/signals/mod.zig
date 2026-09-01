@@ -34,6 +34,7 @@ pub const render_cache = @import("render_cache.zig");
 pub const render_sink = @import("render_sink.zig");
 pub const row_handles = @import("row_handles.zig");
 pub const rows_ids = @import("rows_ids.zig");
+pub const rows_render_order = @import("rows_render_order.zig");
 pub const rows_site_store = @import("rows_site_store.zig");
 pub const rows_transition = @import("rows_transition.zig");
 pub const runtime_limits = @import("runtime_limits.zig");
@@ -70,6 +71,7 @@ test {
     std.testing.refAllDecls(render_sink);
     std.testing.refAllDecls(row_handles);
     std.testing.refAllDecls(rows_ids);
+    std.testing.refAllDecls(rows_render_order);
     std.testing.refAllDecls(rows_site_store);
     std.testing.refAllDecls(rows_transition);
     std.testing.refAllDecls(scope_runtime);
