@@ -754,6 +754,32 @@ RowsBuild(item) : {
 	slots : RowsSlotStore(item),
 	key_index : Dict(Str, U64),
 	key_bytes : U64,
+	slot_chunks_written : U64,
+}
+
+RowsFreshBuild(item) : {
+	order_slots : List(U64),
+	chunks : Dict(U64, List(RowsSlotCell(item))),
+	current_chunk : List(RowsSlotCell(item)),
+	key_index : Dict(Str, U64),
+	key_bytes : U64,
+	chunk_writes : U64,
+}
+
+RowsSlotWrite(item) : { cell : RowsSlotCell(item), offset : U64 }
+
+RowsSlotPatches(item) : {
+	by_chunk : Dict(U64, List(RowsSlotWrite(item))),
+	chunk_ids_rev : List(U64),
+}
+
+RowsReplacementBuild(item) : {
+	order_slots : List(U64),
+	key_index : Dict(Str, U64),
+	key_bytes : U64,
+	patches : RowsSlotPatches(item),
+	free_cursor : U64,
+	next_index : U64,
 }
 
 RowsEditState(item) : {
@@ -793,8 +819,75 @@ rows_entry_at = |order, slots, index| {
 	rows_entry_for_slot(slots, slot)
 }
 
-rows_build_fresh : List(item), Box((item -> Str)), U64, U64, RowsBuild(item) -> Try(RowsBuild(item), Rows.Error)
-rows_build_fresh = |items, key_of, index, len, build|
+rows_slots_patch : RowsSlotPatches(item), U64, RowsSlotCell(item) -> RowsSlotPatches(item)
+rows_slots_patch = |patches, index, cell| {
+	if index == 0 {
+		crash "Rows slot patch index must be nonzero"
+	}
+	zero_index = index - 1
+	chunk_id = zero_index.div_trunc_by(32)
+	offset = zero_index.rem_by(32)
+	write = { cell, offset }
+	match patches.by_chunk.get(chunk_id) {
+		Ok(writes) => {
+			duplicate = writes.find_first(|existing| existing.offset == offset)
+			match duplicate {
+				Ok(_) => crash "Rows slot patch wrote one cell twice"
+				Err(_) => { ..patches, by_chunk: patches.by_chunk.insert(chunk_id, writes.prepend(write)) }
+			}
+		}
+		Err(_) => {
+			{
+				by_chunk: patches.by_chunk.insert(chunk_id, [write]),
+				chunk_ids_rev: patches.chunk_ids_rev.prepend(chunk_id),
+			}
+		}
+	}
+}
+
+rows_slots_patched_cell : List(RowsSlotWrite(item)), U64 -> Try(RowsSlotCell(item), [Missing])
+rows_slots_patched_cell = |writes, offset|
+	match writes.find_first(|write| write.offset == offset) {
+		Ok(write) => Ok(write.cell)
+		Err(_) => Err(Missing)
+	}
+
+## Publish each touched slot chunk once. A touched chunk is rebuilt from its
+## old immutable cells plus at most 32 replacement cells; untouched chunks stay
+## shared with the previous generation.
+rows_slots_apply_patches : RowsSlotStore(item), RowsSlotPatches(item), List(U64), U64 -> { slot_chunks_written : U64, slots : RowsSlotStore(item) }
+rows_slots_apply_patches = |old, patches, free, next_index| {
+	var $chunks = old.chunks
+	var $written = 0
+	for chunk_id in patches.chunk_ids_rev {
+		writes = patches.by_chunk.get(chunk_id) ?? crash "Rows touched slot chunk had no patches"
+		old_chunk = old.chunks.get(chunk_id) ?? []
+		first_index = chunk_id * 32 + 1
+		available = next_index - first_index
+		final_len = if available < 32 {
+			available
+		} else {
+			32
+		}
+		var $chunk = List.with_capacity(final_len)
+		var $offset = 0
+		while $offset < final_len {
+			cell =
+				match rows_slots_patched_cell(writes, $offset) {
+					Ok(patched) => patched
+					Err(_) => old_chunk.get($offset) ?? crash "Rows slot patch omitted an existing cell"
+				}
+			$chunk = $chunk.append(cell)
+			$offset = $offset + 1
+		}
+		$chunks = $chunks.insert(chunk_id, $chunk)
+		$written = $written + 1
+	}
+	{ slot_chunks_written: $written, slots: { chunks: $chunks, free, next_index } }
+}
+
+rows_build_fresh_loop : List(item), Box((item -> Str)), U64, U64, RowsFreshBuild(item) -> Try(RowsFreshBuild(item), Rows.Error)
+rows_build_fresh_loop = |items, key_of, index, len, build|
 	if index == len {
 		Ok(build)
 	} else {
@@ -803,25 +896,88 @@ rows_build_fresh = |items, key_of, index, len, build|
 		match build.key_index.get(key) {
 			Ok(_) => Err(DuplicateKey(key))
 			Err(_) => {
-				allocated = rows_slots_allocate(build.slots, key, item)?
-				rows_build_fresh(
+				slot_index = index + 1
+				slot = rows_slot_pack(slot_index, 1)
+				chunk = build.current_chunk.append(RowsSlotLive({ generation: 1, key, item }))
+				chunk_complete = chunk.len() == 32
+				chunk_id = index.div_trunc_by(32)
+				rows_build_fresh_loop(
 					items,
 					key_of,
 					index + 1,
 					len,
 					{
-						order_slots: build.order_slots.prepend(allocated.slot),
-						slots: allocated.slots,
-						key_index: build.key_index.insert(key, allocated.slot),
-						key_bytes: build.key_bytes + key.to_utf8().len(),
+						order_slots: build.order_slots.prepend(slot),
+						chunks: if chunk_complete {
+							build.chunks.insert(chunk_id, chunk)
+						} else {
+							build.chunks
+						},
+						current_chunk: if chunk_complete {
+							List.with_capacity(32)
+						} else {
+							chunk
+						},
+						key_index: build.key_index.insert(key, slot),
+						key_bytes: build.key_bytes + key.count_utf8_bytes(),
+						chunk_writes: build.chunk_writes + if chunk_complete {
+							1
+						} else {
+							0
+						},
 					},
 				)
 			}
 		}
 	}
 
-rows_build_replacement : List(item), Box((item -> Str)), RowsStorage(item), U64, U64, RowsBuild(item) -> Try(RowsBuild(item), Rows.Error)
-rows_build_replacement = |items, key_of, old, index, len, build|
+## Build a fresh snapshot with one dictionary insertion per completed 32-cell
+## slot chunk. Exact-key lookup remains one preallocated hash insertion per row
+## so duplicate keys are rejected while their first occurrence is still known.
+rows_build_fresh : List(item), Box((item -> Str)) -> Try(RowsBuild(item), Rows.Error)
+rows_build_fresh = |items, key_of| {
+	len = items.len()
+	if len >= rows_slot_base {
+		Err(Rows.Error.SlotExhausted)
+	} else {
+		chunk_capacity = (len + 31).div_trunc_by(32)
+		built = rows_build_fresh_loop(
+			items,
+			key_of,
+			0,
+			len,
+			{
+				order_slots: [],
+				chunks: Dict.with_capacity(chunk_capacity),
+				current_chunk: List.with_capacity(32),
+				key_index: Dict.with_capacity(len),
+				key_bytes: 0,
+				chunk_writes: 0,
+			},
+		)?
+		if built.current_chunk.is_empty() {
+			Ok({
+				order_slots: built.order_slots,
+				slots: { chunks: built.chunks, free: [], next_index: len + 1 },
+				key_index: built.key_index,
+				key_bytes: built.key_bytes,
+				slot_chunks_written: built.chunk_writes,
+			})
+		} else {
+			last_chunk_id = len.div_trunc_by(32)
+			Ok({
+				order_slots: built.order_slots,
+				slots: { chunks: built.chunks.insert(last_chunk_id, built.current_chunk), free: [], next_index: len + 1 },
+				key_index: built.key_index,
+				key_bytes: built.key_bytes,
+				slot_chunks_written: built.chunk_writes + 1,
+			})
+		}
+	}
+}
+
+rows_build_replacement_loop : List(item), Box((item -> Str)), RowsStorage(item), U64, U64, RowsReplacementBuild(item) -> Try(RowsReplacementBuild(item), Rows.Error)
+rows_build_replacement_loop = |items, key_of, old, index, len, build|
 	if index == len {
 		Ok(build)
 	} else {
@@ -830,49 +986,127 @@ rows_build_replacement = |items, key_of, old, index, len, build|
 		match build.key_index.get(key) {
 			Ok(_) => Err(DuplicateKey(key))
 			Err(_) => {
-				entry_and_slots =
+				reserved_result =
 					match old.key_index.get(key) {
 						Ok(old_slot) => {
-							replaced = rows_slots_replace(build.slots, old_slot, key, item) ?? crash "Rows key index named a stale slot"
-							{ slot: old_slot, slots: replaced }
+							old_cell = rows_slots_cell(old.slots, rows_slot_index(old_slot)) ?? crash "Rows key index named a missing slot"
+							generation =
+								match old_cell {
+									RowsSlotLive(live) =>
+										if live.generation == rows_slot_generation(old_slot) {
+											live.generation
+										} else {
+											crash "Rows key index named a stale generation"
+										}
+									_ => crash "Rows key index named a non-live slot"
+								}
+							Ok({
+								free_cursor: build.free_cursor,
+								next_index: build.next_index,
+								slot: old_slot,
+								cell: RowsSlotLive({ generation, key, item }),
+							})
 						}
 						Err(_) => {
-							allocated = rows_slots_allocate(build.slots, key, item)?
-							{ slot: allocated.slot, slots: allocated.slots }
+							match old.slots.free.get(build.free_cursor) {
+								Ok(slot_index) => {
+									free_cell = rows_slots_cell(old.slots, slot_index) ?? crash "Rows free slot was missing"
+									generation =
+										match free_cell {
+											RowsSlotVacant({ generation: stored_generation }) => stored_generation
+											_ => crash "Rows free slot was not vacant"
+										}
+									Ok({
+										free_cursor: build.free_cursor + 1,
+										next_index: build.next_index,
+										slot: rows_slot_pack(slot_index, generation),
+										cell: RowsSlotLive({ generation, key, item }),
+									})
+								}
+								Err(_) => {
+									if build.next_index >= rows_slot_base {
+										Err(Rows.Error.SlotExhausted)
+									} else {
+										Ok({
+											free_cursor: build.free_cursor,
+											next_index: build.next_index + 1,
+											slot: rows_slot_pack(build.next_index, 1),
+											cell: RowsSlotLive({ generation: 1, key, item }),
+										})
+									}
+								}
+							}
 						}
 					}
-				rows_build_replacement(
+				reserved = reserved_result?
+				rows_build_replacement_loop(
 					items,
 					key_of,
 					old,
 					index + 1,
 					len,
 					{
-						order_slots: build.order_slots.prepend(entry_and_slots.slot),
-						slots: entry_and_slots.slots,
-						key_index: build.key_index.insert(key, entry_and_slots.slot),
-						key_bytes: build.key_bytes + key.to_utf8().len(),
+						order_slots: build.order_slots.prepend(reserved.slot),
+						key_index: build.key_index.insert(key, reserved.slot),
+						key_bytes: build.key_bytes + key.count_utf8_bytes(),
+						patches: rows_slots_patch(build.patches, rows_slot_index(reserved.slot), reserved.cell),
+						free_cursor: reserved.free_cursor,
+						next_index: reserved.next_index,
 					},
 				)
 			}
 		}
 	}
 
-rows_release_replaced_slots : RowsStorage(item), RowsBuild(item) -> RowsSlotStore(item)
-rows_release_replaced_slots = |old, build| {
-	var $slots = build.slots
+rows_build_replacement : List(item), Box((item -> Str)), RowsStorage(item) -> Try(RowsBuild(item), Rows.Error)
+rows_build_replacement = |items, key_of, old| {
+	len = items.len()
+	patch_capacity = old.slots.chunks.len() + (len + 31).div_trunc_by(32)
+	partial = rows_build_replacement_loop(
+		items,
+		key_of,
+		old,
+		0,
+		len,
+		{
+			order_slots: [],
+			key_index: Dict.with_capacity(len),
+			key_bytes: 0,
+			patches: { by_chunk: Dict.with_capacity(patch_capacity), chunk_ids_rev: [] },
+			free_cursor: 0,
+			next_index: old.slots.next_index,
+		},
+	)?
+	var $patches = partial.patches
+	var $released_rev = []
 	var $index = 0
 	while $index < rows_order_len(old.order) {
 		entry = rows_entry_at(old.order, old.slots, $index) ?? crash "Rows replacement old index was invalid"
-		match build.key_index.get(entry.key) {
+		match partial.key_index.get(entry.key) {
 			Ok(_) => {}
 			Err(_) => {
-				$slots = rows_slots_release($slots, entry.slot) ?? crash "Rows replacement retired a stale slot"
+				generation = rows_slot_generation(entry.slot)
+				slot_index = rows_slot_index(entry.slot)
+				if generation == 4294967295 {
+					$patches = rows_slots_patch($patches, slot_index, RowsSlotRetired)
+				} else {
+					$patches = rows_slots_patch($patches, slot_index, RowsSlotVacant({ generation: generation + 1 }))
+					$released_rev = $released_rev.prepend(slot_index)
+				}
 			}
 		}
 		$index = $index + 1
 	}
-	$slots
+	remaining_free = old.slots.free.drop_first(partial.free_cursor)
+	final_free = $released_rev.concat(remaining_free)
+	patched = rows_slots_apply_patches(old.slots, $patches, final_free, partial.next_index)
+	Ok({
+		order_slots: partial.order_slots,
+		slots: patched.slots,
+		key_index: partial.key_index,
+		key_bytes: partial.key_bytes,
+		slot_chunks_written: patched.slot_chunks_written,
+	})
 }
 
 ## Retire every live slot without repeatedly path-copying the order tree or
@@ -912,7 +1146,7 @@ rows_remove_at_loop = |state, at, remaining, removed_rev|
 			..state,
 			order: order_removal.order,
 			key_index: state.key_index.remove(entry.key),
-			key_bytes: state.key_bytes - entry.key.to_utf8().len(),
+			key_bytes: state.key_bytes - entry.key.count_utf8_bytes(),
 			removed: state.removed.insert(entry.key, entry),
 			touched: state.touched.insert(entry.slot, True),
 			touched_rev: state.touched_rev.prepend(entry.slot),
@@ -956,7 +1190,7 @@ rows_insert_items = |state, key_of, at, items, item_index, item_len, entries_rev
 					..entry_and_state.state,
 					order: rows_order_insert(entry_and_state.state.order, reserved_index, entry_and_state.entry.slot),
 					key_index: entry_and_state.state.key_index.insert(key, entry_and_state.entry.slot),
-					key_bytes: entry_and_state.state.key_bytes + key.to_utf8().len(),
+					key_bytes: entry_and_state.state.key_bytes + key.count_utf8_bytes(),
 					touched: entry_and_state.state.touched.insert(entry_and_state.entry.slot, True),
 					touched_rev: entry_and_state.state.touched_rev.prepend(entry_and_state.entry.slot),
 				}
@@ -1330,11 +1564,11 @@ rows_delta_metadata = |transitions| {
 	for transition in transitions {
 		match transition {
 			InsertRow({ key, .. }) => {
-				$key_bytes = $key_bytes + key.to_utf8().len()
+				$key_bytes = $key_bytes + key.count_utf8_bytes()
 				$key_count = $key_count + 1
 			}
 			UpdateRow({ key, .. }) => {
-				$key_bytes = $key_bytes + key.to_utf8().len()
+				$key_bytes = $key_bytes + key.count_utf8_bytes()
 				$key_count = $key_count + 1
 			}
 			_ => {}
@@ -1421,15 +1655,8 @@ Rows(item) :: [Rows(RowsStorage(item))].{
 	## Construct a snapshot collection, rejecting duplicate exact keys.
 	from_list : List(item), (item -> Str) -> Try(Rows(item), Error)
 	from_list = |items, key_of| {
-		indexes = rows_empty_indexes()
 		key_of_box = Box.box(key_of)
-		built = rows_build_fresh(
-			items,
-			key_of_box,
-			0,
-			items.len(),
-			{ order_slots: [], slots: rows_slots_empty(), key_index: indexes.key_index, key_bytes: 0 },
-		)?
+		built = rows_build_fresh(items, key_of_box)?
 		Ok(
 			Rows({
 				token: rows_generation_callable(),
@@ -1451,16 +1678,12 @@ Rows(item) :: [Rows(RowsStorage(item))].{
 	## collection retain their stable slots; newly appearing keys receive new ones.
 	replace_all : Rows(item), List(item) -> Try(Rows(item), Error)
 	replace_all = |Rows(old), items| {
-		indexes = rows_empty_indexes()
-		built = rows_build_replacement(
-			items,
-			old.key_of,
-			old,
-			0,
-			items.len(),
-			{ order_slots: [], slots: old.slots, key_index: indexes.key_index, key_bytes: 0 },
-		)?
-		final_slots = rows_release_replaced_slots(old, built)
+		built =
+			if old.slots.next_index == 1 and old.slots.chunks.len() == 0 {
+				rows_build_fresh(items, old.key_of)?
+			} else {
+				rows_build_replacement(items, old.key_of, old)?
+			}
 		Ok(
 			Rows({
 				token: rows_generation_callable(),
@@ -1468,7 +1691,7 @@ Rows(item) :: [Rows(RowsStorage(item))].{
 				transition: Snapshot,
 				key_of: old.key_of,
 				order: rows_order_from_slots(rows_reverse_u64(built.order_slots)),
-				slots: final_slots,
+				slots: built.slots,
 				key_index: built.key_index,
 				snapshot_key_bytes: built.key_bytes,
 				op_count: 0,
@@ -1724,6 +1947,154 @@ rows_test_item = |key, value| RowsTestItem({ key, value })
 
 rows_test_key : RowsTestItem -> Str
 rows_test_key = |item| item.key()
+
+rows_test_items : U64 -> List(RowsTestItem)
+rows_test_items = |count| {
+	var $items = List.with_capacity(count)
+	var $index = 0
+	while $index < count {
+		$items = $items.append(rows_test_item($index.to_str(), $index))
+		$index = $index + 1
+	}
+	$items
+}
+
+## Fresh snapshots publish one complete slot chunk at every 32-cell boundary
+## and one final partial chunk, without manufacturing free slots.
+expect {
+	var $valid = True
+	for count in [0, 1, 31, 32, 33, 63, 64, 65, 1000] {
+		items = rows_test_items(count)
+		built = rows_build_fresh(items, Box.box(rows_test_key))?
+		expected_chunks = (count + 31).div_trunc_by(32)
+		last_chunk_ok =
+			if count == 0 {
+				built.slots.chunks.len() == 0
+			} else {
+				last_chunk_id = (count - 1).div_trunc_by(32)
+				expected_last_len = (count - 1).rem_by(32) + 1
+				last_chunk = built.slots.chunks.get(last_chunk_id)?
+				last_chunk.len() == expected_last_len
+			}
+		last_slot_ok =
+			if count == 0 {
+				True
+			} else {
+				last_slot = rows_slot_pack(count, 1)
+				(rows_slots_get(built.slots, last_slot)?).item.value() == count - 1
+			}
+		$valid =
+			$valid
+				and built.slot_chunks_written == expected_chunks
+					and built.slots.chunks.len() == expected_chunks
+						and built.slots.next_index == count + 1
+							and built.slots.free.is_empty()
+								and built.key_index.len() == count
+									and last_chunk_ok
+										and last_slot_ok
+	}
+	$valid
+}
+
+## Snapshot replacement rebuilds each affected scattered chunk once, preserves
+## surviving slot identities, and advances reused vacant-slot generations.
+expect {
+	initial = Rows.from_list(rows_test_items(65), rows_test_key)?
+	initial_survivor_slot = Rows.platform_slot_at(initial, 64)?
+	removed = Rows.apply(initial, [RemoveKey("1"), RemoveKey("33")])?
+	Rows(removed_storage) = removed
+	replacement_items = [rows_test_item("64", 640), rows_test_item("0", 100), rows_test_item("x", 1), rows_test_item("y", 2)]
+	planned = rows_build_replacement(replacement_items, removed_storage.key_of, removed_storage)?
+	replaced = Rows.replace_all(removed, replacement_items)?
+	Rows(replaced_storage) = replaced
+
+	replaced_survivor_slot = Rows.platform_slot_at(replaced, 0)?
+	x_slot = Rows.platform_slot_at(replaced, 2)?
+	y_slot = Rows.platform_slot_at(replaced, 3)?
+	reused_indexes = [rows_slot_index(x_slot), rows_slot_index(y_slot)].sort_with(
+		|left, right| if left < right {
+			Before
+		} else if left > right {
+			After
+		} else {
+			Same
+		},
+	)
+
+	planned.slot_chunks_written == 3
+		and replaced_storage.slots.chunks.len() == 3
+			and replaced_storage.slots.next_index == 66
+				and replaced_survivor_slot == initial_survivor_slot
+					and reused_indexes == [2, 34]
+						and rows_slot_generation(x_slot) == 2
+							and rows_slot_generation(y_slot) == 2
+								and Rows.to_list(replaced).map(|item| item.key()) == ["64", "0", "x", "y"]
+									and Rows.get_key(initial, "1")?.value() == 1
+										and Rows.get_key(removed, "64")?.value() == 64
+											and Rows.get_key(replaced, "64")?.value() == 640
+}
+
+## A saturated removed slot retires permanently during snapshot replacement and
+## is never added to the next generation's free list.
+expect {
+	max_generation = 4294967295
+	old_slot = rows_slot_pack(1, max_generation)
+	chunks : Dict(U64, List(RowsSlotCell(RowsTestItem)))
+	chunks = Dict.with_capacity(1).insert(0, [RowsSlotLive({ generation: max_generation, key: "a", item: rows_test_item("a", 1) })])
+	key_index : Dict(Str, U64)
+	key_index = Dict.with_capacity(1).insert("a", old_slot)
+	old : RowsStorage(RowsTestItem)
+	old = {
+		token: rows_generation_callable(),
+		parent: NoParent,
+		transition: Snapshot,
+		key_of: Box.box(rows_test_key),
+		order: rows_order_from_slots([old_slot]),
+		slots: { chunks, free: [], next_index: 2 },
+		key_index,
+		snapshot_key_bytes: 1,
+		op_count: 0,
+		delta_key_count: 0,
+		delta_key_bytes: 0,
+	}
+	built = rows_build_replacement([], old.key_of, old)?
+	retired =
+		match rows_slots_cell(built.slots, 1)? {
+			RowsSlotRetired => True
+			_ => False
+		}
+
+	retired and built.slots.free.is_empty() and built.slot_chunks_written == 1 and (rows_slots_get(old.slots, old_slot)?).item.value() == 1
+}
+
+## Replacement failures publish no generation and leave the previous snapshot
+## independently readable.
+expect {
+	initial = Rows.from_list([rows_test_item("a", 1), rows_test_item("b", 2)], rows_test_key)?
+	duplicate = Rows.replace_all(initial, [rows_test_item("same", 3), rows_test_item("same", 4)])
+	Rows(initial_storage) = initial
+	exhausted_storage : RowsStorage(RowsTestItem)
+	exhausted_storage = {
+		..initial_storage,
+		order: rows_order_empty(),
+		slots: { chunks: Dict.empty(), free: [], next_index: rows_slot_base },
+		key_index: Dict.empty(),
+		snapshot_key_bytes: 0,
+	}
+	exhausted = Rows.replace_all(Rows(exhausted_storage), [rows_test_item("new", 5)])
+	duplicate_failed =
+		match duplicate {
+			Err(DuplicateKey("same")) => True
+			_ => False
+		}
+	exhausted_failed =
+		match exhausted {
+			Err(SlotExhausted) => True
+			_ => False
+		}
+
+	duplicate_failed and exhausted_failed and Rows.get_key(initial, "a")?.value() == 1 and Rows.get_key(initial, "b")?.value() == 2
+}
 
 ## Chunked order tables keep boundary keys dense, support arbitrary bulk input
 ## order, and preserve bounded edit-time replacement and removal.
